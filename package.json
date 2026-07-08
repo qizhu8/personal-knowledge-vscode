@@ -2,9 +2,11 @@
   "name": "personal-knowledge",
   "displayName": "Personal Knowledge",
   "description": "Browse, edit, and sync your personal knowledge: skills, notes, prompts, packages, scripts. Expose your knowledge base to AI assistants via MCP.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "Uone",
-  "author": { "name": "Yu Wang" },
+  "author": {
+    "name": "Yu Wang"
+  },
   "license": "MIT",
   "icon": "resources/icon.png",
   "repository": {
@@ -12,29 +14,74 @@
     "url": "https://github.com/qizhu8/personal-knowledge-vscode"
   },
   "homepage": "https://github.com/qizhu8/personal-knowledge-vscode#readme",
-  "bugs": { "url": "https://github.com/qizhu8/personal-knowledge-vscode/issues" },
-  "engines": { "vscode": "^1.85.0" },
-  "categories": ["Other", "Snippets", "Education"],
-  "keywords": ["knowledge", "skills", "notes", "productivity", "personal", "mcp", "pkm"],
+  "bugs": {
+    "url": "https://github.com/qizhu8/personal-knowledge-vscode/issues"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Snippets",
+    "Education"
+  ],
+  "keywords": [
+    "knowledge",
+    "skills",
+    "notes",
+    "productivity",
+    "personal",
+    "mcp",
+    "pkm"
+  ],
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
-      { "command": "personalKnowledge.open",      "title": "Personal Knowledge: Open Panel",               "icon": "$(book)" },
-      { "command": "personalKnowledge.addNote",   "title": "Personal Knowledge: Quick Note" },
-      { "command": "personalKnowledge.saveSkill", "title": "Personal Knowledge: Save Selection as Skill" },
-      { "command": "personalKnowledge.setupMcp",  "title": "Personal Knowledge: Setup MCP Server" }
+      {
+        "command": "personalKnowledge.open",
+        "title": "Personal Knowledge: Open Panel",
+        "icon": "$(book)"
+      },
+      {
+        "command": "personalKnowledge.addNote",
+        "title": "Personal Knowledge: Quick Note"
+      },
+      {
+        "command": "personalKnowledge.saveSkill",
+        "title": "Personal Knowledge: Save Selection as Skill"
+      },
+      {
+        "command": "personalKnowledge.setupMcp",
+        "title": "Personal Knowledge: Setup MCP Server"
+      }
     ],
     "keybindings": [
-      { "command": "personalKnowledge.open",    "key": "ctrl+shift+k", "mac": "cmd+shift+k" },
-      { "command": "personalKnowledge.addNote", "key": "ctrl+shift+n", "mac": "cmd+shift+n" }
+      {
+        "command": "personalKnowledge.open",
+        "key": "ctrl+shift+k",
+        "mac": "cmd+shift+k"
+      },
+      {
+        "command": "personalKnowledge.addNote",
+        "key": "ctrl+shift+n",
+        "mac": "cmd+shift+n"
+      }
     ],
     "menus": {
       "editor/context": [
-        { "command": "personalKnowledge.saveSkill", "when": "editorHasSelection", "group": "personalKnowledge" }
+        {
+          "command": "personalKnowledge.saveSkill",
+          "when": "editorHasSelection",
+          "group": "personalKnowledge"
+        }
       ],
       "view/title": [
-        { "command": "personalKnowledge.open", "when": "view == personalKnowledge.sidebarView", "group": "navigation" }
+        {
+          "command": "personalKnowledge.open",
+          "when": "view == personalKnowledge.sidebarView",
+          "group": "navigation"
+        }
       ]
     },
     "viewsContainers": {
