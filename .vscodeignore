@@ -1,0 +1,24 @@
+# Exclude source files (compiled output in dist/ is what gets packaged)
+src/**/*.ts
+!src/webview/**
+
+# Dev tooling
+tsconfig.json
+.eslintrc*
+.prettierrc*
+.editorconfig
+.gitignore
+.github/
+
+# Node modules — sql.js is bundled into dist/sql-asm.js at build time
+node_modules/
+
+# Test and CI artifacts
+**/*.test.ts
+**/*.spec.ts
+coverage/
+.nyc_output/
+
+# Misc
+*.vsix
+*.map

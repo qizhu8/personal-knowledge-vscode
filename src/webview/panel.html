@@ -1,0 +1,1102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'unsafe-inline' https://cdnjs.cloudflare.com; font-src https://cdnjs.cloudflare.com; img-src data: https:;">
+<title>Personal Knowledge</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:var(--vscode-editor-background);--panel:var(--vscode-sideBar-background);
+  --border:var(--vscode-panel-border);--accent:var(--vscode-focusBorder);
+  --text:var(--vscode-foreground);--muted:var(--vscode-descriptionForeground);
+  --hover:var(--vscode-list-hoverBackground);--input:var(--vscode-input-background);
+  --active:var(--vscode-list-activeSelectionBackground);
+  --active-fg:var(--vscode-list-activeSelectionForeground)}
+body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family);
+  font-size:var(--vscode-font-size);display:flex;flex-direction:column;height:100vh;overflow:hidden}
+/* Topbar */
+#topbar{background:var(--panel);border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:8px;padding:6px 12px;flex-shrink:0}
+#tabs{display:flex;gap:2px;flex:1}
+.tab{padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;color:var(--muted);border:none;
+  background:transparent;white-space:nowrap}
+.tab:hover{background:var(--hover);color:var(--text)}
+.tab.active{background:var(--active);color:var(--active-fg)}
+.tbtn{padding:4px 10px;border-radius:4px;border:1px solid var(--border);background:var(--input);
+  color:var(--text);font-size:11px;cursor:pointer;white-space:nowrap}
+.tbtn:hover{border-color:var(--accent)}
+#searchbox{background:var(--input);border:1px solid var(--border);border-radius:4px;
+  padding:4px 8px;color:var(--text);font-size:12px;width:180px;outline:none}
+#searchbox:focus{border-color:var(--accent)}
+/* Layout */
+#layout{display:flex;flex:1;min-height:0}
+/* Sidebar */
+#sidebar{width:240px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);
+  display:flex;flex-direction:column;overflow:hidden}
+#sidebar-filters{padding:6px 8px;border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:4px}
+.chip{font-size:10px;padding:2px 7px;border-radius:10px;border:1px solid var(--border);
+  color:var(--muted);cursor:pointer;background:transparent}
+.chip.active{border-color:var(--accent);color:var(--accent)}
+#item-list{flex:1;overflow-y:auto;padding:4px 0}
+.li{padding:6px 12px;cursor:pointer;border-left:2px solid transparent;display:flex;flex-direction:column;gap:2px}
+.li:hover{background:var(--hover)}
+.li.active{background:var(--active);color:var(--active-fg);border-left-color:var(--accent)}
+.li-name{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.li-meta{font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.li.active .li-meta{color:var(--active-fg);opacity:.7}
+/* Main */
+#main{flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden}
+#detail{flex:1;overflow-y:auto;padding:20px 28px;min-height:0}
+/* Detail */
+.d-title{font-size:18px;font-weight:700;margin-bottom:8px}
+.d-meta{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;font-size:11px;color:var(--muted)}
+.tag{background:var(--panel);border:1px solid var(--border);color:var(--accent);font-size:10px;
+  padding:1px 6px;border-radius:8px}
+.cat{background:var(--panel);border:1px solid var(--border);color:var(--muted);font-size:10px;
+  padding:1px 6px;border-radius:8px}
+.meta-grid{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:11px;
+  background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:14px}
+.ml{color:var(--muted)}.mv{color:var(--text)}
+hr.div{border:none;border-top:1px solid var(--border);margin:14px 0}
+/* TOC */
+.toc-wrap{float:right;width:180px;margin:0 0 12px 20px;background:var(--panel);
+  border:1px solid var(--border);border-radius:6px;padding:10px}
+.toc-wrap h4{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:6px}
+.toc a{display:block;font-size:11px;color:var(--muted);text-decoration:none;
+  padding:2px 0 2px calc(var(--d,0)*10px)}
+.toc a:hover{color:var(--accent)}
+/* Prose */
+.prose{font-size:13px;line-height:1.7}
+.prose h1,.prose h2,.prose h3{color:var(--accent);margin:1.3em 0 .4em;font-weight:600}
+.prose h1{font-size:1.3em}.prose h2{font-size:1.15em}.prose h3{font-size:1.05em}
+.prose p{margin:.5em 0}
+.prose ul,.prose ol{padding-left:1.4em;margin:.4em 0}
+.prose li{margin:.2em 0}
+.prose code{background:var(--panel);padding:1px 4px;border-radius:3px;font-size:11px;font-family:var(--vscode-editor-font-family)}
+.prose pre{position:relative;margin:.8em 0;border-radius:6px;overflow:hidden}
+.prose pre code{font-size:11px;padding:12px !important;display:block;background:var(--vscode-textCodeBlock-background)}
+.copy-btn{position:absolute;top:6px;right:6px;font-size:10px;padding:2px 7px;border-radius:3px;
+  border:1px solid var(--border);background:var(--panel);color:var(--muted);cursor:pointer;opacity:0}
+.prose pre:hover .copy-btn{opacity:1}
+.copy-btn:hover{color:var(--accent);border-color:var(--accent)}
+.prose table{border-collapse:collapse;width:100%;margin:.8em 0;font-size:12px}
+.prose th,.prose td{border:1px solid var(--border);padding:5px 8px}
+.prose th{background:var(--panel);color:var(--accent)}
+.prose blockquote{border-left:3px solid var(--accent);padding-left:10px;color:var(--muted);margin:.8em 0}
+.prose hr{border:none;border-top:1px solid var(--border);margin:1.2em 0}
+.prose a{color:var(--accent)}
+/* Note types */
+.nt-todo{border-left-color:#f87171!important}.nt-done{border-left-color:#4ade80!important}
+.nt-data-path{border-left-color:#fb923c!important}.nt-observation{border-left-color:#60a5fa!important}
+/* Note form */
+#note-form{padding:16px 28px;background:var(--panel);border-top:1px solid var(--border);flex-shrink:0}
+#note-form.hidden{display:none}
+#note-form h3{font-size:13px;margin-bottom:10px}
+.form-row{display:flex;gap:8px;margin-bottom:8px}
+.form-row input,.form-row select,.form-row textarea{
+  background:var(--input);border:1px solid var(--border);border-radius:4px;
+  color:var(--text);padding:5px 8px;font-size:12px;outline:none}
+.form-row input:focus,.form-row select:focus,.form-row textarea:focus{border-color:var(--accent)}
+#note-content{width:100%;height:80px;resize:vertical;font-family:var(--vscode-editor-font-family);font-size:12px}
+.form-actions{display:flex;gap:6px;justify-content:flex-end}
+/* File tree */
+.ftree{font-size:11px;font-family:var(--vscode-editor-font-family);line-height:1.8}
+.ft-dir{color:var(--accent)}.ft-file{color:var(--muted);cursor:pointer}
+.ft-file:hover{color:var(--text)}
+/* vpill */
+.vpill{display:inline-block;padding:2px 8px;border-radius:8px;font-size:10px;
+  border:1px solid var(--border);color:var(--muted);cursor:pointer;margin:2px}
+.vpill.active,.vpill:hover{border-color:var(--accent);color:var(--accent)}
+/* Prompt tree view */
+.tree-proj{margin-bottom:2px}
+.tree-proj-hdr{padding:5px 12px;cursor:pointer;font-size:12px;font-weight:600;color:var(--accent)}
+.tree-proj-hdr:hover{background:var(--hover)}
+.tree-proj-body{padding-left:12px}
+.tree-task-hdr{padding:4px 12px;cursor:pointer;font-size:12px;color:var(--text)}
+.tree-task-hdr:hover{background:var(--hover)}
+.tree-task-body{padding-left:12px}
+.tree-ver-hdr{padding:3px 12px;cursor:pointer;font-size:11px;color:var(--muted)}
+.tree-ver-hdr:hover{background:var(--hover)}
+.tree-ver-body{padding-left:10px}
+.tree-file{padding:3px 12px;cursor:pointer;font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tree-file:hover{background:var(--hover);color:var(--text)}
+.collapsed{display:none}
+/* Diff view */
+.diff-wrap{display:flex;gap:12px;overflow-x:auto;font-family:var(--vscode-editor-font-family);font-size:11px}
+.diff-panel{flex:1;min-width:300px;border:1px solid var(--border);border-radius:6px;overflow:hidden}
+.diff-ver-label{padding:6px 10px;background:var(--panel);font-weight:600;font-size:12px;color:var(--accent);border-bottom:1px solid var(--border)}
+.diff-lines{overflow-y:auto;max-height:600px}
+.diff-line{display:flex;gap:8px;padding:1px 6px;line-height:1.5}
+.diff-line:hover{background:var(--hover)}
+.diff-add{background:#4ade8018;color:#4ade80}
+.diff-rem{background:#f8717118;color:#f87171}
+.diff-no{color:var(--muted);min-width:28px;text-align:right;user-select:none;flex-shrink:0}
+.diff-controls{display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap}
+.diff-controls select{background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:4px 8px;font-size:12px;outline:none}
+.diff-controls select:focus{border-color:var(--accent)}
+.diff-stat{font-size:11px;padding:2px 8px;border-radius:8px}
+.stat-add{background:#4ade8022;color:#4ade80}
+.stat-rem{background:#f8717122;color:#f87171}
+/* Loading banner */
+#loading-banner{position:fixed;inset:0;background:var(--bg);z-index:500;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;transition:opacity .35s}
+#loading-banner.hidden{opacity:0;pointer-events:none}
+.loading-logo{font-size:52px;animation:pulse 1.3s ease-in-out infinite}
+@keyframes pulse{0%,100%{transform:scale(1);opacity:.7}50%{transform:scale(1.1);opacity:1}}
+.loading-title{font-size:17px;font-weight:700;color:var(--accent)}
+.loading-sub{font-size:12px;color:var(--muted)}
+.loading-bar{width:200px;height:3px;background:var(--border);border-radius:2px;overflow:hidden}
+.loading-bar-fill{height:100%;background:var(--accent);border-radius:2px;animation:loadbar 1.5s ease-in-out infinite}
+@keyframes loadbar{0%{width:0%;margin-left:0}60%{width:60%;margin-left:20%}100%{width:0%;margin-left:100%}}
+/* empty */
+.empty{color:var(--muted);padding:40px;text-align:center;font-size:12px}
+/* Sync modal */
+#sync-modal-bg{display:none;position:fixed;inset:0;background:#0008;z-index:200;align-items:flex-start;justify-content:center;padding-top:48px}
+#sync-modal-bg.open{display:flex}
+#sync-modal{background:var(--panel);border:1px solid var(--border);border-radius:10px;width:560px;max-width:95vw;max-height:80vh;display:flex;flex-direction:column;overflow:hidden}
+.sm-header{display:flex;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border)}
+.sm-header h3{font-size:14px;flex:1}
+.sm-close{background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px;padding:2px 6px}
+.sm-close:hover{color:var(--text)}
+.sm-tabs{display:flex;border-bottom:1px solid var(--border)}
+.sm-tab{padding:8px 18px;font-size:12px;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent}
+.sm-tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.sm-body{flex:1;overflow-y:auto;padding:16px 18px}
+.sm-section{margin-bottom:14px}
+.sm-label{font-size:11px;color:var(--muted);margin-bottom:6px}
+.sm-row{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+.sm-row input,.sm-row select{flex:1;background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 8px;font-size:12px;outline:none}
+.sm-row input:focus,.sm-row select:focus{border-color:var(--accent)}
+/* Skill checklist */
+.skill-check-list{max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:4px}
+.skill-check-item{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:3px;cursor:pointer;font-size:12px}
+.skill-check-item:hover{background:var(--hover)}
+.skill-check-item input[type=checkbox]{accent-color:var(--accent);cursor:pointer}
+.skill-check-all{font-size:11px;color:var(--accent);cursor:pointer;margin-bottom:4px;display:block}
+/* Credential box */
+.cred-box{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;font-size:12px;font-family:var(--vscode-editor-font-family)}
+.cred-row{display:flex;gap:8px;align-items:center;margin-bottom:6px}
+.cred-label{color:var(--muted);width:80px;flex-shrink:0}
+.cred-val{flex:1;color:var(--text);word-break:break-all}
+.cred-copy{padding:2px 7px;font-size:10px;border:1px solid var(--border);border-radius:3px;background:var(--panel);color:var(--muted);cursor:pointer}
+.cred-copy:hover{color:var(--accent);border-color:var(--accent)}
+/* Session list */
+.session-item{border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:8px;display:flex;align-items:center;gap:8px}
+.session-item.expired{opacity:.5}
+.session-info{flex:1;font-size:11px}
+.session-name{font-weight:600;font-size:12px;margin-bottom:3px}
+.session-meta{color:var(--muted)}
+.session-badge{padding:2px 6px;border-radius:8px;font-size:10px;font-weight:600}
+.badge-active{background:#4ade8022;color:#4ade80}
+.badge-expired{background:var(--border);color:var(--muted)}
+/* Context menu */
+#ctx-menu{position:fixed;display:none;background:var(--panel);border:1px solid var(--border);
+  border-radius:6px;padding:4px 0;min-width:140px;z-index:999;box-shadow:0 4px 12px #0006}
+#ctx-menu.open{display:block}
+.ctx-item{padding:6px 14px;font-size:12px;cursor:pointer;color:var(--text)}
+.ctx-item:hover{background:var(--hover)}
+.ctx-item.danger{color:#f87171}
+.ctx-item.danger:hover{background:#f8717122}
+/* Skills category tree */
+.tree-cat-hdr{display:flex;align-items:center;gap:6px;padding:5px 10px;cursor:pointer;font-size:11px;font-weight:600;color:var(--accent);border-bottom:1px solid var(--border);user-select:none}
+.tree-cat-hdr:hover{background:var(--hover)}
+.tree-cat-arrow{font-size:9px;width:10px;flex-shrink:0;color:var(--muted)}
+.tree-cat-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tree-cat-count{font-size:10px;color:var(--muted);background:var(--border);border-radius:8px;padding:1px 6px;flex-shrink:0}
+.tree-cat-body .li{padding-left:20px}
+/* Search highlight */
+mark{background:var(--vscode-editor-findMatchHighlightBackground,#ffd70055);color:inherit;border-radius:2px;padding:0 1px}
+</style>
+</head>
+<body>
+<div id="topbar">
+  <div id="tabs">
+    <button class="tab active" data-tab="skills">Skills</button>
+    <button class="tab" data-tab="notes">Notes</button>
+    <button class="tab" data-tab="prompts">Prompts</button>
+    <button class="tab" data-tab="packages">Packages</button>
+    <button class="tab" data-tab="scripts">Scripts</button>
+    <button class="tab" data-tab="mcp">⚡ MCP</button>
+  </div>
+  <input id="searchbox" type="search" placeholder="Search…">
+  <button class="tbtn" onclick="toggleNoteForm()">+ Note</button>
+  <button class="tbtn" onclick="doExport()">⬇ Export</button>
+  <button class="tbtn" onclick="triggerImport()">⬆ Import</button>
+  <button class="tbtn" onclick="openSyncModal()">🔄 Sync</button>
+  <input type="file" id="import-file" accept=".json" style="display:none" onchange="doImport(this)">
+</div>
+<div id="layout">
+  <div id="sidebar">
+    <div id="sidebar-filters"></div>
+    <div id="item-list"></div>
+  </div>
+  <div id="main">
+    <div id="detail"><div class="empty">Select an item from the sidebar.</div></div>
+    <div id="note-form" class="hidden">
+      <h3 id="note-form-title">Quick Note</h3>
+      <div class="form-row">
+        <input id="note-title" placeholder="Title (optional)" style="flex:2">
+        <select id="note-type" style="flex:1">
+          <option value="general">general</option>
+          <option value="todo">todo</option>
+          <option value="done">done</option>
+          <option value="data-path">data-path</option>
+          <option value="observation">observation</option>
+        </select>
+        <input id="note-tags" placeholder="tags, comma-sep" style="flex:1.5">
+      </div>
+      <div class="form-row"><textarea id="note-content" placeholder="Note content…"></textarea></div>
+      <input type="hidden" id="note-edit-slug">
+      <div class="form-actions">
+        <button class="tbtn" onclick="toggleNoteForm()">Cancel</button>
+        <button class="tbtn" onclick="saveNote()" style="border-color:var(--accent)">Save Note</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Context menu (note right-click) -->
+<div id="ctx-menu">
+  <div class="ctx-item" id="ctx-open">Open</div>
+  <div class="ctx-item" id="ctx-edit">✏ Edit Note</div>
+  <div class="ctx-item" id="ctx-mark-done">✓ Mark as Done</div>
+  <div class="ctx-item danger" id="ctx-delete">🗑 Delete Note</div>
+</div>
+
+<!-- Sync modal -->
+<div id="sync-modal-bg">
+<div id="sync-modal">
+  <div class="sm-header">
+    <h3>🔄 Knowledge Sync</h3>
+    <button class="sm-close" onclick="closeSyncModal()">✕</button>
+  </div>
+  <div class="sm-tabs">
+    <div class="sm-tab active" id="sm-tab-host" onclick="switchSmTab('host')">Host</div>
+    <div class="sm-tab" id="sm-tab-sessions" onclick="switchSmTab('sessions')">Active Links</div>
+    <div class="sm-tab" id="sm-tab-join" onclick="switchSmTab('join')">Join</div>
+  </div>
+  <div class="sm-body">
+    <!-- HOST tab -->
+    <div id="sm-pane-host">
+      <div class="sm-section">
+        <div class="sm-label">Select what to share</div>
+        <div id="sync-type-sections"></div>
+      </div>
+      <div class="sm-section">
+        <div class="sm-label">Settings</div>
+        <div class="sm-row">
+          <span style="font-size:12px;color:var(--muted);width:90px">Expires in</span>
+          <select id="sm-expiry">
+            <option value="15">15 minutes</option>
+            <option value="30" selected>30 minutes</option>
+            <option value="60">1 hour</option>
+            <option value="120">2 hours</option>
+            <option value="480">8 hours</option>
+          </select>
+          <span style="font-size:12px;color:var(--muted);width:50px">Port</span>
+          <input id="sm-port" type="number" value="19877" style="width:80px;flex:none">
+        </div>
+      </div>
+      <button class="tbtn" style="border-color:var(--accent);width:100%" onclick="doCreateSync()">Generate Sync Link</button>
+      <div id="sm-cred-result" style="margin-top:12px"></div>
+    </div>
+    <!-- SESSIONS tab -->
+    <div id="sm-pane-sessions" style="display:none">
+      <div id="sm-session-list"><div style="color:var(--muted);font-size:12px">No active sessions.</div></div>
+    </div>
+    <!-- JOIN tab -->
+    <div id="sm-pane-join" style="display:none">
+      <div class="sm-section">
+        <div class="sm-label">Connect to a host</div>
+        <div class="sm-row"><span style="font-size:12px;color:var(--muted);width:80px">URL</span><input id="join-url" placeholder="http://10.x.x.x:19877"></div>
+        <div class="sm-row"><span style="font-size:12px;color:var(--muted);width:80px">Username</span><input id="join-user" placeholder="e.g. a3f8b2c1"></div>
+        <div class="sm-row"><span style="font-size:12px;color:var(--muted);width:80px">Password</span><input id="join-pass" type="password" placeholder="password"></div>
+      </div>
+      <button class="tbtn" style="border-color:var(--accent);width:100%" onclick="doJoinSync()">Download Skills</button>
+      <div id="join-result" style="margin-top:10px;font-size:12px;color:var(--muted)"></div>
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+const vscode = acquireVsCodeApi();
+marked.setOptions({ breaks: true });
+const esc = s => String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const ICON = {todo:'☐',done:'✓','data-path':'📂',observation:'👁',general:'📝'};
+
+let state = { tab:'skills', filter:'all', search:'', items:[], active:null };
+let ctxTarget = null; // slug of note under right-click
+let currentDetail = null; // current detail item for edit/delete actions
+let catCollapsed = {}; // collapsed state per skill category
+let pendingEditSlug = null; // note slug awaiting detail load for edit
+let searchDebounce = null; // debounce timer for search
+
+// ── Context menu ──────────────────────────────────────────────────────────
+const ctxMenu = document.getElementById('ctx-menu');
+
+document.getElementById('item-list').addEventListener('contextmenu', e => {
+  const li = e.target.closest('.li[data-note-slug]');
+  if (!li) return;
+  e.preventDefault();
+  ctxTarget = li.dataset.noteSlug;
+  ctxMenu.style.left = e.clientX + 'px';
+  ctxMenu.style.top  = e.clientY + 'px';
+  ctxMenu.classList.add('open');
+});
+
+document.addEventListener('click', () => ctxMenu.classList.remove('open'));
+document.addEventListener('contextmenu', e => {
+  if (!e.target.closest('#item-list .li[data-note-slug]')) ctxMenu.classList.remove('open');
+});
+
+document.getElementById('ctx-open').addEventListener('click', () => {
+  if (ctxTarget) openItem('note', ctxTarget);
+});
+document.getElementById('ctx-mark-done').addEventListener('click', () => {
+  if (ctxTarget) { ask('markDone', { slug: ctxTarget }); ctxTarget = null; }
+});
+document.getElementById('ctx-delete').addEventListener('click', () => {
+  if (ctxTarget) { ask('deleteNote', { slug: ctxTarget }); ctxTarget = null; }
+});
+document.getElementById('ctx-edit').addEventListener('click', () => {
+  if (ctxTarget) { pendingEditSlug = ctxTarget; ask('detail', { type:'note', key: ctxTarget }); ctxTarget = null; }
+});
+
+// ── Message from extension ─────────────────────────────────────────────────
+window.addEventListener('message', e => {
+  const { command, data } = e.data;
+  // Dismiss loading banner on first response
+  if (command === 'list') {
+    const banner = document.getElementById('loading-banner');
+    if (banner && !banner.classList.contains('hidden')) {
+      banner.classList.add('hidden');
+      setTimeout(() => banner.remove(), 400);
+    }
+  }
+  if      (command === 'list')     { state.items = data; renderList(); }
+  else if (command === 'detail') {
+    if (pendingEditSlug && data?.type === 'note' && data.slug === pendingEditSlug) {
+      pendingEditSlug = null; editNote(data);
+    } else { renderDetail(data); }
+  }
+  else if (command === 'saved')    { ask('list', { tab: state.tab, filter: state.filter, q: state.search }); }
+  else if (command === 'exported') {
+    const a = document.createElement('a');
+    a.href = 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(data, null, 2));
+    a.download = 'pkm-export-' + new Date().toISOString().slice(0,10) + '.json';
+    a.click();
+  }
+  // ── Sync responses ──────────────────────────────────────────────────────
+  else if (command === 'syncContentList') {
+    buildTypeSections(data);
+  }
+  else if (command === 'syncSkillList') {
+    // legacy fallback — ignored now
+  }
+  else if (command === 'syncStarted') {
+    const s = data;
+    document.getElementById('sm-cred-result').innerHTML = `
+      <div class="cred-box">
+        <div style="font-size:11px;color:#4ade80;margin-bottom:8px">✅ Sync link active — share with recipient:</div>
+        <div class="cred-row"><span class="cred-label">URL</span><span class="cred-val">${esc(s.url)}</span><button class="cred-copy" onclick="navigator.clipboard.writeText('${esc(s.url)}')">Copy</button></div>
+        <div class="cred-row"><span class="cred-label">Username</span><span class="cred-val">${esc(s.username)}</span><button class="cred-copy" onclick="navigator.clipboard.writeText('${esc(s.username)}')">Copy</button></div>
+        <div class="cred-row"><span class="cred-label">Password</span><span class="cred-val">${esc(s.password)}</span><button class="cred-copy" onclick="navigator.clipboard.writeText('${esc(s.password)}')">Copy</button></div>
+        <div class="cred-row"><span class="cred-label">Expires</span><span class="cred-val">${new Date(s.expires).toLocaleTimeString()}</span></div>
+        <div class="cred-row"><span class="cred-label">Skills</span><span class="cred-val">${s.skillCount === 'all' ? 'All skills' : s.skillCount + ' selected'}</span></div>
+      </div>`;
+    ask('getSyncSessions', {});
+  }
+  else if (command === 'syncSessions') { renderSyncSessions(data.sessions); }
+  else if (command === 'syncJoined')   {
+    document.getElementById('join-result').innerHTML =
+      `<span style="color:#4ade80">✅ Synced from ${esc(data.from)}: ${esc(data.summary||data.count+' items')}</span>`;
+  }
+  else if (command === 'mcpStatus')    { renderMcpPane(data); }
+  else if (command === 'mcpGenerated') { renderMcpGenerated(data); }
+  else if (command === 'mcpError')     {
+    const el = document.getElementById('mcp-result');
+    if (el) el.innerHTML = `<span style="color:#f87171">❌ ${esc(data.error)}</span>`;
+  }
+  else if (command === 'openTab') {
+    const btn = document.querySelector(`.tab[data-tab="${data.tab}"]`);
+    if (btn) btn.dispatchEvent(new MouseEvent('click'));
+  }
+
+      ? document.getElementById('join-result')
+      : document.getElementById('sm-cred-result');
+    if (errEl) errEl.innerHTML = `<span style="color:#f87171">❌ ${esc(data.error)}</span>`;
+  }
+});
+
+function ask(command, payload) { vscode.postMessage({ command, ...payload }); }
+
+// ── Tabs ──────────────────────────────────────────────────────────────────
+document.querySelectorAll('.tab').forEach(t =>
+  t.addEventListener('click', () => {
+    state.tab = t.dataset.tab; state.filter = 'all'; state.search = '';
+    document.getElementById('searchbox').value = '';
+    document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x.dataset.tab === state.tab));
+    document.getElementById('detail').innerHTML = '<div class="empty">Select an item</div>';
+    if (state.tab === 'mcp') {
+      // Hide sidebar for MCP full-width pane
+      document.getElementById('sidebar').style.display = 'none';
+      document.getElementById('searchbox').style.display = 'none';
+      renderMcpLoading();
+      ask('checkMcp', {});
+    } else {
+      document.getElementById('sidebar').style.display = '';
+      document.getElementById('searchbox').style.display = '';
+      ask('list', { tab: state.tab, filter: 'all', q: '' });
+    }
+  })
+);
+
+document.getElementById('searchbox').addEventListener('input', e => {
+  state.search = e.target.value.trim();
+  clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(() => {
+    ask('list', { tab: state.tab, filter: state.filter, q: state.search });
+  }, 250);
+});
+
+// ── Render list ────────────────────────────────────────────────────────────
+function renderList() {
+  const { tab, items, filter } = state;
+  const el = document.getElementById('item-list');
+  const fEl = document.getElementById('sidebar-filters');
+
+  if (tab === 'skills') {
+    fEl.innerHTML = '';
+    const groups = {};
+    (items||[]).forEach(r => { const g = r.category||'(uncategorized)'; (groups[g]||(groups[g]=[])).push(r); });
+    const q = state.search;
+    el.innerHTML = Object.keys(groups).sort((a,b)=>a==='(uncategorized)'?1:b==='(uncategorized)'?-1:a.localeCompare(b)).map(cat => {
+      const open = !catCollapsed[cat];
+      return `<div class="tree-cat">
+        <div class="tree-cat-hdr" onclick="toggleCat('${esc(cat)}')" title="${esc(cat)}">
+          <span class="tree-cat-arrow">${open?'▼':'▶'}</span>
+          <span class="tree-cat-label">${cat==='(uncategorized)'?'<em style="opacity:.6">(uncategorized)</em>':esc(cat)}</span>
+          <span class="tree-cat-count">${groups[cat].length}</span>
+        </div>
+        <div class="tree-cat-body" style="${open?'':'display:none'}">
+          ${groups[cat].map(r=>`<div class="li" data-skill-name="${esc(r.name)}" onclick="openItem('skill','${esc(r.name)}')">
+            <div class="li-name">${hl(r.name,q)}</div>
+            <div class="li-meta">${r.description?hl(r.description.slice(0,50),q):''}</div>
+          </div>`).join('')}
+        </div>
+      </div>`;
+    }).join('') || '<div class="empty">No skills</div>';
+
+  } else if (tab === 'notes') {
+    const types = ['all','todo','done','data-path','observation','general'];
+    fEl.innerHTML = types.map(t =>
+      `<span class="chip ${filter===t?'active':''}" onclick="setNoteFilter('${t}')">${t}</span>`).join('');
+    el.innerHTML = items.map(r => `<div class="li nt-${r.type}" data-note-slug="${esc(r.slug)}" onclick="openItem('note','${esc(r.slug)}')">
+      <div class="li-name">${ICON[r.type]||'📝'} ${hl(r.title,state.search)}</div>
+      <div class="li-meta">${r.updated_at.slice(0,10)}</div>
+    </div>`).join('') || '<div class="empty">No notes</div>';
+
+  } else if (tab === 'prompts') {
+    // Tree: project → task → versions → files
+    const projs = [...new Set(items.map(r => r.project))].sort();
+    fEl.innerHTML = ['all',...projs].map(p =>
+      `<span class="chip ${filter===p?'active':''}" onclick="setFilter('${p}')">${p}</span>`).join('');
+    const shown = filter==='all' ? items : items.filter(r => r.project===filter);
+    // Group by project
+    const byProj = {};
+    shown.forEach(r => { (byProj[r.project]||(byProj[r.project]=[])).push(r); });
+    el.innerHTML = Object.entries(byProj).map(([proj, tasks]) =>
+      `<div class="tree-proj">
+        <div class="tree-proj-hdr" onclick="toggleTree(this)">▶ ${esc(proj)}</div>
+        <div class="tree-proj-body collapsed">${tasks.map(r =>
+          `<div class="tree-task">
+            <div class="tree-task-hdr" onclick="toggleTree(this)">▷ ${esc(r.task)}</div>
+            <div class="tree-task-body collapsed">${(r.versions||[]).map(v =>
+              `<div class="tree-ver">
+                <div class="tree-ver-hdr" onclick="toggleTree(this)">📁 ${esc(v.version)}</div>
+                <div class="tree-ver-body collapsed">${(v.files||[]).map(f =>
+                  `<div class="tree-file" onclick="openPromptFile('${esc(proj)}','${esc(r.task)}','${esc(v.version)}','${esc(f.name)}')">📄 ${esc(f.name)}</div>`
+                ).join('')}</div>
+              </div>`
+            ).join('')}</div>
+          </div>`
+        ).join('')}</div>
+      </div>`
+    ).join('') || '<div class="empty">No prompts</div>';
+
+  } else if (tab === 'packages') {
+    const langs = [...new Set(items.map(r => r.lang))].sort();
+    fEl.innerHTML = ['all',...langs].map(l =>
+      `<span class="chip ${filter===l?'active':''}" onclick="setFilter('${l}')">${l}</span>`).join('');
+    const shown = filter==='all' ? items : items.filter(r => r.lang===filter);
+    el.innerHTML = shown.map(r => `<div class="li" onclick="openItem('package','${esc(r.name)}')">
+      <div class="li-name">${esc(r.name)}</div>
+      <div class="li-meta">${esc(r.lang)} · ${esc((r.description||'').slice(0,50))}</div>
+    </div>`).join('') || '<div class="empty">No packages</div>';
+
+  } else if (tab === 'scripts') {
+    const cats = [...new Set(items.map(r => r.category))].sort();
+    fEl.innerHTML = ['all',...cats].map(c =>
+      `<span class="chip ${filter===c?'active':''}" onclick="setFilter('${c}')">${c}</span>`).join('');
+    const shown = filter==='all' ? items : items.filter(r => r.category===filter);
+    el.innerHTML = shown.flatMap(r => r.files.map(f =>
+      `<div class="li" onclick="openItem('script','${esc(r.category+'/'+f)}')">
+        <div class="li-name">${esc(f)}</div>
+        <div class="li-meta">${esc(r.category)}</div>
+      </div>`
+    )).join('') || '<div class="empty">No scripts</div>';
+  }
+}
+
+function setFilter(f) { state.filter = f; renderList(); }
+function setNoteFilter(f) { state.filter = f; ask('list', { tab:'notes', filter:f, q:state.search }); }
+
+// ── Open detail ────────────────────────────────────────────────────────────
+function openItem(type, key) {
+  document.querySelectorAll('.li').forEach(l => l.classList.remove('active'));
+  event?.currentTarget?.classList?.add('active');
+  ask('detail', { type, key });
+}
+
+function openPromptFile(proj, task, ver, fname) {
+  ask('detail', { type:'prompt', key: proj+'|'+task+'|'+ver+'|'+fname });
+}
+
+function openPromptDiff(proj, task, fname) {
+  ask('detail', { type:'promptDiff', key: proj+'|'+task+'|'+fname });
+}
+
+function toggleTree(hdr) {
+  const body = hdr.nextElementSibling;
+  if (!body) return;
+  const collapsed = body.classList.toggle('collapsed');
+  const arrow = hdr.textContent[0];
+  if (arrow === '▶') hdr.textContent = '▼' + hdr.textContent.slice(1);
+  else if (arrow === '▼') hdr.textContent = '▶' + hdr.textContent.slice(1);
+  else if (arrow === '▷') hdr.textContent = '▽' + hdr.textContent.slice(1);
+  else if (arrow === '▽') hdr.textContent = '▷' + hdr.textContent.slice(1);
+}
+
+function openPrompt(proj, task, ver) {
+  ask('detail', { type:'prompt', key: proj+'|'+task+'|'+ver });
+}
+
+// ── Render detail ──────────────────────────────────────────────────────────
+function renderDetail(data) {
+  const el = document.getElementById('detail');
+  if (!data) { currentDetail = null; el.innerHTML = '<div class="empty">Not found.</div>'; return; }
+
+  if (data.type === 'skill') {
+    currentDetail = data;
+    const tags = JSON.parse(data.tags||'[]');
+    const toc = buildToc(data.content||'');
+    el.innerHTML = `
+      <div class="d-title">${esc(data.name)}</div>
+      <div class="d-meta">
+        ${data.category?`<span class="cat">${esc(data.category)}</span>`:''}
+        ${tags.map(t=>`<span class="tag">${esc(t)}</span>`).join('')}
+        <span>${wordCount(data.content||'')}</span>
+        <span>Updated ${(data.updated_at||'').slice(0,10)}</span>
+        <span style="flex:1"></span>
+        <button class="tbtn" style="font-size:11px" onclick="startEditSkill()">✏ Edit</button>
+        <button class="tbtn" style="font-size:11px" onclick="confirmDeleteSkill(this)">🗑 Delete</button>
+      </div>
+      <div class="meta-grid">
+        <span class="ml">Source</span><span class="mv">${esc(data.source_project||'—')}</span>
+        <span class="ml">Created</span><span class="mv">${(data.created_at||'').slice(0,10)}</span>
+        <span class="ml">Description</span><span class="mv">${esc(data.description||'—')}</span>
+      </div>
+      <hr class="div">${toc}<div class="prose">${marked.parse(data.content||'')}</div>`;
+
+  } else if (data.type === 'note') {
+    currentDetail = data;
+    const tags = JSON.parse(data.tags||'[]');
+    el.innerHTML = `
+      <div class="d-title">${ICON[data.type_]||'📝'} ${esc(data.title)}</div>
+      <div class="d-meta">
+        <span>${esc(data.note_type)}</span>
+        ${tags.map(t=>`<span class="tag">${esc(t)}</span>`).join('')}
+        <span>Updated ${(data.updated_at||'').slice(0,10)}</span>
+        <span style="font-size:10px;color:var(--muted)">id: ${esc(data.slug)}</span>
+        <span style="flex:1"></span>
+        <button class="tbtn" style="font-size:11px" onclick="editNote(currentDetail)">✏ Edit</button>
+      </div>
+      <hr class="div"><div class="prose">${marked.parse(data.content||'')}</div>`;
+
+  } else if (data.type === 'prompt') {
+    const { project, task, version, file, content, meta, allVersions } = data;
+    const ext  = (file||'').split('.').pop()||'';
+    const lang = {jinja2:'jinja',jinja:'jinja',txt:'text',json:'json',yaml:'yaml',py:'python',sh:'bash'}[ext]||'text';
+    const pills = (allVersions||[]).map(v =>
+      `<span class="vpill ${v.version===version?'active':''}" onclick="openPromptFile('${esc(project)}','${esc(task)}','${esc(v.version)}','${esc(file)}')">${esc(v.version)}</span>`
+    ).join('');
+    const metaHtml = meta?.hasMetadata ? `
+      <div class="meta-grid" style="margin-bottom:12px">
+        <span class="ml">Title</span><span class="mv">${esc(meta.title||'—')}</span>
+        ${meta.note?`<span class="ml">Note</span><span class="mv" style="white-space:pre-wrap">${esc(meta.note)}</span>`:''}
+      </div>` : '';
+    const diffBtn = (allVersions||[]).length > 1
+      ? `<button class="tbtn" style="font-size:11px;margin-left:8px" onclick="openPromptDiff('${esc(project)}','${esc(task)}','${esc(file)}')">⊟ Diff versions</button>`
+      : '';
+    el.innerHTML = `
+      <div class="d-title">${esc(project)} / ${esc(task)}</div>
+      <div class="d-meta"><span>📄 ${esc(file)}</span><span>${esc(version)}</span>${diffBtn}</div>
+      <div style="margin-bottom:10px">${pills}</div>
+      ${metaHtml}
+      <hr class="div">
+      <div class="prose"><pre><code class="language-${lang}">${esc(content||'')}</code></pre></div>`;
+
+  } else if (data.type === 'promptDiff') {
+    const { project, task, file, allVersions } = data;
+    if (!allVersions?.length) { el.innerHTML = '<div class="empty">No versions.</div>'; return; }
+    const versions = allVersions.map(v => v.version);
+    const verA = versions[0];
+    const verB = versions[versions.length - 1];
+    const opts = versions.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
+    el.innerHTML = `
+      <div class="d-title">${esc(project)} / ${esc(task)} / ${esc(file)}</div>
+      <div class="diff-controls">
+        <span style="font-size:12px;color:var(--muted)">Compare:</span>
+        <select id="diff-ver-a">${opts}</select>
+        <span style="color:var(--muted)">→</span>
+        <select id="diff-ver-b">${opts}</select>
+        <span id="diff-stats"></span>
+      </div>
+      <hr class="div">
+      <div class="diff-wrap" id="diff-panels"></div>`;
+    // Set defaults and wire selectors
+    const selA = document.getElementById('diff-ver-a');
+    const selB = document.getElementById('diff-ver-b');
+    selA.value = verA; selB.value = verB;
+    const verMap = {};
+    allVersions.forEach(v => verMap[v.version] = v.content || '');
+    function renderDiff() {
+      const a = verMap[selA.value] || '', b = verMap[selB.value] || '';
+      const la = a.split('\n'), lb = b.split('\n');
+      const setA = new Set(la), setB = new Set(lb);
+      let added = 0, removed = 0;
+      const leftLines = la.map((line, i) => {
+        const gone = !setB.has(line);
+        if (gone) removed++;
+        return `<div class="diff-line${gone?' diff-rem':''}"><span class="diff-no">${i+1}</span><span>${esc(line)||'&nbsp;'}</span></div>`;
+      }).join('');
+      const rightLines = lb.map((line, i) => {
+        const isNew = !setA.has(line);
+        if (isNew) added++;
+        return `<div class="diff-line${isNew?' diff-add':''}"><span class="diff-no">${i+1}</span><span>${esc(line)||'&nbsp;'}</span></div>`;
+      }).join('');
+      document.getElementById('diff-panels').innerHTML =
+        `<div class="diff-panel"><div class="diff-ver-label">${esc(selA.value)}</div><div class="diff-lines">${leftLines}</div></div>` +
+        `<div class="diff-panel"><div class="diff-ver-label">${esc(selB.value)}</div><div class="diff-lines">${rightLines}</div></div>`;
+      document.getElementById('diff-stats').innerHTML =
+        `<span class="diff-stat stat-add">+${added} added</span>&nbsp;<span class="diff-stat stat-rem">-${removed} removed</span>`;
+    }
+    selA.addEventListener('change', renderDiff);
+    selB.addEventListener('change', renderDiff);
+    renderDiff();
+    return;
+
+  } else if (data.type === 'package') {
+    function renderTree(nodes, depth=0) {
+      return (nodes||[]).map(n => {
+        const pad = '&nbsp;'.repeat(depth*3);
+        if (n.type==='dir') return `<div>${pad}<span class="ft-dir">📁 ${esc(n.name)}/</span></div>${renderTree(n.children,depth+1)}`;
+        return `<div>${pad}<span class="ft-file" onclick="loadPkgFile('${esc(data.name)}','${esc(n.name)}')">📄 ${esc(n.name)}</span></div>`;
+      }).join('');
+    }
+    const toc = buildToc(data.readme||'');
+    el.innerHTML = `
+      <div class="d-title">${esc(data.name)}</div>
+      <hr class="div">
+      <details style="margin-bottom:12px">
+        <summary style="cursor:pointer;color:var(--muted);font-size:11px">File tree</summary>
+        <div class="ftree" style="margin-top:6px">${renderTree(data.tree)}</div>
+      </details>
+      <hr class="div">${toc}<div class="prose">${marked.parse(data.readme||'')}</div>`;
+
+  } else if (data.type === 'script') {
+    const ext = (data.file||'').split('.').pop()||'';
+    const lang = {sh:'bash',py:'python',js:'javascript',ts:'typescript',r:'r',sql:'sql'}[ext]||'text';
+    el.innerHTML = `
+      <div class="d-title">${esc(data.file||'')}</div>
+      <div class="d-meta"><span>${wordCount(data.content||'')}</span></div>
+      <hr class="div">
+      <div class="prose"><pre><code class="language-${lang}">${esc(data.content||'')}</code></pre></div>`;
+  }
+
+  postProcess();
+}
+
+function loadPkgFile(pkg, file) { ask('detail', { type:'packageFile', key: pkg+'|'+file }); }
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function buildToc(md) {
+  const hdgs = [...md.matchAll(/^(#{1,3})\s+(.+)$/gm)];
+  if (hdgs.length < 3) return '';
+  const items = hdgs.map(([,h,t]) =>
+    `<a href="#" style="--d:${h.length-1}" onclick="scrollHd('${t.replace(/'/g,"\\'")}');return false">${esc(t)}</a>`
+  ).join('');
+  return `<div class="toc-wrap"><h4>Contents</h4><div class="toc">${items}</div></div>`;
+}
+
+function scrollHd(title) {
+  for (const el of document.querySelectorAll('#detail h1,#detail h2,#detail h3'))
+    if (el.textContent.trim()===title) { el.scrollIntoView({behavior:'smooth'}); break; }
+}
+
+function wordCount(text) {
+  const w = text.trim().split(/\s+/).length;
+  return `${w.toLocaleString()} words · ~${Math.max(1,Math.round(w/200))} min`;
+}
+
+function postProcess() {
+  document.querySelectorAll('#detail pre code').forEach(el => hljs.highlightElement(el));
+  document.querySelectorAll('#detail pre').forEach(pre => {
+    if (pre.querySelector('.copy-btn')) return;
+    const btn = document.createElement('button'); btn.className='copy-btn'; btn.textContent='Copy';
+    btn.onclick = () => { navigator.clipboard.writeText(pre.querySelector('code')?.textContent||''); btn.textContent='✓'; setTimeout(()=>btn.textContent='Copy',1500); };
+    pre.appendChild(btn);
+  });
+}
+
+// ── Note form ──────────────────────────────────────────────────────────────
+function toggleNoteForm() {
+  const nf = document.getElementById('note-form');
+  if (!nf.classList.contains('hidden')) {
+    document.getElementById('note-form-title').textContent = 'Quick Note';
+    document.getElementById('note-edit-slug').value = '';
+  }
+  nf.classList.toggle('hidden');
+}
+
+function saveNote() {
+  const title    = document.getElementById('note-title').value.trim();
+  const content  = document.getElementById('note-content').value.trim();
+  const type     = document.getElementById('note-type').value;
+  const tags     = document.getElementById('note-tags').value.split(',').map(t=>t.trim()).filter(Boolean);
+  const editSlug = document.getElementById('note-edit-slug').value.trim();
+  if (!content) return;
+  ask('saveNote', { title: title || content.slice(0,60), content, type, tags, ...(editSlug ? { slug: editSlug } : {}) });
+  if (editSlug) ask('detail', { type:'note', key: editSlug });
+  document.getElementById('note-title').value   = '';
+  document.getElementById('note-content').value  = '';
+  document.getElementById('note-tags').value    = '';
+  document.getElementById('note-edit-slug').value = '';
+  toggleNoteForm();
+}
+
+// ── Import / Export ────────────────────────────────────────────────────────
+function doExport() { ask('export', {}); }
+function triggerImport() { document.getElementById('import-file').click(); }
+function doImport(input) {
+  const file = input.files[0]; if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => { try { ask('import', { bundle: JSON.parse(e.target.result) }); } catch { alert('Invalid JSON file'); } };
+  reader.readAsText(file);
+  input.value = '';
+}
+
+// ── Sync modal ─────────────────────────────────────────────────────────────
+let smCurrentTab = 'host';
+let syncContent = {}; // loaded content lists per type
+
+function openSyncModal() {
+  document.getElementById('sync-modal-bg').classList.add('open');
+  ask('getSyncContentList', {});
+  ask('getSyncSessions', {});
+}
+function closeSyncModal() { document.getElementById('sync-modal-bg').classList.remove('open'); }
+document.getElementById('sync-modal-bg').addEventListener('click', e => {
+  if (e.target === document.getElementById('sync-modal-bg')) closeSyncModal();
+});
+
+function switchSmTab(tab) {
+  smCurrentTab = tab;
+  ['host','sessions','join'].forEach(t => {
+    document.getElementById('sm-tab-'+t).classList.toggle('active', t===tab);
+    document.getElementById('sm-pane-'+t).style.display = t===tab ? '' : 'none';
+  });
+}
+
+function toggleAllSkills() {
+  const boxes = document.querySelectorAll('#sync-type-sections input[type=checkbox][data-item]');
+  const anyChecked = [...boxes].some(b => b.checked);
+  boxes.forEach(b => b.checked = !anyChecked);
+}
+
+function buildTypeSections(content) {
+  syncContent = content;
+  const TYPES = [
+    { id: 'skills',   label: 'Skills',   icon: '🧠', items: content.skills   || [] },
+    { id: 'notes',    label: 'Notes',    icon: '📝', items: content.notes    || [] },
+    { id: 'prompts',  label: 'Prompts',  icon: '💬', items: content.prompts  || [] },
+    { id: 'scripts',  label: 'Scripts',  icon: '⚙️', items: content.scripts  || [] },
+    { id: 'packages', label: 'Packages', icon: '📦', items: content.packages || [] },
+  ];
+  const wrap = document.getElementById('sync-type-sections');
+  wrap.innerHTML = TYPES.map(t => `
+    <div style="margin-bottom:8px;border:1px solid var(--border);border-radius:6px;overflow:hidden">
+      <div style="display:flex;align-items:center;gap:8px;padding:7px 10px;background:var(--panel);cursor:pointer"
+           onclick="toggleSyncType('${t.id}')">
+        <input type="checkbox" id="ct-${t.id}" onclick="event.stopPropagation();syncTypeCheck('${t.id}')"
+               ${t.id==='skills'?'checked':''}>
+        <span style="font-size:12px;font-weight:600">${t.icon} ${t.label}</span>
+        <span style="font-size:11px;color:var(--muted);margin-left:auto">${t.items.length} items</span>
+        <span id="ct-arrow-${t.id}" style="font-size:10px;color:var(--muted)">${t.id==='skills'?'▼':'▶'}</span>
+      </div>
+      <div id="ct-list-${t.id}" style="display:${t.id==='skills'?'':'none'};max-height:150px;overflow-y:auto;padding:4px">
+        <div style="padding:3px 6px;display:flex;gap:6px">
+          <span style="font-size:10px;color:var(--accent);cursor:pointer"
+                onclick="selectAllType('${t.id}',true)">All</span>
+          <span style="font-size:10px;color:var(--muted)">|</span>
+          <span style="font-size:10px;color:var(--accent);cursor:pointer"
+                onclick="selectAllType('${t.id}',false)">None</span>
+        </div>
+        ${t.items.map(item => `
+          <label class="skill-check-item">
+            <input type="checkbox" data-type="${t.id}" data-item="${esc(item.id)}" checked>
+            <span>${esc(item.label)}</span>
+            ${item.meta?`<span class="cat" style="font-size:9px">${esc(item.meta)}</span>`:''}
+          </label>`).join('')}
+        ${!t.items.length?`<div style="color:var(--muted);font-size:11px;padding:6px">No ${t.label.toLowerCase()} found.</div>`:''}
+      </div>
+    </div>`).join('');
+}
+
+function toggleSyncType(id) {
+  const list = document.getElementById('ct-list-'+id);
+  const arrow = document.getElementById('ct-arrow-'+id);
+  const hidden = list.style.display === 'none';
+  list.style.display = hidden ? '' : 'none';
+  arrow.textContent = hidden ? '▼' : '▶';
+}
+
+function syncTypeCheck(id) {
+  // toggling the header checkbox doesn't change item selections, just includes/excludes the type
+}
+
+function selectAllType(id, checked) {
+  document.querySelectorAll(`#ct-list-${id} input[data-item]`).forEach(b => b.checked = checked);
+}
+
+function renderSyncSessions(sessions) {
+  const el = document.getElementById('sm-session-list');
+  const now = new Date();
+  if (!sessions?.length) { el.innerHTML = '<div style="color:var(--muted);font-size:12px">No sessions yet.</div>'; return; }
+  el.innerHTML = sessions.map(s => {
+    const active  = s.enabled && new Date(s.expires) > now;
+    const expires = new Date(s.expires).toLocaleString();
+    return `<div class="session-item ${active?'':'expired'}">
+      <div class="session-info">
+        <div class="session-name">${esc(s.url)} <span class="session-badge ${active?'badge-active':'badge-expired'}">${active?'Active':'Expired'}</span></div>
+        <div class="session-meta">User: ${esc(s.username)} · Skills: ${s.skillCount === 'all' ? 'all' : s.skillCount} · Expires: ${expires}</div>
+      </div>
+      ${active ? `<button class="tbtn" style="color:#f87171;border-color:#f87171;font-size:11px" onclick="ask('revokeSync',{id:'${esc(s.id)}'})">Revoke</button>` : ''}
+    </div>`;
+  }).join('');
+}
+
+function doCreateSync() {
+  const getSelected = (type) => {
+    const checked = [...document.querySelectorAll(`#ct-list-${type} input[data-item]:checked`)];
+    const all     = [...document.querySelectorAll(`#ct-list-${type} input[data-item]`)];
+    return checked.length === all.length ? [] : checked.map(b => b.dataset.item);
+  };
+  const contentTypes = ['skills','notes','prompts','scripts','packages']
+    .filter(t => document.getElementById('ct-'+t)?.checked);
+  const selected = {
+    skills:   getSelected('skills'),
+    notes:    getSelected('notes'),
+    prompts:  getSelected('prompts'),
+    scripts:  getSelected('scripts'),
+    packages: getSelected('packages'),
+  };
+  const expiry = parseInt(document.getElementById('sm-expiry').value);
+  const port   = parseInt(document.getElementById('sm-port').value) || 19877;
+  document.getElementById('sm-cred-result').innerHTML = '<span style="color:var(--muted);font-size:12px">Generating…</span>';
+  ask('startSync', { selected, contentTypes, expiresMinutes: expiry, port });
+}
+
+function doJoinSync() {
+  const url  = document.getElementById('join-url').value.trim().replace(/\/$/, '');
+  const user = document.getElementById('join-user').value.trim();
+  const pass = document.getElementById('join-pass').value.trim();
+  if (!url || !user || !pass) { document.getElementById('join-result').innerHTML = '<span style="color:#f87171">All fields required.</span>'; return; }
+  document.getElementById('join-result').innerHTML = '<span style="color:var(--muted)">Connecting…</span>';
+  ask('joinSync', { syncUrl: url, username: user, password: pass });
+}
+
+// ── Category tree ─────────────────────────────────────────────────────────
+function toggleCat(cat) { catCollapsed[cat] = !catCollapsed[cat]; renderList(); }
+
+// ── Search highlight ──────────────────────────────────────────────────────
+function hl(text, q) {
+  if (!q) return esc(text);
+  try {
+    const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'gi');
+    let result='',last=0,m;
+    while((m=re.exec(text))!==null){result+=esc(text.slice(last,m.index));result+=`<mark>${esc(m[0])}</mark>`;last=re.lastIndex;}
+    return result+esc(text.slice(last));
+  } catch { return esc(text); }
+}
+
+// ── Skill edit / delete ───────────────────────────────────────────────────
+function startEditSkill() {
+  const d = currentDetail; if (!d) return;
+  const tags = JSON.parse(d.tags||'[]');
+  document.getElementById('detail').innerHTML = `
+    <div class="d-title">✏ Edit: <span style="color:var(--accent)">${esc(d.name)}</span></div>
+    <div class="form-row" style="gap:8px;margin-bottom:8px">
+      <input id="se-desc" value="${esc(d.description||'')}" placeholder="Description" style="flex:2;background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 8px;font-size:12px;outline:none">
+      <input id="se-cat" value="${esc(d.category||'')}" placeholder="Category" style="flex:1;background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 8px;font-size:12px;outline:none">
+      <input id="se-tags" value="${esc(tags.join(', '))}" placeholder="tags, comma-sep" style="flex:1.5;background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 8px;font-size:12px;outline:none">
+    </div>
+    <textarea id="se-content" style="width:100%;height:calc(100vh - 250px);background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:8px;font-size:12px;font-family:var(--vscode-editor-font-family);resize:none;outline:none;line-height:1.5">${esc(d.content||'')}</textarea>
+    <div class="form-actions" style="margin-top:8px">
+      <button class="tbtn" onclick="ask('detail',{type:'skill',key:currentDetail.name})">Cancel</button>
+      <button class="tbtn" style="border-color:var(--accent)" onclick="submitSkillEdit()">💾 Save</button>
+    </div>`;
+  document.getElementById('se-content').focus();
+}
+
+function submitSkillEdit() {
+  const d = currentDetail; if (!d) return;
+  ask('saveSkill', { name: d.name,
+    content:     document.getElementById('se-content').value,
+    description: document.getElementById('se-desc').value.trim(),
+    category:    document.getElementById('se-cat').value.trim(),
+    tags:        document.getElementById('se-tags').value.split(',').map(t=>t.trim()).filter(Boolean) });
+  ask('detail', { type:'skill', key: d.name });
+}
+
+function confirmDeleteSkill(btn) {
+  if (btn.dataset.confirming) {
+    ask('deleteSkill', { name: currentDetail?.name });
+  } else {
+    btn.dataset.confirming = 'y';
+    btn.textContent = '⚠ Confirm?';
+    btn.style.borderColor = '#f87171'; btn.style.color = '#f87171';
+    setTimeout(() => { delete btn.dataset.confirming; btn.textContent='🗑 Delete'; btn.style.borderColor=''; btn.style.color=''; }, 3000);
+  }
+}
+
+// ── Note edit ─────────────────────────────────────────────────────────────
+function editNote(data) {
+  document.getElementById('note-form-title').textContent = '✏ Edit Note';
+  document.getElementById('note-title').value   = data.title || '';
+  document.getElementById('note-content').value  = data.content || '';
+  document.getElementById('note-type').value    = data.note_type || data.type || 'general';
+  document.getElementById('note-tags').value    = JSON.parse(data.tags||'[]').join(', ');
+  document.getElementById('note-edit-slug').value = data.slug;
+  const nf = document.getElementById('note-form');
+  if (nf.classList.contains('hidden')) nf.classList.remove('hidden');
+  nf.scrollIntoView({ behavior:'smooth' });
+  setTimeout(() => document.getElementById('note-content').focus(), 100);
+}
+
+// ── MCP wizard ────────────────────────────────────────────────────────────
+function renderMcpLoading() {
+  document.getElementById('detail').innerHTML = `<div style="padding:32px 36px;max-width:720px">
+    <div style="color:var(--muted);font-size:12px">Checking MCP server status…</div>
+  </div>`;
+}
+
+function renderMcpPane(data) {
+  const el = document.getElementById('detail');
+  const installed = data?.installed;
+  const serverPath = data?.serverPath ?? '';
+  el.innerHTML = `
+    <div style="padding:28px 36px;max-width:720px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px">
+        <span style="font-size:22px">⚡</span>
+        <span style="font-size:17px;font-weight:700">MCP Server</span>
+        <span style="font-size:11px;padding:2px 8px;border-radius:8px;${installed
+          ? 'background:#4ade8022;color:#4ade80'
+          : 'background:var(--border);color:var(--muted)'}">${installed ? '● Installed' : '○ Not installed'}</span>
+      </div>
+      <p style="color:var(--muted);font-size:12px;margin-bottom:20px;line-height:1.6">
+        The <strong>Model Context Protocol (MCP)</strong> lets AI assistants like Claude and GitHub Copilot
+        read your personal knowledge base directly — search your skills, read notes, and more.
+      </p>
+
+      ${installed ? `
+        <div style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:16px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Server location</div>
+          <code style="font-size:11px;color:var(--accent)">${esc(serverPath)}</code>
+        </div>
+        <div style="font-size:13px;font-weight:600;margin-bottom:10px">Configure your AI client</div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:8px">
+          Add this to your Claude Desktop config
+          (<code style="font-size:11px">~/Library/Application Support/Claude/claude_desktop_config.json</code>
+          on macOS or <code style="font-size:11px">%APPDATA%\\Claude\\claude_desktop_config.json</code> on Windows):
+        </div>
+        <pre style="background:var(--vscode-textCodeBlock-background);border-radius:6px;padding:12px;font-size:11px;overflow-x:auto"><code id="mcp-cfg-code"></code></pre>
+        <button class="tbtn" style="margin-top:8px;font-size:11px" onclick="copyCfg()">Copy config snippet</button>
+        <hr class="div" style="margin:18px 0">
+        <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Install dependencies:</div>
+        <pre style="background:var(--vscode-textCodeBlock-background);border-radius:6px;padding:10px;font-size:11px"><code>pip install fastmcp</code></pre>
+        <div style="font-size:12px;color:var(--muted);margin:10px 0 4px">Start the server manually:</div>
+        <pre style="background:var(--vscode-textCodeBlock-background);border-radius:6px;padding:10px;font-size:11px"><code>python ${esc(serverPath)}</code></pre>
+        <hr class="div" style="margin:18px 0">
+        <button class="tbtn" style="border-color:var(--accent)" onclick="doGenerateMcp()">↺ Regenerate server files</button>
+      ` : `
+        <div style="border:1px solid var(--border);border-radius:8px;padding:16px 18px;margin-bottom:16px">
+          <div style="font-size:13px;font-weight:600;margin-bottom:8px">Setup steps</div>
+          <div style="font-size:12px;color:var(--muted);line-height:1.8">
+            1. Click <strong>Generate Server</strong> — creates <code style="font-size:11px">${esc(serverPath || '~/personal-knowledge/mcp-server/server.py')}</code><br>
+            2. Install dependencies: <code style="font-size:11px">pip install fastmcp</code><br>
+            3. Add the config snippet to your Claude Desktop or VS Code Copilot settings<br>
+            4. Restart your AI client — it will connect to your knowledge base automatically
+          </div>
+        </div>
+        <button class="tbtn" style="border-color:var(--accent);padding:6px 18px;font-size:13px" onclick="doGenerateMcp()">
+          ✦ Generate MCP Server
+        </button>
+      `}
+      <div id="mcp-result" style="margin-top:12px;font-size:12px"></div>
+    </div>`;
+
+  if (installed) {
+    // Populate config snippet async after render
+    ask('generateMcp', { previewOnly: true });
+  }
+}
+
+function renderMcpGenerated(data) {
+  const el = document.getElementById('mcp-result');
+  if (el) el.innerHTML = `<span style="color:#4ade80">✅ Server created at <code style="font-size:11px">${esc(data.serverPath)}</code></span>`;
+  // Store config snippet for copying
+  window._mcpCfg = data.configSnippet || '';
+  const codeEl = document.getElementById('mcp-cfg-code');
+  if (codeEl) codeEl.textContent = data.configSnippet || '';
+  // Re-check status to refresh UI
+  setTimeout(() => ask('checkMcp', {}), 300);
+}
+
+function doGenerateMcp() {
+  const el = document.getElementById('mcp-result');
+  if (el) el.innerHTML = '<span style="color:var(--muted)">Generating…</span>';
+  ask('generateMcp', {});
+}
+
+function copyCfg() {
+  navigator.clipboard.writeText(window._mcpCfg || '').then(() =>
+    vscode.window.setStatusBarMessage?.('Copied!'));
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────
+ask('list', { tab:'skills', filter:'all', q:'' });
+</script>
+
+<!-- Loading banner (shown until first data arrives) -->
+<div id="loading-banner">
+  <div class="loading-logo">📚</div>
+  <div class="loading-title">Personal Knowledge</div>
+  <div class="loading-sub">Loading your knowledge store…</div>
+  <div class="loading-bar"><div class="loading-bar-fill"></div></div>
+</div>
+</body></html>

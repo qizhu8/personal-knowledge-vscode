@@ -1,0 +1,87 @@
+{
+  "name": "personal-knowledge",
+  "displayName": "Personal Knowledge",
+  "description": "Browse, edit, and sync your personal knowledge: skills, notes, prompts, packages, scripts. Expose your knowledge base to AI assistants via MCP.",
+  "version": "1.0.0",
+  "publisher": "Uone",
+  "author": { "name": "Yu Wang" },
+  "license": "MIT",
+  "icon": "resources/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/qizhu8/personal-knowledge-vscode"
+  },
+  "homepage": "https://github.com/qizhu8/personal-knowledge-vscode#readme",
+  "bugs": { "url": "https://github.com/qizhu8/personal-knowledge-vscode/issues" },
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Other", "Snippets", "Education"],
+  "keywords": ["knowledge", "skills", "notes", "productivity", "personal", "mcp", "pkm"],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "personalKnowledge.open",      "title": "Personal Knowledge: Open Panel",               "icon": "$(book)" },
+      { "command": "personalKnowledge.addNote",   "title": "Personal Knowledge: Quick Note" },
+      { "command": "personalKnowledge.saveSkill", "title": "Personal Knowledge: Save Selection as Skill" },
+      { "command": "personalKnowledge.setupMcp",  "title": "Personal Knowledge: Setup MCP Server" }
+    ],
+    "keybindings": [
+      { "command": "personalKnowledge.open",    "key": "ctrl+shift+k", "mac": "cmd+shift+k" },
+      { "command": "personalKnowledge.addNote", "key": "ctrl+shift+n", "mac": "cmd+shift+n" }
+    ],
+    "menus": {
+      "editor/context": [
+        { "command": "personalKnowledge.saveSkill", "when": "editorHasSelection", "group": "personalKnowledge" }
+      ],
+      "view/title": [
+        { "command": "personalKnowledge.open", "when": "view == personalKnowledge.sidebarView", "group": "navigation" }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "personalKnowledgeBar",
+          "title": "Personal Knowledge",
+          "icon": "resources/sidebar-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "personalKnowledgeBar": [
+        {
+          "type": "webview",
+          "id": "personalKnowledge.sidebarView",
+          "name": "Knowledge"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Personal Knowledge",
+      "properties": {
+        "personalKnowledge.storePath": {
+          "type": "string",
+          "default": "",
+          "description": "Custom path for the knowledge store directory. Defaults to ~/personal-knowledge if left empty."
+        },
+        "personalKnowledge.openOnStartup": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically open the Personal Knowledge panel on VS Code startup."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && cp -r src/webview dist/ && cp node_modules/sql.js/dist/sql-asm.js dist/",
+    "watch": "tsc -p tsconfig.json --watch",
+    "package": "npx vsce package"
+  },
+  "dependencies": {
+    "sql.js": "^1.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^6.0.3"
+  }
+}
