@@ -9,7 +9,7 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "sourceMap": true,
-    "types": ["vscode", "node", "better-sqlite3"]
+    "types": ["vscode", "node"]
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]

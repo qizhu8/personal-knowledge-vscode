@@ -134,19 +134,66 @@ export function packageFileGet(name: string, relPath: string) {
 // ── Scripts ───────────────────────────────────────────────────────────────
 export function scriptList() {
   const base = join(_storePath, 'scripts');
-  return safeReadDir(base)
-    .filter(cat => isDir(join(base, cat)))
-    .map(category => ({
-      category,
-      files: safeReadDir(join(base, category)).filter(f => !isDir(join(base, category, f)))
-    }))
-    .filter(c => c.files.length);
+  const out: { category: string; file: string; path: string; lang: string; langs: string[] }[] = [];
+  const walk = (dir: string, rel: string) => {
+    for (const name of safeReadDir(dir)) {
+      const full = join(dir, name);
+      const childRel = rel ? `${rel}/${name}` : name;
+      if (isDir(full)) { walk(full, childRel); continue; }
+      const category = rel || "(root)";
+      const langs = detectScriptLangs(full, name);
+      out.push({ category, file: name, path: childRel, lang: langs.join(" + "), langs });
+    }
+  };
+  walk(base, "");
+  return out;
 }
 
-export function scriptGet(category: string, file: string) {
-  const full = join(_storePath, 'scripts', category, file);
-  if (!existsSync(full)) return null;
-  return { content: readFileSync(full, 'utf-8'), file };
+export function scriptGet(relPath: string, _legacy?: string) {
+  // Backward compatible: (category, file) OR (relPath)
+  const rel = _legacy ? `${relPath}/${_legacy}` : relPath;
+  const full = join(_storePath, 'scripts', rel);
+  if (!existsSync(full) || isDir(full)) return null;
+  try {
+    const name = rel.split('/').pop() ?? rel;
+    const langs = detectScriptLangs(full, name);
+    return {
+      content: readFileSync(full, 'utf-8'),
+      file: name,
+      path: rel,
+      lang: langs.join(" + "),
+      langs,
+    };
+  } catch { return null; }
+}
+
+/** Detect the coding language(s) of a script — returns one tag per language. */
+export function detectScriptLangs(fullPath: string, name: string): string[] {
+  const ext = extname(name).toLowerCase();
+  let sample = "";
+  try { sample = readFileSync(fullPath, 'utf-8').slice(0, 20000); } catch { /* ignore */ }
+
+  if (ext === '.cs')   return ['C#'];
+  if (ext === '.py')   return ['Python'];
+  if (ext === '.ps1')  return ['PowerShell'];
+  if (ext === '.usql') return ['U-SQL'];
+  if (ext === '.sql')  return ['SQL'];
+  if (ext === '.sh')   return ['Shell'];
+
+  if (ext === '.script') {
+    const langs = ['Scope'];
+    const hasCS = /#CS\b|#ENDCS\b|\bpublic\s+(class|static|struct)\b|\busing\s+System\b/.test(sample);
+    const hasPy = /\bPython(Reducer|Processor|Combiner|Mapper)?\b|#PY\b|\.py"|\bimport\s+\w+/.test(sample);
+    if (hasCS) langs.push('C#');
+    if (hasPy) langs.push('Python');
+    return langs;
+  }
+  return [ext ? ext.slice(1).toUpperCase() : 'text'];
+}
+
+/** Legacy single-string language (joined) for backward compatibility. */
+export function detectScriptLang(fullPath: string, name: string): string {
+  return detectScriptLangs(fullPath, name).join(" + ");
 }
 
 // ── Bulk export for sync ──────────────────────────────────────────────────
@@ -188,12 +235,19 @@ export function promptExport(): { project: string; task: string; version: string
 export function scriptExport(): { category: string; file: string; content: string }[] {
   const base = join(_storePath, 'scripts');
   const out: { category: string; file: string; content: string }[] = [];
-  for (const cat of safeReadDir(base).filter(c => isDir(join(base, c)))) {
-    for (const fname of safeReadDir(join(base, cat)).filter(f => !isDir(join(base, cat, f)))) {
-      const content = readTextSafe(join(base, cat, fname));
-      if (content !== null) out.push({ category: cat, file: fname, content });
+  const walk = (dir: string, rel: string) => {
+    for (const name of safeReadDir(dir)) {
+      const full = join(dir, name);
+      const childRel = rel ? `${rel}/${name}` : name;
+      if (isDir(full)) { walk(full, childRel); continue; }
+      const content = readTextSafe(full);
+      if (content !== null) {
+        const category = rel || "(root)";
+        out.push({ category, file: name, content });
+      }
     }
-  }
+  };
+  walk(base, "");
   return out;
 }
 

@@ -2,7 +2,7 @@
   "name": "personal-knowledge",
   "displayName": "Personal Knowledge",
   "description": "Browse, edit, and sync your personal knowledge: skills, notes, prompts, packages, scripts. Expose your knowledge base to AI assistants via MCP.",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "publisher": "Uone",
   "author": {
     "name": "Yu Wang"
@@ -54,6 +54,69 @@
       {
         "command": "personalKnowledge.setupMcp",
         "title": "Personal Knowledge: Setup MCP Server"
+      },
+      {
+        "command": "personalKnowledge.refreshTree",
+        "title": "Personal Knowledge: Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "personalKnowledge.openSkill",
+        "title": "Open Skill"
+      },
+      {
+        "command": "personalKnowledge.openNote",
+        "title": "Open Note"
+      },
+      {
+        "command": "personalKnowledge.openPrompt",
+        "title": "Open Prompt"
+      },
+      {
+        "command": "personalKnowledge.openPackage",
+        "title": "Open Package"
+      },
+      {
+        "command": "personalKnowledge.openScript",
+        "title": "Open Script"
+      },
+      {
+        "command": "personalKnowledge.showLogs",
+        "title": "Personal Knowledge: Show Logs"
+      },
+      {
+        "command": "personalKnowledge.setAiKey",
+        "title": "Personal Knowledge: Set AI API Key"
+      },
+      {
+        "command": "personalKnowledge.addSkillHere",
+        "title": "New Skill Here",
+        "icon": "$(add)"
+      },
+      {
+        "command": "personalKnowledge.addNoteHere",
+        "title": "New Note Here",
+        "icon": "$(add)"
+      },
+      {
+        "command": "personalKnowledge.addScriptHere",
+        "title": "New Script Here",
+        "icon": "$(add)"
+      },
+      {
+        "command": "personalKnowledge.editSkill",
+        "title": "Edit",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "personalKnowledge.editNote",
+        "title": "Edit",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "personalKnowledge.editScript",
+        "title": "Edit",
+        "icon": "$(edit)"
       }
     ],
     "keybindings": [
@@ -81,6 +144,73 @@
           "command": "personalKnowledge.open",
           "when": "view == personalKnowledge.sidebarView",
           "group": "navigation"
+        },
+        {
+          "command": "personalKnowledge.refreshTree",
+          "when": "view == personalKnowledge.sidebarView",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "personalKnowledge.addSkillHere",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-skills-container",
+          "group": "inline"
+        },
+        {
+          "command": "personalKnowledge.addNoteHere",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-notes-container",
+          "group": "inline"
+        },
+        {
+          "command": "personalKnowledge.addScriptHere",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-scripts-container",
+          "group": "inline"
+        },
+        {
+          "command": "personalKnowledge.addSkillHere",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-skills-container",
+          "group": "1_new"
+        },
+        {
+          "command": "personalKnowledge.addNoteHere",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-notes-container",
+          "group": "1_new"
+        },
+        {
+          "command": "personalKnowledge.addScriptHere",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-scripts-container",
+          "group": "1_new"
+        },
+        {
+          "command": "personalKnowledge.editSkill",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-skill-item",
+          "group": "inline"
+        },
+        {
+          "command": "personalKnowledge.editNote",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-note-item",
+          "group": "inline"
+        },
+        {
+          "command": "personalKnowledge.editScript",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-script-item",
+          "group": "inline"
+        },
+        {
+          "command": "personalKnowledge.editSkill",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-skill-item",
+          "group": "1_edit"
+        },
+        {
+          "command": "personalKnowledge.editNote",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-note-item",
+          "group": "1_edit"
+        },
+        {
+          "command": "personalKnowledge.editScript",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-script-item",
+          "group": "1_edit"
         }
       ]
     },
@@ -96,12 +226,17 @@
     "views": {
       "personalKnowledgeBar": [
         {
-          "type": "webview",
           "id": "personalKnowledge.sidebarView",
           "name": "Knowledge"
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "personalKnowledge.sidebarView",
+        "contents": "Your personal knowledge base.\n\n[Open Knowledge Panel](command:personalKnowledge.open)\n\nShortcut: `Ctrl+Shift+K`"
+      }
+    ],
     "configuration": {
       "title": "Personal Knowledge",
       "properties": {
@@ -114,21 +249,72 @@
           "type": "boolean",
           "default": false,
           "description": "Automatically open the Personal Knowledge panel on VS Code startup."
+        },
+        "personalKnowledge.logLevel": {
+          "type": "string",
+          "enum": [
+            "debug",
+            "info",
+            "warn",
+            "error"
+          ],
+          "default": "info",
+          "description": "Logging verbosity. Use 'debug' to record all activity (including page views and messages) to the Output panel and log file; 'info' logs user actions only."
+        },
+        "personalKnowledge.maxTreeDepth": {
+          "type": "number",
+          "default": 4,
+          "minimum": 1,
+          "maximum": 12,
+          "description": "Maximum number of folder levels shown in the sidebar tree for skills and notes. Deeper path segments collapse into the leaf item."
+        },
+        "personalKnowledge.aiBackend": {
+          "type": "string",
+          "enum": [
+            "copilot",
+            "azure-openai",
+            "openai-compatible"
+          ],
+          "enumDescriptions": [
+            "Use GitHub Copilot via the built-in VS Code Language Model API (no API key needed).",
+            "Use Azure OpenAI. Set aiEndpoint, aiModel (deployment name), aiAzureApiVersion, and run 'Personal Knowledge: Set AI API Key'.",
+            "Use any OpenAI-compatible endpoint (OpenAI, vLLM, Ollama, etc.). Set aiEndpoint, aiModel, and run 'Personal Knowledge: Set AI API Key'."
+          ],
+          "default": "copilot",
+          "description": "Which AI backend to use for script summarization."
+        },
+        "personalKnowledge.aiModel": {
+          "type": "string",
+          "default": "gpt-4o-mini",
+          "description": "Model name (openai-compatible) or deployment name (azure-openai). Ignored for Copilot."
+        },
+        "personalKnowledge.aiEndpoint": {
+          "type": "string",
+          "default": "",
+          "description": "Base URL for azure-openai (e.g. https://myres.openai.azure.com) or openai-compatible (e.g. https://api.openai.com/v1). Ignored for Copilot."
+        },
+        "personalKnowledge.aiAzureApiVersion": {
+          "type": "string",
+          "default": "2024-06-01",
+          "description": "Azure OpenAI API version (azure-openai backend only)."
         }
       }
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && cp -r src/webview dist/ && cp node_modules/sql.js/dist/sql-asm.js dist/",
+    "build": "tsc -p tsconfig.json && cp -r src/webview dist/ && cp node_modules/sql.js/dist/sql-wasm.js dist/ && cp node_modules/sql.js/dist/sql-wasm.wasm dist/ && cp node_modules/marked/lib/marked.umd.js dist/webview/ && npx esbuild src/webview/hljs-entry.js --bundle --minify --format=iife --outfile=dist/webview/hljs.js && cp node_modules/highlight.js/styles/github-dark.css dist/webview/hljs.css && node scripts/postbuild.js",
     "watch": "tsc -p tsconfig.json --watch",
     "package": "npx vsce package"
   },
   "dependencies": {
+    "highlight.js": "^11.11.1",
+    "marked": "^18.0.5",
     "sql.js": "^1.12.0"
   },
   "devDependencies": {
     "@types/node": "^26.1.0",
     "@types/vscode": "^1.85.0",
+    "esbuild": "^0.28.1",
     "typescript": "^6.0.3"
   }
 }
