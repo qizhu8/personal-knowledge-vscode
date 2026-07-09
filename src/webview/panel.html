@@ -3,11 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'unsafe-inline' https://cdnjs.cloudflare.com; font-src https://cdnjs.cloudflare.com; img-src data: https:;">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' %%CSP_SOURCE%%; style-src 'unsafe-inline' %%CSP_SOURCE%%; font-src %%CSP_SOURCE%%; img-src data: https: %%CSP_SOURCE%%;">
 <title>Personal Knowledge</title>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<link rel="stylesheet" href="%%HLJS_CSS%%">
+<script src="%%MARKED_SRC%%"></script>
+<script src="%%HLJS_SRC%%"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{--bg:var(--vscode-editor-background);--panel:var(--vscode-sideBar-background);
@@ -101,7 +101,16 @@ hr.div{border:none;border-top:1px solid var(--border);margin:14px 0}
   background:var(--input);border:1px solid var(--border);border-radius:4px;
   color:var(--text);padding:5px 8px;font-size:12px;outline:none}
 .form-row input:focus,.form-row select:focus,.form-row textarea:focus{border-color:var(--accent)}
-#note-content{width:100%;height:80px;resize:vertical;font-family:var(--vscode-editor-font-family);font-size:12px}
+#note-content{width:100%;height:100%;resize:none;font-family:var(--vscode-editor-font-family);font-size:12px;
+  background:var(--input);border:none;color:var(--text);padding:10px;outline:none;line-height:1.6}
+/* Split note editor */
+#note-split{display:flex;gap:10px;height:280px;margin-bottom:8px}
+.note-pane{flex:1;display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;overflow:hidden;min-width:0}
+.note-pane:focus-within{border-color:var(--accent)}
+.note-pane-label{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);
+  padding:5px 10px;background:var(--panel);border-bottom:1px solid var(--border);flex-shrink:0}
+#note-preview{flex:1;overflow-y:auto;padding:10px 12px;font-size:13px;line-height:1.7;background:var(--bg)}
+#note-preview:empty::before{content:'Preview appears here…';color:var(--muted);font-style:italic}
 .form-actions{display:flex;gap:6px;justify-content:flex-end}
 /* File tree */
 .ftree{font-size:11px;font-family:var(--vscode-editor-font-family);line-height:1.8}
@@ -248,7 +257,19 @@ mark{background:var(--vscode-editor-findMatchHighlightBackground,#ffd70055);colo
         </select>
         <input id="note-tags" placeholder="tags, comma-sep" style="flex:1.5">
       </div>
-      <div class="form-row"><textarea id="note-content" placeholder="Note content…"></textarea></div>
+      <div class="form-row">
+        <input id="note-category" placeholder="Path e.g. Project/AutoLabeling/C2 Guideline" style="flex:1" title="Slash-separated hierarchy for the sidebar tree">
+      </div>
+      <div id="note-split">
+        <div class="note-pane">
+          <div class="note-pane-label">✎ Markdown</div>
+          <textarea id="note-content" placeholder="Write Markdown here…" oninput="updateNotePreview()"></textarea>
+        </div>
+        <div class="note-pane">
+          <div class="note-pane-label">👁 Preview</div>
+          <div id="note-preview" class="prose"></div>
+        </div>
+      </div>
       <input type="hidden" id="note-edit-slug">
       <div class="form-actions">
         <button class="tbtn" onclick="toggleNoteForm()">Cancel</button>
@@ -324,15 +345,22 @@ mark{background:var(--vscode-editor-findMatchHighlightBackground,#ffd70055);colo
 
 <script>
 const vscode = acquireVsCodeApi();
-marked.setOptions({ breaks: true });
+// CDN libs may be unavailable in offline/remote environments — use safe fallbacks
+try { if (typeof marked !== 'undefined') marked.setOptions({ breaks: true }); } catch(e) {}
+function safeMarked(text) {
+  try { return typeof marked !== 'undefined' ? marked.parse(text||'') : '<pre>' + esc(text||'') + '</pre>'; }
+  catch(e) { return '<pre>' + esc(text||'') + '</pre>'; }
+}
+function safeHljs(el) { try { if (typeof hljs !== 'undefined') hljs.highlightElement(el); } catch(e) {} }
 const esc = s => String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 const ICON = {todo:'☐',done:'✓','data-path':'📂',observation:'👁',general:'📝'};
 
 let state = { tab:'skills', filter:'all', search:'', items:[], active:null };
 let ctxTarget = null; // slug of note under right-click
 let currentDetail = null; // current detail item for edit/delete actions
-let catCollapsed = {}; // collapsed state per skill category
+let catExpanded = {}; // expanded state per folder key (default: collapsed)
 let pendingEditSlug = null; // note slug awaiting detail load for edit
+let pendingEditType = null; // item type awaiting detail load to enter edit mode (from tree right-click)
 let searchDebounce = null; // debounce timer for search
 
 // ── Context menu ──────────────────────────────────────────────────────────
@@ -381,7 +409,18 @@ window.addEventListener('message', e => {
   else if (command === 'detail') {
     if (pendingEditSlug && data?.type === 'note' && data.slug === pendingEditSlug) {
       pendingEditSlug = null; editNote(data);
-    } else { renderDetail(data); }
+    } else {
+      renderDetail(data);
+      // Enter edit mode if this detail was opened via a tree "Edit" action
+      if (pendingEditType && data && data.type === pendingEditType) {
+        const t = pendingEditType; pendingEditType = null;
+        setTimeout(() => {
+          if (t === 'skill')  startEditSkill();
+          else if (t === 'note')   editNote(data);
+          else if (t === 'script') startEditScript();
+        }, 30);
+      }
+    }
   }
   else if (command === 'saved')    { ask('list', { tab: state.tab, filter: state.filter, q: state.search }); }
   else if (command === 'exported') {
@@ -421,11 +460,42 @@ window.addEventListener('message', e => {
     const el = document.getElementById('mcp-result');
     if (el) el.innerHTML = `<span style="color:#f87171">❌ ${esc(data.error)}</span>`;
   }
+  else if (command === 'aiSummary') {
+    const box = document.getElementById('ai-summary');
+    if (box) {
+      if (data.error) {
+        box.innerHTML = `<div style="padding:12px 14px;margin:12px 0;border:1px solid #f87171;border-radius:8px">
+          <span style="color:#f87171;font-size:12px">❌ ${esc(data.error)}</span></div>`;
+      } else {
+        box.innerHTML = `<div style="padding:14px 16px;margin:12px 0;border:1px solid var(--accent);border-radius:8px;background:var(--panel)">
+          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--accent);margin-bottom:8px">✨ AI Summary${data.cached?' (cached)':''}</div>
+          <div class="prose" style="font-size:13px">${safeMarked(data.summary||'')}</div></div>`;
+        postProcess();
+      }
+    }
+  }
+  else if (command === 'scriptSaved') {
+    if (data.error) { alert('Save failed: ' + data.error); return; }
+    if (data.cancelled) return; // user declined confirmation — stay in editor
+    if (data.ok && data.path) ask('detail', { type: 'script', key: data.path }); // reload saved script
+  }
+  else if (command === 'openItem') {
+    // Navigate to a specific item (triggered from sidebar tree view).
+    // NOTE: type/key are top-level on the message, not under `data`.
+    const itemType = e.data.type, itemKey = e.data.key, wantEdit = e.data.edit;
+    const TAB = { note:'notes', skill:'skills', prompt:'prompts', package:'packages', script:'scripts', packageFile:'packages' };
+    const tabName = TAB[itemType] || 'skills';
+    const btn = document.querySelector(`.tab[data-tab="${tabName}"]`);
+    if (btn) btn.dispatchEvent(new MouseEvent('click'));
+    pendingEditType = wantEdit ? itemType : null; // enter edit mode once detail loads
+    setTimeout(() => ask('detail', { type: itemType, key: itemKey }), 150);
+  }
   else if (command === 'openTab') {
-    const btn = document.querySelector(`.tab[data-tab="${data.tab}"]`);
+    const btn = document.querySelector(`.tab[data-tab="${e.data.tab}"]`);
     if (btn) btn.dispatchEvent(new MouseEvent('click'));
   }
-
+  else if (command === 'syncError') {
+    const errEl = smCurrentTab === 'join'
       ? document.getElementById('join-result')
       : document.getElementById('sm-cred-result');
     if (errEl) errEl.innerHTML = `<span style="color:#f87171">❌ ${esc(data.error)}</span>`;
@@ -471,34 +541,26 @@ function renderList() {
 
   if (tab === 'skills') {
     fEl.innerHTML = '';
-    const groups = {};
-    (items||[]).forEach(r => { const g = r.category||'(uncategorized)'; (groups[g]||(groups[g]=[])).push(r); });
     const q = state.search;
-    el.innerHTML = Object.keys(groups).sort((a,b)=>a==='(uncategorized)'?1:b==='(uncategorized)'?-1:a.localeCompare(b)).map(cat => {
-      const open = !catCollapsed[cat];
-      return `<div class="tree-cat">
-        <div class="tree-cat-hdr" onclick="toggleCat('${esc(cat)}')" title="${esc(cat)}">
-          <span class="tree-cat-arrow">${open?'▼':'▶'}</span>
-          <span class="tree-cat-label">${cat==='(uncategorized)'?'<em style="opacity:.6">(uncategorized)</em>':esc(cat)}</span>
-          <span class="tree-cat-count">${groups[cat].length}</span>
-        </div>
-        <div class="tree-cat-body" style="${open?'':'display:none'}">
-          ${groups[cat].map(r=>`<div class="li" data-skill-name="${esc(r.name)}" onclick="openItem('skill','${esc(r.name)}')">
-            <div class="li-name">${hl(r.name,q)}</div>
-            <div class="li-meta">${r.description?hl(r.description.slice(0,50),q):''}</div>
-          </div>`).join('')}
-        </div>
-      </div>`;
-    }).join('') || '<div class="empty">No skills</div>';
+    // Recursive N-level tree by category path; leaf = skill (shows skill name)
+    const root = buildCatTree(items, r => r.category, '(uncategorized)');
+    const html = renderCatTree(root, [], 0, (r, depth) =>
+      skillLi(r, r.name, q, 8 + (depth + 1) * 12), q);
+    el.innerHTML = html || '<div class="empty">No skills</div>';
 
   } else if (tab === 'notes') {
-    const types = ['all','todo','done','data-path','observation','general'];
-    fEl.innerHTML = types.map(t =>
-      `<span class="chip ${filter===t?'active':''}" onclick="setNoteFilter('${t}')">${t}</span>`).join('');
-    el.innerHTML = items.map(r => `<div class="li nt-${r.type}" data-note-slug="${esc(r.slug)}" onclick="openItem('note','${esc(r.slug)}')">
-      <div class="li-name">${ICON[r.type]||'📝'} ${hl(r.title,state.search)}</div>
-      <div class="li-meta">${r.updated_at.slice(0,10)}</div>
-    </div>`).join('') || '<div class="empty">No notes</div>';
+    // Recursive N-level tree by category path (like skills); type is just a label
+    fEl.innerHTML = '';
+    const q = state.search;
+    const root = buildCatTree(items, r => r.category, '(uncategorized)');
+    const html = renderCatTree(root, [], 0, (r, depth) => {
+      const pad = 8 + (depth + 1) * 12;
+      return `<div class="li nt-${r.type}" data-note-slug="${esc(r.slug)}" style="padding-left:${pad}px" onclick="openItem('note','${esc(r.slug)}')">
+        <div class="li-name">${ICON[r.type]||'📝'} ${hl(r.title, q)}</div>
+        <div class="li-meta">${(r.updated_at||'').slice(0,10)}</div>
+      </div>`;
+    }, q);
+    el.innerHTML = html || '<div class="empty">No notes</div>';
 
   } else if (tab === 'prompts') {
     // Tree: project → task → versions → files
@@ -539,21 +601,75 @@ function renderList() {
     </div>`).join('') || '<div class="empty">No packages</div>';
 
   } else if (tab === 'scripts') {
-    const cats = [...new Set(items.map(r => r.category))].sort();
-    fEl.innerHTML = ['all',...cats].map(c =>
-      `<span class="chip ${filter===c?'active':''}" onclick="setFilter('${c}')">${c}</span>`).join('');
-    const shown = filter==='all' ? items : items.filter(r => r.category===filter);
-    el.innerHTML = shown.flatMap(r => r.files.map(f =>
-      `<div class="li" onclick="openItem('script','${esc(r.category+'/'+f)}')">
-        <div class="li-name">${esc(f)}</div>
-        <div class="li-meta">${esc(r.category)}</div>
-      </div>`
-    )).join('') || '<div class="empty">No scripts</div>';
+    // Recursive N-level tree by folder path; leaf = script file with language tag
+    fEl.innerHTML = '';
+    const q = state.search;
+    const root = buildCatTree(items, r => (r.category === '(root)' ? '' : r.category), '(root)');
+    const html = renderCatTree(root, [], 0, (r, depth) => {
+      const pad = 8 + (depth + 1) * 12;
+      return `<div class="li" style="padding-left:${pad}px" onclick="openItem('script','${esc(r.path)}')">
+        <div class="li-name">📄 ${hl(r.file, q)}</div>
+        <div class="li-meta">${(r.langs||(r.lang?r.lang.split(' + '):[])).map(l=>`<span class="cat" style="font-size:9px;margin-right:3px">${esc(l)}</span>`).join('')}</div>
+      </div>`;
+    }, q);
+    el.innerHTML = html || '<div class="empty">No scripts</div>';
   }
 }
 
+function skillLi(r, displayName, q, indent) {
+  return `<div class="li" data-skill-name="${esc(r.name)}" onclick="openItem('skill','${esc(r.name)}')" style="padding-left:${indent}px">
+    <div class="li-name">${hl(displayName||r.name, q)}</div>
+    <div class="li-meta">${r.description ? hl(r.description.slice(0,50), q) : ''}</div>
+  </div>`;
+}
+
+// ── Recursive category tree (shared by Skills & Notes panels) ───────────────
+function buildCatTree(items, getCat, fallback) {
+  const root = { folders: {}, items: [] };
+  (items || []).forEach(it => {
+    const cat = (getCat(it) || '').trim();
+    const segs = cat ? cat.split('/').map(s => s.trim()).filter(Boolean) : [fallback];
+    let node = root;
+    for (const seg of segs) {
+      node.folders[seg] = node.folders[seg] || { folders: {}, items: [] };
+      node = node.folders[seg];
+    }
+    node.items.push(it);
+  });
+  return root;
+}
+
+function countTreeLeaves(node) {
+  let n = node.items.length;
+  for (const k in node.folders) n += countTreeLeaves(node.folders[k]);
+  return n;
+}
+
+function renderCatTree(node, path, depth, renderLeaf, q) {
+  const folderKeys = Object.keys(node.folders).sort((a, b) =>
+    a === '(uncategorized)' ? 1 : b === '(uncategorized)' ? -1 : a.localeCompare(b));
+  let html = '';
+  for (const name of folderKeys) {
+    const child = node.folders[name];
+    // Base64 key: safe inside HTML attrs and JS strings (no quotes/null/unicode issues)
+    const key = btoa(unescape(encodeURIComponent(JSON.stringify(path.concat(name)))));
+    const open = !!catExpanded[key];
+    const pad = 8 + depth * 12;
+    html += `<div class="tree-cat">
+      <div class="tree-cat-hdr" style="padding-left:${pad}px" onclick="toggleCat('${key}')" title="${esc(name)}">
+        <span class="tree-cat-arrow">${open ? '▼' : '▶'}</span>
+        <span class="tree-cat-label">${name === '(uncategorized)' ? '<em style="opacity:.6">(uncategorized)</em>' : esc(name)}</span>
+        <span class="tree-cat-count">${countTreeLeaves(child)}</span>
+      </div>
+      <div class="tree-cat-body" style="${open ? '' : 'display:none'}">${renderCatTree(child, path.concat(name), depth + 1, renderLeaf, q)}</div>
+    </div>`;
+  }
+  for (const it of node.items) html += renderLeaf(it, depth, q);
+  return html;
+}
+
 function setFilter(f) { state.filter = f; renderList(); }
-function setNoteFilter(f) { state.filter = f; ask('list', { tab:'notes', filter:f, q:state.search }); }
+function setNoteFilter(f) { state.filter = f; renderList(); }
 
 // ── Open detail ────────────────────────────────────────────────────────────
 function openItem(type, key) {
@@ -610,22 +726,23 @@ function renderDetail(data) {
         <span class="ml">Created</span><span class="mv">${(data.created_at||'').slice(0,10)}</span>
         <span class="ml">Description</span><span class="mv">${esc(data.description||'—')}</span>
       </div>
-      <hr class="div">${toc}<div class="prose">${marked.parse(data.content||'')}</div>`;
+      <hr class="div">${toc}<div class="prose">${safeMarked(data.content||'')}</div>`;
 
   } else if (data.type === 'note') {
     currentDetail = data;
     const tags = JSON.parse(data.tags||'[]');
     el.innerHTML = `
-      <div class="d-title">${ICON[data.type_]||'📝'} ${esc(data.title)}</div>
+      <div class="d-title">${ICON[data.note_type]||'📝'} ${esc(data.title)}</div>
       <div class="d-meta">
         <span>${esc(data.note_type)}</span>
+        ${data.category?`<span class="cat">${esc(data.category)}</span>`:''}
         ${tags.map(t=>`<span class="tag">${esc(t)}</span>`).join('')}
         <span>Updated ${(data.updated_at||'').slice(0,10)}</span>
         <span style="font-size:10px;color:var(--muted)">id: ${esc(data.slug)}</span>
         <span style="flex:1"></span>
         <button class="tbtn" style="font-size:11px" onclick="editNote(currentDetail)">✏ Edit</button>
       </div>
-      <hr class="div"><div class="prose">${marked.parse(data.content||'')}</div>`;
+      <hr class="div"><div class="prose">${safeMarked(data.content||'')}</div>`;
 
   } else if (data.type === 'prompt') {
     const { project, task, version, file, content, meta, allVersions } = data;
@@ -716,19 +833,59 @@ function renderDetail(data) {
         <summary style="cursor:pointer;color:var(--muted);font-size:11px">File tree</summary>
         <div class="ftree" style="margin-top:6px">${renderTree(data.tree)}</div>
       </details>
-      <hr class="div">${toc}<div class="prose">${marked.parse(data.readme||'')}</div>`;
+      <hr class="div">${toc}<div class="prose">${safeMarked(data.readme||'')}</div>`;
 
   } else if (data.type === 'script') {
+    currentDetail = data;
     const ext = (data.file||'').split('.').pop()||'';
-    const lang = {sh:'bash',py:'python',js:'javascript',ts:'typescript',r:'r',sql:'sql'}[ext]||'text';
+    const lang = {sh:'bash',py:'python',js:'javascript',ts:'typescript',r:'r',sql:'sql',cs:'csharp',ps1:'powershell',script:'scope',usql:'sql'}[ext]||'text';
     el.innerHTML = `
       <div class="d-title">${esc(data.file||'')}</div>
-      <div class="d-meta"><span>${wordCount(data.content||'')}</span></div>
+      <div class="d-meta">
+        ${(data.langs||(data.lang?data.lang.split(' + '):[])).map(l=>`<span class="tag" style="background:var(--panel)">🏷 ${esc(l)}</span>`).join('')}
+        ${data.path?`<span class="cat">${esc(data.path)}</span>`:''}
+        <span>${wordCount(data.content||'')}</span>
+        <span style="flex:1"></span>
+        <button class="tbtn" style="font-size:11px" onclick="startEditScript()">✏ Edit</button>
+        <button class="tbtn" style="font-size:11px;border-color:var(--accent)" onclick="doAiSummary()">✨ AI Summary</button>
+      </div>
+      <div id="ai-summary"></div>
       <hr class="div">
       <div class="prose"><pre><code class="language-${lang}">${esc(data.content||'')}</code></pre></div>`;
   }
 
   postProcess();
+}
+
+// ── Script edit ─────────────────────────────────────────────────────────────
+function startEditScript() {
+  const d = currentDetail;
+  if (!d || d.type !== 'script') return;
+  document.getElementById('detail').innerHTML = `
+    <div class="d-title">✏ Edit: <span style="color:var(--accent)">${esc(d.file)}</span></div>
+    <div class="d-meta"><span class="cat">${esc(d.path||'')}</span></div>
+    <textarea id="se-script" style="width:100%;height:calc(100vh - 200px);background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:10px;font-size:12px;font-family:var(--vscode-editor-font-family);resize:none;outline:none;line-height:1.5">${esc(d.content||'')}</textarea>
+    <div class="form-actions" style="margin-top:8px">
+      <button class="tbtn" onclick="ask('detail',{type:'script',key:currentDetail.path})">Cancel</button>
+      <button class="tbtn" style="border-color:var(--accent)" onclick="submitScriptEdit()">💾 Save</button>
+    </div>`;
+  document.getElementById('se-script').focus();
+}
+
+function submitScriptEdit() {
+  const d = currentDetail; if (!d) return;
+  const content = document.getElementById('se-script').value;
+  ask('saveScript', { path: d.path, content });
+}
+
+// ── AI Summary (script) ─────────────────────────────────────────────────────
+function doAiSummary() {
+  const d = currentDetail;
+  if (!d || d.type !== 'script') return;
+  const box = document.getElementById('ai-summary');
+  if (box) box.innerHTML = `<div style="padding:12px 14px;margin:12px 0;border:1px solid var(--border);border-radius:8px;background:var(--panel)">
+    <span style="color:var(--muted);font-size:12px">✨ Generating AI summary… (this may take a few seconds)</span></div>`;
+  ask('aiSummary', { path: d.path });
 }
 
 function loadPkgFile(pkg, file) { ask('detail', { type:'packageFile', key: pkg+'|'+file }); }
@@ -754,7 +911,7 @@ function wordCount(text) {
 }
 
 function postProcess() {
-  document.querySelectorAll('#detail pre code').forEach(el => hljs.highlightElement(el));
+  document.querySelectorAll('#detail pre code').forEach(el => safeHljs(el));
   document.querySelectorAll('#detail pre').forEach(pre => {
     if (pre.querySelector('.copy-btn')) return;
     const btn = document.createElement('button'); btn.className='copy-btn'; btn.textContent='Copy';
@@ -769,23 +926,28 @@ function toggleNoteForm() {
   if (!nf.classList.contains('hidden')) {
     document.getElementById('note-form-title').textContent = 'Quick Note';
     document.getElementById('note-edit-slug').value = '';
+    document.getElementById('note-category').value = '';
   }
   nf.classList.toggle('hidden');
+  if (!nf.classList.contains('hidden')) updateNotePreview();
 }
 
 function saveNote() {
   const title    = document.getElementById('note-title').value.trim();
   const content  = document.getElementById('note-content').value.trim();
   const type     = document.getElementById('note-type').value;
+  const category = document.getElementById('note-category').value.trim();
   const tags     = document.getElementById('note-tags').value.split(',').map(t=>t.trim()).filter(Boolean);
   const editSlug = document.getElementById('note-edit-slug').value.trim();
   if (!content) return;
-  ask('saveNote', { title: title || content.slice(0,60), content, type, tags, ...(editSlug ? { slug: editSlug } : {}) });
+  ask('saveNote', { title: title || content.slice(0,60), content, type, category, tags, ...(editSlug ? { slug: editSlug } : {}) });
   if (editSlug) ask('detail', { type:'note', key: editSlug });
   document.getElementById('note-title').value   = '';
   document.getElementById('note-content').value  = '';
   document.getElementById('note-tags').value    = '';
+  document.getElementById('note-category').value = '';
   document.getElementById('note-edit-slug').value = '';
+  updateNotePreview();
   toggleNoteForm();
 }
 
@@ -931,7 +1093,7 @@ function doJoinSync() {
 }
 
 // ── Category tree ─────────────────────────────────────────────────────────
-function toggleCat(cat) { catCollapsed[cat] = !catCollapsed[cat]; renderList(); }
+function toggleCat(cat) { catExpanded[cat] = !catExpanded[cat]; renderList(); }
 
 // ── Search highlight ──────────────────────────────────────────────────────
 function hl(text, q) {
@@ -990,12 +1152,21 @@ function editNote(data) {
   document.getElementById('note-title').value   = data.title || '';
   document.getElementById('note-content').value  = data.content || '';
   document.getElementById('note-type').value    = data.note_type || data.type || 'general';
+  document.getElementById('note-category').value = data.category || '';
   document.getElementById('note-tags').value    = JSON.parse(data.tags||'[]').join(', ');
   document.getElementById('note-edit-slug').value = data.slug;
   const nf = document.getElementById('note-form');
   if (nf.classList.contains('hidden')) nf.classList.remove('hidden');
+  updateNotePreview();
   nf.scrollIntoView({ behavior:'smooth' });
   setTimeout(() => document.getElementById('note-content').focus(), 100);
+}
+
+// Live Markdown preview for the note editor
+function updateNotePreview() {
+  const src = document.getElementById('note-content').value;
+  const el = document.getElementById('note-preview');
+  if (el) el.innerHTML = safeMarked(src);
 }
 
 // ── MCP wizard ────────────────────────────────────────────────────────────
@@ -1067,13 +1238,15 @@ function renderMcpPane(data) {
 }
 
 function renderMcpGenerated(data) {
-  const el = document.getElementById('mcp-result');
-  if (el) el.innerHTML = `<span style="color:#4ade80">✅ Server created at <code style="font-size:11px">${esc(data.serverPath)}</code></span>`;
   // Store config snippet for copying
   window._mcpCfg = data.configSnippet || '';
   const codeEl = document.getElementById('mcp-cfg-code');
   if (codeEl) codeEl.textContent = data.configSnippet || '';
-  // Re-check status to refresh UI
+  // A preview call only fills the config block — do NOT re-render (would loop)
+  if (data.preview) return;
+  const el = document.getElementById('mcp-result');
+  if (el) el.innerHTML = `<span style="color:#4ade80">✅ Server created at <code style="font-size:11px">${esc(data.serverPath)}</code></span>`;
+  // Real generation: refresh the pane once to show the installed state
   setTimeout(() => ask('checkMcp', {}), 300);
 }
 
@@ -1089,7 +1262,20 @@ function copyCfg() {
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────
+ask('ready', {});                              // tell the extension the webview is loaded
 ask('list', { tab:'skills', filter:'all', q:'' });
+
+// Safety: if no response after 8 s, DB is still initializing — retry automatically
+setTimeout(() => {
+  const banner = document.getElementById('loading-banner');
+  if (banner && !banner.classList.contains('hidden')) {
+    // Update the subtitle to tell user what's happening
+    const sub = document.querySelector('.loading-sub');
+    if (sub) sub.textContent = 'Database is initializing, retrying…';
+    // Retry the list request after another 3 s
+    setTimeout(() => ask('list', { tab:'skills', filter:'all', q:'' }), 3000);
+  }
+}, 8000);
 </script>
 
 <!-- Loading banner (shown until first data arrives) -->
