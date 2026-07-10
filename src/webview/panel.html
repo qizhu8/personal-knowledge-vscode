@@ -460,16 +460,20 @@ window.addEventListener('message', e => {
     const el = document.getElementById('mcp-result');
     if (el) el.innerHTML = `<span style="color:#f87171">❌ ${esc(data.error)}</span>`;
   }
+  else if (command === 'aiBackends') { renderAiBackends(data.backends); }
   else if (command === 'aiSummary') {
+    if (data.miss) return; // cache-only peek with no cached summary — leave the panel as-is
     const box = document.getElementById('ai-summary');
     if (box) {
       if (data.error) {
         box.innerHTML = `<div style="padding:12px 14px;margin:12px 0;border:1px solid #f87171;border-radius:8px">
-          <span style="color:#f87171;font-size:12px">❌ ${esc(data.error)}</span></div>`;
+          <span style="color:#f87171;font-size:12px">❌ ${esc(data.error)}${data.backend?' ('+esc(data.backend)+')':''}</span></div>`;
       } else {
+        // Strip the machine-readable header comment before rendering
+        const body = (data.summary||'').replace(/^<!--[^>]*-->\s*/, '');
         box.innerHTML = `<div style="padding:14px 16px;margin:12px 0;border:1px solid var(--accent);border-radius:8px;background:var(--panel)">
-          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--accent);margin-bottom:8px">✨ AI Summary${data.cached?' (cached)':''}</div>
-          <div class="prose" style="font-size:13px">${safeMarked(data.summary||'')}</div></div>`;
+          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--accent);margin-bottom:8px">✨ AI Summary${data.cached?' (cached)':''}${data.backend?' · '+esc(data.backend):''}</div>
+          <div class="prose" style="font-size:13px">${safeMarked(body)}</div></div>`;
         postProcess();
       }
     }
@@ -847,11 +851,16 @@ function renderDetail(data) {
         <span>${wordCount(data.content||'')}</span>
         <span style="flex:1"></span>
         <button class="tbtn" style="font-size:11px" onclick="startEditScript()">✏ Edit</button>
+        <select id="ai-backend-select" title="AI backend for summarization"
+          style="font-size:11px;background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:3px 6px;outline:none;max-width:200px">
+          <option value="">Loading backends…</option>
+        </select>
         <button class="tbtn" style="font-size:11px;border-color:var(--accent)" onclick="doAiSummary()">✨ AI Summary</button>
       </div>
       <div id="ai-summary"></div>
       <hr class="div">
       <div class="prose"><pre><code class="language-${lang}">${esc(data.content||'')}</code></pre></div>`;
+    ask('listAiBackends', {}); // populate the backend dropdown
   }
 
   postProcess();
@@ -882,10 +891,36 @@ function submitScriptEdit() {
 function doAiSummary() {
   const d = currentDetail;
   if (!d || d.type !== 'script') return;
+  const sel = document.getElementById('ai-backend-select');
+  const backend = sel ? sel.value : '';
   const box = document.getElementById('ai-summary');
   if (box) box.innerHTML = `<div style="padding:12px 14px;margin:12px 0;border:1px solid var(--border);border-radius:8px;background:var(--panel)">
-    <span style="color:var(--muted);font-size:12px">✨ Generating AI summary… (this may take a few seconds)</span></div>`;
-  ask('aiSummary', { path: d.path });
+    <span style="color:var(--muted);font-size:12px">✨ Generating AI summary${backend?' via '+esc(sel.options[sel.selectedIndex]?.text||''):''}… (this may take a few seconds)</span></div>`;
+  ask('aiSummary', { path: d.path, backend });
+}
+
+// Populate the AI backend dropdown from the scan result
+function renderAiBackends(backends) {
+  const sel = document.getElementById('ai-backend-select');
+  if (!sel) return;
+  if (!backends || !backends.length) {
+    sel.innerHTML = '<option value="">No backend available</option>';
+    return;
+  }
+  const prev = sel.dataset.chosen || '';
+  sel.innerHTML = backends.map(b => `<option value="${esc(b.id)}">${esc(b.label)}</option>`).join('');
+  if (prev && backends.some(b => b.id === prev)) sel.value = prev;
+  sel.onchange = () => { sel.dataset.chosen = sel.value; peekCachedSummary(); };
+  // Auto-show a cached summary for the selected backend, if one exists
+  peekCachedSummary();
+}
+
+// Ask for a cached summary only (never triggers a new AI call)
+function peekCachedSummary() {
+  const d = currentDetail;
+  const sel = document.getElementById('ai-backend-select');
+  if (!d || d.type !== 'script' || !sel) return;
+  ask('aiSummary', { path: d.path, backend: sel.value, cacheOnly: true });
 }
 
 function loadPkgFile(pkg, file) { ask('detail', { type:'packageFile', key: pkg+'|'+file }); }

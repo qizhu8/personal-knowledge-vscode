@@ -578,10 +578,20 @@ async function handleMessage(
 
     case "aiSummary": {
       try {
-        const result = await aiSummarizeScript(msg.path);
+        const result = await aiSummarizeScript(context, msg.path, msg.backend, !!msg.cacheOnly);
         respond({ command: "aiSummary", data: result });
       } catch (e: any) {
         respond({ command: "aiSummary", data: { error: e.message } });
+      }
+      break;
+    }
+
+    case "listAiBackends": {
+      try {
+        const backends = await listAiBackends(context);
+        respond({ command: "aiBackends", data: { backends } });
+      } catch (e: any) {
+        respond({ command: "aiBackends", data: { backends: [], error: e.message } });
       }
       break;
     }
@@ -610,6 +620,8 @@ async function handleMessage(
       }
       try {
         fs.writeFileSync(full, content);
+        // Content changed → all cached AI summaries for this script are stale
+        fs.rmSync(scriptCacheDir(relPath), { recursive: true, force: true });
         gitCommit(`edit(script): ${relPath}`);
         log.action("script.save", { path: relPath });
         vscode.window.setStatusBarMessage("$(check) Script saved & committed", 3000);
@@ -952,28 +964,114 @@ if __name__ == "__main__":
 }
 
 // ── AI Summary for scripts ──────────────────────────────────────────────────
-async function aiSummarizeScript(relPath: string): Promise<{ summary?: string; cached?: boolean; error?: string }> {
-  const r = scriptGet(relPath);
-  if (!r) return { error: `Script not found: ${relPath}` };
+// ── AI backends ─────────────────────────────────────────────────────────────
+interface AiBackend { id: string; label: string; kind: "copilot" | "azure-openai" | "openai-compatible"; model: string; }
 
-  // Cache keyed by SHA-256 of the file content, stored under scripts/.ai-cache/
-  const hash = createHash("sha256").update(r.content).digest("hex").slice(0, 16);
-  const cacheDir = path.join(getStorePath(), "scripts", ".ai-cache");
+/** Scan for available AI backends: live Copilot models + configured HTTP endpoints. */
+async function listAiBackends(context: vscode.ExtensionContext): Promise<AiBackend[]> {
+  const out: AiBackend[] = [];
+
+  // Copilot — enumerate the actual models the VS Code LM API offers
+  const lm = (vscode as any).lm;
+  if (lm?.selectChatModels) {
+    try {
+      const models = await lm.selectChatModels({ vendor: "copilot" });
+      for (const m of models || []) {
+        out.push({ id: `copilot:${m.id}`, label: `Copilot · ${m.name || m.id}`, kind: "copilot", model: m.id });
+      }
+    } catch { /* Copilot not available */ }
+  }
+
+  // HTTP backends — available when an endpoint + API key are configured
+  const cfg = vscode.workspace.getConfiguration("personalKnowledge");
+  const endpoint = cfg.get<string>("aiEndpoint")?.trim();
+  const model = cfg.get<string>("aiModel")?.trim() || "gpt-4o-mini";
+  const backend = cfg.get<string>("aiBackend");
+  const key = await context.secrets.get("personalKnowledge.aiApiKey");
+  if (endpoint && key) {
+    if (backend === "azure-openai")
+      out.push({ id: `azure:${model}`, label: `Azure OpenAI · ${model}`, kind: "azure-openai", model });
+    else
+      out.push({ id: `openai:${model}`, label: `OpenAI-compatible · ${model}`, kind: "openai-compatible", model });
+  } else if (endpoint) {
+    // Endpoint set but no key — surface as needing configuration
+    const kind = backend === "azure-openai" ? "azure-openai" : "openai-compatible";
+    out.push({ id: `${kind}:${model}:needkey`, label: `${kind === "azure-openai" ? "Azure OpenAI" : "OpenAI-compatible"} · ${model} (set API key)`, kind, model });
+  }
+  return out;
+}
+
+/** Run a prompt against a specific backend and return the text response. */
+async function runAiPrompt(context: vscode.ExtensionContext, backend: AiBackend, prompt: string): Promise<string> {
+  if (backend.kind === "copilot") {
+    const lm = (vscode as any).lm;
+    if (!lm?.selectChatModels) throw new Error("Language Model API unavailable (needs VS Code 1.90+ with Copilot).");
+    let models = await lm.selectChatModels({ vendor: "copilot", id: backend.model });
+    if (!models?.length) models = await lm.selectChatModels({ vendor: "copilot" });
+    const model = models?.[0];
+    if (!model) throw new Error("No Copilot chat model available. Sign in to GitHub Copilot.");
+    const messages = [ (vscode as any).LanguageModelChatMessage.User(prompt) ];
+    const resp = await model.sendRequest(messages, {}, new vscode.CancellationTokenSource().token);
+    let out = ""; for await (const chunk of resp.text) out += chunk;
+    return out.trim();
+  }
+
+  // HTTP backends (Azure OpenAI / OpenAI-compatible)
+  const cfg = vscode.workspace.getConfiguration("personalKnowledge");
+  const endpoint = (cfg.get<string>("aiEndpoint") ?? "").trim().replace(/\/$/, "");
+  const apiKey = await context.secrets.get("personalKnowledge.aiApiKey");
+  if (!endpoint) throw new Error("No AI endpoint configured (personalKnowledge.aiEndpoint).");
+  if (!apiKey) throw new Error('No API key set. Run "Personal Knowledge: Set AI API Key".');
+
+  let url: string; const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (backend.kind === "azure-openai") {
+    const ver = cfg.get<string>("aiAzureApiVersion") || "2024-06-01";
+    url = `${endpoint}/openai/deployments/${backend.model}/chat/completions?api-version=${ver}`;
+    headers["api-key"] = apiKey;
+  } else {
+    url = `${endpoint}/chat/completions`;
+    headers["Authorization"] = `Bearer ${apiKey}`;
+  }
+  const body = { model: backend.model, messages: [{ role: "user", content: prompt }], temperature: 0.2, max_tokens: 700 };
+  const resp = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(60_000) });
+  if (!resp.ok) throw new Error(`Endpoint returned ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
+  const j: any = await resp.json();
+  return (j?.choices?.[0]?.message?.content ?? "").trim();
+}
+
+// ── AI Summary for scripts ──────────────────────────────────────────────────
+/** Per-script cache directory under scripts/.ai-cache/<sanitized-path>/ */
+function scriptCacheDir(relPath: string): string {
+  const slug = relPath.replace(/[^A-Za-z0-9._-]+/g, "_");
+  return path.join(getStorePath(), "scripts", ".ai-cache", slug);
+}
+
+async function aiSummarizeScript(
+  context: vscode.ExtensionContext, relPath: string, backendId?: string, cacheOnly = false
+): Promise<{ summary?: string; cached?: boolean; error?: string; backend?: string; miss?: boolean }> {
+  const r = scriptGet(relPath);
+  if (!r) return cacheOnly ? { miss: true } : { error: `Script not found: ${relPath}` };
+
+  // Resolve the backend: requested id, else first available
+  const backends = await listAiBackends(context);
+  if (!backends.length) {
+    return cacheOnly ? { miss: true } : { error: "No AI backend available. Enable Copilot, or set an endpoint + API key in Settings." };
+  }
+  const backend = backends.find(b => b.id === backendId) ?? backends[0];
+  if (backend.id.endsWith(":needkey")) {
+    return cacheOnly ? { miss: true } : { error: 'API key not set. Run "Personal Knowledge: Set AI API Key".', backend: backend.label };
+  }
+
+  // Cache key includes the backend id so switching model/provider regenerates.
+  // Files live in a per-script subfolder so they can be removed on delete/edit.
+  const hash = createHash("sha256").update(backend.id + "\0" + r.content).digest("hex").slice(0, 16);
+  const cacheDir = scriptCacheDir(relPath);
   const cacheFile = path.join(cacheDir, `${hash}.md`);
   if (fs.existsSync(cacheFile)) {
-    return { summary: fs.readFileSync(cacheFile, "utf-8"), cached: true };
+    return { summary: fs.readFileSync(cacheFile, "utf-8"), cached: true, backend: backend.label };
   }
-
-  // Select a Copilot chat model via the VS Code Language Model API
-  const lm = (vscode as any).lm;
-  if (!lm?.selectChatModels) {
-    return { error: "Language Model API unavailable. Requires VS Code 1.90+ with GitHub Copilot Chat enabled." };
-  }
-  const models = await lm.selectChatModels({ vendor: "copilot" });
-  if (!models?.length) {
-    return { error: "No Copilot chat model available. Sign in to GitHub Copilot and try again." };
-  }
-  const model = models[0];
+  // Cache-only peek (used when opening a script): don't call the AI on a miss
+  if (cacheOnly) return { miss: true, backend: backend.label };
 
   const prompt = [
     `You are analyzing a data-processing script written in: ${r.lang}.`,
@@ -994,21 +1092,18 @@ async function aiSummarizeScript(relPath: string): Promise<{ summary?: string; c
   ].join("\n");
 
   try {
-    const messages = [ (vscode as any).LanguageModelChatMessage.User(prompt) ];
-    const cts = new vscode.CancellationTokenSource();
-    const resp = await model.sendRequest(messages, {}, cts.token);
-    let out = "";
-    for await (const chunk of resp.text) out += chunk;
-    out = out.trim();
-    if (!out) return { error: "The model returned an empty response." };
-
+    const out = await runAiPrompt(context, backend, prompt);
+    if (!out) return { error: "The model returned an empty response.", backend: backend.label };
+    // Prepend a machine-readable header noting which backend produced this
+    const withHeader = `<!-- backend: ${backend.id} | generated: ${new Date().toISOString()} -->\n\n${out}`;
     fs.mkdirSync(cacheDir, { recursive: true });
-    fs.writeFileSync(cacheFile, out);
-    return { summary: out, cached: false };
+    fs.writeFileSync(cacheFile, withHeader);
+    return { summary: withHeader, cached: false, backend: backend.label };
   } catch (e: any) {
-    return { error: `AI request failed: ${e?.message ?? e}` };
+    return { error: `AI request failed: ${e?.message ?? e}`, backend: backend.label };
   }
 }
+
 
 // ── Sidebar tree provider ──────────────────────────────────────────────────
 type PkNodeType =
@@ -1440,6 +1535,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       openInPanel(context, "script", item.nodeData.key, true);
     }),
 
+    vscode.commands.registerCommand("personalKnowledge.deleteScript", async (item?: PkTreeItem) => {
+      if (!(await ensureSetup(context)) || !item?.nodeData?.key) return;
+      const relPath = item.nodeData.key as string;
+      const full = path.join(getStorePath(), "scripts", relPath);
+      const scriptsRoot = path.join(getStorePath(), "scripts");
+      if (!path.resolve(full).startsWith(path.resolve(scriptsRoot) + path.sep)) return;
+      const confirm = await vscode.window.showWarningMessage(
+        `Delete script "${relPath}"? This removes the file and its AI-summary cache, and commits the deletion to git.`,
+        { modal: true }, "Delete"
+      );
+      if (confirm !== "Delete") return;
+      try {
+        fs.rmSync(full, { force: true });
+        fs.rmSync(scriptCacheDir(relPath), { recursive: true, force: true }); // remove correlated AI cache
+        gitCommit(`delete(script): ${relPath}`);
+        log.action("script.delete", { path: relPath });
+        vscode.window.setStatusBarMessage("$(trash) Script deleted", 3000);
+        treeProvider.refresh();
+        panel?.webview.postMessage({ command: "detail", data: null });
+      } catch (e: any) {
+        vscode.window.showErrorMessage(`Delete failed: ${e.message}`);
+      }
+    }),
+
     vscode.commands.registerCommand("personalKnowledge.openSkill", async (name: string) => {
       log.action("command.openSkill", { name });
       if (!(await ensureSetup(context))) return;
@@ -1501,7 +1620,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       p.webview.postMessage({ command: "openTab", tab: "mcp" });
     }),
 
-    vscode.commands.registerCommand("personalKnowledge.showLogs", () => log.show())
+    vscode.commands.registerCommand("personalKnowledge.showLogs", () => log.show()),
+
+    vscode.commands.registerCommand("personalKnowledge.setAiKey", async () => {
+      const key = await vscode.window.showInputBox({
+        prompt: "Enter your AI API key (stored securely in VS Code SecretStorage)",
+        password: true,
+        ignoreFocusOut: true,
+        placeHolder: "sk-… or Azure key",
+      });
+      if (key === undefined) return; // cancelled
+      if (key.trim()) {
+        await context.secrets.store("personalKnowledge.aiApiKey", key.trim());
+        vscode.window.showInformationMessage("Personal Knowledge: AI API key saved.");
+      } else {
+        await context.secrets.delete("personalKnowledge.aiApiKey");
+        vscode.window.showInformationMessage("Personal Knowledge: AI API key cleared.");
+      }
+    })
   );
 
   // Only initialize DB if setup was completed (path is known)
