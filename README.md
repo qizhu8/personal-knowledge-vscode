@@ -4,9 +4,15 @@ A VS Code extension for managing your personal knowledge base — skills, notes,
 
 > **A note from the developer**
 >
-> This is a small extension born from a simple need: one unified place to manage skills, quick notes, large collections of prompts, and development scripts. I built it because I'm a heavy user myself — and I'll keep improving it with regular updates. I hope it helps more people stay organized. Welcome aboard, and thanks for giving it a try!
+> This is a small extension born from a simple need: one unified place to manage skills, quick notes, large collections of prompts, and development scripts across multiple projects, vms, even colleagues. I don't want/need/should/feel happy to put everything to git, thus I have this extension. I'm a heavy user myself — and I'll keep improving it with regular updates. I hope it helps more people stay organized. Welcome aboard, and thanks for giving it a try!
 >
 > — Uone
+
+## For Human
+This extension allows you (human) to add/update/delete items, but it is more preferrable for agents to update and we review. Let agents play with your knowledge, they are kids.
+
+## First-Aid Tip
+If you (usually me myself :) ) accidentally deleted/screwed up something, ask AI to fix. AI can read the database and mcp scripts to understand what to do.
 
 ## Features
 

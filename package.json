@@ -117,6 +117,11 @@
         "command": "personalKnowledge.editScript",
         "title": "Edit",
         "icon": "$(edit)"
+      },
+      {
+        "command": "personalKnowledge.deleteScript",
+        "title": "Delete",
+        "icon": "$(trash)"
       }
     ],
     "keybindings": [
@@ -209,6 +214,11 @@
         },
         {
           "command": "personalKnowledge.editScript",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-script-item",
+          "group": "1_edit"
+        },
+        {
+          "command": "personalKnowledge.deleteScript",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-script-item",
           "group": "1_edit"
         }
