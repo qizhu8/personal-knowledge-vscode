@@ -2,6 +2,12 @@
 
 A VS Code extension for managing your personal knowledge base — skills, notes, prompts, packages, and scripts — with hierarchical navigation, full-text search, syntax highlighting, AI-assisted summaries, a built-in sync server, and MCP integration so AI assistants can read *and write* your knowledge directly.
 
+> **A note from the developer**
+>
+> This is a small extension born from a simple need: one unified place to manage skills, quick notes, large collections of prompts, and development scripts. I built it because I'm a heavy user myself — and I'll keep improving it with regular updates. I hope it helps more people stay organized. Welcome aboard, and thanks for giving it a try!
+>
+> — Uone
+
 ## Features
 
 - **Skills** — reusable know-how as searchable Markdown, organised into an arbitrary-depth category tree
@@ -48,6 +54,33 @@ On first activation the extension asks where to store your knowledge base (use t
 ```
 
 Change the location any time via **Settings -> Personal Knowledge: Store Path**.
+
+## How to use
+
+1. **Open the panel** — click the Personal Knowledge icon in the Activity Bar, or press `Ctrl+Shift+K` / `Cmd+Shift+K`.
+2. **Browse** — the left navigation shows your Skills, Notes, Prompts, Packages, and Scripts as collapsible folder trees. Click any item to preview it.
+3. **Capture knowledge**:
+   - Select code in any editor -> right-click -> **Save Selection as Skill**.
+   - Press `Ctrl+Shift+N` / `Cmd+Shift+N` for a quick note (with live Markdown preview).
+   - Right-click a folder in the sidebar -> **New Skill / Note / Script Here**.
+4. **Edit** — right-click any item -> **Edit**, or use the ✏ button in the detail view. Script edits are confirmed and committed to git automatically.
+5. **Understand a script** — open any script and click **✨ AI Summary** for a purpose / inputs / output / issues breakdown.
+6. **Share** — use the **Sync** button to hand another machine a temporary authenticated link to pull selected content.
+7. **Connect an AI assistant** — generate an MCP server (see below).
+
+Everything is stored as plain files + SQLite under your chosen folder, mirrored to Markdown, and tracked in git — so you always own your data and have full history.
+
+## Why an MCP server?
+
+The extension is where **you** manage your knowledge. The **MCP server** is how your **AI assistant** uses it.
+
+Without it, you end up copy-pasting the same context into every chat, and anything the AI figures out is lost when the session ends. With the MCP server running, any MCP-aware assistant (Claude Desktop, GitHub Copilot, etc.) can:
+
+- **Search and read** your accumulated skills, notes, and scripts on demand — so it answers with *your* conventions, gotchas, and past solutions instead of generic guesses.
+- **Write back** new learnings — `add_note`, `update_skill`, and friends let the assistant persist what it discovers, turning your knowledge base into a durable, shared memory that grows across sessions.
+- **Stay in sync** — because the server reads the same store the extension writes, edits from either side show up in both, and every write is git-tracked.
+
+In short: the extension gives *you* a home for your knowledge; the MCP server gives your *AI* a key to that home, so it can both learn from and contribute to it.
 
 ## MCP integration
 
