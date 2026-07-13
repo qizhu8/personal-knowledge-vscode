@@ -6,8 +6,9 @@ import {
   skillList, skillSearch, skillGet, skillUpsert, skillDelete,
   noteList, noteSearch, noteGet, noteUpsert, noteDelete, slugExists,
   noteExport, noteImport,
-  setStorePath as dbSetStorePath, getStorePath, initDb, isDbReady, reloadDb,
-} from "./db";
+  setStorePath as fsSetStorePath, getStorePath,
+} from "./filestore";
+import { migrateDbToFiles } from "./migrate";
 import {
   promptList, promptGetFile, promptGetAllVersionsOfFile,
   packageList, packageGet, packageFileGet,
@@ -97,67 +98,7 @@ function gitCommit(msg: string): void {
   } catch { /* nothing to commit */ }
 }
 
-// ── Markdown mirror (git-trackable readable files) ─────────────────────────
-function safeFileName(s: string): string {
-  return s.replace(/[^a-zA-Z0-9._/-]/g, "_");
-}
-
-/** Write a note to notes/<category-path>/<slug>.md with YAML front-matter so git tracks readable history. */
-function exportNoteFile(row: { slug: string; title: string; content: string; type: string; tags: any; category?: string }): void {
-  try {
-    const catPath = (row.category ?? "").split("/").map(s => safeFileName(s.trim())).filter(Boolean);
-    const dir = path.join(getStorePath(), "notes", ...catPath);
-    fs.mkdirSync(dir, { recursive: true });
-    const tags = typeof row.tags === "string" ? row.tags : JSON.stringify(row.tags ?? []);
-    const fm = `---\ntitle: ${JSON.stringify(row.title)}\ntype: ${row.type}\ncategory: ${JSON.stringify(row.category ?? "")}\ntags: ${tags}\n---\n\n`;
-    fs.writeFileSync(path.join(dir, safeFileName(row.slug) + ".md"), fm + (row.content ?? ""));
-  } catch (e: any) { log.warn(`exportNoteFile failed: ${e?.message}`); }
-}
-
-function deleteNoteFile(slug: string): void {
-  // Remove any notes/**/<slug>.md (category path may vary)
-  try {
-    const base = path.join(getStorePath(), "notes");
-    const walk = (dir: string) => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, e.name);
-        if (e.isDirectory()) walk(full);
-        else if (e.name === safeFileName(slug) + ".md") fs.rmSync(full, { force: true });
-      }
-    };
-    if (fs.existsSync(base)) walk(base);
-  } catch { /* ignore */ }
-}
-
-/** Write a skill to skills/<name>.md (name may contain / for hierarchy). */
-function exportSkillFile(row: { name: string; content: string; description?: string; category?: string; tags?: any }): void {
-  try {
-    const rel = safeFileName(row.name) + ".md";
-    const full = path.join(getStorePath(), "skills", rel);
-    fs.mkdirSync(path.dirname(full), { recursive: true });
-    const tags = typeof row.tags === "string" ? row.tags : JSON.stringify(row.tags ?? []);
-    const fm = `---\nname: ${JSON.stringify(row.name)}\ndescription: ${JSON.stringify(row.description ?? "")}\ncategory: ${JSON.stringify(row.category ?? "")}\ntags: ${tags}\n---\n\n`;
-    fs.writeFileSync(full, fm + (row.content ?? ""));
-  } catch (e: any) { log.warn(`exportSkillFile failed: ${e?.message}`); }
-}
-
-function deleteSkillFile(name: string): void {
-  try { fs.rmSync(path.join(getStorePath(), "skills", safeFileName(name) + ".md"), { force: true }); } catch { /* ignore */ }
-}
-
-/** Mirror all notes and skills from the DB to markdown files, then commit if changed. */
-function mirrorAllToFiles(): void {
-  try {
-    for (const n of noteExport() as any[]) {
-      exportNoteFile({ slug: n.slug, title: n.title, content: n.content, type: n.type, tags: n.tags, category: n.category });
-    }
-    for (const s of skillList() as any[]) {
-      const full = skillGet(s.name);
-      exportSkillFile({ name: s.name, content: full?.content ?? "", description: s.description, category: s.category, tags: s.tags });
-    }
-    gitCommit("sync: mirror DB to markdown files");
-  } catch (e: any) { log.warn(`mirrorAllToFiles failed: ${e?.message}`); }
-}
+// (Notes & skills are persisted directly as files by filestore.ts — no separate mirror needed.)
 
 // ── Slug from title ────────────────────────────────────────────────────────
 function toSlug(title: string): string {
@@ -174,6 +115,7 @@ function uniqueSlug(title: string): string {
 let panel: vscode.WebviewPanel | undefined;
 let _treeProvider: PkTreeProvider | undefined;
 let _panelReady = false;                       // webview has signalled it's ready
+let _storeReady = false;                       // file store configured & migrated
 let _pendingOpen: { type: string; key: string; edit?: boolean } | undefined; // item to open once ready
 
 /** Open an item in the panel; queues it if the webview isn't ready yet. */
@@ -187,23 +129,34 @@ function openInPanel(context: vscode.ExtensionContext, type: string, key: string
   }
 }
 
-/** Returns true if DB is ready; otherwise runs the setup wizard and initializes. */
+/** Set store paths, run the one-time DB→files migration, mark ready, refresh. */
+async function initStore(context: vscode.ExtensionContext, storePath: string): Promise<void> {
+  fsSetStorePath(storePath);
+  storageSetStorePath(storePath);
+  // Hidden, idempotent migration from the legacy SQLite DB to files-as-truth
+  if (!context.globalState.get<boolean>("migratedToFiles", false)) {
+    try {
+      const r = await migrateDbToFiles(context.extensionPath);
+      if (r.migrated) log.info(`migrated ${r.skills} skills, ${r.notes} notes from DB to files`);
+      await context.globalState.update("migratedToFiles", true);
+    } catch (e: any) { log.warn(`migration skipped: ${e?.message}`); }
+  }
+  _storeReady = true;
+  _treeProvider?.refresh();
+}
+
+/** Returns true if the file store is ready; otherwise runs the setup wizard. */
 async function ensureSetup(context: vscode.ExtensionContext): Promise<boolean> {
-  if (isDbReady()) return true;
+  if (_storeReady) return true;
 
   const cfg = vscode.workspace.getConfiguration("personalKnowledge");
   const configuredPath = cfg.get<string>("storePath")?.trim() ?? "";
   const setupComplete  = context.globalState.get<boolean>("setupComplete", false);
 
-  // Already configured but DB still initializing — just wait for it
+  // Already configured — just activate the store
   if (setupComplete && configuredPath) {
-    try {
-      await initDb(context.extensionPath);
-      return isDbReady();
-    } catch (e: any) {
-      vscode.window.showErrorMessage(`Personal Knowledge: database error — ${e.message}`);
-      return false;
-    }
+    await initStore(context, configuredPath);
+    return _storeReady;
   }
 
   // Not configured yet — show the wizard
@@ -215,18 +168,9 @@ async function ensureSetup(context: vscode.ExtensionContext): Promise<boolean> {
     ).then(v => { if (v) ensureSetup(context); });
     return false;
   }
-
-  dbSetStorePath(chosen);
-  storageSetStorePath(chosen);
-  try {
-    await initDb(context.extensionPath);
-    _treeProvider?.refresh();
-    try { generateMcpServer(context); } catch { /* non-critical */ }
-  } catch (e: any) {
-    vscode.window.showErrorMessage(`Personal Knowledge: failed to open database — ${e.message}`);
-    return false;
-  }
-  return true;
+  await initStore(context, chosen);
+  try { generateMcpServer(context); } catch { /* non-critical */ }
+  return _storeReady;
 }
 
 function makeWebviewOptions(context: vscode.ExtensionContext): vscode.WebviewOptions & vscode.WebviewPanelOptions {
@@ -331,17 +275,11 @@ async function handleMessage(
     }
 
     case "reload": {
-      // Re-read the DB from disk to pick up external changes (e.g. MCP writes),
-      // then tell the webview to re-fetch the current tab.
-      try {
-        reloadDb();
-        _treeProvider?.refresh();
-        log.action("reload");
-        respond({ command: "reloaded" });
-      } catch (e: any) {
-        log.error(`reload failed: ${e?.message}`);
-        respond({ command: "reloaded" });
-      }
+      // Files are the source of truth and always read fresh, so this just
+      // re-renders the tree + current tab (external edits are already on disk).
+      _treeProvider?.refresh();
+      log.action("reload");
+      respond({ command: "reloaded" });
       break;
     }
 
@@ -398,7 +336,6 @@ async function handleMessage(
       const { title, content, type, tags, category, slug: existingSlug } = msg;
       const slug = existingSlug ?? uniqueSlug(title || content.slice(0, 60));
       noteUpsert({ slug, title: title || slug, content, type, tags, category });
-      exportNoteFile({ slug, title: title || slug, content, type, tags, category });
       gitCommit(existingSlug ? `update(note): ${slug}` : `add(note): ${slug}`);
       respond({ command: "saved" });
       vscode.window.setStatusBarMessage("$(check) Note saved", 3000);
@@ -408,7 +345,6 @@ async function handleMessage(
     case "saveSkill": {
       const { name, content, category, description, tags } = msg;
       skillUpsert({ name, content, category, description, tags });
-      exportSkillFile({ name, content, category, description, tags });
       gitCommit(`save(skill): ${name}`);
       respond({ command: "saved" });
       vscode.window.setStatusBarMessage("$(check) Skill saved", 3000);
@@ -525,7 +461,7 @@ async function handleMessage(
 
     case "deleteNote": {
       const { slug } = msg;
-      if (noteDelete(slug)) { deleteNoteFile(slug); gitCommit(`delete(note): ${slug}`); }
+      if (noteDelete(slug)) { gitCommit(`delete(note): ${slug}`); }
       vscode.window.setStatusBarMessage("$(trash) Note deleted", 3000);
       respond({ command: "saved" });
       respond({ command: "detail", data: null });
@@ -534,7 +470,7 @@ async function handleMessage(
 
     case "deleteSkill": {
       const { name } = msg;
-      if (skillDelete(name)) { deleteSkillFile(name); gitCommit(`delete(skill): ${name}`); }
+      if (skillDelete(name)) { gitCommit(`delete(skill): ${name}`); }
       vscode.window.setStatusBarMessage("$(trash) Skill deleted", 3000);
       respond({ command: "saved" });
       respond({ command: "detail", data: null });
@@ -548,7 +484,6 @@ async function handleMessage(
         const newContent = row.content + `\n\n---\n✓ Done (${new Date().toISOString().slice(0, 10)})`;
         const tags = JSON.parse(row.tags ?? "[]");
         noteUpsert({ slug: row.slug, title: row.title, content: newContent, type: "done", tags, category: row.category });
-        exportNoteFile({ slug: row.slug, title: row.title, content: newContent, type: "done", tags, category: row.category });
         gitCommit(`done(note): ${slug}`);
         vscode.window.setStatusBarMessage("$(check) Marked as done", 3000);
       }
@@ -1459,7 +1394,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     configuredPath = chosen ?? "";
   }
 
-  dbSetStorePath(configuredPath);
+  fsSetStorePath(configuredPath);
   storageSetStorePath(configuredPath);
 
   // Register sidebar tree view + commands FIRST so they're always available
@@ -1498,7 +1433,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const name = await vscode.window.showInputBox({ prompt: "New skill name", placeHolder: "e.g. my-new-skill" });
       if (!name?.trim()) return;
       skillUpsert({ name: name.trim(), content: "", category: cat || undefined });
-      exportSkillFile({ name: name.trim(), content: "", category: cat });
       gitCommit(`add(skill): ${name.trim()}`);
       treeProvider.refresh();
       openInPanel(context, "skill", name.trim());
@@ -1509,12 +1443,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const cat = (item?.nodeData?.path ?? []).join("/");
       const title = await vscode.window.showInputBox({ prompt: "New note title", placeHolder: "e.g. Investigation findings" });
       if (!title?.trim()) return;
-      const slug = uniqueSlug(title.trim());
-      noteUpsert({ slug, title: title.trim(), content: "", type: "general", tags: [], category: cat } as any);
-      exportNoteFile({ slug, title: title.trim(), content: "", type: "general", tags: [], category: cat } as any);
-      gitCommit(`add(note): ${slug}`);
+      const key = (cat ? cat + "/" : "") + title.trim();
+      noteUpsert({ slug: key, title: title.trim(), content: "", type: "general", tags: [], category: cat } as any);
+      gitCommit(`add(note): ${title.trim()}`);
       treeProvider.refresh();
-      openInPanel(context, "note", slug);
+      openInPanel(context, "note", key);
     }),
 
     vscode.commands.registerCommand("personalKnowledge.addScriptHere", async (item?: PkTreeItem) => {
@@ -1655,13 +1588,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     })
   );
 
-  // Only initialize DB if setup was completed (path is known)
+  // Initialize the file store (runs the one-time DB→files migration) if configured
   if (configuredPath) {
     try {
-      await initDb(context.extensionPath);
-      log.info(`database ready at ${getStorePath()}`);
+      await initStore(context, configuredPath);
+      log.info(`file store ready at ${getStorePath()}`);
       ensureGitRepo();
-      mirrorAllToFiles(); // keep the markdown mirror in sync with the DB
+      startFileWatcher(context);
       treeProvider.refresh();
       panel?.webview.postMessage({ command: "saved" }); // re-fetch if panel already open
       if (!setupComplete) {
@@ -1675,8 +1608,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         } catch (e: any) { log.warn(`MCP generation failed: ${e?.message}`); }
       }
     } catch (e: any) {
-      log.error(`database init failed: ${e?.stack ?? e?.message}`);
-      vscode.window.showErrorMessage(`Personal Knowledge: failed to open database — ${e.message}`);
+      log.error(`store init failed: ${e?.stack ?? e?.message}`);
+      vscode.window.showErrorMessage(`Personal Knowledge: failed to initialize store — ${e.message}`);
     }
   }
 
@@ -1684,4 +1617,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   log.info("activation complete");
 }
 
-export function deactivate(): void { log.info("deactivated"); }
+// ── File watcher: auto-refresh when notes/skills change on disk ─────────────
+let _watcher: vscode.FileSystemWatcher | undefined;
+function startFileWatcher(context: vscode.ExtensionContext): void {
+  _watcher?.dispose();
+  const pattern = new vscode.RelativePattern(getStorePath(), "{notes,skills}/**/*.md");
+  _watcher = vscode.workspace.createFileSystemWatcher(pattern);
+  const onChange = () => {
+    _treeProvider?.refresh();
+    panel?.webview.postMessage({ command: "reloaded" }); // re-fetch current tab
+  };
+  _watcher.onDidCreate(onChange);
+  _watcher.onDidChange(onChange);
+  _watcher.onDidDelete(onChange);
+  context.subscriptions.push(_watcher);
+}
+
+export function deactivate(): void { _watcher?.dispose(); log.info("deactivated"); }
