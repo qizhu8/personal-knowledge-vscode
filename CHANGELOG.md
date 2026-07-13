@@ -3,6 +3,10 @@
 All notable changes to the **Personal Knowledge** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] — 2026-07-13
+
+- **Export a note to HTML**: from the note view, **🌐 Browser** opens a standalone preview in your default browser and **⬇ HTML** saves a self-contained `.html` file. Images are inlined as data URIs and code keeps its syntax highlighting, so the single file is easy to share or present to someone who doesn't have the extension. (On a headless Remote-SSH host with no browser, the preview path is surfaced so you can grab the file.)
+
 ## [1.2.0] — 2026-07-13
 
 **Files are now the source of truth.** Skills and notes live as plain Markdown files under `skills/` and `notes/` — no database. This makes your knowledge base a portable, git-friendly, Obsidian-style wiki that you (and the MCP server) can edit directly.
@@ -11,7 +15,6 @@ This project follows [Semantic Versioning](https://semver.org/).
 - **Hidden one-time migration**: if a legacy `knowledge.db` is found, its skills and notes are migrated into files automatically. The migration is non-destructive — any pre-existing `notes/` and `skills/` folders are backed up to `_pre-files-backup-<timestamp>/` first, and `knowledge.db` is kept as a backup.
 - **Paste images into notes**: paste an image directly into the note editor; it is saved under `notes/_assets/` (content-hash de-duplicated) and rendered inline in both the live preview and the note view.
 - **Cross-note links**: `[[Title]]` / `[[Title|alias]]` wiki links and relative `.md` links are clickable and open the target note.
-- **Export a note to HTML**: from the note view, **🌐 Browser** opens a standalone preview in your default browser and **⬇ HTML** saves a self-contained `.html` file (images inlined as data URIs, syntax highlighting included) — handy for sharing or presenting a note to someone without the extension.
 - **File-backed MCP server**: the generated `mcp-server/server.py` now reads and writes the same Markdown files (no SQLite). MCP writes appear instantly in the panel and land in git as readable diffs. Search still uses an in-memory FTS5 trigram index (CJK-friendly) built from the files.
 - `sql.js` is retained only for the one-time migration.
 
