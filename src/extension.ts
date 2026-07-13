@@ -5,9 +5,10 @@ import { syncServer } from "./sync-server";
 import {
   skillList, skillSearch, skillGet, skillUpsert, skillDelete,
   noteList, noteSearch, noteGet, noteUpsert, noteDelete, slugExists,
-  noteExport, noteImport,
-  setStorePath as dbSetStorePath, getStorePath, initDb, isDbReady, reloadDb,
-} from "./db";
+  noteExport, noteImport, saveNoteAsset,
+  setStorePath as fsSetStorePath, getStorePath,
+} from "./filestore";
+import { migrateDbToFiles } from "./migrate";
 import {
   promptList, promptGetFile, promptGetAllVersionsOfFile,
   packageList, packageGet, packageFileGet,
@@ -97,67 +98,7 @@ function gitCommit(msg: string): void {
   } catch { /* nothing to commit */ }
 }
 
-// ── Markdown mirror (git-trackable readable files) ─────────────────────────
-function safeFileName(s: string): string {
-  return s.replace(/[^a-zA-Z0-9._/-]/g, "_");
-}
-
-/** Write a note to notes/<category-path>/<slug>.md with YAML front-matter so git tracks readable history. */
-function exportNoteFile(row: { slug: string; title: string; content: string; type: string; tags: any; category?: string }): void {
-  try {
-    const catPath = (row.category ?? "").split("/").map(s => safeFileName(s.trim())).filter(Boolean);
-    const dir = path.join(getStorePath(), "notes", ...catPath);
-    fs.mkdirSync(dir, { recursive: true });
-    const tags = typeof row.tags === "string" ? row.tags : JSON.stringify(row.tags ?? []);
-    const fm = `---\ntitle: ${JSON.stringify(row.title)}\ntype: ${row.type}\ncategory: ${JSON.stringify(row.category ?? "")}\ntags: ${tags}\n---\n\n`;
-    fs.writeFileSync(path.join(dir, safeFileName(row.slug) + ".md"), fm + (row.content ?? ""));
-  } catch (e: any) { log.warn(`exportNoteFile failed: ${e?.message}`); }
-}
-
-function deleteNoteFile(slug: string): void {
-  // Remove any notes/**/<slug>.md (category path may vary)
-  try {
-    const base = path.join(getStorePath(), "notes");
-    const walk = (dir: string) => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, e.name);
-        if (e.isDirectory()) walk(full);
-        else if (e.name === safeFileName(slug) + ".md") fs.rmSync(full, { force: true });
-      }
-    };
-    if (fs.existsSync(base)) walk(base);
-  } catch { /* ignore */ }
-}
-
-/** Write a skill to skills/<name>.md (name may contain / for hierarchy). */
-function exportSkillFile(row: { name: string; content: string; description?: string; category?: string; tags?: any }): void {
-  try {
-    const rel = safeFileName(row.name) + ".md";
-    const full = path.join(getStorePath(), "skills", rel);
-    fs.mkdirSync(path.dirname(full), { recursive: true });
-    const tags = typeof row.tags === "string" ? row.tags : JSON.stringify(row.tags ?? []);
-    const fm = `---\nname: ${JSON.stringify(row.name)}\ndescription: ${JSON.stringify(row.description ?? "")}\ncategory: ${JSON.stringify(row.category ?? "")}\ntags: ${tags}\n---\n\n`;
-    fs.writeFileSync(full, fm + (row.content ?? ""));
-  } catch (e: any) { log.warn(`exportSkillFile failed: ${e?.message}`); }
-}
-
-function deleteSkillFile(name: string): void {
-  try { fs.rmSync(path.join(getStorePath(), "skills", safeFileName(name) + ".md"), { force: true }); } catch { /* ignore */ }
-}
-
-/** Mirror all notes and skills from the DB to markdown files, then commit if changed. */
-function mirrorAllToFiles(): void {
-  try {
-    for (const n of noteExport() as any[]) {
-      exportNoteFile({ slug: n.slug, title: n.title, content: n.content, type: n.type, tags: n.tags, category: n.category });
-    }
-    for (const s of skillList() as any[]) {
-      const full = skillGet(s.name);
-      exportSkillFile({ name: s.name, content: full?.content ?? "", description: s.description, category: s.category, tags: s.tags });
-    }
-    gitCommit("sync: mirror DB to markdown files");
-  } catch (e: any) { log.warn(`mirrorAllToFiles failed: ${e?.message}`); }
-}
+// (Notes & skills are persisted directly as files by filestore.ts — no separate mirror needed.)
 
 // ── Slug from title ────────────────────────────────────────────────────────
 function toSlug(title: string): string {
@@ -174,6 +115,7 @@ function uniqueSlug(title: string): string {
 let panel: vscode.WebviewPanel | undefined;
 let _treeProvider: PkTreeProvider | undefined;
 let _panelReady = false;                       // webview has signalled it's ready
+let _storeReady = false;                       // file store configured & migrated
 let _pendingOpen: { type: string; key: string; edit?: boolean } | undefined; // item to open once ready
 
 /** Open an item in the panel; queues it if the webview isn't ready yet. */
@@ -187,23 +129,34 @@ function openInPanel(context: vscode.ExtensionContext, type: string, key: string
   }
 }
 
-/** Returns true if DB is ready; otherwise runs the setup wizard and initializes. */
+/** Set store paths, run the one-time DB→files migration, mark ready, refresh. */
+async function initStore(context: vscode.ExtensionContext, storePath: string): Promise<void> {
+  fsSetStorePath(storePath);
+  storageSetStorePath(storePath);
+  // Hidden, idempotent migration from the legacy SQLite DB to files-as-truth
+  if (!context.globalState.get<boolean>("migratedToFiles", false)) {
+    try {
+      const r = await migrateDbToFiles(context.extensionPath);
+      if (r.migrated) log.info(`migrated ${r.skills} skills, ${r.notes} notes from DB to files`);
+      await context.globalState.update("migratedToFiles", true);
+    } catch (e: any) { log.warn(`migration skipped: ${e?.message}`); }
+  }
+  _storeReady = true;
+  _treeProvider?.refresh();
+}
+
+/** Returns true if the file store is ready; otherwise runs the setup wizard. */
 async function ensureSetup(context: vscode.ExtensionContext): Promise<boolean> {
-  if (isDbReady()) return true;
+  if (_storeReady) return true;
 
   const cfg = vscode.workspace.getConfiguration("personalKnowledge");
   const configuredPath = cfg.get<string>("storePath")?.trim() ?? "";
   const setupComplete  = context.globalState.get<boolean>("setupComplete", false);
 
-  // Already configured but DB still initializing — just wait for it
+  // Already configured — just activate the store
   if (setupComplete && configuredPath) {
-    try {
-      await initDb(context.extensionPath);
-      return isDbReady();
-    } catch (e: any) {
-      vscode.window.showErrorMessage(`Personal Knowledge: database error — ${e.message}`);
-      return false;
-    }
+    await initStore(context, configuredPath);
+    return _storeReady;
   }
 
   // Not configured yet — show the wizard
@@ -215,18 +168,9 @@ async function ensureSetup(context: vscode.ExtensionContext): Promise<boolean> {
     ).then(v => { if (v) ensureSetup(context); });
     return false;
   }
-
-  dbSetStorePath(chosen);
-  storageSetStorePath(chosen);
-  try {
-    await initDb(context.extensionPath);
-    _treeProvider?.refresh();
-    try { generateMcpServer(context); } catch { /* non-critical */ }
-  } catch (e: any) {
-    vscode.window.showErrorMessage(`Personal Knowledge: failed to open database — ${e.message}`);
-    return false;
-  }
-  return true;
+  await initStore(context, chosen);
+  try { generateMcpServer(context); } catch { /* non-critical */ }
+  return _storeReady;
 }
 
 function makeWebviewOptions(context: vscode.ExtensionContext): vscode.WebviewOptions & vscode.WebviewPanelOptions {
@@ -237,6 +181,7 @@ function makeWebviewOptions(context: vscode.ExtensionContext): vscode.WebviewOpt
       vscode.Uri.file(path.join(context.extensionPath, "dist", "webview")),
       vscode.Uri.file(path.join(context.extensionPath, "src",  "webview")),        // dev fallback
       vscode.Uri.file(path.join(context.extensionPath, "node_modules", "marked")), // dev marked
+      vscode.Uri.file(getStorePath()),                                             // note/skill _assets
     ],
   };
 }
@@ -263,6 +208,11 @@ function getWebviewHtml(webview: vscode.Webview, context: vscode.ExtensionContex
 
   // Inject the webview CSP source — required for VS Code to allow scripts to run
   html = html.replace(/%%CSP_SOURCE%%/g, webview.cspSource);
+
+  // Base URI for note image assets (notes/_assets/...). The webview rewrites
+  // `_assets/` markdown image refs to `${NOTES_BASE}/_assets/...` at render time.
+  const notesBase = webview.asWebviewUri(vscode.Uri.file(path.join(getStorePath(), "notes")));
+  html = html.replace(/%%NOTES_BASE%%/g, notesBase.toString());
   return html;
 }
 
@@ -331,17 +281,11 @@ async function handleMessage(
     }
 
     case "reload": {
-      // Re-read the DB from disk to pick up external changes (e.g. MCP writes),
-      // then tell the webview to re-fetch the current tab.
-      try {
-        reloadDb();
-        _treeProvider?.refresh();
-        log.action("reload");
-        respond({ command: "reloaded" });
-      } catch (e: any) {
-        log.error(`reload failed: ${e?.message}`);
-        respond({ command: "reloaded" });
-      }
+      // Files are the source of truth and always read fresh, so this just
+      // re-renders the tree + current tab (external edits are already on disk).
+      _treeProvider?.refresh();
+      log.action("reload");
+      respond({ command: "reloaded" });
       break;
     }
 
@@ -398,17 +342,51 @@ async function handleMessage(
       const { title, content, type, tags, category, slug: existingSlug } = msg;
       const slug = existingSlug ?? uniqueSlug(title || content.slice(0, 60));
       noteUpsert({ slug, title: title || slug, content, type, tags, category });
-      exportNoteFile({ slug, title: title || slug, content, type, tags, category });
       gitCommit(existingSlug ? `update(note): ${slug}` : `add(note): ${slug}`);
       respond({ command: "saved" });
       vscode.window.setStatusBarMessage("$(check) Note saved", 3000);
       break;
     }
 
+    case "saveAsset": {
+      // Pasted image from the note editor: persist to notes/_assets/<hash>.<ext>
+      const { data, ext, reqId } = msg;
+      try {
+        const rel = saveNoteAsset(String(data || ""), String(ext || "png"));
+        respond({ command: "assetSaved", reqId, markdown: `![](${rel})` });
+      } catch (e) {
+        log.error(`saveAsset failed: ${String(e)}`);
+        respond({ command: "assetSaved", reqId, error: String(e) });
+      }
+      break;
+    }
+
+    case "resolveNoteLink": {
+      // Cross-note link: target is a note title, slug, or relative path (no ext)
+      const target = String(msg.target || "").trim();
+      let r = target ? noteGet(target) : null;
+      if (!r && target) {
+        const needle = target.toLowerCase();
+        const hit = (noteList(undefined, 10000) as any[]).find(
+          n => (n.title || "").toLowerCase() === needle ||
+               (n.slug || "").toLowerCase() === needle ||
+               (n.slug || "").toLowerCase().endsWith("/" + needle),
+        );
+        if (hit) r = noteGet(hit.slug);
+      }
+      if (r) respond({ command: "detail", data: { ...r, note_type: r.type, type: "note" } });
+      else respond({ command: "noteLinkMissing", target });
+      break;
+    }
+
+    case "toast": {
+      vscode.window.setStatusBarMessage(`$(info) ${String(msg.text || "")}`, 4000);
+      break;
+    }
+
     case "saveSkill": {
       const { name, content, category, description, tags } = msg;
       skillUpsert({ name, content, category, description, tags });
-      exportSkillFile({ name, content, category, description, tags });
       gitCommit(`save(skill): ${name}`);
       respond({ command: "saved" });
       vscode.window.setStatusBarMessage("$(check) Skill saved", 3000);
@@ -525,7 +503,7 @@ async function handleMessage(
 
     case "deleteNote": {
       const { slug } = msg;
-      if (noteDelete(slug)) { deleteNoteFile(slug); gitCommit(`delete(note): ${slug}`); }
+      if (noteDelete(slug)) { gitCommit(`delete(note): ${slug}`); }
       vscode.window.setStatusBarMessage("$(trash) Note deleted", 3000);
       respond({ command: "saved" });
       respond({ command: "detail", data: null });
@@ -534,7 +512,7 @@ async function handleMessage(
 
     case "deleteSkill": {
       const { name } = msg;
-      if (skillDelete(name)) { deleteSkillFile(name); gitCommit(`delete(skill): ${name}`); }
+      if (skillDelete(name)) { gitCommit(`delete(skill): ${name}`); }
       vscode.window.setStatusBarMessage("$(trash) Skill deleted", 3000);
       respond({ command: "saved" });
       respond({ command: "detail", data: null });
@@ -548,7 +526,6 @@ async function handleMessage(
         const newContent = row.content + `\n\n---\n✓ Done (${new Date().toISOString().slice(0, 10)})`;
         const tags = JSON.parse(row.tags ?? "[]");
         noteUpsert({ slug: row.slug, title: row.title, content: newContent, type: "done", tags, category: row.category });
-        exportNoteFile({ slug: row.slug, title: row.title, content: newContent, type: "done", tags, category: row.category });
         gitCommit(`done(note): ${slug}`);
         vscode.window.setStatusBarMessage("$(check) Marked as done", 3000);
       }
@@ -671,7 +648,7 @@ function generateMcpServer(context: vscode.ExtensionContext): { serverPath: stri
   const mcpDir    = path.join(storePath, "mcp-server");
   const serverPy  = path.join(mcpDir, "server.py");
   const reqTxt    = path.join(mcpDir, "requirements.txt");
-  const dbPath    = path.join(storePath, "knowledge.db").replace(/\\/g, "/");
+  const storeFwd  = storePath.replace(/\\/g, "/");
 
   fs.mkdirSync(mcpDir, { recursive: true });
 
@@ -680,18 +657,21 @@ function generateMcpServer(context: vscode.ExtensionContext): { serverPath: stri
 ${displayName} MCP Server — auto-generated by Personal Knowledge extension.
 Exposes your skills and notes to AI assistants via the Model Context Protocol.
 
+Skills and notes are stored as plain markdown files under skills/ and notes/ —
+the files are the single source of truth (there is no database). Writes made by
+this server appear immediately in the VS Code panel via its file watcher, and
+show up in git history as readable .md diffs.
+
 Read tools:  list_skills, search_skills, get_skill, list_notes, search_notes, get_note
 Write tools: add_note, update_note, delete_note, add_skill, update_skill, delete_skill
 
-Search uses an in-memory FTS5 'trigram' index (CJK-friendly, ranked) rebuilt at
-startup. The shared knowledge.db is kept FTS-free so the VS Code extension
-(sql.js) and this server (Python) can both read AND write it without a module
-conflict. Writes here also update the markdown mirror so git history stays readable.
+Search builds an in-memory FTS5 'trigram' index (CJK-friendly, ranked) at call
+time, falling back to substring matching when FTS5 is unavailable.
 
 Install:  pip install fastmcp
 Run:      python server.py
 """
-import sqlite3, json, re, datetime
+import json, re, sqlite3, datetime
 from pathlib import Path
 from typing import Optional, List
 
@@ -700,159 +680,261 @@ try:
 except ImportError:
     raise SystemExit("fastmcp not found. Run: pip install fastmcp")
 
-DB_PATH = Path("${dbPath}")
-STORE   = DB_PATH.parent
+STORE  = Path(r"${storeFwd}")
+NOTES  = STORE / "notes"
+SKILLS = STORE / "skills"
 mcp = FastMCP("${displayName}")
-
-_HAS_FTS5 = False
-
-
-def _db():
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 def _now() -> str:
     return datetime.datetime.utcnow().isoformat()
 
 
-def _slugify(title: str) -> str:
-    s = re.sub(r"[^a-z0-9\\s-]", "", (title or "").lower()).strip()
-    s = re.sub(r"\\s+", "-", s)[:40]
-    return s or ("note-" + str(int(datetime.datetime.utcnow().timestamp())))
+# ── Frontmatter (matches the extension's minimal YAML subset) ────────────────
+def _parse(text):
+    m = re.match(r"^---\\r?\\n(.*?)\\r?\\n---\\r?\\n?", text, re.S)
+    if not m:
+        return {}, text
+    fm = {}
+    for line in m.group(1).splitlines():
+        i = line.find(":")
+        if i < 0:
+            continue
+        k = line[:i].strip()
+        raw = line[i + 1:].strip()
+        if not k:
+            continue
+        try:
+            fm[k] = json.loads(raw)
+        except Exception:
+            fm[k] = raw.strip("\\"'")
+    return fm, text[m.end():]
 
 
-def _build_index(c: sqlite3.Connection) -> None:
-    """Build an in-memory FTS5 trigram index over skills+notes for ranked CJK search."""
-    global _HAS_FTS5
+def _serialize(fm, body):
+    lines = ["---"]
+    for k, v in fm.items():
+        if v is None:
+            continue
+        if isinstance(v, (list, str)):
+            lines.append(f"{k}: {json.dumps(v, ensure_ascii=False)}")
+        else:
+            lines.append(f"{k}: {v}")
+    lines += ["---", ""]
+    return "\\n".join(lines) + (body or "")
+
+
+# ── Paths / identity (identity = relative path w/o .md; category = folders) ──
+def _safe_name(s):
+    s = re.sub(r'[/\\\\:*?"<>|]', "", s or "")
+    s = "".join(ch for ch in s if ord(ch) >= 32).strip()
+    return s or "untitled"
+
+
+def _safe_cat(cat):
+    if not cat or not cat.strip():
+        return ""
+    return "/".join(_safe_name(p.strip()) for p in cat.split("/") if p.strip())
+
+
+def _cat_of(key):
+    return key.rsplit("/", 1)[0] if "/" in key else ""
+
+
+def _name_of(key):
+    return key.rsplit("/", 1)[-1]
+
+
+def _walk(root):
+    out = []
+    if not root.exists():
+        return out
+    for p in root.rglob("*.md"):
+        rel = p.relative_to(root)
+        if any(part.startswith(".") or part == "_assets" for part in rel.parts):
+            continue
+        out.append((p, rel.as_posix()[:-3]))
+    return out
+
+
+def _mtime(p):
+    return datetime.datetime.utcfromtimestamp(p.stat().st_mtime).isoformat()
+
+
+# ── Notes ────────────────────────────────────────────────────────────────────
+def _note(p, key):
+    fm, body = _parse(p.read_text(encoding="utf-8"))
+    return {"slug": key, "title": fm.get("title") or _name_of(key),
+            "type": fm.get("type") or "general", "tags": fm.get("tags") or [],
+            "category": _cat_of(key), "content": body, "updated_at": _mtime(p)}
+
+
+def _all_notes():
+    return [_note(p, k) for p, k in _walk(NOTES)]
+
+
+def _note_get(slug):
+    p = NOTES / (slug + ".md")
+    return _note(p, slug) if p.exists() else None
+
+
+def _note_write(slug, title, content, type_, tags, category, created=None):
+    cat = _safe_cat(category or "")
+    fname = _safe_name(title or _name_of(slug)) + ".md"
+    rel = (cat + "/" + fname) if cat else fname
+    full = NOTES / rel
+    old = NOTES / (slug + ".md")
+    if old.exists() and rel[:-3] != slug:
+        try: old.unlink()
+        except Exception: pass
+    full.parent.mkdir(parents=True, exist_ok=True)
+    fm = {"title": title, "type": type_ or "general", "tags": tags or [],
+          "created": created or _now()}
+    full.write_text(_serialize(fm, content or ""), encoding="utf-8")
+    return rel[:-3]
+
+
+# ── Skills ───────────────────────────────────────────────────────────────────
+def _skill(p, key):
+    fm, body = _parse(p.read_text(encoding="utf-8"))
+    return {"name": fm.get("name") or _name_of(key), "description": fm.get("description") or "",
+            "category": _cat_of(key), "tags": fm.get("tags") or [],
+            "source_project": fm.get("source_project"), "content": body, "updated_at": _mtime(p)}
+
+
+def _all_skills():
+    return [_skill(p, k) for p, k in _walk(SKILLS)]
+
+
+def _find_skill(name):
+    for p, k in _walk(SKILLS):
+        fm, _ = _parse(p.read_text(encoding="utf-8"))
+        if (fm.get("name") or _name_of(k)) == name:
+            return p, k
+    return None, None
+
+
+def _skill_get(name):
+    p, k = _find_skill(name)
+    return _skill(p, k) if p else None
+
+
+def _skill_write(name, content, description, category, tags, source_project=None, created=None):
+    cat = _safe_cat(category or "")
+    fname = _safe_name(name) + ".md"
+    rel = (cat + "/" + fname) if cat else fname
+    full = SKILLS / rel
+    oldp, _ = _find_skill(name)
+    if oldp is not None and str(oldp) != str(full):
+        try: oldp.unlink()
+        except Exception: pass
+    full.parent.mkdir(parents=True, exist_ok=True)
+    fm = {"name": name, "description": description or "", "tags": tags or [],
+          "source_project": source_project, "created": created or _now()}
+    full.write_text(_serialize(fm, content or ""), encoding="utf-8")
+    return name
+
+
+# ── In-memory FTS5 index (built from files at call time) ─────────────────────
+def _index(skills, notes):
     try:
-        c.execute("CREATE VIRTUAL TABLE temp.skills_fts USING fts5(name, content, description, tokenize='trigram')")
-        c.execute("CREATE VIRTUAL TABLE temp.notes_fts  USING fts5(slug, title, content, tokenize='trigram')")
-        for r in c.execute("SELECT name, content, description FROM skills"):
-            c.execute("INSERT INTO temp.skills_fts(name,content,description) VALUES(?,?,?)",
-                      [r["name"], r["content"], r["description"] or ""])
-        for r in c.execute("SELECT slug, title, content FROM notes"):
-            c.execute("INSERT INTO temp.notes_fts(slug,title,content) VALUES(?,?,?)",
-                      [r["slug"], r["title"], r["content"]])
-        _HAS_FTS5 = True
+        c = sqlite3.connect(":memory:")
+        c.execute("CREATE VIRTUAL TABLE s USING fts5(name, content, description, tokenize='trigram')")
+        c.execute("CREATE VIRTUAL TABLE n USING fts5(slug, title, content, tokenize='trigram')")
+        for r in skills:
+            c.execute("INSERT INTO s VALUES(?,?,?)", [r["name"], r["content"], r["description"]])
+        for r in notes:
+            c.execute("INSERT INTO n VALUES(?,?,?)", [r["slug"], r["title"], r["content"]])
+        return c
     except sqlite3.OperationalError:
-        _HAS_FTS5 = False  # FTS5 unavailable — search_* will fall back to LIKE
-
-
-def _mirror_note(row) -> None:
-    try:
-        cat = (row["category"] or "") if "category" in row.keys() else ""
-        segs = [re.sub(r"[^A-Za-z0-9._-]", "_", s.strip()) for s in cat.split("/") if s.strip()]
-        d = STORE.joinpath("notes", *segs); d.mkdir(parents=True, exist_ok=True)
-        tags = row["tags"] if isinstance(row["tags"], str) else json.dumps(row["tags"] or [])
-        fm = "---\\ntitle: " + json.dumps(row["title"]) + "\\ntype: " + (row["type"] or "general") + "\\ncategory: " + json.dumps(cat) + "\\ntags: " + tags + "\\n---\\n\\n"
-        safe = re.sub(r"[^A-Za-z0-9._/-]", "_", row["slug"])
-        (d / (safe + ".md")).write_text(fm + (row["content"] or ""), encoding="utf-8")
-    except Exception:
-        pass
-
-
-def _mirror_skill(name, content, description, category, tags) -> None:
-    try:
-        safe = re.sub(r"[^A-Za-z0-9._/-]", "_", name)
-        full = STORE / "skills" / (safe + ".md")
-        full.parent.mkdir(parents=True, exist_ok=True)
-        tj = tags if isinstance(tags, str) else json.dumps(tags or [])
-        fm = "---\\nname: " + json.dumps(name) + "\\ndescription: " + json.dumps(description or "") + "\\ncategory: " + json.dumps(category or "") + "\\ntags: " + tj + "\\n---\\n\\n"
-        full.write_text(fm + (content or ""), encoding="utf-8")
-    except Exception:
-        pass
+        return None
 
 
 # ── Read tools ──────────────────────────────────────────────────────────────
 @mcp.tool()
 def list_skills(category: Optional[str] = None) -> str:
-    """List personal skills, optionally filtered by category."""
-    with _db() as c:
-        rows = (c.execute("SELECT name,description,category,tags FROM skills WHERE category=? ORDER BY name", [category])
-                if category else
-                c.execute("SELECT name,description,category,tags FROM skills ORDER BY category,name")).fetchall()
+    """List personal skills, optionally filtered by category (a slash-separated folder path)."""
+    rows = _all_skills()
+    if category:
+        rows = [r for r in rows if r["category"] == category]
+    rows.sort(key=lambda r: (r["category"], r["name"]))
     return json.dumps([{"name": r["name"], "description": r["description"],
-                        "category": r["category"], "tags": json.loads(r["tags"] or "[]")} for r in rows])
+                        "category": r["category"], "tags": r["tags"]} for r in rows])
 
 
 @mcp.tool()
 def search_skills(query: str) -> str:
     """Ranked full-text search across skill names, content, and descriptions (CJK-friendly)."""
-    with _db() as c:
-        _build_index(c)
-        rows = []
-        if _HAS_FTS5:
-            try:
-                names = [x["name"] for x in c.execute(
-                    "SELECT name FROM temp.skills_fts WHERE skills_fts MATCH ? ORDER BY rank LIMIT 20", [query])]
-                for n in names:
-                    r = c.execute("SELECT name,description,category FROM skills WHERE name=?", [n]).fetchone()
-                    if r: rows.append(r)
-            except sqlite3.OperationalError:
-                rows = []
-        if not rows:
-            like = "%" + query + "%"
-            rows = c.execute("SELECT name,description,category FROM skills WHERE name LIKE ? OR content LIKE ? OR description LIKE ? LIMIT 20",
-                             [like, like, like]).fetchall()
-    return json.dumps([{"name": r["name"], "description": r["description"], "category": r["category"]} for r in rows])
+    skills = _all_skills()
+    hits = []
+    idx = _index(skills, [])
+    if idx is not None:
+        try:
+            names = [x[0] for x in idx.execute(
+                "SELECT name FROM s WHERE s MATCH ? ORDER BY rank LIMIT 20", [query])]
+            by = {}
+            for s in skills:
+                by.setdefault(s["name"], s)
+            hits = [by[n] for n in names if n in by]
+        except sqlite3.OperationalError:
+            hits = []
+    if not hits:
+        q = query.lower()
+        hits = [s for s in skills if q in s["name"].lower()
+                or q in (s["content"] or "").lower() or q in (s["description"] or "").lower()][:20]
+    return json.dumps([{"name": s["name"], "description": s["description"], "category": s["category"]} for s in hits])
 
 
 @mcp.tool()
 def get_skill(name: str) -> str:
     """Get the full markdown content of a skill by exact name."""
-    with _db() as c:
-        row = c.execute("SELECT * FROM skills WHERE name=?", [name]).fetchone()
-    if not row:
+    r = _skill_get(name)
+    if not r:
         return f"Skill '{name}' not found. Use list_skills or search_skills to find it."
-    return json.dumps({"name": row["name"], "content": row["content"],
-                       "description": row["description"], "category": row["category"],
-                       "tags": json.loads(row["tags"] or "[]"), "updated_at": row["updated_at"]})
+    return json.dumps({"name": r["name"], "content": r["content"], "description": r["description"],
+                       "category": r["category"], "tags": r["tags"], "updated_at": r["updated_at"]})
 
 
 @mcp.tool()
 def list_notes(type: Optional[str] = None) -> str:
     """List notes. type can be: general, todo, done, observation, data-path."""
-    with _db() as c:
-        rows = (c.execute("SELECT slug,title,type,updated_at FROM notes WHERE type=? ORDER BY updated_at DESC LIMIT 50", [type])
-                if type and type != "all" else
-                c.execute("SELECT slug,title,type,updated_at FROM notes ORDER BY updated_at DESC LIMIT 50")).fetchall()
-    return json.dumps([{"slug": r["slug"], "title": r["title"], "type": r["type"], "updated_at": r["updated_at"]} for r in rows])
+    rows = _all_notes()
+    if type and type != "all":
+        rows = [r for r in rows if r["type"] == type]
+    rows.sort(key=lambda r: r["updated_at"], reverse=True)
+    return json.dumps([{"slug": r["slug"], "title": r["title"], "type": r["type"],
+                        "category": r["category"], "updated_at": r["updated_at"]} for r in rows[:50]])
 
 
 @mcp.tool()
 def search_notes(query: str) -> str:
     """Ranked full-text search across note titles and content (CJK-friendly)."""
-    with _db() as c:
-        _build_index(c)
-        rows = []
-        if _HAS_FTS5:
-            try:
-                slugs = [x["slug"] for x in c.execute(
-                    "SELECT slug FROM temp.notes_fts WHERE notes_fts MATCH ? ORDER BY rank LIMIT 20", [query])]
-                for s in slugs:
-                    r = c.execute("SELECT slug,title,type FROM notes WHERE slug=?", [s]).fetchone()
-                    if r: rows.append(r)
-            except sqlite3.OperationalError:
-                rows = []
-        if not rows:
-            like = "%" + query + "%"
-            rows = c.execute("SELECT slug,title,type FROM notes WHERE title LIKE ? OR content LIKE ? LIMIT 20",
-                             [like, like]).fetchall()
-    return json.dumps([{"slug": r["slug"], "title": r["title"], "type": r["type"]} for r in rows])
+    notes = _all_notes()
+    hits = []
+    idx = _index([], notes)
+    if idx is not None:
+        try:
+            slugs = [x[0] for x in idx.execute(
+                "SELECT slug FROM n WHERE n MATCH ? ORDER BY rank LIMIT 20", [query])]
+            by = {r["slug"]: r for r in notes}
+            hits = [by[s] for s in slugs if s in by]
+        except sqlite3.OperationalError:
+            hits = []
+    if not hits:
+        q = query.lower()
+        hits = [r for r in notes if q in r["title"].lower() or q in (r["content"] or "").lower()][:20]
+    return json.dumps([{"slug": r["slug"], "title": r["title"], "type": r["type"]} for r in hits])
 
 
 @mcp.tool()
 def get_note(slug: str) -> str:
-    """Get the full content of a note by slug."""
-    with _db() as c:
-        row = c.execute("SELECT * FROM notes WHERE slug=?", [slug]).fetchone()
-    if not row:
+    """Get the full content of a note by slug (its relative path without .md)."""
+    r = _note_get(slug)
+    if not r:
         return f"Note '{slug}' not found. Use list_notes or search_notes to find it."
-    return json.dumps({"slug": row["slug"], "title": row["title"], "content": row["content"],
-                       "type": row["type"], "tags": json.loads(row["tags"] or "[]"),
-                       "updated_at": row["updated_at"]})
+    return json.dumps({"slug": r["slug"], "title": r["title"], "content": r["content"],
+                       "type": r["type"], "tags": r["tags"], "category": r["category"],
+                       "updated_at": r["updated_at"]})
 
 
 # ── Write tools ─────────────────────────────────────────────────────────────
@@ -860,71 +942,52 @@ def get_note(slug: str) -> str:
 def add_note(title: str, content: str, type: str = "general", tags: Optional[List[str]] = None,
              category: Optional[str] = None, slug: Optional[str] = None) -> str:
     """Create a new note. 'category' is a slash-separated path (e.g. Project/AutoLabeling/C2 Guideline)
-    used to organize the note in the sidebar tree. 'type' is one of general/todo/done/observation/data-path."""
-    slug = slug or _slugify(title or content[:60])
-    ts = _now(); tj = json.dumps(tags or [])
-    with _db() as c:
-        exists = c.execute("SELECT 1 FROM notes WHERE slug=?", [slug]).fetchone()
-        if exists:
-            return json.dumps({"error": f"Note '{slug}' already exists. Use update_note instead."})
-        c.execute("INSERT INTO notes(slug,title,content,type,category,tags,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
-                  [slug, title or slug, content, type, category, tj, ts, ts])
-        c.commit()
-        row = c.execute("SELECT * FROM notes WHERE slug=?", [slug]).fetchone()
-        _mirror_note(row)
-    return json.dumps({"ok": True, "slug": slug})
+    used to organize the note in the sidebar tree. 'type' is one of general/todo/done/observation/data-path.
+    The note's identity ('slug') is its relative path without .md and is returned on success."""
+    cat = _safe_cat(category or "")
+    key = (cat + "/" + title) if cat else title
+    if _note_get(key):
+        return json.dumps({"error": f"Note '{key}' already exists. Use update_note instead."})
+    new_slug = _note_write(key, title or key, content, type, tags or [], cat)
+    return json.dumps({"ok": True, "slug": new_slug})
 
 
 @mcp.tool()
 def update_note(slug: str, title: Optional[str] = None, content: Optional[str] = None,
                 type: Optional[str] = None, category: Optional[str] = None, tags: Optional[List[str]] = None) -> str:
     """Update fields of an existing note by slug. Only provided fields are changed.
-    'category' is a slash-separated path for sidebar organization."""
-    with _db() as c:
-        row = c.execute("SELECT * FROM notes WHERE slug=?", [slug]).fetchone()
-        if not row:
-            return json.dumps({"error": f"Note '{slug}' not found."})
-        new_title = title if title is not None else row["title"]
-        new_content = content if content is not None else row["content"]
-        new_type = type if type is not None else row["type"]
-        new_cat = category if category is not None else (row["category"] if "category" in row.keys() else None)
-        new_tags = json.dumps(tags) if tags is not None else row["tags"]
-        c.execute("UPDATE notes SET title=?,content=?,type=?,category=?,tags=?,updated_at=? WHERE slug=?",
-                  [new_title, new_content, new_type, new_cat, new_tags, _now(), slug])
-        c.commit()
-        _mirror_note(c.execute("SELECT * FROM notes WHERE slug=?", [slug]).fetchone())
-    return json.dumps({"ok": True, "slug": slug})
+    Changing title/category moves the underlying file; the new slug is returned."""
+    row = _note_get(slug)
+    if not row:
+        return json.dumps({"error": f"Note '{slug}' not found."})
+    new_slug = _note_write(
+        slug,
+        title if title is not None else row["title"],
+        content if content is not None else row["content"],
+        type if type is not None else row["type"],
+        tags if tags is not None else row["tags"],
+        category if category is not None else row["category"],
+    )
+    return json.dumps({"ok": True, "slug": new_slug})
 
 
 @mcp.tool()
 def delete_note(slug: str) -> str:
-    """Delete a note by slug."""
-    with _db() as c:
-        c.execute("DELETE FROM notes WHERE slug=?", [slug]); c.commit()
-    try:
-        safe = re.sub(r"[^A-Za-z0-9._/-]", "_", slug)
-        (STORE / "notes" / (safe + ".md")).unlink(missing_ok=True)
-    except Exception:
-        pass
+    """Delete a note by slug (its relative path without .md)."""
+    p = NOTES / (slug + ".md")
+    try: p.unlink(missing_ok=True)
+    except Exception: pass
     return json.dumps({"ok": True, "slug": slug})
 
 
 @mcp.tool()
 def add_skill(name: str, content: str, description: str = "", category: str = "",
               tags: Optional[List[str]] = None, source_project: str = "") -> str:
-    """Create or overwrite a skill. 'name' may use '/' for hierarchy (e.g. General/DLIS/docker/my-skill)."""
-    ts = _now(); tj = json.dumps(tags or [])
-    with _db() as c:
-        existing = c.execute("SELECT created_at FROM skills WHERE name=?", [name]).fetchone()
-        created = existing["created_at"] if existing else ts
-        c.execute(
-            "INSERT INTO skills(name,content,description,category,tags,source_project,created_at,updated_at) "
-            "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET "
-            "content=excluded.content, description=excluded.description, category=excluded.category, "
-            "tags=excluded.tags, source_project=excluded.source_project, updated_at=excluded.updated_at",
-            [name, content, description, category, tj, source_project, created, ts])
-        c.commit()
-        _mirror_skill(name, content, description, category, tj)
+    """Create or overwrite a skill. 'category' is a slash-separated folder path
+    (e.g. General/DLIS/docker); 'name' is the skill's unique identifier."""
+    created = None
+    existing = _skill_get(name)
+    _skill_write(name, content, description, category, tags or [], source_project or None, created)
     return json.dumps({"ok": True, "name": name})
 
 
@@ -932,31 +995,27 @@ def add_skill(name: str, content: str, description: str = "", category: str = ""
 def update_skill(name: str, content: Optional[str] = None, description: Optional[str] = None,
                  category: Optional[str] = None, tags: Optional[List[str]] = None) -> str:
     """Update fields of an existing skill by name. Only provided fields are changed."""
-    with _db() as c:
-        row = c.execute("SELECT * FROM skills WHERE name=?", [name]).fetchone()
-        if not row:
-            return json.dumps({"error": f"Skill '{name}' not found. Use add_skill to create it."})
-        new_content = content if content is not None else row["content"]
-        new_desc = description if description is not None else row["description"]
-        new_cat = category if category is not None else row["category"]
-        new_tags = json.dumps(tags) if tags is not None else row["tags"]
-        c.execute("UPDATE skills SET content=?,description=?,category=?,tags=?,updated_at=? WHERE name=?",
-                  [new_content, new_desc, new_cat, new_tags, _now(), name])
-        c.commit()
-        _mirror_skill(name, new_content, new_desc, new_cat, new_tags)
+    row = _skill_get(name)
+    if not row:
+        return json.dumps({"error": f"Skill '{name}' not found. Use add_skill to create it."})
+    _skill_write(
+        name,
+        content if content is not None else row["content"],
+        description if description is not None else row["description"],
+        category if category is not None else row["category"],
+        tags if tags is not None else row["tags"],
+        row["source_project"],
+    )
     return json.dumps({"ok": True, "name": name})
 
 
 @mcp.tool()
 def delete_skill(name: str) -> str:
     """Delete a skill by name."""
-    with _db() as c:
-        c.execute("DELETE FROM skills WHERE name=?", [name]); c.commit()
-    try:
-        safe = re.sub(r"[^A-Za-z0-9._/-]", "_", name)
-        (STORE / "skills" / (safe + ".md")).unlink(missing_ok=True)
-    except Exception:
-        pass
+    p, _ = _find_skill(name)
+    if p is not None:
+        try: p.unlink()
+        except Exception: pass
     return json.dumps({"ok": True, "name": name})
 
 
@@ -1459,7 +1518,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     configuredPath = chosen ?? "";
   }
 
-  dbSetStorePath(configuredPath);
+  fsSetStorePath(configuredPath);
   storageSetStorePath(configuredPath);
 
   // Register sidebar tree view + commands FIRST so they're always available
@@ -1498,7 +1557,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const name = await vscode.window.showInputBox({ prompt: "New skill name", placeHolder: "e.g. my-new-skill" });
       if (!name?.trim()) return;
       skillUpsert({ name: name.trim(), content: "", category: cat || undefined });
-      exportSkillFile({ name: name.trim(), content: "", category: cat });
       gitCommit(`add(skill): ${name.trim()}`);
       treeProvider.refresh();
       openInPanel(context, "skill", name.trim());
@@ -1509,12 +1567,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const cat = (item?.nodeData?.path ?? []).join("/");
       const title = await vscode.window.showInputBox({ prompt: "New note title", placeHolder: "e.g. Investigation findings" });
       if (!title?.trim()) return;
-      const slug = uniqueSlug(title.trim());
-      noteUpsert({ slug, title: title.trim(), content: "", type: "general", tags: [], category: cat } as any);
-      exportNoteFile({ slug, title: title.trim(), content: "", type: "general", tags: [], category: cat } as any);
-      gitCommit(`add(note): ${slug}`);
+      const key = (cat ? cat + "/" : "") + title.trim();
+      noteUpsert({ slug: key, title: title.trim(), content: "", type: "general", tags: [], category: cat } as any);
+      gitCommit(`add(note): ${title.trim()}`);
       treeProvider.refresh();
-      openInPanel(context, "note", slug);
+      openInPanel(context, "note", key);
     }),
 
     vscode.commands.registerCommand("personalKnowledge.addScriptHere", async (item?: PkTreeItem) => {
@@ -1655,13 +1712,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     })
   );
 
-  // Only initialize DB if setup was completed (path is known)
+  // Initialize the file store (runs the one-time DB→files migration) if configured
   if (configuredPath) {
     try {
-      await initDb(context.extensionPath);
-      log.info(`database ready at ${getStorePath()}`);
+      await initStore(context, configuredPath);
+      log.info(`file store ready at ${getStorePath()}`);
       ensureGitRepo();
-      mirrorAllToFiles(); // keep the markdown mirror in sync with the DB
+      startFileWatcher(context);
       treeProvider.refresh();
       panel?.webview.postMessage({ command: "saved" }); // re-fetch if panel already open
       if (!setupComplete) {
@@ -1675,8 +1732,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         } catch (e: any) { log.warn(`MCP generation failed: ${e?.message}`); }
       }
     } catch (e: any) {
-      log.error(`database init failed: ${e?.stack ?? e?.message}`);
-      vscode.window.showErrorMessage(`Personal Knowledge: failed to open database — ${e.message}`);
+      log.error(`store init failed: ${e?.stack ?? e?.message}`);
+      vscode.window.showErrorMessage(`Personal Knowledge: failed to initialize store — ${e.message}`);
     }
   }
 
@@ -1684,4 +1741,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   log.info("activation complete");
 }
 
-export function deactivate(): void { log.info("deactivated"); }
+// ── File watcher: auto-refresh when notes/skills change on disk ─────────────
+let _watcher: vscode.FileSystemWatcher | undefined;
+function startFileWatcher(context: vscode.ExtensionContext): void {
+  _watcher?.dispose();
+  const pattern = new vscode.RelativePattern(getStorePath(), "{notes,skills}/**/*.md");
+  _watcher = vscode.workspace.createFileSystemWatcher(pattern);
+  const onChange = () => {
+    _treeProvider?.refresh();
+    panel?.webview.postMessage({ command: "reloaded" }); // re-fetch current tab
+  };
+  _watcher.onDidCreate(onChange);
+  _watcher.onDidChange(onChange);
+  _watcher.onDidDelete(onChange);
+  context.subscriptions.push(_watcher);
+}
+
+export function deactivate(): void { _watcher?.dispose(); log.info("deactivated"); }

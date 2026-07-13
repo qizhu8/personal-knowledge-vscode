@@ -12,7 +12,7 @@ A VS Code extension for managing your personal knowledge base — skills, notes,
 This extension allows you (human) to add/update/delete items, but it is more preferrable for agents to update and we review. Let agents play with your knowledge, they are kids.
 
 ## First-Aid Tip
-If you (usually me myself :) ) accidentally deleted/screwed up something, ask AI to fix. AI can read the database and mcp scripts to understand what to do.
+If you (usually me myself :) ) accidentally deleted/screwed up something, ask AI to fix. AI can read the Markdown files and mcp scripts to understand what to do.
 
 ## Features
 
@@ -28,11 +28,12 @@ If you (usually me myself :) ) accidentally deleted/screwed up something, ask AI
 - **Hierarchical navigation** — both the Activity Bar tree and the panel's left nav render arbitrary-depth folders (default collapsed)
 - **Right-click actions** — add a new skill/note/script at a folder, or edit any item, straight from the sidebar
 - **Full-text search** — instant search across all content (CJK-friendly on the MCP side)
-- **Markdown mirror + git** — every note and skill is mirrored to a readable `.md` file and committed to git automatically
+- **Files are the source of truth** — every skill and note is a plain, git-tracked `.md` file; edit them here, in your editor, or from the MCP server and the panel refreshes automatically
+- **Paste images & cross-note links** — paste images straight into a note (stored under `notes/_assets/`), and link between notes with `[[Title]]` wiki links or relative `.md` links
 - **Sync** — share a temporary authenticated link so another machine can pull your knowledge
-- **MCP server** — auto-generated Python server with **read and write** tools and FTS5 trigram search (CJK-friendly)
+- **MCP server** — auto-generated Python server with **read and write** tools that operate directly on the Markdown files, with FTS5 trigram search (CJK-friendly)
 - **Selectable AI backend** — Copilot (built-in), Azure OpenAI, or any OpenAI-compatible endpoint; keys stored in SecretStorage
-- **Cross-platform** — pure-JS SQLite (sql.js), no native binaries
+- **Cross-platform** — no native binaries
 
 ## Installation
 
@@ -44,15 +45,15 @@ code --install-extension personal-knowledge-*.vsix
 
 ## First run
 
-On first activation the extension asks where to store your knowledge base (use the default `~/personal-knowledge`, browse to an existing folder, or type a custom path — it offers to create it). It then initialises the database, a git repository, and an MCP server.
+On first activation the extension asks where to store your knowledge base (use the default `~/personal-knowledge`, browse to an existing folder, or type a custom path — it offers to create it). It then initialises the folder, a git repository, and an MCP server. If a legacy `knowledge.db` from an older version is found, its skills and notes are migrated into Markdown files automatically (non-destructively).
 
 ## Store directory
 
 ```
 <your-store>/
-  knowledge.db        <- skills & notes (SQLite)
-  skills/             <- markdown mirror (git-tracked)
-  notes/              <- markdown mirror (git-tracked)
+  skills/             <- skills (git-tracked .md files, the source of truth)
+  notes/              <- notes  (git-tracked .md files, the source of truth)
+    _assets/          <- images pasted into notes
   prompts/            <- versioned prompt files
   packages/           <- local Python/Node packages
   scripts/            <- Scope / C# / Python / PowerShell scripts
@@ -74,7 +75,7 @@ Change the location any time via **Settings -> Personal Knowledge: Store Path**.
 6. **Share** — use the **Sync** button to hand another machine a temporary authenticated link to pull selected content.
 7. **Connect an AI assistant** — generate an MCP server (see below).
 
-Everything is stored as plain files + SQLite under your chosen folder, mirrored to Markdown, and tracked in git — so you always own your data and have full history.
+Everything is stored as plain Markdown files under your chosen folder and tracked in git — so you always own your data and have full history.
 
 ## Why an MCP server?
 
@@ -99,7 +100,7 @@ Open the **MCP** tab in the panel and click **Generate MCP Server**, then add th
 | `add_note` / `update_note` / `delete_note` | Create / edit / remove notes |
 | `add_skill` / `update_skill` / `delete_skill` | Create / edit / remove skills |
 
-Search uses an in-memory FTS5 **trigram** index (CJK-friendly, ranked) built at startup, with a `LIKE` fallback for short queries. Writes also update the git-tracked markdown mirror.
+Search uses an in-memory FTS5 **trigram** index (CJK-friendly, ranked) built from the Markdown files at call time, with a substring fallback for short queries. Reads and writes operate directly on the git-tracked `.md` files.
 
 ## AI backend
 

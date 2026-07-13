@@ -1,9 +1,8 @@
 import { createServer, Server, IncomingMessage, ServerResponse } from "http";
 import { networkInterfaces } from "os";
 import { randomBytes } from "crypto";
-import { skillList, skillGet } from "./db";
+import { skillList, skillGet, noteExport } from "./filestore";
 import { promptExport, scriptExport, packageExport } from "./storage";
-import { noteExport } from "./db";
 
 export interface SyncSession {
   id:           string;
