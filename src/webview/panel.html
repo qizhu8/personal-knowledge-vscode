@@ -348,8 +348,13 @@ mark{background:var(--vscode-editor-findMatchHighlightBackground,#ffd70055);colo
 const vscode = acquireVsCodeApi();
 // CDN libs may be unavailable in offline/remote environments — use safe fallbacks
 try { if (typeof marked !== 'undefined') marked.setOptions({ breaks: true }); } catch(e) {}
+// Base URI for note image assets; `_assets/...` refs are rewritten to it at render time
+const NOTES_BASE = '%%NOTES_BASE%%';
+function fixAssets(html) {
+  return String(html).replace(/(src|href)=("|')_assets\//g, '$1=$2' + NOTES_BASE + '/_assets/');
+}
 function safeMarked(text) {
-  try { return typeof marked !== 'undefined' ? marked.parse(text||'') : '<pre>' + esc(text||'') + '</pre>'; }
+  try { return fixAssets(typeof marked !== 'undefined' ? marked.parse(text||'') : '<pre>' + esc(text||'') + '</pre>'); }
   catch(e) { return '<pre>' + esc(text||'') + '</pre>'; }
 }
 function safeHljs(el) { try { if (typeof hljs !== 'undefined') hljs.highlightElement(el); } catch(e) {} }
@@ -424,6 +429,10 @@ window.addEventListener('message', e => {
     }
   }
   else if (command === 'saved')    { ask('list', { tab: state.tab, filter: state.filter, q: state.search }); }
+  else if (command === 'assetSaved') {
+    const cb = pendingAssets[e.data.reqId];
+    if (cb) { delete pendingAssets[e.data.reqId]; cb(e.data.markdown, e.data.error); }
+  }
   else if (command === 'reloaded') {
     ask('list', { tab: state.tab, filter: state.filter, q: state.search });
     const btn = document.querySelector('#topbar .tbtn[onclick="doReload()"]');
@@ -1223,6 +1232,48 @@ function updateNotePreview() {
   const el = document.getElementById('note-preview');
   if (el) el.innerHTML = safeMarked(src);
 }
+
+// ── Paste images into the note editor ────────────────────────────────────────
+const pendingAssets = {};
+function insertAtCursor(ta, text) {
+  const start = ta.selectionStart ?? ta.value.length;
+  const end = ta.selectionEnd ?? ta.value.length;
+  ta.value = ta.value.slice(0, start) + text + ta.value.slice(end);
+  const pos = start + text.length;
+  ta.selectionStart = ta.selectionEnd = pos;
+  ta.focus();
+}
+(function initNotePaste() {
+  const ta = document.getElementById('note-content');
+  if (!ta) return;
+  ta.addEventListener('paste', ev => {
+    const items = (ev.clipboardData && ev.clipboardData.items) || [];
+    let handled = false;
+    for (const it of items) {
+      if (it.kind === 'file' && it.type && it.type.indexOf('image/') === 0) {
+        const file = it.getAsFile();
+        if (!file) continue;
+        handled = true;
+        const ext = (it.type.split('/')[1] || 'png').split('+')[0];
+        const reader = new FileReader();
+        reader.onload = () => {
+          const b64 = String(reader.result || '').split(',')[1] || '';
+          const reqId = 'a' + Date.now() + Math.random().toString(36).slice(2, 7);
+          const placeholder = '![uploading…]()';
+          insertAtCursor(ta, placeholder);
+          updateNotePreview();
+          pendingAssets[reqId] = (markdown, error) => {
+            ta.value = ta.value.replace(placeholder, error ? '![paste failed]()' : markdown);
+            updateNotePreview();
+          };
+          ask('saveAsset', { data: b64, ext, reqId });
+        };
+        reader.readAsDataURL(file);
+      }
+    }
+    if (handled) ev.preventDefault();
+  });
+})();
 
 // ── MCP wizard ────────────────────────────────────────────────────────────
 function renderMcpLoading() {

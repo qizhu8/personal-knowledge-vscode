@@ -5,7 +5,7 @@ import { syncServer } from "./sync-server";
 import {
   skillList, skillSearch, skillGet, skillUpsert, skillDelete,
   noteList, noteSearch, noteGet, noteUpsert, noteDelete, slugExists,
-  noteExport, noteImport,
+  noteExport, noteImport, saveNoteAsset,
   setStorePath as fsSetStorePath, getStorePath,
 } from "./filestore";
 import { migrateDbToFiles } from "./migrate";
@@ -181,6 +181,7 @@ function makeWebviewOptions(context: vscode.ExtensionContext): vscode.WebviewOpt
       vscode.Uri.file(path.join(context.extensionPath, "dist", "webview")),
       vscode.Uri.file(path.join(context.extensionPath, "src",  "webview")),        // dev fallback
       vscode.Uri.file(path.join(context.extensionPath, "node_modules", "marked")), // dev marked
+      vscode.Uri.file(getStorePath()),                                             // note/skill _assets
     ],
   };
 }
@@ -207,6 +208,11 @@ function getWebviewHtml(webview: vscode.Webview, context: vscode.ExtensionContex
 
   // Inject the webview CSP source — required for VS Code to allow scripts to run
   html = html.replace(/%%CSP_SOURCE%%/g, webview.cspSource);
+
+  // Base URI for note image assets (notes/_assets/...). The webview rewrites
+  // `_assets/` markdown image refs to `${NOTES_BASE}/_assets/...` at render time.
+  const notesBase = webview.asWebviewUri(vscode.Uri.file(path.join(getStorePath(), "notes")));
+  html = html.replace(/%%NOTES_BASE%%/g, notesBase.toString());
   return html;
 }
 
@@ -339,6 +345,19 @@ async function handleMessage(
       gitCommit(existingSlug ? `update(note): ${slug}` : `add(note): ${slug}`);
       respond({ command: "saved" });
       vscode.window.setStatusBarMessage("$(check) Note saved", 3000);
+      break;
+    }
+
+    case "saveAsset": {
+      // Pasted image from the note editor: persist to notes/_assets/<hash>.<ext>
+      const { data, ext, reqId } = msg;
+      try {
+        const rel = saveNoteAsset(String(data || ""), String(ext || "png"));
+        respond({ command: "assetSaved", reqId, markdown: `![](${rel})` });
+      } catch (e) {
+        log.error(`saveAsset failed: ${String(e)}`);
+        respond({ command: "assetSaved", reqId, error: String(e) });
+      }
       break;
     }
 

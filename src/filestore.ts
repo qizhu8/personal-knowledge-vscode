@@ -14,6 +14,7 @@ import { join, sep } from "path";
 import {
   existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, rmSync,
 } from "fs";
+import { createHash } from "crypto";
 
 let _store = join(homedir(), "personal-knowledge");
 
@@ -182,6 +183,22 @@ export function noteImport(rows: any[]): number {
     } catch { /* skip invalid */ }
   }
   return count;
+}
+
+// ── Assets (pasted images) ───────────────────────────────────────────────────
+// Images live in notes/_assets/<sha1>.<ext> and are referenced from markdown as
+// `_assets/<sha1>.<ext>` (relative to the notes root). The webview rewrites those
+// refs to webview URIs at render time. Content-hash naming de-dupes identical pastes.
+export function saveNoteAsset(base64: string, ext: string): string {
+  const buf = Buffer.from(base64, "base64");
+  const hash = createHash("sha1").update(buf).digest("hex").slice(0, 16);
+  const safeExt = (ext || "png").replace(/[^a-zA-Z0-9]/g, "").toLowerCase() || "png";
+  const dir = join(_store, "notes", "_assets");
+  mkdirSync(dir, { recursive: true });
+  const rel = `_assets/${hash}.${safeExt}`;
+  const full = join(dir, `${hash}.${safeExt}`);
+  if (!existsSync(full)) writeFileSync(full, buf);
+  return rel;
 }
 
 // ── Skills ──────────────────────────────────────────────────────────────────
