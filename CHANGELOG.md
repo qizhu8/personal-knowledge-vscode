@@ -3,6 +3,17 @@
 All notable changes to the **Personal Knowledge** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] — 2026-07-13
+
+**Files are now the source of truth.** Skills and notes live as plain Markdown files under `skills/` and `notes/` — no database. This makes your knowledge base a portable, git-friendly, Obsidian-style wiki that you (and the MCP server) can edit directly.
+
+- **Files-as-truth store**: skills and notes are read and written directly as `.md` files. Identity is the file's path, the category is its folder, and the title/name is the filename (the exact value is preserved in YAML frontmatter). Search scans on demand; a file watcher auto-refreshes the panel and tree when files change on disk (including external/MCP edits) — no more manual reload.
+- **Hidden one-time migration**: if a legacy `knowledge.db` is found, its skills and notes are migrated into files automatically. The migration is non-destructive — any pre-existing `notes/` and `skills/` folders are backed up to `_pre-files-backup-<timestamp>/` first, and `knowledge.db` is kept as a backup.
+- **Paste images into notes**: paste an image directly into the note editor; it is saved under `notes/_assets/` (content-hash de-duplicated) and rendered inline in both the live preview and the note view.
+- **Cross-note links**: `[[Title]]` / `[[Title|alias]]` wiki links and relative `.md` links are clickable and open the target note.
+- **File-backed MCP server**: the generated `mcp-server/server.py` now reads and writes the same Markdown files (no SQLite). MCP writes appear instantly in the panel and land in git as readable diffs. Search still uses an in-memory FTS5 trigram index (CJK-friendly) built from the files.
+- `sql.js` is retained only for the one-time migration.
+
 ## [1.1.3] — 2026-07-13
 
 - **Refresh button** (topbar) — reloads the database from disk so externally-made changes appear. This matters because the extension keeps the SQLite DB in memory, so writes from the MCP server (`add_note`, `update_skill`, …) or any other process were previously invisible until restart. The button reloads the whole DB, so it reflects added, edited, and deleted **Skills and Notes**, and refreshes the sidebar tree.
