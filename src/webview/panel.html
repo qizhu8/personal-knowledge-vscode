@@ -786,6 +786,8 @@ function renderDetail(data) {
         <span>Updated ${(data.updated_at||'').slice(0,10)}</span>
         <span style="font-size:10px;color:var(--muted)">id: ${esc(data.slug)}</span>
         <span style="flex:1"></span>
+        <button class="tbtn" style="font-size:11px" onclick="exportNote('browser')" title="Open a standalone preview in your browser">🌐 Browser</button>
+        <button class="tbtn" style="font-size:11px" onclick="exportNote('file')" title="Save this note as a self-contained HTML file">⬇ HTML</button>
         <button class="tbtn" style="font-size:11px" onclick="editNote(currentDetail)">✏ Edit</button>
       </div>
       <hr class="div"><div class="prose">${safeMarked(data.content||'')}</div>`;
@@ -994,6 +996,36 @@ function postProcess() {
     const btn = document.createElement('button'); btn.className='copy-btn'; btn.textContent='Copy';
     btn.onclick = () => { navigator.clipboard.writeText(pre.querySelector('code')?.textContent||''); btn.textContent='✓'; setTimeout(()=>btn.textContent='Copy',1500); };
     pre.appendChild(btn);
+  });
+}
+
+// ── Export a note to standalone HTML (open in browser / save to file) ────────
+// Wiki links become plain styled spans (no target outside the panel).
+function linkifyWikiExport(md) {
+  return String(md).replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, function(m, t, a) {
+    return '<span class="wikilink">' + esc((a || t).trim()) + '</span>';
+  });
+}
+function exportNote(mode) {
+  const d = currentDetail;
+  if (!d || d.type !== 'note') return;
+  // Render markdown + highlight code, keeping _assets/ refs relative so the
+  // extension can inline the images as data URIs for a self-contained file.
+  let inner;
+  try { inner = (typeof marked !== 'undefined') ? marked.parse(linkifyWikiExport(d.content || '')) : '<pre>' + esc(d.content || '') + '</pre>'; }
+  catch (e) { inner = '<pre>' + esc(d.content || '') + '</pre>'; }
+  const tmp = document.createElement('div');
+  tmp.innerHTML = inner;
+  tmp.querySelectorAll('pre code').forEach(el => safeHljs(el));
+  ask('exportNoteHtml', {
+    mode: mode,
+    slug: d.slug,
+    title: d.title || '',
+    category: d.category || '',
+    tags: d.tags || '[]',
+    noteType: d.note_type || 'general',
+    updatedAt: d.updated_at || '',
+    bodyHtml: tmp.innerHTML,
   });
 }
 
