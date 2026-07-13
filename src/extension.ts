@@ -361,6 +361,29 @@ async function handleMessage(
       break;
     }
 
+    case "resolveNoteLink": {
+      // Cross-note link: target is a note title, slug, or relative path (no ext)
+      const target = String(msg.target || "").trim();
+      let r = target ? noteGet(target) : null;
+      if (!r && target) {
+        const needle = target.toLowerCase();
+        const hit = (noteList(undefined, 10000) as any[]).find(
+          n => (n.title || "").toLowerCase() === needle ||
+               (n.slug || "").toLowerCase() === needle ||
+               (n.slug || "").toLowerCase().endsWith("/" + needle),
+        );
+        if (hit) r = noteGet(hit.slug);
+      }
+      if (r) respond({ command: "detail", data: { ...r, note_type: r.type, type: "note" } });
+      else respond({ command: "noteLinkMissing", target });
+      break;
+    }
+
+    case "toast": {
+      vscode.window.setStatusBarMessage(`$(info) ${String(msg.text || "")}`, 4000);
+      break;
+    }
+
     case "saveSkill": {
       const { name, content, category, description, tags } = msg;
       skillUpsert({ name, content, category, description, tags });
