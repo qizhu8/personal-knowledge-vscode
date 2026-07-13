@@ -6,7 +6,7 @@ import {
   skillList, skillSearch, skillGet, skillUpsert, skillDelete,
   noteList, noteSearch, noteGet, noteUpsert, noteDelete, slugExists,
   noteExport, noteImport,
-  setStorePath as dbSetStorePath, getStorePath, initDb, isDbReady,
+  setStorePath as dbSetStorePath, getStorePath, initDb, isDbReady, reloadDb,
 } from "./db";
 import {
   promptList, promptGetFile, promptGetAllVersionsOfFile,
@@ -326,6 +326,21 @@ async function handleMessage(
         const { type, key, edit } = _pendingOpen;
         _pendingOpen = undefined;
         respond({ command: "openItem", type, key, edit });
+      }
+      break;
+    }
+
+    case "reload": {
+      // Re-read the DB from disk to pick up external changes (e.g. MCP writes),
+      // then tell the webview to re-fetch the current tab.
+      try {
+        reloadDb();
+        _treeProvider?.refresh();
+        log.action("reload");
+        respond({ command: "reloaded" });
+      } catch (e: any) {
+        log.error(`reload failed: ${e?.message}`);
+        respond({ command: "reloaded" });
       }
       break;
     }

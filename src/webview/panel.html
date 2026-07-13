@@ -231,6 +231,7 @@ mark{background:var(--vscode-editor-findMatchHighlightBackground,#ffd70055);colo
     <button class="tab" data-tab="mcp">⚡ MCP</button>
   </div>
   <input id="searchbox" type="search" placeholder="Search…">
+  <button class="tbtn" onclick="doReload()" title="Reload from disk (pick up external / MCP changes)">↻ Refresh</button>
   <button class="tbtn" onclick="toggleNoteForm()">+ Note</button>
   <button class="tbtn" onclick="doExport()">⬇ Export</button>
   <button class="tbtn" onclick="triggerImport()">⬆ Import</button>
@@ -423,6 +424,11 @@ window.addEventListener('message', e => {
     }
   }
   else if (command === 'saved')    { ask('list', { tab: state.tab, filter: state.filter, q: state.search }); }
+  else if (command === 'reloaded') {
+    ask('list', { tab: state.tab, filter: state.filter, q: state.search });
+    const btn = document.querySelector('#topbar .tbtn[onclick="doReload()"]');
+    if (btn) { btn.disabled = false; btn.textContent = '↻ Refresh'; }
+  }
   else if (command === 'exported') {
     const a = document.createElement('a');
     a.href = 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(data, null, 2));
@@ -988,6 +994,13 @@ function saveNote() {
 
 // ── Import / Export ────────────────────────────────────────────────────────
 function doExport() { ask('export', {}); }
+
+// Reload the DB from disk (picks up external / MCP changes), then re-render current tab
+function doReload() {
+  const btn = document.querySelector('#topbar .tbtn[onclick="doReload()"]');
+  if (btn) { btn.disabled = true; btn.textContent = '↻ …'; }
+  ask('reload', {});
+}
 function triggerImport() { document.getElementById('import-file').click(); }
 function doImport(input) {
   const file = input.files[0]; if (!file) return;

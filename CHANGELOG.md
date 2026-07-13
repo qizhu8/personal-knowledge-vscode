@@ -3,6 +3,10 @@
 All notable changes to the **Personal Knowledge** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.1.3] — 2026-07-13
+
+- **Refresh button** (topbar) — reloads the database from disk so externally-made changes appear. This matters because the extension keeps the SQLite DB in memory, so writes from the MCP server (`add_note`, `update_skill`, …) or any other process were previously invisible until restart. The button reloads the whole DB, so it reflects added, edited, and deleted **Skills and Notes**, and refreshes the sidebar tree.
+
 ## [1.1.2] — 2026-07-10
 
 - **Selectable AI backend** for script summaries — a dropdown in the Scripts tab, populated by scanning for available backends (each live Copilot model, plus configured Azure OpenAI / OpenAI-compatible endpoints).

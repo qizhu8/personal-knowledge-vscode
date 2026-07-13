@@ -8,6 +8,7 @@ import { mkdirSync, existsSync, readFileSync, writeFileSync } from "fs";
 
 // ── Module-level state ────────────────────────────────────────────────────
 let _db: any = null;
+let _SQL: any = null;                          // cached sql.js module for reloads
 let _dbPath   = "";
 let _storePath = join(homedir(), "personal-knowledge");
 let _initPromise: Promise<void> | null = null; // prevent concurrent initializations
@@ -41,6 +42,7 @@ async function _doInit(extPath: string): Promise<void> {
   const initSqlJs = require(jsPath);
   const wasmBinary = readFileSync(wasmPath);
   const SQL = await initSqlJs({ wasmBinary });
+  _SQL = SQL;                                  // cache for reloadDb()
 
   mkdirSync(_storePath, { recursive: true });
   _dbPath = join(_storePath, "knowledge.db");
@@ -50,6 +52,19 @@ async function _doInit(extPath: string): Promise<void> {
 
   _migrate();
   _saveDb();
+}
+
+/**
+ * Re-read the database file from disk into memory. Needed because sql.js keeps
+ * the DB in memory, so external writes (e.g. the MCP server, or another process)
+ * are otherwise invisible. Safe: every extension write calls _saveDb() immediately,
+ * so there are no unsaved in-memory changes to lose.
+ */
+export function reloadDb(): void {
+  if (!_SQL || !_dbPath) return;
+  const buf = existsSync(_dbPath) ? readFileSync(_dbPath) : null;
+  _db = buf ? new _SQL.Database(buf) : new _SQL.Database();
+  _migrate();
 }
 
 function _getDb(): any {
