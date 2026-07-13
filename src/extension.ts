@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import * as path from "path";
+import * as os from "os";
 import * as fs from "fs";
 import { syncServer } from "./sync-server";
 import {
@@ -109,6 +110,107 @@ function uniqueSlug(title: string): string {
   let slug = toSlug(title), n = 2;
   while (slugExists(slug)) slug = `${toSlug(title)}-${n++}`;
   return slug;
+}
+
+// ── Standalone note HTML export ──────────────────────────────────────────────
+/** Filesystem-safe filename part (no path separators or reserved chars). */
+function safeFilePart(s: string): string {
+  return (s || "").replace(/[/\\:*?"<>|\u0000-\u001f]/g, "").trim().slice(0, 120);
+}
+
+const MIME_BY_EXT: Record<string, string> = {
+  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
+  webp: "image/webp", svg: "image/svg+xml", bmp: "image/bmp", avif: "image/avif",
+};
+
+/** Inline `_assets/<file>` image references as base64 data URIs for a portable file. */
+function inlineNoteAssets(html: string): string {
+  const assetsDir = path.join(getStorePath(), "notes", "_assets");
+  return html.replace(/(src\s*=\s*)("|')_assets\/([^"']+)\2/gi, (m, pre, q, file) => {
+    try {
+      const name = decodeURIComponent(file);
+      const full = path.join(assetsDir, name);
+      if (!full.startsWith(assetsDir) || !fs.existsSync(full)) return m;
+      const ext = (path.extname(name).slice(1) || "png").toLowerCase();
+      const mime = MIME_BY_EXT[ext] || "application/octet-stream";
+      const b64 = fs.readFileSync(full).toString("base64");
+      return `${pre}${q}data:${mime};base64,${b64}${q}`;
+    } catch { return m; }
+  });
+}
+
+/** Wrap the webview-rendered note body in a self-contained, shareable HTML document. */
+function buildStandaloneNoteHtml(msg: any): string {
+  const esc = (s: string) => String(s ?? "")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  let tags: string[] = [];
+  try { tags = JSON.parse(msg.tags || "[]"); } catch { tags = []; }
+  const title = String(msg.title || msg.slug || "Note");
+  const body = inlineNoteAssets(String(msg.bodyHtml || ""));
+  const metaBits = [
+    msg.noteType ? `<span class="pill type">${esc(msg.noteType)}</span>` : "",
+    msg.category ? `<span class="pill cat">${esc(msg.category)}</span>` : "",
+    ...tags.map(t => `<span class="pill tag">#${esc(t)}</span>`),
+    msg.updatedAt ? `<span class="upd">Updated ${esc(String(msg.updatedAt).slice(0, 10))}</span>` : "",
+  ].filter(Boolean).join("");
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="Personal Knowledge (VS Code)">
+<title>${esc(title)}</title>
+<style>
+:root{color-scheme:light}
+*{box-sizing:border-box}
+body{margin:0;background:#f6f7f9;color:#1f2328;font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+.wrap{max-width:820px;margin:32px auto;background:#fff;border:1px solid #e2e5e9;border-radius:12px;padding:40px 48px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+h1.doc-title{font-size:28px;line-height:1.25;margin:0 0 12px;color:#0b1220}
+.meta{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:20px;padding-bottom:18px;border-bottom:1px solid #eceef1;font-size:12px}
+.pill{padding:2px 9px;border-radius:20px;font-weight:600}
+.pill.type{background:#eef2ff;color:#4f46e5}
+.pill.cat{background:#ecfdf5;color:#059669}
+.pill.tag{background:#f1f5f9;color:#475569}
+.upd{color:#8a929c;margin-left:auto}
+.prose{font-size:16px}
+.prose h1,.prose h2,.prose h3,.prose h4{line-height:1.3;margin:1.5em 0 .5em;color:#0b1220;font-weight:650}
+.prose h1{font-size:1.6em}.prose h2{font-size:1.35em;border-bottom:1px solid #eceef1;padding-bottom:.2em}.prose h3{font-size:1.15em}
+.prose p{margin:.7em 0}
+.prose a{color:#2563eb;text-decoration:none}.prose a:hover{text-decoration:underline}
+.prose ul,.prose ol{padding-left:1.5em;margin:.6em 0}
+.prose li{margin:.25em 0}
+.prose img{max-width:100%;border-radius:6px;margin:.4em 0}
+.prose blockquote{border-left:4px solid #d0d7de;color:#57606a;margin:.9em 0;padding:.1em 1em}
+.prose hr{border:none;border-top:1px solid #e2e5e9;margin:1.6em 0}
+.prose table{border-collapse:collapse;width:100%;margin:1em 0;font-size:.95em}
+.prose th,.prose td{border:1px solid #e2e5e9;padding:6px 10px}
+.prose th{background:#f6f8fa;text-align:left}
+.prose code{background:#f1f3f5;border-radius:4px;padding:.15em .4em;font-size:.88em;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.prose pre{background:#0d1117;color:#e6edf3;border-radius:8px;padding:16px;overflow:auto;margin:1em 0}
+.prose pre code{background:none;padding:0;font-size:.86em;color:inherit}
+.wikilink{color:#7c3aed;border-bottom:1px dashed #c4b5fd;font-weight:600}
+/* highlight.js (github-dark subset) */
+.hljs-comment,.hljs-quote{color:#8b949e}
+.hljs-keyword,.hljs-selector-tag,.hljs-literal,.hljs-type{color:#ff7b72}
+.hljs-string,.hljs-meta .hljs-string,.hljs-regexp,.hljs-addition{color:#a5d6ff}
+.hljs-number,.hljs-symbol,.hljs-bullet{color:#79c0ff}
+.hljs-title,.hljs-name,.hljs-section,.hljs-title.function_,.hljs-title.class_{color:#d2a8ff}
+.hljs-built_in,.hljs-builtin-name,.hljs-attr,.hljs-attribute{color:#ffa657}
+.hljs-variable,.hljs-template-variable,.hljs-params{color:#e6edf3}
+.hljs-deletion{color:#ffa198}
+.hljs-emphasis{font-style:italic}.hljs-strong{font-weight:700}
+@media print{body{background:#fff}.wrap{border:none;box-shadow:none;margin:0;max-width:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1 class="doc-title">${esc(title)}</h1>
+<div class="meta">${metaBits}</div>
+<div class="prose">${body}</div>
+</div>
+</body>
+</html>`;
 }
 
 // ── Panel management ───────────────────────────────────────────────────────
@@ -376,6 +478,44 @@ async function handleMessage(
       }
       if (r) respond({ command: "detail", data: { ...r, note_type: r.type, type: "note" } });
       else respond({ command: "noteLinkMissing", target });
+      break;
+    }
+
+    case "exportNoteHtml": {
+      // Build a self-contained HTML document from the webview-rendered body and
+      // either open it in the default browser or save it to a file.
+      try {
+        const doc = buildStandaloneNoteHtml(msg);
+        const safe = safeFilePart(String(msg.title || msg.slug || "note")) || "note";
+        if (msg.mode === "browser") {
+          const out = path.join(os.tmpdir(), `pk-note-${safe}-${Date.now()}.html`);
+          fs.writeFileSync(out, doc, "utf-8");
+          const opened = await vscode.env.openExternal(vscode.Uri.file(out));
+          if (opened) {
+            vscode.window.setStatusBarMessage("$(globe) Note opened in browser", 4000);
+          } else {
+            // e.g. headless Remote-SSH host with no browser — tell the user where it is
+            const pick = await vscode.window.showInformationMessage(
+              `Preview written to ${out}`, "Copy Path");
+            if (pick === "Copy Path") await vscode.env.clipboard.writeText(out);
+          }
+        } else {
+          const target = await vscode.window.showSaveDialog({
+            saveLabel: "Export note as HTML",
+            defaultUri: vscode.Uri.file(path.join(os.homedir(), `${safe}.html`)),
+            filters: { HTML: ["html"] },
+          });
+          if (target) {
+            fs.writeFileSync(target.fsPath, doc, "utf-8");
+            const pick = await vscode.window.showInformationMessage(
+              `Note exported to ${path.basename(target.fsPath)}`, "Open");
+            if (pick === "Open") await vscode.env.openExternal(target);
+          }
+        }
+      } catch (e) {
+        log.error(`exportNoteHtml failed: ${String(e)}`);
+        vscode.window.showErrorMessage(`Export failed: ${String(e)}`);
+      }
       break;
     }
 
