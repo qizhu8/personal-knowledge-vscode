@@ -127,6 +127,13 @@ hr.div{border:none;border-top:1px solid var(--border);margin:14px 0}
 .pctx-header{font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);cursor:default;padding:5px 10px 2px}
 .pctx-header:hover{background:none;color:var(--muted)}
 .pctx-sep{height:1px;background:var(--border);margin:4px 2px}
+#pk-modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:2000;display:flex;align-items:center;justify-content:center}
+#pk-modal{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px 20px;min-width:320px;max-width:90vw;box-shadow:0 12px 40px rgba(0,0,0,.5)}
+.pk-modal-title{font-size:14px;font-weight:700;margin-bottom:8px}
+.pk-modal-msg{font-size:12px;color:var(--muted);margin-bottom:10px}
+#pk-modal-input{width:100%;background:var(--input);border:1px solid var(--border);border-radius:5px;color:var(--text);padding:7px 9px;font-size:13px;outline:none;margin-bottom:12px}
+#pk-modal-input:focus{border-color:var(--accent)}
+.pk-modal-actions{display:flex;justify-content:flex-end;gap:8px}
 .paper-card .pc-title{font-weight:600;font-size:12.5px;line-height:1.35}
 .paper-card .pc-meta{font-size:10.5px;color:var(--muted);margin-top:3px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .pc-cite{background:var(--accent);color:var(--bg);border-radius:10px;padding:0 6px;font-weight:700}
@@ -1593,16 +1600,41 @@ function showPaperMenu(x, y, items) {
 function closePaperMenu() { const m = document.getElementById('paper-ctx'); if (m) m.remove(); }
 document.addEventListener('click', closePaperMenu);
 
+// In-webview prompt/confirm (native prompt()/confirm() are blocked in VS Code webviews).
+function pkModal(opts) {
+  closePkModal();
+  const bg = document.createElement('div');
+  bg.id = 'pk-modal-bg';
+  bg.innerHTML = '<div id="pk-modal">' +
+    '<div class="pk-modal-title">' + esc(opts.title || '') + '</div>' +
+    (opts.message ? '<div class="pk-modal-msg">' + esc(opts.message) + '</div>' : '') +
+    (opts.input ? '<input id="pk-modal-input" type="text">' : '') +
+    '<div class="pk-modal-actions">' +
+      '<button class="tbtn" id="pk-modal-cancel">Cancel</button>' +
+      '<button class="tbtn" id="pk-modal-ok" style="border-color:var(--accent)' + (opts.danger ? ';color:#f87171' : '') + '">' + esc(opts.okLabel || 'OK') + '</button>' +
+    '</div></div>';
+  document.body.appendChild(bg);
+  const input = document.getElementById('pk-modal-input');
+  if (input) input.value = opts.defaultValue || '';
+  const done = ok => { const v = input ? input.value : ''; closePkModal(); if (ok && opts.onOk) opts.onOk(v); };
+  document.getElementById('pk-modal-ok').onclick = () => done(true);
+  document.getElementById('pk-modal-cancel').onclick = () => done(false);
+  bg.onclick = e => { if (e.target === bg) done(false); };
+  if (input) { input.focus(); input.select(); input.onkeydown = e => { if (e.key === 'Enter') done(true); else if (e.key === 'Escape') done(false); }; }
+  else document.getElementById('pk-modal-ok').focus();
+}
+function closePkModal() { const m = document.getElementById('pk-modal-bg'); if (m) m.remove(); }
+
 function paperCardMenu(ev, slug, group) {
   ev.preventDefault(); ev.stopPropagation();
   const items = [{ label: 'Move to group', header: true }];
   for (const g of paperGroupsList) {
     items.push({ label: (g.name === group ? '● ' : '   ') + g.name, active: g.name === group, onClick: () => ask('paperSetGroup', { slug, group: g.name }) });
   }
-  items.push({ label: '＋ New group…', onClick: () => { const n = prompt('New group name:'); if (n && n.trim()) ask('paperSetGroup', { slug, group: n.trim() }); } });
+  items.push({ label: '＋ New group…', onClick: () => pkModal({ title: 'New group', input: true, okLabel: 'Create', onOk: v => { if (v.trim()) ask('paperSetGroup', { slug, group: v.trim() }); } }) });
   items.push({ sep: true });
   items.push({ label: '✏ Edit', onClick: () => { pendingEditType = 'paper'; ask('detail', { type: 'paper', key: slug }); } });
-  items.push({ label: '🗑 Delete', danger: true, onClick: () => { if (confirm('Delete this paper?')) ask('deletePaper', { slug }); } });
+  items.push({ label: '🗑 Delete', danger: true, onClick: () => pkModal({ title: 'Delete this paper?', okLabel: 'Delete', danger: true, onOk: () => ask('deletePaper', { slug }) }) });
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
 
@@ -1610,8 +1642,8 @@ function paperGroupMenu(ev, group) {
   ev.preventDefault(); ev.stopPropagation();
   const items = [{ label: '📁 ' + group, header: true }];
   if (group !== 'Papers') {
-    items.push({ label: '✏ Rename group…', onClick: () => { const n = prompt('Rename group:', group); if (n && n.trim() && n.trim() !== group) ask('paperGroupRename', { oldName: group, newName: n.trim() }); } });
-    items.push({ label: '🗑 Delete group', danger: true, onClick: () => { if (confirm('Delete group “' + group + '”? Its items move to “Papers”.')) ask('paperGroupDelete', { name: group }); } });
+    items.push({ label: '✏ Rename group…', onClick: () => pkModal({ title: 'Rename group', input: true, defaultValue: group, okLabel: 'Rename', onOk: v => { if (v.trim() && v.trim() !== group) ask('paperGroupRename', { oldName: group, newName: v.trim() }); } }) });
+    items.push({ label: '🗑 Delete group', danger: true, onClick: () => pkModal({ title: 'Delete group “' + group + '”?', message: 'Its items move back to “Papers”.', okLabel: 'Delete', danger: true, onOk: () => ask('paperGroupDelete', { name: group }) }) });
   } else {
     items.push({ label: 'Default group (can’t rename/delete)', header: true });
   }
@@ -1671,7 +1703,7 @@ function paperDetailHtml(d) {
     <hr class="div"><div class="prose">${safeMarked(d.content || '', d.category)}</div>`;
 }
 function openPaperLink(url, file, category) { ask('openPaperLink', { url, file, category }); }
-function confirmDeletePaper() { if (currentDetail && confirm('Delete this paper?')) ask('deletePaper', { slug: currentDetail.slug }); }
+function confirmDeletePaper() { if (currentDetail) pkModal({ title: 'Delete this paper?', okLabel: 'Delete', danger: true, onOk: () => ask('deletePaper', { slug: currentDetail.slug }) }); }
 
 // Add / edit form
 function openPaperForm(paper) {
@@ -1731,7 +1763,7 @@ function savePaper() {
     return i < 0 ? { paper: l.trim(), note: '' } : { paper: l.slice(0, i).trim(), note: l.slice(i + 2).trim() };
   }).filter(c => c.paper);
   const title = val('pf-title').trim();
-  if (!title) { alert('Title is required'); return; }
+  if (!title) { ask('toast', { text: 'Paper title is required' }); document.getElementById('pf-title').focus(); return; }
   const paper = {
     slug: val('pf-slug') || '', title,
     year: val('pf-year') ? parseInt(val('pf-year'), 10) : null,
