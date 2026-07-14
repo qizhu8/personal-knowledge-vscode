@@ -5,7 +5,7 @@ import * as http from "http";
 import * as fs from "fs";
 import { syncServer } from "./sync-server";
 import {
-  skillList, skillSearch, skillGet, skillUpsert, skillDelete,
+  skillList, skillSearch, skillGet, skillUpsert, skillDelete, skillMoveCategory,
   noteList, noteSearch, noteGet, noteUpsert, noteDelete, slugExists,
   noteExport, noteImport, saveNoteAsset,
   paperList, paperSearch, paperGet, paperUpsert, paperDelete,
@@ -626,6 +626,15 @@ async function handleMessage(
       gitCommit(`save(skill): ${name}`);
       respond({ command: "saved" });
       vscode.window.setStatusBarMessage("$(check) Skill saved", 3000);
+      break;
+    }
+
+    case "skillRenameFolder": {
+      const n = skillMoveCategory(String(msg.oldPrefix || ""), String(msg.newPrefix || ""));
+      if (n) gitCommit(`rename(skill-folder): ${msg.oldPrefix} -> ${msg.newPrefix} (${n})`);
+      _treeProvider?.refresh();
+      respond({ command: "saved" });
+      vscode.window.setStatusBarMessage(`$(check) Renamed folder (${n} skill${n === 1 ? "" : "s"})`, 3000);
       break;
     }
 

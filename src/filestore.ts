@@ -287,6 +287,29 @@ export function skillDelete(name: string): boolean {
   try { rmSync(f.full, { force: true }); return true; } catch { return false; }
 }
 
+/** Rename a skill category folder: re-path every skill under `oldPrefix` to `newPrefix`. */
+export function skillMoveCategory(oldPrefix: string, newPrefix: string): number {
+  const op = (oldPrefix || "").replace(/^\/+|\/+$/g, "");
+  const np = safeCategory(newPrefix || "");
+  if (!op || !np || op === np) return 0;
+  let n = 0;
+  for (const meta of skillList() as any[]) {
+    const cat = meta.category || "";
+    if (cat === op || cat.startsWith(op + "/")) {
+      const full = skillGet(meta.name);
+      if (!full) continue;
+      const newCat = np + cat.slice(op.length);
+      skillUpsert({
+        name: full.name, content: full.content, description: full.description,
+        category: newCat, tags: JSON.parse(full.tags || "[]"),
+        source_project: full.source_project ?? undefined,
+      });
+      n++;
+    }
+  }
+  return n;
+}
+
 // ── Papers ────────────────────────────────────────────────────────────────
 // Files: papers/<Category>/<Title>.md. Frontmatter carries bibliographic
 // metadata, a list of conclusions (shown in the graph), and a `cites` list where

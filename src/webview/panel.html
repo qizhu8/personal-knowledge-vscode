@@ -788,8 +788,15 @@ function renderList() {
     const q = state.search;
     // Recursive N-level tree by category path; leaf = skill (shows skill name)
     const root = buildCatTree(items, r => r.category, '(uncategorized)');
+    // Right-click a folder to rename it (re-paths all skills under it).
+    const folderAttr = (child, name, fullPath) => {
+      const prefix = fullPath.join('/');
+      if (prefix === '(uncategorized)' || fullPath[0] === '(uncategorized)') return '';
+      const b64 = btoa(unescape(encodeURIComponent(prefix)));
+      return ` oncontextmenu="skillFolderMenu(event,'${b64}',${JSON.stringify(name).replace(/"/g, '&quot;')})"`;
+    };
     const html = renderCatTree(root, [], 0, (r, depth) =>
-      skillLi(r, r.name, q, 8 + (depth + 1) * 12), q);
+      skillLi(r, r.name, q, 8 + (depth + 1) * 12), q, folderAttr);
     el.innerHTML = html || '<div class="empty">No skills</div>';
 
   } else if (tab === 'notes') {
@@ -941,7 +948,7 @@ function renderCatTree(node, path, depth, renderLeaf, q, folderAttr) {
     const open = !!catExpanded[key];
     const pad = 8 + depth * 12;
     html += `<div class="tree-cat">
-      <div class="tree-cat-hdr" style="padding-left:${pad}px" onclick="toggleCat('${key}')" title="${esc(name)}"${folderAttr ? folderAttr(child, name) : ''}>
+      <div class="tree-cat-hdr" style="padding-left:${pad}px" onclick="toggleCat('${key}')" title="${esc(name)}"${folderAttr ? folderAttr(child, name, path.concat(name)) : ''}>
         <span class="tree-cat-arrow">${open ? '▾' : '▸'}</span>
         <span class="tree-cat-label">${name === '(uncategorized)' ? '<em style="opacity:.6">(uncategorized)</em>' : esc(name)}</span>
         <span class="tree-cat-count">${countTreeLeaves(child)}</span>
@@ -1691,6 +1698,24 @@ function paperFolderMenu(ev, b64, name) {
     items.push({ label: '   ' + g.name, onClick: () => ask('paperSetGroupMany', { slugs, group: g.name }) });
   }
   items.push({ label: '＋ New group…', onClick: () => pkModal({ title: 'Move “' + name + '” to a new group', input: true, okLabel: 'Create & move', onOk: v => { if (v.trim()) ask('paperSetGroupMany', { slugs, group: v.trim() }); } }) });
+  showPaperMenu(ev.clientX, ev.clientY, items);
+}
+
+// Right-click a Skills category folder -> rename it (re-paths all skills under it).
+function skillFolderMenu(ev, b64, name) {
+  ev.preventDefault(); ev.stopPropagation();
+  let prefix = '';
+  try { prefix = decodeURIComponent(escape(atob(b64))); } catch (e) {}
+  if (!prefix) return;
+  const items = [{ label: '📁 ' + name, header: true }];
+  items.push({ label: '✏ Rename folder…', onClick: () => pkModal({
+    title: 'Rename folder', message: 'Renames “' + prefix + '” and re-paths every skill under it.',
+    input: true, defaultValue: name, okLabel: 'Rename', onOk: v => {
+      const nn = v.trim();
+      if (!nn || nn === name) return;
+      const segs = prefix.split('/'); segs[segs.length - 1] = nn;
+      ask('skillRenameFolder', { oldPrefix: prefix, newPrefix: segs.join('/') });
+    } }) });
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
 
