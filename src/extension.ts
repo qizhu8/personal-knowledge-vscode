@@ -636,7 +636,7 @@ async function handleMessage(
         authors: p.authors ?? [], year: p.year ?? null, topic: p.topic ?? "",
         publisher: p.publisher ?? "", tags: p.tags ?? [], url: p.url ?? "",
         file: p.file ?? "", conclusions: p.conclusions ?? [], cites: p.cites ?? [],
-        category: p.category ?? "",
+        category: p.category ?? "", kind: p.kind ?? "paper",
       });
       gitCommit(p.slug ? `update(paper): ${slug}` : `add(paper): ${slug}`);
       respond({ command: "saved" });

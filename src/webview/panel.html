@@ -317,6 +317,7 @@ mark{background:var(--vscode-editor-findMatchHighlightBackground,#ffd70055);colo
       <div class="form-row">
         <input id="pf-title" placeholder="Title" style="flex:3">
         <input id="pf-year" placeholder="Year" type="number" style="flex:0.6">
+        <label style="font-size:11px;display:flex;align-items:center;gap:4px;white-space:nowrap" title="Mark this as your own idea (rendered distinctly in the graph), not a paper"><input type="checkbox" id="pf-kind-idea"> 💡 Idea</label>
       </div>
       <div class="form-row">
         <input id="pf-authors" placeholder="Authors (comma-separated)" style="flex:2">
@@ -1538,7 +1539,7 @@ function paperCard(p, q, pad) {
   const authors = (p.authors || []).slice(0, 3).join(', ') + ((p.authors || []).length > 3 ? ' et al.' : '');
   const tags = (p.tags || []).map(t => `<span class="pc-tag">${esc(t)}</span>`).join('');
   return `<div class="paper-card" style="margin-left:${pad}px" onclick="openItem('paper','${esc(p.slug)}')">
-    <div class="pc-title">${hl(p.title, q)}</div>
+    <div class="pc-title">${p.kind === 'idea' ? '💡 ' : ''}${hl(p.title, q)}</div>
     <div class="pc-meta">
       ${p.citationCount ? `<span class="pc-cite" title="cited by ${p.citationCount} paper(s)">${p.citationCount}★</span>` : ''}
       ${p.year ? `<span>${p.year}</span>` : ''}
@@ -1556,8 +1557,9 @@ function paperDetailHtml(d) {
   const concl = d.conclusions || [];
   const cites = d.cites || [];
   return `
-    <div class="d-title">${esc(d.title)}</div>
+    <div class="d-title">${d.kind === 'idea' ? '💡 ' : ''}${esc(d.title)}</div>
     <div class="d-meta">
+      ${d.kind === 'idea' ? '<span class="pc-cite" style="background:#f4b400;color:#1a1200">💡 Idea</span>' : ''}
       ${d.citationCount ? `<span class="pc-cite">${d.citationCount}★ cited</span>` : ''}
       ${d.year ? `<span>${d.year}</span>` : ''}
       ${d.topic ? `<span class="cat">${esc(d.topic)}</span>` : ''}
@@ -1595,6 +1597,7 @@ function openPaperForm(paper) {
   set('pf-conclusions', (paper?.conclusions || []).join('\n'));
   set('pf-cites', (paper?.cites || []).map(c => c.note ? (c.paper + ' :: ' + c.note) : c.paper).join('\n'));
   set('pf-content', paper?.content || ''); set('pf-slug', paper?.slug || '');
+  document.getElementById('pf-kind-idea').checked = paper?.kind === 'idea';
   populatePaperDatalist();
   updatePaperPreview();
   document.getElementById('detail').style.display = 'none';
@@ -1646,6 +1649,7 @@ function savePaper() {
     tags: val('pf-tags').split(',').map(s => s.trim()).filter(Boolean),
     url: val('pf-url').trim(), file: val('pf-file').trim(),
     conclusions: splitLines(val('pf-conclusions')), cites,
+    kind: document.getElementById('pf-kind-idea').checked ? 'idea' : 'paper',
     content: document.getElementById('pf-content').value,
   };
   ask('savePaper', { paper });
@@ -1716,12 +1720,19 @@ function renderPaperGraph(data) {
   const edgeCol = (cssv.getPropertyValue('--muted') || '#888').trim();
   const maxCC = Math.max(1, ...data.nodes.map(n => n.citationCount || 0));
   const elements = [];
-  for (const n of data.nodes) elements.push({ data: {
-    id: n.key, label: n.title, display: n.title, cc: n.citationCount || 0,
-    year: n.year || '', topic: n.topic || '', color: topicColor(n.topic),
-    conclusions: (n.conclusions || []).join('\n'),
+  const ideaKeys = new Set(data.nodes.filter(n => n.kind === 'idea').map(n => n.key));
+  for (const n of data.nodes) {
+    const isIdea = n.kind === 'idea';
+    elements.push({ data: {
+      id: n.key, label: n.title, display: (isIdea ? '💡 ' : '') + n.title, cc: n.citationCount || 0,
+      year: n.year || '', topic: n.topic || '', color: isIdea ? '#f4b400' : topicColor(n.topic),
+      kind: n.kind || 'paper', conclusions: (n.conclusions || []).join('\n'),
+    } });
+  }
+  for (const e of data.edges) elements.push({ data: {
+    id: 'e_' + e.from + '__' + e.to, source: e.from, target: e.to, note: e.note || '',
+    ideaEdge: (ideaKeys.has(e.from) || ideaKeys.has(e.to)) ? 1 : 0,
   } });
-  for (const e of data.edges) elements.push({ data: { id: 'e_' + e.from + '__' + e.to, source: e.from, target: e.to, note: e.note || '' } });
   if (cy) { try { cy.destroy(); } catch (e) {} }
   cy = cytoscape({
     container: el, elements, wheelSensitivity: 0.2,
@@ -1732,10 +1743,17 @@ function renderPaperGraph(data) {
         'width': 'mapData(cc,0,' + maxCC + ',18,66)', 'height': 'mapData(cc,0,' + maxCC + ',18,66)',
         'border-width': 1, 'border-color': '#0008',
       } },
+      { selector: 'node[kind = "idea"]', style: {
+        'shape': 'round-rectangle', 'background-color': '#f4b400', 'background-opacity': 0.95,
+        'border-color': '#8a5a00', 'border-width': 2.5, 'border-style': 'dashed',
+        'width': 96, 'height': 44, 'color': '#1a1200', 'font-weight': 'bold', 'font-size': 10,
+        'text-valign': 'center', 'text-margin-y': 0, 'text-max-width': 150,
+      } },
       { selector: 'edge', style: {
         'width': 1.4, 'line-color': edgeCol, 'target-arrow-color': edgeCol,
         'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'arrow-scale': 0.9,
       } },
+      { selector: 'edge[ideaEdge = 1]', style: { 'line-style': 'dashed', 'line-color': '#c8941a', 'target-arrow-color': '#c8941a', 'width': 2 } },
       { selector: 'node:selected', style: { 'border-width': 3, 'border-color': '#ffd166' } },
     ],
     layout: currentPaperLayout(),

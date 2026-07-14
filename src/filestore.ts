@@ -324,6 +324,7 @@ function paperFromFile(f: MdFile): any {
   return {
     slug: key,
     title: fm.title || nameOf(key),
+    kind: fm.kind === "idea" ? "idea" : "paper",
     authors: asArray(fm.authors),
     year: toYear(fm.year),
     topic: fm.topic || "",
@@ -392,7 +393,7 @@ export function paperGet(slug: string): any {
 export function paperUpsert(row: {
   slug: string; title: string; content?: string; authors?: string[]; year?: number | string | null;
   topic?: string; publisher?: string; tags?: string[]; url?: string; file?: string;
-  conclusions?: string[]; cites?: Cite[]; category?: string;
+  conclusions?: string[]; cites?: Cite[]; category?: string; kind?: string;
 }): boolean {
   const existing = paperGet(row.slug);
   const category = safeCategory(row.category ?? existing?.category ?? "");
@@ -408,6 +409,7 @@ export function paperUpsert(row: {
   mkdirSync(join(full, ".."), { recursive: true });
   const fm: Record<string, any> = {
     title: row.title,
+    kind: (row.kind ?? existing?.kind) === "idea" ? "idea" : undefined,
     authors: row.authors ?? existing?.authors ?? [],
     year: toYear(row.year ?? existing?.year),
     topic: row.topic ?? existing?.topic ?? "",
@@ -477,7 +479,7 @@ export function paperGraph(opts: {
 
   const nodes = [...nodeSet].map(s => bySlug.get(s)).filter(Boolean).map(p => ({
     key: p.slug, title: p.title, year: p.year, topic: p.topic, authors: p.authors, tags: p.tags,
-    citationCount: counts.get(p.slug) || 0, conclusions: p.conclusions, url: p.url, file: p.file, category: p.category,
+    kind: p.kind, citationCount: counts.get(p.slug) || 0, conclusions: p.conclusions, url: p.url, file: p.file, category: p.category,
   }));
   const edges: any[] = [];
   for (const p of all) {
