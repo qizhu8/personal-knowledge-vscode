@@ -8,6 +8,8 @@ import {
   skillList, skillSearch, skillGet, skillUpsert, skillDelete,
   noteList, noteSearch, noteGet, noteUpsert, noteDelete, slugExists,
   noteExport, noteImport, saveNoteAsset,
+  paperList, paperSearch, paperGet, paperUpsert, paperDelete,
+  paperFacets, paperGraph, savePaperFile,
   setStorePath as fsSetStorePath, getStorePath,
 } from "./filestore";
 import { migrateDbToFiles } from "./migrate";
@@ -111,6 +113,13 @@ function uniqueSlug(title: string): string {
   let slug = toSlug(title), n = 2;
   while (slugExists(slug)) slug = `${toSlug(title)}-${n++}`;
   return slug;
+}
+
+// Paper identity is its folder path + title (title preserved). paperUpsert
+// writes to the sanitized path; this just builds the category/title key.
+function uniquePaperSlug(title: string, category: string): string {
+  const cat = (category || "").replace(/^\/+|\/+$/g, "");
+  return (cat ? cat + "/" : "") + ((title || "paper").trim() || "paper");
 }
 
 // ── Standalone note HTML export ──────────────────────────────────────────────
@@ -386,6 +395,10 @@ function getWebviewHtml(webview: vscode.Webview, context: vscode.ExtensionContex
   html = html.replace(/%%KATEX_SRC%%/g, katexJs.toString());
   html = html.replace(/%%KATEX_CSS%%/g, katexCss.toString());
 
+  // Graph rendering (Cytoscape.js bundled locally) for the Papers graph view.
+  const cytoscapeJs = webview.asWebviewUri(vscode.Uri.file(path.join(webviewDir, "cytoscape.js")));
+  html = html.replace(/%%CYTOSCAPE_SRC%%/g, cytoscapeJs.toString());
+
   // Inject the webview CSP source — required for VS Code to allow scripts to run
   html = html.replace(/%%CSP_SOURCE%%/g, webview.cspSource);
 
@@ -474,6 +487,7 @@ async function handleMessage(
       let data: unknown;
       if (tab === "skills")    data = q ? skillSearch(q) : skillList(filter === "all" ? undefined : filter);
       else if (tab === "notes")   data = q ? noteSearch(q) : noteList(undefined, 500); // client-side filtering
+      else if (tab === "papers")  data = q ? paperSearch(q) : paperList();
       else if (tab === "prompts")  data = promptList();
       else if (tab === "packages") data = packageList();
       else if (tab === "scripts")  data = scriptList();
@@ -491,6 +505,9 @@ async function handleMessage(
       } else if (type === "note") {
         const r = noteGet(key);
         if (r) data = { ...r, note_type: r.type, type: "note" };
+      } else if (type === "paper") {
+        const r = paperGet(key);
+        if (r) data = { type: "paper", ...r };
       } else if (type === "prompt") {
         const [proj, task, ver, fname] = key.split("|");
         const r = promptGetFile(proj, task, ver, fname);
@@ -611,6 +628,73 @@ async function handleMessage(
       break;
     }
 
+    case "savePaper": {
+      const p = msg.paper || {};
+      const slug = p.slug || uniquePaperSlug(p.title || "paper", p.category || "");
+      paperUpsert({
+        slug, title: p.title || slug, content: p.content ?? "",
+        authors: p.authors ?? [], year: p.year ?? null, topic: p.topic ?? "",
+        publisher: p.publisher ?? "", tags: p.tags ?? [], url: p.url ?? "",
+        file: p.file ?? "", conclusions: p.conclusions ?? [], cites: p.cites ?? [],
+        category: p.category ?? "",
+      });
+      gitCommit(p.slug ? `update(paper): ${slug}` : `add(paper): ${slug}`);
+      respond({ command: "saved" });
+      vscode.window.setStatusBarMessage("$(check) Paper saved", 3000);
+      break;
+    }
+
+    case "deletePaper": {
+      const { slug } = msg;
+      if (paperDelete(slug)) gitCommit(`delete(paper): ${slug}`);
+      respond({ command: "saved" });
+      respond({ command: "detail", data: null });
+      vscode.window.setStatusBarMessage("$(trash) Paper deleted", 3000);
+      break;
+    }
+
+    case "paperFacets": {
+      respond({ command: "paperFacets", data: paperFacets() });
+      break;
+    }
+
+    case "paperGraph": {
+      respond({ command: "paperGraph", data: paperGraph(msg.opts || {}) });
+      break;
+    }
+
+    case "savePaperFile": {
+      // Uploaded local paper file (e.g. a PDF) -> papers/<category>/_assets/<hash>.<ext>
+      const { data, ext, category, reqId } = msg;
+      try {
+        const rel = savePaperFile(String(data || ""), String(ext || "pdf"), String(category || ""));
+        respond({ command: "paperFileSaved", reqId, file: rel });
+      } catch (e) {
+        log.error(`savePaperFile failed: ${String(e)}`);
+        respond({ command: "paperFileSaved", reqId, error: String(e) });
+      }
+      break;
+    }
+
+    case "openPaperLink": {
+      // Open a paper's remote URL or its local file in the OS default app.
+      const url = String(msg.url || "").trim();
+      const file = String(msg.file || "").trim();
+      const category = String(msg.category || "").trim();
+      try {
+        if (url) {
+          await vscode.env.openExternal(vscode.Uri.parse(url));
+        } else if (file) {
+          const segs = category.split("/").map(s => s.trim()).filter(Boolean);
+          const full = path.join(getStorePath(), "papers", ...segs, file);
+          await vscode.env.openExternal(vscode.Uri.file(full));
+        }
+      } catch (e) {
+        vscode.window.showErrorMessage(`Couldn't open paper: ${String(e)}`);
+      }
+      break;
+    }
+
     case "export": {
       const rows = skillList() as any[];
       const bundle = {
@@ -688,6 +772,15 @@ async function handleMessage(
           counts.skills = (counts.skills ?? 0) + 1;
         }
         if (bundle?.notes?.length)    counts.notes    = noteImport(bundle.notes);
+        for (const p of bundle?.papers ?? []) {
+          paperUpsert({
+            slug: p.slug, title: p.title, content: p.content ?? "",
+            authors: p.authors, year: p.year, topic: p.topic, publisher: p.publisher,
+            tags: p.tags, url: p.url, file: p.file, conclusions: p.conclusions,
+            cites: p.cites, category: p.category,
+          });
+          counts.papers = (counts.papers ?? 0) + 1;
+        }
         if (bundle?.prompts?.length)  counts.prompts  = promptImport(bundle.prompts);
         if (bundle?.scripts?.length)  counts.scripts  = scriptImport(bundle.scripts);
         if (bundle?.packages?.length) counts.packages = packageImport(bundle.packages);
@@ -712,10 +805,11 @@ async function handleMessage(
     case "getSyncContentList": {
       const skills   = (skillList() as any[]).map((r: any) => ({ id: r.name,  label: r.name,  meta: r.category ?? "" }));
       const notes    = (noteList(undefined, 200) as any[]).map((r: any) => ({ id: r.slug,  label: r.title, meta: r.type }));
+      const papers   = (paperList() as any[]).map((p: any) => ({ id: p.slug, label: p.title, meta: p.topic || (p.year ? String(p.year) : "") }));
       const prompts  = promptList().flatMap(t => ({ id: `${t.project}/${t.task}`, label: t.task, meta: t.project }));
       const scripts  = (scriptList() as any[]).map((s: any) => ({ id: s.path, label: s.file, meta: s.category }));
       const packages = packageList().map((p: any) => ({ id: p.name, label: p.name, meta: p.lang }));
-      respond({ command: "syncContentList", data: { skills, notes, prompts, scripts, packages } });
+      respond({ command: "syncContentList", data: { skills, notes, papers, prompts, scripts, packages } });
       break;
     }
 
@@ -880,8 +974,10 @@ the files are the single source of truth (there is no database). Writes made by
 this server appear immediately in the VS Code panel via its file watcher, and
 show up in git history as readable .md diffs.
 
-Read tools:  list_skills, search_skills, get_skill, list_notes, search_notes, get_note
-Write tools: add_note, update_note, delete_note, add_skill, update_skill, delete_skill
+Read tools:  list_skills, search_skills, get_skill, list_notes, search_notes, get_note,
+             list_papers, search_papers, get_paper, paper_graph
+Write tools: add_note, update_note, delete_note, add_skill, update_skill, delete_skill,
+             add_paper, update_paper, delete_paper
 
 Search builds an in-memory FTS5 'trigram' index (CJK-friendly, ranked) at call
 time, falling back to substring matching when FTS5 is unavailable.
@@ -1051,6 +1147,79 @@ def _skill_write(name, content, description, category, tags, source_project=None
           "source_project": source_project, "created": created or _now()}
     full.write_text(_serialize(fm, content or ""), encoding="utf-8")
     return name
+
+
+# ── Papers ───────────────────────────────────────────────────────────────────
+PAPERS = STORE / "papers"
+
+def _arr(x):
+    return x if isinstance(x, list) else ([x] if x else [])
+
+def _year(v):
+    if isinstance(v, int): return v
+    try: return int(str(v))
+    except Exception: return None
+
+def _norm_cites(v):
+    out = []
+    if isinstance(v, list):
+        for e in v:
+            if isinstance(e, str):
+                if e.strip(): out.append({"paper": e.strip(), "note": ""})
+            elif isinstance(e, dict):
+                p = str(e.get("paper") or e.get("key") or "").strip()
+                if p: out.append({"paper": p, "note": str(e.get("note") or e.get("comment") or "")})
+    return out
+
+def _paper(p, key):
+    fm, body = _parse(p.read_text(encoding="utf-8"))
+    return {"slug": key, "title": fm.get("title") or _name_of(key),
+            "authors": _arr(fm.get("authors")), "year": _year(fm.get("year")),
+            "topic": fm.get("topic") or "", "publisher": fm.get("publisher") or "",
+            "tags": _arr(fm.get("tags")), "url": fm.get("url") or "", "file": fm.get("file") or "",
+            "conclusions": _arr(fm.get("conclusions")), "cites": _norm_cites(fm.get("cites")),
+            "category": _cat_of(key), "content": body, "updated_at": _mtime(p)}
+
+def _all_papers():
+    return [_paper(p, k) for p, k in _walk(PAPERS)]
+
+def _paper_get(slug):
+    p = PAPERS / (slug + ".md")
+    return _paper(p, slug) if p.exists() else None
+
+def _paper_resolver(all_p):
+    by_key = {p["slug"].lower(): p["slug"] for p in all_p}
+    by_title = {p["title"].lower(): p["slug"] for p in all_p}
+    def r(ref):
+        k = str(ref or "").lower()
+        if k.endswith(".md"): k = k[:-3]
+        return by_key.get(k) or by_title.get(k)
+    return r
+
+def _citation_counts(all_p):
+    resolve = _paper_resolver(all_p)
+    counts = {}
+    for p in all_p:
+        for c in p["cites"]:
+            t = resolve(c["paper"])
+            if t: counts[t] = counts.get(t, 0) + 1
+    return counts
+
+def _paper_write(slug, title, content, authors, year, topic, publisher, tags, url, file, conclusions, cites, category, created=None):
+    cat = _safe_cat(category or "")
+    fname = _safe_name(title or _name_of(slug)) + ".md"
+    rel = (cat + "/" + fname) if cat else fname
+    full = PAPERS / rel
+    old = PAPERS / (slug + ".md")
+    if old.exists() and rel[:-3] != slug:
+        try: old.unlink()
+        except Exception: pass
+    full.parent.mkdir(parents=True, exist_ok=True)
+    fm = {"title": title, "authors": authors or [], "year": _year(year), "topic": topic or "",
+          "publisher": publisher or "", "tags": tags or [], "url": url or "", "file": file or "",
+          "conclusions": conclusions or [], "cites": _norm_cites(cites or []), "created": created or _now()}
+    full.write_text(_serialize(fm, content or ""), encoding="utf-8")
+    return rel[:-3]
 
 
 # ── In-memory FTS5 index (built from files at call time) ─────────────────────
@@ -1237,6 +1406,123 @@ def delete_skill(name: str) -> str:
     return json.dumps({"ok": True, "name": name})
 
 
+# ── Paper tools ──────────────────────────────────────────────────────────────
+@mcp.tool()
+def list_papers(topic: Optional[str] = None) -> str:
+    """List papers (optionally filtered by topic), sorted by citation count (popularity)."""
+    all_p = _all_papers(); counts = _citation_counts(all_p)
+    rows = [p for p in all_p if (not topic or p["topic"] == topic)]
+    rows.sort(key=lambda p: (-(counts.get(p["slug"], 0)), -(p["year"] or 0), p["title"]))
+    return json.dumps([{"slug": p["slug"], "title": p["title"], "year": p["year"],
+                        "authors": p["authors"], "topic": p["topic"], "publisher": p["publisher"],
+                        "tags": p["tags"], "citation_count": counts.get(p["slug"], 0)} for p in rows])
+
+
+@mcp.tool()
+def search_papers(query: str) -> str:
+    """Search papers by title, authors, topic, publisher, tags, or year."""
+    q = query.lower(); all_p = _all_papers(); counts = _citation_counts(all_p)
+    hits = [p for p in all_p if q in p["title"].lower() or q in p["topic"].lower()
+            or q in p["publisher"].lower() or q in " ".join(p["authors"]).lower()
+            or q in " ".join(p["tags"]).lower() or q in str(p["year"] or "")]
+    return json.dumps([{"slug": p["slug"], "title": p["title"], "year": p["year"],
+                        "topic": p["topic"], "citation_count": counts.get(p["slug"], 0)} for p in hits[:50]])
+
+
+@mcp.tool()
+def get_paper(slug: str) -> str:
+    """Get a paper's full record (metadata, conclusions, cites with notes, body) by slug."""
+    p = _paper_get(slug)
+    if not p:
+        return f"Paper '{slug}' not found. Use list_papers or search_papers to find it."
+    p["citation_count"] = _citation_counts(_all_papers()).get(slug, 0)
+    return json.dumps(p)
+
+
+@mcp.tool()
+def add_paper(title: str, authors: Optional[List[str]] = None, year: Optional[int] = None,
+              topic: str = "", publisher: str = "", tags: Optional[List[str]] = None,
+              url: str = "", conclusions: Optional[List[str]] = None,
+              cites: Optional[List[dict]] = None, category: str = "", content: str = "") -> str:
+    """Create a paper. 'cites' is a list of {paper, note}: paper is a cited paper's title or slug,
+    note explains how this paper uses it ('A cites B' means A is a child of B). 'category' is a
+    slash-separated folder path; 'conclusions' is a list shown in the citation graph."""
+    cat = _safe_cat(category or "")
+    key = (cat + "/" + title) if cat else title
+    if _paper_get(key):
+        return json.dumps({"error": f"Paper '{key}' already exists. Use update_paper instead."})
+    new = _paper_write(key, title, content, authors or [], year, topic, publisher, tags or [],
+                       url, "", conclusions or [], cites or [], cat)
+    return json.dumps({"ok": True, "slug": new})
+
+
+@mcp.tool()
+def update_paper(slug: str, title: Optional[str] = None, authors: Optional[List[str]] = None,
+                 year: Optional[int] = None, topic: Optional[str] = None, publisher: Optional[str] = None,
+                 tags: Optional[List[str]] = None, url: Optional[str] = None,
+                 conclusions: Optional[List[str]] = None, cites: Optional[List[dict]] = None,
+                 category: Optional[str] = None, content: Optional[str] = None) -> str:
+    """Update fields of an existing paper by slug. Only provided fields are changed."""
+    p = _paper_get(slug)
+    if not p:
+        return json.dumps({"error": f"Paper '{slug}' not found."})
+    new = _paper_write(slug,
+        title if title is not None else p["title"],
+        content if content is not None else p["content"],
+        authors if authors is not None else p["authors"],
+        year if year is not None else p["year"],
+        topic if topic is not None else p["topic"],
+        publisher if publisher is not None else p["publisher"],
+        tags if tags is not None else p["tags"],
+        url if url is not None else p["url"],
+        p["file"],
+        conclusions if conclusions is not None else p["conclusions"],
+        cites if cites is not None else p["cites"],
+        category if category is not None else p["category"])
+    return json.dumps({"ok": True, "slug": new})
+
+
+@mcp.tool()
+def delete_paper(slug: str) -> str:
+    """Delete a paper by slug."""
+    try: (PAPERS / (slug + ".md")).unlink(missing_ok=True)
+    except Exception: pass
+    return json.dumps({"ok": True, "slug": slug})
+
+
+@mcp.tool()
+def paper_graph(topic: Optional[str] = None, limit: int = 10, neighbors: bool = False) -> str:
+    """Citation graph of the top papers. Returns {nodes, edges}: each edge is
+    {from: cited_parent, to: citing_child, note}. 'limit' keeps the top-N by citations
+    (optionally within 'topic'); set neighbors=true to also include directly-connected papers."""
+    all_p = _all_papers(); resolve = _paper_resolver(all_p); counts = _citation_counts(all_p)
+    by = {p["slug"]: p for p in all_p}
+    filtered = [p for p in all_p if (not topic or p["topic"] == topic)]
+    filtered.sort(key=lambda p: (-(counts.get(p["slug"], 0)), -(p["year"] or 0)))
+    node_set = set(p["slug"] for p in filtered[:max(1, limit)])
+    if neighbors:
+        for s in list(node_set):
+            p = by.get(s)
+            if not p: continue
+            for c in p["cites"]:
+                t = resolve(c["paper"])
+                if t: node_set.add(t)
+            for q in all_p:
+                for c in q["cites"]:
+                    if resolve(c["paper"]) == s: node_set.add(q["slug"])
+    nodes = [{"key": by[s]["slug"], "title": by[s]["title"], "year": by[s]["year"],
+              "topic": by[s]["topic"], "citation_count": counts.get(s, 0),
+              "conclusions": by[s]["conclusions"]} for s in node_set if s in by]
+    edges = []
+    for p in all_p:
+        if p["slug"] not in node_set: continue
+        for c in p["cites"]:
+            t = resolve(c["paper"])
+            if t and t in node_set:
+                edges.append({"from": t, "to": p["slug"], "note": c["note"]})
+    return json.dumps({"nodes": nodes, "edges": edges, "total": len(filtered), "shown": len(nodes)})
+
+
 if __name__ == "__main__":
     mcp.run()
 `);
@@ -1399,8 +1685,8 @@ async function aiSummarizeScript(
 
 // ── Sidebar tree provider ──────────────────────────────────────────────────
 type PkNodeType =
-  | 'root-skills' | 'root-notes' | 'root-prompts' | 'root-packages' | 'root-scripts'
-  | 'skill-folder' | 'skill' | 'note-folder' | 'note'
+  | 'root-skills' | 'root-notes' | 'root-papers' | 'root-prompts' | 'root-packages' | 'root-scripts'
+  | 'skill-folder' | 'skill' | 'note-folder' | 'note' | 'paper-folder' | 'paper'
   | 'prompt-project' | 'prompt-task' | 'prompt-version' | 'prompt-file'
   | 'package' | 'script-folder' | 'script-file';
 
@@ -1415,10 +1701,10 @@ class PkTreeItem extends vscode.TreeItem {
   ) {
     super(label, collapsibleState);
     const ICONS: Partial<Record<PkNodeType, string>> = {
-      "root-skills": "book", "root-notes": "note", "root-prompts": "comment-discussion",
+      "root-skills": "book", "root-notes": "note", "root-papers": "library", "root-prompts": "comment-discussion",
       "root-packages": "package", "root-scripts": "terminal",
-      "skill-folder": "folder", "note-folder": "folder",
-      "skill": "symbol-snippet", "note": "file-text",
+      "skill-folder": "folder", "note-folder": "folder", "paper-folder": "folder",
+      "skill": "symbol-snippet", "note": "file-text", "paper": "file-pdf",
       "prompt-project": "folder", "prompt-task": "symbol-file",
       "prompt-version": "versions", "prompt-file": "file-code",
       "package": "package", "script-folder": "folder", "script-file": "file-code",
@@ -1430,10 +1716,12 @@ class PkTreeItem extends vscode.TreeItem {
     // contextValue drives right-click "New item" menus (see package.json view/item/context)
     if (nodeType === 'root-skills' || nodeType === 'skill-folder')      this.contextValue = 'pk-skills-container';
     else if (nodeType === 'root-notes' || nodeType === 'note-folder')   this.contextValue = 'pk-notes-container';
+    else if (nodeType === 'root-papers' || nodeType === 'paper-folder') this.contextValue = 'pk-papers-container';
     else if (nodeType === 'root-scripts' || nodeType === 'script-folder') this.contextValue = 'pk-scripts-container';
     // Leaf items support right-click Edit
     else if (nodeType === 'skill')       this.contextValue = 'pk-skill-item';
     else if (nodeType === 'note')        this.contextValue = 'pk-note-item';
+    else if (nodeType === 'paper')       this.contextValue = 'pk-paper-item';
     else if (nodeType === 'script-file') this.contextValue = 'pk-script-item';
   }
 }
@@ -1451,6 +1739,7 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
       return [
         new PkTreeItem("Skills",   'root-skills',   vscode.TreeItemCollapsibleState.Collapsed),
         new PkTreeItem("Notes",    'root-notes',    C),
+        new PkTreeItem("Papers",   'root-papers',   C),
         new PkTreeItem("Prompts",  'root-prompts',  C),
         new PkTreeItem("Packages", 'root-packages', C),
         new PkTreeItem("Scripts",  'root-scripts',  C),
@@ -1462,6 +1751,8 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
         case 'skill-folder':   return this._skillFolder(element.nodeData.path);
         case 'root-notes':     return this._noteFolder([]);
         case 'note-folder':    return this._noteFolder(element.nodeData.path);
+        case 'root-papers':    return this._paperFolder([]);
+        case 'paper-folder':   return this._paperFolder(element.nodeData.path);
         case 'root-prompts':   return this._promptProjects();
         case 'prompt-project': return this._promptTasks(element.nodeData.project);
         case 'prompt-task':    return this._promptVersions(element.nodeData.project, element.nodeData.task);
@@ -1572,6 +1863,38 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
       const item = new PkTreeItem(n.title, 'note', vscode.TreeItemCollapsibleState.None, { key: n.slug });
       item.description = n.updated_at?.slice(0, 10);
       item.command = { command: 'personalKnowledge.openNote', title: 'Open', arguments: [n.slug] };
+      out.push(item);
+    }
+    return out;
+  }
+
+  // ── Papers (category → paper) ────────────────────────────────────────────
+  private _paperRoot(): PkFolder {
+    const entries = (paperList() as any[]).map(p => {
+      const cat = (p.category || "").trim();
+      const path = cat ? cat.split("/").map((x: string) => x.trim()).filter(Boolean) : ["(uncategorized)"];
+      return { path, data: p };
+    });
+    return this._buildPathTree(entries);
+  }
+
+  private _paperFolder(path: string[]): PkTreeItem[] {
+    const node = this._navigate(this._paperRoot(), path);
+    if (!node) return [];
+    const out: PkTreeItem[] = [];
+    for (const name of [...node.folders.keys()].sort((a, b) =>
+      a === "(uncategorized)" ? 1 : b === "(uncategorized)" ? -1 : a.localeCompare(b))) {
+      const folder = node.folders.get(name)!;
+      const item = new PkTreeItem(name, 'paper-folder', vscode.TreeItemCollapsibleState.Collapsed,
+        { path: [...path, name] });
+      item.description = String(this._countLeaves(folder));
+      out.push(item);
+    }
+    // Sort papers by citation count (popularity), then year desc
+    for (const p of node.items.sort((a: any, b: any) => (b.citationCount - a.citationCount) || ((b.year || 0) - (a.year || 0)))) {
+      const item = new PkTreeItem(p.title, 'paper', vscode.TreeItemCollapsibleState.None, { key: p.slug });
+      item.description = `${p.year || ""}${p.citationCount ? "  ·  " + p.citationCount + "★" : ""}`.trim();
+      item.command = { command: 'personalKnowledge.openPaper', title: 'Open', arguments: [p.slug] };
       out.push(item);
     }
     return out;
@@ -1861,6 +2184,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       openInPanel(context, "note", slug);
     }),
 
+    vscode.commands.registerCommand("personalKnowledge.openPaper", async (slug: string) => {
+      log.action("command.openPaper", { slug });
+      if (!(await ensureSetup(context))) return;
+      openInPanel(context, "paper", slug);
+    }),
+
     vscode.commands.registerCommand("personalKnowledge.openPrompt", async (key: string) => {
       log.action("command.openPrompt", { key });
       if (!(await ensureSetup(context))) return;
@@ -1963,7 +2292,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 let _watcher: vscode.FileSystemWatcher | undefined;
 function startFileWatcher(context: vscode.ExtensionContext): void {
   _watcher?.dispose();
-  const pattern = new vscode.RelativePattern(getStorePath(), "{notes,skills}/**/*.md");
+  const pattern = new vscode.RelativePattern(getStorePath(), "{notes,skills,papers}/**/*.md");
   _watcher = vscode.workspace.createFileSystemWatcher(pattern);
   const onChange = () => {
     _treeProvider?.refresh();

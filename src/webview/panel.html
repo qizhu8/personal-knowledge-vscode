@@ -10,6 +10,7 @@
 <script src="%%MARKED_SRC%%"></script>
 <script src="%%HLJS_SRC%%"></script>
 <script src="%%KATEX_SRC%%"></script>
+<script src="%%CYTOSCAPE_SRC%%"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{--bg:var(--vscode-editor-background);--panel:var(--vscode-sideBar-background);
@@ -98,6 +99,27 @@ hr.div{border:none;border-top:1px solid var(--border);margin:14px 0}
 .math-error{color:#f87171;background:var(--panel);padding:1px 4px;border-radius:3px}
 .katex{font-size:1.05em}
 .katex-display{margin:.4em 0}
+/* Papers */
+#paper-form.hidden,#paper-graph-view.hidden{display:none}
+#paper-form{padding:14px 16px;overflow-y:auto;flex:1;min-height:0}
+.pf-label{font-size:11px;color:var(--muted)}
+.pf-area{width:100%;min-height:64px;background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px;font-size:12px;font-family:var(--vscode-editor-font-family);resize:vertical;outline:none;line-height:1.5}
+#paper-split{display:flex;gap:10px;min-height:160px}
+#paper-split textarea{flex:1;background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:8px;font-size:12px;font-family:var(--vscode-editor-font-family);resize:vertical;outline:none;line-height:1.6}
+#pf-preview{flex:1;overflow-y:auto;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;font-size:13px}
+.paper-card{padding:8px 10px;border:1px solid var(--border);border-radius:6px;margin:6px 8px;cursor:pointer;background:var(--panel)}
+.paper-card:hover{border-color:var(--accent)}
+.paper-card .pc-title{font-weight:600;font-size:12.5px;line-height:1.35}
+.paper-card .pc-meta{font-size:10.5px;color:var(--muted);margin-top:3px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.pc-cite{background:var(--accent);color:var(--bg);border-radius:10px;padding:0 6px;font-weight:700}
+.pc-tag{background:var(--input);border-radius:8px;padding:0 6px}
+#paper-graph-view{display:flex;flex-direction:column;height:100%}
+#pg-toolbar{display:flex;gap:12px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+#pg-canvas{flex:1;min-height:0;background:var(--bg)}
+#pg-tooltip{position:fixed;max-width:320px;background:var(--panel);border:1px solid var(--accent);border-radius:6px;padding:8px 10px;font-size:11.5px;z-index:50;pointer-events:none;box-shadow:0 4px 16px rgba(0,0,0,.4)}
+#pg-tooltip.hidden{display:none}
+#pg-tooltip .tt-title{font-weight:700;margin-bottom:4px}
+#pg-tooltip ul{margin:2px 0 0;padding-left:16px}
 /* Note types */
 .nt-todo{border-left-color:#f87171!important}.nt-done{border-left-color:#4ade80!important}
 .nt-data-path{border-left-color:#fb923c!important}.nt-observation{border-left-color:#60a5fa!important}
@@ -234,6 +256,7 @@ mark{background:var(--vscode-editor-findMatchHighlightBackground,#ffd70055);colo
   <div id="tabs">
     <button class="tab active" data-tab="skills">Skills</button>
     <button class="tab" data-tab="notes">Notes</button>
+    <button class="tab" data-tab="papers">Papers</button>
     <button class="tab" data-tab="prompts">Prompts</button>
     <button class="tab" data-tab="packages">Packages</button>
     <button class="tab" data-tab="scripts">Scripts</button>
@@ -242,6 +265,8 @@ mark{background:var(--vscode-editor-findMatchHighlightBackground,#ffd70055);colo
   <input id="searchbox" type="search" placeholder="Search…">
   <button class="tbtn" onclick="doReload()" title="Reload from disk (pick up external / MCP changes)">↻ Refresh</button>
   <button class="tbtn" onclick="toggleNoteForm()">+ Note</button>
+  <button class="tbtn" id="btn-add-paper" onclick="openPaperForm()" style="display:none">+ Paper</button>
+  <button class="tbtn" id="btn-paper-graph" onclick="togglePaperGraph()" style="display:none">🕸 Graph</button>
   <button class="tbtn" onclick="doExport()">⬇ Export</button>
   <button class="tbtn" onclick="triggerImport()">⬆ Import</button>
   <button class="tbtn" onclick="openSyncModal()">🔄 Sync</button>
@@ -285,6 +310,67 @@ mark{background:var(--vscode-editor-findMatchHighlightBackground,#ffd70055);colo
         <button class="tbtn" onclick="toggleNoteForm()">Cancel</button>
         <button class="tbtn" onclick="saveNote()" style="border-color:var(--accent)">Save Note</button>
       </div>
+    </div>
+
+    <div id="paper-form" class="hidden">
+      <h3 id="paper-form-title">New Paper</h3>
+      <div class="form-row">
+        <input id="pf-title" placeholder="Title" style="flex:3">
+        <input id="pf-year" placeholder="Year" type="number" style="flex:0.6">
+      </div>
+      <div class="form-row">
+        <input id="pf-authors" placeholder="Authors (comma-separated)" style="flex:2">
+        <input id="pf-topic" placeholder="Topic" style="flex:1">
+        <input id="pf-publisher" placeholder="Publisher / venue" style="flex:1">
+      </div>
+      <div class="form-row">
+        <input id="pf-category" placeholder="Category path e.g. Generative Retrieval" style="flex:2">
+        <input id="pf-tags" placeholder="tags, comma-sep" style="flex:1.5">
+      </div>
+      <div class="form-row">
+        <input id="pf-url" placeholder="Remote URL (arXiv / DOI / link)" style="flex:2">
+        <button class="tbtn" onclick="document.getElementById('pf-file-input').click()">⬆ Upload file</button>
+        <span id="pf-file-label" style="font-size:11px;color:var(--muted);align-self:center"></span>
+        <input type="file" id="pf-file-input" style="display:none" onchange="uploadPaperFile(this)">
+        <input type="hidden" id="pf-file">
+      </div>
+      <div class="form-row" style="flex-direction:column;align-items:stretch;gap:4px">
+        <label class="pf-label">Conclusions — one per line (shown in the graph)</label>
+        <textarea id="pf-conclusions" class="pf-area" placeholder="Self-attention replaces recurrence&#10;Parallelizable"></textarea>
+      </div>
+      <div class="form-row" style="flex-direction:column;align-items:stretch;gap:4px">
+        <label class="pf-label">Cites (papers this one builds on) — one per line: <code>Paper title :: how this paper uses it</code></label>
+        <textarea id="pf-cites" class="pf-area" placeholder="Attention Is All You Need :: uses multi-head self-attention" list="pf-paper-titles"></textarea>
+        <datalist id="pf-paper-titles"></datalist>
+      </div>
+      <div class="form-row" style="flex-direction:column;align-items:stretch;gap:4px">
+        <label class="pf-label">Notes / commentary (Markdown)</label>
+        <div id="paper-split">
+          <textarea id="pf-content" placeholder="Your summary, potential improvements…" oninput="updatePaperPreview()"></textarea>
+          <div id="pf-preview" class="prose"></div>
+        </div>
+      </div>
+      <input type="hidden" id="pf-slug">
+      <div class="form-actions">
+        <button class="tbtn" onclick="closePaperForm()">Cancel</button>
+        <button class="tbtn" onclick="savePaper()" style="border-color:var(--accent)">Save Paper</button>
+      </div>
+    </div>
+
+    <div id="paper-graph-view" class="hidden">
+      <div id="pg-toolbar">
+        <span style="font-weight:600;font-size:12px">🕸 Citation Graph</span>
+        <select id="pg-topic" onchange="loadPaperGraph()" title="Filter by topic"><option value="">All topics</option></select>
+        <label style="font-size:11px;display:flex;align-items:center;gap:4px">Top
+          <input id="pg-limit" type="number" value="10" min="1" max="200" style="width:52px" onchange="loadPaperGraph()"> by citations</label>
+        <label style="font-size:11px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="pg-neighbors" onchange="loadPaperGraph()"> +neighbors</label>
+        <span style="flex:1"></span>
+        <label style="font-size:11px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="pg-layout" onchange="applyPaperLayout()"> Hierarchical</label>
+        <label style="font-size:11px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="pg-allconc" onchange="toggleAllConclusions()"> Show all conclusions</label>
+        <span id="pg-count" style="font-size:11px;color:var(--muted)"></span>
+      </div>
+      <div id="pg-canvas"></div>
+      <div id="pg-tooltip" class="hidden"></div>
     </div>
   </div>
 </div>
@@ -484,6 +570,7 @@ window.addEventListener('message', e => {
         setTimeout(() => {
           if (t === 'skill')  startEditSkill();
           else if (t === 'note')   editNote(data);
+          else if (t === 'paper')  editPaper(data);
           else if (t === 'script') startEditScript();
         }, 30);
       }
@@ -496,6 +583,15 @@ window.addEventListener('message', e => {
   }
   else if (command === 'noteLinkMissing') {
     vscode.postMessage({ command: 'toast', text: 'No note found for “' + (e.data.target || '') + '”' });
+  }
+  else if (command === 'paperFacets') {
+    paperFacetsData = e.data.data || { topics: [], tags: [], years: [] };
+    if (state.tab === 'papers' && !paperGraphOpen) renderPaperFilters(document.getElementById('sidebar-filters'));
+    if (paperGraphOpen) populatePaperTopicSelect();
+  }
+  else if (command === 'paperGraph') { renderPaperGraph(e.data.data); }
+  else if (command === 'paperFileSaved') {
+    if (pendingPaperFile) { const cb = pendingPaperFile; pendingPaperFile = null; cb(e.data.file, e.data.error); }
   }
   else if (command === 'reloaded') {
     renderNonce++; // force cached note images to reload after external regeneration
@@ -574,7 +670,7 @@ window.addEventListener('message', e => {
     // Navigate to a specific item (triggered from sidebar tree view).
     // NOTE: type/key are top-level on the message, not under `data`.
     const itemType = e.data.type, itemKey = e.data.key, wantEdit = e.data.edit;
-    const TAB = { note:'notes', skill:'skills', prompt:'prompts', package:'packages', script:'scripts', packageFile:'packages' };
+    const TAB = { note:'notes', skill:'skills', paper:'papers', prompt:'prompts', package:'packages', script:'scripts', packageFile:'packages' };
     const tabName = TAB[itemType] || 'skills';
     const btn = document.querySelector(`.tab[data-tab="${tabName}"]`);
     if (btn) btn.dispatchEvent(new MouseEvent('click'));
@@ -602,6 +698,8 @@ document.querySelectorAll('.tab').forEach(t =>
     document.getElementById('searchbox').value = '';
     document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x.dataset.tab === state.tab));
     document.getElementById('detail').innerHTML = '<div class="empty">Select an item</div>';
+    closePaperViews();
+    updatePaperChrome();
     if (state.tab === 'mcp') {
       // Hide sidebar for MCP full-width pane
       document.getElementById('sidebar').style.display = 'none';
@@ -611,10 +709,28 @@ document.querySelectorAll('.tab').forEach(t =>
     } else {
       document.getElementById('sidebar').style.display = '';
       document.getElementById('searchbox').style.display = '';
+      if (state.tab === 'papers') ask('paperFacets', {});
       ask('list', { tab: state.tab, filter: 'all', q: '' });
     }
   })
 );
+
+// Show/hide the Papers-specific topbar buttons.
+function updatePaperChrome() {
+  const on = state.tab === 'papers';
+  document.getElementById('btn-add-paper').style.display = on ? '' : 'none';
+  document.getElementById('btn-paper-graph').style.display = on ? '' : 'none';
+}
+// Return to the plain list/detail view (hide paper form + graph).
+function closePaperViews() {
+  document.getElementById('paper-form').classList.add('hidden');
+  document.getElementById('paper-graph-view').classList.add('hidden');
+  document.getElementById('note-form').classList.add('hidden');
+  document.getElementById('detail').style.display = '';
+  paperGraphOpen = false;
+  const gb = document.getElementById('btn-paper-graph');
+  if (gb) gb.textContent = '🕸 Graph';
+}
 
 document.getElementById('searchbox').addEventListener('input', e => {
   state.search = e.target.value.trim();
@@ -652,6 +768,15 @@ function renderList() {
       </div>`;
     }, q);
     el.innerHTML = html || '<div class="empty">No notes</div>';
+
+  } else if (tab === 'papers') {
+    renderPaperFilters(fEl);
+    const q = state.search;
+    let list = items.slice();
+    if (paperTopicFilter) list = list.filter(p => p.topic === paperTopicFilter);
+    const root = buildCatTree(list, r => r.topic || '(untopiced)', '(untopiced)');
+    const html = renderCatTree(root, [], 0, (r, depth) => paperCard(r, q, 8 + (depth + 1) * 12), q);
+    el.innerHTML = html || '<div class="empty">No papers yet — click “+ Paper”.</div>';
 
   } else if (tab === 'prompts') {
     // Tree: project → task → versions → files
@@ -836,6 +961,16 @@ function renderDetail(data) {
         <button class="tbtn" style="font-size:11px" onclick="editNote(currentDetail)">✏ Edit</button>
       </div>
       <hr class="div"><div class="prose">${safeMarked(data.content||'', data.category)}</div>`;
+
+  } else if (data.type === 'paper') {
+    currentDetail = data;
+    // A paper detail always returns to the plain detail pane (closes form/graph)
+    document.getElementById('paper-form').classList.add('hidden');
+    document.getElementById('paper-graph-view').classList.add('hidden');
+    document.getElementById('detail').style.display = '';
+    paperGraphOpen = false;
+    const gb = document.getElementById('btn-paper-graph'); if (gb) gb.textContent = '🕸 Graph';
+    el.innerHTML = paperDetailHtml(data);
 
   } else if (data.type === 'prompt') {
     const { project, task, version, file, content, meta, allVersions } = data;
@@ -1156,6 +1291,7 @@ function buildTypeSections(content) {
   const TYPES = [
     { id: 'skills',   label: 'Skills',   icon: '🧠', items: content.skills   || [] },
     { id: 'notes',    label: 'Notes',    icon: '📝', items: content.notes    || [] },
+    { id: 'papers',   label: 'Papers',   icon: '📄', items: content.papers   || [] },
     { id: 'prompts',  label: 'Prompts',  icon: '💬', items: content.prompts  || [] },
     { id: 'scripts',  label: 'Scripts',  icon: '⚙️', items: content.scripts  || [] },
     { id: 'packages', label: 'Packages', icon: '📦', items: content.packages || [] },
@@ -1236,11 +1372,12 @@ function doCreateSync() {
     const all     = [...document.querySelectorAll(`#ct-list-${type} input[data-item]`)];
     return checked.length === all.length ? [] : checked.map(b => b.dataset.item);
   };
-  const contentTypes = ['skills','notes','prompts','scripts','packages']
+  const contentTypes = ['skills','notes','papers','prompts','scripts','packages']
     .filter(t => document.getElementById('ct-'+t)?.checked);
   const selected = {
     skills:   getSelected('skills'),
     notes:    getSelected('notes'),
+    papers:   getSelected('papers'),
     prompts:  getSelected('prompts'),
     scripts:  getSelected('scripts'),
     packages: getSelected('packages'),
@@ -1381,6 +1518,258 @@ function insertAtCursor(ta, text) {
     if (handled) ev.preventDefault();
   });
 })();
+
+// ── Papers ──────────────────────────────────────────────────────────────────
+let paperTopicFilter = '';
+let paperFacetsData = { topics: [], tags: [], years: [] };
+let paperGraphOpen = false;
+let cy = null;                 // cytoscape instance
+let currentGraphData = null;
+let pendingPaperFile = null;
+
+// List view
+function renderPaperFilters(fEl) {
+  const opts = ['<option value="">All topics</option>'].concat(
+    paperFacetsData.topics.map(t => `<option value="${esc(t.name)}"${t.name === paperTopicFilter ? ' selected' : ''}>${esc(t.name)} (${t.count})</option>`)).join('');
+  fEl.innerHTML = `<div style="padding:6px 8px"><select id="paper-topic-filter" style="width:100%" onchange="setPaperTopic(this.value)">${opts}</select></div>`;
+}
+function setPaperTopic(v) { paperTopicFilter = v; renderList(); }
+function paperCard(p, q, pad) {
+  const authors = (p.authors || []).slice(0, 3).join(', ') + ((p.authors || []).length > 3 ? ' et al.' : '');
+  const tags = (p.tags || []).map(t => `<span class="pc-tag">${esc(t)}</span>`).join('');
+  return `<div class="paper-card" style="margin-left:${pad}px" onclick="openItem('paper','${esc(p.slug)}')">
+    <div class="pc-title">${hl(p.title, q)}</div>
+    <div class="pc-meta">
+      ${p.citationCount ? `<span class="pc-cite" title="cited by ${p.citationCount} paper(s)">${p.citationCount}★</span>` : ''}
+      ${p.year ? `<span>${p.year}</span>` : ''}
+      ${authors ? `<span>${esc(authors)}</span>` : ''}
+      ${p.publisher ? `<span>${esc(p.publisher)}</span>` : ''}
+      ${tags}
+    </div>
+  </div>`;
+}
+
+// Detail view
+function paperDetailHtml(d) {
+  const authors = (d.authors || []).join(', ');
+  const tags = (d.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join('');
+  const concl = d.conclusions || [];
+  const cites = d.cites || [];
+  return `
+    <div class="d-title">${esc(d.title)}</div>
+    <div class="d-meta">
+      ${d.citationCount ? `<span class="pc-cite">${d.citationCount}★ cited</span>` : ''}
+      ${d.year ? `<span>${d.year}</span>` : ''}
+      ${d.topic ? `<span class="cat">${esc(d.topic)}</span>` : ''}
+      ${d.publisher ? `<span>${esc(d.publisher)}</span>` : ''}
+      ${tags}
+      <span style="flex:1"></span>
+      ${d.url ? `<button class="tbtn" style="font-size:11px" onclick="openPaperLink('${esc(d.url)}','','')">🔗 Link</button>` : ''}
+      ${d.file ? `<button class="tbtn" style="font-size:11px" onclick="openPaperLink('','${esc(d.file)}','${esc(d.category)}')">📄 File</button>` : ''}
+      <button class="tbtn" style="font-size:11px" onclick="editPaper(currentDetail)">✏ Edit</button>
+      <button class="tbtn" style="font-size:11px" onclick="confirmDeletePaper()">🗑 Delete</button>
+    </div>
+    <div class="meta-grid">
+      <span class="ml">Authors</span><span class="mv">${esc(authors || '—')}</span>
+      ${d.url ? `<span class="ml">URL</span><span class="mv">${esc(d.url)}</span>` : ''}
+      ${d.file ? `<span class="ml">File</span><span class="mv">${esc(d.file.split('/').pop())}</span>` : ''}
+    </div>
+    ${concl.length ? `<hr class="div"><div style="font-weight:600;margin-bottom:4px">Conclusions</div><ul class="prose">${concl.map(c => `<li>${esc(c)}</li>`).join('')}</ul>` : ''}
+    ${cites.length ? `<hr class="div"><div style="font-weight:600;margin-bottom:4px">Cites (builds on)</div><ul class="prose">${cites.map(c => `<li><b>${esc(c.paper)}</b>${c.note ? ' — ' + esc(c.note) : ''}</li>`).join('')}</ul>` : ''}
+    <hr class="div"><div class="prose">${safeMarked(d.content || '', d.category)}</div>`;
+}
+function openPaperLink(url, file, category) { ask('openPaperLink', { url, file, category }); }
+function confirmDeletePaper() { if (currentDetail && confirm('Delete this paper?')) ask('deletePaper', { slug: currentDetail.slug }); }
+
+// Add / edit form
+function openPaperForm(paper) {
+  const isEdit = !!(paper && paper.slug);
+  document.getElementById('paper-form-title').textContent = isEdit ? 'Edit Paper' : 'New Paper';
+  const set = (id, v) => { document.getElementById(id).value = v; };
+  set('pf-title', paper?.title || ''); set('pf-year', paper?.year || '');
+  set('pf-authors', (paper?.authors || []).join(', ')); set('pf-topic', paper?.topic || '');
+  set('pf-publisher', paper?.publisher || ''); set('pf-category', paper?.category || '');
+  set('pf-tags', (paper?.tags || []).join(', ')); set('pf-url', paper?.url || '');
+  set('pf-file', paper?.file || '');
+  document.getElementById('pf-file-label').textContent = paper?.file ? paper.file.split('/').pop() : '';
+  set('pf-conclusions', (paper?.conclusions || []).join('\n'));
+  set('pf-cites', (paper?.cites || []).map(c => c.note ? (c.paper + ' :: ' + c.note) : c.paper).join('\n'));
+  set('pf-content', paper?.content || ''); set('pf-slug', paper?.slug || '');
+  populatePaperDatalist();
+  updatePaperPreview();
+  document.getElementById('detail').style.display = 'none';
+  document.getElementById('paper-graph-view').classList.add('hidden');
+  document.getElementById('paper-form').classList.remove('hidden');
+}
+function closePaperForm() {
+  document.getElementById('paper-form').classList.add('hidden');
+  document.getElementById('detail').style.display = '';
+}
+function editPaper(p) { openPaperForm(p); }
+function updatePaperPreview() {
+  const el = document.getElementById('pf-preview');
+  if (el) el.innerHTML = safeMarked(document.getElementById('pf-content').value, document.getElementById('pf-category').value);
+}
+function populatePaperDatalist() {
+  const dl = document.getElementById('pf-paper-titles');
+  const titles = (state.tab === 'papers' ? state.items : []).map(p => p.title);
+  dl.innerHTML = titles.map(t => `<option value="${esc(t)}"></option>`).join('');
+}
+function uploadPaperFile(input) {
+  const file = input.files[0]; if (!file) return;
+  const ext = (file.name.split('.').pop() || 'pdf').toLowerCase();
+  const reader = new FileReader();
+  reader.onload = () => {
+    const b64 = String(reader.result || '').split(',')[1] || '';
+    pendingPaperFile = (rel, err) => {
+      if (!err && rel) { document.getElementById('pf-file').value = rel; document.getElementById('pf-file-label').textContent = file.name; }
+    };
+    ask('savePaperFile', { data: b64, ext, category: document.getElementById('pf-category').value, reqId: 'pf' + Date.now() });
+  };
+  reader.readAsDataURL(file);
+}
+function savePaper() {
+  const val = id => document.getElementById(id).value;
+  const splitLines = v => v.split(/\n/).map(s => s.trim()).filter(Boolean);
+  const cites = splitLines(val('pf-cites')).map(l => {
+    const i = l.indexOf('::');
+    return i < 0 ? { paper: l.trim(), note: '' } : { paper: l.slice(0, i).trim(), note: l.slice(i + 2).trim() };
+  }).filter(c => c.paper);
+  const title = val('pf-title').trim();
+  if (!title) { alert('Title is required'); return; }
+  const paper = {
+    slug: val('pf-slug') || '', title,
+    year: val('pf-year') ? parseInt(val('pf-year'), 10) : null,
+    authors: val('pf-authors').split(',').map(s => s.trim()).filter(Boolean),
+    topic: val('pf-topic').trim(), publisher: val('pf-publisher').trim(),
+    category: val('pf-category').trim(),
+    tags: val('pf-tags').split(',').map(s => s.trim()).filter(Boolean),
+    url: val('pf-url').trim(), file: val('pf-file').trim(),
+    conclusions: splitLines(val('pf-conclusions')), cites,
+    content: document.getElementById('pf-content').value,
+  };
+  ask('savePaper', { paper });
+  closePaperForm();
+}
+
+// Graph view
+function togglePaperGraph() {
+  paperGraphOpen = !paperGraphOpen;
+  const gb = document.getElementById('btn-paper-graph');
+  if (paperGraphOpen) {
+    document.getElementById('detail').style.display = 'none';
+    document.getElementById('paper-form').classList.add('hidden');
+    document.getElementById('paper-graph-view').classList.remove('hidden');
+    gb.textContent = '📋 List';
+    populatePaperTopicSelect();
+    loadPaperGraph();
+  } else {
+    document.getElementById('paper-graph-view').classList.add('hidden');
+    document.getElementById('detail').style.display = '';
+    gb.textContent = '🕸 Graph';
+  }
+}
+function populatePaperTopicSelect() {
+  const sel = document.getElementById('pg-topic');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">All topics</option>' +
+    paperFacetsData.topics.map(t => `<option value="${esc(t.name)}">${esc(t.name)} (${t.count})</option>`).join('');
+  sel.value = cur;
+}
+function loadPaperGraph() {
+  const opts = {
+    topic: document.getElementById('pg-topic').value || undefined,
+    limit: parseInt(document.getElementById('pg-limit').value, 10) || 10,
+    neighbors: document.getElementById('pg-neighbors').checked,
+    q: state.search || undefined,
+  };
+  ask('paperGraph', { opts });
+}
+function topicColor(topic) {
+  let h = 0; const s = String(topic || 'x');
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
+  return 'hsl(' + h + ',58%,55%)';
+}
+function currentPaperLayout() {
+  const hier = document.getElementById('pg-layout').checked;
+  if (hier) {
+    const hasIncoming = new Set((currentGraphData?.edges || []).map(e => e.to));
+    const roots = (currentGraphData?.nodes || []).map(n => n.key).filter(k => !hasIncoming.has(k));
+    return { name: 'breadthfirst', directed: true, spacingFactor: 1.1, padding: 24, roots: roots.length ? roots : undefined };
+  }
+  return { name: 'cose', animate: false, padding: 24, nodeRepulsion: 9000, idealEdgeLength: 95, edgeElasticity: 120, nestingFactor: 1.1 };
+}
+function applyPaperLayout() { if (cy) cy.layout(currentPaperLayout()).run(); }
+function renderPaperGraph(data) {
+  currentGraphData = data;
+  const el = document.getElementById('pg-canvas');
+  document.getElementById('pg-count').textContent = data ? `${data.shown} of ${data.total} papers` : '';
+  if (typeof cytoscape === 'undefined') { el.innerHTML = '<div class="empty" style="padding:24px">Graph library unavailable.</div>'; return; }
+  if (!data || !data.nodes || !data.nodes.length) {
+    if (cy) { try { cy.destroy(); } catch (e) {} cy = null; }
+    el.innerHTML = '<div class="empty" style="padding:24px">No papers match — add papers or widen the filter.</div>';
+    return;
+  }
+  el.innerHTML = '';
+  const cssv = getComputedStyle(document.body);
+  const txt = (cssv.getPropertyValue('--text') || '#ddd').trim();
+  const edgeCol = (cssv.getPropertyValue('--muted') || '#888').trim();
+  const maxCC = Math.max(1, ...data.nodes.map(n => n.citationCount || 0));
+  const elements = [];
+  for (const n of data.nodes) elements.push({ data: {
+    id: n.key, label: n.title, display: n.title, cc: n.citationCount || 0,
+    year: n.year || '', topic: n.topic || '', color: topicColor(n.topic),
+    conclusions: (n.conclusions || []).join('\n'),
+  } });
+  for (const e of data.edges) elements.push({ data: { id: 'e_' + e.from + '__' + e.to, source: e.from, target: e.to, note: e.note || '' } });
+  if (cy) { try { cy.destroy(); } catch (e) {} }
+  cy = cytoscape({
+    container: el, elements, wheelSensitivity: 0.2,
+    style: [
+      { selector: 'node', style: {
+        'label': 'data(display)', 'font-size': 9, 'text-wrap': 'wrap', 'text-max-width': 120,
+        'text-valign': 'bottom', 'text-margin-y': 3, 'color': txt, 'background-color': 'data(color)',
+        'width': 'mapData(cc,0,' + maxCC + ',18,66)', 'height': 'mapData(cc,0,' + maxCC + ',18,66)',
+        'border-width': 1, 'border-color': '#0008',
+      } },
+      { selector: 'edge', style: {
+        'width': 1.4, 'line-color': edgeCol, 'target-arrow-color': edgeCol,
+        'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'arrow-scale': 0.9,
+      } },
+      { selector: 'node:selected', style: { 'border-width': 3, 'border-color': '#ffd166' } },
+    ],
+    layout: currentPaperLayout(),
+  });
+  cy.on('mouseover', 'node', evt => showNodeTooltip(evt.target));
+  cy.on('mouseout', 'node', hideTooltip);
+  cy.on('tap', 'node', evt => openItem('paper', evt.target.id()));
+  if (document.getElementById('pg-allconc').checked) toggleAllConclusions();
+}
+function showNodeTooltip(node) {
+  const tt = document.getElementById('pg-tooltip');
+  const concl = (node.data('conclusions') || '').split('\n').filter(Boolean);
+  tt.innerHTML = '<div class="tt-title">' + esc(node.data('label')) + '</div>' +
+    '<div style="color:var(--muted);font-size:10px">' + esc(node.data('topic')) +
+    (node.data('year') ? ' · ' + node.data('year') : '') + ' · ' + node.data('cc') + ' citations</div>' +
+    (concl.length ? '<ul>' + concl.map(c => '<li>' + esc(c) + '</li>').join('') + '</ul>' : '<div style="color:var(--muted)">(no conclusions)</div>');
+  const canvas = document.getElementById('pg-canvas').getBoundingClientRect();
+  tt.style.left = (canvas.left + node.renderedPosition('x') + 14) + 'px';
+  tt.style.top = (canvas.top + node.renderedPosition('y') + 14) + 'px';
+  tt.classList.remove('hidden');
+}
+function hideTooltip() { document.getElementById('pg-tooltip').classList.add('hidden'); }
+function toggleAllConclusions() {
+  if (!cy) return;
+  const all = document.getElementById('pg-allconc').checked;
+  cy.batch(() => {
+    cy.nodes().forEach(n => {
+      if (all) {
+        const c = (n.data('conclusions') || '').split('\n').filter(Boolean);
+        n.data('display', n.data('label') + (c.length ? '\n— ' + c.join('\n— ') : ''));
+      } else n.data('display', n.data('label'));
+    });
+  });
+}
 
 // ── MCP wizard ────────────────────────────────────────────────────────────
 function renderMcpLoading() {
