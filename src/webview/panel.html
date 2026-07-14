@@ -109,6 +109,10 @@ hr.div{border:none;border-top:1px solid var(--border);margin:14px 0}
 #pf-preview{flex:1;overflow-y:auto;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;font-size:13px}
 .paper-card{padding:8px 10px;border:1px solid var(--border);border-radius:6px;margin:6px 8px;cursor:pointer;background:var(--panel)}
 .paper-card:hover{border-color:var(--accent)}
+.pk-ideas-group{margin:4px 6px 10px;border:1px solid #f4b40055;border-radius:8px;background:#f4b40010;padding-bottom:2px}
+.pk-ideas-hdr{position:sticky;top:0;z-index:2;font-size:11px;font-weight:700;color:#f4b400;padding:6px 10px;background:var(--bg);border-bottom:1px solid #f4b40033;border-radius:8px 8px 0 0}
+.pk-ideas-group .paper-card{border-color:#f4b40055;background:#f4b4000d;margin-left:8px}
+.pk-ideas-group .paper-card:hover{border-color:#f4b400}
 .paper-card .pc-title{font-weight:600;font-size:12.5px;line-height:1.35}
 .paper-card .pc-meta{font-size:10.5px;color:var(--muted);margin-top:3px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .pc-cite{background:var(--accent);color:var(--bg);border-radius:10px;padding:0 6px;font-weight:700}
@@ -773,10 +777,16 @@ function renderList() {
   } else if (tab === 'papers') {
     renderPaperFilters(fEl);
     const q = state.search;
-    let list = items.slice();
-    if (paperTopicFilter) list = list.filter(p => p.topic === paperTopicFilter);
-    const root = buildCatTree(list, r => r.topic || '(untopiced)', '(untopiced)');
-    const html = renderCatTree(root, [], 0, (r, depth) => paperCard(r, q, 8 + (depth + 1) * 12), q);
+    const ideas = items.filter(p => p.kind === 'idea');
+    let papers = items.filter(p => p.kind !== 'idea');
+    if (paperTopicFilter) papers = papers.filter(p => p.topic === paperTopicFilter);
+    let html = '';
+    if (ideas.length) {
+      html += '<div class="pk-ideas-group"><div class="pk-ideas-hdr">💡 Ideas</div>' +
+        ideas.map(p => paperCard(p, q, 8)).join('') + '</div>';
+    }
+    const root = buildCatTree(papers, r => r.topic || '(untopiced)', '(untopiced)');
+    html += renderCatTree(root, [], 0, (r, depth) => paperCard(r, q, 8 + (depth + 1) * 12), q);
     el.innerHTML = html || '<div class="empty">No papers yet — click “+ Paper”.</div>';
 
   } else if (tab === 'prompts') {
