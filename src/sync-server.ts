@@ -1,7 +1,7 @@
 import { createServer, Server, IncomingMessage, ServerResponse } from "http";
 import { networkInterfaces } from "os";
 import { randomBytes } from "crypto";
-import { skillList, skillGet, noteExport } from "./filestore";
+import { skillList, skillGet, noteExport, paperList, paperGet } from "./filestore";
 import { promptExport, scriptExport, packageExport } from "./storage";
 
 export interface SyncSession {
@@ -15,6 +15,7 @@ export interface SyncSession {
   selected: {
     skills:   string[];   // names,          empty = all
     notes:    string[];   // slugs,          empty = all
+    papers:   string[];   // slugs,          empty = all
     prompts:  string[];   // "project/task", empty = all
     scripts:  string[];   // "cat/file",     empty = all
     packages: string[];   // names,          empty = all
@@ -136,6 +137,12 @@ class SyncServer {
       if (types.includes("notes")) {
         const all = noteExport() as any[];
         bundle.notes = sel.notes.length ? all.filter(n => sel.notes.includes(n.slug)) : all;
+      }
+      if (types.includes("papers")) {
+        const rows = sel.papers.length
+          ? sel.papers.map(s => paperGet(s)).filter(Boolean)
+          : (paperList() as any[]).map((r: any) => paperGet(r.slug)).filter(Boolean);
+        bundle.papers = rows;
       }
       if (types.includes("prompts")) {
         const all = promptExport();

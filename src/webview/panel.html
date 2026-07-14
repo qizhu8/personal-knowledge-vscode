@@ -1291,6 +1291,7 @@ function buildTypeSections(content) {
   const TYPES = [
     { id: 'skills',   label: 'Skills',   icon: '🧠', items: content.skills   || [] },
     { id: 'notes',    label: 'Notes',    icon: '📝', items: content.notes    || [] },
+    { id: 'papers',   label: 'Papers',   icon: '📄', items: content.papers   || [] },
     { id: 'prompts',  label: 'Prompts',  icon: '💬', items: content.prompts  || [] },
     { id: 'scripts',  label: 'Scripts',  icon: '⚙️', items: content.scripts  || [] },
     { id: 'packages', label: 'Packages', icon: '📦', items: content.packages || [] },
@@ -1371,11 +1372,12 @@ function doCreateSync() {
     const all     = [...document.querySelectorAll(`#ct-list-${type} input[data-item]`)];
     return checked.length === all.length ? [] : checked.map(b => b.dataset.item);
   };
-  const contentTypes = ['skills','notes','prompts','scripts','packages']
+  const contentTypes = ['skills','notes','papers','prompts','scripts','packages']
     .filter(t => document.getElementById('ct-'+t)?.checked);
   const selected = {
     skills:   getSelected('skills'),
     notes:    getSelected('notes'),
+    papers:   getSelected('papers'),
     prompts:  getSelected('prompts'),
     scripts:  getSelected('scripts'),
     packages: getSelected('packages'),
