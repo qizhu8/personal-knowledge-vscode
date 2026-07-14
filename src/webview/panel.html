@@ -910,13 +910,20 @@ function renderList() {
     fEl.innerHTML = '';
     const q = state.search;
     const root = buildCatTree(items, r => (r.category === '(root)' ? '' : r.category), '(root)');
+    const folderAttr = (child, name, fullPath) => {
+      const prefix = fullPath.join('/');
+      if (prefix === '(root)' || fullPath[0] === '(root)') return '';
+      const b64 = btoa(unescape(encodeURIComponent(prefix)));
+      return ` oncontextmenu="scriptFolderMenu(event,'${b64}',${JSON.stringify(name).replace(/"/g, '&quot;')})"`;
+    };
     const html = renderCatTree(root, [], 0, (r, depth) => {
       const pad = 8 + (depth + 1) * 12;
-      return `<div class="li" style="padding-left:${pad}px" onclick="openItem('script','${esc(r.path)}')">
+      const cat = r.category === '(root)' ? '' : r.category;
+      return `<div class="li" style="padding-left:${pad}px" onclick="openItem('script','${esc(r.path)}')" oncontextmenu="scriptItemMenu(event,'${esc(r.path)}',${JSON.stringify(cat).replace(/"/g, '&quot;')})">
         <div class="li-name">📄 ${hl(r.file, q)}</div>
         <div class="li-meta">${(r.langs||(r.lang?r.lang.split(' + '):[])).map(l=>`<span class="cat" style="font-size:9px;margin-right:3px">${esc(l)}</span>`).join('')}</div>
       </div>`;
-    }, q);
+    }, q, folderAttr);
     el.innerHTML = html || '<div class="empty">No scripts</div>';
   }
 }
@@ -1672,7 +1679,7 @@ function pkModal(opts) {
 }
 function closePkModal() { const m = document.getElementById('pk-modal-bg'); if (m) m.remove(); }
 
-function paperCardMenu(ev, slug, group, pinned) {
+function paperCardMenu(ev, slug, group, pinned, topic) {
   ev.preventDefault(); ev.stopPropagation();
   const items = [];
   items.push({ label: pinned ? '★ Unpin' : '☆ Pin', onClick: () => ask('paperSetPinned', { slug, pinned: !pinned }) });
@@ -1682,6 +1689,8 @@ function paperCardMenu(ev, slug, group, pinned) {
     items.push({ label: (g.name === group ? '● ' : '   ') + g.name, active: g.name === group, onClick: () => ask('paperSetGroup', { slug, group: g.name }) });
   }
   items.push({ label: '＋ New group…', onClick: () => pkModal({ title: 'New group', input: true, okLabel: 'Create', onOk: v => { if (v.trim()) ask('paperSetGroup', { slug, group: v.trim() }); } }) });
+  items.push({ sep: true });
+  items.push({ label: '↪ Change topic…', onClick: () => pkModal({ title: 'Change topic', message: 'Moves this paper to a different topic folder.', input: true, defaultValue: topic || '', okLabel: 'Move', onOk: v => ask('paperSetTopic', { slug, topic: v.trim() }) }) });
   items.push({ sep: true });
   items.push({ label: '✏ Edit', onClick: () => { pendingEditType = 'paper'; ask('detail', { type: 'paper', key: slug }); } });
   items.push({ label: '🗑 Delete', danger: true, onClick: () => pkModal({ title: 'Delete this paper?', okLabel: 'Delete', danger: true, onOk: () => ask('deletePaper', { slug }) }) });
@@ -1774,6 +1783,41 @@ function noteFolderMenu(ev, b64, name) {
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
 
+// Right-click a Scripts category folder -> Rename / Move (re-paths every script under it).
+function scriptFolderMenu(ev, b64, name) {
+  ev.preventDefault(); ev.stopPropagation();
+  let prefix = '';
+  try { prefix = decodeURIComponent(escape(atob(b64))); } catch (e) {}
+  if (!prefix) return;
+  const items = [{ label: '📁 ' + name, header: true }];
+  items.push({ label: '✏ Rename folder…', onClick: () => pkModal({
+    title: 'Rename folder', message: 'Renames “' + prefix + '” and re-paths every script under it.',
+    input: true, defaultValue: name, okLabel: 'Rename', onOk: v => {
+      const nn = v.trim();
+      if (!nn || nn === name) return;
+      const segs = prefix.split('/'); segs[segs.length - 1] = nn;
+      ask('scriptMoveFolder', { oldPrefix: prefix, newPrefix: segs.join('/') });
+    } }) });
+  items.push({ label: '↪ Move folder…', onClick: () => pkModal({
+    title: 'Move folder', message: 'New full path for “' + prefix + '” (missing parents are created).',
+    input: true, defaultValue: prefix, okLabel: 'Move', onOk: v => {
+      const np = v.trim().replace(/^\/+|\/+$/g, '');
+      if (np && np !== prefix) ask('scriptMoveFolder', { oldPrefix: prefix, newPrefix: np });
+    } }) });
+  showPaperMenu(ev.clientX, ev.clientY, items);
+}
+
+// Right-click a Scripts leaf -> Move / Edit.
+function scriptItemMenu(ev, relPath, category) {
+  ev.preventDefault(); ev.stopPropagation();
+  const file = String(relPath).split('/').pop();
+  const items = [{ label: '📄 ' + file, header: true }];
+  items.push({ label: '↪ Move…', onClick: () => pkModal({
+    title: 'Move script', message: 'Target folder path (blank = root; missing parents are created).',
+    input: true, defaultValue: category || '', okLabel: 'Move', onOk: v => ask('scriptMove', { relPath, category: v.trim() }) }) });
+  showPaperMenu(ev.clientX, ev.clientY, items);
+}
+
 // List view
 function renderPaperFilters(fEl) {
   const opts = ['<option value="">All topics</option>'].concat(
@@ -1785,7 +1829,8 @@ function paperCard(p, q, pad) {
   const authors = (p.authors || []).slice(0, 3).join(', ') + ((p.authors || []).length > 3 ? ' et al.' : '');
   const tags = (p.tags || []).map(t => `<span class="pc-tag">${esc(t)}</span>`).join('');
   const grp = JSON.stringify(p.group || 'Papers').replace(/"/g, '&quot;');
-  return `<div class="paper-card${p.pinned ? ' pc-pinned' : ''}" style="margin-left:${pad}px" onclick="openItem('paper','${esc(p.slug)}')" oncontextmenu="paperCardMenu(event,'${esc(p.slug)}',${grp},${p.pinned ? 'true' : 'false'})">
+  const tpc = JSON.stringify(p.topic || '').replace(/"/g, '&quot;');
+  return `<div class="paper-card${p.pinned ? ' pc-pinned' : ''}" style="margin-left:${pad}px" onclick="openItem('paper','${esc(p.slug)}')" oncontextmenu="paperCardMenu(event,'${esc(p.slug)}',${grp},${p.pinned ? 'true' : 'false'},${tpc})">
     <div class="pc-title"><span class="pc-star${p.pinned ? ' on' : ''}" onclick="event.stopPropagation();togglePin('${esc(p.slug)}',${p.pinned ? 'false' : 'true'})" title="${p.pinned ? 'Unpin' : 'Pin'}">${p.pinned ? '★' : '☆'}</span> ${hl(p.title, q)}</div>
     <div class="pc-meta">
       ${p.citationCount ? `<span class="pc-cite" title="cited by ${p.citationCount} paper(s)">${p.citationCount}★</span>` : ''}

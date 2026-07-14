@@ -608,6 +608,13 @@ export function paperSetPinned(slug: string, pinned: boolean): boolean {
   return true;
 }
 
+export function paperSetTopic(slug: string, topic: string): boolean {
+  const p = paperGet(slug);
+  if (!p) return false;
+  paperUpsert({ ...p, topic: (topic || "").trim() });
+  return true;
+}
+
 export function paperGroupRename(oldName: string, newName: string): number {
   const to = (newName || "").trim();
   if (!to || !oldName) return 0;

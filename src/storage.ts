@@ -1,6 +1,6 @@
 import { homedir } from "os";
 import { join, extname } from "path";
-import { existsSync, readdirSync, statSync, readFileSync } from "fs";
+import { existsSync, readdirSync, statSync, readFileSync, mkdirSync, renameSync, rmSync, copyFileSync } from "fs";
 
 let _storePath = join(homedir(), "personal-knowledge");
 
@@ -230,6 +230,42 @@ export function promptExport(): { project: string; task: string; version: string
     }
   }
   return out;
+}
+
+// ── Script move (raw files under scripts/<category>/<file>) ─────────────────
+function safeScriptCat(cat: string): string {
+  return (cat || "").split("/").map(s => s.trim().replace(/[<>:"\\|?*\u0000-\u001f]/g, "")).filter(Boolean).join("/");
+}
+
+/** Move a single script file to a different category folder (parents created). */
+export function scriptMove(relPath: string, newCategory: string): boolean {
+  const src = join(_storePath, 'scripts', relPath);
+  if (!existsSync(src) || isDir(src)) return false;
+  const name = relPath.split('/').pop()!;
+  const cat = safeScriptCat(newCategory);
+  const destDir = cat ? join(_storePath, 'scripts', ...cat.split('/')) : join(_storePath, 'scripts');
+  const dest = join(destDir, name);
+  if (dest === src) return false;
+  mkdirSync(destDir, { recursive: true });
+  try { renameSync(src, dest); }
+  catch { try { copyFileSync(src, dest); rmSync(src, { force: true }); } catch { return false; } }
+  return true;
+}
+
+/** Move/rename a script category folder: re-path every script under `oldPrefix`. */
+export function scriptMoveFolder(oldPrefix: string, newPrefix: string): number {
+  const op = (oldPrefix || "").replace(/^\/+|\/+$/g, "");
+  const np = safeScriptCat(newPrefix);
+  if (!op || !np || op === np) return 0;
+  let n = 0;
+  for (const s of scriptList()) {
+    const cat = s.category === "(root)" ? "" : s.category;
+    if (cat === op || cat.startsWith(op + "/")) {
+      const newCat = np + cat.slice(op.length);
+      if (scriptMove(s.path, newCat)) n++;
+    }
+  }
+  return n;
 }
 
 export function scriptExport(): { category: string; file: string; content: string }[] {

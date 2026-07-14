@@ -3,6 +3,12 @@
 All notable changes to the **Personal Knowledge** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.6.1] — 2026-07-14
+
+- **Move everywhere** — the **Move** action now covers every content type:
+  - **Scripts** — right-click a script to **Move…** it to a different folder, or right-click a script category folder to **Rename folder…** / **Move folder…** (re-paths every script beneath it). Missing parent folders are created automatically.
+  - **Papers** — right-click a paper card → **Change topic…** to move it into a different topic folder.
+
 ## [1.6.0] — 2026-07-14
 
 Builds on the **Papers** feature (1.5.0):

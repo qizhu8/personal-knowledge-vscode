@@ -10,14 +10,14 @@ import {
   noteExport, noteImport, saveNoteAsset,
   paperList, paperSearch, paperGet, paperUpsert, paperDelete,
   paperFacets, paperGraph, savePaperFile,
-  paperGroups, paperSetGroup, paperGroupRename, paperGroupDelete, paperSetPinned,
+  paperGroups, paperSetGroup, paperGroupRename, paperGroupDelete, paperSetPinned, paperSetTopic,
   setStorePath as fsSetStorePath, getStorePath,
 } from "./filestore";
 import { migrateDbToFiles } from "./migrate";
 import {
   promptList, promptGetFile, promptGetAllVersionsOfFile,
   packageList, packageGet, packageFileGet,
-  scriptList, scriptGet,
+  scriptList, scriptGet, scriptMove, scriptMoveFolder,
   promptImport, scriptImport, packageImport,
   setStorePath as storageSetStorePath,
 } from "./storage";
@@ -712,6 +712,34 @@ async function handleMessage(
         gitCommit(`${msg.pinned ? "pin" : "unpin"}(paper): ${msg.slug}`);
       }
       respond({ command: "saved" });
+      break;
+    }
+
+    case "paperSetTopic": {
+      if (paperSetTopic(String(msg.slug || ""), String(msg.topic || ""))) {
+        gitCommit(`topic(paper): ${msg.slug} -> ${msg.topic || "(none)"}`);
+      }
+      respond({ command: "saved" });
+      vscode.window.setStatusBarMessage("$(check) Topic updated", 3000);
+      break;
+    }
+
+    case "scriptMove": {
+      if (scriptMove(String(msg.relPath || ""), String(msg.category || ""))) {
+        gitCommit(`move(script): ${msg.relPath} -> ${msg.category || "(root)"}`);
+        _treeProvider?.refresh();
+      }
+      respond({ command: "saved" });
+      vscode.window.setStatusBarMessage("$(check) Script moved", 3000);
+      break;
+    }
+
+    case "scriptMoveFolder": {
+      const n = scriptMoveFolder(String(msg.oldPrefix || ""), String(msg.newPrefix || ""));
+      if (n) gitCommit(`move(script-folder): ${msg.oldPrefix} -> ${msg.newPrefix} (${n})`);
+      _treeProvider?.refresh();
+      respond({ command: "saved" });
+      vscode.window.setStatusBarMessage(`$(check) Moved folder (${n} script${n === 1 ? "" : "s"})`, 3000);
       break;
     }
 
