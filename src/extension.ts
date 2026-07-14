@@ -181,7 +181,7 @@ function inlineNoteAssets(html: string, category = ""): string {
 }
 
 /** Wrap the webview-rendered note body in a self-contained, shareable HTML document. */
-function buildStandaloneNoteHtml(msg: any): string {
+function buildStandaloneNoteHtml(msg: any, katexCss = ""): string {
   const esc = (s: string) => String(s ?? "")
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   let tags: string[] = [];
@@ -241,7 +241,10 @@ h1.doc-title{font-size:28px;line-height:1.25;margin:0 0 12px;color:#0b1220}
 .hljs-variable,.hljs-template-variable,.hljs-params{color:#e6edf3}
 .hljs-deletion{color:#ffa198}
 .hljs-emphasis{font-style:italic}.hljs-strong{font-weight:700}
+.math-block{overflow-x:auto;padding:4px 2px;margin:.6em 0}
+.katex-display{margin:.5em 0}
 @media print{body{background:#fff}.wrap{border:none;box-shadow:none;margin:0;max-width:none}}
+${katexCss}
 </style>
 </head>
 <body>
@@ -252,6 +255,33 @@ h1.doc-title{font-size:28px;line-height:1.25;margin:0 0 12px;color:#0b1220}
 </div>
 </body>
 </html>`;
+}
+
+// Cache the self-contained KaTeX CSS (fonts inlined as data URIs) for HTML export.
+let _katexCssCache: string | undefined;
+function katexCssForExport(context: vscode.ExtensionContext): string {
+  if (_katexCssCache !== undefined) return _katexCssCache;
+  try {
+    const distDir = path.join(context.extensionPath, "dist", "webview");
+    const srcDir  = path.join(context.extensionPath, "src",  "webview");
+    const dir = fs.existsSync(path.join(distDir, "katex.css")) ? distDir : srcDir;
+    const cssPath = path.join(dir, "katex.css");
+    const fontsDir = path.join(dir, "fonts");
+    if (!fs.existsSync(cssPath) || !fs.existsSync(fontsDir)) { _katexCssCache = ""; return ""; }
+    let css = fs.readFileSync(cssPath, "utf-8");
+    // Inline woff2 fonts as data URIs; drop the woff/ttf fallbacks (unused by modern browsers).
+    css = css.replace(/url\(fonts\/([^)]+\.woff2)\)/g, (m, file) => {
+      try {
+        const b64 = fs.readFileSync(path.join(fontsDir, file)).toString("base64");
+        return `url(data:font/woff2;base64,${b64})`;
+      } catch { return m; }
+    });
+    css = css.replace(/,url\(fonts\/[^)]*\)\s*format\("[^"]*"\)/g, "");
+    _katexCssCache = css;
+  } catch {
+    _katexCssCache = "";
+  }
+  return _katexCssCache;
 }
 
 // ── Panel management ───────────────────────────────────────────────────────
@@ -348,6 +378,13 @@ function getWebviewHtml(webview: vscode.Webview, context: vscode.ExtensionContex
   const hljsCss = webview.asWebviewUri(vscode.Uri.file(path.join(webviewDir, "hljs.css")));
   html = html.replace(/%%HLJS_SRC%%/g, hljsJs.toString());
   html = html.replace(/%%HLJS_CSS%%/g, hljsCss.toString());
+
+  // Math rendering (KaTeX bundled locally: JS + CSS + fonts). Fonts are loaded
+  // by katex.css via relative url(fonts/...) which resolve under webviewDir.
+  const katexJs  = webview.asWebviewUri(vscode.Uri.file(path.join(webviewDir, "katex.js")));
+  const katexCss = webview.asWebviewUri(vscode.Uri.file(path.join(webviewDir, "katex.css")));
+  html = html.replace(/%%KATEX_SRC%%/g, katexJs.toString());
+  html = html.replace(/%%KATEX_CSS%%/g, katexCss.toString());
 
   // Inject the webview CSP source — required for VS Code to allow scripts to run
   html = html.replace(/%%CSP_SOURCE%%/g, webview.cspSource);
@@ -526,7 +563,7 @@ async function handleMessage(
       // Build a self-contained HTML document from the webview-rendered body and
       // either open it in the default browser or save it to a file.
       try {
-        const doc = buildStandaloneNoteHtml(msg);
+        const doc = buildStandaloneNoteHtml(msg, katexCssForExport(context));
         const safe = safeFilePart(String(msg.title || msg.slug || "note")) || "note";
         if (msg.mode === "browser") {
           const opened = await openHtmlInBrowser(doc);
