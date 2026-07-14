@@ -413,6 +413,7 @@ mark{background:var(--vscode-editor-findMatchHighlightBackground,#ffd70055);colo
 <div id="ctx-menu">
   <div class="ctx-item" id="ctx-open">Open</div>
   <div class="ctx-item" id="ctx-edit">✏ Edit Note</div>
+  <div class="ctx-item" id="ctx-move">↪ Move…</div>
   <div class="ctx-item" id="ctx-mark-done">✓ Mark as Done</div>
   <div class="ctx-item danger" id="ctx-delete">🗑 Delete Note</div>
 </div>
@@ -579,6 +580,12 @@ document.getElementById('ctx-delete').addEventListener('click', () => {
 });
 document.getElementById('ctx-edit').addEventListener('click', () => {
   if (ctxTarget) { pendingEditSlug = ctxTarget; ask('detail', { type:'note', key: ctxTarget }); ctxTarget = null; }
+});
+document.getElementById('ctx-move').addEventListener('click', () => {
+  if (!ctxTarget) return;
+  const slug = ctxTarget; ctxTarget = null;
+  const cat = slug.includes('/') ? slug.slice(0, slug.lastIndexOf('/')) : '';
+  pkModal({ title: 'Move note', message: 'Target folder path (blank = root; missing parents are created).', input: true, defaultValue: cat, okLabel: 'Move', onOk: v => ask('noteMove', { slug, category: v.trim() }) });
 });
 
 // ── Message from extension ─────────────────────────────────────────────────
@@ -804,13 +811,19 @@ function renderList() {
     fEl.innerHTML = '';
     const q = state.search;
     const root = buildCatTree(items, r => r.category, '(uncategorized)');
+    const folderAttr = (child, name, fullPath) => {
+      const prefix = fullPath.join('/');
+      if (prefix === '(uncategorized)' || fullPath[0] === '(uncategorized)') return '';
+      const b64 = btoa(unescape(encodeURIComponent(prefix)));
+      return ` oncontextmenu="noteFolderMenu(event,'${b64}',${JSON.stringify(name).replace(/"/g, '&quot;')})"`;
+    };
     const html = renderCatTree(root, [], 0, (r, depth) => {
       const pad = 8 + (depth + 1) * 12;
       return `<div class="li nt-${r.type}" data-note-slug="${esc(r.slug)}" style="padding-left:${pad}px" onclick="openItem('note','${esc(r.slug)}')">
         <div class="li-name">${ICON[r.type]||'📝'} ${hl(r.title, q)}</div>
         <div class="li-meta">${(r.updated_at||'').slice(0,10)}</div>
       </div>`;
-    }, q);
+    }, q, folderAttr);
     el.innerHTML = html || '<div class="empty">No notes</div>';
 
   } else if (tab === 'papers') {
@@ -909,7 +922,7 @@ function renderList() {
 }
 
 function skillLi(r, displayName, q, indent) {
-  return `<div class="li" data-skill-name="${esc(r.name)}" onclick="openItem('skill','${esc(r.name)}')" style="padding-left:${indent}px">
+  return `<div class="li" data-skill-name="${esc(r.name)}" onclick="openItem('skill','${esc(r.name)}')" oncontextmenu="skillItemMenu(event,'${esc(r.name)}',${JSON.stringify(r.category || '').replace(/"/g, '&quot;')})" style="padding-left:${indent}px">
     <div class="li-name">${hl(displayName||r.name, q)}</div>
     <div class="li-meta">${r.description ? hl(r.description.slice(0,50), q) : ''}</div>
   </div>`;
@@ -1715,6 +1728,48 @@ function skillFolderMenu(ev, b64, name) {
       if (!nn || nn === name) return;
       const segs = prefix.split('/'); segs[segs.length - 1] = nn;
       ask('skillRenameFolder', { oldPrefix: prefix, newPrefix: segs.join('/') });
+    } }) });
+  items.push({ label: '↪ Move folder…', onClick: () => pkModal({
+    title: 'Move folder', message: 'New full path for “' + prefix + '” (missing parents are created).',
+    input: true, defaultValue: prefix, okLabel: 'Move', onOk: v => {
+      const np = v.trim().replace(/^\/+|\/+$/g, '');
+      if (np && np !== prefix) ask('skillRenameFolder', { oldPrefix: prefix, newPrefix: np });
+    } }) });
+  showPaperMenu(ev.clientX, ev.clientY, items);
+}
+
+// Right-click a Skills leaf -> Move / Edit.
+function skillItemMenu(ev, name, category) {
+  ev.preventDefault(); ev.stopPropagation();
+  const items = [{ label: '📄 ' + name, header: true }];
+  items.push({ label: '↪ Move…', onClick: () => pkModal({
+    title: 'Move skill', message: 'Target folder path (blank = root; missing parents are created).',
+    input: true, defaultValue: category || '', okLabel: 'Move', onOk: v => ask('skillMove', { name, category: v.trim() }) }) });
+  items.push({ sep: true });
+  items.push({ label: '✏ Edit', onClick: () => { pendingEditType = 'skill'; ask('detail', { type: 'skill', key: name }); } });
+  showPaperMenu(ev.clientX, ev.clientY, items);
+}
+
+// Right-click a Notes category folder -> Rename / Move.
+function noteFolderMenu(ev, b64, name) {
+  ev.preventDefault(); ev.stopPropagation();
+  let prefix = '';
+  try { prefix = decodeURIComponent(escape(atob(b64))); } catch (e) {}
+  if (!prefix) return;
+  const items = [{ label: '📁 ' + name, header: true }];
+  items.push({ label: '✏ Rename folder…', onClick: () => pkModal({
+    title: 'Rename folder', message: 'Renames “' + prefix + '” and re-paths every note under it.',
+    input: true, defaultValue: name, okLabel: 'Rename', onOk: v => {
+      const nn = v.trim();
+      if (!nn || nn === name) return;
+      const segs = prefix.split('/'); segs[segs.length - 1] = nn;
+      ask('noteMoveFolder', { oldPrefix: prefix, newPrefix: segs.join('/') });
+    } }) });
+  items.push({ label: '↪ Move folder…', onClick: () => pkModal({
+    title: 'Move folder', message: 'New full path for “' + prefix + '” (missing parents are created).',
+    input: true, defaultValue: prefix, okLabel: 'Move', onOk: v => {
+      const np = v.trim().replace(/^\/+|\/+$/g, '');
+      if (np && np !== prefix) ask('noteMoveFolder', { oldPrefix: prefix, newPrefix: np });
     } }) });
   showPaperMenu(ev.clientX, ev.clientY, items);
 }

@@ -5,8 +5,8 @@ import * as http from "http";
 import * as fs from "fs";
 import { syncServer } from "./sync-server";
 import {
-  skillList, skillSearch, skillGet, skillUpsert, skillDelete, skillMoveCategory,
-  noteList, noteSearch, noteGet, noteUpsert, noteDelete, slugExists,
+  skillList, skillSearch, skillGet, skillUpsert, skillDelete, skillMoveCategory, skillMove,
+  noteList, noteSearch, noteGet, noteUpsert, noteDelete, slugExists, noteMove, noteMoveFolder,
   noteExport, noteImport, saveNoteAsset,
   paperList, paperSearch, paperGet, paperUpsert, paperDelete,
   paperFacets, paperGraph, savePaperFile,
@@ -635,6 +635,35 @@ async function handleMessage(
       _treeProvider?.refresh();
       respond({ command: "saved" });
       vscode.window.setStatusBarMessage(`$(check) Renamed folder (${n} skill${n === 1 ? "" : "s"})`, 3000);
+      break;
+    }
+
+    case "skillMove": {
+      if (skillMove(String(msg.name || ""), String(msg.category || ""))) {
+        gitCommit(`move(skill): ${msg.name} -> ${msg.category || "(root)"}`);
+        _treeProvider?.refresh();
+      }
+      respond({ command: "saved" });
+      vscode.window.setStatusBarMessage("$(check) Skill moved", 3000);
+      break;
+    }
+
+    case "noteMove": {
+      if (noteMove(String(msg.slug || ""), String(msg.category || ""))) {
+        gitCommit(`move(note): ${msg.slug} -> ${msg.category || "(root)"}`);
+        _treeProvider?.refresh();
+      }
+      respond({ command: "saved" });
+      vscode.window.setStatusBarMessage("$(check) Note moved", 3000);
+      break;
+    }
+
+    case "noteMoveFolder": {
+      const n = noteMoveFolder(String(msg.oldPrefix || ""), String(msg.newPrefix || ""));
+      if (n) gitCommit(`move(note-folder): ${msg.oldPrefix} -> ${msg.newPrefix} (${n})`);
+      _treeProvider?.refresh();
+      respond({ command: "saved" });
+      vscode.window.setStatusBarMessage(`$(check) Moved folder (${n} note${n === 1 ? "" : "s"})`, 3000);
       break;
     }
 

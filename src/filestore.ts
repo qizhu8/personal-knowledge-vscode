@@ -310,6 +310,51 @@ export function skillMoveCategory(oldPrefix: string, newPrefix: string): number 
   return n;
 }
 
+/** Move a single skill to a different category (folder path). */
+export function skillMove(name: string, newCategory: string): boolean {
+  const s = skillGet(name);
+  if (!s) return false;
+  skillUpsert({
+    name: s.name, content: s.content, description: s.description,
+    category: safeCategory(newCategory || ""), tags: JSON.parse(s.tags || "[]"),
+    source_project: s.source_project ?? undefined,
+  });
+  return true;
+}
+
+/** Move a single note to a different category (folder path). Parents are created. */
+export function noteMove(slug: string, newCategory: string): boolean {
+  const nt = noteGet(slug);
+  if (!nt) return false;
+  noteUpsert({
+    slug, title: nt.title, content: nt.content, type: nt.type,
+    tags: JSON.parse(nt.tags || "[]"), category: safeCategory(newCategory || ""),
+  });
+  return true;
+}
+
+/** Move a note category folder: re-path every note under `oldPrefix` to `newPrefix`. */
+export function noteMoveFolder(oldPrefix: string, newPrefix: string): number {
+  const op = (oldPrefix || "").replace(/^\/+|\/+$/g, "");
+  const np = safeCategory(newPrefix || "");
+  if (!op || !np || op === np) return 0;
+  let n = 0;
+  for (const meta of noteList(undefined, 100000) as any[]) {
+    const cat = meta.category || "";
+    if (cat === op || cat.startsWith(op + "/")) {
+      const full = noteGet(meta.slug);
+      if (!full) continue;
+      const newCat = np + cat.slice(op.length);
+      noteUpsert({
+        slug: full.slug, title: full.title, content: full.content, type: full.type,
+        tags: JSON.parse(full.tags || "[]"), category: newCat,
+      });
+      n++;
+    }
+  }
+  return n;
+}
+
 // ── Papers ────────────────────────────────────────────────────────────────
 // Files: papers/<Category>/<Title>.md. Frontmatter carries bibliographic
 // metadata, a list of conclusions (shown in the graph), and a `cites` list where

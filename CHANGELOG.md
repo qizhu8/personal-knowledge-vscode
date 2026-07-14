@@ -11,6 +11,7 @@ Builds on the **Papers** feature (1.5.0):
 - **Pin / star** — star any paper or idea; pinned items collect in a **Pinned** section at the top of the list. (Replaces the earlier idea-specific icon — ideas now look like any paper in the list.)
 - **Groups** — organize items into user-assigned groups (default: **Papers**). Right-click a card to **move it to a group** or create a **New group…**; right-click a group header to **rename** or **delete** it (its items fall back to “Papers”). Right-click a **topic folder** to move everything under it (including subfolders) to a group in one step.
 - **Skills** — right-click a category folder to **rename** it; every skill beneath it (and nested subfolders) is re-pathed accordingly.
+- **Move** — right-click a note/skill or a category folder in the tree to **Move** it to a different path; missing parent folders are created automatically.
 - Groups, pins, and the idea flag are stored in frontmatter, sync with the rest, and are preserved across MCP edits.
 - Fixes: group/rename prompts use an in-webview dialog (VS Code webviews block native `prompt()`/`confirm()`); the generated MCP server now serializes booleans as valid JSON; nested folder arrows are sized below their parent group.
 
