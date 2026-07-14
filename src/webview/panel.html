@@ -837,7 +837,7 @@ function renderList() {
       html += '<div class="pk-group' + (custom ? ' pk-group-custom' : '') + '">' +
         '<div class="pk-group-hdr" onclick="togglePaperGroup(' + JSON.stringify(g).replace(/"/g, '&quot;') + ')" ' +
         'oncontextmenu="paperGroupMenu(event,' + JSON.stringify(g).replace(/"/g, '&quot;') + ')">' +
-        '<span class="pk-group-arrow">' + (expanded ? '▾' : '▸') + '</span>' +
+        '<span class="pk-group-arrow">' + (expanded ? '▼' : '▶') + '</span>' +
         '<span class="pk-group-name">' + (custom ? '📁' : '📄') + ' ' + esc(g) + '</span>' +
         '<span class="pk-group-count">' + groups[g].length + '</span></div>' +
         '<div class="pk-group-body" style="display:' + (expanded ? '' : 'none') + '">';
@@ -942,7 +942,7 @@ function renderCatTree(node, path, depth, renderLeaf, q, folderAttr) {
     const pad = 8 + depth * 12;
     html += `<div class="tree-cat">
       <div class="tree-cat-hdr" style="padding-left:${pad}px" onclick="toggleCat('${key}')" title="${esc(name)}"${folderAttr ? folderAttr(child, name) : ''}>
-        <span class="tree-cat-arrow">${open ? '▼' : '▶'}</span>
+        <span class="tree-cat-arrow">${open ? '▾' : '▸'}</span>
         <span class="tree-cat-label">${name === '(uncategorized)' ? '<em style="opacity:.6">(uncategorized)</em>' : esc(name)}</span>
         <span class="tree-cat-count">${countTreeLeaves(child)}</span>
       </div>
