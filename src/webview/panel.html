@@ -381,13 +381,17 @@ try {
 // the note's OWN folder (its category path), matching the on-disk convention
 // notes/<category>/_assets/<file> so links stay portable (Obsidian-style).
 const NOTES_BASE = '%%NOTES_BASE%%';
+let renderNonce = 0; // bumped on Refresh to bust cached (regenerated) note images
 function assetBase(category) {
   const cat = String(category || '').split('/').map(s => s.trim()).filter(Boolean).map(encodeURIComponent).join('/');
   return cat ? NOTES_BASE + '/' + cat : NOTES_BASE;
 }
 function fixAssets(html, category) {
   const base = assetBase(category);
-  return String(html).replace(/(src|href)=("|')_assets\//g, '$1=$2' + base + '/_assets/');
+  return String(html).replace(/(src|href)=("|')_assets\/([^"']+)\2/g, function(m, attr, q, file) {
+    const sep = file.indexOf('?') < 0 ? '?_r=' : '&_r=';
+    return attr + '=' + q + base + '/_assets/' + file + sep + renderNonce + q;
+  });
 }
 // Wiki-style [[Title]] / [[Title|alias]] links -> clickable note links
 function linkifyWiki(md) {
@@ -494,7 +498,15 @@ window.addEventListener('message', e => {
     vscode.postMessage({ command: 'toast', text: 'No note found for “' + (e.data.target || '') + '”' });
   }
   else if (command === 'reloaded') {
+    renderNonce++; // force cached note images to reload after external regeneration
     ask('list', { tab: state.tab, filter: state.filter, q: state.search });
+    // Re-render the currently open note/skill so external edits and regenerated
+    // images (same path) are picked up, not just the sidebar list.
+    if (currentDetail && currentDetail.type === 'note' && currentDetail.slug) {
+      ask('detail', { type: 'note', key: currentDetail.slug });
+    } else if (currentDetail && currentDetail.type === 'skill' && currentDetail.name) {
+      ask('detail', { type: 'skill', key: currentDetail.name });
+    }
     const btn = document.querySelector('#topbar .tbtn[onclick="doReload()"]');
     if (btn) { btn.disabled = false; btn.textContent = '↻ Refresh'; }
   }
