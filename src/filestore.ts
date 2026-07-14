@@ -186,14 +186,16 @@ export function noteImport(rows: any[]): number {
 }
 
 // ── Assets (pasted images) ───────────────────────────────────────────────────
-// Images live in notes/_assets/<sha1>.<ext> and are referenced from markdown as
-// `_assets/<sha1>.<ext>` (relative to the notes root). The webview rewrites those
-// refs to webview URIs at render time. Content-hash naming de-dupes identical pastes.
-export function saveNoteAsset(base64: string, ext: string): string {
+// Images live in the NOTE'S OWN folder: notes/<category>/_assets/<sha1>.<ext>,
+// referenced from markdown as `_assets/<sha1>.<ext>` (relative to the note file).
+// Content-hash naming de-dupes identical pastes. The webview rewrites those refs
+// to webview URIs at render time. `category` is the note's folder path (may be "").
+export function saveNoteAsset(base64: string, ext: string, category = ""): string {
   const buf = Buffer.from(base64, "base64");
   const hash = createHash("sha1").update(buf).digest("hex").slice(0, 16);
   const safeExt = (ext || "png").replace(/[^a-zA-Z0-9]/g, "").toLowerCase() || "png";
-  const dir = join(_store, "notes", "_assets");
+  const cat = safeCategory(category);
+  const dir = cat ? join(_store, "notes", ...cat.split("/"), "_assets") : join(_store, "notes", "_assets");
   mkdirSync(dir, { recursive: true });
   const rel = `_assets/${hash}.${safeExt}`;
   const full = join(dir, `${hash}.${safeExt}`);

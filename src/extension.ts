@@ -162,9 +162,11 @@ const MIME_BY_EXT: Record<string, string> = {
   webp: "image/webp", svg: "image/svg+xml", bmp: "image/bmp", avif: "image/avif",
 };
 
-/** Inline `_assets/<file>` image references as base64 data URIs for a portable file. */
-function inlineNoteAssets(html: string): string {
-  const assetsDir = path.join(getStorePath(), "notes", "_assets");
+/** Inline `_assets/<file>` image references as base64 data URIs for a portable file.
+ *  Assets live in the note's own folder: notes/<category>/_assets/<file>. */
+function inlineNoteAssets(html: string, category = ""): string {
+  const catSegs = String(category || "").split("/").map(s => s.trim()).filter(Boolean);
+  const assetsDir = path.join(getStorePath(), "notes", ...catSegs, "_assets");
   return html.replace(/(src\s*=\s*)("|')_assets\/([^"']+)\2/gi, (m, pre, q, file) => {
     try {
       const name = decodeURIComponent(file);
@@ -185,7 +187,7 @@ function buildStandaloneNoteHtml(msg: any): string {
   let tags: string[] = [];
   try { tags = JSON.parse(msg.tags || "[]"); } catch { tags = []; }
   const title = String(msg.title || msg.slug || "Note");
-  const body = inlineNoteAssets(String(msg.bodyHtml || ""));
+  const body = inlineNoteAssets(String(msg.bodyHtml || ""), String(msg.category || ""));
   const metaBits = [
     msg.noteType ? `<span class="pill type">${esc(msg.noteType)}</span>` : "",
     msg.category ? `<span class="pill cat">${esc(msg.category)}</span>` : "",
@@ -490,10 +492,10 @@ async function handleMessage(
     }
 
     case "saveAsset": {
-      // Pasted image from the note editor: persist to notes/_assets/<hash>.<ext>
-      const { data, ext, reqId } = msg;
+      // Pasted image from the note editor: persist to notes/<category>/_assets/<hash>.<ext>
+      const { data, ext, reqId, category } = msg;
       try {
-        const rel = saveNoteAsset(String(data || ""), String(ext || "png"));
+        const rel = saveNoteAsset(String(data || ""), String(ext || "png"), String(category || ""));
         respond({ command: "assetSaved", reqId, markdown: `![](${rel})` });
       } catch (e) {
         log.error(`saveAsset failed: ${String(e)}`);
