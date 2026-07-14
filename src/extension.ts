@@ -10,7 +10,7 @@ import {
   noteExport, noteImport, saveNoteAsset,
   paperList, paperSearch, paperGet, paperUpsert, paperDelete,
   paperFacets, paperGraph, savePaperFile,
-  paperGroups, paperSetGroup, paperGroupRename, paperGroupDelete,
+  paperGroups, paperSetGroup, paperGroupRename, paperGroupDelete, paperSetPinned,
   setStorePath as fsSetStorePath, getStorePath,
 } from "./filestore";
 import { migrateDbToFiles } from "./migrate";
@@ -637,7 +637,7 @@ async function handleMessage(
         authors: p.authors ?? [], year: p.year ?? null, topic: p.topic ?? "",
         publisher: p.publisher ?? "", tags: p.tags ?? [], url: p.url ?? "",
         file: p.file ?? "", conclusions: p.conclusions ?? [], cites: p.cites ?? [],
-        category: p.category ?? "", kind: p.kind ?? "paper", group: p.group ?? "Papers",
+        category: p.category ?? "", kind: p.kind ?? "paper", group: p.group ?? "Papers", pinned: !!p.pinned,
       });
       gitCommit(p.slug ? `update(paper): ${slug}` : `add(paper): ${slug}`);
       respond({ command: "saved" });
@@ -653,6 +653,25 @@ async function handleMessage(
     case "paperSetGroup": {
       if (paperSetGroup(String(msg.slug || ""), String(msg.group || "Papers"))) {
         gitCommit(`group(paper): ${msg.slug} -> ${msg.group}`);
+      }
+      respond({ command: "saved" });
+      break;
+    }
+
+    case "paperSetGroupMany": {
+      const slugs: string[] = Array.isArray(msg.slugs) ? msg.slugs : [];
+      const group = String(msg.group || "Papers");
+      let n = 0;
+      for (const s of slugs) if (paperSetGroup(String(s), group)) n++;
+      if (n) gitCommit(`group(paper x${n}): -> ${group}`);
+      respond({ command: "saved" });
+      vscode.window.setStatusBarMessage(`$(check) Moved ${n} to “${group}”`, 3000);
+      break;
+    }
+
+    case "paperSetPinned": {
+      if (paperSetPinned(String(msg.slug || ""), !!msg.pinned)) {
+        gitCommit(`${msg.pinned ? "pin" : "unpin"}(paper): ${msg.slug}`);
       }
       respond({ command: "saved" });
       break;
@@ -1060,7 +1079,9 @@ def _serialize(fm, body):
     for k, v in fm.items():
         if v is None:
             continue
-        if isinstance(v, (list, str)):
+        if isinstance(v, bool):
+            lines.append(f"{k}: {'true' if v else 'false'}")
+        elif isinstance(v, (list, str)):
             lines.append(f"{k}: {json.dumps(v, ensure_ascii=False)}")
         else:
             lines.append(f"{k}: {v}")
@@ -1206,6 +1227,7 @@ def _paper(p, key):
     return {"slug": key, "title": fm.get("title") or _name_of(key),
             "kind": "idea" if fm.get("kind") == "idea" else "paper",
             "group": (str(fm.get("group")).strip() if fm.get("group") else "") or "Papers",
+            "pinned": fm.get("pinned") is True,
             "authors": _arr(fm.get("authors")), "year": _year(fm.get("year")),
             "topic": fm.get("topic") or "", "publisher": fm.get("publisher") or "",
             "tags": _arr(fm.get("tags")), "url": fm.get("url") or "", "file": fm.get("file") or "",
@@ -1237,17 +1259,18 @@ def _citation_counts(all_p):
             if t: counts[t] = counts.get(t, 0) + 1
     return counts
 
-def _paper_write(slug, title, content, authors, year, topic, publisher, tags, url, file, conclusions, cites, category, created=None, kind=None, group=None):
+def _paper_write(slug, title, content, authors, year, topic, publisher, tags, url, file, conclusions, cites, category, created=None, kind=None, group=None, pinned=None):
     cat = _safe_cat(category or "")
     fname = _safe_name(title or _name_of(slug)) + ".md"
     rel = (cat + "/" + fname) if cat else fname
     full = PAPERS / rel
     old = PAPERS / (slug + ".md")
-    # Preserve user-set kind/group when the caller doesn't specify them.
-    if (kind is None or group is None) and old.exists():
+    # Preserve user-set kind/group/pinned when the caller doesn't specify them.
+    if (kind is None or group is None or pinned is None) and old.exists():
         prev, _ = _parse(old.read_text(encoding="utf-8"))
         if kind is None: kind = prev.get("kind")
         if group is None: group = prev.get("group")
+        if pinned is None: pinned = prev.get("pinned")
     if old.exists() and rel[:-3] != slug:
         try: old.unlink()
         except Exception: pass
@@ -1255,6 +1278,7 @@ def _paper_write(slug, title, content, authors, year, topic, publisher, tags, ur
     fm = {"title": title,
           "kind": "idea" if kind == "idea" else None,
           "group": (str(group).strip() if group and str(group).strip() != "Papers" else None),
+          "pinned": True if pinned is True else None,
           "authors": authors or [], "year": _year(year), "topic": topic or "",
           "publisher": publisher or "", "tags": tags or [], "url": url or "", "file": file or "",
           "conclusions": conclusions or [], "cites": _norm_cites(cites or []), "created": created or _now()}

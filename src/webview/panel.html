@@ -109,6 +109,12 @@ hr.div{border:none;border-top:1px solid var(--border);margin:14px 0}
 #pf-preview{flex:1;overflow-y:auto;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;font-size:13px}
 .paper-card{padding:8px 10px;border:1px solid var(--border);border-radius:6px;margin:6px 8px;cursor:pointer;background:var(--panel)}
 .paper-card:hover{border-color:var(--accent)}
+.paper-card.pc-pinned{border-color:#f4b40066}
+.pc-star{cursor:pointer;color:var(--muted);font-size:12px;margin-right:2px}
+.pc-star:hover{color:#f4b400}
+.pc-star.on{color:#f4b400}
+.pk-group-pinned>.pk-group-hdr{color:#f4b400;border-bottom-color:#f4b40044}
+.pk-group-pinned>.pk-group-hdr .pk-group-arrow{color:#f4b400}
 /* Paper groups */
 .pk-group{margin:2px 4px 8px}
 .pk-group-hdr{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:6px;padding:5px 8px;font-size:11.5px;font-weight:700;cursor:pointer;background:var(--bg);border-bottom:1px solid var(--border)}
@@ -805,11 +811,26 @@ function renderList() {
     const q = state.search;
     let list = items.slice();
     if (paperTopicFilter) list = list.filter(p => p.topic === paperTopicFilter);
+    const pinned = list.filter(p => p.pinned);
+    const rest = list.filter(p => !p.pinned);
+    // Right-click a topic folder -> move all papers under it to a group.
+    const folderAttr = (child, name) => {
+      const slugs = collectLeafSlugs(child);
+      const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(slugs))));
+      return ` oncontextmenu="paperFolderMenu(event,'${b64}',${JSON.stringify(name).replace(/"/g, '&quot;')})"`;
+    };
+    let html = '';
+    if (pinned.length) {
+      html += '<div class="pk-group pk-group-pinned"><div class="pk-group-hdr">' +
+        '<span class="pk-group-arrow">★</span><span class="pk-group-name">Pinned</span>' +
+        '<span class="pk-group-count">' + pinned.length + '</span></div><div class="pk-group-body">' +
+        pinned.sort((a, b) => (b.citationCount - a.citationCount) || a.title.localeCompare(b.title)).map(p => paperCard(p, q, 8)).join('') +
+        '</div></div>';
+    }
     // Top-level = user-assigned group; custom groups pinned above the default "Papers".
     const groups = {};
-    for (const p of list) { const g = p.group || 'Papers'; (groups[g] = groups[g] || []).push(p); }
+    for (const p of rest) { const g = p.group || 'Papers'; (groups[g] = groups[g] || []).push(p); }
     const names = Object.keys(groups).sort((a, b) => a === 'Papers' ? 1 : b === 'Papers' ? -1 : a.localeCompare(b));
-    let html = '';
     for (const g of names) {
       const expanded = paperGroupExpanded[g] !== false;
       const custom = g !== 'Papers';
@@ -821,7 +842,7 @@ function renderList() {
         '<span class="pk-group-count">' + groups[g].length + '</span></div>' +
         '<div class="pk-group-body" style="display:' + (expanded ? '' : 'none') + '">';
       const root = buildCatTree(groups[g], r => r.topic || '(untopiced)', '(untopiced)');
-      html += renderCatTree(root, [], 0, (r, depth) => paperCard(r, q, 8 + (depth + 1) * 12), q);
+      html += renderCatTree(root, [], 0, (r, depth) => paperCard(r, q, 8 + (depth + 1) * 12), q, folderAttr);
       html += '</div></div>';
     }
     el.innerHTML = html || '<div class="empty">No papers yet — click “+ Paper”.</div>';
@@ -909,7 +930,7 @@ function countTreeLeaves(node) {
   return n;
 }
 
-function renderCatTree(node, path, depth, renderLeaf, q) {
+function renderCatTree(node, path, depth, renderLeaf, q, folderAttr) {
   const folderKeys = Object.keys(node.folders).sort((a, b) =>
     a === '(uncategorized)' ? 1 : b === '(uncategorized)' ? -1 : a.localeCompare(b));
   let html = '';
@@ -920,16 +941,22 @@ function renderCatTree(node, path, depth, renderLeaf, q) {
     const open = !!catExpanded[key];
     const pad = 8 + depth * 12;
     html += `<div class="tree-cat">
-      <div class="tree-cat-hdr" style="padding-left:${pad}px" onclick="toggleCat('${key}')" title="${esc(name)}">
+      <div class="tree-cat-hdr" style="padding-left:${pad}px" onclick="toggleCat('${key}')" title="${esc(name)}"${folderAttr ? folderAttr(child, name) : ''}>
         <span class="tree-cat-arrow">${open ? '▼' : '▶'}</span>
         <span class="tree-cat-label">${name === '(uncategorized)' ? '<em style="opacity:.6">(uncategorized)</em>' : esc(name)}</span>
         <span class="tree-cat-count">${countTreeLeaves(child)}</span>
       </div>
-      <div class="tree-cat-body" style="${open ? '' : 'display:none'}">${renderCatTree(child, path.concat(name), depth + 1, renderLeaf, q)}</div>
+      <div class="tree-cat-body" style="${open ? '' : 'display:none'}">${renderCatTree(child, path.concat(name), depth + 1, renderLeaf, q, folderAttr)}</div>
     </div>`;
   }
   for (const it of node.items) html += renderLeaf(it, depth, q);
   return html;
+}
+// Collect all leaf slugs under a cat-tree folder (papers only).
+function collectLeafSlugs(node) {
+  let out = (node.items || []).map(it => it.slug).filter(Boolean);
+  for (const k in node.folders) out = out.concat(collectLeafSlugs(node.folders[k]));
+  return out;
 }
 
 function setFilter(f) { state.filter = f; renderList(); }
@@ -1625,9 +1652,12 @@ function pkModal(opts) {
 }
 function closePkModal() { const m = document.getElementById('pk-modal-bg'); if (m) m.remove(); }
 
-function paperCardMenu(ev, slug, group) {
+function paperCardMenu(ev, slug, group, pinned) {
   ev.preventDefault(); ev.stopPropagation();
-  const items = [{ label: 'Move to group', header: true }];
+  const items = [];
+  items.push({ label: pinned ? '★ Unpin' : '☆ Pin', onClick: () => ask('paperSetPinned', { slug, pinned: !pinned }) });
+  items.push({ sep: true });
+  items.push({ label: 'Move to group', header: true });
   for (const g of paperGroupsList) {
     items.push({ label: (g.name === group ? '● ' : '   ') + g.name, active: g.name === group, onClick: () => ask('paperSetGroup', { slug, group: g.name }) });
   }
@@ -1650,6 +1680,20 @@ function paperGroupMenu(ev, group) {
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
 
+// Right-click a topic folder -> move every paper under it (incl. subfolders) to a group.
+function paperFolderMenu(ev, b64, name) {
+  ev.preventDefault(); ev.stopPropagation();
+  let slugs = [];
+  try { slugs = JSON.parse(decodeURIComponent(escape(atob(b64)))); } catch (e) {}
+  if (!slugs.length) return;
+  const items = [{ label: 'Move “' + name + '” (' + slugs.length + ') to group', header: true }];
+  for (const g of paperGroupsList) {
+    items.push({ label: '   ' + g.name, onClick: () => ask('paperSetGroupMany', { slugs, group: g.name }) });
+  }
+  items.push({ label: '＋ New group…', onClick: () => pkModal({ title: 'Move “' + name + '” to a new group', input: true, okLabel: 'Create & move', onOk: v => { if (v.trim()) ask('paperSetGroupMany', { slugs, group: v.trim() }); } }) });
+  showPaperMenu(ev.clientX, ev.clientY, items);
+}
+
 // List view
 function renderPaperFilters(fEl) {
   const opts = ['<option value="">All topics</option>'].concat(
@@ -1660,8 +1704,9 @@ function setPaperTopic(v) { paperTopicFilter = v; renderList(); }
 function paperCard(p, q, pad) {
   const authors = (p.authors || []).slice(0, 3).join(', ') + ((p.authors || []).length > 3 ? ' et al.' : '');
   const tags = (p.tags || []).map(t => `<span class="pc-tag">${esc(t)}</span>`).join('');
-  return `<div class="paper-card" style="margin-left:${pad}px" onclick="openItem('paper','${esc(p.slug)}')" oncontextmenu="paperCardMenu(event,'${esc(p.slug)}',${JSON.stringify(p.group || 'Papers').replace(/"/g, '&quot;')})">
-    <div class="pc-title">${p.kind === 'idea' ? '💡 ' : ''}${hl(p.title, q)}</div>
+  const grp = JSON.stringify(p.group || 'Papers').replace(/"/g, '&quot;');
+  return `<div class="paper-card${p.pinned ? ' pc-pinned' : ''}" style="margin-left:${pad}px" onclick="openItem('paper','${esc(p.slug)}')" oncontextmenu="paperCardMenu(event,'${esc(p.slug)}',${grp},${p.pinned ? 'true' : 'false'})">
+    <div class="pc-title"><span class="pc-star${p.pinned ? ' on' : ''}" onclick="event.stopPropagation();togglePin('${esc(p.slug)}',${p.pinned ? 'false' : 'true'})" title="${p.pinned ? 'Unpin' : 'Pin'}">${p.pinned ? '★' : '☆'}</span> ${hl(p.title, q)}</div>
     <div class="pc-meta">
       ${p.citationCount ? `<span class="pc-cite" title="cited by ${p.citationCount} paper(s)">${p.citationCount}★</span>` : ''}
       ${p.year ? `<span>${p.year}</span>` : ''}
@@ -1671,6 +1716,7 @@ function paperCard(p, q, pad) {
     </div>
   </div>`;
 }
+function togglePin(slug, pinned) { ask('paperSetPinned', { slug, pinned }); }
 
 // Detail view
 function paperDetailHtml(d) {
@@ -1679,15 +1725,17 @@ function paperDetailHtml(d) {
   const concl = d.conclusions || [];
   const cites = d.cites || [];
   return `
-    <div class="d-title">${d.kind === 'idea' ? '💡 ' : ''}${esc(d.title)}</div>
+    <div class="d-title">${esc(d.title)}</div>
     <div class="d-meta">
-      ${d.kind === 'idea' ? '<span class="pc-cite" style="background:#f4b400;color:#1a1200">💡 Idea</span>' : ''}
+      ${d.kind === 'idea' ? '<span class="pc-cite" style="background:#f4b400;color:#1a1200">Idea</span>' : ''}
+      ${d.group && d.group !== 'Papers' ? `<span class="pc-tag">📁 ${esc(d.group)}</span>` : ''}
       ${d.citationCount ? `<span class="pc-cite">${d.citationCount}★ cited</span>` : ''}
       ${d.year ? `<span>${d.year}</span>` : ''}
       ${d.topic ? `<span class="cat">${esc(d.topic)}</span>` : ''}
       ${d.publisher ? `<span>${esc(d.publisher)}</span>` : ''}
       ${tags}
       <span style="flex:1"></span>
+      <button class="tbtn" style="font-size:11px" onclick="togglePin('${esc(d.slug)}',${d.pinned ? 'false' : 'true'})" title="${d.pinned ? 'Unpin' : 'Pin to top'}">${d.pinned ? '★ Pinned' : '☆ Pin'}</button>
       ${d.url ? `<button class="tbtn" style="font-size:11px" onclick="openPaperLink('${esc(d.url)}','','')">🔗 Link</button>` : ''}
       ${d.file ? `<button class="tbtn" style="font-size:11px" onclick="openPaperLink('','${esc(d.file)}','${esc(d.category)}')">📄 File</button>` : ''}
       <button class="tbtn" style="font-size:11px" onclick="editPaper(currentDetail)">✏ Edit</button>
