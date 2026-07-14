@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import * as os from "os";
+import * as http from "http";
 import * as fs from "fs";
 import { syncServer } from "./sync-server";
 import {
@@ -116,6 +117,44 @@ function uniqueSlug(title: string): string {
 /** Filesystem-safe filename part (no path separators or reserved chars). */
 function safeFilePart(s: string): string {
   return (s || "").replace(/[/\\:*?"<>|\u0000-\u001f]/g, "").trim().slice(0, 120);
+}
+
+/**
+ * Open a self-contained HTML document in the user's real browser — works both
+ * locally and over Remote-SSH. We serve the doc from an ephemeral loopback HTTP
+ * server and route the URL through `asExternalUri`, which tunnels the port to
+ * the local machine on remote setups (and is a no-op locally). This avoids the
+ * `vscode-remote:`/`file:` "select an app" prompt you get from opening a file URI.
+ */
+async function openHtmlInBrowser(doc: string): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (v: boolean) => { if (!settled) { settled = true; resolve(v); } };
+    try {
+      const server = http.createServer((req, res) => {
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+        res.end(doc);
+      });
+      server.on("error", () => finish(false));
+      // Auto-close after a grace period; a self-contained page needs one GET.
+      const closeTimer = setTimeout(() => { try { server.close(); } catch { /* ignore */ } }, 120_000);
+      closeTimer.unref?.();
+      server.listen(0, "127.0.0.1", async () => {
+        try {
+          const port = (server.address() as any).port;
+          const local = vscode.Uri.parse(`http://127.0.0.1:${port}/`);
+          const external = await vscode.env.asExternalUri(local);
+          const opened = await vscode.env.openExternal(external);
+          finish(!!opened);
+        } catch {
+          try { server.close(); } catch { /* ignore */ }
+          finish(false);
+        }
+      });
+    } catch {
+      finish(false);
+    }
+  });
 }
 
 const MIME_BY_EXT: Record<string, string> = {
@@ -488,15 +527,15 @@ async function handleMessage(
         const doc = buildStandaloneNoteHtml(msg);
         const safe = safeFilePart(String(msg.title || msg.slug || "note")) || "note";
         if (msg.mode === "browser") {
-          const out = path.join(os.tmpdir(), `pk-note-${safe}-${Date.now()}.html`);
-          fs.writeFileSync(out, doc, "utf-8");
-          const opened = await vscode.env.openExternal(vscode.Uri.file(out));
+          const opened = await openHtmlInBrowser(doc);
           if (opened) {
             vscode.window.setStatusBarMessage("$(globe) Note opened in browser", 4000);
           } else {
-            // e.g. headless Remote-SSH host with no browser — tell the user where it is
+            // Couldn't open a browser (e.g. fully headless host) — offer to save instead.
+            const out = path.join(os.tmpdir(), `pk-note-${safe}-${Date.now()}.html`);
+            fs.writeFileSync(out, doc, "utf-8");
             const pick = await vscode.window.showInformationMessage(
-              `Preview written to ${out}`, "Copy Path");
+              `Couldn't open a browser. Preview written to ${out}`, "Copy Path");
             if (pick === "Copy Path") await vscode.env.clipboard.writeText(out);
           }
         } else {

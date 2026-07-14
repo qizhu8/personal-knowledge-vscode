@@ -5,7 +5,7 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [1.3.0] — 2026-07-13
 
-- **Export a note to HTML**: from the note view, **🌐 Browser** opens a standalone preview in your default browser and **⬇ HTML** saves a self-contained `.html` file. Images are inlined as data URIs and code keeps its syntax highlighting, so the single file is easy to share or present to someone who doesn't have the extension. (On a headless Remote-SSH host with no browser, the preview path is surfaced so you can grab the file.)
+- **Export a note to HTML**: from the note view, **🌐 Browser** opens a standalone preview in your default browser and **⬇ HTML** saves a self-contained `.html` file. Images are inlined as data URIs and code keeps its syntax highlighting, so the single file is easy to share or present to someone who doesn't have the extension. The browser preview works over Remote-SSH too — it's served on a forwarded loopback port and opens in your **local** browser (no "select an app" prompt).
 
 ## [1.2.0] — 2026-07-13
 
