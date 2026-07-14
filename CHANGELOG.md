@@ -3,6 +3,17 @@
 All notable changes to the **Personal Knowledge** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.6.0] — 2026-07-14
+
+Builds on the **Papers** feature (1.5.0):
+
+- **Ideas** — mark any node as your own *idea* (a checkbox in the paper form). In the citation graph an idea is drawn distinctly (a gold, dashed box with dashed edges) so it reads as a hub connected to the papers it builds on.
+- **Pin / star** — star any paper or idea; pinned items collect in a **Pinned** section at the top of the list. (Replaces the earlier idea-specific icon — ideas now look like any paper in the list.)
+- **Groups** — organize items into user-assigned groups (default: **Papers**). Right-click a card to **move it to a group** or create a **New group…**; right-click a group header to **rename** or **delete** it (its items fall back to “Papers”). Right-click a **topic folder** to move everything under it (including subfolders) to a group in one step.
+- **Skills** — right-click a category folder to **rename** it; every skill beneath it (and nested subfolders) is re-pathed accordingly.
+- Groups, pins, and the idea flag are stored in frontmatter, sync with the rest, and are preserved across MCP edits.
+- Fixes: group/rename prompts use an in-webview dialog (VS Code webviews block native `prompt()`/`confirm()`); the generated MCP server now serializes booleans as valid JSON; nested folder arrows are sized below their parent group.
+
 ## [1.5.0] — 2026-07-14
 
 - **Papers** — a new tab for tracking research papers and their citation graph.
