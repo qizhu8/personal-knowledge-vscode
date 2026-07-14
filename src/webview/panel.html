@@ -109,6 +109,37 @@ hr.div{border:none;border-top:1px solid var(--border);margin:14px 0}
 #pf-preview{flex:1;overflow-y:auto;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;font-size:13px}
 .paper-card{padding:8px 10px;border:1px solid var(--border);border-radius:6px;margin:6px 8px;cursor:pointer;background:var(--panel)}
 .paper-card:hover{border-color:var(--accent)}
+.paper-card.pc-pinned{border-color:#f4b40066}
+.pc-star{cursor:pointer;color:var(--muted);font-size:12px;margin-right:2px}
+.pc-star:hover{color:#f4b400}
+.pc-star.on{color:#f4b400}
+.pk-group-pinned>.pk-group-hdr{color:#f4b400;border-bottom-color:#f4b40044}
+.pk-group-pinned>.pk-group-hdr .pk-group-arrow{color:#f4b400}
+/* Paper groups */
+.pk-group{margin:2px 4px 8px}
+.pk-group-hdr{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:6px;padding:5px 8px;font-size:11.5px;font-weight:700;cursor:pointer;background:var(--bg);border-bottom:1px solid var(--border)}
+.pk-group-hdr:hover{color:var(--accent)}
+.pk-group-arrow{width:10px;color:var(--muted)}
+.pk-group-name{flex:1}
+.pk-group-count{font-size:10px;color:var(--muted);background:var(--input);border-radius:8px;padding:0 6px}
+.pk-group-custom>.pk-group-hdr{color:#f4b400;border-bottom-color:#f4b40044}
+.pk-group-custom{border:1px solid #f4b40044;border-radius:8px;background:#f4b4000a}
+#paper-ctx{position:fixed;z-index:1000;background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:4px;min-width:180px;box-shadow:0 6px 24px rgba(0,0,0,.45);font-size:12px}
+.pctx-item{padding:5px 10px;border-radius:4px;cursor:pointer;white-space:nowrap}
+.pctx-item:hover{background:var(--accent);color:var(--bg)}
+.pctx-item.pctx-active{color:var(--accent);font-weight:600}
+.pctx-item.pctx-active:hover{color:var(--bg)}
+.pctx-item.pctx-danger:hover{background:#e53935;color:#fff}
+.pctx-header{font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);cursor:default;padding:5px 10px 2px}
+.pctx-header:hover{background:none;color:var(--muted)}
+.pctx-sep{height:1px;background:var(--border);margin:4px 2px}
+#pk-modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:2000;display:flex;align-items:center;justify-content:center}
+#pk-modal{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px 20px;min-width:320px;max-width:90vw;box-shadow:0 12px 40px rgba(0,0,0,.5)}
+.pk-modal-title{font-size:14px;font-weight:700;margin-bottom:8px}
+.pk-modal-msg{font-size:12px;color:var(--muted);margin-bottom:10px}
+#pk-modal-input{width:100%;background:var(--input);border:1px solid var(--border);border-radius:5px;color:var(--text);padding:7px 9px;font-size:13px;outline:none;margin-bottom:12px}
+#pk-modal-input:focus{border-color:var(--accent)}
+.pk-modal-actions{display:flex;justify-content:flex-end;gap:8px}
 .paper-card .pc-title{font-weight:600;font-size:12.5px;line-height:1.35}
 .paper-card .pc-meta{font-size:10.5px;color:var(--muted);margin-top:3px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .pc-cite{background:var(--accent);color:var(--bg);border-radius:10px;padding:0 6px;font-weight:700}
@@ -317,6 +348,7 @@ mark{background:var(--vscode-editor-findMatchHighlightBackground,#ffd70055);colo
       <div class="form-row">
         <input id="pf-title" placeholder="Title" style="flex:3">
         <input id="pf-year" placeholder="Year" type="number" style="flex:0.6">
+        <label style="font-size:11px;display:flex;align-items:center;gap:4px;white-space:nowrap" title="Mark this as your own idea (rendered distinctly in the graph), not a paper"><input type="checkbox" id="pf-kind-idea"> 💡 Idea</label>
       </div>
       <div class="form-row">
         <input id="pf-authors" placeholder="Authors (comma-separated)" style="flex:2">
@@ -325,6 +357,8 @@ mark{background:var(--vscode-editor-findMatchHighlightBackground,#ffd70055);colo
       </div>
       <div class="form-row">
         <input id="pf-category" placeholder="Category path e.g. Generative Retrieval" style="flex:2">
+        <input id="pf-group" placeholder="Group" list="pf-group-list" style="flex:1" title="User-assigned group (default: Papers)">
+        <datalist id="pf-group-list"></datalist>
         <input id="pf-tags" placeholder="tags, comma-sep" style="flex:1.5">
       </div>
       <div class="form-row">
@@ -576,7 +610,7 @@ window.addEventListener('message', e => {
       }
     }
   }
-  else if (command === 'saved')    { ask('list', { tab: state.tab, filter: state.filter, q: state.search }); }
+  else if (command === 'saved')    { ask('list', { tab: state.tab, filter: state.filter, q: state.search }); if (state.tab === 'papers') { ask('paperGroups', {}); ask('paperFacets', {}); } }
   else if (command === 'assetSaved') {
     const cb = pendingAssets[e.data.reqId];
     if (cb) { delete pendingAssets[e.data.reqId]; cb(e.data.markdown, e.data.error); }
@@ -588,6 +622,9 @@ window.addEventListener('message', e => {
     paperFacetsData = e.data.data || { topics: [], tags: [], years: [] };
     if (state.tab === 'papers' && !paperGraphOpen) renderPaperFilters(document.getElementById('sidebar-filters'));
     if (paperGraphOpen) populatePaperTopicSelect();
+  }
+  else if (command === 'paperGroups') {
+    paperGroupsList = (e.data.data && e.data.data.length) ? e.data.data : [{ name: 'Papers', count: 0 }];
   }
   else if (command === 'paperGraph') { renderPaperGraph(e.data.data); }
   else if (command === 'paperFileSaved') {
@@ -709,7 +746,7 @@ document.querySelectorAll('.tab').forEach(t =>
     } else {
       document.getElementById('sidebar').style.display = '';
       document.getElementById('searchbox').style.display = '';
-      if (state.tab === 'papers') ask('paperFacets', {});
+      if (state.tab === 'papers') { ask('paperFacets', {}); ask('paperGroups', {}); }
       ask('list', { tab: state.tab, filter: 'all', q: '' });
     }
   })
@@ -751,8 +788,15 @@ function renderList() {
     const q = state.search;
     // Recursive N-level tree by category path; leaf = skill (shows skill name)
     const root = buildCatTree(items, r => r.category, '(uncategorized)');
+    // Right-click a folder to rename it (re-paths all skills under it).
+    const folderAttr = (child, name, fullPath) => {
+      const prefix = fullPath.join('/');
+      if (prefix === '(uncategorized)' || fullPath[0] === '(uncategorized)') return '';
+      const b64 = btoa(unescape(encodeURIComponent(prefix)));
+      return ` oncontextmenu="skillFolderMenu(event,'${b64}',${JSON.stringify(name).replace(/"/g, '&quot;')})"`;
+    };
     const html = renderCatTree(root, [], 0, (r, depth) =>
-      skillLi(r, r.name, q, 8 + (depth + 1) * 12), q);
+      skillLi(r, r.name, q, 8 + (depth + 1) * 12), q, folderAttr);
     el.innerHTML = html || '<div class="empty">No skills</div>';
 
   } else if (tab === 'notes') {
@@ -774,8 +818,40 @@ function renderList() {
     const q = state.search;
     let list = items.slice();
     if (paperTopicFilter) list = list.filter(p => p.topic === paperTopicFilter);
-    const root = buildCatTree(list, r => r.topic || '(untopiced)', '(untopiced)');
-    const html = renderCatTree(root, [], 0, (r, depth) => paperCard(r, q, 8 + (depth + 1) * 12), q);
+    const pinned = list.filter(p => p.pinned);
+    const rest = list.filter(p => !p.pinned);
+    // Right-click a topic folder -> move all papers under it to a group.
+    const folderAttr = (child, name) => {
+      const slugs = collectLeafSlugs(child);
+      const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(slugs))));
+      return ` oncontextmenu="paperFolderMenu(event,'${b64}',${JSON.stringify(name).replace(/"/g, '&quot;')})"`;
+    };
+    let html = '';
+    if (pinned.length) {
+      html += '<div class="pk-group pk-group-pinned"><div class="pk-group-hdr">' +
+        '<span class="pk-group-arrow">★</span><span class="pk-group-name">Pinned</span>' +
+        '<span class="pk-group-count">' + pinned.length + '</span></div><div class="pk-group-body">' +
+        pinned.sort((a, b) => (b.citationCount - a.citationCount) || a.title.localeCompare(b.title)).map(p => paperCard(p, q, 8)).join('') +
+        '</div></div>';
+    }
+    // Top-level = user-assigned group; custom groups pinned above the default "Papers".
+    const groups = {};
+    for (const p of rest) { const g = p.group || 'Papers'; (groups[g] = groups[g] || []).push(p); }
+    const names = Object.keys(groups).sort((a, b) => a === 'Papers' ? 1 : b === 'Papers' ? -1 : a.localeCompare(b));
+    for (const g of names) {
+      const expanded = paperGroupExpanded[g] !== false;
+      const custom = g !== 'Papers';
+      html += '<div class="pk-group' + (custom ? ' pk-group-custom' : '') + '">' +
+        '<div class="pk-group-hdr" onclick="togglePaperGroup(' + JSON.stringify(g).replace(/"/g, '&quot;') + ')" ' +
+        'oncontextmenu="paperGroupMenu(event,' + JSON.stringify(g).replace(/"/g, '&quot;') + ')">' +
+        '<span class="pk-group-arrow">' + (expanded ? '▼' : '▶') + '</span>' +
+        '<span class="pk-group-name">' + (custom ? '📁' : '📄') + ' ' + esc(g) + '</span>' +
+        '<span class="pk-group-count">' + groups[g].length + '</span></div>' +
+        '<div class="pk-group-body" style="display:' + (expanded ? '' : 'none') + '">';
+      const root = buildCatTree(groups[g], r => r.topic || '(untopiced)', '(untopiced)');
+      html += renderCatTree(root, [], 0, (r, depth) => paperCard(r, q, 8 + (depth + 1) * 12), q, folderAttr);
+      html += '</div></div>';
+    }
     el.innerHTML = html || '<div class="empty">No papers yet — click “+ Paper”.</div>';
 
   } else if (tab === 'prompts') {
@@ -861,7 +937,7 @@ function countTreeLeaves(node) {
   return n;
 }
 
-function renderCatTree(node, path, depth, renderLeaf, q) {
+function renderCatTree(node, path, depth, renderLeaf, q, folderAttr) {
   const folderKeys = Object.keys(node.folders).sort((a, b) =>
     a === '(uncategorized)' ? 1 : b === '(uncategorized)' ? -1 : a.localeCompare(b));
   let html = '';
@@ -872,16 +948,22 @@ function renderCatTree(node, path, depth, renderLeaf, q) {
     const open = !!catExpanded[key];
     const pad = 8 + depth * 12;
     html += `<div class="tree-cat">
-      <div class="tree-cat-hdr" style="padding-left:${pad}px" onclick="toggleCat('${key}')" title="${esc(name)}">
-        <span class="tree-cat-arrow">${open ? '▼' : '▶'}</span>
+      <div class="tree-cat-hdr" style="padding-left:${pad}px" onclick="toggleCat('${key}')" title="${esc(name)}"${folderAttr ? folderAttr(child, name, path.concat(name)) : ''}>
+        <span class="tree-cat-arrow">${open ? '▾' : '▸'}</span>
         <span class="tree-cat-label">${name === '(uncategorized)' ? '<em style="opacity:.6">(uncategorized)</em>' : esc(name)}</span>
         <span class="tree-cat-count">${countTreeLeaves(child)}</span>
       </div>
-      <div class="tree-cat-body" style="${open ? '' : 'display:none'}">${renderCatTree(child, path.concat(name), depth + 1, renderLeaf, q)}</div>
+      <div class="tree-cat-body" style="${open ? '' : 'display:none'}">${renderCatTree(child, path.concat(name), depth + 1, renderLeaf, q, folderAttr)}</div>
     </div>`;
   }
   for (const it of node.items) html += renderLeaf(it, depth, q);
   return html;
+}
+// Collect all leaf slugs under a cat-tree folder (papers only).
+function collectLeafSlugs(node) {
+  let out = (node.items || []).map(it => it.slug).filter(Boolean);
+  for (const k in node.folders) out = out.concat(collectLeafSlugs(node.folders[k]));
+  return out;
 }
 
 function setFilter(f) { state.filter = f; renderList(); }
@@ -1526,6 +1608,116 @@ let paperGraphOpen = false;
 let cy = null;                 // cytoscape instance
 let currentGraphData = null;
 let pendingPaperFile = null;
+let paperGroupsList = [{ name: 'Papers', count: 0 }];
+let paperGroupExpanded = {};   // group name -> expanded (default true)
+
+function togglePaperGroup(g) { paperGroupExpanded[g] = (paperGroupExpanded[g] === false); renderList(); }
+
+// Floating context menu (built dynamically)
+function showPaperMenu(x, y, items) {
+  closePaperMenu();
+  const m = document.createElement('div');
+  m.id = 'paper-ctx';
+  for (const it of items) {
+    if (it.sep) { const d = document.createElement('div'); d.className = 'pctx-sep'; m.appendChild(d); continue; }
+    const el = document.createElement('div');
+    el.className = 'pctx-item' + (it.header ? ' pctx-header' : '') + (it.danger ? ' pctx-danger' : '') + (it.active ? ' pctx-active' : '');
+    el.textContent = it.label;
+    if (!it.header) el.onclick = ev => { ev.stopPropagation(); closePaperMenu(); it.onClick(); };
+    m.appendChild(el);
+  }
+  document.body.appendChild(m);
+  const r = m.getBoundingClientRect();
+  m.style.left = Math.min(x, window.innerWidth - r.width - 8) + 'px';
+  m.style.top = Math.min(y, window.innerHeight - r.height - 8) + 'px';
+}
+function closePaperMenu() { const m = document.getElementById('paper-ctx'); if (m) m.remove(); }
+document.addEventListener('click', closePaperMenu);
+
+// In-webview prompt/confirm (native prompt()/confirm() are blocked in VS Code webviews).
+function pkModal(opts) {
+  closePkModal();
+  const bg = document.createElement('div');
+  bg.id = 'pk-modal-bg';
+  bg.innerHTML = '<div id="pk-modal">' +
+    '<div class="pk-modal-title">' + esc(opts.title || '') + '</div>' +
+    (opts.message ? '<div class="pk-modal-msg">' + esc(opts.message) + '</div>' : '') +
+    (opts.input ? '<input id="pk-modal-input" type="text">' : '') +
+    '<div class="pk-modal-actions">' +
+      '<button class="tbtn" id="pk-modal-cancel">Cancel</button>' +
+      '<button class="tbtn" id="pk-modal-ok" style="border-color:var(--accent)' + (opts.danger ? ';color:#f87171' : '') + '">' + esc(opts.okLabel || 'OK') + '</button>' +
+    '</div></div>';
+  document.body.appendChild(bg);
+  const input = document.getElementById('pk-modal-input');
+  if (input) input.value = opts.defaultValue || '';
+  const done = ok => { const v = input ? input.value : ''; closePkModal(); if (ok && opts.onOk) opts.onOk(v); };
+  document.getElementById('pk-modal-ok').onclick = () => done(true);
+  document.getElementById('pk-modal-cancel').onclick = () => done(false);
+  bg.onclick = e => { if (e.target === bg) done(false); };
+  if (input) { input.focus(); input.select(); input.onkeydown = e => { if (e.key === 'Enter') done(true); else if (e.key === 'Escape') done(false); }; }
+  else document.getElementById('pk-modal-ok').focus();
+}
+function closePkModal() { const m = document.getElementById('pk-modal-bg'); if (m) m.remove(); }
+
+function paperCardMenu(ev, slug, group, pinned) {
+  ev.preventDefault(); ev.stopPropagation();
+  const items = [];
+  items.push({ label: pinned ? '★ Unpin' : '☆ Pin', onClick: () => ask('paperSetPinned', { slug, pinned: !pinned }) });
+  items.push({ sep: true });
+  items.push({ label: 'Move to group', header: true });
+  for (const g of paperGroupsList) {
+    items.push({ label: (g.name === group ? '● ' : '   ') + g.name, active: g.name === group, onClick: () => ask('paperSetGroup', { slug, group: g.name }) });
+  }
+  items.push({ label: '＋ New group…', onClick: () => pkModal({ title: 'New group', input: true, okLabel: 'Create', onOk: v => { if (v.trim()) ask('paperSetGroup', { slug, group: v.trim() }); } }) });
+  items.push({ sep: true });
+  items.push({ label: '✏ Edit', onClick: () => { pendingEditType = 'paper'; ask('detail', { type: 'paper', key: slug }); } });
+  items.push({ label: '🗑 Delete', danger: true, onClick: () => pkModal({ title: 'Delete this paper?', okLabel: 'Delete', danger: true, onOk: () => ask('deletePaper', { slug }) }) });
+  showPaperMenu(ev.clientX, ev.clientY, items);
+}
+
+function paperGroupMenu(ev, group) {
+  ev.preventDefault(); ev.stopPropagation();
+  const items = [{ label: '📁 ' + group, header: true }];
+  if (group !== 'Papers') {
+    items.push({ label: '✏ Rename group…', onClick: () => pkModal({ title: 'Rename group', input: true, defaultValue: group, okLabel: 'Rename', onOk: v => { if (v.trim() && v.trim() !== group) ask('paperGroupRename', { oldName: group, newName: v.trim() }); } }) });
+    items.push({ label: '🗑 Delete group', danger: true, onClick: () => pkModal({ title: 'Delete group “' + group + '”?', message: 'Its items move back to “Papers”.', okLabel: 'Delete', danger: true, onOk: () => ask('paperGroupDelete', { name: group }) }) });
+  } else {
+    items.push({ label: 'Default group (can’t rename/delete)', header: true });
+  }
+  showPaperMenu(ev.clientX, ev.clientY, items);
+}
+
+// Right-click a topic folder -> move every paper under it (incl. subfolders) to a group.
+function paperFolderMenu(ev, b64, name) {
+  ev.preventDefault(); ev.stopPropagation();
+  let slugs = [];
+  try { slugs = JSON.parse(decodeURIComponent(escape(atob(b64)))); } catch (e) {}
+  if (!slugs.length) return;
+  const items = [{ label: 'Move “' + name + '” (' + slugs.length + ') to group', header: true }];
+  for (const g of paperGroupsList) {
+    items.push({ label: '   ' + g.name, onClick: () => ask('paperSetGroupMany', { slugs, group: g.name }) });
+  }
+  items.push({ label: '＋ New group…', onClick: () => pkModal({ title: 'Move “' + name + '” to a new group', input: true, okLabel: 'Create & move', onOk: v => { if (v.trim()) ask('paperSetGroupMany', { slugs, group: v.trim() }); } }) });
+  showPaperMenu(ev.clientX, ev.clientY, items);
+}
+
+// Right-click a Skills category folder -> rename it (re-paths all skills under it).
+function skillFolderMenu(ev, b64, name) {
+  ev.preventDefault(); ev.stopPropagation();
+  let prefix = '';
+  try { prefix = decodeURIComponent(escape(atob(b64))); } catch (e) {}
+  if (!prefix) return;
+  const items = [{ label: '📁 ' + name, header: true }];
+  items.push({ label: '✏ Rename folder…', onClick: () => pkModal({
+    title: 'Rename folder', message: 'Renames “' + prefix + '” and re-paths every skill under it.',
+    input: true, defaultValue: name, okLabel: 'Rename', onOk: v => {
+      const nn = v.trim();
+      if (!nn || nn === name) return;
+      const segs = prefix.split('/'); segs[segs.length - 1] = nn;
+      ask('skillRenameFolder', { oldPrefix: prefix, newPrefix: segs.join('/') });
+    } }) });
+  showPaperMenu(ev.clientX, ev.clientY, items);
+}
 
 // List view
 function renderPaperFilters(fEl) {
@@ -1537,8 +1729,9 @@ function setPaperTopic(v) { paperTopicFilter = v; renderList(); }
 function paperCard(p, q, pad) {
   const authors = (p.authors || []).slice(0, 3).join(', ') + ((p.authors || []).length > 3 ? ' et al.' : '');
   const tags = (p.tags || []).map(t => `<span class="pc-tag">${esc(t)}</span>`).join('');
-  return `<div class="paper-card" style="margin-left:${pad}px" onclick="openItem('paper','${esc(p.slug)}')">
-    <div class="pc-title">${hl(p.title, q)}</div>
+  const grp = JSON.stringify(p.group || 'Papers').replace(/"/g, '&quot;');
+  return `<div class="paper-card${p.pinned ? ' pc-pinned' : ''}" style="margin-left:${pad}px" onclick="openItem('paper','${esc(p.slug)}')" oncontextmenu="paperCardMenu(event,'${esc(p.slug)}',${grp},${p.pinned ? 'true' : 'false'})">
+    <div class="pc-title"><span class="pc-star${p.pinned ? ' on' : ''}" onclick="event.stopPropagation();togglePin('${esc(p.slug)}',${p.pinned ? 'false' : 'true'})" title="${p.pinned ? 'Unpin' : 'Pin'}">${p.pinned ? '★' : '☆'}</span> ${hl(p.title, q)}</div>
     <div class="pc-meta">
       ${p.citationCount ? `<span class="pc-cite" title="cited by ${p.citationCount} paper(s)">${p.citationCount}★</span>` : ''}
       ${p.year ? `<span>${p.year}</span>` : ''}
@@ -1548,6 +1741,7 @@ function paperCard(p, q, pad) {
     </div>
   </div>`;
 }
+function togglePin(slug, pinned) { ask('paperSetPinned', { slug, pinned }); }
 
 // Detail view
 function paperDetailHtml(d) {
@@ -1558,12 +1752,15 @@ function paperDetailHtml(d) {
   return `
     <div class="d-title">${esc(d.title)}</div>
     <div class="d-meta">
+      ${d.kind === 'idea' ? '<span class="pc-cite" style="background:#f4b400;color:#1a1200">Idea</span>' : ''}
+      ${d.group && d.group !== 'Papers' ? `<span class="pc-tag">📁 ${esc(d.group)}</span>` : ''}
       ${d.citationCount ? `<span class="pc-cite">${d.citationCount}★ cited</span>` : ''}
       ${d.year ? `<span>${d.year}</span>` : ''}
       ${d.topic ? `<span class="cat">${esc(d.topic)}</span>` : ''}
       ${d.publisher ? `<span>${esc(d.publisher)}</span>` : ''}
       ${tags}
       <span style="flex:1"></span>
+      <button class="tbtn" style="font-size:11px" onclick="togglePin('${esc(d.slug)}',${d.pinned ? 'false' : 'true'})" title="${d.pinned ? 'Unpin' : 'Pin to top'}">${d.pinned ? '★ Pinned' : '☆ Pin'}</button>
       ${d.url ? `<button class="tbtn" style="font-size:11px" onclick="openPaperLink('${esc(d.url)}','','')">🔗 Link</button>` : ''}
       ${d.file ? `<button class="tbtn" style="font-size:11px" onclick="openPaperLink('','${esc(d.file)}','${esc(d.category)}')">📄 File</button>` : ''}
       <button class="tbtn" style="font-size:11px" onclick="editPaper(currentDetail)">✏ Edit</button>
@@ -1579,7 +1776,7 @@ function paperDetailHtml(d) {
     <hr class="div"><div class="prose">${safeMarked(d.content || '', d.category)}</div>`;
 }
 function openPaperLink(url, file, category) { ask('openPaperLink', { url, file, category }); }
-function confirmDeletePaper() { if (currentDetail && confirm('Delete this paper?')) ask('deletePaper', { slug: currentDetail.slug }); }
+function confirmDeletePaper() { if (currentDetail) pkModal({ title: 'Delete this paper?', okLabel: 'Delete', danger: true, onOk: () => ask('deletePaper', { slug: currentDetail.slug }) }); }
 
 // Add / edit form
 function openPaperForm(paper) {
@@ -1595,6 +1792,9 @@ function openPaperForm(paper) {
   set('pf-conclusions', (paper?.conclusions || []).join('\n'));
   set('pf-cites', (paper?.cites || []).map(c => c.note ? (c.paper + ' :: ' + c.note) : c.paper).join('\n'));
   set('pf-content', paper?.content || ''); set('pf-slug', paper?.slug || '');
+  set('pf-group', (paper?.group && paper.group !== 'Papers') ? paper.group : '');
+  document.getElementById('pf-group-list').innerHTML = paperGroupsList.map(g => `<option value="${esc(g.name)}"></option>`).join('');
+  document.getElementById('pf-kind-idea').checked = paper?.kind === 'idea';
   populatePaperDatalist();
   updatePaperPreview();
   document.getElementById('detail').style.display = 'none';
@@ -1636,7 +1836,7 @@ function savePaper() {
     return i < 0 ? { paper: l.trim(), note: '' } : { paper: l.slice(0, i).trim(), note: l.slice(i + 2).trim() };
   }).filter(c => c.paper);
   const title = val('pf-title').trim();
-  if (!title) { alert('Title is required'); return; }
+  if (!title) { ask('toast', { text: 'Paper title is required' }); document.getElementById('pf-title').focus(); return; }
   const paper = {
     slug: val('pf-slug') || '', title,
     year: val('pf-year') ? parseInt(val('pf-year'), 10) : null,
@@ -1646,6 +1846,8 @@ function savePaper() {
     tags: val('pf-tags').split(',').map(s => s.trim()).filter(Boolean),
     url: val('pf-url').trim(), file: val('pf-file').trim(),
     conclusions: splitLines(val('pf-conclusions')), cites,
+    kind: document.getElementById('pf-kind-idea').checked ? 'idea' : 'paper',
+    group: val('pf-group').trim() || 'Papers',
     content: document.getElementById('pf-content').value,
   };
   ask('savePaper', { paper });
@@ -1716,12 +1918,19 @@ function renderPaperGraph(data) {
   const edgeCol = (cssv.getPropertyValue('--muted') || '#888').trim();
   const maxCC = Math.max(1, ...data.nodes.map(n => n.citationCount || 0));
   const elements = [];
-  for (const n of data.nodes) elements.push({ data: {
-    id: n.key, label: n.title, display: n.title, cc: n.citationCount || 0,
-    year: n.year || '', topic: n.topic || '', color: topicColor(n.topic),
-    conclusions: (n.conclusions || []).join('\n'),
+  const ideaKeys = new Set(data.nodes.filter(n => n.kind === 'idea').map(n => n.key));
+  for (const n of data.nodes) {
+    const isIdea = n.kind === 'idea';
+    elements.push({ data: {
+      id: n.key, label: n.title, display: (isIdea ? '💡 ' : '') + n.title, cc: n.citationCount || 0,
+      year: n.year || '', topic: n.topic || '', color: isIdea ? '#f4b400' : topicColor(n.topic),
+      kind: n.kind || 'paper', conclusions: (n.conclusions || []).join('\n'),
+    } });
+  }
+  for (const e of data.edges) elements.push({ data: {
+    id: 'e_' + e.from + '__' + e.to, source: e.from, target: e.to, note: e.note || '',
+    ideaEdge: (ideaKeys.has(e.from) || ideaKeys.has(e.to)) ? 1 : 0,
   } });
-  for (const e of data.edges) elements.push({ data: { id: 'e_' + e.from + '__' + e.to, source: e.from, target: e.to, note: e.note || '' } });
   if (cy) { try { cy.destroy(); } catch (e) {} }
   cy = cytoscape({
     container: el, elements, wheelSensitivity: 0.2,
@@ -1732,10 +1941,17 @@ function renderPaperGraph(data) {
         'width': 'mapData(cc,0,' + maxCC + ',18,66)', 'height': 'mapData(cc,0,' + maxCC + ',18,66)',
         'border-width': 1, 'border-color': '#0008',
       } },
+      { selector: 'node[kind = "idea"]', style: {
+        'shape': 'round-rectangle', 'background-color': '#f4b400', 'background-opacity': 0.95,
+        'border-color': '#8a5a00', 'border-width': 2.5, 'border-style': 'dashed',
+        'width': 96, 'height': 44, 'color': '#1a1200', 'font-weight': 'bold', 'font-size': 10,
+        'text-valign': 'center', 'text-margin-y': 0, 'text-max-width': 150,
+      } },
       { selector: 'edge', style: {
         'width': 1.4, 'line-color': edgeCol, 'target-arrow-color': edgeCol,
         'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'arrow-scale': 0.9,
       } },
+      { selector: 'edge[ideaEdge = 1]', style: { 'line-style': 'dashed', 'line-color': '#c8941a', 'target-arrow-color': '#c8941a', 'width': 2 } },
       { selector: 'node:selected', style: { 'border-width': 3, 'border-color': '#ffd166' } },
     ],
     layout: currentPaperLayout(),
