@@ -6,8 +6,10 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' %%CSP_SOURCE%%; style-src 'unsafe-inline' %%CSP_SOURCE%%; font-src %%CSP_SOURCE%%; img-src data: https: %%CSP_SOURCE%%;">
 <title>Personal Knowledge</title>
 <link rel="stylesheet" href="%%HLJS_CSS%%">
+<link rel="stylesheet" href="%%KATEX_CSS%%">
 <script src="%%MARKED_SRC%%"></script>
 <script src="%%HLJS_SRC%%"></script>
+<script src="%%KATEX_SRC%%"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{--bg:var(--vscode-editor-background);--panel:var(--vscode-sideBar-background);
@@ -92,6 +94,10 @@ hr.div{border:none;border-top:1px solid var(--border);margin:14px 0}
 .prose a.wikilink{text-decoration:none;border-bottom:1px dashed var(--accent);cursor:pointer}
 .prose a.wikilink:hover{background:var(--accent);color:var(--bg);border-radius:2px}
 .prose img{max-width:100%;border-radius:4px}
+.math-block{overflow-x:auto;overflow-y:hidden;padding:6px 2px;margin:.6em 0}
+.math-error{color:#f87171;background:var(--panel);padding:1px 4px;border-radius:3px}
+.katex{font-size:1.05em}
+.katex-display{margin:.4em 0}
 /* Note types */
 .nt-todo{border-left-color:#f87171!important}.nt-done{border-left-color:#4ade80!important}
 .nt-data-path{border-left-color:#fb923c!important}.nt-observation{border-left-color:#60a5fa!important}
@@ -351,6 +357,26 @@ mark{background:var(--vscode-editor-findMatchHighlightBackground,#ffd70055);colo
 const vscode = acquireVsCodeApi();
 // CDN libs may be unavailable in offline/remote environments — use safe fallbacks
 try { if (typeof marked !== 'undefined') marked.setOptions({ breaks: true }); } catch(e) {}
+// KaTeX math support for marked: $$...$$ (block) and $...$ (inline). marked
+// tokenizes code fences/spans first, so `$` inside code is left untouched.
+function renderMath(tex, display) {
+  try { return katex.renderToString(tex, { displayMode: display, throwOnError: false, strict: false }); }
+  catch (e) { return '<code class="math-error">' + String(tex).replace(/</g,'&lt;') + '</code>'; }
+}
+try {
+  if (typeof marked !== 'undefined' && typeof katex !== 'undefined') {
+    marked.use({ extensions: [
+      { name: 'blockMath', level: 'block',
+        start(src) { const i = src.indexOf('$$'); return i < 0 ? undefined : i; },
+        tokenizer(src) { const m = /^\$\$([\s\S]+?)\$\$/.exec(src); if (m) return { type: 'blockMath', raw: m[0], text: m[1].trim() }; },
+        renderer(t) { return '<div class="math-block">' + renderMath(t.text, true) + '</div>'; } },
+      { name: 'inlineMath', level: 'inline',
+        start(src) { const i = src.indexOf('$'); return i < 0 ? undefined : i; },
+        tokenizer(src) { const m = /^\$(?!\$)((?:\\.|[^$\\])+?)\$(?!\d)/.exec(src); if (m && m[1].trim()) return { type: 'inlineMath', raw: m[0], text: m[1].trim() }; },
+        renderer(t) { return renderMath(t.text, false); } },
+    ] });
+  }
+} catch(e) {}
 // Base URI for note image assets; `_assets/...` refs are rewritten relative to
 // the note's OWN folder (its category path), matching the on-disk convention
 // notes/<category>/_assets/<file> so links stay portable (Obsidian-style).
