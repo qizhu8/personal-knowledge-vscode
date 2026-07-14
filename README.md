@@ -30,6 +30,7 @@ If you (usually me myself :) ) accidentally deleted/screwed up something, ask AI
 - **Full-text search** — instant search across all content (CJK-friendly on the MCP side)
 - **Files are the source of truth** — every skill and note is a plain, git-tracked `.md` file; edit them here, in your editor, or from the MCP server and the panel refreshes automatically
 - **Paste images & cross-note links** — paste images straight into a note (stored under `notes/_assets/`), and link between notes with `[[Title]]` wiki links or relative `.md` links
+- **Math & formulas** — LaTeX rendering via KaTeX: `$...$` inline and `$$...$$` display equations, bundled to work offline; also embedded into HTML exports
 - **Sync** — share a temporary authenticated link so another machine can pull your knowledge
 - **MCP server** — auto-generated Python server with **read and write** tools that operate directly on the Markdown files, with FTS5 trigram search (CJK-friendly)
 - **Selectable AI backend** — Copilot (built-in), Azure OpenAI, or any OpenAI-compatible endpoint; keys stored in SecretStorage
