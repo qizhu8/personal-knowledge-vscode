@@ -3,9 +3,13 @@
 All notable changes to the **Personal Knowledge** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.3.1] — 2026-07-14
+
+- **Fix: 🌐 Browser preview now opens a real browser over Remote-SSH.** Previously, on a remote workspace the button produced a `vscode-remote:` link and VS Code asked you to pick an app. The preview is now served on an ephemeral loopback port and routed through `asExternalUri`, so the port is forwarded to your machine and the page opens in your **local** browser (unchanged behavior when working locally).
+
 ## [1.3.0] — 2026-07-13
 
-- **Export a note to HTML**: from the note view, **🌐 Browser** opens a standalone preview in your default browser and **⬇ HTML** saves a self-contained `.html` file. Images are inlined as data URIs and code keeps its syntax highlighting, so the single file is easy to share or present to someone who doesn't have the extension. The browser preview works over Remote-SSH too — it's served on a forwarded loopback port and opens in your **local** browser (no "select an app" prompt).
+- **Export a note to HTML**: from the note view, **🌐 Browser** opens a standalone preview in your default browser and **⬇ HTML** saves a self-contained `.html` file. Images are inlined as data URIs and code keeps its syntax highlighting, so the single file is easy to share or present to someone who doesn't have the extension. (On a headless Remote-SSH host with no browser, the preview path is surfaced so you can grab the file.)
 
 ## [1.2.0] — 2026-07-13
 
