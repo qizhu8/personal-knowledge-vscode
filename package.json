@@ -312,11 +312,12 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && cp -r src/webview dist/ && cp node_modules/sql.js/dist/sql-wasm.js dist/ && cp node_modules/sql.js/dist/sql-wasm.wasm dist/ && cp node_modules/marked/lib/marked.umd.js dist/webview/ && npx esbuild src/webview/hljs-entry.js --bundle --minify --format=iife --outfile=dist/webview/hljs.js && cp node_modules/highlight.js/styles/github-dark.css dist/webview/hljs.css && cp node_modules/katex/dist/katex.min.js dist/webview/katex.js && cp node_modules/katex/dist/katex.min.css dist/webview/katex.css && mkdir -p dist/webview/fonts && cp node_modules/katex/dist/fonts/*.woff2 dist/webview/fonts/ && node scripts/postbuild.js",
+    "build": "tsc -p tsconfig.json && cp -r src/webview dist/ && cp node_modules/sql.js/dist/sql-wasm.js dist/ && cp node_modules/sql.js/dist/sql-wasm.wasm dist/ && cp node_modules/marked/lib/marked.umd.js dist/webview/ && npx esbuild src/webview/hljs-entry.js --bundle --minify --format=iife --outfile=dist/webview/hljs.js && cp node_modules/highlight.js/styles/github-dark.css dist/webview/hljs.css && cp node_modules/katex/dist/katex.min.js dist/webview/katex.js && cp node_modules/katex/dist/katex.min.css dist/webview/katex.css && mkdir -p dist/webview/fonts && cp node_modules/katex/dist/fonts/*.woff2 dist/webview/fonts/ && cp node_modules/cytoscape/dist/cytoscape.min.js dist/webview/cytoscape.js && node scripts/postbuild.js",
     "watch": "tsc -p tsconfig.json --watch",
     "package": "npx vsce package"
   },
   "dependencies": {
+    "cytoscape": "^3.34.0",
     "highlight.js": "^11.11.1",
     "katex": "^0.16.47",
     "marked": "^18.0.5",

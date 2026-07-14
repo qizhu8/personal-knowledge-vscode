@@ -8,6 +8,8 @@ import {
   skillList, skillSearch, skillGet, skillUpsert, skillDelete,
   noteList, noteSearch, noteGet, noteUpsert, noteDelete, slugExists,
   noteExport, noteImport, saveNoteAsset,
+  paperList, paperSearch, paperGet, paperUpsert, paperDelete,
+  paperFacets, paperGraph, savePaperFile,
   setStorePath as fsSetStorePath, getStorePath,
 } from "./filestore";
 import { migrateDbToFiles } from "./migrate";
@@ -111,6 +113,13 @@ function uniqueSlug(title: string): string {
   let slug = toSlug(title), n = 2;
   while (slugExists(slug)) slug = `${toSlug(title)}-${n++}`;
   return slug;
+}
+
+// Paper identity is its folder path + title (title preserved). paperUpsert
+// writes to the sanitized path; this just builds the category/title key.
+function uniquePaperSlug(title: string, category: string): string {
+  const cat = (category || "").replace(/^\/+|\/+$/g, "");
+  return (cat ? cat + "/" : "") + ((title || "paper").trim() || "paper");
 }
 
 // ── Standalone note HTML export ──────────────────────────────────────────────
@@ -386,6 +395,10 @@ function getWebviewHtml(webview: vscode.Webview, context: vscode.ExtensionContex
   html = html.replace(/%%KATEX_SRC%%/g, katexJs.toString());
   html = html.replace(/%%KATEX_CSS%%/g, katexCss.toString());
 
+  // Graph rendering (Cytoscape.js bundled locally) for the Papers graph view.
+  const cytoscapeJs = webview.asWebviewUri(vscode.Uri.file(path.join(webviewDir, "cytoscape.js")));
+  html = html.replace(/%%CYTOSCAPE_SRC%%/g, cytoscapeJs.toString());
+
   // Inject the webview CSP source — required for VS Code to allow scripts to run
   html = html.replace(/%%CSP_SOURCE%%/g, webview.cspSource);
 
@@ -474,6 +487,7 @@ async function handleMessage(
       let data: unknown;
       if (tab === "skills")    data = q ? skillSearch(q) : skillList(filter === "all" ? undefined : filter);
       else if (tab === "notes")   data = q ? noteSearch(q) : noteList(undefined, 500); // client-side filtering
+      else if (tab === "papers")  data = q ? paperSearch(q) : paperList();
       else if (tab === "prompts")  data = promptList();
       else if (tab === "packages") data = packageList();
       else if (tab === "scripts")  data = scriptList();
@@ -491,6 +505,9 @@ async function handleMessage(
       } else if (type === "note") {
         const r = noteGet(key);
         if (r) data = { ...r, note_type: r.type, type: "note" };
+      } else if (type === "paper") {
+        const r = paperGet(key);
+        if (r) data = { type: "paper", ...r };
       } else if (type === "prompt") {
         const [proj, task, ver, fname] = key.split("|");
         const r = promptGetFile(proj, task, ver, fname);
@@ -608,6 +625,73 @@ async function handleMessage(
       gitCommit(`save(skill): ${name}`);
       respond({ command: "saved" });
       vscode.window.setStatusBarMessage("$(check) Skill saved", 3000);
+      break;
+    }
+
+    case "savePaper": {
+      const p = msg.paper || {};
+      const slug = p.slug || uniquePaperSlug(p.title || "paper", p.category || "");
+      paperUpsert({
+        slug, title: p.title || slug, content: p.content ?? "",
+        authors: p.authors ?? [], year: p.year ?? null, topic: p.topic ?? "",
+        publisher: p.publisher ?? "", tags: p.tags ?? [], url: p.url ?? "",
+        file: p.file ?? "", conclusions: p.conclusions ?? [], cites: p.cites ?? [],
+        category: p.category ?? "",
+      });
+      gitCommit(p.slug ? `update(paper): ${slug}` : `add(paper): ${slug}`);
+      respond({ command: "saved" });
+      vscode.window.setStatusBarMessage("$(check) Paper saved", 3000);
+      break;
+    }
+
+    case "deletePaper": {
+      const { slug } = msg;
+      if (paperDelete(slug)) gitCommit(`delete(paper): ${slug}`);
+      respond({ command: "saved" });
+      respond({ command: "detail", data: null });
+      vscode.window.setStatusBarMessage("$(trash) Paper deleted", 3000);
+      break;
+    }
+
+    case "paperFacets": {
+      respond({ command: "paperFacets", data: paperFacets() });
+      break;
+    }
+
+    case "paperGraph": {
+      respond({ command: "paperGraph", data: paperGraph(msg.opts || {}) });
+      break;
+    }
+
+    case "savePaperFile": {
+      // Uploaded local paper file (e.g. a PDF) -> papers/<category>/_assets/<hash>.<ext>
+      const { data, ext, category, reqId } = msg;
+      try {
+        const rel = savePaperFile(String(data || ""), String(ext || "pdf"), String(category || ""));
+        respond({ command: "paperFileSaved", reqId, file: rel });
+      } catch (e) {
+        log.error(`savePaperFile failed: ${String(e)}`);
+        respond({ command: "paperFileSaved", reqId, error: String(e) });
+      }
+      break;
+    }
+
+    case "openPaperLink": {
+      // Open a paper's remote URL or its local file in the OS default app.
+      const url = String(msg.url || "").trim();
+      const file = String(msg.file || "").trim();
+      const category = String(msg.category || "").trim();
+      try {
+        if (url) {
+          await vscode.env.openExternal(vscode.Uri.parse(url));
+        } else if (file) {
+          const segs = category.split("/").map(s => s.trim()).filter(Boolean);
+          const full = path.join(getStorePath(), "papers", ...segs, file);
+          await vscode.env.openExternal(vscode.Uri.file(full));
+        }
+      } catch (e) {
+        vscode.window.showErrorMessage(`Couldn't open paper: ${String(e)}`);
+      }
       break;
     }
 
@@ -1399,8 +1483,8 @@ async function aiSummarizeScript(
 
 // ── Sidebar tree provider ──────────────────────────────────────────────────
 type PkNodeType =
-  | 'root-skills' | 'root-notes' | 'root-prompts' | 'root-packages' | 'root-scripts'
-  | 'skill-folder' | 'skill' | 'note-folder' | 'note'
+  | 'root-skills' | 'root-notes' | 'root-papers' | 'root-prompts' | 'root-packages' | 'root-scripts'
+  | 'skill-folder' | 'skill' | 'note-folder' | 'note' | 'paper-folder' | 'paper'
   | 'prompt-project' | 'prompt-task' | 'prompt-version' | 'prompt-file'
   | 'package' | 'script-folder' | 'script-file';
 
@@ -1415,10 +1499,10 @@ class PkTreeItem extends vscode.TreeItem {
   ) {
     super(label, collapsibleState);
     const ICONS: Partial<Record<PkNodeType, string>> = {
-      "root-skills": "book", "root-notes": "note", "root-prompts": "comment-discussion",
+      "root-skills": "book", "root-notes": "note", "root-papers": "library", "root-prompts": "comment-discussion",
       "root-packages": "package", "root-scripts": "terminal",
-      "skill-folder": "folder", "note-folder": "folder",
-      "skill": "symbol-snippet", "note": "file-text",
+      "skill-folder": "folder", "note-folder": "folder", "paper-folder": "folder",
+      "skill": "symbol-snippet", "note": "file-text", "paper": "file-pdf",
       "prompt-project": "folder", "prompt-task": "symbol-file",
       "prompt-version": "versions", "prompt-file": "file-code",
       "package": "package", "script-folder": "folder", "script-file": "file-code",
@@ -1430,10 +1514,12 @@ class PkTreeItem extends vscode.TreeItem {
     // contextValue drives right-click "New item" menus (see package.json view/item/context)
     if (nodeType === 'root-skills' || nodeType === 'skill-folder')      this.contextValue = 'pk-skills-container';
     else if (nodeType === 'root-notes' || nodeType === 'note-folder')   this.contextValue = 'pk-notes-container';
+    else if (nodeType === 'root-papers' || nodeType === 'paper-folder') this.contextValue = 'pk-papers-container';
     else if (nodeType === 'root-scripts' || nodeType === 'script-folder') this.contextValue = 'pk-scripts-container';
     // Leaf items support right-click Edit
     else if (nodeType === 'skill')       this.contextValue = 'pk-skill-item';
     else if (nodeType === 'note')        this.contextValue = 'pk-note-item';
+    else if (nodeType === 'paper')       this.contextValue = 'pk-paper-item';
     else if (nodeType === 'script-file') this.contextValue = 'pk-script-item';
   }
 }
@@ -1451,6 +1537,7 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
       return [
         new PkTreeItem("Skills",   'root-skills',   vscode.TreeItemCollapsibleState.Collapsed),
         new PkTreeItem("Notes",    'root-notes',    C),
+        new PkTreeItem("Papers",   'root-papers',   C),
         new PkTreeItem("Prompts",  'root-prompts',  C),
         new PkTreeItem("Packages", 'root-packages', C),
         new PkTreeItem("Scripts",  'root-scripts',  C),
@@ -1462,6 +1549,8 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
         case 'skill-folder':   return this._skillFolder(element.nodeData.path);
         case 'root-notes':     return this._noteFolder([]);
         case 'note-folder':    return this._noteFolder(element.nodeData.path);
+        case 'root-papers':    return this._paperFolder([]);
+        case 'paper-folder':   return this._paperFolder(element.nodeData.path);
         case 'root-prompts':   return this._promptProjects();
         case 'prompt-project': return this._promptTasks(element.nodeData.project);
         case 'prompt-task':    return this._promptVersions(element.nodeData.project, element.nodeData.task);
@@ -1572,6 +1661,38 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
       const item = new PkTreeItem(n.title, 'note', vscode.TreeItemCollapsibleState.None, { key: n.slug });
       item.description = n.updated_at?.slice(0, 10);
       item.command = { command: 'personalKnowledge.openNote', title: 'Open', arguments: [n.slug] };
+      out.push(item);
+    }
+    return out;
+  }
+
+  // ── Papers (category → paper) ────────────────────────────────────────────
+  private _paperRoot(): PkFolder {
+    const entries = (paperList() as any[]).map(p => {
+      const cat = (p.category || "").trim();
+      const path = cat ? cat.split("/").map((x: string) => x.trim()).filter(Boolean) : ["(uncategorized)"];
+      return { path, data: p };
+    });
+    return this._buildPathTree(entries);
+  }
+
+  private _paperFolder(path: string[]): PkTreeItem[] {
+    const node = this._navigate(this._paperRoot(), path);
+    if (!node) return [];
+    const out: PkTreeItem[] = [];
+    for (const name of [...node.folders.keys()].sort((a, b) =>
+      a === "(uncategorized)" ? 1 : b === "(uncategorized)" ? -1 : a.localeCompare(b))) {
+      const folder = node.folders.get(name)!;
+      const item = new PkTreeItem(name, 'paper-folder', vscode.TreeItemCollapsibleState.Collapsed,
+        { path: [...path, name] });
+      item.description = String(this._countLeaves(folder));
+      out.push(item);
+    }
+    // Sort papers by citation count (popularity), then year desc
+    for (const p of node.items.sort((a: any, b: any) => (b.citationCount - a.citationCount) || ((b.year || 0) - (a.year || 0)))) {
+      const item = new PkTreeItem(p.title, 'paper', vscode.TreeItemCollapsibleState.None, { key: p.slug });
+      item.description = `${p.year || ""}${p.citationCount ? "  ·  " + p.citationCount + "★" : ""}`.trim();
+      item.command = { command: 'personalKnowledge.openPaper', title: 'Open', arguments: [p.slug] };
       out.push(item);
     }
     return out;
@@ -1861,6 +1982,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       openInPanel(context, "note", slug);
     }),
 
+    vscode.commands.registerCommand("personalKnowledge.openPaper", async (slug: string) => {
+      log.action("command.openPaper", { slug });
+      if (!(await ensureSetup(context))) return;
+      openInPanel(context, "paper", slug);
+    }),
+
     vscode.commands.registerCommand("personalKnowledge.openPrompt", async (key: string) => {
       log.action("command.openPrompt", { key });
       if (!(await ensureSetup(context))) return;
@@ -1963,7 +2090,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 let _watcher: vscode.FileSystemWatcher | undefined;
 function startFileWatcher(context: vscode.ExtensionContext): void {
   _watcher?.dispose();
-  const pattern = new vscode.RelativePattern(getStorePath(), "{notes,skills}/**/*.md");
+  const pattern = new vscode.RelativePattern(getStorePath(), "{notes,skills,papers}/**/*.md");
   _watcher = vscode.workspace.createFileSystemWatcher(pattern);
   const onChange = () => {
     _treeProvider?.refresh();
