@@ -351,10 +351,17 @@ mark{background:var(--vscode-editor-findMatchHighlightBackground,#ffd70055);colo
 const vscode = acquireVsCodeApi();
 // CDN libs may be unavailable in offline/remote environments — use safe fallbacks
 try { if (typeof marked !== 'undefined') marked.setOptions({ breaks: true }); } catch(e) {}
-// Base URI for note image assets; `_assets/...` refs are rewritten to it at render time
+// Base URI for note image assets; `_assets/...` refs are rewritten relative to
+// the note's OWN folder (its category path), matching the on-disk convention
+// notes/<category>/_assets/<file> so links stay portable (Obsidian-style).
 const NOTES_BASE = '%%NOTES_BASE%%';
-function fixAssets(html) {
-  return String(html).replace(/(src|href)=("|')_assets\//g, '$1=$2' + NOTES_BASE + '/_assets/');
+function assetBase(category) {
+  const cat = String(category || '').split('/').map(s => s.trim()).filter(Boolean).map(encodeURIComponent).join('/');
+  return cat ? NOTES_BASE + '/' + cat : NOTES_BASE;
+}
+function fixAssets(html, category) {
+  const base = assetBase(category);
+  return String(html).replace(/(src|href)=("|')_assets\//g, '$1=$2' + base + '/_assets/');
 }
 // Wiki-style [[Title]] / [[Title|alias]] links -> clickable note links
 function linkifyWiki(md) {
@@ -363,8 +370,8 @@ function linkifyWiki(md) {
     return '<a href="#" class="wikilink" data-note="' + esc(tgt.trim()) + '">' + esc(label) + '</a>';
   });
 }
-function safeMarked(text) {
-  try { return fixAssets(typeof marked !== 'undefined' ? marked.parse(linkifyWiki(text||'')) : '<pre>' + esc(text||'') + '</pre>'); }
+function safeMarked(text, category) {
+  try { return fixAssets(typeof marked !== 'undefined' ? marked.parse(linkifyWiki(text||'')) : '<pre>' + esc(text||'') + '</pre>', category); }
   catch(e) { return '<pre>' + esc(text||'') + '</pre>'; }
 }
 function safeHljs(el) { try { if (typeof hljs !== 'undefined') hljs.highlightElement(el); } catch(e) {} }
@@ -790,7 +797,7 @@ function renderDetail(data) {
         <button class="tbtn" style="font-size:11px" onclick="exportNote('file')" title="Save this note as a self-contained HTML file">⬇ HTML</button>
         <button class="tbtn" style="font-size:11px" onclick="editNote(currentDetail)">✏ Edit</button>
       </div>
-      <hr class="div"><div class="prose">${safeMarked(data.content||'')}</div>`;
+      <hr class="div"><div class="prose">${safeMarked(data.content||'', data.category)}</div>`;
 
   } else if (data.type === 'prompt') {
     const { project, task, version, file, content, meta, allVersions } = data;
@@ -1288,8 +1295,10 @@ function editNote(data) {
 // Live Markdown preview for the note editor
 function updateNotePreview() {
   const src = document.getElementById('note-content').value;
+  const catEl = document.getElementById('note-category');
+  const cat = catEl ? catEl.value : '';
   const el = document.getElementById('note-preview');
-  if (el) el.innerHTML = safeMarked(src);
+  if (el) el.innerHTML = safeMarked(src, cat);
 }
 
 // ── Paste images into the note editor ────────────────────────────────────────
@@ -1325,7 +1334,8 @@ function insertAtCursor(ta, text) {
             ta.value = ta.value.replace(placeholder, error ? '![paste failed]()' : markdown);
             updateNotePreview();
           };
-          ask('saveAsset', { data: b64, ext, reqId });
+          const catEl = document.getElementById('note-category');
+          ask('saveAsset', { data: b64, ext, reqId, category: catEl ? catEl.value : '' });
         };
         reader.readAsDataURL(file);
       }
