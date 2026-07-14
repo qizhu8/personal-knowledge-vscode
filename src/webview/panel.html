@@ -109,10 +109,24 @@ hr.div{border:none;border-top:1px solid var(--border);margin:14px 0}
 #pf-preview{flex:1;overflow-y:auto;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;font-size:13px}
 .paper-card{padding:8px 10px;border:1px solid var(--border);border-radius:6px;margin:6px 8px;cursor:pointer;background:var(--panel)}
 .paper-card:hover{border-color:var(--accent)}
-.pk-ideas-group{margin:4px 6px 10px;border:1px solid #f4b40055;border-radius:8px;background:#f4b40010;padding-bottom:2px}
-.pk-ideas-hdr{position:sticky;top:0;z-index:2;font-size:11px;font-weight:700;color:#f4b400;padding:6px 10px;background:var(--bg);border-bottom:1px solid #f4b40033;border-radius:8px 8px 0 0}
-.pk-ideas-group .paper-card{border-color:#f4b40055;background:#f4b4000d;margin-left:8px}
-.pk-ideas-group .paper-card:hover{border-color:#f4b400}
+/* Paper groups */
+.pk-group{margin:2px 4px 8px}
+.pk-group-hdr{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:6px;padding:5px 8px;font-size:11.5px;font-weight:700;cursor:pointer;background:var(--bg);border-bottom:1px solid var(--border)}
+.pk-group-hdr:hover{color:var(--accent)}
+.pk-group-arrow{width:10px;color:var(--muted)}
+.pk-group-name{flex:1}
+.pk-group-count{font-size:10px;color:var(--muted);background:var(--input);border-radius:8px;padding:0 6px}
+.pk-group-custom>.pk-group-hdr{color:#f4b400;border-bottom-color:#f4b40044}
+.pk-group-custom{border:1px solid #f4b40044;border-radius:8px;background:#f4b4000a}
+#paper-ctx{position:fixed;z-index:1000;background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:4px;min-width:180px;box-shadow:0 6px 24px rgba(0,0,0,.45);font-size:12px}
+.pctx-item{padding:5px 10px;border-radius:4px;cursor:pointer;white-space:nowrap}
+.pctx-item:hover{background:var(--accent);color:var(--bg)}
+.pctx-item.pctx-active{color:var(--accent);font-weight:600}
+.pctx-item.pctx-active:hover{color:var(--bg)}
+.pctx-item.pctx-danger:hover{background:#e53935;color:#fff}
+.pctx-header{font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);cursor:default;padding:5px 10px 2px}
+.pctx-header:hover{background:none;color:var(--muted)}
+.pctx-sep{height:1px;background:var(--border);margin:4px 2px}
 .paper-card .pc-title{font-weight:600;font-size:12.5px;line-height:1.35}
 .paper-card .pc-meta{font-size:10.5px;color:var(--muted);margin-top:3px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .pc-cite{background:var(--accent);color:var(--bg);border-radius:10px;padding:0 6px;font-weight:700}
@@ -330,6 +344,8 @@ mark{background:var(--vscode-editor-findMatchHighlightBackground,#ffd70055);colo
       </div>
       <div class="form-row">
         <input id="pf-category" placeholder="Category path e.g. Generative Retrieval" style="flex:2">
+        <input id="pf-group" placeholder="Group" list="pf-group-list" style="flex:1" title="User-assigned group (default: Papers)">
+        <datalist id="pf-group-list"></datalist>
         <input id="pf-tags" placeholder="tags, comma-sep" style="flex:1.5">
       </div>
       <div class="form-row">
@@ -581,7 +597,7 @@ window.addEventListener('message', e => {
       }
     }
   }
-  else if (command === 'saved')    { ask('list', { tab: state.tab, filter: state.filter, q: state.search }); }
+  else if (command === 'saved')    { ask('list', { tab: state.tab, filter: state.filter, q: state.search }); if (state.tab === 'papers') { ask('paperGroups', {}); ask('paperFacets', {}); } }
   else if (command === 'assetSaved') {
     const cb = pendingAssets[e.data.reqId];
     if (cb) { delete pendingAssets[e.data.reqId]; cb(e.data.markdown, e.data.error); }
@@ -593,6 +609,9 @@ window.addEventListener('message', e => {
     paperFacetsData = e.data.data || { topics: [], tags: [], years: [] };
     if (state.tab === 'papers' && !paperGraphOpen) renderPaperFilters(document.getElementById('sidebar-filters'));
     if (paperGraphOpen) populatePaperTopicSelect();
+  }
+  else if (command === 'paperGroups') {
+    paperGroupsList = (e.data.data && e.data.data.length) ? e.data.data : [{ name: 'Papers', count: 0 }];
   }
   else if (command === 'paperGraph') { renderPaperGraph(e.data.data); }
   else if (command === 'paperFileSaved') {
@@ -714,7 +733,7 @@ document.querySelectorAll('.tab').forEach(t =>
     } else {
       document.getElementById('sidebar').style.display = '';
       document.getElementById('searchbox').style.display = '';
-      if (state.tab === 'papers') ask('paperFacets', {});
+      if (state.tab === 'papers') { ask('paperFacets', {}); ask('paperGroups', {}); }
       ask('list', { tab: state.tab, filter: 'all', q: '' });
     }
   })
@@ -777,16 +796,27 @@ function renderList() {
   } else if (tab === 'papers') {
     renderPaperFilters(fEl);
     const q = state.search;
-    const ideas = items.filter(p => p.kind === 'idea');
-    let papers = items.filter(p => p.kind !== 'idea');
-    if (paperTopicFilter) papers = papers.filter(p => p.topic === paperTopicFilter);
+    let list = items.slice();
+    if (paperTopicFilter) list = list.filter(p => p.topic === paperTopicFilter);
+    // Top-level = user-assigned group; custom groups pinned above the default "Papers".
+    const groups = {};
+    for (const p of list) { const g = p.group || 'Papers'; (groups[g] = groups[g] || []).push(p); }
+    const names = Object.keys(groups).sort((a, b) => a === 'Papers' ? 1 : b === 'Papers' ? -1 : a.localeCompare(b));
     let html = '';
-    if (ideas.length) {
-      html += '<div class="pk-ideas-group"><div class="pk-ideas-hdr">💡 Ideas</div>' +
-        ideas.map(p => paperCard(p, q, 8)).join('') + '</div>';
+    for (const g of names) {
+      const expanded = paperGroupExpanded[g] !== false;
+      const custom = g !== 'Papers';
+      html += '<div class="pk-group' + (custom ? ' pk-group-custom' : '') + '">' +
+        '<div class="pk-group-hdr" onclick="togglePaperGroup(' + JSON.stringify(g).replace(/"/g, '&quot;') + ')" ' +
+        'oncontextmenu="paperGroupMenu(event,' + JSON.stringify(g).replace(/"/g, '&quot;') + ')">' +
+        '<span class="pk-group-arrow">' + (expanded ? '▾' : '▸') + '</span>' +
+        '<span class="pk-group-name">' + (custom ? '📁' : '📄') + ' ' + esc(g) + '</span>' +
+        '<span class="pk-group-count">' + groups[g].length + '</span></div>' +
+        '<div class="pk-group-body" style="display:' + (expanded ? '' : 'none') + '">';
+      const root = buildCatTree(groups[g], r => r.topic || '(untopiced)', '(untopiced)');
+      html += renderCatTree(root, [], 0, (r, depth) => paperCard(r, q, 8 + (depth + 1) * 12), q);
+      html += '</div></div>';
     }
-    const root = buildCatTree(papers, r => r.topic || '(untopiced)', '(untopiced)');
-    html += renderCatTree(root, [], 0, (r, depth) => paperCard(r, q, 8 + (depth + 1) * 12), q);
     el.innerHTML = html || '<div class="empty">No papers yet — click “+ Paper”.</div>';
 
   } else if (tab === 'prompts') {
@@ -1537,6 +1567,56 @@ let paperGraphOpen = false;
 let cy = null;                 // cytoscape instance
 let currentGraphData = null;
 let pendingPaperFile = null;
+let paperGroupsList = [{ name: 'Papers', count: 0 }];
+let paperGroupExpanded = {};   // group name -> expanded (default true)
+
+function togglePaperGroup(g) { paperGroupExpanded[g] = (paperGroupExpanded[g] === false); renderList(); }
+
+// Floating context menu (built dynamically)
+function showPaperMenu(x, y, items) {
+  closePaperMenu();
+  const m = document.createElement('div');
+  m.id = 'paper-ctx';
+  for (const it of items) {
+    if (it.sep) { const d = document.createElement('div'); d.className = 'pctx-sep'; m.appendChild(d); continue; }
+    const el = document.createElement('div');
+    el.className = 'pctx-item' + (it.header ? ' pctx-header' : '') + (it.danger ? ' pctx-danger' : '') + (it.active ? ' pctx-active' : '');
+    el.textContent = it.label;
+    if (!it.header) el.onclick = ev => { ev.stopPropagation(); closePaperMenu(); it.onClick(); };
+    m.appendChild(el);
+  }
+  document.body.appendChild(m);
+  const r = m.getBoundingClientRect();
+  m.style.left = Math.min(x, window.innerWidth - r.width - 8) + 'px';
+  m.style.top = Math.min(y, window.innerHeight - r.height - 8) + 'px';
+}
+function closePaperMenu() { const m = document.getElementById('paper-ctx'); if (m) m.remove(); }
+document.addEventListener('click', closePaperMenu);
+
+function paperCardMenu(ev, slug, group) {
+  ev.preventDefault(); ev.stopPropagation();
+  const items = [{ label: 'Move to group', header: true }];
+  for (const g of paperGroupsList) {
+    items.push({ label: (g.name === group ? '● ' : '   ') + g.name, active: g.name === group, onClick: () => ask('paperSetGroup', { slug, group: g.name }) });
+  }
+  items.push({ label: '＋ New group…', onClick: () => { const n = prompt('New group name:'); if (n && n.trim()) ask('paperSetGroup', { slug, group: n.trim() }); } });
+  items.push({ sep: true });
+  items.push({ label: '✏ Edit', onClick: () => { pendingEditType = 'paper'; ask('detail', { type: 'paper', key: slug }); } });
+  items.push({ label: '🗑 Delete', danger: true, onClick: () => { if (confirm('Delete this paper?')) ask('deletePaper', { slug }); } });
+  showPaperMenu(ev.clientX, ev.clientY, items);
+}
+
+function paperGroupMenu(ev, group) {
+  ev.preventDefault(); ev.stopPropagation();
+  const items = [{ label: '📁 ' + group, header: true }];
+  if (group !== 'Papers') {
+    items.push({ label: '✏ Rename group…', onClick: () => { const n = prompt('Rename group:', group); if (n && n.trim() && n.trim() !== group) ask('paperGroupRename', { oldName: group, newName: n.trim() }); } });
+    items.push({ label: '🗑 Delete group', danger: true, onClick: () => { if (confirm('Delete group “' + group + '”? Its items move to “Papers”.')) ask('paperGroupDelete', { name: group }); } });
+  } else {
+    items.push({ label: 'Default group (can’t rename/delete)', header: true });
+  }
+  showPaperMenu(ev.clientX, ev.clientY, items);
+}
 
 // List view
 function renderPaperFilters(fEl) {
@@ -1548,7 +1628,7 @@ function setPaperTopic(v) { paperTopicFilter = v; renderList(); }
 function paperCard(p, q, pad) {
   const authors = (p.authors || []).slice(0, 3).join(', ') + ((p.authors || []).length > 3 ? ' et al.' : '');
   const tags = (p.tags || []).map(t => `<span class="pc-tag">${esc(t)}</span>`).join('');
-  return `<div class="paper-card" style="margin-left:${pad}px" onclick="openItem('paper','${esc(p.slug)}')">
+  return `<div class="paper-card" style="margin-left:${pad}px" onclick="openItem('paper','${esc(p.slug)}')" oncontextmenu="paperCardMenu(event,'${esc(p.slug)}',${JSON.stringify(p.group || 'Papers').replace(/"/g, '&quot;')})">
     <div class="pc-title">${p.kind === 'idea' ? '💡 ' : ''}${hl(p.title, q)}</div>
     <div class="pc-meta">
       ${p.citationCount ? `<span class="pc-cite" title="cited by ${p.citationCount} paper(s)">${p.citationCount}★</span>` : ''}
@@ -1607,6 +1687,8 @@ function openPaperForm(paper) {
   set('pf-conclusions', (paper?.conclusions || []).join('\n'));
   set('pf-cites', (paper?.cites || []).map(c => c.note ? (c.paper + ' :: ' + c.note) : c.paper).join('\n'));
   set('pf-content', paper?.content || ''); set('pf-slug', paper?.slug || '');
+  set('pf-group', (paper?.group && paper.group !== 'Papers') ? paper.group : '');
+  document.getElementById('pf-group-list').innerHTML = paperGroupsList.map(g => `<option value="${esc(g.name)}"></option>`).join('');
   document.getElementById('pf-kind-idea').checked = paper?.kind === 'idea';
   populatePaperDatalist();
   updatePaperPreview();
@@ -1660,6 +1742,7 @@ function savePaper() {
     url: val('pf-url').trim(), file: val('pf-file').trim(),
     conclusions: splitLines(val('pf-conclusions')), cites,
     kind: document.getElementById('pf-kind-idea').checked ? 'idea' : 'paper',
+    group: val('pf-group').trim() || 'Papers',
     content: document.getElementById('pf-content').value,
   };
   ask('savePaper', { paper });

@@ -10,6 +10,7 @@ import {
   noteExport, noteImport, saveNoteAsset,
   paperList, paperSearch, paperGet, paperUpsert, paperDelete,
   paperFacets, paperGraph, savePaperFile,
+  paperGroups, paperSetGroup, paperGroupRename, paperGroupDelete,
   setStorePath as fsSetStorePath, getStorePath,
 } from "./filestore";
 import { migrateDbToFiles } from "./migrate";
@@ -636,11 +637,40 @@ async function handleMessage(
         authors: p.authors ?? [], year: p.year ?? null, topic: p.topic ?? "",
         publisher: p.publisher ?? "", tags: p.tags ?? [], url: p.url ?? "",
         file: p.file ?? "", conclusions: p.conclusions ?? [], cites: p.cites ?? [],
-        category: p.category ?? "", kind: p.kind ?? "paper",
+        category: p.category ?? "", kind: p.kind ?? "paper", group: p.group ?? "Papers",
       });
       gitCommit(p.slug ? `update(paper): ${slug}` : `add(paper): ${slug}`);
       respond({ command: "saved" });
       vscode.window.setStatusBarMessage("$(check) Paper saved", 3000);
+      break;
+    }
+
+    case "paperGroups": {
+      respond({ command: "paperGroups", data: paperGroups() });
+      break;
+    }
+
+    case "paperSetGroup": {
+      if (paperSetGroup(String(msg.slug || ""), String(msg.group || "Papers"))) {
+        gitCommit(`group(paper): ${msg.slug} -> ${msg.group}`);
+      }
+      respond({ command: "saved" });
+      break;
+    }
+
+    case "paperGroupRename": {
+      const n = paperGroupRename(String(msg.oldName || ""), String(msg.newName || ""));
+      if (n) gitCommit(`group(rename): ${msg.oldName} -> ${msg.newName} (${n})`);
+      respond({ command: "saved" });
+      vscode.window.setStatusBarMessage(`$(check) Renamed group (${n} item${n === 1 ? "" : "s"})`, 3000);
+      break;
+    }
+
+    case "paperGroupDelete": {
+      const n = paperGroupDelete(String(msg.name || ""));
+      if (n) gitCommit(`group(delete): ${msg.name} -> Papers (${n})`);
+      respond({ command: "saved" });
+      vscode.window.setStatusBarMessage(`$(check) Deleted group (${n} item${n === 1 ? "" : "s"} moved to Papers)`, 3000);
       break;
     }
 
@@ -1174,6 +1204,8 @@ def _norm_cites(v):
 def _paper(p, key):
     fm, body = _parse(p.read_text(encoding="utf-8"))
     return {"slug": key, "title": fm.get("title") or _name_of(key),
+            "kind": "idea" if fm.get("kind") == "idea" else "paper",
+            "group": (str(fm.get("group")).strip() if fm.get("group") else "") or "Papers",
             "authors": _arr(fm.get("authors")), "year": _year(fm.get("year")),
             "topic": fm.get("topic") or "", "publisher": fm.get("publisher") or "",
             "tags": _arr(fm.get("tags")), "url": fm.get("url") or "", "file": fm.get("file") or "",
@@ -1205,17 +1237,25 @@ def _citation_counts(all_p):
             if t: counts[t] = counts.get(t, 0) + 1
     return counts
 
-def _paper_write(slug, title, content, authors, year, topic, publisher, tags, url, file, conclusions, cites, category, created=None):
+def _paper_write(slug, title, content, authors, year, topic, publisher, tags, url, file, conclusions, cites, category, created=None, kind=None, group=None):
     cat = _safe_cat(category or "")
     fname = _safe_name(title or _name_of(slug)) + ".md"
     rel = (cat + "/" + fname) if cat else fname
     full = PAPERS / rel
     old = PAPERS / (slug + ".md")
+    # Preserve user-set kind/group when the caller doesn't specify them.
+    if (kind is None or group is None) and old.exists():
+        prev, _ = _parse(old.read_text(encoding="utf-8"))
+        if kind is None: kind = prev.get("kind")
+        if group is None: group = prev.get("group")
     if old.exists() and rel[:-3] != slug:
         try: old.unlink()
         except Exception: pass
     full.parent.mkdir(parents=True, exist_ok=True)
-    fm = {"title": title, "authors": authors or [], "year": _year(year), "topic": topic or "",
+    fm = {"title": title,
+          "kind": "idea" if kind == "idea" else None,
+          "group": (str(group).strip() if group and str(group).strip() != "Papers" else None),
+          "authors": authors or [], "year": _year(year), "topic": topic or "",
           "publisher": publisher or "", "tags": tags or [], "url": url or "", "file": file or "",
           "conclusions": conclusions or [], "cites": _norm_cites(cites or []), "created": created or _now()}
     full.write_text(_serialize(fm, content or ""), encoding="utf-8")

@@ -325,6 +325,7 @@ function paperFromFile(f: MdFile): any {
     slug: key,
     title: fm.title || nameOf(key),
     kind: fm.kind === "idea" ? "idea" : "paper",
+    group: (fm.group && String(fm.group).trim()) || "Papers",
     authors: asArray(fm.authors),
     year: toYear(fm.year),
     topic: fm.topic || "",
@@ -393,7 +394,7 @@ export function paperGet(slug: string): any {
 export function paperUpsert(row: {
   slug: string; title: string; content?: string; authors?: string[]; year?: number | string | null;
   topic?: string; publisher?: string; tags?: string[]; url?: string; file?: string;
-  conclusions?: string[]; cites?: Cite[]; category?: string; kind?: string;
+  conclusions?: string[]; cites?: Cite[]; category?: string; kind?: string; group?: string;
 }): boolean {
   const existing = paperGet(row.slug);
   const category = safeCategory(row.category ?? existing?.category ?? "");
@@ -410,6 +411,7 @@ export function paperUpsert(row: {
   const fm: Record<string, any> = {
     title: row.title,
     kind: (row.kind ?? existing?.kind) === "idea" ? "idea" : undefined,
+    group: (() => { const g = (row.group ?? existing?.group ?? "").trim(); return g && g !== "Papers" ? g : undefined; })(),
     authors: row.authors ?? existing?.authors ?? [],
     year: toYear(row.year ?? existing?.year),
     topic: row.topic ?? existing?.topic ?? "",
@@ -479,7 +481,7 @@ export function paperGraph(opts: {
 
   const nodes = [...nodeSet].map(s => bySlug.get(s)).filter(Boolean).map(p => ({
     key: p.slug, title: p.title, year: p.year, topic: p.topic, authors: p.authors, tags: p.tags,
-    kind: p.kind, citationCount: counts.get(p.slug) || 0, conclusions: p.conclusions, url: p.url, file: p.file, category: p.category,
+    kind: p.kind, group: p.group, citationCount: counts.get(p.slug) || 0, conclusions: p.conclusions, url: p.url, file: p.file, category: p.category,
   }));
   const edges: any[] = [];
   for (const p of all) {
@@ -504,5 +506,47 @@ export function savePaperFile(base64: string, ext: string, category = ""): strin
   const full = join(dir, `${hash}.${safeExt}`);
   if (!existsSync(full)) writeFileSync(full, buf);
   return rel;
+}
+
+// ── Paper groups (user-assigned, distinct from the derived topic) ────────────
+// A group is just a label on each paper; "Papers" is the default. Groups are
+// derived from the items (a group exists while ≥1 paper is in it).
+export function paperGroups(): { name: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const p of allPaperFiles().map(paperFromFile)) {
+    const g = p.group || "Papers";
+    counts.set(g, (counts.get(g) || 0) + 1);
+  }
+  counts.set("Papers", counts.get("Papers") || 0); // always present
+  const custom = [...counts.entries()].filter(([n]) => n !== "Papers")
+    .sort((a, b) => a[0].localeCompare(b[0]));
+  return [...custom, ["Papers", counts.get("Papers")!] as [string, number]]
+    .map(([name, count]) => ({ name, count }));
+}
+
+export function paperSetGroup(slug: string, group: string): boolean {
+  const p = paperGet(slug);
+  if (!p) return false;
+  paperUpsert({ ...p, group: (group || "Papers").trim() || "Papers" });
+  return true;
+}
+
+export function paperGroupRename(oldName: string, newName: string): number {
+  const to = (newName || "").trim();
+  if (!to || !oldName) return 0;
+  let n = 0;
+  for (const p of allPaperFiles().map(paperFromFile)) {
+    if ((p.group || "Papers") === oldName) { paperUpsert({ ...p, group: to }); n++; }
+  }
+  return n;
+}
+
+export function paperGroupDelete(name: string): number {
+  if (!name || name === "Papers") return 0; // can't delete the default
+  let n = 0;
+  for (const p of allPaperFiles().map(paperFromFile)) {
+    if ((p.group || "Papers") === name) { paperUpsert({ ...p, group: "Papers" }); n++; }
+  }
+  return n;
 }
 
