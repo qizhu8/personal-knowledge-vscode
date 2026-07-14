@@ -3,6 +3,10 @@
 All notable changes to the **Personal Knowledge** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.3.2] — 2026-07-14
+
+- **Fix: images in categorized notes now render.** Note image links use the portable, Obsidian-style convention where `_assets/<file>` is relative to the note file (`notes/<category>/_assets/<file>`). The panel and HTML export were resolving them against the top-level `notes/` folder instead, so images in notes that live in a subfolder didn't display. Rendering, the live editor preview, HTML export, and paste-to-insert now all use the note's own `_assets/` folder.
+
 ## [1.3.1] — 2026-07-14
 
 - **Fix: 🌐 Browser preview now opens a real browser over Remote-SSH.** Previously, on a remote workspace the button produced a `vscode-remote:` link and VS Code asked you to pick an app. The preview is now served on an ephemeral loopback port and routed through `asExternalUri`, so the port is forwarded to your machine and the page opens in your **local** browser (unchanged behavior when working locally).
