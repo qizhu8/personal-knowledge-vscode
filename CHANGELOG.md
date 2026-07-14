@@ -3,6 +3,14 @@
 All notable changes to the **Personal Knowledge** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] — 2026-07-14
+
+- **Papers** — a new tab for tracking research papers and their citation graph.
+  - **List View**: each paper shows year, authors, title, topic, publisher, tags, and a citation-count badge; filter by topic and search. Papers are plain `papers/<Category>/<Title>.md` files (files-as-truth) with metadata, a list of conclusions, per-citation notes, a remote **URL** and/or an uploaded **local file**, and a Markdown commentary body.
+  - **Graph View** (Cytoscape.js, bundled offline): an interactive citation graph — draggable nodes, a force ⇄ hierarchical layout toggle, node size/color by citation count and topic, arrows pointing from a cited paper to the papers that cite it, hover a node to reveal its conclusions (or a global “show all” toggle), plus a topic filter, top-N-by-citations limit, and neighbor expansion. Click a node to open the paper.
+  - **MCP**: `list_papers`, `search_papers`, `get_paper`, `add_paper`, `update_paper`, `delete_paper`, and `paper_graph`, so an AI assistant can read and grow your library (citations resolve by title or slug).
+  - **Sync**: papers ride along in the shareable bundle and import on join, with the citation graph preserved on the other side.
+
 ## [1.4.0] — 2026-07-14
 
 - **Math & formulas (KaTeX).** Notes now render LaTeX: `$...$` for inline math and `$$...$$` for display equations — in the note view, the live editor preview, and HTML export. Supports the full common TeX set (`\frac`, `\sum`, `\boxed`, `\begin{cases}`, `\mathcal`, Greek, etc.). KaTeX is bundled locally (script, stylesheet, and fonts), so math renders offline and over Remote-SSH with no CDN. Exported HTML embeds the fonts inline, so a shared file renders math on its own. `$` inside code spans/blocks is left untouched, and everyday currency like “$5” isn't mistaken for math.

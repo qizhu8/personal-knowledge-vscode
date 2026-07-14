@@ -31,6 +31,7 @@ If you (usually me myself :) ) accidentally deleted/screwed up something, ask AI
 - **Files are the source of truth** — every skill and note is a plain, git-tracked `.md` file; edit them here, in your editor, or from the MCP server and the panel refreshes automatically
 - **Paste images & cross-note links** — paste images straight into a note (stored under `notes/_assets/`), and link between notes with `[[Title]]` wiki links or relative `.md` links
 - **Math & formulas** — LaTeX rendering via KaTeX: `$...$` inline and `$$...$$` display equations, bundled to work offline; also embedded into HTML exports
+- **Papers** — track research papers with a citation graph: a list view (year, authors, topic, publisher, tags, citation count) and an interactive, draggable graph (Cytoscape.js; force or hierarchical) that reveals each paper's conclusions on hover; also exposed via MCP and sync
 - **Sync** — share a temporary authenticated link so another machine can pull your knowledge
 - **MCP server** — auto-generated Python server with **read and write** tools that operate directly on the Markdown files, with FTS5 trigram search (CJK-friendly)
 - **Selectable AI backend** — Copilot (built-in), Azure OpenAI, or any OpenAI-compatible endpoint; keys stored in SecretStorage
@@ -55,6 +56,7 @@ On first activation the extension asks where to store your knowledge base (use t
   skills/             <- skills (git-tracked .md files, the source of truth)
   notes/              <- notes  (git-tracked .md files, the source of truth)
     _assets/          <- images pasted into notes
+  papers/             <- papers (git-tracked .md files) + citation graph
   prompts/            <- versioned prompt files
   packages/           <- local Python/Node packages
   scripts/            <- Scope / C# / Python / PowerShell scripts
