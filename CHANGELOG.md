@@ -6,6 +6,7 @@ This project follows [Semantic Versioning](https://semver.org/).
 ## [1.4.0] — 2026-07-14
 
 - **Math & formulas (KaTeX).** Notes now render LaTeX: `$...$` for inline math and `$$...$$` for display equations — in the note view, the live editor preview, and HTML export. Supports the full common TeX set (`\frac`, `\sum`, `\boxed`, `\begin{cases}`, `\mathcal`, Greek, etc.). KaTeX is bundled locally (script, stylesheet, and fonts), so math renders offline and over Remote-SSH with no CDN. Exported HTML embeds the fonts inline, so a shared file renders math on its own. `$` inside code spans/blocks is left untouched, and everyday currency like “$5” isn't mistaken for math.
+- **Refresh re-renders the open note.** The ↻ Refresh button now re-renders the currently open note/skill (not just the sidebar), and appends a cache-buster to note image URLs so **regenerated images** (same path, new content) and external edits show up immediately instead of serving the cached copy.
 
 ## [1.3.2] — 2026-07-14
 
