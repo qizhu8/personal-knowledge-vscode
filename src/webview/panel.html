@@ -2059,6 +2059,8 @@ function renderPaperGraph(data) {
   cy.on('mouseover', 'node', evt => showNodeTooltip(evt.target));
   cy.on('mouseout', 'node', hideTooltip);
   cy.on('tap', 'node', evt => openItem('paper', evt.target.id()));
+  // Click empty canvas background -> conceal the conclusions tooltip.
+  cy.on('tap', evt => { if (evt.target === cy) hideTooltip(); });
   if (document.getElementById('pg-allconc').checked) toggleAllConclusions();
 }
 function showNodeTooltip(node) {

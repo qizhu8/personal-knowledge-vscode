@@ -1,6 +1,6 @@
 # Personal Knowledge
 
-A VS Code extension for managing your personal knowledge base — skills, notes, prompts, packages, and scripts — with hierarchical navigation, full-text search, syntax highlighting, AI-assisted summaries, a built-in sync server, and MCP integration so AI assistants can read *and write* your knowledge directly.
+A VS Code extension for managing your personal knowledge base — skills, notes, papers, prompts, packages, and scripts — with hierarchical navigation, full-text search, syntax highlighting, AI-assisted summaries, a built-in sync server, and MCP integration so AI assistants can read *and write* your knowledge directly.
 
 > **A note from the developer**
 >
@@ -31,7 +31,10 @@ If you (usually me myself :) ) accidentally deleted/screwed up something, ask AI
 - **Files are the source of truth** — every skill and note is a plain, git-tracked `.md` file; edit them here, in your editor, or from the MCP server and the panel refreshes automatically
 - **Paste images & cross-note links** — paste images straight into a note (stored under `notes/_assets/`), and link between notes with `[[Title]]` wiki links or relative `.md` links
 - **Math & formulas** — LaTeX rendering via KaTeX: `$...$` inline and `$$...$$` display equations, bundled to work offline; also embedded into HTML exports
-- **Papers** — track research papers with a citation graph: a list view (year, authors, topic, publisher, tags, citation count) and an interactive, draggable graph (Cytoscape.js; force or hierarchical) that reveals each paper's conclusions on hover; also exposed via MCP and sync
+- **Papers** — track research papers and your own **ideas** with a citation graph:
+  - **List view** grouped into user-defined **groups** and topic folders, showing year, authors, topic, publisher, tags, and a citation-count badge; **pin/star** favourites to the top, and right-click to move a paper between groups or **change its topic**
+  - **Graph view** — an interactive, draggable citation graph (Cytoscape.js; force or hierarchical layout) sized/coloured by citation count and topic, with idea nodes drawn distinctly, that reveals each paper's conclusions on hover
+  - Papers are plain `papers/<Topic>/<Title>.md` files (with a remote URL and/or an uploaded local file), and are exposed via **MCP** and **sync**
 - **Sync** — share a temporary authenticated link so another machine can pull your knowledge
 - **MCP server** — auto-generated Python server with **read and write** tools that operate directly on the Markdown files, with FTS5 trigram search (CJK-friendly)
 - **Selectable AI backend** — Copilot (built-in), Azure OpenAI, or any OpenAI-compatible endpoint; keys stored in SecretStorage
@@ -68,7 +71,7 @@ Change the location any time via **Settings -> Personal Knowledge: Store Path**.
 ## How to use
 
 1. **Open the panel** — click the Personal Knowledge icon in the Activity Bar, or press `Ctrl+Shift+K` / `Cmd+Shift+K`.
-2. **Browse** — the left navigation shows your Skills, Notes, Prompts, Packages, and Scripts as collapsible folder trees. Click any item to preview it.
+2. **Browse** — the left navigation shows your Skills, Notes, Papers, Prompts, Packages, and Scripts as collapsible folder trees. Click any item to preview it.
 3. **Capture knowledge**:
    - Select code in any editor -> right-click -> **Save Selection as Skill**.
    - Press `Ctrl+Shift+N` / `Cmd+Shift+N` for a quick note (with live Markdown preview).
@@ -102,6 +105,8 @@ Open the **MCP** tab in the panel and click **Generate MCP Server**, then add th
 | `list_notes` / `search_notes` / `get_note` | Browse / search / read notes |
 | `add_note` / `update_note` / `delete_note` | Create / edit / remove notes |
 | `add_skill` / `update_skill` / `delete_skill` | Create / edit / remove skills |
+| `list_papers` / `search_papers` / `get_paper` / `paper_graph` | Browse / search / read papers and their citation graph |
+| `add_paper` / `update_paper` / `delete_paper` | Create / edit / remove papers |
 
 Search uses an in-memory FTS5 **trigram** index (CJK-friendly, ranked) built from the Markdown files at call time, with a substring fallback for short queries. Reads and writes operate directly on the git-tracked `.md` files.
 

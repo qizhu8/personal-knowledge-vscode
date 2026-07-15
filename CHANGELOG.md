@@ -3,6 +3,11 @@
 All notable changes to the **Personal Knowledge** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.6.2] — 2026-07-15
+
+- **Papers graph** — click an empty area of the canvas to conceal the conclusions tooltip.
+- **Docs** — the README now documents the **Papers** feature (intro, feature list, walkthrough, and MCP paper tools).
+
 ## [1.6.1] — 2026-07-14
 
 - **Move everywhere** — the **Move** action now covers every content type:
