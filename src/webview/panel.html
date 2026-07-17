@@ -95,6 +95,13 @@ hr.div{border:none;border-top:1px solid var(--border);margin:14px 0}
 .prose a.wikilink{text-decoration:none;border-bottom:1px dashed var(--accent);cursor:pointer}
 .prose a.wikilink:hover{background:var(--accent);color:var(--bg);border-radius:2px}
 .prose img{max-width:100%;border-radius:4px}
+/* Task-list status markers: [ ] todo, [x] done, [~] in progress, [!] blocked */
+.prose li.tk{list-style:none;position:relative}
+.prose li.tk>.tkm{display:inline-block;width:15px;height:15px;line-height:14px;text-align:center;border-radius:3px;font-size:10px;font-weight:700;margin:0 .5em 0 -1.35em;vertical-align:1px;box-sizing:border-box}
+.prose li.tk-todo>.tkm{border:1.5px solid var(--muted);background:var(--bg)}
+.prose li.tk-done>.tkm{background:#3fb950;color:#fff;border:1.5px solid #3fb950}
+.prose li.tk-prog>.tkm{background:#d29922;color:#1a1200;border:1.5px solid #d29922}
+.prose li.tk-block>.tkm{background:#f85149;color:#fff;border:1.5px solid #f85149}
 .math-block{overflow-x:auto;overflow-y:hidden;padding:6px 2px;margin:.6em 0}
 .math-error{color:#f87171;background:var(--panel);padding:1px 4px;border-radius:3px}
 .katex{font-size:1.05em}
@@ -522,8 +529,18 @@ function linkifyWiki(md) {
   });
 }
 function safeMarked(text, category) {
-  try { return fixAssets(typeof marked !== 'undefined' ? marked.parse(linkifyWiki(text||'')) : '<pre>' + esc(text||'') + '</pre>', category); }
+  try { return styleTasks(fixAssets(typeof marked !== 'undefined' ? marked.parse(linkifyWiki(text||'')) : '<pre>' + esc(text||'') + '</pre>', category)); }
   catch(e) { return '<pre>' + esc(text||'') + '</pre>'; }
+}
+// Turn task-list markers into clearly-coloured status badges so checked/unchecked
+// and the custom [~]/[!] states are distinguishable in any theme. marked emits
+// disabled checkboxes for [ ]/[x]; [~]/[!] arrive as literal text at li start.
+function styleTasks(html) {
+  return String(html)
+    .replace(/<li>\s*<input(?=[^>]*\bchecked\b)[^>]*type="checkbox"[^>]*>\s*/g, '<li class="tk tk-done"><span class="tkm">\u2713</span>')
+    .replace(/<li>\s*<input(?![^>]*\bchecked\b)[^>]*type="checkbox"[^>]*>\s*/g, '<li class="tk tk-todo"><span class="tkm"></span>')
+    .replace(/<li>\s*\[~\]\s*/g, '<li class="tk tk-prog"><span class="tkm">~</span>')
+    .replace(/<li>\s*\[!\]\s*/g, '<li class="tk tk-block"><span class="tkm">!</span>');
 }
 function safeHljs(el) { try { if (typeof hljs !== 'undefined') hljs.highlightElement(el); } catch(e) {} }
 const esc = s => String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -1294,7 +1311,7 @@ function exportNote(mode) {
   // Render markdown + highlight code, keeping _assets/ refs relative so the
   // extension can inline the images as data URIs for a self-contained file.
   let inner;
-  try { inner = (typeof marked !== 'undefined') ? marked.parse(linkifyWikiExport(d.content || '')) : '<pre>' + esc(d.content || '') + '</pre>'; }
+  try { inner = styleTasks((typeof marked !== 'undefined') ? marked.parse(linkifyWikiExport(d.content || '')) : '<pre>' + esc(d.content || '') + '</pre>'); }
   catch (e) { inner = '<pre>' + esc(d.content || '') + '</pre>'; }
   const tmp = document.createElement('div');
   tmp.innerHTML = inner;
@@ -1627,6 +1644,7 @@ let paperFacetsData = { topics: [], tags: [], years: [] };
 let paperGraphOpen = false;
 let cy = null;                 // cytoscape instance
 let currentGraphData = null;
+let currentGraphSig = '';      // signature of the currently rendered node/edge set
 let pendingPaperFile = null;
 let paperGroupsList = [{ name: 'Papers', count: 0 }];
 let paperGroupExpanded = {};   // group name -> expanded (default true)
@@ -2002,10 +2020,24 @@ function currentPaperLayout() {
   return { name: 'cose', animate: false, padding: 24, nodeRepulsion: 9000, idealEdgeLength: 95, edgeElasticity: 120, nestingFactor: 1.1 };
 }
 function applyPaperLayout() { if (cy) cy.layout(currentPaperLayout()).run(); }
+function graphSignature(data) {
+  if (!data || !data.nodes) return '';
+  const ns = data.nodes.map(n => n.key).sort().join('|');
+  const es = (data.edges || []).map(e => e.from + '>' + e.to).sort().join('|');
+  return ns + '#' + es;
+}
 function renderPaperGraph(data) {
-  currentGraphData = data;
   const el = document.getElementById('pg-canvas');
   document.getElementById('pg-count').textContent = data ? `${data.shown} of ${data.total} papers` : '';
+  // If the node/edge set is identical (e.g. raising the Top-N limit added no new
+  // nodes), leave the existing graph untouched instead of re-laying it out.
+  const sig = graphSignature(data);
+  if (cy && data && data.nodes && data.nodes.length && sig === currentGraphSig) {
+    currentGraphData = data;
+    return;
+  }
+  currentGraphData = data;
+  currentGraphSig = sig;
   if (typeof cytoscape === 'undefined') { el.innerHTML = '<div class="empty" style="padding:24px">Graph library unavailable.</div>'; return; }
   if (!data || !data.nodes || !data.nodes.length) {
     if (cy) { try { cy.destroy(); } catch (e) {} cy = null; }

@@ -232,6 +232,12 @@ h1.doc-title{font-size:28px;line-height:1.25;margin:0 0 12px;color:#0b1220}
 .prose ul,.prose ol{padding-left:1.5em;margin:.6em 0}
 .prose li{margin:.25em 0}
 .prose img{max-width:100%;border-radius:6px;margin:.4em 0}
+.prose li.tk{list-style:none;position:relative}
+.prose li.tk>.tkm{display:inline-block;width:16px;height:16px;line-height:15px;text-align:center;border-radius:3px;font-size:11px;font-weight:700;margin:0 .5em 0 -1.5em;vertical-align:1px;box-sizing:border-box}
+.prose li.tk-todo>.tkm{border:1.5px solid #9aa2ad;background:#fff}
+.prose li.tk-done>.tkm{background:#2da44e;color:#fff;border:1.5px solid #2da44e}
+.prose li.tk-prog>.tkm{background:#d29922;color:#3d2c00;border:1.5px solid #d29922}
+.prose li.tk-block>.tkm{background:#e5484d;color:#fff;border:1.5px solid #e5484d}
 .prose blockquote{border-left:4px solid #d0d7de;color:#57606a;margin:.9em 0;padding:.1em 1em}
 .prose hr{border:none;border-top:1px solid #e2e5e9;margin:1.6em 0}
 .prose table{border-collapse:collapse;width:100%;margin:1em 0;font-size:.95em}

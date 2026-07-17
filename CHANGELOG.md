@@ -3,6 +3,12 @@
 All notable changes to the **Personal Knowledge** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.6.3] — 2026-07-17
+
+- **Task-list badges** — note checkboxes now render as clearly-coloured status badges that stay legible under any VS Code theme: `[ ]` todo (outlined), `[x]` done (green ✓), `[~]` in progress (amber), `[!]` blocked (red). Applies to the note view, the live editor preview, and HTML export.
+- **Papers graph** — raising the **Top-N by citations** limit no longer reshuffles the graph when it introduces no new nodes; the layout is only rebuilt when the node/edge set actually changes.
+- **Papers graph** — click an empty area of the canvas to conceal the conclusions tooltip.
+
 ## [1.6.2] — 2026-07-15
 
 - **Papers graph** — click an empty area of the canvas to conceal the conclusions tooltip.
