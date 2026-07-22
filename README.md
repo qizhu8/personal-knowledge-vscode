@@ -14,6 +14,28 @@ This extension allows you (human) to add/update/delete items, but it is more pre
 ## First-Aid Tip
 If you (usually me myself :) ) accidentally deleted/screwed up something, ask AI to fix. AI can read the Markdown files and mcp scripts to understand what to do.
 
+## Screenshots
+
+**Skills** — reusable know-how in an arbitrary-depth category tree, with syntax-highlighted detail.
+
+![Skills](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/skills.png)
+
+**Notes** — split preview with Mermaid diagrams, KaTeX math, colour-coded task badges, and pinning.
+
+![Notes](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/notes.png)
+
+**Papers** — research papers with groups, pinning, citation counts, conclusions, and a citation graph.
+
+![Papers](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/papers.png)
+
+**Papers — citation graph** — an interactive graph (Cytoscape.js): node size by citations, colour by topic, and your own **ideas** drawn distinctly (gold, dashed).
+
+![Papers citation graph](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/papers-graph.png)
+
+**Prompts** — versioned prompt files organised by project → task → version → file.
+
+![Prompts](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/prompts.png)
+
 ## Features
 
 - **Skills** — reusable know-how as searchable Markdown, organised into an arbitrary-depth category tree

@@ -511,6 +511,20 @@ try {
     ] });
   }
 } catch(e) {}
+// Wiki links [[Title]] / [[Title|alias]] as a marked INLINE extension. Because
+// marked tokenizes code fences/spans first, [[...]] inside code (e.g. a mermaid
+// `[[Kafka]]` subroutine node) is left untouched instead of being rewritten to
+// an <a> tag, which previously corrupted diagrams and code blocks.
+try {
+  if (typeof marked !== 'undefined') {
+    marked.use({ extensions: [
+      { name: 'wikiLink', level: 'inline',
+        start(src) { const i = src.indexOf('[['); return i < 0 ? undefined : i; },
+        tokenizer(src) { const m = /^\[\[([^\]|\n]+)(?:\|([^\]\n]+))?\]\]/.exec(src); if (m) return { type: 'wikiLink', raw: m[0], target: m[1].trim(), label: (m[2] || m[1]).trim() }; },
+        renderer(t) { const e = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); return '<a href="#" class="wikilink" data-note="' + e(t.target) + '">' + e(t.label) + '</a>'; } },
+    ] });
+  }
+} catch(e) {}
 // Base URI for note image assets; `_assets/...` refs are rewritten relative to
 // the note's OWN folder (its category path), matching the on-disk convention
 // notes/<category>/_assets/<file> so links stay portable (Obsidian-style).
@@ -530,15 +544,9 @@ function fixAssets(html, category) {
     return attr + '=' + q + base + '/_assets/' + file + sep + renderNonce + q;
   });
 }
-// Wiki-style [[Title]] / [[Title|alias]] links -> clickable note links
-function linkifyWiki(md) {
-  return String(md).replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, function(m, tgt, alias) {
-    const label = (alias || tgt).trim();
-    return '<a href="#" class="wikilink" data-note="' + esc(tgt.trim()) + '">' + esc(label) + '</a>';
-  });
-}
+// Wiki links are handled by the `wikiLink` marked extension above (code-safe).
 function safeMarked(text, category) {
-  try { return styleTasks(fixAssets(typeof marked !== 'undefined' ? marked.parse(linkifyWiki(text||'')) : '<pre>' + esc(text||'') + '</pre>', category)); }
+  try { return styleTasks(fixAssets(typeof marked !== 'undefined' ? marked.parse(text||'') : '<pre>' + esc(text||'') + '</pre>', category)); }
   catch(e) { return '<pre>' + esc(text||'') + '</pre>'; }
 }
 // Turn task-list markers into clearly-coloured status badges so checked/unchecked
@@ -1160,6 +1168,7 @@ function renderDetail(data) {
         <span style="flex:1"></span>
         <button class="tbtn" style="font-size:11px" onclick="toggleNotePin('${esc(data.slug)}',${data.pinned ? 'false' : 'true'})" title="${data.pinned ? 'Unpin' : 'Pin to top of its folder'}">${data.pinned ? '★ Pinned' : '☆ Pin'}</button>
         <button class="tbtn" style="font-size:11px" onclick="exportNote('browser')" title="Open in your browser as a linked set — this note plus every note it links to, with clickable cross-note links">🌐 Browser</button>
+        <button class="tbtn" style="font-size:11px" onclick="exportNote('linkedSave')" title="Save this note and every note it links to as a shareable folder of linked HTML files (opens offline)">📦 Site</button>
         <button class="tbtn" style="font-size:11px" onclick="exportNote('file')" title="Save this note as a self-contained HTML file">⬇ HTML</button>
         <button class="tbtn" style="font-size:11px" onclick="editNote(currentDetail)">✏ Edit</button>
       </div>
@@ -1384,19 +1393,27 @@ function postProcess() {
 }
 
 // ── Export a note to standalone HTML (open in browser / save to file) ────────
+// Apply `fn` only OUTSIDE fenced/inline code so replacements never touch code
+// (e.g. a mermaid `[[Kafka]]` node) — mirrors how marked tokenizes code first.
+function outsideCode(md, fn) {
+  return String(md).split(/(```[\s\S]*?```|`[^`\n]*`)/g).map((p, i) => (i % 2 === 0) ? fn(p) : p).join('');
+}
 // Wiki links become plain styled spans (no target outside the panel).
 function linkifyWikiExport(md) {
-  return String(md).replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, function(m, t, a) {
+  return outsideCode(md, seg => seg.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, function(m, t, a) {
     return '<span class="wikilink">' + esc((a || t).trim()) + '</span>';
-  });
+  }));
 }
 async function exportNote(mode) {
   const d = currentDetail;
   if (!d || d.type !== 'note') return;
-  // Browser view = a navigable "site": export this note plus every note it links
-  // to (transitively) so cross-note links are clickable. The extension computes
-  // the closure and sends it back here to render.
-  if (mode === 'browser') { ask('collectLinkedNotes', { slug: d.slug }); return; }
+  // Linked exports: this note plus every note it links to (transitive closure).
+  //   'browser'    -> temporary preview served in the browser (clickable links)
+  //   'linkedSave' -> saved to a folder you pick (portable, shareable, offline)
+  if (mode === 'browser' || mode === 'linkedSave') {
+    ask('collectLinkedNotes', { slug: d.slug, exportMode: mode === 'linkedSave' ? 'save' : 'browser' });
+    return;
+  }
   // Render markdown + highlight code, keeping _assets/ refs relative so the
   // extension can inline the images as data URIs for a self-contained file.
   let inner;
@@ -1444,7 +1461,7 @@ async function renderLinkedExport(data) {
     files.push({ filename: n.filename, slug: n.slug, bodyHtml: tmp.innerHTML });
   }
   if (useMermaid) { _mermaidReady = false; initMermaidOnce(); }
-  ask('writeLinkedExport', { entryFilename: data.entryFilename, files });
+  ask('writeLinkedExport', { entryFilename: data.entryFilename, files, mode: data.mode || 'browser' });
 }
 
 // ── Note form ──────────────────────────────────────────────────────────────

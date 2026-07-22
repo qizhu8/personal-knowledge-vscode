@@ -230,14 +230,23 @@ async function serveFolderInBrowser(dir: string, entry: string): Promise<boolean
   });
 }
 
+// Apply `fn` only OUTSIDE fenced/inline code so link handling never touches code
+// blocks (e.g. a mermaid `[[Kafka]]` node), matching how marked tokenizes code.
+function outsideCode(md: string, fn: (seg: string) => string): string {
+  return String(md).split(/(```[\s\S]*?```|`[^`\n]*`)/g).map((p, i) => (i % 2 === 0) ? fn(p) : p).join("");
+}
+
 // Extract cross-note link targets ([[Title]] wiki links and [text](path.md)).
 function extractNoteLinks(content: string): string[] {
   const out: string[] = [];
-  let m: RegExpExecArray | null;
-  const wiki = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
-  while ((m = wiki.exec(content))) out.push(m[1].trim());
-  const md = /\[[^\]]*\]\(\s*([^)]+?\.md)(?:[?#][^)]*)?\s*\)/gi;
-  while ((m = md.exec(content))) out.push(m[1].trim());
+  outsideCode(content, seg => {
+    let m: RegExpExecArray | null;
+    const wiki = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
+    while ((m = wiki.exec(seg))) out.push(m[1].trim());
+    const md = /\[[^\]]*\]\(\s*([^)]+?\.md)(?:[?#][^)]*)?\s*\)/gi;
+    while ((m = md.exec(seg))) out.push(m[1].trim());
+    return seg;
+  });
   return out;
 }
 
@@ -247,18 +256,20 @@ function rewriteNoteLinks(
   resolve: (t: string, from: string) => string | null,
   filenames: Map<string, string>,
 ): string {
-  content = content.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (m, t, a) => {
-    const label = String(a || t).trim();
-    const slug = resolve(String(t).trim(), fromSlug);
-    const fn = slug ? filenames.get(slug) : undefined;
-    return fn ? `[${label}](${fn})` : label;
+  return outsideCode(content, seg => {
+    seg = seg.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (m, t, a) => {
+      const label = String(a || t).trim();
+      const slug = resolve(String(t).trim(), fromSlug);
+      const fn = slug ? filenames.get(slug) : undefined;
+      return fn ? `[${label}](${fn})` : label;
+    });
+    seg = seg.replace(/\[([^\]]*)\]\(\s*([^)]+?\.md)(?:[?#][^)]*)?\s*\)/gi, (m, label, pth) => {
+      const slug = resolve(String(pth).trim(), fromSlug);
+      const fn = slug ? filenames.get(slug) : undefined;
+      return fn ? `[${label}](${fn})` : m;
+    });
+    return seg;
   });
-  content = content.replace(/\[([^\]]*)\]\(\s*([^)]+?\.md)(?:[?#][^)]*)?\s*\)/gi, (m, label, pth) => {
-    const slug = resolve(String(pth).trim(), fromSlug);
-    const fn = slug ? filenames.get(slug) : undefined;
-    return fn ? `[${label}](${fn})` : m;
-  });
-  return content;
 }
 
 /** Collect the transitive closure of notes reachable from `rootSlug` via links,
@@ -798,27 +809,53 @@ async function handleMessage(
       const rootSlug = String(msg.slug || "").trim();
       const notes = collectLinkedNotes(rootSlug);
       const entry = notes.find(n => n.slug === rootSlug) || notes[0];
-      respond({ command: "linkedNotes", entryFilename: entry ? entry.filename : "", notes });
+      respond({ command: "linkedNotes", entryFilename: entry ? entry.filename : "", notes, mode: msg.exportMode || "browser" });
       break;
     }
 
     case "writeLinkedExport": {
-      // Write each webview-rendered note into a temp folder and open the entry
-      // file in the browser; cross-note links resolve to the sibling .html files.
+      // Write each webview-rendered note as a standalone HTML file with clickable
+      // cross-note links. mode 'save' -> a folder the user picks (portable,
+      // shareable, runs offline); otherwise -> a temp folder opened in the browser.
       try {
         const files: any[] = Array.isArray(msg.files) ? msg.files : [];
         if (!files.length) { vscode.window.setStatusBarMessage("$(info) Nothing to export", 3000); break; }
-        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pk-notes-"));
-        for (const f of files) {
-          const note = noteGet(String(f.slug || "")) || {};
-          const doc = buildStandaloneNoteHtml({
-            title: note.title || f.slug, slug: f.slug, category: note.category || "",
-            tags: note.tags || "[]", noteType: note.type || "general",
-            updatedAt: note.updated_at || "", bodyHtml: f.bodyHtml || "",
-          }, katexCssForExport(context));
-          fs.writeFileSync(path.join(dir, String(f.filename)), doc, "utf-8");
-        }
         const entry = String(msg.entryFilename || files[0].filename);
+        const writeAll = (dir: string) => {
+          for (const f of files) {
+            const note = noteGet(String(f.slug || "")) || {};
+            const doc = buildStandaloneNoteHtml({
+              title: note.title || f.slug, slug: f.slug, category: note.category || "",
+              tags: note.tags || "[]", noteType: note.type || "general",
+              updatedAt: note.updated_at || "", bodyHtml: f.bodyHtml || "",
+            }, katexCssForExport(context));
+            fs.writeFileSync(path.join(dir, String(f.filename)), doc, "utf-8");
+          }
+        };
+
+        if (msg.mode === "save") {
+          const picked = await vscode.window.showOpenDialog({
+            canSelectFolders: true, canSelectFiles: false, canSelectMany: false,
+            openLabel: "Export linked notes here",
+            defaultUri: vscode.Uri.file(os.homedir()),
+          });
+          if (!picked || !picked.length) break;
+          const entryNote = files.find(f => f.filename === entry) || files[0];
+          const baseName = safeFilePart(String(entryNote.slug || "notes").split("/").pop() || "notes") || "notes";
+          const outDir = path.join(picked[0].fsPath, `${baseName}-linked`);
+          fs.mkdirSync(outDir, { recursive: true });
+          writeAll(outDir);
+          const entryPath = path.join(outDir, entry);
+          const pick = await vscode.window.showInformationMessage(
+            `Exported ${files.length} linked note${files.length > 1 ? "s" : ""} to ${outDir}. Open ${entry} to browse offline.`,
+            "Reveal", "Open");
+          if (pick === "Reveal") await vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(entryPath));
+          else if (pick === "Open") await vscode.env.openExternal(vscode.Uri.file(entryPath));
+          break;
+        }
+
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pk-notes-"));
+        writeAll(dir);
         const opened = await serveFolderInBrowser(dir, entry);
         if (opened) {
           vscode.window.setStatusBarMessage(`$(globe) Opened ${files.length} linked note${files.length > 1 ? "s" : ""} in browser`, 5000);

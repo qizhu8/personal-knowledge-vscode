@@ -25,3 +25,4 @@ coverage/
 
 # demo/screenshot harness (never ship)
 dist/webview/_demo*
+resources/screenshots/**

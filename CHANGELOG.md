@@ -3,6 +3,11 @@
 All notable changes to the **Personal Knowledge** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.8.1] — 2026-07-22
+
+- **Fix: `[[...]]` inside code no longer breaks rendering** — wiki-links are now resolved by a code-aware Markdown extension, so `[[...]]` inside a code block or diagram (e.g. a Mermaid `[[Kafka]]` node) is left untouched instead of being rewritten into a link. This previously produced Mermaid parse errors and corrupted code blocks; the fix also covers single-file and linked HTML export.
+- **Docs** — added Skills / Notes / Papers / citation-graph / Prompts screenshots to the README.
+
 ## [1.8.0] — 2026-07-22
 
 - **Pin notes & folders** — pin is an *ordering* marker scoped to siblings. A pinned **note** sorts to the top of its own folder (☆/★ on the row, in the right-click menu, and in the note toolbar). A pinned **folder** sorts before other folders at the same level and shows a gold ★ (right-click a folder → Pin/Unpin). Note pins live in the note’s frontmatter; folder pins live in a git-tracked `notes/.pk-meta.json` and are re-pathed automatically when a folder is renamed/moved.
