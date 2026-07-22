@@ -22,3 +22,6 @@ coverage/
 # Misc
 *.vsix
 *.map
+
+# demo/screenshot harness (never ship)
+dist/webview/_demo*

@@ -98,6 +98,7 @@ function noteFromFile(f: MdFile): any {
     title: fm.title || nameOf(key),
     type: fm.type || "general",
     tags: JSON.stringify(asArray(fm.tags)),
+    pinned: fm.pinned === true,
     category: catOf(key),
     content: body,
     created_at: fm.created || new Date(f.mtime).toISOString(),
@@ -133,7 +134,7 @@ export function noteGet(slug: string): any {
 }
 
 export function noteUpsert(row: {
-  slug: string; title: string; content: string; type: string; tags: string[]; category?: string;
+  slug: string; title: string; content: string; type: string; tags: string[]; category?: string; pinned?: boolean;
 }): boolean {
   const existing = noteGet(row.slug);
   const category = safeCategory(row.category ?? existing?.category ?? "");
@@ -148,9 +149,88 @@ export function noteUpsert(row: {
     try { rmSync(oldFull, { force: true }); } catch { /* ignore */ }
   }
   mkdirSync(join(full, ".."), { recursive: true });
-  const fm = { title: row.title, type: row.type, tags: row.tags ?? [], created };
+  const pinned = (row.pinned ?? existing?.pinned) ? true : undefined;
+  const fm: any = { title: row.title, type: row.type, tags: row.tags ?? [], created };
+  if (pinned) fm.pinned = true; // only write when set, to keep frontmatter clean
   writeFileSync(full, serializeFrontmatter(fm, row.content ?? ""));
   return !existing;
+}
+
+/** Toggle a single note's pinned flag (sorts it to the top of its own folder). */
+export function noteSetPinned(slug: string, pinned: boolean): boolean {
+  const n = noteGet(slug);
+  if (!n) return false;
+  noteUpsert({
+    slug: n.slug, title: n.title, content: n.content, type: n.type,
+    tags: JSON.parse(n.tags || "[]"), category: n.category, pinned: !!pinned,
+  });
+  return true;
+}
+
+// ── Pinned folders (ordering only; a pinned folder sorts before its siblings) ──
+// Stored in a git-tracked dotfile so it travels with the store and syncs.
+function notesMetaPath(): string { return join(notesRoot(), ".pk-meta.json"); }
+function readNotesMeta(): { pinnedFolders: string[] } {
+  try {
+    const p = notesMetaPath();
+    if (existsSync(p)) {
+      const j = JSON.parse(readFileSync(p, "utf-8"));
+      return { pinnedFolders: Array.isArray(j.pinnedFolders) ? j.pinnedFolders : [] };
+    }
+  } catch { /* ignore */ }
+  return { pinnedFolders: [] };
+}
+function writeNotesMeta(m: { pinnedFolders: string[] }): void {
+  try {
+    mkdirSync(notesRoot(), { recursive: true });
+    writeFileSync(notesMetaPath(), JSON.stringify(m, null, 2) + "\n");
+  } catch { /* ignore */ }
+}
+
+/** All folder paths that actually contain notes (every ancestor segment). */
+function existingNoteFolders(): Set<string> {
+  const cats = new Set<string>();
+  for (const n of allNoteFiles().map(noteFromFile)) {
+    const c = n.category || "";
+    if (!c) continue;
+    const segs = c.split("/");
+    for (let i = 0; i < segs.length; i++) cats.add(segs.slice(0, i + 1).join("/"));
+  }
+  return cats;
+}
+
+/** Pinned folder paths, filtered to those that still exist. */
+export function noteFolderPins(): string[] {
+  const live = existingNoteFolders();
+  return readNotesMeta().pinnedFolders.filter(p => live.has(p));
+}
+
+/** Pin/unpin a single folder (ordering only). Returns true if it changed. */
+export function noteSetFolderPinned(prefix: string, pinned: boolean): boolean {
+  const p = (prefix || "").replace(/^\/+|\/+$/g, "");
+  if (!p) return false;
+  const m = readNotesMeta();
+  const has = m.pinnedFolders.includes(p);
+  if (pinned && !has) m.pinnedFolders.push(p);
+  else if (!pinned && has) m.pinnedFolders = m.pinnedFolders.filter(x => x !== p);
+  else return false;
+  writeNotesMeta(m);
+  return true;
+}
+
+/** Re-path pinned-folder entries when a folder is renamed/moved. */
+function repathFolderPins(oldPrefix: string, newPrefix: string): void {
+  const op = (oldPrefix || "").replace(/^\/+|\/+$/g, "");
+  const np = (newPrefix || "").replace(/^\/+|\/+$/g, "");
+  if (!op || !np || op === np) return;
+  const m = readNotesMeta();
+  let changed = false;
+  m.pinnedFolders = m.pinnedFolders.map(p => {
+    if (p === op) { changed = true; return np; }
+    if (p.startsWith(op + "/")) { changed = true; return np + p.slice(op.length); }
+    return p;
+  });
+  if (changed) writeNotesMeta(m);
 }
 
 export function noteDelete(slug: string): boolean {
@@ -178,6 +258,7 @@ export function noteImport(rows: any[]): number {
         type: r.type ?? "general",
         tags: Array.isArray(r.tags) ? r.tags : (typeof r.tags === "string" ? JSON.parse(r.tags || "[]") : []),
         category: r.category ?? "",
+        pinned: r.pinned === true,
       });
       count++;
     } catch { /* skip invalid */ }
@@ -352,6 +433,7 @@ export function noteMoveFolder(oldPrefix: string, newPrefix: string): number {
       n++;
     }
   }
+  if (n) repathFolderPins(op, np);
   return n;
 }
 

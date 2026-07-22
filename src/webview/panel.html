@@ -284,6 +284,7 @@ hr.div{border:none;border-top:1px solid var(--border);margin:14px 0}
 .ctx-item.danger:hover{background:#f8717122}
 /* Skills category tree */
 .tree-cat-hdr{display:flex;align-items:center;gap:6px;padding:5px 10px;cursor:pointer;font-size:11px;font-weight:600;color:var(--accent);border-bottom:1px solid var(--border);user-select:none}
+.tree-cat-hdr.cat-pinned .tree-cat-label{color:#f4b400}
 .tree-cat-hdr:hover{background:var(--hover)}
 .tree-cat-arrow{font-size:9px;width:10px;flex-shrink:0;color:var(--muted)}
 .tree-cat-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -423,6 +424,7 @@ mark{background:var(--vscode-editor-findMatchHighlightBackground,#ffd70055);colo
 <!-- Context menu (note right-click) -->
 <div id="ctx-menu">
   <div class="ctx-item" id="ctx-open">Open</div>
+  <div class="ctx-item" id="ctx-pin">☆ Pin</div>
   <div class="ctx-item" id="ctx-edit">✏ Edit Note</div>
   <div class="ctx-item" id="ctx-move">↪ Move…</div>
   <div class="ctx-item" id="ctx-mark-done">✓ Mark as Done</div>
@@ -513,7 +515,10 @@ try {
 // the note's OWN folder (its category path), matching the on-disk convention
 // notes/<category>/_assets/<file> so links stay portable (Obsidian-style).
 const NOTES_BASE = '%%NOTES_BASE%%';
-let renderNonce = 0; // bumped on Refresh to bust cached (regenerated) note images
+// Cache-buster for note/paper `_assets/` images. Seeded uniquely and bumped on
+// every detail render + Refresh, so a newly-added image is never blocked by a
+// stale (or negative/404) webview resource cache entry from an earlier render.
+let renderNonce = Date.now();
 function assetBase(category) {
   const cat = String(category || '').split('/').map(s => s.trim()).filter(Boolean).map(encodeURIComponent).join('/');
   return cat ? NOTES_BASE + '/' + cat : NOTES_BASE;
@@ -588,6 +593,8 @@ const ICON = {todo:'☐',done:'✓','data-path':'📂',observation:'👁',genera
 
 let state = { tab:'skills', filter:'all', search:'', items:[], active:null };
 let ctxTarget = null; // slug of note under right-click
+let ctxPinned = false; // pinned state of the note under right-click
+let notePinnedFolders = []; // note folder paths pinned to the top of their level
 let currentDetail = null; // current detail item for edit/delete actions
 let catExpanded = {}; // expanded state per folder key (default: collapsed)
 let pendingEditSlug = null; // note slug awaiting detail load for edit
@@ -602,6 +609,9 @@ document.getElementById('item-list').addEventListener('contextmenu', e => {
   if (!li) return;
   e.preventDefault();
   ctxTarget = li.dataset.noteSlug;
+  ctxPinned = li.dataset.notePinned === '1';
+  const pinItem = document.getElementById('ctx-pin');
+  if (pinItem) pinItem.textContent = ctxPinned ? '★ Unpin' : '☆ Pin';
   ctxMenu.style.left = e.clientX + 'px';
   ctxMenu.style.top  = e.clientY + 'px';
   ctxMenu.classList.add('open');
@@ -630,6 +640,9 @@ document.getElementById('detail').addEventListener('click', e => {
 
 document.getElementById('ctx-open').addEventListener('click', () => {
   if (ctxTarget) openItem('note', ctxTarget);
+});
+document.getElementById('ctx-pin').addEventListener('click', () => {
+  if (ctxTarget) { ask('noteSetPinned', { slug: ctxTarget, pinned: !ctxPinned }); ctxTarget = null; }
 });
 document.getElementById('ctx-mark-done').addEventListener('click', () => {
   if (ctxTarget) { ask('markDone', { slug: ctxTarget }); ctxTarget = null; }
@@ -677,6 +690,10 @@ window.addEventListener('message', e => {
     }
   }
   else if (command === 'saved')    { ask('list', { tab: state.tab, filter: state.filter, q: state.search }); if (state.tab === 'papers') { ask('paperGroups', {}); ask('paperFacets', {}); } }
+  else if (command === 'noteFolderPins') {
+    notePinnedFolders = e.data.data || [];
+    if (state.tab === 'notes') renderList();
+  }
   else if (command === 'assetSaved') {
     const cb = pendingAssets[e.data.reqId];
     if (cb) { delete pendingAssets[e.data.reqId]; cb(e.data.markdown, e.data.error); }
@@ -814,6 +831,7 @@ document.querySelectorAll('.tab').forEach(t =>
       document.getElementById('sidebar').style.display = '';
       document.getElementById('searchbox').style.display = '';
       if (state.tab === 'papers') { ask('paperFacets', {}); ask('paperGroups', {}); }
+      if (state.tab === 'notes') { ask('noteFolderPins', {}); }
       ask('list', { tab: state.tab, filter: 'all', q: '' });
     }
   })
@@ -867,23 +885,22 @@ function renderList() {
     el.innerHTML = html || '<div class="empty">No skills</div>';
 
   } else if (tab === 'notes') {
-    // Recursive N-level tree by category path (like skills); type is just a label
+    // Recursive N-level tree by category path. Pinned notes sort to the top of
+    // their own folder; pinned folders sort before sibling folders (same level).
     fEl.innerHTML = '';
     const q = state.search;
-    const root = buildCatTree(items, r => r.category, '(uncategorized)');
     const folderAttr = (child, name, fullPath) => {
       const prefix = fullPath.join('/');
       if (prefix === '(uncategorized)' || fullPath[0] === '(uncategorized)') return '';
       const b64 = btoa(unescape(encodeURIComponent(prefix)));
       return ` oncontextmenu="noteFolderMenu(event,'${b64}',${JSON.stringify(name).replace(/"/g, '&quot;')})"`;
     };
-    const html = renderCatTree(root, [], 0, (r, depth) => {
-      const pad = 8 + (depth + 1) * 12;
-      return `<div class="li nt-${r.type}" data-note-slug="${esc(r.slug)}" style="padding-left:${pad}px" onclick="openItem('note','${esc(r.slug)}')">
-        <div class="li-name">${ICON[r.type]||'📝'} ${hl(r.title, q)}</div>
-        <div class="li-meta">${(r.updated_at||'').slice(0,10)}</div>
-      </div>`;
-    }, q, folderAttr);
+    const root = buildCatTree(items, r => r.category, '(uncategorized)');
+    const order = {
+      isFolderPinned: (arr) => notePinnedFolders.includes(arr.join('/')),
+      isLeafPinned: (it) => !!it.pinned,
+    };
+    const html = renderCatTree(root, [], 0, (r, depth) => noteLi(r, q, 8 + (depth + 1) * 12), q, folderAttr, order);
     el.innerHTML = html || '<div class="empty">No notes</div>';
 
   } else if (tab === 'papers') {
@@ -995,6 +1012,20 @@ function skillLi(r, displayName, q, indent) {
   </div>`;
 }
 
+// A note row in the sidebar tree (with a ★ pin toggle). Right-click uses #ctx-menu.
+function noteLi(r, q, indent) {
+  return `<div class="li nt-${r.type}${r.pinned ? ' nt-pinned' : ''}" data-note-slug="${esc(r.slug)}" data-note-pinned="${r.pinned ? '1' : ''}" style="padding-left:${indent}px" onclick="openItem('note','${esc(r.slug)}')">
+    <div class="li-name"><span class="pc-star${r.pinned ? ' on' : ''}" onclick="event.stopPropagation();toggleNotePin('${esc(r.slug)}',${r.pinned ? 'false' : 'true'})" title="${r.pinned ? 'Unpin' : 'Pin to top of folder'}">${r.pinned ? '★' : '☆'}</span> ${ICON[r.type]||'📝'} ${hl(r.title, q)}</div>
+    <div class="li-meta">${(r.updated_at||'').slice(0,10)}</div>
+  </div>`;
+}
+function toggleNotePin(slug, pinned) {
+  ask('noteSetPinned', { slug, pinned });
+  if (currentDetail && currentDetail.type === 'note' && currentDetail.slug === slug) {
+    currentDetail.pinned = pinned; renderDetail(currentDetail);
+  }
+}
+
 // ── Recursive category tree (shared by Skills & Notes panels) ───────────────
 function buildCatTree(items, getCat, fallback) {
   const root = { folders: {}, items: [] };
@@ -1017,9 +1048,14 @@ function countTreeLeaves(node) {
   return n;
 }
 
-function renderCatTree(node, path, depth, renderLeaf, q, folderAttr) {
-  const folderKeys = Object.keys(node.folders).sort((a, b) =>
-    a === '(uncategorized)' ? 1 : b === '(uncategorized)' ? -1 : a.localeCompare(b));
+function renderCatTree(node, path, depth, renderLeaf, q, folderAttr, order) {
+  const isFP = (order && order.isFolderPinned) ? order.isFolderPinned : null;
+  const folderKeys = Object.keys(node.folders).sort((a, b) => {
+    if (a === '(uncategorized)') return 1;
+    if (b === '(uncategorized)') return -1;
+    if (isFP) { const pa = isFP(path.concat(a)) ? 0 : 1, pb = isFP(path.concat(b)) ? 0 : 1; if (pa !== pb) return pa - pb; }
+    return a.localeCompare(b);
+  });
   let html = '';
   for (const name of folderKeys) {
     const child = node.folders[name];
@@ -1027,16 +1063,19 @@ function renderCatTree(node, path, depth, renderLeaf, q, folderAttr) {
     const key = btoa(unescape(encodeURIComponent(JSON.stringify(path.concat(name)))));
     const open = !!catExpanded[key];
     const pad = 8 + depth * 12;
+    const pinnedFolder = isFP && name !== '(uncategorized)' && isFP(path.concat(name));
     html += `<div class="tree-cat">
-      <div class="tree-cat-hdr" style="padding-left:${pad}px" onclick="toggleCat('${key}')" title="${esc(name)}"${folderAttr ? folderAttr(child, name, path.concat(name)) : ''}>
+      <div class="tree-cat-hdr${pinnedFolder ? ' cat-pinned' : ''}" style="padding-left:${pad}px" onclick="toggleCat('${key}')" title="${esc(name)}"${folderAttr ? folderAttr(child, name, path.concat(name)) : ''}>
         <span class="tree-cat-arrow">${open ? '▾' : '▸'}</span>
-        <span class="tree-cat-label">${name === '(uncategorized)' ? '<em style="opacity:.6">(uncategorized)</em>' : esc(name)}</span>
+        <span class="tree-cat-label">${pinnedFolder ? '★ ' : ''}${name === '(uncategorized)' ? '<em style="opacity:.6">(uncategorized)</em>' : esc(name)}</span>
         <span class="tree-cat-count">${countTreeLeaves(child)}</span>
       </div>
-      <div class="tree-cat-body" style="${open ? '' : 'display:none'}">${renderCatTree(child, path.concat(name), depth + 1, renderLeaf, q, folderAttr)}</div>
+      <div class="tree-cat-body" style="${open ? '' : 'display:none'}">${renderCatTree(child, path.concat(name), depth + 1, renderLeaf, q, folderAttr, order)}</div>
     </div>`;
   }
-  for (const it of node.items) html += renderLeaf(it, depth, q);
+  let leaves = node.items;
+  if (order && order.isLeafPinned) leaves = [...leaves].sort((a, b) => (order.isLeafPinned(b) ? 1 : 0) - (order.isLeafPinned(a) ? 1 : 0));
+  for (const it of leaves) html += renderLeaf(it, depth, q);
   return html;
 }
 // Collect all leaf slugs under a cat-tree folder (papers only).
@@ -1081,6 +1120,7 @@ function openPrompt(proj, task, ver) {
 
 // ── Render detail ──────────────────────────────────────────────────────────
 function renderDetail(data) {
+  renderNonce++; // fresh asset URLs each open so late-added images bypass stale cache
   const el = document.getElementById('detail');
   if (!data) { currentDetail = null; el.innerHTML = '<div class="empty">Not found.</div>'; return; }
 
@@ -1118,6 +1158,7 @@ function renderDetail(data) {
         <span>Updated ${(data.updated_at||'').slice(0,10)}</span>
         <span style="font-size:10px;color:var(--muted)">id: ${esc(data.slug)}</span>
         <span style="flex:1"></span>
+        <button class="tbtn" style="font-size:11px" onclick="toggleNotePin('${esc(data.slug)}',${data.pinned ? 'false' : 'true'})" title="${data.pinned ? 'Unpin' : 'Pin to top of its folder'}">${data.pinned ? '★ Pinned' : '☆ Pin'}</button>
         <button class="tbtn" style="font-size:11px" onclick="exportNote('browser')" title="Open in your browser as a linked set — this note plus every note it links to, with clickable cross-note links">🌐 Browser</button>
         <button class="tbtn" style="font-size:11px" onclick="exportNote('file')" title="Save this note as a self-contained HTML file">⬇ HTML</button>
         <button class="tbtn" style="font-size:11px" onclick="editNote(currentDetail)">✏ Edit</button>
@@ -1862,6 +1903,8 @@ function noteFolderMenu(ev, b64, name) {
   try { prefix = decodeURIComponent(escape(atob(b64))); } catch (e) {}
   if (!prefix) return;
   const items = [{ label: '📁 ' + name, header: true }];
+  const fpinned = notePinnedFolders.includes(prefix);
+  items.push({ label: fpinned ? '★ Unpin folder' : '☆ Pin folder', onClick: () => ask('noteSetFolderPinned', { prefix, pinned: !fpinned }) });
   items.push({ label: '✏ Rename folder…', onClick: () => pkModal({
     title: 'Rename folder', message: 'Renames “' + prefix + '” and re-paths every note under it.',
     input: true, defaultValue: name, okLabel: 'Rename', onOk: v => {

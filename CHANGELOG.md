@@ -3,6 +3,11 @@
 All notable changes to the **Personal Knowledge** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.8.0] — 2026-07-22
+
+- **Pin notes & folders** — pin is an *ordering* marker scoped to siblings. A pinned **note** sorts to the top of its own folder (☆/★ on the row, in the right-click menu, and in the note toolbar). A pinned **folder** sorts before other folders at the same level and shows a gold ★ (right-click a folder → Pin/Unpin). Note pins live in the note’s frontmatter; folder pins live in a git-tracked `notes/.pk-meta.json` and are re-pathed automatically when a folder is renamed/moved.
+- **Fix: late-added images now render** — an image added to a note after it was first opened (or referenced before its file existed) no longer stays blank until a manual refresh. The asset cache-buster is now unique per render, so newly-added `_assets/` images bypass a stale/negative webview cache.
+
 ## [1.7.0] — 2026-07-22
 
 - **Mermaid diagrams** — ` ```mermaid ` fenced code blocks now render as diagrams (flowcharts, sequence, class, state, etc.) in the note view, the live editor preview, and HTML export. Mermaid is bundled locally, so diagrams render offline and over Remote-SSH; the theme follows your VS Code light/dark theme.

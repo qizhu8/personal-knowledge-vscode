@@ -17,7 +17,7 @@ If you (usually me myself :) ) accidentally deleted/screwed up something, ask AI
 ## Features
 
 - **Skills** — reusable know-how as searchable Markdown, organised into an arbitrary-depth category tree
-- **Notes** — quick-capture Markdown notes with a **split live-preview editor**, hierarchical categories, tags, and types; task lists render as colour-coded status badges (`[ ]` todo, `[x]` done, `[~]` in progress, `[!]` blocked) that stay legible under any theme
+- **Notes** — quick-capture Markdown notes with a **split live-preview editor**, hierarchical categories, tags, and types; **pin** a note to the top of its folder or a folder to the top of its level; task lists render as colour-coded status badges (`[ ]` todo, `[x]` done, `[~]` in progress, `[!]` blocked) that stay legible under any theme
 - **Prompts** — browse versioned prompt files (project -> task -> version -> file)
 - **Packages** — browse local Python/Node packages
 - **Scripts** — organise Scope / C# / Python / PowerShell scripts in a recursive folder tree with:

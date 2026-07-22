@@ -6,7 +6,7 @@ import * as fs from "fs";
 import { syncServer } from "./sync-server";
 import {
   skillList, skillSearch, skillGet, skillUpsert, skillDelete, skillMoveCategory, skillMove,
-  noteList, noteSearch, noteGet, noteUpsert, noteDelete, slugExists, noteMove, noteMoveFolder,
+  noteList, noteSearch, noteGet, noteUpsert, noteDelete, slugExists, noteMove, noteMoveFolder, noteSetPinned, noteFolderPins, noteSetFolderPinned,
   noteExport, noteImport, saveNoteAsset,
   paperList, paperSearch, paperGet, paperUpsert, paperDelete,
   paperFacets, paperGraph, savePaperFile,
@@ -883,6 +883,29 @@ async function handleMessage(
       _treeProvider?.refresh();
       respond({ command: "saved" });
       vscode.window.setStatusBarMessage(`$(check) Moved folder (${n} note${n === 1 ? "" : "s"})`, 3000);
+      break;
+    }
+
+    case "noteSetPinned": {
+      if (noteSetPinned(String(msg.slug || ""), !!msg.pinned)) {
+        gitCommit(`${msg.pinned ? "pin" : "unpin"}(note): ${msg.slug}`);
+        _treeProvider?.refresh();
+      }
+      respond({ command: "saved" });
+      break;
+    }
+
+    case "noteFolderPins": {
+      respond({ command: "noteFolderPins", data: noteFolderPins() });
+      break;
+    }
+
+    case "noteSetFolderPinned": {
+      if (noteSetFolderPinned(String(msg.prefix || ""), !!msg.pinned)) {
+        gitCommit(`${msg.pinned ? "pin" : "unpin"}(note-folder): ${msg.prefix}`);
+        _treeProvider?.refresh();
+      }
+      respond({ command: "noteFolderPins", data: noteFolderPins() });
       break;
     }
 
