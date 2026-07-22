@@ -3,6 +3,10 @@
 All notable changes to the **Personal Knowledge** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.8.2] — 2026-07-22
+
+- **Papers graph** — idea nodes now render as a compact rounded shape with the title placed **below** (like paper nodes), so a long idea title is no longer clipped inside the box.
+
 ## [1.8.1] — 2026-07-22
 
 - **Fix: `[[...]]` inside code no longer breaks rendering** — wiki-links are now resolved by a code-aware Markdown extension, so `[[...]]` inside a code block or diagram (e.g. a Mermaid `[[Kafka]]` node) is left untouched instead of being rewritten into a link. This previously produced Mermaid parse errors and corrupted code blocks; the fix also covers single-file and linked HTML export.

@@ -2214,8 +2214,10 @@ function renderPaperGraph(data) {
       { selector: 'node[kind = "idea"]', style: {
         'shape': 'round-rectangle', 'background-color': '#f4b400', 'background-opacity': 0.95,
         'border-color': '#8a5a00', 'border-width': 2.5, 'border-style': 'dashed',
-        'width': 96, 'height': 44, 'color': '#1a1200', 'font-weight': 'bold', 'font-size': 10,
-        'text-valign': 'center', 'text-margin-y': 0, 'text-max-width': 150,
+        'width': 44, 'height': 34,
+        'color': txt, 'font-weight': 'bold', 'font-size': 9,
+        'text-valign': 'bottom', 'text-halign': 'center', 'text-margin-y': 4,
+        'text-wrap': 'wrap', 'text-max-width': 150,
       } },
       { selector: 'edge', style: {
         'width': 1.4, 'line-color': edgeCol, 'target-arrow-color': edgeCol,
