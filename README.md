@@ -29,8 +29,10 @@ If you (usually me myself :) ) accidentally deleted/screwed up something, ask AI
 - **Right-click actions** — add a new skill/note/script at a folder, or edit any item, straight from the sidebar
 - **Full-text search** — instant search across all content (CJK-friendly on the MCP side)
 - **Files are the source of truth** — every skill and note is a plain, git-tracked `.md` file; edit them here, in your editor, or from the MCP server and the panel refreshes automatically
-- **Paste images & cross-note links** — paste images straight into a note (stored under `notes/_assets/`), and link between notes with `[[Title]]` wiki links or relative `.md` links
+- **Paste images & cross-note links** — paste images straight into a note (stored under `notes/_assets/`), and link between notes with `[[Title]]` wiki links or relative/absolute `.md` links; click a link in the note view to jump to the target note
 - **Math & formulas** — LaTeX rendering via KaTeX: `$...$` inline and `$$...$$` display equations, bundled to work offline; also embedded into HTML exports
+- **Mermaid diagrams** — ` ```mermaid ` fenced blocks render as diagrams (flowcharts, sequence, class, state, …) in the note view, live preview, and HTML export; bundled locally and theme-aware
+- **Export to HTML** — **🌐 Browser** opens a note as a navigable set (the note plus every note it links to, with clickable cross-note links, served locally so it works over Remote-SSH); **⬇ HTML** saves a single self-contained file with images, math, and diagrams inlined
 - **Papers** — track research papers and your own **ideas** with a citation graph:
   - **List view** grouped into user-defined **groups** and topic folders, showing year, authors, topic, publisher, tags, and a citation-count badge; **pin/star** favourites to the top, and right-click to move a paper between groups or **change its topic**
   - **Graph view** — an interactive, draggable citation graph (Cytoscape.js; force or hierarchical layout) sized/coloured by citation count and topic, with idea nodes drawn distinctly, that reveals each paper's conclusions on hover

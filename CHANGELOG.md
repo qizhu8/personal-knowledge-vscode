@@ -3,6 +3,12 @@
 All notable changes to the **Personal Knowledge** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.7.0] — 2026-07-22
+
+- **Mermaid diagrams** — ` ```mermaid ` fenced code blocks now render as diagrams (flowcharts, sequence, class, state, etc.) in the note view, the live editor preview, and HTML export. Mermaid is bundled locally, so diagrams render offline and over Remote-SSH; the theme follows your VS Code light/dark theme.
+- **Cross-note links that actually jump** — clicking a link in the note view now reliably opens the target note. Resolution handles `[[Title]]` / `[[Title|alias]]` wiki links, **relative** links (`](../Todo/NOTES.md)`, resolved against the current note’s folder), and **absolute** paths into the store.
+- **Browser view is now a navigable site** — the **🌐 Browser** button exports the note **plus every note it links to** (transitively) and opens them together, so cross-note links are clickable in your browser. Diagrams, math, code highlighting, and task badges are all inlined; served over loopback so it works over Remote-SSH. (**⬇ HTML** still saves a single self-contained file.)
+
 ## [1.6.3] — 2026-07-17
 
 - **Task-list badges** — note checkboxes now render as clearly-coloured status badges that stay legible under any VS Code theme: `[ ]` todo (outlined), `[x]` done (green ✓), `[~]` in progress (amber), `[!]` blocked (red). Applies to the note view, the live editor preview, and HTML export.

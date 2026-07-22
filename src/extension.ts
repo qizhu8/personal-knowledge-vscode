@@ -190,6 +190,134 @@ function inlineNoteAssets(html: string, category = ""): string {
   });
 }
 
+/** Serve a folder of exported note HTML files and open the entry file in the
+ *  user's browser (works over Remote-SSH via asExternalUri). Used by the linked
+ *  ("site") export so cross-note links resolve to sibling .html files. */
+async function serveFolderInBrowser(dir: string, entry: string): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (v: boolean) => { if (!settled) { settled = true; resolve(v); } };
+    try {
+      const server = http.createServer((req, res) => {
+        try {
+          const urlPath = decodeURIComponent(String(req.url || "/").replace(/[?#].*$/, ""));
+          const rel = urlPath === "/" ? entry : urlPath.replace(/^\/+/, "");
+          const full = path.join(dir, rel);
+          if (!full.startsWith(dir) || !fs.existsSync(full) || fs.statSync(full).isDirectory()) {
+            res.writeHead(404); res.end("Not found"); return;
+          }
+          const ext = path.extname(full).slice(1).toLowerCase();
+          const mime = ext === "html" ? "text/html; charset=utf-8"
+            : ext === "css" ? "text/css" : ext === "js" ? "text/javascript"
+            : (MIME_BY_EXT[ext] || "application/octet-stream");
+          res.writeHead(200, { "Content-Type": mime, "Cache-Control": "no-store" });
+          res.end(fs.readFileSync(full));
+        } catch { res.writeHead(500); res.end("error"); }
+      });
+      server.on("error", () => finish(false));
+      const closeTimer = setTimeout(() => { try { server.close(); } catch { /* ignore */ } }, 600_000);
+      closeTimer.unref?.();
+      server.listen(0, "127.0.0.1", async () => {
+        try {
+          const port = (server.address() as any).port;
+          const local = vscode.Uri.parse(`http://127.0.0.1:${port}/${encodeURIComponent(entry)}`);
+          const external = await vscode.env.asExternalUri(local);
+          const opened = await vscode.env.openExternal(external);
+          finish(!!opened);
+        } catch { try { server.close(); } catch { /* ignore */ } finish(false); }
+      });
+    } catch { finish(false); }
+  });
+}
+
+// Extract cross-note link targets ([[Title]] wiki links and [text](path.md)).
+function extractNoteLinks(content: string): string[] {
+  const out: string[] = [];
+  let m: RegExpExecArray | null;
+  const wiki = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
+  while ((m = wiki.exec(content))) out.push(m[1].trim());
+  const md = /\[[^\]]*\]\(\s*([^)]+?\.md)(?:[?#][^)]*)?\s*\)/gi;
+  while ((m = md.exec(content))) out.push(m[1].trim());
+  return out;
+}
+
+// Rewrite a note's cross-note links to point at sibling exported .html files.
+function rewriteNoteLinks(
+  content: string, fromSlug: string,
+  resolve: (t: string, from: string) => string | null,
+  filenames: Map<string, string>,
+): string {
+  content = content.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (m, t, a) => {
+    const label = String(a || t).trim();
+    const slug = resolve(String(t).trim(), fromSlug);
+    const fn = slug ? filenames.get(slug) : undefined;
+    return fn ? `[${label}](${fn})` : label;
+  });
+  content = content.replace(/\[([^\]]*)\]\(\s*([^)]+?\.md)(?:[?#][^)]*)?\s*\)/gi, (m, label, pth) => {
+    const slug = resolve(String(pth).trim(), fromSlug);
+    const fn = slug ? filenames.get(slug) : undefined;
+    return fn ? `[${label}](${fn})` : m;
+  });
+  return content;
+}
+
+/** Collect the transitive closure of notes reachable from `rootSlug` via links,
+ *  assign each a flat .html filename, and rewrite links to those filenames. */
+function collectLinkedNotes(rootSlug: string): any[] {
+  const root = noteGet(rootSlug);
+  if (!root) return [];
+  const all = noteList(undefined, 100000) as any[];
+  const resolve = (target: string, fromSlug: string): string | null => {
+    if (/\.md(\?|#|$)/i.test(target) || target.includes("/")) {
+      const s = resolveNoteSlugFromPath(target, fromSlug);
+      if (s && noteGet(s)) return s;
+    }
+    const direct = target.replace(/\.md$/i, "");
+    if (noteGet(direct)) return direct;
+    const needle = direct.toLowerCase();
+    const base = needle.split("/").pop() || needle;
+    const hit = all.find(
+      n => (n.title || "").toLowerCase() === needle ||
+           (n.slug || "").toLowerCase() === needle ||
+           (n.slug || "").toLowerCase().endsWith("/" + base) ||
+           (n.title || "").toLowerCase() === base,
+    );
+    return hit ? hit.slug : null;
+  };
+  const used = new Set<string>();
+  const filenames = new Map<string, string>();
+  const mkFilename = (slug: string, title: string): string => {
+    const base = (safeFilePart(title || slug).replace(/\//g, "_").replace(/\s+/g, "_") || "note").slice(0, 100);
+    let name = base + ".html", i = 2;
+    while (used.has(name.toLowerCase())) name = `${base}-${i++}.html`;
+    used.add(name.toLowerCase());
+    return name;
+  };
+  const visited = new Map<string, any>();
+  visited.set(rootSlug, root);
+  filenames.set(rootSlug, mkFilename(rootSlug, root.title));
+  const queue = [rootSlug];
+  while (queue.length) {
+    const cur = queue.shift()!;
+    const note = visited.get(cur);
+    for (const raw of extractNoteLinks(note.content || "")) {
+      const tslug = resolve(raw, cur);
+      if (tslug && !visited.has(tslug)) {
+        const tn = noteGet(tslug);
+        if (tn) { visited.set(tslug, tn); filenames.set(tslug, mkFilename(tslug, tn.title)); queue.push(tslug); }
+      }
+    }
+  }
+  const out: any[] = [];
+  for (const [slug, note] of visited) {
+    out.push({
+      slug, filename: filenames.get(slug),
+      content: rewriteNoteLinks(note.content || "", slug, resolve, filenames),
+    });
+  }
+  return out;
+}
+
 /** Wrap the webview-rendered note body in a self-contained, shareable HTML document. */
 function buildStandaloneNoteHtml(msg: any, katexCss = ""): string {
   const esc = (s: string) => String(s ?? "")
@@ -238,6 +366,9 @@ h1.doc-title{font-size:28px;line-height:1.25;margin:0 0 12px;color:#0b1220}
 .prose li.tk-done>.tkm{background:#2da44e;color:#fff;border:1.5px solid #2da44e}
 .prose li.tk-prog>.tkm{background:#d29922;color:#3d2c00;border:1.5px solid #d29922}
 .prose li.tk-block>.tkm{background:#e5484d;color:#fff;border:1.5px solid #e5484d}
+.mermaid-diagram{margin:1em 0;text-align:center;overflow-x:auto}
+.mermaid-diagram svg{max-width:100%;height:auto}
+.mermaid-error{color:#b91c1c;font-size:.9em;text-align:left;white-space:pre-wrap;border:1px solid #f1a9a9;border-radius:6px;padding:8px}
 .prose blockquote{border-left:4px solid #d0d7de;color:#57606a;margin:.9em 0;padding:.1em 1em}
 .prose hr{border:none;border-top:1px solid #e2e5e9;margin:1.6em 0}
 .prose table{border-collapse:collapse;width:100%;margin:1em 0;font-size:.95em}
@@ -362,6 +493,27 @@ async function ensureSetup(context: vscode.ExtensionContext): Promise<boolean> {
   return _storeReady;
 }
 
+// Resolve a note-link target to a note slug. `target` is a relative (./, ../,
+// sub/x.md) or absolute .md path; `from` is the source note's slug. Returns the
+// resolved slug (relative path w/o .md) or null if it escapes the notes store.
+function resolveNoteSlugFromPath(target: string, from: string): string | null {
+  const notesDir = path.join(getStorePath(), "notes");
+  let clean: string;
+  try { clean = decodeURIComponent(target.replace(/[?#].*$/, "")); }
+  catch { clean = target.replace(/[?#].*$/, ""); }
+  // Absolute filesystem path pointing inside the notes store.
+  if (path.isAbsolute(clean)) {
+    const rel = path.relative(notesDir, clean).replace(/\\/g, "/");
+    if (!rel || rel === ".." || rel.startsWith("../")) return null;
+    return rel.replace(/\.md$/i, "");
+  }
+  // Relative to the source note's folder (slug dir).
+  const fromDir = from.includes("/") ? from.slice(0, from.lastIndexOf("/")) : "";
+  const joined = path.posix.normalize(path.posix.join(fromDir, clean));
+  if (joined === ".." || joined.startsWith("../")) return null;
+  return joined.replace(/^\.\//, "").replace(/^\/+/, "").replace(/\.md$/i, "");
+}
+
 function makeWebviewOptions(context: vscode.ExtensionContext): vscode.WebviewOptions & vscode.WebviewPanelOptions {
   return {
     enableScripts: true,
@@ -405,6 +557,10 @@ function getWebviewHtml(webview: vscode.Webview, context: vscode.ExtensionContex
   // Graph rendering (Cytoscape.js bundled locally) for the Papers graph view.
   const cytoscapeJs = webview.asWebviewUri(vscode.Uri.file(path.join(webviewDir, "cytoscape.js")));
   html = html.replace(/%%CYTOSCAPE_SRC%%/g, cytoscapeJs.toString());
+
+  // Diagram rendering (Mermaid bundled locally) for ```mermaid fenced blocks.
+  const mermaidJs = webview.asWebviewUri(vscode.Uri.file(path.join(webviewDir, "mermaid.js")));
+  html = html.replace(/%%MERMAID_SRC%%/g, mermaidJs.toString());
 
   // Inject the webview CSP source — required for VS Code to allow scripts to run
   html = html.replace(/%%CSP_SOURCE%%/g, webview.cspSource);
@@ -566,15 +722,30 @@ async function handleMessage(
     }
 
     case "resolveNoteLink": {
-      // Cross-note link: target is a note title, slug, or relative path (no ext)
+      // Cross-note link: target may be a [[title]], a slug, or a relative /
+      // absolute .md path. `from` is the source note's slug (for relative refs).
       const target = String(msg.target || "").trim();
-      let r = target ? noteGet(target) : null;
+      const from = String(msg.from || "").trim();
+      const isWiki = !!msg.wiki;
+      let r: any = null;
+
+      // 1. Path-style links: resolve relative (./, ../, sub/x.md) against the
+      //    source note's folder, or an absolute path that lives under notes/.
+      if (!isWiki && target && (/\.md(\?|#|$)/i.test(target) || target.includes("/"))) {
+        const slug = resolveNoteSlugFromPath(target, from);
+        if (slug) r = noteGet(slug);
+      }
+      // 2. Direct slug (or a path relative to the notes root).
+      if (!r && target) r = noteGet(target.replace(/\.md$/i, ""));
+      // 3. Title / slug / basename fallback (covers [[Title]] wiki links).
       if (!r && target) {
-        const needle = target.toLowerCase();
+        const needle = target.replace(/\.md$/i, "").toLowerCase();
+        const base = needle.split("/").pop() || needle;
         const hit = (noteList(undefined, 10000) as any[]).find(
           n => (n.title || "").toLowerCase() === needle ||
                (n.slug || "").toLowerCase() === needle ||
-               (n.slug || "").toLowerCase().endsWith("/" + needle),
+               (n.slug || "").toLowerCase().endsWith("/" + base) ||
+               (n.title || "").toLowerCase() === base,
         );
         if (hit) r = noteGet(hit.slug);
       }
@@ -617,6 +788,48 @@ async function handleMessage(
       } catch (e) {
         log.error(`exportNoteHtml failed: ${String(e)}`);
         vscode.window.showErrorMessage(`Export failed: ${String(e)}`);
+      }
+      break;
+    }
+
+    case "collectLinkedNotes": {
+      // Compute the transitive link closure of a note and send it back to the
+      // webview to render (the markdown pipeline lives there).
+      const rootSlug = String(msg.slug || "").trim();
+      const notes = collectLinkedNotes(rootSlug);
+      const entry = notes.find(n => n.slug === rootSlug) || notes[0];
+      respond({ command: "linkedNotes", entryFilename: entry ? entry.filename : "", notes });
+      break;
+    }
+
+    case "writeLinkedExport": {
+      // Write each webview-rendered note into a temp folder and open the entry
+      // file in the browser; cross-note links resolve to the sibling .html files.
+      try {
+        const files: any[] = Array.isArray(msg.files) ? msg.files : [];
+        if (!files.length) { vscode.window.setStatusBarMessage("$(info) Nothing to export", 3000); break; }
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pk-notes-"));
+        for (const f of files) {
+          const note = noteGet(String(f.slug || "")) || {};
+          const doc = buildStandaloneNoteHtml({
+            title: note.title || f.slug, slug: f.slug, category: note.category || "",
+            tags: note.tags || "[]", noteType: note.type || "general",
+            updatedAt: note.updated_at || "", bodyHtml: f.bodyHtml || "",
+          }, katexCssForExport(context));
+          fs.writeFileSync(path.join(dir, String(f.filename)), doc, "utf-8");
+        }
+        const entry = String(msg.entryFilename || files[0].filename);
+        const opened = await serveFolderInBrowser(dir, entry);
+        if (opened) {
+          vscode.window.setStatusBarMessage(`$(globe) Opened ${files.length} linked note${files.length > 1 ? "s" : ""} in browser`, 5000);
+        } else {
+          const pick = await vscode.window.showInformationMessage(
+            `Couldn't open a browser. Notes written to ${dir}`, "Copy Path");
+          if (pick === "Copy Path") await vscode.env.clipboard.writeText(dir);
+        }
+      } catch (e) {
+        log.error(`writeLinkedExport failed: ${String(e)}`);
+        vscode.window.showErrorMessage(`Linked export failed: ${String(e)}`);
       }
       break;
     }

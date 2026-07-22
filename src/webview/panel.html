@@ -11,6 +11,7 @@
 <script src="%%HLJS_SRC%%"></script>
 <script src="%%KATEX_SRC%%"></script>
 <script src="%%CYTOSCAPE_SRC%%"></script>
+<script src="%%MERMAID_SRC%%"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{--bg:var(--vscode-editor-background);--panel:var(--vscode-sideBar-background);
@@ -95,6 +96,9 @@ hr.div{border:none;border-top:1px solid var(--border);margin:14px 0}
 .prose a.wikilink{text-decoration:none;border-bottom:1px dashed var(--accent);cursor:pointer}
 .prose a.wikilink:hover{background:var(--accent);color:var(--bg);border-radius:2px}
 .prose img{max-width:100%;border-radius:4px}
+.mermaid-diagram{margin:.8em 0;text-align:center;overflow-x:auto}
+.mermaid-diagram svg{max-width:100%;height:auto}
+.mermaid-error{color:#f87171;font-size:12px;text-align:left;white-space:pre-wrap;border:1px solid #f87171;border-radius:6px;padding:8px}
 /* Task-list status markers: [ ] todo, [x] done, [~] in progress, [!] blocked */
 .prose li.tk{list-style:none;position:relative}
 .prose li.tk>.tkm{display:inline-block;width:15px;height:15px;line-height:14px;text-align:center;border-radius:3px;font-size:10px;font-weight:700;margin:0 .5em 0 -1.35em;vertical-align:1px;box-sizing:border-box}
@@ -543,6 +547,42 @@ function styleTasks(html) {
     .replace(/<li>\s*\[!\]\s*/g, '<li class="tk tk-block"><span class="tkm">!</span>');
 }
 function safeHljs(el) { try { if (typeof hljs !== 'undefined') hljs.highlightElement(el); } catch(e) {} }
+// ── Mermaid diagrams (```mermaid fenced blocks) ─────────────────────────────
+let _mermaidReady = false;
+function initMermaidOnce() {
+  if (_mermaidReady || typeof mermaid === 'undefined') return _mermaidReady;
+  try {
+    const light = /vscode-light|vscode-high-contrast-light/.test(document.body.className || '');
+    // 'antiscript' keeps <b>/<br/> HTML labels working while stripping <script>.
+    mermaid.initialize({ startOnLoad: false, securityLevel: 'antiscript', theme: light ? 'default' : 'dark', fontFamily: 'inherit' });
+    _mermaidReady = true;
+  } catch (e) {}
+  return _mermaidReady;
+}
+let _mmSeq = 0;
+// Replace each mermaid code block inside `root` with a rendered SVG diagram.
+// Returns a promise that resolves once every diagram in `root` has rendered,
+// so callers (e.g. HTML export) can await fully-inlined SVGs.
+function renderMermaid(root) {
+  if (!root || typeof mermaid === 'undefined' || !initMermaidOnce()) return Promise.resolve();
+  const jobs = [];
+  root.querySelectorAll('code.language-mermaid').forEach(code => {
+    const pre = code.closest('pre') || code;
+    const src = code.textContent || '';
+    const holder = document.createElement('div');
+    holder.className = 'mermaid-diagram';
+    pre.replaceWith(holder);
+    const id = 'mmd-' + (++_mmSeq);
+    jobs.push(Promise.resolve().then(() => mermaid.render(id, src)).then(res => {
+      holder.innerHTML = res.svg;
+      if (res.bindFunctions) res.bindFunctions(holder);
+    }).catch(err => {
+      holder.className = 'mermaid-diagram mermaid-error';
+      holder.textContent = 'Mermaid error: ' + (err && err.message ? err.message : String(err));
+    }));
+  });
+  return Promise.all(jobs);
+}
 const esc = s => String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 const ICON = {todo:'☐',done:'✓','data-path':'📂',observation:'👁',general:'📝'};
 
@@ -572,17 +612,19 @@ document.addEventListener('contextmenu', e => {
   if (!e.target.closest('#item-list .li[data-note-slug]')) ctxMenu.classList.remove('open');
 });
 
-// Cross-note links: [[Title]] (data-note) and relative .md links open the target note
+// Cross-note links: [[Title]] (data-note) and relative/absolute .md links open the target note
 document.getElementById('detail').addEventListener('click', e => {
   const a = e.target.closest('a');
   if (!a) return;
+  const from = (currentDetail && currentDetail.type === 'note') ? currentDetail.slug : '';
   const wiki = a.getAttribute('data-note');
-  if (wiki) { e.preventDefault(); ask('resolveNoteLink', { target: wiki }); return; }
+  if (wiki) { e.preventDefault(); ask('resolveNoteLink', { target: wiki, from, wiki: true }); return; }
   const href = a.getAttribute('href') || '';
-  if (!/^https?:/i.test(href) && /\.md($|[?#])/i.test(href)) {
+  // Skip real URL schemes (http:, mailto:, vscode-webview:, …); allow bare
+  // relative paths and absolute filesystem paths that point at a .md note.
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(href) && /\.md($|[?#])/i.test(href)) {
     e.preventDefault();
-    const p = decodeURIComponent(href.replace(/[?#].*$/, '').replace(/\.md$/i, '').replace(/^\.?\//, ''));
-    ask('resolveNoteLink', { target: p });
+    ask('resolveNoteLink', { target: href, from });
   }
 });
 
@@ -642,6 +684,7 @@ window.addEventListener('message', e => {
   else if (command === 'noteLinkMissing') {
     vscode.postMessage({ command: 'toast', text: 'No note found for “' + (e.data.target || '') + '”' });
   }
+  else if (command === 'linkedNotes') { renderLinkedExport(e.data); }
   else if (command === 'paperFacets') {
     paperFacetsData = e.data.data || { topics: [], tags: [], years: [] };
     if (state.tab === 'papers' && !paperGraphOpen) renderPaperFilters(document.getElementById('sidebar-filters'));
@@ -1075,7 +1118,7 @@ function renderDetail(data) {
         <span>Updated ${(data.updated_at||'').slice(0,10)}</span>
         <span style="font-size:10px;color:var(--muted)">id: ${esc(data.slug)}</span>
         <span style="flex:1"></span>
-        <button class="tbtn" style="font-size:11px" onclick="exportNote('browser')" title="Open a standalone preview in your browser">🌐 Browser</button>
+        <button class="tbtn" style="font-size:11px" onclick="exportNote('browser')" title="Open in your browser as a linked set — this note plus every note it links to, with clickable cross-note links">🌐 Browser</button>
         <button class="tbtn" style="font-size:11px" onclick="exportNote('file')" title="Save this note as a self-contained HTML file">⬇ HTML</button>
         <button class="tbtn" style="font-size:11px" onclick="editNote(currentDetail)">✏ Edit</button>
       </div>
@@ -1289,6 +1332,7 @@ function wordCount(text) {
 }
 
 function postProcess() {
+  renderMermaid(document.getElementById('detail'));
   document.querySelectorAll('#detail pre code').forEach(el => safeHljs(el));
   document.querySelectorAll('#detail pre').forEach(pre => {
     if (pre.querySelector('.copy-btn')) return;
@@ -1305,9 +1349,13 @@ function linkifyWikiExport(md) {
     return '<span class="wikilink">' + esc((a || t).trim()) + '</span>';
   });
 }
-function exportNote(mode) {
+async function exportNote(mode) {
   const d = currentDetail;
   if (!d || d.type !== 'note') return;
+  // Browser view = a navigable "site": export this note plus every note it links
+  // to (transitively) so cross-note links are clickable. The extension computes
+  // the closure and sends it back here to render.
+  if (mode === 'browser') { ask('collectLinkedNotes', { slug: d.slug }); return; }
   // Render markdown + highlight code, keeping _assets/ refs relative so the
   // extension can inline the images as data URIs for a self-contained file.
   let inner;
@@ -1315,6 +1363,13 @@ function exportNote(mode) {
   catch (e) { inner = '<pre>' + esc(d.content || '') + '</pre>'; }
   const tmp = document.createElement('div');
   tmp.innerHTML = inner;
+  // Inline mermaid diagrams as self-contained SVG so the exported file needs no
+  // runtime. Use the light theme to match the export page's white background.
+  if (typeof mermaid !== 'undefined') {
+    try { mermaid.initialize({ startOnLoad: false, securityLevel: 'antiscript', theme: 'default', fontFamily: 'inherit' }); _mermaidReady = true; } catch (e) {}
+    try { await renderMermaid(tmp); } catch (e) {}
+    _mermaidReady = false; initMermaidOnce(); // restore the panel's theme
+  }
   tmp.querySelectorAll('pre code').forEach(el => safeHljs(el));
   ask('exportNoteHtml', {
     mode: mode,
@@ -1326,6 +1381,29 @@ function exportNote(mode) {
     updatedAt: d.updated_at || '',
     bodyHtml: tmp.innerHTML,
   });
+}
+
+// Render the linked-note closure (from collectLinkedNotes) into standalone HTML
+// bodies and hand them to the extension to write + open in the browser. Each
+// note's cross-note links have already been rewritten to sibling .html files.
+async function renderLinkedExport(data) {
+  const notes = (data && data.notes) || [];
+  if (!notes.length) { vscode.postMessage({ command: 'toast', text: 'Nothing to export' }); return; }
+  const useMermaid = (typeof mermaid !== 'undefined');
+  if (useMermaid) { try { mermaid.initialize({ startOnLoad: false, securityLevel: 'antiscript', theme: 'default', fontFamily: 'inherit' }); _mermaidReady = true; } catch (e) {} }
+  const files = [];
+  for (const n of notes) {
+    let inner;
+    try { inner = styleTasks((typeof marked !== 'undefined') ? marked.parse(n.content || '') : '<pre>' + esc(n.content || '') + '</pre>'); }
+    catch (e) { inner = '<pre>' + esc(n.content || '') + '</pre>'; }
+    const tmp = document.createElement('div');
+    tmp.innerHTML = inner;
+    try { await renderMermaid(tmp); } catch (e) {}
+    tmp.querySelectorAll('pre code').forEach(el => safeHljs(el));
+    files.push({ filename: n.filename, slug: n.slug, bodyHtml: tmp.innerHTML });
+  }
+  if (useMermaid) { _mermaidReady = false; initMermaidOnce(); }
+  ask('writeLinkedExport', { entryFilename: data.entryFilename, files });
 }
 
 // ── Note form ──────────────────────────────────────────────────────────────
@@ -1592,7 +1670,7 @@ function updateNotePreview() {
   const catEl = document.getElementById('note-category');
   const cat = catEl ? catEl.value : '';
   const el = document.getElementById('note-preview');
-  if (el) el.innerHTML = safeMarked(src, cat);
+  if (el) { el.innerHTML = safeMarked(src, cat); renderMermaid(el); }
 }
 
 // ── Paste images into the note editor ────────────────────────────────────────
@@ -1926,7 +2004,7 @@ function closePaperForm() {
 function editPaper(p) { openPaperForm(p); }
 function updatePaperPreview() {
   const el = document.getElementById('pf-preview');
-  if (el) el.innerHTML = safeMarked(document.getElementById('pf-content').value, document.getElementById('pf-category').value);
+  if (el) { el.innerHTML = safeMarked(document.getElementById('pf-content').value, document.getElementById('pf-category').value); renderMermaid(el); }
 }
 function populatePaperDatalist() {
   const dl = document.getElementById('pf-paper-titles');
