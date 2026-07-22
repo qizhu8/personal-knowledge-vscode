@@ -1,0 +1,30 @@
+name: Publish Extension
+
+# Publishes to the VS Code Marketplace when a version tag (e.g. v1.8.2) is pushed.
+# Requires a repo secret named VSCE_PAT (Settings -> Secrets and variables ->
+# Actions -> New repository secret). Scope the PAT to Marketplace -> Manage.
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Publish to Marketplace
+        run: npx vsce publish -p "$VSCE_PAT"
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
