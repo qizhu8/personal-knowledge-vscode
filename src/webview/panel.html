@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' %%CSP_SOURCE%%; style-src 'unsafe-inline' %%CSP_SOURCE%%; font-src %%CSP_SOURCE%%; img-src data: https: %%CSP_SOURCE%%;">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' %%CSP_SOURCE%%; style-src 'unsafe-inline' %%CSP_SOURCE%%; font-src %%CSP_SOURCE%%; img-src data: https: %%CSP_SOURCE%%;">
 <title>Personal Knowledge</title>
 <link rel="stylesheet" href="%%HLJS_CSS%%">
 <link rel="stylesheet" href="%%KATEX_CSS%%">
@@ -12,6 +12,7 @@
 <script src="%%KATEX_SRC%%"></script>
 <script src="%%CYTOSCAPE_SRC%%"></script>
 <script src="%%MERMAID_SRC%%"></script>
+<script src="%%FORCEGRAPH3D_SRC%%"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{--bg:var(--vscode-editor-background);--panel:var(--vscode-sideBar-background);
@@ -99,6 +100,38 @@ hr.div{border:none;border-top:1px solid var(--border);margin:14px 0}
 .mermaid-diagram{margin:.8em 0;text-align:center;overflow-x:auto}
 .mermaid-diagram svg{max-width:100%;height:auto}
 .mermaid-error{color:#f87171;font-size:12px;text-align:left;white-space:pre-wrap;border:1px solid #f87171;border-radius:6px;padding:8px}
+/* Environments & Servers dashboards */
+.dash{padding:20px 28px;max-width:960px}
+.dash-hd{display:flex;align-items:center;gap:8px;margin-bottom:14px}
+.dash-title{font-size:17px;font-weight:700}
+.env-card,.srv-card{border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;background:var(--panel)}
+.ec-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ec-path{font-size:11px;color:var(--muted);margin-top:4px;word-break:break-all}
+.env-badge{color:#04150a;font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px;text-transform:uppercase}
+.env-size{font-size:11px;color:var(--muted);white-space:nowrap}
+.py-ver{font-size:10px;font-weight:600;color:var(--accent);border:1px solid var(--accent);border-radius:10px;padding:0 7px;white-space:nowrap}
+.env-managed{font-size:10px;font-weight:600;color:#3fb950;border:1px solid #3fb950;border-radius:10px;padding:0 7px;white-space:nowrap}
+.ec-desc{margin-top:5px;display:flex;flex-wrap:wrap;gap:4px}
+.env-tag{font-size:10px;background:var(--input);border:1px solid var(--border);border-radius:10px;padding:1px 8px;color:var(--text)}
+.env-desc-text{font-size:11px;color:var(--text);opacity:.85}
+.env-activate{background:var(--input);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:12px;font-family:var(--vscode-editor-font-family);white-space:pre-wrap;word-break:break-all;margin:0}
+.sim-card{border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:8px;background:var(--panel)}
+.sim-pct{font-weight:700;font-size:13px;min-width:44px}
+.sim-meta{font-size:11px;color:var(--muted);margin-top:4px}
+.srv-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+.pkg-table{border-collapse:collapse;width:100%;font-size:12px;margin-top:4px}
+.pkg-table td{border-bottom:1px solid var(--border);padding:2px 8px}
+.pkg-table .pv{color:var(--muted);white-space:nowrap;width:1%}
+.cmp-h{margin:12px 0 4px;font-size:12px;color:var(--accent)}
+.cmp-table th{text-align:left;padding:2px 8px;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600}
+.cmp-table th.cmp-sort{cursor:pointer;user-select:none;white-space:nowrap}
+.cmp-table th.cmp-sort:hover{color:var(--accent)}
+.cmp-table .cmp-delta{text-align:center;font-weight:700;width:1%}
+.cmp-table tr.cmp-same td{opacity:.6}
+.srv-edit{border:1px solid var(--accent);border-radius:8px;padding:12px;margin-top:10px;display:flex;flex-direction:column;gap:8px}
+.srv-edit label{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--muted)}
+.srv-edit input{font-size:12px}
+.srv-log{background:var(--vscode-textCodeBlock-background);border-radius:6px;padding:10px;max-height:320px;overflow:auto;font-size:11px;white-space:pre-wrap}
 /* Task-list status markers: [ ] todo, [x] done, [~] in progress, [!] blocked */
 .prose li.tk{list-style:none;position:relative}
 .prose li.tk>.tkm{display:inline-block;width:15px;height:15px;line-height:14px;text-align:center;border-radius:3px;font-size:10px;font-weight:700;margin:0 .5em 0 -1.35em;vertical-align:1px;box-sizing:border-box}
@@ -303,6 +336,8 @@ mark{background:var(--vscode-editor-findMatchHighlightBackground,#ffd70055);colo
     <button class="tab" data-tab="prompts">Prompts</button>
     <button class="tab" data-tab="packages">Packages</button>
     <button class="tab" data-tab="scripts">Scripts</button>
+    <button class="tab" data-tab="environments">🐍 Envs</button>
+    <button class="tab" data-tab="servers">🖥 Servers</button>
     <button class="tab" data-tab="mcp">⚡ MCP</button>
   </div>
   <input id="searchbox" type="search" placeholder="Search…">
@@ -411,7 +446,8 @@ mark{background:var(--vscode-editor-findMatchHighlightBackground,#ffd70055);colo
           <input id="pg-limit" type="number" value="10" min="1" max="200" style="width:52px" onchange="loadPaperGraph()"> by citations</label>
         <label style="font-size:11px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="pg-neighbors" onchange="loadPaperGraph()"> +neighbors</label>
         <span style="flex:1"></span>
-        <label style="font-size:11px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="pg-layout" onchange="applyPaperLayout()"> Hierarchical</label>
+        <label style="font-size:11px;display:flex;align-items:center;gap:4px" title="Switch between 2D and 3D visualization"><input type="checkbox" id="pg-3d" onchange="togglePaper3d()"> 3D</label>
+        <label id="pg-layout-lbl" style="font-size:11px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="pg-layout" onchange="applyPaperLayout()"> Hierarchical</label>
         <label style="font-size:11px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="pg-allconc" onchange="toggleAllConclusions()"> Show all conclusions</label>
         <span id="pg-count" style="font-size:11px;color:var(--muted)"></span>
       </div>
@@ -710,6 +746,24 @@ window.addEventListener('message', e => {
     vscode.postMessage({ command: 'toast', text: 'No note found for “' + (e.data.target || '') + '”' });
   }
   else if (command === 'linkedNotes') { renderLinkedExport(e.data); }
+  else if (command === 'envList') { envCache = data || []; if (state.tab === 'environments') renderEnvDashboard(envCache); }
+  else if (command === 'envPackages') { onEnvPackages(e.data); }
+  else if (command === 'envCompare') { renderEnvCompare(data); }
+  else if (command === 'envSimilarity') { renderEnvSimilarity(data); }
+  else if (command === 'envMergeScript') { onEnvMergeScript(e.data); }
+  else if (command === 'envSize') { onEnvSize(e.data); }
+  else if (command === 'envActivate') { onEnvActivate(e.data); }
+  else if (command === 'envCreated') { onEnvCreated(e.data); }
+  else if (command === 'envCreatePickDir') { onEnvCreatePickDir(e.data); }
+  else if (command === 'envDeleteResult') { onEnvDeleteResult(e.data); }
+  else if (command === 'envMigrated') { onEnvMigrated(e.data); }
+  else if (command === 'envDeleteScript') { onEnvDeleteScript(e.data); }
+  else if (command === 'envCondaList') { onCondaList(data); }
+  else if (command === 'envDetectFolder') { onEnvFolderDetected(e.data.data); }
+  else if (command === 'envPickFolder') { onEnvPickFolder(e.data.dir); }
+  else if (command === 'serverList') { serverCache = data || []; if (state.tab === 'servers') renderServerDashboard(serverCache); }
+  else if (command === 'serverLog') { onServerLog(e.data.slug, e.data.text); }
+  else if (command === 'serverPickFolder') { onServerPickFolder(e.data.dir); }
   else if (command === 'paperFacets') {
     paperFacetsData = e.data.data || { topics: [], tags: [], years: [] };
     if (state.tab === 'papers' && !paperGraphOpen) renderPaperFilters(document.getElementById('sidebar-filters'));
@@ -835,6 +889,16 @@ document.querySelectorAll('.tab').forEach(t =>
       document.getElementById('searchbox').style.display = 'none';
       renderMcpLoading();
       ask('checkMcp', {});
+    } else if (state.tab === 'environments') {
+      document.getElementById('sidebar').style.display = 'none';
+      document.getElementById('searchbox').style.display = 'none';
+      document.getElementById('detail').innerHTML = '<div class="empty">Loading environments…</div>';
+      ask('envList', {});
+    } else if (state.tab === 'servers') {
+      document.getElementById('sidebar').style.display = 'none';
+      document.getElementById('searchbox').style.display = 'none';
+      document.getElementById('detail').innerHTML = '<div class="empty">Loading servers…</div>';
+      ask('serverList', {});
     } else {
       document.getElementById('sidebar').style.display = '';
       document.getElementById('searchbox').style.display = '';
@@ -1653,7 +1717,11 @@ function doJoinSync() {
 }
 
 // ── Category tree ─────────────────────────────────────────────────────────
-function toggleCat(cat) { catExpanded[cat] = !catExpanded[cat]; renderList(); }
+function toggleCat(cat) {
+  catExpanded[cat] = !catExpanded[cat];
+  if (state.tab === 'environments') renderEnvTree();
+  else renderList();
+}
 
 // ── Search highlight ──────────────────────────────────────────────────────
 function hl(text, q) {
@@ -1779,6 +1847,9 @@ let paperTopicFilter = '';
 let paperFacetsData = { topics: [], tags: [], years: [] };
 let paperGraphOpen = false;
 let cy = null;                 // cytoscape instance
+let fg3d = null;               // 3d-force-graph instance
+let paper3d = false;           // 2D (Cytoscape) vs 3D (three.js/WebGL) renderer
+let _fg3dResize = null;        // ResizeObserver for the 3D canvas
 let currentGraphData = null;
 let currentGraphSig = '';      // signature of the currently rendered node/edge set
 let pendingPaperFile = null;
@@ -1817,6 +1888,8 @@ function pkModal(opts) {
     '<div class="pk-modal-title">' + esc(opts.title || '') + '</div>' +
     (opts.message ? '<div class="pk-modal-msg">' + esc(opts.message) + '</div>' : '') +
     (opts.input ? '<input id="pk-modal-input" type="text">' : '') +
+    (opts.textarea ? '<textarea id="pk-modal-textarea" rows="3" placeholder="' + esc(opts.textareaPlaceholder || '') + '" style="width:100%;box-sizing:border-box;margin-top:8px;background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px;font-size:12px;resize:vertical;outline:none"></textarea>' : '') +
+    (opts.checkbox ? '<label style="display:flex;align-items:center;gap:6px;margin-top:10px;font-size:12px;cursor:pointer"><input type="checkbox" id="pk-modal-check"> ' + esc(opts.checkbox.label || '') + '</label>' : '') +
     '<div class="pk-modal-actions">' +
       '<button class="tbtn" id="pk-modal-cancel">Cancel</button>' +
       '<button class="tbtn" id="pk-modal-ok" style="border-color:var(--accent)' + (opts.danger ? ';color:#f87171' : '') + '">' + esc(opts.okLabel || 'OK') + '</button>' +
@@ -1824,11 +1897,15 @@ function pkModal(opts) {
   document.body.appendChild(bg);
   const input = document.getElementById('pk-modal-input');
   if (input) input.value = opts.defaultValue || '';
-  const done = ok => { const v = input ? input.value : ''; closePkModal(); if (ok && opts.onOk) opts.onOk(v); };
+  const ta = document.getElementById('pk-modal-textarea');
+  if (ta) ta.value = opts.textareaValue || '';
+  const chk = document.getElementById('pk-modal-check');
+  if (chk && opts.checkbox && opts.checkbox.checked) chk.checked = true;
+  const done = ok => { const v = input ? input.value : ''; const tv = ta ? ta.value : ''; const cv = chk ? chk.checked : false; closePkModal(); if (ok && opts.onOk) opts.onOk(v, tv, cv); };
   document.getElementById('pk-modal-ok').onclick = () => done(true);
   document.getElementById('pk-modal-cancel').onclick = () => done(false);
   bg.onclick = e => { if (e.target === bg) done(false); };
-  if (input) { input.focus(); input.select(); input.onkeydown = e => { if (e.key === 'Enter') done(true); else if (e.key === 'Escape') done(false); }; }
+  if (input) { input.focus(); input.select(); input.onkeydown = e => { if (e.key === 'Enter' && !ta) done(true); else if (e.key === 'Escape') done(false); }; }
   else document.getElementById('pk-modal-ok').focus();
 }
 function closePkModal() { const m = document.getElementById('pk-modal-bg'); if (m) m.remove(); }
@@ -2164,24 +2241,43 @@ function graphSignature(data) {
   const es = (data.edges || []).map(e => e.from + '>' + e.to).sort().join('|');
   return ns + '#' + es;
 }
+function destroyCy() { if (cy) { try { cy.destroy(); } catch (e) {} cy = null; } }
+function destroyFg3d() {
+  if (fg3d) { try { fg3d._destructor && fg3d._destructor(); } catch (e) {} fg3d = null; }
+  if (_fg3dResize) { try { _fg3dResize.disconnect(); } catch (e) {} _fg3dResize = null; }
+}
+// Toggle between the 2D (Cytoscape) and 3D (three.js/WebGL) renderers.
+function togglePaper3d() {
+  paper3d = document.getElementById('pg-3d').checked;
+  const hl = document.getElementById('pg-layout-lbl');
+  if (hl) hl.style.opacity = paper3d ? '.4' : ''; // Hierarchical layout is 2D-only
+  hideTooltip();
+  currentGraphSig = ''; // force a full re-render with the other renderer
+  if (currentGraphData) renderPaperGraph(currentGraphData);
+}
 function renderPaperGraph(data) {
   const el = document.getElementById('pg-canvas');
   document.getElementById('pg-count').textContent = data ? `${data.shown} of ${data.total} papers` : '';
-  // If the node/edge set is identical (e.g. raising the Top-N limit added no new
-  // nodes), leave the existing graph untouched instead of re-laying it out.
+  // Skip re-layout only when the SAME renderer already shows the SAME node set
+  // (e.g. raising the Top-N limit added no new nodes).
   const sig = graphSignature(data);
-  if (cy && data && data.nodes && data.nodes.length && sig === currentGraphSig) {
+  const liveSameRenderer = paper3d ? !!fg3d : !!cy;
+  if (data && data.nodes && data.nodes.length && sig === currentGraphSig && liveSameRenderer) {
     currentGraphData = data;
     return;
   }
   currentGraphData = data;
   currentGraphSig = sig;
-  if (typeof cytoscape === 'undefined') { el.innerHTML = '<div class="empty" style="padding:24px">Graph library unavailable.</div>'; return; }
   if (!data || !data.nodes || !data.nodes.length) {
-    if (cy) { try { cy.destroy(); } catch (e) {} cy = null; }
+    destroyCy(); destroyFg3d();
     el.innerHTML = '<div class="empty" style="padding:24px">No papers match — add papers or widen the filter.</div>';
     return;
   }
+  if (paper3d) { destroyCy(); render3dGraph(el, data); }
+  else { destroyFg3d(); render2dGraph(el, data); }
+}
+function render2dGraph(el, data) {
+  if (typeof cytoscape === 'undefined') { el.innerHTML = '<div class="empty" style="padding:24px">Graph library unavailable.</div>'; return; }
   el.innerHTML = '';
   const cssv = getComputedStyle(document.body);
   const txt = (cssv.getPropertyValue('--text') || '#ddd').trim();
@@ -2201,7 +2297,6 @@ function renderPaperGraph(data) {
     id: 'e_' + e.from + '__' + e.to, source: e.from, target: e.to, note: e.note || '',
     ideaEdge: (ideaKeys.has(e.from) || ideaKeys.has(e.to)) ? 1 : 0,
   } });
-  if (cy) { try { cy.destroy(); } catch (e) {} }
   cy = cytoscape({
     container: el, elements, wheelSensitivity: 0.2,
     style: [
@@ -2235,6 +2330,50 @@ function renderPaperGraph(data) {
   cy.on('tap', evt => { if (evt.target === cy) hideTooltip(); });
   if (document.getElementById('pg-allconc').checked) toggleAllConclusions();
 }
+function render3dGraph(el, data) {
+  if (typeof ForceGraph3D === 'undefined') { el.innerHTML = '<div class="empty" style="padding:24px">3D graph library unavailable.</div>'; return; }
+  el.innerHTML = '';
+  const cssv = getComputedStyle(document.body);
+  const bg = (cssv.getPropertyValue('--bg') || '#1e1e1e').trim();
+  const edgeCol = (cssv.getPropertyValue('--muted') || '#888').trim();
+  const ideaKeys = new Set(data.nodes.filter(n => n.kind === 'idea').map(n => n.key));
+  const nodes = data.nodes.map(n => ({
+    id: n.key, name: n.title, cc: n.citationCount || 0, year: n.year || '',
+    topic: n.topic || '', kind: n.kind || 'paper',
+    color: n.kind === 'idea' ? '#f4b400' : topicColor(n.topic),
+    conclusions: (n.conclusions || []).join('\n'),
+  }));
+  const links = data.edges.map(e => ({ source: e.from, target: e.to, ideaEdge: (ideaKeys.has(e.from) || ideaKeys.has(e.to)) ? 1 : 0 }));
+  const rect = el.getBoundingClientRect();
+  fg3d = ForceGraph3D()(el)
+    .backgroundColor(bg)
+    .width(rect.width || 600).height(rect.height || 400)
+    .graphData({ nodes, links })
+    .nodeRelSize(4)
+    .nodeVal(n => n.kind === 'idea' ? 6 : 2 + (n.cc || 0))
+    .nodeColor(n => n.color)
+    .nodeOpacity(0.92)
+    .nodeLabel(n => {
+      const c = (n.conclusions || '').split('\n').filter(Boolean);
+      return '<div style="max-width:240px;padding:6px 8px;background:#000a;border:1px solid #444;border-radius:6px;color:#eee;font-size:11px">' +
+        '<b>' + esc(n.name) + '</b><br><span style="color:#aaa">' + esc(n.topic) +
+        (n.year ? ' · ' + n.year : '') + ' · ' + n.cc + ' cite(s)</span>' +
+        (c.length ? '<ul style="margin:4px 0 0 14px;padding:0">' + c.map(x => '<li>' + esc(x) + '</li>').join('') + '</ul>' : '') + '</div>';
+    })
+    .linkColor(l => l.ideaEdge ? '#c8941a' : edgeCol)
+    .linkOpacity(0.55)
+    .linkWidth(l => l.ideaEdge ? 1.2 : 0.6)
+    .linkDirectionalArrowLength(3.5).linkDirectionalArrowRelPos(1)
+    .onNodeClick(n => openItem('paper', n.id));
+  // Keep the WebGL canvas sized to its container.
+  if (typeof ResizeObserver !== 'undefined') {
+    _fg3dResize = new ResizeObserver(() => {
+      const r = el.getBoundingClientRect();
+      if (fg3d && r.width && r.height) { fg3d.width(r.width); fg3d.height(r.height); }
+    });
+    _fg3dResize.observe(el);
+  }
+}
 function showNodeTooltip(node) {
   const tt = document.getElementById('pg-tooltip');
   const concl = (node.data('conclusions') || '').split('\n').filter(Boolean);
@@ -2259,6 +2398,451 @@ function toggleAllConclusions() {
       } else n.data('display', n.data('label'));
     });
   });
+}
+
+// ── Python Environments dashboard ───────────────────────────────────────────
+let envCache = [];
+const ENV_MGR_COLOR = { conda: '#3fb950', venv: '#4daafc', uv: '#a371f7', other: '#8b949e' };
+function renderEnvDashboard(envs) {
+  envCache = envs || [];
+  document.getElementById('detail').innerHTML = `
+    <div class="dash">
+      <div class="dash-hd">
+        <span class="dash-title">🐍 Python Environments</span>
+        <span style="flex:1"></span>
+        <button class="tbtn" onclick="newEnvForm()">✨ New</button>
+        <button class="tbtn" onclick="registerCondaEnv()">＋ conda</button>
+        <button class="tbtn" onclick="registerFolderEnv()">＋ venv/uv folder</button>
+        <button class="tbtn" onclick="startCompare()"${envCache.length < 2 ? ' disabled' : ''}>⇄ Compare</button>
+        <button class="tbtn" onclick="findSimilar()"${envCache.length < 2 ? ' disabled' : ''} title="Find near-duplicate environments that could be merged">≈ Similar</button>
+        <button class="tbtn" onclick="ask('envList',{})">↻</button>
+      </div>
+      <div id="env-tree"></div>
+      <div id="env-out"></div>
+    </div>`;
+  renderEnvTree();
+}
+function renderEnvTree() {
+  const el = document.getElementById('env-tree'); if (!el) return;
+  if (!envCache.length) {
+    el.innerHTML = '<div class="empty">No environments yet — register a conda env or a venv/uv folder.</div>';
+    return;
+  }
+  // Group into a collapsible tree by manager (conda/venv/uv) then root folder.
+  const root = buildCatTree(envCache, envCategory, 'other');
+  el.innerHTML = renderCatTree(root, [], 0, (e, depth) => envCardHtml(e, 8 + depth * 12), '');
+}
+// Tree category: manager first, then the root install/parent folder it lives in.
+function envCategory(e) {
+  const m = e.manager || 'other';
+  if (m === 'conda') {
+    const p = e.path || '';
+    const rootDir = p.includes('/envs/') ? p.slice(0, p.indexOf('/envs/')) : p;
+    return 'conda/' + (rootDir.split('/').filter(Boolean).pop() || 'conda');
+  }
+  const parent = (e.path || e.python || '').replace(/\/[^/]*$/, '');
+  return m + '/' + (parent.split('/').filter(Boolean).pop() || '(root)');
+}
+function envCardHtml(e, indent) {
+  const size = typeof e.sizeBytes === 'number' ? humanSizeJs(e.sizeBytes) : '';
+  return `<div class="env-card" style="margin-left:${indent}px">
+      <div class="ec-row">
+        <span class="env-badge" style="background:${ENV_MGR_COLOR[e.manager] || '#8b949e'}">${esc(e.manager)}</span>
+        <b>${esc(e.name)}</b>
+        ${e.pyVersion ? `<span class="py-ver" title="Python version">py ${esc(e.pyVersion)}</span>` : ''}
+        ${size ? `<span class="env-size" title="on-disk size">💾 ${esc(size)}</span>` : ''}
+        ${e.managed ? `<span class="env-managed" title="Stored in the extension-managed location">📍 managed</span>` : ''}
+        <span style="flex:1"></span>
+        <button class="tbtn" style="font-size:11px" onclick="viewEnvPackages('${esc(e.id)}',false)">📦 Packages</button>
+        <button class="tbtn" style="font-size:11px" onclick="activateEnv('${esc(e.id)}')" title="Open a terminal with this environment activated">⚡ Open shell</button>
+        <button class="tbtn" style="font-size:11px" onclick="refreshEnvSize('${esc(e.id)}')" title="Compute on-disk size">📐</button>
+        ${e.managed ? '' : `<button class="tbtn" style="font-size:11px" onclick="migrateEnv('${esc(e.id)}',${JSON.stringify(e.name).replace(/"/g,'&quot;')})" title="Move this environment into the extension-managed location">🚚 Migrate</button>`}
+        <button class="tbtn" style="font-size:11px" onclick="editEnv('${esc(e.id)}')" title="Edit name / description">✏</button>
+        <button class="tbtn" style="font-size:11px" onclick="deleteEnvScript('${esc(e.id)}')" title="Generate a delete script for you to run manually">🧾 Del script</button>
+        <button class="tbtn" style="font-size:11px" onclick="deleteEnv('${esc(e.id)}',${JSON.stringify(e.name).replace(/"/g,'&quot;')})" title="Unregister">🗑</button>
+      </div>
+      ${e.description ? `<div class="ec-desc">${renderEnvTags(e.description)}</div>` : ''}
+      <div class="ec-path">${esc(e.python || e.path || '')}</div>
+    </div>`;
+}
+function humanSizeJs(b) {
+  if (!b || b < 0) return '0 B';
+  const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0, n = b;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return n.toFixed(i === 0 || n >= 100 ? 0 : 1) + ' ' + u[i];
+}
+function renderEnvTags(desc) {
+  const parts = String(desc).split(',').map(s => s.trim()).filter(Boolean);
+  if (parts.length > 1) return parts.map(t => `<span class="env-tag">${esc(t)}</span>`).join('');
+  return `<span class="env-desc-text">${esc(desc)}</span>`;
+}
+function activateEnv(id) { ask('envActivate', { id }); }
+function onEnvActivate(d) {
+  if (d.error) { envOut('<div style="color:#f87171">' + esc(d.error) + '</div>'); return; }
+  envOut(`<div class="ec-row" style="margin:10px 0 6px"><b>⚡ Opened terminal “${esc(d.termName || 'env')}”</b><span style="font-size:11px;color:var(--muted)">the environment is now activated there — run <code>python</code> / <code>pip</code> as usual</span></div><pre class="env-activate">${esc(d.script)}</pre>`);
+}
+function refreshEnvSize(id) { envOut('<div class="empty">Computing on-disk size…</div>'); ask('envSize', { id, refresh: true }); }
+function onEnvSize(d) {
+  if (d.error) { envOut('<div style="color:#f87171">' + esc(d.error) + '</div>'); return; }
+  envOut('');
+  ask('envList', {}); // refresh cards with the persisted size
+}
+function migrateEnv(id, name) {
+  pkModal({
+    title: 'Migrate “' + name + '”?',
+    message: 'Moves this environment into the extension-managed location (setting: personalKnowledge.environmentsPath, default ~/pkm-envs). Conda envs are cloned then the original is removed; venv/uv are moved and their paths fixed up. This can take a while.',
+    okLabel: 'Migrate', danger: true,
+    onOk: () => { envOut('<div class="empty">Migrating… this can take a while.</div>'); ask('envMigrate', { id }); }
+  });
+}
+function onEnvMigrated(d) {
+  if (d && d.ok) { envOut(''); return; }
+  const err = '<span style="color:#f87171">' + esc((d && d.error) || 'migration failed') + '</span>' + (d && d.log ? '<pre class="env-activate" style="margin-top:6px;max-height:160px;overflow:auto">' + esc(d.log) + '</pre>' : '');
+  envOut('<div>' + err + '</div>');
+}
+function envOut(html) { const o = document.getElementById('env-out'); if (o) o.innerHTML = html; }
+function viewEnvPackages(id, refresh) {
+  envOut('<div class="empty">' + (refresh ? 'Refreshing' : 'Loading') + ' packages…</div>');
+  ask('envPackages', { id, refresh: !!refresh });
+}
+function onEnvPackages(d) {
+  if (d.error) { envOut('<div style="color:#f87171">' + esc(d.error) + '</div>'); return; }
+  const rows = (d.packages || []).map(p => `<tr><td>${esc(p.name)}</td><td class="pv">${esc(p.version)}</td></tr>`).join('');
+  envOut(`<div class="ec-row" style="margin:10px 0 6px">
+      <b>${(d.packages || []).length} packages</b>
+      <span style="font-size:11px;color:var(--muted)">${d.cached ? 'cached' : 'captured'} ${(d.capturedAt || '').slice(0, 19).replace('T', ' ')}</span>
+      <span style="flex:1"></span>
+      <input id="pkg-filter" placeholder="filter…" style="font-size:11px;width:130px" oninput="filterPkgs()">
+      <button class="tbtn" style="font-size:11px" onclick="viewEnvPackages('${esc(d.id)}',true)">↻ Refresh</button>
+    </div>
+    <table class="pkg-table"><tbody id="pkg-body">${rows}</tbody></table>`);
+}
+function filterPkgs() {
+  const q = (document.getElementById('pkg-filter').value || '').toLowerCase();
+  document.querySelectorAll('#pkg-body tr').forEach(tr => { tr.style.display = tr.textContent.toLowerCase().includes(q) ? '' : 'none'; });
+}
+function startCompare() {
+  const opts = envCache.map(e => `<option value="${esc(e.id)}">${esc(e.name)}</option>`).join('');
+  envOut(`<div class="ec-row" style="margin:10px 0">
+      <select id="cmp-a">${opts}</select><span>vs</span><select id="cmp-b">${opts}</select>
+      <button class="tbtn" onclick="runCompare()">Compare</button>
+    </div><div id="cmp-out"></div>`);
+  const b = document.getElementById('cmp-b'); if (b && b.options.length > 1) b.selectedIndex = 1;
+}
+function runCompare() {
+  const a = document.getElementById('cmp-a').value, b = document.getElementById('cmp-b').value;
+  document.getElementById('cmp-out').innerHTML = '<div class="empty">Comparing…</div>';
+  ask('envCompare', { a, b });
+}
+// ── Similarity / merge candidates ────────────────────────────────────────────
+function findSimilar() {
+  envOut('<div class="empty">Analysing package overlap across all environments…</div>');
+  ask('envSimilarity', {});
+}
+function renderEnvSimilarity(d) {
+  const pairs = (d && d.pairs) || [];
+  if (!pairs.length) { envOut('<div class="empty">Need at least two environments with captured packages.</div>'); return; }
+  const tier = s => s >= 0.85 ? { c: '#3fb950', t: 'strong merge candidate' } : (s >= 0.7 ? { c: '#e5c07b', t: 'similar' } : { c: 'var(--muted)', t: 'low overlap' });
+  const rows = pairs.map(p => {
+    const pct = Math.round(p.score * 100), epct = Math.round(p.exactScore * 100), tg = tier(p.score);
+    const save = p.saving ? humanSizeJs(p.saving) : '—';
+    return `<div class="sim-card" style="border-left:3px solid ${tg.c}">
+      <div class="ec-row">
+        <span class="sim-pct" style="color:${tg.c}">${pct}%</span>
+        <b>${esc(p.a.name)}</b> <span style="color:var(--muted)">${humanSizeJs(p.a.size)}</span>
+        <span style="color:var(--muted)">≈</span>
+        <b>${esc(p.b.name)}</b> <span style="color:var(--muted)">${humanSizeJs(p.b.size)}</span>
+        ${p.py ? `<span class="py-ver" title="Python version">py ${esc(p.py)}</span>` : ''}
+        <span style="flex:1"></span>
+        <button class="tbtn" style="font-size:11px" onclick="comparePair('${esc(p.a.id)}','${esc(p.b.id)}')">⇄ Diff</button>
+        <button class="tbtn" style="font-size:11px" onclick="mergeScript('${esc(p.a.id)}','${esc(p.b.id)}')" title="Generate a merge script for you to run manually">🧬 Merge script</button>
+      </div>
+      <div class="sim-meta">${tg.t} · ${p.shared} shared (${epct}% exact) · ${p.diffVer} version-diff · ${p.onlyA} only in ${esc(p.a.name)} / ${p.onlyB} only in ${esc(p.b.name)} · potential save <b style="color:${tg.c}">~${save}</b></div>
+    </div>`;
+  }).join('');
+  const strong = pairs.filter(p => p.score >= 0.85).length;
+  envOut(`<div class="ec-row" style="margin:10px 0 6px"><b>≈ Merge candidates</b>
+      <span style="font-size:11px;color:var(--muted)">${pairs.length} pairs · ${strong} strong (≥85%)${d.skipped ? ' · ' + d.skipped + ' skipped (different Python)' : ''}</span></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Estimated saving assumes the smaller env is merged into the larger. Verify with a full diff before deleting.</div>
+    ${rows}`);
+}
+function comparePair(a, b) {
+  startCompare();
+  const sa = document.getElementById('cmp-a'), sb = document.getElementById('cmp-b');
+  if (sa) sa.value = a; if (sb) sb.value = b;
+  runCompare();
+}
+function mergeScript(a, b) { envOut('<div class="empty">Generating merge script…</div>'); ask('envMergeScript', { a, b }); }
+function onEnvMergeScript(d) {
+  if (d.error) { envOut('<div style="color:#f87171">' + esc(d.error) + '</div>'); return; }
+  envOut(`<div class="ec-row" style="margin:10px 0 6px"><b>🧬 Merge script</b><span style="font-size:11px;color:var(--muted)">keep <b>${esc(d.keep)}</b>, drop <b>${esc(d.drop)}</b> — copied to clipboard; review and run it yourself, the extension will not execute it</span></div><pre class="env-activate">${esc(d.script)}</pre>`);
+}
+const CMP_ST = {
+  same:      { s: '=', c: 'var(--muted)', label: 'same' },
+  upgrade:   { s: '↑', c: '#3fb950', label: 'upgrade' },
+  downgrade: { s: '↓', c: '#e5c07b', label: 'downgrade' },
+  added:     { s: '＋', c: '#4daafc', label: 'added' },
+  deleted:   { s: '－', c: '#f87171', label: 'deleted' },
+};
+const CMP_DELTA_ORDER = ['upgrade', 'downgrade', 'added', 'deleted', 'same'];
+let _cmpData = null;
+let _cmpSort = { col: 'status', dir: 1, deltaIdx: 0 };
+
+function renderEnvCompare(d) {
+  const out = document.getElementById('cmp-out'); if (!out) return;
+  _cmpData = d;
+  _cmpSort = { col: 'status', dir: 1, deltaIdx: 0 };
+  const c = d.counts || {};
+  const summary = CMP_DELTA_ORDER.filter(k => c[k])
+    .map(k => `<span style="color:${CMP_ST[k].c}">${CMP_ST[k].s} ${c[k]} ${CMP_ST[k].label}</span>`).join(' · ');
+  out.innerHTML = `
+    <div class="ec-row" style="margin:8px 0;font-size:12px">
+      <span style="color:var(--muted)">${esc(d.a.name)} (${d.a.count}) → ${esc(d.b.name)} (${d.b.count})</span>
+      <span style="flex:1"></span>
+      <label style="font-size:11px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="cmp-hide-same" onchange="renderCmpBody()"> hide unchanged</label>
+    </div>
+    <div style="font-size:11px;margin-bottom:6px">${summary || '(no packages)'}</div>
+    <table class="pkg-table cmp-table">
+      <thead id="cmp-thead"></thead>
+      <tbody id="cmp-tbody"></tbody>
+    </table>`;
+  renderCmpBody();
+}
+
+function cmpHeader() {
+  const arrow = k => _cmpSort.col === k ? (_cmpSort.dir > 0 ? ' ▲' : ' ▼') : '';
+  const dh = _cmpSort.col === 'status' ? ' ' + CMP_ST[CMP_DELTA_ORDER[_cmpSort.deltaIdx]].s : '';
+  return `<tr>
+    <th class="cmp-sort" onclick="sortCmp('name')">Package${arrow('name')}</th>
+    <th class="cmp-sort" onclick="sortCmp('va')">${esc(_cmpData.a.name)}${arrow('va')}</th>
+    <th class="cmp-sort" onclick="sortCmp('vb')">${esc(_cmpData.b.name)}${arrow('vb')}</th>
+    <th class="cmp-sort cmp-delta" onclick="sortCmp('status')" title="click to cycle: prioritize upgrade / downgrade / added / deleted / same">Δ${dh}</th>
+  </tr>`;
+}
+
+function cmpSortRows() {
+  const rows = (_cmpData && _cmpData.rows) ? _cmpData.rows.slice() : [];
+  if (_cmpSort.col === 'status') {
+    const prio = CMP_DELTA_ORDER[_cmpSort.deltaIdx];
+    const base = { added: 0, deleted: 1, upgrade: 2, downgrade: 3, same: 4 };
+    const rank = s => s === prio ? -1 : base[s];
+    rows.sort((a, b) => (rank(a.status) - rank(b.status)) || a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+  } else {
+    const k = _cmpSort.col;
+    rows.sort((a, b) => _cmpSort.dir * String(a[k]).localeCompare(String(b[k]), undefined, { numeric: true, sensitivity: 'base' }));
+  }
+  return rows;
+}
+
+function sortCmp(col) {
+  if (col === 'status') {
+    if (_cmpSort.col === 'status') _cmpSort.deltaIdx = (_cmpSort.deltaIdx + 1) % CMP_DELTA_ORDER.length;
+    else { _cmpSort.col = 'status'; _cmpSort.deltaIdx = 0; }
+  } else if (_cmpSort.col === col) _cmpSort.dir *= -1;
+  else { _cmpSort.col = col; _cmpSort.dir = 1; }
+  renderCmpBody();
+}
+
+function renderCmpBody() {
+  const tb = document.getElementById('cmp-tbody'); if (!tb) return;
+  const th = document.getElementById('cmp-thead'); if (th) th.innerHTML = cmpHeader();
+  const hide = (document.getElementById('cmp-hide-same') || {}).checked;
+  tb.innerHTML = cmpSortRows().map(r => {
+    const t = CMP_ST[r.status] || CMP_ST.same;
+    const hidden = hide && r.status === 'same' ? ' style="display:none"' : '';
+    return `<tr class="cmp-${r.status}"${hidden}><td>${esc(r.name)}</td><td class="pv">${esc(r.va) || '—'}</td><td class="pv">${esc(r.vb) || '—'}</td>` +
+      `<td class="cmp-delta" style="color:${t.c}" title="${t.label}">${t.s}</td></tr>`;
+  }).join('');
+}
+function registerCondaEnv() { envOut('<div class="empty">Listing conda envs…</div>'); ask('envCondaList', {}); }
+let _condaEnvs = [];
+function onCondaList(envs) {
+  _condaEnvs = envs || [];
+  if (!_condaEnvs.length) { envOut('<div class="empty">No conda envs found (is <code>conda</code> on PATH?).</div>'); return; }
+  const opts = _condaEnvs.map((e, i) => `<option value="${i}">${esc(e.name)} — ${esc(e.prefix)}</option>`).join('');
+  envOut(`<div class="ec-row" style="margin:10px 0"><select id="conda-pick">${opts}</select><button class="tbtn" onclick="addCondaEnv()">Register</button></div>`);
+}
+function addCondaEnv() {
+  const e = _condaEnvs[+document.getElementById('conda-pick').value];
+  if (e) ask('envAdd', { env: { name: e.name, manager: 'conda', python: e.python, path: e.prefix, condaName: e.name } });
+}
+let _envFolder = '';
+function registerFolderEnv() { ask('envPickFolder', {}); }
+function onEnvPickFolder(dir) { if (!dir) return; _envFolder = dir; ask('envDetectFolder', { dir }); }
+function onEnvFolderDetected(d) {
+  if (!d.ok) { vscode.postMessage({ command: 'toast', text: d.error || 'Not a venv/uv folder' }); return; }
+  const base = _envFolder.split('/').pop();
+  pkModal({ title: 'Register environment', message: `${d.manager} · ${d.python}`, input: true, defaultValue: base, okLabel: 'Register',
+    onOk: v => { if (v.trim()) ask('envAdd', { env: { name: v.trim(), manager: d.manager, python: d.python, path: _envFolder } }); } });
+}
+function editEnv(id) {
+  const e = envCache.find(x => x.id === id); if (!e) return;
+  pkModal({
+    title: 'Edit environment', input: true, defaultValue: e.name,
+    textarea: true, textareaValue: e.description || '',
+    textareaPlaceholder: 'Description — tags / crucial packages, e.g. torch 2.3, cuda12, vllm, training',
+    okLabel: 'Save',
+    onOk: (name, desc) => {
+      const patch = { description: (desc || '').trim() };
+      if (name.trim()) patch.name = name.trim();
+      ask('envUpdate', { id, patch });
+    }
+  });
+}
+function deleteEnv(id, name) {
+  pkModal({
+    title: 'Delete “' + name + '”?',
+    message: 'Removes it from the tool. Optionally also delete the environment files from disk (irreversible).',
+    checkbox: { label: 'Also delete the environment files from disk', checked: false },
+    okLabel: 'Delete', danger: true,
+    onOk: (_v, _tv, removeFiles) => ask('envDelete', { id, removeFiles: !!removeFiles })
+  });
+}
+// ── Create a new environment ─────────────────────────────────────────────────
+function newEnvForm() {
+  envOut(`
+  <div class="srv-edit" style="margin-top:10px">
+    <b>✨ Create a new environment</b>
+    <div class="form-row"><label>Type</label>
+      <select id="ne-mgr" onchange="updateNewEnvFields()">
+        <option value="conda">conda</option>
+        <option value="venv">venv (python -m venv)</option>
+        <option value="uv">uv (uv venv)</option>
+      </select>
+    </div>
+    <div class="form-row"><label>Name</label><input id="ne-name" placeholder="my-env"></div>
+    <div class="form-row" id="ne-ver-row"><label>Python version</label><input id="ne-ver" placeholder="e.g. 3.11 (optional)"></div>
+    <div class="form-row" id="ne-base-row" style="display:none"><label>Base interpreter</label><input id="ne-base" placeholder="python3"></div>
+    <div class="form-row" id="ne-dir-row" style="display:none"><label>Parent folder</label>
+      <span style="display:flex;gap:6px;flex:1"><input id="ne-dir" placeholder="/path/to/parent" style="flex:1"><button class="tbtn" onclick="ask('envCreatePickDir',{})" title="Browse">📁</button></span>
+    </div>
+    <div class="form-row"><label>Description</label><input id="ne-desc" placeholder="tags / crucial packages (optional)"></div>
+    <div id="ne-msg" style="font-size:11px;color:var(--muted)"></div>
+    <div class="ec-row"><span style="flex:1"></span>
+      <button class="tbtn" onclick="envOut('')">Cancel</button>
+      <button class="tbtn" style="border-color:var(--accent)" onclick="submitNewEnv()">Create</button>
+    </div>
+  </div>`);
+  updateNewEnvFields();
+}
+function updateNewEnvFields() {
+  const m = (document.getElementById('ne-mgr') || {}).value;
+  const show = (id, on) => { const el = document.getElementById(id); if (el) el.style.display = on ? '' : 'none'; };
+  show('ne-dir-row', m !== 'conda');       // venv/uv need a parent folder
+  show('ne-base-row', m === 'venv');        // venv picks a base interpreter
+  show('ne-ver-row', m !== 'venv');         // conda/uv accept a version string
+}
+function submitNewEnv() {
+  const g = id => ((document.getElementById(id) || {}).value || '').trim();
+  const input = { manager: (document.getElementById('ne-mgr') || {}).value, name: g('ne-name'), pythonVersion: g('ne-ver'), parentDir: g('ne-dir'), baseInterpreter: g('ne-base'), description: g('ne-desc') };
+  const msg = document.getElementById('ne-msg');
+  if (!input.name) { msg.innerHTML = '<span style="color:#f87171">Name is required.</span>'; return; }
+  if ((input.manager === 'venv' || input.manager === 'uv') && !input.parentDir) { msg.innerHTML = '<span style="color:#f87171">Parent folder is required.</span>'; return; }
+  msg.innerHTML = '<span style="color:var(--muted)">Creating… this can take a minute.</span>';
+  ask('envCreate', { input });
+}
+function onEnvCreated(d) {
+  if (d.ok) { envOut(''); return; }
+  const el = document.getElementById('ne-msg');
+  const err = '<span style="color:#f87171">' + esc(d.error || 'failed') + '</span>' + (d.log ? '<pre class="env-activate" style="margin-top:6px;max-height:160px;overflow:auto">' + esc(d.log) + '</pre>' : '');
+  if (el) el.innerHTML = err; else envOut('<div>' + err + '</div>');
+}
+function onEnvCreatePickDir(d) { if (d && d.dir) { const el = document.getElementById('ne-dir'); if (el) el.value = d.dir; } }
+function onEnvDeleteResult(d) { if (d && d.error) envOut('<div style="color:#f87171">' + esc(d.error) + '</div>'); }
+function deleteEnvScript(id) { ask('envDeleteScript', { id }); }
+function onEnvDeleteScript(d) {
+  if (d.error) { envOut('<div style="color:#f87171">' + esc(d.error) + '</div>'); return; }
+  envOut(`<div class="ec-row" style="margin:10px 0 6px"><b>🧾 Delete script</b><span style="font-size:11px;color:var(--muted)">copied to clipboard — review and run it yourself; the extension will not execute it</span></div><pre class="env-activate">${esc(d.script)}</pre>`);
+}
+
+// ── Servers dashboard ────────────────────────────────────────────────────────
+let serverCache = [];
+let _srvPoll = null;
+function renderServerDashboard(servers) {
+  serverCache = servers || [];
+  const dot = s => s === 'running' ? '#3fb950' : s === 'starting' ? '#e5c07b' : '#8b949e';
+  const cards = serverCache.map(s => `
+    <div class="srv-card">
+      <div class="ec-row">
+        <span class="srv-dot" style="background:${dot(s.status)}"></span>
+        <b>${esc(s.name)}</b><span class="cat">${esc(s.slug)}</span>
+        <span style="font-size:11px;color:var(--muted)">:${s.activePort} · ${esc(s.status)}${s.pid ? ' · pid ' + s.pid : ''}</span>
+        <span style="flex:1"></span>
+        ${s.status === 'stopped'
+          ? `<button class="tbtn" onclick="ask('serverStart',{slug:'${esc(s.slug)}'})">▶ Start</button>`
+          : `<button class="tbtn" onclick="ask('serverStop',{slug:'${esc(s.slug)}'})">■ Stop</button><button class="tbtn" onclick="ask('serverRestart',{slug:'${esc(s.slug)}'})">↻</button>`}
+        <button class="tbtn" onclick="openServer('${esc(s.stableUrl)}')" title="Open the stable URL">🌐</button>
+        <button class="tbtn" onclick="ask('serverOpenFolder',{slug:'${esc(s.slug)}'})" title="Open the server folder (code + any data it writes)">📂</button>
+        <button class="tbtn" onclick="editServer('${esc(s.slug)}')">✏</button>
+        <button class="tbtn" onclick="serverLogView('${esc(s.slug)}')" title="Log">📜</button>
+        <button class="tbtn" onclick="deleteServer('${esc(s.slug)}',${JSON.stringify(s.name).replace(/"/g,'&quot;')})">🗑</button>
+      </div>
+      <div class="ec-path"><code>${esc(s.command)}</code> · env: ${esc(s.python || 'python3')}</div>
+      <div class="ec-path">stable: <a href="#" onclick="openServer('${esc(s.stableUrl)}');return false">${esc(s.stableUrl)}</a>
+        <button class="tbtn" style="font-size:10px;padding:1px 6px" onclick="ask('serverCopy',{text:'${esc(s.stableUrl)}'})">copy</button></div>
+    </div>`).join('');
+  document.getElementById('detail').innerHTML = `
+    <div class="dash">
+      <div class="dash-hd">
+        <span class="dash-title">🖥 Servers</span>
+        <span style="font-size:11px;color:var(--muted)">stable URLs via the built-in proxy</span>
+        <span style="flex:1"></span>
+        <button class="tbtn" onclick="importServer()">＋ Import folder</button>
+        <button class="tbtn" onclick="createServer()">＋ New</button>
+        <button class="tbtn" onclick="ask('serverList',{})">↻</button>
+      </div>
+      ${cards || '<div class="empty">No servers yet — import a folder (moves it into the store) or create a new one.</div>'}
+      <div id="srv-out"></div>
+    </div>`;
+  ask('envList', {}); // cache envs for the edit form's interpreter picker
+  // A server that just started shows "starting" until its port is up — auto-poll
+  // until every server has settled (running/stopped) so the light turns green.
+  if (_srvPoll) { clearTimeout(_srvPoll); _srvPoll = null; }
+  if (serverCache.some(s => s.status === 'starting')) {
+    _srvPoll = setTimeout(() => { if (state.tab === 'servers') ask('serverList', {}); }, 1200);
+  }
+}
+function openServer(url) { ask('serverOpenUrl', { url }); }
+function importServer() { ask('serverPickFolder', {}); }
+function onServerPickFolder(dir) {
+  if (!dir) return;
+  const base = dir.split('/').pop();
+  pkModal({ title: 'Import server', message: 'Moves “' + dir + '” into the store as a managed server.', input: true, defaultValue: base, okLabel: 'Import',
+    onOk: v => ask('serverImport', { sourceDir: dir, name: v.trim() || base }) });
+}
+function createServer() { pkModal({ title: 'New server', input: true, okLabel: 'Create', onOk: v => { if (v.trim()) ask('serverCreate', { name: v.trim() }); } }); }
+function editServer(slug) {
+  const s = serverCache.find(x => x.slug === slug); if (!s) return;
+  const envOpts = envCache.map(e => `<option value="${esc(e.python)}">${esc(e.name)} (${esc(e.python)})</option>`).join('');
+  const out = document.getElementById('srv-out');
+  out.innerHTML = `<div class="srv-edit">
+      <b>Edit ${esc(s.name)}</b>
+      <label>Command <input id="se-cmd" value="${esc(s.command)}"></label>
+      <label>Port <input id="se-port" type="number" value="${s.port}"></label>
+      <label>Python interpreter (blank = python3)
+        <input id="se-py" list="se-envs" value="${esc(s.python || '')}" placeholder="python3 or /path/to/env/bin/python">
+        <datalist id="se-envs">${envOpts}</datalist></label>
+      <div><button class="tbtn" onclick="saveServer('${esc(s.slug)}')">Save & restart</button>
+        <button class="tbtn" onclick="document.getElementById('srv-out').innerHTML=''">Cancel</button></div>
+    </div>`;
+}
+function saveServer(slug) {
+  const patch = {
+    command: document.getElementById('se-cmd').value,
+    port: +document.getElementById('se-port').value,
+    python: document.getElementById('se-py').value,
+  };
+  ask('serverUpdate', { slug, patch });
+  document.getElementById('srv-out').innerHTML = '';
+}
+function serverLogView(slug) { document.getElementById('srv-out').innerHTML = '<div class="empty">Loading log…</div>'; ask('serverLog', { slug }); }
+function onServerLog(slug, text) {
+  const out = document.getElementById('srv-out'); if (!out) return;
+  out.innerHTML = '<div class="ec-row" style="margin:8px 0"><b>Log · ' + esc(slug) + '</b><span style="flex:1"></span><button class="tbtn" style="font-size:11px" onclick="serverLogView(\'' + esc(slug) + '\')">↻</button></div>' +
+    '<pre class="srv-log">' + esc(text) + '</pre>';
+}
+function deleteServer(slug, name) {
+  pkModal({ title: 'Delete server “' + name + '”?', message: 'Removes “' + slug + '” and its code from the store.', okLabel: 'Delete', danger: true, onOk: () => ask('serverDelete', { slug }) });
 }
 
 // ── MCP wizard ────────────────────────────────────────────────────────────

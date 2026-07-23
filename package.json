@@ -2,7 +2,7 @@
   "name": "personal-knowledge",
   "displayName": "Personal Knowledge",
   "description": "Browse, edit, and sync your personal knowledge: skills, notes, prompts, packages, scripts. Expose your knowledge base to AI assistants via MCP.",
-  "version": "1.8.2",
+  "version": "1.9.0",
   "publisher": "Uone",
   "author": {
     "name": "Yu Wang"
@@ -255,6 +255,11 @@
           "default": "",
           "description": "Custom path for the knowledge store directory. Defaults to ~/personal-knowledge if left empty."
         },
+        "personalKnowledge.environmentsPath": {
+          "type": "string",
+          "default": "",
+          "description": "Central location where the 'Migrate' action moves Python environments. Defaults to ~/pkm-envs if left empty."
+        },
         "personalKnowledge.openOnStartup": {
           "type": "boolean",
           "default": false,
@@ -312,11 +317,12 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && cp -r src/webview dist/ && cp node_modules/sql.js/dist/sql-wasm.js dist/ && cp node_modules/sql.js/dist/sql-wasm.wasm dist/ && cp node_modules/marked/lib/marked.umd.js dist/webview/ && npx esbuild src/webview/hljs-entry.js --bundle --minify --format=iife --outfile=dist/webview/hljs.js && cp node_modules/highlight.js/styles/github-dark.css dist/webview/hljs.css && cp node_modules/katex/dist/katex.min.js dist/webview/katex.js && cp node_modules/katex/dist/katex.min.css dist/webview/katex.css && mkdir -p dist/webview/fonts && cp node_modules/katex/dist/fonts/*.woff2 dist/webview/fonts/ && cp node_modules/cytoscape/dist/cytoscape.min.js dist/webview/cytoscape.js && cp node_modules/mermaid/dist/mermaid.min.js dist/webview/mermaid.js && node scripts/postbuild.js",
+    "build": "tsc -p tsconfig.json && cp -r src/webview dist/ && cp node_modules/sql.js/dist/sql-wasm.js dist/ && cp node_modules/sql.js/dist/sql-wasm.wasm dist/ && cp node_modules/marked/lib/marked.umd.js dist/webview/ && npx esbuild src/webview/hljs-entry.js --bundle --minify --format=iife --outfile=dist/webview/hljs.js && cp node_modules/highlight.js/styles/github-dark.css dist/webview/hljs.css && cp node_modules/katex/dist/katex.min.js dist/webview/katex.js && cp node_modules/katex/dist/katex.min.css dist/webview/katex.css && mkdir -p dist/webview/fonts && cp node_modules/katex/dist/fonts/*.woff2 dist/webview/fonts/ && cp node_modules/cytoscape/dist/cytoscape.min.js dist/webview/cytoscape.js && cp node_modules/mermaid/dist/mermaid.min.js dist/webview/mermaid.js && cp node_modules/3d-force-graph/dist/3d-force-graph.min.js dist/webview/forcegraph3d.js && node scripts/postbuild.js",
     "watch": "tsc -p tsconfig.json --watch",
     "package": "npx vsce package"
   },
   "dependencies": {
+    "3d-force-graph": "^1.80.0",
     "cytoscape": "^3.34.0",
     "highlight.js": "^11.11.1",
     "katex": "^0.16.47",

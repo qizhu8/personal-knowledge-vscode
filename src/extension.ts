@@ -15,6 +15,15 @@ import {
 } from "./filestore";
 import { migrateDbToFiles } from "./migrate";
 import {
+  initServers, disposeServers, serverList, serverImport, serverCreate,
+  serverUpdate, serverDelete, startServer, stopServer, restartServer, setServerPort, serverLog, serverDir,
+} from "./servers";
+import {
+  initPyenvs, pyenvList, pyenvAdd, pyenvUpdate, pyenvDelete,
+  condaEnvs, detectFolderEnv, pyenvPackages, pyenvCompare,
+  pyenvSize, pyenvActivateScript, pyenvCreate, pyenvSimilarity, pyenvPyVersion, pyenvMigrate, pyenvDeleteScript, pyenvMergeScript,
+} from "./pyenvs";
+import {
   promptList, promptGetFile, promptGetAllVersionsOfFile,
   packageList, packageGet, packageFileGet,
   scriptList, scriptGet, scriptMove, scriptMoveFolder,
@@ -25,6 +34,45 @@ import {
 // ── Git helper ─────────────────────────────────────────────────────────────
 import { execSync } from "child_process";
 import { createHash } from "crypto";
+
+// Background one-shot sweep to compute on-disk sizes for envs missing a cached
+// value, then refresh the panel so sizes show up "by default".
+let _sizeSweeping = false;
+async function sweepEnvSizes(respond: (m: any) => void): Promise<void> {
+  if (_sizeSweeping) return;
+  const missing = pyenvList().filter(e => typeof e.sizeBytes !== "number");
+  if (!missing.length) return;
+  _sizeSweeping = true;
+  try {
+    for (const e of missing) { try { await pyenvSize(e.id, true); } catch { /* ignore */ } }
+    respond({ command: "envList", data: envListForUi() });
+  } finally { _sizeSweeping = false; }
+}
+
+// Fast background sweep to detect Python versions for envs missing one.
+let _verSweeping = false;
+async function sweepEnvVersions(respond: (m: any) => void): Promise<void> {
+  if (_verSweeping) return;
+  const missing = pyenvList().filter(e => !e.pyVersion);
+  if (!missing.length) return;
+  _verSweeping = true;
+  try {
+    for (const e of missing) { try { await pyenvPyVersion(e.id, true); } catch { /* ignore */ } }
+    respond({ command: "envList", data: envListForUi() });
+  } finally { _verSweeping = false; }
+}
+
+// Resolve the extension-managed environments root (for the Migrate action).
+function pyenvsRoot(): string {
+  const cfg = vscode.workspace.getConfiguration("personalKnowledge");
+  return (cfg.get<string>("environmentsPath") || "").trim() || path.join(require("os").homedir(), "pkm-envs");
+}
+
+// Env list enriched with a `managed` flag (already inside the managed root).
+function envListForUi(): any[] {
+  const rp = path.resolve(pyenvsRoot());
+  return pyenvList().map(e => ({ ...e, managed: !!e.path && path.resolve(e.path).startsWith(rp + path.sep) }));
+}
 
 // ── Logging ────────────────────────────────────────────────────────────────
 type LogLevel = "debug" | "info" | "warn" | "error";
@@ -573,6 +621,10 @@ function getWebviewHtml(webview: vscode.Webview, context: vscode.ExtensionContex
   const mermaidJs = webview.asWebviewUri(vscode.Uri.file(path.join(webviewDir, "mermaid.js")));
   html = html.replace(/%%MERMAID_SRC%%/g, mermaidJs.toString());
 
+  // 3D citation graph (3d-force-graph + three.js bundled locally).
+  const fg3dJs = webview.asWebviewUri(vscode.Uri.file(path.join(webviewDir, "forcegraph3d.js")));
+  html = html.replace(/%%FORCEGRAPH3D_SRC%%/g, fg3dJs.toString());
+
   // Inject the webview CSP source — required for VS Code to allow scripts to run
   html = html.replace(/%%CSP_SOURCE%%/g, webview.cspSource);
 
@@ -873,6 +925,224 @@ async function handleMessage(
 
     case "toast": {
       vscode.window.setStatusBarMessage(`$(info) ${String(msg.text || "")}`, 4000);
+      break;
+    }
+
+    // ── Servers dashboard ────────────────────────────────────────────────────
+    case "serverList": {
+      respond({ command: "serverList", data: await serverList() });
+      break;
+    }
+    case "serverStart": {
+      const r = startServer(String(msg.slug || ""));
+      if (!r.ok && r.error) vscode.window.showErrorMessage(`Start failed: ${r.error}`);
+      await new Promise(res => setTimeout(res, 400));
+      respond({ command: "serverList", data: await serverList() });
+      break;
+    }
+    case "serverStop": {
+      stopServer(String(msg.slug || ""));
+      await new Promise(res => setTimeout(res, 300));
+      respond({ command: "serverList", data: await serverList() });
+      break;
+    }
+    case "serverRestart": {
+      const r = await restartServer(String(msg.slug || ""));
+      if (!r.ok && r.error) vscode.window.showErrorMessage(`Restart failed: ${r.error}`);
+      respond({ command: "serverList", data: await serverList() });
+      break;
+    }
+    case "serverSetPort": {
+      const r = await setServerPort(String(msg.slug || ""), Number(msg.port) || 0);
+      if (!r.ok && r.error) vscode.window.showErrorMessage(`Change port failed: ${r.error}`);
+      respond({ command: "serverList", data: await serverList() });
+      break;
+    }
+    case "serverImport": {
+      const r = serverImport(String(msg.sourceDir || ""), String(msg.name || ""));
+      if (r.ok) gitCommit(`server import: ${r.slug}`);
+      else if (r.error) vscode.window.showErrorMessage(`Import failed: ${r.error}`);
+      respond({ command: "serverList", data: await serverList() });
+      break;
+    }
+    case "serverCreate": {
+      const r = serverCreate(String(msg.name || ""));
+      if (r.ok) gitCommit(`server create: ${r.slug}`);
+      respond({ command: "serverList", data: await serverList() });
+      break;
+    }
+    case "serverUpdate": {
+      serverUpdate(String(msg.slug || ""), msg.patch || {});
+      gitCommit(`server update: ${msg.slug}`);
+      respond({ command: "serverList", data: await serverList() });
+      break;
+    }
+    case "serverDelete": {
+      serverDelete(String(msg.slug || ""));
+      gitCommit(`server delete: ${msg.slug}`);
+      respond({ command: "serverList", data: await serverList() });
+      break;
+    }
+    case "serverLog": {
+      respond({ command: "serverLog", slug: msg.slug, text: serverLog(String(msg.slug || ""), 300) });
+      break;
+    }
+    case "serverPickFolder": {
+      const picked = await vscode.window.showOpenDialog({
+        canSelectFolders: true, canSelectFiles: false, canSelectMany: false,
+        openLabel: "Select server folder",
+      });
+      respond({ command: "serverPickFolder", dir: picked && picked.length ? picked[0].fsPath : "" });
+      break;
+    }
+    case "serverOpenUrl": {
+      try {
+        const ext = await vscode.env.asExternalUri(vscode.Uri.parse(String(msg.url || "")));
+        await vscode.env.openExternal(ext);
+      } catch (e: any) { vscode.window.showErrorMessage(`Couldn't open URL: ${e?.message}`); }
+      break;
+    }
+    case "serverOpenFolder": {
+      const dir = serverDir(String(msg.slug || ""));
+      if (dir && fs.existsSync(dir)) {
+        try { await vscode.commands.executeCommand("revealInExplorer", vscode.Uri.file(dir)); } catch { /* ignore */ }
+        try { await vscode.commands.executeCommand("vscode.openFolder", vscode.Uri.file(dir), { forceNewWindow: true }); }
+        catch (e: any) { vscode.window.showErrorMessage(`Couldn't open folder: ${e?.message}`); }
+      } else {
+        vscode.window.showErrorMessage("Server folder not found");
+      }
+      break;
+    }
+    case "serverCopy": {
+      await vscode.env.clipboard.writeText(String(msg.text || ""));
+      vscode.window.setStatusBarMessage("$(check) Copied", 2500);
+      break;
+    }
+
+    // ── Python Environments ──────────────────────────────────────────────────
+    case "envList": {
+      respond({ command: "envList", data: envListForUi() });
+      void sweepEnvVersions(respond);
+      void sweepEnvSizes(respond);
+      break;
+    }
+    case "envCondaList": {
+      respond({ command: "envCondaList", data: await condaEnvs() });
+      break;
+    }
+    case "envDetectFolder": {
+      respond({ command: "envDetectFolder", data: detectFolderEnv(String(msg.dir || "")) });
+      break;
+    }
+    case "envPickFolder": {
+      const picked = await vscode.window.showOpenDialog({
+        canSelectFolders: true, canSelectFiles: false, canSelectMany: false,
+        openLabel: "Select environment folder",
+      });
+      respond({ command: "envPickFolder", dir: picked && picked.length ? picked[0].fsPath : "" });
+      break;
+    }
+    case "envAdd": {
+      pyenvAdd(msg.env || {});
+      respond({ command: "envList", data: envListForUi() });
+      vscode.window.setStatusBarMessage("$(check) Environment added", 3000);
+      break;
+    }
+    case "envUpdate": {
+      pyenvUpdate(String(msg.id || ""), msg.patch || {});
+      respond({ command: "envList", data: envListForUi() });
+      break;
+    }
+    case "envDelete": {
+      const r = await pyenvDelete(String(msg.id || ""), !!msg.removeFiles);
+      if (!r.ok) { respond({ command: "envDeleteResult", error: r.error }); }
+      respond({ command: "envList", data: envListForUi() });
+      break;
+    }
+    case "envPackages": {
+      const r = await pyenvPackages(String(msg.id || ""), !!msg.refresh);
+      respond({ command: "envPackages", id: msg.id, ...r });
+      break;
+    }
+    case "envCompare": {
+      respond({ command: "envCompare", data: await pyenvCompare(String(msg.a || ""), String(msg.b || "")) });
+      break;
+    }
+    case "envSimilarity": {
+      respond({ command: "envSimilarity", data: await pyenvSimilarity() });
+      break;
+    }
+    case "envMergeScript": {
+      const r = await pyenvMergeScript(String(msg.a || ""), String(msg.b || ""));
+      if (r.error || !r.script) { respond({ command: "envMergeScript", error: r.error || "no script" }); break; }
+      await vscode.env.clipboard.writeText(r.script);
+      vscode.window.setStatusBarMessage("$(check) Merge script copied — review and run it yourself", 4000);
+      respond({ command: "envMergeScript", script: r.script, keep: r.keep, drop: r.drop });
+      break;
+    }
+    case "envSize": {
+      const r = await pyenvSize(String(msg.id || ""), !!msg.refresh);
+      respond({ command: "envSize", id: msg.id, ...r });
+      break;
+    }
+    case "envMigrate": {
+      const target = pyenvsRoot();
+      const env = pyenvList().find(e => e.id === msg.id);
+      const r = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Migrating “${env?.name || msg.id}” → ${target}…`, cancellable: false },
+        () => pyenvMigrate(String(msg.id || ""), target),
+      );
+      if (r.ok) {
+        respond({ command: "envList", data: envListForUi() });
+        respond({ command: "envMigrated", ok: true });
+        void sweepEnvSizes(respond);
+        vscode.window.setStatusBarMessage("$(check) Environment migrated", 3000);
+      } else {
+        respond({ command: "envMigrated", ok: false, error: r.error, log: r.log });
+      }
+      break;
+    }
+    case "envDeleteScript": {
+      const { script, error } = pyenvDeleteScript(String(msg.id || ""));
+      if (error || !script) { respond({ command: "envDeleteScript", id: msg.id, error: error || "no script" }); break; }
+      await vscode.env.clipboard.writeText(script);
+      vscode.window.setStatusBarMessage("$(check) Delete command copied — run it yourself", 4000);
+      respond({ command: "envDeleteScript", id: msg.id, script });
+      break;
+    }
+    case "envCreate": {
+      const input = msg.input || {};
+      const r = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Creating ${input.manager} environment “${input.name}”…`, cancellable: false },
+        () => pyenvCreate(input),
+      );
+      if (r.ok) {
+        respond({ command: "envList", data: envListForUi() });
+        respond({ command: "envCreated", ok: true });
+        void sweepEnvSizes(respond);
+        vscode.window.setStatusBarMessage("$(check) Environment created", 3000);
+      } else {
+        respond({ command: "envCreated", ok: false, error: r.error, log: r.log });
+      }
+      break;
+    }
+    case "envCreatePickDir": {
+      const picked = await vscode.window.showOpenDialog({
+        canSelectFolders: true, canSelectFiles: false, canSelectMany: false,
+        openLabel: "Select parent folder for the new environment",
+      });
+      respond({ command: "envCreatePickDir", dir: picked && picked.length ? picked[0].fsPath : "" });
+      break;
+    }
+    case "envActivate": {
+      const { script, error } = pyenvActivateScript(String(msg.id || ""));
+      if (error || !script) { respond({ command: "envActivate", id: msg.id, error: error || "no script" }); break; }
+      const env = pyenvList().find(e => e.id === msg.id);
+      const term = vscode.window.createTerminal(`env: ${env?.name || msg.id}`);
+      term.show();
+      const cmd = script.split("\n").filter(l => l && !l.startsWith("#")).join(" && ");
+      term.sendText(cmd, true);
+      respond({ command: "envActivate", id: msg.id, script, termName: `env: ${env?.name || msg.id}` });
       break;
     }
 
@@ -2471,6 +2741,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   fsSetStorePath(configuredPath);
   storageSetStorePath(configuredPath);
 
+  // Servers + Python Environments subsystems (machine-local runtime state).
+  try {
+    const stateBase = context.globalStorageUri.fsPath;
+    initPyenvs(path.join(stateBase, "environments"), m => log.info(`[env] ${m}`));
+    if (configuredPath) {
+      const pport = vscode.workspace.getConfiguration("personalKnowledge").get<number>("serversProxyPort", 39501);
+      initServers(path.join(getStorePath(), "servers"), path.join(stateBase, "servers"), pport, m => log.info(`[servers] ${m}`));
+    }
+  } catch (e: any) { log.warn(`servers/env init failed: ${e?.message}`); }
+
   // Register sidebar tree view + commands FIRST so they're always available
   const treeProvider = new PkTreeProvider();
   _treeProvider = treeProvider;
@@ -2713,4 +2993,4 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
   context.subscriptions.push(_watcher);
 }
 
-export function deactivate(): void { _watcher?.dispose(); log.info("deactivated"); }
+export function deactivate(): void { _watcher?.dispose(); disposeServers(); log.info("deactivated"); }

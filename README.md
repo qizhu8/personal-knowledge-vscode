@@ -59,6 +59,12 @@ If you (usually me myself :) ) accidentally deleted/screwed up something, ask AI
   - **List view** grouped into user-defined **groups** and topic folders, showing year, authors, topic, publisher, tags, and a citation-count badge; **pin/star** favourites to the top, and right-click to move a paper between groups or **change its topic**
   - **Graph view** — an interactive, draggable citation graph (Cytoscape.js; force or hierarchical layout) sized/coloured by citation count and topic, with idea nodes drawn distinctly, that reveals each paper's conclusions on hover
   - Papers are plain `papers/<Topic>/<Title>.md` files (with a remote URL and/or an uploaded local file), and are exposed via **MCP** and **sync**
+- **Python Environments** — a machine-local manager for your **conda / venv / uv** environments, grouped in a collapsible tree by manager → folder:
+  - Register existing envs (conda auto-detected) or **create** a new conda/venv/uv environment; each card shows the **Python version**, **on-disk size**, and an editable **description** (tags / crucial packages)
+  - **Compare** two envs in a unified, sortable table (package · v1 · v2 · Δ) with colour-coded upgrade/downgrade/added/deleted/same status
+  - **≈ Similar** finds near-duplicate environments (skipping different Python versions) with estimated space savings, and generates a **merge script**; **⚡ Open shell** activates an env in a terminal; **🚚 Migrate** moves an env into a central managed location
+  - Merge and delete scripts are generated for **you to review and run** — the extension never executes them
+- **Servers** — manage long-running local servers as store packages: start/stop/restart, change port, view logs, and open each through a fixed-port **reverse proxy** for a stable URL; servers run detached and are reconciled on restart
 - **Sync** — share a temporary authenticated link so another machine can pull your knowledge
 - **MCP server** — auto-generated Python server with **read and write** tools that operate directly on the Markdown files, with FTS5 trigram search (CJK-friendly)
 - **Selectable AI backend** — Copilot (built-in), Azure OpenAI, or any OpenAI-compatible endpoint; keys stored in SecretStorage

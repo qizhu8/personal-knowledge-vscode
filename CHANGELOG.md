@@ -3,6 +3,35 @@
 All notable changes to the **Personal Knowledge** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.9.0] — 2026-07-23
+
+Two major new tabs — **Python Environments** and **Servers** — plus a 3D papers graph.
+
+### 🐍 Python Environments (new tab)
+
+A machine-local manager for your conda / venv / uv environments.
+
+- **Register & detect** — add a conda env (auto-detected via `conda env list`), or register any venv/uv folder (classified from `pyvenv.cfg`). Environments are grouped into a collapsible **tree** by manager → root/parent folder (all conda envs under their install root, venv/uv under their project folder).
+- **At-a-glance metadata** — each env card shows the **Python version** (e.g. `py 3.11`), an **on-disk size** (`💾`, computed in the background so it's shown by default), and an editable **description** for tags / crucial packages.
+- **Create** — spin up a new **conda**, **venv**, or **uv** environment from a small form (name, Python version / base interpreter, target folder).
+- **Packages & compare** — list a env's packages (cached), and compare two envs in a single unified table (package · v1 · v2 · Δ) with click-to-sort columns and colour+symbol status (**↑** upgrade, **↓** downgrade, **＋** added, **－** deleted, **=** same); hide unchanged rows.
+- **Merge candidates** — **≈ Similar** finds near-duplicate environments by package overlap (skipping pairs on different Python versions), ranks them by similarity with an estimated space saving, and can generate a **merge script** (keep the larger env, install what's missing, then remove the redundant one).
+- **Open shell** — `⚡` opens an integrated terminal with the environment activated.
+- **Migrate** — `🚚` moves an environment into a central, extension-managed location (setting `personalKnowledge.environmentsPath`, default `~/pkm-envs`): conda envs are cloned then the original removed; venv/uv are moved with in-place path fix-ups.
+- **Delete, your way** — unregister only, optionally delete files from disk, or generate a **delete script** for you to review and run manually. The merge and delete scripts are **never executed by the extension** — they're copied to your clipboard for you to run.
+
+### 🖥 Servers (new tab)
+
+Manage long-running local servers as store packages.
+
+- **Dashboard** — start / stop / restart each server, change its port, view logs, open its folder, and open it in the browser through a fixed-port **reverse proxy** that gives every server a stable URL (setting `personalKnowledge.serversProxyPort`, default `39501`).
+- **Store-managed** — import an existing server (moves the folder into `<store>/servers/<slug>/` with a `server.json` manifest) or create a new one; each server is an isolated package. Servers run detached, so they keep running after VS Code closes and are reconciled on restart.
+- **Status polling** — the status light reflects running / starting / stopped and updates automatically while a server is coming up.
+
+### 📄 Papers
+
+- **2D / 3D graph toggle** — the citation graph can now render in **3D** (react-force-graph / Three.js, bundled offline) in addition to the existing 2D Cytoscape view.
+
 ## [1.8.2] — 2026-07-22
 
 - **Papers graph** — idea nodes now render as a compact rounded shape with the title placed **below** (like paper nodes), so a long idea title is no longer clipped inside the box.
