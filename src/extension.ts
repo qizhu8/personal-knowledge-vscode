@@ -1417,6 +1417,7 @@ async function handleMessage(
 
     case "joinSync": {
       const { syncUrl, username, password } = msg;
+      const mode = msg.mode === "group" ? "group" : "overwrite";
       try {
         const response = await fetch(`${syncUrl}/sync/bundle`, {
           headers: { "Authorization": "Basic " + Buffer.from(`${username}:${password}`).toString("base64") },
@@ -1427,33 +1428,59 @@ async function handleMessage(
           return;
         }
         const bundle = await response.json() as any;
+        const from = bundle?.from ?? "remote";
+        // "group" mode isolates everything under <type>/_incoming/<label>/… so
+        // nothing overwrites existing items; the user merges offline afterwards.
+        const seg = (s: string) => String(s || "").trim().replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+        const stamp = () => { const d = new Date(), p = (n: number) => String(n).padStart(2, "0"); return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`; };
+        const label = mode === "group" ? (seg(msg.groupLabel) || `${seg(from)}-${stamp()}`) : "";
+        const prefix = label ? `_incoming/${label}` : "";
+        const pcat = (c?: string) => prefix ? (c ? `${prefix}/${c}` : prefix) : (c || "");
+        const slugPfx = prefix ? prefix.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "") : "";
         const counts: Record<string, number> = {};
         for (const s of bundle?.skills ?? []) {
           const m = s.metadata ?? {};
           skillUpsert({ name: s.name, content: s.content,
-            description: m.description, category: m.category,
+            description: m.description, category: pcat(m.category),
             tags: m.tags, source_project: m.source_project });
           counts.skills = (counts.skills ?? 0) + 1;
         }
-        if (bundle?.notes?.length)    counts.notes    = noteImport(bundle.notes);
+        if (bundle?.notes?.length) {
+          const notes = prefix ? bundle.notes.map((n: any) => ({ ...n, category: pcat(n.category) })) : bundle.notes;
+          counts.notes = noteImport(notes);
+        }
+        const importedSlugs = new Set((bundle?.papers ?? []).map((p: any) => p.slug));
+        const remap = (s: string) => (prefix && importedSlugs.has(s)) ? `${slugPfx}-${s}` : s;
         for (const p of bundle?.papers ?? []) {
+          const cites = Array.isArray(p.cites)
+            ? p.cites.map((c: any) => typeof c === "string" ? remap(c) : (c && c.slug ? { ...c, slug: remap(c.slug) } : c))
+            : p.cites;
           paperUpsert({
-            slug: p.slug, title: p.title, content: p.content ?? "",
+            slug: prefix ? `${slugPfx}-${p.slug}` : p.slug, title: p.title, content: p.content ?? "",
             authors: p.authors, year: p.year, topic: p.topic, publisher: p.publisher,
             tags: p.tags, url: p.url, file: p.file, conclusions: p.conclusions,
-            cites: p.cites, category: p.category,
+            cites, category: pcat(p.category), group: prefix ? label : p.group,
           });
           counts.papers = (counts.papers ?? 0) + 1;
         }
-        if (bundle?.prompts?.length)  counts.prompts  = promptImport(bundle.prompts);
-        if (bundle?.scripts?.length)  counts.scripts  = scriptImport(bundle.scripts);
-        if (bundle?.packages?.length) counts.packages = packageImport(bundle.packages);
+        if (bundle?.prompts?.length) {
+          const prompts = prefix ? bundle.prompts.map((x: any) => ({ ...x, project: `${prefix}/${x.project}` })) : bundle.prompts;
+          counts.prompts = promptImport(prompts);
+        }
+        if (bundle?.scripts?.length) {
+          const scripts = prefix ? bundle.scripts.map((x: any) => ({ ...x, category: pcat(x.category) })) : bundle.scripts;
+          counts.scripts = scriptImport(scripts);
+        }
+        if (bundle?.packages?.length) {
+          const pkgs = prefix ? bundle.packages.map((x: any) => ({ ...x, name: `${prefix}/${x.name}` })) : bundle.packages;
+          counts.packages = packageImport(pkgs);
+        }
         const total   = Object.values(counts).reduce((a, b) => a + b, 0);
         const summary = Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(", ");
-        gitCommit(`sync: ${summary} from ${bundle?.from ?? "remote"}`);
-        respond({ command: "syncJoined", data: { count: total, summary, from: bundle?.from ?? "remote" } });
+        gitCommit(`sync: ${summary} from ${from}${label ? ` (group ${label})` : ""}`);
+        respond({ command: "syncJoined", data: { count: total, summary, from, group: label || undefined } });
         respond({ command: "saved" });
-        vscode.window.setStatusBarMessage(`$(cloud-download) Synced: ${summary}`, 5000);
+        vscode.window.setStatusBarMessage(`$(cloud-download) Synced: ${summary}${label ? " → " + label : ""}`, 5000);
       } catch (e: any) {
         respond({ command: "syncError", data: { error: e.message } });
       }

@@ -2,7 +2,7 @@
   "name": "personal-knowledge",
   "displayName": "Personal Knowledge",
   "description": "Browse, edit, and sync your personal knowledge: skills, notes, prompts, packages, scripts. Expose your knowledge base to AI assistants via MCP.",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "publisher": "Uone",
   "author": {
     "name": "Yu Wang"

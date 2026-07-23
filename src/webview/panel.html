@@ -511,12 +511,22 @@ mark{background:var(--vscode-editor-findMatchHighlightBackground,#ffd70055);colo
     <!-- JOIN tab -->
     <div id="sm-pane-join" style="display:none">
       <div class="sm-section">
+        <div class="sm-label">Quick connect</div>
+        <div class="sm-row"><input id="join-code" placeholder="Paste connection code (pk:…)" style="flex:1"><button class="tbtn" onclick="applySyncCode()">Fill</button></div>
+      </div>
+      <div class="sm-section">
         <div class="sm-label">Connect to a host</div>
         <div class="sm-row"><span style="font-size:12px;color:var(--muted);width:80px">URL</span><input id="join-url" placeholder="http://10.x.x.x:19877"></div>
         <div class="sm-row"><span style="font-size:12px;color:var(--muted);width:80px">Username</span><input id="join-user" placeholder="e.g. a3f8b2c1"></div>
         <div class="sm-row"><span style="font-size:12px;color:var(--muted);width:80px">Password</span><input id="join-pass" type="password" placeholder="password"></div>
       </div>
-      <button class="tbtn" style="border-color:var(--accent);width:100%" onclick="doJoinSync()">Download Skills</button>
+      <div class="sm-section">
+        <div class="sm-label">On receive</div>
+        <div class="sm-row"><label style="font-size:12px;display:flex;align-items:center;gap:6px"><input type="radio" name="join-mode" value="overwrite" checked onchange="toggleJoinGroup()"> Merge directly (overwrite existing)</label></div>
+        <div class="sm-row"><label style="font-size:12px;display:flex;align-items:center;gap:6px"><input type="radio" name="join-mode" value="group" onchange="toggleJoinGroup()"> New group — keep separate, merge offline</label></div>
+        <div class="sm-row" id="join-group-row" style="display:none"><span style="font-size:12px;color:var(--muted);width:80px">Group</span><input id="join-group" placeholder="optional label (default: sender-date)"></div>
+      </div>
+      <button class="tbtn" style="border-color:var(--accent);width:100%" onclick="doJoinSync()">Download</button>
       <div id="join-result" style="margin-top:10px;font-size:12px;color:var(--muted)"></div>
     </div>
   </div>
@@ -804,9 +814,12 @@ window.addEventListener('message', e => {
   }
   else if (command === 'syncStarted') {
     const s = data;
+    const code = 'pk:' + btoa(unescape(encodeURIComponent(JSON.stringify({ u: s.url, n: s.username, p: s.password }))));
     document.getElementById('sm-cred-result').innerHTML = `
       <div class="cred-box">
         <div style="font-size:11px;color:#4ade80;margin-bottom:8px">✅ Sync link active — share with recipient:</div>
+        <div class="cred-row"><span class="cred-label">Code</span><span class="cred-val" title="One-paste connection code">${esc(code)}</span><button class="cred-copy" onclick="navigator.clipboard.writeText('${esc(code)}')">Copy</button></div>
+        <div style="font-size:10px;color:var(--muted);margin:2px 0 8px">Recipient pastes this one code in the Join tab — fills URL, username &amp; password at once.</div>
         <div class="cred-row"><span class="cred-label">URL</span><span class="cred-val">${esc(s.url)}</span><button class="cred-copy" onclick="navigator.clipboard.writeText('${esc(s.url)}')">Copy</button></div>
         <div class="cred-row"><span class="cred-label">Username</span><span class="cred-val">${esc(s.username)}</span><button class="cred-copy" onclick="navigator.clipboard.writeText('${esc(s.username)}')">Copy</button></div>
         <div class="cred-row"><span class="cred-label">Password</span><span class="cred-val">${esc(s.password)}</span><button class="cred-copy" onclick="navigator.clipboard.writeText('${esc(s.password)}')">Copy</button></div>
@@ -818,7 +831,7 @@ window.addEventListener('message', e => {
   else if (command === 'syncSessions') { renderSyncSessions(data.sessions); }
   else if (command === 'syncJoined')   {
     document.getElementById('join-result').innerHTML =
-      `<span style="color:#4ade80">✅ Synced from ${esc(data.from)}: ${esc(data.summary||data.count+' items')}</span>`;
+      `<span style="color:#4ade80">✅ Synced from ${esc(data.from)}: ${esc(data.summary||data.count+' items')}${data.group ? ' → group “'+esc(data.group)+'” (review &amp; merge offline)' : ''}</span>`;
   }
   else if (command === 'mcpStatus')    { renderMcpPane(data); }
   else if (command === 'mcpGenerated') { renderMcpGenerated(data); }
@@ -1712,8 +1725,24 @@ function doJoinSync() {
   const user = document.getElementById('join-user').value.trim();
   const pass = document.getElementById('join-pass').value.trim();
   if (!url || !user || !pass) { document.getElementById('join-result').innerHTML = '<span style="color:#f87171">All fields required.</span>'; return; }
+  const mode = (document.querySelector('input[name="join-mode"]:checked') || {}).value || 'overwrite';
+  const groupLabel = (document.getElementById('join-group').value || '').trim();
   document.getElementById('join-result').innerHTML = '<span style="color:var(--muted)">Connecting…</span>';
-  ask('joinSync', { syncUrl: url, username: user, password: pass });
+  ask('joinSync', { syncUrl: url, username: user, password: pass, mode, groupLabel });
+}
+function applySyncCode() {
+  const raw = (document.getElementById('join-code').value || '').trim();
+  try {
+    const d = JSON.parse(decodeURIComponent(escape(atob(raw.replace(/^pk:/, '')))));
+    if (d.u) document.getElementById('join-url').value = d.u;
+    if (d.n) document.getElementById('join-user').value = d.n;
+    if (d.p) document.getElementById('join-pass').value = d.p;
+    document.getElementById('join-result').innerHTML = '<span style="color:#4ade80">Filled — pick a receive mode, then click Download.</span>';
+  } catch { document.getElementById('join-result').innerHTML = '<span style="color:#f87171">Invalid connection code.</span>'; }
+}
+function toggleJoinGroup() {
+  const mode = (document.querySelector('input[name="join-mode"]:checked') || {}).value;
+  document.getElementById('join-group-row').style.display = mode === 'group' ? '' : 'none';
 }
 
 // ── Category tree ─────────────────────────────────────────────────────────

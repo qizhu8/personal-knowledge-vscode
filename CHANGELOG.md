@@ -3,6 +3,15 @@
 All notable changes to the **Personal Knowledge** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.9.1] — 2026-07-23
+
+### 🔗 Sync
+
+- **One-paste connection code** — the host's sync link now includes a single `pk:…` **Code** that encodes URL + username + password together. The recipient pastes it into **Quick connect** on the Join tab and the URL, username, and password fields fill in at once (no more copying three values separately).
+- **Choose how received items land** — the receiver now picks a mode:
+  - **Merge directly** — import over existing items (previous behavior).
+  - **New group** — everything is imported isolated under `<type>/_incoming/<label>/…` (label defaults to `sender-date`, or a custom name) so nothing overwrites your existing content; you review and merge it offline. Namespacing spans every content type, and imported papers keep their internal citations linked.
+
 ## [1.9.0] — 2026-07-23
 
 Two major new tabs — **Python Environments** and **Servers** — plus a 3D papers graph.
