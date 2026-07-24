@@ -3,6 +3,14 @@
 All notable changes to the **Personal Knowledge** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.9.2] — 2026-07-24
+
+### 🚀 Onboarding
+
+- **Starter examples for new stores** — a brand-new (empty) knowledge base is now seeded with one example per section under a **Getting Started** category: an example skill, a pinned Welcome note (showing task lists, math, a Mermaid diagram, and a wiki-link), an example paper, a versioned prompt, a script, and a small package — so you have something to copy for your own work.
+- **"Getting Started" guide skill** — a `getting-started` skill walks through every function (Skills, Notes, Papers, Prompts, Packages, Scripts, Python Environments, Servers, Sync, MCP): where files live and how to add your own.
+- Seeding runs **only once, only for an empty store** — existing knowledge bases are never modified.
+
 ## [1.9.1] — 2026-07-23
 
 ### 🔗 Sync

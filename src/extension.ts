@@ -524,6 +524,204 @@ async function initStore(context: vscode.ExtensionContext, storePath: string): P
   _treeProvider?.refresh();
 }
 
+// ── First-run example content ────────────────────────────────────────────────
+/** True if the store has no user content in any of the file-backed types. */
+function storeIsEmpty(): boolean {
+  const root = getStorePath();
+  const hasFiles = (dir: string): boolean => {
+    if (!fs.existsSync(dir)) return false;
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (e.name.startsWith(".")) continue;
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) { if (hasFiles(p)) return true; }
+      else return true;
+    }
+    return false;
+  };
+  return !["skills", "notes", "papers", "prompts", "scripts", "packages"]
+    .some(t => hasFiles(path.join(root, t)));
+}
+
+/** Seed a small set of example items (one per folder) + a getting-started guide,
+ *  so brand-new users have something to mimic. Only called on an empty store. */
+function seedExamples(): void {
+  const GS = "Getting Started";
+  const md = (...lines: string[]) => lines.join("\n") + "\n";
+
+  const guide = md(
+    "# Getting Started with Personal Knowledge",
+    "",
+    "Welcome! Your knowledge base is just a folder of plain Markdown files — everything",
+    "in the panel is a file on disk. You (or an AI assistant via MCP) can edit them directly.",
+    "",
+    "> Every item tagged **Getting Started** is an example. Open it, copy its structure for",
+    "> your own work, then delete the examples when you're comfortable.",
+    "",
+    "## 🧠 Skills",
+    "Reusable know-how (`skills/<Category>/<name>.md`). Add one with the **＋** button on the",
+    "Skills tab, or right-click a sidebar folder → *Add skill here*.",
+    "",
+    "## 📝 Notes",
+    "Quick Markdown notes with live preview — `[[wiki links]]`, pasted images, Mermaid",
+    "diagrams, KaTeX math (`$...$`), and task lists (`[ ] [x] [~] [!]`). Pin a note or folder",
+    "to keep it on top. Files: `notes/<Category>/<Title>.md`.",
+    "",
+    "## 📄 Papers",
+    "Track research papers and your own **ideas** with a citation graph (2D/3D). Each paper is",
+    "`papers/<Topic>/<Title>.md` with metadata, conclusions, citations, and an optional URL/file.",
+    "",
+    "## 🧩 Prompts",
+    "Versioned prompt files: `prompts/<project>/<task>/<version>/<file>` — keep iterations side by side.",
+    "",
+    "## 📦 Packages",
+    "Browse small reusable code packages (`packages/<name>/…`) you want handy across projects.",
+    "",
+    "## 📜 Scripts",
+    "Organise scripts in a folder tree (`scripts/<Category>/<file>`) with language tags, syntax",
+    "highlighting, and an **AI Summary** button.",
+    "",
+    "## 🐍 Python Environments",
+    "Manage conda / venv / uv envs: Python version + size, compare two envs, find near-duplicates",
+    "to merge, open an activated shell, or migrate an env into a central folder. (Machine-local.)",
+    "",
+    "## 🖥 Servers",
+    "Run local servers as managed packages: start/stop, change port, view logs, and reach each",
+    "through a stable proxy URL.",
+    "",
+    "## 🔄 Sync",
+    "Share with another machine: the host generates a one-paste connection **code**; the receiver",
+    "pastes it, then chooses to **merge directly** or drop everything into a **new group** to review.",
+    "",
+    "## 🤖 MCP (for AI assistants)",
+    "The MCP tab generates a Python server with read+write tools over these files. Run",
+    "`pip install fastmcp` and point your assistant (Claude, Copilot, …) at it.",
+    "",
+    "---",
+    "Files are the source of truth — edit here, in your editor, or via MCP, and the panel",
+    "refreshes automatically. Everything is git-tracked, so nothing is lost.",
+  );
+
+  skillUpsert({
+    name: "getting-started", category: GS,
+    description: "How to use each part of Personal Knowledge",
+    tags: ["guide", "onboarding"], content: guide,
+  });
+
+  skillUpsert({
+    name: "example-skill", category: GS,
+    description: "A template skill — copy its structure for your own",
+    tags: ["example"],
+    content: md(
+      "# Example Skill",
+      "",
+      "A **skill** is reusable know-how you want to find again — a checklist, a command, a gotcha.",
+      "",
+      "## When to use",
+      "Describe the situation this applies to.",
+      "",
+      "## Steps",
+      "1. First do this.",
+      "2. Then that.",
+      "",
+      "## Gotchas",
+      "- Note anything that bit you.",
+      "",
+      "_Delete this example once you've added your own skills._",
+    ),
+  });
+
+  noteUpsert({
+    slug: `${GS}/Welcome`, title: "Welcome", type: "general",
+    tags: ["example"], category: GS, pinned: true,
+    content: md(
+      "# 👋 Welcome to Personal Knowledge",
+      "",
+      "This is an **example note**. Notes render Markdown live:",
+      "",
+      "- Task list:",
+      "  - [x] done",
+      "  - [ ] todo",
+      "  - [~] in progress",
+      "  - [!] blocked",
+      "- Math: $e^{i\\pi} + 1 = 0$",
+      "- A diagram:",
+      "",
+      "```mermaid",
+      "flowchart LR",
+      "  Idea --> Note --> Skill",
+      "```",
+      "",
+      "Jump to the [[getting-started]] guide. Paste an image straight in — it's stored next to",
+      "the note. Pin this note (★) to keep it on top.",
+      "",
+      "_Delete this example once you're comfortable._",
+    ),
+  });
+
+  paperUpsert({
+    slug: "example-paper", title: "Example Paper — how papers work",
+    category: GS, topic: GS, authors: ["You"], year: 2025, tags: ["example"],
+    conclusions: ["Papers are plain Markdown with metadata", "The graph links citations you list"],
+    content: md(
+      "# Example Paper",
+      "",
+      "Papers track research (or your own **ideas**) with authors, year, conclusions, and",
+      "citations. List a citation by another paper's title or slug and it shows up in the graph.",
+      "",
+      "Attach a remote **URL** or upload a local PDF. Toggle the 2D/3D graph to explore links.",
+      "",
+      "_Delete this example when you add real papers._",
+    ),
+  });
+
+  promptImport([{
+    project: "example-project", task: "summarize", version: "v1", file: "system.md",
+    content: md(
+      "# System prompt (example)",
+      "",
+      "You are a concise assistant. Summarize the user's text in 3 bullet points.",
+      "",
+      "Keep versions of a prompt side by side under prompts/<project>/<task>/<version>/.",
+    ),
+  }]);
+
+  scriptImport([{
+    category: GS, file: "hello.py",
+    content: md(
+      "#!/usr/bin/env python3",
+      '"""Example script. Scripts get language tags, highlighting, and an AI Summary button."""',
+      "",
+      "def main() -> None:",
+      '    print("Hello from your knowledge base!")',
+      "",
+      'if __name__ == "__main__":',
+      "    main()",
+    ),
+  }]);
+
+  packageImport([{
+    name: "example-package",
+    files: [
+      { path: "README.md", content: md("# example-package", "", "Drop small reusable libraries here to keep them handy across projects.") },
+      { path: "hello.py", content: md("def hello() -> str:", '    return "hi from example-package"') },
+    ],
+  }]);
+}
+
+/** Seed examples once, only for a brand-new (empty) store. */
+async function maybeSeedExamples(context: vscode.ExtensionContext): Promise<void> {
+  if (context.globalState.get<boolean>("examplesSeeded", false)) return;
+  try {
+    if (!storeIsEmpty()) { await context.globalState.update("examplesSeeded", true); return; }
+    seedExamples();
+    gitCommit("seed: getting-started examples");
+    log.info("seeded getting-started examples into empty store");
+  } catch (e: any) {
+    log.warn(`example seeding skipped: ${e?.message}`);
+  }
+  await context.globalState.update("examplesSeeded", true);
+}
+
 /** Returns true if the file store is ready; otherwise runs the setup wizard. */
 async function ensureSetup(context: vscode.ExtensionContext): Promise<boolean> {
   if (_storeReady) return true;
@@ -2981,6 +3179,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await initStore(context, configuredPath);
       log.info(`file store ready at ${getStorePath()}`);
       ensureGitRepo();
+      await maybeSeedExamples(context);
       startFileWatcher(context);
       treeProvider.refresh();
       panel?.webview.postMessage({ command: "saved" }); // re-fetch if panel already open
