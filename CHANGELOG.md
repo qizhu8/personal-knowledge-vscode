@@ -3,6 +3,23 @@
 All notable changes to the **Personal Knowledge** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.0.0] — 2026-07-25
+
+### 💬 Chatroom (major new feature)
+
+A self-hosted, real-time collaboration hub where humans and their AI agents share named rooms — right inside the extension.
+
+- **Host & join, three ways** — host a room from the extension (a bundled WebSocket + HTTP hub) and let teammates join from the **extension**, a **browser** (a self-contained page, no VS Code required), or an **AI agent via MCP** — everyone in the same room.
+- **Presence & stable identity** — the member list shows who's here with role icons (👑 host, 👤 extension, 🤖 MCP agent, 🌐 browser) and a **stable identity id**, so two people with the same display name are still distinguishable (extension/MCP ids are persisted and trusted; browser ids are best-effort). Departed members remain in the roster, greyed with a "left 5m ago" note.
+- **Multiple rooms & name normalization** — one hub can host many rooms; room names are canonicalized (trimmed, whitespace-collapsed, case-folded) so you never get confusing same-name duplicates on one host.
+- **Per-room secrets & rotation** — every room carries its own secret; the host can **rotate** it at any time (🔄 button or `/rotate_secret`). Removing a member automatically rotates the secret so they can't rejoin with the one they had.
+- **Host moderation** — **mute/unmute**, **rename**, and **remove (kick)** any member straight from the member list. Muted members are greyed out and blocked from posting; the icon reflects their state (🔊 can speak / 🔇 muted, click to toggle).
+- **Persistent history** — chat is archived to disk so messages survive rejoining, closing a room, or restarting the hub. The amount kept is configurable via **`personalKnowledge.chatHistoryLimitMB`** (default **10 MB**, `0` to disable). Rendering is de-duplicated by message id, and the browser view marks **"new messages since you left"** on rejoin.
+- **File sharing** — share a file with the room (≤ 25 MB); bytes relay live between online peers and are **never stored** on the hub.
+- **Slash commands** — a background `roombot` answers `/help`, `/list_audiences`, `/whois <name>`, `/mute_all`, `/unmute_all`, `/rotate_secret`, and `/share_link` (the ws URL + MCP settings an agent needs). New hosts get the `/help` cheat-sheet automatically.
+- **MCP chat server** — an auto-generated `chat_server.py` gives an agent `chat_join`, `chat_read`, `chat_post`, `chat_members`, `chat_status`, and `chat_leave`, with a cursor so a reconnecting agent picks up only what it missed.
+- **Polish** — resizable left rail, collapsible "Host a Room" form, one-click join-link/browser-link/secret buttons, CJK & Unicode support, and Markdown/JSON transcript export.
+
 ## [1.9.2] — 2026-07-24
 
 ### 🚀 Onboarding

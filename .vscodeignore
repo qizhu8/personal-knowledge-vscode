@@ -10,8 +10,10 @@ tsconfig.json
 .gitignore
 .github/
 
-# Node modules — sql.js is bundled into dist/sql-asm.js at build time
-node_modules/
+# Node modules — sql.js is bundled into dist/sql-asm.js at build time.
+# Ship 'ws' (zero-dependency, pure JS) since the chatroom hub/client require it at runtime.
+node_modules/**
+!node_modules/ws/**
 
 # Test and CI artifacts
 **/*.test.ts

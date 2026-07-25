@@ -1,8 +1,8 @@
 {
   "name": "personal-knowledge",
   "displayName": "Personal Knowledge",
-  "description": "Browse, edit, and sync your personal knowledge: skills, notes, prompts, packages, scripts. Expose your knowledge base to AI assistants via MCP.",
-  "version": "1.9.2",
+  "description": "Browse, edit, and sync your personal knowledge: skills, notes, prompts, packages, scripts. Expose it to AI assistants via MCP, and collaborate with teammates and their agents in a built-in real-time Chatroom.",
+  "version": "2.0.0",
   "publisher": "Uone",
   "author": {
     "name": "Yu Wang"
@@ -54,6 +54,11 @@
       {
         "command": "personalKnowledge.setupMcp",
         "title": "Personal Knowledge: Setup MCP Server"
+      },
+      {
+        "command": "personalKnowledge.openChatroom",
+        "title": "Personal Knowledge: Open Chatroom",
+        "icon": "$(comment-discussion)"
       },
       {
         "command": "personalKnowledge.refreshTree",
@@ -312,6 +317,37 @@
           "type": "string",
           "default": "2024-06-01",
           "description": "Azure OpenAI API version (azure-openai backend only)."
+        },
+        "personalKnowledge.chatHubUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Chatroom: WebSocket URL of the hub to connect to (e.g. ws://host:7345). Leave empty if you host the hub yourself."
+        },
+        "personalKnowledge.chatRoom": {
+          "type": "string",
+          "default": "general",
+          "description": "Chatroom: default room name to join."
+        },
+        "personalKnowledge.chatDisplayName": {
+          "type": "string",
+          "default": "",
+          "description": "Chatroom: display name shown to other members. Defaults to your OS username."
+        },
+        "personalKnowledge.chatSharedSecret": {
+          "type": "string",
+          "default": "",
+          "description": "Chatroom: team shared secret used to join a room. Must match the hub's secret. Corpnet/VPN only for the MVP."
+        },
+        "personalKnowledge.chatHubPort": {
+          "type": "number",
+          "default": 7345,
+          "description": "Chatroom: TCP port the embedded hub listens on when you self-host it."
+        },
+        "personalKnowledge.chatHistoryLimitMB": {
+          "type": "number",
+          "default": 10,
+          "minimum": 0,
+          "description": "Chatroom: how much chat history (in MB) the hub archives to disk per room, so messages survive rejoining, closing a room, or restarting the hub. The oldest messages are dropped once the limit is reached. Set to 0 to disable archiving."
         }
       }
     }
@@ -328,11 +364,13 @@
     "katex": "^0.16.47",
     "marked": "^18.0.5",
     "mermaid": "^11.16.0",
-    "sql.js": "^1.12.0"
+    "sql.js": "^1.12.0",
+    "ws": "^8.21.1"
   },
   "devDependencies": {
     "@types/node": "^26.1.0",
     "@types/vscode": "^1.85.0",
+    "@types/ws": "^8.18.1",
     "esbuild": "^0.28.1",
     "typescript": "^6.0.3"
   }

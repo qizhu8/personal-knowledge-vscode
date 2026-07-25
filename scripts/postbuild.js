@@ -32,3 +32,17 @@ try {
   console.error("post-build: INLINE SCRIPT SYNTAX ERROR —", e.message);
   process.exit(1);
 }
+
+// 3. Syntax-check the chat browser-view HTML (generated at runtime in chatroom.ts,
+//    so it never reaches panel.html's check — a stray edit there kills the page).
+try {
+  const { browserViewHtml } = require(path.join(__dirname, "..", "dist", "chatroom.js"));
+  const bv = browserViewHtml();
+  const bvScripts = [...bv.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+  for (const s of bvScripts) new vm.Script(s[1], { filename: "browser-view:inline" });
+  console.log("post-build: browser-view script syntax OK");
+} catch (e) {
+  console.error("post-build: BROWSER-VIEW SCRIPT SYNTAX ERROR —", e.message);
+  process.exit(1);
+}
+

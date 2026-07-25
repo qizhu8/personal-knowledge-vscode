@@ -1,6 +1,6 @@
 # Personal Knowledge
 
-A VS Code extension for managing your personal knowledge base — skills, notes, papers, prompts, packages, and scripts — with hierarchical navigation, full-text search, syntax highlighting, AI-assisted summaries, a built-in sync server, and MCP integration so AI assistants can read *and write* your knowledge directly.
+A VS Code extension for managing your personal knowledge base — skills, notes, papers, prompts, packages, and scripts — with hierarchical navigation, full-text search, syntax highlighting, AI-assisted summaries, a built-in sync server, MCP integration so AI assistants can read *and write* your knowledge directly, and a real-time **Chatroom** where your team and their AI agents collaborate in shared rooms.
 
 > **A note from the developer**
 >
@@ -36,6 +36,22 @@ If you (usually me myself :) ) accidentally deleted/screwed up something, ask AI
 
 ![Prompts](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/prompts.png)
 
+**Chatroom** — a self-hosted, real-time room where teammates and their AI agents collaborate. Anyone can join from the extension, a browser, or an MCP agent; presence shows who's here (👑 host, 👤 extension, 🤖 agent, 🌐 browser) with a stable identity id.
+
+![Chatroom](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/chatroom.png)
+
+**Chatroom — host controls** — the room host can **mute/unmute** (🔊/🔇), **rename** (✏️), or **remove/kick** (🚫) any member right from the presence list; muted members are greyed out, and people who've left stay under **Earlier**.
+
+![Chatroom host controls](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/chatroom-host.png)
+
+**Chatroom is great for:**
+
+- **Coordinating multiple AI agents — even across platforms and machines.** Put several agents (e.g. a Copilot agent here, a Claude/other agent on another box, each joined via its own MCP server) into one room with a human host. They see each other's messages and files in real time, so you can orchestrate a multi-agent workflow and step in whenever you want.
+- **Adversarial / "GAN-style" agent loops.** Run a *generator* agent that proposes solutions and a *discriminator/critic* agent that pushes back, iterating in the same room while you watch, judge, and steer — mute one side to let the other think, rename them to their roles, and kick a misbehaving agent.
+- **Human-in-the-loop agent runs.** An agent joins via MCP, reads the task from the room, posts intermediate results and questions, and waits for your approval or redirection — all with a persistent transcript.
+- **Team standups & handoffs.** Teammates and their agents drop status into a shared room; the archived history means latecomers (and reconnecting agents) catch up on exactly what they missed.
+- **Bring in non-VS-Code teammates.** Share the browser link and a room secret so anyone can join from a plain browser tab — no install required.
+
 ## Features
 
 - **Skills** — reusable know-how as searchable Markdown, organised into an arbitrary-depth category tree
@@ -66,6 +82,15 @@ If you (usually me myself :) ) accidentally deleted/screwed up something, ask AI
   - Merge and delete scripts are generated for **you to review and run** — the extension never executes them
 - **Servers** — manage long-running local servers as store packages: start/stop/restart, change port, view logs, and open each through a fixed-port **reverse proxy** for a stable URL; servers run detached and are reconciled on restart
 - **Sync** — share a temporary authenticated link so another machine can pull your knowledge
+- **Chatroom** — a self-hosted, real-time collaboration hub where humans and their AI agents share named rooms:
+  - **Host a room** from the extension (a bundled WebSocket + HTTP hub); teammates join from the **extension**, a **browser** (no VS Code needed), or an **AI agent via MCP** — all in the same room
+  - **Presence & identity** — see who's here with role icons (👑 host, 👤 extension, 🤖 MCP agent, 🌐 browser) and a **stable identity id** so people with the same display name are distinguishable; departed members stay in the roster (greyed, "left 5m ago")
+  - **Per-room secrets** — each room has its own secret; **rotate** it any time (a kick rotates it automatically so a removed member can't rejoin)
+  - **Host moderation** — **mute/unmute**, **rename**, or **remove (kick)** any member from the member list; muted members are greyed out and can't post
+  - **Persistent history** — chat is archived to disk (size configurable via `personalKnowledge.chatHistoryLimitMB`, default 10 MB) so messages survive rejoining, closing a room, or restarting the hub; the browser view marks "new messages since you left" on rejoin
+  - **File sharing** — drop a file to share it peer-to-peer with the room (relayed live, never stored on the hub)
+  - **Slash commands** — type `/help` for the list; `/list_audiences`, `/whois <name>`, `/mute_all` · `/unmute_all`, `/rotate_secret`, and `/share_link` (the ws URL + MCP settings an agent uses to join)
+  - **CJK & Unicode** throughout; transcripts can be exported to Markdown/JSON
 - **MCP server** — auto-generated Python server with **read and write** tools that operate directly on the Markdown files, with FTS5 trigram search (CJK-friendly)
 - **Selectable AI backend** — Copilot (built-in), Azure OpenAI, or any OpenAI-compatible endpoint; keys stored in SecretStorage
 - **Cross-platform** — no native binaries

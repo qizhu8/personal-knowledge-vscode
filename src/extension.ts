@@ -18,6 +18,7 @@ import {
   initServers, disposeServers, serverList, serverImport, serverCreate,
   serverUpdate, serverDelete, startServer, stopServer, restartServer, setServerPort, serverLog, serverDir,
 } from "./servers";
+import { ChatHub, ChatClient, ChatMessage, Member, FileMeta, MAX_FILE_BYTES } from "./chatroom";
 import {
   initPyenvs, pyenvList, pyenvAdd, pyenvUpdate, pyenvDelete,
   condaEnvs, detectFolderEnv, pyenvPackages, pyenvCompare,
@@ -33,7 +34,7 @@ import {
 
 // ── Git helper ─────────────────────────────────────────────────────────────
 import { execSync } from "child_process";
-import { createHash } from "crypto";
+import { createHash, randomBytes } from "crypto";
 
 // Background one-shot sweep to compute on-disk sizes for envs missing a cached
 // value, then refresh the panel so sizes show up "by default".
@@ -496,6 +497,7 @@ let _treeProvider: PkTreeProvider | undefined;
 let _panelReady = false;                       // webview has signalled it's ready
 let _storeReady = false;                       // file store configured & migrated
 let _pendingOpen: { type: string; key: string; edit?: boolean } | undefined; // item to open once ready
+let _pendingTab: string | undefined;           // tab to switch to once the webview is ready
 
 /** Open an item in the panel; queues it if the webview isn't ready yet. */
 function openInPanel(context: vscode.ExtensionContext, type: string, key: string, edit = false): void {
@@ -506,6 +508,414 @@ function openInPanel(context: vscode.ExtensionContext, type: string, key: string
   } else {
     _pendingOpen = { type, key, edit }; // flushed on the "ready" message
   }
+}
+
+// ── Chatroom orchestrator ──────────────────────────────────────────────────
+// Owns the (optional self-hosted) hub and a set of room connections — one person
+// can hold multiple rooms at once. Keeps a per-room in-session chat buffer plus
+// received-file buffers (never written to disk unless the user saves them), and
+// forwards live events to the webview chatroom tab.
+interface RoomConn {
+  key:     string;             // stable id: `${url}||${room}`
+  url:     string;
+  room:    string;
+  user:    string;
+  client:  ChatClient;
+  messages: ChatMessage[];
+  members:  Member[];
+  status:   string;
+  statusDetail: string;
+  unread:   number;
+  selfHost: boolean;   // this client is the room's host (can moderate)
+  selfMuted: boolean;  // the host has muted this client
+  files:    Map<string, { meta: FileMeta; from: string; data: Buffer }>; // received, awaiting save
+}
+
+class ChatRoomManager {
+  private hub:   ChatHub | undefined;
+  private rooms: Map<string, RoomConn> = new Map();
+  private hostedKeys: Map<string, string> = new Map();   // room -> secret this host set
+  private activeKey = "";
+  private archiveDir = "";
+  private archiveLimitBytes = 10 * 1024 * 1024;
+  private static readonly MAX_MSGS = 5000;   // session display cap; the hub's byte budget is the real limit
+
+  private static roomKey(url: string, room: string): string { return `${url}||${ChatHub.canonRoom(room)}`; }
+
+  /** Configure on-disk chat archiving (dir + byte cap). Applies to the live hub too. */
+  configureArchive(dir: string, limitBytes: number): void {
+    this.archiveDir = dir;
+    this.archiveLimitBytes = limitBytes;
+    this.hub?.configureArchive(dir, limitBytes);
+  }
+
+  get activeRoom(): RoomConn | undefined { return this.rooms.get(this.activeKey); }
+  get hubIsRunning(): boolean { return !!this.hub?.isRunning; }
+  get hubPort(): number { return this.hub?.port ?? 0; }
+
+  /** Push the full snapshot (room list + active room detail) to the webview. */
+  push(): void {
+    postToPanel({ command: "chatState", data: this.state() });
+  }
+
+  private roomSummary(r: RoomConn) {
+    return { key: r.key, room: r.room, url: r.url, status: r.status, unread: r.unread };
+  }
+
+  state(): object {
+    const active = this.activeRoom;
+    return {
+      rooms: [...this.rooms.values()].map(r => this.roomSummary(r)),
+      activeKey: this.activeKey,
+      active: active ? {
+        key: active.key, room: active.room, url: active.url,
+        status: active.status, statusDetail: active.statusDetail,
+        members: active.members, messages: active.messages, self: active.user,
+        selfHost: active.selfHost, selfMuted: active.selfMuted,
+        files: [...active.files.values()].map(f => ({ fileId: f.meta.fileId, name: f.meta.name, from: f.from, size: f.meta.size })),
+      } : null,
+      hubRunning: !!this.hub?.isRunning,
+      hubUrl:     this.hub?.isRunning ? `ws://${ChatHub.localIp()}:${this.hub.port}` : "",
+      hubHttpUrl: this.hub?.isRunning ? `http://${ChatHub.localIp()}:${this.hub.port}` : "",
+      hubPort:    this.hub?.port ?? 0,
+      hubAdminRooms: this.hub?.isRunning
+        ? this.hub.adminRooms().map(r => ({ ...r, hasKey: this.hostedKeys.has(r.room) }))
+        : [],
+    };
+  }
+
+  joinRoom(opts: { url: string; room: string; user: string; token: string; cid?: string }): void {
+    const key = ChatRoomManager.roomKey(opts.url, opts.room);
+    let rc = this.rooms.get(key);
+    if (rc) { rc.user = opts.user; rc.client.connect({ ...opts, kind: "human" }); this.setActive(key); return; }
+
+    rc = {
+      key, url: opts.url, room: opts.room, user: opts.user,
+      client: null as any, messages: [], members: [], status: "connecting", statusDetail: "",
+      unread: 0, selfHost: false, selfMuted: false, files: new Map(),
+    };
+    rc.client = new ChatClient(
+      {
+        onStatus:   (s, d) => { rc!.status = s; rc!.statusDetail = d ?? ""; this.push(); },
+        onMessage:  m => this.addMessage(rc!, m),
+        onHistory:  ms => { rc!.messages = ms.slice(-ChatRoomManager.MAX_MSGS); if (rc!.key === this.activeKey) this.push(); },
+        onPresence: mm => {
+          rc!.members = mm;
+          const me = mm.find(x => x.sid && x.sid === rc!.client.identity);
+          rc!.selfHost = !!me?.host;
+          rc!.selfMuted = !!me?.muted;
+          this.push();
+        },
+        onFileComplete: (meta, from, data) => this.onFileReceived(rc!, meta, from, data),
+        onRejected: (code, m) => this.onJoinRejected(rc!, code, m),
+        onRenamed:  name => { rc!.user = name; this.push(); },
+        onRekey:    secret => this.onRekey(rc!, secret),
+      },
+      m => log.debug(`chat[${rc!.room}]: ${m}`)
+    );
+    this.rooms.set(key, rc);
+    this.activeKey = key;
+    rc.client.connect({ ...opts, kind: "human" });
+    log.action("chat.join", { room: opts.room, user: opts.user });
+  }
+
+  leaveRoom(key: string): void {
+    const rc = this.rooms.get(key);
+    if (!rc) return;
+    try { rc.client.disconnect(); } catch { /* ignore */ }
+    this.rooms.delete(key);
+    if (this.activeKey === key) this.activeKey = this.rooms.keys().next().value ?? "";
+    log.action("chat.leave", { room: rc.room });
+    this.push();
+  }
+
+  setActive(key: string): void {
+    if (!this.rooms.has(key)) return;
+    this.activeKey = key;
+    const rc = this.rooms.get(key)!;
+    rc.unread = 0;
+    this.push();
+  }
+
+  private addMessage(rc: RoomConn, m: ChatMessage): void {
+    // Ignore a message we already have by id (e.g. history backfill overlapping a
+    // live echo on reconnect) so previously-saved messages never pile up.
+    if (m.id && rc.messages.some(x => x.id === m.id)) return;
+    rc.messages.push(m);
+    if (rc.messages.length > ChatRoomManager.MAX_MSGS) rc.messages.splice(0, rc.messages.length - ChatRoomManager.MAX_MSGS);
+    if (rc.key === this.activeKey) {
+      postToPanel({ command: "chatMessage", data: { key: rc.key, message: m } });
+    } else {
+      if (!m.system) rc.unread++;
+      this.push();
+    }
+  }
+
+  private onFileReceived(rc: RoomConn, meta: FileMeta, from: string, data: Buffer): void {
+    rc.files.set(meta.fileId, { meta, from, data });
+    postToPanel({ command: "chatFileReady", data: { key: rc.key, fileId: meta.fileId, name: meta.name, from, size: meta.size } });
+    if (rc.key === this.activeKey) this.push();
+    log.action("chat.fileReceived", { room: rc.room, name: meta.name, size: meta.size });
+  }
+
+  // The host rotated this room's secret (e.g. after a kick). Persist it so the
+  // 🔑 button and future rejoins use the new value, and offer to copy it.
+  private onRekey(rc: RoomConn, secret: string): void {
+    this.hostedKeys.set(ChatHub.canonRoom(rc.room), secret);
+    saveRekeyedSecret(rc.url, rc.room, secret);
+    this.push();
+    const COPY = "Copy New Secret";
+    vscode.window.showInformationMessage(`Room "${rc.room}" secret was rotated. Share the new secret with your team.`, COPY)
+      .then(p => { if (p === COPY) vscode.env.clipboard.writeText(secret); });
+    log.action("chat.rekey", { room: rc.room });
+  }
+
+  // Terminal join failure (bad secret or duplicate name): drop the room and tell
+  // the user so they can fix the name/secret and re-join.
+  private onJoinRejected(rc: RoomConn, code: string, msg: string): void {
+    try { rc.client.disconnect(); } catch { /* ignore */ }
+    this.rooms.delete(rc.key);
+    if (this.activeKey === rc.key) this.activeKey = this.rooms.keys().next().value ?? "";
+    postToPanel({ command: "chatToast", data: { error: msg } });
+    this.push();
+    log.action("chat.joinRejected", { room: rc.room, code });
+  }
+
+  send(text: string): boolean {
+    const rc = this.activeRoom;
+    return rc ? rc.client.sendText(text) : false;
+  }
+
+  /** Host-only: moderate a member in the active room. Target identified by its
+   *  stable identity (sid) when available, else by display name. */
+  moderate(action: "kick" | "mute" | "unmute" | "rename", target: { sid?: string; user: string }, name?: string): void {
+    const rc = this.activeRoom;
+    if (!rc) return;
+    const key = target.sid ? `cid:${target.sid}` : `name:${(target.user || "").trim().toLowerCase()}`;
+    rc.client.sendAdmin(action, key, name);
+  }
+
+  async sendFileToActive(): Promise<void> {
+    const rc = this.activeRoom;
+    if (!rc || !rc.client.isConnected) { vscode.window.showWarningMessage("Join a room before sharing a file."); return; }
+    const picks = await vscode.window.showOpenDialog({ canSelectMany: false, openLabel: "Share to room" });
+    if (!picks || !picks.length) return;
+    const fsPath = picks[0].fsPath;
+    try {
+      const stat = fs.statSync(fsPath);
+      if (stat.size > MAX_FILE_BYTES) { vscode.window.showErrorMessage(`File too large (max ${MAX_FILE_BYTES / 1024 / 1024} MB).`); return; }
+      const data = fs.readFileSync(fsPath);
+      const res = await rc.client.sendFile(path.basename(fsPath), "application/octet-stream", data);
+      if (!res.ok) vscode.window.showErrorMessage(`Share failed: ${res.error}`);
+      else log.action("chat.fileSent", { room: rc.room, name: path.basename(fsPath), size: stat.size });
+    } catch (e: any) {
+      vscode.window.showErrorMessage(`Share failed: ${e?.message ?? e}`);
+    }
+  }
+
+  async saveReceivedFile(key: string, fileId: string): Promise<void> {
+    const rc = this.rooms.get(key);
+    const rec = rc?.files.get(fileId);
+    if (!rec) { vscode.window.showWarningMessage("This file is no longer available (peers must be online to receive it)."); return; }
+    const target = await vscode.window.showSaveDialog({ defaultUri: vscode.Uri.file(path.join(os.homedir(), rec.meta.name)), saveLabel: "Save shared file" });
+    if (!target) return;
+    try {
+      fs.writeFileSync(target.fsPath, rec.data);
+      vscode.window.showInformationMessage(`Saved ${rec.meta.name}`);
+      log.action("chat.fileSaved", { name: rec.meta.name });
+    } catch (e: any) {
+      vscode.window.showErrorMessage(`Save failed: ${e?.message ?? e}`);
+    }
+  }
+
+  /** Export the active room's transcript to a Markdown or JSON file. */
+  async exportActive(): Promise<void> {
+    const rc = this.activeRoom;
+    if (!rc || !rc.messages.length) { vscode.window.showWarningMessage("No messages to export in this room."); return; }
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const base  = `chatroom-${rc.room}-${stamp}`;
+    const target = await vscode.window.showSaveDialog({
+      defaultUri: vscode.Uri.file(path.join(os.homedir(), `${base}.md`)),
+      filters: { Markdown: ["md"], JSON: ["json"] },
+      saveLabel: "Download transcript",
+    });
+    if (!target) return;
+    try {
+      const isJson = target.fsPath.toLowerCase().endsWith(".json");
+      const doc = isJson
+        ? JSON.stringify({ room: rc.room, url: rc.url, exportedAt: new Date().toISOString(), messages: rc.messages }, null, 2)
+        : this.toMarkdown(rc);
+      fs.writeFileSync(target.fsPath, doc, "utf-8");
+      vscode.window.showInformationMessage(`Transcript saved: ${path.basename(target.fsPath)}`);
+      log.action("chat.export", { room: rc.room, count: rc.messages.length });
+    } catch (e: any) {
+      vscode.window.showErrorMessage(`Export failed: ${e?.message ?? e}`);
+    }
+  }
+
+  private toMarkdown(rc: RoomConn): string {
+    const lines: string[] = [`# Chatroom: ${rc.room}`, "", `_Exported ${new Date().toLocaleString()} · ${rc.messages.length} messages_`, ""];
+    for (const m of rc.messages) {
+      const t = new Date(m.ts).toLocaleTimeString();
+      if (m.system) { lines.push(`> _${m.text}_  \`${t}\``, ""); continue; }
+      const who = `${m.kind === "agent" ? "🤖 " : ""}${m.from}`;
+      lines.push(`**${who}** · \`${t}\``, "", m.text, "");
+    }
+    return lines.join("\n");
+  }
+
+  async startHub(port: number): Promise<{ ok: boolean; wsUrl?: string; httpUrl?: string; error?: string }> {
+    try {
+      if (!this.hub) this.hub = new ChatHub(m => log.info(m));
+      this.hub.configureArchive(this.archiveDir, this.archiveLimitBytes);
+      if (this.hub.isRunning) {
+        const ip0 = ChatHub.localIp();
+        return { ok: true, wsUrl: `ws://${ip0}:${this.hub.port}`, httpUrl: `http://${ip0}:${this.hub.port}` };
+      }
+      log.info(`chat: starting hub on port ${port}`);
+      try {
+        await this.hub.start(port);
+      } catch (e: any) {
+        // If the preferred port is busy, fall back to an OS-assigned free port
+        // so a stale/duplicate hub never blocks hosting.
+        if (e?.code === "EADDRINUSE" && port !== 0) {
+          log.warn(`chat: port ${port} busy — retrying on an ephemeral port`);
+          await this.hub.start(0);
+        } else {
+          throw e;
+        }
+      }
+      const ip = ChatHub.localIp();
+      const wsUrl = `ws://${ip}:${this.hub.port}`;
+      const httpUrl = `http://${ip}:${this.hub.port}`;
+      log.info(`chat: hub ready — join URL ${wsUrl} · browser view ${httpUrl}`);
+      log.action("chat.startHub", { port: this.hub.port });
+      this.push();
+      return { ok: true, wsUrl, httpUrl };
+    } catch (e: any) {
+      const detail = e?.message || String(e);
+      log.error(`chat.startHub failed (port ${port}): code=${e?.code ?? "?"} ${detail}`);
+      if (e?.stack) log.error(e.stack);
+      return { ok: false, error: detail };
+    }
+  }
+
+  stopHub(): void {
+    this.hub?.stop();
+    this.hostedKeys.clear();
+    log.action("chat.stopHub");
+    this.push();
+  }
+
+  adminCloseRoom(room: string): void {
+    this.hub?.adminCloseRoom(room);
+    this.hostedKeys.delete(ChatHub.canonRoom(room));
+    log.action("chat.adminCloseRoom", { room });
+    this.push();
+  }
+
+  /** Rotate a hosted room's secret on demand. The rekey flows back via onRekey. */
+  rotateRoomSecret(room: string): boolean {
+    const s = this.hub?.rotateRoomSecret(room);
+    if (s) log.action("chat.rotateSecret", { room });
+    return !!s;
+  }
+
+  adminCloseAll(): void {
+    this.hub?.adminCloseAll();
+    this.hostedKeys.clear();
+    log.action("chat.adminCloseAll");
+    this.push();
+  }
+
+  // Per-room secrets this host set, so we can copy/share them later.
+  rememberRoomKey(room: string, key: string): void { this.hostedKeys.set(ChatHub.canonRoom(room), key); }
+  getRoomKey(room: string): string | undefined { return this.hostedKeys.get(ChatHub.canonRoom(room)); }
+
+  dispose(): void {
+    for (const rc of this.rooms.values()) { try { rc.client.disconnect(); } catch { /* ignore */ } }
+    this.rooms.clear();
+    try { this.hub?.stop(); } catch { /* ignore */ }
+  }
+}
+
+let chatMgr: ChatRoomManager | undefined;
+function getChatMgr(): ChatRoomManager {
+  if (!chatMgr) chatMgr = new ChatRoomManager();
+  return chatMgr;
+}
+
+// Extension context kept for chat helpers that run outside a message handler
+// (e.g. secret rotation triggered by a hub event).
+let chatCtx: vscode.ExtensionContext | undefined;
+function saveRekeyedSecret(url: string, room: string, secret: string): void {
+  if (!chatCtx) return;
+  const id = `${url}||${room}`;
+  const list = chatRecents(chatCtx);
+  const entry = list.find(r => r.id === id);
+  if (entry) { entry.secret = secret; void chatCtx.globalState.update(CHAT_RECENTS_KEY, list); }
+}
+
+// A stable per-installation chat identity so this user is recognizable across
+// reloads/reconnects (extension joins carry it as their cid). Persisted in
+// globalState; generated once.
+let chatCid = "";
+function getChatCid(context: vscode.ExtensionContext): string {
+  if (chatCid) return chatCid;
+  chatCid = context.globalState.get<string>("chatIdentityCid", "") || "";
+  if (!chatCid) {
+    chatCid = randomBytes(4).toString("hex");
+    void context.globalState.update("chatIdentityCid", chatCid);
+  }
+  return chatCid;
+}
+
+/** Post a message to the panel webview if it's open. */
+function postToPanel(m: object): void {
+  panel?.webview.postMessage(m);
+}
+
+// ── Chatroom recents (persisted across sessions) ────────────────────────────
+const CHAT_RECENTS_KEY = "pk.chat.recents";
+interface RecentRoom { id: string; url: string; room: string; user: string; host: boolean; port: number; secret?: string; lastJoined: number; }
+
+function isLocalChatUrl(wsUrl: string): boolean {
+  try { const h = new URL(wsUrl).hostname; return h === "localhost" || h === "127.0.0.1" || h === ChatHub.localIp(); }
+  catch { return false; }
+}
+function chatUrlPort(wsUrl: string): number {
+  try { return Number(new URL(wsUrl).port) || 7345; } catch { return 7345; }
+}
+function chatRecents(ctx: vscode.ExtensionContext): RecentRoom[] {
+  return ctx.globalState.get<RecentRoom[]>(CHAT_RECENTS_KEY, []);
+}
+function chatRecentsForUi(ctx: vscode.ExtensionContext): object[] {
+  return chatRecents(ctx).map(r => ({ id: r.id, url: r.url, room: r.room, user: r.user, host: r.host }));
+}
+async function saveChatRecent(ctx: vscode.ExtensionContext, e: { url: string; room: string; user: string; secret?: string }): Promise<void> {
+  const id = `${e.url}||${e.room}`;
+  const prev = chatRecents(ctx).find(r => r.id === id);
+  const list = chatRecents(ctx).filter(r => r.id !== id);
+  list.unshift({ id, url: e.url, room: e.room, user: e.user, host: isLocalChatUrl(e.url), port: chatUrlPort(e.url), secret: e.secret ?? prev?.secret, lastJoined: Date.now() });
+  await ctx.globalState.update(CHAT_RECENTS_KEY, list.slice(0, 50));
+}
+async function forgetChatRecent(ctx: vscode.ExtensionContext, id: string): Promise<void> {
+  await ctx.globalState.update(CHAT_RECENTS_KEY, chatRecents(ctx).filter(r => r.id !== id));
+}
+/** Probe a hub's HTTP /health endpoint to see if it's reachable. */
+function probeHub(wsUrl: string, timeoutMs = 2000): Promise<boolean> {
+  return new Promise(resolve => {
+    let httpUrl: string;
+    try {
+      const u = new URL(wsUrl);
+      if (u.protocol === "wss:") { resolve(true); return; } // can't cheaply probe TLS; assume reachable
+      u.protocol = "http:"; u.pathname = "/health"; u.search = "";
+      httpUrl = u.toString();
+    } catch { resolve(false); return; }
+    const req = http.get(httpUrl, res => { res.resume(); resolve(res.statusCode === 200); });
+    req.on("error", () => resolve(false));
+    req.setTimeout(timeoutMs, () => { req.destroy(); resolve(false); });
+  });
 }
 
 /** Set store paths, run the one-time DB→files migration, mark ready, refresh. */
@@ -830,6 +1240,10 @@ function getWebviewHtml(webview: vscode.Webview, context: vscode.ExtensionContex
   // `_assets/` markdown image refs to `${NOTES_BASE}/_assets/...` at render time.
   const notesBase = webview.asWebviewUri(vscode.Uri.file(path.join(getStorePath(), "notes")));
   html = html.replace(/%%NOTES_BASE%%/g, notesBase.toString());
+
+  // Stamp the extension version so the running webview build is always visible.
+  const version = (context.extension?.packageJSON?.version as string) || "?";
+  html = html.replace(/%%PKM_VERSION%%/g, version);
   return html;
 }
 
@@ -894,6 +1308,11 @@ async function handleMessage(
         _pendingOpen = undefined;
         respond({ command: "openItem", type, key, edit });
       }
+      if (_pendingTab) {
+        const tab = _pendingTab;
+        _pendingTab = undefined;
+        respond({ command: "openTab", tab });
+      }
       break;
     }
 
@@ -903,6 +1322,240 @@ async function handleMessage(
       _treeProvider?.refresh();
       log.action("reload");
       respond({ command: "reloaded" });
+      break;
+    }
+
+    // ── Chatroom (agent room) ────────────────────────────────────────────
+    case "chatState": {
+      // Webview opened the tab — send current config defaults + live state.
+      const cfg = vscode.workspace.getConfiguration("personalKnowledge");
+      respond({
+        command: "chatConfig",
+        data: {
+          hubUrl:      (cfg.get<string>("chatHubUrl") || "").trim(),
+          room:        (cfg.get<string>("chatRoom") || "general").trim(),
+          displayName: (cfg.get<string>("chatDisplayName") || os.userInfo().username || "user").trim(),
+          hasSecret:   !!(cfg.get<string>("chatSharedSecret") || "").trim(),
+          hubPort:     cfg.get<number>("chatHubPort") ?? 7345,
+        },
+      });
+      getChatMgr().push();
+      respond({ command: "chatRecents", data: { recents: chatRecentsForUi(context) } });
+      break;
+    }
+
+    case "chatConnect": {
+      // Per-room secret: the joiner enters the room's secret (given by the host).
+      const secret = (msg.secret || "").toString().trim();
+      if (!secret) {
+        respond({ command: "chatToast", data: { error: "Enter the room secret the host gave you." } });
+        break;
+      }
+      let url  = (msg.url  || "").trim();
+      let room = (msg.room || "").trim();
+      // A connection string may embed the room: ws://host:port/room
+      if (url) {
+        try {
+          const u = new URL(url);
+          const seg = u.pathname.replace(/^\/+|\/+$/g, "");
+          if (seg && !room) room = decodeURIComponent(seg.split("/").pop() || "");
+          if (seg) url = `${u.protocol}//${u.host}`;
+        } catch { /* leave as-is */ }
+      }
+      if (!room) room = "general";
+      const user = (msg.user || os.userInfo().username || "user").trim();
+      if (!url) {
+        respond({ command: "chatToast", data: { error: "Enter a hub URL (ws://host:port)." } });
+        break;
+      }
+      getChatMgr().joinRoom({ url, room, user, token: secret, cid: getChatCid(context) });
+      await saveChatRecent(context, { url, room, user, secret });
+      respond({ command: "chatRecents", data: { recents: chatRecentsForUi(context) } });
+      break;
+    }
+
+    case "chatRejoin": {
+      const id = String(msg.id || "");
+      const entry = chatRecents(context).find(r => r.id === id);
+      if (!entry) break;
+      const secret = (entry.secret || "").trim();
+      if (!secret) { respond({ command: "chatToast", data: { error: `No stored secret for room "${entry.room}". Use ＋ Join room and enter it.` } }); break; }
+
+      const reachable = await probeHub(entry.url);
+      if (reachable) {
+        getChatMgr().joinRoom({ url: entry.url, room: entry.room, user: entry.user, token: secret, cid: getChatCid(context) });
+        await saveChatRecent(context, entry);
+      } else if (entry.host) {
+        const REHOST = "Rehost & Join", REMOVE = "Remove";
+        const pick = await vscode.window.showInformationMessage(
+          `Your hub for room "${entry.room}" isn't running.`, REHOST, REMOVE);
+        if (pick === REHOST) {
+          const res = await getChatMgr().startHub(entry.port);
+          if (res.ok) { getChatMgr().rememberRoomKey(entry.room, secret); getChatMgr().joinRoom({ url: entry.url, room: entry.room, user: entry.user, token: secret, cid: getChatCid(context) }); await saveChatRecent(context, entry); }
+          else vscode.window.showErrorMessage(`Couldn't start hub: ${res.error}`);
+        } else if (pick === REMOVE) {
+          await forgetChatRecent(context, id);
+        }
+      } else {
+        const REMOVE = "Remove from recents", KEEP = "Keep";
+        const pick = await vscode.window.showWarningMessage(
+          `Room "${entry.room}" at ${entry.url} seems offline (the host may not be online).`, REMOVE, KEEP);
+        if (pick === REMOVE) await forgetChatRecent(context, id);
+      }
+      respond({ command: "chatRecents", data: { recents: chatRecentsForUi(context) } });
+      break;
+    }
+
+    case "chatForgetRoom": {
+      await forgetChatRecent(context, String(msg.id || ""));
+      respond({ command: "chatRecents", data: { recents: chatRecentsForUi(context) } });
+      break;
+    }
+
+    case "chatSetActive": {
+      getChatMgr().setActive((msg.key || "").toString());
+      break;
+    }
+
+    case "chatLeave": {
+      getChatMgr().leaveRoom((msg.key || "").toString());
+      break;
+    }
+
+    case "chatSend": {
+      const ok = getChatMgr().send((msg.text || "").toString());
+      if (!ok) getChatMgr().push();
+      break;
+    }
+
+    case "chatShareFile": {
+      await getChatMgr().sendFileToActive();
+      break;
+    }
+
+    case "chatSaveFile": {
+      await getChatMgr().saveReceivedFile((msg.key || "").toString(), (msg.fileId || "").toString());
+      break;
+    }
+
+    case "chatExport": {
+      await getChatMgr().exportActive();
+      break;
+    }
+
+    case "chatStartHub": {
+      const cfg = vscode.workspace.getConfiguration("personalKnowledge");
+      // Port: 0 (or blank) means auto-pick a free port; otherwise try the given
+      // port and fall back to a free one if it's busy. Persist a chosen port.
+      let port = Number(msg.port);
+      if (!Number.isFinite(port)) port = cfg.get<number>("chatHubPort") ?? 7345;
+      if (port > 0) await cfg.update("chatHubPort", port, vscode.ConfigurationTarget.Global);
+      const room = (String(msg.room || "").trim()) || (cfg.get<string>("chatRoom") || "general").trim();
+      const user = (String(msg.user || "").trim()) || "Host";   // hosts default to "Host"
+      // Per-room secret: use the host's typed key, reuse a prior one, or generate one.
+      let key = String(msg.key || "").trim();
+      if (!key) key = getChatMgr().getRoomKey(room) || randomBytes(9).toString("base64url");
+
+      const res = await getChatMgr().startHub(port);
+      log.info(`chat: startHub result ok=${res.ok}${res.error ? " error=" + res.error : ""}${res.wsUrl ? " url=" + res.wsUrl : ""}`);
+      respond({ command: "chatHubResult", data: res });
+      if (res.ok) {
+        if (room) await cfg.update("chatRoom", room, vscode.ConfigurationTarget.Global);
+        getChatMgr().rememberRoomKey(room, key);
+        const localUrl = `ws://127.0.0.1:${getChatMgr().hubPort}`;
+        getChatMgr().joinRoom({ url: localUrl, room, user, token: key, cid: getChatCid(context) });
+        await saveChatRecent(context, { url: localUrl, room, user, secret: key });
+        respond({ command: "chatRecents", data: { recents: chatRecentsForUi(context) } });
+        const browserUrl = `${res.httpUrl}/room/${encodeURIComponent(room)}`;
+        const COPYKEY = "Copy Room Secret", BROWSER = "Open Browser View";
+        vscode.window.showInformationMessage(
+          `Hosting room "${room}" as ${user}. Give teammates the room secret + link; browser viewers open the room link and enter the secret.`,
+          COPYKEY, BROWSER
+        ).then(pick => {
+          if (pick === COPYKEY) vscode.env.clipboard.writeText(key);
+          else if (pick === BROWSER) vscode.env.openExternal(vscode.Uri.parse(browserUrl));
+        });
+      } else {
+        const SHOW = "Show Logs";
+        vscode.window.showErrorMessage(`Couldn't start chat hub: ${res.error || "unknown error"}`, SHOW)
+          .then(pick => { if (pick === SHOW) vscode.commands.executeCommand("personalKnowledge.showLogs"); });
+      }
+      break;
+    }
+
+    case "chatStopHub": {
+      getChatMgr().stopHub();
+      break;
+    }
+
+    case "chatCopyRoomKey": {
+      const room = String(msg.room || "").trim();
+      const key = getChatMgr().getRoomKey(room);
+      if (!key) { vscode.window.showWarningMessage(`No stored secret for room "${room}".`); break; }
+      await vscode.env.clipboard.writeText(key);
+      vscode.window.showInformationMessage(`Secret for room "${room}" copied. Share it over a trusted channel.`);
+      break;
+    }
+
+    case "chatCopyJoinString": {
+      const room = String(msg.room || "").trim();
+      const port = getChatMgr().hubPort;
+      if (!port) { vscode.window.showWarningMessage("Hub isn't running."); break; }
+      const s = `ws://${ChatHub.localIp()}:${port}/${encodeURIComponent(room)}`;
+      await vscode.env.clipboard.writeText(s);
+      vscode.window.showInformationMessage(`Join string copied: ${s}  (paste into the Join URL box or PKM_CHAT_URL; secret is separate)`);
+      break;
+    }
+
+    case "chatAdminCloseRoom": {
+      getChatMgr().adminCloseRoom(String(msg.room || ""));
+      break;
+    }
+
+    case "chatRotateSecret": {
+      const room = String(msg.room || "").trim();
+      if (!room) break;
+      const pick = await vscode.window.showWarningMessage(
+        `Rotate the secret for room "${room}"? Current members stay connected; anyone joining after this needs the new secret.`,
+        { modal: true }, "Rotate Secret");
+      if (pick !== "Rotate Secret") break;
+      if (!getChatMgr().rotateRoomSecret(room)) vscode.window.showWarningMessage(`Room "${room}" has no secret to rotate.`);
+      break;
+    }
+
+    case "chatModerate": {
+      const action = String(msg.action || "");
+      if (!["kick", "mute", "unmute", "rename"].includes(action)) break;
+      const sid  = msg.sid ? String(msg.sid) : "";
+      const user = String(msg.user || "member");
+      let name: string | undefined;
+      if (action === "kick") {
+        const pick = await vscode.window.showWarningMessage(`Remove "${user}" from the room?`, { modal: true }, "Remove");
+        if (pick !== "Remove") break;
+      }
+      if (action === "rename") {
+        const input = await vscode.window.showInputBox({
+          prompt: `New name for "${user}"`, value: user,
+          validateInput: v => v.trim() ? undefined : "Enter a name",
+        });
+        if (!input) break;
+        name = input.trim();
+      }
+      getChatMgr().moderate(action as "kick" | "mute" | "unmute" | "rename", { sid, user }, name);
+      break;
+    }
+
+    case "chatAdminCloseAll": {
+      const pick = await vscode.window.showWarningMessage(
+        "Deactivate ALL rooms on your hub? Everyone will be disconnected.",
+        { modal: true }, "Close All Rooms");
+      if (pick === "Close All Rooms") getChatMgr().adminCloseAll();
+      break;
+    }
+
+    case "openExternal": {
+      const url = String(msg.url || "").trim();
+      if (url) { try { await vscode.env.openExternal(vscode.Uri.parse(url)); } catch { /* ignore */ } }
       break;
     }
 
@@ -1753,7 +2406,8 @@ async function handleMessage(
     // ── MCP ──────────────────────────────────────────────────────────────
     case "checkMcp": {
       const info = mcpStatus();
-      respond({ command: "mcpStatus", data: info });
+      const chatInfo = chatMcpStatus();
+      respond({ command: "mcpStatus", data: { ...info, chatInstalled: chatInfo.installed, chatServerPath: chatInfo.serverPath } });
       break;
     }
 
@@ -1763,6 +2417,18 @@ async function handleMessage(
         const info = generateMcpServer(context);
         respond({ command: "mcpGenerated", data: { ...info, preview } });
         if (!preview) vscode.window.setStatusBarMessage("$(check) MCP server created", 4000);
+      } catch (e: any) {
+        respond({ command: "mcpError", data: { error: e.message } });
+      }
+      break;
+    }
+
+    case "generateChatMcp": {
+      try {
+        const preview = !!msg.previewOnly;
+        const info = generateChatMcpServer(context);
+        respond({ command: "chatMcpGenerated", data: { ...info, preview } });
+        if (!preview) vscode.window.setStatusBarMessage("$(check) Agent-Room MCP server created", 4000);
       } catch (e: any) {
         respond({ command: "mcpError", data: { error: e.message } });
       }
@@ -2445,6 +3111,298 @@ if __name__ == "__main__":
   return { serverPath: serverPy, configSnippet };
 }
 
+// ── Agent-Room MCP server (Phase C) ─────────────────────────────────────────
+// A standalone MCP server that lets an AI agent join a chatroom over WebSocket.
+// The shared secret comes from the PKM_CHAT_SECRET env var (set by whoever runs
+// the agent, using the secret the host distributes) — never through a tool arg.
+function chatMcpStatus(): { installed: boolean; serverPath: string } {
+  const serverPath = path.join(getStorePath(), "mcp-server", "chat_server.py");
+  return { installed: fs.existsSync(serverPath), serverPath };
+}
+
+function generateChatMcpServer(_context: vscode.ExtensionContext): { serverPath: string; configSnippet: string } {
+  const storePath = getStorePath();
+  const mcpDir    = path.join(storePath, "mcp-server");
+  const serverPy  = path.join(mcpDir, "chat_server.py");
+  const reqTxt    = path.join(mcpDir, "chat_requirements.txt");
+  fs.mkdirSync(mcpDir, { recursive: true });
+
+  fs.writeFileSync(serverPy, `#!/usr/bin/env python3
+"""
+PKM Agent-Room MCP Server — lets an AI agent join a Personal Knowledge chatroom.
+
+Connects to a self-hosted chat hub over WebSocket and exposes tools so an agent
+can join a room, read the conversation, post messages, and leave — collaborating
+with humans and other agents in real time.
+
+Auth: the team SHARED SECRET (created and distributed by the host) is read from
+the PKM_CHAT_SECRET environment variable. It is never passed as a tool argument,
+so it never flows through the model prompt.
+
+Environment variables:
+  PKM_CHAT_SECRET  (required)  the host's shared secret
+  PKM_CHAT_URL                 default hub URL, e.g. ws://host:7345
+  PKM_CHAT_ROOM                default room name (default: general)
+  PKM_CHAT_NAME                default display name (must be unique in the room)
+
+Install:  pip install fastmcp websockets
+Run:      python chat_server.py
+"""
+import os, json, asyncio
+import secrets as _secrets
+from typing import Optional
+
+try:
+    from fastmcp import FastMCP
+except ImportError:
+    raise SystemExit("fastmcp not found. Run: pip install fastmcp websockets")
+try:
+    import websockets
+except ImportError:
+    raise SystemExit("websockets not found. Run: pip install fastmcp websockets")
+
+mcp = FastMCP("PKM Agent Room")
+
+def _load_cid():
+    # Stable identity across restarts so teammates recognize this agent. Stored
+    # next to this file; falls back to an ephemeral id if the file isn't writable.
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".chat_cid")
+    try:
+        if os.path.exists(p):
+            v = open(p).read().strip()
+            if v:
+                return v
+        v = _secrets.token_hex(4)
+        with open(p, "w") as f:
+            f.write(v)
+        return v
+    except Exception:
+        return _secrets.token_hex(4)
+
+_CID = _load_cid()
+_state = {
+    "ws": None, "task": None,
+    "url": "", "room": "", "name": "",
+    "status": "disconnected", "detail": "",
+    "members": [], "messages": [], "cursor": 0,
+}
+_seen_ids = set()   # message ids already recorded — dedup history backfill on reconnect
+
+
+def _env(k, d=""):
+    v = os.environ.get(k)
+    return v if v else d
+
+
+def _norm(m):
+    return {"id": m.get("id", ""), "from": m.get("from", ""), "text": m.get("text", ""),
+            "ts": m.get("ts", 0), "kind": m.get("kind", "human"),
+            "system": bool(m.get("system"))}
+
+
+def _record(nm):
+    # Append a normalized message unless we've already seen it (by id).
+    mid = nm.get("id")
+    if mid:
+        if mid in _seen_ids:
+            return
+        _seen_ids.add(mid)
+    _state["messages"].append(nm)
+
+
+async def _reader(ws):
+    try:
+        async for raw in ws:
+            try:
+                f = json.loads(raw)
+            except Exception:
+                continue
+            t = f.get("t")
+            if t == "presence":
+                _state["members"] = f.get("members", [])
+            elif t == "history":
+                for m in f.get("messages", []):
+                    _record(_norm(m))
+            elif t == "msg":
+                _record(_norm(f))
+            elif t == "system":
+                _state["messages"].append({"from": "", "text": f.get("text", ""),
+                                            "ts": f.get("ts", 0), "kind": "system", "system": True})
+            elif t == "file.offer":
+                fm = f.get("file", {})
+                _state["messages"].append({"from": f.get("from", ""),
+                                            "text": "[shared a file: " + fm.get("name", "") + "]",
+                                            "ts": f.get("ts", 0), "kind": f.get("kind", "human")})
+            elif t == "closed":
+                _state["messages"].append({"from": "", "text": "Room closed (" + f.get("reason", "") + ").",
+                                            "ts": 0, "kind": "system", "system": True})
+                _state["status"] = "disconnected"; _state["detail"] = "room closed"
+            elif t == "kicked":
+                _state["messages"].append({"from": "", "text": f.get("reason", "Removed by the host."),
+                                            "ts": 0, "kind": "system", "system": True})
+                _state["status"] = "disconnected"; _state["detail"] = "removed by host"
+            elif t == "renamed":
+                _state["name"] = f.get("name", _state["name"])
+                _state["messages"].append({"from": "", "text": 'The host renamed you to "' + f.get("name", "") + '".',
+                                            "ts": 0, "kind": "system", "system": True})
+            elif t == "error":
+                # Mute/moderation notices are informational — keep the connection.
+                if f.get("code") in ("muted", "moderation"):
+                    _state["messages"].append({"from": "", "text": f.get("msg", ""),
+                                                "ts": 0, "kind": "system", "system": True})
+                else:
+                    _state["status"] = "error"; _state["detail"] = f.get("msg", "")
+    except Exception as e:
+        _state["detail"] = str(e)
+    finally:
+        _state["status"] = "disconnected"
+        _state["ws"] = None
+
+
+async def _do_leave():
+    ws = _state.get("ws")
+    if ws is not None:
+        try:
+            await ws.send(json.dumps({"t": "leave", "room": _state.get("room", "")}))
+        except Exception:
+            pass
+        try:
+            await ws.close()
+        except Exception:
+            pass
+    task = _state.get("task")
+    if task is not None:
+        task.cancel()
+    _state.update(ws=None, task=None, status="disconnected", members=[])
+
+
+async def _do_join(url, room, name, token):
+    await _do_leave()
+    ws = await websockets.connect(url, open_timeout=8, max_size=8 * 1024 * 1024)
+    await ws.send(json.dumps({"t": "join", "room": room, "user": name,
+                              "token": token, "kind": "agent", "cid": _CID}))
+    _state.update(ws=ws, url=url, room=room, name=name,
+                  status="connected", detail="", members=[], messages=[], cursor=0)
+    _state["task"] = asyncio.create_task(_reader(ws))
+    await asyncio.sleep(0.4)   # collect initial presence/history or an auth error
+    if _state["status"] == "error":
+        raise RuntimeError(_state["detail"] or "join rejected")
+    return True
+
+
+@mcp.tool()
+async def chat_join(url: str = "", room: str = "", name: str = "") -> str:
+    """Join a Personal Knowledge chatroom as an AI agent. Arguments override the
+    PKM_CHAT_URL / PKM_CHAT_ROOM / PKM_CHAT_NAME environment defaults. The shared
+    secret is read from PKM_CHAT_SECRET (never passed here). Your display name must
+    be unique in the room. Returns connection status and current members."""
+    token = _env("PKM_CHAT_SECRET")
+    if not token:
+        return json.dumps({"ok": False, "error": "PKM_CHAT_SECRET is not set. Ask the host for the shared secret and set it in this server's environment."})
+    url = url or _env("PKM_CHAT_URL")
+    room = room or _env("PKM_CHAT_ROOM", "")
+    name = name or _env("PKM_CHAT_NAME", "agent-" + _CID)
+    # A connection string may embed the room: ws://host:port/roomname
+    if url and not room:
+        try:
+            from urllib.parse import urlparse, unquote
+            pu = urlparse(url)
+            seg = (pu.path or "").strip("/")
+            if seg:
+                room = unquote(seg.split("/")[-1])
+                url = pu.scheme + "://" + pu.netloc
+        except Exception:
+            pass
+    if not room:
+        room = "general"
+    if not url:
+        return json.dumps({"ok": False, "error": "No hub URL. Pass url=ws://host:port[/room] or set PKM_CHAT_URL."})
+    try:
+        await _do_join(url, room, name, token)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)})
+    return json.dumps({"ok": True, "room": room, "name": name, "members": _state["members"]})
+
+
+@mcp.tool()
+async def chat_post(text: str) -> str:
+    """Post a message to the joined chatroom (visible to all humans and agents)."""
+    ws = _state.get("ws")
+    if ws is None or _state["status"] != "connected":
+        return json.dumps({"ok": False, "error": "Not connected. Call chat_join first."})
+    try:
+        await ws.send(json.dumps({"t": "msg", "room": _state["room"],
+                                  "from": _state["name"], "text": text, "kind": "agent"}))
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)})
+    return json.dumps({"ok": True})
+
+
+@mcp.tool()
+async def chat_read(limit: int = 50, only_new: bool = True) -> str:
+    """Read messages from the joined room. By default returns only messages that
+    arrived since your last chat_read; set only_new=false for the latest 'limit'
+    messages. Each message has from, text, ts, and kind (human/agent/system)."""
+    msgs = _state["messages"]
+    start = _state["cursor"] if only_new else max(0, len(msgs) - max(1, limit))
+    items = msgs[start:]
+    if len(items) > limit:
+        items = items[-limit:]
+    _state["cursor"] = len(msgs)
+    return json.dumps({"ok": True, "count": len(items), "messages": items, "status": _state["status"]})
+
+
+@mcp.tool()
+async def chat_members() -> str:
+    """List who is in the room. 'present' are connected now; 'left' is roster history
+    (people who were here and disconnected). Each entry carries a stable 'sid'
+    identity id (verified for extension/MCP, best-effort for browser)."""
+    everyone = _state["members"]
+    present = [m for m in everyone if m.get("present", True)]
+    left = [m for m in everyone if not m.get("present", True)]
+    return json.dumps({"ok": True, "present": present, "left": left,
+                       "members": present, "status": _state["status"]})
+
+
+@mcp.tool()
+async def chat_status() -> str:
+    """Report the current connection status (room, name, status, member count)."""
+    present = [m for m in _state["members"] if m.get("present", True)]
+    return json.dumps({"ok": True, "room": _state["room"], "name": _state["name"],
+                       "status": _state["status"], "detail": _state["detail"],
+                       "members": len(present)})
+
+
+@mcp.tool()
+async def chat_leave() -> str:
+    """Leave the chatroom and close the connection."""
+    await _do_leave()
+    return json.dumps({"ok": True})
+
+
+if __name__ == "__main__":
+    mcp.run()
+`);
+
+  fs.writeFileSync(reqTxt, "fastmcp>=2.0.0\nwebsockets>=12.0\n");
+
+  const configSnippet = JSON.stringify({
+    mcpServers: {
+      "pkm-chat": {
+        command: "python",
+        args: [serverPy],
+        env: {
+          PKM_CHAT_SECRET: "<paste the room secret>",
+          PKM_CHAT_URL: "ws://HOST:7345/ROOM",
+          PKM_CHAT_NAME: "my-agent",
+        },
+      }
+    }
+  }, null, 2);
+
+  return { serverPath: serverPy, configSnippet };
+}
+
 // ── AI Summary for scripts ──────────────────────────────────────────────────
 // ── AI backends ─────────────────────────────────────────────────────────────
 interface AiBackend { id: string; label: string; kind: "copilot" | "azure-openai" | "openai-compatible"; model: string; }
@@ -2589,7 +3547,7 @@ async function aiSummarizeScript(
 
 // ── Sidebar tree provider ──────────────────────────────────────────────────
 type PkNodeType =
-  | 'root-skills' | 'root-notes' | 'root-papers' | 'root-prompts' | 'root-packages' | 'root-scripts'
+  | 'root-skills' | 'root-notes' | 'root-papers' | 'root-prompts' | 'root-packages' | 'root-scripts' | 'root-chatroom'
   | 'skill-folder' | 'skill' | 'note-folder' | 'note' | 'paper-folder' | 'paper'
   | 'prompt-project' | 'prompt-task' | 'prompt-version' | 'prompt-file'
   | 'package' | 'script-folder' | 'script-file';
@@ -2606,7 +3564,7 @@ class PkTreeItem extends vscode.TreeItem {
     super(label, collapsibleState);
     const ICONS: Partial<Record<PkNodeType, string>> = {
       "root-skills": "book", "root-notes": "note", "root-papers": "library", "root-prompts": "comment-discussion",
-      "root-packages": "package", "root-scripts": "terminal",
+      "root-packages": "package", "root-scripts": "terminal", "root-chatroom": "comment-discussion",
       "skill-folder": "folder", "note-folder": "folder", "paper-folder": "folder",
       "skill": "symbol-snippet", "note": "file-text", "paper": "file-pdf",
       "prompt-project": "folder", "prompt-task": "symbol-file",
@@ -2640,6 +3598,8 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
   getChildren(element?: PkTreeItem): PkTreeItem[] {
     const C = vscode.TreeItemCollapsibleState.Collapsed;
     if (!element) {
+      const chatroom = new PkTreeItem("Chatroom", 'root-chatroom', vscode.TreeItemCollapsibleState.None);
+      chatroom.command = { command: "personalKnowledge.openChatroom", title: "Open Chatroom" };
       return [
         new PkTreeItem("Skills",   'root-skills',   vscode.TreeItemCollapsibleState.Collapsed),
         new PkTreeItem("Notes",    'root-notes',    C),
@@ -2647,6 +3607,7 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
         new PkTreeItem("Prompts",  'root-prompts',  C),
         new PkTreeItem("Packages", 'root-packages', C),
         new PkTreeItem("Scripts",  'root-scripts',  C),
+        chatroom,
       ];
     }
     try {
@@ -2939,10 +3900,19 @@ async function firstTimeSetup(context: vscode.ExtensionContext): Promise<string 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   log.init(context);
   log.info(`activating extension v${context.extension?.packageJSON?.version ?? "?"}`);
+  chatCtx = context;
+  const applyChatArchiveCfg = () => {
+    const c = vscode.workspace.getConfiguration("personalKnowledge");
+    const mb = Math.max(0, c.get<number>("chatHistoryLimitMB") ?? 10);
+    const dir = path.join(context.globalStorageUri.fsPath, "chat-history");
+    getChatMgr().configureArchive(dir, Math.round(mb * 1024 * 1024));
+  };
+  applyChatArchiveCfg();
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration(e => {
       if (e.affectsConfiguration("personalKnowledge.logLevel")) log.refreshLevel();
       if (e.affectsConfiguration("personalKnowledge.maxTreeDepth")) _treeProvider?.refresh();
+      if (e.affectsConfiguration("personalKnowledge.chatHistoryLimitMB")) applyChatArchiveCfg();
     })
   );
 
@@ -3153,6 +4123,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       p.webview.postMessage({ command: "openTab", tab: "mcp" });
     }),
 
+    vscode.commands.registerCommand("personalKnowledge.openChatroom", async () => {
+      log.action("command.openChatroom");
+      const p = getOrCreatePanel(context);
+      p.reveal(vscode.ViewColumn.One);
+      if (_panelReady) p.webview.postMessage({ command: "openTab", tab: "chatroom" });
+      else _pendingTab = "chatroom"; // flushed on the webview "ready" message
+    }),
+
     vscode.commands.registerCommand("personalKnowledge.showLogs", () => log.show()),
 
     vscode.commands.registerCommand("personalKnowledge.setAiKey", async () => {
@@ -3219,4 +4197,4 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
   context.subscriptions.push(_watcher);
 }
 
-export function deactivate(): void { _watcher?.dispose(); disposeServers(); log.info("deactivated"); }
+export function deactivate(): void { _watcher?.dispose(); disposeServers(); chatMgr?.dispose(); log.info("deactivated"); }
