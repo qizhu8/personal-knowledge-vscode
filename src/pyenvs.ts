@@ -452,8 +452,37 @@ export function pyenvActivateScript(id: string): { script: string; error?: strin
   return { script: lines.join("\n") + "\n" };
 }
 
-/** A bash snippet that deletes this environment. The extension never runs it —
- *  it is shown to the user to review and execute manually. */
+/** Conda install root for a prefix (strips a trailing /envs/<name> or \envs\<name>). */
+function condaRoot(prefix: string): string {
+  const i1 = prefix.indexOf("/envs/"), i2 = prefix.indexOf("\\envs\\");
+  const i = i1 >= 0 ? i1 : i2;
+  return i >= 0 ? prefix.slice(0, i) : prefix;
+}
+
+/** Platform-aware activation commands to send to an interactive terminal.
+ *  Windows → PowerShell (Activate.ps1 / conda-hook.ps1); otherwise POSIX bash. */
+export function pyenvActivateCommands(id: string): { lines: string[]; display: string; shell: "powershell" | "posix"; error?: string } {
+  const env = pyenvGet(id);
+  if (!env) return { lines: [], display: "", shell: "posix", error: "unknown environment" };
+  const win = process.platform === "win32";
+  const lines: string[] = [];
+  if (env.manager === "conda" && env.path) {
+    const root = condaRoot(env.path);
+    if (win) {
+      lines.push(`& "${root}\\shell\\condabin\\conda-hook.ps1"`, `conda activate "${env.path}"`);
+    } else {
+      lines.push(`source "${root}/etc/profile.d/conda.sh"`, `conda activate "${env.path}"`);
+    }
+  } else if (env.path) {
+    if (win) lines.push(`& "${env.path}\\Scripts\\Activate.ps1"`);
+    else lines.push(`source "${env.path}/bin/activate"`);
+  } else if (env.python) {
+    if (win) lines.push(`$env:Path = "${path.dirname(env.python)};" + $env:Path`);
+    else lines.push(`export PATH="${path.dirname(env.python)}:$PATH"`);
+  }
+  const header = win ? `# PowerShell — activate ${env.name} (${env.manager})` : `#!/usr/bin/env bash\n# Activate ${env.name} (${env.manager})`;
+  return { lines, display: header + "\n" + lines.join("\n") + "\n", shell: win ? "powershell" : "posix" };
+}
 export function pyenvDeleteScript(id: string): { script: string; error?: string } {
   const env = pyenvGet(id);
   if (!env) return { script: "", error: "unknown environment" };

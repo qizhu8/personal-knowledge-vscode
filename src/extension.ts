@@ -22,7 +22,7 @@ import { ChatHub, ChatClient, ChatMessage, Member, FileMeta, MAX_FILE_BYTES } fr
 import {
   initPyenvs, pyenvList, pyenvAdd, pyenvUpdate, pyenvDelete,
   condaEnvs, detectFolderEnv, pyenvPackages, pyenvCompare,
-  pyenvSize, pyenvActivateScript, pyenvCreate, pyenvSimilarity, pyenvPyVersion, pyenvMigrate, pyenvDeleteScript, pyenvMergeScript,
+  pyenvSize, pyenvActivateScript, pyenvActivateCommands, pyenvCreate, pyenvSimilarity, pyenvPyVersion, pyenvMigrate, pyenvDeleteScript, pyenvMergeScript,
 } from "./pyenvs";
 import {
   promptList, promptGetFile, promptGetAllVersionsOfFile,
@@ -125,6 +125,16 @@ class Logger {
 }
 
 const log = new Logger();
+
+/** Human summary of what a sync session shares, across ALL content types. */
+function syncSummary(s: { contentTypes: string[]; selected: Record<string, string[]> }): string {
+  const types = s.contentTypes || [];
+  if (!types.length) return "nothing";
+  return types.map(t => {
+    const arr = (s.selected as any)?.[t] || [];
+    return arr.length ? `${arr.length} ${t}` : `all ${t}`;
+  }).join(", ");
+}
 
 /** Ensure the knowledge store is a git repository (init on first use). */
 function ensureGitRepo(): void {
@@ -1986,14 +1996,13 @@ async function handleMessage(
       break;
     }
     case "envActivate": {
-      const { script, error } = pyenvActivateScript(String(msg.id || ""));
-      if (error || !script) { respond({ command: "envActivate", id: msg.id, error: error || "no script" }); break; }
+      const { lines, display, error } = pyenvActivateCommands(String(msg.id || ""));
+      if (error || !lines.length) { respond({ command: "envActivate", id: msg.id, error: error || "no activation command" }); break; }
       const env = pyenvList().find(e => e.id === msg.id);
       const term = vscode.window.createTerminal(`env: ${env?.name || msg.id}`);
       term.show();
-      const cmd = script.split("\n").filter(l => l && !l.startsWith("#")).join(" && ");
-      term.sendText(cmd, true);
-      respond({ command: "envActivate", id: msg.id, script, termName: `env: ${env?.name || msg.id}` });
+      for (const line of lines) term.sendText(line, true); // per-line: works in PowerShell 5.1 and bash
+      respond({ command: "envActivate", id: msg.id, script: display, termName: `env: ${env?.name || msg.id}` });
       break;
     }
 
@@ -2235,6 +2244,7 @@ async function handleMessage(
           id: session.id, url: session.url, username: session.username,
           password: session.password, expires: session.expires.toISOString(),
           contentTypes: session.contentTypes, selected: session.selected,
+          summary: syncSummary(session),
         }});
       } catch (e: any) {
         respond({ command: "syncError", data: { error: e.message } });
@@ -2247,6 +2257,7 @@ async function handleMessage(
         id: s.id, url: s.url, username: s.username, password: s.password,
         expires: s.expires.toISOString(), enabled: s.enabled,
         skillCount: s.selected.skills.length || "all",
+        summary: syncSummary(s),
         created: s.created.toISOString(),
       }));
       respond({ command: "syncSessions", data: { sessions } });
@@ -2259,6 +2270,7 @@ async function handleMessage(
         id: s.id, url: s.url, username: s.username, password: s.password,
         expires: s.expires.toISOString(), enabled: s.enabled,
         skillCount: s.selected.skills.length || "all",
+        summary: syncSummary(s),
         created: s.created.toISOString(),
       }));
       respond({ command: "syncSessions", data: { sessions } });
@@ -2345,12 +2357,12 @@ async function handleMessage(
     }
 
     case "getSyncContentList": {
-      const skills   = (skillList() as any[]).map((r: any) => ({ id: r.name,  label: r.name,  meta: r.category ?? "" }));
-      const notes    = (noteList(undefined, 200) as any[]).map((r: any) => ({ id: r.slug,  label: r.title, meta: r.type }));
-      const papers   = (paperList() as any[]).map((p: any) => ({ id: p.slug, label: p.title, meta: p.topic || (p.year ? String(p.year) : "") }));
-      const prompts  = promptList().flatMap(t => ({ id: `${t.project}/${t.task}`, label: t.task, meta: t.project }));
-      const scripts  = (scriptList() as any[]).map((s: any) => ({ id: s.path, label: s.file, meta: s.category }));
-      const packages = packageList().map((p: any) => ({ id: p.name, label: p.name, meta: p.lang }));
+      const skills   = (skillList() as any[]).map((r: any) => ({ id: r.name,  label: r.name,  cat: r.category ?? "", meta: "" }));
+      const notes    = (noteList(undefined, 200) as any[]).map((r: any) => ({ id: r.slug,  label: r.title, cat: r.category ?? "", meta: r.type }));
+      const papers   = (paperList() as any[]).map((p: any) => ({ id: p.slug, label: p.title, cat: p.category ?? p.topic ?? "", meta: p.year ? String(p.year) : "" }));
+      const prompts  = promptList().flatMap(t => ({ id: `${t.project}/${t.task}`, label: t.task, cat: t.project, meta: "" }));
+      const scripts  = (scriptList() as any[]).map((s: any) => ({ id: s.path, label: s.file, cat: s.category ?? "", meta: s.lang }));
+      const packages = packageList().map((p: any) => ({ id: p.name, label: p.name, cat: "", meta: p.lang }));
       respond({ command: "syncContentList", data: { skills, notes, papers, prompts, scripts, packages } });
       break;
     }

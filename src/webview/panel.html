@@ -26,11 +26,23 @@ body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family
 /* Topbar */
 #topbar{background:var(--panel);border-bottom:1px solid var(--border);
   display:flex;align-items:center;gap:8px;padding:6px 12px;flex-shrink:0}
-#tabs{display:flex;gap:2px;flex:1}
+#tabwrap{flex:1;min-width:64px;display:flex;align-items:center;gap:2px;overflow:hidden}
+#tabs{display:flex;gap:2px;overflow-x:auto;scroll-behavior:smooth;scrollbar-width:none;-ms-overflow-style:none}
+#tabs::-webkit-scrollbar{display:none}
+.tabnav{flex:none;border:none;background:transparent;color:var(--muted);cursor:pointer;
+  font-size:15px;line-height:1;padding:2px 5px;border-radius:4px}
+.tabnav:hover{background:var(--hover);color:var(--text)}
 .tab{padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;color:var(--muted);border:none;
   background:transparent;white-space:nowrap}
 .tab:hover{background:var(--hover);color:var(--text)}
 .tab.active{background:var(--active);color:var(--active-fg)}
+#toolbar{display:flex;align-items:center;gap:6px}
+#more-wrap{position:relative;flex:none}
+#more-menu{position:absolute;right:0;top:calc(100% + 6px);background:var(--panel);border:1px solid var(--border);
+  border-radius:6px;padding:6px;display:none;flex-direction:column;gap:4px;z-index:60;min-width:150px;
+  box-shadow:0 6px 20px rgba(0,0,0,.35)}
+#more-menu.open{display:flex}
+#more-menu .tbtn{width:100%;text-align:left}
 .tbtn{padding:4px 10px;border-radius:4px;border:1px solid var(--border);background:var(--input);
   color:var(--text);font-size:11px;cursor:pointer;white-space:nowrap}
 .tbtn:hover{border-color:var(--accent)}
@@ -291,6 +303,19 @@ hr.div{border:none;border-top:1px solid var(--border);margin:14px 0}
 .skill-check-item:hover{background:var(--hover)}
 .skill-check-item input[type=checkbox]{accent-color:var(--accent);cursor:pointer}
 .skill-check-all{font-size:11px;color:var(--accent);cursor:pointer;margin-bottom:4px;display:block}
+/* Sync content selection tree */
+.syn-sec{margin-bottom:8px;border:1px solid var(--border);border-radius:6px;overflow:hidden}
+.syn-sec-hd{display:flex;align-items:center;gap:8px;padding:7px 10px;background:var(--panel);cursor:pointer}
+.syn-frow{display:flex;align-items:center;gap:6px;padding:3px 4px;border-radius:3px;font-size:12px}
+.syn-frow:hover{background:var(--hover)}
+.syn-farrow{font-size:9px;width:12px;flex-shrink:0;color:var(--muted);cursor:pointer;user-select:none;text-align:center}
+.syn-fname{cursor:pointer;font-weight:600;color:var(--accent);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.syn-fcount{font-size:10px;color:var(--muted);background:var(--border);border-radius:8px;padding:1px 6px;flex-shrink:0}
+.syn-leaf{display:flex;align-items:center;gap:6px;padding:3px 4px;border-radius:3px;cursor:pointer;font-size:12px}
+.syn-leaf:hover{background:var(--hover)}
+.syn-leaf input,.syn-frow input{accent-color:var(--accent);cursor:pointer;flex-shrink:0}
+.syn-lname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.syn-leaf .cat{font-size:9px;color:var(--muted);margin-left:auto;flex-shrink:0}
 /* Credential box */
 .cred-box{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;font-size:12px;font-family:var(--vscode-editor-font-family)}
 .cred-row{display:flex;gap:8px;align-items:center;margin-bottom:6px}
@@ -418,28 +443,38 @@ body.chat-resizing{cursor:col-resize;user-select:none}
 </head>
 <body>
 <div id="topbar">
-  <div id="tabs">
-    <button class="tab active" data-tab="skills">Skills</button>
-    <button class="tab" data-tab="notes">Notes</button>
-    <button class="tab" data-tab="papers">Papers</button>
-    <button class="tab" data-tab="prompts">Prompts</button>
-    <button class="tab" data-tab="packages">Packages</button>
-    <button class="tab" data-tab="scripts">Scripts</button>
-    <button class="tab" data-tab="environments">🐍 Envs</button>
-    <button class="tab" data-tab="servers">🖥 Servers</button>
-    <button class="tab" data-tab="mcp">⚡ MCP</button>
-    <button class="tab" data-tab="chatroom">💬 Chatroom</button>
+  <div id="tabwrap">
+    <button id="tab-left" class="tabnav" onclick="scrollTabs(-1)" title="Scroll tabs left" style="display:none">‹</button>
+    <div id="tabs">
+      <button class="tab active" data-tab="skills">Skills</button>
+      <button class="tab" data-tab="notes">Notes</button>
+      <button class="tab" data-tab="papers">Papers</button>
+      <button class="tab" data-tab="prompts">Prompts</button>
+      <button class="tab" data-tab="packages">Packages</button>
+      <button class="tab" data-tab="scripts">Scripts</button>
+      <button class="tab" data-tab="environments">🐍 Envs</button>
+      <button class="tab" data-tab="servers">🖥 Servers</button>
+      <button class="tab" data-tab="mcp">⚡ MCP</button>
+      <button class="tab" data-tab="chatroom">💬 Chatroom</button>
+    </div>
+    <button id="tab-right" class="tabnav" onclick="scrollTabs(1)" title="Scroll tabs right" style="display:none">›</button>
   </div>
   <input id="searchbox" type="search" placeholder="Search…">
-  <button class="tbtn" onclick="doReload()" title="Reload from disk (pick up external / MCP changes)">↻ Refresh</button>
-  <button class="tbtn" onclick="toggleNoteForm()">+ Note</button>
-  <button class="tbtn" id="btn-add-paper" onclick="openPaperForm()" style="display:none">+ Paper</button>
-  <button class="tbtn" id="btn-paper-graph" onclick="togglePaperGraph()" style="display:none">🕸 Graph</button>
-  <button class="tbtn" onclick="doExport()">⬇ Export</button>
-  <button class="tbtn" onclick="triggerImport()">⬆ Import</button>
-  <button class="tbtn" onclick="openSyncModal()">🔄 Sync</button>
+  <div id="toolbar">
+    <button class="tbtn" data-ord="1" onclick="doReload()" title="Reload from disk (pick up external / MCP changes)">↻ Refresh</button>
+    <button class="tbtn" data-ord="2" onclick="toggleNoteForm()">+ Note</button>
+    <button class="tbtn" data-ord="3" id="btn-add-paper" onclick="openPaperForm()" style="display:none">+ Paper</button>
+    <button class="tbtn" data-ord="4" id="btn-paper-graph" onclick="togglePaperGraph()" style="display:none">🕸 Graph</button>
+    <button class="tbtn" data-ord="5" onclick="doExport()">⬇ Export</button>
+    <button class="tbtn" data-ord="6" onclick="triggerImport()">⬆ Import</button>
+    <button class="tbtn" data-ord="7" onclick="openSyncModal()">🔄 Sync</button>
+  </div>
+  <div id="more-wrap">
+    <button id="more-btn" class="tbtn" onclick="toggleMoreMenu(event)" title="More actions" style="display:none">⋯</button>
+    <div id="more-menu"></div>
+  </div>
   <input type="file" id="import-file" accept=".json" style="display:none" onchange="doImport(this)">
-  <span id="pkm-version" title="Personal Knowledge extension version" style="margin-left:auto;font-size:10px;color:var(--muted);opacity:.7;padding-left:8px">v%%PKM_VERSION%%</span>
+  <span id="pkm-version" title="Personal Knowledge extension version" style="font-size:10px;color:var(--muted);opacity:.7;padding-left:4px">v%%PKM_VERSION%%</span>
 </div>
 <div id="layout">
   <div id="sidebar">
@@ -575,6 +610,7 @@ body.chat-resizing{cursor:col-resize;user-select:none}
     <div id="sm-pane-host">
       <div class="sm-section">
         <div class="sm-label">Select what to share</div>
+        <div style="font-size:11px;color:var(--muted);margin:-2px 0 6px">Nothing is shared until you check items. Expand a section and tick items or a folder (or the header to select all of that type).</div>
         <div id="sync-type-sections"></div>
       </div>
       <div class="sm-section">
@@ -915,7 +951,7 @@ window.addEventListener('message', e => {
         <div class="cred-row"><span class="cred-label">Username</span><span class="cred-val">${esc(s.username)}</span><button class="cred-copy" onclick="navigator.clipboard.writeText('${esc(s.username)}')">Copy</button></div>
         <div class="cred-row"><span class="cred-label">Password</span><span class="cred-val">${esc(s.password)}</span><button class="cred-copy" onclick="navigator.clipboard.writeText('${esc(s.password)}')">Copy</button></div>
         <div class="cred-row"><span class="cred-label">Expires</span><span class="cred-val">${new Date(s.expires).toLocaleTimeString()}</span></div>
-        <div class="cred-row"><span class="cred-label">Skills</span><span class="cred-val">${s.skillCount === 'all' ? 'All skills' : s.skillCount + ' selected'}</span></div>
+        <div class="cred-row"><span class="cred-label">Shares</span><span class="cred-val">${esc(s.summary || 'nothing selected')}</span></div>
       </div>`;
     ask('getSyncSessions', {});
   }
@@ -986,6 +1022,56 @@ window.addEventListener('message', e => {
 });
 
 function ask(command, payload) { vscode.postMessage({ command, ...payload }); }
+
+// ── Topbar overflow: sliding tabs + collapsing action buttons ───────────
+function scrollTabs(dir) { const t = document.getElementById('tabs'); if (t) t.scrollBy({ left: dir * 160, behavior: 'smooth' }); }
+function updateTabNav() {
+  const t = document.getElementById('tabs'); if (!t) return;
+  const over = t.scrollWidth > t.clientWidth + 2;
+  const l = document.getElementById('tab-left'), r = document.getElementById('tab-right');
+  if (l) l.style.display = over ? '' : 'none';
+  if (r) r.style.display = over ? '' : 'none';
+}
+function sortToolbar() {
+  const tb = document.getElementById('toolbar'); if (!tb) return;
+  [...tb.children].sort((a, b) => (+a.dataset.ord || 0) - (+b.dataset.ord || 0)).forEach(c => tb.appendChild(c));
+}
+function layoutTopbar() {
+  const topbar = document.getElementById('topbar'), tb = document.getElementById('toolbar'),
+        menu = document.getElementById('more-menu'), moreBtn = document.getElementById('more-btn');
+  if (!topbar || !tb || !menu || !moreBtn) return;
+  while (menu.firstChild) tb.appendChild(menu.firstChild);
+  sortToolbar();
+  moreBtn.style.display = 'none';
+  updateTabNav();
+  let guard = 40;
+  while (topbar.scrollWidth > topbar.clientWidth + 1 && guard-- > 0) {
+    const vis = [...tb.children].filter(b => b.offsetParent !== null);
+    if (!vis.length) break;
+    menu.insertBefore(vis[vis.length - 1], menu.firstChild);
+    moreBtn.style.display = '';
+  }
+  updateTabNav();
+}
+function relayoutTopbar() { requestAnimationFrame(layoutTopbar); }
+function toggleMoreMenu(e) { if (e) e.stopPropagation(); const m = document.getElementById('more-menu'); if (m) m.classList.toggle('open'); }
+document.addEventListener('click', e => {
+  const menu = document.getElementById('more-menu'); if (!menu || !menu.classList.contains('open')) return;
+  const wrap = document.getElementById('more-wrap');
+  if (!wrap) return;
+  if (wrap.contains(e.target) && e.target.id !== 'more-btn') setTimeout(() => menu.classList.remove('open'), 0);
+  else if (!wrap.contains(e.target)) menu.classList.remove('open');
+});
+if (window.ResizeObserver) {
+  const ro = new ResizeObserver(() => relayoutTopbar());
+  const el = document.getElementById('topbar'); if (el) ro.observe(el);
+}
+(() => {
+  const t = document.getElementById('tabs'); if (!t) return;
+  t.addEventListener('scroll', updateTabNav, { passive: true });
+  t.addEventListener('wheel', e => { if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) { t.scrollLeft += e.deltaY; e.preventDefault(); } }, { passive: false });
+})();
+relayoutTopbar();
 
 // ── Chatroom (agent room) ───────────────────────────────────────────────────
 const chat = {
@@ -1535,6 +1621,7 @@ function updatePaperChrome() {
   const on = state.tab === 'papers';
   document.getElementById('btn-add-paper').style.display = on ? '' : 'none';
   document.getElementById('btn-paper-graph').style.display = on ? '' : 'none';
+  relayoutTopbar();
 }
 // Return to the plain list/detail view (hide paper form + graph).
 function closePaperViews() {
@@ -2237,27 +2324,92 @@ function buildTypeSections(content) {
     { id: 'packages', label: 'Packages', icon: '📦', items: content.packages || [] },
   ];
   const wrap = document.getElementById('sync-type-sections');
-  wrap.innerHTML = TYPES.map(t => `
-    <div style="margin-bottom:8px;border:1px solid var(--border);border-radius:6px;overflow:hidden">
-      <div style="display:flex;align-items:center;gap:8px;padding:7px 10px;background:var(--panel);cursor:pointer"
-           onclick="toggleSyncType('${t.id}')">
-        <input type="checkbox" id="ct-${t.id}" onclick="event.stopPropagation();syncTypeCheck('${t.id}')"
-               ${t.id==='skills'?'checked':''}>
+  wrap.innerHTML = TYPES.map(t => {
+    const open = t.id === 'skills';
+    const body = t.items.length
+      ? synRenderNode(t.id, synBuildTree(t.items), [], 0)
+      : `<div style="color:var(--muted);font-size:11px;padding:6px">No ${t.label.toLowerCase()} found.</div>`;
+    return `
+    <div class="syn-sec">
+      <div class="syn-sec-hd" onclick="toggleSyncType('${t.id}')">
+        <input type="checkbox" id="ct-${t.id}" onclick="event.stopPropagation();syncTypeCheck('${t.id}')">
         <span style="font-size:12px;font-weight:600">${t.icon} ${t.label}</span>
         <span style="font-size:11px;color:var(--muted);margin-left:auto">${t.items.length} items</span>
-        <span id="ct-arrow-${t.id}" style="font-size:10px;color:var(--muted)">${t.id==='skills'?'▼':'▶'}</span>
+        <span id="ct-arrow-${t.id}" style="font-size:10px;color:var(--muted)">${open?'▼':'▶'}</span>
       </div>
-      <div id="ct-list-${t.id}" style="display:${t.id==='skills'?'':'none'};max-height:150px;overflow-y:auto;padding:4px">
-        ${t.items.map(item => `
-          <label class="skill-check-item">
-            <input type="checkbox" data-type="${t.id}" data-item="${esc(item.id)}" checked onchange="syncItemToggle('${t.id}')">
-            <span>${esc(item.label)}</span>
-            ${item.meta?`<span class="cat" style="font-size:9px">${esc(item.meta)}</span>`:''}
-          </label>`).join('')}
-        ${!t.items.length?`<div style="color:var(--muted);font-size:11px;padding:6px">No ${t.label.toLowerCase()} found.</div>`:''}
-      </div>
-    </div>`).join('');
+      <div id="ct-list-${t.id}" style="display:${open?'':'none'};max-height:220px;overflow-y:auto;padding:4px">${body}</div>
+    </div>`;
+  }).join('');
 }
+
+// Build a nested folder tree from flat items using their `cat` (slash path).
+function synBuildTree(items) {
+  const root = { folders: {}, items: [] };
+  for (const it of items) {
+    const segs = String(it.cat || '').split('/').map(s => s.trim()).filter(Boolean);
+    let node = root;
+    for (const s of segs) { node.folders[s] = node.folders[s] || { folders: {}, items: [] }; node = node.folders[s]; }
+    node.items.push(it);
+  }
+  return root;
+}
+function synCountLeaves(node) {
+  let n = node.items.length;
+  for (const k in node.folders) n += synCountLeaves(node.folders[k]);
+  return n;
+}
+function synRenderNode(type, node, path, depth) {
+  let html = '';
+  for (const name of Object.keys(node.folders).sort((a, b) => a.localeCompare(b))) {
+    const child = node.folders[name];
+    const fpath = path.concat(name);
+    const fid = 'synf-' + type + '-' + btoa(unescape(encodeURIComponent(fpath.join('/')))).replace(/[^a-zA-Z0-9]/g, '');
+    const pad = 6 + depth * 14;
+    html += `<div class="syn-folder">
+      <div class="syn-frow" style="padding-left:${pad}px">
+        <input type="checkbox" class="syn-fchk" data-type="${type}" onchange="synFolderToggle(this)" title="Select everything in this folder">
+        <span class="syn-farrow" onclick="synToggleFolder('${fid}',this)">▶</span>
+        <span class="syn-fname" onclick="synToggleFolder('${fid}',this.parentElement.querySelector('.syn-farrow'))">📁 ${esc(name)}</span>
+        <span class="syn-fcount">${synCountLeaves(child)}</span>
+      </div>
+      <div id="${fid}" class="syn-fbody" style="display:none">${synRenderNode(type, child, fpath, depth + 1)}</div>
+    </div>`;
+  }
+  for (const it of node.items) {
+    const pad = 6 + depth * 14 + 20;
+    html += `<label class="syn-leaf" style="padding-left:${pad}px">
+      <input type="checkbox" data-type="${type}" data-item="${esc(it.id)}" onchange="synLeafToggle('${type}')">
+      <span class="syn-lname">${esc(it.label)}</span>${it.meta ? `<span class="cat">${esc(it.meta)}</span>` : ''}
+    </label>`;
+  }
+  return html;
+}
+function synToggleFolder(fid, arrowEl) {
+  const el = document.getElementById(fid); if (!el) return;
+  const open = el.style.display === 'none';
+  el.style.display = open ? '' : 'none';
+  if (arrowEl && arrowEl.classList.contains('syn-farrow')) arrowEl.textContent = open ? '▼' : '▶';
+}
+// Recompute every folder + type header tri-state from the leaf checkboxes.
+function synRefresh(type) {
+  const listEl = document.getElementById('ct-list-' + type); if (!listEl) return;
+  listEl.querySelectorAll('.syn-folder').forEach(folder => {
+    const chk = folder.querySelector(':scope > .syn-frow > .syn-fchk');
+    const leaves = [...folder.querySelectorAll('input[data-item]')];
+    const c = leaves.filter(b => b.checked).length;
+    if (chk) { chk.checked = c > 0 && c === leaves.length; chk.indeterminate = c > 0 && c < leaves.length; }
+  });
+  const header = document.getElementById('ct-' + type);
+  const all = [...listEl.querySelectorAll('input[data-item]')];
+  const c = all.filter(b => b.checked).length;
+  if (header) { header.checked = c > 0 && c === all.length; header.indeterminate = c > 0 && c < all.length; }
+}
+function synFolderToggle(chk) {
+  const folder = chk.closest('.syn-folder');
+  folder.querySelectorAll('input[data-item]').forEach(b => b.checked = chk.checked);
+  synRefresh(chk.dataset.type);
+}
+function synLeafToggle(type) { synRefresh(type); }
 
 function toggleSyncType(id) {
   const list = document.getElementById('ct-list-'+id);
@@ -2271,22 +2423,7 @@ function syncTypeCheck(id) {
   // Header checkbox cascades to every item in this type (select-all / deselect-all)
   const header = document.getElementById('ct-'+id);
   document.querySelectorAll(`#ct-list-${id} input[data-item]`).forEach(b => b.checked = header.checked);
-}
-
-function selectAllType(id, checked) {
-  document.querySelectorAll(`#ct-list-${id} input[data-item]`).forEach(b => b.checked = checked);
-  const header = document.getElementById('ct-'+id);
-  if (header) header.checked = checked;
-}
-
-// Keep a type's header checkbox in sync when individual items are toggled
-function syncItemToggle(id) {
-  const boxes = [...document.querySelectorAll(`#ct-list-${id} input[data-item]`)];
-  const header = document.getElementById('ct-'+id);
-  if (!header || !boxes.length) return;
-  const checked = boxes.filter(b => b.checked).length;
-  header.checked = checked > 0;               // header on if any item selected
-  header.indeterminate = checked > 0 && checked < boxes.length;
+  synRefresh(id);
 }
 
 function renderSyncSessions(sessions) {
@@ -2299,7 +2436,7 @@ function renderSyncSessions(sessions) {
     return `<div class="session-item ${active?'':'expired'}">
       <div class="session-info">
         <div class="session-name">${esc(s.url)} <span class="session-badge ${active?'badge-active':'badge-expired'}">${active?'Active':'Expired'}</span></div>
-        <div class="session-meta">User: ${esc(s.username)} · Skills: ${s.skillCount === 'all' ? 'all' : s.skillCount} · Expires: ${expires}</div>
+        <div class="session-meta">User: ${esc(s.username)} · ${esc(s.summary || ('Skills: ' + (s.skillCount === 'all' ? 'all' : s.skillCount)))} · Expires: ${expires}</div>
       </div>
       ${active ? `<button class="tbtn" style="color:#f87171;border-color:#f87171;font-size:11px" onclick="ask('revokeSync',{id:'${esc(s.id)}'})">Revoke</button>` : ''}
     </div>`;
@@ -2313,7 +2450,11 @@ function doCreateSync() {
     return checked.length === all.length ? [] : checked.map(b => b.dataset.item);
   };
   const contentTypes = ['skills','notes','papers','prompts','scripts','packages']
-    .filter(t => document.getElementById('ct-'+t)?.checked);
+    .filter(t => document.querySelectorAll(`#ct-list-${t} input[data-item]:checked`).length > 0);
+  if (!contentTypes.length) {
+    document.getElementById('sm-cred-result').innerHTML = '<span style="color:#f87171;font-size:12px">Select at least one item to share (check items under a section).</span>';
+    return;
+  }
   const selected = {
     skills:   getSelected('skills'),
     notes:    getSelected('notes'),
@@ -3091,7 +3232,7 @@ function envCardHtml(e, indent) {
         ${e.managed ? `<span class="env-managed" title="Stored in the extension-managed location">📍 managed</span>` : ''}
         <span style="flex:1"></span>
         <button class="tbtn" style="font-size:11px" onclick="viewEnvPackages('${esc(e.id)}',false)">📦 Packages</button>
-        <button class="tbtn" style="font-size:11px" onclick="activateEnv('${esc(e.id)}')" title="Open a terminal with this environment activated">⚡ Open shell</button>
+        <button class="tbtn" style="font-size:11px" onclick="activateEnv('${esc(e.id)}')" title="Open a terminal with this environment activated (auto Windows/Linux)">⚡ Activate Env</button>
         <button class="tbtn" style="font-size:11px" onclick="refreshEnvSize('${esc(e.id)}')" title="Compute on-disk size">📐</button>
         ${e.managed ? '' : `<button class="tbtn" style="font-size:11px" onclick="migrateEnv('${esc(e.id)}',${JSON.stringify(e.name).replace(/"/g,'&quot;')})" title="Move this environment into the extension-managed location">🚚 Migrate</button>`}
         <button class="tbtn" style="font-size:11px" onclick="editEnv('${esc(e.id)}')" title="Edit name / description">✏</button>
@@ -3116,7 +3257,7 @@ function renderEnvTags(desc) {
 function activateEnv(id) { ask('envActivate', { id }); }
 function onEnvActivate(d) {
   if (d.error) { envOut('<div style="color:#f87171">' + esc(d.error) + '</div>'); return; }
-  envOut(`<div class="ec-row" style="margin:10px 0 6px"><b>⚡ Opened terminal “${esc(d.termName || 'env')}”</b><span style="font-size:11px;color:var(--muted)">the environment is now activated there — run <code>python</code> / <code>pip</code> as usual</span></div><pre class="env-activate">${esc(d.script)}</pre>`);
+  envOut(`<div class="ec-row" style="margin:10px 0 6px"><b>⚡ Activated in terminal “${esc(d.termName || 'env')}”</b><span style="font-size:11px;color:var(--muted)">the environment is now active there — run <code>python</code> / <code>pip</code> as usual</span></div><pre class="env-activate">${esc(d.script)}</pre>`);
 }
 function refreshEnvSize(id) { envOut('<div class="empty">Computing on-disk size…</div>'); ask('envSize', { id, refresh: true }); }
 function onEnvSize(d) {

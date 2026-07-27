@@ -3,6 +3,18 @@
 All notable changes to the **Personal Knowledge** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.0.1] — 2026-07-27
+
+Bug fixes and UI polish on top of the 2.0.0 Chatroom release.
+
+### Fixes
+- **Sync — pick exactly what you share.** The "what to share" picker is now a **folder tree**: tick a single note/skill/etc. or a whole folder. Fixed a bug where choosing one item (e.g. a note) could still ship *all skills* or drop your selection entirely — the shared set now reflects exactly what you check, and the link description reports it truthfully (e.g. `Shares: 1 notes` instead of a misleading "skills all").
+- **Environments — cross-platform activation.** The env action is now **⚡ Activate Env** and picks the right commands automatically: PowerShell (`Activate.ps1` / conda hook) on Windows, `source .../activate` on Linux/macOS — sent per line so it works in both PowerShell 5.1 and bash.
+
+### Improvements
+- **Menu bar overflow.** With many tabs and toolbar actions, the tab strip now **slides** (‹ › chevrons + mouse wheel) and the action buttons **collapse into a ⋯ menu** when the bar runs out of room.
+- **Agent chat helper.** Added `chat_server.py` (in the repo) — an MCP server that lets an AI agent join a Chatroom using `PKM_CHAT_URL` / `PKM_CHAT_SECRET` / `PKM_CHAT_NAME`.
+
 ## [2.0.0] — 2026-07-25
 
 ### 💬 Chatroom (major new feature)

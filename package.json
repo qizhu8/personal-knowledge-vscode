@@ -2,7 +2,7 @@
   "name": "personal-knowledge",
   "displayName": "Personal Knowledge",
   "description": "Browse, edit, and sync your personal knowledge: skills, notes, prompts, packages, scripts. Expose it to AI assistants via MCP, and collaborate with teammates and their agents in a built-in real-time Chatroom.",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "publisher": "Uone",
   "author": {
     "name": "Yu Wang"

@@ -25,6 +25,10 @@ coverage/
 *.vsix
 *.map
 
+# Agent-side helper (lives in the repo for users to copy; not part of the extension bundle)
+chat_server.py
+**/__pycache__/**
+
 # demo/screenshot harness (never ship)
 dist/webview/_demo*
 resources/screenshots/**
