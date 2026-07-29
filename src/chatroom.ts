@@ -336,7 +336,7 @@ export class ChatHub {
     if (conn.joined && frame.t === "leave") {
       // Explicit leave: if the host leaves, deactivate the whole room immediately.
       const st = this.rooms.get(conn.room);
-      if (st && st.owner && (conn.cid === st.owner || conn.id === st.owner)) {
+      if (st && this.isOwnerConn(st, conn)) {
         this.deactivateRoom(conn.room, "host left");
       } else {
         try { conn.ws.close(); } catch { /* ignore */ }
@@ -402,9 +402,9 @@ export class ChatHub {
       const st = this.roomState(conn.room);
       // First real participant owns the room; the room deactivates when they leave.
       const becameOwner = !st.owner && conn.kind !== "browser";
-      if (becameOwner) { st.owner = conn.cid || conn.id; st.ownerName = conn.user; }
+      if (becameOwner) { st.owner = this.identityKey(conn); st.ownerName = conn.user; }
       // Owner reconnected within the grace window — cancel the pending deactivation.
-      if (st.owner && (conn.cid === st.owner || conn.id === st.owner) && st.graceTimer) {
+      if (this.isOwnerConn(st, conn) && st.graceTimer) {
         clearTimeout(st.graceTimer); st.graceTimer = null;
       }
       const prevName = this.rosterJoin(conn, st);
@@ -424,8 +424,11 @@ export class ChatHub {
       const text = (frame.text ?? "").toString().slice(0, 8000);
       if (!text.trim()) return;
       // Slash commands are intercepted (never broadcast) and answered privately by
-      // the background sender — allowed even when muted (they aren't room posts).
-      if (text.trim().startsWith("/")) { this.handleCommand(conn, text.trim()); return; }
+      // the background sender — EXCEPT conversation-control commands, which must
+      // reach every participant, so they fall through and broadcast like a post.
+      const head = text.trim().split(/\s+/)[0].toLowerCase();
+      const isConvCmd = head === "/start_conversation" || head === "/stop_conversation" || head === "/release";
+      if (text.trim().startsWith("/") && !isConvCmd) { this.handleCommand(conn, text.trim()); return; }
       if (this.isMuted(conn)) { this.sendTo(conn.ws, { t: "error", code: "muted", msg: "You are muted by the host and can't post right now." }); return; }
       const m: ChatMessage = {
         id: randomBytes(6).toString("hex"), from: conn.user, fromId: conn.id,
@@ -433,6 +436,8 @@ export class ChatHub {
       };
       this.remember(conn.room, m);
       this.broadcast(conn.room, { t: "msg", room: conn.room, ...m });
+      // On start, brief every participant on how to run the standby loop.
+      if (head === "/start_conversation") this.postConversationGuide(conn.room, text);
       return;
     }
 
@@ -470,12 +475,12 @@ export class ChatHub {
     this.markDeparted(conn, st);
     this.broadcast(conn.room, { t: "system", room: conn.room, text: `${conn.user} left the room`, ts: Date.now() });
     this.broadcastPresence(conn.room);
-    const isOwner = st.owner && (conn.cid === st.owner || conn.id === st.owner);
+    const isOwner = this.isOwnerConn(st, conn);
     if (isOwner) {
       // Host disconnected: give a short grace for reconnect, then deactivate.
       if (st.graceTimer) clearTimeout(st.graceTimer);
       st.graceTimer = setTimeout(() => {
-        const back = [...this.conns.values()].some(c => c.joined && c.room === conn.room && (c.cid === st.owner || c.id === st.owner));
+        const back = [...this.conns.values()].some(c => c.joined && c.room === conn.room && this.isOwnerConn(st, c));
         if (!back) this.deactivateRoom(conn.room, "host left");
       }, ChatHub.OWNER_GRACE_MS);
       st.graceTimer.unref?.();
@@ -494,16 +499,22 @@ export class ChatHub {
 
   private membersOf(room: string): Member[] {
     const st = this.rooms.get(room);
-    const owner = st?.owner;
     return [...this.conns.values()]
       .filter(c => c.joined && c.room === room)
-      .map(c => ({ id: c.id, user: c.user, kind: c.kind, host: !!owner && (c.cid === owner || c.id === owner), muted: !!st?.muted.has(this.identityKey(c)) }));
+      .map(c => ({ id: c.id, user: c.user, kind: c.kind, host: !!st && this.isOwnerConn(st, c), muted: !!st?.muted.has(this.identityKey(c)) }));
   }
 
-  // A stable per-identity key: prefer the client's cid (extension/MCP/browser
-  // persisted), else fall back to the display name so same-name reconnects merge.
+  // A per-member identity within a room: cid + display name. Two windows on one
+  // machine can share a cid (persisted in globalState), so the NAME disambiguates
+  // them; names are unique per room, making (cid, name) unique. Falls back to
+  // name-only when there is no cid (best-effort browser identities).
   private identityKey(conn: HubConn): string {
-    return conn.cid ? `cid:${conn.cid}` : `name:${conn.user.trim().toLowerCase()}`;
+    const nk = conn.user.trim().toLowerCase();
+    return conn.cid ? `cid:${conn.cid}:${nk}` : `name:${nk}`;
+  }
+
+  private isOwnerConn(st: RoomState, conn: HubConn): boolean {
+    return !!st.owner && this.identityKey(conn) === st.owner;
   }
 
   private isMuted(conn: HubConn): boolean {
@@ -511,10 +522,34 @@ export class ChatHub {
     return !!st && st.muted.has(this.identityKey(conn));
   }
 
+  // Post the standby-loop protocol so every participant knows the rules.
+  private postConversationGuide(room: string, startText: string): void {
+    const names = (startText.match(/@(?:"[^"]{1,60}"|[A-Za-z0-9_][\w-]{0,59})/g) || [])
+      .map(s => s.slice(1).replace(/^"|"$/g, ""));
+    const who = names.length ? names.map(n => `@${n}`).join(", ") : "everyone";
+    const guide = [
+      `🛎️ Conversation started (beta) — participants: ${who}.`,
+      `How to take part (the standby loop):`,
+      `1) READY CHECK — the conversation starts only after EVERY participant has replied "I'm ready". Post "I'm ready" now, and wait until all others have too before playing.`,
+      `2) You are in standby — read each new message as it arrives.`,
+      `3) Reply when a message is addressed to you (@you) or is undirected; stay silent when another participant is @'d.`,
+      `4) Need more time? Say "I'm thinking and need more time" so others know to wait rather than assume you dropped.`,
+      `5) After you reply, keep watching (periodic agents: wake ~every 3s to check).`,
+      `6) Repeat wait → read → respond until someone posts /stop_conversation.`,
+      `7) /release @you removes just you; /stop_conversation ends it for everyone.`,
+    ].join("\n");
+    const m: ChatMessage = {
+      id: randomBytes(6).toString("hex"), from: BOT_NAME, fromId: "roombot",
+      text: guide, ts: Date.now(), kind: "agent",
+    };
+    this.remember(room, m);
+    this.broadcast(room, { t: "msg", room, ...m });
+  }
+
   // Answer a slash command privately (only the requester sees the bot reply).
   private handleCommand(conn: HubConn, text: string): void {
     const st = this.rooms.get(conn.room);
-    const isOwner = !!st?.owner && (conn.cid === st.owner || conn.id === st.owner);
+    const isOwner = !!st && this.isOwnerConn(st, conn);
     const cmd = findCommand(text);
     if (!cmd) { this.botReply(conn, `Unknown command "${text.split(/\s+/)[0]}". Type /help for the list.`); return; }
     if (cmd.hostOnly && !isOwner) { this.botReply(conn, `"/${cmd.name}" is available to the room host only.`); return; }
@@ -551,7 +586,7 @@ export class ChatHub {
     let n = 0;
     for (const c of this.conns.values()) {
       if (!c.joined || c.room !== room) continue;
-      if (st.owner && (c.cid === st.owner || c.id === st.owner)) continue;   // never mute the host
+      if (this.isOwnerConn(st, c)) continue;   // never mute the host
       const key = this.identityKey(c);
       if (!st.muted.has(key)) { st.muted.add(key); n++; }
       this.sendTo(c.ws, { t: "error", code: "muted", msg: "The host muted the room — you can read but not post." });
@@ -613,11 +648,14 @@ export class ChatHub {
   private handleAdmin(conn: HubConn, frame: Extract<Frame, { t: "admin" }>): void {
     const st = this.rooms.get(conn.room);
     if (!st) return;
-    const isOwner = !!st.owner && (conn.cid === st.owner || conn.id === st.owner);
-    if (!isOwner) { this.sendTo(conn.ws, { t: "error", code: "moderation", msg: "Only the host can moderate this room." }); return; }
+    const selfKey = this.identityKey(conn);
+    const isOwner = this.isOwnerConn(st, conn);
+    // Renaming YOURSELF is allowed for any member; every other action is host-only.
+    const isSelfRename = frame.action === "rename" && (frame.target || "").slice(0, 120) === selfKey;
+    if (!isOwner && !isSelfRename) { this.sendTo(conn.ws, { t: "error", code: "moderation", msg: "Only the host can moderate this room." }); return; }
     const targetKey = (frame.target || "").slice(0, 120);
     if (!targetKey) return;
-    if (targetKey === this.identityKey(conn)) { this.sendTo(conn.ws, { t: "error", code: "moderation", msg: "You can't moderate yourself." }); return; }
+    if (targetKey === selfKey && frame.action !== "rename") { this.sendTo(conn.ws, { t: "error", code: "moderation", msg: "You can't moderate yourself." }); return; }
     const targets = [...this.conns.values()].filter(c => c.joined && c.room === conn.room && this.identityKey(c) === targetKey);
     const who = st.roster.get(targetKey)?.user || targets[0]?.user || "member";
 
@@ -660,14 +698,22 @@ export class ChatHub {
         const newName = (frame.name || "").trim().slice(0, 60);
         if (!newName) return;
         const nk = newName.toLowerCase();
+        // A rename is allowed only if no OTHER present member already uses that name.
         const clash = [...this.conns.values()].some(
           c => c.joined && c.room === conn.room && this.identityKey(c) !== targetKey && c.user.trim().toLowerCase() === nk);
         if (clash) { this.sendTo(conn.ws, { t: "error", code: "moderation", msg: `"${newName}" is already taken in this room.` }); return; }
+        // Apply the new name, then re-key everything keyed by the OLD identity
+        // (roster, mutes, ownership) to the NEW identity.
         for (const t of targets) { t.user = newName; this.sendTo(t.ws, { t: "renamed", room: conn.room, name: newName }); }
-        const e = st.roster.get(targetKey); if (e) e.user = newName;
-        this.broadcast(conn.room, { t: "system", room: conn.room, text: `${who} was renamed to ${newName} by the host`, ts: Date.now() });
+        const newKey = targets.length ? this.identityKey(targets[0]) : targetKey;
+        const e = st.roster.get(targetKey);
+        if (e) { st.roster.delete(targetKey); e.user = newName; e.key = newKey; st.roster.set(newKey, e); }
+        if (st.muted.has(targetKey)) { st.muted.delete(targetKey); st.muted.add(newKey); }
+        if (st.owner === targetKey) { st.owner = newKey; st.ownerName = newName; }
+        const byHost = targetKey !== selfKey;
+        this.broadcast(conn.room, { t: "system", room: conn.room, text: byHost ? `${who} was renamed to ${newName} by the host` : `${who} is now known as ${newName}`, ts: Date.now() });
         this.broadcastPresence(conn.room);
-        this.log(`admin rename room=${conn.room} ${who} -> ${newName}`);
+        this.log(`rename room=${conn.room} ${who} -> ${newName}${byHost ? " (by host)" : " (self)"}`);
         break;
       }
     }
@@ -712,7 +758,7 @@ export class ChatHub {
       .sort((a, b) => (Number(b.present) - Number(a.present)) || (b.lastSeen - a.lastSeen))
       .map(e => ({
         id: e.id, user: e.user, kind: e.kind,
-        host: !!owner && (e.sid === owner || e.id === owner),
+        host: !!owner && e.key === owner,
         sid: e.sid, verified: e.verified, present: e.present, lastSeen: e.lastSeen,
         muted: st.muted.has(e.key),
       }));

@@ -112,6 +112,21 @@ export const CHAT_COMMANDS: ChatCommand[] = [
     },
   },
   {
+    name: "start_conversation",
+    summary: "Start THE conversation and @-invite the parties — /start_conversation @A @B …",
+    run: () => "Starting the conversation — the invited agents will stand by and reply on their own.",
+  },
+  {
+    name: "stop_conversation",
+    summary: "Stop the current conversation (all agents leave standby)",
+    run: () => "Stopping the current conversation.",
+  },
+  {
+    name: "release",
+    summary: "Drop one party from the conversation — /release @who",
+    run: () => "Releasing the named party from the conversation.",
+  },
+  {
     name: "mute_all",
     summary: "Mute everyone except you",
     hostOnly: true,

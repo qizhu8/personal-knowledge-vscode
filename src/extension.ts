@@ -12,6 +12,7 @@ import {
   paperFacets, paperGraph, savePaperFile,
   paperGroups, paperSetGroup, paperGroupRename, paperGroupDelete, paperSetPinned, paperSetTopic,
   setStorePath as fsSetStorePath, getStorePath,
+  folderCreate, folderList,
 } from "./filestore";
 import { migrateDbToFiles } from "./migrate";
 import {
@@ -26,7 +27,7 @@ import {
 } from "./pyenvs";
 import {
   promptList, promptGetFile, promptGetAllVersionsOfFile,
-  packageList, packageGet, packageFileGet,
+  packageList, packageGet, packageFileGet, packageDelete,
   scriptList, scriptGet, scriptMove, scriptMoveFolder,
   promptImport, scriptImport, packageImport,
   setStorePath as storageSetStorePath,
@@ -125,6 +126,21 @@ class Logger {
 }
 
 const log = new Logger();
+
+/** Package list enriched with git-tracking info (tracked in the store, or its own repo). */
+function packagesWithGit(): any[] {
+  const store = getStorePath();
+  const tracked = new Set<string>();
+  try {
+    const out = execSync("git ls-files -- packages/", { cwd: store, encoding: "utf-8", maxBuffer: 1 << 24 });
+    for (const line of out.split("\n")) { const m = line.match(/^packages\/([^/]+)\//); if (m) tracked.add(m[1]); }
+  } catch { /* not a git repo */ }
+  return (packageList() as any[]).map(p => ({
+    ...p,
+    gitRepo: fs.existsSync(path.join(store, "packages", p.name, ".git")),
+    gitTracked: tracked.has(p.name),
+  }));
+}
 
 /** Human summary of what a sync session shares, across ALL content types. */
 function syncSummary(s: { contentTypes: string[]; selected: Record<string, string[]> }): string {
@@ -611,7 +627,7 @@ class ChatRoomManager {
         onHistory:  ms => { rc!.messages = ms.slice(-ChatRoomManager.MAX_MSGS); if (rc!.key === this.activeKey) this.push(); },
         onPresence: mm => {
           rc!.members = mm;
-          const me = mm.find(x => x.sid && x.sid === rc!.client.identity);
+          const me = mm.find(x => x.sid && x.sid === rc!.client.identity && x.user.trim().toLowerCase() === rc!.user.trim().toLowerCase());
           rc!.selfHost = !!me?.host;
           rc!.selfMuted = !!me?.muted;
           this.push();
@@ -701,9 +717,24 @@ class ChatRoomManager {
   moderate(action: "kick" | "mute" | "unmute" | "rename", target: { sid?: string; user: string }, name?: string): void {
     const rc = this.activeRoom;
     if (!rc) return;
-    const key = target.sid ? `cid:${target.sid}` : `name:${(target.user || "").trim().toLowerCase()}`;
+    const key = target.sid ? `cid:${target.sid}:${(target.user || "").trim().toLowerCase()}` : `name:${(target.user || "").trim().toLowerCase()}`;
     rc.client.sendAdmin(action, key, name);
   }
+
+  /** Rename yourself in the active room. Allowed for any member; the hub rejects
+   *  it if the new alias duplicates another present member. */
+  renameSelf(newName: string): void {
+    const rc = this.activeRoom;
+    if (!rc) return;
+    const nn = (newName || "").trim().slice(0, 60);
+    if (!nn) return;
+    const id = rc.client.identity;
+    const selfKey = id ? `cid:${id}:${rc.user.trim().toLowerCase()}` : `name:${rc.user.trim().toLowerCase()}`;
+    rc.client.sendAdmin("rename", selfKey, nn);
+  }
+
+  /** Your current display name in the active room ("" if none). */
+  get selfName(): string { return this.activeRoom?.user ?? ""; }
 
   async sendFileToActive(): Promise<void> {
     const rc = this.activeRoom;
@@ -1555,6 +1586,17 @@ async function handleMessage(
       break;
     }
 
+    case "chatRenameSelf": {
+      const cur = getChatMgr().selfName || String(msg.user || "");
+      const input = await vscode.window.showInputBox({
+        prompt: "Your new display name in this room", value: cur,
+        validateInput: v => v.trim() ? undefined : "Enter a name",
+      });
+      if (!input) break;
+      getChatMgr().renameSelf(input.trim());
+      break;
+    }
+
     case "chatAdminCloseAll": {
       const pick = await vscode.window.showWarningMessage(
         "Deactivate ALL rooms on your hub? Everyone will be disconnected.",
@@ -1576,10 +1618,28 @@ async function handleMessage(
       else if (tab === "notes")   data = q ? noteSearch(q) : noteList(undefined, 500); // client-side filtering
       else if (tab === "papers")  data = q ? paperSearch(q) : paperList();
       else if (tab === "prompts")  data = promptList();
-      else if (tab === "packages") data = packageList();
+      else if (tab === "packages") data = packagesWithGit();
       else if (tab === "scripts")  data = scriptList();
       else data = [];
-      respond({ command: "list", data });
+      const folders = (tab === "skills" || tab === "notes") ? folderList(tab) : undefined;
+      respond({ command: "list", data, folders });
+      break;
+    }
+
+    case "folderCreate": {
+      const area = String(msg.area || "");
+      if (area !== "skills" && area !== "notes") break;
+      const parent = String(msg.parent || "").replace(/^\/+|\/+$/g, "");
+      const name = String(msg.name || "").trim();
+      if (!name) break;
+      const rel = parent ? `${parent}/${name}` : name;
+      if (folderCreate(area, rel)) {
+        gitCommit(`add(folder): ${area}/${rel}`);
+        _treeProvider?.refresh();
+        vscode.window.setStatusBarMessage("$(new-folder) Folder created", 3000);
+      }
+      const data = area === "skills" ? skillList() : noteList(undefined, 500);
+      respond({ command: "list", data, folders: folderList(area) });
       break;
     }
 
@@ -2130,6 +2190,53 @@ async function handleMessage(
       }
       respond({ command: "saved" });
       vscode.window.setStatusBarMessage("$(check) Topic updated", 3000);
+      break;
+    }
+
+    case "openStoreFolder": {
+      const area = String(msg.area || "");
+      if (!["scripts", "packages", "notes", "skills", "papers", "prompts"].includes(area)) break;
+      const root = path.join(getStorePath(), area);
+      const full = path.join(root, String(msg.rel || ""));
+      if (!path.resolve(full).startsWith(path.resolve(root))) break;
+      if (!fs.existsSync(full)) { vscode.window.showWarningMessage(`Folder not found: ${msg.rel}`); break; }
+      await vscode.commands.executeCommand("vscode.openFolder", vscode.Uri.file(full), { forceNewWindow: true });
+      break;
+    }
+    case "openStoreFile": {
+      const area = String(msg.area || "");
+      if (!["scripts", "packages", "notes", "skills", "papers", "prompts"].includes(area)) break;
+      const root = path.join(getStorePath(), area);
+      const full = path.join(root, String(msg.rel || ""));
+      if (!path.resolve(full).startsWith(path.resolve(root))) break;
+      if (!fs.existsSync(full)) { vscode.window.showWarningMessage(`File not found: ${msg.rel}`); break; }
+      const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(full));
+      await vscode.window.showTextDocument(doc, { preview: false });
+      break;
+    }
+
+    case "packageDelete": {
+      const name = String(msg.name || "").trim();
+      if (!name) break;
+      const dir = path.join(getStorePath(), "packages", name);
+      if (!fs.existsSync(dir)) { vscode.window.showWarningMessage(`Package not found: ${name}`); break; }
+      // Second confirmation (native modal) — first one happens in the webview.
+      const CONFIRM = "Delete Package";
+      const pick = await vscode.window.showWarningMessage(
+        `Permanently delete package "${name}"? This removes the entire folder and cannot be undone.`,
+        { modal: true, detail: dir },
+        CONFIRM
+      );
+      if (pick !== CONFIRM) { respond({ command: "saved" }); break; }
+      if (packageDelete(name)) {
+        gitCommit(`delete(package): ${name}`);
+        _treeProvider?.refresh();
+        vscode.window.setStatusBarMessage("$(check) Package deleted", 3000);
+        respond({ command: "list", tab: "packages", data: packagesWithGit() });
+      } else {
+        vscode.window.showErrorMessage(`Failed to delete package: ${name}`);
+        respond({ command: "saved" });
+      }
       break;
     }
 

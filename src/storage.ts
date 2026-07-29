@@ -131,6 +131,17 @@ export function packageFileGet(name: string, relPath: string) {
   catch { return null; }
 }
 
+export function packageDelete(name: string): boolean {
+  const base = join(_storePath, 'packages');
+  const dir = join(base, name);
+  // Guard against path traversal: resolved dir must stay inside packages/.
+  const rel = require('path').relative(base, dir);
+  if (!name || rel.startsWith('..') || require('path').isAbsolute(rel) || rel.includes('/') || rel.includes('\\')) return false;
+  if (!existsSync(dir) || !isDir(dir)) return false;
+  rmSync(dir, { recursive: true, force: true });
+  return true;
+}
+
 // ── Scripts ───────────────────────────────────────────────────────────────
 export function scriptList() {
   const base = join(_storePath, 'scripts');

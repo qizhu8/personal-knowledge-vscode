@@ -32,12 +32,19 @@ Install:  pip install fastmcp websockets
 Run:      PKM_CHAT_URL=... PKM_CHAT_SECRET=... python chat_server.py
 
 Tools exposed to the agent:
+    chat_join(url, secret, name)  join a room NOW (ask the user for secret+alias)
     chat_status()            connection + room status
     chat_poll(max=50)        NEW messages since the last poll (advances a cursor)
     chat_history(limit=50)   recent buffered messages (no cursor change)
     chat_send(text)          post a message ('/...' runs a room command)
     chat_who()               current members present in the room
     chat_reconnect(secret?)  force a rejoin (e.g. after the host rotated the secret)
+
+STANDARD PROCEDURE for an agent asked to "join a room <ws url>":
+  1. You need three things: the ws URL, the room SECRET, and a display NAME (alias).
+  2. If the user did not give the secret and/or the alias, ASK them for both
+     (the host gets the secret from the room's key button or `/share_link`).
+  3. Call chat_join(url, secret, name). Then use chat_poll to read and chat_send to post.
 
 Note: stdout is reserved for the MCP protocol — all logs go to stderr.
 """
@@ -59,6 +66,15 @@ try:
     from fastmcp import FastMCP
 except ImportError:
     raise SystemExit("fastmcp not found. Run: pip install fastmcp")
+try:
+    # protocol.py should sit beside this file; degrade gracefully if absent.
+    from protocol import parse_mentions, mentions_name
+except Exception:
+    def parse_mentions(_text):
+        return []
+
+    def mentions_name(_text, _name):
+        return False
 
 
 def _log(*a):
@@ -88,8 +104,11 @@ class ChatBridge:
     def __init__(self):
         self.lock = threading.Lock()
         self.loop = None
+        self.url = URL
+        self.room = ROOM
+        self.name = NAME
         self.secret = SECRET
-        self.state = "starting"   # starting|connecting|joined|disconnected|closed|error
+        self.state = "starting"   # starting|idle|connecting|joined|disconnected|closed|error
         self.error = ""
         self.members = []
         self.buf = deque(maxlen=2000)   # {seq,type,from,text,ts}
@@ -99,9 +118,10 @@ class ChatBridge:
         self._resume = None
         self._stop = False
         self._fatal = False
-        if not URL or not self.secret:
-            self.state = "error"
-            self.error = "PKM_CHAT_URL and PKM_CHAT_SECRET are required"
+        if not self.url or not self.secret:
+            # Nothing preconfigured: idle until the agent calls chat_join(...).
+            self.state = "idle"
+            self.error = "no room configured — call chat_join(url, secret, name)"
             self._fatal = True
 
     # ── background thread / event loop ──────────────────────────────────────
@@ -132,9 +152,9 @@ class ChatBridge:
             try:
                 with self.lock:
                     self.state = "connecting"
-                async with websockets.connect(URL, max_size=2 ** 22, ping_interval=20, ping_timeout=20) as ws:
+                async with websockets.connect(self.url, max_size=2 ** 22, ping_interval=20, ping_timeout=20) as ws:
                     await ws.send(json.dumps({
-                        "t": "join", "room": ROOM, "user": NAME,
+                        "t": "join", "room": self.room, "user": self.name,
                         "token": self.secret, "kind": "agent", "cid": CID,
                     }))
                     sender = asyncio.ensure_future(self._sender(ws))
@@ -168,9 +188,18 @@ class ChatBridge:
     def _add(self, typ, frm, text, ts):
         if text == "" and typ == "chat":
             return
+        # Flag @mentions of *this* agent (ignore our own messages).
+        mentions, mentioned = [], False
+        if typ == "chat" and frm != self.name:
+            try:
+                mentions = parse_mentions(text)
+                mentioned = mentions_name(text, self.name)
+            except Exception:
+                pass
         with self.lock:
             self.seq += 1
-            self.buf.append({"seq": self.seq, "type": typ, "from": frm, "text": text, "ts": ts})
+            self.buf.append({"seq": self.seq, "type": typ, "from": frm, "text": text,
+                             "ts": ts, "mentioned": mentioned, "mentions": mentions})
 
     def _mark_joined(self):
         with self.lock:
@@ -231,7 +260,7 @@ class ChatBridge:
                 return False, f"cannot send while {self.state}: {self.error}"
         try:
             fut = asyncio.run_coroutine_threadsafe(
-                self._outbox.put({"t": "msg", "room": ROOM, "text": text[:8000]}), self.loop)
+                self._outbox.put({"t": "msg", "room": self.room, "text": text[:8000]}), self.loop)
             fut.result(timeout=5)
             return True, ""
         except Exception as e:
@@ -253,11 +282,38 @@ class ChatBridge:
 
     def status(self):
         with self.lock:
+            unread_mentions = sum(1 for m in self.buf
+                                  if m.get("mentioned") and m["seq"] > self.cursor)
             return {
-                "state": self.state, "room": ROOM, "name": NAME, "url": URL,
+                "state": self.state, "room": self.room, "name": self.name, "url": self.url,
                 "members": len(self.members), "error": self.error,
                 "buffered": len(self.buf), "unread": max(0, self.seq - self.cursor),
+                "unread_mentions": unread_mentions,
             }
+
+    def mentions(self, limit):
+        with self.lock:
+            hits = [m for m in self.buf if m.get("mentioned")]
+            return hits[-limit:] if limit else hits
+
+    def configure(self, url, secret, name=None, room=None):
+        """Point the bridge at a room and (re)connect. Returns the new status."""
+        url = (url or "").strip()
+        secret = (secret or "").strip()
+        if not url or not secret:
+            return {"ok": False, "error": "url and secret are required", **self.status()}
+        with self.lock:
+            self.url = url
+            self.secret = secret
+            if name:
+                self.name = name.strip()[:60] or self.name
+            self.room = (room or "").strip() or unquote(urlsplit(url).path.lstrip("/"))
+            self.error = ""
+            self.cursor = self.seq  # don't replay old room's buffer as "new"
+        self._fatal = False
+        if self.loop and self._resume:
+            self.loop.call_soon_threadsafe(self._resume.set)
+        return {"ok": True, **self.status()}
 
     def reconnect(self, secret=None):
         if secret:
@@ -276,8 +332,30 @@ mcp = FastMCP("PKM Chat Agent")
 
 
 @mcp.tool()
+def chat_join(url: str, secret: str, name: str = "agent", room: str = "") -> dict:
+    """Join a Personal Knowledge Agent Chatroom NOW and start participating.
+
+    Use this when the user asks you to "join a room <ws url>". To join you need
+    THREE things:
+      - url    : the ws URL, e.g. ws://<host-ip>:<port>/<room>
+      - secret : the room's shared secret (default-deny auth)
+      - name   : your display name / alias in the room
+
+    IMPORTANT: if the user gave you only the URL, ASK them for the room SECRET
+    and the display NAME (alias) before calling this — do not guess them. The
+    host obtains the secret from the room's key button or by typing `/share_link`.
+    `room` is optional; it is parsed from the URL path when omitted.
+
+    After joining, call chat_poll to read messages and chat_send to post.
+    """
+    return bridge.configure(url, secret, name, room)
+
+
+@mcp.tool()
 def chat_status() -> dict:
-    """Report the connection and room status (state, room, name, member count, errors)."""
+    """Report the connection and room status (state, room, name, member count, errors).
+
+    state 'idle' means no room is configured yet — call chat_join(url, secret, name)."""
     return bridge.status()
 
 
@@ -316,6 +394,17 @@ def chat_who() -> dict:
 
 
 @mcp.tool()
+def chat_mentions(limit: int = 20) -> dict:
+    """Return recent messages that @mention YOU (this agent) or @all/@everyone.
+
+    Does NOT advance the poll cursor. Each item is
+    {seq, type, from, text, ts, mentioned, mentions:[names]}. Use this to catch
+    up on things specifically addressed to you without re-reading the whole room.
+    """
+    return {"mentions": bridge.mentions(limit), "name": bridge.name}
+
+
+@mcp.tool()
 def chat_reconnect(secret: str = "") -> dict:
     """Force a reconnect / rejoin. Optionally pass a new secret (e.g. after the
     host rotated it). Use this if chat_status reports 'error' or 'closed'."""
@@ -325,6 +414,6 @@ def chat_reconnect(secret: str = "") -> dict:
 if __name__ == "__main__":
     _log(f"starting: room={ROOM!r} name={NAME!r} url={URL!r}")
     if not URL or not SECRET:
-        _log("WARNING: PKM_CHAT_URL and/or PKM_CHAT_SECRET not set — tools will report an error until you set them and call chat_reconnect.")
+        _log("idle — no PKM_CHAT_URL/SECRET set. The agent should call chat_join(url, secret, name) to join a room.")
     bridge.start()
     mcp.run()

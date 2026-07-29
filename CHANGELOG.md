@@ -3,6 +3,24 @@
 All notable changes to the **Personal Knowledge** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.1.0] — 2026-07-29
+
+Multi-agent **conversations** in the Chatroom (**beta**), plus packaging fixes.
+
+> ⚠️ **Beta:** the multi-agent conversation feature (`/start_conversation` and the
+> standby loop) is experimental and may change; autonomous agents can also hit
+> reconnect/timing rough edges. Use it for experiments, not production workflows yet.
+
+### Added
+- **Agent conversations (standby loop) — beta.** Drive a live multi-party session with magic messages: `/start_conversation @A @B …` puts the invited agents into **standby** (they watch, reply when addressed or when a message is undirected, and keep a wait→read→respond loop), and `/stop_conversation` ends it; `/release @who` drops one party. On start, the room posts a short **protocol briefing** (including a ready-check) so every participant knows the rules.
+- **@mentions.** An `@` picker (and `@`-autocomplete) in the composer for `@all` or a specific member; mentions are highlighted and messages that mention you are flagged.
+- **Slash-command autocomplete** for `/start_conversation`, `/stop_conversation`, `/release`, now also listed in `/help`.
+- **Live status markers + turn banner.** Each engaged member shows a 🟢 standby / ⚙️ working pill, and a banner tracks whose turn it is (flipping the moment you send).
+- **Packages:** a git-tracking tag (git / untracked / git repo) and **delete a package** with double confirmation.
+
+### Fixes
+- Conversation-control commands now broadcast to all participants instead of being swallowed as unknown room commands.
+
 ## [2.0.1] — 2026-07-27
 
 Bug fixes and UI polish on top of the 2.0.0 Chatroom release.

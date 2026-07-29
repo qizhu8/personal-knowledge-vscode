@@ -187,6 +187,43 @@ function writeNotesMeta(m: { pinnedFolders: string[] }): void {
   } catch { /* ignore */ }
 }
 
+// ── Empty folders (create / list) ─────────────────────────────────────────────
+// Folders exist only because items live in them. To let users pre-create an
+// (empty) folder, drop a git-tracked `.gitkeep` so the directory persists across
+// commit/sync, and list all directories so the tree can render empty folders too.
+function areaRoot(area: string): string { return join(_store, area); }
+
+export function folderCreate(area: string, relPath: string): boolean {
+  if (area !== "skills" && area !== "notes") return false;
+  const rel = safeCategory(relPath || "");
+  if (!rel) return false;
+  const full = join(areaRoot(area), ...rel.split("/"));
+  try {
+    mkdirSync(full, { recursive: true });
+    const keep = join(full, ".gitkeep");
+    if (!existsSync(keep)) writeFileSync(keep, "");
+    return true;
+  } catch { return false; }
+}
+
+/** All subdirectory paths under an area root (relative; skips dotfiles/_assets). */
+export function folderList(area: string): string[] {
+  if (area !== "skills" && area !== "notes") return [];
+  const out: string[] = [];
+  const walk = (dir: string, rel: string): void => {
+    let ents: any[];
+    try { ents = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (!e.isDirectory() || e.name.startsWith(".") || e.name === "_assets") continue;
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      out.push(r);
+      walk(join(dir, e.name), r);
+    }
+  };
+  walk(areaRoot(area), "");
+  return out;
+}
+
 /** All folder paths that actually contain notes (every ancestor segment). */
 function existingNoteFolders(): Set<string> {
   const cats = new Set<string>();

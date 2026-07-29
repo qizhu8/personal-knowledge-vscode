@@ -64,6 +64,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family
 .li.active{background:var(--active);color:var(--active-fg);border-left-color:var(--accent)}
 .li-name{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .li-meta{font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pkg-git{font-size:9px;font-weight:600;border-radius:4px;padding:0 5px;margin-left:4px;vertical-align:middle}
+.pkg-git.tracked{background:#3fb95022;color:#3fb950;border:1px solid #3fb95055}
+.pkg-git.repo{background:#4daafc22;color:#4daafc;border:1px solid #4daafc55}
+.pkg-git.untracked{background:var(--input);color:var(--muted);border:1px solid var(--border)}
 .li.active .li-meta{color:var(--active-fg);opacity:.7}
 /* Main */
 #main{flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden}
@@ -402,6 +406,19 @@ body.chat-resizing{cursor:col-resize;user-select:none}
   color:var(--text);font-size:13px;padding:6px 8px;font-family:inherit;max-height:120px}
 #chat-input:focus{outline:none;border-color:var(--accent)}
 #chat-input:disabled{opacity:.5}
+#chat-at-btn{font-weight:700}
+#chat-at-btn:disabled{opacity:.5}
+#chat-input-wrap{flex:1;position:relative;display:flex}
+#chat-mention-pop{position:absolute;left:0;bottom:calc(100% + 4px);z-index:40;min-width:190px;max-width:290px;
+  max-height:210px;overflow-y:auto;background:var(--panel);border:1px solid var(--border);border-radius:8px;
+  box-shadow:0 6px 22px rgba(0,0,0,.4);padding:4px}
+#chat-mention-pop.hidden{display:none}
+.chat-mrow{display:flex;align-items:center;gap:7px;padding:5px 8px;border-radius:5px;font-size:12px;cursor:pointer}
+.chat-mrow:hover,.chat-mrow.sel{background:var(--active)}
+.chat-mrow .chat-mrow-sub{color:var(--muted);font-size:10px;margin-left:auto}
+.chat-at{color:var(--accent);font-weight:600;background:rgba(96,165,250,.14);border-radius:3px;padding:0 2px}
+.chat-msg.mentions-me{border-color:#f4b400;box-shadow:0 0 0 1px rgba(244,180,0,.5)}
+.chat-msg.mentions-me .chat-at{background:rgba(244,180,0,.22);color:#f4b400}
 #chat-side{width:170px;flex-shrink:0;border-left:1px solid var(--border);background:var(--panel);
   padding:10px;overflow-y:auto}
 .chat-side-hdr{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:8px}
@@ -413,6 +430,13 @@ body.chat-resizing{cursor:col-resize;user-select:none}
 .chat-member .chat-unverified{font-size:10px;color:var(--muted);cursor:help}
 .chat-member .chat-ago{color:var(--muted);font-size:10px;margin-left:auto;flex-shrink:0}
 .chat-member .chat-muted-badge{font-size:10px;margin-left:3px;filter:grayscale(1);opacity:.8}
+.chat-proto{font-size:9px;margin-left:4px;padding:0 4px;border-radius:6px;white-space:nowrap;vertical-align:middle}
+.chat-proto.standby{color:#4ade80;background:rgba(74,222,128,.15)}
+.chat-proto.working{color:#f4b400;background:rgba(244,180,0,.18)}
+.chat-proto.engaged{color:#60a5fa;background:rgba(96,165,250,.16)}
+.chat-proto-legend{display:flex;flex-wrap:wrap;gap:4px;margin:0 0 6px;padding-bottom:5px;border-bottom:1px solid var(--border)}
+#chat-turn-banner{padding:5px 10px;font-size:11px;text-align:center;background:var(--active);border-bottom:1px solid var(--border);color:var(--accent)}
+#chat-turn-banner.hidden{display:none}
 .chat-member.muted .chat-mname{color:var(--muted);font-style:italic}
 .chat-member.muted .chat-mdot{background:var(--muted)}
 .chat-mod-actions{margin-left:auto;display:inline-flex;gap:2px;flex-shrink:0}
@@ -427,6 +451,9 @@ body.chat-resizing{cursor:col-resize;user-select:none}
 .chat-recent-item:hover,.chat-admin-item:hover{background:var(--hover)}
 .chat-recent-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;color:var(--muted)}
 .chat-recent-name:hover{color:var(--text)}
+.chat-recent-badge{font-size:9px;font-weight:700;border-radius:4px;padding:0 5px;margin-right:4px;vertical-align:middle}
+.chat-recent-badge.host{background:#3fb95022;color:#3fb950;border:1px solid #3fb95066;text-transform:uppercase;letter-spacing:.3px}
+.chat-recent-badge.guest{background:var(--input);color:var(--muted);border:1px solid var(--border);font-weight:600}
 .chat-admin-item{flex-direction:column;align-items:stretch;gap:3px}
 .chat-admin-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .chat-admin-btns{display:flex;align-items:center;gap:8px;padding-left:2px}
@@ -772,7 +799,7 @@ function renderMermaid(root) {
 const esc = s => String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 const ICON = {todo:'☐',done:'✓','data-path':'📂',observation:'👁',general:'📝'};
 
-let state = { tab:'skills', filter:'all', search:'', items:[], active:null };
+let state = { tab:'skills', filter:'all', search:'', items:[], folders:[], active:null };
 let ctxTarget = null; // slug of note under right-click
 let ctxPinned = false; // pinned state of the note under right-click
 let notePinnedFolders = []; // note folder paths pinned to the top of their level
@@ -796,6 +823,19 @@ document.getElementById('item-list').addEventListener('contextmenu', e => {
   ctxMenu.style.left = e.clientX + 'px';
   ctxMenu.style.top  = e.clientY + 'px';
   ctxMenu.classList.add('open');
+});
+
+// Right-click blank space in the Skills/Notes list -> Create a (top-level) folder.
+document.getElementById('item-list').addEventListener('contextmenu', e => {
+  if (state.tab !== 'skills' && state.tab !== 'notes') return;
+  if (e.target.closest('.li') || e.target.closest('.tree-cat-hdr')) return;  // items/folders have their own menus
+  e.preventDefault();
+  const area = state.tab;
+  showPaperMenu(e.clientX, e.clientY, [
+    { label: '➕ Create Folder…', onClick: () => pkModal({
+      title: 'Create folder', message: 'New top-level folder in ' + area + '.',
+      input: true, okLabel: 'Create', onOk: v => { const n = v.trim(); if (n) ask('folderCreate', { area, parent: '', name: n }); } }) }
+  ]);
 });
 
 document.addEventListener('click', () => ctxMenu.classList.remove('open'));
@@ -852,7 +892,7 @@ window.addEventListener('message', e => {
       setTimeout(() => banner.remove(), 400);
     }
   }
-  if      (command === 'list')     { state.items = data; renderList(); }
+  if      (command === 'list')     { state.items = data; state.folders = e.data.folders || []; renderList(); }
   else if (command === 'detail') {
     if (pendingEditSlug && data?.type === 'note' && data.slug === pendingEditSlug) {
       pendingEditSlug = null; editNote(data);
@@ -1080,7 +1120,71 @@ const chat = {
   hubRunning: false, hubWsUrl: '', hubHttpUrl: '', hubPort: 0, hubError: '',
   secretShown: false, secretVal: '',
   rendered: false, showJoin: false,
+  proto: {},   // user -> {state:'standby'|'working'|'engaged'}: live protocol status
 };
+
+// Sentinel that marks an agent-to-agent protocol frame carried in a chat message
+// (must match WIRE_PREFIX in protocol.py).
+const PKMX_PREFIX = '\u2b1b\u2b1bPKMX\u2b1b';
+function chatIsProto(text) { return typeof text === 'string' && text.startsWith(PKMX_PREFIX); }
+function chatProtoDecode(text) {
+  try { const f = JSON.parse(text.slice(PKMX_PREFIX.length)); return (f && f.t) ? f : null; }
+  catch (e) { return null; }
+}
+// Derive each participant's live protocol status from observed frames.
+function chatTrackProto(fr) {
+  if (!fr) return;
+  const t = fr.t, who = fr.from;
+  if (t === 'open') { chat.proto = {}; if (who) chat.proto[who] = { state: 'engaged' }; }
+  else if (t === 'start') {
+    const roster = (fr.meta && fr.meta.roster) || {};
+    Object.keys(roster).forEach(n => { chat.proto[n] = { state: 'standby' }; });
+  } else if (t === 'turn') {
+    if (fr.kind === 'ack') chat.proto[who] = { state: 'working' };
+    else if (fr.kind === 'result') chat.proto[who] = { state: 'standby' };
+    else if (fr.kind === 'command') { chat.proto[who] = { state: 'engaged' }; }
+  } else if (t === 'state') {
+    const meta = fr.meta || {};
+    const st = meta.state;
+    if (st === 'idle' || st === 'left') { delete chat.proto[who]; chatSetTurn(null); }
+    else if (st) chat.proto[who] = { state: st };
+    if (st === 'working') chatSetTurn('🤔 ' + who + ' is responding…');
+    else if (meta.turn) chatSetTurn('🎯 It\'s ' + meta.turn + '\'s turn');
+  } else if (t === 'end' || t === 'end_ack' || t === 'rst') {
+    chat.proto = {};   // session over — everyone drops out of the protocol
+    chatSetTurn(null);
+  }
+  chatPaintMembers();
+}
+// Plain-text magic messages also drive the markers (so the human host's
+// /start_conversation lights everyone up immediately).
+function chatTrackControl(text) {
+  const s = (text || '').trim(), low = s.toLowerCase();
+  let changed = false;
+  if (low.startsWith('/start_conversation')) {
+    chat.proto = {};
+    chatSetTurn(null);
+    chatParseMentions(s).forEach(n => { chat.proto[n] = { state: 'standby' }; });
+    changed = true;
+  } else if (low.startsWith('/stop_conversation')) {
+    chat.proto = {}; changed = true; chatSetTurn(null);
+  } else if (low.startsWith('/release')) {
+    chatParseMentions(s).forEach(n => { delete chat.proto[n]; }); changed = true;
+  }
+  if (changed) chatPaintMembers();
+}
+// The background "whose turn" banner above the chat log.
+function chatSetTurn(text) {
+  const el = document.getElementById('chat-turn-banner');
+  if (!el) return;
+  if (text) { el.textContent = text; el.classList.remove('hidden'); }
+  else { el.textContent = ''; el.classList.add('hidden'); }
+}
+function chatProtoBadge(state) {
+  if (state === 'working') return '<span class="chat-proto working" title="In session — working on a task">⚙️ working</span>';
+  if (state === 'engaged') return '<span class="chat-proto engaged" title="In session — coordinating">🔵 in session</span>';
+  return '';
+}
 
 function renderChatroom() {
   chat.rendered = true;
@@ -1122,9 +1226,9 @@ function renderChatroom() {
       <button class="tbtn chat-wide" onclick="chatToggleJoin()">＋ Join room</button>
       <div id="chat-join" class="chat-join hidden">
         <label class="chat-field-lbl">Hub URL</label>
-        <input id="chat-url" class="chat-in" placeholder="ws://host:port" title="Address of the hub to connect to, e.g. ws://10.0.0.5:7345">
-        <label class="chat-field-lbl">Room <span class="chat-muted">(channel)</span></label>
-        <input id="chat-room" class="chat-in" placeholder="e.g. general" title="The room/channel to join. Everyone in the same room shares one conversation. A hub can host many rooms.">
+        <input id="chat-url" class="chat-in" placeholder="ws://host:port  or  ws://host:port/room" oninput="chatUrlAutoRoom()" title="Address of the hub, e.g. ws://10.0.0.5:7345. You can paste a full room link (ws://host:port/room) and the Room below is filled automatically.">
+        <label class="chat-field-lbl">Room <span class="chat-muted">(optional — auto-filled from a full room URL)</span></label>
+        <input id="chat-room" class="chat-in" placeholder="auto from URL, or e.g. general" title="The room/channel to join. Leave blank if the Hub URL already includes the room (ws://host:port/room). Everyone in the same room shares one conversation.">
         <label class="chat-field-lbl">Your display name</label>
         <input id="chat-name" class="chat-in" placeholder="e.g. yu" title="The name others see in the room. Must be unique within the room.">
         <label class="chat-field-lbl">Shared secret</label>
@@ -1145,15 +1249,21 @@ function renderChatroom() {
           <span id="chat-status-dot" class="chat-dot"></span>
           <span id="chat-pane-title"></span>
           <span style="flex:1"></span>
+          <button class="tbtn" onclick="chatRenameSelf()" title="Change your display name in this room">✏️ Rename me</button>
           <button class="tbtn" onclick="ask('chatShareFile',{})" title="Share a file with the room (peers must be online)">📎 Share</button>
           <button class="tbtn" onclick="ask('chatExport',{})" title="Download this room's transcript">⬇ Download</button>
           <button class="tbtn" id="chat-leave-btn" onclick="chatLeaveActive()" title="Leave this room">Leave</button>
         </div>
         <div id="chat-body">
           <div id="chat-main">
+            <div id="chat-turn-banner" class="hidden"></div>
             <div id="chat-log"></div>
             <div id="chat-input-row">
-              <textarea id="chat-input" rows="1" placeholder="Message the room…  (Enter to send, Shift+Enter for newline)" disabled></textarea>
+              <button class="tbtn" id="chat-at-btn" onclick="chatToggleMentionMenu()" title="Mention someone (@all or a specific user)" disabled>@</button>
+              <div id="chat-input-wrap">
+                <div id="chat-mention-pop" class="hidden"></div>
+                <textarea id="chat-input" rows="1" placeholder="Message the room…  (Enter to send, Shift+Enter for newline)" disabled></textarea>
+              </div>
               <button class="tbtn" id="chat-send-btn" onclick="chatSend()" disabled>Send</button>
             </div>
           </div>
@@ -1169,8 +1279,12 @@ function renderChatroom() {
   document.getElementById('chat-room').value = chat.cfg.room || 'general';
   document.getElementById('chat-name').value = chat.cfg.displayName || 'user';
   const inp = document.getElementById('chat-input');
-  inp.addEventListener('keydown', ev => { if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); chatSend(); } });
-  inp.addEventListener('input', () => { inp.style.height = 'auto'; inp.style.height = Math.min(inp.scrollHeight, 120) + 'px'; });
+  inp.addEventListener('keydown', chatInputKeydown);
+  inp.addEventListener('input', () => { inp.style.height = 'auto'; inp.style.height = Math.min(inp.scrollHeight, 120) + 'px'; chatSuggestOnInput(); });
+  document.addEventListener('click', ev => {
+    const pop = document.getElementById('chat-mention-pop');
+    if (pop && !pop.classList.contains('hidden') && !pop.contains(ev.target) && ev.target.id !== 'chat-at-btn') chatHideMentionPop();
+  });
   chat.secretShown = false; chat.secretVal = '';
   chatPaintRooms();
   chatPaintActive();
@@ -1325,18 +1439,32 @@ function chatOnSecret(secret) {
 }
 
 function chatDoJoin() {
-  const url  = document.getElementById('chat-url').value.trim();
-  const room = document.getElementById('chat-room').value.trim() || 'general';
+  const raw  = document.getElementById('chat-url').value.trim();
+  // A full room link (ws://host:port/<room>) carries the room in its path — split it
+  // out so the user only needs to paste the Hub URL. An explicit Room field overrides.
+  let url = raw, roomFromUrl = '';
+  const m = raw.match(/^(wss?:\/\/[^/]+)(?:\/(.+))?$/i);
+  if (m) { url = m[1]; if (m[2]) { try { roomFromUrl = decodeURIComponent(m[2]); } catch { roomFromUrl = m[2]; } } }
+  const room = document.getElementById('chat-room').value.trim() || roomFromUrl || 'general';
   const user = document.getElementById('chat-name').value.trim() || 'user';
   const secret = document.getElementById('chat-secret-in').value.trim();
   const hint = document.getElementById('chat-join-hint');
-  if (!url) { if (hint) hint.innerHTML = '<span style="color:#f87171">Enter a hub URL (ws://host:port).</span>'; return; }
+  if (!url) { if (hint) hint.innerHTML = '<span style="color:#f87171">Enter a hub URL (ws://host:port or a full room link).</span>'; return; }
   if (!secret) { if (hint) hint.innerHTML = '<span style="color:#f87171">Enter the room secret the host gave you.</span>'; return; }
   if (hint) hint.textContent = '';
   ask('chatConnect', { url, room, user, secret });
   document.getElementById('chat-secret-in').value = '';
   chat.showJoin = false;
   const j = document.getElementById('chat-join'); if (j) j.classList.add('hidden');
+}
+// Auto-fill the Room field from a full room URL (ws://host:port/<room>) so the
+// user only needs to paste the Hub URL. Only fills when Room is still empty.
+function chatUrlAutoRoom() {
+  const raw = document.getElementById('chat-url').value.trim();
+  const roomIn = document.getElementById('chat-room');
+  if (!roomIn || roomIn.value.trim()) return;
+  const m = raw.match(/^wss?:\/\/[^/]+\/(.+)$/i);
+  if (m) { try { roomIn.value = decodeURIComponent(m[1]); } catch { roomIn.value = m[1]; } }
 }
 
 function chatLeaveActive() { if (chat.activeKey) ask('chatLeave', { key: chat.activeKey }); }
@@ -1382,11 +1510,204 @@ function chatSend() {
   if (!text.trim()) return;
   ask('chatSend', { text });
   inp.value = ''; inp.style.height = 'auto';
+  chatHideMentionPop();
+  chatOnLocalSend(text);
+}
+
+// After I send a normal message in an active conversation, hand the turn to the
+// engaged party (so the banner flips immediately, not only when they reply).
+function chatOnLocalSend(text) {
+  if ((text || '').trim().startsWith('/')) return;   // commands drive the banner elsewhere
+  const self = (chat.active && chat.active.self) || '';
+  const engaged = Object.keys(chat.proto || {}).filter(n => n !== self);
+  if (!engaged.length) return;
+  const who = engaged.length === 1 ? engaged[0] : 'the others';
+  chatSetTurn('🤔 ' + who + ' is responding…');
+}
+
+// ── @mentions ───────────────────────────────────────────────────────────────
+// Candidates = "@all" plus every member except yourself. Members who have LEFT
+// are still listed (marked "away") so you can @ them — they may rejoin.
+function chatMentionCandidates(filter) {
+  const f = (filter || '').toLowerCase();
+  const self = (chat.active && chat.active.self) || '';
+  const members = (chat.active && chat.active.members) || [];
+  const list = [{ name: 'all', label: 'all', sub: 'notify everyone', icon: '📢' }];
+  const seen = new Set();
+  // Present members first, then those who left.
+  const ordered = members.slice().sort((a, b) => (a.present === false ? 1 : 0) - (b.present === false ? 1 : 0));
+  ordered.filter(m => m.user !== self).forEach(m => {
+    const key = m.user.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    const away = m.present === false;
+    const role = m.host ? 'host' : m.kind === 'agent' ? 'agent' : m.kind === 'browser' ? 'browser' : '';
+    list.push({
+      name: m.user, label: m.user,
+      sub: away ? (role ? role + ' · away' : 'away') : role,
+      icon: away ? '💤' : m.host ? '👑' : m.kind === 'agent' ? '🤖' : m.kind === 'browser' ? '🌐' : '👤',
+    });
+  });
+  return list.filter(c => !f || c.name.toLowerCase().startsWith(f));
+}
+
+function chatShowMentionPop(filter, anchor) {
+  const pop = document.getElementById('chat-mention-pop');
+  if (!pop) return;
+  const cands = chatMentionCandidates(filter);
+  if (!cands.length) { chatHideMentionPop(); return; }
+  chat.mentionAnchor = anchor || null;
+  chat.mentionSel = 0;
+  pop.innerHTML = cands.map((c, i) =>
+    `<div class="chat-mrow${i === 0 ? ' sel' : ''}" data-name="${esc(c.name).replace(/"/g, '&quot;')}">` +
+    `<span>${c.icon}</span><span>@${esc(c.label)}</span>` +
+    `${c.sub ? `<span class="chat-mrow-sub">${esc(c.sub)}</span>` : ''}</div>`).join('');
+  pop.querySelectorAll('.chat-mrow').forEach(r => r.addEventListener('click', () => chatPickMention(r.dataset.name)));
+  pop.classList.remove('hidden');
+}
+
+function chatHideMentionPop() {
+  const pop = document.getElementById('chat-mention-pop');
+  if (pop) { pop.classList.add('hidden'); pop.innerHTML = ''; }
+  chat.mentionAnchor = null; chat.mentionSel = -1;
+}
+
+// The "@" button: open a picker at the caret (insert, don't replace).
+function chatToggleMentionMenu() {
+  const pop = document.getElementById('chat-mention-pop');
+  if (pop && !pop.classList.contains('hidden')) { chatHideMentionPop(); return; }
+  const inp = document.getElementById('chat-input');
+  if (inp && !inp.disabled) inp.focus();
+  chatShowMentionPop('', null);
+}
+
+// Typing "@word" opens the picker filtered by the partial under the caret.
+function chatMentionOnInput() {
+  const inp = document.getElementById('chat-input');
+  if (!inp) return;
+  const caret = inp.selectionStart;
+  const upto = inp.value.slice(0, caret);
+  const m = upto.match(/(?:^|\s)@([A-Za-z0-9_\-]*)$/);
+  if (m) chatShowMentionPop(m[1], { start: caret - m[1].length - 1, end: caret });
+  else chatHideMentionPop();
+}
+
+// Magic conversation-control messages, offered via slash-command autocomplete.
+const CHAT_COMMANDS = [
+  { cmd: '/start_conversation', args: ' ', desc: 'Start THE conversation; then @-invite the parties' },
+  { cmd: '/stop_conversation', args: '', desc: 'Stop the current conversation' },
+  { cmd: '/release', args: ' ', desc: 'Drop one party from the conversation' },
+];
+
+// One dispatcher for the composer: slash-command at line start, else @mention.
+function chatSuggestOnInput() {
+  const inp = document.getElementById('chat-input');
+  if (!inp) return;
+  const caret = inp.selectionStart;
+  const upto = inp.value.slice(0, caret);
+  const sc = upto.match(/^\/([a-z_]*)$/i);
+  if (sc) { chatShowCommandPop(sc[1], { start: 0, end: caret }); return; }
+  chatMentionOnInput();
+}
+
+function chatShowCommandPop(filter, anchor) {
+  const pop = document.getElementById('chat-mention-pop');
+  if (!pop) return;
+  const f = (filter || '').toLowerCase();
+  const items = CHAT_COMMANDS.filter(c => !f || c.cmd.slice(1).toLowerCase().startsWith(f));
+  if (!items.length) { chatHideMentionPop(); return; }
+  chat.mentionAnchor = anchor || null;
+  chat.mentionSel = 0;
+  pop.innerHTML = items.map((c, i) =>
+    `<div class="chat-mrow${i === 0 ? ' sel' : ''}" data-cmd="${esc(c.cmd)}" data-args="${esc(c.args || '')}">` +
+    `<span>⌘</span><span>${esc(c.cmd)}</span><span class="chat-mrow-sub">${esc(c.desc)}</span></div>`).join('');
+  pop.querySelectorAll('.chat-mrow').forEach(r => r.addEventListener('click', () => chatPickCommand(r.dataset.cmd, r.dataset.args)));
+  pop.classList.remove('hidden');
+}
+
+function chatPickCommand(cmd, args) {
+  const inp = document.getElementById('chat-input');
+  if (!inp) return;
+  const a = chat.mentionAnchor;
+  const start = a ? a.start : 0;
+  const end = a ? a.end : inp.selectionStart;
+  const insert = cmd + (args || '');
+  inp.value = inp.value.slice(0, start) + insert + inp.value.slice(end);
+  const pos = start + insert.length;
+  inp.setSelectionRange(pos, pos);
+  inp.style.height = 'auto'; inp.style.height = Math.min(inp.scrollHeight, 120) + 'px';
+  chatHideMentionPop();
+  inp.focus();
+}
+
+function chatPickMention(name) {
+  const inp = document.getElementById('chat-input');
+  if (!inp) return;
+  const needQuotes = name !== 'all' && /[^A-Za-z0-9_\-]/.test(name);
+  const token = (needQuotes ? `@"${name}"` : `@${name}`) + ' ';
+  const a = chat.mentionAnchor;
+  const start = a ? a.start : inp.selectionStart;
+  const end = a ? a.end : inp.selectionEnd;
+  inp.value = inp.value.slice(0, start) + token + inp.value.slice(end);
+  const pos = start + token.length;
+  inp.setSelectionRange(pos, pos);
+  inp.style.height = 'auto'; inp.style.height = Math.min(inp.scrollHeight, 120) + 'px';
+  chatHideMentionPop();
+  inp.focus();
+}
+
+// Keydown on the composer: drive the popup if open, else send on Enter.
+function chatInputKeydown(ev) {
+  const pop = document.getElementById('chat-mention-pop');
+  const open = pop && !pop.classList.contains('hidden');
+  if (open) {
+    const rows = Array.from(pop.querySelectorAll('.chat-mrow'));
+    if ((ev.key === 'ArrowDown' || ev.key === 'ArrowUp') && rows.length) {
+      ev.preventDefault();
+      chat.mentionSel = (((chat.mentionSel ?? -1) + (ev.key === 'ArrowDown' ? 1 : -1)) + rows.length) % rows.length;
+      rows.forEach((r, i) => r.classList.toggle('sel', i === chat.mentionSel));
+      rows[chat.mentionSel].scrollIntoView({ block: 'nearest' });
+      return;
+    }
+    if (ev.key === 'Enter' || ev.key === 'Tab') {
+      const idx = (chat.mentionSel != null && chat.mentionSel >= 0) ? chat.mentionSel : 0;
+      if (rows[idx]) { ev.preventDefault(); rows[idx].click(); return; }
+    }
+    if (ev.key === 'Escape') { ev.preventDefault(); chatHideMentionPop(); return; }
+  }
+  if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); chatSend(); }
+}
+
+// Parse @names out of a message (mirror of protocol.parse_mentions).
+function chatParseMentions(text) {
+  const re = /(?<![\w@])@(?:"([^"]{1,60})"|([A-Za-z0-9_][\w\-]{0,59}))/g;
+  const out = []; let m;
+  while ((m = re.exec(text || ''))) {
+    const n = m[1] || m[2];
+    if (n && !out.some(x => x.toLowerCase() === n.toLowerCase())) out.push(n);
+  }
+  return out;
+}
+function chatMentionsMe(text) {
+  const me = (chat.active && chat.active.self) || '';
+  if (!me) return false;
+  const low = chatParseMentions(text).map(s => s.toLowerCase());
+  return low.includes(me.toLowerCase()) || low.includes('all') || low.includes('everyone');
+}
+// Wrap @tokens in an already-HTML-escaped string for display.
+function chatHighlightMentions(escaped) {
+  return (escaped || '').replace(
+    /(?<![\w@])@(?:&quot;[^&]{1,60}&quot;|all|everyone|[A-Za-z0-9_][\w\-]{0,59})/g,
+    m => `<span class="chat-at">${m}</span>`);
 }
 
 function chatAppend(m) {
   const log = document.getElementById('chat-log');
   if (!log) return;
+  // Protocol frames (agent-to-agent) never render as chat — they only drive the
+  // per-member status marker. Hide the raw sentinel/JSON from the log.
+  if (m && !m.system && chatIsProto(m.text)) { chatTrackProto(chatProtoDecode(m.text)); return; }
+  if (m && !m.system && m.text) chatTrackControl(m.text);
   // Idempotent by message id: a message (history backfill + live echo, or a
   // repaint racing an incremental append) never renders twice. System notices
   // get fresh random ids, so join/leave lines still show each time.
@@ -1402,10 +1723,11 @@ function chatAppend(m) {
     el.textContent = m.text;
   } else {
     const mine = chat.active && m.from === chat.active.self;
-    el.className = 'chat-msg' + (mine ? ' mine' : '') + (m.kind === 'agent' ? ' agent' : '');
+    const atMe = !mine && chatMentionsMe(m.text);
+    el.className = 'chat-msg' + (mine ? ' mine' : '') + (m.kind === 'agent' ? ' agent' : '') + (atMe ? ' mentions-me' : '');
     const t = new Date(m.ts || Date.now());
     const hh = String(t.getHours()).padStart(2,'0') + ':' + String(t.getMinutes()).padStart(2,'0');
-    el.innerHTML = `<div class="chat-msg-hdr"><span class="chat-who">${m.kind === 'agent' ? '🤖 ' : ''}${esc(m.from)}</span><span class="chat-time">${hh}</span></div><div class="chat-msg-body">${esc(m.text)}</div>`;
+    el.innerHTML = `<div class="chat-msg-hdr"><span class="chat-who">${m.kind === 'agent' ? '🤖 ' : ''}${esc(m.from)}</span><span class="chat-time">${hh}</span></div><div class="chat-msg-body">${chatHighlightMentions(esc(m.text))}</div>`;
   }
   log.appendChild(el);
   if (atBottom) log.scrollTop = log.scrollHeight;
@@ -1435,14 +1757,18 @@ function chatPaintActive() {
   document.getElementById('chat-status-dot').className = 'chat-dot ' + a.status;
   document.getElementById('chat-pane-title').textContent = a.room + (a.statusDetail ? ' — ' + a.statusDetail : (connected ? '' : ' — ' + a.status));
   const inp = document.getElementById('chat-input'), sbtn = document.getElementById('chat-send-btn');
+  const atbtn = document.getElementById('chat-at-btn');
   const muted = !!a.selfMuted;
   if (inp)  { inp.disabled  = !connected || muted; inp.placeholder = muted ? 'You are muted by the host — you can read but not post.' : 'Message the room…  (Enter to send, Shift+Enter for newline)'; }
   if (sbtn) sbtn.disabled = !connected || muted;
+  if (atbtn) atbtn.disabled = !connected || muted;
   // Repaint the full log from the snapshot (switching rooms).
   const log = document.getElementById('chat-log');
   if (log) {
     log.innerHTML = '';
     chat.renderedIds = new Set();   // reset id-dedup tracking for a clean repaint
+    chat.proto = {};                // rebuild protocol status from this room's frames
+    chatSetTurn(null);
     (a.messages || []).forEach(chatAppend);
     (a.files || []).forEach(f => chatAppendFileRow(f.key || chat.activeKey, f));
     log.scrollTop = log.scrollHeight;
@@ -1479,6 +1805,7 @@ function chatPaintMembers() {
     const canModerate = amHost && isHere && !m.host;
     // Non-host viewers see a small greyed muted indicator; the host toggles it below.
     const mut  = (m.muted && !canModerate) ? '<span class="chat-muted-badge" title="muted by the host — can\'t speak">🔇</span>' : '';
+    const proto = isHere ? chatProtoBadge((chat.proto && chat.proto[m.user] || {}).state) : '';
     const tail = isHere ? '' : `<span class="chat-ago">${esc(chatAgo(m.lastSeen))}</span>`;
     let actions = '';
     if (canModerate) {
@@ -1490,9 +1817,12 @@ function chatPaintMembers() {
         + `<button class="chat-mod" title="Rename this member" onclick="chatModerate('rename',this)">✏️</button>`
         + `<button class="chat-mod chat-mod-kick" title="Remove (kick) this member from the room" onclick="chatModerate('kick',this)">🚫</button></span>`;
     }
-    return `<div class="chat-member${isHere ? '' : ' gone'}${m.muted ? ' muted' : ''}" data-sid="${attr(m.sid || '')}" data-user="${attr(m.user)}" title="${esc(how)}"><span class="chat-mdot ${dotK}"></span><span class="chat-mname">${icon} ${esc(m.user)}${sid}${unv}${mut}</span>${tail}${actions}</div>`;
+    return `<div class="chat-member${isHere ? '' : ' gone'}${m.muted ? ' muted' : ''}" data-sid="${attr(m.sid || '')}" data-user="${attr(m.user)}" title="${esc(how)}"><span class="chat-mdot ${dotK}"></span><span class="chat-mname">${icon} ${esc(m.user)}${sid}${unv}${mut}${proto}</span>${tail}${actions}</div>`;
   };
   let html = amHost ? '<div class="chat-host-hint">You host this room — use each member\'s buttons to mute, rename ✏️, or remove 🚫.</div>' : '';
+  if (chat.proto && Object.keys(chat.proto).length) {
+    html += '<div class="chat-proto-legend"><span class="chat-proto standby">🟢 standby</span><span class="chat-proto working">⚙️ working</span><span class="chat-proto engaged">🔵 in session</span></div>';
+  }
   html += here.map(row).join('');
   if (gone.length) html += `<div class="chat-side-sub">Earlier</div>` + gone.map(row).join('');
   box.innerHTML = html;
@@ -1502,6 +1832,9 @@ function chatModerate(action, btn) {
   const rowEl = btn.closest('.chat-member');
   if (!rowEl) return;
   ask('chatModerate', { action, sid: rowEl.dataset.sid || '', user: rowEl.dataset.user || '' });
+}
+function chatRenameSelf() {
+  ask('chatRenameSelf', { user: (chat.active && chat.active.user) || (chat.cfg && chat.cfg.displayName) || '' });
 }
 
 function chatAgo(ts) {
@@ -1566,12 +1899,23 @@ function chatPaintRecents() {
   const joinedKeys = new Set(chat.rooms.map(r => r.key));
   const items = (chat.recents || []).filter(r => !joinedKeys.has(r.id));
   wrap.classList.toggle('hidden', !items.length);
-  box.innerHTML = items.map(r =>
-    `<div class="chat-recent-item" title="${esc(r.url)} · as ${esc(r.user)}">
-       <span class="chat-recent-name" onclick="ask('chatRejoin',{id:'${esc(r.id)}'})">${r.host ? '🖧 ' : ''}${esc(r.room)}</span>
+  const rowHtml = (r) => {
+    let hostAddr = '';
+    try { hostAddr = new URL(r.url).host; } catch (e) { hostAddr = r.url || ''; }
+    // In the "Joined before" group, show the hub address so same-named rooms on
+    // different hubs stay distinguishable. The "Hosted by me" header needs no tag.
+    const tag = r.host ? '' : (hostAddr ? `<span class="chat-recent-badge guest" title="Hosted by ${esc(r.url)}">@${esc(hostAddr)}</span>` : '');
+    return `<div class="chat-recent-item" title="${esc(r.url)} · as ${esc(r.user)}">
+       <span class="chat-recent-name" onclick="ask('chatRejoin',{id:'${esc(r.id)}'})">${tag}${esc(r.room)}</span>
        <span class="chat-recent-x" title="Forget this room" onclick="ask('chatForgetRoom',{id:'${esc(r.id)}'})">✕</span>
-     </div>`
-  ).join('');
+     </div>`;
+  };
+  const mine   = items.filter(r => r.host);
+  const others = items.filter(r => !r.host);
+  let html = '';
+  if (mine.length)   html += '<div class="chat-side-sub">Hosted by me</div>' + mine.map(rowHtml).join('');
+  if (others.length) html += '<div class="chat-side-sub">Joined before</div>' + others.map(rowHtml).join('');
+  box.innerHTML = html;
 }
 
 // ── Tabs ──────────────────────────────────────────────────────────────────
@@ -1653,6 +1997,7 @@ function renderList() {
     const q = state.search;
     // Recursive N-level tree by category path; leaf = skill (shows skill name)
     const root = buildCatTree(items, r => r.category, '(uncategorized)');
+    seedFolders(root, state.folders);
     // Right-click a folder to rename it (re-paths all skills under it).
     const folderAttr = (child, name, fullPath) => {
       const prefix = fullPath.join('/');
@@ -1676,6 +2021,7 @@ function renderList() {
       return ` oncontextmenu="noteFolderMenu(event,'${b64}',${JSON.stringify(name).replace(/"/g, '&quot;')})"`;
     };
     const root = buildCatTree(items, r => r.category, '(uncategorized)');
+    seedFolders(root, state.folders);
     const order = {
       isFolderPinned: (arr) => notePinnedFolders.includes(arr.join('/')),
       isLeafPinned: (it) => !!it.pinned,
@@ -1757,10 +2103,17 @@ function renderList() {
     fEl.innerHTML = ['all',...langs].map(l =>
       `<span class="chip ${filter===l?'active':''}" onclick="setFilter('${l}')">${l}</span>`).join('');
     const shown = filter==='all' ? items : items.filter(r => r.lang===filter);
-    el.innerHTML = shown.map(r => `<div class="li" onclick="openItem('package','${esc(r.name)}')">
-      <div class="li-name">${esc(r.name)}</div>
+    el.innerHTML = shown.map(r => {
+      const gitTag = r.gitRepo
+        ? '<span class="pkg-git repo" title="Has its own .git repository">git repo</span>'
+        : r.gitTracked
+          ? '<span class="pkg-git tracked" title="Tracked in the knowledge store\'s git">git</span>'
+          : '<span class="pkg-git untracked" title="Not tracked by git yet (uncommitted)">untracked</span>';
+      return `<div class="li" onclick="openItem('package','${esc(r.name)}')" oncontextmenu="packageItemMenu(event,${JSON.stringify(r.name).replace(/"/g,'&quot;')})">
+      <div class="li-name">${esc(r.name)} ${gitTag}</div>
       <div class="li-meta">${esc(r.lang)} · ${esc((r.description||'').slice(0,50))}</div>
-    </div>`).join('') || '<div class="empty">No packages</div>';
+    </div>`;
+    }).join('') || '<div class="empty">No packages</div>';
 
   } else if (tab === 'scripts') {
     // Recursive N-level tree by folder path; leaf = script file with language tag
@@ -1820,6 +2173,16 @@ function buildCatTree(items, getCat, fallback) {
     node.items.push(it);
   });
   return root;
+}
+
+// Ensure each given folder path exists as a (possibly empty) branch in the tree,
+// so user-created empty folders render even with no items yet.
+function seedFolders(root, folders) {
+  for (const f of (folders || [])) {
+    const segs = String(f).split('/').map(s => s.trim()).filter(Boolean);
+    let node = root;
+    for (const seg of segs) { node.folders[seg] = node.folders[seg] || { folders: {}, items: [] }; node = node.folders[seg]; }
+  }
 }
 
 function countTreeLeaves(node) {
@@ -2739,6 +3102,10 @@ function skillFolderMenu(ev, b64, name) {
   try { prefix = decodeURIComponent(escape(atob(b64))); } catch (e) {}
   if (!prefix) return;
   const items = [{ label: '📁 ' + name, header: true }];
+  items.push({ label: '➕ Create Sub Folder…', onClick: () => pkModal({
+    title: 'Create sub-folder', message: 'New folder under “' + prefix + '”.',
+    input: true, okLabel: 'Create', onOk: v => { const n = v.trim(); if (n) ask('folderCreate', { area: 'skills', parent: prefix, name: n }); } }) });
+  items.push({ sep: true });
   items.push({ label: '✏ Rename folder…', onClick: () => pkModal({
     title: 'Rename folder', message: 'Renames “' + prefix + '” and re-paths every skill under it.',
     input: true, defaultValue: name, okLabel: 'Rename', onOk: v => {
@@ -2775,6 +3142,9 @@ function noteFolderMenu(ev, b64, name) {
   try { prefix = decodeURIComponent(escape(atob(b64))); } catch (e) {}
   if (!prefix) return;
   const items = [{ label: '📁 ' + name, header: true }];
+  items.push({ label: '➕ Create Sub Folder…', onClick: () => pkModal({
+    title: 'Create sub-folder', message: 'New folder under “' + prefix + '”.',
+    input: true, okLabel: 'Create', onOk: v => { const n = v.trim(); if (n) ask('folderCreate', { area: 'notes', parent: prefix, name: n }); } }) });
   const fpinned = notePinnedFolders.includes(prefix);
   items.push({ label: fpinned ? '★ Unpin folder' : '☆ Pin folder', onClick: () => ask('noteSetFolderPinned', { prefix, pinned: !fpinned }) });
   items.push({ label: '✏ Rename folder…', onClick: () => pkModal({
@@ -2801,6 +3171,8 @@ function scriptFolderMenu(ev, b64, name) {
   try { prefix = decodeURIComponent(escape(atob(b64))); } catch (e) {}
   if (!prefix) return;
   const items = [{ label: '📁 ' + name, header: true }];
+  items.push({ label: '📂 Open Folder (new window)', onClick: () => ask('openStoreFolder', { area: 'scripts', rel: prefix }) });
+  items.push({ sep: true });
   items.push({ label: '✏ Rename folder…', onClick: () => pkModal({
     title: 'Rename folder', message: 'Renames “' + prefix + '” and re-paths every script under it.',
     input: true, defaultValue: name, okLabel: 'Rename', onOk: v => {
@@ -2823,11 +3195,45 @@ function scriptItemMenu(ev, relPath, category) {
   ev.preventDefault(); ev.stopPropagation();
   const file = String(relPath).split('/').pop();
   const items = [{ label: '📄 ' + file, header: true }];
+  items.push({ label: '📄 Open (this window)', onClick: () => ask('openStoreFile', { area: 'scripts', rel: relPath }) });
+  items.push({ sep: true });
   items.push({ label: '↪ Move…', onClick: () => pkModal({
     title: 'Move script', message: 'Target folder path (blank = root; missing parents are created).',
     input: true, defaultValue: category || '', okLabel: 'Move', onOk: v => ask('scriptMove', { relPath, category: v.trim() }) }) });
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
+
+// Right-click a Package -> open its folder in a new window.
+function packageItemMenu(ev, name) {
+  ev.preventDefault(); ev.stopPropagation();
+  const items = [
+    { label: '📦 ' + name, header: true },
+    { label: '📂 Open Folder (new window)', onClick: () => ask('openStoreFolder', { area: 'packages', rel: name }) },
+    { sep: true },
+    { label: '🗑 Delete Package…', danger: true, onClick: () => confirmDeletePackage(name) },
+  ];
+  showPaperMenu(ev.clientX, ev.clientY, items);
+}
+
+// First confirmation: require the user to type the exact package name.
+// A second (native modal) confirmation happens in the extension host.
+function confirmDeletePackage(name) {
+  pkModal({
+    title: 'Delete package “' + name + '”?',
+    message: 'This permanently removes the entire package folder. Type the package name below to confirm.',
+    input: true,
+    okLabel: 'Delete',
+    danger: true,
+    onOk: v => {
+      if ((v || '').trim() !== name) {
+        pkModal({ title: 'Name did not match', message: 'Deletion cancelled — the text you typed did not match “' + name + '”.', okLabel: 'OK' });
+        return;
+      }
+      ask('packageDelete', { name });
+    }
+  });
+}
+
 
 // List view
 function renderPaperFilters(fEl) {
