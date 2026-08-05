@@ -4407,7 +4407,7 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
     for (const s of node.items.sort((a: any, b: any) => a.name.localeCompare(b.name))) {
       const item = new PkTreeItem(s.name, 'skill', vscode.TreeItemCollapsibleState.None,
         { key: s.category ? `${s.category}/${s.name}` : s.name, relPath: `${s.category ? `${s.category}/` : ""}${s.name}.md`, description: s.description });
-      item.command = { command: 'personalKnowledge.openSkill', title: 'Open', arguments: [item.nodeData.key] };
+      item.command = { command: 'personalKnowledge.openSkill', title: 'Open', arguments: [s.name] };
       if (s.description) item.description = s.description;
       out.push(item);
     }
