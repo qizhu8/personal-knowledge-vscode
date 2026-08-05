@@ -10,9 +10,9 @@
  * scans on demand; a file watcher (in extension.ts) triggers UI refreshes.
  */
 import { homedir } from "os";
-import { join, sep } from "path";
+import { basename, join, resolve, sep } from "path";
 import {
-  existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, rmSync,
+  existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, rmSync, renameSync,
 } from "fs";
 import { createHash } from "crypto";
 
@@ -55,6 +55,7 @@ function serializeFrontmatter(fm: Record<string, any>, body: string): string {
 function safeName(s: string): string {
   return (s || "untitled").replace(/[/\\:*?"<>|\u0000-\u001f]/g, "").trim() || "untitled";
 }
+export function storeSafeName(value: string): string { return safeName(value); }
 function safeCategory(cat: string): string {
   if (!cat || !cat.trim()) return "";
   return cat.split("/").map(s => s.trim()).filter(Boolean).map(s => safeName(s)).filter(Boolean).join("/");
@@ -96,6 +97,7 @@ function noteFromFile(f: MdFile): any {
   return {
     slug: key,
     title: fm.title || nameOf(key),
+    description: fm.description || "",
     type: fm.type || "general",
     tags: JSON.stringify(asArray(fm.tags)),
     pinned: fm.pinned === true,
@@ -118,9 +120,8 @@ export function noteList(type?: string, limit = 50): any[] {
 export function noteSearch(q: string): any[] {
   const needle = q.toLowerCase();
   return allNoteFiles().map(noteFromFile)
-    .filter(r => r.title.toLowerCase().includes(needle) ||
-                 r.content.toLowerCase().includes(needle) ||
-                 r.slug.toLowerCase().includes(needle))
+    .filter(r => [r.title, r.description, r.content, r.slug, r.category, r.type, ...JSON.parse(r.tags || "[]")]
+      .some(value => String(value || "").toLowerCase().includes(needle)))
     .sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""))
     .slice(0, 100)
     .map(({ content, ...meta }) => meta);
@@ -134,7 +135,7 @@ export function noteGet(slug: string): any {
 }
 
 export function noteUpsert(row: {
-  slug: string; title: string; content: string; type: string; tags: string[]; category?: string; pinned?: boolean;
+  slug: string; title: string; content: string; type: string; tags: string[]; category?: string; pinned?: boolean; description?: string;
 }): boolean {
   const existing = noteGet(row.slug);
   const category = safeCategory(row.category ?? existing?.category ?? "");
@@ -150,7 +151,7 @@ export function noteUpsert(row: {
   }
   mkdirSync(join(full, ".."), { recursive: true });
   const pinned = (row.pinned ?? existing?.pinned) ? true : undefined;
-  const fm: any = { title: row.title, type: row.type, tags: row.tags ?? [], created };
+  const fm: any = { title: row.title, description: row.description ?? existing?.description ?? "", type: row.type, tags: row.tags ?? [], created };
   if (pinned) fm.pinned = true; // only write when set, to keep frontmatter clean
   writeFileSync(full, serializeFrontmatter(fm, row.content ?? ""));
   return !existing;
@@ -194,7 +195,7 @@ function writeNotesMeta(m: { pinnedFolders: string[] }): void {
 function areaRoot(area: string): string { return join(_store, area); }
 
 export function folderCreate(area: string, relPath: string): boolean {
-  if (area !== "skills" && area !== "notes") return false;
+  if (!["skills", "notes", "papers", "scripts"].includes(area)) return false;
   const rel = safeCategory(relPath || "");
   if (!rel) return false;
   const full = join(areaRoot(area), ...rel.split("/"));
@@ -208,7 +209,7 @@ export function folderCreate(area: string, relPath: string): boolean {
 
 /** All subdirectory paths under an area root (relative; skips dotfiles/_assets). */
 export function folderList(area: string): string[] {
-  if (area !== "skills" && area !== "notes") return [];
+  if (!["skills", "notes", "papers", "scripts"].includes(area)) return [];
   const out: string[] = [];
   const walk = (dir: string, rel: string): void => {
     let ents: any[];
@@ -222,6 +223,39 @@ export function folderList(area: string): string[] {
   };
   walk(areaRoot(area), "");
   return out;
+}
+
+export function storeEntryMove(
+  area: "skills" | "notes" | "papers" | "prompts" | "scripts",
+  relPath: string,
+  targetFolder: string,
+): { ok: boolean; newPath?: string; error?: string } {
+  const clean = (value: string) => value.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  const sourceRel = clean(relPath);
+  const targetRel = clean(targetFolder);
+  if (!sourceRel || [...sourceRel.split("/"), ...targetRel.split("/")].some(part => part === ".." || part === ".")) {
+    return { ok: false, error: "Invalid path." };
+  }
+  const root = resolve(_store, area);
+  const source = resolve(root, sourceRel);
+  const destinationFolder = targetRel ? resolve(root, targetRel) : root;
+  const destination = resolve(destinationFolder, basename(source));
+  if (!source.startsWith(root + sep) || (destinationFolder !== root && !destinationFolder.startsWith(root + sep))) {
+    return { ok: false, error: "Path escapes the knowledge store." };
+  }
+  if (!existsSync(source)) return { ok: false, error: `Source not found: ${sourceRel}` };
+  if (source === destination) return { ok: false, error: "Item is already in that folder." };
+  if (destination.startsWith(source + sep)) return { ok: false, error: "A folder cannot be moved into itself." };
+  if (existsSync(destination)) return { ok: false, error: `An item named "${basename(source)}" already exists there.` };
+  try {
+    mkdirSync(destinationFolder, { recursive: true });
+    renameSync(source, destination);
+    const newPath = targetRel ? `${targetRel}/${basename(source)}` : basename(source);
+    if (area === "notes" && statSync(destination).isDirectory()) repathFolderPins(sourceRel, newPath);
+    return { ok: true, newPath };
+  } catch (error: any) {
+    return { ok: false, error: error?.message || String(error) };
+  }
 }
 
 /** All folder paths that actually contain notes (every ancestor segment). */
@@ -334,6 +368,7 @@ function skillFromFile(f: MdFile): any {
     category: catOf(key),
     tags: JSON.stringify(asArray(fm.tags)),
     source_project: fm.source_project ?? null,
+    pinned: fm.pinned === true,
     content: body,
     created_at: fm.created || new Date(f.mtime).toISOString(),
     updated_at: new Date(f.mtime).toISOString(),
@@ -353,9 +388,8 @@ export function skillList(category?: string, tag?: string): any[] {
 export function skillSearch(q: string): any[] {
   const needle = q.toLowerCase();
   return allSkillFiles().map(skillFromFile)
-    .filter(r => r.name.toLowerCase().includes(needle) ||
-                 r.content.toLowerCase().includes(needle) ||
-                 (r.description || "").toLowerCase().includes(needle))
+    .filter(r => [r.name, r._key, r.description, r.content, r.category, r.source_project, ...JSON.parse(r.tags || "[]")]
+      .some(value => String(value || "").toLowerCase().includes(needle)))
     .slice(0, 100)
     .map(({ content, _key, ...meta }) => meta);
 }
@@ -374,7 +408,7 @@ export function skillGet(name: string): any {
 }
 
 export function skillUpsert(row: {
-  name: string; content: string; description?: string; category?: string; tags?: string[]; source_project?: string;
+  name: string; content: string; description?: string; category?: string; tags?: string[]; source_project?: string; pinned?: boolean;
 }): boolean {
   const existingFile = findSkillFile(row.name);
   const existing = existingFile ? skillFromFile(existingFile) : null;
@@ -393,6 +427,7 @@ export function skillUpsert(row: {
     description: row.description ?? existing?.description ?? "",
     tags: row.tags ?? (existing ? JSON.parse(existing.tags || "[]") : []),
     source_project: row.source_project ?? existing?.source_project ?? undefined,
+    pinned: (row.pinned ?? existing?.pinned) ? true : undefined,
     created,
   };
   writeFileSync(full, serializeFrontmatter(fm, row.content ?? ""));
@@ -403,6 +438,17 @@ export function skillDelete(name: string): boolean {
   const f = findSkillFile(name);
   if (!f) return false;
   try { rmSync(f.full, { force: true }); return true; } catch { return false; }
+}
+
+export function skillSetPinned(name: string, pinned: boolean): boolean {
+  const skill = skillGet(name);
+  if (!skill) return false;
+  skillUpsert({
+    name: skill.name, content: skill.content, description: skill.description,
+    category: skill.category, tags: JSON.parse(skill.tags || "[]"),
+    source_project: skill.source_project ?? undefined, pinned,
+  });
+  return true;
 }
 
 /** Rename a skill category folder: re-path every skill under `oldPrefix` to `newPrefix`. */
@@ -511,6 +557,7 @@ function paperFromFile(f: MdFile): any {
   return {
     slug: key,
     title: fm.title || nameOf(key),
+    description: fm.description || "",
     kind: fm.kind === "idea" ? "idea" : "paper",
     group: (fm.group && String(fm.group).trim()) || "Papers",
     pinned: fm.pinned === true,
@@ -522,6 +569,8 @@ function paperFromFile(f: MdFile): any {
     url: fm.url || "",
     file: fm.file || "",
     conclusions: asArray(fm.conclusions),
+    implementation: asArray(fm.implementation),
+    assumptions: asArray(fm.assumptions),
     cites: normalizeCites(fm.cites),
     category: catOf(key),
     content: body,
@@ -563,13 +612,15 @@ export function paperList(): any[] {
 
 export function paperSearch(q: string): any[] {
   const n = q.toLowerCase();
-  return paperList().filter(p =>
-    p.title.toLowerCase().includes(n) ||
-    p.topic.toLowerCase().includes(n) ||
-    p.publisher.toLowerCase().includes(n) ||
-    (p.authors as string[]).join(" ").toLowerCase().includes(n) ||
-    (p.tags as string[]).join(" ").toLowerCase().includes(n) ||
-    String(p.year || "").includes(n));
+  const matches = allPaperFiles().map(paperFromFile).filter(p => [
+    p.slug, p.title, p.description, p.content, p.topic, p.publisher, p.category, p.group,
+    p.url, p.file, p.year, ...p.authors, ...p.tags, ...p.conclusions,
+    ...p.implementation, ...p.assumptions,
+    ...p.cites.flatMap((cite: Cite) => [cite.paper, cite.note]),
+  ].some(value => String(value || "").toLowerCase().includes(n)));
+  const counts = citationCounts(allPaperFiles().map(paperFromFile));
+  return matches.map(({ content, ...paper }) => ({ ...paper, citationCount: counts.get(paper.slug) || 0 }))
+    .sort((a, b) => (b.citationCount - a.citationCount) || ((b.year || 0) - (a.year || 0)) || a.title.localeCompare(b.title));
 }
 
 export function paperGet(slug: string): any {
@@ -582,7 +633,8 @@ export function paperGet(slug: string): any {
 export function paperUpsert(row: {
   slug: string; title: string; content?: string; authors?: string[]; year?: number | string | null;
   topic?: string; publisher?: string; tags?: string[]; url?: string; file?: string;
-  conclusions?: string[]; cites?: Cite[]; category?: string; kind?: string; group?: string; pinned?: boolean;
+  conclusions?: string[]; implementation?: string[]; assumptions?: string[]; cites?: Cite[];
+  category?: string; kind?: string; group?: string; pinned?: boolean; description?: string;
 }): boolean {
   const existing = paperGet(row.slug);
   const category = safeCategory(row.category ?? existing?.category ?? "");
@@ -590,6 +642,11 @@ export function paperUpsert(row: {
   const newRel = category ? `${category}/${filename}` : filename;
   const full = join(papersRoot(), newRel);
   const created = existing?.created_at ?? now();
+  const resolvePaper = buildPaperResolver(allPaperFiles().map(paperFromFile));
+  const cites = normalizeCites(row.cites ?? existing?.cites ?? []).flatMap(cite => {
+    const target = resolvePaper(cite.paper);
+    return target && target !== row.slug ? [{ paper: target, note: cite.note }] : [];
+  });
 
   const oldFull = join(papersRoot(), row.slug + ".md");
   if (existing && relNoExt(newRel) !== row.slug && existsSync(oldFull)) {
@@ -598,6 +655,7 @@ export function paperUpsert(row: {
   mkdirSync(join(full, ".."), { recursive: true });
   const fm: Record<string, any> = {
     title: row.title,
+    description: row.description ?? existing?.description ?? "",
     kind: (row.kind ?? existing?.kind) === "idea" ? "idea" : undefined,
     group: (() => { const g = (row.group ?? existing?.group ?? "").trim(); return g && g !== "Papers" ? g : undefined; })(),
     pinned: (row.pinned ?? existing?.pinned) ? true : undefined,
@@ -609,7 +667,9 @@ export function paperUpsert(row: {
     url: row.url ?? existing?.url ?? "",
     file: row.file ?? existing?.file ?? "",
     conclusions: row.conclusions ?? existing?.conclusions ?? [],
-    cites: normalizeCites(row.cites ?? existing?.cites ?? []),
+    implementation: row.implementation ?? existing?.implementation ?? [],
+    assumptions: row.assumptions ?? existing?.assumptions ?? [],
+    cites,
     created,
   };
   writeFileSync(full, serializeFrontmatter(fm, row.content ?? existing?.content ?? ""));
@@ -670,7 +730,9 @@ export function paperGraph(opts: {
 
   const nodes = [...nodeSet].map(s => bySlug.get(s)).filter(Boolean).map(p => ({
     key: p.slug, title: p.title, year: p.year, topic: p.topic, authors: p.authors, tags: p.tags,
-    kind: p.kind, group: p.group, pinned: p.pinned, citationCount: counts.get(p.slug) || 0, conclusions: p.conclusions, url: p.url, file: p.file, category: p.category,
+    kind: p.kind, group: p.group, pinned: p.pinned, citationCount: counts.get(p.slug) || 0,
+    conclusions: p.conclusions, implementation: p.implementation, assumptions: p.assumptions,
+    cites: p.cites, url: p.url, file: p.file, category: p.category,
   }));
   const edges: any[] = [];
   for (const p of all) {

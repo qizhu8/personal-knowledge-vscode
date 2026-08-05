@@ -5,14 +5,14 @@ import * as http from "http";
 import * as fs from "fs";
 import { syncServer } from "./sync-server";
 import {
-  skillList, skillSearch, skillGet, skillUpsert, skillDelete, skillMoveCategory, skillMove,
+  skillList, skillSearch, skillGet, skillUpsert, skillDelete, skillMoveCategory, skillMove, skillSetPinned,
   noteList, noteSearch, noteGet, noteUpsert, noteDelete, slugExists, noteMove, noteMoveFolder, noteSetPinned, noteFolderPins, noteSetFolderPinned,
   noteExport, noteImport, saveNoteAsset,
   paperList, paperSearch, paperGet, paperUpsert, paperDelete,
   paperFacets, paperGraph, savePaperFile,
   paperGroups, paperSetGroup, paperGroupRename, paperGroupDelete, paperSetPinned, paperSetTopic,
   setStorePath as fsSetStorePath, getStorePath,
-  folderCreate, folderList,
+  folderCreate, folderList, storeEntryMove, storeSafeName,
 } from "./filestore";
 import { migrateDbToFiles } from "./migrate";
 import {
@@ -28,7 +28,7 @@ import {
 import {
   promptList, promptGetFile, promptGetAllVersionsOfFile,
   packageList, packageGet, packageFileGet, packageDelete,
-  scriptList, scriptGet, scriptMove, scriptMoveFolder,
+  scriptList, scriptSearch, scriptGet, scriptMove, scriptMoveFolder,
   promptImport, scriptImport, packageImport,
   setStorePath as storageSetStorePath,
 } from "./storage";
@@ -36,6 +36,8 @@ import {
 // ── Git helper ─────────────────────────────────────────────────────────────
 import { execSync } from "child_process";
 import { createHash, randomBytes } from "crypto";
+import { createSyncMagicCode, parseSyncMagicCode } from "./sync-magic-code";
+import { startLiveMarkdownServer } from "./live-note-server";
 
 // Background one-shot sweep to compute on-disk sizes for envs missing a cached
 // value, then refresh the panel so sizes show up "by default".
@@ -247,11 +249,11 @@ const MIME_BY_EXT: Record<string, string> = {
   webp: "image/webp", svg: "image/svg+xml", bmp: "image/bmp", avif: "image/avif",
 };
 
-/** Inline `_assets/<file>` image references as base64 data URIs for a portable file.
- *  Assets live in the note's own folder: notes/<category>/_assets/<file>. */
-function inlineNoteAssets(html: string, category = ""): string {
+/** Inline `_assets/<file>` image references as base64 data URIs for a portable file. */
+function inlineMarkdownAssets(html: string, area = "notes", category = ""): string {
+  const safeArea = ["notes", "skills", "papers"].includes(area) ? area : "notes";
   const catSegs = String(category || "").split("/").map(s => s.trim()).filter(Boolean);
-  const assetsDir = path.join(getStorePath(), "notes", ...catSegs, "_assets");
+  const assetsDir = path.join(getStorePath(), safeArea, ...catSegs, "_assets");
   return html.replace(/(src\s*=\s*)("|')_assets\/([^"']+)\2/gi, (m, pre, q, file) => {
     try {
       const name = decodeURIComponent(file);
@@ -303,6 +305,89 @@ async function serveFolderInBrowser(dir: string, entry: string): Promise<boolean
       });
     } catch { finish(false); }
   });
+}
+
+let liveNoteServer: http.Server | undefined;
+let liveNoteBaseUrl: vscode.Uri | undefined;
+
+function markdownPreviewPath(kind: "note" | "skill" | "paper", key: string): string {
+  const prefix = kind === "note" ? "" : `${kind}s/`;
+  return "/" + (prefix + key).split("/").map(segment => encodeURIComponent(segment)).join("/") + ".html";
+}
+
+function notePreviewPath(slug: string): string { return markdownPreviewPath("note", slug); }
+
+function rewriteLiveNoteLinks(markdown: string, slug: string): string {
+  const all = noteList(undefined, 100000) as any[];
+  const resolve = (target: string): string | null => {
+    if (/\.md(?:[?#]|$)/i.test(target) || target.includes("/")) {
+      const resolved = resolveNoteSlugFromPath(target, slug);
+      if (resolved && noteGet(resolved)) return resolved;
+    }
+    const clean = target.replace(/\.md$/i, "");
+    if (noteGet(clean)) return clean;
+    const needle = clean.toLowerCase();
+    const base = needle.split("/").pop();
+    const hit = all.find(note => String(note.slug).toLowerCase() === needle
+      || String(note.title).toLowerCase() === needle
+      || String(note.slug).toLowerCase().endsWith("/" + base));
+    return hit?.slug || null;
+  };
+  return outsideCode(markdown, segment => segment
+    .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_match, target, alias) => {
+      const linked = resolve(String(target).trim());
+      const label = String(alias || target).trim();
+      return linked ? `[${label}](${notePreviewPath(linked)})` : label;
+    })
+    .replace(/\[([^\]]*)\]\(\s*([^)]+?)\.md((?:[?#][^)]*)?)\s*\)/gi, (match, label, target, suffix) => {
+      const linked = resolve(`${target}.md`);
+      return linked ? `[${label}](${notePreviewPath(linked)}${suffix || ""})` : match;
+    }));
+}
+
+function liveMarkdownHtml(documentPath: string, context: vscode.ExtensionContext): string | undefined {
+  let item: any;
+  let kind: "note" | "skill" | "paper";
+  if (documentPath.startsWith("skills/")) {
+    kind = "skill";
+    const key = documentPath.slice("skills/".length);
+    const listed = (skillList() as any[]).find(skill => (skill.category ? `${skill.category}/${skill.name}` : skill.name) === key);
+    item = listed ? skillGet(listed.name) : undefined;
+  } else if (documentPath.startsWith("papers/")) {
+    kind = "paper";
+    item = paperGet(documentPath.slice("papers/".length));
+  } else {
+    kind = "note";
+    item = noteGet(documentPath);
+  }
+  if (!item) return undefined;
+  const { renderMarkdown } = require("./live-markdown") as { renderMarkdown(markdown: string): string };
+  const markdown = kind === "note" ? rewriteLiveNoteLinks(item.content || "", item.slug) : item.content || "";
+  const bodyHtml = renderMarkdown(markdown);
+  return buildStandaloneNoteHtml({
+    title: item.title || item.name, slug: item.slug || item._key, category: item.category,
+    tags: Array.isArray(item.tags) ? JSON.stringify(item.tags) : item.tags || "[]",
+    noteType: kind, updatedAt: item.updated_at, bodyHtml,
+    description: item.description, sourceProject: item.source_project,
+    authors: item.authors, year: item.year, publisher: item.publisher, url: item.url,
+  }, katexCssForExport(context));
+}
+
+async function openLiveMarkdownPreview(kind: "note" | "skill" | "paper", key: string, context: vscode.ExtensionContext): Promise<boolean> {
+  if (!liveNoteServer) {
+    const started = await startLiveMarkdownServer(
+      [
+        { prefix: "skills", root: path.join(getStorePath(), "skills") },
+        { prefix: "papers", root: path.join(getStorePath(), "papers") },
+        { prefix: "", root: path.join(getStorePath(), "notes") },
+      ],
+      documentPath => liveMarkdownHtml(documentPath, context),
+      MIME_BY_EXT,
+    );
+    liveNoteServer = started.server;
+    liveNoteBaseUrl = await vscode.env.asExternalUri(vscode.Uri.parse(started.localBaseUrl));
+  }
+  return vscode.env.openExternal(vscode.Uri.parse(liveNoteBaseUrl!.toString().replace(/\/$/, "") + markdownPreviewPath(kind, key)));
 }
 
 // Apply `fn` only OUTSIDE fenced/inline code so link handling never touches code
@@ -411,13 +496,21 @@ function buildStandaloneNoteHtml(msg: any, katexCss = ""): string {
   let tags: string[] = [];
   try { tags = JSON.parse(msg.tags || "[]"); } catch { tags = []; }
   const title = String(msg.title || msg.slug || "Note");
-  const body = inlineNoteAssets(String(msg.bodyHtml || ""), String(msg.category || ""));
+  const body = inlineMarkdownAssets(String(msg.bodyHtml || ""), String(msg.area || "notes"), String(msg.category || ""));
   const metaBits = [
     msg.noteType ? `<span class="pill type">${esc(msg.noteType)}</span>` : "",
     msg.category ? `<span class="pill cat">${esc(msg.category)}</span>` : "",
     ...tags.map(t => `<span class="pill tag">#${esc(t)}</span>`),
     msg.updatedAt ? `<span class="upd">Updated ${esc(String(msg.updatedAt).slice(0, 10))}</span>` : "",
   ].filter(Boolean).join("");
+  const authors = Array.isArray(msg.authors) ? msg.authors.join(", ") : String(msg.authors || "");
+  const detailRows = [
+    ["Description", msg.description], ["Source", msg.sourceProject],
+    ["Authors", authors], ["Year", msg.year], ["Publisher", msg.publisher], ["URL", msg.url],
+  ].filter(([, value]) => value !== undefined && value !== null && String(value).trim());
+  const details = detailRows.length
+    ? `<dl class="details">${detailRows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>`
+    : "";
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -438,6 +531,7 @@ h1.doc-title{font-size:28px;line-height:1.25;margin:0 0 12px;color:#0b1220}
 .pill.cat{background:#ecfdf5;color:#059669}
 .pill.tag{background:#f1f5f9;color:#475569}
 .upd{color:#8a929c;margin-left:auto}
+.details{display:grid;grid-template-columns:max-content 1fr;gap:4px 14px;margin:0 0 20px;font-size:13px}.details dt{color:#667085;font-weight:600}.details dd{margin:0;overflow-wrap:anywhere}
 .prose{font-size:16px}
 .prose h1,.prose h2,.prose h3,.prose h4{line-height:1.3;margin:1.5em 0 .5em;color:#0b1220;font-weight:650}
 .prose h1{font-size:1.6em}.prose h2{font-size:1.35em;border-bottom:1px solid #eceef1;padding-bottom:.2em}.prose h3{font-size:1.15em}
@@ -484,6 +578,7 @@ ${katexCss}
 <div class="wrap">
 <h1 class="doc-title">${esc(title)}</h1>
 <div class="meta">${metaBits}</div>
+${details}
 <div class="prose">${body}</div>
 </div>
 </body>
@@ -534,6 +629,275 @@ function openInPanel(context: vscode.ExtensionContext, type: string, key: string
   } else {
     _pendingOpen = { type, key, edit }; // flushed on the "ready" message
   }
+}
+
+function knowledgeContentUri(area: KnowledgeMarkdownArea, key: string): vscode.Uri {
+  return vscode.Uri.from({ scheme: "pkm-content", authority: area, path: `/${key}.md` });
+}
+
+async function openStoreMarkdown(area: KnowledgeMarkdownArea, key: string): Promise<void> {
+  const doc = await vscode.workspace.openTextDocument(knowledgeContentUri(area, key));
+  await vscode.window.showTextDocument(doc, { preview: false });
+}
+
+async function closeNavigationSidebar(): Promise<void> {
+  await vscode.commands.executeCommand("workbench.action.closeSidebar");
+}
+
+type KnowledgeMarkdownArea = "skills" | "notes" | "papers";
+
+function knowledgeMarkdownInfo(uri: vscode.Uri): { area: KnowledgeMarkdownArea; key: string; category: string } | undefined {
+  if (uri.scheme === "pkm-content" && ["skills", "notes", "papers"].includes(uri.authority)) {
+    const key = uri.path.replace(/^\//, "").replace(/\.md$/i, "");
+    const category = key.includes("/") ? key.slice(0, key.lastIndexOf("/")) : "";
+    return { area: uri.authority as KnowledgeMarkdownArea, key, category };
+  }
+  if (uri.scheme !== "file" || path.extname(uri.fsPath).toLowerCase() !== ".md") return undefined;
+  const store = path.resolve(getStorePath());
+  const rel = path.relative(store, path.resolve(uri.fsPath)).split(path.sep).join("/");
+  if (rel.startsWith("../") || path.isAbsolute(rel)) return undefined;
+  const match = /^(skills|notes|papers)\/(.+)\.md$/i.exec(rel);
+  if (!match) return undefined;
+  const area = match[1].toLowerCase() as KnowledgeMarkdownArea;
+  const key = match[2];
+  const category = key.includes("/") ? key.slice(0, key.lastIndexOf("/")) : "";
+  return { area, key, category };
+}
+
+class KnowledgeMetadataCodeLensProvider implements vscode.CodeLensProvider {
+  provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
+    const info = knowledgeMarkdownInfo(document.uri);
+    if (!info) return [];
+    const range = new vscode.Range(0, 0, 0, 0);
+    return [
+      new vscode.CodeLens(range, { command: "personalKnowledge.editMarkdownContent", title: "$(edit) Edit Content", arguments: [info.area, info.key] }),
+      new vscode.CodeLens(range, { command: "personalKnowledge.editMarkdownMetadata", title: "$(settings-gear) Edit Metadata", arguments: [document.uri] }),
+    ];
+  }
+}
+
+class KnowledgeContentFileSystem implements vscode.FileSystemProvider {
+  private readonly changed = new vscode.EventEmitter<vscode.FileChangeEvent[]>();
+  readonly onDidChangeFile = this.changed.event;
+  watch(): vscode.Disposable { return new vscode.Disposable(() => undefined); }
+  stat(uri: vscode.Uri): vscode.FileStat {
+    const info = knowledgeMarkdownInfo(uri);
+    if (!info || !this.get(info)) throw vscode.FileSystemError.FileNotFound(uri);
+    return { type: vscode.FileType.File, ctime: 0, mtime: Date.now(), size: Buffer.byteLength(this.get(info).content || "") };
+  }
+  readDirectory(): [string, vscode.FileType][] { return []; }
+  createDirectory(): void { throw vscode.FileSystemError.NoPermissions("Directories are not supported."); }
+  readFile(uri: vscode.Uri): Uint8Array {
+    const info = knowledgeMarkdownInfo(uri);
+    const item = info && this.get(info);
+    if (!info || !item) throw vscode.FileSystemError.FileNotFound(uri);
+    return Buffer.from(item.content || "", "utf8");
+  }
+  writeFile(uri: vscode.Uri, content: Uint8Array): void {
+    const info = knowledgeMarkdownInfo(uri);
+    const item = info && this.get(info);
+    if (!info || !item) throw vscode.FileSystemError.FileNotFound(uri);
+    const body = Buffer.from(content).toString("utf8");
+    if (info.area === "skills") skillUpsert({ ...item, name: item.name, content: body, tags: JSON.parse(item.tags || "[]") });
+    else if (info.area === "notes") noteUpsert({ ...item, slug: item.slug, content: body, tags: JSON.parse(item.tags || "[]") });
+    else paperUpsert({ ...item, slug: item.slug, content: body });
+    gitCommit(`edit(content): ${info.area}/${info.key}`);
+    this.changed.fire([{ type: vscode.FileChangeType.Changed, uri }]);
+    _treeProvider?.refresh();
+    panel?.webview.postMessage({ command: "reloaded" });
+  }
+  delete(): void { throw vscode.FileSystemError.NoPermissions("Delete from the Knowledge tree instead."); }
+  rename(): void { throw vscode.FileSystemError.NoPermissions("Rename with Edit Metadata instead."); }
+  private get(info: { area: KnowledgeMarkdownArea; key: string }): any {
+    if (info.area === "skills") {
+      const listed = (skillList() as any[]).find(item => (item.category ? `${item.category}/${item.name}` : item.name) === info.key);
+      return listed ? skillGet(listed.name) : undefined;
+    }
+    return info.area === "notes" ? noteGet(info.key) : paperGet(info.key);
+  }
+}
+
+async function editMarkdownMetadata(uri?: vscode.Uri): Promise<void> {
+  const document = uri ? vscode.workspace.textDocuments.find(d => d.uri.toString() === uri.toString())
+    ?? await vscode.workspace.openTextDocument(uri) : vscode.window.activeTextEditor?.document;
+  if (!document) return;
+  const info = knowledgeMarkdownInfo(document.uri);
+  if (!info) { vscode.window.showInformationMessage("This is not a Personal Knowledge Markdown file."); return; }
+  if (document.isDirty && !(await document.save())) return;
+
+  let current: any;
+  if (info.area === "skills") {
+    const listed = (skillList() as any[]).find(s => {
+      const key = s.category ? `${s.category}/${s.name}` : s.name;
+      return key === info.key;
+    });
+    current = skillGet(listed?.name || path.basename(info.key));
+  } else if (info.area === "notes") current = noteGet(info.key);
+  else current = paperGet(info.key);
+  if (!current) { vscode.window.showWarningMessage("Knowledge metadata could not be read from disk."); return; }
+
+  const oldTitle = info.area === "skills" ? current.name : current.title;
+  const title = await vscode.window.showInputBox({
+    title: "Edit Knowledge Metadata (1/4)", prompt: info.area === "skills" ? "Name" : "Title", value: oldTitle,
+    validateInput: value => !value.trim() ? "Title is required" : /[\\/]/.test(value) ? "Title cannot contain slashes" : null,
+  });
+  if (title === undefined) return;
+  const description = await vscode.window.showInputBox({
+    title: "Edit Knowledge Metadata (2/4)", prompt: "Description", value: current.description || "",
+  });
+  if (description === undefined) return;
+  const oldTags = Array.isArray(current.tags) ? current.tags : JSON.parse(current.tags || "[]");
+  const tagsText = await vscode.window.showInputBox({
+    title: "Edit Knowledge Metadata (3/4)", prompt: "Tags (comma-separated)", value: oldTags.join(", "),
+  });
+  if (tagsText === undefined) return;
+  const category = await selectKnowledgeFolder(info.area, info.category);
+  if (category === undefined) return;
+  const cleanTitle = title.trim();
+  const cleanCategory = category.split(/[\\/]/).map(part => part.trim()).filter(Boolean).join("/");
+  const tags = tagsText.split(",").map(tag => tag.trim()).filter(Boolean);
+
+  if (info.area === "skills") {
+    const collision = skillGet(cleanTitle);
+    const safeTitle = storeSafeName(cleanTitle);
+    const destinationKey = cleanCategory ? `${cleanCategory}/${safeTitle}` : safeTitle;
+    const destinationExists = destinationKey !== info.key && fs.existsSync(path.join(getStorePath(), "skills", `${destinationKey}.md`));
+    if ((cleanTitle !== current.name && collision) || destinationExists) {
+      vscode.window.showWarningMessage(`A skill file already exists at "${destinationKey}.md". No files were changed.`);
+      return;
+    }
+    skillUpsert({
+      name: cleanTitle, content: current.content, category: cleanCategory,
+      description: description.trim(), tags, source_project: current.source_project,
+    });
+    if (cleanTitle !== current.name) skillDelete(current.name);
+  } else if (info.area === "notes") {
+    const safeTitle = storeSafeName(cleanTitle);
+    const newKey = cleanCategory ? `${cleanCategory}/${safeTitle}` : safeTitle;
+    if (newKey !== current.slug && noteGet(newKey)) { vscode.window.showWarningMessage(`Note already exists: ${newKey}`); return; }
+    noteUpsert({
+      slug: current.slug, title: cleanTitle, content: current.content, type: current.type,
+      tags, category: cleanCategory, pinned: current.pinned, description: description.trim(),
+    });
+  } else {
+    const safeTitle = storeSafeName(cleanTitle);
+    const newKey = cleanCategory ? `${cleanCategory}/${safeTitle}` : safeTitle;
+    if (newKey !== current.slug && paperGet(newKey)) { vscode.window.showWarningMessage(`Paper or idea already exists: ${newKey}`); return; }
+    paperUpsert({ ...current, slug: current.slug, title: cleanTitle, description: description.trim(), tags, category: cleanCategory });
+  }
+
+  const safeTitle = storeSafeName(cleanTitle);
+  const newKey = cleanCategory ? `${cleanCategory}/${safeTitle}` : safeTitle;
+  gitCommit(`metadata(${info.area}): ${info.key} -> ${newKey}`);
+  _treeProvider?.refresh();
+  panel?.webview.postMessage({ command: "reloaded" });
+  const newUri = knowledgeContentUri(info.area, newKey);
+  const newDocument = await vscode.workspace.openTextDocument(newUri);
+  await vscode.window.showTextDocument(newDocument, { preview: false });
+  vscode.window.setStatusBarMessage("$(check) Knowledge metadata updated", 3000);
+}
+
+function categoryFromTreeItem(item?: PkTreeItem): string {
+  return (item?.nodeData?.path ?? []).filter((segment: string) => segment !== "(uncategorized)").join("/");
+}
+
+type KnowledgeFolderArea = "skills" | "notes" | "papers" | "scripts";
+type KnowledgeFolderPick = vscode.QuickPickItem & { action: "select" | "parent" | "child" | "create" | "type"; name?: string };
+
+async function selectKnowledgeFolder(area: KnowledgeFolderArea, initial = ""): Promise<string | undefined> {
+  let current = initial.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  while (true) {
+    const prefix = current ? `${current}/` : "";
+    const children = [...new Set(folderList(area)
+      .filter(folder => folder.startsWith(prefix))
+      .map(folder => folder.slice(prefix.length).split("/")[0])
+      .filter(Boolean))].sort((left, right) => left.localeCompare(right));
+    const choices: KnowledgeFolderPick[] = [
+      { label: "$(check) Select this folder", description: current || "Root", action: "select" },
+    ];
+    if (current) choices.push({ label: "$(arrow-left) Parent folder", description: current.slice(0, current.lastIndexOf("/")) || "Root", action: "parent" });
+    for (const name of children) choices.push({ label: `$(folder) ${name}`, description: prefix + name, action: "child", name });
+    choices.push(
+      { label: "$(new-folder) New subfolder...", description: current || "Root", action: "create" },
+      { label: "$(keyboard) Type a path...", description: "Enter a slash-separated path", action: "type" },
+    );
+    const picked = await vscode.window.showQuickPick(choices, {
+      title: `Choose ${area === "papers" ? "Paper / Idea" : area[0].toUpperCase() + area.slice(1)} folder`,
+      placeHolder: current ? `Current: ${current}` : "Current: Root",
+    });
+    if (!picked) return undefined;
+    if (picked.action === "select") return current;
+    if (picked.action === "parent") {
+      current = current.includes("/") ? current.slice(0, current.lastIndexOf("/")) : "";
+    } else if (picked.action === "child") {
+      current = prefix + picked.name!;
+    } else if (picked.action === "create") {
+      const name = await vscode.window.showInputBox({
+        title: "New subfolder", prompt: `Create inside ${current || "Root"}`,
+        validateInput: value => !value.trim() ? "Folder name is required" : /[\\/]/.test(value) || value.trim() === "." || value.trim() === ".." ? "Enter one folder name" : null,
+      });
+      if (name === undefined) continue;
+      const next = prefix + name.trim();
+      if (!folderCreate(area, next)) { vscode.window.showErrorMessage(`Could not create folder: ${next}`); continue; }
+      gitCommit(`add(folder): ${area}/${next}`);
+      _treeProvider?.refresh();
+      current = next;
+    } else {
+      const typed = await vscode.window.showInputBox({
+        title: "Type folder path", prompt: "Slash-separated path; leave blank for Root", value: current,
+        validateInput: value => value.split(/[\\/]/).some(part => part.trim() === "." || part.trim() === "..") ? "Path cannot contain '.' or '..'" : null,
+      });
+      if (typed === undefined) continue;
+      const clean = typed.split(/[\\/]/).map(part => part.trim()).filter(Boolean).join("/");
+      if (clean && !folderList(area).includes(clean) && !folderCreate(area, clean)) {
+        vscode.window.showErrorMessage(`Could not create folder: ${clean}`);
+        continue;
+      }
+      if (clean) gitCommit(`add(folder): ${area}/${clean}`);
+      return clean;
+    }
+  }
+}
+
+async function createScriptAtFolder(folder: string): Promise<string | undefined> {
+  const cleanFolder = await selectKnowledgeFolder("scripts", folder);
+  if (cleanFolder === undefined) return undefined;
+  const filename = await vscode.window.showInputBox({
+    prompt: "New script filename (include extension)", placeHolder: "e.g. My New Query.script",
+    validateInput: value => value?.trim() ? (/[\\/]/.test(value) ? "Filename cannot contain slashes" : null) : "Filename required",
+  });
+  if (!filename?.trim()) return undefined;
+  const rel = cleanFolder ? `${cleanFolder}/${filename.trim()}` : filename.trim();
+  const root = path.resolve(getStorePath(), "scripts");
+  const full = path.resolve(root, rel);
+  if (!full.startsWith(root + path.sep)) return undefined;
+  if (fs.existsSync(full)) { vscode.window.showWarningMessage(`Script already exists: ${rel}`); return undefined; }
+  fs.mkdirSync(path.dirname(full), { recursive: true });
+  fs.writeFileSync(full, "");
+  gitCommit(`add(script): ${rel}`);
+  _treeProvider?.refresh();
+  const document = await vscode.workspace.openTextDocument(vscode.Uri.file(full));
+  await vscode.window.showTextDocument(document, { preview: false });
+  return rel;
+}
+
+async function deleteScriptAtPath(relPath: string): Promise<boolean> {
+  const root = path.resolve(getStorePath(), "scripts");
+  const full = path.resolve(root, relPath);
+  if (!full.startsWith(root + path.sep) || !fs.existsSync(full) || fs.statSync(full).isDirectory()) return false;
+  const confirm = await vscode.window.showWarningMessage(
+    `Delete script "${relPath}"? This removes the file and its AI-summary cache, and commits the deletion to git.`,
+    { modal: true }, "Delete"
+  );
+  if (confirm !== "Delete") return false;
+  fs.rmSync(full, { force: true });
+  fs.rmSync(scriptCacheDir(relPath), { recursive: true, force: true });
+  gitCommit(`delete(script): ${relPath}`);
+  log.action("script.delete", { path: relPath });
+  _treeProvider?.refresh();
+  panel?.webview.postMessage({ command: "reloaded" });
+  vscode.window.setStatusBarMessage("$(trash) Script deleted", 3000);
+  return true;
 }
 
 // ── Chatroom orchestrator ──────────────────────────────────────────────────
@@ -1040,7 +1404,7 @@ function seedExamples(): void {
     "through a stable proxy URL.",
     "",
     "## 🔄 Sync",
-    "Share with another machine: the host generates a one-paste connection **code**; the receiver",
+    "Share with another machine: the host generates a one-paste encrypted **Magic Code**; the receiver",
     "pastes it, then chooses to **merge directly** or drop everything into a **new group** to review.",
     "",
     "## 🤖 MCP (for AI assistants)",
@@ -1619,7 +1983,7 @@ async function handleMessage(
       else if (tab === "papers")  data = q ? paperSearch(q) : paperList();
       else if (tab === "prompts")  data = promptList();
       else if (tab === "packages") data = packagesWithGit();
-      else if (tab === "scripts")  data = scriptList();
+      else if (tab === "scripts")  data = q ? scriptSearch(q) : scriptList();
       else data = [];
       const folders = (tab === "skills" || tab === "notes") ? folderList(tab) : undefined;
       respond({ command: "list", data, folders });
@@ -1643,6 +2007,68 @@ async function handleMessage(
       break;
     }
 
+    case "createKnowledgeItem": {
+      const area = String(msg.area || "");
+      if (area !== "skills" && area !== "notes" && area !== "papers") break;
+      const category = await selectKnowledgeFolder(area, String(msg.category || ""));
+      if (category === undefined) break;
+      const title = await vscode.window.showInputBox({
+        prompt: area === "skills" ? "New skill name" : area === "notes" ? "New note title" : `New ${msg.kind === "idea" ? "idea" : "paper"} title`,
+      });
+      if (!title?.trim()) break;
+      if (area === "skills") {
+        if (skillGet(title.trim())) { vscode.window.showWarningMessage(`Skill already exists: ${title.trim()}`); break; }
+        skillUpsert({ name: title.trim(), content: "", category });
+        gitCommit(`add(skill): ${title.trim()}`);
+        await openStoreMarkdown("skills", category ? `${category}/${title.trim()}` : title.trim());
+      } else if (area === "notes") {
+        const slug = (category ? `${category}/` : "") + title.trim();
+        if (noteGet(slug)) { vscode.window.showWarningMessage(`Note already exists: ${slug}`); break; }
+        noteUpsert({ slug, title: title.trim(), content: "", type: "general", tags: [], category });
+        gitCommit(`add(note): ${slug}`);
+        await openStoreMarkdown("notes", slug);
+      } else if (area === "papers") {
+        const slug = uniquePaperSlug(title.trim(), category);
+        if (paperGet(slug)) { vscode.window.showWarningMessage(`Paper or idea already exists: ${slug}`); break; }
+        paperUpsert({
+          slug, title: title.trim(), content: "", category,
+          kind: msg.kind === "idea" ? "idea" : "paper",
+          topic: String(msg.topic || ""), group: String(msg.group || "Papers"),
+        });
+        gitCommit(`add(${msg.kind === "idea" ? "idea" : "paper"}): ${slug}`);
+        await openStoreMarkdown("papers", slug);
+      } else break;
+      _treeProvider?.refresh();
+      respond({ command: "saved" });
+      break;
+    }
+
+    case "createPromptItem": {
+      const project = String(msg.project || "").trim() || await vscode.window.showInputBox({ prompt: "Prompt project" });
+      if (!project?.trim()) break;
+      const task = String(msg.task || "").trim() || await vscode.window.showInputBox({ prompt: "Prompt task" });
+      if (!task?.trim()) break;
+      const version = String(msg.version || "").trim() || await vscode.window.showInputBox({ prompt: "Prompt version", value: "v1" });
+      if (!version?.trim()) break;
+      const file = await vscode.window.showInputBox({
+        prompt: "New prompt filename", placeHolder: "prompt.md",
+        validateInput: value => value?.trim() && !/[\\/]/.test(value) ? null : "Enter a filename without slashes",
+      });
+      if (!file?.trim()) break;
+      const segments = [project, task, version, file].map(value => String(value).trim());
+      if (segments.some(value => value === "." || value === "..")) break;
+      const full = path.join(getStorePath(), "prompts", ...segments);
+      if (fs.existsSync(full)) { vscode.window.showWarningMessage(`Prompt already exists: ${segments.join("/")}`); break; }
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, "");
+      gitCommit(`add(prompt): ${segments.join("/")}`);
+      _treeProvider?.refresh();
+      respond({ command: "saved" });
+      const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(full));
+      await vscode.window.showTextDocument(doc, { preview: false });
+      break;
+    }
+
     case "detail": {
       const { type, key } = msg;
       let data: unknown = null;
@@ -1654,7 +2080,20 @@ async function handleMessage(
         if (r) data = { ...r, note_type: r.type, type: "note" };
       } else if (type === "paper") {
         const r = paperGet(key);
-        if (r) data = { type: "paper", ...r };
+        if (r) {
+          const papers = paperList() as any[];
+          const resolvedCites = (r.cites || []).map((cite: any) => {
+            const ref = String(cite.paper || "").toLowerCase();
+            const target = papers.find(p => String(p.slug).toLowerCase() === ref || String(p.title).toLowerCase() === ref);
+            return { ...cite, slug: target?.slug || "", title: target?.title || cite.paper };
+          });
+          const currentRefs = new Set([String(r.slug).toLowerCase(), String(r.title).toLowerCase()]);
+          const citedBy = papers.flatMap(paper => (paper.cites || []).flatMap((cite: any) =>
+            currentRefs.has(String(cite.paper || "").toLowerCase())
+              ? [{ slug: paper.slug, title: paper.title, note: cite.note || "" }]
+              : []));
+          data = { type: "paper", ...r, resolvedCites, citedBy };
+        }
       } else if (type === "prompt") {
         const [proj, task, ver, fname] = key.split("|");
         const r = promptGetFile(proj, task, ver, fname);
@@ -1777,12 +2216,28 @@ async function handleMessage(
     }
 
     case "collectLinkedNotes": {
-      // Compute the transitive link closure of a note and send it back to the
-      // webview to render (the markdown pipeline lives there).
       const rootSlug = String(msg.slug || "").trim();
+      if (msg.exportMode === "browser") {
+        const opened = await openLiveMarkdownPreview("note", rootSlug, context);
+        if (opened) vscode.window.setStatusBarMessage(`$(globe) Live preview: ${notePreviewPath(rootSlug)}`, 5000);
+        else vscode.window.showWarningMessage("Couldn't open the live Note preview in a browser.");
+        break;
+      }
+      // Static Site export still renders the transitive linked-note closure in
+      // the webview so diagrams can be embedded for offline use.
       const notes = collectLinkedNotes(rootSlug);
       const entry = notes.find(n => n.slug === rootSlug) || notes[0];
       respond({ command: "linkedNotes", entryFilename: entry ? entry.filename : "", notes, mode: msg.exportMode || "browser" });
+      break;
+    }
+
+    case "openMarkdownPreview": {
+      const kind = String(msg.kind || "") as "note" | "skill" | "paper";
+      if (!(["note", "skill", "paper"] as string[]).includes(kind)) break;
+      const key = String(msg.key || "").trim();
+      const opened = await openLiveMarkdownPreview(kind, key, context);
+      if (opened) vscode.window.setStatusBarMessage(`$(globe) Live preview: ${markdownPreviewPath(kind, key)}`, 5000);
+      else vscode.window.showWarningMessage("Couldn't open the Markdown preview in a browser.");
       break;
     }
 
@@ -2122,6 +2577,16 @@ async function handleMessage(
       break;
     }
 
+    case "skillSetPinned": {
+      const name = String(msg.name || "");
+      if (skillSetPinned(name, !!msg.pinned)) {
+        gitCommit(`${msg.pinned ? "pin" : "unpin"}(skill): ${name}`);
+        _treeProvider?.refresh();
+      }
+      respond({ command: "saved" });
+      break;
+    }
+
     case "noteFolderPins": {
       respond({ command: "noteFolderPins", data: noteFolderPins() });
       break;
@@ -2143,12 +2608,18 @@ async function handleMessage(
         slug, title: p.title || slug, content: p.content ?? "",
         authors: p.authors ?? [], year: p.year ?? null, topic: p.topic ?? "",
         publisher: p.publisher ?? "", tags: p.tags ?? [], url: p.url ?? "",
-        file: p.file ?? "", conclusions: p.conclusions ?? [], cites: p.cites ?? [],
+        file: p.file ?? "", conclusions: p.conclusions ?? [], implementation: p.implementation ?? [],
+        assumptions: p.assumptions ?? [], cites: p.cites ?? [],
         category: p.category ?? "", kind: p.kind ?? "paper", group: p.group ?? "Papers", pinned: !!p.pinned,
       });
       gitCommit(p.slug ? `update(paper): ${slug}` : `add(paper): ${slug}`);
       respond({ command: "saved" });
       vscode.window.setStatusBarMessage("$(check) Paper saved", 3000);
+      break;
+    }
+
+    case "paperPicker": {
+      respond({ command: "paperPicker", data: (paperList() as any[]).map(p => ({ slug: p.slug, title: p.title })) });
       break;
     }
 
@@ -2215,6 +2686,95 @@ async function handleMessage(
       break;
     }
 
+    case "openKnowledgeContent": {
+      const area = String(msg.area || "") as KnowledgeMarkdownArea;
+      if (area !== "skills" && area !== "notes" && area !== "papers") break;
+      await openStoreMarkdown(area, String(msg.key || ""));
+      break;
+    }
+
+    case "editKnowledgeMetadata": {
+      const area = String(msg.area || "") as KnowledgeMarkdownArea;
+      if (area !== "skills" && area !== "notes" && area !== "papers") break;
+      await editMarkdownMetadata(knowledgeContentUri(area, String(msg.key || "")));
+      break;
+    }
+
+    case "updateKnowledgeMetadataField": {
+      const area = String(msg.area || "") as KnowledgeMarkdownArea;
+      const key = String(msg.key || "");
+      const field = String(msg.field || "");
+      const value = String(msg.value ?? "").trim();
+      const rejectMetadataUpdate = (error: string): void => {
+        vscode.window.showWarningMessage(error);
+        respond({ command: "metadataUpdateResult", data: { ok: false, error } });
+      };
+      if (!(["skills", "notes", "papers"] as string[]).includes(area)
+          || !["title", "tags", "description", "source_project"].includes(field)
+          || (field === "source_project" && area !== "skills")) break;
+      if (field === "title" && (!value || /[\\/]/.test(value))) {
+        rejectMetadataUpdate("Title is required and cannot contain slashes.");
+        break;
+      }
+      const tags = value.split(",").map(tag => tag.trim()).filter(Boolean);
+      let refreshed: any;
+      let newKey = key;
+      if (area === "skills") {
+        const listed = (skillList() as any[]).find(item => (item.category ? `${item.category}/${item.name}` : item.name) === key);
+        const current = listed && skillGet(listed.name);
+        if (!current) { rejectMetadataUpdate(`Skill not found: ${key}`); break; }
+        const name = field === "title" ? value : current.name;
+        const safeName = storeSafeName(name);
+        const destinationKey = current.category ? `${current.category}/${safeName}` : safeName;
+        const destinationExists = destinationKey !== key && fs.existsSync(path.join(getStorePath(), "skills", `${destinationKey}.md`));
+        if ((name !== current.name && skillGet(name)) || destinationExists) { rejectMetadataUpdate(`A skill file already exists at "${destinationKey}.md". No files were changed.`); break; }
+        skillUpsert({
+          name, content: current.content, category: current.category,
+          description: field === "description" ? value : current.description,
+          tags: field === "tags" ? tags : JSON.parse(current.tags || "[]"),
+          source_project: field === "source_project" ? value : current.source_project,
+        });
+        if (name !== current.name) skillDelete(current.name);
+        newKey = destinationKey;
+        refreshed = { type: "skill", ...skillGet(name) };
+      } else if (area === "notes") {
+        const current = noteGet(key);
+        if (!current) { rejectMetadataUpdate(`Note not found: ${key}`); break; }
+        const title = field === "title" ? value : current.title;
+        const safeTitle = storeSafeName(title);
+        newKey = current.category ? `${current.category}/${safeTitle}` : safeTitle;
+        if (newKey !== current.slug && noteGet(newKey)) { rejectMetadataUpdate(`A note already exists at "${newKey}.md". No files were changed.`); break; }
+        noteUpsert({
+          slug: current.slug, title, content: current.content, type: current.type,
+          tags: field === "tags" ? tags : JSON.parse(current.tags || "[]"),
+          category: current.category, pinned: current.pinned,
+          description: field === "description" ? value : current.description,
+        });
+        const updated = noteGet(newKey);
+        refreshed = updated && { ...updated, note_type: updated.type, type: "note" };
+      } else {
+        const current = paperGet(key);
+        if (!current) { rejectMetadataUpdate(`Paper or idea not found: ${key}`); break; }
+        const title = field === "title" ? value : current.title;
+        const safeTitle = storeSafeName(title);
+        newKey = current.category ? `${current.category}/${safeTitle}` : safeTitle;
+        if (newKey !== current.slug && paperGet(newKey)) { rejectMetadataUpdate(`A paper or idea already exists at "${newKey}.md". No files were changed.`); break; }
+        paperUpsert({
+          ...current, slug: current.slug, title,
+          tags: field === "tags" ? tags : current.tags,
+          description: field === "description" ? value : current.description,
+        });
+        refreshed = { type: "paper", ...paperGet(newKey) };
+      }
+      if (!refreshed) break;
+      gitCommit(`metadata(${area}): ${key} ${field}`);
+      _treeProvider?.refresh();
+      respond({ command: "detail", data: refreshed });
+      respond({ command: "metadataUpdateResult", data: { ok: true, field, key: newKey } });
+      vscode.window.setStatusBarMessage(`$(check) ${field === "source_project" ? "Source" : field} updated`, 3000);
+      break;
+    }
+
     case "packageDelete": {
       const name = String(msg.name || "").trim();
       if (!name) break;
@@ -2256,6 +2816,18 @@ async function handleMessage(
       _treeProvider?.refresh();
       respond({ command: "saved" });
       vscode.window.setStatusBarMessage(`$(check) Moved folder (${n} script${n === 1 ? "" : "s"})`, 3000);
+      break;
+    }
+
+    case "createScript": {
+      const rel = await createScriptAtFolder(String(msg.folder || ""));
+      if (rel) respond({ command: "saved" });
+      break;
+    }
+
+    case "deleteScript": {
+      try { if (await deleteScriptAtPath(String(msg.relPath || ""))) respond({ command: "saved" }); }
+      catch (e: any) { vscode.window.showErrorMessage(`Delete failed: ${e.message}`); }
       break;
     }
 
@@ -2348,8 +2920,7 @@ async function handleMessage(
         await syncServer.ensureStarted(port ?? 19877);
         const session = syncServer.createSession(sel, contentTypes ?? ["skills"], expiresMinutes ?? 30);
         respond({ command: "syncStarted", data: {
-          id: session.id, url: session.url, username: session.username,
-          password: session.password, expires: session.expires.toISOString(),
+          id: session.id, magicCode: createSyncMagicCode(session), expires: session.expires.toISOString(),
           contentTypes: session.contentTypes, selected: session.selected,
           summary: syncSummary(session),
         }});
@@ -2361,7 +2932,7 @@ async function handleMessage(
 
     case "getSyncSessions": {
       const sessions = syncServer.allSessions().map(s => ({
-        id: s.id, url: s.url, username: s.username, password: s.password,
+        id: s.id,
         expires: s.expires.toISOString(), enabled: s.enabled,
         skillCount: s.selected.skills.length || "all",
         summary: syncSummary(s),
@@ -2374,21 +2945,21 @@ async function handleMessage(
     case "revokeSync": {
       syncServer.revokeSession(msg.id);
       const sessions = syncServer.allSessions().map(s => ({
-        id: s.id, url: s.url, username: s.username, password: s.password,
+        id: s.id,
         expires: s.expires.toISOString(), enabled: s.enabled,
         skillCount: s.selected.skills.length || "all",
         summary: syncSummary(s),
         created: s.created.toISOString(),
       }));
       respond({ command: "syncSessions", data: { sessions } });
-      vscode.window.setStatusBarMessage("$(circle-slash) Sync link revoked", 3000);
+      vscode.window.setStatusBarMessage("$(circle-slash) Magic Code revoked", 3000);
       break;
     }
 
     case "joinSync": {
-      const { syncUrl, username, password } = msg;
       const mode = msg.mode === "group" ? "group" : "overwrite";
       try {
+        const { syncUrl, username, password } = parseSyncMagicCode(msg.magicCode);
         const response = await fetch(`${syncUrl}/sync/bundle`, {
           headers: { "Authorization": "Basic " + Buffer.from(`${username}:${password}`).toString("base64") },
           signal: AbortSignal.timeout(15_000),
@@ -2422,16 +2993,24 @@ async function handleMessage(
         const importedSlugs = new Set((bundle?.papers ?? []).map((p: any) => p.slug));
         const remap = (s: string) => (prefix && importedSlugs.has(s)) ? `${slugPfx}-${s}` : s;
         for (const p of bundle?.papers ?? []) {
-          const cites = Array.isArray(p.cites)
-            ? p.cites.map((c: any) => typeof c === "string" ? remap(c) : (c && c.slug ? { ...c, slug: remap(c.slug) } : c))
-            : p.cites;
           paperUpsert({
             slug: prefix ? `${slugPfx}-${p.slug}` : p.slug, title: p.title, content: p.content ?? "",
             authors: p.authors, year: p.year, topic: p.topic, publisher: p.publisher,
             tags: p.tags, url: p.url, file: p.file, conclusions: p.conclusions,
-            cites, category: pcat(p.category), group: prefix ? label : p.group,
+            implementation: p.implementation, assumptions: p.assumptions, cites: [],
+            category: pcat(p.category), group: prefix ? label : p.group,
           });
           counts.papers = (counts.papers ?? 0) + 1;
+        }
+        for (const p of bundle?.papers ?? []) {
+          const slug = prefix ? `${slugPfx}-${p.slug}` : p.slug;
+          const current = paperGet(slug);
+          if (!current) continue;
+          const cites = Array.isArray(p.cites) ? p.cites.map((cite: any) => {
+            if (typeof cite === "string") return { paper: remap(cite), note: "" };
+            return cite?.paper ? { paper: remap(cite.paper), note: cite.note || "" } : cite;
+          }) : [];
+          paperUpsert({ ...current, cites });
         }
         if (bundle?.prompts?.length) {
           const prompts = prefix ? bundle.prompts.map((x: any) => ({ ...x, project: `${prefix}/${x.project}` })) : bundle.prompts;
@@ -2453,6 +3032,16 @@ async function handleMessage(
         vscode.window.setStatusBarMessage(`$(cloud-download) Synced: ${summary}${label ? " → " + label : ""}`, 5000);
       } catch (e: any) {
         respond({ command: "syncError", data: { error: e.message } });
+      }
+      break;
+    }
+
+    case "verifySyncMagicCode": {
+      try {
+        parseSyncMagicCode(msg.magicCode);
+        respond({ command: "syncMagicCodeVerified", data: { requestId: msg.requestId, ok: true } });
+      } catch (error: any) {
+        respond({ command: "syncMagicCodeVerified", data: { requestId: msg.requestId, ok: false, error: error?.message || "Magic Code is invalid." } });
       }
       break;
     }
@@ -3698,6 +4287,7 @@ class PkTreeItem extends vscode.TreeItem {
     if (nodeType === 'root-skills' || nodeType === 'skill-folder')      this.contextValue = 'pk-skills-container';
     else if (nodeType === 'root-notes' || nodeType === 'note-folder')   this.contextValue = 'pk-notes-container';
     else if (nodeType === 'root-papers' || nodeType === 'paper-folder') this.contextValue = 'pk-papers-container';
+    else if (nodeType === 'root-prompts' || nodeType === 'prompt-project' || nodeType === 'prompt-task' || nodeType === 'prompt-version') this.contextValue = 'pk-prompts-container';
     else if (nodeType === 'root-scripts' || nodeType === 'script-folder') this.contextValue = 'pk-scripts-container';
     // Leaf items support right-click Edit
     else if (nodeType === 'skill')       this.contextValue = 'pk-skill-item';
@@ -3755,10 +4345,8 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
     return Math.max(1, Math.min(d ?? 4, 12));
   }
 
-  /** Build a nested folder tree from entries {path, data}. Folder depth is capped so
-   *  the leaf occupies the final level; deeper path segments collapse into the leaf. */
-  private _buildPathTree(entries: { path: string[]; data: any }[]): PkFolder {
-    const maxDepth = PkTreeProvider._maxDepth();
+  /** Build a nested folder tree from entries {path, data}. */
+  private _buildPathTree(entries: { path: string[]; data: any }[], maxDepth = PkTreeProvider._maxDepth()): PkFolder {
     const root: PkFolder = { folders: new Map(), items: [] };
     for (const e of entries) {
       const folderSegs = e.path.slice(0, Math.max(0, maxDepth - 1));
@@ -3782,6 +4370,17 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
     return node;
   }
 
+  private _addFolderPaths(root: PkFolder, folders: string[], maxDepth = PkTreeProvider._maxDepth()): PkFolder {
+    for (const folder of folders) {
+      let node = root;
+      for (const segment of folder.split("/").filter(Boolean).slice(0, maxDepth - 1)) {
+        if (!node.folders.has(segment)) node.folders.set(segment, { folders: new Map(), items: [] });
+        node = node.folders.get(segment)!;
+      }
+    }
+    return root;
+  }
+
   // ── Skills (recursive by category path) ──────────────────────────────────
   private _skillRoot(): PkFolder {
     const entries = (skillList() as any[]).map(s => {
@@ -3789,7 +4388,7 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
       const path = cat ? cat.split("/").map((x: string) => x.trim()).filter(Boolean) : ["(uncategorized)"];
       return { path, data: s };
     });
-    return this._buildPathTree(entries);
+    return this._addFolderPaths(this._buildPathTree(entries), folderList("skills"));
   }
 
   private _skillFolder(path: string[]): PkTreeItem[] {
@@ -3801,14 +4400,14 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
       const folder = node.folders.get(name)!;
       const count = this._countLeaves(folder);
       const item = new PkTreeItem(name, 'skill-folder', vscode.TreeItemCollapsibleState.Collapsed,
-        { path: [...path, name] });
+        { path: [...path, name], relPath: [...path, name].join("/") });
       item.description = String(count);
       out.push(item);
     }
     for (const s of node.items.sort((a: any, b: any) => a.name.localeCompare(b.name))) {
       const item = new PkTreeItem(s.name, 'skill', vscode.TreeItemCollapsibleState.None,
-        { key: s.name, description: s.description });
-      item.command = { command: 'personalKnowledge.openSkill', title: 'Open', arguments: [s.name] };
+        { key: s.category ? `${s.category}/${s.name}` : s.name, relPath: `${s.category ? `${s.category}/` : ""}${s.name}.md`, description: s.description });
+      item.command = { command: 'personalKnowledge.openSkill', title: 'Open', arguments: [item.nodeData.key] };
       if (s.description) item.description = s.description;
       out.push(item);
     }
@@ -3828,7 +4427,7 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
       const path = cat ? cat.split("/").map((x: string) => x.trim()).filter(Boolean) : ["(uncategorized)"];
       return { path, data: n };
     });
-    return this._buildPathTree(entries);
+    return this._addFolderPaths(this._buildPathTree(entries), folderList("notes"));
   }
 
   private _noteFolder(path: string[]): PkTreeItem[] {
@@ -3839,12 +4438,12 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
       a === "(uncategorized)" ? 1 : b === "(uncategorized)" ? -1 : a.localeCompare(b))) {
       const folder = node.folders.get(name)!;
       const item = new PkTreeItem(name, 'note-folder', vscode.TreeItemCollapsibleState.Collapsed,
-        { path: [...path, name] });
+        { path: [...path, name], relPath: [...path, name].join("/") });
       item.description = String(this._countLeaves(folder));
       out.push(item);
     }
     for (const n of node.items.sort((a: any, b: any) => (b.updated_at || "").localeCompare(a.updated_at || ""))) {
-      const item = new PkTreeItem(n.title, 'note', vscode.TreeItemCollapsibleState.None, { key: n.slug });
+      const item = new PkTreeItem(n.title, 'note', vscode.TreeItemCollapsibleState.None, { key: n.slug, relPath: `${n.slug}.md` });
       item.description = n.updated_at?.slice(0, 10);
       item.command = { command: 'personalKnowledge.openNote', title: 'Open', arguments: [n.slug] };
       out.push(item);
@@ -3859,7 +4458,7 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
       const path = cat ? cat.split("/").map((x: string) => x.trim()).filter(Boolean) : ["(uncategorized)"];
       return { path, data: p };
     });
-    return this._buildPathTree(entries);
+    return this._addFolderPaths(this._buildPathTree(entries), folderList("papers"));
   }
 
   private _paperFolder(path: string[]): PkTreeItem[] {
@@ -3870,13 +4469,13 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
       a === "(uncategorized)" ? 1 : b === "(uncategorized)" ? -1 : a.localeCompare(b))) {
       const folder = node.folders.get(name)!;
       const item = new PkTreeItem(name, 'paper-folder', vscode.TreeItemCollapsibleState.Collapsed,
-        { path: [...path, name] });
+        { path: [...path, name], relPath: [...path, name].join("/") });
       item.description = String(this._countLeaves(folder));
       out.push(item);
     }
     // Sort papers by citation count (popularity), then year desc
     for (const p of node.items.sort((a: any, b: any) => (b.citationCount - a.citationCount) || ((b.year || 0) - (a.year || 0)))) {
-      const item = new PkTreeItem(p.title, 'paper', vscode.TreeItemCollapsibleState.None, { key: p.slug });
+      const item = new PkTreeItem(p.title, 'paper', vscode.TreeItemCollapsibleState.None, { key: p.slug, relPath: `${p.slug}.md` });
       item.description = `${p.year || ""}${p.citationCount ? "  ·  " + p.citationCount + "★" : ""}`.trim();
       item.command = { command: 'personalKnowledge.openPaper', title: 'Open', arguments: [p.slug] };
       out.push(item);
@@ -3933,7 +4532,7 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
       const path = cat && cat !== "(root)" ? cat.split("/").map((x: string) => x.trim()).filter(Boolean) : [];
       return { path, data: s };
     });
-    return this._buildPathTree(entries);
+    return this._addFolderPaths(this._buildPathTree(entries, Number.POSITIVE_INFINITY), folderList("scripts"), Number.POSITIVE_INFINITY);
   }
 
   private _scriptFolder(path: string[]): PkTreeItem[] {
@@ -3943,7 +4542,7 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
     for (const name of [...node.folders.keys()].sort()) {
       const folder = node.folders.get(name)!;
       const item = new PkTreeItem(name, 'script-folder', vscode.TreeItemCollapsibleState.Collapsed,
-        { path: [...path, name] });
+        { path: [...path, name], relPath: [...path, name].join("/") });
       item.description = String(this._countLeaves(folder));
       out.push(item);
     }
@@ -3954,6 +4553,73 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
       out.push(item);
     }
     return out;
+  }
+}
+
+type TreeMoveArea = "skills" | "notes" | "papers" | "prompts" | "scripts";
+type TreeMoveLevel = "folder" | "file" | "project" | "task" | "version";
+interface TreeMoveInfo { area: TreeMoveArea; relPath: string; level: TreeMoveLevel; }
+
+function treeMoveInfo(item: PkTreeItem, asTarget = false): TreeMoveInfo | undefined {
+  const rootAreas: Partial<Record<PkNodeType, TreeMoveArea>> = {
+    "root-skills": "skills", "root-notes": "notes", "root-papers": "papers", "root-prompts": "prompts", "root-scripts": "scripts",
+  };
+  const rootArea = rootAreas[item.nodeType];
+  if (rootArea) return asTarget ? { area: rootArea, relPath: "", level: rootArea === "prompts" ? "project" : "folder" } : undefined;
+  const areaByType: Partial<Record<PkNodeType, TreeMoveArea>> = {
+    "skill-folder": "skills", skill: "skills", "note-folder": "notes", note: "notes",
+    "paper-folder": "papers", paper: "papers", "script-folder": "scripts", "script-file": "scripts",
+  };
+  const area = areaByType[item.nodeType];
+  if (area) {
+    if (item.nodeType.endsWith("folder")) {
+      if (item.nodeData.relPath === "(uncategorized)") return asTarget ? { area, relPath: "", level: "folder" } : undefined;
+      return { area, relPath: item.nodeData.relPath, level: "folder" };
+    }
+    return asTarget ? undefined : { area, relPath: item.nodeData.relPath, level: "file" };
+  }
+  if (item.nodeType === "prompt-project") return { area: "prompts", relPath: item.nodeData.project, level: "project" };
+  if (item.nodeType === "prompt-task") return { area: "prompts", relPath: `${item.nodeData.project}/${item.nodeData.task}`, level: "task" };
+  if (item.nodeType === "prompt-version") return { area: "prompts", relPath: `${item.nodeData.project}/${item.nodeData.task}/${item.nodeData.version}`, level: "version" };
+  if (item.nodeType === "prompt-file" && !asTarget) {
+    return { area: "prompts", relPath: `${item.nodeData.project}/${item.nodeData.task}/${item.nodeData.version}/${item.nodeData.file}`, level: "file" };
+  }
+  return undefined;
+}
+
+class PkTreeDragAndDropController implements vscode.TreeDragAndDropController<PkTreeItem> {
+  private static readonly mime = "application/vnd.code.tree.personalKnowledge.sidebarView";
+  readonly dragMimeTypes = [PkTreeDragAndDropController.mime];
+  readonly dropMimeTypes = [PkTreeDragAndDropController.mime];
+
+  handleDrag(source: readonly PkTreeItem[], dataTransfer: vscode.DataTransfer): void {
+    const info = source.length === 1 ? treeMoveInfo(source[0]) : undefined;
+    if (info) dataTransfer.set(PkTreeDragAndDropController.mime, new vscode.DataTransferItem(JSON.stringify(info)));
+  }
+
+  async handleDrop(target: PkTreeItem | undefined, dataTransfer: vscode.DataTransfer): Promise<void> {
+    if (!target) { vscode.window.showInformationMessage("Drop onto a category root or folder."); return; }
+    const raw = dataTransfer.get(PkTreeDragAndDropController.mime);
+    const destination = treeMoveInfo(target, true);
+    if (!raw || !destination) { vscode.window.showWarningMessage("Files can only be dropped onto folders."); return; }
+    let source: TreeMoveInfo;
+    try { source = JSON.parse(await raw.asString()); } catch { return; }
+    if (source.area !== destination.area) { vscode.window.showWarningMessage("Items cannot be moved between knowledge areas."); return; }
+    if (source.area === "prompts") {
+      const allowedParent: Record<TreeMoveLevel, TreeMoveLevel | undefined> = { project: "project", task: "project", version: "task", file: "version", folder: undefined };
+      const requiredDepth: Partial<Record<TreeMoveLevel, number>> = { project: 0, task: 1, version: 2, file: 3 };
+      const destinationDepth = destination.relPath ? destination.relPath.split("/").length : 0;
+      if (allowedParent[source.level] !== destination.level || destinationDepth !== requiredDepth[source.level]) {
+        vscode.window.showWarningMessage("Prompts must keep the project / task / version / file hierarchy.");
+        return;
+      }
+    }
+    const result = storeEntryMove(source.area, source.relPath, destination.relPath);
+    if (!result.ok) { vscode.window.showWarningMessage(result.error || "Move failed."); return; }
+    gitCommit(`move(${source.area}): ${source.relPath} -> ${result.newPath}`);
+    _treeProvider?.refresh();
+    panel?.webview.postMessage({ command: "reloaded" });
+    vscode.window.setStatusBarMessage(`$(move) Moved to ${result.newPath}`, 3000);
   }
 }
 
@@ -4028,6 +4694,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   };
   applyChatArchiveCfg();
   context.subscriptions.push(
+    vscode.workspace.registerFileSystemProvider("pkm-content", new KnowledgeContentFileSystem(), { isCaseSensitive: true }),
+    vscode.languages.registerCodeLensProvider([{ language: "markdown", scheme: "file" }, { language: "markdown", scheme: "pkm-content" }], new KnowledgeMetadataCodeLensProvider()),
     vscode.workspace.onDidChangeConfiguration(e => {
       if (e.affectsConfiguration("personalKnowledge.logLevel")) log.refreshLevel();
       if (e.affectsConfiguration("personalKnowledge.maxTreeDepth")) _treeProvider?.refresh();
@@ -4070,6 +4738,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   _treeProvider = treeProvider;
   const treeView = vscode.window.createTreeView("personalKnowledge.sidebarView", {
     treeDataProvider: treeProvider,
+    dragAndDropController: new PkTreeDragAndDropController(),
     showCollapseAll: true,
   });
   // Clicking the Activity Bar icon: ensure setup then open main panel
@@ -4094,82 +4763,124 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       treeProvider.refresh();
     }),
 
+    vscode.commands.registerCommand("personalKnowledge.editMarkdownMetadata", editMarkdownMetadata),
+    vscode.commands.registerCommand("personalKnowledge.editMarkdownContent", async (area: KnowledgeMarkdownArea, key: string) => {
+      await openStoreMarkdown(area, key);
+    }),
+
     // ── Add new item at a folder (right-click on container) ────────────────
     vscode.commands.registerCommand("personalKnowledge.addSkillHere", async (item?: PkTreeItem) => {
       if (!(await ensureSetup(context))) return;
-      const cat = (item?.nodeData?.path ?? []).join("/");
+      const cat = await selectKnowledgeFolder("skills", categoryFromTreeItem(item));
+      if (cat === undefined) return;
       const name = await vscode.window.showInputBox({ prompt: "New skill name", placeHolder: "e.g. my-new-skill" });
       if (!name?.trim()) return;
+      if (skillGet(name.trim())) { vscode.window.showWarningMessage(`Skill already exists: ${name.trim()}`); return; }
       skillUpsert({ name: name.trim(), content: "", category: cat || undefined });
       gitCommit(`add(skill): ${name.trim()}`);
       treeProvider.refresh();
-      openInPanel(context, "skill", name.trim());
+      await openStoreMarkdown("skills", cat ? `${cat}/${name.trim()}` : name.trim());
     }),
 
     vscode.commands.registerCommand("personalKnowledge.addNoteHere", async (item?: PkTreeItem) => {
       if (!(await ensureSetup(context))) return;
-      const cat = (item?.nodeData?.path ?? []).join("/");
+      const cat = await selectKnowledgeFolder("notes", categoryFromTreeItem(item));
+      if (cat === undefined) return;
       const title = await vscode.window.showInputBox({ prompt: "New note title", placeHolder: "e.g. Investigation findings" });
       if (!title?.trim()) return;
       const key = (cat ? cat + "/" : "") + title.trim();
+      if (noteGet(key)) { vscode.window.showWarningMessage(`Note already exists: ${key}`); return; }
       noteUpsert({ slug: key, title: title.trim(), content: "", type: "general", tags: [], category: cat } as any);
       gitCommit(`add(note): ${title.trim()}`);
       treeProvider.refresh();
-      openInPanel(context, "note", key);
+      await openStoreMarkdown("notes", key);
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.addPaperHere", async (item?: PkTreeItem) => {
+      if (!(await ensureSetup(context))) return;
+      const category = await selectKnowledgeFolder("papers", categoryFromTreeItem(item));
+      if (category === undefined) return;
+      const title = await vscode.window.showInputBox({ prompt: "New paper title", placeHolder: "e.g. Attention Is All You Need" });
+      if (!title?.trim()) return;
+      const slug = uniquePaperSlug(title.trim(), category);
+      if (paperGet(slug)) { vscode.window.showWarningMessage(`Paper or idea already exists: ${slug}`); return; }
+      paperUpsert({ slug, title: title.trim(), content: "", category, kind: "paper" });
+      gitCommit(`add(paper): ${slug}`);
+      treeProvider.refresh();
+      await openStoreMarkdown("papers", slug);
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.addIdeaHere", async (item?: PkTreeItem) => {
+      if (!(await ensureSetup(context))) return;
+      const category = await selectKnowledgeFolder("papers", categoryFromTreeItem(item));
+      if (category === undefined) return;
+      const title = await vscode.window.showInputBox({ prompt: "New idea title", placeHolder: "e.g. Retrieval with adaptive memory" });
+      if (!title?.trim()) return;
+      const slug = uniquePaperSlug(title.trim(), category);
+      if (paperGet(slug)) { vscode.window.showWarningMessage(`Paper or idea already exists: ${slug}`); return; }
+      paperUpsert({ slug, title: title.trim(), content: "", category, kind: "idea" });
+      gitCommit(`add(idea): ${slug}`);
+      treeProvider.refresh();
+      await openStoreMarkdown("papers", slug);
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.addPromptHere", async (item?: PkTreeItem) => {
+      if (!(await ensureSetup(context))) return;
+      const data = item?.nodeData ?? {};
+      const project = data.project || await vscode.window.showInputBox({ prompt: "Prompt project" });
+      if (!project?.trim()) return;
+      const task = data.task || await vscode.window.showInputBox({ prompt: "Prompt task" });
+      if (!task?.trim()) return;
+      const version = data.version || await vscode.window.showInputBox({ prompt: "Prompt version", value: "v1" });
+      if (!version?.trim()) return;
+      const file = await vscode.window.showInputBox({
+        prompt: "New prompt filename",
+        placeHolder: "prompt.md",
+        validateInput: value => value?.trim() && !/[\\/]/.test(value) ? null : "Enter a filename without slashes",
+      });
+      if (!file?.trim()) return;
+      const segments = [project, task, version, file].map(value => String(value).trim());
+      if (segments.some(value => value === "." || value === "..")) return;
+      const full = path.join(getStorePath(), "prompts", ...segments);
+      if (fs.existsSync(full)) { vscode.window.showWarningMessage(`Prompt already exists: ${segments.join("/")}`); return; }
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, "");
+      gitCommit(`add(prompt): ${segments.join("/")}`);
+      treeProvider.refresh();
+      const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(full));
+      await vscode.window.showTextDocument(doc, { preview: false });
     }),
 
     vscode.commands.registerCommand("personalKnowledge.addScriptHere", async (item?: PkTreeItem) => {
       if (!(await ensureSetup(context))) return;
       const folder = (item?.nodeData?.path ?? []).join("/");
-      const fname = await vscode.window.showInputBox({
-        prompt: "New script filename (include extension)",
-        placeHolder: "e.g. My New Query.script",
-        validateInput: v => v?.trim() ? (/[\\/]/.test(v) ? "No slashes — pick the folder by right-clicking it" : null) : "Filename required",
-      });
-      if (!fname?.trim()) return;
-      const rel = folder ? `${folder}/${fname.trim()}` : fname.trim();
-      const full = path.join(getStorePath(), "scripts", rel);
-      if (fs.existsSync(full)) { vscode.window.showWarningMessage(`Script already exists: ${rel}`); return; }
-      fs.mkdirSync(path.dirname(full), { recursive: true });
-      fs.writeFileSync(full, "");
-      gitCommit(`add(script): ${rel}`);
-      treeProvider.refresh();
-      openInPanel(context, "script", rel);
+      await createScriptAtFolder(folder);
     }),
 
     // ── Edit item (right-click on a leaf) ─────────────────────────────────
     vscode.commands.registerCommand("personalKnowledge.editSkill", async (item?: PkTreeItem) => {
       if (!(await ensureSetup(context)) || !item?.nodeData?.key) return;
-      openInPanel(context, "skill", item.nodeData.key, true);
+      await openStoreMarkdown("skills", item.nodeData.key);
     }),
     vscode.commands.registerCommand("personalKnowledge.editNote", async (item?: PkTreeItem) => {
       if (!(await ensureSetup(context)) || !item?.nodeData?.key) return;
-      openInPanel(context, "note", item.nodeData.key, true);
+      await openStoreMarkdown("notes", item.nodeData.key);
+    }),
+    vscode.commands.registerCommand("personalKnowledge.editPaper", async (item?: PkTreeItem) => {
+      if (!(await ensureSetup(context)) || !item?.nodeData?.key) return;
+      await openStoreMarkdown("papers", item.nodeData.key);
     }),
     vscode.commands.registerCommand("personalKnowledge.editScript", async (item?: PkTreeItem) => {
       if (!(await ensureSetup(context)) || !item?.nodeData?.key) return;
-      openInPanel(context, "script", item.nodeData.key, true);
+      const full = path.join(getStorePath(), "scripts", item.nodeData.key);
+      const document = await vscode.workspace.openTextDocument(vscode.Uri.file(full));
+      await vscode.window.showTextDocument(document, { preview: false });
     }),
 
     vscode.commands.registerCommand("personalKnowledge.deleteScript", async (item?: PkTreeItem) => {
       if (!(await ensureSetup(context)) || !item?.nodeData?.key) return;
-      const relPath = item.nodeData.key as string;
-      const full = path.join(getStorePath(), "scripts", relPath);
-      const scriptsRoot = path.join(getStorePath(), "scripts");
-      if (!path.resolve(full).startsWith(path.resolve(scriptsRoot) + path.sep)) return;
-      const confirm = await vscode.window.showWarningMessage(
-        `Delete script "${relPath}"? This removes the file and its AI-summary cache, and commits the deletion to git.`,
-        { modal: true }, "Delete"
-      );
-      if (confirm !== "Delete") return;
       try {
-        fs.rmSync(full, { force: true });
-        fs.rmSync(scriptCacheDir(relPath), { recursive: true, force: true }); // remove correlated AI cache
-        gitCommit(`delete(script): ${relPath}`);
-        log.action("script.delete", { path: relPath });
-        vscode.window.setStatusBarMessage("$(trash) Script deleted", 3000);
-        treeProvider.refresh();
-        panel?.webview.postMessage({ command: "detail", data: null });
+        await deleteScriptAtPath(item.nodeData.key as string);
       } catch (e: any) {
         vscode.window.showErrorMessage(`Delete failed: ${e.message}`);
       }
@@ -4179,36 +4890,42 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       log.action("command.openSkill", { name });
       if (!(await ensureSetup(context))) return;
       openInPanel(context, "skill", name);
+      await closeNavigationSidebar();
     }),
 
     vscode.commands.registerCommand("personalKnowledge.openNote", async (slug: string) => {
       log.action("command.openNote", { slug });
       if (!(await ensureSetup(context))) return;
       openInPanel(context, "note", slug);
+      await closeNavigationSidebar();
     }),
 
     vscode.commands.registerCommand("personalKnowledge.openPaper", async (slug: string) => {
       log.action("command.openPaper", { slug });
       if (!(await ensureSetup(context))) return;
       openInPanel(context, "paper", slug);
+      await closeNavigationSidebar();
     }),
 
     vscode.commands.registerCommand("personalKnowledge.openPrompt", async (key: string) => {
       log.action("command.openPrompt", { key });
       if (!(await ensureSetup(context))) return;
       openInPanel(context, "prompt", key);
+      await closeNavigationSidebar();
     }),
 
     vscode.commands.registerCommand("personalKnowledge.openPackage", async (name: string) => {
       log.action("command.openPackage", { name });
       if (!(await ensureSetup(context))) return;
       openInPanel(context, "package", name);
+      await closeNavigationSidebar();
     }),
 
     vscode.commands.registerCommand("personalKnowledge.openScript", async (key: string) => {
       log.action("command.openScript", { key });
       if (!(await ensureSetup(context))) return;
       openInPanel(context, "script", key);
+      await closeNavigationSidebar();
     }),
 
     vscode.commands.registerCommand("personalKnowledge.addNote", async () => {
@@ -4248,6 +4965,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       p.reveal(vscode.ViewColumn.One);
       if (_panelReady) p.webview.postMessage({ command: "openTab", tab: "chatroom" });
       else _pendingTab = "chatroom"; // flushed on the webview "ready" message
+      await closeNavigationSidebar();
     }),
 
     vscode.commands.registerCommand("personalKnowledge.showLogs", () => log.show()),
@@ -4316,4 +5034,12 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
   context.subscriptions.push(_watcher);
 }
 
-export function deactivate(): void { _watcher?.dispose(); disposeServers(); chatMgr?.dispose(); log.info("deactivated"); }
+export function deactivate(): void {
+  _watcher?.dispose();
+  disposeServers();
+  chatMgr?.dispose();
+  liveNoteServer?.close();
+  liveNoteServer = undefined;
+  liveNoteBaseUrl = undefined;
+  log.info("deactivated");
+}

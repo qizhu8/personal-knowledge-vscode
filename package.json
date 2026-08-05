@@ -2,7 +2,7 @@
   "name": "personal-knowledge",
   "displayName": "Personal Knowledge",
   "description": "Browse, edit, and sync your personal knowledge: skills, notes, prompts, packages, scripts. Expose it to AI assistants via MCP, and collaborate with teammates and their agents in a built-in real-time Chatroom.",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "publisher": "Uone",
   "author": {
     "name": "Yu Wang"
@@ -66,6 +66,16 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "personalKnowledge.editMarkdownMetadata",
+        "title": "Personal Knowledge: Edit Markdown Metadata",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "personalKnowledge.editMarkdownContent",
+        "title": "Personal Knowledge: Edit Content",
+        "icon": "$(edit)"
+      },
+      {
         "command": "personalKnowledge.openSkill",
         "title": "Open Skill"
       },
@@ -104,6 +114,21 @@
         "icon": "$(add)"
       },
       {
+        "command": "personalKnowledge.addPaperHere",
+        "title": "New Paper Here",
+        "icon": "$(add)"
+      },
+      {
+        "command": "personalKnowledge.addIdeaHere",
+        "title": "New Idea Here",
+        "icon": "$(lightbulb)"
+      },
+      {
+        "command": "personalKnowledge.addPromptHere",
+        "title": "New Prompt Here",
+        "icon": "$(add)"
+      },
+      {
         "command": "personalKnowledge.addScriptHere",
         "title": "New Script Here",
         "icon": "$(add)"
@@ -115,6 +140,11 @@
       },
       {
         "command": "personalKnowledge.editNote",
+        "title": "Edit",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "personalKnowledge.editPaper",
         "title": "Edit",
         "icon": "$(edit)"
       },
@@ -178,6 +208,21 @@
           "group": "inline"
         },
         {
+          "command": "personalKnowledge.addPaperHere",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-papers-container",
+          "group": "1_new@1"
+        },
+        {
+          "command": "personalKnowledge.addIdeaHere",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-papers-container",
+          "group": "1_new@2"
+        },
+        {
+          "command": "personalKnowledge.addPromptHere",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-prompts-container",
+          "group": "1_new"
+        },
+        {
           "command": "personalKnowledge.addSkillHere",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-skills-container",
           "group": "1_new"
@@ -203,6 +248,11 @@
           "group": "inline"
         },
         {
+          "command": "personalKnowledge.editPaper",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-paper-item",
+          "group": "inline"
+        },
+        {
           "command": "personalKnowledge.editScript",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-script-item",
           "group": "inline"
@@ -215,6 +265,11 @@
         {
           "command": "personalKnowledge.editNote",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-note-item",
+          "group": "1_edit"
+        },
+        {
+          "command": "personalKnowledge.editPaper",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-paper-item",
           "group": "1_edit"
         },
         {
@@ -353,7 +408,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && cp -r src/webview dist/ && cp node_modules/sql.js/dist/sql-wasm.js dist/ && cp node_modules/sql.js/dist/sql-wasm.wasm dist/ && cp node_modules/marked/lib/marked.umd.js dist/webview/ && npx esbuild src/webview/hljs-entry.js --bundle --minify --format=iife --outfile=dist/webview/hljs.js && cp node_modules/highlight.js/styles/github-dark.css dist/webview/hljs.css && cp node_modules/katex/dist/katex.min.js dist/webview/katex.js && cp node_modules/katex/dist/katex.min.css dist/webview/katex.css && mkdir -p dist/webview/fonts && cp node_modules/katex/dist/fonts/*.woff2 dist/webview/fonts/ && cp node_modules/cytoscape/dist/cytoscape.min.js dist/webview/cytoscape.js && cp node_modules/mermaid/dist/mermaid.min.js dist/webview/mermaid.js && cp node_modules/3d-force-graph/dist/3d-force-graph.min.js dist/webview/forcegraph3d.js && node scripts/postbuild.js",
+    "build": "tsc -p tsconfig.json && cp -r src/webview dist/ && cp node_modules/sql.js/dist/sql-wasm.js dist/ && cp node_modules/sql.js/dist/sql-wasm.wasm dist/ && cp node_modules/marked/lib/marked.umd.js dist/webview/ && npx esbuild src/live-markdown-entry.js --bundle --platform=node --format=cjs --outfile=dist/live-markdown.js && npx esbuild src/webview/hljs-entry.js --bundle --minify --format=iife --outfile=dist/webview/hljs.js && cp node_modules/highlight.js/styles/github-dark.css dist/webview/hljs.css && cp node_modules/katex/dist/katex.min.js dist/webview/katex.js && cp node_modules/katex/dist/katex.min.css dist/webview/katex.css && mkdir -p dist/webview/fonts && cp node_modules/katex/dist/fonts/*.woff2 dist/webview/fonts/ && cp node_modules/cytoscape/dist/cytoscape.min.js dist/webview/cytoscape.js && cp node_modules/mermaid/dist/mermaid.min.js dist/webview/mermaid.js && cp node_modules/3d-force-graph/dist/3d-force-graph.min.js dist/webview/forcegraph3d.js && node scripts/postbuild.js",
     "watch": "tsc -p tsconfig.json --watch",
     "package": "npx vsce package"
   },

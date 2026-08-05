@@ -49,11 +49,17 @@ body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family
 #searchbox{background:var(--input);border:1px solid var(--border);border-radius:4px;
   padding:4px 8px;color:var(--text);font-size:12px;width:180px;outline:none}
 #searchbox:focus{border-color:var(--accent)}
+mark.search-match{background:#00e5ff;color:#001014;border-radius:2px;padding:0 2px;box-shadow:0 0 0 1px #67f3ff;font-weight:700}
+body.vscode-light mark.search-match,body.vscode-high-contrast-light mark.search-match{background:#005fcc;color:#fff;box-shadow:0 0 0 1px #003f8f}
+body.vscode-high-contrast mark.search-match,body.vscode-high-contrast-light mark.search-match{background:#ffea00;color:#000;box-shadow:0 0 0 2px var(--vscode-contrastBorder,#fff)}
 /* Layout */
 #layout{display:flex;flex:1;min-height:0}
 /* Sidebar */
 #sidebar{width:240px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);
   display:flex;flex-direction:column;overflow:hidden}
+#layout-resizer,.split-resizer,#chat-side-resizer{width:6px;flex:0 0 6px;cursor:col-resize;background:transparent;transition:background .12s;position:relative;z-index:4}
+#layout-resizer:hover,#layout-resizer.active,.split-resizer:hover,.split-resizer.active,#chat-side-resizer:hover,#chat-side-resizer.active{background:var(--accent)}
+body.column-resizing{cursor:col-resize;user-select:none}
 #sidebar-filters{padding:6px 8px;border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:4px}
 .chip{font-size:10px;padding:2px 7px;border-radius:10px;border:1px solid var(--border);
   color:var(--muted);cursor:pointer;background:transparent}
@@ -73,7 +79,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family
 #main{flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden}
 #detail{flex:1;overflow-y:auto;padding:20px 28px;min-height:0}
 /* Detail */
-.d-title{font-size:18px;font-weight:700;margin-bottom:8px}
+.d-title{font-size:18px;font-weight:700;margin-bottom:8px;display:flex;align-items:center;gap:5px}
 .d-meta{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;font-size:11px;color:var(--muted)}
 .tag{background:var(--panel);border:1px solid var(--border);color:var(--accent);font-size:10px;
   padding:1px 6px;border-radius:8px}
@@ -82,6 +88,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family
 .meta-grid{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:11px;
   background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:14px}
 .ml{color:var(--muted)}.mv{color:var(--text)}
+.meta-value{display:inline-flex;align-items:center;gap:4px;min-width:0}
+.meta-edit{flex:none;width:20px;height:20px;padding:0;border:0;background:transparent;color:var(--muted);cursor:pointer;font-size:12px;line-height:20px;text-align:center}
+.meta-edit:hover{color:var(--text);background:var(--hover);border-radius:4px}
 hr.div{border:none;border-top:1px solid var(--border);margin:14px 0}
 /* TOC */
 .toc-wrap{float:right;width:180px;margin:0 0 12px 20px;background:var(--panel);
@@ -115,7 +124,7 @@ hr.div{border:none;border-top:1px solid var(--border);margin:14px 0}
 .prose img{max-width:100%;border-radius:4px}
 .mermaid-diagram{margin:.8em 0;text-align:center;overflow-x:auto}
 .mermaid-diagram svg{max-width:100%;height:auto}
-.mermaid-error{color:#f87171;font-size:12px;text-align:left;white-space:pre-wrap;border:1px solid #f87171;border-radius:6px;padding:8px}
+.mermaid-error{color:#f87171;font-size:12px;text-align:left;white-space:pre-wrap;border:1px solid #f87171;border-radius:6px;padding:8px;max-height:120px;overflow:auto}
 /* Environments & Servers dashboards */
 .dash{padding:20px 28px;max-width:960px}
 .dash-hd{display:flex;align-items:center;gap:8px;margin-bottom:14px}
@@ -164,9 +173,9 @@ hr.div{border:none;border-top:1px solid var(--border);margin:14px 0}
 #paper-form{padding:14px 16px;overflow-y:auto;flex:1;min-height:0}
 .pf-label{font-size:11px;color:var(--muted)}
 .pf-area{width:100%;min-height:64px;background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px;font-size:12px;font-family:var(--vscode-editor-font-family);resize:vertical;outline:none;line-height:1.5}
-#paper-split{display:flex;gap:10px;min-height:160px}
-#paper-split textarea{flex:1;background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:8px;font-size:12px;font-family:var(--vscode-editor-font-family);resize:vertical;outline:none;line-height:1.6}
-#pf-preview{flex:1;overflow-y:auto;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;font-size:13px}
+#paper-split{display:flex;gap:10px;height:280px;min-height:160px;max-height:70vh;overflow:auto;resize:vertical}
+#paper-split textarea{flex:0 0 50%;min-width:120px;background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:8px;font-size:12px;font-family:var(--vscode-editor-font-family);resize:vertical;outline:none;line-height:1.6}
+#pf-preview{flex:1;min-width:120px;overflow-y:auto;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;font-size:13px}
 .paper-card{padding:8px 10px;border:1px solid var(--border);border-radius:6px;margin:6px 8px;cursor:pointer;background:var(--panel)}
 .paper-card:hover{border-color:var(--accent)}
 .paper-card.pc-pinned{border-color:#f4b40066}
@@ -194,7 +203,7 @@ hr.div{border:none;border-top:1px solid var(--border);margin:14px 0}
 .pctx-header:hover{background:none;color:var(--muted)}
 .pctx-sep{height:1px;background:var(--border);margin:4px 2px}
 #pk-modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:2000;display:flex;align-items:center;justify-content:center}
-#pk-modal{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px 20px;min-width:320px;max-width:90vw;box-shadow:0 12px 40px rgba(0,0,0,.5)}
+#pk-modal{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px 20px;min-width:320px;max-width:90vw;max-height:90vh;overflow:auto;resize:both;box-shadow:0 12px 40px rgba(0,0,0,.5)}
 .pk-modal-title{font-size:14px;font-weight:700;margin-bottom:8px}
 .pk-modal-msg{font-size:12px;color:var(--muted);margin-bottom:10px}
 #pk-modal-input{width:100%;background:var(--input);border:1px solid var(--border);border-radius:5px;color:var(--text);padding:7px 9px;font-size:13px;outline:none;margin-bottom:12px}
@@ -211,6 +220,19 @@ hr.div{border:none;border-top:1px solid var(--border);margin:14px 0}
 #pg-tooltip.hidden{display:none}
 #pg-tooltip .tt-title{font-weight:700;margin-bottom:4px}
 #pg-tooltip ul{margin:2px 0 0;padding-left:16px}
+.paper-section{border-top:1px solid var(--border);padding:8px 0}
+.paper-section summary{display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;font-weight:700;color:var(--text);list-style:none}
+.paper-section summary::-webkit-details-marker{display:none}
+.paper-section summary::before{content:'▶';font-size:9px;color:var(--muted)}
+.paper-section[open] summary::before{content:'▼'}
+.paper-section-count{font-size:10px;color:var(--muted);font-weight:400}
+.paper-section-body{padding:7px 0 2px 18px}
+.paper-section-empty{color:var(--muted);font-size:11px;font-style:italic}
+.paper-cite-link{color:var(--accent);font-weight:600;cursor:pointer;text-decoration:none}
+.paper-cite-link:hover{text-decoration:underline}
+.paper-cite-row{display:grid;grid-template-columns:minmax(180px,1fr) minmax(180px,1.4fr) auto;gap:6px;margin-bottom:6px}
+.paper-cite-row select,.paper-cite-row input{min-width:0;width:100%}
+@media(max-width:700px){.paper-cite-row{grid-template-columns:1fr auto}.paper-cite-row input{grid-column:1/-1;grid-row:2}}
 /* Note types */
 .nt-todo{border-left-color:#f87171!important}.nt-done{border-left-color:#4ade80!important}
 .nt-data-path{border-left-color:#fb923c!important}.nt-observation{border-left-color:#60a5fa!important}
@@ -226,8 +248,9 @@ hr.div{border:none;border-top:1px solid var(--border);margin:14px 0}
 #note-content{width:100%;height:100%;resize:none;font-family:var(--vscode-editor-font-family);font-size:12px;
   background:var(--input);border:none;color:var(--text);padding:10px;outline:none;line-height:1.6}
 /* Split note editor */
-#note-split{display:flex;gap:10px;height:280px;margin-bottom:8px}
+#note-split{display:flex;gap:10px;height:280px;min-height:160px;max-height:70vh;overflow:auto;resize:vertical;margin-bottom:8px}
 .note-pane{flex:1;display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;overflow:hidden;min-width:0}
+#note-editor-pane{flex:0 0 50%;min-width:120px}
 .note-pane:focus-within{border-color:var(--accent)}
 .note-pane-label{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);
   padding:5px 10px;background:var(--panel);border-bottom:1px solid var(--border);flex-shrink:0}
@@ -287,7 +310,7 @@ hr.div{border:none;border-top:1px solid var(--border);margin:14px 0}
 /* Sync modal */
 #sync-modal-bg{display:none;position:fixed;inset:0;background:#0008;z-index:200;align-items:flex-start;justify-content:center;padding-top:48px}
 #sync-modal-bg.open{display:flex}
-#sync-modal{background:var(--panel);border:1px solid var(--border);border-radius:10px;width:560px;max-width:95vw;max-height:80vh;display:flex;flex-direction:column;overflow:hidden}
+#sync-modal{background:var(--panel);border:1px solid var(--border);border-radius:10px;width:560px;height:620px;max-width:95vw;max-height:80vh;display:flex;flex-direction:column;overflow:hidden;resize:both}
 .sm-header{display:flex;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border)}
 .sm-header h3{font-size:14px;flex:1}
 .sm-close{background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px;padding:2px 6px}
@@ -352,8 +375,6 @@ hr.div{border:none;border-top:1px solid var(--border);margin:14px 0}
 .tree-cat-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tree-cat-count{font-size:10px;color:var(--muted);background:var(--border);border-radius:8px;padding:1px 6px;flex-shrink:0}
 .tree-cat-body .li{padding-left:20px}
-/* Search highlight */
-mark{background:var(--vscode-editor-findMatchHighlightBackground,#ffd70055);color:inherit;border-radius:2px;padding:0 1px}
 /* ── Chatroom ─────────────────────────────────────────────────────────── */
 #chat-root{display:flex;height:100%;min-height:0}
 #chat-rail{width:190px;flex-shrink:0;border-right:1px solid var(--border);background:var(--panel);
@@ -508,6 +529,7 @@ body.chat-resizing{cursor:col-resize;user-select:none}
     <div id="sidebar-filters"></div>
     <div id="item-list"></div>
   </div>
+  <div id="layout-resizer" title="Drag to resize navigation"></div>
   <div id="main">
     <div id="detail"><div class="empty">Select an item from the sidebar.</div></div>
     <div id="note-form" class="hidden">
@@ -527,10 +549,11 @@ body.chat-resizing{cursor:col-resize;user-select:none}
         <input id="note-category" placeholder="Path e.g. Project/AutoLabeling/C2 Guideline" style="flex:1" title="Slash-separated hierarchy for the sidebar tree">
       </div>
       <div id="note-split">
-        <div class="note-pane">
+        <div class="note-pane" id="note-editor-pane">
           <div class="note-pane-label">✎ Markdown</div>
           <textarea id="note-content" placeholder="Write Markdown here…" oninput="updateNotePreview()"></textarea>
         </div>
+        <div class="split-resizer" id="note-split-resizer" title="Drag to resize editor"></div>
         <div class="note-pane">
           <div class="note-pane-label">👁 Preview</div>
           <div id="note-preview" class="prose"></div>
@@ -573,14 +596,22 @@ body.chat-resizing{cursor:col-resize;user-select:none}
         <textarea id="pf-conclusions" class="pf-area" placeholder="Self-attention replaces recurrence&#10;Parallelizable"></textarea>
       </div>
       <div class="form-row" style="flex-direction:column;align-items:stretch;gap:4px">
-        <label class="pf-label">Cites (papers this one builds on) — one per line: <code>Paper title :: how this paper uses it</code></label>
-        <textarea id="pf-cites" class="pf-area" placeholder="Attention Is All You Need :: uses multi-head self-attention" list="pf-paper-titles"></textarea>
-        <datalist id="pf-paper-titles"></datalist>
+        <label class="pf-label">Implementation — one item per line</label>
+        <textarea id="pf-implementation" class="pf-area" placeholder="Training setup, architecture, or implementation detail"></textarea>
+      </div>
+      <div class="form-row" style="flex-direction:column;align-items:stretch;gap:4px">
+        <label class="pf-label">Assumptions — one item per line</label>
+        <textarea id="pf-assumptions" class="pf-area" placeholder="Dataset, modeling, or evaluation assumption"></textarea>
+      </div>
+      <div class="form-row" style="flex-direction:column;align-items:stretch;gap:6px">
+        <div style="display:flex;align-items:center"><label class="pf-label">Cites — existing papers this one builds on</label><span style="flex:1"></span><button type="button" class="tbtn" onclick="addPaperCite()">＋ Add citation</button></div>
+        <div id="pf-cites"></div>
       </div>
       <div class="form-row" style="flex-direction:column;align-items:stretch;gap:4px">
         <label class="pf-label">Notes / commentary (Markdown)</label>
         <div id="paper-split">
           <textarea id="pf-content" placeholder="Your summary, potential improvements…" oninput="updatePaperPreview()"></textarea>
+          <div class="split-resizer" id="paper-split-resizer" title="Drag to resize editor"></div>
           <div id="pf-preview" class="prose"></div>
         </div>
       </div>
@@ -629,7 +660,7 @@ body.chat-resizing{cursor:col-resize;user-select:none}
   </div>
   <div class="sm-tabs">
     <div class="sm-tab active" id="sm-tab-host" onclick="switchSmTab('host')">Host</div>
-    <div class="sm-tab" id="sm-tab-sessions" onclick="switchSmTab('sessions')">Active Links</div>
+    <div class="sm-tab" id="sm-tab-sessions" onclick="switchSmTab('sessions')">Active Codes</div>
     <div class="sm-tab" id="sm-tab-join" onclick="switchSmTab('join')">Join</div>
   </div>
   <div class="sm-body">
@@ -655,7 +686,7 @@ body.chat-resizing{cursor:col-resize;user-select:none}
           <input id="sm-port" type="number" value="19877" style="width:80px;flex:none">
         </div>
       </div>
-      <button class="tbtn" style="border-color:var(--accent);width:100%" onclick="doCreateSync()">Generate Sync Link</button>
+      <button class="tbtn" style="border-color:var(--accent);width:100%" onclick="doCreateSync()">Generate Magic Code</button>
       <div id="sm-cred-result" style="margin-top:12px"></div>
     </div>
     <!-- SESSIONS tab -->
@@ -665,14 +696,10 @@ body.chat-resizing{cursor:col-resize;user-select:none}
     <!-- JOIN tab -->
     <div id="sm-pane-join" style="display:none">
       <div class="sm-section">
-        <div class="sm-label">Quick connect</div>
-        <div class="sm-row"><input id="join-code" placeholder="Paste connection code (pk:…)" style="flex:1"><button class="tbtn" onclick="applySyncCode()">Fill</button></div>
-      </div>
-      <div class="sm-section">
-        <div class="sm-label">Connect to a host</div>
-        <div class="sm-row"><span style="font-size:12px;color:var(--muted);width:80px">URL</span><input id="join-url" placeholder="http://10.x.x.x:19877"></div>
-        <div class="sm-row"><span style="font-size:12px;color:var(--muted);width:80px">Username</span><input id="join-user" placeholder="e.g. a3f8b2c1"></div>
-        <div class="sm-row"><span style="font-size:12px;color:var(--muted);width:80px">Password</span><input id="join-pass" type="password" placeholder="password"></div>
+        <div class="sm-label">Magic Code</div>
+        <div style="font-size:11px;color:var(--muted);margin:-2px 0 6px">Paste the complete code shared by the host. Treat it like a temporary password.</div>
+        <div class="sm-row"><input id="join-code" type="password" placeholder="pk:v3:…" autocomplete="off" style="flex:1" oninput="scheduleMagicCodeVerification()"></div>
+        <div id="join-code-verification" style="font-size:11px;color:var(--muted);margin-top:6px">Paste a Magic Code to verify it.</div>
       </div>
       <div class="sm-section">
         <div class="sm-label">On receive</div>
@@ -680,7 +707,7 @@ body.chat-resizing{cursor:col-resize;user-select:none}
         <div class="sm-row"><label style="font-size:12px;display:flex;align-items:center;gap:6px"><input type="radio" name="join-mode" value="group" onchange="toggleJoinGroup()"> New group — keep separate, merge offline</label></div>
         <div class="sm-row" id="join-group-row" style="display:none"><span style="font-size:12px;color:var(--muted);width:80px">Group</span><input id="join-group" placeholder="optional label (default: sender-date)"></div>
       </div>
-      <button class="tbtn" style="border-color:var(--accent);width:100%" onclick="doJoinSync()">Download</button>
+      <button id="join-download" class="tbtn" style="border-color:var(--accent);width:100%" onclick="doJoinSync()" disabled>Download</button>
       <div id="join-result" style="margin-top:10px;font-size:12px;color:var(--muted)"></div>
     </div>
   </div>
@@ -767,7 +794,7 @@ function initMermaidOnce() {
   try {
     const light = /vscode-light|vscode-high-contrast-light/.test(document.body.className || '');
     // 'antiscript' keeps <b>/<br/> HTML labels working while stripping <script>.
-    mermaid.initialize({ startOnLoad: false, securityLevel: 'antiscript', theme: light ? 'default' : 'dark', fontFamily: 'inherit' });
+    mermaid.initialize({ startOnLoad: false, suppressErrorRendering: true, securityLevel: 'antiscript', theme: light ? 'default' : 'dark', fontFamily: 'inherit' });
     _mermaidReady = true;
   } catch (e) {}
   return _mermaidReady;
@@ -786,12 +813,20 @@ function renderMermaid(root) {
     holder.className = 'mermaid-diagram';
     pre.replaceWith(holder);
     const id = 'mmd-' + (++_mmSeq);
+    const cleanupTemporaryNodes = () => {
+      Array.from(document.body.children).forEach(el => {
+        if (el !== root && (el.id === id || el.id === 'd' + id || el.id === 'i' + id || el.querySelector('[id="' + id + '"]'))) el.remove();
+      });
+    };
     jobs.push(Promise.resolve().then(() => mermaid.render(id, src)).then(res => {
+      cleanupTemporaryNodes();
       holder.innerHTML = res.svg;
       if (res.bindFunctions) res.bindFunctions(holder);
     }).catch(err => {
+      cleanupTemporaryNodes();
       holder.className = 'mermaid-diagram mermaid-error';
-      holder.textContent = 'Mermaid error: ' + (err && err.message ? err.message : String(err));
+      const message = String(err && err.message ? err.message : err || 'Invalid diagram').split('\n')[0].slice(0, 500);
+      holder.textContent = 'Mermaid syntax error: ' + message;
     }));
   });
   return Promise.all(jobs);
@@ -825,17 +860,26 @@ document.getElementById('item-list').addEventListener('contextmenu', e => {
   ctxMenu.classList.add('open');
 });
 
-// Right-click blank space in the Skills/Notes list -> Create a (top-level) folder.
+// Right-click blank space in a content list -> create a top-level item/folder.
 document.getElementById('item-list').addEventListener('contextmenu', e => {
-  if (state.tab !== 'skills' && state.tab !== 'notes') return;
+  if (!['skills', 'notes', 'papers', 'prompts', 'scripts'].includes(state.tab)) return;
   if (e.target.closest('.li') || e.target.closest('.tree-cat-hdr')) return;  // items/folders have their own menus
   e.preventDefault();
   const area = state.tab;
-  showPaperMenu(e.clientX, e.clientY, [
-    { label: '➕ Create Folder…', onClick: () => pkModal({
+  const items = [];
+  if (area === 'skills') items.push({ label: '＋ New Skill…', onClick: () => ask('createKnowledgeItem', { area: 'skills', category: '' }) });
+  if (area === 'notes') items.push({ label: '＋ New Note…', onClick: () => ask('createKnowledgeItem', { area: 'notes', category: '' }) });
+  if (area === 'papers') {
+    items.push({ label: '＋ New Paper…', onClick: () => ask('createKnowledgeItem', { area: 'papers', kind: 'paper', category: '' }) });
+    items.push({ label: '💡 New Idea…', onClick: () => ask('createKnowledgeItem', { area: 'papers', kind: 'idea', category: '' }) });
+  }
+  if (area === 'prompts') items.push({ label: '＋ New Prompt…', onClick: () => ask('createPromptItem', {}) });
+  if (area === 'scripts') items.push({ label: '＋ New Script…', onClick: () => ask('createScript', { folder: '' }) });
+  if (area === 'skills' || area === 'notes') items.push({ label: '➕ Create Folder…', onClick: () => pkModal({
       title: 'Create folder', message: 'New top-level folder in ' + area + '.',
       input: true, okLabel: 'Create', onOk: v => { const n = v.trim(); if (n) ask('folderCreate', { area, parent: '', name: n }); } }) }
-  ]);
+  );
+  showPaperMenu(e.clientX, e.clientY, items);
 });
 
 document.addEventListener('click', () => ctxMenu.classList.remove('open'));
@@ -872,7 +916,7 @@ document.getElementById('ctx-delete').addEventListener('click', () => {
   if (ctxTarget) { ask('deleteNote', { slug: ctxTarget }); ctxTarget = null; }
 });
 document.getElementById('ctx-edit').addEventListener('click', () => {
-  if (ctxTarget) { pendingEditSlug = ctxTarget; ask('detail', { type:'note', key: ctxTarget }); ctxTarget = null; }
+  if (ctxTarget) { openMarkdownItem('notes', '', ctxTarget); ctxTarget = null; }
 });
 document.getElementById('ctx-move').addEventListener('click', () => {
   if (!ctxTarget) return;
@@ -902,9 +946,9 @@ window.addEventListener('message', e => {
       if (pendingEditType && data && data.type === pendingEditType) {
         const t = pendingEditType; pendingEditType = null;
         setTimeout(() => {
-          if (t === 'skill')  startEditSkill();
-          else if (t === 'note')   editNote(data);
-          else if (t === 'paper')  editPaper(data);
+          if (t === 'skill')  openMarkdownItem('skills', data.category, data.name);
+          else if (t === 'note')   openMarkdownItem('notes', '', data.slug);
+          else if (t === 'paper')  openMarkdownItem('papers', '', data.slug);
           else if (t === 'script') startEditScript();
         }, 30);
       }
@@ -949,6 +993,11 @@ window.addEventListener('message', e => {
   else if (command === 'paperGroups') {
     paperGroupsList = (e.data.data && e.data.data.length) ? e.data.data : [{ name: 'Papers', count: 0 }];
   }
+  else if (command === 'paperPicker') {
+    const draft = readPaperCites();
+    paperPickerItems = e.data.data || [];
+    if (!document.getElementById('paper-form').classList.contains('hidden')) renderPaperCites(draft);
+  }
   else if (command === 'paperGraph') { renderPaperGraph(e.data.data); }
   else if (command === 'paperFileSaved') {
     if (pendingPaperFile) { const cb = pendingPaperFile; pendingPaperFile = null; cb(e.data.file, e.data.error); }
@@ -981,21 +1030,33 @@ window.addEventListener('message', e => {
   }
   else if (command === 'syncStarted') {
     const s = data;
-    const code = 'pk:' + btoa(unescape(encodeURIComponent(JSON.stringify({ u: s.url, n: s.username, p: s.password }))));
+    const code = s.magicCode || '';
     document.getElementById('sm-cred-result').innerHTML = `
       <div class="cred-box">
-        <div style="font-size:11px;color:#4ade80;margin-bottom:8px">✅ Sync link active — share with recipient:</div>
-        <div class="cred-row"><span class="cred-label">Code</span><span class="cred-val" title="One-paste connection code">${esc(code)}</span><button class="cred-copy" onclick="navigator.clipboard.writeText('${esc(code)}')">Copy</button></div>
-        <div style="font-size:10px;color:var(--muted);margin:2px 0 8px">Recipient pastes this one code in the Join tab — fills URL, username &amp; password at once.</div>
-        <div class="cred-row"><span class="cred-label">URL</span><span class="cred-val">${esc(s.url)}</span><button class="cred-copy" onclick="navigator.clipboard.writeText('${esc(s.url)}')">Copy</button></div>
-        <div class="cred-row"><span class="cred-label">Username</span><span class="cred-val">${esc(s.username)}</span><button class="cred-copy" onclick="navigator.clipboard.writeText('${esc(s.username)}')">Copy</button></div>
-        <div class="cred-row"><span class="cred-label">Password</span><span class="cred-val">${esc(s.password)}</span><button class="cred-copy" onclick="navigator.clipboard.writeText('${esc(s.password)}')">Copy</button></div>
+        <div style="font-size:11px;color:#4ade80;margin-bottom:8px">✅ Magic Code active — share it with the recipient:</div>
+        <div class="cred-row"><span class="cred-label">Magic Code</span><span class="cred-val" title="One-paste Magic Code">${esc(code)}</span><button class="cred-copy" onclick="navigator.clipboard.writeText('${esc(code)}')">Copy</button></div>
+        <div style="font-size:10px;color:var(--muted);margin:2px 0 8px">This code grants temporary access to the selected content. Share it securely.</div>
         <div class="cred-row"><span class="cred-label">Expires</span><span class="cred-val">${new Date(s.expires).toLocaleTimeString()}</span></div>
         <div class="cred-row"><span class="cred-label">Shares</span><span class="cred-val">${esc(s.summary || 'nothing selected')}</span></div>
       </div>`;
     ask('getSyncSessions', {});
   }
   else if (command === 'syncSessions') { renderSyncSessions(data.sessions); }
+  else if (command === 'syncMagicCodeVerified') {
+    if (data.requestId !== magicCodeVerificationRequest) return;
+    const input = document.getElementById('join-code');
+    const status = document.getElementById('join-code-verification');
+    const button = document.getElementById('join-download');
+    if (data.ok) {
+      input.dataset.verifiedValue = input.value.trim();
+      status.innerHTML = '<span style="color:#4ade80">✓ Checksum and encryption authentication verified.</span>';
+      button.disabled = false;
+    } else {
+      delete input.dataset.verifiedValue;
+      status.innerHTML = `<span style="color:#f87171">✕ ${esc(data.error || 'Magic Code verification failed.')}</span>`;
+      button.disabled = true;
+    }
+  }
   else if (command === 'syncJoined')   {
     document.getElementById('join-result').innerHTML =
       `<span style="color:#4ade80">✅ Synced from ${esc(data.from)}: ${esc(data.summary||data.count+' items')}${data.group ? ' → group “'+esc(data.group)+'” (review &amp; merge offline)' : ''}</span>`;
@@ -1029,6 +1090,9 @@ window.addEventListener('message', e => {
     if (data.error) { alert('Save failed: ' + data.error); return; }
     if (data.cancelled) return; // user declined confirmation — stay in editor
     if (data.ok && data.path) ask('detail', { type: 'script', key: data.path }); // reload saved script
+  }
+  else if (command === 'metadataUpdateResult') {
+    if (!data.ok) pkModal({ title: 'Duplicate name', message: data.error || 'Metadata could not be saved.', okLabel: 'OK' });
   }
   else if (command === 'openItem') {
     // Navigate to a specific item (triggered from sidebar tree view).
@@ -1112,6 +1176,46 @@ if (window.ResizeObserver) {
   t.addEventListener('wheel', e => { if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) { t.scrollLeft += e.deltaY; e.preventDefault(); } }, { passive: false });
 })();
 relayoutTopbar();
+
+function initColumnResizer(handleId, targetId, storageKey, minWidth, maxWidth, direction, useFlex) {
+  const handle = document.getElementById(handleId);
+  const target = document.getElementById(targetId);
+  if (!handle || !target || handle.dataset.resizeBound) return;
+  handle.dataset.resizeBound = '1';
+  const applyWidth = width => {
+    const value = Math.max(minWidth, Math.min(maxWidth, width));
+    if (useFlex) target.style.flex = '0 0 ' + value + 'px';
+    else target.style.width = value + 'px';
+  };
+  try {
+    const saved = Number(localStorage.getItem(storageKey));
+    if (saved) applyWidth(saved);
+  } catch (e) {}
+  handle.addEventListener('mousedown', e => {
+    const startX = e.clientX;
+    const startWidth = target.getBoundingClientRect().width;
+    handle.classList.add('active');
+    document.body.classList.add('column-resizing');
+    const move = ev => {
+      const parentLimit = Math.max(minWidth, (target.parentElement?.clientWidth || maxWidth) - 120);
+      applyWidth(Math.min(parentLimit, startWidth + (ev.clientX - startX) * direction));
+    };
+    const up = () => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      handle.classList.remove('active');
+      document.body.classList.remove('column-resizing');
+      try { localStorage.setItem(storageKey, String(Math.round(target.getBoundingClientRect().width))); } catch (e) {}
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+    e.preventDefault();
+  });
+}
+
+initColumnResizer('layout-resizer', 'sidebar', 'pk-main-sidebar', 150, 600, 1, false);
+initColumnResizer('note-split-resizer', 'note-editor-pane', 'pk-note-editor', 140, 1000, 1, true);
+initColumnResizer('paper-split-resizer', 'pf-content', 'pk-paper-editor', 140, 1000, 1, true);
 
 // ── Chatroom (agent room) ───────────────────────────────────────────────────
 const chat = {
@@ -1267,6 +1371,7 @@ function renderChatroom() {
               <button class="tbtn" id="chat-send-btn" onclick="chatSend()" disabled>Send</button>
             </div>
           </div>
+          <div id="chat-side-resizer" title="Drag to resize members"></div>
           <div id="chat-side">
             <div class="chat-side-hdr">In the room</div>
             <div id="chat-members"><div class="chat-empty">—</div></div>
@@ -1315,6 +1420,7 @@ function chatInitResizer() {
     document.addEventListener('mouseup', up);
     e.preventDefault();
   });
+  initColumnResizer('chat-side-resizer', 'chat-side', 'pk-chat-side', 120, 500, -1, false);
 }
 
 function chatToggleJoin() {
@@ -1929,6 +2035,7 @@ document.querySelectorAll('.tab').forEach(t =>
     document.getElementById('detail').innerHTML = '<div class="empty">Select an item</div>';
     closePaperViews();
     updatePaperChrome();
+    document.getElementById('layout-resizer').style.display = ['mcp', 'environments', 'servers', 'chatroom'].includes(state.tab) ? 'none' : '';
     if (state.tab === 'mcp') {
       // Hide sidebar for MCP full-width pane
       document.getElementById('sidebar').style.display = 'none';
@@ -1980,6 +2087,7 @@ function closePaperViews() {
 
 document.getElementById('searchbox').addEventListener('input', e => {
   state.search = e.target.value.trim();
+  highlightDetailMatches(document.getElementById('detail'), state.search);
   clearTimeout(searchDebounce);
   searchDebounce = setTimeout(() => {
     ask('list', { tab: state.tab, filter: state.filter, q: state.search });
@@ -2006,7 +2114,7 @@ function renderList() {
       return ` oncontextmenu="skillFolderMenu(event,'${b64}',${JSON.stringify(name).replace(/"/g, '&quot;')})"`;
     };
     const html = renderCatTree(root, [], 0, (r, depth) =>
-      skillLi(r, r.name, q, 8 + (depth + 1) * 12), q, folderAttr);
+      skillLi(r, r.name, q, 8 + (depth + 1) * 12), q, folderAttr, { isLeafPinned: it => !!it.pinned });
     el.innerHTML = html || '<div class="empty">No skills</div>';
 
   } else if (tab === 'notes') {
@@ -2081,13 +2189,13 @@ function renderList() {
     shown.forEach(r => { (byProj[r.project]||(byProj[r.project]=[])).push(r); });
     el.innerHTML = Object.entries(byProj).map(([proj, tasks]) =>
       `<div class="tree-proj">
-        <div class="tree-proj-hdr" onclick="toggleTree(this)">▶ ${esc(proj)}</div>
+        <div class="tree-proj-hdr" onclick="toggleTree(this)" oncontextmenu="promptFolderMenu(event,${JSON.stringify(proj).replace(/"/g,'&quot;')},'','')">▶ ${esc(proj)}</div>
         <div class="tree-proj-body collapsed">${tasks.map(r =>
           `<div class="tree-task">
-            <div class="tree-task-hdr" onclick="toggleTree(this)">▷ ${esc(r.task)}</div>
+            <div class="tree-task-hdr" onclick="toggleTree(this)" oncontextmenu="promptFolderMenu(event,${JSON.stringify(proj).replace(/"/g,'&quot;')},${JSON.stringify(r.task).replace(/"/g,'&quot;')},'')">▷ ${esc(r.task)}</div>
             <div class="tree-task-body collapsed">${(r.versions||[]).map(v =>
               `<div class="tree-ver">
-                <div class="tree-ver-hdr" onclick="toggleTree(this)">📁 ${esc(v.version)}</div>
+                <div class="tree-ver-hdr" onclick="toggleTree(this)" oncontextmenu="promptFolderMenu(event,${JSON.stringify(proj).replace(/"/g,'&quot;')},${JSON.stringify(r.task).replace(/"/g,'&quot;')},${JSON.stringify(v.version).replace(/"/g,'&quot;')})">📁 ${esc(v.version)}</div>
                 <div class="tree-ver-body collapsed">${(v.files||[]).map(f =>
                   `<div class="tree-file" onclick="openPromptFile('${esc(proj)}','${esc(r.task)}','${esc(v.version)}','${esc(f.name)}')">📄 ${esc(f.name)}</div>`
                 ).join('')}</div>
@@ -2131,7 +2239,7 @@ function renderList() {
       const cat = r.category === '(root)' ? '' : r.category;
       return `<div class="li" style="padding-left:${pad}px" onclick="openItem('script','${esc(r.path)}')" oncontextmenu="scriptItemMenu(event,'${esc(r.path)}',${JSON.stringify(cat).replace(/"/g, '&quot;')})">
         <div class="li-name">📄 ${hl(r.file, q)}</div>
-        <div class="li-meta">${(r.langs||(r.lang?r.lang.split(' + '):[])).map(l=>`<span class="cat" style="font-size:9px;margin-right:3px">${esc(l)}</span>`).join('')}</div>
+        <div class="li-meta">${cat ? `<span style="margin-right:5px">${hl(cat, q)}</span>` : ''}${(r.langs||(r.lang?r.lang.split(' + '):[])).map(l=>`<span class="cat" style="font-size:9px;margin-right:3px">${hl(l, q)}</span>`).join('')}</div>
       </div>`;
     }, q, folderAttr);
     el.innerHTML = html || '<div class="empty">No scripts</div>';
@@ -2139,10 +2247,17 @@ function renderList() {
 }
 
 function skillLi(r, displayName, q, indent) {
-  return `<div class="li" data-skill-name="${esc(r.name)}" onclick="openItem('skill','${esc(r.name)}')" oncontextmenu="skillItemMenu(event,'${esc(r.name)}',${JSON.stringify(r.category || '').replace(/"/g, '&quot;')})" style="padding-left:${indent}px">
-    <div class="li-name">${hl(displayName||r.name, q)}</div>
+  return `<div class="li${r.pinned ? ' nt-pinned' : ''}" data-skill-name="${esc(r.name)}" onclick="openItem('skill','${esc(r.name)}')" oncontextmenu="skillItemMenu(event,'${esc(r.name)}',${JSON.stringify(r.category || '').replace(/"/g, '&quot;')})" style="padding-left:${indent}px">
+    <div class="li-name"><span class="pc-star${r.pinned ? ' on' : ''}" onclick="event.stopPropagation();toggleSkillPin('${esc(r.name)}',${r.pinned ? 'false' : 'true'})" title="${r.pinned ? 'Unpin' : 'Pin to top of folder'}">${r.pinned ? '★' : '☆'}</span> ${hl(displayName||r.name, q)}</div>
     <div class="li-meta">${r.description ? hl(r.description.slice(0,50), q) : ''}</div>
   </div>`;
+}
+
+function toggleSkillPin(name, pinned) {
+  ask('skillSetPinned', { name, pinned });
+  if (currentDetail && currentDetail.type === 'skill' && currentDetail.name === name) {
+    currentDetail.pinned = pinned; renderDetail(currentDetail);
+  }
 }
 
 // A note row in the sidebar tree (with a ★ pin toggle). Right-click uses #ctx-menu.
@@ -2202,6 +2317,7 @@ function renderCatTree(node, path, depth, renderLeaf, q, folderAttr, order) {
   let html = '';
   for (const name of folderKeys) {
     const child = node.folders[name];
+    if (q && countTreeLeaves(child) === 0) continue;
     // Base64 key: safe inside HTML attrs and JS strings (no quotes/null/unicode issues)
     const key = btoa(unescape(encodeURIComponent(JSON.stringify(path.concat(name)))));
     const open = !!catExpanded[key];
@@ -2262,6 +2378,25 @@ function openPrompt(proj, task, ver) {
 }
 
 // ── Render detail ──────────────────────────────────────────────────────────
+function markdownToolbar(data) {
+  const type = data.type;
+  const pin = type === 'note'
+    ? `toggleNotePin('${esc(data.slug)}',${data.pinned ? 'false' : 'true'})`
+    : type === 'skill'
+      ? `toggleSkillPin('${esc(data.name)}',${data.pinned ? 'false' : 'true'})`
+      : `togglePin('${esc(data.slug)}',${data.pinned ? 'false' : 'true'})`;
+  const area = type + 's';
+  const key = type === 'skill' ? data.name : data.slug;
+  const category = type === 'skill' ? data.category || '' : '';
+  return `
+    <button class="tbtn" style="font-size:11px" onclick="${pin}" title="${data.pinned ? 'Unpin' : 'Pin to top'}">${data.pinned ? '★ Pinned' : '☆ Pin'}</button>
+    <button class="tbtn" style="font-size:11px" onclick="exportMarkdown('browser')" title="Open a live Markdown preview in your browser">🌐 Browser</button>
+    ${type === 'note' ? '<button class="tbtn" style="font-size:11px" onclick="exportMarkdown(\'linkedSave\')" title="Save this Note and its linked Notes as a shareable site">📦 Site</button>' : ''}
+    <button class="tbtn" style="font-size:11px" onclick="exportMarkdown('file')" title="Download as a self-contained HTML file">⬇ Download</button>
+    <button class="tbtn" style="font-size:11px" onclick="openMarkdownItem('${area}', '${esc(category)}', '${esc(key)}')">✏ Edit Content</button>
+    <button class="tbtn" style="font-size:11px" onclick="editMarkdownMetadataItem('${area}', '${esc(category)}', '${esc(key)}')">⚙ Edit Metadata</button>`;
+}
+
 function renderDetail(data) {
   renderNonce++; // fresh asset URLs each open so late-added images bypass stale cache
   const el = document.getElementById('detail');
@@ -2272,20 +2407,21 @@ function renderDetail(data) {
     const tags = JSON.parse(data.tags||'[]');
     const toc = buildToc(data.content||'');
     el.innerHTML = `
-      <div class="d-title">${esc(data.name)}</div>
+      <div class="d-title"><span>${esc(data.name)}</span><button class="meta-edit" onclick="editCurrentMetadata('title')" title="Edit name">✎</button></div>
       <div class="d-meta">
         ${data.category?`<span class="cat">${esc(data.category)}</span>`:''}
         ${tags.map(t=>`<span class="tag">${esc(t)}</span>`).join('')}
+        <button class="meta-edit" onclick="editCurrentMetadata('tags')" title="Edit tags">✎</button>
         <span>${wordCount(data.content||'')}</span>
         <span>Updated ${(data.updated_at||'').slice(0,10)}</span>
         <span style="flex:1"></span>
-        <button class="tbtn" style="font-size:11px" onclick="startEditSkill()">✏ Edit</button>
+        ${markdownToolbar(data)}
         <button class="tbtn" style="font-size:11px" onclick="confirmDeleteSkill(this)">🗑 Delete</button>
       </div>
       <div class="meta-grid">
-        <span class="ml">Source</span><span class="mv">${esc(data.source_project||'—')}</span>
+        <span class="ml">Source</span><span class="mv meta-value"><span>${esc(data.source_project||'—')}</span><button class="meta-edit" onclick="editCurrentMetadata('source_project')" title="Edit source">✎</button></span>
         <span class="ml">Created</span><span class="mv">${(data.created_at||'').slice(0,10)}</span>
-        <span class="ml">Description</span><span class="mv">${esc(data.description||'—')}</span>
+        <span class="ml">Description</span><span class="mv meta-value"><span>${esc(data.description||'—')}</span><button class="meta-edit" onclick="editCurrentMetadata('description')" title="Edit description">✎</button></span>
       </div>
       <hr class="div">${toc}<div class="prose">${safeMarked(data.content||'')}</div>`;
 
@@ -2293,19 +2429,19 @@ function renderDetail(data) {
     currentDetail = data;
     const tags = JSON.parse(data.tags||'[]');
     el.innerHTML = `
-      <div class="d-title">${ICON[data.note_type]||'📝'} ${esc(data.title)}</div>
+      <div class="d-title"><span>${ICON[data.note_type]||'📝'} ${esc(data.title)}</span><button class="meta-edit" onclick="editCurrentMetadata('title')" title="Edit title">✎</button></div>
       <div class="d-meta">
         <span>${esc(data.note_type)}</span>
         ${data.category?`<span class="cat">${esc(data.category)}</span>`:''}
         ${tags.map(t=>`<span class="tag">${esc(t)}</span>`).join('')}
+        <button class="meta-edit" onclick="editCurrentMetadata('tags')" title="Edit tags">✎</button>
         <span>Updated ${(data.updated_at||'').slice(0,10)}</span>
         <span style="font-size:10px;color:var(--muted)">id: ${esc(data.slug)}</span>
         <span style="flex:1"></span>
-        <button class="tbtn" style="font-size:11px" onclick="toggleNotePin('${esc(data.slug)}',${data.pinned ? 'false' : 'true'})" title="${data.pinned ? 'Unpin' : 'Pin to top of its folder'}">${data.pinned ? '★ Pinned' : '☆ Pin'}</button>
-        <button class="tbtn" style="font-size:11px" onclick="exportNote('browser')" title="Open in your browser as a linked set — this note plus every note it links to, with clickable cross-note links">🌐 Browser</button>
-        <button class="tbtn" style="font-size:11px" onclick="exportNote('linkedSave')" title="Save this note and every note it links to as a shareable folder of linked HTML files (opens offline)">📦 Site</button>
-        <button class="tbtn" style="font-size:11px" onclick="exportNote('file')" title="Save this note as a self-contained HTML file">⬇ HTML</button>
-        <button class="tbtn" style="font-size:11px" onclick="editNote(currentDetail)">✏ Edit</button>
+        ${markdownToolbar(data)}
+      </div>
+      <div class="meta-grid">
+        <span class="ml">Description</span><span class="mv meta-value"><span>${esc(data.description||'—')}</span><button class="meta-edit" onclick="editCurrentMetadata('description')" title="Edit description">✎</button></span>
       </div>
       <hr class="div"><div class="prose">${safeMarked(data.content||'', data.category)}</div>`;
 
@@ -2437,6 +2573,32 @@ function renderDetail(data) {
   postProcess();
 }
 
+function openMarkdownItem(area, category, key) {
+  const itemKey = area === 'skills' && category ? category + '/' + key : key;
+  ask('openKnowledgeContent', { area, key: itemKey });
+}
+function editMarkdownMetadataItem(area, category, key) {
+  const itemKey = area === 'skills' && category ? category + '/' + key : key;
+  ask('editKnowledgeMetadata', { area, key: itemKey });
+}
+function editCurrentMetadata(field) {
+  const data = currentDetail;
+  if (!data || !['skill','note','paper'].includes(data.type)) return;
+  const area = data.type === 'skill' ? 'skills' : data.type === 'note' ? 'notes' : 'papers';
+  const key = data.type === 'skill' ? (data.category ? data.category + '/' + data.name : data.name) : data.slug;
+  const values = {
+    title: data.type === 'skill' ? data.name : data.title,
+    tags: Array.isArray(data.tags) ? data.tags.join(', ') : JSON.parse(data.tags || '[]').join(', '),
+    description: data.description || '',
+    source_project: data.source_project || '',
+  };
+  const labels = { title: data.type === 'skill' ? 'Name' : 'Title', tags: 'Tags (comma-separated)', description: 'Description', source_project: 'Source' };
+  pkModal({
+    title: 'Edit ' + labels[field], input: true, defaultValue: values[field] || '', okLabel: 'Save',
+    onOk: value => ask('updateKnowledgeMetadataField', { area, key, field, value }),
+  });
+}
+
 // ── Script edit ─────────────────────────────────────────────────────────────
 function startEditScript() {
   const d = currentDetail;
@@ -2525,6 +2687,41 @@ function postProcess() {
     btn.onclick = () => { navigator.clipboard.writeText(pre.querySelector('code')?.textContent||''); btn.textContent='✓'; setTimeout(()=>btn.textContent='Copy',1500); };
     pre.appendChild(btn);
   });
+  highlightDetailMatches(document.getElementById('detail'), state.search);
+}
+
+function highlightDetailMatches(root, query) {
+  if (!root) return;
+  root.querySelectorAll('mark.search-match').forEach(mark => mark.replaceWith(document.createTextNode(mark.textContent || '')));
+  root.normalize();
+  if (!query) return;
+  const needle = query.toLowerCase();
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement;
+      if (!node.nodeValue || !node.nodeValue.toLowerCase().includes(needle)) return NodeFilter.FILTER_REJECT;
+      if (!parent || parent.closest('button,input,textarea,select,option,script,style,svg,mark,.mermaid-diagram')) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    }
+  });
+  const matches = [];
+  while (walker.nextNode()) matches.push(walker.currentNode);
+  for (const textNode of matches) {
+    const text = textNode.nodeValue;
+    const fragment = document.createDocumentFragment();
+    let start = 0;
+    for (;;) {
+      const index = text.toLowerCase().indexOf(needle, start);
+      if (index < 0) break;
+      if (index > start) fragment.appendChild(document.createTextNode(text.slice(start, index)));
+      const mark = document.createElement('mark'); mark.className = 'search-match';
+      mark.textContent = text.slice(index, index + query.length);
+      fragment.appendChild(mark);
+      start = index + query.length;
+    }
+    if (start < text.length) fragment.appendChild(document.createTextNode(text.slice(start)));
+    textNode.replaceWith(fragment);
+  }
 }
 
 // ── Export a note to standalone HTML (open in browser / save to file) ────────
@@ -2539,14 +2736,22 @@ function linkifyWikiExport(md) {
     return '<span class="wikilink">' + esc((a || t).trim()) + '</span>';
   }));
 }
-async function exportNote(mode) {
+async function exportMarkdown(mode) {
   const d = currentDetail;
-  if (!d || d.type !== 'note') return;
+  if (!d || !['note', 'skill', 'paper'].includes(d.type)) return;
   // Linked exports: this note plus every note it links to (transitive closure).
   //   'browser'    -> temporary preview served in the browser (clickable links)
   //   'linkedSave' -> saved to a folder you pick (portable, shareable, offline)
-  if (mode === 'browser' || mode === 'linkedSave') {
-    ask('collectLinkedNotes', { slug: d.slug, exportMode: mode === 'linkedSave' ? 'save' : 'browser' });
+  if (mode === 'linkedSave') {
+    if (d.type === 'note') ask('collectLinkedNotes', { slug: d.slug, exportMode: 'save' });
+    return;
+  }
+  if (mode === 'browser') {
+    if (d.type === 'note') ask('collectLinkedNotes', { slug: d.slug, exportMode: 'browser' });
+    else ask('openMarkdownPreview', {
+      kind: d.type,
+      key: d.type === 'skill' ? ((d.category ? d.category + '/' : '') + d.name) : d.slug,
+    });
     return;
   }
   // Render markdown + highlight code, keeping _assets/ refs relative so the
@@ -2559,19 +2764,26 @@ async function exportNote(mode) {
   // Inline mermaid diagrams as self-contained SVG so the exported file needs no
   // runtime. Use the light theme to match the export page's white background.
   if (typeof mermaid !== 'undefined') {
-    try { mermaid.initialize({ startOnLoad: false, securityLevel: 'antiscript', theme: 'default', fontFamily: 'inherit' }); _mermaidReady = true; } catch (e) {}
+    try { mermaid.initialize({ startOnLoad: false, suppressErrorRendering: true, securityLevel: 'antiscript', theme: 'default', fontFamily: 'inherit' }); _mermaidReady = true; } catch (e) {}
     try { await renderMermaid(tmp); } catch (e) {}
     _mermaidReady = false; initMermaidOnce(); // restore the panel's theme
   }
   tmp.querySelectorAll('pre code').forEach(el => safeHljs(el));
   ask('exportNoteHtml', {
     mode: mode,
-    slug: d.slug,
-    title: d.title || '',
+    area: d.type + 's',
+    slug: d.slug || d.name,
+    title: d.title || d.name || '',
     category: d.category || '',
-    tags: d.tags || '[]',
-    noteType: d.note_type || 'general',
+    tags: Array.isArray(d.tags) ? JSON.stringify(d.tags) : d.tags || '[]',
+    noteType: d.note_type || d.type,
     updatedAt: d.updated_at || '',
+    description: d.description || '',
+    sourceProject: d.source_project || '',
+    authors: d.authors || [],
+    year: d.year || '',
+    publisher: d.publisher || '',
+    url: d.url || '',
     bodyHtml: tmp.innerHTML,
   });
 }
@@ -2583,7 +2795,7 @@ async function renderLinkedExport(data) {
   const notes = (data && data.notes) || [];
   if (!notes.length) { vscode.postMessage({ command: 'toast', text: 'Nothing to export' }); return; }
   const useMermaid = (typeof mermaid !== 'undefined');
-  if (useMermaid) { try { mermaid.initialize({ startOnLoad: false, securityLevel: 'antiscript', theme: 'default', fontFamily: 'inherit' }); _mermaidReady = true; } catch (e) {} }
+  if (useMermaid) { try { mermaid.initialize({ startOnLoad: false, suppressErrorRendering: true, securityLevel: 'antiscript', theme: 'default', fontFamily: 'inherit' }); _mermaidReady = true; } catch (e) {} }
   const files = [];
   for (const n of notes) {
     let inner;
@@ -2798,8 +3010,8 @@ function renderSyncSessions(sessions) {
     const expires = new Date(s.expires).toLocaleString();
     return `<div class="session-item ${active?'':'expired'}">
       <div class="session-info">
-        <div class="session-name">${esc(s.url)} <span class="session-badge ${active?'badge-active':'badge-expired'}">${active?'Active':'Expired'}</span></div>
-        <div class="session-meta">User: ${esc(s.username)} · ${esc(s.summary || ('Skills: ' + (s.skillCount === 'all' ? 'all' : s.skillCount)))} · Expires: ${expires}</div>
+        <div class="session-name">Magic Code <span class="session-badge ${active?'badge-active':'badge-expired'}">${active?'Active':'Expired'}</span></div>
+        <div class="session-meta">${esc(s.summary || ('Skills: ' + (s.skillCount === 'all' ? 'all' : s.skillCount)))} · Expires: ${expires}</div>
       </div>
       ${active ? `<button class="tbtn" style="color:#f87171;border-color:#f87171;font-size:11px" onclick="ask('revokeSync',{id:'${esc(s.id)}'})">Revoke</button>` : ''}
     </div>`;
@@ -2833,24 +3045,31 @@ function doCreateSync() {
 }
 
 function doJoinSync() {
-  const url  = document.getElementById('join-url').value.trim().replace(/\/$/, '');
-  const user = document.getElementById('join-user').value.trim();
-  const pass = document.getElementById('join-pass').value.trim();
-  if (!url || !user || !pass) { document.getElementById('join-result').innerHTML = '<span style="color:#f87171">All fields required.</span>'; return; }
+  const magicCode = document.getElementById('join-code').value.trim();
+  if (!magicCode) { document.getElementById('join-result').innerHTML = '<span style="color:#f87171">Magic Code is required.</span>'; return; }
+  if (document.getElementById('join-code').dataset.verifiedValue !== magicCode) {
+    document.getElementById('join-result').innerHTML = '<span style="color:#f87171">Verify the current Magic Code before downloading.</span>';
+    return;
+  }
   const mode = (document.querySelector('input[name="join-mode"]:checked') || {}).value || 'overwrite';
   const groupLabel = (document.getElementById('join-group').value || '').trim();
   document.getElementById('join-result').innerHTML = '<span style="color:var(--muted)">Connecting…</span>';
-  ask('joinSync', { syncUrl: url, username: user, password: pass, mode, groupLabel });
+  ask('joinSync', { magicCode, mode, groupLabel });
 }
-function applySyncCode() {
-  const raw = (document.getElementById('join-code').value || '').trim();
-  try {
-    const d = JSON.parse(decodeURIComponent(escape(atob(raw.replace(/^pk:/, '')))));
-    if (d.u) document.getElementById('join-url').value = d.u;
-    if (d.n) document.getElementById('join-user').value = d.n;
-    if (d.p) document.getElementById('join-pass').value = d.p;
-    document.getElementById('join-result').innerHTML = '<span style="color:#4ade80">Filled — pick a receive mode, then click Download.</span>';
-  } catch { document.getElementById('join-result').innerHTML = '<span style="color:#f87171">Invalid connection code.</span>'; }
+let magicCodeVerificationTimer = null;
+let magicCodeVerificationRequest = 0;
+function scheduleMagicCodeVerification() {
+  const input = document.getElementById('join-code');
+  const status = document.getElementById('join-code-verification');
+  const button = document.getElementById('join-download');
+  delete input.dataset.verifiedValue;
+  button.disabled = true;
+  clearTimeout(magicCodeVerificationTimer);
+  const magicCode = input.value.trim();
+  if (!magicCode) { status.textContent = 'Paste a Magic Code to verify it.'; return; }
+  status.textContent = 'Checking checksum and encryption authentication…';
+  const requestId = ++magicCodeVerificationRequest;
+  magicCodeVerificationTimer = setTimeout(() => ask('verifySyncMagicCode', { magicCode, requestId }), 250);
 }
 function toggleJoinGroup() {
   const mode = (document.querySelector('input[name="join-mode"]:checked') || {}).value;
@@ -2870,7 +3089,7 @@ function hl(text, q) {
   try {
     const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'gi');
     let result='',last=0,m;
-    while((m=re.exec(text))!==null){result+=esc(text.slice(last,m.index));result+=`<mark>${esc(m[0])}</mark>`;last=re.lastIndex;}
+    while((m=re.exec(text))!==null){result+=esc(text.slice(last,m.index));result+=`<mark class="search-match">${esc(m[0])}</mark>`;last=re.lastIndex;}
     return result+esc(text.slice(last));
   } catch { return esc(text); }
 }
@@ -2986,6 +3205,7 @@ function insertAtCursor(ta, text) {
 // ── Papers ──────────────────────────────────────────────────────────────────
 let paperTopicFilter = '';
 let paperFacetsData = { topics: [], tags: [], years: [] };
+let paperPickerItems = [];
 let paperGraphOpen = false;
 let cy = null;                 // cytoscape instance
 let fg3d = null;               // 3d-force-graph instance
@@ -3064,7 +3284,8 @@ function paperCardMenu(ev, slug, group, pinned, topic) {
   items.push({ sep: true });
   items.push({ label: '↪ Change topic…', onClick: () => pkModal({ title: 'Change topic', message: 'Moves this paper to a different topic folder.', input: true, defaultValue: topic || '', okLabel: 'Move', onOk: v => ask('paperSetTopic', { slug, topic: v.trim() }) }) });
   items.push({ sep: true });
-  items.push({ label: '✏ Edit', onClick: () => { pendingEditType = 'paper'; ask('detail', { type: 'paper', key: slug }); } });
+  items.push({ label: '✏ Edit Content', onClick: () => openMarkdownItem('papers', '', slug) });
+  items.push({ label: '⚙ Edit Metadata', onClick: () => editMarkdownMetadataItem('papers', '', slug) });
   items.push({ label: '🗑 Delete', danger: true, onClick: () => pkModal({ title: 'Delete this paper?', okLabel: 'Delete', danger: true, onOk: () => ask('deletePaper', { slug }) }) });
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
@@ -3072,6 +3293,9 @@ function paperCardMenu(ev, slug, group, pinned, topic) {
 function paperGroupMenu(ev, group) {
   ev.preventDefault(); ev.stopPropagation();
   const items = [{ label: '📁 ' + group, header: true }];
+  items.push({ label: '＋ New Paper…', onClick: () => ask('createKnowledgeItem', { area: 'papers', kind: 'paper', group }) });
+  items.push({ label: '💡 New Idea…', onClick: () => ask('createKnowledgeItem', { area: 'papers', kind: 'idea', group }) });
+  items.push({ sep: true });
   if (group !== 'Papers') {
     items.push({ label: '✏ Rename group…', onClick: () => pkModal({ title: 'Rename group', input: true, defaultValue: group, okLabel: 'Rename', onOk: v => { if (v.trim() && v.trim() !== group) ask('paperGroupRename', { oldName: group, newName: v.trim() }); } }) });
     items.push({ label: '🗑 Delete group', danger: true, onClick: () => pkModal({ title: 'Delete group “' + group + '”?', message: 'Its items move back to “Papers”.', okLabel: 'Delete', danger: true, onOk: () => ask('paperGroupDelete', { name: group }) }) });
@@ -3087,12 +3311,25 @@ function paperFolderMenu(ev, b64, name) {
   let slugs = [];
   try { slugs = JSON.parse(decodeURIComponent(escape(atob(b64)))); } catch (e) {}
   if (!slugs.length) return;
-  const items = [{ label: 'Move “' + name + '” (' + slugs.length + ') to group', header: true }];
+  const items = [{ label: 'Topic: ' + name, header: true }];
+  items.push({ label: '＋ New Paper…', onClick: () => ask('createKnowledgeItem', { area: 'papers', kind: 'paper', topic: name }) });
+  items.push({ label: '💡 New Idea…', onClick: () => ask('createKnowledgeItem', { area: 'papers', kind: 'idea', topic: name }) });
+  items.push({ sep: true });
+  items.push({ label: 'Move topic (' + slugs.length + ') to group', header: true });
   for (const g of paperGroupsList) {
     items.push({ label: '   ' + g.name, onClick: () => ask('paperSetGroupMany', { slugs, group: g.name }) });
   }
   items.push({ label: '＋ New group…', onClick: () => pkModal({ title: 'Move “' + name + '” to a new group', input: true, okLabel: 'Create & move', onOk: v => { if (v.trim()) ask('paperSetGroupMany', { slugs, group: v.trim() }); } }) });
   showPaperMenu(ev.clientX, ev.clientY, items);
+}
+
+function promptFolderMenu(ev, project, task, version) {
+  ev.preventDefault(); ev.stopPropagation();
+  const scope = [project, task, version].filter(Boolean).join(' / ');
+  showPaperMenu(ev.clientX, ev.clientY, [
+    { label: scope, header: true },
+    { label: '＋ New Prompt…', onClick: () => ask('createPromptItem', { project, task, version }) },
+  ]);
 }
 
 // Right-click a Skills category folder -> rename it (re-paths all skills under it).
@@ -3102,6 +3339,7 @@ function skillFolderMenu(ev, b64, name) {
   try { prefix = decodeURIComponent(escape(atob(b64))); } catch (e) {}
   if (!prefix) return;
   const items = [{ label: '📁 ' + name, header: true }];
+  items.push({ label: '＋ New Skill…', onClick: () => ask('createKnowledgeItem', { area: 'skills', category: prefix }) });
   items.push({ label: '➕ Create Sub Folder…', onClick: () => pkModal({
     title: 'Create sub-folder', message: 'New folder under “' + prefix + '”.',
     input: true, okLabel: 'Create', onOk: v => { const n = v.trim(); if (n) ask('folderCreate', { area: 'skills', parent: prefix, name: n }); } }) });
@@ -3131,7 +3369,8 @@ function skillItemMenu(ev, name, category) {
     title: 'Move skill', message: 'Target folder path (blank = root; missing parents are created).',
     input: true, defaultValue: category || '', okLabel: 'Move', onOk: v => ask('skillMove', { name, category: v.trim() }) }) });
   items.push({ sep: true });
-  items.push({ label: '✏ Edit', onClick: () => { pendingEditType = 'skill'; ask('detail', { type: 'skill', key: name }); } });
+  items.push({ label: '✏ Edit Content', onClick: () => openMarkdownItem('skills', category, name) });
+  items.push({ label: '⚙ Edit Metadata', onClick: () => editMarkdownMetadataItem('skills', category, name) });
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
 
@@ -3142,6 +3381,7 @@ function noteFolderMenu(ev, b64, name) {
   try { prefix = decodeURIComponent(escape(atob(b64))); } catch (e) {}
   if (!prefix) return;
   const items = [{ label: '📁 ' + name, header: true }];
+  items.push({ label: '＋ New Note…', onClick: () => ask('createKnowledgeItem', { area: 'notes', category: prefix }) });
   items.push({ label: '➕ Create Sub Folder…', onClick: () => pkModal({
     title: 'Create sub-folder', message: 'New folder under “' + prefix + '”.',
     input: true, okLabel: 'Create', onOk: v => { const n = v.trim(); if (n) ask('folderCreate', { area: 'notes', parent: prefix, name: n }); } }) });
@@ -3171,6 +3411,7 @@ function scriptFolderMenu(ev, b64, name) {
   try { prefix = decodeURIComponent(escape(atob(b64))); } catch (e) {}
   if (!prefix) return;
   const items = [{ label: '📁 ' + name, header: true }];
+  items.push({ label: '＋ New Script…', onClick: () => ask('createScript', { folder: prefix }) });
   items.push({ label: '📂 Open Folder (new window)', onClick: () => ask('openStoreFolder', { area: 'scripts', rel: prefix }) });
   items.push({ sep: true });
   items.push({ label: '✏ Rename folder…', onClick: () => pkModal({
@@ -3195,11 +3436,12 @@ function scriptItemMenu(ev, relPath, category) {
   ev.preventDefault(); ev.stopPropagation();
   const file = String(relPath).split('/').pop();
   const items = [{ label: '📄 ' + file, header: true }];
-  items.push({ label: '📄 Open (this window)', onClick: () => ask('openStoreFile', { area: 'scripts', rel: relPath }) });
+  items.push({ label: '✏ Edit', onClick: () => ask('openStoreFile', { area: 'scripts', rel: relPath }) });
   items.push({ sep: true });
   items.push({ label: '↪ Move…', onClick: () => pkModal({
     title: 'Move script', message: 'Target folder path (blank = root; missing parents are created).',
     input: true, defaultValue: category || '', okLabel: 'Move', onOk: v => ask('scriptMove', { relPath, category: v.trim() }) }) });
+  items.push({ label: '🗑 Delete', danger: true, onClick: () => ask('deleteScript', { relPath }) });
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
 
@@ -3258,16 +3500,21 @@ function paperCard(p, q, pad) {
     </div>
   </div>`;
 }
-function togglePin(slug, pinned) { ask('paperSetPinned', { slug, pinned }); }
+function togglePin(slug, pinned) {
+  ask('paperSetPinned', { slug, pinned });
+  if (currentDetail && currentDetail.type === 'paper' && currentDetail.slug === slug) {
+    currentDetail.pinned = pinned; renderDetail(currentDetail);
+  }
+}
 
 // Detail view
 function paperDetailHtml(d) {
   const authors = (d.authors || []).join(', ');
   const tags = (d.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join('');
   const concl = d.conclusions || [];
-  const cites = d.cites || [];
+  const cites = d.resolvedCites || d.cites || [];
   return `
-    <div class="d-title">${esc(d.title)}</div>
+    <div class="d-title"><span>${esc(d.title)}</span><button class="meta-edit" onclick="editCurrentMetadata('title')" title="Edit title">✎</button></div>
     <div class="d-meta">
       ${d.kind === 'idea' ? '<span class="pc-cite" style="background:#f4b400;color:#1a1200">Idea</span>' : ''}
       ${d.group && d.group !== 'Papers' ? `<span class="pc-tag">📁 ${esc(d.group)}</span>` : ''}
@@ -3276,21 +3523,49 @@ function paperDetailHtml(d) {
       ${d.topic ? `<span class="cat">${esc(d.topic)}</span>` : ''}
       ${d.publisher ? `<span>${esc(d.publisher)}</span>` : ''}
       ${tags}
+      <button class="meta-edit" onclick="editCurrentMetadata('tags')" title="Edit tags">✎</button>
       <span style="flex:1"></span>
-      <button class="tbtn" style="font-size:11px" onclick="togglePin('${esc(d.slug)}',${d.pinned ? 'false' : 'true'})" title="${d.pinned ? 'Unpin' : 'Pin to top'}">${d.pinned ? '★ Pinned' : '☆ Pin'}</button>
       ${d.url ? `<button class="tbtn" style="font-size:11px" onclick="openPaperLink('${esc(d.url)}','','')">🔗 Link</button>` : ''}
       ${d.file ? `<button class="tbtn" style="font-size:11px" onclick="openPaperLink('','${esc(d.file)}','${esc(d.category)}')">📄 File</button>` : ''}
-      <button class="tbtn" style="font-size:11px" onclick="editPaper(currentDetail)">✏ Edit</button>
+      <button class="tbtn" style="font-size:11px" onclick="openPaperForm(currentDetail)">✎ Edit Fields</button>
+      ${markdownToolbar(d)}
       <button class="tbtn" style="font-size:11px" onclick="confirmDeletePaper()">🗑 Delete</button>
     </div>
     <div class="meta-grid">
+      <span class="ml">Description</span><span class="mv meta-value"><span>${esc(d.description || '—')}</span><button class="meta-edit" onclick="editCurrentMetadata('description')" title="Edit description">✎</button></span>
       <span class="ml">Authors</span><span class="mv">${esc(authors || '—')}</span>
       ${d.url ? `<span class="ml">URL</span><span class="mv">${esc(d.url)}</span>` : ''}
       ${d.file ? `<span class="ml">File</span><span class="mv">${esc(d.file.split('/').pop())}</span>` : ''}
     </div>
-    ${concl.length ? `<hr class="div"><div style="font-weight:600;margin-bottom:4px">Conclusions</div><ul class="prose">${concl.map(c => `<li>${esc(c)}</li>`).join('')}</ul>` : ''}
-    ${cites.length ? `<hr class="div"><div style="font-weight:600;margin-bottom:4px">Cites (builds on)</div><ul class="prose">${cites.map(c => `<li><b>${esc(c.paper)}</b>${c.note ? ' — ' + esc(c.note) : ''}</li>`).join('')}</ul>` : ''}
-    <hr class="div"><div class="prose">${safeMarked(d.content || '', d.category)}</div>`;
+    ${paperListSection('Conclusions', concl)}
+    ${paperListSection('Implementation', d.implementation || [])}
+    ${paperListSection('Assumptions', d.assumptions || [])}
+    ${paperLinksSection('Cites', cites, 'No citations.')}
+    ${paperLinksSection('Cited by', d.citedBy || [], 'Not cited by another paper.')}
+    ${paperContentSection(d.content || '', d.category)}`;
+}
+function paperSection(title, count, body, open) {
+  return `<details class="paper-section"${open ? ' open' : ''}><summary>${esc(title)}<span class="paper-section-count">${count ? count : 'empty'}</span></summary><div class="paper-section-body">${body}</div></details>`;
+}
+function paperListSection(title, items) {
+  const values = (items || []).filter(Boolean);
+  const body = values.length ? `<ul class="prose">${values.map(value => `<li>${esc(value)}</li>`).join('')}</ul>` : '<div class="paper-section-empty">No entries.</div>';
+  return paperSection(title, values.length, body, values.length > 0);
+}
+function paperLinksSection(title, papers, emptyText) {
+  const values = papers || [];
+  const body = values.length ? `<ul class="prose">${values.map(cite => {
+    const title = cite.title || cite.paper;
+    const target = cite.slug || '';
+    const link = target ? `<a class="paper-cite-link" onclick="openItem('paper','${esc(target)}')">${esc(title)}</a>` : `<span>${esc(title)}</span>`;
+    return `<li>${link}${cite.note ? ' — ' + esc(cite.note) : ''}</li>`;
+  }).join('')}</ul>` : `<div class="paper-section-empty">${esc(emptyText)}</div>`;
+  return paperSection(title, values.length, body, values.length > 0);
+}
+function paperContentSection(content, category) {
+  const value = String(content || '');
+  const body = value.trim() ? `<div class="prose">${safeMarked(value, category)}</div>` : '<div class="paper-section-empty">No content.</div>';
+  return paperSection('Content', value.trim() ? wordCount(value) : 0, body, !!value.trim());
 }
 function openPaperLink(url, file, category) { ask('openPaperLink', { url, file, category }); }
 function confirmDeletePaper() { if (currentDetail) pkModal({ title: 'Delete this paper?', okLabel: 'Delete', danger: true, onOk: () => ask('deletePaper', { slug: currentDetail.slug }) }); }
@@ -3307,12 +3582,15 @@ function openPaperForm(paper) {
   set('pf-file', paper?.file || '');
   document.getElementById('pf-file-label').textContent = paper?.file ? paper.file.split('/').pop() : '';
   set('pf-conclusions', (paper?.conclusions || []).join('\n'));
-  set('pf-cites', (paper?.cites || []).map(c => c.note ? (c.paper + ' :: ' + c.note) : c.paper).join('\n'));
+  set('pf-implementation', (paper?.implementation || []).join('\n'));
+  set('pf-assumptions', (paper?.assumptions || []).join('\n'));
   set('pf-content', paper?.content || ''); set('pf-slug', paper?.slug || '');
+  if (!paperPickerItems.length) paperPickerItems = (state.items || []).map(item => ({ slug: item.slug, title: item.title }));
+  renderPaperCites(paper?.cites || []);
+  ask('paperPicker', {});
   set('pf-group', (paper?.group && paper.group !== 'Papers') ? paper.group : '');
   document.getElementById('pf-group-list').innerHTML = paperGroupsList.map(g => `<option value="${esc(g.name)}"></option>`).join('');
   document.getElementById('pf-kind-idea').checked = paper?.kind === 'idea';
-  populatePaperDatalist();
   updatePaperPreview();
   document.getElementById('detail').style.display = 'none';
   document.getElementById('paper-graph-view').classList.add('hidden');
@@ -3327,10 +3605,38 @@ function updatePaperPreview() {
   const el = document.getElementById('pf-preview');
   if (el) { el.innerHTML = safeMarked(document.getElementById('pf-content').value, document.getElementById('pf-category').value); renderMermaid(el); }
 }
-function populatePaperDatalist() {
-  const dl = document.getElementById('pf-paper-titles');
-  const titles = (state.tab === 'papers' ? state.items : []).map(p => p.title);
-  dl.innerHTML = titles.map(t => `<option value="${esc(t)}"></option>`).join('');
+function readPaperCites() {
+  return Array.from(document.querySelectorAll('#pf-cites .paper-cite-row')).map(row => ({
+    paper: row.querySelector('select').value,
+    note: row.querySelector('input').value.trim(),
+  })).filter(cite => cite.paper);
+}
+function renderPaperCites(cites) {
+  const host = document.getElementById('pf-cites');
+  if (!host) return;
+  const currentSlug = document.getElementById('pf-slug').value;
+  const papers = paperPickerItems.filter(paper => paper.slug !== currentSlug).sort((a, b) => a.title.localeCompare(b.title));
+  host.innerHTML = (cites || []).map((cite, index) => {
+    const match = papers.find(paper => paper.slug === cite.paper || paper.title === cite.paper);
+    const selected = match ? match.slug : cite.paper;
+    const missing = selected && !match ? `<option value="${esc(selected)}" selected disabled>Missing: ${esc(selected)}</option>` : '';
+    const options = papers.map(paper => `<option value="${esc(paper.slug)}"${paper.slug === selected ? ' selected' : ''}>${esc(paper.title)}</option>`).join('');
+    return `<div class="paper-cite-row"><select aria-label="Cited paper">${missing}${options}</select><input aria-label="Citation note" value="${esc(cite.note || '')}" placeholder="How this paper builds on it"><button type="button" class="tbtn" onclick="removePaperCite(${index})" title="Remove citation">✕</button></div>`;
+  }).join('') || '<div class="paper-section-empty">No citations selected.</div>';
+}
+function addPaperCite() {
+  const cites = readPaperCites();
+  const currentSlug = document.getElementById('pf-slug').value;
+  const used = new Set(cites.map(cite => cite.paper));
+  const next = paperPickerItems.find(paper => paper.slug !== currentSlug && !used.has(paper.slug));
+  if (!next) { ask('toast', { text: 'No more papers are available to cite' }); return; }
+  cites.push({ paper: next.slug, note: '' });
+  renderPaperCites(cites);
+}
+function removePaperCite(index) {
+  const cites = readPaperCites();
+  cites.splice(index, 1);
+  renderPaperCites(cites);
 }
 function uploadPaperFile(input) {
   const file = input.files[0]; if (!file) return;
@@ -3348,10 +3654,7 @@ function uploadPaperFile(input) {
 function savePaper() {
   const val = id => document.getElementById(id).value;
   const splitLines = v => v.split(/\n/).map(s => s.trim()).filter(Boolean);
-  const cites = splitLines(val('pf-cites')).map(l => {
-    const i = l.indexOf('::');
-    return i < 0 ? { paper: l.trim(), note: '' } : { paper: l.slice(0, i).trim(), note: l.slice(i + 2).trim() };
-  }).filter(c => c.paper);
+  const cites = readPaperCites().filter((cite, index, all) => all.findIndex(item => item.paper === cite.paper) === index);
   const title = val('pf-title').trim();
   if (!title) { ask('toast', { text: 'Paper title is required' }); document.getElementById('pf-title').focus(); return; }
   const paper = {
@@ -3362,7 +3665,9 @@ function savePaper() {
     category: val('pf-category').trim(),
     tags: val('pf-tags').split(',').map(s => s.trim()).filter(Boolean),
     url: val('pf-url').trim(), file: val('pf-file').trim(),
-    conclusions: splitLines(val('pf-conclusions')), cites,
+    conclusions: splitLines(val('pf-conclusions')),
+    implementation: splitLines(val('pf-implementation')),
+    assumptions: splitLines(val('pf-assumptions')), cites,
     kind: document.getElementById('pf-kind-idea').checked ? 'idea' : 'paper',
     group: val('pf-group').trim() || 'Papers',
     content: document.getElementById('pf-content').value,

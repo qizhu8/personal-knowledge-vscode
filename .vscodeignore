@@ -24,6 +24,7 @@ coverage/
 # Misc
 *.vsix
 *.map
+improvement_*.md
 
 # Agent-side helper (lives in the repo for users to copy; not part of the extension bundle)
 chat_server.py

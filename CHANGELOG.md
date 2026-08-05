@@ -3,6 +3,26 @@
 All notable changes to the **Personal Knowledge** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.2.0] — 2026-08-05
+
+A unified Markdown experience, richer Paper research workflows, and a broad navigation/search polish pass.
+
+### Added
+- **Unified Markdown actions.** Notes, Skills, and Papers share a consistent detail toolbar with Pin, Browser, Download, Edit Content, and Edit Metadata actions. Browser previews use reusable live URLs whose paths mirror store-relative Markdown paths and always render the latest file content on refresh.
+- **Paper research fields and citation editing.** Papers support collapsible Conclusions, Implementation, Assumptions, Cites, Cited by, and Content sections. Citations are selected with a structured existing-Paper picker, can be removed or annotated, are canonicalized to valid Paper slugs, and are clickable in both directions.
+- **Full-text search for core content.** Notes, Skills, Papers, and Scripts search titles, paths, metadata, and body content. Matches are highlighted in trees and details with theme-aware high-contrast colors; empty category branches disappear while a search is active.
+- **Activity Bar creation/edit actions.** Create Skills, Notes, Papers, Ideas, Prompts, and Scripts from their navigation trees, and edit Markdown content or metadata directly in VS Code's editor.
+
+### Improved
+- **Paper graph/data consistency.** Citation graph nodes carry the expanded research metadata, imports preserve the new fields, and two-pass sync import keeps citations valid even when targets arrive later in the bundle.
+- **Navigation ergonomics.** Opening a concrete sidebar item collapses the navigation surface to return space to the editor; recursive trees render arbitrary folder depth consistently; resizers support direct mouse adjustment.
+- **Sync Magic Code.** The encrypted `pk:v3` Magic Code is now the primary join flow, with credential verification before download.
+- **Markdown rendering.** Shared rendering and export paths reduce duplicated behavior across content types, while browser and downloaded HTML retain syntax highlighting, diagrams, math, and local assets.
+
+### Fixed
+- Invalid Mermaid syntax no longer injects or accumulates a giant error SVG over the extension or VS Code window. Errors render as a bounded inline message instead.
+- Search no longer leaves unrelated empty folders visible in category trees.
+
 ## [2.1.0] — 2026-07-29
 
 Multi-agent **conversations** in the Chatroom (**beta**), plus packaging fixes.
@@ -62,7 +82,7 @@ A self-hosted, real-time collaboration hub where humans and their AI agents shar
 
 ### 🔗 Sync
 
-- **One-paste connection code** — the host's sync link now includes a single `pk:…` **Code** that encodes URL + username + password together. The recipient pastes it into **Quick connect** on the Join tab and the URL, username, and password fields fill in at once (no more copying three values separately).
+- **Encrypted Magic Code** — Sync now uses one `pk:v3:…` Magic Code instead of separate URL, username, and password fields. Credentials are encrypted with AES-256-GCM using the shared app key, and a SHA-256 checksum detects incomplete or incorrect copies before connecting.
 - **Choose how received items land** — the receiver now picks a mode:
   - **Merge directly** — import over existing items (previous behavior).
   - **New group** — everything is imported isolated under `<type>/_incoming/<label>/…` (label defaults to `sender-date`, or a custom name) so nothing overwrites your existing content; you review and merge it offline. Namespacing spans every content type, and imported papers keep their internal citations linked.

@@ -160,6 +160,15 @@ export function scriptList() {
   return out;
 }
 
+export function scriptSearch(q: string) {
+  const needle = String(q || '').toLowerCase();
+  return scriptList().filter(script => {
+    if ([script.file, script.path, script.category, script.lang, ...script.langs]
+      .some(value => String(value || '').toLowerCase().includes(needle))) return true;
+    return (scriptGet(script.path)?.content || '').toLowerCase().includes(needle);
+  });
+}
+
 export function scriptGet(relPath: string, _legacy?: string) {
   // Backward compatible: (category, file) OR (relPath)
   const rel = _legacy ? `${relPath}/${_legacy}` : relPath;

@@ -54,7 +54,7 @@ If you (usually me myself :) ) accidentally deleted/screwed up something, ask AI
 
 ## Features
 
-- **Skills** — reusable know-how as searchable Markdown, organised into an arbitrary-depth category tree
+- **Skills** — reusable know-how as searchable Markdown, organised into an arbitrary-depth category tree, with pinning, live browser preview, and standalone HTML download
 - **Notes** — quick-capture Markdown notes with a **split live-preview editor**, hierarchical categories, tags, and types; **pin** a note to the top of its folder or a folder to the top of its level; task lists render as colour-coded status badges (`[ ]` todo, `[x]` done, `[~]` in progress, `[!]` blocked) that stay legible under any theme
 - **Prompts** — browse versioned prompt files (project -> task -> version -> file)
 - **Packages** — browse local Python/Node packages
@@ -65,15 +65,17 @@ If you (usually me myself :) ) accidentally deleted/screwed up something, ask AI
   - **In-place editing** with confirmation + automatic git commit
 - **Hierarchical navigation** — both the Activity Bar tree and the panel's left nav render arbitrary-depth folders (default collapsed)
 - **Right-click actions** — add a new skill/note/script at a folder, or edit any item, straight from the sidebar
-- **Full-text search** — instant search across all content (CJK-friendly on the MCP side)
+- **Full-text search** — instant title, path, metadata, and body search across **Notes, Skills, Papers, and Scripts**, with high-contrast match highlighting and category-tree pruning (CJK-friendly on the MCP side)
 - **Files are the source of truth** — every skill and note is a plain, git-tracked `.md` file; edit them here, in your editor, or from the MCP server and the panel refreshes automatically
 - **Paste images & cross-note links** — paste images straight into a note (stored under `notes/_assets/`), and link between notes with `[[Title]]` wiki links or relative/absolute `.md` links; click a link in the note view to jump to the target note
 - **Math & formulas** — LaTeX rendering via KaTeX: `$...$` inline and `$$...$$` display equations, bundled to work offline; also embedded into HTML exports
 - **Mermaid diagrams** — ` ```mermaid ` fenced blocks render as diagrams (flowcharts, sequence, class, state, …) in the note view, live preview, and HTML export; bundled locally and theme-aware
-- **Export to HTML** — **🌐 Browser** opens a note as a navigable set (the note plus every note it links to, with clickable cross-note links, served locally so it works over Remote-SSH); **⬇ HTML** saves a single self-contained file with images, math, and diagrams inlined
+- **Unified Markdown actions** — Notes, Skills, and Papers share Pin, **🌐 Browser**, **⬇ Download**, Edit Content, and Edit Metadata actions. Browser previews have reusable live URLs based on each Markdown file's relative path and re-read the source on every refresh; downloaded HTML keeps images, math, diagrams, and highlighting
 - **Papers** — track research papers and your own **ideas** with a citation graph:
   - **List view** grouped into user-defined **groups** and topic folders, showing year, authors, topic, publisher, tags, and a citation-count badge; **pin/star** favourites to the top, and right-click to move a paper between groups or **change its topic**
   - **Graph view** — an interactive, draggable citation graph (Cytoscape.js; force or hierarchical layout) sized/coloured by citation count and topic, with idea nodes drawn distinctly, that reveals each paper's conclusions on hover
+  - **Research sections** — collapsible Conclusions, Implementation, Assumptions, Cites, Cited by, and Markdown Content; non-empty sections open automatically while empty sections stay compact
+  - **Citation picker** — add/remove citations through an existing-Paper picker instead of free text; both Cites and Cited by lists link directly to the related Paper
   - Papers are plain `papers/<Topic>/<Title>.md` files (with a remote URL and/or an uploaded local file), and are exposed via **MCP** and **sync**
 - **Python Environments** — a machine-local manager for your **conda / venv / uv** environments, grouped in a collapsible tree by manager → folder:
   - Register existing envs (conda auto-detected) or **create** a new conda/venv/uv environment; each card shows the **Python version**, **on-disk size**, and an editable **description** (tags / crucial packages)
@@ -81,7 +83,7 @@ If you (usually me myself :) ) accidentally deleted/screwed up something, ask AI
   - **≈ Similar** finds near-duplicate environments (skipping different Python versions) with estimated space savings, and generates a **merge script**; **⚡ Open shell** activates an env in a terminal; **🚚 Migrate** moves an env into a central managed location
   - Merge and delete scripts are generated for **you to review and run** — the extension never executes them
 - **Servers** — manage long-running local servers as store packages: start/stop/restart, change port, view logs, and open each through a fixed-port **reverse proxy** for a stable URL; servers run detached and are reconciled on restart
-- **Sync** — share a temporary authenticated link so another machine can pull your knowledge
+- **Sync** — share an encrypted, checksum-verified **Magic Code** so another machine can pull exactly the selected knowledge
 - **Chatroom** — a self-hosted, real-time collaboration hub where humans and their AI agents share named rooms:
   - **Host a room** from the extension (a bundled WebSocket + HTTP hub); teammates join from the **extension**, a **browser** (no VS Code needed), or an **AI agent via MCP** — all in the same room
   - **Presence & identity** — see who's here with role icons (👑 host, 👤 extension, 🤖 MCP agent, 🌐 browser) and a **stable identity id** so people with the same display name are distinguishable; departed members stay in the roster (greyed, "left 5m ago")
