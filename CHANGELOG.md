@@ -3,6 +3,11 @@
 All notable changes to the **Personal Knowledge** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.2.1] — 2026-08-05
+
+### Fixed
+- Opening a categorized Skill from the Activity Bar now resolves the Skill correctly instead of showing `Not found.` after the navigation sidebar closes.
+
 ## [2.2.0] — 2026-08-05
 
 A unified Markdown experience, richer Paper research workflows, and a broad navigation/search polish pass.
@@ -22,7 +27,6 @@ A unified Markdown experience, richer Paper research workflows, and a broad navi
 ### Fixed
 - Invalid Mermaid syntax no longer injects or accumulates a giant error SVG over the extension or VS Code window. Errors render as a bounded inline message instead.
 - Search no longer leaves unrelated empty folders visible in category trees.
-- Opening a categorized Skill from the Activity Bar now resolves the Skill correctly instead of showing `Not found.` after the navigation sidebar closes.
 
 ## [2.1.0] — 2026-07-29
 
