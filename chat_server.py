@@ -1,60 +1,50 @@
 #!/usr/bin/env python3
 """
-PKM Chat Agent — an MCP server that lets an AI agent join a Personal Knowledge
+pkm-chat — an MCP server that lets an AI agent join a Personal Knowledge Manager
 "Agent Chatroom" and read / post messages.
 
-The room host runs the chat hub from the Personal Knowledge VS Code panel and
-shares three values (host runs `/share_link` in the room, and copies the secret
-with the 🔑 button):
-
-    PKM_CHAT_URL      ws://<host-ip>:<port>/<room>   (the join URL)
-    PKM_CHAT_SECRET   <the room secret>
-    PKM_CHAT_NAME     <the agent's display name>     (optional, default "agent")
-    PKM_CHAT_ROOM     <room name>                    (optional; parsed from URL if omitted)
+The room host shares one pkchat:v1 Magic Link and assigns the agent an alias.
 
 Wire this file into your agent as an MCP server, e.g. in an MCP client config:
 
     {
-      "mcpServers": {
+            "servers": {
         "pkm-chat": {
-          "command": "python",
-          "args": ["/path/to/chat_server.py"],
-          "env": {
-            "PKM_CHAT_URL": "ws://10.0.0.5:39500/general",
-            "PKM_CHAT_SECRET": "the-room-secret",
-            "PKM_CHAT_NAME": "Claude"
-          }
+                    "type": "stdio",
+                    "command": "/absolute/path/to/python3",
+                    "args": ["/path/to/chat_server.py"]
         }
       }
     }
 
 Install:  pip install fastmcp websockets
-Run:      PKM_CHAT_URL=... PKM_CHAT_SECRET=... python chat_server.py
+Run:      python chat_server.py
 
 Tools exposed to the agent:
-    chat_join(url, secret, name)  join a room NOW (ask the user for secret+alias)
+    chat_join(magic_link, name)   join from one Magic Link + assigned alias
     chat_status()            connection + room status
     chat_poll(max=50)        NEW messages since the last poll (advances a cursor)
+    chat_standby(timeout=300) block until @mentioned/granted a turn or stopped
     chat_history(limit=50)   recent buffered messages (no cursor change)
     chat_send(text)          post a message ('/...' runs a room command)
     chat_who()               current members present in the room
-    chat_reconnect(secret?)  force a rejoin (e.g. after the host rotated the secret)
+    chat_reconnect()         retry the current Magic Link connection
 
-STANDARD PROCEDURE for an agent asked to "join a room <ws url>":
-  1. You need three things: the ws URL, the room SECRET, and a display NAME (alias).
-  2. If the user did not give the secret and/or the alias, ASK them for both
-     (the host gets the secret from the room's key button or `/share_link`).
-  3. Call chat_join(url, secret, name). Then use chat_poll to read and chat_send to post.
+STANDARD PROCEDURE for an agent asked to join:
+    1. Obtain the host's pkchat:v1 Magic Link and the alias assigned to you.
+    2. Call chat_join(magic_link=..., name=...). Do not ask for URL/key separately.
+    3. Use chat_standby for coordinated conversation turns.
 
 Note: stdout is reserved for the MCP protocol — all logs go to stderr.
 """
-import os
 import sys
 import json
 import time
 import asyncio
 import secrets
 import threading
+import base64
+import hashlib
 from collections import deque
 from urllib.parse import urlsplit, unquote
 
@@ -81,15 +71,6 @@ def _log(*a):
     print("[pkm-chat]", *a, file=sys.stderr, flush=True)
 
 
-URL = os.environ.get("PKM_CHAT_URL", "").strip()
-SECRET = os.environ.get("PKM_CHAT_SECRET", "").strip()
-NAME = (os.environ.get("PKM_CHAT_NAME", "agent").strip() or "agent")[:60]
-ROOM = os.environ.get("PKM_CHAT_ROOM", "").strip()
-
-if not ROOM and URL:
-    # joinUrl embeds the room as ws://host:port/<room> (URL-encoded).
-    ROOM = unquote(urlsplit(URL).path.lstrip("/"))
-
 # A stable identity for this process so reconnects merge instead of creating ghosts.
 CID = secrets.token_hex(8)
 
@@ -97,32 +78,53 @@ CID = secrets.token_hex(8)
 FATAL_CODES = {"auth", "name-taken", "no-room"}
 
 
+def parse_magic_link(value):
+    raw = str(value or "").strip()
+    if not raw.startswith("pkchat:v1:"):
+        raise ValueError("Chat Magic Link must start with pkchat:v1:")
+    try:
+        payload, checksum = raw[len("pkchat:v1:"):].split(".", 1)
+    except ValueError:
+        raise ValueError("Chat Magic Link format is invalid or incomplete.")
+    expected = base64.urlsafe_b64encode(hashlib.sha256(payload.encode()).digest()).decode().rstrip("=")[:16]
+    if checksum != expected:
+        raise ValueError("Chat Magic Link checksum failed. It may have been copied incorrectly.")
+    try:
+        decoded = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)).decode())
+    except Exception:
+        raise ValueError("Chat Magic Link payload is invalid.")
+    url, secret = str(decoded.get("u") or "").strip(), str(decoded.get("s") or "").strip()
+    parsed = urlsplit(url)
+    if decoded.get("v") != 1 or parsed.scheme not in ("ws", "wss") or not parsed.netloc or not parsed.path.strip("/") or not secret:
+        raise ValueError("Chat Magic Link is missing valid room credentials.")
+    return url, secret
+
+
 class ChatBridge:
     """Owns a background asyncio loop that keeps one WebSocket connection to the
     hub alive (with reconnect/backoff) and buffers inbound messages for polling."""
 
     def __init__(self):
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
+        self.changed = threading.Condition(self.lock)
         self.loop = None
-        self.url = URL
-        self.room = ROOM
-        self.name = NAME
-        self.secret = SECRET
-        self.state = "starting"   # starting|idle|connecting|joined|disconnected|closed|error
-        self.error = ""
+        self.url = ""
+        self.room = ""
+        self.name = ""
+        self.secret = ""
+        self.state = "idle"   # idle|connecting|joined|disconnected|closed|error
+        self.error = "no meeting configured — call chat_join(magic_link, name)"
         self.members = []
         self.buf = deque(maxlen=2000)   # {seq,type,from,text,ts}
         self.seq = 0
         self.cursor = 0
+        self.standby_cursor = 0
+        self.conversation_active = False
+        self.runtime_state = "idle"
         self._outbox = None
         self._resume = None
         self._stop = False
-        self._fatal = False
-        if not self.url or not self.secret:
-            # Nothing preconfigured: idle until the agent calls chat_join(...).
-            self.state = "idle"
-            self.error = "no room configured — call chat_join(url, secret, name)"
-            self._fatal = True
+        self._fatal = True
 
     # ── background thread / event loop ──────────────────────────────────────
     def start(self):
@@ -157,6 +159,8 @@ class ChatBridge:
                         "t": "join", "room": self.room, "user": self.name,
                         "token": self.secret, "kind": "agent", "cid": CID,
                     }))
+                    await ws.send(json.dumps({"t": "agent.state", "room": self.room,
+                                              "state": self.runtime_state}))
                     sender = asyncio.ensure_future(self._sender(ws))
                     try:
                         async for raw in ws:
@@ -196,10 +200,11 @@ class ChatBridge:
                 mentioned = mentions_name(text, self.name)
             except Exception:
                 pass
-        with self.lock:
+        with self.changed:
             self.seq += 1
             self.buf.append({"seq": self.seq, "type": typ, "from": frm, "text": text,
                              "ts": ts, "mentioned": mentioned, "mentions": mentions})
+            self.changed.notify_all()
 
     def _mark_joined(self):
         with self.lock:
@@ -223,6 +228,9 @@ class ChatBridge:
             for m in f.get("messages", []):
                 kind = "system" if m.get("system") else "chat"
                 self._add(kind, m.get("from", ""), m.get("text", ""), m.get("ts", 0))
+            with self.lock:
+                self.cursor = self.seq
+                self.standby_cursor = self.seq
             self._mark_joined()
         elif t == "presence":
             with self.lock:
@@ -266,6 +274,17 @@ class ChatBridge:
         except Exception as e:
             return False, str(e)
 
+    def send_state(self, state):
+        with self.lock:
+            self.runtime_state = state
+        if self.loop is None or self._outbox is None:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self._outbox.put({"t": "agent.state", "room": self.room, "state": state}), self.loop)
+        except Exception:
+            pass
+
     def poll(self, mx):
         with self.lock:
             new = [m for m in self.buf if m["seq"] > self.cursor]
@@ -296,6 +315,56 @@ class ChatBridge:
             hits = [m for m in self.buf if m.get("mentioned")]
             return hits[-limit:] if limit else hits
 
+    def standby(self, timeout=300):
+        """Block until this agent is addressed during a coordinated conversation."""
+        self.send_state("standby")
+        deadline = time.monotonic() + max(1, min(int(timeout or 300), 1800))
+        with self.changed:
+            while True:
+                pending = [m for m in self.buf if m["seq"] > self.standby_cursor]
+                for message in pending:
+                    text = str(message.get("text") or "").strip()
+                    low = text.lower()
+                    names = [str(name).lower() for name in (message.get("mentions") or [])]
+                    started = message.get("from") == "roombot" and "conversation started" in low
+                    joined = message.get("from") == "roombot" and "joined the conversation" in low
+                    if (started or joined) and (self.name.lower() in names or "all" in names or "everyone" in names):
+                        self.conversation_active = True
+                        self.send_state("standby")
+                        self.standby_cursor = message["seq"]
+                        continue
+                    if low.startswith("/stop_conversation") or "conversation stopped" in low:
+                        self.conversation_active = False
+                        self.send_state("idle")
+                        self.standby_cursor = message["seq"]
+                        return {"event": "stopped", "messages": pending, "instruction": "Conversation ended. Return control to the user."}
+                    if low.startswith("/release") and self.name.lower() in names:
+                        self.conversation_active = False
+                        self.send_state("idle")
+                        self.standby_cursor = message["seq"]
+                        return {"event": "released", "messages": pending, "instruction": "You were released. Return control to the user."}
+                    if not self.conversation_active or message.get("from") == self.name:
+                        self.standby_cursor = message["seq"]
+                        continue
+                    directed = self.name.lower() in names or "all" in names or "everyone" in names
+                    granted = message.get("from") == "roombot" and directed and "your turn" in low
+                    direct_message = message.get("from") != "roombot" and directed
+                    if granted or direct_message:
+                        self.standby_cursor = message["seq"]
+                        self.send_state("thinking")
+                        return {
+                            "event": "message", "messages": pending,
+                            "instruction": "Respond with chat_send, then IMMEDIATELY call chat_standby again. Do not finish your turn while the conversation is active.",
+                        }
+                    self.standby_cursor = message["seq"]
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return {
+                        "event": "timeout", "messages": [],
+                        "instruction": "No turn was granted yet. IMMEDIATELY call chat_standby again; do not finish while the conversation is active.",
+                    }
+                self.changed.wait(timeout=remaining)
+
     def configure(self, url, secret, name=None, room=None):
         """Point the bridge at a room and (re)connect. Returns the new status."""
         url = (url or "").strip()
@@ -310,15 +379,15 @@ class ChatBridge:
             self.room = (room or "").strip() or unquote(urlsplit(url).path.lstrip("/"))
             self.error = ""
             self.cursor = self.seq  # don't replay old room's buffer as "new"
+            self.standby_cursor = self.seq
+            self.conversation_active = False
+            self.runtime_state = "idle"
         self._fatal = False
         if self.loop and self._resume:
             self.loop.call_soon_threadsafe(self._resume.set)
         return {"ok": True, **self.status()}
 
-    def reconnect(self, secret=None):
-        if secret:
-            with self.lock:
-                self.secret = secret.strip()
+    def reconnect(self):
         self._fatal = False
         with self.lock:
             self.error = ""
@@ -328,34 +397,35 @@ class ChatBridge:
 
 
 bridge = ChatBridge()
-mcp = FastMCP("PKM Chat Agent")
+mcp = FastMCP("pkm-chat")
+SERVER_VERSION = "2.0.0"
 
 
 @mcp.tool()
-def chat_join(url: str, secret: str, name: str = "agent", room: str = "") -> dict:
-    """Join a Personal Knowledge Agent Chatroom NOW and start participating.
+def check_version() -> dict:
+    """Return this pkm-chat MCP server's schema version."""
+    return {"name": "pkm-chat", "version": SERVER_VERSION}
 
-    Use this when the user asks you to "join a room <ws url>". To join you need
-    THREE things:
-      - url    : the ws URL, e.g. ws://<host-ip>:<port>/<room>
-      - secret : the room's shared secret (default-deny auth)
-      - name   : your display name / alias in the room
 
-    IMPORTANT: if the user gave you only the URL, ASK them for the room SECRET
-    and the display NAME (alias) before calling this — do not guess them. The
-    host obtains the secret from the room's key button or by typing `/share_link`.
-    `room` is optional; it is parsed from the URL path when omitted.
+@mcp.tool()
+def chat_join(magic_link: str, name: str) -> dict:
+        """Join a Personal Knowledge Agent Chatroom NOW and start participating.
 
-    After joining, call chat_poll to read messages and chat_send to post.
+        Pass the host's pkchat:v1 Magic Link and your assigned name. The Magic Link
+        contains the room URL and key, so do not ask for them separately.
     """
-    return bridge.configure(url, secret, name, room)
+        try:
+            url, secret = parse_magic_link(magic_link)
+        except ValueError as error:
+            return {"ok": False, "error": str(error), **bridge.status()}
+        return bridge.configure(url, secret, name)
 
 
 @mcp.tool()
 def chat_status() -> dict:
     """Report the connection and room status (state, room, name, member count, errors).
 
-    state 'idle' means no room is configured yet — call chat_join(url, secret, name)."""
+    state 'idle' means no meeting is configured yet — call chat_join(magic_link, name)."""
     return bridge.status()
 
 
@@ -367,6 +437,19 @@ def chat_poll(max: int = 50) -> dict:
     repeatedly to follow the conversation without re-reading old lines.
     """
     return {"messages": bridge.poll(max), "status": bridge.status()["state"]}
+
+
+@mcp.tool()
+def chat_standby(timeout: int = 300) -> dict:
+    """Wait for a coordinated conversation turn without busy polling.
+
+    Call this once after joining when the user asks you to enter Chatroom standby.
+    It blocks until /start_conversation includes you and a message addresses
+    @you/@all, or roombot grants your turn. On event='message', respond using
+    chat_send and IMMEDIATELY call chat_standby again. Keep repeating in this
+    same agent turn. Only stop when event is 'stopped' or 'released'.
+    """
+    return {**bridge.standby(timeout), "status": bridge.status()["state"], "name": bridge.name}
 
 
 @mcp.tool()
@@ -382,7 +465,9 @@ def chat_send(text: str) -> dict:
     Prefix with '/' to run a room command (e.g. '/help', '/list_audiences',
     '/whois <name>'); the private reply from 'roombot' arrives via chat_poll.
     """
+    bridge.send_state("sending")
     ok, err = bridge.send_text(text)
+    bridge.send_state("standby" if bridge.conversation_active else "idle")
     return {"ok": ok, "error": err}
 
 
@@ -405,15 +490,13 @@ def chat_mentions(limit: int = 20) -> dict:
 
 
 @mcp.tool()
-def chat_reconnect(secret: str = "") -> dict:
-    """Force a reconnect / rejoin. Optionally pass a new secret (e.g. after the
-    host rotated it). Use this if chat_status reports 'error' or 'closed'."""
-    return bridge.reconnect(secret or None)
+def chat_reconnect() -> dict:
+    """Retry the current Magic Link connection after a transient network error.
+    If the host refreshed the key, obtain a new Magic Link and call chat_join."""
+    return bridge.reconnect()
 
 
 if __name__ == "__main__":
-    _log(f"starting: room={ROOM!r} name={NAME!r} url={URL!r}")
-    if not URL or not SECRET:
-        _log("idle — no PKM_CHAT_URL/SECRET set. The agent should call chat_join(url, secret, name) to join a room.")
+    _log("starting idle — call chat_join(magic_link, name) to join a meeting")
     bridge.start()
     mcp.run()

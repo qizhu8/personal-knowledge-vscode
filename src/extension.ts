@@ -19,7 +19,7 @@ import {
   initServers, disposeServers, serverList, serverImport, serverCreate,
   serverUpdate, serverDelete, startServer, stopServer, restartServer, setServerPort, serverLog, serverDir,
 } from "./servers";
-import { ChatHub, ChatClient, ChatMessage, Member, FileMeta, MAX_FILE_BYTES } from "./chatroom";
+import { ChatHub, ChatClient, ChatMessage, Member, FileMeta, AgentRuntimeState, MAX_FILE_BYTES } from "./chatroom";
 import {
   initPyenvs, pyenvList, pyenvAdd, pyenvUpdate, pyenvDelete,
   condaEnvs, detectFolderEnv, pyenvPackages, pyenvCompare,
@@ -37,7 +37,16 @@ import {
 import { execSync } from "child_process";
 import { createHash, randomBytes } from "crypto";
 import { createSyncMagicCode, parseSyncMagicCode } from "./sync-magic-code";
+import { createChatMagicLink, chatInviteMessage } from "./chat-magic-link";
 import { startLiveMarkdownServer } from "./live-note-server";
+import { managedEnvironmentsRoot } from "./environment-paths";
+import { AiBackend, aiSummarizeScript, listAiBackends, runAiPrompt, scriptCacheDir } from "./ai";
+import {
+  cancelMcpPythonScan, combinedMcpInstallInstruction, combinedMcpRegistry,
+  detectMcpPython, ensureMcpRuntime, generateMcpServer,
+  mcpRuntimeManualCommands, mcpRuntimeStatus, mcpServerDefinitionData, mcpStatus, streamMcpPythonCandidates,
+  validateMcpPython,
+} from "./mcp";
 
 // Background one-shot sweep to compute on-disk sizes for envs missing a cached
 // value, then refresh the panel so sizes show up "by default".
@@ -68,14 +77,23 @@ async function sweepEnvVersions(respond: (m: any) => void): Promise<void> {
 
 // Resolve the extension-managed environments root (for the Migrate action).
 function pyenvsRoot(): string {
-  const cfg = vscode.workspace.getConfiguration("personalKnowledge");
-  return (cfg.get<string>("environmentsPath") || "").trim() || path.join(require("os").homedir(), "pkm-envs");
+  return managedEnvironmentsRoot();
 }
 
 // Env list enriched with a `managed` flag (already inside the managed root).
 function envListForUi(): any[] {
   const rp = path.resolve(pyenvsRoot());
-  return pyenvList().map(e => ({ ...e, managed: !!e.path && path.resolve(e.path).startsWith(rp + path.sep) }));
+  return pyenvList().map(e => {
+    const pathExists = !!e.path && fs.existsSync(e.path);
+    const pythonExists = !!e.python && fs.existsSync(e.python);
+    return {
+      ...e,
+      managed: !!e.path && path.resolve(e.path).startsWith(rp + path.sep),
+      missing: (!!e.path && !pathExists) || (!!e.python && !pythonExists),
+      pathExists,
+      pythonExists,
+    };
+  });
 }
 
 // ── Logging ────────────────────────────────────────────────────────────────
@@ -88,7 +106,7 @@ class Logger {
   private minLevel: LogLevel = "info";
 
   constructor() {
-    this.channel = vscode.window.createOutputChannel("Personal Knowledge");
+    this.channel = vscode.window.createOutputChannel("Personal Knowledge Manager");
   }
 
   init(context: vscode.ExtensionContext): void {
@@ -517,7 +535,7 @@ function buildStandaloneNoteHtml(msg: any, katexCss = ""): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="generator" content="Personal Knowledge (VS Code)">
+<meta name="generator" content="Personal Knowledge Manager (VS Code)">
 <title>${esc(title)}</title>
 <style>
 :root{color-scheme:light}
@@ -619,6 +637,35 @@ let _panelReady = false;                       // webview has signalled it's rea
 let _storeReady = false;                       // file store configured & migrated
 let _pendingOpen: { type: string; key: string; edit?: boolean } | undefined; // item to open once ready
 let _pendingTab: string | undefined;           // tab to switch to once the webview is ready
+let _nativeMcpProvider = false;
+let _mcpDefinitionsChanged: vscode.EventEmitter<void> | undefined;
+
+function refreshMcpDefinitions(): void {
+  _mcpDefinitionsChanged?.fire();
+}
+
+function registerNativeMcpProvider(context: vscode.ExtensionContext): void {
+  const api = vscode as any;
+  if (typeof api.lm?.registerMcpServerDefinitionProvider !== "function" || typeof api.McpStdioServerDefinition !== "function") return;
+  const changed = new vscode.EventEmitter<void>();
+  _mcpDefinitionsChanged = changed;
+  const createDefinition = () => {
+    const data = mcpServerDefinitionData();
+    const definition = new api.McpStdioServerDefinition(data.label, data.command, data.args, {}, data.version);
+    definition.cwd = vscode.Uri.file(data.cwd);
+    return definition;
+  };
+  const provider = {
+    onDidChangeMcpServerDefinitions: changed.event,
+    provideMcpServerDefinitions: () => getStorePath() && mcpRuntimeStatus().healthy ? [createDefinition()] : [],
+    resolveMcpServerDefinition: () => {
+      generateMcpServer(context);
+      return createDefinition();
+    },
+  };
+  context.subscriptions.push(changed, api.lm.registerMcpServerDefinitionProvider("personalKnowledge.pkm", provider));
+  _nativeMcpProvider = true;
+}
 
 /** Open an item in the panel; queues it if the webview isn't ready yet. */
 function openInPanel(context: vscode.ExtensionContext, type: string, key: string, edit = false): void {
@@ -642,6 +689,13 @@ async function openStoreMarkdown(area: KnowledgeMarkdownArea, key: string): Prom
 
 async function closeNavigationSidebar(): Promise<void> {
   await vscode.commands.executeCommand("workbench.action.closeSidebar");
+}
+
+function openChatroomPanel(context: vscode.ExtensionContext): void {
+  const chatPanel = getOrCreatePanel(context);
+  chatPanel.reveal(vscode.ViewColumn.One);
+  if (_panelReady) chatPanel.webview.postMessage({ command: "openTab", tab: "chatroom" });
+  else _pendingTab = "chatroom";
 }
 
 type KnowledgeMarkdownArea = "skills" | "notes" | "papers";
@@ -722,7 +776,7 @@ async function editMarkdownMetadata(uri?: vscode.Uri): Promise<void> {
     ?? await vscode.workspace.openTextDocument(uri) : vscode.window.activeTextEditor?.document;
   if (!document) return;
   const info = knowledgeMarkdownInfo(document.uri);
-  if (!info) { vscode.window.showInformationMessage("This is not a Personal Knowledge Markdown file."); return; }
+  if (!info) { vscode.window.showInformationMessage("This is not a Personal Knowledge Manager Markdown file."); return; }
   if (document.isDirty && !(await document.save())) return;
 
   let current: any;
@@ -918,7 +972,22 @@ interface RoomConn {
   unread:   number;
   selfHost: boolean;   // this client is the room's host (can moderate)
   selfMuted: boolean;  // the host has muted this client
+  agentStates: Record<string, AgentRuntimeState>;
   files:    Map<string, { meta: FileMeta; from: string; data: Buffer }>; // received, awaiting save
+}
+
+interface ManagedChatAgent {
+  id: string;
+  name: string;
+  backend: AiBackend;
+  systemPrompt: string;
+  roomKey: string;
+  client: ChatClient;
+  messages: ChatMessage[];
+  status: string;
+  active: boolean;
+  busy: boolean;
+  generation: number;
 }
 
 class ChatRoomManager {
@@ -926,6 +995,7 @@ class ChatRoomManager {
   private rooms: Map<string, RoomConn> = new Map();
   private hostedKeys: Map<string, string> = new Map();   // room -> secret this host set
   private activeKey = "";
+  private managedAgents: Map<string, ManagedChatAgent> = new Map();
   private archiveDir = "";
   private archiveLimitBytes = 10 * 1024 * 1024;
   private static readonly MAX_MSGS = 5000;   // session display cap; the hub's byte budget is the real limit
@@ -940,6 +1010,12 @@ class ChatRoomManager {
   }
 
   get activeRoom(): RoomConn | undefined { return this.rooms.get(this.activeKey); }
+  activateRoom(url: string, room: string): boolean {
+    const key = ChatRoomManager.roomKey(url, room);
+    if (!this.rooms.has(key)) return false;
+    this.setActive(key);
+    return true;
+  }
   get hubIsRunning(): boolean { return !!this.hub?.isRunning; }
   get hubPort(): number { return this.hub?.port ?? 0; }
 
@@ -962,6 +1038,7 @@ class ChatRoomManager {
         status: active.status, statusDetail: active.statusDetail,
         members: active.members, messages: active.messages, self: active.user,
         selfHost: active.selfHost, selfMuted: active.selfMuted,
+        agentStates: active.agentStates,
         files: [...active.files.values()].map(f => ({ fileId: f.meta.fileId, name: f.meta.name, from: f.from, size: f.meta.size })),
       } : null,
       hubRunning: !!this.hub?.isRunning,
@@ -971,7 +1048,148 @@ class ChatRoomManager {
       hubAdminRooms: this.hub?.isRunning
         ? this.hub.adminRooms().map(r => ({ ...r, hasKey: this.hostedKeys.has(r.room) }))
         : [],
+      managedAgents: [...this.managedAgents.values()].map(agent => ({
+        id: agent.id, name: agent.name, backend: agent.backend.label,
+        roomKey: agent.roomKey, status: agent.status,
+        active: agent.active, busy: agent.busy,
+      })),
     };
+  }
+
+  async addManagedAgent(context: vscode.ExtensionContext): Promise<void> {
+    const room = this.activeRoom;
+    if (!room || !room.selfHost) {
+      vscode.window.showWarningMessage("Host and open a room before adding a managed agent.");
+      return;
+    }
+    const secret = this.getRoomKey(room.room);
+    if (!secret) {
+      vscode.window.showWarningMessage(`No host secret is available for room "${room.room}".`);
+      return;
+    }
+    const backends = await listAiBackends(context);
+    if (!backends.length) {
+      vscode.window.showWarningMessage("No AI backend is available. Sign in to Copilot or configure an AI endpoint.");
+      return;
+    }
+    const picked = await vscode.window.showQuickPick(
+      backends.map(backend => ({ label: backend.label, backend })),
+      { placeHolder: "Model for this Chatroom agent" },
+    );
+    if (!picked) return;
+    const name = (await vscode.window.showInputBox({
+      prompt: "Agent display name", placeHolder: "DockerAgent",
+      validateInput: value => value.trim() ? undefined : "Enter a unique agent name",
+    }))?.trim();
+    if (!name) return;
+    if ([...this.managedAgents.values()].some(agent => agent.roomKey === room.key && agent.name.toLowerCase() === name.toLowerCase())) {
+      vscode.window.showWarningMessage(`Managed agent "${name}" already exists in this room.`);
+      return;
+    }
+    const role = (await vscode.window.showInputBox({
+      prompt: `Role and background for ${name}`,
+      placeHolder: "Owns Docker build, deployment, and container test workflows",
+    }))?.trim() || "Contribute your expertise, ask clarifying questions, and critique proposals constructively.";
+    this.createManagedAgent(context, room, secret, name, picked.backend, role);
+  }
+
+  private createManagedAgent(
+    context: vscode.ExtensionContext,
+    room: RoomConn,
+    secret: string,
+    name: string,
+    backend: AiBackend,
+    role: string,
+  ): void {
+    const id = randomBytes(6).toString("hex");
+    const agent: ManagedChatAgent = {
+      id, name, backend, roomKey: room.key, client: null as any,
+      systemPrompt: [
+        `You are ${name}, an expert participant in a multi-agent engineering discussion.`,
+        `Your role and background: ${role}`,
+        "Respond to the latest addressed message using relevant shared context. Ask focused questions when evidence is missing. Propose concrete next steps, challenge weak assumptions, and keep replies concise. Do not emit Chatroom slash commands.",
+      ].join("\n"),
+      messages: [], status: "connecting", active: false, busy: false, generation: 0,
+    };
+    agent.client = new ChatClient({
+      onStatus: (status, detail) => {
+        agent.status = detail ? `${status}: ${detail}` : status;
+        if (status === "connected") agent.client.sendAgentState(agent.active ? "standby" : "idle");
+        this.push();
+      },
+      onMessage: message => this.onManagedAgentMessage(context, agent, message),
+      onHistory: messages => { agent.messages = messages.slice(-80); },
+      onPresence: () => {}, onFileComplete: () => {}, onAgentState: () => {},
+      onRejected: (_code, message) => { agent.status = `error: ${message}`; agent.active = false; this.push(); },
+      onRenamed: newName => { agent.name = newName; this.push(); },
+      onRekey: () => {},
+    }, message => log.debug(`managed-agent[${name}]: ${message}`));
+    this.managedAgents.set(id, agent);
+    agent.client.connect({ url: room.url, room: room.room, user: name, token: secret, kind: "agent", cid: `managed-${id}` });
+    log.action("chat.managedAgent.add", { room: room.room, name, backend: backend.id });
+    this.push();
+  }
+
+  private messageMentions(text: string, name: string): boolean {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return /@(all|everyone)\b/i.test(text) || new RegExp(`@(?:"${escaped}"|${escaped})(?=\\s|$|[,.!?;:])`, "i").test(text);
+  }
+
+  private async onManagedAgentMessage(context: vscode.ExtensionContext, agent: ManagedChatAgent, message: ChatMessage): Promise<void> {
+    if (message.id && agent.messages.some(existing => existing.id === message.id)) return;
+    agent.messages.push(message);
+    if (agent.messages.length > 80) agent.messages.splice(0, agent.messages.length - 80);
+    const text = String(message.text || "").trim();
+    const low = text.toLowerCase();
+    if (message.from === "roombot" && (low.includes("conversation started") || low.includes("joined the conversation"))) {
+      if (this.messageMentions(text, agent.name)) {
+        agent.active = true; agent.generation++; agent.client.sendAgentState("standby"); this.push();
+      }
+      return;
+    }
+    if (low.startsWith("/stop_conversation") || (message.from === "roombot" && low.includes("conversation stopped"))) {
+      agent.active = false; agent.busy = false; agent.generation++; agent.client.sendAgentState("idle"); this.push(); return;
+    }
+    if (low.startsWith("/release") && this.messageMentions(text, agent.name)) {
+      agent.active = false; agent.busy = false; agent.generation++; agent.client.sendAgentState("idle"); this.push(); return;
+    }
+    if (!agent.active || agent.busy || message.from.toLowerCase() === agent.name.toLowerCase()) return;
+    const directed = this.messageMentions(text, agent.name);
+    const granted = message.from === "roombot" && directed && low.includes("your turn");
+    if (!directed && !granted) return;
+    const generation = agent.generation;
+    agent.busy = true;
+    agent.client.sendAgentState("thinking");
+    this.push();
+    try {
+      const transcript = agent.messages.slice(-30)
+        .filter(item => !item.system)
+        .map(item => `${item.from || "system"}: ${item.text}`)
+        .join("\n");
+      const prompt = `${agent.systemPrompt}\n\nChatroom transcript:\n${transcript}\n\nReply as ${agent.name} to the latest turn. Return only the message to post.`;
+      const reply = await runAiPrompt(context, agent.backend, prompt);
+      if (agent.active && agent.generation === generation && reply.trim()) {
+        agent.client.sendAgentState("sending");
+        agent.client.sendText(reply.trim());
+      }
+    } catch (error: any) {
+      if (agent.active && agent.generation === generation) agent.client.sendText(`@Host I could not respond: ${error?.message || String(error)}`);
+      log.error(`managed agent ${agent.name} failed: ${error?.message || error}`);
+    } finally {
+      if (agent.generation === generation) agent.busy = false;
+      if (agent.generation === generation) agent.client.sendAgentState(agent.active ? "standby" : "idle");
+      this.push();
+    }
+  }
+
+  removeManagedAgent(id: string): void {
+    const agent = this.managedAgents.get(id);
+    if (!agent) return;
+    agent.active = false; agent.generation++;
+    try { agent.client.disconnect(); } catch { /* ignore */ }
+    this.managedAgents.delete(id);
+    log.action("chat.managedAgent.remove", { name: agent.name });
+    this.push();
   }
 
   joinRoom(opts: { url: string; room: string; user: string; token: string; cid?: string }): void {
@@ -982,7 +1200,7 @@ class ChatRoomManager {
     rc = {
       key, url: opts.url, room: opts.room, user: opts.user,
       client: null as any, messages: [], members: [], status: "connecting", statusDetail: "",
-      unread: 0, selfHost: false, selfMuted: false, files: new Map(),
+      unread: 0, selfHost: false, selfMuted: false, agentStates: {}, files: new Map(),
     };
     rc.client = new ChatClient(
       {
@@ -995,6 +1213,10 @@ class ChatRoomManager {
           rc!.selfHost = !!me?.host;
           rc!.selfMuted = !!me?.muted;
           this.push();
+        },
+        onAgentState: (user, state) => {
+          rc!.agentStates[user] = state;
+          postToPanel({ command: "chatAgentState", data: { key: rc!.key, user, state } });
         },
         onFileComplete: (meta, from, data) => this.onFileReceived(rc!, meta, from, data),
         onRejected: (code, m) => this.onJoinRejected(rc!, code, m),
@@ -1054,9 +1276,6 @@ class ChatRoomManager {
     this.hostedKeys.set(ChatHub.canonRoom(rc.room), secret);
     saveRekeyedSecret(rc.url, rc.room, secret);
     this.push();
-    const COPY = "Copy New Secret";
-    vscode.window.showInformationMessage(`Room "${rc.room}" secret was rotated. Share the new secret with your team.`, COPY)
-      .then(p => { if (p === COPY) vscode.env.clipboard.writeText(secret); });
     log.action("chat.rekey", { room: rc.room });
   }
 
@@ -1222,7 +1441,12 @@ class ChatRoomManager {
   /** Rotate a hosted room's secret on demand. The rekey flows back via onRekey. */
   rotateRoomSecret(room: string): boolean {
     const s = this.hub?.rotateRoomSecret(room);
-    if (s) log.action("chat.rotateSecret", { room });
+    if (s) {
+      this.hostedKeys.set(ChatHub.canonRoom(room), s);
+      const active = [...this.rooms.values()].find(connection => ChatHub.canonRoom(connection.room) === ChatHub.canonRoom(room));
+      if (active) saveRekeyedSecret(active.url, active.room, s);
+      log.action("chat.rotateSecret", { room });
+    }
     return !!s;
   }
 
@@ -1237,7 +1461,18 @@ class ChatRoomManager {
   rememberRoomKey(room: string, key: string): void { this.hostedKeys.set(ChatHub.canonRoom(room), key); }
   getRoomKey(room: string): string | undefined { return this.hostedKeys.get(ChatHub.canonRoom(room)); }
 
+  roomInvite(room: string): { magicLink: string; message: string } | undefined {
+    const port = this.hub?.port ?? 0;
+    const secret = this.getRoomKey(room);
+    if (!port || !secret) return undefined;
+    const url = `ws://${ChatHub.localIp()}:${port}/${encodeURIComponent(ChatHub.canonRoom(room))}`;
+    const magicLink = createChatMagicLink(url, secret);
+    return { magicLink, message: chatInviteMessage(magicLink) };
+  }
+
   dispose(): void {
+    for (const agent of this.managedAgents.values()) { try { agent.client.disconnect(); } catch { /* ignore */ } }
+    this.managedAgents.clear();
     for (const rc of this.rooms.values()) { try { rc.client.disconnect(); } catch { /* ignore */ } }
     this.rooms.clear();
     try { this.hub?.stop(); } catch { /* ignore */ }
@@ -1284,10 +1519,6 @@ function postToPanel(m: object): void {
 const CHAT_RECENTS_KEY = "pk.chat.recents";
 interface RecentRoom { id: string; url: string; room: string; user: string; host: boolean; port: number; secret?: string; lastJoined: number; }
 
-function isLocalChatUrl(wsUrl: string): boolean {
-  try { const h = new URL(wsUrl).hostname; return h === "localhost" || h === "127.0.0.1" || h === ChatHub.localIp(); }
-  catch { return false; }
-}
 function chatUrlPort(wsUrl: string): number {
   try { return Number(new URL(wsUrl).port) || 7345; } catch { return 7345; }
 }
@@ -1297,15 +1528,17 @@ function chatRecents(ctx: vscode.ExtensionContext): RecentRoom[] {
 function chatRecentsForUi(ctx: vscode.ExtensionContext): object[] {
   return chatRecents(ctx).map(r => ({ id: r.id, url: r.url, room: r.room, user: r.user, host: r.host }));
 }
-async function saveChatRecent(ctx: vscode.ExtensionContext, e: { url: string; room: string; user: string; secret?: string }): Promise<void> {
+async function saveChatRecent(ctx: vscode.ExtensionContext, e: { url: string; room: string; user: string; secret?: string; host?: boolean }): Promise<void> {
   const id = `${e.url}||${e.room}`;
   const prev = chatRecents(ctx).find(r => r.id === id);
   const list = chatRecents(ctx).filter(r => r.id !== id);
-  list.unshift({ id, url: e.url, room: e.room, user: e.user, host: isLocalChatUrl(e.url), port: chatUrlPort(e.url), secret: e.secret ?? prev?.secret, lastJoined: Date.now() });
+  list.unshift({ id, url: e.url, room: e.room, user: e.user, host: e.host ?? prev?.host ?? false, port: chatUrlPort(e.url), secret: e.secret ?? prev?.secret, lastJoined: Date.now() });
   await ctx.globalState.update(CHAT_RECENTS_KEY, list.slice(0, 50));
+  _treeProvider?.refresh();
 }
 async function forgetChatRecent(ctx: vscode.ExtensionContext, id: string): Promise<void> {
   await ctx.globalState.update(CHAT_RECENTS_KEY, chatRecents(ctx).filter(r => r.id !== id));
+  _treeProvider?.refresh();
 }
 /** Probe a hub's HTTP /health endpoint to see if it's reachable. */
 function probeHub(wsUrl: string, timeoutMs = 2000): Promise<boolean> {
@@ -1364,7 +1597,7 @@ function seedExamples(): void {
   const md = (...lines: string[]) => lines.join("\n") + "\n";
 
   const guide = md(
-    "# Getting Started with Personal Knowledge",
+    "# Getting Started with Personal Knowledge Manager",
     "",
     "Welcome! Your knowledge base is just a folder of plain Markdown files — everything",
     "in the panel is a file on disk. You (or an AI assistant via MCP) can edit them directly.",
@@ -1418,7 +1651,7 @@ function seedExamples(): void {
 
   skillUpsert({
     name: "getting-started", category: GS,
-    description: "How to use each part of Personal Knowledge",
+    description: "How to use each part of Personal Knowledge Manager",
     tags: ["guide", "onboarding"], content: guide,
   });
 
@@ -1449,7 +1682,7 @@ function seedExamples(): void {
     slug: `${GS}/Welcome`, title: "Welcome", type: "general",
     tags: ["example"], category: GS, pinned: true,
     content: md(
-      "# 👋 Welcome to Personal Knowledge",
+      "# 👋 Welcome to Personal Knowledge Manager",
       "",
       "This is an **example note**. Notes render Markdown live:",
       "",
@@ -1555,13 +1788,13 @@ async function ensureSetup(context: vscode.ExtensionContext): Promise<boolean> {
   const chosen = await firstTimeSetup(context);
   if (!chosen) {
     vscode.window.showErrorMessage(
-      "Personal Knowledge: you must complete setup before using this extension.",
+      "Personal Knowledge Manager: you must complete setup before using this extension.",
       "Configure now"
     ).then(v => { if (v) ensureSetup(context); });
     return false;
   }
   await initStore(context, chosen);
-  try { generateMcpServer(context); } catch { /* non-critical */ }
+  void offerMcpRuntimeSetup(context);
   return _storeReady;
 }
 
@@ -1605,6 +1838,11 @@ function getWebviewHtml(webview: vscode.Webview, context: vscode.ExtensionContex
   const srcDir  = path.join(context.extensionPath, "src",  "webview");
   const webviewDir = fs.existsSync(path.join(distDir, "panel.html")) ? distDir : srcDir;
   let html = fs.readFileSync(path.join(webviewDir, "panel.html"), "utf-8");
+
+  const panelJs = webview.asWebviewUri(vscode.Uri.file(path.join(webviewDir, "panel.js")));
+  const panelCss = webview.asWebviewUri(vscode.Uri.file(path.join(webviewDir, "panel.css")));
+  html = html.replace(/%%PANEL_JS%%/g, panelJs.toString());
+  html = html.replace(/%%PANEL_CSS%%/g, panelCss.toString());
 
   // Load marked as an external file (inlining breaks HTML parsing due to <!-- --> in marked)
   const markedFsPath = fs.existsSync(path.join(distDir, "marked.umd.js"))
@@ -1657,7 +1895,7 @@ function getOrCreatePanel(context: vscode.ExtensionContext): vscode.WebviewPanel
 
   panel = vscode.window.createWebviewPanel(
     "personalKnowledge",
-    "Personal Knowledge",
+    "Personal Knowledge Manager",
     vscode.ViewColumn.One,
     makeWebviewOptions(context)
   );
@@ -1774,7 +2012,7 @@ async function handleMessage(
         break;
       }
       getChatMgr().joinRoom({ url, room, user, token: secret, cid: getChatCid(context) });
-      await saveChatRecent(context, { url, room, user, secret });
+      await saveChatRecent(context, { url, room, user, secret, host: false });
       respond({ command: "chatRecents", data: { recents: chatRecentsForUi(context) } });
       break;
     }
@@ -1833,6 +2071,16 @@ async function handleMessage(
       break;
     }
 
+    case "chatAddManagedAgent": {
+      await getChatMgr().addManagedAgent(context);
+      break;
+    }
+
+    case "chatRemoveManagedAgent": {
+      getChatMgr().removeManagedAgent(String(msg.id || ""));
+      break;
+    }
+
     case "chatShareFile": {
       await getChatMgr().sendFileToActive();
       break;
@@ -1869,15 +2117,18 @@ async function handleMessage(
         getChatMgr().rememberRoomKey(room, key);
         const localUrl = `ws://127.0.0.1:${getChatMgr().hubPort}`;
         getChatMgr().joinRoom({ url: localUrl, room, user, token: key, cid: getChatCid(context) });
-        await saveChatRecent(context, { url: localUrl, room, user, secret: key });
+        await saveChatRecent(context, { url: localUrl, room, user, secret: key, host: true });
         respond({ command: "chatRecents", data: { recents: chatRecentsForUi(context) } });
         const browserUrl = `${res.httpUrl}/room/${encodeURIComponent(room)}`;
-        const COPYKEY = "Copy Room Secret", BROWSER = "Open Browser View";
+        const COPY = "Copy Magic Link Invite", BROWSER = "Open Browser View";
         vscode.window.showInformationMessage(
-          `Hosting room "${room}" as ${user}. Give teammates the room secret + link; browser viewers open the room link and enter the secret.`,
-          COPYKEY, BROWSER
+          `Hosting room "${room}" as ${user}. Copy one message to let an MCP agent join; browser viewers can still open the room link.`,
+          COPY, BROWSER
         ).then(pick => {
-          if (pick === COPYKEY) vscode.env.clipboard.writeText(key);
+          if (pick === COPY) {
+            const invite = getChatMgr().roomInvite(room);
+            if (invite) vscode.env.clipboard.writeText(invite.message);
+          }
           else if (pick === BROWSER) vscode.env.openExternal(vscode.Uri.parse(browserUrl));
         });
       } else {
@@ -1893,22 +2144,12 @@ async function handleMessage(
       break;
     }
 
-    case "chatCopyRoomKey": {
+    case "chatCopyInvite": {
       const room = String(msg.room || "").trim();
-      const key = getChatMgr().getRoomKey(room);
-      if (!key) { vscode.window.showWarningMessage(`No stored secret for room "${room}".`); break; }
-      await vscode.env.clipboard.writeText(key);
-      vscode.window.showInformationMessage(`Secret for room "${room}" copied. Share it over a trusted channel.`);
-      break;
-    }
-
-    case "chatCopyJoinString": {
-      const room = String(msg.room || "").trim();
-      const port = getChatMgr().hubPort;
-      if (!port) { vscode.window.showWarningMessage("Hub isn't running."); break; }
-      const s = `ws://${ChatHub.localIp()}:${port}/${encodeURIComponent(room)}`;
-      await vscode.env.clipboard.writeText(s);
-      vscode.window.showInformationMessage(`Join string copied: ${s}  (paste into the Join URL box or PKM_CHAT_URL; secret is separate)`);
+      const invite = getChatMgr().roomInvite(room);
+      if (!invite) { vscode.window.showWarningMessage(`Couldn't create an invite for room "${room}".`); break; }
+      await vscode.env.clipboard.writeText(invite.message);
+      vscode.window.setStatusBarMessage("$(copy) Chatroom Magic Link invite copied", 4000);
       break;
     }
 
@@ -1921,10 +2162,15 @@ async function handleMessage(
       const room = String(msg.room || "").trim();
       if (!room) break;
       const pick = await vscode.window.showWarningMessage(
-        `Rotate the secret for room "${room}"? Current members stay connected; anyone joining after this needs the new secret.`,
-        { modal: true }, "Rotate Secret");
-      if (pick !== "Rotate Secret") break;
-      if (!getChatMgr().rotateRoomSecret(room)) vscode.window.showWarningMessage(`Room "${room}" has no secret to rotate.`);
+        `Refresh the key and Magic Link for room "${room}"? Current members stay connected; the old Magic Link stops working.`,
+        { modal: true }, "Refresh Key");
+      if (pick !== "Refresh Key") break;
+      if (!getChatMgr().rotateRoomSecret(room)) { vscode.window.showWarningMessage(`Room "${room}" has no secret to rotate.`); break; }
+      const invite = getChatMgr().roomInvite(room);
+      if (invite) {
+        await vscode.env.clipboard.writeText(invite.message);
+        vscode.window.showInformationMessage("New key generated. The refreshed Magic Link invite was copied.");
+      }
       break;
     }
 
@@ -2431,8 +2677,8 @@ async function handleMessage(
     }
     case "envDelete": {
       const r = await pyenvDelete(String(msg.id || ""), !!msg.removeFiles);
-      if (!r.ok) { respond({ command: "envDeleteResult", error: r.error }); }
       respond({ command: "envList", data: envListForUi() });
+      respond({ command: "envDeleteResult", data: r });
       break;
     }
     case "envPackages": {
@@ -3114,15 +3360,84 @@ async function handleMessage(
     // ── MCP ──────────────────────────────────────────────────────────────
     case "checkMcp": {
       const info = mcpStatus();
-      const chatInfo = chatMcpStatus();
-      respond({ command: "mcpStatus", data: { ...info, chatInstalled: chatInfo.installed, chatServerPath: chatInfo.serverPath } });
+      const python = detectMcpPython();
+      const runtime = mcpRuntimeStatus();
+      respond({ command: "mcpStatus", data: {
+        ...info,
+        combinedRegistry: runtime.healthy ? combinedMcpRegistry() : "",
+        agencyInstallInstruction: combinedMcpInstallInstruction(),
+        nativeMcpProvider: _nativeMcpProvider,
+        mcpPython: python,
+        mcpRuntime: runtime,
+      } });
+      break;
+    }
+
+    case "mcpDetectPython": {
+      void streamMcpPythonCandidates(respond);
+      break;
+    }
+
+    case "mcpCancelPythonScan": {
+      cancelMcpPythonScan();
+      respond({ command: "mcpPythonScanComplete", data: { cancelled: true, text: "Scan cancelled." } });
+      break;
+    }
+
+    case "mcpBrowsePython": {
+      const picks = await vscode.window.showOpenDialog({
+        canSelectFiles: true, canSelectFolders: false, canSelectMany: false,
+        openLabel: "Select Python executable", title: "Select Python 3.10+ for PKM MCP",
+      });
+      if (picks?.[0]) {
+        const result = validateMcpPython(picks[0].fsPath);
+        respond({ command: "mcpPythonResult", data: { ...result, valid: !result.error, source: "configured" } });
+      }
+      break;
+    }
+
+    case "mcpSetPython": {
+      const result = validateMcpPython(String(msg.path || ""));
+      if (result.error) {
+        respond({ command: "mcpPythonResult", data: { ...result, valid: false, source: "configured", saved: false } });
+        break;
+      }
+      await vscode.workspace.getConfiguration("personalKnowledge").update("mcpPythonPath", result.path, vscode.ConfigurationTarget.Global);
+      respond({ command: "mcpRuntimeProgress", data: { text: "Creating or repairing the managed PKM MCP runtime and installing dependencies…" } });
+      try {
+        const runtime = await ensureMcpRuntime(context);
+        refreshMcpDefinitions();
+        respond({ command: "mcpPythonResult", data: { ...result, valid: true, source: "configured", saved: true, runtime } });
+        _treeProvider?.refresh();
+        respond({ command: "envList", data: envListForUi() });
+      } catch (error: any) {
+        respond({ command: "mcpRuntimeResult", data: { ok: false, error: error?.message || String(error), commands: mcpRuntimeManualCommands(result.path) } });
+      }
+      break;
+    }
+
+    case "mcpRepairRuntime": {
+      const base = detectMcpPython();
+      if (!base.valid) { respond({ command: "mcpRuntimeResult", data: { ok: false, error: base.error, commands: [] } }); break; }
+      respond({ command: "mcpRuntimeProgress", data: { text: "Repairing the managed PKM MCP runtime…" } });
+      try {
+        const runtime = await ensureMcpRuntime(context);
+        refreshMcpDefinitions();
+        respond({ command: "mcpRuntimeResult", data: { ok: true, runtime } });
+        _treeProvider?.refresh();
+        respond({ command: "envList", data: envListForUi() });
+      } catch (error: any) {
+        respond({ command: "mcpRuntimeResult", data: { ok: false, error: error?.message || String(error), commands: mcpRuntimeManualCommands(base.path) } });
+      }
       break;
     }
 
     case "generateMcp": {
       try {
+        if (!mcpRuntimeStatus().healthy) throw new Error("Managed PKM MCP runtime is not healthy. Create or Repair it first.");
         const preview = !!msg.previewOnly;
         const info = generateMcpServer(context);
+        refreshMcpDefinitions();
         respond({ command: "mcpGenerated", data: { ...info, preview } });
         if (!preview) vscode.window.setStatusBarMessage("$(check) MCP server created", 4000);
       } catch (e: any) {
@@ -3133,10 +3448,11 @@ async function handleMessage(
 
     case "generateChatMcp": {
       try {
+        if (!mcpRuntimeStatus().healthy) throw new Error("Managed PKM MCP runtime is not healthy. Create or Repair it first.");
         const preview = !!msg.previewOnly;
-        const info = generateChatMcpServer(context);
-        respond({ command: "chatMcpGenerated", data: { ...info, preview } });
-        if (!preview) vscode.window.setStatusBarMessage("$(check) Agent-Room MCP server created", 4000);
+        const info = generateMcpServer(context);
+        respond({ command: "mcpGenerated", data: { ...info, preview } });
+        if (!preview) vscode.window.setStatusBarMessage("$(check) Unified PKM MCP server created", 4000);
       } catch (e: any) {
         respond({ command: "mcpError", data: { error: e.message } });
       }
@@ -3208,1054 +3524,41 @@ async function handleMessage(
   }
 }
 
-// ── MCP server scaffold ────────────────────────────────────────────────────
-function mcpStatus(): { installed: boolean; serverPath: string } {
-  const serverPath = path.join(getStorePath(), "mcp-server", "server.py");
-  return { installed: fs.existsSync(serverPath), serverPath };
-}
-
-function generateMcpServer(context: vscode.ExtensionContext): { serverPath: string; configSnippet: string } {
-  const storePath = getStorePath();
-  const rawName    = path.basename(storePath);
-  // Sanitize for use as MCP server ID / config key (no spaces or special chars)
-  const serverName = rawName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "personal-knowledge";
-  const displayName = rawName; // human-readable (can have spaces)
-  const mcpDir    = path.join(storePath, "mcp-server");
-  const serverPy  = path.join(mcpDir, "server.py");
-  const reqTxt    = path.join(mcpDir, "requirements.txt");
-  const storeFwd  = storePath.replace(/\\/g, "/");
-
-  fs.mkdirSync(mcpDir, { recursive: true });
-
-  fs.writeFileSync(serverPy, `#!/usr/bin/env python3
-"""
-${displayName} MCP Server — auto-generated by Personal Knowledge extension.
-Exposes your skills and notes to AI assistants via the Model Context Protocol.
-
-Skills and notes are stored as plain markdown files under skills/ and notes/ —
-the files are the single source of truth (there is no database). Writes made by
-this server appear immediately in the VS Code panel via its file watcher, and
-show up in git history as readable .md diffs.
-
-Read tools:  list_skills, search_skills, get_skill, list_notes, search_notes, get_note,
-             list_papers, search_papers, get_paper, paper_graph
-Write tools: add_note, update_note, delete_note, add_skill, update_skill, delete_skill,
-             add_paper, update_paper, delete_paper
-
-Search builds an in-memory FTS5 'trigram' index (CJK-friendly, ranked) at call
-time, falling back to substring matching when FTS5 is unavailable.
-
-Install:  pip install fastmcp
-Run:      python server.py
-"""
-import json, re, sqlite3, datetime
-from pathlib import Path
-from typing import Optional, List
-
-try:
-    from fastmcp import FastMCP
-except ImportError:
-    raise SystemExit("fastmcp not found. Run: pip install fastmcp")
-
-STORE  = Path(r"${storeFwd}")
-NOTES  = STORE / "notes"
-SKILLS = STORE / "skills"
-mcp = FastMCP("${displayName}")
-
-
-def _now() -> str:
-    return datetime.datetime.utcnow().isoformat()
-
-
-# ── Frontmatter (matches the extension's minimal YAML subset) ────────────────
-def _parse(text):
-    m = re.match(r"^---\\r?\\n(.*?)\\r?\\n---\\r?\\n?", text, re.S)
-    if not m:
-        return {}, text
-    fm = {}
-    for line in m.group(1).splitlines():
-        i = line.find(":")
-        if i < 0:
-            continue
-        k = line[:i].strip()
-        raw = line[i + 1:].strip()
-        if not k:
-            continue
-        try:
-            fm[k] = json.loads(raw)
-        except Exception:
-            fm[k] = raw.strip("\\"'")
-    return fm, text[m.end():]
-
-
-def _serialize(fm, body):
-    lines = ["---"]
-    for k, v in fm.items():
-        if v is None:
-            continue
-        if isinstance(v, bool):
-            lines.append(f"{k}: {'true' if v else 'false'}")
-        elif isinstance(v, (list, str)):
-            lines.append(f"{k}: {json.dumps(v, ensure_ascii=False)}")
-        else:
-            lines.append(f"{k}: {v}")
-    lines += ["---", ""]
-    return "\\n".join(lines) + (body or "")
-
-
-# ── Paths / identity (identity = relative path w/o .md; category = folders) ──
-def _safe_name(s):
-    s = re.sub(r'[/\\\\:*?"<>|]', "", s or "")
-    s = "".join(ch for ch in s if ord(ch) >= 32).strip()
-    return s or "untitled"
-
-
-def _safe_cat(cat):
-    if not cat or not cat.strip():
-        return ""
-    return "/".join(_safe_name(p.strip()) for p in cat.split("/") if p.strip())
-
-
-def _cat_of(key):
-    return key.rsplit("/", 1)[0] if "/" in key else ""
-
-
-def _name_of(key):
-    return key.rsplit("/", 1)[-1]
-
-
-def _walk(root):
-    out = []
-    if not root.exists():
-        return out
-    for p in root.rglob("*.md"):
-        rel = p.relative_to(root)
-        if any(part.startswith(".") or part == "_assets" for part in rel.parts):
-            continue
-        out.append((p, rel.as_posix()[:-3]))
-    return out
-
-
-def _mtime(p):
-    return datetime.datetime.utcfromtimestamp(p.stat().st_mtime).isoformat()
-
-
-# ── Notes ────────────────────────────────────────────────────────────────────
-def _note(p, key):
-    fm, body = _parse(p.read_text(encoding="utf-8"))
-    return {"slug": key, "title": fm.get("title") or _name_of(key),
-            "type": fm.get("type") or "general", "tags": fm.get("tags") or [],
-            "category": _cat_of(key), "content": body, "updated_at": _mtime(p)}
-
-
-def _all_notes():
-    return [_note(p, k) for p, k in _walk(NOTES)]
-
-
-def _note_get(slug):
-    p = NOTES / (slug + ".md")
-    return _note(p, slug) if p.exists() else None
-
-
-def _note_write(slug, title, content, type_, tags, category, created=None):
-    cat = _safe_cat(category or "")
-    fname = _safe_name(title or _name_of(slug)) + ".md"
-    rel = (cat + "/" + fname) if cat else fname
-    full = NOTES / rel
-    old = NOTES / (slug + ".md")
-    if old.exists() and rel[:-3] != slug:
-        try: old.unlink()
-        except Exception: pass
-    full.parent.mkdir(parents=True, exist_ok=True)
-    fm = {"title": title, "type": type_ or "general", "tags": tags or [],
-          "created": created or _now()}
-    full.write_text(_serialize(fm, content or ""), encoding="utf-8")
-    return rel[:-3]
-
-
-# ── Skills ───────────────────────────────────────────────────────────────────
-def _skill(p, key):
-    fm, body = _parse(p.read_text(encoding="utf-8"))
-    return {"name": fm.get("name") or _name_of(key), "description": fm.get("description") or "",
-            "category": _cat_of(key), "tags": fm.get("tags") or [],
-            "source_project": fm.get("source_project"), "content": body, "updated_at": _mtime(p)}
-
-
-def _all_skills():
-    return [_skill(p, k) for p, k in _walk(SKILLS)]
-
-
-def _find_skill(name):
-    for p, k in _walk(SKILLS):
-        fm, _ = _parse(p.read_text(encoding="utf-8"))
-        if (fm.get("name") or _name_of(k)) == name:
-            return p, k
-    return None, None
-
-
-def _skill_get(name):
-    p, k = _find_skill(name)
-    return _skill(p, k) if p else None
-
-
-def _skill_write(name, content, description, category, tags, source_project=None, created=None):
-    cat = _safe_cat(category or "")
-    fname = _safe_name(name) + ".md"
-    rel = (cat + "/" + fname) if cat else fname
-    full = SKILLS / rel
-    oldp, _ = _find_skill(name)
-    if oldp is not None and str(oldp) != str(full):
-        try: oldp.unlink()
-        except Exception: pass
-    full.parent.mkdir(parents=True, exist_ok=True)
-    fm = {"name": name, "description": description or "", "tags": tags or [],
-          "source_project": source_project, "created": created or _now()}
-    full.write_text(_serialize(fm, content or ""), encoding="utf-8")
-    return name
-
-
-# ── Papers ───────────────────────────────────────────────────────────────────
-PAPERS = STORE / "papers"
-
-def _arr(x):
-    return x if isinstance(x, list) else ([x] if x else [])
-
-def _year(v):
-    if isinstance(v, int): return v
-    try: return int(str(v))
-    except Exception: return None
-
-def _norm_cites(v):
-    out = []
-    if isinstance(v, list):
-        for e in v:
-            if isinstance(e, str):
-                if e.strip(): out.append({"paper": e.strip(), "note": ""})
-            elif isinstance(e, dict):
-                p = str(e.get("paper") or e.get("key") or "").strip()
-                if p: out.append({"paper": p, "note": str(e.get("note") or e.get("comment") or "")})
-    return out
-
-def _paper(p, key):
-    fm, body = _parse(p.read_text(encoding="utf-8"))
-    return {"slug": key, "title": fm.get("title") or _name_of(key),
-            "kind": "idea" if fm.get("kind") == "idea" else "paper",
-            "group": (str(fm.get("group")).strip() if fm.get("group") else "") or "Papers",
-            "pinned": fm.get("pinned") is True,
-            "authors": _arr(fm.get("authors")), "year": _year(fm.get("year")),
-            "topic": fm.get("topic") or "", "publisher": fm.get("publisher") or "",
-            "tags": _arr(fm.get("tags")), "url": fm.get("url") or "", "file": fm.get("file") or "",
-            "conclusions": _arr(fm.get("conclusions")), "cites": _norm_cites(fm.get("cites")),
-            "category": _cat_of(key), "content": body, "updated_at": _mtime(p)}
-
-def _all_papers():
-    return [_paper(p, k) for p, k in _walk(PAPERS)]
-
-def _paper_get(slug):
-    p = PAPERS / (slug + ".md")
-    return _paper(p, slug) if p.exists() else None
-
-def _paper_resolver(all_p):
-    by_key = {p["slug"].lower(): p["slug"] for p in all_p}
-    by_title = {p["title"].lower(): p["slug"] for p in all_p}
-    def r(ref):
-        k = str(ref or "").lower()
-        if k.endswith(".md"): k = k[:-3]
-        return by_key.get(k) or by_title.get(k)
-    return r
-
-def _citation_counts(all_p):
-    resolve = _paper_resolver(all_p)
-    counts = {}
-    for p in all_p:
-        for c in p["cites"]:
-            t = resolve(c["paper"])
-            if t: counts[t] = counts.get(t, 0) + 1
-    return counts
-
-def _paper_write(slug, title, content, authors, year, topic, publisher, tags, url, file, conclusions, cites, category, created=None, kind=None, group=None, pinned=None):
-    cat = _safe_cat(category or "")
-    fname = _safe_name(title or _name_of(slug)) + ".md"
-    rel = (cat + "/" + fname) if cat else fname
-    full = PAPERS / rel
-    old = PAPERS / (slug + ".md")
-    # Preserve user-set kind/group/pinned when the caller doesn't specify them.
-    if (kind is None or group is None or pinned is None) and old.exists():
-        prev, _ = _parse(old.read_text(encoding="utf-8"))
-        if kind is None: kind = prev.get("kind")
-        if group is None: group = prev.get("group")
-        if pinned is None: pinned = prev.get("pinned")
-    if old.exists() and rel[:-3] != slug:
-        try: old.unlink()
-        except Exception: pass
-    full.parent.mkdir(parents=True, exist_ok=True)
-    fm = {"title": title,
-          "kind": "idea" if kind == "idea" else None,
-          "group": (str(group).strip() if group and str(group).strip() != "Papers" else None),
-          "pinned": True if pinned is True else None,
-          "authors": authors or [], "year": _year(year), "topic": topic or "",
-          "publisher": publisher or "", "tags": tags or [], "url": url or "", "file": file or "",
-          "conclusions": conclusions or [], "cites": _norm_cites(cites or []), "created": created or _now()}
-    full.write_text(_serialize(fm, content or ""), encoding="utf-8")
-    return rel[:-3]
-
-
-# ── In-memory FTS5 index (built from files at call time) ─────────────────────
-def _index(skills, notes):
-    try:
-        c = sqlite3.connect(":memory:")
-        c.execute("CREATE VIRTUAL TABLE s USING fts5(name, content, description, tokenize='trigram')")
-        c.execute("CREATE VIRTUAL TABLE n USING fts5(slug, title, content, tokenize='trigram')")
-        for r in skills:
-            c.execute("INSERT INTO s VALUES(?,?,?)", [r["name"], r["content"], r["description"]])
-        for r in notes:
-            c.execute("INSERT INTO n VALUES(?,?,?)", [r["slug"], r["title"], r["content"]])
-        return c
-    except sqlite3.OperationalError:
-        return None
-
-
-# ── Read tools ──────────────────────────────────────────────────────────────
-@mcp.tool()
-def list_skills(category: Optional[str] = None) -> str:
-    """List personal skills, optionally filtered by category (a slash-separated folder path)."""
-    rows = _all_skills()
-    if category:
-        rows = [r for r in rows if r["category"] == category]
-    rows.sort(key=lambda r: (r["category"], r["name"]))
-    return json.dumps([{"name": r["name"], "description": r["description"],
-                        "category": r["category"], "tags": r["tags"]} for r in rows])
-
-
-@mcp.tool()
-def search_skills(query: str) -> str:
-    """Ranked full-text search across skill names, content, and descriptions (CJK-friendly)."""
-    skills = _all_skills()
-    hits = []
-    idx = _index(skills, [])
-    if idx is not None:
-        try:
-            names = [x[0] for x in idx.execute(
-                "SELECT name FROM s WHERE s MATCH ? ORDER BY rank LIMIT 20", [query])]
-            by = {}
-            for s in skills:
-                by.setdefault(s["name"], s)
-            hits = [by[n] for n in names if n in by]
-        except sqlite3.OperationalError:
-            hits = []
-    if not hits:
-        q = query.lower()
-        hits = [s for s in skills if q in s["name"].lower()
-                or q in (s["content"] or "").lower() or q in (s["description"] or "").lower()][:20]
-    return json.dumps([{"name": s["name"], "description": s["description"], "category": s["category"]} for s in hits])
-
-
-@mcp.tool()
-def get_skill(name: str) -> str:
-    """Get the full markdown content of a skill by exact name."""
-    r = _skill_get(name)
-    if not r:
-        return f"Skill '{name}' not found. Use list_skills or search_skills to find it."
-    return json.dumps({"name": r["name"], "content": r["content"], "description": r["description"],
-                       "category": r["category"], "tags": r["tags"], "updated_at": r["updated_at"]})
-
-
-@mcp.tool()
-def list_notes(type: Optional[str] = None) -> str:
-    """List notes. type can be: general, todo, done, observation, data-path."""
-    rows = _all_notes()
-    if type and type != "all":
-        rows = [r for r in rows if r["type"] == type]
-    rows.sort(key=lambda r: r["updated_at"], reverse=True)
-    return json.dumps([{"slug": r["slug"], "title": r["title"], "type": r["type"],
-                        "category": r["category"], "updated_at": r["updated_at"]} for r in rows[:50]])
-
-
-@mcp.tool()
-def search_notes(query: str) -> str:
-    """Ranked full-text search across note titles and content (CJK-friendly)."""
-    notes = _all_notes()
-    hits = []
-    idx = _index([], notes)
-    if idx is not None:
-        try:
-            slugs = [x[0] for x in idx.execute(
-                "SELECT slug FROM n WHERE n MATCH ? ORDER BY rank LIMIT 20", [query])]
-            by = {r["slug"]: r for r in notes}
-            hits = [by[s] for s in slugs if s in by]
-        except sqlite3.OperationalError:
-            hits = []
-    if not hits:
-        q = query.lower()
-        hits = [r for r in notes if q in r["title"].lower() or q in (r["content"] or "").lower()][:20]
-    return json.dumps([{"slug": r["slug"], "title": r["title"], "type": r["type"]} for r in hits])
-
-
-@mcp.tool()
-def get_note(slug: str) -> str:
-    """Get the full content of a note by slug (its relative path without .md)."""
-    r = _note_get(slug)
-    if not r:
-        return f"Note '{slug}' not found. Use list_notes or search_notes to find it."
-    return json.dumps({"slug": r["slug"], "title": r["title"], "content": r["content"],
-                       "type": r["type"], "tags": r["tags"], "category": r["category"],
-                       "updated_at": r["updated_at"]})
-
-
-# ── Write tools ─────────────────────────────────────────────────────────────
-@mcp.tool()
-def add_note(title: str, content: str, type: str = "general", tags: Optional[List[str]] = None,
-             category: Optional[str] = None, slug: Optional[str] = None) -> str:
-    """Create a new note. 'category' is a slash-separated path (e.g. Project/AutoLabeling/C2 Guideline)
-    used to organize the note in the sidebar tree. 'type' is one of general/todo/done/observation/data-path.
-    The note's identity ('slug') is its relative path without .md and is returned on success."""
-    cat = _safe_cat(category or "")
-    key = (cat + "/" + title) if cat else title
-    if _note_get(key):
-        return json.dumps({"error": f"Note '{key}' already exists. Use update_note instead."})
-    new_slug = _note_write(key, title or key, content, type, tags or [], cat)
-    return json.dumps({"ok": True, "slug": new_slug})
-
-
-@mcp.tool()
-def update_note(slug: str, title: Optional[str] = None, content: Optional[str] = None,
-                type: Optional[str] = None, category: Optional[str] = None, tags: Optional[List[str]] = None) -> str:
-    """Update fields of an existing note by slug. Only provided fields are changed.
-    Changing title/category moves the underlying file; the new slug is returned."""
-    row = _note_get(slug)
-    if not row:
-        return json.dumps({"error": f"Note '{slug}' not found."})
-    new_slug = _note_write(
-        slug,
-        title if title is not None else row["title"],
-        content if content is not None else row["content"],
-        type if type is not None else row["type"],
-        tags if tags is not None else row["tags"],
-        category if category is not None else row["category"],
-    )
-    return json.dumps({"ok": True, "slug": new_slug})
-
-
-@mcp.tool()
-def delete_note(slug: str) -> str:
-    """Delete a note by slug (its relative path without .md)."""
-    p = NOTES / (slug + ".md")
-    try: p.unlink(missing_ok=True)
-    except Exception: pass
-    return json.dumps({"ok": True, "slug": slug})
-
-
-@mcp.tool()
-def add_skill(name: str, content: str, description: str = "", category: str = "",
-              tags: Optional[List[str]] = None, source_project: str = "") -> str:
-    """Create or overwrite a skill. 'category' is a slash-separated folder path
-    (e.g. General/DLIS/docker); 'name' is the skill's unique identifier."""
-    created = None
-    existing = _skill_get(name)
-    _skill_write(name, content, description, category, tags or [], source_project or None, created)
-    return json.dumps({"ok": True, "name": name})
-
-
-@mcp.tool()
-def update_skill(name: str, content: Optional[str] = None, description: Optional[str] = None,
-                 category: Optional[str] = None, tags: Optional[List[str]] = None) -> str:
-    """Update fields of an existing skill by name. Only provided fields are changed."""
-    row = _skill_get(name)
-    if not row:
-        return json.dumps({"error": f"Skill '{name}' not found. Use add_skill to create it."})
-    _skill_write(
-        name,
-        content if content is not None else row["content"],
-        description if description is not None else row["description"],
-        category if category is not None else row["category"],
-        tags if tags is not None else row["tags"],
-        row["source_project"],
-    )
-    return json.dumps({"ok": True, "name": name})
-
-
-@mcp.tool()
-def delete_skill(name: str) -> str:
-    """Delete a skill by name."""
-    p, _ = _find_skill(name)
-    if p is not None:
-        try: p.unlink()
-        except Exception: pass
-    return json.dumps({"ok": True, "name": name})
-
-
-# ── Paper tools ──────────────────────────────────────────────────────────────
-@mcp.tool()
-def list_papers(topic: Optional[str] = None) -> str:
-    """List papers (optionally filtered by topic), sorted by citation count (popularity)."""
-    all_p = _all_papers(); counts = _citation_counts(all_p)
-    rows = [p for p in all_p if (not topic or p["topic"] == topic)]
-    rows.sort(key=lambda p: (-(counts.get(p["slug"], 0)), -(p["year"] or 0), p["title"]))
-    return json.dumps([{"slug": p["slug"], "title": p["title"], "year": p["year"],
-                        "authors": p["authors"], "topic": p["topic"], "publisher": p["publisher"],
-                        "tags": p["tags"], "citation_count": counts.get(p["slug"], 0)} for p in rows])
-
-
-@mcp.tool()
-def search_papers(query: str) -> str:
-    """Search papers by title, authors, topic, publisher, tags, or year."""
-    q = query.lower(); all_p = _all_papers(); counts = _citation_counts(all_p)
-    hits = [p for p in all_p if q in p["title"].lower() or q in p["topic"].lower()
-            or q in p["publisher"].lower() or q in " ".join(p["authors"]).lower()
-            or q in " ".join(p["tags"]).lower() or q in str(p["year"] or "")]
-    return json.dumps([{"slug": p["slug"], "title": p["title"], "year": p["year"],
-                        "topic": p["topic"], "citation_count": counts.get(p["slug"], 0)} for p in hits[:50]])
-
-
-@mcp.tool()
-def get_paper(slug: str) -> str:
-    """Get a paper's full record (metadata, conclusions, cites with notes, body) by slug."""
-    p = _paper_get(slug)
-    if not p:
-        return f"Paper '{slug}' not found. Use list_papers or search_papers to find it."
-    p["citation_count"] = _citation_counts(_all_papers()).get(slug, 0)
-    return json.dumps(p)
-
-
-@mcp.tool()
-def add_paper(title: str, authors: Optional[List[str]] = None, year: Optional[int] = None,
-              topic: str = "", publisher: str = "", tags: Optional[List[str]] = None,
-              url: str = "", conclusions: Optional[List[str]] = None,
-              cites: Optional[List[dict]] = None, category: str = "", content: str = "") -> str:
-    """Create a paper. 'cites' is a list of {paper, note}: paper is a cited paper's title or slug,
-    note explains how this paper uses it ('A cites B' means A is a child of B). 'category' is a
-    slash-separated folder path; 'conclusions' is a list shown in the citation graph."""
-    cat = _safe_cat(category or "")
-    key = (cat + "/" + title) if cat else title
-    if _paper_get(key):
-        return json.dumps({"error": f"Paper '{key}' already exists. Use update_paper instead."})
-    new = _paper_write(key, title, content, authors or [], year, topic, publisher, tags or [],
-                       url, "", conclusions or [], cites or [], cat)
-    return json.dumps({"ok": True, "slug": new})
-
-
-@mcp.tool()
-def update_paper(slug: str, title: Optional[str] = None, authors: Optional[List[str]] = None,
-                 year: Optional[int] = None, topic: Optional[str] = None, publisher: Optional[str] = None,
-                 tags: Optional[List[str]] = None, url: Optional[str] = None,
-                 conclusions: Optional[List[str]] = None, cites: Optional[List[dict]] = None,
-                 category: Optional[str] = None, content: Optional[str] = None) -> str:
-    """Update fields of an existing paper by slug. Only provided fields are changed."""
-    p = _paper_get(slug)
-    if not p:
-        return json.dumps({"error": f"Paper '{slug}' not found."})
-    new = _paper_write(slug,
-        title if title is not None else p["title"],
-        content if content is not None else p["content"],
-        authors if authors is not None else p["authors"],
-        year if year is not None else p["year"],
-        topic if topic is not None else p["topic"],
-        publisher if publisher is not None else p["publisher"],
-        tags if tags is not None else p["tags"],
-        url if url is not None else p["url"],
-        p["file"],
-        conclusions if conclusions is not None else p["conclusions"],
-        cites if cites is not None else p["cites"],
-        category if category is not None else p["category"])
-    return json.dumps({"ok": True, "slug": new})
-
-
-@mcp.tool()
-def delete_paper(slug: str) -> str:
-    """Delete a paper by slug."""
-    try: (PAPERS / (slug + ".md")).unlink(missing_ok=True)
-    except Exception: pass
-    return json.dumps({"ok": True, "slug": slug})
-
-
-@mcp.tool()
-def paper_graph(topic: Optional[str] = None, limit: int = 10, neighbors: bool = False) -> str:
-    """Citation graph of the top papers. Returns {nodes, edges}: each edge is
-    {from: cited_parent, to: citing_child, note}. 'limit' keeps the top-N by citations
-    (optionally within 'topic'); set neighbors=true to also include directly-connected papers."""
-    all_p = _all_papers(); resolve = _paper_resolver(all_p); counts = _citation_counts(all_p)
-    by = {p["slug"]: p for p in all_p}
-    filtered = [p for p in all_p if (not topic or p["topic"] == topic)]
-    filtered.sort(key=lambda p: (-(counts.get(p["slug"], 0)), -(p["year"] or 0)))
-    node_set = set(p["slug"] for p in filtered[:max(1, limit)])
-    if neighbors:
-        for s in list(node_set):
-            p = by.get(s)
-            if not p: continue
-            for c in p["cites"]:
-                t = resolve(c["paper"])
-                if t: node_set.add(t)
-            for q in all_p:
-                for c in q["cites"]:
-                    if resolve(c["paper"]) == s: node_set.add(q["slug"])
-    nodes = [{"key": by[s]["slug"], "title": by[s]["title"], "year": by[s]["year"],
-              "topic": by[s]["topic"], "citation_count": counts.get(s, 0),
-              "conclusions": by[s]["conclusions"]} for s in node_set if s in by]
-    edges = []
-    for p in all_p:
-        if p["slug"] not in node_set: continue
-        for c in p["cites"]:
-            t = resolve(c["paper"])
-            if t and t in node_set:
-                edges.append({"from": t, "to": p["slug"], "note": c["note"]})
-    return json.dumps({"nodes": nodes, "edges": edges, "total": len(filtered), "shown": len(nodes)})
-
-
-if __name__ == "__main__":
-    mcp.run()
-`);
-
-  fs.writeFileSync(reqTxt, "fastmcp>=2.0.0\n");
-
-  const configSnippet = JSON.stringify({
-    mcpServers: {
-      "personal-knowledge": {
-        command: "python",
-        args: [serverPy],
-      }
-    }
-  }, null, 2);
-
-  return { serverPath: serverPy, configSnippet };
-}
-
-// ── Agent-Room MCP server (Phase C) ─────────────────────────────────────────
-// A standalone MCP server that lets an AI agent join a chatroom over WebSocket.
-// The shared secret comes from the PKM_CHAT_SECRET env var (set by whoever runs
-// the agent, using the secret the host distributes) — never through a tool arg.
-function chatMcpStatus(): { installed: boolean; serverPath: string } {
-  const serverPath = path.join(getStorePath(), "mcp-server", "chat_server.py");
-  return { installed: fs.existsSync(serverPath), serverPath };
-}
-
-function generateChatMcpServer(_context: vscode.ExtensionContext): { serverPath: string; configSnippet: string } {
-  const storePath = getStorePath();
-  const mcpDir    = path.join(storePath, "mcp-server");
-  const serverPy  = path.join(mcpDir, "chat_server.py");
-  const reqTxt    = path.join(mcpDir, "chat_requirements.txt");
-  fs.mkdirSync(mcpDir, { recursive: true });
-
-  fs.writeFileSync(serverPy, `#!/usr/bin/env python3
-"""
-PKM Agent-Room MCP Server — lets an AI agent join a Personal Knowledge chatroom.
-
-Connects to a self-hosted chat hub over WebSocket and exposes tools so an agent
-can join a room, read the conversation, post messages, and leave — collaborating
-with humans and other agents in real time.
-
-Auth: the team SHARED SECRET (created and distributed by the host) is read from
-the PKM_CHAT_SECRET environment variable. It is never passed as a tool argument,
-so it never flows through the model prompt.
-
-Environment variables:
-  PKM_CHAT_SECRET  (required)  the host's shared secret
-  PKM_CHAT_URL                 default hub URL, e.g. ws://host:7345
-  PKM_CHAT_ROOM                default room name (default: general)
-  PKM_CHAT_NAME                default display name (must be unique in the room)
-
-Install:  pip install fastmcp websockets
-Run:      python chat_server.py
-"""
-import os, json, asyncio
-import secrets as _secrets
-from typing import Optional
-
-try:
-    from fastmcp import FastMCP
-except ImportError:
-    raise SystemExit("fastmcp not found. Run: pip install fastmcp websockets")
-try:
-    import websockets
-except ImportError:
-    raise SystemExit("websockets not found. Run: pip install fastmcp websockets")
-
-mcp = FastMCP("PKM Agent Room")
-
-def _load_cid():
-    # Stable identity across restarts so teammates recognize this agent. Stored
-    # next to this file; falls back to an ephemeral id if the file isn't writable.
-    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".chat_cid")
-    try:
-        if os.path.exists(p):
-            v = open(p).read().strip()
-            if v:
-                return v
-        v = _secrets.token_hex(4)
-        with open(p, "w") as f:
-            f.write(v)
-        return v
-    except Exception:
-        return _secrets.token_hex(4)
-
-_CID = _load_cid()
-_state = {
-    "ws": None, "task": None,
-    "url": "", "room": "", "name": "",
-    "status": "disconnected", "detail": "",
-    "members": [], "messages": [], "cursor": 0,
-}
-_seen_ids = set()   # message ids already recorded — dedup history backfill on reconnect
-
-
-def _env(k, d=""):
-    v = os.environ.get(k)
-    return v if v else d
-
-
-def _norm(m):
-    return {"id": m.get("id", ""), "from": m.get("from", ""), "text": m.get("text", ""),
-            "ts": m.get("ts", 0), "kind": m.get("kind", "human"),
-            "system": bool(m.get("system"))}
-
-
-def _record(nm):
-    # Append a normalized message unless we've already seen it (by id).
-    mid = nm.get("id")
-    if mid:
-        if mid in _seen_ids:
-            return
-        _seen_ids.add(mid)
-    _state["messages"].append(nm)
-
-
-async def _reader(ws):
-    try:
-        async for raw in ws:
-            try:
-                f = json.loads(raw)
-            except Exception:
-                continue
-            t = f.get("t")
-            if t == "presence":
-                _state["members"] = f.get("members", [])
-            elif t == "history":
-                for m in f.get("messages", []):
-                    _record(_norm(m))
-            elif t == "msg":
-                _record(_norm(f))
-            elif t == "system":
-                _state["messages"].append({"from": "", "text": f.get("text", ""),
-                                            "ts": f.get("ts", 0), "kind": "system", "system": True})
-            elif t == "file.offer":
-                fm = f.get("file", {})
-                _state["messages"].append({"from": f.get("from", ""),
-                                            "text": "[shared a file: " + fm.get("name", "") + "]",
-                                            "ts": f.get("ts", 0), "kind": f.get("kind", "human")})
-            elif t == "closed":
-                _state["messages"].append({"from": "", "text": "Room closed (" + f.get("reason", "") + ").",
-                                            "ts": 0, "kind": "system", "system": True})
-                _state["status"] = "disconnected"; _state["detail"] = "room closed"
-            elif t == "kicked":
-                _state["messages"].append({"from": "", "text": f.get("reason", "Removed by the host."),
-                                            "ts": 0, "kind": "system", "system": True})
-                _state["status"] = "disconnected"; _state["detail"] = "removed by host"
-            elif t == "renamed":
-                _state["name"] = f.get("name", _state["name"])
-                _state["messages"].append({"from": "", "text": 'The host renamed you to "' + f.get("name", "") + '".',
-                                            "ts": 0, "kind": "system", "system": True})
-            elif t == "error":
-                # Mute/moderation notices are informational — keep the connection.
-                if f.get("code") in ("muted", "moderation"):
-                    _state["messages"].append({"from": "", "text": f.get("msg", ""),
-                                                "ts": 0, "kind": "system", "system": True})
-                else:
-                    _state["status"] = "error"; _state["detail"] = f.get("msg", "")
-    except Exception as e:
-        _state["detail"] = str(e)
-    finally:
-        _state["status"] = "disconnected"
-        _state["ws"] = None
-
-
-async def _do_leave():
-    ws = _state.get("ws")
-    if ws is not None:
-        try:
-            await ws.send(json.dumps({"t": "leave", "room": _state.get("room", "")}))
-        except Exception:
-            pass
-        try:
-            await ws.close()
-        except Exception:
-            pass
-    task = _state.get("task")
-    if task is not None:
-        task.cancel()
-    _state.update(ws=None, task=None, status="disconnected", members=[])
-
-
-async def _do_join(url, room, name, token):
-    await _do_leave()
-    ws = await websockets.connect(url, open_timeout=8, max_size=8 * 1024 * 1024)
-    await ws.send(json.dumps({"t": "join", "room": room, "user": name,
-                              "token": token, "kind": "agent", "cid": _CID}))
-    _state.update(ws=ws, url=url, room=room, name=name,
-                  status="connected", detail="", members=[], messages=[], cursor=0)
-    _state["task"] = asyncio.create_task(_reader(ws))
-    await asyncio.sleep(0.4)   # collect initial presence/history or an auth error
-    if _state["status"] == "error":
-        raise RuntimeError(_state["detail"] or "join rejected")
-    return True
-
-
-@mcp.tool()
-async def chat_join(url: str = "", room: str = "", name: str = "") -> str:
-    """Join a Personal Knowledge chatroom as an AI agent. Arguments override the
-    PKM_CHAT_URL / PKM_CHAT_ROOM / PKM_CHAT_NAME environment defaults. The shared
-    secret is read from PKM_CHAT_SECRET (never passed here). Your display name must
-    be unique in the room. Returns connection status and current members."""
-    token = _env("PKM_CHAT_SECRET")
-    if not token:
-        return json.dumps({"ok": False, "error": "PKM_CHAT_SECRET is not set. Ask the host for the shared secret and set it in this server's environment."})
-    url = url or _env("PKM_CHAT_URL")
-    room = room or _env("PKM_CHAT_ROOM", "")
-    name = name or _env("PKM_CHAT_NAME", "agent-" + _CID)
-    # A connection string may embed the room: ws://host:port/roomname
-    if url and not room:
-        try:
-            from urllib.parse import urlparse, unquote
-            pu = urlparse(url)
-            seg = (pu.path or "").strip("/")
-            if seg:
-                room = unquote(seg.split("/")[-1])
-                url = pu.scheme + "://" + pu.netloc
-        except Exception:
-            pass
-    if not room:
-        room = "general"
-    if not url:
-        return json.dumps({"ok": False, "error": "No hub URL. Pass url=ws://host:port[/room] or set PKM_CHAT_URL."})
-    try:
-        await _do_join(url, room, name, token)
-    except Exception as e:
-        return json.dumps({"ok": False, "error": str(e)})
-    return json.dumps({"ok": True, "room": room, "name": name, "members": _state["members"]})
-
-
-@mcp.tool()
-async def chat_post(text: str) -> str:
-    """Post a message to the joined chatroom (visible to all humans and agents)."""
-    ws = _state.get("ws")
-    if ws is None or _state["status"] != "connected":
-        return json.dumps({"ok": False, "error": "Not connected. Call chat_join first."})
-    try:
-        await ws.send(json.dumps({"t": "msg", "room": _state["room"],
-                                  "from": _state["name"], "text": text, "kind": "agent"}))
-    except Exception as e:
-        return json.dumps({"ok": False, "error": str(e)})
-    return json.dumps({"ok": True})
-
-
-@mcp.tool()
-async def chat_read(limit: int = 50, only_new: bool = True) -> str:
-    """Read messages from the joined room. By default returns only messages that
-    arrived since your last chat_read; set only_new=false for the latest 'limit'
-    messages. Each message has from, text, ts, and kind (human/agent/system)."""
-    msgs = _state["messages"]
-    start = _state["cursor"] if only_new else max(0, len(msgs) - max(1, limit))
-    items = msgs[start:]
-    if len(items) > limit:
-        items = items[-limit:]
-    _state["cursor"] = len(msgs)
-    return json.dumps({"ok": True, "count": len(items), "messages": items, "status": _state["status"]})
-
-
-@mcp.tool()
-async def chat_members() -> str:
-    """List who is in the room. 'present' are connected now; 'left' is roster history
-    (people who were here and disconnected). Each entry carries a stable 'sid'
-    identity id (verified for extension/MCP, best-effort for browser)."""
-    everyone = _state["members"]
-    present = [m for m in everyone if m.get("present", True)]
-    left = [m for m in everyone if not m.get("present", True)]
-    return json.dumps({"ok": True, "present": present, "left": left,
-                       "members": present, "status": _state["status"]})
-
-
-@mcp.tool()
-async def chat_status() -> str:
-    """Report the current connection status (room, name, status, member count)."""
-    present = [m for m in _state["members"] if m.get("present", True)]
-    return json.dumps({"ok": True, "room": _state["room"], "name": _state["name"],
-                       "status": _state["status"], "detail": _state["detail"],
-                       "members": len(present)})
-
-
-@mcp.tool()
-async def chat_leave() -> str:
-    """Leave the chatroom and close the connection."""
-    await _do_leave()
-    return json.dumps({"ok": True})
-
-
-if __name__ == "__main__":
-    mcp.run()
-`);
-
-  fs.writeFileSync(reqTxt, "fastmcp>=2.0.0\nwebsockets>=12.0\n");
-
-  const configSnippet = JSON.stringify({
-    mcpServers: {
-      "pkm-chat": {
-        command: "python",
-        args: [serverPy],
-        env: {
-          PKM_CHAT_SECRET: "<paste the room secret>",
-          PKM_CHAT_URL: "ws://HOST:7345/ROOM",
-          PKM_CHAT_NAME: "my-agent",
-        },
-      }
-    }
-  }, null, 2);
-
-  return { serverPath: serverPy, configSnippet };
-}
-
-// ── AI Summary for scripts ──────────────────────────────────────────────────
-// ── AI backends ─────────────────────────────────────────────────────────────
-interface AiBackend { id: string; label: string; kind: "copilot" | "azure-openai" | "openai-compatible"; model: string; }
-
-/** Scan for available AI backends: live Copilot models + configured HTTP endpoints. */
-async function listAiBackends(context: vscode.ExtensionContext): Promise<AiBackend[]> {
-  const out: AiBackend[] = [];
-
-  // Copilot — enumerate the actual models the VS Code LM API offers
-  const lm = (vscode as any).lm;
-  if (lm?.selectChatModels) {
-    try {
-      const models = await lm.selectChatModels({ vendor: "copilot" });
-      for (const m of models || []) {
-        out.push({ id: `copilot:${m.id}`, label: `Copilot · ${m.name || m.id}`, kind: "copilot", model: m.id });
-      }
-    } catch { /* Copilot not available */ }
+async function offerMcpRuntimeSetup(context: vscode.ExtensionContext): Promise<void> {
+  if (context.globalState.get<boolean>("mcpRuntimeSetupOffered.v1", false) || mcpRuntimeStatus().healthy) return;
+  await context.globalState.update("mcpRuntimeSetupOffered.v1", true);
+  const base = detectMcpPython();
+  const openSetup = () => { const panel = getOrCreatePanel(context); panel.reveal(vscode.ViewColumn.One); if (_panelReady) panel.webview.postMessage({ command: "openTab", tab: "mcp" }); else _pendingTab = "mcp"; };
+  if (!base.valid) {
+    const choice = await vscode.window.showWarningMessage(
+      "Personal Knowledge Manager is ready, but MCP requires Python 3.10+. Install Python or specify an executable in the MCP tab. PKM features remain available.",
+      "Open MCP Setup", "Later");
+    if (choice === "Open MCP Setup") openSetup();
+    return;
   }
-
-  // HTTP backends — available when an endpoint + API key are configured
-  const cfg = vscode.workspace.getConfiguration("personalKnowledge");
-  const endpoint = cfg.get<string>("aiEndpoint")?.trim();
-  const model = cfg.get<string>("aiModel")?.trim() || "gpt-4o-mini";
-  const backend = cfg.get<string>("aiBackend");
-  const key = await context.secrets.get("personalKnowledge.aiApiKey");
-  if (endpoint && key) {
-    if (backend === "azure-openai")
-      out.push({ id: `azure:${model}`, label: `Azure OpenAI · ${model}`, kind: "azure-openai", model });
-    else
-      out.push({ id: `openai:${model}`, label: `OpenAI-compatible · ${model}`, kind: "openai-compatible", model });
-  } else if (endpoint) {
-    // Endpoint set but no key — surface as needing configuration
-    const kind = backend === "azure-openai" ? "azure-openai" : "openai-compatible";
-    out.push({ id: `${kind}:${model}:needkey`, label: `${kind === "azure-openai" ? "Azure OpenAI" : "OpenAI-compatible"} · ${model} (set API key)`, kind, model });
-  }
-  return out;
-}
-
-/** Run a prompt against a specific backend and return the text response. */
-async function runAiPrompt(context: vscode.ExtensionContext, backend: AiBackend, prompt: string): Promise<string> {
-  if (backend.kind === "copilot") {
-    const lm = (vscode as any).lm;
-    if (!lm?.selectChatModels) throw new Error("Language Model API unavailable (needs VS Code 1.90+ with Copilot).");
-    let models = await lm.selectChatModels({ vendor: "copilot", id: backend.model });
-    if (!models?.length) models = await lm.selectChatModels({ vendor: "copilot" });
-    const model = models?.[0];
-    if (!model) throw new Error("No Copilot chat model available. Sign in to GitHub Copilot.");
-    const messages = [ (vscode as any).LanguageModelChatMessage.User(prompt) ];
-    const resp = await model.sendRequest(messages, {}, new vscode.CancellationTokenSource().token);
-    let out = ""; for await (const chunk of resp.text) out += chunk;
-    return out.trim();
-  }
-
-  // HTTP backends (Azure OpenAI / OpenAI-compatible)
-  const cfg = vscode.workspace.getConfiguration("personalKnowledge");
-  const endpoint = (cfg.get<string>("aiEndpoint") ?? "").trim().replace(/\/$/, "");
-  const apiKey = await context.secrets.get("personalKnowledge.aiApiKey");
-  if (!endpoint) throw new Error("No AI endpoint configured (personalKnowledge.aiEndpoint).");
-  if (!apiKey) throw new Error('No API key set. Run "Personal Knowledge: Set AI API Key".');
-
-  let url: string; const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (backend.kind === "azure-openai") {
-    const ver = cfg.get<string>("aiAzureApiVersion") || "2024-06-01";
-    url = `${endpoint}/openai/deployments/${backend.model}/chat/completions?api-version=${ver}`;
-    headers["api-key"] = apiKey;
-  } else {
-    url = `${endpoint}/chat/completions`;
-    headers["Authorization"] = `Bearer ${apiKey}`;
-  }
-  const body = { model: backend.model, messages: [{ role: "user", content: prompt }], temperature: 0.2, max_tokens: 700 };
-  const resp = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(60_000) });
-  if (!resp.ok) throw new Error(`Endpoint returned ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
-  const j: any = await resp.json();
-  return (j?.choices?.[0]?.message?.content ?? "").trim();
-}
-
-// ── AI Summary for scripts ──────────────────────────────────────────────────
-/** Per-script cache directory under scripts/.ai-cache/<sanitized-path>/ */
-function scriptCacheDir(relPath: string): string {
-  const slug = relPath.replace(/[^A-Za-z0-9._-]+/g, "_");
-  return path.join(getStorePath(), "scripts", ".ai-cache", slug);
-}
-
-async function aiSummarizeScript(
-  context: vscode.ExtensionContext, relPath: string, backendId?: string, cacheOnly = false
-): Promise<{ summary?: string; cached?: boolean; error?: string; backend?: string; miss?: boolean }> {
-  const r = scriptGet(relPath);
-  if (!r) return cacheOnly ? { miss: true } : { error: `Script not found: ${relPath}` };
-
-  // Resolve the backend: requested id, else first available
-  const backends = await listAiBackends(context);
-  if (!backends.length) {
-    return cacheOnly ? { miss: true } : { error: "No AI backend available. Enable Copilot, or set an endpoint + API key in Settings." };
-  }
-  const backend = backends.find(b => b.id === backendId) ?? backends[0];
-  if (backend.id.endsWith(":needkey")) {
-    return cacheOnly ? { miss: true } : { error: 'API key not set. Run "Personal Knowledge: Set AI API Key".', backend: backend.label };
-  }
-
-  // Cache key includes the backend id so switching model/provider regenerates.
-  // Files live in a per-script subfolder so they can be removed on delete/edit.
-  const hash = createHash("sha256").update(backend.id + "\0" + r.content).digest("hex").slice(0, 16);
-  const cacheDir = scriptCacheDir(relPath);
-  const cacheFile = path.join(cacheDir, `${hash}.md`);
-  if (fs.existsSync(cacheFile)) {
-    return { summary: fs.readFileSync(cacheFile, "utf-8"), cached: true, backend: backend.label };
-  }
-  // Cache-only peek (used when opening a script): don't call the AI on a miss
-  if (cacheOnly) return { miss: true, backend: backend.label };
-
-  const prompt = [
-    `You are analyzing a data-processing script written in: ${r.lang}.`,
-    `File: ${r.path}`,
-    ``,
-    `Produce a concise Markdown summary with these sections:`,
-    `- **Purpose**: what this script does (1-2 sentences)`,
-    `- **How it works**: key steps / data flow`,
-    `- **Inputs**: source streams/tables/files it reads`,
-    `- **Output**: what it produces and where`,
-    `- **Potential issues**: correctness, performance, or maintenance concerns`,
-    ``,
-    `Keep it under 250 words. Here is the script:`,
-    ``,
-    "```",
-    r.content.slice(0, 24000),
-    "```",
-  ].join("\n");
-
+  const choice = await vscode.window.showInformationMessage(
+    `Python ${base.version} detected at ${base.path}. Create a dedicated runtime for the unified PKM MCP server?`,
+    "Create MCP Runtime", "Choose Another Python", "Later");
+  if (choice === "Choose Another Python") { openSetup(); return; }
+  if (choice !== "Create MCP Runtime") return;
   try {
-    const out = await runAiPrompt(context, backend, prompt);
-    if (!out) return { error: "The model returned an empty response.", backend: backend.label };
-    // Prepend a machine-readable header noting which backend produced this
-    const withHeader = `<!-- backend: ${backend.id} | generated: ${new Date().toISOString()} -->\n\n${out}`;
-    fs.mkdirSync(cacheDir, { recursive: true });
-    fs.writeFileSync(cacheFile, withHeader);
-    return { summary: withHeader, cached: false, backend: backend.label };
-  } catch (e: any) {
-    return { error: `AI request failed: ${e?.message ?? e}`, backend: backend.label };
+    await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Creating PKM MCP Runtime", cancellable: false }, async progress => {
+      progress.report({ message: "Creating environment and installing dependencies…" });
+      await ensureMcpRuntime(context);
+    });
+    _treeProvider?.refresh();
+    vscode.window.showInformationMessage("PKM MCP Runtime is ready and registered in Envs.", "Open MCP Setup")
+      .then(result => { if (result === "Open MCP Setup") openSetup(); });
+  } catch (error: any) {
+    vscode.window.showErrorMessage(`MCP runtime setup failed: ${error?.message || String(error)}`, "Open MCP Setup")
+      .then(result => { if (result === "Open MCP Setup") openSetup(); });
   }
 }
-
 
 // ── Sidebar tree provider ──────────────────────────────────────────────────
 type PkNodeType =
-  | 'root-skills' | 'root-notes' | 'root-papers' | 'root-prompts' | 'root-packages' | 'root-scripts' | 'root-chatroom'
+  | 'root-skills' | 'root-notes' | 'root-papers' | 'root-prompts' | 'root-packages' | 'root-scripts' | 'root-chatroom' | 'root-mcp'
+  | 'chat-hosted-group' | 'chat-joined-group' | 'chat-room'
   | 'skill-folder' | 'skill' | 'note-folder' | 'note' | 'paper-folder' | 'paper'
   | 'prompt-project' | 'prompt-task' | 'prompt-version' | 'prompt-file'
   | 'package' | 'script-folder' | 'script-file';
@@ -4272,7 +3575,8 @@ class PkTreeItem extends vscode.TreeItem {
     super(label, collapsibleState);
     const ICONS: Partial<Record<PkNodeType, string>> = {
       "root-skills": "book", "root-notes": "note", "root-papers": "library", "root-prompts": "comment-discussion",
-      "root-packages": "package", "root-scripts": "terminal", "root-chatroom": "comment-discussion",
+      "root-packages": "package", "root-scripts": "terminal", "root-chatroom": "comment-discussion", "root-mcp": "server-process",
+      "chat-hosted-group": "broadcast", "chat-joined-group": "plug", "chat-room": "comment",
       "skill-folder": "folder", "note-folder": "folder", "paper-folder": "folder",
       "skill": "symbol-snippet", "note": "file-text", "paper": "file-pdf",
       "prompt-project": "folder", "prompt-task": "symbol-file",
@@ -4298,6 +3602,7 @@ class PkTreeItem extends vscode.TreeItem {
 }
 
 class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
+  constructor(private readonly context: vscode.ExtensionContext) {}
   private _onChange = new vscode.EventEmitter<PkTreeItem | undefined | void>();
   readonly onDidChangeTreeData = this._onChange.event;
 
@@ -4307,8 +3612,10 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
   getChildren(element?: PkTreeItem): PkTreeItem[] {
     const C = vscode.TreeItemCollapsibleState.Collapsed;
     if (!element) {
-      const chatroom = new PkTreeItem("Chatroom", 'root-chatroom', vscode.TreeItemCollapsibleState.None);
+      const chatroom = new PkTreeItem("Chatroom", 'root-chatroom', C);
       chatroom.command = { command: "personalKnowledge.openChatroom", title: "Open Chatroom" };
+      const mcp = new PkTreeItem("MCP", "root-mcp", vscode.TreeItemCollapsibleState.None);
+      mcp.command = { command: "personalKnowledge.setupMcp", title: "Open MCP" };
       return [
         new PkTreeItem("Skills",   'root-skills',   vscode.TreeItemCollapsibleState.Collapsed),
         new PkTreeItem("Notes",    'root-notes',    C),
@@ -4317,6 +3624,7 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
         new PkTreeItem("Packages", 'root-packages', C),
         new PkTreeItem("Scripts",  'root-scripts',  C),
         chatroom,
+        mcp,
       ];
     }
     try {
@@ -4334,9 +3642,35 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
         case 'root-packages':  return this._packageItems();
         case 'root-scripts':   return this._scriptFolder([]);
         case 'script-folder':  return this._scriptFolder(element.nodeData.path);
+        case 'root-chatroom': return this._chatGroups();
+        case 'chat-hosted-group': return this._chatRooms(true);
+        case 'chat-joined-group': return this._chatRooms(false);
       }
     } catch { /* DB/store not ready yet */ }
     return [];
+  }
+
+  private _chatGroups(): PkTreeItem[] {
+    const recents = chatRecents(this.context);
+    const hostedCount = recents.filter(room => room.host).length;
+    const hosted = new PkTreeItem("Hosted by Me", "chat-hosted-group", vscode.TreeItemCollapsibleState.Collapsed);
+    const joined = new PkTreeItem("Joined", "chat-joined-group", vscode.TreeItemCollapsibleState.Collapsed);
+    hosted.description = String(hostedCount);
+    joined.description = String(recents.length - hostedCount);
+    return [hosted, joined];
+  }
+
+  private _chatRooms(hosted: boolean): PkTreeItem[] {
+    return chatRecents(this.context)
+      .filter(room => room.host === hosted)
+      .sort((left, right) => right.lastJoined - left.lastJoined)
+      .map(room => {
+        const item = new PkTreeItem(room.room, "chat-room", vscode.TreeItemCollapsibleState.None, { id: room.id });
+        item.description = `as ${room.user}`;
+        item.tooltip = `${room.url}/${encodeURIComponent(room.room)}\nAlias: ${room.user}`;
+        item.command = { command: "personalKnowledge.openChatRoomItem", title: "Open Room", arguments: [room.id] };
+        return item;
+      });
   }
 
   // ── Generic recursive path tree ──────────────────────────────────────────
@@ -4628,7 +3962,7 @@ async function firstTimeSetup(context: vscode.ExtensionContext): Promise<string 
   const defaultPath = path.join(require("os").homedir(), "personal-knowledge");
 
   const pick = await vscode.window.showInformationMessage(
-    "Welcome to Personal Knowledge! Choose where to store your knowledge base:",
+    "Welcome to Personal Knowledge Manager! Choose where to store your knowledge base:",
     { modal: true },
     "Use default  (~/personal-knowledge)",
     "Browse existing folder…",
@@ -4645,7 +3979,7 @@ async function firstTimeSetup(context: vscode.ExtensionContext): Promise<string 
       canSelectFiles: false,
       canSelectMany: false,
       openLabel: "Select knowledge store folder",
-      title: "Personal Knowledge — store location",
+      title: "Personal Knowledge Manager — store location",
     });
     if (!result?.[0]) return undefined;
     chosenPath = result[0].fsPath;
@@ -4700,6 +4034,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (e.affectsConfiguration("personalKnowledge.logLevel")) log.refreshLevel();
       if (e.affectsConfiguration("personalKnowledge.maxTreeDepth")) _treeProvider?.refresh();
       if (e.affectsConfiguration("personalKnowledge.chatHistoryLimitMB")) applyChatArchiveCfg();
+      if (e.affectsConfiguration("personalKnowledge.storePath") || e.affectsConfiguration("personalKnowledge.environmentsPath") || e.affectsConfiguration("personalKnowledge.mcpPythonPath")) refreshMcpDefinitions();
     })
   );
 
@@ -4713,7 +4048,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const chosen = await firstTimeSetup(context);
     if (!chosen) {
       vscode.window.showErrorMessage(
-        "Personal Knowledge: setup not completed. Click the sidebar icon or open the panel to configure.",
+        "Personal Knowledge Manager: setup not completed. Click the sidebar icon or open the panel to configure.",
         "Configure now"
       ).then(v => { if (v) ensureSetup(context); });
     }
@@ -4733,8 +4068,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   } catch (e: any) { log.warn(`servers/env init failed: ${e?.message}`); }
 
+  registerNativeMcpProvider(context);
+
   // Register sidebar tree view + commands FIRST so they're always available
-  const treeProvider = new PkTreeProvider();
+  const treeProvider = new PkTreeProvider(context);
   _treeProvider = treeProvider;
   const treeView = vscode.window.createTreeView("personalKnowledge.sidebarView", {
     treeDataProvider: treeProvider,
@@ -4956,15 +4293,43 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("personalKnowledge.setupMcp", async () => {
       log.action("command.setupMcp");
       const p = getOrCreatePanel(context);
-      p.webview.postMessage({ command: "openTab", tab: "mcp" });
+      p.reveal(vscode.ViewColumn.One);
+      if (_panelReady) p.webview.postMessage({ command: "openTab", tab: "mcp" });
+      else _pendingTab = "mcp";
+      await closeNavigationSidebar();
     }),
 
     vscode.commands.registerCommand("personalKnowledge.openChatroom", async () => {
       log.action("command.openChatroom");
-      const p = getOrCreatePanel(context);
-      p.reveal(vscode.ViewColumn.One);
-      if (_panelReady) p.webview.postMessage({ command: "openTab", tab: "chatroom" });
-      else _pendingTab = "chatroom"; // flushed on the webview "ready" message
+      openChatroomPanel(context);
+      await closeNavigationSidebar();
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.openChatRoomItem", async (id: string) => {
+      const entry = chatRecents(context).find(room => room.id === id);
+      if (!entry?.secret) {
+        vscode.window.showWarningMessage("This room has no saved key. Join it again using a fresh Magic Link.");
+        return;
+      }
+      const manager = getChatMgr();
+      if (manager.activateRoom(entry.url, entry.room)) {
+      } else if (entry.host) {
+        const reachable = await probeHub(entry.url);
+        let url = entry.url;
+        if (!reachable) {
+          const result = await manager.startHub(entry.port);
+          if (!result.ok) { vscode.window.showErrorMessage(`Couldn't rehost room: ${result.error}`); return; }
+          url = `ws://127.0.0.1:${manager.hubPort}`;
+        }
+        manager.rememberRoomKey(entry.room, entry.secret);
+        manager.joinRoom({ url, room: entry.room, user: entry.user, token: entry.secret, cid: getChatCid(context) });
+        if (url !== entry.url) await forgetChatRecent(context, entry.id);
+        await saveChatRecent(context, { url, room: entry.room, user: entry.user, secret: entry.secret, host: true });
+      } else {
+        manager.joinRoom({ url: entry.url, room: entry.room, user: entry.user, token: entry.secret, cid: getChatCid(context) });
+        await saveChatRecent(context, entry);
+      }
+      openChatroomPanel(context);
       await closeNavigationSidebar();
     }),
 
@@ -4980,10 +4345,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (key === undefined) return; // cancelled
       if (key.trim()) {
         await context.secrets.store("personalKnowledge.aiApiKey", key.trim());
-        vscode.window.showInformationMessage("Personal Knowledge: AI API key saved.");
+        vscode.window.showInformationMessage("Personal Knowledge Manager: AI API key saved.");
       } else {
         await context.secrets.delete("personalKnowledge.aiApiKey");
-        vscode.window.showInformationMessage("Personal Knowledge: AI API key cleared.");
+        vscode.window.showInformationMessage("Personal Knowledge Manager: AI API key cleared.");
       }
     })
   );
@@ -4998,19 +4363,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       startFileWatcher(context);
       treeProvider.refresh();
       panel?.webview.postMessage({ command: "saved" }); // re-fetch if panel already open
-      if (!setupComplete) {
-        try {
-          const mcp = generateMcpServer(context);
-          log.info(`MCP server generated at ${mcp.serverPath}`);
-          vscode.window.showInformationMessage(
-            `✅ Knowledge store ready at: ${getStorePath()}  |  MCP server: ${mcp.serverPath}  |  Install: pip install fastmcp`,
-            "Open Panel"
-          ).then(v => { if (v) getOrCreatePanel(context); });
-        } catch (e: any) { log.warn(`MCP generation failed: ${e?.message}`); }
-      }
+      void offerMcpRuntimeSetup(context);
     } catch (e: any) {
       log.error(`store init failed: ${e?.stack ?? e?.message}`);
-      vscode.window.showErrorMessage(`Personal Knowledge: failed to initialize store — ${e.message}`);
+      vscode.window.showErrorMessage(`Personal Knowledge Manager: failed to initialize store — ${e.message}`);
     }
   }
 

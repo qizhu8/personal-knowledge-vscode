@@ -177,19 +177,15 @@ class LiveAgent:
         return rest.strip()
 
     async def _converse_intake(self, frm, text):
-        if frm == self.name or P.decode(text):
-            return  # ignore our own lines and raw protocol frames
+        if P.decode(text):
+            return  # ignore raw protocol frames
         s = text.strip()
         low = s.lower()
-        if low.startswith("/start_conversation"):
+        if frm == "roombot" and ("conversation started" in low or "joined the conversation" in low):
             names = [m.lower() for m in P.parse_mentions(s)]
             if self.name.lower() in names or "all" in names:
                 self.conv_participants = set(P.parse_mentions(s))
                 self.history = []
-                opening = self._strip_command(s)
-                if opening:
-                    self.history.append({"from": frm, "text": opening})
-                    self.pending.append({"from": frm, "text": opening})
                 await self._engage()
             return
         if low.startswith("/stop_conversation"):
@@ -200,6 +196,8 @@ class LiveAgent:
             if self.name.lower() in names:
                 await self._disengage("released")
             return
+        if frm == self.name:
+            return  # own ordinary messages are already present in local history
         if self.conv_active:
             self.history.append({"from": frm, "text": text})
             self.pending.append({"from": frm, "text": text})
@@ -220,10 +218,13 @@ class LiveAgent:
                           self._state_frame("idle")])
 
     def _should_respond(self, batch):
-        # Respond to a message directed at me (@me/@all) or undirected (no @ of others).
+        # The hub coordinates free talk. Respond only to @me/@all or an explicit
+        # roombot turn grant; never race other agents on an undirected message.
         for m in batch:
             names = [x.lower() for x in P.parse_mentions(m["text"])]
-            if not names or self.name.lower() in names or "all" in names:
+            directed = self.name.lower() in names or "all" in names or "everyone" in names
+            granted = m["from"] == "roombot" and directed and "your turn" in m["text"].lower()
+            if directed or granted:
                 return True
         return False
 

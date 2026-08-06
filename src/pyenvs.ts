@@ -82,31 +82,53 @@ export function pyenvUpdate(id: string, patch: Partial<PyEnv>): boolean {
   return true;
 }
 
-export function pyenvDelete(id: string, removeFiles = false): Promise<{ ok: boolean; error?: string }> {
+export interface PyEnvDeleteResult {
+  ok: boolean;
+  id: string;
+  path: string;
+  unregistered: boolean;
+  filesRequested: boolean;
+  filesRemoved: boolean;
+  pathStillExists: boolean;
+  stale?: boolean;
+  error?: string;
+}
+
+export function pyenvDelete(id: string, removeFiles = false): Promise<PyEnvDeleteResult> {
   return new Promise(resolve => {
     const env = pyenvGet(id);
-    const unregister = () => {
+    if (!env) return resolve({ ok: false, id, path: "", unregistered: false, filesRequested: removeFiles, filesRemoved: false, pathStillExists: false, error: "Environment is not registered." });
+    const envPath = env.path || "";
+    const finish = (filesRemoved: boolean) => {
       writeReg(readReg().filter(e => e.id !== id));
       try { fs.rmSync(pkgCachePath(id), { force: true }); } catch { /* ignore */ }
-      resolve({ ok: true });
+      const pathStillExists = !!envPath && fs.existsSync(envPath);
+      resolve({ ok: true, id, path: envPath, unregistered: true, filesRequested: removeFiles, filesRemoved: removeFiles && filesRemoved && !pathStillExists, pathStillExists });
     };
-    if (!removeFiles || !env) return unregister();
+    if (!removeFiles) return finish(false);
+    if (envPath && !fs.existsSync(envPath)) {
+      return resolve({
+        ok: false, id, path: envPath, unregistered: false, filesRequested: true,
+        filesRemoved: false, pathStillExists: false, stale: true,
+        error: `Environment path does not exist on disk: ${envPath}`,
+      });
+    }
     if (env.manager === "conda") {
-      if (!env.path || !env.path.includes("/envs/")) {
-        return resolve({ ok: false, error: "refusing to delete the conda base environment from disk" });
+      if (!env.path || !/[\\/]envs[\\/]/.test(env.path)) {
+        return resolve({ ok: false, id, path: envPath, unregistered: false, filesRequested: true, filesRemoved: false, pathStillExists: !!envPath && fs.existsSync(envPath), error: "Refusing to delete a conda base/root environment from disk." });
       }
       execFile("conda", ["env", "remove", "-y", "-p", env.path], { timeout: 120000 }, (err) => {
-        if (err) return resolve({ ok: false, error: `conda env remove failed: ${err.message}` });
-        unregister();
+        if (err) return resolve({ ok: false, id, path: envPath, unregistered: false, filesRequested: true, filesRemoved: false, pathStillExists: fs.existsSync(env.path), error: `conda env remove failed: ${err.message}` });
+        finish(true);
       });
     } else if (env.path) {
       // Safety: only delete something that actually looks like a virtualenv.
-      const looksVenv = fs.existsSync(path.join(env.path, "pyvenv.cfg")) || fs.existsSync(path.join(env.path, "bin", "python"));
-      if (!looksVenv) return resolve({ ok: false, error: "path does not look like a virtualenv — not deleting" });
-      try { fs.rmSync(env.path, { recursive: true, force: true }); unregister(); }
-      catch (e: any) { resolve({ ok: false, error: String(e?.message || e) }); }
+      const looksVenv = fs.existsSync(path.join(env.path, "pyvenv.cfg")) || fs.existsSync(path.join(env.path, "bin", "python")) || fs.existsSync(path.join(env.path, "Scripts", "python.exe"));
+      if (!looksVenv) return resolve({ ok: false, id, path: envPath, unregistered: false, filesRequested: true, filesRemoved: false, pathStillExists: fs.existsSync(env.path), error: "Path does not look like a virtualenv; files were not deleted." });
+      try { fs.rmSync(env.path, { recursive: true, force: true }); finish(true); }
+      catch (e: any) { resolve({ ok: false, id, path: envPath, unregistered: false, filesRequested: true, filesRemoved: false, pathStillExists: fs.existsSync(env.path), error: String(e?.message || e) }); }
     } else {
-      unregister();
+      finish(false);
     }
   });
 }
@@ -144,7 +166,8 @@ export function pyenvCreate(input: {
       if (fs.existsSync(dir)) return resolve({ ok: false, error: `target already exists: ${dir}` });
       const finish = (err: any, out: string) => {
         if (err) return resolve({ ok: false, error: `${input.manager} create failed: ${err.message}`, log: out });
-        const env = pyenvAdd({ name, manager: input.manager, path: dir, python: path.join(dir, "bin", "python"), description: desc });
+        const python = process.platform === "win32" ? path.join(dir, "Scripts", "python.exe") : path.join(dir, "bin", "python");
+        const env = pyenvAdd({ name, manager: input.manager, path: dir, python, description: desc });
         resolve({ ok: true, env, log: out });
       };
       if (input.manager === "venv") {

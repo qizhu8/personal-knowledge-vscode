@@ -1,0 +1,58 @@
+// ── Protocol ────────────────────────────────────────────────────────────────
+export type MemberKind = "human" | "agent" | "browser";
+
+export interface FileMeta {
+  fileId: string;
+  name:   string;
+  size:   number;
+  mime:   string;
+}
+
+export type Frame =
+  | { t: "join";       room: string; user: string; token: string; kind?: MemberKind; cid?: string }
+  | { t: "leave";      room: string }
+  | { t: "presence";   room: string; members: Member[] }
+  | { t: "msg";        id?: string; room: string; from: string; fromId?: string; text: string; ts?: number; kind?: MemberKind }
+  | { t: "system";     room: string; text: string; ts: number }
+  | { t: "agent.state"; room: string; user?: string; state: AgentRuntimeState; ts?: number }
+  | { t: "history";    room: string; messages: ChatMessage[] }
+  | { t: "closed";     room: string; reason: string }
+  | { t: "admin";      room: string; action: "kick" | "mute" | "unmute" | "rename"; target: string; name?: string }
+  | { t: "kicked";     room: string; reason: string }
+  | { t: "renamed";    room: string; name: string }
+  | { t: "rekey";      room: string; secret: string }
+  | { t: "file.offer"; id?: string; room: string; from: string; fromId?: string; ts?: number; kind?: MemberKind; file: FileMeta }
+  | { t: "file.chunk"; room: string; fileId: string; seq: number; data: string; last: boolean }
+  | { t: "error";      code: string; msg: string }
+  | { t: "ping" }
+  | { t: "pong" };
+
+export type AgentRuntimeState = "idle" | "standby" | "thinking" | "sending" | "reconnecting";
+
+export interface Member {
+  id:    string;
+  user:  string;
+  kind:  MemberKind;
+  host?: boolean;   // true for the room owner/host
+  sid?:  string;    // short stable identity id (from the client's cid) — disambiguates same display names
+  verified?: boolean; // true when the identity is server-trusted (extension/MCP persisted id) vs best-effort (browser)
+  present?: boolean;  // false = in the roster history but not currently connected
+  lastSeen?: number;  // ms epoch of the last time this identity was seen (for "left …")
+  muted?: boolean;    // true when the host has muted this identity (can read but not post)
+}
+
+export interface ChatMessage {
+  id:      string;
+  from:    string;
+  fromId:  string;
+  text:    string;
+  ts:      number;
+  kind:    MemberKind;
+  system?: boolean;
+  file?:   FileMeta;   // present when this line announces a shared file
+}
+
+// File-transfer limits (in-memory relay; keeps the DoS surface small).
+export const MAX_FILE_BYTES = 25 * 1024 * 1024; // 25 MB
+export const CHUNK_BYTES     = 64 * 1024;        // 64 KB raw per chunk
+

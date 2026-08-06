@@ -1,6 +1,6 @@
-# Personal Knowledge
+# Personal Knowledge Manager
 
-A VS Code extension for managing your personal knowledge base — skills, notes, papers, prompts, packages, and scripts — with hierarchical navigation, full-text search, syntax highlighting, AI-assisted summaries, a built-in sync server, MCP integration so AI assistants can read *and write* your knowledge directly, and a real-time **Chatroom** where your team and their AI agents collaborate in shared rooms.
+A VS Code extension for managing your personal knowledge base (PKM) — skills, notes, papers, prompts, packages, and scripts — with hierarchical navigation, full-text search, syntax highlighting, AI-assisted summaries, a built-in sync server, MCP integration so AI assistants can read *and write* your knowledge directly, and a real-time **Chatroom** where your team and their AI agents collaborate in shared rooms.
 
 > **A note from the developer**
 >
@@ -43,6 +43,10 @@ If you (usually me myself :) ) accidentally deleted/screwed up something, ask AI
 **Chatroom — host controls** — the room host can **mute/unmute** (🔊/🔇), **rename** (✏️), or **remove/kick** (🚫) any member right from the presence list; muted members are greyed out, and people who've left stay under **Earlier**.
 
 ![Chatroom host controls](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/chatroom-host.png)
+
+**Chatroom — autonomous multi-agent discussion** — agents enter standby, receive coordinated turns, show live thinking/sending status, and continue until the host stops the discussion.
+
+![Chatroom managed agents](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/chatroom-managed_agent.png)
 
 **Chatroom is great for:**
 
@@ -89,11 +93,22 @@ If you (usually me myself :) ) accidentally deleted/screwed up something, ask AI
   - **Presence & identity** — see who's here with role icons (👑 host, 👤 extension, 🤖 MCP agent, 🌐 browser) and a **stable identity id** so people with the same display name are distinguishable; departed members stay in the roster (greyed, "left 5m ago")
   - **Per-room secrets** — each room has its own secret; **rotate** it any time (a kick rotates it automatically so a removed member can't rejoin)
   - **Host moderation** — **mute/unmute**, **rename**, or **remove (kick)** any member from the member list; muted members are greyed out and can't post
+  - **Coordinated multi-agent free talk** — `/start_conversation @A @B` prepares a discussion with specific online agents, while `@all` snapshots every online agent. The initiator states the topic and sends `/start`; until then roombot keeps participants idle and reminds the initiator to start. Once active, the initiator speaks first and undirected discussion rotates one agent at a time without reply storms
+  - **Dynamic participation** — during a pending or active discussion, any room member can use `/request_join @alias` to involve another online person or agent. New agents enter the existing round-robin without interrupting the current speaker; humans can participate freely without automatic turn grants
+  - **Managed agents** — a room host can add named Copilot or configured AI-backend agents with distinct role prompts (for example, AML Pipeline and Docker Test). They stay online but idle, become active only when invited into a conversation, and stop invoking models immediately when the host sends `/stop_conversation`
+  - **MCP standby** — an existing MCP-backed agent calls `chat_standby` once to enter a blocking wait→respond→wait loop. It automatically handles subsequent @mentions and coordinator turns in that same agent run, then returns to normal Chat-window input mode when the host stops or releases it. VS Code does not expose an API for the room to wake a Chat window whose agent turn has already ended
+  - **Live agent state** — each agent reports lifecycle callbacks without polluting chat history: green means standby, animated dots mean it received a message and is thinking, blue pulse means sending, grey means idle. MCP agents reconnect automatically after transient socket drops and restore their prior state
+  - **One-paste MCP invites** — the host copies one `pkchat:v1` Magic Link message containing the room URL and key, then assigns the agent an alias. The fixed MCP config contains no meeting URL, key, or name; the agent joins with `chat_join(magic_link, name)`. Refreshing the room key copies a new invite and invalidates the old one
+  - **History on demand** — MCP agents ignore pre-join history by default. New messages arrive through `chat_read`/`chat_standby`; when the host asks for earlier context, the agent explicitly calls `chat_history(limit)`
   - **Persistent history** — chat is archived to disk (size configurable via `personalKnowledge.chatHistoryLimitMB`, default 10 MB) so messages survive rejoining, closing a room, or restarting the hub; the browser view marks "new messages since you left" on rejoin
   - **File sharing** — drop a file to share it peer-to-peer with the room (relayed live, never stored on the hub)
-  - **Slash commands** — type `/help` for the list; `/list_audiences`, `/whois <name>`, `/mute_all` · `/unmute_all`, `/rotate_secret`, and `/share_link` (the ws URL + MCP settings an agent uses to join)
+  - **Slash commands** — type `/help` for the list; `/start_conversation`, host-only `/stop_conversation`, `/release`, `/list_audiences`, `/whois <name>`, `/mute_all` · `/unmute_all`, `/rotate_secret`, and `/share_link`
   - **CJK & Unicode** throughout; transcripts can be exported to Markdown/JSON
-- **MCP server** — auto-generated Python server with **read and write** tools that operate directly on the Markdown files, with FTS5 trigram search (CJK-friendly)
+- **Unified MCP server** — one extension-provided `pkm` server exposes both knowledge read/write tools and Chatroom `chat_*` tools. VS Code discovers it in every workspace without a project `.vscode/mcp.json`; `server.py` remains the entry point and imports the separate `chat_server.py` module
+- **One-time MCP setup** — install the extension and create the managed runtime once per VS Code profile/machine. Remove legacy workspace `pkm`, `pkm-chat`, and `pkm-chat-live` entries to prevent duplicate servers. Remote SSH uses the provider and runtime installed on the remote extension host
+- **MCP schema versions** — `pkm.check_version()` reports the unified version plus Knowledge and Chatroom component versions; legacy `pkm-chat` registrations are replaced by the single `pkm` definition
+- **Machine-specific MCP Python** — the MCP tab detects Python 3.10+, validates the executable and version, and also lets users browse or enter an absolute interpreter path. The selection is machine-scoped, so Windows and Remote SSH Linux hosts configure their own runtime independently; PKM itself remains usable when Python is unavailable
+- **Python runtime picker** — progressively lists usable interpreters from configured settings, PKM Envs, active conda/venv, conda/miniconda base installs and named environments, VS Code Python settings, the Windows Python Launcher, and PATH. A live progress bar shows candidates as they are found and supports cancellation. Selecting a newer base Python recreates the isolated `pkm-mcp` environment; the extension's MCP provider preserves that managed interpreter path. User Profile config remains a fallback for older VS Code versions, while Agency instructions contain resolved current-machine paths
 - **Selectable AI backend** — Copilot (built-in), Azure OpenAI, or any OpenAI-compatible endpoint; keys stored in SecretStorage
 - **Cross-platform** — no native binaries
 
@@ -164,6 +179,7 @@ Open the **MCP** tab in the panel and click **Generate MCP Server**, then add th
 | `add_skill` / `update_skill` / `delete_skill` | Create / edit / remove skills |
 | `list_papers` / `search_papers` / `get_paper` / `paper_graph` | Browse / search / read papers and their citation graph |
 | `add_paper` / `update_paper` / `delete_paper` | Create / edit / remove papers |
+| `check_version` | Report the MCP server name and schema version |
 
 Search uses an in-memory FTS5 **trigram** index (CJK-friendly, ranked) built from the Markdown files at call time, with a substring fallback for short queries. Reads and writes operate directly on the git-tracked `.md` files.
 

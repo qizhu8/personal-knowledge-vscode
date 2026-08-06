@@ -1,8 +1,8 @@
 {
   "name": "personal-knowledge",
-  "displayName": "Personal Knowledge",
+  "displayName": "Personal Knowledge Manager",
   "description": "Browse, edit, and sync your personal knowledge: skills, notes, prompts, packages, scripts. Expose it to AI assistants via MCP, and collaborate with teammates and their agents in a built-in real-time Chatroom.",
-  "version": "2.2.1",
+  "version": "2.4.0",
   "publisher": "Uone",
   "author": {
     "name": "Yu Wang"
@@ -37,42 +37,48 @@
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "personalKnowledge.pkm",
+        "label": "Personal Knowledge Manager"
+      }
+    ],
     "commands": [
       {
         "command": "personalKnowledge.open",
-        "title": "Personal Knowledge: Open Panel",
+        "title": "Personal Knowledge Manager: Open Panel",
         "icon": "$(book)"
       },
       {
         "command": "personalKnowledge.addNote",
-        "title": "Personal Knowledge: Quick Note"
+        "title": "Personal Knowledge Manager: Quick Note"
       },
       {
         "command": "personalKnowledge.saveSkill",
-        "title": "Personal Knowledge: Save Selection as Skill"
+        "title": "Personal Knowledge Manager: Save Selection as Skill"
       },
       {
         "command": "personalKnowledge.setupMcp",
-        "title": "Personal Knowledge: Setup MCP Server"
+        "title": "Personal Knowledge Manager: Setup MCP Server"
       },
       {
         "command": "personalKnowledge.openChatroom",
-        "title": "Personal Knowledge: Open Chatroom",
+        "title": "Personal Knowledge Manager: Open Chatroom",
         "icon": "$(comment-discussion)"
       },
       {
         "command": "personalKnowledge.refreshTree",
-        "title": "Personal Knowledge: Refresh",
+        "title": "Personal Knowledge Manager: Refresh",
         "icon": "$(refresh)"
       },
       {
         "command": "personalKnowledge.editMarkdownMetadata",
-        "title": "Personal Knowledge: Edit Markdown Metadata",
+        "title": "Personal Knowledge Manager: Edit Markdown Metadata",
         "icon": "$(edit)"
       },
       {
         "command": "personalKnowledge.editMarkdownContent",
-        "title": "Personal Knowledge: Edit Content",
+        "title": "Personal Knowledge Manager: Edit Content",
         "icon": "$(edit)"
       },
       {
@@ -97,11 +103,11 @@
       },
       {
         "command": "personalKnowledge.showLogs",
-        "title": "Personal Knowledge: Show Logs"
+        "title": "Personal Knowledge Manager: Show Logs"
       },
       {
         "command": "personalKnowledge.setAiKey",
-        "title": "Personal Knowledge: Set AI API Key"
+        "title": "Personal Knowledge Manager: Set AI API Key"
       },
       {
         "command": "personalKnowledge.addSkillHere",
@@ -288,7 +294,7 @@
       "activitybar": [
         {
           "id": "personalKnowledgeBar",
-          "title": "Personal Knowledge",
+          "title": "Personal Knowledge Manager",
           "icon": "resources/sidebar-icon.svg"
         }
       ]
@@ -304,11 +310,11 @@
     "viewsWelcome": [
       {
         "view": "personalKnowledge.sidebarView",
-        "contents": "Your personal knowledge base.\n\n[Open Knowledge Panel](command:personalKnowledge.open)\n\nShortcut: `Ctrl+Shift+K`"
+        "contents": "Your personal knowledge base.\n\n[Open PKM Panel](command:personalKnowledge.open)\n\nShortcut: `Ctrl+Shift+K`"
       }
     ],
     "configuration": {
-      "title": "Personal Knowledge",
+      "title": "Personal Knowledge Manager",
       "properties": {
         "personalKnowledge.storePath": {
           "type": "string",
@@ -320,10 +326,16 @@
           "default": "",
           "description": "Central location where the 'Migrate' action moves Python environments. Defaults to ~/pkm-envs if left empty."
         },
+        "personalKnowledge.mcpPythonPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Absolute Python 3.10+ executable used to create and run the managed PKM MCP environment. Machine-specific; not synced to remote hosts."
+        },
         "personalKnowledge.openOnStartup": {
           "type": "boolean",
           "default": false,
-          "description": "Automatically open the Personal Knowledge panel on VS Code startup."
+          "description": "Automatically open the Personal Knowledge Manager panel on VS Code startup."
         },
         "personalKnowledge.logLevel": {
           "type": "string",
@@ -352,8 +364,8 @@
           ],
           "enumDescriptions": [
             "Use GitHub Copilot via the built-in VS Code Language Model API (no API key needed).",
-            "Use Azure OpenAI. Set aiEndpoint, aiModel (deployment name), aiAzureApiVersion, and run 'Personal Knowledge: Set AI API Key'.",
-            "Use any OpenAI-compatible endpoint (OpenAI, vLLM, Ollama, etc.). Set aiEndpoint, aiModel, and run 'Personal Knowledge: Set AI API Key'."
+            "Use Azure OpenAI. Set aiEndpoint, aiModel (deployment name), aiAzureApiVersion, and run 'Personal Knowledge Manager: Set AI API Key'.",
+            "Use any OpenAI-compatible endpoint (OpenAI, vLLM, Ollama, etc.). Set aiEndpoint, aiModel, and run 'Personal Knowledge Manager: Set AI API Key'."
           ],
           "default": "copilot",
           "description": "Which AI backend to use for script summarization."
@@ -408,7 +420,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && cp -r src/webview dist/ && cp node_modules/sql.js/dist/sql-wasm.js dist/ && cp node_modules/sql.js/dist/sql-wasm.wasm dist/ && cp node_modules/marked/lib/marked.umd.js dist/webview/ && npx esbuild src/live-markdown-entry.js --bundle --platform=node --format=cjs --outfile=dist/live-markdown.js && npx esbuild src/webview/hljs-entry.js --bundle --minify --format=iife --outfile=dist/webview/hljs.js && cp node_modules/highlight.js/styles/github-dark.css dist/webview/hljs.css && cp node_modules/katex/dist/katex.min.js dist/webview/katex.js && cp node_modules/katex/dist/katex.min.css dist/webview/katex.css && mkdir -p dist/webview/fonts && cp node_modules/katex/dist/fonts/*.woff2 dist/webview/fonts/ && cp node_modules/cytoscape/dist/cytoscape.min.js dist/webview/cytoscape.js && cp node_modules/mermaid/dist/mermaid.min.js dist/webview/mermaid.js && cp node_modules/3d-force-graph/dist/3d-force-graph.min.js dist/webview/forcegraph3d.js && node scripts/postbuild.js",
+    "build": "tsc -p tsconfig.json && cp -r src/webview dist/ && node scripts/build-panel.js && cp node_modules/sql.js/dist/sql-wasm.js dist/ && cp node_modules/sql.js/dist/sql-wasm.wasm dist/ && cp node_modules/marked/lib/marked.umd.js dist/webview/ && npx esbuild src/live-markdown-entry.js --bundle --platform=node --format=cjs --outfile=dist/live-markdown.js && npx esbuild src/webview/hljs-entry.js --bundle --minify --format=iife --outfile=dist/webview/hljs.js && cp node_modules/highlight.js/styles/github-dark.css dist/webview/hljs.css && cp node_modules/katex/dist/katex.min.js dist/webview/katex.js && cp node_modules/katex/dist/katex.min.css dist/webview/katex.css && mkdir -p dist/webview/fonts && cp node_modules/katex/dist/fonts/*.woff2 dist/webview/fonts/ && cp node_modules/cytoscape/dist/cytoscape.min.js dist/webview/cytoscape.js && cp node_modules/mermaid/dist/mermaid.min.js dist/webview/mermaid.js && cp node_modules/3d-force-graph/dist/3d-force-graph.min.js dist/webview/forcegraph3d.js && node scripts/postbuild.js",
     "watch": "tsc -p tsconfig.json --watch",
     "package": "npx vsce package"
   },

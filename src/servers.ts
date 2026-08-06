@@ -391,7 +391,7 @@ function indexPage(): string {
     const up = st[slug] && isAlive(st[slug].pid);
     return `<li><a href="/s/${encodeURIComponent(slug)}/">${m?.name || slug}</a> <small>(${up ? "running" : "stopped"} · ${slug})</small></li>`;
   }).join("");
-  return `<!doctype html><meta charset="utf-8"><title>Personal Knowledge — Servers</title>` +
+  return `<!doctype html><meta charset="utf-8"><title>Personal Knowledge Manager — Servers</title>` +
     `<body style="font:15px system-ui;max-width:640px;margin:40px auto"><h2>Registered servers</h2>` +
     `<ul>${rows || "<li><em>none</em></li>"}</ul></body>`;
 }

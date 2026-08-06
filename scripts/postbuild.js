@@ -1,9 +1,5 @@
 #!/usr/bin/env node
-/* Post-build step for the webview:
- *  1. Remove the blocking highlight.js CDN <script> (CSS kept for styling).
- *  2. Syntax-check the main inline <script> so a stray edit can never ship a
- *     broken webview (a single syntax error kills ALL webview JS silently).
- */
+/* Post-build validation for the extension and browser Chatroom webviews. */
 const fs = require("fs");
 const vm = require("vm");
 const path = require("path");
@@ -18,18 +14,19 @@ html = html.replace(
 );
 fs.writeFileSync(htmlPath, html);
 
-// 2. Extract and syntax-check the main inline script
-const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
-if (scripts.length === 0) {
-  console.error("post-build: no inline <script> found in panel.html");
-  process.exit(1);
-}
-const inline = scripts[scripts.length - 1][1]; // the big app script (last inline block)
+// 2. Syntax-check the extracted panel application script.
 try {
-  new vm.Script(inline, { filename: "panel.html:inline" });
-  console.log("post-build: hljs CDN removed, inline script syntax OK");
+  const panelJsPath = path.join(__dirname, "..", "dist", "webview", "panel.js");
+  new vm.Script(fs.readFileSync(panelJsPath, "utf-8"), { filename: "panel.js" });
+  if (!html.includes('href="%%PANEL_CSS%%"') || !html.includes('src="%%PANEL_JS%%"')) {
+    throw new Error("panel.html is missing panel CSS/JS placeholders");
+  }
+  if (/<script(?![^>]*\bsrc=)[^>]*>[\s\S]*?<\/script>/.test(html) || /<style(?:\s[^>]*)?>/.test(html)) {
+    throw new Error("panel.html must not contain inline JavaScript or CSS");
+  }
+  console.log("post-build: hljs CDN removed, panel.js syntax OK");
 } catch (e) {
-  console.error("post-build: INLINE SCRIPT SYNTAX ERROR —", e.message);
+  console.error("post-build: PANEL SCRIPT ERROR —", e.message);
   process.exit(1);
 }
 

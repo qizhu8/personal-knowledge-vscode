@@ -3,7 +3,7 @@
 // (the "roombot"). Add new commands to CHAT_COMMANDS; the hub and /help pick
 // them up automatically. Command text is NEVER broadcast to the room — only the
 // bot's reply is sent back to the requester.
-import type { Member } from "./chatroom";
+import type { Member } from "./chatroom-protocol";
 
 /** Display name of the background sender that answers slash commands. */
 export const BOT_NAME = "roombot";
@@ -24,6 +24,7 @@ export interface CommandActions {
   muteAll:   () => number;   // mute every present non-host member; returns how many changed
   unmuteAll: () => number;   // clear all mutes in the room; returns how many were cleared
   rotateSecret: () => boolean;  // rotate the room secret; returns true if a secret existed to rotate
+  inviteMessage: () => string;
 }
 
 export interface ChatCommand {
@@ -68,15 +69,9 @@ export const CHAT_COMMANDS: ChatCommand[] = [
   },
   {
     name: "share_link",
-    summary: "Show the ws link + MCP settings an AI agent uses to join",
+    summary: "Create the one-paste MCP Magic Link invite",
     hostOnly: true,
-    run: (ctx) => [
-      `🔗 To bring an AI agent into "${ctx.room}", set these on its MCP chat server (chat_server.py):`,
-      `  PKM_CHAT_URL    = ${ctx.joinUrl}`,
-      `  PKM_CHAT_SECRET = <the room secret>   (copy it with the 🔑 button)`,
-      `  PKM_CHAT_NAME   = <the agent's display name>`,
-      `The agent then joins this room over MCP and can read and post messages.`,
-    ].join("\n"),
+    run: (ctx) => ctx.actions.inviteMessage(),
   },
   {
     name: "list_audiences",
@@ -113,18 +108,29 @@ export const CHAT_COMMANDS: ChatCommand[] = [
   },
   {
     name: "start_conversation",
-    summary: "Start THE conversation and @-invite the parties — /start_conversation @A @B …",
-    run: () => "Starting the conversation — the invited agents will stand by and reply on their own.",
+    summary: "Prepare agent free talk — /start_conversation @A @B or @all; then state the topic and /start",
+    run: () => "Conversation prepared. State the topic, then use /start.",
+  },
+  {
+    name: "start",
+    summary: "Initiator: begin the prepared discussion after stating the topic",
+    run: () => "Starting the prepared discussion.",
   },
   {
     name: "stop_conversation",
     summary: "Stop the current conversation (all agents leave standby)",
+    hostOnly: true,
     run: () => "Stopping the current conversation.",
   },
   {
     name: "release",
     summary: "Drop one party from the conversation — /release @who",
     run: () => "Releasing the named party from the conversation.",
+  },
+  {
+    name: "request_join",
+    summary: "Invite an online member into this discussion — /request_join @alias",
+    run: () => "Requesting that the named member join the discussion.",
   },
   {
     name: "mute_all",
