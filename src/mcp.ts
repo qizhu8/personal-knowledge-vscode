@@ -8,9 +8,9 @@ import { condaEnvs, pyenvAdd, pyenvCreate, pyenvDelete, pyenvList, pyenvUpdate }
 import { managedEnvironmentsRoot } from "./environment-paths";
 
 // ── MCP server scaffold ────────────────────────────────────────────────────
-export const UNIFIED_MCP_VERSION = "2.0.0";
+export const UNIFIED_MCP_VERSION = "2.0.1";
 const KNOWLEDGE_MCP_VERSION = "1.0.0";
-const CHAT_MCP_VERSION = "2.0.0";
+const CHAT_MCP_VERSION = "2.0.1";
 
 interface McpServerStatus {
   installed: boolean;
@@ -18,6 +18,8 @@ interface McpServerStatus {
   expectedVersion: string;
   installedVersion: string;
   current: boolean;
+  knowledgeVersion: string;
+  chatVersion: string;
 }
 
 function readMcpVersion(serverPath: string): string {
@@ -314,7 +316,13 @@ export function combinedMcpInstallInstruction(): string {
 export function mcpStatus(): McpServerStatus {
   const serverPath = path.join(getStorePath(), "mcp-server", "server.py");
   const installedVersion = readMcpVersion(serverPath);
-  return { installed: !!installedVersion, serverPath, expectedVersion: UNIFIED_MCP_VERSION, installedVersion, current: installedVersion === UNIFIED_MCP_VERSION };
+  return {
+    installed: !!installedVersion, serverPath,
+    expectedVersion: UNIFIED_MCP_VERSION, installedVersion,
+    current: installedVersion === UNIFIED_MCP_VERSION,
+    knowledgeVersion: KNOWLEDGE_MCP_VERSION,
+    chatVersion: CHAT_MCP_VERSION,
+  };
 }
 
 export function generateMcpServer(context: vscode.ExtensionContext): { serverPath: string; configSnippet: string } {
@@ -941,7 +949,13 @@ if __name__ == "__main__":
 export function chatMcpStatus(): McpServerStatus {
   const serverPath = path.join(getStorePath(), "mcp-server", "chat_server.py");
   const installedVersion = readMcpVersion(serverPath);
-  return { installed: !!installedVersion, serverPath, expectedVersion: CHAT_MCP_VERSION, installedVersion, current: installedVersion === CHAT_MCP_VERSION };
+  return {
+    installed: !!installedVersion, serverPath,
+    expectedVersion: CHAT_MCP_VERSION, installedVersion,
+    current: installedVersion === CHAT_MCP_VERSION,
+    knowledgeVersion: KNOWLEDGE_MCP_VERSION,
+    chatVersion: CHAT_MCP_VERSION,
+  };
 }
 
 export function generateChatMcpServer(_context: vscode.ExtensionContext): { serverPath: string; configSnippet: string } {
@@ -1257,13 +1271,13 @@ async def chat_history(limit: int = 50) -> str:
 
 @mcp.tool()
 async def chat_standby(timeout: int = 300) -> str:
-  """Continuously watch the room during a coordinated conversation.
+    """Continuously watch the room during a coordinated conversation.
 
-  Call immediately after joining. When /start_conversation names this agent,
-  it MUST remain focused on Chatroom: on event='message', respond with
-  chat_post and IMMEDIATELY call chat_standby again; on event='timeout', call
-  chat_standby again without ending the agent turn. The only normal exits are
-  event='stopped' after /stop_conversation or event='released' after /release.
+    Call immediately after joining. When /start_conversation names this agent,
+    it MUST remain focused on Chatroom: on event='message', respond with
+    chat_post and IMMEDIATELY call chat_standby again; on event='timeout', call
+    chat_standby again without ending the agent turn. The only normal exits are
+    event='stopped' after /stop_conversation or event='released' after /release.
     """
     timeout = max(1, min(int(timeout or 300), 1800))
     await _send_state("standby")

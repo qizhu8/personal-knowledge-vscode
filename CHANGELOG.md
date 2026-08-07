@@ -3,7 +3,7 @@
 All notable changes to the **Personal Knowledge Manager** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
-## [2.3.6] — 2026-08-07
+## [2.3.7] — 2026-08-07
 
 This release streamlines first-time setup and improves Chatroom reliability across VS Code, MCP agents, and browser participants.
 
@@ -17,6 +17,7 @@ This release streamlines first-time setup and improves Chatroom reliability acro
 - Fixed mention autocomplete, highlighting, and delivery-status display issues.
 - Fixed Python environment deletion/refresh behavior and managed MCP interpreter paths.
 - Improved generated-server and webview validation to prevent broken local builds.
+- Fixed generated `chat_server.py` indentation and bumped the unified/chat MCP schema to `2.0.1` so outdated server files are clearly detected.
 
 ## [2.2.1] — 2026-08-05
 

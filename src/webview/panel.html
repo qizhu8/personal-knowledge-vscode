@@ -51,6 +51,10 @@
   <input type="file" id="import-file" accept=".json" style="display:none" onchange="doImport(this)">
   <span id="pkm-version" title="Personal Knowledge Manager extension version" style="font-size:10px;color:var(--muted);opacity:.7;padding-left:4px">v%%PKM_VERSION%%</span>
 </div>
+<div id="mcp-global-warning" class="hidden" role="status">
+  <span id="mcp-global-warning-text"></span>
+  <button class="tbtn" onclick="openMcpSetup()">Open MCP Setup</button>
+</div>
 <div id="layout">
   <div id="sidebar">
     <div id="sidebar-filters"></div>

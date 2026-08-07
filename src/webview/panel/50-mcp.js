@@ -5,6 +5,28 @@ function renderMcpLoading() {
   </div>`;
 }
 
+function updateGlobalMcpWarning(data) {
+  const banner = document.getElementById('mcp-global-warning');
+  const text = document.getElementById('mcp-global-warning-text');
+  if (!banner || !text) return;
+  if (data?.installed && data?.current) {
+    banner.classList.add('hidden');
+    text.textContent = '';
+    return;
+  }
+  const installed = data?.installedVersion || 'missing';
+  const expected = data?.expectedVersion || '?';
+  text.textContent = data?.installed
+    ? `PKM MCP server is outdated (installed v${installed}, expected v${expected}). Regenerate it and restart pkm.`
+    : `PKM MCP server is missing (expected v${expected}). Create the managed runtime and generate the server.`;
+  banner.classList.remove('hidden');
+}
+
+function openMcpSetup() {
+  const button = document.querySelector('.tab[data-tab="mcp"]');
+  if (button) button.dispatchEvent(new MouseEvent('click'));
+}
+
 function mcpVersionBadge(installed, current, installedVersion, expectedVersion) {
   if (!installed) return '<span style="font-size:11px;padding:2px 8px;border-radius:8px;background:var(--border);color:var(--muted)">○ Missing · expected v' + esc(expectedVersion || '?') + '</span>';
   if (current) return '<span style="font-size:11px;padding:2px 8px;border-radius:8px;background:#4ade8022;color:#4ade80">● Current · v' + esc(installedVersion) + '</span>';
@@ -22,7 +44,7 @@ function renderMcpPane(data) {
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px">
         <span style="font-size:22px">⚡</span>
         <span style="font-size:17px;font-weight:700">Unified PKM MCP Server</span>
-        ${mcpVersionBadge(installed, data?.current, data?.installedVersion, data?.expectedVersion)}
+        <span id="mcp-version-badge">${mcpVersionBadge(installed, data?.current, data?.installedVersion, data?.expectedVersion)}</span>
       </div>
       <p style="color:var(--muted);font-size:12px;margin-bottom:14px;line-height:1.6">
         The <strong>Model Context Protocol (MCP)</strong> lets AI assistants like Claude and GitHub Copilot
@@ -78,7 +100,7 @@ function renderMcpPane(data) {
         <div style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:16px">
           <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Server location</div>
           <code style="font-size:11px;color:var(--accent)">${esc(serverPath)}</code>
-          <div style="font-size:10px;color:var(--muted);margin-top:6px">Installed: ${esc(data?.installedVersion || 'unknown')} · Expected: ${esc(data?.expectedVersion || '?')}</div>
+          <div id="mcp-schema-versions" style="font-size:10px;color:var(--muted);margin-top:6px">Unified schema: installed v${esc(data?.installedVersion || 'unknown')} · expected v${esc(data?.expectedVersion || '?')}<br>Components: Knowledge v${esc(data?.knowledgeVersion || '?')} · Chat v${esc(data?.chatVersion || '?')}</div>
         </div>
         <div style="font-size:13px;font-weight:600;margin-bottom:10px">VS Code MCP definition</div>
         <div style="font-size:12px;color:var(--muted);margin-bottom:8px">

@@ -346,7 +346,7 @@ window.addEventListener('message', e => {
     document.getElementById('join-result').innerHTML =
       `<span style="color:#4ade80">✅ Synced from ${esc(data.from)}: ${esc(data.summary||data.count+' items')}${data.group ? ' → group “'+esc(data.group)+'” (review &amp; merge offline)' : ''}</span>`;
   }
-  else if (command === 'mcpStatus')    { renderMcpPane(data); }
+  else if (command === 'mcpStatus')    { updateGlobalMcpWarning(data); if (state.tab === 'mcp') renderMcpPane(data); }
   else if (command === 'chatReadReceipt') { chatUpdateReadReceipt(data); }
   else if (command === 'mcpPythonResult') { renderMcpPythonResult(data); }
   else if (command === 'mcpPythonCandidates') { renderMcpPythonCandidates(data); }

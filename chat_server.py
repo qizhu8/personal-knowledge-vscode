@@ -408,7 +408,7 @@ class ChatBridge:
 
 bridge = ChatBridge()
 mcp = FastMCP("pkm-chat")
-SERVER_VERSION = "2.0.0"
+SERVER_VERSION = "2.0.1"
 
 
 @mcp.tool()

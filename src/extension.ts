@@ -96,6 +96,20 @@ function envListForUi(): any[] {
   });
 }
 
+function mcpPanelStatusData(): object {
+  const info = mcpStatus();
+  const python = detectMcpPython();
+  const runtime = mcpRuntimeStatus();
+  return {
+    ...info,
+    combinedRegistry: runtime.healthy ? combinedMcpRegistry() : "",
+    agencyInstallInstruction: combinedMcpInstallInstruction(),
+    nativeMcpProvider: _nativeMcpProvider,
+    mcpPython: python,
+    mcpRuntime: runtime,
+  };
+}
+
 // ── Logging ────────────────────────────────────────────────────────────────
 type LogLevel = "debug" | "info" | "warn" | "error";
 const LEVEL_ORDER: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3 };
@@ -2001,6 +2015,7 @@ async function handleMessage(
         _pendingTab = undefined;
         respond({ command: "openTab", tab });
       }
+      respond({ command: "mcpStatus", data: mcpPanelStatusData() });
       break;
     }
 
@@ -3432,17 +3447,7 @@ async function handleMessage(
 
     // ── MCP ──────────────────────────────────────────────────────────────
     case "checkMcp": {
-      const info = mcpStatus();
-      const python = detectMcpPython();
-      const runtime = mcpRuntimeStatus();
-      respond({ command: "mcpStatus", data: {
-        ...info,
-        combinedRegistry: runtime.healthy ? combinedMcpRegistry() : "",
-        agencyInstallInstruction: combinedMcpInstallInstruction(),
-        nativeMcpProvider: _nativeMcpProvider,
-        mcpPython: python,
-        mcpRuntime: runtime,
-      } });
+      respond({ command: "mcpStatus", data: mcpPanelStatusData() });
       break;
     }
 
