@@ -33,7 +33,9 @@ Tools exposed to the agent:
 STANDARD PROCEDURE for an agent asked to join:
     1. Obtain the host's pkchat:v1 Magic Link and the alias assigned to you.
     2. Call chat_join(magic_link=..., name=...). Do not ask for URL/key separately.
-    3. Use chat_standby for coordinated conversation turns.
+    3. Call chat_standby immediately. When /start_conversation names you, keep
+       calling chat_standby after every reply or timeout until roombot announces
+       /stop_conversation or you are /release'd. Do not end the agent turn early.
 
 Note: stdout is reserved for the MCP protocol — all logs go to stderr.
 """
@@ -219,6 +221,13 @@ class ChatBridge:
         t = f.get("t")
         now = int(time.time() * 1000)
         if t == "msg":
+            receipt = f.get("receipt") or {}
+            if receipt.get("ack") and f.get("id") and self.loop is not None and self._outbox is not None:
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        self._outbox.put({"t": "msg.read", "room": self.room, "messageId": f["id"]}), self.loop)
+                except Exception:
+                    pass
             self._add("chat", f.get("from", ""), f.get("text", ""), f.get("ts") or now)
             self._mark_joined()
         elif t == "system":
@@ -326,9 +335,10 @@ class ChatBridge:
                     text = str(message.get("text") or "").strip()
                     low = text.lower()
                     names = [str(name).lower() for name in (message.get("mentions") or [])]
+                    prepared = message.get("from") == "roombot" and "conversation prepared" in low
                     started = message.get("from") == "roombot" and "conversation started" in low
                     joined = message.get("from") == "roombot" and "joined the conversation" in low
-                    if (started or joined) and (self.name.lower() in names or "all" in names or "everyone" in names):
+                    if (prepared or started or joined) and (self.name.lower() in names or "all" in names or "everyone" in names):
                         self.conversation_active = True
                         self.send_state("standby")
                         self.standby_cursor = message["seq"]
@@ -441,13 +451,13 @@ def chat_poll(max: int = 50) -> dict:
 
 @mcp.tool()
 def chat_standby(timeout: int = 300) -> dict:
-    """Wait for a coordinated conversation turn without busy polling.
+    """Continuously watch the room during a coordinated conversation.
 
-    Call this once after joining when the user asks you to enter Chatroom standby.
-    It blocks until /start_conversation includes you and a message addresses
-    @you/@all, or roombot grants your turn. On event='message', respond using
-    chat_send and IMMEDIATELY call chat_standby again. Keep repeating in this
-    same agent turn. Only stop when event is 'stopped' or 'released'.
+    Call immediately after joining. When /start_conversation includes you, you
+    MUST remain focused on Chatroom. On event='message', respond with chat_send
+    and IMMEDIATELY call chat_standby again. On event='timeout', call it again
+    without ending the agent turn. Only stop on event='stopped' after
+    /stop_conversation or event='released' after /release.
     """
     return {**bridge.standby(timeout), "status": bridge.status()["state"], "name": bridge.name}
 

@@ -1075,6 +1075,12 @@ async def _reader(ws):
                 for m in f.get("messages", []):
                     _record(_norm(m))
             elif t == "msg":
+                receipt = f.get("receipt") or {}
+                if receipt.get("ack") and f.get("id"):
+                    try:
+                        await ws.send(json.dumps({"t": "msg.read", "room": _state["room"], "messageId": f["id"]}))
+                    except Exception:
+                        pass
                 _record(_norm(f))
             elif t == "system":
                 _state["messages"].append({"from": "", "text": f.get("text", ""),
@@ -1251,11 +1257,13 @@ async def chat_history(limit: int = 50) -> str:
 
 @mcp.tool()
 async def chat_standby(timeout: int = 300) -> str:
-    """Block until this agent is granted a coordinated conversation turn.
+  """Continuously watch the room during a coordinated conversation.
 
-    Call once after joining when asked to enter standby. On event='message',
-    respond with chat_post and IMMEDIATELY call chat_standby again in the same
-    agent turn. Continue until event is 'stopped' or 'released'.
+  Call immediately after joining. When /start_conversation names this agent,
+  it MUST remain focused on Chatroom: on event='message', respond with
+  chat_post and IMMEDIATELY call chat_standby again; on event='timeout', call
+  chat_standby again without ending the agent turn. The only normal exits are
+  event='stopped' after /stop_conversation or event='released' after /release.
     """
     timeout = max(1, min(int(timeout or 300), 1800))
     await _send_state("standby")
@@ -1266,9 +1274,10 @@ async def chat_standby(timeout: int = 300) -> str:
         text = str(message.get("text") or "").strip()
         low = text.lower()
         _state["standby_cursor"] += 1
+        prepared = message.get("from") == "roombot" and "conversation prepared" in low
         started = message.get("from") == "roombot" and "conversation started" in low
         joined = message.get("from") == "roombot" and "joined the conversation" in low
-        if (started or joined) and _mentions(text, _state["name"]):
+        if (prepared or started or joined) and _mentions(text, _state["name"]):
           _state["conversation_active"] = True
           await _send_state("standby")
           continue

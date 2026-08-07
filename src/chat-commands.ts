@@ -108,8 +108,8 @@ export const CHAT_COMMANDS: ChatCommand[] = [
   },
   {
     name: "start_conversation",
-    summary: "Prepare agent free talk — /start_conversation @A @B or @all; then state the topic and /start",
-    run: () => "Conversation prepared. State the topic, then use /start.",
+    summary: "Put named agents into continuous standby — /start_conversation @A @B or @all; then state the topic and /start",
+    run: () => "Conversation prepared. Named agents must keep watching until /stop_conversation or /release. State the topic, then use /start.",
   },
   {
     name: "start",
@@ -118,7 +118,7 @@ export const CHAT_COMMANDS: ChatCommand[] = [
   },
   {
     name: "stop_conversation",
-    summary: "Stop the current conversation (all agents leave standby)",
+    summary: "Stop the conversation and release all agents from continuous standby",
     hostOnly: true,
     run: () => "Stopping the current conversation.",
   },

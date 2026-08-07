@@ -12,12 +12,13 @@ export type Frame =
   | { t: "join";       room: string; user: string; token: string; kind?: MemberKind; cid?: string }
   | { t: "leave";      room: string }
   | { t: "presence";   room: string; members: Member[] }
-  | { t: "msg";        id?: string; room: string; from: string; fromId?: string; text: string; ts?: number; kind?: MemberKind }
+  | { t: "msg";        id?: string; room: string; from: string; fromId?: string; text: string; ts?: number; kind?: MemberKind; receipt?: ReadReceipt }
+  | { t: "msg.read";   room: string; messageId: string; read?: number; total?: number }
   | { t: "system";     room: string; text: string; ts: number }
   | { t: "agent.state"; room: string; user?: string; state: AgentRuntimeState; ts?: number }
   | { t: "history";    room: string; messages: ChatMessage[] }
   | { t: "closed";     room: string; reason: string }
-  | { t: "admin";      room: string; action: "kick" | "mute" | "unmute" | "rename"; target: string; name?: string }
+  | { t: "admin";      room: string; action: "kick" | "mute" | "unmute" | "rename" | "edit"; target: string; name?: string; role?: string }
   | { t: "kicked";     room: string; reason: string }
   | { t: "renamed";    room: string; name: string }
   | { t: "rekey";      room: string; secret: string }
@@ -39,6 +40,7 @@ export interface Member {
   present?: boolean;  // false = in the roster history but not currently connected
   lastSeen?: number;  // ms epoch of the last time this identity was seen (for "left …")
   muted?: boolean;    // true when the host has muted this identity (can read but not post)
+  role?: string;      // host-assigned room role/label
 }
 
 export interface ChatMessage {
@@ -50,6 +52,13 @@ export interface ChatMessage {
   kind:    MemberKind;
   system?: boolean;
   file?:   FileMeta;   // present when this line announces a shared file
+  receipt?: ReadReceipt;
+}
+
+export interface ReadReceipt {
+  read: number;
+  total: number;
+  ack?: boolean;
 }
 
 // File-transfer limits (in-memory relay; keeps the DoS surface small).

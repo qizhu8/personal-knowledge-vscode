@@ -42,6 +42,7 @@ interface RoomState {
   roster: Map<string, RosterEntry>;   // everyone who has ever joined (present + departed)
   muted: Set<string>;                 // identity keys the host has muted (persists across reconnects)
   conversation: ConversationState;
+  receipts: Map<string, { targets: Set<string>; readers: Set<string> }>;
 }
 
 interface ConversationState {
@@ -50,6 +51,7 @@ interface ConversationState {
   initiatorKey: string;
   initiatorName: string;
   participants: string[];
+  currentSpeaker: string;
   nextIndex: number;
   turns: number;
 }
@@ -66,6 +68,7 @@ interface RosterEntry {
   present:   boolean;
   firstSeen: number;
   lastSeen:  number;
+  role:      string;
 }
 
 export interface AdminRoomInfo { room: string; owner: string; members: number; }
@@ -190,7 +193,8 @@ export class ChatHub {
       s = {
         history: [], owner: "", ownerName: "", graceTimer: null,
         roster: new Map(), muted: new Set(),
-        conversation: { active: false, pending: false, initiatorKey: "", initiatorName: "", participants: [], nextIndex: 0, turns: 0 },
+        conversation: { active: false, pending: false, initiatorKey: "", initiatorName: "", participants: [], currentSpeaker: "", nextIndex: 0, turns: 0 },
+        receipts: new Map(),
       };
       this.rooms.set(room, s);
       this.loadArchive(room, s);   // restore prior chat so rejoiners see history
@@ -313,10 +317,15 @@ export class ChatHub {
       const cid     = (frame.cid  || "").slice(0, 32);
       const token   = frame.token ?? "";
       const kind: MemberKind = frame.kind === "agent" ? "agent" : frame.kind === "browser" ? "browser" : "human";
-      // Per-room secret: the room's creator sets it; everyone else must match it.
+      const nameKey = desired.trim().toLowerCase();
+      const joiningIdentity = cid ? `cid:${cid}:${nameKey}` : "";
+      const existingState = this.rooms.get(room);
+      const ownerReconnect = kind === "human" && !!joiningIdentity && existingState?.owner === joiningIdentity;
+      // The stable owner identity can always reconnect. The per-room secret is
+      // guest authentication and must match for everyone else.
       const known = this.roomSecret.get(room);
       if (known !== undefined) {
-        if (!constantTimeEquals(token, known)) {
+        if (!ownerReconnect && !constantTimeEquals(token, known)) {
           this.sendTo(conn.ws, { t: "error", code: "auth", msg: `Wrong secret for room "${room}".` });
           try { conn.ws.close(); } catch { /* ignore */ }
           return;
@@ -336,7 +345,6 @@ export class ChatHub {
         this.roomSecret.set(room, token);   // creator defines the room's secret
       }
       // Names must be unique within a room so every identity is unambiguous.
-      const nameKey = desired.trim().toLowerCase();
       for (const other of this.conns.values()) {
         if (other === conn || !other.joined || other.room !== room) continue;
         if (other.user.trim().toLowerCase() !== nameKey) continue;
@@ -407,15 +415,37 @@ export class ChatHub {
         id: randomBytes(6).toString("hex"), from: conn.user, fromId: conn.id,
         text, ts: Date.now(), kind: conn.kind,
       };
+      const targets = this.mentionTargets(conn.room, conn, text);
+      if (targets.size) {
+        roomState.receipts.set(m.id, { targets, readers: new Set() });
+        m.receipt = { read: 0, total: targets.size };
+      }
       this.remember(conn.room, m);
-      this.broadcast(conn.room, { t: "msg", room: conn.room, ...m });
+      if (targets.size) this.broadcastReceiptMessage(conn.room, m, targets);
+      else this.broadcast(conn.room, { t: "msg", room: conn.room, ...m });
       if (head === "/start_conversation") this.prepareConversation(conn, text);
       else if (head === "/start") this.activateConversation(conn);
       else if (head === "/stop_conversation") this.stopConversation(conn.room);
       else if (head === "/release") this.releaseConversationMembers(conn.room, text);
       else if (head === "/request_join") this.requestConversationJoin(conn.room, text);
       else if (roomState.conversation.pending) this.remindConversationStart(conn.room);
-      else this.coordinateConversationTurn(conn.room, conn.user, text);
+      else this.coordinateConversationTurn(conn.room, conn);
+      return;
+    }
+
+    if (frame.t === "msg.read") {
+      const receipt = this.roomState(conn.room).receipts.get(frame.messageId);
+      if (!receipt) return;
+      const reader = this.identityKey(conn);
+      if (!receipt.targets.has(reader) || receipt.readers.has(reader)) return;
+      receipt.readers.add(reader);
+      const count = { read: receipt.readers.size, total: receipt.targets.size };
+      const message = this.roomState(conn.room).history.find(item => item.id === frame.messageId);
+      if (message) message.receipt = count;
+      this.broadcast(conn.room, {
+        t: "msg.read", room: conn.room, messageId: frame.messageId,
+        ...count,
+      });
       return;
     }
 
@@ -514,6 +544,27 @@ export class ChatHub {
       .map(value => value.slice(1).replace(/^"|"$/g, ""));
   }
 
+  private mentionTargets(room: string, sender: HubConn, text: string): Set<string> {
+    const mentions = this.conversationMentions(text).map(name => name.toLowerCase());
+    if (!mentions.length) return new Set();
+    const all = mentions.some(name => name === "all" || name === "everyone");
+    const senderKey = this.identityKey(sender);
+    return new Set([...this.conns.values()]
+      .filter(conn => conn.joined && conn.room === room && this.identityKey(conn) !== senderKey)
+      .filter(conn => all || mentions.includes(conn.user.toLowerCase()))
+      .map(conn => this.identityKey(conn)));
+  }
+
+  private broadcastReceiptMessage(room: string, message: ChatMessage, targets: Set<string>): void {
+    for (const conn of this.conns.values()) {
+      if (!conn.joined || conn.room !== room) continue;
+      const receipt = message.receipt
+        ? { ...message.receipt, ack: targets.has(this.identityKey(conn)) }
+        : undefined;
+      this.sendTo(conn.ws, { t: "msg", room, ...message, receipt });
+    }
+  }
+
   private formatMention(name: string): string {
     return /^[A-Za-z0-9_][\w-]{0,59}$/.test(name) ? `@${name}` : `@"${name.replace(/"/g, "")}"`;
   }
@@ -534,6 +585,30 @@ export class ChatHub {
     this.broadcast(room, { t: "msg", room, ...message });
   }
 
+  private informConversationGuideline(room: string, agentNames: string[]): void {
+    const wanted = new Set(agentNames.map(name => name.toLowerCase()));
+    const sent = new Set<string>();
+    for (const conn of this.conns.values()) {
+      if (!conn.joined || conn.room !== room || conn.kind !== "agent" || !wanted.has(conn.user.toLowerCase())) continue;
+      const identity = this.identityKey(conn);
+      if (sent.has(identity)) continue;
+      sent.add(identity);
+      const message: ChatMessage = {
+        id: randomBytes(6).toString("hex"), from: BOT_NAME, fromId: "roombot",
+        text: [
+          `PRIVATE AGENT GUIDELINE for ${this.formatMention(conn.user)}: you are participating in a coordinated conversation.`,
+          `Call chat_standby(timeout=300) now. Do not use chat_read for conversation monitoring.`,
+          `When chat_standby returns event="message", reply with chat_post, then immediately call chat_standby again.`,
+          `When it returns event="timeout", immediately call chat_standby again without ending your agent turn.`,
+          `Continue until event="stopped" after /stop_conversation or event="released" after /release.`,
+        ].join("\n"),
+        ts: Date.now(), kind: "agent",
+      };
+      this.sendTo(conn.ws, { t: "msg", room, ...message });
+    }
+    this.postCoordinatorMessage(room, "ℹ️ Conversation guideline sent to participating agents.");
+  }
+
   private prepareConversation(initiator: HubConn, startText: string): void {
     const room = initiator.room;
     const state = this.roomState(room).conversation;
@@ -551,6 +626,7 @@ export class ChatHub {
     state.initiatorKey = this.identityKey(initiator);
     state.initiatorName = initiator.user;
     state.participants = participants;
+    state.currentSpeaker = "";
     const initiatorIndex = participants.findIndex(name => name.toLowerCase() === initiator.user.toLowerCase());
     state.nextIndex = initiatorIndex >= 0 ? (initiatorIndex + 1) % participants.length : 0;
     state.turns = 0;
@@ -559,7 +635,11 @@ export class ChatHub {
       return;
     }
     const who = participants.map(name => this.formatMention(name)).join(", ");
-    this.postCoordinatorMessage(room, `${this.formatMention(initiator.user)}, please state your topic, and use /start to begin the conversation. I'll ping each participant to continue the conversation. Pending participants: ${who}.`);
+    this.postCoordinatorMessage(room, [
+      `🛎️ Conversation prepared — pending agents: ${who}.`,
+      `${this.formatMention(initiator.user)}, please state your topic, then use /start to begin turn rotation.`,
+    ].join("\n"));
+    this.informConversationGuideline(room, participants);
   }
 
   private activateConversation(initiator: HubConn): void {
@@ -578,7 +658,7 @@ export class ChatHub {
     this.postCoordinatorMessage(initiator.room, [
       `🛎️ Conversation started — active agents: ${who}.`,
       `Directed @mentions respond immediately; undirected free talk rotates one participant at a time.`,
-      `The host can end the discussion with /stop_conversation.`,
+      `The host ends the discussion with /stop_conversation.`,
     ].join("\n"));
     if (initiator.kind === "agent") this.postTurnGrant(initiator.room, initiator.user);
     else this.grantNextConversationTurn(initiator.room, initiator.user);
@@ -596,6 +676,7 @@ export class ChatHub {
     state.initiatorKey = "";
     state.initiatorName = "";
     state.participants = [];
+    state.currentSpeaker = "";
     state.nextIndex = 0;
     this.postCoordinatorMessage(room, "⏹ Conversation stopped. All agents may leave standby.");
   }
@@ -605,12 +686,15 @@ export class ChatHub {
     if (!state.active && !state.pending) return;
     const released = new Set(this.conversationMentions(text).map(name => name.toLowerCase()));
     state.participants = state.participants.filter(name => !released.has(name.toLowerCase()));
+    const releasedCurrent = released.has(state.currentSpeaker.toLowerCase());
+    if (releasedCurrent) state.currentSpeaker = "";
     state.nextIndex = state.participants.length ? state.nextIndex % state.participants.length : 0;
     if (!state.participants.length) {
       this.stopConversation(room);
       return;
     }
     this.postCoordinatorMessage(room, `Released: ${[...released].map(name => this.formatMention(name)).join(", ")}. Remaining: ${state.participants.map(name => this.formatMention(name)).join(", ")}.`);
+    if (releasedCurrent && state.active) this.grantNextConversationTurn(room, "");
   }
 
   private requestConversationJoin(room: string, text: string): void {
@@ -638,15 +722,15 @@ export class ChatHub {
     if (already.length) lines.push(`Already participating: ${already.map(name => this.formatMention(name)).join(", ")}.`);
     if (missing.length) lines.push(`Not online: ${missing.map(name => this.formatMention(name)).join(", ")}.`);
     this.postCoordinatorMessage(room, lines.join(" "));
+    if (added.length) this.informConversationGuideline(room, added);
   }
 
-  private coordinateConversationTurn(room: string, sender: string, text: string): void {
+  private coordinateConversationTurn(room: string, sender: HubConn): void {
     const state = this.roomState(room).conversation;
-    if (!state.active) return;
-    const mentions = this.conversationMentions(text).map(name => name.toLowerCase());
-    if (mentions.some(name => ["all", "everyone"].includes(name))) return;
-    if (state.participants.some(name => mentions.includes(name.toLowerCase()))) return;
-    this.grantNextConversationTurn(room, sender);
+    if (!state.active || sender.kind !== "agent" || !state.currentSpeaker) return;
+    if (sender.user.toLowerCase() !== state.currentSpeaker.toLowerCase()) return;
+    state.currentSpeaker = "";
+    this.grantNextConversationTurn(room, sender.user);
   }
 
   private grantNextConversationTurn(room: string, sender: string): void {
@@ -664,13 +748,23 @@ export class ChatHub {
     }
     if (selectedIndex < 0) return;
     const next = state.participants[selectedIndex];
+    state.currentSpeaker = next;
     state.nextIndex = (selectedIndex + 1) % state.participants.length;
     state.turns++;
     this.postTurnGrant(room, next);
   }
 
   private postTurnGrant(room: string, name: string): void {
-    this.postCoordinatorMessage(room, `🎙️ ${this.formatMention(name)}, your turn. Respond to the latest free-talk message, then return to standby.`);
+    const wanted = name.toLowerCase();
+    for (const conn of this.conns.values()) {
+      if (!conn.joined || conn.room !== room || conn.kind !== "agent" || conn.user.toLowerCase() !== wanted) continue;
+      this.sendTo(conn.ws, {
+        t: "msg", room, id: randomBytes(6).toString("hex"),
+        from: BOT_NAME, fromId: "roombot",
+        text: `🎙️ ${this.formatMention(name)}, your turn. Respond to the latest free-talk message, then return to standby.`,
+        ts: Date.now(), kind: "agent",
+      });
+    }
   }
 
   // Answer a slash command privately (only the requester sees the bot reply).
@@ -753,7 +847,7 @@ export class ChatHub {
     const fresh = randomBytes(9).toString("base64url");
     this.roomSecret.set(room, fresh);
     for (const c of this.conns.values()) {
-      if (c.joined && c.room === room && st.owner && (c.cid === st.owner || c.id === st.owner)) {
+      if (c.joined && c.room === room && this.isOwnerConn(st, c)) {
         this.sendTo(c.ws, { t: "rekey", room, secret: fresh });
       }
     }
@@ -775,7 +869,7 @@ export class ChatHub {
     });
   }
 
-  // Host-only moderation: kick, mute/unmute, rename another member. Rejected for
+  // Host-only moderation: remove, mute/unmute, or edit another member. Rejected for
   // anyone who isn't the room owner.
   private handleAdmin(conn: HubConn, frame: Extract<Frame, { t: "admin" }>): void {
     const st = this.rooms.get(conn.room);
@@ -796,17 +890,21 @@ export class ChatHub {
         for (const t of targets) {
           this.sendTo(t.ws, { t: "kicked", room: conn.room, reason: "Removed by the host." });
           t.joined = false;                 // stop onClose from re-broadcasting a "left" line
-          this.markDeparted(t, st);
           this.conns.delete(t.ws);
           try { t.ws.close(); } catch { /* ignore */ }
         }
         st.muted.delete(targetKey);
-        this.broadcast(conn.room, { t: "system", room: conn.room, text: `${who} was removed by the host`, ts: Date.now() });
+        st.roster.delete(targetKey);
+        st.conversation.participants = st.conversation.participants.filter(name => name.toLowerCase() !== who.toLowerCase());
+        const removedCurrent = st.conversation.currentSpeaker.toLowerCase() === who.toLowerCase();
+        if (removedCurrent) st.conversation.currentSpeaker = "";
+        this.broadcast(conn.room, { t: "system", room: conn.room, text: `${who} was permanently removed by the host`, ts: Date.now() });
         // Rotate the room secret so the removed member can't immediately rejoin
         // with the secret they already had. Existing members stay connected (the
         // secret is only checked at join); only NEW joins need the fresh secret.
         this.rotateSecretInternal(conn.room, `🔑 Room secret was rotated after removing ${who}. New members need the new secret.`);
         this.broadcastPresence(conn.room);
+        if (removedCurrent && st.conversation.active) this.grantNextConversationTurn(conn.room, "");
         this.log(`admin kick room=${conn.room} target=${who} (secret rotated)`);
         break;
       }
@@ -848,6 +946,39 @@ export class ChatHub {
         this.log(`rename room=${conn.room} ${who} -> ${newName}${byHost ? " (by host)" : " (self)"}`);
         break;
       }
+      case "edit": {
+        const entry = st.roster.get(targetKey);
+        if (!entry) { this.sendTo(conn.ws, { t: "error", code: "moderation", msg: "That member is no longer in the room roster." }); return; }
+        const oldName = entry.user;
+        const newName = (frame.name || oldName).trim().slice(0, 60);
+        const newRole = (frame.role || "").trim().slice(0, 120);
+        if (!newName) return;
+        const nameChanged = newName.toLowerCase() !== oldName.toLowerCase();
+        if (nameChanged) {
+          const clash = [...st.roster.values()].some(other => other.key !== targetKey && other.user.toLowerCase() === newName.toLowerCase());
+          if (clash) { this.sendTo(conn.ws, { t: "error", code: "moderation", msg: `"${newName}" is already in the room roster.` }); return; }
+        }
+        for (const target of targets) {
+          target.user = newName;
+          if (nameChanged) this.sendTo(target.ws, { t: "renamed", room: conn.room, name: newName });
+        }
+        const newKey = nameChanged
+          ? (targets.length ? this.identityKey(targets[0]) : (entry.sid ? `cid:${entry.sid}:${newName.toLowerCase()}` : `name:${newName.toLowerCase()}`))
+          : targetKey;
+        const wasMuted = st.muted.delete(targetKey);
+        if (newKey !== targetKey) st.roster.delete(targetKey);
+        entry.key = newKey;
+        entry.user = newName;
+        entry.role = newRole;
+        st.roster.set(newKey, entry);
+        if (wasMuted) st.muted.add(newKey);
+        if (st.owner === targetKey) { st.owner = newKey; st.ownerName = newName; }
+        st.conversation.participants = st.conversation.participants.map(name => name.toLowerCase() === oldName.toLowerCase() ? newName : name);
+        if (st.conversation.currentSpeaker.toLowerCase() === oldName.toLowerCase()) st.conversation.currentSpeaker = newName;
+        this.broadcastPresence(conn.room);
+        this.log(`admin edit room=${conn.room} ${oldName} -> ${newName} role=${newRole}`);
+        break;
+      }
     }
   }
 
@@ -866,7 +997,7 @@ export class ChatHub {
     }
     st.roster.set(key, {
       key, id: conn.id, user: conn.user, kind: conn.kind,
-      sid: conn.cid || "", verified, present: true, firstSeen: now, lastSeen: now,
+      sid: conn.cid || "", verified, present: true, firstSeen: now, lastSeen: now, role: "",
     });
     return undefined;
   }
@@ -893,6 +1024,7 @@ export class ChatHub {
         host: !!owner && e.key === owner,
         sid: e.sid, verified: e.verified, present: e.present, lastSeen: e.lastSeen,
         muted: st.muted.has(e.key),
+        role: e.role,
       }));
   }
 

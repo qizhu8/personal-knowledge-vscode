@@ -3,27 +3,20 @@
 All notable changes to the **Personal Knowledge Manager** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
-## [2.4.0] — 2026-08-06
+## [2.3.6] — 2026-08-07
 
-Major Chatroom coordination, managed MCP runtime, and extension architecture update.
+This release streamlines first-time setup and improves Chatroom reliability across VS Code, MCP agents, and browser participants.
 
-### Added
-- **Autonomous multi-agent conversations.** Chatroom supports a host-driven prepare → topic → `/start` flow, round-robin agent turns, host-only stop, dynamic `/request_join`, participant release, runtime state indicators, managed agents, standby, and reconnect handling.
-- **Chatroom Magic Links.** A single `pkchat:v1` invitation packages the room endpoint and secret with integrity validation; agent aliases remain assigned separately.
-- **Managed MCP runtime.** The extension discovers Python 3.10+ installations, creates or repairs an isolated `pkm-mcp` environment, installs dependencies, registers it in Envs, and preserves its interpreter path across symlinked virtual environments.
-- **Extension-provided MCP definition.** Installing the extension makes one unified `pkm` server available across VS Code workspaces without project-level `.vscode/mcp.json` files. Remote windows use their remote extension host, store, and runtime.
-
-### Changed
-- **Unified MCP deployment.** One registered `pkm` server exposes both knowledge and Chatroom tools. `server.py` remains the entry point and mounts the separate `chat_server.py` module; one requirements file and one managed runtime serve both components.
-- **MCP migration.** Generated VS Code and Agency definitions use resolved current-machine paths. Legacy `pkm-chat` and `pkm-chat-live` registrations should be removed to avoid duplicate tools.
-- **Personal Knowledge Manager branding.** User-visible extension naming is standardized while the Marketplace package ID and `personalKnowledge.*` settings namespace remain compatible.
-- **Webview and extension structure.** The monolithic panel assets, Chatroom protocol/hub/client/browser code, MCP generator, AI helpers, and environment-path logic are split into focused modules with deterministic builds.
+### Improved
+- Simplified MCP setup with one managed runtime and one `pkm` server available across workspaces.
+- Smoother Chatroom invitations, browser joining, member management, mentions, and multi-agent conversations.
+- Refreshed navigation and product icons for a more consistent Personal Knowledge Manager experience.
 
 ### Fixed
-- Multiple VS Code windows can share one Chatroom identity without reconnect loops or false leave events.
-- Environments correctly report stale registrations, verify deletion outcomes, refresh after changes, and resolve Windows virtual-environment interpreters.
-- MCP configs no longer resolve a virtual environment's Python symlink back to the base interpreter.
-- Generated Python templates and browser/webview scripts are syntax-checked during the build.
+- Fixed Chatroom reconnect, room-key, turn-order, roster, invitation, and browser authorization issues.
+- Fixed mention autocomplete, highlighting, and delivery-status display issues.
+- Fixed Python environment deletion/refresh behavior and managed MCP interpreter paths.
+- Improved generated-server and webview validation to prevent broken local builds.
 
 ## [2.2.1] — 2026-08-05
 

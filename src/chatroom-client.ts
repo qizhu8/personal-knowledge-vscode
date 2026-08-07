@@ -20,6 +20,7 @@ export interface ClientEvents {
   onHistory:      (messages: ChatMessage[]) => void;
   onPresence:     (members: Member[]) => void;
   onAgentState?:  (user: string, state: AgentRuntimeState) => void;
+  onReadReceipt?: (messageId: string, read: number, total: number) => void;
   onFileComplete: (meta: FileMeta, from: string, data: Buffer) => void;
   onRejected?:    (code: string, msg: string) => void;
   onRenamed?:     (name: string) => void;
@@ -102,10 +103,17 @@ export class ChatClient {
         this.events.onHistory(frame.messages);
         break;
       case "msg":
+        if (frame.id && frame.receipt?.ack) {
+          this.send({ t: "msg.read", room: frame.room, messageId: frame.id });
+        }
         this.events.onMessage({
           id: frame.id ?? randomBytes(6).toString("hex"), from: frame.from, fromId: frame.fromId ?? "",
           text: frame.text, ts: frame.ts ?? Date.now(), kind: frame.kind ?? "human", file: (frame as any).file,
+          receipt: frame.receipt ? { read: frame.receipt.read, total: frame.receipt.total } : undefined,
         });
+        break;
+      case "msg.read":
+        this.events.onReadReceipt?.(frame.messageId, frame.read ?? 0, frame.total ?? 0);
         break;
       case "system":
         this.events.onMessage({ id: randomBytes(6).toString("hex"), from: "", fromId: "", text: frame.text, ts: frame.ts, kind: "human", system: true });
@@ -187,9 +195,9 @@ export class ChatClient {
   }
 
   /** Host-only: moderate another member (kick / mute / unmute / rename). */
-  sendAdmin(action: "kick" | "mute" | "unmute" | "rename", target: string, name?: string): boolean {
+  sendAdmin(action: "kick" | "mute" | "unmute" | "rename" | "edit", target: string, name?: string, role?: string): boolean {
     if (!this.isConnected || !this.opts) return false;
-    this.send({ t: "admin", room: this.opts.room, action, target, name });
+    this.send({ t: "admin", room: this.opts.room, action, target, name, role });
     return true;
   }
 

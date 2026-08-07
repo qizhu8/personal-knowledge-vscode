@@ -181,17 +181,17 @@ class LiveAgent:
             return  # ignore raw protocol frames
         s = text.strip()
         low = s.lower()
-        if frm == "roombot" and ("conversation started" in low or "joined the conversation" in low):
+        if frm == "roombot" and ("conversation prepared" in low or "conversation started" in low or "joined the conversation" in low):
             names = [m.lower() for m in P.parse_mentions(s)]
             if self.name.lower() in names or "all" in names:
                 self.conv_participants = set(P.parse_mentions(s))
                 self.history = []
                 await self._engage()
             return
-        if low.startswith("/stop_conversation"):
+        if low.startswith("/stop_conversation") or (frm == "roombot" and "conversation stopped" in low):
             await self._disengage("conversation stopped")
             return
-        if low.startswith("/release"):
+        if low.startswith("/release") or (frm == "roombot" and low.startswith("released:")):
             names = [m.lower() for m in P.parse_mentions(s)]
             if self.name.lower() in names:
                 await self._disengage("released")
@@ -266,6 +266,9 @@ class LiveAgent:
             return
         t = f.get("t")
         if t == "msg":
+            receipt = f.get("receipt") or {}
+            if receipt.get("ack") and f.get("id") and self.ws is not None:
+                await self.ws.send(json.dumps({"t": "msg.read", "room": self.room, "messageId": f["id"]}))
             if self.converse:
                 await self._converse_intake(f.get("from", ""), f.get("text", ""))
             else:

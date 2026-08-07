@@ -149,6 +149,11 @@ function renderChatroom() {
           <span id="chat-status-dot" class="chat-dot"></span>
           <span id="chat-pane-title"></span>
           <span style="flex:1"></span>
+          <span id="chat-hosted-actions" class="hidden">
+            <button class="tbtn" id="chat-copy-invite-btn" onclick="chatCopyActiveInvite()" title="Copy the complete Magic Message">📋 Invite</button>
+            <button class="tbtn" onclick="chatOpenActiveBrowser()" title="Open this room in a browser">🌐 Browser</button>
+            <button class="tbtn" id="chat-rotate-key-btn" onclick="chatRotateActiveKey()" title="Refresh the room key and copy a new Magic Message">🔄 Key</button>
+          </span>
           <button class="tbtn hidden" id="chat-add-agent-btn" onclick="ask('chatAddManagedAgent',{})" title="Add an AI agent managed by this extension">＋ Agent</button>
           <button class="tbtn" onclick="chatRenameSelf()" title="Change your display name in this room">✏️ Rename me</button>
           <button class="tbtn" onclick="ask('chatShareFile',{})" title="Share a file with the room (peers must be online)">📎 Share</button>
@@ -313,6 +318,37 @@ function chatPrimaryHubRoom() {
   const act = chat.active && chat.active.room;
   if (act) { const hit = rooms.find(r => canon(r.room) === canon(act)); if (hit) return hit.room; }
   return rooms[0].room;
+}
+
+function chatActiveHostedRoom() {
+  const active = chat.active && chat.active.room;
+  if (!active) return null;
+  const canon = s => String(s || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  return (chat.hubAdminRooms || []).find(room => canon(room.room) === canon(active)) || null;
+}
+
+function chatCopyActiveInvite() {
+  const active = chat.active;
+  if (active?.selfHost && active.hasRoomKey) ask('chatCopyInvite', { room: active.room });
+}
+
+function chatOpenActiveBrowser() {
+  const active = chat.active;
+  if (!active?.selfHost) return;
+  const hosted = chatActiveHostedRoom();
+  if (hosted) { chatOpenRoomBrowser(hosted.room); return; }
+  try {
+    const url = new URL(active.url);
+    url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
+    url.pathname = '/room/' + encodeURIComponent(active.room);
+    url.search = ''; url.hash = '';
+    ask('openExternal', { url: url.toString() });
+  } catch (e) {}
+}
+
+function chatRotateActiveKey() {
+  const hosted = chatActiveHostedRoom();
+  if (hosted && hosted.hasKey) ask('chatRotateSecret', { room: hosted.room });
 }
 
 function chatCopyPrimaryLink() {
@@ -485,13 +521,13 @@ function chatToggleMentionMenu() {
   chatShowMentionPop('', null);
 }
 
-// Typing "@word" opens the picker filtered by the partial under the caret.
+// Typing "@word" anywhere opens the picker filtered by the partial under the caret.
 function chatMentionOnInput() {
   const inp = document.getElementById('chat-input');
   if (!inp) return;
   const caret = inp.selectionStart;
   const upto = inp.value.slice(0, caret);
-  const m = upto.match(/(?:^|\s)@([A-Za-z0-9_\-]*)$/);
+  const m = upto.match(/@([^@\s,.;:!?，。！？；：]*)$/);
   if (m) chatShowMentionPop(m[1], { start: caret - m[1].length - 1, end: caret });
   else chatHideMentionPop();
 }
@@ -554,8 +590,9 @@ function chatPickMention(name) {
   const a = chat.mentionAnchor;
   const start = a ? a.start : inp.selectionStart;
   const end = a ? a.end : inp.selectionEnd;
-  inp.value = inp.value.slice(0, start) + token + inp.value.slice(end);
-  const pos = start + token.length;
+  const leading = start > 0 && !/\s/.test(inp.value[start - 1]) ? ' ' : '';
+  inp.value = inp.value.slice(0, start) + leading + token + inp.value.slice(end);
+  const pos = start + leading.length + token.length;
   inp.setSelectionRange(pos, pos);
   inp.style.height = 'auto'; inp.style.height = Math.min(inp.scrollHeight, 120) + 'px';
   chatHideMentionPop();
@@ -586,7 +623,7 @@ function chatInputKeydown(ev) {
 
 // Parse @names out of a message (mirror of protocol.parse_mentions).
 function chatParseMentions(text) {
-  const re = /(?<![\w@])@(?:"([^"]{1,60})"|([A-Za-z0-9_][\w\-]{0,59}))/g;
+  const re = /(?<![\p{L}\p{N}_@])@(?:"([^"]{1,60})"|([\p{L}\p{N}_][\p{L}\p{N}_\-]{0,59}))/gu;
   const out = []; let m;
   while ((m = re.exec(text || ''))) {
     const n = m[1] || m[2];
@@ -602,9 +639,14 @@ function chatMentionsMe(text) {
 }
 // Wrap @tokens in an already-HTML-escaped string for display.
 function chatHighlightMentions(escaped) {
+  const me = ((chat.active && chat.active.self) || '').toLowerCase();
   return (escaped || '').replace(
-    /(?<![\w@])@(?:&quot;[\s\S]{1,120}?&quot;|all|everyone|[A-Za-z0-9_][\w\-]{0,59})/g,
-    m => `<span class="chat-at">${m}</span>`);
+    /(?<![\p{L}\p{N}_@])@(?:&quot;[\s\S]{1,120}?&quot;|all|everyone|[\p{L}\p{N}_][\p{L}\p{N}_\-]{0,59})/gu,
+    m => {
+      const name = m.slice(1).replace(/^&quot;|&quot;$/g, '').toLowerCase();
+      const targetMe = name === me || name === 'all' || name === 'everyone';
+      return `<span class="chat-at ${targetMe ? 'chat-at-me' : 'chat-at-other'}">${m}</span>`;
+    });
 }
 
 function chatAppend(m) {
@@ -631,12 +673,33 @@ function chatAppend(m) {
     const mine = chat.active && m.from === chat.active.self;
     const atMe = !mine && chatMentionsMe(m.text);
     el.className = 'chat-msg' + (mine ? ' mine' : '') + (m.kind === 'agent' ? ' agent' : '') + (atMe ? ' mentions-me' : '');
+    if (m.id) el.dataset.messageId = m.id;
     const t = new Date(m.ts || Date.now());
     const hh = String(t.getHours()).padStart(2,'0') + ':' + String(t.getMinutes()).padStart(2,'0');
-    el.innerHTML = `<div class="chat-msg-hdr"><span class="chat-who">${m.kind === 'agent' ? '🤖 ' : ''}${esc(m.from)}</span><span class="chat-time">${hh}</span></div><div class="chat-msg-body">${chatHighlightMentions(esc(m.text))}</div>`;
+    const receipt = mine && m.receipt ? `<span class="chat-read-receipt" data-message-id="${esc(m.id)}" title="Mentioned recipients who received this message">✓ ${m.receipt.read}/${m.receipt.total}</span>` : '';
+    el.innerHTML = `<div class="chat-msg-hdr"><span class="chat-who">${m.kind === 'agent' ? '🤖 ' : ''}${esc(m.from)}</span><span class="chat-time">${hh}</span>${receipt}</div><div class="chat-msg-body">${chatHighlightMentions(esc(m.text))}</div>`;
   }
   log.appendChild(el);
   if (atBottom) log.scrollTop = log.scrollHeight;
+}
+
+function chatUpdateReadReceipt(data) {
+  if (!data || data.key !== chat.activeKey) return;
+  const message = chat.active && (chat.active.messages || []).find(item => item.id === data.messageId);
+  if (message) message.receipt = { read: data.read, total: data.total };
+  let marker = Array.from(document.querySelectorAll('.chat-read-receipt')).find(el => el.dataset.messageId === data.messageId);
+  if (!marker) {
+    const rendered = Array.from(document.querySelectorAll('.chat-msg.mine')).find(el => el.dataset.messageId === data.messageId);
+    const header = rendered && rendered.querySelector('.chat-msg-hdr');
+    if (header) {
+      marker = document.createElement('span');
+      marker.className = 'chat-read-receipt';
+      marker.dataset.messageId = data.messageId;
+      marker.title = 'Mentioned recipients who received this message';
+      header.appendChild(marker);
+    }
+  }
+  if (marker) marker.textContent = `✓ ${data.read}/${data.total}`;
 }
 
 function chatPaintRooms() {
@@ -668,6 +731,13 @@ function chatPaintActive() {
   const muted = !!a.selfMuted;
   const addAgent = document.getElementById('chat-add-agent-btn');
   if (addAgent) addAgent.classList.toggle('hidden', !a.selfHost);
+  const hosted = chatActiveHostedRoom();
+  const hostedActions = document.getElementById('chat-hosted-actions');
+  if (hostedActions) hostedActions.classList.toggle('hidden', !a.selfHost);
+  const copyInvite = document.getElementById('chat-copy-invite-btn');
+  const rotateKey = document.getElementById('chat-rotate-key-btn');
+  if (copyInvite) copyInvite.disabled = !a.hasRoomKey;
+  if (rotateKey) rotateKey.disabled = !hosted?.hasKey;
   if (inp)  { inp.disabled  = !connected || muted; inp.placeholder = muted ? 'You are muted by the host — you can read but not post.' : 'Message the room…  (Enter to send, Shift+Enter for newline)'; }
   if (sbtn) sbtn.disabled = !connected || muted;
   if (atbtn) atbtn.disabled = !connected || muted;
@@ -716,22 +786,24 @@ function chatPaintMembers() {
     const dotK = isHere ? (m.host ? 'host' : m.kind) : 'gone';
     const sid  = m.sid ? `<span class="chat-sid" title="${m.verified === false ? 'best-effort id (browser — not verified)' : 'stable identity id'}">${esc(m.sid)}</span>` : '';
     const unv  = (m.verified === false) ? '<span class="chat-unverified" title="browser identity — best-effort, not verified">⚠️</span>' : '';
-    const canModerate = amHost && isHere && !m.host;
+    const canManage = amHost && !m.host;
+    const canModerate = canManage && isHere;
     // Non-host viewers see a small greyed muted indicator; the host toggles it below.
     const mut  = (m.muted && !canModerate) ? '<span class="chat-muted-badge" title="muted by the host — can\'t speak">🔇</span>' : '';
     const proto = isHere ? chatProtoBadge((chat.proto && chat.proto[m.user] || {}).state) : '';
     const tail = isHere ? '' : `<span class="chat-ago">${esc(chatAgo(m.lastSeen))}</span>`;
+    const role = m.role ? `<span class="chat-role">${esc(m.role)}</span>` : '';
     let actions = '';
-    if (canModerate) {
+    if (canManage) {
       // Icon reflects the CURRENT state: 🔊 = can speak (click to mute), 🔇 = muted (click to unmute).
-      const tog = m.muted
+      const tog = !isHere ? '' : m.muted
         ? `<button class="chat-mod" title="Muted — click to unmute" onclick="chatModerate('unmute',this)">🔇</button>`
         : `<button class="chat-mod" title="Can speak — click to mute" onclick="chatModerate('mute',this)">🔊</button>`;
       actions = `<span class="chat-mod-actions">${tog}`
-        + `<button class="chat-mod" title="Rename this member" onclick="chatModerate('rename',this)">✏️</button>`
-        + `<button class="chat-mod chat-mod-kick" title="Remove (kick) this member from the room" onclick="chatModerate('kick',this)">🚫</button></span>`;
+        + `<button class="chat-mod" title="Edit name and role" onclick="chatModerate('edit',this)">✏️</button>`
+        + `<button class="chat-mod chat-mod-kick" title="Permanently remove from this room and Earlier" onclick="chatModerate('kick',this)">🚫</button></span>`;
     }
-    return `<div class="chat-member${isHere ? '' : ' gone'}${m.muted ? ' muted' : ''}" data-sid="${attr(m.sid || '')}" data-user="${attr(m.user)}" title="${esc(how)}"><span class="chat-mdot ${dotK}${runtimeState ? ' state-' + runtimeState : ''}"></span><span class="chat-mname">${icon} ${esc(m.user)}${sid}${unv}${mut}${proto}</span>${tail}${actions}</div>`;
+    return `<div class="chat-member${isHere ? '' : ' gone'}${m.muted ? ' muted' : ''}" data-sid="${attr(m.sid || '')}" data-user="${attr(m.user)}" data-role="${attr(m.role || '')}" title="${esc(how)}"><span class="chat-mdot ${dotK}${runtimeState ? ' state-' + runtimeState : ''}"></span><span class="chat-mname">${icon} ${esc(m.user)}${sid}${unv}${mut}${proto}${role}</span>${tail}${actions}</div>`;
   };
   let html = amHost ? '<div class="chat-host-hint">You host this room — use each member\'s buttons to mute, rename ✏️, or remove 🚫.</div>' : '';
   if (chat.proto && Object.keys(chat.proto).length) {
@@ -740,7 +812,8 @@ function chatPaintMembers() {
   if (amHost && managed.length) {
     html += '<div class="chat-side-sub">Managed agents</div>' + managed.map(agent => {
       const stateLabel = agent.busy ? '⚙️ working' : agent.active ? '🟢 standby' : '⚪ idle';
-      return `<div class="chat-member" title="${attr(agent.backend)}"><span class="chat-mdot agent"></span><span class="chat-mname">🤖 ${esc(agent.name)}<span class="chat-sid">${stateLabel}</span></span><button class="chat-mod chat-mod-kick" title="Remove managed agent" onclick="ask('chatRemoveManagedAgent',{id:'${attr(agent.id)}'})">🚫</button></div>`;
+      const role = agent.role ? `<span class="chat-role">${esc(agent.role)}</span>` : '';
+      return `<div class="chat-member" title="${attr(agent.backend)}"><span class="chat-mdot agent"></span><span class="chat-mname">🤖 ${esc(agent.name)}<span class="chat-sid">${stateLabel}</span>${role}</span><span class="chat-mod-actions"><button class="chat-mod" title="Edit name and role" onclick="ask('chatEditManagedAgent',{id:'${attr(agent.id)}',name:'${attr(agent.name)}',role:'${attr(agent.role || '')}'})">✏️</button><button class="chat-mod chat-mod-kick" title="Permanently remove managed agent" onclick="ask('chatRemoveManagedAgent',{id:'${attr(agent.id)}'})">🚫</button></span></div>`;
     }).join('');
   }
   html += here.map(row).join('');
@@ -751,7 +824,7 @@ function chatPaintMembers() {
 function chatModerate(action, btn) {
   const rowEl = btn.closest('.chat-member');
   if (!rowEl) return;
-  ask('chatModerate', { action, sid: rowEl.dataset.sid || '', user: rowEl.dataset.user || '' });
+  ask('chatModerate', { action, sid: rowEl.dataset.sid || '', user: rowEl.dataset.user || '', role: rowEl.dataset.role || '' });
 }
 function chatRenameSelf() {
   ask('chatRenameSelf', { user: (chat.active && chat.active.user) || (chat.cfg && chat.cfg.displayName) || '' });

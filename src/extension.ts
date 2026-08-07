@@ -980,6 +980,7 @@ interface ManagedChatAgent {
   id: string;
   name: string;
   backend: AiBackend;
+  role: string;
   systemPrompt: string;
   roomKey: string;
   client: ChatClient;
@@ -1001,6 +1002,15 @@ class ChatRoomManager {
   private static readonly MAX_MSGS = 5000;   // session display cap; the hub's byte budget is the real limit
 
   private static roomKey(url: string, room: string): string { return `${url}||${ChatHub.canonRoom(room)}`; }
+
+  private static managedAgentPrompt(name: string, role: string): string {
+    return [
+      `You are ${name}, an expert participant in a multi-agent engineering discussion.`,
+      `Your role and background: ${role}`,
+      "Chatroom protocol: when /start_conversation includes you, continuously watch the room. After every reply, return to standby. Stay active until roombot announces /stop_conversation or you are /release'd.",
+      "Respond to the latest addressed message using relevant shared context. Ask focused questions when evidence is missing. Propose concrete next steps, challenge weak assumptions, and keep replies concise. Do not emit Chatroom slash commands.",
+    ].join("\n");
+  }
 
   /** Configure on-disk chat archiving (dir + byte cap). Applies to the live hub too. */
   configureArchive(dir: string, limitBytes: number): void {
@@ -1038,6 +1048,7 @@ class ChatRoomManager {
         status: active.status, statusDetail: active.statusDetail,
         members: active.members, messages: active.messages, self: active.user,
         selfHost: active.selfHost, selfMuted: active.selfMuted,
+        hasRoomKey: !!this.getRoomKey(active.room),
         agentStates: active.agentStates,
         files: [...active.files.values()].map(f => ({ fileId: f.meta.fileId, name: f.meta.name, from: f.from, size: f.meta.size })),
       } : null,
@@ -1049,7 +1060,7 @@ class ChatRoomManager {
         ? this.hub.adminRooms().map(r => ({ ...r, hasKey: this.hostedKeys.has(r.room) }))
         : [],
       managedAgents: [...this.managedAgents.values()].map(agent => ({
-        id: agent.id, name: agent.name, backend: agent.backend.label,
+        id: agent.id, name: agent.name, role: agent.role, backend: agent.backend.label,
         roomKey: agent.roomKey, status: agent.status,
         active: agent.active, busy: agent.busy,
       })),
@@ -1103,12 +1114,8 @@ class ChatRoomManager {
   ): void {
     const id = randomBytes(6).toString("hex");
     const agent: ManagedChatAgent = {
-      id, name, backend, roomKey: room.key, client: null as any,
-      systemPrompt: [
-        `You are ${name}, an expert participant in a multi-agent engineering discussion.`,
-        `Your role and background: ${role}`,
-        "Respond to the latest addressed message using relevant shared context. Ask focused questions when evidence is missing. Propose concrete next steps, challenge weak assumptions, and keep replies concise. Do not emit Chatroom slash commands.",
-      ].join("\n"),
+      id, name, backend, role, roomKey: room.key, client: null as any,
+      systemPrompt: ChatRoomManager.managedAgentPrompt(name, role),
       messages: [], status: "connecting", active: false, busy: false, generation: 0,
     };
     agent.client = new ChatClient({
@@ -1141,7 +1148,7 @@ class ChatRoomManager {
     if (agent.messages.length > 80) agent.messages.splice(0, agent.messages.length - 80);
     const text = String(message.text || "").trim();
     const low = text.toLowerCase();
-    if (message.from === "roombot" && (low.includes("conversation started") || low.includes("joined the conversation"))) {
+    if (message.from === "roombot" && (low.includes("conversation prepared") || low.includes("conversation started") || low.includes("joined the conversation"))) {
       if (this.messageMentions(text, agent.name)) {
         agent.active = true; agent.generation++; agent.client.sendAgentState("standby"); this.push();
       }
@@ -1186,9 +1193,34 @@ class ChatRoomManager {
     const agent = this.managedAgents.get(id);
     if (!agent) return;
     agent.active = false; agent.generation++;
-    try { agent.client.disconnect(); } catch { /* ignore */ }
+    const room = this.rooms.get(agent.roomKey);
+    const target = `cid:managed-${agent.id}:${agent.name.trim().toLowerCase()}`;
+    if (!room?.selfHost || !room.client.sendAdmin("kick", target)) {
+      try { agent.client.disconnect(); } catch { /* ignore */ }
+    }
     this.managedAgents.delete(id);
     log.action("chat.managedAgent.remove", { name: agent.name });
+    this.push();
+  }
+
+  editManagedAgent(id: string, name: string, role: string): void {
+    const agent = this.managedAgents.get(id);
+    if (!agent) return;
+    const nextName = name.trim().slice(0, 60);
+    const nextRole = role.trim().slice(0, 120);
+    if (!nextName) return;
+    const duplicate = [...this.managedAgents.values()].some(other => other.id !== id && other.roomKey === agent.roomKey && other.name.toLowerCase() === nextName.toLowerCase());
+    if (duplicate) { vscode.window.showWarningMessage(`Managed agent "${nextName}" already exists in this room.`); return; }
+    const room = this.rooms.get(agent.roomKey);
+    const target = `cid:managed-${agent.id}:${agent.name.trim().toLowerCase()}`;
+    if (!room?.selfHost || !room.client.sendAdmin("edit", target, nextName, nextRole)) {
+      vscode.window.showWarningMessage("Reconnect the hosted room before editing this managed agent.");
+      return;
+    }
+    agent.name = nextName;
+    agent.role = nextRole;
+    agent.systemPrompt = ChatRoomManager.managedAgentPrompt(nextName, nextRole);
+    log.action("chat.managedAgent.edit", { name: nextName, role: nextRole });
     this.push();
   }
 
@@ -1218,6 +1250,7 @@ class ChatRoomManager {
           rc!.agentStates[user] = state;
           postToPanel({ command: "chatAgentState", data: { key: rc!.key, user, state } });
         },
+        onReadReceipt: (messageId, read, total) => this.updateReadReceipt(rc!, messageId, read, total),
         onFileComplete: (meta, from, data) => this.onFileReceived(rc!, meta, from, data),
         onRejected: (code, m) => this.onJoinRejected(rc!, code, m),
         onRenamed:  name => { rc!.user = name; this.push(); },
@@ -1263,6 +1296,13 @@ class ChatRoomManager {
     }
   }
 
+  private updateReadReceipt(rc: RoomConn, messageId: string, read: number, total: number): void {
+    const message = rc.messages.find(item => item.id === messageId);
+    if (!message) return;
+    message.receipt = { read, total };
+    postToPanel({ command: "chatReadReceipt", data: { key: rc.key, messageId, read, total } });
+  }
+
   private onFileReceived(rc: RoomConn, meta: FileMeta, from: string, data: Buffer): void {
     rc.files.set(meta.fileId, { meta, from, data });
     postToPanel({ command: "chatFileReady", data: { key: rc.key, fileId: meta.fileId, name: meta.name, from, size: meta.size } });
@@ -1297,11 +1337,11 @@ class ChatRoomManager {
 
   /** Host-only: moderate a member in the active room. Target identified by its
    *  stable identity (sid) when available, else by display name. */
-  moderate(action: "kick" | "mute" | "unmute" | "rename", target: { sid?: string; user: string }, name?: string): void {
+  moderate(action: "kick" | "mute" | "unmute" | "rename" | "edit", target: { sid?: string; user: string }, name?: string, role?: string): void {
     const rc = this.activeRoom;
     if (!rc) return;
     const key = target.sid ? `cid:${target.sid}:${(target.user || "").trim().toLowerCase()}` : `name:${(target.user || "").trim().toLowerCase()}`;
-    rc.client.sendAdmin(action, key, name);
+    rc.client.sendAdmin(action, key, name, role);
   }
 
   /** Rename yourself in the active room. Allowed for any member; the hub rejects
@@ -1462,10 +1502,15 @@ class ChatRoomManager {
   getRoomKey(room: string): string | undefined { return this.hostedKeys.get(ChatHub.canonRoom(room)); }
 
   roomInvite(room: string): { magicLink: string; message: string } | undefined {
-    const port = this.hub?.port ?? 0;
     const secret = this.getRoomKey(room);
-    if (!port || !secret) return undefined;
-    const url = `ws://${ChatHub.localIp()}:${port}/${encodeURIComponent(ChatHub.canonRoom(room))}`;
+    if (!secret) return undefined;
+    const connection = [...this.rooms.values()].find(item => ChatHub.canonRoom(item.room) === ChatHub.canonRoom(room));
+    let base = connection?.url || (this.hub?.port ? `ws://${ChatHub.localIp()}:${this.hub.port}` : "");
+    if (!base) return undefined;
+    const parsed = new URL(base);
+    parsed.pathname = `/${encodeURIComponent(ChatHub.canonRoom(room))}`;
+    parsed.search = ""; parsed.hash = "";
+    const url = parsed.toString().replace(/\/$/, "");
     const magicLink = createChatMagicLink(url, secret);
     return { magicLink, message: chatInviteMessage(magicLink) };
   }
@@ -2026,6 +2071,7 @@ async function handleMessage(
 
       const reachable = await probeHub(entry.url);
       if (reachable) {
+        if (entry.host) getChatMgr().rememberRoomKey(entry.room, secret);
         getChatMgr().joinRoom({ url: entry.url, room: entry.room, user: entry.user, token: secret, cid: getChatCid(context) });
         await saveChatRecent(context, entry);
       } else if (entry.host) {
@@ -2078,6 +2124,22 @@ async function handleMessage(
 
     case "chatRemoveManagedAgent": {
       getChatMgr().removeManagedAgent(String(msg.id || ""));
+      break;
+    }
+    case "chatEditManagedAgent": {
+      const id = String(msg.id || "");
+      const currentName = String(msg.name || "");
+      const name = await vscode.window.showInputBox({
+        prompt: `New name for managed agent "${currentName}"`, value: currentName,
+        validateInput: value => value.trim() ? undefined : "Enter a name",
+      });
+      if (!name) break;
+      const role = await vscode.window.showInputBox({
+        prompt: `Role for "${name.trim()}" (leave empty to clear)`, value: String(msg.role || ""),
+        placeHolder: "e.g. Security reviewer, Research agent",
+      });
+      if (role === undefined) break;
+      getChatMgr().editManagedAgent(id, name, role);
       break;
     }
 
@@ -2176,15 +2238,18 @@ async function handleMessage(
 
     case "chatModerate": {
       const action = String(msg.action || "");
-      if (!["kick", "mute", "unmute", "rename"].includes(action)) break;
+      if (!["kick", "mute", "unmute", "rename", "edit"].includes(action)) break;
       const sid  = msg.sid ? String(msg.sid) : "";
       const user = String(msg.user || "member");
       let name: string | undefined;
+      let role: string | undefined;
       if (action === "kick") {
-        const pick = await vscode.window.showWarningMessage(`Remove "${user}" from the room?`, { modal: true }, "Remove");
-        if (pick !== "Remove") break;
+        const pick = await vscode.window.showWarningMessage(
+          `Permanently remove "${user}" from this room roster? They will disappear from Earlier. If online, they will be disconnected and the room key will rotate.`,
+          { modal: true }, "Remove Permanently");
+        if (pick !== "Remove Permanently") break;
       }
-      if (action === "rename") {
+      if (action === "rename" || action === "edit") {
         const input = await vscode.window.showInputBox({
           prompt: `New name for "${user}"`, value: user,
           validateInput: v => v.trim() ? undefined : "Enter a name",
@@ -2192,7 +2257,15 @@ async function handleMessage(
         if (!input) break;
         name = input.trim();
       }
-      getChatMgr().moderate(action as "kick" | "mute" | "unmute" | "rename", { sid, user }, name);
+      if (action === "edit") {
+        const input = await vscode.window.showInputBox({
+          prompt: `Role for "${name}" (leave empty to clear)`, value: String(msg.role || ""),
+          placeHolder: "e.g. Security reviewer, Research agent",
+        });
+        if (input === undefined) break;
+        role = input.trim();
+      }
+      getChatMgr().moderate(action as "kick" | "mute" | "unmute" | "rename" | "edit", { sid, user }, name, role);
       break;
     }
 

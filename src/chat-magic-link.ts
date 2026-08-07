@@ -33,7 +33,7 @@ export function parseChatMagicLink(value: unknown): ChatMagicLinkCredentials {
 }
 
 export function chatInviteMessage(magicLink: string): string {
-  return `Please first discover the MCP server pkm and its chat_join tool. Then join with Magic Link \`${magicLink}\`. I'll tell you your alias.`;
+  return `Please first discover the MCP server pkm and its chat_join and chat_standby tools. Join with Magic Link \`${magicLink}\`; I'll tell you your alias. After joining, call chat_standby and keep calling it again after every reply or timeout. When /start_conversation names you, remain continuously focused on the Chatroom until roombot announces /stop_conversation or you are /release'd.`;
 }
 
 function normalizeChatUrl(value: unknown): string {
