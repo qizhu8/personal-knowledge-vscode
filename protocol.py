@@ -73,7 +73,7 @@ _MENTION_RE = re.compile(r'(?<![\w@])@(?:"([^"]{1,60})"|([A-Za-z0-9_][\w\-]{0,59
 
 
 def parse_mentions(text: str) -> list[str]:
-    """Return the list of names @mentioned in a chat message (order-preserving, de-duped)."""
+    """Return all mention tokens, for display and trusted control-message parsing."""
     if not text:
         return []
     out: list[str] = []
@@ -84,11 +84,40 @@ def parse_mentions(text: str) -> list[str]:
     return out
 
 
+def parse_recipients(text: str) -> list[str]:
+    """Return slash-command mentions or leading recipients for an ordinary message."""
+    if not text:
+        return []
+    value = text.lstrip()
+    matches = _MENTION_RE.finditer(value) if value.startswith("/") else _leading_mentions(value)
+    out: list[str] = []
+    for match in matches:
+        name = match.group(1) or match.group(2)
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+def _leading_mentions(text: str):
+    offset = 0
+    while offset < len(text):
+        match = _MENTION_RE.match(text, offset)
+        if not match:
+            return
+        end = match.end()
+        if end < len(text) and not text[end].isspace():
+            return
+        yield match
+        offset = end
+        while offset < len(text) and text[offset].isspace():
+            offset += 1
+
+
 def mentions_name(text: str, name: str) -> bool:
     """True if `name` is @mentioned in text (case-insensitive). '@all'/'@everyone' match anyone."""
     if not text or not name:
         return False
-    low = {m.lower() for m in parse_mentions(text)}
+    low = {m.lower() for m in parse_recipients(text)}
     return name.lower() in low or "all" in low or "everyone" in low
 
 

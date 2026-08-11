@@ -1,0 +1,664 @@
+#!/usr/bin/env python3
+"""Internal Chatroom module for the unified Personal Knowledge Manager MCP server."""
+import asyncio
+import base64
+import hashlib
+import json
+import os
+import re
+import secrets
+from urllib.parse import unquote, urlparse
+
+import websockets
+from fastmcp import FastMCP
+
+mcp = FastMCP("pkm-chat")
+SERVER_VERSION = "%%CHAT_MCP_VERSION%%"
+CHAT_TOOLS = ["chat_capabilities", "chat_join", "chat_post", "chat_read", "chat_history",
+              "chat_standby", "chat_members", "chat_status", "chat_leave"]
+
+
+@mcp.tool()
+def check_chat_version() -> dict:
+    """Discover the PKM Chatroom component version and available chat tools."""
+    return {"name": "pkm-chat", "version": SERVER_VERSION, "capability": "pkm-chatroom",
+            "chat_tools": CHAT_TOOLS}
+
+
+@mcp.tool()
+def chat_capabilities() -> dict:
+    """Discover all PKM Chatroom tools and the Join -> Standby -> Post workflow.
+
+    Use this for live multi-agent chat, Magic Link joining, directed @message
+    waiting, posting, status, members, history, or leave support.
+    """
+    return {"ok": True, "capability": "pkm-chatroom", "version": SERVER_VERSION,
+            "workflow": ["chat_join", "chat_standby", "chat_post", "chat_standby"],
+            "chat_tools": CHAT_TOOLS,
+            "instruction": "Join with a pkchat:v1 Magic Link and alias, then keep using chat_standby after each chat_post."}
+
+
+def _parse_magic_link(value):
+    raw = str(value or "").strip()
+    if not raw.startswith("pkchat:v1:"):
+        raise ValueError("Chat Magic Link must start with pkchat:v1:")
+    try:
+        payload, checksum = raw[len("pkchat:v1:"):].split(".", 1)
+    except ValueError:
+        raise ValueError("Chat Magic Link format is invalid or incomplete.")
+    expected = base64.urlsafe_b64encode(hashlib.sha256(payload.encode()).digest()).decode().rstrip("=")[:16]
+    if checksum != expected:
+        raise ValueError("Chat Magic Link checksum failed. It may have been copied incorrectly.")
+    try:
+        decoded = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)).decode())
+    except Exception:
+        raise ValueError("Chat Magic Link payload is invalid.")
+    url = str(decoded.get("u") or "").strip()
+    secret = str(decoded.get("s") or "").strip()
+    room_id = str(decoded.get("r") or "").strip()
+    parsed = urlparse(url)
+    if decoded.get("v") != 1 or parsed.scheme not in ("ws", "wss") or not parsed.netloc or not parsed.path.strip("/") or not secret:
+        raise ValueError("Chat Magic Link is missing valid room credentials.")
+    room = unquote(parsed.path.strip("/").split("/")[-1])
+    return parsed.scheme + "://" + parsed.netloc, room, secret, room_id
+
+
+def _all_mention_names(text):
+    return [(quoted or plain) for quoted, plain in
+            re.findall(r'@(?:"([^"]{1,60})"|([\w-]{1,60}))', str(text or ""))]
+
+
+def _recipient_names(text):
+    value = str(text or "").lstrip()
+    if value.startswith("/"):
+        return _all_mention_names(value)
+    else:
+        tokens, rest = [], value
+        leading = re.compile(r'^@(?:"([^"]{1,60})"|([\w-]{1,60}))(?:\s+|$)')
+        while True:
+            match = leading.match(rest)
+            if not match:
+                break
+            tokens.append((match.group(1), match.group(2)))
+            rest = rest[match.end():]
+    return [(quoted or plain) for quoted, plain in tokens]
+
+
+def _mentions(text, name):
+    target = str(name or "")
+    names = {item.casefold() for item in _recipient_names(text)}
+    return bool(names.intersection({"all", "everyone", target.casefold()}))
+
+
+def _has_any_mention(text):
+    return bool(re.search(r'@(?:"[^"\n]{1,60}"|[\w-]{1,60})', str(text or "")))
+
+
+def _format_mention(name):
+    value = str(name or "").replace('"', "").strip()
+    return "@" + value if re.fullmatch(r"[A-Za-z0-9_][\w-]{0,59}", value) else '@"' + value + '"'
+
+
+def _cid_path():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), ".chat_cids.json")
+
+
+def _load_cid(alias):
+    path = _cid_path()
+    key = str(alias or "").strip().casefold()
+    try:
+        data = json.loads(open(path, encoding="utf-8").read()) if os.path.exists(path) else {}
+        if data.get(key):
+            return str(data[key])
+        data[key] = secrets.token_hex(8)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2)
+        return data[key]
+    except Exception:
+        return secrets.token_hex(8)
+
+
+class ChatConnection:
+    def __init__(self, alias, url, room, token, room_id=""):
+        self.alias = alias
+        self.name = alias
+        self.url = url
+        self.room = room
+        self.token = token
+        self.room_id = room_id
+        self.cid = _load_cid(alias)
+        self.ws = None
+        self.task = None
+        self.closing = False
+        self.status = "connecting"
+        self.detail = ""
+        self.error_code = ""
+        self.members = []
+        self.messages = []
+        self.cursor = 0
+        self.standby_cursor = 0
+        self.conversation_active = False
+        self.runtime_state = "standby"
+        self.participant_id = ""
+        self.join_event = asyncio.Event()
+        self.reply_target = ""
+        self.last_message_id = ""
+        self.terminal_event = None
+        self.transport_error = ""
+        self.message_event = asyncio.Event()
+        self.seen_ids = set()
+
+    def normalized(self, message):
+        return {"id": message.get("id", ""), "from": message.get("from", ""),
+                "text": message.get("text", ""), "ts": message.get("ts", 0),
+                "kind": message.get("kind", "human"), "system": bool(message.get("system"))}
+
+    def record(self, message):
+        message_id = message.get("id")
+        if message_id:
+            if message_id in self.seen_ids:
+                return
+            self.seen_ids.add(message_id)
+            self.last_message_id = message_id
+        self.messages.append(message)
+        self.message_event.set()
+
+    async def reader(self, ws):
+        try:
+            async for raw in ws:
+                try:
+                    frame = json.loads(raw)
+                except Exception:
+                    continue
+                frame_type = frame.get("t")
+                if frame_type == "join.pending":
+                    self.status = "waiting-approval"
+                    self.detail = "Waiting for Host approval"
+                elif frame_type == "join.approved":
+                    self.participant_id = str(frame.get("participantId") or "")
+                elif frame_type == "join.ready":
+                    self.status = "connected"
+                    self.detail = ""
+                    self.error_code = ""
+                    self.transport_error = ""
+                    self.join_event.set()
+                    await self.send_state("standby")
+                elif frame_type == "presence":
+                    self.members = frame.get("members", [])
+                elif frame_type == "history":
+                    for message in frame.get("messages", []):
+                        self.record(self.normalized(message))
+                    if frame.get("mode") != "catchup":
+                        self.cursor = len(self.messages)
+                        self.standby_cursor = len(self.messages)
+                elif frame_type == "msg":
+                    receipt = frame.get("receipt") or {}
+                    if receipt.get("ack") and frame.get("id"):
+                        try:
+                            await ws.send(json.dumps({"t": "msg.read", "room": self.room, "messageId": frame["id"]}))
+                        except Exception:
+                            pass
+                    self.record(self.normalized(frame))
+                elif frame_type == "system":
+                    self.record({"id": "", "from": "", "text": frame.get("text", ""),
+                                 "ts": frame.get("ts", 0), "kind": "system", "system": True})
+                elif frame_type == "renamed":
+                    self.name = frame.get("name", self.name)
+                elif frame_type in ("closed", "kicked"):
+                    self.status = "disconnected"
+                    self.detail = frame.get("reason", "room closed")
+                    self.closing = True
+                    self.join_event.set()
+                    self.terminal_event = {"event": "kicked" if frame_type == "kicked" else "closed",
+                                           "reason": self.detail}
+                    self.error_code = "kicked" if frame_type == "kicked" else "room-closed"
+                    self.transport_error = ""
+                    self.message_event.set()
+                elif frame_type == "error" and frame.get("code") not in ("muted", "moderation"):
+                    self.status = "error"
+                    self.detail = frame.get("msg", "")
+                    self.error_code = str(frame.get("code") or "error")
+                    if frame.get("code") in ("auth", "name-taken", "no-room", "room-mismatch", "join-rejected", "join-timeout", "join-cancelled"):
+                        self.closing = True
+                    self.join_event.set()
+        finally:
+            if self.ws is ws:
+                self.ws = None
+                if not self.closing:
+                    self.status = "disconnected"
+                    self.error_code = "transport-error"
+                    self.transport_error = self.detail or "WebSocket disconnected before the Room closed."
+                    self.message_event.set()
+
+    async def send_state(self, state):
+        self.runtime_state = state
+        if self.ws is not None and self.status == "connected":
+            try:
+                await self.ws.send(json.dumps({"t": "agent.state", "room": self.room, "state": state}))
+            except Exception:
+                pass
+
+    async def connection_loop(self):
+        backoff = 1
+        while not self.closing:
+            try:
+                ws = await websockets.connect(self.url, open_timeout=8, max_size=8 * 1024 * 1024)
+                self.ws = ws
+                self.status = "waiting-approval"
+                self.detail = ""
+                self.join_event.clear()
+                await ws.send(json.dumps({"t": "join", "room": self.room, "user": self.name,
+                                          "roomId": self.room_id or None, "token": self.token,
+                                          "kind": "agent", "cid": self.cid,
+                                          "resumeAfter": self.last_message_id or None}))
+                backoff = 1
+                await self.reader(ws)
+            except asyncio.CancelledError:
+                return
+            except Exception as error:
+                self.detail = str(error)
+                self.error_code = "transport-error"
+                self.transport_error = self.detail or "WebSocket transport failed."
+                self.message_event.set()
+            if self.closing:
+                return
+            self.status = "reconnecting"
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 30)
+
+    async def start(self):
+        self.task = asyncio.create_task(self.connection_loop())
+        try:
+            await asyncio.wait_for(self.join_event.wait(), timeout=125)
+        except asyncio.TimeoutError:
+            await self.leave()
+            raise RuntimeError("Host approval did not complete within 125 seconds.")
+        if self.status != "connected":
+            raise RuntimeError(self.detail or "join rejected")
+
+    async def leave(self):
+        self.closing = True
+        if self.ws is not None:
+            try:
+                await self.ws.send(json.dumps({"t": "leave", "room": self.room}))
+                await self.ws.close()
+            except Exception:
+                pass
+        if self.task is not None:
+            self.task.cancel()
+        self.ws = None
+        self.task = None
+        self.status = "disconnected"
+        self.members = []
+
+    async def post(self, text, continue_working=False):
+        if self.ws is None or self.status != "connected":
+            return {"ok": False, "error_code": "transport-error", "retryable": True,
+                    "error": "Not connected. Call chat_join first.", **self._lifecycle_fields()}
+        value = str(text or "").strip()
+        if not value:
+            return {"ok": False, "error": "Message is empty."}
+        if not value.startswith("/") and not _has_any_mention(value) and self.reply_target:
+            value = _format_mention(self.reply_target) + " " + value
+        self.reply_target = ""
+        await self.send_state("sending")
+        try:
+            await self.ws.send(json.dumps({"t": "msg", "room": self.room,
+                                           "from": self.name, "text": value, "kind": "agent"}))
+        except Exception as error:
+            self.error_code = "transport-error"
+            self.transport_error = str(error) or "WebSocket transport failed while posting."
+            self.message_event.set()
+            return {"ok": False, "error_code": "transport-error", "retryable": True,
+                    "error": self.transport_error, **self._lifecycle_fields()}
+        finally:
+            await self.send_state("thinking" if continue_working else "standby")
+        return {"ok": True, "error_code": "", "retryable": False,
+                "room_id": self.room_id, "participant_id": self.participant_id,
+                **self._lifecycle_fields()}
+
+    def read(self, limit=50, only_new=True):
+        start = self.cursor if only_new else max(0, len(self.messages) - max(1, limit))
+        items = self.messages[start:]
+        if len(items) > limit:
+            items = items[-limit:]
+        self.cursor = len(self.messages)
+        return items
+
+    async def standby(self, timeout=300, max_messages=8, max_bytes=32768, batch_wait_ms=250):
+        timeout = max(1, min(int(timeout or 300), 1800))
+        max_messages = max(1, min(int(max_messages or 8), 32))
+        max_bytes = max(1024, min(int(max_bytes or 32768), 65536))
+        batch_wait_ms = max(0, min(int(batch_wait_ms or 0), 1000))
+        await self.send_state("standby")
+        cursor_before = self.standby_cursor
+        while True:
+            if self.terminal_event:
+                terminal = self.terminal_event
+                self.terminal_event = None
+                self.runtime_state = "idle"
+                return {**terminal, "message": None, "messages": [], "event_id": "",
+                        "cursor_before": cursor_before, "cursor_after": self.standby_cursor,
+                        "addressed": False, "matched_mention": "", "truncated": False,
+                    "continuation_cursor": "", "room_id": self.room_id,
+                    "participant_id": self.participant_id,
+                        **self._lifecycle_fields(terminal.get("event", "")),
+                        "instruction": "Room participation ended. Return control to the user."}
+            if self.transport_error:
+                reason = self.transport_error
+                self.transport_error = ""
+                return {"event": "transport_error", "reason": reason, "retryable": True,
+                        "message": None, "messages": [], "event_id": "", "event_ids": [],
+                        "cursor_before": cursor_before, "cursor_after": self.standby_cursor,
+                        "addressed": False, "matched_mention": "", "truncated": False,
+                        "continuation_cursor": "", "room_id": self.room_id,
+                        "participant_id": self.participant_id,
+                        **self._lifecycle_fields("transport_error"),
+                        "instruction": "Transport was interrupted. The client is reconnecting; call chat_standby again."}
+            self.message_event.clear()
+            pending = self.messages[self.standby_cursor:]
+            for message in pending:
+                text = str(message.get("text") or "").strip()
+                low = text.lower()
+                self.standby_cursor += 1
+                from_bot = message.get("from") == "roombot"
+                control_names = {item.casefold() for item in _all_mention_names(text)} if from_bot else set()
+                if from_bot and any(marker in low for marker in ("conversation started", "joined the conversation")) and control_names.intersection({self.name.casefold(), "all", "everyone"}):
+                    self.conversation_active = True
+                    continue
+                if self.conversation_active and (low.startswith("/stop_conversation") or "conversation stopped" in low):
+                    self.conversation_active = False
+                    await self.send_state("idle")
+                    return self._standby_result("stopped", message, cursor_before, False, "", max_bytes,
+                                                "Conversation ended. Return control to the user.")
+                if self.conversation_active and low.startswith("/release") and _mentions(text, self.name):
+                    self.conversation_active = False
+                    await self.send_state("idle")
+                    return self._standby_result("released", message, cursor_before, True, self.name, max_bytes,
+                                                "You were released. Return control to the user.")
+                if message.get("from") == self.name:
+                    continue
+                directed = _mentions(text, self.name)
+                granted = from_bot and directed and "your turn" in low
+                if granted or (not from_bot and directed):
+                    if not from_bot:
+                        self.reply_target = message.get("from", "")
+                    else:
+                        self.reply_target = next((item.get("from", "") for item in reversed(pending)
+                                                  if item.get("from") not in ("", "roombot", self.name)), "Host")
+                    await self.send_state("thinking")
+                    recipients = {item.casefold() for item in _recipient_names(text)}
+                    matched = self.name if self.name.casefold() in recipients else "all" if "all" in recipients else "everyone"
+                    messages, control = await self._collect_directed_batch(message, max_messages, batch_wait_ms)
+                    if control:
+                        kind, control_message = control
+                        self.conversation_active = False
+                        await self.send_state("idle")
+                        return self._standby_result(
+                            kind, control_message, cursor_before, kind == "released", self.name if kind == "released" else "",
+                            max_bytes, "Conversation ended. Return control to the user.")
+                    if self.terminal_event:
+                        terminal = self.terminal_event
+                        self.terminal_event = None
+                        await self.send_state("idle")
+                        return {**terminal, "message": None, "messages": [], "event_id": "",
+                                "cursor_before": cursor_before, "cursor_after": self.standby_cursor,
+                                "addressed": False, "matched_mention": "", "truncated": False,
+                                "continuation_cursor": "", "room_id": self.room_id,
+                                "participant_id": self.participant_id,
+                                **self._lifecycle_fields(terminal.get("event", "")),
+                                "instruction": "Room participation ended. Return control to the user."}
+                    return self._standby_result(
+                        "message", messages, cursor_before, True, matched, max_bytes,
+                        "Respond to this directed message batch with chat_post, then immediately call chat_standby again.")
+            try:
+                await asyncio.wait_for(self.message_event.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                await self.send_state("standby")
+                return {"event": "timeout", "message": None, "messages": [], "event_id": "",
+                        "cursor_before": cursor_before, "cursor_after": self.standby_cursor,
+                        "addressed": False, "matched_mention": "", "truncated": False,
+                        "continuation_cursor": "", "room_id": self.room_id,
+                        "participant_id": self.participant_id,
+                        **self._lifecycle_fields("timeout"),
+                        "instruction": "Still in standby. Call chat_standby(name=your_alias) again to keep this Agent turn waiting."}
+
+    async def _collect_directed_batch(self, first, max_messages, batch_wait_ms):
+        selected = [first]
+        deadline = asyncio.get_running_loop().time() + (batch_wait_ms / 1000.0)
+        while len(selected) < max_messages:
+            if self.terminal_event:
+                return selected, None
+            candidates = self.messages[self.standby_cursor:]
+            for item in candidates:
+                self.standby_cursor += 1
+                text = str(item.get("text") or "").strip()
+                low = text.lower()
+                from_bot = item.get("from") == "RoomBot"
+                if self.conversation_active and from_bot and ("conversation stopped" in low or low.startswith("/stop_conversation")):
+                    return selected, ("stopped", item)
+                if self.conversation_active and low.startswith("/release") and _mentions(text, self.name):
+                    return selected, ("released", item)
+                if item.get("from") == self.name:
+                    continue
+                if _mentions(str(item.get("text") or ""), self.name):
+                    selected.append(item)
+                    if len(selected) >= max_messages:
+                        return selected, None
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                break
+            self.message_event.clear()
+            try:
+                await asyncio.wait_for(self.message_event.wait(), timeout=remaining)
+            except asyncio.TimeoutError:
+                break
+        return selected, None
+
+    def _standby_result(self, event, messages, cursor_before, addressed, matched_mention, max_bytes, instruction):
+        source_messages = messages if isinstance(messages, list) else [messages]
+        result_messages = [dict(item) for item in source_messages]
+        encoded = json.dumps(result_messages, ensure_ascii=False).encode("utf-8")
+        truncated = len(encoded) > max_bytes
+        if truncated:
+            budget = max(0, max_bytes - 1024)
+            kept = []
+            for item in result_messages:
+                if len(json.dumps(kept + [item], ensure_ascii=False).encode("utf-8")) <= budget:
+                    kept.append(item)
+                    continue
+                if not kept:
+                    text = str(item.get("text") or "").encode("utf-8")
+                    item["text"] = text[:budget].decode("utf-8", "ignore")
+                    item["truncated_bytes"] = len(encoded)
+                    kept.append(item)
+                break
+            result_messages = kept
+        first = source_messages[0]
+        last = source_messages[-1]
+        return {"event": event, "message": result_messages[0] if result_messages else None, "messages": result_messages,
+                "event_id": str(first.get("id") or ""),
+                "event_ids": [str(item.get("id") or "") for item in source_messages], "cursor_before": cursor_before,
+                "cursor_after": self.standby_cursor, "addressed": addressed,
+                "matched_mention": matched_mention, "truncated": truncated,
+                "continuation_cursor": str(last.get("id") or "") if truncated else "",
+                "room_id": self.room_id, "participant_id": self.participant_id,
+                **self._lifecycle_fields(event),
+                "instruction": instruction}
+
+    def _lifecycle_fields(self, event=""):
+        room_closed = event in ("closed", "kicked") or self.error_code in ("room-closed", "kicked")
+        room_open = not room_closed and self.status != "error"
+        return {"conversation_active": self.conversation_active,
+                "room_open": room_open,
+                "should_continue_standby": room_open and event not in ("stopped", "released"),
+                "room_closed": room_closed,
+                "new_link_required": room_closed or self.error_code in ("auth", "no-room", "room-mismatch")}
+
+    def status_data(self):
+        present = [member for member in self.members if member.get("present", True)]
+        return {"alias": self.alias, "name": self.name, "room": self.room,
+            "room_id": self.room_id, "status": self.status, "detail": self.detail,
+            "error_code": self.error_code, "members": len(present),
+            "participant_id": self.participant_id, **self._lifecycle_fields()}
+
+
+_connections = {}
+
+
+def _aliases():
+    return sorted(connection.alias for connection in _connections.values())
+
+
+def _resolve(name=""):
+    requested = str(name or "").strip().casefold()
+    matches = [connection for connection in _connections.values()
+               if not requested or requested in (connection.alias.casefold(), connection.name.casefold())]
+    if requested and not matches:
+        raise ValueError("No joined Chatroom identity matches %r. Active aliases: %s" % (name, ", ".join(_aliases()) or "none"))
+    if not requested and len(matches) > 1:
+        raise ValueError("Multiple Chatroom identities are active. Pass name=your_assigned_alias. Active aliases: %s" % ", ".join(_aliases()))
+    if not matches:
+        raise ValueError("No Chatroom identity is joined. Call chat_join first.")
+    return matches[0]
+
+
+@mcp.tool()
+async def chat_join(magic_link: str, name: str) -> str:
+    """PKM Chatroom: join by Magic Link and alias, then wait for Host approval.
+
+    Multiple Agents may share this MCP process. The returned alias identifies
+    this connection. Pass name=that_alias to every other chat tool whenever
+    more than one identity is active.
+    """
+    alias = str(name or "").strip()
+    if not alias:
+        return json.dumps({"ok": False, "error_code": "alias-required",
+                           "error": "The host must assign this agent an alias."})
+    try:
+        url, room, token, room_id = _parse_magic_link(magic_link)
+    except ValueError as error:
+        return json.dumps({"ok": False, "error_code": "invalid-magic-link", "error": str(error)})
+    key = alias.casefold()
+    previous = _connections.get(key)
+    connection = ChatConnection(alias, url, room, token, room_id)
+    try:
+        await connection.start()
+    except Exception as error:
+        return json.dumps({"ok": False, "error_code": connection.error_code or "join-failed",
+                           "error": str(error), "alias": alias})
+    if previous is not None:
+        await previous.leave()
+    _connections[key] = connection
+    return json.dumps({"ok": True, **connection.status_data(), "active_aliases": _aliases(),
+                       "instruction": "Use name=%r on subsequent chat tools." % alias})
+
+
+@mcp.tool()
+async def chat_post(text: str, name: str = "", continue_working: bool = False) -> str:
+    """PKM Chatroom: post a directed message.
+
+    Final replies automatically return to standby. For an acknowledgement or
+    progress update sent before work is complete, pass continue_working=true so
+    the Agent LED remains thinking until the final post or next chat_standby.
+    """
+    try:
+        connection = _resolve(name)
+    except ValueError as error:
+        return json.dumps({"ok": False, "error": str(error)})
+    return json.dumps(await connection.post(text, bool(continue_working)))
+
+
+@mcp.tool()
+async def chat_read(limit: int = 50, only_new: bool = True, name: str = "") -> str:
+    """Read messages for one identity. Pass name when multiple aliases are active."""
+    try:
+        connection = _resolve(name)
+    except ValueError as error:
+        return json.dumps({"ok": False, "error": str(error)})
+    items = connection.read(max(1, min(int(limit or 50), 500)), bool(only_new))
+    return json.dumps({"ok": True, "alias": connection.alias, "count": len(items),
+                       "messages": items, "status": connection.status})
+
+
+@mcp.tool()
+async def chat_history(limit: int = 50, name: str = "") -> str:
+    """Read recent history for one identity without changing its cursor."""
+    try:
+        connection = _resolve(name)
+    except ValueError as error:
+        return json.dumps({"ok": False, "error": str(error)})
+    limit = max(1, min(int(limit or 50), 500))
+    return json.dumps({"ok": True, "alias": connection.alias,
+                       "messages": connection.messages[-limit:]})
+
+
+@mcp.tool()
+async def chat_standby(timeout: int = 300, max_messages: int = 8, max_bytes: int = 32768,
+                       batch_wait_ms: int = 250, name: str = "") -> str:
+    """PKM Chatroom: block until @name/@all, control, close, transport, or timeout.
+
+    The connection enters standby automatically after Join and after every Post.
+    This call unblocks on directed messages. Stop/release events apply only once
+    this Agent's conversation is active; Room close and leave always terminate.
+    """
+    try:
+        connection = _resolve(name)
+    except ValueError as error:
+        return json.dumps({"ok": False, "error": str(error)})
+    try:
+        result = await connection.standby(timeout, max_messages, max_bytes, batch_wait_ms)
+    except asyncio.CancelledError:
+        await connection.send_state("standby")
+        result = {"event": "client_cancelled", "reason": "The MCP Host cancelled this standby call.",
+                  "retryable": True, "message": None, "messages": [], "event_id": "", "event_ids": [],
+                  "cursor_before": connection.standby_cursor, "cursor_after": connection.standby_cursor,
+                  "addressed": False, "matched_mention": "", "truncated": False,
+                  "continuation_cursor": "", "room_id": connection.room_id,
+                  "participant_id": connection.participant_id,
+                  **connection._lifecycle_fields("client_cancelled"),
+                  "instruction": "The call was cancelled; call chat_standby again to resume waiting."}
+    return json.dumps({"ok": True, "alias": connection.alias, **result})
+
+
+@mcp.tool()
+async def chat_members(name: str = "") -> str:
+    """List members visible to one joined identity."""
+    try:
+        connection = _resolve(name)
+    except ValueError as error:
+        return json.dumps({"ok": False, "error": str(error)})
+    present = [member for member in connection.members if member.get("present", True)]
+    left = [member for member in connection.members if not member.get("present", True)]
+    return json.dumps({"ok": True, "alias": connection.alias, "room_id": connection.room_id,
+                       "participant_id": connection.participant_id,
+                       "present": present, "left": left, "members": present})
+
+
+@mcp.tool()
+async def chat_status(name: str = "") -> str:
+    """PKM Chatroom: report connection, Room lifecycle, identity, and standby status."""
+    if not str(name or "").strip() and len(_connections) != 1:
+        return json.dumps({"ok": True, "active_aliases": _aliases(),
+                           "connections": [connection.status_data() for connection in _connections.values()]})
+    try:
+        connection = _resolve(name)
+    except ValueError as error:
+        return json.dumps({"ok": False, "error": str(error), "active_aliases": _aliases()})
+    return json.dumps({"ok": True, **connection.status_data(), "active_aliases": _aliases()})
+
+
+@mcp.tool()
+async def chat_leave(name: str = "") -> str:
+    """Leave and remove one Chatroom identity. Pass name when multiple are active."""
+    try:
+        connection = _resolve(name)
+    except ValueError as error:
+        return json.dumps({"ok": False, "error": str(error)})
+    await connection.leave()
+    _connections.pop(connection.alias.casefold(), None)
+    return json.dumps({"ok": True, "alias": connection.alias, "active_aliases": _aliases()})
+
+
+if __name__ == "__main__":
+    mcp.run()

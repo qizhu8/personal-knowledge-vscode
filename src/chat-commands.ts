@@ -23,7 +23,7 @@ export interface CommandContext {
 export interface CommandActions {
   muteAll:   () => number;   // mute every present non-host member; returns how many changed
   unmuteAll: () => number;   // clear all mutes in the room; returns how many were cleared
-  rotateSecret: () => boolean;  // rotate the room secret; returns true if a secret existed to rotate
+  rotateSecret: () => Promise<boolean>;  // rotate the room secret; returns true if a secret existed to rotate
   inviteMessage: () => string;
 }
 
@@ -31,7 +31,7 @@ export interface ChatCommand {
   name:     string;                          // e.g. "help" (typed as "/help")
   summary:  string;                          // one-line description for /help
   hostOnly?: boolean;                        // only the room host may run it
-  run: (ctx: CommandContext) => string;      // returns the reply text (may be multi-line)
+  run: (ctx: CommandContext) => string | Promise<string>;      // returns the reply text (may be multi-line)
 }
 
 function ago(ts?: number): string {
@@ -154,7 +154,7 @@ export const CHAT_COMMANDS: ChatCommand[] = [
     name: "rotate_secret",
     summary: "Rotate this room's secret (the old one stops working)",
     hostOnly: true,
-    run: (ctx) => ctx.actions.rotateSecret()
+    run: async (ctx) => await ctx.actions.rotateSecret()
       ? "🔑 Rotated the room secret. Copy the new one from the notification (or the 🔑 button) and share it with your team. Current members stay; new joiners need the new secret."
       : "This room has no secret to rotate.",
   },

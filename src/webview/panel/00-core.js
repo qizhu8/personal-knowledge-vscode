@@ -402,6 +402,11 @@ window.addEventListener('message', e => {
     const btn = document.querySelector(`.tab[data-tab="${e.data.tab}"]`);
     if (btn) btn.dispatchEvent(new MouseEvent('click'));
   }
+  else if (command === 'highlightMcpRegenerate') {
+    const btn = document.querySelector('.tab[data-tab="mcp"]');
+    if (btn) btn.dispatchEvent(new MouseEvent('click'));
+    setTimeout(highlightMcpRegenerate, 250);
+  }
   else if (command === 'chatConfig') { chatOnConfig(data); }
   else if (command === 'chatState')  { chatOnState(data); }
   else if (command === 'chatRecents'){ chatOnRecents(data); }

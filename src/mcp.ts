@@ -8,9 +8,9 @@ import { condaEnvs, pyenvAdd, pyenvCreate, pyenvDelete, pyenvList, pyenvUpdate }
 import { managedEnvironmentsRoot } from "./environment-paths";
 
 // ── MCP server scaffold ────────────────────────────────────────────────────
-export const UNIFIED_MCP_VERSION = "2.0.1";
+export const UNIFIED_MCP_VERSION = "2.0.11";
 const KNOWLEDGE_MCP_VERSION = "1.0.0";
-const CHAT_MCP_VERSION = "2.0.1";
+const CHAT_MCP_VERSION = "2.0.11";
 
 interface McpServerStatus {
   installed: boolean;
@@ -308,7 +308,7 @@ export function combinedMcpInstallInstruction(): string {
     "6. Start or restart pkm in Agency. In VS Code, merge the same entry into .vscode/mcp.json, then click Start or run MCP: List Servers.",
     "7. Start a new agent chat session so tool discovery is refreshed.",
     `8. Discover pkm.check_version and verify unified version ${UNIFIED_MCP_VERSION}.`,
-    "9. Verify pkm exposes both knowledge tools and chat_join/chat_standby/chat_post.",
+    "9. Call pkm.chat_capabilities and verify its chat_tools includes chat_join, chat_standby, and chat_post.",
     "Report any missing file, dependency error, start failure, or version mismatch with the exact error text.",
   ].join("\n");
 }
@@ -378,7 +378,9 @@ mcp = FastMCP("pkm")
 def check_version() -> dict:
   """Return the unified server version and its component schema versions."""
   return {"name": "pkm", "version": SERVER_VERSION,
-          "components": {"knowledge": KNOWLEDGE_SCHEMA_VERSION, "chat": CHAT_SCHEMA_VERSION}}
+          "components": {"knowledge": KNOWLEDGE_SCHEMA_VERSION, "chat": CHAT_SCHEMA_VERSION},
+          "capabilities": ["personal-knowledge", "papers", "pkm-chatroom"],
+          "chat_discovery_tool": "chat_capabilities"}
 
 
 def _now() -> str:
@@ -958,7 +960,7 @@ export function chatMcpStatus(): McpServerStatus {
   };
 }
 
-export function generateChatMcpServer(_context: vscode.ExtensionContext): { serverPath: string; configSnippet: string } {
+export function generateChatMcpServer(context: vscode.ExtensionContext): { serverPath: string; configSnippet: string } {
   const storePath = getStorePath();
   const mcpDir    = path.join(storePath, "mcp-server");
   const serverPy  = path.join(mcpDir, "chat_server.py");
@@ -1352,6 +1354,15 @@ async def chat_leave() -> str:
 if __name__ == "__main__":
     mcp.run()
 `);
+
+  const extensionRoot = context?.extensionPath || path.join(__dirname, "..");
+  const templatePath = path.join(extensionRoot, "resources", "chat_server.py.template");
+  const template = fs.readFileSync(templatePath, "utf-8")
+    .replace(/%%CHAT_MCP_VERSION%%/g, CHAT_MCP_VERSION);
+  const requiredChatTools = ["chat_capabilities", "chat_join", "chat_standby", "chat_post", "chat_status"];
+  const missingChatTools = requiredChatTools.filter(tool => !template.includes(`def ${tool}(`));
+  if (missingChatTools.length) throw new Error(`Chat MCP template is missing required tools: ${missingChatTools.join(", ")}`);
+  fs.writeFileSync(serverPy, template);
 
   const configSnippet = JSON.stringify({
     servers: {

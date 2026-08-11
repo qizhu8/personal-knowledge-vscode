@@ -2,7 +2,7 @@
   "name": "personal-knowledge",
   "displayName": "Personal Knowledge Manager",
   "description": "Browse, edit, and sync your personal knowledge: skills, notes, prompts, packages, scripts. Expose it to AI assistants via MCP, and collaborate with teammates and their agents in a built-in real-time Chatroom.",
-  "version": "2.3.7",
+  "version": "2.4.0",
   "publisher": "Uone",
   "author": {
     "name": "Yu Wang"
@@ -421,6 +421,20 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && cp -r src/webview dist/ && node scripts/build-panel.js && cp node_modules/sql.js/dist/sql-wasm.js dist/ && cp node_modules/sql.js/dist/sql-wasm.wasm dist/ && cp node_modules/marked/lib/marked.umd.js dist/webview/ && npx esbuild src/live-markdown-entry.js --bundle --platform=node --format=cjs --outfile=dist/live-markdown.js && npx esbuild src/webview/hljs-entry.js --bundle --minify --format=iife --outfile=dist/webview/hljs.js && cp node_modules/highlight.js/styles/github-dark.css dist/webview/hljs.css && cp node_modules/katex/dist/katex.min.js dist/webview/katex.js && cp node_modules/katex/dist/katex.min.css dist/webview/katex.css && mkdir -p dist/webview/fonts && cp node_modules/katex/dist/fonts/*.woff2 dist/webview/fonts/ && cp node_modules/cytoscape/dist/cytoscape.min.js dist/webview/cytoscape.js && cp node_modules/mermaid/dist/mermaid.min.js dist/webview/mermaid.js && cp node_modules/3d-force-graph/dist/3d-force-graph.min.js dist/webview/forcegraph3d.js && node scripts/postbuild.js",
+    "test:chat-persistence": "npm run build && node scripts/test-chat-persistence.js",
+    "test:chat-stored-rooms": "npm run build && node scripts/test-chat-stored-rooms.js",
+    "test:chat-stored-rooms-ui": "npm run build && node scripts/test-chat-stored-rooms-ui.js",
+    "test:chat-participant-persistence": "npm run build && node scripts/test-chat-participant-persistence.js",
+    "test:chat-join-approval": "npm run build && node scripts/test-chat-join-approval.js",
+    "test:chat-hub-approval": "npm run build && node scripts/test-chat-hub-approval.js",
+    "test:chat-join-approval-ui": "npm run build && node scripts/test-chat-join-approval-ui.js",
+    "test:chat-magic-link": "npm run build && node scripts/test-chat-magic-link.js",
+    "test:chat-mcp-approval": "npm run build && node scripts/test-chat-mcp-approval.js",
+    "test:chat-packaged-worker": "npm run build && node scripts/test-chat-packaged-worker.js",
+    "test:chat-hub-health": "npm run build && node scripts/test-chat-hub-health.js",
+    "test:chat-history-atomic": "python scripts/test-chat-history-atomic.py",
+    "test:chat-generated-standby": "python scripts/test-chat-generated-standby.py",
+    "poc:chat-room-lifecycle": "npm run build && node scripts/poc-chat-room-lifecycle.js",
     "watch": "tsc -p tsconfig.json --watch",
     "package": "npx vsce package"
   },

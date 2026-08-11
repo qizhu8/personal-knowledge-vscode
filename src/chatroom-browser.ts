@@ -65,7 +65,7 @@ export function browserViewHtml(): string {
   <button onclick="sendMsg()">Send</button>
 </div>
 <script>
-  var ws=null, me="", joined=false, ROOM="", roomSecret="", magicGeneration=0, incoming={};
+  var ws=null, me="", joined=false, joining=false, ROOM="", ROOM_ID="", roomSecret="", magicGeneration=0, incoming={};
   var shownIds={}, everJoined=false, roster=[], suggestAnchor=null, suggestIndex=-1;   // de-dup by message id + track rejoins
   var browserCommands=[
     {cmd:"/help",args:"",desc:"List room commands"},
@@ -125,20 +125,28 @@ export function browserViewHtml(): string {
       var magicUrl=new URL(payload.u),magicRoom=canonRoom(decodeURIComponent(magicUrl.pathname.replace(/^\\/+/,"")));
       if(!/^wss?:$/.test(magicUrl.protocol)||!magicUrl.hostname||!magicRoom)throw new Error("Magic Message contains an invalid room URL.");
       if(ROOM&&canonRoom(ROOM)!==magicRoom)throw new Error('This invitation is for room "'+magicRoom+'", not "'+ROOM+'".');
-      ROOM=magicRoom; roomSecret=String(payload.s).trim();
+      ROOM=magicRoom; ROOM_ID=String(payload.r||"").trim(); roomSecret=String(payload.s).trim();
       var rl=document.getElementById("roomlabel");rl.textContent="Room: "+ROOM;rl.style.display="inline";
       document.getElementById("go").disabled=false;
       setMagicHint('✓ Magic Message verified locally for room "'+ROOM+'".',true);
     }catch(e){if(generation===magicGeneration)setMagicHint(e&&e.message?e.message:String(e),false);}
   }
   function setMagicHint(text,ok){var h=document.getElementById("hint");h.textContent=text;h.style.color=ok?"#4ade80":"#f87171";}
-  function toggleConn(){ if(joined){ leave(); } else { join(); } }
+  function toggleConn(){ if(joined||joining){ leave(); } else { join(); } }
   function leave(){ if(ws){try{ws.close();}catch(e){}} }
   function setJoined(on){
     joined=on;
+    joining=false;
     document.getElementById("go").textContent=on?"Leave":"Join";
     ["name","invite"].forEach(function(id){ document.getElementById(id).disabled=on; });
     document.getElementById("composer").style.display=on?"flex":"none";
+  }
+  function setJoining(on){
+    joining=on;
+    joined=false;
+    document.getElementById("go").textContent=on?"Cancel":"Join";
+    ["name","invite"].forEach(function(id){ document.getElementById(id).disabled=on; });
+    document.getElementById("composer").style.display="none";
   }
   function join(){
     if(!ROOM||!roomSecret){ setMagicHint("Paste and verify the room's Magic Message first.",false); return; }
@@ -148,13 +156,17 @@ export function browserViewHtml(): string {
     if(ws){try{ws.close();}catch(e){}}
     var proto=location.protocol==="https:"?"wss":"ws";
     ws=new WebSocket(proto+"://"+location.host);
+    setJoining(true);
     setStatus("connecting…","");
-    ws.onopen=function(){ ws.send(JSON.stringify({t:"join",room:ROOM,user:me,token:secret,kind:"browser",cid:cid})); setStatus("connected","on"); setJoined(true); };
-    ws.onclose=function(){ setStatus("disconnected",""); setJoined(false); };
+    ws.onopen=function(){ ws.send(JSON.stringify({t:"join",room:ROOM,roomId:ROOM_ID||undefined,user:me,token:secret,kind:"browser",cid:cid})); };
+    ws.onclose=function(){ setStatus("disconnected",""); setJoining(false); setJoined(false); };
     ws.onmessage=function(ev){ var f; try{f=JSON.parse(ev.data);}catch(e){return;} onFrame(f); };
   }
   function setStatus(t,cls){ document.getElementById("status").textContent=t; document.getElementById("dot").className=cls; }
   function onFrame(f){
+    if(f.t==="join.pending"){ setJoining(true); setStatus("waiting for Host approval…",""); return; }
+    if(f.t==="join.approved"){ return; }
+    if(f.t==="join.ready"){ setJoined(true); setStatus("connected","on"); return; }
     if(f.t==="error"){
       if(f.code==="muted"||f.code==="moderation"){ append({system:true,text:f.msg}); return; }   // informational, stay joined
       setStatus("error: "+f.msg,"err"); document.getElementById("hint").innerHTML='<span style="color:#f87171">'+esc(f.msg)+'</span>'; setJoined(false); return;

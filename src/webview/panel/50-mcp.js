@@ -25,6 +25,17 @@ function updateGlobalMcpWarning(data) {
 function openMcpSetup() {
   const button = document.querySelector('.tab[data-tab="mcp"]');
   if (button) button.dispatchEvent(new MouseEvent('click'));
+  setTimeout(highlightMcpRegenerate, 250);
+}
+
+function highlightMcpRegenerate() {
+  const button = document.getElementById('mcp-regenerate-server-code');
+  if (!button) { ask('checkMcp', {}); setTimeout(highlightMcpRegenerate, 300); return; }
+  button.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  button.classList.remove('mcp-regenerate-highlight');
+  void button.offsetWidth;
+  button.classList.add('mcp-regenerate-highlight');
+  setTimeout(() => button.classList.remove('mcp-regenerate-highlight'), 6500);
 }
 
 function mcpVersionBadge(installed, current, installedVersion, expectedVersion) {
@@ -113,7 +124,7 @@ function renderMcpPane(data) {
         <hr class="div" style="margin:18px 0">
         <div style="font-size:12px;color:var(--muted);margin:10px 0 4px">Run <strong>MCP: List Servers</strong> → <strong>pkm</strong> → Start/Restart. Remote SSH windows receive the provider from the remote extension host and use remote paths.</div>
         <hr class="div" style="margin:18px 0">
-        <button class="tbtn" style="border-color:var(--accent)" onclick="doGenerateMcp()" ${runtime.healthy ? '' : 'disabled'}>↺ Regenerate server files</button>
+        <button class="tbtn mcp-regenerate-action ${data?.current ? '' : 'mcp-regenerate-highlight'}" id="mcp-regenerate-server-code" onclick="doGenerateMcp()" ${runtime.healthy ? '' : 'disabled'}>↺ Regenerate Server Code</button>
       ` : `
         <div style="border:1px solid var(--border);border-radius:8px;padding:16px 18px;margin-bottom:16px">
           <div style="font-size:13px;font-weight:600;margin-bottom:8px">Setup steps</div>
@@ -124,8 +135,8 @@ function renderMcpPane(data) {
             4. Use <strong>MCP: List Servers</strong> to start it
           </div>
         </div>
-        <button class="tbtn" style="border-color:var(--accent);padding:6px 18px;font-size:13px" onclick="doGenerateMcp()" ${runtime.healthy ? '' : 'disabled'}>
-          ✦ Generate MCP Server
+        <button class="tbtn mcp-regenerate-action ${data?.current ? '' : 'mcp-regenerate-highlight'}" id="mcp-regenerate-server-code" style="padding:6px 18px;font-size:13px" onclick="doGenerateMcp()" ${runtime.healthy ? '' : 'disabled'}>
+          ✦ Regenerate Server Code
         </button>
       `}
       <div id="mcp-result" style="margin-top:12px;font-size:12px"></div>

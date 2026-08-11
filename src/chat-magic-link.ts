@@ -3,15 +3,17 @@ import { createHash } from "crypto";
 export interface ChatMagicLinkCredentials {
   url: string;
   secret: string;
+  roomId?: string;
 }
 
 const PREFIX = "pkchat:v1:";
 
-export function createChatMagicLink(url: string, secret: string): string {
+export function createChatMagicLink(url: string, secret: string, roomId?: string): string {
   const normalizedUrl = normalizeChatUrl(url);
   const normalizedSecret = String(secret || "").trim();
   if (!normalizedSecret) throw new Error("Chatroom secret is required.");
-  const payload = Buffer.from(JSON.stringify({ v: 1, u: normalizedUrl, s: normalizedSecret }), "utf8").toString("base64url");
+  const normalizedRoomId = String(roomId || "").trim();
+  const payload = Buffer.from(JSON.stringify({ v: 1, u: normalizedUrl, s: normalizedSecret, ...(normalizedRoomId ? { r: normalizedRoomId } : {}) }), "utf8").toString("base64url");
   const checksum = createHash("sha256").update(payload, "utf8").digest("base64url").slice(0, 16);
   return `${PREFIX}${payload}.${checksum}`;
 }
@@ -28,12 +30,13 @@ export function parseChatMagicLink(value: unknown): ChatMagicLinkCredentials {
   catch { throw new Error("Chat Magic Link payload is invalid."); }
   const url = normalizeChatUrl(decoded?.u);
   const secret = String(decoded?.s || "").trim();
+  const roomId = String(decoded?.r || "").trim() || undefined;
   if (decoded?.v !== 1 || !secret) throw new Error("Chat Magic Link is missing valid room credentials.");
-  return { url, secret };
+  return { url, secret, roomId };
 }
 
 export function chatInviteMessage(magicLink: string): string {
-  return `Please first discover the MCP server pkm and its chat_join and chat_standby tools. Join with Magic Link \`${magicLink}\`; I'll tell you your alias. After joining, call chat_standby and keep calling it again after every reply or timeout. When /start_conversation names you, remain continuously focused on the Chatroom until roombot announces /stop_conversation or you are /release'd.`;
+  return `Discover the MCP server pkm and call chat_capabilities to find the complete PKM Chatroom tool workflow. Join with chat_join using Magic Link \`${magicLink}\` and the alias I'll give you. Approval automatically places you in standby. Call chat_standby to block until an @message addresses you. Use chat_post(..., continue_working=true) for progress updates while work continues; final chat_post returns to standby, then call chat_standby again. Stop only for /stop_conversation, /release, /leave, or Room close.`;
 }
 
 function normalizeChatUrl(value: unknown): string {

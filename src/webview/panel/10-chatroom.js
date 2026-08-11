@@ -1,7 +1,7 @@
 // ── Chatroom (agent room) ───────────────────────────────────────────────────
 const chat = {
   cfg: { hubUrl: '', room: 'general', displayName: 'user', hasSecret: false, hubPort: 7345 },
-  rooms: [], activeKey: '', active: null, recents: [], hubAdminRooms: [], managedAgents: [],
+  rooms: [], storedRooms: [], activeKey: '', active: null, recents: [], hubAdminRooms: [], pendingApprovals: [], managedAgents: [],
   hubRunning: false, hubWsUrl: '', hubHttpUrl: '', hubPort: 0, hubError: '',
   secretShown: false, secretVal: '',
   rendered: false, showJoin: false,
@@ -74,6 +74,8 @@ function chatProtoBadge(state) {
   if (state === 'sending') return '<span class="chat-proto engaged" title="Sending a response">sending</span>';
   if (state === 'reconnecting') return '<span class="chat-proto working" title="Connection lost — reconnecting">reconnecting</span>';
   if (state === 'engaged') return '<span class="chat-proto engaged" title="In session — coordinating">🔵 in session</span>';
+  if (state === 'idle') return '<span class="chat-proto idle" title="Idle — stopped or released from standby">idle</span>';
+  if (state === 'standby') return '<span class="chat-proto standby" title="Waiting for a directed @ message">standby</span>';
   return '';
 }
 
@@ -91,7 +93,7 @@ function renderChatroom() {
   const d = document.getElementById('detail');
   d.style.padding = '0';
   d.style.overflow = 'hidden';
-  d.innerHTML = `
+    d.innerHTML = `
   <div id="chat-root">
     <div id="chat-rail">
       <div class="chat-hub-box">
@@ -118,11 +120,19 @@ function renderChatroom() {
         <div id="chat-admin" class="hidden">
           <div class="chat-rail-hdr">Rooms on my hub <span class="chat-muted">(admin)</span></div>
           <div id="chat-admin-rooms"></div>
+          <div id="chat-pending-wrap" class="hidden">
+            <div class="chat-rail-hdr">Pending joins</div>
+            <div id="chat-pending-joins"></div>
+          </div>
           <button class="tbtn chat-wide" id="chat-admin-closeall" onclick="ask('chatAdminCloseAll',{})" style="border-color:#f87171;color:#f87171">Close all rooms</button>
         </div>
       </div>
       <div class="chat-rail-hdr" style="margin-top:10px">Rooms</div>
       <div id="chat-rooms"></div>
+      <div id="chat-stored-wrap" class="hidden">
+        <div class="chat-rail-hdr" style="margin-top:8px">Stored Rooms</div>
+        <div id="chat-stored-rooms"></div>
+      </div>
       <button class="tbtn chat-wide" onclick="chatToggleJoin()">＋ Join room</button>
       <div id="chat-join" class="chat-join hidden">
         <label class="chat-field-lbl">Hub URL</label>
@@ -149,11 +159,6 @@ function renderChatroom() {
           <span id="chat-status-dot" class="chat-dot"></span>
           <span id="chat-pane-title"></span>
           <span style="flex:1"></span>
-          <span id="chat-hosted-actions" class="hidden">
-            <button class="tbtn" id="chat-copy-invite-btn" onclick="chatCopyActiveInvite()" title="Copy the complete Magic Message">📋 Invite</button>
-            <button class="tbtn" onclick="chatOpenActiveBrowser()" title="Open this room in a browser">🌐 Browser</button>
-            <button class="tbtn" id="chat-rotate-key-btn" onclick="chatRotateActiveKey()" title="Refresh the room key and copy a new Magic Message">🔄 Key</button>
-          </span>
           <button class="tbtn hidden" id="chat-add-agent-btn" onclick="ask('chatAddManagedAgent',{})" title="Add an AI agent managed by this extension">＋ Agent</button>
           <button class="tbtn" onclick="chatRenameSelf()" title="Change your display name in this room">✏️ Rename me</button>
           <button class="tbtn" onclick="ask('chatShareFile',{})" title="Share a file with the room (peers must be online)">📎 Share</button>
@@ -168,6 +173,7 @@ function renderChatroom() {
               <button class="tbtn" id="chat-at-btn" onclick="chatToggleMentionMenu()" title="Mention someone (@all or a specific user)" disabled>@</button>
               <div id="chat-input-wrap">
                 <div id="chat-mention-pop" class="hidden"></div>
+                <span id="chat-default-recipient" title="Inferred recipient; sending will make @all explicit">@all</span>
                 <textarea id="chat-input" rows="1" placeholder="Message the room…  (Enter to send, Shift+Enter for newline)" disabled></textarea>
               </div>
               <button class="tbtn" id="chat-send-btn" onclick="chatSend()" disabled>Send</button>
@@ -194,6 +200,7 @@ function renderChatroom() {
   });
   chat.secretShown = false; chat.secretVal = '';
   chatPaintRooms();
+  chatPaintStoredRooms();
   chatPaintActive();
   chatPaintHub();
   chatPaintRecents();
@@ -244,6 +251,7 @@ function chatOnConfig(cfg) {
 function chatOnState(s) {
   if (!s) return;
   chat.rooms = s.rooms || [];
+  chat.storedRooms = s.storedRooms || [];
   chat.activeKey = s.activeKey || '';
   chat.active = s.active || null;
   chat.hubRunning = !!s.hubRunning;
@@ -251,10 +259,12 @@ function chatOnState(s) {
   chat.hubHttpUrl = s.hubHttpUrl ?? chat.hubHttpUrl;
   chat.hubPort = s.hubPort ?? chat.hubPort;
   chat.hubAdminRooms = s.hubAdminRooms || [];
+  chat.pendingApprovals = s.pendingApprovals || [];
   chat.managedAgents = s.managedAgents || [];
   if (chat.hubRunning) chat.hubError = '';   // running truth clears any stale error
   if (state.tab !== 'chatroom') return;
   chatPaintRooms();
+  chatPaintStoredRooms();
   chatPaintActive();
   chatPaintHub();
   chatPaintRecents();
@@ -318,37 +328,6 @@ function chatPrimaryHubRoom() {
   const act = chat.active && chat.active.room;
   if (act) { const hit = rooms.find(r => canon(r.room) === canon(act)); if (hit) return hit.room; }
   return rooms[0].room;
-}
-
-function chatActiveHostedRoom() {
-  const active = chat.active && chat.active.room;
-  if (!active) return null;
-  const canon = s => String(s || '').trim().replace(/\s+/g, ' ').toLowerCase();
-  return (chat.hubAdminRooms || []).find(room => canon(room.room) === canon(active)) || null;
-}
-
-function chatCopyActiveInvite() {
-  const active = chat.active;
-  if (active?.selfHost && active.hasRoomKey) ask('chatCopyInvite', { room: active.room });
-}
-
-function chatOpenActiveBrowser() {
-  const active = chat.active;
-  if (!active?.selfHost) return;
-  const hosted = chatActiveHostedRoom();
-  if (hosted) { chatOpenRoomBrowser(hosted.room); return; }
-  try {
-    const url = new URL(active.url);
-    url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
-    url.pathname = '/room/' + encodeURIComponent(active.room);
-    url.search = ''; url.hash = '';
-    ask('openExternal', { url: url.toString() });
-  } catch (e) {}
-}
-
-function chatRotateActiveKey() {
-  const hosted = chatActiveHostedRoom();
-  if (hosted && hosted.hasKey) ask('chatRotateSecret', { room: hosted.room });
 }
 
 function chatCopyPrimaryLink() {
@@ -446,10 +425,12 @@ function chatGenKey() {
 
 function chatSend() {
   const inp = document.getElementById('chat-input');
-  const text = inp.value;
-  if (!text.trim()) return;
+  const draft = inp.value;
+  if (!draft.trim()) return;
+  const text = chatMaterializeRecipient(draft);
   ask('chatSend', { text });
   inp.value = ''; inp.style.height = 'auto';
+  chatUpdateDefaultRecipient();
   chatHideMentionPop();
   chatOnLocalSend(text);
 }
@@ -518,7 +499,7 @@ function chatToggleMentionMenu() {
   if (pop && !pop.classList.contains('hidden')) { chatHideMentionPop(); return; }
   const inp = document.getElementById('chat-input');
   if (inp && !inp.disabled) inp.focus();
-  chatShowMentionPop('', null);
+  chatShowMentionPop('', { start: 0, end: 0 });
 }
 
 // Typing "@word" anywhere opens the picker filtered by the partial under the caret.
@@ -539,6 +520,7 @@ const CHAT_COMMANDS = [
   { cmd: '/stop_conversation', args: '', desc: 'Host: stop and release all standby agents' },
   { cmd: '/release', args: ' ', desc: 'Drop one party from the conversation' },
   { cmd: '/request_join', args: ' ', desc: 'Invite an online member into the discussion' },
+  { cmd: '/leave', args: '', desc: 'Leave/close this Room; stored history is preserved' },
 ];
 
 // One dispatcher for the composer: slash-command at line start, else @mention.
@@ -547,6 +529,7 @@ function chatSuggestOnInput() {
   if (!inp) return;
   const caret = inp.selectionStart;
   const upto = inp.value.slice(0, caret);
+  chatUpdateDefaultRecipient();
   const sc = upto.match(/^\/([a-z_]*)$/i);
   if (sc) { chatShowCommandPop(sc[1], { start: 0, end: caret }); return; }
   chatMentionOnInput();
@@ -596,6 +579,7 @@ function chatPickMention(name) {
   inp.setSelectionRange(pos, pos);
   inp.style.height = 'auto'; inp.style.height = Math.min(inp.scrollHeight, 120) + 'px';
   chatHideMentionPop();
+  chatUpdateDefaultRecipient();
   inp.focus();
 }
 
@@ -631,10 +615,36 @@ function chatParseMentions(text) {
   }
   return out;
 }
+function chatParseRecipients(text) {
+  const value = String(text || '').trimStart();
+  if (!value || value.startsWith('/')) return [];
+  const recipients = [];
+  const re = /^@(?:"([^"]{1,60})"|([\p{L}\p{N}_][\p{L}\p{N}_-]{0,59}))(?:\s+|$)/u;
+  let rest = value;
+  while (true) {
+    const match = re.exec(rest);
+    if (!match) break;
+    recipients.push(match[1] || match[2]);
+    rest = rest.slice(match[0].length);
+  }
+  return recipients;
+}
+function chatMaterializeRecipient(text) {
+  const value = String(text || '').trim();
+  if (!value || value.startsWith('/') || chatParseRecipients(value).length) return value;
+  return '@all ' + value;
+}
+function chatUpdateDefaultRecipient() {
+  const input = document.getElementById('chat-input');
+  const inferred = document.getElementById('chat-default-recipient');
+  if (!input || !inferred) return;
+  const value = input.value.trimStart();
+  inferred.classList.toggle('hidden', value.startsWith('/') || chatParseRecipients(value).length > 0);
+}
 function chatMentionsMe(text) {
   const me = (chat.active && chat.active.self) || '';
   if (!me) return false;
-  const low = chatParseMentions(text).map(s => s.toLowerCase());
+  const low = chatParseRecipients(text).map(s => s.toLowerCase());
   return low.includes(me.toLowerCase()) || low.includes('all') || low.includes('everyone');
 }
 // Wrap @tokens in an already-HTML-escaped string for display.
@@ -715,6 +725,30 @@ function chatPaintRooms() {
   }).join('');
 }
 
+function chatPaintStoredRooms() {
+  const wrap = document.getElementById('chat-stored-wrap');
+  const box = document.getElementById('chat-stored-rooms');
+  if (!wrap || !box) return;
+  const rooms = chat.storedRooms || [];
+  wrap.classList.toggle('hidden', !rooms.length);
+  if (!rooms.length) { box.innerHTML = ''; return; }
+  box.innerHTML = rooms.map(room => {
+    const available = room.canRehost !== false;
+    const count = Number(room.messageCount) || 0;
+    const activity = room.updatedAt ? chatAgo(room.updatedAt).replace(/^left /, '') : 'unknown';
+    const meta = `${count} message${count === 1 ? '' : 's'} · ${activity}`;
+    const reason = room.unavailableReason || 'This Room cannot be Rehosted.';
+    return `<div class="chat-stored-item${available ? '' : ' unavailable'}" title="${available ? 'Stored locally · Rehost this Room' : esc(reason)}">
+      <button class="chat-stored-open" title="${available ? 'Rehost Room' : esc(reason)}" ${available ? `onclick="ask('chatRehostStoredRoom',{roomId:'${esc(room.roomId)}'})"` : 'disabled'}>▶</button>
+      <span class="chat-stored-copy"><span class="chat-stored-name">${esc(room.roomName)}</span><span class="chat-stored-meta">${esc(meta)}</span></span>
+      <span class="chat-stored-actions">
+        ${available ? `<button class="chat-stored-icon" title="Rename Stored Room" onclick="ask('chatRenameStoredRoom',{roomId:'${esc(room.roomId)}',roomName:'${esc(room.roomName)}'})">✏</button>` : '<span class="chat-stored-warning" aria-label="Unavailable">!</span>'}
+        ${available ? `<button class="chat-stored-icon danger" title="Delete Room Data permanently" onclick="ask('chatDeleteStoredRoom',{roomId:'${esc(room.roomId)}',roomName:'${esc(room.roomName)}'})">🗑</button>` : ''}
+      </span>
+    </div>`;
+  }).join('');
+}
+
 function chatPaintActive() {
   const emptyPane = document.getElementById('chat-empty-pane');
   const activeBox = document.getElementById('chat-active');
@@ -731,13 +765,6 @@ function chatPaintActive() {
   const muted = !!a.selfMuted;
   const addAgent = document.getElementById('chat-add-agent-btn');
   if (addAgent) addAgent.classList.toggle('hidden', !a.selfHost);
-  const hosted = chatActiveHostedRoom();
-  const hostedActions = document.getElementById('chat-hosted-actions');
-  if (hostedActions) hostedActions.classList.toggle('hidden', !a.selfHost);
-  const copyInvite = document.getElementById('chat-copy-invite-btn');
-  const rotateKey = document.getElementById('chat-rotate-key-btn');
-  if (copyInvite) copyInvite.disabled = !a.hasRoomKey;
-  if (rotateKey) rotateKey.disabled = !hosted?.hasKey;
   if (inp)  { inp.disabled  = !connected || muted; inp.placeholder = muted ? 'You are muted by the host — you can read but not post.' : 'Message the room…  (Enter to send, Shift+Enter for newline)'; }
   if (sbtn) sbtn.disabled = !connected || muted;
   if (atbtn) atbtn.disabled = !connected || muted;
@@ -882,6 +909,29 @@ function chatPaintHub() {
        </div>
      </div>`
   ).join('');
+  chatPaintPendingJoins();
+}
+
+function chatPaintPendingJoins() {
+  const wrap = document.getElementById('chat-pending-wrap');
+  const box = document.getElementById('chat-pending-joins');
+  if (!wrap || !box) return;
+  const pending = chat.pendingApprovals || [];
+  wrap.classList.toggle('hidden', !pending.length);
+  if (!pending.length) { box.innerHTML = ''; return; }
+  box.innerHTML = pending.map(item => {
+    const seconds = Math.max(0, Math.ceil((Number(item.expiresAt) - Date.now()) / 1000));
+    const reusable = (item.reusableParticipants || []).length;
+    return `<div class="chat-pending-item">
+      <div class="chat-pending-head"><span class="chat-pending-alias">${esc(item.alias)}</span><span class="chat-recent-badge guest">${esc(item.kind)}</span></div>
+      <div class="chat-stored-meta">${seconds}s remaining</div>
+      <div class="chat-pending-actions">
+        <button class="tbtn" onclick="ask('chatApproveJoinNew',{requestId:'${esc(item.requestId)}'})">New user</button>
+        <button class="tbtn" ${reusable ? `onclick="ask('chatApproveJoinReuse',{requestId:'${esc(item.requestId)}'})"` : 'disabled'} title="${reusable ? `${reusable} offline identity option(s)` : 'No offline identity available'}">Reuse</button>
+        <button class="tbtn chat-pending-reject" onclick="ask('chatRejectJoin',{requestId:'${esc(item.requestId)}'})">Reject</button>
+      </div>
+    </div>`;
+  }).join('');
 }
 
 function chatPaintRecents() {

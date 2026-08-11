@@ -8,10 +8,12 @@ export type ChatStatus = "disconnected" | "connecting" | "connected" | "error";
 export interface JoinOpts {
   url:   string;
   room:  string;
+  roomId?: string;
   user:  string;
   token: string;
   kind?: MemberKind;
   cid?:  string;   // stable identity id (persisted by the extension/MCP); defaults to a random per-instance id
+  hostToken?: string; // ephemeral proof returned by the local Hub Create/Rehost API
 }
 
 export interface ClientEvents {
@@ -25,6 +27,8 @@ export interface ClientEvents {
   onRejected?:    (code: string, msg: string) => void;
   onRenamed?:     (name: string) => void;
   onRekey?:       (secret: string) => void;
+  onJoinPending?: (requestId: string, expiresAt: number) => void;
+  onJoinApproved?: (participantId: string, outcome: "new" | "reuse") => void;
 }
 
 interface Incoming { meta: FileMeta; chunks: Buffer[]; from: string; received: number; }
@@ -40,11 +44,13 @@ export class ChatClient {
   private incoming: Map<string, Incoming> = new Map();
   private cid = randomBytes(4).toString("hex");   // stable identity across reconnects
   private log: (m: string) => void;
+  private lastMessageId = "";
 
   status:   ChatStatus = "disconnected";
   members:  Member[]   = [];
   selfUser = "";
   selfRoom = "";
+  participantId = "";
 
   constructor(events: ClientEvents, logger?: (m: string) => void) {
     this.events = events;
@@ -57,7 +63,9 @@ export class ChatClient {
   get identity(): string { return this.cid; }
 
   connect(opts: JoinOpts): void {
+    const sameRoom = !!this.opts && this.opts.room === opts.room && (this.opts.roomId || "") === (opts.roomId || "");
     this.disconnect();
+    if (!sameRoom) this.lastMessageId = "";
     this.opts = opts;
     this.selfUser = opts.user;
     this.selfRoom = opts.room;
@@ -77,8 +85,8 @@ export class ChatClient {
 
     ws.on("open", () => {
       this.reconnectDelay = 1000;
-      this.send({ t: "join", room: this.opts!.room, user: this.opts!.user, token: this.opts!.token, kind: this.opts!.kind ?? "human", cid: this.cid });
-      this.setStatus("connected");
+      this.send({ t: "join", room: this.opts!.room, roomId: this.opts!.roomId, user: this.opts!.user, token: this.opts!.token, kind: this.opts!.kind ?? "human", cid: this.cid, hostToken: this.opts!.hostToken, resumeAfter: this.lastMessageId || undefined });
+      this.setStatus("connecting", "waiting for Host approval…");
       this.startPing();
     });
     ws.on("message", raw => this.onFrame(raw.toString()));
@@ -95,14 +103,31 @@ export class ChatClient {
     let frame: Frame;
     try { frame = JSON.parse(raw); } catch { return; }
     switch (frame.t) {
+      case "join.pending":
+        this.setStatus("connecting", "waiting for Host approval…");
+        this.events.onJoinPending?.(frame.requestId, frame.expiresAt);
+        break;
+      case "join.approved":
+        this.participantId = frame.participantId;
+        this.events.onJoinApproved?.(frame.participantId, frame.outcome);
+        break;
+      case "join.ready":
+        this.setStatus("connected");
+        break;
       case "presence":
         this.members = frame.members;
         this.events.onPresence(frame.members);
         break;
       case "history":
-        this.events.onHistory(frame.messages);
+        if (frame.messages.length) this.lastMessageId = frame.messages[frame.messages.length - 1].id || this.lastMessageId;
+        if (frame.mode === "catchup") {
+          for (const message of frame.messages) this.events.onMessage(message);
+        } else {
+          this.events.onHistory(frame.messages);
+        }
         break;
       case "msg":
+        if (frame.id) this.lastMessageId = frame.id;
         if (frame.id && frame.receipt?.ack) {
           this.send({ t: "msg.read", room: frame.room, messageId: frame.id });
         }
@@ -166,12 +191,12 @@ export class ChatClient {
       case "error":
         // Moderation notices (mute/unmute, forbidden, rename clash) are informational —
         // surface them in the log without flipping the connection into an error state.
-        if (frame.code === "muted" || frame.code === "moderation") {
+        if (frame.code === "muted" || frame.code === "moderation" || frame.code === "mention-required") {
           this.events.onMessage({ id: randomBytes(6).toString("hex"), from: "", fromId: "", text: frame.msg, ts: Date.now(), kind: "human", system: true });
           break;
         }
         this.setStatus("error", frame.msg);
-        if (frame.code === "auth" || frame.code === "name-taken" || frame.code === "no-room") {
+        if (frame.code === "auth" || frame.code === "name-taken" || frame.code === "no-room" || frame.code === "room-mismatch" || frame.code === "join-rejected" || frame.code === "join-timeout" || frame.code === "join-cancelled") {
           this.intentionalClose = true; // don't retry: creds/name/room won't fix themselves
           this.events.onRejected?.(frame.code, frame.msg);
         }

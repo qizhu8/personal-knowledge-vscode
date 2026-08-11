@@ -9,14 +9,17 @@ export interface FileMeta {
 }
 
 export type Frame =
-  | { t: "join";       room: string; user: string; token: string; kind?: MemberKind; cid?: string }
+  | { t: "join";       room: string; roomId?: string; user: string; token: string; kind?: MemberKind; cid?: string; hostToken?: string; resumeAfter?: string }
+  | { t: "join.pending"; room: string; requestId: string; expiresAt: number }
+  | { t: "join.approved"; room: string; participantId: string; outcome: "new" | "reuse" }
+  | { t: "join.ready"; room: string }
   | { t: "leave";      room: string }
   | { t: "presence";   room: string; members: Member[] }
   | { t: "msg";        id?: string; room: string; from: string; fromId?: string; text: string; ts?: number; kind?: MemberKind; receipt?: ReadReceipt }
   | { t: "msg.read";   room: string; messageId: string; read?: number; total?: number }
   | { t: "system";     room: string; text: string; ts: number }
   | { t: "agent.state"; room: string; user?: string; state: AgentRuntimeState; ts?: number }
-  | { t: "history";    room: string; messages: ChatMessage[] }
+  | { t: "history";    room: string; mode: "baseline" | "catchup"; messages: ChatMessage[] }
   | { t: "closed";     room: string; reason: string }
   | { t: "admin";      room: string; action: "kick" | "mute" | "unmute" | "rename" | "edit"; target: string; name?: string; role?: string }
   | { t: "kicked";     room: string; reason: string }
@@ -41,6 +44,7 @@ export interface Member {
   lastSeen?: number;  // ms epoch of the last time this identity was seen (for "left …")
   muted?: boolean;    // true when the host has muted this identity (can read but not post)
   role?: string;      // host-assigned room role/label
+  participantId?: string; // durable identity scoped to this Room
 }
 
 export interface ChatMessage {

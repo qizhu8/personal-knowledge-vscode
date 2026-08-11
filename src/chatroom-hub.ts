@@ -1,13 +1,17 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer, Server, IncomingMessage, ServerResponse } from "http";
 import { networkInterfaces } from "os";
-import { randomBytes, timingSafeEqual, createHash } from "crypto";
+import { randomBytes, randomUUID, timingSafeEqual, createHash } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { findCommand, BOT_NAME, CommandContext } from "./chat-commands";
 import { createChatMagicLink, chatInviteMessage } from "./chat-magic-link";
 import { AgentRuntimeState, ChatMessage, FileMeta, Frame, MAX_FILE_BYTES, Member, MemberKind } from "./chatroom-protocol";
 import { browserViewHtml } from "./chatroom-browser";
+import { ChatPersistence, PersistedChatMessage } from "./chat-persistence";
+import { ChatRoomLifecycle, ActiveChatRoom, StoredChatRoom } from "./chat-room-lifecycle";
+import { SecretStorageLike } from "./chat-room-credentials";
+import { ChatJoinApprovalManager, JoinApprovalResult, PendingJoinApproval } from "./chat-join-approval";
 
 function constantTimeEquals(a: string, b: string): boolean {
   const ba = Buffer.from(a, "utf-8");
@@ -32,9 +36,14 @@ interface HubConn {
   ws:     WebSocket;
   alive:  boolean;
   joined: boolean;
+  participantId: string;
+  pendingJoinId: string;
+  resumeAfter: string;
+  processing: Promise<void>;
 }
 
 interface RoomState {
+  roomId: string;
   history: ChatMessage[];   // CHAT ONLY — never files
   owner:   string;          // creator's cid (or conn id) — room deactivates when they leave
   ownerName: string;
@@ -69,9 +78,10 @@ interface RosterEntry {
   firstSeen: number;
   lastSeen:  number;
   role:      string;
+  participantId: string;
 }
 
-export interface AdminRoomInfo { room: string; owner: string; members: number; }
+export interface AdminRoomInfo { roomId: string; room: string; owner: string; members: number; }
 
 export class ChatHub {
   private http:  Server | null = null;
@@ -89,6 +99,15 @@ export class ChatHub {
   private archiveDir = "";
   private historyLimitBytes = 10 * 1024 * 1024;     // configurable; 0 disables archiving
   private flushTimers: Map<string, NodeJS.Timeout> = new Map();
+  private persistence?: ChatPersistence;
+  private persistenceRoot = "";
+  private storedRooms: StoredChatRoom[] = [];
+  private lifecycle?: ChatRoomLifecycle;
+  private installationId = "";
+  private secretStorage?: SecretStorageLike;
+  private approvals?: ChatJoinApprovalManager;
+  private hostTokens = new Map<string, string>();
+  private approvalChanged?: () => void;
 
   constructor(logger?: (m: string) => void) { this.log = logger ?? (() => {}); }
 
@@ -97,6 +116,45 @@ export class ChatHub {
     this.archiveDir = dir || "";
     this.historyLimitBytes = Math.max(0, limitBytes | 0);
     if (this.archiveDir) { try { fs.mkdirSync(this.archiveDir, { recursive: true }); } catch { /* ignore */ } }
+  }
+
+  configurePersistence(rootDir: string, limitBytes: number): void {
+    this.persistenceRoot = rootDir || "";
+    this.historyLimitBytes = Math.max(0, limitBytes | 0);
+  }
+
+  configureLifecycle(rootDir: string, limitBytes: number, installationId: string, secretStorage: SecretStorageLike): void {
+    this.persistenceRoot = rootDir || "";
+    this.historyLimitBytes = Math.max(0, limitBytes | 0);
+    this.installationId = installationId;
+    this.secretStorage = secretStorage;
+  }
+
+  onApprovalsChanged(callback: () => void): void { this.approvalChanged = callback; }
+
+  pendingApprovals(): PendingJoinApproval[] { return this.approvals?.list() || []; }
+
+  async approveJoinNew(requestId: string): Promise<void> { await this.requireApprovals().approveNew(requestId); }
+  async approveJoinReuse(requestId: string, participantId: string): Promise<void> { await this.requireApprovals().approveReuse(requestId, participantId); }
+  async rejectJoin(requestId: string, reason?: string): Promise<void> { await this.requireApprovals().reject(requestId, reason); }
+
+  private requireApprovals(): ChatJoinApprovalManager {
+    if (!this.approvals) throw new Error("Join approval service is unavailable.");
+    return this.approvals;
+  }
+
+  async renameStoredRoom(roomId: string, roomName: string): Promise<void> {
+    await this.ensurePersistence();
+    if (!this.lifecycle) throw new Error("Room lifecycle is unavailable.");
+    await this.lifecycle.renameStoredRoom(roomId, roomName);
+    this.storedRooms = await this.lifecycle.listStoredRooms();
+  }
+
+  async deleteStoredRoom(roomId: string): Promise<void> {
+    await this.ensurePersistence();
+    if (!this.lifecycle) throw new Error("Room lifecycle is unavailable.");
+    await this.lifecycle.deleteStoredRoom(roomId);
+    this.storedRooms = await this.lifecycle.listStoredRooms();
   }
 
   get port(): number { return this._port; }
@@ -113,16 +171,50 @@ export class ChatHub {
   // ── Admin (available to the local hub owner) ──────────────────────────────
   adminRooms(): AdminRoomInfo[] {
     return [...this.rooms.keys()].map(room => ({
+      roomId: this.rooms.get(room)?.roomId || "",
       room,
       owner: this.rooms.get(room)?.ownerName || "—",
       members: this.membersOf(room).length,
     }));
   }
-  adminCloseRoom(room: string): void { this.deactivateRoom(room, "closed by admin"); }
-  adminCloseAll(): void { for (const room of [...this.rooms.keys()]) this.deactivateRoom(room, "closed by admin"); }
+  async adminCloseRoom(room: string): Promise<void> { await this.deactivateRoom(room, "closed by admin"); }
+  async adminCloseAll(): Promise<void> { for (const room of [...this.rooms.keys()]) await this.deactivateRoom(room, "closed by admin"); }
+
+  async listStoredRooms(): Promise<StoredChatRoom[]> {
+    await this.ensurePersistence();
+    if (!this.lifecycle) return this.storedRooms;
+    this.storedRooms = await this.lifecycle.listStoredRooms();
+    return this.storedRooms;
+  }
+
+  private async ensurePersistence(): Promise<void> {
+    if (!this.persistenceRoot || this.persistence) return;
+    if (this.installationId && this.secretStorage) {
+      this.lifecycle = new ChatRoomLifecycle(this.persistenceRoot, this.installationId, this.secretStorage, 500, this.historyLimitBytes, message => this.log(message));
+      this.persistence = this.lifecycle.persistence;
+      this.approvals = new ChatJoinApprovalManager(
+        this.persistence,
+        (roomId, participantId) => [...this.conns.values()].some(conn => conn.joined && this.rooms.get(conn.room)?.roomId === roomId && conn.participantId === participantId),
+        120_000,
+        () => this.approvalChanged?.(),
+      );
+      this.storedRooms = await this.lifecycle.listStoredRooms();
+    } else {
+      this.persistence = new ChatPersistence(this.persistenceRoot, 500, this.historyLimitBytes, message => this.log(message));
+      this.storedRooms = (await this.persistence.listStoredRooms()).map(room => ({
+        roomId: room.roomId,
+        roomName: room.roomName,
+        updatedAt: room.updatedAt,
+        messageCount: room.messageCount,
+        canRehost: false,
+        unavailableReason: "Room lifecycle credentials are not configured.",
+      }));
+    }
+  }
 
   async start(port: number): Promise<void> {
     if (this.wss) return;
+    await this.ensurePersistence();
     await new Promise<void>((resolve, reject) => {
       const httpServer = createServer((req, res) => this.onHttp(req, res));
       // Attach the error handler BEFORE listening so a bind failure (e.g. port in
@@ -157,9 +249,80 @@ export class ChatHub {
     this.log(`chat hub listening on ${this._port} (ws + browser view)`);
   }
 
-  stop(): void {
+  async createRoom(roomName: string, requestedJoinSecret?: string): Promise<{ roomId: string; room: string; secret: string; hostToken: string }> {
+    if (!this.lifecycle) throw new Error("Chat Hub lifecycle is not configured or running.");
+    const room = ChatHub.canonRoom(roomName);
+    this.storedRooms = await this.lifecycle.listStoredRooms();
+    if (this.rooms.has(room) || this.storedRooms.some(item => ChatHub.canonRoom(item.roomName) === room)) {
+      throw new Error(`A Room named "${room}" already exists. Rehost the stored Room instead.`);
+    }
+    const active = await this.lifecycle.createRoom(room, requestedJoinSecret);
+    if (!active.messages.length) {
+      const legacy = this.readLegacyArchive(room);
+      if (legacy.length) {
+        await this.lifecycle.persistence.appendMany(active.roomId, legacy.map(message => this.toPersisted(message)));
+        active.messages.push(...legacy.map(message => this.toPersisted(message)));
+      }
+    }
+    this.installActiveRoom(active);
+    const hostToken = randomBytes(24).toString("base64url");
+    this.hostTokens.set(room, hostToken);
+    return { roomId: active.roomId, room, secret: active.joinSecret, hostToken };
+  }
+
+  async rehostRoom(roomId: string): Promise<{ roomId: string; room: string; secret: string; hostToken: string }> {
+    if (!this.lifecycle) throw new Error("Chat Hub lifecycle is not configured or running.");
+    const active = await this.lifecycle.rehostRoom(roomId);
+    const room = ChatHub.canonRoom(active.roomName);
+    if (this.rooms.has(room)) {
+      await this.lifecycle.deactivateRoom(roomId, "name-conflict");
+      throw new Error(`An active Room named "${room}" already exists.`);
+    }
+    this.installActiveRoom(active);
+    const hostToken = randomBytes(24).toString("base64url");
+    this.hostTokens.set(room, hostToken);
+    return { roomId, room, secret: active.joinSecret, hostToken };
+  }
+
+  private installActiveRoom(active: ActiveChatRoom): void {
+    const room = ChatHub.canonRoom(active.roomName);
+    const roster = new Map<string, RosterEntry>();
+    for (const membership of active.identityState.memberships) {
+      if (membership.forgottenAt != null) continue;
+      const alias = [...active.identityState.aliases].reverse().find(item => item.participantId === membership.participantId);
+      if (!alias) continue;
+      const key = `participant:${membership.participantId}`;
+      roster.set(key, {
+        key,
+        id: `stored:${membership.participantId}`,
+        user: alias.alias,
+        kind: membership.kind === "agent" ? "agent" : membership.kind === "browser" ? "browser" : "human",
+        sid: membership.participantId.slice(0, 8),
+        participantId: membership.participantId,
+        verified: membership.kind !== "browser",
+        present: false,
+        firstSeen: membership.createdAt,
+        lastSeen: membership.updatedAt,
+        role: membership.role || "",
+      });
+    }
+    const ownerName = active.hostParticipantId
+      ? roster.get(`participant:${active.hostParticipantId}`)?.user || ""
+      : "";
+    const state: RoomState = {
+      roomId: active.roomId, history: active.messages.map(message => this.fromPersisted(message)),
+      owner: active.hostParticipantId || "", ownerName, graceTimer: null, roster, muted: new Set(),
+      conversation: { active: false, pending: false, initiatorKey: "", initiatorName: "", participants: [], currentSpeaker: "", nextIndex: 0, turns: 0 },
+      receipts: new Map(),
+    };
+    this.rooms.set(room, state);
+    this.roomSecret.set(room, active.joinSecret);
+    this.trimHistory(state);
+  }
+
+  async stop(): Promise<void> {
     if (this.heartbeat) { clearInterval(this.heartbeat); this.heartbeat = null; }
-    for (const room of this.rooms.keys()) this.flushArchive(room);   // persist before shutdown
+    for (const room of [...this.rooms.keys()]) await this.deactivateRoom(room, "hub-shutdown");
     for (const t of this.flushTimers.values()) clearTimeout(t);
     this.flushTimers.clear();
     for (const c of this.conns.values()) { try { c.ws.close(); } catch { /* ignore */ } }
@@ -168,6 +331,17 @@ export class ChatHub {
     try { this.wss?.close(); } catch { /* ignore */ }
     try { this.http?.close(); } catch { /* ignore */ }
     this.wss = null; this.http = null; this._port = 0;
+    if (this.lifecycle) {
+      await this.lifecycle.dispose();
+      this.lifecycle = undefined;
+      this.persistence = undefined;
+      this.approvals = undefined;
+      this.storedRooms = [];
+    } else if (this.persistence) {
+      await this.persistence.dispose();
+      this.persistence = undefined;
+      this.storedRooms = [];
+    }
     this.log("chat hub stopped");
   }
 
@@ -181,7 +355,12 @@ export class ChatHub {
     }
     if (req.method === "GET" && url === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: true, rooms: this.roomNames.length, members: this.conns.size }));
+      res.end(JSON.stringify({
+        ok: true,
+        rooms: this.roomNames.length,
+        members: this.conns.size,
+        activeRooms: [...this.rooms.entries()].map(([room, state]) => ({ room, roomId: state.roomId })),
+      }));
       return;
     }
     res.writeHead(404); res.end("Not found");
@@ -191,7 +370,7 @@ export class ChatHub {
     let s = this.rooms.get(room);
     if (!s) {
       s = {
-        history: [], owner: "", ownerName: "", graceTimer: null,
+        roomId: randomUUID(), history: [], owner: "", ownerName: "", graceTimer: null,
         roster: new Map(), muted: new Set(),
         conversation: { active: false, pending: false, initiatorKey: "", initiatorName: "", participants: [], currentSpeaker: "", nextIndex: 0, turns: 0 },
         receipts: new Map(),
@@ -200,6 +379,61 @@ export class ChatHub {
       this.loadArchive(room, s);   // restore prior chat so rejoiners see history
     }
     return s;
+  }
+
+  private async ensureRoomState(room: string): Promise<RoomState> {
+    const existing = this.rooms.get(room);
+    if (existing) return existing;
+    const stored = this.storedRooms.find(candidate => ChatHub.canonRoom(candidate.roomName) === room);
+    const roomId = stored?.roomId || randomUUID();
+    let history: ChatMessage[] = [];
+    if (this.persistence) {
+      const opened = await this.persistence.openRoom(roomId, room);
+      history = opened.messages.map(message => this.fromPersisted(message));
+      if (!stored && !history.length) {
+        const legacy = this.readLegacyArchive(room);
+        if (legacy.length) {
+          await this.persistence.appendMany(roomId, legacy.map(message => this.toPersisted(message)));
+          history = legacy;
+        }
+      }
+    } else {
+      const temporary = this.roomState(room);
+      temporary.roomId = roomId;
+      return temporary;
+    }
+    const state: RoomState = {
+      roomId, history, owner: "", ownerName: "", graceTimer: null,
+      roster: new Map(), muted: new Set(),
+      conversation: { active: false, pending: false, initiatorKey: "", initiatorName: "", participants: [], currentSpeaker: "", nextIndex: 0, turns: 0 },
+      receipts: new Map(),
+    };
+    this.rooms.set(room, state);
+    this.trimHistory(state);
+    return state;
+  }
+
+  private readLegacyArchive(room: string): ChatMessage[] {
+    if (!this.archiveDir || this.historyLimitBytes <= 0) return [];
+    try { const value = JSON.parse(fs.readFileSync(this.archivePath(room), "utf-8")); return Array.isArray(value) ? value : []; }
+    catch { return []; }
+  }
+
+  private toPersisted(message: ChatMessage): PersistedChatMessage {
+    return {
+      id: message.id, participantId: message.fromId || undefined,
+      aliasAtSend: message.from || "system", senderKind: message.kind,
+      messageType: message.system ? "system" : message.file ? "file" : "chat",
+      content: message.text, metadata: { system: message.system, file: message.file, receipt: message.receipt },
+      createdAt: message.ts,
+    };
+  }
+
+  private fromPersisted(message: PersistedChatMessage): ChatMessage {
+    const metadata = (message.metadata || {}) as any;
+    return { id: message.id, from: message.aliasAtSend, fromId: message.participantId || "", text: message.content,
+      ts: message.createdAt, kind: message.senderKind as MemberKind, system: !!metadata.system,
+      file: metadata.file, receipt: metadata.receipt };
   }
 
   // ── Persistent chat archive ───────────────────────────────────────────────
@@ -251,14 +485,17 @@ export class ChatHub {
   }
 
   // Kick everyone out of a room and drop all of its state (no zombie rooms).
-  private deactivateRoom(room: string, reason: string): void {
+  private async deactivateRoom(room: string, reason: string): Promise<void> {
     const st = this.rooms.get(room);
     if (st?.graceTimer) { clearTimeout(st.graceTimer); st.graceTimer = null; }
     const flush = this.flushTimers.get(room);
     if (flush) { clearTimeout(flush); this.flushTimers.delete(room); }
-    this.flushArchive(room);      // persist final state before dropping in-memory
     this.rooms.delete(room);   // remove first so onClose treats these as already-gone
     this.roomSecret.delete(room);
+    this.hostTokens.delete(room);
+    if (st && this.approvals) await this.approvals.cancelRoom(st.roomId, reason);
+    if (st && this.lifecycle) await this.lifecycle.deactivateRoom(st.roomId, reason);
+    else this.flushArchive(room);
     const members = [...this.conns.values()].filter(c => c.joined && c.room === room);
     for (const c of members) {
       this.sendTo(c.ws, { t: "closed", room, reason });
@@ -269,15 +506,18 @@ export class ChatHub {
   }
 
   private onConnection(ws: WebSocket): void {
-    const conn: HubConn = { id: randomBytes(4).toString("hex"), user: "", room: "", kind: "human", cid: "", ws, alive: true, joined: false };
+    const conn: HubConn = { id: randomBytes(4).toString("hex"), user: "", room: "", kind: "human", cid: "", ws, alive: true, joined: false, participantId: "", pendingJoinId: "", resumeAfter: "", processing: Promise.resolve() };
     this.conns.set(ws, conn);
     ws.on("pong", () => { conn.alive = true; });
-    ws.on("message", raw => this.onMessage(conn, raw.toString()));
-    ws.on("close", () => this.onClose(conn));
+    ws.on("message", raw => {
+      conn.processing = conn.processing.then(() => this.onMessage(conn, raw.toString()))
+        .catch(error => this.log(`chat frame failed for ${conn.user || "pending"}: ${(error as Error).message}`));
+    });
+    ws.on("close", () => { void this.onClose(conn); });
     ws.on("error", () => { try { ws.close(); } catch { /* ignore */ } });
   }
 
-  private onMessage(conn: HubConn, raw: string): void {
+  private async onMessage(conn: HubConn, raw: string): Promise<void> {
     let frame: Frame;
     try { frame = JSON.parse(raw); } catch { return; }
 
@@ -285,19 +525,12 @@ export class ChatHub {
     if (frame.t === "pong") { conn.alive = true; return; }
 
     if (conn.joined && frame.t === "leave") {
-      // Multiple VS Code windows can share one stable identity. Leaving one
-      // window must not deactivate the room while another owner window remains.
-      const st = this.rooms.get(conn.room);
-      if (st && this.isOwnerConn(st, conn) && !this.hasOtherIdentityConnection(conn)) {
-        this.deactivateRoom(conn.room, "host left");
-      } else {
-        try { conn.ws.close(); } catch { /* ignore */ }
-      }
+      await this.leaveConnection(conn);
       return;
     }
 
     if (conn.joined && frame.t === "admin") {
-      this.handleAdmin(conn, frame);
+      await this.handleAdmin(conn, frame);
       return;
     }
 
@@ -311,80 +544,55 @@ export class ChatHub {
     }
 
     if (!conn.joined) {
+      if (conn.pendingJoinId) {
+        this.sendTo(conn.ws, { t: "error", code: "join-pending", msg: "This Join is waiting for Host approval." });
+        return;
+      }
       if (frame.t !== "join") { this.sendTo(conn.ws, { t: "error", code: "not-joined", msg: "join first" }); return; }
       const desired = (frame.user || "anon").slice(0, 60);
       const room    = ChatHub.canonRoom(frame.room);
       const cid     = (frame.cid  || "").slice(0, 32);
       const token   = frame.token ?? "";
       const kind: MemberKind = frame.kind === "agent" ? "agent" : frame.kind === "browser" ? "browser" : "human";
-      const nameKey = desired.trim().toLowerCase();
-      const joiningIdentity = cid ? `cid:${cid}:${nameKey}` : "";
+      const nameKey = desired.trim().normalize("NFKC").toLocaleLowerCase();
       const existingState = this.rooms.get(room);
-      const ownerReconnect = kind === "human" && !!joiningIdentity && existingState?.owner === joiningIdentity;
-      // The stable owner identity can always reconnect. The per-room secret is
-      // guest authentication and must match for everyone else.
+      if (frame.roomId && existingState?.roomId !== frame.roomId) {
+        this.sendTo(conn.ws, { t: "error", code: "room-mismatch", msg: `Room identity does not match the active Room "${room}".` });
+        try { conn.ws.close(); } catch { /* ignore */ }
+        return;
+      }
       const known = this.roomSecret.get(room);
       if (known !== undefined) {
-        if (!ownerReconnect && !constantTimeEquals(token, known)) {
+        if (!constantTimeEquals(token, known)) {
           this.sendTo(conn.ws, { t: "error", code: "auth", msg: `Wrong secret for room "${room}".` });
           try { conn.ws.close(); } catch { /* ignore */ }
           return;
         }
       } else {
-        // Room doesn't exist yet: only a host/extension user can create it.
-        if (kind === "browser") {
-          this.sendTo(conn.ws, { t: "error", code: "no-room", msg: `Room "${room}" doesn't exist yet. Ask the host to start it.` });
-          try { conn.ws.close(); } catch { /* ignore */ }
-          return;
-        }
-        if (!token) {
-          this.sendTo(conn.ws, { t: "error", code: "auth", msg: "A secret is required to create a room." });
-          try { conn.ws.close(); } catch { /* ignore */ }
-          return;
-        }
-        this.roomSecret.set(room, token);   // creator defines the room's secret
+        this.sendTo(conn.ws, { t: "error", code: "no-room", msg: `Room "${room}" isn't active. Ask the Host to Create or Rehost it.` });
+        try { conn.ws.close(); } catch { /* ignore */ }
+        return;
       }
-      // Names must be unique within a room so every identity is unambiguous.
-      for (const other of this.conns.values()) {
-        if (other === conn || !other.joined || other.room !== room) continue;
-        if (other.user.trim().toLowerCase() !== nameKey) continue;
-        if (cid && other.cid && other.cid === cid) {
-          // Same stable identity in another VS Code window. Keep both live;
-          // roster/presence aggregates them as one person.
-          continue;
-        } else {
-          this.sendTo(conn.ws, { t: "error", code: "name-taken", msg: `The name "${desired}" is already taken in room "${room}". Please choose a different name.` });
-          try { conn.ws.close(); } catch { /* ignore */ }
-          return;
-        }
-      }
-      conn.joined = true;
       conn.user = desired;
       conn.room = room;
       conn.cid  = cid;
       conn.kind = kind;
-      const identityAlreadyPresent = this.hasOtherIdentityConnection(conn);
-      this.log(`join room=${conn.room} user=${conn.user} kind=${conn.kind}`);
-      const st = this.roomState(conn.room);
-      // First real participant owns the room; the room deactivates when they leave.
-      const becameOwner = !st.owner && conn.kind !== "browser";
-      if (becameOwner) { st.owner = this.identityKey(conn); st.ownerName = conn.user; }
-      // Owner reconnected within the grace window — cancel the pending deactivation.
-      if (this.isOwnerConn(st, conn) && st.graceTimer) {
-        clearTimeout(st.graceTimer); st.graceTimer = null;
+      conn.resumeAfter = String(frame.resumeAfter || "").slice(0, 120);
+      const st = existingState || await this.ensureRoomState(room);
+      if (!this.approvals || !this.persistence) throw new Error("Room Join approval is unavailable.");
+      const isHost = kind === "human" && !!frame.hostToken && constantTimeEquals(frame.hostToken, this.hostTokens.get(room) || "");
+      const pending = await this.approvals.request(st.roomId, conn.id, desired, kind);
+      conn.pendingJoinId = pending.approval.requestId;
+      if (isHost) {
+        if (st.owner) await this.approvals.approveReuse(pending.approval.requestId, st.owner);
+        else await this.approvals.approveNew(pending.approval.requestId);
+      } else {
+        this.sendTo(conn.ws, { t: "join.pending", room, requestId: pending.approval.requestId, expiresAt: pending.approval.expiresAt });
       }
-      const prevName = this.rosterJoin(conn, st);
-      // Backfill recent chat history to the joining member (files are never stored).
-      if (st.history.length) this.sendTo(conn.ws, { t: "history", room: conn.room, messages: st.history });
-      if (!identityAlreadyPresent) {
-        const joinText = (prevName && prevName !== conn.user)
-          ? `${prevName} rejoined with new name ${conn.user}`
-          : `${conn.user} joined the room`;
-        this.broadcast(conn.room, { t: "system", room: conn.room, text: joinText, ts: Date.now() });
-      }
-      this.broadcastPresence(conn.room);
-      // Greet the host who just created a room with the /help cheat-sheet.
-      if (becameOwner) this.sendHelp(conn, `👋 Welcome — you're now hosting "${conn.room}". Here are the magic messages you can type:`);
+      void pending.result.then(result => this.finishJoin(conn, result, isHost)).catch(error => {
+        this.sendTo(conn.ws, { t: "error", code: "join-failed", msg: (error as Error).message });
+        try { conn.ws.close(); } catch { /* ignore */ }
+      });
       return;
     }
 
@@ -395,8 +603,12 @@ export class ChatHub {
       // the background sender — EXCEPT conversation-control commands, which must
       // reach every participant, so they fall through and broadcast like a post.
       const head = text.trim().split(/\s+/)[0].toLowerCase();
-      const isConvCmd = head === "/start_conversation" || head === "/start" || head === "/stop_conversation" || head === "/release" || head === "/request_join";
-      if (text.trim().startsWith("/") && !isConvCmd) { this.handleCommand(conn, text.trim()); return; }
+      const isConvCmd = head === "/start_conversation" || head === "/start" || head === "/stop_conversation" || head === "/release" || head === "/request_join" || head === "/leave";
+      if (text.trim().startsWith("/") && !isConvCmd) { await this.handleCommand(conn, text.trim()); return; }
+      if (!text.trim().startsWith("/") && !this.conversationMentions(text).length) {
+        this.sendTo(conn.ws, { t: "error", code: "mention-required", msg: "Every Chatroom message must address @all or a specific @participant." });
+        return;
+      }
       if (this.isMuted(conn)) { this.sendTo(conn.ws, { t: "error", code: "muted", msg: "You are muted by the host and can't post right now." }); return; }
       const roomState = this.roomState(conn.room);
       if (head === "/start") {
@@ -412,7 +624,7 @@ export class ChatHub {
         return;
       }
       const m: ChatMessage = {
-        id: randomBytes(6).toString("hex"), from: conn.user, fromId: conn.id,
+        id: randomBytes(6).toString("hex"), from: conn.user, fromId: conn.participantId,
         text, ts: Date.now(), kind: conn.kind,
       };
       const targets = this.mentionTargets(conn.room, conn, text);
@@ -420,16 +632,17 @@ export class ChatHub {
         roomState.receipts.set(m.id, { targets, readers: new Set() });
         m.receipt = { read: 0, total: targets.size };
       }
-      this.remember(conn.room, m);
+      await this.remember(conn.room, m);
       if (targets.size) this.broadcastReceiptMessage(conn.room, m, targets);
       else this.broadcast(conn.room, { t: "msg", room: conn.room, ...m });
-      if (head === "/start_conversation") this.prepareConversation(conn, text);
-      else if (head === "/start") this.activateConversation(conn);
-      else if (head === "/stop_conversation") this.stopConversation(conn.room);
-      else if (head === "/release") this.releaseConversationMembers(conn.room, text);
-      else if (head === "/request_join") this.requestConversationJoin(conn.room, text);
-      else if (roomState.conversation.pending) this.remindConversationStart(conn.room);
-      else this.coordinateConversationTurn(conn.room, conn);
+      if (head === "/start_conversation") await this.prepareConversation(conn, text);
+      else if (head === "/start") await this.activateConversation(conn);
+      else if (head === "/stop_conversation") await this.stopConversation(conn.room);
+      else if (head === "/release") await this.releaseConversationMembers(conn.room, text);
+      else if (head === "/request_join") await this.requestConversationJoin(conn.room, text);
+      else if (head === "/leave") await this.leaveConnection(conn);
+      else if (roomState.conversation.pending) await this.remindConversationStart(conn.room);
+      else await this.coordinateConversationTurn(conn.room, conn);
       return;
     }
 
@@ -455,13 +668,13 @@ export class ChatHub {
       if (this.isMuted(conn)) { this.sendTo(conn.ws, { t: "error", code: "muted", msg: "You are muted by the host and can't share files right now." }); return; }
       // Record a CHAT note (not the bytes) so late joiners see a file was shared.
       const note: ChatMessage = {
-        id: randomBytes(6).toString("hex"), from: conn.user, fromId: conn.id,
+        id: randomBytes(6).toString("hex"), from: conn.user, fromId: conn.participantId,
         text: `📎 shared a file: ${f.name} (${humanSize(f.size)})`,
         ts: Date.now(), kind: conn.kind, file: f,
       };
-      this.remember(conn.room, note);
+      await this.remember(conn.room, note);
       // Relay the live offer to everyone EXCEPT the sender.
-      this.broadcast(conn.room, { t: "file.offer", room: conn.room, from: conn.user, fromId: conn.id, ts: note.ts, kind: conn.kind, file: f }, conn.ws);
+      this.broadcast(conn.room, { t: "file.offer", room: conn.room, from: conn.user, fromId: conn.participantId, ts: note.ts, kind: conn.kind, file: f }, conn.ws);
       // Echo the chat note back to the sender so their own UI shows it.
       this.sendTo(conn.ws, { t: "msg", room: conn.room, ...note });
       return;
@@ -475,13 +688,80 @@ export class ChatHub {
     }
   }
 
-  private onClose(conn: HubConn): void {
+  private async finishJoin(conn: HubConn, result: JoinApprovalResult, isHost: boolean): Promise<void> {
+    if (!this.conns.has(conn.ws) || !conn.pendingJoinId) return;
+    conn.pendingJoinId = "";
+    if (result.outcome !== "new" && result.outcome !== "reuse") {
+      const code = result.outcome === "timeout" ? "join-timeout" : result.outcome === "reject" ? "join-rejected" : "join-cancelled";
+      this.sendTo(conn.ws, { t: "error", code, msg: result.reason || `Join ${result.outcome}.` });
+      try { conn.ws.close(); } catch { /* ignore */ }
+      return;
+    }
+    if (!result.participantId) throw new Error("Approved Join has no participant ID.");
+    conn.participantId = result.participantId;
+    conn.joined = true;
+    const st = this.rooms.get(conn.room);
+    if (!st) { try { conn.ws.close(); } catch { /* ignore */ } return; }
+    const identityAlreadyPresent = this.hasOtherIdentityConnection(conn);
+    if (isHost) {
+      if (!st.owner) {
+        st.owner = conn.participantId;
+        await this.persistence?.recordLifecycle(st.roomId, "room.host_assigned", undefined, { participantId: conn.participantId });
+      }
+      st.ownerName = conn.user;
+    }
+    if (this.isOwnerConn(st, conn) && st.graceTimer) {
+      clearTimeout(st.graceTimer); st.graceTimer = null;
+    }
+    this.log(`join approved room=${conn.room} participant=${conn.participantId} user=${conn.user} outcome=${result.outcome}`);
+    const prevName = this.rosterJoin(conn, st);
+    this.sendTo(conn.ws, { t: "join.approved", room: conn.room, participantId: conn.participantId, outcome: result.outcome });
+    if (st.history.length) {
+      const resumeIndex = conn.resumeAfter ? st.history.findIndex(message => message.id === conn.resumeAfter) : -1;
+      const mode = conn.resumeAfter && resumeIndex >= 0 ? "catchup" : "baseline";
+      const messages = mode === "catchup" ? st.history.slice(resumeIndex + 1) : st.history;
+      this.sendTo(conn.ws, { t: "history", room: conn.room, mode, messages });
+    }
+    if (!identityAlreadyPresent) {
+      const joinText = (prevName && prevName !== conn.user)
+        ? `${prevName} rejoined with new name ${conn.user}`
+        : `${conn.user} joined the room`;
+      this.broadcast(conn.room, { t: "system", room: conn.room, text: joinText, ts: Date.now() });
+    }
+    this.broadcastPresence(conn.room);
+    this.sendTo(conn.ws, { t: "join.ready", room: conn.room });
+    if (conn.kind === "agent") {
+      this.broadcast(conn.room, { t: "agent.state", room: conn.room, user: conn.user, state: "standby", ts: Date.now() });
+    }
+    if (isHost) this.sendHelp(conn, `👋 Welcome — you're now hosting "${conn.room}". Here are the magic messages you can type:`);
+  }
+
+  private async leaveConnection(conn: HubConn): Promise<void> {
+    // Multiple VS Code windows can share one stable identity. Leaving one
+    // window must not deactivate the Room while another owner window remains.
+    const state = this.rooms.get(conn.room);
+    if (state && this.isOwnerConn(state, conn) && !this.hasOtherIdentityConnection(conn)) {
+      await this.deactivateRoom(conn.room, "host left");
+    } else {
+      try { conn.ws.close(); } catch { /* ignore */ }
+    }
+  }
+
+  private async onClose(conn: HubConn): Promise<void> {
     this.conns.delete(conn.ws);
+    if (conn.pendingJoinId) {
+      await this.approvals?.cancelConnection(conn.id).catch(error => this.log(`pending Join cancel failed: ${(error as Error).message}`));
+      conn.pendingJoinId = "";
+    }
     if (!conn.joined) return;
     const st = this.rooms.get(conn.room);
     if (!st) return;   // room already deactivated
     this.markDeparted(conn, st);
     const identityStillHere = this.hasOtherIdentityConnection(conn);
+    if (!identityStillHere && this.persistence && conn.participantId) {
+      await this.persistence.releaseAlias(st.roomId, conn.participantId, Date.now(), conn.user)
+        .catch(error => this.log(`alias release failed: ${(error as Error).message}`));
+    }
     if (!identityStillHere) {
       this.broadcast(conn.room, { t: "system", room: conn.room, text: `${conn.user} left the room`, ts: Date.now() });
     }
@@ -492,27 +772,25 @@ export class ChatHub {
       if (st.graceTimer) clearTimeout(st.graceTimer);
       st.graceTimer = setTimeout(() => {
         const back = [...this.conns.values()].some(c => c.joined && c.room === conn.room && this.isOwnerConn(st, c));
-        if (!back) this.deactivateRoom(conn.room, "host left");
+        if (!back) void this.deactivateRoom(conn.room, "host left").catch(error => this.log(`room deactivate failed: ${(error as Error).message}`));
       }, ChatHub.OWNER_GRACE_MS);
       st.graceTimer.unref?.();
-    } else if (!this.membersOf(conn.room).length) {
-      this.rooms.delete(conn.room);
-      this.roomSecret.delete(conn.room);
     }
   }
 
-  private remember(room: string, m: ChatMessage): void {
+  private async remember(room: string, m: ChatMessage): Promise<void> {
     const st = this.roomState(room);
+    if (this.persistence) await this.persistence.append(st.roomId, this.toPersisted(m));
     st.history.push(m);
     this.trimHistory(st);
-    this.scheduleFlush(room);
+    if (!this.persistence) this.scheduleFlush(room);
   }
 
   private membersOf(room: string): Member[] {
     const st = this.rooms.get(room);
     return [...this.conns.values()]
       .filter(c => c.joined && c.room === room)
-      .map(c => ({ id: c.id, user: c.user, kind: c.kind, host: !!st && this.isOwnerConn(st, c), muted: !!st?.muted.has(this.identityKey(c)) }));
+      .map(c => ({ id: c.id, user: c.user, kind: c.kind, host: !!st && this.isOwnerConn(st, c), muted: !!st?.muted.has(this.identityKey(c)), participantId: c.participantId }));
   }
 
   // A per-member identity within a room: cid + display name. Two windows on one
@@ -520,6 +798,7 @@ export class ChatHub {
   // them; names are unique per room, making (cid, name) unique. Falls back to
   // name-only when there is no cid (best-effort browser identities).
   private identityKey(conn: HubConn): string {
+    if (conn.participantId) return `participant:${conn.participantId}`;
     const nk = conn.user.trim().toLowerCase();
     return conn.cid ? `cid:${conn.cid}:${nk}` : `name:${nk}`;
   }
@@ -531,7 +810,7 @@ export class ChatHub {
   }
 
   private isOwnerConn(st: RoomState, conn: HubConn): boolean {
-    return !!st.owner && this.identityKey(conn) === st.owner;
+    return !!st.owner && conn.participantId === st.owner;
   }
 
   private isMuted(conn: HubConn): boolean {
@@ -540,8 +819,21 @@ export class ChatHub {
   }
 
   private conversationMentions(text: string): string[] {
-    return (text.match(/@(?:"[^"]{1,60}"|[\p{L}\p{N}_][\p{L}\p{N}_-]{0,59})/gu) || [])
-      .map(value => value.slice(1).replace(/^"|"$/g, ""));
+    const value = text.trimStart();
+    if (value.startsWith("/")) {
+      return (value.match(/@(?:"[^"]{1,60}"|[\p{L}\p{N}_][\p{L}\p{N}_-]{0,59})/gu) || [])
+        .map(token => token.slice(1).replace(/^"|"$/g, ""));
+    }
+    const recipients: string[] = [];
+    let rest = value;
+    const leading = /^@(?:"([^"]{1,60})"|([\p{L}\p{N}_][\p{L}\p{N}_-]{0,59}))(?:\s+|$)/u;
+    while (true) {
+      const match = leading.exec(rest);
+      if (!match) break;
+      recipients.push(match[1] || match[2]);
+      rest = rest.slice(match[0].length);
+    }
+    return recipients;
   }
 
   private mentionTargets(room: string, sender: HubConn, text: string): Set<string> {
@@ -576,16 +868,16 @@ export class ChatHub {
       .filter((name, index, all) => all.findIndex(other => other.toLowerCase() === name.toLowerCase()) === index);
   }
 
-  private postCoordinatorMessage(room: string, text: string): void {
+  private async postCoordinatorMessage(room: string, text: string): Promise<void> {
     const message: ChatMessage = {
       id: randomBytes(6).toString("hex"), from: BOT_NAME, fromId: "roombot",
       text, ts: Date.now(), kind: "agent",
     };
-    this.remember(room, message);
+    await this.remember(room, message);
     this.broadcast(room, { t: "msg", room, ...message });
   }
 
-  private informConversationGuideline(room: string, agentNames: string[]): void {
+  private async informConversationGuideline(room: string, agentNames: string[]): Promise<void> {
     const wanted = new Set(agentNames.map(name => name.toLowerCase()));
     const sent = new Set<string>();
     for (const conn of this.conns.values()) {
@@ -597,19 +889,19 @@ export class ChatHub {
         id: randomBytes(6).toString("hex"), from: BOT_NAME, fromId: "roombot",
         text: [
           `PRIVATE AGENT GUIDELINE for ${this.formatMention(conn.user)}: you are participating in a coordinated conversation.`,
-          `Call chat_standby(timeout=300) now. Do not use chat_read for conversation monitoring.`,
-          `When chat_standby returns event="message", reply with chat_post, then immediately call chat_standby again.`,
-          `When it returns event="timeout", immediately call chat_standby again without ending your agent turn.`,
+          `Call chat_standby(timeout=300, name=${JSON.stringify(conn.user)}) now. Do not use chat_read for conversation monitoring.`,
+          `When chat_standby returns event="message", reply with chat_post(text=..., name=${JSON.stringify(conn.user)}), then immediately call chat_standby with the same name again.`,
+          `When it returns event="timeout", immediately call chat_standby(name=${JSON.stringify(conn.user)}) again without ending your agent turn.`,
           `Continue until event="stopped" after /stop_conversation or event="released" after /release.`,
         ].join("\n"),
         ts: Date.now(), kind: "agent",
       };
       this.sendTo(conn.ws, { t: "msg", room, ...message });
     }
-    this.postCoordinatorMessage(room, "ℹ️ Conversation guideline sent to participating agents.");
+    await this.postCoordinatorMessage(room, "ℹ️ Conversation guideline sent to participating agents.");
   }
 
-  private prepareConversation(initiator: HubConn, startText: string): void {
+  private async prepareConversation(initiator: HubConn, startText: string): Promise<void> {
     const room = initiator.room;
     const state = this.roomState(room).conversation;
     const online = this.onlineAgentNames(room);
@@ -631,18 +923,18 @@ export class ChatHub {
     state.nextIndex = initiatorIndex >= 0 ? (initiatorIndex + 1) % participants.length : 0;
     state.turns = 0;
     if (!participants.length) {
-      this.postCoordinatorMessage(room, "No online agents matched this conversation. Join agents first, then use /start_conversation @all or @name.");
+      await this.postCoordinatorMessage(room, "No online agents matched this conversation. Join agents first, then use /start_conversation @all or @name.");
       return;
     }
     const who = participants.map(name => this.formatMention(name)).join(", ");
-    this.postCoordinatorMessage(room, [
+    await this.postCoordinatorMessage(room, [
       `🛎️ Conversation prepared — pending agents: ${who}.`,
       `${this.formatMention(initiator.user)}, please state your topic, then use /start to begin turn rotation.`,
     ].join("\n"));
-    this.informConversationGuideline(room, participants);
+    await this.informConversationGuideline(room, participants);
   }
 
-  private activateConversation(initiator: HubConn): void {
+  private async activateConversation(initiator: HubConn): Promise<void> {
     const state = this.roomState(initiator.room).conversation;
     if (!state.pending) {
       this.botReply(initiator, "No conversation is pending. Use /start_conversation @agents or @all first.");
@@ -655,22 +947,22 @@ export class ChatHub {
     state.pending = false;
     state.active = true;
     const who = state.participants.map(name => this.formatMention(name)).join(", ");
-    this.postCoordinatorMessage(initiator.room, [
+    await this.postCoordinatorMessage(initiator.room, [
       `🛎️ Conversation started — active agents: ${who}.`,
       `Directed @mentions respond immediately; undirected free talk rotates one participant at a time.`,
       `The host ends the discussion with /stop_conversation.`,
     ].join("\n"));
-    if (initiator.kind === "agent") this.postTurnGrant(initiator.room, initiator.user);
-    else this.grantNextConversationTurn(initiator.room, initiator.user);
+    if (initiator.kind === "agent") await this.postTurnGrant(initiator.room, initiator.user);
+    else await this.grantNextConversationTurn(initiator.room, initiator.user);
   }
 
-  private remindConversationStart(room: string): void {
-    this.postCoordinatorMessage(room, "Please say /start when you want to start the discussion.");
+  private async remindConversationStart(room: string): Promise<void> {
+    await this.postCoordinatorMessage(room, "Please say /start when you want to start the discussion.");
   }
 
-  private stopConversation(room: string): void {
+  private async stopConversation(room: string): Promise<void> {
     const state = this.roomState(room).conversation;
-    if (!state.active && !state.participants.length) return;
+    if (!state.active) return;
     state.active = false;
     state.pending = false;
     state.initiatorKey = "";
@@ -678,10 +970,10 @@ export class ChatHub {
     state.participants = [];
     state.currentSpeaker = "";
     state.nextIndex = 0;
-    this.postCoordinatorMessage(room, "⏹ Conversation stopped. All agents may leave standby.");
+    await this.postCoordinatorMessage(room, "⏹ Conversation stopped. All agents may leave standby.");
   }
 
-  private releaseConversationMembers(room: string, text: string): void {
+  private async releaseConversationMembers(room: string, text: string): Promise<void> {
     const state = this.roomState(room).conversation;
     if (!state.active && !state.pending) return;
     const released = new Set(this.conversationMentions(text).map(name => name.toLowerCase()));
@@ -690,22 +982,22 @@ export class ChatHub {
     if (releasedCurrent) state.currentSpeaker = "";
     state.nextIndex = state.participants.length ? state.nextIndex % state.participants.length : 0;
     if (!state.participants.length) {
-      this.stopConversation(room);
+      await this.stopConversation(room);
       return;
     }
-    this.postCoordinatorMessage(room, `Released: ${[...released].map(name => this.formatMention(name)).join(", ")}. Remaining: ${state.participants.map(name => this.formatMention(name)).join(", ")}.`);
-    if (releasedCurrent && state.active) this.grantNextConversationTurn(room, "");
+    await this.postCoordinatorMessage(room, `Released: ${[...released].map(name => this.formatMention(name)).join(", ")}. Remaining: ${state.participants.map(name => this.formatMention(name)).join(", ")}.`);
+    if (releasedCurrent && state.active) await this.grantNextConversationTurn(room, "");
   }
 
-  private requestConversationJoin(room: string, text: string): void {
+  private async requestConversationJoin(room: string, text: string): Promise<void> {
     const state = this.roomState(room).conversation;
     if (!state.active && !state.pending) {
-      this.postCoordinatorMessage(room, "No conversation is pending or active. Use /start_conversation first.");
+      await this.postCoordinatorMessage(room, "No conversation is pending or active. Use /start_conversation first.");
       return;
     }
     const requested = this.conversationMentions(text);
     if (!requested.length) {
-      this.postCoordinatorMessage(room, "Usage: /request_join @alias");
+      await this.postCoordinatorMessage(room, "Usage: /request_join @alias");
       return;
     }
     const present = this.rosterOf(room).filter(member => member.present !== false);
@@ -721,19 +1013,19 @@ export class ChatHub {
     if (added.length) lines.push(`Joined the conversation: ${added.map(name => this.formatMention(name)).join(", ")}.`);
     if (already.length) lines.push(`Already participating: ${already.map(name => this.formatMention(name)).join(", ")}.`);
     if (missing.length) lines.push(`Not online: ${missing.map(name => this.formatMention(name)).join(", ")}.`);
-    this.postCoordinatorMessage(room, lines.join(" "));
-    if (added.length) this.informConversationGuideline(room, added);
+    await this.postCoordinatorMessage(room, lines.join(" "));
+    if (added.length) await this.informConversationGuideline(room, added);
   }
 
-  private coordinateConversationTurn(room: string, sender: HubConn): void {
+  private async coordinateConversationTurn(room: string, sender: HubConn): Promise<void> {
     const state = this.roomState(room).conversation;
     if (!state.active || sender.kind !== "agent" || !state.currentSpeaker) return;
     if (sender.user.toLowerCase() !== state.currentSpeaker.toLowerCase()) return;
     state.currentSpeaker = "";
-    this.grantNextConversationTurn(room, sender.user);
+    await this.grantNextConversationTurn(room, sender.user);
   }
 
-  private grantNextConversationTurn(room: string, sender: string): void {
+  private async grantNextConversationTurn(room: string, sender: string): Promise<void> {
     const state = this.roomState(room).conversation;
     if (!state.active) return;
     const online = new Set(this.onlineAgentNames(room).map(name => name.toLowerCase()));
@@ -751,10 +1043,10 @@ export class ChatHub {
     state.currentSpeaker = next;
     state.nextIndex = (selectedIndex + 1) % state.participants.length;
     state.turns++;
-    this.postTurnGrant(room, next);
+    await this.postTurnGrant(room, next);
   }
 
-  private postTurnGrant(room: string, name: string): void {
+  private async postTurnGrant(room: string, name: string): Promise<void> {
     const wanted = name.toLowerCase();
     for (const conn of this.conns.values()) {
       if (!conn.joined || conn.room !== room || conn.kind !== "agent" || conn.user.toLowerCase() !== wanted) continue;
@@ -768,14 +1060,14 @@ export class ChatHub {
   }
 
   // Answer a slash command privately (only the requester sees the bot reply).
-  private handleCommand(conn: HubConn, text: string): void {
+  private async handleCommand(conn: HubConn, text: string): Promise<void> {
     const st = this.rooms.get(conn.room);
     const isOwner = !!st && this.isOwnerConn(st, conn);
     const cmd = findCommand(text);
     if (!cmd) { this.botReply(conn, `Unknown command "${text.split(/\s+/)[0]}". Type /help for the list.`); return; }
     if (cmd.hostOnly && !isOwner) { this.botReply(conn, `"/${cmd.name}" is available to the room host only.`); return; }
     const arg = (text.match(/^\/\S+\s*([\s\S]*)$/)?.[1] ?? "").trim();
-    try { this.botReply(conn, cmd.run(this.buildCmdCtx(conn, isOwner, arg))); }
+    try { this.botReply(conn, await cmd.run(this.buildCmdCtx(conn, isOwner, arg))); }
     catch (e) { this.botReply(conn, `Command failed: ${(e as Error).message}`); }
     this.log(`command /${cmd.name} by ${conn.user} in ${conn.room}`);
   }
@@ -789,11 +1081,13 @@ export class ChatHub {
       actions: {
         muteAll:   () => this.muteAllExceptHost(conn.room),
         unmuteAll: () => this.unmuteAllInRoom(conn.room),
-        rotateSecret: () => !!this.rotateRoomSecret(conn.room),
+        rotateSecret: async () => !!await this.rotateRoomSecret(conn.room),
         inviteMessage: () => {
           const secret = this.roomSecret.get(conn.room);
           if (!secret) throw new Error("Room secret is unavailable.");
-          return chatInviteMessage(createChatMagicLink(`${wsUrl}/${encodeURIComponent(conn.room)}`, secret));
+          const roomId = this.rooms.get(conn.room)?.roomId;
+          if (!roomId) throw new Error("Room identity is unavailable.");
+          return chatInviteMessage(createChatMagicLink(`${wsUrl}/${encodeURIComponent(conn.room)}`, secret, roomId));
         },
       },
     };
@@ -841,10 +1135,12 @@ export class ChatHub {
   // Generate a new secret for a room, notify the owner (so the app can persist and
   // share it), and post a room note. Returns the new secret, or undefined if the
   // room has no secret set. Current members stay connected; only new joins need it.
-  private rotateSecretInternal(room: string, note: string): string | undefined {
+  private async rotateSecretInternal(room: string, note: string): Promise<string | undefined> {
     const st = this.rooms.get(room);
     if (!st || !this.roomSecret.has(room)) return undefined;
-    const fresh = randomBytes(9).toString("base64url");
+    const fresh = this.lifecycle
+      ? await this.lifecycle.rotateJoinSecret(st.roomId)
+      : randomBytes(9).toString("base64url");
     this.roomSecret.set(room, fresh);
     for (const c of this.conns.values()) {
       if (c.joined && c.room === room && this.isOwnerConn(st, c)) {
@@ -856,8 +1152,8 @@ export class ChatHub {
   }
 
   /** Public: rotate a room's secret on demand (admin button or /rotate_secret). */
-  rotateRoomSecret(room: string): string | undefined {
-    const s = this.rotateSecretInternal(ChatHub.canonRoom(room), `🔑 The host rotated the room secret. New members need the new secret.`);
+  async rotateRoomSecret(room: string): Promise<string | undefined> {
+    const s = await this.rotateSecretInternal(ChatHub.canonRoom(room), `🔑 The host rotated the room secret. New members need the new secret.`);
     if (s) this.log(`secret rotated for ${room}`);
     return s;
   }
@@ -871,7 +1167,7 @@ export class ChatHub {
 
   // Host-only moderation: remove, mute/unmute, or edit another member. Rejected for
   // anyone who isn't the room owner.
-  private handleAdmin(conn: HubConn, frame: Extract<Frame, { t: "admin" }>): void {
+  private async handleAdmin(conn: HubConn, frame: Extract<Frame, { t: "admin" }>): Promise<void> {
     const st = this.rooms.get(conn.room);
     if (!st) return;
     const selfKey = this.identityKey(conn);
@@ -887,6 +1183,8 @@ export class ChatHub {
 
     switch (frame.action) {
       case "kick": {
+        const participantId = st.roster.get(targetKey)?.participantId || targets[0]?.participantId;
+        if (participantId && this.persistence) await this.persistence.forgetParticipant(st.roomId, participantId, Date.now());
         for (const t of targets) {
           this.sendTo(t.ws, { t: "kicked", room: conn.room, reason: "Removed by the host." });
           t.joined = false;                 // stop onClose from re-broadcasting a "left" line
@@ -902,9 +1200,9 @@ export class ChatHub {
         // Rotate the room secret so the removed member can't immediately rejoin
         // with the secret they already had. Existing members stay connected (the
         // secret is only checked at join); only NEW joins need the fresh secret.
-        this.rotateSecretInternal(conn.room, `🔑 Room secret was rotated after removing ${who}. New members need the new secret.`);
+        await this.rotateSecretInternal(conn.room, `🔑 Room secret was rotated after removing ${who}. New members need the new secret.`);
         this.broadcastPresence(conn.room);
-        if (removedCurrent && st.conversation.active) this.grantNextConversationTurn(conn.room, "");
+        if (removedCurrent && st.conversation.active) await this.grantNextConversationTurn(conn.room, "");
         this.log(`admin kick room=${conn.room} target=${who} (secret rotated)`);
         break;
       }
@@ -932,14 +1230,15 @@ export class ChatHub {
         const clash = [...this.conns.values()].some(
           c => c.joined && c.room === conn.room && this.identityKey(c) !== targetKey && c.user.trim().toLowerCase() === nk);
         if (clash) { this.sendTo(conn.ws, { t: "error", code: "moderation", msg: `"${newName}" is already taken in this room.` }); return; }
-        // Apply the new name, then re-key everything keyed by the OLD identity
-        // (roster, mutes, ownership) to the NEW identity.
+        const participantId = st.roster.get(targetKey)?.participantId || targets[0]?.participantId;
+        if (participantId && this.persistence) await this.persistence.renameAlias(st.roomId, participantId, newName, Date.now());
+        // Participant identity is stable; changing an alias never changes keys.
         for (const t of targets) { t.user = newName; this.sendTo(t.ws, { t: "renamed", room: conn.room, name: newName }); }
-        const newKey = targets.length ? this.identityKey(targets[0]) : targetKey;
+        const newKey = targetKey;
         const e = st.roster.get(targetKey);
         if (e) { st.roster.delete(targetKey); e.user = newName; e.key = newKey; st.roster.set(newKey, e); }
         if (st.muted.has(targetKey)) { st.muted.delete(targetKey); st.muted.add(newKey); }
-        if (st.owner === targetKey) { st.owner = newKey; st.ownerName = newName; }
+        if (e?.participantId === st.owner) st.ownerName = newName;
         const byHost = targetKey !== selfKey;
         this.broadcast(conn.room, { t: "system", room: conn.room, text: byHost ? `${who} was renamed to ${newName} by the host` : `${who} is now known as ${newName}`, ts: Date.now() });
         this.broadcastPresence(conn.room);
@@ -957,14 +1256,16 @@ export class ChatHub {
         if (nameChanged) {
           const clash = [...st.roster.values()].some(other => other.key !== targetKey && other.user.toLowerCase() === newName.toLowerCase());
           if (clash) { this.sendTo(conn.ws, { t: "error", code: "moderation", msg: `"${newName}" is already in the room roster.` }); return; }
+          if (entry.participantId && this.persistence) await this.persistence.renameAlias(st.roomId, entry.participantId, newName, Date.now());
+        }
+        if (entry.participantId && this.persistence && newRole !== entry.role) {
+          await this.persistence.setParticipantRole(st.roomId, entry.participantId, newRole, Date.now());
         }
         for (const target of targets) {
           target.user = newName;
           if (nameChanged) this.sendTo(target.ws, { t: "renamed", room: conn.room, name: newName });
         }
-        const newKey = nameChanged
-          ? (targets.length ? this.identityKey(targets[0]) : (entry.sid ? `cid:${entry.sid}:${newName.toLowerCase()}` : `name:${newName.toLowerCase()}`))
-          : targetKey;
+        const newKey = targetKey;
         const wasMuted = st.muted.delete(targetKey);
         if (newKey !== targetKey) st.roster.delete(targetKey);
         entry.key = newKey;
@@ -972,7 +1273,7 @@ export class ChatHub {
         entry.role = newRole;
         st.roster.set(newKey, entry);
         if (wasMuted) st.muted.add(newKey);
-        if (st.owner === targetKey) { st.owner = newKey; st.ownerName = newName; }
+        if (entry.participantId === st.owner) st.ownerName = newName;
         st.conversation.participants = st.conversation.participants.map(name => name.toLowerCase() === oldName.toLowerCase() ? newName : name);
         if (st.conversation.currentSpeaker.toLowerCase() === oldName.toLowerCase()) st.conversation.currentSpeaker = newName;
         this.broadcastPresence(conn.room);
@@ -992,12 +1293,12 @@ export class ChatHub {
     if (e) {
       const prevName = e.user;
       e.present = true; e.id = conn.id; e.user = conn.user; e.kind = conn.kind;
-      e.sid = conn.cid || e.sid; e.verified = verified; e.lastSeen = now;
+      e.sid = conn.cid || e.sid; e.participantId = conn.participantId; e.verified = verified; e.lastSeen = now;
       return prevName;
     }
     st.roster.set(key, {
       key, id: conn.id, user: conn.user, kind: conn.kind,
-      sid: conn.cid || "", verified, present: true, firstSeen: now, lastSeen: now, role: "",
+      sid: conn.cid || "", participantId: conn.participantId, verified, present: true, firstSeen: now, lastSeen: now, role: "",
     });
     return undefined;
   }
@@ -1021,10 +1322,10 @@ export class ChatHub {
       .sort((a, b) => (Number(b.present) - Number(a.present)) || (b.lastSeen - a.lastSeen))
       .map(e => ({
         id: e.id, user: e.user, kind: e.kind,
-        host: !!owner && e.key === owner,
+        host: !!owner && e.participantId === owner,
         sid: e.sid, verified: e.verified, present: e.present, lastSeen: e.lastSeen,
         muted: st.muted.has(e.key),
-        role: e.role,
+        role: e.role, participantId: e.participantId,
       }));
   }
 

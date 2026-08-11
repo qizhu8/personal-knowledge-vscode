@@ -3,7 +3,7 @@
 All notable changes to the **Personal Knowledge Manager** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
-## [2.3.7] — 2026-08-07
+## [2.4.0] — 2026-08-11
 
 This release streamlines first-time setup and improves Chatroom reliability across VS Code, MCP agents, and browser participants.
 
@@ -11,6 +11,30 @@ This release streamlines first-time setup and improves Chatroom reliability acro
 - Simplified MCP setup with one managed runtime and one `pkm` server available across workspaces.
 - Smoother Chatroom invitations, browser joining, member management, mentions, and multi-agent conversations.
 - Refreshed navigation and product icons for a more consistent Personal Knowledge Manager experience.
+- Added durable Room identities with explicit Create, Deactivate, and Rehost lifecycles backed by per-Room SQLite databases.
+- Stored Host credentials and Join secrets in VS Code SecretStorage, with persistent secret rotation and same-machine Room locking.
+- Added a dedicated Stored Rooms list with message/activity metadata, unavailable-credential diagnostics, and one-click Rehost.
+- Added Room-scoped participant memberships, reusable alias history, durable pending Join reservations, and a tested Host approval state machine.
+- Added Host-approved New/Reuse/Reject Join flows across Extension, MCP, and browser clients; new Magic Messages include durable Room IDs.
+- Made approved Agents enter standby automatically, wake on any directed @message, and return to standby after every post; idle now means stopped or released.
+- Enforced directed @mentions on regular Chatroom messages so routing and Agent wake-up semantics stay deterministic.
+- Added a join-ready history barrier so historical start/release/stop messages cannot mutate a new or reconnecting standby session.
+- Scoped stop/release handling to Agents whose conversation has actually started.
+- Made Host leave an authoritative Room shutdown that immediately releases all blocked participant standby calls.
+- Added bounded standby bursts so split instructions can arrive together (8 directed messages and 250 ms by default), while control events remain immediate.
+- Atomically advanced standby cursors, filtered self/non-directed messages, and added event/identity/cursor metadata.
+- Added configurable standby message/window/byte caps with UTF-8-safe truncation and continuation cursors.
+- Added structured timeout, transport, cancellation, stop, release, close, and kick events with unified Room/standby lifecycle fields.
+- Added a `chat_capabilities` discovery manifest and generation-time checks for the complete PKM Chatroom tool workflow.
+- Bumped the unified/chat MCP schema to `2.0.9` and made server-code regeneration explicitly user-triggered; status previews no longer rewrite generated files.
+- Added a gray inferred `@all` composer recipient that becomes explicit on send unless the user supplies a leading recipient.
+- Changed ordinary-message routing to leading recipient mentions only, so technical references such as inline `@all` no longer broadcast or wake unrelated Agents; control messages retain full mention parsing.
+- Added `/leave` as a visible Chatroom command; participant leave closes that identity, while Host leave stores/deactivates the Room for everyone without deleting history or identities.
+- Added `continue_working` to Chatroom post tools so progress updates preserve the Agent thinking LED; final posts still return to standby automatically.
+- Persisted Earlier participants, alias edits, roles, permanent Forget, and Host identity across Room Rehost.
+- Added Stored Room Rename and permanently confirmed Delete Data actions.
+- Replaced typed Room-name deletion confirmation with two explicit irreversible-delete confirmations.
+- Deduplicated live navigation entries by durable Room UUID so Rehost on a new Hub URL/port replaces stale connections instead of showing duplicate Room names.
 
 ### Fixed
 - Fixed Chatroom reconnect, room-key, turn-order, roster, invitation, and browser authorization issues.
@@ -18,6 +42,8 @@ This release streamlines first-time setup and improves Chatroom reliability acro
 - Fixed Python environment deletion/refresh behavior and managed MCP interpreter paths.
 - Improved generated-server and webview validation to prevent broken local builds.
 - Fixed generated `chat_server.py` indentation and bumped the unified/chat MCP schema to `2.0.1` so outdated server files are clearly detected.
+- Fixed alias collisions when multiple Agents in one VS Code window share the unified MCP server; each approved connection now carries a Room-scoped participant identity.
+- Added crash-safe Room journal recovery and prevented active Room databases from being scanned by another local Hub instance.
 
 ## [2.2.1] — 2026-08-05
 
