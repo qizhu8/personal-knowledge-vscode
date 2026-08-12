@@ -9,6 +9,7 @@ This project follows [Semantic Versioning](https://semver.org/).
 - Added a versioned PKM Skill Router with generated native Agent Skill projections for GitHub Copilot, generic Agents, Claude, and custom target folders.
 - Added `skill_capabilities`, `skill_context`, `skill_feedback`, and `propose_skill_update` MCP tools for automatic secondary-Skill discovery and reviewable maintenance.
 - Added content-hash tracking, conflict/modified detection, safe Inject/Update/Remove actions, stale-target reminders, and a Skill proposal queue.
+- Added user-selected Agent Skills roots through native folder browsing or manual paths, including Windows drive/UNC paths, `%USERPROFILE%`, `~`, and environment-variable expansion with cross-host validation.
 
 ### Changed
 - Renamed the user-facing MCP tab to Config and grouped MCP runtime/server controls with Agent Skill integration.

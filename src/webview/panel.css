@@ -29,6 +29,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family
 @keyframes mcpRegenerateHighlight{0%,100%{box-shadow:0 0 0 1px rgba(244,180,0,.3),0 0 0 rgba(244,180,0,0)}50%{box-shadow:0 0 0 4px rgba(244,180,0,.2),0 0 20px rgba(244,180,0,.45)}}
 .pkm-config-section{border:1px solid var(--border);background:var(--panel);padding:14px 16px;margin:14px 0 18px}
 .pkm-config-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
+.pkm-config-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
 .pkm-skill-source,.pkm-skill-path,.pkm-skill-detail{font-size:10px;color:var(--muted);overflow-wrap:anywhere}
 .pkm-skill-source{margin-bottom:8px}.pkm-skill-target{display:flex;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--border)}
 .pkm-skill-target-main{flex:1;min-width:0;display:grid;grid-template-columns:minmax(120px,auto) auto;align-items:center;justify-content:start;column-gap:10px}

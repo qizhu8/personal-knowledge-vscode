@@ -53,7 +53,7 @@ import {
 } from "./mcp";
 import {
   addPkmSkillCustomTarget, injectPkmSkill, pkmSkillProjectionStatus,
-  removeInjectedPkmSkill, removePkmSkillCustomTarget,
+  removeInjectedPkmSkill, removePkmSkillCustomTarget, resolvePkmSkillTargetPath,
 } from "./pkm-skill-projection";
 
 // Background one-shot sweep to compute on-disk sizes for envs missing a cached
@@ -3801,13 +3801,38 @@ async function handleMessage(
       break;
     }
 
-    case "pkmSkillAddCustomTarget": {
+    case "pkmSkillBrowseCustomTarget": {
       const picked = await vscode.window.showOpenDialog({ canSelectFiles: false, canSelectFolders: true, canSelectMany: false, title: "Select an Agent Skills root folder" });
       if (!picked?.[0]) break;
       const label = await vscode.window.showInputBox({ title: "Custom Agent Target", prompt: "Name shown in PKM Config.", value: path.basename(picked[0].fsPath) || "Custom Agent" });
       if (label === undefined) break;
       await addPkmSkillCustomTarget(context, picked[0].fsPath, label);
       log.action("pkmSkill.customTarget.add", { path: picked[0].fsPath });
+      respond({ command: "mcpStatus", data: mcpPanelStatusData() });
+      break;
+    }
+
+    case "pkmSkillEnterCustomTarget": {
+      const windows = process.platform === "win32";
+      const entered = await vscode.window.showInputBox({
+        title: "Enter Agent Skills Root",
+        prompt: "PKM will create pkm-skills/SKILL.md inside this directory. Environment variables and ~ are supported.",
+        placeHolder: windows ? "%USERPROFILE%\\.copilot\\skills or C:\\AgentSkills" : "~/.copilot/skills or /home/me/agent-skills",
+        validateInput: value => {
+          try { resolvePkmSkillTargetPath(value); return undefined; }
+          catch (error) { return (error as Error).message; }
+        },
+      });
+      if (entered === undefined) break;
+      const resolved = resolvePkmSkillTargetPath(entered);
+      const label = await vscode.window.showInputBox({
+        title: "Custom Agent Target",
+        prompt: `Resolved root: ${resolved}`,
+        value: path.basename(resolved) || "Custom Agent",
+      });
+      if (label === undefined) break;
+      await addPkmSkillCustomTarget(context, resolved, label);
+      log.action("pkmSkill.customTarget.add", { path: resolved, source: "manual" });
       respond({ command: "mcpStatus", data: mcpPanelStatusData() });
       break;
     }

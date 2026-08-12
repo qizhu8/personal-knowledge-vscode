@@ -79,8 +79,9 @@ function renderPkmSkillTargets(data) {
   const proposals = data?.skillProposals || [];
   return `<div class="pkm-config-section">
     <div class="pkm-config-heading"><div><strong>PKM Skill Router</strong><div class="pkm-skill-detail">Native discovery adapter · router v${esc(skill.routerVersion)} · requires MCP ≥ ${esc(skill.minimumMcpSchema)}</div></div>
-      <button class="tbtn" onclick="ask('pkmSkillAddCustomTarget',{})">＋ Custom Target</button></div>
+      <div class="pkm-config-actions"><button class="tbtn" onclick="ask('pkmSkillBrowseCustomTarget',{})">Browse Directory</button><button class="tbtn" onclick="ask('pkmSkillEnterCustomTarget',{})">Enter Path</button></div></div>
     <div class="pkm-skill-source">Canonical source: <code>${esc(skill.sourcePath)}</code>${skill.sourceExists ? '' : ' · created on first Inject'}</div>
+    <div class="pkm-skill-detail" style="margin-bottom:8px">Choose any Agent Skills root. PKM creates <code>&lt;root&gt;/pkm-skills/SKILL.md</code>. Windows drive, UNC, <code>%USERPROFILE%</code>, <code>~</code>, and environment-variable paths are supported on their matching host.</div>
     ${rows || '<div class="empty">No Agent targets configured.</div>'}
     <div class="pkm-skill-proposals"><span><strong>Skill Proposals</strong> · ${proposals.length} pending</span>
       <button class="tbtn" onclick="ask('pkmSkillOpenProposals',{})">Open Proposals Folder</button></div>

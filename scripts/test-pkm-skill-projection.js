@@ -23,6 +23,27 @@ try {
   filestore.setStorePath(path.join(root, "store"));
   const projection = require("../dist/pkm-skill-projection");
 
+  assert.strictEqual(
+    projection.resolvePkmSkillTargetPath('%USERPROFILE%\\.copilot\\skills', 'win32', { USERPROFILE: 'C:\\Users\\Amy' }, 'C:\\Users\\Amy'),
+    'C:\\Users\\Amy\\.copilot\\skills',
+  );
+  assert.strictEqual(
+    projection.resolvePkmSkillTargetPath('\\\\server\\share\\agent-skills', 'win32', {}, 'C:\\Users\\Amy'),
+    '\\\\server\\share\\agent-skills',
+  );
+  assert.strictEqual(
+    projection.resolvePkmSkillTargetPath('~/.copilot/skills', 'linux', { HOME: '/home/amy' }, '/home/amy'),
+    '/home/amy/.copilot/skills',
+  );
+  assert.throws(
+    () => projection.resolvePkmSkillTargetPath('C:\\Users\\Amy\\.copilot\\skills', 'linux', {}, '/home/amy'),
+    /Windows path/,
+  );
+  assert.throws(
+    () => projection.resolvePkmSkillTargetPath('%UNKNOWN%\\skills', 'win32', {}, 'C:\\Users\\Amy'),
+    /unknown environment variable/,
+  );
+
   let status = projection.pkmSkillProjectionStatus(context);
   assert.strictEqual(status.routerVersion, "1.0.0");
   assert.strictEqual(status.targets.find(target => target.id === "copilot").state, "missing");

@@ -23,6 +23,33 @@ export interface PkmSkillTarget {
   root: string;
 }
 
+export function resolvePkmSkillTargetPath(
+  input: string,
+  platform: NodeJS.Platform = process.platform,
+  environment: NodeJS.ProcessEnv = process.env,
+  home: string = os.homedir(),
+): string {
+  let value = String(input || "").trim().replace(/^(["'])(.*)\1$/, "$2");
+  if (!value) throw new Error("Enter an Agent Skills root directory.");
+  value = value.replace(/^~(?=$|[\\/])/, home);
+  value = value.replace(/%([^%]+)%/g, (match, name) => environment[name] ?? environment[name.toUpperCase()] ?? match);
+  value = value.replace(/\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g,
+    (match, braced, plain) => environment[braced || plain] ?? match);
+  if (/%[^%]+%|\$\{[^}]+\}|\$[A-Za-z_][A-Za-z0-9_]*/.test(value)) {
+    throw new Error(`The path contains an unknown environment variable: ${value}`);
+  }
+  const windowsAbsolute = /^[A-Za-z]:[\\/]/.test(value) || /^\\\\[^\\]+\\[^\\]+/.test(value);
+  if (platform === "win32") {
+    if (!windowsAbsolute) throw new Error("Enter an absolute Windows path, such as %USERPROFILE%\\.copilot\\skills or C:\\AgentSkills.");
+    return path.win32.normalize(value);
+  }
+  if (windowsAbsolute) {
+    throw new Error("This is a Windows path, but the Extension Host is running on Linux/macOS. Configure it in the local Windows window, or enter a path on this host.");
+  }
+  if (!path.posix.isAbsolute(value)) throw new Error("Enter an absolute path, such as ~/.copilot/skills or /home/me/agent-skills.");
+  return path.posix.normalize(value);
+}
+
 export interface PkmSkillTargetStatus extends PkmSkillTarget {
   skillPath: string;
   state: PkmSkillTargetState;
@@ -143,8 +170,7 @@ export function pkmSkillTargets(context: vscode.ExtensionContext): PkmSkillTarge
 }
 
 export async function addPkmSkillCustomTarget(context: vscode.ExtensionContext, root: string, label?: string): Promise<PkmSkillTarget> {
-  const resolved = path.resolve(root);
-  if (!path.isAbsolute(resolved)) throw new Error("Custom Agent Skill target must be an absolute path.");
+  const resolved = resolvePkmSkillTargetPath(root);
   const custom = context.globalState.get<PkmSkillTarget[]>(CUSTOM_TARGETS_KEY, []);
   const existing = custom.find(target => path.resolve(target.root) === resolved);
   if (existing) return existing;
