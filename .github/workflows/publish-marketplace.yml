@@ -1,0 +1,91 @@
+name: Publish VS Code Marketplace
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Discover the workload identity or publish a release
+        required: true
+        default: identity
+        type: choice
+        options:
+          - identity
+          - publish
+      version:
+        description: Exact package.json version (required in publish mode)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: ${{ inputs.mode == 'publish' && format('Publish {0}', inputs.version) || 'Show Marketplace identity' }}
+    runs-on: ubuntu-latest
+    environment: marketplace
+
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        if: inputs.mode == 'publish'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Verify requested version
+        if: inputs.mode == 'publish'
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(node -p "require('./package.json').version")"
+          if [[ "$actual" != "${{ inputs.version }}" ]]; then
+            echo "Requested version ${{ inputs.version }} does not match package.json $actual" >&2
+            exit 1
+          fi
+
+      - name: Install dependencies
+        if: inputs.mode == 'publish'
+        run: npm ci
+
+      - name: Build and validate
+        if: inputs.mode == 'publish'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run build
+          npm run test:chat-history-atomic
+          npm run test:chat-generated-standby
+          npm run test:chat-packaged-worker
+
+      - name: Package VSIX
+        if: inputs.mode == 'publish'
+        run: npx @vscode/vsce@3.9.2 package --out "personal-knowledge-${{ inputs.version }}.vsix"
+
+      - name: Sign in to personal Entra tenant with GitHub OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Show Marketplace publishing identity
+        shell: bash
+        run: |
+          az rest \
+            --url "https://app.vssps.visualstudio.com/_apis/profile/profiles/me?api-version=7.1" \
+            --resource 499b84ac-1321-427f-aa17-267ca6975798 \
+            --query "{id:id,name:displayName}" \
+            --output json
+
+      - name: Publish with Microsoft Entra ID
+        if: inputs.mode == 'publish'
+        shell: bash
+        run: |
+          npx @vscode/vsce@3.9.2 publish \
+            --azure-credential \
+            --packagePath "personal-knowledge-${{ inputs.version }}.vsix"

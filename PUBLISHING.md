@@ -1,44 +1,55 @@
 # Publishing Guide
 
+The canonical release path is `.github/workflows/publish-marketplace.yml`.
+
+It uses GitHub Actions OIDC, a federated personal Microsoft Entra application, and `vsce --azure-credential`. It does not use a Marketplace PAT, client secret, Azure subscription, local Azure login, or Device Code Flow.
+
 ## One-time setup
 
-```bash
-# Install vsce globally (if not already)
-npm install -g @vscode/vsce
+1. Create a personal Entra app registration/service principal without a client secret.
+2. Add this federated credential:
 
-# Login with your Marketplace PAT
-# Get a PAT at: https://dev.azure.com → User Settings → Personal access tokens
-# Scope required: Marketplace → Manage
-npx vsce login Uone
+   ```text
+   Issuer:   https://token.actions.githubusercontent.com
+   Audience: api://AzureADTokenExchange
+   Subject:  repo:qizhu8/personal-knowledge-vscode:environment:marketplace
+   ```
+
+3. Create GitHub environment `marketplace` with variables:
+
+   ```text
+   AZURE_CLIENT_ID=<application client ID>
+   AZURE_TENANT_ID=<personal tenant ID>
+   ```
+
+4. Run the workflow in `identity` mode.
+5. Add the returned Marketplace profile ID to publisher `Uone` as Contributor/Owner with access to `personal-knowledge`.
+
+## Publish
+
+1. Update `package.json`, `package-lock.json`, and `CHANGELOG.md` to the same version.
+2. Run release checks locally.
+3. Commit and push the exact release source.
+4. Run **Actions -> Publish VS Code Marketplace -> Run workflow**.
+5. Select `publish` and enter the exact manifest version.
+
+The workflow builds its own VSIX from the selected commit and refuses a version mismatch.
+
+## Verify
+
+- <https://marketplace.visualstudio.com/items?itemName=Uone.personal-knowledge>
+- <https://marketplace.visualstudio.com/manage/publishers/Uone>
+
+Marketplace validation can delay public visibility. Versions are immutable once accepted or reserved.
+
+## Emergency fallback
+
+Upload the exact tested VSIX through the Marketplace management website. Do not introduce PAT, client-secret, or DCF credentials.
+
+## Detailed documentation
+
+See:
+
+```text
+skills/User/VSCode Marketplace/publish-vscode-extension.md
 ```
-
-## Build & package
-
-```bash
-npm run build       # compile TypeScript + copy assets
-npm run package     # produces personal-knowledge-<version>.vsix
-```
-
-## Publish a new version
-
-```bash
-# 1. Bump version (choose patch / minor / major)
-npm version patch   # 1.0.0 → 1.0.1
-
-# 2. Build, package, and publish in one step
-npx vsce publish
-
-# 3. Push the version bump commit + tag to GitHub
-git push && git push --tags
-```
-
-## Manual upload (alternative to CLI)
-
-1. Run `npm run build && npm run package`
-2. Go to https://marketplace.visualstudio.com/manage/publishers/Uone
-3. Click the **⋯** menu on the extension → **Update**
-4. Upload the new `.vsix` file
-
-## Marketplace listing
-
-https://marketplace.visualstudio.com/items?itemName=Uone.personal-knowledge
