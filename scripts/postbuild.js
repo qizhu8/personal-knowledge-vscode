@@ -39,6 +39,10 @@ try {
   if (!html.includes('data-tab="servers">Servers</button>') || html.includes('data-tab="servers">🖥')) {
     throw new Error("Servers menu tab must use text only, without a leading icon");
   }
+  if (!html.includes('data-tab="mcp">Config</button>') || !panelJs.includes("renderPkmSkillTargets") ||
+      !panelJs.includes("pkmSkillInject") || !panelJs.includes("pkmSkillOpenProposals") || !panelCss.includes("pkm-skill-target")) {
+    throw new Error("Config tab must expose PKM Skill Router target controls");
+  }
   if (!panelJs.includes('id="chat-default-recipient"') || !panelJs.includes("function chatMaterializeRecipient") ||
       !panelJs.includes("return '@all ' + value") || !panelJs.includes("function chatParseRecipients")) {
     throw new Error("Chat composer must display and materialize the inferred @all recipient");

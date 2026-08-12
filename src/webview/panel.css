@@ -27,6 +27,13 @@ body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family
 .mcp-regenerate-action{border-color:#f4b400!important;background:rgba(244,180,0,.13)!important;color:#ffd65a!important;font-weight:700;box-shadow:0 0 0 1px rgba(244,180,0,.22)}
 .mcp-regenerate-highlight{animation:mcpRegenerateHighlight 1.05s ease-in-out infinite;outline:2px solid rgba(244,180,0,.9);outline-offset:3px}
 @keyframes mcpRegenerateHighlight{0%,100%{box-shadow:0 0 0 1px rgba(244,180,0,.3),0 0 0 rgba(244,180,0,0)}50%{box-shadow:0 0 0 4px rgba(244,180,0,.2),0 0 20px rgba(244,180,0,.45)}}
+.pkm-config-section{border:1px solid var(--border);background:var(--panel);padding:14px 16px;margin:14px 0 18px}
+.pkm-config-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
+.pkm-skill-source,.pkm-skill-path,.pkm-skill-detail{font-size:10px;color:var(--muted);overflow-wrap:anywhere}
+.pkm-skill-source{margin-bottom:8px}.pkm-skill-target{display:flex;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--border)}
+.pkm-skill-target-main{flex:1;min-width:0;display:grid;grid-template-columns:minmax(120px,auto) auto;align-items:center;justify-content:start;column-gap:10px}
+.pkm-skill-path,.pkm-skill-detail{grid-column:1/-1;margin-top:3px}.pkm-skill-target-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.pkm-skill-proposals{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-top:10px;margin-top:4px;border-top:1px solid var(--border);font-size:11px;color:var(--muted)}
 #more-wrap{position:relative;flex:none}
 #more-menu{position:absolute;right:0;top:calc(100% + 6px);background:var(--panel);border:1px solid var(--border);
   border-radius:6px;padding:6px;display:none;flex-direction:column;gap:4px;z-index:60;min-width:150px;

@@ -3,6 +3,16 @@
 All notable changes to the **Personal Knowledge Manager** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- Added a versioned PKM Skill Router with generated native Agent Skill projections for GitHub Copilot, generic Agents, Claude, and custom target folders.
+- Added `skill_capabilities`, `skill_context`, `skill_feedback`, and `propose_skill_update` MCP tools for automatic secondary-Skill discovery and reviewable maintenance.
+- Added content-hash tracking, conflict/modified detection, safe Inject/Update/Remove actions, stale-target reminders, and a Skill proposal queue.
+
+### Changed
+- Renamed the user-facing MCP tab to Config and grouped MCP runtime/server controls with Agent Skill integration.
+
 ## [2.4.0] — 2026-08-11
 
 This release streamlines first-time setup and improves Chatroom reliability across VS Code, MCP agents, and browser participants.

@@ -434,6 +434,8 @@
     "test:chat-hub-health": "npm run build && node scripts/test-chat-hub-health.js",
     "test:chat-history-atomic": "python scripts/test-chat-history-atomic.py",
     "test:chat-generated-standby": "python scripts/test-chat-generated-standby.py",
+    "test:pkm-skill-projection": "npm run build && node scripts/test-pkm-skill-projection.js",
+    "test:pkm-skill-mcp": "node scripts/test-pkm-skill-mcp.js",
     "poc:chat-room-lifecycle": "npm run build && node scripts/poc-chat-room-lifecycle.js",
     "watch": "tsc -p tsconfig.json --watch",
     "package": "npx vsce package"

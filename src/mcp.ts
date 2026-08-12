@@ -8,7 +8,7 @@ import { condaEnvs, pyenvAdd, pyenvCreate, pyenvDelete, pyenvList, pyenvUpdate }
 import { managedEnvironmentsRoot } from "./environment-paths";
 
 // ── MCP server scaffold ────────────────────────────────────────────────────
-export const UNIFIED_MCP_VERSION = "2.0.11";
+export const UNIFIED_MCP_VERSION = "2.1.0";
 const KNOWLEDGE_MCP_VERSION = "1.0.0";
 const CHAT_MCP_VERSION = "2.0.11";
 
@@ -187,7 +187,7 @@ export async function streamMcpPythonCandidates(respond: (message: object) => vo
 function resolveMcpPython(): string {
   const runtimePython = validateMcpPython(mcpRuntimePythonPath());
   if (!runtimePython.error) return runtimePython.path;
-  throw new Error("Managed PKM MCP runtime is missing or broken. Create or Repair it in the MCP tab.");
+  throw new Error("Managed PKM MCP runtime is missing or broken. Create or Repair it in the Config tab.");
 }
 
 export function mcpServerDefinitionData(): { label: string; command: string; args: string[]; cwd: string; version: string } {
@@ -291,7 +291,7 @@ export function combinedMcpInstallInstruction(): string {
     `Internal chat module: ${chatServerPath}`,
     "",
     `1. Verify the managed runtime exists and can import fastmcp and websockets: ${quote(runtimePython)} -c "import fastmcp, websockets"`,
-    `2. Verify the generated entry and chat module exist at ${serverPath} and ${chatServerPath}. If missing or outdated, regenerate them from the extension MCP tab.`,
+    `2. Verify the generated entry and chat module exist at ${serverPath} and ${chatServerPath}. If missing or outdated, regenerate them from the extension Config tab.`,
     "3. Remove obsolete pkm-chat and pkm-chat-live registrations; their chat tools are now exposed by pkm.",
     "4. In MCP Agency, add/import this Local/stdio server. Preserve all unrelated servers:",
     "",
@@ -303,7 +303,7 @@ export function combinedMcpInstallInstruction(): string {
     }, null, 2),
     "```",
     "",
-    "5. The MCP tab normally installs dependencies automatically. If Repair reported an install failure, run:",
+    "5. The Config tab normally installs dependencies automatically. If Repair reported an install failure, run:",
     `   ${quote(runtimePython)} -m pip install -r ${quote(requirementsPath)}`,
     "6. Start or restart pkm in Agency. In VS Code, merge the same entry into .vscode/mcp.json, then click Start or run MCP: List Servers.",
     "7. Start a new agent chat session so tool discovery is refreshed.",
@@ -356,7 +356,7 @@ time, falling back to substring matching when FTS5 is unavailable.
 Install:  pip install fastmcp
 Run:      python server.py
 """
-import json, re, sqlite3, datetime
+import json, re, sqlite3, datetime, hashlib, uuid
 from pathlib import Path
 
 SERVER_VERSION = "${UNIFIED_MCP_VERSION}"
@@ -379,8 +379,9 @@ def check_version() -> dict:
   """Return the unified server version and its component schema versions."""
   return {"name": "pkm", "version": SERVER_VERSION,
           "components": {"knowledge": KNOWLEDGE_SCHEMA_VERSION, "chat": CHAT_SCHEMA_VERSION},
-          "capabilities": ["personal-knowledge", "papers", "pkm-chatroom"],
-          "chat_discovery_tool": "chat_capabilities"}
+          "capabilities": ["personal-knowledge", "papers", "pkm-chatroom", "pkm-skills"],
+          "chat_discovery_tool": "chat_capabilities",
+          "skill_discovery_tool": "skill_capabilities"}
 
 
 def _now() -> str:
@@ -636,6 +637,126 @@ def _index(skills, notes):
 
 
 # ── Read tools ──────────────────────────────────────────────────────────────
+def _skill_id(row):
+  return ((row.get("category") or "") + "/" + row["name"]).strip("/")
+
+
+def _skill_hash(row):
+  value = json.dumps({"name": row["name"], "description": row.get("description", ""),
+            "category": row.get("category", ""), "tags": row.get("tags", []),
+            "content": row.get("content", "")}, ensure_ascii=False, sort_keys=True)
+  return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _skill_by_id(skill_id):
+  wanted = str(skill_id or "").strip("/").casefold()
+  for row in _all_skills():
+    if _skill_id(row).casefold() == wanted or row["name"].casefold() == wanted:
+      return row
+  return None
+
+
+@mcp.tool()
+def skill_capabilities() -> str:
+  """Discover the PKM secondary-Skill workflow for finding, using, and maintaining reusable knowledge."""
+  return json.dumps({
+    "ok": True,
+    "capability": "pkm-skills",
+    "workflow": ["skill_context", "perform task", "skill_feedback", "propose_skill_update"],
+    "tools": ["skill_context", "skill_feedback", "propose_skill_update", "search_skills", "get_skill"],
+    "maintenance_policy": "Use proposals for reusable changes; do not overwrite formal Skills automatically.",
+  })
+
+
+@mcp.tool()
+def skill_context(task: str, workspace: str = "", files: Optional[List[str]] = None,
+          diagnostics: str = "", limit: int = 3) -> str:
+  """Find and activate the smallest relevant PKM Skill set for a substantial task.
+
+  Call before coding, research, debugging, or operational workflows that may
+  depend on personal conventions or domain knowledge. Returns full Skill bodies,
+  stable IDs, content hashes, match reasons, and required/recommended priority.
+  """
+  query = " ".join([str(task or ""), str(workspace or ""), " ".join(files or []), str(diagnostics or "")]).strip()
+  if not query:
+    return json.dumps({"ok": False, "error": "task is required"})
+  raw_terms = re.findall(r"[\\w.-]{2,}", query.casefold(), re.UNICODE)
+  terms = list(dict.fromkeys(raw_terms + ([query.casefold()] if len(query) <= 80 else [])))
+  ranked = []
+  for row in _all_skills():
+    name = row["name"].casefold()
+    description = (row.get("description") or "").casefold()
+    category = (row.get("category") or "").casefold()
+    tags = " ".join(row.get("tags") or []).casefold()
+    content = (row.get("content") or "").casefold()
+    score, matched = 0, []
+    for term in terms:
+      if term in name: score += 8; matched.append("name:" + term)
+      if term in description: score += 5; matched.append("description:" + term)
+      if term in tags: score += 4; matched.append("tag:" + term)
+      if term in category: score += 3; matched.append("category:" + term)
+      if term in content: score += 1; matched.append("content:" + term)
+    if score:
+      ranked.append((score, row, list(dict.fromkeys(matched))[:6]))
+  ranked.sort(key=lambda item: (-item[0], _skill_id(item[1]).casefold()))
+  selected = ranked[:max(1, min(int(limit or 3), 5))]
+  skills = []
+  for index, (score, row, reasons) in enumerate(selected):
+    skills.append({"skill_id": _skill_id(row), "name": row["name"],
+             "description": row.get("description", ""), "category": row.get("category", ""),
+             "tags": row.get("tags", []), "content": row.get("content", ""),
+             "content_hash": _skill_hash(row), "score": score,
+             "priority": "required" if index == 0 and score >= 8 else "recommended",
+             "match_reason": reasons})
+  return json.dumps({"ok": True, "task": task, "count": len(skills), "skills": skills,
+             "instruction": "Follow required Skills. After substantial work, report outcomes with skill_feedback and propose reusable improvements."}, ensure_ascii=False)
+
+
+@mcp.tool()
+def skill_feedback(task: str, used_skills: List[str], outcome: str,
+           observations: Optional[List[str]] = None, evidence: Optional[List[str]] = None) -> str:
+  """Record which PKM Skills were used, the outcome, and reusable observations without modifying formal Skills."""
+  directory = STORE / "_feedback"
+  directory.mkdir(parents=True, exist_ok=True)
+  entry = {"id": str(uuid.uuid4()), "created": _now(), "task": task,
+       "used_skills": used_skills or [], "outcome": outcome,
+       "observations": observations or [], "evidence": evidence or []}
+  with (directory / "skill-usage.jsonl").open("a", encoding="utf-8") as handle:
+    handle.write(json.dumps(entry, ensure_ascii=False) + "\\n")
+  return json.dumps({"ok": True, "feedback_id": entry["id"]})
+
+
+@mcp.tool()
+def propose_skill_update(skill_id: str, base_hash: str, reason: str,
+             evidence: Optional[List[str]] = None, proposed_content: str = "",
+             confidence: float = 0.0) -> str:
+  """Create a reviewable PKM Skill maintenance proposal; never directly changes the formal Skill."""
+  row = _skill_by_id(skill_id)
+  if not row:
+    return json.dumps({"ok": False, "error": "Skill not found", "skill_id": skill_id})
+  current_hash = _skill_hash(row)
+  proposal_id = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
+  directory = STORE / "_proposals" / "skills"
+  directory.mkdir(parents=True, exist_ok=True)
+  safe = re.sub(r"[^A-Za-z0-9._-]+", "-", _skill_id(row)).strip("-").lower() or "skill"
+  target = directory / (proposal_id + "-" + safe + ".md")
+  conflict = bool(base_hash and base_hash != current_hash)
+  body = ["---", "proposal_id: " + proposal_id,
+      "skill_id: " + json.dumps(_skill_id(row), ensure_ascii=False),
+      "base_hash: " + json.dumps(base_hash or current_hash),
+      "current_hash: " + json.dumps(current_hash),
+      "conflict: " + ("true" if conflict else "false"),
+      "confidence: " + str(max(0.0, min(float(confidence or 0), 1.0))),
+      "created: " + _now(), "---", "", "# Skill Update Proposal", "",
+      "## Reason", "", reason or "No reason supplied.", "", "## Evidence", ""]
+  body.extend(["- " + item for item in (evidence or [])] or ["- No evidence supplied."])
+  body.extend(["", "## Proposed Content", "", proposed_content or "No replacement content supplied.", ""])
+  target.write_text("\\n".join(body), encoding="utf-8")
+  return json.dumps({"ok": True, "proposal_id": proposal_id,
+             "proposal_path": str(target), "skill_id": _skill_id(row),
+             "current_hash": current_hash, "conflict": conflict})
+
+
 @mcp.tool()
 def list_skills(category: Optional[str] = None) -> str:
     """List personal skills, optionally filtered by category (a slash-separated folder path)."""
@@ -1362,6 +1483,9 @@ if __name__ == "__main__":
   const requiredChatTools = ["chat_capabilities", "chat_join", "chat_standby", "chat_post", "chat_status"];
   const missingChatTools = requiredChatTools.filter(tool => !template.includes(`def ${tool}(`));
   if (missingChatTools.length) throw new Error(`Chat MCP template is missing required tools: ${missingChatTools.join(", ")}`);
+  const requiredSkillTools = ["skill_capabilities", "skill_context", "skill_feedback", "propose_skill_update"];
+  const missingSkillTools = requiredSkillTools.filter(tool => !fs.readFileSync(path.join(__dirname, "mcp.js"), "utf8").includes(`def ${tool}(`));
+  if (missingSkillTools.length) throw new Error(`Unified MCP server is missing required Skill tools: ${missingSkillTools.join(", ")}`);
   fs.writeFileSync(serverPy, template);
 
   const configSnippet = JSON.stringify({

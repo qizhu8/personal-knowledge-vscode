@@ -294,7 +294,7 @@ function deleteEnv(id, name) {
   const isMcpRuntime = env && (env.name === 'PKM MCP Runtime' || /Managed runtime for pkm/.test(env.description || ''));
   pkModal({
     title: 'Delete “' + name + '”?',
-    message: (isMcpRuntime ? 'Warning: deleting the PKM MCP Runtime will stop the unified pkm server until you Repair it in the MCP tab.\n\n' : '') + (env?.missing ? 'The environment is already missing on disk. This will clean its stale registration.' : 'Removes it from the tool. Optionally also delete the environment files from disk (irreversible).'),
+    message: (isMcpRuntime ? 'Warning: deleting the PKM MCP Runtime will stop the unified pkm server until you Repair it in Config.\n\n' : '') + (env?.missing ? 'The environment is already missing on disk. This will clean its stale registration.' : 'Removes it from the tool. Optionally also delete the environment files from disk (irreversible).'),
     checkbox: { label: 'Also delete the environment files from disk', checked: false },
     okLabel: 'Delete', danger: true,
     onOk: (_v, _tv, removeFiles) => ask('envDelete', { id, removeFiles: !!removeFiles })

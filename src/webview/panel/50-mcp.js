@@ -44,6 +44,49 @@ function mcpVersionBadge(installed, current, installedVersion, expectedVersion) 
   return '<span style="font-size:11px;padding:2px 8px;border-radius:8px;background:#f4b40022;color:#f4b400">● Outdated · ' + esc(installedVersion || 'unknown') + ' → v' + esc(expectedVersion || '?') + '</span>';
 }
 
+function pkmSkillStateBadge(target) {
+  const labels = {
+    missing: 'Missing', current: 'Current', outdated: 'Router Outdated',
+    'content-outdated': 'Content Outdated', modified: 'Modified',
+    conflict: 'Conflict', unavailable: 'Unavailable',
+  };
+  const good = target.state === 'current';
+  const color = good ? '#4ade80' : target.state === 'missing' ? 'var(--muted)' : target.state === 'conflict' || target.state === 'unavailable' ? '#f87171' : '#f4b400';
+  return `<span style="font-size:10px;color:${color}">${good ? '●' : '○'} ${esc(labels[target.state] || target.state)}${target.installedVersion ? ' · v' + esc(target.installedVersion) : ''}</span>`;
+}
+
+function renderPkmSkillTargets(data) {
+  const skill = data?.pkmSkill;
+  if (!skill) return '<div class="empty">Configure a PKM store before injecting the Skill Router.</div>';
+  const rows = (skill.targets || []).map(target => {
+    const update = ['missing','outdated','content-outdated','modified'].includes(target.state);
+    const label = target.state === 'missing' ? 'Inject PKM Skill' : target.state === 'current' ? 'Reinstall' : 'Update PKM Skill';
+    const action = update || target.state === 'current'
+      ? `<button class="tbtn" style="border-color:var(--accent)" onclick="ask('pkmSkillInject',{id:'${esc(target.id)}'})">${label}</button>`
+      : '';
+    const remove = target.managed
+      ? `<button class="tbtn" onclick="ask('pkmSkillRemove',{id:'${esc(target.id)}'})">Remove</button>`
+      : '';
+    const removeTarget = target.kind === 'custom'
+      ? `<button class="tbtn" onclick="ask('pkmSkillRemoveCustomTarget',{id:'${esc(target.id)}'})">Remove Target</button>`
+      : '';
+    return `<div class="pkm-skill-target">
+      <div class="pkm-skill-target-main"><strong>${esc(target.label)}</strong>${pkmSkillStateBadge(target)}
+        <div class="pkm-skill-path">${esc(target.skillPath)}</div><div class="pkm-skill-detail">${esc(target.detail || '')}</div></div>
+      <div class="pkm-skill-target-actions">${action}${remove}${removeTarget}</div>
+    </div>`;
+  }).join('');
+  const proposals = data?.skillProposals || [];
+  return `<div class="pkm-config-section">
+    <div class="pkm-config-heading"><div><strong>PKM Skill Router</strong><div class="pkm-skill-detail">Native discovery adapter · router v${esc(skill.routerVersion)} · requires MCP ≥ ${esc(skill.minimumMcpSchema)}</div></div>
+      <button class="tbtn" onclick="ask('pkmSkillAddCustomTarget',{})">＋ Custom Target</button></div>
+    <div class="pkm-skill-source">Canonical source: <code>${esc(skill.sourcePath)}</code>${skill.sourceExists ? '' : ' · created on first Inject'}</div>
+    ${rows || '<div class="empty">No Agent targets configured.</div>'}
+    <div class="pkm-skill-proposals"><span><strong>Skill Proposals</strong> · ${proposals.length} pending</span>
+      <button class="tbtn" onclick="ask('pkmSkillOpenProposals',{})">Open Proposals Folder</button></div>
+  </div>`;
+}
+
 function renderMcpPane(data) {
   const el = document.getElementById('detail');
   const installed = data?.installed;
@@ -58,9 +101,9 @@ function renderMcpPane(data) {
         <span id="mcp-version-badge">${mcpVersionBadge(installed, data?.current, data?.installedVersion, data?.expectedVersion)}</span>
       </div>
       <p style="color:var(--muted);font-size:12px;margin-bottom:14px;line-height:1.6">
-        The <strong>Model Context Protocol (MCP)</strong> lets AI assistants like Claude and GitHub Copilot
-        read and write your personal knowledge base and join Chatroom conversations through one registered server.
+        Configure the external runtimes and Agent integrations used by Personal Knowledge Manager.
       </p>
+      ${renderPkmSkillTargets(data)}
       <div style="background:var(--panel);border:1px solid ${data?.nativeMcpProvider ? '#4ade8066' : '#f4b40066'};border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:11px;line-height:1.6;color:var(--muted)">
         ${data?.nativeMcpProvider
           ? '<strong style="color:#4ade80">Available in every workspace.</strong> The extension registers <code>pkm</code> directly with VS Code; no project <code>.vscode/mcp.json</code> is needed. Remove old workspace <code>pkm</code>, <code>pkm-chat</code>, and <code>pkm-chat-live</code> entries to avoid duplicates.'

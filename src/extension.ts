@@ -51,6 +51,10 @@ import {
   mcpRuntimeManualCommands, mcpRuntimeStatus, mcpServerDefinitionData, mcpStatus, streamMcpPythonCandidates,
   validateMcpPython,
 } from "./mcp";
+import {
+  addPkmSkillCustomTarget, injectPkmSkill, pkmSkillProjectionStatus,
+  removeInjectedPkmSkill, removePkmSkillCustomTarget,
+} from "./pkm-skill-projection";
 
 // Background one-shot sweep to compute on-disk sizes for envs missing a cached
 // value, then refresh the panel so sizes show up "by default".
@@ -104,6 +108,10 @@ function mcpPanelStatusData(): object {
   const info = mcpStatus();
   const python = detectMcpPython();
   const runtime = mcpRuntimeStatus();
+  const proposalDir = getStorePath() ? path.join(getStorePath(), "_proposals", "skills") : "";
+  const skillProposals = proposalDir && fs.existsSync(proposalDir)
+    ? fs.readdirSync(proposalDir).filter(name => name.endsWith(".md")).sort().reverse().map(name => ({ name, path: path.join(proposalDir, name) }))
+    : [];
   return {
     ...info,
     combinedRegistry: runtime.healthy ? combinedMcpRegistry() : "",
@@ -111,6 +119,9 @@ function mcpPanelStatusData(): object {
     nativeMcpProvider: _nativeMcpProvider,
     mcpPython: python,
     mcpRuntime: runtime,
+    pkmSkill: chatCtx && getStorePath() ? pkmSkillProjectionStatus(chatCtx) : null,
+    skillProposals,
+    skillProposalDir: proposalDir,
   };
 }
 
@@ -659,6 +670,7 @@ let _pendingMcpRegenerateHighlight = false;
 let _nativeMcpProvider = false;
 let _mcpDefinitionsChanged: vscode.EventEmitter<void> | undefined;
 let _mcpRegenerationPromptedFor = "";
+let _pkmSkillUpdatePromptedFor = "";
 
 function refreshMcpDefinitions(): void {
   _mcpDefinitionsChanged?.fire();
@@ -3762,6 +3774,57 @@ async function handleMessage(
     case "checkMcp": {
       respond({ command: "mcpStatus", data: mcpPanelStatusData() });
       void offerMcpServerRegeneration(context);
+      void offerPkmSkillProjectionUpdate(context);
+      break;
+    }
+
+    case "pkmSkillInject": {
+      try {
+        const target = injectPkmSkill(context, String(msg.id || ""));
+        log.action("pkmSkill.inject", { target: target.id, path: target.skillPath, state: target.state });
+        respond({ command: "mcpStatus", data: mcpPanelStatusData() });
+        vscode.window.setStatusBarMessage("$(check) PKM Skill injected", 4000);
+      } catch (error: any) {
+        respond({ command: "mcpError", data: { error: error?.message || String(error) } });
+      }
+      break;
+    }
+
+    case "pkmSkillRemove": {
+      try {
+        removeInjectedPkmSkill(context, String(msg.id || ""));
+        log.action("pkmSkill.remove", { target: String(msg.id || "") });
+        respond({ command: "mcpStatus", data: mcpPanelStatusData() });
+      } catch (error: any) {
+        respond({ command: "mcpError", data: { error: error?.message || String(error) } });
+      }
+      break;
+    }
+
+    case "pkmSkillAddCustomTarget": {
+      const picked = await vscode.window.showOpenDialog({ canSelectFiles: false, canSelectFolders: true, canSelectMany: false, title: "Select an Agent Skills root folder" });
+      if (!picked?.[0]) break;
+      const label = await vscode.window.showInputBox({ title: "Custom Agent Target", prompt: "Name shown in PKM Config.", value: path.basename(picked[0].fsPath) || "Custom Agent" });
+      if (label === undefined) break;
+      await addPkmSkillCustomTarget(context, picked[0].fsPath, label);
+      log.action("pkmSkill.customTarget.add", { path: picked[0].fsPath });
+      respond({ command: "mcpStatus", data: mcpPanelStatusData() });
+      break;
+    }
+
+    case "pkmSkillRemoveCustomTarget": {
+      try { removeInjectedPkmSkill(context, String(msg.id || "")); } catch { /* an absent projection is fine */ }
+      await removePkmSkillCustomTarget(context, String(msg.id || ""));
+      log.action("pkmSkill.customTarget.remove", { target: String(msg.id || "") });
+      respond({ command: "mcpStatus", data: mcpPanelStatusData() });
+      break;
+    }
+
+    case "pkmSkillOpenProposals": {
+      const directory = path.join(getStorePath(), "_proposals", "skills");
+      fs.mkdirSync(directory, { recursive: true });
+      await vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(directory));
+      log.action("pkmSkill.proposals.open", { directory });
       break;
     }
 
@@ -3928,9 +3991,9 @@ async function offerMcpRuntimeSetup(context: vscode.ExtensionContext): Promise<v
   const openSetup = () => { const panel = getOrCreatePanel(context); panel.reveal(vscode.ViewColumn.One); if (_panelReady) panel.webview.postMessage({ command: "openTab", tab: "mcp" }); else _pendingTab = "mcp"; };
   if (!base.valid) {
     const choice = await vscode.window.showWarningMessage(
-      "Personal Knowledge Manager is ready, but MCP requires Python 3.10+. Install Python or specify an executable in the MCP tab. PKM features remain available.",
-      "Open MCP Setup", "Later");
-    if (choice === "Open MCP Setup") openSetup();
+      "Personal Knowledge Manager is ready, but MCP requires Python 3.10+. Install Python or specify an executable in Config. PKM features remain available.",
+      "Open Config", "Later");
+    if (choice === "Open Config") openSetup();
     return;
   }
   const choice = await vscode.window.showInformationMessage(
@@ -3944,11 +4007,11 @@ async function offerMcpRuntimeSetup(context: vscode.ExtensionContext): Promise<v
       await ensureMcpRuntime(context);
     });
     _treeProvider?.refresh();
-    vscode.window.showInformationMessage("PKM MCP Runtime is ready and registered in Envs.", "Open MCP Setup")
-      .then(result => { if (result === "Open MCP Setup") openSetup(); });
+    vscode.window.showInformationMessage("PKM MCP Runtime is ready and registered in Envs.", "Open Config")
+      .then(result => { if (result === "Open Config") openSetup(); });
   } catch (error: any) {
-    vscode.window.showErrorMessage(`MCP runtime setup failed: ${error?.message || String(error)}`, "Open MCP Setup")
-      .then(result => { if (result === "Open MCP Setup") openSetup(); });
+    vscode.window.showErrorMessage(`MCP runtime setup failed: ${error?.message || String(error)}`, "Open Config")
+      .then(result => { if (result === "Open Config") openSetup(); });
   }
 }
 
@@ -3972,14 +4035,14 @@ async function regenerateMcpServerCode(context: vscode.ExtensionContext): Promis
     panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
     await vscode.window.showInformationMessage(
       `PKM MCP server code regenerated at ${info.serverPath}. Restart the pkm MCP server to load it.`,
-      "Open MCP Setup",
-    ).then(choice => { if (choice === "Open MCP Setup") openMcpSetup(context, true); });
+      "Open Config",
+    ).then(choice => { if (choice === "Open Config") openMcpSetup(context, true); });
   } catch (error: any) {
     const choice = await vscode.window.showErrorMessage(
       `Could not regenerate PKM MCP server code: ${error?.message || String(error)}`,
-      "Open MCP Setup",
+      "Open Config",
     );
-    if (choice === "Open MCP Setup") openMcpSetup(context, true);
+    if (choice === "Open Config") openMcpSetup(context, true);
   }
 }
 
@@ -3992,10 +4055,31 @@ async function offerMcpServerRegeneration(context: vscode.ExtensionContext): Pro
   const installed = status.installed ? `v${status.installedVersion}` : "missing";
   const choice = await vscode.window.showWarningMessage(
     `PKM MCP server code is ${installed}; v${status.expectedVersion} is required. Regenerate it now, then restart the pkm MCP server.`,
-    "Regenerate Server Code", "Open MCP Setup", "Later",
+    "Regenerate Server Code", "Open Config", "Later",
   );
   if (choice === "Regenerate Server Code") await regenerateMcpServerCode(context);
-  else if (choice === "Open MCP Setup") openMcpSetup(context, true);
+  else if (choice === "Open Config") openMcpSetup(context, true);
+}
+
+async function offerPkmSkillProjectionUpdate(context: vscode.ExtensionContext): Promise<void> {
+  if (!getStorePath()) return;
+  const status = pkmSkillProjectionStatus(context);
+  const stale = status.targets.filter(target => target.state === "outdated" || target.state === "content-outdated");
+  if (!stale.length) return;
+  const promptKey = `${status.routerVersion}:${status.targets.map(target => `${target.id}:${target.expectedSourceHash}`).join("|")}`;
+  if (_pkmSkillUpdatePromptedFor === promptKey) return;
+  _pkmSkillUpdatePromptedFor = promptKey;
+  const choice = await vscode.window.showWarningMessage(
+    `PKM Skill Router needs updating in ${stale.length} Agent target${stale.length === 1 ? "" : "s"}.`,
+    "Update Injected Skill", "Open Config", "Later",
+  );
+  if (choice === "Update Injected Skill") {
+    for (const target of stale) injectPkmSkill(context, target.id);
+    log.action("pkmSkill.updateAll", { targets: stale.map(target => target.id) });
+    panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+  } else if (choice === "Open Config") {
+    openMcpSetup(context);
+  }
 }
 
 // ── Sidebar tree provider ──────────────────────────────────────────────────
@@ -4820,6 +4904,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       panel?.webview.postMessage({ command: "saved" }); // re-fetch if panel already open
       void offerMcpRuntimeSetup(context);
       void offerMcpServerRegeneration(context);
+      void offerPkmSkillProjectionUpdate(context);
     } catch (e: any) {
       log.error(`store init failed: ${e?.stack ?? e?.message}`);
       vscode.window.showErrorMessage(`Personal Knowledge Manager: failed to initialize store — ${e.message}`);
@@ -4836,9 +4921,13 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
   _watcher?.dispose();
   const pattern = new vscode.RelativePattern(getStorePath(), "{notes,skills,papers}/**/*.md");
   _watcher = vscode.workspace.createFileSystemWatcher(pattern);
-  const onChange = () => {
+  const onChange = (uri: vscode.Uri) => {
     _treeProvider?.refresh();
     panel?.webview.postMessage({ command: "reloaded" }); // re-fetch current tab
+    if (uri.fsPath === path.join(getStorePath(), "skills", "System", "PKM", "PKM Skills.md")) {
+      panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+      void offerPkmSkillProjectionUpdate(context);
+    }
   };
   _watcher.onDidCreate(onChange);
   _watcher.onDidChange(onChange);
