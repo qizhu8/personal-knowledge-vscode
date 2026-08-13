@@ -3,6 +3,26 @@
 All notable changes to the **Personal Knowledge Manager** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- Only highlight Chatroom `@mentions` that resolve to a Room roster alias or the reserved broadcast names; unknown literal `@words` remain plain text.
+- Fixed quoted aliases with spaces (for example `@"PKM Dev"`) losing mention highlighting because the renderer expected quote entities that the real escape function does not produce.
+
+### Changed
+- Simplified Agent participation to `standby → directed @message → post → standby`; removed the legacy conversation preparation, participant, release, and round-robin state machine.
+- Added host-only `/stop @agent` (or `/stop @all`) to disconnect online Agents while preserving their Room identity in Earlier and leaving the Room secret unchanged.
+- Changed Host Leave to an explicit Close Room action that stores the Room for Rehost; permanent deletion remains available only from Stored Rooms behind double confirmation.
+- Fixed Host Close racing Presence state: durable local Hub ownership now controls Close, Stored Rooms refresh immediately, and the Room can be Rehosted without waiting.
+- Added right-click Rename for active hosted and Stored Rooms; active renames preserve connected members, Room UUID, history, identities, and Join secret.
+- Restored Activity Bar Hosted Rooms using active/stored ownership data rather than Recents; its native context menu supports Open/Rehost, Rename, Close, and double-confirmed Delete as appropriate.
+- Made Recents contain Joined Rooms only and deduplicate legacy endpoints by host/IP plus Room name while ignoring port; durable Room UUID remains authoritative when available.
+- Added structured reply intent: pure `@all` broadcasts default to no reply, direct aliases default to reply-required, senders can override it, and standby batches identify exactly which events require responses.
+- Made implicit recipients role-aware: Host messages default to `@all`, while non-Host Extension and browser messages default to a point-to-point reply to the online Host.
+- Made final post results explicitly require an immediate blocking `chat_standby` call, preventing Agents from ending their turn after one reply while merely displaying a standby state.
+- Added message-local `reply_audience` propagation: when a Host addresses multiple named Agents, each Agent's implicit reply keeps the Host and peer recipients in the loop without restoring a global turn scheduler; `@all` itself is never propagated.
+- Exposed `runtime_state` and `state_changed_at` through Chatroom status/lifecycle payloads, and scoped structured stop events to `chatroom`.
+
 ## [2.4.1] — 2026-08-13
 
 ### Added

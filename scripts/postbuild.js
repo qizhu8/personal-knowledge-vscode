@@ -46,17 +46,40 @@ try {
     throw new Error("Config tab must expose PKM Skill Router target controls");
   }
   if (!panelJs.includes('id="chat-default-recipient"') || !panelJs.includes("function chatMaterializeRecipient") ||
-      !panelJs.includes("return '@all ' + value") || !panelJs.includes("function chatParseRecipients")) {
-    throw new Error("Chat composer must display and materialize the inferred @all recipient");
+      !panelJs.includes("chatDefaultRecipientName") || !panelJs.includes("function chatParseRecipients")) {
+    throw new Error("Chat composer must display and materialize a role-aware default recipient");
+  }
+  if (!panelJs.includes('id="chat-response-required"') || !panelJs.includes("a.selfHost ? 'Close Room' : 'Leave Room'")) {
+    throw new Error("Chatroom UI must expose explicit reply intent and distinguish Host Close from guest Leave");
+  }
+  if (!panelJs.includes("function chatActiveRoomMenu") || !panelJs.includes("function chatStoredRoomMenu") ||
+      !panelJs.includes("chatRehostStoredRoom") || !panelJs.includes("chatDeleteStoredRoom")) {
+    throw new Error("Chatroom right-click menus must expose active and Stored Room actions");
   }
   const extensionJs = fs.readFileSync(path.join(__dirname, "..", "dist", "extension.js"), "utf-8");
   if (!extensionJs.includes("Regenerate Server Code") || !extensionJs.includes("offerMcpServerRegeneration")) {
     throw new Error("extension must offer direct MCP server-code regeneration");
   }
+  const browserSource = fs.readFileSync(path.join(__dirname, "..", "src", "chatroom-browser.ts"), "utf-8");
+  if (!browserSource.includes("selfMember&&selfMember.host") || !browserSource.includes('host?host.user:"all"')) {
+    throw new Error("Browser Chatroom must default Host messages to @all and guest replies to the Host");
+  }
   const extensionTs = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf-8");
-  if (!extensionTs.includes('return roomId ? `room:${roomId}`') ||
+  const packageJson = fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf-8");
+  for (const command of ["openHostedRoomItem", "renameHostedRoom", "closeHostedRoom", "deleteHostedRoom"]) {
+    if (!packageJson.includes(`personalKnowledge.${command}`) || !extensionTs.includes(`personalKnowledge.${command}`)) {
+      throw new Error(`Hosted Room navigation command is missing: ${command}`);
+    }
+  }
+  if (!extensionTs.includes("this.hub?.adminRooms().some") || !extensionTs.includes("await this.refreshStoredRooms()")) {
+    throw new Error("Host Close must use durable Hub ownership and refresh Stored Rooms immediately");
+  }
+  const roomIdentityTs = fs.readFileSync(path.join(__dirname, "..", "src", "chat-room-identity.ts"), "utf-8");
+  if (!roomIdentityTs.includes('if (roomId) return `room:${roomId}`') ||
+      !roomIdentityTs.includes("new URL(url).hostname") ||
+      !extensionTs.includes("return chatRoomIdentity(url, room, roomId)") ||
       !extensionTs.includes("item.roomId === opts.roomId")) {
-    throw new Error("live Chatroom navigation must deduplicate connections by durable Room UUID");
+    throw new Error("Chatroom navigation must deduplicate by Room UUID or host+name without port");
   }
   if (extensionTs.includes("Type ${roomName} to delete") ||
       !extensionTs.includes('"Delete Data Permanently"') ||

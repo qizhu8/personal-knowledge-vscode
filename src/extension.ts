@@ -22,6 +22,7 @@ import {
 import { ChatHub, ChatClient, ChatMessage, Member, FileMeta, AgentRuntimeState, MAX_FILE_BYTES } from "./chatroom";
 import { BOT_NAME } from "./chat-commands";
 import { StoredChatRoom } from "./chat-room-lifecycle";
+import { chatRoomIdentity, joinedRoomRecents } from "./chat-room-identity";
 import { PendingJoinApproval } from "./chat-join-approval";
 import { probeChatRoomActive } from "./chat-hub-health";
 import {
@@ -1017,9 +1018,16 @@ interface ManagedChatAgent {
   messages: ChatMessage[];
   status: string;
   active: boolean;
-  conversationActive: boolean;
   busy: boolean;
   generation: number;
+}
+
+interface HostedRoomNavigationItem {
+  roomId: string;
+  roomName: string;
+  active: boolean;
+  canRehost: boolean;
+  unavailableReason?: string;
 }
 
 class ChatRoomManager {
@@ -1039,14 +1047,14 @@ class ChatRoomManager {
   private static readonly MAX_MSGS = 5000;   // session display cap; the hub's byte budget is the real limit
 
   private static roomKey(url: string, room: string, roomId?: string): string {
-    return roomId ? `room:${roomId}` : `${url}||${ChatHub.canonRoom(room)}`;
+    return chatRoomIdentity(url, room, roomId);
   }
 
   private static managedAgentPrompt(name: string, role: string): string {
     return [
       `You are ${name}, an expert participant in a multi-agent engineering discussion.`,
       `Your role and background: ${role}`,
-      "Chatroom protocol: when /start_conversation includes you, continuously watch the room. After every reply, return to standby. Stay active until roombot announces /stop_conversation or you are /release'd.",
+      "Chatroom protocol: remain in standby while connected. Respond only to messages directed to you or @all, then return to standby. The host may disconnect you with /stop.",
       "Respond to the latest addressed message using relevant shared context. Ask focused questions when evidence is missing. Propose concrete next steps, challenge weak assumptions, and keep replies concise. Do not emit Chatroom slash commands.",
     ].join("\n");
   }
@@ -1127,6 +1135,17 @@ class ChatRoomManager {
     this.setActive(key);
     return true;
   }
+  activateRoomById(roomId: string): boolean {
+    const room = [...this.rooms.values()].find(candidate => candidate.roomId === roomId);
+    if (!room) return false;
+    this.setActive(room.key);
+    return true;
+  }
+  async closeHostedRoomById(roomId: string): Promise<void> {
+    const room = [...this.rooms.values()].find(candidate => candidate.roomId === roomId);
+    if (!room) throw new Error("The active hosted Room was not found.");
+    await this.closeOrLeaveRoom(room.key);
+  }
   get hubIsRunning(): boolean { return !!this.hub?.isRunning; }
   get hubPort(): number { return this.hub?.port ?? 0; }
 
@@ -1136,7 +1155,7 @@ class ChatRoomManager {
   }
 
   private roomSummary(r: RoomConn) {
-    return { key: r.key, room: r.room, roomId: r.roomId, url: r.url, status: r.status, unread: r.unread };
+    return { key: r.key, room: r.room, roomId: r.roomId, url: r.url, status: r.status, unread: r.unread, selfHost: r.selfHost };
   }
 
   state(): object {
@@ -1168,6 +1187,19 @@ class ChatRoomManager {
         active: agent.active, busy: agent.busy,
       })),
     };
+  }
+
+  hostedRoomsForNavigation(): HostedRoomNavigationItem[] {
+    const active = new Map(this.hub?.adminRooms().map(room => [room.roomId, room]) || []);
+    const rows: HostedRoomNavigationItem[] = [...active.values()].map(room => ({
+      roomId: room.roomId, roomName: room.room, active: true, canRehost: true,
+    }));
+    for (const stored of this.storedRooms) {
+      if (active.has(stored.roomId)) continue;
+      rows.push({ roomId: stored.roomId, roomName: stored.roomName, active: false,
+        canRehost: stored.canRehost, unavailableReason: stored.unavailableReason });
+    }
+    return rows.sort((left, right) => left.roomName.localeCompare(right.roomName));
   }
 
   async addManagedAgent(context: vscode.ExtensionContext): Promise<void> {
@@ -1219,15 +1251,14 @@ class ChatRoomManager {
     const agent: ManagedChatAgent = {
       id, name, backend, role, roomKey: room.key, client: null as any,
       systemPrompt: ChatRoomManager.managedAgentPrompt(name, role),
-      messages: [], status: "connecting", active: true, conversationActive: false, busy: false, generation: 0,
+      messages: [], status: "connecting", active: true, busy: false, generation: 0,
     };
     agent.client = new ChatClient({
       onStatus: (status, detail) => {
         agent.status = detail ? `${status}: ${detail}` : status;
         if (status === "connected") agent.client.sendAgentState("standby");
-        if (status === "disconnected" && detail?.startsWith("closed:")) {
+        if (status === "disconnected") {
           agent.active = false;
-          agent.conversationActive = false;
           agent.busy = false;
           agent.generation++;
         }
@@ -1273,22 +1304,9 @@ class ChatRoomManager {
     if (agent.messages.length > 80) agent.messages.splice(0, agent.messages.length - 80);
     const text = String(message.text || "").trim();
     const low = text.toLowerCase();
-    if (message.from === "roombot" && (low.includes("conversation started") || low.includes("joined the conversation"))) {
-      if (this.messageMentions(text, agent.name)) {
-        agent.active = true; agent.conversationActive = true; agent.generation++; agent.client.sendAgentState("standby"); this.push();
-      }
-      return;
-    }
-    if (agent.conversationActive && (low.startsWith("/stop_conversation") || (message.from === "roombot" && low.includes("conversation stopped")))) {
-      agent.active = false; agent.conversationActive = false; agent.busy = false; agent.generation++; agent.client.sendAgentState("idle"); this.push(); return;
-    }
-    if (agent.conversationActive && low.startsWith("/release") && this.messageMentions(text, agent.name)) {
-      agent.active = false; agent.conversationActive = false; agent.busy = false; agent.generation++; agent.client.sendAgentState("idle"); this.push(); return;
-    }
     if (!agent.active || agent.busy || message.from.toLowerCase() === agent.name.toLowerCase()) return;
     const directed = this.messageMentions(text, agent.name);
-    const granted = message.from === "roombot" && directed && low.includes("your turn");
-    if (!directed && !granted) return;
+    if (!directed) return;
     const generation = agent.generation;
     agent.busy = true;
     agent.client.sendAgentState("thinking");
@@ -1420,13 +1438,41 @@ class ChatRoomManager {
     log.action("chat.join", { room: opts.room, user: opts.user });
   }
 
-  leaveRoom(key: string): void {
+  async closeOrLeaveRoom(key: string): Promise<void> {
     const rc = this.rooms.get(key);
     if (!rc) return;
-    try { rc.client.disconnect(); } catch { /* ignore */ }
+    const locallyHosted = !!this.hub?.adminRooms().some(room =>
+      (rc.roomId && room.roomId === rc.roomId) || (!rc.roomId && room.room === ChatHub.canonRoom(rc.room)));
+    if (locallyHosted && this.hub?.isRunning) {
+      await this.hub.adminCloseRoom(rc.room);
+    } else {
+      try { rc.client.disconnect(); } catch { /* ignore */ }
+    }
     this.rooms.delete(key);
     if (this.activeKey === key) this.activeKey = this.rooms.keys().next().value ?? "";
-    log.action("chat.leave", { room: rc.room });
+    if (locallyHosted) await this.refreshStoredRooms();
+    log.action(locallyHosted ? "chat.closeRoom" : "chat.leave", { room: rc.room, roomId: rc.roomId });
+    this.push();
+  }
+
+  async renameActiveRoom(roomId: string, roomName: string): Promise<void> {
+    if (!this.hub?.isRunning) throw new Error("The Chat Hub is not running.");
+    const rc = [...this.rooms.values()].find(room => room.roomId === roomId);
+    if (!rc) throw new Error("The active Room connection was not found.");
+    const previousKey = rc.key;
+    const previousRoom = rc.room;
+    const nextRoom = await this.hub.renameActiveRoom(roomId, roomName);
+    const nextKey = ChatRoomManager.roomKey(rc.url, nextRoom, roomId);
+    this.rooms.delete(previousKey);
+    rc.room = nextRoom;
+    rc.key = nextKey;
+    this.rooms.set(nextKey, rc);
+    const secret = this.hostedKeys.get(ChatHub.canonRoom(previousRoom));
+    this.hostedKeys.delete(ChatHub.canonRoom(previousRoom));
+    if (secret) this.hostedKeys.set(ChatHub.canonRoom(nextRoom), secret);
+    for (const agent of this.managedAgents.values()) if (agent.roomKey === previousKey) agent.roomKey = nextKey;
+    if (this.activeKey === previousKey) this.activeKey = nextKey;
+    _treeProvider?.refresh();
     this.push();
   }
 
@@ -1470,7 +1516,7 @@ class ChatRoomManager {
   // durable hosted Rooms never copy their secret into globalState recents.
   private onRekey(rc: RoomConn, secret: string): void {
     this.hostedKeys.set(ChatHub.canonRoom(rc.room), secret);
-    saveRekeyedSecret(rc.url, rc.room, secret);
+    saveRekeyedSecret(rc.url, rc.room, secret, rc.roomId);
     this.push();
     log.action("chat.rekey", { room: rc.room });
   }
@@ -1486,9 +1532,9 @@ class ChatRoomManager {
     log.action("chat.joinRejected", { room: rc.room, code });
   }
 
-  send(text: string): boolean {
+  send(text: string, responseRequired?: boolean): boolean {
     const rc = this.activeRoom;
-    return rc ? rc.client.sendText(text) : false;
+    return rc ? rc.client.sendText(text, responseRequired) : false;
   }
 
   /** Host-only: moderate a member in the active room. Target identified by its
@@ -1641,6 +1687,7 @@ class ChatRoomManager {
       this.hub.configureLifecycle(this.persistenceRoot, this.archiveLimitBytes, this.installationId, this.secretStorage);
     }
     this.storedRooms = await this.hub.listStoredRooms();
+    _treeProvider?.refresh();
     this.push();
   }
 
@@ -1764,11 +1811,11 @@ function getChatMgr(): ChatRoomManager {
 // Extension context kept for chat helpers that run outside a message handler
 // (e.g. secret rotation triggered by a hub event).
 let chatCtx: vscode.ExtensionContext | undefined;
-function saveRekeyedSecret(url: string, room: string, secret: string): void {
+function saveRekeyedSecret(url: string, room: string, secret: string, roomId?: string): void {
   if (!chatCtx) return;
-  const id = `${url}||${room}`;
+  const id = chatRoomIdentity(url, room, roomId);
   const list = chatRecents(chatCtx);
-  const entry = list.find(r => r.id === id);
+  const entry = list.find(recent => chatRoomIdentity(recent.url, recent.room, recent.roomId) === id);
   if (entry && (!entry.host || !entry.roomId)) { entry.secret = secret; void chatCtx.globalState.update(CHAT_RECENTS_KEY, list); }
 }
 
@@ -1810,23 +1857,81 @@ function chatUrlPort(wsUrl: string): number {
   try { return Number(new URL(wsUrl).port) || 7345; } catch { return 7345; }
 }
 function chatRecents(ctx: vscode.ExtensionContext): RecentRoom[] {
-  return ctx.globalState.get<RecentRoom[]>(CHAT_RECENTS_KEY, []);
+  return joinedRoomRecents(ctx.globalState.get<RecentRoom[]>(CHAT_RECENTS_KEY, []));
+}
+async function migrateChatRecents(ctx: vscode.ExtensionContext): Promise<void> {
+  const raw = ctx.globalState.get<RecentRoom[]>(CHAT_RECENTS_KEY, []);
+  const joined = joinedRoomRecents(raw.map(room => ({ ...room })));
+  if (JSON.stringify(raw) !== JSON.stringify(joined)) await ctx.globalState.update(CHAT_RECENTS_KEY, joined);
 }
 function chatRecentsForUi(ctx: vscode.ExtensionContext): object[] {
   return chatRecents(ctx).map(r => ({ id: r.id, url: r.url, room: r.room, roomId: r.roomId, user: r.user, host: r.host }));
 }
 async function saveChatRecent(ctx: vscode.ExtensionContext, e: { url: string; room: string; roomId?: string; user: string; secret?: string; host?: boolean }): Promise<void> {
-  const id = `${e.url}||${e.room}`;
-  const prev = chatRecents(ctx).find(r => r.id === id);
-  const list = chatRecents(ctx).filter(r => r.id !== id);
-  const host = e.host ?? prev?.host ?? false;
-  list.unshift({ id, url: e.url, room: e.room, roomId: e.roomId ?? prev?.roomId, user: e.user, host, port: chatUrlPort(e.url), secret: host && e.roomId ? undefined : e.secret ?? prev?.secret, lastJoined: Date.now() });
+  const current = chatRecents(ctx);
+  if (e.host) {
+    await ctx.globalState.update(CHAT_RECENTS_KEY, current);
+    _treeProvider?.refresh();
+    return;
+  }
+  const id = chatRoomIdentity(e.url, e.room, e.roomId);
+  const prev = current.find(room => chatRoomIdentity(room.url, room.room, room.roomId) === id);
+  const list = current.filter(room => chatRoomIdentity(room.url, room.room, room.roomId) !== id);
+  list.unshift({ id, url: e.url, room: e.room, roomId: e.roomId ?? prev?.roomId, user: e.user, host: false, port: chatUrlPort(e.url), secret: e.secret ?? prev?.secret, lastJoined: Date.now() });
   await ctx.globalState.update(CHAT_RECENTS_KEY, list.slice(0, 50));
   _treeProvider?.refresh();
 }
 async function forgetChatRecent(ctx: vscode.ExtensionContext, id: string): Promise<void> {
   await ctx.globalState.update(CHAT_RECENTS_KEY, chatRecents(ctx).filter(r => r.id !== id));
   _treeProvider?.refresh();
+}
+
+async function openHostedRoom(context: vscode.ExtensionContext, roomId: string): Promise<void> {
+  const manager = getChatMgr();
+  if (manager.activateRoomById(roomId)) {
+    openChatroomPanel(context);
+    return;
+  }
+  const stored = manager.hostedRoomsForNavigation().find(room => room.roomId === roomId);
+  if (!stored) throw new Error("Hosted Room was not found.");
+  if (!stored.canRehost) throw new Error(stored.unavailableReason || "This Room cannot be Rehosted.");
+  const cfg = vscode.workspace.getConfiguration("personalKnowledge");
+  const started = await manager.startHub(cfg.get<number>("chatHubPort") ?? 7345);
+  if (!started.ok) throw new Error(started.error || "Couldn't start Chat Hub.");
+  const hosted = await manager.rehostRoom(roomId);
+  const url = `ws://127.0.0.1:${manager.hubPort}`;
+  manager.joinRoom({ url, room: hosted.room, roomId: hosted.roomId, user: "Host", token: hosted.secret,
+    cid: getChatCid(context), hostToken: hosted.hostToken });
+  openChatroomPanel(context);
+}
+
+async function promptRenameHostedRoom(room: HostedRoomNavigationItem): Promise<void> {
+  const roomName = await vscode.window.showInputBox({
+    title: room.active ? "Rename Active Room" : "Rename Stored Room",
+    value: room.roomName,
+    prompt: "Room UUID, history, identities, and Join secret remain unchanged.",
+    validateInput: value => value.trim() ? undefined : "Room name is required.",
+  });
+  if (roomName === undefined || roomName.trim() === room.roomName.trim()) return;
+  if (room.active) await getChatMgr().renameActiveRoom(room.roomId, roomName);
+  else await getChatMgr().renameStoredRoom(room.roomId, roomName);
+}
+
+async function confirmAndDeleteStoredRoom(context: vscode.ExtensionContext, roomId: string, roomName: string): Promise<boolean> {
+  const confirmed = await vscode.window.showWarningMessage(
+    `Permanently delete Stored Room "${roomName}" and all of its messages, participants, alias history, and credentials?`,
+    { modal: true }, "Continue",
+  );
+  if (confirmed !== "Continue") return false;
+  const finalConfirmation = await vscode.window.showWarningMessage(
+    `Final confirmation: permanently delete "${roomName}"? This cannot be undone or recovered by Rehost.`,
+    { modal: true }, "Delete Data Permanently",
+  );
+  if (finalConfirmation !== "Delete Data Permanently") return false;
+  await getChatMgr().deleteStoredRoom(roomId);
+  await context.globalState.update(CHAT_RECENTS_KEY, chatRecents(context).filter(room => room.roomId !== roomId));
+  _treeProvider?.refresh();
+  return true;
 }
 /** Set store paths, run the one-time DB→files migration, mark ready, refresh. */
 async function initStore(context: vscode.ExtensionContext, storePath: string): Promise<void> {
@@ -2349,12 +2454,13 @@ async function handleMessage(
     }
 
     case "chatLeave": {
-      getChatMgr().leaveRoom((msg.key || "").toString());
+      await getChatMgr().closeOrLeaveRoom((msg.key || "").toString());
       break;
     }
 
     case "chatSend": {
-      const ok = getChatMgr().send((msg.text || "").toString());
+      const responseRequired = typeof msg.responseRequired === "boolean" ? msg.responseRequired : undefined;
+      const ok = getChatMgr().send((msg.text || "").toString(), responseRequired);
       if (!ok) getChatMgr().push();
       break;
     }
@@ -2509,22 +2615,26 @@ async function handleMessage(
       break;
     }
 
+    case "chatRenameActiveRoom": {
+      const roomId = String(msg.roomId || "");
+      const currentName = String(msg.roomName || "");
+      const roomName = await vscode.window.showInputBox({
+        title: "Rename Active Room",
+        value: currentName,
+        prompt: "Connected members stay in the Room; Room UUID, history, identities, and Join secret remain unchanged.",
+        validateInput: value => value.trim() ? undefined : "Room name is required.",
+      });
+      if (roomName === undefined || roomName.trim() === currentName.trim()) break;
+      try { await getChatMgr().renameActiveRoom(roomId, roomName); }
+      catch (error: any) { vscode.window.showErrorMessage(`Couldn't rename active Room: ${error?.message || error}`); }
+      break;
+    }
+
     case "chatDeleteStoredRoom": {
       const roomId = String(msg.roomId || "");
       const roomName = String(msg.roomName || "");
-      const confirmed = await vscode.window.showWarningMessage(
-        `Permanently delete Stored Room "${roomName}" and all of its messages, participants, alias history, and credentials?`,
-        { modal: true }, "Continue",
-      );
-      if (confirmed !== "Continue") break;
-      const finalConfirmation = await vscode.window.showWarningMessage(
-        `Final confirmation: permanently delete "${roomName}"? This cannot be undone or recovered by Rehost.`,
-        { modal: true }, "Delete Data Permanently",
-      );
-      if (finalConfirmation !== "Delete Data Permanently") break;
       try {
-        await getChatMgr().deleteStoredRoom(roomId);
-        await context.globalState.update(CHAT_RECENTS_KEY, chatRecents(context).filter(room => room.roomId !== roomId));
+        await confirmAndDeleteStoredRoom(context, roomId, roomName);
         respond({ command: "chatRecents", data: { recents: chatRecentsForUi(context) } });
       } catch (error: any) {
         vscode.window.showErrorMessage(`Couldn't delete Room data: ${error?.message || error}`);
@@ -4117,7 +4227,7 @@ async function offerPkmSkillProjectionUpdate(context: vscode.ExtensionContext): 
 // ── Sidebar tree provider ──────────────────────────────────────────────────
 type PkNodeType =
   | 'root-skills' | 'root-notes' | 'root-papers' | 'root-prompts' | 'root-packages' | 'root-scripts' | 'root-chatroom' | 'root-mcp'
-  | 'chat-hosted-group' | 'chat-joined-group' | 'chat-room'
+  | 'chat-hosted-group' | 'chat-joined-group' | 'chat-hosted-room' | 'chat-room'
   | 'skill-folder' | 'skill' | 'note-folder' | 'note' | 'paper-folder' | 'paper'
   | 'prompt-project' | 'prompt-task' | 'prompt-version' | 'prompt-file'
   | 'package' | 'script-folder' | 'script-file';
@@ -4135,7 +4245,7 @@ class PkTreeItem extends vscode.TreeItem {
     const ICONS: Partial<Record<PkNodeType, string>> = {
       "root-skills": "book", "root-notes": "note", "root-papers": "library", "root-prompts": "comment-discussion",
       "root-packages": "package", "root-scripts": "terminal", "root-chatroom": "comment-discussion", "root-mcp": "server-process",
-      "chat-hosted-group": "broadcast", "chat-joined-group": "plug", "chat-room": "comment",
+      "chat-hosted-group": "broadcast", "chat-joined-group": "plug", "chat-hosted-room": "broadcast", "chat-room": "comment",
       "skill-folder": "folder", "note-folder": "folder", "paper-folder": "folder",
       "skill": "symbol-snippet", "note": "file-text", "paper": "file-pdf",
       "prompt-project": "folder", "prompt-task": "symbol-file",
@@ -4202,8 +4312,8 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
         case 'root-scripts':   return this._scriptFolder([]);
         case 'script-folder':  return this._scriptFolder(element.nodeData.path);
         case 'root-chatroom': return this._chatGroups();
-        case 'chat-hosted-group': return this._chatRooms(true);
-        case 'chat-joined-group': return this._chatRooms(false);
+        case 'chat-hosted-group': return this._hostedRooms();
+        case 'chat-joined-group': return this._chatRooms();
       }
     } catch { /* DB/store not ready yet */ }
     return [];
@@ -4211,17 +4321,27 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
 
   private _chatGroups(): PkTreeItem[] {
     const recents = chatRecents(this.context);
-    const hostedCount = recents.filter(room => room.host).length;
-    const hosted = new PkTreeItem("Hosted by Me", "chat-hosted-group", vscode.TreeItemCollapsibleState.Collapsed);
-    const joined = new PkTreeItem("Joined", "chat-joined-group", vscode.TreeItemCollapsibleState.Collapsed);
-    hosted.description = String(hostedCount);
-    joined.description = String(recents.length - hostedCount);
+    const hostedRooms = getChatMgr().hostedRoomsForNavigation();
+    const hosted = new PkTreeItem("Hosted Rooms", "chat-hosted-group", vscode.TreeItemCollapsibleState.Collapsed);
+    const joined = new PkTreeItem("Recent Joined Rooms", "chat-joined-group", vscode.TreeItemCollapsibleState.Collapsed);
+    hosted.description = String(hostedRooms.length);
+    joined.description = String(recents.length);
     return [hosted, joined];
   }
 
-  private _chatRooms(hosted: boolean): PkTreeItem[] {
+  private _hostedRooms(): PkTreeItem[] {
+    return getChatMgr().hostedRoomsForNavigation().map(room => {
+      const item = new PkTreeItem(room.roomName, "chat-hosted-room", vscode.TreeItemCollapsibleState.None, room);
+      item.contextValue = room.active ? "pk-chat-hosted-room-active" : "pk-chat-hosted-room-stored";
+      item.description = room.active ? "active" : room.canRehost ? "stored" : "unavailable";
+      item.tooltip = room.active ? "Active hosted Room" : room.unavailableReason || "Stored Room · click to Rehost";
+      item.command = { command: "personalKnowledge.openHostedRoomItem", title: room.active ? "Open Room" : "Rehost Room", arguments: [room.roomId] };
+      return item;
+    });
+  }
+
+  private _chatRooms(): PkTreeItem[] {
     return chatRecents(this.context)
-      .filter(room => room.host === hosted)
       .sort((left, right) => right.lastJoined - left.lastJoined)
       .map(room => {
         const item = new PkTreeItem(room.room, "chat-room", vscode.TreeItemCollapsibleState.None, { id: room.id });
@@ -4579,6 +4699,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   log.init(context);
   log.info(`activating extension v${context.extension?.packageJSON?.version ?? "?"}`);
   chatCtx = context;
+  await migrateChatRecents(context);
   const applyChatArchiveCfg = () => {
     const c = vscode.workspace.getConfiguration("personalKnowledge");
     const mb = Math.max(0, c.get<number>("chatHistoryLimitMB") ?? 10);
@@ -4865,6 +4986,34 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       log.action("command.openChatroom");
       openChatroomPanel(context);
       await closeNavigationSidebar();
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.openHostedRoomItem", async (itemOrRoomId: PkTreeItem | string) => {
+      const roomId = typeof itemOrRoomId === "string" ? itemOrRoomId : String(itemOrRoomId?.nodeData?.roomId || "");
+      if (!roomId) return;
+      try { await openHostedRoom(context, roomId); }
+      catch (error: any) { vscode.window.showErrorMessage(`Couldn't open Hosted Room: ${error?.message || error}`); }
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.renameHostedRoom", async (item: PkTreeItem) => {
+      const room = item?.nodeData as HostedRoomNavigationItem;
+      if (!room?.roomId) return;
+      try { await promptRenameHostedRoom(room); }
+      catch (error: any) { vscode.window.showErrorMessage(`Couldn't rename Room: ${error?.message || error}`); }
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.closeHostedRoom", async (item: PkTreeItem) => {
+      const room = item?.nodeData as HostedRoomNavigationItem;
+      if (!room?.roomId || !room.active) return;
+      try { await getChatMgr().closeHostedRoomById(room.roomId); }
+      catch (error: any) { vscode.window.showErrorMessage(`Couldn't close Room: ${error?.message || error}`); }
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.deleteHostedRoom", async (item: PkTreeItem) => {
+      const room = item?.nodeData as HostedRoomNavigationItem;
+      if (!room?.roomId || room.active) return;
+      try { await confirmAndDeleteStoredRoom(context, room.roomId, room.roomName); }
+      catch (error: any) { vscode.window.showErrorMessage(`Couldn't delete Room: ${error?.message || error}`); }
     }),
 
     vscode.commands.registerCommand("personalKnowledge.openChatRoomItem", async (id: string) => {

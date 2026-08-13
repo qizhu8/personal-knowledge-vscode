@@ -15,15 +15,17 @@ export type Frame =
   | { t: "join.ready"; room: string }
   | { t: "leave";      room: string }
   | { t: "presence";   room: string; members: Member[] }
-  | { t: "msg";        id?: string; room: string; from: string; fromId?: string; text: string; ts?: number; kind?: MemberKind; receipt?: ReadReceipt }
+  | { t: "msg";        id?: string; room: string; from: string; fromId?: string; text: string; ts?: number; kind?: MemberKind; receipt?: ReadReceipt; responseRequired?: boolean }
   | { t: "msg.read";   room: string; messageId: string; read?: number; total?: number }
   | { t: "system";     room: string; text: string; ts: number }
   | { t: "agent.state"; room: string; user?: string; state: AgentRuntimeState; ts?: number }
   | { t: "history";    room: string; mode: "baseline" | "catchup"; messages: ChatMessage[] }
   | { t: "closed";     room: string; reason: string }
+  | { t: "stopped";    room: string; reason: string; scope: "chatroom" }
   | { t: "admin";      room: string; action: "kick" | "mute" | "unmute" | "rename" | "edit"; target: string; name?: string; role?: string }
   | { t: "kicked";     room: string; reason: string }
   | { t: "renamed";    room: string; name: string }
+  | { t: "room.renamed"; room: string; previousRoom: string }
   | { t: "rekey";      room: string; secret: string }
   | { t: "file.offer"; id?: string; room: string; from: string; fromId?: string; ts?: number; kind?: MemberKind; file: FileMeta }
   | { t: "file.chunk"; room: string; fileId: string; seq: number; data: string; last: boolean }
@@ -57,6 +59,7 @@ export interface ChatMessage {
   system?: boolean;
   file?:   FileMeta;   // present when this line announces a shared file
   receipt?: ReadReceipt;
+  responseRequired?: boolean;
 }
 
 export interface ReadReceipt {

@@ -107,30 +107,10 @@ export const CHAT_COMMANDS: ChatCommand[] = [
     },
   },
   {
-    name: "start_conversation",
-    summary: "Put named agents into continuous standby — /start_conversation @A @B or @all; then state the topic and /start",
-    run: () => "Conversation prepared. Named agents must keep watching until /stop_conversation or /release. State the topic, then use /start.",
-  },
-  {
-    name: "start",
-    summary: "Initiator: begin the prepared discussion after stating the topic",
-    run: () => "Starting the prepared discussion.",
-  },
-  {
-    name: "stop_conversation",
-    summary: "Stop the conversation and release all agents from continuous standby",
+    name: "stop",
+    summary: "Stop and disconnect online agents without removing their Room identity — /stop @agent or @all",
     hostOnly: true,
-    run: () => "Stopping the current conversation.",
-  },
-  {
-    name: "release",
-    summary: "Drop one party from the conversation — /release @who",
-    run: () => "Releasing the named party from the conversation.",
-  },
-  {
-    name: "request_join",
-    summary: "Invite an online member into this discussion — /request_join @alias",
-    run: () => "Requesting that the named member join the discussion.",
+    run: () => "Stopping the named online agent(s).",
   },
   {
     name: "mute_all",

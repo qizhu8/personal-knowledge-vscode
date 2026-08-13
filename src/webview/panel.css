@@ -445,9 +445,9 @@ body.chat-resizing{cursor:col-resize;user-select:none}
 #chat-input:disabled{opacity:.5}
 #chat-at-btn{font-weight:700}
 #chat-at-btn:disabled{opacity:.5}
+.chat-reply-toggle{display:flex;align-items:center;gap:4px;white-space:nowrap;font-size:11px;color:var(--muted)}
 #chat-input-wrap{flex:1;position:relative;display:flex}
-#chat-default-recipient{position:absolute;left:10px;top:8px;z-index:1;color:var(--muted);opacity:.62;font-size:12px;pointer-events:none;user-select:none}
-#chat-default-recipient:not(.hidden)+#chat-input{padding-left:38px}
+#chat-default-recipient{position:absolute;left:10px;top:8px;z-index:1;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);opacity:.62;font-size:12px;pointer-events:none;user-select:none}
 #chat-default-recipient.hidden{display:none}
 #chat-mention-pop{position:absolute;left:0;bottom:calc(100% + 4px);z-index:40;min-width:190px;max-width:290px;
   max-height:210px;overflow-y:auto;background:var(--panel);border:1px solid var(--border);border-radius:8px;

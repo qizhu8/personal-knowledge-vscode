@@ -70,10 +70,7 @@ export function browserViewHtml(): string {
   var browserCommands=[
     {cmd:"/help",args:"",desc:"List room commands"},
     {cmd:"/whois",args:" ",desc:"Show details about a member"},
-    {cmd:"/start_conversation",args:" ",desc:"Prepare free talk with @agents or @all"},
-    {cmd:"/start",args:"",desc:"Begin a conversation you prepared"},
-    {cmd:"/release",args:" ",desc:"Leave one participant out of the conversation"},
-    {cmd:"/request_join",args:" ",desc:"Invite an online member into the discussion"}
+    {cmd:"/stop",args:" ",desc:"Host: disconnect an online agent without removing its identity"}
   ];
   var cid=(function(){ try{ var k="pkm-chat-cid"; var v=localStorage.getItem(k); if(!v){ v=Math.random().toString(36).slice(2,10); localStorage.setItem(k,v); } return v; }catch(e){ return Math.random().toString(36).slice(2,10); } })();
   function esc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
@@ -174,6 +171,7 @@ export function browserViewHtml(): string {
     if(f.t==="closed"){ append({system:true,text:"Room closed ("+f.reason+")."}); setStatus("room closed","err"); if(ws){try{ws.close();}catch(e){}} return; }
     if(f.t==="kicked"){ append({system:true,text:f.reason||"You were removed by the host."}); setStatus("removed by host","err"); if(ws){try{ws.close();}catch(e){}} return; }
     if(f.t==="renamed"){ me=f.name; append({system:true,text:'The host renamed you to "'+f.name+'".'}); return; }
+    if(f.t==="room.renamed"){ ROOM=f.room; append({system:true,text:'Room renamed to "'+f.room+'".'}); return; }
     if(f.t==="presence"){ paintMembers(f.members); return; }
     if(f.t==="history"){
       var msgs=f.messages||[];
@@ -226,6 +224,13 @@ export function browserViewHtml(): string {
   }
   function sendMsg(){
     var inp=document.getElementById("input"); var v=inp.value.trim(); if(!v||!ws) return;
+    if(v.charAt(0)!=="/"&&!/^@(?:"[^"]{1,60}"|[\w\-]{1,60})(?:\s+|$)/u.test(v)){
+      var selfMember=roster.filter(function(member){return member.user===me&&member.present!==false;})[0];
+      var host=roster.filter(function(member){return member.host&&member.present!==false;})[0];
+      var recipient=selfMember&&selfMember.host?"all":host?host.user:"all";
+      var quoted=recipient!=="all"&&/[^A-Za-z0-9_\-]/.test(recipient);
+      v=(quoted?'@"'+recipient.replace(/"/g,'')+'"':'@'+recipient)+" "+v;
+    }
     ws.send(JSON.stringify({t:"msg",room:ROOM,from:me,text:v,kind:"browser"}));
     inp.value=""; hideSuggest();
   }

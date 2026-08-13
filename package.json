@@ -67,6 +67,26 @@
         "icon": "$(comment-discussion)"
       },
       {
+        "command": "personalKnowledge.openHostedRoomItem",
+        "title": "Open / Rehost Room",
+        "icon": "$(debug-start)"
+      },
+      {
+        "command": "personalKnowledge.renameHostedRoom",
+        "title": "Rename Room…",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "personalKnowledge.closeHostedRoom",
+        "title": "Close Room",
+        "icon": "$(close)"
+      },
+      {
+        "command": "personalKnowledge.deleteHostedRoom",
+        "title": "Delete Room Data…",
+        "icon": "$(trash)"
+      },
+      {
         "command": "personalKnowledge.refreshTree",
         "title": "Personal Knowledge Manager: Refresh",
         "icon": "$(refresh)"
@@ -198,6 +218,26 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "personalKnowledge.openHostedRoomItem",
+          "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-chat-hosted-room-(active|stored)/",
+          "group": "1_room@0"
+        },
+        {
+          "command": "personalKnowledge.renameHostedRoom",
+          "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-chat-hosted-room-(active|stored)/",
+          "group": "1_room@1"
+        },
+        {
+          "command": "personalKnowledge.closeHostedRoom",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-chat-hosted-room-active",
+          "group": "1_room@2"
+        },
+        {
+          "command": "personalKnowledge.deleteHostedRoom",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-chat-hosted-room-stored",
+          "group": "2_danger@1"
+        },
         {
           "command": "personalKnowledge.addSkillHere",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-skills-container",
@@ -429,6 +469,9 @@
     "test:chat-hub-approval": "npm run build && node scripts/test-chat-hub-approval.js",
     "test:chat-join-approval-ui": "npm run build && node scripts/test-chat-join-approval-ui.js",
     "test:chat-moderation-ui": "npm run build && node scripts/test-chat-moderation-ui.js",
+    "test:chat-mention-highlight-ui": "npm run build && node scripts/test-chat-mention-highlight-ui.js",
+    "test:chat-room-identity": "npm run build && node scripts/test-chat-room-identity.js",
+    "test:chat-default-recipient-ui": "npm run build && node scripts/test-chat-default-recipient-ui.js",
     "test:chat-magic-link": "npm run build && node scripts/test-chat-magic-link.js",
     "test:chat-mcp-approval": "npm run build && node scripts/test-chat-mcp-approval.js",
     "test:chat-packaged-worker": "npm run build && node scripts/test-chat-packaged-worker.js",

@@ -50,19 +50,7 @@ interface RoomState {
   graceTimer: NodeJS.Timeout | null;  // pending owner-departure deactivation
   roster: Map<string, RosterEntry>;   // everyone who has ever joined (present + departed)
   muted: Set<string>;                 // identity keys the host has muted (persists across reconnects)
-  conversation: ConversationState;
   receipts: Map<string, { targets: Set<string>; readers: Set<string> }>;
-}
-
-interface ConversationState {
-  active: boolean;
-  pending: boolean;
-  initiatorKey: string;
-  initiatorName: string;
-  participants: string[];
-  currentSpeaker: string;
-  nextIndex: number;
-  turns: number;
 }
 
 // One identity's lifetime in a room. Keyed by a stable identity (cid) when the
@@ -179,6 +167,33 @@ export class ChatHub {
   }
   async adminCloseRoom(room: string): Promise<void> { await this.deactivateRoom(room, "closed by admin"); }
   async adminCloseAll(): Promise<void> { for (const room of [...this.rooms.keys()]) await this.deactivateRoom(room, "closed by admin"); }
+
+  async renameActiveRoom(roomId: string, roomName: string): Promise<string> {
+    await this.ensurePersistence();
+    if (!this.lifecycle) throw new Error("Room lifecycle is unavailable.");
+    const current = [...this.rooms.entries()].find(([, state]) => state.roomId === roomId);
+    if (!current) throw new Error(`Active Room ${roomId} was not found.`);
+    const [previousRoom, state] = current;
+    const nextRoom = ChatHub.canonRoom(roomName);
+    if (nextRoom !== previousRoom && this.rooms.has(nextRoom)) throw new Error(`An active Room named "${nextRoom}" already exists.`);
+    await this.lifecycle.renameActiveRoom(roomId, nextRoom);
+    if (nextRoom === previousRoom) return nextRoom;
+    this.rooms.delete(previousRoom);
+    this.rooms.set(nextRoom, state);
+    const secret = this.roomSecret.get(previousRoom);
+    const hostToken = this.hostTokens.get(previousRoom);
+    this.roomSecret.delete(previousRoom);
+    this.hostTokens.delete(previousRoom);
+    if (secret) this.roomSecret.set(nextRoom, secret);
+    if (hostToken) this.hostTokens.set(nextRoom, hostToken);
+    const members = [...this.conns.values()].filter(conn => conn.joined && conn.room === previousRoom);
+    for (const conn of members) {
+      conn.room = nextRoom;
+      this.sendTo(conn.ws, { t: "room.renamed", room: nextRoom, previousRoom });
+    }
+    this.log(`room ${previousRoom} renamed to ${nextRoom}`);
+    return nextRoom;
+  }
 
   async listStoredRooms(): Promise<StoredChatRoom[]> {
     await this.ensurePersistence();
@@ -312,7 +327,6 @@ export class ChatHub {
     const state: RoomState = {
       roomId: active.roomId, history: active.messages.map(message => this.fromPersisted(message)),
       owner: active.hostParticipantId || "", ownerName, graceTimer: null, roster, muted: new Set(),
-      conversation: { active: false, pending: false, initiatorKey: "", initiatorName: "", participants: [], currentSpeaker: "", nextIndex: 0, turns: 0 },
       receipts: new Map(),
     };
     this.rooms.set(room, state);
@@ -372,7 +386,6 @@ export class ChatHub {
       s = {
         roomId: randomUUID(), history: [], owner: "", ownerName: "", graceTimer: null,
         roster: new Map(), muted: new Set(),
-        conversation: { active: false, pending: false, initiatorKey: "", initiatorName: "", participants: [], currentSpeaker: "", nextIndex: 0, turns: 0 },
         receipts: new Map(),
       };
       this.rooms.set(room, s);
@@ -405,7 +418,6 @@ export class ChatHub {
     const state: RoomState = {
       roomId, history, owner: "", ownerName: "", graceTimer: null,
       roster: new Map(), muted: new Set(),
-      conversation: { active: false, pending: false, initiatorKey: "", initiatorName: "", participants: [], currentSpeaker: "", nextIndex: 0, turns: 0 },
       receipts: new Map(),
     };
     this.rooms.set(room, state);
@@ -424,7 +436,7 @@ export class ChatHub {
       id: message.id, participantId: message.fromId || undefined,
       aliasAtSend: message.from || "system", senderKind: message.kind,
       messageType: message.system ? "system" : message.file ? "file" : "chat",
-      content: message.text, metadata: { system: message.system, file: message.file, receipt: message.receipt },
+      content: message.text, metadata: { system: message.system, file: message.file, receipt: message.receipt, responseRequired: message.responseRequired },
       createdAt: message.ts,
     };
   }
@@ -433,7 +445,7 @@ export class ChatHub {
     const metadata = (message.metadata || {}) as any;
     return { id: message.id, from: message.aliasAtSend, fromId: message.participantId || "", text: message.content,
       ts: message.createdAt, kind: message.senderKind as MemberKind, system: !!metadata.system,
-      file: metadata.file, receipt: metadata.receipt };
+      file: metadata.file, receipt: metadata.receipt, responseRequired: metadata.responseRequired };
   }
 
   // ── Persistent chat archive ───────────────────────────────────────────────
@@ -599,33 +611,24 @@ export class ChatHub {
     if (frame.t === "msg") {
       const text = (frame.text ?? "").toString().slice(0, 8000);
       if (!text.trim()) return;
-      // Slash commands are intercepted (never broadcast) and answered privately by
-      // the background sender — EXCEPT conversation-control commands, which must
-      // reach every participant, so they fall through and broadcast like a post.
+      // Slash commands are intercepted and answered privately. /leave remains a
+      // visible Room event; /stop is handled above as a structured lifecycle action.
       const head = text.trim().split(/\s+/)[0].toLowerCase();
-      const isConvCmd = head === "/start_conversation" || head === "/start" || head === "/stop_conversation" || head === "/release" || head === "/request_join" || head === "/leave";
-      if (text.trim().startsWith("/") && !isConvCmd) { await this.handleCommand(conn, text.trim()); return; }
-      if (!text.trim().startsWith("/") && !this.conversationMentions(text).length) {
+      if (head === "/stop") { await this.stopAgentConnections(conn, text); return; }
+      if (text.trim().startsWith("/") && head !== "/leave") { await this.handleCommand(conn, text.trim()); return; }
+      if (!text.trim().startsWith("/") && !this.leadingMentionNames(text).length) {
         this.sendTo(conn.ws, { t: "error", code: "mention-required", msg: "Every Chatroom message must address @all or a specific @participant." });
         return;
       }
       if (this.isMuted(conn)) { this.sendTo(conn.ws, { t: "error", code: "muted", msg: "You are muted by the host and can't post right now." }); return; }
       const roomState = this.roomState(conn.room);
-      if (head === "/start") {
-        const conversation = roomState.conversation;
-        if (!conversation.pending) { this.botReply(conn, "No conversation is pending. Use /start_conversation first."); return; }
-        if (conversation.initiatorKey !== this.identityKey(conn)) {
-          this.botReply(conn, `Only ${conversation.initiatorName}, who initiated this conversation, can start it.`);
-          return;
-        }
-      }
-      if (head === "/stop_conversation" && !this.isOwnerConn(roomState, conn)) {
-        this.botReply(conn, "Only the room host can stop the active conversation.");
-        return;
-      }
+      const recipientNames = this.leadingMentionNames(text).map(name => name.toLowerCase());
       const m: ChatMessage = {
         id: randomBytes(6).toString("hex"), from: conn.user, fromId: conn.participantId,
         text, ts: Date.now(), kind: conn.kind,
+        responseRequired: typeof frame.responseRequired === "boolean"
+          ? frame.responseRequired
+          : recipientNames.some(name => name !== "all" && name !== "everyone"),
       };
       const targets = this.mentionTargets(conn.room, conn, text);
       if (targets.size) {
@@ -635,14 +638,7 @@ export class ChatHub {
       await this.remember(conn.room, m);
       if (targets.size) this.broadcastReceiptMessage(conn.room, m, targets);
       else this.broadcast(conn.room, { t: "msg", room: conn.room, ...m });
-      if (head === "/start_conversation") await this.prepareConversation(conn, text);
-      else if (head === "/start") await this.activateConversation(conn);
-      else if (head === "/stop_conversation") await this.stopConversation(conn.room);
-      else if (head === "/release") await this.releaseConversationMembers(conn.room, text);
-      else if (head === "/request_join") await this.requestConversationJoin(conn.room, text);
-      else if (head === "/leave") await this.leaveConnection(conn);
-      else if (roomState.conversation.pending) await this.remindConversationStart(conn.room);
-      else await this.coordinateConversationTurn(conn.room, conn);
+      if (head === "/leave") await this.leaveConnection(conn);
       return;
     }
 
@@ -747,6 +743,33 @@ export class ChatHub {
     }
   }
 
+  private async stopAgentConnections(requester: HubConn, text: string): Promise<void> {
+    const state = this.rooms.get(requester.room);
+    if (!state || !this.isOwnerConn(state, requester)) {
+      this.botReply(requester, "Only the room host can stop agents.");
+      return;
+    }
+    const requested = this.leadingMentionNames(text).map(name => name.toLowerCase());
+    const stopAll = requested.some(name => name === "all" || name === "everyone");
+    const targets = [...this.conns.values()].filter(conn =>
+      conn.joined && conn.room === requester.room && conn.kind === "agent" &&
+      (stopAll || requested.includes(conn.user.toLowerCase())));
+    if (!requested.length) {
+      this.botReply(requester, "Usage: /stop @agent or /stop @all");
+      return;
+    }
+    if (!targets.length) {
+      this.botReply(requester, "No matching online agents were found.");
+      return;
+    }
+    const names = [...new Set(targets.map(target => target.user))];
+    for (const target of targets) {
+      this.sendTo(target.ws, { t: "stopped", room: requester.room, reason: "Stopped by the room host.", scope: "chatroom" });
+      try { target.ws.close(); } catch { /* ignore */ }
+    }
+    this.botReply(requester, `Stopped: ${names.map(name => this.formatMention(name)).join(", ")}. Their Room identities remain in Earlier.`);
+  }
+
   private async onClose(conn: HubConn): Promise<void> {
     this.conns.delete(conn.ws);
     if (conn.pendingJoinId) {
@@ -818,7 +841,7 @@ export class ChatHub {
     return !!st && st.muted.has(this.identityKey(conn));
   }
 
-  private conversationMentions(text: string): string[] {
+  private leadingMentionNames(text: string): string[] {
     const value = text.trimStart();
     if (value.startsWith("/")) {
       return (value.match(/@(?:"[^"]{1,60}"|[\p{L}\p{N}_][\p{L}\p{N}_-]{0,59})/gu) || [])
@@ -837,7 +860,7 @@ export class ChatHub {
   }
 
   private mentionTargets(room: string, sender: HubConn, text: string): Set<string> {
-    const mentions = this.conversationMentions(text).map(name => name.toLowerCase());
+    const mentions = this.leadingMentionNames(text).map(name => name.toLowerCase());
     if (!mentions.length) return new Set();
     const all = mentions.some(name => name === "all" || name === "everyone");
     const senderKey = this.identityKey(sender);
@@ -859,204 +882,6 @@ export class ChatHub {
 
   private formatMention(name: string): string {
     return /^[A-Za-z0-9_][\w-]{0,59}$/.test(name) ? `@${name}` : `@"${name.replace(/"/g, "")}"`;
-  }
-
-  private onlineAgentNames(room: string): string[] {
-    return [...this.conns.values()]
-      .filter(conn => conn.joined && conn.room === room && conn.kind === "agent")
-      .map(conn => conn.user)
-      .filter((name, index, all) => all.findIndex(other => other.toLowerCase() === name.toLowerCase()) === index);
-  }
-
-  private async postCoordinatorMessage(room: string, text: string): Promise<void> {
-    const message: ChatMessage = {
-      id: randomBytes(6).toString("hex"), from: BOT_NAME, fromId: "roombot",
-      text, ts: Date.now(), kind: "agent",
-    };
-    await this.remember(room, message);
-    this.broadcast(room, { t: "msg", room, ...message });
-  }
-
-  private async informConversationGuideline(room: string, agentNames: string[]): Promise<void> {
-    const wanted = new Set(agentNames.map(name => name.toLowerCase()));
-    const sent = new Set<string>();
-    for (const conn of this.conns.values()) {
-      if (!conn.joined || conn.room !== room || conn.kind !== "agent" || !wanted.has(conn.user.toLowerCase())) continue;
-      const identity = this.identityKey(conn);
-      if (sent.has(identity)) continue;
-      sent.add(identity);
-      const message: ChatMessage = {
-        id: randomBytes(6).toString("hex"), from: BOT_NAME, fromId: "roombot",
-        text: [
-          `PRIVATE AGENT GUIDELINE for ${this.formatMention(conn.user)}: you are participating in a coordinated conversation.`,
-          `Call chat_standby(timeout=300, name=${JSON.stringify(conn.user)}) now. Do not use chat_read for conversation monitoring.`,
-          `When chat_standby returns event="message", reply with chat_post(text=..., name=${JSON.stringify(conn.user)}), then immediately call chat_standby with the same name again.`,
-          `When it returns event="timeout", immediately call chat_standby(name=${JSON.stringify(conn.user)}) again without ending your agent turn.`,
-          `Continue until event="stopped" after /stop_conversation or event="released" after /release.`,
-        ].join("\n"),
-        ts: Date.now(), kind: "agent",
-      };
-      this.sendTo(conn.ws, { t: "msg", room, ...message });
-    }
-    await this.postCoordinatorMessage(room, "ℹ️ Conversation guideline sent to participating agents.");
-  }
-
-  private async prepareConversation(initiator: HubConn, startText: string): Promise<void> {
-    const room = initiator.room;
-    const state = this.roomState(room).conversation;
-    const online = this.onlineAgentNames(room);
-    const requested = this.conversationMentions(startText);
-    const allRequested = requested.some(name => ["all", "everyone"].includes(name.toLowerCase()));
-    const selected = (allRequested || requested.length === 0)
-      ? online
-      : online.filter(agent => requested.some(name => name.toLowerCase() === agent.toLowerCase()));
-    const participants = initiator.kind === "agent" && !selected.some(name => name.toLowerCase() === initiator.user.toLowerCase())
-      ? [initiator.user, ...selected]
-      : selected;
-    state.active = false;
-    state.pending = participants.length > 0;
-    state.initiatorKey = this.identityKey(initiator);
-    state.initiatorName = initiator.user;
-    state.participants = participants;
-    state.currentSpeaker = "";
-    const initiatorIndex = participants.findIndex(name => name.toLowerCase() === initiator.user.toLowerCase());
-    state.nextIndex = initiatorIndex >= 0 ? (initiatorIndex + 1) % participants.length : 0;
-    state.turns = 0;
-    if (!participants.length) {
-      await this.postCoordinatorMessage(room, "No online agents matched this conversation. Join agents first, then use /start_conversation @all or @name.");
-      return;
-    }
-    const who = participants.map(name => this.formatMention(name)).join(", ");
-    await this.postCoordinatorMessage(room, [
-      `🛎️ Conversation prepared — pending agents: ${who}.`,
-      `${this.formatMention(initiator.user)}, please state your topic, then use /start to begin turn rotation.`,
-    ].join("\n"));
-    await this.informConversationGuideline(room, participants);
-  }
-
-  private async activateConversation(initiator: HubConn): Promise<void> {
-    const state = this.roomState(initiator.room).conversation;
-    if (!state.pending) {
-      this.botReply(initiator, "No conversation is pending. Use /start_conversation @agents or @all first.");
-      return;
-    }
-    if (state.initiatorKey !== this.identityKey(initiator)) {
-      this.botReply(initiator, `Only ${state.initiatorName}, who initiated this conversation, can start it.`);
-      return;
-    }
-    state.pending = false;
-    state.active = true;
-    const who = state.participants.map(name => this.formatMention(name)).join(", ");
-    await this.postCoordinatorMessage(initiator.room, [
-      `🛎️ Conversation started — active agents: ${who}.`,
-      `Directed @mentions respond immediately; undirected free talk rotates one participant at a time.`,
-      `The host ends the discussion with /stop_conversation.`,
-    ].join("\n"));
-    if (initiator.kind === "agent") await this.postTurnGrant(initiator.room, initiator.user);
-    else await this.grantNextConversationTurn(initiator.room, initiator.user);
-  }
-
-  private async remindConversationStart(room: string): Promise<void> {
-    await this.postCoordinatorMessage(room, "Please say /start when you want to start the discussion.");
-  }
-
-  private async stopConversation(room: string): Promise<void> {
-    const state = this.roomState(room).conversation;
-    if (!state.active) return;
-    state.active = false;
-    state.pending = false;
-    state.initiatorKey = "";
-    state.initiatorName = "";
-    state.participants = [];
-    state.currentSpeaker = "";
-    state.nextIndex = 0;
-    await this.postCoordinatorMessage(room, "⏹ Conversation stopped. All agents may leave standby.");
-  }
-
-  private async releaseConversationMembers(room: string, text: string): Promise<void> {
-    const state = this.roomState(room).conversation;
-    if (!state.active && !state.pending) return;
-    const released = new Set(this.conversationMentions(text).map(name => name.toLowerCase()));
-    state.participants = state.participants.filter(name => !released.has(name.toLowerCase()));
-    const releasedCurrent = released.has(state.currentSpeaker.toLowerCase());
-    if (releasedCurrent) state.currentSpeaker = "";
-    state.nextIndex = state.participants.length ? state.nextIndex % state.participants.length : 0;
-    if (!state.participants.length) {
-      await this.stopConversation(room);
-      return;
-    }
-    await this.postCoordinatorMessage(room, `Released: ${[...released].map(name => this.formatMention(name)).join(", ")}. Remaining: ${state.participants.map(name => this.formatMention(name)).join(", ")}.`);
-    if (releasedCurrent && state.active) await this.grantNextConversationTurn(room, "");
-  }
-
-  private async requestConversationJoin(room: string, text: string): Promise<void> {
-    const state = this.roomState(room).conversation;
-    if (!state.active && !state.pending) {
-      await this.postCoordinatorMessage(room, "No conversation is pending or active. Use /start_conversation first.");
-      return;
-    }
-    const requested = this.conversationMentions(text);
-    if (!requested.length) {
-      await this.postCoordinatorMessage(room, "Usage: /request_join @alias");
-      return;
-    }
-    const present = this.rosterOf(room).filter(member => member.present !== false);
-    const added: string[] = [], missing: string[] = [], already: string[] = [];
-    for (const alias of requested) {
-      const member = present.find(candidate => candidate.user.toLowerCase() === alias.toLowerCase());
-      if (!member) { missing.push(alias); continue; }
-      if (state.participants.some(name => name.toLowerCase() === member.user.toLowerCase())) { already.push(member.user); continue; }
-      state.participants.push(member.user);
-      added.push(member.user);
-    }
-    const lines: string[] = [];
-    if (added.length) lines.push(`Joined the conversation: ${added.map(name => this.formatMention(name)).join(", ")}.`);
-    if (already.length) lines.push(`Already participating: ${already.map(name => this.formatMention(name)).join(", ")}.`);
-    if (missing.length) lines.push(`Not online: ${missing.map(name => this.formatMention(name)).join(", ")}.`);
-    await this.postCoordinatorMessage(room, lines.join(" "));
-    if (added.length) await this.informConversationGuideline(room, added);
-  }
-
-  private async coordinateConversationTurn(room: string, sender: HubConn): Promise<void> {
-    const state = this.roomState(room).conversation;
-    if (!state.active || sender.kind !== "agent" || !state.currentSpeaker) return;
-    if (sender.user.toLowerCase() !== state.currentSpeaker.toLowerCase()) return;
-    state.currentSpeaker = "";
-    await this.grantNextConversationTurn(room, sender.user);
-  }
-
-  private async grantNextConversationTurn(room: string, sender: string): Promise<void> {
-    const state = this.roomState(room).conversation;
-    if (!state.active) return;
-    const online = new Set(this.onlineAgentNames(room).map(name => name.toLowerCase()));
-    let selectedIndex = -1;
-    for (let offset = 0; offset < state.participants.length; offset++) {
-      const index = (state.nextIndex + offset) % state.participants.length;
-      const candidate = state.participants[index];
-      if (online.has(candidate.toLowerCase()) && candidate.toLowerCase() !== sender.toLowerCase()) {
-        selectedIndex = index;
-        break;
-      }
-    }
-    if (selectedIndex < 0) return;
-    const next = state.participants[selectedIndex];
-    state.currentSpeaker = next;
-    state.nextIndex = (selectedIndex + 1) % state.participants.length;
-    state.turns++;
-    await this.postTurnGrant(room, next);
-  }
-
-  private async postTurnGrant(room: string, name: string): Promise<void> {
-    const wanted = name.toLowerCase();
-    for (const conn of this.conns.values()) {
-      if (!conn.joined || conn.room !== room || conn.kind !== "agent" || conn.user.toLowerCase() !== wanted) continue;
-      this.sendTo(conn.ws, {
-        t: "msg", room, id: randomBytes(6).toString("hex"),
-        from: BOT_NAME, fromId: "roombot",
-        text: `🎙️ ${this.formatMention(name)}, your turn. Respond to the latest free-talk message, then return to standby.`,
-        ts: Date.now(), kind: "agent",
-      });
-    }
   }
 
   // Answer a slash command privately (only the requester sees the bot reply).
@@ -1193,16 +1018,12 @@ export class ChatHub {
         }
         st.muted.delete(targetKey);
         st.roster.delete(targetKey);
-        st.conversation.participants = st.conversation.participants.filter(name => name.toLowerCase() !== who.toLowerCase());
-        const removedCurrent = st.conversation.currentSpeaker.toLowerCase() === who.toLowerCase();
-        if (removedCurrent) st.conversation.currentSpeaker = "";
         this.broadcast(conn.room, { t: "system", room: conn.room, text: `${who} was permanently removed by the host`, ts: Date.now() });
         // Rotate the room secret so the removed member can't immediately rejoin
         // with the secret they already had. Existing members stay connected (the
         // secret is only checked at join); only NEW joins need the fresh secret.
         await this.rotateSecretInternal(conn.room, `🔑 Room secret was rotated after removing ${who}. New members need the new secret.`);
         this.broadcastPresence(conn.room);
-        if (removedCurrent && st.conversation.active) await this.grantNextConversationTurn(conn.room, "");
         this.log(`admin kick room=${conn.room} target=${who} (secret rotated)`);
         break;
       }
@@ -1274,8 +1095,6 @@ export class ChatHub {
         st.roster.set(newKey, entry);
         if (wasMuted) st.muted.add(newKey);
         if (entry.participantId === st.owner) st.ownerName = newName;
-        st.conversation.participants = st.conversation.participants.map(name => name.toLowerCase() === oldName.toLowerCase() ? newName : name);
-        if (st.conversation.currentSpeaker.toLowerCase() === oldName.toLowerCase()) st.conversation.currentSpeaker = newName;
         this.broadcastPresence(conn.room);
         this.log(`admin edit room=${conn.room} ${oldName} -> ${newName} role=${newRole}`);
         break;

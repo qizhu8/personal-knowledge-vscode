@@ -21,6 +21,9 @@ result = {"ok": ok, "error": error, "elapsed": time.monotonic() - started,
 if ok and mode in ("standby", "stop", "history", "inactive-stop", "closed"):
     event = bridge.standby(1 if mode in ("history", "inactive-stop") else 5)
     result["standby_event"] = event.get("event")
+    result["standby_scope"] = event.get("scope")
+    result["response_required"] = event.get("response_required")
+    result["required_response_event_ids"] = event.get("required_response_event_ids")
     if mode == "standby" and event.get("event") == "message":
         bridge.send_state("sending")
         result["post_ok"] = bridge.send_text("directed response")[0]

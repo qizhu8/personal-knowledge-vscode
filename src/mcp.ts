@@ -8,9 +8,9 @@ import { condaEnvs, pyenvAdd, pyenvCreate, pyenvDelete, pyenvList, pyenvUpdate }
 import { managedEnvironmentsRoot } from "./environment-paths";
 
 // ── MCP server scaffold ────────────────────────────────────────────────────
-export const UNIFIED_MCP_VERSION = "2.2.3";
+export const UNIFIED_MCP_VERSION = "2.4.0";
 const KNOWLEDGE_MCP_VERSION = "1.0.0";
-const CHAT_MCP_VERSION = "2.0.11";
+const CHAT_MCP_VERSION = "2.2.0";
 
 interface McpServerStatus {
   installed: boolean;
@@ -1130,7 +1130,7 @@ export function generateChatMcpServer(context: vscode.ExtensionContext): { serve
 pkm-chat MCP Server — lets an AI agent join a Personal Knowledge Manager chatroom.
 
 Connects to a self-hosted chat hub over WebSocket and exposes tools so an agent
-can join a room, read the conversation, post messages, and leave — collaborating
+can join a room, read directed messages, post replies, and leave — collaborating
 with humans and other agents in real time.
 
 The host shares one Magic Link containing the room URL and key, then separately
@@ -1183,7 +1183,7 @@ _state = {
   "token": "", "closing": False, "runtime_state": "idle",
     "status": "disconnected", "detail": "",
     "members": [], "messages": [], "cursor": 0,
-    "standby_cursor": 0, "conversation_active": False,
+    "standby_cursor": 0,
 }
 _message_event = asyncio.Event()
 _seen_ids = set()   # message ids already recorded — dedup history backfill on reconnect
@@ -1350,7 +1350,7 @@ async def _do_join(url, room, name, token):
     await _do_leave()
     _state.update(ws=None, url=url, room=room, name=name, token=token, closing=False,
                   status="connecting", detail="", members=[], messages=[], cursor=0,
-                  standby_cursor=0, conversation_active=False, runtime_state="idle")
+                  standby_cursor=0, runtime_state="standby")
     _state["task"] = asyncio.create_task(_connection_loop())
     await asyncio.sleep(0.4)   # collect initial presence/history or an auth error
     _state["cursor"] = len(_state["messages"])
@@ -1400,7 +1400,7 @@ async def chat_post(text: str) -> str:
     except Exception as e:
         return json.dumps({"ok": False, "error": str(e)})
     finally:
-        await _send_state("standby" if _state["conversation_active"] else "idle")
+        await _send_state("standby")
     return json.dumps({"ok": True})
 
 
@@ -1432,14 +1432,7 @@ async def chat_history(limit: int = 50) -> str:
 
 @mcp.tool()
 async def chat_standby(timeout: int = 300) -> str:
-    """Continuously watch the room during a coordinated conversation.
-
-    Call immediately after joining. When /start_conversation names this agent,
-    it MUST remain focused on Chatroom: on event='message', respond with
-    chat_post and IMMEDIATELY call chat_standby again; on event='timeout', call
-    chat_standby again without ending the agent turn. The only normal exits are
-    event='stopped' after /stop_conversation or event='released' after /release.
-    """
+  """Block until a directed @message or timeout; call again after each result."""
     timeout = max(1, min(int(timeout or 300), 1800))
     await _send_state("standby")
     while True:
@@ -1449,37 +1442,19 @@ async def chat_standby(timeout: int = 300) -> str:
         text = str(message.get("text") or "").strip()
         low = text.lower()
         _state["standby_cursor"] += 1
-        prepared = message.get("from") == "roombot" and "conversation prepared" in low
-        started = message.get("from") == "roombot" and "conversation started" in low
-        joined = message.get("from") == "roombot" and "joined the conversation" in low
-        if (prepared or started or joined) and _mentions(text, _state["name"]):
-          _state["conversation_active"] = True
-          await _send_state("standby")
-          continue
-        if low.startswith("/stop_conversation") or "conversation stopped" in low:
-          _state["conversation_active"] = False
-          await _send_state("idle")
-          return json.dumps({"ok": True, "event": "stopped", "messages": pending,
-                     "instruction": "Conversation ended. Return control to the user."})
-        if low.startswith("/release") and _mentions(text, _state["name"]):
-          _state["conversation_active"] = False
-          await _send_state("idle")
-          return json.dumps({"ok": True, "event": "released", "messages": pending,
-                     "instruction": "You were released. Return control to the user."})
-        if not _state["conversation_active"] or message.get("from") == _state["name"]:
+        if message.get("from") == _state["name"]:
           continue
         directed = _mentions(text, _state["name"])
-        granted = message.get("from") == "roombot" and directed and "your turn" in low
         direct_message = message.get("from") != "roombot" and directed
-        if granted or direct_message:
+        if direct_message:
           await _send_state("thinking")
           return json.dumps({"ok": True, "event": "message", "messages": pending,
-                     "instruction": "Respond with chat_post, then IMMEDIATELY call chat_standby again. Do not finish while the conversation is active."})
+                     "instruction": "Respond with chat_post, then immediately call chat_standby again."})
       try:
         await asyncio.wait_for(_message_event.wait(), timeout=timeout)
       except asyncio.TimeoutError:
         return json.dumps({"ok": True, "event": "timeout", "messages": [],
-                   "instruction": "No turn yet. IMMEDIATELY call chat_standby again; do not finish while the conversation is active."})
+                   "instruction": "Still in standby. Call chat_standby again to keep waiting."})
 
 
 @mcp.tool()

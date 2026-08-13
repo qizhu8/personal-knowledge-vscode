@@ -41,27 +41,6 @@ function chatTrackProto(fr) {
   }
   chatPaintMembers();
 }
-// Plain-text magic messages also drive the markers (so the human host's
-// /start_conversation lights everyone up immediately).
-function chatTrackControl(text) {
-  const s = (text || '').trim(), low = s.toLowerCase();
-  let changed = false;
-  if (low.startsWith('/start_conversation')) {
-    chat.proto = {};
-    chatSetTurn(null);
-    changed = true;
-  } else if (low.includes('conversation started') || low.includes('joined the conversation')) {
-    chatParseMentions(s).forEach(name => {
-      const member = (((chat.active && chat.active.members) || []).find(item => item.user.toLowerCase() === name.toLowerCase()));
-      chat.proto[name] = { state: member && member.kind !== 'agent' ? 'engaged' : 'standby' };
-    }); changed = true;
-  } else if (low.startsWith('/stop_conversation')) {
-    chat.proto = {}; changed = true; chatSetTurn(null);
-  } else if (low.startsWith('/release')) {
-    chatParseMentions(s).forEach(n => { delete chat.proto[n]; }); changed = true;
-  }
-  if (changed) chatPaintMembers();
-}
 // The background "whose turn" banner above the chat log.
 function chatSetTurn(text) {
   const el = document.getElementById('chat-turn-banner');
@@ -74,7 +53,7 @@ function chatProtoBadge(state) {
   if (state === 'sending') return '<span class="chat-proto engaged" title="Sending a response">sending</span>';
   if (state === 'reconnecting') return '<span class="chat-proto working" title="Connection lost — reconnecting">reconnecting</span>';
   if (state === 'engaged') return '<span class="chat-proto engaged" title="In session — coordinating">🔵 in session</span>';
-  if (state === 'idle') return '<span class="chat-proto idle" title="Idle — stopped or released from standby">idle</span>';
+  if (state === 'idle') return '<span class="chat-proto idle" title="Disconnected from the Room">idle</span>';
   if (state === 'standby') return '<span class="chat-proto standby" title="Waiting for a directed @ message">standby</span>';
   return '';
 }
@@ -163,7 +142,7 @@ function renderChatroom() {
           <button class="tbtn" onclick="chatRenameSelf()" title="Change your display name in this room">✏️ Rename me</button>
           <button class="tbtn" onclick="ask('chatShareFile',{})" title="Share a file with the room (peers must be online)">📎 Share</button>
           <button class="tbtn" onclick="ask('chatExport',{})" title="Download this room's transcript">⬇ Download</button>
-          <button class="tbtn" id="chat-leave-btn" onclick="chatLeaveActive()" title="Leave this room">Leave</button>
+          <button class="tbtn" id="chat-leave-btn" onclick="chatLeaveActive()" title="Leave this room">Leave Room</button>
         </div>
         <div id="chat-body">
           <div id="chat-main">
@@ -176,6 +155,7 @@ function renderChatroom() {
                 <span id="chat-default-recipient" title="Inferred recipient; sending will make @all explicit">@all</span>
                 <textarea id="chat-input" rows="1" placeholder="Message the room…  (Enter to send, Shift+Enter for newline)" disabled></textarea>
               </div>
+              <label class="chat-reply-toggle" title="Require recipients to reply; useful for @all requests"><input id="chat-response-required" type="checkbox"> Replies</label>
               <button class="tbtn" id="chat-send-btn" onclick="chatSend()" disabled>Send</button>
             </div>
           </div>
@@ -428,22 +408,13 @@ function chatSend() {
   const draft = inp.value;
   if (!draft.trim()) return;
   const text = chatMaterializeRecipient(draft);
-  ask('chatSend', { text });
+  const requireReplies = !!document.getElementById('chat-response-required')?.checked;
+  ask('chatSend', { text, ...(requireReplies ? { responseRequired: true } : {}) });
   inp.value = ''; inp.style.height = 'auto';
+  const responseRequired = document.getElementById('chat-response-required');
+  if (responseRequired) responseRequired.checked = false;
   chatUpdateDefaultRecipient();
   chatHideMentionPop();
-  chatOnLocalSend(text);
-}
-
-// After I send a normal message in an active conversation, hand the turn to the
-// engaged party (so the banner flips immediately, not only when they reply).
-function chatOnLocalSend(text) {
-  if ((text || '').trim().startsWith('/')) return;   // commands drive the banner elsewhere
-  const self = (chat.active && chat.active.self) || '';
-  const engaged = Object.keys(chat.proto || {}).filter(n => n !== self);
-  if (!engaged.length) return;
-  const who = engaged.length === 1 ? engaged[0] : 'the others';
-  chatSetTurn('🤔 ' + who + ' is responding…');
 }
 
 // ── @mentions ───────────────────────────────────────────────────────────────
@@ -513,13 +484,8 @@ function chatMentionOnInput() {
   else chatHideMentionPop();
 }
 
-// Magic conversation-control messages, offered via slash-command autocomplete.
 const CHAT_COMMANDS = [
-  { cmd: '/start_conversation', args: ' ', desc: 'Start free talk with @agents or @all' },
-  { cmd: '/start', args: '', desc: 'Initiator: begin the prepared discussion' },
-  { cmd: '/stop_conversation', args: '', desc: 'Host: stop and release all standby agents' },
-  { cmd: '/release', args: ' ', desc: 'Drop one party from the conversation' },
-  { cmd: '/request_join', args: ' ', desc: 'Invite an online member into the discussion' },
+  { cmd: '/stop', args: ' ', desc: 'Host: disconnect an online agent without removing its identity' },
   { cmd: '/leave', args: '', desc: 'Leave/close this Room; stored history is preserved' },
 ];
 
@@ -629,17 +595,31 @@ function chatParseRecipients(text) {
   }
   return recipients;
 }
+function chatRecipientToken(name) {
+  const value = String(name || '').trim() || 'all';
+  return value === 'all' || /^[A-Za-z0-9_][\w-]{0,59}$/.test(value) ? `@${value}` : `@"${value.replace(/"/g, '')}"`;
+}
+function chatDefaultRecipientName() {
+  const active = chat.active || {};
+  if (active.selfHost) return 'all';
+  const host = (active.members || []).find(member => member.host && member.present !== false);
+  return host?.user || 'all';
+}
 function chatMaterializeRecipient(text) {
   const value = String(text || '').trim();
   if (!value || value.startsWith('/') || chatParseRecipients(value).length) return value;
-  return '@all ' + value;
+  return chatRecipientToken(chatDefaultRecipientName()) + ' ' + value;
 }
 function chatUpdateDefaultRecipient() {
   const input = document.getElementById('chat-input');
   const inferred = document.getElementById('chat-default-recipient');
   if (!input || !inferred) return;
   const value = input.value.trimStart();
-  inferred.classList.toggle('hidden', value.startsWith('/') || chatParseRecipients(value).length > 0);
+  const hidden = value.startsWith('/') || chatParseRecipients(value).length > 0;
+  inferred.textContent = chatRecipientToken(chatDefaultRecipientName());
+  inferred.title = chat.active?.selfHost ? 'Host broadcast recipient; sending will make @all explicit' : 'Point-to-point default recipient: Room Host';
+  inferred.classList.toggle('hidden', hidden);
+  input.style.paddingLeft = hidden ? '' : `${Math.min(inferred.scrollWidth + 16, 160)}px`;
 }
 function chatMentionsMe(text) {
   const me = (chat.active && chat.active.self) || '';
@@ -647,13 +627,24 @@ function chatMentionsMe(text) {
   const low = chatParseRecipients(text).map(s => s.toLowerCase());
   return low.includes(me.toLowerCase()) || low.includes('all') || low.includes('everyone');
 }
+function chatHighlightableMentionNames() {
+  const names = new Set(['all', 'everyone']);
+  const active = chat.active || {};
+  [active.self, ...(active.members || []).map(member => member.user)].forEach(name => {
+    const value = String(name || '').trim();
+    if (value) names.add(esc(value).toLowerCase());
+  });
+  return names;
+}
 // Wrap @tokens in an already-HTML-escaped string for display.
 function chatHighlightMentions(escaped) {
-  const me = ((chat.active && chat.active.self) || '').toLowerCase();
+  const me = esc((chat.active && chat.active.self) || '').toLowerCase();
+  const known = chatHighlightableMentionNames();
   return (escaped || '').replace(
-    /(?<![\p{L}\p{N}_@])@(?:&quot;[\s\S]{1,120}?&quot;|all|everyone|[\p{L}\p{N}_][\p{L}\p{N}_\-]{0,59})/gu,
+    /(?<![\p{L}\p{N}_@])@(?:"[^"\n]{1,60}"|&quot;[\s\S]{1,120}?&quot;|all|everyone|[\p{L}\p{N}_][\p{L}\p{N}_\-]{0,59})/gu,
     m => {
-      const name = m.slice(1).replace(/^&quot;|&quot;$/g, '').toLowerCase();
+      const name = m.slice(1).replace(/^"|"$/g, '').replace(/^&quot;|&quot;$/g, '').toLowerCase();
+      if (!known.has(name)) return m;
       const targetMe = name === me || name === 'all' || name === 'everyone';
       return `<span class="chat-at ${targetMe ? 'chat-at-me' : 'chat-at-other'}">${m}</span>`;
     });
@@ -665,7 +656,6 @@ function chatAppend(m) {
   // Protocol frames (agent-to-agent) never render as chat — they only drive the
   // per-member status marker. Hide the raw sentinel/JSON from the log.
   if (m && !m.system && chatIsProto(m.text)) { chatTrackProto(chatProtoDecode(m.text)); return; }
-  if (m && !m.system && m.text) chatTrackControl(m.text);
   // Idempotent by message id: a message (history backfill + live echo, or a
   // repaint racing an incremental append) never renders twice. System notices
   // get fresh random ids, so join/leave lines still show each time.
@@ -716,10 +706,12 @@ function chatPaintRooms() {
   const box = document.getElementById('chat-rooms');
   if (!box) return;
   if (!chat.rooms.length) { box.innerHTML = '<div class="chat-empty">No rooms joined.</div>'; return; }
+  const attr = value => esc(value).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   box.innerHTML = chat.rooms.map(r => {
     const active = r.key === chat.activeKey;
     const badge = r.unread ? `<span class="chat-badge">${r.unread}</span>` : '';
-    return `<div class="chat-room-item${active ? ' active' : ''}" onclick="ask('chatSetActive',{key:'${esc(r.key)}'})">
+    const rename = r.selfHost && r.roomId ? `oncontextmenu="chatActiveRoomMenu(event,'${attr(r.key)}','${attr(r.roomId)}','${attr(r.room)}')" title="Right-click for Room actions"` : '';
+    return `<div class="chat-room-item${active ? ' active' : ''}" onclick="ask('chatSetActive',{key:'${attr(r.key)}'})" ${rename}>
       <span class="chat-dot ${esc(r.status)}"></span>
       <span class="chat-room-name" title="${esc(r.url)}">${esc(r.room)}</span>${badge}</div>`;
   }).join('');
@@ -732,13 +724,14 @@ function chatPaintStoredRooms() {
   const rooms = chat.storedRooms || [];
   wrap.classList.toggle('hidden', !rooms.length);
   if (!rooms.length) { box.innerHTML = ''; return; }
+  const attr = value => esc(value).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   box.innerHTML = rooms.map(room => {
     const available = room.canRehost !== false;
     const count = Number(room.messageCount) || 0;
     const activity = room.updatedAt ? chatAgo(room.updatedAt).replace(/^left /, '') : 'unknown';
     const meta = `${count} message${count === 1 ? '' : 's'} · ${activity}`;
     const reason = room.unavailableReason || 'This Room cannot be Rehosted.';
-    return `<div class="chat-stored-item${available ? '' : ' unavailable'}" title="${available ? 'Stored locally · Rehost this Room' : esc(reason)}">
+    return `<div class="chat-stored-item${available ? '' : ' unavailable'}" title="${available ? 'Stored locally · Right-click for Room actions' : attr(reason)}" ${available ? `oncontextmenu="chatStoredRoomMenu(event,'${attr(room.roomId)}','${attr(room.roomName)}')"` : ''}>
       <button class="chat-stored-open" title="${available ? 'Rehost Room' : esc(reason)}" ${available ? `onclick="ask('chatRehostStoredRoom',{roomId:'${esc(room.roomId)}'})"` : 'disabled'}>▶</button>
       <span class="chat-stored-copy"><span class="chat-stored-name">${esc(room.roomName)}</span><span class="chat-stored-meta">${esc(meta)}</span></span>
       <span class="chat-stored-actions">
@@ -747,6 +740,25 @@ function chatPaintStoredRooms() {
       </span>
     </div>`;
   }).join('');
+}
+
+function chatActiveRoomMenu(event, key, roomId, roomName) {
+  event.preventDefault(); event.stopPropagation();
+  showPaperMenu(event.clientX, event.clientY, [
+    { label: '✏ Rename…', onClick: () => ask('chatRenameActiveRoom', { roomId, roomName }) },
+    { sep: true },
+    { label: 'Close Room', onClick: () => ask('chatLeave', { key }) },
+  ]);
+}
+
+function chatStoredRoomMenu(event, roomId, roomName) {
+  event.preventDefault(); event.stopPropagation();
+  showPaperMenu(event.clientX, event.clientY, [
+    { label: '▶ Rehost', onClick: () => ask('chatRehostStoredRoom', { roomId }) },
+    { label: '✏ Rename…', onClick: () => ask('chatRenameStoredRoom', { roomId, roomName }) },
+    { sep: true },
+    { label: '🗑 Delete Data…', danger: true, onClick: () => ask('chatDeleteStoredRoom', { roomId, roomName }) },
+  ]);
 }
 
 function chatPaintActive() {
@@ -762,12 +774,16 @@ function chatPaintActive() {
   document.getElementById('chat-pane-title').textContent = a.room + (a.statusDetail ? ' — ' + a.statusDetail : (connected ? '' : ' — ' + a.status));
   const inp = document.getElementById('chat-input'), sbtn = document.getElementById('chat-send-btn');
   const atbtn = document.getElementById('chat-at-btn');
+  const replyToggle = document.getElementById('chat-response-required');
   const muted = !!a.selfMuted;
   const addAgent = document.getElementById('chat-add-agent-btn');
+  const leave = document.getElementById('chat-leave-btn');
   if (addAgent) addAgent.classList.toggle('hidden', !a.selfHost);
+  if (leave) { leave.textContent = a.selfHost ? 'Close Room' : 'Leave Room'; leave.title = a.selfHost ? 'Close and store this Room; data remains available under Stored Rooms' : 'Leave this Room'; }
   if (inp)  { inp.disabled  = !connected || muted; inp.placeholder = muted ? 'You are muted by the host — you can read but not post.' : 'Message the room…  (Enter to send, Shift+Enter for newline)'; }
   if (sbtn) sbtn.disabled = !connected || muted;
   if (atbtn) atbtn.disabled = !connected || muted;
+  if (replyToggle) replyToggle.disabled = !connected || muted;
   // Repaint the full log from the snapshot (switching rooms).
   const log = document.getElementById('chat-log');
   if (log) {

@@ -150,6 +150,18 @@ export class ChatRoomLifecycle {
     }
   }
 
+  async renameActiveRoom(roomId: string, roomName: string): Promise<string> {
+    if (!this.locks.has(roomId)) throw new Error(`Room ${roomId} is not active in this Hub.`);
+    const normalizedName = roomName.trim().replace(/\s+/g, " ").slice(0, 80);
+    if (!normalizedName) throw new Error("Room name is required.");
+    const records = await this.listStoredRoomRecords();
+    if (records.some(room => room.roomId !== roomId && room.roomName.trim().toLocaleLowerCase() === normalizedName.toLocaleLowerCase())) {
+      throw new Error(`A stored Room named "${normalizedName}" already exists.`);
+    }
+    await this.persistence.recordLifecycle(roomId, "room.renamed", undefined, { roomName: normalizedName });
+    return normalizedName;
+  }
+
   async deleteStoredRoom(roomId: string): Promise<void> {
     await this.requireOwnedStoredRoom(roomId);
     const roomDir = path.join(this.rootDir, roomId);

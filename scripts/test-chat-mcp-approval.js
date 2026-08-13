@@ -104,6 +104,8 @@ async function main() {
     host.send(JSON.stringify({ t: "msg", room: room.room, text: "@\"Directed Python\" please respond" }));
     const standby = await standbyClient.result;
     assert.strictEqual(standby.standby_event, "message");
+    assert.strictEqual(standby.response_required, true);
+    assert.strictEqual(standby.required_response_event_ids.length, 1);
     assert.strictEqual(standby.post_ok, true);
     assert.strictEqual(standby.runtime_state, "standby");
     await waitHostFrame(host, frame => frame.t === "msg" && frame.text === "@Host directed response");
@@ -114,33 +116,19 @@ async function main() {
     const stoppedPending = await waitPending(hub, "Stopped Python");
     await hub.approveJoinNew(stoppedPending.requestId);
     await waitHostFrame(host, frame => frame.t === "agent.state" && frame.user === "Stopped Python" && frame.state === "standby");
-    const conversation = hub.rooms.get(room.room).conversation;
-    conversation.active = true;
-    conversation.participants = ["Stopped Python"];
-    await hub.postCoordinatorMessage(room.room, "Conversation started — active agents: @\"Stopped Python\".");
-    host.send(JSON.stringify({ t: "msg", room: room.room, text: "/stop_conversation" }));
+    const rekeysBeforeStop = host.frames.filter(frame => frame.t === "rekey").length;
+    host.send(JSON.stringify({ t: "msg", room: room.room, text: "/stop @\"Stopped Python\"" }));
     const stopped = await stoppedClient.result;
     assert.strictEqual(stopped.standby_event, "stopped");
+    assert.strictEqual(stopped.standby_scope, "chatroom");
     assert.strictEqual(stopped.runtime_state, "idle");
-
-    const historyClient = launch(url, room.room, room.roomId, room.secret, "History Python", "history");
-    children.push(historyClient.child);
-    const historyPending = await waitPending(hub, "History Python");
-    await hub.approveJoinNew(historyPending.requestId);
-    const historyResult = await historyClient.result;
-    assert.strictEqual(historyResult.standby_event, "timeout",
-      "historical /stop_conversation must remain behind the standby cursor after Join");
-    assert.strictEqual(historyResult.runtime_state, "standby");
-
-    const inactiveStopClient = launch(url, room.room, room.roomId, room.secret, "Inactive Stop Python", "inactive-stop");
-    children.push(inactiveStopClient.child);
-    const inactiveStopPending = await waitPending(hub, "Inactive Stop Python");
-    await hub.approveJoinNew(inactiveStopPending.requestId);
-    await waitHostFrame(host, frame => frame.t === "agent.state" && frame.user === "Inactive Stop Python" && frame.state === "standby");
-    host.send(JSON.stringify({ t: "msg", room: room.room, text: "/stop_conversation" }));
-    const inactiveStop = await inactiveStopClient.result;
-    assert.strictEqual(inactiveStop.standby_event, "timeout", "inactive conversation stop must not terminate standby");
-    assert.strictEqual(inactiveStop.runtime_state, "standby");
+    await waitHostFrame(host, frame => frame.t === "presence" && frame.members.some(member =>
+      member.participantId === stopped.participant_id && member.present === false));
+    const stoppedIdentity = await hub.persistence.identityState(room.roomId);
+    const stoppedMembership = stoppedIdentity.memberships.find(item => item.participantId === stopped.participant_id);
+    assert(stoppedMembership && stoppedMembership.forgottenAt == null, "/stop must preserve participant membership");
+    assert.strictEqual(host.frames.filter(frame => frame.t === "rekey").length, rekeysBeforeStop,
+      "/stop must not rotate the Room secret");
 
     const rejectedClient = launch(url, room.room, room.roomId, room.secret, "Rejected Python");
     children.push(rejectedClient.child);
@@ -160,7 +148,7 @@ async function main() {
     assert.strictEqual(closed.standby_event, "closed");
     assert.strictEqual(closed.runtime_state, "idle");
     assert.strictEqual(hub.roomNames.length, 0, "Host leave must deactivate the Room for every participant");
-    console.log("MCP approval test: Join, auto-standby, directed wake, post recovery, rejection, and Host-leave close OK");
+    console.log("MCP approval test: Join, auto-standby, directed wake, stop-to-Earlier, rejection, and Host-leave close OK");
   } finally {
     for (const child of children) if (child.exitCode === null) child.kill("SIGTERM");
     try { host?.terminate(); } catch {}

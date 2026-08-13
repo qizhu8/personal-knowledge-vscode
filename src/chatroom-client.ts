@@ -135,6 +135,7 @@ export class ChatClient {
           id: frame.id ?? randomBytes(6).toString("hex"), from: frame.from, fromId: frame.fromId ?? "",
           text: frame.text, ts: frame.ts ?? Date.now(), kind: frame.kind ?? "human", file: (frame as any).file,
           receipt: frame.receipt ? { read: frame.receipt.read, total: frame.receipt.total } : undefined,
+          responseRequired: frame.responseRequired,
         });
         break;
       case "msg.read":
@@ -151,6 +152,11 @@ export class ChatClient {
         this.events.onMessage({ id: randomBytes(6).toString("hex"), from: "", fromId: "", text: `Room closed (${frame.reason}).`, ts: Date.now(), kind: "human", system: true });
         this.setStatus("disconnected", `closed: ${frame.reason}`);
         break;
+      case "stopped":
+        this.intentionalClose = true;
+        this.events.onMessage({ id: randomBytes(6).toString("hex"), from: "", fromId: "", text: frame.reason || "Stopped by the room host.", ts: Date.now(), kind: "human", system: true });
+        this.setStatus("disconnected", "stopped by host");
+        break;
       case "kicked":
         this.intentionalClose = true;   // removed by host; don't reconnect
         this.events.onMessage({ id: randomBytes(6).toString("hex"), from: "", fromId: "", text: frame.reason || "You were removed by the host.", ts: Date.now(), kind: "human", system: true });
@@ -162,6 +168,11 @@ export class ChatClient {
         this.selfUser = frame.name;
         this.events.onMessage({ id: randomBytes(6).toString("hex"), from: "", fromId: "", text: `The host renamed you to "${frame.name}".`, ts: Date.now(), kind: "human", system: true });
         this.events.onRenamed?.(frame.name);
+        break;
+      case "room.renamed":
+        if (this.opts) this.opts.room = frame.room;
+        this.selfRoom = frame.room;
+        this.events.onMessage({ id: randomBytes(6).toString("hex"), from: "", fromId: "", text: `Room renamed to "${frame.room}".`, ts: Date.now(), kind: "human", system: true });
         break;
       case "rekey":
         // The host rotated this room's secret (e.g. after a kick). Keep using it
@@ -205,11 +216,11 @@ export class ChatClient {
     }
   }
 
-  sendText(text: string): boolean {
+  sendText(text: string, responseRequired?: boolean): boolean {
     if (!this.isConnected || !this.opts) return false;
     const t = text.trim();
     if (!t) return false;
-    this.send({ t: "msg", room: this.opts.room, from: this.opts.user, text: t, kind: this.opts.kind ?? "human" });
+    this.send({ t: "msg", room: this.opts.room, from: this.opts.user, text: t, kind: this.opts.kind ?? "human", responseRequired });
     return true;
   }
 

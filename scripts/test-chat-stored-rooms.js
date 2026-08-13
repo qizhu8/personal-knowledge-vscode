@@ -38,6 +38,8 @@ async function main() {
     const beta = await owner.createRoom("Beta", "beta-secret");
     const foreignRoom = await foreign.createRoom("Foreign", "foreign-secret");
 
+    assert.strictEqual(await owner.renameActiveRoom(alpha.roomId, "Alpha Live"), "Alpha Live");
+
     observer = new ChatRoomLifecycle(root, "installation-owner", ownerSecrets, 60_000);
     assert.deepStrictEqual(await observer.listStoredRooms(), [], "active Rooms must never appear as stored");
 
@@ -48,6 +50,7 @@ async function main() {
     assert.deepStrictEqual(new Set(stored.map(room => room.roomId)), new Set([alpha.roomId, beta.roomId]), "foreign Rooms must be excluded");
     assert(stored.every(room => room.canRehost), "owned Rooms with valid credentials must be Rehostable");
     assert.strictEqual(stored.find(room => room.roomId === alpha.roomId).messageCount, 2);
+    assert.strictEqual(stored.find(room => room.roomId === alpha.roomId).roomName, "Alpha Live");
     assert.strictEqual(stored.find(room => room.roomId === beta.roomId).messageCount, 0);
     assert(stored[0].updatedAt >= stored[1].updatedAt, "Stored Rooms must be sorted by most recent activity");
 

@@ -24,7 +24,7 @@ Tools exposed to the agent:
     chat_join(magic_link, name)   join from one Magic Link + assigned alias
     chat_status()            connection + room status
     chat_poll(max=50)        NEW messages since the last poll (advances a cursor)
-    chat_standby(timeout=300) block until @mentioned/granted a turn or stopped
+    chat_standby(timeout=300) block until @mentioned, stopped, closed, or timeout
     chat_history(limit=50)   recent buffered messages (no cursor change)
     chat_send(text)          post a message ('/...' runs a room command)
     chat_who()               current members present in the room
@@ -35,7 +35,7 @@ STANDARD PROCEDURE for an agent asked to join:
     2. Call chat_join(magic_link=..., name=...). Do not ask for URL/key separately.
         3. Approval automatically sets standby. Call chat_standby to block until an
              @message addresses you. chat_send returns to standby automatically; call
-             chat_standby again to keep waiting until stop/release/leave/Room close.
+             chat_standby again to keep waiting until the Host uses /stop, you leave, or the Room closes.
 
 Note: stdout is reserved for the MCP protocol — all logs go to stderr.
 """
@@ -137,10 +137,11 @@ class ChatBridge:
         self.seq = 0
         self.cursor = 0
         self.standby_cursor = 0
-        self.conversation_active = False
         self.runtime_state = "standby"
+        self.state_changed_at = int(time.time() * 1000)
         self.participant_id = ""
         self.reply_target = ""
+        self.reply_audience = []
         self.last_message_id = ""
         self.terminal_event = None
         self.transport_error = ""
@@ -220,7 +221,7 @@ class ChatBridge:
                 return
 
     # ── inbound frames ──────────────────────────────────────────────────────
-    def _add(self, typ, frm, text, ts, message_id=""):
+    def _add(self, typ, frm, text, ts, message_id="", response_required=False):
         if text == "" and typ == "chat":
             return
         # Flag @mentions of *this* agent (ignore our own messages).
@@ -234,7 +235,8 @@ class ChatBridge:
         with self.changed:
             self.seq += 1
             self.buf.append({"seq": self.seq, "id": message_id, "type": typ, "from": frm, "text": text,
-                             "ts": ts, "mentioned": mentioned, "mentions": mentions})
+                             "ts": ts, "mentioned": mentioned, "mentions": mentions,
+                             "response_required": bool(response_required)})
             if message_id:
                 self.last_message_id = message_id
             self.changed.notify_all()
@@ -258,7 +260,8 @@ class ChatBridge:
                 self.seq += 1
                 message_id = str(item.get("id") or "")
                 self.buf.append({"seq": self.seq, "id": message_id, "type": typ, "from": frm, "text": text,
-                                 "ts": item.get("ts", 0), "mentioned": mentioned, "mentions": mentions})
+                                 "ts": item.get("ts", 0), "mentioned": mentioned, "mentions": mentions,
+                                 "response_required": bool(item.get("responseRequired", item.get("response_required", False)))})
                 if message_id:
                     self.last_message_id = message_id
             if mode != "catchup":
@@ -281,7 +284,8 @@ class ChatBridge:
                         self._outbox.put({"t": "msg.read", "room": self.room, "messageId": f["id"]}), self.loop)
                 except Exception:
                     pass
-            self._add("chat", f.get("from", ""), f.get("text", ""), f.get("ts") or now, str(f.get("id") or ""))
+            self._add("chat", f.get("from", ""), f.get("text", ""), f.get("ts") or now,
+                      str(f.get("id") or ""), f.get("responseRequired", False))
         elif t == "system":
             self._add("system", "", f.get("text", ""), f.get("ts") or now)
         elif t == "history":
@@ -308,6 +312,9 @@ class ChatBridge:
             with self.lock:
                 self.secret = f.get("secret", self.secret)
             _log("host rotated the room secret; adopted the new one")
+        elif t == "room.renamed":
+            with self.lock:
+                self.room = str(f.get("room") or self.room)
         elif t == "error":
             code, msg = f.get("code", ""), f.get("msg", "")
             with self.lock:
@@ -320,21 +327,21 @@ class ChatBridge:
                     self.state = "error"
             with self.changed:
                 self.changed.notify_all()
-        elif t in ("closed", "kicked"):
+        elif t in ("closed", "kicked", "stopped"):
             reason = f.get("reason", "")
             with self.lock:
-                self.state = "closed"
-                self.error = (("kicked: " if t == "kicked" else "") + reason).strip()
+                self.state = "disconnected" if t == "stopped" else "closed"
+                self.error = ((t + ": " if t in ("kicked", "stopped") else "") + reason).strip()
             self._fatal = True
             with self.changed:
-                self.terminal_event = {"event": "kicked" if t == "kicked" else "closed",
-                                       "reason": self.error or reason}
-                self.error_code = "kicked" if t == "kicked" else "room-closed"
+                self.terminal_event = {"event": t, "reason": self.error or reason,
+                                       **({"scope": f.get("scope", "chatroom")} if t == "stopped" else {})}
+                self.error_code = "stopped" if t == "stopped" else "kicked" if t == "kicked" else "room-closed"
                 self.transport_error = ""
                 self.changed.notify_all()
 
     # ── thread-safe API for the MCP tools ───────────────────────────────────
-    def send_text(self, text):
+    def send_text(self, text, response_required=None):
         text = (text or "").strip()
         if not text:
             return False, "empty message"
@@ -343,12 +350,14 @@ class ChatBridge:
         with self.lock:
             if self.state not in ("joined", "connecting", "disconnected"):
                 return False, f"cannot send while {self.state}: {self.error}"
-            if not text.startswith("/") and not _has_any_mention(text) and self.reply_target:
-                text = f"{_format_mention(self.reply_target)} {text}"
+            if not text.startswith("/") and not _has_any_mention(text) and self.reply_audience:
+                text = f"{' '.join(_format_mention(target) for target in self.reply_audience)} {text}"
             self.reply_target = ""
+            self.reply_audience = []
         try:
             fut = asyncio.run_coroutine_threadsafe(
-                self._outbox.put({"t": "msg", "room": self.room, "text": text[:8000]}), self.loop)
+                self._outbox.put({"t": "msg", "room": self.room, "text": text[:8000],
+                                  **({"responseRequired": bool(response_required)} if response_required is not None else {})}), self.loop)
             fut.result(timeout=5)
             return True, ""
         except Exception as e:
@@ -356,7 +365,9 @@ class ChatBridge:
 
     def send_state(self, state):
         with self.lock:
-            self.runtime_state = state
+            if self.runtime_state != state:
+                self.runtime_state = state
+                self.state_changed_at = int(time.time() * 1000)
         if self.loop is None or self._outbox is None:
             return
         try:
@@ -394,15 +405,16 @@ class ChatBridge:
             }
 
     def _lifecycle_fields(self, event=""):
-        room_closed = event in ("closed", "kicked") or self.state == "closed"
+        room_closed = event in ("closed", "kicked") or (self.state == "closed" and event != "stopped")
         room_open = not room_closed and self.state != "error"
-        should_continue = room_open and event not in ("stopped", "released")
+        should_continue = room_open and event != "stopped"
         return {
-            "conversation_active": self.conversation_active,
             "room_open": room_open,
             "should_continue_standby": should_continue,
             "room_closed": room_closed,
             "new_link_required": room_closed or self.error_code in ("auth", "no-room", "room-mismatch"),
+            "runtime_state": self.runtime_state,
+            "state_changed_at": self.state_changed_at,
         }
 
     def wait_for_join(self, timeout=125):
@@ -422,7 +434,7 @@ class ChatBridge:
             return hits[-limit:] if limit else hits
 
     def standby(self, timeout=300, max_messages=8, max_bytes=32768, batch_wait_ms=250):
-        """Block until directed, or until an active conversation stops/releases this Agent."""
+        """Block until a directed message or a structured Room lifecycle event."""
         self.send_state("standby")
         max_messages = max(1, min(int(max_messages or 8), 32))
         max_bytes = max(1024, min(int(max_bytes or 32768), 65536))
@@ -435,6 +447,7 @@ class ChatBridge:
                     terminal = self.terminal_event
                     self.terminal_event = None
                     self.runtime_state = "idle"
+                    self.state_changed_at = int(time.time() * 1000)
                     return {**terminal, "message": None, "messages": [], "event_id": "",
                             "cursor_before": cursor_before, "cursor_after": self.standby_cursor,
                             "addressed": False, "matched_mention": "", "truncated": False,
@@ -459,47 +472,31 @@ class ChatBridge:
                     low = text.lower()
                     names = [str(name).lower() for name in (message.get("mentions") or [])]
                     self.standby_cursor = message["seq"]
-                    started = message.get("from") == "roombot" and "conversation started" in low
-                    joined = message.get("from") == "roombot" and "joined the conversation" in low
-                    if (started or joined) and (self.name.lower() in names or "all" in names or "everyone" in names):
-                        self.conversation_active = True
-                        self.send_state("standby")
-                        continue
-                    if self.conversation_active and (low.startswith("/stop_conversation") or "conversation stopped" in low):
-                        self.conversation_active = False
-                        self.send_state("idle")
-                        return self._standby_result("stopped", message, cursor_before, False, "", max_bytes,
-                                                    "Conversation ended. Return control to the user.")
-                    if self.conversation_active and low.startswith("/release") and self.name.lower() in names:
-                        self.conversation_active = False
-                        self.send_state("idle")
-                        return self._standby_result("released", message, cursor_before, True, self.name, max_bytes,
-                                                    "You were released. Return control to the user.")
                     if message.get("from") == self.name:
                         continue
                     directed = self.name.lower() in names or "all" in names or "everyone" in names
-                    granted = message.get("from") == "roombot" and directed and "your turn" in low
                     direct_message = message.get("from") != "roombot" and directed
-                    if granted or direct_message:
-                        if message.get("from") != "roombot":
-                            self.reply_target = message.get("from", "")
-                        else:
-                            self.reply_target = next((item.get("from", "") for item in reversed(pending)
-                                                      if item.get("from") not in ("", "roombot", self.name)), "Host")
+                    if direct_message:
                         self.send_state("thinking")
                         matched = "all" if "all" in names else "everyone" if "everyone" in names else self.name
-                        messages, control = self._collect_directed_batch(message, max_messages, batch_wait_ms)
-                        if control:
-                            kind, control_message = control
-                            self.conversation_active = False
-                            self.send_state("idle")
-                            return self._standby_result(
-                                kind, control_message, cursor_before, kind == "released", self.name if kind == "released" else "",
-                                max_bytes, "Conversation ended. Return control to the user.")
+                        messages = self._collect_directed_batch(message, max_messages, batch_wait_ms)
+                        audience = []
+                        for item in messages:
+                            sender = str(item.get("from") or "")
+                            if sender and sender not in ("roombot", self.name) and sender.lower() not in {name.lower() for name in audience}:
+                                audience.append(sender)
+                            for recipient in item.get("mentions") or []:
+                                if str(recipient).lower() in (self.name.lower(), "all", "everyone"):
+                                    continue
+                                if str(recipient).lower() not in {name.lower() for name in audience}:
+                                    audience.append(str(recipient))
+                        self.reply_audience = audience
+                        self.reply_target = audience[0] if audience else ""
                         if self.terminal_event:
                             terminal = self.terminal_event
                             self.terminal_event = None
                             self.runtime_state = "idle"
+                            self.state_changed_at = int(time.time() * 1000)
                             return {**terminal, "message": None, "messages": [], "event_id": "",
                                     "cursor_before": cursor_before, "cursor_after": self.standby_cursor,
                                     "addressed": False, "matched_mention": "", "truncated": False,
@@ -530,28 +527,22 @@ class ChatBridge:
         deadline = time.monotonic() + (batch_wait_ms / 1000.0)
         while len(selected) < max_messages:
             if self.terminal_event:
-                return selected, None
+                return selected
             candidates = [item for item in self.buf if item["seq"] > self.standby_cursor]
             for item in candidates:
                 self.standby_cursor = item["seq"]
-                text = str(item.get("text") or "").strip()
-                low = text.lower()
                 names = [str(name).lower() for name in (item.get("mentions") or [])]
-                if self.conversation_active and (low.startswith("/stop_conversation") or "conversation stopped" in low):
-                    return selected, ("stopped", item)
-                if self.conversation_active and low.startswith("/release") and self.name.lower() in names:
-                    return selected, ("released", item)
                 if item.get("from") == self.name:
                     continue
                 if self.name.lower() in names or "all" in names or "everyone" in names:
                     selected.append(item)
                     if len(selected) >= max_messages:
-                        return selected, None
+                        return selected
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
             self.changed.wait(timeout=remaining)
-        return selected, None
+        return selected
 
     def _standby_result(self, event, messages, cursor_before, addressed, matched_mention, max_bytes, instruction):
         """Build a bounded event response while the caller holds self.changed."""
@@ -576,6 +567,10 @@ class ChatBridge:
             result_messages = kept
         first = source_messages[0]
         last = source_messages[-1]
+        required_ids = [str(item.get("id") or "") for item in source_messages if item.get("response_required")]
+        if event == "message":
+            instruction = ("Respond to the required messages, then immediately call chat_standby again."
+                           if required_ids else "No response was requested. Immediately call chat_standby again without posting an acknowledgement.")
         return {
             "event": event,
             "message": result_messages[0] if result_messages else None,
@@ -586,6 +581,9 @@ class ChatBridge:
             "cursor_after": self.standby_cursor,
             "addressed": addressed,
             "matched_mention": matched_mention,
+            "response_required": bool(required_ids),
+            "required_response_event_ids": required_ids,
+            "reply_audience": list(self.reply_audience),
             "truncated": truncated,
             "continuation_cursor": str(last.get("id") or "") if truncated else "",
             "room_id": self.room_id,
@@ -612,8 +610,8 @@ class ChatBridge:
             self.transport_error = ""
             self.cursor = self.seq  # don't replay old room's buffer as "new"
             self.standby_cursor = self.seq
-            self.conversation_active = False
             self.runtime_state = "standby"
+            self.state_changed_at = int(time.time() * 1000)
         self._fatal = False
         if self.loop and self._resume:
             self.loop.call_soon_threadsafe(self._resume.set)
@@ -725,7 +723,7 @@ def chat_poll(max: int = 50, name: str = "") -> dict:
     """Return NEW room messages since the last poll and advance the read cursor.
 
     Each message is {seq, type: 'chat'|'system', from, text, ts}. Call this
-    repeatedly to follow the conversation without re-reading old lines.
+    repeatedly to follow Room activity without re-reading old lines.
     """
     try:
         bridge = _resolve_bridge(name)
@@ -737,12 +735,11 @@ def chat_poll(max: int = 50, name: str = "") -> dict:
 @mcp.tool()
 def chat_standby(timeout: int = 300, max_messages: int = 8, max_bytes: int = 32768,
                  batch_wait_ms: int = 250, name: str = "") -> dict:
-    """PKM Chatroom: block until @name/@all, control, close, transport, or timeout.
+    """PKM Chatroom: block until @name/@all, stop, close, transport, or timeout.
 
     The connection is already in standby after chat_join. This blocking call
     returns event='message' for any directed message. After chat_send the Agent
-    automatically returns to standby. /stop_conversation and /release terminate
-    it only after this Agent's conversation has started; leave/Room close always terminate.
+    automatically returns to standby. Host /stop, leave, and Room close terminate it.
     """
     try:
         bridge = _resolve_bridge(name)
@@ -763,7 +760,8 @@ def chat_history(limit: int = 50, name: str = "") -> dict:
 
 
 @mcp.tool()
-def chat_send(text: str, name: str = "", continue_working: bool = False) -> dict:
+def chat_send(text: str, name: str = "", continue_working: bool = False,
+              response_required: bool = None) -> dict:
     """PKM Chatroom: post a directed message.
 
     Final replies return to standby. Pass continue_working=true for progress or
@@ -775,11 +773,15 @@ def chat_send(text: str, name: str = "", continue_working: bool = False) -> dict
     try:
         bridge = _resolve_bridge(name)
         bridge.send_state("sending")
-        ok, err = bridge.send_text(text)
+        ok, err = bridge.send_text(text, response_required)
         bridge.send_state("thinking" if continue_working else "standby")
         return {"ok": ok, "error_code": "" if ok else "transport-error", "error": err,
             "retryable": not ok, "name": bridge.name, "room_id": bridge.room_id,
-            "participant_id": bridge.participant_id, **bridge._lifecycle_fields()}
+            "participant_id": bridge.participant_id,
+            "instruction": ("Continue the current work. Post another progress update with continue_working=true, or a final post without it when complete."
+                            if continue_working else
+                            "Posting only changed the activity state to standby; it did not start a blocking wait. You MUST call chat_standby immediately and must not end the Agent turn."),
+            **bridge._lifecycle_fields()}
     except ValueError as error:
         return {"ok": False, "error": str(error)}
 

@@ -7,6 +7,7 @@ import json
 import os
 import re
 import secrets
+import time
 from urllib.parse import unquote, urlparse
 
 import websockets
@@ -137,11 +138,12 @@ class ChatConnection:
         self.messages = []
         self.cursor = 0
         self.standby_cursor = 0
-        self.conversation_active = False
         self.runtime_state = "standby"
+        self.state_changed_at = int(time.time() * 1000)
         self.participant_id = ""
         self.join_event = asyncio.Event()
         self.reply_target = ""
+        self.reply_audience = []
         self.last_message_id = ""
         self.terminal_event = None
         self.transport_error = ""
@@ -151,7 +153,8 @@ class ChatConnection:
     def normalized(self, message):
         return {"id": message.get("id", ""), "from": message.get("from", ""),
                 "text": message.get("text", ""), "ts": message.get("ts", 0),
-                "kind": message.get("kind", "human"), "system": bool(message.get("system"))}
+                "kind": message.get("kind", "human"), "system": bool(message.get("system")),
+                "response_required": bool(message.get("responseRequired", message.get("response_required", False)))}
 
     def record(self, message):
         message_id = message.get("id")
@@ -204,14 +207,16 @@ class ChatConnection:
                                  "ts": frame.get("ts", 0), "kind": "system", "system": True})
                 elif frame_type == "renamed":
                     self.name = frame.get("name", self.name)
-                elif frame_type in ("closed", "kicked"):
+                elif frame_type == "room.renamed":
+                    self.room = frame.get("room", self.room)
+                elif frame_type in ("closed", "kicked", "stopped"):
                     self.status = "disconnected"
                     self.detail = frame.get("reason", "room closed")
                     self.closing = True
                     self.join_event.set()
-                    self.terminal_event = {"event": "kicked" if frame_type == "kicked" else "closed",
-                                           "reason": self.detail}
-                    self.error_code = "kicked" if frame_type == "kicked" else "room-closed"
+                    self.terminal_event = {"event": frame_type, "reason": self.detail,
+                                           **({"scope": frame.get("scope", "chatroom")} if frame_type == "stopped" else {})}
+                    self.error_code = "stopped" if frame_type == "stopped" else "kicked" if frame_type == "kicked" else "room-closed"
                     self.transport_error = ""
                     self.message_event.set()
                 elif frame_type == "error" and frame.get("code") not in ("muted", "moderation"):
@@ -231,7 +236,9 @@ class ChatConnection:
                     self.message_event.set()
 
     async def send_state(self, state):
-        self.runtime_state = state
+        if self.runtime_state != state:
+            self.runtime_state = state
+            self.state_changed_at = int(time.time() * 1000)
         if self.ws is not None and self.status == "connected":
             try:
                 await self.ws.send(json.dumps({"t": "agent.state", "room": self.room, "state": state}))
@@ -291,20 +298,23 @@ class ChatConnection:
         self.status = "disconnected"
         self.members = []
 
-    async def post(self, text, continue_working=False):
+    async def post(self, text, continue_working=False, response_required=None):
         if self.ws is None or self.status != "connected":
             return {"ok": False, "error_code": "transport-error", "retryable": True,
                     "error": "Not connected. Call chat_join first.", **self._lifecycle_fields()}
         value = str(text or "").strip()
         if not value:
             return {"ok": False, "error": "Message is empty."}
-        if not value.startswith("/") and not _has_any_mention(value) and self.reply_target:
-            value = _format_mention(self.reply_target) + " " + value
+        if not value.startswith("/") and not _has_any_mention(value) and self.reply_audience:
+            value = " ".join(_format_mention(target) for target in self.reply_audience) + " " + value
         self.reply_target = ""
+        self.reply_audience = []
         await self.send_state("sending")
         try:
-            await self.ws.send(json.dumps({"t": "msg", "room": self.room,
-                                           "from": self.name, "text": value, "kind": "agent"}))
+            frame = {"t": "msg", "room": self.room, "from": self.name, "text": value, "kind": "agent"}
+            if response_required is not None:
+                frame["responseRequired"] = bool(response_required)
+            await self.ws.send(json.dumps(frame))
         except Exception as error:
             self.error_code = "transport-error"
             self.transport_error = str(error) or "WebSocket transport failed while posting."
@@ -315,6 +325,9 @@ class ChatConnection:
             await self.send_state("thinking" if continue_working else "standby")
         return {"ok": True, "error_code": "", "retryable": False,
                 "room_id": self.room_id, "participant_id": self.participant_id,
+                "instruction": ("Continue the current work. Use chat_post(..., continue_working=true) for another progress update; use a final chat_post without it when complete."
+                                if continue_working else
+                                "Posting only changed the activity state to standby; it did not start a blocking wait. You MUST call chat_standby immediately and must not end the Agent turn."),
                 **self._lifecycle_fields()}
 
     def read(self, limit=50, only_new=True):
@@ -337,6 +350,7 @@ class ChatConnection:
                 terminal = self.terminal_event
                 self.terminal_event = None
                 self.runtime_state = "idle"
+                self.state_changed_at = int(time.time() * 1000)
                 return {**terminal, "message": None, "messages": [], "event_id": "",
                         "cursor_before": cursor_before, "cursor_after": self.standby_cursor,
                         "addressed": False, "matched_mention": "", "truncated": False,
@@ -362,41 +376,26 @@ class ChatConnection:
                 low = text.lower()
                 self.standby_cursor += 1
                 from_bot = message.get("from") == "roombot"
-                control_names = {item.casefold() for item in _all_mention_names(text)} if from_bot else set()
-                if from_bot and any(marker in low for marker in ("conversation started", "joined the conversation")) and control_names.intersection({self.name.casefold(), "all", "everyone"}):
-                    self.conversation_active = True
-                    continue
-                if self.conversation_active and (low.startswith("/stop_conversation") or "conversation stopped" in low):
-                    self.conversation_active = False
-                    await self.send_state("idle")
-                    return self._standby_result("stopped", message, cursor_before, False, "", max_bytes,
-                                                "Conversation ended. Return control to the user.")
-                if self.conversation_active and low.startswith("/release") and _mentions(text, self.name):
-                    self.conversation_active = False
-                    await self.send_state("idle")
-                    return self._standby_result("released", message, cursor_before, True, self.name, max_bytes,
-                                                "You were released. Return control to the user.")
                 if message.get("from") == self.name:
                     continue
                 directed = _mentions(text, self.name)
-                granted = from_bot and directed and "your turn" in low
-                if granted or (not from_bot and directed):
-                    if not from_bot:
-                        self.reply_target = message.get("from", "")
-                    else:
-                        self.reply_target = next((item.get("from", "") for item in reversed(pending)
-                                                  if item.get("from") not in ("", "roombot", self.name)), "Host")
+                if not from_bot and directed:
                     await self.send_state("thinking")
                     recipients = {item.casefold() for item in _recipient_names(text)}
                     matched = self.name if self.name.casefold() in recipients else "all" if "all" in recipients else "everyone"
-                    messages, control = await self._collect_directed_batch(message, max_messages, batch_wait_ms)
-                    if control:
-                        kind, control_message = control
-                        self.conversation_active = False
-                        await self.send_state("idle")
-                        return self._standby_result(
-                            kind, control_message, cursor_before, kind == "released", self.name if kind == "released" else "",
-                            max_bytes, "Conversation ended. Return control to the user.")
+                    messages = await self._collect_directed_batch(message, max_messages, batch_wait_ms)
+                    audience = []
+                    for item in messages:
+                        sender = str(item.get("from") or "")
+                        if sender and sender not in ("roombot", self.name) and sender.casefold() not in {name.casefold() for name in audience}:
+                            audience.append(sender)
+                        for recipient in _recipient_names(str(item.get("text") or "")):
+                            if recipient.casefold() in (self.name.casefold(), "all", "everyone"):
+                                continue
+                            if recipient.casefold() not in {name.casefold() for name in audience}:
+                                audience.append(recipient)
+                    self.reply_audience = audience
+                    self.reply_target = audience[0] if audience else ""
                     if self.terminal_event:
                         terminal = self.terminal_event
                         self.terminal_event = None
@@ -428,23 +427,16 @@ class ChatConnection:
         deadline = asyncio.get_running_loop().time() + (batch_wait_ms / 1000.0)
         while len(selected) < max_messages:
             if self.terminal_event:
-                return selected, None
+                return selected
             candidates = self.messages[self.standby_cursor:]
             for item in candidates:
                 self.standby_cursor += 1
-                text = str(item.get("text") or "").strip()
-                low = text.lower()
-                from_bot = item.get("from") == "RoomBot"
-                if self.conversation_active and from_bot and ("conversation stopped" in low or low.startswith("/stop_conversation")):
-                    return selected, ("stopped", item)
-                if self.conversation_active and low.startswith("/release") and _mentions(text, self.name):
-                    return selected, ("released", item)
                 if item.get("from") == self.name:
                     continue
                 if _mentions(str(item.get("text") or ""), self.name):
                     selected.append(item)
                     if len(selected) >= max_messages:
-                        return selected, None
+                        return selected
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 break
@@ -453,7 +445,7 @@ class ChatConnection:
                 await asyncio.wait_for(self.message_event.wait(), timeout=remaining)
             except asyncio.TimeoutError:
                 break
-        return selected, None
+        return selected
 
     def _standby_result(self, event, messages, cursor_before, addressed, matched_mention, max_bytes, instruction):
         source_messages = messages if isinstance(messages, list) else [messages]
@@ -476,11 +468,18 @@ class ChatConnection:
             result_messages = kept
         first = source_messages[0]
         last = source_messages[-1]
+        required_ids = [str(item.get("id") or "") for item in source_messages if item.get("response_required")]
+        if event == "message":
+            instruction = ("Respond to the required messages with chat_post, then immediately call chat_standby again."
+                           if required_ids else "No response was requested. Immediately call chat_standby again without posting an acknowledgement.")
         return {"event": event, "message": result_messages[0] if result_messages else None, "messages": result_messages,
                 "event_id": str(first.get("id") or ""),
                 "event_ids": [str(item.get("id") or "") for item in source_messages], "cursor_before": cursor_before,
                 "cursor_after": self.standby_cursor, "addressed": addressed,
                 "matched_mention": matched_mention, "truncated": truncated,
+                "response_required": bool(required_ids),
+                "required_response_event_ids": required_ids,
+                "reply_audience": list(self.reply_audience),
                 "continuation_cursor": str(last.get("id") or "") if truncated else "",
                 "room_id": self.room_id, "participant_id": self.participant_id,
                 **self._lifecycle_fields(event),
@@ -489,11 +488,12 @@ class ChatConnection:
     def _lifecycle_fields(self, event=""):
         room_closed = event in ("closed", "kicked") or self.error_code in ("room-closed", "kicked")
         room_open = not room_closed and self.status != "error"
-        return {"conversation_active": self.conversation_active,
-                "room_open": room_open,
-                "should_continue_standby": room_open and event not in ("stopped", "released"),
+        return {"room_open": room_open,
+                "should_continue_standby": room_open and event != "stopped",
                 "room_closed": room_closed,
-                "new_link_required": room_closed or self.error_code in ("auth", "no-room", "room-mismatch")}
+                "new_link_required": room_closed or self.error_code in ("auth", "no-room", "room-mismatch"),
+                "runtime_state": self.runtime_state,
+                "state_changed_at": self.state_changed_at}
 
     def status_data(self):
         present = [member for member in self.members if member.get("present", True)]
@@ -555,10 +555,12 @@ async def chat_join(magic_link: str, name: str) -> str:
 
 
 @mcp.tool()
-async def chat_post(text: str, name: str = "", continue_working: bool = False) -> str:
+async def chat_post(text: str, name: str = "", continue_working: bool = False,
+                    response_required: bool = None) -> str:
     """PKM Chatroom: post a directed message.
 
-    Final replies automatically return to standby. For an acknowledgement or
+    Final replies change the activity state to standby but do not block. The
+    caller MUST immediately call chat_standby after a final post. For an acknowledgement or
     progress update sent before work is complete, pass continue_working=true so
     the Agent LED remains thinking until the final post or next chat_standby.
     """
@@ -566,7 +568,7 @@ async def chat_post(text: str, name: str = "", continue_working: bool = False) -
         connection = _resolve(name)
     except ValueError as error:
         return json.dumps({"ok": False, "error": str(error)})
-    return json.dumps(await connection.post(text, bool(continue_working)))
+    return json.dumps(await connection.post(text, bool(continue_working), response_required))
 
 
 @mcp.tool()
@@ -596,11 +598,10 @@ async def chat_history(limit: int = 50, name: str = "") -> str:
 @mcp.tool()
 async def chat_standby(timeout: int = 300, max_messages: int = 8, max_bytes: int = 32768,
                        batch_wait_ms: int = 250, name: str = "") -> str:
-    """PKM Chatroom: block until @name/@all, control, close, transport, or timeout.
+    """PKM Chatroom: block until @name/@all, stop, close, transport, or timeout.
 
     The connection enters standby automatically after Join and after every Post.
-    This call unblocks on directed messages. Stop/release events apply only once
-    this Agent's conversation is active; Room close and leave always terminate.
+    This call unblocks on directed messages. Host /stop, Room close, and leave terminate.
     """
     try:
         connection = _resolve(name)

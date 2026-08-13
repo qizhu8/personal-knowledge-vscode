@@ -82,8 +82,7 @@ class LiveAgent:
             "You are an agent in a group chat. Reply concisely and stay on task.")
         self.poll_interval = poll_interval
         self.end_idle = end_idle
-        self.conv_active = False
-        self.conv_participants = set()
+        self.conv_active = converse
         self.history = []
         self.pending = []
         self.m = P.SessionMachine(name, role=role)
@@ -164,67 +163,29 @@ class LiveAgent:
                 self.m.state = P.SessionMachine.CLOSED
                 return
 
-    # ── conversational standby mode (magic-message driven) ───────────────────
+    # ── directed standby mode ────────────────────────────────────────────────
     def _state_frame(self, st, turn=None):
         meta = {"state": st}
         if turn:
             meta["turn"] = turn
         return {"v": P.PROTO_VERSION, "t": "state", "from": self.name, "meta": meta}
 
-    def _strip_command(self, s):
-        rest = re.sub(r"^/start_conversation\b", "", s, flags=re.I)
-        rest = re.sub(r'^(\s*@(?:"[^"]+"|[\w\-]+))+', "", rest)  # drop leading @invitees
-        return rest.strip()
-
     async def _converse_intake(self, frm, text):
         if P.decode(text):
             return  # ignore raw protocol frames
-        s = text.strip()
-        low = s.lower()
-        if frm == "roombot" and ("conversation prepared" in low or "conversation started" in low or "joined the conversation" in low):
-            names = [m.lower() for m in P.parse_mentions(s)]
-            if self.name.lower() in names or "all" in names:
-                self.conv_participants = set(P.parse_mentions(s))
-                self.history = []
-                await self._engage()
-            return
-        if low.startswith("/stop_conversation") or (frm == "roombot" and "conversation stopped" in low):
-            await self._disengage("conversation stopped")
-            return
-        if low.startswith("/release") or (frm == "roombot" and low.startswith("released:")):
-            names = [m.lower() for m in P.parse_mentions(s)]
-            if self.name.lower() in names:
-                await self._disengage("released")
-            return
         if frm == self.name:
-            return  # own ordinary messages are already present in local history
-        if self.conv_active:
+            return
+        names = [m.lower() for m in P.parse_mentions(text)]
+        if self.name.lower() in names or "all" in names or "everyone" in names:
             self.history.append({"from": frm, "text": text})
             self.pending.append({"from": frm, "text": text})
 
-    async def _engage(self):
-        self.conv_active = True
-        await self._emit([
-            f"🟢 {self.name}: joined — standing by, I'll reply within "
-            f"{int(self.poll_interval)}s. Say /stop_conversation to end.",
-            self._state_frame("standby")])
-
-    async def _disengage(self, reason):
-        if not self.conv_active:
-            return
-        self.conv_active = False
-        self.pending = []
-        await self._emit([f"👋 {self.name}: leaving the conversation ({reason}).",
-                          self._state_frame("idle")])
-
     def _should_respond(self, batch):
-        # The hub coordinates free talk. Respond only to @me/@all or an explicit
-        # roombot turn grant; never race other agents on an undirected message.
+        # Respond only to @me/@all; never race other agents on unrelated text.
         for m in batch:
             names = [x.lower() for x in P.parse_mentions(m["text"])]
             directed = self.name.lower() in names or "all" in names or "everyone" in names
-            granted = m["from"] == "roombot" and directed and "your turn" in m["text"].lower()
-            if directed or granted:
+            if directed:
                 return True
         return False
 
@@ -283,7 +244,7 @@ class LiveAgent:
             self.members = f.get("members", [])
         elif t == "error":
             log("hub error:", f.get("code"), f.get("msg"))
-        elif t in ("closed", "kicked"):
+        elif t in ("closed", "kicked", "stopped"):
             self.m.state = P.SessionMachine.CLOSED
 
     async def _handle_text(self, text):
@@ -374,8 +335,8 @@ def main():
     ap.add_argument("--topic", default="task queue")
     ap.add_argument("--no-narrate", action="store_true", help="don't post plain-text status lines")
     ap.add_argument("--converse", action="store_true",
-                    help="conversational standby mode: react to /start_conversation, poll every N s")
-    ap.add_argument("--system", default="", help="system prompt for conversational mode")
+                    help="directed standby mode: respond to @name/@all until the Host uses /stop")
+    ap.add_argument("--system", default="", help="system prompt for directed standby mode")
     ap.add_argument("--poll", type=float, default=3.0, help="standby poll interval seconds")
     ap.add_argument("--backend", default=os.environ.get("PKM_LLM_BACKEND", ""),
                     help="LLM backend: mock | openai | vllm | pyparus | human")
@@ -388,7 +349,7 @@ def main():
         raise SystemExit("PKM_CHAT_URL and PKM_CHAT_SECRET (or --url/--secret) are required")
     room = args.room.strip() or unquote(urlsplit(url).path.lstrip("/"))
 
-    # An LLM is needed by the worker (structured) or any conversational agent.
+    # An LLM is needed by the worker (structured) or any directed-standby agent.
     llm = None
     if args.backend and (args.converse or args.role == "Worker"):
         llm = AiClient.from_env(backend=args.backend or None,

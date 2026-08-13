@@ -25,9 +25,9 @@ time.sleep(0.05)
 bridge._on_frame(__import__("json").dumps({
     "t": "history",
     "messages": [
-        {"from": "roombot", "text": "Conversation started — active agents: @\"History Agent\".", "ts": 1},
-        {"from": "Host", "text": "/release @\"History Agent\"", "ts": 2},
-        {"from": "Host", "text": "/stop_conversation", "ts": 3},
+        {"from": "Host", "text": "Old room history", "ts": 1},
+        {"from": "Other", "text": "@Host unrelated", "ts": 2},
+        {"from": "Host", "text": "Another old message", "ts": 3},
         {"system": True, "from": "", "text": "History Agent left the room", "ts": 4},
     ],
 }))
@@ -36,7 +36,6 @@ thread.join(timeout=2)
 assert not thread.is_alive(), "standby test thread did not finish"
 assert result.get("event") == "timeout", result
 assert bridge.runtime_state == "standby", bridge.runtime_state
-assert bridge.conversation_active is False
 assert bridge.standby_cursor == bridge.seq == 4
 
 catchup = ChatBridge()
@@ -56,34 +55,13 @@ catchup._on_frame(__import__("json").dumps({
     "t": "history",
     "mode": "catchup",
     "messages": [
-        {"id": "c1", "from": "roombot", "text": "Conversation started — active agents: @\"Catchup Agent\".", "ts": 5},
+        {"id": "c1", "from": "Other", "text": "@Host unrelated", "ts": 5},
         {"id": "c2", "from": "Host", "text": "@\"Catchup Agent\" please catch up", "ts": 6},
     ],
 }))
 directed_thread.join(timeout=2)
 assert directed_result.get("event") == "message", directed_result
-assert catchup.conversation_active is True
 assert catchup.last_message_id == "c2"
-
-stopped_result = {}
-
-
-def wait_stopped():
-    stopped_result.update(catchup.standby(1))
-
-
-stopped_thread = threading.Thread(target=wait_stopped)
-stopped_thread.start()
-time.sleep(0.05)
-catchup._on_frame(__import__("json").dumps({
-    "t": "history",
-    "mode": "catchup",
-    "messages": [{"id": "c3", "from": "Host", "text": "/stop_conversation", "ts": 7}],
-}))
-stopped_thread.join(timeout=2)
-assert stopped_result.get("event") == "stopped", stopped_result
-assert catchup.runtime_state == "idle"
-assert catchup.last_message_id == "c3"
 
 focused = ChatBridge()
 focused.name = "Focused Agent"
@@ -109,7 +87,6 @@ assert focused_result["cursor_after"] == 4
 assert focused_result["truncated"] is False
 assert focused_result["room_id"] == "room-focused"
 assert focused_result["participant_id"] == "participant-focused"
-assert focused_result["conversation_active"] is False
 assert focused_result["room_open"] is True
 assert focused_result["should_continue_standby"] is True
 assert focused_result["room_closed"] is False
@@ -137,15 +114,13 @@ assert [item["id"] for item in single.standby(1, max_messages=1)["messages"]] ==
 
 controlled = ChatBridge()
 controlled.name = "Controlled Agent"
-controlled.conversation_active = True
-controlled._replace_history([
-    {"id": "ctrl1", "from": "Host", "text": "@\"Controlled Agent\" begin", "ts": 14},
-    {"id": "ctrl2", "from": "Host", "text": "/stop_conversation", "ts": 15},
-], mode="catchup")
+controlled.state = "joined"
+controlled._on_frame(json.dumps({"t": "stopped", "reason": "Stopped by the room host."}))
 controlled_result = controlled.standby(1)
 assert controlled_result["event"] == "stopped", controlled_result
-assert controlled_result["event_id"] == "ctrl2"
-assert controlled.conversation_active is False
+assert controlled_result["should_continue_standby"] is False
+assert controlled_result["room_closed"] is False
+assert controlled_result["new_link_required"] is False
 
 large = ChatBridge()
 large.name = "Large Agent"
@@ -159,4 +134,4 @@ assert large_result["continuation_cursor"] == "large-1"
 assert len(large_result["message"]["text"].encode("utf-8")) <= 1024
 assert len(json.dumps(large_result, ensure_ascii=False).encode("utf-8")) <= 1400
 
-print("history atomic test: bounded burst, control precedence, cursor metadata, and byte cap OK")
+print("history atomic test: directed burst, structured stop, cursor metadata, and byte cap OK")

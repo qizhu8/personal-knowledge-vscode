@@ -67,9 +67,9 @@ async function main() {
   let managedClient;
   try {
     hub = new ChatHub();
-    assert.deepStrictEqual(hub.conversationMentions('@Host discusses `@all` behavior'), ['Host']);
-    assert.deepStrictEqual(hub.conversationMentions('plain text mentions @all later'), []);
-    assert.deepStrictEqual(hub.conversationMentions('/release @"Agent One"'), ['Agent One']);
+    assert.deepStrictEqual(hub.leadingMentionNames('@Host discusses `@all` behavior'), ['Host']);
+    assert.deepStrictEqual(hub.leadingMentionNames('plain text mentions @all later'), []);
+    assert.deepStrictEqual(hub.leadingMentionNames('/stop @"Agent One"'), ['Agent One']);
     hub.configureLifecycle(root, 10 * 1024 * 1024, "installation-owner", secrets);
     await hub.start(0);
     const created = await hub.createRoom("Approval", "join-secret");
@@ -118,6 +118,13 @@ async function main() {
     guest.send(JSON.stringify({ t: "msg", room: created.room, text: "@Host participant identity message" }));
     const participantMessage = await waitFrame(host, frame => frame.t === "msg" && frame.text === "@Host participant identity message");
     assert.strictEqual(participantMessage.fromId, approved.participantId);
+    assert.strictEqual(participantMessage.responseRequired, true);
+    guest.send(JSON.stringify({ t: "msg", room: created.room, text: "@Host FYI only", responseRequired: false }));
+    const explicitFyi = await waitFrame(host, frame => frame.t === "msg" && frame.text === "@Host FYI only");
+    assert.strictEqual(explicitFyi.responseRequired, false);
+    host.send(JSON.stringify({ t: "msg", room: created.room, text: "@all broadcast update" }));
+    const broadcast = await waitFrame(guest, frame => frame.t === "msg" && frame.text === "@all broadcast update");
+    assert.strictEqual(broadcast.responseRequired, false);
     await waitUntil(async () => (await hub.persistence.openRoom(created.roomId, created.room)).messages.some(
       message => message.content === "@Host participant identity message" && message.participantId === approved.participantId));
 
@@ -142,7 +149,8 @@ async function main() {
     assert.strictEqual(reuseApproved.participantId, approved.participantId);
     const catchup = await waitFrame(reused, frame => frame.t === "history");
     assert.strictEqual(catchup.mode, "catchup");
-    assert.deepStrictEqual(catchup.messages.map(message => message.id), [leaveMessage.id, missed.id]);
+    assert.deepStrictEqual(catchup.messages.map(message => message.id), [explicitFyi.id, broadcast.id, leaveMessage.id, missed.id]);
+    assert.strictEqual(catchup.messages[0].responseRequired, false, "response intent must survive persistence");
 
     host.send(JSON.stringify({
       t: "admin", room: created.room, action: "edit",
@@ -205,6 +213,10 @@ async function main() {
     assert.strictEqual(restoredKeeper.present, false);
     assert.strictEqual(restoredKeeper.role, "Analyst");
     assert(!restoredPresence.members.some(member => member.participantId === approved.participantId), "forgotten participant must not return in Earlier");
+    const activeRenamed = await hub.renameActiveRoom(rehosted.roomId, "Approval Renamed");
+    assert.strictEqual(activeRenamed, "approval renamed");
+    await waitFrame(rehost, frame => frame.t === "room.renamed" && frame.room === "approval renamed");
+    assert.deepStrictEqual(hub.roomNames, ["approval renamed"]);
     rehost.send(JSON.stringify({ t: "msg", room: rehosted.room, text: "/leave" }));
     await waitUntil(async () => hub.roomNames.length === 0);
     const storedAfterLeave = await hub.listStoredRooms();
