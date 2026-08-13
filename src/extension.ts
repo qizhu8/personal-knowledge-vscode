@@ -1340,7 +1340,9 @@ class ChatRoomManager {
     const duplicate = [...this.managedAgents.values()].some(other => other.id !== id && other.roomKey === agent.roomKey && other.name.toLowerCase() === nextName.toLowerCase());
     if (duplicate) { vscode.window.showWarningMessage(`Managed agent "${nextName}" already exists in this room.`); return; }
     const room = this.rooms.get(agent.roomKey);
-    const target = `cid:managed-${agent.id}:${agent.name.trim().toLowerCase()}`;
+    const target = agent.client.participantId
+      ? `participant:${agent.client.participantId}`
+      : `cid:managed-${agent.id}:${agent.name.trim().toLowerCase()}`;
     if (!room?.selfHost || !room.client.sendAdmin("edit", target, nextName, nextRole)) {
       vscode.window.showWarningMessage("Reconnect the hosted room before editing this managed agent.");
       return;
@@ -1491,10 +1493,14 @@ class ChatRoomManager {
 
   /** Host-only: moderate a member in the active room. Target identified by its
    *  stable identity (sid) when available, else by display name. */
-  moderate(action: "kick" | "mute" | "unmute" | "rename" | "edit", target: { sid?: string; user: string }, name?: string, role?: string): void {
+  moderate(action: "kick" | "mute" | "unmute" | "rename" | "edit", target: { participantId?: string; sid?: string; user: string }, name?: string, role?: string): void {
     const rc = this.activeRoom;
     if (!rc) return;
-    const key = target.sid ? `cid:${target.sid}:${(target.user || "").trim().toLowerCase()}` : `name:${(target.user || "").trim().toLowerCase()}`;
+    const key = target.participantId
+      ? `participant:${target.participantId}`
+      : target.sid
+        ? `cid:${target.sid}:${(target.user || "").trim().toLowerCase()}`
+        : `name:${(target.user || "").trim().toLowerCase()}`;
     rc.client.sendAdmin(action, key, name, role);
   }
 
@@ -2580,6 +2586,7 @@ async function handleMessage(
       const action = String(msg.action || "");
       if (!["kick", "mute", "unmute", "rename", "edit"].includes(action)) break;
       const sid  = msg.sid ? String(msg.sid) : "";
+      const participantId = msg.participantId ? String(msg.participantId) : "";
       const user = String(msg.user || "member");
       let name: string | undefined;
       let role: string | undefined;
@@ -2605,7 +2612,7 @@ async function handleMessage(
         if (input === undefined) break;
         role = input.trim();
       }
-      getChatMgr().moderate(action as "kick" | "mute" | "unmute" | "rename" | "edit", { sid, user }, name, role);
+      getChatMgr().moderate(action as "kick" | "mute" | "unmute" | "rename" | "edit", { participantId, sid, user }, name, role);
       break;
     }
 
@@ -4166,8 +4173,8 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
     if (!element) {
       const chatroom = new PkTreeItem("Chatroom", 'root-chatroom', C);
       chatroom.command = { command: "personalKnowledge.openChatroom", title: "Open Chatroom" };
-      const mcp = new PkTreeItem("MCP", "root-mcp", vscode.TreeItemCollapsibleState.None);
-      mcp.command = { command: "personalKnowledge.setupMcp", title: "Open MCP" };
+      const mcp = new PkTreeItem("Config", "root-mcp", vscode.TreeItemCollapsibleState.None);
+      mcp.command = { command: "personalKnowledge.setupMcp", title: "Open Config" };
       return [
         new PkTreeItem("Skills",   'root-skills',   vscode.TreeItemCollapsibleState.Collapsed),
         new PkTreeItem("Notes",    'root-notes',    C),

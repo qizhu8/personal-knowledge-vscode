@@ -45,7 +45,8 @@ try {
   );
 
   let status = projection.pkmSkillProjectionStatus(context);
-  assert.strictEqual(status.routerVersion, "1.0.0");
+  assert.strictEqual(status.routerVersion, "1.1.3");
+  assert.strictEqual(status.minimumMcpSchema, "2.2.3");
   assert.strictEqual(status.targets.find(target => target.id === "copilot").state, "missing");
 
   const injected = projection.injectPkmSkill(context, "copilot");

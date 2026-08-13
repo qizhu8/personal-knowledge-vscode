@@ -7,7 +7,7 @@ tags:
   - skill-router
   - knowledge-management
 type: system
-router_version: 1.0.0
+router_version: 1.1.3
 created: 2026-08-12
 ---
 
@@ -21,9 +21,10 @@ For coding, research, debugging, operational workflows, or domain-specific tasks
 
 1. Call `pkm.skill_capabilities` to discover the current PKM Skill workflow.
 2. Call `pkm.skill_context` with the task and relevant workspace, file, and diagnostic context.
-3. Follow every returned `required` Skill.
-4. Apply `recommended` Skills when they fit the task.
-5. Keep each returned `skill_id` and `content_hash` for maintenance feedback.
+3. If it returns `no_match: true`, continue without a PKM Skill; do not force a weak match.
+4. Review the returned summaries and call `pkm.get_skill(skill_id)` only for candidates you will apply.
+5. Follow every returned `required` Skill and apply `recommended` Skills when they fit the task.
+6. Keep each returned `skill_id` and `content_hash` for maintenance feedback.
 
 Do not load the entire Skill catalog. Prefer the smallest relevant set.
 

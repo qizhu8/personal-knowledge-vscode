@@ -830,7 +830,7 @@ function chatPaintMembers() {
         + `<button class="chat-mod" title="Edit name and role" onclick="chatModerate('edit',this)">✏️</button>`
         + `<button class="chat-mod chat-mod-kick" title="Permanently remove from this room and Earlier" onclick="chatModerate('kick',this)">🚫</button></span>`;
     }
-    return `<div class="chat-member${isHere ? '' : ' gone'}${m.muted ? ' muted' : ''}" data-sid="${attr(m.sid || '')}" data-user="${attr(m.user)}" data-role="${attr(m.role || '')}" title="${esc(how)}"><span class="chat-mdot ${dotK}${runtimeState ? ' state-' + runtimeState : ''}"></span><span class="chat-mname">${icon} ${esc(m.user)}${sid}${unv}${mut}${proto}${role}</span>${tail}${actions}</div>`;
+    return `<div class="chat-member${isHere ? '' : ' gone'}${m.muted ? ' muted' : ''}" data-participant-id="${attr(m.participantId || '')}" data-sid="${attr(m.sid || '')}" data-user="${attr(m.user)}" data-role="${attr(m.role || '')}" title="${esc(how)}"><span class="chat-mdot ${dotK}${runtimeState ? ' state-' + runtimeState : ''}"></span><span class="chat-mname">${icon} ${esc(m.user)}${sid}${unv}${mut}${proto}${role}</span>${tail}${actions}</div>`;
   };
   let html = amHost ? '<div class="chat-host-hint">You host this room — use each member\'s buttons to mute, rename ✏️, or remove 🚫.</div>' : '';
   if (chat.proto && Object.keys(chat.proto).length) {
@@ -851,7 +851,7 @@ function chatPaintMembers() {
 function chatModerate(action, btn) {
   const rowEl = btn.closest('.chat-member');
   if (!rowEl) return;
-  ask('chatModerate', { action, sid: rowEl.dataset.sid || '', user: rowEl.dataset.user || '', role: rowEl.dataset.role || '' });
+  ask('chatModerate', { action, participantId: rowEl.dataset.participantId || '', sid: rowEl.dataset.sid || '', user: rowEl.dataset.user || '', role: rowEl.dataset.role || '' });
 }
 function chatRenameSelf() {
   ask('chatRenameSelf', { user: (chat.active && chat.active.user) || (chat.cfg && chat.cfg.displayName) || '' });

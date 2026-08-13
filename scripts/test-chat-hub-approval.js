@@ -149,6 +149,8 @@ async function main() {
       target: `participant:${approved.participantId}`, name: "Agent Renamed", role: "Reviewer",
     }));
     await waitFrame(reused, frame => frame.t === "renamed" && frame.name === "Agent Renamed");
+    await waitFrame(host, frame => frame.t === "presence" && frame.members.some(
+      member => member.participantId === approved.participantId && member.user === "Agent Renamed" && member.role === "Reviewer"));
     await waitUntil(async () => (await hub.persistence.identityState(created.roomId)).aliases.some(
       alias => alias.participantId === approved.participantId && alias.alias === "Agent Renamed" && !alias.releasedAt));
     reused.close();

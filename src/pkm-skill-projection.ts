@@ -5,9 +5,16 @@ import { createHash, randomBytes } from "crypto";
 import * as vscode from "vscode";
 import { getStorePath } from "./filestore";
 
-export const PKM_SKILL_ROUTER_VERSION = "1.0.0";
-export const PKM_SKILL_MIN_MCP_VERSION = "2.1.0";
+export const PKM_SKILL_ROUTER_VERSION = "1.1.3";
+export const PKM_SKILL_MIN_MCP_VERSION = "2.2.3";
 export const PKM_SKILL_SOURCE_RELATIVE = path.join("System", "PKM", "PKM Skills.md");
+
+const LEGACY_BUNDLED_SOURCE_HASHES = new Set([
+  "a7698a2b99e23f88aa9fd84d8d01cb9984e843e1b46fda426d349d95bdfeaa74", // Router 1.0.0
+  "90e969afbde64e489d6856a6df078d2e6da4a847c961496960d6e7d6d0e41588", // Router 1.1.0
+  "2da9ae268a9f6c828d466650fb2db1b812a00aeb30c6b25862ca24346bacbef9", // Router 1.1.1
+  "e200f9d3967f4e0f0779f59ae6ecdde4afac834b6c3b18fe7be557daf242265a", // Router 1.1.2
+]);
 
 const CUSTOM_TARGETS_KEY = "pkm.skillProjection.customTargets.v1";
 const MARKER_PREFIX = "<!-- pkm-managed ";
@@ -85,9 +92,16 @@ function bundledSourcePath(context: vscode.ExtensionContext): string {
 
 function ensureCanonicalSource(context: vscode.ExtensionContext): string {
   const target = canonicalSourcePath();
-  if (fs.existsSync(target)) return target;
   const bundled = bundledSourcePath(context);
   if (!fs.existsSync(bundled)) throw new Error("The bundled PKM Skill Router source is missing.");
+  if (fs.existsSync(target)) {
+    const current = fs.readFileSync(target, "utf8");
+    if (!LEGACY_BUNDLED_SOURCE_HASHES.has(sha256(current))) return target;
+    const temp = `${target}.tmp-${process.pid}-${randomBytes(4).toString("hex")}`;
+    fs.copyFileSync(bundled, temp);
+    fs.renameSync(temp, target);
+    return target;
+  }
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.copyFileSync(bundled, target);
   return target;

@@ -3,13 +3,15 @@
 All notable changes to the **Personal Knowledge Manager** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [2.4.1] — 2026-08-13
 
 ### Added
 - Added a versioned PKM Skill Router with generated native Agent Skill projections for GitHub Copilot, generic Agents, Claude, and custom target folders.
 - Added `skill_capabilities`, `skill_context`, `skill_feedback`, and `propose_skill_update` MCP tools for automatic secondary-Skill discovery and reviewable maintenance.
 - Added content-hash tracking, conflict/modified detection, safe Inject/Update/Remove actions, stale-target reminders, and a Skill proposal queue.
 - Added user-selected Agent Skills roots through native folder browsing or manual paths, including Windows drive/UNC paths, `%USERPROFILE%`, `~`, and environment-variable expansion with cross-host validation.
+- Fixed Chatroom member rename and role editing to target the durable participant identity, so roster updates no longer fail with “That member is no longer in the room roster.”
+- Upgraded PKM Skill Router to 1.1.3 with metadata-gated, explainable summary retrieval, explicit `no_match`, and on-demand full Skill loading by stable ID.
 
 ### Changed
 - Renamed the user-facing MCP tab to Config and grouped MCP runtime/server controls with Agent Skill integration.
