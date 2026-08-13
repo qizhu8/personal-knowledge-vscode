@@ -3,7 +3,7 @@
 All notable changes to the **Personal Knowledge Manager** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [2.4.2] — 2026-08-13
 
 ### Fixed
 - Only highlight Chatroom `@mentions` that resolve to a Room roster alias or the reserved broadcast names; unknown literal `@words` remain plain text.
