@@ -76,6 +76,22 @@ jobs:
         if: inputs.mode == 'publish'
         run: npx @vscode/vsce@3.9.2 package --out "personal-knowledge-${{ inputs.version }}.vsix"
 
+      - name: Verify Marketplace OIDC configuration
+        shell: bash
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -z "$AZURE_CLIENT_ID" ]] && missing+=("AZURE_CLIENT_ID")
+          [[ -z "$AZURE_TENANT_ID" ]] && missing+=("AZURE_TENANT_ID")
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::Missing required 'marketplace' environment variable(s): ${missing[*]}." >&2
+            echo "See PUBLISHING.md 'One-time setup' for how to create the GitHub environment 'marketplace' and set these variables." >&2
+            exit 1
+          fi
+
       - name: Sign in to personal Entra tenant with GitHub OIDC
         uses: azure/login@v2
         with:
