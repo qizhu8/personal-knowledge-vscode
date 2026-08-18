@@ -22,6 +22,7 @@ export interface PendingJoinApproval {
 }
 
 interface PendingEntry extends PendingJoinApproval {
+  clientKey: string;
   status: "pending" | "settling";
   timer?: NodeJS.Timeout;
   resolve: (result: JoinApprovalResult) => void;
@@ -37,12 +38,12 @@ export class ChatJoinApprovalManager {
     private readonly onChanged?: () => void,
   ) {}
 
-  async request(roomId: string, connectionId: string, alias: string, kind: string): Promise<{ approval: PendingJoinApproval; result: Promise<JoinApprovalResult> }> {
+  async request(roomId: string, connectionId: string, alias: string, clientKey: string, kind: string): Promise<{ approval: PendingJoinApproval; result: Promise<JoinApprovalResult> }> {
     const requestedAt = Date.now();
     const requestId = randomUUID();
     const aliasKey = normalizeChatAlias(alias);
     const expiresAt = requestedAt + this.timeoutMs;
-    await this.persistence.requestJoin(roomId, { requestId, alias, aliasKey, kind, requestedAt, expiresAt });
+    await this.persistence.requestJoin(roomId, { requestId, alias, aliasKey, clientKey, kind, requestedAt, expiresAt });
     let state: ParticipantIdentityState;
     try { state = await this.persistence.identityState(roomId); }
     catch (error) {
@@ -54,7 +55,7 @@ export class ChatJoinApprovalManager {
     let resolve!: (result: JoinApprovalResult) => void;
     const result = new Promise<JoinApprovalResult>(done => { resolve = done; });
     const entry: PendingEntry = {
-      requestId, connectionId, roomId, alias, aliasKey, kind, requestedAt, expiresAt,
+      requestId, connectionId, roomId, alias, aliasKey, clientKey, kind, requestedAt, expiresAt,
       reusableParticipants: this.reusableParticipants(roomId, state),
       status: "pending", resolve,
     };
@@ -62,6 +63,22 @@ export class ChatJoinApprovalManager {
     this.armTimeout(entry);
     this.onChanged?.();
     return { approval: this.publicEntry(entry), result };
+  }
+
+  async approveAutomatic(requestId: string): Promise<void> {
+    const entry = this.requirePending(requestId);
+    const state = await this.persistence.identityState(entry.roomId);
+    const previous = [...state.pendingJoins].reverse().find(item =>
+      item.requestId !== requestId && item.clientKey === entry.clientKey &&
+      (item.status === "approved_new" || item.status === "approved_reuse") && !!item.participantId);
+    const membership = previous?.participantId
+      ? state.memberships.find(item => item.participantId === previous.participantId && item.forgottenAt == null)
+      : undefined;
+    if (membership && !this.isParticipantOnline(entry.roomId, membership.participantId)) {
+      await this.settle(requestId, { outcome: "reuse", participantId: membership.participantId });
+    } else {
+      await this.settle(requestId, { outcome: "new", participantId: randomUUID() });
+    }
   }
 
   list(roomId?: string): PendingJoinApproval[] {

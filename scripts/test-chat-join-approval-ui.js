@@ -11,7 +11,10 @@ const functionSource = match[0].replace(/\n\nfunction chatPaintRecents$/, "");
 
 function element() {
   const value = { innerHTML: "", hidden: false };
-  value.classList = { toggle(_name, hidden) { value.hidden = hidden; } };
+  value.classList = {
+    toggle(_name, hidden) { value.hidden = hidden; },
+    add(name) { if (name === "hidden") value.hidden = true; },
+  };
   return value;
 }
 
@@ -34,16 +37,7 @@ context.chat.pendingApprovals = [{
   reusableParticipants: [],
 }];
 context.paint();
-assert.strictEqual(wrap.hidden, false);
-assert.match(box.innerHTML, /Agent &lt;One&gt;/);
-assert.match(box.innerHTML, /chatApproveJoinNew/);
-assert.match(box.innerHTML, /chatRejectJoin/);
-assert.match(box.innerHTML, /Reuse<\/button>/);
-assert.match(box.innerHTML, /disabled/);
-assert.doesNotMatch(box.innerHTML, /request-'unsafe/);
-
-context.chat.pendingApprovals[0].reusableParticipants = [{ participantId: "participant-1", previousAlias: "Old", kind: "agent" }];
-context.paint();
-assert.match(box.innerHTML, /chatApproveJoinReuse/);
-assert.match(box.innerHTML, /1 offline identity option/);
-console.log("join approval UI test: empty, escaped alias, New, Reuse, Reject, and disabled states OK");
+assert.strictEqual(wrap.hidden, true);
+assert.strictEqual(box.innerHTML, "");
+assert.doesNotMatch(functionSource, /chatApproveJoin|chatRejectJoin|Reuse Identity/);
+console.log("Join UI test: manual approval and Reuse controls are removed OK");

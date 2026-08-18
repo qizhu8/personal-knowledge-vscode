@@ -18,6 +18,15 @@ import { createHash } from "crypto";
 
 let _store = join(homedir(), "personal-knowledge");
 
+export interface SearchOptions { regex?: boolean; caseSensitive?: boolean; }
+function searchMatches(query: string, options: SearchOptions, values: unknown[]): boolean {
+  const source = options.regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  try {
+    const pattern = new RegExp(source, options.caseSensitive ? "" : "i");
+    return values.some(value => pattern.test(String(value || "")));
+  } catch { return false; }
+}
+
 export function setStorePath(p: string): void {
   _store = p?.trim() || join(homedir(), "personal-knowledge");
 }
@@ -117,11 +126,9 @@ export function noteList(type?: string, limit = 50): any[] {
   return rows.slice(0, limit).map(({ content, ...meta }) => meta);
 }
 
-export function noteSearch(q: string): any[] {
-  const needle = q.toLowerCase();
+export function noteSearch(q: string, options: SearchOptions = {}): any[] {
   return allNoteFiles().map(noteFromFile)
-    .filter(r => [r.title, r.description, r.content, r.slug, r.category, r.type, ...JSON.parse(r.tags || "[]")]
-      .some(value => String(value || "").toLowerCase().includes(needle)))
+    .filter(r => searchMatches(q, options, [r.title, r.description, r.content, r.slug, r.category, r.type, ...JSON.parse(r.tags || "[]")]))
     .sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""))
     .slice(0, 100)
     .map(({ content, ...meta }) => meta);
@@ -385,11 +392,9 @@ export function skillList(category?: string, tag?: string): any[] {
   return rows.map(({ content, _key, ...meta }) => meta);
 }
 
-export function skillSearch(q: string): any[] {
-  const needle = q.toLowerCase();
+export function skillSearch(q: string, options: SearchOptions = {}): any[] {
   return allSkillFiles().map(skillFromFile)
-    .filter(r => [r.name, r._key, r.description, r.content, r.category, r.source_project, ...JSON.parse(r.tags || "[]")]
-      .some(value => String(value || "").toLowerCase().includes(needle)))
+    .filter(r => searchMatches(q, options, [r.name, r._key, r.description, r.content, r.category, r.source_project, ...JSON.parse(r.tags || "[]")]))
     .slice(0, 100)
     .map(({ content, _key, ...meta }) => meta);
 }
@@ -610,14 +615,11 @@ export function paperList(): any[] {
     .sort((a, b) => (b.citationCount - a.citationCount) || ((b.year || 0) - (a.year || 0)) || a.title.localeCompare(b.title));
 }
 
-export function paperSearch(q: string): any[] {
-  const n = q.toLowerCase();
-  const matches = allPaperFiles().map(paperFromFile).filter(p => [
-    p.slug, p.title, p.description, p.content, p.topic, p.publisher, p.category, p.group,
-    p.url, p.file, p.year, ...p.authors, ...p.tags, ...p.conclusions,
-    ...p.implementation, ...p.assumptions,
-    ...p.cites.flatMap((cite: Cite) => [cite.paper, cite.note]),
-  ].some(value => String(value || "").toLowerCase().includes(n)));
+export function paperSearch(q: string, options: SearchOptions = {}): any[] {
+  const matches = allPaperFiles().map(paperFromFile).filter(p => searchMatches(q, options,
+    [p.slug, p.title, p.description, p.content, p.topic, p.publisher, p.category, p.group,
+    p.url, p.file, p.year, ...p.authors, ...p.tags, ...p.conclusions, ...p.implementation, ...p.assumptions,
+    ...p.cites.flatMap((cite: Cite) => [cite.paper, cite.note])]));
   const counts = citationCounts(allPaperFiles().map(paperFromFile));
   return matches.map(({ content, ...paper }) => ({ ...paper, citationCount: counts.get(paper.slug) || 0 }))
     .sort((a, b) => (b.citationCount - a.citationCount) || ((b.year || 0) - (a.year || 0)) || a.title.localeCompare(b.title));

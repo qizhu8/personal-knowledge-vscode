@@ -44,6 +44,24 @@ function mcpVersionBadge(installed, current, installedVersion, expectedVersion) 
   return '<span style="font-size:11px;padding:2px 8px;border-radius:8px;background:#f4b40022;color:#f4b400">● Outdated · ' + esc(installedVersion || 'unknown') + ' → v' + esc(expectedVersion || '?') + '</span>';
 }
 
+function mcpRegeneratePresentation(data) {
+  const installed = data?.installedVersion || 'missing';
+  const expected = data?.expectedVersion || '?';
+  const knowledgeInstalled = data?.installedKnowledgeVersion || 'missing';
+  const knowledgeExpected = data?.knowledgeVersion || '?';
+  const chatInstalled = data?.installedChatVersion || 'missing';
+  const chatExpected = data?.chatVersion || '?';
+  const label = !data?.installed
+    ? `Generate Server Code · target v${expected}`
+    : data?.current
+      ? `Regenerate Server Code · v${expected}`
+      : `Regenerate Server Code · v${installed} → v${expected}`;
+  const title = data?.current
+    ? `Generated server is current: Unified v${expected}, Knowledge v${knowledgeExpected}, Chat v${chatExpected}.`
+    : `Regenerate Unified v${installed} → v${expected}; Knowledge v${knowledgeInstalled} → v${knowledgeExpected}; Chat v${chatInstalled} → v${chatExpected}.`;
+  return { label, title };
+}
+
 function pkmSkillStateBadge(target) {
   const labels = {
     missing: 'Missing', current: 'Current', outdated: 'Router Outdated',
@@ -60,8 +78,10 @@ function renderPkmSkillTargets(data) {
   if (!skill) return '<div class="empty">Configure a PKM store before injecting the Skill Router.</div>';
   const rows = (skill.targets || []).map(target => {
     const update = ['missing','outdated','content-outdated','modified'].includes(target.state);
-    const label = target.state === 'missing' ? 'Inject PKM Skill' : target.state === 'current' ? 'Reinstall' : 'Update PKM Skill';
-    const action = update || target.state === 'current'
+    const label = target.state === 'missing'
+      ? `Inject PKM Skill · v${target.expectedVersion || skill.routerVersion}`
+      : `Update PKM Skill · v${target.installedVersion || 'unknown'} → v${target.expectedVersion || skill.routerVersion}`;
+    const action = update
       ? `<button class="tbtn" style="border-color:var(--accent)" onclick="ask('pkmSkillInject',{id:'${esc(target.id)}'})">${label}</button>`
       : '';
     const remove = target.managed
@@ -88,14 +108,88 @@ function renderPkmSkillTargets(data) {
   </div>`;
 }
 
+function mcpDashboardState(data) {
+  const skill = data?.pkmSkill;
+  const targets = skill?.targets || [];
+  const installedRouterVersions = [...new Set(targets.map(target => target.installedVersion).filter(Boolean))];
+  const routerInstalled = installedRouterVersions.length ? installedRouterVersions.map(version => `v${version}`).join(', ') : 'Missing';
+  const routerCurrent = targets.length > 0 && targets.every(target => target.state === 'current');
+  const process = data?.mcpProcess || { running:false, available:false, detail:'Not checked' };
+  const runtime = data?.mcpRuntime || {};
+  const store = data?.store || {};
+  return {
+    process, runtime, store, skill, routerInstalled, routerCurrent,
+    ready: !!store.valid && !!runtime.healthy && !!data?.current,
+  };
+}
+
+function mcpStatusLight(kind, label) {
+  return `<span class="mcp-status mcp-status-${kind}"><span class="mcp-status-dot"></span>${esc(label)}</span>`;
+}
+function mcpPathSizeText(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return 'Unavailable';
+  const units = ['B','KB','MB','GB','TB']; let value = bytes; let index = 0;
+  while (value >= 1024 && index < units.length - 1) { value /= 1024; index += 1; }
+  return `${value.toFixed(index === 0 || value >= 100 ? 0 : 1)} ${units[index]}`;
+}
+function renderMcpPathSize(data) {
+  const element = document.querySelector(`[data-mcp-path-size="${CSS.escape(String(data?.key || ''))}"]`);
+  if (!element) return;
+  element.textContent = data?.error ? data.error : mcpPathSizeText(Number(data?.bytes));
+  element.title = data?.error ? data.error : `${Number(data?.bytes || 0).toLocaleString()} bytes`;
+}
+function refreshMcpPathSizes() {
+  document.querySelectorAll('[data-mcp-path-size]').forEach(element => { element.textContent = 'Calculating…'; element.title = ''; });
+  ask('refreshMcpPathSizes', {});
+}
+
+function renderMcpDashboard(data) {
+  const status = mcpDashboardState(data);
+  const paths = data?.paths || {};
+  const processKind = status.process.running ? 'good' : status.ready ? 'warn' : 'bad';
+  const processLabel = status.process.running ? `Running${status.process.pid ? ` · PID ${status.process.pid}` : ''}` : status.ready ? 'Ready · not detected' : 'Setup required';
+  const rows = [
+    ['Unified MCP Server', data?.installedVersion ? `v${data.installedVersion}` : 'Missing', `v${data?.expectedVersion || '?'}`, data?.current, `<button class="tbtn ${data?.current ? '' : 'mcp-regenerate-action'}" onclick="doGenerateMcp()" ${status.runtime.healthy ? '' : 'disabled'}>${data?.current ? 'Regenerate' : data?.installed ? 'Update' : 'Generate'}</button>`],
+    ['Knowledge schema', data?.installedKnowledgeVersion ? `v${data.installedKnowledgeVersion}` : 'Missing', `v${data?.knowledgeVersion || '?'}`, data?.installedKnowledgeVersion === data?.knowledgeVersion, data?.installedKnowledgeVersion === data?.knowledgeVersion ? '<span class="mcp-no-action">No action</span>' : '<button class="tbtn mcp-regenerate-action" onclick="doGenerateMcp()">Update with Server</button>'],
+    ['Chat schema', data?.installedChatVersion ? `v${data.installedChatVersion}` : 'Missing', `v${data?.chatVersion || '?'}`, data?.installedChatVersion === data?.chatVersion, data?.installedChatVersion === data?.chatVersion ? '<span class="mcp-no-action">No action</span>' : '<button class="tbtn mcp-regenerate-action" onclick="doGenerateMcp()">Update with Server</button>'],
+    ['PKM Skill Router', status.routerInstalled, `v${status.skill?.routerVersion || '?'}`, status.routerCurrent, '<button class="tbtn" onclick="document.getElementById(\'pkm-skill-router-section\')?.scrollIntoView({behavior:\'smooth\'})">Review Targets</button>'],
+  ];
+  const setup = [
+    [status.store.valid, 'Knowledge root', status.store.valid ? status.store.path : status.store.configured ? 'Configured path is unavailable; restart to enter recovery setup' : 'Restart to enter first-run setup', '<span class="mcp-no-action">Startup wizard</span>'],
+    [!!data?.mcpPython?.valid, 'Python 3.10+', data?.mcpPython?.valid ? `${data.mcpPython.path} · ${data.mcpPython.version}` : 'Select and validate a Python executable', '<button class="tbtn" onclick="document.getElementById(\'mcp-python-path\')?.scrollIntoView({behavior:\'smooth\'})">Configure Python</button>'],
+    [!!status.runtime.healthy, 'Managed runtime', status.runtime.healthy ? `${status.runtime.python} · healthy` : status.runtime.error || 'Create the dedicated virtual environment', `<button class="tbtn" onclick="ask('mcpRepairRuntime',{})" ${data?.mcpPython?.valid ? '' : 'disabled'}>${status.runtime.exists ? 'Repair Runtime' : 'Create Runtime'}</button>`],
+    [!!data?.current, 'Generated server code', data?.current ? `Unified v${data.expectedVersion} is current` : 'Generate or update server.py, chat_server.py, and requirements.txt', data?.current ? '<span class="mcp-no-action">No action needed</span>' : `<button class="tbtn mcp-regenerate-action" onclick="doGenerateMcp()" ${status.runtime.healthy ? '' : 'disabled'}>${data?.installed ? 'Update Code' : 'Generate Code'}</button>`],
+    [!!data?.nativeMcpProvider, 'Registration', data?.nativeMcpProvider ? 'VS Code provider is available; verify external Agency separately' : 'Register pkm in VS Code and any external Agency', '<button class="tbtn" onclick="document.getElementById(\'mcp-agency-registration\')?.scrollIntoView({behavior:\'smooth\'})">Registration Guide</button>'],
+  ];
+  return `<section class="mcp-dashboard">
+    <div class="mcp-dashboard-head"><div><h2>PKM Integration Status</h2><p>Server runtime, generated schemas, and Agent Skill Router are versioned independently.</p></div><div class="mcp-running">${mcpStatusLight(processKind, processLabel)}<button class="tbtn" onclick="ask('checkMcp',{})" title="Refresh process and version status">↻</button></div></div>
+    <div class="mcp-runtime-note">${esc(status.process.detail || '')}${!status.process.running && status.ready ? ' Stdio MCP servers start on demand; use MCP: List Servers to start pkm.' : ''}</div>
+    <div class="mcp-version-table"><div class="mcp-version-row mcp-version-header"><span>Component</span><span>Installed</span><span>Target</span><span>Status</span><span>Action</span></div>${rows.map(row => `<div class="mcp-version-row"><strong>${row[0]}</strong><code>${esc(row[1])}</code><code>${esc(row[2])}</code>${mcpStatusLight(row[3] ? 'good' : 'warn', row[3] ? 'Current' : 'Update available')}<span class="mcp-row-action">${row[4]}</span></div>`).join('')}</div>
+    <div class="mcp-paths"><div class="mcp-paths-head"><h3>Paths</h3><button class="tbtn" onclick="refreshMcpPathSizes()" title="Recalculate disk usage">↻ Refresh sizes</button></div>
+      <div class="mcp-path-table-wrap"><table class="mcp-path-table"><colgroup><col class="mcp-path-type-col"><col><col class="mcp-path-size-col"><col class="mcp-path-source-col"></colgroup>
+        <thead><tr><th>Path Type</th><th>Location</th><th>Disk Usage</th><th>Source</th></tr></thead>
+        <tbody>
+          <tr><td>Knowledge root</td><td><code title="${esc(paths.store || '')}">${esc(paths.store || 'Not configured')}</code></td><td data-mcp-path-size="store">Calculating…</td><td>read-only</td></tr>
+          <tr><td>Environments root</td><td><code title="${esc(paths.environments || '')}">${esc(paths.environments || 'Not configured')}</code></td><td data-mcp-path-size="environments">Calculating…</td><td>read-only</td></tr>
+          <tr><td>Managed MCP runtime</td><td><code title="${esc(paths.runtime || '')}">${esc(paths.runtime || 'Not created')}</code></td><td data-mcp-path-size="runtime">Calculating…</td><td>derived</td></tr>
+          <tr><td>Runtime Python</td><td><code title="${esc(paths.python || '')}">${esc(paths.python || 'Not configured')}</code></td><td data-mcp-path-size="python">Calculating…</td><td>read-only</td></tr>
+          <tr><td>MCP server directory</td><td><code title="${esc(paths.serverDirectory || '')}">${esc(paths.serverDirectory || 'Not generated')}</code></td><td data-mcp-path-size="serverDirectory">Calculating…</td><td>from Root</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+    <div class="mcp-setup-guide"><h3>Setup guideline</h3><div class="mcp-setup-list">${setup.map((step, index) => `<div class="mcp-setup-step ${step[0] ? 'done' : 'needed'}"><span class="mcp-step-number">${step[0] ? '✓' : index + 1}</span><span><strong>${esc(step[1])}</strong><small>${esc(step[2])}</small></span><span class="mcp-row-action">${step[3]}</span></div>`).join('')}</div></div>
+  </section>`;
+}
+
 function renderMcpPane(data) {
   const el = document.getElementById('detail');
   const installed = data?.installed;
   const serverPath = data?.serverPath ?? '';
   const python = data?.mcpPython || { path:'', version:'', valid:false, source:'none', error:'Python status unavailable.' };
   const runtime = data?.mcpRuntime || { path:'', python:'', exists:false, healthy:false, registered:false, error:'Managed runtime status unavailable.' };
+  const regenerate = mcpRegeneratePresentation(data);
   el.innerHTML = `
-    <div style="padding:28px 36px;max-width:720px">
+    <div style="padding:28px 36px;max-width:980px">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px">
         <span style="font-size:22px">⚡</span>
         <span style="font-size:17px;font-weight:700">Unified PKM MCP Server</span>
@@ -104,7 +198,8 @@ function renderMcpPane(data) {
       <p style="color:var(--muted);font-size:12px;margin-bottom:14px;line-height:1.6">
         Configure the external runtimes and Agent integrations used by Personal Knowledge Manager.
       </p>
-      ${renderPkmSkillTargets(data)}
+      ${renderMcpDashboard(data)}
+      <div id="pkm-skill-router-section">${renderPkmSkillTargets(data)}</div>
       <div style="background:var(--panel);border:1px solid ${data?.nativeMcpProvider ? '#4ade8066' : '#f4b40066'};border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:11px;line-height:1.6;color:var(--muted)">
         ${data?.nativeMcpProvider
           ? '<strong style="color:#4ade80">Available in every workspace.</strong> The extension registers <code>pkm</code> directly with VS Code; no project <code>.vscode/mcp.json</code> is needed. Remove old workspace <code>pkm</code>, <code>pkm-chat</code>, and <code>pkm-chat-live</code> entries to avoid duplicates.'
@@ -155,7 +250,7 @@ function renderMcpPane(data) {
         <div style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:16px">
           <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Server location</div>
           <code style="font-size:11px;color:var(--accent)">${esc(serverPath)}</code>
-          <div id="mcp-schema-versions" style="font-size:10px;color:var(--muted);margin-top:6px">Unified schema: installed v${esc(data?.installedVersion || 'unknown')} · expected v${esc(data?.expectedVersion || '?')}<br>Components: Knowledge v${esc(data?.knowledgeVersion || '?')} · Chat v${esc(data?.chatVersion || '?')}</div>
+          <div id="mcp-schema-versions" style="font-size:10px;color:var(--muted);margin-top:6px">Unified: installed v${esc(data?.installedVersion || 'unknown')} → target v${esc(data?.expectedVersion || '?')}<br>Knowledge: installed v${esc(data?.installedKnowledgeVersion || 'unknown')} → target v${esc(data?.knowledgeVersion || '?')}<br>Chat: installed v${esc(data?.installedChatVersion || 'unknown')} → target v${esc(data?.chatVersion || '?')}</div>
         </div>
         <div style="font-size:13px;font-weight:600;margin-bottom:10px">VS Code MCP definition</div>
         <div style="font-size:12px;color:var(--muted);margin-bottom:8px">
@@ -168,7 +263,7 @@ function renderMcpPane(data) {
         <hr class="div" style="margin:18px 0">
         <div style="font-size:12px;color:var(--muted);margin:10px 0 4px">Run <strong>MCP: List Servers</strong> → <strong>pkm</strong> → Start/Restart. Remote SSH windows receive the provider from the remote extension host and use remote paths.</div>
         <hr class="div" style="margin:18px 0">
-        <button class="tbtn mcp-regenerate-action ${data?.current ? '' : 'mcp-regenerate-highlight'}" id="mcp-regenerate-server-code" onclick="doGenerateMcp()" ${runtime.healthy ? '' : 'disabled'}>↺ Regenerate Server Code</button>
+        <button class="tbtn ${data?.current ? '' : 'mcp-regenerate-action mcp-regenerate-highlight'}" id="mcp-regenerate-server-code" title="${esc(regenerate.title)}" onclick="doGenerateMcp()" ${runtime.healthy ? '' : 'disabled'}>↺ ${esc(regenerate.label)}</button>
       ` : `
         <div style="border:1px solid var(--border);border-radius:8px;padding:16px 18px;margin-bottom:16px">
           <div style="font-size:13px;font-weight:600;margin-bottom:8px">Setup steps</div>
@@ -179,16 +274,16 @@ function renderMcpPane(data) {
             4. Use <strong>MCP: List Servers</strong> to start it
           </div>
         </div>
-        <button class="tbtn mcp-regenerate-action ${data?.current ? '' : 'mcp-regenerate-highlight'}" id="mcp-regenerate-server-code" style="padding:6px 18px;font-size:13px" onclick="doGenerateMcp()" ${runtime.healthy ? '' : 'disabled'}>
-          ✦ Regenerate Server Code
+        <button class="tbtn mcp-regenerate-action mcp-regenerate-highlight" id="mcp-regenerate-server-code" title="${esc(regenerate.title)}" style="padding:6px 18px;font-size:13px" onclick="doGenerateMcp()" ${runtime.healthy ? '' : 'disabled'}>
+          ✦ ${esc(regenerate.label)}
         </button>
       `}
       <div id="mcp-result" style="margin-top:12px;font-size:12px"></div>
 
       <hr class="div" style="margin:24px 0">
-      <div style="font-size:14px;font-weight:700;margin-bottom:6px">MCP Agency registration</div>
+      <div id="mcp-agency-registration" style="font-size:14px;font-weight:700;margin-bottom:6px">MCP Agency registration</div>
       <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:8px">
-        Copy these current-machine instructions to an agent. The managed runtime, PKM store, server, and
+        The extension cannot reliably inspect an external Agency registry. If <code>pkm</code> is not registered there, copy these current-machine instructions into Copilot or Agency. The managed runtime, PKM store, server, and
         requirements paths are already resolved; the agent should register the single <code>pkm</code> entry and verify its unified tool surface.
       </div>
       <pre style="background:var(--vscode-textCodeBlock-background);border-radius:6px;padding:12px;font-size:11px;overflow:auto;max-height:340px"><code id="agency-install-code">${esc(data?.agencyInstallInstruction || '')}</code></pre>
@@ -209,7 +304,12 @@ function renderMcpGenerated(data) {
   // A preview call only fills the config block — do NOT re-render (would loop)
   if (data.preview) return;
   const el = document.getElementById('mcp-result');
-  if (el) el.innerHTML = `<span style="color:#4ade80">✅ Server created at <code style="font-size:11px">${esc(data.serverPath)}</code></span>`;
+  if (el) {
+    const base = String(data.serverPath || '').replace(/[\\/]server\.py$/, '');
+    el.innerHTML = `<div style="color:#4ade80">✓ Unified MCP code regenerated:</div>` +
+      `<div style="margin-top:4px;color:var(--muted)"><code>${esc(data.serverPath)}</code><br><code>${esc(base + '/chat_server.py')}</code><br><code>${esc(base + '/requirements.txt')}</code></div>` +
+      `<div style="margin-top:7px;color:var(--muted)">No Agency registry was modified. If <code>pkm</code> is not registered in your MCP Agency, copy the installation instructions below into Copilot or Agency.</div>`;
+  }
   // Real generation: refresh the pane once to show the installed state
   setTimeout(() => ask('checkMcp', {}), 300);
 }

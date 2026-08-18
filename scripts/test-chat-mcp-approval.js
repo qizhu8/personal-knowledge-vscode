@@ -34,16 +34,6 @@ function launch(url, room, roomId, secret, alias, mode = "join") {
   return { child, result };
 }
 
-async function waitPending(hub, alias, timeout = 3000) {
-  const started = Date.now();
-  while (Date.now() - started < timeout) {
-    const pending = hub.pendingApprovals().find(item => item.alias === alias);
-    if (pending) return pending;
-    await new Promise(resolve => setTimeout(resolve, 10));
-  }
-  throw new Error(`Timed out waiting for pending alias ${alias}`);
-}
-
 function connectHost(url, room) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url);
@@ -86,26 +76,20 @@ async function main() {
 
     const approvedClient = launch(url, room.room, room.roomId, room.secret, "Python Agent");
     children.push(approvedClient.child);
-    const pending = await waitPending(hub, "Python Agent");
-    await new Promise(resolve => setTimeout(resolve, 150));
-    assert.strictEqual(approvedClient.child.exitCode, null, "Python chat_join must remain blocked before Host approval");
-    await hub.approveJoinNew(pending.requestId);
     const approved = await approvedClient.result;
     assert.strictEqual(approved.ok, true);
     assert(approved.participant_id);
-    assert(approved.elapsed >= 0.1);
+    assert(approved.elapsed < 1, "valid-secret chat_join must not wait for Host approval");
 
     const standbyClient = launch(url, room.room, room.roomId, room.secret, "Directed Python", "standby");
     children.push(standbyClient.child);
-    const standbyPending = await waitPending(hub, "Directed Python");
-    await hub.approveJoinNew(standbyPending.requestId);
     await waitHostFrame(host, frame => frame.t === "agent.state" && frame.user === "Directed Python" && frame.state === "standby");
 
     host.send(JSON.stringify({ t: "msg", room: room.room, text: "@\"Directed Python\" please respond" }));
     const standby = await standbyClient.result;
     assert.strictEqual(standby.standby_event, "message");
-    assert.strictEqual(standby.response_required, true);
-    assert.strictEqual(standby.required_response_event_ids.length, 1);
+    assert.strictEqual(standby.reply_required, true);
+    assert.strictEqual(standby.reply_required_event_ids.length, 1);
     assert.strictEqual(standby.post_ok, true);
     assert.strictEqual(standby.runtime_state, "standby");
     await waitHostFrame(host, frame => frame.t === "msg" && frame.text === "@Host directed response");
@@ -113,8 +97,6 @@ async function main() {
 
     const stoppedClient = launch(url, room.room, room.roomId, room.secret, "Stopped Python", "stop");
     children.push(stoppedClient.child);
-    const stoppedPending = await waitPending(hub, "Stopped Python");
-    await hub.approveJoinNew(stoppedPending.requestId);
     await waitHostFrame(host, frame => frame.t === "agent.state" && frame.user === "Stopped Python" && frame.state === "standby");
     const rekeysBeforeStop = host.frames.filter(frame => frame.t === "rekey").length;
     host.send(JSON.stringify({ t: "msg", room: room.room, text: "/stop @\"Stopped Python\"" }));
@@ -130,25 +112,21 @@ async function main() {
     assert.strictEqual(host.frames.filter(frame => frame.t === "rekey").length, rekeysBeforeStop,
       "/stop must not rotate the Room secret");
 
-    const rejectedClient = launch(url, room.room, room.roomId, room.secret, "Rejected Python");
+    const rejectedClient = launch(url, room.room, room.roomId, "wrong-secret", "Rejected Python");
     children.push(rejectedClient.child);
-    const rejectedPending = await waitPending(hub, "Rejected Python");
-    await hub.rejectJoin(rejectedPending.requestId, "Rejected by integration test.");
     const rejected = await rejectedClient.result;
     assert.strictEqual(rejected.ok, false);
-    assert.match(rejected.error, /Rejected by integration test/);
+    assert.strictEqual(rejected.error_code, "auth");
 
     const closedClient = launch(url, room.room, room.roomId, room.secret, "Closed Python", "closed");
     children.push(closedClient.child);
-    const closedPending = await waitPending(hub, "Closed Python");
-    await hub.approveJoinNew(closedPending.requestId);
     await waitHostFrame(host, frame => frame.t === "agent.state" && frame.user === "Closed Python" && frame.state === "standby");
     host.send(JSON.stringify({ t: "leave", room: room.room }));
     const closed = await closedClient.result;
     assert.strictEqual(closed.standby_event, "closed");
     assert.strictEqual(closed.runtime_state, "idle");
     assert.strictEqual(hub.roomNames.length, 0, "Host leave must deactivate the Room for every participant");
-    console.log("MCP approval test: Join, auto-standby, directed wake, stop-to-Earlier, rejection, and Host-leave close OK");
+    console.log("MCP Join test: immediate Join, auto-standby, directed wake, stop-to-Earlier, auth rejection, and Host-leave close OK");
   } finally {
     for (const child of children) if (child.exitCode === null) child.kill("SIGTERM");
     try { host?.terminate(); } catch {}

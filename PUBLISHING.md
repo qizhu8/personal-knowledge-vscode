@@ -28,10 +28,11 @@ It uses GitHub Actions OIDC, a federated personal Microsoft Entra application, a
 ## Publish
 
 1. Update `package.json`, `package-lock.json`, and `CHANGELOG.md` to the same version.
-2. Run release checks locally.
-3. Commit and push the exact release source.
-4. Run **Actions -> Publish VS Code Marketplace -> Run workflow**.
-5. Select `publish` and enter the exact manifest version.
+2. Regenerate privacy-safe release media with `npm run screenshots:gif`; inspect PNG/GIF output and confirm it contains synthetic fixtures only. See `SCREENSHOTS.md`.
+3. Run `npm run test:release`, `git diff --check`, and package the exact target version locally.
+4. Commit and push the exact release source.
+5. Run **Actions -> Publish VS Code Marketplace -> Run workflow**.
+6. Select `publish` and enter the exact manifest version.
 
 The workflow builds its own VSIX from the selected commit and refuses a version mismatch.
 

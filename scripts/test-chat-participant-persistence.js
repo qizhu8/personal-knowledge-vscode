@@ -6,7 +6,7 @@ const path = require("path");
 const { ChatPersistence } = require("../dist/chat-persistence");
 
 const roomId = "identity-room-001";
-const request = (requestId, alias, requestedAt) => ({ requestId, alias, kind: "agent", requestedAt, expiresAt: requestedAt + 120_000 });
+const request = (requestId, alias, requestedAt) => ({ requestId, alias, clientKey: `client-${requestId}`, kind: "agent", requestedAt, expiresAt: requestedAt + 120_000 });
 
 async function crash(persistence) {
   await persistence.worker.terminate();

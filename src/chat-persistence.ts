@@ -21,13 +21,14 @@ export interface OpenRoomResult {
 export interface StoredRoomInfo {
   roomId: string;
   roomName: string;
-  state: "stored";
+  state: "stored" | "active";
   updatedAt: number;
   messageCount: number;
   ownerInstallationId?: string;
   hostCredentialHash?: string;
   joinSecretHash?: string;
   hostParticipantId?: string;
+  activeUrl?: string;
 }
 
 export interface RoomCredentialsMetadata {
@@ -42,6 +43,7 @@ export interface PersistedPendingJoinRequest {
   requestId: string;
   alias: string;
   aliasKey: string;
+  clientKey: string;
   kind: string;
   requestedAt: number;
   expiresAt: number;
@@ -58,7 +60,7 @@ export interface PersistedJoinResolution {
 export interface ParticipantIdentityState {
   memberships: { participantId: string; kind: string; role: string; createdAt: number; updatedAt: number; forgottenAt?: number }[];
   aliases: { aliasKey: string; alias: string; participantId: string; assignedAt: number; releasedAt?: number }[];
-  pendingJoins: { requestId: string; aliasKey: string; alias: string; kind: string; status: string; requestedAt: number; expiresAt: number; resolvedAt?: number; participantId?: string; reason?: string }[];
+  pendingJoins: { requestId: string; aliasKey: string; alias: string; clientKey: string; kind: string; status: string; requestedAt: number; expiresAt: number; resolvedAt?: number; participantId?: string; reason?: string }[];
 }
 
 export function normalizeChatAlias(alias: string): string {

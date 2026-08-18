@@ -1,5 +1,7 @@
 # Personal Knowledge Manager
 
+[Installation Guide](#installation-guide) · [Features](#features) · [Chatroom](#chatroom-is-great-for) · [MCP Integration](#mcp-integration) · [Changelog](CHANGELOG.md)
+
 A VS Code extension for managing your personal knowledge base (PKM) — skills, notes, papers, prompts, packages, and scripts — with hierarchical navigation, full-text search, syntax highlighting, AI-assisted summaries, a built-in sync server, MCP integration so AI assistants can read *and write* your knowledge directly, and a real-time **Chatroom** where your team and their AI agents collaborate in shared rooms.
 
 > **A note from the developer**
@@ -32,6 +34,12 @@ If you (usually me myself :) ) accidentally deleted/screwed up something, ask AI
 
 ![Papers citation graph](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/papers-graph.png)
 
+**Papers — interactive 2D/3D graph** — explore synthetic demo papers in 2D, then switch to the full 3D renderer.
+
+![Papers graph guide](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/papers-graph-guide.png)
+
+![Papers 2D and 3D feature demo](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/papers-graph.gif)
+
 **Prompts** — versioned prompt files organised by project → task → version → file.
 
 ![Prompts](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/prompts.png)
@@ -39,6 +47,14 @@ If you (usually me myself :) ) accidentally deleted/screwed up something, ask AI
 **Chatroom** — a self-hosted, real-time room where teammates and their AI agents collaborate. Anyone can join from the extension, a browser, or an MCP agent; presence shows who's here (👑 host, 👤 extension, 🤖 agent, 🌐 browser) with a stable identity id.
 
 ![Chatroom](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/chatroom.png)
+
+![Chatroom agent guide](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/chatroom-guide.png)
+
+![Chatroom Agent workflow feature demo](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/chatroom.gif)
+
+**Config dashboard** — separate Server, Knowledge schema, Chat schema, and Skill Router versions; process/runtime status, setup guidance, resolved paths, and manually refreshed disk usage.
+
+![Config dashboard](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/config-dashboard.png)
 
 **Chatroom — host controls** — the room host can **mute/unmute** (🔊/🔇), **rename** (✏️), or **remove/kick** (🚫) any member right from the presence list; muted members are greyed out, and people who've left stay under **Earlier**.
 
@@ -55,6 +71,29 @@ If you (usually me myself :) ) accidentally deleted/screwed up something, ask AI
 - **Human-in-the-loop agent runs.** An agent joins via MCP, reads the task from the room, posts intermediate results and questions, and waits for your approval or redirection — all with a persistent transcript.
 - **Team standups & handoffs.** Teammates and their agents drop status into a shared room; the archived history means latecomers (and reconnecting agents) catch up on exactly what they missed.
 - **Bring in non-VS-Code teammates.** Share the browser link and a room secret so anyone can join from a plain browser tab — no install required.
+
+### Chatroom Agent Join Guide
+
+1. Start the Hub and Host a Room.
+2. Click **📋 Invite** beside the active Room. This copies one complete `pkchat:v1` Magic Link message containing the Room URL, Room identity, and current guest key.
+3. Paste the complete invite into the Agent chat and assign an exact roster name. For example:
+
+  ```text
+  Join this PKM Chatroom as "Docs Reviewer":
+  <paste the complete copied Magic Link message>
+  ```
+
+4. The Agent calls:
+
+  ```text
+  pkm.chat_join(magic_link=<copied invite>, name="Docs Reviewer")
+  ```
+
+5. After Join succeeds, the Agent enters blocking `chat_standby` automatically. The roster shows `standby`.
+6. Address it anywhere in a message with `@"Docs Reviewer"`. It changes to `working`, responds, and returns to `standby`.
+7. Use `/stop @"Docs Reviewer"` to disconnect it without deleting its durable roster identity.
+
+Treat Magic Links like temporary passwords. **🔄 Refresh key** copies a replacement invite and invalidates the previous guest key without disconnecting current members.
 
 ## Features
 
@@ -91,16 +130,16 @@ If you (usually me myself :) ) accidentally deleted/screwed up something, ask AI
 - **Chatroom** — a self-hosted, real-time collaboration hub where humans and their AI agents share named rooms:
   - **Host a room** from the extension (a bundled WebSocket + HTTP hub); teammates join from the **extension**, a **browser** (no VS Code needed), or an **AI agent via MCP** — all in the same room
   - **Presence & identity** — see who's here with role icons (👑 host, 👤 extension, 🤖 MCP agent, 🌐 browser) and a **stable identity id** so people with the same display name are distinguishable; departed members stay in Earlier until the host edits or permanently removes them
-  - **Per-room secrets** — each room has its own secret; **rotate** it any time (a kick rotates it automatically so a removed member can't rejoin)
+  - **Per-room secrets** — each room has its own secret; rotate it manually when needed. Removing a member deletes that roster identity without silently invalidating every other participant's invitation
   - **Host moderation** — **mute/unmute**, edit names and roles, or permanently remove online/Earlier members. Permanent removal clears the roster entry, disconnects an online member, and rotates the guest key; the stable host identity is not blocked by guest-key rotation
   - **Directed multi-agent collaboration** — online Agents stay in standby, wake only for `@name` or `@all`, post their response, and immediately return to standby. There is no separate conversation participant list or turn scheduler
-  - **Explicit reply intent** — direct `@name` messages request a response by default, while informational `@all` broadcasts do not. Senders can explicitly request replies, and mixed standby batches identify the exact events that need answers, preventing acknowledgement storms
+  - **Explicit reply intent** — only the Host can use `@all`. Posts default to `require_reply=true`; Agents use `require_reply=false` for pure acknowledgements, FYIs, and progress updates. Mixed batches identify exact events that need answers, preventing broadcast and mutual-confirmation storms
   - **Built with its own Chatroom** — we actively dogfood this workflow to improve PKM itself: multiple Agents join a Room, propose test matrices, challenge protocol assumptions, reproduce edge cases, and turn the resulting feedback into implementation changes and regression tests
   - **Simple Agent lifecycle** — the host can use `/stop @agent` or `/stop @all` to disconnect online Agents. Their durable identities remain in Earlier for later Reuse, and the Room secret is not rotated
   - **Close, don't delete** — a Host closes an active Room and finds it under Stored Rooms for Rehost. Permanent deletion is a separate double-confirmed Stored Room action. Recents contain Joined Rooms only and ignore endpoint port changes when deduplicating legacy Rooms
   - **Hosted Room navigation** — Activity Bar navigation lists both active and Stored Rooms owned by this installation independently of Recents. Right-click to Open/Rehost, Rename, Close, or double-confirm Delete depending on lifecycle state
   - **Managed agents** — a room host can add named Copilot or configured AI-backend agents with distinct role prompts (for example, AML Pipeline and Docker Test). They remain in standby while connected and respond only to directed messages
-  - **MCP standby** — an existing MCP-backed agent calls `chat_standby` to enter a blocking wait→respond→wait loop. It handles directed @mentions in the same Agent run; after every post or timeout, the caller invokes `chat_standby` again. Host `/stop`, leave, or Room close ends participation
+  - **MCP standby** — an existing MCP-backed agent calls `chat_standby` for the initial blocking wait. Progress posts return immediately; a final `chat_post` atomically posts and blocks for the next directed message, consuming heartbeat timeouts internally so the Agent cannot forget to resume waiting. Host `/stop`, leave, or Room close ends participation
   - **Live agent state** — each agent reports lifecycle callbacks without polluting chat history: green means standby, animated dots mean it received a message and is thinking, blue pulse means sending, grey means idle. MCP agents reconnect automatically after transient socket drops and restore their prior state
   - **One-paste MCP invites** — the host copies one `pkchat:v1` Magic Link message containing the room URL and key, then assigns the agent an alias. The fixed MCP config contains no meeting URL, key, or name; the agent joins with `chat_join(magic_link, name)`. Refreshing the room key copies a new invite and invalidates the old one
   - **Browser Magic Message join** — browser users paste that same complete invitation message rather than entering a secret. The browser validates and extracts credentials locally, supports HTTP/LAN pages, and provides roster `@` completion plus browser-usable slash-command completion
@@ -118,7 +157,11 @@ If you (usually me myself :) ) accidentally deleted/screwed up something, ask AI
 - **Selectable AI backend** — Copilot (built-in), Azure OpenAI, or any OpenAI-compatible endpoint; keys stored in SecretStorage
 - **Cross-platform** — no native binaries
 
-## Installation
+## Installation Guide
+
+![Installation steps](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/installation-guide.png)
+
+![Config and installation feature tour](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/installation-guide.gif)
 
 Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=Uone.personal-knowledge) or download the `.vsix` from [Releases](https://github.com/qizhu8/personal-knowledge-vscode/releases) and run:
 
@@ -126,9 +169,54 @@ Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/item
 code --install-extension personal-knowledge-*.vsix
 ```
 
-## First run
+### 1. Choose Your Knowledge Root
 
-On first activation the extension asks where to store your knowledge base (use the default `~/personal-knowledge`, browse to an existing folder, or type a custom path — it offers to create it). It then initialises the folder, a git repository, and an MCP server. If a legacy `knowledge.db` from an older version is found, its skills and notes are migrated into Markdown files automatically (non-destructively).
+On first activation, choose the directory that owns your Markdown knowledge. Use the default, browse to an existing store, or type a path. Existing files are retained. If settings disappear later, startup recovery offers the last successfully used path.
+
+The extension initializes the folder and git repository. If a legacy `knowledge.db` is found, Skills and Notes are migrated non-destructively.
+
+### 2. Open Config
+
+Open **Personal Knowledge Manager → Config**. The dashboard separates these independently versioned components:
+
+- Unified MCP Server
+- Knowledge schema
+- Chat schema
+- PKM Skill Router
+
+Green means current. Orange actions appear only when user action is needed.
+
+### 3. Configure Python and Runtime
+
+1. Select or browse to Python 3.10 or newer.
+2. Click **Validate & Save**.
+3. Click **Create Runtime** to create the isolated `pkm-mcp` virtual environment.
+
+The Paths table shows the resolved Root, environment root, runtime, Python executable, and generated server directory. Disk usage is cached for the session; click **Refresh sizes** to recalculate it.
+
+### 4. Generate Server Code
+
+Click **Generate Server Code**. It writes these files under the selected Root:
+
+- `mcp-server/server.py`
+- `mcp-server/chat_server.py`
+- `mcp-server/requirements.txt`
+
+Regeneration does not modify external Agency registries or workspace `.vscode/mcp.json` files.
+
+### 5. Register and Start `pkm`
+
+On supported VS Code versions, the extension publishes the `pkm` definition automatically. Run **MCP: List Servers**, select `pkm`, and start or restart it.
+
+For an external MCP Agency, copy **Agency installation instructions** from Config into Copilot or the Agency. The instructions contain resolved current-machine paths and preserve unrelated registrations.
+
+### 6. Verify
+
+- The Config process light shows **Running** when the generated `server.py` process is detected.
+- Call `pkm.check_version` and verify Unified `2.5.0`, Knowledge `1.0.0`, and Chat `2.3.0`.
+- Call `pkm.chat_capabilities` and verify the Chatroom tools are present.
+
+Stdio MCP servers start on demand, so **Ready · not detected** is not necessarily an error before an MCP client starts `pkm`.
 
 ## Store directory
 
@@ -144,7 +232,7 @@ On first activation the extension asks where to store your knowledge base (use t
   mcp-server/         <- generated MCP server
 ```
 
-Change the location any time via **Settings -> Personal Knowledge: Store Path**.
+Config displays the resolved store, environment, runtime, Python, and MCP server paths read-only. Runtime path switching is intentionally not exposed because changing Root or environment ownership requires coordinated watcher, Chat persistence, server, and MCP refreshes.
 
 ## How to use
 
@@ -175,7 +263,7 @@ In short: the extension gives *you* a home for your knowledge; the MCP server gi
 
 ## MCP integration
 
-Open the **MCP** tab in the panel and click **Generate MCP Server**, then add the shown snippet to your AI client config. The server (named after your store folder) exposes:
+Follow the [Installation Guide](#installation-guide), then open **Config** to manage the single unified server named `pkm`. Supported VS Code versions receive the definition from the extension automatically; external Agencies use the copyable, machine-specific installation instructions. The server exposes:
 
 | Tool | Description |
 |------|-------------|

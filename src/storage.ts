@@ -160,12 +160,14 @@ export function scriptList() {
   return out;
 }
 
-export function scriptSearch(q: string) {
-  const needle = String(q || '').toLowerCase();
+export function scriptSearch(q: string, options: { regex?: boolean; caseSensitive?: boolean } = {}) {
+  const source = options.regex ? q : String(q || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  let pattern: RegExp;
+  try { pattern = new RegExp(source, options.caseSensitive ? '' : 'i'); } catch { return []; }
   return scriptList().filter(script => {
     if ([script.file, script.path, script.category, script.lang, ...script.langs]
-      .some(value => String(value || '').toLowerCase().includes(needle))) return true;
-    return (scriptGet(script.path)?.content || '').toLowerCase().includes(needle);
+      .some(value => pattern.test(String(value || '')))) return true;
+    return pattern.test(scriptGet(script.path)?.content || '');
   });
 }
 

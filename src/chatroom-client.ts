@@ -1,6 +1,6 @@
+import { AgentRuntimeState, ChatMessage, ChatMode, CHUNK_BYTES, FileMeta, Frame, MAX_FILE_BYTES, Member, MemberKind, ReplyPolicy } from "./chatroom-protocol";
 import { WebSocket } from "ws";
 import { randomBytes } from "crypto";
-import { AgentRuntimeState, ChatMessage, CHUNK_BYTES, FileMeta, Frame, MAX_FILE_BYTES, Member, MemberKind } from "./chatroom-protocol";
 
 // ── Client (one connection == one room) ───────────────────────────────────────
 export type ChatStatus = "disconnected" | "connecting" | "connected" | "error";
@@ -136,6 +136,9 @@ export class ChatClient {
           text: frame.text, ts: frame.ts ?? Date.now(), kind: frame.kind ?? "human", file: (frame as any).file,
           receipt: frame.receipt ? { read: frame.receipt.read, total: frame.receipt.total } : undefined,
           responseRequired: frame.responseRequired,
+            replyPolicy: frame.replyPolicy, mode: frame.mode, discussionAudience: frame.discussionAudience,
+            replyToMessageId: frame.replyToMessageId,
+            recipients: frame.recipients,
         });
         break;
       case "msg.read":
@@ -200,9 +203,8 @@ export class ChatClient {
         break;
       }
       case "error":
-        // Moderation notices (mute/unmute, forbidden, rename clash) are informational —
-        // surface them in the log without flipping the connection into an error state.
-        if (frame.code === "muted" || frame.code === "moderation" || frame.code === "mention-required") {
+        // A rejected action is scoped to that action; it must not poison the live connection.
+        if (["muted", "moderation", "mention-required", "host-only-broadcast", "phase-closed", "duplicate-slot"].includes(frame.code)) {
           this.events.onMessage({ id: randomBytes(6).toString("hex"), from: "", fromId: "", text: frame.msg, ts: Date.now(), kind: "human", system: true });
           break;
         }
@@ -216,11 +218,12 @@ export class ChatClient {
     }
   }
 
-  sendText(text: string, responseRequired?: boolean): boolean {
+  sendText(text: string, responseRequired?: boolean, replyPolicy?: ReplyPolicy, mode?: ChatMode, recipients?: string[], replyToMessageId?: string): boolean {
     if (!this.isConnected || !this.opts) return false;
     const t = text.trim();
     if (!t) return false;
-    this.send({ t: "msg", room: this.opts.room, from: this.opts.user, text: t, kind: this.opts.kind ?? "human", responseRequired });
+    this.send({ t: "msg", room: this.opts.room, from: this.opts.user, text: t, kind: this.opts.kind ?? "human", responseRequired, replyPolicy, mode,
+      clientRequestId: randomBytes(8).toString("hex"), recipients, replyToMessageId });
     return true;
   }
 

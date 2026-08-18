@@ -34,6 +34,7 @@ interface PendingJoinRequest {
   requestId: string;
   alias: string;
   aliasKey: string;
+  clientKey: string;
   kind: string;
   requestedAt: number;
   expiresAt: number;
@@ -159,6 +160,7 @@ CREATE TABLE IF NOT EXISTS pending_joins (
   request_id TEXT PRIMARY KEY,
   alias_key TEXT NOT NULL,
   alias_display TEXT NOT NULL,
+  client_key TEXT NOT NULL DEFAULT '',
   kind TEXT NOT NULL,
   status TEXT NOT NULL,
   requested_at INTEGER NOT NULL,
@@ -183,6 +185,8 @@ function ensureMetadataColumns(db: any): void {
 function ensureMembershipColumns(db: any): void {
   const columns = new Set<string>((db.exec("PRAGMA table_info(memberships)")[0]?.values || []).map((row: unknown[]) => String(row[1])));
   if (!columns.has("role")) db.run("ALTER TABLE memberships ADD COLUMN role TEXT NOT NULL DEFAULT ''");
+  const pendingColumns = new Set<string>((db.exec("PRAGMA table_info(pending_joins)")[0]?.values || []).map((row: unknown[]) => String(row[1])));
+  if (!pendingColumns.has("client_key")) db.run("ALTER TABLE pending_joins ADD COLUMN client_key TEXT NOT NULL DEFAULT ''");
 }
 
 function assertRoomId(roomId: string): void {
@@ -253,9 +257,9 @@ function scalar(db: any, sql: string, params: unknown[] = []): unknown {
 
 function applyJoinRequest(room: RoomHandle, request: PendingJoinRequest): void {
   room.db.run(`INSERT OR IGNORE INTO pending_joins
-    (request_id, alias_key, alias_display, kind, status, requested_at, expires_at)
-    VALUES(?, ?, ?, ?, 'pending', ?, ?)`,
-  [request.requestId, request.aliasKey, request.alias, request.kind, request.requestedAt, request.expiresAt]);
+    (request_id, alias_key, alias_display, client_key, kind, status, requested_at, expires_at)
+    VALUES(?, ?, ?, ?, ?, 'pending', ?, ?)`,
+  [request.requestId, request.aliasKey, request.alias, request.clientKey, request.kind, request.requestedAt, request.expiresAt]);
 }
 
 function resolutionStatus(outcome: JoinResolution["outcome"]): string {
@@ -425,12 +429,16 @@ function createRoom(roomId: string, roomName: string, credentials: RoomCredentia
   return result;
 }
 
-function listStoredRooms(): { roomId: string; roomName: string; state: "stored"; updatedAt: number; messageCount: number; ownerInstallationId?: string; hostCredentialHash?: string; joinSecretHash?: string; hostParticipantId?: string }[] {
-  const result: { roomId: string; roomName: string; state: "stored"; updatedAt: number; messageCount: number; ownerInstallationId?: string; hostCredentialHash?: string; joinSecretHash?: string; hostParticipantId?: string }[] = [];
+function listStoredRooms(): { roomId: string; roomName: string; state: "stored" | "active"; updatedAt: number; messageCount: number; ownerInstallationId?: string; hostCredentialHash?: string; joinSecretHash?: string; hostParticipantId?: string; activeUrl?: string }[] {
+  const result: { roomId: string; roomName: string; state: "stored" | "active"; updatedAt: number; messageCount: number; ownerInstallationId?: string; hostCredentialHash?: string; joinSecretHash?: string; hostParticipantId?: string; activeUrl?: string }[] = [];
   if (!fs.existsSync(rootDir)) return result;
   for (const entry of fs.readdirSync(rootDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
-    if (fs.existsSync(path.join(rootDir, entry.name, "chatroom.lock"))) continue;
+    const lockPath = path.join(rootDir, entry.name, "chatroom.lock");
+    let lock: { roomName?: string; activeUrl?: string } | undefined;
+    if (fs.existsSync(lockPath)) {
+      try { lock = JSON.parse(fs.readFileSync(lockPath, "utf8")); } catch { continue; }
+    }
     const dbPath = path.join(rootDir, entry.name, "chatroom.db");
     if (!fs.existsSync(dbPath)) continue;
     let db: any;
@@ -441,11 +449,11 @@ function listStoredRooms(): { roomId: string; roomName: string; state: "stored";
         roomId: entry.name, roomName: "", dir: path.join(rootDir, entry.name), dbPath,
         journalPath: path.join(rootDir, entry.name, "chatroom.journal"), db, dirty: false,
       };
-      replayJournal(discovered);
+      if (!lock) replayJournal(discovered);
       const metadata = db.exec(`SELECT room_id, current_name, state, updated_at,
         owner_installation_id, host_credential_hash, join_secret_hash, host_participant_id FROM room_metadata LIMIT 1`)[0]?.values?.[0];
       if (!metadata) continue;
-      if (String(metadata[2]) !== "stored") {
+      if (!lock && String(metadata[2]) !== "stored") {
         insertLifecycleEvent(discovered, {
           id: randomUUID(), type: "room.deactivated", payload: { reason: "hub-restart" },
           createdAt: Date.now(), state: "stored",
@@ -455,11 +463,12 @@ function listStoredRooms(): { roomId: string; roomName: string; state: "stored";
       if (discovered.dirty) atomicFlush(discovered);
       const messageCount = Number(db.exec("SELECT COUNT(*) FROM messages")[0]?.values?.[0]?.[0] || 0);
       result.push({
-        roomId: String(metadata[0]), roomName: String(metadata[1]), state: "stored", updatedAt: Number(metadata[3]), messageCount,
+        roomId: String(metadata[0]), roomName: String(lock?.roomName || metadata[1]), state: lock ? "active" : "stored", updatedAt: Number(metadata[3]), messageCount,
         ownerInstallationId: metadata[4] == null ? undefined : String(metadata[4]),
         hostCredentialHash: metadata[5] == null ? undefined : String(metadata[5]),
         joinSecretHash: metadata[6] == null ? undefined : String(metadata[6]),
         hostParticipantId: metadata[7] == null ? undefined : String(metadata[7]),
+        activeUrl: lock?.activeUrl,
       });
     } catch { /* ignore corrupt/unrecognized room DB; caller can surface diagnostics later */ }
     finally { try { db?.close(); } catch { /* ignore */ } }
@@ -521,6 +530,7 @@ function requestJoin(roomId: string, request: PendingJoinRequest): void {
   if (!room) throw new Error(`Room ${roomId} is not open in persistence worker.`);
   const expectedKey = request.alias.trim().normalize("NFKC").toLocaleLowerCase();
   if (!request.requestId || !request.alias.trim() || request.alias.length > 60 || request.aliasKey !== expectedKey) throw new Error("Invalid Join request alias.");
+  if (!request.clientKey || request.clientKey.length > 64) throw new Error("Join request requires a valid client identity key.");
   if (request.expiresAt <= request.requestedAt) throw new Error("Join request expiry must be after its request time.");
   if (scalar(room.db, "SELECT 1 FROM pending_joins WHERE request_id=?", [request.requestId])) throw new Error(`Join request ${request.requestId} already exists.`);
   if (scalar(room.db, "SELECT 1 FROM pending_joins WHERE alias_key=? AND status='pending'", [request.aliasKey])) throw new Error(`Alias "${request.alias}" is already reserved by a pending Join.`);
@@ -597,8 +607,8 @@ function identityState(roomId: string): object {
       .map((row: unknown[]) => ({ participantId: String(row[0]), kind: String(row[1]), role: String(row[2]), createdAt: Number(row[3]), updatedAt: Number(row[4]), forgottenAt: row[5] == null ? undefined : Number(row[5]) })),
     aliases: rows("SELECT alias_key, alias_display, participant_id, assigned_at, released_at FROM alias_history ORDER BY sequence")
       .map((row: unknown[]) => ({ aliasKey: String(row[0]), alias: String(row[1]), participantId: String(row[2]), assignedAt: Number(row[3]), releasedAt: row[4] == null ? undefined : Number(row[4]) })),
-    pendingJoins: rows("SELECT request_id, alias_key, alias_display, kind, status, requested_at, expires_at, resolved_at, participant_id, reason FROM pending_joins ORDER BY requested_at, request_id")
-      .map((row: unknown[]) => ({ requestId: String(row[0]), aliasKey: String(row[1]), alias: String(row[2]), kind: String(row[3]), status: String(row[4]), requestedAt: Number(row[5]), expiresAt: Number(row[6]), resolvedAt: row[7] == null ? undefined : Number(row[7]), participantId: row[8] == null ? undefined : String(row[8]), reason: row[9] == null ? undefined : String(row[9]) })),
+    pendingJoins: rows("SELECT request_id, alias_key, alias_display, client_key, kind, status, requested_at, expires_at, resolved_at, participant_id, reason FROM pending_joins ORDER BY requested_at, request_id")
+      .map((row: unknown[]) => ({ requestId: String(row[0]), aliasKey: String(row[1]), alias: String(row[2]), clientKey: String(row[3]), kind: String(row[4]), status: String(row[5]), requestedAt: Number(row[6]), expiresAt: Number(row[7]), resolvedAt: row[8] == null ? undefined : Number(row[8]), participantId: row[9] == null ? undefined : String(row[9]), reason: row[10] == null ? undefined : String(row[10]) })),
   };
 }
 

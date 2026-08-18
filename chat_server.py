@@ -137,7 +137,7 @@ class ChatBridge:
         self.seq = 0
         self.cursor = 0
         self.standby_cursor = 0
-        self.runtime_state = "standby"
+        self.runtime_state = "idle"
         self.state_changed_at = int(time.time() * 1000)
         self.participant_id = ""
         self.reply_target = ""
@@ -145,6 +145,7 @@ class ChatBridge:
         self.last_message_id = ""
         self.terminal_event = None
         self.transport_error = ""
+        self.post_results = {}
         self._outbox = None
         self._resume = None
         self._stop = False
@@ -221,22 +222,24 @@ class ChatBridge:
                 return
 
     # ── inbound frames ──────────────────────────────────────────────────────
-    def _add(self, typ, frm, text, ts, message_id="", response_required=False):
+    def _add(self, typ, frm, text, ts, message_id="", reply_policy="none", mode=None, discussion_audience=None, recipients=None):
         if text == "" and typ == "chat":
             return
         # Flag @mentions of *this* agent (ignore our own messages).
         mentions, mentioned = [], False
         if typ == "chat" and frm != self.name:
             try:
-                mentions = parse_mentions(text) if frm == "roombot" else parse_recipients(text)
-                mentioned = mentions_name(text, self.name)
+                mentions = parse_mentions(text) if frm == "roombot" else list(recipients) if recipients is not None else parse_recipients(text)
+                mentioned = self.name.lower() in {str(item).lower() for item in mentions} or "all" in {str(item).lower() for item in mentions} or "everyone" in {str(item).lower() for item in mentions}
             except Exception:
                 pass
         with self.changed:
             self.seq += 1
             self.buf.append({"seq": self.seq, "id": message_id, "type": typ, "from": frm, "text": text,
                              "ts": ts, "mentioned": mentioned, "mentions": mentions,
-                             "response_required": bool(response_required)})
+                             "reply_policy": reply_policy, "reply_required": reply_policy == "required",
+                             "mode": mode, "discussion_audience": list(discussion_audience or []),
+                             "recipients": list(recipients) if recipients is not None else None})
             if message_id:
                 self.last_message_id = message_id
             self.changed.notify_all()
@@ -251,17 +254,23 @@ class ChatBridge:
                     continue
                 frm = str(item.get("from") or "")
                 mentions, mentioned = [], False
+                frame_recipients = item.get("recipients")
                 if typ == "chat" and frm != self.name:
                     try:
-                        mentions = parse_mentions(text) if frm == "roombot" else parse_recipients(text)
-                        mentioned = mentions_name(text, self.name)
+                        mentions = parse_mentions(text) if frm == "roombot" else list(frame_recipients) if isinstance(frame_recipients, list) else parse_recipients(text)
+                        mentioned = self.name.lower() in {str(name).lower() for name in mentions} or "all" in {str(name).lower() for name in mentions} or "everyone" in {str(name).lower() for name in mentions}
                     except Exception:
                         pass
                 self.seq += 1
                 message_id = str(item.get("id") or "")
+                policy = str(item.get("replyPolicy") or item.get("reply_policy") or "")
+                if policy not in ("none", "required", "optional"):
+                    policy = "required" if item.get("requireReply", item.get("responseRequired", item.get("reply_required", item.get("response_required", False)))) else "none"
                 self.buf.append({"seq": self.seq, "id": message_id, "type": typ, "from": frm, "text": text,
                                  "ts": item.get("ts", 0), "mentioned": mentioned, "mentions": mentions,
-                                 "response_required": bool(item.get("responseRequired", item.get("response_required", False)))})
+                                 "reply_policy": policy, "reply_required": policy == "required",
+                                 "mode": item.get("mode"), "discussion_audience": list(item.get("discussionAudience") or item.get("discussion_audience") or []),
+                                 "recipients": list(frame_recipients) if isinstance(frame_recipients, list) else None})
                 if message_id:
                     self.last_message_id = message_id
             if mode != "catchup":
@@ -284,8 +293,18 @@ class ChatBridge:
                         self._outbox.put({"t": "msg.read", "room": self.room, "messageId": f["id"]}), self.loop)
                 except Exception:
                     pass
+            policy = str(f.get("replyPolicy") or f.get("reply_policy") or "")
+            if policy not in ("none", "required", "optional"):
+                policy = "required" if f.get("requireReply", f.get("responseRequired", False)) else "none"
             self._add("chat", f.get("from", ""), f.get("text", ""), f.get("ts") or now,
-                      str(f.get("id") or ""), f.get("responseRequired", False))
+                      str(f.get("id") or ""), policy, f.get("mode"), f.get("discussionAudience") or f.get("discussion_audience"),
+                      f.get("recipients") if isinstance(f.get("recipients"), list) else None)
+        elif t == "msg.accepted":
+            request_id = str(f.get("clientRequestId") or "")
+            with self.changed:
+                self.post_results[request_id] = {"ok": True, "posted": True, "client_request_id": request_id,
+                                                 "message_id": str(f.get("messageId") or ""), "connection_alive": True}
+                self.changed.notify_all()
         elif t == "system":
             self._add("system", "", f.get("text", ""), f.get("ts") or now)
         elif t == "history":
@@ -307,7 +326,6 @@ class ChatBridge:
                 self.error = ""
                 self.error_code = ""
                 self.changed.notify_all()
-            self.send_state("standby")
         elif t == "rekey":
             with self.lock:
                 self.secret = f.get("secret", self.secret)
@@ -317,6 +335,15 @@ class ChatBridge:
                 self.room = str(f.get("room") or self.room)
         elif t == "error":
             code, msg = f.get("code", ""), f.get("msg", "")
+            request_id = str(f.get("clientRequestId") or "")
+            if request_id:
+                with self.changed:
+                    self.post_results[request_id] = {"ok": False, "posted": False, "client_request_id": request_id,
+                                                     "error_code": code, "error": msg,
+                                                     "correctable": bool(f.get("correctable", True)),
+                                                     "connection_alive": bool(f.get("connectionAlive", True))}
+                    self.changed.notify_all()
+                return
             with self.lock:
                 self.error = f"{code}: {msg}"
                 self.error_code = code
@@ -341,7 +368,7 @@ class ChatBridge:
                 self.changed.notify_all()
 
     # ── thread-safe API for the MCP tools ───────────────────────────────────
-    def send_text(self, text, response_required=None):
+    def send_text(self, text, require_reply=True):
         text = (text or "").strip()
         if not text:
             return False, "empty message"
@@ -354,12 +381,27 @@ class ChatBridge:
                 text = f"{' '.join(_format_mention(target) for target in self.reply_audience)} {text}"
             self.reply_target = ""
             self.reply_audience = []
+        request_id = secrets.token_hex(12)
+        recipients = []
+        for recipient in parse_mentions(text):
+            if str(recipient).lower() not in {str(item).lower() for item in recipients}:
+                recipients.append(str(recipient))
         try:
             fut = asyncio.run_coroutine_threadsafe(
                 self._outbox.put({"t": "msg", "room": self.room, "text": text[:8000],
-                                  **({"responseRequired": bool(response_required)} if response_required is not None else {})}), self.loop)
+                                  "clientRequestId": request_id,
+                                  "recipients": recipients,
+                                  **({"requireReply": bool(require_reply)} if require_reply is not None else {})}), self.loop)
             fut.result(timeout=5)
-            return True, ""
+            deadline = time.monotonic() + 8
+            with self.changed:
+                while request_id not in self.post_results:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return False, "Timed out waiting for the Hub to acknowledge this post."
+                    self.changed.wait(timeout=remaining)
+                result = self.post_results.pop(request_id)
+            return bool(result.get("ok")), str(result.get("error") or "")
         except Exception as e:
             return False, str(e)
 
@@ -485,10 +527,13 @@ class ChatBridge:
                             sender = str(item.get("from") or "")
                             if sender and sender not in ("roombot", self.name) and sender.lower() not in {name.lower() for name in audience}:
                                 audience.append(sender)
-                            for recipient in item.get("mentions") or []:
+                            for recipient in (item.get("recipients") if item.get("recipients") is not None else item.get("mentions") or []):
                                 if str(recipient).lower() in (self.name.lower(), "all", "everyone"):
                                     continue
                                 if str(recipient).lower() not in {name.lower() for name in audience}:
+                                    audience.append(str(recipient))
+                            for recipient in item.get("discussion_audience") or []:
+                                if str(recipient).lower() != self.name.lower() and str(recipient).lower() not in {name.lower() for name in audience}:
                                     audience.append(str(recipient))
                         self.reply_audience = audience
                         self.reply_target = audience[0] if audience else ""
@@ -567,7 +612,8 @@ class ChatBridge:
             result_messages = kept
         first = source_messages[0]
         last = source_messages[-1]
-        required_ids = [str(item.get("id") or "") for item in source_messages if item.get("response_required")]
+        required_ids = [str(item.get("id") or "") for item in source_messages if item.get("reply_required")]
+        policies = [str(item.get("reply_policy") or "none") for item in source_messages]
         if event == "message":
             instruction = ("Respond to the required messages, then immediately call chat_standby again."
                            if required_ids else "No response was requested. Immediately call chat_standby again without posting an acknowledgement.")
@@ -581,8 +627,9 @@ class ChatBridge:
             "cursor_after": self.standby_cursor,
             "addressed": addressed,
             "matched_mention": matched_mention,
-            "response_required": bool(required_ids),
-            "required_response_event_ids": required_ids,
+            "reply_required": bool(required_ids),
+            "reply_required_event_ids": required_ids,
+            "reply_policy": "required" if required_ids else "optional" if "optional" in policies else "none",
             "reply_audience": list(self.reply_audience),
             "truncated": truncated,
             "continuation_cursor": str(last.get("id") or "") if truncated else "",
@@ -689,19 +736,22 @@ def chat_join(magic_link: str, name: str) -> dict:
     except ValueError as error:
         return {"ok": False, "error_code": "invalid-magic-link", "error": str(error)}
     key = alias.casefold()
+    previous = bridges.pop(key, None)
+    if previous is not None:
+        previous._stop = True
+        if previous.loop is not None and previous._resume is not None:
+            previous.loop.call_soon_threadsafe(previous._resume.set)
     bridge = ChatBridge()
     bridge.configure(url, secret, alias, room_id=room_id)
     bridge.start()
     ok, error = bridge.wait_for_join()
     if not ok:
+        bridge._stop = True
         return {"ok": False, "error_code": bridge.error_code or "join-failed",
-            "error": error or "Join was not approved.", "name": alias}
-    previous = bridges.get(key)
-    if previous is not None:
-        previous._stop = True
+            "error": error or "Join was not approved.", "name": alias, "active_aliases": _aliases()}
     bridges[key] = bridge
     return {"ok": True, **bridge.status(), "active_aliases": _aliases(),
-            "instruction": f"Use name={alias!r} on subsequent chat tools."}
+            "instruction": f"Use name={alias!r} on subsequent chat tools, then call chat_standby to begin an active blocking wait."}
 
 
 @mcp.tool()
@@ -761,11 +811,14 @@ def chat_history(limit: int = 50, name: str = "") -> dict:
 
 @mcp.tool()
 def chat_send(text: str, name: str = "", continue_working: bool = False,
-              response_required: bool = None) -> dict:
+              require_reply: bool = True) -> dict:
     """PKM Chatroom: post a directed message.
 
-    Final replies return to standby. Pass continue_working=true for progress or
-    acknowledgement posts sent before work is complete, preserving thinking state.
+    Progress posts return immediately. A final post atomically enters blocking
+    standby and returns only for the next directed message, stop/close,
+    transport error, or cancellation. Heartbeat timeouts are consumed internally.
+    Posts require a reply by default. Set require_reply=false for a pure ACK,
+    FYI, or progress update that must not continue the exchange.
 
     Prefix with '/' to run a room command (e.g. '/help', '/list_audiences',
     '/whois <name>'); the private reply from 'roombot' arrives via chat_poll.
@@ -773,15 +826,21 @@ def chat_send(text: str, name: str = "", continue_working: bool = False,
     try:
         bridge = _resolve_bridge(name)
         bridge.send_state("sending")
-        ok, err = bridge.send_text(text, response_required)
+        ok, err = bridge.send_text(text, require_reply)
         bridge.send_state("thinking" if continue_working else "standby")
-        return {"ok": ok, "error_code": "" if ok else "transport-error", "error": err,
+        posted = {"ok": ok, "error_code": "" if ok else "transport-error", "error": err,
             "retryable": not ok, "name": bridge.name, "room_id": bridge.room_id,
             "participant_id": bridge.participant_id,
             "instruction": ("Continue the current work. Post another progress update with continue_working=true, or a final post without it when complete."
                             if continue_working else
-                            "Posting only changed the activity state to standby; it did not start a blocking wait. You MUST call chat_standby immediately and must not end the Agent turn."),
+                            "Final post sent; waiting atomically for the next actionable Chatroom event."),
             **bridge._lifecycle_fields()}
+        if not ok or continue_working:
+            return posted
+        while True:
+            result = bridge.standby(300, 8, 32768, 250)
+            if result.get("event") != "timeout":
+                return {"ok": True, "posted": True, "name": bridge.name, **result}
     except ValueError as error:
         return {"ok": False, "error": str(error)}
 

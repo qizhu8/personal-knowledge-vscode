@@ -1,5 +1,7 @@
 // ── Protocol ────────────────────────────────────────────────────────────────
 export type MemberKind = "human" | "agent" | "browser";
+export type ReplyPolicy = "none" | "required" | "optional";
+export type ChatMode = "announce" | "ask" | "discuss";
 
 export interface FileMeta {
   fileId: string;
@@ -15,7 +17,8 @@ export type Frame =
   | { t: "join.ready"; room: string }
   | { t: "leave";      room: string }
   | { t: "presence";   room: string; members: Member[] }
-  | { t: "msg";        id?: string; room: string; from: string; fromId?: string; text: string; ts?: number; kind?: MemberKind; receipt?: ReadReceipt; responseRequired?: boolean }
+  | { t: "msg";        id?: string; room: string; from: string; fromId?: string; text: string; ts?: number; kind?: MemberKind; receipt?: ReadReceipt; requireReply?: boolean; responseRequired?: boolean; replyPolicy?: ReplyPolicy; mode?: ChatMode; discussionAudience?: string[]; clientRequestId?: string; recipients?: string[]; replyToMessageId?: string }
+  | { t: "msg.accepted"; room: string; clientRequestId: string; messageId: string }
   | { t: "msg.read";   room: string; messageId: string; read?: number; total?: number }
   | { t: "system";     room: string; text: string; ts: number }
   | { t: "agent.state"; room: string; user?: string; state: AgentRuntimeState; ts?: number }
@@ -29,7 +32,7 @@ export type Frame =
   | { t: "rekey";      room: string; secret: string }
   | { t: "file.offer"; id?: string; room: string; from: string; fromId?: string; ts?: number; kind?: MemberKind; file: FileMeta }
   | { t: "file.chunk"; room: string; fileId: string; seq: number; data: string; last: boolean }
-  | { t: "error";      code: string; msg: string }
+  | { t: "error";      code: string; msg: string; clientRequestId?: string; correctable?: boolean; connectionAlive?: boolean }
   | { t: "ping" }
   | { t: "pong" };
 
@@ -47,6 +50,8 @@ export interface Member {
   muted?: boolean;    // true when the host has muted this identity (can read but not post)
   role?: string;      // host-assigned room role/label
   participantId?: string; // durable identity scoped to this Room
+  runtimeState?: AgentRuntimeState; // standby means an active blocking wait, not merely a connected socket
+  stateChangedAt?: number;
 }
 
 export interface ChatMessage {
@@ -60,6 +65,11 @@ export interface ChatMessage {
   file?:   FileMeta;   // present when this line announces a shared file
   receipt?: ReadReceipt;
   responseRequired?: boolean;
+  replyPolicy?: ReplyPolicy;
+  mode?: ChatMode;
+  discussionAudience?: string[];
+  replyToMessageId?: string;
+  recipients?: string[];
 }
 
 export interface ReadReceipt {

@@ -34,21 +34,6 @@
     </div>
     <button id="tab-right" class="tabnav" onclick="scrollTabs(1)" title="Scroll tabs right" style="display:none">›</button>
   </div>
-  <input id="searchbox" type="search" placeholder="Search…">
-  <div id="toolbar">
-    <button class="tbtn" data-ord="1" onclick="doReload()" title="Reload from disk (pick up external / MCP changes)">↻ Refresh</button>
-    <button class="tbtn" data-ord="2" onclick="toggleNoteForm()">+ Note</button>
-    <button class="tbtn" data-ord="3" id="btn-add-paper" onclick="openPaperForm()" style="display:none">+ Paper</button>
-    <button class="tbtn" data-ord="4" id="btn-paper-graph" onclick="togglePaperGraph()" style="display:none">🕸 Graph</button>
-    <button class="tbtn" data-ord="5" onclick="doExport()">⬇ Export</button>
-    <button class="tbtn" data-ord="6" onclick="triggerImport()">⬆ Import</button>
-    <button class="tbtn" data-ord="7" onclick="openSyncModal()">🔄 Sync</button>
-  </div>
-  <div id="more-wrap">
-    <button id="more-btn" class="tbtn" onclick="toggleMoreMenu(event)" title="More actions" style="display:none">⋯</button>
-    <div id="more-menu"></div>
-  </div>
-  <input type="file" id="import-file" accept=".json" style="display:none" onchange="doImport(this)">
   <span id="pkm-version" title="Personal Knowledge Manager extension version" style="font-size:10px;color:var(--muted);opacity:.7;padding-left:4px">v%%PKM_VERSION%%</span>
 </div>
 <div id="mcp-global-warning" class="hidden" role="status">
@@ -61,9 +46,33 @@
     <div id="sidebar-filters"></div>
     <div id="item-list"></div>
   </div>
-  <div id="layout-resizer" title="Drag to resize navigation"></div>
+  <div id="layout-resizer" title="Drag to resize navigation"><button id="sidebar-toggle" class="panel-collapse-toggle" onclick="event.stopPropagation();toggleMainSidebar()" onmousedown="event.stopPropagation()" title="Minimize category tree" aria-label="Minimize category tree">◀</button></div>
   <div id="main">
-    <div id="detail"><div class="empty">Select an item from the sidebar.</div></div>
+    <div id="content-toolbar">
+      <div class="find-control" id="content-find-control">
+        <input id="searchbox" type="search" placeholder="Search…" title="Search the current content collection">
+        <span id="search-count" class="find-count">0/0</span>
+        <button id="search-prev" type="button" onclick="navigateFind('content',-1)" title="Previous match">↑</button>
+        <button id="search-next" type="button" onclick="navigateFind('content',1)" title="Next match">↓</button>
+        <button id="search-case" type="button" onclick="toggleFindOption('content','case')" title="Match case">Aa</button>
+        <button id="search-regex" type="button" onclick="toggleFindOption('content','regex')" title="Use regular expression">.*</button>
+      </div>
+      <div id="toolbar">
+        <button class="tbtn" data-ord="1" onclick="doReload()" title="Reload from disk (pick up external / MCP changes)">↻ Refresh</button>
+        <button class="tbtn" data-ord="2" onclick="toggleNoteForm()" title="Create a new note">+ Note</button>
+        <button class="tbtn" data-ord="3" id="btn-add-paper" onclick="openPaperForm()" title="Create a new paper entry" style="display:none">+ Paper</button>
+        <button class="tbtn" data-ord="4" id="btn-paper-graph" onclick="togglePaperGraph()" title="Open or close the paper graph" style="display:none">🕸 Graph</button>
+        <button class="tbtn" data-ord="5" onclick="doExport()" title="Export Personal Knowledge content">⬇ Export</button>
+        <button class="tbtn" data-ord="6" onclick="triggerImport()" title="Import Personal Knowledge content">⬆ Import</button>
+        <button class="tbtn" data-ord="7" onclick="openSyncModal()" title="Open knowledge synchronization">🔄 Sync</button>
+      </div>
+      <div id="more-wrap">
+        <button id="more-btn" class="tbtn" onclick="toggleMoreMenu(event)" title="More content actions" style="display:none">⋯</button>
+        <div id="more-menu"></div>
+      </div>
+      <input type="file" id="import-file" accept=".json" style="display:none" onchange="doImport(this)">
+    </div>
+    <div id="detail"><div class="empty empty-select-item">Select an item from the sidebar.</div></div>
     <div id="note-form" class="hidden">
       <h3 id="note-form-title">Quick Note</h3>
       <div class="form-row">

@@ -2,14 +2,18 @@
 document.querySelectorAll('.tab').forEach(t =>
   t.addEventListener('click', () => {
     state.tab = t.dataset.tab; state.filter = 'all'; state.search = '';
+    vscode.setState({ ...(vscode.getState() || {}), tab: state.tab });
     document.getElementById('searchbox').value = '';
     document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x.dataset.tab === state.tab));
     const _detail = document.getElementById('detail');
     _detail.style.padding = ''; _detail.style.overflow = '';   // reset chatroom overrides
-    document.getElementById('detail').innerHTML = '<div class="empty">Select an item</div>';
+    renderEmptyDetail();
     closePaperViews();
     updatePaperChrome();
-    document.getElementById('layout-resizer').style.display = ['mcp', 'environments', 'servers', 'chatroom'].includes(state.tab) ? 'none' : '';
+    const fullWidthTab = ['mcp', 'environments', 'servers', 'chatroom'].includes(state.tab);
+    document.getElementById('layout-resizer').style.display = fullWidthTab ? 'none' : '';
+    document.getElementById('sidebar-toggle').style.display = fullWidthTab ? 'none' : '';
+    document.getElementById('content-toolbar').style.display = fullWidthTab ? 'none' : '';
     if (state.tab === 'mcp') {
       // Hide sidebar for MCP full-width pane
       document.getElementById('sidebar').style.display = 'none';
@@ -34,6 +38,7 @@ document.querySelectorAll('.tab').forEach(t =>
     } else {
       document.getElementById('sidebar').style.display = '';
       document.getElementById('searchbox').style.display = '';
+      applyMainSidebarState();
       if (state.tab === 'papers') { ask('paperFacets', {}); ask('paperGroups', {}); }
       if (state.tab === 'notes') { ask('noteFolderPins', {}); }
       ask('list', { tab: state.tab, filter: 'all', q: '' });
@@ -59,13 +64,20 @@ function closePaperViews() {
   if (gb) gb.textContent = '🕸 Graph';
 }
 
-document.getElementById('searchbox').addEventListener('input', e => {
-  state.search = e.target.value.trim();
-  highlightDetailMatches(document.getElementById('detail'), state.search);
+function contentSearchChanged(requestList = true) {
+  const input = document.getElementById('searchbox');
+  const options = findOptions('content');
+  state.search = input.value.trim();
+  highlightDetailMatches(document.getElementById('layout'), state.search);
+  if (!requestList) return;
   clearTimeout(searchDebounce);
   searchDebounce = setTimeout(() => {
-    ask('list', { tab: state.tab, filter: state.filter, q: state.search });
+    if (compileFindPattern(state.search, options.regex, options.caseSensitive) !== false)
+      ask('list', { tab: state.tab, filter: state.filter, q: state.search, regex: options.regex, caseSensitive: options.caseSensitive });
   }, 250);
+}
+document.getElementById('searchbox').addEventListener('input', e => {
+  contentSearchChanged(true);
 });
 
 // ── Render list ────────────────────────────────────────────────────────────
@@ -661,41 +673,19 @@ function postProcess() {
     btn.onclick = () => { navigator.clipboard.writeText(pre.querySelector('code')?.textContent||''); btn.textContent='✓'; setTimeout(()=>btn.textContent='Copy',1500); };
     pre.appendChild(btn);
   });
-  highlightDetailMatches(document.getElementById('detail'), state.search);
+  highlightDetailMatches(document.getElementById('layout'), state.search);
 }
 
 function highlightDetailMatches(root, query) {
-  if (!root) return;
-  root.querySelectorAll('mark.search-match').forEach(mark => mark.replaceWith(document.createTextNode(mark.textContent || '')));
-  root.normalize();
-  if (!query) return;
-  const needle = query.toLowerCase();
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-    acceptNode(node) {
-      const parent = node.parentElement;
-      if (!node.nodeValue || !node.nodeValue.toLowerCase().includes(needle)) return NodeFilter.FILTER_REJECT;
-      if (!parent || parent.closest('button,input,textarea,select,option,script,style,svg,mark,.mermaid-diagram')) return NodeFilter.FILTER_REJECT;
-      return NodeFilter.FILTER_ACCEPT;
-    }
-  });
-  const matches = [];
-  while (walker.nextNode()) matches.push(walker.currentNode);
-  for (const textNode of matches) {
-    const text = textNode.nodeValue;
-    const fragment = document.createDocumentFragment();
-    let start = 0;
-    for (;;) {
-      const index = text.toLowerCase().indexOf(needle, start);
-      if (index < 0) break;
-      if (index > start) fragment.appendChild(document.createTextNode(text.slice(start, index)));
-      const mark = document.createElement('mark'); mark.className = 'search-match';
-      mark.textContent = text.slice(index, index + query.length);
-      fragment.appendChild(mark);
-      start = index + query.length;
-    }
-    if (start < text.length) fragment.appendChild(document.createTextNode(text.slice(start)));
-    textNode.replaceWith(fragment);
-  }
+  const options = findOptions('content');
+  const pattern = compileFindPattern(query, options.regex, options.caseSensitive);
+  const current = findState.content;
+  current.targets.forEach(target => target.classList.remove('search-current'));
+  current.index = -1; current.targets = [];
+  if (pattern === false) { clearFindMarks(root); updateFindStatus('content', true); return; }
+  current.targets = markFindMatches(root, pattern);
+  if (current.targets.length) { current.index = 0; current.targets[0].classList.add('search-current'); }
+  updateFindStatus('content', false);
 }
 
 // ── Export a note to standalone HTML (open in browser / save to file) ────────

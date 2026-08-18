@@ -19,6 +19,8 @@ export interface StoredChatRoom {
   updatedAt: number;
   messageCount: number;
   canRehost: boolean;
+  activeElsewhere?: boolean;
+  activeUrl?: string;
   unavailableReason?: string;
 }
 
@@ -43,16 +45,22 @@ export class ChatRoomLifecycle {
     const records = await this.listStoredRoomRecords();
     const result: StoredChatRoom[] = [];
     for (const room of records) {
-      if (room.ownerInstallationId !== this.installationId) continue;
+      const hostVerified = !!room.hostCredentialHash && await this.credentials.verifyHost(room.roomId, room.hostCredentialHash);
+      if (room.ownerInstallationId !== this.installationId && !hostVerified) continue;
       let unavailableReason: string | undefined;
       if (!room.hostCredentialHash) unavailableReason = "Host credential metadata is missing.";
-      else if (!await this.credentials.verifyHost(room.roomId, room.hostCredentialHash)) unavailableReason = "Host credential is missing or invalid.";
+      else if (!hostVerified) unavailableReason = "Host credential is missing or invalid.";
+      else if (room.state === "active") unavailableReason = room.activeUrl
+        ? "Active in another VS Code window."
+        : "Active in another VS Code window; endpoint unavailable.";
       result.push({
         roomId: room.roomId,
         roomName: room.roomName,
         updatedAt: room.updatedAt,
         messageCount: room.messageCount,
-        canRehost: !unavailableReason,
+        canRehost: room.state === "stored" && !unavailableReason,
+        activeElsewhere: room.state === "active",
+        activeUrl: room.activeUrl,
         unavailableReason,
       });
     }
@@ -90,13 +98,20 @@ export class ChatRoomLifecycle {
     }
   }
 
+  publishActiveDescriptor(roomId: string, roomName: string, activeUrl: string): void {
+    const lock = this.locks.get(roomId);
+    if (!lock) throw new Error(`Room ${roomId} is not active in this Hub.`);
+    lock.updateDescriptor({ roomId, roomName, activeUrl });
+  }
+
   async rehostRoom(roomId: string): Promise<ActiveChatRoom> {
     if (this.locks.has(roomId)) throw new Error(`Room ${roomId} is already active in this Hub.`);
     const stored = (await this.listStoredRoomRecords()).find(room => room.roomId === roomId);
     if (!stored) throw new Error(`Stored Room ${roomId} was not found or is hosted elsewhere.`);
     if (!stored.ownerInstallationId || !stored.hostCredentialHash) throw new Error(`Room ${roomId} has no Host credential metadata.`);
-    if (stored.ownerInstallationId !== this.installationId) throw new Error("This Extension installation does not own the Room.");
-    if (!await this.credentials.verifyHost(roomId, stored.hostCredentialHash)) throw new Error("The Room Host credential is missing or invalid.");
+    const hostVerified = await this.credentials.verifyHost(roomId, stored.hostCredentialHash);
+    if (stored.ownerInstallationId !== this.installationId && !hostVerified) throw new Error("This Extension installation does not own the Room.");
+    if (!hostVerified) throw new Error("The Room Host credential is missing or invalid.");
     const credentials = await this.credentials.load(roomId);
     if (!credentials) throw new Error("The Room credentials are missing.");
     const lock = ChatRoomLock.acquire(path.join(this.rootDir, roomId, "chatroom.lock"), this.installationId);
@@ -193,8 +208,9 @@ export class ChatRoomLifecycle {
   private async requireOwnedStoredRoom(roomId: string): Promise<StoredRoomInfo> {
     const stored = (await this.listStoredRoomRecords()).find(room => room.roomId === roomId);
     if (!stored) throw new Error(`Stored Room ${roomId} was not found or is hosted elsewhere.`);
-    if (stored.ownerInstallationId !== this.installationId) throw new Error("This Extension installation does not own the Room.");
-    if (!stored.hostCredentialHash || !await this.credentials.verifyHost(roomId, stored.hostCredentialHash)) {
+    const hostVerified = !!stored.hostCredentialHash && await this.credentials.verifyHost(roomId, stored.hostCredentialHash);
+    if (stored.ownerInstallationId !== this.installationId && !hostVerified) throw new Error("This Extension installation does not own the Room.");
+    if (!hostVerified) {
       throw new Error("The Room Host credential is missing or invalid.");
     }
     return stored;

@@ -1,4 +1,11 @@
 const vscode = acquireVsCodeApi();
+window.addEventListener('error', event => vscode.postMessage({
+  command: 'webviewDiagnostic', kind: 'error', message: `${event.message || 'window error'} @ ${event.filename || '?'}:${event.lineno || 0}`,
+}));
+window.addEventListener('unhandledrejection', event => vscode.postMessage({
+  command: 'webviewDiagnostic', kind: 'unhandledrejection', message: String(event.reason?.stack || event.reason || 'unknown rejection'),
+}));
+setInterval(() => vscode.postMessage({ command: 'webviewDiagnostic', kind: 'heartbeat' }), 30000);
 // CDN libs may be unavailable in offline/remote environments — use safe fallbacks
 try { if (typeof marked !== 'undefined') marked.setOptions({ breaks: true }); } catch(e) {}
 // KaTeX math support for marked: $$...$$ (block) and $...$ (inline). marked
@@ -126,6 +133,79 @@ let catExpanded = {}; // expanded state per folder key (default: collapsed)
 let pendingEditSlug = null; // note slug awaiting detail load for edit
 let pendingEditType = null; // item type awaiting detail load to enter edit mode (from tree right-click)
 let searchDebounce = null; // debounce timer for search
+const findState = { content: { index: -1, targets: [] }, chat: { index: -1, targets: [] } };
+
+function compileFindPattern(query, regex, caseSensitive) {
+  if (!query) return null;
+  const source = regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  try { return new RegExp(source, caseSensitive ? 'g' : 'gi'); } catch { return false; }
+}
+function findOptions(scope) {
+  return {
+    query: document.getElementById(scope === 'chat' ? 'chat-searchbox' : 'searchbox')?.value || '',
+    regex: !!document.getElementById(scope === 'chat' ? 'chat-search-regex' : 'search-regex')?.classList.contains('active'),
+    caseSensitive: !!document.getElementById(scope === 'chat' ? 'chat-search-case' : 'search-case')?.classList.contains('active'),
+  };
+}
+function clearFindMarks(root) {
+  root?.querySelectorAll('mark.search-match').forEach(mark => mark.replaceWith(document.createTextNode(mark.textContent || '')));
+  root?.normalize();
+}
+function markFindMatches(root, pattern) {
+  clearFindMarks(root);
+  if (!root || !pattern) return [];
+  const nodes = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode(node) {
+    const parent = node.parentElement;
+    if (!node.nodeValue || !parent || parent.closest('button,input,textarea,select,option,script,style,svg,mark,.mermaid-diagram')) return NodeFilter.FILTER_REJECT;
+    pattern.lastIndex = 0;
+    return pattern.test(node.nodeValue) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+  }});
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  const marks = [];
+  for (const textNode of nodes) {
+    const text = textNode.nodeValue || '';
+    const fragment = document.createDocumentFragment();
+    let last = 0; pattern.lastIndex = 0; let match;
+    while ((match = pattern.exec(text)) !== null) {
+      if (match.index > last) fragment.appendChild(document.createTextNode(text.slice(last, match.index)));
+      const mark = document.createElement('mark'); mark.className = 'search-match'; mark.textContent = match[0];
+      fragment.appendChild(mark); marks.push(mark); last = match.index + match[0].length;
+      if (!match[0].length) pattern.lastIndex += 1;
+    }
+    if (last < text.length) fragment.appendChild(document.createTextNode(text.slice(last)));
+    textNode.replaceWith(fragment);
+  }
+  return marks;
+}
+function updateFindStatus(scope, error) {
+  const current = findState[scope];
+  const count = document.getElementById(scope === 'chat' ? 'chat-search-count' : 'search-count');
+  if (count) count.textContent = error ? 'Invalid regex' : current.targets.length ? `${current.index + 1}/${current.targets.length}` : '0/0';
+}
+function navigateFind(scope, delta) {
+  const current = findState[scope];
+  if (!current.targets.length) return;
+  current.targets[current.index]?.classList.remove('search-current');
+  current.index = (current.index + delta + current.targets.length) % current.targets.length;
+  const target = current.targets[current.index];
+  target.classList.add('search-current');
+  target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  updateFindStatus(scope, false);
+}
+function preservedFindIndex(targets, messageId, previousIndex) {
+  if (!targets.length) return -1;
+  if (messageId) {
+    const matched = targets.findIndex(target => target.dataset?.messageId === messageId);
+    if (matched >= 0) return matched;
+  }
+  return Math.max(0, Math.min(previousIndex, targets.length - 1));
+}
+function toggleFindOption(scope, option) {
+  const id = scope === 'chat' ? `chat-search-${option}` : `search-${option}`;
+  document.getElementById(id)?.classList.toggle('active');
+  if (scope === 'chat') chatRefreshSearch(); else contentSearchChanged(true);
+}
 
 // ── Context menu ──────────────────────────────────────────────────────────
 const ctxMenu = document.getElementById('ctx-menu');
@@ -219,7 +299,7 @@ window.addEventListener('message', e => {
       setTimeout(() => banner.remove(), 400);
     }
   }
-  if      (command === 'list')     { state.items = data; state.folders = e.data.folders || []; renderList(); }
+  if      (command === 'list')     { state.items = data; state.folders = e.data.folders || []; renderList(); highlightDetailMatches(document.getElementById('layout'), state.search); }
   else if (command === 'detail') {
     if (pendingEditSlug && data?.type === 'note' && data.slug === pendingEditSlug) {
       pendingEditSlug = null; editNote(data);
@@ -347,6 +427,7 @@ window.addEventListener('message', e => {
       `<span style="color:#4ade80">✅ Synced from ${esc(data.from)}: ${esc(data.summary||data.count+' items')}${data.group ? ' → group “'+esc(data.group)+'” (review &amp; merge offline)' : ''}</span>`;
   }
   else if (command === 'mcpStatus')    { updateGlobalMcpWarning(data); if (state.tab === 'mcp') renderMcpPane(data); }
+  else if (command === 'mcpPathSize')  { renderMcpPathSize(data); }
   else if (command === 'chatReadReceipt') { chatUpdateReadReceipt(data); }
   else if (command === 'mcpPythonResult') { renderMcpPythonResult(data); }
   else if (command === 'mcpPythonCandidates') { renderMcpPythonCandidates(data); }
@@ -440,15 +521,15 @@ function sortToolbar() {
   [...tb.children].sort((a, b) => (+a.dataset.ord || 0) - (+b.dataset.ord || 0)).forEach(c => tb.appendChild(c));
 }
 function layoutTopbar() {
-  const topbar = document.getElementById('topbar'), tb = document.getElementById('toolbar'),
+  const actionbar = document.getElementById('content-toolbar'), tb = document.getElementById('toolbar'),
         menu = document.getElementById('more-menu'), moreBtn = document.getElementById('more-btn');
-  if (!topbar || !tb || !menu || !moreBtn) return;
+  if (!actionbar || !tb || !menu || !moreBtn) return;
   while (menu.firstChild) tb.appendChild(menu.firstChild);
   sortToolbar();
   moreBtn.style.display = 'none';
   updateTabNav();
   let guard = 40;
-  while (topbar.scrollWidth > topbar.clientWidth + 1 && guard-- > 0) {
+  while (actionbar.scrollWidth > actionbar.clientWidth + 1 && guard-- > 0) {
     const vis = [...tb.children].filter(b => b.offsetParent !== null);
     if (!vis.length) break;
     menu.insertBefore(vis[vis.length - 1], menu.firstChild);
@@ -467,7 +548,8 @@ document.addEventListener('click', e => {
 });
 if (window.ResizeObserver) {
   const ro = new ResizeObserver(() => relayoutTopbar());
-  const el = document.getElementById('topbar'); if (el) ro.observe(el);
+  const topbar = document.getElementById('topbar'); if (topbar) ro.observe(topbar);
+  const actionbar = document.getElementById('content-toolbar'); if (actionbar) ro.observe(actionbar);
 }
 (() => {
   const t = document.getElementById('tabs'); if (!t) return;
@@ -511,6 +593,36 @@ function initColumnResizer(handleId, targetId, storageKey, minWidth, maxWidth, d
     e.preventDefault();
   });
 }
+
+function mainSidebarCollapsed() {
+  try { return localStorage.getItem('pk-main-sidebar-collapsed') === '1'; } catch { return false; }
+}
+function renderEmptyDetail() {
+  const detail = document.getElementById('detail');
+  if (!detail) return;
+  detail.innerHTML = `<div class="empty empty-select-item">Select an item from the sidebar.${mainSidebarCollapsed() ? '<div class="empty-select-hint">Please click the &gt; button to see the sidebar.</div>' : ''}</div>`;
+}
+function refreshEmptyDetailHint() {
+  if (document.querySelector('#detail > .empty-select-item')) renderEmptyDetail();
+}
+function applyMainSidebarState() {
+  const layout = document.getElementById('layout');
+  const toggle = document.getElementById('sidebar-toggle');
+  if (!layout || !toggle) return;
+  const collapsed = mainSidebarCollapsed();
+  layout.classList.toggle('main-sidebar-collapsed', collapsed);
+  toggle.textContent = collapsed ? '▶' : '◀';
+  toggle.title = collapsed ? 'Restore category tree' : 'Minimize category tree';
+  toggle.setAttribute('aria-label', toggle.title);
+  toggle.setAttribute('aria-expanded', String(!collapsed));
+  refreshEmptyDetailHint();
+}
+function toggleMainSidebar() {
+  const collapsed = !mainSidebarCollapsed();
+  try { localStorage.setItem('pk-main-sidebar-collapsed', collapsed ? '1' : '0'); } catch {}
+  applyMainSidebarState();
+}
+applyMainSidebarState();
 
 initColumnResizer('layout-resizer', 'sidebar', 'pk-main-sidebar', 150, 600, 1, false);
 initColumnResizer('note-split-resizer', 'note-editor-pane', 'pk-note-editor', 140, 1000, 1, true);

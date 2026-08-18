@@ -8,9 +8,9 @@ import { condaEnvs, pyenvAdd, pyenvCreate, pyenvDelete, pyenvList, pyenvUpdate }
 import { managedEnvironmentsRoot } from "./environment-paths";
 
 // ── MCP server scaffold ────────────────────────────────────────────────────
-export const UNIFIED_MCP_VERSION = "2.4.0";
+export const UNIFIED_MCP_VERSION = "2.5.0";
 const KNOWLEDGE_MCP_VERSION = "1.0.0";
-const CHAT_MCP_VERSION = "2.2.0";
+const CHAT_MCP_VERSION = "2.3.0";
 
 interface McpServerStatus {
   installed: boolean;
@@ -20,6 +20,8 @@ interface McpServerStatus {
   current: boolean;
   knowledgeVersion: string;
   chatVersion: string;
+  installedKnowledgeVersion: string;
+  installedChatVersion: string;
 }
 
 function readMcpVersion(serverPath: string): string {
@@ -28,9 +30,36 @@ function readMcpVersion(serverPath: string): string {
   catch { return "unknown"; }
 }
 
+function readMcpComponentVersion(serverPath: string, constant: string): string {
+  if (!fs.existsSync(serverPath)) return "";
+  try {
+    const source = fs.readFileSync(serverPath, "utf-8");
+    return new RegExp(`^${constant}\\s*=\\s*["']([^"']+)["']`, "m").exec(source)?.[1] || "legacy";
+  } catch { return "unknown"; }
+}
+
 interface McpPythonStatus { path: string; version: string; valid: boolean; source: string; error: string; }
 interface McpPythonCandidate { path: string; version: string; source: string; label: string; }
 interface McpRuntimeStatus { path: string; python: string; exists: boolean; healthy: boolean; version: string; error: string; registered: boolean; }
+export interface McpProcessStatus { running: boolean; pid: string; checkedAt: number; available: boolean; detail: string; }
+
+export function mcpProcessStatus(): McpProcessStatus {
+  const serverPath = path.resolve(getStorePath(), "mcp-server", "server.py");
+  try {
+    const output = process.platform === "win32"
+      ? execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"], { encoding: "utf8", timeout: 3000 })
+      : execFileSync("ps", ["-eo", "pid=,args="], { encoding: "utf8", timeout: 3000 });
+    const normalizedPath = serverPath.replace(/\\/g, "/").toLowerCase();
+    const lines = process.platform === "win32"
+      ? (() => { const parsed = JSON.parse(output || "[]"); return (Array.isArray(parsed) ? parsed : [parsed]).map(item => `${item.ProcessId || ""} ${item.CommandLine || ""}`); })()
+      : output.split(/\r?\n/);
+    const match = lines.find(line => String(line).replace(/\\/g, "/").toLowerCase().includes(normalizedPath));
+    const pid = match ? /^\s*(\d+)/.exec(String(match))?.[1] || "" : "";
+    return { running: !!match, pid, checkedAt: Date.now(), available: true, detail: match ? "Generated server process detected." : "No generated server process detected." };
+  } catch (error: any) {
+    return { running: false, pid: "", checkedAt: Date.now(), available: false, detail: `Process detection unavailable: ${error?.message || String(error)}` };
+  }
+}
 
 function mcpRuntimePath(): string { return path.join(managedEnvironmentsRoot(), "pkm-mcp"); }
 function mcpRuntimeBaseMarker(): string { return path.join(mcpRuntimePath(), ".pkm-base-python.json"); }
@@ -316,12 +345,16 @@ export function combinedMcpInstallInstruction(): string {
 export function mcpStatus(): McpServerStatus {
   const serverPath = path.join(getStorePath(), "mcp-server", "server.py");
   const installedVersion = readMcpVersion(serverPath);
+  const installedKnowledgeVersion = readMcpComponentVersion(serverPath, "KNOWLEDGE_SCHEMA_VERSION");
+  const installedChatVersion = readMcpComponentVersion(serverPath, "CHAT_SCHEMA_VERSION");
   return {
     installed: !!installedVersion, serverPath,
     expectedVersion: UNIFIED_MCP_VERSION, installedVersion,
-    current: installedVersion === UNIFIED_MCP_VERSION,
+    current: installedVersion === UNIFIED_MCP_VERSION && installedKnowledgeVersion === KNOWLEDGE_MCP_VERSION && installedChatVersion === CHAT_MCP_VERSION,
     knowledgeVersion: KNOWLEDGE_MCP_VERSION,
     chatVersion: CHAT_MCP_VERSION,
+    installedKnowledgeVersion,
+    installedChatVersion,
   };
 }
 
@@ -1116,6 +1149,8 @@ export function chatMcpStatus(): McpServerStatus {
     current: installedVersion === CHAT_MCP_VERSION,
     knowledgeVersion: KNOWLEDGE_MCP_VERSION,
     chatVersion: CHAT_MCP_VERSION,
+    installedKnowledgeVersion: readMcpComponentVersion(serverPath, "KNOWLEDGE_SCHEMA_VERSION"),
+    installedChatVersion: readMcpComponentVersion(serverPath, "CHAT_SCHEMA_VERSION"),
   };
 }
 

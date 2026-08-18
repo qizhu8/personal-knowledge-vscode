@@ -29,19 +29,28 @@ async function main() {
   const sharedSecrets = new Map();
   const ownerSecrets = new MemorySecretStorage(sharedSecrets);
   const owner = new ChatRoomLifecycle(root, "installation-owner", ownerSecrets, 60_000);
-  const foreign = new ChatRoomLifecycle(root, "installation-foreign", new MemorySecretStorage(sharedSecrets), 60_000);
+  const foreign = new ChatRoomLifecycle(root, "installation-foreign", new MemorySecretStorage(), 60_000);
   let observer;
+  let recovered;
   try {
     const alpha = await owner.createRoom("Alpha", "alpha-secret");
     await owner.persistence.append(alpha.roomId, message("alpha-1", "first", 1));
     await owner.persistence.append(alpha.roomId, message("alpha-2", "second", 2));
     const beta = await owner.createRoom("Beta", "beta-secret");
     const foreignRoom = await foreign.createRoom("Foreign", "foreign-secret");
+    owner.publishActiveDescriptor(alpha.roomId, "Alpha", "ws://127.0.0.1:7001");
+    owner.publishActiveDescriptor(beta.roomId, "Beta", "ws://127.0.0.1:7001");
+    foreign.publishActiveDescriptor(foreignRoom.roomId, "Foreign", "ws://127.0.0.1:7002");
 
     assert.strictEqual(await owner.renameActiveRoom(alpha.roomId, "Alpha Live"), "Alpha Live");
 
     observer = new ChatRoomLifecycle(root, "installation-owner", ownerSecrets, 60_000);
-    assert.deepStrictEqual(await observer.listStoredRooms(), [], "active Rooms must never appear as stored");
+    const activeElsewhere = await observer.listStoredRooms();
+    assert.deepStrictEqual(new Set(activeElsewhere.map(room => room.roomId)), new Set([alpha.roomId, beta.roomId]),
+      "another Extension Host must discover owned active Rooms");
+    assert(activeElsewhere.every(room => room.activeElsewhere && !room.canRehost),
+      "active Rooms must be visible but never Rehostable");
+    assert(activeElsewhere.every(room => room.activeUrl === "ws://127.0.0.1:7001"));
 
     await owner.deactivateRoom(alpha.roomId, "test");
     await owner.deactivateRoom(beta.roomId, "test");
@@ -57,7 +66,10 @@ async function main() {
     const rehosted = await observer.rehostRoom(alpha.roomId);
     assert.strictEqual(rehosted.joinSecret, "alpha-secret");
     stored = await observer.listStoredRooms();
-    assert.deepStrictEqual(stored.map(room => room.roomId), [beta.roomId], "Rehosted Room must leave the Stored list");
+    assert(stored.some(room => room.roomId === alpha.roomId && room.activeElsewhere && !room.canRehost),
+      "Rehosted Room must remain discoverable as active elsewhere");
+    assert(stored.some(room => room.roomId === beta.roomId && !room.activeElsewhere && room.canRehost),
+      "inactive Room must remain Rehostable");
     await observer.deactivateRoom(alpha.roomId, "test");
 
     await observer.renameStoredRoom(alpha.roomId, "Alpha Renamed");
@@ -71,6 +83,11 @@ async function main() {
     assert.strictEqual(renamedRehost.joinSecret, "alpha-secret");
     assert.deepStrictEqual(renamedRehost.messages.map(item => item.id), ["alpha-1", "alpha-2"]);
     await observer.deactivateRoom(alpha.roomId, "rename verified");
+
+    recovered = new ChatRoomLifecycle(root, "installation-recreated", ownerSecrets, 60_000);
+    stored = await recovered.listStoredRooms();
+    assert(stored.some(room => room.roomId === alpha.roomId && room.canRehost),
+      "a preserved Host credential must recover Rooms after installation identity changes");
 
     await ownerSecrets.delete(`personalKnowledge.chatroom.${beta.roomId}.host`);
     stored = await observer.listStoredRooms();
@@ -92,6 +109,7 @@ async function main() {
     assert(!publicJson.includes("ownerInstallationId"), "Stored Room UI data must not expose installation identity");
     console.log("stored rooms test: ownership, active exclusion, Rehost, Rename, unavailable credentials, and Delete Data OK");
   } finally {
+    await recovered?.dispose().catch(() => {});
     await observer?.dispose().catch(() => {});
     await owner.dispose().catch(() => {});
     await foreign.dispose().catch(() => {});

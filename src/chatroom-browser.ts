@@ -236,7 +236,8 @@ export function browserViewHtml(): string {
   }
   function mentionCandidates(filter){
     var f=String(filter||"").toLowerCase(),seen={};
-    var list=[{name:"all",label:"@all",sub:"notify everyone",icon:"📢"}];
+    var selfMember=roster.filter(function(member){return member.user===me&&member.present!==false;})[0];
+    var list=selfMember&&selfMember.host?[{name:"all",label:"@all",sub:"notify everyone",icon:"📢"}]:[];
     roster.slice().sort(function(a,b){return (a.present===false?1:0)-(b.present===false?1:0);}).forEach(function(m){
       if(m.user===me||seen[m.user.toLowerCase()])return;seen[m.user.toLowerCase()]=1;
       list.push({name:m.user,label:"@"+m.user,sub:(m.present===false?"away":m.host?"host":m.kind||""),icon:m.host?"👑":m.kind==="agent"?"🤖":m.kind==="browser"?"🌐":"👤"});

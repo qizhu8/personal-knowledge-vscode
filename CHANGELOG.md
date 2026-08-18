@@ -3,6 +3,72 @@
 All notable changes to the **Personal Knowledge Manager** extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [2.5.0] - 2026-08-18
+
+This is a major Chatroom, search, setup, and MCP Config release. It replaces text-derived routing with structured recipients across the complete stack, makes Agent standby reliable, and adds a versioned setup dashboard with privacy-safe release media.
+
+### Fixed
+- Replaced uneven Config path rows with a fixed-layout Path Type / Location / Disk Usage / Source table, with horizontal scrolling on narrow windows.
+- Preserved the current Chatroom search result across presence/message repaints and batched transcript highlighting, preventing previous/next navigation from looping between results 1 and 2.
+- Added a contextual empty-state hint on content tabs: when no item is selected and the sidebar is minimized, the detail pane tells users to click the `>` control to restore it.
+- Limited MCP dashboard action highlighting to missing, outdated, broken, or unconfigured states; current components now show neutral actions or `No action`.
+- Clarified that Regenerate Server Code writes `server.py`, `chat_server.py`, and `requirements.txt` without modifying external Agency registries, and directs unregistered users to copy the provided installation instructions into Copilot or Agency.
+- Collapsed the Host To list to `@all` after every other roster member has been selected, excluding the Host themself and including offline roster members.
+- Kept offline Room participants mentionable while they remain in the roster; presence now affects live delivery and default audience inheritance, not explicit To recognition.
+- Activated the extension when VS Code restores an open Personal Knowledge Manager tab, preventing the tab from remaining in a loading state until the sidebar is clicked.
+- Synchronized body mentions with the To editor: autocomplete-style quoted mentions activate only after the closing quote and disappear when it is backspaced; unquoted syntax is accepted only for aliases without spaces (`@Amy`), while spaced aliases require quotes (`@"Asset Dev"`).
+- Restored installed → target version details directly on the Regenerate Server Code action, including Unified, Knowledge, and Chat schema mismatches.
+- Removed the misleading Reinstall action for Current PKM Skill Router targets; update actions now appear only for missing or outdated content and show their version transition.
+- Corrected reply-intent defaults: Host `@all` messages require replies, while Agent posts require no reply unless explicitly requested.
+- Removed the human-facing Replies checkbox; Extension and browser users now rely on automatic Host/recipient inference, while MCP callers retain the structured override for advanced workflows.
+- Restricted `@all`/`@everyone` to the Room Host. Posts default to `require_reply=true`; Agents must use `require_reply=false` for pure acknowledgements, FYIs, and progress updates so point-to-point confirmation does not loop.
+- Made the Host composer carry forward the previous message's still-present named audience as the next inferred recipient list; explicit recipients always override it, and `@all` remains sticky only when the previous Host message used it.
+- Made final `chat_post`/`chat_send` atomically enter blocking standby and consume heartbeat timeouts internally; progress posts still return immediately, removing the fragile requirement that Agents remember a separate standby call.
+- Restored Hosted Rooms when VS Code regenerates the extension installation identity by accepting the durable Host credential as ownership proof.
+- Fixed failed same-alias Agent rejoins retaining a stale active connection, and stopped message-level errors such as `host-only-broadcast` from incorrectly closing an otherwise healthy Chatroom session.
+- Removed manual Host Join approval and user-visible identity reuse; valid Room-secret holders now join immediately, active alias collisions fail immediately, and only the same client identity key resumes a participant.
+- Distinguished a connected idle Agent from an Agent actively blocked in standby, including runtime state in presence updates.
+- Made only valid leading roster mentions override inferred recipients; inline, code-block, and unknown mentions no longer alter routing.
+- Stopped rotating the Room secret when the Host removes a member; secret rotation is now manual only.
+- Made active hosted Rooms discoverable in other VS Code windows sharing the same PKM store, with automatic cross-window refresh and an `active elsewhere` state that cannot be mistakenly Rehosted.
+- Kept Rooms hosted when the Host Chatroom tab disconnects or reloads; only explicit Close Room, `/leave`, Stop Hub, or extension shutdown now stores the Room.
+- Added webview panel restoration across reloads, bounded Chatroom rendering to 1,000 visible messages, and renderer heartbeat/error diagnostics for unexpected tab disposal.
+- Added a targeted cross-window refresh while any Room is `active elsewhere`, so a missed lock-delete watcher event cannot leave a closed Room stuck in that state instead of becoming Rehostable.
+- Preserved Chatroom history scroll position across new messages and state repaints; scrolling to the bottom resumes automatic latest-message following, while scrolling up pauses it.
+
+### Added
+- Added a standardized privacy-safe release media pipeline that renders the real extension webview with synthetic fixtures and produces static multi-step guides plus cursor-visible Chatroom, Papers 2D/3D, and installation GIFs.
+- Added asynchronous disk-usage sizes to every Config path using cross-platform Node filesystem APIs, with symlink-safe traversal, session caching, and an explicit Refresh sizes action so large environments are scanned only on demand.
+- Reorganized Config into an MCP status dashboard with separate Unified Server, Knowledge schema, Chat schema, and Skill Router versions, direct update actions, a best-effort running-process light, and a state-driven setup guideline.
+- Added startup recovery of the last successfully used Root Directory when settings are missing or invalid; new users are routed directly to the Config wizard. Config displays all resolved paths read-only until a safe path-switch workflow is available.
+- Added unified search navigation with highlighted matches, current/total counts, previous/next controls, regular-expression mode, and case-sensitive mode; Chatroom counts and navigates matching messages while content tabs search their collections and visible detail.
+- Added persistent minimize/restore controls for the global category tree and Chatroom member pane, plus an explicit Jump to latest control.
+- Made the category-tree minimize control a visible edge-mounted triangle (`◀`/`▶`) that remains available after collapse.
+- Added the same persistent triangle control to the Chatroom Hub/Rooms panel and refined both controls to a taller, narrower edge handle.
+- Replaced the In the room text toggle with a persistent edge triangle; compact mode keeps the vertical state legend plus each member's status light and name while hiding timestamps, IDs, roles, and action buttons.
+- Made compact Roster width independently draggable (defaulting to roughly four name characters, with a 54px minimum), and overlaid all collapse arrows on their original resizer boundaries so visual edges and drag hit areas stay aligned.
+- Made the vertical standby/working/in session legend always visible instead of depending on whether an Agent state frame has already arrived.
+- Removed the Host moderation instruction from In the room and changed the status legend to a persistent vertical three-state list: standby, working, and in session.
+
+- Added Host Announce, Ask, and Discuss message modes with `none`, `required`, and `optional` reply-policy metadata while retaining legacy `require_reply` compatibility.
+- Added mode explanations on hover and a transient in-room notice whenever the Host switches between Announce, Ask, and Discuss.
+- Added sanitized Markdown rendering in Chatroom messages, including GFM tables, syntax-highlighted code, KaTeX math, and Mermaid diagrams.
+- Added structured message recipients and made every valid roster mention anywhere in a message a delivery target; routing no longer depends on a leading mention prefix.
+- Added hover comments across Chatroom controls, runtime status indicators, and member rows; member comments include full name, participant ID, connection ID, client identity ID, presence, role, and runtime meaning.
+- Added a resizable/fullscreen Markdown message viewer and metadata-only message quotes with durable `replyToMessageId` links and jump-back highlighting.
+- Added a message right-click menu with Quote, Open in viewer, and Copy text actions.
+- Moved inferred recipient names into a dedicated composer row so long multi-recipient lists cannot overlap the textarea placeholder or typed message.
+- Promoted inferred recipients to a top-level `To:` bar above mode, quote, and message input so routing context is visually separate from authored text.
+- Replaced the separate recipient bar and `@` button with one mail-style composer: editable `To` chips and message body share a single widget, manual recipients use the `+` picker, and valid body mentions sync into `To` automatically.
+- Made each new message inherit the previous Host-authored `To` audience, then union in manually selected recipients and every valid new body mention, with deduplication and departed-member filtering.
+- Made inherited/default `To` chips removable per draft: removing `@all` suppresses the default for that message, while subsequent body mentions or manual selections add only the intended recipients.
+- Tracked `To` recipients by inherited, manual, and current-body mention sources: removing a body mention removes mention-only recipients immediately, while inherited/manual recipients remain until their chip is explicitly removed.
+- Added real-time roster-aware `To` detection while typing; when a Host mentions every roster participant except themself, including offline members, the recipient chips collapse automatically to `@all` without rewriting the message body and expand again when one mention is removed.
+- Added a keyboard-editable `To` token input: leading valid mentions move out of the body, middle mentions remain in context, unknown `@words` stay literal, and arrow/Backspace/Delete keys navigate or remove recipient chips.
+- Persisted structured recipients with each message so future `To` inheritance works without prefixing or otherwise contaminating Markdown message text.
+
 ## [2.4.2] — 2026-08-13
 
 ### Fixed
@@ -10,6 +76,8 @@ This project follows [Semantic Versioning](https://semver.org/).
 - Fixed quoted aliases with spaces (for example `@"PKM Dev"`) losing mention highlighting because the renderer expected quote entities that the real escape function does not produce.
 
 ### Changed
+- Moved Search and content actions (Refresh, Note, Paper, Graph, Export, Import, Sync) from the crowded tab row into a dedicated toolbar inside the main content window, leaving the category tree unaffected.
+- Hid the content toolbar entirely on Chatroom, Config, Environments, and Servers, where those content actions are not applicable.
 - Simplified Agent participation to `standby → directed @message → post → standby`; removed the legacy conversation preparation, participant, release, and round-robin state machine.
 - Added host-only `/stop @agent` (or `/stop @all`) to disconnect online Agents while preserving their Room identity in Earlier and leaving the Room secret unchanged.
 - Changed Host Leave to an explicit Close Room action that stores the Room for Rehost; permanent deletion remains available only from Stored Rooms behind double confirmation.

@@ -95,6 +95,14 @@ def _has_any_mention(text):
     return bool(re.search(r'@(?:"[^"\n]{1,60}"|[\w-]{1,60})', str(text or "")))
 
 
+def _structured_recipient_names(text):
+    names = []
+    for name in _all_mention_names(text):
+        if name.casefold() not in {item.casefold() for item in names}:
+            names.append(name)
+    return names
+
+
 def _format_mention(name):
     value = str(name or "").replace('"', "").strip()
     return "@" + value if re.fullmatch(r"[A-Za-z0-9_][\w-]{0,59}", value) else '@"' + value + '"'
@@ -138,7 +146,7 @@ class ChatConnection:
         self.messages = []
         self.cursor = 0
         self.standby_cursor = 0
-        self.runtime_state = "standby"
+        self.runtime_state = "idle"
         self.state_changed_at = int(time.time() * 1000)
         self.participant_id = ""
         self.join_event = asyncio.Event()
@@ -149,12 +157,18 @@ class ChatConnection:
         self.transport_error = ""
         self.message_event = asyncio.Event()
         self.seen_ids = set()
+        self.post_waiters = {}
 
     def normalized(self, message):
+        policy = str(message.get("replyPolicy") or message.get("reply_policy") or "")
+        if policy not in ("none", "required", "optional"):
+            policy = "required" if message.get("requireReply", message.get("responseRequired", message.get("reply_required", message.get("response_required", False)))) else "none"
         return {"id": message.get("id", ""), "from": message.get("from", ""),
                 "text": message.get("text", ""), "ts": message.get("ts", 0),
                 "kind": message.get("kind", "human"), "system": bool(message.get("system")),
-                "response_required": bool(message.get("responseRequired", message.get("response_required", False)))}
+                "reply_policy": policy, "reply_required": policy == "required",
+                "mode": message.get("mode"), "discussion_audience": list(message.get("discussionAudience") or message.get("discussion_audience") or []),
+                "recipients": list(message.get("recipients")) if isinstance(message.get("recipients"), list) else None}
 
     def record(self, message):
         message_id = message.get("id")
@@ -185,7 +199,6 @@ class ChatConnection:
                     self.error_code = ""
                     self.transport_error = ""
                     self.join_event.set()
-                    await self.send_state("standby")
                 elif frame_type == "presence":
                     self.members = frame.get("members", [])
                 elif frame_type == "history":
@@ -202,6 +215,13 @@ class ChatConnection:
                         except Exception:
                             pass
                     self.record(self.normalized(frame))
+                elif frame_type == "msg.accepted":
+                    request_id = str(frame.get("clientRequestId") or "")
+                    waiter = self.post_waiters.get(request_id)
+                    if waiter is not None and not waiter.done():
+                        waiter.set_result({"ok": True, "posted": True, "client_request_id": request_id,
+                                           "message_id": str(frame.get("messageId") or ""),
+                                           "connection_alive": True})
                 elif frame_type == "system":
                     self.record({"id": "", "from": "", "text": frame.get("text", ""),
                                  "ts": frame.get("ts", 0), "kind": "system", "system": True})
@@ -220,12 +240,24 @@ class ChatConnection:
                     self.transport_error = ""
                     self.message_event.set()
                 elif frame_type == "error" and frame.get("code") not in ("muted", "moderation"):
-                    self.status = "error"
+                    code = str(frame.get("code") or "error")
                     self.detail = frame.get("msg", "")
-                    self.error_code = str(frame.get("code") or "error")
-                    if frame.get("code") in ("auth", "name-taken", "no-room", "room-mismatch", "join-rejected", "join-timeout", "join-cancelled"):
+                    self.error_code = code
+                    request_id = str(frame.get("clientRequestId") or "")
+                    waiter = self.post_waiters.get(request_id)
+                    if request_id and waiter is not None and not waiter.done():
+                        waiter.set_result({"ok": False, "posted": False, "client_request_id": request_id,
+                                           "error_code": code, "error": self.detail,
+                                           "correctable": bool(frame.get("correctable", True)),
+                                           "connection_alive": bool(frame.get("connectionAlive", True))})
+                        continue
+                    fatal = code in ("auth", "name-taken", "no-room", "room-mismatch", "join-failed",
+                                     "join-rejected", "join-timeout", "join-cancelled")
+                    if fatal:
+                        self.status = "error"
                         self.closing = True
-                    self.join_event.set()
+                    if fatal or self.status != "connected":
+                        self.join_event.set()
         finally:
             if self.ws is ws:
                 self.ws = None
@@ -298,7 +330,7 @@ class ChatConnection:
         self.status = "disconnected"
         self.members = []
 
-    async def post(self, text, continue_working=False, response_required=None):
+    async def post(self, text, continue_working=False, require_reply=True):
         if self.ws is None or self.status != "connected":
             return {"ok": False, "error_code": "transport-error", "retryable": True,
                     "error": "Not connected. Call chat_join first.", **self._lifecycle_fields()}
@@ -310,11 +342,18 @@ class ChatConnection:
         self.reply_target = ""
         self.reply_audience = []
         await self.send_state("sending")
+        request_id = secrets.token_hex(12)
+        waiter = asyncio.get_running_loop().create_future()
+        self.post_waiters[request_id] = waiter
         try:
-            frame = {"t": "msg", "room": self.room, "from": self.name, "text": value, "kind": "agent"}
-            if response_required is not None:
-                frame["responseRequired"] = bool(response_required)
+            frame = {"t": "msg", "room": self.room, "from": self.name, "text": value, "kind": "agent",
+                     "clientRequestId": request_id, "recipients": _structured_recipient_names(value)}
+            if require_reply is not None:
+                frame["requireReply"] = bool(require_reply)
             await self.ws.send(json.dumps(frame))
+            result = await asyncio.wait_for(waiter, timeout=8)
+            if not result.get("ok"):
+                return {**result, **self._lifecycle_fields()}
         except Exception as error:
             self.error_code = "transport-error"
             self.transport_error = str(error) or "WebSocket transport failed while posting."
@@ -322,8 +361,9 @@ class ChatConnection:
             return {"ok": False, "error_code": "transport-error", "retryable": True,
                     "error": self.transport_error, **self._lifecycle_fields()}
         finally:
+            self.post_waiters.pop(request_id, None)
             await self.send_state("thinking" if continue_working else "standby")
-        return {"ok": True, "error_code": "", "retryable": False,
+        return {**result, "error_code": "", "retryable": False,
                 "room_id": self.room_id, "participant_id": self.participant_id,
                 "instruction": ("Continue the current work. Use chat_post(..., continue_working=true) for another progress update; use a final chat_post without it when complete."
                                 if continue_working else
@@ -378,10 +418,12 @@ class ChatConnection:
                 from_bot = message.get("from") == "roombot"
                 if message.get("from") == self.name:
                     continue
-                directed = _mentions(text, self.name)
+                routed = message.get("recipients")
+                recipient_names = {str(item).casefold() for item in routed} if routed is not None else {item.casefold() for item in _recipient_names(text)}
+                directed = bool(recipient_names.intersection({"all", "everyone", self.name.casefold()}))
                 if not from_bot and directed:
                     await self.send_state("thinking")
-                    recipients = {item.casefold() for item in _recipient_names(text)}
+                    recipients = recipient_names
                     matched = self.name if self.name.casefold() in recipients else "all" if "all" in recipients else "everyone"
                     messages = await self._collect_directed_batch(message, max_messages, batch_wait_ms)
                     audience = []
@@ -389,11 +431,15 @@ class ChatConnection:
                         sender = str(item.get("from") or "")
                         if sender and sender not in ("roombot", self.name) and sender.casefold() not in {name.casefold() for name in audience}:
                             audience.append(sender)
-                        for recipient in _recipient_names(str(item.get("text") or "")):
+                        item_recipients = item.get("recipients")
+                        for recipient in (item_recipients if item_recipients is not None else _recipient_names(str(item.get("text") or ""))):
                             if recipient.casefold() in (self.name.casefold(), "all", "everyone"):
                                 continue
                             if recipient.casefold() not in {name.casefold() for name in audience}:
                                 audience.append(recipient)
+                        for recipient in item.get("discussion_audience") or []:
+                            if str(recipient).casefold() != self.name.casefold() and str(recipient).casefold() not in {name.casefold() for name in audience}:
+                                audience.append(str(recipient))
                     self.reply_audience = audience
                     self.reply_target = audience[0] if audience else ""
                     if self.terminal_event:
@@ -468,17 +514,20 @@ class ChatConnection:
             result_messages = kept
         first = source_messages[0]
         last = source_messages[-1]
-        required_ids = [str(item.get("id") or "") for item in source_messages if item.get("response_required")]
+        required_ids = [str(item.get("id") or "") for item in source_messages if item.get("reply_required")]
+        policies = [str(item.get("reply_policy") or "none") for item in source_messages]
         if event == "message":
-            instruction = ("Respond to the required messages with chat_post, then immediately call chat_standby again."
-                           if required_ids else "No response was requested. Immediately call chat_standby again without posting an acknowledgement.")
+            instruction = ("Respond to the required messages with chat_post; the final post automatically resumes standby."
+                           if required_ids else "Post only if you have a substantive contribution." if "optional" in policies
+                           else "No response was requested. Immediately call chat_standby again without posting an acknowledgement.")
         return {"event": event, "message": result_messages[0] if result_messages else None, "messages": result_messages,
                 "event_id": str(first.get("id") or ""),
                 "event_ids": [str(item.get("id") or "") for item in source_messages], "cursor_before": cursor_before,
                 "cursor_after": self.standby_cursor, "addressed": addressed,
                 "matched_mention": matched_mention, "truncated": truncated,
-                "response_required": bool(required_ids),
-                "required_response_event_ids": required_ids,
+                "reply_required": bool(required_ids),
+                "reply_required_event_ids": required_ids,
+                "reply_policy": "required" if required_ids else "optional" if "optional" in policies else "none",
                 "reply_audience": list(self.reply_audience),
                 "continuation_cursor": str(last.get("id") or "") if truncated else "",
                 "room_id": self.room_id, "participant_id": self.participant_id,
@@ -540,35 +589,56 @@ async def chat_join(magic_link: str, name: str) -> str:
     except ValueError as error:
         return json.dumps({"ok": False, "error_code": "invalid-magic-link", "error": str(error)})
     key = alias.casefold()
-    previous = _connections.get(key)
+    previous = _connections.pop(key, None)
+    if previous is not None:
+        await previous.leave()
     connection = ChatConnection(alias, url, room, token, room_id)
     try:
         await connection.start()
     except Exception as error:
+        await connection.leave()
         return json.dumps({"ok": False, "error_code": connection.error_code or "join-failed",
-                           "error": str(error), "alias": alias})
-    if previous is not None:
-        await previous.leave()
+                           "error": str(error), "alias": alias, "active_aliases": _aliases()})
     _connections[key] = connection
     return json.dumps({"ok": True, **connection.status_data(), "active_aliases": _aliases(),
-                       "instruction": "Use name=%r on subsequent chat tools." % alias})
+                       "instruction": "Use name=%r on subsequent chat tools, then call chat_standby to begin an active blocking wait." % alias})
 
 
 @mcp.tool()
 async def chat_post(text: str, name: str = "", continue_working: bool = False,
-                    response_required: bool = None) -> str:
+                    require_reply: bool = True) -> str:
     """PKM Chatroom: post a directed message.
 
-    Final replies change the activity state to standby but do not block. The
-    caller MUST immediately call chat_standby after a final post. For an acknowledgement or
-    progress update sent before work is complete, pass continue_working=true so
-    the Agent LED remains thinking until the final post or next chat_standby.
+    Progress posts (continue_working=true) return immediately. A final post
+    atomically enters blocking standby and returns only for the next directed
+    message, stop/close, transport error, or client cancellation. Heartbeat
+    timeouts are consumed internally, so the Agent cannot forget to wait.
+    Posts require a reply by default. Pass require_reply=false for a pure
+    acknowledgement, FYI, or progress update that must not continue the exchange.
     """
     try:
         connection = _resolve(name)
     except ValueError as error:
         return json.dumps({"ok": False, "error": str(error)})
-    return json.dumps(await connection.post(text, bool(continue_working), response_required))
+    posted = await connection.post(text, bool(continue_working), require_reply)
+    if not posted.get("ok") or continue_working:
+        return json.dumps(posted)
+    try:
+        while True:
+            result = await connection.standby(300, 8, 32768, 250)
+            if result.get("event") != "timeout":
+                return json.dumps({"ok": True, "posted": True, "alias": connection.alias, **result})
+    except asyncio.CancelledError:
+        await connection.send_state("standby")
+        return json.dumps({"ok": True, "posted": True, "alias": connection.alias,
+                           "event": "client_cancelled", "reason": "The MCP Host cancelled this post-and-standby call.",
+                           "retryable": True, "message": None, "messages": [], "event_id": "", "event_ids": [],
+                           "cursor_before": connection.standby_cursor, "cursor_after": connection.standby_cursor,
+                           "addressed": False, "matched_mention": "", "truncated": False,
+                           "continuation_cursor": "", "room_id": connection.room_id,
+                           "participant_id": connection.participant_id,
+                           **connection._lifecycle_fields("client_cancelled"),
+                           "instruction": "The call was cancelled; call chat_standby again to resume waiting."})
 
 
 @mcp.tool()

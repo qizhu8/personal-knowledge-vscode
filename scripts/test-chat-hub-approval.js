@@ -86,13 +86,12 @@ async function main() {
       managedClient = new ChatClient({
         onStatus: status => { if (status === "connected") resolve(); },
         onMessage: () => {}, onHistory: () => {}, onPresence: () => {}, onFileComplete: () => {},
-        onJoinPending: requestId => { void hub.approveJoinNew(requestId).catch(reject); },
         onRejected: (_code, message) => reject(new Error(message)),
       });
       managedClient.connect({ url, room: created.room, roomId: created.roomId, user: "Managed Agent", token: created.secret, kind: "agent", cid: "managed-test" });
     });
     await managedConnected;
-    assert(managedClient.participantId, "managed agent must receive a participant ID through automatic Host approval");
+    assert(managedClient.participantId, "managed agent must receive a participant ID through automatic Join");
     managedClient.disconnect();
 
     const mismatched = await connect(url); sockets.push(mismatched);
@@ -100,17 +99,15 @@ async function main() {
     await waitFrame(mismatched, frame => frame.t === "error" && frame.code === "room-mismatch");
     assert.strictEqual(hub.pendingApprovals().length, 0, "Room ID mismatch must fail before reserving an alias");
 
-    const guest = await connect(url); sockets.push(guest);
+    let guest = await connect(url); sockets.push(guest);
     sendJoin(guest, created.room, created.secret, "Agent One", { roomId: created.roomId });
-    const pending = await waitFrame(guest, frame => frame.t === "join.pending");
-    assert(!guest.frames.some(frame => frame.t === "history" || frame.t === "presence"), "pending Join must not receive Room data");
-    guest.send(JSON.stringify({ t: "msg", room: created.room, text: "should not post" }));
-    await waitFrame(guest, frame => frame.t === "error" && frame.code === "join-pending");
-    assert(!host.frames.some(frame => frame.t === "msg" && frame.text === "should not post"));
-    await hub.approveJoinNew(pending.requestId);
     const approved = await waitFrame(guest, frame => frame.t === "join.approved");
     await waitFrame(guest, frame => frame.t === "presence");
+    await waitFrame(host, frame => frame.t === "agent.state" && frame.user === "Agent One" && frame.state === "idle");
+    guest.send(JSON.stringify({ t: "agent.state", room: created.room, state: "standby" }));
     await waitFrame(host, frame => frame.t === "agent.state" && frame.user === "Agent One" && frame.state === "standby");
+    await waitFrame(host, frame => frame.t === "presence" && frame.members.some(member =>
+      member.user === "Agent One" && member.runtimeState === "standby"));
     assert.notStrictEqual(approved.participantId, hostApproved.participantId);
     guest.send(JSON.stringify({ t: "msg", room: created.room, text: "message without direction" }));
     await waitFrame(guest, frame => frame.t === "error" && frame.code === "mention-required");
@@ -118,13 +115,29 @@ async function main() {
     guest.send(JSON.stringify({ t: "msg", room: created.room, text: "@Host participant identity message" }));
     const participantMessage = await waitFrame(host, frame => frame.t === "msg" && frame.text === "@Host participant identity message");
     assert.strictEqual(participantMessage.fromId, approved.participantId);
-    assert.strictEqual(participantMessage.responseRequired, true);
-    guest.send(JSON.stringify({ t: "msg", room: created.room, text: "@Host FYI only", responseRequired: false }));
+    assert.strictEqual(participantMessage.responseRequired, true, "require_reply must default true");
+    guest.send(JSON.stringify({ t: "msg", room: created.room, text: "@Host substantive question", requireReply: true }));
+    const explicitQuestion = await waitFrame(host, frame => frame.t === "msg" && frame.text === "@Host substantive question");
+    assert.strictEqual(explicitQuestion.responseRequired, true, "Agent may explicitly continue a substantive discussion");
+    guest.send(JSON.stringify({ t: "msg", room: created.room, text: "@Host FYI only", requireReply: false }));
     const explicitFyi = await waitFrame(host, frame => frame.t === "msg" && frame.text === "@Host FYI only");
     assert.strictEqual(explicitFyi.responseRequired, false);
     host.send(JSON.stringify({ t: "msg", room: created.room, text: "@all broadcast update" }));
     const broadcast = await waitFrame(guest, frame => frame.t === "msg" && frame.text === "@all broadcast update");
-    assert.strictEqual(broadcast.responseRequired, false);
+    assert.strictEqual(broadcast.responseRequired, true, "Host @all must request replies by default");
+    guest.send(JSON.stringify({ t: "msg", room: created.room, text: "@all guest FYI" }));
+    await waitFrame(guest, frame => frame.t === "error" && frame.code === "host-only-broadcast");
+    assert(!host.frames.some(frame => frame.t === "msg" && frame.text === "@all guest FYI"), "non-Host @all must not broadcast");
+    const duplicateAlias = await connect(url); sockets.push(duplicateAlias);
+    sendJoin(duplicateAlias, created.room, created.secret, "Agent One", { roomId: created.roomId });
+    const duplicateApproved = await waitFrame(duplicateAlias, frame => frame.t === "join.approved");
+    assert.strictEqual(duplicateApproved.participantId, approved.participantId,
+      "same alias and cid must reconnect by reusing the existing identity without Host approval");
+    guest = duplicateAlias;
+    const collidingAlias = await connect(url); sockets.push(collidingAlias);
+    sendJoin(collidingAlias, created.room, created.secret, "Agent One", { roomId: created.roomId, cid: "different-cid" });
+    await waitFrame(collidingAlias, frame => frame.t === "error" && frame.code === "name-taken");
+    assert.strictEqual(hub.pendingApprovals().length, 0, "an alias collision must fail immediately without reserving approval");
     await waitUntil(async () => (await hub.persistence.openRoom(created.roomId, created.room)).messages.some(
       message => message.content === "@Host participant identity message" && message.participantId === approved.participantId));
 
@@ -141,16 +154,13 @@ async function main() {
 
     const reused = await connect(url); sockets.push(reused);
     sendJoin(reused, created.room, created.secret, "Agent One", { roomId: created.roomId, resumeAfter: participantMessage.id });
-    const reusePending = await waitFrame(reused, frame => frame.t === "join.pending");
-    const reusable = hub.pendingApprovals().find(item => item.requestId === reusePending.requestId).reusableParticipants;
-    assert(reusable.some(item => item.participantId === approved.participantId));
-    await hub.approveJoinReuse(reusePending.requestId, approved.participantId);
     const reuseApproved = await waitFrame(reused, frame => frame.t === "join.approved");
     assert.strictEqual(reuseApproved.participantId, approved.participantId);
     const catchup = await waitFrame(reused, frame => frame.t === "history");
     assert.strictEqual(catchup.mode, "catchup");
-    assert.deepStrictEqual(catchup.messages.map(message => message.id), [explicitFyi.id, broadcast.id, leaveMessage.id, missed.id]);
-    assert.strictEqual(catchup.messages[0].responseRequired, false, "response intent must survive persistence");
+    assert.deepStrictEqual(catchup.messages.map(message => message.id), [explicitQuestion.id, explicitFyi.id, broadcast.id, leaveMessage.id, missed.id]);
+    assert.strictEqual(catchup.messages.find(message => message.id === explicitFyi.id).responseRequired, false,
+      "explicit no-reply intent must survive persistence");
 
     host.send(JSON.stringify({
       t: "admin", room: created.room, action: "edit",
@@ -165,28 +175,24 @@ async function main() {
     await waitUntil(async () => (await hub.persistence.identityState(created.roomId)).aliases.some(
       alias => alias.participantId === approved.participantId && alias.alias === "Agent Renamed" && alias.releasedAt));
     host.send(JSON.stringify({ t: "admin", room: created.room, action: "kick", target: `participant:${approved.participantId}` }));
-    const rekey = await waitFrame(host, frame => frame.t === "rekey" && frame.secret !== created.secret);
     await waitUntil(async () => (await hub.persistence.identityState(created.roomId)).memberships.some(
       membership => membership.participantId === approved.participantId && membership.forgottenAt));
+    assert.strictEqual(host.frames.filter(frame => frame.t === "rekey").length, 0,
+      "removing a member must not rotate the Room secret");
 
     const afterForget = await connect(url); sockets.push(afterForget);
-    sendJoin(afterForget, created.room, rekey.secret, "Agent Renamed", { roomId: created.roomId });
-    const forgottenPending = await waitFrame(afterForget, frame => frame.t === "join.pending");
-    assert(!hub.pendingApprovals().find(item => item.requestId === forgottenPending.requestId).reusableParticipants.some(
-      item => item.participantId === approved.participantId), "forgotten participant must not be offered for Reuse");
-    await hub.rejectJoin(forgottenPending.requestId, "Forgotten identity test complete.");
+    sendJoin(afterForget, created.room, created.secret, "Agent Renamed", { roomId: created.roomId });
+    const afterForgetApproved = await waitFrame(afterForget, frame => frame.t === "join.approved");
+    assert.notStrictEqual(afterForgetApproved.participantId, approved.participantId,
+      "a forgotten client identity must receive a new participant ID");
+    afterForget.close();
 
-    const rejected = await connect(url); sockets.push(rejected);
-    sendJoin(rejected, created.room, rekey.secret, "Rejected", { roomId: created.roomId });
-    const rejectPending = await waitFrame(rejected, frame => frame.t === "join.pending");
-    await hub.rejectJoin(rejectPending.requestId, "Host said no.");
-    const rejection = await waitFrame(rejected, frame => frame.t === "error" && frame.code === "join-rejected");
-    assert.strictEqual(rejection.msg, "Host said no.");
+    const rotatedSecret = await hub.rotateRoomSecret(created.room);
+    assert(rotatedSecret && rotatedSecret !== created.secret, "manual rotation must create a new Room secret");
+    await waitFrame(host, frame => frame.t === "rekey" && frame.secret === rotatedSecret);
 
     const keeper = await connect(url); sockets.push(keeper);
-    sendJoin(keeper, created.room, rekey.secret, "Keeper", { roomId: created.roomId });
-    const keeperPending = await waitFrame(keeper, frame => frame.t === "join.pending");
-    await hub.approveJoinNew(keeperPending.requestId);
+    sendJoin(keeper, created.room, rotatedSecret, "Keeper", { roomId: created.roomId });
     const keeperApproved = await waitFrame(keeper, frame => frame.t === "join.approved");
     host.send(JSON.stringify({
       t: "admin", room: created.room, action: "edit",
@@ -217,7 +223,19 @@ async function main() {
     assert.strictEqual(activeRenamed, "approval renamed");
     await waitFrame(rehost, frame => frame.t === "room.renamed" && frame.room === "approval renamed");
     assert.deepStrictEqual(hub.roomNames, ["approval renamed"]);
-    rehost.send(JSON.stringify({ t: "msg", room: rehosted.room, text: "/leave" }));
+    const hostSocketClosed = new Promise(resolve => rehost.once("close", resolve));
+    rehost.close();
+    await hostSocketClosed;
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.deepStrictEqual(hub.roomNames, ["approval renamed"],
+      "closing the Host tab/socket must not close the hosted Room");
+
+    const reconnectedHost = await connect(`ws://127.0.0.1:${hub.port}`); sockets.push(reconnectedHost);
+    sendJoin(reconnectedHost, activeRenamed, rehosted.secret, "Host", {
+      roomId: rehosted.roomId, kind: "human", hostToken: rehosted.hostToken,
+    });
+    await waitFrame(reconnectedHost, frame => frame.t === "join.ready");
+    reconnectedHost.send(JSON.stringify({ t: "msg", room: activeRenamed, text: "/leave" }));
     await waitUntil(async () => hub.roomNames.length === 0);
     const storedAfterLeave = await hub.listStoredRooms();
     assert(storedAfterLeave.some(room => room.roomId === rehosted.roomId), "Host /leave must store, not delete, the Room");
@@ -226,7 +244,7 @@ async function main() {
     const historyAfterLeave = (await hub.persistence.openRoom(rehosted.roomId, rehosted.room)).messages;
     assert(historyAfterLeave.some(message => message.content === "/leave"), "Rehost after /leave must preserve message history");
     await hub.deactivateRoom(reopenedAfterLeave.room, "test cleanup");
-    console.log("hub approval test: Host proof, /leave history retention, New, Reuse, Reject, alias release, and Host Rehost identity OK");
+    console.log("hub Join test: valid-secret auto Join, credential resume, collision, alias release, and Host Rehost identity OK");
   } finally {
     for (const socket of sockets) try { socket.terminate(); } catch {}
     try { managedClient?.disconnect(); } catch {}

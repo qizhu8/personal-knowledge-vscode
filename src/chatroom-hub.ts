@@ -1,3 +1,4 @@
+import { AgentRuntimeState, ChatMessage, FileMeta, Frame, MAX_FILE_BYTES, Member, MemberKind, ReplyPolicy } from "./chatroom-protocol";
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer, Server, IncomingMessage, ServerResponse } from "http";
 import { networkInterfaces } from "os";
@@ -6,7 +7,6 @@ import * as fs from "fs";
 import * as path from "path";
 import { findCommand, BOT_NAME, CommandContext } from "./chat-commands";
 import { createChatMagicLink, chatInviteMessage } from "./chat-magic-link";
-import { AgentRuntimeState, ChatMessage, FileMeta, Frame, MAX_FILE_BYTES, Member, MemberKind } from "./chatroom-protocol";
 import { browserViewHtml } from "./chatroom-browser";
 import { ChatPersistence, PersistedChatMessage } from "./chat-persistence";
 import { ChatRoomLifecycle, ActiveChatRoom, StoredChatRoom } from "./chat-room-lifecycle";
@@ -39,6 +39,8 @@ interface HubConn {
   participantId: string;
   pendingJoinId: string;
   resumeAfter: string;
+  runtimeState: AgentRuntimeState;
+  stateChangedAt: number;
   processing: Promise<void>;
 }
 
@@ -81,7 +83,6 @@ export class ChatHub {
   private heartbeat: NodeJS.Timeout | null = null;
   private log: (m: string) => void;
   private static readonly HISTORY_MAX = 5000;       // hard ceiling on messages kept per room
-  private static readonly OWNER_GRACE_MS = 15_000;  // tolerate a host's brief reconnect
 
   // Persistent chat archive (so history survives rejoin / room close / hub restart).
   private archiveDir = "";
@@ -177,6 +178,7 @@ export class ChatHub {
     const nextRoom = ChatHub.canonRoom(roomName);
     if (nextRoom !== previousRoom && this.rooms.has(nextRoom)) throw new Error(`An active Room named "${nextRoom}" already exists.`);
     await this.lifecycle.renameActiveRoom(roomId, nextRoom);
+    this.lifecycle.publishActiveDescriptor(roomId, nextRoom, `ws://${ChatHub.localIp()}:${this.port}`);
     if (nextRoom === previousRoom) return nextRoom;
     this.rooms.delete(previousRoom);
     this.rooms.set(nextRoom, state);
@@ -272,6 +274,7 @@ export class ChatHub {
       throw new Error(`A Room named "${room}" already exists. Rehost the stored Room instead.`);
     }
     const active = await this.lifecycle.createRoom(room, requestedJoinSecret);
+    this.lifecycle.publishActiveDescriptor(active.roomId, room, `ws://${ChatHub.localIp()}:${this.port}`);
     if (!active.messages.length) {
       const legacy = this.readLegacyArchive(room);
       if (legacy.length) {
@@ -289,6 +292,7 @@ export class ChatHub {
     if (!this.lifecycle) throw new Error("Chat Hub lifecycle is not configured or running.");
     const active = await this.lifecycle.rehostRoom(roomId);
     const room = ChatHub.canonRoom(active.roomName);
+    this.lifecycle.publishActiveDescriptor(active.roomId, room, `ws://${ChatHub.localIp()}:${this.port}`);
     if (this.rooms.has(room)) {
       await this.lifecycle.deactivateRoom(roomId, "name-conflict");
       throw new Error(`An active Room named "${room}" already exists.`);
@@ -436,7 +440,10 @@ export class ChatHub {
       id: message.id, participantId: message.fromId || undefined,
       aliasAtSend: message.from || "system", senderKind: message.kind,
       messageType: message.system ? "system" : message.file ? "file" : "chat",
-      content: message.text, metadata: { system: message.system, file: message.file, receipt: message.receipt, responseRequired: message.responseRequired },
+      content: message.text, metadata: { system: message.system, file: message.file, receipt: message.receipt,
+        responseRequired: message.responseRequired, replyPolicy: message.replyPolicy, mode: message.mode,
+        discussionAudience: message.discussionAudience, replyToMessageId: message.replyToMessageId,
+        recipients: message.recipients },
       createdAt: message.ts,
     };
   }
@@ -445,7 +452,9 @@ export class ChatHub {
     const metadata = (message.metadata || {}) as any;
     return { id: message.id, from: message.aliasAtSend, fromId: message.participantId || "", text: message.content,
       ts: message.createdAt, kind: message.senderKind as MemberKind, system: !!metadata.system,
-      file: metadata.file, receipt: metadata.receipt, responseRequired: metadata.responseRequired };
+      file: metadata.file, receipt: metadata.receipt, responseRequired: metadata.responseRequired,
+      replyPolicy: metadata.replyPolicy, mode: metadata.mode, discussionAudience: metadata.discussionAudience,
+      replyToMessageId: metadata.replyToMessageId, recipients: metadata.recipients };
   }
 
   // ── Persistent chat archive ───────────────────────────────────────────────
@@ -518,7 +527,7 @@ export class ChatHub {
   }
 
   private onConnection(ws: WebSocket): void {
-    const conn: HubConn = { id: randomBytes(4).toString("hex"), user: "", room: "", kind: "human", cid: "", ws, alive: true, joined: false, participantId: "", pendingJoinId: "", resumeAfter: "", processing: Promise.resolve() };
+    const conn: HubConn = { id: randomBytes(4).toString("hex"), user: "", room: "", kind: "human", cid: "", ws, alive: true, joined: false, participantId: "", pendingJoinId: "", resumeAfter: "", runtimeState: "idle", stateChangedAt: Date.now(), processing: Promise.resolve() };
     this.conns.set(ws, conn);
     ws.on("pong", () => { conn.alive = true; });
     ws.on("message", raw => {
@@ -548,10 +557,13 @@ export class ChatHub {
 
     if (conn.joined && frame.t === "agent.state") {
       if (conn.kind !== "agent") return;
+      conn.runtimeState = frame.state;
+      conn.stateChangedAt = Date.now();
       this.broadcast(conn.room, {
         t: "agent.state", room: conn.room, user: conn.user,
-        state: frame.state, ts: Date.now(),
+        state: frame.state, ts: conn.stateChangedAt,
       });
+      this.broadcastPresence(conn.room);
       return;
     }
 
@@ -593,13 +605,46 @@ export class ChatHub {
       const st = existingState || await this.ensureRoomState(room);
       if (!this.approvals || !this.persistence) throw new Error("Room Join approval is unavailable.");
       const isHost = kind === "human" && !!frame.hostToken && constantTimeEquals(frame.hostToken, this.hostTokens.get(room) || "");
-      const pending = await this.approvals.request(st.roomId, conn.id, desired, kind);
+      const sameAlias = [...this.conns.values()].filter(other => other !== conn && other.room === room &&
+        other.user.trim().normalize("NFKC").toLocaleLowerCase() === nameKey && (other.joined || !!other.pendingJoinId));
+      const reconnect = sameAlias.find(other => !!cid && other.cid === cid);
+      if (!reconnect && sameAlias.length) {
+        this.sendTo(conn.ws, { t: "error", code: "name-taken", msg: `Alias "${desired}" is already active.` });
+        try { conn.ws.close(); } catch { /* ignore */ }
+        return;
+      }
+      let reconnectParticipantId = "";
+      if (reconnect) {
+        reconnectParticipantId = reconnect.participantId;
+        if (reconnect.pendingJoinId) {
+          await this.approvals.cancelConnection(reconnect.id, "Superseded by a newer connection.");
+          reconnect.pendingJoinId = "";
+        }
+        if (reconnect.joined && reconnectParticipantId) {
+          reconnect.joined = false;
+          await this.persistence.releaseAlias(st.roomId, reconnectParticipantId, Date.now(), reconnect.user);
+        }
+        this.conns.delete(reconnect.ws);
+        try { reconnect.ws.close(); } catch { /* ignore */ }
+      }
+      let pending;
+      try {
+        pending = await this.approvals.request(st.roomId, conn.id, desired, cid || `connection:${conn.id}`, kind);
+      } catch (error) {
+        this.sendTo(conn.ws, { t: "error", code: "join-failed", msg: (error as Error).message });
+        try { conn.ws.close(); } catch { /* ignore */ }
+        return;
+      }
       conn.pendingJoinId = pending.approval.requestId;
-      if (isHost) {
+      if (isHost && st.owner) {
+        await this.approvals.approveReuse(pending.approval.requestId, st.owner);
+      } else if (reconnectParticipantId) {
+        await this.approvals.approveReuse(pending.approval.requestId, reconnectParticipantId);
+      } else if (isHost) {
         if (st.owner) await this.approvals.approveReuse(pending.approval.requestId, st.owner);
         else await this.approvals.approveNew(pending.approval.requestId);
       } else {
-        this.sendTo(conn.ws, { t: "join.pending", room, requestId: pending.approval.requestId, expiresAt: pending.approval.expiresAt });
+        await this.approvals.approveAutomatic(pending.approval.requestId);
       }
       void pending.result.then(result => this.finishJoin(conn, result, isHost)).catch(error => {
         this.sendTo(conn.ws, { t: "error", code: "join-failed", msg: (error as Error).message });
@@ -611,26 +656,52 @@ export class ChatHub {
     if (frame.t === "msg") {
       const text = (frame.text ?? "").toString().slice(0, 8000);
       if (!text.trim()) return;
+      const clientRequestId = String(frame.clientRequestId || "").slice(0, 120);
+      const rejectMessage = (code: string, msg: string) => this.sendTo(conn.ws, {
+        t: "error", code, msg, clientRequestId: clientRequestId || undefined,
+        correctable: true, connectionAlive: true,
+      });
       // Slash commands are intercepted and answered privately. /leave remains a
       // visible Room event; /stop is handled above as a structured lifecycle action.
       const head = text.trim().split(/\s+/)[0].toLowerCase();
       if (head === "/stop") { await this.stopAgentConnections(conn, text); return; }
       if (text.trim().startsWith("/") && head !== "/leave") { await this.handleCommand(conn, text.trim()); return; }
-      if (!text.trim().startsWith("/") && !this.leadingMentionNames(text).length) {
-        this.sendTo(conn.ws, { t: "error", code: "mention-required", msg: "Every Chatroom message must address @all or a specific @participant." });
+      const structuredRecipients = Array.isArray(frame.recipients)
+        ? frame.recipients.map(name => String(name || "").trim()).filter(Boolean).slice(0, 64)
+        : [];
+      const recipientNames = (structuredRecipients.length ? structuredRecipients : this.allMentionNames(text)).map(name => name.toLowerCase());
+      if (!text.trim().startsWith("/") && !recipientNames.length) {
+        rejectMessage("mention-required", "Every Chatroom message must address @all or a specific @participant.");
         return;
       }
-      if (this.isMuted(conn)) { this.sendTo(conn.ws, { t: "error", code: "muted", msg: "You are muted by the host and can't post right now." }); return; }
+      if (this.isMuted(conn)) { rejectMessage("muted", "You are muted by the host and can't post right now."); return; }
       const roomState = this.roomState(conn.room);
-      const recipientNames = this.leadingMentionNames(text).map(name => name.toLowerCase());
+      const broadcastRequested = recipientNames.some(name => name === "all" || name === "everyone");
+      if (broadcastRequested && !this.isOwnerConn(roomState, conn)) {
+        rejectMessage("host-only-broadcast", "Only the Room Host can use @all. Address specific participants instead.");
+        return;
+      }
       const m: ChatMessage = {
         id: randomBytes(6).toString("hex"), from: conn.user, fromId: conn.participantId,
         text, ts: Date.now(), kind: conn.kind,
-        responseRequired: typeof frame.responseRequired === "boolean"
-          ? frame.responseRequired
-          : recipientNames.some(name => name !== "all" && name !== "everyone"),
+        replyPolicy: (["none", "required", "optional"] as ReplyPolicy[]).includes(frame.replyPolicy as ReplyPolicy)
+          ? frame.replyPolicy as ReplyPolicy
+          : typeof frame.requireReply === "boolean"
+            ? frame.requireReply ? "required" : "none"
+            : typeof frame.responseRequired === "boolean"
+              ? frame.responseRequired ? "required" : "none"
+              : "required",
+        mode: conn.kind === "human" && this.isOwnerConn(roomState, conn) && ["announce", "ask", "discuss"].includes(String(frame.mode))
+          ? frame.mode as "announce" | "ask" | "discuss" : undefined,
+        replyToMessageId: String(frame.replyToMessageId || "").slice(0, 120) || undefined,
+        recipients: recipientNames,
       };
-      const targets = this.mentionTargets(conn.room, conn, text);
+      const targets = this.mentionTargets(conn.room, conn, text, recipientNames);
+      m.responseRequired = m.replyPolicy === "required";
+      if (m.mode === "discuss") {
+        m.discussionAudience = [...targets].map(target => [...this.conns.values()].find(candidate =>
+          candidate.joined && candidate.room === conn.room && this.identityKey(candidate) === target)?.user).filter((name): name is string => !!name);
+      }
       if (targets.size) {
         roomState.receipts.set(m.id, { targets, readers: new Set() });
         m.receipt = { read: 0, total: targets.size };
@@ -638,6 +709,7 @@ export class ChatHub {
       await this.remember(conn.room, m);
       if (targets.size) this.broadcastReceiptMessage(conn.room, m, targets);
       else this.broadcast(conn.room, { t: "msg", room: conn.room, ...m });
+      if (clientRequestId) this.sendTo(conn.ws, { t: "msg.accepted", room: conn.room, clientRequestId, messageId: m.id });
       if (head === "/leave") await this.leaveConnection(conn);
       return;
     }
@@ -700,7 +772,7 @@ export class ChatHub {
     if (!st) { try { conn.ws.close(); } catch { /* ignore */ } return; }
     const identityAlreadyPresent = this.hasOtherIdentityConnection(conn);
     if (isHost) {
-      if (!st.owner) {
+      if (st.owner !== conn.participantId) {
         st.owner = conn.participantId;
         await this.persistence?.recordLifecycle(st.roomId, "room.host_assigned", undefined, { participantId: conn.participantId });
       }
@@ -726,9 +798,7 @@ export class ChatHub {
     }
     this.broadcastPresence(conn.room);
     this.sendTo(conn.ws, { t: "join.ready", room: conn.room });
-    if (conn.kind === "agent") {
-      this.broadcast(conn.room, { t: "agent.state", room: conn.room, user: conn.user, state: "standby", ts: Date.now() });
-    }
+    if (conn.kind === "agent") this.broadcast(conn.room, { t: "agent.state", room: conn.room, user: conn.user, state: "idle", ts: conn.stateChangedAt });
     if (isHost) this.sendHelp(conn, `👋 Welcome — you're now hosting "${conn.room}". Here are the magic messages you can type:`);
   }
 
@@ -789,16 +859,9 @@ export class ChatHub {
       this.broadcast(conn.room, { t: "system", room: conn.room, text: `${conn.user} left the room`, ts: Date.now() });
     }
     this.broadcastPresence(conn.room);
-    const isOwner = this.isOwnerConn(st, conn);
-    if (isOwner && !identityStillHere) {
-      // Host disconnected: give a short grace for reconnect, then deactivate.
-      if (st.graceTimer) clearTimeout(st.graceTimer);
-      st.graceTimer = setTimeout(() => {
-        const back = [...this.conns.values()].some(c => c.joined && c.room === conn.room && this.isOwnerConn(st, c));
-        if (!back) void this.deactivateRoom(conn.room, "host left").catch(error => this.log(`room deactivate failed: ${(error as Error).message}`));
-      }, ChatHub.OWNER_GRACE_MS);
-      st.graceTimer.unref?.();
-    }
+    // A hosted Room belongs to the Hub, not to the Host UI socket. Closing a
+    // tab, reloading a window, or losing transport must not close the Room.
+    // Explicit /leave, Close Room, Stop Hub, or extension disposal owns that lifecycle.
   }
 
   private async remember(room: string, m: ChatMessage): Promise<void> {
@@ -813,7 +876,8 @@ export class ChatHub {
     const st = this.rooms.get(room);
     return [...this.conns.values()]
       .filter(c => c.joined && c.room === room)
-      .map(c => ({ id: c.id, user: c.user, kind: c.kind, host: !!st && this.isOwnerConn(st, c), muted: !!st?.muted.has(this.identityKey(c)), participantId: c.participantId }));
+      .map(c => ({ id: c.id, user: c.user, kind: c.kind, host: !!st && this.isOwnerConn(st, c), muted: !!st?.muted.has(this.identityKey(c)), participantId: c.participantId,
+        runtimeState: c.kind === "agent" ? c.runtimeState : undefined, stateChangedAt: c.kind === "agent" ? c.stateChangedAt : undefined }));
   }
 
   // A per-member identity within a room: cid + display name. Two windows on one
@@ -859,8 +923,14 @@ export class ChatHub {
     return recipients;
   }
 
-  private mentionTargets(room: string, sender: HubConn, text: string): Set<string> {
-    const mentions = this.leadingMentionNames(text).map(name => name.toLowerCase());
+  private allMentionNames(text: string): string[] {
+    const names = (String(text || "").match(/@(?:"[^"\n]{1,60}"|[\p{L}\p{N}_][\p{L}\p{N}_-]{0,59})/gu) || [])
+      .map(token => token.slice(1).replace(/^"|"$/g, ""));
+    return names.filter((name, index) => names.findIndex(candidate => candidate.toLocaleLowerCase() === name.toLocaleLowerCase()) === index);
+  }
+
+  private mentionTargets(room: string, sender: HubConn, text: string, recipientNames?: string[]): Set<string> {
+    const mentions = recipientNames?.length ? recipientNames : this.allMentionNames(text).map(name => name.toLowerCase());
     if (!mentions.length) return new Set();
     const all = mentions.some(name => name === "all" || name === "everyone");
     const senderKey = this.identityKey(sender);
@@ -1019,12 +1089,8 @@ export class ChatHub {
         st.muted.delete(targetKey);
         st.roster.delete(targetKey);
         this.broadcast(conn.room, { t: "system", room: conn.room, text: `${who} was permanently removed by the host`, ts: Date.now() });
-        // Rotate the room secret so the removed member can't immediately rejoin
-        // with the secret they already had. Existing members stay connected (the
-        // secret is only checked at join); only NEW joins need the fresh secret.
-        await this.rotateSecretInternal(conn.room, `🔑 Room secret was rotated after removing ${who}. New members need the new secret.`);
         this.broadcastPresence(conn.room);
-        this.log(`admin kick room=${conn.room} target=${who} (secret rotated)`);
+        this.log(`admin kick room=${conn.room} target=${who}`);
         break;
       }
       case "mute": {
@@ -1145,6 +1211,12 @@ export class ChatHub {
         sid: e.sid, verified: e.verified, present: e.present, lastSeen: e.lastSeen,
         muted: st.muted.has(e.key),
         role: e.role, participantId: e.participantId,
+        runtimeState: e.kind === "agent" && e.present
+          ? [...this.conns.values()].find(conn => conn.joined && conn.participantId === e.participantId)?.runtimeState
+          : undefined,
+        stateChangedAt: e.kind === "agent" && e.present
+          ? [...this.conns.values()].find(conn => conn.joined && conn.participantId === e.participantId)?.stateChangedAt
+          : undefined,
       }));
   }
 

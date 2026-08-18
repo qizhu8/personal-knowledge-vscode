@@ -63,6 +63,19 @@ directed_thread.join(timeout=2)
 assert directed_result.get("event") == "message", directed_result
 assert catchup.last_message_id == "c2"
 
+spaced = ChatBridge()
+spaced.name = "Agent With Spaces"
+spaced.state = "joined"
+spaced._on_frame(json.dumps({
+    "t": "msg", "id": "space-1", "from": "Peer",
+    "text": "context before @\"Agent With Spaces\" review",
+    "recipients": ["agent with spaces"], "replyPolicy": "required", "ts": 7,
+}))
+spaced_result = spaced.standby(1)
+assert spaced_result["event"] == "message" and spaced_result["event_id"] == "space-1", spaced_result
+assert spaced_result["matched_mention"] == "Agent With Spaces"
+assert spaced_result["reply_required"] is True
+
 focused = ChatBridge()
 focused.name = "Focused Agent"
 focused.room_id = "room-focused"

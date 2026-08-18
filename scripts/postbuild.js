@@ -45,12 +45,16 @@ try {
       !panelCss.includes("pkm-skill-target")) {
     throw new Error("Config tab must expose PKM Skill Router target controls");
   }
-  if (!panelJs.includes('id="chat-default-recipient"') || !panelJs.includes("function chatMaterializeRecipient") ||
-      !panelJs.includes("chatDefaultRecipientName") || !panelJs.includes("function chatParseRecipients")) {
-    throw new Error("Chat composer must display and materialize a role-aware default recipient");
+  if (!panelJs.includes('id="chat-composer"') || !panelJs.includes('id="chat-recipient-chips"') ||
+      !panelJs.includes("function chatComposerRecipientNames") || !panelJs.includes("chatDefaultRecipientNames") ||
+      !panelJs.includes("chatStructuredRecipientNames")) {
+    throw new Error("Chat composer must expose unified To chips with inherited, manual, and mentioned recipients");
   }
-  if (!panelJs.includes('id="chat-response-required"') || !panelJs.includes("a.selfHost ? 'Close Room' : 'Leave Room'")) {
-    throw new Error("Chatroom UI must expose explicit reply intent and distinguish Host Close from guest Leave");
+  if (!panelJs.includes("chat.active?.selfHost ? [{ name: 'all'")) {
+    throw new Error("Extension Chatroom must show @all in the mention picker only to the Host");
+  }
+  if (panelJs.includes('id="chat-response-required"') || !panelJs.includes("a.selfHost ? 'Close Room' : 'Leave Room'")) {
+    throw new Error("Chatroom UI must infer reply intent automatically and distinguish Host Close from guest Leave");
   }
   if (!panelJs.includes("function chatActiveRoomMenu") || !panelJs.includes("function chatStoredRoomMenu") ||
       !panelJs.includes("chatRehostStoredRoom") || !panelJs.includes("chatDeleteStoredRoom")) {
@@ -61,8 +65,9 @@ try {
     throw new Error("extension must offer direct MCP server-code regeneration");
   }
   const browserSource = fs.readFileSync(path.join(__dirname, "..", "src", "chatroom-browser.ts"), "utf-8");
-  if (!browserSource.includes("selfMember&&selfMember.host") || !browserSource.includes('host?host.user:"all"')) {
-    throw new Error("Browser Chatroom must default Host messages to @all and guest replies to the Host");
+  if (!browserSource.includes("selfMember&&selfMember.host") || !browserSource.includes('host?host.user:"all"') ||
+      !browserSource.includes("selfMember&&selfMember.host?[{name:\"all\"")) {
+    throw new Error("Browser Chatroom must reserve @all for Hosts and default guest replies to the Host");
   }
   const extensionTs = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf-8");
   const packageJson = fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf-8");

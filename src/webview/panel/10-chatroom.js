@@ -5,6 +5,15 @@ const chat = {
   hubRunning: false, hubWsUrl: '', hubHttpUrl: '', hubPort: 0, hubError: '',
   secretShown: false, secretVal: '',
   rendered: false, showJoin: false,
+  mode: 'ask',
+  modeNoticeTimer: null,
+  quote: null,
+  manualRecipients: [],
+  bodyRecipients: [],
+  removedRecipients: [],
+  selectedRecipientIndex: -1,
+  followLatest: true,
+  scrollPositions: {},
   proto: {},   // user -> {state:'standby'|'working'|'engaged'}: live protocol status
 };
 
@@ -56,6 +65,21 @@ function chatProtoBadge(state) {
   if (state === 'idle') return '<span class="chat-proto idle" title="Disconnected from the Room">idle</span>';
   if (state === 'standby') return '<span class="chat-proto standby" title="Waiting for a directed @ message">standby</span>';
   return '';
+}
+
+function chatEnsureControlComments(root) {
+  if (!root) return;
+  const comments = {
+    'chat-send-btn': 'Send this message using the selected mode and recipients.',
+    'chat-stophub-btn': 'Stop the local Chat Hub and store its active Rooms.',
+    'chat-admin-closeall': 'Close and store every Room hosted by this Hub.',
+  };
+  root.querySelectorAll('button,a,[role="button"]').forEach(control => {
+    if (control.title) return;
+    const idComment = comments[control.id];
+    const label = control.getAttribute('aria-label') || control.textContent?.trim();
+    control.title = idComment || (label ? `${label}.` : 'Chatroom action.');
+  });
 }
 
 function chatOnAgentState(data) {
@@ -130,7 +154,7 @@ function renderChatroom() {
         <div id="chat-recents"></div>
       </div>
     </div>
-    <div id="chat-rail-resizer" title="Drag to resize"></div>
+    <div id="chat-rail-resizer" title="Drag to resize"><button id="chat-rail-toggle" class="panel-collapse-toggle chat-rail-toggle" onclick="event.stopPropagation();chatToggleHubPanel()" onmousedown="event.stopPropagation()" title="Minimize Chatroom Hub panel" aria-label="Minimize Chatroom Hub panel">◀</button></div>
     <div id="chat-pane">
       <div id="chat-empty-pane" class="chat-empty-pane">Join a room to start or host one through Hub on the left.</div>
       <div id="chat-active" class="hidden">
@@ -147,24 +171,46 @@ function renderChatroom() {
         <div id="chat-body">
           <div id="chat-main">
             <div id="chat-turn-banner" class="hidden"></div>
+            <div id="chat-find" class="find-control">
+              <input id="chat-searchbox" type="search" placeholder="Find messages…" oninput="chatRefreshSearch()" onkeydown="chatSearchKeydown(event)" title="Find in loaded messages">
+              <span id="chat-search-count" class="find-count">0/0</span>
+              <button type="button" onclick="navigateFind('chat',-1)" title="Previous matching message">↑</button>
+              <button type="button" onclick="navigateFind('chat',1)" title="Next matching message">↓</button>
+              <button id="chat-search-case" type="button" onclick="toggleFindOption('chat','case')" title="Match case">Aa</button>
+              <button id="chat-search-regex" type="button" onclick="toggleFindOption('chat','regex')" title="Use regular expression">.*</button>
+            </div>
             <div id="chat-log"></div>
+            <button id="chat-jump-latest" class="chat-jump-latest hidden" type="button" onclick="chatPinLatest()" title="Return to the newest message and resume following new messages">↓ Jump to latest</button>
+            <div id="chat-mode-control" class="chat-mode-control hidden" role="group" aria-label="Message mode">
+              <button type="button" data-mode="announce" onclick="chatSetMode('announce')" title="Notify the selected recipients without requesting an acknowledgement or reply.">Announce</button>
+              <button type="button" data-mode="ask" onclick="chatSetMode('ask')" class="active" title="Ask each selected recipient for one required response.">Ask</button>
+              <button type="button" data-mode="discuss" onclick="chatSetMode('discuss')" title="Invite the selected recipients into a shared peer discussion.">Discuss</button>
+            </div>
+            <div id="chat-mode-notice" class="chat-mode-notice hidden" role="status" aria-live="polite"></div>
+            <div id="chat-quote-bar" class="chat-quote-bar hidden"></div>
             <div id="chat-input-row">
-              <button class="tbtn" id="chat-at-btn" onclick="chatToggleMentionMenu()" title="Mention someone (@all or a specific user)" disabled>@</button>
-              <div id="chat-input-wrap">
+              <div id="chat-composer">
+                <div id="chat-recipient-row" title="Recipients. Type @ to add people; use arrows and Backspace/Delete to edit tokens."><span class="chat-recipient-label">To</span><div id="chat-recipient-chips"></div><input id="chat-recipient-input" type="text" autocomplete="off" spellcheck="false" placeholder="@ recipient" aria-label="Add recipients"></div>
+                <div id="chat-input-wrap">
                 <div id="chat-mention-pop" class="hidden"></div>
-                <span id="chat-default-recipient" title="Inferred recipient; sending will make @all explicit">@all</span>
                 <textarea id="chat-input" rows="1" placeholder="Message the room…  (Enter to send, Shift+Enter for newline)" disabled></textarea>
+                </div>
               </div>
-              <label class="chat-reply-toggle" title="Require recipients to reply; useful for @all requests"><input id="chat-response-required" type="checkbox"> Replies</label>
               <button class="tbtn" id="chat-send-btn" onclick="chatSend()" disabled>Send</button>
             </div>
           </div>
-          <div id="chat-side-resizer" title="Drag to resize members"></div>
+          <div id="chat-side-resizer" title="Drag to resize members"><button id="chat-side-toggle" class="panel-collapse-toggle chat-side-toggle" onclick="event.stopPropagation();chatToggleMemberPane()" onmousedown="event.stopPropagation()" title="Minimize In the room panel" aria-label="Minimize In the room panel">▶</button></div>
           <div id="chat-side">
             <div class="chat-side-hdr">In the room</div>
             <div id="chat-members"><div class="chat-empty">—</div></div>
           </div>
         </div>
+      </div>
+    </div>
+    <div id="chat-message-viewer" class="chat-message-viewer hidden" role="dialog" aria-modal="true" aria-label="Expanded Chatroom message">
+      <div class="chat-message-viewer-panel">
+        <div class="chat-message-viewer-head"><span id="chat-message-viewer-title"></span><span class="chat-message-viewer-actions"><button type="button" title="Copy the original message text" onclick="chatCopyViewedMessage()">Copy</button><button type="button" title="Toggle fullscreen message view" onclick="chatToggleViewerFullscreen()">Fullscreen</button><button type="button" title="Close expanded message view" onclick="chatCloseMessageViewer()">Close</button></span></div>
+        <div id="chat-message-viewer-body" class="chat-message-viewer-body prose"></div>
       </div>
     </div>
   </div>`;
@@ -173,10 +219,16 @@ function renderChatroom() {
   document.getElementById('chat-name').value = chat.cfg.displayName || 'user';
   const inp = document.getElementById('chat-input');
   inp.addEventListener('keydown', chatInputKeydown);
-  inp.addEventListener('input', () => { inp.style.height = 'auto'; inp.style.height = Math.min(inp.scrollHeight, 120) + 'px'; chatSuggestOnInput(); });
+  inp.addEventListener('input', chatBodyInput);
+  const recipientInput = document.getElementById('chat-recipient-input');
+  recipientInput.addEventListener('input', chatRecipientInputChanged);
+  recipientInput.addEventListener('keydown', chatRecipientInputKeydown);
+  document.getElementById('chat-log')?.addEventListener('scroll', chatTrackScroll, { passive: true });
+  chatEnsureControlComments(d);
+  document.addEventListener('keydown', event => { if (event.key === 'Escape') chatCloseMessageViewer(); });
   document.addEventListener('click', ev => {
     const pop = document.getElementById('chat-mention-pop');
-    if (pop && !pop.classList.contains('hidden') && !pop.contains(ev.target) && ev.target.id !== 'chat-at-btn') chatHideMentionPop();
+    if (pop && !pop.classList.contains('hidden') && !pop.contains(ev.target) && ev.target.id !== 'chat-recipient-input') chatHideMentionPop();
   });
   chat.secretShown = false; chat.secretVal = '';
   chatPaintRooms();
@@ -185,6 +237,8 @@ function renderChatroom() {
   chatPaintHub();
   chatPaintRecents();
   chatInitResizer();
+  chatApplyHubPanelState();
+  chatApplyMemberPaneState();
 }
 
 // Drag the divider between the left rail (Hub/Rooms) and the chat pane to resize.
@@ -209,7 +263,124 @@ function chatInitResizer() {
     document.addEventListener('mouseup', up);
     e.preventDefault();
   });
-  initColumnResizer('chat-side-resizer', 'chat-side', 'pk-chat-side', 120, 500, -1, false);
+  chatInitMemberResizer();
+}
+
+function chatInitMemberResizer() {
+  const handle = document.getElementById('chat-side-resizer');
+  const side = document.getElementById('chat-side');
+  if (!handle || !side || handle.dataset.resizeBound) return;
+  handle.dataset.resizeBound = '1';
+  handle.addEventListener('mousedown', event => {
+    if (event.target.closest('button')) return;
+    const startX = event.clientX;
+    const startWidth = side.getBoundingClientRect().width;
+    handle.classList.add('active');
+    document.body.classList.add('column-resizing');
+    const move = moveEvent => {
+      const width = Math.max(54, Math.min(500, startWidth - (moveEvent.clientX - startX)));
+      side.style.width = `${width}px`;
+    };
+    const up = () => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      handle.classList.remove('active');
+      document.body.classList.remove('column-resizing');
+      const key = chatMemberPaneCollapsed() ? 'pk-chat-side-compact' : 'pk-chat-side';
+      try { localStorage.setItem(key, String(Math.round(side.getBoundingClientRect().width))); } catch {}
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+    event.preventDefault();
+  });
+}
+
+function chatMemberPaneCollapsed() {
+  try { return localStorage.getItem('pk-chat-side-collapsed') === '1'; } catch { return false; }
+}
+function chatApplyMemberPaneState() {
+  const body = document.getElementById('chat-body');
+  const toggle = document.getElementById('chat-side-toggle');
+  const side = document.getElementById('chat-side');
+  if (!body || !toggle || !side) return;
+  const collapsed = chatMemberPaneCollapsed();
+  let width = collapsed ? 86 : 170;
+  try { width = Number(localStorage.getItem(collapsed ? 'pk-chat-side-compact' : 'pk-chat-side')) || width; } catch {}
+  side.style.width = `${Math.max(54, Math.min(500, width))}px`;
+  body.classList.toggle('chat-side-collapsed', collapsed);
+  toggle.textContent = collapsed ? '◀' : '▶';
+  toggle.title = collapsed ? 'Restore full In the room panel' : 'Minimize In the room panel to status and name';
+  toggle.setAttribute('aria-label', toggle.title);
+  toggle.setAttribute('aria-expanded', String(!collapsed));
+}
+function chatToggleMemberPane() {
+  const side = document.getElementById('chat-side');
+  const currentlyCollapsed = chatMemberPaneCollapsed();
+  if (side) {
+    try { localStorage.setItem(currentlyCollapsed ? 'pk-chat-side-compact' : 'pk-chat-side', String(Math.round(side.getBoundingClientRect().width))); } catch {}
+  }
+  const collapsed = !chatMemberPaneCollapsed();
+  try { localStorage.setItem('pk-chat-side-collapsed', collapsed ? '1' : '0'); } catch {}
+  chatApplyMemberPaneState();
+}
+
+function chatHubPanelCollapsed() {
+  try { return localStorage.getItem('pk-chat-rail-collapsed') === '1'; } catch { return false; }
+}
+function chatApplyHubPanelState() {
+  const root = document.getElementById('chat-root');
+  const toggle = document.getElementById('chat-rail-toggle');
+  if (!root || !toggle) return;
+  const collapsed = chatHubPanelCollapsed();
+  root.classList.toggle('chat-rail-collapsed', collapsed);
+  toggle.textContent = collapsed ? '▶' : '◀';
+  toggle.title = collapsed ? 'Restore Chatroom Hub panel' : 'Minimize Chatroom Hub panel';
+  toggle.setAttribute('aria-label', toggle.title);
+  toggle.setAttribute('aria-expanded', String(!collapsed));
+}
+function chatToggleHubPanel() {
+  const collapsed = !chatHubPanelCollapsed();
+  try { localStorage.setItem('pk-chat-rail-collapsed', collapsed ? '1' : '0'); } catch {}
+  chatApplyHubPanelState();
+}
+
+function chatIsNearBottom(log) { return !!log && log.scrollHeight - log.scrollTop - log.clientHeight <= 40; }
+function chatTrackScroll() {
+  const log = document.getElementById('chat-log');
+  if (!log) return;
+  chat.followLatest = chatIsNearBottom(log);
+  if (chat.activeKey) chat.scrollPositions[chat.activeKey] = log.scrollTop;
+  document.getElementById('chat-jump-latest')?.classList.toggle('hidden', chat.followLatest);
+}
+function chatPinLatest() {
+  const log = document.getElementById('chat-log');
+  if (!log) return;
+  chat.followLatest = true;
+  log.scrollTop = log.scrollHeight;
+  if (chat.activeKey) chat.scrollPositions[chat.activeKey] = log.scrollTop;
+  document.getElementById('chat-jump-latest')?.classList.add('hidden');
+}
+function chatRefreshSearch(preserveCurrent = false) {
+  const root = document.getElementById('chat-log');
+  const options = findOptions('chat');
+  const pattern = compileFindPattern(options.query, options.regex, options.caseSensitive);
+  const current = findState.chat;
+  const previousIndex = current.index;
+  const previousMessageId = preserveCurrent && previousIndex >= 0 ? current.targets[previousIndex]?.dataset?.messageId || '' : '';
+  current.targets.forEach(target => target.classList.remove('search-current'));
+  current.index = -1; current.targets = [];
+  if (pattern === false) { clearFindMarks(root); updateFindStatus('chat', true); return; }
+  const marks = markFindMatches(root, pattern);
+  current.targets = [...new Set(marks.map(mark => mark.closest('.chat-msg,.chat-sys')).filter(Boolean))];
+  if (current.targets.length) {
+    current.index = preserveCurrent ? preservedFindIndex(current.targets, previousMessageId, previousIndex) : 0;
+    current.targets[current.index].classList.add('search-current');
+  }
+  updateFindStatus('chat', false);
+}
+function chatSearchKeydown(event) {
+  if (event.key !== 'Enter') return;
+  event.preventDefault(); navigateFind('chat', event.shiftKey ? -1 : 1);
 }
 
 function chatToggleJoin() {
@@ -230,9 +401,16 @@ function chatOnConfig(cfg) {
 
 function chatOnState(s) {
   if (!s) return;
+  const existingLog = document.getElementById('chat-log');
+  const previousKey = chat.activeKey;
+  if (existingLog && previousKey) {
+    chat.scrollPositions[previousKey] = existingLog.scrollTop;
+    chat.followLatest = chatIsNearBottom(existingLog);
+  }
   chat.rooms = s.rooms || [];
   chat.storedRooms = s.storedRooms || [];
   chat.activeKey = s.activeKey || '';
+  if (chat.activeKey !== previousKey) chat.followLatest = chat.scrollPositions[chat.activeKey] == null;
   chat.active = s.active || null;
   chat.hubRunning = !!s.hubRunning;
   chat.hubWsUrl = s.hubUrl ?? chat.hubWsUrl;
@@ -263,8 +441,6 @@ function chatOnMessage(d) {
 function chatOnFileReady(d) {
   if (state.tab !== 'chatroom' || !d || d.key !== chat.activeKey) return;
   chatAppendFileRow(d.key, d);
-  const log = document.getElementById('chat-log');
-  if (log) log.scrollTop = log.scrollHeight;
 }
 
 function chatToast(err) {
@@ -407,14 +583,103 @@ function chatSend() {
   const inp = document.getElementById('chat-input');
   const draft = inp.value;
   if (!draft.trim()) return;
-  const text = chatMaterializeRecipient(draft);
-  const requireReplies = !!document.getElementById('chat-response-required')?.checked;
-  ask('chatSend', { text, ...(requireReplies ? { responseRequired: true } : {}) });
+  const extracted = chatExtractLeadingRecipients(draft);
+  const text = extracted.text.trim();
+  const recipients = chatComposerRecipientNames(draft);
+  const mode = chat.active?.selfHost ? chat.mode : undefined;
+  const replyPolicy = mode === 'announce' ? 'none' : mode === 'discuss' ? 'required' : 'required';
+  ask('chatSend', { text, mode, replyPolicy, recipients, replyToMessageId: chat.quote?.id || '' });
   inp.value = ''; inp.style.height = 'auto';
-  const responseRequired = document.getElementById('chat-response-required');
-  if (responseRequired) responseRequired.checked = false;
+  chat.manualRecipients = [];
+  chat.bodyRecipients = [];
+  chat.removedRecipients = [];
+  chat.selectedRecipientIndex = -1;
+  chatClearQuote();
   chatUpdateDefaultRecipient();
   chatHideMentionPop();
+}
+
+function chatMessageById(messageId) {
+  return (chat.active?.messages || []).find(message => message.id === messageId);
+}
+function chatQuoteMessage(messageId) {
+  const message = chatMessageById(messageId);
+  if (!message) return;
+  chat.quote = { id: message.id, from: message.from, ts: message.ts, text: message.text };
+  const bar = document.getElementById('chat-quote-bar');
+  if (!bar) return;
+  const summary = String(message.text || '').replace(/\s+/g, ' ').trim().slice(0, 140);
+  const time = new Date(message.ts || Date.now()).toLocaleString();
+  bar.innerHTML = `<button type="button" class="chat-quote-jump" title="Jump to the quoted message" onclick="chatJumpToMessage('${esc(message.id)}')"><b>${esc(message.from)}</b><span>${esc(time)} · ${esc(summary)} · ${esc(message.id)}</span></button><button type="button" class="chat-quote-close" title="Remove quoted message" onclick="chatClearQuote()">×</button>`;
+  bar.classList.remove('hidden');
+  document.getElementById('chat-input')?.focus();
+}
+function chatClearQuote() {
+  chat.quote = null;
+  const bar = document.getElementById('chat-quote-bar');
+  if (bar) { bar.classList.add('hidden'); bar.innerHTML = ''; }
+}
+function chatJumpToMessage(messageId) {
+  const element = document.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
+  if (!element) return;
+  element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  element.classList.add('chat-message-focus');
+  setTimeout(() => element.classList.remove('chat-message-focus'), 1800);
+}
+function chatOpenMessageViewer(messageId) {
+  const message = chatMessageById(messageId);
+  const viewer = document.getElementById('chat-message-viewer');
+  const body = document.getElementById('chat-message-viewer-body');
+  const title = document.getElementById('chat-message-viewer-title');
+  if (!message || !viewer || !body || !title) return;
+  chat.viewedMessage = message;
+  title.textContent = `${message.from} · ${new Date(message.ts || Date.now()).toLocaleString()} · ${message.id}`;
+  chatRenderMarkdown(body, message.text);
+  viewer.classList.remove('hidden');
+}
+function chatCloseMessageViewer() {
+  const viewer = document.getElementById('chat-message-viewer');
+  if (viewer) { viewer.classList.add('hidden'); viewer.classList.remove('fullscreen'); }
+  chat.viewedMessage = null;
+}
+function chatToggleViewerFullscreen() { document.getElementById('chat-message-viewer')?.classList.toggle('fullscreen'); }
+async function chatCopyViewedMessage() {
+  if (!chat.viewedMessage) return;
+  try { await navigator.clipboard.writeText(chat.viewedMessage.text || ''); } catch { vscode.postMessage({ command: 'copyText', text: chat.viewedMessage.text || '' }); }
+}
+function chatMessageMenu(event, messageId) {
+  event.preventDefault();
+  event.stopPropagation();
+  const message = chatMessageById(messageId);
+  if (!message) return;
+  showPaperMenu(event.clientX, event.clientY, [
+    { label: 'Quote', onClick: () => chatQuoteMessage(messageId) },
+    { label: 'Open in viewer', onClick: () => chatOpenMessageViewer(messageId) },
+    { label: 'Copy text', onClick: () => {
+      if (navigator.clipboard?.writeText) void navigator.clipboard.writeText(message.text || '');
+      else vscode.postMessage({ command: 'copyText', text: message.text || '' });
+    } },
+  ]);
+}
+
+function chatSetMode(mode) {
+  if (!['announce', 'ask', 'discuss'].includes(mode)) return;
+  chat.mode = mode;
+  document.querySelectorAll('#chat-mode-control button').forEach(button => button.classList.toggle('active', button.dataset.mode === mode));
+  const notices = {
+    announce: 'Switched to Announce mode: Recipients are notified, but no acknowledgement or reply is requested.',
+    ask: 'Switched to Ask mode: Each selected recipient is asked to reply once.',
+    discuss: 'Switched to Discuss mode: Selected recipients are invited into a shared peer discussion.',
+  };
+  const notice = document.getElementById('chat-mode-notice');
+  if (!notice) return;
+  notice.textContent = notices[mode];
+  notice.classList.remove('hidden');
+  if (chat.modeNoticeTimer) clearTimeout(chat.modeNoticeTimer);
+  chat.modeNoticeTimer = setTimeout(() => {
+    notice.classList.add('hidden');
+    chat.modeNoticeTimer = null;
+  }, 4500);
 }
 
 // ── @mentions ───────────────────────────────────────────────────────────────
@@ -424,7 +689,7 @@ function chatMentionCandidates(filter) {
   const f = (filter || '').toLowerCase();
   const self = (chat.active && chat.active.self) || '';
   const members = (chat.active && chat.active.members) || [];
-  const list = [{ name: 'all', label: 'all', sub: 'notify everyone', icon: '📢' }];
+  const list = chat.active?.selfHost ? [{ name: 'all', label: 'all', sub: 'notify everyone', icon: '📢' }] : [];
   const seen = new Set();
   // Present members first, then those who left.
   const ordered = members.slice().sort((a, b) => (a.present === false ? 1 : 0) - (b.present === false ? 1 : 0));
@@ -464,13 +729,72 @@ function chatHideMentionPop() {
   chat.mentionAnchor = null; chat.mentionSel = -1;
 }
 
-// The "@" button: open a picker at the caret (insert, don't replace).
-function chatToggleMentionMenu() {
+function chatBodyInput() {
+  const input = document.getElementById('chat-input');
+  if (!input) return;
+  const extracted = chatExtractLeadingRecipients(input.value);
+  if (extracted.names.length) {
+    for (const name of extracted.names) {
+      if (!chat.manualRecipients.some(item => item.toLowerCase() === name.toLowerCase())) chat.manualRecipients.push(name);
+      chat.removedRecipients = chat.removedRecipients.filter(item => item.toLowerCase() !== name.toLowerCase());
+    }
+    const removedLength = input.value.length - extracted.text.length;
+    const caret = Math.max(0, (input.selectionStart || 0) - removedLength);
+    input.value = extracted.text;
+    input.setSelectionRange(caret, caret);
+  }
+  chatSyncBodyRecipients(input.value);
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+  chatSuggestOnInput();
+  chatUpdateDefaultRecipient();
+}
+
+function chatRecipientInputChanged() {
+  const input = document.getElementById('chat-recipient-input');
+  if (!input) return;
+  const value = input.value;
+  const match = /^@?(.*)$/.exec(value);
+  chatShowMentionPop(match?.[1] || '', { recipientMode: true });
+}
+
+function chatSelectRecipient(index) {
+  const chips = Array.from(document.querySelectorAll('#chat-recipient-chips .chat-recipient-chip'));
+  chat.selectedRecipientIndex = chips.length ? Math.max(0, Math.min(chips.length - 1, index)) : -1;
+  chips.forEach((chip, chipIndex) => chip.classList.toggle('selected', chipIndex === chat.selectedRecipientIndex));
+}
+function chatRecipientInputKeydown(event) {
+  const input = event.currentTarget;
   const pop = document.getElementById('chat-mention-pop');
-  if (pop && !pop.classList.contains('hidden')) { chatHideMentionPop(); return; }
-  const inp = document.getElementById('chat-input');
-  if (inp && !inp.disabled) inp.focus();
-  chatShowMentionPop('', { start: 0, end: 0 });
+  const rows = pop && !pop.classList.contains('hidden') ? Array.from(pop.querySelectorAll('.chat-mrow')) : [];
+  if (rows.length && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+    event.preventDefault();
+    chat.mentionSel = (((chat.mentionSel ?? -1) + (event.key === 'ArrowDown' ? 1 : -1)) + rows.length) % rows.length;
+    rows.forEach((row, index) => row.classList.toggle('sel', index === chat.mentionSel));
+    rows[chat.mentionSel].scrollIntoView({ block: 'nearest' });
+    return;
+  }
+  if (rows.length && (event.key === 'Enter' || event.key === 'Tab')) {
+    event.preventDefault();
+    rows[chat.mentionSel >= 0 ? chat.mentionSel : 0]?.click();
+    return;
+  }
+  const names = chatComposerRecipientNames(document.getElementById('chat-input')?.value || '');
+  if (event.key === 'ArrowLeft' && !input.value) {
+    event.preventDefault(); chatSelectRecipient(chat.selectedRecipientIndex < 0 ? names.length - 1 : chat.selectedRecipientIndex - 1); return;
+  }
+  if (event.key === 'ArrowRight' && chat.selectedRecipientIndex >= 0) {
+    event.preventDefault();
+    if (chat.selectedRecipientIndex >= names.length - 1) { chatSelectRecipient(-1); input.focus(); }
+    else chatSelectRecipient(chat.selectedRecipientIndex + 1);
+    return;
+  }
+  if ((event.key === 'Backspace' || event.key === 'Delete') && !input.value) {
+    const index = chat.selectedRecipientIndex >= 0 ? chat.selectedRecipientIndex : names.length - 1;
+    if (index >= 0) { event.preventDefault(); chatRemoveRecipient(names[index]); chatSelectRecipient(Math.min(index, names.length - 2)); }
+    return;
+  }
+  if (event.key === 'Escape') { chatHideMentionPop(); input.value = ''; chatSelectRecipient(-1); }
 }
 
 // Typing "@word" anywhere opens the picker filtered by the partial under the caret.
@@ -532,6 +856,17 @@ function chatPickCommand(cmd, args) {
 }
 
 function chatPickMention(name) {
+  if (chat.mentionAnchor?.recipientMode) {
+    if (!chat.manualRecipients.some(item => item.toLowerCase() === name.toLowerCase())) chat.manualRecipients.push(name);
+    chat.removedRecipients = chat.removedRecipients.filter(item => item.toLowerCase() !== name.toLowerCase());
+    chatHideMentionPop();
+    const recipientInput = document.getElementById('chat-recipient-input');
+    if (recipientInput) recipientInput.value = '';
+    chat.selectedRecipientIndex = -1;
+    chatUpdateDefaultRecipient();
+    document.getElementById('chat-input')?.focus();
+    return;
+  }
   const inp = document.getElementById('chat-input');
   if (!inp) return;
   const needQuotes = name !== 'all' && /[^A-Za-z0-9_\-]/.test(name);
@@ -545,7 +880,7 @@ function chatPickMention(name) {
   inp.setSelectionRange(pos, pos);
   inp.style.height = 'auto'; inp.style.height = Math.min(inp.scrollHeight, 120) + 'px';
   chatHideMentionPop();
-  chatUpdateDefaultRecipient();
+  chatBodyInput();
   inp.focus();
 }
 
@@ -595,31 +930,128 @@ function chatParseRecipients(text) {
   }
   return recipients;
 }
+function chatValidRecipientMap() {
+  const active = chat.active || {};
+  const valid = new Map((active.members || []).map(member => [String(member.user || '').toLowerCase(), member.user]));
+  if (active.selfHost) { valid.set('all', 'all'); valid.set('everyone', 'all'); }
+  return valid;
+}
+function chatExtractLeadingRecipients(text) {
+  const source = String(text || '');
+  const valid = chatValidRecipientMap();
+  const names = [];
+  let rest = source;
+  const leading = /^\s*@(?:(?:"([^"]{1,60})")|([\p{L}\p{N}_][\p{L}\p{N}_-]{0,59}))(?:\s+|$)/u;
+  while (true) {
+    const match = leading.exec(rest);
+    if (!match) break;
+    const resolved = valid.get(String(match[1] || match[2]).toLowerCase());
+    if (!resolved) break;
+    if (!names.some(name => name.toLowerCase() === resolved.toLowerCase())) names.push(resolved);
+    rest = rest.slice(match[0].length);
+  }
+  return { names, text: rest };
+}
 function chatRecipientToken(name) {
   const value = String(name || '').trim() || 'all';
   return value === 'all' || /^[A-Za-z0-9_][\w-]{0,59}$/.test(value) ? `@${value}` : `@"${value.replace(/"/g, '')}"`;
 }
-function chatDefaultRecipientName() {
+function chatExplicitRecipientNames(text) {
+  const valid = chatValidRecipientMap();
+  const recipients = [];
+  for (const name of chatParseRecipients(text)) {
+    const resolved = valid.get(name.toLowerCase());
+    if (resolved && !recipients.some(item => item.toLowerCase() === resolved.toLowerCase())) recipients.push(resolved);
+  }
+  return recipients;
+}
+function chatStructuredRecipientNames(text) {
+  const valid = chatValidRecipientMap();
+  const recipients = [];
+  const source = String(text || '');
+  const unquotedAliases = [...new Set([...valid.values()])].filter(name => !/\s/.test(name)).sort((a, b) => b.length - a.length);
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] !== '@' || (index > 0 && /[\p{L}\p{N}_@]/u.test(source[index - 1]))) continue;
+    let resolved = '';
+    if (source[index + 1] === '"') {
+      const close = source.indexOf('"', index + 2);
+      if (close > index + 2) resolved = valid.get(source.slice(index + 2, close).toLowerCase()) || '';
+    } else {
+      resolved = unquotedAliases.find(name => source.slice(index + 1, index + 1 + name.length).toLowerCase() === name.toLowerCase()
+        && (index + 1 + name.length === source.length || !/[\p{L}\p{N}_-]/u.test(source[index + 1 + name.length]))) || '';
+    }
+    if (resolved && !recipients.some(item => item.toLowerCase() === resolved.toLowerCase())) recipients.push(resolved);
+  }
+  return recipients;
+}
+function chatSyncBodyRecipients(text) {
+  const current = chatStructuredRecipientNames(text);
+  const previous = new Set(chat.bodyRecipients.map(name => name.toLowerCase()));
+  const added = new Set(current.filter(name => !previous.has(name.toLowerCase())).map(name => name.toLowerCase()));
+  if (added.size) chat.removedRecipients = chat.removedRecipients.filter(name => !added.has(name.toLowerCase()));
+  chat.bodyRecipients = current;
+  return current;
+}
+function chatDefaultRecipientNames() {
   const active = chat.active || {};
-  if (active.selfHost) return 'all';
+  if (active.selfHost) {
+    const members = active.members || [];
+    const valid = new Map(members.filter(member => member.present !== false && member.user !== active.self)
+      .map(member => [member.user.toLowerCase(), member.user]));
+    const previous = [...(active.messages || [])].reverse().find(message =>
+      !message.system && message.from === active.self && ((message.recipients || []).length || chatParseRecipients(message.text).length));
+    if (previous) {
+      const recipients = (previous.recipients || []).length ? previous.recipients : chatParseRecipients(previous.text);
+      if (recipients.some(name => ['all', 'everyone'].includes(name.toLowerCase()))) return ['all'];
+      const carried = recipients.map(name => valid.get(name.toLowerCase())).filter(Boolean);
+      if (carried.length) return [...new Set(carried)];
+    }
+    return ['all'];
+  }
   const host = (active.members || []).find(member => member.host && member.present !== false);
-  return host?.user || 'all';
+  return host?.user ? [host.user] : [];
 }
 function chatMaterializeRecipient(text) {
-  const value = String(text || '').trim();
-  if (!value || value.startsWith('/') || chatParseRecipients(value).length) return value;
-  return chatRecipientToken(chatDefaultRecipientName()) + ' ' + value;
+  return String(text || '').trim();
+}
+function chatComposerRecipientNames(text) {
+  const explicit = chatStructuredRecipientNames(text);
+  const inherited = chatDefaultRecipientNames();
+  const selected = [...inherited, ...chat.manualRecipients, ...explicit];
+  const removed = new Set(chat.removedRecipients.map(name => name.toLowerCase()));
+  const unique = selected.filter(name => !removed.has(name.toLowerCase()))
+    .filter((name, index, items) => items.findIndex(item => item.toLowerCase() === name.toLowerCase()) === index);
+  return chatCollapseFullAudience(unique);
+}
+function chatCollapseFullAudience(names) {
+  const active = chat.active || {};
+  if (!active.selfHost) return names;
+  if (names.some(name => ['all', 'everyone'].includes(name.toLowerCase()))) return ['all'];
+  const audience = (active.members || []).filter(member => member.user !== active.self)
+    .map(member => String(member.user || '').toLowerCase()).filter(Boolean);
+  const selected = new Set(names.map(name => name.toLowerCase()));
+  return audience.length && audience.every(name => selected.has(name)) ? ['all'] : names;
+}
+function chatRemoveRecipient(name) {
+  chat.manualRecipients = chat.manualRecipients.filter(item => item.toLowerCase() !== String(name || '').toLowerCase());
+  if (!chat.removedRecipients.some(item => item.toLowerCase() === String(name || '').toLowerCase())) chat.removedRecipients.push(String(name || ''));
+  chatUpdateDefaultRecipient();
 }
 function chatUpdateDefaultRecipient() {
   const input = document.getElementById('chat-input');
-  const inferred = document.getElementById('chat-default-recipient');
-  if (!input || !inferred) return;
+  const chips = document.getElementById('chat-recipient-chips');
+  if (!input || !chips) return;
   const value = input.value.trimStart();
-  const hidden = value.startsWith('/') || chatParseRecipients(value).length > 0;
-  inferred.textContent = chatRecipientToken(chatDefaultRecipientName());
-  inferred.title = chat.active?.selfHost ? 'Host broadcast recipient; sending will make @all explicit' : 'Point-to-point default recipient: Room Host';
-  inferred.classList.toggle('hidden', hidden);
-  input.style.paddingLeft = hidden ? '' : `${Math.min(inferred.scrollWidth + 16, 160)}px`;
+  const names = value.startsWith('/') ? [] : chatComposerRecipientNames(value);
+  const inherited = new Set(chatDefaultRecipientNames().map(name => name.toLowerCase()));
+  const manual = new Set(chat.manualRecipients.map(name => name.toLowerCase()));
+  const mentioned = new Set(chatStructuredRecipientNames(value).map(name => name.toLowerCase()));
+  chips.innerHTML = names.map(name => {
+    const sources = [inherited.has(name.toLowerCase()) ? 'inherited' : '', manual.has(name.toLowerCase()) ? 'manual' : '', mentioned.has(name.toLowerCase()) ? 'mentioned' : ''].filter(Boolean).join(', ');
+    return `<span class="chat-recipient-chip" title="Recipient: ${esc(name)} · ${esc(sources)}">${esc(chatRecipientToken(name))}<button type="button" title="Remove ${esc(name)} from this message" onclick="chatRemoveRecipient(decodeURIComponent('${encodeURIComponent(name)}'))">×</button></span>`;
+  }).join('');
+  chatSelectRecipient(chat.selectedRecipientIndex);
+  document.getElementById('chat-recipient-row')?.classList.toggle('hidden', value.startsWith('/'));
 }
 function chatMentionsMe(text) {
   const me = (chat.active && chat.active.self) || '';
@@ -650,7 +1082,65 @@ function chatHighlightMentions(escaped) {
     });
 }
 
-function chatAppend(m) {
+function chatSanitizeMarkdown(root) {
+  const blocked = new Set(['SCRIPT', 'STYLE', 'IFRAME', 'OBJECT', 'EMBED', 'FORM', 'INPUT', 'BUTTON', 'META', 'LINK']);
+  root.querySelectorAll('*').forEach(element => {
+    if (blocked.has(element.tagName)) { element.remove(); return; }
+    for (const attribute of [...element.attributes]) {
+      const name = attribute.name.toLowerCase();
+      const value = attribute.value.trim().toLowerCase();
+      if (name.startsWith('on') || name === 'srcdoc' || ((name === 'href' || name === 'src') && /^(?:javascript|data):/.test(value))) {
+        element.removeAttribute(attribute.name);
+      }
+    }
+    if (element.tagName === 'A') {
+      element.setAttribute('target', '_blank');
+      element.setAttribute('rel', 'noopener noreferrer');
+    }
+  });
+}
+
+function chatHighlightMentionText(root) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) {
+    const parent = walker.currentNode.parentElement;
+    if (parent && !parent.closest('code,pre,a,.katex,.mermaid-diagram')) nodes.push(walker.currentNode);
+  }
+  nodes.forEach(node => {
+    const html = chatHighlightMentions(esc(node.nodeValue || ''));
+    if (html === esc(node.nodeValue || '')) return;
+    const replacement = document.createElement('span');
+    replacement.innerHTML = html;
+    node.replaceWith(...replacement.childNodes);
+  });
+}
+
+let chatMarkdownRenderer;
+function chatSafeMarked(text) {
+  if (typeof marked === 'undefined') return `<pre>${esc(text || '')}</pre>`;
+  if (!chatMarkdownRenderer && marked.Renderer) {
+    chatMarkdownRenderer = new marked.Renderer();
+    chatMarkdownRenderer.html = token => esc(typeof token === 'string' ? token : token.text || token.raw || '');
+  }
+  return marked.parse(String(text || ''), chatMarkdownRenderer ? { renderer: chatMarkdownRenderer } : undefined);
+}
+
+function chatRenderMarkdown(root, text) {
+  let html;
+  try {
+    html = chatSafeMarked(text);
+  } catch {
+    html = `<pre>${esc(text || '')}</pre>`;
+  }
+  root.innerHTML = html;
+  chatSanitizeMarkdown(root);
+  chatHighlightMentionText(root);
+  root.querySelectorAll('pre code:not(.language-mermaid)').forEach(safeHljs);
+  void renderMermaid(root);
+}
+
+function chatAppend(m, refreshSearch = true) {
   const log = document.getElementById('chat-log');
   if (!log) return;
   // Protocol frames (agent-to-agent) never render as chat — they only drive the
@@ -664,7 +1154,7 @@ function chatAppend(m) {
     if (chat.renderedIds.has(m.id)) return;
     chat.renderedIds.add(m.id);
   }
-  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+  const shouldFollow = chat.followLatest && chatIsNearBottom(log);
   const el = document.createElement('div');
   if (m.system) {
     el.className = 'chat-sys';
@@ -677,10 +1167,27 @@ function chatAppend(m) {
     const t = new Date(m.ts || Date.now());
     const hh = String(t.getHours()).padStart(2,'0') + ':' + String(t.getMinutes()).padStart(2,'0');
     const receipt = mine && m.receipt ? `<span class="chat-read-receipt" data-message-id="${esc(m.id)}" title="Mentioned recipients who received this message">✓ ${m.receipt.read}/${m.receipt.total}</span>` : '';
-    el.innerHTML = `<div class="chat-msg-hdr"><span class="chat-who">${m.kind === 'agent' ? '🤖 ' : ''}${esc(m.from)}</span><span class="chat-time">${hh}</span>${receipt}</div><div class="chat-msg-body">${chatHighlightMentions(esc(m.text))}</div>`;
+    const quoted = m.replyToMessageId ? chatMessageById(m.replyToMessageId) : null;
+    const quoteHeader = m.replyToMessageId ? `<button type="button" class="chat-reply-reference" title="Jump to quoted message ${esc(m.replyToMessageId)}" onclick="chatJumpToMessage('${esc(m.replyToMessageId)}')">Reply to ${esc(quoted?.from || 'message')} · ${esc(m.replyToMessageId)}</button>` : '';
+    el.innerHTML = `<div class="chat-msg-hdr"><span class="chat-who">${m.kind === 'agent' ? '🤖 ' : ''}${esc(m.from)}</span><span class="chat-time">${hh}</span>${receipt}<span class="chat-msg-actions"><button type="button" title="Quote this message" onclick="chatQuoteMessage('${esc(m.id)}')">Quote</button><button type="button" title="Open this message in a larger resizable viewer" onclick="chatOpenMessageViewer('${esc(m.id)}')">Open</button></span></div>${quoteHeader}<div class="chat-msg-body prose"></div>`;
+    chatRenderMarkdown(el.querySelector('.chat-msg-body'), m.text);
+    el.addEventListener('dblclick', event => { if (!event.target.closest('button,a')) chatOpenMessageViewer(m.id); });
+    el.addEventListener('contextmenu', event => chatMessageMenu(event, m.id));
   }
   log.appendChild(el);
-  if (atBottom) log.scrollTop = log.scrollHeight;
+  while (log.children.length > 1000) {
+    const oldest = log.firstElementChild;
+    const messageId = oldest && oldest.dataset && oldest.dataset.messageId;
+    if (messageId && chat.renderedIds) chat.renderedIds.delete(messageId);
+    oldest?.remove();
+  }
+  if (shouldFollow) {
+    log.scrollTop = log.scrollHeight;
+    chat.followLatest = true;
+  } else {
+    document.getElementById('chat-jump-latest')?.classList.remove('hidden');
+  }
+  if (refreshSearch && document.getElementById('chat-searchbox')?.value) chatRefreshSearch(true);
 }
 
 function chatUpdateReadReceipt(data) {
@@ -727,15 +1234,16 @@ function chatPaintStoredRooms() {
   const attr = value => esc(value).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   box.innerHTML = rooms.map(room => {
     const available = room.canRehost !== false;
+    const activeElsewhere = !!room.activeElsewhere;
     const count = Number(room.messageCount) || 0;
     const activity = room.updatedAt ? chatAgo(room.updatedAt).replace(/^left /, '') : 'unknown';
-    const meta = `${count} message${count === 1 ? '' : 's'} · ${activity}`;
+    const meta = activeElsewhere ? `Active in another VS Code window · ${count} message${count === 1 ? '' : 's'}` : `${count} message${count === 1 ? '' : 's'} · ${activity}`;
     const reason = room.unavailableReason || 'This Room cannot be Rehosted.';
     return `<div class="chat-stored-item${available ? '' : ' unavailable'}" title="${available ? 'Stored locally · Right-click for Room actions' : attr(reason)}" ${available ? `oncontextmenu="chatStoredRoomMenu(event,'${attr(room.roomId)}','${attr(room.roomName)}')"` : ''}>
       <button class="chat-stored-open" title="${available ? 'Rehost Room' : esc(reason)}" ${available ? `onclick="ask('chatRehostStoredRoom',{roomId:'${esc(room.roomId)}'})"` : 'disabled'}>▶</button>
       <span class="chat-stored-copy"><span class="chat-stored-name">${esc(room.roomName)}</span><span class="chat-stored-meta">${esc(meta)}</span></span>
       <span class="chat-stored-actions">
-        ${available ? `<button class="chat-stored-icon" title="Rename Stored Room" onclick="ask('chatRenameStoredRoom',{roomId:'${esc(room.roomId)}',roomName:'${esc(room.roomName)}'})">✏</button>` : '<span class="chat-stored-warning" aria-label="Unavailable">!</span>'}
+        ${available ? `<button class="chat-stored-icon" title="Rename Stored Room" onclick="ask('chatRenameStoredRoom',{roomId:'${esc(room.roomId)}',roomName:'${esc(room.roomName)}'})">✏</button>` : `<span class="chat-stored-warning" aria-label="${activeElsewhere ? 'Active elsewhere' : 'Unavailable'}">${activeElsewhere ? '●' : '!'}</span>`}
         ${available ? `<button class="chat-stored-icon danger" title="Delete Room Data permanently" onclick="ask('chatDeleteStoredRoom',{roomId:'${esc(room.roomId)}',roomName:'${esc(room.roomName)}'})">🗑</button>` : ''}
       </span>
     </div>`;
@@ -771,30 +1279,37 @@ function chatPaintActive() {
   const a = chat.active;
   const connected = a.status === 'connected';
   document.getElementById('chat-status-dot').className = 'chat-dot ' + a.status;
+  document.getElementById('chat-status-dot').title = connected ? 'Connected to this Room.' : `Room connection state: ${a.statusDetail || a.status}.`;
   document.getElementById('chat-pane-title').textContent = a.room + (a.statusDetail ? ' — ' + a.statusDetail : (connected ? '' : ' — ' + a.status));
   const inp = document.getElementById('chat-input'), sbtn = document.getElementById('chat-send-btn');
-  const atbtn = document.getElementById('chat-at-btn');
-  const replyToggle = document.getElementById('chat-response-required');
   const muted = !!a.selfMuted;
   const addAgent = document.getElementById('chat-add-agent-btn');
   const leave = document.getElementById('chat-leave-btn');
+  const modeControl = document.getElementById('chat-mode-control');
   if (addAgent) addAgent.classList.toggle('hidden', !a.selfHost);
   if (leave) { leave.textContent = a.selfHost ? 'Close Room' : 'Leave Room'; leave.title = a.selfHost ? 'Close and store this Room; data remains available under Stored Rooms' : 'Leave this Room'; }
+  if (modeControl) modeControl.classList.toggle('hidden', !a.selfHost);
   if (inp)  { inp.disabled  = !connected || muted; inp.placeholder = muted ? 'You are muted by the host — you can read but not post.' : 'Message the room…  (Enter to send, Shift+Enter for newline)'; }
   if (sbtn) sbtn.disabled = !connected || muted;
-  if (atbtn) atbtn.disabled = !connected || muted;
-  if (replyToggle) replyToggle.disabled = !connected || muted;
+  const recipientInput = document.getElementById('chat-recipient-input');
+  if (recipientInput) recipientInput.disabled = !connected || muted;
+  chatUpdateDefaultRecipient();
   // Repaint the full log from the snapshot (switching rooms).
   const log = document.getElementById('chat-log');
   if (log) {
+    const restoreTop = chat.scrollPositions[chat.activeKey] ?? log.scrollTop;
+    const shouldFollow = chat.followLatest;
     log.innerHTML = '';
     chat.renderedIds = new Set();   // reset id-dedup tracking for a clean repaint
     chat.proto = {};                // rebuild protocol status from this room's frames
     chatSetTurn(null);
-    (a.messages || []).forEach(chatAppend);
+    (a.messages || []).forEach(message => chatAppend(message, false));
     Object.entries(a.agentStates || {}).forEach(([user, runtimeState]) => { chat.proto[user] = { state: runtimeState }; });
     (a.files || []).forEach(f => chatAppendFileRow(f.key || chat.activeKey, f));
-    log.scrollTop = log.scrollHeight;
+    if (document.getElementById('chat-searchbox')?.value) chatRefreshSearch(true);
+    log.scrollTop = shouldFollow ? log.scrollHeight : restoreTop;
+    chat.scrollPositions[chat.activeKey] = log.scrollTop;
+    document.getElementById('chat-jump-latest')?.classList.toggle('hidden', shouldFollow);
   }
   chatPaintMembers();
 }
@@ -806,7 +1321,10 @@ function chatAppendFileRow(key, f) {
   el.className = 'chat-file';
   el.innerHTML = `<span>✅ <b>${esc(f.name)}</b> from ${esc(f.from)} received</span>
     <button class="tbtn" onclick="ask('chatSaveFile',{key:'${esc(key)}',fileId:'${esc(f.fileId)}'})">Save…</button>`;
+  const shouldFollow = chat.followLatest && chatIsNearBottom(log);
   log.appendChild(el);
+  if (shouldFollow) log.scrollTop = log.scrollHeight;
+  else document.getElementById('chat-jump-latest')?.classList.remove('hidden');
 }
 
 function chatPaintMembers() {
@@ -834,8 +1352,24 @@ function chatPaintMembers() {
     // Non-host viewers see a small greyed muted indicator; the host toggles it below.
     const mut  = (m.muted && !canModerate) ? '<span class="chat-muted-badge" title="muted by the host — can\'t speak">🔇</span>' : '';
     const proto = isHere ? chatProtoBadge((chat.proto && chat.proto[m.user] || {}).state) : '';
-    const tail = isHere ? '' : `<span class="chat-ago">${esc(chatAgo(m.lastSeen))}</span>`;
+    const tail = `<span class="chat-ago">${esc(isHere ? chatUpdatedAgo(m.stateChangedAt || m.lastSeen) : chatAgo(m.lastSeen))}</span>`;
     const role = m.role ? `<span class="chat-role">${esc(m.role)}</span>` : '';
+    const runtimeComment = runtimeState === 'standby' ? 'Standby: actively waiting for a directed message.'
+      : runtimeState === 'thinking' || runtimeState === 'working' ? 'Working: processing a delivered message.'
+      : runtimeState === 'sending' ? 'Sending: posting a response to the Room.'
+      : runtimeState === 'engaged' ? 'In session: participating in a coordinated exchange.'
+      : runtimeState === 'reconnecting' ? 'Reconnecting: transport is being restored.'
+      : runtimeState === 'idle' ? 'Idle: connected but not actively waiting.' : '';
+    const identityComment = [
+      `Full name: ${m.user}`,
+      `Participant ID: ${m.participantId || 'not assigned'}`,
+      `Connection ID: ${m.id || 'not available'}`,
+      `Client identity ID: ${m.sid || 'not available'}`,
+      `Type: ${how}`,
+      `Presence: ${isHere ? 'present' : chatAgo(m.lastSeen)}`,
+      runtimeComment,
+      m.role ? `Role: ${m.role}` : '',
+    ].filter(Boolean).join('\n');
     let actions = '';
     if (canManage) {
       // Icon reflects the CURRENT state: 🔊 = can speak (click to mute), 🔇 = muted (click to unmute).
@@ -846,12 +1380,9 @@ function chatPaintMembers() {
         + `<button class="chat-mod" title="Edit name and role" onclick="chatModerate('edit',this)">✏️</button>`
         + `<button class="chat-mod chat-mod-kick" title="Permanently remove from this room and Earlier" onclick="chatModerate('kick',this)">🚫</button></span>`;
     }
-    return `<div class="chat-member${isHere ? '' : ' gone'}${m.muted ? ' muted' : ''}" data-participant-id="${attr(m.participantId || '')}" data-sid="${attr(m.sid || '')}" data-user="${attr(m.user)}" data-role="${attr(m.role || '')}" title="${esc(how)}"><span class="chat-mdot ${dotK}${runtimeState ? ' state-' + runtimeState : ''}"></span><span class="chat-mname">${icon} ${esc(m.user)}${sid}${unv}${mut}${proto}${role}</span>${tail}${actions}</div>`;
+    return `<div class="chat-member${isHere ? '' : ' gone'}${m.muted ? ' muted' : ''}" data-participant-id="${attr(m.participantId || '')}" data-sid="${attr(m.sid || '')}" data-user="${attr(m.user)}" data-role="${attr(m.role || '')}" title="${attr(identityComment)}"><span class="chat-mdot ${dotK}${runtimeState ? ' state-' + runtimeState : ''}" title="${attr(runtimeComment || (isHere ? 'Present in the Room.' : 'Not currently connected.'))}"></span><span class="chat-mname"><span class="chat-avatar">${icon}</span><span class="chat-member-name-text">${esc(m.user)}</span>${sid}${unv}${mut}${proto}${role}</span>${tail}${actions}</div>`;
   };
-  let html = amHost ? '<div class="chat-host-hint">You host this room — use each member\'s buttons to mute, rename ✏️, or remove 🚫.</div>' : '';
-  if (chat.proto && Object.keys(chat.proto).length) {
-    html += '<div class="chat-proto-legend"><span class="chat-proto standby">🟢 standby</span><span class="chat-proto working">⚙️ working</span><span class="chat-proto engaged">🔵 in session</span></div>';
-  }
+  let html = '<div class="chat-proto-legend"><span class="chat-proto standby" title="Standby: the Agent has an active blocking wait for directed messages."><span class="chat-legend-dot standby"></span>standby</span><span class="chat-proto working" title="Working: the Agent is processing a delivered message or task."><span class="chat-legend-dot working"></span>working</span><span class="chat-proto engaged" title="In session: the Agent is participating in a coordinated multi-step exchange."><span class="chat-legend-dot engaged"></span>in session</span></div>';
   if (amHost && managed.length) {
     html += '<div class="chat-side-sub">Managed agents</div>' + managed.map(agent => {
       const stateLabel = agent.busy ? '⚙️ working' : agent.active ? '🟢 standby' : '⚪ idle';
@@ -862,6 +1393,7 @@ function chatPaintMembers() {
   html += here.map(row).join('');
   if (gone.length) html += `<div class="chat-side-sub">Earlier</div>` + gone.map(row).join('');
   box.innerHTML = html;
+  chatEnsureControlComments(box);
 }
 
 function chatModerate(action, btn) {
@@ -882,6 +1414,10 @@ function chatAgo(ts) {
   const h = Math.round(m / 60);
   if (h < 24) return 'left ' + h + 'h ago';
   return 'left ' + Math.round(h / 24) + 'd ago';
+}
+function chatUpdatedAgo(ts) {
+  if (!ts) return 'updated unknown';
+  return chatAgo(ts).replace(/^left /, 'updated ');
 }
 
 function chatPaintHub() {
@@ -932,22 +1468,8 @@ function chatPaintPendingJoins() {
   const wrap = document.getElementById('chat-pending-wrap');
   const box = document.getElementById('chat-pending-joins');
   if (!wrap || !box) return;
-  const pending = chat.pendingApprovals || [];
-  wrap.classList.toggle('hidden', !pending.length);
-  if (!pending.length) { box.innerHTML = ''; return; }
-  box.innerHTML = pending.map(item => {
-    const seconds = Math.max(0, Math.ceil((Number(item.expiresAt) - Date.now()) / 1000));
-    const reusable = (item.reusableParticipants || []).length;
-    return `<div class="chat-pending-item">
-      <div class="chat-pending-head"><span class="chat-pending-alias">${esc(item.alias)}</span><span class="chat-recent-badge guest">${esc(item.kind)}</span></div>
-      <div class="chat-stored-meta">${seconds}s remaining</div>
-      <div class="chat-pending-actions">
-        <button class="tbtn" onclick="ask('chatApproveJoinNew',{requestId:'${esc(item.requestId)}'})">New user</button>
-        <button class="tbtn" ${reusable ? `onclick="ask('chatApproveJoinReuse',{requestId:'${esc(item.requestId)}'})"` : 'disabled'} title="${reusable ? `${reusable} offline identity option(s)` : 'No offline identity available'}">Reuse</button>
-        <button class="tbtn chat-pending-reject" onclick="ask('chatRejectJoin',{requestId:'${esc(item.requestId)}'})">Reject</button>
-      </div>
-    </div>`;
-  }).join('');
+  wrap.classList.add('hidden');
+  box.innerHTML = '';
 }
 
 function chatPaintRecents() {

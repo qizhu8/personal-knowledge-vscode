@@ -19,11 +19,10 @@ import {
   initServers, disposeServers, serverList, serverImport, serverCreate,
   serverUpdate, serverDelete, startServer, stopServer, restartServer, setServerPort, serverLog, serverDir,
 } from "./servers";
-import { ChatHub, ChatClient, ChatMessage, Member, FileMeta, AgentRuntimeState, MAX_FILE_BYTES } from "./chatroom";
+import { ChatHub, ChatClient, ChatMessage, Member, FileMeta, AgentRuntimeState, ChatMode, ReplyPolicy, MAX_FILE_BYTES } from "./chatroom";
 import { BOT_NAME } from "./chat-commands";
 import { StoredChatRoom } from "./chat-room-lifecycle";
 import { chatRoomIdentity, joinedRoomRecents } from "./chat-room-identity";
-import { PendingJoinApproval } from "./chat-join-approval";
 import { probeChatRoomActive } from "./chat-hub-health";
 import {
   initPyenvs, pyenvList, pyenvAdd, pyenvUpdate, pyenvDelete,
@@ -49,7 +48,7 @@ import { AiBackend, aiSummarizeScript, listAiBackends, runAiPrompt, scriptCacheD
 import {
   cancelMcpPythonScan, combinedMcpInstallInstruction, combinedMcpRegistry,
   detectMcpPython, ensureMcpRuntime, generateMcpServer,
-  mcpRuntimeManualCommands, mcpRuntimeStatus, mcpServerDefinitionData, mcpStatus, streamMcpPythonCandidates,
+  mcpProcessStatus, mcpRuntimeManualCommands, mcpRuntimeStatus, mcpServerDefinitionData, mcpStatus, streamMcpPythonCandidates,
   validateMcpPython,
 } from "./mcp";
 import {
@@ -109,6 +108,8 @@ function mcpPanelStatusData(): object {
   const info = mcpStatus();
   const python = detectMcpPython();
   const runtime = mcpRuntimeStatus();
+  const configuredStorePath = vscode.workspace.getConfiguration("personalKnowledge").get<string>("storePath")?.trim() || "";
+  const storePathValid = !!configuredStorePath && fs.existsSync(configuredStorePath) && fs.statSync(configuredStorePath).isDirectory();
   const proposalDir = getStorePath() ? path.join(getStorePath(), "_proposals", "skills") : "";
   const skillProposals = proposalDir && fs.existsSync(proposalDir)
     ? fs.readdirSync(proposalDir).filter(name => name.endsWith(".md")).sort().reverse().map(name => ({ name, path: path.join(proposalDir, name) }))
@@ -118,12 +119,69 @@ function mcpPanelStatusData(): object {
     combinedRegistry: runtime.healthy ? combinedMcpRegistry() : "",
     agencyInstallInstruction: combinedMcpInstallInstruction(),
     nativeMcpProvider: _nativeMcpProvider,
+    mcpProcess: mcpProcessStatus(),
+    store: { path: configuredStorePath, configured: !!configuredStorePath, valid: storePathValid },
+    paths: {
+      store: configuredStorePath,
+      environments: managedEnvironmentsRoot(),
+      runtime: runtime.path,
+      python: runtime.python || python.path,
+      serverDirectory: info.serverPath ? path.dirname(info.serverPath) : "",
+    },
     mcpPython: python,
     mcpRuntime: runtime,
     pkmSkill: chatCtx && getStorePath() ? pkmSkillProjectionStatus(chatCtx) : null,
     skillProposals,
     skillProposalDir: proposalDir,
   };
+}
+
+const mcpPathSizeCache = new Map<string, { bytes: number; at: number; error?: string }>();
+async function calculatePathBytes(target: string): Promise<{ bytes: number; error?: string }> {
+  if (!target) return { bytes: 0, error: "Not configured" };
+  let bytes = 0;
+  const pending = [target];
+  try {
+    while (pending.length) {
+      const current = pending.pop()!;
+      let stat: fs.Stats;
+      try { stat = await fs.promises.lstat(current); } catch (error: any) {
+        if (current === target) throw error;
+        continue;
+      }
+      const allocatedBytes = typeof stat.blocks === "number" && stat.blocks > 0 ? stat.blocks * 512 : stat.size;
+      bytes += allocatedBytes;
+      if (stat.isSymbolicLink()) continue;
+      if (!stat.isDirectory()) continue;
+      let entries: fs.Dirent[];
+      try { entries = await fs.promises.readdir(current, { withFileTypes: true }); }
+      catch { continue; }
+      for (const entry of entries) pending.push(path.join(current, entry.name));
+      if (pending.length % 500 === 0) await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    return { bytes };
+  } catch (error: any) {
+    return { bytes: 0, error: error?.code === "ENOENT" ? "Not found" : error?.message || String(error) };
+  }
+}
+
+async function sendMcpPathSizes(respond: (m: object) => void): Promise<void> {
+  const info = mcpStatus();
+  const python = detectMcpPython();
+  const runtime = mcpRuntimeStatus();
+  const paths: Record<string, string> = {
+    store: vscode.workspace.getConfiguration("personalKnowledge").get<string>("storePath")?.trim() || "",
+    environments: managedEnvironmentsRoot(),
+    runtime: runtime.path,
+    python: runtime.python || python.path,
+    serverDirectory: info.serverPath ? path.dirname(info.serverPath) : "",
+  };
+  for (const [key, target] of Object.entries(paths)) {
+    const cached = mcpPathSizeCache.get(target);
+    const result = cached || { ...await calculatePathBytes(target), at: Date.now() };
+    if (target) mcpPathSizeCache.set(target, result);
+    respond({ command: "mcpPathSize", data: { key, path: target, ...result } });
+  }
 }
 
 // ── Logging ────────────────────────────────────────────────────────────────
@@ -664,6 +722,8 @@ function katexCssForExport(context: vscode.ExtensionContext): string {
 let panel: vscode.WebviewPanel | undefined;
 let _treeProvider: PkTreeProvider | undefined;
 let _panelReady = false;                       // webview has signalled it's ready
+let _panelLastHeartbeat = 0;
+let _panelLastDiagnostic = "";
 let _storeReady = false;                       // file store configured & migrated
 let _pendingOpen: { type: string; key: string; edit?: boolean } | undefined; // item to open once ready
 let _pendingTab: string | undefined;           // tab to switch to once the webview is ready
@@ -1026,6 +1086,7 @@ interface HostedRoomNavigationItem {
   roomId: string;
   roomName: string;
   active: boolean;
+  activeElsewhere?: boolean;
   canRehost: boolean;
   unavailableReason?: string;
 }
@@ -1041,10 +1102,9 @@ class ChatRoomManager {
   private persistenceRoot = "";
   private installationId = "";
   private secretStorage: vscode.SecretStorage | undefined;
-  private approvalPrompted = new Set<string>();
-  private approvalPromptTimer: NodeJS.Timeout | undefined;
   private archiveLimitBytes = 10 * 1024 * 1024;
-  private static readonly MAX_MSGS = 5000;   // session display cap; the hub's byte budget is the real limit
+  private crossWindowRefreshTimer: NodeJS.Timeout | undefined;
+  private static readonly MAX_MSGS = 1000;   // bounded visible transcript; full history remains durable in the Room DB
 
   private static roomKey(url: string, room: string, roomId?: string): string {
     return chatRoomIdentity(url, room, roomId);
@@ -1060,53 +1120,7 @@ class ChatRoomManager {
   }
 
   private bindHub(hub: ChatHub): void {
-    hub.onApprovalsChanged(() => {
-      this.push();
-      if (this.approvalPromptTimer) clearTimeout(this.approvalPromptTimer);
-      this.approvalPromptTimer = setTimeout(() => {
-        this.approvalPromptTimer = undefined;
-        void this.promptNewApprovals();
-      }, 200);
-      this.approvalPromptTimer.unref?.();
-    });
-  }
-
-  private async promptNewApprovals(): Promise<void> {
-    for (const pending of this.hub?.pendingApprovals() || []) {
-      if (this.approvalPrompted.has(pending.requestId)) continue;
-      this.approvalPrompted.add(pending.requestId);
-      const NEW = "New User", REUSE = "Reuse Identity", REJECT = "Reject";
-      const actions = pending.reusableParticipants.length ? [NEW, REUSE, REJECT] : [NEW, REJECT];
-      const pick = await vscode.window.showInformationMessage(
-        `${pending.kind === "agent" ? "Agent" : pending.kind === "browser" ? "Browser user" : "User"} "${pending.alias}" wants to join Room "${this.roomNameForId(pending.roomId)}".`,
-        ...actions,
-      );
-      if (!pick) continue;
-      if (!this.pendingJoin(pending.requestId)) {
-        vscode.window.showInformationMessage(`Join request from "${pending.alias}" is no longer pending.`);
-        continue;
-      }
-      try {
-        if (pick === NEW) await this.approveJoinNew(pending.requestId);
-        else if (pick === REUSE) await this.pickAndApproveReuse(pending);
-        else if (pick === REJECT) await this.rejectJoin(pending.requestId);
-      } catch (error: any) {
-        vscode.window.showErrorMessage(`Couldn't process Join request: ${error?.message || error}`);
-      }
-    }
-  }
-
-  private async pickAndApproveReuse(pending: PendingJoinApproval): Promise<void> {
-    const picked = await vscode.window.showQuickPick(
-      pending.reusableParticipants.map(participant => ({
-        label: participant.previousAlias || participant.participantId.slice(0, 8),
-        description: participant.kind,
-        detail: `Room participant ${participant.participantId}`,
-        participantId: participant.participantId,
-      })),
-      { title: `Reuse identity for ${pending.alias}`, placeHolder: "Choose an offline participant identity" },
-    );
-    if (picked) await this.approveJoinReuse(pending.requestId, picked.participantId);
+    hub.onApprovalsChanged(() => this.push());
   }
 
   private roomNameForId(roomId: string): string {
@@ -1160,6 +1174,7 @@ class ChatRoomManager {
 
   state(): object {
     const active = this.activeRoom;
+    const locallyActiveRoomIds = new Set(this.hub?.adminRooms().map(room => room.roomId) || []);
     return {
       rooms: [...this.rooms.values()].map(r => this.roomSummary(r)),
       activeKey: this.activeKey,
@@ -1179,8 +1194,8 @@ class ChatRoomManager {
       hubAdminRooms: this.hub?.isRunning
         ? this.hub.adminRooms().map(r => ({ ...r, hasKey: this.hostedKeys.has(r.room) }))
         : [],
-      pendingApprovals: this.hub?.pendingApprovals() || [],
-      storedRooms: this.storedRooms,
+      pendingApprovals: [],
+      storedRooms: this.storedRooms.filter(room => !locallyActiveRoomIds.has(room.roomId)),
       managedAgents: [...this.managedAgents.values()].map(agent => ({
         id: agent.id, name: agent.name, role: agent.role, backend: agent.backend.label,
         roomKey: agent.roomKey, status: agent.status,
@@ -1197,7 +1212,7 @@ class ChatRoomManager {
     for (const stored of this.storedRooms) {
       if (active.has(stored.roomId)) continue;
       rows.push({ roomId: stored.roomId, roomName: stored.roomName, active: false,
-        canRehost: stored.canRehost, unavailableReason: stored.unavailableReason });
+        activeElsewhere: stored.activeElsewhere, canRehost: stored.canRehost, unavailableReason: stored.unavailableReason });
     }
     return rows.sort((left, right) => left.roomName.localeCompare(right.roomName));
   }
@@ -1268,14 +1283,6 @@ class ChatRoomManager {
       onHistory: messages => { agent.messages = messages.slice(-80); },
       onPresence: () => {}, onFileComplete: () => {}, onAgentState: () => {},
       onRejected: (_code, message) => { agent.status = `error: ${message}`; agent.active = false; this.push(); },
-      onJoinPending: requestId => {
-        this.approvalPrompted.add(requestId);
-        void this.approveJoinNew(requestId).catch(error => {
-          agent.status = `error: ${(error as Error).message}`;
-          agent.active = false;
-          this.push();
-        });
-      },
       onRenamed: newName => { agent.name = newName; this.push(); },
       onRekey: () => {},
     }, message => log.debug(`managed-agent[${name}]: ${message}`));
@@ -1415,6 +1422,9 @@ class ChatRoomManager {
         onHistory:  ms => { rc!.messages = ms.slice(-ChatRoomManager.MAX_MSGS); if (rc!.key === this.activeKey) this.push(); },
         onPresence: mm => {
           rc!.members = mm;
+          for (const member of mm) {
+            if (member.kind === "agent" && member.runtimeState) rc!.agentStates[member.user] = member.runtimeState;
+          }
           const me = mm.find(x => x.participantId && x.participantId === rc!.client.participantId);
           rc!.selfHost = !!me?.host;
           rc!.selfMuted = !!me?.muted;
@@ -1532,9 +1542,9 @@ class ChatRoomManager {
     log.action("chat.joinRejected", { room: rc.room, code });
   }
 
-  send(text: string, responseRequired?: boolean): boolean {
+  send(text: string, responseRequired?: boolean, replyPolicy?: ReplyPolicy, mode?: ChatMode, recipients?: string[], replyToMessageId?: string): boolean {
     const rc = this.activeRoom;
-    return rc ? rc.client.sendText(text, responseRequired) : false;
+    return rc ? rc.client.sendText(text, responseRequired, replyPolicy, mode, recipients, replyToMessageId) : false;
   }
 
   /** Host-only: moderate a member in the active room. Target identified by its
@@ -1687,8 +1697,22 @@ class ChatRoomManager {
       this.hub.configureLifecycle(this.persistenceRoot, this.archiveLimitBytes, this.installationId, this.secretStorage);
     }
     this.storedRooms = await this.hub.listStoredRooms();
+    this.scheduleCrossWindowRefresh();
     _treeProvider?.refresh();
     this.push();
+  }
+
+  private scheduleCrossWindowRefresh(): void {
+    if (this.crossWindowRefreshTimer) {
+      clearTimeout(this.crossWindowRefreshTimer);
+      this.crossWindowRefreshTimer = undefined;
+    }
+    if (!this.storedRooms.some(room => room.activeElsewhere)) return;
+    this.crossWindowRefreshTimer = setTimeout(() => {
+      this.crossWindowRefreshTimer = undefined;
+      void this.refreshStoredRooms().catch(error => log.warn(`chat: active Room refresh failed: ${(error as Error).message}`));
+    }, 2000);
+    this.crossWindowRefreshTimer.unref?.();
   }
 
   async renameStoredRoom(roomId: string, roomName: string): Promise<void> {
@@ -1755,25 +1779,6 @@ class ChatRoomManager {
     this.push();
   }
 
-  pendingJoin(requestId: string): PendingJoinApproval | undefined {
-    return this.hub?.pendingApprovals().find(item => item.requestId === requestId);
-  }
-
-  async approveJoinNew(requestId: string): Promise<void> {
-    await this.hub?.approveJoinNew(requestId);
-    this.push();
-  }
-
-  async approveJoinReuse(requestId: string, participantId: string): Promise<void> {
-    await this.hub?.approveJoinReuse(requestId, participantId);
-    this.push();
-  }
-
-  async rejectJoin(requestId: string, reason?: string): Promise<void> {
-    await this.hub?.rejectJoin(requestId, reason);
-    this.push();
-  }
-
   // Per-room secrets this host set, so we can copy/share them later.
   rememberRoomKey(room: string, key: string): void { this.hostedKeys.set(ChatHub.canonRoom(room), key); }
   getRoomKey(room: string): string | undefined { return this.hostedKeys.get(ChatHub.canonRoom(room)); }
@@ -1794,6 +1799,8 @@ class ChatRoomManager {
   }
 
   async dispose(): Promise<void> {
+    if (this.crossWindowRefreshTimer) clearTimeout(this.crossWindowRefreshTimer);
+    this.crossWindowRefreshTimer = undefined;
     for (const agent of this.managedAgents.values()) { try { agent.client.disconnect(); } catch { /* ignore */ } }
     this.managedAgents.clear();
     for (const rc of this.rooms.values()) { try { rc.client.disconnect(); } catch { /* ignore */ } }
@@ -2154,15 +2161,16 @@ async function ensureSetup(context: vscode.ExtensionContext): Promise<boolean> {
   const cfg = vscode.workspace.getConfiguration("personalKnowledge");
   const configuredPath = cfg.get<string>("storePath")?.trim() ?? "";
   const setupComplete  = context.globalState.get<boolean>("setupComplete", false);
+  const configuredPathValid = !!configuredPath && fs.existsSync(configuredPath) && fs.statSync(configuredPath).isDirectory();
 
   // Already configured — just activate the store
-  if (setupComplete && configuredPath) {
+  if (setupComplete && configuredPathValid) {
     await initStore(context, configuredPath);
     return _storeReady;
   }
 
   // Not configured yet — show the wizard
-  const chosen = await firstTimeSetup(context);
+  const chosen = await firstTimeSetup(context, !!configuredPath || setupComplete);
   if (!chosen) {
     vscode.window.showErrorMessage(
       "Personal Knowledge Manager: you must complete setup before using this extension.",
@@ -2270,18 +2278,26 @@ function getWebviewHtml(webview: vscode.Webview, context: vscode.ExtensionContex
 function getOrCreatePanel(context: vscode.ExtensionContext): vscode.WebviewPanel {
   if (panel) { panel.reveal(vscode.ViewColumn.One); return panel; }
 
-  panel = vscode.window.createWebviewPanel(
+  const created = vscode.window.createWebviewPanel(
     "personalKnowledge",
     "Personal Knowledge Manager",
     vscode.ViewColumn.One,
     makeWebviewOptions(context)
   );
+  initializePanel(created, context, false);
+  return created;
+}
 
-  panel.iconPath = vscode.Uri.parse("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📚</text></svg>");
+function initializePanel(target: vscode.WebviewPanel, context: vscode.ExtensionContext, restored: boolean): void {
+  panel = target;
+  target.webview.options = makeWebviewOptions(context);
+  target.iconPath = vscode.Uri.parse("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📚</text></svg>");
   _panelReady = false; // fresh webview; wait for its "ready" signal
-  const html = getWebviewHtml(panel.webview, context);
-  panel.webview.html = html;
-  log.info(`panel created (html ${html.length} bytes)`);
+  _panelLastHeartbeat = Date.now();
+  _panelLastDiagnostic = "";
+  const html = getWebviewHtml(target.webview, context);
+  target.webview.html = html;
+  log.info(`panel ${restored ? "restored" : "created"} (html ${html.length} bytes)`);
 
   // Debug: dump generated HTML for inspection (debug level only)
   if (LEVEL_ORDER["debug"] >= 0) {
@@ -2292,7 +2308,7 @@ function getOrCreatePanel(context: vscode.ExtensionContext): vscode.WebviewPanel
     } catch { /* ignore */ }
   }
 
-  panel.webview.onDidReceiveMessage(
+  target.webview.onDidReceiveMessage(
     msg => {
       log.debug(`webview → ${JSON.stringify(msg).slice(0, 200)}`);
       handleMessage(msg, m => panel?.webview.postMessage(m), context);
@@ -2300,8 +2316,11 @@ function getOrCreatePanel(context: vscode.ExtensionContext): vscode.WebviewPanel
     undefined, context.subscriptions
   );
 
-  panel.onDidDispose(() => { panel = undefined; _panelReady = false; log.debug("panel disposed"); }, undefined, context.subscriptions);
-  return panel;
+  target.onDidDispose(() => {
+    if (panel === target) panel = undefined;
+    _panelReady = false;
+    log.info(`panel disposed visible=${target.visible} active=${target.active} heartbeatAgeMs=${Date.now() - _panelLastHeartbeat}${_panelLastDiagnostic ? ` lastDiagnostic=${_panelLastDiagnostic}` : ""}`);
+  }, undefined, context.subscriptions);
 }
 
 // ── Shared message handler (panel + sidebar) ───────────────────────────────
@@ -2319,6 +2338,15 @@ async function handleMessage(
     log.debug(`handleMessage: ${msg.command}`);
   }
   switch (msg.command) {
+    case "webviewDiagnostic": {
+      if (msg.kind === "heartbeat") {
+        _panelLastHeartbeat = Date.now();
+      } else {
+        _panelLastDiagnostic = `${String(msg.kind || "error")}: ${String(msg.message || "unknown").slice(0, 500)}`;
+        log.warn(`webview diagnostic ${_panelLastDiagnostic}`);
+      }
+      break;
+    }
 
     case "ready": {
       // Webview finished loading — flush any queued item to open
@@ -2338,6 +2366,7 @@ async function handleMessage(
         respond({ command: "highlightMcpRegenerate" });
       }
       respond({ command: "mcpStatus", data: mcpPanelStatusData() });
+      void sendMcpPathSizes(respond);
       break;
     }
 
@@ -2460,7 +2489,11 @@ async function handleMessage(
 
     case "chatSend": {
       const responseRequired = typeof msg.responseRequired === "boolean" ? msg.responseRequired : undefined;
-      const ok = getChatMgr().send((msg.text || "").toString(), responseRequired);
+      const replyPolicy = ["none", "required", "optional"].includes(String(msg.replyPolicy)) ? msg.replyPolicy as ReplyPolicy : undefined;
+      const mode = ["announce", "ask", "discuss"].includes(String(msg.mode)) ? msg.mode as ChatMode : undefined;
+      const recipients = Array.isArray(msg.recipients) ? msg.recipients.map((name: unknown) => String(name || "")).filter(Boolean) : undefined;
+      const replyToMessageId = String(msg.replyToMessageId || "").slice(0, 120) || undefined;
+      const ok = getChatMgr().send((msg.text || "").toString(), responseRequired, replyPolicy, mode, recipients, replyToMessageId);
       if (!ok) getChatMgr().push();
       break;
     }
@@ -2642,40 +2675,6 @@ async function handleMessage(
       break;
     }
 
-    case "chatApproveJoinNew": {
-      const requestId = String(msg.requestId || "");
-      try { await getChatMgr().approveJoinNew(requestId); }
-      catch (error: any) { vscode.window.showErrorMessage(`Couldn't approve Join: ${error?.message || error}`); }
-      break;
-    }
-
-    case "chatApproveJoinReuse": {
-      const requestId = String(msg.requestId || "");
-      const pending = getChatMgr().pendingJoin(requestId);
-      if (!pending) { vscode.window.showWarningMessage("This Join request is no longer pending."); break; }
-      if (!pending.reusableParticipants.length) { vscode.window.showWarningMessage("No offline participant identity is available to reuse."); break; }
-      const picked = await vscode.window.showQuickPick(
-        pending.reusableParticipants.map(participant => ({
-          label: participant.previousAlias || participant.participantId.slice(0, 8),
-          description: participant.kind,
-          detail: `Room participant ${participant.participantId}`,
-          participantId: participant.participantId,
-        })),
-        { title: `Reuse identity for ${pending.alias}`, placeHolder: "Choose an offline participant identity" },
-      );
-      if (!picked) break;
-      try { await getChatMgr().approveJoinReuse(requestId, picked.participantId); }
-      catch (error: any) { vscode.window.showErrorMessage(`Couldn't reuse identity: ${error?.message || error}`); }
-      break;
-    }
-
-    case "chatRejectJoin": {
-      const requestId = String(msg.requestId || "");
-      try { await getChatMgr().rejectJoin(requestId); }
-      catch (error: any) { vscode.window.showErrorMessage(`Couldn't reject Join: ${error?.message || error}`); }
-      break;
-    }
-
     case "chatRotateSecret": {
       const room = String(msg.room || "").trim();
       if (!room) break;
@@ -2753,13 +2752,18 @@ async function handleMessage(
 
     case "list": {
       const { tab, filter, q } = msg;
+      const searchOptions = { regex: !!msg.regex, caseSensitive: !!msg.caseSensitive };
+      const listMatches = (value: unknown) => {
+        const source = searchOptions.regex ? String(q || "") : String(q || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        try { return new RegExp(source, searchOptions.caseSensitive ? "" : "i").test(JSON.stringify(value)); } catch { return false; }
+      };
       let data: unknown;
-      if (tab === "skills")    data = q ? skillSearch(q) : skillList(filter === "all" ? undefined : filter);
-      else if (tab === "notes")   data = q ? noteSearch(q) : noteList(undefined, 500); // client-side filtering
-      else if (tab === "papers")  data = q ? paperSearch(q) : paperList();
-      else if (tab === "prompts")  data = promptList();
-      else if (tab === "packages") data = packagesWithGit();
-      else if (tab === "scripts")  data = q ? scriptSearch(q) : scriptList();
+      if (tab === "skills")    data = q ? skillSearch(q, searchOptions) : skillList(filter === "all" ? undefined : filter);
+      else if (tab === "notes")   data = q ? noteSearch(q, searchOptions) : noteList(undefined, 500); // client-side filtering
+      else if (tab === "papers")  data = q ? paperSearch(q, searchOptions) : paperList();
+      else if (tab === "prompts")  data = q ? promptList().filter(listMatches) : promptList();
+      else if (tab === "packages") { const rows = packagesWithGit(); data = q ? rows.filter(listMatches) : rows; }
+      else if (tab === "scripts")  data = q ? scriptSearch(q, searchOptions) : scriptList();
       else data = [];
       const folders = (tab === "skills" || tab === "notes") ? folderList(tab) : undefined;
       respond({ command: "list", data, folders });
@@ -3890,8 +3894,15 @@ async function handleMessage(
     // ── MCP ──────────────────────────────────────────────────────────────
     case "checkMcp": {
       respond({ command: "mcpStatus", data: mcpPanelStatusData() });
+      void sendMcpPathSizes(respond);
       void offerMcpServerRegeneration(context);
       void offerPkmSkillProjectionUpdate(context);
+      break;
+    }
+
+    case "refreshMcpPathSizes": {
+      mcpPathSizeCache.clear();
+      void sendMcpPathSizes(respond);
       break;
     }
 
@@ -4333,9 +4344,9 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
     return getChatMgr().hostedRoomsForNavigation().map(room => {
       const item = new PkTreeItem(room.roomName, "chat-hosted-room", vscode.TreeItemCollapsibleState.None, room);
       item.contextValue = room.active ? "pk-chat-hosted-room-active" : "pk-chat-hosted-room-stored";
-      item.description = room.active ? "active" : room.canRehost ? "stored" : "unavailable";
+      item.description = room.active ? "active" : room.activeElsewhere ? "active elsewhere" : room.canRehost ? "stored" : "unavailable";
       item.tooltip = room.active ? "Active hosted Room" : room.unavailableReason || "Stored Room · click to Rehost";
-      item.command = { command: "personalKnowledge.openHostedRoomItem", title: room.active ? "Open Room" : "Rehost Room", arguments: [room.roomId] };
+      if (!room.activeElsewhere) item.command = { command: "personalKnowledge.openHostedRoomItem", title: room.active ? "Open Room" : "Rehost Room", arguments: [room.roomId] };
       return item;
     });
   }
@@ -4637,12 +4648,20 @@ class PkTreeDragAndDropController implements vscode.TreeDragAndDropController<Pk
 }
 
 // ── First-run setup wizard ─────────────────────────────────────────────────
-async function firstTimeSetup(context: vscode.ExtensionContext): Promise<string | undefined> {
+async function firstTimeSetup(context: vscode.ExtensionContext, reconfigure = false): Promise<string | undefined> {
   const defaultPath = path.join(require("os").homedir(), "personal-knowledge");
+  const currentPath = vscode.workspace.getConfiguration("personalKnowledge").get<string>("storePath")?.trim() || "";
+  const previousPath = context.globalState.get<string>("lastStorePath", "").trim();
+  const reusablePath = previousPath && previousPath !== currentPath && fs.existsSync(previousPath) && fs.statSync(previousPath).isDirectory()
+    ? previousPath : "";
+  const reuseLabel = reusablePath ? `Reuse previous  (${reusablePath})` : undefined;
 
   const pick = await vscode.window.showInformationMessage(
-    "Welcome to Personal Knowledge Manager! Choose where to store your knowledge base:",
+    reconfigure
+      ? `Configure the Personal Knowledge root directory.${currentPath ? ` Current: ${currentPath}` : ""}`
+      : "Welcome to Personal Knowledge Manager! Choose where to store your knowledge base:",
     { modal: true },
+    ...(reuseLabel ? [reuseLabel] : []),
     "Use default  (~/personal-knowledge)",
     "Browse existing folder…",
     "Type a custom path…"
@@ -4652,7 +4671,9 @@ async function firstTimeSetup(context: vscode.ExtensionContext): Promise<string 
 
   let chosenPath: string | undefined;
 
-  if (pick === "Browse existing folder…") {
+  if (reuseLabel && pick === reuseLabel) {
+    chosenPath = reusablePath;
+  } else if (pick === "Browse existing folder…") {
     const result = await vscode.window.showOpenDialog({
       canSelectFolders: true,
       canSelectFiles: false,
@@ -4667,7 +4688,7 @@ async function firstTimeSetup(context: vscode.ExtensionContext): Promise<string 
     chosenPath = await vscode.window.showInputBox({
       prompt: "Enter the full path for your knowledge store",
       placeHolder: defaultPath,
-      value: defaultPath,
+      value: currentPath || defaultPath,
       validateInput: v => v?.trim() ? null : "Path cannot be empty",
     });
     if (!chosenPath) return undefined;
@@ -4691,6 +4712,7 @@ async function firstTimeSetup(context: vscode.ExtensionContext): Promise<string 
   await vscode.workspace.getConfiguration("personalKnowledge")
     .update("storePath", chosenPath, vscode.ConfigurationTarget.Global);
   await context.globalState.update("setupComplete", true);
+  await context.globalState.update("lastStorePath", chosenPath);
   return chosenPath;
 }
 
@@ -4723,11 +4745,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const cfg = vscode.workspace.getConfiguration("personalKnowledge");
   let configuredPath = cfg.get<string>("storePath")?.trim() ?? "";
   const setupComplete = context.globalState.get<boolean>("setupComplete", false);
+  const configuredPathValid = !!configuredPath && fs.existsSync(configuredPath) && fs.statSync(configuredPath).isDirectory();
   log.debug(`configuredPath="${configuredPath}" setupComplete=${setupComplete}`);
+  if (configuredPathValid) await context.globalState.update("lastStorePath", configuredPath);
 
   // First-time setup: ask user where to store their knowledge base
-  if (!setupComplete && !configuredPath) {
-    const chosen = await firstTimeSetup(context);
+  if (!configuredPathValid) {
+    _pendingTab = "mcp";
+    const chosen = await firstTimeSetup(context, !!configuredPath || setupComplete);
     if (!chosen) {
       vscode.window.showErrorMessage(
         "Personal Knowledge Manager: setup not completed. Click the sidebar icon or open the panel to configure.",
@@ -4740,6 +4765,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   fsSetStorePath(configuredPath);
   storageSetStorePath(configuredPath);
   applyChatArchiveCfg();
+  context.subscriptions.push(vscode.window.registerWebviewPanelSerializer("personalKnowledge", {
+    async deserializeWebviewPanel(webviewPanel, state) {
+      const restoredState = state as { tab?: unknown } | undefined;
+      _pendingTab = configuredPathValid ? (typeof restoredState?.tab === "string" ? restoredState.tab : "chatroom") : "mcp";
+      initializePanel(webviewPanel, context, true);
+    },
+  }));
+  if (configuredPath) {
+    const chatroomsRoot = path.join(getStorePath(), "chatrooms");
+    const chatroomWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(chatroomsRoot, "**/*"));
+    let chatroomRefreshTimer: NodeJS.Timeout | undefined;
+    const scheduleChatroomRefresh = () => {
+      if (chatroomRefreshTimer) clearTimeout(chatroomRefreshTimer);
+      chatroomRefreshTimer = setTimeout(() => {
+        chatroomRefreshTimer = undefined;
+        void getChatMgr().refreshStoredRooms().catch(error => log.warn(`chat: cross-window refresh failed: ${(error as Error).message}`));
+      }, 200);
+    };
+    chatroomWatcher.onDidCreate(scheduleChatroomRefresh);
+    chatroomWatcher.onDidChange(scheduleChatroomRefresh);
+    chatroomWatcher.onDidDelete(scheduleChatroomRefresh);
+    context.subscriptions.push(chatroomWatcher, { dispose: () => { if (chatroomRefreshTimer) clearTimeout(chatroomRefreshTimer); } });
+  }
 
   // Servers + Python Environments subsystems (machine-local runtime state).
   try {

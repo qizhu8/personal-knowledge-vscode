@@ -18,7 +18,7 @@ async function main() {
     const changes = [];
     const approvals = new ChatJoinApprovalManager(persistence, (_roomId, participantId) => online.has(participantId), 40, () => changes.push(Date.now()));
 
-    const first = await approvals.request(roomId, "connection-1", "Alpha", "agent");
+    const first = await approvals.request(roomId, "connection-1", "Alpha", "client-alpha", "agent");
     assert.strictEqual(approvals.list(roomId).length, 1);
     await approvals.approveNew(first.approval.requestId);
     const firstResult = await first.result;
@@ -26,7 +26,7 @@ async function main() {
     assert(firstResult.participantId);
 
     await persistence.releaseAlias(roomId, firstResult.participantId, Date.now());
-    const second = await approvals.request(roomId, "connection-2", "Beta", "agent");
+    const second = await approvals.request(roomId, "connection-2", "Beta", "client-alpha", "agent");
     assert(second.approval.reusableParticipants.some(item => item.participantId === firstResult.participantId && item.previousAlias === "Alpha"));
     online.add(firstResult.participantId);
     await assert.rejects(approvals.approveReuse(second.approval.requestId, firstResult.participantId), /offline/);
@@ -35,24 +35,24 @@ async function main() {
     assert.deepStrictEqual(await second.result, { outcome: "reuse", participantId: firstResult.participantId });
 
     await persistence.releaseAlias(roomId, firstResult.participantId, Date.now());
-    const rejected = await approvals.request(roomId, "connection-3", "Gamma", "browser");
+    const rejected = await approvals.request(roomId, "connection-3", "Gamma", "client-gamma", "browser");
     await approvals.reject(rejected.approval.requestId, "No guests today.");
     assert.deepStrictEqual(await rejected.result, { outcome: "reject", reason: "No guests today." });
 
-    const browser = await approvals.request(roomId, "connection-browser", "Browser", "browser");
+    const browser = await approvals.request(roomId, "connection-browser", "Browser", "client-browser", "browser");
     await approvals.approveNew(browser.approval.requestId);
     const browserResult = await browser.result;
     await persistence.releaseAlias(roomId, browserResult.participantId, Date.now());
-    const browserRetry = await approvals.request(roomId, "connection-browser-2", "Browser Again", "browser");
+    const browserRetry = await approvals.request(roomId, "connection-browser-2", "Browser Again", "client-browser", "browser");
     assert(!browserRetry.approval.reusableParticipants.some(item => item.participantId === browserResult.participantId),
       "temporary browser identities must not be offered for Reuse");
     await approvals.reject(browserRetry.approval.requestId);
 
-    const cancelled = await approvals.request(roomId, "connection-4", "Delta", "agent");
+    const cancelled = await approvals.request(roomId, "connection-4", "Delta", "client-delta", "agent");
     await approvals.cancelConnection("connection-4");
     assert.strictEqual((await cancelled.result).outcome, "cancel");
 
-    const timedOut = await approvals.request(roomId, "connection-5", "Epsilon", "agent");
+    const timedOut = await approvals.request(roomId, "connection-5", "Epsilon", "client-epsilon", "agent");
     assert.strictEqual((await timedOut.result).outcome, "timeout");
     assert.strictEqual(approvals.list().length, 0);
     const persisted = await persistence.identityState(roomId);

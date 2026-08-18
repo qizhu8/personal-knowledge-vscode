@@ -8,6 +8,9 @@ export interface ChatRoomLockRecord {
   instanceNonce: string;
   hostname: string;
   acquiredAt: number;
+  roomId?: string;
+  roomName?: string;
+  activeUrl?: string;
 }
 
 function processAlive(pid: number): boolean {
@@ -79,6 +82,16 @@ export class ChatRoomLock {
       }
     }
     throw new Error("Unable to acquire Room lock.");
+  }
+
+  updateDescriptor(descriptor: { roomId: string; roomName: string; activeUrl: string }): void {
+    const owner = readRecord(this.lockPath);
+    if (!owner || owner.instanceNonce !== this.record.instanceNonce) throw new Error("Room lock ownership changed.");
+    const next = { ...owner, ...descriptor };
+    const temporary = `${this.lockPath}.${this.record.instanceNonce}.tmp`;
+    fs.writeFileSync(temporary, JSON.stringify(next), { mode: 0o600 });
+    fs.renameSync(temporary, this.lockPath);
+    Object.assign(this.record, descriptor);
   }
 
   release(): boolean {
