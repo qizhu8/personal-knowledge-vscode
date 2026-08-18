@@ -10,6 +10,7 @@ This project follows [Semantic Versioning](https://semver.org/).
 This is a major Chatroom, search, setup, and MCP Config release. It replaces text-derived routing with structured recipients across the complete stack, makes Agent standby reliable, and adds a versioned setup dashboard with privacy-safe release media.
 
 ### Fixed
+- Started the managed-server stable reverse proxy on VS Code startup, surfaced proxy-listener health instead of opening a dead stable URL, registered the machine-local proxy port setting, and generated an Agent-readable proxy compatibility guide in every managed server folder.
 - Replaced uneven Config path rows with a fixed-layout Path Type / Location / Disk Usage / Source table, with horizontal scrolling on narrow windows.
 - Preserved the current Chatroom search result across presence/message repaints and batched transcript highlighting, preventing previous/next navigation from looping between results 1 and 2.
 - Added a contextual empty-state hint on content tabs: when no item is selected and the sidebar is minimized, the detail pane tells users to click the `>` control to restore it.

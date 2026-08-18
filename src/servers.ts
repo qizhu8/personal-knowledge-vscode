@@ -39,6 +39,10 @@ export function initServers(serversDir: string, stateDir: string, proxyPort: num
   if (logger) _log = logger;
   try { fs.mkdirSync(_serversDir, { recursive: true }); } catch { /* ignore */ }
   try { fs.mkdirSync(path.join(_stateDir, "logs"), { recursive: true }); } catch { /* ignore */ }
+  for (const slug of listSlugs()) {
+    const manifest = readManifest(slug);
+    if (manifest) writeProxyGuide(slug, manifest);
+  }
   reconcile();
   startProxy();
   for (const slug of listSlugs()) {
@@ -88,6 +92,42 @@ function readManifest(slug: string): ServerManifest | null {
 function writeManifest(slug: string, m: ServerManifest): void {
   fs.mkdirSync(serverDirOf(slug), { recursive: true });
   fs.writeFileSync(manifestPath(slug), JSON.stringify(m, null, 2) + "\n");
+  writeProxyGuide(slug, m);
+}
+
+function writeProxyGuide(slug: string, manifest: ServerManifest): void {
+  const guidePath = path.join(serverDirOf(slug), "PKM_SERVER_PROXY.md");
+  const content = `# PKM Managed Server Proxy Guide
+
+This server is managed by Personal Knowledge Manager.
+
+## Endpoints
+
+- Native URL: \`http://127.0.0.1:${manifest.port}/\`
+- Stable URL: \`http://127.0.0.1:<serversProxyPort>/s/${slug}/\`
+
+The native service can outlive VS Code. The stable URL depends on the PKM extension host reverse proxy. If the native URL works but the stable URL returns connection refused, reload VS Code or activate PKM and verify the proxy port in Config/Settings.
+
+Under Remote SSH, the canonical endpoint lives on the remote host. VS Code may open it through a different local forwarded port (for example, remote 39501 may appear as local 60321). That local forwarding URL is session-scoped and can expire; reopen the Stable URL from the Servers dashboard instead of persisting the forwarded port.
+
+## Binding Requirements
+
+1. Listen on \`127.0.0.1\` or \`0.0.0.0\`, never on a remote-only interface.
+2. Respect the \`{port}\` argument supplied by the managed command.
+3. Serve the application root at \`/\`; PKM strips \`/s/${slug}/\` before forwarding upstream.
+4. Prefer relative asset and API URLs. PKM rewrites static root-absolute HTML attributes and routes root-absolute requests by Referer, but JavaScript-created URLs may need an explicit base path.
+5. For redirects, avoid hard-coded external origins. Relative \`Location\` values are safest.
+6. WebSocket/SSE applications must support reverse-proxy upgrade/streaming. If they do not, use the native URL until proxy support is added.
+
+## Agent Checklist
+
+- Test both native and stable URLs.
+- On Remote SSH, distinguish the remote proxy port from VS Code's temporary local forwarded port.
+- Inspect browser network failures for absolute paths, redirects, WebSockets, or missing Referer headers.
+- Do not change the stable slug; it is the server folder name.
+- Keep \`server.json\`, startup scripts, and this guide with the server source.
+`;
+  try { fs.writeFileSync(guidePath, content); } catch { /* best-effort documentation */ }
 }
 
 // ── Machine-local runtime state ──────────────────────────────────────────────
@@ -276,6 +316,7 @@ export async function setServerPort(slug: string, port: number): Promise<{ ok: b
 // ── Status / logs / python envs ──────────────────────────────────────────────
 export async function serverList(): Promise<any[]> {
   const st = readState();
+  const proxyRunning = await probePort(_proxyPort);
   const out: any[] = [];
   for (const slug of listSlugs().sort()) {
     const m = readManifest(slug);
@@ -291,6 +332,7 @@ export async function serverList(): Promise<any[]> {
       python: m.python || "", autostart: !!m.autostart, status, pid, activePort, startedAt,
       stableUrl: `http://localhost:${_proxyPort}/s/${slug}/`,
       localUrl: `http://localhost:${activePort}/`,
+      proxyRunning,
     });
   }
   return out;
@@ -328,6 +370,24 @@ export function listPythonEnvs(): Promise<{ label: string; path: string }[]> {
 }
 
 // ── Reverse proxy: stable /s/<slug>/ → the server's current port ──────────────
+export function rewriteProxyHtml(body: string, slug: string): string {
+  const base = `/s/${slug}/`;
+  const withoutBase = body.replace(/<base\b[^>]*>/gi, "");
+  const rewritten = withoutBase.replace(/((?:src|href|action)\s*=\s*["'])(\/(?!\/)[^"']*)/gi, (_match, prefix, value) =>
+    `${prefix}${value.startsWith(base) ? value : base + value.slice(1)}`);
+  return rewritten.replace(/(<head[^>]*>)/i, `$1<base href="${base}">`);
+}
+
+function rewriteProxyHeaders(headers: http.IncomingHttpHeaders, slug: string): http.IncomingHttpHeaders {
+  const next = { ...headers };
+  const base = `/s/${slug}/`;
+  const location = String(next.location || "");
+  if (location.startsWith("/") && !location.startsWith("//") && !location.startsWith(base)) {
+    next.location = base + location.slice(1);
+  }
+  return next;
+}
+
 function proxyTo(slug: string, targetPath: string, req: http.IncomingMessage, res: http.ServerResponse): void {
   const run = readState()[slug];
   const man = readManifest(slug);
@@ -336,20 +396,18 @@ function proxyTo(slug: string, targetPath: string, req: http.IncomingMessage, re
   const headers = { ...req.headers, host: `127.0.0.1:${port}` };
   const preq = http.request({ host: "127.0.0.1", port, path: targetPath, method: req.method, headers }, pres => {
     const ct = String(pres.headers["content-type"] || "");
+    const responseHeaders = rewriteProxyHeaders(pres.headers, slug);
     if (/text\/html/i.test(ct)) {
       const chunks: Buffer[] = [];
       pres.on("data", c => chunks.push(c));
       pres.on("end", () => {
-        let body = Buffer.concat(chunks).toString("utf-8");
-        const base = `/s/${slug}/`;
-        body = body.replace(/(<head[^>]*>)/i, `$1<base href="${base}">`);
-        body = body.replace(/((?:src|href|action)\s*=\s*["'])\/(?!\/)/gi, `$1${base}`);
-        const h = { ...pres.headers }; delete h["content-length"];
-        res.writeHead(pres.statusCode || 200, h);
+        const body = rewriteProxyHtml(Buffer.concat(chunks).toString("utf-8"), slug);
+        delete responseHeaders["content-length"];
+        res.writeHead(pres.statusCode || 200, responseHeaders);
         res.end(body);
       });
     } else {
-      res.writeHead(pres.statusCode || 200, pres.headers);
+      res.writeHead(pres.statusCode || 200, responseHeaders);
       pres.pipe(res);
     }
   });

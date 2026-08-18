@@ -14,21 +14,22 @@ function renderServerDashboard(servers) {
         ${s.status === 'stopped'
           ? `<button class="tbtn" onclick="ask('serverStart',{slug:'${esc(s.slug)}'})">▶ Start</button>`
           : `<button class="tbtn" onclick="ask('serverStop',{slug:'${esc(s.slug)}'})">■ Stop</button><button class="tbtn" onclick="ask('serverRestart',{slug:'${esc(s.slug)}'})">↻</button>`}
-        <button class="tbtn" onclick="openServer('${esc(s.stableUrl)}')" title="Open the stable URL">🌐</button>
+        <button class="tbtn" onclick="openServer('${esc(s.proxyRunning ? s.stableUrl : s.localUrl)}')" title="${s.proxyRunning ? 'Open the stable URL' : 'Stable proxy is offline; open the native URL'}">🌐</button>
         <button class="tbtn" onclick="ask('serverOpenFolder',{slug:'${esc(s.slug)}'})" title="Open the server folder (code + any data it writes)">📂</button>
         <button class="tbtn" onclick="editServer('${esc(s.slug)}')">✏</button>
         <button class="tbtn" onclick="serverLogView('${esc(s.slug)}')" title="Log">📜</button>
         <button class="tbtn" onclick="deleteServer('${esc(s.slug)}',${JSON.stringify(s.name).replace(/"/g,'&quot;')})">🗑</button>
       </div>
       <div class="ec-path"><code>${esc(s.command)}</code> · env: ${esc(s.python || 'python3')}</div>
-      <div class="ec-path">stable: <a href="#" onclick="openServer('${esc(s.stableUrl)}');return false">${esc(s.stableUrl)}</a>
-        <button class="tbtn" style="font-size:10px;padding:1px 6px" onclick="ask('serverCopy',{text:'${esc(s.stableUrl)}'})">copy</button></div>
+      <div class="ec-path" title="On Remote SSH, VS Code may open this remote endpoint through a different session-local forwarded port.">stable: ${s.proxyRunning ? `<a href="#" onclick="openServer('${esc(s.stableUrl)}');return false">${esc(s.stableUrl)}</a>` : `<span style="color:#f4b400">proxy offline · ${esc(s.stableUrl)}</span>`}
+        <button class="tbtn" style="font-size:10px;padding:1px 6px" onclick="ask('serverCopy',{text:'${esc(s.stableUrl)}'})">copy</button>
+        ${s.proxyRunning ? '' : '<span style="color:var(--muted);font-size:10px">Reload VS Code or activate PKM to restart the stable proxy.</span>'}</div>
     </div>`).join('');
   document.getElementById('detail').innerHTML = `
     <div class="dash">
       <div class="dash-hd">
         <span class="dash-title">🖥 Servers</span>
-        <span style="font-size:11px;color:var(--muted)">stable URLs via the built-in proxy</span>
+        <span style="font-size:11px;color:${serverCache.length && serverCache.every(server => server.proxyRunning) ? 'var(--muted)' : '#f4b400'}">${serverCache.length && serverCache.every(server => server.proxyRunning) ? 'stable URLs via the built-in proxy' : 'stable proxy is not listening'}</span>
         <span style="flex:1"></span>
         <button class="tbtn" onclick="importServer()">＋ Import folder</button>
         <button class="tbtn" onclick="createServer()">＋ New</button>

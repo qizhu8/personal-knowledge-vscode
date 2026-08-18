@@ -35,6 +35,7 @@
     "pkm"
   ],
   "activationEvents": [
+    "onStartupFinished",
     "onWebviewPanel:personalKnowledge"
   ],
   "main": "./dist/extension.js",
@@ -457,6 +458,14 @@
           "default": 10,
           "minimum": 0,
           "description": "Chatroom: how much chat history (in MB) the hub archives to disk per room, so messages survive rejoining, closing a room, or restarting the hub. The oldest messages are dropped once the limit is reached. Set to 0 to disable archiving."
+        },
+        "personalKnowledge.serversProxyPort": {
+          "type": "number",
+          "default": 39501,
+          "minimum": 1024,
+          "maximum": 65535,
+          "scope": "machine",
+          "description": "Machine-local port for stable managed-server URLs under /s/<slug>/. The proxy runs in the VS Code extension host."
         }
       }
     }
@@ -489,7 +498,8 @@
     "test:chat-layout-scroll-ui": "npm run build && node scripts/test-chat-layout-scroll-ui.js",
     "test:pkm-skill-projection": "npm run build && node scripts/test-pkm-skill-projection.js",
     "test:pkm-skill-mcp": "node scripts/test-pkm-skill-mcp.js",
-    "test:release": "npm run build && node scripts/test-chat-persistence.js && node scripts/test-chat-stored-rooms.js && node scripts/test-chat-stored-rooms-ui.js && node scripts/test-chat-participant-persistence.js && node scripts/test-chat-join-approval.js && node scripts/test-chat-hub-approval.js && node scripts/test-chat-join-approval-ui.js && node scripts/test-chat-moderation-ui.js && node scripts/test-chat-mention-highlight-ui.js && node scripts/test-chat-room-identity.js && node scripts/test-chat-default-recipient-ui.js && node scripts/test-chat-multi-recipient.js && node scripts/test-chat-magic-link.js && node scripts/test-chat-mcp-approval.js && node scripts/test-chat-packaged-worker.js && node scripts/test-chat-hub-health.js && python scripts/test-chat-history-atomic.py && python scripts/test-chat-generated-standby.py && node scripts/test-chat-markdown.js && node scripts/test-chat-quote-viewer-ui.js && node scripts/test-mcp-version-ui.js && node scripts/test-chat-layout-scroll-ui.js && node scripts/test-pkm-skill-projection.js && node scripts/test-pkm-skill-mcp.js",
+    "test:server-proxy": "npm run build && node scripts/test-server-proxy.js",
+    "test:release": "npm run build && node scripts/test-chat-persistence.js && node scripts/test-chat-stored-rooms.js && node scripts/test-chat-stored-rooms-ui.js && node scripts/test-chat-participant-persistence.js && node scripts/test-chat-join-approval.js && node scripts/test-chat-hub-approval.js && node scripts/test-chat-join-approval-ui.js && node scripts/test-chat-moderation-ui.js && node scripts/test-chat-mention-highlight-ui.js && node scripts/test-chat-room-identity.js && node scripts/test-chat-default-recipient-ui.js && node scripts/test-chat-multi-recipient.js && node scripts/test-chat-magic-link.js && node scripts/test-chat-mcp-approval.js && node scripts/test-chat-packaged-worker.js && node scripts/test-chat-hub-health.js && python scripts/test-chat-history-atomic.py && python scripts/test-chat-generated-standby.py && node scripts/test-chat-markdown.js && node scripts/test-chat-quote-viewer-ui.js && node scripts/test-mcp-version-ui.js && node scripts/test-chat-layout-scroll-ui.js && node scripts/test-pkm-skill-projection.js && node scripts/test-pkm-skill-mcp.js && node scripts/test-server-proxy.js",
     "poc:chat-room-lifecycle": "npm run build && node scripts/poc-chat-room-lifecycle.js",
     "watch": "tsc -p tsconfig.json --watch",
     "package": "npx vsce package"
