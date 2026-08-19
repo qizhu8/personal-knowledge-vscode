@@ -1,7 +1,7 @@
 {
   "name": "personal-knowledge",
   "displayName": "Personal Knowledge Manager",
-  "description": "Browse, edit, and sync your personal knowledge: skills, notes, prompts, packages, scripts. Expose it to AI assistants via MCP, and collaborate with teammates and their agents in a built-in real-time Chatroom.",
+  "description": "%extension.description%",
   "version": "2.5.0",
   "publisher": "Uone",
   "author": {
@@ -49,25 +49,45 @@
     "commands": [
       {
         "command": "personalKnowledge.open",
-        "title": "Personal Knowledge Manager: Open Panel",
+        "title": "%command.open%",
         "icon": "$(book)"
       },
       {
         "command": "personalKnowledge.addNote",
-        "title": "Personal Knowledge Manager: Quick Note"
+        "title": "%command.addNote%"
       },
       {
         "command": "personalKnowledge.saveSkill",
-        "title": "Personal Knowledge Manager: Save Selection as Skill"
+        "title": "%command.saveSkill%"
       },
       {
         "command": "personalKnowledge.setupMcp",
-        "title": "Personal Knowledge Manager: Open Config"
+        "title": "%command.openConfig%"
       },
       {
         "command": "personalKnowledge.openChatroom",
-        "title": "Personal Knowledge Manager: Open Chatroom",
+        "title": "%command.openChatroom%",
         "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "personalKnowledge.openServers",
+        "title": "%command.openServers%",
+        "icon": "$(server-environment)"
+      },
+      {
+        "command": "personalKnowledge.startServerItem",
+        "title": "%command.startServer%",
+        "icon": "$(play)"
+      },
+      {
+        "command": "personalKnowledge.stopServerItem",
+        "title": "%command.stopServer%",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "personalKnowledge.restartServerItem",
+        "title": "%command.restartServer%",
+        "icon": "$(debug-restart)"
       },
       {
         "command": "personalKnowledge.openHostedRoomItem",
@@ -91,7 +111,7 @@
       },
       {
         "command": "personalKnowledge.refreshTree",
-        "title": "Personal Knowledge Manager: Refresh",
+        "title": "%command.refresh%",
         "icon": "$(refresh)"
       },
       {
@@ -126,7 +146,7 @@
       },
       {
         "command": "personalKnowledge.showLogs",
-        "title": "Personal Knowledge Manager: Show Logs"
+        "title": "%command.showLogs%"
       },
       {
         "command": "personalKnowledge.setAiKey",
@@ -221,6 +241,21 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "personalKnowledge.startServerItem",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-server-stopped",
+          "group": "1_server@1"
+        },
+        {
+          "command": "personalKnowledge.stopServerItem",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-server-active",
+          "group": "1_server@1"
+        },
+        {
+          "command": "personalKnowledge.restartServerItem",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-server-active",
+          "group": "1_server@2"
+        },
         {
           "command": "personalKnowledge.openHostedRoomItem",
           "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-chat-hosted-room-(active|stored)/",
@@ -346,7 +381,7 @@
       "personalKnowledgeBar": [
         {
           "id": "personalKnowledge.sidebarView",
-          "name": "Knowledge"
+          "name": "%view.knowledge%"
         }
       ]
     },
@@ -357,7 +392,7 @@
       }
     ],
     "configuration": {
-      "title": "Personal Knowledge Manager",
+      "title": "%configuration.title%",
       "properties": {
         "personalKnowledge.storePath": {
           "type": "string",
@@ -379,6 +414,13 @@
           "type": "boolean",
           "default": false,
           "description": "Automatically open the Personal Knowledge Manager panel on VS Code startup."
+        },
+        "personalKnowledge.uiLanguage": {
+          "type": "string",
+          "enum": ["auto", "en", "zh-cn", "es"],
+          "enumDescriptions": ["Follow the VS Code display language.", "English", "简体中文", "Español"],
+          "default": "auto",
+          "description": "%configuration.uiLanguage%"
         },
         "personalKnowledge.logLevel": {
           "type": "string",
@@ -499,7 +541,9 @@
     "test:pkm-skill-projection": "npm run build && node scripts/test-pkm-skill-projection.js",
     "test:pkm-skill-mcp": "node scripts/test-pkm-skill-mcp.js",
     "test:server-proxy": "npm run build && node scripts/test-server-proxy.js",
-    "test:release": "npm run build && node scripts/test-chat-persistence.js && node scripts/test-chat-stored-rooms.js && node scripts/test-chat-stored-rooms-ui.js && node scripts/test-chat-participant-persistence.js && node scripts/test-chat-join-approval.js && node scripts/test-chat-hub-approval.js && node scripts/test-chat-join-approval-ui.js && node scripts/test-chat-moderation-ui.js && node scripts/test-chat-mention-highlight-ui.js && node scripts/test-chat-room-identity.js && node scripts/test-chat-default-recipient-ui.js && node scripts/test-chat-multi-recipient.js && node scripts/test-chat-magic-link.js && node scripts/test-chat-mcp-approval.js && node scripts/test-chat-packaged-worker.js && node scripts/test-chat-hub-health.js && python scripts/test-chat-history-atomic.py && python scripts/test-chat-generated-standby.py && node scripts/test-chat-markdown.js && node scripts/test-chat-quote-viewer-ui.js && node scripts/test-mcp-version-ui.js && node scripts/test-chat-layout-scroll-ui.js && node scripts/test-pkm-skill-projection.js && node scripts/test-pkm-skill-mcp.js && node scripts/test-server-proxy.js",
+    "test:navigation-status": "npm run build && node scripts/test-navigation-status.js",
+    "test:localization": "npm run build && node scripts/test-localization.js",
+    "test:release": "npm run build && node scripts/test-chat-persistence.js && node scripts/test-chat-stored-rooms.js && node scripts/test-chat-stored-rooms-ui.js && node scripts/test-chat-participant-persistence.js && node scripts/test-chat-join-approval.js && node scripts/test-chat-hub-approval.js && node scripts/test-chat-join-approval-ui.js && node scripts/test-chat-moderation-ui.js && node scripts/test-chat-mention-highlight-ui.js && node scripts/test-chat-room-identity.js && node scripts/test-chat-default-recipient-ui.js && node scripts/test-chat-multi-recipient.js && node scripts/test-chat-magic-link.js && node scripts/test-chat-mcp-approval.js && node scripts/test-chat-packaged-worker.js && node scripts/test-chat-hub-health.js && python scripts/test-chat-history-atomic.py && python scripts/test-chat-generated-standby.py && node scripts/test-chat-markdown.js && node scripts/test-chat-quote-viewer-ui.js && node scripts/test-mcp-version-ui.js && node scripts/test-chat-layout-scroll-ui.js && node scripts/test-pkm-skill-projection.js && node scripts/test-pkm-skill-mcp.js && node scripts/test-server-proxy.js && node scripts/test-navigation-status.js && node scripts/test-localization.js",
     "poc:chat-room-lifecycle": "npm run build && node scripts/poc-chat-room-lifecycle.js",
     "watch": "tsc -p tsconfig.json --watch",
     "package": "npx vsce package"

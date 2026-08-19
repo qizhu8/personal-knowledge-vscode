@@ -44,6 +44,8 @@ import { createSyncMagicCode, parseSyncMagicCode } from "./sync-magic-code";
 import { createChatMagicLink, chatInviteMessage } from "./chat-magic-link";
 import { startLiveMarkdownServer } from "./live-note-server";
 import { managedEnvironmentsRoot } from "./environment-paths";
+import { NavigationStatus, summarizeChatNavigation, summarizeServerNavigation } from "./navigation-status";
+import { loadLocaleCatalogs, localizedText, resolveUiLanguage, UiLanguageSetting, uiLanguageSetting } from "./localization";
 import { AiBackend, aiSummarizeScript, listAiBackends, runAiPrompt, scriptCacheDir } from "./ai";
 import {
   cancelMcpPythonScan, combinedMcpInstallInstruction, combinedMcpRegistry,
@@ -788,6 +790,13 @@ function openChatroomPanel(context: vscode.ExtensionContext): void {
   else _pendingTab = "chatroom";
 }
 
+function openPanelTab(context: vscode.ExtensionContext, tab: string): void {
+  const target = getOrCreatePanel(context);
+  target.reveal(vscode.ViewColumn.One);
+  if (_panelReady) target.webview.postMessage({ command: "openTab", tab });
+  else _pendingTab = tab;
+}
+
 type KnowledgeMarkdownArea = "skills" | "notes" | "papers";
 
 function knowledgeMarkdownInfo(uri: vscode.Uri): { area: KnowledgeMarkdownArea; key: string; category: string } | undefined {
@@ -1104,6 +1113,7 @@ class ChatRoomManager {
   private secretStorage: vscode.SecretStorage | undefined;
   private archiveLimitBytes = 10 * 1024 * 1024;
   private crossWindowRefreshTimer: NodeJS.Timeout | undefined;
+  private navigationStatusSignature = "";
   private static readonly MAX_MSGS = 1000;   // bounded visible transcript; full history remains durable in the Room DB
 
   private static roomKey(url: string, room: string, roomId?: string): string {
@@ -1165,7 +1175,14 @@ class ChatRoomManager {
 
   /** Push the full snapshot (room list + active room detail) to the webview. */
   push(): void {
-    postToPanel({ command: "chatState", data: this.state() });
+    const snapshot = this.state();
+    postToPanel({ command: "chatState", data: snapshot });
+    const status = summarizeChatNavigation(snapshot as any);
+    const signature = `${status.kind}:${status.description}`;
+    if (signature !== this.navigationStatusSignature) {
+      this.navigationStatusSignature = signature;
+      _treeProvider?.refreshChatStatus();
+    }
   }
 
   private roomSummary(r: RoomConn) {
@@ -2272,6 +2289,13 @@ function getWebviewHtml(webview: vscode.Webview, context: vscode.ExtensionContex
   // Stamp the extension version so the running webview build is always visible.
   const version = (context.extension?.packageJSON?.version as string) || "?";
   html = html.replace(/%%PKM_VERSION%%/g, version);
+  const languageSetting = uiLanguageSetting();
+  const localizationPayload = Buffer.from(JSON.stringify({
+    setting: languageSetting,
+    resolved: resolveUiLanguage(languageSetting),
+    catalogs: loadLocaleCatalogs(context.extensionPath),
+  }), "utf8").toString("base64");
+  html = html.replace(/%%I18N_PAYLOAD_B64%%/g, localizationPayload);
   return html;
 }
 
@@ -2324,6 +2348,28 @@ function initializePanel(target: vscode.WebviewPanel, context: vscode.ExtensionC
 }
 
 // ── Shared message handler (panel + sidebar) ───────────────────────────────
+async function serverListForUi(context: vscode.ExtensionContext): Promise<any[]> {
+  const enabled = new Set(context.globalState.get<string[]>("servers.autoForward.v1", []));
+  return (await serverList()).map(server => ({
+    ...server,
+    autoForward: enabled.has(server.slug),
+    remoteName: vscode.env.remoteName || "",
+  }));
+}
+
+async function ensureServerForwarding(context: vscode.ExtensionContext, slug: string): Promise<string> {
+  if (!slug || !vscode.env.remoteName) return "";
+  const enabled = new Set(context.globalState.get<string[]>("servers.autoForward.v1", []));
+  if (!enabled.has(slug)) return "";
+  const server = (await serverList()).find(item => item.slug === slug && item.status !== "stopped");
+  if (!server?.localUrl) return "";
+  try { return (await vscode.env.asExternalUri(vscode.Uri.parse(server.localUrl))).toString(); }
+  catch (error: any) {
+    vscode.window.showWarningMessage(`Couldn't forward ${server.localUrl}: ${error?.message || String(error)}`);
+    return "";
+  }
+}
+
 async function handleMessage(
   msg: any,
   respond: (m: object) => void,
@@ -2345,6 +2391,17 @@ async function handleMessage(
         _panelLastDiagnostic = `${String(msg.kind || "error")}: ${String(msg.message || "unknown").slice(0, 500)}`;
         log.warn(`webview diagnostic ${_panelLastDiagnostic}`);
       }
+      break;
+    }
+
+    case "setUiLanguage": {
+      const requested = String(msg.language || "auto") as UiLanguageSetting;
+      const setting: UiLanguageSetting = requested === "en" || requested === "zh-cn" || requested === "es" ? requested : "auto";
+      await vscode.workspace.getConfiguration("personalKnowledge").update("uiLanguage", setting, vscode.ConfigurationTarget.Global);
+      const catalogs = loadLocaleCatalogs(context.extensionPath);
+      const resolved = resolveUiLanguage(setting);
+      respond({ command: "uiLanguage", data: { setting, resolved, catalogs } });
+      _treeProvider?.refresh();
       break;
     }
 
@@ -3086,57 +3143,83 @@ async function handleMessage(
 
     // ── Servers dashboard ────────────────────────────────────────────────────
     case "serverList": {
-      respond({ command: "serverList", data: await serverList() });
+      respond({ command: "serverList", data: await serverListForUi(context) });
+      await _treeProvider?.refreshServerStatus();
       break;
     }
     case "serverStart": {
       const r = startServer(String(msg.slug || ""));
       if (!r.ok && r.error) vscode.window.showErrorMessage(`Start failed: ${r.error}`);
       await new Promise(res => setTimeout(res, 400));
-      respond({ command: "serverList", data: await serverList() });
+      await ensureServerForwarding(context, String(msg.slug || ""));
+      respond({ command: "serverList", data: await serverListForUi(context) });
+      await _treeProvider?.refreshServerStatus();
       break;
     }
     case "serverStop": {
       stopServer(String(msg.slug || ""));
       await new Promise(res => setTimeout(res, 300));
-      respond({ command: "serverList", data: await serverList() });
+      respond({ command: "serverList", data: await serverListForUi(context) });
+      await _treeProvider?.refreshServerStatus();
       break;
     }
     case "serverRestart": {
       const r = await restartServer(String(msg.slug || ""));
       if (!r.ok && r.error) vscode.window.showErrorMessage(`Restart failed: ${r.error}`);
-      respond({ command: "serverList", data: await serverList() });
+      await ensureServerForwarding(context, String(msg.slug || ""));
+      respond({ command: "serverList", data: await serverListForUi(context) });
+      await _treeProvider?.refreshServerStatus();
       break;
     }
     case "serverSetPort": {
       const r = await setServerPort(String(msg.slug || ""), Number(msg.port) || 0);
       if (!r.ok && r.error) vscode.window.showErrorMessage(`Change port failed: ${r.error}`);
-      respond({ command: "serverList", data: await serverList() });
+      await ensureServerForwarding(context, String(msg.slug || ""));
+      respond({ command: "serverList", data: await serverListForUi(context) });
+      await _treeProvider?.refreshServerStatus();
       break;
     }
     case "serverImport": {
       const r = serverImport(String(msg.sourceDir || ""), String(msg.name || ""));
       if (r.ok) gitCommit(`server import: ${r.slug}`);
       else if (r.error) vscode.window.showErrorMessage(`Import failed: ${r.error}`);
-      respond({ command: "serverList", data: await serverList() });
+      respond({ command: "serverList", data: await serverListForUi(context) });
+      await _treeProvider?.refreshServerStatus();
       break;
     }
     case "serverCreate": {
       const r = serverCreate(String(msg.name || ""));
       if (r.ok) gitCommit(`server create: ${r.slug}`);
-      respond({ command: "serverList", data: await serverList() });
+      respond({ command: "serverList", data: await serverListForUi(context) });
+      await _treeProvider?.refreshServerStatus();
       break;
     }
     case "serverUpdate": {
       serverUpdate(String(msg.slug || ""), msg.patch || {});
       gitCommit(`server update: ${msg.slug}`);
-      respond({ command: "serverList", data: await serverList() });
+      await ensureServerForwarding(context, String(msg.slug || ""));
+      respond({ command: "serverList", data: await serverListForUi(context) });
+      await _treeProvider?.refreshServerStatus();
       break;
     }
     case "serverDelete": {
       serverDelete(String(msg.slug || ""));
       gitCommit(`server delete: ${msg.slug}`);
-      respond({ command: "serverList", data: await serverList() });
+      respond({ command: "serverList", data: await serverListForUi(context) });
+      await _treeProvider?.refreshServerStatus();
+      break;
+    }
+    case "serverSetForward": {
+      const slug = String(msg.slug || "");
+      const enabled = !!msg.enabled;
+      const current = new Set(context.globalState.get<string[]>("servers.autoForward.v1", []));
+      if (enabled) current.add(slug); else current.delete(slug);
+      await context.globalState.update("servers.autoForward.v1", [...current].sort());
+      let externalUrl = "";
+      if (enabled) externalUrl = await ensureServerForwarding(context, slug);
+      else if (vscode.env.remoteName) vscode.window.showInformationMessage("Automatic forwarding disabled. Close any existing tunnel manually in VS Code's Ports view.");
+      respond({ command: "serverForwardResult", data: { slug, enabled, externalUrl, remoteName: vscode.env.remoteName || "" } });
+      respond({ command: "serverList", data: await serverListForUi(context) });
       break;
     }
     case "serverLog": {
@@ -3153,8 +3236,12 @@ async function handleMessage(
     }
     case "serverOpenUrl": {
       try {
-        const ext = await vscode.env.asExternalUri(vscode.Uri.parse(String(msg.url || "")));
-        await vscode.env.openExternal(ext);
+        const url = String(msg.url || "");
+        if (msg.requiresForward && vscode.env.remoteName && !msg.forwardEnabled) {
+          vscode.window.showWarningMessage("Enable Port Forward for this Server Link, or use the Stable Link with a reachable network IP.");
+          break;
+        }
+        await vscode.env.openExternal(vscode.Uri.parse(url));
       } catch (e: any) { vscode.window.showErrorMessage(`Couldn't open URL: ${e?.message}`); }
       break;
     }
@@ -4237,7 +4324,8 @@ async function offerPkmSkillProjectionUpdate(context: vscode.ExtensionContext): 
 
 // ── Sidebar tree provider ──────────────────────────────────────────────────
 type PkNodeType =
-  | 'root-skills' | 'root-notes' | 'root-papers' | 'root-prompts' | 'root-packages' | 'root-scripts' | 'root-chatroom' | 'root-mcp'
+  | 'root-skills' | 'root-notes' | 'root-papers' | 'root-prompts' | 'root-packages' | 'root-scripts' | 'root-servers' | 'root-chatroom' | 'root-mcp'
+  | 'server-item'
   | 'chat-hosted-group' | 'chat-joined-group' | 'chat-hosted-room' | 'chat-room'
   | 'skill-folder' | 'skill' | 'note-folder' | 'note' | 'paper-folder' | 'paper'
   | 'prompt-project' | 'prompt-task' | 'prompt-version' | 'prompt-file'
@@ -4255,7 +4343,7 @@ class PkTreeItem extends vscode.TreeItem {
     super(label, collapsibleState);
     const ICONS: Partial<Record<PkNodeType, string>> = {
       "root-skills": "book", "root-notes": "note", "root-papers": "library", "root-prompts": "comment-discussion",
-      "root-packages": "package", "root-scripts": "terminal", "root-chatroom": "comment-discussion", "root-mcp": "server-process",
+      "root-packages": "package", "root-scripts": "terminal", "root-servers": "server-environment", "root-chatroom": "comment-discussion", "root-mcp": "server-process",
       "chat-hosted-group": "broadcast", "chat-joined-group": "plug", "chat-hosted-room": "broadcast", "chat-room": "comment",
       "skill-folder": "folder", "note-folder": "folder", "paper-folder": "folder",
       "skill": "symbol-snippet", "note": "file-text", "paper": "file-pdf",
@@ -4285,24 +4373,65 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
   constructor(private readonly context: vscode.ExtensionContext) {}
   private _onChange = new vscode.EventEmitter<PkTreeItem | undefined | void>();
   readonly onDidChangeTreeData = this._onChange.event;
+  private serverStatus: NavigationStatus = { kind: "offline", description: "checking", tooltip: "Checking managed servers." };
+  private serverRows: any[] = [];
+  private serverStatusRefresh: Promise<void> | undefined;
 
   refresh(): void { this._onChange.fire(); }
+  async refreshServerStatus(): Promise<void> {
+    if (this.serverStatusRefresh) return this.serverStatusRefresh;
+    this.serverStatusRefresh = (async () => {
+      try { this.serverRows = await serverList(); this.serverStatus = summarizeServerNavigation(this.serverRows); }
+      catch (error: any) { this.serverStatus = { kind: "attention", description: "status error", tooltip: `Could not inspect managed servers: ${error?.message || String(error)}` }; }
+      this._onChange.fire();
+    })();
+    try { await this.serverStatusRefresh; }
+    finally { this.serverStatusRefresh = undefined; }
+  }
+  refreshChatStatus(): void { this._onChange.fire(); }
   getTreeItem(e: PkTreeItem): vscode.TreeItem { return e; }
+
+  private applyStatus(item: PkTreeItem, status: NavigationStatus): PkTreeItem {
+    const color = status.kind === "online" ? "testing.iconPassed" : status.kind === "attention" ? "list.warningForeground" : "disabledForeground";
+    item.iconPath = new vscode.ThemeIcon("circle-filled", new vscode.ThemeColor(color));
+    item.description = this.localizedStatus(status.description);
+    item.tooltip = status.tooltip;
+    return item;
+  }
+
+  private text(key: string, params: Record<string, string | number> = {}): string {
+    return localizedText(this.context.extensionPath, key, params);
+  }
+
+  private localizedStatus(description: string): string {
+    const exact: Record<string, string> = { checking: "nav.checking", offline: "nav.offline", none: "nav.none", "all stopped": "nav.allStopped", "Hub running": "nav.hubRunning" };
+    if (exact[description]) return this.text(exact[description]);
+    const aggregate = /^(\d+) (running|connected|connecting)$/.exec(description);
+    if (aggregate) {
+      const key = aggregate[2] === "running" ? "nav.serversRunning" : aggregate[2] === "connected" ? "nav.roomsConnected" : "nav.roomsConnecting";
+      return this.text(key, { count: aggregate[1] });
+    }
+    return description;
+  }
 
   getChildren(element?: PkTreeItem): PkTreeItem[] {
     const C = vscode.TreeItemCollapsibleState.Collapsed;
     if (!element) {
-      const chatroom = new PkTreeItem("Chatroom", 'root-chatroom', C);
+      const chatStatus = summarizeChatNavigation(getChatMgr().state() as any);
+      const chatroom = this.applyStatus(new PkTreeItem(this.text("tabs.chatroom"), 'root-chatroom', C), chatStatus);
       chatroom.command = { command: "personalKnowledge.openChatroom", title: "Open Chatroom" };
-      const mcp = new PkTreeItem("Config", "root-mcp", vscode.TreeItemCollapsibleState.None);
+      const servers = this.applyStatus(new PkTreeItem(this.text("tabs.servers"), "root-servers", C), this.serverStatus);
+      servers.command = { command: "personalKnowledge.openServers", title: "Open Servers" };
+      const mcp = new PkTreeItem(this.text("tabs.config"), "root-mcp", vscode.TreeItemCollapsibleState.None);
       mcp.command = { command: "personalKnowledge.setupMcp", title: "Open Config" };
       return [
-        new PkTreeItem("Skills",   'root-skills',   vscode.TreeItemCollapsibleState.Collapsed),
-        new PkTreeItem("Notes",    'root-notes',    C),
-        new PkTreeItem("Papers",   'root-papers',   C),
-        new PkTreeItem("Prompts",  'root-prompts',  C),
-        new PkTreeItem("Packages", 'root-packages', C),
-        new PkTreeItem("Scripts",  'root-scripts',  C),
+        new PkTreeItem(this.text("tabs.skills"),   'root-skills',   vscode.TreeItemCollapsibleState.Collapsed),
+        new PkTreeItem(this.text("tabs.notes"),    'root-notes',    C),
+        new PkTreeItem(this.text("tabs.papers"),   'root-papers',   C),
+        new PkTreeItem(this.text("tabs.prompts"),  'root-prompts',  C),
+        new PkTreeItem(this.text("tabs.packages"), 'root-packages', C),
+        new PkTreeItem(this.text("tabs.scripts"),  'root-scripts',  C),
+        servers,
         chatroom,
         mcp,
       ];
@@ -4322,6 +4451,7 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
         case 'root-packages':  return this._packageItems();
         case 'root-scripts':   return this._scriptFolder([]);
         case 'script-folder':  return this._scriptFolder(element.nodeData.path);
+        case 'root-servers': return this._serverItems();
         case 'root-chatroom': return this._chatGroups();
         case 'chat-hosted-group': return this._hostedRooms();
         case 'chat-joined-group': return this._chatRooms();
@@ -4338,6 +4468,20 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
     hosted.description = String(hostedRooms.length);
     joined.description = String(recents.length);
     return [hosted, joined];
+  }
+
+  private _serverItems(): PkTreeItem[] {
+    return this.serverRows.map(server => {
+      const status: NavigationStatus = server.status === "running"
+        ? { kind: "online", description: this.text("nav.runningPort", { port: server.activePort }), tooltip: `${server.name} is running on port ${server.activePort}.` }
+        : server.status === "starting"
+          ? { kind: "attention", description: this.text("nav.startingPort", { port: server.activePort }), tooltip: `${server.name} is starting on port ${server.activePort}.` }
+          : { kind: "offline", description: this.text("nav.stoppedPort", { port: server.port }), tooltip: `${server.name} is stopped; configured port ${server.port}.` };
+      const item = this.applyStatus(new PkTreeItem(server.name, "server-item", vscode.TreeItemCollapsibleState.None, { slug: server.slug }), status);
+      item.contextValue = server.status === "stopped" ? "pk-server-stopped" : "pk-server-active";
+      item.command = { command: "personalKnowledge.openServers", title: "Open Servers", arguments: [server.slug] };
+      return item;
+    });
   }
 
   private _hostedRooms(): PkTreeItem[] {
@@ -4804,6 +4948,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Register sidebar tree view + commands FIRST so they're always available
   const treeProvider = new PkTreeProvider(context);
   _treeProvider = treeProvider;
+  void treeProvider.refreshServerStatus();
   const treeView = vscode.window.createTreeView("personalKnowledge.sidebarView", {
     treeDataProvider: treeProvider,
     dragAndDropController: new PkTreeDragAndDropController(),
@@ -5034,6 +5179,37 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       log.action("command.openChatroom");
       openChatroomPanel(context);
       await closeNavigationSidebar();
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.openServers", async () => {
+      log.action("command.openServers");
+      openPanelTab(context, "servers");
+      await closeNavigationSidebar();
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.startServerItem", async (item: PkTreeItem) => {
+      const slug = String(item?.nodeData?.slug || "");
+      if (!slug) return;
+      const result = startServer(slug);
+      if (!result.ok) vscode.window.showErrorMessage(`Start failed: ${result.error || "unknown error"}`);
+      else await ensureServerForwarding(context, slug);
+      await treeProvider.refreshServerStatus();
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.stopServerItem", async (item: PkTreeItem) => {
+      const slug = String(item?.nodeData?.slug || "");
+      if (!slug) return;
+      stopServer(slug);
+      await treeProvider.refreshServerStatus();
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.restartServerItem", async (item: PkTreeItem) => {
+      const slug = String(item?.nodeData?.slug || "");
+      if (!slug) return;
+      const result = await restartServer(slug);
+      if (!result.ok) vscode.window.showErrorMessage(`Restart failed: ${result.error || "unknown error"}`);
+      else await ensureServerForwarding(context, slug);
+      await treeProvider.refreshServerStatus();
     }),
 
     vscode.commands.registerCommand("personalKnowledge.openHostedRoomItem", async (itemOrRoomId: PkTreeItem | string) => {

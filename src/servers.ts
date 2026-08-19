@@ -9,6 +9,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as http from "http";
 import * as net from "net";
+import { networkInterfaces } from "os";
 
 export interface ServerManifest {
   name: string;
@@ -65,6 +66,21 @@ export function disposeServers(): void {
 
 export function proxyPort(): number { return _proxyPort; }
 
+export interface ServerNetworkAddress { interface: string; address: string; }
+export function serverNetworkAddresses(interfaces = networkInterfaces()): ServerNetworkAddress[] {
+  const virtual = /^(docker|br-|veth|virbr|vmnet|zt|tailscale|tun|tap)/i;
+  const rows: ServerNetworkAddress[] = [];
+  const seen = new Set<string>();
+  for (const [name, entries] of Object.entries(interfaces)) {
+    for (const entry of entries || []) {
+      if (entry.internal || entry.family !== "IPv4" || seen.has(entry.address)) continue;
+      seen.add(entry.address);
+      rows.push({ interface: name, address: entry.address });
+    }
+  }
+  return rows.sort((left, right) => Number(virtual.test(left.interface)) - Number(virtual.test(right.interface)) || left.interface.localeCompare(right.interface));
+}
+
 /** Absolute path to a server's managed folder (its code + any data it writes). */
 export function serverDir(slug: string): string { return serverDirOf(slug); }
 
@@ -103,26 +119,26 @@ This server is managed by Personal Knowledge Manager.
 
 ## Endpoints
 
-- Native URL: \`http://127.0.0.1:${manifest.port}/\`
-- Stable URL: \`http://127.0.0.1:<serversProxyPort>/s/${slug}/\`
+- Server Link: \`http://localhost:${manifest.port}/\`
+- Stable Link: \`http://<selected-network-ip>:${manifest.port}/\`
 
-The native service can outlive VS Code. The stable URL depends on the PKM extension host reverse proxy. If the native URL works but the stable URL returns connection refused, reload VS Code or activate PKM and verify the proxy port in Config/Settings.
+The Servers dashboard lists every non-loopback IPv4 interface and remembers the selected address per server. Stable Link changes only the host portion; it connects directly to the service and does not depend on VS Code port forwarding.
 
-Under Remote SSH, the canonical endpoint lives on the remote host. VS Code may open it through a different local forwarded port (for example, remote 39501 may appear as local 60321). That local forwarding URL is session-scoped and can expire; reopen the Stable URL from the Servers dashboard instead of persisting the forwarded port.
+Under Remote SSH, Server Link points to localhost on the remote machine and requires VS Code port forwarding when opened from a local browser. Stable Link uses the selected remote LAN/global IP directly, subject to routing and firewall policy.
 
 ## Binding Requirements
 
 1. Listen on \`127.0.0.1\` or \`0.0.0.0\`, never on a remote-only interface.
 2. Respect the \`{port}\` argument supplied by the managed command.
-3. Serve the application root at \`/\`; PKM strips \`/s/${slug}/\` before forwarding upstream.
-4. Prefer relative asset and API URLs. PKM rewrites static root-absolute HTML attributes and routes root-absolute requests by Referer, but JavaScript-created URLs may need an explicit base path.
-5. For redirects, avoid hard-coded external origins. Relative \`Location\` values are safest.
-6. WebSocket/SSE applications must support reverse-proxy upgrade/streaming. If they do not, use the native URL until proxy support is added.
+3. Serve the application root at \`/\` and avoid hard-coded external origins.
+4. Permit the selected network interface through the host firewall when LAN/global access is intended.
+5. Prefer relative asset/API URLs so both localhost and network links work unchanged.
+6. If using the optional legacy \`/s/${slug}/\` reverse proxy, additionally verify base paths, redirects, WebSockets, and SSE.
 
 ## Agent Checklist
 
-- Test both native and stable URLs.
-- On Remote SSH, distinguish the remote proxy port from VS Code's temporary local forwarded port.
+- Test both Server Link and the selected Stable Link.
+- On Remote SSH, do not persist VS Code's temporary local forwarded port as the Stable Link.
 - Inspect browser network failures for absolute paths, redirects, WebSockets, or missing Referer headers.
 - Do not change the stable slug; it is the server folder name.
 - Keep \`server.json\`, startup scripts, and this guide with the server source.
@@ -317,6 +333,7 @@ export async function setServerPort(slug: string, port: number): Promise<{ ok: b
 export async function serverList(): Promise<any[]> {
   const st = readState();
   const proxyRunning = await probePort(_proxyPort);
+  const networkAddresses = serverNetworkAddresses();
   const out: any[] = [];
   for (const slug of listSlugs().sort()) {
     const m = readManifest(slug);
@@ -333,6 +350,7 @@ export async function serverList(): Promise<any[]> {
       stableUrl: `http://localhost:${_proxyPort}/s/${slug}/`,
       localUrl: `http://localhost:${activePort}/`,
       proxyRunning,
+      networkLinks: networkAddresses.map(item => ({ ...item, url: `http://${item.address}:${activePort}/` })),
     });
   }
   return out;

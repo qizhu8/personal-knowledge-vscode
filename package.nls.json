@@ -1,0 +1,17 @@
+{
+  "extension.description": "Browse, edit, and sync personal knowledge; connect AI assistants through MCP and collaborate in Chatrooms.",
+  "command.open": "Personal Knowledge Manager: Open Panel",
+  "command.addNote": "Personal Knowledge Manager: Quick Note",
+  "command.saveSkill": "Personal Knowledge Manager: Save Selection as Skill",
+  "command.openConfig": "Personal Knowledge Manager: Open Config",
+  "command.openChatroom": "Personal Knowledge Manager: Open Chatroom",
+  "command.openServers": "Personal Knowledge Manager: Open Servers",
+  "command.startServer": "Start Server",
+  "command.stopServer": "Stop Server",
+  "command.restartServer": "Restart Server",
+  "command.refresh": "Personal Knowledge Manager: Refresh",
+  "command.showLogs": "Personal Knowledge Manager: Show Logs",
+  "view.knowledge": "Knowledge",
+  "configuration.title": "Personal Knowledge Manager",
+  "configuration.uiLanguage": "Display language for the Personal Knowledge Manager panel and dynamic navigation."
+}

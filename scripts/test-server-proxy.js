@@ -5,7 +5,7 @@ const http = require("http");
 const os = require("os");
 const path = require("path");
 
-const { initServers, serverList, disposeServers, rewriteProxyHtml } = require("../dist/servers.js");
+const { initServers, serverList, disposeServers, rewriteProxyHtml, serverNetworkAddresses } = require("../dist/servers.js");
 
 async function listen(server) {
   await new Promise((resolve, reject) => {
@@ -16,6 +16,16 @@ async function listen(server) {
 }
 
 async function main() {
+  const addresses = serverNetworkAddresses({
+    lo: [{ address: "127.0.0.1", family: "IPv4", internal: true }],
+    docker0: [{ address: "172.17.0.1", family: "IPv4", internal: false }],
+    ethernet: [{ address: "10.0.0.8", family: "IPv4", internal: false }],
+    duplicate: [{ address: "10.0.0.8", family: "IPv4", internal: false }],
+  });
+  assert.deepStrictEqual(addresses, [
+    { interface: "ethernet", address: "10.0.0.8" },
+    { interface: "docker0", address: "172.17.0.1" },
+  ]);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-server-proxy-"));
   const serversDir = path.join(root, "servers");
   const stateDir = path.join(root, "state");
@@ -54,11 +64,49 @@ async function main() {
   const rows = await serverList();
   assert.strictEqual(rows[0].proxyRunning, true);
   assert.strictEqual(rows[0].stableUrl, `http://localhost:${proxyPort}/s/${slug}/`);
+  assert.ok(Array.isArray(rows[0].networkLinks));
+  assert.ok(rows[0].networkLinks.every(link => link.url.endsWith(`:${upstreamPort}/`)));
 
   const guide = fs.readFileSync(path.join(serversDir, slug, "PKM_SERVER_PROXY.md"), "utf8");
-  assert.match(guide, /Stable URL/);
-  assert.match(guide, /WebSocket\/SSE/);
-  assert.match(guide, new RegExp(`/s/${slug}/`));
+  assert.match(guide, /Stable Link/);
+  assert.match(guide, /Server Link/);
+  assert.match(guide, /WebSockets, and SSE/);
+
+  const panel = fs.readFileSync(path.join(__dirname, "..", "dist", "webview", "panel.js"), "utf8");
+  const panelCss = fs.readFileSync(path.join(__dirname, "..", "dist", "webview", "panel.css"), "utf8");
+  assert.match(panel, /class="srv-actions"/);
+  assert.match(panel, /class="srv-lifecycle-actions"/);
+  assert.match(panel, /class="srv-management-actions"/);
+  assert.match(panel, />📂 Folder<\/button>/);
+  assert.match(panel, />⚙ Settings<\/button>/);
+  assert.match(panel, /class="tbtn srv-danger"/);
+  assert.match(panel, />🗑 Delete<\/button>/);
+  assert.doesNotMatch(panel, />🌐<\/button>/);
+  assert.match(panel, /title="Edit server settings: command, port, and Python"/);
+  assert.match(panel, /id="srv-out-\$\{esc\(s\.slug\)\}"/);
+  assert.match(panel, /function closeServerOutput/);
+  assert.match(panel, /title="Close log panel"/);
+  assert.match(panel, /<strong>Stable Link<\/strong>/);
+  assert.match(panel, /<details class="srv-link-block srv-local-link">/);
+  assert.match(panel, /<summary[^>]*>Server Local Link/);
+  assert.doesNotMatch(panel, /<details class="srv-link-block srv-local-link" open/);
+  assert.match(panel, />Open<\/button><button[^>]*>Copy<\/button>/);
+  assert.match(panel, /title="Select the network interface\/IP for Stable Link"/);
+  assert.match(panel, /class="srv-forward-toggle"/);
+  assert.match(panel, /Port Forward/);
+  assert.match(panel, /function serverForwardChanged/);
+  assert.match(panel, /requiresForward: kind === 'local'/);
+  assert.match(panel, /id="srv-out-\$\{esc\(s\.slug\)\}"/);
+  assert.match(panel, /function serverOutput/);
+  assert.match(panel, /function closeServerOutput/);
+  assert.match(panel, /title="Close log panel"/);
+  assert.match(panel, /title="Refresh this log output"/);
+  assert.match(panel, /Display name <input id="se-name-/);
+  assert.match(panel, /name: document\.getElementById\('se-name-' \+ slug\)\.value/);
+  assert.doesNotMatch(panel, /id="srv-out"/);
+  assert.match(panelCss, /justify-content:space-between/);
+  assert.match(panelCss, /\.srv-link-actions\{display:flex;flex-direction:column/);
+  assert.match(panelCss, /\.srv-danger\{color:#f87171/);
 
   disposeServers();
   await new Promise(resolve => upstream.close(resolve));

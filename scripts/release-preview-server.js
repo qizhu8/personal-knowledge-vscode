@@ -89,6 +89,12 @@ const demoGraph = {
     { from: "demo/retrieval-planning", to: "demo/research-loop", note: "plan" },
   ],
 };
+const demoServers = [{
+  slug: "demo-server", name: "Demo Visualization Server", command: "python server.py --port 8772", port: 8772,
+  python: "/home/demo/pkm-envs/demo/bin/python", autostart: false, status: "running", pid: 24001,
+  activePort: 8772, localUrl: "http://localhost:8772/", autoForward: true, remoteName: "ssh-remote",
+  networkLinks: [{ interface: "ethernet0", address: "10.0.0.8", url: "http://10.0.0.8:8772/" }],
+}];
 
 function bootstrap(view) {
   const sizes = { store: 18874368, environments: 1702887424, runtime: 247463936, python: 6832128, serverDirectory: 315392 };
@@ -111,6 +117,7 @@ function bootstrap(view) {
         send('mcpStatus', ${JSON.stringify(demoMcp)});
         Object.entries(${JSON.stringify(sizes)}).forEach(([key, bytes]) => send('mcpPathSize', { key, bytes }));
       } else if (message.command === 'chatState') send('chatState', __chat);
+      else if (message.command === 'serverList') send('serverList', ${JSON.stringify(demoServers)});
       else if (message.command === 'chatCopyInvite') {
         window.dispatchEvent(new CustomEvent('releaseInviteCopied', { detail: {
           invite: 'pkchat:v1:demo-release-invite',
@@ -144,12 +151,14 @@ function bootstrap(view) {
 
 function panelHtml(view) {
   let html = fs.readFileSync(path.join(webview, "panel.html"), "utf8");
+  const catalogs = Object.fromEntries(["en", "zh-cn", "es"].map(locale => [locale, JSON.parse(fs.readFileSync(path.join(root, "resources", "locales", `${locale}.json`), "utf8"))]));
   html = html.replace(/<meta http-equiv="Content-Security-Policy"[^>]*>/, "");
   const replacements = {
     "%%NOTES_BASE%%": "/demo/notes", "%%HLJS_CSS%%": "/hljs.css", "%%KATEX_CSS%%": "/katex.css",
     "%%MARKED_SRC%%": "/marked.umd.js", "%%HLJS_SRC%%": "/hljs.js", "%%KATEX_SRC%%": "/katex.js",
     "%%CYTOSCAPE_SRC%%": "/cytoscape.js", "%%MERMAID_SRC%%": "/mermaid.js", "%%FORCEGRAPH3D_SRC%%": "/forcegraph3d.js",
     "%%PANEL_CSS%%": "/panel.css", "%%PANEL_JS%%": "/panel.js", "%%PKM_VERSION%%": "2.5.0",
+    "%%I18N_PAYLOAD_B64%%": Buffer.from(JSON.stringify({ setting: "en", resolved: "en", catalogs }), "utf8").toString("base64"),
   };
   for (const [token, value] of Object.entries(replacements)) html = html.split(token).join(value);
   return html.replace("</head>", `${bootstrap(view)}</head>`);

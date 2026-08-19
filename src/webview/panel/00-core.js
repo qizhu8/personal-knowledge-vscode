@@ -124,6 +124,83 @@ function renderMermaid(root) {
 const esc = s => String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 const ICON = {todo:'☐',done:'✓','data-path':'📂',observation:'👁',general:'📝'};
 
+let uiI18n = (() => {
+  try {
+    const encoded = atob(document.querySelector('meta[name="pkm-i18n"]')?.content || '');
+    return JSON.parse(new TextDecoder().decode(Uint8Array.from(encoded, character => character.charCodeAt(0))));
+  }
+  catch { return { setting: 'en', resolved: 'en', catalogs: { en: { strings: {} } } }; }
+})();
+const i18nOriginalText = new WeakMap();
+const i18nOriginalAttrs = new WeakMap();
+let i18nScheduled = false;
+
+function i18nStrings(locale = uiI18n.resolved) { return uiI18n.catalogs?.[locale]?.strings || {}; }
+function t(key, params = {}) {
+  let value = i18nStrings()[key] || i18nStrings('en')[key] || key;
+  Object.entries(params).forEach(([name, replacement]) => { value = value.replaceAll(`{${name}}`, String(replacement)); });
+  return value;
+}
+function i18nEnglishLookup() {
+  return new Map(Object.entries(i18nStrings('en')).map(([key, value]) => [value, key]));
+}
+function translateUiNode(node, lookup) {
+  if (node.nodeType === Node.TEXT_NODE) {
+    const parent = node.parentElement;
+    if (!parent || parent.closest('script,style,code,pre,textarea,option[data-i18n-skip]')) return;
+    if (!i18nOriginalText.has(node)) i18nOriginalText.set(node, node.nodeValue || '');
+    const original = i18nOriginalText.get(node) || '';
+    const trimmed = original.trim();
+    const key = lookup.get(trimmed);
+    if (!key) return;
+    const translated = t(key);
+    const next = original.replace(trimmed, translated);
+    if (node.nodeValue !== next) node.nodeValue = next;
+    return;
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) return;
+  const element = node;
+  const explicitKey = element.getAttribute('data-i18n');
+  if (explicitKey && element.textContent !== t(explicitKey)) element.textContent = t(explicitKey);
+  for (const attribute of ['title','placeholder','aria-label']) {
+    const key = element.getAttribute(`data-i18n-${attribute}`);
+    if (key && element.getAttribute(attribute) !== t(key)) element.setAttribute(attribute, t(key));
+  }
+  let originals = i18nOriginalAttrs.get(element);
+  if (!originals) { originals = {}; i18nOriginalAttrs.set(element, originals); }
+  for (const attribute of ['title','placeholder','aria-label']) {
+    if (!element.hasAttribute(attribute)) continue;
+    if (!(attribute in originals)) originals[attribute] = element.getAttribute(attribute) || '';
+    const key = lookup.get(originals[attribute]);
+    if (key && element.getAttribute(attribute) !== t(key)) element.setAttribute(attribute, t(key));
+  }
+}
+function translateUi(root = document.body) {
+  if (!root) return;
+  const lookup = i18nEnglishLookup();
+  translateUiNode(root, lookup);
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+  while (walker.nextNode()) translateUiNode(walker.currentNode, lookup);
+  document.documentElement.lang = uiI18n.resolved;
+}
+function scheduleUiTranslation() {
+  if (i18nScheduled) return;
+  i18nScheduled = true;
+  requestAnimationFrame(() => { i18nScheduled = false; translateUi(); });
+}
+function applyUiLanguage(payload) {
+  uiI18n = Object.assign({}, uiI18n, payload || {});
+  translateUi();
+  const selector = document.getElementById('pkm-language-select');
+  if (selector) selector.value = uiI18n.setting || 'auto';
+}
+function changeUiLanguage(setting) {
+  if (setting === 'en' || setting === 'zh-cn' || setting === 'es') applyUiLanguage({ setting, resolved: setting });
+  ask('setUiLanguage', { language: setting });
+}
+new MutationObserver(scheduleUiTranslation).observe(document.body, { childList: true, subtree: true });
+scheduleUiTranslation();
+
 let state = { tab:'skills', filter:'all', search:'', items:[], folders:[], active:null };
 let ctxTarget = null; // slug of note under right-click
 let ctxPinned = false; // pinned state of the note under right-click
@@ -427,6 +504,7 @@ window.addEventListener('message', e => {
       `<span style="color:#4ade80">✅ Synced from ${esc(data.from)}: ${esc(data.summary||data.count+' items')}${data.group ? ' → group “'+esc(data.group)+'” (review &amp; merge offline)' : ''}</span>`;
   }
   else if (command === 'mcpStatus')    { updateGlobalMcpWarning(data); if (state.tab === 'mcp') renderMcpPane(data); }
+  else if (command === 'uiLanguage')   { applyUiLanguage(data); }
   else if (command === 'mcpPathSize')  { renderMcpPathSize(data); }
   else if (command === 'chatReadReceipt') { chatUpdateReadReceipt(data); }
   else if (command === 'mcpPythonResult') { renderMcpPythonResult(data); }

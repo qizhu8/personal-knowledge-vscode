@@ -1,0 +1,17 @@
+{
+  "extension.description": "浏览、编辑和同步个人知识；通过 MCP 连接 AI 助手，并在聊天室中协作。",
+  "command.open": "Personal Knowledge Manager：打开面板",
+  "command.addNote": "Personal Knowledge Manager：快速笔记",
+  "command.saveSkill": "Personal Knowledge Manager：将选中内容保存为技能",
+  "command.openConfig": "Personal Knowledge Manager：打开配置",
+  "command.openChatroom": "Personal Knowledge Manager：打开聊天室",
+  "command.openServers": "Personal Knowledge Manager：打开服务",
+  "command.startServer": "启动服务",
+  "command.stopServer": "停止服务",
+  "command.restartServer": "重启服务",
+  "command.refresh": "Personal Knowledge Manager：刷新",
+  "command.showLogs": "Personal Knowledge Manager：显示日志",
+  "view.knowledge": "知识",
+  "configuration.title": "Personal Knowledge Manager",
+  "configuration.uiLanguage": "Personal Knowledge Manager 面板和动态导航的显示语言。"
+}

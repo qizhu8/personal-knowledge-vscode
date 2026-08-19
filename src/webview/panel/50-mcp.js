@@ -194,6 +194,8 @@ function renderMcpPane(data) {
         <span style="font-size:22px">⚡</span>
         <span style="font-size:17px;font-weight:700">Unified PKM MCP Server</span>
         <span id="mcp-version-badge">${mcpVersionBadge(installed, data?.current, data?.installedVersion, data?.expectedVersion)}</span>
+        <span style="flex:1"></span>
+        <label class="pkm-language-control"><span data-i18n="language.label">Language</span><select id="pkm-language-select" onchange="changeUiLanguage(this.value)" data-i18n-title="language.choose" title="${esc(t('language.choose'))}"><option value="auto" data-i18n="language.auto" ${uiI18n.setting === 'auto' ? 'selected' : ''}>${t('language.auto')}</option><option value="en" data-i18n="language.english" ${uiI18n.setting === 'en' ? 'selected' : ''}>${t('language.english')}</option><option value="zh-cn" data-i18n="language.chineseSimplified" ${uiI18n.setting === 'zh-cn' ? 'selected' : ''}>${t('language.chineseSimplified')}</option><option value="es" data-i18n="language.spanish" ${uiI18n.setting === 'es' ? 'selected' : ''}>${t('language.spanish')}</option></select></label>
       </div>
       <p style="color:var(--muted);font-size:12px;margin-bottom:14px;line-height:1.6">
         Configure the external runtimes and Agent integrations used by Personal Knowledge Manager.

@@ -1,0 +1,17 @@
+{
+  "extension.description": "Explora, edita y sincroniza conocimiento personal; conecta asistentes mediante MCP y colabora en salas de chat.",
+  "command.open": "Personal Knowledge Manager: Abrir panel",
+  "command.addNote": "Personal Knowledge Manager: Nota rápida",
+  "command.saveSkill": "Personal Knowledge Manager: Guardar selección como habilidad",
+  "command.openConfig": "Personal Knowledge Manager: Abrir configuración",
+  "command.openChatroom": "Personal Knowledge Manager: Abrir sala de chat",
+  "command.openServers": "Personal Knowledge Manager: Abrir servidores",
+  "command.startServer": "Iniciar servidor",
+  "command.stopServer": "Detener servidor",
+  "command.restartServer": "Reiniciar servidor",
+  "command.refresh": "Personal Knowledge Manager: Actualizar",
+  "command.showLogs": "Personal Knowledge Manager: Mostrar registros",
+  "view.knowledge": "Conocimiento",
+  "configuration.title": "Personal Knowledge Manager",
+  "configuration.uiLanguage": "Idioma del panel de Personal Knowledge Manager y de la navegación dinámica."
+}

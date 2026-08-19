@@ -96,8 +96,8 @@ try {
       !/resolveMcpServerDefinition:\s*\(\)\s*=>\s*createDefinition\(\)/.test(extensionTs)) {
     throw new Error("MCP preview/provider resolution must not regenerate server code implicitly");
   }
-  if (!extensionTs.includes('new PkTreeItem("Config", "root-mcp"') || extensionTs.includes('new PkTreeItem("MCP", "root-mcp"')) {
-    throw new Error("Config navigation label is missing or regressed to MCP");
+  if (!extensionTs.includes('new PkTreeItem(this.text("tabs.config"), "root-mcp"') || extensionTs.includes('new PkTreeItem("MCP", "root-mcp"')) {
+    throw new Error("Localized Config navigation label is missing or regressed to MCP");
   }
   console.log("post-build: hljs CDN removed, panel.js syntax OK");
 } catch (e) {
