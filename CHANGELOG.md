@@ -26,7 +26,7 @@ This release adds live English, Simplified Chinese, and Spanish UI switching, an
 - Added expandable Servers and Chatroom navigation with status indicators on individual servers and Rooms; running/connected is green, starting/reconnecting is yellow, and stopped/offline is grey. Top-level category entries remain undecorated.
 
 ### Changed
-- Moved 27 automated tests into `tests/`, manual behavior matrices into `tests/cases/`, and Chatroom planning notes into `docs/planning/`; release packages exclude the complete test tree.
+- Moved 27 automated tests into `tests/`, manual behavior matrices into `tests/cases/`, legacy Chatroom Python harnesses into `tests/harness/legacy-chatroom/`, and supplementary documentation into `docs/`; release packages exclude test and internal documentation trees.
 
 ## [2.5.0] - 2026-08-18
 

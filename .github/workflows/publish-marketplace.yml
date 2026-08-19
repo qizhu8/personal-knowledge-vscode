@@ -88,7 +88,7 @@ jobs:
           [[ -z "$AZURE_TENANT_ID" ]] && missing+=("AZURE_TENANT_ID")
           if [[ ${#missing[@]} -gt 0 ]]; then
             echo "::error::Missing required 'marketplace' environment variable(s): ${missing[*]}." >&2
-            echo "See PUBLISHING.md 'One-time setup' for how to create the GitHub environment 'marketplace' and set these variables." >&2
+            echo "See docs/guides/PUBLISHING.md 'One-time setup' for how to create the GitHub environment 'marketplace' and set these variables." >&2
             exit 1
           fi
 

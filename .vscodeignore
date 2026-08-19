@@ -17,7 +17,7 @@ node_modules/**
 
 # Test and CI artifacts
 tests/**
-docs/planning/**
+docs/**
 **/*.test.ts
 **/*.spec.ts
 coverage/
@@ -28,8 +28,6 @@ coverage/
 *.map
 improvement_*.md
 
-# Agent-side helper (lives in the repo for users to copy; not part of the extension bundle)
-chat_server.py
 **/__pycache__/**
 resources/.chat_cids.json
 
@@ -38,4 +36,3 @@ dist/webview/_demo*
 resources/screenshots/**
 scripts/release-preview-server.js
 scripts/capture-release-screenshots.py
-SCREENSHOTS.md

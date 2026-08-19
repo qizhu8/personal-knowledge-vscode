@@ -15,7 +15,7 @@ class MemorySecretStorage {
 }
 
 function launch(url, room, roomId, secret, alias, mode = "join") {
-  const child = spawn("python", [path.join(__dirname, "..", "scripts", "chat-mcp-approval-client.py"), url, room, roomId, secret, alias, mode], {
+  const child = spawn("python", [path.join(__dirname, "harness", "legacy-chatroom", "chat-mcp-approval-client.py"), url, room, roomId, secret, alias, mode], {
     cwd: path.join(__dirname, ".."), stdio: ["ignore", "pipe", "pipe"],
   });
   let stdout = "", stderr = "";
