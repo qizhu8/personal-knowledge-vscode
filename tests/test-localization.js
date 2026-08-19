@@ -11,6 +11,9 @@ for (const locale of locales) {
   assert.strictEqual(catalogs[locale].meta.locale, locale);
   assert.deepStrictEqual(Object.keys(catalogs[locale].strings).sort(), englishKeys, `${locale} catalog keys must exactly match English`);
   for (const key of englishKeys) assert.ok(String(catalogs[locale].strings[key]).trim(), `${locale}:${key} must not be empty`);
+  assert.strictEqual(catalogs[locale].strings["language.english"], "English");
+  assert.strictEqual(catalogs[locale].strings["language.chineseSimplified"], "简体中文");
+  assert.strictEqual(catalogs[locale].strings["language.spanish"], "Español");
 }
 
 const byEnglish = new Map();

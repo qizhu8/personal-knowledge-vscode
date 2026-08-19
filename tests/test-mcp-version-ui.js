@@ -9,6 +9,7 @@ const panelCss = fs.readFileSync(path.join(__dirname, "..", "dist", "webview", "
 const sourceTs = fs.readFileSync(path.join(__dirname, "..", "src", "mcp.ts"), "utf8");
 const extensionTs = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
 const esc = value => String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+assert.match(panelCss, /\.mcp-version-table \.mcp-row-action\{text-align:left;/);
 
 const presentation = panelJs.match(/function mcpRegeneratePresentation\(data\)\s*\{[\s\S]*?\n\}/);
 assert(presentation, "MCP regenerate presentation helper must be bundled");
@@ -47,7 +48,7 @@ assert(sourceTs.includes("installedKnowledgeVersion === KNOWLEDGE_MCP_VERSION"))
 assert(sourceTs.includes("installedChatVersion === CHAT_MCP_VERSION"));
 assert(panelJs.includes("Knowledge: installed v"));
 assert(panelJs.includes("Chat: installed v"));
-for (const text of ["PKM Integration Status", "Unified MCP Server", "Knowledge schema", "Chat schema", "PKM Skill Router", "Setup guideline", "Ready · not detected", "Startup wizard"]) {
+for (const text of ["PKM Integration Status", "Unified MCP Server", "Knowledge schema", "Chat schema", "PKM Skill Router", "Setup guideline", "Ready · starts on demand", "Startup wizard"]) {
   assert(panelJs.includes(text), `missing dashboard text: ${text}`);
 }
 for (const text of ["Paths", "Knowledge root", "Environments root", "Managed MCP runtime", "Runtime Python", "MCP server directory", "No action needed"]) {

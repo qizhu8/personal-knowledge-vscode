@@ -218,7 +218,7 @@ For an external MCP Agency, copy **Agency installation instructions** from Confi
 - Call `pkm.check_version` and verify Unified `2.5.1`, Knowledge `1.0.0`, and Chat `2.3.0`.
 - Call `pkm.chat_capabilities` and verify the Chatroom tools are present.
 
-Stdio MCP servers start on demand, so **Ready · not detected** is not necessarily an error before an MCP client starts `pkm`.
+Stdio MCP servers start on demand, so **Ready · starts on demand** means setup is complete and `pkm` will launch when an MCP client requests it.
 
 ## Store directory
 

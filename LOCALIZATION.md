@@ -3,8 +3,8 @@
 Personal Knowledge Manager supports these panel languages:
 
 - `en` — English
-- `zh-cn` — Simplified Chinese
-- `es` — Spanish
+- `zh-cn` — 简体中文
+- `es` — Español
 
 ## Catalogs
 
@@ -39,6 +39,17 @@ These follow the VS Code display language. The Config language selector controls
 7. Run `npm run test:localization`.
 
 The runtime translator also maps cataloged English phrases in legacy templates and observes dynamic DOM updates. New UI should prefer explicit keys so translations do not depend on exact English phrasing.
+
+## Adding a Language
+
+1. Copy `resources/locales/en.json`, set its locale and native label, and translate every string value without changing keys.
+2. Register the locale in `src/localization.ts`, including Auto language resolution when applicable.
+3. Add its native-name option to the Config selector and `personalKnowledge.uiLanguage` enum.
+4. Add the corresponding `package.nls.<locale>.json` for VS Code-owned surfaces.
+5. Add the locale to `tests/test-localization.js`; key parity and non-empty values are then enforced automatically.
+6. Run `npm run test:localization` and exercise live switching without reloading the panel.
+
+Language choices must always use native names, such as `English`, `简体中文`, and `Español`, so users can recognize their language before changing the UI.
 
 ## Language Resolution
 

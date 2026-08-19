@@ -16,6 +16,8 @@ node_modules/**
 !node_modules/ws/**
 
 # Test and CI artifacts
+tests/**
+docs/planning/**
 **/*.test.ts
 **/*.spec.ts
 coverage/

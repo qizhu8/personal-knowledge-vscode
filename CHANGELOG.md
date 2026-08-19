@@ -10,6 +10,8 @@ This project follows [Semantic Versioning](https://semver.org/).
 This release adds live English, Simplified Chinese, and Spanish UI switching, and completes the managed-server navigation and Remote-SSH access workflow.
 
 ### Fixed
+- Left-aligned every Action cell in the PKM Integration Status table and replaced the ambiguous `Ready · not detected` state with `Ready · starts on demand` plus localized startup guidance.
+- Kept language choices recognizable in every locale by always displaying their native names: `English`, `简体中文`, and `Español`.
 - Moved Stable Link interface selection and Remote-SSH Port Forwarding from individual Server cards into one shared Servers toolbar; the global Port Forward toggle defaults to On and applies to every managed server.
 - Completed live Config localization for explanatory content, runtime/process states, version transitions, setup steps, Paths, and PKM Skill Router targets across English, Simplified Chinese, and Spanish.
 - Replaced the PKM Integration Status CSS grid with a compact semantic table, standardized `No action needed`, and removed button wrapping that created oversized blank rows.
@@ -21,8 +23,10 @@ This release adds live English, Simplified Chinese, and Spanish UI switching, an
 ### Added
 - Added structured multilingual UI catalogs for English, Simplified Chinese, and Spanish; Config can switch the live panel/navigation language without losing state, Auto follows VS Code, and primary manifest commands use official package NLS catalogs.
 - Added Start, Stop, and Restart context-menu actions for individual Servers in Navigation; display-name rename remains in the card Settings panel without changing the server slug or links.
-- Added a persisted per-server Port Forward toggle for Remote-SSH localhost links and expandable Servers navigation with individual running/starting/stopped indicators.
-- Added event-driven top-level Servers and Chatroom navigation status indicators: running/connected is green, starting/reconnecting/proxy-offline is yellow, and stopped/offline is grey, with text descriptions for accessibility. The Servers Refresh action performs an explicit health refresh without background polling.
+- Added expandable Servers and Chatroom navigation with status indicators on individual servers and Rooms; running/connected is green, starting/reconnecting is yellow, and stopped/offline is grey. Top-level category entries remain undecorated.
+
+### Changed
+- Moved 27 automated tests into `tests/`, manual behavior matrices into `tests/cases/`, and Chatroom planning notes into `docs/planning/`; release packages exclude the complete test tree.
 
 ## [2.5.0] - 2026-08-18
 
