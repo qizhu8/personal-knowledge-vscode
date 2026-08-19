@@ -2349,18 +2349,17 @@ function initializePanel(target: vscode.WebviewPanel, context: vscode.ExtensionC
 
 // ── Shared message handler (panel + sidebar) ───────────────────────────────
 async function serverListForUi(context: vscode.ExtensionContext): Promise<any[]> {
-  const enabled = new Set(context.globalState.get<string[]>("servers.autoForward.v1", []));
+  const autoForward = context.globalState.get<boolean>("servers.autoForward.global.v1", true);
   return (await serverList()).map(server => ({
     ...server,
-    autoForward: enabled.has(server.slug),
+    autoForward,
     remoteName: vscode.env.remoteName || "",
   }));
 }
 
 async function ensureServerForwarding(context: vscode.ExtensionContext, slug: string): Promise<string> {
   if (!slug || !vscode.env.remoteName) return "";
-  const enabled = new Set(context.globalState.get<string[]>("servers.autoForward.v1", []));
-  if (!enabled.has(slug)) return "";
+  if (!context.globalState.get<boolean>("servers.autoForward.global.v1", true)) return "";
   const server = (await serverList()).find(item => item.slug === slug && item.status !== "stopped");
   if (!server?.localUrl) return "";
   try { return (await vscode.env.asExternalUri(vscode.Uri.parse(server.localUrl))).toString(); }
@@ -3210,15 +3209,17 @@ async function handleMessage(
       break;
     }
     case "serverSetForward": {
-      const slug = String(msg.slug || "");
       const enabled = !!msg.enabled;
-      const current = new Set(context.globalState.get<string[]>("servers.autoForward.v1", []));
-      if (enabled) current.add(slug); else current.delete(slug);
-      await context.globalState.update("servers.autoForward.v1", [...current].sort());
-      let externalUrl = "";
-      if (enabled) externalUrl = await ensureServerForwarding(context, slug);
+      await context.globalState.update("servers.autoForward.global.v1", enabled);
+      const externalUrls: Record<string, string> = {};
+      if (enabled) {
+        for (const server of await serverList()) {
+          const externalUrl = await ensureServerForwarding(context, server.slug);
+          if (externalUrl) externalUrls[server.slug] = externalUrl;
+        }
+      }
       else if (vscode.env.remoteName) vscode.window.showInformationMessage("Automatic forwarding disabled. Close any existing tunnel manually in VS Code's Ports view.");
-      respond({ command: "serverForwardResult", data: { slug, enabled, externalUrl, remoteName: vscode.env.remoteName || "" } });
+      respond({ command: "serverForwardResult", data: { enabled, externalUrls, remoteName: vscode.env.remoteName || "" } });
       respond({ command: "serverList", data: await serverListForUi(context) });
       break;
     }

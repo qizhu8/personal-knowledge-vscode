@@ -91,10 +91,14 @@ async function main() {
   assert.match(panel, /<summary[^>]*>Server Local Link/);
   assert.doesNotMatch(panel, /<details class="srv-link-block srv-local-link" open/);
   assert.match(panel, />Open<\/button><button[^>]*>Copy<\/button>/);
-  assert.match(panel, /title="Select the network interface\/IP for Stable Link"/);
-  assert.match(panel, /class="srv-forward-toggle"/);
+  assert.match(panel, /class="srv-global-controls"/);
+  assert.match(panel, /title="Select the network interface\/IP for every Stable Link"/);
+  assert.strictEqual((panel.match(/onchange="serverNetworkChanged\(this\.value\)"/g) || []).length, 1);
+  assert.doesNotMatch(panel, /pkm-server-network-/);
+  assert.match(panel, /class="tbtn srv-forward-toggle \$\{autoForward \? 'active' : ''\}" aria-pressed="\$\{autoForward\}"/);
   assert.match(panel, /Port Forward/);
-  assert.match(panel, /function serverForwardChanged/);
+  assert.match(panel, /function serverForwardChanged\(enabled\)/);
+  assert.doesNotMatch(panel, /serverForwardChanged\(slug/);
   assert.match(panel, /requiresForward: kind === 'local'/);
   assert.match(panel, /id="srv-out-\$\{esc\(s\.slug\)\}"/);
   assert.match(panel, /function serverOutput/);

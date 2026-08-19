@@ -4,12 +4,16 @@ let _srvPoll = null;
 function renderServerDashboard(servers) {
   serverCache = servers || [];
   const dot = s => s === 'running' ? '#3fb950' : s === 'starting' ? '#e5c07b' : '#8b949e';
+  const networkLinks = serverCache[0]?.networkLinks || [];
+  let savedNetwork = ''; try { savedNetwork = localStorage.getItem('pkm-server-network') || ''; } catch {}
+  const selectedNetwork = networkLinks.find(link => link.address === savedNetwork) || networkLinks[0];
+  const networkOptions = networkLinks.map(link => `<option value="${esc(link.address)}" ${link.address === selectedNetwork?.address ? 'selected' : ''}>${esc(link.interface)} · ${esc(link.address)}</option>`).join('');
+  const autoForward = serverCache[0]?.autoForward ?? true;
+  const remoteName = serverCache.find(server => server.remoteName)?.remoteName || '';
   const cards = serverCache.map(s => {
     const links = s.networkLinks || [];
-    let saved = ''; try { saved = localStorage.getItem('pkm-server-network-' + s.slug) || ''; } catch {}
-    const selected = links.find(link => link.address === saved) || links[0];
+    const selected = links.find(link => link.address === selectedNetwork?.address) || links[0];
     const stableLink = selected?.url || '';
-    const options = links.map(link => `<option value="${esc(link.address)}" ${link.address === selected?.address ? 'selected' : ''}>${esc(link.interface)} · ${esc(link.address)}</option>`).join('');
     return `
     <div class="srv-card">
       <div class="ec-row">
@@ -25,14 +29,11 @@ function renderServerDashboard(servers) {
         <span class="srv-management-actions"><button class="tbtn" onclick="ask('serverOpenFolder',{slug:'${esc(s.slug)}'})" title="Open the server folder (code + any data it writes)">📂 Folder</button>
         <button class="tbtn" onclick="editServer('${esc(s.slug)}')" title="Edit server settings: command, port, and Python">⚙ Settings</button>
         <button class="tbtn" onclick="serverLogView('${esc(s.slug)}')" title="Open the latest managed process log">📜 Log</button>
-        <button class="tbtn srv-danger" onclick="deleteServer('${esc(s.slug)}',${JSON.stringify(s.name).replace(/"/g,'&quot;')})" title="Permanently delete this managed server folder and settings">🗑 Delete</button>
-        <label class="srv-forward-toggle" title="Request VS Code Remote-SSH port forwarding for Server Link. Disable prevents new forwarding; close an existing tunnel in the Ports view."><input type="checkbox" ${s.autoForward ? 'checked' : ''} ${s.remoteName ? '' : 'disabled'} onchange="serverForwardChanged('${esc(s.slug)}',this.checked)"> ↔ Port Forward</label></span>
+        <button class="tbtn srv-danger" onclick="deleteServer('${esc(s.slug)}',${JSON.stringify(s.name).replace(/"/g,'&quot;')})" title="Permanently delete this managed server folder and settings">🗑 Delete</button></span>
       </div>
       <div class="ec-path"><code>${esc(s.command)}</code> · env: ${esc(s.python || 'python3')}</div>
       <div class="srv-link-block srv-stable-link">
-        <div class="srv-link-head"><strong>Stable Link</strong>
-          <select onchange="serverNetworkChanged('${esc(s.slug)}',this.value)" title="Select the network interface/IP for Stable Link" ${links.length ? '' : 'disabled'}>${options || '<option>No network IPv4 found</option>'}</select>
-        </div>
+        <div class="srv-link-head"><strong>Stable Link</strong></div>
         <div class="srv-link-main">
           <code id="srv-network-link-${esc(s.slug)}" title="${esc(stableLink || 'Unavailable')}">${esc(stableLink || 'Unavailable')}</code>
           <span class="srv-link-actions"><button class="tbtn" onclick="openServerLink('${esc(s.slug)}','network')" title="Open Stable Link with the selected IP" ${stableLink ? '' : 'disabled'}>Open</button><button class="tbtn" onclick="copyServerLink('${esc(s.slug)}','network')" title="Copy Stable Link" ${stableLink ? '' : 'disabled'}>Copy</button></span>
@@ -52,11 +53,15 @@ function renderServerDashboard(servers) {
     <div class="dash">
       <div class="dash-hd">
         <span class="dash-title">🖥 Servers</span>
-        <span style="font-size:11px;color:var(--muted)">select a network interface for LAN/global access</span>
         <span style="flex:1"></span>
         <button class="tbtn" onclick="importServer()" title="Move an existing server folder into the PKM store">＋ Import folder</button>
         <button class="tbtn" onclick="createServer()" title="Create a new managed server package">＋ New</button>
         <button class="tbtn" onclick="ask('serverList',{})" title="Force-refresh server process, port, and link status">↻ Refresh</button>
+      </div>
+      <div class="srv-global-controls">
+        <label><span data-i18n="servers.networkInterface">Stable Link interface</span><select onchange="serverNetworkChanged(this.value)" title="Select the network interface/IP for every Stable Link" ${networkLinks.length ? '' : 'disabled'}>${networkOptions || '<option data-i18n="servers.noNetwork">No network IPv4 found</option>'}</select></label>
+        <button class="tbtn srv-forward-toggle ${autoForward ? 'active' : ''}" aria-pressed="${autoForward}" onclick="serverForwardChanged(!${autoForward})" title="Request VS Code Remote-SSH port forwarding for all Server Local Links. Enabled by default." ${remoteName ? '' : 'disabled'}><span data-i18n="servers.portForward">↔ Port Forward</span>: <span data-i18n="${autoForward ? 'servers.on' : 'servers.off'}">${autoForward ? 'On' : 'Off'}</span></button>
+        ${remoteName ? `<span class="srv-global-remote">Remote: ${esc(remoteName)}</span>` : '<span class="srv-global-remote">Local window · forwarding not required</span>'}
       </div>
       ${cards || '<div class="empty">No servers yet — import a folder (moves it into the store) or create a new one.</div>'}
     </div>`;
@@ -72,13 +77,12 @@ function openServer(url) { ask('serverOpenUrl', { url }); }
 function selectedServerLink(slug, kind) {
   const server = serverCache.find(item => item.slug === slug); if (!server) return '';
   if (kind === 'local') return server.localUrl || '';
-  let saved = ''; try { saved = localStorage.getItem('pkm-server-network-' + slug) || ''; } catch {}
+  let saved = ''; try { saved = localStorage.getItem('pkm-server-network') || ''; } catch {}
   return (server.networkLinks || []).find(link => link.address === saved)?.url || server.networkLinks?.[0]?.url || '';
 }
-function serverNetworkChanged(slug, address) {
-  try { localStorage.setItem('pkm-server-network-' + slug, address); } catch {}
-  const element = document.getElementById('srv-network-link-' + slug);
-  if (element) element.textContent = selectedServerLink(slug, 'network') || 'Unavailable';
+function serverNetworkChanged(address) {
+  try { localStorage.setItem('pkm-server-network', address); } catch {}
+  renderServerDashboard(serverCache);
 }
 function openServerLink(slug, kind) {
   const server = serverCache.find(item => item.slug === slug);
@@ -86,7 +90,7 @@ function openServerLink(slug, kind) {
   if (server && url) ask('serverOpenUrl', { url, requiresForward: kind === 'local', forwardEnabled: !!server.autoForward });
 }
 function copyServerLink(slug, kind) { const url = selectedServerLink(slug, kind); if (url) ask('serverCopy', { text: url }); }
-function serverForwardChanged(slug, enabled) { ask('serverSetForward', { slug, enabled }); }
+function serverForwardChanged(enabled) { ask('serverSetForward', { enabled }); }
 function importServer() { ask('serverPickFolder', {}); }
 function onServerPickFolder(dir) {
   if (!dir) return;

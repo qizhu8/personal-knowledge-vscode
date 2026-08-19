@@ -10,6 +10,7 @@ This project follows [Semantic Versioning](https://semver.org/).
 This release adds live English, Simplified Chinese, and Spanish UI switching, and completes the managed-server navigation and Remote-SSH access workflow.
 
 ### Fixed
+- Moved Stable Link interface selection and Remote-SSH Port Forwarding from individual Server cards into one shared Servers toolbar; the global Port Forward toggle defaults to On and applies to every managed server.
 - Completed live Config localization for explanatory content, runtime/process states, version transitions, setup steps, Paths, and PKM Skill Router targets across English, Simplified Chinese, and Spanish.
 - Replaced the PKM Integration Status CSS grid with a compact semantic table, standardized `No action needed`, and removed button wrapping that created oversized blank rows.
 - Removed aggregate status lights from the top-level Servers and Chatroom navigation entries while retaining per-server lights and adding active/connecting/offline lights to individual hosted and recently joined Rooms.
