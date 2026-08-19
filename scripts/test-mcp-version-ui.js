@@ -17,30 +17,30 @@ vm.createContext(presentationContext);
 new vm.Script(`${presentation[0]}; this.present = mcpRegeneratePresentation;`).runInContext(presentationContext);
 
 const outdated = presentationContext.present({
-  installed: true, current: false, installedVersion: "2.4.0", expectedVersion: "2.5.0",
+  installed: true, current: false, installedVersion: "2.4.0", expectedVersion: "2.5.1",
   installedKnowledgeVersion: "1.0.0", knowledgeVersion: "1.0.0",
   installedChatVersion: "2.2.1", chatVersion: "2.3.0",
 });
-assert.strictEqual(outdated.label, "Regenerate Server Code · v2.4.0 → v2.5.0");
-assert.match(outdated.title, /Unified v2\.4\.0 → v2\.5\.0/);
+assert.strictEqual(outdated.label, "Regenerate Server Code · v2.4.0 → v2.5.1");
+assert.match(outdated.title, /Unified v2\.4\.0 → v2\.5\.1/);
 assert.match(outdated.title, /Chat v2\.2\.1 → v2\.3\.0/);
-assert.strictEqual(presentationContext.present({ installed: true, current: true, expectedVersion: "2.5.0", knowledgeVersion: "1.0.0", chatVersion: "2.3.0" }).label,
-  "Regenerate Server Code · v2.5.0");
-assert.strictEqual(presentationContext.present({ installed: false, expectedVersion: "2.5.0" }).label,
-  "Generate Server Code · target v2.5.0");
+assert.strictEqual(presentationContext.present({ installed: true, current: true, expectedVersion: "2.5.1", knowledgeVersion: "1.0.0", chatVersion: "2.3.0" }).label,
+  "Regenerate Server Code · v2.5.1");
+assert.strictEqual(presentationContext.present({ installed: false, expectedVersion: "2.5.1" }).label,
+  "Generate Server Code · target v2.5.1");
 
 const skillStart = panelJs.indexOf("function pkmSkillStateBadge");
 const skillEnd = panelJs.indexOf("function renderMcpPane", skillStart);
 assert(skillStart >= 0 && skillEnd > skillStart, "Skill Router renderer must be bundled");
-const skillContext = { esc };
+const skillContext = { esc, mcpI18nAttrs: (key, params = {}) => `data-i18n="${key}" ${Object.entries(params).map(([name, value]) => `data-i18n-param-${name}="${value}"`).join(' ')}` };
 vm.createContext(skillContext);
 new vm.Script(`${panelJs.slice(skillStart, skillEnd)}; this.render = renderPkmSkillTargets;`).runInContext(skillContext);
-const baseSkill = { routerVersion: "1.1.3", minimumMcpSchema: "2.2.3", sourcePath: "/skill.md", sourceExists: true, targets: [] };
-const currentHtml = skillContext.render({ pkmSkill: { ...baseSkill, targets: [{ id: "copilot", kind: "copilot", label: "GitHub Copilot", root: "/x", skillPath: "/x/pkm-skills/SKILL.md", state: "current", installedVersion: "1.1.3", expectedVersion: "1.1.3", managed: true, detail: "Injected Skill is current." }] }, skillProposals: [] });
-assert.match(currentHtml, /Current · v1\.1\.3/);
+const baseSkill = { routerVersion: "1.1.4", minimumMcpSchema: "2.2.3", sourcePath: "/skill.md", sourceExists: true, targets: [] };
+const currentHtml = skillContext.render({ pkmSkill: { ...baseSkill, targets: [{ id: "copilot", kind: "copilot", label: "GitHub Copilot", root: "/x", skillPath: "/x/pkm-skills/SKILL.md", state: "current", installedVersion: "1.1.4", expectedVersion: "1.1.4", managed: true, detail: "Injected Skill is current." }] }, skillProposals: [] });
+assert.match(currentHtml, /data-i18n="config\.current"[^>]*>Current<\/span> · v1\.1\.4/);
 assert.doesNotMatch(currentHtml, /Reinstall|pkmSkillInject/);
-const outdatedHtml = skillContext.render({ pkmSkill: { ...baseSkill, targets: [{ id: "copilot", kind: "copilot", label: "GitHub Copilot", root: "/x", skillPath: "/x/pkm-skills/SKILL.md", state: "outdated", installedVersion: "1.1.2", expectedVersion: "1.1.3", managed: true, detail: "Router 1.1.2 -> 1.1.3" }] }, skillProposals: [] });
-assert.match(outdatedHtml, /Update PKM Skill · v1\.1\.2 → v1\.1\.3/);
+const outdatedHtml = skillContext.render({ pkmSkill: { ...baseSkill, targets: [{ id: "copilot", kind: "copilot", label: "GitHub Copilot", root: "/x", skillPath: "/x/pkm-skills/SKILL.md", state: "outdated", installedVersion: "1.1.3", expectedVersion: "1.1.4", managed: true, detail: "Router 1.1.3 -> 1.1.4" }] }, skillProposals: [] });
+assert.match(outdatedHtml, /data-i18n="config\.updateSkill"[^>]*data-i18n-param-installed="1\.1\.3"[^>]*data-i18n-param-expected="1\.1\.4"[^>]*>Update PKM Skill · v1\.1\.3 → v1\.1\.4<\/span>/);
 assert.match(outdatedHtml, /pkmSkillInject/);
 
 assert(sourceTs.includes("installedKnowledgeVersion === KNOWLEDGE_MCP_VERSION"));

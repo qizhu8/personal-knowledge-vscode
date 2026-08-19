@@ -7,7 +7,7 @@ tags:
   - skill-router
   - knowledge-management
 type: system
-router_version: 1.1.3
+router_version: 1.1.4
 created: 2026-08-12
 ---
 

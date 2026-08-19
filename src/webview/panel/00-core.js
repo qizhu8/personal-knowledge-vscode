@@ -144,6 +144,13 @@ function t(key, params = {}) {
 function i18nEnglishLookup() {
   return new Map(Object.entries(i18nStrings('en')).map(([key, value]) => [value, key]));
 }
+function i18nElementParams(element) {
+  const params = {};
+  for (const attribute of element.attributes || []) {
+    if (attribute.name.startsWith('data-i18n-param-')) params[attribute.name.slice(16)] = attribute.value;
+  }
+  return params;
+}
 function translateUiNode(node, lookup) {
   if (node.nodeType === Node.TEXT_NODE) {
     const parent = node.parentElement;
@@ -161,7 +168,10 @@ function translateUiNode(node, lookup) {
   if (node.nodeType !== Node.ELEMENT_NODE) return;
   const element = node;
   const explicitKey = element.getAttribute('data-i18n');
-  if (explicitKey && element.textContent !== t(explicitKey)) element.textContent = t(explicitKey);
+  if (explicitKey) {
+    const translated = t(explicitKey, i18nElementParams(element));
+    if (element.textContent !== translated) element.textContent = translated;
+  }
   for (const attribute of ['title','placeholder','aria-label']) {
     const key = element.getAttribute(`data-i18n-${attribute}`);
     if (key && element.getAttribute(attribute) !== t(key)) element.setAttribute(attribute, t(key));

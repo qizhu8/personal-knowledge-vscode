@@ -5,13 +5,29 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [2.5.0] - 2026-08-19
+## [2.5.1] - 2026-08-19
 
-This is a major Chatroom, search, setup, managed-server, and multilingual UI release. It replaces text-derived routing with structured recipients across the complete stack, makes Agent standby reliable, and adds localized navigation plus a versioned setup dashboard with privacy-safe release media.
+This release adds live English, Simplified Chinese, and Spanish UI switching, and completes the managed-server navigation and Remote-SSH access workflow.
 
 ### Fixed
+- Completed live Config localization for explanatory content, runtime/process states, version transitions, setup steps, Paths, and PKM Skill Router targets across English, Simplified Chinese, and Spanish.
+- Replaced the PKM Integration Status CSS grid with a compact semantic table, standardized `No action needed`, and removed button wrapping that created oversized blank rows.
+- Removed aggregate status lights from the top-level Servers and Chatroom navigation entries while retaining per-server lights and adding active/connecting/offline lights to individual hosted and recently joined Rooms.
+- Bumped PKM Skill Router to 1.1.4 and registered the 1.1.3 bundled source for automatic migration, so Update available now presents a real version transition and refreshes unchanged canonical Router content.
 - Reorganized managed-server cards with a dedicated second-row action toolbar, a gear Settings button, complete hover hints, and card-local Edit/Log panels with explicit Close/Cancel controls.
 - Split server access into a selectable network-IP Stable Link and a localhost Server Link, avoiding accidental dependence on Remote-SSH port forwarding.
+
+### Added
+- Added structured multilingual UI catalogs for English, Simplified Chinese, and Spanish; Config can switch the live panel/navigation language without losing state, Auto follows VS Code, and primary manifest commands use official package NLS catalogs.
+- Added Start, Stop, and Restart context-menu actions for individual Servers in Navigation; display-name rename remains in the card Settings panel without changing the server slug or links.
+- Added a persisted per-server Port Forward toggle for Remote-SSH localhost links and expandable Servers navigation with individual running/starting/stopped indicators.
+- Added event-driven top-level Servers and Chatroom navigation status indicators: running/connected is green, starting/reconnecting/proxy-offline is yellow, and stopped/offline is grey, with text descriptions for accessibility. The Servers Refresh action performs an explicit health refresh without background polling.
+
+## [2.5.0] - 2026-08-18
+
+This is a major Chatroom, search, setup, and MCP Config release. It replaces text-derived routing with structured recipients across the complete stack, makes Agent standby reliable, and adds a versioned setup dashboard with privacy-safe release media.
+
+### Fixed
 - Started the managed-server stable reverse proxy on VS Code startup, surfaced proxy-listener health instead of opening a dead stable URL, registered the machine-local proxy port setting, and generated an Agent-readable proxy compatibility guide in every managed server folder.
 - Replaced uneven Config path rows with a fixed-layout Path Type / Location / Disk Usage / Source table, with horizontal scrolling on narrow windows.
 - Preserved the current Chatroom search result across presence/message repaints and batched transcript highlighting, preventing previous/next navigation from looping between results 1 and 2.
@@ -42,10 +58,6 @@ This is a major Chatroom, search, setup, managed-server, and multilingual UI rel
 - Preserved Chatroom history scroll position across new messages and state repaints; scrolling to the bottom resumes automatic latest-message following, while scrolling up pauses it.
 
 ### Added
-- Added structured multilingual UI catalogs for English, Simplified Chinese, and Spanish; Config can switch the live panel/navigation language without losing state, Auto follows VS Code, and primary manifest commands use official package NLS catalogs.
-- Added Start, Stop, and Restart context-menu actions for individual Servers in Navigation; display-name rename remains in the card Settings panel without changing the server slug or links.
-- Added a persisted per-server Port Forward toggle for Remote-SSH localhost links and expandable Servers navigation with individual running/starting/stopped indicators.
-- Added event-driven top-level Servers and Chatroom navigation status indicators: running/connected is green, starting/reconnecting/proxy-offline is yellow, and stopped/offline is grey, with text descriptions for accessibility. The Servers Refresh action performs an explicit health refresh without background polling.
 - Added a standardized privacy-safe release media pipeline that renders the real extension webview with synthetic fixtures and produces static multi-step guides plus cursor-visible Chatroom, Papers 2D/3D, and installation GIFs.
 - Added asynchronous disk-usage sizes to every Config path using cross-platform Node filesystem APIs, with symlink-safe traversal, session caching, and an explicit Refresh sizes action so large environments are scanned only on demand.
 - Reorganized Config into an MCP status dashboard with separate Unified Server, Knowledge schema, Chat schema, and Skill Router versions, direct update actions, a best-effort running-process light, and a state-driven setup guideline.

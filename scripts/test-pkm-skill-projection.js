@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 const assert = require("assert");
+const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -22,6 +23,13 @@ try {
   const filestore = require("../dist/filestore");
   filestore.setStorePath(path.join(root, "store"));
   const projection = require("../dist/pkm-skill-projection");
+  const bundledSource = fs.readFileSync(path.join(__dirname, "..", "resources", "pkm-skills-router.md"), "utf8");
+  assert.match(bundledSource, /^router_version:\s*1\.1\.4$/m);
+  const legacySource = bundledSource.replace("router_version: 1.1.4", "router_version: 1.1.3");
+  assert.strictEqual(crypto.createHash("sha256").update(legacySource, "utf8").digest("hex"), "6e4d01d6b905b96879225119a8c76597984abe3b8ef1d84858c8cea5e064da5d");
+  const canonicalSource = path.join(root, "store", "skills", "System", "PKM", "PKM Skills.md");
+  fs.mkdirSync(path.dirname(canonicalSource), { recursive: true });
+  fs.writeFileSync(canonicalSource, legacySource, "utf8");
 
   assert.strictEqual(
     projection.resolvePkmSkillTargetPath('%USERPROFILE%\\.copilot\\skills', 'win32', { USERPROFILE: 'C:\\Users\\Amy' }, 'C:\\Users\\Amy'),
@@ -45,13 +53,14 @@ try {
   );
 
   let status = projection.pkmSkillProjectionStatus(context);
-  assert.strictEqual(status.routerVersion, "1.1.3");
+  assert.strictEqual(status.routerVersion, "1.1.4");
   assert.strictEqual(status.minimumMcpSchema, "2.2.3");
   assert.strictEqual(status.targets.find(target => target.id === "copilot").state, "missing");
 
   const injected = projection.injectPkmSkill(context, "copilot");
   assert.strictEqual(injected.state, "current");
   assert(fs.existsSync(injected.skillPath));
+  assert.match(fs.readFileSync(canonicalSource, "utf8"), /^router_version:\s*1\.1\.4$/m);
   const generated = fs.readFileSync(injected.skillPath, "utf8");
   assert.match(generated, /^---\nname: pkm-skills/m);
   assert.match(generated, /<!-- pkm-managed /);

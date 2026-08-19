@@ -4417,10 +4417,9 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
   getChildren(element?: PkTreeItem): PkTreeItem[] {
     const C = vscode.TreeItemCollapsibleState.Collapsed;
     if (!element) {
-      const chatStatus = summarizeChatNavigation(getChatMgr().state() as any);
-      const chatroom = this.applyStatus(new PkTreeItem(this.text("tabs.chatroom"), 'root-chatroom', C), chatStatus);
+      const chatroom = new PkTreeItem(this.text("tabs.chatroom"), 'root-chatroom', C);
       chatroom.command = { command: "personalKnowledge.openChatroom", title: "Open Chatroom" };
-      const servers = this.applyStatus(new PkTreeItem(this.text("tabs.servers"), "root-servers", C), this.serverStatus);
+      const servers = new PkTreeItem(this.text("tabs.servers"), "root-servers", C);
       servers.command = { command: "personalKnowledge.openServers", title: "Open Servers" };
       const mcp = new PkTreeItem(this.text("tabs.config"), "root-mcp", vscode.TreeItemCollapsibleState.None);
       mcp.command = { command: "personalKnowledge.setupMcp", title: "Open Config" };
@@ -4486,22 +4485,31 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
 
   private _hostedRooms(): PkTreeItem[] {
     return getChatMgr().hostedRoomsForNavigation().map(room => {
-      const item = new PkTreeItem(room.roomName, "chat-hosted-room", vscode.TreeItemCollapsibleState.None, room);
+      const status: NavigationStatus = room.active || room.activeElsewhere
+        ? { kind: "online", description: room.activeElsewhere ? "active elsewhere" : "active", tooltip: room.activeElsewhere ? "Room is active in another VS Code window." : "Active hosted Room." }
+        : room.canRehost
+          ? { kind: "offline", description: "stored", tooltip: "Stored Room · click to Rehost." }
+          : { kind: "attention", description: "unavailable", tooltip: room.unavailableReason || "Stored Room is unavailable." };
+      const item = this.applyStatus(new PkTreeItem(room.roomName, "chat-hosted-room", vscode.TreeItemCollapsibleState.None, room), status);
       item.contextValue = room.active ? "pk-chat-hosted-room-active" : "pk-chat-hosted-room-stored";
-      item.description = room.active ? "active" : room.activeElsewhere ? "active elsewhere" : room.canRehost ? "stored" : "unavailable";
-      item.tooltip = room.active ? "Active hosted Room" : room.unavailableReason || "Stored Room · click to Rehost";
       if (!room.activeElsewhere) item.command = { command: "personalKnowledge.openHostedRoomItem", title: room.active ? "Open Room" : "Rehost Room", arguments: [room.roomId] };
       return item;
     });
   }
 
   private _chatRooms(): PkTreeItem[] {
+    const liveRooms = new Map(((getChatMgr().state() as any).rooms || []).map((room: any) => [chatRoomIdentity(room.url, room.room, room.roomId), room]));
     return chatRecents(this.context)
       .sort((left, right) => right.lastJoined - left.lastJoined)
       .map(room => {
-        const item = new PkTreeItem(room.room, "chat-room", vscode.TreeItemCollapsibleState.None, { id: room.id });
-        item.description = `as ${room.user}`;
-        item.tooltip = `${room.url}/${encodeURIComponent(room.room)}\nAlias: ${room.user}`;
+        const live = liveRooms.get(room.id) as any;
+        const status: NavigationStatus = live?.status === "connected"
+          ? { kind: "online", description: `connected · as ${room.user}`, tooltip: `Connected as ${room.user}.` }
+          : live?.status === "connecting"
+            ? { kind: "attention", description: `connecting · as ${room.user}`, tooltip: `Connecting as ${room.user}.` }
+            : { kind: "offline", description: `offline · as ${room.user}`, tooltip: `Recent Room · reconnect as ${room.user}.` };
+        const item = this.applyStatus(new PkTreeItem(room.room, "chat-room", vscode.TreeItemCollapsibleState.None, { id: room.id }), status);
+        item.tooltip = `${status.tooltip}\n${room.url}/${encodeURIComponent(room.room)}`;
         item.command = { command: "personalKnowledge.openChatRoomItem", title: "Open Room", arguments: [room.id] };
         return item;
       });

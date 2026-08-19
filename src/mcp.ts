@@ -8,7 +8,7 @@ import { condaEnvs, pyenvAdd, pyenvCreate, pyenvDelete, pyenvList, pyenvUpdate }
 import { managedEnvironmentsRoot } from "./environment-paths";
 
 // ── MCP server scaffold ────────────────────────────────────────────────────
-export const UNIFIED_MCP_VERSION = "2.5.0";
+export const UNIFIED_MCP_VERSION = "2.5.1";
 const KNOWLEDGE_MCP_VERSION = "1.0.0";
 const CHAT_MCP_VERSION = "2.3.0";
 

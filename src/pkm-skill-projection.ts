@@ -5,7 +5,7 @@ import { createHash, randomBytes } from "crypto";
 import * as vscode from "vscode";
 import { getStorePath } from "./filestore";
 
-export const PKM_SKILL_ROUTER_VERSION = "1.1.3";
+export const PKM_SKILL_ROUTER_VERSION = "1.1.4";
 export const PKM_SKILL_MIN_MCP_VERSION = "2.2.3";
 export const PKM_SKILL_SOURCE_RELATIVE = path.join("System", "PKM", "PKM Skills.md");
 
@@ -14,6 +14,7 @@ const LEGACY_BUNDLED_SOURCE_HASHES = new Set([
   "90e969afbde64e489d6856a6df078d2e6da4a847c961496960d6e7d6d0e41588", // Router 1.1.0
   "2da9ae268a9f6c828d466650fb2db1b812a00aeb30c6b25862ca24346bacbef9", // Router 1.1.1
   "e200f9d3967f4e0f0779f59ae6ecdde4afac834b6c3b18fe7be557daf242265a", // Router 1.1.2
+  "6e4d01d6b905b96879225119a8c76597984abe3b8ef1d84858c8cea5e064da5d", // Router 1.1.3
 ]);
 
 const CUSTOM_TARGETS_KEY = "pkm.skillProjection.customTargets.v1";
