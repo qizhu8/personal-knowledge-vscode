@@ -22,9 +22,10 @@ It uses GitHub Actions OIDC, a federated personal Microsoft Entra application, a
    AZURE_TENANT_ID=<personal tenant ID>
    ```
 
-4. Run the workflow in `identity` mode.
-5. Add the returned Marketplace profile ID to publisher `Uone` as Contributor/Owner with access to `personal-knowledge`.
-6. Run `identity` mode again. It must pass both **Show Marketplace publishing identity** and **Verify Uone publisher permissions**.
+4. Materialize the app's **service principal object** in an Azure DevOps organization connected to the same Entra tenant. For this publisher, use `uoneorg`; a Stakeholder license and no project assignment are sufficient. The application object ID is not interchangeable with the service principal object ID.
+5. Run the workflow in `identity` mode. This creates/resolves its Visual Studio Services profile and prints the Marketplace profile ID without packaging or publishing.
+6. Sign in as a publisher **Owner** and add that profile ID to publisher `Uone` as Contributor/Owner. Existing Contributors cannot manage publisher membership.
+7. Run `identity` mode again. It must pass both **Show Marketplace publishing identity** and **Verify Uone publisher permissions**.
 
 The workflow has no push, tag, release, or scheduled trigger. Publishing occurs only when a repository administrator manually runs the workflow, selects `publish`, and enters the exact version.
 
