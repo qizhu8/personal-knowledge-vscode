@@ -24,6 +24,9 @@ It uses GitHub Actions OIDC, a federated personal Microsoft Entra application, a
 
 4. Run the workflow in `identity` mode.
 5. Add the returned Marketplace profile ID to publisher `Uone` as Contributor/Owner with access to `personal-knowledge`.
+6. Run `identity` mode again. It must pass both **Show Marketplace publishing identity** and **Verify Uone publisher permissions**.
+
+The workflow has no push, tag, release, or scheduled trigger. Publishing occurs only when a repository administrator manually runs the workflow, selects `publish`, and enters the exact version.
 
 ## Publish
 

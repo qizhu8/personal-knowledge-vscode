@@ -31,7 +31,6 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Node.js
-        if: inputs.mode == 'publish'
         uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -107,6 +106,10 @@ jobs:
             --resource 499b84ac-1321-427f-aa17-267ca6975798 \
             --query "{id:id,name:displayName}" \
             --output json
+
+      - name: Verify Uone publisher permissions
+        shell: bash
+        run: npx @vscode/vsce@3.9.2 verify-pat Uone --azure-credential
 
       - name: Publish with Microsoft Entra ID
         if: inputs.mode == 'publish'
