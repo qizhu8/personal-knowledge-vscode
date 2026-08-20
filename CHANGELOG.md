@@ -10,6 +10,9 @@ This project follows [Semantic Versioning](https://semver.org/).
 This release adds live switching across 11 UI languages and completes the managed-server navigation and Remote-SSH access workflow.
 
 ### Fixed
+- Removed Chatroom composer stalls by caching inherited recipients, parsing body mentions once per input event, avoiding unchanged To-chip DOM rebuilds, and skipping full Markdown transcript repaints for presence-only state updates.
+- Preserved authored mentions everywhere in the Chatroom message body, including leading task-assignment mentions, while continuing to derive the structured To audience from every valid body mention.
+- Kept the reader's exact historical-message viewport anchored across presence updates, new messages, and snapshot repaints; only the explicit Jump to latest action resumes following the newest message.
 - Left-aligned every Action cell in the PKM Integration Status table and replaced the ambiguous `Ready · not detected` state with `Ready · starts on demand` plus localized startup guidance.
 - Kept language choices recognizable in every locale by always displaying their native names: `English`, `简体中文`, and `Español`.
 - Moved Stable Link interface selection and Remote-SSH Port Forwarding from individual Server cards into one shared Servers toolbar; the global Port Forward toggle defaults to On and applies to every managed server.

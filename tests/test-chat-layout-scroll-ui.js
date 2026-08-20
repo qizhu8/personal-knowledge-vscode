@@ -22,7 +22,7 @@ assert(panelJs.includes("actionbar.scrollWidth > actionbar.clientWidth"));
 assert(panelJs.includes("document.getElementById('content-toolbar').style.display = fullWidthTab ? 'none' : ''"));
 assert(panelCss.includes("#content-toolbar{display:flex"));
 
-for (const name of ["toggleMainSidebar", "applyMainSidebarState", "renderEmptyDetail", "refreshEmptyDetailHint", "chatToggleHubPanel", "chatApplyHubPanelState", "chatToggleMemberPane", "chatApplyMemberPaneState", "chatTrackScroll", "chatPinLatest", "chatIsNearBottom"]) {
+for (const name of ["toggleMainSidebar", "applyMainSidebarState", "renderEmptyDetail", "refreshEmptyDetailHint", "chatToggleHubPanel", "chatApplyHubPanelState", "chatToggleMemberPane", "chatApplyMemberPaneState", "chatTrackScroll", "chatPinLatest", "chatIsNearBottom", "chatCaptureScrollAnchor", "chatRestoreScrollAnchor"]) {
   assert(panelJs.includes(`function ${name}`), `missing ${name}`);
 }
 assert.match(panelHtml, /id="layout-resizer"[^>]*><button id="sidebar-toggle"/);
@@ -61,7 +61,9 @@ assert(panelJs.includes("const collapsed = chatMemberPaneCollapsed();\n  let wid
 assert(panelJs.includes('class="chat-avatar"'));
 assert(panelJs.includes('class="chat-member-name-text"'));
 assert(panelJs.includes("chat.scrollPositions[previousKey] = existingLog.scrollTop"));
-assert(panelJs.includes("log.scrollTop = shouldFollow ? log.scrollHeight : restoreTop"));
+assert(panelJs.includes("else chatRestoreScrollAnchor(log, restoreAnchor, restoreTop)"));
+assert(panelJs.includes("if (chat.logSnapshotKey === logSnapshotKey)"));
+assert(panelJs.includes("chat.scrollAnchors[chat.activeKey] = chatCaptureScrollAnchor(log)"));
 assert(panelJs.includes("chat.followLatest && chatIsNearBottom(log)"));
 assert(panelJs.includes("chat-jump-latest"));
 for (const id of ["search-count", "search-prev", "search-next", "search-case", "search-regex"]) {
@@ -79,6 +81,7 @@ assert(panelJs.includes("chatRefreshSearch(true)"));
 assert(panelJs.includes("chatAppend(message, false)"));
 assert(panelCss.includes("mark.search-match.search-current"));
 assert(panelCss.includes(".chat-msg.search-current"));
+assert(panelCss.includes("overflow-anchor:none"));
 assert.doesNotMatch(panelJs, /function chatOnFileReady[\s\S]{0,300}scrollTop = log\.scrollHeight/);
 
 const nearBottomSource = panelJs.match(/function chatIsNearBottom\(log\)\s*\{[^}]+\}/);

@@ -11,7 +11,7 @@ assert(match, "Chatroom recipient materializer must be present in the bundled pa
 
 const context = { chat: { active: null, manualRecipients: [], bodyRecipients: [], removedRecipients: [] }, String };
 vm.createContext(context);
-new vm.Script(`${match[0]}; this.materialize = chatMaterializeRecipient; this.structured = chatStructuredRecipientNames; this.syncBody = chatSyncBodyRecipients; this.recipients = chatComposerRecipientNames; this.extractLeading = chatExtractLeadingRecipients;`).runInContext(context);
+new vm.Script(`${match[0]}; this.materialize = chatMaterializeRecipient; this.structured = chatStructuredRecipientNames; this.syncBody = chatSyncBodyRecipients; this.recipients = chatComposerRecipientNames;`).runInContext(context);
 
 context.chat.active = { selfHost: true, self: "Host", members: [{ user: "Host", host: true, present: true }], messages: [] };
 assert.strictEqual(context.materialize("broadcast"), "broadcast");
@@ -102,15 +102,10 @@ context.chat.removedRecipients = ["all"];
 assert.deepStrictEqual(Array.from(context.recipients("draft")), [], "removing inherited @all must leave this draft with no recipients");
 assert.deepStrictEqual(Array.from(context.recipients('@"Agent A" draft')), ["Agent A"],
 	"a new body mention must populate the edited empty To list without restoring @all");
-let leading = context.extractLeading('@"Agent A" @"Agent B" ## Report');
-assert.deepStrictEqual(Array.from(leading.names), ["Agent A", "Agent B"]);
-assert.strictEqual(leading.text, "## Report", "valid leading mentions must move to To without occupying Markdown body space");
-leading = context.extractLeading('@Unknown ## Report');
-assert.deepStrictEqual(Array.from(leading.names), []);
-assert.strictEqual(leading.text, '@Unknown ## Report', "unknown @words must remain literal body text");
-leading = context.extractLeading('Context for @"Agent A" in the middle');
-assert.deepStrictEqual(Array.from(leading.names), []);
-assert.strictEqual(leading.text, 'Context for @"Agent A" in the middle', "middle mentions must remain in the body");
+assert.deepStrictEqual(Array.from(context.structured('@"Agent A" @"Agent B" ## Report')), ["Agent A", "Agent B"],
+	"leading authored mentions must populate To without being removed from the body");
+assert.strictEqual(context.materialize('@"Agent A" @"Agent B" ## Report'), '@"Agent A" @"Agent B" ## Report');
+assert.deepStrictEqual(Array.from(context.structured('@Unknown ## Report')), []);
 
 context.chat.active = { selfHost: true, self: "Host", members: [
 	{ user: "Host", host: true, present: true }, { user: "Amy", present: true },
@@ -118,9 +113,8 @@ context.chat.active = { selfHost: true, self: "Host", members: [
 ], messages: [] };
 context.chat.manualRecipients = [];
 context.chat.removedRecipients = ["all"];
-leading = context.extractLeading('@"Agent With Spaces" ## Report');
-assert.deepStrictEqual(Array.from(leading.names), ["Agent With Spaces"]);
-assert.strictEqual(leading.text, "## Report");
+assert.deepStrictEqual(Array.from(context.structured('@"Agent With Spaces" ## Report')), ["Agent With Spaces"]);
+assert.strictEqual(context.materialize('@"Agent With Spaces" ## Report'), '@"Agent With Spaces" ## Report');
 assert.deepStrictEqual(Array.from(context.recipients('Context @"Agent With Spaces"')), ["Agent With Spaces"]);
 assert.deepStrictEqual(Array.from(context.structured('Context @Amy')), ["Amy"]);
 assert.deepStrictEqual(Array.from(context.structured('Context @"Amy"')), ["Amy"]);
@@ -212,7 +206,8 @@ assert.match(panelJs, /id="chat-recipient-chips"/);
 assert.match(panelJs, /id="chat-recipient-input"/);
 assert.doesNotMatch(panelJs, /id="chat-at-btn"/);
 assert.match(panelJs, /function chatRecipientInputKeydown/);
-assert.match(panelJs, /function chatExtractLeadingRecipients/);
+assert.doesNotMatch(panelJs, /chatExtractLeadingRecipients/);
+assert.doesNotMatch(panelJs, /input\.value\s*=\s*extracted\.text/);
 assert.match(panelJs, /event\.key === 'ArrowLeft'/);
 assert.match(panelJs, /event\.key === 'ArrowRight'/);
 assert.match(panelJs, /event\.key === 'Backspace' \|\| event\.key === 'Delete'/);

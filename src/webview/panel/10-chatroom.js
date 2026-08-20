@@ -14,6 +14,10 @@ const chat = {
   selectedRecipientIndex: -1,
   followLatest: true,
   scrollPositions: {},
+  scrollAnchors: {},
+  restoringScroll: false,
+  defaultRecipientCache: null,
+  logSnapshotKey: '',
   proto: {},   // user -> {state:'standby'|'working'|'engaged'}: live protocol status
 };
 
@@ -345,11 +349,30 @@ function chatToggleHubPanel() {
 }
 
 function chatIsNearBottom(log) { return !!log && log.scrollHeight - log.scrollTop - log.clientHeight <= 40; }
+function chatCaptureScrollAnchor(log) {
+  if (!log) return null;
+  const children = Array.from(log.children);
+  const element = children.find(child => child.offsetTop + child.offsetHeight > log.scrollTop) || children[0];
+  if (!element) return null;
+  return { messageId: element.dataset?.messageId || '', index: children.indexOf(element), offset: element.offsetTop - log.scrollTop };
+}
+function chatRestoreScrollAnchor(log, anchor, fallbackTop = 0) {
+  if (!log) return;
+  const children = Array.from(log.children);
+  const element = (anchor?.messageId && children.find(child => child.dataset?.messageId === anchor.messageId))
+    || (Number.isInteger(anchor?.index) ? children[Math.min(anchor.index, children.length - 1)] : null);
+  chat.restoringScroll = true;
+  log.scrollTop = element ? element.offsetTop - (anchor.offset || 0) : fallbackTop;
+  requestAnimationFrame(() => { chat.restoringScroll = false; });
+}
 function chatTrackScroll() {
   const log = document.getElementById('chat-log');
-  if (!log) return;
+  if (!log || chat.restoringScroll) return;
   chat.followLatest = chatIsNearBottom(log);
-  if (chat.activeKey) chat.scrollPositions[chat.activeKey] = log.scrollTop;
+  if (chat.activeKey) {
+    chat.scrollPositions[chat.activeKey] = log.scrollTop;
+    if (!chat.followLatest) chat.scrollAnchors[chat.activeKey] = chatCaptureScrollAnchor(log);
+  }
   document.getElementById('chat-jump-latest')?.classList.toggle('hidden', chat.followLatest);
 }
 function chatPinLatest() {
@@ -406,6 +429,7 @@ function chatOnState(s) {
   if (existingLog && previousKey) {
     chat.scrollPositions[previousKey] = existingLog.scrollTop;
     chat.followLatest = chatIsNearBottom(existingLog);
+    if (!chat.followLatest) chat.scrollAnchors[previousKey] = chatCaptureScrollAnchor(existingLog);
   }
   chat.rooms = s.rooms || [];
   chat.storedRooms = s.storedRooms || [];
@@ -583,8 +607,7 @@ function chatSend() {
   const inp = document.getElementById('chat-input');
   const draft = inp.value;
   if (!draft.trim()) return;
-  const extracted = chatExtractLeadingRecipients(draft);
-  const text = extracted.text.trim();
+  const text = draft.trim();
   const recipients = chatComposerRecipientNames(draft);
   const mode = chat.active?.selfHost ? chat.mode : undefined;
   const replyPolicy = mode === 'announce' ? 'none' : mode === 'discuss' ? 'required' : 'required';
@@ -732,22 +755,11 @@ function chatHideMentionPop() {
 function chatBodyInput() {
   const input = document.getElementById('chat-input');
   if (!input) return;
-  const extracted = chatExtractLeadingRecipients(input.value);
-  if (extracted.names.length) {
-    for (const name of extracted.names) {
-      if (!chat.manualRecipients.some(item => item.toLowerCase() === name.toLowerCase())) chat.manualRecipients.push(name);
-      chat.removedRecipients = chat.removedRecipients.filter(item => item.toLowerCase() !== name.toLowerCase());
-    }
-    const removedLength = input.value.length - extracted.text.length;
-    const caret = Math.max(0, (input.selectionStart || 0) - removedLength);
-    input.value = extracted.text;
-    input.setSelectionRange(caret, caret);
-  }
-  chatSyncBodyRecipients(input.value);
+  const mentioned = chatSyncBodyRecipients(input.value);
   input.style.height = 'auto';
   input.style.height = Math.min(input.scrollHeight, 120) + 'px';
   chatSuggestOnInput();
-  chatUpdateDefaultRecipient();
+  chatUpdateDefaultRecipient(mentioned);
 }
 
 function chatRecipientInputChanged() {
@@ -819,7 +831,6 @@ function chatSuggestOnInput() {
   if (!inp) return;
   const caret = inp.selectionStart;
   const upto = inp.value.slice(0, caret);
-  chatUpdateDefaultRecipient();
   const sc = upto.match(/^\/([a-z_]*)$/i);
   if (sc) { chatShowCommandPop(sc[1], { start: 0, end: caret }); return; }
   chatMentionOnInput();
@@ -936,22 +947,6 @@ function chatValidRecipientMap() {
   if (active.selfHost) { valid.set('all', 'all'); valid.set('everyone', 'all'); }
   return valid;
 }
-function chatExtractLeadingRecipients(text) {
-  const source = String(text || '');
-  const valid = chatValidRecipientMap();
-  const names = [];
-  let rest = source;
-  const leading = /^\s*@(?:(?:"([^"]{1,60})")|([\p{L}\p{N}_][\p{L}\p{N}_-]{0,59}))(?:\s+|$)/u;
-  while (true) {
-    const match = leading.exec(rest);
-    if (!match) break;
-    const resolved = valid.get(String(match[1] || match[2]).toLowerCase());
-    if (!resolved) break;
-    if (!names.some(name => name.toLowerCase() === resolved.toLowerCase())) names.push(resolved);
-    rest = rest.slice(match[0].length);
-  }
-  return { names, text: rest };
-}
 function chatRecipientToken(name) {
   const value = String(name || '').trim() || 'all';
   return value === 'all' || /^[A-Za-z0-9_][\w-]{0,59}$/.test(value) ? `@${value}` : `@"${value.replace(/"/g, '')}"`;
@@ -994,28 +989,37 @@ function chatSyncBodyRecipients(text) {
 }
 function chatDefaultRecipientNames() {
   const active = chat.active || {};
+  const members = active.members || [];
+  const messages = active.messages || [];
+  const signature = `${chat.activeKey}|${active.selfHost ? 1 : 0}|${active.self || ''}|${members.map(member => `${member.user}:${member.present !== false ? 1 : 0}:${member.host ? 1 : 0}`).join('|')}|${messages.length}|${messages[messages.length - 1]?.id || ''}`;
+  if (chat.defaultRecipientCache?.signature === signature) return chat.defaultRecipientCache.names.slice();
+  let result = [];
   if (active.selfHost) {
-    const members = active.members || [];
     const valid = new Map(members.filter(member => member.present !== false && member.user !== active.self)
       .map(member => [member.user.toLowerCase(), member.user]));
-    const previous = [...(active.messages || [])].reverse().find(message =>
-      !message.system && message.from === active.self && ((message.recipients || []).length || chatParseRecipients(message.text).length));
+    let previous;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (!message.system && message.from === active.self && ((message.recipients || []).length || chatParseRecipients(message.text).length)) { previous = message; break; }
+    }
     if (previous) {
       const recipients = (previous.recipients || []).length ? previous.recipients : chatParseRecipients(previous.text);
-      if (recipients.some(name => ['all', 'everyone'].includes(name.toLowerCase()))) return ['all'];
+      if (recipients.some(name => ['all', 'everyone'].includes(name.toLowerCase()))) result = ['all'];
       const carried = recipients.map(name => valid.get(name.toLowerCase())).filter(Boolean);
-      if (carried.length) return [...new Set(carried)];
+      if (!result.length && carried.length) result = [...new Set(carried)];
     }
-    return ['all'];
+    if (!result.length) result = ['all'];
+  } else {
+    const host = members.find(member => member.host && member.present !== false);
+    result = host?.user ? [host.user] : [];
   }
-  const host = (active.members || []).find(member => member.host && member.present !== false);
-  return host?.user ? [host.user] : [];
+  chat.defaultRecipientCache = { signature, names: result.slice() };
+  return result;
 }
 function chatMaterializeRecipient(text) {
   return String(text || '').trim();
 }
-function chatComposerRecipientNames(text) {
-  const explicit = chatStructuredRecipientNames(text);
+function chatComposerRecipientNames(text, explicit = chatStructuredRecipientNames(text)) {
   const inherited = chatDefaultRecipientNames();
   const selected = [...inherited, ...chat.manualRecipients, ...explicit];
   const removed = new Set(chat.removedRecipients.map(name => name.toLowerCase()));
@@ -1037,20 +1041,24 @@ function chatRemoveRecipient(name) {
   if (!chat.removedRecipients.some(item => item.toLowerCase() === String(name || '').toLowerCase())) chat.removedRecipients.push(String(name || ''));
   chatUpdateDefaultRecipient();
 }
-function chatUpdateDefaultRecipient() {
+function chatUpdateDefaultRecipient(explicitMentions) {
   const input = document.getElementById('chat-input');
   const chips = document.getElementById('chat-recipient-chips');
   if (!input || !chips) return;
   const value = input.value.trimStart();
-  const names = value.startsWith('/') ? [] : chatComposerRecipientNames(value);
+  const mentionedNames = explicitMentions || chatStructuredRecipientNames(value);
+  const names = value.startsWith('/') ? [] : chatComposerRecipientNames(value, mentionedNames);
   const inherited = new Set(chatDefaultRecipientNames().map(name => name.toLowerCase()));
   const manual = new Set(chat.manualRecipients.map(name => name.toLowerCase()));
-  const mentioned = new Set(chatStructuredRecipientNames(value).map(name => name.toLowerCase()));
-  chips.innerHTML = names.map(name => {
+  const mentioned = new Set(mentionedNames.map(name => name.toLowerCase()));
+  const html = names.map(name => {
     const sources = [inherited.has(name.toLowerCase()) ? 'inherited' : '', manual.has(name.toLowerCase()) ? 'manual' : '', mentioned.has(name.toLowerCase()) ? 'mentioned' : ''].filter(Boolean).join(', ');
     return `<span class="chat-recipient-chip" title="Recipient: ${esc(name)} · ${esc(sources)}">${esc(chatRecipientToken(name))}<button type="button" title="Remove ${esc(name)} from this message" onclick="chatRemoveRecipient(decodeURIComponent('${encodeURIComponent(name)}'))">×</button></span>`;
   }).join('');
-  chatSelectRecipient(chat.selectedRecipientIndex);
+  if (chips.innerHTML !== html) {
+    chips.innerHTML = html;
+    chatSelectRecipient(chat.selectedRecipientIndex);
+  }
   document.getElementById('chat-recipient-row')?.classList.toggle('hidden', value.startsWith('/'));
 }
 function chatMentionsMe(text) {
@@ -1297,8 +1305,19 @@ function chatPaintActive() {
   // Repaint the full log from the snapshot (switching rooms).
   const log = document.getElementById('chat-log');
   if (log) {
+    const messages = a.messages || [];
+    const files = a.files || [];
+    const firstMessage = messages[0];
+    const lastMessage = messages[messages.length - 1];
+    const logSnapshotKey = `${chat.activeKey}|${messages.length}|${firstMessage?.id || firstMessage?.ts || ''}|${lastMessage?.id || lastMessage?.ts || ''}|${files.length}|${files[files.length - 1]?.fileId || ''}`;
+    if (chat.logSnapshotKey === logSnapshotKey) {
+      document.getElementById('chat-jump-latest')?.classList.toggle('hidden', chat.followLatest);
+      chatPaintMembers();
+      return;
+    }
     const restoreTop = chat.scrollPositions[chat.activeKey] ?? log.scrollTop;
     const shouldFollow = chat.followLatest;
+    const restoreAnchor = !shouldFollow ? chat.scrollAnchors[chat.activeKey] || chatCaptureScrollAnchor(log) : null;
     log.innerHTML = '';
     chat.renderedIds = new Set();   // reset id-dedup tracking for a clean repaint
     chat.proto = {};                // rebuild protocol status from this room's frames
@@ -1307,7 +1326,9 @@ function chatPaintActive() {
     Object.entries(a.agentStates || {}).forEach(([user, runtimeState]) => { chat.proto[user] = { state: runtimeState }; });
     (a.files || []).forEach(f => chatAppendFileRow(f.key || chat.activeKey, f));
     if (document.getElementById('chat-searchbox')?.value) chatRefreshSearch(true);
-    log.scrollTop = shouldFollow ? log.scrollHeight : restoreTop;
+    if (shouldFollow) log.scrollTop = log.scrollHeight;
+    else chatRestoreScrollAnchor(log, restoreAnchor, restoreTop);
+    chat.logSnapshotKey = logSnapshotKey;
     chat.scrollPositions[chat.activeKey] = log.scrollTop;
     document.getElementById('chat-jump-latest')?.classList.toggle('hidden', shouldFollow);
   }
