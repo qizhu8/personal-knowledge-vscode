@@ -1,5 +1,5 @@
 {
-  "meta": { "locale": "zh-cn", "label": "简体中文" },
+  "meta": { "locale": "zh-hans", "label": "简体中文" },
   "strings": {
     "language.label": "语言",
     "language.auto": "自动（跟随 VS Code）",

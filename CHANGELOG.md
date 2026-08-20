@@ -7,13 +7,13 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [2.5.1] - 2026-08-19
 
-This release adds live English, Simplified Chinese, and Spanish UI switching, and completes the managed-server navigation and Remote-SSH access workflow.
+This release adds live switching across 11 UI languages and completes the managed-server navigation and Remote-SSH access workflow.
 
 ### Fixed
 - Left-aligned every Action cell in the PKM Integration Status table and replaced the ambiguous `Ready · not detected` state with `Ready · starts on demand` plus localized startup guidance.
 - Kept language choices recognizable in every locale by always displaying their native names: `English`, `简体中文`, and `Español`.
 - Moved Stable Link interface selection and Remote-SSH Port Forwarding from individual Server cards into one shared Servers toolbar; the global Port Forward toggle defaults to On and applies to every managed server.
-- Completed live Config localization for explanatory content, runtime/process states, version transitions, setup steps, Paths, and PKM Skill Router targets across English, Simplified Chinese, and Spanish.
+- Completed live Config localization for explanatory content, runtime/process states, version transitions, setup steps, Paths, and PKM Skill Router targets across all supported languages.
 - Replaced the PKM Integration Status CSS grid with a compact semantic table, standardized `No action needed`, and removed button wrapping that created oversized blank rows.
 - Removed aggregate status lights from the top-level Servers and Chatroom navigation entries while retaining per-server lights and adding active/connecting/offline lights to individual hosted and recently joined Rooms.
 - Bumped PKM Skill Router to 1.1.4 and registered the 1.1.3 bundled source for automatic migration, so Update available now presents a real version transition and refreshes unchanged canonical Router content.
@@ -21,7 +21,7 @@ This release adds live English, Simplified Chinese, and Spanish UI switching, an
 - Split server access into a selectable network-IP Stable Link and a localhost Server Link, avoiding accidental dependence on Remote-SSH port forwarding.
 
 ### Added
-- Added structured multilingual UI catalogs for English, Simplified Chinese, and Spanish; Config can switch the live panel/navigation language without losing state, Auto follows VS Code, and primary manifest commands use official package NLS catalogs.
+- Added manifest-driven UI catalogs for English, 简体中文, Español, 日本語, 한국어, Français, Deutsch, Português (Brasil), Italiano, Русский, and العربية; Config switches live panel/navigation language without losing state, Auto follows VS Code, Arabic uses RTL layout, and primary manifest commands use official package NLS catalogs.
 - Added Start, Stop, and Restart context-menu actions for individual Servers in Navigation; display-name rename remains in the card Settings panel without changing the server slug or links.
 - Added expandable Servers and Chatroom navigation with status indicators on individual servers and Rooms; running/connected is green, starting/reconnecting is yellow, and stopped/offline is grey. Top-level category entries remain undecorated.
 

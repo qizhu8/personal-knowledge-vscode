@@ -45,7 +45,7 @@ import { createChatMagicLink, chatInviteMessage } from "./chat-magic-link";
 import { startLiveMarkdownServer } from "./live-note-server";
 import { managedEnvironmentsRoot } from "./environment-paths";
 import { NavigationStatus, summarizeChatNavigation, summarizeServerNavigation } from "./navigation-status";
-import { loadLocaleCatalogs, localizedText, resolveUiLanguage, UiLanguageSetting, uiLanguageSetting } from "./localization";
+import { loadLocaleCatalogs, loadLocaleManifest, localizedText, normalizeUiLanguage, resolveUiLanguage, UiLanguageSetting, uiLanguageSetting } from "./localization";
 import { AiBackend, aiSummarizeScript, listAiBackends, runAiPrompt, scriptCacheDir } from "./ai";
 import {
   cancelMcpPythonScan, combinedMcpInstallInstruction, combinedMcpRegistry,
@@ -2292,7 +2292,8 @@ function getWebviewHtml(webview: vscode.Webview, context: vscode.ExtensionContex
   const languageSetting = uiLanguageSetting();
   const localizationPayload = Buffer.from(JSON.stringify({
     setting: languageSetting,
-    resolved: resolveUiLanguage(languageSetting),
+    resolved: resolveUiLanguage(languageSetting, vscode.env.language, context.extensionPath),
+    locales: loadLocaleManifest(context.extensionPath).locales,
     catalogs: loadLocaleCatalogs(context.extensionPath),
   }), "utf8").toString("base64");
   html = html.replace(/%%I18N_PAYLOAD_B64%%/g, localizationPayload);
@@ -2395,11 +2396,11 @@ async function handleMessage(
 
     case "setUiLanguage": {
       const requested = String(msg.language || "auto") as UiLanguageSetting;
-      const setting: UiLanguageSetting = requested === "en" || requested === "zh-cn" || requested === "es" ? requested : "auto";
+      const setting: UiLanguageSetting = requested === "auto" ? "auto" : normalizeUiLanguage(context.extensionPath, requested) || "auto";
       await vscode.workspace.getConfiguration("personalKnowledge").update("uiLanguage", setting, vscode.ConfigurationTarget.Global);
       const catalogs = loadLocaleCatalogs(context.extensionPath);
-      const resolved = resolveUiLanguage(setting);
-      respond({ command: "uiLanguage", data: { setting, resolved, catalogs } });
+      const resolved = resolveUiLanguage(setting, vscode.env.language, context.extensionPath);
+      respond({ command: "uiLanguage", data: { setting, resolved, locales: loadLocaleManifest(context.extensionPath).locales, catalogs } });
       _treeProvider?.refresh();
       break;
     }

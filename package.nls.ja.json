@@ -1,0 +1,17 @@
+{
+  "extension.description": "個人ナレッジの参照、編集、同期を行い、MCP を介して AI アシスタントに接続し、チャットルームで共同作業できます。",
+  "command.open": "Personal Knowledge Manager: パネルを開く",
+  "command.addNote": "Personal Knowledge Manager: クイックノート",
+  "command.saveSkill": "Personal Knowledge Manager: 選択範囲を Skill として保存",
+  "command.openConfig": "Personal Knowledge Manager: 設定を開く",
+  "command.openChatroom": "Personal Knowledge Manager: チャットルームを開く",
+  "command.openServers": "Personal Knowledge Manager: サーバーを開く",
+  "command.startServer": "サーバーを起動",
+  "command.stopServer": "サーバーを停止",
+  "command.restartServer": "サーバーを再起動",
+  "command.refresh": "Personal Knowledge Manager: 更新",
+  "command.showLogs": "Personal Knowledge Manager: ログを表示",
+  "view.knowledge": "ナレッジ",
+  "configuration.title": "Personal Knowledge Manager",
+  "configuration.uiLanguage": "Personal Knowledge Manager パネルと動的ナビゲーションの表示言語。"
+}

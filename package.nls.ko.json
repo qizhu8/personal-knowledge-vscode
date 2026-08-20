@@ -1,0 +1,17 @@
+{
+  "extension.description": "개인 지식을 탐색, 편집 및 동기화하고 MCP를 통해 AI 도우미에 연결하여 채팅방에서 협업합니다.",
+  "command.open": "Personal Knowledge Manager: 패널 열기",
+  "command.addNote": "Personal Knowledge Manager: 빠른 노트",
+  "command.saveSkill": "Personal Knowledge Manager: 선택 영역을 Skill로 저장",
+  "command.openConfig": "Personal Knowledge Manager: 구성 열기",
+  "command.openChatroom": "Personal Knowledge Manager: 채팅방 열기",
+  "command.openServers": "Personal Knowledge Manager: 서버 열기",
+  "command.startServer": "서버 시작",
+  "command.stopServer": "서버 중지",
+  "command.restartServer": "서버 다시 시작",
+  "command.refresh": "Personal Knowledge Manager: 새로 고침",
+  "command.showLogs": "Personal Knowledge Manager: 로그 표시",
+  "view.knowledge": "지식",
+  "configuration.title": "Personal Knowledge Manager",
+  "configuration.uiLanguage": "Personal Knowledge Manager 패널 및 동적 탐색의 표시 언어입니다."
+}

@@ -201,12 +201,19 @@ function scheduleUiTranslation() {
 function applyUiLanguage(payload) {
   uiI18n = Object.assign({}, uiI18n, payload || {});
   translateUi();
+  const locale = (uiI18n.locales || []).find(item => item.id === uiI18n.resolved);
+  document.documentElement.dir = locale?.direction || 'ltr';
   const selector = document.getElementById('pkm-language-select');
   if (selector) selector.value = uiI18n.setting || 'auto';
 }
 function changeUiLanguage(setting) {
-  if (setting === 'en' || setting === 'zh-cn' || setting === 'es') applyUiLanguage({ setting, resolved: setting });
+  if (uiI18n.catalogs?.[setting]) applyUiLanguage({ setting, resolved: setting });
   ask('setUiLanguage', { language: setting });
+}
+function languageOptionsHtml() {
+  const options = [`<option value="auto" data-i18n="language.auto" ${uiI18n.setting === 'auto' ? 'selected' : ''}>${esc(t('language.auto'))}</option>`];
+  for (const locale of uiI18n.locales || []) options.push(`<option value="${esc(locale.id)}" ${uiI18n.setting === locale.id ? 'selected' : ''}>${esc(locale.label)}</option>`);
+  return options.join('');
 }
 new MutationObserver(scheduleUiTranslation).observe(document.body, { childList: true, subtree: true });
 scheduleUiTranslation();

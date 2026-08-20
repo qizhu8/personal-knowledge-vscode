@@ -1,0 +1,17 @@
+{
+  "extension.description": "Просматривайте, редактируйте и синхронизируйте личные знания; подключайте ИИ-помощников через MCP и работайте совместно в чат-комнатах.",
+  "command.open": "Personal Knowledge Manager: Открыть панель",
+  "command.addNote": "Personal Knowledge Manager: Быстрая заметка",
+  "command.saveSkill": "Personal Knowledge Manager: Сохранить выделение как навык",
+  "command.openConfig": "Personal Knowledge Manager: Открыть настройку",
+  "command.openChatroom": "Personal Knowledge Manager: Открыть чат-комнату",
+  "command.openServers": "Personal Knowledge Manager: Открыть серверы",
+  "command.startServer": "Запустить сервер",
+  "command.stopServer": "Остановить сервер",
+  "command.restartServer": "Перезапустить сервер",
+  "command.refresh": "Personal Knowledge Manager: Обновить",
+  "command.showLogs": "Personal Knowledge Manager: Показать журналы",
+  "view.knowledge": "Знания",
+  "configuration.title": "Personal Knowledge Manager",
+  "configuration.uiLanguage": "Язык интерфейса панели Personal Knowledge Manager и динамической навигации."
+}

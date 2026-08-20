@@ -1,0 +1,17 @@
+{
+  "extension.description": "Durchsuchen, bearbeiten und synchronisieren Sie persönliches Wissen; verbinden Sie KI-Assistenten über MCP und arbeiten Sie in Chaträumen zusammen.",
+  "command.open": "Personal Knowledge Manager: Bereich öffnen",
+  "command.addNote": "Personal Knowledge Manager: Schnellnotiz",
+  "command.saveSkill": "Personal Knowledge Manager: Auswahl als Skill speichern",
+  "command.openConfig": "Personal Knowledge Manager: Konfiguration öffnen",
+  "command.openChatroom": "Personal Knowledge Manager: Chatraum öffnen",
+  "command.openServers": "Personal Knowledge Manager: Server öffnen",
+  "command.startServer": "Server starten",
+  "command.stopServer": "Server beenden",
+  "command.restartServer": "Server neu starten",
+  "command.refresh": "Personal Knowledge Manager: Aktualisieren",
+  "command.showLogs": "Personal Knowledge Manager: Protokolle anzeigen",
+  "view.knowledge": "Wissen",
+  "configuration.title": "Personal Knowledge Manager",
+  "configuration.uiLanguage": "Anzeigesprache für den Personal Knowledge Manager-Bereich und die dynamische Navigation."
+}

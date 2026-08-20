@@ -1,0 +1,17 @@
+{
+  "extension.description": "Parcourez, modifiez et synchronisez vos connaissances personnelles ; connectez des assistants IA via MCP et collaborez dans des salons de discussion.",
+  "command.open": "Personal Knowledge Manager: Ouvrir le panneau",
+  "command.addNote": "Personal Knowledge Manager: Note rapide",
+  "command.saveSkill": "Personal Knowledge Manager: Enregistrer la sélection comme compétence",
+  "command.openConfig": "Personal Knowledge Manager: Ouvrir la configuration",
+  "command.openChatroom": "Personal Knowledge Manager: Ouvrir le salon de discussion",
+  "command.openServers": "Personal Knowledge Manager: Ouvrir les serveurs",
+  "command.startServer": "Démarrer le serveur",
+  "command.stopServer": "Arrêter le serveur",
+  "command.restartServer": "Redémarrer le serveur",
+  "command.refresh": "Personal Knowledge Manager: Actualiser",
+  "command.showLogs": "Personal Knowledge Manager: Afficher les journaux",
+  "view.knowledge": "Connaissances",
+  "configuration.title": "Personal Knowledge Manager",
+  "configuration.uiLanguage": "Langue d’affichage du panneau Personal Knowledge Manager et de la navigation dynamique."
+}

@@ -1,0 +1,15 @@
+{
+  "locales": [
+    { "id": "en", "label": "English", "vscodePrefixes": ["en"] },
+    { "id": "zh-hans", "label": "简体中文", "aliases": ["zh-cn"], "packageNls": "zh-cn", "vscodePrefixes": ["zh-cn", "zh-sg", "zh-hans"] },
+    { "id": "es", "label": "Español", "vscodePrefixes": ["es"] },
+    { "id": "ja", "label": "日本語", "vscodePrefixes": ["ja"] },
+    { "id": "ko", "label": "한국어", "vscodePrefixes": ["ko"] },
+    { "id": "fr", "label": "Français", "vscodePrefixes": ["fr"] },
+    { "id": "de", "label": "Deutsch", "vscodePrefixes": ["de"] },
+    { "id": "pt-br", "label": "Português (Brasil)", "vscodePrefixes": ["pt-br", "pt"] },
+    { "id": "it", "label": "Italiano", "vscodePrefixes": ["it"] },
+    { "id": "ru", "label": "Русский", "vscodePrefixes": ["ru"] },
+    { "id": "ar", "label": "العربية", "vscodePrefixes": ["ar"], "direction": "rtl" }
+  ]
+}

@@ -151,14 +151,15 @@ function bootstrap(view) {
 
 function panelHtml(view) {
   let html = fs.readFileSync(path.join(webview, "panel.html"), "utf8");
-  const catalogs = Object.fromEntries(["en", "zh-cn", "es"].map(locale => [locale, JSON.parse(fs.readFileSync(path.join(root, "resources", "locales", `${locale}.json`), "utf8"))]));
+  const localeManifest = JSON.parse(fs.readFileSync(path.join(root, "resources", "locales", "manifest.json"), "utf8"));
+  const catalogs = Object.fromEntries(localeManifest.locales.map(locale => [locale.id, JSON.parse(fs.readFileSync(path.join(root, "resources", "locales", `${locale.id}.json`), "utf8"))]));
   html = html.replace(/<meta http-equiv="Content-Security-Policy"[^>]*>/, "");
   const replacements = {
     "%%NOTES_BASE%%": "/demo/notes", "%%HLJS_CSS%%": "/hljs.css", "%%KATEX_CSS%%": "/katex.css",
     "%%MARKED_SRC%%": "/marked.umd.js", "%%HLJS_SRC%%": "/hljs.js", "%%KATEX_SRC%%": "/katex.js",
     "%%CYTOSCAPE_SRC%%": "/cytoscape.js", "%%MERMAID_SRC%%": "/mermaid.js", "%%FORCEGRAPH3D_SRC%%": "/forcegraph3d.js",
     "%%PANEL_CSS%%": "/panel.css", "%%PANEL_JS%%": "/panel.js", "%%PKM_VERSION%%": "2.5.1",
-    "%%I18N_PAYLOAD_B64%%": Buffer.from(JSON.stringify({ setting: "en", resolved: "en", catalogs }), "utf8").toString("base64"),
+    "%%I18N_PAYLOAD_B64%%": Buffer.from(JSON.stringify({ setting: "en", resolved: "en", locales: localeManifest.locales, catalogs }), "utf8").toString("base64"),
   };
   for (const [token, value] of Object.entries(replacements)) html = html.split(token).join(value);
   return html.replace("</head>", `${bootstrap(view)}</head>`);

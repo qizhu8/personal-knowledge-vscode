@@ -3,17 +3,24 @@
 Personal Knowledge Manager supports these panel languages:
 
 - `en` — English
-- `zh-cn` — 简体中文
+- `zh-hans` — 简体中文 (`zh-cn` is accepted as a compatibility alias)
 - `es` — Español
+- `ja` — 日本語
+- `ko` — 한국어
+- `fr` — Français
+- `de` — Deutsch
+- `pt-br` — Português (Brasil)
+- `it` — Italiano
+- `ru` — Русский
+- `ar` — العربية
 
 ## Catalogs
 
-Runtime panel/navigation strings live in:
+Runtime panel/navigation strings and locale registration live in:
 
 ```text
-resources/locales/en.json
-resources/locales/zh-cn.json
-resources/locales/es.json
+resources/locales/manifest.json
+resources/locales/<locale>.json
 ```
 
 All catalogs must contain exactly the same keys. English is the source language and fallback.
@@ -22,8 +29,7 @@ VS Code-owned surfaces such as Command Palette titles and the Activity Bar view 
 
 ```text
 package.nls.json
-package.nls.zh-cn.json
-package.nls.es.json
+package.nls.<locale>.json
 ```
 
 These follow the VS Code display language. The Config language selector controls the PKM webview and dynamic navigation without reloading the panel.
@@ -43,21 +49,19 @@ The runtime translator also maps cataloged English phrases in legacy templates a
 ## Adding a Language
 
 1. Copy `resources/locales/en.json`, set its locale and native label, and translate every string value without changing keys.
-2. Register the locale in `src/localization.ts`, including Auto language resolution when applicable.
-3. Add its native-name option to the Config selector and `personalKnowledge.uiLanguage` enum.
+2. Add one entry to `resources/locales/manifest.json`, including native label, VS Code language prefixes, and `direction: "rtl"` when applicable.
+3. Add the locale ID and native label to the `personalKnowledge.uiLanguage` enum. The Config selector and runtime catalog loading are generated from the locale manifest.
 4. Add the corresponding `package.nls.<locale>.json` for VS Code-owned surfaces.
-5. Add the locale to `tests/test-localization.js`; key parity and non-empty values are then enforced automatically.
+5. Run `tests/test-localization.js`; it discovers locales from the manifest and enforces catalog/NLS key parity, placeholders, labels, Settings alignment, Auto resolution, and RTL metadata.
 6. Run `npm run test:localization` and exercise live switching without reloading the panel.
 
-Language choices must always use native names, such as `English`, `简体中文`, and `Español`, so users can recognize their language before changing the UI.
+Language choices must always use native names, such as `English`, `简体中文`, `日本語`, and `العربية`, so users can recognize their language before changing the UI.
 
 ## Language Resolution
 
 `personalKnowledge.uiLanguage` accepts:
 
-- `auto` — follow VS Code (`zh*` → `zh-cn`, `es*` → `es`, otherwise `en`)
-- `en`
-- `zh-cn`
-- `es`
+- `auto` — follow the longest matching `vscodePrefixes` entry in `resources/locales/manifest.json`, otherwise use `en`
+- any locale ID registered in the manifest
 
 Changing the language in Config updates the current panel immediately and persists globally.

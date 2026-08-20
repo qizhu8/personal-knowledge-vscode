@@ -1,0 +1,17 @@
+{
+  "extension.description": "استعرض معارفك الشخصية وحرّرها وزامنها؛ وصّل مساعدي الذكاء الاصطناعي عبر MCP وتعاون في غرف الدردشة.",
+  "command.open": "Personal Knowledge Manager: فتح اللوحة",
+  "command.addNote": "Personal Knowledge Manager: ملاحظة سريعة",
+  "command.saveSkill": "Personal Knowledge Manager: حفظ التحديد كمهارة",
+  "command.openConfig": "Personal Knowledge Manager: فتح الإعداد",
+  "command.openChatroom": "Personal Knowledge Manager: فتح غرفة الدردشة",
+  "command.openServers": "Personal Knowledge Manager: فتح الخوادم",
+  "command.startServer": "بدء تشغيل الخادم",
+  "command.stopServer": "إيقاف الخادم",
+  "command.restartServer": "إعادة تشغيل الخادم",
+  "command.refresh": "Personal Knowledge Manager: تحديث",
+  "command.showLogs": "Personal Knowledge Manager: عرض السجلات",
+  "view.knowledge": "المعرفة",
+  "configuration.title": "Personal Knowledge Manager",
+  "configuration.uiLanguage": "لغة عرض لوحة Personal Knowledge Manager والتنقل الديناميكي."
+}
