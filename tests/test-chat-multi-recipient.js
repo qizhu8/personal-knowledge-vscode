@@ -38,6 +38,9 @@ async function main() {
   const sockets = []; let hub;
   try {
     hub = new ChatHub();
+    assert.deepStrictEqual(hub.allMentionNames("email foo@example and literal x@Agent"), [],
+      "Hub fallback parser must ignore email-like @ tokens embedded in words");
+    assert.deepStrictEqual(hub.allMentionNames('ask @Amy and @"Agent A"'), ["Amy", "Agent A"]);
     hub.configureLifecycle(root, 1024 * 1024, "owner", new MemorySecretStorage());
     await hub.start(0);
     const room = await hub.createRoom("Three Recipients", "secret");
@@ -53,6 +56,10 @@ async function main() {
 
     const text = '@"Agent A" @"Agent B" @"Agent Three" test all three';
     host.send(JSON.stringify({ t: "msg", room: room.room, text, kind: "human" }));
+    const senderEcho = await waitFor(() => host.frames.find(frame => frame.t === "msg" && frame.text === text));
+    assert.strictEqual(senderEcho.receipt?.ack, false, "sender echo must not count as recipient delivery");
+    assert.strictEqual(host.frames.filter(frame => frame.t === "msg" && frame.text === text).length, 1,
+      "Hub must echo the accepted message exactly once because clients do not render a local optimistic copy");
     const delivered = [];
     for (const socket of sockets.slice(1)) {
       delivered.push(await waitFor(() => socket.frames.find(frame => frame.t === "msg" && frame.text === text)));
@@ -84,22 +91,29 @@ async function main() {
     assert.strictEqual(discuss.mode, "discuss");
     assert.deepStrictEqual(new Set(discuss.discussionAudience), new Set(["Agent A", "Agent B"]));
 
+    sockets[3].terminate();
+    await waitFor(() => host.frames.find(frame => frame.t === "presence" &&
+      frame.members?.find(member => member.user === "Agent Three")?.present === false));
+    const offlineDiscussText = '@"Agent A" @"Agent B" @"Agent Three" continue with offline context';
+    host.send(JSON.stringify({ t: "msg", room: room.room, text: offlineDiscussText, kind: "human",
+      mode: "discuss", replyPolicy: "required" }));
+    const offlineDiscuss = await waitFor(() => sockets[1].frames.find(frame => frame.t === "msg" && frame.text === offlineDiscussText));
+    assert.deepStrictEqual(new Set(offlineDiscuss.discussionAudience), new Set(["Agent A", "Agent B", "Agent Three"]),
+      "discussion audience must retain explicitly mentioned offline roster members");
+    assert.strictEqual(offlineDiscuss.receipt?.total, 2, "live receipt total must count only connected delivery targets");
+
     const trailingText = '@Host status table\n\n| Item | State |\n|---|---|\n| build | ready |\n\n@"Agent B" @"Agent Three" please send latest delta';
     sockets[1].send(JSON.stringify({ t: "msg", room: room.room, text: trailingText, kind: "agent",
       recipients: ["Host", "Agent B", "Agent Three"], replyPolicy: "required" }));
     const trailingHost = await waitFor(() => host.frames.find(frame => frame.t === "msg" && frame.text === trailingText));
     const trailingB = await waitFor(() => sockets[2].frames.find(frame => frame.t === "msg" && frame.text === trailingText));
-    const trailingThree = await waitFor(() => sockets[3].frames.find(frame => frame.t === "msg" && frame.text === trailingText));
-    assert.strictEqual(trailingHost.receipt?.total, 3);
+    assert.strictEqual(trailingHost.receipt?.total, 2);
     assert.strictEqual(trailingB.receipt?.ack, true);
-    assert.strictEqual(trailingThree.receipt?.ack, true);
 
     const legacyTrailingText = '@Host legacy body\n\n@"Agent B" @"Agent Three" all mentions route';
     sockets[1].send(JSON.stringify({ t: "msg", room: room.room, text: legacyTrailingText, kind: "agent", replyPolicy: "required" }));
     const legacyB = await waitFor(() => sockets[2].frames.find(frame => frame.t === "msg" && frame.text === legacyTrailingText));
-    const legacyThree = await waitFor(() => sockets[3].frames.find(frame => frame.t === "msg" && frame.text === legacyTrailingText));
-    assert.strictEqual(legacyB.receipt?.total, 3, "legacy frames must route every valid mention, not only the leading prefix");
-    assert.strictEqual(legacyThree.receipt?.ack, true);
+    assert.strictEqual(legacyB.receipt?.total, 2, "legacy frames must route every valid online mention, not only the leading prefix");
 
     const quotedText = '@"Agent B" quoting the table';
     host.send(JSON.stringify({ t: "msg", room: room.room, text: quotedText, kind: "human",
@@ -127,6 +141,24 @@ async function main() {
     assert.strictEqual(rejectedReceipt.correctable, true);
     assert.strictEqual(rejectedReceipt.connectionAlive, true);
     assert(!host.frames.some(frame => frame.t === "msg" && frame.text === "@all forbidden"));
+
+    sockets[1].send(JSON.stringify({ t: "msg", room: room.room, text: "@all disguised broadcast", kind: "agent",
+      recipients: ["Host"], clientRequestId: "rejected-disguised-1" }));
+    const disguisedBroadcast = await waitFor(() => sockets[1].frames.find(frame => frame.t === "error" && frame.clientRequestId === "rejected-disguised-1"));
+    assert.strictEqual(disguisedBroadcast.code, "host-only-broadcast");
+    assert(!host.frames.some(frame => frame.t === "msg" && frame.text === "@all disguised broadcast"));
+
+    sockets[1].send(JSON.stringify({ t: "msg", room: room.room, text: "@Ghost must not broadcast", kind: "agent", clientRequestId: "unknown-1" }));
+    const unknownReceipt = await waitFor(() => sockets[1].frames.find(frame => frame.t === "error" && frame.clientRequestId === "unknown-1"));
+    assert.strictEqual(unknownReceipt.code, "mention-required");
+    assert.strictEqual(unknownReceipt.connectionAlive, true);
+    assert(!host.frames.some(frame => frame.t === "msg" && frame.text === "@Ghost must not broadcast"));
+
+    sockets[1].send(JSON.stringify({ t: "msg", room: room.room, text: "private metadata", kind: "agent",
+      recipients: ["Ghost"], clientRequestId: "unknown-structured-1" }));
+    const unknownStructured = await waitFor(() => sockets[1].frames.find(frame => frame.t === "error" && frame.clientRequestId === "unknown-structured-1"));
+    assert.strictEqual(unknownStructured.code, "mention-required");
+    assert(!host.frames.some(frame => frame.t === "msg" && frame.text === "private metadata"));
     console.log("chat multi-recipient test: Host reaches three Agents; Agent reaches two peers; non-Host @all rejected OK");
   } finally {
     for (const socket of sockets) try { socket.terminate(); } catch {}

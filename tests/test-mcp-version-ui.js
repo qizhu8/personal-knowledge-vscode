@@ -18,17 +18,17 @@ vm.createContext(presentationContext);
 new vm.Script(`${presentation[0]}; this.present = mcpRegeneratePresentation;`).runInContext(presentationContext);
 
 const outdated = presentationContext.present({
-  installed: true, current: false, installedVersion: "2.4.0", expectedVersion: "2.5.1",
+  installed: true, current: false, installedVersion: "2.4.0", expectedVersion: "2.5.3",
   installedKnowledgeVersion: "1.0.0", knowledgeVersion: "1.0.0",
   installedChatVersion: "2.2.1", chatVersion: "2.3.0",
 });
-assert.strictEqual(outdated.label, "Regenerate Server Code · v2.4.0 → v2.5.1");
-assert.match(outdated.title, /Unified v2\.4\.0 → v2\.5\.1/);
+assert.strictEqual(outdated.label, "Regenerate Server Code · v2.4.0 → v2.5.3");
+assert.match(outdated.title, /Unified v2\.4\.0 → v2\.5\.3/);
 assert.match(outdated.title, /Chat v2\.2\.1 → v2\.3\.0/);
-assert.strictEqual(presentationContext.present({ installed: true, current: true, expectedVersion: "2.5.1", knowledgeVersion: "1.0.0", chatVersion: "2.3.0" }).label,
-  "Regenerate Server Code · v2.5.1");
-assert.strictEqual(presentationContext.present({ installed: false, expectedVersion: "2.5.1" }).label,
-  "Generate Server Code · target v2.5.1");
+assert.strictEqual(presentationContext.present({ installed: true, current: true, expectedVersion: "2.5.3", knowledgeVersion: "1.0.0", chatVersion: "2.3.0" }).label,
+  "Regenerate Server Code · v2.5.3");
+assert.strictEqual(presentationContext.present({ installed: false, expectedVersion: "2.5.3" }).label,
+  "Generate Server Code · target v2.5.3");
 
 const skillStart = panelJs.indexOf("function pkmSkillStateBadge");
 const skillEnd = panelJs.indexOf("function renderMcpPane", skillStart);
@@ -67,6 +67,9 @@ assert(extensionTs.includes("stat.blocks * 512"));
 assert.doesNotMatch(extensionTs, /execFile\(["']du["']/);
 assert(extensionTs.includes('case "refreshMcpPathSizes"'));
 assert(extensionTs.includes("mcpPathSizeCache.clear()"));
+assert(extensionTs.includes("mcpPathSizeGeneration += 1"));
+assert(extensionTs.includes("generation !== mcpPathSizeGeneration"));
+assert(extensionTs.includes("sendMcpPathSizes(respond, mcpPathSizeGeneration)"));
 assert.doesNotMatch(extensionTs, /300_000|Date\.now\(\) - cached\.at/);
 assert(panelJs.includes("function refreshMcpPathSizes"));
 assert(panelJs.includes("↻ Refresh sizes"));

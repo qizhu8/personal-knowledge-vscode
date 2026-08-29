@@ -2,6 +2,8 @@
 document.querySelectorAll('.tab').forEach(t =>
   t.addEventListener('click', () => {
     state.tab = t.dataset.tab; state.filter = 'all'; state.search = '';
+    currentDetail = null;
+    currentDetailRequest = null;
     vscode.setState({ ...(vscode.getState() || {}), tab: state.tab });
     document.getElementById('searchbox').value = '';
     document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x.dataset.tab === state.tab));
@@ -30,6 +32,7 @@ document.querySelectorAll('.tab').forEach(t =>
       document.getElementById('searchbox').style.display = 'none';
       document.getElementById('detail').innerHTML = '<div class="empty">Loading servers…</div>';
       ask('serverList', {});
+      ask('serverGroupList', {});
     } else if (state.tab === 'chatroom') {
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
@@ -334,18 +337,22 @@ function setFilter(f) { state.filter = f; renderList(); }
 function setNoteFilter(f) { state.filter = f; renderList(); }
 
 // ── Open detail ────────────────────────────────────────────────────────────
+function requestDetail(type, key) {
+  currentDetailRequest = { type, key };
+  ask('detail', currentDetailRequest);
+}
 function openItem(type, key) {
   document.querySelectorAll('.li').forEach(l => l.classList.remove('active'));
   event?.currentTarget?.classList?.add('active');
-  ask('detail', { type, key });
+  requestDetail(type, key);
 }
 
 function openPromptFile(proj, task, ver, fname) {
-  ask('detail', { type:'prompt', key: proj+'|'+task+'|'+ver+'|'+fname });
+  requestDetail('prompt', proj+'|'+task+'|'+ver+'|'+fname);
 }
 
 function openPromptDiff(proj, task, fname) {
-  ask('detail', { type:'promptDiff', key: proj+'|'+task+'|'+fname });
+  requestDetail('promptDiff', proj+'|'+task+'|'+fname);
 }
 
 function toggleTree(hdr) {
@@ -360,7 +367,7 @@ function toggleTree(hdr) {
 }
 
 function openPrompt(proj, task, ver) {
-  ask('detail', { type:'prompt', key: proj+'|'+task+'|'+ver });
+  requestDetail('prompt', proj+'|'+task+'|'+ver);
 }
 
 // ── Render detail ──────────────────────────────────────────────────────────
@@ -386,7 +393,8 @@ function markdownToolbar(data) {
 function renderDetail(data) {
   renderNonce++; // fresh asset URLs each open so late-added images bypass stale cache
   const el = document.getElementById('detail');
-  if (!data) { currentDetail = null; el.innerHTML = '<div class="empty">Not found.</div>'; return; }
+  if (!data) { currentDetail = null; currentDetailRequest = null; el.innerHTML = '<div class="empty">Not found.</div>'; return; }
+  currentDetail = data;
 
   if (data.type === 'skill') {
     currentDetail = data;
@@ -642,7 +650,7 @@ function peekCachedSummary() {
   ask('aiSummary', { path: d.path, backend: sel.value, cacheOnly: true });
 }
 
-function loadPkgFile(pkg, file) { ask('detail', { type:'packageFile', key: pkg+'|'+file }); }
+function loadPkgFile(pkg, file) { requestDetail('packageFile', pkg+'|'+file); }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 function buildToc(md) {
@@ -1192,9 +1200,21 @@ function showPaperMenu(x, y, items) {
   for (const it of items) {
     if (it.sep) { const d = document.createElement('div'); d.className = 'pctx-sep'; m.appendChild(d); continue; }
     const el = document.createElement('div');
-    el.className = 'pctx-item' + (it.header ? ' pctx-header' : '') + (it.danger ? ' pctx-danger' : '') + (it.active ? ' pctx-active' : '');
+    el.className = 'pctx-item' + (it.header ? ' pctx-header' : '') + (it.danger ? ' pctx-danger' : '') + (it.active ? ' pctx-active' : '') + (it.children ? ' pctx-has-submenu' : '');
     el.textContent = it.label;
-    if (!it.header) el.onclick = ev => { ev.stopPropagation(); closePaperMenu(); it.onClick(); };
+    if (it.children) {
+      const arrow = document.createElement('span'); arrow.className = 'pctx-arrow'; arrow.textContent = '›'; el.appendChild(arrow);
+      const submenu = document.createElement('div'); submenu.className = 'pctx-submenu';
+      for (const child of it.children) {
+        if (child.sep) { const separator = document.createElement('div'); separator.className = 'pctx-sep'; submenu.appendChild(separator); continue; }
+        const childElement = document.createElement('div');
+        childElement.className = 'pctx-item' + (child.active ? ' pctx-active' : ''); childElement.textContent = child.label;
+        childElement.onclick = ev => { ev.stopPropagation(); closePaperMenu(); child.onClick(); };
+        submenu.appendChild(childElement);
+      }
+      el.appendChild(submenu);
+      el.onclick = ev => ev.stopPropagation();
+    } else if (!it.header) el.onclick = ev => { ev.stopPropagation(); closePaperMenu(); it.onClick(); };
     m.appendChild(el);
   }
   document.body.appendChild(m);

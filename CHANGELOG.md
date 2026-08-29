@@ -5,14 +5,48 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.5.3] - 2026-08-29
+
+This patch release completes managed Server organization, port/process safety, Navigation parity, and state-aware sidebar guidance.
+
+### Added
+- Added complete managed Server group operations: drag Servers between nested groups or Ungrouped, rename a group from the dashboard or Navigation, and delete a group by safely promoting all contained Servers and child groups to its parent.
+- Mirrored the Python Environments dashboard hierarchy in Navigation as manager → root folder → environment, including Python version and missing-path state.
+- Added a permanent Hidden Server group whose contents stay searchable in the dashboard but are excluded from Navigation.
+- Added centralized managed-port allocation and visibility: new/imported Servers receive unique ports, duplicate edits and starts are rejected, old duplicate manifests are repaired on startup, and Settings can select the next free managed port.
+- Added external-listener detection so a registered port already running outside PKM is shown accurately without unsafe Stop/Restart controls.
+- Added a confirmed **Force Stop** action for external listeners that displays the exact PID and command, revalidates process identity before termination, and refreshes the detected state afterward.
+- Added persistent empty Server groups, a **New group** action, and a Server-card **Move to group** submenu containing Ungrouped, every existing group, and atomic New group creation.
+- Added **Move to Group…** to each Server's Navigation context menu, with a dynamic picker for Ungrouped, Hidden, every existing group, and New group creation.
+
+### Changed
+- Made both displayed Stable Link and Server Local Link URLs directly clickable and keyboard-accessible with the same behavior as their Open buttons.
+- Restricted Server drag-and-drop to a dedicated `⋮⋮` handle so names, tags, commands, paths, and links remain selectable and copyable.
+- Increased Server dashboard contrast by rendering Hidden with opaque theme-aware selection colors and promoting New group to a high-contrast primary button.
+- Made empty content tabs explain when their sidebar is collapsed, point to the actual `▶` restore control, and update the hint immediately across all 11 UI languages when sidebar state or language changes.
+- Grouped root-level ungrouped Servers under a localized, default-expanded **Ungrouped** Navigation node so its disclosure arrow aligns exactly with every other top-level Server group and can be collapsed to reduce tree length.
+
+## [2.5.2] - 2026-08-21
+
+This patch release stabilizes Chatroom composing and keeps the reader's historical-message focus unchanged during live updates.
+
+### Fixed
+- Added a clickable Environments entry to Navigation so the Python Environments dashboard is reachable directly from the Activity Bar tree.
+- Unified structured recipient behavior across Extension, Browser, Hub, and MCP clients: authored text remains unchanged, full-message mentions become To recipients, unknown/email-like aliases cannot route or broadcast, and non-Host `@all` cannot be disguised by conflicting metadata.
+- Preserved explicitly mentioned offline roster members in discussion audiences and subsequent structured replies while keeping live delivery receipts limited to connected recipients.
+- Made every visible Refresh action honor its scope: Environments now force-update path/Python/size metadata, MCP size refreshes reject stale in-flight scans, and Knowledge refreshes re-read the exact open Skill, Note, Paper, Prompt, Package/File, or Script detail.
+- Resolved localization against the caller's actual extension path and updated README descriptions to match per-item navigation status and the 11-language UI.
+- Preserved the exact visible historical message and offset when thinking/sending banners appear or disappear and when the composer grows or resets after sending, preventing surrounding layout changes from moving the reader's focus.
+- Made **Show latest message** a persistent follow mode: after activation, new messages, images, and asynchronous Mermaid layout remain pinned to the newest content until the reader deliberately scrolls upward.
+- Removed Chatroom composer stalls by caching inherited recipients, parsing body mentions once per input event, avoiding unchanged To-chip DOM rebuilds, and skipping full Markdown transcript repaints for presence-only state updates.
+- Preserved authored mentions everywhere in the Chatroom message body, including leading task-assignment mentions, while continuing to derive the structured To audience from every valid body mention.
+- Kept the reader's exact historical-message viewport anchored across presence updates, new messages, and snapshot repaints; only the explicit Jump to latest action resumes following the newest message.
+
 ## [2.5.1] - 2026-08-19
 
 This release adds live switching across 11 UI languages and completes the managed-server navigation and Remote-SSH access workflow.
 
 ### Fixed
-- Removed Chatroom composer stalls by caching inherited recipients, parsing body mentions once per input event, avoiding unchanged To-chip DOM rebuilds, and skipping full Markdown transcript repaints for presence-only state updates.
-- Preserved authored mentions everywhere in the Chatroom message body, including leading task-assignment mentions, while continuing to derive the structured To audience from every valid body mention.
-- Kept the reader's exact historical-message viewport anchored across presence updates, new messages, and snapshot repaints; only the explicit Jump to latest action resumes following the newest message.
 - Left-aligned every Action cell in the PKM Integration Status table and replaced the ambiguous `Ready · not detected` state with `Ready · starts on demand` plus localized startup guidance.
 - Kept language choices recognizable in every locale by always displaying their native names: `English`, `简体中文`, and `Español`.
 - Moved Stable Link interface selection and Remote-SSH Port Forwarding from individual Server cards into one shared Servers toolbar; the global Port Forward toggle defaults to On and applies to every managed server.
@@ -24,6 +58,8 @@ This release adds live switching across 11 UI languages and completes the manage
 - Split server access into a selectable network-IP Stable Link and a localhost Server Link, avoiding accidental dependence on Remote-SSH port forwarding.
 
 ### Added
+- Added slash-separated, arbitrarily nested Server groups in both the Servers dashboard and Navigation; groups are collapsible, remember their open state, show descendant counts, and keep starred servers pinned first within their immediate group.
+- Added searchable tags to managed Server manifests and an immediate multi-field Servers search across name, slug, group, tags, command, Python, and status; matching groups expand temporarily and return to their saved collapse state when search is cleared.
 - Added manifest-driven UI catalogs for English, 简体中文, Español, 日本語, 한국어, Français, Deutsch, Português (Brasil), Italiano, Русский, and العربية; Config switches live panel/navigation language without losing state, Auto follows VS Code, Arabic uses RTL layout, and primary manifest commands use official package NLS catalogs.
 - Added Start, Stop, and Restart context-menu actions for individual Servers in Navigation; display-name rename remains in the card Settings panel without changing the server slug or links.
 - Added expandable Servers and Chatroom navigation with status indicators on individual servers and Rooms; running/connected is green, starting/reconnecting is yellow, and stopped/offline is grey. Top-level category entries remain undecorated.

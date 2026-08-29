@@ -666,17 +666,19 @@ export class ChatHub {
       const head = text.trim().split(/\s+/)[0].toLowerCase();
       if (head === "/stop") { await this.stopAgentConnections(conn, text); return; }
       if (text.trim().startsWith("/") && head !== "/leave") { await this.handleCommand(conn, text.trim()); return; }
+      const roomState = this.roomState(conn.room);
       const structuredRecipients = Array.isArray(frame.recipients)
         ? frame.recipients.map(name => String(name || "").trim()).filter(Boolean).slice(0, 64)
         : [];
-      const recipientNames = (structuredRecipients.length ? structuredRecipients : this.allMentionNames(text)).map(name => name.toLowerCase());
+      const requestedRecipients = structuredRecipients.length ? structuredRecipients : this.allMentionNames(text);
+      const recipientNames = this.validRecipientNames(roomState, conn, requestedRecipients);
       if (!text.trim().startsWith("/") && !recipientNames.length) {
         rejectMessage("mention-required", "Every Chatroom message must address @all or a specific @participant.");
         return;
       }
       if (this.isMuted(conn)) { rejectMessage("muted", "You are muted by the host and can't post right now."); return; }
-      const roomState = this.roomState(conn.room);
-      const broadcastRequested = recipientNames.some(name => name === "all" || name === "everyone");
+      const bodyBroadcastRequested = this.allMentionNames(text).some(name => name.toLowerCase() === "all" || name.toLowerCase() === "everyone");
+      const broadcastRequested = bodyBroadcastRequested || recipientNames.some(name => name === "all" || name === "everyone");
       if (broadcastRequested && !this.isOwnerConn(roomState, conn)) {
         rejectMessage("host-only-broadcast", "Only the Room Host can use @all. Address specific participants instead.");
         return;
@@ -699,8 +701,7 @@ export class ChatHub {
       const targets = this.mentionTargets(conn.room, conn, text, recipientNames);
       m.responseRequired = m.replyPolicy === "required";
       if (m.mode === "discuss") {
-        m.discussionAudience = [...targets].map(target => [...this.conns.values()].find(candidate =>
-          candidate.joined && candidate.room === conn.room && this.identityKey(candidate) === target)?.user).filter((name): name is string => !!name);
+        m.discussionAudience = this.discussionAudience(roomState, conn, recipientNames);
       }
       if (targets.size) {
         roomState.receipts.set(m.id, { targets, readers: new Set() });
@@ -924,7 +925,7 @@ export class ChatHub {
   }
 
   private allMentionNames(text: string): string[] {
-    const names = (String(text || "").match(/@(?:"[^"\n]{1,60}"|[\p{L}\p{N}_][\p{L}\p{N}_-]{0,59})/gu) || [])
+    const names = (String(text || "").match(/(?<![\p{L}\p{N}_@])@(?:"[^"\n]{1,60}"|[\p{L}\p{N}_][\p{L}\p{N}_-]{0,59})/gu) || [])
       .map(token => token.slice(1).replace(/^"|"$/g, ""));
     return names.filter((name, index) => names.findIndex(candidate => candidate.toLocaleLowerCase() === name.toLocaleLowerCase()) === index);
   }
@@ -938,6 +939,33 @@ export class ChatHub {
       .filter(conn => conn.joined && conn.room === room && this.identityKey(conn) !== senderKey)
       .filter(conn => all || mentions.includes(conn.user.toLowerCase()))
       .map(conn => this.identityKey(conn)));
+  }
+
+  private validRecipientNames(st: RoomState, sender: HubConn, requested: string[]): string[] {
+    const senderKey = this.identityKey(sender);
+    const valid = new Map([...st.roster.entries()]
+      .filter(([key]) => key !== senderKey)
+      .map(([, entry]) => [entry.user.toLowerCase(), entry.user.toLowerCase()]));
+    valid.set("all", "all");
+    valid.set("everyone", "all");
+    const names: string[] = [];
+    for (const name of requested) {
+      const resolved = valid.get(String(name || "").toLowerCase());
+      if (resolved && !names.includes(resolved)) names.push(resolved);
+    }
+    return names;
+  }
+
+  private discussionAudience(st: RoomState, sender: HubConn, recipientNames: string[]): string[] {
+    const requested = new Set(recipientNames.map(name => name.toLowerCase()));
+    const all = requested.has("all") || requested.has("everyone");
+    const senderKey = this.identityKey(sender);
+    const names: string[] = [];
+    for (const [key, entry] of st.roster) {
+      if (key === senderKey || (!all && !requested.has(entry.user.toLowerCase()))) continue;
+      if (!names.some(name => name.toLowerCase() === entry.user.toLowerCase())) names.push(entry.user);
+    }
+    return names;
   }
 
   private broadcastReceiptMessage(room: string, message: ChatMessage, targets: Set<string>): void {

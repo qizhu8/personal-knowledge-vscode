@@ -4,7 +4,7 @@
 // restarts; runtime status (pid/port) is tracked machine-locally in globalStorage
 // and reconciled on activation. A fixed-port reverse proxy maps stable
 // /s/<slug>/ URLs to each server's current port so Notes links never break.
-import { spawn, execFile } from "child_process";
+import { spawn, spawnSync, execFile } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import * as http from "http";
@@ -17,6 +17,9 @@ export interface ServerManifest {
   port: number;
   python?: string;          // interpreter path (or blank -> python3)
   autostart?: boolean;
+  category?: string;        // slash-separated dashboard group path
+  pinned?: boolean;         // sort first within its immediate group
+  tags?: string[];          // searchable labels
 }
 
 interface RunState {
@@ -26,6 +29,8 @@ interface RunState {
   logFile: string;
   command: string;
 }
+
+export interface ServerListenerProcess { pid: number; name: string; command: string; }
 
 let _serversDir = "";       // <store>/servers  (code + manifests; git-tracked)
 let _stateDir = "";         // globalStorage/servers  (state + logs; machine-local)
@@ -40,6 +45,7 @@ export function initServers(serversDir: string, stateDir: string, proxyPort: num
   if (logger) _log = logger;
   try { fs.mkdirSync(_serversDir, { recursive: true }); } catch { /* ignore */ }
   try { fs.mkdirSync(path.join(_stateDir, "logs"), { recursive: true }); } catch { /* ignore */ }
+  ensureUniqueConfiguredPorts();
   for (const slug of listSlugs()) {
     const manifest = readManifest(slug);
     if (manifest) writeProxyGuide(slug, manifest);
@@ -93,6 +99,7 @@ function listSlugs(): string[] {
 }
 function serverDirOf(slug: string): string { return path.join(_serversDir, slug); }
 function manifestPath(slug: string): string { return path.join(serverDirOf(slug), "server.json"); }
+function groupsPath(): string { return path.join(_serversDir, ".groups.json"); }
 function readManifest(slug: string): ServerManifest | null {
   try {
     const j = JSON.parse(fs.readFileSync(manifestPath(slug), "utf-8"));
@@ -102,6 +109,9 @@ function readManifest(slug: string): ServerManifest | null {
       port: Number(j.port) || 8000,
       python: j.python ? String(j.python) : "",
       autostart: !!j.autostart,
+      category: normalizeCategory(j.category),
+      pinned: !!j.pinned,
+      tags: Array.isArray(j.tags) ? [...new Set<string>(j.tags.map((tag: unknown) => String(tag || "").trim()).filter(Boolean))] : [],
     };
   } catch { return null; }
 }
@@ -109,6 +119,94 @@ function writeManifest(slug: string, m: ServerManifest): void {
   fs.mkdirSync(serverDirOf(slug), { recursive: true });
   fs.writeFileSync(manifestPath(slug), JSON.stringify(m, null, 2) + "\n");
   writeProxyGuide(slug, m);
+}
+
+function normalizeCategory(category: unknown): string {
+  const parts = String(category || "").split("/").map(part => part.trim()).filter(Boolean);
+  if (parts[0]?.toLowerCase() === "hidden") parts[0] = "Hidden";
+  return parts.join("/");
+}
+
+function categoryPrefixes(category: string): string[] {
+  const parts = normalizeCategory(category).split("/").filter(Boolean);
+  return parts.map((_part, index) => parts.slice(0, index + 1).join("/"));
+}
+
+function readRegisteredGroups(): string[] {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(groupsPath(), "utf8"));
+    return [...new Set<string>((Array.isArray(parsed?.groups) ? parsed.groups : []).map(normalizeCategory).filter(Boolean))];
+  } catch { return []; }
+}
+
+function writeRegisteredGroups(groups: string[]): void {
+  const normalized = [...new Set(groups.flatMap(categoryPrefixes).filter(group => group !== "Hidden"))].sort();
+  fs.writeFileSync(groupsPath(), JSON.stringify({ groups: normalized }, null, 2) + "\n");
+}
+
+function registerServerGroup(category: string): void {
+  const normalized = normalizeCategory(category);
+  if (!normalized || normalized === "Hidden") return;
+  const current = readRegisteredGroups();
+  if (!categoryPrefixes(normalized).every(group => current.includes(group))) writeRegisteredGroups([...current, normalized]);
+}
+
+export function serverGroupList(): string[] {
+  const groups = new Set<string>(["Hidden", ...readRegisteredGroups()]);
+  for (const slug of listSlugs()) {
+    const manifest = readManifest(slug);
+    if (manifest?.category) categoryPrefixes(manifest.category).forEach(group => groups.add(group));
+  }
+  return [...groups].sort((left, right) => left === "Hidden" ? -1 : right === "Hidden" ? 1 : left.localeCompare(right));
+}
+
+export function serverCreateGroup(category: string): { ok: boolean; group?: string; error?: string } {
+  const normalized = normalizeCategory(category);
+  if (!normalized) return { ok: false, error: "group path is required" };
+  if (serverGroupList().includes(normalized)) return { ok: false, error: "group already exists" };
+  writeRegisteredGroups([...readRegisteredGroups(), normalized]);
+  return { ok: true, group: normalized };
+}
+
+function validServerPort(port: unknown): number | undefined {
+  const value = Number(port);
+  return Number.isInteger(value) && value >= 1 && value <= 65535 ? value : undefined;
+}
+
+/** Return the other managed Server that reserves this configured or active port. */
+export function serverPortOwner(port: number, excludeSlug = ""): string | undefined {
+  const value = validServerPort(port);
+  if (!value || value === _proxyPort) return value === _proxyPort ? "PKM Server proxy" : undefined;
+  const state = readState();
+  for (const slug of listSlugs()) {
+    if (slug === excludeSlug) continue;
+    const manifest = readManifest(slug);
+    if (manifest?.port === value) return slug;
+    const run = state[slug];
+    if (run?.port === value && isAlive(run.pid)) return slug;
+  }
+  return undefined;
+}
+
+/** Pick a unique managed Server port, preferring the requested value then scanning upward. */
+export function nextServerPort(preferred = 8000, excludeSlug = ""): number {
+  const start = validServerPort(preferred) || 8000;
+  for (let port = start; port <= 65535; port++) if (!serverPortOwner(port, excludeSlug)) return port;
+  for (let port = 1024; port < start; port++) if (!serverPortOwner(port, excludeSlug)) return port;
+  throw new Error("no free managed Server port");
+}
+
+function ensureUniqueConfiguredPorts(): void {
+  const used = new Set<number>([_proxyPort]);
+  for (const slug of listSlugs().sort()) {
+    const manifest = readManifest(slug);
+    if (!manifest) continue;
+    let port = validServerPort(manifest.port) || 8000;
+    while (used.has(port) && port < 65535) port++;
+    if (used.has(port)) { port = 1024; while (used.has(port) && port < 65535) port++; }
+    if (port !== manifest.port) writeManifest(slug, { ...manifest, port });
+    used.add(port);
+  }
 }
 
 function writeProxyGuide(slug: string, manifest: ServerManifest): void {
@@ -122,7 +220,7 @@ This server is managed by Personal Knowledge Manager.
 - Server Link: \`http://localhost:${manifest.port}/\`
 - Stable Link: \`http://<selected-network-ip>:${manifest.port}/\`
 
-The Servers dashboard lists every non-loopback IPv4 interface and remembers the selected address per server. Stable Link changes only the host portion; it connects directly to the service and does not depend on VS Code port forwarding.
+The Servers dashboard lists every non-loopback IPv4 interface and applies one shared selected address to every managed server. Stable Link changes only the host portion; it connects directly to the service and does not depend on VS Code port forwarding.
 
 Under Remote SSH, Server Link points to localhost on the remote machine and requires VS Code port forwarding when opened from a local browser. Stable Link uses the selected remote LAN/global IP directly, subject to routing and firewall policy.
 
@@ -168,6 +266,75 @@ function probePort(port: number): Promise<boolean> {
     sock.on("error", () => done(false));
     sock.on("timeout", () => done(false));
   });
+}
+function probePortSync(port: number): boolean {
+  const script = "const n=require('net'),s=n.connect({host:'127.0.0.1',port:+process.argv[1]});s.setTimeout(350);s.on('connect',()=>{s.destroy();process.exit(0)});const no=()=>{s.destroy();process.exit(1)};s.on('error',no);s.on('timeout',no)";
+  try { return spawnSync(process.execPath, ["-e", script, String(port)], { timeout: 1000, stdio: "ignore" }).status === 0; }
+  catch { return false; }
+}
+export function serverListenerProcesses(port: number): ServerListenerProcess[] {
+  const value = validServerPort(port);
+  if (!value) return [];
+  const pids = new Set<number>();
+  const names = new Map<number, string>();
+  if (process.platform === "win32") {
+    const script = `$p=(Get-NetTCPConnection -State Listen -LocalPort ${value} -ErrorAction SilentlyContinue).OwningProcess|Sort-Object -Unique; $p|ForEach-Object{Write-Output (\"$($_)|\"+(Get-Process -Id $_ -ErrorAction SilentlyContinue).ProcessName)}`;
+    const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", timeout: 2500 });
+    for (const line of String(result.stdout || "").split(/\r?\n/)) {
+      const match = /^(\d+)\|(.*)$/.exec(line.trim());
+      if (match) { pids.add(Number(match[1])); names.set(Number(match[1]), match[2]); }
+    }
+  } else {
+    const lsof = spawnSync("lsof", ["-nP", "-a", `-iTCP:${value}`, "-sTCP:LISTEN", "-Fpc"], { encoding: "utf8", timeout: 2500 });
+    let currentPid = 0;
+    for (const line of String(lsof.stdout || "").split(/\r?\n/)) {
+      if (line.startsWith("p") && /^p\d+$/.test(line)) { currentPid = Number(line.slice(1)); pids.add(currentPid); }
+      else if (line.startsWith("c") && currentPid) names.set(currentPid, line.slice(1));
+    }
+    if (!pids.size) {
+      const ss = spawnSync("ss", ["-ltnp", "sport", "=", `:${value}`], { encoding: "utf8", timeout: 2500 });
+      for (const match of String(ss.stdout || "").matchAll(/\(\("([^"]+)"[^)]*pid=(\d+)/g)) {
+        const pid = Number(match[2]); pids.add(pid); names.set(pid, match[1]);
+      }
+    }
+  }
+  return [...pids].filter(pid => pid > 1).sort((a, b) => a - b).map(pid => {
+    let command = names.get(pid) || "unknown process";
+    if (process.platform !== "win32") {
+      const ps = spawnSync("ps", ["-p", String(pid), "-o", "args="], { encoding: "utf8", timeout: 1500 });
+      command = String(ps.stdout || "").trim() || command;
+    }
+    return { pid, name: names.get(pid) || path.basename(command.split(/\s+/)[0] || "process"), command };
+  });
+}
+
+export async function forceStopExternalServer(slug: string, expectedPids: number[] = []): Promise<{ ok: boolean; pids?: number[]; error?: string }> {
+  const manifest = readManifest(slug);
+  if (!manifest) return { ok: false, error: "unknown server" };
+  const tracked = readState()[slug];
+  if (tracked && isAlive(tracked.pid)) return { ok: false, error: "this Server is managed by PKM; use Stop instead" };
+  const listeners = serverListenerProcesses(manifest.port);
+  if (!listeners.length) return { ok: false, error: `no listener process could be identified on port ${manifest.port}` };
+  const actualPids = listeners.map(listener => listener.pid);
+  const expected = [...new Set(expectedPids.map(Number).filter(pid => pid > 1))].sort((a, b) => a - b);
+  if (expected.length && (expected.length !== actualPids.length || expected.some((pid, index) => pid !== actualPids[index]))) {
+    return { ok: false, error: "listener process changed; refresh and confirm again" };
+  }
+  if (actualPids.includes(process.pid)) return { ok: false, error: "refusing to terminate the VS Code extension host" };
+  for (const pid of actualPids) {
+    try {
+      if (process.platform === "win32") spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { timeout: 5000, stdio: "ignore" });
+      else process.kill(pid, "SIGTERM");
+    } catch (error: any) { return { ok: false, error: `could not terminate PID ${pid}: ${error?.message || error}` }; }
+  }
+  await new Promise(resolve => setTimeout(resolve, 700));
+  if (process.platform !== "win32") {
+    const remaining = serverListenerProcesses(manifest.port).filter(listener => actualPids.includes(listener.pid));
+    for (const listener of remaining) { try { process.kill(listener.pid, "SIGKILL"); } catch { /* process already exited */ } }
+    if (remaining.length) await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  if (await probePort(manifest.port)) return { ok: false, pids: actualPids, error: `port ${manifest.port} is still listening` };
+  return { ok: true, pids: actualPids };
 }
 function reconcile(): void {
   const st = readState();
@@ -216,7 +383,7 @@ function copyDir(src: string, dest: string): void {
 
 // ── Registry operations ──────────────────────────────────────────────────────
 /** Move an existing folder into the store as a managed server package. */
-export function serverImport(sourceDir: string, name?: string): { ok: boolean; slug?: string; error?: string } {
+export function serverImport(sourceDir: string, name?: string): { ok: boolean; slug?: string; port?: number; error?: string } {
   const src = String(sourceDir || "").trim();
   if (!src || !fs.existsSync(src) || !fs.statSync(src).isDirectory()) return { ok: false, error: "not a folder" };
   const nm = (name || path.basename(src)).trim();
@@ -226,12 +393,13 @@ export function serverImport(sourceDir: string, name?: string): { ok: boolean; s
   try { fs.renameSync(src, dest); }
   catch { try { copyDir(src, dest); fs.rmSync(src, { recursive: true, force: true }); } catch (e: any) { return { ok: false, error: String(e?.message || e) }; } }
   const det = detectInDir(dest);
-  writeManifest(slug, { name: nm, command: det.command, port: det.port, python: "", autostart: false });
-  return { ok: true, slug };
+  const port = nextServerPort(det.port, slug);
+  writeManifest(slug, { name: nm, command: det.command, port, python: "", autostart: false });
+  return { ok: true, slug, port };
 }
 
 /** Create a new empty server package with a starter index.html. */
-export function serverCreate(name: string): { ok: boolean; slug?: string } {
+export function serverCreate(name: string): { ok: boolean; slug?: string; port?: number } {
   const slug = uniqueSlug(name || "server");
   const dir = serverDirOf(slug);
   fs.mkdirSync(dir, { recursive: true });
@@ -239,21 +407,55 @@ export function serverCreate(name: string): { ok: boolean; slug?: string } {
   if (!fs.existsSync(idx)) {
     fs.writeFileSync(idx, `<!doctype html><meta charset="utf-8"><title>${name || slug}</title>\n<body style="font:16px system-ui;margin:40px"><h1>${name || slug}</h1><p>Put your app here.</p></body>\n`);
   }
-  writeManifest(slug, { name: name || slug, command: "{python} -m http.server {port}", port: 8000, python: "", autostart: false });
-  return { ok: true, slug };
+  const port = nextServerPort(8000, slug);
+  writeManifest(slug, { name: name || slug, command: "{python} -m http.server {port}", port, python: "", autostart: false });
+  return { ok: true, slug, port };
 }
 
 export function serverUpdate(slug: string, patch: Partial<ServerManifest>): boolean {
   const m = readManifest(slug);
   if (!m) return false;
+  const requestedPort = patch.port !== undefined ? validServerPort(patch.port) : m.port;
+  if (!requestedPort || serverPortOwner(requestedPort, slug)) return false;
   writeManifest(slug, {
     name: patch.name !== undefined ? String(patch.name).trim() : m.name,
     command: patch.command !== undefined ? String(patch.command).trim() : m.command,
-    port: patch.port !== undefined ? (Number(patch.port) || m.port) : m.port,
+    port: requestedPort,
     python: patch.python !== undefined ? String(patch.python).trim() : m.python,
     autostart: patch.autostart !== undefined ? !!patch.autostart : m.autostart,
+    category: patch.category !== undefined ? normalizeCategory(patch.category) : m.category,
+    pinned: patch.pinned !== undefined ? !!patch.pinned : m.pinned,
+    tags: patch.tags !== undefined ? [...new Set((Array.isArray(patch.tags) ? patch.tags : []).map(tag => String(tag || "").trim()).filter(Boolean))] : m.tags,
   });
+  if (patch.category !== undefined) registerServerGroup(normalizeCategory(patch.category));
   return true;
+}
+
+/** Rename or remove one group path without deleting any servers. */
+export function serverMoveGroup(oldPrefix: string, newPrefix: string): { ok: boolean; count: number; error?: string } {
+  const oldCategory = normalizeCategory(oldPrefix);
+  const newCategory = normalizeCategory(newPrefix);
+  if (!oldCategory) return { ok: false, count: 0, error: "root group cannot be moved" };
+  if (newCategory === oldCategory || newCategory.startsWith(oldCategory + "/")) {
+    return { ok: false, count: 0, error: "group cannot be moved into itself" };
+  }
+  let count = 0;
+  for (const slug of listSlugs()) {
+    const manifest = readManifest(slug);
+    if (!manifest) continue;
+    const category = normalizeCategory(manifest.category);
+    if (category !== oldCategory && !category.startsWith(oldCategory + "/")) continue;
+    const suffix = category.slice(oldCategory.length).replace(/^\//, "");
+    writeManifest(slug, { ...manifest, category: [newCategory, suffix].filter(Boolean).join("/") });
+    count++;
+  }
+  const movedGroups = readRegisteredGroups().map(group => {
+    if (group !== oldCategory && !group.startsWith(oldCategory + "/")) return group;
+    const suffix = group.slice(oldCategory.length).replace(/^\//, "");
+    return [newCategory, suffix].filter(Boolean).join("/");
+  }).filter(Boolean);
+  writeRegisteredGroups(movedGroups);
+  return { ok: true, count };
 }
 
 export function serverDelete(slug: string): boolean {
@@ -272,10 +474,13 @@ function resolvePython(m: ServerManifest): string {
 export function startServer(slug: string): { ok: boolean; error?: string } {
   const m = readManifest(slug);
   if (!m) return { ok: false, error: "unknown server" };
+  const owner = serverPortOwner(m.port, slug);
+  if (owner) return { ok: false, error: `port ${m.port} is reserved by ${owner}` };
   const dir = serverDirOf(slug);
   if (!fs.existsSync(dir)) return { ok: false, error: `directory not found: ${dir}` };
   const st = readState();
   if (st[slug] && isAlive(st[slug].pid)) return { ok: true };
+  if (probePortSync(m.port)) return { ok: false, error: `port ${m.port} already has an external listener; stop it or choose another unique port` };
 
   const port = Number(m.port) || 8000;
   const cmd = m.command.replace(/\{python\}/g, resolvePython(m)).replace(/\{port\}/g, String(port));
@@ -324,7 +529,9 @@ export async function restartServer(slug: string): Promise<{ ok: boolean; error?
 }
 
 export async function setServerPort(slug: string, port: number): Promise<{ ok: boolean; error?: string }> {
-  if (!serverUpdate(slug, { port })) return { ok: false, error: "unknown server" };
+  const owner = serverPortOwner(port, slug);
+  if (owner) return { ok: false, error: `port ${port} is reserved by ${owner}` };
+  if (!serverUpdate(slug, { port })) return { ok: false, error: "invalid port or unknown server" };
   const wasRunning = !!readState()[slug];
   return wasRunning ? restartServer(slug) : { ok: true };
 }
@@ -334,6 +541,7 @@ export async function serverList(): Promise<any[]> {
   const st = readState();
   const proxyRunning = await probePort(_proxyPort);
   const networkAddresses = serverNetworkAddresses();
+  const suggestedPort = nextServerPort();
   const out: any[] = [];
   for (const slug of listSlugs().sort()) {
     const m = readManifest(slug);
@@ -343,10 +551,16 @@ export async function serverList(): Promise<any[]> {
     if (run && isAlive(run.pid)) {
       pid = run.pid; activePort = run.port; startedAt = run.startedAt;
       status = (await probePort(activePort)) ? "running" : "starting";
+    } else if (await probePort(m.port)) {
+      status = "external";
     }
     out.push({
       slug, name: m.name, dir: serverDirOf(slug), command: m.command, port: m.port,
       python: m.python || "", autostart: !!m.autostart, status, pid, activePort, startedAt,
+      category: m.category || "", pinned: !!m.pinned,
+      tags: m.tags || [],
+      suggestedPort,
+      externalProcesses: status === "external" ? serverListenerProcesses(m.port) : [],
       stableUrl: `http://localhost:${_proxyPort}/s/${slug}/`,
       localUrl: `http://localhost:${activePort}/`,
       proxyRunning,

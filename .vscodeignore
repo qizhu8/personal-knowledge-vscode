@@ -25,7 +25,7 @@ coverage/
 
 # Misc
 *.vsix
-*.map
+**/*.map
 improvement_*.md
 
 **/__pycache__/**
@@ -36,3 +36,4 @@ dist/webview/_demo*
 resources/screenshots/**
 scripts/release-preview-server.js
 scripts/capture-release-screenshots.py
+scripts/poc-*.js

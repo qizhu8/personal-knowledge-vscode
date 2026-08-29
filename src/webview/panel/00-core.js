@@ -200,6 +200,7 @@ function scheduleUiTranslation() {
 }
 function applyUiLanguage(payload) {
   uiI18n = Object.assign({}, uiI18n, payload || {});
+  refreshEmptyDetailHint();
   translateUi();
   const locale = (uiI18n.locales || []).find(item => item.id === uiI18n.resolved);
   document.documentElement.dir = locale?.direction || 'ltr';
@@ -223,6 +224,7 @@ let ctxTarget = null; // slug of note under right-click
 let ctxPinned = false; // pinned state of the note under right-click
 let notePinnedFolders = []; // note folder paths pinned to the top of their level
 let currentDetail = null; // current detail item for edit/delete actions
+let currentDetailRequest = null; // authoritative {type,key}, including packageFile/prompt variants
 let catExpanded = {}; // expanded state per folder key (default: collapsed)
 let pendingEditSlug = null; // note slug awaiting detail load for edit
 let pendingEditType = null; // item type awaiting detail load to enter edit mode (from tree right-click)
@@ -445,6 +447,7 @@ window.addEventListener('message', e => {
   else if (command === 'envDetectFolder') { onEnvFolderDetected(e.data.data); }
   else if (command === 'envPickFolder') { onEnvPickFolder(e.data.dir); }
   else if (command === 'serverList') { serverCache = data || []; if (state.tab === 'servers') renderServerDashboard(serverCache); }
+  else if (command === 'serverGroupList') { serverGroupPaths = data || ['Hidden']; if (state.tab === 'servers') renderServerDashboard(serverCache); }
   else if (command === 'serverLog') { onServerLog(e.data.slug, e.data.text); }
   else if (command === 'serverPickFolder') { onServerPickFolder(e.data.dir); }
   else if (command === 'paperFacets') {
@@ -469,11 +472,7 @@ window.addEventListener('message', e => {
     ask('list', { tab: state.tab, filter: state.filter, q: state.search });
     // Re-render the currently open note/skill so external edits and regenerated
     // images (same path) are picked up, not just the sidebar list.
-    if (currentDetail && currentDetail.type === 'note' && currentDetail.slug) {
-      ask('detail', { type: 'note', key: currentDetail.slug });
-    } else if (currentDetail && currentDetail.type === 'skill' && currentDetail.name) {
-      ask('detail', { type: 'skill', key: currentDetail.name });
-    }
+    if (currentDetailRequest) ask('detail', currentDetailRequest);
     const btn = document.querySelector('#topbar .tbtn[onclick="doReload()"]');
     if (btn) { btn.disabled = false; btn.textContent = '↻ Refresh'; }
   }
@@ -695,7 +694,8 @@ function mainSidebarCollapsed() {
 function renderEmptyDetail() {
   const detail = document.getElementById('detail');
   if (!detail) return;
-  detail.innerHTML = `<div class="empty empty-select-item">Select an item from the sidebar.${mainSidebarCollapsed() ? '<div class="empty-select-hint">Please click the &gt; button to see the sidebar.</div>' : ''}</div>`;
+  const collapsedHint = mainSidebarCollapsed() ? `<div class="empty-select-hint">${esc(t('content.restoreSidebar'))}</div>` : '';
+  detail.innerHTML = `<div class="empty empty-select-item">${collapsedHint}<div>${esc(t('content.selectItem'))}</div></div>`;
 }
 function refreshEmptyDetailHint() {
   if (document.querySelector('#detail > .empty-select-item')) renderEmptyDetail();

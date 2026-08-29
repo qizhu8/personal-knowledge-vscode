@@ -10,8 +10,8 @@ const port = Number(process.env.PORT || 4178);
 const demoMcp = {
   installed: true,
   current: true,
-  installedVersion: "2.5.1",
-  expectedVersion: "2.5.1",
+  installedVersion: "2.5.3",
+  expectedVersion: "2.5.3",
   knowledgeVersion: "1.0.0",
   chatVersion: "2.3.0",
   installedKnowledgeVersion: "1.0.0",
@@ -57,7 +57,7 @@ const demoChat = {
       { user: "Build Monitor", participantId: "demo-build", present: false, kind: "agent", runtimeState: "idle" },
     ],
     messages: [
-      { id: "d1", from: "Release Host", kind: "human", ts: 1787010000000, text: '@"Docs Reviewer" @"QA Agent" Please review the 2.5.1 release notes and regression matrix.', recipients: ["Docs Reviewer", "QA Agent"], replyPolicy: "required", mode: "ask", receipt: { read: 2, total: 2 } },
+      { id: "d1", from: "Release Host", kind: "human", ts: 1787010000000, text: '@"Docs Reviewer" @"QA Agent" Please review the 2.5.3 release notes and regression matrix.', recipients: ["Docs Reviewer", "QA Agent"], replyPolicy: "required", mode: "ask", receipt: { read: 2, total: 2 } },
       { id: "d2", from: "Docs Reviewer", kind: "agent", ts: 1787010060000, text: "Documentation review is complete. The setup guide now separates server, schema, and Skill Router versions.", recipients: ["Release Host"], replyPolicy: "none" },
       { id: "d3", from: "QA Agent", kind: "agent", ts: 1787010120000, text: "Search navigation, quoted mentions, offline roster routing, and standby wake tests are passing.", recipients: ["Release Host"], replyPolicy: "none" },
       { id: "d4", from: "Release Host", kind: "human", ts: 1787010180000, text: '@all Final check: verify the package and publish workflow.', recipients: ["all"], replyPolicy: "required", mode: "announce", receipt: { read: 2, total: 2 } },
@@ -158,7 +158,7 @@ function panelHtml(view) {
     "%%NOTES_BASE%%": "/demo/notes", "%%HLJS_CSS%%": "/hljs.css", "%%KATEX_CSS%%": "/katex.css",
     "%%MARKED_SRC%%": "/marked.umd.js", "%%HLJS_SRC%%": "/hljs.js", "%%KATEX_SRC%%": "/katex.js",
     "%%CYTOSCAPE_SRC%%": "/cytoscape.js", "%%MERMAID_SRC%%": "/mermaid.js", "%%FORCEGRAPH3D_SRC%%": "/forcegraph3d.js",
-    "%%PANEL_CSS%%": "/panel.css", "%%PANEL_JS%%": "/panel.js", "%%PKM_VERSION%%": "2.5.1",
+    "%%PANEL_CSS%%": "/panel.css", "%%PANEL_JS%%": "/panel.js", "%%PKM_VERSION%%": "2.5.3",
     "%%I18N_PAYLOAD_B64%%": Buffer.from(JSON.stringify({ setting: "en", resolved: "en", locales: localeManifest.locales, catalogs }), "utf8").toString("base64"),
   };
   for (const [token, value] of Object.entries(replacements)) html = html.split(token).join(value);

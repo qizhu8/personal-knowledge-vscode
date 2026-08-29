@@ -17,7 +17,7 @@ import {
 import { migrateDbToFiles } from "./migrate";
 import {
   initServers, disposeServers, serverList, serverImport, serverCreate,
-  serverUpdate, serverDelete, startServer, stopServer, restartServer, setServerPort, serverLog, serverDir,
+  serverUpdate, serverGroupList, serverCreateGroup, serverMoveGroup, serverPortOwner, forceStopExternalServer, serverDelete, startServer, stopServer, restartServer, setServerPort, serverLog, serverDir,
 } from "./servers";
 import { ChatHub, ChatClient, ChatMessage, Member, FileMeta, AgentRuntimeState, ChatMode, ReplyPolicy, MAX_FILE_BYTES } from "./chatroom";
 import { BOT_NAME } from "./chat-commands";
@@ -139,6 +139,7 @@ function mcpPanelStatusData(): object {
 }
 
 const mcpPathSizeCache = new Map<string, { bytes: number; at: number; error?: string }>();
+let mcpPathSizeGeneration = 0;
 async function calculatePathBytes(target: string): Promise<{ bytes: number; error?: string }> {
   if (!target) return { bytes: 0, error: "Not configured" };
   let bytes = 0;
@@ -167,7 +168,7 @@ async function calculatePathBytes(target: string): Promise<{ bytes: number; erro
   }
 }
 
-async function sendMcpPathSizes(respond: (m: object) => void): Promise<void> {
+async function sendMcpPathSizes(respond: (m: object) => void, generation = mcpPathSizeGeneration): Promise<void> {
   const info = mcpStatus();
   const python = detectMcpPython();
   const runtime = mcpRuntimeStatus();
@@ -179,8 +180,10 @@ async function sendMcpPathSizes(respond: (m: object) => void): Promise<void> {
     serverDirectory: info.serverPath ? path.dirname(info.serverPath) : "",
   };
   for (const [key, target] of Object.entries(paths)) {
+    if (generation !== mcpPathSizeGeneration) return;
     const cached = mcpPathSizeCache.get(target);
     const result = cached || { ...await calculatePathBytes(target), at: Date.now() };
+    if (generation !== mcpPathSizeGeneration) return;
     if (target) mcpPathSizeCache.set(target, result);
     respond({ command: "mcpPathSize", data: { key, path: target, ...result } });
   }
@@ -3147,6 +3150,22 @@ async function handleMessage(
       await _treeProvider?.refreshServerStatus();
       break;
     }
+    case "serverGroupList": {
+      respond({ command: "serverGroupList", data: serverGroupList() });
+      break;
+    }
+    case "serverCreateGroup": {
+      const result = serverCreateGroup(String(msg.category || ""));
+      if (!result.ok) vscode.window.showErrorMessage(`Create Server group failed: ${result.error || "unknown error"}`);
+      else {
+        if (msg.moveSlug) serverUpdate(String(msg.moveSlug), { category: result.group || "" });
+        gitCommit(`server group create: ${result.group}`);
+      }
+      respond({ command: "serverGroupList", data: serverGroupList() });
+      respond({ command: "serverList", data: await serverListForUi(context) });
+      await _treeProvider?.refreshServerStatus();
+      break;
+    }
     case "serverStart": {
       const r = startServer(String(msg.slug || ""));
       if (!r.ok && r.error) vscode.window.showErrorMessage(`Start failed: ${r.error}`);
@@ -3159,6 +3178,14 @@ async function handleMessage(
     case "serverStop": {
       stopServer(String(msg.slug || ""));
       await new Promise(res => setTimeout(res, 300));
+      respond({ command: "serverList", data: await serverListForUi(context) });
+      await _treeProvider?.refreshServerStatus();
+      break;
+    }
+    case "serverForceStopExternal": {
+      const result = await forceStopExternalServer(String(msg.slug || ""), Array.isArray(msg.expectedPids) ? msg.expectedPids : []);
+      if (!result.ok) vscode.window.showErrorMessage(`Force Stop failed: ${result.error || "unknown error"}`);
+      else vscode.window.showInformationMessage(`Stopped external listener PID ${result.pids?.join(", ") || "unknown"}.`);
       respond({ command: "serverList", data: await serverListForUi(context) });
       await _treeProvider?.refreshServerStatus();
       break;
@@ -3195,10 +3222,32 @@ async function handleMessage(
       break;
     }
     case "serverUpdate": {
-      serverUpdate(String(msg.slug || ""), msg.patch || {});
-      gitCommit(`server update: ${msg.slug}`);
-      await ensureServerForwarding(context, String(msg.slug || ""));
+      const slug = String(msg.slug || "");
+      const patch = msg.patch || {};
+      const requestedPort = Number(patch.port);
+      const owner = patch.port !== undefined ? serverPortOwner(requestedPort, slug) : undefined;
+      if (owner) vscode.window.showErrorMessage(`Port ${requestedPort} is already reserved by ${owner}. Choose a unique port.`);
+      else if (!serverUpdate(slug, patch)) vscode.window.showErrorMessage("Server settings were not saved. Check that the port is between 1 and 65535 and unique.");
+      else gitCommit(`server update: ${msg.slug}`);
+      await ensureServerForwarding(context, slug);
       respond({ command: "serverList", data: await serverListForUi(context) });
+      await _treeProvider?.refreshServerStatus();
+      break;
+    }
+    case "serverSetPinned": {
+      const slug = String(msg.slug || "");
+      serverUpdate(slug, { pinned: !!msg.pinned });
+      gitCommit(`server ${msg.pinned ? "star" : "unstar"}: ${slug}`);
+      respond({ command: "serverList", data: await serverListForUi(context) });
+      await _treeProvider?.refreshServerStatus();
+      break;
+    }
+    case "serverMoveGroup": {
+      const result = serverMoveGroup(String(msg.oldPrefix || ""), String(msg.newPrefix || ""));
+      if (!result.ok) vscode.window.showErrorMessage(`Move Server group failed: ${result.error || "unknown error"}`);
+      else gitCommit(`server group move: ${msg.oldPrefix} -> ${msg.newPrefix || "(root)"}`);
+      respond({ command: "serverList", data: await serverListForUi(context) });
+      respond({ command: "serverGroupList", data: serverGroupList() });
       await _treeProvider?.refreshServerStatus();
       break;
     }
@@ -3266,6 +3315,14 @@ async function handleMessage(
 
     // ── Python Environments ──────────────────────────────────────────────────
     case "envList": {
+      if (msg.refresh) {
+        for (const environment of pyenvList()) {
+          try { await pyenvPyVersion(environment.id, true); } catch { /* keep refreshing other environments */ }
+          try { await pyenvSize(environment.id, true); } catch { /* keep refreshing other environments */ }
+        }
+        respond({ command: "envList", data: envListForUi() });
+        break;
+      }
       respond({ command: "envList", data: envListForUi() });
       void sweepEnvVersions(respond);
       void sweepEnvSizes(respond);
@@ -3290,18 +3347,21 @@ async function handleMessage(
     case "envAdd": {
       pyenvAdd(msg.env || {});
       respond({ command: "envList", data: envListForUi() });
+      _treeProvider?.refresh();
       vscode.window.setStatusBarMessage("$(check) Environment added", 3000);
       break;
     }
     case "envUpdate": {
       pyenvUpdate(String(msg.id || ""), msg.patch || {});
       respond({ command: "envList", data: envListForUi() });
+      _treeProvider?.refresh();
       break;
     }
     case "envDelete": {
       const r = await pyenvDelete(String(msg.id || ""), !!msg.removeFiles);
       respond({ command: "envList", data: envListForUi() });
       respond({ command: "envDeleteResult", data: r });
+      _treeProvider?.refresh();
       break;
     }
     case "envPackages": {
@@ -3340,6 +3400,7 @@ async function handleMessage(
       if (r.ok) {
         respond({ command: "envList", data: envListForUi() });
         respond({ command: "envMigrated", ok: true });
+        _treeProvider?.refresh();
         void sweepEnvSizes(respond);
         vscode.window.setStatusBarMessage("$(check) Environment migrated", 3000);
       } else {
@@ -3364,6 +3425,7 @@ async function handleMessage(
       if (r.ok) {
         respond({ command: "envList", data: envListForUi() });
         respond({ command: "envCreated", ok: true });
+        _treeProvider?.refresh();
         void sweepEnvSizes(respond);
         vscode.window.setStatusBarMessage("$(check) Environment created", 3000);
       } else {
@@ -3990,8 +4052,9 @@ async function handleMessage(
     }
 
     case "refreshMcpPathSizes": {
+      mcpPathSizeGeneration += 1;
       mcpPathSizeCache.clear();
-      void sendMcpPathSizes(respond);
+      void sendMcpPathSizes(respond, mcpPathSizeGeneration);
       break;
     }
 
@@ -4326,8 +4389,9 @@ async function offerPkmSkillProjectionUpdate(context: vscode.ExtensionContext): 
 
 // ── Sidebar tree provider ──────────────────────────────────────────────────
 type PkNodeType =
-  | 'root-skills' | 'root-notes' | 'root-papers' | 'root-prompts' | 'root-packages' | 'root-scripts' | 'root-servers' | 'root-chatroom' | 'root-mcp'
-  | 'server-item'
+  | 'root-skills' | 'root-notes' | 'root-papers' | 'root-prompts' | 'root-packages' | 'root-scripts' | 'root-environments' | 'root-servers' | 'root-chatroom' | 'root-mcp'
+  | 'environment-group' | 'environment-item'
+  | 'server-group' | 'server-ungrouped-group' | 'server-item'
   | 'chat-hosted-group' | 'chat-joined-group' | 'chat-hosted-room' | 'chat-room'
   | 'skill-folder' | 'skill' | 'note-folder' | 'note' | 'paper-folder' | 'paper'
   | 'prompt-project' | 'prompt-task' | 'prompt-version' | 'prompt-file'
@@ -4345,13 +4409,14 @@ class PkTreeItem extends vscode.TreeItem {
     super(label, collapsibleState);
     const ICONS: Partial<Record<PkNodeType, string>> = {
       "root-skills": "book", "root-notes": "note", "root-papers": "library", "root-prompts": "comment-discussion",
-      "root-packages": "package", "root-scripts": "terminal", "root-servers": "server-environment", "root-chatroom": "comment-discussion", "root-mcp": "server-process",
+      "root-packages": "package", "root-scripts": "terminal", "root-environments": "beaker", "root-servers": "server-environment", "root-chatroom": "comment-discussion", "root-mcp": "server-process",
+      "environment-group": "folder", "environment-item": "python",
       "chat-hosted-group": "broadcast", "chat-joined-group": "plug", "chat-hosted-room": "broadcast", "chat-room": "comment",
       "skill-folder": "folder", "note-folder": "folder", "paper-folder": "folder",
       "skill": "symbol-snippet", "note": "file-text", "paper": "file-pdf",
       "prompt-project": "folder", "prompt-task": "symbol-file",
       "prompt-version": "versions", "prompt-file": "file-code",
-      "package": "package", "script-folder": "folder", "script-file": "file-code",
+      "package": "package", "script-folder": "folder", "script-file": "file-code", "server-group": "folder", "server-ungrouped-group": "folder",
     };
     const icon = ICONS[nodeType];
     if (icon) this.iconPath = new vscode.ThemeIcon(icon);
@@ -4363,6 +4428,7 @@ class PkTreeItem extends vscode.TreeItem {
     else if (nodeType === 'root-papers' || nodeType === 'paper-folder') this.contextValue = 'pk-papers-container';
     else if (nodeType === 'root-prompts' || nodeType === 'prompt-project' || nodeType === 'prompt-task' || nodeType === 'prompt-version') this.contextValue = 'pk-prompts-container';
     else if (nodeType === 'root-scripts' || nodeType === 'script-folder') this.contextValue = 'pk-scripts-container';
+    else if (nodeType === 'server-group') this.contextValue = 'pk-server-group';
     // Leaf items support right-click Edit
     else if (nodeType === 'skill')       this.contextValue = 'pk-skill-item';
     else if (nodeType === 'note')        this.contextValue = 'pk-note-item';
@@ -4423,6 +4489,8 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
       chatroom.command = { command: "personalKnowledge.openChatroom", title: "Open Chatroom" };
       const servers = new PkTreeItem(this.text("tabs.servers"), "root-servers", C);
       servers.command = { command: "personalKnowledge.openServers", title: "Open Servers" };
+      const environments = new PkTreeItem(this.text("tabs.environments"), "root-environments", C);
+      environments.command = { command: "personalKnowledge.openEnvironments", title: "Open Environments" };
       const mcp = new PkTreeItem(this.text("tabs.config"), "root-mcp", vscode.TreeItemCollapsibleState.None);
       mcp.command = { command: "personalKnowledge.setupMcp", title: "Open Config" };
       return [
@@ -4432,6 +4500,7 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
         new PkTreeItem(this.text("tabs.prompts"),  'root-prompts',  C),
         new PkTreeItem(this.text("tabs.packages"), 'root-packages', C),
         new PkTreeItem(this.text("tabs.scripts"),  'root-scripts',  C),
+        environments,
         servers,
         chatroom,
         mcp,
@@ -4452,7 +4521,11 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
         case 'root-packages':  return this._packageItems();
         case 'root-scripts':   return this._scriptFolder([]);
         case 'script-folder':  return this._scriptFolder(element.nodeData.path);
-        case 'root-servers': return this._serverItems();
+        case 'root-environments': return this._environmentItems([]);
+        case 'environment-group': return this._environmentItems(element.nodeData.path);
+        case 'root-servers': return this._serverItems([]);
+        case 'server-group': return this._serverItems(element.nodeData.path);
+        case 'server-ungrouped-group': return this._serverItems([], true);
         case 'root-chatroom': return this._chatGroups();
         case 'chat-hosted-group': return this._hostedRooms();
         case 'chat-joined-group': return this._chatRooms();
@@ -4471,18 +4544,94 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
     return [hosted, joined];
   }
 
-  private _serverItems(): PkTreeItem[] {
-    return this.serverRows.map(server => {
+  private _serverItems(groupPath: string[], ungroupedOnly = false): PkTreeItem[] {
+    const prefix = groupPath.join("/");
+    const childGroups = new Set<string>();
+    const navigationServers = this.serverRows.filter(server => String(server.category || "").split("/")[0]?.toLowerCase() !== "hidden");
+    for (const category of ungroupedOnly ? [] : serverGroupList()) {
+      const parts = String(category || "").split("/").filter(Boolean);
+      if (parts[0]?.toLowerCase() === "hidden" || parts.slice(0, groupPath.length).join("/") !== prefix) continue;
+      if (parts.length > groupPath.length) childGroups.add(parts[groupPath.length]);
+    }
+    const direct = navigationServers.filter(server => {
+      const parts = String(server.category || "").split("/").filter(Boolean);
+      if (parts.slice(0, groupPath.length).join("/") !== prefix) return false;
+      if (parts.length > groupPath.length) {
+        childGroups.add(parts[groupPath.length]);
+        return false;
+      }
+      return true;
+    }).sort((left, right) => Number(!!right.pinned) - Number(!!left.pinned) || left.name.localeCompare(right.name));
+    const groups = [...childGroups].sort((left, right) => left.localeCompare(right)).map(name => {
+      const path = [...groupPath, name];
+      const categoryPrefix = path.join("/");
+      const item = new PkTreeItem(name, "server-group", vscode.TreeItemCollapsibleState.Collapsed, { path });
+      item.description = String(navigationServers.filter(server => String(server.category || "") === categoryPrefix
+        || String(server.category || "").startsWith(categoryPrefix + "/")).length);
+      return item;
+    });
+    const servers = direct.map(server => {
       const status: NavigationStatus = server.status === "running"
         ? { kind: "online", description: this.text("nav.runningPort", { port: server.activePort }), tooltip: `${server.name} is running on port ${server.activePort}.` }
+        : server.status === "external"
+          ? { kind: "online", description: `external · :${server.port}`, tooltip: `${server.name} has a live listener on port ${server.port}, but PKM did not start it.` }
         : server.status === "starting"
           ? { kind: "attention", description: this.text("nav.startingPort", { port: server.activePort }), tooltip: `${server.name} is starting on port ${server.activePort}.` }
           : { kind: "offline", description: this.text("nav.stoppedPort", { port: server.port }), tooltip: `${server.name} is stopped; configured port ${server.port}.` };
       const item = this.applyStatus(new PkTreeItem(server.name, "server-item", vscode.TreeItemCollapsibleState.None, { slug: server.slug }), status);
-      item.contextValue = server.status === "stopped" ? "pk-server-stopped" : "pk-server-active";
+      item.contextValue = server.status === "stopped" ? "pk-server-stopped" : server.status === "external" ? "pk-server-external" : "pk-server-active";
+      item.label = server.pinned ? `★ ${server.name}` : server.name;
       item.command = { command: "personalKnowledge.openServers", title: "Open Servers", arguments: [server.slug] };
       return item;
     });
+    if (!groupPath.length && !ungroupedOnly && servers.length) {
+      const ungrouped = new PkTreeItem(this.text("servers.ungrouped"), "server-ungrouped-group", vscode.TreeItemCollapsibleState.Expanded);
+      ungrouped.description = String(servers.length);
+      ungrouped.tooltip = `${servers.length} Server${servers.length === 1 ? "" : "s"} without a group.`;
+      return [ungrouped, ...groups];
+    }
+    if (ungroupedOnly) return servers;
+    return [...groups, ...servers];
+  }
+
+  private _environmentCategory(environment: any): string[] {
+    const manager = String(environment.manager || "other");
+    if (manager === "conda") {
+      const environmentPath = String(environment.path || "");
+      const rootPath = environmentPath.includes("/envs/") ? environmentPath.slice(0, environmentPath.indexOf("/envs/")) : environmentPath;
+      return [manager, rootPath.split("/").filter(Boolean).pop() || "conda"];
+    }
+    const parentPath = String(environment.path || environment.python || "").replace(/\/[^/]*$/, "");
+    return [manager, parentPath.split("/").filter(Boolean).pop() || "(root)"];
+  }
+
+  private _environmentItems(groupPath: string[]): PkTreeItem[] {
+    const environments = envListForUi();
+    const childGroups = new Set<string>();
+    const direct = environments.filter(environment => {
+      const category = this._environmentCategory(environment);
+      if (category.slice(0, groupPath.length).join("/") !== groupPath.join("/")) return false;
+      if (category.length > groupPath.length) { childGroups.add(category[groupPath.length]); return false; }
+      return true;
+    }).sort((left, right) => String(left.name).localeCompare(String(right.name)));
+    const groups = [...childGroups].sort((left, right) => left.localeCompare(right)).map(name => {
+      const itemPath = [...groupPath, name];
+      const item = new PkTreeItem(name, "environment-group", vscode.TreeItemCollapsibleState.Collapsed, { path: itemPath });
+      item.description = String(environments.filter(environment => {
+        const category = this._environmentCategory(environment);
+        return category.slice(0, itemPath.length).join("/") === itemPath.join("/");
+      }).length);
+      return item;
+    });
+    const items = direct.map(environment => {
+      const item = new PkTreeItem(environment.name, "environment-item", vscode.TreeItemCollapsibleState.None, { id: environment.id });
+      item.description = environment.missing ? "missing" : environment.pyVersion ? `py ${environment.pyVersion}` : environment.manager;
+      item.tooltip = `${environment.name}\n${environment.python || environment.path || ""}`;
+      item.iconPath = new vscode.ThemeIcon(environment.missing ? "warning" : "python", environment.missing ? new vscode.ThemeColor("list.warningForeground") : undefined);
+      item.command = { command: "personalKnowledge.openEnvironments", title: "Open Environments", arguments: [environment.id] };
+      return item;
+    });
+    return [...groups, ...items];
   }
 
   private _hostedRooms(): PkTreeItem[] {
@@ -5197,6 +5346,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await closeNavigationSidebar();
     }),
 
+    vscode.commands.registerCommand("personalKnowledge.openEnvironments", async () => {
+      log.action("command.openEnvironments");
+      openPanelTab(context, "environments");
+      await closeNavigationSidebar();
+    }),
+
     vscode.commands.registerCommand("personalKnowledge.startServerItem", async (item: PkTreeItem) => {
       const slug = String(item?.nodeData?.slug || "");
       if (!slug) return;
@@ -5220,6 +5375,70 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!result.ok) vscode.window.showErrorMessage(`Restart failed: ${result.error || "unknown error"}`);
       else await ensureServerForwarding(context, slug);
       await treeProvider.refreshServerStatus();
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.moveServerToGroup", async (item: PkTreeItem) => {
+      const slug = String(item?.nodeData?.slug || "");
+      if (!slug) return;
+      const server = (await serverList()).find(row => row.slug === slug);
+      if (!server) { vscode.window.showErrorMessage("Server not found."); return; }
+      type GroupPick = vscode.QuickPickItem & { category?: string; create?: boolean };
+      const groups = serverGroupList();
+      const picks: GroupPick[] = [
+        { label: "Ungrouped", description: server.category ? "" : "Current group", category: "" },
+        { label: "Existing groups", kind: vscode.QuickPickItemKind.Separator },
+        ...groups.map(category => ({ label: category === "Hidden" ? "$(eye-closed) Hidden" : `$(folder) ${category}`, description: server.category === category ? "Current group" : category === "Hidden" ? "Excluded from Navigation" : "", category })),
+        { label: "Create", kind: vscode.QuickPickItemKind.Separator },
+        { label: "$(add) New group…", description: "Create a group and move this Server", create: true },
+      ];
+      const picked = await vscode.window.showQuickPick(picks, { title: `Move “${server.name}” to Group`, placeHolder: "Choose an existing group or create a new one" });
+      if (!picked) return;
+      let category = picked.category;
+      if (picked.create) {
+        const value = await vscode.window.showInputBox({ title: "New Server Group", prompt: "Slash-separated group path", placeHolder: "e.g. Research/Vision", validateInput: input => input.trim() ? undefined : "Group path is required" });
+        if (!value) return;
+        const created = serverCreateGroup(value);
+        if (!created.ok) { vscode.window.showErrorMessage(`Create Server group failed: ${created.error || "unknown error"}`); return; }
+        category = created.group || "";
+      }
+      if (category === undefined || category === server.category) return;
+      if (!serverUpdate(slug, { category })) { vscode.window.showErrorMessage("Could not move Server to the selected group."); return; }
+      gitCommit(`server move: ${slug} -> ${category || "(root)"}`);
+      await treeProvider.refreshServerStatus();
+      panel?.webview.postMessage({ command: "serverGroupList", data: serverGroupList() });
+      panel?.webview.postMessage({ command: "serverList", data: await serverListForUi(context) });
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.renameServerGroup", async (item: PkTreeItem) => {
+      const parts = [...(item?.nodeData?.path || [])];
+      const currentName = String(parts.pop() || "");
+      if (!currentName) return;
+      const nextName = await vscode.window.showInputBox({
+        title: "Rename Server Group", value: currentName, prompt: "Group name",
+        validateInput: value => value.trim() && !/[\\/]/.test(value) ? undefined : "Enter one group name without slashes",
+      });
+      if (!nextName || nextName.trim() === currentName) return;
+      const oldPrefix = [...parts, currentName].join("/");
+      const newPrefix = [...parts, nextName.trim()].join("/");
+      const result = serverMoveGroup(oldPrefix, newPrefix);
+      if (!result.ok) vscode.window.showErrorMessage(`Rename Server group failed: ${result.error || "unknown error"}`);
+      else { gitCommit(`server group move: ${oldPrefix} -> ${newPrefix}`); await treeProvider.refreshServerStatus(); }
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.deleteServerGroup", async (item: PkTreeItem) => {
+      const parts = [...(item?.nodeData?.path || [])];
+      const name = String(parts.pop() || "");
+      if (!name) return;
+      const parent = parts.join("/");
+      const choice = await vscode.window.showWarningMessage(
+        `Delete Server group “${name}”? Its Servers and nested groups will move to ${parent ? `“${parent}”` : "Ungrouped"}. No Server files will be deleted.`,
+        { modal: true }, "Delete Group",
+      );
+      if (choice !== "Delete Group") return;
+      const oldPrefix = [...parts, name].join("/");
+      const result = serverMoveGroup(oldPrefix, parent);
+      if (!result.ok) vscode.window.showErrorMessage(`Delete Server group failed: ${result.error || "unknown error"}`);
+      else { gitCommit(`server group delete: ${oldPrefix}`); await treeProvider.refreshServerStatus(); }
     }),
 
     vscode.commands.registerCommand("personalKnowledge.openHostedRoomItem", async (itemOrRoomId: PkTreeItem | string) => {

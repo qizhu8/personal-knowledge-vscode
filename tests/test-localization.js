@@ -61,8 +61,9 @@ for (const key of ["nav.runningPort", "nav.startingPort", "nav.stoppedPort", "co
 }
 
 const originalRequire = Module.prototype.require;
+let configuredLanguage = "auto";
 Module.prototype.require = function (id) {
-  if (id === "vscode") return { workspace: { getConfiguration: () => ({ get: () => "auto" }) }, env: { language: "en" }, extensions: { getExtension: () => undefined } };
+  if (id === "vscode") return { workspace: { getConfiguration: () => ({ get: () => configuredLanguage }) }, env: { language: "en" }, extensions: { getExtension: () => undefined } };
   return originalRequire.apply(this, arguments);
 };
 const localization = require(path.join(root, "dist", "localization.js"));
@@ -75,5 +76,7 @@ for (const [language, expected] of Object.entries(expectedAutoMappings)) {
   assert.strictEqual(localization.resolveUiLanguage("auto", language, root), expected, `Auto locale mapping failed for ${language}`);
 }
 assert.strictEqual(localization.resolveUiLanguage("zh-cn", "en", root), "zh-hans", "Legacy zh-cn setting must migrate to zh-hans");
+configuredLanguage = "fr";
+assert.strictEqual(localization.localizedText(root, "tabs.servers"), catalogs.fr.strings["tabs.servers"], "localizedText must resolve settings against its supplied extension path");
 
 console.log(`localization test: ${englishKeys.length} keys aligned across ${locales.length} locales (${manifest.locales.map(locale => locale.label).join(", ")})`);

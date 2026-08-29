@@ -107,8 +107,9 @@ Treat Magic Links like temporary passwords. **🔄 Refresh key** copies a replac
   - **AI Summary** button — Purpose / How it works / Inputs / Output / Issues, cached by content hash
   - **In-place editing** with confirmation + automatic git commit
 - **Hierarchical navigation** — both the Activity Bar tree and the panel's left nav render arbitrary-depth folders (default collapsed)
-- **Live navigation status** — top-level Servers and Chatroom entries include color and text indicators for running/connected, starting/reconnecting/proxy-offline, and stopped/offline states
-- **Multilingual UI** — switch the PKM panel and dynamic navigation between English, 简体中文, and Español from Config, or follow the VS Code display language automatically. Structured locale catalogs keep static and dynamically rendered webview text aligned; VS Code command titles use official `package.nls` catalogs
+- **Live navigation status** — individual Servers and Rooms include color and text indicators for running/connected, starting/reconnecting, and stopped/offline states; top-level category entries remain undecorated
+- **Organized managed servers** — create persistent empty groups with **New group**, assign searchable tags and slash-separated paths in Settings, drag Servers by the `⋮⋮` handle, or right-click a card and use **Move to group** → Ungrouped / existing group / New group. Groups can be renamed or safely deleted from the dashboard or Navigation. The permanent **Hidden** group excludes its complete branch from Navigation. Card text remains selectable and copyable
+- **Multilingual UI** — switch the PKM panel and dynamic navigation across 11 languages from Config, or follow the VS Code display language automatically. Manifest-driven locale catalogs keep static and dynamically rendered webview text aligned; Arabic uses RTL layout, and VS Code command titles use official `package.nls` catalogs
 - **Right-click actions** — add a new skill/note/script at a folder, or edit any item, straight from the sidebar
 - **Full-text search** — instant title, path, metadata, and body search across **Notes, Skills, Papers, and Scripts**, with high-contrast match highlighting and category-tree pruning (CJK-friendly on the MCP side)
 - **Files are the source of truth** — every skill and note is a plain, git-tracked `.md` file; edit them here, in your editor, or from the MCP server and the panel refreshes automatically
@@ -122,12 +123,12 @@ Treat Magic Links like temporary passwords. **🔄 Refresh key** copies a replac
   - **Research sections** — collapsible Conclusions, Implementation, Assumptions, Cites, Cited by, and Markdown Content; non-empty sections open automatically while empty sections stay compact
   - **Citation picker** — add/remove citations through an existing-Paper picker instead of free text; both Cites and Cited by lists link directly to the related Paper
   - Papers are plain `papers/<Topic>/<Title>.md` files (with a remote URL and/or an uploaded local file), and are exposed via **MCP** and **sync**
-- **Python Environments** — a machine-local manager for your **conda / venv / uv** environments, grouped in a collapsible tree by manager → folder:
+- **Python Environments** — a machine-local manager for your **conda / venv / uv** environments, grouped in both the dashboard and Navigation by manager → folder:
   - Register existing envs (conda auto-detected) or **create** a new conda/venv/uv environment; each card shows the **Python version**, **on-disk size**, and an editable **description** (tags / crucial packages)
   - **Compare** two envs in a unified, sortable table (package · v1 · v2 · Δ) with colour-coded upgrade/downgrade/added/deleted/same status
   - **≈ Similar** finds near-duplicate environments (skipping different Python versions) with estimated space savings, and generates a **merge script**; **⚡ Open shell** activates an env in a terminal; **🚚 Migrate** moves an env into a central managed location
   - Merge and delete scripts are generated for **you to review and run** — the extension never executes them
-- **Servers** — manage long-running local servers as store packages with card-local settings/log panels and fully described actions. Each card shows a **Stable Link** using a selectable non-loopback network IP and a localhost **Server Link**. On Remote SSH, a **Port Forward** toggle asks VS Code to forward Server Link on start/restart; disabling it prevents new requests, while existing tunnels remain user-managed in the Ports view. Navigation expands to show every server with its running/starting/stopped indicator. Each server folder receives `PKM_SERVER_PROXY.md` with binding, firewall, link, and optional reverse-proxy guidance for Agents
+- **Servers** — manage long-running local servers as store packages with card-local settings/log panels and fully described actions. A central port registry assigns unique ports, rejects conflicts, and distinguishes PKM-managed processes from external listeners already using a registered port. External listeners expose their PID/command and a confirmed, identity-revalidated **Force Stop** action. Each card shows directly clickable **Stable Link** and localhost **Server Link** URLs plus their Open/Copy actions. On Remote SSH, a **Port Forward** toggle asks VS Code to forward Server Link on start/restart; disabling it prevents new requests, while existing tunnels remain user-managed in the Ports view. Navigation expands to show every non-Hidden server with its running/starting/external/stopped indicator
 - **Sync** — share an encrypted, checksum-verified **Magic Code** so another machine can pull exactly the selected knowledge
 - **Chatroom** — a self-hosted, real-time collaboration hub where humans and their AI agents share named rooms:
   - **Host a room** from the extension (a bundled WebSocket + HTTP hub); teammates join from the **extension**, a **browser** (no VS Code needed), or an **AI agent via MCP** — all in the same room
@@ -215,7 +216,7 @@ For an external MCP Agency, copy **Agency installation instructions** from Confi
 ### 6. Verify
 
 - The Config process light shows **Running** when the generated `server.py` process is detected.
-- Call `pkm.check_version` and verify Unified `2.5.1`, Knowledge `1.0.0`, and Chat `2.3.0`.
+- Call `pkm.check_version` and verify Unified `2.5.3`, Knowledge `1.0.0`, and Chat `2.3.0`.
 - Call `pkm.chat_capabilities` and verify the Chatroom tools are present.
 
 Stdio MCP servers start on demand, so **Ready · starts on demand** means setup is complete and `pkm` will launch when an MCP client requests it.

@@ -25,6 +25,8 @@ async def main():
     assert module._mentions('@Host discusses `@all` behavior', "Generated Agent") is False
     assert module._structured_recipient_names('@Host report\n\n@"Agent B" @"Agent Three" review') == ["Host", "Agent B", "Agent Three"]
     assert module._structured_recipient_names('@Host report `@"Agent B"`\n```\n@"Agent Three"\n```') == ["Host", "Agent B", "Agent Three"]
+    assert module._structured_recipient_names('email foo@example and literal x@Agent') == []
+    assert module._structured_recipient_names('ask @Amy and @"Agent B"') == ["Amy", "Agent B"]
 
     tools = await module.mcp.list_tools()
     names = {tool.name for tool in tools}
@@ -88,6 +90,7 @@ async def main():
     posting = module.ChatConnection("Posting Agent", "ws://unused", "room", "secret", "room-posting")
     posting.status = "connected"
     posting.participant_id = "participant-posting"
+    posting.members = [{"user": "Posting Agent"}, {"user": "Host", "host": True}]
     class FakeSocket:
         async def send(self, raw):
             frame = json.loads(raw)
@@ -184,23 +187,27 @@ async def main():
     group_frames = []
     group = module.ChatConnection("Group Generated", "ws://unused", "room", "secret", "room-group")
     group.status = "connected"
+    group.members = [{"user": "Group Generated"}, {"user": "Host", "host": True}, {"user": "Peer Agent"}]
     class GroupSocket:
         async def send(self, raw):
             frame = json.loads(raw); group_frames.append(frame)
             if frame.get("t") == "msg":
                 group.post_waiters[frame["clientRequestId"]].set_result({"ok": True, "posted": True, "client_request_id": frame["clientRequestId"], "message_id": "group-posted", "connection_alive": True})
     group.ws = GroupSocket()
-    group.record({"id": "group-1", "from": "Host", "text": '@"Group Generated" @"Peer Agent" discuss',
-                  "ts": 5, "reply_required": True})
+    group.record(group.normalized({"id": "group-1", "from": "Host", "text": '@"Group Generated" @"Peer Agent" discuss',
+                                  "ts": 5, "recipients": ["Group Generated", "Peer Agent"],
+                                  "discussionAudience": ["Group Generated", "Peer Agent", "Offline Agent"], "replyPolicy": "required"}))
     group_result = await group.standby(1)
-    assert group_result["reply_audience"] == ["Host", "Peer Agent"], group_result
+    assert group_result["reply_audience"] == ["Host", "Peer Agent", "Offline Agent"], group_result
     await group.post("implicit group reply")
     group_post = next(frame for frame in group_frames if frame.get("t") == "msg")
-    assert group_post["text"].startswith('@Host @"Peer Agent" '), group_post
+    assert group_post["text"] == "implicit group reply", group_post
+    assert group_post["recipients"] == ["Host", "Peer Agent", "Offline Agent"], group_post
 
     peer_frames = []
     peer = module.ChatConnection("Peer Agent", "ws://unused", "room", "secret", "room-peer")
     peer.status = "connected"
+    peer.members = [{"user": "Peer Agent"}, {"user": "Host", "host": True}, {"user": "Group Generated"}]
     class PeerSocket:
         async def send(self, raw):
             frame = json.loads(raw); peer_frames.append(frame)
@@ -208,17 +215,18 @@ async def main():
                 peer.post_waiters[frame["clientRequestId"]].set_result({"ok": True, "posted": True, "client_request_id": frame["clientRequestId"], "message_id": "peer-posted", "connection_alive": True})
     peer.ws = PeerSocket()
     peer.record({"id": "group-2", "from": "Group Generated", "text": group_post["text"],
-                 "ts": 6, "reply_required": True})
+                 "ts": 6, "recipients": group_post["recipients"], "reply_required": True})
     peer_result = await peer.standby(1)
-    assert peer_result["reply_audience"] == ["Group Generated", "Host"], peer_result
+    assert peer_result["reply_audience"] == ["Group Generated", "Host", "Offline Agent"], peer_result
     await peer.post("peer continues")
     peer_post = next(frame for frame in peer_frames if frame.get("t") == "msg")
-    assert peer_post["text"].startswith('@"Group Generated" @Host '), peer_post
+    assert peer_post["text"] == "peer continues", peer_post
+    assert peer_post["recipients"] == ["Group Generated", "Host", "Offline Agent"], peer_post
     group.record({"id": "group-3", "from": "Peer Agent", "text": peer_post["text"],
-                  "ts": 7, "reply_required": True})
+                  "ts": 7, "recipients": peer_post["recipients"], "reply_required": True})
     continued = await group.standby(1)
     assert continued["event"] == "message"
-    assert continued["reply_audience"] == ["Peer Agent", "Host"], continued
+    assert continued["reply_audience"] == ["Peer Agent", "Host", "Offline Agent"], continued
 
     broadcast = module.ChatConnection("Broadcast Generated", "ws://unused", "room", "secret", "room-broadcast")
     broadcast.status = "connected"

@@ -58,8 +58,10 @@ function chatTrackProto(fr) {
 function chatSetTurn(text) {
   const el = document.getElementById('chat-turn-banner');
   if (!el) return;
-  if (text) { el.textContent = text; el.classList.remove('hidden'); }
-  else { el.textContent = ''; el.classList.add('hidden'); }
+  chatPreserveReadingLayout(() => {
+    if (text) { el.textContent = text; el.classList.remove('hidden'); }
+    else { el.textContent = ''; el.classList.add('hidden'); }
+  });
 }
 function chatProtoBadge(state) {
   if (state === 'thinking' || state === 'working') return '<span class="chat-proto thinking" title="Received a message and is thinking"><span class="chat-thinking-dot">.</span><span class="chat-thinking-dot">.</span><span class="chat-thinking-dot">.</span></span>';
@@ -184,7 +186,7 @@ function renderChatroom() {
               <button id="chat-search-regex" type="button" onclick="toggleFindOption('chat','regex')" title="Use regular expression">.*</button>
             </div>
             <div id="chat-log"></div>
-            <button id="chat-jump-latest" class="chat-jump-latest hidden" type="button" onclick="chatPinLatest()" title="Return to the newest message and resume following new messages">↓ Jump to latest</button>
+            <button id="chat-jump-latest" class="chat-jump-latest hidden" type="button" onclick="chatPinLatest()" data-i18n="chat.jumpLatest" data-i18n-title="chat.followLatestTitle" title="Show the latest message and keep following new messages">↓ Show latest message</button>
             <div id="chat-mode-control" class="chat-mode-control hidden" role="group" aria-label="Message mode">
               <button type="button" data-mode="announce" onclick="chatSetMode('announce')" title="Notify the selected recipients without requesting an acknowledgement or reply.">Announce</button>
               <button type="button" data-mode="ask" onclick="chatSetMode('ask')" class="active" title="Ask each selected recipient for one required response.">Ask</button>
@@ -365,6 +367,26 @@ function chatRestoreScrollAnchor(log, anchor, fallbackTop = 0) {
   log.scrollTop = element ? element.offsetTop - (anchor.offset || 0) : fallbackTop;
   requestAnimationFrame(() => { chat.restoringScroll = false; });
 }
+function chatPreserveReadingLayout(mutate) {
+  const log = document.getElementById('chat-log');
+  if (!log) { mutate(); return; }
+  const shouldFollow = chat.followLatest;
+  const anchor = !shouldFollow ? chatCaptureScrollAnchor(log) : null;
+  const fallbackTop = log.scrollTop;
+  mutate();
+  const restore = () => {
+    if (shouldFollow) {
+      chat.followLatest = true;
+      chatScrollLatest(log);
+    } else {
+      chat.followLatest = false;
+      chatRestoreScrollAnchor(log, anchor, fallbackTop);
+      document.getElementById('chat-jump-latest')?.classList.remove('hidden');
+    }
+  };
+  restore();
+  requestAnimationFrame(restore);
+}
 function chatTrackScroll() {
   const log = document.getElementById('chat-log');
   if (!log || chat.restoringScroll) return;
@@ -375,13 +397,19 @@ function chatTrackScroll() {
   }
   document.getElementById('chat-jump-latest')?.classList.toggle('hidden', chat.followLatest);
 }
+function chatScrollLatest(log = document.getElementById('chat-log')) {
+  if (!log || !chat.followLatest) return;
+  log.scrollTop = log.scrollHeight;
+  if (chat.activeKey) chat.scrollPositions[chat.activeKey] = log.scrollTop;
+  document.getElementById('chat-jump-latest')?.classList.add('hidden');
+}
 function chatPinLatest() {
   const log = document.getElementById('chat-log');
   if (!log) return;
   chat.followLatest = true;
-  log.scrollTop = log.scrollHeight;
-  if (chat.activeKey) chat.scrollPositions[chat.activeKey] = log.scrollTop;
-  document.getElementById('chat-jump-latest')?.classList.add('hidden');
+  delete chat.scrollAnchors[chat.activeKey];
+  chatScrollLatest(log);
+  requestAnimationFrame(() => chatScrollLatest(log));
 }
 function chatRefreshSearch(preserveCurrent = false) {
   const root = document.getElementById('chat-log');
@@ -612,14 +640,16 @@ function chatSend() {
   const mode = chat.active?.selfHost ? chat.mode : undefined;
   const replyPolicy = mode === 'announce' ? 'none' : mode === 'discuss' ? 'required' : 'required';
   ask('chatSend', { text, mode, replyPolicy, recipients, replyToMessageId: chat.quote?.id || '' });
-  inp.value = ''; inp.style.height = 'auto';
-  chat.manualRecipients = [];
-  chat.bodyRecipients = [];
-  chat.removedRecipients = [];
-  chat.selectedRecipientIndex = -1;
-  chatClearQuote();
-  chatUpdateDefaultRecipient();
-  chatHideMentionPop();
+  chatPreserveReadingLayout(() => {
+    inp.value = ''; inp.style.height = 'auto';
+    chat.manualRecipients = [];
+    chat.bodyRecipients = [];
+    chat.removedRecipients = [];
+    chat.selectedRecipientIndex = -1;
+    chatClearQuote();
+    chatUpdateDefaultRecipient();
+    chatHideMentionPop();
+  });
 }
 
 function chatMessageById(messageId) {
@@ -1145,7 +1175,10 @@ function chatRenderMarkdown(root, text) {
   chatSanitizeMarkdown(root);
   chatHighlightMentionText(root);
   root.querySelectorAll('pre code:not(.language-mermaid)').forEach(safeHljs);
-  void renderMermaid(root);
+  root.querySelectorAll('img').forEach(image => {
+    if (!image.complete) image.addEventListener('load', () => chatScrollLatest(), { once: true });
+  });
+  return renderMermaid(root);
 }
 
 function chatAppend(m, refreshSearch = true) {
@@ -1162,8 +1195,9 @@ function chatAppend(m, refreshSearch = true) {
     if (chat.renderedIds.has(m.id)) return;
     chat.renderedIds.add(m.id);
   }
-  const shouldFollow = chat.followLatest && chatIsNearBottom(log);
+  const shouldFollow = chat.followLatest;
   const el = document.createElement('div');
+  let renderDone = Promise.resolve();
   if (m.system) {
     el.className = 'chat-sys';
     el.textContent = m.text;
@@ -1178,7 +1212,7 @@ function chatAppend(m, refreshSearch = true) {
     const quoted = m.replyToMessageId ? chatMessageById(m.replyToMessageId) : null;
     const quoteHeader = m.replyToMessageId ? `<button type="button" class="chat-reply-reference" title="Jump to quoted message ${esc(m.replyToMessageId)}" onclick="chatJumpToMessage('${esc(m.replyToMessageId)}')">Reply to ${esc(quoted?.from || 'message')} · ${esc(m.replyToMessageId)}</button>` : '';
     el.innerHTML = `<div class="chat-msg-hdr"><span class="chat-who">${m.kind === 'agent' ? '🤖 ' : ''}${esc(m.from)}</span><span class="chat-time">${hh}</span>${receipt}<span class="chat-msg-actions"><button type="button" title="Quote this message" onclick="chatQuoteMessage('${esc(m.id)}')">Quote</button><button type="button" title="Open this message in a larger resizable viewer" onclick="chatOpenMessageViewer('${esc(m.id)}')">Open</button></span></div>${quoteHeader}<div class="chat-msg-body prose"></div>`;
-    chatRenderMarkdown(el.querySelector('.chat-msg-body'), m.text);
+    renderDone = chatRenderMarkdown(el.querySelector('.chat-msg-body'), m.text);
     el.addEventListener('dblclick', event => { if (!event.target.closest('button,a')) chatOpenMessageViewer(m.id); });
     el.addEventListener('contextmenu', event => chatMessageMenu(event, m.id));
   }
@@ -1190,8 +1224,9 @@ function chatAppend(m, refreshSearch = true) {
     oldest?.remove();
   }
   if (shouldFollow) {
-    log.scrollTop = log.scrollHeight;
-    chat.followLatest = true;
+    chatScrollLatest(log);
+    requestAnimationFrame(() => chatScrollLatest(log));
+    void renderDone.finally(() => chatScrollLatest(log));
   } else {
     document.getElementById('chat-jump-latest')?.classList.remove('hidden');
   }
@@ -1311,6 +1346,7 @@ function chatPaintActive() {
     const lastMessage = messages[messages.length - 1];
     const logSnapshotKey = `${chat.activeKey}|${messages.length}|${firstMessage?.id || firstMessage?.ts || ''}|${lastMessage?.id || lastMessage?.ts || ''}|${files.length}|${files[files.length - 1]?.fileId || ''}`;
     if (chat.logSnapshotKey === logSnapshotKey) {
+      chatScrollLatest(log);
       document.getElementById('chat-jump-latest')?.classList.toggle('hidden', chat.followLatest);
       chatPaintMembers();
       return;
@@ -1326,7 +1362,7 @@ function chatPaintActive() {
     Object.entries(a.agentStates || {}).forEach(([user, runtimeState]) => { chat.proto[user] = { state: runtimeState }; });
     (a.files || []).forEach(f => chatAppendFileRow(f.key || chat.activeKey, f));
     if (document.getElementById('chat-searchbox')?.value) chatRefreshSearch(true);
-    if (shouldFollow) log.scrollTop = log.scrollHeight;
+    if (shouldFollow) chatScrollLatest(log);
     else chatRestoreScrollAnchor(log, restoreAnchor, restoreTop);
     chat.logSnapshotKey = logSnapshotKey;
     chat.scrollPositions[chat.activeKey] = log.scrollTop;
@@ -1342,9 +1378,12 @@ function chatAppendFileRow(key, f) {
   el.className = 'chat-file';
   el.innerHTML = `<span>✅ <b>${esc(f.name)}</b> from ${esc(f.from)} received</span>
     <button class="tbtn" onclick="ask('chatSaveFile',{key:'${esc(key)}',fileId:'${esc(f.fileId)}'})">Save…</button>`;
-  const shouldFollow = chat.followLatest && chatIsNearBottom(log);
+  const shouldFollow = chat.followLatest;
   log.appendChild(el);
-  if (shouldFollow) log.scrollTop = log.scrollHeight;
+  if (shouldFollow) {
+    chatScrollLatest(log);
+    requestAnimationFrame(() => chatScrollLatest(log));
+  }
   else document.getElementById('chat-jump-latest')?.classList.remove('hidden');
 }
 

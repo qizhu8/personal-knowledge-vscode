@@ -13,12 +13,17 @@ export interface ServerNavigationRow {
 
 export function summarizeServerNavigation(rows: ServerNavigationRow[]): NavigationStatus {
   const running = rows.filter(row => row.status === "running").length;
+  const external = rows.filter(row => row.status === "external").length;
   const starting = rows.filter(row => row.status === "starting").length;
   if (starting) {
     const reason = `${starting} starting`;
     return { kind: "attention", description: reason, tooltip: `Servers need attention: ${reason}.` };
   }
-  if (running) return { kind: "online", description: `${running} running`, tooltip: `${running} managed server${running === 1 ? " is" : "s are"} running; stable proxy is online.` };
+  if (running || external) {
+    const total = running + external;
+    const suffix = external ? ` ${external} detected outside PKM.` : "";
+    return { kind: "online", description: `${total} running`, tooltip: `${total} registered server${total === 1 ? " has" : "s have"} a live listener;${suffix || " all are PKM-managed."}` };
+  }
   return { kind: "offline", description: rows.length ? "all stopped" : "none", tooltip: rows.length ? "All managed servers are stopped." : "No managed servers are registered." };
 }
 

@@ -43,13 +43,14 @@ export function loadLocaleCatalogs(extensionPath: string): Record<string, Locale
   return catalogs;
 }
 
-export function uiLanguageSetting(): UiLanguageSetting {
+export function uiLanguageSetting(extensionPath = vscode.extensions.getExtension("Uone.personal-knowledge")?.extensionPath || path.join(__dirname, "..")): UiLanguageSetting {
   const value = vscode.workspace.getConfiguration("personalKnowledge").get<string>("uiLanguage", "auto");
   if (value === "auto") return "auto";
-  return normalizeUiLanguage(vscode.extensions.getExtension("Uone.personal-knowledge")?.extensionPath || path.join(__dirname, ".."), value) || "auto";
+  return normalizeUiLanguage(extensionPath, value) || "auto";
 }
 
-export function resolveUiLanguage(setting = uiLanguageSetting(), vscodeLanguage = vscode.env.language, extensionPath = vscode.extensions.getExtension("Uone.personal-knowledge")?.extensionPath || path.join(__dirname, "..")): string {
+export function resolveUiLanguage(setting: UiLanguageSetting | undefined = undefined, vscodeLanguage = vscode.env.language, extensionPath = vscode.extensions.getExtension("Uone.personal-knowledge")?.extensionPath || path.join(__dirname, "..")): string {
+  setting ??= uiLanguageSetting(extensionPath);
   if (setting !== "auto") return normalizeUiLanguage(extensionPath, setting) || "en";
   const language = String(vscodeLanguage || "").toLowerCase();
   const matches = loadLocaleManifest(extensionPath).locales
@@ -59,7 +60,7 @@ export function resolveUiLanguage(setting = uiLanguageSetting(), vscodeLanguage 
 }
 
 export function localizedText(extensionPath: string, key: string, params: Record<string, string | number> = {}): string {
-  const locale = resolveUiLanguage();
+  const locale = resolveUiLanguage(uiLanguageSetting(extensionPath), vscode.env.language, extensionPath);
   const catalogs = loadLocaleCatalogs(extensionPath);
   let value = catalogs[locale]?.strings[key] || catalogs.en?.strings[key] || key;
   for (const [name, replacement] of Object.entries(params)) value = value.split(`{${name}}`).join(String(replacement));

@@ -2,7 +2,7 @@
   "name": "personal-knowledge",
   "displayName": "Personal Knowledge Manager",
   "description": "%extension.description%",
-  "version": "2.5.1",
+  "version": "2.5.3",
   "publisher": "Uone",
   "author": {
     "name": "Yu Wang"
@@ -88,6 +88,21 @@
         "command": "personalKnowledge.restartServerItem",
         "title": "%command.restartServer%",
         "icon": "$(debug-restart)"
+      },
+      {
+        "command": "personalKnowledge.moveServerToGroup",
+        "title": "Move to Group…",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "personalKnowledge.renameServerGroup",
+        "title": "Rename Group…",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "personalKnowledge.deleteServerGroup",
+        "title": "Delete Group…",
+        "icon": "$(trash)"
       },
       {
         "command": "personalKnowledge.openHostedRoomItem",
@@ -241,6 +256,21 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "personalKnowledge.moveServerToGroup",
+          "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-server-(stopped|active|external)/",
+          "group": "1_server@0"
+        },
+        {
+          "command": "personalKnowledge.renameServerGroup",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-server-group",
+          "group": "1_server@1"
+        },
+        {
+          "command": "personalKnowledge.deleteServerGroup",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-server-group",
+          "group": "1_server@2"
+        },
         {
           "command": "personalKnowledge.startServerItem",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-server-stopped",
@@ -553,6 +583,7 @@
     "test:chat-mention-highlight-ui": "npm run build && node tests/test-chat-mention-highlight-ui.js",
     "test:chat-room-identity": "npm run build && node tests/test-chat-room-identity.js",
     "test:chat-default-recipient-ui": "npm run build && node tests/test-chat-default-recipient-ui.js",
+    "test:chat-browser-ui": "npm run build && node tests/test-chat-browser-ui.js",
     "test:chat-multi-recipient": "npm run build && node tests/test-chat-multi-recipient.js",
     "test:chat-magic-link": "npm run build && node tests/test-chat-magic-link.js",
     "test:chat-mcp-approval": "npm run build && node tests/test-chat-mcp-approval.js",
@@ -567,9 +598,12 @@
     "test:pkm-skill-projection": "npm run build && node tests/test-pkm-skill-projection.js",
     "test:pkm-skill-mcp": "node tests/test-pkm-skill-mcp.js",
     "test:server-proxy": "npm run build && node tests/test-server-proxy.js",
+    "test:server-grouping": "npm run build && node tests/test-server-grouping.js",
+    "test:environment-refresh": "npm run build && node tests/test-environment-refresh.js",
+    "test:refresh-actions": "npm run build && node tests/test-refresh-actions.js",
     "test:navigation-status": "npm run build && node tests/test-navigation-status.js",
     "test:localization": "npm run build && node tests/test-localization.js",
-    "test:release": "npm run build && node tests/test-chat-persistence.js && node tests/test-chat-stored-rooms.js && node tests/test-chat-stored-rooms-ui.js && node tests/test-chat-participant-persistence.js && node tests/test-chat-join-approval.js && node tests/test-chat-hub-approval.js && node tests/test-chat-join-approval-ui.js && node tests/test-chat-moderation-ui.js && node tests/test-chat-mention-highlight-ui.js && node tests/test-chat-room-identity.js && node tests/test-chat-default-recipient-ui.js && node tests/test-chat-multi-recipient.js && node tests/test-chat-magic-link.js && node tests/test-chat-mcp-approval.js && node tests/test-chat-packaged-worker.js && node tests/test-chat-hub-health.js && python tests/test-chat-history-atomic.py && python tests/test-chat-generated-standby.py && node tests/test-chat-markdown.js && node tests/test-chat-quote-viewer-ui.js && node tests/test-mcp-version-ui.js && node tests/test-chat-layout-scroll-ui.js && node tests/test-pkm-skill-projection.js && node tests/test-pkm-skill-mcp.js && node tests/test-server-proxy.js && node tests/test-navigation-status.js && node tests/test-localization.js",
+    "test:release": "npm run build && node tests/test-chat-persistence.js && node tests/test-chat-stored-rooms.js && node tests/test-chat-stored-rooms-ui.js && node tests/test-chat-participant-persistence.js && node tests/test-chat-join-approval.js && node tests/test-chat-hub-approval.js && node tests/test-chat-join-approval-ui.js && node tests/test-chat-moderation-ui.js && node tests/test-chat-mention-highlight-ui.js && node tests/test-chat-room-identity.js && node tests/test-chat-default-recipient-ui.js && node tests/test-chat-browser-ui.js && node tests/test-chat-multi-recipient.js && node tests/test-chat-magic-link.js && node tests/test-chat-mcp-approval.js && node tests/test-chat-packaged-worker.js && node tests/test-chat-hub-health.js && python tests/test-chat-history-atomic.py && python tests/test-chat-generated-standby.py && node tests/test-chat-markdown.js && node tests/test-chat-quote-viewer-ui.js && node tests/test-mcp-version-ui.js && node tests/test-chat-layout-scroll-ui.js && node tests/test-pkm-skill-projection.js && node tests/test-pkm-skill-mcp.js && node tests/test-server-proxy.js && node tests/test-server-grouping.js && node tests/test-environment-refresh.js && node tests/test-refresh-actions.js && node tests/test-navigation-status.js && node tests/test-localization.js",
     "poc:chat-room-lifecycle": "npm run build && node scripts/poc-chat-room-lifecycle.js",
     "watch": "tsc -p tsconfig.json --watch",
     "package": "npx vsce package"

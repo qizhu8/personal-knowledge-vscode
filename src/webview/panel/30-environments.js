@@ -13,12 +13,17 @@ function renderEnvDashboard(envs) {
         <button class="tbtn" onclick="registerFolderEnv()">＋ venv/uv folder</button>
         <button class="tbtn" onclick="startCompare()"${envCache.length < 2 ? ' disabled' : ''}>⇄ Compare</button>
         <button class="tbtn" onclick="findSimilar()"${envCache.length < 2 ? ' disabled' : ''} title="Find near-duplicate environments that could be merged">≈ Similar</button>
-        <button class="tbtn" onclick="ask('envList',{})">↻</button>
+        <button id="env-refresh-btn" class="tbtn" onclick="refreshEnvDashboard()" title="Force-refresh paths, Python versions, and disk sizes for every registered environment">↻ Refresh</button>
       </div>
       <div id="env-tree"></div>
       <div id="env-out"></div>
     </div>`;
   renderEnvTree();
+}
+function refreshEnvDashboard() {
+  const button = document.getElementById('env-refresh-btn');
+  if (button) { button.disabled = true; button.textContent = '↻ …'; }
+  ask('envList', { refresh: true });
 }
 function renderEnvTree() {
   const el = document.getElementById('env-tree'); if (!el) return;

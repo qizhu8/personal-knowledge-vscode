@@ -224,15 +224,34 @@ export function browserViewHtml(): string {
   }
   function sendMsg(){
     var inp=document.getElementById("input"); var v=inp.value.trim(); if(!v||!ws) return;
-    if(v.charAt(0)!=="/"&&!/^@(?:"[^"]{1,60}"|[\w\-]{1,60})(?:\s+|$)/u.test(v)){
+    var recipients=v.charAt(0)==="/"?[]:browserRecipientNames(v);
+    if(v.charAt(0)!=="/"&&!recipients.length){
       var selfMember=roster.filter(function(member){return member.user===me&&member.present!==false;})[0];
       var host=roster.filter(function(member){return member.host&&member.present!==false;})[0];
-      var recipient=selfMember&&selfMember.host?"all":host?host.user:"all";
-      var quoted=recipient!=="all"&&/[^A-Za-z0-9_\-]/.test(recipient);
-      v=(quoted?'@"'+recipient.replace(/"/g,'')+'"':'@'+recipient)+" "+v;
+      recipients=[selfMember&&selfMember.host?"all":host?host.user:"all"];
     }
-    ws.send(JSON.stringify({t:"msg",room:ROOM,from:me,text:v,kind:"browser"}));
+    ws.send(JSON.stringify({t:"msg",room:ROOM,from:me,text:v,kind:"browser",recipients:recipients}));
     inp.value=""; hideSuggest();
+  }
+  function browserRecipientNames(text){
+    var valid={};
+    roster.forEach(function(member){valid[String(member.user||"").toLowerCase()]=member.user;});
+    var selfMember=roster.filter(function(member){return member.user===me&&member.present!==false;})[0];
+    if(selfMember&&selfMember.host){valid.all="all";valid.everyone="all";}
+    var aliases=Object.keys(valid).filter(function(key){return key.indexOf(" ")<0;}).sort(function(a,b){return b.length-a.length;}),out=[],source=String(text||"");
+    for(var index=0;index<source.length;index++){
+      if(source[index]!=="@"||(index>0&&/[\p{L}\p{N}_@]/u.test(source[index-1])))continue;
+      var resolved="";
+      if(source[index+1]==='"'){
+        var close=source.indexOf('"',index+2);
+        if(close>index+2)resolved=valid[source.slice(index+2,close).toLowerCase()]||"";
+      }else{
+        var key=aliases.filter(function(alias){return source.slice(index+1,index+1+alias.length).toLowerCase()===alias&&(index+1+alias.length===source.length||!/[\p{L}\p{N}_-]/u.test(source[index+1+alias.length]));})[0];
+        resolved=key?valid[key]:"";
+      }
+      if(resolved&&!out.some(function(name){return name.toLowerCase()===resolved.toLowerCase();}))out.push(resolved);
+    }
+    return out;
   }
   function mentionCandidates(filter){
     var f=String(filter||"").toLowerCase(),seen={};

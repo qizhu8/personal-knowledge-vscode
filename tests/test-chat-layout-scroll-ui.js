@@ -22,7 +22,7 @@ assert(panelJs.includes("actionbar.scrollWidth > actionbar.clientWidth"));
 assert(panelJs.includes("document.getElementById('content-toolbar').style.display = fullWidthTab ? 'none' : ''"));
 assert(panelCss.includes("#content-toolbar{display:flex"));
 
-for (const name of ["toggleMainSidebar", "applyMainSidebarState", "renderEmptyDetail", "refreshEmptyDetailHint", "chatToggleHubPanel", "chatApplyHubPanelState", "chatToggleMemberPane", "chatApplyMemberPaneState", "chatTrackScroll", "chatPinLatest", "chatIsNearBottom", "chatCaptureScrollAnchor", "chatRestoreScrollAnchor"]) {
+for (const name of ["toggleMainSidebar", "applyMainSidebarState", "renderEmptyDetail", "refreshEmptyDetailHint", "chatToggleHubPanel", "chatApplyHubPanelState", "chatToggleMemberPane", "chatApplyMemberPaneState", "chatTrackScroll", "chatPinLatest", "chatScrollLatest", "chatIsNearBottom", "chatCaptureScrollAnchor", "chatRestoreScrollAnchor", "chatPreserveReadingLayout"]) {
   assert(panelJs.includes(`function ${name}`), `missing ${name}`);
 }
 assert.match(panelHtml, /id="layout-resizer"[^>]*><button id="sidebar-toggle"/);
@@ -32,8 +32,9 @@ assert(panelJs.includes("collapsed ? '▶' : '◀'"));
 assert(panelJs.includes("pk-chat-side-collapsed"));
 assert(panelJs.includes("pk-chat-rail-collapsed"));
 assert(panelCss.includes("#layout.main-sidebar-collapsed #sidebar"));
-assert(panelJs.includes("Select an item from the sidebar."));
-assert(panelJs.includes("Please click the &gt; button to see the sidebar."));
+assert(panelJs.includes("t('content.selectItem')"));
+assert(panelJs.includes("t('content.restoreSidebar')"));
+assert(panelJs.includes("refreshEmptyDetailHint();\n  translateUi();"));
 assert(panelHtml.includes('class="empty empty-select-item"'));
 assert(panelCss.includes(".empty-select-hint"));
 assert(panelCss.includes("width:14px;height:72px"));
@@ -64,7 +65,12 @@ assert(panelJs.includes("chat.scrollPositions[previousKey] = existingLog.scrollT
 assert(panelJs.includes("else chatRestoreScrollAnchor(log, restoreAnchor, restoreTop)"));
 assert(panelJs.includes("if (chat.logSnapshotKey === logSnapshotKey)"));
 assert(panelJs.includes("chat.scrollAnchors[chat.activeKey] = chatCaptureScrollAnchor(log)"));
-assert(panelJs.includes("chat.followLatest && chatIsNearBottom(log)"));
+assert(panelJs.includes("chat.followLatest = chatIsNearBottom(log)"));
+assert.doesNotMatch(panelJs, /const shouldFollow = chat\.followLatest && chatIsNearBottom\(log\)/);
+assert(panelJs.includes("void renderDone.finally(() => chatScrollLatest(log))"));
+assert(panelJs.includes("Show the latest message and keep following new messages"));
+assert.match(panelJs, /function chatSetTurn\(text\)[\s\S]{0,240}chatPreserveReadingLayout/);
+assert.match(panelJs, /function chatSend\(\)[\s\S]{0,900}chatPreserveReadingLayout/);
 assert(panelJs.includes("chat-jump-latest"));
 for (const id of ["search-count", "search-prev", "search-next", "search-case", "search-regex"]) {
   assert(panelHtml.includes(`id="${id}"`), `missing global search control ${id}`);

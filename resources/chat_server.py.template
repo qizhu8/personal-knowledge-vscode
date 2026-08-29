@@ -66,7 +66,7 @@ def _parse_magic_link(value):
 
 def _all_mention_names(text):
     return [(quoted or plain) for quoted, plain in
-            re.findall(r'@(?:"([^"]{1,60})"|([\w-]{1,60}))', str(text or ""))]
+            re.findall(r'(?<![\w@])@(?:"([^"]{1,60})"|([\w-]{1,60}))', str(text or ""))]
 
 
 def _recipient_names(text):
@@ -91,21 +91,12 @@ def _mentions(text, name):
     return bool(names.intersection({"all", "everyone", target.casefold()}))
 
 
-def _has_any_mention(text):
-    return bool(re.search(r'@(?:"[^"\n]{1,60}"|[\w-]{1,60})', str(text or "")))
-
-
 def _structured_recipient_names(text):
     names = []
     for name in _all_mention_names(text):
         if name.casefold() not in {item.casefold() for item in names}:
             names.append(name)
     return names
-
-
-def _format_mention(name):
-    value = str(name or "").replace('"', "").strip()
-    return "@" + value if re.fullmatch(r"[A-Za-z0-9_][\w-]{0,59}", value) else '@"' + value + '"'
 
 
 def _cid_path():
@@ -337,8 +328,18 @@ class ChatConnection:
         value = str(text or "").strip()
         if not value:
             return {"ok": False, "error": "Message is empty."}
-        if not value.startswith("/") and not _has_any_mention(value) and self.reply_audience:
-            value = " ".join(_format_mention(target) for target in self.reply_audience) + " " + value
+        body_recipients = _structured_recipient_names(value) if not value.startswith("/") else []
+        valid = {str(member.get("user") or "").casefold(): str(member.get("user") or "") for member in self.members}
+        self_member = next((member for member in self.members if str(member.get("user") or "").casefold() == self.name.casefold()), None)
+        if self_member and self_member.get("host"):
+            valid.update({"all": "all", "everyone": "all"})
+        recipients = []
+        for name in body_recipients:
+            resolved = valid.get(name.casefold())
+            if resolved and resolved.casefold() != self.name.casefold() and resolved.casefold() not in {item.casefold() for item in recipients}:
+                recipients.append(resolved)
+        if not recipients and not value.startswith("/"):
+            recipients = list(self.reply_audience)
         self.reply_target = ""
         self.reply_audience = []
         await self.send_state("sending")
@@ -347,7 +348,7 @@ class ChatConnection:
         self.post_waiters[request_id] = waiter
         try:
             frame = {"t": "msg", "room": self.room, "from": self.name, "text": value, "kind": "agent",
-                     "clientRequestId": request_id, "recipients": _structured_recipient_names(value)}
+                     "clientRequestId": request_id, "recipients": recipients}
             if require_reply is not None:
                 frame["requireReply"] = bool(require_reply)
             await self.ws.send(json.dumps(frame))
