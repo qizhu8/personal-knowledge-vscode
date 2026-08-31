@@ -49,18 +49,18 @@ export function promptList(): PromptTask[] {
   const base = join(_storePath, 'prompts');
   if (!existsSync(base)) return [];
   const out: PromptTask[] = [];
-  for (const proj of safeReadDir(base)) {
+  for (const proj of safeReadDir(base).filter(name => !name.startsWith('.'))) {
     const projDir = join(base, proj);
     if (!isDir(projDir)) continue;
-    for (const task of safeReadDir(projDir)) {
+    for (const task of safeReadDir(projDir).filter(name => !name.startsWith('.'))) {
       const taskDir = join(projDir, task);
       if (!isDir(taskDir)) continue;
-      const versionDirs = safeReadDir(taskDir).filter(v => isDir(join(taskDir, v))).sort();
+      const versionDirs = safeReadDir(taskDir).filter(v => !v.startsWith('.') && isDir(join(taskDir, v))).sort();
       if (!versionDirs.length) continue;
       const versions: PromptVersion[] = versionDirs.map(v => ({
         version: v,
         files: safeReadDir(join(taskDir, v))
-          .filter(f => !isDir(join(taskDir, v, f)))
+          .filter(f => !f.startsWith('.') && !isDir(join(taskDir, v, f)))
           .map(f => ({ name: f, size: statSync(join(taskDir, v, f)).size }))
       }));
       out.push({ project: proj, task, versions, latest: versionDirs[versionDirs.length - 1] });

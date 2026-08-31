@@ -5,9 +5,9 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [2.5.3] - 2026-08-29
+## [2.5.3] - 2026-08-31
 
-This patch release completes managed Server organization, port/process safety, Navigation parity, and state-aware sidebar guidance.
+This patch release completes managed Server organization, port/process safety, unified multi-level Navigation subgroup management, Agent-readable paths, and state-aware content guidance.
 
 ### Added
 - Added complete managed Server group operations: drag Servers between nested groups or Ungrouped, rename a group from the dashboard or Navigation, and delete a group by safely promoting all contained Servers and child groups to its parent.
@@ -18,6 +18,11 @@ This patch release completes managed Server organization, port/process safety, N
 - Added a confirmed **Force Stop** action for external listeners that displays the exact PID and command, revalidates process identity before termination, and refreshes the detected state afterward.
 - Added persistent empty Server groups, a **New group** action, and a Server-card **Move to group** submenu containing Ungrouped, every existing group, and atomic New group creation.
 - Added **Move to Group…** to each Server's Navigation context menu, with a dynamic picker for Ungrouped, Hidden, every existing group, and New group creation.
+- Added the machine hostname as a persistent Stable Link host option alongside concrete network-interface IPv4 addresses, allowing links such as `http://hostname:<port>/` when the hostname is resolvable from the client.
+- Added native Navigation drag-and-drop for Server items: drop onto a Server subgroup, Ungrouped, or the Servers root to update the persisted assignment and refresh both Navigation and the Servers dashboard.
+- Added **New Subgroup…**, **Rename Subgroup…**, and **Delete Subgroup…** to the Servers root context menu in Navigation; rename/delete use subgroup pickers, exclude the permanent Hidden subgroup, and preserve contained Servers and nested subgroups.
+- Unified Navigation hierarchy management for Skills, Notes, Papers, Prompts, and Scripts: right-click any category root or subgroup to create slash-separated multi-level subgroups, and rename or safely delete real subgroups.
+- Added **Copy Path** to every Navigation element. Files and directories copy their PKM-relative store path; machine-local or virtual Server, Environment, Chatroom, and Config nodes copy stable `pkm://` locators for Agent instructions.
 
 ### Changed
 - Made both displayed Stable Link and Server Local Link URLs directly clickable and keyboard-accessible with the same behavior as their Open buttons.
@@ -25,6 +30,9 @@ This patch release completes managed Server organization, port/process safety, N
 - Increased Server dashboard contrast by rendering Hidden with opaque theme-aware selection colors and promoting New group to a high-contrast primary button.
 - Made empty content tabs explain when their sidebar is collapsed, point to the actual `▶` restore control, and update the hint immediately across all 11 UI languages when sidebar state or language changes.
 - Grouped root-level ungrouped Servers under a localized, default-expanded **Ungrouped** Navigation node so its disclosure arrow aligns exactly with every other top-level Server group and can be collapsed to reduce tree length.
+- Made subgroup deletion non-destructive: Skills, Notes, Papers, and Scripts promote contents to the parent after collision preflight; Prompts move contents to a same-level `Ungrouped` fallback so the fixed Project / Task / Version hierarchy remains valid.
+- Standardized hierarchy actions on the term **Subgroup** rather than mixing Group and Subgroup labels.
+- Standardized Skill, Note, Paper, Prompt, and Script detail headers as title → full current-file PKM-relative path → tags/features/actions, removing parent-only and duplicated path metadata.
 
 ## [2.5.2] - 2026-08-21
 

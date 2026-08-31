@@ -9,7 +9,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as http from "http";
 import * as net from "net";
-import { networkInterfaces } from "os";
+import { hostname, networkInterfaces } from "os";
 
 export interface ServerManifest {
   name: string;
@@ -72,8 +72,8 @@ export function disposeServers(): void {
 
 export function proxyPort(): number { return _proxyPort; }
 
-export interface ServerNetworkAddress { interface: string; address: string; }
-export function serverNetworkAddresses(interfaces = networkInterfaces()): ServerNetworkAddress[] {
+export interface ServerNetworkAddress { interface: string; address: string; kind: "interface" | "hostname"; }
+export function serverNetworkAddresses(interfaces = networkInterfaces(), hostName = hostname()): ServerNetworkAddress[] {
   const virtual = /^(docker|br-|veth|virbr|vmnet|zt|tailscale|tun|tap)/i;
   const rows: ServerNetworkAddress[] = [];
   const seen = new Set<string>();
@@ -81,10 +81,15 @@ export function serverNetworkAddresses(interfaces = networkInterfaces()): Server
     for (const entry of entries || []) {
       if (entry.internal || entry.family !== "IPv4" || seen.has(entry.address)) continue;
       seen.add(entry.address);
-      rows.push({ interface: name, address: entry.address });
+      rows.push({ interface: name, address: entry.address, kind: "interface" });
     }
   }
-  return rows.sort((left, right) => Number(virtual.test(left.interface)) - Number(virtual.test(right.interface)) || left.interface.localeCompare(right.interface));
+  rows.sort((left, right) => Number(virtual.test(left.interface)) - Number(virtual.test(right.interface)) || left.interface.localeCompare(right.interface));
+  const host = String(hostName || "").trim().replace(/\.$/, "");
+  if (host && /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/i.test(host) && !seen.has(host)) {
+    rows.push({ interface: "Hostname", address: host, kind: "hostname" });
+  }
+  return rows;
 }
 
 /** Absolute path to a server's managed folder (its code + any data it writes). */

@@ -61,6 +61,7 @@
     "servers.group": "分组",
     "servers.tags": "标签",
     "servers.ungrouped": "未分组",
+    "servers.hostname": "主机名",
     "servers.command": "命令",
     "servers.port": "端口",
     "servers.python": "Python 解释器（默认使用 python3）",

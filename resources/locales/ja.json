@@ -61,6 +61,7 @@
     "servers.group": "グループ",
     "servers.tags": "タグ",
     "servers.ungrouped": "未分類",
+    "servers.hostname": "ホスト名",
     "servers.command": "コマンド",
     "servers.port": "ポート",
     "servers.python": "Python インタープリター（空欄の場合は python3）",

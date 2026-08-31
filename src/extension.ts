@@ -12,7 +12,7 @@ import {
   paperFacets, paperGraph, savePaperFile,
   paperGroups, paperSetGroup, paperGroupRename, paperGroupDelete, paperSetPinned, paperSetTopic,
   setStorePath as fsSetStorePath, getStorePath,
-  folderCreate, folderList, storeEntryMove, storeSafeName,
+  folderCreate, folderList, folderRename, folderDeletePromote, storeEntryMove, storeSafeName,
 } from "./filestore";
 import { migrateDbToFiles } from "./migrate";
 import {
@@ -45,6 +45,7 @@ import { createChatMagicLink, chatInviteMessage } from "./chat-magic-link";
 import { startLiveMarkdownServer } from "./live-note-server";
 import { managedEnvironmentsRoot } from "./environment-paths";
 import { NavigationStatus, summarizeChatNavigation, summarizeServerNavigation } from "./navigation-status";
+import { navigationItemPath } from "./navigation-path";
 import { loadLocaleCatalogs, loadLocaleManifest, localizedText, normalizeUiLanguage, resolveUiLanguage, UiLanguageSetting, uiLanguageSetting } from "./localization";
 import { AiBackend, aiSummarizeScript, listAiBackends, runAiPrompt, scriptCacheDir } from "./ai";
 import {
@@ -955,6 +956,41 @@ async function editMarkdownMetadata(uri?: vscode.Uri): Promise<void> {
 
 function categoryFromTreeItem(item?: PkTreeItem): string {
   return (item?.nodeData?.path ?? []).filter((segment: string) => segment !== "(uncategorized)").join("/");
+}
+
+type NavigationGroupArea = "skills" | "notes" | "papers" | "prompts" | "scripts";
+interface NavigationGroupInfo { area: NavigationGroupArea; path: string; maxDepth?: number; }
+
+function navigationGroupInfo(item?: PkTreeItem): NavigationGroupInfo | undefined {
+  if (!item) return undefined;
+  const roots: Partial<Record<PkNodeType, NavigationGroupArea>> = {
+    "root-skills": "skills", "root-notes": "notes", "root-papers": "papers", "root-prompts": "prompts", "root-scripts": "scripts",
+  };
+  const rootArea = roots[item.nodeType];
+  if (rootArea) return { area: rootArea, path: "", maxDepth: rootArea === "prompts" ? 3 : undefined };
+  if (item.nodeType === "skill-folder" || item.nodeType === "note-folder" || item.nodeType === "paper-folder" || item.nodeType === "script-folder") {
+    const areaByFolder: Record<string, NavigationGroupArea> = { "skill-folder": "skills", "note-folder": "notes", "paper-folder": "papers", "script-folder": "scripts" };
+    const area = areaByFolder[item.nodeType];
+    const relPath = String(item.nodeData.relPath || "");
+    if (relPath === "(uncategorized)") return { area, path: "" };
+    if (!relPath) return undefined;
+    return { area, path: relPath };
+  }
+  if (item.nodeType === "prompt-project") return { area: "prompts", path: item.nodeData.project, maxDepth: 3 };
+  if (item.nodeType === "prompt-task") return { area: "prompts", path: `${item.nodeData.project}/${item.nodeData.task}`, maxDepth: 3 };
+  if (item.nodeType === "prompt-version") return { area: "prompts", path: `${item.nodeData.project}/${item.nodeData.task}/${item.nodeData.version}`, maxDepth: 3 };
+  return undefined;
+}
+
+function normalizedSubgroupPath(value: string): string | undefined {
+  const parts = String(value || "").split(/[\\/]/).map(part => part.trim()).filter(Boolean);
+  if (!parts.length || parts.some(part => part === "." || part === ".." || /[<>:"|?*\u0000-\u001f]/.test(part))) return undefined;
+  return parts.join("/");
+}
+
+function refreshKnowledgeGroups(): void {
+  _treeProvider?.refresh();
+  panel?.webview.postMessage({ command: "reloaded" });
 }
 
 type KnowledgeFolderArea = "skills" | "notes" | "papers" | "scripts";
@@ -2950,8 +2986,9 @@ async function handleMessage(
         if (r) data = { type: "package", ...r };
       } else if (type === "packageFile") {
         const [pkg, ...rest] = key.split("|");
-        const r = packageFileGet(pkg, rest.join("|"));
-        if (r) data = { type: "script", ...r };
+        const relPath = rest.join("|");
+        const r = packageFileGet(pkg, relPath);
+        if (r) data = { type: "script", ...r, pkmPath: `packages/${pkg}/${relPath}` };
       } else if (type === "script") {
         // key is the full relative path (e.g. "AdCoherence/Analysis/foo.script")
         const r = scriptGet(key);
@@ -4423,11 +4460,18 @@ class PkTreeItem extends vscode.TreeItem {
     if (nodeData?.description) this.tooltip = nodeData.description;
 
     // contextValue drives right-click "New item" menus (see package.json view/item/context)
-    if (nodeType === 'root-skills' || nodeType === 'skill-folder')      this.contextValue = 'pk-skills-container';
-    else if (nodeType === 'root-notes' || nodeType === 'note-folder')   this.contextValue = 'pk-notes-container';
-    else if (nodeType === 'root-papers' || nodeType === 'paper-folder') this.contextValue = 'pk-papers-container';
-    else if (nodeType === 'root-prompts' || nodeType === 'prompt-project' || nodeType === 'prompt-task' || nodeType === 'prompt-version') this.contextValue = 'pk-prompts-container';
-    else if (nodeType === 'root-scripts' || nodeType === 'script-folder') this.contextValue = 'pk-scripts-container';
+    if (nodeType === 'root-skills') this.contextValue = 'pk-skills-root';
+    else if (nodeType === 'skill-folder') this.contextValue = label === "(uncategorized)" ? 'pk-skills-virtual-root' : 'pk-skills-group';
+    else if (nodeType === 'root-notes') this.contextValue = 'pk-notes-root';
+    else if (nodeType === 'note-folder') this.contextValue = label === "(uncategorized)" ? 'pk-notes-virtual-root' : 'pk-notes-group';
+    else if (nodeType === 'root-papers') this.contextValue = 'pk-papers-root';
+    else if (nodeType === 'paper-folder') this.contextValue = label === "(uncategorized)" ? 'pk-papers-virtual-root' : 'pk-papers-group';
+    else if (nodeType === 'root-prompts') this.contextValue = 'pk-prompts-root';
+    else if (nodeType === 'prompt-project' || nodeType === 'prompt-task') this.contextValue = 'pk-prompts-group';
+    else if (nodeType === 'prompt-version') this.contextValue = 'pk-prompts-terminal-group';
+    else if (nodeType === 'root-scripts') this.contextValue = 'pk-scripts-root';
+    else if (nodeType === 'script-folder') this.contextValue = 'pk-scripts-group';
+    else if (nodeType === 'root-servers') this.contextValue = 'pk-servers-container';
     else if (nodeType === 'server-group') this.contextValue = 'pk-server-group';
     // Leaf items support right-click Edit
     else if (nodeType === 'skill')       this.contextValue = 'pk-skill-item';
@@ -4812,23 +4856,29 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
 
   // ── Prompts (project → task → version → file) ────────────────────────────
   private _promptProjects(): PkTreeItem[] {
-    const projects = [...new Set(promptList().map(t => t.project))].sort();
+    const projects = [...new Set([...promptList().map(t => t.project), ...folderList("prompts").map(folder => folder.split("/")[0])])].sort();
     return projects.map(p =>
       new PkTreeItem(p, 'prompt-project', vscode.TreeItemCollapsibleState.Collapsed, { project: p }));
   }
 
   private _promptTasks(project: string): PkTreeItem[] {
-    return promptList().filter(t => t.project === project).map(t =>
-      new PkTreeItem(t.task, 'prompt-task', vscode.TreeItemCollapsibleState.Collapsed,
-        { project, task: t.task }));
+    const tasks = new Set(promptList().filter(t => t.project === project).map(t => t.task));
+    for (const folder of folderList("prompts")) {
+      const parts = folder.split("/");
+      if (parts[0] === project && parts[1]) tasks.add(parts[1]);
+    }
+    return [...tasks].sort().map(task => new PkTreeItem(task, 'prompt-task', vscode.TreeItemCollapsibleState.Collapsed, { project, task }));
   }
 
   private _promptVersions(project: string, task: string): PkTreeItem[] {
     const t = promptList().find(x => x.project === project && x.task === task);
-    if (!t) return [];
-    return t.versions.map(v =>
-      new PkTreeItem(v.version, 'prompt-version', vscode.TreeItemCollapsibleState.Collapsed,
-        { project, task, version: v.version, files: v.files }));
+    const versions = new Map((t?.versions || []).map(version => [version.version, version.files]));
+    for (const folder of folderList("prompts")) {
+      const parts = folder.split("/");
+      if (parts[0] === project && parts[1] === task && parts[2] && !versions.has(parts[2])) versions.set(parts[2], []);
+    }
+    return [...versions].sort(([left], [right]) => left.localeCompare(right)).map(([version, files]) =>
+      new PkTreeItem(version, 'prompt-version', vscode.TreeItemCollapsibleState.Collapsed, { project, task, version, files }));
   }
 
   private _promptFiles(nd: any): PkTreeItem[] {
@@ -4883,13 +4933,13 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
   }
 }
 
-type TreeMoveArea = "skills" | "notes" | "papers" | "prompts" | "scripts";
+type TreeMoveArea = "skills" | "notes" | "papers" | "prompts" | "scripts" | "servers";
 type TreeMoveLevel = "folder" | "file" | "project" | "task" | "version";
 interface TreeMoveInfo { area: TreeMoveArea; relPath: string; level: TreeMoveLevel; }
 
 function treeMoveInfo(item: PkTreeItem, asTarget = false): TreeMoveInfo | undefined {
   const rootAreas: Partial<Record<PkNodeType, TreeMoveArea>> = {
-    "root-skills": "skills", "root-notes": "notes", "root-papers": "papers", "root-prompts": "prompts", "root-scripts": "scripts",
+    "root-skills": "skills", "root-notes": "notes", "root-papers": "papers", "root-prompts": "prompts", "root-scripts": "scripts", "root-servers": "servers",
   };
   const rootArea = rootAreas[item.nodeType];
   if (rootArea) return asTarget ? { area: rootArea, relPath: "", level: rootArea === "prompts" ? "project" : "folder" } : undefined;
@@ -4911,10 +4961,14 @@ function treeMoveInfo(item: PkTreeItem, asTarget = false): TreeMoveInfo | undefi
   if (item.nodeType === "prompt-file" && !asTarget) {
     return { area: "prompts", relPath: `${item.nodeData.project}/${item.nodeData.task}/${item.nodeData.version}/${item.nodeData.file}`, level: "file" };
   }
+  if (item.nodeType === "server-group" && asTarget) return { area: "servers", relPath: item.nodeData.path.join("/"), level: "folder" };
+  if (item.nodeType === "server-ungrouped-group" && asTarget) return { area: "servers", relPath: "", level: "folder" };
+  if (item.nodeType === "server-item" && !asTarget) return { area: "servers", relPath: item.nodeData.slug, level: "file" };
   return undefined;
 }
 
 class PkTreeDragAndDropController implements vscode.TreeDragAndDropController<PkTreeItem> {
+  constructor(private readonly context: vscode.ExtensionContext) {}
   private static readonly mime = "application/vnd.code.tree.personalKnowledge.sidebarView";
   readonly dragMimeTypes = [PkTreeDragAndDropController.mime];
   readonly dropMimeTypes = [PkTreeDragAndDropController.mime];
@@ -4932,6 +4986,18 @@ class PkTreeDragAndDropController implements vscode.TreeDragAndDropController<Pk
     let source: TreeMoveInfo;
     try { source = JSON.parse(await raw.asString()); } catch { return; }
     if (source.area !== destination.area) { vscode.window.showWarningMessage("Items cannot be moved between knowledge areas."); return; }
+    if (source.area === "servers") {
+      const server = (await serverList()).find(row => row.slug === source.relPath);
+      if (!server) { vscode.window.showWarningMessage("Server not found."); return; }
+      if (String(server.category || "") === destination.relPath) return;
+      if (!serverUpdate(source.relPath, { category: destination.relPath })) { vscode.window.showWarningMessage("Could not move Server to that group."); return; }
+      gitCommit(`server move: ${source.relPath} -> ${destination.relPath || "(root)"}`);
+      await _treeProvider?.refreshServerStatus();
+      panel?.webview.postMessage({ command: "serverGroupList", data: serverGroupList() });
+      panel?.webview.postMessage({ command: "serverList", data: await serverListForUi(this.context) });
+      vscode.window.setStatusBarMessage(`$(move) Moved ${server.name} to ${destination.relPath || "Ungrouped"}`, 3000);
+      return;
+    }
     if (source.area === "prompts") {
       const allowedParent: Record<TreeMoveLevel, TreeMoveLevel | undefined> = { project: "project", task: "project", version: "task", file: "version", folder: undefined };
       const requiredDepth: Partial<Record<TreeMoveLevel, number>> = { project: 0, task: 1, version: 2, file: 3 };
@@ -5110,7 +5176,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   void treeProvider.refreshServerStatus();
   const treeView = vscode.window.createTreeView("personalKnowledge.sidebarView", {
     treeDataProvider: treeProvider,
-    dragAndDropController: new PkTreeDragAndDropController(),
+    dragAndDropController: new PkTreeDragAndDropController(context),
     showCollapseAll: true,
   });
   // Clicking the Activity Bar icon: ensure setup then open main panel
@@ -5138,6 +5204,78 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("personalKnowledge.editMarkdownMetadata", editMarkdownMetadata),
     vscode.commands.registerCommand("personalKnowledge.editMarkdownContent", async (area: KnowledgeMarkdownArea, key: string) => {
       await openStoreMarkdown(area, key);
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.copyNavigationPath", async (item?: PkTreeItem) => {
+      if (!item) return;
+      const locator = navigationItemPath(item);
+      await vscode.env.clipboard.writeText(locator);
+      vscode.window.setStatusBarMessage(`$(copy) Copied PKM path: ${locator}`, 4000);
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.newSubgroup", async (item?: PkTreeItem) => {
+      if (!(await ensureSetup(context))) return;
+      const group = navigationGroupInfo(item);
+      if (!group) { vscode.window.showWarningMessage("Select a real group or category root."); return; }
+      const value = await vscode.window.showInputBox({
+        title: `New ${group.area} Subgroup`, prompt: `Create inside ${group.path || "Root"}; slash-separated paths create multiple levels`, placeHolder: "e.g. Research/Vision/Models",
+        validateInput: input => normalizedSubgroupPath(input) ? undefined : "Enter one or more valid subgroup names separated by slashes",
+      });
+      if (!value) return;
+      const suffix = normalizedSubgroupPath(value);
+      if (!suffix) return;
+      const destination = [group.path, suffix].filter(Boolean).join("/");
+      if (group.maxDepth && destination.split("/").length > group.maxDepth) {
+        vscode.window.showWarningMessage("Prompts support three group levels: Project / Task / Version. The next level is a Prompt file.");
+        return;
+      }
+      if (folderList(group.area).includes(destination)) { vscode.window.showWarningMessage(`Group already exists: ${destination}`); return; }
+      if (!folderCreate(group.area, destination)) { vscode.window.showErrorMessage(`Could not create subgroup: ${destination}`); return; }
+      gitCommit(`add(subgroup): ${group.area}/${destination}`);
+      refreshKnowledgeGroups();
+      vscode.window.setStatusBarMessage(`$(new-folder) Created ${group.area} subgroup ${destination}`, 3000);
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.renameSubgroup", async (item?: PkTreeItem) => {
+      if (!(await ensureSetup(context))) return;
+      const group = navigationGroupInfo(item);
+      if (!group?.path) { vscode.window.showWarningMessage("Category roots cannot be renamed."); return; }
+      const parts = group.path.split("/");
+      const currentName = parts.pop()!;
+      const parent = parts.join("/");
+      const nextName = await vscode.window.showInputBox({
+        title: `Rename ${group.area} Subgroup`, value: currentName, prompt: parent ? `Name within ${parent}` : "Subgroup name",
+        validateInput: input => normalizedSubgroupPath(input) === input.trim() && !/[\\/]/.test(input) ? undefined : "Enter one valid subgroup name without slashes",
+      });
+      if (!nextName || nextName.trim() === currentName) return;
+      const destination = [parent, nextName.trim()].filter(Boolean).join("/");
+      const result = folderRename(group.area, group.path, destination);
+      if (!result.ok) { vscode.window.showErrorMessage(`Rename subgroup failed: ${result.error || "unknown error"}`); return; }
+      gitCommit(`rename(group): ${group.area}/${group.path} -> ${destination}`);
+      refreshKnowledgeGroups();
+      vscode.window.setStatusBarMessage(`$(edit) Renamed ${group.area} group to ${destination}`, 3000);
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.deleteSubgroup", async (item?: PkTreeItem) => {
+      if (!(await ensureSetup(context))) return;
+      const group = navigationGroupInfo(item);
+      if (!group?.path) { vscode.window.showWarningMessage("Category roots cannot be deleted."); return; }
+      const full = path.join(getStorePath(), group.area, ...group.path.split("/"));
+      const contents = fs.readdirSync(full).filter(name => name !== ".gitkeep");
+      const parentPath = group.path.includes("/") ? group.path.slice(0, group.path.lastIndexOf("/")) : "";
+      const currentName = group.path.split("/").pop() || "";
+      const fallback = group.area === "prompts" && contents.length ? (currentName === "Ungrouped" ? "Recovered" : "Ungrouped") : "";
+      const destination = [parentPath, fallback].filter(Boolean).join("/") || "Root";
+      const choice = await vscode.window.showWarningMessage(
+        contents.length ? `Delete ${group.area} subgroup “${group.path}”? Its contents will move to ${destination}. No files will be deleted.` : `Delete empty ${group.area} subgroup “${group.path}”?`,
+        { modal: true }, "Delete Subgroup",
+      );
+      if (choice !== "Delete Subgroup") return;
+      const result = folderDeletePromote(group.area, group.path, fallback);
+      if (!result.ok) { vscode.window.showErrorMessage(`Delete subgroup failed: ${result.error || "unknown error"}`); return; }
+      gitCommit(`delete(group): ${group.area}/${group.path} (${result.moved} promoted)`);
+      refreshKnowledgeGroups();
+      vscode.window.setStatusBarMessage(`$(trash) Deleted ${group.area} group ${group.path}`, 3000);
     }),
 
     // ── Add new item at a folder (right-click on container) ────────────────
@@ -5389,13 +5527,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         { label: "Existing groups", kind: vscode.QuickPickItemKind.Separator },
         ...groups.map(category => ({ label: category === "Hidden" ? "$(eye-closed) Hidden" : `$(folder) ${category}`, description: server.category === category ? "Current group" : category === "Hidden" ? "Excluded from Navigation" : "", category })),
         { label: "Create", kind: vscode.QuickPickItemKind.Separator },
-        { label: "$(add) New group…", description: "Create a group and move this Server", create: true },
+        { label: "$(add) New subgroup…", description: "Create a subgroup and move this Server", create: true },
       ];
       const picked = await vscode.window.showQuickPick(picks, { title: `Move “${server.name}” to Group`, placeHolder: "Choose an existing group or create a new one" });
       if (!picked) return;
       let category = picked.category;
       if (picked.create) {
-        const value = await vscode.window.showInputBox({ title: "New Server Group", prompt: "Slash-separated group path", placeHolder: "e.g. Research/Vision", validateInput: input => input.trim() ? undefined : "Group path is required" });
+        const value = await vscode.window.showInputBox({ title: "New Server Subgroup", prompt: "Slash-separated subgroup path", placeHolder: "e.g. Research/Vision", validateInput: input => input.trim() ? undefined : "Subgroup path is required" });
         if (!value) return;
         const created = serverCreateGroup(value);
         if (!created.ok) { vscode.window.showErrorMessage(`Create Server group failed: ${created.error || "unknown error"}`); return; }
@@ -5409,20 +5547,94 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       panel?.webview.postMessage({ command: "serverList", data: await serverListForUi(context) });
     }),
 
+    vscode.commands.registerCommand("personalKnowledge.createServerGroupFromNavigation", async (item?: PkTreeItem) => {
+      const parent = item?.nodeType === "server-group" ? (item.nodeData.path || []).join("/") : "";
+      const value = await vscode.window.showInputBox({
+        title: "New Server Subgroup", prompt: `Create inside ${parent || "Servers"}; slash-separated paths create multiple levels`, placeHolder: "e.g. Research/Vision",
+        validateInput: input => input.trim() ? undefined : "Subgroup path is required",
+      });
+      if (!value) return;
+      const suffix = normalizedSubgroupPath(value);
+      if (!suffix) { vscode.window.showWarningMessage("Enter one or more valid subgroup names separated by slashes."); return; }
+      const destination = [parent, suffix].filter(Boolean).join("/");
+      const result = serverCreateGroup(destination);
+      if (!result.ok) { vscode.window.showErrorMessage(`Create Server group failed: ${result.error || "unknown error"}`); return; }
+      gitCommit(`server group create: ${result.group}`);
+      await treeProvider.refreshServerStatus();
+      panel?.webview.postMessage({ command: "serverGroupList", data: serverGroupList() });
+      vscode.window.setStatusBarMessage(`$(new-folder) Created Server subgroup ${result.group}`, 3000);
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.renameServerGroupFromNavigation", async () => {
+      const groups = serverGroupList().filter(group => group !== "Hidden");
+      if (!groups.length) { vscode.window.showInformationMessage("No renameable Server subgroups."); return; }
+      const picked = await vscode.window.showQuickPick(groups.map(group => ({ label: `$(folder) ${group}`, group })), {
+        title: "Rename Server Subgroup", placeHolder: "Choose a subgroup to rename",
+      });
+      if (!picked) return;
+      const parts = picked.group.split("/");
+      const currentName = parts.pop() || picked.group;
+      const parent = parts.join("/");
+      const nextName = await vscode.window.showInputBox({
+        title: `Rename Server Subgroup “${picked.group}”`, value: currentName, prompt: parent ? `Name within ${parent}` : "Subgroup name",
+        validateInput: value => value.trim() && !/[\\/]/.test(value) ? undefined : "Enter one subgroup name without slashes",
+      });
+      if (!nextName || nextName.trim() === currentName) return;
+      const newPrefix = [parent, nextName.trim()].filter(Boolean).join("/");
+      const result = serverMoveGroup(picked.group, newPrefix);
+      if (!result.ok) { vscode.window.showErrorMessage(`Rename Server group failed: ${result.error || "unknown error"}`); return; }
+      gitCommit(`server group move: ${picked.group} -> ${newPrefix}`);
+      await treeProvider.refreshServerStatus();
+      panel?.webview.postMessage({ command: "serverGroupList", data: serverGroupList() });
+      panel?.webview.postMessage({ command: "serverList", data: await serverListForUi(context) });
+      vscode.window.setStatusBarMessage(`$(edit) Renamed Server subgroup to ${newPrefix}`, 3000);
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.deleteServerGroupFromNavigation", async () => {
+      const groups = serverGroupList().filter(group => group !== "Hidden");
+      if (!groups.length) { vscode.window.showInformationMessage("No deletable Server subgroups."); return; }
+      const rows = await serverList();
+      const picked = await vscode.window.showQuickPick(groups.map(group => ({
+        label: `$(folder) ${group}`,
+        description: `${rows.filter(server => server.category === group || String(server.category || "").startsWith(group + "/")).length} Server(s)`,
+        group,
+      })), { title: "Delete Server Subgroup", placeHolder: "Choose a subgroup; no Server files will be deleted" });
+      if (!picked) return;
+      const parts = picked.group.split("/");
+      const name = parts.pop() || picked.group;
+      const parent = parts.join("/");
+      const choice = await vscode.window.showWarningMessage(
+        `Delete Server subgroup “${picked.group}”? Its Servers and nested subgroups will move to ${parent ? `“${parent}”` : "Ungrouped"}. No Server files will be deleted.`,
+        { modal: true }, "Delete Subgroup",
+      );
+      if (choice !== "Delete Subgroup") return;
+      const result = serverMoveGroup(picked.group, parent);
+      if (!result.ok) { vscode.window.showErrorMessage(`Delete Server group failed: ${result.error || "unknown error"}`); return; }
+      gitCommit(`server group delete: ${picked.group}`);
+      await treeProvider.refreshServerStatus();
+      panel?.webview.postMessage({ command: "serverGroupList", data: serverGroupList() });
+      panel?.webview.postMessage({ command: "serverList", data: await serverListForUi(context) });
+      vscode.window.setStatusBarMessage(`$(trash) Deleted Server subgroup ${name}`, 3000);
+    }),
+
     vscode.commands.registerCommand("personalKnowledge.renameServerGroup", async (item: PkTreeItem) => {
       const parts = [...(item?.nodeData?.path || [])];
       const currentName = String(parts.pop() || "");
       if (!currentName) return;
       const nextName = await vscode.window.showInputBox({
-        title: "Rename Server Group", value: currentName, prompt: "Group name",
-        validateInput: value => value.trim() && !/[\\/]/.test(value) ? undefined : "Enter one group name without slashes",
+        title: "Rename Server Subgroup", value: currentName, prompt: "Subgroup name",
+        validateInput: value => value.trim() && !/[\\/]/.test(value) ? undefined : "Enter one subgroup name without slashes",
       });
       if (!nextName || nextName.trim() === currentName) return;
       const oldPrefix = [...parts, currentName].join("/");
       const newPrefix = [...parts, nextName.trim()].join("/");
       const result = serverMoveGroup(oldPrefix, newPrefix);
       if (!result.ok) vscode.window.showErrorMessage(`Rename Server group failed: ${result.error || "unknown error"}`);
-      else { gitCommit(`server group move: ${oldPrefix} -> ${newPrefix}`); await treeProvider.refreshServerStatus(); }
+      else {
+        gitCommit(`server group move: ${oldPrefix} -> ${newPrefix}`); await treeProvider.refreshServerStatus();
+        panel?.webview.postMessage({ command: "serverGroupList", data: serverGroupList() });
+        panel?.webview.postMessage({ command: "serverList", data: await serverListForUi(context) });
+      }
     }),
 
     vscode.commands.registerCommand("personalKnowledge.deleteServerGroup", async (item: PkTreeItem) => {
@@ -5431,14 +5643,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!name) return;
       const parent = parts.join("/");
       const choice = await vscode.window.showWarningMessage(
-        `Delete Server group “${name}”? Its Servers and nested groups will move to ${parent ? `“${parent}”` : "Ungrouped"}. No Server files will be deleted.`,
-        { modal: true }, "Delete Group",
+        `Delete Server subgroup “${name}”? Its Servers and nested subgroups will move to ${parent ? `“${parent}”` : "Ungrouped"}. No Server files will be deleted.`,
+        { modal: true }, "Delete Subgroup",
       );
-      if (choice !== "Delete Group") return;
+      if (choice !== "Delete Subgroup") return;
       const oldPrefix = [...parts, name].join("/");
       const result = serverMoveGroup(oldPrefix, parent);
       if (!result.ok) vscode.window.showErrorMessage(`Delete Server group failed: ${result.error || "unknown error"}`);
-      else { gitCommit(`server group delete: ${oldPrefix}`); await treeProvider.refreshServerStatus(); }
+      else {
+        gitCommit(`server group delete: ${oldPrefix}`); await treeProvider.refreshServerStatus();
+        panel?.webview.postMessage({ command: "serverGroupList", data: serverGroupList() });
+        panel?.webview.postMessage({ command: "serverList", data: await serverListForUi(context) });
+      }
     }),
 
     vscode.commands.registerCommand("personalKnowledge.openHostedRoomItem", async (itemOrRoomId: PkTreeItem | string) => {

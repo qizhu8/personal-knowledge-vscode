@@ -202,7 +202,7 @@ function writeNotesMeta(m: { pinnedFolders: string[] }): void {
 function areaRoot(area: string): string { return join(_store, area); }
 
 export function folderCreate(area: string, relPath: string): boolean {
-  if (!["skills", "notes", "papers", "scripts"].includes(area)) return false;
+  if (!["skills", "notes", "papers", "prompts", "scripts"].includes(area)) return false;
   const rel = safeCategory(relPath || "");
   if (!rel) return false;
   const full = join(areaRoot(area), ...rel.split("/"));
@@ -216,7 +216,7 @@ export function folderCreate(area: string, relPath: string): boolean {
 
 /** All subdirectory paths under an area root (relative; skips dotfiles/_assets). */
 export function folderList(area: string): string[] {
-  if (!["skills", "notes", "papers", "scripts"].includes(area)) return [];
+  if (!["skills", "notes", "papers", "prompts", "scripts"].includes(area)) return [];
   const out: string[] = [];
   const walk = (dir: string, rel: string): void => {
     let ents: any[];
@@ -230,6 +230,53 @@ export function folderList(area: string): string[] {
   };
   walk(areaRoot(area), "");
   return out;
+}
+
+type FolderArea = "skills" | "notes" | "papers" | "prompts" | "scripts";
+
+function safeFolderOperationPath(area: FolderArea, relPath: string): { root: string; rel: string; full: string } | undefined {
+  const rel = safeCategory(relPath || "");
+  if (!rel || rel.split("/").some(part => part === "." || part === "..")) return undefined;
+  const root = resolve(areaRoot(area));
+  const full = resolve(root, ...rel.split("/"));
+  if (!full.startsWith(root + sep)) return undefined;
+  return { root, rel, full };
+}
+
+/** Rename/move a folder to an explicit relative path after collision checks. */
+export function folderRename(area: FolderArea, oldRelPath: string, newRelPath: string): { ok: boolean; error?: string } {
+  const source = safeFolderOperationPath(area, oldRelPath);
+  const destination = safeFolderOperationPath(area, newRelPath);
+  if (!source || !destination) return { ok: false, error: "Invalid folder path." };
+  if (!existsSync(source.full) || !statSync(source.full).isDirectory()) return { ok: false, error: `Folder not found: ${source.rel}` };
+  if (source.full === destination.full) return { ok: false, error: "Folder name is unchanged." };
+  if (destination.full.startsWith(source.full + sep)) return { ok: false, error: "A folder cannot be moved into itself." };
+  if (existsSync(destination.full)) return { ok: false, error: `Folder already exists: ${destination.rel}` };
+  try {
+    mkdirSync(resolve(destination.full, ".."), { recursive: true });
+    renameSync(source.full, destination.full);
+    if (area === "notes") repathFolderPins(source.rel, destination.rel);
+    return { ok: true };
+  } catch (error: any) { return { ok: false, error: error?.message || String(error) }; }
+}
+
+/** Delete only the folder container, moving children to its parent or a same-level fallback group. */
+export function folderDeletePromote(area: FolderArea, relPath: string, fallbackGroup = ""): { ok: boolean; moved: number; error?: string } {
+  const source = safeFolderOperationPath(area, relPath);
+  if (!source || !existsSync(source.full) || !statSync(source.full).isDirectory()) return { ok: false, moved: 0, error: "Folder not found." };
+  const parentRel = source.rel.includes("/") ? source.rel.slice(0, source.rel.lastIndexOf("/")) : "";
+  const destinationRel = [parentRel, fallbackGroup].filter(Boolean).join("/");
+  const destinationFull = destinationRel ? resolve(source.root, ...destinationRel.split("/")) : source.root;
+  const entries = readdirSync(source.full).filter(name => name !== ".gitkeep");
+  const collision = entries.find(name => existsSync(join(destinationFull, name)));
+  if (collision) return { ok: false, moved: 0, error: `Cannot delete group: "${collision}" already exists in ${destinationRel || "Root"}.` };
+  try {
+    if (entries.length) mkdirSync(destinationFull, { recursive: true });
+    for (const name of entries) renameSync(join(source.full, name), join(destinationFull, name));
+    rmSync(source.full, { recursive: true, force: true });
+    if (area === "notes") repathFolderPins(source.rel, destinationRel);
+    return { ok: true, moved: entries.length };
+  } catch (error: any) { return { ok: false, moved: 0, error: error?.message || String(error) }; }
 }
 
 export function storeEntryMove(
@@ -300,14 +347,14 @@ export function noteSetFolderPinned(prefix: string, pinned: boolean): boolean {
 function repathFolderPins(oldPrefix: string, newPrefix: string): void {
   const op = (oldPrefix || "").replace(/^\/+|\/+$/g, "");
   const np = (newPrefix || "").replace(/^\/+|\/+$/g, "");
-  if (!op || !np || op === np) return;
+  if (!op || op === np) return;
   const m = readNotesMeta();
   let changed = false;
   m.pinnedFolders = m.pinnedFolders.map(p => {
     if (p === op) { changed = true; return np; }
     if (p.startsWith(op + "/")) { changed = true; return np + p.slice(op.length); }
     return p;
-  });
+  }).filter(Boolean);
   if (changed) writeNotesMeta(m);
 }
 

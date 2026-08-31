@@ -61,6 +61,7 @@
     "servers.group": "Группа",
     "servers.tags": "Теги",
     "servers.ungrouped": "Без группы",
+    "servers.hostname": "Имя хоста",
     "servers.command": "Команда",
     "servers.port": "Порт",
     "servers.python": "Интерпретатор Python (пусто = python3)",

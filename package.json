@@ -96,12 +96,27 @@
       },
       {
         "command": "personalKnowledge.renameServerGroup",
-        "title": "Rename Group…",
+        "title": "Rename Subgroup…",
         "icon": "$(edit)"
       },
       {
         "command": "personalKnowledge.deleteServerGroup",
-        "title": "Delete Group…",
+        "title": "Delete Subgroup…",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "personalKnowledge.createServerGroupFromNavigation",
+        "title": "New Subgroup…",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "personalKnowledge.renameServerGroupFromNavigation",
+        "title": "Rename Subgroup…",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "personalKnowledge.deleteServerGroupFromNavigation",
+        "title": "Delete Subgroup…",
         "icon": "$(trash)"
       },
       {
@@ -198,6 +213,26 @@
         "icon": "$(add)"
       },
       {
+        "command": "personalKnowledge.newSubgroup",
+        "title": "New Subgroup…",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "personalKnowledge.renameSubgroup",
+        "title": "Rename Subgroup…",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "personalKnowledge.deleteSubgroup",
+        "title": "Delete Subgroup…",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "personalKnowledge.copyNavigationPath",
+        "title": "Copy Path",
+        "icon": "$(copy)"
+      },
+      {
         "command": "personalKnowledge.editSkill",
         "title": "Edit",
         "icon": "$(edit)"
@@ -257,6 +292,46 @@
       ],
       "view/item/context": [
         {
+          "command": "personalKnowledge.copyNavigationPath",
+          "when": "view == personalKnowledge.sidebarView",
+          "group": "9_copy@1"
+        },
+        {
+          "command": "personalKnowledge.newSubgroup",
+          "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-(skills|notes|papers|prompts|scripts)-(root|group|virtual-root)/",
+          "group": "0_group@1"
+        },
+        {
+          "command": "personalKnowledge.renameSubgroup",
+          "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-(skills|notes|papers|prompts|scripts)-(group|terminal-group)/",
+          "group": "0_group@2"
+        },
+        {
+          "command": "personalKnowledge.deleteSubgroup",
+          "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-(skills|notes|papers|prompts|scripts)-(group|terminal-group)/",
+          "group": "0_group@3"
+        },
+        {
+          "command": "personalKnowledge.createServerGroupFromNavigation",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-servers-container",
+          "group": "1_server_group@1"
+        },
+        {
+          "command": "personalKnowledge.createServerGroupFromNavigation",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-server-group",
+          "group": "0_server_group@1"
+        },
+        {
+          "command": "personalKnowledge.renameServerGroupFromNavigation",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-servers-container",
+          "group": "1_server_group@2"
+        },
+        {
+          "command": "personalKnowledge.deleteServerGroupFromNavigation",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-servers-container",
+          "group": "1_server_group@3"
+        },
+        {
           "command": "personalKnowledge.moveServerToGroup",
           "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-server-(stopped|active|external)/",
           "group": "1_server@0"
@@ -308,47 +383,47 @@
         },
         {
           "command": "personalKnowledge.addSkillHere",
-          "when": "view == personalKnowledge.sidebarView && viewItem == pk-skills-container",
+          "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-skills-(root|group|virtual-root)/",
           "group": "inline"
         },
         {
           "command": "personalKnowledge.addNoteHere",
-          "when": "view == personalKnowledge.sidebarView && viewItem == pk-notes-container",
+          "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-notes-(root|group|virtual-root)/",
           "group": "inline"
         },
         {
           "command": "personalKnowledge.addScriptHere",
-          "when": "view == personalKnowledge.sidebarView && viewItem == pk-scripts-container",
+          "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-scripts-(root|group)/",
           "group": "inline"
         },
         {
           "command": "personalKnowledge.addPaperHere",
-          "when": "view == personalKnowledge.sidebarView && viewItem == pk-papers-container",
+          "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-papers-(root|group|virtual-root)/",
           "group": "1_new@1"
         },
         {
           "command": "personalKnowledge.addIdeaHere",
-          "when": "view == personalKnowledge.sidebarView && viewItem == pk-papers-container",
+          "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-papers-(root|group|virtual-root)/",
           "group": "1_new@2"
         },
         {
           "command": "personalKnowledge.addPromptHere",
-          "when": "view == personalKnowledge.sidebarView && viewItem == pk-prompts-container",
+          "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-prompts-(root|group|terminal-group)/",
           "group": "1_new"
         },
         {
           "command": "personalKnowledge.addSkillHere",
-          "when": "view == personalKnowledge.sidebarView && viewItem == pk-skills-container",
+          "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-skills-(root|group|virtual-root)/",
           "group": "1_new"
         },
         {
           "command": "personalKnowledge.addNoteHere",
-          "when": "view == personalKnowledge.sidebarView && viewItem == pk-notes-container",
+          "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-notes-(root|group|virtual-root)/",
           "group": "1_new"
         },
         {
           "command": "personalKnowledge.addScriptHere",
-          "when": "view == personalKnowledge.sidebarView && viewItem == pk-scripts-container",
+          "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-scripts-(root|group)/",
           "group": "1_new"
         },
         {
@@ -602,8 +677,11 @@
     "test:environment-refresh": "npm run build && node tests/test-environment-refresh.js",
     "test:refresh-actions": "npm run build && node tests/test-refresh-actions.js",
     "test:navigation-status": "npm run build && node tests/test-navigation-status.js",
+    "test:navigation-groups": "npm run build && node tests/test-navigation-groups.js",
+    "test:navigation-copy-path": "npm run build && node tests/test-navigation-copy-path.js",
+    "test:detail-path-ui": "npm run build && node tests/test-detail-path-ui.js",
     "test:localization": "npm run build && node tests/test-localization.js",
-    "test:release": "npm run build && node tests/test-chat-persistence.js && node tests/test-chat-stored-rooms.js && node tests/test-chat-stored-rooms-ui.js && node tests/test-chat-participant-persistence.js && node tests/test-chat-join-approval.js && node tests/test-chat-hub-approval.js && node tests/test-chat-join-approval-ui.js && node tests/test-chat-moderation-ui.js && node tests/test-chat-mention-highlight-ui.js && node tests/test-chat-room-identity.js && node tests/test-chat-default-recipient-ui.js && node tests/test-chat-browser-ui.js && node tests/test-chat-multi-recipient.js && node tests/test-chat-magic-link.js && node tests/test-chat-mcp-approval.js && node tests/test-chat-packaged-worker.js && node tests/test-chat-hub-health.js && python tests/test-chat-history-atomic.py && python tests/test-chat-generated-standby.py && node tests/test-chat-markdown.js && node tests/test-chat-quote-viewer-ui.js && node tests/test-mcp-version-ui.js && node tests/test-chat-layout-scroll-ui.js && node tests/test-pkm-skill-projection.js && node tests/test-pkm-skill-mcp.js && node tests/test-server-proxy.js && node tests/test-server-grouping.js && node tests/test-environment-refresh.js && node tests/test-refresh-actions.js && node tests/test-navigation-status.js && node tests/test-localization.js",
+    "test:release": "npm run build && node tests/test-chat-persistence.js && node tests/test-chat-stored-rooms.js && node tests/test-chat-stored-rooms-ui.js && node tests/test-chat-participant-persistence.js && node tests/test-chat-join-approval.js && node tests/test-chat-hub-approval.js && node tests/test-chat-join-approval-ui.js && node tests/test-chat-moderation-ui.js && node tests/test-chat-mention-highlight-ui.js && node tests/test-chat-room-identity.js && node tests/test-chat-default-recipient-ui.js && node tests/test-chat-browser-ui.js && node tests/test-chat-multi-recipient.js && node tests/test-chat-magic-link.js && node tests/test-chat-mcp-approval.js && node tests/test-chat-packaged-worker.js && node tests/test-chat-hub-health.js && python tests/test-chat-history-atomic.py && python tests/test-chat-generated-standby.py && node tests/test-chat-markdown.js && node tests/test-chat-quote-viewer-ui.js && node tests/test-mcp-version-ui.js && node tests/test-chat-layout-scroll-ui.js && node tests/test-pkm-skill-projection.js && node tests/test-pkm-skill-mcp.js && node tests/test-server-proxy.js && node tests/test-server-grouping.js && node tests/test-environment-refresh.js && node tests/test-refresh-actions.js && node tests/test-navigation-status.js && node tests/test-navigation-groups.js && node tests/test-navigation-copy-path.js && node tests/test-detail-path-ui.js && node tests/test-localization.js",
     "poc:chat-room-lifecycle": "npm run build && node scripts/poc-chat-room-lifecycle.js",
     "watch": "tsc -p tsconfig.json --watch",
     "package": "npx vsce package"

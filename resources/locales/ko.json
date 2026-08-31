@@ -61,6 +61,7 @@
     "servers.group": "그룹",
     "servers.tags": "태그",
     "servers.ungrouped": "그룹 없음",
+    "servers.hostname": "호스트 이름",
     "servers.command": "명령",
     "servers.port": "포트",
     "servers.python": "Python 인터프리터(비워 두면 python3)",

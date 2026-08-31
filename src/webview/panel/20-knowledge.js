@@ -390,6 +390,19 @@ function markdownToolbar(data) {
     <button class="tbtn" style="font-size:11px" onclick="editMarkdownMetadataItem('${area}', '${esc(category)}', '${esc(key)}')">⚙ Edit Metadata</button>`;
 }
 
+function detailContentPath(data) {
+  if (data.type === 'skill') return `skills/${data._key || [data.category, data.name].filter(Boolean).join('/')}.md`;
+  if (data.type === 'note') return `notes/${data.slug}.md`;
+  if (data.type === 'paper') return `papers/${data.slug}.md`;
+  if (data.type === 'prompt') return `prompts/${data.project}/${data.task}/${data.version}/${data.file}`;
+  if (data.type === 'script') return data.pkmPath || `scripts/${data.path || data.file}`;
+  return '';
+}
+function detailPathHtml(data) {
+  const value = detailContentPath(data);
+  return value ? `<div class="d-path" title="PKM relative path">${esc(value)}</div>` : '';
+}
+
 function renderDetail(data) {
   renderNonce++; // fresh asset URLs each open so late-added images bypass stale cache
   const el = document.getElementById('detail');
@@ -402,6 +415,7 @@ function renderDetail(data) {
     const toc = buildToc(data.content||'');
     el.innerHTML = `
       <div class="d-title"><span>${esc(data.name)}</span><button class="meta-edit" onclick="editCurrentMetadata('title')" title="Edit name">✎</button></div>
+      ${detailPathHtml(data)}
       <div class="d-meta">
         ${data.category?`<span class="cat">${esc(data.category)}</span>`:''}
         ${tags.map(t=>`<span class="tag">${esc(t)}</span>`).join('')}
@@ -424,13 +438,13 @@ function renderDetail(data) {
     const tags = JSON.parse(data.tags||'[]');
     el.innerHTML = `
       <div class="d-title"><span>${ICON[data.note_type]||'📝'} ${esc(data.title)}</span><button class="meta-edit" onclick="editCurrentMetadata('title')" title="Edit title">✎</button></div>
+      ${detailPathHtml(data)}
       <div class="d-meta">
         <span>${esc(data.note_type)}</span>
         ${data.category?`<span class="cat">${esc(data.category)}</span>`:''}
         ${tags.map(t=>`<span class="tag">${esc(t)}</span>`).join('')}
         <button class="meta-edit" onclick="editCurrentMetadata('tags')" title="Edit tags">✎</button>
         <span>Updated ${(data.updated_at||'').slice(0,10)}</span>
-        <span style="font-size:10px;color:var(--muted)">id: ${esc(data.slug)}</span>
         <span style="flex:1"></span>
         ${markdownToolbar(data)}
       </div>
@@ -466,7 +480,8 @@ function renderDetail(data) {
       : '';
     el.innerHTML = `
       <div class="d-title">${esc(project)} / ${esc(task)}</div>
-      <div class="d-meta"><span>📄 ${esc(file)}</span><span>${esc(version)}</span>${diffBtn}</div>
+      ${detailPathHtml(data)}
+      <div class="d-meta"><span>${esc(version)}</span>${diffBtn}</div>
       <div style="margin-bottom:10px">${pills}</div>
       ${metaHtml}
       <hr class="div">
@@ -546,9 +561,9 @@ function renderDetail(data) {
     const lang = {sh:'bash',py:'python',js:'javascript',ts:'typescript',r:'r',sql:'sql',cs:'csharp',ps1:'powershell',script:'scope',usql:'sql'}[ext]||'text';
     el.innerHTML = `
       <div class="d-title">${esc(data.file||'')}</div>
+      ${detailPathHtml(data)}
       <div class="d-meta">
         ${(data.langs||(data.lang?data.lang.split(' + '):[])).map(l=>`<span class="tag" style="background:var(--panel)">🏷 ${esc(l)}</span>`).join('')}
-        ${data.path?`<span class="cat">${esc(data.path)}</span>`:''}
         <span>${wordCount(data.content||'')}</span>
         <span style="flex:1"></span>
         <button class="tbtn" style="font-size:11px" onclick="startEditScript()">✏ Edit</button>
@@ -599,7 +614,7 @@ function startEditScript() {
   if (!d || d.type !== 'script') return;
   document.getElementById('detail').innerHTML = `
     <div class="d-title">✏ Edit: <span style="color:var(--accent)">${esc(d.file)}</span></div>
-    <div class="d-meta"><span class="cat">${esc(d.path||'')}</span></div>
+    ${detailPathHtml(d)}
     <textarea id="se-script" style="width:100%;height:calc(100vh - 200px);background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:10px;font-size:12px;font-family:var(--vscode-editor-font-family);resize:none;outline:none;line-height:1.5">${esc(d.content||'')}</textarea>
     <div class="form-actions" style="margin-top:8px">
       <button class="tbtn" onclick="ask('detail',{type:'script',key:currentDetail.path})">Cancel</button>
@@ -1500,6 +1515,7 @@ function paperDetailHtml(d) {
   const cites = d.resolvedCites || d.cites || [];
   return `
     <div class="d-title"><span>${esc(d.title)}</span><button class="meta-edit" onclick="editCurrentMetadata('title')" title="Edit title">✎</button></div>
+    ${detailPathHtml(d)}
     <div class="d-meta">
       ${d.kind === 'idea' ? '<span class="pc-cite" style="background:#f4b400;color:#1a1200">Idea</span>' : ''}
       ${d.group && d.group !== 'Papers' ? `<span class="pc-tag">📁 ${esc(d.group)}</span>` : ''}

@@ -61,6 +61,7 @@
     "servers.group": "Group",
     "servers.tags": "Tags",
     "servers.ungrouped": "Ungrouped",
+    "servers.hostname": "Hostname",
     "servers.command": "Command",
     "servers.port": "Port",
     "servers.python": "Python interpreter (blank = python3)",

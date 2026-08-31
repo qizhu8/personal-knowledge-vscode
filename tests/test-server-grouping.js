@@ -64,7 +64,7 @@ assert.match(panel, /function createServerGroup\(\)/);
 assert.match(panel, /class="tbtn srv-new-group"/);
 assert.match(panel, /function serverCardMenu\(event, slug\)/);
 assert.match(panel, /label: 'Move to group', children/);
-assert.match(panel, /＋ New group…/);
+assert.match(panel, /＋ New subgroup…/);
 assert.match(extension, /case "serverSetPinned"/);
 assert.match(extension, /case "serverMoveGroup"/);
 assert.match(extension, /case "serverCreateGroup"/);

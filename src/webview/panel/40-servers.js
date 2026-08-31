@@ -61,7 +61,7 @@ function moveServerToGroup(slug, category) {
   if (server && String(server.category || '') !== category) ask('serverUpdate', { slug, patch: { category } });
 }
 function createAndMoveServerGroup(slug) {
-  pkModal({ title: 'New Server group', message: 'Enter a slash-separated group path. The Server will be moved there after creation.', input: true, okLabel: 'Create & move', onOk: value => {
+  pkModal({ title: 'New Server subgroup', message: 'Enter a slash-separated subgroup path. The Server will be moved there after creation.', input: true, okLabel: 'Create & move', onOk: value => {
     const category = value.trim();
     if (category) ask('serverCreateGroup', { category, moveSlug: slug });
   } });
@@ -72,14 +72,14 @@ function serverCardMenu(event, slug) {
   const groups = [...new Set(['', ...serverGroupPaths])];
   const children = groups.map(group => ({ label: `${String(server.category || '') === group ? '●' : '  '} ${group || 'Ungrouped'}`, active: String(server.category || '') === group, onClick: () => moveServerToGroup(slug, group) }));
   children.push({ sep: true });
-  children.push({ label: '＋ New group…', onClick: () => createAndMoveServerGroup(slug) });
+  children.push({ label: '＋ New subgroup…', onClick: () => createAndMoveServerGroup(slug) });
   showPaperMenu(event.clientX, event.clientY, [{ label: 'Move to group', children }]);
 }
 function renameServerGroup(path) {
   const parts = path.split('/');
   const currentName = parts.pop() || '';
   const parent = parts.join('/');
-  pkModal({ title: 'Rename group', input: true, defaultValue: currentName, okLabel: 'Rename', onOk: value => {
+  pkModal({ title: 'Rename subgroup', input: true, defaultValue: currentName, okLabel: 'Rename', onOk: value => {
     const name = value.trim().replace(/[\\/]+/g, ' ');
     if (name && name !== currentName) ask('serverMoveGroup', { oldPrefix: path, newPrefix: [parent, name].filter(Boolean).join('/') });
   } });
@@ -88,7 +88,7 @@ function deleteServerGroup(path) {
   const parts = path.split('/');
   const name = parts.pop() || path;
   const parent = parts.join('/');
-  pkModal({ title: 'Delete group “' + name + '”?', message: 'Servers and nested groups will move to ' + (parent ? '“' + parent + '”' : 'Ungrouped') + '. No servers or files will be deleted.', okLabel: 'Delete group', danger: true, onOk: () => ask('serverMoveGroup', { oldPrefix: path, newPrefix: parent }) });
+  pkModal({ title: 'Delete subgroup “' + name + '”?', message: 'Servers and nested subgroups will move to ' + (parent ? '“' + parent + '”' : 'Ungrouped') + '. No servers or files will be deleted.', okLabel: 'Delete subgroup', danger: true, onOk: () => ask('serverMoveGroup', { oldPrefix: path, newPrefix: parent }) });
 }
 function renderServerGroupNode(node, parentPath = '') {
   const cards = node.entries.slice().sort((left, right) => Number(!!right.server.pinned) - Number(!!left.server.pinned)
@@ -97,7 +97,7 @@ function renderServerGroupNode(node, parentPath = '') {
     const path = parentPath ? `${parentPath}/${name}` : name;
     const count = serverGroupCount(child);
     const hidden = path === 'Hidden';
-    return `<details class="srv-group${hidden ? ' srv-hidden-group' : ''}" data-group-path="${encodeURIComponent(path)}" ${serverGroupOpen(path) ? 'open' : ''} ontoggle="serverGroupToggled(this,decodeURIComponent('${encodeURIComponent(path)}'))" ondragover="serverGroupDragOver(event)" ondragleave="serverGroupDragLeave(event)" ondrop="serverGroupDrop(event,decodeURIComponent('${encodeURIComponent(path)}'))"><summary><span>${hidden ? '🙈' : '📁'} ${esc(name)}</span>${hidden ? '<span class="srv-hidden-hint">excluded from Navigation</span>' : ''}<span class="srv-group-count">${count}</span>${hidden ? '' : `<span class="srv-group-actions"><button class="srv-group-action" onclick="event.preventDefault();event.stopPropagation();renameServerGroup(decodeURIComponent('${encodeURIComponent(path)}'))" title="Rename group" aria-label="Rename ${esc(name)} group">✎</button><button class="srv-group-action srv-group-delete" onclick="event.preventDefault();event.stopPropagation();deleteServerGroup(decodeURIComponent('${encodeURIComponent(path)}'))" title="Delete group without deleting servers" aria-label="Delete ${esc(name)} group">×</button></span>`}</summary><div class="srv-group-body">${renderServerGroupNode(child, path)}</div></details>`;
+    return `<details class="srv-group${hidden ? ' srv-hidden-group' : ''}" data-group-path="${encodeURIComponent(path)}" ${serverGroupOpen(path) ? 'open' : ''} ontoggle="serverGroupToggled(this,decodeURIComponent('${encodeURIComponent(path)}'))" ondragover="serverGroupDragOver(event)" ondragleave="serverGroupDragLeave(event)" ondrop="serverGroupDrop(event,decodeURIComponent('${encodeURIComponent(path)}'))"><summary><span>${hidden ? '🙈' : '📁'} ${esc(name)}</span>${hidden ? '<span class="srv-hidden-hint">excluded from Navigation</span>' : ''}<span class="srv-group-count">${count}</span>${hidden ? '' : `<span class="srv-group-actions"><button class="srv-group-action" onclick="event.preventDefault();event.stopPropagation();renameServerGroup(decodeURIComponent('${encodeURIComponent(path)}'))" title="Rename subgroup" aria-label="Rename ${esc(name)} subgroup">✎</button><button class="srv-group-action srv-group-delete" onclick="event.preventDefault();event.stopPropagation();deleteServerGroup(decodeURIComponent('${encodeURIComponent(path)}'))" title="Delete subgroup without deleting servers" aria-label="Delete ${esc(name)} subgroup">×</button></span>`}</summary><div class="srv-group-body">${renderServerGroupNode(child, path)}</div></details>`;
   }).join('');
   return cards + groups;
 }
@@ -129,7 +129,7 @@ function renderServerDashboard(servers) {
   const networkLinks = serverCache[0]?.networkLinks || [];
   let savedNetwork = ''; try { savedNetwork = localStorage.getItem('pkm-server-network') || ''; } catch {}
   const selectedNetwork = networkLinks.find(link => link.address === savedNetwork) || networkLinks[0];
-  const networkOptions = networkLinks.map(link => `<option value="${esc(link.address)}" ${link.address === selectedNetwork?.address ? 'selected' : ''}>${esc(link.interface)} · ${esc(link.address)}</option>`).join('');
+  const networkOptions = networkLinks.map(link => `<option value="${esc(link.address)}" ${link.address === selectedNetwork?.address ? 'selected' : ''}>${link.kind === 'hostname' ? esc(t('servers.hostname')) : esc(link.interface)} · ${esc(link.address)}</option>`).join('');
   const autoForward = serverCache[0]?.autoForward ?? true;
   const remoteName = serverCache.find(server => server.remoteName)?.remoteName || '';
   const suggestedPort = serverCache[0]?.suggestedPort || 8000;
@@ -187,13 +187,13 @@ function renderServerDashboard(servers) {
         <span class="dash-title">🖥 Servers</span>
         <input id="server-search" oninput="filterServerDashboard(this.value)" placeholder="Search…" data-i18n-placeholder="search.placeholder" aria-label="Search servers" title="Search name, slug, group, tags, command, Python, and status">
         <span style="flex:1"></span>
-        <button class="tbtn srv-new-group" onclick="createServerGroup()" title="Create an empty group, then drag or right-click a Server to move it">＋ New group</button>
+        <button class="tbtn srv-new-group" onclick="createServerGroup()" title="Create an empty subgroup, then drag or right-click a Server to move it">＋ New subgroup</button>
         <button class="tbtn" onclick="importServer()" title="Move an existing server folder into the PKM store">＋ Import folder</button>
         <button class="tbtn" onclick="createServer()" title="Create a new managed server package">＋ New</button>
         <button class="tbtn" onclick="ask('serverList',{})" title="Force-refresh server process, port, and link status">↻ Refresh</button>
       </div>
       <div class="srv-global-controls">
-        <label><span data-i18n="servers.networkInterface">Stable Link interface</span><select onchange="serverNetworkChanged(this.value)" title="Select the network interface/IP for every Stable Link" ${networkLinks.length ? '' : 'disabled'}>${networkOptions || '<option data-i18n="servers.noNetwork">No network IPv4 found</option>'}</select></label>
+        <label><span data-i18n="servers.networkInterface">Stable Link interface</span><select onchange="serverNetworkChanged(this.value)" title="Select a hostname or network interface/IP for every Stable Link" ${networkLinks.length ? '' : 'disabled'}>${networkOptions || '<option data-i18n="servers.noNetwork">No hostname or network IPv4 found</option>'}</select></label>
         <button class="tbtn srv-forward-toggle ${autoForward ? 'active' : ''}" aria-pressed="${autoForward}" onclick="serverForwardChanged(!${autoForward})" title="Request VS Code Remote-SSH port forwarding for all Server Local Links. Enabled by default." ${remoteName ? '' : 'disabled'}><span data-i18n="servers.portForward">↔ Port Forward</span>: <span data-i18n="${autoForward ? 'servers.on' : 'servers.off'}">${autoForward ? 'On' : 'Off'}</span></button>
         ${remoteName ? `<span class="srv-global-remote">Remote: ${esc(remoteName)}</span>` : '<span class="srv-global-remote">Local window · forwarding not required</span>'}
       </div>
@@ -252,7 +252,7 @@ function onServerPickFolder(dir) {
     onOk: v => ask('serverImport', { sourceDir: dir, name: v.trim() || base }) });
 }
 function createServer() { pkModal({ title: 'New server', input: true, okLabel: 'Create', onOk: v => { if (v.trim()) ask('serverCreate', { name: v.trim() }); } }); }
-function createServerGroup() { pkModal({ title: 'New Server group', message: 'Enter a slash-separated path. Then drag a Server by its ⋮⋮ handle or right-click it to move.', input: true, okLabel: 'Create group', onOk: value => { if (value.trim()) ask('serverCreateGroup', { category: value.trim() }); } }); }
+function createServerGroup() { pkModal({ title: 'New Server subgroup', message: 'Enter a slash-separated path to create multiple levels. Then drag a Server by its ⋮⋮ handle or right-click it to move.', input: true, okLabel: 'Create subgroup', onOk: value => { if (value.trim()) ask('serverCreateGroup', { category: value.trim() }); } }); }
 function serverOutput(slug) { return document.getElementById('srv-out-' + slug); }
 function closeServerOutput(slug) { const out = serverOutput(slug); if (out) out.innerHTML = ''; }
 function editServer(slug) {

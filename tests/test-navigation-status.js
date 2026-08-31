@@ -71,11 +71,24 @@ assert.match(extension, /nodeType === 'server-group'\) this\.contextValue = 'pk-
 assert.match(extension, /personalKnowledge\.renameServerGroup/);
 assert.match(extension, /personalKnowledge\.deleteServerGroup/);
 assert.match(extension, /personalKnowledge\.moveServerToGroup/);
+assert.match(extension, /personalKnowledge\.createServerGroupFromNavigation/);
+assert.match(extension, /personalKnowledge\.renameServerGroupFromNavigation/);
+assert.match(extension, /personalKnowledge\.deleteServerGroupFromNavigation/);
 assert.match(extension, /showQuickPick\(picks, \{ title: `Move “\$\{server\.name\}” to Group`/);
 assert.match(extension, /\$\(eye-closed\) Hidden/);
-assert.match(extension, /\$\(add\) New group…/);
+assert.match(extension, /\$\(add\) New subgroup…/);
 assert.match(manifest, /viewItem == pk-server-group/);
 assert.match(manifest, /"command": "personalKnowledge\.moveServerToGroup"/);
 assert.match(manifest, /viewItem =~ \/pk-server-\(stopped\|active\|external\)\//);
+assert.match(manifest, /viewItem == pk-servers-container/);
+assert.match(manifest, /"command": "personalKnowledge\.createServerGroupFromNavigation"[\s\S]*?viewItem == pk-server-group/);
+assert.match(extension, /item\?\.nodeType === "server-group"/);
+assert.match(manifest, /"command": "personalKnowledge\.renameServerGroupFromNavigation"/);
+assert.match(extension, /title: "Rename Server Subgroup", placeHolder: "Choose a subgroup to rename"/);
+assert.match(extension, /nodeType === 'root-servers'\) this\.contextValue = 'pk-servers-container'/);
+assert.match(extension, /"root-servers": "servers"/);
+assert.match(extension, /"server-item" && !asTarget/);
+assert.match(extension, /source\.area === "servers"/);
+assert.match(extension, /new PkTreeDragAndDropController\(context\)/);
 
 console.log("navigation status test: Servers and Chatroom online/attention/offline aggregation OK");

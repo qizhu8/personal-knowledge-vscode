@@ -61,6 +61,7 @@
     "servers.group": "Groupe",
     "servers.tags": "Étiquettes",
     "servers.ungrouped": "Sans groupe",
+    "servers.hostname": "Nom d’hôte",
     "servers.command": "Commande",
     "servers.port": "Port",
     "servers.python": "Interpréteur Python (vide = python3)",

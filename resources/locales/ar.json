@@ -61,6 +61,7 @@
     "servers.group": "المجموعة",
     "servers.tags": "الوسوم",
     "servers.ungrouped": "غير مجمّع",
+    "servers.hostname": "اسم المضيف",
     "servers.command": "الأمر",
     "servers.port": "المنفذ",
     "servers.python": "مفسّر Python (فارغ = python3)",

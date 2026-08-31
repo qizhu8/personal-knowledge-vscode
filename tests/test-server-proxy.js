@@ -22,11 +22,13 @@ async function main() {
     docker0: [{ address: "172.17.0.1", family: "IPv4", internal: false }],
     ethernet: [{ address: "10.0.0.8", family: "IPv4", internal: false }],
     duplicate: [{ address: "10.0.0.8", family: "IPv4", internal: false }],
-  });
+  }, "review-host.example");
   assert.deepStrictEqual(addresses, [
-    { interface: "ethernet", address: "10.0.0.8" },
-    { interface: "docker0", address: "172.17.0.1" },
+    { interface: "ethernet", address: "10.0.0.8", kind: "interface" },
+    { interface: "docker0", address: "172.17.0.1", kind: "interface" },
+    { interface: "Hostname", address: "review-host.example", kind: "hostname" },
   ]);
+  assert.deepStrictEqual(serverNetworkAddresses({}, "bad host name"), [], "invalid hostnames must not create malformed URLs");
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-server-proxy-"));
   const serversDir = path.join(root, "servers");
   const stateDir = path.join(root, "state");
@@ -167,7 +169,8 @@ async function main() {
   assert.doesNotMatch(panel, /<details class="srv-link-block srv-local-link" open/);
   assert.match(panel, />Open<\/button><button[^>]*>Copy<\/button>/);
   assert.match(panel, /class="srv-global-controls"/);
-  assert.match(panel, /title="Select the network interface\/IP for every Stable Link"/);
+  assert.match(panel, /title="Select a hostname or network interface\/IP for every Stable Link"/);
+  assert.match(panel, /t\('servers\.hostname'\)/);
   assert.strictEqual((panel.match(/onchange="serverNetworkChanged\(this\.value\)"/g) || []).length, 1);
   assert.doesNotMatch(panel, /pkm-server-network-/);
   assert.match(panel, /class="tbtn srv-forward-toggle \$\{autoForward \? 'active' : ''\}" aria-pressed="\$\{autoForward\}"/);
