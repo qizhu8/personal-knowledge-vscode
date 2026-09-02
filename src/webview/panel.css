@@ -32,6 +32,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family
 .pkm-language-control{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:10px}.pkm-language-control select{background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:4px 7px;font-size:11px}
 .pkm-config-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
 .pkm-config-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.pkm-action-spinner{display:inline-block;width:10px;height:10px;margin-right:5px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;vertical-align:-1px;animation:pkmActionSpin .7s linear infinite}@keyframes pkmActionSpin{to{transform:rotate(360deg)}}.pkm-skill-update-action:disabled,.pkm-skill-update-all:disabled{opacity:.72;cursor:wait}
+.sync-progress{display:flex;flex-direction:column;gap:6px;color:var(--text);font-size:11px}.sync-progress>div{display:flex;justify-content:space-between;gap:10px}.sync-progress span{color:var(--muted);white-space:nowrap}.sync-progress progress{width:100%;height:8px;accent-color:var(--accent)}
 .pkm-skill-source,.pkm-skill-path,.pkm-skill-detail{font-size:10px;color:var(--muted);overflow-wrap:anywhere}
 .pkm-skill-source{margin-bottom:8px}.pkm-skill-target{display:flex;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--border)}
 .mcp-dashboard{border:1px solid var(--border);background:var(--panel);margin:16px 0;padding:16px}

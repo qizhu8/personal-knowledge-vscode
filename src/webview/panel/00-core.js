@@ -518,8 +518,21 @@ window.addEventListener('message', e => {
   else if (command === 'syncJoined')   {
     document.getElementById('join-result').innerHTML =
       `<span style="color:#4ade80">✅ Synced from ${esc(data.from)}: ${esc(data.summary||data.count+' items')}${data.group ? ' → group “'+esc(data.group)+'” (review &amp; merge offline)' : ''}</span>`;
+    const button = document.getElementById('join-download');
+    if (button) { button.disabled = false; button.removeAttribute('aria-busy'); button.textContent = 'Download'; }
+  }
+  else if (command === 'syncProgress') {
+    const progress = document.getElementById('join-result');
+    if (progress) {
+      const percent = Number.isFinite(data?.percent) ? Math.max(0, Math.min(100, data.percent)) : null;
+      const amount = data?.stage === 'downloading' && data?.current
+        ? `${mcpPathSizeText(Number(data.current))}${data.total ? ' / ' + mcpPathSizeText(Number(data.total)) : ''}`
+        : data?.total ? `${data.current || 0} / ${data.total}${data.type ? ' ' + data.type : ''}` : '';
+      progress.innerHTML = `<div class="sync-progress"><div><strong>${esc(data.message || 'Synchronizing…')}</strong><span>${percent === null ? '' : percent + '%'}${amount ? ' · ' + esc(amount) : ''}</span></div><progress ${percent === null ? '' : `value="${percent}" max="100"`}></progress></div>`;
+    }
   }
   else if (command === 'mcpStatus')    { updateGlobalMcpWarning(data); if (state.tab === 'mcp') renderMcpPane(data); }
+  else if (command === 'pkmSkillUpdateComplete') { finishPkmSkillUpdates(); if (!data?.ok) ask('checkMcp', {}); }
   else if (command === 'uiLanguage')   { applyUiLanguage(data); }
   else if (command === 'mcpPathSize')  { renderMcpPathSize(data); }
   else if (command === 'chatReadReceipt') { chatUpdateReadReceipt(data); }
@@ -596,6 +609,10 @@ window.addEventListener('message', e => {
       ? document.getElementById('join-result')
       : document.getElementById('sm-cred-result');
     if (errEl) errEl.innerHTML = `<span style="color:#f87171">❌ ${esc(data.error)}</span>`;
+    if (smCurrentTab === 'join') {
+      const button = document.getElementById('join-download');
+      if (button) { button.disabled = false; button.removeAttribute('aria-busy'); button.textContent = 'Download'; }
+    }
   }
 });
 

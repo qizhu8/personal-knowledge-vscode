@@ -6,6 +6,7 @@ import { execFile, execFileSync, execSync } from "child_process";
 import { getStorePath } from "./filestore";
 import { condaEnvs, pyenvAdd, pyenvCreate, pyenvDelete, pyenvList, pyenvUpdate } from "./pyenvs";
 import { managedEnvironmentsRoot } from "./environment-paths";
+import { isAbsoluteForPlatform, isForeignAbsolutePath } from "./store-path";
 
 // ── MCP server scaffold ────────────────────────────────────────────────────
 export const UNIFIED_MCP_VERSION = "2.5.4";
@@ -43,8 +44,22 @@ interface McpPythonCandidate { path: string; version: string; source: string; la
 interface McpRuntimeStatus { path: string; python: string; exists: boolean; healthy: boolean; version: string; error: string; registered: boolean; }
 export interface McpProcessStatus { running: boolean; pid: string; checkedAt: number; available: boolean; detail: string; }
 
+export function managedMcpServerDirectory(): string {
+  const configured = vscode.workspace.getConfiguration("personalKnowledge").get<string>("mcpServerPath", "").trim();
+  return configured && isAbsoluteForPlatform(configured) && !isForeignAbsolutePath(configured)
+    ? path.normalize(configured)
+    : path.join(getStorePath(), "mcp-server");
+}
+
+export function managedMcpRuntimePath(): string {
+  const configured = vscode.workspace.getConfiguration("personalKnowledge").get<string>("mcpRuntimePath", "").trim();
+  return configured && isAbsoluteForPlatform(configured) && !isForeignAbsolutePath(configured)
+    ? path.normalize(configured)
+    : path.join(managedEnvironmentsRoot(), "pkm-mcp");
+}
+
 export function mcpProcessStatus(): McpProcessStatus {
-  const serverPath = path.resolve(getStorePath(), "mcp-server", "server.py");
+  const serverPath = path.join(managedMcpServerDirectory(), "server.py");
   try {
     const output = process.platform === "win32"
       ? execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"], { encoding: "utf8", timeout: 3000 })
@@ -61,7 +76,7 @@ export function mcpProcessStatus(): McpProcessStatus {
   }
 }
 
-function mcpRuntimePath(): string { return path.join(managedEnvironmentsRoot(), "pkm-mcp"); }
+function mcpRuntimePath(): string { return managedMcpRuntimePath(); }
 function mcpRuntimeBaseMarker(): string { return path.join(mcpRuntimePath(), ".pkm-base-python.json"); }
 function mcpRuntimePythonPath(): string {
   return process.platform === "win32" ? path.join(mcpRuntimePath(), "Scripts", "python.exe") : path.join(mcpRuntimePath(), "bin", "python");
@@ -220,7 +235,7 @@ function resolveMcpPython(): string {
 }
 
 export function mcpServerDefinitionData(): { label: string; command: string; args: string[]; cwd: string; version: string } {
-  const cwd = path.join(getStorePath(), "mcp-server");
+  const cwd = managedMcpServerDirectory();
   return {
     label: "pkm",
     command: resolveMcpPython(),
@@ -247,33 +262,39 @@ export function mcpRuntimeStatus(): McpRuntimeStatus {
 export async function ensureMcpRuntime(context: vscode.ExtensionContext): Promise<McpRuntimeStatus> {
   const base = detectMcpPython();
   if (!base.valid) throw new Error(base.error);
-  const root = managedEnvironmentsRoot(), runtimePath = mcpRuntimePath();
+  const runtimePath = mcpRuntimePath(), root = path.dirname(runtimePath);
+  const runtimeName = path.basename(runtimePath);
+  if (!/^[A-Za-z0-9._-]+$/.test(runtimeName)) throw new Error("Managed MCP Runtime folder name may only contain letters, digits, . _ -");
   fs.mkdirSync(root, { recursive: true });
   let validation = validateMcpPython(mcpRuntimePythonPath());
   let baseChanged = false;
+  const markerExists = fs.existsSync(mcpRuntimeBaseMarker());
   try {
     const marker = JSON.parse(fs.readFileSync(mcpRuntimeBaseMarker(), "utf-8"));
     baseChanged = marker.path !== base.path || marker.version !== base.version;
   } catch { baseChanged = fs.existsSync(runtimePath); }
   if (validation.error || baseChanged) {
+    if (fs.existsSync(runtimePath) && !markerExists) {
+      throw new Error(`Refusing to replace unrecognized directory: ${runtimePath}. Choose an empty path or an existing PKM-managed runtime.`);
+    }
     const stale = pyenvList().find(env => env.name === "PKM MCP Runtime" || (env.path && path.resolve(env.path) === path.resolve(runtimePath)));
     if (stale) await pyenvDelete(stale.id, false);
     if (fs.existsSync(runtimePath)) fs.rmSync(runtimePath, { recursive: true, force: true });
     const created = await pyenvCreate({
-      manager: "venv", name: "pkm-mcp", parentDir: root, baseInterpreter: base.path,
+      manager: "venv", name: runtimeName, parentDir: root, baseInterpreter: base.path,
       description: "Managed runtime for the unified PKM MCP server",
     });
     if (!created.ok) throw new Error(created.error || "Could not create the managed MCP runtime.");
     if (created.env) pyenvUpdate(created.env.id, { name: "PKM MCP Runtime", description: "Managed runtime for the unified PKM MCP server" });
     validation = validateMcpPython(mcpRuntimePythonPath());
     if (validation.error) throw new Error(validation.error);
-    fs.writeFileSync(mcpRuntimeBaseMarker(), JSON.stringify({ path: base.path, version: base.version }, null, 2) + "\n");
   }
   generateMcpServer(context);
-  const requirements = path.join(getStorePath(), "mcp-server", "requirements.txt");
+  const requirements = path.join(managedMcpServerDirectory(), "requirements.txt");
   await new Promise<void>((resolve, reject) => execFile(validation.path, ["-m", "pip", "install", "-r", requirements], {
     timeout: 600000, maxBuffer: 1 << 24,
   }, (error, _stdout, stderr) => error ? reject(new Error(`${error.message}\n${String(stderr || "")}`.trim())) : resolve()));
+  fs.writeFileSync(mcpRuntimeBaseMarker(), JSON.stringify({ path: base.path, version: base.version }, null, 2) + "\n");
   const existing = pyenvList().find(env => env.path && path.resolve(env.path) === path.resolve(runtimePath));
   if (existing) pyenvUpdate(existing.id, { name: "PKM MCP Runtime", manager: "venv", python: validation.path, description: "Managed runtime for the unified PKM MCP server" });
   else pyenvAdd({ name: "PKM MCP Runtime", manager: "venv", path: runtimePath, python: validation.path, description: "Managed runtime for the unified PKM MCP server" });
@@ -283,7 +304,7 @@ export async function ensureMcpRuntime(context: vscode.ExtensionContext): Promis
 export function mcpRuntimeManualCommands(basePython: string): string[] {
   const runtime = mcpRuntimePath();
   const python = mcpRuntimePythonPath();
-  const mcpDir = path.join(getStorePath(), "mcp-server");
+  const mcpDir = managedMcpServerDirectory();
   const quote = (value: string) => `"${value.replace(/"/g, '\\"')}"`;
   return [
     `${quote(basePython)} -m venv ${quote(runtime)}`,
@@ -292,7 +313,7 @@ export function mcpRuntimeManualCommands(basePython: string): string[] {
 }
 
 export function combinedMcpRegistry(): string {
-  const mcpDir = path.join(getStorePath(), "mcp-server");
+  const mcpDir = managedMcpServerDirectory();
   const python = resolveMcpPython();
   return JSON.stringify({
     servers: {
@@ -303,7 +324,7 @@ export function combinedMcpRegistry(): string {
 
 export function combinedMcpInstallInstruction(): string {
   const storePath = getStorePath();
-  const mcpDir = path.join(storePath, "mcp-server");
+  const mcpDir = managedMcpServerDirectory();
   const runtimePython = mcpRuntimePythonPath();
   const serverPath = path.join(mcpDir, "server.py");
   const requirementsPath = path.join(mcpDir, "requirements.txt");
@@ -343,7 +364,7 @@ export function combinedMcpInstallInstruction(): string {
 }
 
 export function mcpStatus(): McpServerStatus {
-  const serverPath = path.join(getStorePath(), "mcp-server", "server.py");
+  const serverPath = path.join(managedMcpServerDirectory(), "server.py");
   const installedVersion = readMcpVersion(serverPath);
   const installedKnowledgeVersion = readMcpComponentVersion(serverPath, "KNOWLEDGE_SCHEMA_VERSION");
   const installedChatVersion = readMcpComponentVersion(serverPath, "CHAT_SCHEMA_VERSION");
@@ -360,7 +381,7 @@ export function mcpStatus(): McpServerStatus {
 
 export function generateMcpServer(context: vscode.ExtensionContext): { serverPath: string; configSnippet: string } {
   const storePath = getStorePath();
-  const mcpDir    = path.join(storePath, "mcp-server");
+  const mcpDir    = managedMcpServerDirectory();
   const serverPy  = path.join(mcpDir, "server.py");
   const reqTxt    = path.join(mcpDir, "requirements.txt");
   const storeFwd  = storePath.replace(/\\/g, "/");
@@ -1141,7 +1162,7 @@ if __name__ == "__main__":
 // The server config is room-agnostic; each invitation supplies a one-paste Magic
 // Link plus the alias the agent should use for that meeting.
 export function chatMcpStatus(): McpServerStatus {
-  const serverPath = path.join(getStorePath(), "mcp-server", "chat_server.py");
+  const serverPath = path.join(managedMcpServerDirectory(), "chat_server.py");
   const installedVersion = readMcpVersion(serverPath);
   return {
     installed: !!installedVersion, serverPath,
@@ -1156,7 +1177,7 @@ export function chatMcpStatus(): McpServerStatus {
 
 export function generateChatMcpServer(context: vscode.ExtensionContext): { serverPath: string; configSnippet: string } {
   const storePath = getStorePath();
-  const mcpDir    = path.join(storePath, "mcp-server");
+  const mcpDir    = managedMcpServerDirectory();
   const serverPy  = path.join(mcpDir, "chat_server.py");
   fs.mkdirSync(mcpDir, { recursive: true });
 

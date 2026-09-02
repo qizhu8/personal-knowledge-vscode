@@ -10,6 +10,11 @@ export interface ResolvedStorePath {
   rejected: string[];
 }
 
+export function isAbsoluteForPlatform(value: string, platform: NodeJS.Platform = process.platform): boolean {
+  const path = String(value || "").trim();
+  return platform === "win32" ? /^[a-z]:[\\/]/i.test(path) || /^\\\\[^\\]+\\[^\\]+/.test(path) : path.startsWith("/");
+}
+
 export function extensionHostDescription(platform: NodeJS.Platform, hostName: string, remoteName = ""): string {
   const osName = platform === "win32" ? "Windows" : platform === "darwin" ? "macOS" : "Linux";
   return remoteName
@@ -38,7 +43,7 @@ export function resolveMachineStorePath(
   ];
   for (const [source, path] of ordered) {
     if (!path) continue;
-    if (isForeignAbsolutePath(path, platform) || !isDirectory(path)) { rejected.push(path); continue; }
+    if (!isAbsoluteForPlatform(path, platform) || isForeignAbsolutePath(path, platform) || !isDirectory(path)) { rejected.push(path); continue; }
     return { path, source, rejected };
   }
   return undefined;

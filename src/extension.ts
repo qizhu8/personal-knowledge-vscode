@@ -46,13 +46,13 @@ import { startLiveMarkdownServer } from "./live-note-server";
 import { managedEnvironmentsRoot } from "./environment-paths";
 import { NavigationStatus, summarizeChatNavigation, summarizeServerNavigation } from "./navigation-status";
 import { navigationItemPath } from "./navigation-path";
-import { extensionHostDescription, resolveMachineStorePath } from "./store-path";
+import { extensionHostDescription, isAbsoluteForPlatform, isForeignAbsolutePath, resolveMachineStorePath } from "./store-path";
 import { loadLocaleCatalogs, loadLocaleManifest, localizedText, normalizeUiLanguage, resolveUiLanguage, UiLanguageSetting, uiLanguageSetting } from "./localization";
 import { AiBackend, aiSummarizeScript, listAiBackends, runAiPrompt, scriptCacheDir } from "./ai";
 import {
   cancelMcpPythonScan, combinedMcpInstallInstruction, combinedMcpRegistry,
   detectMcpPython, ensureMcpRuntime, generateMcpServer,
-  mcpProcessStatus, mcpRuntimeManualCommands, mcpRuntimeStatus, mcpServerDefinitionData, mcpStatus, streamMcpPythonCandidates,
+  managedMcpRuntimePath, managedMcpServerDirectory, mcpProcessStatus, mcpRuntimeManualCommands, mcpRuntimeStatus, mcpServerDefinitionData, mcpStatus, streamMcpPythonCandidates,
   validateMcpPython,
 } from "./mcp";
 import {
@@ -130,7 +130,7 @@ function mcpPanelStatusData(): object {
       store: activeStorePath,
       environments: managedEnvironmentsRoot(),
       runtime: runtime.path,
-      python: runtime.python || python.path,
+      python: python.path,
       serverDirectory: info.serverPath ? path.dirname(info.serverPath) : "",
     },
     mcpPython: python,
@@ -179,7 +179,7 @@ async function sendMcpPathSizes(respond: (m: object) => void, generation = mcpPa
     store: _storeReady ? getStorePath() : "",
     environments: managedEnvironmentsRoot(),
     runtime: runtime.path,
-    python: runtime.python || python.path,
+    python: python.path,
     serverDirectory: info.serverPath ? path.dirname(info.serverPath) : "",
   };
   for (const [key, target] of Object.entries(paths)) {
@@ -734,6 +734,13 @@ const MACHINE_STORE_PATH_KEY = "machineStorePath.v1";
 function directoryExists(candidate: string): boolean {
   try { return fs.existsSync(candidate) && fs.statSync(candidate).isDirectory(); }
   catch { return false; }
+}
+
+function localAbsolutePathError(candidate: string): string | undefined {
+  const value = String(candidate || "").trim();
+  if (!value) return "Path is required";
+  if (!isAbsoluteForPlatform(value) || isForeignAbsolutePath(value)) return `Enter an absolute ${process.platform === "win32" ? "Windows" : process.platform === "darwin" ? "macOS" : "Linux"} path for this Extension Host`;
+  return undefined;
 }
 
 function resolvedStorePath(context: vscode.ExtensionContext): ReturnType<typeof resolveMachineStorePath> {
@@ -1905,7 +1912,7 @@ function saveRekeyedSecret(url: string, room: string, secret: string, roomId?: s
   const id = chatRoomIdentity(url, room, roomId);
   const list = chatRecents(chatCtx);
   const entry = list.find(recent => chatRoomIdentity(recent.url, recent.room, recent.roomId) === id);
-  if (entry && (!entry.host || !entry.roomId)) { entry.secret = secret; void chatCtx.globalState.update(CHAT_RECENTS_KEY, list); }
+  if (entry && (!entry.host || !entry.roomId)) void chatCtx.secrets.store(chatRecentSecretKey(id), secret);
 }
 
 // A stable per-installation chat identity so this user is recognizable across
@@ -1942,6 +1949,14 @@ function postToPanel(m: object): void {
 const CHAT_RECENTS_KEY = "pk.chat.recents";
 interface RecentRoom { id: string; url: string; room: string; roomId?: string; user: string; host: boolean; port: number; secret?: string; lastJoined: number; }
 
+function chatRecentSecretKey(id: string): string {
+  return `personalKnowledge.chatroom.recent.${createHash("sha256").update(id).digest("hex")}`;
+}
+
+async function chatRecentSecret(ctx: vscode.ExtensionContext, id: string): Promise<string> {
+  return (await ctx.secrets.get(chatRecentSecretKey(id))) || "";
+}
+
 function chatUrlPort(wsUrl: string): number {
   try { return Number(new URL(wsUrl).port) || 7345; } catch { return 7345; }
 }
@@ -1951,6 +1966,10 @@ function chatRecents(ctx: vscode.ExtensionContext): RecentRoom[] {
 async function migrateChatRecents(ctx: vscode.ExtensionContext): Promise<void> {
   const raw = ctx.globalState.get<RecentRoom[]>(CHAT_RECENTS_KEY, []);
   const joined = joinedRoomRecents(raw.map(room => ({ ...room })));
+  for (const room of joined) {
+    if (room.secret) await ctx.secrets.store(chatRecentSecretKey(room.id), room.secret);
+    delete room.secret;
+  }
   if (JSON.stringify(raw) !== JSON.stringify(joined)) await ctx.globalState.update(CHAT_RECENTS_KEY, joined);
 }
 function chatRecentsForUi(ctx: vscode.ExtensionContext): object[] {
@@ -1966,11 +1985,13 @@ async function saveChatRecent(ctx: vscode.ExtensionContext, e: { url: string; ro
   const id = chatRoomIdentity(e.url, e.room, e.roomId);
   const prev = current.find(room => chatRoomIdentity(room.url, room.room, room.roomId) === id);
   const list = current.filter(room => chatRoomIdentity(room.url, room.room, room.roomId) !== id);
-  list.unshift({ id, url: e.url, room: e.room, roomId: e.roomId ?? prev?.roomId, user: e.user, host: false, port: chatUrlPort(e.url), secret: e.secret ?? prev?.secret, lastJoined: Date.now() });
+  if (e.secret) await ctx.secrets.store(chatRecentSecretKey(id), e.secret);
+  list.unshift({ id, url: e.url, room: e.room, roomId: e.roomId ?? prev?.roomId, user: e.user, host: false, port: chatUrlPort(e.url), lastJoined: Date.now() });
   await ctx.globalState.update(CHAT_RECENTS_KEY, list.slice(0, 50));
   _treeProvider?.refresh();
 }
 async function forgetChatRecent(ctx: vscode.ExtensionContext, id: string): Promise<void> {
+  await ctx.secrets.delete(chatRecentSecretKey(id));
   await ctx.globalState.update(CHAT_RECENTS_KEY, chatRecents(ctx).filter(r => r.id !== id));
   _treeProvider?.refresh();
 }
@@ -2549,7 +2570,7 @@ async function handleMessage(
       const id = String(msg.id || "");
       const entry = chatRecents(context).find(r => r.id === id);
       if (!entry) break;
-      const recentSecret = (entry.secret || "").trim();
+      const recentSecret = (await chatRecentSecret(context, entry.id)).trim();
       if (!entry.host && !recentSecret) { respond({ command: "chatToast", data: { error: `No stored secret for room "${entry.room}". Use ＋ Join room and enter it.` } }); break; }
 
       const reachable = await probeChatRoomActive(entry.url, entry.room, entry.roomId);
@@ -3957,6 +3978,7 @@ async function handleMessage(
           "Download Here",
         );
         if (confirmed !== "Download Here") throw new Error("Sync download cancelled before writing any files.");
+        respond({ command: "syncProgress", data: { stage: "connecting", message: "Connecting to Sync host…" } });
         const { syncUrl, username, password } = parseSyncMagicCode(msg.magicCode);
         const response = await fetch(`${syncUrl}/sync/bundle`, {
           headers: { "Authorization": "Basic " + Buffer.from(`${username}:${password}`).toString("base64") },
@@ -3966,7 +3988,21 @@ async function handleMessage(
           respond({ command: "syncError", data: { error: `Server returned ${response.status}: ${await response.text()}` } });
           return;
         }
-        const bundle = await response.json() as any;
+        const totalBytes = Number(response.headers.get("content-length")) || 0;
+        const chunks: Buffer[] = [];
+        let downloadedBytes = 0;
+        if (response.body) {
+          const reader = response.body.getReader();
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = Buffer.from(value);
+            chunks.push(chunk);
+            downloadedBytes += chunk.length;
+            respond({ command: "syncProgress", data: { stage: "downloading", current: downloadedBytes, total: totalBytes, percent: totalBytes ? Math.min(100, Math.round(downloadedBytes * 100 / totalBytes)) : undefined, message: "Downloading knowledge bundle…" } });
+          }
+        } else chunks.push(Buffer.from(await response.text(), "utf8"));
+        const bundle = JSON.parse(Buffer.concat(chunks).toString("utf8")) as any;
         const from = bundle?.from ?? "remote";
         // "group" mode isolates everything under <type>/_incoming/<label>/… so
         // nothing overwrites existing items; the user merges offline afterwards.
@@ -3977,16 +4013,29 @@ async function handleMessage(
         const pcat = (c?: string) => prefix ? (c ? `${prefix}/${c}` : prefix) : (c || "");
         const slugPfx = prefix ? prefix.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "") : "";
         const counts: Record<string, number> = {};
+        const totalItems = ["skills", "notes", "papers", "prompts", "scripts", "packages"]
+          .reduce((count, type) => count + (Array.isArray(bundle?.[type]) ? bundle[type].length : 0), 0);
+        let importedItems = 0;
+        const reportImported = async (type: string): Promise<void> => {
+          importedItems += 1;
+          respond({ command: "syncProgress", data: { stage: "importing", current: importedItems, total: totalItems, percent: totalItems ? Math.round(importedItems * 100 / totalItems) : 100, type, message: `Importing ${type}…` } });
+          if (importedItems % 20 === 0) await new Promise<void>(resolve => setImmediate(resolve));
+        };
+        respond({ command: "syncProgress", data: { stage: "importing", current: 0, total: totalItems, percent: 0, message: "Preparing imported content…" } });
         for (const s of bundle?.skills ?? []) {
           const m = s.metadata ?? {};
           skillUpsert({ name: s.name, content: s.content,
             description: m.description, category: pcat(m.category),
             tags: m.tags, source_project: m.source_project });
           counts.skills = (counts.skills ?? 0) + 1;
+          await reportImported("skills");
         }
         if (bundle?.notes?.length) {
           const notes = prefix ? bundle.notes.map((n: any) => ({ ...n, category: pcat(n.category) })) : bundle.notes;
-          counts.notes = noteImport(notes);
+          for (const note of notes) {
+            counts.notes = (counts.notes ?? 0) + noteImport([note]);
+            await reportImported("notes");
+          }
         }
         const importedSlugs = new Set((bundle?.papers ?? []).map((p: any) => p.slug));
         const remap = (s: string) => (prefix && importedSlugs.has(s)) ? `${slugPfx}-${s}` : s;
@@ -3999,6 +4048,7 @@ async function handleMessage(
             category: pcat(p.category), group: prefix ? label : p.group,
           });
           counts.papers = (counts.papers ?? 0) + 1;
+          await reportImported("papers");
         }
         for (const p of bundle?.papers ?? []) {
           const slug = prefix ? `${slugPfx}-${p.slug}` : p.slug;
@@ -4012,15 +4062,24 @@ async function handleMessage(
         }
         if (bundle?.prompts?.length) {
           const prompts = prefix ? bundle.prompts.map((x: any) => ({ ...x, project: `${prefix}/${x.project}` })) : bundle.prompts;
-          counts.prompts = promptImport(prompts);
+          for (const prompt of prompts) {
+            counts.prompts = (counts.prompts ?? 0) + promptImport([prompt]);
+            await reportImported("prompts");
+          }
         }
         if (bundle?.scripts?.length) {
           const scripts = prefix ? bundle.scripts.map((x: any) => ({ ...x, category: pcat(x.category) })) : bundle.scripts;
-          counts.scripts = scriptImport(scripts);
+          for (const script of scripts) {
+            counts.scripts = (counts.scripts ?? 0) + scriptImport([script]);
+            await reportImported("scripts");
+          }
         }
         if (bundle?.packages?.length) {
           const pkgs = prefix ? bundle.packages.map((x: any) => ({ ...x, name: `${prefix}/${x.name}` })) : bundle.packages;
-          counts.packages = packageImport(pkgs);
+          for (const pkg of pkgs) {
+            counts.packages = (counts.packages ?? 0) + packageImport([pkg]);
+            await reportImported("packages");
+          }
         }
         const total   = Object.values(counts).reduce((a, b) => a + b, 0);
         const summary = Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(", ");
@@ -4126,14 +4185,34 @@ async function handleMessage(
     }
 
     case "pkmSkillInject": {
+      let ok = false;
       try {
         const target = injectPkmSkill(context, String(msg.id || ""));
         log.action("pkmSkill.inject", { target: target.id, path: target.skillPath, state: target.state });
+        ok = true;
         respond({ command: "mcpStatus", data: mcpPanelStatusData() });
         vscode.window.setStatusBarMessage("$(check) PKM Skill injected", 4000);
       } catch (error: any) {
         respond({ command: "mcpError", data: { error: error?.message || String(error) } });
+      } finally {
+        respond({ command: "pkmSkillUpdateComplete", data: { ok } });
       }
+      break;
+    }
+
+    case "pkmSkillInjectAll": {
+      const ids = [...new Set<string>((Array.isArray(msg.ids) ? msg.ids : []).map((id: unknown) => String(id || "")).filter(Boolean))];
+      const errors: string[] = [];
+      for (const id of ids) {
+        try {
+          const target = injectPkmSkill(context, id);
+          log.action("pkmSkill.inject", { target: target.id, path: target.skillPath, state: target.state, bulk: true });
+        } catch (error: any) { errors.push(`${id}: ${error?.message || String(error)}`); }
+      }
+      respond({ command: "mcpStatus", data: mcpPanelStatusData() });
+      if (errors.length) respond({ command: "mcpError", data: { error: `Updated ${ids.length - errors.length}/${ids.length} targets. ${errors.join("; ")}` } });
+      else vscode.window.setStatusBarMessage(`$(check) Updated ${ids.length} PKM Skill targets`, 4000);
+      respond({ command: "pkmSkillUpdateComplete", data: { ok: errors.length === 0 } });
       break;
     }
 
@@ -4145,6 +4224,26 @@ async function handleMessage(
       } catch (error: any) {
         respond({ command: "mcpError", data: { error: error?.message || String(error) } });
       }
+      break;
+    }
+
+    case "reconfigureKnowledgeRoot": {
+      await vscode.commands.executeCommand("personalKnowledge.reconfigureKnowledgeRoot");
+      break;
+    }
+
+    case "reconfigureEnvironmentsRoot": {
+      await vscode.commands.executeCommand("personalKnowledge.reconfigureEnvironmentsRoot");
+      break;
+    }
+
+    case "reconfigureMcpRuntimePath": {
+      await vscode.commands.executeCommand("personalKnowledge.reconfigureMcpRuntimePath");
+      break;
+    }
+
+    case "reconfigureMcpServerPath": {
+      await vscode.commands.executeCommand("personalKnowledge.reconfigureMcpServerPath");
       break;
     }
 
@@ -4229,7 +4328,9 @@ async function handleMessage(
         respond({ command: "mcpPythonResult", data: { ...result, valid: false, source: "configured", saved: false } });
         break;
       }
-      await vscode.workspace.getConfiguration("personalKnowledge").update("mcpPythonPath", result.path, vscode.ConfigurationTarget.Global);
+      const configuration = vscode.workspace.getConfiguration("personalKnowledge");
+      const previousPython = configuration.get<string>("mcpPythonPath", "");
+      await configuration.update("mcpPythonPath", result.path, vscode.ConfigurationTarget.Global);
       respond({ command: "mcpRuntimeProgress", data: { text: "Creating or repairing the managed PKM MCP runtime and installing dependencies…" } });
       try {
         const runtime = await ensureMcpRuntime(context);
@@ -4238,6 +4339,8 @@ async function handleMessage(
         _treeProvider?.refresh();
         respond({ command: "envList", data: envListForUi() });
       } catch (error: any) {
+        await configuration.update("mcpPythonPath", previousPython || undefined, vscode.ConfigurationTarget.Global);
+        refreshMcpDefinitions();
         respond({ command: "mcpRuntimeResult", data: { ok: false, error: error?.message || String(error), commands: mcpRuntimeManualCommands(result.path) } });
       }
       break;
@@ -5090,7 +5193,7 @@ async function firstTimeSetup(context: vscode.ExtensionContext, reconfigure = fa
       prompt: "Enter the full path for your knowledge store",
       placeHolder: defaultPath,
       value: currentPath || defaultPath,
-      validateInput: v => v?.trim() ? null : "Path cannot be empty",
+      validateInput: value => localAbsolutePathError(value),
     });
     if (!chosenPath) return undefined;
     chosenPath = chosenPath.trim();
@@ -5122,6 +5225,94 @@ async function firstTimeSetup(context: vscode.ExtensionContext, reconfigure = fa
   return chosenPath;
 }
 
+function displayBytes(bytes: number | undefined): string {
+  if (!Number.isFinite(bytes) || Number(bytes) < 0) return "not measured";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = Number(bytes), index = 0;
+  while (value >= 1024 && index < units.length - 1) { value /= 1024; index += 1; }
+  return `${value.toFixed(index === 0 || value >= 100 ? 0 : 1)} ${units[index]}`;
+}
+
+async function chooseEnvironmentsRoot(context: vscode.ExtensionContext): Promise<string | undefined> {
+  const current = path.resolve(managedEnvironmentsRoot());
+  const defaultPath = path.resolve(os.homedir(), "pkm-envs");
+  const host = extensionHostDescription(process.platform, os.hostname(), vscode.env.remoteName || "");
+  const cachedSize = mcpPathSizeCache.get(current)?.bytes;
+  const choice = await vscode.window.showWarningMessage(
+    "Reconfigure the machine-local Environments Root?",
+    { modal: true, detail: `${host}\n\nCurrent: ${current}\nCurrent disk usage: ${displayBytes(cachedSize)}\n\nThis directory stores migrated/created conda, venv, and uv environments plus the managed pkm-mcp runtime. It can grow very large. Existing environments will not be moved automatically.` },
+    `Use default (${defaultPath})`, "Browse Folder…", "Type a Path…",
+  );
+  if (!choice) return undefined;
+  let selected: string | undefined;
+  if (choice === "Browse Folder…") {
+    const picked = await vscode.window.showOpenDialog({ canSelectFiles: false, canSelectFolders: true, canSelectMany: false, title: "Select machine-local Environments Root", openLabel: "Select Environments Root" });
+    selected = picked?.[0]?.fsPath;
+  } else if (choice === "Type a Path…") {
+    selected = await vscode.window.showInputBox({ title: "Environments Root", prompt: `Absolute path on ${host}`, value: current, placeHolder: defaultPath, validateInput: value => localAbsolutePathError(value) });
+  } else selected = defaultPath;
+  if (!selected) return undefined;
+  selected = path.resolve(selected.trim());
+  if (!directoryExists(selected)) {
+    const create = await vscode.window.showWarningMessage(`Create the Environments Root directory?`, { modal: true, detail: selected }, "Create Directory");
+    if (create !== "Create Directory") return undefined;
+    fs.mkdirSync(selected, { recursive: true });
+  }
+  if (selected === current) return undefined;
+  const confirmed = await vscode.window.showWarningMessage(
+    "Use this machine-local Environments Root?",
+    { modal: true, detail: `${host}\n\nCurrent: ${current}\nNew: ${selected}\n\nExisting environments stay at their current paths. New managed environments and migrations use the new root. The managed pkm-mcp runtime must be recreated under the new root.` },
+    "Use This Root",
+  );
+  return confirmed === "Use This Root" ? selected : undefined;
+}
+
+async function chooseMachineDirectory(label: string, current: string, defaultPath: string, impact: string): Promise<string | undefined> {
+  const host = extensionHostDescription(process.platform, os.hostname(), vscode.env.remoteName || "");
+  const choice = await vscode.window.showWarningMessage(
+    `Reconfigure ${label}?`,
+    { modal: true, detail: `${host}\n\nCurrent: ${current}\n\n${impact}\nThis path is machine-local and excluded from VS Code Settings Sync.` },
+    `Use default (${defaultPath})`, "Browse Folder…", "Type a Path…",
+  );
+  if (!choice) return undefined;
+  let selected: string | undefined;
+  if (choice === "Browse Folder…") {
+    const picked = await vscode.window.showOpenDialog({ canSelectFiles: false, canSelectFolders: true, canSelectMany: false, title: `Select ${label}`, openLabel: `Select ${label}` });
+    selected = picked?.[0]?.fsPath;
+  } else if (choice === "Type a Path…") {
+    selected = await vscode.window.showInputBox({ title: label, prompt: `Absolute path on ${host}`, value: current, placeHolder: defaultPath, validateInput: value => localAbsolutePathError(value) });
+  } else selected = defaultPath;
+  if (!selected) return undefined;
+  selected = path.resolve(selected.trim());
+  if (selected === current) return undefined;
+  if (!directoryExists(selected)) {
+    const create = await vscode.window.showWarningMessage(`Create this directory?`, { modal: true, detail: selected }, "Create Directory");
+    if (create !== "Create Directory") return undefined;
+    fs.mkdirSync(selected, { recursive: true });
+  }
+  const confirmed = await vscode.window.showWarningMessage(
+    `Use this ${label}?`,
+    { modal: true, detail: `${host}\n\nCurrent: ${current}\nNew: ${selected}\n\n${impact}` },
+    "Use This Path",
+  );
+  return confirmed === "Use This Path" ? selected : undefined;
+}
+
+function directoryIsEmpty(directory: string): boolean {
+  try { return fs.readdirSync(directory).length === 0; }
+  catch { return false; }
+}
+
+function safeMcpRuntimeTarget(directory: string): boolean {
+  return !directoryExists(directory) || directoryIsEmpty(directory) || fs.existsSync(path.join(directory, ".pkm-base-python.json"));
+}
+
+function safeMcpServerTarget(directory: string): boolean {
+  if (!directoryExists(directory) || directoryIsEmpty(directory)) return true;
+  try { return /PKM MCP Server.*auto-generated/i.test(fs.readFileSync(path.join(directory, "server.py"), "utf8")); }
+  catch { return false; }
+}
+
 // ── Activation ─────────────────────────────────────────────────────────────
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   log.init(context);
@@ -5144,7 +5335,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (e.affectsConfiguration("personalKnowledge.logLevel")) log.refreshLevel();
       if (e.affectsConfiguration("personalKnowledge.maxTreeDepth")) _treeProvider?.refresh();
       if (e.affectsConfiguration("personalKnowledge.chatHistoryLimitMB")) applyChatArchiveCfg();
-      if (e.affectsConfiguration("personalKnowledge.storePath") || e.affectsConfiguration("personalKnowledge.environmentsPath") || e.affectsConfiguration("personalKnowledge.mcpPythonPath")) refreshMcpDefinitions();
+      if (e.affectsConfiguration("personalKnowledge.storePath") || e.affectsConfiguration("personalKnowledge.environmentsPath") || e.affectsConfiguration("personalKnowledge.mcpPythonPath") || e.affectsConfiguration("personalKnowledge.mcpRuntimePath") || e.affectsConfiguration("personalKnowledge.mcpServerPath")) refreshMcpDefinitions();
     })
   );
 
@@ -5510,6 +5701,147 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await closeNavigationSidebar();
     }),
 
+    vscode.commands.registerCommand("personalKnowledge.reconfigureKnowledgeRoot", async () => {
+      const previousRoot = _storeReady ? getStorePath() : "";
+      const chosen = await firstTimeSetup(context, true);
+      if (!chosen || chosen === previousRoot) return;
+      await chatMgr?.dispose();
+      chatMgr = undefined;
+      disposeServers();
+      const proxyPort = vscode.workspace.getConfiguration("personalKnowledge").get<number>("serversProxyPort", 39501);
+      try {
+        _storeReady = false;
+        await initStore(context, chosen);
+        applyChatArchiveCfg();
+        ensureGitRepo();
+        startFileWatcher(context);
+        initServers(path.join(chosen, "servers"), path.join(context.globalStorageUri.fsPath, "servers"), proxyPort, message => log.info(`[servers] ${message}`));
+        mcpPathSizeGeneration += 1;
+        mcpPathSizeCache.clear();
+        refreshMcpDefinitions();
+        treeProvider.refresh();
+        panel?.webview.postMessage({ command: "reloaded" });
+        panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+        vscode.window.showInformationMessage(`Knowledge Root changed on ${extensionHostDescription(process.platform, os.hostname(), vscode.env.remoteName || "")}: ${chosen}. Chatroom history now uses ${path.join(chosen, "chatrooms")}; existing Rooms were not moved.`);
+        void offerMcpServerRegeneration(context);
+        void offerPkmSkillProjectionUpdate(context);
+      } catch (error: any) {
+        if (previousRoot && directoryExists(previousRoot)) {
+          await rememberMachineStorePath(context, previousRoot);
+          _storeReady = false;
+          await initStore(context, previousRoot);
+          applyChatArchiveCfg();
+          startFileWatcher(context);
+          initServers(path.join(previousRoot, "servers"), path.join(context.globalStorageUri.fsPath, "servers"), proxyPort, message => log.info(`[servers] ${message}`));
+        }
+        refreshMcpDefinitions();
+        treeProvider.refresh();
+        panel?.webview.postMessage({ command: "reloaded" });
+        panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+        vscode.window.showErrorMessage(`Knowledge Root change failed and the previous root was restored: ${error?.message || String(error)}`);
+      }
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.reconfigureEnvironmentsRoot", async () => {
+      const chosen = await chooseEnvironmentsRoot(context);
+      if (!chosen) return;
+      const configuration = vscode.workspace.getConfiguration("personalKnowledge");
+      const previous = configuration.get<string>("environmentsPath", "");
+      const runtimeIsDerived = !configuration.get<string>("mcpRuntimePath", "").trim();
+      const derivedRuntime = path.join(chosen, "pkm-mcp");
+      if (runtimeIsDerived && !safeMcpRuntimeTarget(derivedRuntime)) {
+        vscode.window.showErrorMessage(`Cannot use this Environments Root: ${derivedRuntime} is not an empty or PKM-managed runtime directory.`);
+        return;
+      }
+      await configuration.update("environmentsPath", chosen, vscode.ConfigurationTarget.Global);
+      try {
+        refreshMcpDefinitions();
+        if (runtimeIsDerived) {
+          await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Rebuilding PKM MCP Runtime in the new Environments Root", cancellable: false }, () => ensureMcpRuntime(context));
+        }
+      } catch (error: any) {
+        await configuration.update("environmentsPath", previous || undefined, vscode.ConfigurationTarget.Global);
+        refreshMcpDefinitions();
+        mcpPathSizeGeneration += 1;
+        mcpPathSizeCache.clear();
+        treeProvider.refresh();
+        panel?.webview.postMessage({ command: "envList", data: envListForUi() });
+        panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+        vscode.window.showErrorMessage(`Environments Root was restored because reconfiguration failed: ${error?.message || String(error)}`);
+        return;
+      }
+      mcpPathSizeGeneration += 1;
+      mcpPathSizeCache.clear();
+      treeProvider.refresh();
+      panel?.webview.postMessage({ command: "envList", data: envListForUi() });
+      panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+      vscode.window.showInformationMessage(`Environments Root changed to ${chosen}. Existing environments were not moved.`);
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.reconfigureMcpRuntimePath", async () => {
+      const current = managedMcpRuntimePath();
+      const defaultPath = path.join(managedEnvironmentsRoot(), "pkm-mcp");
+      const chosen = await chooseMachineDirectory("Managed MCP Runtime Path", current, defaultPath, "The runtime will be created or rebuilt at the new path. The previous runtime directory is not deleted automatically.");
+      if (!chosen) return;
+      if (!safeMcpRuntimeTarget(chosen)) {
+        vscode.window.showErrorMessage(`Refusing to replace non-PKM directory: ${chosen}. Choose an empty directory or an existing PKM-managed runtime.`);
+        return;
+      }
+      const configuration = vscode.workspace.getConfiguration("personalKnowledge");
+      const previous = configuration.get<string>("mcpRuntimePath", "");
+      await configuration.update("mcpRuntimePath", chosen, vscode.ConfigurationTarget.Global);
+      try {
+        refreshMcpDefinitions();
+        await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Rebuilding PKM MCP Runtime", cancellable: false }, () => ensureMcpRuntime(context));
+      } catch (error: any) {
+        await configuration.update("mcpRuntimePath", previous || undefined, vscode.ConfigurationTarget.Global);
+        refreshMcpDefinitions();
+        mcpPathSizeGeneration += 1;
+        mcpPathSizeCache.clear();
+        treeProvider.refresh();
+        panel?.webview.postMessage({ command: "envList", data: envListForUi() });
+        panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+        vscode.window.showErrorMessage(`Managed MCP Runtime path was restored because rebuilding failed: ${error?.message || String(error)}`);
+        return;
+      }
+      mcpPathSizeGeneration += 1;
+      mcpPathSizeCache.clear();
+      treeProvider.refresh();
+      panel?.webview.postMessage({ command: "envList", data: envListForUi() });
+      panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+      vscode.window.showInformationMessage(`Managed MCP Runtime is ready at ${chosen}.`);
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.reconfigureMcpServerPath", async () => {
+      const current = managedMcpServerDirectory();
+      const defaultPath = path.join(getStorePath(), "mcp-server");
+      const chosen = await chooseMachineDirectory("MCP Server Directory", current, defaultPath, "Generated server.py, chat_server.py, and requirements.txt will be regenerated at the new path. The previous directory is not deleted automatically.");
+      if (!chosen) return;
+      if (!safeMcpServerTarget(chosen)) {
+        vscode.window.showErrorMessage(`Refusing to overwrite non-PKM directory: ${chosen}. Choose an empty directory or an existing PKM-generated server directory.`);
+        return;
+      }
+      const configuration = vscode.workspace.getConfiguration("personalKnowledge");
+      const previous = configuration.get<string>("mcpServerPath", "");
+      await configuration.update("mcpServerPath", chosen, vscode.ConfigurationTarget.Global);
+      try {
+        generateMcpServer(context);
+      } catch (error: any) {
+        await configuration.update("mcpServerPath", previous || undefined, vscode.ConfigurationTarget.Global);
+        refreshMcpDefinitions();
+        mcpPathSizeGeneration += 1;
+        mcpPathSizeCache.clear();
+        panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+        vscode.window.showErrorMessage(`MCP Server Directory was restored because generation failed: ${error?.message || String(error)}`);
+        return;
+      }
+      mcpPathSizeGeneration += 1;
+      mcpPathSizeCache.clear();
+      refreshMcpDefinitions();
+      panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+      vscode.window.showInformationMessage(`PKM MCP server code regenerated at ${chosen}. Restart pkm in each MCP client.`);
+    }),
+
     vscode.commands.registerCommand("personalKnowledge.openChatroom", async () => {
       log.action("command.openChatroom");
       openChatroomPanel(context);
@@ -5725,7 +6057,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     vscode.commands.registerCommand("personalKnowledge.openChatRoomItem", async (id: string) => {
       const entry = chatRecents(context).find(room => room.id === id);
-      if (!entry || (!entry.host && !entry.secret)) {
+      const recentSecret = entry ? await chatRecentSecret(context, entry.id) : "";
+      if (!entry || (!entry.host && !recentSecret)) {
         vscode.window.showWarningMessage("This room has no saved key. Join it again using a fresh Magic Link.");
         return;
       }
@@ -5743,7 +6076,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           try {
             const hosted = entry.roomId
               ? await manager.rehostRoom(entry.roomId)
-              : await manager.createHostedRoom(entry.room, entry.secret);
+              : await manager.createHostedRoom(entry.room, recentSecret || undefined);
             const url = `ws://127.0.0.1:${manager.hubPort}`;
             manager.joinRoom({ url, room: hosted.room, roomId: hosted.roomId, user: entry.user, token: hosted.secret, cid: getChatCid(context), hostToken: hosted.hostToken });
             await saveChatRecent(context, { url, room: hosted.room, roomId: hosted.roomId, user: entry.user, host: true });
@@ -5753,7 +6086,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           }
         }
       } else {
-        manager.joinRoom({ url: entry.url, room: entry.room, roomId: entry.roomId, user: entry.user, token: entry.secret!, cid: getChatCid(context) });
+        manager.joinRoom({ url: entry.url, room: entry.room, roomId: entry.roomId, user: entry.user, token: recentSecret, cid: getChatCid(context) });
         await saveChatRecent(context, entry);
       }
       openChatroomPanel(context);

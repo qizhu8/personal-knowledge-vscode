@@ -65,6 +65,26 @@
         "title": "%command.openConfig%"
       },
       {
+        "command": "personalKnowledge.reconfigureKnowledgeRoot",
+        "title": "Personal Knowledge Manager: Reconfigure Knowledge Root",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "personalKnowledge.reconfigureEnvironmentsRoot",
+        "title": "Personal Knowledge Manager: Reconfigure Environments Root",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "personalKnowledge.reconfigureMcpRuntimePath",
+        "title": "Personal Knowledge Manager: Reconfigure MCP Runtime Path",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "personalKnowledge.reconfigureMcpServerPath",
+        "title": "Personal Knowledge Manager: Reconfigure MCP Server Directory",
+        "icon": "$(folder-opened)"
+      },
+      {
         "command": "personalKnowledge.openChatroom",
         "title": "%command.openChatroom%",
         "icon": "$(comment-discussion)"
@@ -517,6 +537,18 @@
           "scope": "machine",
           "description": "Absolute Python 3.10+ executable used to create and run the managed PKM MCP environment. Machine-specific; not synced to remote hosts."
         },
+        "personalKnowledge.mcpRuntimePath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Machine-local path for the managed PKM MCP virtual environment. Defaults to <Environments Root>/pkm-mcp."
+        },
+        "personalKnowledge.mcpServerPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Machine-local directory for generated PKM MCP server code. Defaults to <Knowledge Root>/mcp-server."
+        },
         "personalKnowledge.openOnStartup": {
           "type": "boolean",
           "default": false,
@@ -621,7 +653,9 @@
         "personalKnowledge.chatSharedSecret": {
           "type": "string",
           "default": "",
-          "description": "Chatroom: team shared secret used to join a room. Must match the hub's secret. Corpnet/VPN only for the MVP."
+          "scope": "machine",
+          "deprecationMessage": "Legacy only. Join each Room through the Chatroom UI; Room credentials are stored in VS Code SecretStorage.",
+          "description": "Legacy machine-local Chatroom shared secret. New Room credentials use VS Code SecretStorage."
         },
         "personalKnowledge.chatHubPort": {
           "type": "number",
@@ -683,8 +717,10 @@
     "test:navigation-copy-path": "npm run build && node tests/test-navigation-copy-path.js",
     "test:detail-path-ui": "npm run build && node tests/test-detail-path-ui.js",
     "test:machine-store-path": "npm run build && node tests/test-machine-store-path.js",
+    "test:sync-progress": "npm run build && node tests/test-sync-progress.js",
+    "test:chat-storage-boundaries": "npm run build && node tests/test-chat-storage-boundaries.js",
     "test:localization": "npm run build && node tests/test-localization.js",
-    "test:release": "npm run build && node tests/test-chat-persistence.js && node tests/test-chat-stored-rooms.js && node tests/test-chat-stored-rooms-ui.js && node tests/test-chat-participant-persistence.js && node tests/test-chat-join-approval.js && node tests/test-chat-hub-approval.js && node tests/test-chat-join-approval-ui.js && node tests/test-chat-moderation-ui.js && node tests/test-chat-mention-highlight-ui.js && node tests/test-chat-room-identity.js && node tests/test-chat-default-recipient-ui.js && node tests/test-chat-browser-ui.js && node tests/test-chat-multi-recipient.js && node tests/test-chat-magic-link.js && node tests/test-chat-mcp-approval.js && node tests/test-chat-packaged-worker.js && node tests/test-chat-hub-health.js && python tests/test-chat-history-atomic.py && python tests/test-chat-generated-standby.py && node tests/test-chat-markdown.js && node tests/test-chat-quote-viewer-ui.js && node tests/test-mcp-version-ui.js && node tests/test-chat-layout-scroll-ui.js && node tests/test-pkm-skill-projection.js && node tests/test-pkm-skill-mcp.js && node tests/test-server-proxy.js && node tests/test-server-grouping.js && node tests/test-environment-refresh.js && node tests/test-refresh-actions.js && node tests/test-navigation-status.js && node tests/test-navigation-groups.js && node tests/test-navigation-copy-path.js && node tests/test-detail-path-ui.js && node tests/test-machine-store-path.js && node tests/test-localization.js",
+    "test:release": "npm run build && node tests/test-chat-persistence.js && node tests/test-chat-stored-rooms.js && node tests/test-chat-stored-rooms-ui.js && node tests/test-chat-participant-persistence.js && node tests/test-chat-join-approval.js && node tests/test-chat-hub-approval.js && node tests/test-chat-join-approval-ui.js && node tests/test-chat-moderation-ui.js && node tests/test-chat-mention-highlight-ui.js && node tests/test-chat-room-identity.js && node tests/test-chat-default-recipient-ui.js && node tests/test-chat-browser-ui.js && node tests/test-chat-multi-recipient.js && node tests/test-chat-magic-link.js && node tests/test-chat-mcp-approval.js && node tests/test-chat-packaged-worker.js && node tests/test-chat-hub-health.js && node tests/test-chat-storage-boundaries.js && python tests/test-chat-history-atomic.py && python tests/test-chat-generated-standby.py && node tests/test-chat-markdown.js && node tests/test-chat-quote-viewer-ui.js && node tests/test-mcp-version-ui.js && node tests/test-chat-layout-scroll-ui.js && node tests/test-pkm-skill-projection.js && node tests/test-pkm-skill-mcp.js && node tests/test-server-proxy.js && node tests/test-server-grouping.js && node tests/test-environment-refresh.js && node tests/test-refresh-actions.js && node tests/test-navigation-status.js && node tests/test-navigation-groups.js && node tests/test-navigation-copy-path.js && node tests/test-detail-path-ui.js && node tests/test-machine-store-path.js && node tests/test-sync-progress.js && node tests/test-localization.js",
     "poc:chat-room-lifecycle": "npm run build && node scripts/poc-chat-room-lifecycle.js",
     "watch": "tsc -p tsconfig.json --watch",
     "package": "npx vsce package"

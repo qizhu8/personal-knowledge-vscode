@@ -161,8 +161,9 @@ class SyncServer {
         bundle.packages = sel.packages.length ? all.filter(p => sel.packages.includes(p.name)) : all;
       }
 
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(bundle));
+      const payload = JSON.stringify(bundle);
+      res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) });
+      res.end(payload);
 
     } else if (req.method === "GET" && req.url === "/sync/session") {
       res.writeHead(200, { "Content-Type": "application/json" });

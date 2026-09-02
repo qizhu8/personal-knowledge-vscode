@@ -1041,6 +1041,8 @@ function doJoinSync() {
   }
   const mode = (document.querySelector('input[name="join-mode"]:checked') || {}).value || 'overwrite';
   const groupLabel = (document.getElementById('join-group').value || '').trim();
+  const button = document.getElementById('join-download');
+  button.disabled = true; button.setAttribute('aria-busy', 'true'); button.textContent = 'Downloading…';
   document.getElementById('join-result').innerHTML = '<span style="color:var(--muted)">Connecting…</span>';
   ask('joinSync', { magicCode, mode, groupLabel });
 }

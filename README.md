@@ -315,6 +315,12 @@ The Knowledge Root path belongs to the machine running the VS Code Extension Hos
 
 The pointer and the content are separate. You can clone the same Git repository to a different absolute path on each machine and select that local clone as each machine's Knowledge Root. PKM creates local commits, but it does not currently automate remote `pull`, `push`, merge, or conflict resolution. Magic Code Sync is an explicit one-time transfer; before writing, it confirms the exact receiving host and Knowledge Root.
 
+### Storage ownership
+
+The **Knowledge Root** is the user-owned, portable content root. Skills, Notes, Papers, Prompts, Scripts, Packages, managed Servers, and durable Chatroom Room databases live beneath it. Lightweight portable PKM metadata belongs under `<Knowledge Root>/.pkm/`. This directory can be backed up or managed with Git according to your own sharing policy.
+
+The extension installation directory is never a data root because upgrades and reinstalls replace it. Machine-only registries, process state, logs, and caches use VS Code `globalStorage`; credentials and Room secrets use VS Code `SecretStorage`. Secrets never belong in the Knowledge Root or Git.
+
 ## Building from source
 
 ```bash

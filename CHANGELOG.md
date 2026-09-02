@@ -15,6 +15,13 @@ This emergency patch separates machine-local storage pointers from cross-machine
 - Rejected foreign Windows paths on Linux and foreign POSIX paths on Windows during root recovery, and made Config display the actual active Local/Remote Extension Host root instead of a stale frontend setting.
 - Made first-run setup display the actual Extension Host, OS, and full platform-native default path, then explicitly confirm the final absolute machine-local root.
 - Guarded Knowledge Sync behind a ready machine-local root and added a pre-download confirmation showing the exact target host, root, and import mode so synchronized content cannot silently land in a default directory.
+- Kept durable Chatroom Room databases under `<Knowledge Root>/chatrooms`, flush/stopped the active Hub before root changes, and migrated recent Room secrets from extension state into VS Code SecretStorage.
+- Marked the legacy Chatroom shared-secret setting machine-only and deprecated it in favor of per-Room SecretStorage credentials.
+
+### Added
+- Made all five Config Paths actionable and machine-only: Knowledge Root, Environments Root, Managed MCP Runtime, MCP Base Python, and MCP Server Directory. Reconfiguration runs the required rebind/rebuild/regenerate flow and restores the prior path on failure.
+- Added immediate busy/disabled states for PKM Skill Router updates plus a deduplicated **Update All** action.
+- Added byte-level download and per-item import progress for large Knowledge Sync transfers, including button locking and success/error recovery.
 
 ## [2.5.3] - 2026-08-31
 
