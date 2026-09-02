@@ -9,14 +9,13 @@
  * There is no database — the folder tree is the single source of truth. A caller
  * scans on demand; a file watcher (in extension.ts) triggers UI refreshes.
  */
-import { homedir } from "os";
 import { basename, join, resolve, sep } from "path";
 import {
   existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, rmSync, renameSync,
 } from "fs";
 import { createHash } from "crypto";
 
-let _store = join(homedir(), "personal-knowledge");
+let _store = "";
 
 export interface SearchOptions { regex?: boolean; caseSensitive?: boolean; }
 function searchMatches(query: string, options: SearchOptions, values: unknown[]): boolean {
@@ -28,7 +27,7 @@ function searchMatches(query: string, options: SearchOptions, values: unknown[])
 }
 
 export function setStorePath(p: string): void {
-  _store = p?.trim() || join(homedir(), "personal-knowledge");
+  _store = p?.trim() || "";
 }
 export function getStorePath(): string { return _store; }
 

@@ -217,7 +217,7 @@ For an external MCP Agency, copy **Agency installation instructions** from Confi
 ### 6. Verify
 
 - The Config process light shows **Running** when the generated `server.py` process is detected.
-- Call `pkm.check_version` and verify Unified `2.5.3`, Knowledge `1.0.0`, and Chat `2.3.0`.
+- Call `pkm.check_version` and verify Unified `2.5.4`, Knowledge `1.0.0`, and Chat `2.3.0`.
 - Call `pkm.chat_capabilities` and verify the Chatroom tools are present.
 
 Stdio MCP servers start on demand, so **Ready · starts on demand** means setup is complete and `pkm` will launch when an MCP client requests it.
@@ -302,12 +302,18 @@ API keys are stored in VS Code SecretStorage, never in settings.
 
 | Setting | Description |
 |---------|-------------|
-| `personalKnowledge.storePath` | Knowledge store directory |
+| `personalKnowledge.storePath` | Machine-local Knowledge Root pointer; excluded from VS Code Settings Sync |
 | `personalKnowledge.openOnStartup` | Open the panel automatically at startup |
 | `personalKnowledge.maxTreeDepth` | Max folder levels in the tree (default 4) |
 | `personalKnowledge.logLevel` | `debug` / `info` / `warn` / `error` |
 | `personalKnowledge.aiBackend` | `copilot` / `azure-openai` / `openai-compatible` |
 | `personalKnowledge.aiModel` / `aiEndpoint` / `aiAzureApiVersion` | AI backend configuration |
+
+### Machine roots and content sync
+
+The Knowledge Root path belongs to the machine running the VS Code Extension Host. In a local Windows window this is a Windows path; in Remote SSH or WSL it is a path on that remote Linux host. The setup dialog identifies that host and shows the full absolute destination before saving it. `storePath`, `environmentsPath`, and the internal active-root record are machine-local and never travel through VS Code Settings Sync.
+
+The pointer and the content are separate. You can clone the same Git repository to a different absolute path on each machine and select that local clone as each machine's Knowledge Root. PKM creates local commits, but it does not currently automate remote `pull`, `push`, merge, or conflict resolution. Magic Code Sync is an explicit one-time transfer; before writing, it confirms the exact receiving host and Knowledge Root.
 
 ## Building from source
 

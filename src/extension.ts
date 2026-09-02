@@ -46,6 +46,7 @@ import { startLiveMarkdownServer } from "./live-note-server";
 import { managedEnvironmentsRoot } from "./environment-paths";
 import { NavigationStatus, summarizeChatNavigation, summarizeServerNavigation } from "./navigation-status";
 import { navigationItemPath } from "./navigation-path";
+import { extensionHostDescription, resolveMachineStorePath } from "./store-path";
 import { loadLocaleCatalogs, loadLocaleManifest, localizedText, normalizeUiLanguage, resolveUiLanguage, UiLanguageSetting, uiLanguageSetting } from "./localization";
 import { AiBackend, aiSummarizeScript, listAiBackends, runAiPrompt, scriptCacheDir } from "./ai";
 import {
@@ -111,8 +112,9 @@ function mcpPanelStatusData(): object {
   const info = mcpStatus();
   const python = detectMcpPython();
   const runtime = mcpRuntimeStatus();
-  const configuredStorePath = vscode.workspace.getConfiguration("personalKnowledge").get<string>("storePath")?.trim() || "";
-  const storePathValid = !!configuredStorePath && fs.existsSync(configuredStorePath) && fs.statSync(configuredStorePath).isDirectory();
+  const activeStorePath = _storeReady ? getStorePath() : "";
+  const storePathValid = !!activeStorePath && directoryExists(activeStorePath);
+  const storeHost = extensionHostDescription(process.platform, os.hostname(), vscode.env.remoteName || "");
   const proposalDir = getStorePath() ? path.join(getStorePath(), "_proposals", "skills") : "";
   const skillProposals = proposalDir && fs.existsSync(proposalDir)
     ? fs.readdirSync(proposalDir).filter(name => name.endsWith(".md")).sort().reverse().map(name => ({ name, path: path.join(proposalDir, name) }))
@@ -123,9 +125,9 @@ function mcpPanelStatusData(): object {
     agencyInstallInstruction: combinedMcpInstallInstruction(),
     nativeMcpProvider: _nativeMcpProvider,
     mcpProcess: mcpProcessStatus(),
-    store: { path: configuredStorePath, configured: !!configuredStorePath, valid: storePathValid },
+    store: { path: activeStorePath, configured: !!activeStorePath, valid: storePathValid, host: storeHost },
     paths: {
-      store: configuredStorePath,
+      store: activeStorePath,
       environments: managedEnvironmentsRoot(),
       runtime: runtime.path,
       python: runtime.python || python.path,
@@ -174,7 +176,7 @@ async function sendMcpPathSizes(respond: (m: object) => void, generation = mcpPa
   const python = detectMcpPython();
   const runtime = mcpRuntimeStatus();
   const paths: Record<string, string> = {
-    store: vscode.workspace.getConfiguration("personalKnowledge").get<string>("storePath")?.trim() || "",
+    store: _storeReady ? getStorePath() : "",
     environments: managedEnvironmentsRoot(),
     runtime: runtime.path,
     python: runtime.python || python.path,
@@ -727,6 +729,30 @@ function katexCssForExport(context: vscode.ExtensionContext): string {
 // ── Panel management ───────────────────────────────────────────────────────
 let panel: vscode.WebviewPanel | undefined;
 let _treeProvider: PkTreeProvider | undefined;
+const MACHINE_STORE_PATH_KEY = "machineStorePath.v1";
+
+function directoryExists(candidate: string): boolean {
+  try { return fs.existsSync(candidate) && fs.statSync(candidate).isDirectory(); }
+  catch { return false; }
+}
+
+function resolvedStorePath(context: vscode.ExtensionContext): ReturnType<typeof resolveMachineStorePath> {
+  return resolveMachineStorePath({
+    machinePath: context.globalState.get<string>(MACHINE_STORE_PATH_KEY, ""),
+    configuredPath: vscode.workspace.getConfiguration("personalKnowledge").get<string>("storePath", ""),
+    previousPath: context.globalState.get<string>("lastStorePath", ""),
+  }, directoryExists);
+}
+
+async function rememberMachineStorePath(context: vscode.ExtensionContext, storePath: string): Promise<void> {
+  await context.globalState.update(MACHINE_STORE_PATH_KEY, storePath);
+  await context.globalState.update("lastStorePath", storePath);
+  await context.globalState.update("setupComplete", true);
+  const configuration = vscode.workspace.getConfiguration("personalKnowledge");
+  if (configuration.get<string>("storePath", "").trim() !== storePath) {
+    await configuration.update("storePath", storePath, vscode.ConfigurationTarget.Global);
+  }
+}
 let _panelReady = false;                       // webview has signalled it's ready
 let _panelLastHeartbeat = 0;
 let _panelLastDiagnostic = "";
@@ -2214,19 +2240,14 @@ async function maybeSeedExamples(context: vscode.ExtensionContext): Promise<void
 async function ensureSetup(context: vscode.ExtensionContext): Promise<boolean> {
   if (_storeReady) return true;
 
-  const cfg = vscode.workspace.getConfiguration("personalKnowledge");
-  const configuredPath = cfg.get<string>("storePath")?.trim() ?? "";
-  const setupComplete  = context.globalState.get<boolean>("setupComplete", false);
-  const configuredPathValid = !!configuredPath && fs.existsSync(configuredPath) && fs.statSync(configuredPath).isDirectory();
-
-  // Already configured — just activate the store
-  if (setupComplete && configuredPathValid) {
-    await initStore(context, configuredPath);
+  const resolved = resolvedStorePath(context);
+  if (resolved) {
+    await rememberMachineStorePath(context, resolved.path);
+    await initStore(context, resolved.path);
     return _storeReady;
   }
 
-  // Not configured yet — show the wizard
-  const chosen = await firstTimeSetup(context, !!configuredPath || setupComplete);
+  const chosen = await firstTimeSetup(context, true);
   if (!chosen) {
     vscode.window.showErrorMessage(
       "Personal Knowledge Manager: you must complete setup before using this extension.",
@@ -3885,6 +3906,7 @@ async function handleMessage(
       const { selected, contentTypes, expiresMinutes, port } = msg;
       const sel = selected ?? { skills: [], notes: [], prompts: [], scripts: [], packages: [] };
       try {
+        if (!_storeReady || !directoryExists(getStorePath())) throw new Error("Machine-local Knowledge Root is not ready. Configure it before starting Sync.");
         await syncServer.ensureStarted(port ?? 19877);
         const session = syncServer.createSession(sel, contentTypes ?? ["skills"], expiresMinutes ?? 30);
         respond({ command: "syncStarted", data: {
@@ -3927,6 +3949,14 @@ async function handleMessage(
     case "joinSync": {
       const mode = msg.mode === "group" ? "group" : "overwrite";
       try {
+        if (!_storeReady || !directoryExists(getStorePath())) throw new Error("Machine-local Knowledge Root is not ready. Configure it before downloading Sync content.");
+        const targetRoot = path.resolve(getStorePath());
+        const confirmed = await vscode.window.showWarningMessage(
+          "Download synchronized knowledge into this machine-local root?",
+          { modal: true, detail: `${extensionHostDescription(process.platform, os.hostname(), vscode.env.remoteName || "")}\n\n${targetRoot}\n\nMode: ${mode === "group" ? "New incoming subgroup" : "Merge / overwrite matching content"}` },
+          "Download Here",
+        );
+        if (confirmed !== "Download Here") throw new Error("Sync download cancelled before writing any files.");
         const { syncUrl, username, password } = parseSyncMagicCode(msg.magicCode);
         const response = await fetch(`${syncUrl}/sync/bundle`, {
           headers: { "Authorization": "Basic " + Buffer.from(`${username}:${password}`).toString("base64") },
@@ -3995,7 +4025,7 @@ async function handleMessage(
         const total   = Object.values(counts).reduce((a, b) => a + b, 0);
         const summary = Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(", ");
         gitCommit(`sync: ${summary} from ${from}${label ? ` (group ${label})` : ""}`);
-        respond({ command: "syncJoined", data: { count: total, summary, from, group: label || undefined } });
+        respond({ command: "syncJoined", data: { count: total, summary, from, group: label || undefined, targetRoot } });
         respond({ command: "saved" });
         vscode.window.setStatusBarMessage(`$(cloud-download) Synced: ${summary}${label ? " → " + label : ""}`, 5000);
       } catch (e: any) {
@@ -5018,8 +5048,10 @@ class PkTreeDragAndDropController implements vscode.TreeDragAndDropController<Pk
 
 // ── First-run setup wizard ─────────────────────────────────────────────────
 async function firstTimeSetup(context: vscode.ExtensionContext, reconfigure = false): Promise<string | undefined> {
-  const defaultPath = path.join(require("os").homedir(), "personal-knowledge");
-  const currentPath = vscode.workspace.getConfiguration("personalKnowledge").get<string>("storePath")?.trim() || "";
+  const defaultPath = path.resolve(os.homedir(), "personal-knowledge");
+  const hostDescription = extensionHostDescription(process.platform, os.hostname(), vscode.env.remoteName || "");
+  const resolved = resolvedStorePath(context);
+  const currentPath = resolved?.path || "";
   const previousPath = context.globalState.get<string>("lastStorePath", "").trim();
   const reusablePath = previousPath && previousPath !== currentPath && fs.existsSync(previousPath) && fs.statSync(previousPath).isDirectory()
     ? previousPath : "";
@@ -5027,11 +5059,11 @@ async function firstTimeSetup(context: vscode.ExtensionContext, reconfigure = fa
 
   const pick = await vscode.window.showInformationMessage(
     reconfigure
-      ? `Configure the Personal Knowledge root directory.${currentPath ? ` Current: ${currentPath}` : ""}`
-      : "Welcome to Personal Knowledge Manager! Choose where to store your knowledge base:",
-    { modal: true },
+      ? `Configure the Personal Knowledge root on ${hostDescription}.${currentPath ? ` Current: ${currentPath}` : ""}`
+      : `Welcome to Personal Knowledge Manager. Choose where to store knowledge on ${hostDescription}.`,
+    { modal: true, detail: "The root path is machine-local and excluded from VS Code Settings Sync. Knowledge content can be synchronized separately." },
     ...(reuseLabel ? [reuseLabel] : []),
-    "Use default  (~/personal-knowledge)",
+    `Use default  (${defaultPath})`,
     "Browse existing folder…",
     "Type a custom path…"
   );
@@ -5078,10 +5110,15 @@ async function firstTimeSetup(context: vscode.ExtensionContext, reconfigure = fa
     fs.mkdirSync(chosenPath, { recursive: true });
   }
 
-  await vscode.workspace.getConfiguration("personalKnowledge")
-    .update("storePath", chosenPath, vscode.ConfigurationTarget.Global);
-  await context.globalState.update("setupComplete", true);
-  await context.globalState.update("lastStorePath", chosenPath);
+  chosenPath = path.resolve(chosenPath);
+  const confirmed = await vscode.window.showInformationMessage(
+    `Use this machine-local Knowledge Root?`,
+    { modal: true, detail: `${hostDescription}\n\n${chosenPath}\n\nThis path stays on this extension host and is not copied by VS Code Settings Sync.` },
+    "Use This Root",
+  );
+  if (confirmed !== "Use This Root") return undefined;
+
+  await rememberMachineStorePath(context, chosenPath);
   return chosenPath;
 }
 
@@ -5096,7 +5133,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const mb = Math.max(0, c.get<number>("chatHistoryLimitMB") ?? 10);
     const dir = path.join(context.globalStorageUri.fsPath, "chat-history");
     getChatMgr().configureArchive(dir, Math.round(mb * 1024 * 1024));
-    const store = getStorePath();
+    const store = _storeReady ? getStorePath() : "";
     if (store) getChatMgr().configurePersistence(path.join(store, "chatrooms"), getChatInstallationId(context), context.secrets);
   };
   applyChatArchiveCfg();
@@ -5112,16 +5149,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   const cfg = vscode.workspace.getConfiguration("personalKnowledge");
-  let configuredPath = cfg.get<string>("storePath")?.trim() ?? "";
-  const setupComplete = context.globalState.get<boolean>("setupComplete", false);
-  const configuredPathValid = !!configuredPath && fs.existsSync(configuredPath) && fs.statSync(configuredPath).isDirectory();
-  log.debug(`configuredPath="${configuredPath}" setupComplete=${setupComplete}`);
-  if (configuredPathValid) await context.globalState.update("lastStorePath", configuredPath);
+  const initialResolution = resolvedStorePath(context);
+  let configuredPath = initialResolution?.path || "";
+  log.debug(`machineStorePath="${configuredPath}" source=${initialResolution?.source || "none"}`);
+  if (initialResolution) await rememberMachineStorePath(context, initialResolution.path);
 
   // First-time setup: ask user where to store their knowledge base
-  if (!configuredPathValid) {
+  if (!configuredPath) {
     _pendingTab = "mcp";
-    const chosen = await firstTimeSetup(context, !!configuredPath || setupComplete);
+    const chosen = await firstTimeSetup(context, true);
     if (!chosen) {
       vscode.window.showErrorMessage(
         "Personal Knowledge Manager: setup not completed. Click the sidebar icon or open the panel to configure.",
@@ -5131,13 +5167,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     configuredPath = chosen ?? "";
   }
 
-  fsSetStorePath(configuredPath);
-  storageSetStorePath(configuredPath);
+  if (configuredPath) {
+    fsSetStorePath(configuredPath);
+    storageSetStorePath(configuredPath);
+  }
   applyChatArchiveCfg();
   context.subscriptions.push(vscode.window.registerWebviewPanelSerializer("personalKnowledge", {
     async deserializeWebviewPanel(webviewPanel, state) {
       const restoredState = state as { tab?: unknown } | undefined;
-      _pendingTab = configuredPathValid ? (typeof restoredState?.tab === "string" ? restoredState.tab : "chatroom") : "mcp";
+      _pendingTab = configuredPath ? (typeof restoredState?.tab === "string" ? restoredState.tab : "chatroom") : "mcp";
       initializePanel(webviewPanel, context, true);
     },
   }));
@@ -5746,6 +5784,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   if (configuredPath) {
     try {
       await initStore(context, configuredPath);
+      applyChatArchiveCfg();
       log.info(`file store ready at ${getStorePath()}`);
       ensureGitRepo();
       await maybeSeedExamples(context);

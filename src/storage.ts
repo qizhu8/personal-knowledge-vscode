@@ -1,11 +1,10 @@
-import { homedir } from "os";
 import { join, extname } from "path";
 import { existsSync, readdirSync, statSync, readFileSync, mkdirSync, renameSync, rmSync, copyFileSync } from "fs";
 
-let _storePath = join(homedir(), "personal-knowledge");
+let _storePath = "";
 
 export function setStorePath(p: string): void {
-  _storePath = p?.trim() || join(homedir(), "personal-knowledge");
+  _storePath = p?.trim() || "";
 }
 
 function safeReadDir(dir: string): string[] {

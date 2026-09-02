@@ -18,17 +18,17 @@ vm.createContext(presentationContext);
 new vm.Script(`${presentation[0]}; this.present = mcpRegeneratePresentation;`).runInContext(presentationContext);
 
 const outdated = presentationContext.present({
-  installed: true, current: false, installedVersion: "2.4.0", expectedVersion: "2.5.3",
+  installed: true, current: false, installedVersion: "2.4.0", expectedVersion: "2.5.4",
   installedKnowledgeVersion: "1.0.0", knowledgeVersion: "1.0.0",
   installedChatVersion: "2.2.1", chatVersion: "2.3.0",
 });
-assert.strictEqual(outdated.label, "Regenerate Server Code · v2.4.0 → v2.5.3");
-assert.match(outdated.title, /Unified v2\.4\.0 → v2\.5\.3/);
+assert.strictEqual(outdated.label, "Regenerate Server Code · v2.4.0 → v2.5.4");
+assert.match(outdated.title, /Unified v2\.4\.0 → v2\.5\.4/);
 assert.match(outdated.title, /Chat v2\.2\.1 → v2\.3\.0/);
-assert.strictEqual(presentationContext.present({ installed: true, current: true, expectedVersion: "2.5.3", knowledgeVersion: "1.0.0", chatVersion: "2.3.0" }).label,
-  "Regenerate Server Code · v2.5.3");
-assert.strictEqual(presentationContext.present({ installed: false, expectedVersion: "2.5.3" }).label,
-  "Generate Server Code · target v2.5.3");
+assert.strictEqual(presentationContext.present({ installed: true, current: true, expectedVersion: "2.5.4", knowledgeVersion: "1.0.0", chatVersion: "2.3.0" }).label,
+  "Regenerate Server Code · v2.5.4");
+assert.strictEqual(presentationContext.present({ installed: false, expectedVersion: "2.5.4" }).label,
+  "Generate Server Code · target v2.5.4");
 
 const skillStart = panelJs.indexOf("function pkmSkillStateBadge");
 const skillEnd = panelJs.indexOf("function renderMcpPane", skillStart);
@@ -82,6 +82,7 @@ assert.doesNotMatch(panelJs, /configureStorePath|configureEnvironmentsPath/);
 assert(panelJs.includes("mcpProcess"));
 assert(sourceTs.includes("export function mcpProcessStatus"));
 assert(extensionTs.includes('context.globalState.get<string>("lastStorePath"'));
-assert(extensionTs.includes('_pendingTab = configuredPathValid ?'));
+assert(extensionTs.includes('_pendingTab = configuredPath ?'));
+assert(extensionTs.includes('const initialResolution = resolvedStorePath(context)'));
 assert.doesNotMatch(extensionTs, /case "configureStorePath"|case "configureEnvironmentsPath"/);
 console.log("MCP version UI test: regenerate version transitions and current Skill Router action state OK");

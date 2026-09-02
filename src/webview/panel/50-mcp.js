@@ -182,7 +182,7 @@ function renderMcpDashboard(data) {
       <div class="mcp-path-table-wrap"><table class="mcp-path-table"><colgroup><col class="mcp-path-type-col"><col><col class="mcp-path-size-col"><col class="mcp-path-source-col"></colgroup>
         <thead><tr><th>Path Type</th><th>Location</th><th>Disk Usage</th><th>Source</th></tr></thead>
         <tbody>
-          <tr><td>Knowledge root</td><td><code title="${esc(paths.store || '')}">${esc(paths.store || 'Not configured')}</code></td><td data-mcp-path-size="store">Calculating…</td><td>read-only</td></tr>
+          <tr><td>Knowledge root</td><td><code title="${esc(paths.store || '')}">${esc(paths.store || 'Not configured')}</code></td><td data-mcp-path-size="store">Calculating…</td><td>${esc(data?.store?.host ? `machine-local · ${data.store.host}` : 'machine-local')}</td></tr>
           <tr><td>Environments root</td><td><code title="${esc(paths.environments || '')}">${esc(paths.environments || 'Not configured')}</code></td><td data-mcp-path-size="environments">Calculating…</td><td>read-only</td></tr>
           <tr><td>Managed MCP runtime</td><td><code title="${esc(paths.runtime || '')}">${esc(paths.runtime || 'Not created')}</code></td><td data-mcp-path-size="runtime">Calculating…</td><td>derived</td></tr>
           <tr><td>Runtime Python</td><td><code title="${esc(paths.python || '')}">${esc(paths.python || 'Not configured')}</code></td><td data-mcp-path-size="python">Calculating…</td><td>read-only</td></tr>

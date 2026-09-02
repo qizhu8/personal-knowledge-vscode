@@ -5,6 +5,17 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.5.4] - 2026-09-02
+
+This emergency patch separates machine-local storage pointers from cross-machine content synchronization and prevents silent fallback writes after reinstall or Remote-SSH setup.
+
+### Fixed
+- Decoupled the Knowledge Root pointer from VS Code Settings Sync by making `storePath` and `environmentsPath` machine-scoped and persisting the active root in unsynced Extension Host state.
+- Removed the silent `~/personal-knowledge` fallback that could make Skills appear missing after reinstall or when a synced cross-OS path was unavailable; valid machine-local roots now recover without relying on the previous `setupComplete` flag.
+- Rejected foreign Windows paths on Linux and foreign POSIX paths on Windows during root recovery, and made Config display the actual active Local/Remote Extension Host root instead of a stale frontend setting.
+- Made first-run setup display the actual Extension Host, OS, and full platform-native default path, then explicitly confirm the final absolute machine-local root.
+- Guarded Knowledge Sync behind a ready machine-local root and added a pre-download confirmation showing the exact target host, root, and import mode so synchronized content cannot silently land in a default directory.
+
 ## [2.5.3] - 2026-08-31
 
 This patch release completes managed Server organization, port/process safety, unified multi-level Navigation subgroup management, Agent-readable paths, and state-aware content guidance.
