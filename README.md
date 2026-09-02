@@ -217,7 +217,7 @@ For an external MCP Agency, copy **Agency installation instructions** from Confi
 ### 6. Verify
 
 - The Config process light shows **Running** when the generated `server.py` process is detected.
-- Call `pkm.check_version` and verify Unified `2.5.4`, Knowledge `1.0.0`, and Chat `2.3.0`.
+- Call `pkm.check_version` and verify Unified `2.5.5`, Knowledge `1.0.0`, and Chat `2.3.1`.
 - Call `pkm.chat_capabilities` and verify the Chatroom tools are present.
 
 Stdio MCP servers start on demand, so **Ready · starts on demand** means setup is complete and `pkm` will launch when an MCP client requests it.

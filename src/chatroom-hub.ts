@@ -97,8 +97,20 @@ export class ChatHub {
   private approvals?: ChatJoinApprovalManager;
   private hostTokens = new Map<string, string>();
   private approvalChanged?: () => void;
+  private advertisedHost = "";
 
   constructor(logger?: (m: string) => void) { this.log = logger ?? (() => {}); }
+
+  get publicHost(): string { return this.advertisedHost || ChatHub.localIp(); }
+
+  setAdvertisedHost(host: string): void {
+    const value = String(host || "").trim();
+    if (!value || !/^[a-z0-9](?:[a-z0-9.:-]*[a-z0-9])?$/i.test(value)) throw new Error("Invalid Chatroom advertised host.");
+    this.advertisedHost = value;
+    if (this.lifecycle && this.isRunning) {
+      for (const [room, state] of this.rooms) this.lifecycle.publishActiveDescriptor(state.roomId, room, `ws://${this.publicHost}:${this.port}`);
+    }
+  }
 
   /** Point the hub at an on-disk archive dir and cap total bytes kept per room. */
   configureArchive(dir: string, limitBytes: number): void {
@@ -137,6 +149,22 @@ export class ChatHub {
     if (!this.lifecycle) throw new Error("Room lifecycle is unavailable.");
     await this.lifecycle.renameStoredRoom(roomId, roomName);
     this.storedRooms = await this.lifecycle.listStoredRooms();
+  }
+
+  async repairStoredRoom(roomId: string): Promise<{ roomId: string; roomName: string; messageCount: number; closedOrphans: number }> {
+    await this.ensurePersistence();
+    if (!this.lifecycle) throw new Error("Room lifecycle is unavailable.");
+    const target = (await this.lifecycle.listStoredRooms()).find(room => room.roomId === roomId);
+    if (!target) throw new Error(`Stored Room ${roomId} was not found.`);
+    const roomName = ChatHub.canonRoom(target.roomName);
+    const localMatches = [...this.rooms.entries()].filter(([name, state]) => state.roomId === roomId || name === roomName);
+    for (const [name] of localMatches) {
+      if (this.membersOf(name).length) throw new Error(`Room "${name}" still has connected members. Close it before repairing.`);
+    }
+    for (const [name] of localMatches) await this.deactivateRoom(name, "stored-room-repair");
+    const repaired = await this.lifecycle.repairStoredRoom(roomId);
+    this.storedRooms = await this.lifecycle.listStoredRooms();
+    return { ...repaired, closedOrphans: localMatches.length };
   }
 
   async deleteStoredRoom(roomId: string): Promise<void> {
@@ -178,7 +206,7 @@ export class ChatHub {
     const nextRoom = ChatHub.canonRoom(roomName);
     if (nextRoom !== previousRoom && this.rooms.has(nextRoom)) throw new Error(`An active Room named "${nextRoom}" already exists.`);
     await this.lifecycle.renameActiveRoom(roomId, nextRoom);
-    this.lifecycle.publishActiveDescriptor(roomId, nextRoom, `ws://${ChatHub.localIp()}:${this.port}`);
+    this.lifecycle.publishActiveDescriptor(roomId, nextRoom, `ws://${this.publicHost}:${this.port}`);
     if (nextRoom === previousRoom) return nextRoom;
     this.rooms.delete(previousRoom);
     this.rooms.set(nextRoom, state);
@@ -274,7 +302,7 @@ export class ChatHub {
       throw new Error(`A Room named "${room}" already exists. Rehost the stored Room instead.`);
     }
     const active = await this.lifecycle.createRoom(room, requestedJoinSecret);
-    this.lifecycle.publishActiveDescriptor(active.roomId, room, `ws://${ChatHub.localIp()}:${this.port}`);
+    this.lifecycle.publishActiveDescriptor(active.roomId, room, `ws://${this.publicHost}:${this.port}`);
     if (!active.messages.length) {
       const legacy = this.readLegacyArchive(room);
       if (legacy.length) {
@@ -292,7 +320,7 @@ export class ChatHub {
     if (!this.lifecycle) throw new Error("Chat Hub lifecycle is not configured or running.");
     const active = await this.lifecycle.rehostRoom(roomId);
     const room = ChatHub.canonRoom(active.roomName);
-    this.lifecycle.publishActiveDescriptor(active.roomId, room, `ws://${ChatHub.localIp()}:${this.port}`);
+    this.lifecycle.publishActiveDescriptor(active.roomId, room, `ws://${this.publicHost}:${this.port}`);
     if (this.rooms.has(room)) {
       await this.lifecycle.deactivateRoom(roomId, "name-conflict");
       throw new Error(`An active Room named "${room}" already exists.`);
@@ -569,7 +597,7 @@ export class ChatHub {
 
     if (!conn.joined) {
       if (conn.pendingJoinId) {
-        this.sendTo(conn.ws, { t: "error", code: "join-pending", msg: "This Join is waiting for Host approval." });
+        this.sendTo(conn.ws, { t: "error", code: "join-pending", msg: "This Join is assigning its Room identity automatically." });
         return;
       }
       if (frame.t !== "join") { this.sendTo(conn.ws, { t: "error", code: "not-joined", msg: "join first" }); return; }
@@ -603,7 +631,7 @@ export class ChatHub {
       conn.kind = kind;
       conn.resumeAfter = String(frame.resumeAfter || "").slice(0, 120);
       const st = existingState || await this.ensureRoomState(room);
-      if (!this.approvals || !this.persistence) throw new Error("Room Join approval is unavailable.");
+      if (!this.approvals || !this.persistence) throw new Error("Automatic Room identity assignment is unavailable.");
       const isHost = kind === "human" && !!frame.hostToken && constantTimeEquals(frame.hostToken, this.hostTokens.get(room) || "");
       const sameAlias = [...this.conns.values()].filter(other => other !== conn && other.room === room &&
         other.user.trim().normalize("NFKC").toLocaleLowerCase() === nameKey && (other.joined || !!other.pendingJoinId));
@@ -996,7 +1024,7 @@ export class ChatHub {
   }
 
   private buildCmdCtx(conn: HubConn, isOwner: boolean, arg: string): CommandContext {
-    const wsUrl = `ws://${ChatHub.localIp()}:${this._port}`;
+    const wsUrl = `ws://${this.publicHost}:${this._port}`;
     return {
       room: conn.room, isOwner, wsUrl,
       joinUrl: `${wsUrl}/${encodeURIComponent(conn.room)}`,

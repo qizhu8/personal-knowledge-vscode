@@ -17,7 +17,7 @@ import {
 import { migrateDbToFiles } from "./migrate";
 import {
   initServers, disposeServers, serverList, serverImport, serverCreate,
-  serverUpdate, serverGroupList, serverCreateGroup, serverMoveGroup, serverPortOwner, forceStopExternalServer, serverDelete, startServer, stopServer, restartServer, setServerPort, serverLog, serverDir,
+  serverUpdate, serverGroupList, serverCreateGroup, serverMoveGroup, serverPortOwner, serverNetworkAddresses, forceStopExternalServer, serverDelete, startServer, stopServer, restartServer, setServerPort, serverLog, serverDir,
 } from "./servers";
 import { ChatHub, ChatClient, ChatMessage, Member, FileMeta, AgentRuntimeState, ChatMode, ReplyPolicy, MAX_FILE_BYTES } from "./chatroom";
 import { BOT_NAME } from "./chat-commands";
@@ -1192,6 +1192,16 @@ class ChatRoomManager {
     return chatRoomIdentity(url, room, roomId);
   }
 
+  setAdvertisedHost(host: string): void {
+    if (!this.hub) {
+      this.hub = new ChatHub(m => log.info(m));
+      this.bindHub(this.hub);
+    }
+    this.hub.setAdvertisedHost(host);
+  }
+
+  private advertisedHost(): string { return this.hub?.publicHost || ChatHub.localIp(); }
+
   private static managedAgentPrompt(name: string, role: string): string {
     return [
       `You are ${name}, an expert participant in a multi-agent engineering discussion.`,
@@ -1277,8 +1287,8 @@ class ChatRoomManager {
         files: [...active.files.values()].map(f => ({ fileId: f.meta.fileId, name: f.meta.name, from: f.from, size: f.meta.size })),
       } : null,
       hubRunning: !!this.hub?.isRunning,
-      hubUrl:     this.hub?.isRunning ? `ws://${ChatHub.localIp()}:${this.hub.port}` : "",
-      hubHttpUrl: this.hub?.isRunning ? `http://${ChatHub.localIp()}:${this.hub.port}` : "",
+      hubUrl:     this.hub?.isRunning ? `ws://${this.advertisedHost()}:${this.hub.port}` : "",
+      hubHttpUrl: this.hub?.isRunning ? `http://${this.advertisedHost()}:${this.hub.port}` : "",
       hubPort:    this.hub?.port ?? 0,
       hubAdminRooms: this.hub?.isRunning
         ? this.hub.adminRooms().map(r => ({ ...r, hasKey: this.hostedKeys.has(r.room) }))
@@ -1540,10 +1550,11 @@ class ChatRoomManager {
   async closeOrLeaveRoom(key: string): Promise<void> {
     const rc = this.rooms.get(key);
     if (!rc) return;
-    const locallyHosted = !!this.hub?.adminRooms().some(room =>
-      (rc.roomId && room.roomId === rc.roomId) || (!rc.roomId && room.room === ChatHub.canonRoom(rc.room)));
+    const locallyHosted = this.hub?.adminRooms().find(room =>
+      (!!rc.roomId && room.roomId === rc.roomId) ||
+      (rc.selfHost && room.room === ChatHub.canonRoom(rc.room)));
     if (locallyHosted && this.hub?.isRunning) {
-      await this.hub.adminCloseRoom(rc.room);
+      await this.hub.adminCloseRoom(locallyHosted.room);
     } else {
       try { rc.client.disconnect(); } catch { /* ignore */ }
     }
@@ -1746,8 +1757,8 @@ class ChatRoomManager {
         this.hub.configurePersistence(this.persistenceRoot, this.archiveLimitBytes);
       }
       if (this.hub.isRunning) {
-        const ip0 = ChatHub.localIp();
-        return { ok: true, wsUrl: `ws://${ip0}:${this.hub.port}`, httpUrl: `http://${ip0}:${this.hub.port}` };
+        const host = this.advertisedHost();
+        return { ok: true, wsUrl: `ws://${host}:${this.hub.port}`, httpUrl: `http://${host}:${this.hub.port}` };
       }
       log.info(`chat: starting hub on port ${port}`);
       try {
@@ -1762,9 +1773,9 @@ class ChatRoomManager {
           throw e;
         }
       }
-      const ip = ChatHub.localIp();
-      const wsUrl = `ws://${ip}:${this.hub.port}`;
-      const httpUrl = `http://${ip}:${this.hub.port}`;
+      const host = this.advertisedHost();
+      const wsUrl = `ws://${host}:${this.hub.port}`;
+      const httpUrl = `http://${host}:${this.hub.port}`;
       log.info(`chat: hub ready — join URL ${wsUrl} · browser view ${httpUrl}`);
       log.action("chat.startHub", { port: this.hub.port });
       this.push();
@@ -1807,6 +1818,13 @@ class ChatRoomManager {
   async renameStoredRoom(roomId: string, roomName: string): Promise<void> {
     await this.hub?.renameStoredRoom(roomId, roomName);
     await this.refreshStoredRooms();
+  }
+
+  async repairStoredRoom(roomId: string): Promise<{ roomName: string; messageCount: number; closedOrphans: number }> {
+    if (!this.hub) throw new Error("Chat Hub storage is unavailable.");
+    const repaired = await this.hub.repairStoredRoom(roomId);
+    await this.refreshStoredRooms();
+    return repaired;
   }
 
   async deleteStoredRoom(roomId: string): Promise<void> {
@@ -1876,7 +1894,7 @@ class ChatRoomManager {
     const secret = this.getRoomKey(room);
     if (!secret) return undefined;
     const connection = [...this.rooms.values()].find(item => ChatHub.canonRoom(item.room) === ChatHub.canonRoom(room));
-    let base = connection?.url || (this.hub?.port ? `ws://${ChatHub.localIp()}:${this.hub.port}` : "");
+    let base = this.hub?.port ? `ws://${this.advertisedHost()}:${this.hub.port}` : connection?.url || "";
     if (!base) return undefined;
     const parsed = new URL(base);
     parsed.pathname = `/${encodeURIComponent(ChatHub.canonRoom(room))}`;
@@ -1948,6 +1966,19 @@ function postToPanel(m: object): void {
 // ── Chatroom recents (persisted across sessions) ────────────────────────────
 const CHAT_RECENTS_KEY = "pk.chat.recents";
 interface RecentRoom { id: string; url: string; room: string; roomId?: string; user: string; host: boolean; port: number; secret?: string; lastJoined: number; }
+
+function chatInviteHostOptions(context: vscode.ExtensionContext): { options: any[]; selected: string; unavailable: boolean } {
+  const options = serverNetworkAddresses().map(item => ({ ...item, label: `${item.kind === "hostname" ? "Hostname" : item.interface} · ${item.address}` }));
+  const configured = vscode.workspace.getConfiguration("personalKnowledge").get<string>("chatInviteHost", "").trim();
+  const selected = configured || options[0]?.address || "";
+  return { options, selected, unavailable: !!configured && !options.some(item => item.address === configured) };
+}
+
+function applyChatInviteHost(context: vscode.ExtensionContext): { selected: string; unavailable: boolean } {
+  const result = chatInviteHostOptions(context);
+  if (result.selected && !result.unavailable) getChatMgr().setAdvertisedHost(result.selected);
+  return result;
+}
 
 function chatRecentSecretKey(id: string): string {
   return `personalKnowledge.chatroom.recent.${createHash("sha256").update(id).digest("hex")}`;
@@ -2521,6 +2552,7 @@ async function handleMessage(
     case "chatState": {
       // Webview opened the tab — send current config defaults + live state.
       const cfg = vscode.workspace.getConfiguration("personalKnowledge");
+      const inviteHost = applyChatInviteHost(context);
       respond({
         command: "chatConfig",
         data: {
@@ -2529,10 +2561,25 @@ async function handleMessage(
           displayName: (cfg.get<string>("chatDisplayName") || os.userInfo().username || "user").trim(),
           hasSecret:   !!(cfg.get<string>("chatSharedSecret") || "").trim(),
           hubPort:     cfg.get<number>("chatHubPort") ?? 7345,
+          inviteHosts: chatInviteHostOptions(context).options,
+          inviteHost: inviteHost.selected,
+          inviteHostUnavailable: inviteHost.unavailable,
         },
       });
       getChatMgr().push();
       respond({ command: "chatRecents", data: { recents: chatRecentsForUi(context) } });
+      break;
+    }
+
+    case "chatSetInviteHost": {
+      const address = String(msg.address || "").trim();
+      const available = serverNetworkAddresses().some(item => item.address === address);
+      if (!available) { respond({ command: "chatToast", data: { error: `Invite host is unavailable on this Extension Host: ${address}` } }); break; }
+      await vscode.workspace.getConfiguration("personalKnowledge").update("chatInviteHost", address, vscode.ConfigurationTarget.Global);
+      getChatMgr().setAdvertisedHost(address);
+      getChatMgr().push();
+      const inviteHost = chatInviteHostOptions(context);
+      respond({ command: "chatConfig", data: { inviteHosts: inviteHost.options, inviteHost: inviteHost.selected, inviteHostUnavailable: false } });
       break;
     }
 
@@ -2678,6 +2725,11 @@ async function handleMessage(
     }
 
     case "chatStartHub": {
+      const inviteHost = applyChatInviteHost(context);
+      if (!inviteHost.selected || inviteHost.unavailable) {
+        respond({ command: "chatHubResult", data: { ok: false, error: "Choose an available Invite interface before hosting a Room." } });
+        break;
+      }
       const cfg = vscode.workspace.getConfiguration("personalKnowledge");
       // Port: 0 (or blank) means auto-pick a free port; otherwise try the given
       // port and fall back to a free one if it's busy. Persist a chosen port.
@@ -2783,6 +2835,21 @@ async function handleMessage(
       if (roomName === undefined || roomName.trim() === currentName.trim()) break;
       try { await getChatMgr().renameStoredRoom(roomId, roomName); }
       catch (error: any) { vscode.window.showErrorMessage(`Couldn't rename Room: ${error?.message || error}`); }
+      break;
+    }
+
+    case "chatRepairStoredRoom": {
+      const roomId = String(msg.roomId || "").trim();
+      if (!roomId) break;
+      try {
+        const repaired = await getChatMgr().repairStoredRoom(roomId);
+        const orphanDetail = repaired.closedOrphans
+          ? ` Closed ${repaired.closedOrphans} inactive local Room instance${repaired.closedOrphans === 1 ? "" : "s"}.`
+          : "";
+        vscode.window.showInformationMessage(`Repaired "${repaired.roomName}". Preserved ${repaired.messageCount} message${repaired.messageCount === 1 ? "" : "s"}.${orphanDetail}`);
+      } catch (error: any) {
+        vscode.window.showErrorMessage(`Couldn't repair Stored Room: ${error?.message || error}`);
+      }
       break;
     }
 
@@ -6039,6 +6106,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!room?.roomId) return;
       try { await promptRenameHostedRoom(room); }
       catch (error: any) { vscode.window.showErrorMessage(`Couldn't rename Room: ${error?.message || error}`); }
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.repairStoredRoom", async (item: PkTreeItem) => {
+      const room = item?.nodeData as HostedRoomNavigationItem;
+      if (!room?.roomId || room.active) return;
+      try {
+        const repaired = await getChatMgr().repairStoredRoom(room.roomId);
+        const orphanDetail = repaired.closedOrphans
+          ? ` Closed ${repaired.closedOrphans} inactive local Room instance${repaired.closedOrphans === 1 ? "" : "s"}.`
+          : "";
+        vscode.window.showInformationMessage(`Repaired "${repaired.roomName}". Preserved ${repaired.messageCount} message${repaired.messageCount === 1 ? "" : "s"}.${orphanDetail}`);
+      } catch (error: any) {
+        vscode.window.showErrorMessage(`Couldn't repair Stored Room: ${error?.message || error}`);
+      }
     }),
 
     vscode.commands.registerCommand("personalKnowledge.closeHostedRoom", async (item: PkTreeItem) => {

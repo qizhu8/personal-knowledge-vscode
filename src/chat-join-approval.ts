@@ -48,7 +48,7 @@ export class ChatJoinApprovalManager {
     try { state = await this.persistence.identityState(roomId); }
     catch (error) {
       await this.persistence.resolveJoin(roomId, {
-        requestId, outcome: "cancel", resolvedAt: Date.now(), reason: "Could not prepare Host approval.",
+        requestId, outcome: "cancel", resolvedAt: Date.now(), reason: "Could not prepare automatic Room identity assignment.",
       });
       throw error;
     }
@@ -162,7 +162,7 @@ export class ChatJoinApprovalManager {
     const delay = Math.max(0, entry.expiresAt - Date.now());
     entry.timer = setTimeout(() => {
       if (entry.status !== "pending") return;
-      void this.settle(entry.requestId, { outcome: "timeout", reason: "Host approval timed out." }).catch(() => {});
+      void this.settle(entry.requestId, { outcome: "timeout", reason: "Automatic Room identity assignment timed out." }).catch(() => {});
     }, delay);
     entry.timer.unref?.();
   }

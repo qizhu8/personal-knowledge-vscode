@@ -9,9 +9,9 @@ import { managedEnvironmentsRoot } from "./environment-paths";
 import { isAbsoluteForPlatform, isForeignAbsolutePath } from "./store-path";
 
 // ── MCP server scaffold ────────────────────────────────────────────────────
-export const UNIFIED_MCP_VERSION = "2.5.4";
+export const UNIFIED_MCP_VERSION = "2.5.5";
 const KNOWLEDGE_MCP_VERSION = "1.0.0";
-const CHAT_MCP_VERSION = "2.3.0";
+const CHAT_MCP_VERSION = "2.3.1";
 
 interface McpServerStatus {
   installed: boolean;

@@ -161,7 +161,7 @@ export function browserViewHtml(): string {
   }
   function setStatus(t,cls){ document.getElementById("status").textContent=t; document.getElementById("dot").className=cls; }
   function onFrame(f){
-    if(f.t==="join.pending"){ setJoining(true); setStatus("waiting for Host approval…",""); return; }
+    if(f.t==="join.pending"){ setJoining(true); setStatus("assigning Room identity automatically…",""); return; }
     if(f.t==="join.approved"){ return; }
     if(f.t==="join.ready"){ setJoined(true); setStatus("connected","on"); return; }
     if(f.t==="error"){

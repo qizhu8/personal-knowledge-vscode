@@ -86,7 +86,7 @@ export class ChatClient {
     ws.on("open", () => {
       this.reconnectDelay = 1000;
       this.send({ t: "join", room: this.opts!.room, roomId: this.opts!.roomId, user: this.opts!.user, token: this.opts!.token, kind: this.opts!.kind ?? "human", cid: this.cid, hostToken: this.opts!.hostToken, resumeAfter: this.lastMessageId || undefined });
-      this.setStatus("connecting", "waiting for Host approval…");
+      this.setStatus("connecting", "assigning Room identity automatically…");
       this.startPing();
     });
     ws.on("message", raw => this.onFrame(raw.toString()));
@@ -104,7 +104,7 @@ export class ChatClient {
     try { frame = JSON.parse(raw); } catch { return; }
     switch (frame.t) {
       case "join.pending":
-        this.setStatus("connecting", "waiting for Host approval…");
+        this.setStatus("connecting", "assigning Room identity automatically…");
         this.events.onJoinPending?.(frame.requestId, frame.expiresAt);
         break;
       case "join.approved":

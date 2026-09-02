@@ -76,7 +76,10 @@ try {
       throw new Error(`Hosted Room navigation command is missing: ${command}`);
     }
   }
-  if (!extensionTs.includes("this.hub?.adminRooms().some") || !extensionTs.includes("await this.refreshStoredRooms()")) {
+  if (!extensionTs.includes("this.hub?.adminRooms().find") ||
+      !extensionTs.includes("rc.selfHost && room.room === ChatHub.canonRoom(rc.room)") ||
+      !extensionTs.includes("await this.hub.adminCloseRoom(locallyHosted.room)") ||
+      !extensionTs.includes("await this.refreshStoredRooms()")) {
     throw new Error("Host Close must use durable Hub ownership and refresh Stored Rooms immediately");
   }
   const roomIdentityTs = fs.readFileSync(path.join(__dirname, "..", "src", "chat-room-identity.ts"), "utf-8");

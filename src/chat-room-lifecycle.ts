@@ -24,6 +24,12 @@ export interface StoredChatRoom {
   unavailableReason?: string;
 }
 
+export interface RepairedChatRoom {
+  roomId: string;
+  roomName: string;
+  messageCount: number;
+}
+
 export class ChatRoomLifecycle {
   readonly persistence: ChatPersistence;
   private readonly credentials: ChatRoomCredentialStore;
@@ -160,6 +166,20 @@ export class ChatRoomLifecycle {
       await this.persistence.openRoom(roomId, stored.roomName);
       await this.persistence.recordLifecycle(roomId, "room.renamed", undefined, { roomName: normalizedName });
       await this.persistence.closeRoom(roomId, "renamed");
+    } finally {
+      lock.release();
+    }
+  }
+
+  async repairStoredRoom(roomId: string): Promise<RepairedChatRoom> {
+    if (this.locks.has(roomId)) throw new Error(`Room ${roomId} is active in this Hub. Close it before repairing.`);
+    const stored = await this.requireOwnedStoredRoom(roomId);
+    const lock = ChatRoomLock.acquire(path.join(this.rootDir, roomId, "chatroom.lock"), this.installationId);
+    try {
+      await this.persistence.openRoom(roomId, stored.roomName);
+      await this.persistence.recordLifecycle(roomId, "room.repaired", "stored");
+      await this.persistence.closeRoom(roomId, "repaired");
+      return { roomId, roomName: stored.roomName, messageCount: stored.messageCount };
     } finally {
       lock.release();
     }

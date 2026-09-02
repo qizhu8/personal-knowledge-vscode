@@ -36,7 +36,7 @@ export function parseChatMagicLink(value: unknown): ChatMagicLinkCredentials {
 }
 
 export function chatInviteMessage(magicLink: string): string {
-  return `Discover the MCP server pkm and call chat_capabilities to find the complete PKM Chatroom tool workflow. Join with chat_join using Magic Link \`${magicLink}\` and the alias I'll give you. Approval automatically places you in standby. Call chat_standby to block until an @message addresses you. Use chat_post(..., continue_working=true) for progress updates while work continues; final chat_post returns to standby, then call chat_standby again. Stay in standby until the Host uses /stop, you leave, or the Room closes.`;
+  return `Discover the unified MCP server pkm and call chat_capabilities to find the complete PKM Chatroom tool workflow. Join with chat_join using Magic Link \`${magicLink}\` and the alias I'll give you. Identity assignment is automatic; never ask the Host for approval. Call chat_standby to block until an @message addresses you. Use chat_post(..., continue_working=true) for progress updates while work continues; final chat_post returns to standby, then call chat_standby again. Stay in standby until the Host uses /stop, you leave, or the Room closes.`;
 }
 
 function normalizeChatUrl(value: unknown): string {

@@ -35,6 +35,7 @@ assert.strictEqual(manifest.contributes.configuration.properties["personalKnowle
 assert.strictEqual(manifest.contributes.configuration.properties["personalKnowledge.mcpPythonPath"].scope, "machine");
 assert.strictEqual(manifest.contributes.configuration.properties["personalKnowledge.mcpRuntimePath"].scope, "machine");
 assert.strictEqual(manifest.contributes.configuration.properties["personalKnowledge.mcpServerPath"].scope, "machine");
+assert.strictEqual(manifest.contributes.configuration.properties["personalKnowledge.chatInviteHost"].scope, "machine");
 for (const file of ["src/filestore.ts", "src/storage.ts"]) {
   const source = fs.readFileSync(path.join(root, file), "utf8");
   assert.doesNotMatch(source, /homedir\(\).*personal-knowledge/);

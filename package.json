@@ -2,7 +2,7 @@
   "name": "personal-knowledge",
   "displayName": "Personal Knowledge Manager",
   "description": "%extension.description%",
-  "version": "2.5.4",
+  "version": "2.5.5",
   "publisher": "Uone",
   "author": {
     "name": "Yu Wang"
@@ -148,6 +148,11 @@
         "command": "personalKnowledge.renameHostedRoom",
         "title": "Rename Room…",
         "icon": "$(edit)"
+      },
+      {
+        "command": "personalKnowledge.repairStoredRoom",
+        "title": "Repair Stored Room",
+        "icon": "$(tools)"
       },
       {
         "command": "personalKnowledge.closeHostedRoom",
@@ -392,9 +397,14 @@
           "group": "1_room@1"
         },
         {
+          "command": "personalKnowledge.repairStoredRoom",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-chat-hosted-room-stored",
+          "group": "1_room@2"
+        },
+        {
           "command": "personalKnowledge.closeHostedRoom",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-chat-hosted-room-active",
-          "group": "1_room@2"
+          "group": "1_room@3"
         },
         {
           "command": "personalKnowledge.deleteHostedRoom",
@@ -662,6 +672,12 @@
           "default": 7345,
           "description": "Chatroom: TCP port the embedded hub listens on when you self-host it."
         },
+        "personalKnowledge.chatInviteHost": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Machine-local hostname or network-interface address advertised in Chatroom Magic Links. The Hub still listens on all interfaces."
+        },
         "personalKnowledge.chatHistoryLimitMB": {
           "type": "number",
           "default": 10,
@@ -719,8 +735,12 @@
     "test:machine-store-path": "npm run build && node tests/test-machine-store-path.js",
     "test:sync-progress": "npm run build && node tests/test-sync-progress.js",
     "test:chat-storage-boundaries": "npm run build && node tests/test-chat-storage-boundaries.js",
+    "test:chat-no-manual-approval": "npm run build && node tests/test-chat-no-manual-approval.js",
+    "test:chat-invite-host": "npm run build && node tests/test-chat-invite-host.js",
+    "test:chat-close-room-recovery": "npm run build && node tests/test-chat-close-room-recovery.js",
+    "test:chat-room-repair": "npm run build && node tests/test-chat-room-repair.js",
     "test:localization": "npm run build && node tests/test-localization.js",
-    "test:release": "npm run build && node tests/test-chat-persistence.js && node tests/test-chat-stored-rooms.js && node tests/test-chat-stored-rooms-ui.js && node tests/test-chat-participant-persistence.js && node tests/test-chat-join-approval.js && node tests/test-chat-hub-approval.js && node tests/test-chat-join-approval-ui.js && node tests/test-chat-moderation-ui.js && node tests/test-chat-mention-highlight-ui.js && node tests/test-chat-room-identity.js && node tests/test-chat-default-recipient-ui.js && node tests/test-chat-browser-ui.js && node tests/test-chat-multi-recipient.js && node tests/test-chat-magic-link.js && node tests/test-chat-mcp-approval.js && node tests/test-chat-packaged-worker.js && node tests/test-chat-hub-health.js && node tests/test-chat-storage-boundaries.js && python tests/test-chat-history-atomic.py && python tests/test-chat-generated-standby.py && node tests/test-chat-markdown.js && node tests/test-chat-quote-viewer-ui.js && node tests/test-mcp-version-ui.js && node tests/test-chat-layout-scroll-ui.js && node tests/test-pkm-skill-projection.js && node tests/test-pkm-skill-mcp.js && node tests/test-server-proxy.js && node tests/test-server-grouping.js && node tests/test-environment-refresh.js && node tests/test-refresh-actions.js && node tests/test-navigation-status.js && node tests/test-navigation-groups.js && node tests/test-navigation-copy-path.js && node tests/test-detail-path-ui.js && node tests/test-machine-store-path.js && node tests/test-sync-progress.js && node tests/test-localization.js",
+    "test:release": "npm run build && node tests/test-chat-persistence.js && node tests/test-chat-stored-rooms.js && node tests/test-chat-stored-rooms-ui.js && node tests/test-chat-participant-persistence.js && node tests/test-chat-join-approval.js && node tests/test-chat-hub-approval.js && node tests/test-chat-join-approval-ui.js && node tests/test-chat-no-manual-approval.js && node tests/test-chat-invite-host.js && node tests/test-chat-close-room-recovery.js && node tests/test-chat-room-repair.js && node tests/test-chat-moderation-ui.js && node tests/test-chat-mention-highlight-ui.js && node tests/test-chat-room-identity.js && node tests/test-chat-default-recipient-ui.js && node tests/test-chat-browser-ui.js && node tests/test-chat-multi-recipient.js && node tests/test-chat-magic-link.js && node tests/test-chat-mcp-approval.js && node tests/test-chat-packaged-worker.js && node tests/test-chat-hub-health.js && node tests/test-chat-storage-boundaries.js && python tests/test-chat-history-atomic.py && python tests/test-chat-generated-standby.py && node tests/test-chat-markdown.js && node tests/test-chat-quote-viewer-ui.js && node tests/test-mcp-version-ui.js && node tests/test-chat-layout-scroll-ui.js && node tests/test-pkm-skill-projection.js && node tests/test-pkm-skill-mcp.js && node tests/test-server-proxy.js && node tests/test-server-grouping.js && node tests/test-environment-refresh.js && node tests/test-refresh-actions.js && node tests/test-navigation-status.js && node tests/test-navigation-groups.js && node tests/test-navigation-copy-path.js && node tests/test-detail-path-ui.js && node tests/test-machine-store-path.js && node tests/test-sync-progress.js && node tests/test-localization.js",
     "poc:chat-room-lifecycle": "npm run build && node scripts/poc-chat-room-lifecycle.js",
     "watch": "tsc -p tsconfig.json --watch",
     "package": "npx vsce package"

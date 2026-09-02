@@ -1,6 +1,6 @@
 // ── Chatroom (agent room) ───────────────────────────────────────────────────
 const chat = {
-  cfg: { hubUrl: '', room: 'general', displayName: 'user', hasSecret: false, hubPort: 7345 },
+  cfg: { hubUrl: '', room: 'general', displayName: 'user', hasSecret: false, hubPort: 7345, inviteHosts: [], inviteHost: '', inviteHostUnavailable: false },
   rooms: [], storedRooms: [], activeKey: '', active: null, recents: [], hubAdminRooms: [], pendingApprovals: [], managedAgents: [],
   hubRunning: false, hubWsUrl: '', hubHttpUrl: '', hubPort: 0, hubError: '',
   secretShown: false, secretVal: '',
@@ -123,6 +123,9 @@ function renderChatroom() {
             <label class="chat-field-lbl">Port <span class="chat-muted">(blank = auto)</span></label>
             <input id="chat-hub-port" class="chat-in" placeholder="auto" title="Port to host the hub on. Leave blank (or 0) to auto-pick a free port. Only used when starting the hub.">
           </div>
+          <label class="chat-field-lbl">Invite interface</label>
+          <select id="chat-invite-host" class="chat-in" onchange="chatInviteHostChanged(this.value)" title="Hostname or network interface advertised in Magic Links. The Hub still listens on all interfaces."></select>
+          <div id="chat-invite-url" class="chat-hint"></div>
           <button class="tbtn chat-wide" onclick="chatHostRoom()" style="border-color:var(--accent)">Host Room</button>
         </div>
         <button class="tbtn chat-wide hidden" id="chat-stophub-btn" onclick="ask('chatStopHub',{})" style="border-color:#f87171;color:#f87171">Stop Hub</button>
@@ -448,6 +451,29 @@ function chatOnConfig(cfg) {
   const u = document.getElementById('chat-url');   if (u && !u.value) u.value = chat.cfg.hubUrl || '';
   const r = document.getElementById('chat-room');  if (r && !r.value) r.value = chat.cfg.room || 'general';
   const n = document.getElementById('chat-name');  if (n && !n.value) n.value = chat.cfg.displayName || 'user';
+  chatPaintInviteHosts();
+}
+
+function chatPaintInviteHosts() {
+  const select = document.getElementById('chat-invite-host');
+  const hint = document.getElementById('chat-invite-url');
+  if (!select) return;
+  const options = chat.cfg.inviteHosts || [];
+  select.innerHTML = options.map(item => `<option value="${esc(item.address)}" ${item.address === chat.cfg.inviteHost ? 'selected' : ''}>${esc(item.label || ((item.interface || 'Interface') + ' · ' + item.address))}</option>`).join('');
+  if (chat.cfg.inviteHostUnavailable) select.insertAdjacentHTML('afterbegin', `<option value="${esc(chat.cfg.inviteHost)}" selected disabled>Unavailable · ${esc(chat.cfg.inviteHost)}</option>`);
+  select.disabled = !options.length;
+  const port = chat.hubPort || chat.cfg.hubPort || 7345;
+  if (hint) hint.innerHTML = chat.cfg.inviteHostUnavailable
+    ? `<span style="color:#f87171">Saved interface is unavailable. Choose another hostname or network interface.</span>`
+    : chat.cfg.inviteHost ? `Magic Links will advertise <code>ws://${esc(chat.cfg.inviteHost)}:${port}</code>` : '<span style="color:#f87171">No hostname or network interface is available.</span>';
+}
+
+function chatInviteHostChanged(address) {
+  if (!address) return;
+  chat.cfg.inviteHost = address;
+  chat.cfg.inviteHostUnavailable = false;
+  chatPaintInviteHosts();
+  ask('chatSetInviteHost', { address });
 }
 
 function chatOnState(s) {
@@ -471,6 +497,7 @@ function chatOnState(s) {
   chat.hubAdminRooms = s.hubAdminRooms || [];
   chat.pendingApprovals = s.pendingApprovals || [];
   chat.managedAgents = s.managedAgents || [];
+  chatPaintInviteHosts();
   if (chat.hubRunning) chat.hubError = '';   // running truth clears any stale error
   if (state.tab !== 'chatroom') return;
   chatPaintRooms();
@@ -511,11 +538,13 @@ function chatOnHubResult(res) {
     chat.hubRunning = true;                       // success is authoritative → no red
     if (res.wsUrl)   chat.hubWsUrl   = res.wsUrl;
     if (res.httpUrl) chat.hubHttpUrl = res.httpUrl;
+    if (res.wsUrl) { try { chat.cfg.inviteHost = new URL(res.wsUrl).hostname; } catch {} }
     const u = document.getElementById('chat-url');
     if (u && !u.value) u.value = res.wsUrl || '';
   } else {
     chat.hubError = res.error || 'unknown — run “Personal Knowledge Manager: Show Logs” for details';
   }
+  chatPaintInviteHosts();
   chatPaintHub();
 }
 
@@ -1306,6 +1335,7 @@ function chatStoredRoomMenu(event, roomId, roomName) {
   event.preventDefault(); event.stopPropagation();
   showPaperMenu(event.clientX, event.clientY, [
     { label: '▶ Rehost', onClick: () => ask('chatRehostStoredRoom', { roomId }) },
+    { label: 'Repair Room', onClick: () => ask('chatRepairStoredRoom', { roomId }) },
     { label: '✏ Rename…', onClick: () => ask('chatRenameStoredRoom', { roomId, roomName }) },
     { sep: true },
     { label: '🗑 Delete Data…', danger: true, onClick: () => ask('chatDeleteStoredRoom', { roomId, roomName }) },

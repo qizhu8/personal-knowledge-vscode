@@ -5,6 +5,18 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.5.5] - 2026-09-02
+
+This patch removes misleading legacy Chatroom approval behavior and forces generated MCP Chatroom code to refresh.
+
+### Fixed
+- Removed obsolete manual Host-approval wording from generated Chatroom agents, Extension/Browser clients, and Hub errors. Valid Magic Link joins use automatic identity assignment; compatibility metadata now explicitly directs agents from legacy `pkm-chat` to unified `pkm`.
+- Bumped the Chatroom component schema to `2.3.1` so Config detects stale `chat_server.py` files and requires regeneration instead of treating legacy approval wording as current.
+
+### Added
+- Added a machine-local Chatroom **Invite interface** selector with hostname and every non-loopback IPv4 interface. It controls advertised Magic Link/Browser URLs while the Hub continues listening on all interfaces, and blocks hosting when a saved interface disappears.
+- Added **Repair Stored Room** to the Navigation and Chatroom context menus. Repair safely recovers stale local locks and state, closes zero-member local zombie instances, and preserves Room history, identities, and credentials.
+
 ## [2.5.4] - 2026-09-02
 
 This emergency patch separates machine-local storage pointers from cross-machine content synchronization and prevents silent fallback writes after reinstall or Remote-SSH setup.
@@ -278,6 +290,7 @@ Multi-agent **conversations** in the Chatroom (**beta**), plus packaging fixes.
 ### Fixes
 - Conversation-control commands now broadcast to all participants instead of being swallowed as unknown room commands.
 
+- Fixed **Close Room** leaving a zombie active Room when a Host connection carried a stale Room UUID. Confirmed local Hosts now recover by canonical Room name and fully deactivate the Hub Room before it is offered for Rehost.
 ## [2.0.1] — 2026-07-27
 
 Bug fixes and UI polish on top of the 2.0.0 Chatroom release.

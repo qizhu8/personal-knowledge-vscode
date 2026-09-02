@@ -18,17 +18,17 @@ vm.createContext(presentationContext);
 new vm.Script(`${presentation[0]}; this.present = mcpRegeneratePresentation;`).runInContext(presentationContext);
 
 const outdated = presentationContext.present({
-  installed: true, current: false, installedVersion: "2.4.0", expectedVersion: "2.5.4",
+  installed: true, current: false, installedVersion: "2.4.0", expectedVersion: "2.5.5",
   installedKnowledgeVersion: "1.0.0", knowledgeVersion: "1.0.0",
-  installedChatVersion: "2.2.1", chatVersion: "2.3.0",
+  installedChatVersion: "2.3.0", chatVersion: "2.3.1",
 });
-assert.strictEqual(outdated.label, "Regenerate Server Code · v2.4.0 → v2.5.4");
-assert.match(outdated.title, /Unified v2\.4\.0 → v2\.5\.4/);
-assert.match(outdated.title, /Chat v2\.2\.1 → v2\.3\.0/);
-assert.strictEqual(presentationContext.present({ installed: true, current: true, expectedVersion: "2.5.4", knowledgeVersion: "1.0.0", chatVersion: "2.3.0" }).label,
-  "Regenerate Server Code · v2.5.4");
-assert.strictEqual(presentationContext.present({ installed: false, expectedVersion: "2.5.4" }).label,
-  "Generate Server Code · target v2.5.4");
+assert.strictEqual(outdated.label, "Regenerate Server Code · v2.4.0 → v2.5.5");
+assert.match(outdated.title, /Unified v2\.4\.0 → v2\.5\.5/);
+assert.match(outdated.title, /Chat v2\.3\.0 → v2\.3\.1/);
+assert.strictEqual(presentationContext.present({ installed: true, current: true, expectedVersion: "2.5.5", knowledgeVersion: "1.0.0", chatVersion: "2.3.1" }).label,
+  "Regenerate Server Code · v2.5.5");
+assert.strictEqual(presentationContext.present({ installed: false, expectedVersion: "2.5.5" }).label,
+  "Generate Server Code · target v2.5.5");
 
 const skillStart = panelJs.indexOf("function pkmSkillStateBadge");
 const skillEnd = panelJs.indexOf("function renderMcpPane", skillStart);

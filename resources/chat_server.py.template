@@ -23,6 +23,8 @@ CHAT_TOOLS = ["chat_capabilities", "chat_join", "chat_post", "chat_read", "chat_
 def check_chat_version() -> dict:
     """Discover the PKM Chatroom component version and available chat tools."""
     return {"name": "pkm-chat", "version": SERVER_VERSION, "capability": "pkm-chatroom",
+            "legacy_entrypoint": True, "preferred_server": "pkm",
+            "manual_approval_required": False,
             "chat_tools": CHAT_TOOLS}
 
 
@@ -34,9 +36,11 @@ def chat_capabilities() -> dict:
     waiting, posting, status, members, history, or leave support.
     """
     return {"ok": True, "capability": "pkm-chatroom", "version": SERVER_VERSION,
+            "server": "pkm-chat", "legacy_entrypoint": True, "preferred_server": "pkm",
+            "manual_approval_required": False,
             "workflow": ["chat_join", "chat_standby", "chat_post", "chat_standby"],
             "chat_tools": CHAT_TOOLS,
-            "instruction": "Join with a pkchat:v1 Magic Link and alias, then keep using chat_standby after each chat_post."}
+            "instruction": "Prefer the unified pkm server. Join with a pkchat:v1 Magic Link and alias. Identity assignment is automatic; no manual action is required. Then keep using chat_standby after each chat_post."}
 
 
 def _parse_magic_link(value):
@@ -180,8 +184,8 @@ class ChatConnection:
                     continue
                 frame_type = frame.get("t")
                 if frame_type == "join.pending":
-                    self.status = "waiting-approval"
-                    self.detail = "Waiting for Host approval"
+                    self.status = "joining"
+                    self.detail = "Assigning Room identity automatically"
                 elif frame_type == "join.approved":
                     self.participant_id = str(frame.get("participantId") or "")
                 elif frame_type == "join.ready":
@@ -274,7 +278,7 @@ class ChatConnection:
             try:
                 ws = await websockets.connect(self.url, open_timeout=8, max_size=8 * 1024 * 1024)
                 self.ws = ws
-                self.status = "waiting-approval"
+                self.status = "joining"
                 self.detail = ""
                 self.join_event.clear()
                 await ws.send(json.dumps({"t": "join", "room": self.room, "user": self.name,
@@ -302,7 +306,7 @@ class ChatConnection:
             await asyncio.wait_for(self.join_event.wait(), timeout=125)
         except asyncio.TimeoutError:
             await self.leave()
-            raise RuntimeError("Host approval did not complete within 125 seconds.")
+            raise RuntimeError("Room join and automatic identity assignment did not complete within 125 seconds.")
         if self.status != "connected":
             raise RuntimeError(self.detail or "join rejected")
 
@@ -575,11 +579,11 @@ def _resolve(name=""):
 
 @mcp.tool()
 async def chat_join(magic_link: str, name: str) -> str:
-    """PKM Chatroom: join by Magic Link and alias, then wait for Host approval.
+    """PKM Chatroom: join by Magic Link and alias with automatic identity assignment.
 
     Multiple Agents may share this MCP process. The returned alias identifies
     this connection. Pass name=that_alias to every other chat tool whenever
-    more than one identity is active.
+    more than one identity is active. Identity assignment is automatic.
     """
     alias = str(name or "").strip()
     if not alias:
