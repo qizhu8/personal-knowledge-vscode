@@ -1,0 +1,56 @@
+#!/usr/bin/env node
+const assert = require("assert");
+const fs = require("fs");
+const path = require("path");
+
+const root = path.join(__dirname, "..");
+const panel = fs.readFileSync(path.join(root, "dist", "webview", "panel.js"), "utf8");
+const css = fs.readFileSync(path.join(root, "dist", "webview", "panel.css"), "utf8");
+const html = fs.readFileSync(path.join(root, "src", "webview", "panel.html"), "utf8");
+const extension = fs.readFileSync(path.join(root, "src", "extension.ts"), "utf8");
+const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+
+assert.match(panel, /state\.knowledgeTrash = e\.data\.knowledgeTrash \|\| \[\]/);
+assert.match(panel, /function beginAction\(command, button\)/);
+assert.match(panel, /button\.classList\.add\('action-pending'\)/);
+assert.match(panel, /mcpRepairRuntime:600000/);
+assert.match(panel, /generateMcp:90000/);
+assert.match(css, /\.pk-table/);
+assert.match(css, /\.pk-list/);
+assert.match(css, /\.pk-card/);
+assert.match(css, /\.pk-button/);
+assert.match(panel, /function renderKnowledgeTrashDock\(area\)/);
+assert.match(panel, /function toggleKnowledgeTrashDock\(\)/);
+assert.match(panel, /renderSubscribedGroups\(el\);\s*renderKnowledgeTrashDock\(tab\)/);
+assert.match(panel, /knowledge-trash-popover hidden/);
+assert.match(panel, /knowledge-trash-dock-row/);
+assert.match(panel, /Trash is empty/);
+assert.match(panel, /skillTrashRestore/);
+assert.match(panel, /Delete Permanently/);
+assert.match(panel, /function deleteKnowledgeTrashEntry\(area, id, name, kind\)/);
+assert.match(panel, /function emptySkillTrash\(\)/);
+assert.match(panel, /This cannot be undone/);
+assert.match(panel, /skillTrashFolder/);
+assert.match(panel, /Move folder to Trash/);
+assert.match(panel, /Move to Trash/);
+assert.match(css, /#knowledge-trash-dock\{position:relative/);
+assert.match(css, /\.knowledge-trash-popover\{position:absolute/);
+assert.match(css, /bottom:100%/);
+assert.match(html, /id="knowledge-trash-dock"/);
+assert.match(extension, /skillMoveToTrash/);
+assert.match(extension, /skillFolderMoveToTrash/);
+assert.match(extension, /skillTrashEmpty/);
+assert.match(extension, /new PkTreeItem\("Trash", "skill-trash"/);
+assert.match(extension, /command: "skillTrashResult"/);
+assert.match(extension, /case 'skill-trash':\s+return this\._skillTrashItems\(\)/);
+assert.match(extension, /registerCommand\("personalKnowledge\.restoreSkillTrash"/);
+assert.match(extension, /registerCommand\("personalKnowledge\.emptySkillTrash"/);
+assert.match(extension, /registerCommand\("personalKnowledge\.deleteSkillTrashEntry"/);
+assert.match(extension, /case "skillTrashDelete"/);
+assert.match(extension, /group\.area === "skills"/);
+const commands = new Set(manifest.contributes.commands.map(command => command.command));
+assert(commands.has("personalKnowledge.restoreSkillTrash"));
+assert(commands.has("personalKnowledge.emptySkillTrash"));
+assert(commands.has("personalKnowledge.deleteSkillTrashEntry"));
+
+console.log("Skill Trash UI test: bottom dock, upward overlay, folder and item trash, restore, and explicit empty OK");

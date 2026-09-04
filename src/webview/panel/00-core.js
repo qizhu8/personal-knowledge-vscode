@@ -5,7 +5,7 @@ window.addEventListener('error', event => vscode.postMessage({
 window.addEventListener('unhandledrejection', event => vscode.postMessage({
   command: 'webviewDiagnostic', kind: 'unhandledrejection', message: String(event.reason?.stack || event.reason || 'unknown rejection'),
 }));
-setInterval(() => vscode.postMessage({ command: 'webviewDiagnostic', kind: 'heartbeat' }), 30000);
+setInterval(() => { if (document.visibilityState === 'visible') vscode.postMessage({ command: 'webviewDiagnostic', kind: 'heartbeat' }); }, 120000);
 // CDN libs may be unavailable in offline/remote environments — use safe fallbacks
 try { if (typeof marked !== 'undefined') marked.setOptions({ breaks: true }); } catch(e) {}
 // KaTeX math support for marked: $$...$$ (block) and $...$ (inline). marked
@@ -219,7 +219,111 @@ function languageOptionsHtml() {
 new MutationObserver(scheduleUiTranslation).observe(document.body, { childList: true, subtree: true });
 scheduleUiTranslation();
 
-let state = { tab:'skills', filter:'all', search:'', items:[], folders:[], active:null };
+let state = { tab:'skills', filter:'all', search:'', items:[], folders:[], subscriptionGroups:[], knowledgeTrash:[], active:null };
+const pendingActionButtons = new Map();
+const actionTimeouts = {
+  subscriptionCopyLink:10000, subscriptionConfigure:15000, subscriptionSetOnline:30000,
+  subscriptionUpsertShare:30000, subscriptionDeleteShare:30000, subscriptionAdd:60000,
+  subscriptionRename:10000, subscriptionRefresh:60000, subscriptionRemove:30000,
+  subscriptionRevealSecret:10000, subscriptionRotateSecret:30000, subscriptionUnblockIp:15000, subscriptionFork:30000, subscriptionOpenServerLink:15000,
+  skillTrashRestore:15000, skillTrashDelete:15000, skillTrashEmpty:30000,
+  knowledgeTrashMove:15000, knowledgeTrashRestore:15000, knowledgeTrashDelete:15000, knowledgeTrashEmpty:30000,
+  serverSubscriptionStatus:15000,
+  serverSubscriptionRefresh:60000,
+  mcpRepairRuntime:600000, mcpSetPython:600000, generateMcp:90000,
+  checkMcp:15000, mcpDetectPython:60000, refreshMcpPathSizes:30000,
+};
+
+function restoreActionButton(entry) {
+  clearTimeout(entry.timer);
+  if (!entry.button.isConnected) return;
+  entry.button.disabled = false;
+  entry.button.removeAttribute('aria-busy');
+  entry.button.classList.remove('action-pending');
+  entry.button.innerHTML = entry.html;
+}
+
+function actionMessageHost(button) {
+  return button.closest('.sub-editor-actions,.sub-gateway-actions,.sub-add,.sub-row-actions,.pkm-config-actions,.mcp-row-action,.mcp-running') || button.parentElement;
+}
+
+function clearActionError(button) {
+  actionMessageHost(button)?.parentElement?.querySelectorAll(':scope > .pk-action-error').forEach(error => error.remove());
+}
+
+function showActionError(button, message) {
+  const host = actionMessageHost(button);
+  if (!host?.parentElement) return;
+  host.parentElement.querySelectorAll(':scope > .pk-action-error').forEach(error => error.remove());
+  const error = document.createElement('div');
+  error.className = 'pk-action-error';
+  error.setAttribute('role','alert');
+  const text = document.createElement('span');
+  text.textContent = message;
+  const dismiss = document.createElement('button');
+  dismiss.type = 'button';
+  dismiss.className = 'pk-action-error-dismiss';
+  dismiss.textContent = '×';
+  dismiss.title = 'Dismiss error';
+  dismiss.setAttribute('aria-label','Dismiss error');
+  dismiss.onclick = () => error.remove();
+  error.append(text, dismiss);
+  host.insertAdjacentElement('afterend', error);
+}
+
+function showViewActionError(message) {
+  const host = document.querySelector('.d-title,.sub-head,#item-list');
+  if (!host) return;
+  host.parentElement?.querySelectorAll(':scope > .pk-action-error').forEach(error => error.remove());
+  const error = document.createElement('div');
+  error.className = 'pk-action-error'; error.setAttribute('role','alert');
+  const text = document.createElement('span'); text.textContent = message;
+  const dismiss = document.createElement('button'); dismiss.type = 'button'; dismiss.className = 'pk-action-error-dismiss'; dismiss.textContent = '×'; dismiss.title = 'Dismiss error'; dismiss.setAttribute('aria-label','Dismiss error'); dismiss.onclick = () => error.remove();
+  error.append(text, dismiss); host.insertAdjacentElement('afterend', error);
+}
+
+function timeoutAction(command, entry) {
+  const remaining = (pendingActionButtons.get(command) || []).filter(candidate => candidate !== entry);
+  if (remaining.length) pendingActionButtons.set(command, remaining); else pendingActionButtons.delete(command);
+  restoreActionButton(entry);
+  showActionError(entry.button, `${entry.label} timed out. The background operation may still be running; check PKM logs before retrying.`);
+}
+
+function beginAction(command, button) {
+  const timeout = actionTimeouts[command];
+  if (!timeout || !(button instanceof HTMLButtonElement) || button.disabled) return;
+  clearActionError(button);
+  const entries = pendingActionButtons.get(command) || [];
+  const entry = { button, html:button.innerHTML, label:(button.textContent || command).trim(), timer:0 };
+  entry.timer = setTimeout(() => timeoutAction(command, entry), timeout);
+  entries.push(entry);
+  pendingActionButtons.set(command, entries);
+  button.disabled = true;
+  button.setAttribute('aria-busy','true');
+  button.classList.add('action-pending');
+  button.textContent = button.dataset.pendingLabel || 'Working…';
+}
+
+function finishAction(...commands) {
+  for (const command of commands) {
+    for (const entry of pendingActionButtons.get(command) || []) {
+      restoreActionButton(entry);
+    }
+    pendingActionButtons.delete(command);
+  }
+}
+
+function hasPendingActionPrefix(prefix) { return [...pendingActionButtons.keys()].some(command => command.startsWith(prefix)); }
+
+function failAction(message, ...commands) {
+  for (const command of commands) {
+    for (const entry of pendingActionButtons.get(command) || []) {
+      restoreActionButton(entry);
+      showActionError(entry.button, message);
+    }
+    pendingActionButtons.delete(command);
+  }
+}
 let ctxTarget = null; // slug of note under right-click
 let ctxPinned = false; // pinned state of the note under right-click
 let notePinnedFolders = []; // note folder paths pinned to the top of their level
@@ -372,7 +476,10 @@ document.getElementById('ctx-mark-done').addEventListener('click', () => {
   if (ctxTarget) { ask('markDone', { slug: ctxTarget }); ctxTarget = null; }
 });
 document.getElementById('ctx-delete').addEventListener('click', () => {
-  if (ctxTarget) { ask('deleteNote', { slug: ctxTarget }); ctxTarget = null; }
+  if (ctxTarget) {
+    const slug = ctxTarget; ctxTarget = null;
+    pkModal({ title:'Move Note to Trash?', message:'The Note remains recoverable until permanently deleted.', okLabel:'Move to Trash', danger:true, onOk:()=>ask('deleteNote',{slug}) });
+  }
 });
 document.getElementById('ctx-edit').addEventListener('click', () => {
   if (ctxTarget) { openMarkdownItem('notes', '', ctxTarget); ctxTarget = null; }
@@ -388,14 +495,14 @@ document.getElementById('ctx-move').addEventListener('click', () => {
 window.addEventListener('message', e => {
   const { command, data } = e.data;
   // Dismiss loading banner on first response
-  if (command === 'list') {
+  if (['list','subscriptionState','mcpStatus','chatState','serverList','envList'].includes(command)) {
     const banner = document.getElementById('loading-banner');
     if (banner && !banner.classList.contains('hidden')) {
       banner.classList.add('hidden');
       setTimeout(() => banner.remove(), 400);
     }
   }
-  if      (command === 'list')     { state.items = data; state.folders = e.data.folders || []; renderList(); highlightDetailMatches(document.getElementById('layout'), state.search); }
+  if      (command === 'list')     { finishAction('list','deleteSkill','skillTrashFolder','skillTrashRestore','skillTrashDelete','skillTrashEmpty','knowledgeTrashMove','knowledgeTrashRestore','knowledgeTrashDelete','knowledgeTrashEmpty'); state.items = data; state.folders = e.data.folders || []; state.subscriptionGroups = e.data.subscriptionGroups || []; state.knowledgeTrash = e.data.knowledgeTrash || []; renderList(); highlightDetailMatches(document.getElementById('layout'), state.search); }
   else if (command === 'detail') {
     if (pendingEditSlug && data?.type === 'note' && data.slug === pendingEditSlug) {
       pendingEditSlug = null; editNote(data);
@@ -414,6 +521,18 @@ window.addEventListener('message', e => {
     }
   }
   else if (command === 'saved')    { ask('list', { tab: state.tab, filter: state.filter, q: state.search }); if (state.tab === 'papers') { ask('paperGroups', {}); ask('paperFacets', {}); } }
+  else if (command === 'skillTrashResult') {
+    if (!data?.ok) pkModal({ title:'Skills Trash', message:data?.error || 'Trash action failed.', okLabel:'OK' });
+    else vscode.postMessage({ command:'toast', text:data.action === 'emptied' ? `Emptied ${Number(data.count)||0} Trash entries` : `${data.action === 'restored' ? 'Restored' : data.action === 'deleted' ? 'Permanently deleted' : 'Moved to Trash'}: ${data.path || ''}` });
+    currentDetail = null; currentDetailRequest = null; renderEmptyDetail();
+    ask('list', { tab:'skills', filter:'all', q:state.tab === 'skills' ? state.search : '' });
+  }
+  else if (command === 'knowledgeTrashResult') {
+    if (!data?.ok) pkModal({ title:'Trash', message:data?.error || 'Trash action failed.', okLabel:'OK' });
+    else vscode.postMessage({ command:'toast', text:data.action === 'emptied' ? `Emptied ${Number(data.count)||0} Trash entries` : `${data.action === 'restored' ? 'Restored' : data.action === 'deleted' ? 'Permanently deleted' : 'Moved to Trash'}: ${data.path || ''}` });
+    currentDetail = null; currentDetailRequest = null; renderEmptyDetail();
+    ask('list', { tab:data?.area || state.tab, filter:'all', q:data?.area === state.tab ? state.search : '' });
+  }
   else if (command === 'noteFolderPins') {
     notePinnedFolders = e.data.data || [];
     if (state.tab === 'notes') renderList();
@@ -448,8 +567,49 @@ window.addEventListener('message', e => {
   else if (command === 'envPickFolder') { onEnvPickFolder(e.data.dir); }
   else if (command === 'serverList') { serverCache = data || []; if (state.tab === 'servers') renderServerDashboard(serverCache); }
   else if (command === 'serverGroupList') { serverGroupPaths = data || ['Hidden']; if (state.tab === 'servers') renderServerDashboard(serverCache); }
+  else if (command === 'serverSubscriptionGroups') { finishAction('serverSubscriptionStatus','serverSubscriptionRefresh'); serverSubscriptionGroups = data || []; if (state.tab === 'servers') renderServerDashboard(serverCache); }
   else if (command === 'serverLog') { onServerLog(e.data.slug, e.data.text); }
   else if (command === 'serverPickFolder') { onServerPickFolder(e.data.dir); }
+  else if (command === 'subscriptionState') { finishAction('subscriptionState','subscriptionConfigure','subscriptionSetOnline','subscriptionUpsertShare','subscriptionDeleteShare','subscriptionAdd','subscriptionRename','subscriptionRefresh','subscriptionRemove','subscriptionUnblockIp','subscriptionRotateSecret'); subscriptionOnState(data); }
+  else if (command === 'subscriptionChanged') {
+    if (state.tab === 'subscriptions' && !hasPendingActionPrefix('subscription')) ask('subscriptionState', {});
+    else if (state.tab === 'servers') ask('serverList', {});
+    else if (['skills','notes','papers','prompts','scripts','packages'].includes(state.tab)) ask('list', { tab: state.tab, filter: state.filter, q: state.search });
+  }
+  else if (command === 'subscriptionError') {
+    const action = String(data?.action || '');
+    const message = data?.error || 'Subscription action failed.';
+    if (action && pendingActionButtons.has(action)) failAction(message, action); else showViewActionError(message);
+  }
+  else if (command === 'subscriptionSecret') { finishAction('subscriptionRevealSecret','subscriptionRotateSecret'); subscriptionShowSecret(data?.secret || ''); }
+  else if (command === 'subscriptionRenamed') {
+    const subscription = (subscriptionData.subscriptions || []).find(item => item.id === data?.id);
+    if (subscription) subscription.alias = data?.alias || '';
+    const fallbackName = subscription?.brokerName || subscription?.shareId || '';
+    for (const group of state.subscriptionGroups || []) if (group.subscriptionId === data?.id) group.alias = data?.alias || fallbackName;
+    if (['skills','notes','papers','prompts','scripts','packages'].includes(state.tab)) renderList();
+    vscode.postMessage({ command:'toast', text:data?.alias ? `Local name changed to ${data.alias}` : 'Using published Broker name' });
+  }
+  else if (command === 'subscriptionCompleted') {
+    if (data?.action === 'copied') finishAction('subscriptionCopyLink');
+    if (data?.action === 'serverOpened') finishAction('subscriptionOpenServerLink');
+    if (data?.action === 'serverContentRefreshed') finishAction('serverSubscriptionRefresh');
+    if (data?.action === 'published' || data?.action === 'created') {
+      subscriptionSelectionDrafts.delete(subscriptionEditingShare);
+      if (data.action === 'created') subscriptionEditingShare = String(data.shareId || '');
+    }
+    const messages = {
+      configured:'Gateway settings applied', online:'Gateway is online', offline:'Gateway is offline', copied:'Magic Link copied',
+      brokerDeleted:'Broker deleted', removed:'Subscription removed', unblocked:`Unblocked ${data?.ip || 'address'}`, serverOpened:`Opened ${data?.name || 'Server'}`, serverContentRefreshed:`Refreshed ${data?.name || 'Server subscription'} at revision ${data?.revision || 0}`,
+    };
+    const text = data?.action === 'published' ? `Published ${data.name} revision ${data.revision}` : data?.action === 'created' ? `Created Broker ${data.name}` : data?.action === 'subscribed' ? `Subscribed to ${data.name}` : data?.action === 'refreshed' ? `Refreshed ${data.name} at revision ${data.revision}` : messages[data?.action] || 'Subscription action completed';
+    vscode.postMessage({ command:'toast', text });
+  }
+  else if (command === 'subscriptionForked') {
+    finishAction('subscriptionFork');
+    ask('list', { tab: state.tab, filter: state.filter, q: state.search });
+    vscode.postMessage({ command: 'toast', text: `Forked to ${data?.path || 'local knowledge'}` });
+  }
   else if (command === 'paperFacets') {
     paperFacetsData = e.data.data || { topics: [], tags: [], years: [] };
     if (state.tab === 'papers' && !paperGraphOpen) renderPaperFilters(document.getElementById('sidebar-filters'));
@@ -531,21 +691,22 @@ window.addEventListener('message', e => {
       progress.innerHTML = `<div class="sync-progress"><div><strong>${esc(data.message || 'Synchronizing…')}</strong><span>${percent === null ? '' : percent + '%'}${amount ? ' · ' + esc(amount) : ''}</span></div><progress ${percent === null ? '' : `value="${percent}" max="100"`}></progress></div>`;
     }
   }
-  else if (command === 'mcpStatus')    { updateGlobalMcpWarning(data); if (state.tab === 'mcp') renderMcpPane(data); }
+  else if (command === 'mcpStatus')    { finishAction('checkMcp','reconfigureKnowledgeRoot','reconfigureEnvironmentsRoot'); updateGlobalMcpWarning(data); if (state.tab === 'mcp') renderMcpPane(data); }
   else if (command === 'pkmSkillUpdateComplete') { finishPkmSkillUpdates(); if (!data?.ok) ask('checkMcp', {}); }
   else if (command === 'uiLanguage')   { applyUiLanguage(data); }
-  else if (command === 'mcpPathSize')  { renderMcpPathSize(data); }
+  else if (command === 'mcpPathSize')  { finishAction('refreshMcpPathSizes'); renderMcpPathSize(data); }
   else if (command === 'chatReadReceipt') { chatUpdateReadReceipt(data); }
-  else if (command === 'mcpPythonResult') { renderMcpPythonResult(data); }
+  else if (command === 'mcpPythonResult') { finishAction('mcpSetPython','mcpBrowsePython'); renderMcpPythonResult(data); }
   else if (command === 'mcpPythonCandidates') { renderMcpPythonCandidates(data); }
   else if (command === 'mcpPythonScanStarted') { startMcpPythonScan(data); }
   else if (command === 'mcpPythonCandidate') { appendMcpPythonCandidate(data); }
   else if (command === 'mcpPythonScanProgress') { updateMcpPythonScan(data); }
-  else if (command === 'mcpPythonScanComplete') { finishMcpPythonScan(data); }
+  else if (command === 'mcpPythonScanComplete') { finishAction('mcpDetectPython','mcpCancelPythonScan'); finishMcpPythonScan(data); }
   else if (command === 'mcpRuntimeProgress') { renderMcpRuntimeProgress(data); }
-  else if (command === 'mcpRuntimeResult') { renderMcpRuntimeResult(data); }
-  else if (command === 'mcpGenerated') { renderMcpGenerated(data); }
+  else if (command === 'mcpRuntimeResult') { finishAction('mcpRepairRuntime','mcpSetPython','reconfigureMcpRuntimePath'); renderMcpRuntimeResult(data); }
+  else if (command === 'mcpGenerated') { finishAction('generateMcp','reconfigureMcpServerPath'); renderMcpGenerated(data); }
   else if (command === 'mcpError')     {
+    failAction(data?.error || 'The operation failed.','checkMcp','mcpRepairRuntime','mcpSetPython','generateMcp','mcpDetectPython','refreshMcpPathSizes','reconfigureKnowledgeRoot','reconfigureEnvironmentsRoot','reconfigureMcpRuntimePath','reconfigureMcpServerPath');
     const el = document.getElementById('mcp-result');
     if (el) el.innerHTML = `<span style="color:#f87171">❌ ${esc(data.error)}</span>`;
   }
@@ -590,6 +751,7 @@ window.addEventListener('message', e => {
     const btn = document.querySelector(`.tab[data-tab="${e.data.tab}"]`);
     if (btn) btn.dispatchEvent(new MouseEvent('click'));
   }
+  else if (command === 'openSubscription') { subscriptionOpen(String(e.data.shareId || '')); }
   else if (command === 'highlightMcpRegenerate') {
     const btn = document.querySelector('.tab[data-tab="mcp"]');
     if (btn) btn.dispatchEvent(new MouseEvent('click'));
@@ -616,7 +778,10 @@ window.addEventListener('message', e => {
   }
 });
 
-function ask(command, payload) { vscode.postMessage({ command, ...payload }); }
+function ask(command, payload, button) {
+  beginAction(command, button || window.event?.currentTarget);
+  vscode.postMessage({ command, ...payload });
+}
 
 // ── Topbar overflow: sliding tabs + collapsing action buttons ───────────
 function scrollTabs(dir) { const t = document.getElementById('tabs'); if (t) t.scrollBy({ left: dir * 160, behavior: 'smooth' }); }

@@ -2,4 +2,5 @@ node_modules/
 dist/
 *.vsix
 __pycache__/
+.vscode-test/
 .vscode/mcp.json

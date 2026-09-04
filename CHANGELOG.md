@@ -5,6 +5,234 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-09-04
+
+### Added
+- Added the Subscription Shared Market: signed Magic Links, mutable Brokers, isolated machine-local Subscriber caches, metadata-only MQTT notifications, manual and background Sync, and read-only MCP access to subscribed content.
+- Added per-Broker Network and Account ACLs, Open and Secret Protected control planes, encrypted single-use data transfers, secret rotation, usage visibility, and automatic blocking after repeated invalid secret proofs.
+- Added hierarchical subscribed content for Skills, Notes, Papers, Prompts, Scripts, Packages, and link-only Servers, with Broker-local aliases and compact collapsed Broker cards.
+- Added file, folder, whole-Broker Skill, and Package Forks with persistent provenance, stable `_folk_` roots, and collision-safe top-level Package names.
+- Added recoverable Trash workflows for Skills, Notes, Papers, Prompts, and Scripts in both the dashboard and Navigation.
+- Added subscribed Server links under Broker groups in Navigation, direct one-click opening, explicit content/status refresh, and visible health state.
+
+### Changed
+- Server subscriptions now share only validated direct HTTP(S) links using the Broker hostname and each Server's active or configured port; Server commands and source files never enter subscription bundles.
+- Standardized pending, completion, timeout, and inline error feedback across Subscription actions.
+- Reduced background resource use with visible-only monitoring, longer health and cleanup intervals, native Gateway file watching, and a 10-second watcher fallback.
+
+### Fixed
+- Reconcile published Broker snapshots after Server and Knowledge Root initialization so upgraded Server links are automatically republished.
+- Preserve authoritative Broker counts, unsaved Shared Content selections, local Subscriber aliases, folder hierarchy, and cached content across refresh and offline transitions.
+- Keep Subscription storage outside the Knowledge Root and prevent live Chatroom databases from entering Knowledge Root commits.
+
+## [2.6.21] - 2026-09-04
+
+### Fixed
+- Published Broker snapshots are reconciled after Server and Knowledge Root initialization. Existing Server subscriptions created before direct URLs were available now receive populated links after the Broker reloads and the Subscriber refreshes content.
+
+## [2.6.20] - 2026-09-04
+
+### Added
+- The Navigation **Servers** root now groups subscribed Server links by Broker. Each Server appears beneath its Broker with the direct URL visible and opens from the tree in one click.
+
+### Changed
+- Local and subscribed Server links now use the Broker hostname with the Server's active or configured port, for example `http://br1u42-s3-33:8776/`. Subscription links no longer use the `:39501/s/<slug>/` resolver.
+
+### Fixed
+- Subscribed Server status checks now recognize reachable HTTP services accurately and fall back to `GET` when a Server does not support `HEAD`.
+
+## [2.6.19] - 2026-09-04
+
+### Added
+- Expanded subscribed Server Broker cards now provide separate **Refresh Content** and **Refresh Status** actions. Content refresh downloads newly shared Servers; status refresh only probes current links.
+
+### Fixed
+- Local and subscribed Server links use the readable stable entry `http://<Broker host>:39501/s/<slug>/`. The resolver redirects to the Server's current active port, so the stable ID remains unchanged across port changes.
+- The stable resolver listens on the Broker network interface rather than localhost only, and health checks follow the redirect to verify the actual Server.
+- Subscribed Server monitoring remains inactive while cards are collapsed, starts immediately on expansion, runs every 60 seconds while expanded, and stops on collapse or tab exit.
+
+## [2.6.18] - 2026-09-04
+
+### Changed
+- Local Server groups are collapsed by default to conserve dashboard space. Explicit user expansion/collapse state remains persisted.
+
+## [2.6.17] - 2026-09-04
+
+### Added
+- Added the same recoverable Trash workflow to Notes, Papers, Prompts, and Scripts: bottom-docked upward overlay, item/folder move, Restore, per-entry Delete Permanently, and Empty Trash.
+- Added matching Trash nodes and context-menu actions to the VS Code Navigation tree for all supported knowledge areas.
+
+### Changed
+- Existing Note, Paper, Prompt, and Script delete actions now move content to area-specific `.trash` storage while preserving original paths. Direct permanent Script deletion outside Trash has been removed.
+
+## [2.6.16] - 2026-09-04
+
+### Added
+- Subscribed Servers now use collapsed Broker cards with a `Server / Link / Status / Action` table. Link health is checked only while the Broker card is expanded, immediately and then every 60 seconds.
+- Skills Trash is now a fixed bottom dock. Its content opens upward as an overlay above the category tree instead of participating in normal tree layout.
+
+### Changed
+- Reduced recurring resource usage: visible webview diagnostics run every 2 minutes, Subscription health fallback every 5 minutes, Sync cleanup every 2 minutes, and Chat Hub cleanup every minute. Existing refreshes already above 5 minutes remain unchanged.
+- Local Server startup probing remains a short-lived 5-second active search only while a visible Server is starting; it stops once status settles.
+- Gateway configuration now uses native filesystem events when available and a 10-second polling fallback when system watcher capacity is exhausted. Broker changes explicitly signal the Gateway, so correctness does not depend on polling.
+
+## [2.6.15] - 2026-09-04
+
+### Changed
+- Each subscribed Server now exposes exactly one stable link based on the Broker's advertised host and the managed Servers proxy path (`/s/<slug>/`). Alternate interface links and temporary Server-port links are no longer shared.
+
+## [2.6.14] - 2026-09-04
+
+### Added
+- Added **Fork All** for each subscribed Skills Broker. The full remote Skill path tree is copied into the Broker's stable local folk root without overwriting prior Forks or conflicting paths.
+- Added **Delete Permanently** for individual Skill and folder entries in Skills Trash, available from both the webview and Navigation context menu. **Empty Trash** remains available for deleting everything.
+
+## [2.6.13] - 2026-09-04
+
+### Changed
+- Server subscriptions are now link-only. Publishers share Server name, grouping metadata, tags, and network links; commands, Python configuration, manifests, and source files never enter the subscription bundle or cache.
+- Subscribers can inspect and open validated HTTP(S) Server links, but cannot Fork Server code. Code distribution remains the responsibility of a separate repository such as GitHub.
+- The Servers view now labels subscribed entries as **Subscribed Server Links** rather than recipes.
+
+## [2.6.12] - 2026-09-04
+
+### Changed
+- Forked Packages are now created as usable direct children of `packages/`, named `<original>_<Broker>`, with numeric suffixes (`1`, `2`, …) for collisions.
+- Forked Package list and detail views display a provenance tag containing the original package name, Broker, publisher user, and publisher hostname.
+
+### Fixed
+- Subscribed Server source files now aggregate into one Server row per recipe. The row title comes from `server.recipe.json` instead of exposing each source file as a separate Server.
+
+## [2.6.11] - 2026-09-04
+
+### Changed
+- Renaming a subscribed Broker now immediately changes its virtual group name across Skills, Notes, Papers, Prompts, Scripts, Packages, and Servers. Clearing the local name restores the published Broker name.
+- Skills Trash is always rendered after all local and subscribed Skill groups.
+
+### Fixed
+- Inline action errors now remain visible below their originating action row, include a dismiss button, and replace prior errors instead of stacking.
+
+## [2.6.10] - 2026-09-04
+
+### Added
+- Added response-driven pending states for Subscription actions. Buttons disable immediately with labels such as **Publishing…**, **Subscribing…**, **Copying…**, and **Forking…**.
+- Added command-specific timeouts and dismissible inline errors below the originating action row. Repeated failures replace the existing error instead of stacking.
+- Added explicit completion feedback for Gateway settings, Online/Offline, Broker Publish/Create/Delete, Subscribe/Refresh/Remove, Copy Link, Rename, Unblock, and Fork.
+
+### Fixed
+- Skills Trash is now always visible, including its empty state. Skill and folder deletion use working in-webview confirmation, return visible results, and refresh Trash immediately.
+- Subscriber Rename now uses a functional in-webview input dialog instead of the browser-native prompt blocked by VS Code webviews.
+- Subscription errors remain attached to the triggering action and are no longer erased by an intermediate automatic state refresh.
+
+## [2.6.9] - 2026-09-04
+
+### Added
+- Added **Skills Trash**. Deleting a Skill or Skill folder moves it to a hidden path-preserving Trash; entries can be restored, and only **Empty Trash** permanently deletes them.
+- Added Subscriber-local Rename on the subscribed Broker card context menu. The alias affects only the current Subscriber and never changes the published Broker name.
+
+### Changed
+- New Fork roots are uniquely identified by a stable hash of Broker name, publisher user, and publisher hostname. Their technical path is `_folk_<Broker> - <user> - <host>--<hash>`, while the UI displays `Broker - user - host` with the **folk** marker.
+- Share Broker **Copy Link** and **Delete** actions now use explicit secondary and destructive button styling.
+
+## [2.6.8] - 2026-09-04
+
+### Changed
+- Subscribed Brokers now use the same collapsed-card interaction as Share Brokers. Cards show only Broker name, status, revision, and last Sync; host, endpoint, cached content metadata, and actions appear after expansion.
+- Subscription titles prioritize the published Broker name, including recovery from legacy cached summaries, instead of displaying the publisher user/hostname identity.
+- Knowledge Root setup no longer offers or preselects an invented `~/personal-knowledge` default. Users must reuse a verified path, browse an existing folder, or explicitly enter and confirm a path.
+
+### Fixed
+- Existing Share Brokers use authoritative published counts for `selected`; automatic status refreshes no longer create an empty draft that changes the display to `0 selected`.
+- Live Chatroom SQLite databases are excluded from Knowledge Root Git commits.
+
+## [2.6.7] - 2026-09-04
+
+### Changed
+- Local `_folk_<Broker>` roots display the Broker name with a **folk** marker in both the Knowledge webview and Navigation tree while retaining the original path for all operations.
+- Folk roots are persistent organization reminders: each root is Git-tracked and remains after its contents are moved into the user's own system, until the user explicitly deletes the root folder.
+
+## [2.6.6] - 2026-09-04
+
+### Added
+- Added **Fork to Local** to the right-click menu for subscribed files and folders. Folder Forks atomically preserve the complete remote subtree and refuse to merge into an existing local folder.
+
+### Changed
+- Share Brokers now appear as compact collapsed cards. Clicking a card expands its configuration below it, split into **General**, **ACL**, and **Shared Content** tabs.
+- Subscribed Broker groups and nested content folders remain collapsed until explicitly opened.
+
+### Fixed
+- Shared Content now reports the Broker's authoritative published counts instead of showing zero when the current local catalog cannot rematch an existing published selection.
+
+## [2.6.5] - 2026-09-04
+
+### Changed
+- Subscribed Skills, Notes, Papers, Prompts, and Scripts now follow their remote folder hierarchy instead of appearing as a flat list under each Broker.
+- Subscribed Packages remain one row per package with stable folder counts, truncation, and Fork actions.
+
+## [2.6.4] - 2026-09-04
+
+### Added
+- Added **Fork to Local** for subscribed Skills, Notes, Papers, Prompts, Scripts, and Packages.
+- Single-file Forks preserve the complete remote path under `<type>/_folk_<BrokerName>/`; for example, `skills/_folk_CreativeGen/Ads/Data Quality/assetquality-snorkel-weak-supervision.md`.
+- Package Forks copy the complete package under `packages/_folk_<BrokerName>/<package>/`. Forks are independent local copies, never overwritten by subscription refreshes, and refuse to overwrite an existing local destination.
+
+### Changed
+- The Packages view now separates **Local Packages** from **Subscribed Packages**. Subscribed content is grouped by Broker and displayed once per package instead of once per package file.
+- Subscription records and provenance now retain the actual Broker name so `_folk_` roots do not depend on machine publisher names or user/host identity.
+
+## [2.6.3] - 2026-09-03
+
+### Added
+- Added **Subscription** to the Navigation tree with exactly two groups: **Brokers** and **Subscribers**. Broker items open their settings directly.
+- Added **Copy Link** and **Delete** beside each Broker title in the left Broker list.
+- Added explicit **Go Online** and **Go Offline** controls for the machine Node Gateway.
+
+### Changed
+- New and legacy-loopback Broker configurations now default the Invite interface to the machine hostname.
+- Online runs the Gateway as a detached machine daemon that survives VS Code and SSH disconnects, matching managed Server process behavior.
+- Published Shared Content stays collapsed until explicitly expanded; editor footers no longer duplicate Broker list actions.
+
+## [2.6.2] - 2026-09-03
+
+### Fixed
+- Removed MQTT browser-environment checks from the Node bundle so VS Code 1.136's Extension Host no longer raises repeated `navigator` migration errors during PKM activation.
+- Kept Subscription health checks while suppressing unchanged 304/Gateway notifications, preventing redundant once-per-minute Navigation and Subscription UI rerenders.
+
+## [2.6.1] - 2026-09-03
+
+### Fixed
+- Preserved unsaved Shared Content selections and expanded tree nodes across periodic Subscription refreshes.
+- Made folder selection cascade to descendant folders and files, update selected counts immediately, and keep explicit child exclusions after refresh.
+- Clarified Broker Audience as **Discoverable · Gateway catalog** or **Unlisted · Magic Link only**; discovery never bypasses Network ACL, Account ACL, or Secret Protection.
+- Bundled the IP policy runtime so packaged installations activate without a workspace `node_modules` directory.
+
+## [2.6.0] - 2026-09-03
+
+This release adds a decentralized Shared Market for publishing and subscribing to selected PKM content across reachable machines.
+
+### Added
+- Added a full-width **Subscription** tab with a long-lived per-machine Node Gateway, selectable advertised interface, stable port, signed `pkmshare:v1` Magic Links, mutable Shares, local aliases, manual refresh, and removal.
+- Added mixed Shares for Skills, Notes, Papers, Prompts, Scripts, Packages, and sanitized portable Server recipes. Exact-item selections remain fixed; explicitly shared folders automatically include future files.
+- Added metadata-only MQTT 3.1.1 retained notifications over WebSocket using Aedes and MQTT.js. Control signals contain revision, type counts, topics, tags, and hashes but never content; HTTP ETag polling remains the canonical fallback.
+- Reused the Sync bundle format and verification path for background transfers into atomically replaced machine-local subscription caches.
+- Added read-only subscription alias groups and isolated Server recipe views. Every cached file has a provenance sidecar recording alias, publisher, node, Share, remote path, revision, hash, and sync time.
+- Removing a subscription deletes its complete machine-local cache and refreshes every affected virtual view immediately. Health monitoring warns when the local Common Communication Port becomes unavailable or a remote Broker cannot be reached; verified caches stay readable offline and local Gateway loss is recovered automatically when possible.
+- Added explicit MCP tools `list_subscriptions`, `search_subscribed_content`, and `get_subscribed_content`. Default local knowledge searches remain isolated from subscribed caches.
+- Added a Broker master-detail editor with a recursive TreeView for selecting exactly which content and folders each Broker shares, plus Subscriber aliases, usage statistics, and security-event visibility.
+
+### Security
+- Added signed node/Share identity, short-lived single-use transfer tickets, exact MQTT subscription ACLs, disabled remote publishing, request limits, transfer concurrency caps, byte throttling, backpressure, strict timeouts, and checksum verification.
+- Open Brokers share the stable Common Control Port. Each Secret Protected Broker owns an independent hidden Control Port carried only in its separate `pkms:v1` secret; its Magic Link is insufficient for access, and the secret gates metadata as well as Sync authorization.
+- After authorization, each Sync uses a separate random or configured Data Broker port. Transfer payloads are port- and ticket-bound encrypted, and the single-use endpoint closes after completion or expiry.
+- Added standard Casbin ACL enforcement for discovery, metadata, Sync requests, downloads, and MQTT subscriptions. Account rules, exact IP/CIDR/wildcard network rules, and automatic blocks use deny-overrides and default-deny semantics.
+- Added per-Broker Subscriber usage statistics, security events, Blocklist/Whitelist controls, and three-strike protection: three incorrect secret proofs permanently block that source IP until manual Unblock. Broker owners can rotate secrets manually; rotation invalidates old credentials and waits for the Gateway to activate the new verifier before revealing the new secret.
+- Subscription caches live exclusively under VS Code machine-local `globalStorage`; background updates never write to the Knowledge Root or create Git commits.
+- Raised the minimum VS Code version to `1.90.0` for the Node 20 runtime required by the current audited Aedes release.
+
+### Changed
+- Reserved port `19877` for the PKM Node Gateway and moved legacy manual Magic Code Sync's default to `19878`.
+- Updated Mermaid and DOMPurify to patched versions; production dependency audit reports zero vulnerabilities.
+
 ## [2.5.5] - 2026-09-02
 
 This patch removes misleading legacy Chatroom approval behavior and forces generated MCP Chatroom code to refresh.

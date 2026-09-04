@@ -34,7 +34,7 @@ for (const command of ["envAdd", "envUpdate", "envDelete", "envMigrate", "envCre
 }
 assert.doesNotMatch(extension, /applyStatus\(new PkTreeItem\(this\.text\("tabs\.servers"\), "root-servers"/);
 assert.doesNotMatch(extension, /applyStatus\(new PkTreeItem\(this\.text\("tabs\.chatroom"\), 'root-chatroom'/);
-assert.match(extension, /case 'root-servers': return this\._serverItems\(\[\]\)/);
+assert.match(extension, /case 'root-servers': return this\._serverRootItems\(\)/);
 assert.match(extension, /case 'server-group': return this\._serverItems\(element\.nodeData\.path\)/);
 assert.match(extension, /case 'server-ungrouped-group': return this\._serverItems\(\[\], true\)/);
 assert.match(extension, /private _serverItems\(groupPath: string\[\], ungroupedOnly = false\): PkTreeItem\[\]/);

@@ -3,6 +3,27 @@
 const fs = require("fs");
 const vm = require("vm");
 const path = require("path");
+const esbuild = require("esbuild");
+
+esbuild.buildSync({
+  entryPoints: [path.join(__dirname, "..", "src", "subscription-mqtt-client.ts")],
+  bundle: true,
+  platform: "node",
+  format: "cjs",
+  define: { navigator: "undefined" },
+  outfile: path.join(__dirname, "..", "dist", "subscription-mqtt-client.js"),
+});
+if (/\bnavigator\b/.test(fs.readFileSync(path.join(__dirname, "..", "dist", "subscription-mqtt-client.js"), "utf8"))) {
+  throw new Error("subscription MQTT bundle must not access VS Code's migrated Node navigator global");
+}
+
+esbuild.buildSync({
+  entryPoints: [path.join(__dirname, "..", "src", "subscription-ip-policy.ts")],
+  bundle: true,
+  platform: "node",
+  format: "cjs",
+  outfile: path.join(__dirname, "..", "dist", "subscription-ip-policy.js"),
+});
 
 const htmlPath = path.join(__dirname, "..", "dist", "webview", "panel.html");
 let html = fs.readFileSync(htmlPath, "utf-8");

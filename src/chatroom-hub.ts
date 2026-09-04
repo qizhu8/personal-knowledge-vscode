@@ -289,7 +289,7 @@ export class ChatHub {
         resolve();
       });
     });
-    this.heartbeat = setInterval(() => this.sweep(), 30_000);
+    this.heartbeat = setInterval(() => this.sweep(), 60_000);
     this.heartbeat.unref?.();
     this.log(`chat hub listening on ${this._port} (ws + browser view)`);
   }

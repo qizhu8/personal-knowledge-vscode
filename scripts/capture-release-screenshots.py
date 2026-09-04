@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Capture privacy-safe release screenshots from the real built PKM webview."""
 import argparse
+import os
+import socket
 import subprocess
 import sys
 import time
@@ -11,6 +13,18 @@ from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
 SCREENSHOTS = ROOT / "resources" / "screenshots"
+PREVIEW_URL = "http://127.0.0.1:4178"
+
+
+def available_port(preferred: int = 4178) -> int:
+    for port in range(preferred, preferred + 20):
+        with socket.socket() as candidate:
+            try:
+                candidate.bind(("127.0.0.1", port))
+                return port
+            except OSError:
+                continue
+    raise RuntimeError("No release preview port is available")
 
 
 def wait_for_server(url: str, timeout: float = 10.0) -> None:
@@ -31,6 +45,7 @@ def assert_private_demo(page, route: str, require_markers: bool = True) -> None:
         "config": ["/home/demo/", "PKM Integration Status"],
         "chat": ["Release Planning", "Docs Reviewer"],
         "papers": [],
+        "subscriptions": ["AAGL Working Set", "Creative Generation Team"],
     }[route]
     if require_markers:
         for value in required:
@@ -48,8 +63,10 @@ def assert_private_demo(page, route: str, require_markers: bool = True) -> None:
 
 
 def capture_page(page, route: str, output: str) -> None:
-    page.goto(f"http://127.0.0.1:4178/{route}", wait_until="networkidle")
+    page.goto(f"{PREVIEW_URL}/{route}", wait_until="networkidle")
     wait_until_ready(page)
+    if route == "subscriptions":
+        page.wait_for_selector(".sub-dashboard")
     assert_private_demo(page, route)
     target = SCREENSHOTS / output
     page.screenshot(path=str(target), full_page=False)
@@ -124,7 +141,7 @@ def validate_image_metadata(file_path: Path) -> None:
 def capture_chat_gif(page) -> None:
     frames_dir = SCREENSHOTS / ".chatroom-frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
-    page.goto("http://127.0.0.1:4178/chat", wait_until="networkidle")
+    page.goto(f"{PREVIEW_URL}/chat", wait_until="networkidle")
     wait_until_ready(page)
     assert_private_demo(page, "chat")
     install_cursor(page)
@@ -172,7 +189,7 @@ def capture_chat_gif(page) -> None:
 def capture_papers_gif(page) -> None:
     frames_dir = SCREENSHOTS / ".papers-frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
-    page.goto("http://127.0.0.1:4178/papers", wait_until="networkidle")
+    page.goto(f"{PREVIEW_URL}/papers", wait_until="networkidle")
     wait_until_ready(page)
     assert_private_demo(page, "papers", require_markers=False)
     install_cursor(page)
@@ -230,7 +247,7 @@ def capture_papers_gif(page) -> None:
 def capture_installation_gif(page) -> None:
     frames_dir = SCREENSHOTS / ".installation-frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
-    page.goto("http://127.0.0.1:4178/config", wait_until="networkidle")
+    page.goto(f"{PREVIEW_URL}/config", wait_until="networkidle")
     wait_until_ready(page)
     assert_private_demo(page, "config")
     install_cursor(page)
@@ -259,6 +276,7 @@ def capture_installation_gif(page) -> None:
 
 
 def main() -> int:
+    global PREVIEW_URL
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gif", action="store_true", help="Also capture Chatroom, Papers graph, and installation GIFs")
     parser.add_argument("--no-build", action="store_true", help="Reuse the existing dist/ bundle")
@@ -266,14 +284,18 @@ def main() -> int:
     if not args.no_build:
         subprocess.run(["npm", "run", "build"], cwd=ROOT, check=True)
     SCREENSHOTS.mkdir(parents=True, exist_ok=True)
-    server = subprocess.Popen(["node", "scripts/release-preview-server.js"], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    preview_port = available_port()
+    PREVIEW_URL = f"http://127.0.0.1:{preview_port}"
+    preview_env = {**os.environ, "PORT": str(preview_port)}
+    server = subprocess.Popen(["node", "scripts/release-preview-server.js"], cwd=ROOT, env=preview_env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     try:
-        wait_for_server("http://127.0.0.1:4178/config")
+        wait_for_server(f"{PREVIEW_URL}/config")
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
             page = browser.new_page(viewport={"width": 1600, "height": 1000}, device_scale_factor=1)
             capture_page(page, "config", "config-dashboard.png")
             capture_page(page, "chat", "chatroom.png")
+            capture_page(page, "subscriptions", "subscription.png")
             if args.gif:
                 capture_chat_gif(page)
                 capture_papers_gif(page)

@@ -9,7 +9,7 @@ import { managedEnvironmentsRoot } from "./environment-paths";
 import { isAbsoluteForPlatform, isForeignAbsolutePath } from "./store-path";
 
 // ── MCP server scaffold ────────────────────────────────────────────────────
-export const UNIFIED_MCP_VERSION = "2.5.5";
+export const UNIFIED_MCP_VERSION = "2.6.0";
 const KNOWLEDGE_MCP_VERSION = "1.0.0";
 const CHAT_MCP_VERSION = "2.3.1";
 
@@ -385,6 +385,7 @@ export function generateMcpServer(context: vscode.ExtensionContext): { serverPat
   const serverPy  = path.join(mcpDir, "server.py");
   const reqTxt    = path.join(mcpDir, "requirements.txt");
   const storeFwd  = storePath.replace(/\\/g, "/");
+  const subscriptionCacheFwd = path.join(context.globalStorageUri.fsPath, "subscriptions", "cache").replace(/\\/g, "/");
 
   fs.mkdirSync(mcpDir, { recursive: true });
   generateChatMcpServer(context);
@@ -400,7 +401,8 @@ this server appear immediately in the VS Code panel via its file watcher, and
 show up in git history as readable .md diffs.
 
 Read tools:  list_skills, search_skills, get_skill, list_notes, search_notes, get_note,
-             list_papers, search_papers, get_paper, paper_graph
+             list_papers, search_papers, get_paper, paper_graph,
+             list_subscriptions, search_subscribed_content, get_subscribed_content
 Write tools: add_note, update_note, delete_note, add_skill, update_skill, delete_skill,
              add_paper, update_paper, delete_paper
 
@@ -426,6 +428,7 @@ except ImportError:
 STORE  = Path(r"${storeFwd}")
 NOTES  = STORE / "notes"
 SKILLS = STORE / "skills"
+SUBSCRIPTIONS = Path(r"${subscriptionCacheFwd}")
 mcp = FastMCP("pkm")
 
 @mcp.tool()
@@ -433,7 +436,7 @@ def check_version() -> dict:
   """Return the unified server version and its component schema versions."""
   return {"name": "pkm", "version": SERVER_VERSION,
           "components": {"knowledge": KNOWLEDGE_SCHEMA_VERSION, "chat": CHAT_SCHEMA_VERSION},
-          "capabilities": ["personal-knowledge", "papers", "pkm-chatroom", "pkm-skills"],
+          "capabilities": ["personal-knowledge", "papers", "pkm-chatroom", "pkm-skills", "subscriptions"],
           "chat_discovery_tool": "chat_capabilities",
           "skill_discovery_tool": "skill_capabilities"}
 
@@ -1132,6 +1135,88 @@ def paper_graph(topic: Optional[str] = None, limit: int = 10, neighbors: bool = 
             if t and t in node_set:
                 edges.append({"from": t, "to": p["slug"], "note": c["note"]})
     return json.dumps({"nodes": nodes, "edges": edges, "total": len(filtered), "shown": len(nodes)})
+
+
+def _subscription_records():
+    rows = []
+    if not SUBSCRIPTIONS.exists():
+      return rows
+    for metadata_path in SUBSCRIPTIONS.glob("*/*/_subscription.json"):
+      try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["cache_root"] = str(metadata_path.parent)
+        rows.append(metadata)
+      except Exception:
+        continue
+    return rows
+
+
+@mcp.tool()
+def list_subscriptions() -> str:
+    """List physically isolated, machine-local PKM subscriptions and their provenance.
+    This does not search or modify the user's local Knowledge Root."""
+    rows = []
+    for record in _subscription_records():
+      rows.append({k: record.get(k) for k in ["subscriptionId", "alias", "publisher", "nodeId", "shareId", "revision", "collectionHash", "syncedAt"]})
+    return json.dumps(rows, ensure_ascii=False)
+
+
+@mcp.tool()
+def search_subscribed_content(query: str, content_type: Optional[str] = None,
+                  alias: Optional[str] = None, limit: int = 20) -> str:
+    """Explicitly search downloaded subscription caches. Results remain read-only and
+    separate from local Skills/Notes/Papers/Prompts/Scripts/Packages/Servers."""
+    needle = (query or "").casefold()
+    wanted_type = (content_type or "").strip().lower()
+    wanted_alias = (alias or "").casefold()
+    results = []
+    for record in _subscription_records():
+      if wanted_alias and wanted_alias not in str(record.get("alias") or record.get("publisher") or "").casefold():
+        continue
+      root = Path(record["cache_root"]) / "content"
+      if not root.exists():
+        continue
+      for file_path in root.rglob("*"):
+        if not file_path.is_file() or file_path.name.endswith(".pkm-source.json"):
+          continue
+        relative = file_path.relative_to(root)
+        item_type = relative.parts[0] if relative.parts else ""
+        if wanted_type and item_type != wanted_type:
+          continue
+        try:
+          text = file_path.read_text(encoding="utf-8")
+        except Exception:
+          continue
+        if needle and needle not in str(relative).casefold() and needle not in text.casefold():
+          continue
+        index = text.casefold().find(needle) if needle else 0
+        snippet = text[max(0, index - 100):index + max(160, len(needle) + 100)].replace("\\n", " ")
+        results.append({
+          "node_id": record.get("nodeId"), "share_id": record.get("shareId"),
+          "alias": record.get("alias") or record.get("publisher"), "content_type": item_type,
+          "path": "/".join(relative.parts[1:]), "snippet": snippet,
+          "revision": record.get("revision"), "synced_at": record.get("syncedAt"),
+        })
+        if len(results) >= max(1, min(limit, 100)):
+          return json.dumps(results, ensure_ascii=False)
+    return json.dumps(results, ensure_ascii=False)
+
+
+@mcp.tool()
+def get_subscribed_content(node_id: str, share_id: str, content_type: str, path: str) -> str:
+    """Read one explicit subscribed cache item returned by search_subscribed_content.
+    Returns content plus its publisher/subscriber provenance; never writes local content."""
+    base = (SUBSCRIPTIONS / node_id / share_id / "content" / content_type).resolve()
+    target = (base / path).resolve()
+    if base not in target.parents or not target.is_file() or target.name.endswith(".pkm-source.json"):
+      return json.dumps({"error": "Subscribed item not found."})
+    try:
+      content = target.read_text(encoding="utf-8")
+      provenance_path = Path(str(target) + ".pkm-source.json")
+      provenance = json.loads(provenance_path.read_text(encoding="utf-8")) if provenance_path.exists() else {}
+      return json.dumps({"content": content, "provenance": provenance}, ensure_ascii=False)
+    except Exception as error:
+      return json.dumps({"error": str(error)})
 
 
 from chat_server import mcp as chat_mcp

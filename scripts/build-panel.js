@@ -11,6 +11,7 @@ const parts = [
   "20-knowledge.js",
   "30-environments.js",
   "40-servers.js",
+  "45-subscriptions.js",
   "50-mcp.js",
   "60-init.js",
 ];

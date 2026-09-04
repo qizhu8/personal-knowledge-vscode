@@ -30,6 +30,7 @@
       <button class="tab" data-tab="scripts">Scripts</button>
       <button class="tab" data-tab="environments">Envs</button>
       <button class="tab" data-tab="servers">Servers</button>
+      <button class="tab" data-tab="subscriptions">Subscription</button>
       <button class="tab" data-tab="chatroom">Chatroom</button>
       <button class="tab" data-tab="mcp">Config</button>
     </div>
@@ -46,6 +47,7 @@
   <div id="sidebar">
     <div id="sidebar-filters"></div>
     <div id="item-list"></div>
+    <div id="knowledge-trash-dock" class="hidden"></div>
   </div>
   <div id="layout-resizer" title="Drag to resize navigation"><button id="sidebar-toggle" class="panel-collapse-toggle" onclick="event.stopPropagation();toggleMainSidebar()" onmousedown="event.stopPropagation()" title="Minimize category tree" aria-label="Minimize category tree">◀</button></div>
   <div id="main">
@@ -225,7 +227,7 @@
             <option value="480">8 hours</option>
           </select>
           <span style="font-size:12px;color:var(--muted);width:50px">Port</span>
-          <input id="sm-port" type="number" value="19877" style="width:80px;flex:none">
+          <input id="sm-port" type="number" value="19878" style="width:80px;flex:none">
         </div>
       </div>
       <button class="tbtn" style="border-color:var(--accent);width:100%" onclick="doCreateSync()">Generate Magic Code</button>
@@ -256,8 +258,6 @@
 </div>
 </div>
 
-<script src="%%PANEL_JS%%"></script>
-
 <!-- Loading banner (shown until first data arrives) -->
 <div id="loading-banner">
   <div class="loading-logo">📚</div>
@@ -265,4 +265,5 @@
   <div class="loading-sub">Loading your knowledge store…</div>
   <div class="loading-bar"><div class="loading-bar-fill"></div></div>
 </div>
+<script src="%%PANEL_JS%%"></script>
 </body></html>
