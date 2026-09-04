@@ -2,7 +2,7 @@
   "name": "personal-knowledge",
   "displayName": "Personal Knowledge Manager",
   "description": "%extension.description%",
-  "version": "2.7.0",
+  "version": "2.7.1",
   "publisher": "Uone",
   "author": {
     "name": "Yu Wang"

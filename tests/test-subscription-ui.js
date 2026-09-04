@@ -69,6 +69,8 @@ assert.match(panel, /event\.stopPropagation\(\);subscriptionDeleteShare/);
 assert.match(panel, /Delete Broker.*Subscriber caches are not deleted/);
 assert.doesNotMatch(panel, /if \(confirm\(`Delete Share/);
 assert.match(panel, /function beginAction\(command, button\)/);
+assert.match(panel, /button\.disabled \|\| pendingActionButtons\.has\(command\)/);
+assert.match(panel, /if \(!beginAction\(command, button \|\| window\.event\?\.currentTarget\)\) return/);
 assert.match(panel, /function hasPendingActionPrefix\(prefix\)/);
 assert.match(panel, /state\.tab === 'subscriptions' && !hasPendingActionPrefix\('subscription'\)/);
 assert.match(panel, /const actionTimeouts =/);

@@ -215,6 +215,8 @@ export class SharedMarketManager {
   private gatewayError = "";
   private gatewayConfigurationId = "";
   private warned = new Set<string>();
+  private publishedRefresh: Promise<number> | undefined;
+  private publishedRefreshAgain = false;
   private readonly publisherUser: string;
   private readonly publisherHost: string;
 
@@ -471,11 +473,25 @@ export class SharedMarketManager {
   }
 
   async refreshPublishedShares(): Promise<number> {
-    let changed = 0;
-    for (const share of [...this.state.shares]) {
-      const refreshed = await this.upsertShare({ shareId: share.shareId, name: share.name, visibility: share.visibility, contentTypes: share.contentTypes, selected: share.selected, folders: share.folders || {}, accessMode: share.accessMode, ipRules: share.ipRules || [], accountMode: share.accountMode, accountRules: share.accountRules || [], protection: share.protection, controlPort: share.controlPort, dataPort: share.dataPort });
-      if (refreshed.revision !== share.revision) changed += 1;
+    if (this.publishedRefresh) {
+      this.publishedRefreshAgain = true;
+      return this.publishedRefresh;
     }
+    const refresh = this.refreshPublishedSharesUntilCurrent();
+    this.publishedRefresh = refresh;
+    try { return await refresh; }
+    finally { if (this.publishedRefresh === refresh) this.publishedRefresh = undefined; }
+  }
+
+  private async refreshPublishedSharesUntilCurrent(): Promise<number> {
+    let changed = 0;
+    do {
+      this.publishedRefreshAgain = false;
+      for (const share of [...this.state.shares]) {
+        const refreshed = await this.upsertShare({ shareId: share.shareId, name: share.name, visibility: share.visibility, contentTypes: share.contentTypes, selected: share.selected, folders: share.folders || {}, accessMode: share.accessMode, ipRules: share.ipRules || [], accountMode: share.accountMode, accountRules: share.accountRules || [], protection: share.protection, controlPort: share.controlPort, dataPort: share.dataPort });
+        if (refreshed.revision !== share.revision) changed += 1;
+      }
+    } while (this.publishedRefreshAgain);
     return changed;
   }
 

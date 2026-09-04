@@ -61,6 +61,9 @@ async function main() {
   fs.writeFileSync(path.join(sampleServer, "app.py"), "print('portable server source')\n");
   servers.initServers(serversRoot, path.join(root, "server-state"), await freePort());
   filestore.skillUpsert({ name: "Shared Skill", description: "Metadata only summary", category: "Research/AAGL", tags: ["aagl", "pipeline"], content: "SECRET BODY MUST NOT ENTER CONTROL SIGNAL" });
+  filestore.noteUpsert({ slug: "", title: "Indexed Note", type: "general", tags: [], content: "INDEXED NOTE BODY" });
+  assert.strictEqual(filestore.noteList(undefined, 10)[0].content, undefined, "noteList must remain metadata-only by default");
+  assert.strictEqual(filestore.noteList(undefined, 10, true)[0].content, "INDEXED NOTE BODY", "internal link indexing may opt into parsed content");
   fs.mkdirSync(path.join(store, "packages", "shared-tool", "src"), { recursive: true });
   fs.writeFileSync(path.join(store, "packages", "shared-tool", "README.md"), "# Shared Tool\n");
   fs.writeFileSync(path.join(store, "packages", "shared-tool", "src", "tool.py"), "VALUE = 42\n");
@@ -222,6 +225,16 @@ async function main() {
     assert.strictEqual(exactShare.revision, 2, "exact file Share must not change when a sibling is added");
     const exactBundle = JSON.parse(fs.readFileSync(exactShare.snapshotPath, "utf8"));
     assert(!exactBundle.skills.some(item => item.name === "Future Folder Skill"), "partial file Share must not include future siblings");
+
+    filestore.skillUpsert({ name: "Concurrent Future Skill", category: "Research/AAGL", tags: ["future"], content: "ADDED BEFORE CONCURRENT REFRESH" });
+    const [firstConcurrentRefresh, secondConcurrentRefresh] = await Promise.all([
+      manager.refreshPublishedShares(),
+      manager.refreshPublishedShares(),
+    ]);
+    assert.strictEqual(firstConcurrentRefresh, 1);
+    assert.strictEqual(secondConcurrentRefresh, 1, "concurrent refresh callers must share the active publication result");
+    const concurrentFolderShare = manager.snapshot.shares.find(item => item.shareId === folderShare.shareId);
+    assert.strictEqual(concurrentFolderShare.revision, 3, "concurrent automatic refreshes must publish exactly one new revision");
 
     const protectedControlPort = await freePort();
     const protectedDataPort = await freePort();

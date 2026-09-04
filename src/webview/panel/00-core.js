@@ -291,7 +291,8 @@ function timeoutAction(command, entry) {
 
 function beginAction(command, button) {
   const timeout = actionTimeouts[command];
-  if (!timeout || !(button instanceof HTMLButtonElement) || button.disabled) return;
+  if (!timeout || !(button instanceof HTMLButtonElement)) return true;
+  if (button.disabled || pendingActionButtons.has(command)) return false;
   clearActionError(button);
   const entries = pendingActionButtons.get(command) || [];
   const entry = { button, html:button.innerHTML, label:(button.textContent || command).trim(), timer:0 };
@@ -302,6 +303,7 @@ function beginAction(command, button) {
   button.setAttribute('aria-busy','true');
   button.classList.add('action-pending');
   button.textContent = button.dataset.pendingLabel || 'Working…';
+  return true;
 }
 
 function finishAction(...commands) {
@@ -779,7 +781,7 @@ window.addEventListener('message', e => {
 });
 
 function ask(command, payload, button) {
-  beginAction(command, button || window.event?.currentTarget);
+  if (!beginAction(command, button || window.event?.currentTarget)) return;
   vscode.postMessage({ command, ...payload });
 }
 
