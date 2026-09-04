@@ -459,20 +459,43 @@ function markdownPreviewPath(kind: "note" | "skill" | "paper", key: string): str
 
 function notePreviewPath(slug: string): string { return markdownPreviewPath("note", slug); }
 
+function noteLinkIndex(notes: any[]): {
+  bySlug: Map<string, any>;
+  titleIndex: Map<string, number>;
+  basenameIndex: Map<string, number>;
+} {
+  const bySlug = new Map<string, any>();
+  const titleIndex = new Map<string, number>();
+  const basenameIndex = new Map<string, number>();
+  notes.forEach((note, index) => {
+    const slug = String(note.slug || "").toLowerCase();
+    const title = String(note.title || "").toLowerCase();
+    if (slug && !bySlug.has(slug)) bySlug.set(slug, note);
+    if (title && !titleIndex.has(title)) titleIndex.set(title, index);
+    const basename = slug.split("/").pop() || slug;
+    if (basename && !basenameIndex.has(basename)) basenameIndex.set(basename, index);
+  });
+  return { bySlug, titleIndex, basenameIndex };
+}
+
 function rewriteLiveNoteLinks(markdown: string, slug: string): string {
-  const all = noteList(undefined, 100000) as any[];
+  const all = noteList(undefined, 100000, true) as any[];
+  const index = noteLinkIndex(all);
   const resolve = (target: string): string | null => {
     if (/\.md(?:[?#]|$)/i.test(target) || target.includes("/")) {
       const resolved = resolveNoteSlugFromPath(target, slug);
-      if (resolved && noteGet(resolved)) return resolved;
+      const resolvedNote = resolved ? index.bySlug.get(resolved.toLowerCase()) : undefined;
+      if (resolvedNote) return resolvedNote.slug;
     }
     const clean = target.replace(/\.md$/i, "");
-    if (noteGet(clean)) return clean;
+    const directNote = index.bySlug.get(clean.toLowerCase());
+    if (directNote) return directNote.slug;
     const needle = clean.toLowerCase();
     const base = needle.split("/").pop();
-    const hit = all.find(note => String(note.slug).toLowerCase() === needle
-      || String(note.title).toLowerCase() === needle
-      || String(note.slug).toLowerCase().endsWith("/" + base));
+    const titleMatch = index.titleIndex.get(needle);
+    const basenameMatch = base ? index.basenameIndex.get(base) : undefined;
+    const hitIndex = titleMatch === undefined ? basenameMatch : basenameMatch === undefined ? titleMatch : Math.min(titleMatch, basenameMatch);
+    const hit = hitIndex === undefined ? undefined : all[hitIndex];
     return hit?.slug || null;
   };
   return outsideCode(markdown, segment => segment
@@ -577,24 +600,24 @@ function rewriteNoteLinks(
 /** Collect the transitive closure of notes reachable from `rootSlug` via links,
  *  assign each a flat .html filename, and rewrite links to those filenames. */
 function collectLinkedNotes(rootSlug: string): any[] {
-  const root = noteGet(rootSlug);
+  const all = noteList(undefined, 100000, true) as any[];
+  const index = noteLinkIndex(all);
+  const root = index.bySlug.get(rootSlug.toLowerCase());
   if (!root) return [];
-  const all = noteList(undefined, 100000) as any[];
   const resolve = (target: string, fromSlug: string): string | null => {
     if (/\.md(\?|#|$)/i.test(target) || target.includes("/")) {
       const s = resolveNoteSlugFromPath(target, fromSlug);
-      if (s && noteGet(s)) return s;
+      const resolvedNote = s ? index.bySlug.get(s.toLowerCase()) : undefined;
+      if (resolvedNote) return resolvedNote.slug;
     }
     const direct = target.replace(/\.md$/i, "");
-    if (noteGet(direct)) return direct;
+    const directNote = index.bySlug.get(direct.toLowerCase());
+    if (directNote) return directNote.slug;
     const needle = direct.toLowerCase();
     const base = needle.split("/").pop() || needle;
-    const hit = all.find(
-      n => (n.title || "").toLowerCase() === needle ||
-           (n.slug || "").toLowerCase() === needle ||
-           (n.slug || "").toLowerCase().endsWith("/" + base) ||
-           (n.title || "").toLowerCase() === base,
-    );
+    const candidates = [index.titleIndex.get(needle), index.basenameIndex.get(base), index.titleIndex.get(base)]
+      .filter((value): value is number => value !== undefined);
+    const hit = candidates.length ? all[Math.min(...candidates)] : undefined;
     return hit ? hit.slug : null;
   };
   const used = new Set<string>();
@@ -616,7 +639,7 @@ function collectLinkedNotes(rootSlug: string): any[] {
     for (const raw of extractNoteLinks(note.content || "")) {
       const tslug = resolve(raw, cur);
       if (tslug && !visited.has(tslug)) {
-        const tn = noteGet(tslug);
+        const tn = index.bySlug.get(tslug.toLowerCase());
         if (tn) { visited.set(tslug, tn); filenames.set(tslug, mkFilename(tslug, tn.title)); queue.push(tslug); }
       }
     }
@@ -1205,6 +1228,7 @@ class ChatRoomManager {
   private secretStorage: vscode.SecretStorage | undefined;
   private archiveLimitBytes = 10 * 1024 * 1024;
   private crossWindowRefreshTimer: NodeJS.Timeout | undefined;
+  private storedRoomsRefresh: Promise<void> | undefined;
   private navigationStatusSignature = "";
   private static readonly MAX_MSGS = 1000;   // bounded visible transcript; full history remains durable in the Room DB
 
@@ -1809,6 +1833,13 @@ class ChatRoomManager {
   }
 
   async refreshStoredRooms(): Promise<void> {
+    if (this.storedRoomsRefresh) return this.storedRoomsRefresh;
+    this.storedRoomsRefresh = this.refreshStoredRoomsNow();
+    try { await this.storedRoomsRefresh; }
+    finally { this.storedRoomsRefresh = undefined; }
+  }
+
+  private async refreshStoredRoomsNow(): Promise<void> {
     if (!this.persistenceRoot || !this.installationId || !this.secretStorage) return;
     if (!this.hub) {
       this.hub = new ChatHub(m => log.info(m));
@@ -3137,10 +3168,10 @@ async function handleMessage(
     case "list": {
       const { tab, filter, q } = msg;
       const searchOptions = { regex: !!msg.regex, caseSensitive: !!msg.caseSensitive };
-      const listMatches = (value: unknown) => {
-        const source = searchOptions.regex ? String(q || "") : String(q || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        try { return new RegExp(source, searchOptions.caseSensitive ? "" : "i").test(JSON.stringify(value)); } catch { return false; }
-      };
+      const source = searchOptions.regex ? String(q || "") : String(q || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      let listPattern: RegExp | undefined;
+      try { listPattern = new RegExp(source, searchOptions.caseSensitive ? "" : "i"); } catch { /* invalid regex returns no matches */ }
+      const listMatches = (value: unknown) => !!listPattern?.test(JSON.stringify(value));
       let data: unknown;
       if (tab === "skills")    data = q ? skillSearch(q, searchOptions) : skillList(filter === "all" ? undefined : filter);
       else if (tab === "notes")   data = q ? noteSearch(q, searchOptions) : noteList(undefined, 500); // client-side filtering
@@ -5838,6 +5869,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         chatroomRefreshTimer = undefined;
         void getChatMgr().refreshStoredRooms().catch(error => log.warn(`chat: cross-window refresh failed: ${(error as Error).message}`));
       }, 200);
+      chatroomRefreshTimer.unref?.();
     };
     chatroomWatcher.onDidCreate(scheduleChatroomRefresh);
     chatroomWatcher.onDidChange(scheduleChatroomRefresh);
@@ -6769,20 +6801,34 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 // ── File watcher: auto-refresh when notes/skills change on disk ─────────────
 let _watcher: vscode.FileSystemWatcher | undefined;
+let _watcherRefreshTimer: NodeJS.Timeout | undefined;
+let _watcherSkillProjectionChanged = false;
 function startFileWatcher(context: vscode.ExtensionContext): void {
   _watcher?.dispose();
+  if (_watcherRefreshTimer) clearTimeout(_watcherRefreshTimer);
+  _watcherRefreshTimer = undefined;
+  _watcherSkillProjectionChanged = false;
   const pattern = new vscode.RelativePattern(getStorePath(), "{notes,skills,papers,prompts,scripts,packages,servers}/**/*");
   _watcher = vscode.workspace.createFileSystemWatcher(pattern);
   const onChange = (uri: vscode.Uri) => {
-    _treeProvider?.refresh();
-    panel?.webview.postMessage({ command: "reloaded" }); // re-fetch current tab
-    void sharedMarket?.refreshPublishedShares().then(changed => {
-      if (changed && panel) void handleMessage({ command: "subscriptionState" }, message => panel?.webview.postMessage(message), context);
-    }).catch(error => log.warn(`subscription publish refresh failed: ${(error as Error).message}`));
     if (uri.fsPath === path.join(getStorePath(), "skills", "System", "PKM", "PKM Skills.md")) {
-      panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
-      void offerPkmSkillProjectionUpdate(context);
+      _watcherSkillProjectionChanged = true;
     }
+    if (_watcherRefreshTimer) clearTimeout(_watcherRefreshTimer);
+    _watcherRefreshTimer = setTimeout(() => {
+      _watcherRefreshTimer = undefined;
+      _treeProvider?.refresh();
+      panel?.webview.postMessage({ command: "reloaded" }); // re-fetch current tab
+      void sharedMarket?.refreshPublishedShares().then(changed => {
+        if (changed && panel) void handleMessage({ command: "subscriptionState" }, message => panel?.webview.postMessage(message), context);
+      }).catch(error => log.warn(`subscription publish refresh failed: ${(error as Error).message}`));
+      if (_watcherSkillProjectionChanged) {
+        _watcherSkillProjectionChanged = false;
+        panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+        void offerPkmSkillProjectionUpdate(context);
+      }
+    }, 100);
+    _watcherRefreshTimer.unref?.();
   };
   _watcher.onDidCreate(onChange);
   _watcher.onDidChange(onChange);
@@ -6792,6 +6838,8 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
 
 export async function deactivate(): Promise<void> {
   _watcher?.dispose();
+  if (_watcherRefreshTimer) clearTimeout(_watcherRefreshTimer);
+  _watcherRefreshTimer = undefined;
   disposeServers();
   await chatMgr?.dispose();
   sharedMarket?.dispose();

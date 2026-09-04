@@ -15,6 +15,14 @@ on:
         description: Exact package.json version (required in publish mode)
         required: false
         type: string
+      channel:
+        description: Marketplace release channel
+        required: true
+        default: stable
+        type: choice
+        options:
+          - stable
+          - pre-release
 
 permissions:
   contents: read
@@ -22,7 +30,7 @@ permissions:
 
 jobs:
   publish:
-    name: ${{ inputs.mode == 'publish' && format('Publish {0}', inputs.version) || 'Show Marketplace identity' }}
+    name: ${{ inputs.mode == 'publish' && format('Publish {0} ({1})', inputs.version, inputs.channel) || 'Show Marketplace identity' }}
     runs-on: ubuntu-latest
     environment: marketplace
 
@@ -73,7 +81,11 @@ jobs:
 
       - name: Package VSIX
         if: inputs.mode == 'publish'
-        run: npx @vscode/vsce@3.9.2 package --out "personal-knowledge-${{ inputs.version }}.vsix"
+        shell: bash
+        run: |
+          args=()
+          if [[ "${{ inputs.channel }}" == "pre-release" ]]; then args+=(--pre-release); fi
+          npx @vscode/vsce@3.9.2 package "${args[@]}" --out "personal-knowledge-${{ inputs.version }}.vsix"
 
       - name: Verify Marketplace OIDC configuration
         shell: bash
@@ -115,6 +127,9 @@ jobs:
         if: inputs.mode == 'publish'
         shell: bash
         run: |
+          args=()
+          if [[ "${{ inputs.channel }}" == "pre-release" ]]; then args+=(--pre-release); fi
           npx @vscode/vsce@3.9.2 publish \
             --azure-credential \
+            "${args[@]}" \
             --packagePath "personal-knowledge-${{ inputs.version }}.vsix"

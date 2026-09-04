@@ -5,6 +5,21 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.7.1] - 2026-09-04
+
+> Pre-Release channel
+
+### Fixed
+- Prevented concurrent button actions with the same command from sharing one uncorrelated completion state and restoring later actions prematurely.
+- Serialized automatic Broker snapshot refreshes so filesystem event bursts cannot publish concurrently from the same revision.
+- Coalesced concurrent Stored Room refreshes to prevent stale results and duplicate persistence scans.
+- Preserved canonical Note slug casing while resolving case-insensitive cross-note links.
+
+### Changed
+- Indexed parsed Notes once during live preview and linked export, removing repeated synchronous file reads and linear link scans.
+- Debounced Knowledge Root filesystem event bursts into one Navigation, webview, and published-Broker refresh.
+- Compiled list-search regular expressions once per request instead of once per row.
+
 ## [2.7.0] - 2026-09-04
 
 ### Added

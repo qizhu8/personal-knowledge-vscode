@@ -201,11 +201,12 @@ function noteFromFile(f: MdFile): any {
 
 function allNoteFiles(): MdFile[] { const out: MdFile[] = []; walkMd(notesRoot(), "", out); return out; }
 
-export function noteList(type?: string, limit = 50): any[] {
+export function noteList(type?: string, limit = 50, includeContent = false): any[] {
   let rows = allNoteFiles().map(noteFromFile);
   if (type && type !== "all") rows = rows.filter(r => r.type === type);
   rows.sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""));
-  return rows.slice(0, limit).map(({ content, ...meta }) => meta);
+  const limited = rows.slice(0, limit);
+  return includeContent ? limited : limited.map(({ content, ...meta }) => meta);
 }
 
 export function noteSearch(q: string, options: SearchOptions = {}): any[] {
