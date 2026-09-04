@@ -1,6 +1,7 @@
 node_modules/
 dist/
 *.vsix
+skill_vault.md
 __pycache__/
 .vscode-test/
 .vscode/mcp.json
