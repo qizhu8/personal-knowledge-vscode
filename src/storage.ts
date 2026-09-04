@@ -90,6 +90,22 @@ export function promptGetAllVersionsOfFile(project: string, task: string, filena
 }
 
 // ── Packages ──────────────────────────────────────────────────────────────
+export interface PackageSource {
+  kind: "subscription-fork";
+  originalName: string;
+  brokerName: string;
+  publisherUser: string;
+  publisherHost: string;
+}
+
+function packageSource(dir: string): PackageSource | undefined {
+  try {
+    const value = JSON.parse(readFileSync(join(dir, ".pkm-package.json"), "utf8"));
+    if (value?.schema !== 1 || value?.kind !== "subscription-fork" || !value.originalName || !value.brokerName || !value.publisherUser || !value.publisherHost) return undefined;
+    return { kind: value.kind, originalName: String(value.originalName), brokerName: String(value.brokerName), publisherUser: String(value.publisherUser), publisherHost: String(value.publisherHost) };
+  } catch { return undefined; }
+}
+
 function walkFiles(dir: string, depth = 0): any[] {
   if (!existsSync(dir) || depth > 4) return [];
   return safeReadDir(dir).map(name => {
@@ -111,7 +127,7 @@ export function packageList() {
     }
     const lang = existsSync(join(dir, 'pyproject.toml')) ? 'python'
       : existsSync(join(dir, 'package.json')) ? 'node' : 'unknown';
-    return { name, description, lang };
+    return { name, description, lang, source: packageSource(dir) };
   });
 }
 
@@ -120,7 +136,7 @@ export function packageGet(name: string) {
   if (!existsSync(dir)) return null;
   const readmePath = ['README.md', 'README.rst', 'readme.md'].map(r => join(dir, r)).find(existsSync);
   const readme = readmePath ? readFileSync(readmePath, 'utf-8') : '*(No README found)*';
-  return { name, readme, tree: walkFiles(dir) };
+  return { name, readme, tree: walkFiles(dir), source: packageSource(dir) };
 }
 
 export function packageFileGet(name: string, relPath: string) {

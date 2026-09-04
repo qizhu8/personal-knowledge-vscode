@@ -1,6 +1,7 @@
 // ── Tabs ──────────────────────────────────────────────────────────────────
 document.querySelectorAll('.tab').forEach(t =>
   t.addEventListener('click', () => {
+    if (state.tab === 'servers' && t.dataset.tab !== 'servers') stopSubscribedServerMonitoring();
     state.tab = t.dataset.tab; state.filter = 'all'; state.search = '';
     currentDetail = null;
     currentDetailRequest = null;
@@ -12,7 +13,7 @@ document.querySelectorAll('.tab').forEach(t =>
     renderEmptyDetail();
     closePaperViews();
     updatePaperChrome();
-    const fullWidthTab = ['mcp', 'environments', 'servers', 'chatroom'].includes(state.tab);
+    const fullWidthTab = ['mcp', 'environments', 'servers', 'subscriptions', 'chatroom'].includes(state.tab);
     document.getElementById('layout-resizer').style.display = fullWidthTab ? 'none' : '';
     document.getElementById('sidebar-toggle').style.display = fullWidthTab ? 'none' : '';
     document.getElementById('content-toolbar').style.display = fullWidthTab ? 'none' : '';
@@ -33,6 +34,11 @@ document.querySelectorAll('.tab').forEach(t =>
       document.getElementById('detail').innerHTML = '<div class="empty">Loading servers…</div>';
       ask('serverList', {});
       ask('serverGroupList', {});
+    } else if (state.tab === 'subscriptions') {
+      document.getElementById('sidebar').style.display = 'none';
+      document.getElementById('searchbox').style.display = 'none';
+      renderSubscriptionLoading();
+      ask('subscriptionState', {});
     } else if (state.tab === 'chatroom') {
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
@@ -82,6 +88,24 @@ function contentSearchChanged(requestList = true) {
 document.getElementById('searchbox').addEventListener('input', e => {
   contentSearchChanged(true);
 });
+
+function folkDisplayName(value) {
+  const raw = String(value || '');
+  if (!raw.startsWith('_folk_') || raw.length === 6) return esc(raw);
+  const displayName = raw.slice(6).replace(/--[a-f0-9]{12}$/i, '');
+  return `<span class="folk-source-name">${esc(displayName)}</span><span class="folk-badge" title="Forked content awaiting organization">folk</span>`;
+}
+
+function folkDisplayPath(value) {
+  const parts = String(value || '').replace(/\\/g, '/').split('/');
+  if (!parts[0].startsWith('_folk_')) return esc(value);
+  return [folkDisplayName(parts[0]), ...parts.slice(1).map(esc)].join('<span class="folk-path-separator"> / </span>');
+}
+
+function packageSourceTag(source) {
+  if (!source) return '';
+  return `<span class="pkg-source-tag" title="Original package ${esc(source.originalName)} from ${esc(source.brokerName)} published by ${esc(source.publisherUser)} on ${esc(source.publisherHost)}">original: ${esc(source.originalName)} · ${esc(source.brokerName)} - ${esc(source.publisherUser)} - ${esc(source.publisherHost)}</span>`;
+}
 
 // ── Render list ────────────────────────────────────────────────────────────
 function renderList() {
@@ -171,14 +195,14 @@ function renderList() {
     // Tree: project → task → versions → files
     const projs = [...new Set(items.map(r => r.project))].sort();
     fEl.innerHTML = ['all',...projs].map(p =>
-      `<span class="chip ${filter===p?'active':''}" onclick="setFilter('${p}')">${p}</span>`).join('');
+      `<span class="chip ${filter===p?'active':''}" onclick="setFilter('${p}')">${folkDisplayPath(p)}</span>`).join('');
     const shown = filter==='all' ? items : items.filter(r => r.project===filter);
     // Group by project
     const byProj = {};
     shown.forEach(r => { (byProj[r.project]||(byProj[r.project]=[])).push(r); });
     el.innerHTML = Object.entries(byProj).map(([proj, tasks]) =>
       `<div class="tree-proj">
-        <div class="tree-proj-hdr" onclick="toggleTree(this)" oncontextmenu="promptFolderMenu(event,${JSON.stringify(proj).replace(/"/g,'&quot;')},'','')">▶ ${esc(proj)}</div>
+        <div class="tree-proj-hdr" onclick="toggleTree(this)" oncontextmenu="promptFolderMenu(event,${JSON.stringify(proj).replace(/"/g,'&quot;')},'','')">▶ ${folkDisplayPath(proj)}</div>
         <div class="tree-proj-body collapsed">${tasks.map(r =>
           `<div class="tree-task">
             <div class="tree-task-hdr" onclick="toggleTree(this)" oncontextmenu="promptFolderMenu(event,${JSON.stringify(proj).replace(/"/g,'&quot;')},${JSON.stringify(r.task).replace(/"/g,'&quot;')},'')">▷ ${esc(r.task)}</div>
@@ -186,7 +210,7 @@ function renderList() {
               `<div class="tree-ver">
                 <div class="tree-ver-hdr" onclick="toggleTree(this)" oncontextmenu="promptFolderMenu(event,${JSON.stringify(proj).replace(/"/g,'&quot;')},${JSON.stringify(r.task).replace(/"/g,'&quot;')},${JSON.stringify(v.version).replace(/"/g,'&quot;')})">📁 ${esc(v.version)}</div>
                 <div class="tree-ver-body collapsed">${(v.files||[]).map(f =>
-                  `<div class="tree-file" onclick="openPromptFile('${esc(proj)}','${esc(r.task)}','${esc(v.version)}','${esc(f.name)}')">📄 ${esc(f.name)}</div>`
+                  `<div class="tree-file" onclick="openPromptFile('${esc(proj)}','${esc(r.task)}','${esc(v.version)}','${esc(f.name)}')" oncontextmenu="promptItemTrashMenu(event,${JSON.stringify(`${proj}/${r.task}/${v.version}/${f.name}`).replace(/"/g,'&quot;')},${JSON.stringify(f.name).replace(/"/g,'&quot;')})">📄 ${esc(f.name)}</div>`
                 ).join('')}</div>
               </div>`
             ).join('')}</div>
@@ -200,17 +224,18 @@ function renderList() {
     fEl.innerHTML = ['all',...langs].map(l =>
       `<span class="chip ${filter===l?'active':''}" onclick="setFilter('${l}')">${l}</span>`).join('');
     const shown = filter==='all' ? items : items.filter(r => r.lang===filter);
-    el.innerHTML = shown.map(r => {
+    el.innerHTML = `<div class="sub-virtual-divider local-packages"><span>Local Packages</span></div>` + (shown.map(r => {
       const gitTag = r.gitRepo
         ? '<span class="pkg-git repo" title="Has its own .git repository">git repo</span>'
         : r.gitTracked
           ? '<span class="pkg-git tracked" title="Tracked in the knowledge store\'s git">git</span>'
           : '<span class="pkg-git untracked" title="Not tracked by git yet (uncommitted)">untracked</span>';
+          const sourceTag = packageSourceTag(r.source);
       return `<div class="li" onclick="openItem('package','${esc(r.name)}')" oncontextmenu="packageItemMenu(event,${JSON.stringify(r.name).replace(/"/g,'&quot;')})">
-      <div class="li-name">${esc(r.name)} ${gitTag}</div>
-      <div class="li-meta">${esc(r.lang)} · ${esc((r.description||'').slice(0,50))}</div>
+      <div class="li-name">${folkDisplayPath(r.name)} ${gitTag}</div>
+          <div class="li-meta">${esc(r.lang)} · ${esc((r.description||'').slice(0,50))}${sourceTag}</div>
     </div>`;
-    }).join('') || '<div class="empty">No packages</div>';
+    }).join('') || '<div class="empty">No local packages</div>');
 
   } else if (tab === 'scripts') {
     // Recursive N-level tree by folder path; leaf = script file with language tag
@@ -233,6 +258,130 @@ function renderList() {
     }, q, folderAttr);
     el.innerHTML = html || '<div class="empty">No scripts</div>';
   }
+  renderSubscribedGroups(el);
+  renderKnowledgeTrashDock(tab);
+}
+
+function renderSubscribedGroups(container) {
+  const groups = state.subscriptionGroups || [];
+  if (!groups.length) return;
+  const html = groups.map(group => {
+    const groupPayload = subscriptionEncodeForkPayload({ name:group.alias, keys:group.items.map(item => item.key) });
+    return `<div class="pk-group sub-virtual-group">
+    <div class="pk-group-hdr" onclick="this.nextElementSibling.classList.toggle('collapsed')" oncontextmenu="subscriptionGroupForkMenu(event,'${groupPayload}')">
+      <span class="pk-group-arrow">◈</span><span class="pk-group-name">${esc(group.alias)}</span><span class="pk-group-count">${group.items.length}</span>${state.tab === 'skills' ? `<button class="sub-fork-btn" data-pending-label="Forking…" onclick="event.stopPropagation();subscriptionForkAll('${groupPayload}',this)">Fork All</button>` : ''}
+    </div>
+    <div class="pk-group-body collapsed">${subscriptionRenderItemTree(subscriptionBuildItemTree(group.items), 0, group.revision)}</div>
+  </div>`;
+  }).join('');
+  container.insertAdjacentHTML('beforeend', `<div class="sub-virtual-divider"><span>${state.tab === 'packages' ? 'Subscribed Packages' : 'Subscriptions'}</span></div>${html}`);
+}
+
+function subscriptionBuildItemTree(items) {
+  const root = { folders:{}, items:[] };
+  for (const item of items) {
+    const parts = String(item.path || item.title || '').replace(/\\/g, '/').split('/').filter(Boolean);
+    let node = root;
+    for (const folder of parts.slice(0, -1)) node = node.folders[folder] ||= { folders:{}, items:[] };
+    node.items.push(item);
+  }
+  return root;
+}
+
+function subscriptionRenderItemTree(node, depth, revision, parentPath = []) {
+  const folders = Object.entries(node.folders).sort(([left],[right]) => left.localeCompare(right)).map(([name,child]) => {
+    const folderPath = [...parentPath, name];
+    const payload = subscriptionEncodeForkPayload({ path:folderPath.join('/'), keys:subscriptionCachedTreeItems(child).map(item => item.key) });
+    return `<details class="sub-cache-folder"><summary style="padding-left:${8 + depth * 12}px" oncontextmenu="subscriptionFolderForkMenu(event,'${payload}')"><span class="sub-cache-arrow">›</span><span class="sub-cache-name">${esc(name)}</span><small>${subscriptionTreeCount(child)}</small></summary><div>${subscriptionRenderItemTree(child, depth + 1, revision, folderPath)}</div></details>`;
+  }
+  ).join('');
+  const leaves = node.items.sort((left,right) => left.title.localeCompare(right.title)).map(item => `<div class="li sub-virtual-item" style="padding-left:${8 + depth * 12}px" onclick="openItem('subscriptionItem','${esc(item.key)}')" oncontextmenu="subscriptionItemForkMenu(event,'${subscriptionEncodeForkPayload({key:item.key,title:item.title})}')" title="${esc(item.path)}">
+    <div class="li-name"><span>${esc(item.title)}</span><button class="sub-fork-btn" data-pending-label="Forking…" onclick="event.stopPropagation();subscriptionFork('${esc(item.key)}',this)" title="Create an independent local copy">Fork</button></div><div class="li-meta">${esc(item.path)} · revision ${Number(revision)||0}</div>
+  </div>`).join('');
+  return folders + leaves;
+}
+
+function subscriptionCachedTreeItems(node) { return [...node.items, ...Object.values(node.folders).flatMap(subscriptionCachedTreeItems)]; }
+function subscriptionEncodeForkPayload(value) { return btoa(unescape(encodeURIComponent(JSON.stringify(value)))); }
+function subscriptionDecodeForkPayload(value) { return JSON.parse(decodeURIComponent(escape(atob(value)))); }
+
+function subscriptionFolderForkMenu(ev, payload) {
+  ev.preventDefault(); ev.stopPropagation();
+  let folderPath = '', keys = [];
+  try { ({ path:folderPath, keys } = subscriptionDecodeForkPayload(payload)); } catch { return; }
+  showPaperMenu(ev.clientX, ev.clientY, [
+    { label:'Folder · ' + folderPath, header:true },
+    { label: 'Fork to Local', onClick: () => ask('subscriptionFork', { keys, path: folderPath }) },
+  ]);
+}
+
+function subscriptionItemForkMenu(ev, payload) {
+  ev.preventDefault(); ev.stopPropagation();
+  let key = '', title = '';
+  try { ({ key, title } = subscriptionDecodeForkPayload(payload)); } catch { return; }
+  showPaperMenu(ev.clientX, ev.clientY, [
+    { label:'Subscribed · ' + title, header:true },
+    { label:'Fork to Local', onClick:() => subscriptionFork(key) },
+  ]);
+}
+
+function subscriptionGroupForkMenu(ev, payload) {
+  if (state.tab !== 'skills') return;
+  ev.preventDefault(); ev.stopPropagation();
+  let group;
+  try { group = subscriptionDecodeForkPayload(payload); } catch { return; }
+  showPaperMenu(ev.clientX, ev.clientY, [
+    { label:'Subscribed Skills · ' + group.name, header:true },
+    { label:'Fork entire Broker to Local', onClick:() => ask('subscriptionFork',{keys:group.keys,path:''}) },
+  ]);
+}
+
+function subscriptionForkAll(payload, button) {
+  let group;
+  try { group = subscriptionDecodeForkPayload(payload); } catch { return; }
+  ask('subscriptionFork',{keys:group.keys,path:''},button);
+}
+
+function subscriptionFork(key, button) { ask('subscriptionFork', { key }, button); }
+
+function renderKnowledgeTrashDock(area) {
+  const dock = document.getElementById('knowledge-trash-dock');
+  if (!dock) return;
+  const visible = ['skills','notes','papers','prompts','scripts'].includes(area);
+  dock.classList.toggle('hidden', !visible);
+  if (!visible) { dock.replaceChildren(); return; }
+  const entries = state.knowledgeTrash || [];
+  dock.innerHTML = `<div class="knowledge-trash-popover hidden">${entries.length ? entries.map(entry => `<div class="li knowledge-trash-item"><div class="li-name"><span>${entry.kind === 'folder' ? '📁' : '📄'} ${esc(entry.name)}</span><span class="knowledge-trash-actions"><button class="sub-fork-btn" data-pending-label="Restoring…" onclick="restoreKnowledgeTrash('${area}','${esc(entry.id)}',this)">Restore</button><button class="sub-fork-btn danger" onclick="deleteKnowledgeTrashEntry('${area}','${esc(entry.id)}','${esc(entry.name)}','${esc(entry.kind)}')">Delete Permanently</button></span></div><div class="li-meta">${esc(entry.originalPath)} · ${entry.deletedAt ? new Date(entry.deletedAt).toLocaleString() : ''}</div></div>`).join('') : '<div class="empty">Trash is empty</div>'}</div><div class="knowledge-trash-dock-row" role="button" tabindex="0" aria-expanded="false" onclick="toggleKnowledgeTrashDock()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleKnowledgeTrashDock()}"><span>Trash</span><span class="pk-group-count">${entries.length}</span><button class="knowledge-trash-empty" onclick="event.stopPropagation();emptyKnowledgeTrash('${area}')" title="Permanently delete everything in ${area} Trash" ${entries.length ? '' : 'disabled'}>Empty Trash</button><i>▴</i></div>`;
+}
+
+function toggleKnowledgeTrashDock() {
+  const dock = document.getElementById('knowledge-trash-dock');
+  const popover = dock?.querySelector('.knowledge-trash-popover');
+  const row = dock?.querySelector('.knowledge-trash-dock-row');
+  if (!popover || !row) return;
+  const open = !popover.classList.toggle('hidden');
+  row.classList.toggle('active', open);
+  row.setAttribute('aria-expanded', String(open));
+}
+
+function emptySkillTrash() {
+  pkModal({ title:'Empty Skills Trash?', message:'Permanently delete every Skill and folder in Trash? This cannot be undone.', okLabel:'Empty Trash', danger:true, onOk:()=>ask('skillTrashEmpty',{}) });
+}
+
+function restoreKnowledgeTrash(area, id, button) {
+  if (area === 'skills') ask('skillTrashRestore',{id},button); else ask('knowledgeTrashRestore',{area,id},button);
+}
+
+function emptyKnowledgeTrash(area) {
+  pkModal({ title:`Empty ${area} Trash?`, message:`Permanently delete every item and folder in ${area} Trash? This cannot be undone.`, okLabel:'Empty Trash', danger:true, onOk:()=>ask(area === 'skills' ? 'skillTrashEmpty' : 'knowledgeTrashEmpty', area === 'skills' ? {} : {area}) });
+}
+
+function deleteKnowledgeTrashEntry(area, id, name, kind) {
+  pkModal({ title:`Permanently delete ${kind} "${name}"?`, message:'This removes only this Trash entry and cannot be undone.', okLabel:'Delete Permanently', danger:true, onOk:()=>ask(area === 'skills' ? 'skillTrashDelete' : 'knowledgeTrashDelete', area === 'skills' ? {id} : {area,id}) });
+}
+
+function deleteSkillTrashEntry(id, name, kind) {
+  pkModal({ title:`Permanently delete ${kind} "${name}"?`, message:'This removes only this Trash entry and cannot be undone.', okLabel:'Delete Permanently', danger:true, onOk:()=>ask('skillTrashDelete',{id}) });
 }
 
 function skillLi(r, displayName, q, indent) {
@@ -315,7 +464,7 @@ function renderCatTree(node, path, depth, renderLeaf, q, folderAttr, order) {
     html += `<div class="tree-cat">
       <div class="tree-cat-hdr${pinnedFolder ? ' cat-pinned' : ''}" style="padding-left:${pad}px" onclick="toggleCat('${key}')" title="${esc(name)}"${folderAttr ? folderAttr(child, name, path.concat(name)) : ''}>
         <span class="tree-cat-arrow">${open ? '▾' : '▸'}</span>
-        <span class="tree-cat-label">${pinnedFolder ? '★ ' : ''}${name === '(uncategorized)' ? '<em style="opacity:.6">(uncategorized)</em>' : esc(name)}</span>
+        <span class="tree-cat-label">${pinnedFolder ? '★ ' : ''}${name === '(uncategorized)' ? '<em style="opacity:.6">(uncategorized)</em>' : path.length === 0 ? folkDisplayName(name) : esc(name)}</span>
         <span class="tree-cat-count">${countTreeLeaves(child)}</span>
       </div>
       <div class="tree-cat-body" style="${open ? '' : 'display:none'}">${renderCatTree(child, path.concat(name), depth + 1, renderLeaf, q, folderAttr, order)}</div>
@@ -409,7 +558,26 @@ function renderDetail(data) {
   if (!data) { currentDetail = null; currentDetailRequest = null; el.innerHTML = '<div class="empty">Not found.</div>'; return; }
   currentDetail = data;
 
-  if (data.type === 'skill') {
+  if (data.type === 'subscription') {
+    const source = data.provenance || {};
+    let serverLinkData = null;
+    if (data.contentType === 'servers') { try { serverLinkData = JSON.parse(data.content || '{}'); } catch {} }
+    const rendered = data.contentType === 'servers'
+      ? `<div class="subscribed-server-links">${(serverLinkData?.links || []).map((link,index) => `<div><span>${esc(link.label || link.url)}</span><button class="pk-button" data-pending-label="Opening…" onclick="ask('subscriptionOpenServerLink',{key:'${esc(currentDetailRequest?.key || '')}',index:${index}},this)">Open</button></div>`).join('') || '<div class="empty">No network link is available from this Server.</div>'}</div>`
+      : ['skills','notes','papers'].includes(data.contentType) ? safeMarked(data.content || '') : `<pre><code>${esc(data.content || '')}</code></pre>`;
+    const forkAction = data.contentType === 'servers' ? '<span class="tag">Link only</span>' : `<button class="pk-button" data-pending-label="Forking…" onclick="subscriptionFork('${esc(currentDetailRequest?.key || '')}',this)">Fork to Local</button>`;
+    el.innerHTML = `<div class="d-title"><span>${esc(serverLinkData?.name || data.title)}</span><span class="tag">Read-only subscription</span><span style="flex:1"></span>${forkAction}</div>
+      <div class="d-path" title="Remote path">${esc(data.path)}</div>
+      <div class="meta-grid">
+        <span class="ml">Alias</span><span class="mv">${esc(source.subscriptionAlias || '—')}</span>
+        <span class="ml">Publisher</span><span class="mv">${esc(source.publisher || '—')}</span>
+        <span class="ml">Type</span><span class="mv">${esc(data.contentType || '')}</span>
+        <span class="ml">Share</span><span class="mv">${esc(source.shareId || '—')}</span>
+        <span class="ml">Revision</span><span class="mv">${Number(source.revision)||0}</span>
+        <span class="ml">Synced</span><span class="mv">${source.syncedAt ? new Date(source.syncedAt).toLocaleString() : '—'}</span>
+        <span class="ml">Content hash</span><span class="mv"><code>${esc(source.contentHash || '—')}</code></span>
+      </div><hr class="div"><div class="prose">${rendered}</div>`;
+  } else if (data.type === 'skill') {
     currentDetail = data;
     const tags = JSON.parse(data.tags||'[]');
     const toc = buildToc(data.content||'');
@@ -424,7 +592,7 @@ function renderDetail(data) {
         <span>Updated ${(data.updated_at||'').slice(0,10)}</span>
         <span style="flex:1"></span>
         ${markdownToolbar(data)}
-        <button class="tbtn" style="font-size:11px" onclick="confirmDeleteSkill(this)">🗑 Delete</button>
+        <button class="tbtn" style="font-size:11px" onclick="confirmDeleteSkill(this)">🗑 Move to Trash</button>
       </div>
       <div class="meta-grid">
         <span class="ml">Source</span><span class="mv meta-value"><span>${esc(data.source_project||'—')}</span><button class="meta-edit" onclick="editCurrentMetadata('source_project')" title="Edit source">✎</button></span>
@@ -547,7 +715,7 @@ function renderDetail(data) {
     }
     const toc = buildToc(data.readme||'');
     el.innerHTML = `
-      <div class="d-title">${esc(data.name)}</div>
+      <div class="d-title"><span>${esc(data.name)}</span>${packageSourceTag(data.source)}</div>
       <hr class="div">
       <details style="margin-bottom:12px">
         <summary style="cursor:pointer;color:var(--muted);font-size:11px">File tree</summary>
@@ -1027,7 +1195,7 @@ function doCreateSync() {
     packages: getSelected('packages'),
   };
   const expiry = parseInt(document.getElementById('sm-expiry').value);
-  const port   = parseInt(document.getElementById('sm-port').value) || 19877;
+  const port   = parseInt(document.getElementById('sm-port').value) || 19878;
   document.getElementById('sm-cred-result').innerHTML = '<span style="color:var(--muted);font-size:12px">Generating…</span>';
   ask('startSync', { selected, contentTypes, expiresMinutes: expiry, port });
 }
@@ -1114,14 +1282,9 @@ function submitSkillEdit() {
 }
 
 function confirmDeleteSkill(btn) {
-  if (btn.dataset.confirming) {
-    ask('deleteSkill', { name: currentDetail?.name });
-  } else {
-    btn.dataset.confirming = 'y';
-    btn.textContent = '⚠ Confirm?';
-    btn.style.borderColor = '#f87171'; btn.style.color = '#f87171';
-    setTimeout(() => { delete btn.dataset.confirming; btn.textContent='🗑 Delete'; btn.style.borderColor=''; btn.style.color=''; }, 3000);
-  }
+  const name = currentDetail?.name;
+  if (!name) return;
+  pkModal({ title:'Move Skill to Trash?', message:`${name}\n\nThe Skill remains recoverable until Empty Trash is used.`, okLabel:'Move to Trash', danger:true, onOk:()=>ask('deleteSkill',{name}) });
 }
 
 // ── Note edit ─────────────────────────────────────────────────────────────
@@ -1288,7 +1451,7 @@ function paperCardMenu(ev, slug, group, pinned, topic) {
   items.push({ sep: true });
   items.push({ label: '✏ Edit Content', onClick: () => openMarkdownItem('papers', '', slug) });
   items.push({ label: '⚙ Edit Metadata', onClick: () => editMarkdownMetadataItem('papers', '', slug) });
-  items.push({ label: '🗑 Delete', danger: true, onClick: () => pkModal({ title: 'Delete this paper?', okLabel: 'Delete', danger: true, onOk: () => ask('deletePaper', { slug }) }) });
+  items.push({ label: '🗑 Move to Trash…', danger: true, onClick: () => pkModal({ title: 'Move this Paper to Trash?', message:'The Paper remains recoverable until permanently deleted.', okLabel: 'Move to Trash', danger: true, onOk: () => ask('deletePaper', { slug }) }) });
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
 
@@ -1328,10 +1491,26 @@ function paperFolderMenu(ev, b64, name) {
 function promptFolderMenu(ev, project, task, version) {
   ev.preventDefault(); ev.stopPropagation();
   const scope = [project, task, version].filter(Boolean).join(' / ');
-  showPaperMenu(ev.clientX, ev.clientY, [
+  const items = [
     { label: scope, header: true },
     { label: '＋ New Prompt…', onClick: () => ask('createPromptItem', { project, task, version }) },
-  ]);
+  ];
+  items.push({ sep:true });
+  items.push({ label:'🗑 Move folder to Trash…', danger:true, onClick:()=>moveKnowledgeFolderToTrash('prompts',[project,task,version].filter(Boolean).join('/'),scope) });
+  showPaperMenu(ev.clientX, ev.clientY, items);
+}
+
+function promptItemTrashMenu(ev, path, name) {
+  ev.preventDefault(); ev.stopPropagation();
+  showPaperMenu(ev.clientX, ev.clientY, [{label:name,header:true},{label:'🗑 Move to Trash…',danger:true,onClick:()=>moveKnowledgeItemToTrash('prompts',path,name)}]);
+}
+
+function moveKnowledgeFolderToTrash(area, path, name) {
+  pkModal({ title:`Move ${name} to Trash?`, message:'The folder and all its contents remain recoverable until permanently deleted.', okLabel:'Move to Trash', danger:true, onOk:()=>ask('knowledgeTrashMove',{area,path,kind:'folder',name}) });
+}
+
+function moveKnowledgeItemToTrash(area, path, name) {
+  pkModal({ title:`Move ${name} to Trash?`, message:'The item remains recoverable until permanently deleted.', okLabel:'Move to Trash', danger:true, onOk:()=>ask('knowledgeTrashMove',{area,path,kind:'item',name}) });
 }
 
 // Right-click a Skills category folder -> rename it (re-paths all skills under it).
@@ -1360,6 +1539,8 @@ function skillFolderMenu(ev, b64, name) {
       const np = v.trim().replace(/^\/+|\/+$/g, '');
       if (np && np !== prefix) ask('skillRenameFolder', { oldPrefix: prefix, newPrefix: np });
     } }) });
+  items.push({ sep: true });
+  items.push({ label: '🗑 Move folder to Trash…', danger: true, onClick: () => pkModal({ title:'Move Skill folder to Trash?', message:`${prefix}\n\nAll Skills and subfolders will remain recoverable from Trash.`, okLabel:'Move to Trash', danger:true, onOk:()=>ask('skillTrashFolder',{path:prefix}) }) });
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
 
@@ -1373,6 +1554,8 @@ function skillItemMenu(ev, name, category) {
   items.push({ sep: true });
   items.push({ label: '✏ Edit Content', onClick: () => openMarkdownItem('skills', category, name) });
   items.push({ label: '⚙ Edit Metadata', onClick: () => editMarkdownMetadataItem('skills', category, name) });
+  items.push({ sep: true });
+  items.push({ label: '🗑 Move to Trash…', danger: true, onClick: () => pkModal({ title:'Move Skill to Trash?', message:`${name}\n\nThe Skill remains recoverable from Trash.`, okLabel:'Move to Trash', danger:true, onOk:()=>ask('deleteSkill',{name}) }) });
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
 
@@ -1403,6 +1586,8 @@ function noteFolderMenu(ev, b64, name) {
       const np = v.trim().replace(/^\/+|\/+$/g, '');
       if (np && np !== prefix) ask('noteMoveFolder', { oldPrefix: prefix, newPrefix: np });
     } }) });
+  items.push({ sep:true });
+  items.push({ label:'🗑 Move folder to Trash…',danger:true,onClick:()=>moveKnowledgeFolderToTrash('notes',prefix,name) });
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
 
@@ -1430,6 +1615,8 @@ function scriptFolderMenu(ev, b64, name) {
       const np = v.trim().replace(/^\/+|\/+$/g, '');
       if (np && np !== prefix) ask('scriptMoveFolder', { oldPrefix: prefix, newPrefix: np });
     } }) });
+  items.push({ sep:true });
+  items.push({ label:'🗑 Move folder to Trash…',danger:true,onClick:()=>moveKnowledgeFolderToTrash('scripts',prefix,name) });
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
 
@@ -1443,7 +1630,7 @@ function scriptItemMenu(ev, relPath, category) {
   items.push({ label: '↪ Move…', onClick: () => pkModal({
     title: 'Move script', message: 'Target folder path (blank = root; missing parents are created).',
     input: true, defaultValue: category || '', okLabel: 'Move', onOk: v => ask('scriptMove', { relPath, category: v.trim() }) }) });
-  items.push({ label: '🗑 Delete', danger: true, onClick: () => ask('deleteScript', { relPath }) });
+  items.push({ label: '🗑 Move to Trash…', danger: true, onClick: () => moveKnowledgeItemToTrash('scripts',relPath,relPath.split('/').pop()) });
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
 
@@ -1532,7 +1719,7 @@ function paperDetailHtml(d) {
       ${d.file ? `<button class="tbtn" style="font-size:11px" onclick="openPaperLink('','${esc(d.file)}','${esc(d.category)}')">📄 File</button>` : ''}
       <button class="tbtn" style="font-size:11px" onclick="openPaperForm(currentDetail)">✎ Edit Fields</button>
       ${markdownToolbar(d)}
-      <button class="tbtn" style="font-size:11px" onclick="confirmDeletePaper()">🗑 Delete</button>
+      <button class="tbtn" style="font-size:11px" onclick="confirmDeletePaper()">🗑 Move to Trash</button>
     </div>
     <div class="meta-grid">
       <span class="ml">Description</span><span class="mv meta-value"><span>${esc(d.description || '—')}</span><button class="meta-edit" onclick="editCurrentMetadata('description')" title="Edit description">✎</button></span>
@@ -1571,7 +1758,7 @@ function paperContentSection(content, category) {
   return paperSection('Content', value.trim() ? wordCount(value) : 0, body, !!value.trim());
 }
 function openPaperLink(url, file, category) { ask('openPaperLink', { url, file, category }); }
-function confirmDeletePaper() { if (currentDetail) pkModal({ title: 'Delete this paper?', okLabel: 'Delete', danger: true, onOk: () => ask('deletePaper', { slug: currentDetail.slug }) }); }
+function confirmDeletePaper() { if (currentDetail) pkModal({ title: 'Move this Paper to Trash?', message:'The Paper remains recoverable until permanently deleted.', okLabel: 'Move to Trash', danger: true, onOk: () => ask('deletePaper', { slug: currentDetail.slug }) }); }
 
 // Add / edit form
 function openPaperForm(paper) {

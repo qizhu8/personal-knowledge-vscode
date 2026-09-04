@@ -13,7 +13,7 @@ import { basename, join, resolve, sep } from "path";
 import {
   existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, rmSync, renameSync,
 } from "fs";
-import { createHash } from "crypto";
+import { createHash, randomBytes } from "crypto";
 
 let _store = "";
 
@@ -73,6 +73,89 @@ function asArray(v: any): string[] {
 }
 
 interface MdFile { full: string; rel: string; mtime: number; }
+
+export type KnowledgeTrashArea = "notes" | "papers" | "prompts" | "scripts";
+export interface KnowledgeTrashEntry {
+  id: string;
+  kind: "item" | "folder";
+  name: string;
+  originalPath: string;
+  deletedAt: string;
+}
+
+function knowledgeTrashRoot(area: KnowledgeTrashArea): string { return join(areaRoot(area), ".trash"); }
+function knowledgeTrashPath(area: KnowledgeTrashArea, relativePath: string): { rel: string; full: string } | undefined {
+  const rel = String(relativePath || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  if (!rel || rel === ".trash" || rel.startsWith(".trash/") || rel.split("/").some(part => !part || part === "." || part === "..")) return undefined;
+  const root = resolve(areaRoot(area));
+  const full = resolve(root, ...rel.split("/"));
+  return full.startsWith(root + sep) ? { rel, full } : undefined;
+}
+
+export function knowledgeMoveToTrash(area: KnowledgeTrashArea, relativePath: string, kind: KnowledgeTrashEntry["kind"], name: string): KnowledgeTrashEntry | undefined {
+  const source = knowledgeTrashPath(area, relativePath);
+  if (!source || !existsSync(source.full)) return undefined;
+  const stat = statSync(source.full);
+  if (kind === "folder" ? !stat.isDirectory() : !stat.isFile()) return undefined;
+  const id = `${Date.now()}-${randomBytes(5).toString("hex")}`;
+  const entryDir = join(knowledgeTrashRoot(area), id);
+  const entry: KnowledgeTrashEntry = { id, kind, name, originalPath: source.rel, deletedAt: now() };
+  try {
+    mkdirSync(entryDir, { recursive: true });
+    writeFileSync(join(entryDir, "metadata.json"), JSON.stringify(entry, null, 2) + "\n");
+    renameSync(source.full, join(entryDir, "payload"));
+    return entry;
+  } catch {
+    rmSync(entryDir, { recursive: true, force: true });
+    return undefined;
+  }
+}
+
+export function knowledgeTrashList(area: KnowledgeTrashArea): KnowledgeTrashEntry[] {
+  const root = knowledgeTrashRoot(area);
+  if (!existsSync(root)) return [];
+  const entries: KnowledgeTrashEntry[] = [];
+  for (const id of readdirSync(root)) {
+    if (!/^[0-9]+-[a-f0-9]+$/.test(id)) continue;
+    try {
+      const entry = JSON.parse(readFileSync(join(root, id, "metadata.json"), "utf8")) as KnowledgeTrashEntry;
+      if (entry.id === id && (entry.kind === "item" || entry.kind === "folder") && entry.originalPath) entries.push(entry);
+    } catch { /* ignore incomplete entries */ }
+  }
+  return entries.sort((left, right) => right.deletedAt.localeCompare(left.deletedAt));
+}
+
+export function knowledgeTrashRestore(area: KnowledgeTrashArea, id: string): { ok: boolean; path?: string; error?: string } {
+  const entry = knowledgeTrashList(area).find(item => item.id === id);
+  if (!entry) return { ok: false, error: "Trash item was not found." };
+  const destination = knowledgeTrashPath(area, entry.originalPath);
+  if (!destination) return { ok: false, error: "Trash restore path is invalid." };
+  if (existsSync(destination.full)) return { ok: false, error: `Restore target already exists: ${entry.originalPath}` };
+  const entryDir = join(knowledgeTrashRoot(area), id);
+  try {
+    mkdirSync(resolve(destination.full, ".."), { recursive: true });
+    renameSync(join(entryDir, "payload"), destination.full);
+    rmSync(entryDir, { recursive: true, force: true });
+    if (existsSync(knowledgeTrashRoot(area)) && readdirSync(knowledgeTrashRoot(area)).length === 0) rmSync(knowledgeTrashRoot(area), { recursive: true, force: true });
+    return { ok: true, path: entry.originalPath };
+  } catch (error: any) { return { ok: false, error: error?.message || String(error) }; }
+}
+
+export function knowledgeTrashDelete(area: KnowledgeTrashArea, id: string): { ok: boolean; name?: string; path?: string; kind?: KnowledgeTrashEntry["kind"]; error?: string } {
+  const entry = knowledgeTrashList(area).find(item => item.id === id);
+  if (!entry) return { ok: false, error: "Trash item was not found." };
+  try {
+    rmSync(join(knowledgeTrashRoot(area), id), { recursive: true, force: true });
+    if (existsSync(knowledgeTrashRoot(area)) && readdirSync(knowledgeTrashRoot(area)).length === 0) rmSync(knowledgeTrashRoot(area), { recursive: true, force: true });
+    return { ok: true, name: entry.name, path: entry.originalPath, kind: entry.kind };
+  } catch (error: any) { return { ok: false, error: error?.message || String(error) }; }
+}
+
+export function knowledgeTrashEmpty(area: KnowledgeTrashArea): number {
+  const count = knowledgeTrashList(area).length;
+  rmSync(knowledgeTrashRoot(area), { recursive: true, force: true });
+  return count;
+}
 
 function walkMd(dir: string, rel: string, out: MdFile[]): void {
   if (!existsSync(dir)) return;
@@ -410,6 +493,88 @@ export function saveNoteAsset(base64: string, ext: string, category = ""): strin
 
 // ── Skills ──────────────────────────────────────────────────────────────────
 function skillsRoot(): string { return join(_store, "skills"); }
+function skillTrashRoot(): string { return join(skillsRoot(), ".trash"); }
+
+export interface SkillTrashEntry {
+  id: string;
+  kind: "skill" | "folder";
+  name: string;
+  originalPath: string;
+  deletedAt: string;
+}
+
+function moveSkillPathToTrash(full: string, originalPath: string, kind: SkillTrashEntry["kind"], name: string): SkillTrashEntry | undefined {
+  if (!existsSync(full)) return undefined;
+  const id = `${Date.now()}-${randomBytes(5).toString("hex")}`;
+  const entryDir = join(skillTrashRoot(), id);
+  const entry: SkillTrashEntry = { id, kind, name, originalPath, deletedAt: now() };
+  try {
+    mkdirSync(entryDir, { recursive: true });
+    writeFileSync(join(entryDir, "metadata.json"), JSON.stringify(entry, null, 2) + "\n");
+    renameSync(full, join(entryDir, "payload"));
+    return entry;
+  } catch {
+    rmSync(entryDir, { recursive: true, force: true });
+    return undefined;
+  }
+}
+
+export function skillMoveToTrash(name: string): SkillTrashEntry | undefined {
+  const file = findSkillFile(name);
+  return file ? moveSkillPathToTrash(file.full, file.rel, "skill", name) : undefined;
+}
+
+export function skillFolderMoveToTrash(relPath: string): SkillTrashEntry | undefined {
+  const source = safeFolderOperationPath("skills", relPath);
+  if (!source || source.rel === ".trash" || source.rel.startsWith(".trash/") || !existsSync(source.full) || !statSync(source.full).isDirectory()) return undefined;
+  return moveSkillPathToTrash(source.full, source.rel, "folder", basename(source.rel));
+}
+
+export function skillTrashList(): SkillTrashEntry[] {
+  if (!existsSync(skillTrashRoot())) return [];
+  const entries: SkillTrashEntry[] = [];
+  for (const id of readdirSync(skillTrashRoot())) {
+    if (!/^[0-9]+-[a-f0-9]+$/.test(id)) continue;
+    try {
+      const entry = JSON.parse(readFileSync(join(skillTrashRoot(), id, "metadata.json"), "utf8")) as SkillTrashEntry;
+      if (entry.id === id && (entry.kind === "skill" || entry.kind === "folder") && entry.originalPath) entries.push(entry);
+    } catch { /* ignore incomplete trash entries */ }
+  }
+  return entries.sort((left, right) => right.deletedAt.localeCompare(left.deletedAt));
+}
+
+export function skillTrashRestore(id: string): { ok: boolean; path?: string; error?: string } {
+  const entry = skillTrashList().find(item => item.id === id);
+  if (!entry) return { ok: false, error: "Trash item was not found." };
+  const destination = resolve(skillsRoot(), ...entry.originalPath.split("/"));
+  const root = resolve(skillsRoot());
+  if (!destination.startsWith(root + sep)) return { ok: false, error: "Trash restore path is invalid." };
+  if (existsSync(destination)) return { ok: false, error: `Restore target already exists: ${entry.originalPath}` };
+  const entryDir = join(skillTrashRoot(), id);
+  try {
+    mkdirSync(resolve(destination, ".."), { recursive: true });
+    renameSync(join(entryDir, "payload"), destination);
+    rmSync(entryDir, { recursive: true, force: true });
+    if (existsSync(skillTrashRoot()) && readdirSync(skillTrashRoot()).length === 0) rmSync(skillTrashRoot(), { recursive: true, force: true });
+    return { ok: true, path: entry.originalPath };
+  } catch (error: any) { return { ok: false, error: error?.message || String(error) }; }
+}
+
+export function skillTrashEmpty(): number {
+  const count = skillTrashList().length;
+  rmSync(skillTrashRoot(), { recursive: true, force: true });
+  return count;
+}
+
+export function skillTrashDelete(id: string): { ok: boolean; name?: string; error?: string } {
+  const entry = skillTrashList().find(item => item.id === id);
+  if (!entry) return { ok: false, error: "Trash item was not found." };
+  try {
+    rmSync(join(skillTrashRoot(), id), { recursive: true, force: true });
+    if (existsSync(skillTrashRoot()) && readdirSync(skillTrashRoot()).length === 0) rmSync(skillTrashRoot(), { recursive: true, force: true });
+    return { ok: true, name: entry.name };
+  } catch (error: any) { return { ok: false, error: error?.message || String(error) }; }
+}
 
 function skillFromFile(f: MdFile): any {
   const { fm, body } = parseFrontmatter(readFileSync(f.full, "utf-8"));

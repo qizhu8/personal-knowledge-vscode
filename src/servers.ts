@@ -31,6 +31,13 @@ interface RunState {
 }
 
 export interface ServerListenerProcess { pid: number; name: string; command: string; }
+export interface SharedServerLink {
+  slug: string;
+  name: string;
+  category: string;
+  tags: string[];
+  url: string;
+}
 
 let _serversDir = "";       // <store>/servers  (code + manifests; git-tracked)
 let _stateDir = "";         // globalStorage/servers  (state + logs; machine-local)
@@ -94,6 +101,25 @@ export function serverNetworkAddresses(interfaces = networkInterfaces(), hostNam
 
 /** Absolute path to a server's managed folder (its code + any data it writes). */
 export function serverDir(slug: string): string { return serverDirOf(slug); }
+
+export function serverExport(selectedSlugs: string[] = [], advertisedHost = ""): SharedServerLink[] {
+  const selected = new Set(selectedSlugs);
+  const host = advertisedHost.trim();
+  const state = readState();
+  return listSlugs().filter(slug => !selected.size || selected.has(slug)).flatMap(slug => {
+    const manifest = readManifest(slug);
+    if (!manifest) return [];
+    const port = state[slug] && isAlive(state[slug].pid) ? state[slug].port : manifest.port;
+    const urlHost = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+    return [{
+      slug,
+      name: manifest.name,
+      category: manifest.category || "",
+      tags: manifest.tags || [],
+      url: urlHost ? `http://${urlHost}:${port}/` : "",
+    }];
+  });
+}
 
 // ── Store-backed registry (one folder per server) ────────────────────────────
 function listSlugs(): string[] {

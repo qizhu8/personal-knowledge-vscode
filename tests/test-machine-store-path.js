@@ -43,7 +43,8 @@ for (const file of ["src/filestore.ts", "src/storage.ts"]) {
 }
 const extension = fs.readFileSync(path.join(root, "src", "extension.ts"), "utf8");
 assert.match(extension, /MACHINE_STORE_PATH_KEY = "machineStorePath\.v1"/);
-assert.match(extension, /Use default  \(\$\{defaultPath\}\)/);
+assert.doesNotMatch(extension, /homedir\(\), "personal-knowledge"/);
+assert.match(extension, /placeHolder: path\.join\(os\.homedir\(\), "your-knowledge-root"\)/);
 assert.match(extension, /This path stays on this extension host and is not copied by VS Code Settings Sync/);
 assert.doesNotMatch(extension, /Use default  \(~\/personal-knowledge\)/);
 assert.match(extension, /const activeStorePath = _storeReady \? getStorePath\(\) : ""/);

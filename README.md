@@ -131,6 +131,9 @@ Treat Magic Links like temporary passwords. **🔄 Refresh key** copies a replac
   - Merge and delete scripts are generated for **you to review and run** — the extension never executes them
 - **Servers** — manage long-running local servers as store packages with card-local settings/log panels and fully described actions. A central port registry assigns unique ports, rejects conflicts, and distinguishes PKM-managed processes from external listeners already using a registered port. External listeners expose their PID/command and a confirmed, identity-revalidated **Force Stop** action. Each card shows directly clickable **Stable Link** and localhost **Server Link** URLs plus their Open/Copy actions; Stable Links can use either a concrete network-interface IPv4 address or the machine hostname when client DNS resolves it. On Remote SSH, a **Port Forward** toggle asks VS Code to forward Server Link on start/restart; disabling it prevents new requests, while existing tunnels remain user-managed in the Ports view. Navigation expands to show every non-Hidden server with its running/starting/external/stopped indicator
 - **Sync** — share an encrypted, checksum-verified **Magic Code** so another machine can pull exactly the selected knowledge
+- **Subscription / Shared Market** — publish mutable collections of Skills, Notes, Papers, Prompts, Scripts, Packages, and portable Server recipes from a long-lived machine node, then subscribe by signed Magic Link. Each Broker has a recursive content TreeView, a local alias, Subscriber usage statistics, and Casbin-enforced account/network access rules. MQTT sends metadata-only revision/topic/tag signals; background Sync downloads verified content into a physically isolated machine-local cache. Subscription aliases appear as read-only virtual groups, while explicit MCP tools let Agents search subscribed caches without mixing them into local knowledge.
+- **Protected control and data planes** — Open Brokers share the stable Common Control Port for discovery, metadata, MQTT notifications, and authorization. Each Secret Protected Broker instead owns an independent Control Port that is carried only in its separate secret, not its Magic Link; the secret also gates metadata and can be manually rotated. After authorization, either mode creates a separate random or configured Data Broker port for the actual Sync. A single-use transfer endpoint closes after completion or expiry.
+- **Broker access controls** — standard Casbin ACLs combine account allow/block lists, exact IP/CIDR/wildcard network rules, and automatic blocks with deny-overrides and default-deny behavior. Three incorrect protected-secret proofs permanently block the source IP for that Broker until its owner manually unblocks it; a correct secret cannot bypass an automatic block.
 - **Chatroom** — a self-hosted, real-time collaboration hub where humans and their AI agents share named rooms:
   - **Host a room** from the extension (a bundled WebSocket + HTTP hub); teammates join from the **extension**, a **browser** (no VS Code needed), or an **AI agent via MCP** — all in the same room
   - **Presence & identity** — see who's here with role icons (👑 host, 👤 extension, 🤖 MCP agent, 🌐 browser) and a **stable identity id** so people with the same display name are distinguishable; departed members stay in Earlier until the host edits or permanently removes them
@@ -217,7 +220,7 @@ For an external MCP Agency, copy **Agency installation instructions** from Confi
 ### 6. Verify
 
 - The Config process light shows **Running** when the generated `server.py` process is detected.
-- Call `pkm.check_version` and verify Unified `2.5.5`, Knowledge `1.0.0`, and Chat `2.3.1`.
+- Call `pkm.check_version` and verify Unified `2.6.0`, Knowledge `1.0.0`, and Chat `2.3.1`.
 - Call `pkm.chat_capabilities` and verify the Chatroom tools are present.
 
 Stdio MCP servers start on demand, so **Ready · starts on demand** means setup is complete and `pkm` will launch when an MCP client requests it.
@@ -320,6 +323,8 @@ The pointer and the content are separate. You can clone the same Git repository 
 The **Knowledge Root** is the user-owned, portable content root. Skills, Notes, Papers, Prompts, Scripts, Packages, managed Servers, and durable Chatroom Room databases live beneath it. Lightweight portable PKM metadata belongs under `<Knowledge Root>/.pkm/`. This directory can be backed up or managed with Git according to your own sharing policy.
 
 The extension installation directory is never a data root because upgrades and reinstalls replace it. Machine-only registries, process state, logs, and caches use VS Code `globalStorage`; credentials and Room secrets use VS Code `SecretStorage`. Secrets never belong in the Knowledge Root or Git.
+
+Subscription content is physically isolated under VS Code `globalStorage/subscriptions/cache/<nodeId>/<shareId>/`, never under the Knowledge Root. Every cached file has a `.pkm-source.json` provenance sidecar with its subscription alias, publisher, Share, revision, content hash, remote path, and synchronization time. Local Skills and default MCP searches do not include these files; use the read-only alias groups or explicit subscription MCP tools.
 
 ## Building from source
 

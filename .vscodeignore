@@ -27,6 +27,7 @@ coverage/
 *.vsix
 **/*.map
 improvement_*.md
+skill_vault.md
 
 **/__pycache__/**
 resources/.chat_cids.json

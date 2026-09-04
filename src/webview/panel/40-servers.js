@@ -1,6 +1,9 @@
 // ── Servers dashboard ────────────────────────────────────────────────────────
 let serverCache = [];
 let serverGroupPaths = ['Hidden'];
+let serverSubscriptionGroups = [];
+let serverSubscriptionExpanded = '';
+let serverSubscriptionMonitor = null;
 let _srvPoll = null;
 let serverSearchQuery = '';
 function serverGroupTree(entries) {
@@ -24,11 +27,34 @@ function serverGroupTree(entries) {
   return root;
 }
 function serverGroupOpen(path) {
-  try { return localStorage.getItem('pkm-server-group-' + path) !== '0'; } catch { return true; }
+  try { return localStorage.getItem('pkm-server-group-' + path) === '1'; } catch { return false; }
 }
 function serverGroupToggled(details, path) {
   if (serverSearchQuery) return;
   try { localStorage.setItem('pkm-server-group-' + path, details.open ? '1' : '0'); } catch {}
+}
+function toggleSubscribedServerBroker(subscriptionId) {
+  serverSubscriptionExpanded = serverSubscriptionExpanded === subscriptionId ? '' : subscriptionId;
+  stopSubscribedServerMonitoring();
+  if (serverSubscriptionExpanded) {
+    ask('serverSubscriptionStatus', { subscriptionId: serverSubscriptionExpanded });
+    // Long-running monitoring stays well above the 10-second minimum period.
+    serverSubscriptionMonitor = setInterval(() => {
+      if (state.tab === 'servers' && serverSubscriptionExpanded) ask('serverSubscriptionStatus', { subscriptionId: serverSubscriptionExpanded });
+    }, 60_000);
+  }
+  renderServerDashboard(serverCache);
+}
+function stopSubscribedServerMonitoring() {
+  if (serverSubscriptionMonitor) clearInterval(serverSubscriptionMonitor);
+  serverSubscriptionMonitor = null;
+}
+function renderSubscribedServerGroups() {
+  if (!serverSubscriptionGroups.length) return '';
+  return `<div class="srv-subscribed"><h3>Subscribed Server Links</h3><div class="pk-list">${serverSubscriptionGroups.map(group => {
+    const expanded = serverSubscriptionExpanded === group.subscriptionId;
+    return `<article class="pk-card srv-subscriber-card ${expanded ? 'active' : ''}"><div class="srv-subscriber-head" role="button" tabindex="0" aria-expanded="${expanded}" onclick="toggleSubscribedServerBroker('${esc(group.subscriptionId)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleSubscribedServerBroker('${esc(group.subscriptionId)}')}"><span><strong>${esc(group.alias)}</strong><small>${group.items.length} Servers · revision ${Number(group.revision)||0}</small></span><i>›</i></div>${expanded ? `<div class="srv-subscriber-detail"><div class="srv-subscriber-actions"><button class="pk-button" data-pending-label="Checking…" onclick="ask('serverSubscriptionStatus',{subscriptionId:'${esc(group.subscriptionId)}'},this)">Refresh Status</button></div><div class="srv-subscriber-table-wrap"><table class="pk-table srv-subscriber-table"><thead><tr><th>Server</th><th>Link</th><th>Status</th><th>Action</th></tr></thead><tbody>${group.items.map(item => { const status = item.status === 'running' ? ['running','Running'] : item.status === 'unavailable' ? ['unavailable','Unavailable'] : ['not-checked','Not checked']; return `<tr><td><strong>${esc(item.title)}</strong></td><td><code title="${esc(item.link || '')}">${esc(item.link || 'Unavailable')}</code></td><td><span class="srv-sub-status ${status[0]}"><i></i>${status[1]}</span></td><td><button class="pk-button" data-pending-label="Opening…" onclick="ask('subscriptionOpenServerLink',{key:'${esc(item.key)}',index:0},this)" ${item.link ? '' : 'disabled'}>Open</button></td></tr>`; }).join('')}</tbody></table></div></div>` : ''}</article>`;
+  }).join('')}</div></div>`;
 }
 function serverDragStart(event, slug) {
   event.dataTransfer.effectAllowed = 'move';
@@ -181,6 +207,7 @@ function renderServerDashboard(servers) {
     </div>` };
   });
   const cards = renderServerGroupNode(serverGroupTree(cardEntries));
+  const subscribedServers = renderSubscribedServerGroups();
   document.getElementById('detail').innerHTML = `
     <div class="dash">
       <div class="dash-hd">
@@ -200,6 +227,7 @@ function renderServerDashboard(servers) {
       <div class="srv-port-registry"><strong>Managed ports</strong><span class="srv-port-list">${portChips || '<span class="empty">No ports reserved</span>'}</span><span class="srv-next-port">Next free: <b>${suggestedPort}</b></span></div>
       <div class="srv-root-drop" ondragover="serverGroupDragOver(event)" ondragleave="serverGroupDragLeave(event)" ondrop="serverGroupDrop(event,'')" title="Drag a server here to remove it from its group">Ungrouped</div>
       ${cards || '<div class="empty">No servers yet — import a folder (moves it into the store) or create a new one.</div>'}
+      ${subscribedServers}
     </div>`;
   const nextSearchInput = document.getElementById('server-search');
   if (nextSearchInput) {
@@ -211,11 +239,11 @@ function renderServerDashboard(servers) {
   }
   filterServerDashboard(serverSearchQuery);
   ask('envList', {}); // cache envs for the edit form's interpreter picker
-  // A server that just started shows "starting" until its port is up — auto-poll
-  // until every server has settled (running/stopped) so the light turns green.
+  // This is a short-lived, user-visible active search while a local Server starts,
+  // not a long-running background refresh. It stops as soon as status settles.
   if (_srvPoll) { clearTimeout(_srvPoll); _srvPoll = null; }
   if (serverCache.some(s => s.status === 'starting')) {
-    _srvPoll = setTimeout(() => { if (state.tab === 'servers') ask('serverList', {}); }, 1200);
+    _srvPoll = setTimeout(() => { if (state.tab === 'servers') ask('serverList', {}); }, 5000);
   }
 }
 function openServer(url) { ask('serverOpenUrl', { url }); }

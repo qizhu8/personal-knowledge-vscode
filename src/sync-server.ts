@@ -3,6 +3,18 @@ import { networkInterfaces } from "os";
 import { randomBytes } from "crypto";
 import { skillList, skillGet, noteExport, paperList, paperGet } from "./filestore";
 import { promptExport, scriptExport, packageExport } from "./storage";
+import { serverExport } from "./servers";
+
+export interface SyncSelection {
+  [contentType: string]: string[];
+  skills: string[];
+  notes: string[];
+  papers: string[];
+  prompts: string[];
+  scripts: string[];
+  packages: string[];
+  servers: string[];
+}
 
 export interface SyncSession {
   id:           string;
@@ -12,14 +24,7 @@ export interface SyncSession {
   expires:      Date;
   enabled:      boolean;
   contentTypes: string[];
-  selected: {
-    skills:   string[];   // names,          empty = all
-    notes:    string[];   // slugs,          empty = all
-    papers:   string[];   // slugs,          empty = all
-    prompts:  string[];   // "project/task", empty = all
-    scripts:  string[];   // "cat/file",     empty = all
-    packages: string[];   // names,          empty = all
-  };
+  selected: SyncSelection;
   created:      Date;
 }
 
@@ -51,7 +56,7 @@ class SyncServer {
       this.server.on("error", reject);
     });
     // Sweep expired sessions every minute
-    setInterval(() => this.sweep(), 60_000).unref();
+    setInterval(() => this.sweep(), 2 * 60_000).unref();
   }
 
   createSession(selected: SyncSession["selected"], contentTypes: string[], expiresMinutes: number): SyncSession {
@@ -92,7 +97,7 @@ class SyncServer {
     }
   }
 
-  private handle(req: IncomingMessage, res: ServerResponse): void {
+  private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     res.setHeader("Access-Control-Allow-Origin", "*");
 
     if (req.method === "GET" && req.url === "/sync/ping") {
@@ -120,46 +125,7 @@ class SyncServer {
     }
 
     if (req.method === "GET" && (req.url === "/sync/skills" || req.url === "/sync/bundle")) {
-      const types    = session.contentTypes.length ? session.contentTypes : ["skills"];
-      const sel      = session.selected;
-      const bundle: any = { from: process.env.USER ?? "uone", created_at: new Date().toISOString(), version: "2" };
-
-      if (types.includes("skills")) {
-        const rows = sel.skills.length
-          ? sel.skills.map(n => skillGet(n)).filter(Boolean)
-          : (skillList() as any[]).map((r: any) => skillGet(r.name)).filter(Boolean);
-        bundle.skills = (rows as any[]).map(r => ({
-          name: r.name, content: r.content,
-          metadata: { description: r.description, category: r.category,
-                      tags: JSON.parse(r.tags ?? "[]"), source_project: r.source_project, created_at: r.created_at }
-        }));
-      }
-      if (types.includes("notes")) {
-        const all = noteExport() as any[];
-        bundle.notes = sel.notes.length ? all.filter(n => sel.notes.includes(n.slug)) : all;
-      }
-      if (types.includes("papers")) {
-        const rows = sel.papers.length
-          ? sel.papers.map(s => paperGet(s)).filter(Boolean)
-          : (paperList() as any[]).map((r: any) => paperGet(r.slug)).filter(Boolean);
-        bundle.papers = rows;
-      }
-      if (types.includes("prompts")) {
-        const all = promptExport();
-        bundle.prompts = sel.prompts.length
-          ? all.filter(p => sel.prompts.includes(`${p.project}/${p.task}`))
-          : all;
-      }
-      if (types.includes("scripts")) {
-        const all = scriptExport();
-        bundle.scripts = sel.scripts.length
-          ? all.filter(s => sel.scripts.includes(`${s.category}/${s.file}`))
-          : all;
-      }
-      if (types.includes("packages")) {
-        const all = packageExport();
-        bundle.packages = sel.packages.length ? all.filter(p => sel.packages.includes(p.name)) : all;
-      }
+      const bundle = buildSyncBundle(session.selected, session.contentTypes);
 
       const payload = JSON.stringify(bundle);
       res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) });
@@ -184,3 +150,45 @@ class SyncServer {
 }
 
 export const syncServer = new SyncServer();
+
+export function emptySyncSelection(): SyncSelection {
+  return { skills: [], notes: [], papers: [], prompts: [], scripts: [], packages: [], servers: [] };
+}
+
+export function buildSyncBundle(selection: SyncSelection, contentTypes: string[], from = process.env.USER ?? "uone"): any {
+  const types = contentTypes.length ? contentTypes : ["skills"];
+  const selected = { ...emptySyncSelection(), ...selection };
+  const bundle: any = { from, created_at: new Date().toISOString(), version: "3" };
+  if (types.includes("skills")) {
+    const rows = selected.skills.length
+      ? selected.skills.map(name => skillGet(name)).filter(Boolean)
+      : (skillList() as any[]).map((row: any) => skillGet(row.name)).filter(Boolean);
+    bundle.skills = (rows as any[]).map(row => ({
+      name: row.name, content: row.content,
+      metadata: { description: row.description, category: row.category, tags: JSON.parse(row.tags ?? "[]"), source_project: row.source_project, created_at: row.created_at },
+    }));
+  }
+  if (types.includes("notes")) {
+    const all = noteExport() as any[];
+    bundle.notes = selected.notes.length ? all.filter(note => selected.notes.includes(note.slug)) : all;
+  }
+  if (types.includes("papers")) {
+    bundle.papers = selected.papers.length
+      ? selected.papers.map(slug => paperGet(slug)).filter(Boolean)
+      : (paperList() as any[]).map((row: any) => paperGet(row.slug)).filter(Boolean);
+  }
+  if (types.includes("prompts")) {
+    const all = promptExport();
+    bundle.prompts = selected.prompts.length ? all.filter(prompt => selected.prompts.includes(`${prompt.project}/${prompt.task}`)) : all;
+  }
+  if (types.includes("scripts")) {
+    const all = scriptExport();
+    bundle.scripts = selected.scripts.length ? all.filter(script => selected.scripts.includes(`${script.category}/${script.file}`)) : all;
+  }
+  if (types.includes("packages")) {
+    const all = packageExport();
+    bundle.packages = selected.packages.length ? all.filter(pkg => selected.packages.includes(pkg.name)) : all;
+  }
+  if (types.includes("servers")) bundle.servers = serverExport(selected.servers);
+  return bundle;
+}

@@ -2,7 +2,7 @@
   "name": "personal-knowledge",
   "displayName": "Personal Knowledge Manager",
   "description": "%extension.description%",
-  "version": "2.5.5",
+  "version": "2.7.0",
   "publisher": "Uone",
   "author": {
     "name": "Yu Wang"
@@ -18,7 +18,7 @@
     "url": "https://github.com/qizhu8/personal-knowledge-vscode/issues"
   },
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.90.0"
   },
   "categories": [
     "Other",
@@ -36,6 +36,7 @@
   ],
   "activationEvents": [
     "onStartupFinished",
+    "onView:personalKnowledge.sidebarView",
     "onWebviewPanel:personalKnowledge"
   ],
   "main": "./dist/extension.js",
@@ -93,6 +94,11 @@
         "command": "personalKnowledge.openServers",
         "title": "%command.openServers%",
         "icon": "$(server-environment)"
+      },
+      {
+        "command": "personalKnowledge.openSubscriptions",
+        "title": "Open Subscription",
+        "icon": "$(broadcast)"
       },
       {
         "command": "personalKnowledge.startServerItem",
@@ -253,6 +259,41 @@
         "icon": "$(trash)"
       },
       {
+        "command": "personalKnowledge.restoreSkillTrash",
+        "title": "Restore from Trash",
+        "icon": "$(history)"
+      },
+      {
+        "command": "personalKnowledge.emptySkillTrash",
+        "title": "Empty Skills Trash…",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "personalKnowledge.deleteSkillTrashEntry",
+        "title": "Delete Permanently…",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "personalKnowledge.trashKnowledgeItem",
+        "title": "Move to Trash…",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "personalKnowledge.restoreKnowledgeTrash",
+        "title": "Restore from Trash",
+        "icon": "$(history)"
+      },
+      {
+        "command": "personalKnowledge.deleteKnowledgeTrashEntry",
+        "title": "Delete Permanently…",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "personalKnowledge.emptyKnowledgeTrash",
+        "title": "Empty Trash…",
+        "icon": "$(trash)"
+      },
+      {
         "command": "personalKnowledge.copyNavigationPath",
         "title": "Copy Path",
         "icon": "$(copy)"
@@ -279,7 +320,7 @@
       },
       {
         "command": "personalKnowledge.deleteScript",
-        "title": "Delete",
+        "title": "Move to Trash…",
         "icon": "$(trash)"
       }
     ],
@@ -335,6 +376,41 @@
           "command": "personalKnowledge.deleteSubgroup",
           "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-(skills|notes|papers|prompts|scripts)-(group|terminal-group)/",
           "group": "0_group@3"
+        },
+        {
+          "command": "personalKnowledge.restoreSkillTrash",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-skill-trash-item",
+          "group": "0_trash@1"
+        },
+        {
+          "command": "personalKnowledge.deleteSkillTrashEntry",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-skill-trash-item",
+          "group": "0_trash@2"
+        },
+        {
+          "command": "personalKnowledge.emptySkillTrash",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-skill-trash",
+          "group": "0_trash@1"
+        },
+        {
+          "command": "personalKnowledge.trashKnowledgeItem",
+          "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-(note|paper|prompt|script)-item/",
+          "group": "8_delete@1"
+        },
+        {
+          "command": "personalKnowledge.restoreKnowledgeTrash",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-knowledge-trash-item",
+          "group": "0_trash@1"
+        },
+        {
+          "command": "personalKnowledge.deleteKnowledgeTrashEntry",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-knowledge-trash-item",
+          "group": "0_trash@2"
+        },
+        {
+          "command": "personalKnowledge.emptyKnowledgeTrash",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-knowledge-trash",
+          "group": "0_trash@1"
         },
         {
           "command": "personalKnowledge.createServerGroupFromNavigation",
@@ -520,12 +596,6 @@
         }
       ]
     },
-    "viewsWelcome": [
-      {
-        "view": "personalKnowledge.sidebarView",
-        "contents": "Your personal knowledge base.\n\n[Open PKM Panel](command:personalKnowledge.open)\n\nShortcut: `Ctrl+Shift+K`"
-      }
-    ],
     "configuration": {
       "title": "%configuration.title%",
       "properties": {
@@ -696,7 +766,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && cp -r src/webview dist/ && node scripts/build-panel.js && cp node_modules/sql.js/dist/sql-wasm.js dist/ && cp node_modules/sql.js/dist/sql-wasm.wasm dist/ && cp node_modules/marked/lib/marked.umd.js dist/webview/ && npx esbuild src/live-markdown-entry.js --bundle --platform=node --format=cjs --outfile=dist/live-markdown.js && npx esbuild src/webview/hljs-entry.js --bundle --minify --format=iife --outfile=dist/webview/hljs.js && cp node_modules/highlight.js/styles/github-dark.css dist/webview/hljs.css && cp node_modules/katex/dist/katex.min.js dist/webview/katex.js && cp node_modules/katex/dist/katex.min.css dist/webview/katex.css && mkdir -p dist/webview/fonts && cp node_modules/katex/dist/fonts/*.woff2 dist/webview/fonts/ && cp node_modules/cytoscape/dist/cytoscape.min.js dist/webview/cytoscape.js && cp node_modules/mermaid/dist/mermaid.min.js dist/webview/mermaid.js && cp node_modules/3d-force-graph/dist/3d-force-graph.min.js dist/webview/forcegraph3d.js && node scripts/postbuild.js",
+    "build": "tsc -p tsconfig.json && npx esbuild src/subscription-gateway-entry.ts --bundle --platform=node --format=cjs --outfile=dist/subscription-gateway.js && cp -r src/webview dist/ && node scripts/build-panel.js && cp node_modules/sql.js/dist/sql-wasm.js dist/ && cp node_modules/sql.js/dist/sql-wasm.wasm dist/ && cp node_modules/marked/lib/marked.umd.js dist/webview/ && npx esbuild src/live-markdown-entry.js --bundle --platform=node --format=cjs --outfile=dist/live-markdown.js && npx esbuild src/webview/hljs-entry.js --bundle --minify --format=iife --outfile=dist/webview/hljs.js && cp node_modules/highlight.js/styles/github-dark.css dist/webview/hljs.css && cp node_modules/katex/dist/katex.min.js dist/webview/katex.js && cp node_modules/katex/dist/katex.min.css dist/webview/katex.css && mkdir -p dist/webview/fonts && cp node_modules/katex/dist/fonts/*.woff2 dist/webview/fonts/ && cp node_modules/cytoscape/dist/cytoscape.min.js dist/webview/cytoscape.js && cp node_modules/mermaid/dist/mermaid.min.js dist/webview/mermaid.js && cp node_modules/3d-force-graph/dist/3d-force-graph.min.js dist/webview/forcegraph3d.js && node scripts/postbuild.js",
     "screenshots": "python scripts/capture-release-screenshots.py",
     "screenshots:gif": "python scripts/capture-release-screenshots.py --gif",
     "test:chat-persistence": "npm run build && node tests/test-chat-persistence.js",
@@ -739,7 +809,13 @@
     "test:chat-invite-host": "npm run build && node tests/test-chat-invite-host.js",
     "test:chat-close-room-recovery": "npm run build && node tests/test-chat-close-room-recovery.js",
     "test:chat-room-repair": "npm run build && node tests/test-chat-room-repair.js",
+    "test:subscriptions": "npm run build && node tests/test-subscriptions.js",
+    "test:subscription-acl": "npm run build && node tests/test-subscription-acl.js",
+    "test:subscription-ui": "npm run build && node tests/test-subscription-ui.js",
+    "test:subscription-fork": "npm run build && node tests/test-subscription-fork.js",
+    "test:startup": "npm run build && node scripts/run-extension-startup-test.js",
     "test:localization": "npm run build && node tests/test-localization.js",
+    "pretest:release": "npm run build && node tests/test-subscription-acl.js && node tests/test-subscriptions.js && node tests/test-subscription-fork.js && node tests/test-subscription-ui.js && node scripts/run-extension-startup-test.js",
     "test:release": "npm run build && node tests/test-chat-persistence.js && node tests/test-chat-stored-rooms.js && node tests/test-chat-stored-rooms-ui.js && node tests/test-chat-participant-persistence.js && node tests/test-chat-join-approval.js && node tests/test-chat-hub-approval.js && node tests/test-chat-join-approval-ui.js && node tests/test-chat-no-manual-approval.js && node tests/test-chat-invite-host.js && node tests/test-chat-close-room-recovery.js && node tests/test-chat-room-repair.js && node tests/test-chat-moderation-ui.js && node tests/test-chat-mention-highlight-ui.js && node tests/test-chat-room-identity.js && node tests/test-chat-default-recipient-ui.js && node tests/test-chat-browser-ui.js && node tests/test-chat-multi-recipient.js && node tests/test-chat-magic-link.js && node tests/test-chat-mcp-approval.js && node tests/test-chat-packaged-worker.js && node tests/test-chat-hub-health.js && node tests/test-chat-storage-boundaries.js && python tests/test-chat-history-atomic.py && python tests/test-chat-generated-standby.py && node tests/test-chat-markdown.js && node tests/test-chat-quote-viewer-ui.js && node tests/test-mcp-version-ui.js && node tests/test-chat-layout-scroll-ui.js && node tests/test-pkm-skill-projection.js && node tests/test-pkm-skill-mcp.js && node tests/test-server-proxy.js && node tests/test-server-grouping.js && node tests/test-environment-refresh.js && node tests/test-refresh-actions.js && node tests/test-navigation-status.js && node tests/test-navigation-groups.js && node tests/test-navigation-copy-path.js && node tests/test-detail-path-ui.js && node tests/test-machine-store-path.js && node tests/test-sync-progress.js && node tests/test-localization.js",
     "poc:chat-room-lifecycle": "npm run build && node scripts/poc-chat-room-lifecycle.js",
     "watch": "tsc -p tsconfig.json --watch",
@@ -747,18 +823,25 @@
   },
   "dependencies": {
     "3d-force-graph": "^1.80.0",
+    "aedes": "^1.1.2",
+    "casbin": "^5.51.1",
     "cytoscape": "^3.34.0",
+    "dompurify": "^3.4.14",
     "highlight.js": "^11.11.1",
+    "ipaddr.js": "^2.5.0",
     "katex": "^0.16.47",
     "marked": "^18.0.5",
-    "mermaid": "^11.16.0",
+    "mermaid": "^11.17.2",
+    "mqtt": "^5.15.2",
+    "rate-limiter-flexible": "^11.2.0",
     "sql.js": "^1.12.0",
     "ws": "^8.21.1"
   },
   "devDependencies": {
     "@types/node": "^26.1.0",
-    "@types/vscode": "^1.85.0",
+    "@types/vscode": "1.90.0",
     "@types/ws": "^8.18.1",
+    "@vscode/test-electron": "^3.1.0",
     "esbuild": "^0.28.1",
     "typescript": "^6.0.3"
   }

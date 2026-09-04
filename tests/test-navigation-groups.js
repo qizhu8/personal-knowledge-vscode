@@ -53,7 +53,16 @@ try {
   assert.match(extension, /Prompts support three group levels/);
   assert.match(extension, /folderDeletePromote\(group\.area, group\.path, fallback\)/);
   assert.match(extension, /"skill-folder": "skills", "note-folder": "notes", "paper-folder": "papers", "script-folder": "scripts"/);
+  assert.match(extension, /new PkTreeItem\("Subscription", "root-subscriptions"/);
+  assert.match(extension, /return \[brokers, subscribers\]/);
+  assert.match(extension, /case 'subscription-brokers-group': return this\._subscriptionBrokers\(\)/);
+  assert.match(extension, /case 'subscription-subscribers-group': return this\._subscriptionSubscribers\(\)/);
   const commandTitles = Object.fromEntries(packageJson.contributes.commands.map(command => [command.command, command.title]));
+  assert.strictEqual(commandTitles["personalKnowledge.openSubscriptions"], "Open Subscription");
+  assert.match(extension, /function folkNavigationLabel\(value: string, root: boolean\)/);
+  assert.match(extension, /replace\(\/--\[a-f0-9\]\{12\}\$\/i, ""\)/);
+  assert.match(extension, /folkNavigationLabel\(name, path\.length === 0\)/);
+  assert.match(extension, /folkNavigationLabel\(p, true\)/);
   assert.strictEqual(commandTitles["personalKnowledge.newSubgroup"], "New Subgroup…");
   assert.strictEqual(commandTitles["personalKnowledge.renameSubgroup"], "Rename Subgroup…");
   assert.strictEqual(commandTitles["personalKnowledge.deleteSubgroup"], "Delete Subgroup…");

@@ -4,8 +4,12 @@ import * as os from "os";
 import * as http from "http";
 import * as fs from "fs";
 import { syncServer } from "./sync-server";
+import { SharedContentType, SharedMarketManager, SHARED_CONTENT_TYPES } from "./subscriptions";
+import { forkSubscriptionContent } from "./subscription-fork";
 import {
   skillList, skillSearch, skillGet, skillUpsert, skillDelete, skillMoveCategory, skillMove, skillSetPinned,
+  skillMoveToTrash, skillFolderMoveToTrash, skillTrashList, skillTrashRestore, skillTrashEmpty, skillTrashDelete,
+  knowledgeMoveToTrash, knowledgeTrashList, knowledgeTrashRestore, knowledgeTrashDelete, knowledgeTrashEmpty, KnowledgeTrashArea,
   noteList, noteSearch, noteGet, noteUpsert, noteDelete, slugExists, noteMove, noteMoveFolder, noteSetPinned, noteFolderPins, noteSetFolderPinned,
   noteExport, noteImport, saveNoteAsset,
   paperList, paperSearch, paperGet, paperUpsert, paperDelete,
@@ -242,6 +246,12 @@ class Logger {
 }
 
 const log = new Logger();
+let sharedMarket: SharedMarketManager | undefined;
+
+function getSharedMarket(): SharedMarketManager {
+  if (!sharedMarket) throw new Error("Subscription service is not initialized.");
+  return sharedMarket;
+}
 
 /** Package list enriched with git-tracking info (tracked in the store, or its own repo). */
 function packagesWithGit(): any[] {
@@ -268,6 +278,24 @@ function syncSummary(s: { contentTypes: string[]; selected: Record<string, strin
   }).join(", ");
 }
 
+function compactTags(value: unknown): string {
+  if (Array.isArray(value)) return value.map(String).join(", ");
+  if (typeof value !== "string") return "";
+  try { return compactTags(JSON.parse(value)); } catch { return value; }
+}
+
+async function sharedContentCatalog(): Promise<Record<string, any[]>> {
+  return {
+    skills: (skillList() as any[]).map(row => ({ id: row.name, label: row.name, cat: row.category ?? "", treePath: row.category || "(uncategorized)", meta: compactTags(row.tags) })),
+    notes: (noteList(undefined, 500) as any[]).map(row => ({ id: row.slug, label: row.title, cat: row.category ?? "", treePath: row.category || "(uncategorized)", meta: row.type })),
+    papers: (paperList() as any[]).map(row => ({ id: row.slug, label: row.title, cat: row.category || row.topic || "", treePath: row.category || "(uncategorized)", meta: [row.topic, row.year].filter(Boolean).join(" · ") })),
+    prompts: promptList().map(row => ({ id: `${row.project}/${row.task}`, label: row.task, cat: row.project, treePath: row.project, meta: row.latest })),
+    scripts: (scriptList() as any[]).map(row => ({ id: row.path, label: row.file, cat: row.category === "(root)" ? "" : row.category ?? "", treePath: row.category === "(root)" ? "" : row.category ?? "", meta: row.lang })),
+    packages: packageList().map((row: any) => ({ id: row.name, label: row.name, cat: "", treePath: "", meta: row.lang })),
+    servers: (await serverList()).map(row => ({ id: row.slug, label: row.name, cat: row.category ?? "", treePath: row.category || "Ungrouped", meta: (row.tags || []).join(", ") })),
+  };
+}
+
 /** Ensure the knowledge store is a git repository (init on first use). */
 function ensureGitRepo(): void {
   try {
@@ -278,7 +306,7 @@ function ensureGitRepo(): void {
     // Ignore the binary DB + WAL and generated MCP server; track the markdown mirror instead
     const gitignore = path.join(store, ".gitignore");
     if (!fs.existsSync(gitignore)) {
-      fs.writeFileSync(gitignore, "knowledge.db\nknowledge.db-shm\nknowledge.db-wal\nmcp-server/\n");
+      fs.writeFileSync(gitignore, "knowledge.db\nknowledge.db-shm\nknowledge.db-wal\nmcp-server/\nchatrooms/**/*.db\nchatrooms/**/*.journal\nchatrooms/**/*.db-shm\nchatrooms/**/*.db-wal\n");
     }
     execSync(`git -C "${store}" add -A && git -C "${store}" commit -m "init: personal knowledge store" --allow-empty`, { stdio: "pipe" });
     log.info(`initialized git repo in ${store}`);
@@ -766,6 +794,7 @@ let _panelLastDiagnostic = "";
 let _storeReady = false;                       // file store configured & migrated
 let _pendingOpen: { type: string; key: string; edit?: boolean } | undefined; // item to open once ready
 let _pendingTab: string | undefined;           // tab to switch to once the webview is ready
+let _pendingSubscriptionShare: string | undefined;
 let _pendingMcpRegenerateHighlight = false;
 let _nativeMcpProvider = false;
 let _mcpDefinitionsChanged: vscode.EventEmitter<void> | undefined;
@@ -832,6 +861,16 @@ function openPanelTab(context: vscode.ExtensionContext, tab: string): void {
   target.reveal(vscode.ViewColumn.One);
   if (_panelReady) target.webview.postMessage({ command: "openTab", tab });
   else _pendingTab = tab;
+}
+
+function openSubscriptionPanel(context: vscode.ExtensionContext, shareId = ""): void {
+  const target = getOrCreatePanel(context);
+  target.reveal(vscode.ViewColumn.One);
+  if (_panelReady) target.webview.postMessage({ command: "openSubscription", shareId });
+  else {
+    _pendingTab = "subscriptions";
+    _pendingSubscriptionShare = shareId;
+  }
 }
 
 type KnowledgeMarkdownArea = "skills" | "notes" | "papers";
@@ -1104,25 +1143,6 @@ async function createScriptAtFolder(folder: string): Promise<string | undefined>
   const document = await vscode.workspace.openTextDocument(vscode.Uri.file(full));
   await vscode.window.showTextDocument(document, { preview: false });
   return rel;
-}
-
-async function deleteScriptAtPath(relPath: string): Promise<boolean> {
-  const root = path.resolve(getStorePath(), "scripts");
-  const full = path.resolve(root, relPath);
-  if (!full.startsWith(root + path.sep) || !fs.existsSync(full) || fs.statSync(full).isDirectory()) return false;
-  const confirm = await vscode.window.showWarningMessage(
-    `Delete script "${relPath}"? This removes the file and its AI-summary cache, and commits the deletion to git.`,
-    { modal: true }, "Delete"
-  );
-  if (confirm !== "Delete") return false;
-  fs.rmSync(full, { force: true });
-  fs.rmSync(scriptCacheDir(relPath), { recursive: true, force: true });
-  gitCommit(`delete(script): ${relPath}`);
-  log.action("script.delete", { path: relPath });
-  _treeProvider?.refresh();
-  panel?.webview.postMessage({ command: "reloaded" });
-  vscode.window.setStatusBarMessage("$(trash) Script deleted", 3000);
-  return true;
 }
 
 // ── Chatroom orchestrator ──────────────────────────────────────────────────
@@ -2470,6 +2490,40 @@ async function serverListForUi(context: vscode.ExtensionContext): Promise<any[]>
   }));
 }
 
+const subscribedServerHealth = new Map<string, { checkedAt: number; status: "running" | "unavailable" }>();
+async function probeSubscribedServer(link: string): Promise<"running" | "unavailable"> {
+  try {
+    let response = await fetch(link, { method: "HEAD", redirect: "follow", signal: AbortSignal.timeout(3_000) });
+    if (response.status === 405 || response.status === 501) {
+      response = await fetch(link, { method: "GET", redirect: "follow", signal: AbortSignal.timeout(3_000) });
+      await response.body?.cancel();
+    }
+    return response.status < 500 ? "running" : "unavailable";
+  } catch {
+    return "unavailable";
+  }
+}
+
+async function subscribedServerGroupsForUi(subscriptionId = "", probe = false): Promise<any[]> {
+  if (!sharedMarket) return [];
+  const groups = sharedMarket.cachedGroups("servers");
+  return Promise.all(groups.map(async group => ({
+    ...group,
+    items: await Promise.all(group.items.map(async item => {
+      const server = sharedMarket!.cachedServerLinks(item.key);
+      const link = server.links[0]?.url || "";
+      const cached = subscribedServerHealth.get(link);
+      let status: "running" | "unavailable" | "not-checked" = cached?.status || "not-checked";
+      if (link && probe && group.subscriptionId === subscriptionId) {
+        const probedStatus = await probeSubscribedServer(link);
+        status = probedStatus;
+        subscribedServerHealth.set(link, { checkedAt: Date.now(), status: probedStatus });
+      }
+      return { ...item, title: server.name, link, status };
+    })),
+  })));
+}
+
 async function ensureServerForwarding(context: vscode.ExtensionContext, slug: string): Promise<string> {
   if (!slug || !vscode.env.remoteName) return "";
   if (!context.globalState.get<boolean>("servers.autoForward.global.v1", true)) return "";
@@ -2530,6 +2584,11 @@ async function handleMessage(
         _pendingTab = undefined;
         respond({ command: "openTab", tab });
       }
+      if (_pendingSubscriptionShare !== undefined) {
+        const shareId = _pendingSubscriptionShare;
+        _pendingSubscriptionShare = undefined;
+        respond({ command: "openSubscription", shareId });
+      }
       if (_pendingMcpRegenerateHighlight) {
         _pendingMcpRegenerateHighlight = false;
         respond({ command: "highlightMcpRegenerate" });
@@ -2545,6 +2604,126 @@ async function handleMessage(
       _treeProvider?.refresh();
       log.action("reload");
       respond({ command: "reloaded" });
+      break;
+    }
+
+    case "subscriptionState": {
+      respond({ command: "subscriptionState", data: { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses() } });
+      break;
+    }
+
+    case "subscriptionConfigure": {
+      await getSharedMarket().configure({
+        enabled: !!msg.enabled,
+        port: Number(msg.port || 19877),
+        advertisedHost: String(msg.advertisedHost || ""),
+        displayName: String(msg.displayName || ""),
+      });
+      respond({ command: "subscriptionCompleted", data: { action: "configured" } });
+      respond({ command: "subscriptionState", data: { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses() } });
+      break;
+    }
+
+    case "subscriptionSetOnline": {
+      await getSharedMarket().setGatewayOnline(!!msg.online);
+      respond({ command: "subscriptionCompleted", data: { action: msg.online ? "online" : "offline" } });
+      respond({ command: "subscriptionState", data: { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses() } });
+      break;
+    }
+
+    case "subscriptionUpsertShare": {
+      const contentTypes = (Array.isArray(msg.contentTypes) ? msg.contentTypes : [])
+        .filter((type: unknown): type is SharedContentType => SHARED_CONTENT_TYPES.includes(String(type) as SharedContentType));
+      const published = await getSharedMarket().upsertShare({
+        shareId: String(msg.shareId || "") || undefined,
+        name: String(msg.name || ""),
+        visibility: msg.visibility === "unlisted" ? "unlisted" : "public",
+        contentTypes,
+        selected: msg.selected || {},
+        folders: msg.folders || {},
+        accessMode: msg.accessMode === "white-list" ? "white-list" : "block-list",
+        ipRules: Array.isArray(msg.ipRules) ? msg.ipRules : [],
+        accountMode: msg.accountMode === "white-list" ? "white-list" : msg.accountMode === "block-list" ? "block-list" : "open",
+        accountRules: Array.isArray(msg.accountRules) ? msg.accountRules : [],
+        protection: msg.protection === "secret-protected" ? "secret-protected" : "open",
+        secret: String(msg.secret || ""),
+        controlPort: Number(msg.controlPort || 0),
+        dataPort: Number(msg.dataPort || 0),
+      });
+      respond({ command: "subscriptionCompleted", data: { action: String(msg.shareId || "") ? "published" : "created", shareId: published.shareId, name: published.name, revision: published.revision } });
+      respond({ command: "subscriptionState", data: { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses() } });
+      break;
+    }
+
+    case "subscriptionDeleteShare": {
+      await getSharedMarket().deleteShare(String(msg.shareId || ""));
+      respond({ command: "subscriptionCompleted", data: { action: "brokerDeleted" } });
+      respond({ command: "subscriptionState", data: { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses() } });
+      break;
+    }
+
+    case "subscriptionCopyLink": {
+      await vscode.env.clipboard.writeText(getSharedMarket().magicLink(String(msg.shareId || "")));
+      respond({ command: "subscriptionCompleted", data: { action: "copied" } });
+      break;
+    }
+
+    case "subscriptionRevealSecret": {
+      const secret = await getSharedMarket().shareSecret(String(msg.shareId || ""));
+      respond({ command: "subscriptionSecret", data: { secret } });
+      break;
+    }
+
+    case "subscriptionRotateSecret": {
+      const result = await getSharedMarket().rotateShareSecret(String(msg.shareId || ""), Number(msg.controlPort || 0));
+      respond({ command: "subscriptionSecret", data: { secret: result.secret } });
+      respond({ command: "subscriptionState", data: { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses() } });
+      break;
+    }
+
+    case "subscriptionUnblockIp": {
+      getSharedMarket().unblockIp(String(msg.shareId || ""), String(msg.ip || ""));
+      respond({ command: "subscriptionCompleted", data: { action: "unblocked", ip: String(msg.ip || "") } });
+      respond({ command: "subscriptionState", data: { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses() } });
+      break;
+    }
+
+    case "subscriptionAdd": {
+      const subscribed = await getSharedMarket().subscribe(String(msg.magicLink || ""), String(msg.alias || ""), String(msg.secret || ""));
+      respond({ command: "subscriptionCompleted", data: { action: "subscribed", name: subscribed.alias || subscribed.brokerName || subscribed.shareId } });
+      respond({ command: "subscriptionState", data: { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses() } });
+      break;
+    }
+
+    case "subscriptionRename": {
+      const alias = String(msg.alias || "").trim();
+      const subscriptionId = String(msg.id || "");
+      getSharedMarket().renameSubscription(subscriptionId, alias);
+      respond({ command: "subscriptionRenamed", data: { id: subscriptionId, alias } });
+      respond({ command: "subscriptionState", data: { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses() } });
+      break;
+    }
+
+    case "subscriptionRefresh": {
+      const refreshed = await getSharedMarket().refresh(String(msg.id || ""), !!msg.force);
+      respond({ command: "subscriptionCompleted", data: { action: "refreshed", name: refreshed.alias || refreshed.brokerName || refreshed.shareId, revision: refreshed.revision } });
+      respond({ command: "subscriptionState", data: { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses() } });
+      break;
+    }
+
+    case "subscriptionRemove": {
+      getSharedMarket().removeSubscription(String(msg.id || ""));
+      respond({ command: "subscriptionCompleted", data: { action: "removed" } });
+      respond({ command: "subscriptionState", data: { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses() } });
+      break;
+    }
+
+    case "subscriptionOpenServerLink": {
+      const server = getSharedMarket().cachedServerLinks(String(msg.key || ""));
+      const link = server.links[Number(msg.index)];
+      if (!link) throw new Error("Subscribed Server link was not found.");
+      await vscode.env.openExternal(vscode.Uri.parse(link.url));
+      respond({ command: "subscriptionCompleted", data: { action: "serverOpened", name: server.name } });
       break;
     }
 
@@ -2971,7 +3150,12 @@ async function handleMessage(
       else if (tab === "scripts")  data = q ? scriptSearch(q, searchOptions) : scriptList();
       else data = [];
       const folders = (tab === "skills" || tab === "notes") ? folderList(tab) : undefined;
-      respond({ command: "list", data, folders });
+      const subscriptionGroups = sharedMarket && SHARED_CONTENT_TYPES.includes(tab as SharedContentType)
+        ? sharedMarket.cachedGroups(tab as SharedContentType, String(q || ""))
+        : [];
+      const trashAreas = ["notes", "papers", "prompts", "scripts"] as KnowledgeTrashArea[];
+      const knowledgeTrash = tab === "skills" ? skillTrashList() : trashAreas.includes(tab as KnowledgeTrashArea) ? knowledgeTrashList(tab as KnowledgeTrashArea) : [];
+      respond({ command: "list", data, folders, subscriptionGroups, knowledgeTrash });
       break;
     }
 
@@ -3057,7 +3241,9 @@ async function handleMessage(
     case "detail": {
       const { type, key } = msg;
       let data: unknown = null;
-      if (type === "skill") {
+      if (type === "subscriptionItem") {
+        data = getSharedMarket().cachedDetail(String(key || ""));
+      } else if (type === "skill") {
         const r = skillGet(key);
         if (r) data = { type: "skill", ...r };
       } else if (type === "note") {
@@ -3104,6 +3290,19 @@ async function handleMessage(
         if (r) data = { type: "script", ...r };
       }
       respond({ command: "detail", data });
+      break;
+    }
+
+    case "subscriptionFork": {
+      const market = getSharedMarket();
+      const keys = Array.isArray(msg.keys) ? msg.keys.map(String) : [];
+      const source = keys.length
+        ? market.forkFolderSource(keys, String(msg.path || ""))
+        : market.forkSource(String(msg.key || ""));
+      const forkPath = forkSubscriptionContent(getStorePath(), source);
+      gitCommit(`fork(${source.type === "packages" ? "package" : source.type}): ${source.brokerName}/${source.remotePath}`);
+      _treeProvider?.refresh();
+      respond({ command: "subscriptionForked", data: { type: source.type, path: forkPath } });
       break;
     }
 
@@ -3293,7 +3492,21 @@ async function handleMessage(
     // ── Servers dashboard ────────────────────────────────────────────────────
     case "serverList": {
       respond({ command: "serverList", data: await serverListForUi(context) });
+      respond({ command: "serverSubscriptionGroups", data: await subscribedServerGroupsForUi() });
       await _treeProvider?.refreshServerStatus();
+      break;
+    }
+
+    case "serverSubscriptionStatus": {
+      respond({ command: "serverSubscriptionGroups", data: await subscribedServerGroupsForUi(String(msg.subscriptionId || ""), true) });
+      break;
+    }
+
+    case "serverSubscriptionRefresh": {
+      const subscriptionId = String(msg.subscriptionId || "");
+      const refreshed = await getSharedMarket().refresh(subscriptionId, true);
+      respond({ command: "serverSubscriptionGroups", data: await subscribedServerGroupsForUi(subscriptionId, true) });
+      respond({ command: "subscriptionCompleted", data: { action: "serverContentRefreshed", name: refreshed.alias || refreshed.brokerName || refreshed.shareId, revision: refreshed.revision } });
       break;
     }
     case "serverGroupList": {
@@ -3903,8 +4116,10 @@ async function handleMessage(
     }
 
     case "deleteScript": {
-      try { if (await deleteScriptAtPath(String(msg.relPath || ""))) respond({ command: "saved" }); }
-      catch (e: any) { vscode.window.showErrorMessage(`Delete failed: ${e.message}`); }
+      const relPath = String(msg.relPath || "");
+      const entry = knowledgeMoveToTrash("scripts", relPath, "item", path.basename(relPath));
+      if (entry) gitCommit(`trash(script): ${entry.originalPath}`);
+      respond({ command: "knowledgeTrashResult", data: entry ? { ok: true, action: "moved", area: "scripts", path: entry.originalPath } : { ok: false, area: "scripts", error: "Script was not found." } });
       break;
     }
 
@@ -3926,10 +4141,10 @@ async function handleMessage(
 
     case "deletePaper": {
       const { slug } = msg;
-      if (paperDelete(slug)) gitCommit(`delete(paper): ${slug}`);
-      respond({ command: "saved" });
-      respond({ command: "detail", data: null });
-      vscode.window.setStatusBarMessage("$(trash) Paper deleted", 3000);
+      const paper = paperGet(String(slug || ""));
+      const entry = knowledgeMoveToTrash("papers", `${slug}.md`, "item", paper?.title || path.basename(String(slug || "")));
+      if (entry) gitCommit(`trash(paper): ${entry.originalPath}`);
+      respond({ command: "knowledgeTrashResult", data: entry ? { ok: true, action: "moved", area: "papers", path: entry.originalPath } : { ok: false, area: "papers", error: "Paper was not found." } });
       break;
     }
 
@@ -3995,7 +4210,7 @@ async function handleMessage(
       const sel = selected ?? { skills: [], notes: [], prompts: [], scripts: [], packages: [] };
       try {
         if (!_storeReady || !directoryExists(getStorePath())) throw new Error("Machine-local Knowledge Root is not ready. Configure it before starting Sync.");
-        await syncServer.ensureStarted(port ?? 19877);
+        await syncServer.ensureStarted(port ?? 19878);
         const session = syncServer.createSession(sel, contentTypes ?? ["skills"], expiresMinutes ?? 30);
         respond({ command: "syncStarted", data: {
           id: session.id, magicCode: createSyncMagicCode(session), expires: session.expires.toISOString(),
@@ -4189,19 +4404,83 @@ async function handleMessage(
 
     case "deleteNote": {
       const { slug } = msg;
-      if (noteDelete(slug)) { gitCommit(`delete(note): ${slug}`); }
-      vscode.window.setStatusBarMessage("$(trash) Note deleted", 3000);
-      respond({ command: "saved" });
-      respond({ command: "detail", data: null });
+      const note = noteGet(String(slug || ""));
+      const entry = knowledgeMoveToTrash("notes", `${slug}.md`, "item", note?.title || path.basename(String(slug || "")));
+      if (entry) gitCommit(`trash(note): ${entry.originalPath}`);
+      respond({ command: "knowledgeTrashResult", data: entry ? { ok: true, action: "moved", area: "notes", path: entry.originalPath } : { ok: false, area: "notes", error: "Note was not found." } });
       break;
     }
 
     case "deleteSkill": {
       const { name } = msg;
-      if (skillDelete(name)) { gitCommit(`delete(skill): ${name}`); }
-      vscode.window.setStatusBarMessage("$(trash) Skill deleted", 3000);
-      respond({ command: "saved" });
-      respond({ command: "detail", data: null });
+      const trashed = skillMoveToTrash(String(name || ""));
+      if (trashed) gitCommit(`trash(skill): ${trashed.originalPath}`);
+      respond({ command: "skillTrashResult", data: trashed ? { ok: true, action: "moved", path: trashed.originalPath } : { ok: false, error: "Skill was not found." } });
+      break;
+    }
+
+    case "skillTrashFolder": {
+      const trashed = skillFolderMoveToTrash(String(msg.path || ""));
+      if (trashed) gitCommit(`trash(skill-folder): ${trashed.originalPath}`);
+      respond({ command: "skillTrashResult", data: trashed ? { ok: true, action: "moved", path: trashed.originalPath } : { ok: false, error: "Skill folder was not found." } });
+      break;
+    }
+
+    case "skillTrashRestore": {
+      const result = skillTrashRestore(String(msg.id || ""));
+      if (!result.ok) { respond({ command: "skillTrashResult", data: result }); break; }
+      gitCommit(`restore(skill-trash): ${result.path}`);
+      respond({ command: "skillTrashResult", data: { ok: true, action: "restored", path: result.path } });
+      break;
+    }
+
+    case "skillTrashEmpty": {
+      const count = skillTrashEmpty();
+      if (count) gitCommit(`empty(skill-trash): ${count} entries`);
+      respond({ command: "skillTrashResult", data: { ok: true, action: "emptied", count } });
+      break;
+    }
+
+    case "skillTrashDelete": {
+      const result = skillTrashDelete(String(msg.id || ""));
+      if (result.ok) gitCommit(`delete(skill-trash): ${result.name}`);
+      respond({ command: "skillTrashResult", data: result.ok ? { ok: true, action: "deleted", path: result.name } : result });
+      break;
+    }
+
+    case "knowledgeTrashMove": {
+      const area = String(msg.area || "") as KnowledgeTrashArea;
+      if (!("notes papers prompts scripts".split(" ") as string[]).includes(area)) throw new Error("Unsupported Trash area.");
+      const entry = knowledgeMoveToTrash(area, String(msg.path || ""), msg.kind === "folder" ? "folder" : "item", String(msg.name || ""));
+      if (entry) gitCommit(`trash(${area}): ${entry.originalPath}`);
+      respond({ command: "knowledgeTrashResult", data: entry ? { ok: true, action: "moved", area, path: entry.originalPath } : { ok: false, area, error: `${area} item was not found.` } });
+      break;
+    }
+
+    case "knowledgeTrashRestore": {
+      const area = String(msg.area || "") as KnowledgeTrashArea;
+      if (!("notes papers prompts scripts".split(" ") as string[]).includes(area)) throw new Error("Unsupported Trash area.");
+      const result = knowledgeTrashRestore(area, String(msg.id || ""));
+      if (result.ok) gitCommit(`restore(${area}-trash): ${result.path}`);
+      respond({ command: "knowledgeTrashResult", data: { ...result, action: "restored", area } });
+      break;
+    }
+
+    case "knowledgeTrashDelete": {
+      const area = String(msg.area || "") as KnowledgeTrashArea;
+      if (!("notes papers prompts scripts".split(" ") as string[]).includes(area)) throw new Error("Unsupported Trash area.");
+      const result = knowledgeTrashDelete(area, String(msg.id || ""));
+      if (result.ok) gitCommit(`delete(${area}-trash): ${result.path}`);
+      respond({ command: "knowledgeTrashResult", data: { ...result, action: "deleted", area } });
+      break;
+    }
+
+    case "knowledgeTrashEmpty": {
+      const area = String(msg.area || "") as KnowledgeTrashArea;
+      if (!("notes papers prompts scripts".split(" ") as string[]).includes(area)) throw new Error("Unsupported Trash area.");
+      const count = knowledgeTrashEmpty(area);
+      if (count) gitCommit(`empty(${area}-trash): ${count} entries`);
+      respond({ command: "knowledgeTrashResult", data: { ok: true, action: "emptied", area, count } });
       break;
     }
 
@@ -4522,6 +4801,8 @@ async function handleMessage(
     log.error(`handleMessage(${msg.command}) failed: ${e?.stack ?? e?.message ?? e}`);
     if (msg.command === "list") {
       respond({ command: "list", data: [] });
+    } else if (String(msg.command || "").startsWith("subscription")) {
+      respond({ command: "subscriptionError", data: { action: String(msg.command || ""), error: e?.message || String(e) } });
     }
   }
 }
@@ -4626,15 +4907,21 @@ async function offerPkmSkillProjectionUpdate(context: vscode.ExtensionContext): 
 
 // ── Sidebar tree provider ──────────────────────────────────────────────────
 type PkNodeType =
-  | 'root-skills' | 'root-notes' | 'root-papers' | 'root-prompts' | 'root-packages' | 'root-scripts' | 'root-environments' | 'root-servers' | 'root-chatroom' | 'root-mcp'
+  | 'root-skills' | 'root-notes' | 'root-papers' | 'root-prompts' | 'root-packages' | 'root-scripts' | 'root-environments' | 'root-servers' | 'root-chatroom' | 'root-subscriptions' | 'root-mcp'
   | 'environment-group' | 'environment-item'
-  | 'server-group' | 'server-ungrouped-group' | 'server-item'
+  | 'server-group' | 'server-ungrouped-group' | 'server-item' | 'server-subscriber-group' | 'server-subscriber-item'
   | 'chat-hosted-group' | 'chat-joined-group' | 'chat-hosted-room' | 'chat-room'
-  | 'skill-folder' | 'skill' | 'note-folder' | 'note' | 'paper-folder' | 'paper'
+  | 'subscription-brokers-group' | 'subscription-subscribers-group' | 'subscription-broker' | 'subscription-subscriber'
+  | 'skill-folder' | 'skill' | 'skill-trash' | 'skill-trash-item' | 'note-folder' | 'note' | 'paper-folder' | 'paper'
+  | 'knowledge-trash' | 'knowledge-trash-item'
   | 'prompt-project' | 'prompt-task' | 'prompt-version' | 'prompt-file'
   | 'package' | 'script-folder' | 'script-file';
 
 interface PkFolder { folders: Map<string, PkFolder>; items: any[]; }
+
+function folkNavigationLabel(value: string, root: boolean): string {
+  return root && value.startsWith("_folk_") && value.length > 6 ? `${value.slice(6).replace(/--[a-f0-9]{12}$/i, "")} · folk` : value;
+}
 
 class PkTreeItem extends vscode.TreeItem {
   constructor(
@@ -4646,14 +4933,15 @@ class PkTreeItem extends vscode.TreeItem {
     super(label, collapsibleState);
     const ICONS: Partial<Record<PkNodeType, string>> = {
       "root-skills": "book", "root-notes": "note", "root-papers": "library", "root-prompts": "comment-discussion",
-      "root-packages": "package", "root-scripts": "terminal", "root-environments": "beaker", "root-servers": "server-environment", "root-chatroom": "comment-discussion", "root-mcp": "server-process",
+      "root-packages": "package", "root-scripts": "terminal", "root-environments": "beaker", "root-servers": "server-environment", "root-chatroom": "comment-discussion", "root-subscriptions": "broadcast", "root-mcp": "server-process",
       "environment-group": "folder", "environment-item": "python",
       "chat-hosted-group": "broadcast", "chat-joined-group": "plug", "chat-hosted-room": "broadcast", "chat-room": "comment",
-      "skill-folder": "folder", "note-folder": "folder", "paper-folder": "folder",
+      "subscription-brokers-group": "folder", "subscription-subscribers-group": "folder", "subscription-broker": "radio-tower", "subscription-subscriber": "cloud",
+      "skill-folder": "folder", "skill-trash": "trash", "skill-trash-item": "trash", "knowledge-trash": "trash", "knowledge-trash-item": "trash", "note-folder": "folder", "paper-folder": "folder",
       "skill": "symbol-snippet", "note": "file-text", "paper": "file-pdf",
       "prompt-project": "folder", "prompt-task": "symbol-file",
       "prompt-version": "versions", "prompt-file": "file-code",
-      "package": "package", "script-folder": "folder", "script-file": "file-code", "server-group": "folder", "server-ungrouped-group": "folder",
+      "package": "package", "script-folder": "folder", "script-file": "file-code", "server-group": "folder", "server-ungrouped-group": "folder", "server-subscriber-group": "cloud", "server-subscriber-item": "link-external",
     };
     const icon = ICONS[nodeType];
     if (icon) this.iconPath = new vscode.ThemeIcon(icon);
@@ -4662,6 +4950,10 @@ class PkTreeItem extends vscode.TreeItem {
     // contextValue drives right-click "New item" menus (see package.json view/item/context)
     if (nodeType === 'root-skills') this.contextValue = 'pk-skills-root';
     else if (nodeType === 'skill-folder') this.contextValue = label === "(uncategorized)" ? 'pk-skills-virtual-root' : 'pk-skills-group';
+    else if (nodeType === 'skill-trash') this.contextValue = 'pk-skill-trash';
+    else if (nodeType === 'skill-trash-item') this.contextValue = 'pk-skill-trash-item';
+    else if (nodeType === 'knowledge-trash') this.contextValue = 'pk-knowledge-trash';
+    else if (nodeType === 'knowledge-trash-item') this.contextValue = 'pk-knowledge-trash-item';
     else if (nodeType === 'root-notes') this.contextValue = 'pk-notes-root';
     else if (nodeType === 'note-folder') this.contextValue = label === "(uncategorized)" ? 'pk-notes-virtual-root' : 'pk-notes-group';
     else if (nodeType === 'root-papers') this.contextValue = 'pk-papers-root';
@@ -4677,6 +4969,7 @@ class PkTreeItem extends vscode.TreeItem {
     else if (nodeType === 'skill')       this.contextValue = 'pk-skill-item';
     else if (nodeType === 'note')        this.contextValue = 'pk-note-item';
     else if (nodeType === 'paper')       this.contextValue = 'pk-paper-item';
+    else if (nodeType === 'prompt-file') this.contextValue = 'pk-prompt-item';
     else if (nodeType === 'script-file') this.contextValue = 'pk-script-item';
   }
 }
@@ -4735,6 +5028,8 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
       servers.command = { command: "personalKnowledge.openServers", title: "Open Servers" };
       const environments = new PkTreeItem(this.text("tabs.environments"), "root-environments", C);
       environments.command = { command: "personalKnowledge.openEnvironments", title: "Open Environments" };
+      const subscriptions = new PkTreeItem("Subscription", "root-subscriptions", C);
+      subscriptions.command = { command: "personalKnowledge.openSubscriptions", title: "Open Subscription" };
       const mcp = new PkTreeItem(this.text("tabs.config"), "root-mcp", vscode.TreeItemCollapsibleState.None);
       mcp.command = { command: "personalKnowledge.setupMcp", title: "Open Config" };
       return [
@@ -4747,35 +5042,75 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
         environments,
         servers,
         chatroom,
+        subscriptions,
         mcp,
       ];
     }
     try {
       switch (element.nodeType) {
-        case 'root-skills':    return this._skillFolder([]);
+        case 'root-skills':    return this._skillRootItems();
         case 'skill-folder':   return this._skillFolder(element.nodeData.path);
-        case 'root-notes':     return this._noteFolder([]);
+        case 'skill-trash':    return this._skillTrashItems();
+        case 'root-notes':     return this._withKnowledgeTrash("notes", this._noteFolder([]));
         case 'note-folder':    return this._noteFolder(element.nodeData.path);
-        case 'root-papers':    return this._paperFolder([]);
+        case 'root-papers':    return this._withKnowledgeTrash("papers", this._paperFolder([]));
         case 'paper-folder':   return this._paperFolder(element.nodeData.path);
-        case 'root-prompts':   return this._promptProjects();
+        case 'root-prompts':   return this._withKnowledgeTrash("prompts", this._promptProjects());
         case 'prompt-project': return this._promptTasks(element.nodeData.project);
         case 'prompt-task':    return this._promptVersions(element.nodeData.project, element.nodeData.task);
         case 'prompt-version': return this._promptFiles(element.nodeData);
         case 'root-packages':  return this._packageItems();
-        case 'root-scripts':   return this._scriptFolder([]);
+        case 'root-scripts':   return this._withKnowledgeTrash("scripts", this._scriptFolder([]));
         case 'script-folder':  return this._scriptFolder(element.nodeData.path);
+        case 'knowledge-trash': return this._knowledgeTrashItems(element.nodeData.area);
         case 'root-environments': return this._environmentItems([]);
         case 'environment-group': return this._environmentItems(element.nodeData.path);
-        case 'root-servers': return this._serverItems([]);
+        case 'root-servers': return this._serverRootItems();
         case 'server-group': return this._serverItems(element.nodeData.path);
         case 'server-ungrouped-group': return this._serverItems([], true);
+        case 'server-subscriber-group': return this._subscribedServerItems(element.nodeData.subscriptionId);
         case 'root-chatroom': return this._chatGroups();
         case 'chat-hosted-group': return this._hostedRooms();
         case 'chat-joined-group': return this._chatRooms();
+        case 'root-subscriptions': return this._subscriptionGroups();
+        case 'subscription-brokers-group': return this._subscriptionBrokers();
+        case 'subscription-subscribers-group': return this._subscriptionSubscribers();
       }
     } catch { /* DB/store not ready yet */ }
     return [];
+  }
+
+  private _subscriptionGroups(): PkTreeItem[] {
+    const snapshot = sharedMarket?.snapshot as any;
+    const brokers = new PkTreeItem("Brokers", "subscription-brokers-group", vscode.TreeItemCollapsibleState.Collapsed);
+    const subscribers = new PkTreeItem("Subscribers", "subscription-subscribers-group", vscode.TreeItemCollapsibleState.Collapsed);
+    brokers.description = String(snapshot?.shares?.length || 0);
+    subscribers.description = String(snapshot?.subscriptions?.length || 0);
+    brokers.command = { command: "personalKnowledge.openSubscriptions", title: "Open Brokers" };
+    subscribers.command = { command: "personalKnowledge.openSubscriptions", title: "Open Subscribers" };
+    return [brokers, subscribers];
+  }
+
+  private _subscriptionBrokers(): PkTreeItem[] {
+    const snapshot = sharedMarket?.snapshot as any;
+    return (snapshot?.shares || []).map((share: any) => {
+      const item = new PkTreeItem(share.name, "subscription-broker", vscode.TreeItemCollapsibleState.None, { shareId: share.shareId });
+      item.description = `r${Number(share.revision) || 0} · ${share.visibility === "public" ? "discoverable" : "unlisted"}`;
+      item.iconPath = new vscode.ThemeIcon(snapshot.gatewayStatus === "running" ? "radio-tower" : "circle-slash", new vscode.ThemeColor(snapshot.gatewayStatus === "running" ? "testing.iconPassed" : "disabledForeground"));
+      item.command = { command: "personalKnowledge.openSubscriptions", title: "Open Broker", arguments: [share.shareId] };
+      return item;
+    });
+  }
+
+  private _subscriptionSubscribers(): PkTreeItem[] {
+    const snapshot = sharedMarket?.snapshot as any;
+    return (snapshot?.subscriptions || []).map((subscription: any) => {
+      const item = new PkTreeItem(subscription.alias || subscription.publisher || subscription.shareId, "subscription-subscriber", vscode.TreeItemCollapsibleState.None);
+      item.description = subscription.status || "new";
+      item.iconPath = new vscode.ThemeIcon(subscription.status === "current" ? "cloud" : "cloud-offline", new vscode.ThemeColor(subscription.status === "current" ? "testing.iconPassed" : "disabledForeground"));
+      item.command = { command: "personalKnowledge.openSubscriptions", title: "Open Subscriber" };
+      return item;
+    });
   }
 
   private _chatGroups(): PkTreeItem[] {
@@ -4836,6 +5171,32 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
     }
     if (ungroupedOnly) return servers;
     return [...groups, ...servers];
+  }
+
+  private _serverRootItems(): PkTreeItem[] {
+    const local = this._serverItems([]);
+    if (!sharedMarket) return local;
+    const subscribed = sharedMarket.cachedGroups("servers").map(group => {
+      const item = new PkTreeItem(group.alias, "server-subscriber-group", vscode.TreeItemCollapsibleState.Collapsed, { subscriptionId: group.subscriptionId });
+      item.description = `${group.items.length} subscribed`;
+      item.tooltip = `Subscribed Server links from ${group.alias}`;
+      return item;
+    });
+    return [...local, ...subscribed];
+  }
+
+  private _subscribedServerItems(subscriptionId: string): PkTreeItem[] {
+    if (!sharedMarket) return [];
+    const group = sharedMarket.cachedGroups("servers").find(item => item.subscriptionId === subscriptionId);
+    if (!group) return [];
+    return group.items.map(server => {
+      const link = sharedMarket!.cachedServerLinks(server.key).links[0]?.url || "";
+      const item = new PkTreeItem(server.title, "server-subscriber-item", vscode.TreeItemCollapsibleState.None, { key: server.key });
+      item.description = link || "Unavailable";
+      item.tooltip = link || "No Server link is available.";
+      if (link) item.command = { command: "personalKnowledge.openSubscribedServer", title: "Open Subscribed Server", arguments: [server.key] };
+      return item;
+    });
   }
 
   private _environmentCategory(environment: any): string[] {
@@ -4962,6 +5323,40 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
     return this._addFolderPaths(this._buildPathTree(entries), folderList("skills"));
   }
 
+  private _skillRootItems(): PkTreeItem[] {
+    const items = this._skillFolder([]);
+    const trash = skillTrashList();
+    const item = new PkTreeItem("Trash", "skill-trash", vscode.TreeItemCollapsibleState.Collapsed);
+    item.description = String(trash.length);
+    items.push(item);
+    return items;
+  }
+
+  private _withKnowledgeTrash(area: KnowledgeTrashArea, items: PkTreeItem[]): PkTreeItem[] {
+    const trash = knowledgeTrashList(area);
+    const item = new PkTreeItem("Trash", "knowledge-trash", vscode.TreeItemCollapsibleState.Collapsed, { area });
+    item.description = String(trash.length);
+    return [...items, item];
+  }
+
+  private _knowledgeTrashItems(area: KnowledgeTrashArea): PkTreeItem[] {
+    return knowledgeTrashList(area).map(entry => {
+      const item = new PkTreeItem(entry.name, "knowledge-trash-item", vscode.TreeItemCollapsibleState.None, { ...entry, area });
+      item.description = entry.originalPath;
+      item.tooltip = `${entry.kind === "folder" ? "Folder" : "Item"} moved to Trash at ${entry.deletedAt}`;
+      return item;
+    });
+  }
+
+  private _skillTrashItems(): PkTreeItem[] {
+    return skillTrashList().map(entry => {
+      const item = new PkTreeItem(entry.name, "skill-trash-item", vscode.TreeItemCollapsibleState.None, entry);
+      item.description = entry.originalPath;
+      item.tooltip = `${entry.kind === "folder" ? "Folder" : "Skill"} moved to Trash at ${entry.deletedAt}`;
+      return item;
+    });
+  }
+
   private _skillFolder(path: string[]): PkTreeItem[] {
     const node = this._navigate(this._skillRoot(), path);
     if (!node) return [];
@@ -4970,7 +5365,7 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
       a === "(uncategorized)" ? 1 : b === "(uncategorized)" ? -1 : a.localeCompare(b))) {
       const folder = node.folders.get(name)!;
       const count = this._countLeaves(folder);
-      const item = new PkTreeItem(name, 'skill-folder', vscode.TreeItemCollapsibleState.Collapsed,
+      const item = new PkTreeItem(folkNavigationLabel(name, path.length === 0), 'skill-folder', vscode.TreeItemCollapsibleState.Collapsed,
         { path: [...path, name], relPath: [...path, name].join("/") });
       item.description = String(count);
       out.push(item);
@@ -5008,7 +5403,7 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
     for (const name of [...node.folders.keys()].sort((a, b) =>
       a === "(uncategorized)" ? 1 : b === "(uncategorized)" ? -1 : a.localeCompare(b))) {
       const folder = node.folders.get(name)!;
-      const item = new PkTreeItem(name, 'note-folder', vscode.TreeItemCollapsibleState.Collapsed,
+      const item = new PkTreeItem(folkNavigationLabel(name, path.length === 0), 'note-folder', vscode.TreeItemCollapsibleState.Collapsed,
         { path: [...path, name], relPath: [...path, name].join("/") });
       item.description = String(this._countLeaves(folder));
       out.push(item);
@@ -5039,7 +5434,7 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
     for (const name of [...node.folders.keys()].sort((a, b) =>
       a === "(uncategorized)" ? 1 : b === "(uncategorized)" ? -1 : a.localeCompare(b))) {
       const folder = node.folders.get(name)!;
-      const item = new PkTreeItem(name, 'paper-folder', vscode.TreeItemCollapsibleState.Collapsed,
+      const item = new PkTreeItem(folkNavigationLabel(name, path.length === 0), 'paper-folder', vscode.TreeItemCollapsibleState.Collapsed,
         { path: [...path, name], relPath: [...path, name].join("/") });
       item.description = String(this._countLeaves(folder));
       out.push(item);
@@ -5058,7 +5453,7 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
   private _promptProjects(): PkTreeItem[] {
     const projects = [...new Set([...promptList().map(t => t.project), ...folderList("prompts").map(folder => folder.split("/")[0])])].sort();
     return projects.map(p =>
-      new PkTreeItem(p, 'prompt-project', vscode.TreeItemCollapsibleState.Collapsed, { project: p }));
+      new PkTreeItem(folkNavigationLabel(p, true), 'prompt-project', vscode.TreeItemCollapsibleState.Collapsed, { project: p }));
   }
 
   private _promptTasks(project: string): PkTreeItem[] {
@@ -5094,7 +5489,7 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
   // ── Packages ─────────────────────────────────────────────────────────────
   private _packageItems(): PkTreeItem[] {
     return (packageList() as any[]).map((p: any) => {
-      const item = new PkTreeItem(p.name, 'package', vscode.TreeItemCollapsibleState.None,
+      const item = new PkTreeItem(folkNavigationLabel(p.name, true), 'package', vscode.TreeItemCollapsibleState.None,
         { key: p.name, description: p.description });
       item.description = p.lang;
       item.command = { command: 'personalKnowledge.openPackage', title: 'Open', arguments: [p.name] };
@@ -5118,7 +5513,7 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
     const out: PkTreeItem[] = [];
     for (const name of [...node.folders.keys()].sort()) {
       const folder = node.folders.get(name)!;
-      const item = new PkTreeItem(name, 'script-folder', vscode.TreeItemCollapsibleState.Collapsed,
+      const item = new PkTreeItem(folkNavigationLabel(name, path.length === 0), 'script-folder', vscode.TreeItemCollapsibleState.Collapsed,
         { path: [...path, name], relPath: [...path, name].join("/") });
       item.description = String(this._countLeaves(folder));
       out.push(item);
@@ -5218,7 +5613,6 @@ class PkTreeDragAndDropController implements vscode.TreeDragAndDropController<Pk
 
 // ── First-run setup wizard ─────────────────────────────────────────────────
 async function firstTimeSetup(context: vscode.ExtensionContext, reconfigure = false): Promise<string | undefined> {
-  const defaultPath = path.resolve(os.homedir(), "personal-knowledge");
   const hostDescription = extensionHostDescription(process.platform, os.hostname(), vscode.env.remoteName || "");
   const resolved = resolvedStorePath(context);
   const currentPath = resolved?.path || "";
@@ -5233,7 +5627,6 @@ async function firstTimeSetup(context: vscode.ExtensionContext, reconfigure = fa
       : `Welcome to Personal Knowledge Manager. Choose where to store knowledge on ${hostDescription}.`,
     { modal: true, detail: "The root path is machine-local and excluded from VS Code Settings Sync. Knowledge content can be synchronized separately." },
     ...(reuseLabel ? [reuseLabel] : []),
-    `Use default  (${defaultPath})`,
     "Browse existing folder…",
     "Type a custom path…"
   );
@@ -5258,16 +5651,14 @@ async function firstTimeSetup(context: vscode.ExtensionContext, reconfigure = fa
   } else if (pick === "Type a custom path…") {
     chosenPath = await vscode.window.showInputBox({
       prompt: "Enter the full path for your knowledge store",
-      placeHolder: defaultPath,
-      value: currentPath || defaultPath,
+      placeHolder: path.join(os.homedir(), "your-knowledge-root"),
+      value: currentPath || reusablePath,
       validateInput: value => localAbsolutePathError(value),
     });
     if (!chosenPath) return undefined;
     chosenPath = chosenPath.trim();
 
-  } else {
-    chosenPath = defaultPath;
-  }
+  } else return undefined;
 
   // Create the folder if it doesn't exist
   if (!fs.existsSync(chosenPath)) {
@@ -5464,6 +5855,28 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   } catch (e: any) { log.warn(`servers/env init failed: ${e?.message}`); }
 
+  try {
+    sharedMarket = new SharedMarketManager(
+      path.join(context.globalStorageUri.fsPath, "subscriptions"),
+      path.join(context.extensionPath, "dist", "subscription-gateway.js"),
+      `${os.userInfo().username || "user"} / ${os.hostname()}`,
+      {
+        onChanged: () => {
+          panel?.webview.postMessage({ command: "subscriptionChanged" });
+          _treeProvider?.refresh();
+        },
+        onWarning: message => { void vscode.window.showWarningMessage(message, "Open Subscription").then(choice => {
+          if (choice !== "Open Subscription") return;
+          if (panel) { panel.reveal(vscode.ViewColumn.One); void panel.webview.postMessage({ command: "openTab", tab: "subscriptions" }); }
+          else { _pendingTab = "subscriptions"; getOrCreatePanel(context); }
+        }); },
+      },
+      context.secrets,
+      { user: os.userInfo().username || "user", host: os.hostname() },
+    );
+    sharedMarket.startBackground();
+  } catch (error: any) { log.warn(`subscription init failed: ${error?.message || error}`); }
+
   registerNativeMcpProvider(context);
 
   // Register sidebar tree view + commands FIRST so they're always available
@@ -5490,6 +5903,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       log.action("command.open");
       if (!(await ensureSetup(context))) return;
       getOrCreatePanel(context);
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.openSubscriptions", async (shareId?: string) => {
+      log.action("command.openSubscriptions");
+      if (!(await ensureSetup(context))) return;
+      openSubscriptionPanel(context, String(shareId || ""));
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.openSubscribedServer", async (key: string) => {
+      try {
+        const server = getSharedMarket().cachedServerLinks(String(key || ""));
+        const link = server.links[0]?.url;
+        if (!link) throw new Error("No Server link is available.");
+        await vscode.env.openExternal(vscode.Uri.parse(link));
+      } catch (error: any) {
+        vscode.window.showErrorMessage(`Open subscribed Server failed: ${error?.message || String(error)}`);
+      }
     }),
 
     vscode.commands.registerCommand("personalKnowledge.refreshTree", () => {
@@ -5556,6 +5986,33 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!(await ensureSetup(context))) return;
       const group = navigationGroupInfo(item);
       if (!group?.path) { vscode.window.showWarningMessage("Category roots cannot be deleted."); return; }
+      if (group.area === "skills") {
+        const choice = await vscode.window.showWarningMessage(
+          `Move Skill folder “${group.path}” and all its contents to Trash?`,
+          { modal: true }, "Move to Trash",
+        );
+        if (choice !== "Move to Trash") return;
+        const trashed = skillFolderMoveToTrash(group.path);
+        if (!trashed) { vscode.window.showErrorMessage(`Could not move Skill folder to Trash: ${group.path}`); return; }
+        gitCommit(`trash(skill-folder): ${trashed.originalPath}`);
+        refreshKnowledgeGroups();
+        vscode.window.setStatusBarMessage(`$(trash) Moved Skill folder to Trash: ${group.path}`, 3000);
+        return;
+      }
+      if ((["notes", "papers", "prompts", "scripts"] as string[]).includes(group.area)) {
+        const area = group.area as KnowledgeTrashArea;
+        const choice = await vscode.window.showWarningMessage(
+          `Move ${area} folder “${group.path}” and all its contents to Trash?`,
+          { modal: true }, "Move to Trash",
+        );
+        if (choice !== "Move to Trash") return;
+        const trashed = knowledgeMoveToTrash(area, group.path, "folder", path.basename(group.path));
+        if (!trashed) { vscode.window.showErrorMessage(`Could not move ${area} folder to Trash: ${group.path}`); return; }
+        gitCommit(`trash(${area}-folder): ${trashed.originalPath}`);
+        refreshKnowledgeGroups();
+        vscode.window.setStatusBarMessage(`$(trash) Moved ${area} folder to Trash: ${group.path}`, 3000);
+        return;
+      }
       const full = path.join(getStorePath(), group.area, ...group.path.split("/"));
       const contents = fs.readdirSync(full).filter(name => name !== ".gitkeep");
       const parentPath = group.path.includes("/") ? group.path.slice(0, group.path.lastIndexOf("/")) : "";
@@ -5572,6 +6029,94 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       gitCommit(`delete(group): ${group.area}/${group.path} (${result.moved} promoted)`);
       refreshKnowledgeGroups();
       vscode.window.setStatusBarMessage(`$(trash) Deleted ${group.area} group ${group.path}`, 3000);
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.restoreSkillTrash", async (item?: PkTreeItem) => {
+      if (!(await ensureSetup(context)) || item?.nodeType !== "skill-trash-item") return;
+      const result = skillTrashRestore(String(item.nodeData.id || ""));
+      if (!result.ok) { vscode.window.showErrorMessage(`Restore from Skills Trash failed: ${result.error || "unknown error"}`); return; }
+      gitCommit(`restore(skill-trash): ${result.path}`);
+      refreshKnowledgeGroups();
+      vscode.window.setStatusBarMessage(`$(history) Restored ${result.path}`, 3000);
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.emptySkillTrash", async () => {
+      if (!(await ensureSetup(context))) return;
+      const count = skillTrashList().length;
+      if (!count) return;
+      const choice = await vscode.window.showWarningMessage(
+        `Permanently delete all ${count} entries in Skills Trash? This cannot be undone.`,
+        { modal: true }, "Empty Trash",
+      );
+      if (choice !== "Empty Trash") return;
+      skillTrashEmpty();
+      gitCommit(`empty(skill-trash): ${count} entries`);
+      refreshKnowledgeGroups();
+      vscode.window.setStatusBarMessage(`$(trash) Emptied Skills Trash`, 3000);
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.deleteSkillTrashEntry", async (item?: PkTreeItem) => {
+      if (!(await ensureSetup(context)) || item?.nodeType !== "skill-trash-item") return;
+      const choice = await vscode.window.showWarningMessage(
+        `Permanently delete ${item.nodeData.kind} “${item.nodeData.name}” from Skills Trash? This cannot be undone.`,
+        { modal: true }, "Delete Permanently",
+      );
+      if (choice !== "Delete Permanently") return;
+      const result = skillTrashDelete(String(item.nodeData.id || ""));
+      if (!result.ok) { vscode.window.showErrorMessage(`Permanent deletion failed: ${result.error || "unknown error"}`); return; }
+      gitCommit(`delete(skill-trash): ${result.name}`);
+      refreshKnowledgeGroups();
+      vscode.window.setStatusBarMessage(`$(trash) Permanently deleted ${result.name}`, 3000);
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.trashKnowledgeItem", async (item?: PkTreeItem) => {
+      if (!(await ensureSetup(context)) || !item) return;
+      let area: KnowledgeTrashArea | undefined;
+      let relativePath = "";
+      if (item.nodeType === "note") { area = "notes"; relativePath = `${item.nodeData.key}.md`; }
+      else if (item.nodeType === "paper") { area = "papers"; relativePath = `${item.nodeData.key}.md`; }
+      else if (item.nodeType === "prompt-file") { area = "prompts"; relativePath = [item.nodeData.project, item.nodeData.task, item.nodeData.version, item.nodeData.file].join("/"); }
+      else if (item.nodeType === "script-file") { area = "scripts"; relativePath = item.nodeData.key; }
+      if (!area || !relativePath) return;
+      const name = typeof item.label === "string" ? item.label : path.basename(relativePath);
+      const choice = await vscode.window.showWarningMessage(`Move “${name}” to ${area} Trash?`, { modal: true }, "Move to Trash");
+      if (choice !== "Move to Trash") return;
+      const entry = knowledgeMoveToTrash(area, relativePath, "item", name);
+      if (!entry) { vscode.window.showErrorMessage(`Could not move item to ${area} Trash.`); return; }
+      gitCommit(`trash(${area}): ${entry.originalPath}`);
+      refreshKnowledgeGroups();
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.restoreKnowledgeTrash", async (item?: PkTreeItem) => {
+      if (!(await ensureSetup(context)) || item?.nodeType !== "knowledge-trash-item") return;
+      const area = item.nodeData.area as KnowledgeTrashArea;
+      const result = knowledgeTrashRestore(area, String(item.nodeData.id || ""));
+      if (!result.ok) { vscode.window.showErrorMessage(`Restore from ${area} Trash failed: ${result.error}`); return; }
+      gitCommit(`restore(${area}-trash): ${result.path}`);
+      refreshKnowledgeGroups();
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.deleteKnowledgeTrashEntry", async (item?: PkTreeItem) => {
+      if (!(await ensureSetup(context)) || item?.nodeType !== "knowledge-trash-item") return;
+      const area = item.nodeData.area as KnowledgeTrashArea;
+      const choice = await vscode.window.showWarningMessage(`Permanently delete “${item.nodeData.name}” from ${area} Trash? This cannot be undone.`, { modal: true }, "Delete Permanently");
+      if (choice !== "Delete Permanently") return;
+      const result = knowledgeTrashDelete(area, String(item.nodeData.id || ""));
+      if (!result.ok) { vscode.window.showErrorMessage(`Permanent deletion failed: ${result.error}`); return; }
+      gitCommit(`delete(${area}-trash): ${result.path}`);
+      refreshKnowledgeGroups();
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.emptyKnowledgeTrash", async (item?: PkTreeItem) => {
+      if (!(await ensureSetup(context)) || item?.nodeType !== "knowledge-trash") return;
+      const area = item.nodeData.area as KnowledgeTrashArea;
+      const count = knowledgeTrashList(area).length;
+      if (!count) return;
+      const choice = await vscode.window.showWarningMessage(`Permanently delete all ${count} entries in ${area} Trash? This cannot be undone.`, { modal: true }, "Empty Trash");
+      if (choice !== "Empty Trash") return;
+      knowledgeTrashEmpty(area);
+      gitCommit(`empty(${area}-trash): ${count} entries`);
+      refreshKnowledgeGroups();
     }),
 
     // ── Add new item at a folder (right-click on container) ────────────────
@@ -5685,11 +6230,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     vscode.commands.registerCommand("personalKnowledge.deleteScript", async (item?: PkTreeItem) => {
       if (!(await ensureSetup(context)) || !item?.nodeData?.key) return;
-      try {
-        await deleteScriptAtPath(item.nodeData.key as string);
-      } catch (e: any) {
-        vscode.window.showErrorMessage(`Delete failed: ${e.message}`);
-      }
+      const relativePath = String(item.nodeData.key);
+      const choice = await vscode.window.showWarningMessage(`Move Script “${relativePath}” to Trash?`, { modal: true }, "Move to Trash");
+      if (choice !== "Move to Trash") return;
+      const entry = knowledgeMoveToTrash("scripts", relativePath, "item", path.basename(relativePath));
+      if (!entry) { vscode.window.showErrorMessage(`Could not move Script to Trash: ${relativePath}`); return; }
+      gitCommit(`trash(script): ${entry.originalPath}`);
+      refreshKnowledgeGroups();
     }),
 
     vscode.commands.registerCommand("personalKnowledge.openSkill", async (name: string) => {
@@ -6201,6 +6748,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       applyChatArchiveCfg();
       log.info(`file store ready at ${getStorePath()}`);
       ensureGitRepo();
+      const refreshedShares = await sharedMarket?.refreshPublishedShares() || 0;
+      if (refreshedShares) log.info(`refreshed ${refreshedShares} published Broker snapshot${refreshedShares === 1 ? "" : "s"} after store initialization`);
       await maybeSeedExamples(context);
       startFileWatcher(context);
       treeProvider.refresh();
@@ -6222,11 +6771,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 let _watcher: vscode.FileSystemWatcher | undefined;
 function startFileWatcher(context: vscode.ExtensionContext): void {
   _watcher?.dispose();
-  const pattern = new vscode.RelativePattern(getStorePath(), "{notes,skills,papers}/**/*.md");
+  const pattern = new vscode.RelativePattern(getStorePath(), "{notes,skills,papers,prompts,scripts,packages,servers}/**/*");
   _watcher = vscode.workspace.createFileSystemWatcher(pattern);
   const onChange = (uri: vscode.Uri) => {
     _treeProvider?.refresh();
     panel?.webview.postMessage({ command: "reloaded" }); // re-fetch current tab
+    void sharedMarket?.refreshPublishedShares().then(changed => {
+      if (changed && panel) void handleMessage({ command: "subscriptionState" }, message => panel?.webview.postMessage(message), context);
+    }).catch(error => log.warn(`subscription publish refresh failed: ${(error as Error).message}`));
     if (uri.fsPath === path.join(getStorePath(), "skills", "System", "PKM", "PKM Skills.md")) {
       panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
       void offerPkmSkillProjectionUpdate(context);
@@ -6242,6 +6794,8 @@ export async function deactivate(): Promise<void> {
   _watcher?.dispose();
   disposeServers();
   await chatMgr?.dispose();
+  sharedMarket?.dispose();
+  sharedMarket = undefined;
   liveNoteServer?.close();
   liveNoteServer = undefined;
   liveNoteBaseUrl = undefined;
