@@ -23,6 +23,7 @@ assert.match(knowledge, /state\.tab === 'servers'.*stopSubscribedServerMonitorin
 assert.match(extension, /subscribedServerGroupsForUi\(\)/);
 assert.match(extension, /subscribedServerGroupsForUi\(String\(msg\.subscriptionId \|\| ""\), true\)/);
 assert.match(extension, /_watcherRefreshTimer = setTimeout/);
+assert.match(extension, /\.pkm\/content-privacy\.json/);
 assert.match(extension, /_watcherRefreshTimer\.unref\?\.\(\)/);
 assert.match(extension, /if \(_watcherRefreshTimer\) clearTimeout\(_watcherRefreshTimer\)/);
 assert.match(subscriptions, /30 \* 60_000/);

@@ -61,8 +61,11 @@ try {
   assert.strictEqual(commandTitles["personalKnowledge.openSubscriptions"], "Open Subscription");
   assert.match(extension, /function folkNavigationLabel\(value: string, root: boolean\)/);
   assert.match(extension, /replace\(\/--\[a-f0-9\]\{12\}\$\/i, ""\)/);
-  assert.match(extension, /folkNavigationLabel\(name, path\.length === 0\)/);
-  assert.match(extension, /folkNavigationLabel\(p, true\)/);
+  assert.match(extension, /privateNavigationLabel\("skills", name, topLevel\)/);
+  assert.match(extension, /privateNavigationLabel\("prompts", p, true\)/);
+  assert.match(extension, /privacyTopLevel/);
+  assert.strictEqual(commandTitles["personalKnowledge.setFolderPrivate"], "Set as Private");
+  assert.strictEqual(commandTitles["personalKnowledge.setFolderPublic"], "Set as Public");
   assert.strictEqual(commandTitles["personalKnowledge.newSubgroup"], "New Subgroup…");
   assert.strictEqual(commandTitles["personalKnowledge.renameSubgroup"], "Rename Subgroup…");
   assert.strictEqual(commandTitles["personalKnowledge.deleteSubgroup"], "Delete Subgroup…");

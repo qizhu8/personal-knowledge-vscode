@@ -7,6 +7,7 @@ import { connect, MqttClient } from "./subscription-mqtt-client";
 import { buildSyncBundle, emptySyncSelection, SyncSelection } from "./sync-server";
 import { normalizeClientIp, normalizeIpBlockRules } from "./subscription-ip-policy";
 import { serverExport } from "./servers";
+import { isContentItemPrivate } from "./content-privacy";
 
 export type SharedContentType = "skills" | "notes" | "papers" | "prompts" | "scripts" | "packages" | "servers";
 export const SHARED_CONTENT_TYPES: SharedContentType[] = ["skills", "notes", "papers", "prompts", "scripts", "packages", "servers"];
@@ -768,6 +769,7 @@ export class SharedMarketManager {
       const dynamicFolders = folders[type] || [];
       result[type] = all.filter((item: any) => {
         const itemFolder = folder(type, item);
+        if (isContentItemPrivate(type, item)) return false;
         return exact.has(identity(type, item)) || dynamicFolders.some(sharedFolder => sharedFolder === "" || itemFolder === sharedFolder || itemFolder.startsWith(`${sharedFolder}/`));
       });
     }

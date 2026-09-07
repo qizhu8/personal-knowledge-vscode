@@ -188,7 +188,7 @@ export function serverGroupList(): string[] {
     const manifest = readManifest(slug);
     if (manifest?.category) categoryPrefixes(manifest.category).forEach(group => groups.add(group));
   }
-  return [...groups].sort((left, right) => left === "Hidden" ? -1 : right === "Hidden" ? 1 : left.localeCompare(right));
+  return [...groups].sort((left, right) => left === "Hidden" ? 1 : right === "Hidden" ? -1 : left.localeCompare(right));
 }
 
 export function serverCreateGroup(category: string): { ok: boolean; group?: string; error?: string } {

@@ -5,6 +5,7 @@ import * as http from "http";
 import * as fs from "fs";
 import { syncServer } from "./sync-server";
 import { SharedContentType, SharedMarketManager, SHARED_CONTENT_TYPES } from "./subscriptions";
+import { isContentItemPrivate, isTopLevelPrivate, PrivacyContentType, renameTopLevelPrivacy, setPrivacyStoreRoot, setTopLevelPrivacy } from "./content-privacy";
 import { forkSubscriptionContent } from "./subscription-fork";
 import {
   skillList, skillSearch, skillGet, skillUpsert, skillDelete, skillMoveCategory, skillMove, skillSetPinned,
@@ -284,15 +285,23 @@ function compactTags(value: unknown): string {
   try { return compactTags(JSON.parse(value)); } catch { return value; }
 }
 
+function preserveTopLevelPrivacy(type: PrivacyContentType, oldPath: string, newPath: string): void {
+  if (!oldPath.includes("/") && newPath && !newPath.includes("/")) renameTopLevelPrivacy(type, oldPath, newPath);
+}
+
+function privateTopLevelPromotionBlocked(type: PrivacyContentType, oldPath: string, newPath: string): boolean {
+  return !oldPath.includes("/") && !newPath && isTopLevelPrivate(type, oldPath);
+}
+
 async function sharedContentCatalog(): Promise<Record<string, any[]>> {
   return {
-    skills: (skillList() as any[]).map(row => ({ id: row.name, label: row.name, cat: row.category ?? "", treePath: row.category || "(uncategorized)", meta: compactTags(row.tags) })),
-    notes: (noteList(undefined, 500) as any[]).map(row => ({ id: row.slug, label: row.title, cat: row.category ?? "", treePath: row.category || "(uncategorized)", meta: row.type })),
-    papers: (paperList() as any[]).map(row => ({ id: row.slug, label: row.title, cat: row.category || row.topic || "", treePath: row.category || "(uncategorized)", meta: [row.topic, row.year].filter(Boolean).join(" · ") })),
-    prompts: promptList().map(row => ({ id: `${row.project}/${row.task}`, label: row.task, cat: row.project, treePath: row.project, meta: row.latest })),
-    scripts: (scriptList() as any[]).map(row => ({ id: row.path, label: row.file, cat: row.category === "(root)" ? "" : row.category ?? "", treePath: row.category === "(root)" ? "" : row.category ?? "", meta: row.lang })),
-    packages: packageList().map((row: any) => ({ id: row.name, label: row.name, cat: "", treePath: "", meta: row.lang })),
-    servers: (await serverList()).map(row => ({ id: row.slug, label: row.name, cat: row.category ?? "", treePath: row.category || "Ungrouped", meta: (row.tags || []).join(", ") })),
+    skills: (skillList() as any[]).filter(row => !isContentItemPrivate("skills", row)).map(row => ({ id: row.name, label: row.name, cat: row.category ?? "", treePath: row.category || "(uncategorized)", meta: compactTags(row.tags) })),
+    notes: (noteList(undefined, 500) as any[]).filter(row => !isContentItemPrivate("notes", row)).map(row => ({ id: row.slug, label: row.title, cat: row.category ?? "", treePath: row.category || "(uncategorized)", meta: row.type })),
+    papers: (paperList() as any[]).filter(row => !isContentItemPrivate("papers", row)).map(row => ({ id: row.slug, label: row.title, cat: row.category || row.topic || "", treePath: row.category || "(uncategorized)", meta: [row.topic, row.year].filter(Boolean).join(" · ") })),
+    prompts: promptList().filter(row => !isContentItemPrivate("prompts", row)).map(row => ({ id: `${row.project}/${row.task}`, label: row.task, cat: row.project, treePath: row.project, meta: row.latest })),
+    scripts: (scriptList() as any[]).filter(row => !isContentItemPrivate("scripts", row)).map(row => ({ id: row.path, label: row.file, cat: row.category === "(root)" ? "" : row.category ?? "", treePath: row.category === "(root)" ? "" : row.category ?? "", meta: row.lang })),
+    packages: packageList().filter((row: any) => !isContentItemPrivate("packages", row)).map((row: any) => ({ id: row.name, label: row.name, cat: "", treePath: "", meta: row.lang })),
+    servers: (await serverList()).filter(row => !isContentItemPrivate("servers", row)).map(row => ({ id: row.slug, label: row.name, cat: row.category ?? "", treePath: row.category || "Ungrouped", meta: (row.tags || []).join(", ") })),
   };
 }
 
@@ -818,6 +827,7 @@ let _storeReady = false;                       // file store configured & migrat
 let _pendingOpen: { type: string; key: string; edit?: boolean } | undefined; // item to open once ready
 let _pendingTab: string | undefined;           // tab to switch to once the webview is ready
 let _pendingSubscriptionShare: string | undefined;
+let _pendingServerSlug: string | undefined;
 let _pendingMcpRegenerateHighlight = false;
 let _nativeMcpProvider = false;
 let _mcpDefinitionsChanged: vscode.EventEmitter<void> | undefined;
@@ -884,6 +894,16 @@ function openPanelTab(context: vscode.ExtensionContext, tab: string): void {
   target.reveal(vscode.ViewColumn.One);
   if (_panelReady) target.webview.postMessage({ command: "openTab", tab });
   else _pendingTab = tab;
+}
+
+function openServerPanel(context: vscode.ExtensionContext, slug = ""): void {
+  const target = getOrCreatePanel(context);
+  target.reveal(vscode.ViewColumn.One);
+  if (_panelReady) target.webview.postMessage({ command: "focusServer", slug });
+  else {
+    _pendingTab = "servers";
+    _pendingServerSlug = slug;
+  }
 }
 
 function openSubscriptionPanel(context: vscode.ExtensionContext, shareId = ""): void {
@@ -2129,6 +2149,7 @@ async function confirmAndDeleteStoredRoom(context: vscode.ExtensionContext, room
 async function initStore(context: vscode.ExtensionContext, storePath: string): Promise<void> {
   fsSetStorePath(storePath);
   storageSetStorePath(storePath);
+  setPrivacyStoreRoot(storePath);
   // Hidden, idempotent migration from the legacy SQLite DB to files-as-truth
   if (!context.globalState.get<boolean>("migratedToFiles", false)) {
     try {
@@ -2619,6 +2640,11 @@ async function handleMessage(
         const shareId = _pendingSubscriptionShare;
         _pendingSubscriptionShare = undefined;
         respond({ command: "openSubscription", shareId });
+      }
+      if (_pendingServerSlug !== undefined) {
+        const slug = _pendingServerSlug;
+        _pendingServerSlug = undefined;
+        respond({ command: "focusServer", slug });
       }
       if (_pendingMcpRegenerateHighlight) {
         _pendingMcpRegenerateHighlight = false;
@@ -3633,9 +3659,15 @@ async function handleMessage(
       break;
     }
     case "serverMoveGroup": {
-      const result = serverMoveGroup(String(msg.oldPrefix || ""), String(msg.newPrefix || ""));
+      const oldPrefix = String(msg.oldPrefix || "");
+      const newPrefix = String(msg.newPrefix || "");
+      if (privateTopLevelPromotionBlocked("servers", oldPrefix, newPrefix)) throw new Error("Set this private Server group as Public before deleting it into Ungrouped.");
+      const result = serverMoveGroup(oldPrefix, newPrefix);
       if (!result.ok) vscode.window.showErrorMessage(`Move Server group failed: ${result.error || "unknown error"}`);
-      else gitCommit(`server group move: ${msg.oldPrefix} -> ${msg.newPrefix || "(root)"}`);
+      else {
+        preserveTopLevelPrivacy("servers", oldPrefix, newPrefix);
+        gitCommit(`server group move: ${oldPrefix} -> ${newPrefix || "(root)"}`);
+      }
       respond({ command: "serverList", data: await serverListForUi(context) });
       respond({ command: "serverGroupList", data: serverGroupList() });
       await _treeProvider?.refreshServerStatus();
@@ -4954,6 +4986,11 @@ function folkNavigationLabel(value: string, root: boolean): string {
   return root && value.startsWith("_folk_") && value.length > 6 ? `${value.slice(6).replace(/--[a-f0-9]{12}$/i, "")} · folk` : value;
 }
 
+function privateNavigationLabel(type: PrivacyContentType, value: string, topLevel: boolean): string {
+  const label = folkNavigationLabel(value, topLevel);
+  return topLevel && isTopLevelPrivate(type, value) ? `🔒 ${label}` : label;
+}
+
 class PkTreeItem extends vscode.TreeItem {
   constructor(
     label: string,
@@ -5002,6 +5039,7 @@ class PkTreeItem extends vscode.TreeItem {
     else if (nodeType === 'paper')       this.contextValue = 'pk-paper-item';
     else if (nodeType === 'prompt-file') this.contextValue = 'pk-prompt-item';
     else if (nodeType === 'script-file') this.contextValue = 'pk-script-item';
+    if (nodeData?.privacyTopLevel) this.contextValue = `${this.contextValue || "pk-item"}-privacy-${nodeData.isPrivate ? "private" : "public"}`;
   }
 }
 
@@ -5136,7 +5174,7 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
   private _subscriptionSubscribers(): PkTreeItem[] {
     const snapshot = sharedMarket?.snapshot as any;
     return (snapshot?.subscriptions || []).map((subscription: any) => {
-      const item = new PkTreeItem(subscription.alias || subscription.publisher || subscription.shareId, "subscription-subscriber", vscode.TreeItemCollapsibleState.None);
+      const item = new PkTreeItem(subscription.alias || subscription.publisher || subscription.shareId, "subscription-subscriber", vscode.TreeItemCollapsibleState.None, { subscriptionId: subscription.id });
       item.description = subscription.status || "new";
       item.iconPath = new vscode.ThemeIcon(subscription.status === "current" ? "cloud" : "cloud-offline", new vscode.ThemeColor(subscription.status === "current" ? "testing.iconPassed" : "disabledForeground"));
       item.command = { command: "personalKnowledge.openSubscriptions", title: "Open Subscriber" };
@@ -5175,7 +5213,9 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
     const groups = [...childGroups].sort((left, right) => left.localeCompare(right)).map(name => {
       const path = [...groupPath, name];
       const categoryPrefix = path.join("/");
-      const item = new PkTreeItem(name, "server-group", vscode.TreeItemCollapsibleState.Collapsed, { path });
+      const topLevel = groupPath.length === 0;
+      const item = new PkTreeItem(privateNavigationLabel("servers", name, topLevel), "server-group", vscode.TreeItemCollapsibleState.Collapsed,
+        { path, privacyTopLevel: topLevel, isPrivate: topLevel && isTopLevelPrivate("servers", name), privacyType: "servers", privacyName: name });
       item.description = String(navigationServers.filter(server => String(server.category || "") === categoryPrefix
         || String(server.category || "").startsWith(categoryPrefix + "/")).length);
       return item;
@@ -5396,8 +5436,9 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
       a === "(uncategorized)" ? 1 : b === "(uncategorized)" ? -1 : a.localeCompare(b))) {
       const folder = node.folders.get(name)!;
       const count = this._countLeaves(folder);
-      const item = new PkTreeItem(folkNavigationLabel(name, path.length === 0), 'skill-folder', vscode.TreeItemCollapsibleState.Collapsed,
-        { path: [...path, name], relPath: [...path, name].join("/") });
+      const topLevel = path.length === 0;
+      const item = new PkTreeItem(privateNavigationLabel("skills", name, topLevel), 'skill-folder', vscode.TreeItemCollapsibleState.Collapsed,
+        { path: [...path, name], relPath: [...path, name].join("/"), privacyTopLevel: topLevel && name !== "(uncategorized)", isPrivate: topLevel && isTopLevelPrivate("skills", name), privacyType: "skills", privacyName: name });
       item.description = String(count);
       out.push(item);
     }
@@ -5434,8 +5475,9 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
     for (const name of [...node.folders.keys()].sort((a, b) =>
       a === "(uncategorized)" ? 1 : b === "(uncategorized)" ? -1 : a.localeCompare(b))) {
       const folder = node.folders.get(name)!;
-      const item = new PkTreeItem(folkNavigationLabel(name, path.length === 0), 'note-folder', vscode.TreeItemCollapsibleState.Collapsed,
-        { path: [...path, name], relPath: [...path, name].join("/") });
+      const topLevel = path.length === 0;
+      const item = new PkTreeItem(privateNavigationLabel("notes", name, topLevel), 'note-folder', vscode.TreeItemCollapsibleState.Collapsed,
+        { path: [...path, name], relPath: [...path, name].join("/"), privacyTopLevel: topLevel && name !== "(uncategorized)", isPrivate: topLevel && isTopLevelPrivate("notes", name), privacyType: "notes", privacyName: name });
       item.description = String(this._countLeaves(folder));
       out.push(item);
     }
@@ -5465,8 +5507,9 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
     for (const name of [...node.folders.keys()].sort((a, b) =>
       a === "(uncategorized)" ? 1 : b === "(uncategorized)" ? -1 : a.localeCompare(b))) {
       const folder = node.folders.get(name)!;
-      const item = new PkTreeItem(folkNavigationLabel(name, path.length === 0), 'paper-folder', vscode.TreeItemCollapsibleState.Collapsed,
-        { path: [...path, name], relPath: [...path, name].join("/") });
+      const topLevel = path.length === 0;
+      const item = new PkTreeItem(privateNavigationLabel("papers", name, topLevel), 'paper-folder', vscode.TreeItemCollapsibleState.Collapsed,
+        { path: [...path, name], relPath: [...path, name].join("/"), privacyTopLevel: topLevel && name !== "(uncategorized)", isPrivate: topLevel && isTopLevelPrivate("papers", name), privacyType: "papers", privacyName: name });
       item.description = String(this._countLeaves(folder));
       out.push(item);
     }
@@ -5484,7 +5527,8 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
   private _promptProjects(): PkTreeItem[] {
     const projects = [...new Set([...promptList().map(t => t.project), ...folderList("prompts").map(folder => folder.split("/")[0])])].sort();
     return projects.map(p =>
-      new PkTreeItem(folkNavigationLabel(p, true), 'prompt-project', vscode.TreeItemCollapsibleState.Collapsed, { project: p }));
+      new PkTreeItem(privateNavigationLabel("prompts", p, true), 'prompt-project', vscode.TreeItemCollapsibleState.Collapsed,
+        { project: p, privacyTopLevel: true, isPrivate: isTopLevelPrivate("prompts", p), privacyType: "prompts", privacyName: p }));
   }
 
   private _promptTasks(project: string): PkTreeItem[] {
@@ -5520,8 +5564,8 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
   // ── Packages ─────────────────────────────────────────────────────────────
   private _packageItems(): PkTreeItem[] {
     return (packageList() as any[]).map((p: any) => {
-      const item = new PkTreeItem(folkNavigationLabel(p.name, true), 'package', vscode.TreeItemCollapsibleState.None,
-        { key: p.name, description: p.description });
+      const item = new PkTreeItem(privateNavigationLabel("packages", p.name, true), 'package', vscode.TreeItemCollapsibleState.None,
+        { key: p.name, description: p.description, privacyTopLevel: true, isPrivate: isTopLevelPrivate("packages", p.name), privacyType: "packages", privacyName: p.name });
       item.description = p.lang;
       item.command = { command: 'personalKnowledge.openPackage', title: 'Open', arguments: [p.name] };
       return item;
@@ -5544,8 +5588,9 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
     const out: PkTreeItem[] = [];
     for (const name of [...node.folders.keys()].sort()) {
       const folder = node.folders.get(name)!;
-      const item = new PkTreeItem(folkNavigationLabel(name, path.length === 0), 'script-folder', vscode.TreeItemCollapsibleState.Collapsed,
-        { path: [...path, name], relPath: [...path, name].join("/") });
+      const topLevel = path.length === 0;
+      const item = new PkTreeItem(privateNavigationLabel("scripts", name, topLevel), 'script-folder', vscode.TreeItemCollapsibleState.Collapsed,
+        { path: [...path, name], relPath: [...path, name].join("/"), privacyTopLevel: topLevel, isPrivate: topLevel && isTopLevelPrivate("scripts", name), privacyType: "scripts", privacyName: name });
       item.description = String(this._countLeaves(folder));
       out.push(item);
     }
@@ -5850,6 +5895,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   if (configuredPath) {
     fsSetStorePath(configuredPath);
     storageSetStorePath(configuredPath);
+    setPrivacyStoreRoot(configuredPath);
   }
   applyChatArchiveCfg();
   context.subscriptions.push(vscode.window.registerWebviewPanelSerializer("personalKnowledge", {
@@ -5971,6 +6017,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       vscode.window.setStatusBarMessage(`$(copy) Copied PKM path: ${locator}`, 4000);
     }),
 
+    vscode.commands.registerCommand("personalKnowledge.setFolderPrivate", async (item?: PkTreeItem) => {
+      if (!item?.nodeData?.privacyTopLevel) return;
+      const type = item.nodeData.privacyType as PrivacyContentType;
+      const name = String(item.nodeData.privacyName || "");
+      setTopLevelPrivacy(type, name, true);
+      gitCommit(`privacy(${type}): ${name} private`);
+      const changed = await sharedMarket?.refreshPublishedShares() || 0;
+      treeProvider.refresh();
+      if (panel) await handleMessage({ command: "subscriptionState" }, message => panel?.webview.postMessage(message), context);
+      vscode.window.setStatusBarMessage(`$(lock) ${name} is private${changed ? `; refreshed ${changed} Broker${changed === 1 ? "" : "s"}` : ""}`, 5000);
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.setFolderPublic", async (item?: PkTreeItem) => {
+      if (!item?.nodeData?.privacyTopLevel) return;
+      const type = item.nodeData.privacyType as PrivacyContentType;
+      const name = String(item.nodeData.privacyName || "");
+      setTopLevelPrivacy(type, name, false);
+      gitCommit(`privacy(${type}): ${name} public`);
+      const changed = await sharedMarket?.refreshPublishedShares() || 0;
+      treeProvider.refresh();
+      if (panel) await handleMessage({ command: "subscriptionState" }, message => panel?.webview.postMessage(message), context);
+      vscode.window.setStatusBarMessage(`$(unlock) ${name} is public${changed ? `; refreshed ${changed} Broker${changed === 1 ? "" : "s"}` : ""}`, 5000);
+    }),
+
     vscode.commands.registerCommand("personalKnowledge.newSubgroup", async (item?: PkTreeItem) => {
       if (!(await ensureSetup(context))) return;
       const group = navigationGroupInfo(item);
@@ -6009,6 +6079,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const destination = [parent, nextName.trim()].filter(Boolean).join("/");
       const result = folderRename(group.area, group.path, destination);
       if (!result.ok) { vscode.window.showErrorMessage(`Rename subgroup failed: ${result.error || "unknown error"}`); return; }
+      preserveTopLevelPrivacy(group.area as PrivacyContentType, group.path, destination);
       gitCommit(`rename(group): ${group.area}/${group.path} -> ${destination}`);
       refreshKnowledgeGroups();
       vscode.window.setStatusBarMessage(`$(edit) Renamed ${group.area} group to ${destination}`, 3000);
@@ -6494,10 +6565,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await closeNavigationSidebar();
     }),
 
-    vscode.commands.registerCommand("personalKnowledge.openServers", async () => {
+    vscode.commands.registerCommand("personalKnowledge.openServers", async (slug?: string) => {
       log.action("command.openServers");
-      openPanelTab(context, "servers");
+      openServerPanel(context, String(slug || ""));
       await closeNavigationSidebar();
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.openServerLink", async (item?: PkTreeItem) => {
+      const slug = String(item?.nodeData?.slug || "");
+      const server = (await serverListForUi(context)).find(row => row.slug === slug);
+      const link = server?.networkLinks?.find((candidate: any) => candidate.kind === "hostname") || server?.networkLinks?.[0];
+      if (!link?.url) { vscode.window.showWarningMessage(`No network link is available for ${server?.name || slug}.`); return; }
+      await vscode.env.openExternal(vscode.Uri.parse(link.url));
     }),
 
     vscode.commands.registerCommand("personalKnowledge.openEnvironments", async () => {
@@ -6599,6 +6678,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const newPrefix = [parent, nextName.trim()].filter(Boolean).join("/");
       const result = serverMoveGroup(picked.group, newPrefix);
       if (!result.ok) { vscode.window.showErrorMessage(`Rename Server group failed: ${result.error || "unknown error"}`); return; }
+      preserveTopLevelPrivacy("servers", picked.group, newPrefix);
       gitCommit(`server group move: ${picked.group} -> ${newPrefix}`);
       await treeProvider.refreshServerStatus();
       panel?.webview.postMessage({ command: "serverGroupList", data: serverGroupList() });
@@ -6619,6 +6699,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const parts = picked.group.split("/");
       const name = parts.pop() || picked.group;
       const parent = parts.join("/");
+      if (privateTopLevelPromotionBlocked("servers", picked.group, parent)) {
+        vscode.window.showWarningMessage(`Set private Server group “${picked.group}” as Public before deleting it into Ungrouped.`);
+        return;
+      }
       const choice = await vscode.window.showWarningMessage(
         `Delete Server subgroup “${picked.group}”? Its Servers and nested subgroups will move to ${parent ? `“${parent}”` : "Ungrouped"}. No Server files will be deleted.`,
         { modal: true }, "Delete Subgroup",
@@ -6647,6 +6731,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const result = serverMoveGroup(oldPrefix, newPrefix);
       if (!result.ok) vscode.window.showErrorMessage(`Rename Server group failed: ${result.error || "unknown error"}`);
       else {
+        preserveTopLevelPrivacy("servers", oldPrefix, newPrefix);
         gitCommit(`server group move: ${oldPrefix} -> ${newPrefix}`); await treeProvider.refreshServerStatus();
         panel?.webview.postMessage({ command: "serverGroupList", data: serverGroupList() });
         panel?.webview.postMessage({ command: "serverList", data: await serverListForUi(context) });
@@ -6658,12 +6743,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const name = String(parts.pop() || "");
       if (!name) return;
       const parent = parts.join("/");
+      const oldPrefix = [...parts, name].join("/");
+      if (privateTopLevelPromotionBlocked("servers", oldPrefix, parent)) {
+        vscode.window.showWarningMessage(`Set private Server group “${oldPrefix}” as Public before deleting it into Ungrouped.`);
+        return;
+      }
       const choice = await vscode.window.showWarningMessage(
         `Delete Server subgroup “${name}”? Its Servers and nested subgroups will move to ${parent ? `“${parent}”` : "Ungrouped"}. No Server files will be deleted.`,
         { modal: true }, "Delete Subgroup",
       );
       if (choice !== "Delete Subgroup") return;
-      const oldPrefix = [...parts, name].join("/");
       const result = serverMoveGroup(oldPrefix, parent);
       if (!result.ok) vscode.window.showErrorMessage(`Delete Server group failed: ${result.error || "unknown error"}`);
       else {
@@ -6801,10 +6890,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 // ── File watcher: auto-refresh when notes/skills change on disk ─────────────
 let _watcher: vscode.FileSystemWatcher | undefined;
+let _privacyWatcher: vscode.FileSystemWatcher | undefined;
 let _watcherRefreshTimer: NodeJS.Timeout | undefined;
 let _watcherSkillProjectionChanged = false;
 function startFileWatcher(context: vscode.ExtensionContext): void {
   _watcher?.dispose();
+  _privacyWatcher?.dispose();
   if (_watcherRefreshTimer) clearTimeout(_watcherRefreshTimer);
   _watcherRefreshTimer = undefined;
   _watcherSkillProjectionChanged = false;
@@ -6833,11 +6924,16 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
   _watcher.onDidCreate(onChange);
   _watcher.onDidChange(onChange);
   _watcher.onDidDelete(onChange);
-  context.subscriptions.push(_watcher);
+  _privacyWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(getStorePath(), ".pkm/content-privacy.json"));
+  _privacyWatcher.onDidCreate(onChange);
+  _privacyWatcher.onDidChange(onChange);
+  _privacyWatcher.onDidDelete(onChange);
+  context.subscriptions.push(_watcher, _privacyWatcher);
 }
 
 export async function deactivate(): Promise<void> {
   _watcher?.dispose();
+  _privacyWatcher?.dispose();
   if (_watcherRefreshTimer) clearTimeout(_watcherRefreshTimer);
   _watcherRefreshTimer = undefined;
   disposeServers();

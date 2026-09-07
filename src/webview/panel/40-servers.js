@@ -6,6 +6,7 @@ let serverSubscriptionExpanded = '';
 let serverSubscriptionMonitor = null;
 let _srvPoll = null;
 let serverSearchQuery = '';
+let serverFocusSlug = '';
 function serverGroupTree(entries) {
   const root = { groups: new Map(), entries: [] };
   entries.forEach(entry => {
@@ -119,7 +120,7 @@ function deleteServerGroup(path) {
 function renderServerGroupNode(node, parentPath = '') {
   const cards = node.entries.slice().sort((left, right) => Number(!!right.server.pinned) - Number(!!left.server.pinned)
     || left.server.name.localeCompare(right.server.name)).map(entry => entry.html).join('');
-  const groups = [...node.groups.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([name, child]) => {
+  const groups = [...node.groups.entries()].sort(([left], [right]) => left === 'Hidden' ? 1 : right === 'Hidden' ? -1 : left.localeCompare(right)).map(([name, child]) => {
     const path = parentPath ? `${parentPath}/${name}` : name;
     const count = serverGroupCount(child);
     const hidden = path === 'Hidden';
@@ -166,7 +167,7 @@ function renderServerDashboard(servers) {
     const stableLink = selected?.url || '';
     const searchText = [s.name, s.slug, s.category, ...(s.tags || []), s.command, s.python || 'python3', s.status].join(' ').toLowerCase();
     return { server: s, html: `
-    <div class="srv-card" oncontextmenu="serverCardMenu(event,'${esc(s.slug)}')" title="Right-click for group actions" data-server-search="${encodeURIComponent(searchText)}">
+    <div class="srv-card" tabindex="-1" data-server-slug="${esc(s.slug)}" oncontextmenu="serverCardMenu(event,'${esc(s.slug)}')" title="Right-click for group actions" data-server-search="${encodeURIComponent(searchText)}">
       <div class="ec-row">
         <span class="srv-drag-handle" draggable="true" ondragstart="serverDragStart(event,'${esc(s.slug)}');this.closest('.srv-card').classList.add('srv-dragging')" ondragend="serverDragEnd(event)" title="Drag this Server to another group" aria-label="Drag ${esc(s.name)} to another group">⋮⋮</span>
         <span class="srv-dot" style="background:${dot(s.status)}"></span>
@@ -238,6 +239,16 @@ function renderServerDashboard(servers) {
     }
   }
   filterServerDashboard(serverSearchQuery);
+  if (serverFocusSlug) {
+    const focused = document.querySelector(`.srv-card[data-server-slug="${CSS.escape(serverFocusSlug)}"]`);
+    if (focused) {
+      focused.classList.add('srv-card-focused');
+      focused.focus({ preventScroll: true });
+      focused.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setTimeout(() => focused.classList.remove('srv-card-focused'), 2200);
+      serverFocusSlug = '';
+    }
+  }
   ask('envList', {}); // cache envs for the edit form's interpreter picker
   // This is a short-lived, user-visible active search while a local Server starts,
   // not a long-running background refresh. It stops as soon as status settles.
@@ -245,6 +256,21 @@ function renderServerDashboard(servers) {
   if (serverCache.some(s => s.status === 'starting')) {
     _srvPoll = setTimeout(() => { if (state.tab === 'servers') ask('serverList', {}); }, 5000);
   }
+}
+function focusServerDashboard(slug) {
+  serverFocusSlug = String(slug || '');
+  serverSearchQuery = '';
+  const server = serverCache.find(item => item.slug === serverFocusSlug);
+  if (!server && state.tab === 'servers') { ask('serverList', {}); return; }
+  if (server?.category) {
+    const parts = String(server.category).split('/').filter(Boolean);
+    for (let index = 1; index <= parts.length; index++) {
+      try { localStorage.setItem('pkm-server-group-' + parts.slice(0, index).join('/'), '1'); } catch {}
+    }
+  }
+  const tab = document.querySelector('.tab[data-tab="servers"]');
+  if (state.tab !== 'servers' && tab) tab.dispatchEvent(new MouseEvent('click'));
+  else renderServerDashboard(serverCache);
 }
 function openServer(url) { ask('serverOpenUrl', { url }); }
 function selectedServerLink(slug, kind) {

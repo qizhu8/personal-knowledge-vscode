@@ -753,6 +753,7 @@ window.addEventListener('message', e => {
     const btn = document.querySelector(`.tab[data-tab="${e.data.tab}"]`);
     if (btn) btn.dispatchEvent(new MouseEvent('click'));
   }
+  else if (command === 'focusServer') { focusServerDashboard(String(e.data.slug || '')); }
   else if (command === 'openSubscription') { subscriptionOpen(String(e.data.shareId || '')); }
   else if (command === 'highlightMcpRegenerate') {
     const btn = document.querySelector('.tab[data-tab="mcp"]');
