@@ -35,6 +35,8 @@ export function navigationItemPath(item: NavigationPathItem): string {
     case "server-group": return `pkm://servers/subgroups/${encodeURIComponent((data.path || []).join("/"))}`;
     case "server-ungrouped-group": return "pkm://servers/subgroups/ungrouped";
     case "server-item": return `servers/${data.slug}/server.json`;
+    case "server-subscriber-group": return `pkm://subscriptions/${encodeURIComponent(data.subscriptionId || "")}/servers`;
+    case "server-subscriber-item": return `pkm://subscriptions/servers/${encodeURIComponent(data.key || "")}`;
     case "root-environments": return "pkm://environments";
     case "environment-group": return `pkm://environments/groups/${encodeURIComponent((data.path || []).join("/"))}`;
     case "environment-item": return `pkm://environments/${encodeURIComponent(data.id || "")}`;
@@ -43,6 +45,11 @@ export function navigationItemPath(item: NavigationPathItem): string {
     case "chat-joined-group": return "pkm://chatroom/joined";
     case "chat-hosted-room": return `pkm://chatroom/rooms/${encodeURIComponent(data.roomId || data.roomName || "")}`;
     case "chat-room": return `pkm://chatroom/rooms/${encodeURIComponent(data.id || "")}`;
+    case "root-subscriptions": return "pkm://subscriptions";
+    case "subscription-brokers-group": return "pkm://subscriptions/brokers";
+    case "subscription-subscribers-group": return "pkm://subscriptions/subscribers";
+    case "subscription-broker": return `pkm://subscriptions/brokers/${encodeURIComponent(data.shareId || "")}`;
+    case "subscription-subscriber": return `pkm://subscriptions/subscribers/${encodeURIComponent(data.subscriptionId || "")}`;
     case "root-mcp": return "pkm://config";
     default: return `pkm://navigation/${encodeURIComponent(item.nodeType)}/${encodeURIComponent(String(item.label || ""))}`;
   }

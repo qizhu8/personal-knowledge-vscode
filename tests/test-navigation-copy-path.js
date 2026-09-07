@@ -29,6 +29,8 @@ const cases = [
   ["server-group", { path: ["Research", "Vision"] }, "pkm://servers/subgroups/Research%2FVision"],
   ["server-ungrouped-group", {}, "pkm://servers/subgroups/ungrouped"],
   ["server-item", { slug: "asset-quality" }, "servers/asset-quality/server.json"],
+  ["server-subscriber-group", { subscriptionId: "sub/id" }, "pkm://subscriptions/sub%2Fid/servers"],
+  ["server-subscriber-item", { key: "server key" }, "pkm://subscriptions/servers/server%20key"],
   ["root-environments", {}, "pkm://environments"],
   ["environment-group", { path: ["conda", "miniconda3"] }, "pkm://environments/groups/conda%2Fminiconda3"],
   ["environment-item", { id: "env id" }, "pkm://environments/env%20id"],
@@ -37,6 +39,11 @@ const cases = [
   ["chat-joined-group", {}, "pkm://chatroom/joined"],
   ["chat-hosted-room", { roomId: "room/id" }, "pkm://chatroom/rooms/room%2Fid"],
   ["chat-room", { id: "recent room" }, "pkm://chatroom/rooms/recent%20room"],
+  ["root-subscriptions", {}, "pkm://subscriptions"],
+  ["subscription-brokers-group", {}, "pkm://subscriptions/brokers"],
+  ["subscription-subscribers-group", {}, "pkm://subscriptions/subscribers"],
+  ["subscription-broker", { shareId: "share/id" }, "pkm://subscriptions/brokers/share%2Fid"],
+  ["subscription-subscriber", { subscriptionId: "subscriber id" }, "pkm://subscriptions/subscribers/subscriber%20id"],
   ["root-mcp", {}, "pkm://config"],
 ];
 

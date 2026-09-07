@@ -2,7 +2,7 @@
   "name": "personal-knowledge",
   "displayName": "Personal Knowledge Manager",
   "description": "%extension.description%",
-  "version": "2.7.1",
+  "version": "2.7.2",
   "publisher": "Uone",
   "author": {
     "name": "Yu Wang"
@@ -94,6 +94,11 @@
         "command": "personalKnowledge.openServers",
         "title": "%command.openServers%",
         "icon": "$(server-environment)"
+      },
+      {
+        "command": "personalKnowledge.openServerLink",
+        "title": "Open Link",
+        "icon": "$(link-external)"
       },
       {
         "command": "personalKnowledge.openSubscriptions",
@@ -299,6 +304,16 @@
         "icon": "$(copy)"
       },
       {
+        "command": "personalKnowledge.setFolderPrivate",
+        "title": "Set as Private",
+        "icon": "$(lock)"
+      },
+      {
+        "command": "personalKnowledge.setFolderPublic",
+        "title": "Set as Public",
+        "icon": "$(unlock)"
+      },
+      {
         "command": "personalKnowledge.editSkill",
         "title": "Edit",
         "icon": "$(edit)"
@@ -363,6 +378,16 @@
           "group": "9_copy@1"
         },
         {
+          "command": "personalKnowledge.setFolderPrivate",
+          "when": "view == personalKnowledge.sidebarView && viewItem =~ /-privacy-public$/",
+          "group": "2_privacy@1"
+        },
+        {
+          "command": "personalKnowledge.setFolderPublic",
+          "when": "view == personalKnowledge.sidebarView && viewItem =~ /-privacy-private$/",
+          "group": "2_privacy@1"
+        },
+        {
           "command": "personalKnowledge.newSubgroup",
           "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-(skills|notes|papers|prompts|scripts)-(root|group|virtual-root)/",
           "group": "0_group@1"
@@ -419,7 +444,7 @@
         },
         {
           "command": "personalKnowledge.createServerGroupFromNavigation",
-          "when": "view == personalKnowledge.sidebarView && viewItem == pk-server-group",
+          "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-server-group/",
           "group": "0_server_group@1"
         },
         {
@@ -438,13 +463,18 @@
           "group": "1_server@0"
         },
         {
+          "command": "personalKnowledge.openServerLink",
+          "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-server-(stopped|active|external)/",
+          "group": "0_open@1"
+        },
+        {
           "command": "personalKnowledge.renameServerGroup",
-          "when": "view == personalKnowledge.sidebarView && viewItem == pk-server-group",
+          "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-server-group/",
           "group": "1_server@1"
         },
         {
           "command": "personalKnowledge.deleteServerGroup",
-          "when": "view == personalKnowledge.sidebarView && viewItem == pk-server-group",
+          "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-server-group/",
           "group": "1_server@2"
         },
         {
@@ -813,9 +843,10 @@
     "test:subscription-acl": "npm run build && node tests/test-subscription-acl.js",
     "test:subscription-ui": "npm run build && node tests/test-subscription-ui.js",
     "test:subscription-fork": "npm run build && node tests/test-subscription-fork.js",
+    "test:content-privacy": "npm run build && node tests/test-content-privacy.js",
     "test:startup": "npm run build && node scripts/run-extension-startup-test.js",
     "test:localization": "npm run build && node tests/test-localization.js",
-    "pretest:release": "npm run build && node tests/test-subscription-acl.js && node tests/test-subscriptions.js && node tests/test-subscription-fork.js && node tests/test-subscription-ui.js && node scripts/run-extension-startup-test.js",
+    "pretest:release": "npm run build && node tests/test-content-privacy.js && node tests/test-subscription-acl.js && node tests/test-subscriptions.js && node tests/test-subscription-fork.js && node tests/test-subscription-ui.js && node scripts/run-extension-startup-test.js",
     "test:release": "npm run build && node tests/test-chat-persistence.js && node tests/test-chat-stored-rooms.js && node tests/test-chat-stored-rooms-ui.js && node tests/test-chat-participant-persistence.js && node tests/test-chat-join-approval.js && node tests/test-chat-hub-approval.js && node tests/test-chat-join-approval-ui.js && node tests/test-chat-no-manual-approval.js && node tests/test-chat-invite-host.js && node tests/test-chat-close-room-recovery.js && node tests/test-chat-room-repair.js && node tests/test-chat-moderation-ui.js && node tests/test-chat-mention-highlight-ui.js && node tests/test-chat-room-identity.js && node tests/test-chat-default-recipient-ui.js && node tests/test-chat-browser-ui.js && node tests/test-chat-multi-recipient.js && node tests/test-chat-magic-link.js && node tests/test-chat-mcp-approval.js && node tests/test-chat-packaged-worker.js && node tests/test-chat-hub-health.js && node tests/test-chat-storage-boundaries.js && python tests/test-chat-history-atomic.py && python tests/test-chat-generated-standby.py && node tests/test-chat-markdown.js && node tests/test-chat-quote-viewer-ui.js && node tests/test-mcp-version-ui.js && node tests/test-chat-layout-scroll-ui.js && node tests/test-pkm-skill-projection.js && node tests/test-pkm-skill-mcp.js && node tests/test-server-proxy.js && node tests/test-server-grouping.js && node tests/test-environment-refresh.js && node tests/test-refresh-actions.js && node tests/test-navigation-status.js && node tests/test-navigation-groups.js && node tests/test-navigation-copy-path.js && node tests/test-detail-path-ui.js && node tests/test-machine-store-path.js && node tests/test-sync-progress.js && node tests/test-localization.js",
     "poc:chat-room-lifecycle": "npm run build && node scripts/poc-chat-room-lifecycle.js",
     "watch": "tsc -p tsconfig.json --watch",

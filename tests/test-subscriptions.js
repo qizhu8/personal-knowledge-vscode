@@ -8,6 +8,7 @@ const { createHmac, randomBytes, scryptSync, sign } = require("crypto");
 const filestore = require("../dist/filestore");
 const storage = require("../dist/storage");
 const servers = require("../dist/servers");
+const privacy = require("../dist/content-privacy");
 const { SharedMarketManager, parseShareMagicLink, verifyShareSummary } = require("../dist/subscriptions");
 
 class MemorySecretStorage {
@@ -53,6 +54,7 @@ async function main() {
   fs.mkdirSync(store, { recursive: true });
   filestore.setStorePath(store);
   storage.setStorePath(store);
+  privacy.setPrivacyStoreRoot(store);
   const serversRoot = path.join(store, "servers");
   const sampleServer = path.join(serversRoot, "sample-api");
   const sampleServerPort = await freePort();
@@ -303,6 +305,15 @@ async function main() {
     const refreshedProtected = await manager.subscribe(protectedLink, "Protected Alias", rotated.secret);
     assert.strictEqual(refreshedProtected.revision, rotated.share.revision, "new rotated secret must restore protected synchronization");
     manager.removeSubscription(refreshedProtected.id);
+
+    privacy.setTopLevelPrivacy("skills", "Research", true);
+    const privacyRefreshCount = await manager.refreshPublishedShares();
+    assert(privacyRefreshCount >= 2, "making a shared top-level folder private must rebuild affected Broker snapshots");
+    for (const published of manager.snapshot.shares.filter(item => item.contentTypes.includes("skills") && item.protection === "open")) {
+      const publishedBundle = JSON.parse(fs.readFileSync(published.snapshotPath, "utf8"));
+      assert.deepStrictEqual(publishedBundle.skills, [], "private top-level folders must be physically absent even from existing selections");
+    }
+    privacy.setTopLevelPrivacy("skills", "Research", false);
 
     const persistedState = JSON.parse(fs.readFileSync(path.join(state, "subscriptions.json"), "utf8"));
     process.kill(persistedState.gatewayPid, "SIGTERM");

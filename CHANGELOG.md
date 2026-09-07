@@ -5,6 +5,21 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.7.2] - 2026-09-07
+
+> Pre-Release channel
+
+### Added
+- Added top-level folder privacy for Skills, Notes, Papers, Prompt projects, Packages, Scripts, and Server groups. Private roots display a `🔒`, apply to all descendants, and are physically excluded from Subscription catalogs and Broker snapshots even when an older selection still references them.
+- Added **Open Link** to local Server Navigation items and exact dashboard focus when a Server is opened from Navigation.
+- Added stable Copy Path locators for Subscription and subscribed Server Navigation nodes.
+
+### Changed
+- The permanent Hidden Server group now always renders after normal groups.
+
+### Fixed
+- Privacy metadata fails closed when malformed, follows top-level folder renames, and prevents private Server groups from being deleted into public Ungrouped content.
+
 ## [2.7.1] - 2026-09-04
 
 > Pre-Release channel
