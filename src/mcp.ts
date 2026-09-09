@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
+import { createHash } from "crypto";
 import { execFile, execFileSync, execSync } from "child_process";
 import { getStorePath } from "./filestore";
 import { condaEnvs, pyenvAdd, pyenvCreate, pyenvDelete, pyenvList, pyenvUpdate } from "./pyenvs";
@@ -10,6 +11,8 @@ import { isAbsoluteForPlatform, isForeignAbsolutePath } from "./store-path";
 
 // ── MCP server scaffold ────────────────────────────────────────────────────
 export const UNIFIED_MCP_VERSION = "2.6.0";
+const PROMPT_MANAGER_WHEEL = "uone_prompt_manager-0.1.0-py3-none-any.whl";
+const PROMPT_MANAGER_WHEEL_SHA256 = "eb9fd76058134f9ab9711d8e7604c75f761db5762d93e67f65740dc07fdc1518";
 const KNOWLEDGE_MCP_VERSION = "1.0.0";
 const CHAT_MCP_VERSION = "2.3.1";
 
@@ -291,9 +294,23 @@ export async function ensureMcpRuntime(context: vscode.ExtensionContext): Promis
   }
   generateMcpServer(context);
   const requirements = path.join(managedMcpServerDirectory(), "requirements.txt");
-  await new Promise<void>((resolve, reject) => execFile(validation.path, ["-m", "pip", "install", "-r", requirements], {
+  const pipInstall = (args: string[]) => new Promise<void>((resolve, reject) => execFile(validation.path, ["-m", "pip", "install", ...args], {
     timeout: 600000, maxBuffer: 1 << 24,
-  }, (error, _stdout, stderr) => error ? reject(new Error(`${error.message}\n${String(stderr || "")}`.trim())) : resolve()));
+  }, (error, stdout, stderr) => error ? reject(new Error(`${error.message}\n${String(stdout || "")}\n${String(stderr || "")}`.trim())) : resolve()));
+  try {
+    await pipInstall(["-r", requirements]);
+  } catch (initialError: any) {
+    const detail = initialError?.message || String(initialError);
+    const promptManagerDownloadFailure = /uone[-_]prompt[-_]manager/i.test(detail)
+      && /(No matching distribution|Could not find a version|SSL|TLS|HTTPSConnectionPool|files\.pythonhosted\.org)/i.test(detail);
+    if (!promptManagerDownloadFailure) throw initialError;
+    const wheel = path.join(context.extensionPath, "resources", "vendor", PROMPT_MANAGER_WHEEL);
+    if (!fs.existsSync(wheel)) throw new Error(`Prompt Manager download failed and the bundled fallback wheel is missing: ${wheel}\n${detail}`);
+    const digest = createHash("sha256").update(fs.readFileSync(wheel)).digest("hex");
+    if (digest !== PROMPT_MANAGER_WHEEL_SHA256) throw new Error("Bundled Prompt Manager wheel failed integrity verification.");
+    await pipInstall(["--no-deps", wheel]);
+    await pipInstall(["-r", requirements]);
+  }
   fs.writeFileSync(mcpRuntimeBaseMarker(), JSON.stringify({ path: base.path, version: base.version }, null, 2) + "\n");
   const existing = pyenvList().find(env => env.path && path.resolve(env.path) === path.resolve(runtimePath));
   if (existing) pyenvUpdate(existing.id, { name: "PKM MCP Runtime", manager: "venv", python: validation.path, description: "Managed runtime for the unified PKM MCP server" });

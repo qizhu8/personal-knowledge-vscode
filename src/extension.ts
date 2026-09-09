@@ -5088,6 +5088,42 @@ async function offerMcpRuntimeSetup(context: vscode.ExtensionContext): Promise<v
   }
 }
 
+async function offerMcpRuntimeDependencyRepair(context: vscode.ExtensionContext): Promise<void> {
+  const state = mcpRuntimeStatus();
+  if (!state.exists || state.healthy || !state.error.includes("prompt_manager")) return;
+  const offerKey = "mcpRuntimeDependencyRepairOffered.uone-prompt-manager-0.1.0";
+  if (context.globalState.get<boolean>(offerKey, false)) return;
+  await context.globalState.update(offerKey, true);
+  const choice = await vscode.window.showWarningMessage(
+    "The existing PKM MCP Runtime predates Prompt Manager support. Install the missing uone-prompt-manager dependency now?",
+    "Repair Runtime", "Open Config", "Later",
+  );
+  const openSetup = () => {
+    const panel = getOrCreatePanel(context);
+    panel.reveal(vscode.ViewColumn.One);
+    if (_panelReady) void panel.webview.postMessage({ command: "openTab", tab: "mcp" });
+    else _pendingTab = "mcp";
+  };
+  if (choice === "Open Config") { openSetup(); return; }
+  if (choice !== "Repair Runtime") return;
+  try {
+    await vscode.window.withProgress({
+      location: vscode.ProgressLocation.Notification,
+      title: "Updating PKM MCP Runtime dependencies",
+      cancellable: false,
+    }, async progress => {
+      progress.report({ message: "Installing uone-prompt-manager and validating the runtime…" });
+      await ensureMcpRuntime(context);
+    });
+    refreshMcpDefinitions();
+    _treeProvider?.refresh();
+    vscode.window.showInformationMessage("PKM MCP Runtime dependencies were updated successfully.");
+  } catch (error: any) {
+    vscode.window.showErrorMessage(`PKM MCP Runtime repair failed: ${error?.message || String(error)}`, "Open Config")
+      .then(result => { if (result === "Open Config") openSetup(); });
+  }
+}
+
 function openMcpSetup(context: vscode.ExtensionContext, highlightRegenerate = false): void {
   const mcpPanel = getOrCreatePanel(context);
   mcpPanel.reveal(vscode.ViewColumn.One);
@@ -7081,6 +7117,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       treeProvider.refresh();
       panel?.webview.postMessage({ command: "saved" }); // re-fetch if panel already open
       void offerMcpRuntimeSetup(context);
+      void offerMcpRuntimeDependencyRepair(context);
       void offerMcpServerRegeneration(context);
       void offerPkmSkillProjectionUpdate(context);
     } catch (e: any) {

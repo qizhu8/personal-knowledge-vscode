@@ -5,6 +5,12 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.7.7] - 2026-09-09
+
+### Fixed
+- Existing managed MCP runtimes that predate `uone-prompt-manager` now receive a one-time **Repair Runtime** migration prompt instead of only reporting `ModuleNotFoundError: prompt_manager`; repair regenerates requirements and upgrades dependencies in place.
+- Runtime repair first uses the configured pip index normally. If downloading `uone-prompt-manager` fails because the index lacks it or `files.pythonhosted.org` TLS is blocked, repair verifies and installs the wheel bundled in the VSIX, then retries the remaining requirements through the configured index.
+
 ## [2.7.6] - 2026-09-09
 
 ### Changed
