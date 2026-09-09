@@ -576,9 +576,14 @@ let promptRenderMode = 'completion';
 const promptVersionStatuses = new Map();
 const promptDatasets = new Map();
 const promptTaskVariableSets = new Map();
+const promptRenderDrafts = new Map();
 
 function promptDatasetKey() {
   return currentDetail?.type === 'prompt' ? [currentDetail.project,currentDetail.task].join('|') : '';
+}
+
+function promptRenderDraftKey() {
+  return currentDetail?.type === 'prompt' ? [currentDetail.project,currentDetail.task,currentDetail.version,currentDetail.file].join('|') : '';
 }
 
 function promptVersionCompare(left, right) {
@@ -647,6 +652,7 @@ function promptLoadDatasetText(text, name = 'Pasted Dataset') {
     promptDatasets.set(promptDatasetKey(), { name, rows:promptParseDataset(text), index:0 });
     promptRefreshDataset();
     promptRenderDatasetTable();
+    promptLoadDatasetRowIntoDraft();
   } catch (error) {
     if (status) { status.textContent = error.message || String(error); status.classList.add('error'); }
   }
@@ -681,6 +687,7 @@ function promptDatasetMove(step) {
   dataset.index = Math.max(0, Math.min(dataset.rows.length - 1, dataset.index + step));
   promptRefreshDataset();
   promptRenderDatasetTable();
+  promptLoadDatasetRowIntoDraft();
 }
 
 function promptDatasetSelect(index) {
@@ -692,6 +699,7 @@ function promptDatasetSelect(index) {
     row.classList.toggle('selected', rowIndex === index);
     row.setAttribute('aria-selected', String(rowIndex === index));
   });
+  promptLoadDatasetRowIntoDraft();
 }
 
 function promptDatasetDelete(index, event) {
@@ -703,6 +711,7 @@ function promptDatasetDelete(index, event) {
   else dataset.index = Math.min(dataset.index > index ? dataset.index - 1 : dataset.index, dataset.rows.length - 1);
   promptRefreshDataset();
   promptRenderDatasetTable();
+  if (dataset.rows.length) promptLoadDatasetRowIntoDraft();
 }
 
 function promptDatasetAddRow() {
@@ -717,6 +726,7 @@ function promptDatasetAddRow() {
   dataset.index = dataset.rows.length - 1;
   promptRefreshDataset();
   promptRenderDatasetTable();
+  promptLoadDatasetRowIntoDraft();
   requestAnimationFrame(() => document.querySelector(`.prompt-dataset-table tbody tr:nth-child(${dataset.index + 1}) input`)?.focus());
 }
 
@@ -725,6 +735,7 @@ function promptDatasetEdit(index, key, input) {
   if (!dataset || !dataset.rows[index]) return;
   dataset.rows[index][key] = promptContextValue(input.value);
   dataset.index = index;
+  promptRenderDrafts.set(promptRenderDraftKey(), { ...dataset.rows[index] });
   promptRefreshDataset(false);
   document.querySelectorAll('.prompt-dataset-table tbody tr').forEach((row,rowIndex) => {
     row.classList.toggle('selected', rowIndex === index);
@@ -733,6 +744,98 @@ function promptDatasetEdit(index, key, input) {
 }
 
 function promptClearDataset() { promptDatasets.delete(promptDatasetKey()); promptRefreshDataset(); promptRenderDatasetTable(); }
+
+function promptStableValue(value) {
+  if (Array.isArray(value)) return value.map(promptStableValue);
+  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(key => [key,promptStableValue(value[key])]));
+  return value;
+}
+
+function promptDatasetFingerprint(row) {
+  return JSON.stringify(promptStableValue(row));
+}
+
+function promptLoadDatasetRowIntoDraft() {
+  const dataset = promptDatasets.get(promptDatasetKey());
+  if (!dataset || !currentDetail || currentDetail.type !== 'prompt') return;
+  promptRenderDrafts.set(promptRenderDraftKey(), { ...dataset.rows[dataset.index] });
+  promptRefreshRenderForm();
+}
+
+function promptRenderDatasetSelect(value) {
+  const dataset = promptDatasets.get(promptDatasetKey());
+  const index = Number(value);
+  if (!dataset || !Number.isInteger(index) || index < 0 || index >= dataset.rows.length) return;
+  dataset.index = index;
+  promptLoadDatasetRowIntoDraft();
+}
+
+function promptRefreshRenderDatasetSelector() {
+  const select = document.getElementById('prompt-render-dataset-row');
+  if (!select) return;
+  const dataset = promptDatasets.get(promptDatasetKey());
+  if (!dataset?.rows.length) {
+    select.innerHTML = '<option value="">No Dataset rows</option>';
+    select.disabled = true;
+    return;
+  }
+  select.disabled = false;
+  select.innerHTML = dataset.rows.map((row,index) => {
+    const preview = Object.values(row).map(value => typeof value === 'string' ? value : JSON.stringify(value)).find(value => value)?.slice(0,40) || 'Empty row';
+    return `<option value="${index}">Row ${index + 1} · ${esc(preview)}</option>`;
+  }).join('');
+  select.value = String(dataset.index);
+}
+
+function promptRenderDraftEdit(variable, input) {
+  const draft = { ...(promptRenderDrafts.get(promptRenderDraftKey()) || {}) };
+  draft[variable] = promptContextValue(input.value);
+  promptRenderDrafts.set(promptRenderDraftKey(), draft);
+  promptRefreshAddToDatasetState();
+}
+
+function promptRefreshRenderForm() {
+  const target = document.getElementById('prompt-render-inputs');
+  if (!target || !currentDetail || currentDetail.type !== 'prompt') return;
+  const variables = Array.isArray(currentDetail.analysis?.variables) ? currentDetail.analysis.variables : [];
+  const dataset = promptDatasets.get(promptDatasetKey());
+  const source = promptRenderDrafts.get(promptRenderDraftKey()) || (dataset ? dataset.rows[dataset.index] : {});
+  const draft = Object.fromEntries(variables.map(variable => [variable,Object.prototype.hasOwnProperty.call(source,variable) ? source[variable] : '']));
+  if (variables.length) promptRenderDrafts.set(promptRenderDraftKey(), draft);
+  target.innerHTML = variables.length ? variables.map(variable => `<label><span>${esc(variable)}</span><input class="prompt-render-input" data-variable="${esc(variable)}" placeholder="Text or JSON value" oninput="promptRenderDraftEdit(${JSON.stringify(variable).replace(/"/g,'&quot;')},this)"></label>`).join('') : '<div class="prompt-render-empty">Variables appear when analysis completes.</div>';
+  target.querySelectorAll('.prompt-render-input').forEach(input => {
+    if (!Object.prototype.hasOwnProperty.call(draft,input.dataset.variable)) return;
+    const value = draft[input.dataset.variable];
+    input.value = typeof value === 'string' ? value : JSON.stringify(value);
+  });
+  promptRefreshRenderDatasetSelector();
+  promptRefreshAddToDatasetState();
+}
+
+function promptRefreshAddToDatasetState() {
+  const button = document.getElementById('prompt-add-to-dataset');
+  if (!button) return;
+  const context = promptCurrentContext();
+  button.disabled = !Object.keys(context).length;
+}
+
+function promptAddCurrentToDataset() {
+  const row = promptCurrentContext();
+  if (!Object.keys(row).length) return;
+  let dataset = promptDatasets.get(promptDatasetKey());
+  if (!dataset) {
+    dataset = { name:'Render snapshots', rows:[], index:0 };
+    promptDatasets.set(promptDatasetKey(), dataset);
+  }
+  const fingerprint = promptDatasetFingerprint(row);
+  const existing = dataset.rows.findIndex(candidate => promptDatasetFingerprint(candidate) === fingerprint);
+  if (existing >= 0) dataset.index = existing;
+  else { dataset.rows.push(promptStableValue(row)); dataset.index = dataset.rows.length - 1; }
+  promptRefreshDataset();
+  promptRefreshAddToDatasetState();
+  const button = document.getElementById('prompt-add-to-dataset');
+  if (button) { button.textContent = existing >= 0 ? 'Already in Dataset' : 'Added to Dataset'; setTimeout(() => { if (button.isConnected) button.textContent = '＋ Add to Dataset'; },1200); }
+}
 
 function promptDatasetVariables() {
   if (!currentDetail || currentDetail.type !== 'prompt') return [];
@@ -772,6 +875,7 @@ function promptRefreshDataset(renderTable = true) {
   document.getElementById('prompt-dataset-position').textContent = `${dataset.index + 1} / ${dataset.rows.length}`;
   document.getElementById('prompt-dataset-prev').disabled = dataset.index === 0;
   document.getElementById('prompt-dataset-next').disabled = dataset.index === dataset.rows.length - 1;
+  promptRefreshRenderDatasetSelector();
   if (renderTable) promptRenderDatasetTable(variables);
 }
 
@@ -803,6 +907,7 @@ function promptWorkspaceSetTab(tab) {
   document.querySelectorAll('.prompt-workspace-panel').forEach(panel => panel.classList.toggle('active', panel.dataset.promptPanel === tab));
   if (tab === 'compare') promptRenderComparison();
   if (tab === 'dataset') { promptRefreshVariableCoverage(); promptRefreshDataset(); }
+  if (tab === 'render') promptRefreshRenderForm();
 }
 
 function promptSetRenderMode(mode) {
@@ -822,7 +927,9 @@ function promptContextValue(raw) {
 
 function promptCurrentContext() {
   const dataset = promptDatasets.get(promptDatasetKey());
-  return dataset ? { ...dataset.rows[dataset.index] } : {};
+  const source = promptRenderDrafts.get(promptRenderDraftKey()) || (dataset ? dataset.rows[dataset.index] : {});
+  const variables = Array.isArray(currentDetail?.analysis?.variables) ? currentDetail.analysis.variables : [];
+  return variables.length ? Object.fromEntries(variables.map(variable => [variable,Object.prototype.hasOwnProperty.call(source,variable) ? source[variable] : ''])) : { ...source };
 }
 
 function promptRunRender(button) {
@@ -1119,6 +1226,8 @@ function renderDetail(data) {
         </section>
         <section class="prompt-workspace-panel ${promptWorkspaceTab==='render'?'active':''}" data-prompt-panel="render">
           <div class="prompt-render-toolbar"><div class="prompt-mode" aria-label="Output mode"><button class="prompt-mode-button ${mode==='completion'?'active':''}" data-mode="completion" aria-pressed="${mode==='completion'}" onclick="promptSetRenderMode('completion')">Completion</button><button class="prompt-mode-button ${mode==='chat'?'active':''}" data-mode="chat" aria-pressed="${mode==='chat'}" onclick="promptSetRenderMode('chat')">Chat</button></div><button id="prompt-render-button" class="tbtn primary" onclick="promptRunRender(this)" ${analysis.syntaxValid !== true ? 'disabled' : ''}>▶ Render</button><span class="prompt-render-spacer"></span><select id="prompt-inference-backend" title="Model for Prompt inference"><option value="">Loading models…</option></select><button id="prompt-inference-button" type="button" class="tbtn" onclick="promptRunInference(this)" disabled>Run Inference</button></div>
+          <div class="prompt-render-form-head"><div><strong>Render inputs</strong><span>Enter values directly or populate the form from a Dataset row.</span></div><label class="prompt-render-dataset-picker"><span>Dataset row</span><select id="prompt-render-dataset-row" onchange="promptRenderDatasetSelect(this.value)" disabled><option value="">No Dataset rows</option></select></label><button id="prompt-add-to-dataset" type="button" class="tbtn" onclick="promptAddCurrentToDataset()" disabled>＋ Add to Dataset</button></div>
+          <div id="prompt-render-inputs" class="prompt-context-grid"></div>
           <div id="prompt-render-output" class="prompt-render-output"><div class="prompt-render-empty">Enter sample values, then render the final prompt.</div></div>
           <div id="prompt-inference-output" class="prompt-inference-output hidden"></div>
         </section>
@@ -1151,6 +1260,7 @@ function renderDetail(data) {
     if (toSelect) toSelect.value = toVersion;
     if (promptWorkspaceTab === 'compare') promptRenderComparison();
     if (promptWorkspaceTab === 'dataset') { promptRefreshVariableCoverage(); promptRefreshDataset(); }
+    if (promptWorkspaceTab === 'render') promptRefreshRenderForm();
     ask('listAiBackends', {});
     highlightSelectedPromptTree(data);
     if (window.innerWidth <= 760) setMainSidebarCollapsed(true, false);
