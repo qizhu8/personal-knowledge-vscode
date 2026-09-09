@@ -8,6 +8,14 @@ const panelJs = fs.readFileSync(path.join(__dirname, "..", "dist", "webview", "p
 const panelCss = fs.readFileSync(path.join(__dirname, "..", "dist", "webview", "panel.css"), "utf8");
 const sourceTs = fs.readFileSync(path.join(__dirname, "..", "src", "mcp.ts"), "utf8");
 const extensionTs = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
+assert.match(extensionTs, /offerMcpRuntimeDependencyRepair/);
+assert.match(extensionTs, /mcpRuntimeDependencyRepairOffered\.uone-prompt-manager-0\.1\.0/);
+assert.match(extensionTs, /state\.error\.includes\("prompt_manager"\)/);
+assert.match(extensionTs, /await ensureMcpRuntime\(context\)/);
+assert.match(sourceTs, /await pipInstall\(\["-r", requirements\]\)/);
+assert.match(sourceTs, /promptManagerDownloadFailure/);
+assert.match(sourceTs, /--no-deps", wheel/);
+assert.match(sourceTs, /PROMPT_MANAGER_WHEEL_SHA256/);
 const esc = value => String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 assert.match(panelCss, /\.mcp-version-table \.mcp-row-action\{text-align:left;/);
 
