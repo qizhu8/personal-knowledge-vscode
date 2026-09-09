@@ -5,6 +5,11 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.7.8] - 2026-09-09
+
+### Changed
+- Render now always provides a per-variable form. Its Dataset-row selector can populate an independent per-version draft without mutating the source row, and **Add to Dataset** appends the current snapshot only when its canonical typed JSON content is not already present.
+
 ## [2.7.7] - 2026-09-09
 
 ### Fixed
