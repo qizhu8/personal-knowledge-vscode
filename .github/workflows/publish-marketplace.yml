@@ -67,17 +67,11 @@ jobs:
 
       - name: Install Python test dependencies
         if: inputs.mode == 'publish'
-        run: python -m pip install "fastmcp>=2.0.0" "websockets>=12.0"
+        run: python -m pip install "fastmcp>=2.0.0" "uone-prompt-manager==0.1.0" "websockets>=12.0"
 
       - name: Build and validate
         if: inputs.mode == 'publish'
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm run build
-          npm run test:chat-history-atomic
-          npm run test:chat-generated-standby
-          npm run test:chat-packaged-worker
+        run: npm run test:release
 
       - name: Package VSIX
         if: inputs.mode == 'publish'

@@ -2,7 +2,7 @@
   "name": "personal-knowledge",
   "displayName": "Personal Knowledge Manager",
   "description": "%extension.description%",
-  "version": "2.7.2",
+  "version": "2.7.6",
   "publisher": "Uone",
   "author": {
     "name": "Yu Wang"
@@ -164,6 +164,11 @@
         "command": "personalKnowledge.repairStoredRoom",
         "title": "Repair Stored Room",
         "icon": "$(tools)"
+      },
+      {
+        "command": "personalKnowledge.forceCloseHostedRoom",
+        "title": "Force Close Host…",
+        "icon": "$(debug-stop)"
       },
       {
         "command": "personalKnowledge.closeHostedRoom",
@@ -508,6 +513,11 @@
           "group": "1_room@2"
         },
         {
+          "command": "personalKnowledge.forceCloseHostedRoom",
+          "when": "view == personalKnowledge.sidebarView && viewItem == pk-chat-hosted-room-active-elsewhere",
+          "group": "1_room@2"
+        },
+        {
           "command": "personalKnowledge.closeHostedRoom",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-chat-hosted-room-active",
           "group": "1_room@3"
@@ -821,6 +831,9 @@
     "test:chat-markdown": "npm run build && node tests/test-chat-markdown.js",
     "test:chat-quote-viewer-ui": "npm run build && node tests/test-chat-quote-viewer-ui.js",
     "test:mcp-version-ui": "npm run build && node tests/test-mcp-version-ui.js",
+    "test:prompt-manager-ui": "npm run build && node tests/test-prompt-manager-ui.js",
+    "test:prompt-version-note": "npm run build && node tests/test-prompt-version-note.js",
+    "test:prompt-inheritance": "python tests/test-prompt-inheritance.py",
     "test:chat-layout-scroll-ui": "npm run build && node tests/test-chat-layout-scroll-ui.js",
     "test:pkm-skill-projection": "npm run build && node tests/test-pkm-skill-projection.js",
     "test:pkm-skill-mcp": "node tests/test-pkm-skill-mcp.js",
@@ -844,10 +857,11 @@
     "test:subscription-ui": "npm run build && node tests/test-subscription-ui.js",
     "test:subscription-fork": "npm run build && node tests/test-subscription-fork.js",
     "test:content-privacy": "npm run build && node tests/test-content-privacy.js",
+    "test:content-privacy-ui": "npm run build && node tests/test-content-privacy-ui.js",
     "test:startup": "npm run build && node scripts/run-extension-startup-test.js",
     "test:localization": "npm run build && node tests/test-localization.js",
-    "pretest:release": "npm run build && node tests/test-content-privacy.js && node tests/test-subscription-acl.js && node tests/test-subscriptions.js && node tests/test-subscription-fork.js && node tests/test-subscription-ui.js && node scripts/run-extension-startup-test.js",
-    "test:release": "npm run build && node tests/test-chat-persistence.js && node tests/test-chat-stored-rooms.js && node tests/test-chat-stored-rooms-ui.js && node tests/test-chat-participant-persistence.js && node tests/test-chat-join-approval.js && node tests/test-chat-hub-approval.js && node tests/test-chat-join-approval-ui.js && node tests/test-chat-no-manual-approval.js && node tests/test-chat-invite-host.js && node tests/test-chat-close-room-recovery.js && node tests/test-chat-room-repair.js && node tests/test-chat-moderation-ui.js && node tests/test-chat-mention-highlight-ui.js && node tests/test-chat-room-identity.js && node tests/test-chat-default-recipient-ui.js && node tests/test-chat-browser-ui.js && node tests/test-chat-multi-recipient.js && node tests/test-chat-magic-link.js && node tests/test-chat-mcp-approval.js && node tests/test-chat-packaged-worker.js && node tests/test-chat-hub-health.js && node tests/test-chat-storage-boundaries.js && python tests/test-chat-history-atomic.py && python tests/test-chat-generated-standby.py && node tests/test-chat-markdown.js && node tests/test-chat-quote-viewer-ui.js && node tests/test-mcp-version-ui.js && node tests/test-chat-layout-scroll-ui.js && node tests/test-pkm-skill-projection.js && node tests/test-pkm-skill-mcp.js && node tests/test-server-proxy.js && node tests/test-server-grouping.js && node tests/test-environment-refresh.js && node tests/test-refresh-actions.js && node tests/test-navigation-status.js && node tests/test-navigation-groups.js && node tests/test-navigation-copy-path.js && node tests/test-detail-path-ui.js && node tests/test-machine-store-path.js && node tests/test-sync-progress.js && node tests/test-localization.js",
+    "pretest:release": "npm run build && node tests/test-content-privacy.js && node tests/test-content-privacy-ui.js && node tests/test-subscription-acl.js && node tests/test-subscriptions.js && node tests/test-subscription-fork.js && node tests/test-subscription-ui.js && node scripts/run-extension-startup-test.js",
+    "test:release": "npm run build && node tests/test-chat-persistence.js && node tests/test-chat-stored-rooms.js && node tests/test-chat-stored-rooms-ui.js && node tests/test-chat-participant-persistence.js && node tests/test-chat-join-approval.js && node tests/test-chat-hub-approval.js && node tests/test-chat-join-approval-ui.js && node tests/test-chat-no-manual-approval.js && node tests/test-chat-invite-host.js && node tests/test-chat-close-room-recovery.js && node tests/test-chat-room-repair.js && node tests/test-chat-moderation-ui.js && node tests/test-chat-mention-highlight-ui.js && node tests/test-chat-room-identity.js && node tests/test-chat-default-recipient-ui.js && node tests/test-chat-browser-ui.js && node tests/test-chat-multi-recipient.js && node tests/test-chat-magic-link.js && node tests/test-chat-mcp-approval.js && node tests/test-chat-packaged-worker.js && node tests/test-chat-hub-health.js && node tests/test-chat-storage-boundaries.js && python tests/test-chat-history-atomic.py && python tests/test-chat-generated-standby.py && node tests/test-chat-markdown.js && node tests/test-chat-quote-viewer-ui.js && node tests/test-mcp-version-ui.js && node tests/test-prompt-manager-ui.js && node tests/test-prompt-version-note.js && python tests/test-prompt-inheritance.py && node tests/test-chat-layout-scroll-ui.js && node tests/test-pkm-skill-projection.js && node tests/test-pkm-skill-mcp.js && node tests/test-server-proxy.js && node tests/test-server-grouping.js && node tests/test-environment-refresh.js && node tests/test-refresh-actions.js && node tests/test-navigation-status.js && node tests/test-navigation-groups.js && node tests/test-navigation-copy-path.js && node tests/test-detail-path-ui.js && node tests/test-machine-store-path.js && node tests/test-sync-progress.js && node tests/test-localization.js",
     "poc:chat-room-lifecycle": "npm run build && node scripts/poc-chat-room-lifecycle.js",
     "watch": "tsc -p tsconfig.json --watch",
     "package": "npx vsce package"

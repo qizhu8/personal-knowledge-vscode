@@ -1,5 +1,5 @@
-import { join, extname } from "path";
-import { existsSync, readdirSync, statSync, readFileSync, mkdirSync, renameSync, rmSync, copyFileSync } from "fs";
+import { join, extname, resolve, sep } from "path";
+import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, mkdirSync, renameSync, rmSync, copyFileSync, cpSync } from "fs";
 
 let _storePath = "";
 
@@ -87,6 +87,53 @@ export function promptGetAllVersionsOfFile(project: string, task: string, filena
       version: v,
       content: stripPromptMetadata(readFileSync(join(taskDir, v, filename), 'utf-8')).replace(/^\n/, '')
     }));
+}
+
+export function promptFilePath(project: string, task: string, version: string, filename = ""): string {
+  const root = resolve(_storePath, "prompts");
+  const target = resolve(root, project, task, version, filename);
+  if (!target.startsWith(root + sep)) throw new Error("Prompt path escapes the Prompt library.");
+  return target;
+}
+
+function promptMetadataBlock(title: string, note: string): string {
+  if (title.includes("\n") || title.includes("\r") || note.includes("#}")) throw new Error("Prompt metadata contains an unsupported delimiter.");
+  return `{# PROMPT_METADATA\ntitle: ${title.trim()}\nnote:\n${note.replace(/\s+$/, "")}\n#}\n`;
+}
+
+export function promptSaveVersionNote(
+  project: string,
+  task: string,
+  version: string,
+  filename: string,
+  note: string,
+  newVersion?: string,
+): { version: string; file: string; meta: { title: string; note: string; hasMetadata: boolean } } {
+  const sourceFile = promptFilePath(project, task, version, filename);
+  if (!existsSync(sourceFile) || !statSync(sourceFile).isFile()) throw new Error("Prompt file was not found.");
+  let targetVersion = version;
+  if (newVersion) {
+    if (!/^v\d+(?:\.\d+)*$/.test(newVersion)) throw new Error("Version must look like v10 or v9.2.");
+    const sourceDir = promptFilePath(project, task, version);
+    const targetDir = promptFilePath(project, task, newVersion);
+    if (existsSync(targetDir)) throw new Error(`Prompt version already exists: ${newVersion}`);
+    const temporaryDir = `${targetDir}.tmp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    try {
+      cpSync(sourceDir, temporaryDir, { recursive: true, errorOnExist: true });
+      renameSync(temporaryDir, targetDir);
+    } catch (error) {
+      rmSync(temporaryDir, { recursive: true, force: true });
+      throw error;
+    }
+    targetVersion = newVersion;
+  }
+  const targetFile = promptFilePath(project, task, targetVersion, filename);
+  const raw = readFileSync(targetFile, "utf8");
+  const current = parsePromptMetadata(raw);
+  const body = stripPromptMetadata(raw).replace(/^\r?\n/, "");
+  const updated = promptMetadataBlock(current.title, note) + body;
+  writeFileSync(targetFile, updated, "utf8");
+  return { version: targetVersion, file: filename, meta: parsePromptMetadata(updated) };
 }
 
 // ── Packages ──────────────────────────────────────────────────────────────

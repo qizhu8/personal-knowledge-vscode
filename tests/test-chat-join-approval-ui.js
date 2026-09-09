@@ -5,9 +5,9 @@ const path = require("path");
 const vm = require("vm");
 
 const panelJs = fs.readFileSync(path.join(__dirname, "..", "dist", "webview", "panel.js"), "utf8");
-const match = panelJs.match(/function chatPaintPendingJoins\(\)\s*\{[\s\S]*?\n\}\n\nfunction chatPaintRecents/);
+const match = panelJs.match(/function chatPaintPendingJoins\(\)\s*\{[\s\S]*?box\.innerHTML = '';\n\}/);
 assert(match, "chatPaintPendingJoins must be present in the bundled panel script");
-const functionSource = match[0].replace(/\n\nfunction chatPaintRecents$/, "");
+const functionSource = match[0];
 
 function element() {
   const value = { innerHTML: "", hidden: false };

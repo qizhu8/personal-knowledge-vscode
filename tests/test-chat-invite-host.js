@@ -19,6 +19,7 @@ assert.match(setting.description, /Magic Links/);
 const extension = fs.readFileSync(path.join(root, "src", "extension.ts"), "utf8");
 assert.match(extension, /serverNetworkAddresses\(\)\.map/);
 assert.match(extension, /chatInviteHostOptions\(context\)/);
+assert.match(extension, /options\.find\(item => item\.kind === "hostname"\)\?\.address \|\| options\[0\]\?\.address/);
 assert.match(extension, /getChatMgr\(\)\.setAdvertisedHost/);
 assert.match(extension, /case "chatSetInviteHost"/);
 assert.match(extension, /Choose an available Invite interface before hosting a Room/);
@@ -30,6 +31,7 @@ const panel = fs.readFileSync(path.join(root, "dist", "webview", "panel.js"), "u
 assert.match(panel, /id="chat-invite-host"/);
 assert.match(panel, /function chatPaintInviteHosts\(\)/);
 assert.match(panel, /function chatInviteHostChanged\(address\)/);
+assert.match(panel, /class="chat-host-interface"><span>Hosting on<\/span><select id="chat-invite-host"/);
 assert.match(panel, /Magic Links will advertise/);
 assert.match(panel, /Saved interface is unavailable/);
 assert.match(panel, /ask\('chatSetInviteHost', \{ address \}\)/);

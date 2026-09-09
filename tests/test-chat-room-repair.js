@@ -29,9 +29,9 @@ async function main() {
       createdAt: Date.now(),
     });
 
-    assert.deepStrictEqual(hub.roomNames, ["aagl discussion"]);
+    assert.deepStrictEqual(hub.roomNames, ["AAGL Discussion"]);
     const repaired = await hub.repairStoredRoom(created.roomId);
-    assert.strictEqual(repaired.roomName, "aagl discussion");
+    assert.strictEqual(repaired.roomName, "AAGL Discussion");
     assert.strictEqual(repaired.messageCount, 1);
     assert.strictEqual(repaired.closedOrphans, 1, "repair must close a zero-member local zombie Room");
     assert.deepStrictEqual(hub.roomNames, []);
@@ -41,7 +41,7 @@ async function main() {
     const reopened = await hub.rehostRoom(created.roomId);
     const history = await hub.persistence.openRoom(created.roomId, reopened.room);
     assert(history.messages.some(message => message.id === "message-before-repair"), "repair must preserve Room history");
-    await hub.adminCloseRoom(reopened.room);
+    await hub.adminCloseRoom(reopened.roomId);
 
     const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
     assert(packageJson.contributes.commands.some(command => command.command === "personalKnowledge.repairStoredRoom"));

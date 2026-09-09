@@ -5,7 +5,7 @@ import * as http from "http";
 import * as fs from "fs";
 import { syncServer } from "./sync-server";
 import { SharedContentType, SharedMarketManager, SHARED_CONTENT_TYPES } from "./subscriptions";
-import { isContentItemPrivate, isTopLevelPrivate, PrivacyContentType, renameTopLevelPrivacy, setPrivacyStoreRoot, setTopLevelPrivacy } from "./content-privacy";
+import { isContentItemPrivate, isTopLevelPrivate, privateTopLevels, PrivacyContentType, renameTopLevelPrivacy, setPrivacyStoreRoot, setTopLevelPrivacy } from "./content-privacy";
 import { forkSubscriptionContent } from "./subscription-fork";
 import {
   skillList, skillSearch, skillGet, skillUpsert, skillDelete, skillMoveCategory, skillMove, skillSetPinned,
@@ -35,7 +35,7 @@ import {
   pyenvSize, pyenvActivateScript, pyenvActivateCommands, pyenvCreate, pyenvSimilarity, pyenvPyVersion, pyenvMigrate, pyenvDeleteScript, pyenvMergeScript,
 } from "./pyenvs";
 import {
-  promptList, promptGetFile, promptGetAllVersionsOfFile,
+  promptList, promptGetFile, promptGetAllVersionsOfFile, promptFilePath, promptSaveVersionNote,
   packageList, packageGet, packageFileGet, packageDelete,
   scriptList, scriptSearch, scriptGet, scriptMove, scriptMoveFolder,
   promptImport, scriptImport, packageImport,
@@ -64,6 +64,7 @@ import {
   addPkmSkillCustomTarget, injectPkmSkill, pkmSkillProjectionStatus,
   removeInjectedPkmSkill, removePkmSkillCustomTarget, resolvePkmSkillTargetPath,
 } from "./pkm-skill-projection";
+import { cachedPromptAnalysis, inspectPromptCached, renderPrompt } from "./prompt-manager";
 
 // Background one-shot sweep to compute on-disk sizes for envs missing a cached
 // value, then refresh the panel so sizes show up "by default".
@@ -1231,6 +1232,8 @@ interface HostedRoomNavigationItem {
   roomName: string;
   active: boolean;
   activeElsewhere?: boolean;
+  activeUrl?: string;
+  canForceClose?: boolean;
   canRehost: boolean;
   unavailableReason?: string;
 }
@@ -1355,7 +1358,7 @@ class ChatRoomManager {
       hubHttpUrl: this.hub?.isRunning ? `http://${this.advertisedHost()}:${this.hub.port}` : "",
       hubPort:    this.hub?.port ?? 0,
       hubAdminRooms: this.hub?.isRunning
-        ? this.hub.adminRooms().map(r => ({ ...r, hasKey: this.hostedKeys.has(r.room) }))
+        ? this.hub.adminRooms().map(r => ({ ...r, hasKey: this.hostedKeys.has(r.roomId) }))
         : [],
       pendingApprovals: [],
       storedRooms: this.storedRooms.filter(room => !locallyActiveRoomIds.has(room.roomId)),
@@ -1375,7 +1378,7 @@ class ChatRoomManager {
     for (const stored of this.storedRooms) {
       if (active.has(stored.roomId)) continue;
       rows.push({ roomId: stored.roomId, roomName: stored.roomName, active: false,
-        activeElsewhere: stored.activeElsewhere, canRehost: stored.canRehost, unavailableReason: stored.unavailableReason });
+        activeElsewhere: stored.activeElsewhere, activeUrl: stored.activeUrl, canForceClose: stored.canForceClose, canRehost: stored.canRehost, unavailableReason: stored.unavailableReason });
     }
     return rows.sort((left, right) => left.roomName.localeCompare(right.roomName));
   }
@@ -1616,9 +1619,9 @@ class ChatRoomManager {
     if (!rc) return;
     const locallyHosted = this.hub?.adminRooms().find(room =>
       (!!rc.roomId && room.roomId === rc.roomId) ||
-      (rc.selfHost && room.room === ChatHub.canonRoom(rc.room)));
+      (!rc.roomId && rc.selfHost && ChatHub.canonRoom(room.room) === ChatHub.canonRoom(rc.room)));
     if (locallyHosted && this.hub?.isRunning) {
-      await this.hub.adminCloseRoom(locallyHosted.room);
+      await this.hub.adminCloseRoom(locallyHosted.roomId);
     } else {
       try { rc.client.disconnect(); } catch { /* ignore */ }
     }
@@ -1641,9 +1644,6 @@ class ChatRoomManager {
     rc.room = nextRoom;
     rc.key = nextKey;
     this.rooms.set(nextKey, rc);
-    const secret = this.hostedKeys.get(ChatHub.canonRoom(previousRoom));
-    this.hostedKeys.delete(ChatHub.canonRoom(previousRoom));
-    if (secret) this.hostedKeys.set(ChatHub.canonRoom(nextRoom), secret);
     for (const agent of this.managedAgents.values()) if (agent.roomKey === previousKey) agent.roomKey = nextKey;
     if (this.activeKey === previousKey) this.activeKey = nextKey;
     _treeProvider?.refresh();
@@ -1689,7 +1689,7 @@ class ChatRoomManager {
   // The Hub has already persisted this rotation. Refresh live invite actions;
   // durable hosted Rooms never copy their secret into globalState recents.
   private onRekey(rc: RoomConn, secret: string): void {
-    this.hostedKeys.set(ChatHub.canonRoom(rc.room), secret);
+    if (rc.roomId) this.hostedKeys.set(rc.roomId, secret);
     saveRekeyedSecret(rc.url, rc.room, secret, rc.roomId);
     this.push();
     log.action("chat.rekey", { room: rc.room });
@@ -1898,6 +1898,12 @@ class ChatRoomManager {
     return repaired;
   }
 
+  async forceCloseHostedRoom(roomId: string): Promise<void> {
+    if (!this.hub) throw new Error("Chat Hub storage is unavailable.");
+    await this.hub.forceCloseRemoteRoom(roomId);
+    await this.refreshStoredRooms();
+  }
+
   async deleteStoredRoom(roomId: string): Promise<void> {
     await this.hub?.deleteStoredRoom(roomId);
     await this.refreshStoredRooms();
@@ -1906,7 +1912,7 @@ class ChatRoomManager {
   async createHostedRoom(room: string, requestedSecret?: string): Promise<{ roomId: string; room: string; secret: string; hostToken: string }> {
     if (!this.hub?.isRunning) throw new Error("Start the Chat Hub before creating a Room.");
     const created = await this.hub.createRoom(room, requestedSecret);
-    this.hostedKeys.set(created.room, created.secret);
+    this.hostedKeys.set(created.roomId, created.secret);
     await this.refreshStoredRooms();
     this.push();
     return created;
@@ -1915,7 +1921,7 @@ class ChatRoomManager {
   async rehostRoom(roomId: string): Promise<{ roomId: string; room: string; secret: string; hostToken: string }> {
     if (!this.hub?.isRunning) throw new Error("Start the Chat Hub before Rehosting a Room.");
     const rehosted = await this.hub.rehostRoom(roomId);
-    this.hostedKeys.set(rehosted.room, rehosted.secret);
+    this.hostedKeys.set(rehosted.roomId, rehosted.secret);
     await this.refreshStoredRooms();
     this.push();
     return rehosted;
@@ -1929,20 +1935,22 @@ class ChatRoomManager {
     this.push();
   }
 
-  async adminCloseRoom(room: string): Promise<void> {
-    await this.hub?.adminCloseRoom(room);
-    this.hostedKeys.delete(ChatHub.canonRoom(room));
+  async adminCloseRoom(roomId: string): Promise<void> {
+    const room = this.hub?.adminRooms().find(item => item.roomId === roomId)?.room || roomId;
+    await this.hub?.adminCloseRoom(roomId);
+    if (roomId) this.hostedKeys.delete(roomId);
     await this.refreshStoredRooms();
-    log.action("chat.adminCloseRoom", { room });
+    log.action("chat.adminCloseRoom", { room, roomId });
     this.push();
   }
 
   /** Rotate a hosted room's secret on demand. The rekey flows back via onRekey. */
   async rotateRoomSecret(room: string): Promise<boolean> {
+    const roomId = this.hub?.adminRooms().find(item => item.roomId === room || ChatHub.canonRoom(item.room) === ChatHub.canonRoom(room))?.roomId;
     const s = await this.hub?.rotateRoomSecret(room);
-    if (s) {
-      this.hostedKeys.set(ChatHub.canonRoom(room), s);
-      const active = [...this.rooms.values()].find(connection => ChatHub.canonRoom(connection.room) === ChatHub.canonRoom(room));
+    if (s && roomId) {
+      this.hostedKeys.set(roomId, s);
+      const active = [...this.rooms.values()].find(connection => connection.roomId === roomId);
       if (active) saveRekeyedSecret(active.url, active.room, s);
       log.action("chat.rotateSecret", { room });
     }
@@ -1958,8 +1966,14 @@ class ChatRoomManager {
   }
 
   // Per-room secrets this host set, so we can copy/share them later.
-  rememberRoomKey(room: string, key: string): void { this.hostedKeys.set(ChatHub.canonRoom(room), key); }
-  getRoomKey(room: string): string | undefined { return this.hostedKeys.get(ChatHub.canonRoom(room)); }
+  rememberRoomKey(room: string, key: string): void {
+    const roomId = this.hub?.adminRooms().find(item => item.roomId === room || ChatHub.canonRoom(item.room) === ChatHub.canonRoom(room))?.roomId;
+    if (roomId) this.hostedKeys.set(roomId, key);
+  }
+  getRoomKey(room: string): string | undefined {
+    const roomId = this.hub?.adminRooms().find(item => item.roomId === room || ChatHub.canonRoom(item.room) === ChatHub.canonRoom(room))?.roomId;
+    return roomId ? this.hostedKeys.get(roomId) : undefined;
+  }
 
   roomInvite(room: string): { magicLink: string; message: string } | undefined {
     const secret = this.getRoomKey(room);
@@ -1968,10 +1982,10 @@ class ChatRoomManager {
     let base = this.hub?.port ? `ws://${this.advertisedHost()}:${this.hub.port}` : connection?.url || "";
     if (!base) return undefined;
     const parsed = new URL(base);
-    parsed.pathname = `/${encodeURIComponent(ChatHub.canonRoom(room))}`;
+    parsed.pathname = `/${encodeURIComponent(connection?.room || room)}`;
     parsed.search = ""; parsed.hash = "";
     const url = parsed.toString().replace(/\/$/, "");
-    const roomId = this.hub?.adminRooms().find(item => item.room === ChatHub.canonRoom(room))?.roomId;
+    const roomId = this.hub?.adminRooms().find(item => item.roomId === room || ChatHub.canonRoom(item.room) === ChatHub.canonRoom(room))?.roomId;
     const magicLink = createChatMagicLink(url, secret, roomId);
     return { magicLink, message: chatInviteMessage(magicLink) };
   }
@@ -2041,7 +2055,7 @@ interface RecentRoom { id: string; url: string; room: string; roomId?: string; u
 function chatInviteHostOptions(context: vscode.ExtensionContext): { options: any[]; selected: string; unavailable: boolean } {
   const options = serverNetworkAddresses().map(item => ({ ...item, label: `${item.kind === "hostname" ? "Hostname" : item.interface} · ${item.address}` }));
   const configured = vscode.workspace.getConfiguration("personalKnowledge").get<string>("chatInviteHost", "").trim();
-  const selected = configured || options[0]?.address || "";
+  const selected = configured || options.find(item => item.kind === "hostname")?.address || options[0]?.address || "";
   return { options, selected, unavailable: !!configured && !options.some(item => item.address === configured) };
 }
 
@@ -2537,6 +2551,7 @@ async function serverListForUi(context: vscode.ExtensionContext): Promise<any[]>
   const autoForward = context.globalState.get<boolean>("servers.autoForward.global.v1", true);
   return (await serverList()).map(server => ({
     ...server,
+    isPrivate: isContentItemPrivate("servers", server),
     autoForward,
     remoteName: vscode.env.remoteName || "",
   }));
@@ -3020,16 +3035,17 @@ async function handleMessage(
     }
 
     case "chatCopyInvite": {
-      const room = String(msg.room || "").trim();
-      const invite = getChatMgr().roomInvite(room);
-      if (!invite) { vscode.window.showWarningMessage(`Couldn't create an invite for room "${room}".`); break; }
+      const roomId = String(msg.roomId || "").trim();
+      const roomName = String(msg.roomName || roomId);
+      const invite = getChatMgr().roomInvite(roomId);
+      if (!invite) { vscode.window.showWarningMessage(`Couldn't create an invite for room "${roomName}".`); break; }
       await vscode.env.clipboard.writeText(invite.message);
       vscode.window.setStatusBarMessage("$(copy) Chatroom Magic Link invite copied", 4000);
       break;
     }
 
     case "chatAdminCloseRoom": {
-      await getChatMgr().adminCloseRoom(String(msg.room || ""));
+      await getChatMgr().adminCloseRoom(String(msg.roomId || ""));
       break;
     }
 
@@ -3055,6 +3071,26 @@ async function handleMessage(
       } catch (error: any) {
         vscode.window.showErrorMessage(`Couldn't Rehost Room: ${error?.message || error}`);
         await manager.refreshStoredRooms();
+      }
+      break;
+    }
+
+    case "chatForceCloseHostedRoom": {
+      const roomId = String(msg.roomId || "").trim();
+      const roomName = String(msg.roomName || roomId);
+      const owned = getChatMgr().hostedRoomsForNavigation().find(room => room.roomId === roomId && room.canForceClose);
+      if (!owned) { vscode.window.showErrorMessage("Force Close is available only for your own Room hosted elsewhere."); break; }
+      const choice = await vscode.window.showWarningMessage(
+        `Force the active Host to close “${roomName}”? Connected participants will be disconnected. History and Room credentials are preserved so you can Rehost it here.`,
+        { modal: true, detail: `Active endpoint: ${owned.activeUrl || "unavailable"}` },
+        "Force Close Host",
+      );
+      if (choice !== "Force Close Host") break;
+      try {
+        await getChatMgr().forceCloseHostedRoom(roomId);
+        vscode.window.showInformationMessage(`Closed the active Host for “${roomName}”. You can now Rehost it.`);
+      } catch (error: any) {
+        vscode.window.showErrorMessage(`Couldn't force-close the active Host: ${error?.message || error}`);
       }
       break;
     }
@@ -3117,14 +3153,15 @@ async function handleMessage(
     }
 
     case "chatRotateSecret": {
-      const room = String(msg.room || "").trim();
-      if (!room) break;
+      const roomId = String(msg.roomId || "").trim();
+      const roomName = String(msg.roomName || roomId);
+      if (!roomId) break;
       const pick = await vscode.window.showWarningMessage(
-        `Refresh the key and Magic Link for room "${room}"? Current members stay connected; the old Magic Link stops working.`,
+        `Refresh the key and Magic Link for room "${roomName}"? Current members stay connected; the old Magic Link stops working.`,
         { modal: true }, "Refresh Key");
       if (pick !== "Refresh Key") break;
-      if (!await getChatMgr().rotateRoomSecret(room)) { vscode.window.showWarningMessage(`Room "${room}" has no secret to rotate.`); break; }
-      const invite = getChatMgr().roomInvite(room);
+      if (!await getChatMgr().rotateRoomSecret(roomId)) { vscode.window.showWarningMessage(`Room "${roomName}" has no secret to rotate.`); break; }
+      const invite = getChatMgr().roomInvite(roomId);
       if (invite) {
         await vscode.env.clipboard.writeText(invite.message);
         vscode.window.showInformationMessage("New key generated. The refreshed Magic Link invite was copied.");
@@ -3191,6 +3228,18 @@ async function handleMessage(
       break;
     }
 
+    case "contentSetPrivacy": {
+      const type = String(msg.type || "") as PrivacyContentType;
+      const topLevel = String(msg.topLevel || "");
+      if (!(SHARED_CONTENT_TYPES as readonly string[]).includes(type)) throw new Error(`Unsupported privacy content type: ${type}`);
+      setTopLevelPrivacy(type, topLevel, !!msg.isPrivate);
+      gitCommit(`privacy(${type}): ${topLevel} ${msg.isPrivate ? "private" : "public"}`);
+      const changed = await sharedMarket?.refreshPublishedShares() || 0;
+      _treeProvider?.refresh();
+      respond({ command: "privacyChanged", data: { type, topLevel, isPrivate: !!msg.isPrivate, brokersRefreshed: changed } });
+      break;
+    }
+
     case "list": {
       const { tab, filter, q } = msg;
       const searchOptions = { regex: !!msg.regex, caseSensitive: !!msg.caseSensitive };
@@ -3206,13 +3255,17 @@ async function handleMessage(
       else if (tab === "packages") { const rows = packagesWithGit(); data = q ? rows.filter(listMatches) : rows; }
       else if (tab === "scripts")  data = q ? scriptSearch(q, searchOptions) : scriptList();
       else data = [];
+      if (SHARED_CONTENT_TYPES.includes(tab as SharedContentType) && Array.isArray(data)) {
+        data = data.map(item => ({ ...item, isPrivate: isContentItemPrivate(tab as PrivacyContentType, item) }));
+      }
       const folders = (tab === "skills" || tab === "notes") ? folderList(tab) : undefined;
       const subscriptionGroups = sharedMarket && SHARED_CONTENT_TYPES.includes(tab as SharedContentType)
         ? sharedMarket.cachedGroups(tab as SharedContentType, String(q || ""))
         : [];
       const trashAreas = ["notes", "papers", "prompts", "scripts"] as KnowledgeTrashArea[];
       const knowledgeTrash = tab === "skills" ? skillTrashList() : trashAreas.includes(tab as KnowledgeTrashArea) ? knowledgeTrashList(tab as KnowledgeTrashArea) : [];
-      respond({ command: "list", data, folders, subscriptionGroups, knowledgeTrash });
+      const privacyTopLevels = SHARED_CONTENT_TYPES.includes(tab as SharedContentType) ? privateTopLevels(tab as PrivacyContentType) : [];
+      respond({ command: "list", data, folders, subscriptionGroups, knowledgeTrash, privateTopLevels: privacyTopLevels });
       break;
     }
 
@@ -3327,7 +3380,34 @@ async function handleMessage(
         const r = promptGetFile(proj, task, ver, fname);
         if (r) {
           const allVers = promptGetAllVersionsOfFile(proj, task, fname);
-          data = { type: "prompt", ...r, allVersions: allVers };
+          const promptTask = promptList().find(item => item.project === proj && item.task === task);
+          const taskVersions = promptTask?.versions.map(item => item.version) || allVers.map(item => item.version);
+          const identity = { project: proj, task, version: ver, file: fname };
+          const analysis = cachedPromptAnalysis(identity) || {
+            available: true, pending: true, format: path.extname(fname).replace(/^\./, "") || "prompt",
+            syntaxValid: null, syntaxError: "", variables: [], relatedFiles: [], templateTree: [], missingTemplates: [],
+            lineCount: r.content ? r.content.split(/\r?\n/).length : 0, charCount: r.content?.length || 0, chatTemplate: false,
+          };
+          data = { type: "prompt", ...r, allVersions: allVers, taskVersions, analysis };
+          const orderedVersions = [ver, ...taskVersions.filter(version => version !== ver)];
+          setImmediate(async () => {
+            for (const version of orderedVersions) {
+              const versionInfo = promptTask?.versions.find(item => item.version === version);
+              const files = versionInfo?.files.map(item => item.name).filter(name => /\.jinja2?$/.test(name)) || [fname];
+              const taskVariables = new Set<string>();
+              for (const file of files) {
+                const versionIdentity = { project: proj, task, version, file };
+                try {
+                  const result = await inspectPromptCached(context.extensionPath, versionIdentity);
+                  result.variables.forEach(variable => taskVariables.add(variable));
+                  if (file === fname) respond({ command: "promptVersionAnalysis", data: { ...versionIdentity, analysis: result } });
+                } catch (error: any) {
+                  if (file === fname) respond({ command: "promptVersionAnalysis", data: { ...versionIdentity, analysis: { available: false, pending: false, syntaxValid: false, syntaxError: error?.message || String(error), variables: [], relatedFiles: [], templateTree: [], missingTemplates: [] } } });
+                }
+              }
+              respond({ command: "promptTaskVariables", data: { project: proj, task, version, variables: [...taskVariables].sort() } });
+            }
+          });
         }
       } else if (type === "promptDiff") {
         const [proj, task, fname] = key.split("|");
@@ -3346,7 +3426,113 @@ async function handleMessage(
         const r = scriptGet(key);
         if (r) data = { type: "script", ...r };
       }
+      if (data && typeof data === "object" && type !== "subscriptionItem") {
+        if (type === "packageFile") (data as any).isPrivate = isTopLevelPrivate("packages", String(key || "").split("|")[0]);
+        else if (type === "promptDiff") (data as any).isPrivate = isTopLevelPrivate("prompts", String(key || "").split("|")[0]);
+        else if ((["skill", "note", "paper", "prompt", "package", "script"] as string[]).includes(type)) {
+          (data as any).isPrivate = isContentItemPrivate(type === "package" ? "packages" : type === "prompt" ? "prompts" : `${type}s` as PrivacyContentType, data);
+        }
+      }
       respond({ command: "detail", data });
+      break;
+    }
+
+    case "promptRender": {
+      const identity = {
+        project: String(msg.project || ""), task: String(msg.task || ""),
+        version: String(msg.version || ""), file: String(msg.file || ""),
+      };
+      try {
+        const rendered = await renderPrompt(
+          context.extensionPath,
+          identity,
+          msg.context && typeof msg.context === "object" ? msg.context : {},
+          msg.mode === "chat" ? "chat" : "completion",
+        );
+        respond({ command: "promptRendered", data: { ...identity, ...rendered } });
+      } catch (error: any) {
+        respond({ command: "promptRendered", data: { ...identity, error: error?.message || String(error) } });
+      }
+      break;
+    }
+
+    case "promptInference": {
+      const identity = {
+        project: String(msg.project || ""), task: String(msg.task || ""),
+        version: String(msg.version || ""), file: String(msg.file || ""),
+      };
+      try {
+        const backends = await listAiBackends(context);
+        const backend = backends.find(item => item.id === String(msg.backend || ""));
+        if (!backend) throw new Error("Choose an available model before running inference.");
+        if (backend.id.endsWith(":needkey")) throw new Error('API key not set. Run "Personal Knowledge Manager: Set AI API Key".');
+        const rendered = await renderPrompt(
+          context.extensionPath,
+          identity,
+          msg.context && typeof msg.context === "object" ? msg.context : {},
+          msg.mode === "chat" ? "chat" : "completion",
+        );
+        const prompt = Array.isArray(rendered.result)
+          ? rendered.result.map((message: any) => `<|im_start|>${String(message[0] || "user")}\n${String(message[1] || "")}<|im_end|>`).join("\n")
+          : String(rendered.result || "");
+        if (!prompt.trim()) throw new Error("The rendered Prompt is empty.");
+        if (prompt.length > 200_000) throw new Error("The rendered Prompt exceeds the 200,000 character inference limit.");
+        const result = await runAiPrompt(context, backend, prompt);
+        respond({ command: "promptInferenceResult", data: { ...identity, result, rendered: rendered.result, mode: rendered.mode, backend: backend.label, model: backend.model } });
+      } catch (error: any) {
+        respond({ command: "promptInferenceResult", data: { ...identity, error: error?.message || String(error) } });
+      }
+      break;
+    }
+
+    case "promptSaveVersionNote": {
+      const project = String(msg.project || ""), task = String(msg.task || ""), version = String(msg.version || ""), file = String(msg.file || "");
+      const note = String(msg.note || "");
+      const overwriteLabel = `Overwrite ${version}`;
+      const newVersionLabel = "Save as New Version…";
+      const choice = await vscode.window.showWarningMessage(
+        `Save the Version note for ${project}/${task}/${version}/${file}?`,
+        { modal: true, detail: "Overwrite updates this Prompt version. Save as New Version copies the complete version folder before applying the note." },
+        overwriteLabel, newVersionLabel,
+      );
+      if (!choice) { respond({ command: "promptVersionNoteSaved", data: { cancelled: true } }); break; }
+      let targetVersion: string | undefined;
+      if (choice === newVersionLabel) {
+        const match = /^v(\d+(?:\.\d+)*)$/.exec(version);
+        const parts = match ? match[1].split(".").map(Number) : [1];
+        parts[parts.length - 1] += 1;
+        const suggested = `v${parts.join(".")}`;
+        targetVersion = await vscode.window.showInputBox({
+          title: "Save Prompt as New Version", prompt: `Copy the complete ${version} folder and update this Version note.`, value: suggested,
+          validateInput: value => {
+            if (!/^v\d+(?:\.\d+)*$/.test(value.trim())) return "Use a version such as v10 or v9.2.";
+            try { return fs.existsSync(promptFilePath(project, task, value.trim())) ? `Version already exists: ${value.trim()}` : undefined; }
+            catch (error: any) { return error?.message || String(error); }
+          },
+        });
+        if (!targetVersion) { respond({ command: "promptVersionNoteSaved", data: { cancelled: true } }); break; }
+        targetVersion = targetVersion.trim();
+      }
+      try {
+        const saved = promptSaveVersionNote(project, task, version, file, note, targetVersion);
+        gitCommit(`${targetVersion ? "add(prompt-version)" : "update(prompt)"}: ${project}/${task}/${saved.version}/${file} note`);
+        _treeProvider?.refresh();
+        respond({ command: "promptVersionNoteSaved", data: { ok: true, project, task, ...saved } });
+      } catch (error: any) {
+        respond({ command: "promptVersionNoteSaved", data: { error: error?.message || String(error) } });
+      }
+      break;
+    }
+
+    case "promptOpenTextEditor": {
+      try {
+        const fullPath = promptFilePath(String(msg.project || ""), String(msg.task || ""), String(msg.version || ""), String(msg.file || ""));
+        if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isFile()) throw new Error("Prompt file was not found.");
+        const document = await vscode.workspace.openTextDocument(vscode.Uri.file(fullPath));
+        await vscode.window.showTextDocument(document, { preview: false });
+      } catch (error: any) {
+        vscode.window.showWarningMessage(error?.message || String(error));
+      }
       break;
     }
 
@@ -3549,6 +3735,7 @@ async function handleMessage(
     // ── Servers dashboard ────────────────────────────────────────────────────
     case "serverList": {
       respond({ command: "serverList", data: await serverListForUi(context) });
+      respond({ command: "serverPrivacy", data: privateTopLevels("servers") });
       respond({ command: "serverSubscriptionGroups", data: await subscribedServerGroupsForUi() });
       await _treeProvider?.refreshServerStatus();
       break;
@@ -5318,7 +5505,7 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
           ? { kind: "offline", description: "stored", tooltip: "Stored Room · click to Rehost." }
           : { kind: "attention", description: "unavailable", tooltip: room.unavailableReason || "Stored Room is unavailable." };
       const item = this.applyStatus(new PkTreeItem(room.roomName, "chat-hosted-room", vscode.TreeItemCollapsibleState.None, room), status);
-      item.contextValue = room.active ? "pk-chat-hosted-room-active" : "pk-chat-hosted-room-stored";
+      item.contextValue = room.active ? "pk-chat-hosted-room-active" : room.canForceClose ? "pk-chat-hosted-room-active-elsewhere" : "pk-chat-hosted-room-stored";
       if (!room.activeElsewhere) item.command = { command: "personalKnowledge.openHostedRoomItem", title: room.active ? "Open Room" : "Rehost Room", arguments: [room.roomId] };
       return item;
     });
@@ -6787,6 +6974,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.window.showInformationMessage(`Repaired "${repaired.roomName}". Preserved ${repaired.messageCount} message${repaired.messageCount === 1 ? "" : "s"}.${orphanDetail}`);
       } catch (error: any) {
         vscode.window.showErrorMessage(`Couldn't repair Stored Room: ${error?.message || error}`);
+      }
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.forceCloseHostedRoom", async (item: PkTreeItem) => {
+      const room = item?.nodeData as HostedRoomNavigationItem;
+      if (!room?.roomId || !room.canForceClose) { vscode.window.showErrorMessage("Force Close is available only for your own Room hosted elsewhere with a verified Host credential."); return; }
+      const choice = await vscode.window.showWarningMessage(
+        `Force the active Host to close “${room.roomName}”? Connected participants will be disconnected. History and credentials are preserved for Rehost.`,
+        { modal: true, detail: `Active endpoint: ${room.activeUrl || "unavailable"}` },
+        "Force Close Host",
+      );
+      if (choice !== "Force Close Host") return;
+      try {
+        await getChatMgr().forceCloseHostedRoom(room.roomId);
+        treeProvider.refreshChatStatus();
+        vscode.window.showInformationMessage(`Closed the active Host for “${room.roomName}”. You can now Rehost it.`);
+      } catch (error: any) {
+        vscode.window.showErrorMessage(`Couldn't force-close the active Host: ${error?.message || error}`);
       }
     }),
 

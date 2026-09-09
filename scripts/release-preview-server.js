@@ -45,7 +45,10 @@ const demoMcp = {
 };
 
 const demoChat = {
-  rooms: [{ key: "demo", room: "Release Planning", roomId: "demo-room", url: "ws://127.0.0.1:7345", status: "connected", unread: 0, selfHost: true }],
+  rooms: [
+    { key: "demo", room: "Release Planning", roomId: "demo-room", url: "ws://127.0.0.1:7345", status: "connected", unread: 0, selfHost: true, user: "Release Host" },
+    { key: "joined-live", room: "AAGL 缓存设计", roomId: "joined-live-room", url: "ws://research-host:7345", status: "connected", unread: 2, selfHost: false, user: "Reviewer" },
+  ],
   activeKey: "demo",
   active: {
     key: "demo", room: "Release Planning", roomId: "demo-room", url: "ws://127.0.0.1:7345", status: "connected", statusDetail: "",
@@ -66,8 +69,17 @@ const demoChat = {
   },
   hubRunning: true, hubUrl: "ws://127.0.0.1:7345", hubHttpUrl: "http://127.0.0.1:7345", hubPort: 7345,
   hubAdminRooms: [{ roomId: "demo-room", room: "Release Planning", owner: "Release Host", members: 3, hasKey: true }],
-  storedRooms: [], pendingApprovals: [], managedAgents: [],
+  storedRooms: [
+    { roomId: "hosted-elsewhere", roomName: "模型评审", messageCount: 18, updatedAt: 1787009900000, canRehost: false, activeElsewhere: true, canForceClose: true, activeUrl: "ws://other-host:7345", unavailableReason: "Active in another VS Code window." },
+    { roomId: "stored-design", roomName: "Design Archive", messageCount: 42, updatedAt: 1786900000000, canRehost: true },
+    { roomId: "stored-empty", roomName: "Weekly Notes", messageCount: 6, updatedAt: 1786800000000, canRehost: true },
+  ], pendingApprovals: [], managedAgents: [],
 };
+const demoChatRecents = [
+  { id:"joined-live", room:"AAGL 缓存设计", roomId:"joined-live-room", url:"ws://research-host:7345", user:"Reviewer", host:false, lastJoined:1787010200000 },
+  { id:"recent-quality", room:"Asset Quality", roomId:"recent-quality-room", url:"ws://quality-host:7345", user:"Yu", host:false, lastJoined:1786900000000 },
+  { id:"recent-retrieval", room:"生成式检索", roomId:"recent-retrieval-room", url:"ws://retrieval-host:7345", user:"Yu", host:false, lastJoined:1786800000000 },
+];
 
 const demoPapers = [
   { slug: "demo/retrieval-planning", title: "Retrieval Planning", topic: "Retrieval", year: 2025, citationCount: 12, kind: "paper" },
@@ -76,6 +88,21 @@ const demoPapers = [
   { slug: "demo/iterative-verification", title: "Iterative Verification", topic: "Evaluation", year: 2026, citationCount: 5, kind: "paper" },
   { slug: "demo/adaptive-index", title: "Adaptive Index", topic: "Retrieval", year: 2024, citationCount: 4, kind: "paper" },
   { slug: "demo/research-loop", title: "Research Loop", topic: "Agents", year: 2026, citationCount: 2, kind: "idea" },
+];
+const demoPrompts = [{
+  project: "AutoLabeling", task: "Accuracy", latest: "v10",
+  versions: [
+    { version: "v9", files: [{ name: "adasset_accuracy_base.jinja2", size: 13800 }, { name: "accuracy.jinja2", size: 244 }] },
+    { version: "v9.1", files: [{ name: "adasset_accuracy_base.jinja2", size: 13775 }, { name: "accuracy.jinja2", size: 302 }] },
+    { version: "v9.2", files: [{ name: "accuracy.jinja2", size: 180 }] },
+    { version: "v10", files: [{ name: "base.jinja2", size: 160 }, { name: "accuracy_policy.jinja2", size: 190 }, { name: "accuracy.jinja2", size: 260 }] },
+  ],
+}];
+const demoPromptVersions = [
+  { version: "v9", content: "<|im_start|>system\nYou review ad accuracy in {{ Language }} for {{ Year }}.<|im_end|>\n<|im_start|>user\nAd: {{ AdAsset }}\nLP: {{ Src }}<|im_end|>" },
+  { version: "v9.1", content: "{# Production Accuracy prompt #}\n{% extends \"adasset_accuracy_base.jinja2\" %}\n{% block task %}\n{% if Language %}Language: {{ Language | upper }}{% endif %}\nAd: {{ AdAsset | trim }}\nLP: {{ Src }}\nYear: {{ Year }}\n{% endblock %}" },
+  { version: "v9.2", content: "{% extends \"missing_accuracy_base.jinja2\" %}\n{% block task %}Ad: {{ AdAsset }}{% endblock %}" },
+  { version: "v10", content: "{% extends \"accuracy_policy.jinja2\" %}\n{% block task %}\n{% for asset in assets %}\n{% if asset.enabled %}Ad: {{ asset.title | trim }}{% else %}Skipped{% endif %}\n{% endfor %}\nLP: {{ Src }}\n{% endblock %}" },
 ];
 const demoGraph = {
   total: demoPapers.length, shown: demoPapers.length,
@@ -130,7 +157,8 @@ function bootstrap(view) {
   return `<style id="release-theme">
   :root{--vscode-editor-background:#1f1f1f;--vscode-sideBar-background:#181818;--vscode-panel-border:#343434;--vscode-focusBorder:#0078d4;--vscode-foreground:#cccccc;--vscode-descriptionForeground:#9d9d9d;--vscode-list-hoverBackground:#2a2d2e;--vscode-input-background:#313131;--vscode-list-activeSelectionBackground:#04395e;--vscode-list-activeSelectionForeground:#ffffff;--vscode-textCodeBlock-background:#181818;--vscode-font-family:"Segoe UI",sans-serif;--vscode-editor-font-family:"Cascadia Code",Consolas,monospace;--vscode-font-size:13px}
   </style><script>
-  const __state = { tab: ${JSON.stringify(view === "chat" ? "chatroom" : view === "papers" ? "papers" : view === "subscriptions" ? "subscriptions" : "mcp")} };
+  const __state = { tab: ${JSON.stringify(view === "chat" ? "chatroom" : view === "papers" ? "papers" : view === "prompts" ? "prompts" : view === "subscriptions" ? "subscriptions" : "mcp")} };
+  let __demoPromptNote = 'Adds concise output guidance.';
   const __chat = ${JSON.stringify(demoChat)};
   let __messageSequence = 10;
   window.acquireVsCodeApi = () => ({
@@ -146,7 +174,7 @@ function bootstrap(view) {
       } else if (message.command === 'checkMcp') {
         send('mcpStatus', ${JSON.stringify(demoMcp)});
         Object.entries(${JSON.stringify(sizes)}).forEach(([key, bytes]) => send('mcpPathSize', { key, bytes }));
-      } else if (message.command === 'chatState') send('chatState', __chat);
+      } else if (message.command === 'chatState') { send('chatState', __chat); send('chatRecents', { recents: ${JSON.stringify(demoChatRecents)} }); }
       else if (message.command === 'subscriptionState') send('subscriptionState', ${JSON.stringify(demoSubscriptions)});
       else if (message.command === 'subscriptionRename') {
         const state = ${JSON.stringify(demoSubscriptions)};
@@ -180,9 +208,46 @@ function bootstrap(view) {
       }
       else if (message.command === 'list') {
         if (message.tab === 'papers') send('list', ${JSON.stringify(demoPapers)});
+        else if (message.tab === 'prompts') send('list', ${JSON.stringify(demoPrompts)});
         else if (message.tab === 'packages') window.dispatchEvent(new MessageEvent('message', { data: { command: 'list', data: ${JSON.stringify(demoLocalPackages)}, subscriptionGroups: ${JSON.stringify(demoSubscribedPackages)} } }));
         else send('list', []);
       }
+      else if (message.command === 'detail' && message.type === 'prompt') {
+        const parts = String(message.key || '').split('|');
+        const selected = ${JSON.stringify(demoPromptVersions)}.find(item => item.version === parts[2]) || ${JSON.stringify(demoPromptVersions)}[1];
+        const selectedFile = parts[3] || 'accuracy.jinja2';
+        const crazy = selected.version === 'v10';
+        const broken = selected.version === 'v9.2';
+        const sourceByFile = crazy ? {
+          'base.jinja2':'<|im_start|>system\\nBrand {{ brand }} in {{ Language }}.\\n{% for rule in guardrails %}- {{ loop.index }}: {{ rule | upper }}\\n{% endfor %}{% block body %}{% endblock %}<|im_end|>',
+          'accuracy_policy.jinja2':'{% extends "base.jinja2" %}{% block body %}{% if policy %}Policy {{ policy }} for {{ Year }}.{% elif fallback_policy %}Fallback {{ fallback_policy }}{% else %}No policy{% endif %}{% block task %}{% endblock %}{% endblock %}',
+          'accuracy.jinja2':selected.content,
+        } : {'adasset_accuracy_base.jinja2':'<|im_start|>system\\nBase instructions for {{ Language }}.<|im_end|>\\n{% block task %}{% endblock %}','accuracy.jinja2':selected.content};
+        const selectedContent = sourceByFile[selectedFile] || selected.content;
+        const crazyTree = [{file:'base.jinja2',exists:true,selected:selectedFile==='base.jinja2',inheritedPlaceholders:[],introducedVariables:['Language','brand','guardrails'],effectiveVariables:['Language','brand','guardrails'],children:[{file:'accuracy_policy.jinja2',exists:true,selected:selectedFile==='accuracy_policy.jinja2',extends:'base.jinja2',inheritedPlaceholders:['Language','brand','guardrails'],introducedVariables:['Year','fallback_policy','policy'],effectiveVariables:['Language','Year','brand','fallback_policy','guardrails','policy'],children:[{file:'accuracy.jinja2',exists:true,selected:selectedFile==='accuracy.jinja2',extends:'accuracy_policy.jinja2',inheritedPlaceholders:['Language','Year','brand','fallback_policy','guardrails','policy'],introducedVariables:['Src','assets'],effectiveVariables:['Language','Src','Year','assets','brand','fallback_policy','guardrails','policy'],children:[]}]}]}];
+        const simpleTree = broken ? [{file:'missing_accuracy_base.jinja2',exists:false,selected:false,inheritedPlaceholders:[],introducedVariables:[],effectiveVariables:[],children:[{file:'accuracy.jinja2',exists:true,selected:true,extends:'missing_accuracy_base.jinja2',inheritedPlaceholders:[],introducedVariables:['AdAsset'],effectiveVariables:['AdAsset'],children:[]}]}] : [{file:'adasset_accuracy_base.jinja2',exists:true,selected:selectedFile.includes('_base'),inheritedPlaceholders:[],introducedVariables:['Language','Year'],effectiveVariables:['Language','Year'],children:[{file:'accuracy.jinja2',exists:true,selected:!selectedFile.includes('_base'),extends:'adasset_accuracy_base.jinja2',inheritedPlaceholders:['Language','Year'],introducedVariables:['AdAsset','Src'],effectiveVariables:['AdAsset','Language','Src','Year'],children:[]}]}];
+        const relatedFiles = crazy ? ['base.jinja2','accuracy_policy.jinja2','accuracy.jinja2'].filter(file=>file!==selectedFile) : broken ? ['missing_accuracy_base.jinja2'] : [selectedFile.includes('_base')?'accuracy.jinja2':'adasset_accuracy_base.jinja2'];
+        const variables = crazy ? ['Language','Src','Year','assets','brand','fallback_policy','guardrails','policy'] : broken ? ['AdAsset'] : ['AdAsset','Language','Src','Year'];
+        const identity = {project:parts[0] || 'AutoLabeling',task:parts[1] || 'Accuracy',version:selected.version,file:selectedFile};
+        const fullAnalysis = {available:true,pending:false,format:'jinja2',syntaxValid:!broken,syntaxError:broken?'Missing base template: missing_accuracy_base.jinja2':'',variables,relatedFiles,templateTree:crazy?crazyTree:simpleTree,missingTemplates:broken?['missing_accuracy_base.jinja2']:[],lineCount:selectedContent.split('\\n').length,charCount:selectedContent.length,chatTemplate:!broken};
+        send('detail', { type:'prompt', ...identity, content:selectedContent, meta:{hasMetadata:true,title:'Accuracy Review',note:selected.version === 'v9.1' ? __demoPromptNote : 'Production baseline.'}, allVersions:${JSON.stringify(demoPromptVersions)}, analysis:{available:true,pending:true,format:'jinja2',syntaxValid:null,syntaxError:'',variables:[],relatedFiles:[],templateTree:[],missingTemplates:[],lineCount:selectedContent.split('\\n').length,charCount:selectedContent.length,chatTemplate:false} });
+        const versionStates = {v9:true,'v9.1':true,'v9.2':false,v10:true};
+        const taskVariables = {v9:['AdAsset','Language','Src','Year'],'v9.1':['AdAsset','Language','Src','Year'],'v9.2':['AdAsset'],v10:['Language','Src','Year','assets','brand','fallback_policy','guardrails','policy']};
+        Object.entries(versionStates).forEach(([version,valid],index) => setTimeout(() => { send('promptVersionAnalysis', {project:identity.project,task:identity.task,file:identity.file,version,analysis:version === identity.version ? fullAnalysis : {available:true,pending:false,format:'jinja2',syntaxValid:valid,syntaxError:valid?'':'Missing base template',variables:[],relatedFiles:[],templateTree:[],missingTemplates:[]}}); send('promptTaskVariables',{project:identity.project,task:identity.task,version,variables:taskVariables[version]}); }, 600 + index * 450));
+      }
+      else if (message.command === 'promptRender') {
+        const context = message.context || {};
+        const system = 'You review ad accuracy in ' + (context.Language || 'English') + ' for ' + (context.Year || '2026') + '. Return a concise decision.';
+        const user = 'Ad: ' + (context.AdAsset || '') + '\\nLP: ' + (context.Src || '');
+        send('promptRendered', { project:message.project,task:message.task,version:message.version,file:message.file,format:'jinja2',mode:message.mode,result:message.mode === 'chat' ? [['system',system],['user',user]] : system + '\\n' + user });
+      }
+      else if (message.command === 'listAiBackends') send('aiBackends', {backends:[{id:'copilot:demo-gpt',label:'Copilot · Demo GPT',kind:'copilot',model:'demo-gpt'},{id:'openai:demo-mini',label:'OpenAI-compatible · demo-mini',kind:'openai-compatible',model:'demo-mini'}]});
+      else if (message.command === 'promptInference') { const row=message.context||{}; const firstAsset=Array.isArray(row.assets)?row.assets.find(item=>item&&item.enabled):null; const rendered=[['system','Review ad accuracy in '+(row.Language||'English')+'.'],['user','Ad: '+(firstAsset?.title||row.AdAsset||'')+'\\nLP: '+(row.Src||'')]]; setTimeout(() => send('promptInferenceResult', {project:message.project,task:message.task,version:message.version,file:message.file,mode:message.mode,rendered:message.mode==='chat'?rendered:rendered.map(item=>item[1]).join('\\n'),backend:message.backend==='copilot:demo-gpt'?'Copilot · Demo GPT':'OpenAI-compatible · demo-mini',model:message.backend.split(':').pop(),result:'**Decision: Accurate**\\n\\nThe ad claim is supported by the supplied landing-page text.'}), 450); }
+      else if (message.command === 'promptSaveVersionNote') {
+        __demoPromptNote = message.note || '';
+        send('promptVersionNoteSaved', { ok:true,project:message.project,task:message.task,version:message.version,file:message.file,meta:{hasMetadata:true,title:'Accuracy Review',note:__demoPromptNote} });
+      }
+      else if (message.command === 'promptOpenTextEditor') window.dispatchEvent(new CustomEvent('releasePromptOpenTextEditor', { detail:message }));
       else if (message.command === 'paperFacets') send('paperFacets', { topics: [{name:'Retrieval',count:2},{name:'Agents',count:2},{name:'Memory',count:1},{name:'Evaluation',count:1}], tags: [], years: [] });
       else if (message.command === 'paperGroups') send('paperGroups', [{name:'Demo Papers',count:6}]);
       else if (message.command === 'paperGraph') send('paperGraph', ${JSON.stringify(demoGraph)});
@@ -215,7 +280,7 @@ const server = http.createServer((request, response) => {
     response.end(panelHtml(url.searchParams.get("view") || "config"));
     return;
   }
-  if (url.pathname === "/config" || url.pathname === "/chat" || url.pathname === "/papers" || url.pathname === "/subscriptions") {
+  if (url.pathname === "/config" || url.pathname === "/chat" || url.pathname === "/papers" || url.pathname === "/prompts" || url.pathname === "/subscriptions") {
     response.setHeader("Content-Type", "text/html; charset=utf-8");
     response.end(panelHtml(url.pathname.slice(1)));
     return;

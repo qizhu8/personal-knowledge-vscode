@@ -29,10 +29,14 @@ for (const [data, expected] of cases) {
 for (const marker of [
   /d-title[^\n]+data\.name[\s\S]{0,180}detailPathHtml\(data\)[\s\S]{0,80}<div class="d-meta">/,
   /d-title[^\n]+data\.title[\s\S]{0,180}detailPathHtml\(data\)[\s\S]{0,80}<div class="d-meta">/,
-  /d-title[^\n]+project[\s\S]{0,120}detailPathHtml\(data\)[\s\S]{0,80}<div class="d-meta">/,
   /d-title[^\n]+data\.file[\s\S]{0,100}detailPathHtml\(data\)[\s\S]{0,80}<div class="d-meta">/,
   /d-title[^\n]+d\.title[\s\S]{0,180}detailPathHtml\(d\)[\s\S]{0,80}<div class="d-meta">/,
 ]) assert.match(panel, marker);
+const promptHeader = panel.indexOf('class="prompt-workbench-head"');
+const promptTitle = panel.indexOf("meta?.title || task", promptHeader);
+const promptPath = panel.indexOf("detailPathHtml(data)", promptTitle);
+assert(promptHeader >= 0 && promptTitle > promptHeader && promptPath > promptTitle,
+  "Prompt workbench must keep its title before the full PKM path");
 assert.doesNotMatch(panel, /id: \$\{esc\(data\.slug\)\}/, "Note slug must not be duplicated in metadata after the path row");
 assert.match(fs.readFileSync(path.join(root, "src", "webview", "panel.css"), "utf8"), /\.d-path\{[^}]*user-select:text/);
 

@@ -4,11 +4,15 @@ import csharp from "highlight.js/lib/languages/csharp";
 import python from "highlight.js/lib/languages/python";
 import powershell from "highlight.js/lib/languages/powershell";
 import sql from "highlight.js/lib/languages/sql";
+import xml from "highlight.js/lib/languages/xml";
+import django from "highlight.js/lib/languages/django";
 
 hljs.registerLanguage("csharp", csharp);
 hljs.registerLanguage("python", python);
 hljs.registerLanguage("powershell", powershell);
 hljs.registerLanguage("sql", sql);
+hljs.registerLanguage("xml", xml);
+hljs.registerLanguage("jinja", django);
 
 // Minimal grammar for Microsoft SCOPE (.script) — SQL-like DSL with C#/Python UDOs
 hljs.registerLanguage("scope", function (hl) {

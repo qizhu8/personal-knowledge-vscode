@@ -1,0 +1,134 @@
+#!/usr/bin/env node
+const assert = require("assert");
+const fs = require("fs");
+const path = require("path");
+const vm = require("vm");
+
+const root = path.join(__dirname, "..");
+const panel = fs.readFileSync(path.join(root, "dist", "webview", "panel.js"), "utf8");
+const css = fs.readFileSync(path.join(root, "dist", "webview", "panel.css"), "utf8");
+const extension = fs.readFileSync(path.join(root, "src", "extension.ts"), "utf8");
+const manager = fs.readFileSync(path.join(root, "src", "prompt-manager.ts"), "utf8");
+const bridge = fs.readFileSync(path.join(root, "resources", "prompt_manager_bridge.py"), "utf8");
+const preview = fs.readFileSync(path.join(root, "scripts", "release-preview-server.js"), "utf8");
+const highlighter = fs.readFileSync(path.join(root, "dist", "webview", "hljs.js"), "utf8");
+
+assert.match(bridge, /from prompt_manager import PromptGeneratorLight, PromptMode/);
+assert.match(bridge, /redirect_stdout\(io\.StringIO\(\)\)/, "legacy manager stdout must not corrupt JSON IPC");
+assert.match(bridge, /"chatTemplate": "<\|im_start\|>" in rendered_shape/,
+	"Chat mode must be detected from the effective template after extends/includes render");
+assert.match(manager, /resolveMcpPython\(\)/, "Prompt rendering must use the managed PKM runtime");
+assert.match(manager, /Prompt path escapes the Prompt library/);
+assert.doesNotMatch(extension, /analysis = await inspectPrompt/,
+	"opening Prompt detail must not wait for Python analysis");
+assert.match(extension, /setImmediate\(async \(\) =>/);
+assert.match(extension, /await inspectPromptCached\(context\.extensionPath/);
+assert.match(extension, /command: "promptVersionAnalysis"/);
+assert.match(manager, /promptAnalysisCache/);
+assert.match(manager, /promptVersionSignature/);
+assert.match(extension, /case "promptRender"/);
+assert.match(extension, /case "promptInference"/);
+assert.match(extension, /const rendered = await renderPrompt\(/);
+assert.match(extension, /await runAiPrompt\(context, backend, prompt\)/);
+assert.match(extension, /rendered: rendered\.result/);
+assert.match(extension, /case "promptSaveVersionNote"/);
+assert.match(extension, /Overwrite \$\{version\}/);
+assert.match(extension, /Save as New Version…/);
+assert.match(extension, /case "promptOpenTextEditor"/);
+assert.match(extension, /showTextDocument\(document, \{ preview: false \}\)/);
+assert.match(panel, /class="prompt-workbench"/);
+assert.match(panel, /data-prompt-tab="source"/);
+assert.match(panel, /data-prompt-tab="render"/);
+assert.match(panel, /data-prompt-tab="compare"/);
+assert.match(panel, /data-prompt-tab="metadata"/);
+assert.match(panel, /prompt-metadata-panel[\s\S]*aria-label="Prompt flow"/);
+assert.match(panel, /prompt-metadata-panel[\s\S]*class="prompt-note"/);
+assert.match(panel, /if \(previousDetailType !== 'prompt'\) promptWorkspaceTab = 'source'/);
+assert.match(panel, /promptWorkspaceTab==='metadata'\?'active':''/);
+assert.match(panel, /Template inheritance/);
+assert.match(panel, /inheritedPlaceholders/);
+assert.match(panel, /introducedVariables/);
+assert.match(panel, /prompt-selected/);
+assert.match(panel, /prompt-related/);
+assert.match(panel, /highlightSelectedPromptTree\(data\)/);
+assert.match(panel, /class="prompt-version-clock \$\{syntaxState\}"/);
+assert.match(panel, /syntax-valid' : analysis\.syntaxValid === false \? 'syntax-invalid' : 'syntax-unknown'/);
+assert.match(panel, /promptVersionStatuses/);
+assert.match(panel, /promptOnVersionAnalysis/);
+assert.match(panel, /prompt-version-\$\{status\}/);
+assert.match(panel, /role="spinbutton"/);
+assert.match(panel, /onwheel="promptVersionWheel\(event\)"/);
+assert.doesNotMatch(panel, /class="prompt-version-strip"/);
+assert.match(panel, /ask\('promptRender'/);
+assert.match(panel, /ask\('promptInference'/);
+assert.match(panel, /prompt-dataset-bar/);
+assert.match(panel, /prompt-dataset-table/);
+assert.match(panel, /function promptDatasetSelect\(index\)/);
+assert.match(panel, /function promptDatasetDelete\(index, event\)/);
+assert.match(panel, /function promptDatasetAddRow\(\)/);
+assert.match(panel, /function promptDatasetEdit\(index, key, input\)/);
+assert.match(panel, /＋ Add Row/);
+assert.match(panel, /aria-label="Delete Dataset row \$\{index\+1\}"/);
+assert.doesNotMatch(panel, /id="prompt-dataset-inputs"/);
+assert.match(panel, /data-prompt-tab="dataset"/);
+assert.match(panel, /Jinja variables/);
+assert.match(panel, /promptTaskVariableSets/);
+assert.match(panel, /command === 'promptTaskVariables'/);
+assert.match(panel, /prompt-inference-backend/);
+assert.match(panel, /prompt-inference-output/);
+assert.match(panel, /aria-label="Edit Version note">✎<\/button>/);
+assert.match(panel, /Open in Text Editor/);
+assert.match(panel, /promptItemTrashMenu[\s\S]*promptOpenTextEditor/);
+assert.match(panel, /<small>Inputs<\/small><strong>\$\{variables\.length\}<\/strong>/);
+assert.match(panel, /if \(window\.innerWidth <= 760\) setMainSidebarCollapsed\(true, false\)/);
+assert.match(css, /\.prompt-flow\{[^}]*grid-template-columns:/);
+assert.match(css, /\.prompt-flow\{[^}]*min-height:40px/);
+assert.match(css, /\.prompt-version-clock\.syntax-valid\{[^}]*#4ade80/);
+assert.match(css, /\.prompt-version-clock\.syntax-invalid\{[^}]*#f87171/);
+assert.match(css, /\.prompt-version-clock\.syntax-unknown\{[^}]*var\(--border\)/);
+assert.match(css, /\.pctx-item\.prompt-version-valid\{[^}]*#4ade80/);
+assert.match(css, /\.pctx-item\.prompt-version-invalid\{[^}]*#f87171/);
+assert.match(css, /\.prompt-workspace-panel\.active\{[^}]*flex:1/);
+assert.match(css, /#detail:has\(\.prompt-workbench\)\{overflow:hidden\}/);
+assert.match(css, /@media\(max-width:760px\)\{#detail\{padding:10px 8px\}/);
+assert.match(preview, /url\.pathname === "\/prompts"/);
+assert.match(preview, /\{% extends \\"adasset_accuracy_base\.jinja2\\" %\}/);
+assert.match(preview, /missing_accuracy_base\.jinja2/);
+assert.match(preview, /accuracy_policy\.jinja2/);
+for (const variable of ["AdAsset", "Language", "Src", "Year"]) assert.match(preview, new RegExp(`'${variable}'`));
+assert.doesNotMatch(preview, /variables:.*\blocale\b/);
+
+const highlightContext = { window: {} };
+vm.createContext(highlightContext);
+new vm.Script(highlighter).runInContext(highlightContext);
+const highlighted = highlightContext.window.hljs.highlight(
+	'{# note #}\n{% extends "base.jinja2" %}\n{% for asset in assets %}{% if asset.enabled %}{{ asset.title | upper }}{% elif fallback %}{{ fallback }}{% else %}none{% endif %}{% endfor %}',
+	{ language: 'jinja' },
+).value;
+assert.match(highlighted, /hljs-comment/);
+assert.match(highlighted, /hljs-template-tag/);
+assert.match(highlighted, /hljs-template-variable/);
+assert.match(highlighted, /hljs-name[^>]*>extends/);
+for (const keyword of ['for','if','elif','else','endif','endfor']) assert.match(highlighted, new RegExp(`hljs-name[^>]*>${keyword}`));
+
+const parserStart = panel.indexOf('function promptParseDataset(text)');
+const parserEnd = panel.indexOf('function promptLoadDatasetText', parserStart);
+assert(parserStart >= 0 && parserEnd > parserStart, 'Dataset parser must be bundled');
+const datasetContext = {};
+vm.createContext(datasetContext);
+new vm.Script(`${panel.slice(parserStart, parserEnd)};this.parseDataset=promptParseDataset;`).runInContext(datasetContext);
+assert.deepStrictEqual(JSON.parse(JSON.stringify(datasetContext.parseDataset('{"x":1}'))), [{x:1}]);
+assert.deepStrictEqual(JSON.parse(JSON.stringify(datasetContext.parseDataset('[{"x":1},{"x":2}]'))), [{x:1},{x:2}]);
+assert.deepStrictEqual(JSON.parse(JSON.stringify(datasetContext.parseDataset('{"x":1}\n{"x":2}'))), [{x:1},{x:2}]);
+assert.throws(() => datasetContext.parseDataset('[1,2]'), /row must be a JSON object/);
+
+const rangeStart = panel.indexOf('function promptVariableRanges(versions, present)');
+const rangeEnd = panel.indexOf('function promptOnTaskVariables', rangeStart);
+assert(rangeStart >= 0 && rangeEnd > rangeStart, 'Variable range formatter must be bundled');
+const rangeContext = {};
+vm.createContext(rangeContext);
+new vm.Script(`${panel.slice(rangeStart, rangeEnd)};this.ranges=promptVariableRanges;`).runInContext(rangeContext);
+assert.strictEqual(rangeContext.ranges(['v1','v2','v3','v9'], new Set(['v1','v2','v9'])), '[v1, v2] ∪ [v9, v9]');
+assert.strictEqual(rangeContext.ranges(['v1','v2','v9'], new Set(['v1','v2','v9'])), '[v1, v9]');
+
+console.log("Prompt Manager UI test: manager bridge, full-height tabs, Metadata, flip versions, Jinja highlighting, and narrow layout OK");

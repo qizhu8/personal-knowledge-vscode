@@ -25,6 +25,14 @@ assert(panelCss.includes("#content-toolbar{display:flex"));
 for (const name of ["toggleMainSidebar", "applyMainSidebarState", "renderEmptyDetail", "refreshEmptyDetailHint", "chatToggleHubPanel", "chatApplyHubPanelState", "chatToggleMemberPane", "chatApplyMemberPaneState", "chatTrackScroll", "chatPinLatest", "chatScrollLatest", "chatIsNearBottom", "chatCaptureScrollAnchor", "chatRestoreScrollAnchor", "chatPreserveReadingLayout"]) {
   assert(panelJs.includes(`function ${name}`), `missing ${name}`);
 }
+assert(panelJs.includes("function chatResizeInput(input)"));
+assert(panelJs.includes("position: 'fixed', left: '-10000px'"));
+assert(panelJs.includes("chatInputMeasure.rows = 1"));
+assert(panelJs.includes("if (Math.abs(input.getBoundingClientRect().height - height) >= 1)"));
+assert(panelJs.includes("const bottomGap = log ? Math.max(0, log.scrollHeight - log.scrollTop - log.clientHeight) : 0"));
+assert(panelJs.includes("log.scrollTop = Math.max(0, log.scrollHeight - log.clientHeight - bottomGap)"));
+const chatBodyInputSource = panelJs.match(/function chatBodyInput\(\)\s*\{[\s\S]*?\n\}/)?.[0] || "";
+assert.doesNotMatch(chatBodyInputSource, /style\.height = 'auto'/);
 assert.match(panelHtml, /id="layout-resizer"[^>]*><button id="sidebar-toggle"/);
 assert(panelHtml.includes('>◀</button>'));
 assert(panelJs.includes("pk-main-sidebar-collapsed"));
@@ -69,9 +77,16 @@ assert(panelJs.includes("chat.followLatest = chatIsNearBottom(log)"));
 assert.doesNotMatch(panelJs, /const shouldFollow = chat\.followLatest && chatIsNearBottom\(log\)/);
 assert(panelJs.includes("void renderDone.finally(() => chatScrollLatest(log))"));
 assert(panelJs.includes("Show the latest message and keep following new messages"));
-assert.match(panelJs, /function chatSetTurn\(text\)[\s\S]{0,240}chatPreserveReadingLayout/);
+assert.doesNotMatch(panelJs, /function chatSetTurn\(/);
+assert.doesNotMatch(panelHtml, /id="chat-turn-banner"/);
 assert.match(panelJs, /function chatSend\(\)[\s\S]{0,900}chatPreserveReadingLayout/);
 assert(panelJs.includes("chat-jump-latest"));
+assert.match(panelJs, /chatCopyInvite',\{roomId:/);
+assert.match(panelJs, /chatRotateSecret',\{roomId:/);
+const extensionSource = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
+assert.match(extensionSource, /hasKey: this\.hostedKeys\.has\(r\.roomId\)/,
+  "Rooms on my hub must reveal Magic Link actions from the UUID-keyed Host secret");
+assert.doesNotMatch(extensionSource, /hasKey: this\.hostedKeys\.has\(r\.room\)/);
 for (const id of ["search-count", "search-prev", "search-next", "search-case", "search-regex"]) {
   assert(panelHtml.includes(`id="${id}"`), `missing global search control ${id}`);
 }

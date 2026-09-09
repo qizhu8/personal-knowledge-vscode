@@ -15,6 +15,7 @@ const stored = new Map([["pkm-server-group-Research/Vision", "0"]]);
 const context = {
   Map, Set, encodeURIComponent, decodeURIComponent,
   serverGroupPaths: ["Hidden"],
+  serverPrivacyLock: path => String(path).startsWith("Research") ? '<span class="content-private-lock">🔒</span>' : '',
   localStorage: { getItem: key => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, value) },
   esc: value => String(value),
 };
@@ -33,6 +34,7 @@ const html = context.render(tree);
 assert(html.indexOf("root") < html.indexOf("Research"), "ungrouped root servers remain directly visible");
 assert(html.indexOf("pinned") < html.indexOf("old"), "starred servers sort first inside their group");
 assert.match(html, /📁 Research/);
+assert.match(html, /content-private-lock[^>]*>🔒<\/span>📁 Research/, "private top-level and inherited Server groups must display a lock");
 assert.match(html, /📁 Vision/);
 assert.match(html, /📁 Models/);
 assert.match(html, /🙈 Hidden/);

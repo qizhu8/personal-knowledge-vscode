@@ -219,7 +219,7 @@ function languageOptionsHtml() {
 new MutationObserver(scheduleUiTranslation).observe(document.body, { childList: true, subtree: true });
 scheduleUiTranslation();
 
-let state = { tab:'skills', filter:'all', search:'', items:[], folders:[], subscriptionGroups:[], knowledgeTrash:[], active:null };
+let state = { tab:'skills', filter:'all', search:'', items:[], folders:[], subscriptionGroups:[], knowledgeTrash:[], privateTopLevels:[], active:null };
 const pendingActionButtons = new Map();
 const actionTimeouts = {
   subscriptionCopyLink:10000, subscriptionConfigure:15000, subscriptionSetOnline:30000,
@@ -504,7 +504,7 @@ window.addEventListener('message', e => {
       setTimeout(() => banner.remove(), 400);
     }
   }
-  if      (command === 'list')     { finishAction('list','deleteSkill','skillTrashFolder','skillTrashRestore','skillTrashDelete','skillTrashEmpty','knowledgeTrashMove','knowledgeTrashRestore','knowledgeTrashDelete','knowledgeTrashEmpty'); state.items = data; state.folders = e.data.folders || []; state.subscriptionGroups = e.data.subscriptionGroups || []; state.knowledgeTrash = e.data.knowledgeTrash || []; renderList(); highlightDetailMatches(document.getElementById('layout'), state.search); }
+  if      (command === 'list')     { finishAction('list','deleteSkill','skillTrashFolder','skillTrashRestore','skillTrashDelete','skillTrashEmpty','knowledgeTrashMove','knowledgeTrashRestore','knowledgeTrashDelete','knowledgeTrashEmpty'); state.items = data; state.folders = e.data.folders || []; state.subscriptionGroups = e.data.subscriptionGroups || []; state.knowledgeTrash = e.data.knowledgeTrash || []; if (Array.isArray(e.data.privateTopLevels)) state.privateTopLevels = e.data.privateTopLevels; renderList(); highlightDetailMatches(document.getElementById('layout'), state.search); }
   else if (command === 'detail') {
     if (pendingEditSlug && data?.type === 'note' && data.slug === pendingEditSlug) {
       pendingEditSlug = null; editNote(data);
@@ -569,7 +569,13 @@ window.addEventListener('message', e => {
   else if (command === 'envPickFolder') { onEnvPickFolder(e.data.dir); }
   else if (command === 'serverList') { serverCache = data || []; if (state.tab === 'servers') renderServerDashboard(serverCache); }
   else if (command === 'serverGroupList') { serverGroupPaths = data || ['Hidden']; if (state.tab === 'servers') renderServerDashboard(serverCache); }
+  else if (command === 'serverPrivacy') { serverPrivateTopLevels = data || []; if (state.tab === 'servers') renderServerDashboard(serverCache); }
   else if (command === 'serverSubscriptionGroups') { finishAction('serverSubscriptionStatus','serverSubscriptionRefresh'); serverSubscriptionGroups = data || []; if (state.tab === 'servers') renderServerDashboard(serverCache); }
+  else if (command === 'privacyChanged') {
+    if (state.tab === 'servers') { serverPrivateTopLevels = data?.type === 'servers' ? (data?.isPrivate ? [...new Set([...serverPrivateTopLevels, data.topLevel])] : serverPrivateTopLevels.filter(name => name !== data.topLevel)) : serverPrivateTopLevels; ask('serverList', {}); }
+    else if (['skills','notes','papers','prompts','packages','scripts'].includes(state.tab)) ask('list', { tab: state.tab, filter: state.filter, q: state.search });
+    if (currentDetailRequest) requestDetail(currentDetailRequest.type, currentDetailRequest.key);
+  }
   else if (command === 'serverLog') { onServerLog(e.data.slug, e.data.text); }
   else if (command === 'serverPickFolder') { onServerPickFolder(e.data.dir); }
   else if (command === 'subscriptionState') { finishAction('subscriptionState','subscriptionConfigure','subscriptionSetOnline','subscriptionUpsertShare','subscriptionDeleteShare','subscriptionAdd','subscriptionRename','subscriptionRefresh','subscriptionRemove','subscriptionUnblockIp','subscriptionRotateSecret'); subscriptionOnState(data); }
@@ -626,6 +632,11 @@ window.addEventListener('message', e => {
     if (!document.getElementById('paper-form').classList.contains('hidden')) renderPaperCites(draft);
   }
   else if (command === 'paperGraph') { renderPaperGraph(e.data.data); }
+  else if (command === 'promptRendered') { promptRendered(data); }
+  else if (command === 'promptInferenceResult') { promptInferenceResult(data); }
+  else if (command === 'promptVersionAnalysis') { promptOnVersionAnalysis(data); }
+  else if (command === 'promptTaskVariables') { promptOnTaskVariables(data); }
+  else if (command === 'promptVersionNoteSaved') { promptVersionNoteSaved(data); }
   else if (command === 'paperFileSaved') {
     if (pendingPaperFile) { const cb = pendingPaperFile; pendingPaperFile = null; cb(e.data.file, e.data.error); }
   }
@@ -885,11 +896,10 @@ function renderEmptyDetail() {
 function refreshEmptyDetailHint() {
   if (document.querySelector('#detail > .empty-select-item')) renderEmptyDetail();
 }
-function applyMainSidebarState() {
+function applyMainSidebarState(collapsed = mainSidebarCollapsed()) {
   const layout = document.getElementById('layout');
   const toggle = document.getElementById('sidebar-toggle');
   if (!layout || !toggle) return;
-  const collapsed = mainSidebarCollapsed();
   layout.classList.toggle('main-sidebar-collapsed', collapsed);
   toggle.textContent = collapsed ? '▶' : '◀';
   toggle.title = collapsed ? 'Restore category tree' : 'Minimize category tree';
@@ -897,10 +907,13 @@ function applyMainSidebarState() {
   toggle.setAttribute('aria-expanded', String(!collapsed));
   refreshEmptyDetailHint();
 }
+function setMainSidebarCollapsed(collapsed, persist = true) {
+  if (persist) { try { localStorage.setItem('pk-main-sidebar-collapsed', collapsed ? '1' : '0'); } catch {} }
+  applyMainSidebarState(collapsed);
+}
 function toggleMainSidebar() {
-  const collapsed = !mainSidebarCollapsed();
-  try { localStorage.setItem('pk-main-sidebar-collapsed', collapsed ? '1' : '0'); } catch {}
-  applyMainSidebarState();
+  const layout = document.getElementById('layout');
+  setMainSidebarCollapsed(!(layout && layout.classList.contains('main-sidebar-collapsed')));
 }
 applyMainSidebarState();
 
