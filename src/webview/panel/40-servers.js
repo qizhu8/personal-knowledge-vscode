@@ -7,6 +7,9 @@ let serverSubscriptionMonitor = null;
 let _srvPoll = null;
 let serverSearchQuery = '';
 let serverFocusSlug = '';
+let serverPrivateTopLevels = [];
+function serverPathPrivate(path) { const top = String(path || '').split('/').filter(Boolean)[0] || ''; return !!top && serverPrivateTopLevels.includes(top); }
+function serverPrivacyLock(path) { return serverPathPrivate(path) ? '<span class="content-private-lock" title="Private: excluded from Subscription sharing" aria-label="Private">🔒</span>' : ''; }
 function serverGroupTree(entries) {
   const root = { groups: new Map(), entries: [] };
   entries.forEach(entry => {
@@ -117,6 +120,15 @@ function deleteServerGroup(path) {
   const parent = parts.join('/');
   pkModal({ title: 'Delete subgroup “' + name + '”?', message: 'Servers and nested subgroups will move to ' + (parent ? '“' + parent + '”' : 'Ungrouped') + '. No servers or files will be deleted.', okLabel: 'Delete subgroup', danger: true, onOk: () => ask('serverMoveGroup', { oldPrefix: path, newPrefix: parent }) });
 }
+function serverGroupMenu(event, path) {
+  event.preventDefault(); event.stopPropagation();
+  if (!path || path.includes('/')) return;
+  const isPrivate = serverPathPrivate(path);
+  showPaperMenu(event.clientX, event.clientY, [
+    { label: path, header: true },
+    { label: isPrivate ? '🔓 Set as Public' : '🔒 Set as Private', onClick: () => ask('contentSetPrivacy', { type:'servers', topLevel:path, isPrivate:!isPrivate }) },
+  ]);
+}
 function renderServerGroupNode(node, parentPath = '') {
   const cards = node.entries.slice().sort((left, right) => Number(!!right.server.pinned) - Number(!!left.server.pinned)
     || left.server.name.localeCompare(right.server.name)).map(entry => entry.html).join('');
@@ -124,7 +136,7 @@ function renderServerGroupNode(node, parentPath = '') {
     const path = parentPath ? `${parentPath}/${name}` : name;
     const count = serverGroupCount(child);
     const hidden = path === 'Hidden';
-    return `<details class="srv-group${hidden ? ' srv-hidden-group' : ''}" data-group-path="${encodeURIComponent(path)}" ${serverGroupOpen(path) ? 'open' : ''} ontoggle="serverGroupToggled(this,decodeURIComponent('${encodeURIComponent(path)}'))" ondragover="serverGroupDragOver(event)" ondragleave="serverGroupDragLeave(event)" ondrop="serverGroupDrop(event,decodeURIComponent('${encodeURIComponent(path)}'))"><summary><span>${hidden ? '🙈' : '📁'} ${esc(name)}</span>${hidden ? '<span class="srv-hidden-hint">excluded from Navigation</span>' : ''}<span class="srv-group-count">${count}</span>${hidden ? '' : `<span class="srv-group-actions"><button class="srv-group-action" onclick="event.preventDefault();event.stopPropagation();renameServerGroup(decodeURIComponent('${encodeURIComponent(path)}'))" title="Rename subgroup" aria-label="Rename ${esc(name)} subgroup">✎</button><button class="srv-group-action srv-group-delete" onclick="event.preventDefault();event.stopPropagation();deleteServerGroup(decodeURIComponent('${encodeURIComponent(path)}'))" title="Delete subgroup without deleting servers" aria-label="Delete ${esc(name)} subgroup">×</button></span>`}</summary><div class="srv-group-body">${renderServerGroupNode(child, path)}</div></details>`;
+    return `<details class="srv-group${hidden ? ' srv-hidden-group' : ''}" data-group-path="${encodeURIComponent(path)}" ${serverGroupOpen(path) ? 'open' : ''} ontoggle="serverGroupToggled(this,decodeURIComponent('${encodeURIComponent(path)}'))" ondragover="serverGroupDragOver(event)" ondragleave="serverGroupDragLeave(event)" ondrop="serverGroupDrop(event,decodeURIComponent('${encodeURIComponent(path)}'))"><summary ${parentPath ? '' : `oncontextmenu="serverGroupMenu(event,decodeURIComponent('${encodeURIComponent(path)}'))"`}><span>${serverPrivacyLock(path)}${hidden ? '🙈' : '📁'} ${esc(name)}</span>${hidden ? '<span class="srv-hidden-hint">excluded from Navigation</span>' : ''}<span class="srv-group-count">${count}</span>${hidden ? '' : `<span class="srv-group-actions"><button class="srv-group-action" onclick="event.preventDefault();event.stopPropagation();renameServerGroup(decodeURIComponent('${encodeURIComponent(path)}'))" title="Rename subgroup" aria-label="Rename ${esc(name)} subgroup">✎</button><button class="srv-group-action srv-group-delete" onclick="event.preventDefault();event.stopPropagation();deleteServerGroup(decodeURIComponent('${encodeURIComponent(path)}'))" title="Delete subgroup without deleting servers" aria-label="Delete ${esc(name)} subgroup">×</button></span>`}</summary><div class="srv-group-body">${renderServerGroupNode(child, path)}</div></details>`;
   }).join('');
   return cards + groups;
 }
@@ -172,7 +184,7 @@ function renderServerDashboard(servers) {
         <span class="srv-drag-handle" draggable="true" ondragstart="serverDragStart(event,'${esc(s.slug)}');this.closest('.srv-card').classList.add('srv-dragging')" ondragend="serverDragEnd(event)" title="Drag this Server to another group" aria-label="Drag ${esc(s.name)} to another group">⋮⋮</span>
         <span class="srv-dot" style="background:${dot(s.status)}"></span>
         <button class="srv-star ${s.pinned ? 'active' : ''}" onclick="serverPinChanged('${esc(s.slug)}',${s.pinned ? 'false' : 'true'})" title="${s.pinned ? 'Unstar this server' : 'Star and pin this server to the top of its group'}" aria-label="${s.pinned ? 'Unstar' : 'Star'} ${esc(s.name)}">${s.pinned ? '★' : '☆'}</button>
-        <b>${esc(s.name)}</b><span class="cat">${esc(s.slug)}</span>
+        <b>${esc(s.name)}</b>${serverPrivacyLock(s.category)}<span class="cat">${esc(s.slug)}</span>
         ${s.category ? `<span class="srv-category">${esc(s.category)}</span>` : ''}
         ${(s.tags || []).map(tag => `<span class="srv-tag">${esc(tag)}</span>`).join('')}
         <span style="font-size:11px;color:var(--muted)">:${s.activePort} · ${esc(s.status)}${s.pid ? ' · pid ' + s.pid : ''}</span>

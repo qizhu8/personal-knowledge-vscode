@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from "crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
 
 export interface SecretStorageLike {
   get(key: string): Thenable<string | undefined>;
@@ -15,6 +15,8 @@ export interface ChatRoomCredentials extends ChatRoomCredentialHashes {
   hostCredential: string;
   joinSecret: string;
 }
+
+export interface ChatRoomHostProof { timestamp: number; nonce: string; signature: string; }
 
 export function hashChatRoomCredential(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -53,6 +55,24 @@ export class ChatRoomCredentialStore {
   async verifyHost(roomId: string, expectedHash: string): Promise<boolean> {
     const value = await this.secrets.get(this.hostKey(roomId));
     return !!value && hashMatches(value, expectedHash);
+  }
+
+  async createHostProof(roomId: string, purpose: string): Promise<ChatRoomHostProof> {
+    const hostCredential = await this.secrets.get(this.hostKey(roomId));
+    if (!hostCredential) throw new Error(`Host credential is missing for Room ${roomId}.`);
+    const timestamp = Date.now();
+    const nonce = randomBytes(16).toString("base64url");
+    const signature = createHmac("sha256", hostCredential).update(`${purpose}\n${timestamp}\n${nonce}`).digest("base64url");
+    return { timestamp, nonce, signature };
+  }
+
+  async verifyHostProof(roomId: string, expectedHash: string, purpose: string, proof: ChatRoomHostProof): Promise<boolean> {
+    if (!Number.isFinite(proof.timestamp) || Math.abs(Date.now() - proof.timestamp) > 30_000 || !/^[A-Za-z0-9_-]{16,}$/.test(proof.nonce)) return false;
+    const hostCredential = await this.secrets.get(this.hostKey(roomId));
+    if (!hostCredential || !hashMatches(hostCredential, expectedHash)) return false;
+    const expected = Buffer.from(createHmac("sha256", hostCredential).update(`${purpose}\n${proof.timestamp}\n${proof.nonce}`).digest("base64url"));
+    const actual = Buffer.from(String(proof.signature || ""));
+    return actual.length === expected.length && timingSafeEqual(actual, expected);
   }
 
   async rotateJoinSecret(roomId: string): Promise<{ joinSecret: string; joinSecretHash: string }> {

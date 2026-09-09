@@ -86,7 +86,8 @@ export function browserViewHtml(): string {
   document.getElementById("go").disabled=true;
   function b64url(bytes){ var s=""; for(var i=0;i<bytes.length;i++)s+=String.fromCharCode(bytes[i]); return btoa(s).replace(/\\+/g,"-").replace(/\\//g,"_").replace(/=+$/g,""); }
   function decodeB64url(value){ var s=value.replace(/-/g,"+").replace(/_/g,"/"); while(s.length%4)s+="="; var raw=atob(s),bytes=new Uint8Array(raw.length); for(var i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i); return new TextDecoder().decode(bytes); }
-  function canonRoom(value){ return String(value||"").trim().replace(/\\s+/g," ").toLowerCase().slice(0,80); }
+  function displayRoomName(value){ return Array.from(String(value||"").normalize("NFKC").trim().replace(/\\s+/g," ")).slice(0,80).join(""); }
+  function roomNameKey(value){ return displayRoomName(value).toLocaleLowerCase(); }
   function rotr(value,bits){return (value>>>bits)|(value<<(32-bits));}
   function sha256Fallback(text){
     var initial=[0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
@@ -119,10 +120,10 @@ export function browserViewHtml(): string {
       if(b64url(digest).slice(0,16)!==match[2])throw new Error("Magic Message checksum failed. Ask the host for a fresh copy.");
       var payload=JSON.parse(decodeB64url(match[1]));
       if(payload.v!==1||!payload.u||!String(payload.s||"").trim())throw new Error("Magic Message is missing room credentials.");
-      var magicUrl=new URL(payload.u),magicRoom=canonRoom(decodeURIComponent(magicUrl.pathname.replace(/^\\/+/,"")));
+      var magicUrl=new URL(payload.u),magicRoom=displayRoomName(decodeURIComponent(magicUrl.pathname.replace(/^\\/+/,""))),magicRoomId=String(payload.r||"").trim();
       if(!/^wss?:$/.test(magicUrl.protocol)||!magicUrl.hostname||!magicRoom)throw new Error("Magic Message contains an invalid room URL.");
-      if(ROOM&&canonRoom(ROOM)!==magicRoom)throw new Error('This invitation is for room "'+magicRoom+'", not "'+ROOM+'".');
-      ROOM=magicRoom; ROOM_ID=String(payload.r||"").trim(); roomSecret=String(payload.s).trim();
+      if(!magicRoomId&&ROOM&&roomNameKey(ROOM)!==roomNameKey(magicRoom))throw new Error('This invitation is for room "'+magicRoom+'", not "'+ROOM+'".');
+      ROOM=magicRoom; ROOM_ID=magicRoomId; roomSecret=String(payload.s).trim();
       var rl=document.getElementById("roomlabel");rl.textContent="Room: "+ROOM;rl.style.display="inline";
       document.getElementById("go").disabled=false;
       setMagicHint('✓ Magic Message verified locally for room "'+ROOM+'".',true);

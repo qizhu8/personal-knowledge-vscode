@@ -5,6 +5,53 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.7.6] - 2026-09-09
+
+### Changed
+- Rebuilt Prompt details as an interactive HTML workspace backed by `uone-prompt-manager`: visualize template inputs and output mode, inspect syntax and variables, render Completion or Chat previews with sample context, and compare versions inline.
+- Added a dedicated `/prompts` release preview plus responsive Prompt behavior that temporarily collapses the category tree on narrow panes while preserving the restore control.
+- Moved the compact Inputs → Template → Output summary into a peer **Metadata** tab so Source, Render, and Compare consume the full remaining workspace height.
+- Added editable Version notes in Source with a mandatory **Overwrite current version** or **Save as New Version** decision; new versions clone the complete version directory atomically.
+- Added **Open in Text Editor** from both Prompt Source and the Prompt file context menu.
+- Added real Jinja syntax highlighting for comments, template tags, control keywords, variables, and filters using bundled Highlight.js Jinja/XML grammars.
+- Replaced the separate version row with a title-adjacent flip-clock selector supporting click, wheel, arrow keys, and explicit previous/next controls; moved Version note editing into Metadata to maximize Source height.
+- Highlighted the exact selected Prompt file in CatTree plus every same-version Jinja file in its inheritance chain; Metadata now renders a recursive base → extender tree with inherited placeholders, variables introduced at each level, and explicit Missing base nodes that make syntax status invalid.
+- Preserved the active Prompt workspace tab while switching CatTree files or versions, so Metadata/Render/Compare remain the user’s working context instead of resetting to Source.
+- Marked the title-adjacent Prompt version clock green for syntax-valid templates and red for syntax-invalid or missing-base templates, while retaining explicit status text and accessible labels.
+- Moved all Prompt syntax analysis off the detail-opening path: uncached versions start white with **Analyzing…**, then turn green/red progressively as background results arrive. A dependency-aware in-memory cache invalidates when any file in the version directory changes, avoiding a database requirement.
+- Added a dedicated task-level **Dataset** tab. It aggregates Jinja variables across every Prompt version in the background, distinguishes all-version and partial coverage, and exposes closed occurrence ranges as interval Unions on hover (for example `[v1, v3] ∪ [v7, v9]`). JSON/JSONL rows can be loaded or pasted, navigated, and matched to the union schema without a database.
+- Replaced the ambiguous per-variable Dataset form with a table: each row is one test record, each column is a task-level Jinja variable, clicking selects the Render/Inference row, and individual rows can be deleted with adjacent selection preserved.
+- Added **Add Row** and safe inline cell editing to Dataset tables. New rows initialize the task’s Jinja-variable union, select automatically, and preserve JSON scalar/array/object types when values are edited.
+- Added direct Prompt inference through existing configured Copilot/Azure/OpenAI-compatible models. The Extension Host re-renders the current template and Dataset row with `uone-prompt-manager`, submits that exact Prompt, and displays the rendered input beside the model response and backend identity.
+
+### Fixed
+
+## [2.7.5] - 2026-09-08
+
+> Local test build
+
+### Added
+- Added inherited `🔒` indicators to panel CatTree folders/subfolders, local content rows, detail titles, Prompt hierarchy, Packages, and Server groups/cards. Top-level CatTree context menus now expose **Set as Private/Public** while subfolders inherit without overrides.
+
+### Changed
+- Room UUID is now the authoritative internal identity across Hub state, routing, ownership, close, Rehost, rename, and secrets. Display names preserve their original Unicode/CJK spelling and letter case; name matching remains only as a legacy boundary when no UUID exists.
+- Replaced the platform-colored **Create Sub Folder** emoji with the same plain `＋` visual language used by Add actions.
+
+## [2.7.4] - 2026-09-08
+
+> Local test build
+
+### Added
+- Added authenticated **Force Close Host** recovery for an owned Room active in another VS Code window. The recorded Host is contacted with a short-lived, one-time Host proof; joined/foreign Rooms cannot use the action, and history/credentials remain available for Rehost.
+
+## [2.7.3] - 2026-09-08
+
+> Local test build
+
+### Fixed
+- Made every Stored Room reachable in an independently scrollable, counted collection instead of letting later rooms fall below the Chat rail viewport.
+- Prevented the Chatroom message viewport from shaking or jumping while typing by measuring composer height off-screen, changing the real textarea only when needed, and preserving the message viewport's bottom edge as the composer grows.
+
 ## [2.7.2] - 2026-09-07
 
 > Pre-Release channel
@@ -545,8 +592,6 @@ Multi-agent **conversations** in the Chatroom (**beta**), plus packaging fixes.
 - **Live status markers + turn banner.** Each engaged member shows a 🟢 standby / ⚙️ working pill, and a banner tracks whose turn it is (flipping the moment you send).
 - **Packages:** a git-tracking tag (git / untracked / git repo) and **delete a package** with double confirmation.
 
-### Fixes
-- Conversation-control commands now broadcast to all participants instead of being swallowed as unknown room commands.
 
 - Fixed **Close Room** leaving a zombie active Room when a Host connection carried a stale Room UUID. Confirmed local Hosts now recover by canonical Room name and fully deactivate the Hub Room before it is offered for Rehost.
 ## [2.0.1] — 2026-07-27

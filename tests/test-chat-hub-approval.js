@@ -219,19 +219,19 @@ async function main() {
     assert.strictEqual(restoredKeeper.present, false);
     assert.strictEqual(restoredKeeper.role, "Analyst");
     assert(!restoredPresence.members.some(member => member.participantId === approved.participantId), "forgotten participant must not return in Earlier");
-    const activeRenamed = await hub.renameActiveRoom(rehosted.roomId, "Approval Renamed");
-    assert.strictEqual(activeRenamed, "approval renamed");
-    await waitFrame(rehost, frame => frame.t === "room.renamed" && frame.room === "approval renamed");
-    assert.deepStrictEqual(hub.roomNames, ["approval renamed"]);
+    const activeRenamed = await hub.renameActiveRoom(rehosted.roomId, "AAGL 缓存设计");
+    assert.strictEqual(activeRenamed, "AAGL 缓存设计");
+    await waitFrame(rehost, frame => frame.t === "room.renamed" && frame.room === "AAGL 缓存设计");
+    assert.deepStrictEqual(hub.roomNames, ["AAGL 缓存设计"]);
     const hostSocketClosed = new Promise(resolve => rehost.once("close", resolve));
     rehost.close();
     await hostSocketClosed;
     await new Promise(resolve => setTimeout(resolve, 50));
-    assert.deepStrictEqual(hub.roomNames, ["approval renamed"],
+    assert.deepStrictEqual(hub.roomNames, ["AAGL 缓存设计"],
       "closing the Host tab/socket must not close the hosted Room");
 
     const reconnectedHost = await connect(`ws://127.0.0.1:${hub.port}`); sockets.push(reconnectedHost);
-    sendJoin(reconnectedHost, activeRenamed, rehosted.secret, "Host", {
+    sendJoin(reconnectedHost, "stale lowercase name", rehosted.secret, "Host", {
       roomId: rehosted.roomId, kind: "human", hostToken: rehosted.hostToken,
     });
     await waitFrame(reconnectedHost, frame => frame.t === "join.ready");

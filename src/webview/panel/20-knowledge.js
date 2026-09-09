@@ -107,6 +107,19 @@ function packageSourceTag(source) {
   return `<span class="pkg-source-tag" title="Original package ${esc(source.originalName)} from ${esc(source.brokerName)} published by ${esc(source.publisherUser)} on ${esc(source.publisherHost)}">original: ${esc(source.originalName)} · ${esc(source.brokerName)} - ${esc(source.publisherUser)} - ${esc(source.publisherHost)}</span>`;
 }
 
+function privacyInherited(path) {
+  const top = String(Array.isArray(path) ? path[0] || '' : path || '').replace(/\\/g, '/').split('/').filter(Boolean)[0] || '';
+  return !!top && (state.privateTopLevels || []).includes(top);
+}
+function privacyLock(isPrivate) { return isPrivate ? '<span class="content-private-lock" title="Private: excluded from Subscription sharing" aria-label="Private">🔒</span>' : ''; }
+function appendPrivacyMenu(items, type, path) {
+  const parts = String(path || '').split('/').filter(Boolean);
+  if (parts.length !== 1) return;
+  const isPrivate = privacyInherited(parts);
+  items.push({ sep: true });
+  items.push({ label: isPrivate ? '🔓 Set as Public' : '🔒 Set as Private', onClick: () => ask('contentSetPrivacy', { type, topLevel: parts[0], isPrivate: !isPrivate }) });
+}
+
 // ── Render list ────────────────────────────────────────────────────────────
 function renderList() {
   const { tab, items, filter } = state;
@@ -158,10 +171,10 @@ function renderList() {
     const pinned = list.filter(p => p.pinned);
     const rest = list.filter(p => !p.pinned);
     // Right-click a topic folder -> move all papers under it to a group.
-    const folderAttr = (child, name) => {
+    const folderAttr = (child, name, fullPath) => {
       const slugs = collectLeafSlugs(child);
       const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(slugs))));
-      return ` oncontextmenu="paperFolderMenu(event,'${b64}',${JSON.stringify(name).replace(/"/g, '&quot;')})"`;
+      return ` oncontextmenu="paperFolderMenu(event,'${b64}',${JSON.stringify(name).replace(/"/g, '&quot;')},${JSON.stringify(fullPath.join('/')).replace(/"/g, '&quot;')})"`;
     };
     let html = '';
     if (pinned.length) {
@@ -185,7 +198,7 @@ function renderList() {
         '<span class="pk-group-name">' + (custom ? '📁' : '📄') + ' ' + esc(g) + '</span>' +
         '<span class="pk-group-count">' + groups[g].length + '</span></div>' +
         '<div class="pk-group-body" style="display:' + (expanded ? '' : 'none') + '">';
-      const root = buildCatTree(groups[g], r => r.topic || '(untopiced)', '(untopiced)');
+      const root = buildCatTree(groups[g], r => r.category || '(uncategorized)', '(uncategorized)');
       html += renderCatTree(root, [], 0, (r, depth) => paperCard(r, q, 8 + (depth + 1) * 12), q, folderAttr);
       html += '</div></div>';
     }
@@ -202,15 +215,15 @@ function renderList() {
     shown.forEach(r => { (byProj[r.project]||(byProj[r.project]=[])).push(r); });
     el.innerHTML = Object.entries(byProj).map(([proj, tasks]) =>
       `<div class="tree-proj">
-        <div class="tree-proj-hdr" onclick="toggleTree(this)" oncontextmenu="promptFolderMenu(event,${JSON.stringify(proj).replace(/"/g,'&quot;')},'','')">▶ ${folkDisplayPath(proj)}</div>
+        <div class="tree-proj-hdr" onclick="toggleTree(this)" oncontextmenu="promptFolderMenu(event,${JSON.stringify(proj).replace(/"/g,'&quot;')},'','')">▶ ${privacyLock(privacyInherited([proj]))}${folkDisplayPath(proj)}</div>
         <div class="tree-proj-body collapsed">${tasks.map(r =>
           `<div class="tree-task">
-            <div class="tree-task-hdr" onclick="toggleTree(this)" oncontextmenu="promptFolderMenu(event,${JSON.stringify(proj).replace(/"/g,'&quot;')},${JSON.stringify(r.task).replace(/"/g,'&quot;')},'')">▷ ${esc(r.task)}</div>
+            <div class="tree-task-hdr" onclick="toggleTree(this)" oncontextmenu="promptFolderMenu(event,${JSON.stringify(proj).replace(/"/g,'&quot;')},${JSON.stringify(r.task).replace(/"/g,'&quot;')},'')">▷ ${privacyLock(r.isPrivate)}${esc(r.task)}</div>
             <div class="tree-task-body collapsed">${(r.versions||[]).map(v =>
               `<div class="tree-ver">
-                <div class="tree-ver-hdr" onclick="toggleTree(this)" oncontextmenu="promptFolderMenu(event,${JSON.stringify(proj).replace(/"/g,'&quot;')},${JSON.stringify(r.task).replace(/"/g,'&quot;')},${JSON.stringify(v.version).replace(/"/g,'&quot;')})">📁 ${esc(v.version)}</div>
+                <div class="tree-ver-hdr" onclick="toggleTree(this)" oncontextmenu="promptFolderMenu(event,${JSON.stringify(proj).replace(/"/g,'&quot;')},${JSON.stringify(r.task).replace(/"/g,'&quot;')},${JSON.stringify(v.version).replace(/"/g,'&quot;')})">📁 ${privacyLock(r.isPrivate)}${esc(v.version)}</div>
                 <div class="tree-ver-body collapsed">${(v.files||[]).map(f =>
-                  `<div class="tree-file" onclick="openPromptFile('${esc(proj)}','${esc(r.task)}','${esc(v.version)}','${esc(f.name)}')" oncontextmenu="promptItemTrashMenu(event,${JSON.stringify(`${proj}/${r.task}/${v.version}/${f.name}`).replace(/"/g,'&quot;')},${JSON.stringify(f.name).replace(/"/g,'&quot;')})">📄 ${esc(f.name)}</div>`
+                  `<div class="tree-file" data-prompt-project="${esc(proj)}" data-prompt-task="${esc(r.task)}" data-prompt-version="${esc(v.version)}" data-prompt-file="${esc(f.name)}" onclick="openPromptFile('${esc(proj)}','${esc(r.task)}','${esc(v.version)}','${esc(f.name)}')" oncontextmenu="promptItemTrashMenu(event,${JSON.stringify(`${proj}/${r.task}/${v.version}/${f.name}`).replace(/"/g,'&quot;')},${JSON.stringify(f.name).replace(/"/g,'&quot;')},${JSON.stringify(proj).replace(/"/g,'&quot;')},${JSON.stringify(r.task).replace(/"/g,'&quot;')},${JSON.stringify(v.version).replace(/"/g,'&quot;')})">📄 ${privacyLock(r.isPrivate)}${esc(f.name)}</div>`
                 ).join('')}</div>
               </div>`
             ).join('')}</div>
@@ -218,6 +231,7 @@ function renderList() {
         ).join('')}</div>
       </div>`
     ).join('') || '<div class="empty">No prompts</div>';
+    if (currentDetail?.type === 'prompt') highlightSelectedPromptTree(currentDetail);
 
   } else if (tab === 'packages') {
     const langs = [...new Set(items.map(r => r.lang))].sort();
@@ -232,7 +246,7 @@ function renderList() {
           : '<span class="pkg-git untracked" title="Not tracked by git yet (uncommitted)">untracked</span>';
           const sourceTag = packageSourceTag(r.source);
       return `<div class="li" onclick="openItem('package','${esc(r.name)}')" oncontextmenu="packageItemMenu(event,${JSON.stringify(r.name).replace(/"/g,'&quot;')})">
-      <div class="li-name">${folkDisplayPath(r.name)} ${gitTag}</div>
+      <div class="li-name">${privacyLock(r.isPrivate)}${folkDisplayPath(r.name)} ${gitTag}</div>
           <div class="li-meta">${esc(r.lang)} · ${esc((r.description||'').slice(0,50))}${sourceTag}</div>
     </div>`;
     }).join('') || '<div class="empty">No local packages</div>');
@@ -252,7 +266,7 @@ function renderList() {
       const pad = 8 + (depth + 1) * 12;
       const cat = r.category === '(root)' ? '' : r.category;
       return `<div class="li" style="padding-left:${pad}px" onclick="openItem('script','${esc(r.path)}')" oncontextmenu="scriptItemMenu(event,'${esc(r.path)}',${JSON.stringify(cat).replace(/"/g, '&quot;')})">
-        <div class="li-name">📄 ${hl(r.file, q)}</div>
+        <div class="li-name">📄 ${privacyLock(r.isPrivate)}${hl(r.file, q)}</div>
         <div class="li-meta">${cat ? `<span style="margin-right:5px">${hl(cat, q)}</span>` : ''}${(r.langs||(r.lang?r.lang.split(' + '):[])).map(l=>`<span class="cat" style="font-size:9px;margin-right:3px">${hl(l, q)}</span>`).join('')}</div>
       </div>`;
     }, q, folderAttr);
@@ -386,7 +400,7 @@ function deleteSkillTrashEntry(id, name, kind) {
 
 function skillLi(r, displayName, q, indent) {
   return `<div class="li${r.pinned ? ' nt-pinned' : ''}" data-skill-name="${esc(r.name)}" onclick="openItem('skill','${esc(r.name)}')" oncontextmenu="skillItemMenu(event,'${esc(r.name)}',${JSON.stringify(r.category || '').replace(/"/g, '&quot;')})" style="padding-left:${indent}px">
-    <div class="li-name"><span class="pc-star${r.pinned ? ' on' : ''}" onclick="event.stopPropagation();toggleSkillPin('${esc(r.name)}',${r.pinned ? 'false' : 'true'})" title="${r.pinned ? 'Unpin' : 'Pin to top of folder'}">${r.pinned ? '★' : '☆'}</span> ${hl(displayName||r.name, q)}</div>
+    <div class="li-name"><span class="pc-star${r.pinned ? ' on' : ''}" onclick="event.stopPropagation();toggleSkillPin('${esc(r.name)}',${r.pinned ? 'false' : 'true'})" title="${r.pinned ? 'Unpin' : 'Pin to top of folder'}">${r.pinned ? '★' : '☆'}</span> ${privacyLock(r.isPrivate)}${hl(displayName||r.name, q)}</div>
     <div class="li-meta">${r.description ? hl(r.description.slice(0,50), q) : ''}</div>
   </div>`;
 }
@@ -401,7 +415,7 @@ function toggleSkillPin(name, pinned) {
 // A note row in the sidebar tree (with a ★ pin toggle). Right-click uses #ctx-menu.
 function noteLi(r, q, indent) {
   return `<div class="li nt-${r.type}${r.pinned ? ' nt-pinned' : ''}" data-note-slug="${esc(r.slug)}" data-note-pinned="${r.pinned ? '1' : ''}" style="padding-left:${indent}px" onclick="openItem('note','${esc(r.slug)}')">
-    <div class="li-name"><span class="pc-star${r.pinned ? ' on' : ''}" onclick="event.stopPropagation();toggleNotePin('${esc(r.slug)}',${r.pinned ? 'false' : 'true'})" title="${r.pinned ? 'Unpin' : 'Pin to top of folder'}">${r.pinned ? '★' : '☆'}</span> ${ICON[r.type]||'📝'} ${hl(r.title, q)}</div>
+    <div class="li-name"><span class="pc-star${r.pinned ? ' on' : ''}" onclick="event.stopPropagation();toggleNotePin('${esc(r.slug)}',${r.pinned ? 'false' : 'true'})" title="${r.pinned ? 'Unpin' : 'Pin to top of folder'}">${r.pinned ? '★' : '☆'}</span> ${ICON[r.type]||'📝'} ${privacyLock(r.isPrivate)}${hl(r.title, q)}</div>
     <div class="li-meta">${(r.updated_at||'').slice(0,10)}</div>
   </div>`;
 }
@@ -464,7 +478,7 @@ function renderCatTree(node, path, depth, renderLeaf, q, folderAttr, order) {
     html += `<div class="tree-cat">
       <div class="tree-cat-hdr${pinnedFolder ? ' cat-pinned' : ''}" style="padding-left:${pad}px" onclick="toggleCat('${key}')" title="${esc(name)}"${folderAttr ? folderAttr(child, name, path.concat(name)) : ''}>
         <span class="tree-cat-arrow">${open ? '▾' : '▸'}</span>
-        <span class="tree-cat-label">${pinnedFolder ? '★ ' : ''}${name === '(uncategorized)' ? '<em style="opacity:.6">(uncategorized)</em>' : path.length === 0 ? folkDisplayName(name) : esc(name)}</span>
+        <span class="tree-cat-label">${pinnedFolder ? '★ ' : ''}${privacyLock(privacyInherited(path.concat(name)))}${name === '(uncategorized)' ? '<em style="opacity:.6">(uncategorized)</em>' : path.length === 0 ? folkDisplayName(name) : esc(name)}</span>
         <span class="tree-cat-count">${countTreeLeaves(child)}</span>
       </div>
       <div class="tree-cat-body" style="${open ? '' : 'display:none'}">${renderCatTree(child, path.concat(name), depth + 1, renderLeaf, q, folderAttr, order)}</div>
@@ -500,6 +514,44 @@ function openPromptFile(proj, task, ver, fname) {
   requestDetail('prompt', proj+'|'+task+'|'+ver+'|'+fname);
 }
 
+function highlightSelectedPromptTree(data) {
+  document.querySelectorAll('.tree-file.prompt-selected,.tree-file.prompt-related').forEach(node => node.classList.remove('prompt-selected','prompt-related'));
+  if (!data || data.type !== 'prompt') return;
+  const related = new Set(data.analysis?.relatedFiles || []);
+  document.querySelectorAll('.tree-file[data-prompt-file]').forEach(node => {
+    const sameVersion = node.dataset.promptProject === data.project && node.dataset.promptTask === data.task && node.dataset.promptVersion === data.version;
+    if (!sameVersion) return;
+    if (node.dataset.promptFile === data.file) node.classList.add('prompt-selected');
+    else if (related.has(node.dataset.promptFile)) node.classList.add('prompt-related');
+    if (!node.classList.contains('prompt-selected') && !node.classList.contains('prompt-related')) return;
+    const versionBody = node.closest('.tree-ver-body');
+    const taskBody = node.closest('.tree-task-body');
+    const projectBody = node.closest('.tree-proj-body');
+    [versionBody,taskBody,projectBody].forEach(body => body?.classList.remove('collapsed'));
+    const taskHeader = node.closest('.tree-task')?.querySelector('.tree-task-hdr');
+    const projectHeader = node.closest('.tree-proj')?.querySelector('.tree-proj-hdr');
+    if (taskHeader) taskHeader.innerHTML = taskHeader.innerHTML.replace(/^▷/, '▽');
+    if (projectHeader) projectHeader.innerHTML = projectHeader.innerHTML.replace(/^▶/, '▼');
+  });
+}
+
+function promptOpenInheritanceFile(button) {
+  if (!currentDetail || currentDetail.type !== 'prompt' || button.dataset.missing === 'true') return;
+  openPromptFile(currentDetail.project, currentDetail.task, currentDetail.version, button.dataset.file);
+}
+
+function promptInheritanceTreeHtml(nodes) {
+  if (!Array.isArray(nodes) || !nodes.length) return '<div class="prompt-inheritance-empty">Standalone template · no inheritance chain</div>';
+  const chips = values => values.length ? values.map(value => `<span>${esc(value)}</span>`).join('') : '<em>none</em>';
+  const render = (node, depth) => `<li class="prompt-inheritance-node${node.selected?' selected':''}${node.exists===false?' missing':''}" style="--depth:${depth}">
+    <button type="button" data-file="${esc(node.file)}" data-missing="${node.exists===false}" onclick="promptOpenInheritanceFile(this)" ${node.exists===false?'disabled':''}><strong>${esc(node.file)}</strong>${node.selected?'<b>Selected</b>':''}${node.exists===false?'<b>Missing</b>':''}</button>
+    ${node.extends?`<div class="prompt-inheritance-edge">extends from <code>${esc(node.extends)}</code></div>`:''}
+    <div class="prompt-inheritance-vars"><label>inherits</label><div>${chips(node.inheritedPlaceholders||[])}</div><label>introduces</label><div>${chips(node.introducedVariables||[])}</div></div>
+    ${(node.children||[]).length?`<ol>${node.children.map(child=>render(child,depth+1)).join('')}</ol>`:''}
+  </li>`;
+  return `<ol class="prompt-inheritance-tree">${nodes.map(node=>render(node,0)).join('')}</ol>`;
+}
+
 function openPromptDiff(proj, task, fname) {
   requestDetail('promptDiff', proj+'|'+task+'|'+fname);
 }
@@ -517,6 +569,392 @@ function toggleTree(hdr) {
 
 function openPrompt(proj, task, ver) {
   requestDetail('prompt', proj+'|'+task+'|'+ver);
+}
+
+let promptWorkspaceTab = 'source';
+let promptRenderMode = 'completion';
+const promptVersionStatuses = new Map();
+const promptDatasets = new Map();
+const promptTaskVariableSets = new Map();
+
+function promptDatasetKey() {
+  return currentDetail?.type === 'prompt' ? [currentDetail.project,currentDetail.task].join('|') : '';
+}
+
+function promptVersionCompare(left, right) {
+  const parse = value => String(value).replace(/^v/i, '').split('.').map(part => Number(part) || 0);
+  const a = parse(left), b = parse(right), length = Math.max(a.length,b.length);
+  for (let index=0; index<length; index++) { const delta=(a[index]||0)-(b[index]||0); if (delta) return delta; }
+  return String(left).localeCompare(String(right));
+}
+
+function promptVariableRanges(versions, present) {
+  const ranges = [];
+  let start = -1;
+  for (let index=0; index<=versions.length; index++) {
+    const included = index < versions.length && present.has(versions[index]);
+    if (included && start < 0) start = index;
+    if (!included && start >= 0) { ranges.push(`[${versions[start]}, ${versions[index-1]}]`); start = -1; }
+  }
+  return ranges.join(' ∪ ');
+}
+
+function promptOnTaskVariables(data) {
+  promptTaskVariableSets.set([data.project,data.task,data.version].join('|'), new Set(data.variables || []));
+  if (currentDetail?.type === 'prompt' && currentDetail.project === data.project && currentDetail.task === data.task) {
+    promptRefreshVariableCoverage();
+    promptRenderDatasetTable();
+  }
+}
+
+function promptRefreshVariableCoverage() {
+  const target = document.getElementById('prompt-variable-coverage');
+  if (!target || !currentDetail || currentDetail.type !== 'prompt') return;
+  const versions = [...(currentDetail.taskVersions || currentDetail.allVersions?.map(item => item.version) || [])].sort(promptVersionCompare);
+  const analyzed = versions.filter(version => promptTaskVariableSets.has([currentDetail.project,currentDetail.task,version].join('|')));
+  const variables = new Set();
+  analyzed.forEach(version => promptTaskVariableSets.get([currentDetail.project,currentDetail.task,version].join('|'))?.forEach(variable => variables.add(variable)));
+  promptRenderDatasetTable([...variables].sort());
+  if (!variables.size) { target.innerHTML = `<div class="prompt-variable-empty">${analyzed.length < versions.length ? `Analyzing task variables… ${analyzed.length}/${versions.length} versions` : 'No Jinja variables found.'}</div>`; return; }
+  target.innerHTML = [...variables].sort().map(variable => {
+    const present = new Set(versions.filter(version => promptTaskVariableSets.get([currentDetail.project,currentDetail.task,version].join('|'))?.has(variable)));
+    const all = present.size === versions.length && analyzed.length === versions.length;
+    const range = promptVariableRanges(versions, present);
+    const pending = analyzed.length < versions.length ? ` · analysis ${analyzed.length}/${versions.length}` : '';
+    const title = `${variable}: ${range || 'not found'} · ${present.size}/${versions.length} versions${pending}`;
+    return `<span class="prompt-variable-coverage ${all?'all':'partial'}" title="${esc(title)}"><strong>${esc(variable)}</strong><small>${all?'all':`${present.size}/${versions.length}`}</small></span>`;
+  }).join('');
+}
+
+function promptParseDataset(text) {
+  const source = String(text || '').trim();
+  if (!source) throw new Error('Dataset is empty.');
+  let value;
+  try { value = JSON.parse(source); }
+  catch {
+    try { value = source.split(/\r?\n/).filter(line => line.trim()).map(line => JSON.parse(line)); }
+    catch (error) { throw new Error(`Use a JSON array/object or JSONL rows. ${error.message || error}`); }
+  }
+  const rows = Array.isArray(value) ? value : [value];
+  if (!rows.length) throw new Error('Dataset has no rows.');
+  if (rows.some(row => !row || Array.isArray(row) || typeof row !== 'object')) throw new Error('Every Dataset row must be a JSON object.');
+  return rows;
+}
+
+function promptLoadDatasetText(text, name = 'Pasted Dataset') {
+  const status = document.getElementById('prompt-dataset-status');
+  try {
+    promptDatasets.set(promptDatasetKey(), { name, rows:promptParseDataset(text), index:0 });
+    promptRefreshDataset();
+    promptRenderDatasetTable();
+  } catch (error) {
+    if (status) { status.textContent = error.message || String(error); status.classList.add('error'); }
+  }
+}
+
+function promptLoadDatasetFile(input) {
+  const file = input.files?.[0]; input.value = '';
+  if (!file) return;
+  const status = document.getElementById('prompt-dataset-status');
+  if (file.size > 5 * 1024 * 1024) { if (status) { status.textContent = 'Dataset must be 5 MB or smaller.'; status.classList.add('error'); } return; }
+  const reader = new FileReader();
+  reader.onload = () => promptLoadDatasetText(String(reader.result || ''), file.name);
+  reader.onerror = () => { if (status) { status.textContent = 'Could not read Dataset file.'; status.classList.add('error'); } };
+  reader.readAsText(file);
+}
+
+function promptToggleDatasetPaste() {
+  const panel = document.getElementById('prompt-dataset-paste');
+  if (!panel) return;
+  panel.classList.toggle('hidden');
+  if (!panel.classList.contains('hidden')) panel.querySelector('textarea')?.focus();
+}
+
+function promptCommitPastedDataset() {
+  promptLoadDatasetText(document.getElementById('prompt-dataset-text')?.value || '');
+  if (promptDatasets.has(promptDatasetKey())) document.getElementById('prompt-dataset-paste')?.classList.add('hidden');
+}
+
+function promptDatasetMove(step) {
+  const dataset = promptDatasets.get(promptDatasetKey());
+  if (!dataset) return;
+  dataset.index = Math.max(0, Math.min(dataset.rows.length - 1, dataset.index + step));
+  promptRefreshDataset();
+  promptRenderDatasetTable();
+}
+
+function promptDatasetSelect(index) {
+  const dataset = promptDatasets.get(promptDatasetKey());
+  if (!dataset || index < 0 || index >= dataset.rows.length) return;
+  dataset.index = index;
+  promptRefreshDataset(false);
+  document.querySelectorAll('.prompt-dataset-table tbody tr').forEach((row,rowIndex) => {
+    row.classList.toggle('selected', rowIndex === index);
+    row.setAttribute('aria-selected', String(rowIndex === index));
+  });
+}
+
+function promptDatasetDelete(index, event) {
+  event?.stopPropagation();
+  const dataset = promptDatasets.get(promptDatasetKey());
+  if (!dataset || index < 0 || index >= dataset.rows.length) return;
+  dataset.rows.splice(index, 1);
+  if (!dataset.rows.length) promptDatasets.delete(promptDatasetKey());
+  else dataset.index = Math.min(dataset.index > index ? dataset.index - 1 : dataset.index, dataset.rows.length - 1);
+  promptRefreshDataset();
+  promptRenderDatasetTable();
+}
+
+function promptDatasetAddRow() {
+  let dataset = promptDatasets.get(promptDatasetKey());
+  if (!dataset) {
+    dataset = { name:'Untitled Dataset', rows:[], index:0 };
+    promptDatasets.set(promptDatasetKey(), dataset);
+  }
+  const row = {};
+  promptDatasetVariables().forEach(variable => { row[variable] = ''; });
+  dataset.rows.push(row);
+  dataset.index = dataset.rows.length - 1;
+  promptRefreshDataset();
+  promptRenderDatasetTable();
+  requestAnimationFrame(() => document.querySelector(`.prompt-dataset-table tbody tr:nth-child(${dataset.index + 1}) input`)?.focus());
+}
+
+function promptDatasetEdit(index, key, input) {
+  const dataset = promptDatasets.get(promptDatasetKey());
+  if (!dataset || !dataset.rows[index]) return;
+  dataset.rows[index][key] = promptContextValue(input.value);
+  dataset.index = index;
+  promptRefreshDataset(false);
+  document.querySelectorAll('.prompt-dataset-table tbody tr').forEach((row,rowIndex) => {
+    row.classList.toggle('selected', rowIndex === index);
+    row.setAttribute('aria-selected', String(rowIndex === index));
+  });
+}
+
+function promptClearDataset() { promptDatasets.delete(promptDatasetKey()); promptRefreshDataset(); promptRenderDatasetTable(); }
+
+function promptDatasetVariables() {
+  if (!currentDetail || currentDetail.type !== 'prompt') return [];
+  const variables = new Set();
+  const versions = currentDetail.taskVersions || currentDetail.allVersions?.map(item => item.version) || [];
+  versions.forEach(version => promptTaskVariableSets.get([currentDetail.project,currentDetail.task,version].join('|'))?.forEach(variable => variables.add(variable)));
+  return [...variables].sort();
+}
+
+function promptDatasetCell(value, rowIndex, key) {
+  if (value === undefined) return `<input value="" placeholder="—" aria-label="Row ${rowIndex + 1}, ${esc(key)}" onfocus="promptDatasetSelect(${rowIndex})" onchange="promptDatasetEdit(${rowIndex},${JSON.stringify(key).replace(/"/g,'&quot;')},this)">`;
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  return `<input value="${esc(text).replace(/"/g,'&quot;')}" title="${esc(text)}" aria-label="Row ${rowIndex + 1}, ${esc(key)}" onfocus="promptDatasetSelect(${rowIndex})" onchange="promptDatasetEdit(${rowIndex},${JSON.stringify(key).replace(/"/g,'&quot;')},this)">`;
+}
+
+function promptRenderDatasetTable(variables = promptDatasetVariables()) {
+  const target = document.getElementById('prompt-dataset-table');
+  if (!target) return;
+  const dataset = promptDatasets.get(promptDatasetKey());
+  if (!dataset) { target.innerHTML = '<div class="prompt-dataset-empty">Load or paste JSON/JSONL to create Dataset rows.</div>'; return; }
+  const extra = [...new Set(dataset.rows.flatMap(row => Object.keys(row)).filter(key => !variables.includes(key)))].sort();
+  const columns = [...variables, ...extra];
+  target.innerHTML = `<div class="prompt-dataset-table-wrap"><table><thead><tr><th class="prompt-dataset-index">#</th>${columns.map(column => `<th title="${esc(column)}">${esc(column)}${extra.includes(column)?'<small>extra</small>':''}</th>`).join('')}<th class="prompt-dataset-delete-column"><span class="sr-only">Actions</span></th></tr></thead><tbody>${dataset.rows.map((row,index)=>`<tr class="${index===dataset.index?'selected':''}" tabindex="0" onclick="promptDatasetSelect(${index})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();promptDatasetSelect(${index})}" aria-selected="${index===dataset.index}"><td class="prompt-dataset-index">${index+1}</td>${columns.map(column=>`<td>${promptDatasetCell(row[column],index,column)}</td>`).join('')}<td class="prompt-dataset-delete-column"><button type="button" onclick="promptDatasetDelete(${index},event)" title="Delete Dataset row ${index+1}" aria-label="Delete Dataset row ${index+1}">×</button></td></tr>`).join('')}</tbody></table></div>`;
+}
+
+function promptRefreshDataset(renderTable = true) {
+  const dataset = promptDatasets.get(promptDatasetKey());
+  const status = document.getElementById('prompt-dataset-status');
+  const controls = document.getElementById('prompt-dataset-controls');
+  if (!status || !controls) return;
+  status.classList.remove('error'); controls.classList.toggle('hidden', !dataset);
+  if (!dataset) { status.textContent = 'No Dataset'; return; }
+  const row = dataset.rows[dataset.index];
+  const variables = promptDatasetVariables();
+  const matched = variables.filter(variable => Object.prototype.hasOwnProperty.call(row, variable)).length;
+  status.textContent = `${dataset.name} · ${dataset.rows.length} row${dataset.rows.length === 1 ? '' : 's'} · ${matched}/${variables.length} inputs matched`;
+  document.getElementById('prompt-dataset-position').textContent = `${dataset.index + 1} / ${dataset.rows.length}`;
+  document.getElementById('prompt-dataset-prev').disabled = dataset.index === 0;
+  document.getElementById('prompt-dataset-next').disabled = dataset.index === dataset.rows.length - 1;
+  if (renderTable) promptRenderDatasetTable(variables);
+}
+
+function promptVersionStatusKey(project, task, file, version) {
+  return [project,task,file,version].join('|');
+}
+
+function promptOnVersionAnalysis(data) {
+  if (!data?.analysis) return;
+  const status = data.analysis.syntaxValid === true ? 'valid' : data.analysis.syntaxValid === false ? 'invalid' : 'unknown';
+  promptVersionStatuses.set(promptVersionStatusKey(data.project,data.task,data.file,data.version), { status, error:data.analysis.syntaxError || '' });
+  document.querySelectorAll(`#paper-ctx .pctx-item[data-prompt-version="${CSS.escape(data.version)}"]`).forEach(item => {
+    item.classList.remove('prompt-version-valid','prompt-version-invalid','prompt-version-unknown');
+    item.classList.add(`prompt-version-${status}`);
+    item.title = data.analysis.syntaxError || (status === 'valid' ? 'Syntax valid' : 'Analyzing');
+  });
+  if (!currentDetail || currentDetail.type !== 'prompt') return;
+  if ([data.project,data.task,data.version,data.file].join('|') !== [currentDetail.project,currentDetail.task,currentDetail.version,currentDetail.file].join('|')) return;
+  renderDetail({ ...currentDetail, analysis:data.analysis });
+}
+
+function promptWorkspaceSetTab(tab) {
+  promptWorkspaceTab = tab;
+  document.querySelectorAll('.prompt-workspace-tab').forEach(button => {
+    const active = button.dataset.promptTab === tab;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', String(active));
+  });
+  document.querySelectorAll('.prompt-workspace-panel').forEach(panel => panel.classList.toggle('active', panel.dataset.promptPanel === tab));
+  if (tab === 'compare') promptRenderComparison();
+  if (tab === 'dataset') { promptRefreshVariableCoverage(); promptRefreshDataset(); }
+}
+
+function promptSetRenderMode(mode) {
+  promptRenderMode = mode === 'chat' ? 'chat' : 'completion';
+  document.querySelectorAll('.prompt-mode-button').forEach(button => {
+    const active = button.dataset.mode === promptRenderMode;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
+}
+
+function promptContextValue(raw) {
+  const value = String(raw || '').trim();
+  if (!value) return '';
+  try { return JSON.parse(value); } catch { return value; }
+}
+
+function promptCurrentContext() {
+  const dataset = promptDatasets.get(promptDatasetKey());
+  return dataset ? { ...dataset.rows[dataset.index] } : {};
+}
+
+function promptRunRender(button) {
+  if (!currentDetail || currentDetail.type !== 'prompt') return;
+  const output = document.getElementById('prompt-render-output');
+  if (output) output.innerHTML = '<div class="prompt-render-empty">Rendering with uone-prompt-manager…</div>';
+  button.disabled = true; button.setAttribute('aria-busy', 'true');
+  ask('promptRender', { project:currentDetail.project, task:currentDetail.task, version:currentDetail.version, file:currentDetail.file, context:promptCurrentContext(), mode:promptRenderMode });
+}
+
+function promptRunInference(button) {
+  if (!currentDetail || currentDetail.type !== 'prompt') return;
+  const backend = document.getElementById('prompt-inference-backend');
+  const output = document.getElementById('prompt-inference-output');
+  if (!backend?.value || !output) return;
+  button.disabled = true; button.setAttribute('aria-busy', 'true');
+  output.classList.remove('hidden');
+  output.innerHTML = `<div class="prompt-render-empty">Running inference with ${esc(backend.options[backend.selectedIndex]?.text || 'selected model')}…</div>`;
+  ask('promptInference', { project:currentDetail.project, task:currentDetail.task, version:currentDetail.version, file:currentDetail.file, context:promptCurrentContext(), mode:promptRenderMode, backend:backend.value });
+}
+
+function promptInferenceResult(data) {
+  if (!currentDetail || currentDetail.type !== 'prompt') return;
+  if ([data.project,data.task,data.version,data.file].join('|') !== [currentDetail.project,currentDetail.task,currentDetail.version,currentDetail.file].join('|')) return;
+  const button = document.getElementById('prompt-inference-button');
+  if (button) { button.disabled = false; button.removeAttribute('aria-busy'); }
+  if (!data.error && data.rendered !== undefined) promptRendered({ ...data, result:data.rendered });
+  const output = document.getElementById('prompt-inference-output');
+  if (!output) return;
+  output.classList.remove('hidden');
+  output.innerHTML = data.error
+    ? `<div class="prompt-render-error">${esc(data.error)}</div>`
+    : `<div class="prompt-inference-head"><strong>Model response</strong><span>${esc(data.backend || data.model || '')}</span></div><div class="prompt-inference-result">${safeMarked(String(data.result || ''))}</div>`;
+  postProcess();
+}
+
+function promptRendered(data) {
+  if (!currentDetail || currentDetail.type !== 'prompt') return;
+  if ([data.project,data.task,data.version,data.file].join('|') !== [currentDetail.project,currentDetail.task,currentDetail.version,currentDetail.file].join('|')) return;
+  const button = document.getElementById('prompt-render-button');
+  if (button) { button.disabled = false; button.removeAttribute('aria-busy'); }
+  const output = document.getElementById('prompt-render-output');
+  if (!output) return;
+  if (data.error) { output.innerHTML = `<div class="prompt-render-error">${esc(data.error)}</div>`; return; }
+  if (data.mode === 'chat' && Array.isArray(data.result)) {
+    output.innerHTML = `<div class="prompt-chat-preview">${data.result.map(message => `<section class="prompt-chat-message"><span>${esc(message[0] || 'message')}</span><div>${esc(message[1] || '')}</div></section>`).join('')}</div>`;
+  } else {
+    output.innerHTML = `<pre class="prompt-completion-preview">${esc(String(data.result ?? ''))}</pre>`;
+  }
+}
+
+function promptEditVersionNote() {
+  const editor = document.getElementById('prompt-note-editor');
+  const textarea = document.getElementById('prompt-note-input');
+  if (!editor || !textarea || !currentDetail) return;
+  textarea.value = currentDetail.meta?.note || '';
+  editor.classList.remove('hidden');
+  textarea.focus();
+}
+
+function promptCancelVersionNote() {
+  document.getElementById('prompt-note-editor')?.classList.add('hidden');
+}
+
+function promptSaveVersionNote(button) {
+  if (!currentDetail || currentDetail.type !== 'prompt') return;
+  const note = document.getElementById('prompt-note-input')?.value || '';
+  button.disabled = true; button.setAttribute('aria-busy', 'true');
+  ask('promptSaveVersionNote', { project:currentDetail.project, task:currentDetail.task, version:currentDetail.version, file:currentDetail.file, note });
+}
+
+function promptVersionNoteSaved(data) {
+  const button = document.getElementById('prompt-note-save');
+  if (button) { button.disabled = false; button.removeAttribute('aria-busy'); }
+  if (data?.cancelled) return;
+  const error = document.getElementById('prompt-note-error');
+  if (data?.error) { if (error) error.textContent = data.error; return; }
+  if (!data?.ok) return;
+  ask('list', { tab:'prompts', filter:state.filter, q:state.search });
+  requestDetail('prompt', [data.project,data.task,data.version,data.file].join('|'));
+}
+
+function promptOpenTextEditor() {
+  if (!currentDetail || currentDetail.type !== 'prompt') return;
+  ask('promptOpenTextEditor', { project:currentDetail.project, task:currentDetail.task, version:currentDetail.version, file:currentDetail.file });
+}
+
+let promptVersionChanging = false;
+function promptChangeVersion(step) {
+  if (promptVersionChanging || !currentDetail || currentDetail.type !== 'prompt') return;
+  const versions = (currentDetail.allVersions || []).map(item => item.version);
+  const index = versions.indexOf(currentDetail.version);
+  const next = index + step;
+  if (index < 0 || next < 0 || next >= versions.length) return;
+  promptVersionChanging = true;
+  const clock = document.querySelector('.prompt-version-clock');
+  clock?.classList.add(step > 0 ? 'flip-next' : 'flip-previous');
+  setTimeout(() => {
+    promptVersionChanging = false;
+    openPromptFile(currentDetail.project, currentDetail.task, versions[next], currentDetail.file);
+  }, 130);
+}
+
+function promptVersionWheel(event) {
+  event.preventDefault();
+  if (Math.abs(event.deltaY) < 2) return;
+  promptChangeVersion(event.deltaY > 0 ? 1 : -1);
+}
+
+function promptVersionMenu(event) {
+  event.preventDefault(); event.stopPropagation();
+  if (!currentDetail || currentDetail.type !== 'prompt') return;
+  const items = (currentDetail.allVersions || []).map(item => ({
+    label:item.version, active:item.version === currentDetail.version,
+    version:item.version,
+    status:(promptVersionStatuses.get(promptVersionStatusKey(currentDetail.project,currentDetail.task,currentDetail.file,item.version)) || {status:'unknown'}).status,
+    onClick:()=>openPromptFile(currentDetail.project,currentDetail.task,item.version,currentDetail.file),
+  }));
+  showPaperMenu(event.clientX, event.clientY, items);
+}
+
+function promptRenderComparison() {
+  if (!currentDetail || currentDetail.type !== 'prompt') return;
+  const left = document.getElementById('prompt-compare-from'), right = document.getElementById('prompt-compare-to'), target = document.getElementById('prompt-inline-diff');
+  if (!left || !right || !target) return;
+  const versions = Object.fromEntries((currentDetail.allVersions || []).map(item => [item.version, item.content || '']));
+  const fromLines = (versions[left.value] || '').split('\n'), toLines = (versions[right.value] || '').split('\n');
+  const fromSet = new Set(fromLines), toSet = new Set(toLines);
+  let removed = 0, added = 0;
+  const before = fromLines.map((line, index) => { const changed = !toSet.has(line); if (changed) removed++; return `<div class="diff-line${changed?' diff-rem':''}"><span class="diff-no">${index+1}</span><span>${esc(line)||'&nbsp;'}</span></div>`; }).join('');
+  const after = toLines.map((line, index) => { const changed = !fromSet.has(line); if (changed) added++; return `<div class="diff-line${changed?' diff-add':''}"><span class="diff-no">${index+1}</span><span>${esc(line)||'&nbsp;'}</span></div>`; }).join('');
+  target.innerHTML = `<div class="prompt-diff-stat"><span class="removed">−${removed}</span><span class="added">+${added}</span></div><div class="diff-wrap"><div class="diff-panel"><div class="diff-hdr">${esc(left.value)}</div>${before}</div><div class="diff-panel"><div class="diff-hdr">${esc(right.value)}</div>${after}</div></div>`;
 }
 
 // ── Render detail ──────────────────────────────────────────────────────────
@@ -556,6 +994,7 @@ function renderDetail(data) {
   renderNonce++; // fresh asset URLs each open so late-added images bypass stale cache
   const el = document.getElementById('detail');
   if (!data) { currentDetail = null; currentDetailRequest = null; el.innerHTML = '<div class="empty">Not found.</div>'; return; }
+  const previousDetailType = currentDetail?.type;
   currentDetail = data;
 
   if (data.type === 'subscription') {
@@ -582,7 +1021,7 @@ function renderDetail(data) {
     const tags = JSON.parse(data.tags||'[]');
     const toc = buildToc(data.content||'');
     el.innerHTML = `
-      <div class="d-title"><span>${esc(data.name)}</span><button class="meta-edit" onclick="editCurrentMetadata('title')" title="Edit name">✎</button></div>
+      <div class="d-title"><span>${esc(data.name)}</span>${privacyLock(data.isPrivate)}<button class="meta-edit" onclick="editCurrentMetadata('title')" title="Edit name">✎</button></div>
       ${detailPathHtml(data)}
       <div class="d-meta">
         ${data.category?`<span class="cat">${esc(data.category)}</span>`:''}
@@ -605,7 +1044,7 @@ function renderDetail(data) {
     currentDetail = data;
     const tags = JSON.parse(data.tags||'[]');
     el.innerHTML = `
-      <div class="d-title"><span>${ICON[data.note_type]||'📝'} ${esc(data.title)}</span><button class="meta-edit" onclick="editCurrentMetadata('title')" title="Edit title">✎</button></div>
+      <div class="d-title"><span>${ICON[data.note_type]||'📝'} ${esc(data.title)}</span>${privacyLock(data.isPrivate)}<button class="meta-edit" onclick="editCurrentMetadata('title')" title="Edit title">✎</button></div>
       ${detailPathHtml(data)}
       <div class="d-meta">
         <span>${esc(data.note_type)}</span>
@@ -632,28 +1071,89 @@ function renderDetail(data) {
     el.innerHTML = paperDetailHtml(data);
 
   } else if (data.type === 'prompt') {
-    const { project, task, version, file, content, meta, allVersions } = data;
+    currentDetail = data;
+    const { project, task, version, file, content, meta, allVersions, analysis = {} } = data;
     const ext  = (file||'').split('.').pop()||'';
     const lang = {jinja2:'jinja',jinja:'jinja',txt:'text',json:'json',yaml:'yaml',py:'python',sh:'bash'}[ext]||'text';
-    const pills = (allVersions||[]).map(v =>
-      `<span class="vpill ${v.version===version?'active':''}" onclick="openPromptFile('${esc(project)}','${esc(task)}','${esc(v.version)}','${esc(file)}')">${esc(v.version)}</span>`
-    ).join('');
-    const metaHtml = meta?.hasMetadata ? `
-      <div class="meta-grid" style="margin-bottom:12px">
-        <span class="ml">Title</span><span class="mv">${esc(meta.title||'—')}</span>
-        ${meta.note?`<span class="ml">Note</span><span class="mv" style="white-space:pre-wrap">${esc(meta.note)}</span>`:''}
-      </div>` : '';
-    const diffBtn = (allVersions||[]).length > 1
-      ? `<button class="tbtn" style="font-size:11px;margin-left:8px" onclick="openPromptDiff('${esc(project)}','${esc(task)}','${esc(file)}')">⊟ Diff versions</button>`
-      : '';
+    const versions = (allVersions||[]);
+    const variables = Array.isArray(analysis.variables) ? analysis.variables : [];
+    if (analysis.pending !== true && variables.length) promptTaskVariableSets.set([project,task,version].join('|'), new Set(variables));
+    const format = String(analysis.format || ext || 'prompt').toUpperCase();
+    const syntaxHtml = analysis.pending || analysis.syntaxValid === null
+      ? '<span class="prompt-health pending">Analyzing…</span>'
+      : analysis.available === false
+      ? `<span class="prompt-health unavailable">Manager unavailable</span>`
+      : analysis.syntaxValid
+        ? '<span class="prompt-health valid">Syntax valid</span>'
+        : `<span class="prompt-health invalid" title="${esc(analysis.syntaxError || 'Invalid template')}">Syntax invalid</span>`;
+    const mode = analysis.chatTemplate ? 'chat' : 'completion';
+    promptRenderMode = mode;
+    if (previousDetailType !== 'prompt') promptWorkspaceTab = 'source';
+    if (promptWorkspaceTab === 'compare' && versions.length < 2) promptWorkspaceTab = 'source';
+    const versionOptions = versions.map(v => `<option value="${esc(v.version)}">${esc(v.version)}</option>`).join('');
+    const fromVersion = versions[0]?.version || version;
+    const toVersion = versions[versions.length-1]?.version || version;
+    const versionIndex = Math.max(0, versions.findIndex(item => item.version === version));
+    versions.forEach(item => {
+      const key = promptVersionStatusKey(project,task,file,item.version);
+      if (!promptVersionStatuses.has(key)) promptVersionStatuses.set(key, {status:'unknown',error:''});
+    });
+    if (analysis.syntaxValid === true || analysis.syntaxValid === false) promptVersionStatuses.set(promptVersionStatusKey(project,task,file,version), {status:analysis.syntaxValid?'valid':'invalid',error:analysis.syntaxError||''});
+    const syntaxState = analysis.syntaxValid === true ? 'syntax-valid' : analysis.syntaxValid === false ? 'syntax-invalid' : 'syntax-unknown';
     el.innerHTML = `
-      <div class="d-title">${esc(project)} / ${esc(task)}</div>
-      ${detailPathHtml(data)}
-      <div class="d-meta"><span>${esc(version)}</span>${diffBtn}</div>
-      <div style="margin-bottom:10px">${pills}</div>
-      ${metaHtml}
-      <hr class="div">
-      <div class="prose"><pre><code class="language-${lang}">${esc(content||'')}</code></pre></div>`;
+      <div class="prompt-workbench">
+        <header class="prompt-workbench-head">
+          <div><div class="prompt-title-line"><div class="d-title">${esc(meta?.title || task)} ${privacyLock(data.isPrivate)}</div><div class="prompt-version-clock ${syntaxState}" role="spinbutton" tabindex="0" aria-label="Prompt version ${esc(version)}, ${syntaxState==='syntax-valid'?'syntax valid':syntaxState==='syntax-invalid'?'syntax invalid':'analyzing'}" aria-valuemin="1" aria-valuemax="${versions.length}" aria-valuenow="${versionIndex+1}" aria-valuetext="${esc(version)}" onwheel="promptVersionWheel(event)" onkeydown="if(event.key==='ArrowUp'){event.preventDefault();promptChangeVersion(-1)}else if(event.key==='ArrowDown'){event.preventDefault();promptChangeVersion(1)}"><button type="button" class="prompt-version-face" onclick="promptVersionMenu(event)" title="Choose Prompt version">${esc(version)}</button><span class="prompt-version-steppers"><button type="button" onclick="event.stopPropagation();promptChangeVersion(-1)" title="Previous Prompt version" aria-label="Previous Prompt version" ${versionIndex===0?'disabled':''}>▴</button><button type="button" onclick="event.stopPropagation();promptChangeVersion(1)" title="Next Prompt version" aria-label="Next Prompt version" ${versionIndex===versions.length-1?'disabled':''}>▾</button></span></div></div>${detailPathHtml(data)}</div>
+          <div class="prompt-health-row"><span class="prompt-format">${esc(format)}</span>${syntaxHtml}</div>
+        </header>
+        <nav class="prompt-workspace-tabs" role="tablist">
+          <button class="prompt-workspace-tab ${promptWorkspaceTab==='source'?'active':''}" data-prompt-tab="source" role="tab" aria-selected="${promptWorkspaceTab==='source'}" onclick="promptWorkspaceSetTab('source')">Source</button>
+          <button class="prompt-workspace-tab ${promptWorkspaceTab==='render'?'active':''}" data-prompt-tab="render" role="tab" aria-selected="${promptWorkspaceTab==='render'}" onclick="promptWorkspaceSetTab('render')">Render</button>
+          <button class="prompt-workspace-tab ${promptWorkspaceTab==='compare'?'active':''}" data-prompt-tab="compare" role="tab" aria-selected="${promptWorkspaceTab==='compare'}" onclick="promptWorkspaceSetTab('compare')" ${versions.length < 2 ? 'disabled' : ''}>Compare</button>
+          <button class="prompt-workspace-tab ${promptWorkspaceTab==='metadata'?'active':''}" data-prompt-tab="metadata" role="tab" aria-selected="${promptWorkspaceTab==='metadata'}" onclick="promptWorkspaceSetTab('metadata')">Metadata</button>
+          <button class="prompt-workspace-tab ${promptWorkspaceTab==='dataset'?'active':''}" data-prompt-tab="dataset" role="tab" aria-selected="${promptWorkspaceTab==='dataset'}" onclick="promptWorkspaceSetTab('dataset')">Dataset</button>
+        </nav>
+        <section class="prompt-workspace-panel ${promptWorkspaceTab==='source'?'active':''}" data-prompt-panel="source">
+          <div class="prompt-source-toolbar"><span>${Number(analysis.lineCount)||0} lines · ${Number(analysis.charCount)||0} chars</span><button type="button" class="tbtn" onclick="promptOpenTextEditor()" title="Open this Prompt in the VS Code Text Editor">↗ Open in Text Editor</button></div>
+          <pre class="prompt-source"><code class="language-${lang}">${esc(content||'')}</code></pre>${!analysis.syntaxValid && analysis.syntaxError ? `<div class="prompt-render-error">${esc(analysis.syntaxError)}</div>` : ''}
+        </section>
+        <section class="prompt-workspace-panel ${promptWorkspaceTab==='render'?'active':''}" data-prompt-panel="render">
+          <div class="prompt-render-toolbar"><div class="prompt-mode" aria-label="Output mode"><button class="prompt-mode-button ${mode==='completion'?'active':''}" data-mode="completion" aria-pressed="${mode==='completion'}" onclick="promptSetRenderMode('completion')">Completion</button><button class="prompt-mode-button ${mode==='chat'?'active':''}" data-mode="chat" aria-pressed="${mode==='chat'}" onclick="promptSetRenderMode('chat')">Chat</button></div><button id="prompt-render-button" class="tbtn primary" onclick="promptRunRender(this)" ${analysis.syntaxValid !== true ? 'disabled' : ''}>▶ Render</button><span class="prompt-render-spacer"></span><select id="prompt-inference-backend" title="Model for Prompt inference"><option value="">Loading models…</option></select><button id="prompt-inference-button" type="button" class="tbtn" onclick="promptRunInference(this)" disabled>Run Inference</button></div>
+          <div id="prompt-render-output" class="prompt-render-output"><div class="prompt-render-empty">Enter sample values, then render the final prompt.</div></div>
+          <div id="prompt-inference-output" class="prompt-inference-output hidden"></div>
+        </section>
+        <section class="prompt-workspace-panel ${promptWorkspaceTab==='compare'?'active':''}" data-prompt-panel="compare">
+          <div class="prompt-compare-toolbar"><label>From<select id="prompt-compare-from" onchange="promptRenderComparison()">${versionOptions}</select></label><span>→</span><label>To<select id="prompt-compare-to" onchange="promptRenderComparison()">${versionOptions}</select></label></div>
+          <div id="prompt-inline-diff"></div>
+        </section>
+        <section class="prompt-workspace-panel prompt-metadata-panel ${promptWorkspaceTab==='metadata'?'active':''}" data-prompt-panel="metadata">
+          <div class="prompt-note"><strong>Version note</strong><span>${esc(meta?.note || 'No version note')}</span><button type="button" class="prompt-note-edit" onclick="promptEditVersionNote()" title="Edit Version note" aria-label="Edit Version note">✎</button></div>
+          <div id="prompt-note-editor" class="prompt-note-editor hidden"><textarea id="prompt-note-input" rows="4" aria-label="Version note"></textarea><div><span id="prompt-note-error"></span><button type="button" class="tbtn" onclick="promptCancelVersionNote()">Cancel</button><button type="button" id="prompt-note-save" class="tbtn primary" onclick="promptSaveVersionNote(this)">Save…</button></div></div>
+          <section class="prompt-inheritance"><div class="prompt-inheritance-title"><strong>Template inheritance</strong><span>base → extender</span></div>${promptInheritanceTreeHtml(analysis.templateTree)}</section>
+          <section class="prompt-flow" aria-label="Prompt flow">
+            <div class="prompt-flow-stage"><small>Inputs</small><strong>${variables.length}</strong></div>
+            <span class="prompt-flow-arrow">→</span>
+            <div class="prompt-flow-stage template"><small>Template</small><strong title="${esc(file)}">${esc(file)}</strong></div>
+            <span class="prompt-flow-arrow">→</span>
+            <div class="prompt-flow-stage output"><small>Output</small><strong title="${mode === 'chat' ? 'Chat messages' : 'Completion text'}">${mode === 'chat' ? 'Chat' : 'Completion'}</strong></div>
+          </section>
+          <div class="meta-grid prompt-template-facts"><span class="ml">Engine</span><span class="mv">uone-prompt-manager</span><span class="ml">Format</span><span class="mv">${esc(format)}</span><span class="ml">Template size</span><span class="mv">${Number(analysis.lineCount)||0} lines · ${Number(analysis.charCount)||0} chars</span><span class="ml">Input count</span><span class="mv">${variables.length}</span></div>
+        </section>
+        <section class="prompt-workspace-panel prompt-dataset-panel ${promptWorkspaceTab==='dataset'?'active':''}" data-prompt-panel="dataset">
+          <div class="prompt-variable-summary"><div><strong>Jinja variables</strong><span>Hover a variable to inspect its closed version ranges.</span></div><div id="prompt-variable-coverage"></div></div>
+          <div class="prompt-dataset-bar"><strong>Test Dataset</strong><span id="prompt-dataset-status">No Dataset</span><span class="prompt-dataset-spacer"></span><input id="prompt-dataset-file" type="file" accept=".json,.jsonl,.ndjson,application/json" onchange="promptLoadDatasetFile(this)"><button type="button" class="tbtn" onclick="promptDatasetAddRow()">＋ Add Row</button><button type="button" class="tbtn" onclick="document.getElementById('prompt-dataset-file').click()">↥ Load</button><button type="button" class="tbtn" onclick="promptToggleDatasetPaste()">Paste</button><div id="prompt-dataset-controls" class="prompt-dataset-controls hidden"><button id="prompt-dataset-prev" type="button" onclick="promptDatasetMove(-1)" title="Previous Dataset row" aria-label="Previous Dataset row">‹</button><span id="prompt-dataset-position"></span><button id="prompt-dataset-next" type="button" onclick="promptDatasetMove(1)" title="Next Dataset row" aria-label="Next Dataset row">›</button><button type="button" onclick="promptClearDataset()" title="Clear Dataset" aria-label="Clear Dataset">×</button></div></div>
+          <div id="prompt-dataset-paste" class="prompt-dataset-paste hidden"><textarea id="prompt-dataset-text" rows="5" placeholder='[{"AdAsset":"Example ad","Src":"Landing page text"}]' aria-label="JSON or JSONL Dataset"></textarea><div><button type="button" class="tbtn" onclick="promptToggleDatasetPaste()">Cancel</button><button type="button" class="tbtn primary" onclick="promptCommitPastedDataset()">Use Dataset</button></div></div>
+          <div id="prompt-dataset-table" class="prompt-dataset-table"><div class="prompt-dataset-empty">Load or paste JSON/JSONL to create Dataset rows.</div></div>
+        </section>
+      </div>`;
+    const fromSelect = document.getElementById('prompt-compare-from'), toSelect = document.getElementById('prompt-compare-to');
+    if (fromSelect) fromSelect.value = fromVersion;
+    if (toSelect) toSelect.value = toVersion;
+    if (promptWorkspaceTab === 'compare') promptRenderComparison();
+    if (promptWorkspaceTab === 'dataset') { promptRefreshVariableCoverage(); promptRefreshDataset(); }
+    ask('listAiBackends', {});
+    highlightSelectedPromptTree(data);
+    if (window.innerWidth <= 760) setMainSidebarCollapsed(true, false);
 
   } else if (data.type === 'promptDiff') {
     const { project, task, file, allVersions } = data;
@@ -663,7 +1163,7 @@ function renderDetail(data) {
     const verB = versions[versions.length - 1];
     const opts = versions.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
     el.innerHTML = `
-      <div class="d-title">${esc(project)} / ${esc(task)} / ${esc(file)}</div>
+      <div class="d-title">${esc(project)} / ${esc(task)} / ${esc(file)} ${privacyLock(data.isPrivate)}</div>
       <div class="diff-controls">
         <span style="font-size:12px;color:var(--muted)">Compare:</span>
         <select id="diff-ver-a">${opts}</select>
@@ -715,7 +1215,7 @@ function renderDetail(data) {
     }
     const toc = buildToc(data.readme||'');
     el.innerHTML = `
-      <div class="d-title"><span>${esc(data.name)}</span>${packageSourceTag(data.source)}</div>
+      <div class="d-title"><span>${esc(data.name)}</span>${privacyLock(data.isPrivate)}${packageSourceTag(data.source)}</div>
       <hr class="div">
       <details style="margin-bottom:12px">
         <summary style="cursor:pointer;color:var(--muted);font-size:11px">File tree</summary>
@@ -728,7 +1228,7 @@ function renderDetail(data) {
     const ext = (data.file||'').split('.').pop()||'';
     const lang = {sh:'bash',py:'python',js:'javascript',ts:'typescript',r:'r',sql:'sql',cs:'csharp',ps1:'powershell',script:'scope',usql:'sql'}[ext]||'text';
     el.innerHTML = `
-      <div class="d-title">${esc(data.file||'')}</div>
+      <div class="d-title">${esc(data.file||'')} ${privacyLock(data.isPrivate)}</div>
       ${detailPathHtml(data)}
       <div class="d-meta">
         ${(data.langs||(data.lang?data.lang.split(' + '):[])).map(l=>`<span class="tag" style="background:var(--panel)">🏷 ${esc(l)}</span>`).join('')}
@@ -812,17 +1312,22 @@ function doAiSummary() {
 // Populate the AI backend dropdown from the scan result
 function renderAiBackends(backends) {
   const sel = document.getElementById('ai-backend-select');
-  if (!sel) return;
-  if (!backends || !backends.length) {
-    sel.innerHTML = '<option value="">No backend available</option>';
-    return;
+  if (sel) {
+    if (!backends || !backends.length) sel.innerHTML = '<option value="">No backend available</option>';
+    else {
+      const prev = sel.dataset.chosen || '';
+      sel.innerHTML = backends.map(b => `<option value="${esc(b.id)}">${esc(b.label)}</option>`).join('');
+      if (prev && backends.some(b => b.id === prev)) sel.value = prev;
+      sel.onchange = () => { sel.dataset.chosen = sel.value; peekCachedSummary(); };
+      peekCachedSummary();
+    }
   }
-  const prev = sel.dataset.chosen || '';
-  sel.innerHTML = backends.map(b => `<option value="${esc(b.id)}">${esc(b.label)}</option>`).join('');
-  if (prev && backends.some(b => b.id === prev)) sel.value = prev;
-  sel.onchange = () => { sel.dataset.chosen = sel.value; peekCachedSummary(); };
-  // Auto-show a cached summary for the selected backend, if one exists
-  peekCachedSummary();
+  const promptSelect = document.getElementById('prompt-inference-backend');
+  const promptButton = document.getElementById('prompt-inference-button');
+  if (!promptSelect || !promptButton) return;
+  const usable = (backends || []).filter(backend => !backend.id.endsWith(':needkey'));
+  promptSelect.innerHTML = usable.length ? usable.map(backend => `<option value="${esc(backend.id)}">${esc(backend.label)}</option>`).join('') : '<option value="">No model available</option>';
+  promptButton.disabled = !usable.length || currentDetail?.analysis?.syntaxValid !== true;
 }
 
 // Ask for a cached summary only (never triggers a new AI call)
@@ -1380,7 +1885,8 @@ function showPaperMenu(x, y, items) {
   for (const it of items) {
     if (it.sep) { const d = document.createElement('div'); d.className = 'pctx-sep'; m.appendChild(d); continue; }
     const el = document.createElement('div');
-    el.className = 'pctx-item' + (it.header ? ' pctx-header' : '') + (it.danger ? ' pctx-danger' : '') + (it.active ? ' pctx-active' : '') + (it.children ? ' pctx-has-submenu' : '');
+    el.className = 'pctx-item' + (it.header ? ' pctx-header' : '') + (it.danger ? ' pctx-danger' : '') + (it.active ? ' pctx-active' : '') + (it.status ? ` prompt-version-${it.status}` : '') + (it.children ? ' pctx-has-submenu' : '');
+    if (it.version) el.dataset.promptVersion = it.version;
     el.textContent = it.label;
     if (it.children) {
       const arrow = document.createElement('span'); arrow.className = 'pctx-arrow'; arrow.textContent = '›'; el.appendChild(arrow);
@@ -1470,21 +1976,22 @@ function paperGroupMenu(ev, group) {
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
 
-// Right-click a topic folder -> move every paper under it (incl. subfolders) to a group.
-function paperFolderMenu(ev, b64, name) {
+// Right-click a physical Paper folder -> create content, set top-level privacy, or move its papers to a display group.
+function paperFolderMenu(ev, b64, name, path) {
   ev.preventDefault(); ev.stopPropagation();
   let slugs = [];
   try { slugs = JSON.parse(decodeURIComponent(escape(atob(b64)))); } catch (e) {}
   if (!slugs.length) return;
-  const items = [{ label: 'Topic: ' + name, header: true }];
-  items.push({ label: '＋ New Paper…', onClick: () => ask('createKnowledgeItem', { area: 'papers', kind: 'paper', topic: name }) });
-  items.push({ label: '💡 New Idea…', onClick: () => ask('createKnowledgeItem', { area: 'papers', kind: 'idea', topic: name }) });
+  const items = [{ label: 'Folder: ' + name, header: true }];
+  appendPrivacyMenu(items, 'papers', path);
+  items.push({ label: '＋ New Paper…', onClick: () => ask('createKnowledgeItem', { area: 'papers', kind: 'paper', category: path }) });
+  items.push({ label: '💡 New Idea…', onClick: () => ask('createKnowledgeItem', { area: 'papers', kind: 'idea', category: path }) });
   items.push({ sep: true });
-  items.push({ label: 'Move topic (' + slugs.length + ') to group', header: true });
+  items.push({ label: 'Move folder contents (' + slugs.length + ') to group', header: true });
   for (const g of paperGroupsList) {
     items.push({ label: '   ' + g.name, onClick: () => ask('paperSetGroupMany', { slugs, group: g.name }) });
   }
-  items.push({ label: '＋ New group…', onClick: () => pkModal({ title: 'Move “' + name + '” to a new group', input: true, okLabel: 'Create & move', onOk: v => { if (v.trim()) ask('paperSetGroupMany', { slugs, group: v.trim() }); } }) });
+  items.push({ label: '＋ New group…', onClick: () => pkModal({ title: 'Move folder “' + name + '” to a new group', input: true, okLabel: 'Create & move', onOk: v => { if (v.trim()) ask('paperSetGroupMany', { slugs, group: v.trim() }); } }) });
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
 
@@ -1495,14 +2002,15 @@ function promptFolderMenu(ev, project, task, version) {
     { label: scope, header: true },
     { label: '＋ New Prompt…', onClick: () => ask('createPromptItem', { project, task, version }) },
   ];
+  if (!task && !version) appendPrivacyMenu(items, 'prompts', project);
   items.push({ sep:true });
   items.push({ label:'🗑 Move folder to Trash…', danger:true, onClick:()=>moveKnowledgeFolderToTrash('prompts',[project,task,version].filter(Boolean).join('/'),scope) });
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
 
-function promptItemTrashMenu(ev, path, name) {
+function promptItemTrashMenu(ev, path, name, project, task, version) {
   ev.preventDefault(); ev.stopPropagation();
-  showPaperMenu(ev.clientX, ev.clientY, [{label:name,header:true},{label:'🗑 Move to Trash…',danger:true,onClick:()=>moveKnowledgeItemToTrash('prompts',path,name)}]);
+  showPaperMenu(ev.clientX, ev.clientY, [{label:name,header:true},{label:'↗ Open in Text Editor',onClick:()=>ask('promptOpenTextEditor',{project,task,version,file:name})},{sep:true},{label:'🗑 Move to Trash…',danger:true,onClick:()=>moveKnowledgeItemToTrash('prompts',path,name)}]);
 }
 
 function moveKnowledgeFolderToTrash(area, path, name) {
@@ -1520,8 +2028,9 @@ function skillFolderMenu(ev, b64, name) {
   try { prefix = decodeURIComponent(escape(atob(b64))); } catch (e) {}
   if (!prefix) return;
   const items = [{ label: '📁 ' + name, header: true }];
+  appendPrivacyMenu(items, 'skills', prefix);
   items.push({ label: '＋ New Skill…', onClick: () => ask('createKnowledgeItem', { area: 'skills', category: prefix }) });
-  items.push({ label: '➕ Create Sub Folder…', onClick: () => pkModal({
+  items.push({ label: '＋ Create Subfolder…', onClick: () => pkModal({
     title: 'Create sub-folder', message: 'New folder under “' + prefix + '”.',
     input: true, okLabel: 'Create', onOk: v => { const n = v.trim(); if (n) ask('folderCreate', { area: 'skills', parent: prefix, name: n }); } }) });
   items.push({ sep: true });
@@ -1566,8 +2075,9 @@ function noteFolderMenu(ev, b64, name) {
   try { prefix = decodeURIComponent(escape(atob(b64))); } catch (e) {}
   if (!prefix) return;
   const items = [{ label: '📁 ' + name, header: true }];
+  appendPrivacyMenu(items, 'notes', prefix);
   items.push({ label: '＋ New Note…', onClick: () => ask('createKnowledgeItem', { area: 'notes', category: prefix }) });
-  items.push({ label: '➕ Create Sub Folder…', onClick: () => pkModal({
+  items.push({ label: '＋ Create Subfolder…', onClick: () => pkModal({
     title: 'Create sub-folder', message: 'New folder under “' + prefix + '”.',
     input: true, okLabel: 'Create', onOk: v => { const n = v.trim(); if (n) ask('folderCreate', { area: 'notes', parent: prefix, name: n }); } }) });
   const fpinned = notePinnedFolders.includes(prefix);
@@ -1598,6 +2108,7 @@ function scriptFolderMenu(ev, b64, name) {
   try { prefix = decodeURIComponent(escape(atob(b64))); } catch (e) {}
   if (!prefix) return;
   const items = [{ label: '📁 ' + name, header: true }];
+  appendPrivacyMenu(items, 'scripts', prefix);
   items.push({ label: '＋ New Script…', onClick: () => ask('createScript', { folder: prefix }) });
   items.push({ label: '📂 Open Folder (new window)', onClick: () => ask('openStoreFolder', { area: 'scripts', rel: prefix }) });
   items.push({ sep: true });
@@ -1643,6 +2154,7 @@ function packageItemMenu(ev, name) {
     { sep: true },
     { label: '🗑 Delete Package…', danger: true, onClick: () => confirmDeletePackage(name) },
   ];
+  appendPrivacyMenu(items, 'packages', name);
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
 
@@ -1679,7 +2191,7 @@ function paperCard(p, q, pad) {
   const grp = JSON.stringify(p.group || 'Papers').replace(/"/g, '&quot;');
   const tpc = JSON.stringify(p.topic || '').replace(/"/g, '&quot;');
   return `<div class="paper-card${p.pinned ? ' pc-pinned' : ''}" style="margin-left:${pad}px" onclick="openItem('paper','${esc(p.slug)}')" oncontextmenu="paperCardMenu(event,'${esc(p.slug)}',${grp},${p.pinned ? 'true' : 'false'},${tpc})">
-    <div class="pc-title"><span class="pc-star${p.pinned ? ' on' : ''}" onclick="event.stopPropagation();togglePin('${esc(p.slug)}',${p.pinned ? 'false' : 'true'})" title="${p.pinned ? 'Unpin' : 'Pin'}">${p.pinned ? '★' : '☆'}</span> ${hl(p.title, q)}</div>
+    <div class="pc-title"><span class="pc-star${p.pinned ? ' on' : ''}" onclick="event.stopPropagation();togglePin('${esc(p.slug)}',${p.pinned ? 'false' : 'true'})" title="${p.pinned ? 'Unpin' : 'Pin'}">${p.pinned ? '★' : '☆'}</span> ${privacyLock(p.isPrivate)}${hl(p.title, q)}</div>
     <div class="pc-meta">
       ${p.citationCount ? `<span class="pc-cite" title="cited by ${p.citationCount} paper(s)">${p.citationCount}★</span>` : ''}
       ${p.year ? `<span>${p.year}</span>` : ''}
@@ -1703,7 +2215,7 @@ function paperDetailHtml(d) {
   const concl = d.conclusions || [];
   const cites = d.resolvedCites || d.cites || [];
   return `
-    <div class="d-title"><span>${esc(d.title)}</span><button class="meta-edit" onclick="editCurrentMetadata('title')" title="Edit title">✎</button></div>
+    <div class="d-title"><span>${esc(d.title)}</span>${privacyLock(d.isPrivate)}<button class="meta-edit" onclick="editCurrentMetadata('title')" title="Edit title">✎</button></div>
     ${detailPathHtml(d)}
     <div class="d-meta">
       ${d.kind === 'idea' ? '<span class="pc-cite" style="background:#f4b400;color:#1a1200">Idea</span>' : ''}

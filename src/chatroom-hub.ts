@@ -46,6 +46,7 @@ interface HubConn {
 
 interface RoomState {
   roomId: string;
+  displayName: string;
   history: ChatMessage[];   // CHAT ONLY — never files
   owner:   string;          // creator's cid (or conn id) — room deactivates when they leave
   ownerName: string;
@@ -96,6 +97,7 @@ export class ChatHub {
   private secretStorage?: SecretStorageLike;
   private approvals?: ChatJoinApprovalManager;
   private hostTokens = new Map<string, string>();
+  private usedHostProofs = new Map<string, number>();
   private approvalChanged?: () => void;
   private advertisedHost = "";
 
@@ -108,7 +110,7 @@ export class ChatHub {
     if (!value || !/^[a-z0-9](?:[a-z0-9.:-]*[a-z0-9])?$/i.test(value)) throw new Error("Invalid Chatroom advertised host.");
     this.advertisedHost = value;
     if (this.lifecycle && this.isRunning) {
-      for (const [room, state] of this.rooms) this.lifecycle.publishActiveDescriptor(state.roomId, room, `ws://${this.publicHost}:${this.port}`);
+      for (const state of this.rooms.values()) this.lifecycle.publishActiveDescriptor(state.roomId, state.displayName, `ws://${this.publicHost}:${this.port}`);
     }
   }
 
@@ -156,12 +158,11 @@ export class ChatHub {
     if (!this.lifecycle) throw new Error("Room lifecycle is unavailable.");
     const target = (await this.lifecycle.listStoredRooms()).find(room => room.roomId === roomId);
     if (!target) throw new Error(`Stored Room ${roomId} was not found.`);
-    const roomName = ChatHub.canonRoom(target.roomName);
-    const localMatches = [...this.rooms.entries()].filter(([name, state]) => state.roomId === roomId || name === roomName);
-    for (const [name] of localMatches) {
-      if (this.membersOf(name).length) throw new Error(`Room "${name}" still has connected members. Close it before repairing.`);
+    const localMatches = [...this.rooms.entries()].filter(([, state]) => state.roomId === roomId || ChatHub.canonRoom(state.displayName) === ChatHub.canonRoom(target.roomName));
+    for (const [localRoomId, state] of localMatches) {
+      if (this.membersOf(localRoomId).length) throw new Error(`Room "${state.displayName}" still has connected members. Close it before repairing.`);
     }
-    for (const [name] of localMatches) await this.deactivateRoom(name, "stored-room-repair");
+    for (const [localRoomId] of localMatches) await this.deactivateRoom(localRoomId, "stored-room-repair");
     const repaired = await this.lifecycle.repairStoredRoom(roomId);
     this.storedRooms = await this.lifecycle.listStoredRooms();
     return { ...repaired, closedOrphans: localMatches.length };
@@ -176,49 +177,82 @@ export class ChatHub {
 
   get port(): number { return this._port; }
   get isRunning(): boolean { return !!this.wss; }
-  get roomNames(): string[] { return [...this.rooms.keys()]; }
+  get roomNames(): string[] { return [...this.rooms.values()].map(state => state.displayName); }
 
   // Canonical room identity: trim, collapse internal whitespace, and case-fold so
   // "General", " general ", and "general" all resolve to ONE room per host (no
   // confusing same-name duplicates).
   static canonRoom(name: string | undefined): string {
-    return (name || "general").trim().replace(/\s+/g, " ").toLowerCase().slice(0, 80) || "general";
+    return ChatHub.displayRoomName(name).toLocaleLowerCase();
+  }
+
+  static displayRoomName(name: string | undefined): string {
+    return Array.from((name || "general").normalize("NFKC").trim().replace(/\s+/g, " ")).slice(0, 80).join("") || "general";
+  }
+
+  private findRoomIdByName(name: string | undefined): string | undefined {
+    const key = ChatHub.canonRoom(name);
+    return [...this.rooms.entries()].find(([, state]) => ChatHub.canonRoom(state.displayName) === key)?.[0];
+  }
+
+  private roomName(roomId: string): string {
+    return this.rooms.get(roomId)?.displayName || roomId;
   }
 
   // ── Admin (available to the local hub owner) ──────────────────────────────
   adminRooms(): AdminRoomInfo[] {
-    return [...this.rooms.keys()].map(room => ({
-      roomId: this.rooms.get(room)?.roomId || "",
-      room,
-      owner: this.rooms.get(room)?.ownerName || "—",
-      members: this.membersOf(room).length,
+    return [...this.rooms.values()].map(state => ({
+      roomId: state.roomId,
+      room: state.displayName,
+      owner: state.ownerName || "—",
+      members: this.membersOf(state.roomId).length,
     }));
   }
-  async adminCloseRoom(room: string): Promise<void> { await this.deactivateRoom(room, "closed by admin"); }
-  async adminCloseAll(): Promise<void> { for (const room of [...this.rooms.keys()]) await this.deactivateRoom(room, "closed by admin"); }
+  async adminCloseRoom(room: string): Promise<void> { const roomId = this.rooms.has(room) ? room : this.findRoomIdByName(room); if (roomId) await this.deactivateRoom(roomId, "closed by admin"); }
+  async adminCloseAll(): Promise<void> { for (const roomId of [...this.rooms.keys()]) await this.deactivateRoom(roomId, "closed by admin"); }
+
+  async forceCloseRemoteRoom(roomId: string): Promise<void> {
+    if (!this.lifecycle) throw new Error("Chat Hub lifecycle is not configured.");
+    const request = await this.lifecycle.activeRoomCloseRequest(roomId);
+    const endpoint = new URL(request.activeUrl);
+    endpoint.protocol = endpoint.protocol === "wss:" ? "https:" : "http:";
+    endpoint.pathname = `/api/rooms/${encodeURIComponent(roomId)}/close`;
+    endpoint.search = ""; endpoint.hash = "";
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "X-PKM-Host-Timestamp": String(request.proof.timestamp),
+        "X-PKM-Host-Nonce": request.proof.nonce,
+        "X-PKM-Host-Proof": request.proof.signature,
+      },
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) throw new Error(`Active Host returned ${response.status}: ${await response.text()}`);
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      this.storedRooms = await this.lifecycle.listStoredRooms();
+      const room = this.storedRooms.find(item => item.roomId === roomId);
+      if (room?.canRehost && !room.activeElsewhere) return;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error("The active Host accepted the close request but did not release the Room within 15 seconds.");
+  }
 
   async renameActiveRoom(roomId: string, roomName: string): Promise<string> {
     await this.ensurePersistence();
     if (!this.lifecycle) throw new Error("Room lifecycle is unavailable.");
-    const current = [...this.rooms.entries()].find(([, state]) => state.roomId === roomId);
-    if (!current) throw new Error(`Active Room ${roomId} was not found.`);
-    const [previousRoom, state] = current;
-    const nextRoom = ChatHub.canonRoom(roomName);
-    if (nextRoom !== previousRoom && this.rooms.has(nextRoom)) throw new Error(`An active Room named "${nextRoom}" already exists.`);
+    const state = this.rooms.get(roomId);
+    if (!state) throw new Error(`Active Room ${roomId} was not found.`);
+    const previousRoom = state.displayName;
+    const nextRoom = ChatHub.displayRoomName(roomName);
+    const collision = this.findRoomIdByName(nextRoom);
+    if (collision && collision !== roomId) throw new Error(`An active Room named "${nextRoom}" already exists.`);
     await this.lifecycle.renameActiveRoom(roomId, nextRoom);
     this.lifecycle.publishActiveDescriptor(roomId, nextRoom, `ws://${this.publicHost}:${this.port}`);
     if (nextRoom === previousRoom) return nextRoom;
-    this.rooms.delete(previousRoom);
-    this.rooms.set(nextRoom, state);
-    const secret = this.roomSecret.get(previousRoom);
-    const hostToken = this.hostTokens.get(previousRoom);
-    this.roomSecret.delete(previousRoom);
-    this.hostTokens.delete(previousRoom);
-    if (secret) this.roomSecret.set(nextRoom, secret);
-    if (hostToken) this.hostTokens.set(nextRoom, hostToken);
-    const members = [...this.conns.values()].filter(conn => conn.joined && conn.room === previousRoom);
+    state.displayName = nextRoom;
+    const members = [...this.conns.values()].filter(conn => conn.joined && conn.room === roomId);
     for (const conn of members) {
-      conn.room = nextRoom;
       this.sendTo(conn.ws, { t: "room.renamed", room: nextRoom, previousRoom });
     }
     this.log(`room ${previousRoom} renamed to ${nextRoom}`);
@@ -261,7 +295,13 @@ export class ChatHub {
     if (this.wss) return;
     await this.ensurePersistence();
     await new Promise<void>((resolve, reject) => {
-      const httpServer = createServer((req, res) => this.onHttp(req, res));
+      const httpServer = createServer((req, res) => {
+        void this.onHttp(req, res).catch(error => {
+          this.log(`chat hub http handler failed: ${(error as Error).message}`);
+          if (!res.headersSent) res.writeHead(500, { "Content-Type": "text/plain" });
+          if (!res.writableEnded) res.end("Chat Hub request failed");
+        });
+      });
       // Attach the error handler BEFORE listening so a bind failure (e.g. port in
       // use) rejects cleanly instead of surfacing as an unhandled 'error' event.
       const onListenError = (err: NodeJS.ErrnoException) => {
@@ -296,9 +336,9 @@ export class ChatHub {
 
   async createRoom(roomName: string, requestedJoinSecret?: string): Promise<{ roomId: string; room: string; secret: string; hostToken: string }> {
     if (!this.lifecycle) throw new Error("Chat Hub lifecycle is not configured or running.");
-    const room = ChatHub.canonRoom(roomName);
+    const room = ChatHub.displayRoomName(roomName);
     this.storedRooms = await this.lifecycle.listStoredRooms();
-    if (this.rooms.has(room) || this.storedRooms.some(item => ChatHub.canonRoom(item.roomName) === room)) {
+    if (this.findRoomIdByName(room) || this.storedRooms.some(item => ChatHub.canonRoom(item.roomName) === ChatHub.canonRoom(room))) {
       throw new Error(`A Room named "${room}" already exists. Rehost the stored Room instead.`);
     }
     const active = await this.lifecycle.createRoom(room, requestedJoinSecret);
@@ -312,27 +352,27 @@ export class ChatHub {
     }
     this.installActiveRoom(active);
     const hostToken = randomBytes(24).toString("base64url");
-    this.hostTokens.set(room, hostToken);
+    this.hostTokens.set(active.roomId, hostToken);
     return { roomId: active.roomId, room, secret: active.joinSecret, hostToken };
   }
 
   async rehostRoom(roomId: string): Promise<{ roomId: string; room: string; secret: string; hostToken: string }> {
     if (!this.lifecycle) throw new Error("Chat Hub lifecycle is not configured or running.");
     const active = await this.lifecycle.rehostRoom(roomId);
-    const room = ChatHub.canonRoom(active.roomName);
+    const room = ChatHub.displayRoomName(active.roomName);
     this.lifecycle.publishActiveDescriptor(active.roomId, room, `ws://${this.publicHost}:${this.port}`);
-    if (this.rooms.has(room)) {
+    if (this.rooms.has(roomId)) {
       await this.lifecycle.deactivateRoom(roomId, "name-conflict");
       throw new Error(`An active Room named "${room}" already exists.`);
     }
     this.installActiveRoom(active);
     const hostToken = randomBytes(24).toString("base64url");
-    this.hostTokens.set(room, hostToken);
+    this.hostTokens.set(roomId, hostToken);
     return { roomId, room, secret: active.joinSecret, hostToken };
   }
 
   private installActiveRoom(active: ActiveChatRoom): void {
-    const room = ChatHub.canonRoom(active.roomName);
+    const room = ChatHub.displayRoomName(active.roomName);
     const roster = new Map<string, RosterEntry>();
     for (const membership of active.identityState.memberships) {
       if (membership.forgottenAt != null) continue;
@@ -357,12 +397,12 @@ export class ChatHub {
       ? roster.get(`participant:${active.hostParticipantId}`)?.user || ""
       : "";
     const state: RoomState = {
-      roomId: active.roomId, history: active.messages.map(message => this.fromPersisted(message)),
+      roomId: active.roomId, displayName: room, history: active.messages.map(message => this.fromPersisted(message)),
       owner: active.hostParticipantId || "", ownerName, graceTimer: null, roster, muted: new Set(),
       receipts: new Map(),
     };
-    this.rooms.set(room, state);
-    this.roomSecret.set(room, active.joinSecret);
+    this.rooms.set(active.roomId, state);
+    this.roomSecret.set(active.roomId, active.joinSecret);
     this.trimHistory(state);
   }
 
@@ -392,8 +432,33 @@ export class ChatHub {
   }
 
   // Serve the browser view (a self-contained monitoring/participation page).
-  private onHttp(req: IncomingMessage, res: ServerResponse): void {
+  private async onHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = req.url || "/";
+    const closeMatch = req.method === "POST" && /^\/api\/rooms\/([^/]+)\/close$/.exec(url);
+    if (closeMatch) {
+      const roomId = decodeURIComponent(closeMatch[1]);
+      const proof = {
+        timestamp: Number(req.headers["x-pkm-host-timestamp"] || 0),
+        nonce: String(req.headers["x-pkm-host-nonce"] || ""),
+        signature: String(req.headers["x-pkm-host-proof"] || ""),
+      };
+      const now = Date.now();
+      for (const [key, expiresAt] of this.usedHostProofs) if (expiresAt <= now) this.usedHostProofs.delete(key);
+      const proofKey = `${roomId}:${proof.nonce}`;
+      if (this.usedHostProofs.has(proofKey)) {
+        res.writeHead(409, { "Content-Type": "text/plain" }); res.end("Host proof was already used"); return;
+      }
+      this.usedHostProofs.set(proofKey, now + 30_000);
+      if (!this.lifecycle || !await this.lifecycle.authorizeHostCloseProof(roomId, proof)) {
+        this.usedHostProofs.delete(proofKey);
+        res.writeHead(401, { "Content-Type": "text/plain" }); res.end("Invalid Host proof"); return;
+      }
+      const active = [...this.rooms.entries()].find(([, state]) => state.roomId === roomId);
+      if (!active) { res.writeHead(404, { "Content-Type": "text/plain" }); res.end("Room is not active on this Hub"); return; }
+      res.writeHead(202, { "Content-Type": "application/json", "Connection": "close" }); res.end(JSON.stringify({ accepted: true }));
+      setImmediate(() => { void this.deactivateRoom(active[0], "force-closed by Room owner").catch(error => this.log(`force-close failed for ${roomId}: ${(error as Error).message}`)); });
+      return;
+    }
     if (req.method === "GET" && (url === "/" || url.startsWith("/?") || url.startsWith("/room"))) {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(browserViewHtml());
@@ -405,54 +470,43 @@ export class ChatHub {
         ok: true,
         rooms: this.roomNames.length,
         members: this.conns.size,
-        activeRooms: [...this.rooms.entries()].map(([room, state]) => ({ room, roomId: state.roomId })),
+        activeRooms: [...this.rooms.values()].map(state => ({ room: state.displayName, roomId: state.roomId })),
       }));
       return;
     }
     res.writeHead(404); res.end("Not found");
   }
 
-  private roomState(room: string): RoomState {
-    let s = this.rooms.get(room);
-    if (!s) {
-      s = {
-        roomId: randomUUID(), history: [], owner: "", ownerName: "", graceTimer: null,
-        roster: new Map(), muted: new Set(),
-        receipts: new Map(),
-      };
-      this.rooms.set(room, s);
-      this.loadArchive(room, s);   // restore prior chat so rejoiners see history
-    }
-    return s;
+  private roomState(roomId: string): RoomState {
+    const state = this.rooms.get(roomId);
+    if (!state) throw new Error(`Active Room ${roomId} was not found.`);
+    return state;
   }
 
-  private async ensureRoomState(room: string): Promise<RoomState> {
-    const existing = this.rooms.get(room);
+  private async ensureRoomState(roomId: string, displayName: string): Promise<RoomState> {
+    const existing = this.rooms.get(roomId);
     if (existing) return existing;
-    const stored = this.storedRooms.find(candidate => ChatHub.canonRoom(candidate.roomName) === room);
-    const roomId = stored?.roomId || randomUUID();
+    const stored = this.storedRooms.find(candidate => candidate.roomId === roomId);
     let history: ChatMessage[] = [];
     if (this.persistence) {
-      const opened = await this.persistence.openRoom(roomId, room);
+      const opened = await this.persistence.openRoom(roomId, displayName);
       history = opened.messages.map(message => this.fromPersisted(message));
       if (!stored && !history.length) {
-        const legacy = this.readLegacyArchive(room);
+        const legacy = this.readLegacyArchive(displayName);
         if (legacy.length) {
           await this.persistence.appendMany(roomId, legacy.map(message => this.toPersisted(message)));
           history = legacy;
         }
       }
     } else {
-      const temporary = this.roomState(room);
-      temporary.roomId = roomId;
-      return temporary;
+      throw new Error("Room persistence is unavailable.");
     }
     const state: RoomState = {
-      roomId, history, owner: "", ownerName: "", graceTimer: null,
+      roomId, displayName, history, owner: "", ownerName: "", graceTimer: null,
       roster: new Map(), muted: new Set(),
       receipts: new Map(),
     };
-    this.rooms.set(room, state);
+    this.rooms.set(roomId, state);
     this.trimHistory(state);
     return state;
   }
@@ -536,6 +590,7 @@ export class ChatHub {
   // Kick everyone out of a room and drop all of its state (no zombie rooms).
   private async deactivateRoom(room: string, reason: string): Promise<void> {
     const st = this.rooms.get(room);
+    const displayName = st?.displayName || room;
     if (st?.graceTimer) { clearTimeout(st.graceTimer); st.graceTimer = null; }
     const flush = this.flushTimers.get(room);
     if (flush) { clearTimeout(flush); this.flushTimers.delete(room); }
@@ -547,11 +602,11 @@ export class ChatHub {
     else this.flushArchive(room);
     const members = [...this.conns.values()].filter(c => c.joined && c.room === room);
     for (const c of members) {
-      this.sendTo(c.ws, { t: "closed", room, reason });
+      this.sendTo(c.ws, { t: "closed", room: displayName, reason });
       this.conns.delete(c.ws);
       try { c.ws.close(); } catch { /* ignore */ }
     }
-    this.log(`room ${room} deactivated: ${reason}`);
+    this.log(`room ${displayName} (${room}) deactivated: ${reason}`);
   }
 
   private onConnection(ws: WebSocket): void {
@@ -602,37 +657,38 @@ export class ChatHub {
       }
       if (frame.t !== "join") { this.sendTo(conn.ws, { t: "error", code: "not-joined", msg: "join first" }); return; }
       const desired = (frame.user || "anon").slice(0, 60);
-      const room    = ChatHub.canonRoom(frame.room);
+      const requestedName = ChatHub.displayRoomName(frame.room);
+      const room = frame.roomId && this.rooms.has(frame.roomId) ? frame.roomId : this.findRoomIdByName(requestedName);
       const cid     = (frame.cid  || "").slice(0, 32);
       const token   = frame.token ?? "";
       const kind: MemberKind = frame.kind === "agent" ? "agent" : frame.kind === "browser" ? "browser" : "human";
       const nameKey = desired.trim().normalize("NFKC").toLocaleLowerCase();
-      const existingState = this.rooms.get(room);
-      if (frame.roomId && existingState?.roomId !== frame.roomId) {
-        this.sendTo(conn.ws, { t: "error", code: "room-mismatch", msg: `Room identity does not match the active Room "${room}".` });
+      const existingState = room ? this.rooms.get(room) : undefined;
+      if (frame.roomId && (!existingState || room !== frame.roomId)) {
+        this.sendTo(conn.ws, { t: "error", code: "room-mismatch", msg: `Room UUID does not match an active Room.` });
         try { conn.ws.close(); } catch { /* ignore */ }
         return;
       }
-      const known = this.roomSecret.get(room);
+      const known = room ? this.roomSecret.get(room) : undefined;
       if (known !== undefined) {
         if (!constantTimeEquals(token, known)) {
-          this.sendTo(conn.ws, { t: "error", code: "auth", msg: `Wrong secret for room "${room}".` });
+          this.sendTo(conn.ws, { t: "error", code: "auth", msg: `Wrong secret for room "${existingState?.displayName || requestedName}".` });
           try { conn.ws.close(); } catch { /* ignore */ }
           return;
         }
       } else {
-        this.sendTo(conn.ws, { t: "error", code: "no-room", msg: `Room "${room}" isn't active. Ask the Host to Create or Rehost it.` });
+        this.sendTo(conn.ws, { t: "error", code: "no-room", msg: `Room "${requestedName}" isn't active. Ask the Host to Create or Rehost it.` });
         try { conn.ws.close(); } catch { /* ignore */ }
         return;
       }
       conn.user = desired;
-      conn.room = room;
+      conn.room = room!;
       conn.cid  = cid;
       conn.kind = kind;
       conn.resumeAfter = String(frame.resumeAfter || "").slice(0, 120);
-      const st = existingState || await this.ensureRoomState(room);
+      const st = existingState || await this.ensureRoomState(room!, requestedName);
       if (!this.approvals || !this.persistence) throw new Error("Automatic Room identity assignment is unavailable.");
-      const isHost = kind === "human" && !!frame.hostToken && constantTimeEquals(frame.hostToken, this.hostTokens.get(room) || "");
+      const isHost = kind === "human" && !!frame.hostToken && constantTimeEquals(frame.hostToken, this.hostTokens.get(room!) || "");
       const sameAlias = [...this.conns.values()].filter(other => other !== conn && other.room === room &&
         other.user.trim().normalize("NFKC").toLocaleLowerCase() === nameKey && (other.joined || !!other.pendingJoinId));
       const reconnect = sameAlias.find(other => !!cid && other.cid === cid);
@@ -828,7 +884,7 @@ export class ChatHub {
     this.broadcastPresence(conn.room);
     this.sendTo(conn.ws, { t: "join.ready", room: conn.room });
     if (conn.kind === "agent") this.broadcast(conn.room, { t: "agent.state", room: conn.room, user: conn.user, state: "idle", ts: conn.stateChangedAt });
-    if (isHost) this.sendHelp(conn, `👋 Welcome — you're now hosting "${conn.room}". Here are the magic messages you can type:`);
+    if (isHost) this.sendHelp(conn, `👋 Welcome — you're now hosting "${st.displayName}". Here are the magic messages you can type:`);
   }
 
   private async leaveConnection(conn: HubConn): Promise<void> {
@@ -1025,9 +1081,10 @@ export class ChatHub {
 
   private buildCmdCtx(conn: HubConn, isOwner: boolean, arg: string): CommandContext {
     const wsUrl = `ws://${this.publicHost}:${this._port}`;
+    const displayName = this.roomName(conn.room);
     return {
-      room: conn.room, isOwner, wsUrl,
-      joinUrl: `${wsUrl}/${encodeURIComponent(conn.room)}`,
+      room: displayName, isOwner, wsUrl,
+      joinUrl: `${wsUrl}/${encodeURIComponent(displayName)}`,
       members: this.rosterOf(conn.room), arg,
       actions: {
         muteAll:   () => this.muteAllExceptHost(conn.room),
@@ -1036,9 +1093,8 @@ export class ChatHub {
         inviteMessage: () => {
           const secret = this.roomSecret.get(conn.room);
           if (!secret) throw new Error("Room secret is unavailable.");
-          const roomId = this.rooms.get(conn.room)?.roomId;
-          if (!roomId) throw new Error("Room identity is unavailable.");
-          return chatInviteMessage(createChatMagicLink(`${wsUrl}/${encodeURIComponent(conn.room)}`, secret, roomId));
+          if (!this.rooms.has(conn.room)) throw new Error("Room identity is unavailable.");
+          return chatInviteMessage(createChatMagicLink(`${wsUrl}/${encodeURIComponent(displayName)}`, secret, conn.room));
         },
       },
     };
@@ -1104,7 +1160,8 @@ export class ChatHub {
 
   /** Public: rotate a room's secret on demand (admin button or /rotate_secret). */
   async rotateRoomSecret(room: string): Promise<string | undefined> {
-    const s = await this.rotateSecretInternal(ChatHub.canonRoom(room), `🔑 The host rotated the room secret. New members need the new secret.`);
+    const roomId = this.rooms.has(room) ? room : this.findRoomIdByName(room);
+    const s = roomId ? await this.rotateSecretInternal(roomId, `🔑 The host rotated the room secret. New members need the new secret.`) : undefined;
     if (s) this.log(`secret rotated for ${room}`);
     return s;
   }
@@ -1281,7 +1338,7 @@ export class ChatHub {
   }
 
   private broadcast(room: string, frame: Frame, exceptWs?: WebSocket): void {
-    const data = JSON.stringify(frame);
+    const data = JSON.stringify(this.displayFrame(frame));
     for (const c of this.conns.values()) {
       if (c.joined && c.room === room && c.ws !== exceptWs && c.ws.readyState === WebSocket.OPEN) {
         try { c.ws.send(data); } catch { /* ignore */ }
@@ -1290,7 +1347,12 @@ export class ChatHub {
   }
 
   private sendTo(ws: WebSocket, frame: Frame): void {
-    if (ws.readyState === WebSocket.OPEN) { try { ws.send(JSON.stringify(frame)); } catch { /* ignore */ } }
+    if (ws.readyState === WebSocket.OPEN) { try { ws.send(JSON.stringify(this.displayFrame(frame))); } catch { /* ignore */ } }
+  }
+
+  private displayFrame(frame: Frame): Frame {
+    const room = (frame as any).room;
+    return typeof room === "string" && this.rooms.has(room) ? { ...frame, room: this.roomName(room) } as Frame : frame;
   }
 
   private sweep(): void {

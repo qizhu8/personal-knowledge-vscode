@@ -98,8 +98,9 @@ try {
     }
   }
   if (!extensionTs.includes("this.hub?.adminRooms().find") ||
-      !extensionTs.includes("rc.selfHost && room.room === ChatHub.canonRoom(rc.room)") ||
-      !extensionTs.includes("await this.hub.adminCloseRoom(locallyHosted.room)") ||
+      !extensionTs.includes("!!rc.roomId && room.roomId === rc.roomId") ||
+      !extensionTs.includes("!rc.roomId && rc.selfHost && ChatHub.canonRoom(room.room) === ChatHub.canonRoom(rc.room)") ||
+      !extensionTs.includes("await this.hub.adminCloseRoom(locallyHosted.roomId)") ||
       !extensionTs.includes("await this.refreshStoredRooms()")) {
     throw new Error("Host Close must use durable Hub ownership and refresh Stored Rooms immediately");
   }

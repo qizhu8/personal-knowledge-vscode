@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { randomUUID } from "crypto";
 import { ChatRoomLock } from "./chat-room-lock";
-import { ChatRoomCredentialStore, SecretStorageLike } from "./chat-room-credentials";
+import { ChatRoomCredentialStore, ChatRoomHostProof, SecretStorageLike } from "./chat-room-credentials";
 import { ChatPersistence, OpenRoomResult, ParticipantIdentityState, StoredRoomInfo } from "./chat-persistence";
 
 export interface ActiveChatRoom extends OpenRoomResult {
@@ -21,6 +21,7 @@ export interface StoredChatRoom {
   canRehost: boolean;
   activeElsewhere?: boolean;
   activeUrl?: string;
+  canForceClose?: boolean;
   unavailableReason?: string;
 }
 
@@ -67,10 +68,23 @@ export class ChatRoomLifecycle {
         canRehost: room.state === "stored" && !unavailableReason,
         activeElsewhere: room.state === "active",
         activeUrl: room.activeUrl,
+        canForceClose: room.state === "active" && !!room.activeUrl && hostVerified,
         unavailableReason,
       });
     }
     return result;
+  }
+
+  async authorizeHostCloseProof(roomId: string, proof: ChatRoomHostProof): Promise<boolean> {
+    const stored = (await this.listStoredRoomRecords()).find(room => room.roomId === roomId);
+    return !!stored?.hostCredentialHash && this.credentials.verifyHostProof(roomId, stored.hostCredentialHash, `force-close:${roomId}`, proof);
+  }
+
+  async activeRoomCloseRequest(roomId: string): Promise<{ activeUrl: string; proof: ChatRoomHostProof }> {
+    const stored = (await this.listStoredRoomRecords()).find(room => room.roomId === roomId);
+    if (!stored || stored.state !== "active" || !stored.activeUrl) throw new Error("The active Room endpoint is unavailable.");
+    if (!stored.hostCredentialHash || !await this.credentials.verifyHost(roomId, stored.hostCredentialHash)) throw new Error("The Room Host credential is missing or invalid.");
+    return { activeUrl: stored.activeUrl, proof: await this.credentials.createHostProof(roomId, `force-close:${roomId}`) };
   }
 
   private async listStoredRoomRecords(): Promise<StoredRoomInfo[]> {

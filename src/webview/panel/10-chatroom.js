@@ -20,6 +20,7 @@ const chat = {
   logSnapshotKey: '',
   proto: {},   // user -> {state:'standby'|'working'|'engaged'}: live protocol status
 };
+const chatInactiveExpanded = { hosted: false, joined: false };
 
 // Sentinel that marks an agent-to-agent protocol frame carried in a chat message
 // (must match WIRE_PREFIX in protocol.py).
@@ -44,24 +45,12 @@ function chatTrackProto(fr) {
   } else if (t === 'state') {
     const meta = fr.meta || {};
     const st = meta.state;
-    if (st === 'idle' || st === 'left') { delete chat.proto[who]; chatSetTurn(null); }
+    if (st === 'idle' || st === 'left') delete chat.proto[who];
     else if (st) chat.proto[who] = { state: st };
-    if (st === 'working') chatSetTurn('🤔 ' + who + ' is responding…');
-    else if (meta.turn) chatSetTurn('🎯 It\'s ' + meta.turn + '\'s turn');
   } else if (t === 'end' || t === 'end_ack' || t === 'rst') {
     chat.proto = {};   // session over — everyone drops out of the protocol
-    chatSetTurn(null);
   }
   chatPaintMembers();
-}
-// The background "whose turn" banner above the chat log.
-function chatSetTurn(text) {
-  const el = document.getElementById('chat-turn-banner');
-  if (!el) return;
-  chatPreserveReadingLayout(() => {
-    if (text) { el.textContent = text; el.classList.remove('hidden'); }
-    else { el.textContent = ''; el.classList.add('hidden'); }
-  });
 }
 function chatProtoBadge(state) {
   if (state === 'thinking' || state === 'working') return '<span class="chat-proto thinking" title="Received a message and is thinking"><span class="chat-thinking-dot">.</span><span class="chat-thinking-dot">.</span><span class="chat-thinking-dot">.</span></span>';
@@ -91,9 +80,6 @@ function chatEnsureControlComments(root) {
 function chatOnAgentState(data) {
   if (!data || data.key !== chat.activeKey || !data.user) return;
   chat.proto[data.user] = { state: data.state || 'idle' };
-  if (data.state === 'thinking') chatSetTurn('🤔 ' + data.user + ' is thinking…');
-  else if (data.state === 'sending') chatSetTurn('✉ ' + data.user + ' is sending…');
-  else if (data.state === 'standby' || data.state === 'idle') chatSetTurn(null);
   chatPaintMembers();
 }
 
@@ -105,9 +91,11 @@ function renderChatroom() {
     d.innerHTML = `
   <div id="chat-root">
     <div id="chat-rail">
-      <div class="chat-hub-box">
-        <div class="chat-rail-hdr">Hub <span class="chat-muted" title="Host a hub so teammates can connect">(host)</span></div>
-        <div id="chat-hub-info" class="chat-hint"></div>
+      <section class="chat-room-section chat-hosted-section">
+        <div class="chat-room-section-head"><span>Hosted by me</span><span id="chat-hosted-count" class="chat-muted"></span></div>
+        <div class="chat-host-controls">
+        <label class="chat-host-interface"><span>Hosting on</span><select id="chat-invite-host" class="chat-in" onchange="chatInviteHostChanged(this.value)" title="Hostname or network interface advertised in every hosted Room Magic Link. The Hub still listens on all interfaces."></select></label>
+        <div id="chat-invite-url" class="chat-hint"></div>
         <button class="tbtn chat-wide" id="chat-host-toggle" onclick="chatToggleHostForm()">＋ Host a Room</button>
         <div id="chat-host-form" class="chat-join hidden">
           <label class="chat-field-lbl">Room</label>
@@ -123,30 +111,21 @@ function renderChatroom() {
             <label class="chat-field-lbl">Port <span class="chat-muted">(blank = auto)</span></label>
             <input id="chat-hub-port" class="chat-in" placeholder="auto" title="Port to host the hub on. Leave blank (or 0) to auto-pick a free port. Only used when starting the hub.">
           </div>
-          <label class="chat-field-lbl">Invite interface</label>
-          <select id="chat-invite-host" class="chat-in" onchange="chatInviteHostChanged(this.value)" title="Hostname or network interface advertised in Magic Links. The Hub still listens on all interfaces."></select>
-          <div id="chat-invite-url" class="chat-hint"></div>
           <button class="tbtn chat-wide" onclick="chatHostRoom()" style="border-color:var(--accent)">Host Room</button>
         </div>
         <button class="tbtn chat-wide hidden" id="chat-stophub-btn" onclick="ask('chatStopHub',{})" style="border-color:#f87171;color:#f87171">Stop Hub</button>
-        <div id="chat-admin" class="hidden">
-          <div class="chat-rail-hdr">Rooms on my hub <span class="chat-muted">(admin)</span></div>
-          <div id="chat-admin-rooms"></div>
-          <div id="chat-pending-wrap" class="hidden">
-            <div class="chat-rail-hdr">Pending joins</div>
-            <div id="chat-pending-joins"></div>
-          </div>
-          <button class="tbtn chat-wide" id="chat-admin-closeall" onclick="ask('chatAdminCloseAll',{})" style="border-color:#f87171;color:#f87171">Close all rooms</button>
         </div>
-      </div>
-      <div class="chat-rail-hdr" style="margin-top:10px">Rooms</div>
-      <div id="chat-rooms"></div>
-      <div id="chat-stored-wrap" class="hidden">
-        <div class="chat-rail-hdr" style="margin-top:8px">Stored Rooms</div>
-        <div id="chat-stored-rooms"></div>
-      </div>
-      <button class="tbtn chat-wide" onclick="chatToggleJoin()">＋ Join room</button>
-      <div id="chat-join" class="chat-join hidden">
+        <div id="chat-hosted-rooms" class="chat-room-cards"></div>
+        <div id="chat-pending-wrap" class="hidden">
+          <div class="chat-rail-hdr">Pending joins</div>
+          <div id="chat-pending-joins"></div>
+        </div>
+        <button class="tbtn chat-wide chat-close-all hidden" id="chat-admin-closeall" onclick="ask('chatAdminCloseAll',{})">Close all rooms</button>
+      </section>
+      <section class="chat-room-section chat-joined-section">
+        <div class="chat-room-section-head"><span>Joined before</span><span id="chat-joined-count" class="chat-muted"></span></div>
+        <button class="tbtn chat-wide" onclick="chatToggleJoin()">＋ Join room</button>
+        <div id="chat-join" class="chat-join hidden">
         <label class="chat-field-lbl">Hub URL</label>
         <input id="chat-url" class="chat-in" placeholder="ws://host:port  or  ws://host:port/room" oninput="chatUrlAutoRoom()" title="Address of the hub, e.g. ws://10.0.0.5:7345. You can paste a full room link (ws://host:port/room) and the Room below is filled automatically.">
         <label class="chat-field-lbl">Room <span class="chat-muted">(optional — auto-filled from a full room URL)</span></label>
@@ -158,10 +137,8 @@ function renderChatroom() {
         <button class="tbtn chat-wide" onclick="chatDoJoin()" style="border-color:var(--accent)">Join</button>
         <div id="chat-join-hint" class="chat-hint"></div>
       </div>
-      <div id="chat-recents-wrap" class="hidden">
-        <div class="chat-rail-hdr">Recent</div>
-        <div id="chat-recents"></div>
-      </div>
+        <div id="chat-joined-rooms" class="chat-room-cards"></div>
+      </section>
     </div>
     <div id="chat-rail-resizer" title="Drag to resize"><button id="chat-rail-toggle" class="panel-collapse-toggle chat-rail-toggle" onclick="event.stopPropagation();chatToggleHubPanel()" onmousedown="event.stopPropagation()" title="Minimize Chatroom Hub panel" aria-label="Minimize Chatroom Hub panel">◀</button></div>
     <div id="chat-pane">
@@ -179,7 +156,6 @@ function renderChatroom() {
         </div>
         <div id="chat-body">
           <div id="chat-main">
-            <div id="chat-turn-banner" class="hidden"></div>
             <div id="chat-find" class="find-control">
               <input id="chat-searchbox" type="search" placeholder="Find messages…" oninput="chatRefreshSearch()" onkeydown="chatSearchKeydown(event)" title="Find in loaded messages">
               <span id="chat-search-count" class="find-count">0/0</span>
@@ -240,11 +216,9 @@ function renderChatroom() {
     if (pop && !pop.classList.contains('hidden') && !pop.contains(ev.target) && ev.target.id !== 'chat-recipient-input') chatHideMentionPop();
   });
   chat.secretShown = false; chat.secretVal = '';
-  chatPaintRooms();
-  chatPaintStoredRooms();
+  chatPaintRoomCards();
   chatPaintActive();
   chatPaintHub();
-  chatPaintRecents();
   chatInitResizer();
   chatApplyHubPanelState();
   chatApplyMemberPaneState();
@@ -500,16 +474,14 @@ function chatOnState(s) {
   chatPaintInviteHosts();
   if (chat.hubRunning) chat.hubError = '';   // running truth clears any stale error
   if (state.tab !== 'chatroom') return;
-  chatPaintRooms();
-  chatPaintStoredRooms();
+  chatPaintRoomCards();
   chatPaintActive();
   chatPaintHub();
-  chatPaintRecents();
 }
 
 function chatOnRecents(d) {
   chat.recents = (d && d.recents) || [];
-  if (state.tab === 'chatroom') chatPaintRecents();
+  if (state.tab === 'chatroom') chatPaintRoomCards();
 }
 
 function chatOnMessage(d) {
@@ -548,32 +520,17 @@ function chatOnHubResult(res) {
   chatPaintHub();
 }
 
-function chatOpenBrowser() {
-  if (!chat.hubHttpUrl) return;
-  const room = chatPrimaryHubRoom();
-  if (!room) return;
-  ask('openExternal', { url: chat.hubHttpUrl + '/room/' + encodeURIComponent(room) });
-}
-
-// The room a hub-level shortcut should act on: prefer the room open in the pane
-// if it's on my hub, otherwise the first room hosted on my hub. Never guesses
-// from the (often-empty) host-form input, which caused the wrong room to open.
-function chatPrimaryHubRoom() {
-  const rooms = chat.hubAdminRooms || [];
-  if (!rooms.length) return '';
-  const canon = s => String(s || '').trim().replace(/\s+/g, ' ').toLowerCase();
-  const act = chat.active && chat.active.room;
-  if (act) { const hit = rooms.find(r => canon(r.room) === canon(act)); if (hit) return hit.room; }
-  return rooms[0].room;
-}
-
-function chatCopyPrimaryLink() {
-  const room = chatPrimaryHubRoom();
-  if (room) ask('chatCopyInvite', { room });
-}
-
 function chatOpenRoomBrowser(room) {
   if (chat.hubHttpUrl) ask('openExternal', { url: chat.hubHttpUrl + '/room/' + encodeURIComponent(room) });
+}
+function chatOpenRoomBrowserAt(url, room) {
+  try {
+    const target = new URL(url);
+    target.protocol = target.protocol === 'wss:' ? 'https:' : target.protocol === 'ws:' ? 'http:' : target.protocol;
+    target.pathname = '/room/' + encodeURIComponent(room);
+    target.search = ''; target.hash = '';
+    ask('openExternal', { url: target.toString() });
+  } catch {}
 }
 
 // Reveal/hide the shared secret. The value is fetched on demand from the host's
@@ -811,12 +768,39 @@ function chatHideMentionPop() {
   chat.mentionAnchor = null; chat.mentionSel = -1;
 }
 
+let chatInputMeasure = null;
+function chatResizeInput(input) {
+  if (!chatInputMeasure) {
+    chatInputMeasure = document.createElement('textarea');
+    chatInputMeasure.setAttribute('aria-hidden', 'true');
+    chatInputMeasure.rows = 1;
+    chatInputMeasure.tabIndex = -1;
+    Object.assign(chatInputMeasure.style, {
+      position: 'fixed', left: '-10000px', top: '0', visibility: 'hidden', pointerEvents: 'none',
+      resize: 'none', overflow: 'hidden', height: '0', minHeight: '0', maxHeight: 'none', boxSizing: 'border-box',
+    });
+    document.body.appendChild(chatInputMeasure);
+  }
+  const style = getComputedStyle(input);
+  for (const property of ['fontFamily', 'fontSize', 'fontStyle', 'fontWeight', 'letterSpacing', 'lineHeight', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth']) {
+    chatInputMeasure.style[property] = style[property];
+  }
+  chatInputMeasure.style.width = input.getBoundingClientRect().width + 'px';
+  chatInputMeasure.value = input.value || ' ';
+  const height = Math.min(chatInputMeasure.scrollHeight, 120);
+  if (Math.abs(input.getBoundingClientRect().height - height) >= 1) {
+    const log = document.getElementById('chat-log');
+    const bottomGap = log ? Math.max(0, log.scrollHeight - log.scrollTop - log.clientHeight) : 0;
+    input.style.height = height + 'px';
+    if (log) log.scrollTop = Math.max(0, log.scrollHeight - log.clientHeight - bottomGap);
+  }
+}
+
 function chatBodyInput() {
   const input = document.getElementById('chat-input');
   if (!input) return;
   const mentioned = chatSyncBodyRecipients(input.value);
-  input.style.height = 'auto';
-  input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+  chatResizeInput(input);
   chatSuggestOnInput();
   chatUpdateDefaultRecipient(mentioned);
 }
@@ -920,7 +904,7 @@ function chatPickCommand(cmd, args) {
   inp.value = inp.value.slice(0, start) + insert + inp.value.slice(end);
   const pos = start + insert.length;
   inp.setSelectionRange(pos, pos);
-  inp.style.height = 'auto'; inp.style.height = Math.min(inp.scrollHeight, 120) + 'px';
+  chatResizeInput(inp);
   chatHideMentionPop();
   inp.focus();
 }
@@ -948,7 +932,7 @@ function chatPickMention(name) {
   inp.value = inp.value.slice(0, start) + leading + token + inp.value.slice(end);
   const pos = start + leading.length + token.length;
   inp.setSelectionRange(pos, pos);
-  inp.style.height = 'auto'; inp.style.height = Math.min(inp.scrollHeight, 120) + 'px';
+  chatResizeInput(inp);
   chatHideMentionPop();
   chatBodyInput();
   inp.focus();
@@ -1281,45 +1265,68 @@ function chatUpdateReadReceipt(data) {
   if (marker) marker.textContent = `✓ ${data.read}/${data.total}`;
 }
 
-function chatPaintRooms() {
-  const box = document.getElementById('chat-rooms');
-  if (!box) return;
-  if (!chat.rooms.length) { box.innerHTML = '<div class="chat-empty">No rooms joined.</div>'; return; }
+function chatRoomCard(room) {
   const attr = value => esc(value).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  box.innerHTML = chat.rooms.map(r => {
-    const active = r.key === chat.activeKey;
-    const badge = r.unread ? `<span class="chat-badge">${r.unread}</span>` : '';
-    const rename = r.selfHost && r.roomId ? `oncontextmenu="chatActiveRoomMenu(event,'${attr(r.key)}','${attr(r.roomId)}','${attr(r.room)}')" title="Right-click for Room actions"` : '';
-    return `<div class="chat-room-item${active ? ' active' : ''}" onclick="ask('chatSetActive',{key:'${attr(r.key)}'})" ${rename}>
-      <span class="chat-dot ${esc(r.status)}"></span>
-      <span class="chat-room-name" title="${esc(r.url)}">${esc(r.room)}</span>${badge}</div>`;
-  }).join('');
+  const actions = (room.actions || []).map(action => `<button slot="actions" type="button" class="chat-room-card-action${action.danger ? ' danger' : ''}" onclick="event.stopPropagation();${action.onclick}">${esc(action.label)}</button>`).join('');
+  const open = room.onclick ? `onclick="${room.onclick}" role="button" tabindex="0" onkeydown="if(event.target===this&&(event.key==='Enter'||event.key===' ')){event.preventDefault();${room.onclick}}"` : 'tabindex="0"';
+  return `<uone-disclosure-card class="chat-room-card" action-label="Room actions" ${room.selected ? 'selected' : ''} ${room.unavailable ? 'unavailable' : ''} ${open} title="${attr(room.title || room.meta || room.name)}">
+    <span slot="leading" class="chat-dot ${esc(room.status || 'disconnected')}"></span><strong slot="title">${esc(room.name)}</strong><small slot="description">${esc(room.meta || '')}</small>${room.unread ? `<span slot="badge" class="chat-badge">${room.unread}</span>` : ''}${actions}
+  </uone-disclosure-card>`;
 }
-
-function chatPaintStoredRooms() {
-  const wrap = document.getElementById('chat-stored-wrap');
-  const box = document.getElementById('chat-stored-rooms');
-  if (!wrap || !box) return;
-  const rooms = chat.storedRooms || [];
-  wrap.classList.toggle('hidden', !rooms.length);
-  if (!rooms.length) { box.innerHTML = ''; return; }
+function chatInactiveRoomCard(room) {
   const attr = value => esc(value).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  box.innerHTML = rooms.map(room => {
-    const available = room.canRehost !== false;
-    const activeElsewhere = !!room.activeElsewhere;
-    const count = Number(room.messageCount) || 0;
-    const activity = room.updatedAt ? chatAgo(room.updatedAt).replace(/^left /, '') : 'unknown';
-    const meta = activeElsewhere ? `Active in another VS Code window · ${count} message${count === 1 ? '' : 's'}` : `${count} message${count === 1 ? '' : 's'} · ${activity}`;
-    const reason = room.unavailableReason || 'This Room cannot be Rehosted.';
-    return `<div class="chat-stored-item${available ? '' : ' unavailable'}" title="${available ? 'Stored locally · Right-click for Room actions' : attr(reason)}" ${available ? `oncontextmenu="chatStoredRoomMenu(event,'${attr(room.roomId)}','${attr(room.roomName)}')"` : ''}>
-      <button class="chat-stored-open" title="${available ? 'Rehost Room' : esc(reason)}" ${available ? `onclick="ask('chatRehostStoredRoom',{roomId:'${esc(room.roomId)}'})"` : 'disabled'}>▶</button>
-      <span class="chat-stored-copy"><span class="chat-stored-name">${esc(room.roomName)}</span><span class="chat-stored-meta">${esc(meta)}</span></span>
-      <span class="chat-stored-actions">
-        ${available ? `<button class="chat-stored-icon" title="Rename Stored Room" onclick="ask('chatRenameStoredRoom',{roomId:'${esc(room.roomId)}',roomName:'${esc(room.roomName)}'})">✏</button>` : `<span class="chat-stored-warning" aria-label="${activeElsewhere ? 'Active elsewhere' : 'Unavailable'}">${activeElsewhere ? '●' : '!'}</span>`}
-        ${available ? `<button class="chat-stored-icon danger" title="Delete Room Data permanently" onclick="ask('chatDeleteStoredRoom',{roomId:'${esc(room.roomId)}',roomName:'${esc(room.roomName)}'})">🗑</button>` : ''}
-      </span>
-    </div>`;
-  }).join('');
+  const actions = (room.actions || []).map(action => `<button slot="actions" type="button" class="chat-room-card-action${action.danger ? ' danger' : ''}" onclick="event.stopPropagation();${action.onclick}">${esc(action.label)}</button>`).join('');
+  return `<uone-disclosure-card class="chat-room-card chat-room-card-inactive" action-label="Room actions" ${room.unavailable ? 'unavailable' : ''} tabindex="0" title="${attr(room.title || room.meta || room.name)}">
+    <button slot="primary-action" type="button" class="chat-inactive-resume" ${room.resume ? `onclick="event.stopPropagation();${room.resume.onclick}"` : 'disabled'} title="${esc(room.resume?.title || 'Unavailable')}" aria-label="${esc(room.resume?.title || 'Unavailable')}">▶</button><strong slot="title">${esc(room.name)}</strong><small slot="description">${esc(room.meta || '')}</small>${actions}
+  </uone-disclosure-card>`;
+}
+function chatToggleInactive(group) {
+  chatInactiveExpanded[group] = !chatInactiveExpanded[group];
+  chatPaintRoomCards();
+}
+function chatRoomCardCollection(group, active, inactive) {
+  let html = active.map(chatRoomCard).join('');
+  if (inactive.length) {
+    const expanded = !!chatInactiveExpanded[group];
+    html += `<button type="button" class="chat-room-card-divider" aria-expanded="${expanded}" onclick="chatToggleInactive('${group}')"><span class="chat-room-card-divider-arrow">${expanded ? '▾' : '▸'}</span><span>Inactive · ${inactive.length}</span></button>`;
+    if (expanded) html += `<div class="chat-room-inactive">${inactive.map(chatInactiveRoomCard).join('')}</div>`;
+  }
+  return html;
+}
+function chatPaintRoomCards() {
+  const hostedBox = document.getElementById('chat-hosted-rooms');
+  const joinedBox = document.getElementById('chat-joined-rooms');
+  if (!hostedBox || !joinedBox) return;
+  const connectionsByRoomId = new Map((chat.rooms || []).filter(room => room.roomId).map(room => [room.roomId, room]));
+  const hostedActive = (chat.hubAdminRooms || []).map(room => {
+    const connection = connectionsByRoomId.get(room.roomId);
+    return { name:room.room, status:'connected', selected:connection?.key === chat.activeKey, unread:connection?.unread || 0, meta:`Active · ${room.members} member${room.members === 1 ? '' : 's'}`,
+      onclick:connection ? `ask('chatSetActive',{key:'${esc(connection.key)}'})` : '', actions:[
+        ...(connection ? [{label:'Open',onclick:`ask('chatSetActive',{key:'${esc(connection.key)}'})`}] : []),
+        ...(room.hasKey ? [{label:'Magic Link',onclick:`ask('chatCopyInvite',{roomId:'${esc(room.roomId)}',roomName:'${esc(room.room)}'})`}] : []),
+        {label:'Browser',onclick:`chatOpenRoomBrowser('${esc(room.room)}')`},
+        ...(room.hasKey ? [{label:'Refresh Key',onclick:`ask('chatRotateSecret',{roomId:'${esc(room.roomId)}',roomName:'${esc(room.room)}'})`}] : []),
+        {label:'Close',danger:true,onclick:`ask('chatAdminCloseRoom',{roomId:'${esc(room.roomId)}'})`},
+      ] };
+  });
+  const hostedIds = new Set(hostedActive.map((_, index) => (chat.hubAdminRooms || [])[index]?.roomId));
+  const stored = (chat.storedRooms || []).filter(room => !hostedIds.has(room.roomId)).sort((a,b) => Number(b.updatedAt||0)-Number(a.updatedAt||0));
+  const hostedElsewhere = stored.filter(room => room.activeElsewhere).map(room => ({ name:room.roomName,status:'connected',meta:`Active elsewhere · ${Number(room.messageCount)||0} messages`,title:room.unavailableReason,unavailable:!room.canForceClose,actions:[
+    ...(room.activeUrl ? [{label:'Browser',onclick:`chatOpenRoomBrowserAt('${esc(room.activeUrl)}','${esc(room.roomName)}')`}] : []),
+    ...(room.canForceClose ? [{label:'Force Close',danger:true,onclick:`ask('chatForceCloseHostedRoom',{roomId:'${esc(room.roomId)}',roomName:'${esc(room.roomName)}'},this)`}] : []),
+  ] }));
+  const hostedInactive = stored.filter(room => !room.activeElsewhere).map(room => ({ name:room.roomName,status:'disconnected',meta:`${Number(room.messageCount)||0} messages · ${room.updatedAt ? chatAgo(room.updatedAt).replace(/^left /,'') : 'unknown'}`,title:room.unavailableReason,unavailable:!room.canRehost,
+    resume:room.canRehost ? {title:'Rehost this Room',onclick:`ask('chatRehostStoredRoom',{roomId:'${esc(room.roomId)}'})`} : null, actions:[
+    ...(room.canRehost ? [{label:'Rename',onclick:`ask('chatRenameStoredRoom',{roomId:'${esc(room.roomId)}',roomName:'${esc(room.roomName)}'})`},{label:'Delete',danger:true,onclick:`ask('chatDeleteStoredRoom',{roomId:'${esc(room.roomId)}',roomName:'${esc(room.roomName)}'})`}] : []),
+  ] }));
+  const activeHostedIds = new Set([...hostedIds, ...stored.filter(room => room.activeElsewhere).map(room => room.roomId)]);
+  const joinedActive = (chat.rooms || []).filter(room => !room.selfHost && !activeHostedIds.has(room.roomId)).map(room => ({ name:room.room,status:room.status,selected:room.key===chat.activeKey,unread:room.unread,meta:`${room.status} · joined as ${room.user || ''}`,title:room.url,onclick:`ask('chatSetActive',{key:'${esc(room.key)}'})`,actions:[{label:'Open',onclick:`ask('chatSetActive',{key:'${esc(room.key)}'})`},{label:'Browser',onclick:`chatOpenRoomBrowserAt('${esc(room.url)}','${esc(room.room)}')`}]}));
+  const joinedKeys = new Set((chat.rooms || []).map(room => room.key));
+  const joinedBefore = (chat.recents || []).filter(room => !room.host && !joinedKeys.has(room.id)).sort((a,b)=>Number(b.lastJoined||0)-Number(a.lastJoined||0)).map(room => { let host='';try{host=new URL(room.url).host}catch{}return {name:room.room,status:'disconnected',meta:`${host ? '@'+host+' · ' : ''}${room.lastJoined ? chatAgo(room.lastJoined).replace(/^left /,'') : 'joined before'}`,title:`${room.url} · as ${room.user}`,resume:{title:`Rejoin as ${room.user}`,onclick:`ask('chatRejoin',{id:'${esc(room.id)}'})`},actions:[{label:'Browser',onclick:`chatOpenRoomBrowserAt('${esc(room.url)}','${esc(room.room)}')`},{label:'Forget',danger:true,onclick:`ask('chatForgetRoom',{id:'${esc(room.id)}'})`} ]};});
+  hostedBox.innerHTML = chatRoomCardCollection('hosted', [...hostedActive, ...hostedElsewhere], hostedInactive) || '<div class="chat-empty">No hosted rooms yet.</div>';
+  joinedBox.innerHTML = chatRoomCardCollection('joined', joinedActive, joinedBefore) || '<div class="chat-empty">No joined rooms yet.</div>';
+  const hostedCount = document.getElementById('chat-hosted-count'); if (hostedCount) hostedCount.textContent = String(hostedActive.length + hostedElsewhere.length + hostedInactive.length);
+  const joinedCount = document.getElementById('chat-joined-count'); if (joinedCount) joinedCount.textContent = String(joinedActive.length + joinedBefore.length);
 }
 
 function chatActiveRoomMenu(event, key, roomId, roomName) {
@@ -1339,6 +1346,13 @@ function chatStoredRoomMenu(event, roomId, roomName) {
     { label: '✏ Rename…', onClick: () => ask('chatRenameStoredRoom', { roomId, roomName }) },
     { sep: true },
     { label: '🗑 Delete Data…', danger: true, onClick: () => ask('chatDeleteStoredRoom', { roomId, roomName }) },
+  ]);
+}
+
+function chatActiveElsewhereRoomMenu(event, roomId, roomName) {
+  event.preventDefault(); event.stopPropagation();
+  showPaperMenu(event.clientX, event.clientY, [
+    { label: '■ Force Close Host…', danger: true, onClick: () => ask('chatForceCloseHostedRoom', { roomId, roomName }) },
   ]);
 }
 
@@ -1387,7 +1401,6 @@ function chatPaintActive() {
     log.innerHTML = '';
     chat.renderedIds = new Set();   // reset id-dedup tracking for a clean repaint
     chat.proto = {};                // rebuild protocol status from this room's frames
-    chatSetTurn(null);
     (a.messages || []).forEach(message => chatAppend(message, false));
     Object.entries(a.agentStates || {}).forEach(([user, runtimeState]) => { chat.proto[user] = { state: runtimeState }; });
     (a.files || []).forEach(f => chatAppendFileRow(f.key || chat.activeKey, f));
@@ -1511,47 +1524,16 @@ function chatUpdatedAgo(ts) {
 }
 
 function chatPaintHub() {
-  const info = document.getElementById('chat-hub-info');
   const stopBtn = document.getElementById('chat-stophub-btn');
   const toggle = document.getElementById('chat-host-toggle');
   const portWrap = document.getElementById('chat-hub-port-wrap');
-  if (info) {
-    if (chat.hubRunning) {
-      const pr = chatPrimaryHubRoom();
-      const links = pr
-        ? ` · <span class="chat-muted" title="This shortcut targets room &quot;${esc(pr)}&quot;">${esc(pr)}</span> `
-          + `<a href="#" title="Copy one-paste MCP Magic Link invite" onclick="chatCopyPrimaryLink();return false;">📋 Invite</a> `
-          + `<a href="#" title="Open this room in a browser" onclick="chatOpenBrowser();return false;">Join via browser</a>`
-        : '';
-      info.innerHTML = `● Hosting on <code>${esc(chat.hubWsUrl)}</code>${links}`;
-    } else if (chat.hubError) {
-      info.innerHTML = `<span style="color:#f87171">Hub failed: ${esc(chat.hubError)}</span>`;
-    } else {
-      info.innerHTML = '<span class="chat-muted">Not hosting.</span>';
-    }
-  }
   if (stopBtn) stopBtn.classList.toggle('hidden', !chat.hubRunning);
   if (toggle)  toggle.textContent = chat.hubRunning ? '＋ Host another Room' : '＋ Host a Room';
   if (portWrap) portWrap.style.display = chat.hubRunning ? 'none' : '';
-  // Admin: rooms currently on my hub.
-  const admin = document.getElementById('chat-admin');
-  const list = document.getElementById('chat-admin-rooms');
-  if (!admin || !list) return;
-  admin.classList.toggle('hidden', !chat.hubRunning);
-  if (!chat.hubRunning) return;
-  if (!chat.hubAdminRooms.length) { list.innerHTML = '<div class="chat-empty">No active rooms.</div>'; return; }
-  list.innerHTML = chat.hubAdminRooms.map(r =>
-    `<div class="chat-admin-item" title="host: ${esc(r.owner)} · ${r.members} member(s)">
-       <div class="chat-admin-name">${esc(r.room)} <span class="chat-muted">(${r.members})</span></div>
-       <div class="chat-admin-btns">
-         ${r.hasKey ? `<span class="chat-secret-btn" title="Copy one-paste MCP Magic Link invite" onclick="ask('chatCopyInvite',{room:'${esc(r.room)}'})">📋</span>` : ''}
-         <span class="chat-secret-btn" title="Open browser view for this room" onclick="chatOpenRoomBrowser('${esc(r.room)}')">🌐</span>
-         ${r.hasKey ? `<span class="chat-secret-btn" title="Refresh key and copy the new Magic Link invite" onclick="ask('chatRotateSecret',{room:'${esc(r.room)}'})">🔄</span>` : ''}
-         <span class="chat-recent-x" title="Deactivate this room" onclick="ask('chatAdminCloseRoom',{room:'${esc(r.room)}'})">✕</span>
-       </div>
-     </div>`
-  ).join('');
+  const closeAll = document.getElementById('chat-admin-closeall');
+  if (closeAll) closeAll.classList.toggle('hidden', !chat.hubRunning || !(chat.hubAdminRooms || []).length);
   chatPaintPendingJoins();
+  chatPaintRoomCards();
 }
 
 function chatPaintPendingJoins() {
@@ -1560,31 +1542,5 @@ function chatPaintPendingJoins() {
   if (!wrap || !box) return;
   wrap.classList.add('hidden');
   box.innerHTML = '';
-}
-
-function chatPaintRecents() {
-  const wrap = document.getElementById('chat-recents-wrap');
-  const box = document.getElementById('chat-recents');
-  if (!wrap || !box) return;
-  const joinedKeys = new Set(chat.rooms.map(r => r.key));
-  const items = (chat.recents || []).filter(r => !joinedKeys.has(r.id));
-  wrap.classList.toggle('hidden', !items.length);
-  const rowHtml = (r) => {
-    let hostAddr = '';
-    try { hostAddr = new URL(r.url).host; } catch (e) { hostAddr = r.url || ''; }
-    // In the "Joined before" group, show the hub address so same-named rooms on
-    // different hubs stay distinguishable. The "Hosted by me" header needs no tag.
-    const tag = r.host ? '' : (hostAddr ? `<span class="chat-recent-badge guest" title="Hosted by ${esc(r.url)}">@${esc(hostAddr)}</span>` : '');
-    return `<div class="chat-recent-item" title="${esc(r.url)} · as ${esc(r.user)}">
-       <span class="chat-recent-name" onclick="ask('chatRejoin',{id:'${esc(r.id)}'})">${tag}${esc(r.room)}</span>
-       <span class="chat-recent-x" title="Forget this room" onclick="ask('chatForgetRoom',{id:'${esc(r.id)}'})">✕</span>
-     </div>`;
-  };
-  const mine   = items.filter(r => r.host);
-  const others = items.filter(r => !r.host);
-  let html = '';
-  if (mine.length)   html += '<div class="chat-side-sub">Hosted by me</div>' + mine.map(rowHtml).join('');
-  if (others.length) html += '<div class="chat-side-sub">Joined before</div>' + others.map(rowHtml).join('');
-  box.innerHTML = html;
 }
 

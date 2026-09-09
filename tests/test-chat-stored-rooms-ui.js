@@ -4,59 +4,74 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 
-const panelJs = fs.readFileSync(path.join(__dirname, "..", "dist", "webview", "panel.js"), "utf8");
-const extensionJs = fs.readFileSync(path.join(__dirname, "..", "dist", "extension.js"), "utf8");
-assert(extensionJs.includes("scheduleCrossWindowRefresh"));
-assert(extensionJs.includes("this.storedRooms.some(room => room.activeElsewhere)"));
-assert(extensionJs.includes("active Room refresh failed"));
-const match = panelJs.match(/function chatPaintStoredRooms\(\)\s*\{[\s\S]*?\n\}\n\nfunction chatPaintActive/);
-assert(match, "chatPaintStoredRooms must be present in the bundled panel script");
-const functionSource = match[0].replace(/\n\nfunction chatPaintActive$/, "");
+const root = path.join(__dirname, "..");
+const panel = fs.readFileSync(path.join(root, "dist", "webview", "panel.js"), "utf8");
+const css = fs.readFileSync(path.join(root, "dist", "webview", "panel.css"), "utf8");
+const extension = fs.readFileSync(path.join(root, "src", "extension.ts"), "utf8");
+const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 
-function createElement() {
-  return {
-    innerHTML: "",
-    hidden: false,
-    classList: { toggle(_name, value) { this.owner.hidden = value; }, owner: null },
-  };
-}
+assert.match(panel, /Hosted by me/);
+assert.match(panel, /Joined before/);
+assert.match(panel, /id="chat-hosted-rooms" class="chat-room-cards"/);
+assert.match(panel, /id="chat-joined-rooms" class="chat-room-cards"/);
+assert.match(panel, /function chatRoomCard\(room\)/);
+assert.match(panel, /function chatInactiveRoomCard\(room\)/);
+assert.match(panel, /customElements\.define\("uone-disclosure-card"/);
+assert.match(panel, /<uone-disclosure-card class="chat-room-card"/);
+assert.match(panel, /slot="actions"/);
+assert.match(panel, /class="chat-inactive-resume"/);
+assert.match(panel, /aria-label="\$\{esc\(room\.resume\?\.title/);
+assert.match(panel, />▶<\/button>/);
+assert.match(panel, /resume:room\.canRehost \? \{title:'Rehost this Room'/);
+assert.match(panel, /resume:\{title:`Rejoin as/);
+assert.doesNotMatch(panel, /hostedInactive[\s\S]{0,700}\{label:'Rehost'/);
+assert.match(panel, /function chatPaintRoomCards\(\)/);
+assert.match(panel, /const chatInactiveExpanded = \{ hosted: false, joined: false \}/,
+  "both Inactive groups must be collapsed by default");
+assert.match(panel, /function chatToggleInactive\(group\)/);
+assert.match(panel, /aria-expanded="\$\{expanded\}"/);
+assert.match(panel, /Inactive · \$\{inactive\.length\}/);
+assert.match(panel, /chatRoomCardCollection\('hosted'/);
+assert.match(panel, /chatRoomCardCollection\('joined'/);
+assert.doesNotMatch(panel, /id="chat-admin-rooms"/);
+assert.doesNotMatch(panel, /id="chat-stored-rooms"/);
+assert.doesNotMatch(panel, /id="chat-recents"/);
+assert.doesNotMatch(panel, /id="chat-hub-info"/);
+assert.doesNotMatch(panel, /function chatPaintStoredRooms\(/);
+assert.doesNotMatch(panel, /function chatPaintRecents\(/);
+assert.match(panel, /id="chat-host-toggle"/);
+assert.match(panel, /id="chat-admin-closeall"/);
+assert.match(panel, /Magic Link/);
+assert.match(panel, /Browser/);
+assert.match(panel, /Force Close/);
+assert.match(panel, /Rehost/);
+assert.match(panel, /Forget/);
+assert.match(panel, /chatCopyInvite',\{roomId:/);
+assert.match(panel, /chatRotateSecret',\{roomId:/);
+const browserFunction = panel.match(/function chatOpenRoomBrowserAt\(url, room\) \{[\s\S]*?\n\}/);
+assert(browserFunction, "joined Room Browser handler must be present");
+const opened = [];
+const browserContext = { URL, ask: (command, payload) => opened.push({ command, payload }) };
+vm.createContext(browserContext);
+new vm.Script(`${browserFunction[0]};chatOpenRoomBrowserAt('wss://chat.example:7345/socket?secret=private#fragment','生成式检索')`)
+  .runInContext(browserContext);
+assert.strictEqual(opened.length, 1);
+assert.strictEqual(opened[0].command, "openExternal");
+assert.strictEqual(opened[0].payload.url,
+  "https://chat.example:7345/room/%E7%94%9F%E6%88%90%E5%BC%8F%E6%A3%80%E7%B4%A2");
+assert.match(extension, /hasKey: this\.hostedKeys\.has\(r\.roomId\)/);
+assert.match(css, /\.chat-room-section\{[^}]*flex:none/);
+assert.match(css, /#chat-rail\{[^}]*scrollbar-gutter:stable/,
+  "the Hub rail must reserve scrollbar space before Inactive cards expand");
+assert.match(css, /#chat-rail\{[^}]*scrollbar-color:var\(--border\) var\(--panel\)/);
+assert.match(css, /#chat-rail::\-webkit-scrollbar-track\{background:var\(--panel\)\}/);
+assert.match(css, /#chat-rail::\-webkit-scrollbar-thumb\{[^}]*border:2px solid var\(--panel\)/);
+assert.match(css, /\.chat-room-section\+\.chat-room-section\{[^}]*margin-top:14px/);
+assert.match(panel, /:host\(:hover\) \.actions/);
+assert.match(panel, /@media \(prefers-reduced-motion: reduce\)/);
+assert.match(css, /\.chat-close-all/);
 
-const wrap = createElement(); wrap.classList.owner = wrap;
-const box = createElement(); box.classList.owner = box;
-const context = {
-  chat: { storedRooms: [] },
-  document: { getElementById: id => id === "chat-stored-wrap" ? wrap : id === "chat-stored-rooms" ? box : null },
-  esc: value => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/'/g, "&#39;").replace(/"/g, "&quot;"),
-  chatAgo: () => "left 2h ago",
-};
-vm.createContext(context);
-new vm.Script(`${functionSource}; this.paint = chatPaintStoredRooms;`).runInContext(context);
+const forceCloseMenu = manifest.contributes.menus["view/item/context"].find(item => item.command === "personalKnowledge.forceCloseHostedRoom");
+assert.strictEqual(forceCloseMenu.when, "view == personalKnowledge.sidebarView && viewItem == pk-chat-hosted-room-active-elsewhere");
 
-context.paint();
-assert.strictEqual(wrap.hidden, true, "empty Stored Rooms section must be hidden");
-assert.strictEqual(box.innerHTML, "");
-
-context.chat.storedRooms = [
-  { roomId: "room-available", roomName: "Design <Review>", messageCount: 2, updatedAt: 1, canRehost: true },
-  { roomId: "room-active-elsewhere", roomName: "Live Review", messageCount: 3, updatedAt: 1, canRehost: false,
-    activeElsewhere: true, unavailableReason: "Active in another VS Code window." },
-  { roomId: "room-unavailable", roomName: "Archive", messageCount: 0, updatedAt: 1, canRehost: false, unavailableReason: "Host credential is missing." },
-];
-context.paint();
-assert.strictEqual(wrap.hidden, false);
-assert.match(box.innerHTML, /chatRehostStoredRoom/);
-assert.match(box.innerHTML, /chatRenameStoredRoom/);
-assert.match(box.innerHTML, /chatDeleteStoredRoom/);
-assert.match(box.innerHTML, /room-available/);
-assert.doesNotMatch(box.innerHTML, /chatRehostStoredRoom[^>]+room-unavailable/);
-assert.match(box.innerHTML, /Host credential is missing/);
-assert.match(box.innerHTML, /2 messages · 2h ago/);
-assert.match(box.innerHTML, /Active in another VS Code window · 3 messages/);
-assert.match(box.innerHTML, /Design &lt;Review&gt;/, "Room names must be escaped");
-assert.match(box.innerHTML, /disabled/, "unavailable Room action must be disabled");
-const unavailableRow = box.innerHTML.slice(box.innerHTML.indexOf("room-unavailable"));
-assert.doesNotMatch(unavailableRow, /chatRenameStoredRoom|chatDeleteStoredRoom/);
-const activeElsewhereRow = box.innerHTML.slice(box.innerHTML.indexOf("room-active-elsewhere"), box.innerHTML.indexOf("room-unavailable"));
-assert.doesNotMatch(activeElsewhereRow, /chatRehostStoredRoom|chatRenameStoredRoom|chatDeleteStoredRoom/);
-
-console.log("stored rooms UI test: Rehostable, active elsewhere, unavailable, metadata, and escaping states OK");
+console.log("Chat Room cards UI test: two groups, active-first ordering, collapsed Inactive, hover actions, UUID admin actions, and Close all OK");

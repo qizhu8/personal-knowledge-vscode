@@ -228,7 +228,7 @@ export async function streamMcpPythonCandidates(respond: (message: object) => vo
   respond({ command: "mcpPythonScanComplete", data: { count, text: count ? `Scan complete · ${count} usable Python 3.10+ runtime(s)` : "Scan complete · no usable Python 3.10+ runtimes found" } });
 }
 
-function resolveMcpPython(): string {
+export function resolveMcpPython(): string {
   const runtimePython = validateMcpPython(mcpRuntimePythonPath());
   if (!runtimePython.error) return runtimePython.path;
   throw new Error("Managed PKM MCP runtime is missing or broken. Create or Repair it in the Config tab.");
@@ -252,7 +252,7 @@ export function mcpRuntimeStatus(): McpRuntimeStatus {
   const registered = pyenvList().some(env => env.path && path.resolve(env.path) === path.resolve(runtimePath));
   if (validation.error) return { path: runtimePath, python, exists, healthy: false, version: validation.version, error: exists ? validation.error : "Managed MCP runtime has not been created.", registered };
   try {
-    execFileSync(validation.path, ["-c", "import fastmcp, websockets"], { timeout: 10000, stdio: ["ignore", "pipe", "pipe"] });
+    execFileSync(validation.path, ["-c", "import fastmcp, prompt_manager, websockets"], { timeout: 10000, stdio: ["ignore", "pipe", "pipe"] });
     return { path: runtimePath, python: validation.path, exists: true, healthy: true, version: validation.version, error: "", registered };
   } catch (error: any) {
     return { path: runtimePath, python: validation.path, exists: true, healthy: false, version: validation.version, error: `MCP dependencies are missing or broken: ${error?.message || String(error)}`, registered };
@@ -340,7 +340,7 @@ export function combinedMcpInstallInstruction(): string {
     `pkm server: ${serverPath}`,
     `Internal chat module: ${chatServerPath}`,
     "",
-    `1. Verify the managed runtime exists and can import fastmcp and websockets: ${quote(runtimePython)} -c "import fastmcp, websockets"`,
+    `1. Verify the managed runtime exists and can import fastmcp, prompt_manager, and websockets: ${quote(runtimePython)} -c "import fastmcp, prompt_manager, websockets"`,
     `2. Verify the generated entry and chat module exist at ${serverPath} and ${chatServerPath}. If missing or outdated, regenerate them from the extension Config tab.`,
     "3. Remove obsolete pkm-chat and pkm-chat-live registrations; their chat tools are now exposed by pkm.",
     "4. In MCP Agency, add/import this Local/stdio server. Preserve all unrelated servers:",
@@ -1226,7 +1226,7 @@ if __name__ == "__main__":
     mcp.run()
 `);
 
-  fs.writeFileSync(reqTxt, "fastmcp>=2.0.0\nwebsockets>=12.0\n");
+  fs.writeFileSync(reqTxt, "fastmcp>=2.0.0\nuone-prompt-manager==0.1.0\nwebsockets>=12.0\n");
   fs.rmSync(path.join(mcpDir, "chat_requirements.txt"), { force: true });
 
   const configSnippet = JSON.stringify({

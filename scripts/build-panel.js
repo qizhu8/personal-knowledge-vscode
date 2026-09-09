@@ -6,6 +6,7 @@ const root = path.join(__dirname, "..");
 const sourceDir = path.join(root, "src", "webview", "panel");
 const outputDir = path.join(root, "dist", "webview");
 const parts = [
+  path.join(root, "src", "webview", "components", "disclosure-action-card.js"),
   "00-core.js",
   "10-chatroom.js",
   "20-knowledge.js",
@@ -17,7 +18,7 @@ const parts = [
 ];
 
 const bundle = parts
-  .map((file) => fs.readFileSync(path.join(sourceDir, file), "utf-8"))
+  .map((file) => fs.readFileSync(path.isAbsolute(file) ? file : path.join(sourceDir, file), "utf-8"))
   .join("");
 
 fs.writeFileSync(path.join(outputDir, "panel.js"), bundle);
