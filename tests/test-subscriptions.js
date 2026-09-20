@@ -47,7 +47,27 @@ function secretProof(material, salt, identityProof) {
   return createHmac("sha256", verifier).update(identityProof).digest("base64url");
 }
 
+function testMalformedStateRecovery() {
+  for (const malformed of ["{not-json", JSON.stringify({ schema: 1, shares: "not-an-array" })]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-subscriptions-corrupt-"));
+    try {
+      fs.writeFileSync(path.join(root, "subscriptions.json"), malformed);
+      const manager = new SharedMarketManager(root, path.join(__dirname, "..", "dist", "subscription-gateway.js"), "Recovery Test");
+      const recovered = JSON.parse(fs.readFileSync(path.join(root, "subscriptions.json"), "utf8"));
+      assert.strictEqual(recovered.schema, 1);
+      assert(Array.isArray(recovered.shares) && Array.isArray(recovered.subscriptions));
+      const quarantined = fs.readdirSync(root).filter(name => name.startsWith("subscriptions.json.corrupt-"));
+      assert.strictEqual(quarantined.length, 1, "malformed Subscription state must be quarantined for diagnosis");
+      assert.strictEqual(fs.readFileSync(path.join(root, quarantined[0]), "utf8"), malformed, "quarantine must preserve the malformed state exactly");
+      manager.dispose();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+}
+
 async function main() {
+  testMalformedStateRecovery();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-subscriptions-test-"));
   const store = path.join(root, "store");
   const state = path.join(root, "state");

@@ -257,8 +257,20 @@ export class SharedMarketManager {
     this.gatewayRuntimeVersion = identity?.version?.trim() || "dev";
     fs.mkdirSync(storageDir, { recursive: true });
     const statePath = this.statePath();
+    let persisted: PersistedState | undefined;
     if (fs.existsSync(statePath)) {
-      this.state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      try {
+        const candidate = JSON.parse(fs.readFileSync(statePath, "utf8")) as PersistedState;
+        if (candidate?.schema !== 1 || !candidate.nodeId || !candidate.publicKey || !candidate.privateKey || !Array.isArray(candidate.shares)) {
+          throw new Error("Subscription state schema is invalid.");
+        }
+        persisted = candidate;
+      } catch {
+        fs.renameSync(statePath, `${statePath}.corrupt-${Date.now()}-${process.pid}`);
+      }
+    }
+    if (persisted) {
+      this.state = persisted;
       this.state.bindHost = "0.0.0.0";
       if (!this.state.advertisedHost || this.state.advertisedHost === "127.0.0.1") this.state.advertisedHost = defaultAdvertisedHost();
       for (const share of this.state.shares || []) share.folders ||= {};
