@@ -33,6 +33,7 @@
       <button class="tab" data-tab="subscriptions">Subscription</button>
       <button class="tab" data-tab="chatroom">Chatroom</button>
       <button class="tab" data-tab="mcp">Config</button>
+      <button class="tab" data-tab="skillRouter">Skill Router</button>
     </div>
     <button id="tab-right" class="tabnav" onclick="scrollTabs(1)" title="Scroll tabs right" style="display:none">›</button>
   </div>
@@ -44,6 +45,10 @@
   <button class="tbtn" onclick="openMcpSetup()">Open Config</button>
 </div>
 <div id="layout">
+  <div id="view-loading-progress" class="view-loading-progress hidden" role="status" aria-live="polite">
+    <div class="view-loading-copy"><strong id="view-loading-stage">Loading</strong><span id="view-loading-detail"></span><span id="view-loading-count"></span></div>
+    <progress id="view-loading-bar" max="100"></progress>
+  </div>
   <div id="sidebar">
     <div id="sidebar-filters"></div>
     <div id="item-list"></div>
@@ -188,11 +193,11 @@
 <!-- Context menu (note right-click) -->
 <div id="ctx-menu">
   <div class="ctx-item" id="ctx-open">Open</div>
-  <div class="ctx-item" id="ctx-pin">☆ Pin</div>
-  <div class="ctx-item" id="ctx-edit">✏ Edit Note</div>
-  <div class="ctx-item" id="ctx-move">↪ Move…</div>
-  <div class="ctx-item" id="ctx-mark-done">✓ Mark as Done</div>
-  <div class="ctx-item danger" id="ctx-delete">🗑 Delete Note</div>
+  <div class="ctx-item" id="ctx-pin">Pin</div>
+  <div class="ctx-item" id="ctx-edit">Edit Note</div>
+  <div class="ctx-item" id="ctx-move">Move…</div>
+  <div class="ctx-item" id="ctx-mark-done">Mark as Done</div>
+  <div class="ctx-item danger" id="ctx-delete">Delete Note</div>
 </div>
 
 <!-- Sync modal -->
@@ -259,11 +264,12 @@
 </div>
 
 <!-- Loading banner (shown until first data arrives) -->
-<div id="loading-banner">
+<div id="loading-banner" class="hidden">
   <div class="loading-logo">📚</div>
   <div class="loading-title">Personal Knowledge Manager</div>
-  <div class="loading-sub">Loading your knowledge store…</div>
-  <div class="loading-bar"><div class="loading-bar-fill"></div></div>
+  <div class="loading-sub">Preparing your knowledge store…</div>
+  <div class="loading-stage-count"></div>
+  <progress class="loading-bar" max="100" value="5"></progress>
 </div>
 <script src="%%PANEL_JS%%"></script>
 </body></html>

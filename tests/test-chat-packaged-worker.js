@@ -14,6 +14,8 @@ try {
   assert(!fs.existsSync(path.join(extensionRoot, "node_modules", "sql.js", "package.json")), "test must not rely on packaged sql.js node_modules resolution");
   assert(fs.existsSync(path.join(extensionRoot, "resources", "pkm-skills-router.md")), "VSIX must include the canonical PKM Skill Router seed");
   assert(fs.existsSync(path.join(extensionRoot, "dist", "pkm-skill-projection.js")), "VSIX must include the compiled Skill projection manager");
+  assert(fs.existsSync(path.join(extensionRoot, "resources", "retrieval_worker.py")), "VSIX must include the persistent retrieval worker");
+  assert(fs.existsSync(path.join(extensionRoot, "resources", "vendor", "adaptive_skill_retrieval-0.3.0.dev2026091601-py3-none-any.whl")), "VSIX must include the verified adaptive retrieval wheel");
   const { ChatPersistence } = require(path.join(extensionRoot, "dist", "chat-persistence.js"));
   const persistence = new ChatPersistence(path.join(root, "rooms"), 50);
   persistence.openRoom("packaged-room-001", "Packaged Room")

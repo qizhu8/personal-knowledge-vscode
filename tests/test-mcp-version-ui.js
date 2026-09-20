@@ -8,14 +8,44 @@ const panelJs = fs.readFileSync(path.join(__dirname, "..", "dist", "webview", "p
 const panelCss = fs.readFileSync(path.join(__dirname, "..", "dist", "webview", "panel.css"), "utf8");
 const sourceTs = fs.readFileSync(path.join(__dirname, "..", "src", "mcp.ts"), "utf8");
 const extensionTs = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
-assert.match(extensionTs, /offerMcpRuntimeDependencyRepair/);
-assert.match(extensionTs, /mcpRuntimeDependencyRepairOffered\.uone-prompt-manager-0\.1\.0/);
-assert.match(extensionTs, /state\.error\.includes\("prompt_manager"\)/);
+assert.match(extensionTs, /function maintainPkmIntegration\(context: vscode\.ExtensionContext\)/);
+assert.match(extensionTs, /server\.newerThanExpected \|\| newerRouters\.length[\s\S]{0,900}This window will not downgrade shared PKM files/,
+  "an older window must stop maintenance and recommend a manual Reload Window");
+assert.doesNotMatch(extensionTs, /executeCommand\([^\n]*(reloadWindow|reload)/i,
+  "PKM must never reload the user's window automatically");
+assert.match(sourceTs, /Refusing to replace newer PKM MCP server/,
+  "the generated server write boundary must reject downgrades");
+assert.match(panelJs, /data\?\.current \|\| data\?\.newerThanExpected/,
+  "a newer shared server must remain usable in an older window");
+assert.match(panelJs, /data\?\.newerThanExpected \? 'Newer installed'/,
+  "Config must describe a newer shared server without requesting downgrade");
+assert.match(extensionTs, /if \(!runtime\.healthy\)[\s\S]{0,500}await ensureMcpRuntime\(context\)/,
+  "automatic maintenance must create or repair the managed runtime");
+assert.match(extensionTs, /else if \(!server\.current\)[\s\S]{0,500}generateMcpServer\(context\)/,
+  "automatic maintenance must regenerate stale server code");
+assert.match(extensionTs, /target\.managed[\s\S]{0,180}target\.state === "outdated"[\s\S]{0,700}injectPkmSkill\(context, staleManaged\[index\]\.id\)/,
+  "automatic maintenance must update existing managed Skill projections");
+assert.doesNotMatch(extensionTs, /void offerMcpRuntimeDependencyRepair\(context\)/);
+assert.doesNotMatch(extensionTs, /void offerMcpServerRegeneration\(context\)/);
 assert.match(extensionTs, /await ensureMcpRuntime\(context\)/);
+assert.match(extensionTs, /case "generateMcp"[\s\S]{0,500}!mcpRuntimeStatus\(\)\.healthy[\s\S]{0,350}await ensureMcpRuntime\(context\)/,
+  "Update with Server must automatically repair missing managed dependencies");
+assert.doesNotMatch(extensionTs, /Managed PKM MCP runtime is not healthy\. Create or Repair it first/);
 assert.match(sourceTs, /await pipInstall\(\["-r", requirements\]\)/);
 assert.match(sourceTs, /promptManagerDownloadFailure/);
 assert.match(sourceTs, /--no-deps", wheel/);
 assert.match(sourceTs, /PROMPT_MANAGER_WHEEL_SHA256/);
+assert.match(sourceTs, /RETRIEVAL_ENGINE_WHEEL_SHA256/);
+assert.match(sourceTs, /import fastmcp, prompt_manager, websockets, adaptive_skill_retrieval/);
+assert.match(sourceTs, /def search_knowledge\(/);
+assert.match(sourceTs, /def retrieval_status\(/);
+assert.match(sourceTs, /_collector_post\("search_invocation"/);
+assert.match(sourceTs, /"tool_name": tool_name/);
+assert.match(sourceTs, /"model_based_routing_enabled": False/);
+assert.doesNotMatch(sourceTs, /adaptive_candidate = _retrieval_request/);
+assert.doesNotMatch(sourceTs, /_collector_post\("retrieval"/);
+assert.match(extensionTs, /extensionVersion: String\(chatCtx\?\.extension\?\.packageJSON\?\.version \|\| "unknown"\)/);
+assert.match(extensionTs, /skillRouters: \[[\s\S]{0,600}name: "Exact"[\s\S]{0,300}name: "BM25"/);
 const esc = value => String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 assert.match(panelCss, /\.mcp-version-table \.mcp-row-action\{text-align:left;/);
 
@@ -51,12 +81,12 @@ const skillContext = {
 };
 vm.createContext(skillContext);
 new vm.Script(`${panelJs.slice(skillStart, skillEnd)}; this.render = renderPkmSkillTargets; this.injectOne = pkmSkillInjectOne; this.injectAll = pkmSkillInjectAll; this.finish = finishPkmSkillUpdates;`).runInContext(skillContext);
-const baseSkill = { routerVersion: "1.1.4", minimumMcpSchema: "2.2.3", sourcePath: "/skill.md", sourceExists: true, targets: [] };
-const currentHtml = skillContext.render({ pkmSkill: { ...baseSkill, targets: [{ id: "copilot", kind: "copilot", label: "GitHub Copilot", root: "/x", skillPath: "/x/pkm-skills/SKILL.md", state: "current", installedVersion: "1.1.4", expectedVersion: "1.1.4", managed: true, detail: "Injected Skill is current." }] }, skillProposals: [] });
-assert.match(currentHtml, /data-i18n="config\.current"[^>]*>Current<\/span> · v1\.1\.4/);
+const baseSkill = { routerVersion: "1.1.6", minimumMcpSchema: "2.8.0", sourcePath: "/skill.md", sourceExists: true, targets: [] };
+const currentHtml = skillContext.render({ pkmSkill: { ...baseSkill, targets: [{ id: "copilot", kind: "copilot", label: "GitHub Copilot", root: "/x", skillPath: "/x/pkm-skills/SKILL.md", state: "current", installedVersion: "1.1.6", expectedVersion: "1.1.6", managed: true, detail: "Injected Skill is current." }] }, skillProposals: [] });
+assert.match(currentHtml, /data-i18n="config\.current"[^>]*>Current<\/span> · v1\.1\.6/);
 assert.doesNotMatch(currentHtml, /Reinstall|pkmSkillInject/);
-const outdatedHtml = skillContext.render({ pkmSkill: { ...baseSkill, targets: [{ id: "copilot", kind: "copilot", label: "GitHub Copilot", root: "/x", skillPath: "/x/pkm-skills/SKILL.md", state: "outdated", installedVersion: "1.1.3", expectedVersion: "1.1.4", managed: true, detail: "Router 1.1.3 -> 1.1.4" }] }, skillProposals: [] });
-assert.match(outdatedHtml, /data-i18n="config\.updateSkill"[^>]*data-i18n-param-installed="1\.1\.3"[^>]*data-i18n-param-expected="1\.1\.4"[^>]*>Update PKM Skill · v1\.1\.3 → v1\.1\.4<\/span>/);
+const outdatedHtml = skillContext.render({ pkmSkill: { ...baseSkill, targets: [{ id: "copilot", kind: "copilot", label: "GitHub Copilot", root: "/x", skillPath: "/x/pkm-skills/SKILL.md", state: "outdated", installedVersion: "1.1.5", expectedVersion: "1.1.6", managed: true, detail: "Router 1.1.5 -> 1.1.6" }] }, skillProposals: [] });
+assert.match(outdatedHtml, /data-i18n="config\.updateSkill"[^>]*data-i18n-param-installed="1\.1\.5"[^>]*data-i18n-param-expected="1\.1\.6"[^>]*>Update PKM Skill · v1\.1\.5 → v1\.1\.6<\/span>/);
 assert.match(outdatedHtml, /pkmSkillInject/);
 const bulkHtml = skillContext.render({ pkmSkill: { ...baseSkill, targets: [
   { id: "copilot", label: "Copilot", skillPath: "/x", state: "outdated" },
@@ -83,10 +113,43 @@ assert(sourceTs.includes("installedKnowledgeVersion === KNOWLEDGE_MCP_VERSION"))
 assert(sourceTs.includes("installedChatVersion === CHAT_MCP_VERSION"));
 assert(panelJs.includes("Knowledge: installed v"));
 assert(panelJs.includes("Chat: installed v"));
-for (const text of ["PKM Integration Status", "Unified MCP Server", "Knowledge schema", "Chat schema", "PKM Skill Router", "Setup guideline", "Ready · starts on demand", "Startup wizard"]) {
+for (const text of ["PKM Integration Status", "Unified MCP Server", "Knowledge schema", "Chat schema", "PKM Skill Router", "Setup progress", "Ready · starts on demand", "Automatic integration", "Agent connection"]) {
   assert(panelJs.includes(text), `missing dashboard text: ${text}`);
 }
-for (const text of ["Paths", "Knowledge root", "Environments root", "Managed MCP runtime", "MCP Base Python", "MCP server directory", "No action needed"]) {
+assert.doesNotMatch(panelJs, />Update with Server<\/button>|>Update Code<\/button>|>Repair Runtime<\/button>/,
+  "normal Config state must not ask new users to maintain internal components manually");
+assert.match(panelJs, /automatic\.state === 'error' \? '<button class="tbtn" onclick="ask\(\\'checkMcp\\'/,
+  "automatic failures must expose one Retry action");
+assert.match(panelJs, /Personal Knowledge Manager<\/span>[\s\S]{0,300}Extension v\$\{esc\(data\?\.extensionVersion \|\| 'unknown'\)\}/,
+  "the Config header must show the complete Extension semver independently from MCP schema versions");
+assert.match(panelJs, /\['PKM Skill Router',[\s\S]{0,240}<span class="mcp-no-action">No action<\/span>/,
+  "the Skill Router version row must be informational only");
+assert.match(panelJs, /\['PKM Skill Router',[\s\S]{0,240}'Info', 'info'\]/,
+  "the informational Router row must never report Update available");
+assert.doesNotMatch(panelJs, /PKM Skill Router',[\s\S]{0,240}>Review Targets<\/button>/,
+  "the version table must not duplicate Router target actions");
+assert.match(panelJs, /<details class="mcp-router-field"><summary><span>Skill Router<\/span>/,
+  "Config must provide a collapsible Skill Router field");
+assert.doesNotMatch(panelJs, /<details class="mcp-router-field" open/,
+  "the Skill Router field must be collapsed by default");
+assert.match(panelJs, /function renderSkillRouterField[\s\S]{0,900}router\.name[\s\S]{0,900}router\.description/,
+  "the field must render the backend-provided route list without action buttons");
+assert.match(extensionTs, /firstRunGuide: \{ visible: !!guideStep, step: guideStep \}/);
+assert.match(panelJs, /id="pkm-first-run-guide"[\s\S]{0,1400}Click the highlighted Inject or Update All button/,
+  "first configuration must explain the consent action in a floating guide");
+assert.match(panelJs, /pkm-first-run-target[\s\S]{0,500}pkmSkillInjectAll/,
+  "the first Skill injection action must receive an anchored callout");
+assert.match(panelJs, /dataset\.step === 'python'\) completeIntegrationGuide\(\)/,
+  "Python guidance must complete only when Validate & Save submits a path");
+assert.match(panelCss, /\.pkm-first-run-target::after\{content:'Start here'/);
+assert.match(panelCss, /\.pkm-first-run-guide\{position:fixed/);
+assert.match(panelJs, /const previousScrollTop = el\?\.scrollTop \|\| 0/);
+assert.match(panelJs, /requestAnimationFrame\(\(\) => \{[\s\S]{0,180}Math\.min\(previousScrollTop, maxScrollTop\)/,
+  "Config rerenders after Update with Server must clamp stale scroll offsets instead of leaving blank space");
+assert.match(panelJs, /\['Unified MCP Server',[\s\S]{0,300}<span class="mcp-no-action">Automatic<\/span>/);
+assert.doesNotMatch(panelJs, />Update with Server<\/button>|>Update Code<\/button>|>Repair Runtime<\/button>/,
+  "routine internal updates must not be presented as user actions");
+for (const text of ["Paths", "Knowledge root", "Environments root", "Managed MCP runtime", "MCP Base Python", "MCP server directory", "Automatic", "Connected"]) {
   assert(panelJs.includes(text), `missing path/status text: ${text}`);
 }
 for (const key of ["store", "environments", "runtime", "python", "serverDirectory"]) {
@@ -120,7 +183,8 @@ assert(panelJs.includes('class="mcp-path-table"'));
 assert(panelJs.includes("<th>Path Type</th><th>Location</th><th>Disk Usage</th><th>Action</th>"));
 assert(panelCss.includes("table-layout:fixed"));
 assert(panelCss.includes(".mcp-path-size-col{width:105px}"));
-assert(panelJs.includes("data?.current ? '' : 'mcp-regenerate-action'"));
+assert(panelJs.includes("automatic.state === 'error'"));
+assert(panelJs.includes(">Retry</button>"));
 assert.doesNotMatch(panelJs, /configureStorePath|configureEnvironmentsPath/);
 assert(panelJs.includes("mcpProcess"));
 assert(sourceTs.includes("export function mcpProcessStatus"));

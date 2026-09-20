@@ -29,5 +29,9 @@ assert.deepStrictEqual(Array.from(context.recipients("@all broadcast")), ["all"]
 assert.match(html, /text:v,kind:"browser",recipients:recipients/);
 assert.doesNotMatch(html, /v=\(quoted\?/);
 assert.match(html, /var recipients=v\.charAt\(0\)==="\/"\?\[\]:browserRecipientNames\(v\)/);
+assert.match(html, /f\.t==="meeting\.snapshot"/);
+assert.match(html, /Meeting Summary/);
+assert.match(html, /function meetingRecord\(record\)/);
+assert.match(html, /<small>Lead<\/small>/);
 
 console.log("chat browser UI test: body preservation, full-message recipients, offline aliases, and host-only @all OK");

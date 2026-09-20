@@ -2,7 +2,7 @@
   "name": "personal-knowledge",
   "displayName": "Personal Knowledge Manager",
   "description": "%extension.description%",
-  "version": "2.7.8",
+  "version": "2.7.33",
   "publisher": "Uone",
   "author": {
     "name": "Yu Wang"
@@ -380,92 +380,92 @@
         {
           "command": "personalKnowledge.copyNavigationPath",
           "when": "view == personalKnowledge.sidebarView",
-          "group": "9_copy@1"
+          "group": "1_copy@1"
         },
         {
           "command": "personalKnowledge.setFolderPrivate",
           "when": "view == personalKnowledge.sidebarView && viewItem =~ /-privacy-public$/",
-          "group": "2_privacy@1"
+          "group": "5_control@1"
         },
         {
           "command": "personalKnowledge.setFolderPublic",
           "when": "view == personalKnowledge.sidebarView && viewItem =~ /-privacy-private$/",
-          "group": "2_privacy@1"
+          "group": "5_control@1"
         },
         {
           "command": "personalKnowledge.newSubgroup",
           "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-(skills|notes|papers|prompts|scripts)-(root|group|virtual-root)/",
-          "group": "0_group@1"
+          "group": "2_create@1"
         },
         {
           "command": "personalKnowledge.renameSubgroup",
           "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-(skills|notes|papers|prompts|scripts)-(group|terminal-group)/",
-          "group": "0_group@2"
+          "group": "4_organize@1"
         },
         {
           "command": "personalKnowledge.deleteSubgroup",
           "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-(skills|notes|papers|prompts|scripts)-(group|terminal-group)/",
-          "group": "0_group@3"
+          "group": "9_danger@1"
         },
         {
           "command": "personalKnowledge.restoreSkillTrash",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-skill-trash-item",
-          "group": "0_trash@1"
+          "group": "3_restore@1"
         },
         {
           "command": "personalKnowledge.deleteSkillTrashEntry",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-skill-trash-item",
-          "group": "0_trash@2"
+          "group": "9_danger@1"
         },
         {
           "command": "personalKnowledge.emptySkillTrash",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-skill-trash",
-          "group": "0_trash@1"
+          "group": "9_danger@1"
         },
         {
           "command": "personalKnowledge.trashKnowledgeItem",
           "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-(note|paper|prompt|script)-item/",
-          "group": "8_delete@1"
+          "group": "9_danger@1"
         },
         {
           "command": "personalKnowledge.restoreKnowledgeTrash",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-knowledge-trash-item",
-          "group": "0_trash@1"
+          "group": "3_restore@1"
         },
         {
           "command": "personalKnowledge.deleteKnowledgeTrashEntry",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-knowledge-trash-item",
-          "group": "0_trash@2"
+          "group": "9_danger@1"
         },
         {
           "command": "personalKnowledge.emptyKnowledgeTrash",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-knowledge-trash",
-          "group": "0_trash@1"
+          "group": "9_danger@1"
         },
         {
           "command": "personalKnowledge.createServerGroupFromNavigation",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-servers-container",
-          "group": "1_server_group@1"
+          "group": "2_create@1"
         },
         {
           "command": "personalKnowledge.createServerGroupFromNavigation",
           "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-server-group/",
-          "group": "0_server_group@1"
+          "group": "2_create@1"
         },
         {
           "command": "personalKnowledge.renameServerGroupFromNavigation",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-servers-container",
-          "group": "1_server_group@2"
+          "group": "4_organize@1"
         },
         {
           "command": "personalKnowledge.deleteServerGroupFromNavigation",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-servers-container",
-          "group": "1_server_group@3"
+          "group": "9_danger@1"
         },
         {
           "command": "personalKnowledge.moveServerToGroup",
           "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-server-(stopped|active|external)/",
-          "group": "1_server@0"
+          "group": "4_organize@1"
         },
         {
           "command": "personalKnowledge.openServerLink",
@@ -475,57 +475,57 @@
         {
           "command": "personalKnowledge.renameServerGroup",
           "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-server-group/",
-          "group": "1_server@1"
+          "group": "4_organize@1"
         },
         {
           "command": "personalKnowledge.deleteServerGroup",
           "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-server-group/",
-          "group": "1_server@2"
+          "group": "9_danger@1"
         },
         {
           "command": "personalKnowledge.startServerItem",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-server-stopped",
-          "group": "1_server@1"
+          "group": "5_control@1"
         },
         {
           "command": "personalKnowledge.stopServerItem",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-server-active",
-          "group": "1_server@1"
+          "group": "5_control@1"
         },
         {
           "command": "personalKnowledge.restartServerItem",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-server-active",
-          "group": "1_server@2"
+          "group": "5_control@2"
         },
         {
           "command": "personalKnowledge.openHostedRoomItem",
           "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-chat-hosted-room-(active|stored)/",
-          "group": "1_room@0"
+          "group": "0_open@1"
         },
         {
           "command": "personalKnowledge.renameHostedRoom",
           "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-chat-hosted-room-(active|stored)/",
-          "group": "1_room@1"
+          "group": "3_edit@1"
         },
         {
           "command": "personalKnowledge.repairStoredRoom",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-chat-hosted-room-stored",
-          "group": "1_room@2"
+          "group": "5_control@1"
         },
         {
           "command": "personalKnowledge.forceCloseHostedRoom",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-chat-hosted-room-active-elsewhere",
-          "group": "1_room@2"
+          "group": "9_danger@1"
         },
         {
           "command": "personalKnowledge.closeHostedRoom",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-chat-hosted-room-active",
-          "group": "1_room@3"
+          "group": "5_control@2"
         },
         {
           "command": "personalKnowledge.deleteHostedRoom",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-chat-hosted-room-stored",
-          "group": "2_danger@1"
+          "group": "9_danger@1"
         },
         {
           "command": "personalKnowledge.addSkillHere",
@@ -545,32 +545,32 @@
         {
           "command": "personalKnowledge.addPaperHere",
           "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-papers-(root|group|virtual-root)/",
-          "group": "1_new@1"
+          "group": "2_create@1"
         },
         {
           "command": "personalKnowledge.addIdeaHere",
           "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-papers-(root|group|virtual-root)/",
-          "group": "1_new@2"
+          "group": "2_create@2"
         },
         {
           "command": "personalKnowledge.addPromptHere",
           "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-prompts-(root|group|terminal-group)/",
-          "group": "1_new"
+          "group": "2_create"
         },
         {
           "command": "personalKnowledge.addSkillHere",
           "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-skills-(root|group|virtual-root)/",
-          "group": "1_new"
+          "group": "2_create"
         },
         {
           "command": "personalKnowledge.addNoteHere",
           "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-notes-(root|group|virtual-root)/",
-          "group": "1_new"
+          "group": "2_create"
         },
         {
           "command": "personalKnowledge.addScriptHere",
           "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-scripts-(root|group)/",
-          "group": "1_new"
+          "group": "2_create"
         },
         {
           "command": "personalKnowledge.editSkill",
@@ -595,27 +595,27 @@
         {
           "command": "personalKnowledge.editSkill",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-skill-item",
-          "group": "1_edit"
+          "group": "3_edit"
         },
         {
           "command": "personalKnowledge.editNote",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-note-item",
-          "group": "1_edit"
+          "group": "3_edit"
         },
         {
           "command": "personalKnowledge.editPaper",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-paper-item",
-          "group": "1_edit"
+          "group": "3_edit"
         },
         {
           "command": "personalKnowledge.editScript",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-script-item",
-          "group": "1_edit"
+          "group": "3_edit"
         },
         {
           "command": "personalKnowledge.deleteScript",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-script-item",
-          "group": "1_edit"
+          "group": "9_danger@1"
         }
       ]
     },
@@ -674,6 +674,22 @@
           "default": false,
           "description": "Automatically open the Personal Knowledge Manager panel on VS Code startup."
         },
+        "personalKnowledge.skillRouterEnabledSolutions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "copilot_default",
+              "l1_online"
+            ]
+          },
+          "uniqueItems": true,
+          "default": [
+            "copilot_default",
+            "l1_online"
+          ],
+          "description": "Enabled mature Skill Router solutions. Copilot default is always restored as the required automatic fallback when PKM retrieval is disabled or unavailable."
+        },
         "personalKnowledge.uiLanguage": {
           "type": "string",
           "enum": [
@@ -717,13 +733,6 @@
           ],
           "default": "info",
           "description": "Logging verbosity. Use 'debug' to record all activity (including page views and messages) to the Output panel and log file; 'info' logs user actions only."
-        },
-        "personalKnowledge.maxTreeDepth": {
-          "type": "number",
-          "default": 4,
-          "minimum": 1,
-          "maximum": 12,
-          "description": "Maximum number of folder levels shown in the sidebar tree for skills and notes. Deeper path segments collapse into the leaf item."
         },
         "personalKnowledge.aiBackend": {
           "type": "string",
@@ -780,13 +789,29 @@
         "personalKnowledge.chatHubPort": {
           "type": "number",
           "default": 7345,
-          "description": "Chatroom: TCP port the embedded hub listens on when you self-host it."
+          "scope": "machine",
+          "description": "Chatroom: stable per-user TCP port for the self-hosted Hub. PKM assigns and persists a user-specific port when unset."
         },
         "personalKnowledge.chatInviteHost": {
           "type": "string",
           "default": "",
           "scope": "machine",
+          "deprecationMessage": "Use Personal Knowledge Manager: External Link Host. Existing values remain supported as a migration fallback.",
           "description": "Machine-local hostname or network-interface address advertised in Chatroom Magic Links. The Hub still listens on all interfaces."
+        },
+        "personalKnowledge.externalLinkHost": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Machine-local hostname or network-interface address used by public content links, Chatroom invites, Subscription links, and Server Stable Links. Defaults to this machine's hostname."
+        },
+        "personalKnowledge.contentGatewayPort": {
+          "type": "number",
+          "default": 39502,
+          "minimum": 1024,
+          "maximum": 65535,
+          "scope": "machine",
+          "description": "Stable per-user port for public Note, Skill, Paper, and Script links. PKM assigns and persists a user-specific port when unset. Private content returns 404."
         },
         "personalKnowledge.chatHistoryLimitMB": {
           "type": "number",
@@ -800,7 +825,7 @@
           "minimum": 1024,
           "maximum": 65535,
           "scope": "machine",
-          "description": "Machine-local port for stable managed-server URLs under /s/<slug>/. The proxy runs in the VS Code extension host."
+          "description": "Stable per-user loopback port for managed-server URLs under /s/<slug>/. PKM assigns and persists a user-specific port when unset."
         }
       }
     }
@@ -831,10 +856,16 @@
     "test:chat-markdown": "npm run build && node tests/test-chat-markdown.js",
     "test:chat-quote-viewer-ui": "npm run build && node tests/test-chat-quote-viewer-ui.js",
     "test:mcp-version-ui": "npm run build && node tests/test-mcp-version-ui.js",
+    "test:skill-router-ui": "npm run build && node tests/test-skill-router-ui.js",
     "test:prompt-manager-ui": "npm run build && node tests/test-prompt-manager-ui.js",
     "test:prompt-version-note": "npm run build && node tests/test-prompt-version-note.js",
     "test:prompt-inheritance": "python tests/test-prompt-inheritance.py",
     "test:chat-layout-scroll-ui": "npm run build && node tests/test-chat-layout-scroll-ui.js",
+    "test:chat-core": "node tests/test-meeting-state.js && node tests/test-chat-meeting-snapshot.js && node tests/test-chat-managed-agent-routing.js && node tests/test-chat-meeting-lifecycle.js",
+    "test:chat-coverage": "npm run build && npm run test:chat-coverage:run",
+    "test:chat-coverage:run": "c8 --all --include=dist/meeting-state.js --include=dist/chat-meeting-lifecycle.js --check-coverage --branches 72 --functions 90 --lines 90 --statements 90 npm run test:chat-core",
+    "test:meeting-state": "npm run build && node tests/test-meeting-state.js",
+    "test:chat-managed-agent-routing": "npm run build && node tests/test-chat-managed-agent-routing.js",
     "test:pkm-skill-projection": "npm run build && node tests/test-pkm-skill-projection.js",
     "test:pkm-skill-mcp": "node tests/test-pkm-skill-mcp.js",
     "test:server-proxy": "npm run build && node tests/test-server-proxy.js",
@@ -858,10 +889,17 @@
     "test:subscription-fork": "npm run build && node tests/test-subscription-fork.js",
     "test:content-privacy": "npm run build && node tests/test-content-privacy.js",
     "test:content-privacy-ui": "npm run build && node tests/test-content-privacy-ui.js",
+    "test:cattree-refresh": "npm run build && node tests/test-cattree-refresh.js",
     "test:startup": "npm run build && node scripts/run-extension-startup-test.js",
     "test:localization": "npm run build && node tests/test-localization.js",
-    "pretest:release": "npm run build && node tests/test-content-privacy.js && node tests/test-content-privacy-ui.js && node tests/test-subscription-acl.js && node tests/test-subscriptions.js && node tests/test-subscription-fork.js && node tests/test-subscription-ui.js && node scripts/run-extension-startup-test.js",
-    "test:release": "npm run build && node tests/test-chat-persistence.js && node tests/test-chat-stored-rooms.js && node tests/test-chat-stored-rooms-ui.js && node tests/test-chat-participant-persistence.js && node tests/test-chat-join-approval.js && node tests/test-chat-hub-approval.js && node tests/test-chat-join-approval-ui.js && node tests/test-chat-no-manual-approval.js && node tests/test-chat-invite-host.js && node tests/test-chat-close-room-recovery.js && node tests/test-chat-room-repair.js && node tests/test-chat-moderation-ui.js && node tests/test-chat-mention-highlight-ui.js && node tests/test-chat-room-identity.js && node tests/test-chat-default-recipient-ui.js && node tests/test-chat-browser-ui.js && node tests/test-chat-multi-recipient.js && node tests/test-chat-magic-link.js && node tests/test-chat-mcp-approval.js && node tests/test-chat-packaged-worker.js && node tests/test-chat-hub-health.js && node tests/test-chat-storage-boundaries.js && python tests/test-chat-history-atomic.py && python tests/test-chat-generated-standby.py && node tests/test-chat-markdown.js && node tests/test-chat-quote-viewer-ui.js && node tests/test-mcp-version-ui.js && node tests/test-prompt-manager-ui.js && node tests/test-prompt-version-note.js && python tests/test-prompt-inheritance.py && node tests/test-chat-layout-scroll-ui.js && node tests/test-pkm-skill-projection.js && node tests/test-pkm-skill-mcp.js && node tests/test-server-proxy.js && node tests/test-server-grouping.js && node tests/test-environment-refresh.js && node tests/test-refresh-actions.js && node tests/test-navigation-status.js && node tests/test-navigation-groups.js && node tests/test-navigation-copy-path.js && node tests/test-detail-path-ui.js && node tests/test-machine-store-path.js && node tests/test-sync-progress.js && node tests/test-localization.js",
+    "test:cross-window-singletons": "npm run build && node tests/test-cross-window-singletons.js",
+    "test:user-service-ports": "npm run build && node tests/test-user-service-ports.js",
+    "test:loading-progress": "npm run build && node tests/test-loading-progress.js",
+    "test:knowledge-inventory": "npm run build && node tests/test-knowledge-inventory.js",
+    "test:performance-telemetry": "npm run build && node tests/test-performance-telemetry.js",
+    "test:root-storage-policy": "npm run build && node tests/test-root-storage-policy.js",
+    "pretest:release": "npm run build && node tests/test-version-order.js && node tests/test-content-privacy.js && node tests/test-content-privacy-ui.js && node tests/test-cattree-refresh.js && node tests/test-loading-progress.js && node tests/test-cross-window-singletons.js && node tests/test-user-service-ports.js && node tests/test-knowledge-inventory.js && node tests/test-performance-telemetry.js && node tests/test-root-storage-policy.js && node tests/test-subscription-acl.js && node tests/test-subscriptions.js && node tests/test-subscription-fork.js && node tests/test-subscription-ui.js && node tests/test-subscription-actions.js && node tests/test-navigation-subscriptions.js && node tests/test-retrieval-snapshot.js && node tests/test-retrieval-worker.js && node scripts/run-extension-startup-test.js",
+    "test:release": "npm run build && node tests/test-chat-persistence.js && node tests/test-chat-stored-rooms.js && node tests/test-chat-stored-rooms-ui.js && node tests/test-chat-participant-persistence.js && node tests/test-chat-join-approval.js && node tests/test-chat-hub-approval.js && node tests/test-chat-join-approval-ui.js && node tests/test-chat-no-manual-approval.js && node tests/test-chat-invite-host.js && node tests/test-chat-close-room-recovery.js && node tests/test-chat-room-repair.js && node tests/test-chat-moderation-ui.js && node tests/test-chat-mention-highlight-ui.js && node tests/test-chat-room-identity.js && node tests/test-chat-default-recipient-ui.js && node tests/test-chat-browser-ui.js && node tests/test-chat-multi-recipient.js && node tests/test-chat-magic-link.js && node tests/test-chat-mcp-approval.js && node tests/test-chat-packaged-worker.js && node tests/test-chat-hub-health.js && node tests/test-chat-storage-boundaries.js && python tests/test-chat-history-atomic.py && python tests/test-chat-generated-standby.py && node tests/test-chat-markdown.js && node tests/test-chat-quote-viewer-ui.js && node tests/test-browser-markdown-preview.js && node tests/test-context-menus.js && node tests/test-context-menu-actions.js && node tests/test-mcp-version-ui.js && node tests/test-prompt-manager-ui.js && node tests/test-prompt-version-note.js && python tests/test-prompt-inheritance.py && node tests/test-chat-layout-scroll-ui.js && node tests/test-pkm-skill-projection.js && node tests/test-pkm-skill-mcp.js && node tests/test-pkm-onboarding-guide.js && node tests/test-server-proxy.js && node tests/test-server-grouping.js && node tests/test-environment-refresh.js && node tests/test-refresh-actions.js && node tests/test-navigation-status.js && node tests/test-navigation-groups.js && node tests/test-navigation-copy-path.js && node tests/test-detail-path-ui.js && node tests/test-machine-store-path.js && node tests/test-sync-progress.js && node tests/test-localization.js && npm run test:chat-coverage:run",
     "poc:chat-room-lifecycle": "npm run build && node scripts/poc-chat-room-lifecycle.js",
     "watch": "tsc -p tsconfig.json --watch",
     "package": "npx vsce package"
@@ -887,6 +925,7 @@
     "@types/vscode": "1.90.0",
     "@types/ws": "^8.18.1",
     "@vscode/test-electron": "^3.1.0",
+    "c8": "^12.0.0",
     "esbuild": "^0.28.1",
     "typescript": "^6.0.3"
   }

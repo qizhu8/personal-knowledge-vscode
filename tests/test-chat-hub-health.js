@@ -23,6 +23,11 @@ async function main() {
     hub.configureLifecycle(root, 1024 * 1024, "owner", sharedSecrets);
     await hub.start(0);
     const url = `ws://127.0.0.1:${hub.port}`;
+    const identity = await (await fetch(`http://127.0.0.1:${hub.port}/.well-known/pkm-chat-hub`)).json();
+    assert.deepStrictEqual(identity, { protocol: "pkm-chat-hub:v1", installationId: "owner", pid: process.pid, port: hub.port });
+    const duplicate = new ChatHub();
+    duplicate.configureLifecycle(root, 1024 * 1024, "owner", sharedSecrets);
+    await assert.rejects(() => duplicate.start(hub.port), error => error?.code === "EADDRINUSE");
     assert.strictEqual(await probeChatRoomActive(url, "Legacy Room"), false, "an empty reachable Hub must not block Rehost");
     const room = await hub.createRoom("Legacy Room", "secret");
     assert.strictEqual(await probeChatRoomActive(url, room.room, room.roomId), true);

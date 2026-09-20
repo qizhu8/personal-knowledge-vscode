@@ -1,11 +1,16 @@
+import { withCrossProcessLock } from "./cross-process-lock";
+import { stableUserPort } from "./user-service-ports";
+import { KnowledgeInventoryManager } from "./knowledge-inventory";
+import { performanceSummary, recordPerformanceMetric } from "./performance-telemetry";
 import * as vscode from "vscode";
 import * as path from "path";
 import * as os from "os";
 import * as http from "http";
+import * as net from "net";
 import * as fs from "fs";
 import { syncServer } from "./sync-server";
 import { SharedContentType, SharedMarketManager, SHARED_CONTENT_TYPES } from "./subscriptions";
-import { isContentItemPrivate, isTopLevelPrivate, privateTopLevels, PrivacyContentType, renameTopLevelPrivacy, setPrivacyStoreRoot, setTopLevelPrivacy } from "./content-privacy";
+import { isContentItemPrivate, isContentPathPrivate, isTopLevelPrivate, privateTopLevels, PrivacyContentType, renameTopLevelPrivacy, setPrivacyStoreRoot, setTopLevelPrivacy } from "./content-privacy";
 import { forkSubscriptionContent } from "./subscription-fork";
 import {
   skillList, skillSearch, skillGet, skillUpsert, skillDelete, skillMoveCategory, skillMove, skillSetPinned,
@@ -25,6 +30,9 @@ import {
   serverUpdate, serverGroupList, serverCreateGroup, serverMoveGroup, serverPortOwner, serverNetworkAddresses, forceStopExternalServer, serverDelete, startServer, stopServer, restartServer, setServerPort, serverLog, serverDir,
 } from "./servers";
 import { ChatHub, ChatClient, ChatMessage, Member, FileMeta, AgentRuntimeState, ChatMode, ReplyPolicy, MAX_FILE_BYTES } from "./chatroom";
+import { MeetingStateStore, MeetingRoomSnapshot } from "./meeting-state";
+import { ChatMeetingLifecycle, isFinalLeadSummary } from "./chat-meeting-lifecycle";
+import { messageAddressesManagedAgent } from "./chat-managed-agent-routing";
 import { BOT_NAME } from "./chat-commands";
 import { StoredChatRoom } from "./chat-room-lifecycle";
 import { chatRoomIdentity, joinedRoomRecents } from "./chat-room-identity";
@@ -43,14 +51,18 @@ import {
 } from "./storage";
 
 // ── Git helper ─────────────────────────────────────────────────────────────
-import { execSync } from "child_process";
+import { execFile, execSync } from "child_process";
 import { createHash, randomBytes, randomUUID } from "crypto";
 import { createSyncMagicCode, parseSyncMagicCode } from "./sync-magic-code";
 import { createChatMagicLink, chatInviteMessage } from "./chat-magic-link";
 import { startLiveMarkdownServer } from "./live-note-server";
+import { browserFaviconTag, browserIconBuffer } from "./browser-branding";
 import { managedEnvironmentsRoot } from "./environment-paths";
 import { NavigationStatus, summarizeChatNavigation, summarizeServerNavigation } from "./navigation-status";
 import { navigationItemPath } from "./navigation-path";
+import { subscriptionNavigationRoot, SubscriptionNavigationNode } from "./navigation-subscriptions";
+import { createRetrievalSnapshot } from "./retrieval-snapshot";
+import { RetrievalWorkerManager } from "./retrieval-worker";
 import { extensionHostDescription, isAbsoluteForPlatform, isForeignAbsolutePath, resolveMachineStorePath } from "./store-path";
 import { loadLocaleCatalogs, loadLocaleManifest, localizedText, normalizeUiLanguage, resolveUiLanguage, UiLanguageSetting, uiLanguageSetting } from "./localization";
 import { AiBackend, aiSummarizeScript, listAiBackends, runAiPrompt, scriptCacheDir } from "./ai";
@@ -58,7 +70,7 @@ import {
   cancelMcpPythonScan, combinedMcpInstallInstruction, combinedMcpRegistry,
   detectMcpPython, ensureMcpRuntime, generateMcpServer,
   managedMcpRuntimePath, managedMcpServerDirectory, mcpProcessStatus, mcpRuntimeManualCommands, mcpRuntimeStatus, mcpServerDefinitionData, mcpStatus, streamMcpPythonCandidates,
-  validateMcpPython,
+  resolveMcpPython, validateMcpPython,
 } from "./mcp";
 import {
   addPkmSkillCustomTarget, injectPkmSkill, pkmSkillProjectionStatus,
@@ -125,8 +137,14 @@ function mcpPanelStatusData(): object {
   const skillProposals = proposalDir && fs.existsSync(proposalDir)
     ? fs.readdirSync(proposalDir).filter(name => name.endsWith(".md")).sort().reverse().map(name => ({ name, path: path.join(proposalDir, name) }))
     : [];
+  const pkmSkill = chatCtx && getStorePath() ? pkmSkillProjectionStatus(chatCtx) : null;
+  const guideDismissed = !!chatCtx?.globalState.get<boolean>("pkm.integrationGuideDismissed.v1", false);
+  const guideStep = !guideDismissed && !python.valid ? "python"
+    : !guideDismissed && pkmSkill?.targets.some(target => target.state === "missing") ? "skill"
+    : "";
   return {
     ...info,
+    extensionVersion: String(chatCtx?.extension?.packageJSON?.version || "unknown"),
     combinedRegistry: runtime.healthy ? combinedMcpRegistry() : "",
     agencyInstallInstruction: combinedMcpInstallInstruction(),
     nativeMcpProvider: _nativeMcpProvider,
@@ -141,7 +159,15 @@ function mcpPanelStatusData(): object {
     },
     mcpPython: python,
     mcpRuntime: runtime,
-    pkmSkill: chatCtx && getStorePath() ? pkmSkillProjectionStatus(chatCtx) : null,
+    skillRouters: [
+      { id: "exact", name: "Exact", kind: "Deterministic", version: "1", status: "active", description: "Hard exact constraints and identifier matches." },
+      { id: "bm25", name: "BM25", kind: "Lexical", version: "academic-k1=0.9-b=0.4", status: "active", description: "Frozen relevance ranking across the typed Subscriber index." },
+    ],
+    pkmSkill,
+    firstRunGuide: { visible: !!guideStep, step: guideStep },
+    automaticSetup: { state: integrationMaintenanceState, error: integrationMaintenanceError },
+    performance: performanceStateDir ? performanceSummary(performanceStateDir) : {},
+    externalLink: { ...externalLinkHostOptions(), contentPort: publicContentActivePort || publicContentPort() },
     skillProposals,
     skillProposalDir: proposalDir,
   };
@@ -249,10 +275,160 @@ class Logger {
 
 const log = new Logger();
 let sharedMarket: SharedMarketManager | undefined;
+const RETRIEVAL_ENGINE_VERSION = "0.3.0.dev2026091601";
+const RETRIEVAL_CONFIGURATION_HASH = createHash("sha256").update("exact-match-v1|bm25-academic-k1=0.9-b=0.4|typed-prior-v1").digest("hex");
+let retrievalWorker: RetrievalWorkerManager | undefined;
+let retrievalRefreshTimer: NodeJS.Timeout | undefined;
+let retrievalRefreshRunning: Promise<void> | undefined;
+let knowledgeInventory: KnowledgeInventoryManager | undefined;
+let performanceStateDir = "";
+let activationStartedAt = 0;
+let firstContentRecorded = false;
+
+function refreshKnowledgeInventory(context: vscode.ExtensionContext): Promise<void> {
+  if (!knowledgeInventory) return Promise.resolve();
+  const startedAt = Date.now();
+  return knowledgeInventory.refresh(progress => {
+    if (progress.batchCount) {
+      _treeProvider?.refresh();
+      panel?.webview.postMessage({ command: "inventoryBatch", data: { count: progress.batchCount, scanned: progress.scanned } });
+    }
+  }).then(snapshot => {
+    if (performanceStateDir) recordPerformanceMetric(performanceStateDir, "inventory.refresh_ms", Date.now() - startedAt, snapshot.stats.scanned);
+    log.info(`knowledge inventory ready revision=${snapshot.revision.slice(0, 12)} scanned=${snapshot.stats.scanned} reused=${snapshot.stats.reused} parsed=${snapshot.stats.parsed} removed=${snapshot.stats.removed}`);
+    _treeProvider?.refresh();
+    if (panel) void handleMessage({ command: "list", tab: "notes", filter: "all", q: "" }, message => panel?.webview.postMessage(message), context);
+  }).catch(error => log.warn(`knowledge inventory refresh failed: ${(error as Error).message}`));
+}
 
 function getSharedMarket(): SharedMarketManager {
   if (!sharedMarket) throw new Error("Subscription service is not initialized.");
   return sharedMarket;
+}
+
+function retrievalStateDirectory(context: vscode.ExtensionContext): string {
+  const identity = createHash("sha256").update(path.resolve(getStorePath())).digest("hex").slice(0, 16);
+  return path.join(context.globalStorageUri.fsPath, "retrieval", identity);
+}
+
+function currentRetrievalSnapshot() {
+  const skills = skillList().flatMap(row => {
+    const detail = skillGet(row.name);
+    return detail ? [{ ...row, ...detail }] : [];
+  });
+  const notes = noteList(undefined, Number.MAX_SAFE_INTEGER, true);
+  const scripts = scriptList().flatMap(row => {
+    const detail = scriptGet(row.path);
+    return detail ? [{ ...row, ...detail, extension: path.extname(row.path) }] : [];
+  });
+  const subscriptionGroups = sharedMarket
+    ? SHARED_CONTENT_TYPES.flatMap(type => sharedMarket!.cachedGroups(type, "", Number.MAX_SAFE_INTEGER))
+    : [];
+  return createRetrievalSnapshot({
+    skills, notes, scripts, subscriptionGroups,
+    readSubscription: key => getSharedMarket().cachedDetail(key),
+  });
+}
+
+const MATURE_SKILL_ROUTER_SOLUTIONS = ["copilot_default", "l1_online"] as const;
+type MatureSkillRouterSolution = typeof MATURE_SKILL_ROUTER_SOLUTIONS[number];
+
+function enabledSkillRouterSolutions(): MatureSkillRouterSolution[] {
+  const configured = vscode.workspace.getConfiguration("personalKnowledge")
+    .get<string[]>("skillRouterEnabledSolutions", [...MATURE_SKILL_ROUTER_SOLUTIONS]);
+  const enabled = MATURE_SKILL_ROUTER_SOLUTIONS.filter(solution => configured.includes(solution));
+  if (!enabled.includes("copilot_default")) enabled.unshift("copilot_default");
+  return enabled;
+}
+
+function writeSkillRouterRuntimeConfig(context: vscode.ExtensionContext): MatureSkillRouterSolution[] {
+  const enabledSolutions = enabledSkillRouterSolutions();
+  const stateDirectory = retrievalStateDirectory(context);
+  fs.mkdirSync(stateDirectory, { recursive: true });
+  const target = path.join(stateDirectory, "router-config.json");
+  const temporary = `${target}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify({ schema: 1, enabledSolutions }, null, 2), { mode: 0o600 });
+  fs.renameSync(temporary, target);
+  return enabledSolutions;
+}
+
+async function skillRouterStatusData(context: vscode.ExtensionContext): Promise<object> {
+  const enabledSolutions = writeSkillRouterRuntimeConfig(context);
+  const activeProfile = enabledSolutions.includes("l1_online") ? "l1_online" : "copilot_default";
+  let documentCount = 0;
+  let revision = "";
+  try {
+    const snapshot = currentRetrievalSnapshot();
+    documentCount = snapshot.documents.length;
+    revision = snapshot.corpus_revision;
+  } catch { /* the Knowledge Root may still be initializing */ }
+  let runtime: Record<string, unknown> = { ready: false };
+  if (retrievalWorker) {
+    try {
+      const status = await retrievalWorker.status();
+      runtime = {
+        ready: status.ready,
+        documentCount: status.document_count,
+        corpusRevision: status.corpus_revision,
+        engineVersion: status.engine_version,
+        configurationHash: status.configuration_hash,
+        error: status.error,
+      };
+    } catch (error: any) {
+      runtime = { ready: false, error: error?.message || String(error) };
+    }
+  }
+  return {
+    activeProfile,
+    fallbackProfile: "copilot_default",
+    enabledSolutions,
+    solutions: {
+      copilot_default: { available: true, mature: true, enabled: enabledSolutions.includes("copilot_default"), externallyServed: true },
+      l1_exact: { available: false, mature: false, enabled: false },
+      l1_online: { available: true, mature: true, enabled: enabledSolutions.includes("l1_online") },
+      l1_weighted: { available: false, mature: false, enabled: false, systemDisabled: true },
+    },
+    modelBasedRoutingEnabled: false,
+    collector: {
+      eventType: "search_invocation",
+      collectedTools: [
+        "pkm.skill_context", "pkm.search_knowledge", "pkm.search_skills",
+        "pkm.search_notes", "pkm.search_papers", "pkm.search_subscribed_content",
+      ],
+      unavailableTools: ["vscode.tool_search", "vscode.grep_search"],
+      queryTextCollected: false,
+    },
+    corpus: { documentCount, revision },
+    runtime,
+  };
+}
+
+async function refreshRetrievalIndex(context: vscode.ExtensionContext): Promise<void> {
+  if (!getStorePath() || !mcpRuntimeStatus().healthy) return;
+  retrievalWorker ||= new RetrievalWorkerManager(
+    retrievalStateDirectory(context),
+    path.join(context.extensionPath, "resources", "retrieval_worker.py"),
+    resolveMcpPython(),
+    RETRIEVAL_ENGINE_VERSION,
+    RETRIEVAL_CONFIGURATION_HASH,
+  );
+  const startedAt = Date.now();
+  const snapshot = currentRetrievalSnapshot();
+  const sync = await retrievalWorker.sync(snapshot);
+  if (performanceStateDir) recordPerformanceMetric(performanceStateDir, "retrieval.sync_ms", Date.now() - startedAt, sync.upserts + sync.deletes);
+  log.info(`retrieval ${sync.mode} submitted revision=${snapshot.corpus_revision.slice(0, 12)} documents=${snapshot.documents.length} upserts=${sync.upserts} deletes=${sync.deletes}`);
+}
+
+function scheduleRetrievalRefresh(context: vscode.ExtensionContext, delay = 250): void {
+  if (retrievalRefreshTimer) clearTimeout(retrievalRefreshTimer);
+  retrievalRefreshTimer = setTimeout(() => {
+    retrievalRefreshTimer = undefined;
+    const previous = retrievalRefreshRunning || Promise.resolve();
+    retrievalRefreshRunning = previous.catch(() => {}).then(() => refreshRetrievalIndex(context))
+      .catch(error => log.warn(`retrieval refresh failed: ${(error as Error).message}`))
+      .finally(() => { retrievalRefreshRunning = undefined; });
+  }, delay);
+  retrievalRefreshTimer.unref?.();
 }
 
 /** Package list enriched with git-tracking info (tracked in the store, or its own repo). */
@@ -294,8 +470,26 @@ function privateTopLevelPromotionBlocked(type: PrivacyContentType, oldPath: stri
   return !oldPath.includes("/") && !newPath && isTopLevelPrivate(type, oldPath);
 }
 
+let sharedCatalogRevision = 0;
+let sharedCatalogCache: { revision: number; value: Record<string, any[]> } | undefined;
+let sharedCatalogBuild: { revision: number; promise: Promise<Record<string, any[]>> } | undefined;
+
+function invalidateSharedContentCatalog(): void {
+  sharedCatalogRevision += 1;
+  sharedCatalogCache = undefined;
+}
+
+function memorySample(): { heapUsed: number; external: number; arrayBuffers: number } {
+  const usage = process.memoryUsage();
+  return { heapUsed: usage.heapUsed, external: usage.external, arrayBuffers: usage.arrayBuffers };
+}
+
 async function sharedContentCatalog(): Promise<Record<string, any[]>> {
-  return {
+  const revision = sharedCatalogRevision;
+  if (sharedCatalogCache?.revision === revision) return sharedCatalogCache.value;
+  if (sharedCatalogBuild?.revision === revision) return sharedCatalogBuild.promise;
+  const startedAt = Date.now(), before = memorySample();
+  const promise = (async () => ({
     skills: (skillList() as any[]).filter(row => !isContentItemPrivate("skills", row)).map(row => ({ id: row.name, label: row.name, cat: row.category ?? "", treePath: row.category || "(uncategorized)", meta: compactTags(row.tags) })),
     notes: (noteList(undefined, 500) as any[]).filter(row => !isContentItemPrivate("notes", row)).map(row => ({ id: row.slug, label: row.title, cat: row.category ?? "", treePath: row.category || "(uncategorized)", meta: row.type })),
     papers: (paperList() as any[]).filter(row => !isContentItemPrivate("papers", row)).map(row => ({ id: row.slug, label: row.title, cat: row.category || row.topic || "", treePath: row.category || "(uncategorized)", meta: [row.topic, row.year].filter(Boolean).join(" · ") })),
@@ -303,7 +497,17 @@ async function sharedContentCatalog(): Promise<Record<string, any[]>> {
     scripts: (scriptList() as any[]).filter(row => !isContentItemPrivate("scripts", row)).map(row => ({ id: row.path, label: row.file, cat: row.category === "(root)" ? "" : row.category ?? "", treePath: row.category === "(root)" ? "" : row.category ?? "", meta: row.lang })),
     packages: packageList().filter((row: any) => !isContentItemPrivate("packages", row)).map((row: any) => ({ id: row.name, label: row.name, cat: "", treePath: "", meta: row.lang })),
     servers: (await serverList()).filter(row => !isContentItemPrivate("servers", row)).map(row => ({ id: row.slug, label: row.name, cat: row.category ?? "", treePath: row.category || "Ungrouped", meta: (row.tags || []).join(", ") })),
-  };
+  }))();
+  sharedCatalogBuild = { revision, promise };
+  try {
+    const value = await promise;
+    if (sharedCatalogRevision === revision) sharedCatalogCache = { revision, value };
+    const after = memorySample();
+    log.info(`subscription catalog build revision=${revision} durationMs=${Date.now() - startedAt} items=${Object.values(value).reduce((sum, items) => sum + items.length, 0)} heapDelta=${after.heapUsed - before.heapUsed} externalDelta=${after.external - before.external} arrayBufferDelta=${after.arrayBuffers - before.arrayBuffers}`);
+    return value;
+  } finally {
+    if (sharedCatalogBuild?.promise === promise) sharedCatalogBuild = undefined;
+  }
 }
 
 /** Ensure the knowledge store is a git repository (init on first use). */
@@ -325,11 +529,21 @@ function ensureGitRepo(): void {
   }
 }
 
+let gitCommitQueue = Promise.resolve();
+
+function runGit(args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile("git", args, { stdio: "pipe" } as any, error => error ? reject(error) : resolve());
+  });
+}
+
 function gitCommit(msg: string): void {
-  try {
-    const store = getStorePath();
-    execSync(`git -C "${store}" add -A && git -C "${store}" commit -m "${msg.replace(/"/g, '\\"')}"`, { stdio: "pipe" });
-  } catch { /* nothing to commit */ }
+  invalidateSharedContentCatalog();
+  const store = getStorePath();
+  gitCommitQueue = gitCommitQueue
+    .then(() => runGit(["-C", store, "add", "-A"]))
+    .then(() => runGit(["-C", store, "commit", "-m", msg]))
+    .catch(() => { /* nothing to commit, or the next operation will retry */ });
 }
 
 // (Notes & skills are persisted directly as files by filestore.ts — no separate mirror needed.)
@@ -461,9 +675,123 @@ async function serveFolderInBrowser(dir: string, entry: string): Promise<boolean
 
 let liveNoteServer: http.Server | undefined;
 let liveNoteBaseUrl: vscode.Uri | undefined;
+let publicContentServer: http.Server | undefined;
+let publicContentTimer: NodeJS.Timeout | undefined;
+let publicContentActivePort = 0;
+let publicContentEnsure: Promise<void> | undefined;
 
-function markdownPreviewPath(kind: "note" | "skill" | "paper", key: string): string {
-  const prefix = kind === "note" ? "" : `${kind}s/`;
+function externalLinkHostOptions(): { options: any[]; selected: string; resolved: string; unavailable: boolean } {
+  const options = serverNetworkAddresses().map(item => ({ ...item, label: `${item.kind === "hostname" ? "Hostname" : item.interface} · ${item.address}` }));
+  const configuration = vscode.workspace.getConfiguration("personalKnowledge");
+  const configured = configuration.get<string>("externalLinkHost", "").trim()
+    || configuration.get<string>("chatInviteHost", "").trim();
+  const fallback = options.find(item => item.kind === "hostname")?.address || options[0]?.address || os.hostname().replace(/\.$/, "");
+  const unavailable = !!configured && !options.some(item => item.address === configured);
+  return { options, selected: configured || fallback, resolved: unavailable ? fallback : configured || fallback, unavailable };
+}
+
+function externalUrlHost(): string {
+  const host = externalLinkHostOptions().resolved;
+  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+}
+
+function publicContentPort(): number {
+  return vscode.workspace.getConfiguration("personalKnowledge").get<number>("contentGatewayPort", 39502);
+}
+
+function publicContentPath(kind: "note" | "skill" | "paper" | "script", key: string): string {
+  return "/" + `${kind}s/${key}`.split("/").map(segment => encodeURIComponent(segment)).join("/") + ".html";
+}
+
+function publicContentRouteAllowed(pathname: string): boolean {
+  const clean = pathname.replace(/^\/+/, "").replace(/\.html$/i, "");
+  const match = /^(notes|skills|papers|scripts)\/(.+)$/.exec(clean);
+  if (!match) return false;
+  return !isContentPathPrivate(match[1] as PrivacyContentType, match[2]);
+}
+
+function publicContentIdentity(): { storeId: string; version: string } {
+  return {
+    storeId: createHash("sha256").update(path.resolve(getStorePath())).digest("hex").slice(0, 24),
+    version: "1",
+  };
+}
+
+async function ensurePublicContentGateway(context: vscode.ExtensionContext): Promise<void> {
+  if (publicContentEnsure) return publicContentEnsure;
+  const pending = withCrossProcessLock(
+    path.join(context.globalStorageUri.fsPath, "services", "public-content.lock"),
+    "Public Content Gateway transition",
+    5_000,
+    () => ensurePublicContentGatewayOnce(context),
+  );
+  publicContentEnsure = pending;
+  try { await pending; }
+  finally { if (publicContentEnsure === pending) publicContentEnsure = undefined; }
+}
+
+async function ensurePublicContentGatewayOnce(context: vscode.ExtensionContext): Promise<void> {
+  if (!_storeReady || !getStorePath()) return;
+  const port = publicContentPort();
+  const identity = publicContentIdentity();
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/.well-known/pkm-content`, { signal: AbortSignal.timeout(500) });
+    const active = await response.json() as { protocol?: string; storeId?: string };
+    if (active.protocol === "pkm-content:v1" && active.storeId === identity.storeId) { publicContentActivePort = port; return; }
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("another content service")) throw error;
+  }
+  try {
+    await startPublicContentGatewayAt(context, port, identity);
+  } catch (error: any) {
+    if (error?.code !== "EADDRINUSE") throw error;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/.well-known/pkm-content`, { signal: AbortSignal.timeout(500) });
+        const active = await response.json() as { protocol?: string; storeId?: string };
+        if (active.protocol === "pkm-content:v1" && active.storeId === identity.storeId) { publicContentActivePort = port; return; }
+      } catch { /* listener may still be publishing its identity endpoint */ }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error(`Public Content Gateway port ${port} is owned by an unrelated service. Choose another port in Config.`);
+  }
+}
+
+async function startPublicContentGatewayAt(context: vscode.ExtensionContext, port: number, identity: { storeId: string; version: string }): Promise<void> {
+  const started = await startLiveMarkdownServer(
+    [
+      { prefix: "notes", root: path.join(getStorePath(), "notes") },
+      { prefix: "skills", root: path.join(getStorePath(), "skills") },
+      { prefix: "papers", root: path.join(getStorePath(), "papers") },
+      { prefix: "scripts", root: path.join(getStorePath(), "scripts") },
+    ],
+    documentPath => liveMarkdownHtml(documentPath, context),
+    MIME_BY_EXT,
+    { listenHost: "0.0.0.0", port, authorizePath: publicContentRouteAllowed, identity, favicon: browserIconBuffer() },
+  );
+  publicContentServer = started.server;
+  publicContentActivePort = port;
+  publicContentServer.once("close", () => { publicContentServer = undefined; publicContentActivePort = 0; });
+}
+
+function findAvailablePort(start: number): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const tryPort = (port: number): void => {
+      if (port > 65535 || port >= start + 100) { reject(new Error("No available Public Content Gateway port was found.")); return; }
+      const probe = net.createServer();
+      probe.once("error", () => tryPort(port + 1));
+      probe.listen(port, "0.0.0.0", () => probe.close(() => resolve(port)));
+    };
+    tryPort(start);
+  });
+}
+
+function stablePublicContentUrl(kind: "note" | "skill" | "paper" | "script", key: string): string {
+  return `http://${externalUrlHost()}:${publicContentActivePort || publicContentPort()}${publicContentPath(kind, key)}`;
+}
+
+function markdownPreviewPath(kind: "note" | "skill" | "paper" | "script", key: string): string {
+  const prefix = `${kind}s/`;
   return "/" + (prefix + key).split("/").map(segment => encodeURIComponent(segment)).join("/") + ".html";
 }
 
@@ -522,7 +850,7 @@ function rewriteLiveNoteLinks(markdown: string, slug: string): string {
 
 function liveMarkdownHtml(documentPath: string, context: vscode.ExtensionContext): string | undefined {
   let item: any;
-  let kind: "note" | "skill" | "paper";
+  let kind: "note" | "skill" | "paper" | "script";
   if (documentPath.startsWith("skills/")) {
     kind = "skill";
     const key = documentPath.slice("skills/".length);
@@ -531,6 +859,12 @@ function liveMarkdownHtml(documentPath: string, context: vscode.ExtensionContext
   } else if (documentPath.startsWith("papers/")) {
     kind = "paper";
     item = paperGet(documentPath.slice("papers/".length));
+  } else if (documentPath.startsWith("scripts/")) {
+    kind = "script";
+    item = scriptGet(documentPath.slice("scripts/".length));
+  } else if (documentPath.startsWith("notes/")) {
+    kind = "note";
+    item = noteGet(documentPath.slice("notes/".length));
   } else {
     kind = "note";
     item = noteGet(documentPath);
@@ -538,31 +872,45 @@ function liveMarkdownHtml(documentPath: string, context: vscode.ExtensionContext
   if (!item) return undefined;
   const { renderMarkdown } = require("./live-markdown") as { renderMarkdown(markdown: string): string };
   const markdown = kind === "note" ? rewriteLiveNoteLinks(item.content || "", item.slug) : item.content || "";
-  const bodyHtml = renderMarkdown(markdown);
+  const bodyHtml = kind === "script"
+    ? `<pre><code>${String(item.content || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</code></pre>`
+    : renderMarkdown(markdown);
   return buildStandaloneNoteHtml({
-    title: item.title || item.name, slug: item.slug || item._key, category: item.category,
+    title: item.title || item.name || item.file, slug: item.slug || item._key || item.path, category: item.category,
     tags: Array.isArray(item.tags) ? JSON.stringify(item.tags) : item.tags || "[]",
     noteType: kind, updatedAt: item.updated_at, bodyHtml,
     description: item.description, sourceProject: item.source_project,
     authors: item.authors, year: item.year, publisher: item.publisher, url: item.url,
-  }, katexCssForExport(context));
+  }, katexCssForExport(context), "/favicon.ico");
 }
 
-async function openLiveMarkdownPreview(kind: "note" | "skill" | "paper", key: string, context: vscode.ExtensionContext): Promise<boolean> {
+async function openLiveMarkdownPreview(kind: "note" | "skill" | "paper" | "script", key: string, context: vscode.ExtensionContext): Promise<boolean> {
+  const privacyType = `${kind}s` as PrivacyContentType;
+  if (!isContentPathPrivate(privacyType, key)) {
+    await ensurePublicContentGateway(context);
+    return vscode.env.openExternal(vscode.Uri.parse(stablePublicContentUrl(kind, key)));
+  }
   if (!liveNoteServer) {
+    const accessToken = randomBytes(24).toString("base64url");
     const started = await startLiveMarkdownServer(
       [
+        { prefix: "notes", root: path.join(getStorePath(), "notes") },
         { prefix: "skills", root: path.join(getStorePath(), "skills") },
         { prefix: "papers", root: path.join(getStorePath(), "papers") },
-        { prefix: "", root: path.join(getStorePath(), "notes") },
+        { prefix: "scripts", root: path.join(getStorePath(), "scripts") },
       ],
       documentPath => liveMarkdownHtml(documentPath, context),
       MIME_BY_EXT,
+      { accessToken, favicon: browserIconBuffer() },
     );
     liveNoteServer = started.server;
-    liveNoteBaseUrl = await vscode.env.asExternalUri(vscode.Uri.parse(started.localBaseUrl));
+    liveNoteBaseUrl = await vscode.env.asExternalUri(vscode.Uri.parse(`${started.localBaseUrl}?_pkm_token=${encodeURIComponent(accessToken)}`));
   }
-  return vscode.env.openExternal(vscode.Uri.parse(liveNoteBaseUrl!.toString().replace(/\/$/, "") + markdownPreviewPath(kind, key)));
+  const target = new URL(liveNoteBaseUrl!.toString());
+  const token = target.search;
+  target.pathname = markdownPreviewPath(kind, key);
+  target.search = token;
+  return vscode.env.openExternal(vscode.Uri.parse(target.toString()));
 }
 
 // Apply `fn` only OUTSIDE fenced/inline code so link handling never touches code
@@ -665,7 +1013,7 @@ function collectLinkedNotes(rootSlug: string): any[] {
 }
 
 /** Wrap the webview-rendered note body in a self-contained, shareable HTML document. */
-function buildStandaloneNoteHtml(msg: any, katexCss = ""): string {
+function buildStandaloneNoteHtml(msg: any, katexCss = "", faviconHref = ""): string {
   const esc = (s: string) => String(s ?? "")
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   let tags: string[] = [];
@@ -693,12 +1041,13 @@ function buildStandaloneNoteHtml(msg: any, katexCss = ""): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="generator" content="Personal Knowledge Manager (VS Code)">
+${browserFaviconTag(faviconHref)}
 <title>${esc(title)}</title>
 <style>
 :root{color-scheme:light}
 *{box-sizing:border-box}
 body{margin:0;background:#f6f7f9;color:#1f2328;font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
-.wrap{max-width:820px;margin:32px auto;background:#fff;border:1px solid #e2e5e9;border-radius:12px;padding:40px 48px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.wrap{width:calc(100% - clamp(32px,5vw,96px));margin:clamp(16px,2vw,32px) auto;background:#fff;border:1px solid #e2e5e9;border-radius:8px;padding:clamp(24px,3vw,48px);box-shadow:0 1px 3px rgba(0,0,0,.06)}
 h1.doc-title{font-size:28px;line-height:1.25;margin:0 0 12px;color:#0b1220}
 .meta{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:20px;padding-bottom:18px;border-bottom:1px solid #eceef1;font-size:12px}
 .pill{padding:2px 9px;border-radius:20px;font-weight:600}
@@ -745,6 +1094,7 @@ h1.doc-title{font-size:28px;line-height:1.25;margin:0 0 12px;color:#0b1220}
 .hljs-emphasis{font-style:italic}.hljs-strong{font-weight:700}
 .math-block{overflow-x:auto;padding:4px 2px;margin:.6em 0}
 .katex-display{margin:.5em 0}
+@media(max-width:700px){.wrap{width:100%;margin:0;border-width:0;border-radius:0;padding:20px 16px;box-shadow:none}.upd{width:100%;margin-left:0}}
 @media print{body{background:#fff}.wrap{border:none;box-shadow:none;margin:0;max-width:none}}
 ${katexCss}
 </style>
@@ -825,7 +1175,7 @@ let _panelReady = false;                       // webview has signalled it's rea
 let _panelLastHeartbeat = 0;
 let _panelLastDiagnostic = "";
 let _storeReady = false;                       // file store configured & migrated
-let _pendingOpen: { type: string; key: string; edit?: boolean } | undefined; // item to open once ready
+let _pendingOpen: { type: string; key: string; edit?: boolean; tab?: string } | undefined; // item to open once ready
 let _pendingTab: string | undefined;           // tab to switch to once the webview is ready
 let _pendingSubscriptionShare: string | undefined;
 let _pendingServerSlug: string | undefined;
@@ -860,13 +1210,13 @@ function registerNativeMcpProvider(context: vscode.ExtensionContext): void {
 }
 
 /** Open an item in the panel; queues it if the webview isn't ready yet. */
-function openInPanel(context: vscode.ExtensionContext, type: string, key: string, edit = false): void {
+function openInPanel(context: vscode.ExtensionContext, type: string, key: string, edit = false, tab?: string): void {
   const p = getOrCreatePanel(context);
   p.reveal(vscode.ViewColumn.One);
   if (_panelReady) {
-    p.webview.postMessage({ command: "openItem", type, key, edit });
+    p.webview.postMessage({ command: "openItem", type, key, edit, tab });
   } else {
-    _pendingOpen = { type, key, edit }; // flushed on the "ready" message
+    _pendingOpen = { type, key, edit, tab }; // flushed on the "ready" message
   }
 }
 
@@ -1209,18 +1559,22 @@ interface RoomConn {
   selfHost: boolean;   // this client is the room's host (can moderate)
   selfMuted: boolean;  // the host has muted this client
   agentStates: Record<string, AgentRuntimeState>;
+  meetings: MeetingRoomSnapshot;
+  meetingHistorySynced: boolean;
   files:    Map<string, { meta: FileMeta; from: string; data: Buffer }>; // received, awaiting save
 }
 
 interface ManagedChatAgent {
   id: string;
   name: string;
+  icon: string;
   backend: AiBackend;
   role: string;
   systemPrompt: string;
   roomKey: string;
   client: ChatClient;
   messages: ChatMessage[];
+  pendingMessages: ChatMessage[];
   status: string;
   active: boolean;
   busy: boolean;
@@ -1249,11 +1603,14 @@ class ChatRoomManager {
   private persistenceRoot = "";
   private installationId = "";
   private secretStorage: vscode.SecretStorage | undefined;
+  private meetingStore: MeetingStateStore | undefined;
+  private meetingLifecycle: ChatMeetingLifecycle | undefined;
   private archiveLimitBytes = 10 * 1024 * 1024;
   private crossWindowRefreshTimer: NodeJS.Timeout | undefined;
   private storedRoomsRefresh: Promise<void> | undefined;
   private navigationStatusSignature = "";
   private static readonly MAX_MSGS = 1000;   // bounded visible transcript; full history remains durable in the Room DB
+  private static readonly DEFAULT_MANAGED_AGENT_ROLE = "Contribute relevant expertise, ask focused questions, review peer proposals, and help the Room reach concrete decisions.";
 
   private static roomKey(url: string, room: string, roomId?: string): string {
     return chatRoomIdentity(url, room, roomId);
@@ -1280,6 +1637,11 @@ class ChatRoomManager {
 
   private bindHub(hub: ChatHub): void {
     hub.onApprovalsChanged(() => this.push());
+    hub.onRoomDeactivating(async roomId => {
+      const room = [...this.rooms.values()].find(candidate => candidate.roomId === roomId);
+      try { await this.meetingLifecycle?.adjournRoom(roomId, room?.user); }
+      catch (error) { log.warn(`chat: couldn't adjourn Meeting while closing Room: ${(error as Error).message}`); }
+    });
   }
 
   private roomNameForId(roomId: string): string {
@@ -1297,6 +1659,9 @@ class ChatRoomManager {
     this.persistenceRoot = rootDir;
     this.installationId = installationId;
     this.secretStorage = secretStorage;
+    this.meetingStore = new MeetingStateStore(rootDir, path.join(path.dirname(rootDir), "notes"));
+    this.meetingLifecycle = new ChatMeetingLifecycle(this.meetingStore);
+    if (!isTopLevelPrivate("notes", "Chatroom Meetings")) setTopLevelPrivacy("notes", "Chatroom Meetings", true);
     this.hub?.configureLifecycle(rootDir, this.archiveLimitBytes, installationId, secretStorage);
     void this.refreshStoredRooms().catch(error => log.warn(`chat: couldn't refresh Stored Rooms: ${(error as Error).message}`));
   }
@@ -1338,6 +1703,67 @@ class ChatRoomManager {
     return { key: r.key, room: r.room, roomId: r.roomId, url: r.url, status: r.status, unread: r.unread, selfHost: r.selfHost };
   }
 
+  private meetingRoomId(room: RoomConn): string {
+    return room.roomId || createHash("sha256").update(room.key).digest("hex");
+  }
+
+  private publishMeetingSnapshot(room: RoomConn): void {
+    if (!room.selfHost || !this.meetingStore) return;
+    room.meetings = this.meetingStore.snapshot(this.meetingRoomId(room));
+    room.client.sendMeetingSnapshot({ ...room.meetings, trash: [] } as unknown as Record<string, unknown>);
+  }
+
+  meetingNoteKey(meetingId: string): string {
+    const room = this.activeRoom;
+    if (!room?.selfHost || !this.meetingStore) throw new Error("The canonical Meeting Note is available from its Host.");
+    const snapshot = this.meetingStore.snapshot(this.meetingRoomId(room));
+    const meeting = [snapshot.current, ...snapshot.history].find(candidate => candidate?.id === meetingId);
+    if (!meeting) throw new Error("Meeting Note was not found.");
+    return meeting.markdownPath.replace(/\\/g, "/").replace(/\.md$/i, "");
+  }
+
+  async startActiveMeeting(requestId: string, expectedRevision: number): Promise<void> {
+    const room = this.activeRoom;
+    if (!room || !room.selfHost) throw new Error("Only the Room Host can start a Meeting in this version.");
+    if (!this.meetingStore) throw new Error("Meeting storage is not configured.");
+    const trigger = [...room.messages].reverse().find(message => !message.system && message.mode === "discuss");
+    if (!trigger) throw new Error("Send a Discuss message before starting the Meeting.");
+    const problem = trigger.text.trim();
+    const title = problem.split(/\r?\n/)[0].replace(/^#+\s*/, "").slice(0, 100) || "Chatroom Meeting";
+    await this.meetingStore.startMeeting({
+      roomId: this.meetingRoomId(room), roomName: room.room, title, problemStatement: problem,
+      owner: trigger.discussionLead || room.user, lead: trigger.discussionLead || room.user, recorder: room.user,
+      participants: [...new Set([room.user, ...room.members.filter(member => member.present !== false).map(member => member.user)])],
+      host: room.user, triggerMessageId: trigger.id,
+      requestId, expectedRevision,
+    });
+    this.publishMeetingSnapshot(room);
+    this.push();
+  }
+
+  async adjournActiveMeeting(meetingId: string, requestId: string, expectedRevision: number): Promise<void> {
+    const room = this.activeRoom;
+    if (!room || !room.selfHost) throw new Error("Only the Room Host can adjourn a Meeting in this version.");
+    if (!this.meetingStore) throw new Error("Meeting storage is not configured.");
+    await this.meetingStore.adjournMeeting({
+      roomId: this.meetingRoomId(room), meetingId, actor: room.user, requestId, expectedRevision,
+    });
+    this.publishMeetingSnapshot(room);
+    this.push();
+  }
+
+  async mutateMeetingTrash(action: "trash" | "restore" | "delete", meetingId: string, requestId: string, expectedRevision: number): Promise<void> {
+    const room = this.activeRoom;
+    if (!room || !room.selfHost) throw new Error("Only the Room Host can change Meeting Trash.");
+    if (!this.meetingStore) throw new Error("Meeting storage is not configured.");
+    const input = { roomId: this.meetingRoomId(room), meetingId, actor: room.user, requestId, expectedRevision };
+    if (action === "trash") await this.meetingStore.moveToTrash(input);
+    else if (action === "restore") await this.meetingStore.restoreFromTrash(input);
+    else await this.meetingStore.permanentlyDelete(input);
+    this.publishMeetingSnapshot(room);
+    this.push();
+  }
+
   state(): object {
     const active = this.activeRoom;
     const locallyActiveRoomIds = new Set(this.hub?.adminRooms().map(room => room.roomId) || []);
@@ -1352,6 +1778,7 @@ class ChatRoomManager {
         hasRoomKey: !!this.getRoomKey(active.room),
         agentStates: active.agentStates,
         files: [...active.files.values()].map(f => ({ fileId: f.meta.fileId, name: f.meta.name, from: f.from, size: f.meta.size })),
+        meetings: active.selfHost && this.meetingStore ? this.meetingStore.snapshot(this.meetingRoomId(active)) : active.meetings,
       } : null,
       hubRunning: !!this.hub?.isRunning,
       hubUrl:     this.hub?.isRunning ? `ws://${this.advertisedHost()}:${this.hub.port}` : "",
@@ -1363,7 +1790,7 @@ class ChatRoomManager {
       pendingApprovals: [],
       storedRooms: this.storedRooms.filter(room => !locallyActiveRoomIds.has(room.roomId)),
       managedAgents: [...this.managedAgents.values()].map(agent => ({
-        id: agent.id, name: agent.name, role: agent.role, backend: agent.backend.label,
+        id: agent.id, name: agent.name, icon: agent.icon, role: agent.role, backend: agent.backend.label,
         roomKey: agent.roomKey, status: agent.status,
         active: agent.active, busy: agent.busy,
       })),
@@ -1413,11 +1840,7 @@ class ChatRoomManager {
       vscode.window.showWarningMessage(`Managed agent "${name}" already exists in this room.`);
       return;
     }
-    const role = (await vscode.window.showInputBox({
-      prompt: `Role and background for ${name}`,
-      placeHolder: "Owns Docker build, deployment, and container test workflows",
-    }))?.trim() || "Contribute your expertise, ask clarifying questions, and critique proposals constructively.";
-    this.createManagedAgent(context, room, secret, name, picked.backend, role);
+    this.createManagedAgent(context, room, secret, name, picked.backend, ChatRoomManager.DEFAULT_MANAGED_AGENT_ROLE);
   }
 
   private createManagedAgent(
@@ -1430,14 +1853,18 @@ class ChatRoomManager {
   ): void {
     const id = randomBytes(6).toString("hex");
     const agent: ManagedChatAgent = {
-      id, name, backend, role, roomKey: room.key, client: null as any,
+      id, name, icon: "🤖", backend, role, roomKey: room.key, client: null as any,
       systemPrompt: ChatRoomManager.managedAgentPrompt(name, role),
-      messages: [], status: "connecting", active: true, busy: false, generation: 0,
+      messages: [], pendingMessages: [], status: "connecting", active: true, busy: false, generation: 0,
     };
     agent.client = new ChatClient({
       onStatus: (status, detail) => {
         agent.status = detail ? `${status}: ${detail}` : status;
-        if (status === "connected") agent.client.sendAgentState("standby");
+        if (status === "connected") {
+          agent.active = true;
+          agent.client.sendAgentState("standby");
+          void this.drainManagedAgentMessages(context, agent);
+        }
         if (status === "disconnected") {
           agent.active = false;
           agent.busy = false;
@@ -1453,14 +1880,9 @@ class ChatRoomManager {
       onRekey: () => {},
     }, message => log.debug(`managed-agent[${name}]: ${message}`));
     this.managedAgents.set(id, agent);
-    agent.client.connect({ url: room.url, room: room.room, roomId: room.roomId, user: name, token: secret, kind: "agent", cid: `managed-${id}` });
+    agent.client.connect({ url: room.url, room: room.room, roomId: room.roomId, user: name, token: secret, kind: "agent", cid: `managed-${id}`, temporary: true });
     log.action("chat.managedAgent.add", { room: room.room, name, backend: backend.id });
     this.push();
-  }
-
-  private messageMentions(text: string, name: string): boolean {
-    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return /@(all|everyone)\b/i.test(text) || new RegExp(`@(?:"${escaped}"|${escaped})(?=\\s|$|[,.!?;:])`, "i").test(text);
   }
 
   private ensureDirectedReply(text: string, target: string): string {
@@ -1471,21 +1893,38 @@ class ChatRoomManager {
     return `${mention} ${value}`;
   }
 
-  private async onManagedAgentMessage(context: vscode.ExtensionContext, agent: ManagedChatAgent, message: ChatMessage): Promise<void> {
+  private onManagedAgentMessage(context: vscode.ExtensionContext, agent: ManagedChatAgent, message: ChatMessage): void {
     if (message.id && agent.messages.some(existing => existing.id === message.id)) return;
     agent.messages.push(message);
     if (agent.messages.length > 80) agent.messages.splice(0, agent.messages.length - 80);
     const text = String(message.text || "").trim();
-    const low = text.toLowerCase();
-    if (!agent.active || agent.busy || message.from.toLowerCase() === agent.name.toLowerCase()) return;
-    const directed = this.messageMentions(text, agent.name);
+    if (!agent.active || message.from.toLowerCase() === agent.name.toLowerCase()) return;
+    const directed = messageAddressesManagedAgent(message, agent.name);
     if (!directed) return;
+    if (!agent.pendingMessages.some(existing => existing.id === message.id)) agent.pendingMessages.push(message);
+    if (agent.pendingMessages.length > 32) agent.pendingMessages.splice(0, agent.pendingMessages.length - 32);
+    if (agent.busy) {
+      agent.status = `queued: ${agent.pendingMessages.length}`;
+      this.push();
+      return;
+    }
+    void this.drainManagedAgentMessages(context, agent);
+  }
+
+  private async drainManagedAgentMessages(context: vscode.ExtensionContext, agent: ManagedChatAgent): Promise<void> {
+    if (!agent.active || agent.busy) return;
+    const message = agent.pendingMessages.shift();
+    if (!message) return;
     const generation = agent.generation;
     agent.busy = true;
+    agent.status = agent.pendingMessages.length ? `working; ${agent.pendingMessages.length} queued` : "working";
     agent.client.sendAgentState("thinking");
     this.push();
+    let failure = "";
     try {
-      const transcript = agent.messages.slice(-30)
+      const messageIndex = agent.messages.findIndex(item => item.id === message.id);
+      const transcriptEnd = messageIndex >= 0 ? messageIndex + 1 : agent.messages.length;
+      const transcript = agent.messages.slice(Math.max(0, transcriptEnd - 30), transcriptEnd)
         .filter(item => !item.system)
         .map(item => `${item.from || "system"}: ${item.text}`)
         .join("\n");
@@ -1499,12 +1938,19 @@ class ChatRoomManager {
         agent.client.sendText(this.ensureDirectedReply(reply, replyTarget));
       }
     } catch (error: any) {
-      if (agent.generation === generation) agent.client.sendText(`@Host I could not respond: ${error?.message || String(error)}`);
+      failure = error?.message || String(error);
+      if (agent.generation === generation) agent.client.sendText(`@Host I could not respond: ${failure}`);
       log.error(`managed agent ${agent.name} failed: ${error?.message || error}`);
     } finally {
       if (agent.generation === generation) agent.busy = false;
-      if (agent.generation === generation) agent.client.sendAgentState(agent.active ? "standby" : "idle");
+      if (agent.generation === generation) {
+        agent.status = failure ? `error: ${failure}` : agent.pendingMessages.length ? `queued: ${agent.pendingMessages.length}` : agent.active ? "standby" : "idle";
+        agent.client.sendAgentState(agent.pendingMessages.length ? "thinking" : agent.active ? "standby" : "idle");
+      }
       this.push();
+      if (agent.generation === generation && agent.active && agent.pendingMessages.length) {
+        void this.drainManagedAgentMessages(context, agent);
+      }
     }
   }
 
@@ -1513,16 +1959,17 @@ class ChatRoomManager {
     if (!agent) return;
     agent.active = false; agent.generation++;
     const room = this.rooms.get(agent.roomKey);
-    const target = `cid:managed-${agent.id}:${agent.name.trim().toLowerCase()}`;
-    if (!room?.selfHost || !room.client.sendAdmin("kick", target)) {
-      try { agent.client.disconnect(); } catch { /* ignore */ }
-    }
+    const target = agent.client.participantId
+      ? `participant:${agent.client.participantId}`
+      : `cid:managed-${agent.id}:${agent.name.trim().toLowerCase()}`;
+    if (room?.selfHost) room.client.sendAdmin("kick", target);
+    try { agent.client.disconnect(); } catch { /* ignore */ }
     this.managedAgents.delete(id);
     log.action("chat.managedAgent.remove", { name: agent.name });
     this.push();
   }
 
-  editManagedAgent(id: string, name: string, role: string): void {
+  editManagedAgent(id: string, name: string, role: string, icon: string): void {
     const agent = this.managedAgents.get(id);
     if (!agent) return;
     const nextName = name.trim().slice(0, 60);
@@ -1540,6 +1987,7 @@ class ChatRoomManager {
     }
     agent.name = nextName;
     agent.role = nextRole;
+    agent.icon = Array.from(icon.trim()).slice(0, 4).join("") || "🤖";
     agent.systemPrompt = ChatRoomManager.managedAgentPrompt(nextName, nextRole);
     log.action("chat.managedAgent.edit", { name: nextName, role: nextRole });
     this.push();
@@ -1579,13 +2027,13 @@ class ChatRoomManager {
     rc = {
       key, url: opts.url, room: opts.room, roomId: opts.roomId, user: opts.user,
       client: null as any, messages: [], members: [], status: "connecting", statusDetail: "",
-      unread: 0, selfHost: false, selfMuted: false, agentStates: {}, files: new Map(),
+      unread: 0, selfHost: false, selfMuted: false, agentStates: {}, meetings: { current: null, history: [], trash: [] }, meetingHistorySynced: false, files: new Map(),
     };
     rc.client = new ChatClient(
       {
-        onStatus:   (s, d) => { rc!.status = s; rc!.statusDetail = d ?? ""; this.push(); },
+        onStatus:   (s, d) => { rc!.status = s; rc!.statusDetail = d ?? ""; if (s === "connected") this.publishMeetingSnapshot(rc!); this.push(); },
         onMessage:  m => this.addMessage(rc!, m),
-        onHistory:  ms => { rc!.messages = ms.slice(-ChatRoomManager.MAX_MSGS); if (rc!.key === this.activeKey) this.push(); },
+        onHistory:  ms => { rc!.messages = ms.slice(-ChatRoomManager.MAX_MSGS); if (rc!.selfHost) void this.syncMeetingFromHistory(rc!); if (rc!.key === this.activeKey) this.push(); },
         onPresence: mm => {
           rc!.members = mm;
           for (const member of mm) {
@@ -1594,7 +2042,12 @@ class ChatRoomManager {
           const me = mm.find(x => x.participantId && x.participantId === rc!.client.participantId);
           rc!.selfHost = !!me?.host;
           rc!.selfMuted = !!me?.muted;
+          if (rc!.selfHost) void this.syncMeetingFromHistory(rc!);
           this.push();
+        },
+        onMeetingSnapshot: snapshot => {
+          rc!.meetings = snapshot as unknown as MeetingRoomSnapshot;
+          if (rc!.key === this.activeKey) this.push();
         },
         onAgentState: (user, state) => {
           rc!.agentStates[user] = state;
@@ -1624,6 +2077,15 @@ class ChatRoomManager {
       await this.hub.adminCloseRoom(locallyHosted.roomId);
     } else {
       try { rc.client.disconnect(); } catch { /* ignore */ }
+    }
+    for (const [id, agent] of this.managedAgents) {
+      if (agent.roomKey !== key) continue;
+      agent.active = false;
+      agent.busy = false;
+      agent.generation++;
+      agent.pendingMessages = [];
+      try { agent.client.disconnect(); } catch { /* ignore */ }
+      this.managedAgents.delete(id);
     }
     this.rooms.delete(key);
     if (this.activeKey === key) this.activeKey = this.rooms.keys().next().value ?? "";
@@ -1664,11 +2126,79 @@ class ChatRoomManager {
     if (m.id && rc.messages.some(x => x.id === m.id)) return;
     rc.messages.push(m);
     if (rc.messages.length > ChatRoomManager.MAX_MSGS) rc.messages.splice(0, rc.messages.length - ChatRoomManager.MAX_MSGS);
+    void this.updateMeetingFromMessage(rc, m);
     if (rc.key === this.activeKey) {
       postToPanel({ command: "chatMessage", data: { key: rc.key, message: m } });
     } else {
       if (!m.system) rc.unread++;
       this.push();
+    }
+  }
+
+  private async updateMeetingFromMessage(room: RoomConn, message: ChatMessage): Promise<void> {
+    if (!room.selfHost || !this.meetingStore || message.system || !message.id || !message.text.trim()) return;
+    const roomId = this.meetingRoomId(room);
+    try {
+      const current = this.meetingStore.snapshot(roomId).current;
+      if (!current) {
+        if (message.mode !== "discuss") return;
+        const problem = message.text.trim();
+        const title = problem.split(/\r?\n/)[0].replace(/^#+\s*/, "").slice(0, 100) || "Chatroom Meeting";
+        await this.meetingStore.startMeeting({
+          roomId, roomName: room.room, title, problemStatement: problem,
+          owner: message.discussionLead || room.user, lead: message.discussionLead || room.user, recorder: room.user,
+          participants: [...new Set([room.user, ...room.members.filter(member => member.present !== false).map(member => member.user)])],
+          host: room.user, triggerMessageId: message.id, requestId: `auto-start:${message.id}`, expectedRevision: 0,
+        });
+      } else {
+        await this.meetingStore.recordDiscussionMessage({
+          roomId, participant: message.from, text: message.text, sourceMessageId: message.id,
+          finalLeadSummary: isFinalLeadSummary(message, current.lead),
+          recordedAt: message.ts ? new Date(message.ts).toISOString() : undefined,
+        });
+      }
+      this.publishMeetingSnapshot(room);
+      this.push();
+    } catch (error: any) {
+      log.warn(`chat: couldn't update live Meeting Summary: ${error?.message || String(error)}`);
+    }
+  }
+
+  private async syncMeetingFromHistory(room: RoomConn): Promise<void> {
+    if (room.meetingHistorySynced || !room.selfHost || !this.meetingStore) return;
+    room.meetingHistorySynced = true;
+    const roomId = this.meetingRoomId(room);
+    try {
+      let current = this.meetingStore.snapshot(roomId).current;
+      if (!current) {
+        const trigger = this.meetingLifecycle?.latestDiscussAfterLastMeeting(roomId, room.messages);
+        if (!trigger?.id || !trigger.text.trim()) {
+          room.meetingHistorySynced = false;
+          return;
+        }
+        const problem = trigger.text.trim();
+        const title = problem.split(/\r?\n/)[0].replace(/^#+\s*/, "").slice(0, 100) || "Chatroom Meeting";
+        current = await this.meetingStore.startMeeting({
+          roomId, roomName: room.room, title, problemStatement: problem,
+          owner: trigger.discussionLead || room.user, lead: trigger.discussionLead || room.user, recorder: room.user,
+          participants: [...new Set([room.user, ...room.members.filter(member => member.present !== false).map(member => member.user)])],
+          host: room.user, triggerMessageId: trigger.id, requestId: `history-start:${trigger.id}`, expectedRevision: 0,
+        });
+      }
+      const triggerIndex = room.messages.findIndex(message => message.id === current?.triggerMessageId);
+      for (const message of room.messages.slice(Math.max(0, triggerIndex + 1))) {
+        if (message.system || !message.id || !message.text.trim()) continue;
+        await this.meetingStore.recordDiscussionMessage({
+          roomId, participant: message.from, text: message.text, sourceMessageId: message.id,
+          finalLeadSummary: isFinalLeadSummary(message, current.lead),
+          recordedAt: message.ts ? new Date(message.ts).toISOString() : undefined,
+        });
+      }
+      this.publishMeetingSnapshot(room);
+      this.push();
+    } catch (error: any) {
+      room.meetingHistorySynced = false;
+      log.warn(`chat: couldn't reconcile Meeting Summary from history: ${error?.message || String(error)}`);
     }
   }
 
@@ -1706,9 +2236,9 @@ class ChatRoomManager {
     log.action("chat.joinRejected", { room: rc.room, code });
   }
 
-  send(text: string, responseRequired?: boolean, replyPolicy?: ReplyPolicy, mode?: ChatMode, recipients?: string[], replyToMessageId?: string): boolean {
+  send(text: string, responseRequired?: boolean, replyPolicy?: ReplyPolicy, mode?: ChatMode, recipients?: string[], replyToMessageId?: string, discussionLead?: string, finalTopicSummary?: boolean): boolean {
     const rc = this.activeRoom;
-    return rc ? rc.client.sendText(text, responseRequired, replyPolicy, mode, recipients, replyToMessageId) : false;
+    return rc ? rc.client.sendText(text, responseRequired, replyPolicy, mode, recipients, replyToMessageId, discussionLead, finalTopicSummary) : false;
   }
 
   /** Host-only: moderate a member in the active room. Target identified by its
@@ -1828,11 +2358,17 @@ class ChatRoomManager {
       try {
         await this.hub.start(port);
       } catch (e: any) {
-        // If the preferred port is busy, fall back to an OS-assigned free port
-        // so a stale/duplicate hub never blocks hosting.
         if (e?.code === "EADDRINUSE" && port !== 0) {
-          log.warn(`chat: port ${port} busy — retrying on an ephemeral port`);
-          await this.hub.start(0);
+          try {
+            const response = await fetch(`http://127.0.0.1:${port}/.well-known/pkm-chat-hub`, { signal: AbortSignal.timeout(500) });
+            const active = await response.json() as { protocol?: string; installationId?: string };
+            if (active.protocol === "pkm-chat-hub:v1" && active.installationId === this.installationId) {
+              throw new Error(`Chat Hub is already active in another VS Code window on port ${port}. Use that window to host Rooms.`);
+            }
+          } catch (identityError) {
+            if (identityError instanceof Error && identityError.message.includes("already active in another VS Code window")) throw identityError;
+          }
+          throw e;
         } else {
           throw e;
         }
@@ -2053,10 +2589,18 @@ const CHAT_RECENTS_KEY = "pk.chat.recents";
 interface RecentRoom { id: string; url: string; room: string; roomId?: string; user: string; host: boolean; port: number; secret?: string; lastJoined: number; }
 
 function chatInviteHostOptions(context: vscode.ExtensionContext): { options: any[]; selected: string; unavailable: boolean } {
-  const options = serverNetworkAddresses().map(item => ({ ...item, label: `${item.kind === "hostname" ? "Hostname" : item.interface} · ${item.address}` }));
-  const configured = vscode.workspace.getConfiguration("personalKnowledge").get<string>("chatInviteHost", "").trim();
-  const selected = configured || options.find(item => item.kind === "hostname")?.address || options[0]?.address || "";
-  return { options, selected, unavailable: !!configured && !options.some(item => item.address === configured) };
+  const external = externalLinkHostOptions();
+  return { options: external.options, selected: external.selected, unavailable: external.unavailable };
+}
+
+async function updateExternalLinkHost(address: string): Promise<void> {
+  if (!serverNetworkAddresses().some(item => item.address === address)) throw new Error("Select an available hostname or network interface.");
+  await vscode.workspace.getConfiguration("personalKnowledge").update("externalLinkHost", address, vscode.ConfigurationTarget.Global);
+  if (chatCtx) applyChatInviteHost(chatCtx);
+  if (sharedMarket) {
+    const snapshot = sharedMarket.snapshot as any;
+    if (snapshot.advertisedHost !== address) await sharedMarket.configure({ enabled: snapshot.enabled, port: snapshot.port, advertisedHost: address, displayName: snapshot.displayName });
+  }
 }
 
 function applyChatInviteHost(context: vscode.ExtensionContext): { selected: string; unavailable: boolean } {
@@ -2161,6 +2705,7 @@ async function confirmAndDeleteStoredRoom(context: vscode.ExtensionContext, room
 }
 /** Set store paths, run the one-time DB→files migration, mark ready, refresh. */
 async function initStore(context: vscode.ExtensionContext, storePath: string): Promise<void> {
+  invalidateSharedContentCatalog();
   fsSetStorePath(storePath);
   storageSetStorePath(storePath);
   setPrivacyStoreRoot(storePath);
@@ -2173,6 +2718,7 @@ async function initStore(context: vscode.ExtensionContext, storePath: string): P
     } catch (e: any) { log.warn(`migration skipped: ${e?.message}`); }
   }
   _storeReady = true;
+  void ensurePublicContentGateway(context).catch(error => log.warn(`public content gateway: ${(error as Error).message}`));
   _treeProvider?.refresh();
 }
 
@@ -2232,6 +2778,15 @@ function seedExamples(): void {
     "Organise scripts in a folder tree (`scripts/<Category>/<file>`) with language tags, syntax",
     "highlighting, and an **AI Summary** button.",
     "",
+    "## Navigation and right-click menus",
+    "Right-click any folder or document to copy its canonical PKM path. Menus group Open, Copy,",
+    "Create, Edit, Organize, Control, and Danger actions so destructive operations remain last.",
+    "",
+    "## Privacy and browser links",
+    "Top-level folder privacy is inherited. Public Notes, Skills, Papers, and Scripts can use stable",
+    "browser links on the configured hostname/interface and fixed Content Gateway port. Private",
+    "content is not publicly discoverable and returns 404; owner Preview uses temporary access.",
+    "",
     "## 🐍 Python Environments",
     "Manage conda / venv / uv envs: Python version + size, compare two envs, find near-duplicates",
     "to merge, open an activated shell, or migrate an env into a central folder. (Machine-local.)",
@@ -2244,9 +2799,16 @@ function seedExamples(): void {
     "Share with another machine: the host generates a one-paste encrypted **Magic Code**; the receiver",
     "pastes it, then chooses to **merge directly** or drop everything into a **new group** to review.",
     "",
+    "## Subscription Brokers",
+    "Subscribe to another Broker to search its downloaded Skills, Notes, Papers, Prompts, Scripts,",
+    "Packages, and Server links without merging them into local Knowledge. Realtime notifications",
+    "refresh changed Brokers automatically; use right-click **Refresh from Broker** as a manual fallback.",
+    "Subscribed Copy Path values work with MCP `get_subscribed_content_by_path`.",
+    "",
     "## 🤖 MCP (for AI assistants)",
-    "The MCP tab generates a Python server with read+write tools over these files. Run",
-    "`pip install fastmcp` and point your assistant (Claude, Copilot, …) at it.",
+    "The Config tab manages a dedicated Python runtime and generates one unified `pkm` server with",
+    "read/write Knowledge, Subscription, Skill workflow, and Chatroom tools. Update generated code",
+    "when the Config version table reports it as outdated.",
     "",
     "---",
     "Files are the source of truth — edit here, in your editor, or via MCP, and the panel",
@@ -2394,7 +2956,7 @@ async function ensureSetup(context: vscode.ExtensionContext): Promise<boolean> {
     return false;
   }
   await initStore(context, chosen);
-  void offerMcpRuntimeSetup(context);
+  void maintainPkmIntegration(context);
   return _storeReady;
 }
 
@@ -2513,6 +3075,7 @@ function getOrCreatePanel(context: vscode.ExtensionContext): vscode.WebviewPanel
 
 function initializePanel(target: vscode.WebviewPanel, context: vscode.ExtensionContext, restored: boolean): void {
   panel = target;
+  if (performanceStateDir && activationStartedAt) recordPerformanceMetric(performanceStateDir, "startup.framework_ms", Date.now() - activationStartedAt);
   target.webview.options = makeWebviewOptions(context);
   target.iconPath = vscode.Uri.parse("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📚</text></svg>");
   _panelReady = false; // fresh webview; wait for its "ready" signal
@@ -2549,11 +3112,13 @@ function initializePanel(target: vscode.WebviewPanel, context: vscode.ExtensionC
 // ── Shared message handler (panel + sidebar) ───────────────────────────────
 async function serverListForUi(context: vscode.ExtensionContext): Promise<any[]> {
   const autoForward = context.globalState.get<boolean>("servers.autoForward.global.v1", true);
+  const externalLinkHost = externalLinkHostOptions().resolved;
   return (await serverList()).map(server => ({
     ...server,
     isPrivate: isContentItemPrivate("servers", server),
     autoForward,
     remoteName: vscode.env.remoteName || "",
+    externalLinkHost,
   }));
 }
 
@@ -2610,8 +3175,8 @@ async function handleMessage(
 ): Promise<void> {
   try {
   // Log user-meaningful actions at info level; noisy list/detail at debug
-  if (["saveNote", "saveSkill", "deleteNote", "deleteSkill", "markDone",
-       "export", "import", "startSync", "joinSync", "revokeSync", "generateMcp"].includes(msg.command)) {
+    if (["saveNote", "saveSkill", "deleteNote", "deleteSkill", "markDone",
+      "export", "import", "startSync", "joinSync", "revokeSync", "generateMcp", "setSkillRouterSolutionEnabled"].includes(msg.command)) {
     log.action(`webview.${msg.command}`);
   } else {
     log.debug(`handleMessage: ${msg.command}`);
@@ -2641,10 +3206,11 @@ async function handleMessage(
     case "ready": {
       // Webview finished loading — flush any queued item to open
       _panelReady = true;
+      respond({ command: "loadingProgress", data: { stage: "preparing", percent: 5, message: "Preparing PKM services…" } });
       if (_pendingOpen) {
-        const { type, key, edit } = _pendingOpen;
+        const { type, key, edit, tab } = _pendingOpen;
         _pendingOpen = undefined;
-        respond({ command: "openItem", type, key, edit });
+        respond({ command: "openItem", type, key, edit, tab });
       }
       if (_pendingTab) {
         const tab = _pendingTab;
@@ -2675,7 +3241,32 @@ async function handleMessage(
       // re-renders the tree + current tab (external edits are already on disk).
       _treeProvider?.refresh();
       log.action("reload");
-      respond({ command: "reloaded" });
+      respond({ command: "reloaded", data: { manual: true } });
+      break;
+    }
+
+    case "refreshKnowledgeFolder": {
+      const area = String(msg.area || "");
+      const category = String(msg.category || "").replace(/^\/+|\/+$/g, "");
+      if (!["skills", "notes", "papers", "scripts"].includes(area)) throw new Error(`Unsupported category tree: ${area}`);
+      const root = path.resolve(getStorePath(), area);
+      const target = path.resolve(root, category);
+      if (target !== root && !target.startsWith(root + path.sep)) throw new Error("Category path escapes the Knowledge Root");
+      let timeout: NodeJS.Timeout | undefined;
+      try {
+        await Promise.race([
+          fs.promises.readdir(target),
+          new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("Folder scan timed out after 3 seconds")), 3_000); }),
+        ]);
+        invalidateSharedContentCatalog();
+        _treeProvider?.refresh();
+        respond({ command: "reloaded", data: { folderScan: true, changedPath: `${area}/${category}/` } });
+        scheduleRetrievalRefresh(context);
+      } catch (error: any) {
+        respond({ command: "knowledgeFolderScanFailed", data: { category, error: error?.message || String(error) } });
+      } finally {
+        if (timeout) clearTimeout(timeout);
+      }
       break;
     }
 
@@ -2728,8 +3319,27 @@ async function handleMessage(
     }
 
     case "subscriptionDeleteShare": {
-      await getSharedMarket().deleteShare(String(msg.shareId || ""));
-      respond({ command: "subscriptionCompleted", data: { action: "brokerDeleted" } });
+      const shareId = String(msg.shareId || "");
+      const share = (getSharedMarket().snapshot as any).shares?.find((item: any) => item.shareId === shareId);
+      if (!share) throw new Error("Broker not found.");
+      const choice = await vscode.window.showWarningMessage(
+        `Delete Broker “${share.name}”?`,
+        { modal: true, detail: "This stops publishing and removes the local Broker definition, snapshots, secret, and statistics. Existing Subscriber caches on other machines are not deleted." },
+        "Delete Broker",
+      );
+      if (choice !== "Delete Broker") {
+        respond({ command: "subscriptionCompleted", data: { action: "brokerDeleteCancelled", name: share.name } });
+        break;
+      }
+      await getSharedMarket().deleteShare(shareId);
+      respond({ command: "subscriptionCompleted", data: { action: "brokerDeleted", name: share.name } });
+      respond({ command: "subscriptionState", data: { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses() } });
+      break;
+    }
+
+    case "subscriptionSetSharePublished": {
+      const share = await getSharedMarket().setSharePublished(String(msg.shareId || ""), !!msg.published);
+      respond({ command: "subscriptionCompleted", data: { action: share.published === false ? "brokerPaused" : "brokerPublished", name: share.name } });
       respond({ command: "subscriptionState", data: { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses() } });
       break;
     }
@@ -2754,7 +3364,7 @@ async function handleMessage(
     }
 
     case "subscriptionUnblockIp": {
-      getSharedMarket().unblockIp(String(msg.shareId || ""), String(msg.ip || ""));
+      await getSharedMarket().unblockIp(String(msg.shareId || ""), String(msg.ip || ""));
       respond({ command: "subscriptionCompleted", data: { action: "unblocked", ip: String(msg.ip || "") } });
       respond({ command: "subscriptionState", data: { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses() } });
       break;
@@ -2824,10 +3434,8 @@ async function handleMessage(
 
     case "chatSetInviteHost": {
       const address = String(msg.address || "").trim();
-      const available = serverNetworkAddresses().some(item => item.address === address);
-      if (!available) { respond({ command: "chatToast", data: { error: `Invite host is unavailable on this Extension Host: ${address}` } }); break; }
-      await vscode.workspace.getConfiguration("personalKnowledge").update("chatInviteHost", address, vscode.ConfigurationTarget.Global);
-      getChatMgr().setAdvertisedHost(address);
+      try { await updateExternalLinkHost(address); }
+      catch { respond({ command: "chatToast", data: { error: `External link host is unavailable on this Extension Host: ${address}` } }); break; }
       getChatMgr().push();
       const inviteHost = chatInviteHostOptions(context);
       respond({ command: "chatConfig", data: { inviteHosts: inviteHost.options, inviteHost: inviteHost.selected, inviteHostUnavailable: false } });
@@ -2929,13 +3537,60 @@ async function handleMessage(
       const mode = ["announce", "ask", "discuss"].includes(String(msg.mode)) ? msg.mode as ChatMode : undefined;
       const recipients = Array.isArray(msg.recipients) ? msg.recipients.map((name: unknown) => String(name || "")).filter(Boolean) : undefined;
       const replyToMessageId = String(msg.replyToMessageId || "").slice(0, 120) || undefined;
-      const ok = getChatMgr().send((msg.text || "").toString(), responseRequired, replyPolicy, mode, recipients, replyToMessageId);
+      const discussionLead = mode === "discuss" ? String(msg.discussionLead || "").slice(0, 60) || undefined : undefined;
+      const finalTopicSummary = msg.finalTopicSummary === true;
+      const ok = getChatMgr().send((msg.text || "").toString(), responseRequired, replyPolicy, mode, recipients, replyToMessageId, discussionLead, finalTopicSummary);
       if (!ok) getChatMgr().push();
       break;
     }
 
+    case "chatMeetingStart": {
+      try {
+        await getChatMgr().startActiveMeeting(String(msg.requestId || ""), Number(msg.expectedRevision || 0));
+      } catch (error: any) {
+        respond({ command: "chatToast", data: { error: error?.message || String(error) } });
+      }
+      break;
+    }
+
+    case "chatMeetingAdjourn": {
+      try {
+        await getChatMgr().adjournActiveMeeting(String(msg.meetingId || ""), String(msg.requestId || ""), Number(msg.expectedRevision || 0));
+      } catch (error: any) {
+        respond({ command: "chatToast", data: { error: error?.message || String(error) } });
+      }
+      break;
+    }
+
+    case "chatMeetingOpenNote": {
+      try {
+        respond({ command: "openItem", type: "note", key: getChatMgr().meetingNoteKey(String(msg.meetingId || "")), tab: "notes" });
+      } catch (error: any) {
+        respond({ command: "chatToast", data: { error: error?.message || String(error) } });
+      }
+      break;
+    }
+
+    case "chatMeetingTrash":
+    case "chatMeetingRestore":
+    case "chatMeetingDelete": {
+      try {
+        const action = msg.command === "chatMeetingTrash" ? "trash" : msg.command === "chatMeetingRestore" ? "restore" : "delete";
+        await getChatMgr().mutateMeetingTrash(action, String(msg.meetingId || ""), String(msg.requestId || ""), Number(msg.expectedRevision || 0));
+      } catch (error: any) {
+        respond({ command: "chatToast", data: { error: error?.message || String(error) } });
+      }
+      break;
+    }
+
     case "chatAddManagedAgent": {
-      await getChatMgr().addManagedAgent(context);
+      respond({ command: "chatAddManagedAgentProgress", data: { percent: 15, message: "Detecting available AI models…" } });
+      try {
+        await getChatMgr().addManagedAgent(context);
+        respond({ command: "chatAddManagedAgentResult", data: { ok: true } });
+      } catch (error: any) {
+        respond({ command: "chatAddManagedAgentResult", data: { ok: false, error: error?.message || String(error) } });
+      }
       break;
     }
 
@@ -2946,6 +3601,12 @@ async function handleMessage(
     case "chatEditManagedAgent": {
       const id = String(msg.id || "");
       const currentName = String(msg.name || "");
+      const icon = await vscode.window.showInputBox({
+        prompt: `Profile icon for managed agent "${currentName}"`, value: String(msg.icon || "🤖"),
+        placeHolder: "Emoji or up to 4 characters",
+        validateInput: value => Array.from(value.trim()).length > 4 ? "Use at most 4 characters" : undefined,
+      });
+      if (icon === undefined) break;
       const name = await vscode.window.showInputBox({
         prompt: `New name for managed agent "${currentName}"`, value: currentName,
         validateInput: value => value.trim() ? undefined : "Enter a name",
@@ -2956,7 +3617,7 @@ async function handleMessage(
         placeHolder: "e.g. Security reviewer, Research agent",
       });
       if (role === undefined) break;
-      getChatMgr().editManagedAgent(id, name, role);
+      getChatMgr().editManagedAgent(id, name, role, icon);
       break;
     }
 
@@ -3242,30 +3903,41 @@ async function handleMessage(
 
     case "list": {
       const { tab, filter, q } = msg;
+      if (!msg.silent) respond({ command: "loadingProgress", data: { stage: "scanning", percent: 25, message: `Scanning ${tab || "knowledge"} files…` } });
+      await new Promise(resolve => setImmediate(resolve));
       const searchOptions = { regex: !!msg.regex, caseSensitive: !!msg.caseSensitive };
       const source = searchOptions.regex ? String(q || "") : String(q || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       let listPattern: RegExp | undefined;
       try { listPattern = new RegExp(source, searchOptions.caseSensitive ? "" : "i"); } catch { /* invalid regex returns no matches */ }
       const listMatches = (value: unknown) => !!listPattern?.test(JSON.stringify(value));
       let data: unknown;
-      if (tab === "skills")    data = q ? skillSearch(q, searchOptions) : skillList(filter === "all" ? undefined : filter);
-      else if (tab === "notes")   data = q ? noteSearch(q, searchOptions) : noteList(undefined, 500); // client-side filtering
+      if (tab === "skills")    data = q ? skillSearch(q, searchOptions) : knowledgeInventory?.snapshot.revision && filter === "all" ? knowledgeInventory.skills() : skillList(filter === "all" ? undefined : filter);
+      else if (tab === "notes")   data = q ? noteSearch(q, searchOptions) : knowledgeInventory?.notes().length ? knowledgeInventory.notes() : noteList(undefined, 500); // persisted inventory first
       else if (tab === "papers")  data = q ? paperSearch(q, searchOptions) : paperList();
       else if (tab === "prompts")  data = q ? promptList().filter(listMatches) : promptList();
       else if (tab === "packages") { const rows = packagesWithGit(); data = q ? rows.filter(listMatches) : rows; }
-      else if (tab === "scripts")  data = q ? scriptSearch(q, searchOptions) : scriptList();
+      else if (tab === "scripts")  data = q ? scriptSearch(q, searchOptions) : knowledgeInventory?.snapshot.revision ? knowledgeInventory.scripts() : scriptList();
       else data = [];
       if (SHARED_CONTENT_TYPES.includes(tab as SharedContentType) && Array.isArray(data)) {
         data = data.map(item => ({ ...item, isPrivate: isContentItemPrivate(tab as PrivacyContentType, item) }));
       }
-      const folders = (tab === "skills" || tab === "notes") ? folderList(tab) : undefined;
+      const folders = (tab === "skills" || tab === "notes") ? (tab === "notes" && knowledgeInventory?.snapshot.revision ? knowledgeInventory.folders("notes") : folderList(tab)) : undefined;
       const subscriptionGroups = sharedMarket && SHARED_CONTENT_TYPES.includes(tab as SharedContentType)
         ? sharedMarket.cachedGroups(tab as SharedContentType, String(q || ""))
         : [];
       const trashAreas = ["notes", "papers", "prompts", "scripts"] as KnowledgeTrashArea[];
       const knowledgeTrash = tab === "skills" ? skillTrashList() : trashAreas.includes(tab as KnowledgeTrashArea) ? knowledgeTrashList(tab as KnowledgeTrashArea) : [];
       const privacyTopLevels = SHARED_CONTENT_TYPES.includes(tab as SharedContentType) ? privateTopLevels(tab as PrivacyContentType) : [];
+      const itemCount = Array.isArray(data) ? data.length : 0;
+      const folderCount = Array.isArray(folders) ? folders.length : 0;
+      if (!msg.silent) respond({ command: "loadingProgress", data: { stage: "building-tree", percent: 78, current: itemCount, total: itemCount, message: "Building category tree…", detail: `${folderCount} folders` } });
+      await new Promise(resolve => setImmediate(resolve));
       respond({ command: "list", data, folders, subscriptionGroups, knowledgeTrash, privateTopLevels: privacyTopLevels });
+      if (!firstContentRecorded && performanceStateDir && activationStartedAt) {
+        firstContentRecorded = true;
+        recordPerformanceMetric(performanceStateDir, "startup.first_content_ms", Date.now() - activationStartedAt, itemCount);
+      }
+      if (!msg.silent) respond({ command: "loadingProgress", data: { stage: "ready", percent: 100, current: itemCount, total: itemCount, message: "Ready", detail: `${folderCount} folders` } });
       break;
     }
 
@@ -3660,12 +4332,27 @@ async function handleMessage(
     }
 
     case "openMarkdownPreview": {
-      const kind = String(msg.kind || "") as "note" | "skill" | "paper";
-      if (!(["note", "skill", "paper"] as string[]).includes(kind)) break;
+      const kind = String(msg.kind || "") as "note" | "skill" | "paper" | "script";
+      if (!(["note", "skill", "paper", "script"] as string[]).includes(kind)) break;
       const key = String(msg.key || "").trim();
       const opened = await openLiveMarkdownPreview(kind, key, context);
       if (opened) vscode.window.setStatusBarMessage(`$(globe) Live preview: ${markdownPreviewPath(kind, key)}`, 5000);
       else vscode.window.showWarningMessage("Couldn't open the Markdown preview in a browser.");
+      break;
+    }
+
+    case "copyPublicContentLink": {
+      const kind = String(msg.kind || "") as "note" | "skill" | "paper" | "script";
+      const key = String(msg.key || "").trim();
+      if (!(["note", "skill", "paper", "script"] as string[]).includes(kind) || !key) break;
+      if (isContentPathPrivate(`${kind}s` as PrivacyContentType, key)) {
+        vscode.window.showWarningMessage("Private content has no public stable link. Use Browser Preview for a temporary owner-only view.");
+        break;
+      }
+      await ensurePublicContentGateway(context);
+      const url = stablePublicContentUrl(kind, key);
+      await vscode.env.clipboard.writeText(url);
+      vscode.window.setStatusBarMessage(`$(link) Stable link copied: ${url}`, 5000);
       break;
     }
 
@@ -3729,6 +4416,14 @@ async function handleMessage(
 
     case "toast": {
       vscode.window.setStatusBarMessage(`$(info) ${String(msg.text || "")}`, 4000);
+      break;
+    }
+
+    case "copyText": {
+      const text = String(msg.text || "");
+      if (!text) break;
+      await vscode.env.clipboard.writeText(text);
+      vscode.window.setStatusBarMessage(`$(copy) Copied ${text}`, 3000);
       break;
     }
 
@@ -4768,8 +5463,54 @@ async function handleMessage(
     case "checkMcp": {
       respond({ command: "mcpStatus", data: mcpPanelStatusData() });
       void sendMcpPathSizes(respond);
-      void offerMcpServerRegeneration(context);
-      void offerPkmSkillProjectionUpdate(context);
+      void maintainPkmIntegration(context);
+      break;
+    }
+
+    case "skillRouterStatus": {
+      respond({ command: "skillRouterStatus", data: await skillRouterStatusData(context) });
+      break;
+    }
+
+    case "setSkillRouterSolutionEnabled": {
+      const solution = String(msg.solution || "") as MatureSkillRouterSolution;
+      if (!MATURE_SKILL_ROUTER_SOLUTIONS.includes(solution)) throw new Error("This Skill Router solution is not available for enablement.");
+      if (solution === "copilot_default" && !msg.enabled) throw new Error("Copilot default is the required automatic fallback and cannot be disabled yet.");
+      const enabled = new Set(enabledSkillRouterSolutions());
+      if (msg.enabled) enabled.add(solution); else enabled.delete(solution);
+      enabled.add("copilot_default");
+      await vscode.workspace.getConfiguration("personalKnowledge").update(
+        "skillRouterEnabledSolutions",
+        MATURE_SKILL_ROUTER_SOLUTIONS.filter(candidate => enabled.has(candidate)),
+        vscode.ConfigurationTarget.Global,
+      );
+      respond({ command: "skillRouterStatus", data: await skillRouterStatusData(context) });
+      break;
+    }
+
+    case "dismissIntegrationGuide": {
+      await context.globalState.update("pkm.integrationGuideDismissed.v1", true);
+      respond({ command: "mcpStatus", data: mcpPanelStatusData() });
+      break;
+    }
+
+    case "setExternalLinkHost": {
+      await updateExternalLinkHost(String(msg.address || "").trim());
+      respond({ command: "mcpStatus", data: mcpPanelStatusData() });
+      respond({ command: "serverList", data: await serverListForUi(context) });
+      const inviteHost = chatInviteHostOptions(context);
+      respond({ command: "chatConfig", data: { inviteHosts: inviteHost.options, inviteHost: inviteHost.selected, inviteHostUnavailable: inviteHost.unavailable } });
+      break;
+    }
+
+    case "setContentGatewayPort": {
+      const port = Number(msg.port);
+      if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Content Gateway port must be between 1024 and 65535.");
+      if (publicContentServer) await new Promise<void>(resolve => publicContentServer!.close(() => resolve()));
+      publicContentActivePort = 0;
+      await vscode.workspace.getConfiguration("personalKnowledge").update("contentGatewayPort", port, vscode.ConfigurationTarget.Global);
+      await ensurePublicContentGateway(context);
+      respond({ command: "mcpStatus", data: mcpPanelStatusData() });
       break;
     }
 
@@ -4930,6 +5671,7 @@ async function handleMessage(
       respond({ command: "mcpRuntimeProgress", data: { text: "Creating or repairing the managed PKM MCP runtime and installing dependencies…" } });
       try {
         const runtime = await ensureMcpRuntime(context);
+        scheduleRetrievalRefresh(context, 0);
         refreshMcpDefinitions();
         respond({ command: "mcpPythonResult", data: { ...result, valid: true, source: "configured", saved: true, runtime } });
         _treeProvider?.refresh();
@@ -4948,6 +5690,7 @@ async function handleMessage(
       respond({ command: "mcpRuntimeProgress", data: { text: "Repairing the managed PKM MCP runtime…" } });
       try {
         const runtime = await ensureMcpRuntime(context);
+        scheduleRetrievalRefresh(context, 0);
         refreshMcpDefinitions();
         respond({ command: "mcpRuntimeResult", data: { ok: true, runtime } });
         _treeProvider?.refresh();
@@ -4960,8 +5703,12 @@ async function handleMessage(
 
     case "generateMcp": {
       try {
-        if (!mcpRuntimeStatus().healthy) throw new Error("Managed PKM MCP runtime is not healthy. Create or Repair it first.");
         const preview = !!msg.previewOnly;
+        if (!preview && !mcpRuntimeStatus().healthy) {
+          respond({ command: "mcpRuntimeProgress", data: { text: "Updating managed runtime dependencies before generating server code…" } });
+          await ensureMcpRuntime(context);
+          scheduleRetrievalRefresh(context, 0);
+        }
         const info = preview
           ? { serverPath: mcpStatus().serverPath, configSnippet: combinedMcpRegistry() }
           : generateMcpServer(context);
@@ -4976,8 +5723,12 @@ async function handleMessage(
 
     case "generateChatMcp": {
       try {
-        if (!mcpRuntimeStatus().healthy) throw new Error("Managed PKM MCP runtime is not healthy. Create or Repair it first.");
         const preview = !!msg.previewOnly;
+        if (!preview && !mcpRuntimeStatus().healthy) {
+          respond({ command: "mcpRuntimeProgress", data: { text: "Updating managed runtime dependencies before generating server code…" } });
+          await ensureMcpRuntime(context);
+          scheduleRetrievalRefresh(context, 0);
+        }
         const info = preview
           ? { serverPath: mcpStatus().serverPath, configSnippet: combinedMcpRegistry() }
           : generateMcpServer(context);
@@ -5078,6 +5829,7 @@ async function offerMcpRuntimeSetup(context: vscode.ExtensionContext): Promise<v
     await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Creating PKM MCP Runtime", cancellable: false }, async progress => {
       progress.report({ message: "Creating environment and installing dependencies…" });
       await ensureMcpRuntime(context);
+      scheduleRetrievalRefresh(context, 0);
     });
     _treeProvider?.refresh();
     vscode.window.showInformationMessage("PKM MCP Runtime is ready and registered in Envs.", "Open Config")
@@ -5090,12 +5842,12 @@ async function offerMcpRuntimeSetup(context: vscode.ExtensionContext): Promise<v
 
 async function offerMcpRuntimeDependencyRepair(context: vscode.ExtensionContext): Promise<void> {
   const state = mcpRuntimeStatus();
-  if (!state.exists || state.healthy || !state.error.includes("prompt_manager")) return;
-  const offerKey = "mcpRuntimeDependencyRepairOffered.uone-prompt-manager-0.1.0";
+  if (!state.exists || state.healthy || !/(prompt_manager|adaptive_skill_retrieval)/.test(state.error)) return;
+  const offerKey = "mcpRuntimeDependencyRepairOffered.retrieval-0.3.0";
   if (context.globalState.get<boolean>(offerKey, false)) return;
   await context.globalState.update(offerKey, true);
   const choice = await vscode.window.showWarningMessage(
-    "The existing PKM MCP Runtime predates Prompt Manager support. Install the missing uone-prompt-manager dependency now?",
+    "The existing PKM MCP Runtime is missing required Prompt Manager or adaptive retrieval dependencies. Repair it now?",
     "Repair Runtime", "Open Config", "Later",
   );
   const openSetup = () => {
@@ -5112,8 +5864,9 @@ async function offerMcpRuntimeDependencyRepair(context: vscode.ExtensionContext)
       title: "Updating PKM MCP Runtime dependencies",
       cancellable: false,
     }, async progress => {
-      progress.report({ message: "Installing uone-prompt-manager and validating the runtime…" });
+      progress.report({ message: "Installing managed MCP and adaptive retrieval dependencies…" });
       await ensureMcpRuntime(context);
+      scheduleRetrievalRefresh(context, 0);
     });
     refreshMcpDefinitions();
     _treeProvider?.refresh();
@@ -5191,6 +5944,85 @@ async function offerPkmSkillProjectionUpdate(context: vscode.ExtensionContext): 
   }
 }
 
+let integrationMaintenance: Promise<void> | undefined;
+let integrationMaintenanceErrorShown = false;
+let integrationMaintenanceState: "idle" | "running" | "ready" | "action-required" | "error" = "idle";
+let integrationMaintenanceError = "";
+let newerPkmVersionNotice = "";
+function maintainPkmIntegration(context: vscode.ExtensionContext): Promise<void> {
+  if (integrationMaintenance) return integrationMaintenance;
+  integrationMaintenanceState = "running";
+  integrationMaintenanceError = "";
+  integrationMaintenance = (async () => {
+    panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "integration", percent: 10, message: "Checking PKM integration…" } });
+    const server = mcpStatus();
+    const skillBeforeMaintenance = pkmSkillProjectionStatus(context);
+    const newerRouters = skillBeforeMaintenance.targets.filter(target => target.state === "newer");
+    if (server.newerThanExpected || newerRouters.length) {
+      const detected = [server.newerThanExpected ? `MCP server v${server.installedVersion}` : "",
+        ...newerRouters.map(target => `Skill Router v${target.installedVersion}`)].filter(Boolean).join(", ");
+      integrationMaintenanceState = "action-required";
+      integrationMaintenanceError = `Newer PKM components detected: ${detected}. Reload this VS Code window to use the updated extension. No files were changed.`;
+      panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+      if (newerPkmVersionNotice !== detected) {
+        newerPkmVersionNotice = detected;
+        void vscode.window.showInformationMessage(
+          `A newer PKM version is active on this machine (${detected}). Reload this VS Code window when convenient. This window will not downgrade shared PKM files.`,
+          "Open Config",
+        ).then(choice => { if (choice === "Open Config") openMcpSetup(context); });
+      }
+      return;
+    }
+    const python = detectMcpPython();
+    if (!python.valid) {
+      integrationMaintenanceState = "action-required";
+      panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+      return;
+    }
+    const runtime = mcpRuntimeStatus();
+    if (!runtime.healthy) {
+      panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "runtime", percent: 25, message: "Preparing managed Python runtime…" } });
+      log.info("automatically creating or repairing managed MCP runtime");
+      await ensureMcpRuntime(context);
+    } else if (!server.current) {
+      panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "mcp", percent: 48, message: "Updating MCP server code…" } });
+      log.info("automatically updating generated MCP server code");
+      generateMcpServer(context);
+    }
+    refreshMcpDefinitions();
+    panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "retrieval", percent: 68, message: "Refreshing knowledge retrieval index…" } });
+    scheduleRetrievalRefresh(context, 0);
+
+    const skill = pkmSkillProjectionStatus(context);
+    const staleManaged = skill.targets.filter(target => target.managed
+      && (target.state === "outdated" || target.state === "content-outdated"));
+    if (staleManaged.length) panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "routers", percent: 84, current: 0, total: staleManaged.length, message: "Updating Agent Skill Routers…" } });
+    for (let index = 0; index < staleManaged.length; index++) {
+      injectPkmSkill(context, staleManaged[index].id);
+      panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "routers", percent: 84 + Math.round((index + 1) * 12 / staleManaged.length), current: index + 1, total: staleManaged.length, message: "Updating Agent Skill Routers…" } });
+    }
+    if (staleManaged.length) log.info(`automatically updated ${staleManaged.length} managed PKM Skill target(s)`);
+    integrationMaintenanceErrorShown = false;
+    integrationMaintenanceState = "ready";
+    panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "ready", percent: 100, message: "PKM integration ready" } });
+    panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+  })().catch(error => {
+    const message = (error as Error).message;
+    integrationMaintenanceState = "error";
+    integrationMaintenanceError = message;
+    log.warn(`automatic PKM integration maintenance failed: ${message}`);
+    panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+    if (!integrationMaintenanceErrorShown) {
+      integrationMaintenanceErrorShown = true;
+      void vscode.window.showWarningMessage(
+        `PKM could not finish automatic integration setup: ${message}`,
+        "Open Config",
+      ).then(choice => { if (choice === "Open Config") openMcpSetup(context); });
+    }
+  }).finally(() => { integrationMaintenance = undefined; });
+  return integrationMaintenance;
+}
+
 // ── Sidebar tree provider ──────────────────────────────────────────────────
 type PkNodeType =
   | 'root-skills' | 'root-notes' | 'root-papers' | 'root-prompts' | 'root-packages' | 'root-scripts' | 'root-environments' | 'root-servers' | 'root-chatroom' | 'root-subscriptions' | 'root-mcp'
@@ -5198,6 +6030,7 @@ type PkNodeType =
   | 'server-group' | 'server-ungrouped-group' | 'server-item' | 'server-subscriber-group' | 'server-subscriber-item'
   | 'chat-hosted-group' | 'chat-joined-group' | 'chat-hosted-room' | 'chat-room'
   | 'subscription-brokers-group' | 'subscription-subscribers-group' | 'subscription-broker' | 'subscription-subscriber'
+  | 'subscribed-content-root' | 'subscribed-content-broker' | 'subscribed-content-folder' | 'subscribed-content-item'
   | 'skill-folder' | 'skill' | 'skill-trash' | 'skill-trash-item' | 'note-folder' | 'note' | 'paper-folder' | 'paper'
   | 'knowledge-trash' | 'knowledge-trash-item'
   | 'prompt-project' | 'prompt-task' | 'prompt-version' | 'prompt-file'
@@ -5228,6 +6061,7 @@ class PkTreeItem extends vscode.TreeItem {
       "environment-group": "folder", "environment-item": "python",
       "chat-hosted-group": "broadcast", "chat-joined-group": "plug", "chat-hosted-room": "broadcast", "chat-room": "comment",
       "subscription-brokers-group": "folder", "subscription-subscribers-group": "folder", "subscription-broker": "radio-tower", "subscription-subscriber": "cloud",
+      "subscribed-content-root": "cloud", "subscribed-content-broker": "remote", "subscribed-content-folder": "folder", "subscribed-content-item": "file",
       "skill-folder": "folder", "skill-trash": "trash", "skill-trash-item": "trash", "knowledge-trash": "trash", "knowledge-trash-item": "trash", "note-folder": "folder", "paper-folder": "folder",
       "skill": "symbol-snippet", "note": "file-text", "paper": "file-pdf",
       "prompt-project": "folder", "prompt-task": "symbol-file",
@@ -5255,6 +6089,7 @@ class PkTreeItem extends vscode.TreeItem {
     else if (nodeType === 'root-scripts') this.contextValue = 'pk-scripts-root';
     else if (nodeType === 'script-folder') this.contextValue = 'pk-scripts-group';
     else if (nodeType === 'root-servers') this.contextValue = 'pk-servers-container';
+    else if (nodeType.startsWith('subscribed-content-')) this.contextValue = 'pk-subscribed-content';
     else if (nodeType === 'server-group') this.contextValue = 'pk-server-group';
     // Leaf items support right-click Edit
     else if (nodeType === 'skill')       this.contextValue = 'pk-skill-item';
@@ -5273,8 +6108,18 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
   private serverStatus: NavigationStatus = { kind: "offline", description: "checking", tooltip: "Checking managed servers." };
   private serverRows: any[] = [];
   private serverStatusRefresh: Promise<void> | undefined;
+  private skillRootCache: PkFolder | undefined;
+  private noteRootCache: PkFolder | undefined;
+  private paperRootCache: PkFolder | undefined;
+  private scriptRootCache: PkFolder | undefined;
 
-  refresh(): void { this._onChange.fire(); }
+  refresh(): void {
+    this.skillRootCache = undefined;
+    this.noteRootCache = undefined;
+    this.paperRootCache = undefined;
+    this.scriptRootCache = undefined;
+    this._onChange.fire();
+  }
   async refreshServerStatus(): Promise<void> {
     if (this.serverStatusRefresh) return this.serverStatusRefresh;
     this.serverStatusRefresh = (async () => {
@@ -5340,19 +6185,19 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
     }
     try {
       switch (element.nodeType) {
-        case 'root-skills':    return this._skillRootItems();
+        case 'root-skills':    return this._withSubscribedContent("skills", this._skillRootItems());
         case 'skill-folder':   return this._skillFolder(element.nodeData.path);
         case 'skill-trash':    return this._skillTrashItems();
-        case 'root-notes':     return this._withKnowledgeTrash("notes", this._noteFolder([]));
+        case 'root-notes':     return this._withSubscribedContent("notes", this._withKnowledgeTrash("notes", this._noteFolder([])));
         case 'note-folder':    return this._noteFolder(element.nodeData.path);
-        case 'root-papers':    return this._withKnowledgeTrash("papers", this._paperFolder([]));
+        case 'root-papers':    return this._withSubscribedContent("papers", this._withKnowledgeTrash("papers", this._paperFolder([])));
         case 'paper-folder':   return this._paperFolder(element.nodeData.path);
-        case 'root-prompts':   return this._withKnowledgeTrash("prompts", this._promptProjects());
+        case 'root-prompts':   return this._withSubscribedContent("prompts", this._withKnowledgeTrash("prompts", this._promptProjects()));
         case 'prompt-project': return this._promptTasks(element.nodeData.project);
         case 'prompt-task':    return this._promptVersions(element.nodeData.project, element.nodeData.task);
         case 'prompt-version': return this._promptFiles(element.nodeData);
-        case 'root-packages':  return this._packageItems();
-        case 'root-scripts':   return this._withKnowledgeTrash("scripts", this._scriptFolder([]));
+        case 'root-packages':  return this._withSubscribedContent("packages", this._packageItems());
+        case 'root-scripts':   return this._withSubscribedContent("scripts", this._withKnowledgeTrash("scripts", this._scriptFolder([])));
         case 'script-folder':  return this._scriptFolder(element.nodeData.path);
         case 'knowledge-trash': return this._knowledgeTrashItems(element.nodeData.area);
         case 'root-environments': return this._environmentItems([]);
@@ -5361,6 +6206,9 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
         case 'server-group': return this._serverItems(element.nodeData.path);
         case 'server-ungrouped-group': return this._serverItems([], true);
         case 'server-subscriber-group': return this._subscribedServerItems(element.nodeData.subscriptionId);
+        case 'subscribed-content-root':
+        case 'subscribed-content-broker':
+        case 'subscribed-content-folder': return this._subscribedContentChildren(element.nodeData.model);
         case 'root-chatroom': return this._chatGroups();
         case 'chat-hosted-group': return this._hostedRooms();
         case 'chat-joined-group': return this._chatRooms();
@@ -5381,6 +6229,38 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
     brokers.command = { command: "personalKnowledge.openSubscriptions", title: "Open Brokers" };
     subscribers.command = { command: "personalKnowledge.openSubscriptions", title: "Open Subscribers" };
     return [brokers, subscribers];
+  }
+
+  private _withSubscribedContent(type: SharedContentType, local: PkTreeItem[]): PkTreeItem[] {
+    if (!sharedMarket) return local;
+    const model = subscriptionNavigationRoot(type, sharedMarket.cachedGroups(type));
+    if (!model) return local;
+    return [...local, this._subscribedContentItem(model)];
+  }
+
+  private _subscribedContentItem(model: SubscriptionNavigationNode): PkTreeItem {
+    const nodeType: PkNodeType = model.kind === "root" ? "subscribed-content-root"
+      : model.kind === "broker" ? "subscribed-content-broker"
+      : model.kind === "folder" ? "subscribed-content-folder" : "subscribed-content-item";
+    const state = model.kind === "item" ? vscode.TreeItemCollapsibleState.None : vscode.TreeItemCollapsibleState.Collapsed;
+    const item = new PkTreeItem(model.label, nodeType, state, { model, key: model.itemKey, pkmPath: model.pkmPath });
+    if (model.kind !== "item") item.description = String(model.count);
+    if (model.kind === "root") item.tooltip = `Read-only ${model.contentType} from subscribed Brokers`;
+    if (model.kind === "broker") item.tooltip = `Subscribed ${model.contentType} from ${model.label}`;
+    if (model.kind === "item") {
+      item.tooltip = model.path;
+      if (model.contentType === "servers") {
+        item.iconPath = new vscode.ThemeIcon("link-external");
+        item.command = { command: "personalKnowledge.openSubscribedServer", title: "Open Subscribed Server", arguments: [model.itemKey] };
+      } else {
+        item.command = { command: "personalKnowledge.openSubscribedContent", title: "Open Subscribed Content", arguments: [model.contentType, model.itemKey] };
+      }
+    }
+    return item;
+  }
+
+  private _subscribedContentChildren(model: SubscriptionNavigationNode): PkTreeItem[] {
+    return model.children.map(child => this._subscribedContentItem(child));
   }
 
   private _subscriptionBrokers(): PkTreeItem[] {
@@ -5451,9 +6331,11 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
         : server.status === "starting"
           ? { kind: "attention", description: this.text("nav.startingPort", { port: server.activePort }), tooltip: `${server.name} is starting on port ${server.activePort}.` }
           : { kind: "offline", description: this.text("nav.stoppedPort", { port: server.port }), tooltip: `${server.name} is stopped; configured port ${server.port}.` };
-      const item = this.applyStatus(new PkTreeItem(server.name, "server-item", vscode.TreeItemCollapsibleState.None, { slug: server.slug }), status);
+      const inheritedPrivate = isContentItemPrivate("servers", server);
+      const serverLabel = `${inheritedPrivate ? "🔒 " : ""}${server.pinned ? "★ " : ""}${server.name}`;
+      const item = this.applyStatus(new PkTreeItem(serverLabel, "server-item", vscode.TreeItemCollapsibleState.None,
+        { slug: server.slug, isPrivate: inheritedPrivate }), status);
       item.contextValue = server.status === "stopped" ? "pk-server-stopped" : server.status === "external" ? "pk-server-external" : "pk-server-active";
-      item.label = server.pinned ? `★ ${server.name}` : server.name;
       item.command = { command: "personalKnowledge.openServers", title: "Open Servers", arguments: [server.slug] };
       return item;
     });
@@ -5469,14 +6351,7 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
 
   private _serverRootItems(): PkTreeItem[] {
     const local = this._serverItems([]);
-    if (!sharedMarket) return local;
-    const subscribed = sharedMarket.cachedGroups("servers").map(group => {
-      const item = new PkTreeItem(group.alias, "server-subscriber-group", vscode.TreeItemCollapsibleState.Collapsed, { subscriptionId: group.subscriptionId });
-      item.description = `${group.items.length} subscribed`;
-      item.tooltip = `Subscribed Server links from ${group.alias}`;
-      return item;
-    });
-    return [...local, ...subscribed];
+    return this._withSubscribedContent("servers", local);
   }
 
   private _subscribedServerItems(subscriptionId: string): PkTreeItem[] {
@@ -5566,18 +6441,12 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
   }
 
   // ── Generic recursive path tree ──────────────────────────────────────────
-  private static _maxDepth(): number {
-    const d = vscode.workspace.getConfiguration("personalKnowledge").get<number>("maxTreeDepth", 4);
-    return Math.max(1, Math.min(d ?? 4, 12));
-  }
-
   /** Build a nested folder tree from entries {path, data}. */
-  private _buildPathTree(entries: { path: string[]; data: any }[], maxDepth = PkTreeProvider._maxDepth()): PkFolder {
+  private _buildPathTree(entries: { path: string[]; data: any }[]): PkFolder {
     const root: PkFolder = { folders: new Map(), items: [] };
     for (const e of entries) {
-      const folderSegs = e.path.slice(0, Math.max(0, maxDepth - 1));
       let node = root;
-      for (const seg of folderSegs) {
+      for (const seg of e.path) {
         if (!node.folders.has(seg)) node.folders.set(seg, { folders: new Map(), items: [] });
         node = node.folders.get(seg)!;
       }
@@ -5596,10 +6465,10 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
     return node;
   }
 
-  private _addFolderPaths(root: PkFolder, folders: string[], maxDepth = PkTreeProvider._maxDepth()): PkFolder {
+  private _addFolderPaths(root: PkFolder, folders: string[]): PkFolder {
     for (const folder of folders) {
       let node = root;
-      for (const segment of folder.split("/").filter(Boolean).slice(0, maxDepth - 1)) {
+      for (const segment of folder.split("/").filter(Boolean)) {
         if (!node.folders.has(segment)) node.folders.set(segment, { folders: new Map(), items: [] });
         node = node.folders.get(segment)!;
       }
@@ -5609,12 +6478,15 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
 
   // ── Skills (recursive by category path) ──────────────────────────────────
   private _skillRoot(): PkFolder {
-    const entries = (skillList() as any[]).map(s => {
+    if (this.skillRootCache) return this.skillRootCache;
+    const skills = knowledgeInventory?.snapshot.revision ? knowledgeInventory.skills() : skillList();
+    const entries = (skills as any[]).map(s => {
       const cat = (s.category || "").trim();
       const path = cat ? cat.split("/").map((x: string) => x.trim()).filter(Boolean) : ["(uncategorized)"];
       return { path, data: s };
     });
-    return this._addFolderPaths(this._buildPathTree(entries), folderList("skills"));
+    const folders = knowledgeInventory?.snapshot.revision ? knowledgeInventory.folders("skills") : folderList("skills");
+    return this.skillRootCache = this._addFolderPaths(this._buildPathTree(entries), folders);
   }
 
   private _skillRootItems(): PkTreeItem[] {
@@ -5683,12 +6555,15 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
 
   // ── Notes (recursive by category path; uncategorized grouped together) ───
   private _noteRoot(): PkFolder {
-    const entries = (noteList(undefined, 500) as any[]).map(n => {
+    if (this.noteRootCache) return this.noteRootCache;
+    const notes = knowledgeInventory?.snapshot.revision ? knowledgeInventory.notes() : noteList(undefined, 500);
+    const entries = (notes as any[]).map(n => {
       const cat = (n.category || "").trim();
       const path = cat ? cat.split("/").map((x: string) => x.trim()).filter(Boolean) : ["(uncategorized)"];
       return { path, data: n };
     });
-    return this._addFolderPaths(this._buildPathTree(entries), folderList("notes"));
+    const folders = knowledgeInventory?.snapshot.revision ? knowledgeInventory.folders("notes") : folderList("notes");
+    return this.noteRootCache = this._addFolderPaths(this._buildPathTree(entries), folders);
   }
 
   private _noteFolder(path: string[]): PkTreeItem[] {
@@ -5705,8 +6580,10 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
       out.push(item);
     }
     for (const n of node.items.sort((a: any, b: any) => (b.updated_at || "").localeCompare(a.updated_at || ""))) {
-      const item = new PkTreeItem(n.title, 'note', vscode.TreeItemCollapsibleState.None, { key: n.slug, relPath: `${n.slug}.md` });
-      item.description = n.updated_at?.slice(0, 10);
+      const relativePath = `${n.slug}.md`;
+      const item = new PkTreeItem(n.title, 'note', vscode.TreeItemCollapsibleState.None, { key: n.slug, relPath: relativePath });
+      item.description = relativePath.split("/").pop() || relativePath;
+      item.tooltip = `${n.title}\nnotes/${relativePath}`;
       item.command = { command: 'personalKnowledge.openNote', title: 'Open', arguments: [n.slug] };
       out.push(item);
     }
@@ -5715,12 +6592,13 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
 
   // ── Papers (category → paper) ────────────────────────────────────────────
   private _paperRoot(): PkFolder {
+    if (this.paperRootCache) return this.paperRootCache;
     const entries = (paperList() as any[]).map(p => {
       const cat = (p.category || "").trim();
       const path = cat ? cat.split("/").map((x: string) => x.trim()).filter(Boolean) : ["(uncategorized)"];
       return { path, data: p };
     });
-    return this._addFolderPaths(this._buildPathTree(entries), folderList("papers"));
+    return this.paperRootCache = this._addFolderPaths(this._buildPathTree(entries), folderList("papers"));
   }
 
   private _paperFolder(path: string[]): PkTreeItem[] {
@@ -5797,12 +6675,15 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
 
   // ── Scripts (recursive by folder path) ───────────────────────────────────
   private _scriptRoot(): PkFolder {
-    const entries = (scriptList() as any[]).map(s => {
+    if (this.scriptRootCache) return this.scriptRootCache;
+    const scripts = knowledgeInventory?.snapshot.revision ? knowledgeInventory.scripts() : scriptList();
+    const entries = (scripts as any[]).map(s => {
       const cat = (s.category || "").trim();
       const path = cat && cat !== "(root)" ? cat.split("/").map((x: string) => x.trim()).filter(Boolean) : [];
       return { path, data: s };
     });
-    return this._addFolderPaths(this._buildPathTree(entries, Number.POSITIVE_INFINITY), folderList("scripts"), Number.POSITIVE_INFINITY);
+    const folders = knowledgeInventory?.snapshot.revision ? knowledgeInventory.folders("scripts") : folderList("scripts");
+    return this.scriptRootCache = this._addFolderPaths(this._buildPathTree(entries), folders);
   }
 
   private _scriptFolder(path: string[]): PkTreeItem[] {
@@ -5919,24 +6800,32 @@ async function firstTimeSetup(context: vscode.ExtensionContext, reconfigure = fa
   const reusablePath = previousPath && previousPath !== currentPath && fs.existsSync(previousPath) && fs.statSync(previousPath).isDirectory()
     ? previousPath : "";
   const reuseLabel = reusablePath ? `Reuse previous  (${reusablePath})` : undefined;
+  const recommendedPath = path.join(os.homedir(), "uone-knowledge");
+  const recommendedLabel = "Use Recommended Location";
 
   const pick = await vscode.window.showInformationMessage(
     reconfigure
       ? `Configure the Personal Knowledge root on ${hostDescription}.${currentPath ? ` Current: ${currentPath}` : ""}`
-      : `Welcome to Personal Knowledge Manager. Choose where to store knowledge on ${hostDescription}.`,
-    { modal: true, detail: "The root path is machine-local and excluded from VS Code Settings Sync. Knowledge content can be synchronized separately." },
+      : `Welcome to Personal Knowledge Manager. Choose where this machine stores your knowledge.`,
+    { modal: true, detail: reconfigure
+      ? "Changing the root switches this machine to another PKM store. Existing content is not moved."
+      : `${recommendedPath}\n\nAfter this choice, PKM automatically creates or repairs its isolated runtime, generates the MCP server, builds the retrieval index, and keeps future updates current. Your Markdown files remain the source of truth.` },
+    ...(!reconfigure ? [recommendedLabel] : []),
     ...(reuseLabel ? [reuseLabel] : []),
-    "Browse existing folder…",
-    "Type a custom path…"
+    "Choose Existing Folder…",
+    "Enter Another Path…"
   );
 
   if (!pick) return undefined;
 
   let chosenPath: string | undefined;
 
-  if (reuseLabel && pick === reuseLabel) {
+  const usedRecommendedPath = pick === recommendedLabel;
+  if (usedRecommendedPath) {
+    chosenPath = recommendedPath;
+  } else if (reuseLabel && pick === reuseLabel) {
     chosenPath = reusablePath;
-  } else if (pick === "Browse existing folder…") {
+  } else if (pick === "Choose Existing Folder…") {
     const result = await vscode.window.showOpenDialog({
       canSelectFolders: true,
       canSelectFiles: false,
@@ -5947,7 +6836,7 @@ async function firstTimeSetup(context: vscode.ExtensionContext, reconfigure = fa
     if (!result?.[0]) return undefined;
     chosenPath = result[0].fsPath;
 
-  } else if (pick === "Type a custom path…") {
+  } else if (pick === "Enter Another Path…") {
     chosenPath = await vscode.window.showInputBox({
       prompt: "Enter the full path for your knowledge store",
       placeHolder: path.join(os.homedir(), "your-knowledge-root"),
@@ -5961,22 +6850,26 @@ async function firstTimeSetup(context: vscode.ExtensionContext, reconfigure = fa
 
   // Create the folder if it doesn't exist
   if (!fs.existsSync(chosenPath)) {
-    const confirm = await vscode.window.showWarningMessage(
-      `Folder does not exist: ${chosenPath}\n\nCreate it?`,
-      { modal: true },
-      "Create folder"
-    );
-    if (confirm !== "Create folder") return undefined;
+    if (!usedRecommendedPath) {
+      const confirm = await vscode.window.showWarningMessage(
+        `Folder does not exist: ${chosenPath}\n\nCreate it?`,
+        { modal: true },
+        "Create folder"
+      );
+      if (confirm !== "Create folder") return undefined;
+    }
     fs.mkdirSync(chosenPath, { recursive: true });
   }
 
   chosenPath = path.resolve(chosenPath);
-  const confirmed = await vscode.window.showInformationMessage(
-    `Use this machine-local Knowledge Root?`,
-    { modal: true, detail: `${hostDescription}\n\n${chosenPath}\n\nThis path stays on this extension host and is not copied by VS Code Settings Sync.` },
-    "Use This Root",
-  );
-  if (confirmed !== "Use This Root") return undefined;
+  if (!usedRecommendedPath) {
+    const confirmed = await vscode.window.showInformationMessage(
+      `Use this machine-local Knowledge Root?`,
+      { modal: true, detail: `${hostDescription}\n\n${chosenPath}\n\nThis path stays on this extension host and is not copied by VS Code Settings Sync.` },
+      "Use This Root",
+    );
+    if (confirmed !== "Use This Root") return undefined;
+  }
 
   await rememberMachineStorePath(context, chosenPath);
   return chosenPath;
@@ -6072,8 +6965,18 @@ function safeMcpServerTarget(directory: string): boolean {
 
 // ── Activation ─────────────────────────────────────────────────────────────
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  activationStartedAt = Date.now();
+  firstContentRecorded = false;
+  performanceStateDir = path.join(context.globalStorageUri.fsPath, "performance");
   log.init(context);
   log.info(`activating extension v${context.extension?.packageJSON?.version ?? "?"}`);
+  const userPortConfiguration = vscode.workspace.getConfiguration("personalKnowledge");
+  for (const setting of ["serversProxyPort", "contentGatewayPort", "chatHubPort"] as const) {
+    const inspected = userPortConfiguration.inspect<number>(setting);
+    if (inspected?.globalValue === undefined) {
+      await userPortConfiguration.update(setting, stableUserPort(setting), vscode.ConfigurationTarget.Global);
+    }
+  }
   chatCtx = context;
   await migrateChatRecents(context);
   const applyChatArchiveCfg = () => {
@@ -6090,8 +6993,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.languages.registerCodeLensProvider([{ language: "markdown", scheme: "file" }, { language: "markdown", scheme: "pkm-content" }], new KnowledgeMetadataCodeLensProvider()),
     vscode.workspace.onDidChangeConfiguration(e => {
       if (e.affectsConfiguration("personalKnowledge.logLevel")) log.refreshLevel();
-      if (e.affectsConfiguration("personalKnowledge.maxTreeDepth")) _treeProvider?.refresh();
       if (e.affectsConfiguration("personalKnowledge.chatHistoryLimitMB")) applyChatArchiveCfg();
+      if (e.affectsConfiguration("personalKnowledge.externalLinkHost")) {
+        const selected = externalLinkHostOptions();
+        if (!selected.unavailable && chatCtx) getChatMgr().setAdvertisedHost(selected.resolved);
+        panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+      }
+      if (e.affectsConfiguration("personalKnowledge.contentGatewayPort")) {
+        publicContentServer?.close();
+        publicContentServer = undefined;
+        publicContentActivePort = 0;
+        void ensurePublicContentGateway(context).catch(error => log.warn(`public content gateway: ${(error as Error).message}`));
+      }
+      if (e.affectsConfiguration("personalKnowledge.skillRouterEnabledSolutions")) {
+        writeSkillRouterRuntimeConfig(context);
+        void skillRouterStatusData(context).then(data => panel?.webview.postMessage({ command: "skillRouterStatus", data }));
+      }
       if (e.affectsConfiguration("personalKnowledge.storePath") || e.affectsConfiguration("personalKnowledge.environmentsPath") || e.affectsConfiguration("personalKnowledge.mcpPythonPath") || e.affectsConfiguration("personalKnowledge.mcpRuntimePath") || e.affectsConfiguration("personalKnowledge.mcpServerPath")) refreshMcpDefinitions();
     })
   );
@@ -6099,13 +7016,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const cfg = vscode.workspace.getConfiguration("personalKnowledge");
   const initialResolution = resolvedStorePath(context);
   let configuredPath = initialResolution?.path || "";
+  let firstConfiguration = false;
   log.debug(`machineStorePath="${configuredPath}" source=${initialResolution?.source || "none"}`);
   if (initialResolution) await rememberMachineStorePath(context, initialResolution.path);
 
   // First-time setup: ask user where to store their knowledge base
   if (!configuredPath) {
     _pendingTab = "mcp";
-    const chosen = await firstTimeSetup(context, true);
+    const chosen = await firstTimeSetup(context, false);
     if (!chosen) {
       vscode.window.showErrorMessage(
         "Personal Knowledge Manager: setup not completed. Click the sidebar icon or open the panel to configure.",
@@ -6113,12 +7031,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       ).then(v => { if (v) ensureSetup(context); });
     }
     configuredPath = chosen ?? "";
+    firstConfiguration = !!chosen;
   }
 
   if (configuredPath) {
     fsSetStorePath(configuredPath);
     storageSetStorePath(configuredPath);
     setPrivacyStoreRoot(configuredPath);
+    knowledgeInventory = new KnowledgeInventoryManager(
+      configuredPath,
+      path.join(context.globalStorageUri.fsPath, "inventory"),
+      path.join(__dirname, "knowledge-inventory-worker.js"),
+    );
+    publicContentTimer = setInterval(() => { void ensurePublicContentGateway(context).catch(() => {}); }, 5_000);
+    publicContentTimer.unref?.();
+    context.subscriptions.push({ dispose: () => {
+      if (publicContentTimer) clearInterval(publicContentTimer);
+      publicContentTimer = undefined;
+      publicContentServer?.close();
+      publicContentServer = undefined;
+      publicContentActivePort = 0;
+    } });
   }
   applyChatArchiveCfg();
   context.subscriptions.push(vscode.window.registerWebviewPanelSerializer("personalKnowledge", {
@@ -6128,6 +7061,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       initializePanel(webviewPanel, context, true);
     },
   }));
+  const openPanelOnStartup = !!configuredPath && (firstConfiguration || cfg.get<boolean>("openOnStartup"));
+  if (openPanelOnStartup) {
+    getOrCreatePanel(context);
+    panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "framework", percent: 3, message: "PKM interface ready", detail: "Loading content in stages…" } });
+  }
   if (configuredPath) {
     const chatroomsRoot = path.join(getStorePath(), "chatrooms");
     const chatroomWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(chatroomsRoot, "**/*"));
@@ -6147,12 +7085,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   // Servers + Python Environments subsystems (machine-local runtime state).
+  let initializeServers = () => {};
   try {
     const stateBase = context.globalStorageUri.fsPath;
     initPyenvs(path.join(stateBase, "environments"), m => log.info(`[env] ${m}`));
     if (configuredPath) {
       const pport = vscode.workspace.getConfiguration("personalKnowledge").get<number>("serversProxyPort", 39501);
-      initServers(path.join(getStorePath(), "servers"), path.join(stateBase, "servers"), pport, m => log.info(`[servers] ${m}`));
+      initializeServers = () => initServers(path.join(getStorePath(), "servers"), path.join(stateBase, "servers"), pport, m => log.info(`[servers] ${m}`));
     }
   } catch (e: any) { log.warn(`servers/env init failed: ${e?.message}`); }
 
@@ -6165,30 +7104,50 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         onChanged: () => {
           panel?.webview.postMessage({ command: "subscriptionChanged" });
           _treeProvider?.refresh();
+          scheduleRetrievalRefresh(context);
         },
         onWarning: message => { void vscode.window.showWarningMessage(message, "Open Subscription").then(choice => {
           if (choice !== "Open Subscription") return;
           if (panel) { panel.reveal(vscode.ViewColumn.One); void panel.webview.postMessage({ command: "openTab", tab: "subscriptions" }); }
           else { _pendingTab = "subscriptions"; getOrCreatePanel(context); }
         }); },
+        onDiagnostic: event => log.info(`subscription diagnostic ${JSON.stringify(event)}`),
       },
       context.secrets,
-      { user: os.userInfo().username || "user", host: os.hostname() },
+      { user: os.userInfo().username || "user", host: os.hostname(), version: String(context.extension.packageJSON.version || "unknown") },
     );
-    sharedMarket.startBackground();
+    const externalHost = externalLinkHostOptions().resolved;
+    const marketState = sharedMarket.snapshot as any;
+    if (externalHost && marketState.advertisedHost !== externalHost) {
+      void sharedMarket.configure({ enabled: marketState.enabled, port: marketState.port, advertisedHost: externalHost, displayName: marketState.displayName })
+        .then(() => sharedMarket?.startBackground())
+        .catch(error => log.warn(`Subscription host update failed: ${(error as Error).message}`));
+    } else sharedMarket.startBackground();
   } catch (error: any) { log.warn(`subscription init failed: ${error?.message || error}`); }
-
   registerNativeMcpProvider(context);
 
   // Register sidebar tree view + commands FIRST so they're always available
   const treeProvider = new PkTreeProvider(context);
   _treeProvider = treeProvider;
-  void treeProvider.refreshServerStatus();
   const treeView = vscode.window.createTreeView("personalKnowledge.sidebarView", {
     treeDataProvider: treeProvider,
     dragAndDropController: new PkTreeDragAndDropController(context),
     showCollapseAll: true,
   });
+  context.subscriptions.push(vscode.commands.registerCommand("_personalKnowledge.testNavigationPath", (area: string, segments: string[]) => {
+    const rootType = `root-${area}`;
+    let children = treeProvider.getChildren();
+    let current = children.find(item => item.nodeType === rootType);
+    if (!current) return { found: false, missing: rootType, children: children.map(item => item.label) };
+    for (const segment of segments || []) {
+      children = treeProvider.getChildren(current);
+      const next = children.find(item => Array.isArray(item.nodeData?.path) && item.nodeData.path[item.nodeData.path.length - 1] === segment);
+      if (!next) return { found: false, missing: segment, children: children.map(item => ({ label: item.label, description: item.description, relPath: item.nodeData?.relPath })) };
+      current = next;
+    }
+    children = treeProvider.getChildren(current);
+    return { found: true, children: children.map(item => ({ label: item.label, description: item.description, relPath: item.nodeData?.relPath, key: item.nodeData?.key })) };
+  }));
   // Clicking the Activity Bar icon: ensure setup then open main panel
   treeView.onDidChangeVisibility(async e => {
     if (e.visible) {
@@ -6221,6 +7180,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       } catch (error: any) {
         vscode.window.showErrorMessage(`Open subscribed Server failed: ${error?.message || String(error)}`);
       }
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.openSubscribedContent", async (type: SharedContentType, key: string) => {
+      if (!SHARED_CONTENT_TYPES.includes(type) || type === "servers") return;
+      openInPanel(context, "subscriptionItem", String(key || ""), false, type);
     }),
 
     vscode.commands.registerCommand("personalKnowledge.refreshTree", () => {
@@ -6663,8 +7627,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         panel?.webview.postMessage({ command: "reloaded" });
         panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
         vscode.window.showInformationMessage(`Knowledge Root changed on ${extensionHostDescription(process.platform, os.hostname(), vscode.env.remoteName || "")}: ${chosen}. Chatroom history now uses ${path.join(chosen, "chatrooms")}; existing Rooms were not moved.`);
-        void offerMcpServerRegeneration(context);
-        void offerPkmSkillProjectionUpdate(context);
+        void maintainPkmIntegration(context);
       } catch (error: any) {
         if (previousRoot && directoryExists(previousRoot)) {
           await rememberMachineStorePath(context, previousRoot);
@@ -7109,56 +8072,96 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await initStore(context, configuredPath);
       applyChatArchiveCfg();
       log.info(`file store ready at ${getStorePath()}`);
-      ensureGitRepo();
-      const refreshedShares = await sharedMarket?.refreshPublishedShares() || 0;
-      if (refreshedShares) log.info(`refreshed ${refreshedShares} published Broker snapshot${refreshedShares === 1 ? "" : "s"} after store initialization`);
-      await maybeSeedExamples(context);
       startFileWatcher(context);
       treeProvider.refresh();
       panel?.webview.postMessage({ command: "saved" }); // re-fetch if panel already open
-      void offerMcpRuntimeSetup(context);
-      void offerMcpRuntimeDependencyRepair(context);
-      void offerMcpServerRegeneration(context);
-      void offerPkmSkillProjectionUpdate(context);
+      setImmediate(() => {
+        panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "background", percent: 82, message: "Starting background services…" } });
+        if (!fs.existsSync(path.join(getStorePath(), ".git"))) ensureGitRepo();
+        void sharedMarket?.refreshPublishedShares().then(refreshedShares => {
+          if (refreshedShares) log.info(`refreshed ${refreshedShares} published Broker snapshot${refreshedShares === 1 ? "" : "s"} after store initialization`);
+        }).catch(error => log.warn(`background Broker refresh failed: ${(error as Error).message}`));
+        if (firstConfiguration) void maybeSeedExamples(context).catch(error => log.warn(`example seed failed: ${(error as Error).message}`));
+        scheduleRetrievalRefresh(context, 0);
+        void refreshKnowledgeInventory(context);
+        void maintainPkmIntegration(context);
+      });
     } catch (e: any) {
       log.error(`store init failed: ${e?.stack ?? e?.message}`);
       vscode.window.showErrorMessage(`Personal Knowledge Manager: failed to initialize store — ${e.message}`);
     }
   }
 
-  if (configuredPath && cfg.get<boolean>("openOnStartup")) getOrCreatePanel(context);
-  log.info("activation complete");
+  const activationDuration = Date.now() - activationStartedAt;
+  recordPerformanceMetric(performanceStateDir, "startup.activation_ms", activationDuration);
+  log.info(`activation complete durationMs=${activationDuration}`);
+  setImmediate(() => {
+    panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "servers", percent: 12, message: "Discovering managed servers…" } });
+    try { initializeServers(); }
+    catch (error) { log.warn(`deferred Servers initialization failed: ${(error as Error).message}`); }
+    void treeProvider.refreshServerStatus();
+  });
 }
 
 // ── File watcher: auto-refresh when notes/skills change on disk ─────────────
 let _watcher: vscode.FileSystemWatcher | undefined;
 let _privacyWatcher: vscode.FileSystemWatcher | undefined;
 let _watcherRefreshTimer: NodeJS.Timeout | undefined;
+let _watcherFallbackTimer: NodeJS.Timeout | undefined;
+let _knowledgeTreeSignature = "";
 let _watcherSkillProjectionChanged = false;
+
+function knowledgeTreeSignature(): string {
+  const entries: string[] = [];
+  const visit = (root: string, relative = "") => {
+    let names: string[];
+    try { names = fs.readdirSync(path.join(root, relative)); } catch { return; }
+    for (const name of names) {
+      if (name.startsWith(".") || name === "_assets") continue;
+      const child = relative ? path.join(relative, name) : name;
+      try {
+        const stat = fs.statSync(path.join(root, child));
+        if (stat.isDirectory()) visit(root, child);
+        else entries.push(`${path.relative(getStorePath(), path.join(root, child)).replace(/\\/g, "/")}:${stat.mtimeMs}:${stat.size}`);
+      } catch { /* file changed while scanning; the next pass will observe it */ }
+    }
+  };
+  for (const area of ["notes", "skills", "papers", "prompts", "scripts", "packages", "servers"]) visit(path.join(getStorePath(), area));
+  return entries.sort().join("\n");
+}
+
 function startFileWatcher(context: vscode.ExtensionContext): void {
   _watcher?.dispose();
   _privacyWatcher?.dispose();
   if (_watcherRefreshTimer) clearTimeout(_watcherRefreshTimer);
+  if (_watcherFallbackTimer) clearInterval(_watcherFallbackTimer);
   _watcherRefreshTimer = undefined;
+  _watcherFallbackTimer = undefined;
   _watcherSkillProjectionChanged = false;
+  _knowledgeTreeSignature = knowledgeTreeSignature();
   const pattern = new vscode.RelativePattern(getStorePath(), "{notes,skills,papers,prompts,scripts,packages,servers}/**/*");
   _watcher = vscode.workspace.createFileSystemWatcher(pattern);
   const onChange = (uri: vscode.Uri) => {
+    invalidateSharedContentCatalog();
     if (uri.fsPath === path.join(getStorePath(), "skills", "System", "PKM", "PKM Skills.md")) {
       _watcherSkillProjectionChanged = true;
     }
     if (_watcherRefreshTimer) clearTimeout(_watcherRefreshTimer);
     _watcherRefreshTimer = setTimeout(() => {
       _watcherRefreshTimer = undefined;
+      _knowledgeTreeSignature = knowledgeTreeSignature();
       _treeProvider?.refresh();
-      panel?.webview.postMessage({ command: "reloaded" }); // re-fetch current tab
+      const changedPath = path.relative(getStorePath(), uri.fsPath).replace(/\\/g, "/");
+      panel?.webview.postMessage({ command: "reloaded", data: { changedPath } }); // re-fetch and reveal the changed item
       void sharedMarket?.refreshPublishedShares().then(changed => {
         if (changed && panel) void handleMessage({ command: "subscriptionState" }, message => panel?.webview.postMessage(message), context);
       }).catch(error => log.warn(`subscription publish refresh failed: ${(error as Error).message}`));
+      scheduleRetrievalRefresh(context);
+      void refreshKnowledgeInventory(context);
       if (_watcherSkillProjectionChanged) {
         _watcherSkillProjectionChanged = false;
         panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
-        void offerPkmSkillProjectionUpdate(context);
+        void maintainPkmIntegration(context);
       }
     }, 100);
     _watcherRefreshTimer.unref?.();
@@ -7170,6 +8173,18 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
   _privacyWatcher.onDidCreate(onChange);
   _privacyWatcher.onDidChange(onChange);
   _privacyWatcher.onDidDelete(onChange);
+  _watcherFallbackTimer = setInterval(() => {
+    if (!panel?.visible || !_panelReady) return;
+    const signature = knowledgeTreeSignature();
+    if (signature === _knowledgeTreeSignature) return;
+    _knowledgeTreeSignature = signature;
+    invalidateSharedContentCatalog();
+    _treeProvider?.refresh();
+    panel.webview.postMessage({ command: "reloaded", data: { fallback: true } });
+    scheduleRetrievalRefresh(context);
+    log.info("file watcher fallback detected a knowledge tree change");
+  }, 15_000);
+  _watcherFallbackTimer.unref?.();
   context.subscriptions.push(_watcher, _privacyWatcher);
 }
 
@@ -7177,7 +8192,11 @@ export async function deactivate(): Promise<void> {
   _watcher?.dispose();
   _privacyWatcher?.dispose();
   if (_watcherRefreshTimer) clearTimeout(_watcherRefreshTimer);
+  if (_watcherFallbackTimer) clearInterval(_watcherFallbackTimer);
+  if (retrievalRefreshTimer) clearTimeout(retrievalRefreshTimer);
   _watcherRefreshTimer = undefined;
+  _watcherFallbackTimer = undefined;
+  retrievalRefreshTimer = undefined;
   disposeServers();
   await chatMgr?.dispose();
   sharedMarket?.dispose();

@@ -5,6 +5,192 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.7.33] - 2026-09-20
+
+### Changed
+- Discuss now accepts one or more explicit recipients; `@all` remains restricted to the Room Host.
+- Managed Agents now have editable profile icons and use the same standby/thinking status indicators as other Agents instead of the legacy gear-and-working label.
+
+### Fixed
+- Closing or leaving a Room now disconnects its temporary Managed Agents, clears queued work, and removes their in-memory entries.
+- Managed Agent identity is now persisted explicitly as temporary instead of inferred from connection IDs. Closing or Rehosting permanently forgets those memberships, while durable Agents remain reusable even when their client ID begins with `managed-`.
+- Every Room deactivation path, including Host leave, Force Close, Close All, Hub shutdown, and extension disposal, now uses one lifecycle hook to adjourn the active Meeting exactly once. History reconciliation ignores Discuss messages from completed Meetings, so the first new Discuss after Rehost creates a separate Meeting Note.
+- Discussion Lead selection now reaches MCP Agents as `discussion_lead` and `is_discussion_lead`; selected Leads receive an explicit instruction to guide topics and close each one with a concise canonical Summary.
+- Meeting Summary now keeps one concise current idea bullet per participant instead of copying every message. Only the selected Lead can set the Topic conclusion, using the explicit `chat_post(final_topic_summary=true)` signal; ending an ordinary reply no longer overwrites it.
+- Added executable Room-to-Meeting lifecycle coverage and a release-blocking `c8` gate. The release suite now includes Meeting state/snapshot, Managed Agent routing, and lifecycle behavior tests.
+- Closing a Room no longer reports that a new Magic Link is required. The same link remains valid after Rehost; only authentication failure, Room identity mismatch, or removal requires replacement credentials. Chat MCP schema advances to `2.3.5` so generated servers rebuild automatically.
+
+## [2.7.32] - 2026-09-17
+
+### Added
+- Added a persistent asynchronous Knowledge Inventory outside the Knowledge Root. A Worker scans Notes, Skills, Scripts, Papers, Prompts, Packages, and Servers, reuses unchanged `mtime:size` fingerprints, reparses only changed files, detects deletions, reports progress every 100 files, and atomically persists a restart-ready manifest.
+- Added bounded privacy-safe performance telemetry for activation, first framework, first content, Inventory refresh, and Retrieval synchronization, with the latest 200 samples and p50/p95 summaries. Paths, queries, and content are never recorded.
+
+### Changed
+- Notes, Skills, and Scripts lists plus Navigation now consume the shared Inventory. Navigation caches each path tree for one refresh generation instead of rescanning on every expanded hierarchy level.
+- Retrieval synchronization now sends document upserts and deleted IDs after the initial full submission. The Worker persists the merged document set and atomically rebuilds the current exact/BM25 engine because the bundled engine exposes full `index()` only.
+- Added Knowledge Root growth protection for environments, Server runtime data/models, package dependencies, build outputs, test installations, and caches. Managed environments continue to default outside the Knowledge Root under `~/pkm-envs`.
+
+## [2.7.31] - 2026-09-17
+
+### Changed
+- Loading indicators now use a one-second reveal threshold. Fast tab changes and Refresh operations show no progress UI; longer jobs reveal the latest stage and counts. All Subscription success, failure, cancellation, state, and secret responses explicitly close pending progress.
+- Moved Subscriber rows, account selection, automatic blocks, synchronization history, and security events into a lazy fourth **Subscribers** Broker-settings tab. Other tabs no longer construct large Subscriber DOM trees, and saving without opening Subscribers preserves existing account ACL rules.
+- My Share Brokers now display revisions as `YYYYMMDD.rN`, resetting the readable counter each day while retaining the monotonic numeric revision internally for synchronization.
+
+### Fixed
+- Queued MQTT Subscriber refreshes until Broker state transactions commit, preventing lost same-process revision notifications. Gateway configuration reload now resolves the live daemon PID before signaling, and IP unblock waits until the live Gateway applies the change.
+
+## [2.7.30] - 2026-09-17
+
+### Changed
+- Reworked startup as framework-first incremental loading. The panel shell is created before activation completes, while Broker rebuilds, Servers discovery/autostart, Git initialization, Retrieval refresh, example seeding, and MCP maintenance run afterward with visible stages.
+- Cached Navigation path trees per refresh generation, preventing every expanded hierarchy level from rescanning the complete corpus. Note list metadata is now cached by mtime/size and excludes full bodies; changed files invalidate independently.
+
+### Added
+- Added real Extension Host startup timing and ordering assertions. The current test activation completes in approximately one second while requiring the panel framework to appear first.
+
+## [2.7.29] - 2026-09-17
+
+### Added
+- Added staged loading progress throughout the main PKM panel. Initial load now reports preparation, file scanning, category-tree construction, detected item/folder counts, and Ready completion with a determinate progress bar instead of an indefinite animation.
+- Added a non-blocking progress strip for tab changes and Refresh, plus detailed MCP maintenance stages for Python runtime, generated server code, retrieval index, and per-target Skill Router updates.
+
+## [2.7.28] - 2026-09-17
+
+### Fixed
+- Changed fixed host-wide service defaults to stable per-user ports. On first use, Servers Proxy, Public Content Gateway, Chat Hub, and a new Subscription Gateway derive distinct ports from the OS UID (or username hash), persist them in machine-local state, and share them across that user's VS Code windows. Existing explicit settings and existing Broker ports remain unchanged.
+
+## [2.7.27] - 2026-09-17
+
+### Fixed
+- Removed automatic Content Gateway port-change dialogs from background singleton recovery. PKM now retries the identity endpoint while startup settles, keeps the configured stable port unchanged when an unrelated service is proven, and directs explicit recovery through Config.
+- Added leases to cross-process service locks so a live but blocked Extension Host cannot hold a transition lock forever. This fixes repeated false `Content Gateway port ... is occupied` prompts caused by one window waiting for modal input while holding the lock.
+- Missing Secret Protected Broker credentials no longer abort the entire Knowledge store initialization. Automatic rebuild skips only that Broker, preserves its existing snapshot, and requests secret rotation.
+
+## [2.7.26] - 2026-09-17
+
+### Fixed
+- Reworked machine-level service ownership for multiple VS Code windows. The Servers proxy now exposes a store identity, reuses the existing owner without `EADDRINUSE` noise, and automatically takes over after the owner exits. Managed Server start/stop and runtime-state writes are cross-process locked.
+- Serialized Public Content Gateway startup with a cross-process transition lock and five-second owner takeover checks. Retrieval Worker transitions are now locked and monotonic, so an older window cannot replace a newer compatible worker.
+- Serialized Subscription state mutations against the latest disk state and elected one cross-window background leader for MQTT, polling, and health checks. Concurrent Broker changes no longer overwrite each other.
+- Added Chat Hub identity discovery and removed random-port duplicate Hub fallback. Port conflicts with the same installation now report that the Hub is active in another window, and failed binds release persistence workers.
+- Direct Sync now recovers cleanly from failed binds and closes its listener after all sessions expire. Added executable two-process and two-manager singleton regressions.
+
+## [2.7.25] - 2026-09-17
+
+### Fixed
+- Added an executable VS Code Extension Host regression test that creates `notes/Project/AAGL_Improvement/Module Optimizer/LP Processor/progress.md.md`, traverses the real Navigation provider one folder at a time, and requires the final leaf to expose both its frontmatter title and exact relative filename/path. The test remains valid when native file watching is unavailable due to `ENOSPC`.
+
+## [2.7.24] - 2026-09-17
+
+### Fixed
+- Navigation Note leaves now show the real filename beside the frontmatter title and expose the complete `notes/...` path in their tooltip, so files such as `progress.md.md` remain directly recognizable after unlimited hierarchy rendering.
+
+## [2.7.23] - 2026-09-17
+
+### Fixed
+- Removed the Navigation hierarchy-depth cap. Skills, Notes, Papers, and Scripts now preserve every folder segment instead of flattening paths after the configured fourth level; the obsolete `personalKnowledge.maxTreeDepth` setting was removed. Prompt navigation retains its intentional Project / Task / Version structure.
+
+## [2.7.22] - 2026-09-17
+
+### Fixed
+- Category folders now perform a bounded live disk scan when expanded, with a three-second timeout and visible failure feedback. Note search also matches the original filename, `notes/`-relative path, and absolute filesystem path, including filenames such as `progress.md.md` whose canonical slug removes only the final extension.
+
+## [2.7.21] - 2026-09-17
+
+### Fixed
+- Fixed externally created or updated Notes and Skills remaining hidden in the category tree. Native watcher events now reveal the changed item's full folder path, manual **Refresh** clears hidden search filtering and expands changed content, and a visible-panel-only disk signature fallback detects changes missed when native file watching is unavailable.
+
+## [2.7.20] - 2026-09-17
+
+### Fixed
+- Replaced the unreliable webview Broker Delete dialog with a native VS Code confirmation keyed only by stable `shareId`. Confirm and cancel now both produce visible completion results and restore the pending button.
+- Expanded Subscription tests from static label checks to executable main-panel action coverage: destructive and Publish handlers are invoked, all 17 inline controls must resolve to functions, every command must have an Extension handler, completion recovery is checked, and manager/Gateway tests verify actual state changes.
+
+## [2.7.19] - 2026-09-17
+
+### Added
+- Added a per-Broker **Publish** toggle. Pausing keeps the Broker definition, snapshots, secrets, and statistics locally while removing it from discovery, metadata, transfer tickets, protected listeners, and MQTT retained publication; resuming republishes the existing revision.
+
+### Fixed
+- Fixed Broker deletion for names containing apostrophes or other JavaScript-significant characters by passing only the stable `shareId` from the card action and resolving the display name from state.
+
+## [2.7.18] - 2026-09-17
+
+### Fixed
+- Prevented mixed-version VS Code windows from oscillating shared MCP server and injected Router files between old and new versions. Maintenance is now monotonic: an older window detects newer MCP/schema or Router artifacts, performs no writes, and shows one informational recommendation to manually **Reload Window**; PKM never triggers the reload itself.
+
+## [2.7.17] - 2026-09-16
+
+### Changed
+- Simplified first-run setup around user decisions rather than internal components: new users can create the recommended Knowledge Root in one click, then see a four-step **Setup progress** checklist for Knowledge location, Python, automatic integration, and Agent connection. Runtime, schema, server-code, and index updates no longer present routine maintenance buttons; only Python selection, first Agent authorization, or a failed automatic setup requires action.
+
+## [2.7.16] - 2026-09-16
+
+### Changed
+- Reduced default `search_knowledge` token overhead by returning compact actionable summaries instead of route-index maps, long route keys, and complete metadata/provenance. Full diagnostics remain available with `debug=true` and continue to be captured in shadow telemetry. Unified MCP advances to `2.8.1` and Knowledge schema to `1.3.1`.
+
+## [2.7.15] - 2026-09-16
+
+### Changed
+- Replaced the startup sequence of Runtime, generated server, and managed Skill Router upgrade prompts with one serialized automatic maintenance flow. PKM now creates or repairs the runtime, regenerates stale server code, updates existing managed Skill projections, and refreshes the retrieval index automatically. Only failures require user action.
+- Added a first-configuration coachmark for actions that require user consent or selection: a **Start here** callout is anchored to the required button while a dismissible floating guide explains what clicking it will create, update, and leave untouched.
+
+## [2.7.14] - 2026-09-16
+
+### Fixed
+- Prevented **Update with Server** from leaving a large blank area by clamping the Config scroll position after the status-driven rerender.
+- Changed the non-actionable PKM Skill Router version row to a neutral **Info** state instead of showing the confusing **Update available** status without an action.
+- Made **Update with Server** automatically repair missing managed runtime dependencies, including the bundled adaptive retrieval engine, instead of rejecting upgraded installations with “Managed PKM MCP runtime is not healthy.”
+
+
+## [2.7.13] - 2026-09-16
+
+### Fixed
+- Changed the Config header to display the complete Extension semantic version independently from Unified MCP schema versions, preventing Extension `2.7.10` from appearing as `2.7.1`. The PKM Skill Router version row is now informational only; Inject and Update actions remain in the dedicated Router targets section.
+- Added a default-collapsed, informational **Skill Router** field in Config listing the active Exact and frozen BM25 retrieval routes; it intentionally has no actions and can accommodate future model-based routes.
+
+## [2.7.12] - 2026-09-16
+
+### Added
+- Integrated `adaptive-skill-retrieval` 0.3 as a bundled offline engine behind one persistent worker per Subscriber Knowledge Root. The unified typed index combines local Skills, Notes, and Scripts with every subscribed Broker while preserving canonical IDs, source URIs, read-only state, provenance, and Broker revisions.
+- Added MCP `search_knowledge` and `retrieval_status`. Query text reaches the engine unchanged, inferred content types act as soft preferences, explicit type filters remain strict, and responses report the ready corpus revision, query plan, route versions, and ranked provenance without document bodies in telemetry.
+
+### Changed
+- Build the initial index once, then submit deterministic snapshots after local file or Broker changes. Workers keep serving the previous ready index during rebuild, atomically swap successful revisions, reuse one PID across MCP clients, and restore the last-known-good snapshot after restart.
+- Run adaptive retrieval as a shadow candidate for `skill_context` under the same interaction ID while preserving the existing retriever as control. Unified MCP advances to `2.8.0`, Knowledge schema to `1.3.0`, and the injected Router to `1.1.6`.
+
+## [2.7.11] - 2026-09-16
+
+### Fixed
+- Fixed task-driven Broker Skill retrieval for detailed task descriptions by bounding metadata coverage dilution while retaining minimum metadata matches and rare-term anchors. `AutoLabeling V2 Data Preparation` is now selected consistently by `skill_context` as well as explicit `search_skills`. Unified MCP advances to `2.7.2` and Knowledge schema to `1.2.1` so generated servers request **Update Code**.
+
+## [2.7.10] - 2026-09-16
+
+### Fixed
+- Added a cloud-marked, default-collapsed **From Brokers** group under Skills, Notes, Papers, Prompts, Scripts, Packages, and Servers in Navigation. Each subscribed Broker is separately collapsed, preserves remote folder hierarchy, opens content read-only in the matching view, and retains canonical Subscription Copy Paths.
+- Included read-only Broker Skills in ordinary `skill_context`, `search_skills`, and `get_skill` retrieval, using canonical Subscription Copy Path IDs and returning publisher provenance without copying remote content into the local Knowledge Root. Unified MCP advances to `2.7.1`, Knowledge schema to `1.2.0`, and the injected PKM Skill Router to `1.1.5` so existing generated servers and Skills request updates.
+- Added a maintained System PKM onboarding Skill and updated the new-user getting-started seed to cover current Knowledge, privacy, stable browser links, Subscription search/Refresh, Chatroom, Server, Sync, and MCP workflows.
+- Standardized all Navigation and webview right-click menus into Open, Copy, Create, Edit, Organize, Control, and Danger sections; removed menu-label icons, collapsed duplicate separators, and added Copy Path to every folder/document surface including virtual roots, subscribed items, Servers, and Chatrooms.
+- Implemented the missing webview `copyText` clipboard handler and added executable coverage that invokes every right-click action, verifies every webview command handler, and checks every native Navigation command registration.
+- Added canonical, reversible Copy Paths for subscribed content and `get_subscribed_content_by_path`, allowing copied Skill/Note/Prompt/Script/Server paths to be read directly through MCP.
+- Added **Refresh from Broker** to Subscriber, subscribed item, folder, and broker-group right-click menus; repaired WebSocket MQTT socket identity so Broker revision notifications now automatically discover newly published files, with explicit fallback warnings when realtime updates are unavailable.
+- Expanded end-to-end Subscription tests across searchable Skills, Notes, Prompts, Scripts, and Servers, including automatic MQTT updates and manual forced refresh while MQTT is disconnected.
+- Made newly created Knowledge subfolders appear immediately in both Navigation and category trees by moving automatic Git commits to a serialized asynchronous queue instead of blocking the extension host during `git add` and `git commit`.
+- Expanded browser Markdown previews to use the available viewport width and added the extension icon to generated PKM browser tabs through a standard `/favicon.ico` route, with embedded fallback for offline HTML exports.
+- Added a machine-scoped external hostname/interface setting shared by public content, Chatroom, Subscription, and Server links.
+- Added fixed-port stable browser links for public Notes, Skills, Papers, and Scripts. The gateway reuses the same store/port across windows and restarts, requires confirmation before persisting a fallback port, and returns `404` for private content before rendering or file access.
+- Displayed inherited 🔒 privacy markers on individual Server items in both Navigation and the Server dashboard, clarifying that private Server groups are excluded from Subscription sharing and public links.
+- Preserved room-scoped Chat composer drafts across Chatroom/tab and Room switches, including partially typed text, recipient edits, message mode, and quote context; sending clears only the submitted Room draft.
+- Bounded Subscription snapshot retention to the current and previous revision, pruning stale files at startup and after durable publication.
+- Cached and coalesced full Shared Content catalog builds by store revision, with centralized invalidation for local and external changes.
+- Bounded synchronous Subscription search to 256 KB per content body and 200 raw results while preserving metadata search for large files.
+- Added a signed 512 MB snapshot download guard and redacted publish/download/catalog memory telemetry for diagnosing extension-host amplification.
+- Streamed Subscription downloads to disk and moved decryption, checksum validation, JSON parsing, and atomic cache materialization into a bounded short-lived child process, preventing large snapshot object graphs and synchronous writes from blocking or remaining in the extension host.
+- Added version-aware graceful handoff for detached Subscription gateways, including runtime protocol/version identity, verified legacy PID shutdown, and a cross-window transition lock that prevents duplicate replacement processes during extension upgrades.
+- Made **Discuss** semantically distinct from Ask: it now requires at least two recipients, generated Agents post an initial independent contribution, remain in standby, then explicitly review a named peer and publish a bounded synthesis without triggering another reply loop. Chat MCP schema advances to `2.3.2` so existing generated servers request regeneration.
+
 ## [2.7.8] - 2026-09-09
 
 ### Changed

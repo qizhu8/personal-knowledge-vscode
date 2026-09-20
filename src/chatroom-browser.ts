@@ -2,9 +2,12 @@
 // A single self-contained page: paste the host's Magic Message + enter a name, then watch and
 // participate in the room over WebSocket. File downloads are not offered here —
 // files relay peer-to-peer between online VS Code clients only.
+import { browserFaviconTag } from "./browser-branding";
+
 export function browserViewHtml(): string {
   return `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+${browserFaviconTag("/favicon.ico")}
 <title>PKM Agent Room</title>
 <style>
   :root{color-scheme:dark}
@@ -44,6 +47,9 @@ export function browserViewHtml(): string {
   .dl:hover{border-color:#4ea1ff}
   .hint{color:#888;font-size:12px;padding:6px 14px}
   h4{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#888}
+  #meetingBtn{display:none;width:100%;margin:14px 0 0;padding:7px;border:1px solid #4ea1ff;background:transparent;color:#4ea1ff;cursor:pointer}
+  #meetingPanel{position:fixed;inset:7vh 7vw;z-index:30;overflow:auto;padding:18px;background:#202022;border:1px solid #555;box-shadow:0 12px 40px rgba(0,0,0,.6)}
+  #meetingPanel.hidden{display:none}.meeting-head{display:flex;justify-content:space-between;align-items:center;gap:12px}.meeting-head button{border:0;background:transparent;color:#ddd;font-size:24px;cursor:pointer}.meeting-meta{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:#444;margin:12px 0}.meeting-meta div{padding:8px;background:#29292b}.meeting-meta small{display:block;color:#888}.meeting-topic{border-top:1px solid #444;padding:10px 0}.meeting-topic p{white-space:pre-wrap}.meeting-round{margin:8px 0;padding:8px;border-left:2px solid #4ea1ff;background:#29292b}@media(max-width:700px){#side{width:130px}.meeting-meta{grid-template-columns:1fr 1fr}#meetingPanel{inset:3vh 3vw}}
 </style></head><body>
 <header>
   <span id="dot"></span>
@@ -56,8 +62,9 @@ export function browserViewHtml(): string {
 <div class="hint" id="hint">Paste the complete Magic Message from the host. Credentials are verified and extracted locally in this browser.</div>
 <div id="wrap">
   <div id="log"></div>
-  <div id="side"><h4>In the room</h4><div id="members"></div></div>
+  <div id="side"><h4>In the room</h4><div id="members"></div><button id="meetingBtn" onclick="toggleMeeting()">Meeting Summary</button></div>
 </div>
+<section id="meetingPanel" class="hidden" aria-label="Meeting Summary"></section>
 <div id="composer" style="display:none">
   <input type="file" id="file" style="display:none" onchange="if(this.files[0])sendFile(this.files[0])">
   <button id="attach" onclick="document.getElementById('file').click()" title="Share a file (max 25 MB)">📎</button>
@@ -66,7 +73,7 @@ export function browserViewHtml(): string {
 </div>
 <script>
   var ws=null, me="", joined=false, joining=false, ROOM="", ROOM_ID="", roomSecret="", magicGeneration=0, incoming={};
-  var shownIds={}, everJoined=false, roster=[], suggestAnchor=null, suggestIndex=-1;   // de-dup by message id + track rejoins
+  var shownIds={}, everJoined=false, roster=[], meetingSnapshot={current:null,history:[],trash:[]}, suggestAnchor=null, suggestIndex=-1;   // de-dup by message id + track rejoins
   var browserCommands=[
     {cmd:"/help",args:"",desc:"List room commands"},
     {cmd:"/whois",args:" ",desc:"Show details about a member"},
@@ -174,6 +181,7 @@ export function browserViewHtml(): string {
     if(f.t==="renamed"){ me=f.name; append({system:true,text:'The host renamed you to "'+f.name+'".'}); return; }
     if(f.t==="room.renamed"){ ROOM=f.room; append({system:true,text:'Room renamed to "'+f.room+'".'}); return; }
     if(f.t==="presence"){ paintMembers(f.members); return; }
+    if(f.t==="meeting.snapshot"){ meetingSnapshot=f.snapshot||{current:null,history:[],trash:[]}; paintMeeting(); return; }
     if(f.t==="history"){
       var msgs=f.messages||[];
       // Only show messages you haven't seen yet (dedup by id). On a rejoin, mark
@@ -189,6 +197,14 @@ export function browserViewHtml(): string {
     if(f.t==="file.offer"){ incoming[f.file.fileId]={meta:f.file,from:f.from,chunks:[]}; append({from:f.from,kind:f.kind,text:"📎 sharing a file: "+f.file.name,ts:f.ts}); return; }
     if(f.t==="file.chunk"){ var inc=incoming[f.fileId]; if(inc){ inc.chunks.push(Uint8Array.from(atob(f.data),function(c){return c.charCodeAt(0);})); if(f.last){ var blob=new Blob(inc.chunks,{type:(inc.meta.mime||"application/octet-stream")}); addFileLink(inc.meta.name, URL.createObjectURL(blob)); delete incoming[f.fileId]; } } return; }
   }
+  function meetingDate(value){var date=new Date(value);return isNaN(date.getTime())?esc(value):date.toLocaleString();}
+  function meetingTopic(topic){
+    var rounds=(topic.rounds||[]).map(function(round){return '<div class="meeting-round"><strong>Round '+esc(round.number)+'</strong>'+(round.opinions||[]).map(function(opinion){return '<p><b>'+esc(opinion.participant)+':</b> '+esc(opinion.text)+'</p>';}).join('')+'<p><b>Conclusion:</b> '+esc(round.conclusion||'Pending')+'</p><p><b>Next:</b> '+esc(round.next||'Continue discussion')+'</p></div>';}).join('');
+    return '<section class="meeting-topic"><h3>'+esc(topic.title)+'</h3><p><b>Problem Statement:</b> '+esc(topic.problemStatement)+'</p>'+rounds+(topic.subtopics||[]).map(meetingTopic).join('')+'</section>';
+  }
+  function meetingRecord(record){return '<div class="meeting-head"><div><small>'+(record.status==='active'?'Active meeting':'Read-only history')+'</small><h2>'+esc(record.title)+'</h2></div><button onclick="toggleMeeting(false)" aria-label="Close">×</button></div><div class="meeting-meta"><div><small>Participants</small>'+esc((record.participants||[]).join(', ')||'Not recorded')+'</div><div><small>Lead</small>'+esc(record.lead||'Not assigned')+'</div><div><small>Recorder</small>'+esc(record.recorder||record.lead)+'</div><div><small>Started</small>'+meetingDate(record.startedAt)+'</div><div><small>Ended</small>'+(record.endedAt?meetingDate(record.endedAt):'In progress')+'</div></div>'+(record.topics||[]).map(meetingTopic).join('');}
+  function paintMeeting(){var records=[meetingSnapshot.current].concat(meetingSnapshot.history||[]).filter(Boolean),button=document.getElementById('meetingBtn'),panel=document.getElementById('meetingPanel');button.style.display=records.length?'block':'none';if(records.length)panel.innerHTML=meetingRecord(records[0]);else panel.classList.add('hidden');}
+  function toggleMeeting(force){var panel=document.getElementById('meetingPanel'),open=typeof force==='boolean'?force:panel.classList.contains('hidden');panel.classList.toggle('hidden',!open);if(open)paintMeeting();}
   function append(m){
     if(m && m.id){ if(shownIds[m.id]) return; shownIds[m.id]=1; }   // never render the same message twice
     var log=document.getElementById("log");

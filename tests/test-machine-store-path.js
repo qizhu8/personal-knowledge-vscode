@@ -65,5 +65,7 @@ assert.match(extension, /function safeMcpRuntimeTarget\(directory: string\)/);
 assert.match(extension, /function safeMcpServerTarget\(directory: string\)/);
 assert.match(extension, /Choose an empty directory or an existing PKM-managed runtime/);
 assert.match(extension, /Choose an empty directory or an existing PKM-generated server directory/);
+assert.match(mcpSource, /insideInstalledExtension/,
+  "legacy MCP server paths inside the read-only installed extension must fall back to the Knowledge Root");
 
 console.log("machine store path test: machine scope, cross-OS rejection, reinstall recovery, host-aware setup, no fallback, and Sync target confirmation OK");

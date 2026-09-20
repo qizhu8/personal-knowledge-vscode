@@ -23,6 +23,7 @@ export interface PendingJoinApproval {
 
 interface PendingEntry extends PendingJoinApproval {
   clientKey: string;
+  temporary: boolean;
   status: "pending" | "settling";
   timer?: NodeJS.Timeout;
   resolve: (result: JoinApprovalResult) => void;
@@ -38,12 +39,12 @@ export class ChatJoinApprovalManager {
     private readonly onChanged?: () => void,
   ) {}
 
-  async request(roomId: string, connectionId: string, alias: string, clientKey: string, kind: string): Promise<{ approval: PendingJoinApproval; result: Promise<JoinApprovalResult> }> {
+  async request(roomId: string, connectionId: string, alias: string, clientKey: string, kind: string, temporary = false): Promise<{ approval: PendingJoinApproval; result: Promise<JoinApprovalResult> }> {
     const requestedAt = Date.now();
     const requestId = randomUUID();
     const aliasKey = normalizeChatAlias(alias);
     const expiresAt = requestedAt + this.timeoutMs;
-    await this.persistence.requestJoin(roomId, { requestId, alias, aliasKey, clientKey, kind, requestedAt, expiresAt });
+    await this.persistence.requestJoin(roomId, { requestId, alias, aliasKey, clientKey, kind, temporary, requestedAt, expiresAt });
     let state: ParticipantIdentityState;
     try { state = await this.persistence.identityState(roomId); }
     catch (error) {
@@ -55,7 +56,7 @@ export class ChatJoinApprovalManager {
     let resolve!: (result: JoinApprovalResult) => void;
     const result = new Promise<JoinApprovalResult>(done => { resolve = done; });
     const entry: PendingEntry = {
-      requestId, connectionId, roomId, alias, aliasKey, clientKey, kind, requestedAt, expiresAt,
+      requestId, connectionId, roomId, alias, aliasKey, clientKey, kind, temporary, requestedAt, expiresAt,
       reusableParticipants: this.reusableParticipants(roomId, state),
       status: "pending", resolve,
     };

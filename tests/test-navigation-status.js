@@ -41,7 +41,7 @@ assert.match(extension, /private _serverItems\(groupPath: string\[\], ungroupedO
 assert.match(extension, /new PkTreeItem\(this\.text\("servers\.ungrouped"\), "server-ungrouped-group", vscode\.TreeItemCollapsibleState\.Expanded\)/);
 assert.match(extension, /for \(const category of ungroupedOnly \? \[\] : serverGroupList\(\)\)/);
 assert.match(extension, /Number\(!!right\.pinned\) - Number\(!!left\.pinned\)/);
-assert.match(extension, /new PkTreeItem\(server\.name, "server-item"/);
+assert.match(extension, /new PkTreeItem\(serverLabel, "server-item"/);
 assert.match(extension, /applyStatus\(new PkTreeItem\(room\.roomName, "chat-hosted-room"/);
 assert.match(extension, /applyStatus\(new PkTreeItem\(room\.room, "chat-room"/);
 assert.match(extension, /this\.text\("nav\.runningPort", \{ port: server\.activePort \}\)/);

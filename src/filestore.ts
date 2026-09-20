@@ -72,7 +72,7 @@ function asArray(v: any): string[] {
   return Array.isArray(v) ? v : v ? [String(v)] : [];
 }
 
-interface MdFile { full: string; rel: string; mtime: number; }
+interface MdFile { full: string; rel: string; mtime: number; size: number; }
 
 export type KnowledgeTrashArea = "notes" | "papers" | "prompts" | "scripts";
 export interface KnowledgeTrashEntry {
@@ -166,7 +166,7 @@ function walkMd(dir: string, rel: string, out: MdFile[]): void {
     try { st = statSync(full); } catch { continue; }
     const childRel = rel ? `${rel}/${name}` : name;
     if (st.isDirectory()) walkMd(full, childRel, out);
-    else if (name.toLowerCase().endsWith(".md")) out.push({ full, rel: childRel, mtime: st.mtimeMs });
+    else if (name.toLowerCase().endsWith(".md")) out.push({ full, rel: childRel, mtime: st.mtimeMs, size: st.size });
   }
 }
 
@@ -181,11 +181,17 @@ function nameOf(keyPath: string): string {
 
 // ── Notes ───────────────────────────────────────────────────────────────────
 function notesRoot(): string { return join(_store, "notes"); }
+const noteMetadataCache = new Map<string, { fingerprint: string; row: any }>();
 
-function noteFromFile(f: MdFile): any {
+function noteFromFile(f: MdFile, includeContent = true): any {
+  const fingerprint = `${f.mtime}:${f.size}`;
+  if (!includeContent) {
+    const cached = noteMetadataCache.get(f.full);
+    if (cached?.fingerprint === fingerprint) return { ...cached.row };
+  }
   const { fm, body } = parseFrontmatter(readFileSync(f.full, "utf-8"));
   const key = relNoExt(f.rel);
-  return {
+  const row = {
     slug: key,
     title: fm.title || nameOf(key),
     description: fm.description || "",
@@ -193,35 +199,40 @@ function noteFromFile(f: MdFile): any {
     tags: JSON.stringify(asArray(fm.tags)),
     pinned: fm.pinned === true,
     category: catOf(key),
-    content: body,
+    ...(includeContent ? { content: body } : {}),
     created_at: fm.created || new Date(f.mtime).toISOString(),
     updated_at: new Date(f.mtime).toISOString(),
   };
+  if (!includeContent) noteMetadataCache.set(f.full, { fingerprint, row });
+  return row;
 }
 
 function allNoteFiles(): MdFile[] { const out: MdFile[] = []; walkMd(notesRoot(), "", out); return out; }
 
 export function noteList(type?: string, limit = 50, includeContent = false): any[] {
-  let rows = allNoteFiles().map(noteFromFile);
+  let rows = allNoteFiles().map(file => noteFromFile(file, includeContent));
   if (type && type !== "all") rows = rows.filter(r => r.type === type);
   rows.sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""));
   const limited = rows.slice(0, limit);
-  return includeContent ? limited : limited.map(({ content, ...meta }) => meta);
+  return limited;
 }
 
 export function noteSearch(q: string, options: SearchOptions = {}): any[] {
-  return allNoteFiles().map(noteFromFile)
-    .filter(r => searchMatches(q, options, [r.title, r.description, r.content, r.slug, r.category, r.type, ...JSON.parse(r.tags || "[]")]))
-    .sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""))
+  return allNoteFiles().map(file => ({ file, note: noteFromFile(file) }))
+    .filter(({ file, note }) => searchMatches(q, options, [
+      note.title, note.description, note.content, note.slug, note.category, note.type,
+      file.rel, join("notes", file.rel), file.full, ...JSON.parse(note.tags || "[]"),
+    ]))
+    .sort((a, b) => (b.note.updated_at || "").localeCompare(a.note.updated_at || ""))
     .slice(0, 100)
-    .map(({ content, ...meta }) => meta);
+    .map(({ note: { content, ...meta } }) => meta);
 }
 
 export function noteGet(slug: string): any {
   const full = join(notesRoot(), slug + ".md");
   if (!existsSync(full)) return null;
   const st = statSync(full);
-  return noteFromFile({ full, rel: slug + ".md", mtime: st.mtimeMs });
+  return noteFromFile({ full, rel: slug + ".md", mtime: st.mtimeMs, size: st.size });
 }
 
 export function noteUpsert(row: {
@@ -398,7 +409,7 @@ export function storeEntryMove(
 /** All folder paths that actually contain notes (every ancestor segment). */
 function existingNoteFolders(): Set<string> {
   const cats = new Set<string>();
-  for (const n of allNoteFiles().map(noteFromFile)) {
+  for (const n of allNoteFiles().map(file => noteFromFile(file))) {
     const c = n.category || "";
     if (!c) continue;
     const segs = c.split("/");
@@ -452,7 +463,7 @@ export function slugExists(slug: string): boolean {
 }
 
 export function noteExport(): any[] {
-  return allNoteFiles().map(noteFromFile);
+  return allNoteFiles().map(file => noteFromFile(file));
 }
 
 export function noteImport(rows: any[]): number {
@@ -841,7 +852,7 @@ export function paperGet(slug: string): any {
   const full = join(papersRoot(), slug + ".md");
   if (!existsSync(full)) return null;
   const st = statSync(full);
-  return paperFromFile({ full, rel: slug + ".md", mtime: st.mtimeMs });
+  return paperFromFile({ full, rel: slug + ".md", mtime: st.mtimeMs, size: st.size });
 }
 
 export function paperUpsert(row: {

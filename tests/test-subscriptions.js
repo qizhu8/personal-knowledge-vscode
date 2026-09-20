@@ -9,7 +9,7 @@ const filestore = require("../dist/filestore");
 const storage = require("../dist/storage");
 const servers = require("../dist/servers");
 const privacy = require("../dist/content-privacy");
-const { SharedMarketManager, parseShareMagicLink, verifyShareSummary } = require("../dist/subscriptions");
+const { SharedMarketManager, parseShareMagicLink, parseSubscribedContentPath, verifyShareSummary } = require("../dist/subscriptions");
 
 class MemorySecretStorage {
   constructor() { this.values = new Map(); }
@@ -64,24 +64,33 @@ async function main() {
   servers.initServers(serversRoot, path.join(root, "server-state"), await freePort());
   filestore.skillUpsert({ name: "Shared Skill", description: "Metadata only summary", category: "Research/AAGL", tags: ["aagl", "pipeline"], content: "SECRET BODY MUST NOT ENTER CONTROL SIGNAL" });
   filestore.noteUpsert({ slug: "", title: "Indexed Note", type: "general", tags: [], content: "INDEXED NOTE BODY" });
-  assert.strictEqual(filestore.noteList(undefined, 10)[0].content, undefined, "noteList must remain metadata-only by default");
-  assert.strictEqual(filestore.noteList(undefined, 10, true)[0].content, "INDEXED NOTE BODY", "internal link indexing may opt into parsed content");
+  filestore.noteUpsert({ slug: "", title: "Shared Note", category: "Team", type: "general", tags: ["shared"], content: "UNIQUE SUBSCRIBED NOTE BODY" });
+  storage.promptImport([{ project: "Ads", task: "Review", version: "v1", file: "prompt.md", content: "UNIQUE SUBSCRIBED PROMPT BODY" }]);
+  storage.scriptImport([{ category: "Team", file: "check.script", content: "UNIQUE SUBSCRIBED SCRIPT BODY" }]);
+  assert.strictEqual(filestore.noteList(undefined, 10).find(note => note.title === "Indexed Note").content, undefined, "noteList must remain metadata-only by default");
+  assert.strictEqual(filestore.noteList(undefined, 10, true).find(note => note.title === "Indexed Note").content, "INDEXED NOTE BODY", "internal link indexing may opt into parsed content");
   fs.mkdirSync(path.join(store, "packages", "shared-tool", "src"), { recursive: true });
   fs.writeFileSync(path.join(store, "packages", "shared-tool", "README.md"), "# Shared Tool\n");
   fs.writeFileSync(path.join(store, "packages", "shared-tool", "src", "tool.py"), "VALUE = 42\n");
   const warnings = [];
+  const diagnostics = [];
   let changedEvents = 0;
   const secretStorage = new MemorySecretStorage();
   const manager = new SharedMarketManager(state, path.join(__dirname, "..", "dist", "subscription-gateway.js"), "PKM Test Node", {
     onWarning: message => warnings.push(message),
     onChanged: () => { changedEvents += 1; },
+    onDiagnostic: event => diagnostics.push(event),
   }, secretStorage, { user: "alice", host: "host-a" });
   const port = await freePort();
   try {
     await manager.configure({ enabled: false, port, advertisedHost: "127.0.0.1", displayName: "PKM Test Node" });
-    const share = await manager.upsertShare({ name: "AAGL Context", visibility: "public", contentTypes: ["skills", "packages", "servers"], selected: { skills: ["Shared Skill"], packages: ["shared-tool"], servers: ["sample-api"] } });
+    const sharedContentTypes = ["skills", "notes", "prompts", "scripts", "packages", "servers"];
+    const sharedSelection = { skills: ["Shared Skill"], notes: ["Team/Shared Note"], prompts: ["Ads/Review"], scripts: ["Team/check.script"], packages: ["shared-tool"], servers: ["sample-api"] };
+    const share = await manager.upsertShare({ name: "AAGL Context", visibility: "public", contentTypes: sharedContentTypes, selected: sharedSelection });
     assert.strictEqual(share.revision, 1);
-    assert.deepStrictEqual(share.summary.counts, { skills: 1, packages: 1, servers: 1 });
+    assert.match(share.revisionLabel, /^\d{8}\.r1$/, "first Broker snapshot of a day must use YYYYMMDD.r1");
+    assert.strictEqual(share.summary.snapshotBytes, fs.statSync(share.snapshotPath).size);
+    assert.deepStrictEqual(share.summary.counts, { skills: 1, notes: 1, prompts: 1, scripts: 1, packages: 1, servers: 1 });
     assert(share.summary.topics.includes("Research/AAGL"));
     assert(share.summary.tags.includes("aagl"));
     assert.strictEqual(share.summary.metadataOnly, true);
@@ -122,6 +131,10 @@ async function main() {
     assert.strictEqual(subscribed.brokerName, "AAGL Context");
     assert.strictEqual(subscribed.publisherUser, "alice");
     assert.strictEqual(subscribed.publisherHost, "host-a");
+    assert(diagnostics.some(event => event.operation === "publish" && event.snapshotBytes > 0));
+    assert(diagnostics.some(event => event.operation === "download" && event.snapshotBytes > 0));
+    assert(diagnostics.some(event => event.operation === "download" && event.isolatedProcess === true && event.transferBytes > 0));
+    assert(!JSON.stringify(diagnostics).includes("SECRET BODY"));
     assert.strictEqual(manager.snapshot.subscriptions[0].brokerName, "AAGL Context");
     manager.state.subscriptions[0].brokerName = undefined;
     assert.strictEqual(manager.snapshot.subscriptions[0].brokerName, "AAGL Context", "legacy records must recover Broker name from cached summary");
@@ -131,6 +144,7 @@ async function main() {
     assert.strictEqual(manager.snapshot.subscriptions[0].brokerName, "AAGL Context", "Subscriber rename must not alter the published Broker name");
     const cached = path.join(state, "cache", subscribed.nodeId, subscribed.shareId, "bundle.json");
     assert(fs.existsSync(cached), "background Sync must populate the machine-local subscription cache");
+    assert.deepStrictEqual(fs.readdirSync(path.join(state, "downloads")), [], "completed Sync must remove temporary downloads");
     assert(JSON.parse(fs.readFileSync(cached, "utf8")).skills[0].content.includes("SECRET BODY"));
     const cachedSkill = path.join(state, "cache", subscribed.nodeId, subscribed.shareId, "content", "skills", "Research", "AAGL", "Shared Skill.md");
     assert(fs.existsSync(cachedSkill), "subscribed Skills must be materialized as isolated Markdown files");
@@ -142,10 +156,37 @@ async function main() {
     assert.strictEqual(provenance.revision, 1);
     assert(provenance.syncedAt);
     assert(!fs.existsSync(path.join(store, "skills", "_subscriptions")), "subscription refresh must never write into the Knowledge Root");
+    const cachedScripts = path.join(state, "cache", subscribed.nodeId, subscribed.shareId, "content", "scripts");
+    fs.mkdirSync(cachedScripts, { recursive: true });
+    fs.writeFileSync(path.join(cachedScripts, "large-search-guard.script"), `UNIQUE_LARGE_BODY_TERM\n${"x".repeat(300 * 1024)}`);
+    assert.strictEqual(manager.cachedGroups("scripts", "UNIQUE_LARGE_BODY_TERM").length, 0,
+      "large cached bodies must not be synchronously loaded for content search");
+    assert.strictEqual(manager.cachedGroups("scripts", "large-search-guard")[0].items.length, 1,
+      "large files must remain searchable by metadata");
+    for (let index = 0; index < 250; index++) fs.writeFileSync(path.join(cachedScripts, `bounded-${String(index).padStart(3, "0")}.script`), "small");
+    assert.strictEqual(manager.cachedGroups("scripts")[0].items.length, 200,
+      "subscription navigation must cap raw results to bound webview payloads");
     const packageGroups = manager.cachedGroups("packages");
     assert.strictEqual(packageGroups.length, 1);
     assert.strictEqual(packageGroups[0].alias, "My Creative Context", "subscribed groups must use the Subscriber-local name");
     assert.strictEqual(manager.cachedGroups("skills")[0].alias, "My Creative Context");
+    const searchableTypes = [
+      ["skills", "SECRET BODY", "Research/AAGL/Shared Skill.md"],
+      ["notes", "UNIQUE SUBSCRIBED NOTE", "Team/Shared Note.md"],
+      ["prompts", "UNIQUE SUBSCRIBED PROMPT", "Ads/Review/v1/prompt.md"],
+      ["scripts", "UNIQUE SUBSCRIBED SCRIPT", "Team/check.script"],
+      ["servers", "Sample API", "sample-api/server.link.json"],
+    ];
+    for (const [type, query, expectedPath] of searchableTypes) {
+      const group = manager.cachedGroups(type, query)[0];
+      assert(group, `subscribed ${type} must be searchable by downloaded content`);
+      const item = group.items.find(candidate => candidate.path === expectedPath);
+      assert(item, `subscribed ${type} search must return ${expectedPath}`);
+      assert.deepStrictEqual(parseSubscribedContentPath(item.pkmPath), {
+        nodeId: subscribed.nodeId, shareId: subscribed.shareId, contentType: type, path: expectedPath,
+      }, `subscribed ${type} Copy Path must round-trip into MCP read arguments`);
+      assert.strictEqual(manager.cachedDetail(item.key).path, expectedPath);
+    }
     const serverGroups = manager.cachedGroups("servers");
     assert.strictEqual(serverGroups[0].alias, "My Creative Context");
     assert.strictEqual(serverGroups[0].items.length, 1, "each subscribed Server must aggregate into one link row");
@@ -201,16 +242,53 @@ async function main() {
     manager.renameSubscription(subscribed.id, "");
     assert.strictEqual(manager.cachedGroups("skills")[0].alias, "AAGL Context", "clearing the local name must restore the published Broker name");
     manager.renameSubscription(subscribed.id, "Renamed Alias");
+    const mqttClient = manager.mqttClients.get(subscribed.nodeId);
+    await waitUntil(() => mqttClient?.connected, 6000);
+    const mqttTopic = `pkm/v1/nodes/${subscribed.nodeId}/shares/${subscribed.shareId}/summary`;
+    assert(mqttClient._resubscribeTopics?.[mqttTopic], "Subscriber must retain its Broker revision topic");
+    const paused = await manager.setSharePublished(share.shareId, false);
+    assert.strictEqual(paused.published, false);
+    assert.strictEqual(manager.snapshot.shares.find(item => item.shareId === share.shareId).published, false, "paused Broker definition must remain available locally");
+    const pausedSummary = await fetch(`http://127.0.0.1:${port}/v1/shares/${share.shareId}/summary`, { headers: { "X-PKM-Subscriber-Proof": subscriberProof(statePath, share.shareId) } });
+    assert.strictEqual(pausedSummary.status, 404, "paused Broker must not expose metadata through an existing link");
+    const pausedTicket = await fetch(`http://127.0.0.1:${port}/v1/shares/${share.shareId}/sync-ticket`, { method: "POST", headers: { "X-PKM-Subscriber-Proof": subscriberProof(statePath, share.shareId) } });
+    assert.strictEqual(pausedTicket.status, 404, "paused Broker must not issue transfer tickets");
+    const pausedCatalog = await (await fetch(`http://127.0.0.1:${port}/v1/catalog`)).json();
+    assert(!(pausedCatalog.shares || []).some(item => item.shareId === share.shareId), "paused Broker must leave public discovery");
+    const resumed = await manager.setSharePublished(share.shareId, true);
+    assert.strictEqual(resumed.published, true);
+    const resumedSummary = await fetch(`http://127.0.0.1:${port}/v1/shares/${share.shareId}/summary`, { headers: { "X-PKM-Subscriber-Proof": subscriberProof(statePath, share.shareId) } });
+    assert.strictEqual(resumedSummary.status, 200, "resuming must publish the retained Broker definition again");
+    assert(mqttClient._resubscribeTopics?.[mqttTopic], "pause/resume must preserve an existing Subscriber MQTT topic");
     filestore.skillUpsert({ name: "Shared Skill", description: "Updated", category: "Research/AAGL", tags: ["aagl", "updated"], content: "REVISION TWO" });
-    const updated = await manager.upsertShare({ shareId: share.shareId, name: share.name, contentTypes: ["skills"], selected: { skills: ["Shared Skill"] } });
+    filestore.noteUpsert({ slug: "", title: "Broker Added Note", category: "Team", type: "general", tags: ["new"], content: "NEW FILE DISCOVERED BY MANUAL REFRESH" });
+    const updatedSelection = { ...sharedSelection, notes: [...sharedSelection.notes, "Team/Broker Added Note"] };
+    const updated = await manager.upsertShare({ shareId: share.shareId, name: share.name, contentTypes: sharedContentTypes, selected: updatedSelection });
     assert.strictEqual(updated.revision, 2);
+    assert.strictEqual(updated.revisionLabel, `${share.revisionDate}.r2`, "same-day Broker snapshots must increment the readable daily revision");
     await waitUntil(async () => {
       const response = await fetch(`http://127.0.0.1:${port}/v1/shares/${share.shareId}/summary`);
       return response.ok && (await response.json()).revision === 2;
     });
-    await manager.refresh(subscribed.id, true);
+    await waitUntil(() => manager.snapshot.subscriptions[0].revision === 2, 6000);
     assert.strictEqual(manager.snapshot.subscriptions[0].revision, 2);
     assert(fs.readFileSync(cached, "utf8").includes("REVISION TWO"));
+    const addedNote = manager.cachedGroups("notes", "NEW FILE DISCOVERED BY MANUAL REFRESH")[0]?.items.find(item => item.path === "Team/Broker Added Note.md");
+    assert(addedNote, "forced Subscriber refresh must discover a newly published Broker file");
+    assert.deepStrictEqual(parseSubscribedContentPath(addedNote.pkmPath), {
+      nodeId: subscribed.nodeId, shareId: subscribed.shareId, contentType: "notes", path: "Team/Broker Added Note.md",
+    });
+    for (const client of manager.mqttClients.values()) client.end(true);
+    manager.mqttClients.clear();
+    filestore.noteUpsert({ slug: "", title: "Manual Refresh Note", category: "Team", type: "general", tags: ["manual"], content: "ONLY DISCOVERED BY FORCED REFRESH" });
+    const manualSelection = { ...updatedSelection, notes: [...updatedSelection.notes, "Team/Manual Refresh Note"] };
+    const manualUpdate = await manager.upsertShare({ shareId: share.shareId, name: share.name, contentTypes: sharedContentTypes, selected: manualSelection });
+    assert.strictEqual(manualUpdate.revision, 3);
+    assert.strictEqual(manager.snapshot.subscriptions[0].revision, 2, "without MQTT, Subscriber must remain stale until manual refresh");
+    await manager.refresh(subscribed.id, true);
+    assert.strictEqual(manager.snapshot.subscriptions[0].revision, 3);
+    assert(manager.cachedGroups("notes", "ONLY DISCOVERED BY FORCED REFRESH")[0]?.items.some(item => item.path === "Team/Manual Refresh Note.md"),
+      "manual force refresh must discover a Broker file missed while realtime notification is unavailable");
     assert(!JSON.stringify(updated.summary).includes("REVISION TWO"));
 
     const folderShare = await manager.upsertShare({ name: "Dynamic AAGL Folder", contentTypes: ["skills"], selected: {}, folders: { skills: ["Research/AAGL"] } });
@@ -224,7 +302,7 @@ async function main() {
     assert(folderBundle.skills.some(item => item.name === "Future Folder Skill"), "folder-level Share must include future files");
     assert(!folderBundle.skills.some(item => item.name === "Outside Skill"), "folder-level Share must not escape its folder");
     const exactShare = manager.snapshot.shares.find(item => item.shareId === share.shareId);
-    assert.strictEqual(exactShare.revision, 2, "exact file Share must not change when a sibling is added");
+    assert.strictEqual(exactShare.revision, 3, "exact file Share must not change when a sibling is added");
     const exactBundle = JSON.parse(fs.readFileSync(exactShare.snapshotPath, "utf8"));
     assert(!exactBundle.skills.some(item => item.name === "Future Folder Skill"), "partial file Share must not include future siblings");
 
@@ -237,6 +315,14 @@ async function main() {
     assert.strictEqual(secondConcurrentRefresh, 1, "concurrent refresh callers must share the active publication result");
     const concurrentFolderShare = manager.snapshot.shares.find(item => item.shareId === folderShare.shareId);
     assert.strictEqual(concurrentFolderShare.revision, 3, "concurrent automatic refreshes must publish exactly one new revision");
+    filestore.skillUpsert({ name: "Second Concurrent Skill", category: "Research/AAGL", tags: ["future"], content: "REVISION FOUR" });
+    await manager.refreshPublishedShares();
+    const retainedFolderShare = manager.snapshot.shares.find(item => item.shareId === folderShare.shareId);
+    assert.strictEqual(retainedFolderShare.revision, 4);
+    const retainedSnapshots = fs.readdirSync(path.join(state, "snapshots"))
+      .filter(name => name.startsWith(`${folderShare.shareId}-`)).sort();
+    assert.deepStrictEqual(retainedSnapshots, [`${folderShare.shareId}-3.json`, `${folderShare.shareId}-4.json`],
+      "published snapshots must retain only current and previous revisions");
 
     const protectedControlPort = await freePort();
     const protectedDataPort = await freePort();
@@ -261,7 +347,7 @@ async function main() {
     assert.strictEqual((await fetch(`http://127.0.0.1:${port}/v1/shares/${protectedShare.shareId}/summary`)).status, 404, "shared Open Control Port must not route Secret Protected Brokers");
     const unauthenticatedMetadata = await fetch(`http://127.0.0.1:${protectedControlPort}/v1/shares/${protectedShare.shareId}/summary`);
     assert.strictEqual(unauthenticatedMetadata.status, 401, "private Control Port must not expose protected metadata without the separate secret");
-    manager.unblockIp(protectedShare.shareId, "127.0.0.1");
+    await manager.unblockIp(protectedShare.shareId, "127.0.0.1");
 
     for (let attempt = 1; attempt <= 3; attempt++) {
       const identity = subscriberProof(statePath, protectedShare.shareId);
@@ -325,6 +411,11 @@ async function main() {
     assert(warnings.some(message => message.includes("Common Communication Port") && message.includes("restarted")), "Gateway loss must emit a recovery warning");
     assert.strictEqual(manager.snapshot.gatewayStatus, "running", "Gateway health check must self-recover when the port is available");
 
+    const apostropheShare = await manager.upsertShare({ name: "Yu Wang's Work", contentTypes: ["skills"], selected: { skills: ["Shared Skill"] } });
+    assert(manager.snapshot.shares.some(item => item.shareId === apostropheShare.shareId));
+    await manager.deleteShare(apostropheShare.shareId);
+    assert(!manager.snapshot.shares.some(item => item.shareId === apostropheShare.shareId), "Broker names with apostrophes must not prevent deletion");
+
     await manager.configure({ enabled: false, port, advertisedHost: "127.0.0.1", displayName: "PKM Test Node" });
     await assert.rejects(manager.refresh(subscribed.id), /fetch|Broker|connect/i);
     assert.strictEqual(manager.snapshot.subscriptions[0].status, "offline");
@@ -350,8 +441,11 @@ async function testPersistentGatewayLifecycle() {
   const state = path.join(root, "state");
   const gatewayScript = path.join(__dirname, "..", "dist", "subscription-gateway.js");
   const port = await freePort();
-  const first = new SharedMarketManager(state, gatewayScript, "Persistent Gateway Test");
+  const diagnostics = [];
+  const warnings = [];
+  const first = new SharedMarketManager(state, gatewayScript, "Persistent Gateway Test", {}, undefined, { user: "test", host: "host", version: "2.6.1" });
   let resumed;
+  let resumedPeer;
   try {
     assert.strictEqual(first.snapshot.advertisedHost, os.hostname().replace(/\.$/, ""), "new Broker Invite interface must default to hostname");
     await first.configure({ enabled: false, port, advertisedHost: "", displayName: "Persistent Gateway Test" });
@@ -361,16 +455,53 @@ async function testPersistentGatewayLifecycle() {
     first.dispose();
     const response = await fetch(`http://127.0.0.1:${port}/.well-known/pkm-node`);
     assert.strictEqual(response.status, 200, "Gateway daemon must survive manager/Extension Host disposal");
-    resumed = new SharedMarketManager(state, gatewayScript, "Persistent Gateway Test");
-    await resumed.setGatewayOnline(false);
+    const legacyNode = await response.json();
+    assert.strictEqual(legacyNode.gatewayVersion, "2.6.1", "detached Gateway must report its launch-time runtime version");
+    assert.strictEqual(legacyNode.gatewayPid, pid, "Gateway endpoint must report its actual runtime PID");
+    const staleState = JSON.parse(fs.readFileSync(path.join(state, "subscriptions.json"), "utf8"));
+    staleState.gatewayPid = 99999999;
+    fs.writeFileSync(path.join(state, "subscriptions.json"), JSON.stringify(staleState, null, 2));
+    resumed = new SharedMarketManager(state, gatewayScript, "Persistent Gateway Test", {
+      onDiagnostic: event => diagnostics.push(event),
+      onWarning: message => warnings.push(message),
+    }, undefined, { user: "test", host: "host", version: "2.7.20" });
+    resumedPeer = new SharedMarketManager(state, gatewayScript, "Persistent Gateway Test", {
+      onDiagnostic: event => diagnostics.push(event),
+      onWarning: message => warnings.push(message),
+    }, undefined, { user: "test", host: "host", version: "2.7.20" });
+    const [windowAShare, windowBShare] = await Promise.all([
+      resumed.upsertShare({ name: "Window A Broker", contentTypes: ["notes"], selected: { notes: [] } }),
+      resumedPeer.upsertShare({ name: "Window B Broker", contentTypes: ["skills"], selected: { skills: [] } }),
+    ]);
+    const concurrentState = JSON.parse(fs.readFileSync(path.join(state, "subscriptions.json"), "utf8"));
+    assert(concurrentState.shares.some(share => share.shareId === windowAShare.shareId), "Window A mutation must survive Window B save");
+    assert(concurrentState.shares.some(share => share.shareId === windowBShare.shareId), "Window B mutation must rebase on and preserve Window A state");
+    await Promise.all([resumed.setGatewayOnline(true), resumedPeer.setGatewayOnline(true)]);
+    const upgradedState = JSON.parse(fs.readFileSync(path.join(state, "subscriptions.json"), "utf8"));
+    assert.notStrictEqual(upgradedState.gatewayPid, pid, "upgrade handoff must replace the detached N-1 process");
+    const upgradedResponse = await fetch(`http://127.0.0.1:${port}/.well-known/pkm-node`);
+    const upgradedNode = await upgradedResponse.json();
+    assert.strictEqual(upgradedNode.gatewayVersion, "2.7.20", "replacement Gateway must report the current extension version");
+    assert.strictEqual(upgradedNode.gatewayPid, upgradedState.gatewayPid, "replacement endpoint and persisted state must agree on owner PID");
+    assert.strictEqual(upgradedNode.gatewayProtocolVersion, "pkm-node-gateway:v2");
+    assert(diagnostics.some(event => event.operation === "gateway-handoff" && event.previousVersion === "2.6.1" && event.nextVersion === "2.7.20"));
+    assert(warnings.some(message => message.includes("2.6.1") && message.includes("2.7.20")), "upgrade handoff must emit one visible transition warning");
+    const gatewayState = JSON.parse(fs.readFileSync(path.join(state, "gateway-state.json"), "utf8"));
+    assert.strictEqual(gatewayState.extensionVersion, "2.7.20");
+
+    assert.strictEqual(gatewayState.gatewayProtocolVersion, "pkm-node-gateway:v2");
+    assert.strictEqual(gatewayState.ownerNodeId, upgradedNode.nodeId);
+    await resumedPeer.setGatewayOnline(false);
     await waitUntil(async () => {
       try { await fetch(`http://127.0.0.1:${port}/.well-known/pkm-node`, { signal: AbortSignal.timeout(100) }); return false; }
       catch { return true; }
     });
   } finally {
     await resumed?.setGatewayOnline(false).catch(() => {});
+    await resumedPeer?.setGatewayOnline(false).catch(() => {});
     first.dispose();
     resumed?.dispose();
+    resumedPeer?.dispose();
     fs.rmSync(root, { recursive: true, force: true });
   }
 }

@@ -138,8 +138,16 @@ export class ChatRoomLifecycle {
     try {
       const opened = await this.persistence.openRoom(roomId, stored.roomName);
       await this.persistence.recordLifecycle(roomId, "room.rehosted", "active");
+      let identityState = await this.persistence.identityState(roomId);
+      const managedParticipantIds = new Set(identityState.memberships
+        .filter(membership => membership.temporary)
+        .map(membership => membership.participantId));
+      for (const participantId of managedParticipantIds) {
+        await this.persistence.forgetParticipant(roomId, participantId, Date.now());
+      }
+      if (managedParticipantIds.size) identityState = await this.persistence.identityState(roomId);
       this.locks.set(roomId, lock);
-      return { roomId, roomName: stored.roomName, joinSecret: credentials.joinSecret, hostParticipantId: stored.hostParticipantId, identityState: await this.persistence.identityState(roomId), ...opened };
+      return { roomId, roomName: stored.roomName, joinSecret: credentials.joinSecret, hostParticipantId: stored.hostParticipantId, identityState, ...opened };
     } catch (error) {
       lock.release();
       throw error;

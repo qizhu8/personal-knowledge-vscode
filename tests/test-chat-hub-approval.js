@@ -65,11 +65,15 @@ async function main() {
   let hub;
   const sockets = [];
   let managedClient;
+  let durablePrefixedClient;
   try {
     hub = new ChatHub();
     assert.deepStrictEqual(hub.leadingMentionNames('@Host discusses `@all` behavior'), ['Host']);
     assert.deepStrictEqual(hub.leadingMentionNames('plain text mentions @all later'), []);
     assert.deepStrictEqual(hub.leadingMentionNames('/stop @"Agent One"'), ['Agent One']);
+    assert.deepStrictEqual(hub.allMentionNames('@Host discusses `@all` behavior'), ['Host']);
+    assert.deepStrictEqual(hub.allMentionNames('@Host example:\n```text\n@all\n```'), ['Host']);
+    assert.deepStrictEqual(hub.allMentionNames('@Host quoted context:\n> @all old message'), ['Host']);
     hub.configureLifecycle(root, 10 * 1024 * 1024, "installation-owner", secrets);
     await hub.start(0);
     const created = await hub.createRoom("Approval", "join-secret");
@@ -88,11 +92,30 @@ async function main() {
         onMessage: () => {}, onHistory: () => {}, onPresence: () => {}, onFileComplete: () => {},
         onRejected: (_code, message) => reject(new Error(message)),
       });
-      managedClient.connect({ url, room: created.room, roomId: created.roomId, user: "Managed Agent", token: created.secret, kind: "agent", cid: "managed-test" });
+      managedClient.connect({ url, room: created.room, roomId: created.roomId, user: "Managed Agent", token: created.secret, kind: "agent", cid: "managed-test", temporary: true });
     });
     await managedConnected;
     assert(managedClient.participantId, "managed agent must receive a participant ID through automatic Join");
+    const managedParticipantId = managedClient.participantId;
+    assert.strictEqual((await hub.persistence.identityState(created.roomId)).memberships
+      .find(membership => membership.participantId === managedParticipantId).temporary, true,
+    "temporary Managed Agent identity must be persisted explicitly");
     managedClient.disconnect();
+
+    const durablePrefixedConnected = new Promise((resolve, reject) => {
+      durablePrefixedClient = new ChatClient({
+        onStatus: status => { if (status === "connected") resolve(); },
+        onMessage: () => {}, onHistory: () => {}, onPresence: () => {}, onFileComplete: () => {},
+        onRejected: (_code, message) => reject(new Error(message)),
+      });
+      durablePrefixedClient.connect({ url, room: created.room, roomId: created.roomId, user: "Durable Prefix Agent", token: created.secret, kind: "agent", cid: "managed-durable", temporary: false });
+    });
+    await durablePrefixedConnected;
+    const durablePrefixedParticipantId = durablePrefixedClient.participantId;
+    assert.strictEqual((await hub.persistence.identityState(created.roomId)).memberships
+      .find(membership => membership.participantId === durablePrefixedParticipantId).temporary, false,
+    "CID text must not classify a durable Agent as temporary");
+    durablePrefixedClient.disconnect();
 
     const mismatched = await connect(url); sockets.push(mismatched);
     sendJoin(mismatched, created.room, created.secret, "Wrong Room", { roomId: "different-room-id" });
@@ -122,6 +145,12 @@ async function main() {
     guest.send(JSON.stringify({ t: "msg", room: created.room, text: "@Host FYI only", requireReply: false }));
     const explicitFyi = await waitFrame(host, frame => frame.t === "msg" && frame.text === "@Host FYI only");
     assert.strictEqual(explicitFyi.responseRequired, false);
+    const technicalMention = '@Host literal `@all` must not broadcast';
+    guest.send(JSON.stringify({ t: "msg", room: created.room, text: technicalMention, requireReply: false }));
+    const technicalMentionMessage = await waitFrame(host, frame => frame.t === "msg" && frame.text === technicalMention);
+    const quotedMention = '@Host quoted context:\n> @all previous message';
+    guest.send(JSON.stringify({ t: "msg", room: created.room, text: quotedMention, requireReply: false }));
+    const quotedMentionMessage = await waitFrame(host, frame => frame.t === "msg" && frame.text === quotedMention);
     host.send(JSON.stringify({ t: "msg", room: created.room, text: "@all broadcast update" }));
     const broadcast = await waitFrame(guest, frame => frame.t === "msg" && frame.text === "@all broadcast update");
     assert.strictEqual(broadcast.responseRequired, true, "Host @all must request replies by default");
@@ -158,7 +187,8 @@ async function main() {
     assert.strictEqual(reuseApproved.participantId, approved.participantId);
     const catchup = await waitFrame(reused, frame => frame.t === "history");
     assert.strictEqual(catchup.mode, "catchup");
-    assert.deepStrictEqual(catchup.messages.map(message => message.id), [explicitQuestion.id, explicitFyi.id, broadcast.id, leaveMessage.id, missed.id]);
+    assert.deepStrictEqual(catchup.messages.map(message => message.id), [explicitQuestion.id, explicitFyi.id,
+      technicalMentionMessage.id, quotedMentionMessage.id, broadcast.id, leaveMessage.id, missed.id]);
     assert.strictEqual(catchup.messages.find(message => message.id === explicitFyi.id).responseRequired, false,
       "explicit no-reply intent must survive persistence");
 
@@ -219,6 +249,8 @@ async function main() {
     assert.strictEqual(restoredKeeper.present, false);
     assert.strictEqual(restoredKeeper.role, "Analyst");
     assert(!restoredPresence.members.some(member => member.participantId === approved.participantId), "forgotten participant must not return in Earlier");
+    assert(!restoredPresence.members.some(member => member.participantId === managedParticipantId), "temporary managed Agent must be deleted when the Room closes");
+    assert(restoredPresence.members.some(member => member.participantId === durablePrefixedParticipantId), "durable Agent must survive Rehost regardless of CID prefix");
     const activeRenamed = await hub.renameActiveRoom(rehosted.roomId, "AAGL 缓存设计");
     assert.strictEqual(activeRenamed, "AAGL 缓存设计");
     await waitFrame(rehost, frame => frame.t === "room.renamed" && frame.room === "AAGL 缓存设计");

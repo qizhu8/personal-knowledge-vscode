@@ -6,6 +6,7 @@ const vm = require("vm");
 
 const panelJs = fs.readFileSync(path.join(__dirname, "..", "dist", "webview", "panel.js"), "utf8");
 const panelCss = fs.readFileSync(path.join(__dirname, "..", "dist", "webview", "panel.css"), "utf8");
+const extensionTs = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
 const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
 
 assert(manifest.activationEvents.includes("onWebviewPanel:personalKnowledge"),
@@ -21,8 +22,32 @@ assert(panelJs.includes("document.getElementById('content-toolbar')"));
 assert(panelJs.includes("actionbar.scrollWidth > actionbar.clientWidth"));
 assert(panelJs.includes("document.getElementById('content-toolbar').style.display = fullWidthTab ? 'none' : ''"));
 assert(panelCss.includes("#content-toolbar{display:flex"));
+assert.match(panelJs, /id="chat-add-agent-btn"[^>]*data-pending-label="Detecting models…"[^>]*onclick="ask\('chatAddManagedAgent',\{\},this\)"/,
+  "+ Agent must enter a visible pending state in the same click frame");
+assert.match(panelJs, /chatAddManagedAgent:180000/,
+  "managed-Agent discovery must have an explicit timeout and pending lifecycle");
+assert.match(panelJs, /command === 'chatAddManagedAgentProgress'/);
+assert.match(panelJs, /command === 'chatAddManagedAgentResult'[\s\S]{0,180}finishAction\('chatAddManagedAgent'\)/);
+assert.match(extensionTs, /case "chatAddManagedAgent"[\s\S]{0,300}chatAddManagedAgentProgress[\s\S]{0,500}chatAddManagedAgentResult/,
+  "the Extension must report model detection progress and always complete the pending action");
+assert(!extensionTs.includes("Role and background for ${name}"),
+  "adding a managed Agent should not ask for a role");
+assert.match(extensionTs, /const target = agent\.client\.participantId[\s\S]{0,160}`participant:\$\{agent\.client\.participantId\}`/,
+  "managed Agent removal must target the approved participant identity on the first click");
+assert.match(extensionTs, /room\?\.selfHost\) room\.client\.sendAdmin\("kick", target\);[\s\S]{0,100}agent\.client\.disconnect\(\)/,
+  "managed Agent removal must always stop its local client after requesting durable Room removal");
+assert.match(extensionTs, /interface ManagedChatAgent \{[\s\S]{0,120}icon: string;/,
+  "managed Agents must carry an editable profile icon");
+assert.match(extensionTs, /Profile icon for managed agent[\s\S]{0,900}editManagedAgent\(id, name, role, icon\)/,
+  "managed Agent editing must persist the chosen profile icon");
+assert.match(panelJs, /chat-avatar">\$\{esc\(agent\.icon \|\| '🤖'\)\}/,
+  "managed Agent rows must render their selected profile icon");
+assert.match(panelJs, /agent\.busy \|\| detail\.startsWith\('queued'\) \? 'thinking' : agent\.active \? 'standby' : 'idle'/,
+  "managed Agent rows must use the shared runtime-state model");
+assert.doesNotMatch(panelJs, /agent\.busy \? `⚙️/,
+  "managed Agent working state must not use the legacy gear label");
 
-for (const name of ["toggleMainSidebar", "applyMainSidebarState", "renderEmptyDetail", "refreshEmptyDetailHint", "chatToggleHubPanel", "chatApplyHubPanelState", "chatToggleMemberPane", "chatApplyMemberPaneState", "chatTrackScroll", "chatPinLatest", "chatScrollLatest", "chatIsNearBottom", "chatCaptureScrollAnchor", "chatRestoreScrollAnchor", "chatPreserveReadingLayout"]) {
+for (const name of ["toggleMainSidebar", "applyMainSidebarState", "renderEmptyDetail", "refreshEmptyDetailHint", "chatToggleHubPanel", "chatApplyHubPanelState", "chatToggleMemberPane", "chatApplyMemberPaneState", "chatTrackScroll", "chatPinLatest", "chatScrollLatest", "chatIsNearBottom", "chatCaptureScrollAnchor", "chatRestoreScrollAnchor", "chatPreserveReadingLayout", "chatCaptureDraft", "chatRestoreDraft", "chatPaintQuote", "chatPaintMode", "chatMeetingSummaryHtml", "chatHistoricalMeetingSummaryHtml", "chatSelectMeetingSummary", "chatPaintMeetingSummary", "chatToggleMeetingSummary"]) {
   assert(panelJs.includes(`function ${name}`), `missing ${name}`);
 }
 assert(panelJs.includes("function chatResizeInput(input)"));
@@ -79,8 +104,56 @@ assert(panelJs.includes("void renderDone.finally(() => chatScrollLatest(log))"))
 assert(panelJs.includes("Show the latest message and keep following new messages"));
 assert.doesNotMatch(panelJs, /function chatSetTurn\(/);
 assert.doesNotMatch(panelHtml, /id="chat-turn-banner"/);
-assert.match(panelJs, /function chatSend\(\)[\s\S]{0,900}chatPreserveReadingLayout/);
+assert.match(panelJs, /function chatSend\(\)[\s\S]{0,1400}chatPreserveReadingLayout/);
+assert.match(panelJs, /drafts: \{\}/);
+assert.match(panelJs, /state\.tab === 'chatroom' && t\.dataset\.tab !== 'chatroom'\) chatCaptureDraft\(\)/,
+  "leaving Chatroom must capture the composer before its DOM is replaced");
+assert.match(panelJs, /function renderChatroom\(\)[\s\S]*?chatRestoreDraft\(\);\n\}/,
+  "re-entering Chatroom must restore the active Room draft");
+assert.match(panelJs, /function chatCaptureDraft[\s\S]{0,700}manualRecipients[\s\S]{0,250}removedRecipients[\s\S]{0,250}quote/);
+assert.match(panelJs, /recipientText: recipientInput \? recipientInput\.value/);
+assert.match(panelJs, /selectionStart: input \? input\.selectionStart/);
+assert.match(panelJs, /input\.selectionStart = Math\.min\(draft\.selectionStart/);
+assert.match(panelJs, /function chatSend\(\)[\s\S]{0,1400}delete chat\.drafts\[chatDraftKey\(\)\]/,
+  "sending must clear the submitted Room draft");
 assert(panelJs.includes("chat-jump-latest"));
+assert.match(panelJs, /id="chat-meeting-summary-btn"[^>]*onclick="chatToggleMeetingSummary\(\)"/);
+assert.match(panelJs, /id="chat-meeting-summary" class="chat-meeting-summary hidden"/);
+assert(panelJs.includes("function chatMeetingTopicHtml(topic, activeTopicId, depth = 0)"));
+assert(panelCss.includes(".chat-meeting-summary{position:absolute;inset:0"));
+assert(panelCss.includes(".chat-meeting-subtopics"));
+assert(panelJs.includes("chat.active?.meetings || { current: null, history: [] }"));
+assert(panelJs.includes("function chatStartMeeting()"));
+assert(panelJs.includes("command:'chatMeetingStart'"));
+assert(panelJs.includes("function chatAdjournMeeting(meetingId, expectedRevision)"));
+assert(panelJs.includes("command:'chatMeetingAdjourn'"));
+assert(panelJs.includes("function chatMeetingContextMenu(event, meetingId)"));
+assert(panelJs.includes('id="chat-discussion-lead"'));
+assert(panelJs.includes("discussionLead: chatSelectedDiscussionLead()") || panelJs.includes("discussionLead, replyToMessageId"));
+assert(extensionTs.includes("lead: trigger.discussionLead || room.user"));
+assert(extensionTs.includes("private async updateMeetingFromMessage(room: RoomConn, message: ChatMessage)"));
+assert(extensionTs.includes('requestId: `auto-start:${message.id}`'));
+assert(extensionTs.includes("await this.meetingStore.recordDiscussionMessage"));
+assert(extensionTs.includes("void this.updateMeetingFromMessage(rc, m)"));
+assert(extensionTs.includes("private async syncMeetingFromHistory(room: RoomConn)"));
+assert(extensionTs.includes("requestId: `history-start:${trigger.id}`"));
+assert(extensionTs.includes("if (rc!.selfHost) void this.syncMeetingFromHistory(rc!)"));
+assert(panelJs.includes("command:'chatMeetingTrash'"));
+assert(panelJs.includes("function chatRestoreMeeting(meetingId, expectedRevision)"));
+assert(panelJs.includes("command:'chatMeetingRestore'"));
+assert(panelJs.includes("function chatDeleteMeeting(meetingId, expectedRevision)"));
+assert(panelJs.includes("command:'chatMeetingDelete'"));
+assert(panelJs.includes("command:'chatMeetingOpenNote'"));
+assert(panelJs.includes("Open detailed Note"));
+for (const label of ["Participants", "Lead", "Recorder", "Started", "Ended"]) assert(panelJs.includes(label));
+assert(panelJs.includes("Send a Discuss message to start a continuously updated Meeting Summary"));
+assert(panelCss.includes(".chat-meeting-trash"));
+assert(panelCss.includes(".chat-meeting-minutes-meta"));
+assert.doesNotMatch(panelJs, /Managed Agent reconnect reliability|Recipient routing reliability/,
+  "Meeting Summary must not ship preview fixtures");
+assert(panelJs.includes("meetingSummarySelections: {}"));
+assert(panelJs.includes("chat.meetingSummarySelections[chat.activeKey || ''] = meetingId"));
+assert(panelCss.includes(".chat-meeting-list"));
 assert.match(panelJs, /chatCopyInvite',\{roomId:/);
 assert.match(panelJs, /chatRotateSecret',\{roomId:/);
 const extensionSource = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");

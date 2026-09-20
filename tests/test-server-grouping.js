@@ -71,7 +71,7 @@ assert.match(panel, /data-server-slug=/);
 assert.match(panel, /scrollIntoView\(\{ behavior: 'smooth', block: 'center' \}\)/);
 assert.match(panel, /focused\.focus\(\{ preventScroll: true \}\)/);
 assert.match(panel, /label: 'Move to group', children/);
-assert.match(panel, /＋ New subgroup…/);
+assert.match(panel, /label: 'New subgroup…'/);
 assert.match(extension, /case "serverSetPinned"/);
 assert.match(extension, /case "serverMoveGroup"/);
 assert.match(extension, /case "serverCreateGroup"/);

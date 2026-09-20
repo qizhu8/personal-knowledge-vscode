@@ -4,9 +4,10 @@ import * as path from "path";
 import { createHash, randomBytes } from "crypto";
 import * as vscode from "vscode";
 import { getStorePath } from "./filestore";
+import { compareVersionOrder } from "./version-order";
 
-export const PKM_SKILL_ROUTER_VERSION = "1.1.4";
-export const PKM_SKILL_MIN_MCP_VERSION = "2.2.3";
+export const PKM_SKILL_ROUTER_VERSION = "1.1.6";
+export const PKM_SKILL_MIN_MCP_VERSION = "2.8.0";
 export const PKM_SKILL_SOURCE_RELATIVE = path.join("System", "PKM", "PKM Skills.md");
 
 const LEGACY_BUNDLED_SOURCE_HASHES = new Set([
@@ -15,6 +16,8 @@ const LEGACY_BUNDLED_SOURCE_HASHES = new Set([
   "2da9ae268a9f6c828d466650fb2db1b812a00aeb30c6b25862ca24346bacbef9", // Router 1.1.1
   "e200f9d3967f4e0f0779f59ae6ecdde4afac834b6c3b18fe7be557daf242265a", // Router 1.1.2
   "6e4d01d6b905b96879225119a8c76597984abe3b8ef1d84858c8cea5e064da5d", // Router 1.1.3
+  "763311e1c6e8d7c3b9807914b81453b0da45c00ba7c47d2054719b3f179bb371", // Router 1.1.4
+  "614f9aec0acd2f90d4072d83649b7cfc1b0625723ede396505c82c11a86e49aa", // Router 1.1.5
 ]);
 
 const CUSTOM_TARGETS_KEY = "pkm.skillProjection.customTargets.v1";
@@ -22,7 +25,7 @@ const MARKER_PREFIX = "<!-- pkm-managed ";
 const MARKER_SUFFIX = " -->";
 
 export type PkmSkillTargetKind = "copilot" | "agents" | "claude" | "custom";
-export type PkmSkillTargetState = "missing" | "current" | "outdated" | "content-outdated" | "modified" | "conflict" | "unavailable";
+export type PkmSkillTargetState = "missing" | "current" | "outdated" | "newer" | "content-outdated" | "modified" | "conflict" | "unavailable";
 
 export interface PkmSkillTarget {
   id: string;
@@ -233,8 +236,11 @@ export function pkmSkillProjectionStatus(context: vscode.ExtensionContext): { ro
           installedSourceHash = marker.sourceHash || "";
           if (current !== projected.content) {
             if (installedVersion !== PKM_SKILL_ROUTER_VERSION) {
-              state = "outdated";
-              detail = `Router ${installedVersion} -> ${PKM_SKILL_ROUTER_VERSION}`;
+              const order = compareVersionOrder(installedVersion, PKM_SKILL_ROUTER_VERSION);
+              state = order !== undefined && order > 0 ? "newer" : "outdated";
+              detail = state === "newer"
+                ? `Newer Router ${installedVersion} is already installed. Reload this VS Code window.`
+                : `Router ${installedVersion} -> ${PKM_SKILL_ROUTER_VERSION}`;
             } else if (installedSourceHash !== source.hash) {
               state = "content-outdated";
               detail = "The canonical PKM Skill changed.";
@@ -278,6 +284,12 @@ export function injectPkmSkill(context: vscode.ExtensionContext, id: string): Pk
   const file = skillPath(target);
   if (fs.existsSync(file) && !parseMarker(fs.readFileSync(file, "utf8"))) {
     throw new Error(`Refusing to overwrite a non-PKM Skill at ${file}`);
+  }
+  if (fs.existsSync(file)) {
+    const marker = parseMarker(fs.readFileSync(file, "utf8"));
+    if (marker && (compareVersionOrder(marker.routerVersion, PKM_SKILL_ROUTER_VERSION) || 0) > 0) {
+      throw new Error(`Refusing to replace newer PKM Skill Router v${marker.routerVersion} with v${PKM_SKILL_ROUTER_VERSION}. Reload this VS Code window.`);
+    }
   }
   const projected = renderProjection(context, target, true);
   fs.mkdirSync(path.dirname(file), { recursive: true });

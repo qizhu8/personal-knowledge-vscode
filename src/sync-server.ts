@@ -32,6 +32,7 @@ class SyncServer {
   private server:   Server | null = null;
   private sessions: Map<string, SyncSession> = new Map(); // keyed by username
   private _port     = 0;
+  private sweepTimer: NodeJS.Timeout | undefined;
 
   get port(): number { return this._port; }
   get isRunning(): boolean { return !!this.server; }
@@ -47,16 +48,28 @@ class SyncServer {
 
   async ensureStarted(port: number): Promise<void> {
     if (this.server) return;
+    const candidate = createServer((req, res) => this.handle(req, res));
     await new Promise<void>((resolve, reject) => {
-      this.server = createServer((req, res) => this.handle(req, res));
-      this.server.listen(port, "0.0.0.0", () => {
-        this._port = (this.server!.address() as any).port;
+      candidate.listen(port, "0.0.0.0", () => {
+        this.server = candidate;
+        this._port = (candidate.address() as any).port;
         resolve();
       });
-      this.server.on("error", reject);
+      candidate.once("error", error => { try { candidate.close(); } catch { /* not listening */ } reject(error); });
     });
-    // Sweep expired sessions every minute
-    setInterval(() => this.sweep(), 2 * 60_000).unref();
+    if (!this.sweepTimer) {
+      this.sweepTimer = setInterval(() => {
+        this.sweep();
+        if (!this.activeSessions().length && this.server) {
+          this.server.close();
+          this.server = null;
+          this._port = 0;
+          if (this.sweepTimer) clearInterval(this.sweepTimer);
+          this.sweepTimer = undefined;
+        }
+      }, 2 * 60_000);
+      this.sweepTimer.unref();
+    }
   }
 
   createSession(selected: SyncSession["selected"], contentTypes: string[], expiresMinutes: number): SyncSession {

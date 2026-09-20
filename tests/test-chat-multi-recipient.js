@@ -85,11 +85,29 @@ async function main() {
 
     const discussText = '@"Agent A" @"Agent B" review together';
     host.send(JSON.stringify({ t: "msg", room: room.room, text: discussText, kind: "human",
-      mode: "discuss", replyPolicy: "required" }));
+      mode: "discuss", replyPolicy: "required", discussionLead: "Agent B" }));
     const discuss = await waitFor(() => sockets[1].frames.find(frame => frame.t === "msg" && frame.text === discussText));
     assert.strictEqual(discuss.replyPolicy, "required");
     assert.strictEqual(discuss.mode, "discuss");
     assert.deepStrictEqual(new Set(discuss.discussionAudience), new Set(["Agent A", "Agent B"]));
+    assert.strictEqual(discuss.discussionLead, "Agent B");
+    await waitFor(async () => (await hub.persistence.openRoom(room.roomId, room.room)).messages.some(message =>
+      message.content === discussText && message.metadata?.discussionLead === "Agent B"));
+
+    const invalidLeadText = '@"Agent A" @"Agent B" invalid lead';
+    host.send(JSON.stringify({ t: "msg", room: room.room, text: invalidLeadText, kind: "human",
+      mode: "discuss", replyPolicy: "required", discussionLead: "Ghost", clientRequestId: "invalid-lead" }));
+    const invalidLead = await waitFor(() => host.frames.find(frame => frame.t === "error" && frame.clientRequestId === "invalid-lead"));
+    assert.strictEqual(invalidLead.code, "discuss-invalid-lead");
+    assert(!sockets[1].frames.some(frame => frame.t === "msg" && frame.text === invalidLeadText));
+
+    const singleDiscussText = '@"Agent A" review alone';
+    host.send(JSON.stringify({ t: "msg", room: room.room, text: singleDiscussText, kind: "human",
+      mode: "discuss", replyPolicy: "required", clientRequestId: "single-discuss" }));
+    const singleDiscuss = await waitFor(() => sockets[1].frames.find(frame => frame.t === "msg" && frame.text === singleDiscussText));
+    assert.deepStrictEqual(singleDiscuss.discussionAudience, ["Agent A"],
+      "one explicitly selected recipient must be a valid Discuss audience");
+    assert.strictEqual(singleDiscuss.mode, "discuss");
 
     sockets[3].terminate();
     await waitFor(() => host.frames.find(frame => frame.t === "presence" &&
@@ -104,11 +122,14 @@ async function main() {
 
     const trailingText = '@Host status table\n\n| Item | State |\n|---|---|\n| build | ready |\n\n@"Agent B" @"Agent Three" please send latest delta';
     sockets[1].send(JSON.stringify({ t: "msg", room: room.room, text: trailingText, kind: "agent",
-      recipients: ["Host", "Agent B", "Agent Three"], replyPolicy: "required" }));
+      recipients: ["Host", "Agent B", "Agent Three"], replyPolicy: "none", finalTopicSummary: true }));
     const trailingHost = await waitFor(() => host.frames.find(frame => frame.t === "msg" && frame.text === trailingText));
     const trailingB = await waitFor(() => sockets[2].frames.find(frame => frame.t === "msg" && frame.text === trailingText));
     assert.strictEqual(trailingHost.receipt?.total, 2);
     assert.strictEqual(trailingB.receipt?.ack, true);
+    assert.strictEqual(trailingHost.finalTopicSummary, true);
+    await waitFor(async () => (await hub.persistence.openRoom(room.roomId, room.room)).messages.some(message =>
+      message.content === trailingText && message.metadata?.finalTopicSummary === true));
 
     const legacyTrailingText = '@Host legacy body\n\n@"Agent B" @"Agent Three" all mentions route';
     sockets[1].send(JSON.stringify({ t: "msg", room: room.room, text: legacyTrailingText, kind: "agent", replyPolicy: "required" }));
@@ -159,7 +180,7 @@ async function main() {
     const unknownStructured = await waitFor(() => sockets[1].frames.find(frame => frame.t === "error" && frame.clientRequestId === "unknown-structured-1"));
     assert.strictEqual(unknownStructured.code, "mention-required");
     assert(!host.frames.some(frame => frame.t === "msg" && frame.text === "private metadata"));
-    console.log("chat multi-recipient test: Host reaches three Agents; Agent reaches two peers; non-Host @all rejected OK");
+    console.log("chat multi-recipient test: explicit one/many recipient Discuss and non-Host @all rejection OK");
   } finally {
     for (const socket of sockets) try { socket.terminate(); } catch {}
     await hub?.stop().catch(() => {});

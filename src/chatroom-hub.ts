@@ -8,6 +8,7 @@ import * as path from "path";
 import { findCommand, BOT_NAME, CommandContext } from "./chat-commands";
 import { createChatMagicLink, chatInviteMessage } from "./chat-magic-link";
 import { browserViewHtml } from "./chatroom-browser";
+import { browserIconBuffer } from "./browser-branding";
 import { ChatPersistence, PersistedChatMessage } from "./chat-persistence";
 import { ChatRoomLifecycle, ActiveChatRoom, StoredChatRoom } from "./chat-room-lifecycle";
 import { SecretStorageLike } from "./chat-room-credentials";
@@ -42,6 +43,7 @@ interface HubConn {
   runtimeState: AgentRuntimeState;
   stateChangedAt: number;
   processing: Promise<void>;
+  temporary: boolean;
 }
 
 interface RoomState {
@@ -54,6 +56,7 @@ interface RoomState {
   roster: Map<string, RosterEntry>;   // everyone who has ever joined (present + departed)
   muted: Set<string>;                 // identity keys the host has muted (persists across reconnects)
   receipts: Map<string, { targets: Set<string>; readers: Set<string> }>;
+  meetingSnapshot?: Record<string, unknown>;
 }
 
 // One identity's lifetime in a room. Keyed by a stable identity (cid) when the
@@ -70,6 +73,7 @@ interface RosterEntry {
   lastSeen:  number;
   role:      string;
   participantId: string;
+  temporary: boolean;
 }
 
 export interface AdminRoomInfo { roomId: string; room: string; owner: string; members: number; }
@@ -99,6 +103,8 @@ export class ChatHub {
   private hostTokens = new Map<string, string>();
   private usedHostProofs = new Map<string, number>();
   private approvalChanged?: () => void;
+  private roomDeactivating?: (roomId: string, reason: string) => Promise<void> | void;
+  private deactivationTasks = new Map<string, Promise<void>>();
   private advertisedHost = "";
 
   constructor(logger?: (m: string) => void) { this.log = logger ?? (() => {}); }
@@ -134,6 +140,7 @@ export class ChatHub {
   }
 
   onApprovalsChanged(callback: () => void): void { this.approvalChanged = callback; }
+  onRoomDeactivating(callback: (roomId: string, reason: string) => Promise<void> | void): void { this.roomDeactivating = callback; }
 
   pendingApprovals(): PendingJoinApproval[] { return this.approvals?.list() || []; }
 
@@ -294,6 +301,7 @@ export class ChatHub {
   async start(port: number): Promise<void> {
     if (this.wss) return;
     await this.ensurePersistence();
+    try {
     await new Promise<void>((resolve, reject) => {
       const httpServer = createServer((req, res) => {
         void this.onHttp(req, res).catch(error => {
@@ -329,6 +337,10 @@ export class ChatHub {
         resolve();
       });
     });
+    } catch (error) {
+      await this.stop();
+      throw error;
+    }
     this.heartbeat = setInterval(() => this.sweep(), 60_000);
     this.heartbeat.unref?.();
     this.log(`chat hub listening on ${this._port} (ws + browser view)`);
@@ -386,6 +398,7 @@ export class ChatHub {
         kind: membership.kind === "agent" ? "agent" : membership.kind === "browser" ? "browser" : "human",
         sid: membership.participantId.slice(0, 8),
         participantId: membership.participantId,
+        temporary: membership.temporary,
         verified: membership.kind !== "browser",
         present: false,
         firstSeen: membership.createdAt,
@@ -434,6 +447,11 @@ export class ChatHub {
   // Serve the browser view (a self-contained monitoring/participation page).
   private async onHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = req.url || "/";
+    if (req.method === "GET" && url === "/.well-known/pkm-chat-hub") {
+      res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      res.end(JSON.stringify({ protocol: "pkm-chat-hub:v1", installationId: this.installationId, pid: process.pid, port: this._port }));
+      return;
+    }
     const closeMatch = req.method === "POST" && /^\/api\/rooms\/([^/]+)\/close$/.exec(url);
     if (closeMatch) {
       const roomId = decodeURIComponent(closeMatch[1]);
@@ -458,6 +476,12 @@ export class ChatHub {
       res.writeHead(202, { "Content-Type": "application/json", "Connection": "close" }); res.end(JSON.stringify({ accepted: true }));
       setImmediate(() => { void this.deactivateRoom(active[0], "force-closed by Room owner").catch(error => this.log(`force-close failed for ${roomId}: ${(error as Error).message}`)); });
       return;
+    }
+    if (req.method === "GET" && url === "/favicon.ico") {
+      const icon = browserIconBuffer();
+      if (!icon) { res.writeHead(404); res.end(); return; }
+      res.writeHead(200, { "Content-Type": "image/png", "Cache-Control": "public, max-age=86400" });
+      res.end(icon); return;
     }
     if (req.method === "GET" && (url === "/" || url.startsWith("/?") || url.startsWith("/room"))) {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -524,7 +548,8 @@ export class ChatHub {
       messageType: message.system ? "system" : message.file ? "file" : "chat",
       content: message.text, metadata: { system: message.system, file: message.file, receipt: message.receipt,
         responseRequired: message.responseRequired, replyPolicy: message.replyPolicy, mode: message.mode,
-        discussionAudience: message.discussionAudience, replyToMessageId: message.replyToMessageId,
+        discussionAudience: message.discussionAudience, discussionLead: message.discussionLead, finalTopicSummary: message.finalTopicSummary,
+        replyToMessageId: message.replyToMessageId,
         recipients: message.recipients },
       createdAt: message.ts,
     };
@@ -535,7 +560,8 @@ export class ChatHub {
     return { id: message.id, from: message.aliasAtSend, fromId: message.participantId || "", text: message.content,
       ts: message.createdAt, kind: message.senderKind as MemberKind, system: !!metadata.system,
       file: metadata.file, receipt: metadata.receipt, responseRequired: metadata.responseRequired,
-      replyPolicy: metadata.replyPolicy, mode: metadata.mode, discussionAudience: metadata.discussionAudience,
+      replyPolicy: metadata.replyPolicy, mode: metadata.mode, discussionAudience: metadata.discussionAudience, discussionLead: metadata.discussionLead,
+      finalTopicSummary: metadata.finalTopicSummary === true,
       replyToMessageId: metadata.replyToMessageId, recipients: metadata.recipients };
   }
 
@@ -589,6 +615,14 @@ export class ChatHub {
 
   // Kick everyone out of a room and drop all of its state (no zombie rooms).
   private async deactivateRoom(room: string, reason: string): Promise<void> {
+    const existing = this.deactivationTasks.get(room);
+    if (existing) return existing;
+    const task = this.performDeactivateRoom(room, reason).finally(() => this.deactivationTasks.delete(room));
+    this.deactivationTasks.set(room, task);
+    return task;
+  }
+
+  private async performDeactivateRoom(room: string, reason: string): Promise<void> {
     const st = this.rooms.get(room);
     const displayName = st?.displayName || room;
     if (st?.graceTimer) { clearTimeout(st.graceTimer); st.graceTimer = null; }
@@ -597,8 +631,20 @@ export class ChatHub {
     this.rooms.delete(room);   // remove first so onClose treats these as already-gone
     this.roomSecret.delete(room);
     this.hostTokens.delete(room);
+    if (st && this.roomDeactivating) {
+      try { await this.roomDeactivating(st.roomId, reason); }
+      catch (error) { this.log(`Room deactivation hook failed for ${displayName}: ${(error as Error).message}`); }
+    }
     if (st && this.approvals) await this.approvals.cancelRoom(st.roomId, reason);
-    if (st && this.lifecycle) await this.lifecycle.deactivateRoom(st.roomId, reason);
+    if (st && this.lifecycle) {
+      const forgottenAt = Date.now();
+      for (const member of st.roster.values()) {
+        if (member.temporary && member.participantId) {
+          await this.lifecycle.persistence.forgetParticipant(st.roomId, member.participantId, forgottenAt);
+        }
+      }
+      await this.lifecycle.deactivateRoom(st.roomId, reason);
+    }
     else this.flushArchive(room);
     const members = [...this.conns.values()].filter(c => c.joined && c.room === room);
     for (const c of members) {
@@ -610,7 +656,7 @@ export class ChatHub {
   }
 
   private onConnection(ws: WebSocket): void {
-    const conn: HubConn = { id: randomBytes(4).toString("hex"), user: "", room: "", kind: "human", cid: "", ws, alive: true, joined: false, participantId: "", pendingJoinId: "", resumeAfter: "", runtimeState: "idle", stateChangedAt: Date.now(), processing: Promise.resolve() };
+    const conn: HubConn = { id: randomBytes(4).toString("hex"), user: "", room: "", kind: "human", cid: "", ws, alive: true, joined: false, participantId: "", pendingJoinId: "", resumeAfter: "", runtimeState: "idle", stateChangedAt: Date.now(), processing: Promise.resolve(), temporary: false };
     this.conns.set(ws, conn);
     ws.on("pong", () => { conn.alive = true; });
     ws.on("message", raw => {
@@ -650,6 +696,22 @@ export class ChatHub {
       return;
     }
 
+    if (conn.joined && frame.t === "meeting.snapshot") {
+      const roomState = this.roomState(conn.room);
+      if (!this.isOwnerConn(roomState, conn)) {
+        this.sendTo(conn.ws, { t: "error", code: "meeting-host-only", msg: "Only the Room Host can publish Meeting state.", correctable: true, connectionAlive: true });
+        return;
+      }
+      const snapshot = frame.snapshot;
+      if (!snapshot || typeof snapshot !== "object" || !Array.isArray(snapshot.history) || !Array.isArray(snapshot.trash) || JSON.stringify(snapshot).length > 1024 * 1024) {
+        this.sendTo(conn.ws, { t: "error", code: "meeting-invalid", msg: "Meeting state is invalid or too large.", correctable: true, connectionAlive: true });
+        return;
+      }
+      roomState.meetingSnapshot = snapshot;
+      this.broadcast(conn.room, { t: "meeting.snapshot", room: conn.room, snapshot });
+      return;
+    }
+
     if (!conn.joined) {
       if (conn.pendingJoinId) {
         this.sendTo(conn.ws, { t: "error", code: "join-pending", msg: "This Join is assigning its Room identity automatically." });
@@ -685,6 +747,7 @@ export class ChatHub {
       conn.room = room!;
       conn.cid  = cid;
       conn.kind = kind;
+      conn.temporary = kind === "agent" && frame.temporary === true;
       conn.resumeAfter = String(frame.resumeAfter || "").slice(0, 120);
       const st = existingState || await this.ensureRoomState(room!, requestedName);
       if (!this.approvals || !this.persistence) throw new Error("Automatic Room identity assignment is unavailable.");
@@ -713,7 +776,7 @@ export class ChatHub {
       }
       let pending;
       try {
-        pending = await this.approvals.request(st.roomId, conn.id, desired, cid || `connection:${conn.id}`, kind);
+        pending = await this.approvals.request(st.roomId, conn.id, desired, cid || `connection:${conn.id}`, kind, conn.temporary);
       } catch (error) {
         this.sendTo(conn.ws, { t: "error", code: "join-failed", msg: (error as Error).message });
         try { conn.ws.close(); } catch { /* ignore */ }
@@ -781,11 +844,20 @@ export class ChatHub {
           ? frame.mode as "announce" | "ask" | "discuss" : undefined,
         replyToMessageId: String(frame.replyToMessageId || "").slice(0, 120) || undefined,
         recipients: recipientNames,
+        finalTopicSummary: frame.finalTopicSummary === true,
       };
       const targets = this.mentionTargets(conn.room, conn, text, recipientNames);
       m.responseRequired = m.replyPolicy === "required";
       if (m.mode === "discuss") {
         m.discussionAudience = this.discussionAudience(roomState, conn, recipientNames);
+        if (m.discussionAudience.length < 1) {
+          rejectMessage("discuss-requires-recipient", "Discuss requires at least one recipient.");
+          return;
+        }
+        const requestedLead = String(frame.discussionLead || conn.user).trim().toLocaleLowerCase();
+        const lead = this.rosterOf(conn.room).find(member => member.present !== false && member.user.toLocaleLowerCase() === requestedLead);
+        if (!lead) { rejectMessage("discuss-invalid-lead", "Choose a current Room participant as Discussion Lead."); return; }
+        m.discussionLead = lead.user;
       }
       if (targets.size) {
         roomState.receipts.set(m.id, { targets, readers: new Set() });
@@ -875,6 +947,7 @@ export class ChatHub {
       const messages = mode === "catchup" ? st.history.slice(resumeIndex + 1) : st.history;
       this.sendTo(conn.ws, { t: "history", room: conn.room, mode, messages });
     }
+    if (st.meetingSnapshot) this.sendTo(conn.ws, { t: "meeting.snapshot", room: conn.room, snapshot: st.meetingSnapshot });
     if (!identityAlreadyPresent) {
       const joinText = (prevName && prevName !== conn.user)
         ? `${prevName} rejoined with new name ${conn.user}`
@@ -1008,8 +1081,34 @@ export class ChatHub {
     return recipients;
   }
 
+  private mentionSearchText(text: string): string {
+    let fence = "";
+    return String(text || "").split(/\r?\n/).map(line => {
+      const fenceMatch = /^\s*(`{3,}|~{3,})/.exec(line);
+      if (fenceMatch) {
+        const marker = fenceMatch[1][0];
+        if (!fence) fence = marker;
+        else if (fence === marker) fence = "";
+        return "";
+      }
+      if (fence || /^\s*>/.test(line)) return "";
+      let visible = "";
+      for (let index = 0; index < line.length;) {
+        if (line[index] !== "`") { visible += line[index++]; continue; }
+        let end = index;
+        while (end < line.length && line[end] === "`") end++;
+        const marker = line.slice(index, end);
+        const closing = line.indexOf(marker, end);
+        if (closing < 0) { visible += " ".repeat(line.length - index); break; }
+        visible += " ".repeat(closing + marker.length - index);
+        index = closing + marker.length;
+      }
+      return visible;
+    }).join("\n");
+  }
+
   private allMentionNames(text: string): string[] {
-    const names = (String(text || "").match(/(?<![\p{L}\p{N}_@])@(?:"[^"\n]{1,60}"|[\p{L}\p{N}_][\p{L}\p{N}_-]{0,59})/gu) || [])
+    const names = (this.mentionSearchText(text).match(/(?<![\p{L}\p{N}_@])@(?:"[^"\n]{1,60}"|[\p{L}\p{N}_][\p{L}\p{N}_-]{0,59})/gu) || [])
       .map(token => token.slice(1).replace(/^"|"$/g, ""));
     return names.filter((name, index) => names.findIndex(candidate => candidate.toLocaleLowerCase() === name.toLocaleLowerCase()) === index);
   }
@@ -1291,12 +1390,12 @@ export class ChatHub {
     if (e) {
       const prevName = e.user;
       e.present = true; e.id = conn.id; e.user = conn.user; e.kind = conn.kind;
-      e.sid = conn.cid || e.sid; e.participantId = conn.participantId; e.verified = verified; e.lastSeen = now;
+      e.sid = conn.cid || e.sid; e.participantId = conn.participantId; e.temporary = conn.temporary; e.verified = verified; e.lastSeen = now;
       return prevName;
     }
     st.roster.set(key, {
       key, id: conn.id, user: conn.user, kind: conn.kind,
-      sid: conn.cid || "", participantId: conn.participantId, verified, present: true, firstSeen: now, lastSeen: now, role: "",
+      sid: conn.cid || "", participantId: conn.participantId, temporary: conn.temporary, verified, present: true, firstSeen: now, lastSeen: now, role: "",
     });
     return undefined;
   }
@@ -1323,7 +1422,7 @@ export class ChatHub {
         host: !!owner && e.participantId === owner,
         sid: e.sid, verified: e.verified, present: e.present, lastSeen: e.lastSeen,
         muted: st.muted.has(e.key),
-        role: e.role, participantId: e.participantId,
+        role: e.role, participantId: e.participantId, temporary: e.temporary,
         runtimeState: e.kind === "agent" && e.present
           ? [...this.conns.values()].find(conn => conn.joined && conn.participantId === e.participantId)?.runtimeState
           : undefined,

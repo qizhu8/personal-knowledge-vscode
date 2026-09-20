@@ -26,13 +26,17 @@ assert.match(panel, /privacyLock\(data\.isPrivate\)/);
 assert.match(panel, /privacyLock\(d\.isPrivate\)/);
 assert.match(panel, /function serverPrivacyLock\(path\)/);
 assert.match(panel, /serverPrivacyLock\(s\.category\)/);
+assert.match(panel, /excluded from Subscription sharing and public links/);
+assert.match(extension, /const inheritedPrivate = isContentItemPrivate\("servers", server\)/);
+assert.match(extension, /`\$\{inheritedPrivate \? "🔒 " : ""\}\$\{server\.pinned \? "★ " : ""\}\$\{server\.name\}`/,
+  "private Server items must retain their inherited lock in Navigation");
 assert.match(panel, /serverGroupMenu\(event/);
 assert.match(extension, /case "contentSetPrivacy"/);
 assert.match(extension, /isPrivate: isContentItemPrivate/);
 assert.match(extension, /privateTopLevels: privacyTopLevels/);
 assert.match(extension, /command: "serverPrivacy"/);
 assert.match(css, /\.content-private-lock/);
-assert.doesNotMatch(panel, /➕ Create Sub Folder/);
-assert.match(panel, /＋ Create Subfolder…/);
+assert.doesNotMatch(panel, /[➕＋] Create Sub(?:folder| Folder)…/);
+assert.match(panel, /label: 'Create Subfolder…'/);
 
 console.log("content privacy UI test: inherited CatTree, leaf, detail, Server locks, top-level menus, and plain Subfolder icon OK");

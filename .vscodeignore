@@ -9,6 +9,7 @@ tsconfig.json
 .editorconfig
 .gitignore
 .github/
+.vscode/
 
 # Node modules — sql.js is bundled into dist/sql-asm.js at build time.
 # Ship 'ws' (zero-dependency, pure JS) since the chatroom hub/client require it at runtime.
@@ -27,6 +28,7 @@ coverage/
 *.vsix
 **/*.map
 improvement_*.md
+planning.md
 skill_vault.md
 
 **/__pycache__/**
