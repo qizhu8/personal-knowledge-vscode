@@ -5,6 +5,9 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Marketplace OIDC now uses the supported Azure Login v3 action, with release coverage preventing regressions to deprecated action runtimes or publish-before-verify ordering.
+
 ## [2.7.33] - 2026-09-20
 
 ### Changed
