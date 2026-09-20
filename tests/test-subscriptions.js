@@ -359,7 +359,9 @@ async function main() {
     const blockedIdentity = subscriberProof(statePath, protectedShare.shareId);
     const blockedCorrect = await fetch(`http://127.0.0.1:${protectedControlPort}/v1/shares/${protectedShare.shareId}/sync-ticket`, { method: "POST", headers: { "X-PKM-Subscriber-Proof": blockedIdentity, "X-PKM-Share-Secret-Proof": secretProof(secretMaterial, secretSalt, blockedIdentity) } });
     assert.strictEqual(blockedCorrect.status, 403, "automatic block must override a subsequently correct secret");
-    manager.unblockIp(protectedShare.shareId, "127.0.0.1");
+    await manager.unblockIp(protectedShare.shareId, "127.0.0.1");
+    protectedTelemetry = manager.snapshot.shares.find(item => item.shareId === protectedShare.shareId);
+    assert(!protectedTelemetry.automaticBlocks.some(block => block.ip === "127.0.0.1"), "unblock must complete before protected access resumes");
     const allowedIdentity = subscriberProof(statePath, protectedShare.shareId);
     const allowedTicketResponse = await fetch(`http://127.0.0.1:${protectedControlPort}/v1/shares/${protectedShare.shareId}/sync-ticket`, { method: "POST", headers: { "X-PKM-Subscriber-Proof": allowedIdentity, "X-PKM-Share-Secret-Proof": secretProof(secretMaterial, secretSalt, allowedIdentity) } });
     assert.strictEqual(allowedTicketResponse.status, 200);
