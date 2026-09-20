@@ -81,6 +81,10 @@ jobs:
           if [[ "${{ inputs.channel }}" == "pre-release" ]]; then args+=(--pre-release); fi
           npx @vscode/vsce@3.9.2 package "${args[@]}" --out "personal-knowledge-${{ inputs.version }}.vsix"
 
+      - name: Verify VSIX metadata and boundaries
+        if: inputs.mode == 'publish'
+        run: node scripts/verify-vsix-package.js "personal-knowledge-${{ inputs.version }}.vsix" "${{ inputs.version }}" "${{ inputs.channel }}"
+
       - name: Verify Marketplace OIDC configuration
         shell: bash
         env:

@@ -12,6 +12,8 @@ This project follows [Semantic Versioning](https://semver.org/).
 - Managed Agents now have editable profile icons and use the same standby/thinking status indicators as other Agents instead of the legacy gear-and-working label.
 
 ### Fixed
+- Overrode Casbin's vulnerable transitive CSV parser with patched `csv-parse` 7.0.2, with release coverage for the resolved version, parser compatibility, and ACL behavior.
+- Marketplace packaging now fails before publication when the VSIX identity, version, release-channel marker, or development-file boundaries do not match the requested release.
 - New Knowledge Roots now seed the complete generated/runtime ignore policy used by storage protection, and the release check validates that product policy without depending on the developer machine's parent repository layout.
 - Closing or leaving a Room now disconnects its temporary Managed Agents, clears queued work, and removes their in-memory entries.
 - Managed Agent identity is now persisted explicitly as temporary instead of inferred from connection IDs. Closing or Rehosting permanently forgets those memberships, while durable Agents remain reusable even when their client ID begins with `managed-`.
