@@ -40,3 +40,4 @@ resources/screenshots/**
 scripts/release-preview-server.js
 scripts/capture-release-screenshots.py
 scripts/poc-*.js
+scripts/verify-vsix-package.js
