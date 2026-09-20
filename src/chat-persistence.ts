@@ -45,6 +45,7 @@ export interface PersistedPendingJoinRequest {
   aliasKey: string;
   clientKey: string;
   kind: string;
+  temporary?: boolean;
   requestedAt: number;
   expiresAt: number;
 }
@@ -58,9 +59,9 @@ export interface PersistedJoinResolution {
 }
 
 export interface ParticipantIdentityState {
-  memberships: { participantId: string; kind: string; role: string; createdAt: number; updatedAt: number; forgottenAt?: number }[];
+  memberships: { participantId: string; kind: string; role: string; temporary: boolean; createdAt: number; updatedAt: number; forgottenAt?: number }[];
   aliases: { aliasKey: string; alias: string; participantId: string; assignedAt: number; releasedAt?: number }[];
-  pendingJoins: { requestId: string; aliasKey: string; alias: string; clientKey: string; kind: string; status: string; requestedAt: number; expiresAt: number; resolvedAt?: number; participantId?: string; reason?: string }[];
+  pendingJoins: { requestId: string; aliasKey: string; alias: string; clientKey: string; kind: string; temporary: boolean; status: string; requestedAt: number; expiresAt: number; resolvedAt?: number; participantId?: string; reason?: string }[];
 }
 
 export function normalizeChatAlias(alias: string): string {

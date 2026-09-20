@@ -15,5 +15,7 @@ assert.match(implementation, /!rc\.roomId && rc\.selfHost && ChatHub\.canonRoom\
   "only a legacy Host connection without a UUID may resolve by canonical Room name");
 assert.match(implementation, /adminCloseRoom\(locallyHosted\.roomId\)/,
   "Close Room must deactivate the Hub by immutable Room UUID");
+assert.match(implementation, /for \(const \[id, agent\] of this\.managedAgents\)[\s\S]*?agent\.roomKey !== key[\s\S]*?agent\.generation\+\+[\s\S]*?agent\.pendingMessages = \[\][\s\S]*?agent\.client\.disconnect\(\)[\s\S]*?this\.managedAgents\.delete\(id\)/,
+  "Close Room must release managed Agent clients, queued work, and in-memory entries");
 
-console.log("Chat Close Room recovery test: UUID-first ownership with name fallback only for legacy UUID-less Hosts");
+console.log("Chat Close Room recovery test: UUID-first ownership and managed Agent release OK");

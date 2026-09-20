@@ -19,12 +19,14 @@ interface ShareSummary {
   topics: string[];
   tags: string[];
   itemCount: number;
+  snapshotBytes?: number;
   metadataOnly: true;
   signature: string;
 }
 interface GatewayShare {
   summary: ShareSummary;
   snapshotPath: string;
+  published?: boolean;
   visibility: "public" | "unlisted";
   accessMode: "block-list" | "white-list";
   ipRules: string[];
@@ -38,6 +40,9 @@ interface GatewayShare {
 interface GatewayState {
   schema: 1;
   configurationId?: string;
+  extensionVersion?: string;
+  gatewayProtocolVersion?: string;
+  ownerNodeId?: string;
   nodeId: string;
   displayName: string;
   port: number;
@@ -49,6 +54,8 @@ interface GatewayState {
   uploadBytesPerSecond?: number;
   maxConcurrentTransfers?: number;
 }
+const gatewayRuntimeVersion = String(process.argv[3] || "legacy");
+const gatewayProtocolVersion = "pkm-node-gateway:v2";
 interface SubscriberProof {
   schema: 1;
   nodeId: string;
@@ -102,7 +109,7 @@ function json(res: ServerResponse, status: number, value: unknown, headers: Reco
   res.writeHead(status, { "Content-Type": "application/json", "Content-Length": String(Buffer.byteLength(payload)), "Cache-Control": "no-store", ...headers });
   res.end(payload);
 }
-function findShare(shareId: string): GatewayShare | undefined { return state.shares.find(share => share.summary.shareId === shareId); }
+function findShare(shareId: string): GatewayShare | undefined { return state.shares.find(share => share.published !== false && share.summary.shareId === shareId); }
 function loadStats(): SubscriberStats {
   try {
     const stats = JSON.parse(readFileSync(state.subscriberStatsPath, "utf8"));
@@ -316,13 +323,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, scope: ControlS
   catch { json(res, 429, { error: "Rate limit exceeded." }, { "Retry-After": "30" }); return; }
 
   if (req.method === "GET" && url.pathname === "/.well-known/pkm-node") {
-    json(res, 200, { protocol: "pkm-node:v1", nodeId: state.nodeId, displayName: state.displayName, publicKey: state.publicKey, configurationId: state.configurationId, broker: scope === "open" ? "open" : "secret-protected", ...(scope === "open" ? {} : { shareId: scope }), capabilities: { sharedMarket: "v1", mqtt: "3.1.1-websocket" } });
+    json(res, 200, { protocol: "pkm-node:v1", nodeId: state.nodeId, displayName: state.displayName, publicKey: state.publicKey, configurationId: state.configurationId,
+      gatewayVersion: gatewayRuntimeVersion, gatewayProtocolVersion, gatewayPid: process.pid, broker: scope === "open" ? "open" : "secret-protected", ...(scope === "open" ? {} : { shareId: scope }), capabilities: { sharedMarket: "v1", mqtt: "3.1.1-websocket" } });
     return;
   }
   if (req.method === "GET" && url.pathname === "/v1/catalog") {
     if (scope !== "open") { json(res, 404, { error: "Not found." }); return; }
     const visible = [];
-    for (const share of state.shares) if (inControlScope(share, scope) && share.visibility === "public" && share.accountMode === "open" && await aclAllowed(share, undefined, clientKey(req), "discover")) visible.push(share.summary);
+    for (const share of state.shares) if (share.published !== false && inControlScope(share, scope) && share.visibility === "public" && share.accountMode === "open" && await aclAllowed(share, undefined, clientKey(req), "discover")) visible.push(share.summary);
     json(res, 200, { nodeId: state.nodeId, shares: visible });
     return;
   }
@@ -382,8 +390,9 @@ async function main(): Promise<void> {
   broker.authorizeSubscribe = (_client, subscription, callback) => {
     const match = /^pkm\/v1\/nodes\/[a-zA-Z0-9:_-]+\/shares\/([a-zA-Z0-9_-]{8,128})\/summary$/.exec(subscription.topic);
     const share = match ? findShare(match[1]) : undefined;
-    const remoteIp = String((_client as any)?.conn?.remoteAddress || "");
-    const localPort = Number((_client as any)?.conn?.localPort || 0);
+    const connection = (_client as any)?.conn;
+    const remoteIp = String(connection?.pkmRemoteAddress || connection?.remoteAddress || "");
+    const localPort = Number(connection?.pkmLocalPort || connection?.localPort || 0);
     const expectedPort = share?.protection === "secret-protected" ? share.controlPort : state.port;
     const identity = (_client as any)?.pkmSubscriberProof as SubscriberProof | undefined;
     void (async () => {
@@ -400,7 +409,12 @@ async function main(): Promise<void> {
     server.on("upgrade", (req, socket, head) => {
       const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
       if (url.pathname !== "/mqtt" || !String(req.headers["sec-websocket-protocol"] || "").split(/\s*,\s*/).includes("mqtt")) { socket.destroy(); return; }
-      webSockets.handleUpgrade(req, socket, head, ws => broker.handle(createWebSocketStream(ws), req));
+      webSockets.handleUpgrade(req, socket, head, ws => {
+        const transport = createWebSocketStream(ws) as any;
+        transport.pkmLocalPort = req.socket.localPort;
+        transport.pkmRemoteAddress = req.socket.remoteAddress;
+        broker.handle(transport, req);
+      });
     });
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(port, state.bindHost || "0.0.0.0", resolve); });
     listeners.set(scope, { port, server, webSockets });
@@ -412,17 +426,18 @@ async function main(): Promise<void> {
   };
   const reconcileListeners = async (): Promise<void> => {
     const desired = new Map<string, number>([["open", state.port]]);
-    for (const share of state.shares) if (share.protection === "secret-protected") desired.set(share.summary.shareId, share.controlPort);
+    for (const share of state.shares) if (share.published !== false && share.protection === "secret-protected") desired.set(share.summary.shareId, share.controlPort);
     for (const [scope, listener] of [...listeners]) if (desired.get(scope) !== listener.port) await stopListener(scope);
     for (const [scope, port] of desired) if (!listeners.has(scope)) await startListener(scope, port);
   };
 
   const publishSummaries = (): void => {
-    const currentShareIds = new Set(state.shares.map(share => share.summary.shareId));
+    const publishedShares = state.shares.filter(share => share.published !== false);
+    const currentShareIds = new Set(publishedShares.map(share => share.summary.shareId));
     for (const previousShareId of publishedShareIds) {
       if (!currentShareIds.has(previousShareId)) broker.publish({ cmd: "publish", topic: `pkm/v1/nodes/${state.nodeId}/shares/${previousShareId}/summary`, payload: Buffer.alloc(0), qos: 1, retain: true, dup: false }, () => {});
     }
-    for (const share of state.shares) broker.publish({ cmd: "publish", topic: `pkm/v1/nodes/${state.nodeId}/shares/${share.summary.shareId}/summary`, payload: Buffer.from(JSON.stringify(share.summary)), qos: 1, retain: true, dup: false }, () => {});
+    for (const share of publishedShares) broker.publish({ cmd: "publish", topic: `pkm/v1/nodes/${state.nodeId}/shares/${share.summary.shareId}/summary`, payload: Buffer.from(JSON.stringify(share.summary)), qos: 1, retain: true, dup: false }, () => {});
     publishedShareIds = currentShareIds;
   };
   const reload = async (): Promise<void> => { state = readState(); await reconcileListeners(); publishSummaries(); };

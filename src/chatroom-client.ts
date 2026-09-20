@@ -14,6 +14,7 @@ export interface JoinOpts {
   kind?: MemberKind;
   cid?:  string;   // stable identity id (persisted by the extension/MCP); defaults to a random per-instance id
   hostToken?: string; // ephemeral proof returned by the local Hub Create/Rehost API
+  temporary?: boolean; // Room-scoped Managed Agent identity
 }
 
 export interface ClientEvents {
@@ -21,6 +22,7 @@ export interface ClientEvents {
   onMessage:      (m: ChatMessage) => void;
   onHistory:      (messages: ChatMessage[]) => void;
   onPresence:     (members: Member[]) => void;
+  onMeetingSnapshot?: (snapshot: Record<string, unknown>) => void;
   onAgentState?:  (user: string, state: AgentRuntimeState) => void;
   onReadReceipt?: (messageId: string, read: number, total: number) => void;
   onFileComplete: (meta: FileMeta, from: string, data: Buffer) => void;
@@ -85,7 +87,7 @@ export class ChatClient {
 
     ws.on("open", () => {
       this.reconnectDelay = 1000;
-      this.send({ t: "join", room: this.opts!.room, roomId: this.opts!.roomId, user: this.opts!.user, token: this.opts!.token, kind: this.opts!.kind ?? "human", cid: this.cid, hostToken: this.opts!.hostToken, resumeAfter: this.lastMessageId || undefined });
+      this.send({ t: "join", room: this.opts!.room, roomId: this.opts!.roomId, user: this.opts!.user, token: this.opts!.token, kind: this.opts!.kind ?? "human", cid: this.cid, hostToken: this.opts!.hostToken, resumeAfter: this.lastMessageId || undefined, temporary: this.opts!.temporary });
       this.setStatus("connecting", "assigning Room identity automatically…");
       this.startPing();
     });
@@ -118,6 +120,9 @@ export class ChatClient {
         this.members = frame.members;
         this.events.onPresence(frame.members);
         break;
+      case "meeting.snapshot":
+        this.events.onMeetingSnapshot?.(frame.snapshot);
+        break;
       case "history":
         if (frame.messages.length) this.lastMessageId = frame.messages[frame.messages.length - 1].id || this.lastMessageId;
         if (frame.mode === "catchup") {
@@ -137,6 +142,8 @@ export class ChatClient {
           receipt: frame.receipt ? { read: frame.receipt.read, total: frame.receipt.total } : undefined,
           responseRequired: frame.responseRequired,
             replyPolicy: frame.replyPolicy, mode: frame.mode, discussionAudience: frame.discussionAudience,
+            discussionLead: frame.discussionLead,
+            finalTopicSummary: frame.finalTopicSummary,
             replyToMessageId: frame.replyToMessageId,
             recipients: frame.recipients,
         });
@@ -204,7 +211,7 @@ export class ChatClient {
       }
       case "error":
         // A rejected action is scoped to that action; it must not poison the live connection.
-        if (["muted", "moderation", "mention-required", "host-only-broadcast", "phase-closed", "duplicate-slot"].includes(frame.code)) {
+        if (["muted", "moderation", "mention-required", "host-only-broadcast", "discuss-requires-peers", "phase-closed", "duplicate-slot"].includes(frame.code)) {
           this.events.onMessage({ id: randomBytes(6).toString("hex"), from: "", fromId: "", text: frame.msg, ts: Date.now(), kind: "human", system: true });
           break;
         }
@@ -218,18 +225,24 @@ export class ChatClient {
     }
   }
 
-  sendText(text: string, responseRequired?: boolean, replyPolicy?: ReplyPolicy, mode?: ChatMode, recipients?: string[], replyToMessageId?: string): boolean {
+  sendText(text: string, responseRequired?: boolean, replyPolicy?: ReplyPolicy, mode?: ChatMode, recipients?: string[], replyToMessageId?: string, discussionLead?: string, finalTopicSummary?: boolean): boolean {
     if (!this.isConnected || !this.opts) return false;
     const t = text.trim();
     if (!t) return false;
     this.send({ t: "msg", room: this.opts.room, from: this.opts.user, text: t, kind: this.opts.kind ?? "human", responseRequired, replyPolicy, mode,
-      clientRequestId: randomBytes(8).toString("hex"), recipients, replyToMessageId });
+      clientRequestId: randomBytes(8).toString("hex"), recipients, replyToMessageId, discussionLead, finalTopicSummary });
     return true;
   }
 
   sendAgentState(state: AgentRuntimeState): boolean {
     if (!this.isConnected || !this.opts || this.opts.kind !== "agent") return false;
     this.send({ t: "agent.state", room: this.opts.room, user: this.opts.user, state });
+    return true;
+  }
+
+  sendMeetingSnapshot(snapshot: Record<string, unknown>): boolean {
+    if (!this.isConnected || !this.opts) return false;
+    this.send({ t: "meeting.snapshot", room: this.opts.room, snapshot });
     return true;
   }
 

@@ -20,7 +20,7 @@ assert.match(knowledge, /currentDetail = data;/);
 assert.match(servers, /ask\('serverList',\{\}\).*Force-refresh server process, port, and link status/);
 assert.match(mcp, /ask\('refreshMcpPathSizes', \{\}\)/);
 assert.match(extension, /mcpPathSizeGeneration \+= 1;[\s\S]{0,100}mcpPathSizeCache\.clear\(\)/);
-assert.match(extension, /case "reload":[\s\S]{0,300}respond\(\{ command: "reloaded" \}\)/);
+assert.match(extension, /case "reload":[\s\S]{0,300}respond\(\{ command: "reloaded", data: \{ manual: true \} \}\)/);
 assert.match(vscodeIgnore, /^\*\*\/\*\.map$/m);
 assert.match(vscodeIgnore, /^scripts\/poc-\*\.js$/m);
 

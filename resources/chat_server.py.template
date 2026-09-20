@@ -147,6 +147,11 @@ class ChatConnection:
         self.join_event = asyncio.Event()
         self.reply_target = ""
         self.reply_audience = []
+        self.discussion_active = False
+        self.discussion_audience = []
+        self.discussion_lead = ""
+        self.discussion_phase = ""
+        self.discussion_peers_seen = []
         self.last_message_id = ""
         self.terminal_event = None
         self.transport_error = ""
@@ -163,6 +168,7 @@ class ChatConnection:
                 "kind": message.get("kind", "human"), "system": bool(message.get("system")),
                 "reply_policy": policy, "reply_required": policy == "required",
                 "mode": message.get("mode"), "discussion_audience": list(message.get("discussionAudience") or message.get("discussion_audience") or []),
+                "discussion_lead": str(message.get("discussionLead") or message.get("discussion_lead") or ""),
                 "recipients": list(message.get("recipients")) if isinstance(message.get("recipients"), list) else None}
 
     def record(self, message):
@@ -325,7 +331,7 @@ class ChatConnection:
         self.status = "disconnected"
         self.members = []
 
-    async def post(self, text, continue_working=False, require_reply=True):
+    async def post(self, text, continue_working=False, require_reply=True, final_topic_summary=False):
         if self.ws is None or self.status != "connected":
             return {"ok": False, "error_code": "transport-error", "retryable": True,
                     "error": "Not connected. Call chat_join first.", **self._lifecycle_fields()}
@@ -355,6 +361,8 @@ class ChatConnection:
                      "clientRequestId": request_id, "recipients": recipients}
             if require_reply is not None:
                 frame["requireReply"] = bool(require_reply)
+            if final_topic_summary:
+                frame["finalTopicSummary"] = True
             await self.ws.send(json.dumps(frame))
             result = await asyncio.wait_for(waiter, timeout=8)
             if not result.get("ok"):
@@ -447,6 +455,28 @@ class ChatConnection:
                                 audience.append(str(recipient))
                     self.reply_audience = audience
                     self.reply_target = audience[0] if audience else ""
+                    discuss_message = next((item for item in messages if item.get("mode") == "discuss"), None)
+                    if discuss_message is not None:
+                        self.discussion_active = True
+                        self.discussion_phase = "initial"
+                        self.discussion_peers_seen = []
+                        self.discussion_audience = [str(name) for name in discuss_message.get("discussion_audience") or []
+                                                    if str(name).casefold() != self.name.casefold()]
+                        self.discussion_lead = str(discuss_message.get("discussion_lead") or "")
+                    elif self.discussion_active:
+                        peer_messages = [item for item in messages
+                                         if str(item.get("from") or "").casefold() in {name.casefold() for name in self.discussion_audience}]
+                        if peer_messages:
+                            for item in peer_messages:
+                                sender = str(item.get("from") or "")
+                                if sender and sender.casefold() not in {name.casefold() for name in self.discussion_peers_seen}:
+                                    self.discussion_peers_seen.append(sender)
+                            self.discussion_phase = "review"
+                            self.discussion_active = False
+                        else:
+                            self.discussion_phase = ""
+                    else:
+                        self.discussion_phase = ""
                     if self.terminal_event:
                         terminal = self.terminal_event
                         self.terminal_event = None
@@ -522,9 +552,22 @@ class ChatConnection:
         required_ids = [str(item.get("id") or "") for item in source_messages if item.get("reply_required")]
         policies = [str(item.get("reply_policy") or "none") for item in source_messages]
         if event == "message":
-            instruction = ("Respond to the required messages with chat_post; the final post automatically resumes standby."
-                           if required_ids else "Post only if you have a substantive contribution." if "optional" in policies
-                           else "No response was requested. Immediately call chat_standby again without posting an acknowledgement.")
+            if self.discussion_phase == "initial":
+                lead_instruction = (" You are the selected Discussion Lead: guide topics in order, do not copy the transcript, and close each Topic with a concise synthesized Summary."
+                                    if self.discussion_lead.casefold() == self.name.casefold() else "")
+                instruction = ("DISCUSS initial phase:" + lead_instruction + " Post your independent analysis to the discussion audience with "
+                               "chat_post(require_reply=true), then continue standby. Do not claim consensus yet; peers must review each other's work.")
+            elif self.discussion_phase == "review":
+                summary_call = ("chat_post(require_reply=false, final_topic_summary=true)"
+                                if self.discussion_lead.casefold() == self.name.casefold()
+                                else "chat_post(require_reply=false)")
+                instruction = ("DISCUSS review phase: explicitly name and critically review at least one contribution from "
+                               f"{', '.join(self.discussion_peers_seen)}; identify agreement, disagreement, or omissions, then post a synthesized conclusion "
+                               f"with {summary_call}. This review step is mandatory; without it the interaction is Ask, not Discuss.")
+            else:
+                instruction = ("Respond to the required messages with chat_post; the final post automatically resumes standby."
+                               if required_ids else "Post only if you have a substantive contribution." if "optional" in policies
+                               else "No response was requested. Immediately call chat_standby again without posting an acknowledgement.")
         return {"event": event, "message": result_messages[0] if result_messages else None, "messages": result_messages,
                 "event_id": str(first.get("id") or ""),
                 "event_ids": [str(item.get("id") or "") for item in source_messages], "cursor_before": cursor_before,
@@ -534,6 +577,10 @@ class ChatConnection:
                 "reply_required_event_ids": required_ids,
                 "reply_policy": "required" if required_ids else "optional" if "optional" in policies else "none",
                 "reply_audience": list(self.reply_audience),
+                "discussion_phase": self.discussion_phase,
+                "discussion_lead": self.discussion_lead,
+                "is_discussion_lead": bool(self.discussion_lead) and self.discussion_lead.casefold() == self.name.casefold(),
+                "discussion_peers_seen": list(self.discussion_peers_seen),
                 "continuation_cursor": str(last.get("id") or "") if truncated else "",
                 "room_id": self.room_id, "participant_id": self.participant_id,
                 **self._lifecycle_fields(event),
@@ -545,7 +592,7 @@ class ChatConnection:
         return {"room_open": room_open,
                 "should_continue_standby": room_open and event != "stopped",
                 "room_closed": room_closed,
-                "new_link_required": room_closed or self.error_code in ("auth", "no-room", "room-mismatch"),
+            "new_link_required": self.error_code in ("auth", "room-mismatch", "kicked"),
                 "runtime_state": self.runtime_state,
                 "state_changed_at": self.state_changed_at}
 
@@ -611,7 +658,7 @@ async def chat_join(magic_link: str, name: str) -> str:
 
 @mcp.tool()
 async def chat_post(text: str, name: str = "", continue_working: bool = False,
-                    require_reply: bool = True) -> str:
+                    require_reply: bool = True, final_topic_summary: bool = False) -> str:
     """PKM Chatroom: post a directed message.
 
     Progress posts (continue_working=true) return immediately. A final post
@@ -625,7 +672,7 @@ async def chat_post(text: str, name: str = "", continue_working: bool = False,
         connection = _resolve(name)
     except ValueError as error:
         return json.dumps({"ok": False, "error": str(error)})
-    posted = await connection.post(text, bool(continue_working), require_reply)
+    posted = await connection.post(text, bool(continue_working), require_reply, bool(final_topic_summary))
     if not posted.get("ok") or continue_working:
         return json.dumps(posted)
     try:

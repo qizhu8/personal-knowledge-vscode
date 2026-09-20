@@ -36,6 +36,20 @@ async def main():
     assert "PKM Chatroom" in (capability_tool.description or "")
     assert module.chat_capabilities()["chat_tools"] == module.CHAT_TOOLS
 
+    closed = module.ChatConnection("Closed Agent", "ws://unused", "room", "secret", "room-closed")
+    closed.status = "disconnected"
+    closed.error_code = "room-closed"
+    assert closed.status_data()["room_closed"] is True
+    assert closed.status_data()["new_link_required"] is False, "a closed Room must remain rejoinable with the same Magic Link after Rehost"
+    absent = module.ChatConnection("Absent Agent", "ws://unused", "room", "secret", "room-absent")
+    absent.status = "error"
+    absent.error_code = "no-room"
+    assert absent.status_data()["new_link_required"] is False, "a temporarily absent Room must not invalidate its Magic Link"
+    invalid = module.ChatConnection("Invalid Agent", "ws://unused", "room", "secret", "room-invalid")
+    invalid.status = "error"
+    invalid.error_code = "auth"
+    assert invalid.status_data()["new_link_required"] is True
+
     class HoldingSocket:
         def __init__(self):
             self.release = asyncio.Event()
@@ -196,10 +210,17 @@ async def main():
     group.ws = GroupSocket()
     group.record(group.normalized({"id": "group-1", "from": "Host", "text": '@"Group Generated" @"Peer Agent" discuss',
                                   "ts": 5, "recipients": ["Group Generated", "Peer Agent"],
-                                  "discussionAudience": ["Group Generated", "Peer Agent", "Offline Agent"], "replyPolicy": "required"}))
+                                  "mode": "discuss", "discussionAudience": ["Group Generated", "Peer Agent", "Offline Agent"],
+                                  "discussionLead": "Group Generated", "replyPolicy": "required"}))
     group_result = await group.standby(1)
     assert group_result["reply_audience"] == ["Host", "Peer Agent", "Offline Agent"], group_result
-    await group.post("implicit group reply")
+    assert group_result["discussion_phase"] == "initial", group_result
+    assert group_result["discussion_lead"] == "Group Generated", group_result
+    assert group_result["is_discussion_lead"] is True, group_result
+    assert "selected Discussion Lead" in group_result["instruction"], group_result
+    assert "close each Topic with a concise synthesized Summary" in group_result["instruction"], group_result
+    assert "peers must review each other's work" in group_result["instruction"], group_result
+    await group.post("implicit group reply", require_reply=True)
     group_post = next(frame for frame in group_frames if frame.get("t") == "msg")
     assert group_post["text"] == "implicit group reply", group_post
     assert group_post["recipients"] == ["Host", "Peer Agent", "Offline Agent"], group_post
@@ -227,6 +248,14 @@ async def main():
     continued = await group.standby(1)
     assert continued["event"] == "message"
     assert continued["reply_audience"] == ["Peer Agent", "Host", "Offline Agent"], continued
+    assert continued["discussion_phase"] == "review", continued
+    assert continued["discussion_peers_seen"] == ["Peer Agent"], continued
+    assert "mandatory" in continued["instruction"], continued
+    assert "chat_post(require_reply=false, final_topic_summary=true)" in continued["instruction"], continued
+    await group.post("concise final summary", require_reply=False, final_topic_summary=True)
+    summary_post = [frame for frame in group_frames if frame.get("t") == "msg"][-1]
+    assert summary_post["finalTopicSummary"] is True, summary_post
+    assert summary_post["requireReply"] is False, summary_post
 
     broadcast = module.ChatConnection("Broadcast Generated", "ws://unused", "room", "secret", "room-broadcast")
     broadcast.status = "connected"

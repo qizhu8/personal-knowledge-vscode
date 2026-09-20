@@ -1,6 +1,7 @@
 // ── Tabs ──────────────────────────────────────────────────────────────────
 document.querySelectorAll('.tab').forEach(t =>
   t.addEventListener('click', () => {
+    if (state.tab === 'chatroom' && t.dataset.tab !== 'chatroom') chatCaptureDraft();
     if (state.tab === 'servers' && t.dataset.tab !== 'servers') stopSubscribedServerMonitoring();
     state.tab = t.dataset.tab; state.filter = 'all'; state.search = '';
     currentDetail = null;
@@ -13,7 +14,7 @@ document.querySelectorAll('.tab').forEach(t =>
     renderEmptyDetail();
     closePaperViews();
     updatePaperChrome();
-    const fullWidthTab = ['mcp', 'environments', 'servers', 'subscriptions', 'chatroom'].includes(state.tab);
+    const fullWidthTab = ['mcp', 'skillRouter', 'environments', 'servers', 'subscriptions', 'chatroom'].includes(state.tab);
     document.getElementById('layout-resizer').style.display = fullWidthTab ? 'none' : '';
     document.getElementById('sidebar-toggle').style.display = fullWidthTab ? 'none' : '';
     document.getElementById('content-toolbar').style.display = fullWidthTab ? 'none' : '';
@@ -23,6 +24,11 @@ document.querySelectorAll('.tab').forEach(t =>
       document.getElementById('searchbox').style.display = 'none';
       renderMcpLoading();
       ask('checkMcp', {});
+    } else if (state.tab === 'skillRouter') {
+      document.getElementById('sidebar').style.display = 'none';
+      document.getElementById('searchbox').style.display = 'none';
+      renderSkillRouterLoading();
+      ask('skillRouterStatus', {});
     } else if (state.tab === 'environments') {
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
@@ -117,8 +123,14 @@ function appendPrivacyMenu(items, type, path) {
   if (parts.length !== 1) return;
   const isPrivate = privacyInherited(parts);
   items.push({ sep: true });
-  items.push({ label: isPrivate ? '🔓 Set as Public' : '🔒 Set as Private', onClick: () => ask('contentSetPrivacy', { type, topLevel: parts[0], isPrivate: !isPrivate }) });
+  items.push({ label: isPrivate ? 'Set as Public' : 'Set as Private', onClick: () => ask('contentSetPrivacy', { type, topLevel: parts[0], isPrivate: !isPrivate }) });
 }
+
+function copyContextPath(path) {
+  if (path) vscode.postMessage({ command: 'copyText', text: path });
+}
+
+function copyPathMenu(path) { return { label: 'Copy Path', onClick: () => copyContextPath(path) }; }
 
 // ── Render list ────────────────────────────────────────────────────────────
 function renderList() {
@@ -135,7 +147,7 @@ function renderList() {
     // Right-click a folder to rename it (re-paths all skills under it).
     const folderAttr = (child, name, fullPath) => {
       const prefix = fullPath.join('/');
-      if (prefix === '(uncategorized)' || fullPath[0] === '(uncategorized)') return '';
+      if (prefix === '(uncategorized)' || fullPath[0] === '(uncategorized)') return ` oncontextmenu="virtualRootFolderMenu(event,'skills')"`;
       const b64 = btoa(unescape(encodeURIComponent(prefix)));
       return ` oncontextmenu="skillFolderMenu(event,'${b64}',${JSON.stringify(name).replace(/"/g, '&quot;')})"`;
     };
@@ -150,7 +162,7 @@ function renderList() {
     const q = state.search;
     const folderAttr = (child, name, fullPath) => {
       const prefix = fullPath.join('/');
-      if (prefix === '(uncategorized)' || fullPath[0] === '(uncategorized)') return '';
+      if (prefix === '(uncategorized)' || fullPath[0] === '(uncategorized)') return ` oncontextmenu="virtualRootFolderMenu(event,'notes')"`;
       const b64 = btoa(unescape(encodeURIComponent(prefix)));
       return ` oncontextmenu="noteFolderMenu(event,'${b64}',${JSON.stringify(name).replace(/"/g, '&quot;')})"`;
     };
@@ -258,7 +270,12 @@ function renderList() {
     const root = buildCatTree(items, r => (r.category === '(root)' ? '' : r.category), '(root)');
     const folderAttr = (child, name, fullPath) => {
       const prefix = fullPath.join('/');
-      if (prefix === '(root)' || fullPath[0] === '(root)') return '';
+      if (prefix === '(root)' || fullPath[0] === '(root)') return ` oncontextmenu="virtualRootFolderMenu(event,'scripts')"`;
+
+      function virtualRootFolderMenu(event, area) {
+        event.preventDefault(); event.stopPropagation();
+        showPaperMenu(event.clientX, event.clientY, [{ label: 'Root', header: true }, copyPathMenu(`${area}/`)]);
+      }
       const b64 = btoa(unescape(encodeURIComponent(prefix)));
       return ` oncontextmenu="scriptFolderMenu(event,'${b64}',${JSON.stringify(name).replace(/"/g, '&quot;')})"`;
     };
@@ -280,12 +297,12 @@ function renderSubscribedGroups(container) {
   const groups = state.subscriptionGroups || [];
   if (!groups.length) return;
   const html = groups.map(group => {
-    const groupPayload = subscriptionEncodeForkPayload({ name:group.alias, keys:group.items.map(item => item.key) });
+    const groupPayload = subscriptionEncodeForkPayload({ name:group.alias, subscriptionId:group.subscriptionId, keys:group.items.map(item => item.key), pkmPath:`pkm://subscriptions/${encodeURIComponent(group.nodeId)}/${encodeURIComponent(group.shareId)}` });
     return `<div class="pk-group sub-virtual-group">
     <div class="pk-group-hdr" onclick="this.nextElementSibling.classList.toggle('collapsed')" oncontextmenu="subscriptionGroupForkMenu(event,'${groupPayload}')">
       <span class="pk-group-arrow">◈</span><span class="pk-group-name">${esc(group.alias)}</span><span class="pk-group-count">${group.items.length}</span>${state.tab === 'skills' ? `<button class="sub-fork-btn" data-pending-label="Forking…" onclick="event.stopPropagation();subscriptionForkAll('${groupPayload}',this)">Fork All</button>` : ''}
     </div>
-    <div class="pk-group-body collapsed">${subscriptionRenderItemTree(subscriptionBuildItemTree(group.items), 0, group.revision)}</div>
+    <div class="pk-group-body collapsed">${subscriptionRenderItemTree(subscriptionBuildItemTree(group.items), 0, group.revision, [], group)}</div>
   </div>`;
   }).join('');
   container.insertAdjacentHTML('beforeend', `<div class="sub-virtual-divider"><span>${state.tab === 'packages' ? 'Subscribed Packages' : 'Subscriptions'}</span></div>${html}`);
@@ -302,14 +319,15 @@ function subscriptionBuildItemTree(items) {
   return root;
 }
 
-function subscriptionRenderItemTree(node, depth, revision, parentPath = []) {
+function subscriptionRenderItemTree(node, depth, revision, parentPath = [], group = {}) {
   const folders = Object.entries(node.folders).sort(([left],[right]) => left.localeCompare(right)).map(([name,child]) => {
     const folderPath = [...parentPath, name];
-    const payload = subscriptionEncodeForkPayload({ path:folderPath.join('/'), keys:subscriptionCachedTreeItems(child).map(item => item.key) });
-    return `<details class="sub-cache-folder"><summary style="padding-left:${8 + depth * 12}px" oncontextmenu="subscriptionFolderForkMenu(event,'${payload}')"><span class="sub-cache-arrow">›</span><span class="sub-cache-name">${esc(name)}</span><small>${subscriptionTreeCount(child)}</small></summary><div>${subscriptionRenderItemTree(child, depth + 1, revision, folderPath)}</div></details>`;
+    const folderPkmPath = `pkm://subscriptions/${encodeURIComponent(group.nodeId || '')}/${encodeURIComponent(group.shareId || '')}/${encodeURIComponent(state.tab)}/${folderPath.map(encodeURIComponent).join('/')}`;
+    const payload = subscriptionEncodeForkPayload({ path:folderPath.join('/'), pkmPath:folderPkmPath, subscriptionId:group.subscriptionId, keys:subscriptionCachedTreeItems(child).map(item => item.key) });
+    return `<details class="sub-cache-folder"><summary style="padding-left:${8 + depth * 12}px" oncontextmenu="subscriptionFolderForkMenu(event,'${payload}')"><span class="sub-cache-arrow">›</span><span class="sub-cache-name">${esc(name)}</span><small>${subscriptionTreeCount(child)}</small></summary><div>${subscriptionRenderItemTree(child, depth + 1, revision, folderPath, group)}</div></details>`;
   }
   ).join('');
-  const leaves = node.items.sort((left,right) => left.title.localeCompare(right.title)).map(item => `<div class="li sub-virtual-item" style="padding-left:${8 + depth * 12}px" onclick="openItem('subscriptionItem','${esc(item.key)}')" oncontextmenu="subscriptionItemForkMenu(event,'${subscriptionEncodeForkPayload({key:item.key,title:item.title})}')" title="${esc(item.path)}">
+  const leaves = node.items.sort((left,right) => left.title.localeCompare(right.title)).map(item => `<div class="li sub-virtual-item" style="padding-left:${8 + depth * 12}px" onclick="openItem('subscriptionItem','${esc(item.key)}')" oncontextmenu="subscriptionItemForkMenu(event,'${subscriptionEncodeForkPayload({key:item.key,title:item.title,pkmPath:item.pkmPath,subscriptionId:group.subscriptionId})}')" title="${esc(item.path)}">
     <div class="li-name"><span>${esc(item.title)}</span><button class="sub-fork-btn" data-pending-label="Forking…" onclick="event.stopPropagation();subscriptionFork('${esc(item.key)}',this)" title="Create an independent local copy">Fork</button></div><div class="li-meta">${esc(item.path)} · revision ${Number(revision)||0}</div>
   </div>`).join('');
   return folders + leaves;
@@ -321,20 +339,26 @@ function subscriptionDecodeForkPayload(value) { return JSON.parse(decodeURICompo
 
 function subscriptionFolderForkMenu(ev, payload) {
   ev.preventDefault(); ev.stopPropagation();
-  let folderPath = '', keys = [];
-  try { ({ path:folderPath, keys } = subscriptionDecodeForkPayload(payload)); } catch { return; }
+  let folderPath = '', pkmPath = '', subscriptionId = '', keys = [];
+  try { ({ path:folderPath, pkmPath, subscriptionId, keys } = subscriptionDecodeForkPayload(payload)); } catch { return; }
   showPaperMenu(ev.clientX, ev.clientY, [
     { label:'Folder · ' + folderPath, header:true },
+    copyPathMenu(pkmPath),
+    { sep: true },
+    { label: 'Refresh from Broker', onClick: () => ask('subscriptionRefresh', { id: subscriptionId, force: true }) },
     { label: 'Fork to Local', onClick: () => ask('subscriptionFork', { keys, path: folderPath }) },
   ]);
 }
 
 function subscriptionItemForkMenu(ev, payload) {
   ev.preventDefault(); ev.stopPropagation();
-  let key = '', title = '';
-  try { ({ key, title } = subscriptionDecodeForkPayload(payload)); } catch { return; }
+  let key = '', title = '', pkmPath = '', subscriptionId = '';
+  try { ({ key, title, pkmPath, subscriptionId } = subscriptionDecodeForkPayload(payload)); } catch { return; }
   showPaperMenu(ev.clientX, ev.clientY, [
     { label:'Subscribed · ' + title, header:true },
+    copyPathMenu(pkmPath),
+    { sep: true },
+    { label: 'Refresh from Broker', onClick: () => ask('subscriptionRefresh', { id: subscriptionId, force: true }) },
     { label:'Fork to Local', onClick:() => subscriptionFork(key) },
   ]);
 }
@@ -346,6 +370,9 @@ function subscriptionGroupForkMenu(ev, payload) {
   try { group = subscriptionDecodeForkPayload(payload); } catch { return; }
   showPaperMenu(ev.clientX, ev.clientY, [
     { label:'Subscribed Skills · ' + group.name, header:true },
+    copyPathMenu(group.pkmPath),
+    { sep: true },
+    { label: 'Refresh from Broker', onClick: () => ask('subscriptionRefresh', { id: group.subscriptionId, force: true }) },
     { label:'Fork entire Broker to Local', onClick:() => ask('subscriptionFork',{keys:group.keys,path:''}) },
   ]);
 }
@@ -413,10 +440,15 @@ function toggleSkillPin(name, pinned) {
 }
 
 // A note row in the sidebar tree (with a ★ pin toggle). Right-click uses #ctx-menu.
+function noteFilename(note) {
+  return `${String(note?.slug || '').split('/').pop() || 'note'}.md`;
+}
+
 function noteLi(r, q, indent) {
-  return `<div class="li nt-${r.type}${r.pinned ? ' nt-pinned' : ''}" data-note-slug="${esc(r.slug)}" data-note-pinned="${r.pinned ? '1' : ''}" style="padding-left:${indent}px" onclick="openItem('note','${esc(r.slug)}')">
+  const filename = noteFilename(r);
+  return `<div class="li nt-${r.type}${r.pinned ? ' nt-pinned' : ''}" data-note-slug="${esc(r.slug)}" data-note-pinned="${r.pinned ? '1' : ''}" style="padding-left:${indent}px" onclick="openItem('note','${esc(r.slug)}')" title="notes/${esc(r.slug)}.md">
     <div class="li-name"><span class="pc-star${r.pinned ? ' on' : ''}" onclick="event.stopPropagation();toggleNotePin('${esc(r.slug)}',${r.pinned ? 'false' : 'true'})" title="${r.pinned ? 'Unpin' : 'Pin to top of folder'}">${r.pinned ? '★' : '☆'}</span> ${ICON[r.type]||'📝'} ${privacyLock(r.isPrivate)}${hl(r.title, q)}</div>
-    <div class="li-meta">${(r.updated_at||'').slice(0,10)}</div>
+    <div class="li-meta">${hl(filename, q)} · ${(r.updated_at||'').slice(0,10)}</div>
   </div>`;
 }
 function toggleNotePin(slug, pinned) {
@@ -456,6 +488,37 @@ function countTreeLeaves(node) {
   let n = node.items.length;
   for (const k in node.folders) n += countTreeLeaves(node.folders[k]);
   return n;
+}
+
+function expandedCategoryKey(path) {
+  return btoa(unescape(encodeURIComponent(JSON.stringify(path))));
+}
+
+function expandCategoryPath(category) {
+  const segments = String(category || '').split('/').map(value => value.trim()).filter(Boolean);
+  for (let depth = 1; depth <= segments.length; depth++) catExpanded[expandedCategoryKey(segments.slice(0, depth))] = true;
+}
+
+function refreshedItemKey(item) {
+  return String(item?.slug || item?.skill_id || item?.name || item?.path || '');
+}
+
+function revealRefreshedTreeItems(tab, previousItems, nextItems, refresh) {
+  if (!refresh) return false;
+  const area = `${tab}/`;
+  const changedPath = String(refresh.changedPath || '');
+  if (changedPath && !changedPath.startsWith(area)) return !/^notes\/|^skills\//.test(changedPath);
+  if (!['notes', 'skills'].includes(tab) || !Array.isArray(nextItems)) return true;
+  if (changedPath.startsWith(area)) {
+    const relative = changedPath.slice(area.length);
+    expandCategoryPath(relative.includes('/') ? relative.slice(0, relative.lastIndexOf('/')) : '');
+    return true;
+  }
+  const previous = new Map((previousItems || []).map(item => [refreshedItemKey(item), item.updated_at || '']));
+  const changed = nextItems.filter(item => !previous.has(refreshedItemKey(item)) || previous.get(refreshedItemKey(item)) !== (item.updated_at || ''));
+  if (changed.length) changed.forEach(item => expandCategoryPath(item.category));
+  else if (refresh.manual && nextItems[0]) expandCategoryPath(nextItems[0].category);
+  return true;
 }
 
 function renderCatTree(node, path, depth, renderLeaf, q, folderAttr, order) {
@@ -1075,9 +1138,11 @@ function markdownToolbar(data) {
   const area = type + 's';
   const key = type === 'skill' ? data.name : data.slug;
   const category = type === 'skill' ? data.category || '' : '';
+  const stableKey = type === 'skill' ? [category, key].filter(Boolean).join('/') : key;
   return `
     <button class="tbtn" style="font-size:11px" onclick="${pin}" title="${data.pinned ? 'Unpin' : 'Pin to top'}">${data.pinned ? '★ Pinned' : '☆ Pin'}</button>
-    <button class="tbtn" style="font-size:11px" onclick="exportMarkdown('browser')" title="Open a live Markdown preview in your browser">🌐 Browser</button>
+    <button class="tbtn" style="font-size:11px" onclick="exportMarkdown('browser')" title="Open the browser preview">🌐 Browser</button>
+    <button class="tbtn" style="font-size:11px" onclick="ask('copyPublicContentLink',{kind:'${type}',key:'${esc(stableKey)}'})" title="Copy the stable public browser link">🔗 Copy Link</button>
     ${type === 'note' ? '<button class="tbtn" style="font-size:11px" onclick="exportMarkdown(\'linkedSave\')" title="Save this Note and its linked Notes as a shareable site">📦 Site</button>' : ''}
     <button class="tbtn" style="font-size:11px" onclick="exportMarkdown('file')" title="Download as a self-contained HTML file">⬇ Download</button>
     <button class="tbtn" style="font-size:11px" onclick="openMarkdownItem('${area}', '${esc(category)}', '${esc(key)}')">✏ Edit Content</button>
@@ -1344,6 +1409,8 @@ function renderDetail(data) {
         ${(data.langs||(data.lang?data.lang.split(' + '):[])).map(l=>`<span class="tag" style="background:var(--panel)">🏷 ${esc(l)}</span>`).join('')}
         <span>${wordCount(data.content||'')}</span>
         <span style="flex:1"></span>
+        <button class="tbtn" style="font-size:11px" onclick="ask('openMarkdownPreview',{kind:'script',key:'${esc(data.path || data.file)}'})" title="Open the browser preview">🌐 Browser</button>
+        <button class="tbtn" style="font-size:11px" onclick="ask('copyPublicContentLink',{kind:'script',key:'${esc(data.path || data.file)}'})" title="Copy the stable public browser link">🔗 Copy Link</button>
         <button class="tbtn" style="font-size:11px" onclick="startEditScript()">✏ Edit</button>
         <select id="ai-backend-select" title="AI backend for summarization"
           style="font-size:11px;background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:3px 6px;outline:none;max-width:200px">
@@ -1620,6 +1687,9 @@ function doReload() {
   const btn = document.querySelector('#topbar .tbtn[onclick="doReload()"]');
   if (btn) { btn.disabled = true; btn.textContent = '↻ …'; }
   if (state.tab === 'environments') { ask('envList', {}); return; }
+  const search = document.getElementById('searchbox');
+  if (search) search.value = '';
+  state.search = '';
   ask('reload', {});
 }
 function triggerImport() { document.getElementById('import-file').click(); }
@@ -1852,6 +1922,12 @@ function toggleJoinGroup() {
 // ── Category tree ─────────────────────────────────────────────────────────
 function toggleCat(cat) {
   catExpanded[cat] = !catExpanded[cat];
+  if (catExpanded[cat] && ['skills', 'notes', 'papers', 'scripts'].includes(state.tab)) {
+    try {
+      const category = JSON.parse(decodeURIComponent(escape(atob(cat)))).join('/');
+      ask('refreshKnowledgeFolder', { area: state.tab, category });
+    } catch { /* malformed tree state still remains locally expandable */ }
+  }
   if (state.tab === 'environments') renderEnvTree();
   else renderList();
 }
@@ -1992,19 +2068,20 @@ function showPaperMenu(x, y, items) {
   closePaperMenu();
   const m = document.createElement('div');
   m.id = 'paper-ctx';
-  for (const it of items) {
+  const visibleItems = items.filter((item, index, all) => !item.sep || (index > 0 && index < all.length - 1 && !all[index - 1].sep));
+  for (const it of visibleItems) {
     if (it.sep) { const d = document.createElement('div'); d.className = 'pctx-sep'; m.appendChild(d); continue; }
     const el = document.createElement('div');
     el.className = 'pctx-item' + (it.header ? ' pctx-header' : '') + (it.danger ? ' pctx-danger' : '') + (it.active ? ' pctx-active' : '') + (it.status ? ` prompt-version-${it.status}` : '') + (it.children ? ' pctx-has-submenu' : '');
     if (it.version) el.dataset.promptVersion = it.version;
-    el.textContent = it.label;
+    el.textContent = contextMenuLabel(it.label);
     if (it.children) {
       const arrow = document.createElement('span'); arrow.className = 'pctx-arrow'; arrow.textContent = '›'; el.appendChild(arrow);
       const submenu = document.createElement('div'); submenu.className = 'pctx-submenu';
       for (const child of it.children) {
         if (child.sep) { const separator = document.createElement('div'); separator.className = 'pctx-sep'; submenu.appendChild(separator); continue; }
         const childElement = document.createElement('div');
-        childElement.className = 'pctx-item' + (child.active ? ' pctx-active' : ''); childElement.textContent = child.label;
+        childElement.className = 'pctx-item' + (child.active ? ' pctx-active' : ''); childElement.textContent = contextMenuLabel(child.label);
         childElement.onclick = ev => { ev.stopPropagation(); closePaperMenu(); child.onClick(); };
         submenu.appendChild(childElement);
       }
@@ -2018,6 +2095,7 @@ function showPaperMenu(x, y, items) {
   m.style.left = Math.min(x, window.innerWidth - r.width - 8) + 'px';
   m.style.top = Math.min(y, window.innerHeight - r.height - 8) + 'px';
 }
+function contextMenuLabel(label) { return String(label || '').replace(/^(?:\s|[\p{Extended_Pictographic}\p{Emoji_Presentation}]|[★☆✏⚙↗↪■▶▷▽●○＋➕✓])+/u, '').trimStart(); }
 function closePaperMenu() { const m = document.getElementById('paper-ctx'); if (m) m.remove(); }
 document.addEventListener('click', closePaperMenu);
 
@@ -2054,32 +2132,32 @@ function closePkModal() { const m = document.getElementById('pk-modal-bg'); if (
 
 function paperCardMenu(ev, slug, group, pinned, topic) {
   ev.preventDefault(); ev.stopPropagation();
-  const items = [];
-  items.push({ label: pinned ? '★ Unpin' : '☆ Pin', onClick: () => ask('paperSetPinned', { slug, pinned: !pinned }) });
+  const items = [{ label: slug.split('/').pop() || slug, header: true }, copyPathMenu(`papers/${slug}.md`), { sep: true }];
+  items.push({ label: 'Edit Content', onClick: () => openMarkdownItem('papers', '', slug) });
+  items.push({ label: 'Edit Metadata', onClick: () => editMarkdownMetadataItem('papers', '', slug) });
+  items.push({ label: pinned ? 'Unpin' : 'Pin', onClick: () => ask('paperSetPinned', { slug, pinned: !pinned }) });
+  items.push({ label: 'Change topic…', onClick: () => pkModal({ title: 'Change topic', message: 'Moves this paper to a different topic folder.', input: true, defaultValue: topic || '', okLabel: 'Move', onOk: v => ask('paperSetTopic', { slug, topic: v.trim() }) }) });
   items.push({ sep: true });
   items.push({ label: 'Move to group', header: true });
   for (const g of paperGroupsList) {
-    items.push({ label: (g.name === group ? '● ' : '   ') + g.name, active: g.name === group, onClick: () => ask('paperSetGroup', { slug, group: g.name }) });
+    items.push({ label: g.name, active: g.name === group, onClick: () => ask('paperSetGroup', { slug, group: g.name }) });
   }
-  items.push({ label: '＋ New group…', onClick: () => pkModal({ title: 'New group', input: true, okLabel: 'Create', onOk: v => { if (v.trim()) ask('paperSetGroup', { slug, group: v.trim() }); } }) });
+  items.push({ label: 'New group…', onClick: () => pkModal({ title: 'New group', input: true, okLabel: 'Create', onOk: v => { if (v.trim()) ask('paperSetGroup', { slug, group: v.trim() }); } }) });
   items.push({ sep: true });
-  items.push({ label: '↪ Change topic…', onClick: () => pkModal({ title: 'Change topic', message: 'Moves this paper to a different topic folder.', input: true, defaultValue: topic || '', okLabel: 'Move', onOk: v => ask('paperSetTopic', { slug, topic: v.trim() }) }) });
-  items.push({ sep: true });
-  items.push({ label: '✏ Edit Content', onClick: () => openMarkdownItem('papers', '', slug) });
-  items.push({ label: '⚙ Edit Metadata', onClick: () => editMarkdownMetadataItem('papers', '', slug) });
-  items.push({ label: '🗑 Move to Trash…', danger: true, onClick: () => pkModal({ title: 'Move this Paper to Trash?', message:'The Paper remains recoverable until permanently deleted.', okLabel: 'Move to Trash', danger: true, onOk: () => ask('deletePaper', { slug }) }) });
+  items.push({ label: 'Move to Trash…', danger: true, onClick: () => pkModal({ title: 'Move this Paper to Trash?', message:'The Paper remains recoverable until permanently deleted.', okLabel: 'Move to Trash', danger: true, onOk: () => ask('deletePaper', { slug }) }) });
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
 
 function paperGroupMenu(ev, group) {
   ev.preventDefault(); ev.stopPropagation();
-  const items = [{ label: '📁 ' + group, header: true }];
-  items.push({ label: '＋ New Paper…', onClick: () => ask('createKnowledgeItem', { area: 'papers', kind: 'paper', group }) });
-  items.push({ label: '💡 New Idea…', onClick: () => ask('createKnowledgeItem', { area: 'papers', kind: 'idea', group }) });
+  const items = [{ label: group, header: true }, copyPathMenu(`pkm://papers/groups/${encodeURIComponent(group)}`), { sep: true }];
+  items.push({ label: 'New Paper…', onClick: () => ask('createKnowledgeItem', { area: 'papers', kind: 'paper', group }) });
+  items.push({ label: 'New Idea…', onClick: () => ask('createKnowledgeItem', { area: 'papers', kind: 'idea', group }) });
   items.push({ sep: true });
   if (group !== 'Papers') {
-    items.push({ label: '✏ Rename group…', onClick: () => pkModal({ title: 'Rename group', input: true, defaultValue: group, okLabel: 'Rename', onOk: v => { if (v.trim() && v.trim() !== group) ask('paperGroupRename', { oldName: group, newName: v.trim() }); } }) });
-    items.push({ label: '🗑 Delete group', danger: true, onClick: () => pkModal({ title: 'Delete group “' + group + '”?', message: 'Its items move back to “Papers”.', okLabel: 'Delete', danger: true, onOk: () => ask('paperGroupDelete', { name: group }) }) });
+    items.push({ label: 'Rename group…', onClick: () => pkModal({ title: 'Rename group', input: true, defaultValue: group, okLabel: 'Rename', onOk: v => { if (v.trim() && v.trim() !== group) ask('paperGroupRename', { oldName: group, newName: v.trim() }); } }) });
+    items.push({ sep: true });
+    items.push({ label: 'Delete group', danger: true, onClick: () => pkModal({ title: 'Delete group “' + group + '”?', message: 'Its items move back to “Papers”.', okLabel: 'Delete', danger: true, onOk: () => ask('paperGroupDelete', { name: group }) }) });
   } else {
     items.push({ label: 'Default group (can’t rename/delete)', header: true });
   }
@@ -2092,16 +2170,17 @@ function paperFolderMenu(ev, b64, name, path) {
   let slugs = [];
   try { slugs = JSON.parse(decodeURIComponent(escape(atob(b64)))); } catch (e) {}
   if (!slugs.length) return;
-  const items = [{ label: 'Folder: ' + name, header: true }];
-  appendPrivacyMenu(items, 'papers', path);
-  items.push({ label: '＋ New Paper…', onClick: () => ask('createKnowledgeItem', { area: 'papers', kind: 'paper', category: path }) });
-  items.push({ label: '💡 New Idea…', onClick: () => ask('createKnowledgeItem', { area: 'papers', kind: 'idea', category: path }) });
+  const physicalPath = path === '(uncategorized)' ? '' : path;
+  const items = [{ label: 'Folder: ' + (physicalPath ? name : 'Root'), header: true }, copyPathMenu(`papers/${physicalPath ? physicalPath + '/' : ''}`), { sep: true }];
+  items.push({ label: 'New Paper…', onClick: () => ask('createKnowledgeItem', { area: 'papers', kind: 'paper', category: physicalPath }) });
+  items.push({ label: 'New Idea…', onClick: () => ask('createKnowledgeItem', { area: 'papers', kind: 'idea', category: physicalPath }) });
+  appendPrivacyMenu(items, 'papers', physicalPath);
   items.push({ sep: true });
   items.push({ label: 'Move folder contents (' + slugs.length + ') to group', header: true });
   for (const g of paperGroupsList) {
     items.push({ label: '   ' + g.name, onClick: () => ask('paperSetGroupMany', { slugs, group: g.name }) });
   }
-  items.push({ label: '＋ New group…', onClick: () => pkModal({ title: 'Move folder “' + name + '” to a new group', input: true, okLabel: 'Create & move', onOk: v => { if (v.trim()) ask('paperSetGroupMany', { slugs, group: v.trim() }); } }) });
+  items.push({ label: 'New group…', onClick: () => pkModal({ title: 'Move folder “' + name + '” to a new group', input: true, okLabel: 'Create & move', onOk: v => { if (v.trim()) ask('paperSetGroupMany', { slugs, group: v.trim() }); } }) });
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
 
@@ -2110,17 +2189,19 @@ function promptFolderMenu(ev, project, task, version) {
   const scope = [project, task, version].filter(Boolean).join(' / ');
   const items = [
     { label: scope, header: true },
-    { label: '＋ New Prompt…', onClick: () => ask('createPromptItem', { project, task, version }) },
+    copyPathMenu(`prompts/${[project, task, version].filter(Boolean).join('/')}/`),
+    { sep: true },
+    { label: 'New Prompt…', onClick: () => ask('createPromptItem', { project, task, version }) },
   ];
   if (!task && !version) appendPrivacyMenu(items, 'prompts', project);
   items.push({ sep:true });
-  items.push({ label:'🗑 Move folder to Trash…', danger:true, onClick:()=>moveKnowledgeFolderToTrash('prompts',[project,task,version].filter(Boolean).join('/'),scope) });
+  items.push({ label:'Move folder to Trash…', danger:true, onClick:()=>moveKnowledgeFolderToTrash('prompts',[project,task,version].filter(Boolean).join('/'),scope) });
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
 
 function promptItemTrashMenu(ev, path, name, project, task, version) {
   ev.preventDefault(); ev.stopPropagation();
-  showPaperMenu(ev.clientX, ev.clientY, [{label:name,header:true},{label:'↗ Open in Text Editor',onClick:()=>ask('promptOpenTextEditor',{project,task,version,file:name})},{sep:true},{label:'🗑 Move to Trash…',danger:true,onClick:()=>moveKnowledgeItemToTrash('prompts',path,name)}]);
+  showPaperMenu(ev.clientX, ev.clientY, [{label:name,header:true},copyPathMenu(`prompts/${path}`),{sep:true},{label:'Open in Text Editor',onClick:()=>ask('promptOpenTextEditor',{project,task,version,file:name})},{sep:true},{label:'Move to Trash…',danger:true,onClick:()=>moveKnowledgeItemToTrash('prompts',path,name)}]);
 }
 
 function moveKnowledgeFolderToTrash(area, path, name) {
@@ -2137,14 +2218,13 @@ function skillFolderMenu(ev, b64, name) {
   let prefix = '';
   try { prefix = decodeURIComponent(escape(atob(b64))); } catch (e) {}
   if (!prefix) return;
-  const items = [{ label: '📁 ' + name, header: true }];
-  appendPrivacyMenu(items, 'skills', prefix);
-  items.push({ label: '＋ New Skill…', onClick: () => ask('createKnowledgeItem', { area: 'skills', category: prefix }) });
-  items.push({ label: '＋ Create Subfolder…', onClick: () => pkModal({
+  const items = [{ label: name, header: true }, copyPathMenu(`skills/${prefix}/`), { sep: true }];
+  items.push({ label: 'New Skill…', onClick: () => ask('createKnowledgeItem', { area: 'skills', category: prefix }) });
+  items.push({ label: 'Create Subfolder…', onClick: () => pkModal({
     title: 'Create sub-folder', message: 'New folder under “' + prefix + '”.',
     input: true, okLabel: 'Create', onOk: v => { const n = v.trim(); if (n) ask('folderCreate', { area: 'skills', parent: prefix, name: n }); } }) });
   items.push({ sep: true });
-  items.push({ label: '✏ Rename folder…', onClick: () => pkModal({
+  items.push({ label: 'Rename folder…', onClick: () => pkModal({
     title: 'Rename folder', message: 'Renames “' + prefix + '” and re-paths every skill under it.',
     input: true, defaultValue: name, okLabel: 'Rename', onOk: v => {
       const nn = v.trim();
@@ -2152,29 +2232,30 @@ function skillFolderMenu(ev, b64, name) {
       const segs = prefix.split('/'); segs[segs.length - 1] = nn;
       ask('skillRenameFolder', { oldPrefix: prefix, newPrefix: segs.join('/') });
     } }) });
-  items.push({ label: '↪ Move folder…', onClick: () => pkModal({
+  items.push({ label: 'Move folder…', onClick: () => pkModal({
     title: 'Move folder', message: 'New full path for “' + prefix + '” (missing parents are created).',
     input: true, defaultValue: prefix, okLabel: 'Move', onOk: v => {
       const np = v.trim().replace(/^\/+|\/+$/g, '');
       if (np && np !== prefix) ask('skillRenameFolder', { oldPrefix: prefix, newPrefix: np });
     } }) });
+  appendPrivacyMenu(items, 'skills', prefix);
   items.push({ sep: true });
-  items.push({ label: '🗑 Move folder to Trash…', danger: true, onClick: () => pkModal({ title:'Move Skill folder to Trash?', message:`${prefix}\n\nAll Skills and subfolders will remain recoverable from Trash.`, okLabel:'Move to Trash', danger:true, onOk:()=>ask('skillTrashFolder',{path:prefix}) }) });
+  items.push({ label: 'Move folder to Trash…', danger: true, onClick: () => pkModal({ title:'Move Skill folder to Trash?', message:`${prefix}\n\nAll Skills and subfolders will remain recoverable from Trash.`, okLabel:'Move to Trash', danger:true, onOk:()=>ask('skillTrashFolder',{path:prefix}) }) });
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
 
 // Right-click a Skills leaf -> Move / Edit.
 function skillItemMenu(ev, name, category) {
   ev.preventDefault(); ev.stopPropagation();
-  const items = [{ label: '📄 ' + name, header: true }];
-  items.push({ label: '↪ Move…', onClick: () => pkModal({
+  const itemPath = [category, name].filter(Boolean).join('/');
+  const items = [{ label: name, header: true }, copyPathMenu(`skills/${itemPath}.md`), { sep: true }];
+  items.push({ label: 'Edit Content', onClick: () => openMarkdownItem('skills', category, name) });
+  items.push({ label: 'Edit Metadata', onClick: () => editMarkdownMetadataItem('skills', category, name) });
+  items.push({ label: 'Move…', onClick: () => pkModal({
     title: 'Move skill', message: 'Target folder path (blank = root; missing parents are created).',
     input: true, defaultValue: category || '', okLabel: 'Move', onOk: v => ask('skillMove', { name, category: v.trim() }) }) });
   items.push({ sep: true });
-  items.push({ label: '✏ Edit Content', onClick: () => openMarkdownItem('skills', category, name) });
-  items.push({ label: '⚙ Edit Metadata', onClick: () => editMarkdownMetadataItem('skills', category, name) });
-  items.push({ sep: true });
-  items.push({ label: '🗑 Move to Trash…', danger: true, onClick: () => pkModal({ title:'Move Skill to Trash?', message:`${name}\n\nThe Skill remains recoverable from Trash.`, okLabel:'Move to Trash', danger:true, onOk:()=>ask('deleteSkill',{name}) }) });
+  items.push({ label: 'Move to Trash…', danger: true, onClick: () => pkModal({ title:'Move Skill to Trash?', message:`${name}\n\nThe Skill remains recoverable from Trash.`, okLabel:'Move to Trash', danger:true, onOk:()=>ask('deleteSkill',{name}) }) });
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
 
@@ -2184,15 +2265,15 @@ function noteFolderMenu(ev, b64, name) {
   let prefix = '';
   try { prefix = decodeURIComponent(escape(atob(b64))); } catch (e) {}
   if (!prefix) return;
-  const items = [{ label: '📁 ' + name, header: true }];
-  appendPrivacyMenu(items, 'notes', prefix);
-  items.push({ label: '＋ New Note…', onClick: () => ask('createKnowledgeItem', { area: 'notes', category: prefix }) });
-  items.push({ label: '＋ Create Subfolder…', onClick: () => pkModal({
+  const items = [{ label: name, header: true }, copyPathMenu(`notes/${prefix}/`), { sep: true }];
+  items.push({ label: 'New Note…', onClick: () => ask('createKnowledgeItem', { area: 'notes', category: prefix }) });
+  items.push({ label: 'Create Subfolder…', onClick: () => pkModal({
     title: 'Create sub-folder', message: 'New folder under “' + prefix + '”.',
     input: true, okLabel: 'Create', onOk: v => { const n = v.trim(); if (n) ask('folderCreate', { area: 'notes', parent: prefix, name: n }); } }) });
   const fpinned = notePinnedFolders.includes(prefix);
-  items.push({ label: fpinned ? '★ Unpin folder' : '☆ Pin folder', onClick: () => ask('noteSetFolderPinned', { prefix, pinned: !fpinned }) });
-  items.push({ label: '✏ Rename folder…', onClick: () => pkModal({
+  items.push({ sep: true });
+  items.push({ label: fpinned ? 'Unpin folder' : 'Pin folder', onClick: () => ask('noteSetFolderPinned', { prefix, pinned: !fpinned }) });
+  items.push({ label: 'Rename folder…', onClick: () => pkModal({
     title: 'Rename folder', message: 'Renames “' + prefix + '” and re-paths every note under it.',
     input: true, defaultValue: name, okLabel: 'Rename', onOk: v => {
       const nn = v.trim();
@@ -2200,14 +2281,15 @@ function noteFolderMenu(ev, b64, name) {
       const segs = prefix.split('/'); segs[segs.length - 1] = nn;
       ask('noteMoveFolder', { oldPrefix: prefix, newPrefix: segs.join('/') });
     } }) });
-  items.push({ label: '↪ Move folder…', onClick: () => pkModal({
+  items.push({ label: 'Move folder…', onClick: () => pkModal({
     title: 'Move folder', message: 'New full path for “' + prefix + '” (missing parents are created).',
     input: true, defaultValue: prefix, okLabel: 'Move', onOk: v => {
       const np = v.trim().replace(/^\/+|\/+$/g, '');
       if (np && np !== prefix) ask('noteMoveFolder', { oldPrefix: prefix, newPrefix: np });
     } }) });
+  appendPrivacyMenu(items, 'notes', prefix);
   items.push({ sep:true });
-  items.push({ label:'🗑 Move folder to Trash…',danger:true,onClick:()=>moveKnowledgeFolderToTrash('notes',prefix,name) });
+  items.push({ label:'Move folder to Trash…',danger:true,onClick:()=>moveKnowledgeFolderToTrash('notes',prefix,name) });
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
 
@@ -2217,12 +2299,11 @@ function scriptFolderMenu(ev, b64, name) {
   let prefix = '';
   try { prefix = decodeURIComponent(escape(atob(b64))); } catch (e) {}
   if (!prefix) return;
-  const items = [{ label: '📁 ' + name, header: true }];
-  appendPrivacyMenu(items, 'scripts', prefix);
-  items.push({ label: '＋ New Script…', onClick: () => ask('createScript', { folder: prefix }) });
-  items.push({ label: '📂 Open Folder (new window)', onClick: () => ask('openStoreFolder', { area: 'scripts', rel: prefix }) });
+  const items = [{ label: name, header: true }, { label: 'Open Folder in New Window', onClick: () => ask('openStoreFolder', { area: 'scripts', rel: prefix }) }, copyPathMenu(`scripts/${prefix}/`), { sep: true }];
+  items.push({ label: 'New Script…', onClick: () => ask('createScript', { folder: prefix }) });
+  items.push({ label: 'Create Subfolder…', onClick: () => pkModal({ title:'Create sub-folder', message:'New folder under “' + prefix + '”.', input:true, okLabel:'Create', onOk:v=>{ const name=v.trim(); if(name) ask('folderCreate',{area:'scripts',parent:prefix,name}); } }) });
   items.push({ sep: true });
-  items.push({ label: '✏ Rename folder…', onClick: () => pkModal({
+  items.push({ label: 'Rename folder…', onClick: () => pkModal({
     title: 'Rename folder', message: 'Renames “' + prefix + '” and re-paths every script under it.',
     input: true, defaultValue: name, okLabel: 'Rename', onOk: v => {
       const nn = v.trim();
@@ -2230,14 +2311,15 @@ function scriptFolderMenu(ev, b64, name) {
       const segs = prefix.split('/'); segs[segs.length - 1] = nn;
       ask('scriptMoveFolder', { oldPrefix: prefix, newPrefix: segs.join('/') });
     } }) });
-  items.push({ label: '↪ Move folder…', onClick: () => pkModal({
+  items.push({ label: 'Move folder…', onClick: () => pkModal({
     title: 'Move folder', message: 'New full path for “' + prefix + '” (missing parents are created).',
     input: true, defaultValue: prefix, okLabel: 'Move', onOk: v => {
       const np = v.trim().replace(/^\/+|\/+$/g, '');
       if (np && np !== prefix) ask('scriptMoveFolder', { oldPrefix: prefix, newPrefix: np });
     } }) });
+  appendPrivacyMenu(items, 'scripts', prefix);
   items.push({ sep:true });
-  items.push({ label:'🗑 Move folder to Trash…',danger:true,onClick:()=>moveKnowledgeFolderToTrash('scripts',prefix,name) });
+  items.push({ label:'Move folder to Trash…',danger:true,onClick:()=>moveKnowledgeFolderToTrash('scripts',prefix,name) });
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
 
@@ -2245,13 +2327,13 @@ function scriptFolderMenu(ev, b64, name) {
 function scriptItemMenu(ev, relPath, category) {
   ev.preventDefault(); ev.stopPropagation();
   const file = String(relPath).split('/').pop();
-  const items = [{ label: '📄 ' + file, header: true }];
-  items.push({ label: '✏ Edit', onClick: () => ask('openStoreFile', { area: 'scripts', rel: relPath }) });
+  const items = [{ label: file, header: true }, { label: 'Open in Text Editor', onClick: () => ask('openStoreFile', { area: 'scripts', rel: relPath }) }, copyPathMenu(`scripts/${relPath}`)];
   items.push({ sep: true });
-  items.push({ label: '↪ Move…', onClick: () => pkModal({
+  items.push({ label: 'Move…', onClick: () => pkModal({
     title: 'Move script', message: 'Target folder path (blank = root; missing parents are created).',
     input: true, defaultValue: category || '', okLabel: 'Move', onOk: v => ask('scriptMove', { relPath, category: v.trim() }) }) });
-  items.push({ label: '🗑 Move to Trash…', danger: true, onClick: () => moveKnowledgeItemToTrash('scripts',relPath,relPath.split('/').pop()) });
+  items.push({ sep: true });
+  items.push({ label: 'Move to Trash…', danger: true, onClick: () => moveKnowledgeItemToTrash('scripts',relPath,relPath.split('/').pop()) });
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
 
@@ -2259,12 +2341,14 @@ function scriptItemMenu(ev, relPath, category) {
 function packageItemMenu(ev, name) {
   ev.preventDefault(); ev.stopPropagation();
   const items = [
-    { label: '📦 ' + name, header: true },
-    { label: '📂 Open Folder (new window)', onClick: () => ask('openStoreFolder', { area: 'packages', rel: name }) },
+    { label: name, header: true },
+    { label: 'Open Folder in New Window', onClick: () => ask('openStoreFolder', { area: 'packages', rel: name }) },
+    copyPathMenu(`packages/${name}/`),
     { sep: true },
-    { label: '🗑 Delete Package…', danger: true, onClick: () => confirmDeletePackage(name) },
   ];
   appendPrivacyMenu(items, 'packages', name);
+  items.push({ sep: true });
+  items.push({ label: 'Delete Package…', danger: true, onClick: () => confirmDeletePackage(name) });
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
 

@@ -18,9 +18,18 @@ async function main() {
   fs.mkdirSync(settingsDir, { recursive: true });
   fs.mkdirSync(workspaceDir, { recursive: true });
   fs.mkdirSync(storeDir, { recursive: true });
+  const navigationNoteDir = path.join(storeDir, "notes", "Project", "AAGL_Improvement", "Module Optimizer", "LP Processor");
+  fs.mkdirSync(navigationNoteDir, { recursive: true });
+  fs.writeFileSync(path.join(navigationNoteDir, "progress.md.md"), [
+    "---",
+    'title: "LPFeatureProcessor v1.1 Optimization Progress"',
+    'type: "general"',
+    "---",
+    "fixture",
+  ].join("\n"));
   fs.writeFileSync(path.join(settingsDir, "settings.json"), JSON.stringify({
     "personalKnowledge.storePath": storeDir,
-    "personalKnowledge.openOnStartup": false,
+    "personalKnowledge.openOnStartup": true,
     "personalKnowledge.logLevel": "debug",
   }, null, 2));
 
@@ -97,11 +106,12 @@ async function startVirtualDisplay(root) {
 function assertStartupResult(resultPath) {
   if (!fs.existsSync(resultPath)) throw new Error("VS Code exited without running the startup assertions");
   const result = JSON.parse(fs.readFileSync(resultPath, "utf8"));
-  const required = ["activated", "commandsRegistered", "panelCreated", "webviewReady"];
+  const required = ["activated", "commandsRegistered", "panelCreated", "webviewReady", "deepNavigationNoteVisible", "frameworkBeforeActivationComplete"];
   for (const key of required) {
     if (result[key] !== true) throw new Error(`Startup assertion did not pass: ${key}`);
   }
-  console.log("Extension startup test: activation, commands, panel creation, and Webview ready handshake OK");
+  if (!Number.isFinite(result.activationDurationMs)) throw new Error("Startup assertion did not report activationDurationMs");
+  console.log(`Extension startup test: activation ${result.activationDurationMs}ms, commands, panel creation, and Webview ready handshake OK`);
 }
 
 main().catch(error => {

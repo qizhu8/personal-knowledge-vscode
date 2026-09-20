@@ -6,6 +6,15 @@ const path = require("path");
 
 const root = path.join(__dirname, "..");
 const { setStorePath, folderCreate, folderList, folderRename, folderDeletePromote } = require("../dist/filestore.js");
+const extensionSource = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
+
+assert.match(extensionSource, /let gitCommitQueue = Promise\.resolve\(\)/,
+  "automatic Git commits must be serialized without blocking the extension host");
+assert.match(extensionSource, /execFile\("git", args/);
+assert.doesNotMatch(extensionSource, /function gitCommit\(msg: string\): void \{[\s\S]{0,500}execSync/,
+  "folder UI refresh must not wait for synchronous git add/commit");
+assert.match(extensionSource, /case "folderCreate"[\s\S]{0,900}_treeProvider\?\.refresh\(\)[\s\S]{0,500}respond\(\{ command: "list"/,
+  "folder creation must refresh navigation and category trees in the same request");
 const promptStorage = require("../dist/storage.js");
 const store = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-navigation-groups-"));
 
@@ -50,6 +59,12 @@ try {
     assert.match(manifest, new RegExp(`pk-\\(skills\\|notes\\|papers\\|prompts\\|scripts\\)`));
   }
   assert.match(extension, /slash-separated paths create multiple levels/);
+  assert.doesNotMatch(extension, /_maxDepth|maxTreeDepth|folderSegs = e\.path\.slice/, "generic Navigation trees must preserve every hierarchy level");
+  assert.match(extension, /for \(const seg of e\.path\)/, "Navigation path construction must traverse the complete path");
+  assert.match(extension, /for \(const segment of folder\.split\("\/"\)\.filter\(Boolean\)\)/, "empty deep folders must preserve every hierarchy level");
+  assert.strictEqual(packageJson.contributes.configuration.properties["personalKnowledge.maxTreeDepth"], undefined);
+  assert.match(extension, /item\.description = relativePath\.split\("\/"\)\.pop\(\) \|\| relativePath/, "Navigation Notes must display the real filename beside the frontmatter title");
+  assert.match(extension, /item\.tooltip = `\$\{n\.title\}\\nnotes\/\$\{relativePath\}`/, "Navigation Notes must expose their full relative path");
   assert.match(extension, /Prompts support three group levels/);
   assert.match(extension, /folderDeletePromote\(group\.area, group\.path, fallback\)/);
   assert.match(extension, /"skill-folder": "skills", "note-folder": "notes", "paper-folder": "papers", "script-folder": "scripts"/);

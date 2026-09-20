@@ -1,13 +1,18 @@
 import * as fs from "fs";
 import * as path from "path";
-import { createCipheriv, createDecipheriv, createHash, createHmac, generateKeyPairSync, randomBytes, scryptSync, sign, verify } from "crypto";
-import { spawn } from "child_process";
+import { createCipheriv, createHash, createHmac, generateKeyPairSync, randomBytes, scryptSync, sign, verify } from "crypto";
+import { fork, spawn } from "child_process";
 import { hostname } from "os";
+import { Readable, Transform, TransformCallback } from "stream";
+import { pipeline } from "stream/promises";
 import { connect, MqttClient } from "./subscription-mqtt-client";
 import { buildSyncBundle, emptySyncSelection, SyncSelection } from "./sync-server";
 import { normalizeClientIp, normalizeIpBlockRules } from "./subscription-ip-policy";
 import { serverExport } from "./servers";
 import { isContentItemPrivate } from "./content-privacy";
+import { ChatRoomLock } from "./chat-room-lock";
+import { withCrossProcessLock, withCrossProcessLockSync } from "./cross-process-lock";
+import { stableUserPort } from "./user-service-ports";
 
 export type SharedContentType = "skills" | "notes" | "papers" | "prompts" | "scripts" | "packages" | "servers";
 export const SHARED_CONTENT_TYPES: SharedContentType[] = ["skills", "notes", "papers", "prompts", "scripts", "packages", "servers"];
@@ -22,6 +27,7 @@ export interface ShareSummary {
   topics: string[];
   tags: string[];
   itemCount: number;
+  snapshotBytes?: number;
   metadataOnly: true;
   secretProtected?: boolean;
   secretSalt?: string;
@@ -30,8 +36,12 @@ export interface ShareSummary {
 export interface ShareDefinition {
   shareId: string;
   name: string;
+  published?: boolean;
   visibility: "public" | "unlisted";
   revision: number;
+  revisionDate: string;
+  dailyRevision: number;
+  revisionLabel: string;
   contentTypes: SharedContentType[];
   selected: SyncSelection;
   folders: Partial<Record<SharedContentType, string[]>>;
@@ -82,7 +92,7 @@ export interface CachedSubscriptionGroup {
   shareId: string;
   revision: number;
   syncedAt: string;
-  items: { key: string; title: string; path: string; type: SharedContentType; packageName?: string }[];
+  items: { key: string; title: string; path: string; type: SharedContentType; pkmPath: string; packageName?: string }[];
 }
 export interface CachedForkSource {
   type: SharedContentType;
@@ -97,6 +107,7 @@ export interface CachedForkSource {
 export interface SharedMarketEvents {
   onChanged?: () => void;
   onWarning?: (message: string) => void;
+  onDiagnostic?: (event: Record<string, string | number | boolean>) => void;
 }
 export interface SubscriptionSecretStorage {
   get(key: string): Thenable<string | undefined>;
@@ -154,13 +165,6 @@ function encryptSnapshot(plaintext: Buffer, key: Buffer): Buffer {
   const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   return Buffer.from(JSON.stringify({ v: 1, alg: "A256GCM", iv: iv.toString("base64url"), ciphertext: ciphertext.toString("base64url"), tag: cipher.getAuthTag().toString("base64url") }));
 }
-function decryptSnapshot(envelope: Buffer, key: Buffer): Buffer {
-  const parsed = JSON.parse(envelope.toString("utf8"));
-  if (parsed?.v !== 1 || parsed?.alg !== "A256GCM") throw new Error("Encrypted Sync snapshot format is invalid.");
-  const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(parsed.iv, "base64url"));
-  decipher.setAuthTag(Buffer.from(parsed.tag, "base64url"));
-  return Buffer.concat([decipher.update(Buffer.from(parsed.ciphertext, "base64url")), decipher.final()]);
-}
 function unique(values: unknown[], limit = 100): string[] {
   return [...new Set(values.flatMap(value => Array.isArray(value) ? value : [value]).map(value => String(value || "").trim()).filter(Boolean))]
     .sort((left, right) => left.localeCompare(right)).slice(0, limit);
@@ -198,6 +202,19 @@ function safeRelativePath(...parts: unknown[]): string {
   if (!cleaned.length) return "untitled";
   return cleaned.join("/");
 }
+export function subscribedContentPath(nodeId: string, shareId: string, type: SharedContentType, contentPath = ""): string {
+  const suffix = String(contentPath || "").replace(/\\/g, "/").split("/").filter(Boolean).map(encodeURIComponent).join("/");
+  return `pkm://subscriptions/${encodeURIComponent(nodeId)}/${encodeURIComponent(shareId)}/${type}${suffix ? `/${suffix}` : ""}`;
+}
+
+export function parseSubscribedContentPath(value: string): { nodeId: string; shareId: string; contentType: SharedContentType; path: string } {
+  const url = new URL(value);
+  if (url.protocol !== "pkm:" || url.hostname !== "subscriptions") throw new Error("Invalid subscribed content path.");
+  const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+  const [nodeId, shareId, contentType, ...contentParts] = parts;
+  if (!nodeId || !shareId || !SHARED_CONTENT_TYPES.includes(contentType as SharedContentType)) throw new Error("Invalid subscribed content path.");
+  return { nodeId, shareId, contentType: contentType as SharedContentType, path: contentParts.join("/") };
+}
 function withoutSignature<T extends { signature: string }>(value: T): Omit<T, "signature"> {
   const { signature: _signature, ...unsigned } = value;
   return unsigned;
@@ -206,24 +223,38 @@ function withoutSignature<T extends { signature: string }>(value: T): Omit<T, "s
 function defaultAdvertisedHost(): string {
   return hostname().trim().replace(/\.$/, "") || "127.0.0.1";
 }
+function revisionDate(value = new Date().toISOString()): string {
+  return String(value || "").slice(0, 10).replace(/-/g, "") || new Date().toISOString().slice(0, 10).replace(/-/g, "");
+}
+
+const MAX_CACHED_SEARCH_FILE_BYTES = 256 * 1024;
+const MAX_CACHED_SEARCH_RESULTS = 200;
+const MAX_SNAPSHOT_DOWNLOAD_BYTES = 512 * 1024 * 1024;
 
 export class SharedMarketManager {
   private state: PersistedState;
   private mqttClients = new Map<string, MqttClient>();
   private pollTimer: NodeJS.Timeout | undefined;
   private healthTimer: NodeJS.Timeout | undefined;
+  private backgroundElectionTimer: NodeJS.Timeout | undefined;
+  private backgroundLock: ChatRoomLock | undefined;
   private gatewayStatus: "stopped" | "running" | "error" = "stopped";
   private gatewayError = "";
   private gatewayConfigurationId = "";
+  private gatewayEnsure: Promise<void> | undefined;
   private warned = new Set<string>();
   private publishedRefresh: Promise<number> | undefined;
   private publishedRefreshAgain = false;
   private readonly publisherUser: string;
   private readonly publisherHost: string;
+  private readonly gatewayRuntimeVersion: string;
+  private stateMutationDepth = 0;
+  private pendingMqttRefreshes = new Set<string>();
 
-  constructor(private readonly storageDir: string, private readonly gatewayScript: string, displayName: string, private readonly events: SharedMarketEvents = {}, private readonly secrets?: SubscriptionSecretStorage, identity?: { user: string; host: string }) {
+  constructor(private readonly storageDir: string, private readonly gatewayScript: string, displayName: string, private readonly events: SharedMarketEvents = {}, private readonly secrets?: SubscriptionSecretStorage, identity?: { user: string; host: string; version?: string }) {
     this.publisherUser = identity?.user.trim() || "";
     this.publisherHost = identity?.host.trim() || "";
+    this.gatewayRuntimeVersion = identity?.version?.trim() || "dev";
     fs.mkdirSync(storageDir, { recursive: true });
     const statePath = this.statePath();
     if (fs.existsSync(statePath)) {
@@ -241,24 +272,30 @@ export class SharedMarketManager {
         share.controlPort ||= 0;
         share.dataPort ||= 0;
         share.contentHash ||= "";
+        share.revisionDate ||= revisionDate(share.summary?.updatedAt);
+        share.dailyRevision = Math.max(1, Number(share.dailyRevision || 1));
+        share.revisionLabel = `${share.revisionDate}.r${share.dailyRevision}`;
       }
       this.state.subscriptions ||= [];
       for (const record of this.state.subscriptions || []) record.brokerName ||= this.cachedBrokerName(record);
       this.save();
+      this.prunePublishedSnapshots();
     }
     else {
       const keys = generateKeyPairSync("ed25519");
       const publicKey = keys.publicKey.export({ type: "spki", format: "pem" }).toString();
       this.state = {
-        schema: 1, nodeId: nodeIdForPublicKey(publicKey), displayName, port: 19877, bindHost: "0.0.0.0", advertisedHost: defaultAdvertisedHost(),
+        schema: 1, nodeId: nodeIdForPublicKey(publicKey), displayName, port: stableUserPort("subscriptionPort"), bindHost: "0.0.0.0", advertisedHost: defaultAdvertisedHost(),
         publicKey, privateKey: keys.privateKey.export({ type: "pkcs8", format: "pem" }).toString(), enabled: false,
         shares: [], subscriptions: [],
       };
       this.save();
     }
+    this.pruneStaleDownloads();
   }
 
   get snapshot(): object {
+    if (!this.stateMutationDepth) this.reloadPersistedState();
     return {
       nodeId: this.state.nodeId, displayName: this.state.displayName, port: this.state.port, advertisedHost: this.state.advertisedHost,
       enabled: this.state.enabled, gatewayStatus: this.gatewayStatus, gatewayError: this.gatewayError,
@@ -267,9 +304,45 @@ export class SharedMarketManager {
     };
   }
 
-  cachedGroups(type: SharedContentType, query = ""): CachedSubscriptionGroup[] {
+  private reloadPersistedState(): void {
+    try {
+      const latest = JSON.parse(fs.readFileSync(this.statePath(), "utf8")) as PersistedState;
+      if (latest?.nodeId === this.state.nodeId) this.state = latest;
+    } catch { /* retain the last complete atomic snapshot */ }
+  }
+
+  private async withStateMutation<T>(action: () => Promise<T>): Promise<T> {
+    if (this.stateMutationDepth) return action();
+    return withCrossProcessLock(path.join(this.storageDir, "subscriptions-state.lock"), "Subscription state mutation", 10 * 60_000, async () => {
+      this.reloadPersistedState();
+      this.stateMutationDepth++;
+      try { return await action(); }
+      finally {
+        this.stateMutationDepth--;
+        if (!this.stateMutationDepth && this.pendingMqttRefreshes.size) {
+          const pending = [...this.pendingMqttRefreshes];
+          this.pendingMqttRefreshes.clear();
+          setImmediate(() => { for (const id of pending) void this.refresh(id).catch(() => {}); });
+        }
+      }
+    });
+  }
+
+  private withStateMutationSync<T>(action: () => T): T {
+    if (this.stateMutationDepth) return action();
+    return withCrossProcessLockSync(path.join(this.storageDir, "subscriptions-state.lock"), "Subscription state mutation", () => {
+      this.reloadPersistedState();
+      this.stateMutationDepth++;
+      try { return action(); }
+      finally { this.stateMutationDepth--; }
+    });
+  }
+
+  cachedGroups(type: SharedContentType, query = "", maxResults = MAX_CACHED_SEARCH_RESULTS): CachedSubscriptionGroup[] {
     const normalizedQuery = query.trim().toLocaleLowerCase();
+    let remaining = Math.max(1, maxResults);
     return this.state.subscriptions.flatMap(record => {
+      if (remaining <= 0) return [];
       const root = path.join(this.storageDir, "cache", record.nodeId, record.shareId);
       const contentRoot = path.join(root, "content", type);
       if (!fs.existsSync(contentRoot)) return [];
@@ -278,6 +351,7 @@ export class SharedMarketManager {
       const items: CachedSubscriptionGroup["items"] = [];
       const walk = (directory: string, relative: string): void => {
         for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+          if (remaining <= 0) return;
           if (entry.name.endsWith(".pkm-source.json")) continue;
           const rel = relative ? `${relative}/${entry.name}` : entry.name;
           const full = path.join(directory, entry.name);
@@ -285,12 +359,21 @@ export class SharedMarketManager {
           if (!entry.isFile()) continue;
           const label = path.basename(entry.name, path.extname(entry.name));
           if (normalizedQuery) {
-            let content = "";
-            try { content = fs.readFileSync(full, "utf8").toLocaleLowerCase(); } catch { /* binary/unreadable entries are not searchable */ }
-            if (![record.alias, record.publisher, rel, label, content].some(value => String(value || "").toLocaleLowerCase().includes(normalizedQuery))) continue;
+            const metadataMatches = [record.alias, record.publisher, rel, label]
+              .some(value => String(value || "").toLocaleLowerCase().includes(normalizedQuery));
+            if (!metadataMatches) {
+              let contentMatches = false;
+              try {
+                if (fs.statSync(full).size <= MAX_CACHED_SEARCH_FILE_BYTES) {
+                  contentMatches = fs.readFileSync(full, "utf8").toLocaleLowerCase().includes(normalizedQuery);
+                }
+              } catch { /* binary, large, or unreadable entries are metadata-searchable only */ }
+              if (!contentMatches) continue;
+            }
           }
           const encoded = Buffer.from(JSON.stringify({ subscriptionId: record.id, type, path: rel })).toString("base64url");
-          items.push({ key: encoded, title: label, path: rel, type });
+          items.push({ key: encoded, title: label, path: rel, type, pkmPath: subscribedContentPath(record.nodeId, record.shareId, type, rel) });
+          remaining -= 1;
         }
       };
       walk(contentRoot, "");
@@ -399,6 +482,7 @@ export class SharedMarketManager {
   }
 
   async configure(config: { enabled: boolean; port: number; advertisedHost: string; displayName: string }): Promise<void> {
+    if (!this.stateMutationDepth) return this.withStateMutation(() => this.configure(config));
     const port = Number(config.port);
     if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Subscription port must be between 1024 and 65535.");
     const portChanged = this.state.port !== port;
@@ -415,6 +499,7 @@ export class SharedMarketManager {
   }
 
   async setGatewayOnline(online: boolean): Promise<void> {
+    if (!this.stateMutationDepth) return this.withStateMutation(() => this.setGatewayOnline(online));
     this.state.enabled = online;
     this.save();
     if (online) await this.ensureGateway();
@@ -423,6 +508,8 @@ export class SharedMarketManager {
   }
 
   async upsertShare(input: { shareId?: string; name: string; visibility?: "public" | "unlisted"; contentTypes: SharedContentType[]; selected?: Partial<SyncSelection>; folders?: Partial<Record<SharedContentType, string[]>>; accessMode?: "block-list" | "white-list"; ipRules?: string[]; accountMode?: "open" | "block-list" | "white-list"; accountRules?: string[]; protection?: "open" | "secret-protected"; secret?: string; controlPort?: number; dataPort?: number }): Promise<ShareDefinition> {
+    if (!this.stateMutationDepth) return this.withStateMutation(() => this.upsertShare(input));
+    const operationStartedAt = Date.now(), memoryBefore = process.memoryUsage();
     const name = input.name.trim();
     if (!name) throw new Error("Share name is required.");
     const contentTypes = input.contentTypes.filter(type => SHARED_CONTENT_TYPES.includes(type));
@@ -465,15 +552,21 @@ export class SharedMarketManager {
     atomicWrite(snapshotPath, snapshot, 0o600);
     const revision = (existing?.revision || 0) + 1;
     const summary = this.buildSummary(shareId, name, revision, snapshot, bundle, protection === "secret-protected", secretSalt);
-    const definition: ShareDefinition = { shareId, name, visibility: input.visibility || existing?.visibility || "public", revision, contentTypes, selected, folders, accessMode, ipRules, accountMode, accountRules, protection, controlPort, dataPort, secretSalt, authVerifier: keys?.authVerifier.toString("base64url"), contentHash: hash(plaintext), summary, snapshotPath };
+    const nextRevisionDate = revisionDate(summary.updatedAt);
+    const dailyRevision = existing?.revisionDate === nextRevisionDate ? Math.max(1, Number(existing.dailyRevision || 1)) + 1 : 1;
+    const revisionLabel = `${nextRevisionDate}.r${dailyRevision}`;
+    const definition: ShareDefinition = { shareId, name, published: existing?.published !== false, visibility: input.visibility || existing?.visibility || "public", revision, revisionDate: nextRevisionDate, dailyRevision, revisionLabel, contentTypes, selected, folders, accessMode, ipRules, accountMode, accountRules, protection, controlPort, dataPort, secretSalt, authVerifier: keys?.authVerifier.toString("base64url"), contentHash: hash(plaintext), summary, snapshotPath };
     this.state.shares = [...this.state.shares.filter(share => share.shareId !== shareId), definition];
     this.save();
     await this.reloadGatewayConfiguration(this.state.port, this.gatewayConfigurationId);
+    this.prunePublishedSnapshots(shareId);
+    this.operationDiagnostic("publish", operationStartedAt, memoryBefore, { shareId, revision, snapshotBytes: snapshot.length, itemCount: summary.itemCount });
     this.changed();
     return definition;
   }
 
   async refreshPublishedShares(): Promise<number> {
+    if (!this.stateMutationDepth) return this.withStateMutation(() => this.refreshPublishedShares());
     if (this.publishedRefresh) {
       this.publishedRefreshAgain = true;
       return this.publishedRefresh;
@@ -489,6 +582,10 @@ export class SharedMarketManager {
     do {
       this.publishedRefreshAgain = false;
       for (const share of [...this.state.shares]) {
+        if (share.protection === "secret-protected" && !await this.secrets?.get(this.publisherSecretKey(share.shareId))) {
+          this.warning(`protected-secret:${share.shareId}`, `Secret Protected Broker "${share.name}" was not rebuilt because its secret is unavailable. Its existing snapshot remains unchanged; rotate the secret to resume automatic publication.`);
+          continue;
+        }
         const refreshed = await this.upsertShare({ shareId: share.shareId, name: share.name, visibility: share.visibility, contentTypes: share.contentTypes, selected: share.selected, folders: share.folders || {}, accessMode: share.accessMode, ipRules: share.ipRules || [], accountMode: share.accountMode, accountRules: share.accountRules || [], protection: share.protection, controlPort: share.controlPort, dataPort: share.dataPort });
         if (refreshed.revision !== share.revision) changed += 1;
       }
@@ -497,6 +594,7 @@ export class SharedMarketManager {
   }
 
   async deleteShare(shareId: string): Promise<void> {
+    if (!this.stateMutationDepth) return this.withStateMutation(() => this.deleteShare(shareId));
     const share = this.state.shares.find(item => item.shareId === shareId);
     if (!share) return;
     this.state.shares = this.state.shares.filter(item => item.shareId !== shareId);
@@ -516,7 +614,20 @@ export class SharedMarketManager {
     this.changed();
   }
 
+  async setSharePublished(shareId: string, published: boolean): Promise<ShareDefinition> {
+    if (!this.stateMutationDepth) return this.withStateMutation(() => this.setSharePublished(shareId, published));
+    const share = this.state.shares.find(item => item.shareId === shareId);
+    if (!share) throw new Error("Broker not found.");
+    if ((share.published !== false) === published) return share;
+    share.published = published;
+    this.save();
+    await this.reloadGatewayConfiguration(this.state.port, this.gatewayConfigurationId);
+    this.changed();
+    return share;
+  }
+
   async rotateShareSecret(shareId: string, controlPort?: number): Promise<{ share: ShareDefinition; secret: string }> {
+    if (!this.stateMutationDepth) return this.withStateMutation(() => this.rotateShareSecret(shareId, controlPort));
     const share = this.state.shares.find(item => item.shareId === shareId);
     if (!share) throw new Error("Share Broker was not found.");
     if (share.protection !== "secret-protected") throw new Error("Only Secret Protected Brokers have a rotatable secret.");
@@ -537,13 +648,14 @@ export class SharedMarketManager {
     return protectedSecretCode(share.controlPort, share.secretSalt!, material);
   }
 
-  unblockIp(shareId: string, ip: string): void {
+  async unblockIp(shareId: string, ip: string): Promise<void> {
     const normalized = normalizeClientIp(ip);
     try {
       const stats = JSON.parse(fs.readFileSync(this.subscriberStatsPath(), "utf8"));
       if (stats?.automaticBlocks?.[shareId]) delete stats.automaticBlocks[shareId][normalized];
       if (stats?.secretFailures?.[shareId]) delete stats.secretFailures[shareId][normalized];
       atomicWrite(this.subscriberStatsPath(), JSON.stringify(stats, null, 2), 0o600);
+      await this.reloadGatewayConfiguration(this.state.port, this.gatewayConfigurationId);
       this.changed();
     } catch { /* no automatic block state */ }
   }
@@ -564,6 +676,7 @@ export class SharedMarketManager {
   }
 
   async subscribe(magicLink: string, alias = "", secret = ""): Promise<SubscriptionRecord> {
+    if (!this.stateMutationDepth) return this.withStateMutation(() => this.subscribe(magicLink, alias, secret));
     const payload = parseShareMagicLink(magicLink);
     let endpoint = payload.endpoint;
     let secretMaterial = "";
@@ -595,6 +708,7 @@ export class SharedMarketManager {
   }
 
   renameSubscription(id: string, alias: string): void {
+    if (!this.stateMutationDepth) return this.withStateMutationSync(() => this.renameSubscription(id, alias));
     const record = this.requireSubscription(id);
     record.alias = alias.trim();
     const metadataPath = path.join(this.storageDir, "cache", record.nodeId, record.shareId, "_subscription.json");
@@ -610,6 +724,7 @@ export class SharedMarketManager {
   }
 
   removeSubscription(id: string): void {
+    if (!this.stateMutationDepth) return this.withStateMutationSync(() => this.removeSubscription(id));
     const record = this.requireSubscription(id);
     this.state.subscriptions = this.state.subscriptions.filter(item => item.id !== id);
     fs.rmSync(path.join(this.storageDir, "cache", record.nodeId, record.shareId), { recursive: true, force: true });
@@ -620,6 +735,7 @@ export class SharedMarketManager {
   }
 
   async refresh(id: string, forceDownload = false): Promise<SubscriptionRecord> {
+    if (!this.stateMutationDepth) return this.withStateMutation(() => this.refresh(id, forceDownload));
     const record = this.requireSubscription(id);
     const previousStatus = record.status;
     const previousError = record.error;
@@ -663,6 +779,18 @@ export class SharedMarketManager {
   }
 
   startBackground(): void {
+    this.tryBecomeBackgroundLeader();
+    if (!this.backgroundElectionTimer) {
+      this.backgroundElectionTimer = setInterval(() => this.tryBecomeBackgroundLeader(), 15_000);
+      this.backgroundElectionTimer.unref?.();
+    }
+  }
+
+  private tryBecomeBackgroundLeader(): void {
+    if (this.backgroundLock) return;
+    try { this.backgroundLock = ChatRoomLock.acquire(path.join(this.storageDir, "subscription-background.lock"), this.state.nodeId); }
+    catch { return; }
+    this.reloadPersistedState();
     for (const record of this.state.subscriptions) this.connectMqtt(record);
     if (!this.pollTimer) {
       this.pollTimer = setInterval(() => { for (const record of this.state.subscriptions) void this.refresh(record.id).catch(() => {}); }, 30 * 60_000);
@@ -681,8 +809,9 @@ export class SharedMarketManager {
     if (this.state.enabled) {
       try {
         const response = await fetch(`http://127.0.0.1:${this.state.port}/.well-known/pkm-node`, { signal: AbortSignal.timeout(2_000) });
-        const node = await response.json() as { nodeId?: string };
+        const node = await response.json() as { nodeId?: string; gatewayVersion?: string; gatewayProtocolVersion?: string };
         if (node.nodeId !== this.state.nodeId) throw new Error(`Port ${this.state.port} is not serving this PKM node.`);
+        if (!this.gatewayCompatible(node)) await this.ensureGateway();
         this.gatewayStatus = "running"; this.gatewayError = ""; this.warned.delete("gateway"); this.warned.delete("gateway-restarted");
       } catch (probeError) {
         try {
@@ -719,8 +848,12 @@ export class SharedMarketManager {
   dispose(): void {
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.healthTimer) clearInterval(this.healthTimer);
+    if (this.backgroundElectionTimer) clearInterval(this.backgroundElectionTimer);
+    this.backgroundElectionTimer = undefined;
     for (const client of this.mqttClients.values()) client.end(true);
     this.mqttClients.clear();
+    this.backgroundLock?.release();
+    this.backgroundLock = undefined;
   }
 
   private buildSummary(shareId: string, name: string, revision: number, snapshot: Buffer, bundle: any, secretProtected = false, secretSalt?: string): ShareSummary {
@@ -739,6 +872,7 @@ export class SharedMarketManager {
     const unsigned = {
       shareId, name, revision, collectionHash: hash(snapshot), updatedAt: new Date().toISOString(), counts,
       topics: unique(topics, 100), tags: unique(tags, 100), itemCount: Object.values(counts).reduce((sum, count) => sum + count, 0), metadataOnly: true as const, secretProtected, ...(secretSalt ? { secretSalt } : {}),
+      snapshotBytes: snapshot.length,
     };
     const signature = sign(null, Buffer.from(JSON.stringify(unsigned)), this.state.privateKey).toString("base64url");
     return { ...unsigned, signature };
@@ -777,6 +911,8 @@ export class SharedMarketManager {
   }
 
   private async downloadSnapshot(record: SubscriptionRecord, summary: ShareSummary): Promise<void> {
+    const operationStartedAt = Date.now(), memoryBefore = process.memoryUsage();
+    if (Number(summary.snapshotBytes || 0) > MAX_SNAPSHOT_DOWNLOAD_BYTES) throw new Error(`Subscription snapshot exceeds the ${MAX_SNAPSHOT_DOWNLOAD_BYTES / 1024 / 1024} MB safety limit.`);
     const identityProof = this.subscriberProof(record.shareId);
     let derivedKeys: { authVerifier: Buffer; contentKey: Buffer } | undefined;
     if (summary.secretProtected) {
@@ -794,79 +930,69 @@ export class SharedMarketManager {
     if (new URL(brokerUrl).port === new URL(record.endpoint).port) throw new Error("Broker returned the Common Control Port for content transfer.");
     const bundleResponse = await fetch(`${brokerUrl}/sync/bundle`, { headers: { Authorization: `Bearer ${ticket.ticket}` }, signal: AbortSignal.timeout(120_000) });
     if (!bundleResponse.ok) throw new Error(`Background Sync returned ${bundleResponse.status}.`);
-    let bytes: Buffer<ArrayBufferLike> = Buffer.from(await bundleResponse.arrayBuffer());
-    if (summary.secretProtected) {
-      if (!derivedKeys || bytes.length < 36 || bytes.subarray(0, 8).toString("ascii") !== "PKMENC1\n") throw new Error("Secret Protected Broker returned an invalid encrypted transfer.");
-      const port = Number(new URL(brokerUrl).port);
-      const transferKey = createHmac("sha256", derivedKeys.authVerifier).update(`pkm-transfer:v1:${record.nodeId}:${record.shareId}:${summary.revision}:${port}:${ticket.ticket}`).digest();
-      const iv = bytes.subarray(8, 20), tag = bytes.subarray(bytes.length - 16), ciphertext = bytes.subarray(20, bytes.length - 16);
-      const decipher = createDecipheriv("aes-256-gcm", transferKey, iv); decipher.setAuthTag(tag);
-      bytes = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-    }
-    if (hash(bytes) !== summary.collectionHash) throw new Error("Background Sync checksum mismatch.");
-    if (summary.secretProtected) bytes = decryptSnapshot(bytes, derivedKeys!.contentKey);
-    const bundle = JSON.parse(bytes.toString("utf8"));
-    const syncedAt = new Date().toISOString();
-    this.materializeSubscriptionCache(record, summary, bundle, bytes, syncedAt);
-    record.lastUpdated = syncedAt;
-  }
-
-  private materializeSubscriptionCache(record: SubscriptionRecord, summary: ShareSummary, bundle: any, bytes: Buffer, syncedAt: string): void {
-    const parent = path.join(this.storageDir, "cache", record.nodeId);
-    const destination = path.join(parent, record.shareId);
-    const staging = path.join(parent, `.${record.shareId}.${randomBytes(5).toString("hex")}.staging`);
-    fs.mkdirSync(staging, { recursive: true });
-    const writeCached = (type: SharedContentType, remotePath: string, content: string): void => {
-      const relative = safeRelativePath("content", type, remotePath);
-      const target = path.join(staging, ...relative.split("/"));
-      atomicWrite(target, content, 0o600);
-      atomicWrite(`${target}.pkm-source.json`, JSON.stringify({
-        schema: 1,
-        subscriptionId: record.id,
-        subscriptionAlias: record.alias,
-        brokerName: summary.name,
-        publisher: record.publisher,
-        nodeId: record.nodeId,
-        shareId: record.shareId,
-        remotePath,
-        type,
-        revision: summary.revision,
-        contentHash: hash(content),
-        syncedAt,
-      }, null, 2), 0o600);
-    };
-    for (const skill of bundle.skills || []) writeCached("skills", `${skill.metadata?.category ? `${skill.metadata.category}/` : ""}${skill.name}.md`, String(skill.content || ""));
-    for (const note of bundle.notes || []) writeCached("notes", `${note.slug || note.title || "note"}.md`, String(note.content || ""));
-    for (const paper of bundle.papers || []) writeCached("papers", `${paper.category ? `${paper.category}/` : ""}${paper.slug || paper.title || "paper"}.md`, String(paper.content || ""));
-    for (const prompt of bundle.prompts || []) writeCached("prompts", `${prompt.project}/${prompt.task}/${prompt.version}/${prompt.file}`, String(prompt.content || ""));
-    for (const script of bundle.scripts || []) writeCached("scripts", `${script.category === "(root)" ? "" : `${script.category}/`}${script.file}`, String(script.content || ""));
-    for (const pkg of bundle.packages || []) for (const file of pkg.files || []) writeCached("packages", `${pkg.name}/${file.path}`, String(file.content || ""));
-    for (const server of bundle.servers || []) writeCached("servers", `${server.slug}/server.link.json`, JSON.stringify({ name: server.name, category: server.category, tags: server.tags, url: server.url || "" }, null, 2));
-    atomicWrite(path.join(staging, "bundle.json"), bytes, 0o600);
-    atomicWrite(path.join(staging, "summary.json"), JSON.stringify(summary, null, 2), 0o600);
-    atomicWrite(path.join(staging, "_subscription.json"), JSON.stringify({
-      schema: 1,
-      subscriptionId: record.id,
-      alias: record.alias,
-      brokerName: summary.name,
-      publisher: record.publisher,
-      nodeId: record.nodeId,
-      shareId: record.shareId,
-      endpoint: record.endpoint,
-      revision: summary.revision,
-      collectionHash: summary.collectionHash,
-      syncedAt,
-      physicalIsolation: "VS Code globalStorage; outside Knowledge Root",
-    }, null, 2), 0o600);
-    const backup = `${destination}.previous`;
-    fs.rmSync(backup, { recursive: true, force: true });
-    if (fs.existsSync(destination)) fs.renameSync(destination, backup);
-    try { fs.renameSync(staging, destination); fs.rmSync(backup, { recursive: true, force: true }); }
-    catch (error) {
-      if (!fs.existsSync(destination) && fs.existsSync(backup)) fs.renameSync(backup, destination);
-      fs.rmSync(staging, { recursive: true, force: true });
+    const contentLength = Number(bundleResponse.headers.get("content-length") || 0);
+    if (contentLength > MAX_SNAPSHOT_DOWNLOAD_BYTES + 64 * 1024) throw new Error(`Background Sync payload exceeds the ${MAX_SNAPSHOT_DOWNLOAD_BYTES / 1024 / 1024} MB safety limit.`);
+    if (!bundleResponse.body) throw new Error("Background Sync returned an empty payload.");
+    const downloadsDir = path.join(this.storageDir, "downloads");
+    fs.mkdirSync(downloadsDir, { recursive: true });
+    const downloadPath = path.join(downloadsDir, `${record.shareId}.${randomBytes(6).toString("hex")}.download`);
+    let downloadedBytes = 0;
+    const limit = new Transform({
+      transform(chunk: Buffer, _encoding: BufferEncoding, callback: TransformCallback) {
+        downloadedBytes += chunk.length;
+        if (downloadedBytes > MAX_SNAPSHOT_DOWNLOAD_BYTES + 64 * 1024) callback(new Error(`Background Sync payload exceeds the ${MAX_SNAPSHOT_DOWNLOAD_BYTES / 1024 / 1024} MB safety limit.`));
+        else callback(null, chunk);
+      },
+    });
+    try {
+      await pipeline(Readable.fromWeb(bundleResponse.body as any), limit, fs.createWriteStream(downloadPath, { mode: 0o600 }));
+    } catch (error) {
+      fs.rmSync(downloadPath, { force: true });
       throw error;
     }
+    let transferKey: Buffer | undefined;
+    if (summary.secretProtected) {
+      if (!derivedKeys) throw new Error("Secret Protected Broker keys are missing.");
+      const port = Number(new URL(brokerUrl).port);
+      transferKey = createHmac("sha256", derivedKeys.authVerifier).update(`pkm-transfer:v1:${record.nodeId}:${record.shareId}:${summary.revision}:${port}:${ticket.ticket}`).digest();
+    }
+    const syncedAt = new Date().toISOString();
+    const snapshotBytes = await this.materializeInChild({
+      inputPath: downloadPath,
+      storageDir: this.storageDir,
+      record: { id: record.id, alias: record.alias, publisher: record.publisher, nodeId: record.nodeId, shareId: record.shareId, endpoint: record.endpoint },
+      summary,
+      syncedAt,
+      transferKey: transferKey?.toString("base64url"),
+      contentKey: derivedKeys?.contentKey.toString("base64url"),
+    });
+    record.lastUpdated = syncedAt;
+    this.operationDiagnostic("download", operationStartedAt, memoryBefore, { shareId: record.shareId, revision: summary.revision, snapshotBytes, transferBytes: downloadedBytes, itemCount: summary.itemCount, isolatedProcess: true });
+  }
+
+  private materializeInChild(task: Record<string, unknown>): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const child = fork(path.join(__dirname, "subscription-materialize-worker.js"), [], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+      let settled = false;
+      let timeout: NodeJS.Timeout | undefined;
+      const finish = (error?: Error, snapshotBytes?: number): void => {
+        if (settled) return;
+        settled = true;
+        if (timeout) clearTimeout(timeout);
+        if (error && child.exitCode === null) child.kill();
+        fs.rmSync(String(task.inputPath), { force: true });
+        if (error) reject(error); else resolve(Number(snapshotBytes || 0));
+      };
+      child.once("error", error => finish(error));
+      child.once("exit", code => { if (!settled) finish(new Error(`Subscription materializer exited before completion (${code ?? "unknown"}).`)); });
+      child.once("message", (message: any) => {
+        if (message?.ok) finish(undefined, message.snapshotBytes);
+        else finish(new Error(message?.error || "Subscription materializer failed."));
+      });
+      child.send(task, error => { if (error) finish(error); });
+      timeout = setTimeout(() => finish(new Error("Subscription materializer timed out.")), 5 * 60_000);
+      timeout.unref();
+    });
   }
 
   private connectMqtt(record: SubscriptionRecord): void {
@@ -878,30 +1004,49 @@ export class SharedMarketManager {
     });
     this.mqttClients.set(record.nodeId, client);
     client.on("connect", () => {
+      this.warned.delete(`mqtt-node:${record.nodeId}`);
       for (const subscription of this.state.subscriptions.filter(item => item.nodeId === record.nodeId)) {
-        client.subscribe(`pkm/v1/nodes/${subscription.nodeId}/shares/${subscription.shareId}/summary`, { qos: 1 });
+        const warningKey = `mqtt:${subscription.nodeId}:${subscription.shareId}`;
+        client.subscribe(`pkm/v1/nodes/${subscription.nodeId}/shares/${subscription.shareId}/summary`, { qos: 1 }, error => {
+          if (error) this.warning(warningKey, `Realtime updates for "${subscription.alias || subscription.brokerName || subscription.publisher}" are unavailable; periodic and manual Refresh remain available.`);
+          else this.warned.delete(warningKey);
+        });
       }
     });
     client.on("message", (_topic, payload) => {
       try {
         const summary = JSON.parse(payload.toString()) as ShareSummary;
         const subscription = this.state.subscriptions.find(item => item.shareId === summary.shareId && item.nodeId === record.nodeId);
-        if (subscription && summary.revision > subscription.revision) void this.refresh(subscription.id).catch(() => {});
+        if (subscription && summary.revision > subscription.revision) {
+          if (this.stateMutationDepth) this.pendingMqttRefreshes.add(subscription.id);
+          else void this.refresh(subscription.id).catch(() => {});
+        }
       } catch { /* polling remains the canonical fallback */ }
     });
-    client.on("error", () => { /* polling remains available */ });
+    client.on("error", () => {
+      this.warning(`mqtt-node:${record.nodeId}`, `Realtime Subscription updates from ${record.publisher} are unavailable; periodic and manual Refresh remain available.`);
+    });
   }
 
   private async ensureGateway(): Promise<void> {
+    if (this.gatewayEnsure) return this.gatewayEnsure;
+    const pending = this.withGatewayTransitionLock(() => this.ensureGatewayLocked());
+    this.gatewayEnsure = pending;
+    try { await pending; }
+    finally { if (this.gatewayEnsure === pending) this.gatewayEnsure = undefined; }
+  }
+
+  private async ensureGatewayLocked(): Promise<void> {
     try {
       const response = await fetch(`http://127.0.0.1:${this.state.port}/.well-known/pkm-node`, { signal: AbortSignal.timeout(1_000) });
-      const node = await response.json() as { nodeId?: string };
-      if (node.nodeId === this.state.nodeId) { this.gatewayStatus = "running"; this.gatewayError = ""; return; }
-      throw new Error(`Port ${this.state.port} is owned by another PKM node.`);
+      const node = await response.json() as { nodeId?: string; gatewayVersion?: string; gatewayProtocolVersion?: string; gatewayPid?: number };
+      if (node.nodeId === this.state.nodeId && this.gatewayCompatible(node)) { this.refreshGatewayPid(); this.gatewayStatus = "running"; this.gatewayError = ""; return; }
+      if (node.nodeId === this.state.nodeId) await this.handoffGateway(node.gatewayVersion || "legacy", node.gatewayPid);
+      else throw new Error(`Port ${this.state.port} is owned by another PKM node.`);
     } catch (error) {
-      if (error instanceof Error && error.message.includes("another PKM node")) throw error;
+      if (error instanceof Error && (error.message.includes("another PKM node") || error.message.includes("handoff"))) throw error;
     }
-    const child = spawn(process.execPath, [this.gatewayScript, this.gatewayStatePath()], { detached: true, stdio: "ignore" });
+    const child = spawn(process.execPath, [this.gatewayScript, this.gatewayStatePath(), this.gatewayRuntimeVersion], { detached: true, stdio: "ignore" });
     child.unref();
     this.state.gatewayPid = child.pid;
     this.save(false);
@@ -909,12 +1054,106 @@ export class SharedMarketManager {
     while (Date.now() < deadline) {
       try {
         const response = await fetch(`http://127.0.0.1:${this.state.port}/.well-known/pkm-node`, { signal: AbortSignal.timeout(500) });
-        const node = await response.json() as { nodeId?: string };
-        if (node.nodeId === this.state.nodeId) { this.gatewayStatus = "running"; this.gatewayError = ""; return; }
+        const node = await response.json() as { nodeId?: string; gatewayVersion?: string; gatewayProtocolVersion?: string };
+        if (node.nodeId === this.state.nodeId && this.gatewayCompatible(node)) { this.gatewayStatus = "running"; this.gatewayError = ""; return; }
       } catch { /* retry */ }
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     throw new Error(`PKM Node Gateway did not start on port ${this.state.port}.`);
+  }
+
+  private gatewayCompatible(node: { gatewayVersion?: string; gatewayProtocolVersion?: string }): boolean {
+    return node.gatewayVersion === this.gatewayRuntimeVersion
+      && node.gatewayProtocolVersion === "pkm-node-gateway:v2"
+      && Number((node as { gatewayPid?: number }).gatewayPid) > 1;
+  }
+
+  private refreshGatewayPid(): void {
+    try {
+      const persisted = JSON.parse(fs.readFileSync(this.statePath(), "utf8")) as PersistedState;
+      if (persisted.gatewayPid) this.state.gatewayPid = persisted.gatewayPid;
+    } catch { /* retain the in-memory PID */ }
+  }
+
+  private async handoffGateway(previousVersion: string, endpointPid?: number): Promise<void> {
+    const pid = this.resolveGatewayOwnerPid(endpointPid);
+    if (!pid) throw new Error("Gateway handoff refused because the live listener PID could not be uniquely verified.");
+    this.state.gatewayPid = pid;
+    try { process.kill(pid, "SIGTERM"); }
+    catch (error: any) { if (error?.code !== "ESRCH") throw new Error(`Gateway handoff could not stop PID ${pid}: ${error?.message || error}`); }
+    const deadline = Date.now() + 5_000;
+    let stopped = false;
+    while (Date.now() < deadline) {
+      if (!this.processAlive(pid) || !await this.gatewayStillServing()) { stopped = true; break; }
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    if (!stopped) throw new Error(`Gateway handoff timed out waiting for PID ${pid}.`);
+    this.state.gatewayPid = undefined;
+    this.events.onDiagnostic?.({ operation: "gateway-handoff", previousVersion, nextVersion: this.gatewayRuntimeVersion, previousPid: pid });
+    this.warning("gateway-upgraded", `PKM Node Gateway ${previousVersion} was gracefully replaced by ${this.gatewayRuntimeVersion}.`);
+  }
+
+  private gatewayProcessOwned(pid: number): boolean {
+    if (!this.processAlive(pid)) return false;
+    const cmdlinePath = `/proc/${pid}/cmdline`;
+    if (!fs.existsSync(cmdlinePath)) return true;
+    try {
+      const command = fs.readFileSync(cmdlinePath, "utf8").replace(/\0/g, " ");
+      return command.includes("subscription-gateway") && command.includes(this.gatewayStatePath());
+    } catch { return false; }
+  }
+
+  private resolveGatewayOwnerPid(endpointPid?: number): number | undefined {
+    if (Number(endpointPid) > 1 && this.gatewayProcessOwned(Number(endpointPid))) return Number(endpointPid);
+    const candidates = new Set<number>();
+    this.refreshGatewayPid();
+    if (Number(this.state.gatewayPid) > 1 && this.gatewayProcessOwned(Number(this.state.gatewayPid))) candidates.add(Number(this.state.gatewayPid));
+    if (process.platform === "linux") {
+      try {
+        for (const entry of fs.readdirSync("/proc")) {
+          if (!/^\d+$/.test(entry)) continue;
+          const pid = Number(entry);
+          if (this.gatewayProcessOwned(pid)) candidates.add(pid);
+        }
+      } catch { /* endpoint PID remains the portable identity source */ }
+    }
+    return candidates.size === 1 ? [...candidates][0] : undefined;
+  }
+
+  private processAlive(pid: number): boolean {
+    const statPath = `/proc/${pid}/stat`;
+    if (fs.existsSync(statPath)) {
+      try {
+        const stat = fs.readFileSync(statPath, "utf8");
+        const state = stat.slice(stat.lastIndexOf(")") + 2).charAt(0);
+        if (state === "Z") return false;
+      } catch { /* fall through to the portable signal check */ }
+    }
+    try { process.kill(pid, 0); return true; }
+    catch (error: any) { return error?.code === "EPERM"; }
+  }
+
+  private async gatewayStillServing(): Promise<boolean> {
+    try {
+      const response = await fetch(`http://127.0.0.1:${this.state.port}/.well-known/pkm-node`, { signal: AbortSignal.timeout(250) });
+      const node = await response.json() as { nodeId?: string };
+      return node.nodeId === this.state.nodeId;
+    } catch { return false; }
+  }
+
+  private async withGatewayTransitionLock<T>(action: () => Promise<T>): Promise<T> {
+    const lockPath = path.join(this.storageDir, "gateway-transition.lock");
+    const deadline = Date.now() + 7_000;
+    let lock: ChatRoomLock | undefined;
+    while (!lock) {
+      try { lock = ChatRoomLock.acquire(lockPath, this.state.nodeId); }
+      catch (error) {
+        if (Date.now() >= deadline) throw new Error(`Gateway handoff lock timed out: ${error instanceof Error ? error.message : String(error)}`);
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+    }
+    try { return await action(); }
+    finally { lock.release(); }
   }
 
   private async stopGateway(): Promise<void> {
@@ -932,17 +1171,31 @@ export class SharedMarketManager {
 
   private async reloadGatewayConfiguration(controlPort: number, configurationId: string): Promise<void> {
     if (!this.state.enabled || !this.state.gatewayPid) return;
-    try { process.kill(this.state.gatewayPid, "SIGHUP"); } catch { /* file watching remains the fallback */ }
+    let ownerPid = Number(this.state.gatewayPid);
+    try {
+      const response = await fetch(`http://127.0.0.1:${this.state.port}/.well-known/pkm-node`, { signal: AbortSignal.timeout(1_000) });
+      const node = await response.json() as { nodeId?: string; gatewayPid?: number };
+      if (node.nodeId === this.state.nodeId && Number(node.gatewayPid) > 1) {
+        ownerPid = Number(node.gatewayPid);
+        this.state.gatewayPid = ownerPid;
+      }
+    } catch { /* persisted PID and file watching remain fallback paths */ }
+    try { process.kill(ownerPid, "SIGHUP"); } catch { /* file watching remains the fallback */ }
     const deadline = Date.now() + 5_000;
+    let expected = configurationId;
+    let observed = "";
     while (Date.now() < deadline) {
       try {
+        const persisted = JSON.parse(fs.readFileSync(this.gatewayStatePath(), "utf8")) as { configurationId?: string };
+        expected = String(persisted.configurationId || expected);
         const response = await fetch(`http://127.0.0.1:${controlPort}/.well-known/pkm-node`, { signal: AbortSignal.timeout(500) });
         const node = await response.json() as { configurationId?: string };
-        if (node.configurationId === configurationId) return;
+        observed = String(node.configurationId || "");
+        if (observed === expected) return;
       } catch { /* retry while the listener reloads */ }
       await new Promise(resolve => setTimeout(resolve, 50));
     }
-    throw new Error("Broker did not load the rotated secret in time.");
+    throw new Error(`Broker Gateway configuration reload timed out (expected ${expected || "unknown"}, observed ${observed || "none"}).`);
   }
 
   private changed(): void { this.events.onChanged?.(); }
@@ -969,12 +1222,53 @@ export class SharedMarketManager {
     if (writeGateway) {
       this.gatewayConfigurationId = randomBytes(12).toString("base64url");
       const gateway = {
-        schema: 1, configurationId: this.gatewayConfigurationId, nodeId: this.state.nodeId, displayName: this.state.displayName, port: this.state.port, bindHost: this.state.bindHost, advertisedHost: this.state.advertisedHost,
-        publicKey: this.state.publicKey, shares: this.state.shares.map(share => ({ summary: share.summary, snapshotPath: share.snapshotPath, visibility: share.visibility, accessMode: share.accessMode, ipRules: share.ipRules || [], accountMode: share.accountMode, accountRules: share.accountRules || [], protection: share.protection, authVerifier: share.authVerifier, controlPort: share.controlPort, dataPort: share.dataPort || 0 })),
+        schema: 1, configurationId: this.gatewayConfigurationId, extensionVersion: this.gatewayRuntimeVersion, gatewayProtocolVersion: "pkm-node-gateway:v2", ownerNodeId: this.state.nodeId,
+        nodeId: this.state.nodeId, displayName: this.state.displayName, port: this.state.port, bindHost: this.state.bindHost, advertisedHost: this.state.advertisedHost,
+        publicKey: this.state.publicKey, shares: this.state.shares.map(share => ({ summary: share.summary, snapshotPath: share.snapshotPath, published: share.published !== false, visibility: share.visibility, accessMode: share.accessMode, ipRules: share.ipRules || [], accountMode: share.accountMode, accountRules: share.accountRules || [], protection: share.protection, authVerifier: share.authVerifier, controlPort: share.controlPort, dataPort: share.dataPort || 0 })),
         subscriberStatsPath: this.subscriberStatsPath(), uploadBytesPerSecond: 10 * 1024 * 1024, maxConcurrentTransfers: 2,
       };
       atomicWrite(this.gatewayStatePath(), JSON.stringify(gateway, null, 2), 0o600);
     }
+  }
+  private prunePublishedSnapshots(onlyShareId?: string): { removed: number; reclaimedBytes: number } {
+    const snapshotsDir = path.join(this.storageDir, "snapshots");
+    if (!fs.existsSync(snapshotsDir)) return { removed: 0, reclaimedBytes: 0 };
+    const activeShares = new Map(this.state.shares.map(share => [share.shareId, share]));
+    let removed = 0, reclaimedBytes = 0;
+    for (const name of fs.readdirSync(snapshotsDir)) {
+      const match = /^(.+)-(\d+)\.json$/.exec(name);
+      if (!match || onlyShareId && match[1] !== onlyShareId) continue;
+      const share = activeShares.get(match[1]);
+      const revision = Number(match[2]);
+      if (share && (revision === share.revision || revision === share.revision - 1)) continue;
+      const full = path.join(snapshotsDir, name);
+      try { reclaimedBytes += fs.statSync(full).size; fs.rmSync(full, { force: true }); removed += 1; } catch { /* retry on next startup/publish */ }
+    }
+    return { removed, reclaimedBytes };
+  }
+  private pruneStaleDownloads(): void {
+    const downloadsDir = path.join(this.storageDir, "downloads");
+    if (!fs.existsSync(downloadsDir)) return;
+    const staleBefore = Date.now() - 24 * 60 * 60_000;
+    for (const name of fs.readdirSync(downloadsDir)) {
+      if (!name.endsWith(".download")) continue;
+      const full = path.join(downloadsDir, name);
+      try { if (fs.statSync(full).mtimeMs < staleBefore) fs.rmSync(full, { force: true }); } catch { /* retry next startup */ }
+    }
+  }
+  private operationDiagnostic(operation: string, startedAt: number, before: NodeJS.MemoryUsage, fields: Record<string, string | number | boolean>): void {
+    const after = process.memoryUsage();
+    this.events.onDiagnostic?.({
+      operation,
+      durationMs: Date.now() - startedAt,
+      heapUsedBefore: before.heapUsed,
+      heapUsedAfter: after.heapUsed,
+      externalBefore: before.external,
+      externalAfter: after.external,
+      arrayBuffersBefore: before.arrayBuffers,
+      arrayBuffersAfter: after.arrayBuffers,
+      ...fields,
+    });
   }
   private statePath(): string { return path.join(this.storageDir, "subscriptions.json"); }
   private gatewayStatePath(): string { return path.join(this.storageDir, "gateway-state.json"); }

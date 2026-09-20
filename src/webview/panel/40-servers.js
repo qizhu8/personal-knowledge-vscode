@@ -9,7 +9,7 @@ let serverSearchQuery = '';
 let serverFocusSlug = '';
 let serverPrivateTopLevels = [];
 function serverPathPrivate(path) { const top = String(path || '').split('/').filter(Boolean)[0] || ''; return !!top && serverPrivateTopLevels.includes(top); }
-function serverPrivacyLock(path) { return serverPathPrivate(path) ? '<span class="content-private-lock" title="Private: excluded from Subscription sharing" aria-label="Private">🔒</span>' : ''; }
+function serverPrivacyLock(path) { return serverPathPrivate(path) ? '<span class="content-private-lock" title="Private: excluded from Subscription sharing and public links" aria-label="Private">🔒</span>' : ''; }
 function serverGroupTree(entries) {
   const root = { groups: new Map(), entries: [] };
   entries.forEach(entry => {
@@ -100,10 +100,15 @@ function serverCardMenu(event, slug) {
   event.preventDefault(); event.stopPropagation();
   const server = serverCache.find(item => item.slug === slug); if (!server) return;
   const groups = [...new Set(['', ...serverGroupPaths])];
-  const children = groups.map(group => ({ label: `${String(server.category || '') === group ? '●' : '  '} ${group || 'Ungrouped'}`, active: String(server.category || '') === group, onClick: () => moveServerToGroup(slug, group) }));
+  const children = groups.map(group => ({ label: group || 'Ungrouped', active: String(server.category || '') === group, onClick: () => moveServerToGroup(slug, group) }));
   children.push({ sep: true });
-  children.push({ label: '＋ New subgroup…', onClick: () => createAndMoveServerGroup(slug) });
-  showPaperMenu(event.clientX, event.clientY, [{ label: 'Move to group', children }]);
+  children.push({ label: 'New subgroup…', onClick: () => createAndMoveServerGroup(slug) });
+  showPaperMenu(event.clientX, event.clientY, [
+    { label: server.name, header: true },
+    copyPathMenu(`servers/${slug}/server.json`),
+    { sep: true },
+    { label: 'Move to group', children },
+  ]);
 }
 function renameServerGroup(path) {
   const parts = path.split('/');
@@ -126,7 +131,9 @@ function serverGroupMenu(event, path) {
   const isPrivate = serverPathPrivate(path);
   showPaperMenu(event.clientX, event.clientY, [
     { label: path, header: true },
-    { label: isPrivate ? '🔓 Set as Public' : '🔒 Set as Private', onClick: () => ask('contentSetPrivacy', { type:'servers', topLevel:path, isPrivate:!isPrivate }) },
+    copyPathMenu(`pkm://servers/subgroups/${encodeURIComponent(path)}`),
+    { sep: true },
+    { label: isPrivate ? 'Set as Public' : 'Set as Private', onClick: () => ask('contentSetPrivacy', { type:'servers', topLevel:path, isPrivate:!isPrivate }) },
   ]);
 }
 function renderServerGroupNode(node, parentPath = '') {
@@ -167,7 +174,8 @@ function renderServerDashboard(servers) {
   const dot = s => s === 'running' ? '#3fb950' : s === 'external' ? '#4daafc' : s === 'starting' ? '#e5c07b' : '#8b949e';
   const networkLinks = serverCache[0]?.networkLinks || [];
   let savedNetwork = ''; try { savedNetwork = localStorage.getItem('pkm-server-network') || ''; } catch {}
-  const selectedNetwork = networkLinks.find(link => link.address === savedNetwork) || networkLinks[0];
+  const selectedAddress = serverCache[0]?.externalLinkHost || savedNetwork;
+  const selectedNetwork = networkLinks.find(link => link.address === selectedAddress) || networkLinks.find(link => link.kind === 'hostname') || networkLinks[0];
   const networkOptions = networkLinks.map(link => `<option value="${esc(link.address)}" ${link.address === selectedNetwork?.address ? 'selected' : ''}>${link.kind === 'hostname' ? esc(t('servers.hostname')) : esc(link.interface)} · ${esc(link.address)}</option>`).join('');
   const autoForward = serverCache[0]?.autoForward ?? true;
   const remoteName = serverCache.find(server => server.remoteName)?.remoteName || '';
@@ -289,10 +297,12 @@ function selectedServerLink(slug, kind) {
   const server = serverCache.find(item => item.slug === slug); if (!server) return '';
   if (kind === 'local') return server.localUrl || '';
   let saved = ''; try { saved = localStorage.getItem('pkm-server-network') || ''; } catch {}
-  return (server.networkLinks || []).find(link => link.address === saved)?.url || server.networkLinks?.[0]?.url || '';
+  const selected = server.externalLinkHost || saved;
+  return (server.networkLinks || []).find(link => link.address === selected)?.url || server.networkLinks?.find(link => link.kind === 'hostname')?.url || server.networkLinks?.[0]?.url || '';
 }
 function serverNetworkChanged(address) {
   try { localStorage.setItem('pkm-server-network', address); } catch {}
+  ask('setExternalLinkHost', { address });
   renderServerDashboard(serverCache);
 }
 function openServerLink(slug, kind) {

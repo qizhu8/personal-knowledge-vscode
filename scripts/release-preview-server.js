@@ -32,13 +32,13 @@ const demoMcp = {
   combinedRegistry: '{\n  "servers": {\n    "pkm": { "type": "stdio", "command": "/home/demo/pkm-envs/pkm-mcp/bin/python", "args": ["/home/demo/pkm/mcp-server/server.py"] }\n  }\n}',
   agencyInstallInstruction: "Register the demo unified local stdio MCP server named pkm.\nUse /home/demo/pkm-envs/pkm-mcp/bin/python and /home/demo/pkm/mcp-server/server.py.",
   pkmSkill: {
-    routerVersion: "1.1.4",
-    minimumMcpSchema: "2.2.3",
+    routerVersion: "1.1.6",
+    minimumMcpSchema: "2.8.0",
     sourcePath: "/home/demo/pkm/skills/System/PKM/PKM Skills.md",
     sourceExists: true,
     targets: [
-      { id: "copilot", kind: "copilot", label: "GitHub Copilot", skillPath: "/home/demo/.copilot/skills/pkm-skills/SKILL.md", state: "current", installedVersion: "1.1.4", expectedVersion: "1.1.4", managed: true, detail: "Injected Skill is current." },
-      { id: "agents", kind: "agents", label: "Agent Skills", skillPath: "/home/demo/.agents/skills/pkm-skills/SKILL.md", state: "current", installedVersion: "1.1.4", expectedVersion: "1.1.4", managed: true, detail: "Injected Skill is current." },
+      { id: "copilot", kind: "copilot", label: "GitHub Copilot", skillPath: "/home/demo/.copilot/skills/pkm-skills/SKILL.md", state: "current", installedVersion: "1.1.6", expectedVersion: "1.1.6", managed: true, detail: "Injected Skill is current." },
+      { id: "agents", kind: "agents", label: "Agent Skills", skillPath: "/home/demo/.agents/skills/pkm-skills/SKILL.md", state: "current", installedVersion: "1.1.6", expectedVersion: "1.1.6", managed: true, detail: "Injected Skill is current." },
     ],
   },
   skillProposals: [],

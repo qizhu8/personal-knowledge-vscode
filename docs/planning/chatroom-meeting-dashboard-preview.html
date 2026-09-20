@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PKM Meeting Summary Preview</title>
+<style>
+:root{--bg:#181a1f;--panel:#202329;--panel2:#262a31;--text:#eceef3;--muted:#969eab;--line:#3a3f49;--accent:#4daafc;--good:#54c985;--warn:#e4b94f;--bad:#ef7272;--violet:#b49cff}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:12px/1.55 "IBM Plex Sans","Aptos","Segoe UI",sans-serif;letter-spacing:0}.topbar{height:42px;display:flex;align-items:center;gap:12px;padding:0 14px;border-bottom:1px solid var(--line);background:#1d2025}.brand{font-weight:800}.path{color:var(--muted);font-size:10px}.live{margin-left:auto;color:var(--good);font-size:10px}.page{width:min(980px,calc(100% - 28px));margin:20px auto 52px}.meeting-head{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;align-items:end;padding-bottom:14px;border-bottom:2px solid var(--text)}.eyebrow{color:var(--muted);font-size:9px;font-weight:700;text-transform:uppercase}.meeting-head h1{margin:3px 0;font-size:20px;line-height:1.25}.meeting-meta{color:var(--muted);font-size:10px}.meeting-state{display:flex;align-items:center;gap:7px;color:var(--accent);font-size:10px}.meeting-state:before{content:"";width:8px;height:8px;border-radius:50%;background:currentColor}.summary-note{margin:13px 0 16px;padding:8px 10px;border-left:3px solid var(--accent);background:#4daafc0c;color:var(--muted);font-size:10px}.topic{margin-top:10px;border:1px solid var(--line);background:var(--panel)}.topic[open]{border-color:#4daafc77}.topic>summary{list-style:none;display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:8px;align-items:center;padding:10px 12px;cursor:pointer;background:var(--panel2)}.topic>summary::-webkit-details-marker{display:none}.arrow{color:var(--muted);font-size:10px;transition:transform .15s}.topic[open]>summary .arrow{transform:rotate(90deg)}.topic-name{min-width:0}.topic-name strong,.topic-name small{display:block}.topic-name strong{font-size:13px}.topic-name small{margin-top:1px;color:var(--muted);font-size:9px}.badges{display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end}.badge{padding:1px 6px;border:1px solid currentColor;font-size:8px;text-transform:uppercase;white-space:nowrap}.active{color:var(--accent)}.blocked{color:var(--bad)}.queued{color:var(--muted)}.complete{color:var(--good)}.body{padding:4px 14px 14px}.branch{position:relative;margin:10px 0 0 8px;padding-left:22px;border-left:1px solid var(--line)}.branch:before{content:"";position:absolute;left:0;top:13px;width:13px;border-top:1px solid var(--line)}.label{margin-bottom:4px;color:var(--muted);font-size:9px;font-weight:700;text-transform:uppercase}.statement{margin:0;padding:7px 9px;background:#15171b;border-left:2px solid var(--line)}.round{margin:8px 0 0;border:1px solid var(--line)}.round-head{display:flex;align-items:center;gap:8px;padding:6px 8px;background:#24272d}.round-head strong{font-size:10px}.round-head span{margin-left:auto;color:var(--muted);font-size:9px}.opinions{padding:3px 9px}.opinion{display:grid;grid-template-columns:92px minmax(0,1fr);gap:10px;padding:7px 0;border-bottom:1px solid var(--line)}.opinion:last-child{border-bottom:0}.agent{color:var(--violet);font-size:10px;font-weight:700}.opinion p{margin:0;font-size:11px}.result{display:grid;grid-template-columns:92px minmax(0,1fr);gap:10px;padding:8px 9px;border-top:1px solid var(--line);background:#ffffff03}.result-label{color:var(--muted);font-size:9px;font-weight:700;text-transform:uppercase}.yes{color:var(--good);font-weight:700}.no{color:var(--warn);font-weight:700}.next{color:var(--accent)}.workitems{margin:5px 0 0;padding:0;list-style:none}.workitems li{display:grid;grid-template-columns:92px minmax(0,1fr) auto;gap:10px;align-items:start;padding:7px 0;border-bottom:1px solid var(--line)}.workitems li:last-child{border-bottom:0}.task-state{color:var(--warn);font-size:9px;white-space:nowrap}.subtopics{margin:12px 0 0 8px;padding-left:18px;border-left:2px solid var(--accent)}.subtopic-label{margin-bottom:6px;color:var(--accent);font-size:9px;font-weight:700;text-transform:uppercase}.subtopics .topic{margin-top:6px}.subtopics .topic>summary{background:#22262c}.subtopics .topic-name strong{font-size:12px}.footer{margin-top:14px;display:flex;justify-content:space-between;gap:12px;color:var(--muted);font-size:9px}.footer code{color:var(--accent)}button{border:1px solid var(--line);background:#15171b;color:var(--text);font:inherit;font-size:10px;padding:4px 8px;cursor:pointer}button:hover{border-color:var(--accent);color:var(--accent)}@media(max-width:620px){.path{display:none}.page{width:calc(100% - 16px);margin:12px auto 32px}.meeting-head{grid-template-columns:1fr}.meeting-state{margin-top:-8px}.topic>summary{grid-template-columns:16px minmax(0,1fr)}.badges{grid-column:2;justify-content:flex-start}.body{padding:3px 8px 10px}.branch{margin-left:3px;padding-left:13px}.opinion,.result,.workitems li{grid-template-columns:1fr;gap:2px}.subtopics{margin-left:3px;padding-left:10px}.footer{flex-direction:column}.round-head{align-items:flex-start;flex-direction:column;gap:1px}.round-head span{margin-left:0}}
+</style>
+</head>
+<body>
+<header class="topbar"><strong class="brand">Personal Knowledge Manager</strong><span class="path">Chatroom / PKM Dev Room / Meeting Summary</span><span class="live">Canonical revision 42</span></header>
+<main class="page">
+  <header class="meeting-head">
+    <div><div class="eyebrow">Meeting M-104</div><h1>Managed Agent reconnect reliability</h1><div class="meeting-meta">Lead: PKM Dev · Decision Owner: Host · Started 2026-09-19 09:42 UTC</div></div>
+    <div class="meeting-state">In Discussion · Topic T1.1</div>
+  </header>
+  <div class="summary-note">This summary is generated from canonical Meeting state. Lead and Host update it through controlled APIs; this projection is read-only.</div>
+
+  <details class="topic" open>
+    <summary><span class="arrow">▶</span><span class="topic-name"><strong>Topic A · Prevent duplicate replies after reconnect</strong><small>Owner: Agent A · Round 1 complete · blocked by Topic A.2</small></span><span class="badges"><span class="badge blocked">Blocked</span></span></summary>
+    <div class="body">
+      <section class="branch"><div class="label">Problem statement</div><p class="statement">A reconnect may redeliver a message whose processing identity was held only by the previous Extension Host.</p></section>
+      <section class="branch"><div class="label">Discussion result</div>
+        <article class="round"><header class="round-head"><strong>Round 1</strong><span>Required replies 3 / 3</span></header><div class="opinions">
+          <div class="opinion"><span class="agent">Agent A</span><p>Reconnect can repeat delivery before the previous response state is recovered.</p></div>
+          <div class="opinion"><span class="agent">Agent B</span><p>The current request identifier is not stable across Extension Host reloads.</p></div>
+          <div class="opinion"><span class="agent">Agent C</span><p>Deduplication must be serialized across multiple VS Code windows.</p></div>
+        </div><div class="result"><span class="result-label">Conclusion</span><span class="yes">Yes · duplicate processing is reproducible</span></div><div class="result"><span class="result-label">Next</span><span class="next">Observe Topic A.2 · request ID persistence</span></div></article>
+      </section>
+      <section class="branch"><div class="label">WorkItems</div><ul class="workitems">
+        <li><span class="agent">Agent A</span><span>Provide the reconnect reproduction and expected idempotency contract.</span><span class="task-state">In Review</span></li>
+        <li><span class="agent">Agent B</span><span>Design persistent request identity ownership in the machine singleton.</span><span class="task-state">Pending Acceptance</span></li>
+      </ul></section>
+
+      <section class="subtopics"><div class="subtopic-label">Blocking Subtopic · DFS Active</div>
+        <details class="topic" open>
+          <summary><span class="arrow">▶</span><span class="topic-name"><strong>Topic A.2 · Persist request identity</strong><small>Owner: Agent B · Round 2 · active DFS node</small></span><span class="badges"><span class="badge active">Discussing</span></span></summary>
+          <div class="body">
+            <section class="branch"><div class="label">Problem statement</div><p class="statement">Request IDs created in Extension Host memory disappear on reload and cannot coordinate concurrent windows.</p></section>
+            <section class="branch"><div class="label">Discussion result</div>
+              <article class="round"><header class="round-head"><strong>Round 1</strong><span>Required replies 2 / 2</span></header><div class="opinions">
+                <div class="opinion"><span class="agent">Agent A</span><p>Persist the identifier with Room state.</p></div>
+                <div class="opinion"><span class="agent">Agent B</span><p>Room-local persistence alone does not serialize multiple Extension Hosts.</p></div>
+                <div class="opinion"><span class="agent">Agent C</span><p>Ownership must remain outside the unchanged Chat History DB.</p></div>
+              </div><div class="result"><span class="result-label">Conclusion</span><span class="no">No · storage owner unresolved</span></div></article>
+              <article class="round"><header class="round-head"><strong>Round 2</strong><span>Required replies 2 / 2 · summarizing</span></header><div class="opinions">
+                <div class="opinion"><span class="agent">Agent A</span><p>The machine singleton already owns cross-window serialization and is the correct boundary.</p></div>
+                <div class="opinion"><span class="agent">Agent B</span><p>Use an idempotent client request ID stored in canonical Meeting/service state, with bounded retention.</p></div>
+                <div class="opinion"><span class="agent">Agent C</span><p>Add reload and multi-window tests before accepting the conclusion.</p></div>
+              </div><div class="result"><span class="result-label">Conclusion</span><span class="no">Candidate · awaiting Host</span></div><div class="result"><span class="result-label">Next</span><span class="next">Host accepts or records Inconclusive</span></div></article>
+            </section>
+          </div>
+        </details>
+      </section>
+    </div>
+  </details>
+
+  <details class="topic">
+    <summary><span class="arrow">▶</span><span class="topic-name"><strong>Topic B · Improve reconnect error visibility</strong><small>Root queue position 2 · does not interrupt active DFS branch</small></span><span class="badges"><span class="badge queued">Queued</span></span></summary>
+    <div class="body"><section class="branch"><div class="label">Problem statement</div><p class="statement">Users need a persistent and actionable error state when reconnect or model generation fails.</p></section></div>
+  </details>
+
+  <footer class="footer"><span>Meeting Note: <code>2026-09-19T09-42-00Z.md</code></span><span><button onclick="document.querySelectorAll('details.topic').forEach(item=>item.open=true)">Expand all</button> <button onclick="document.querySelectorAll('details.topic').forEach(item=>item.open=false)">Collapse all</button></span></footer>
+</main>
+</body>
+</html>

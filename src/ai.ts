@@ -53,9 +53,19 @@ export async function runAiPrompt(context: vscode.ExtensionContext, backend: AiB
     const model = models?.[0];
     if (!model) throw new Error("No Copilot chat model available. Sign in to GitHub Copilot.");
     const messages = [ (vscode as any).LanguageModelChatMessage.User(prompt) ];
-    const resp = await model.sendRequest(messages, {}, new vscode.CancellationTokenSource().token);
-    let out = ""; for await (const chunk of resp.text) out += chunk;
-    return out.trim();
+    const cancellation = new vscode.CancellationTokenSource();
+    const timer = setTimeout(() => cancellation.cancel(), 90_000);
+    try {
+      const resp = await model.sendRequest(messages, {}, cancellation.token);
+      let out = ""; for await (const chunk of resp.text) out += chunk;
+      return out.trim();
+    } catch (error: any) {
+      if (cancellation.token.isCancellationRequested) throw new Error("Copilot model response timed out after 90 seconds.");
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      cancellation.dispose();
+    }
   }
 
   // HTTP backends (Azure OpenAI / OpenAI-compatible)

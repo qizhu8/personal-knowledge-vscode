@@ -16,6 +16,49 @@ async function listen(server) {
   return server.address().port;
 }
 
+async function waitFor(check, timeout = 5000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (await check()) return;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  throw new Error("Timed out waiting for condition");
+}
+
+async function testCrossProcessProxyReuse(root) {
+  const proxyPortProbe = http.createServer();
+  const proxyPort = await listen(proxyPortProbe);
+  await new Promise(resolve => proxyPortProbe.close(resolve));
+  const serversDir = path.join(root, "cross-window-servers");
+  const stateDir = path.join(root, "cross-window-state");
+  fs.mkdirSync(serversDir, { recursive: true });
+  const modulePath = path.join(__dirname, "..", "dist", "servers.js");
+  const childCode = `const s=require(${JSON.stringify(modulePath)});s.initServers(${JSON.stringify(serversDir)},${JSON.stringify(stateDir)},${proxyPort},m=>process.send?.(m));process.send?.('ready');setInterval(()=>{},1000);`;
+  const first = spawn(process.execPath, ["-e", childCode], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  const second = spawn(process.execPath, ["-e", childCode], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  const messages = [];
+  first.on("message", message => messages.push(String(message)));
+  second.on("message", message => messages.push(String(message)));
+  try {
+    await waitFor(async () => {
+      try { return (await fetch(`http://127.0.0.1:${proxyPort}/.well-known/pkm-servers-proxy`)).ok; } catch { return false; }
+    });
+    await waitFor(() => messages.some(message => message.includes("servers proxy reused")));
+    assert(!messages.some(message => message.includes("EADDRINUSE")), messages.join("\n"));
+    const firstIdentity = await (await fetch(`http://127.0.0.1:${proxyPort}/.well-known/pkm-servers-proxy`)).json();
+    const owner = first.pid === firstIdentity.pid ? first : second;
+    owner.kill("SIGTERM");
+    await waitFor(async () => {
+      try {
+        const identity = await (await fetch(`http://127.0.0.1:${proxyPort}/.well-known/pkm-servers-proxy`)).json();
+        return identity.pid !== firstIdentity.pid;
+      } catch { return false; }
+    }, 20_000);
+  } finally {
+    first.kill("SIGTERM"); second.kill("SIGTERM");
+  }
+}
+
 async function main() {
   const addresses = serverNetworkAddresses({
     lo: [{ address: "127.0.0.1", family: "IPv4", internal: true }],
@@ -30,6 +73,7 @@ async function main() {
   ]);
   assert.deepStrictEqual(serverNetworkAddresses({}, "bad host name"), [], "invalid hostnames must not create malformed URLs");
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-server-proxy-"));
+  await testCrossProcessProxyReuse(root);
   const serversDir = path.join(root, "servers");
   const stateDir = path.join(root, "state");
   const slug = "demo-server";

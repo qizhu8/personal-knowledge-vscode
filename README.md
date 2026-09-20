@@ -310,7 +310,6 @@ API keys are stored in VS Code SecretStorage, never in settings.
 |---------|-------------|
 | `personalKnowledge.storePath` | Machine-local Knowledge Root pointer; excluded from VS Code Settings Sync |
 | `personalKnowledge.openOnStartup` | Open the panel automatically at startup |
-| `personalKnowledge.maxTreeDepth` | Max folder levels in the tree (default 4) |
 | `personalKnowledge.logLevel` | `debug` / `info` / `warn` / `error` |
 | `personalKnowledge.aiBackend` | `copilot` / `azure-openai` / `openai-compatible` |
 | `personalKnowledge.aiModel` / `aiEndpoint` / `aiAzureApiVersion` | AI backend configuration |

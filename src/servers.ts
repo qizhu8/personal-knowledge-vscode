@@ -10,6 +10,7 @@ import * as path from "path";
 import * as http from "http";
 import * as net from "net";
 import { hostname, networkInterfaces } from "os";
+import { createHash, randomUUID } from "crypto";
 
 export interface ServerManifest {
   name: string;
@@ -43,6 +44,8 @@ let _serversDir = "";       // <store>/servers  (code + manifests; git-tracked)
 let _stateDir = "";         // globalStorage/servers  (state + logs; machine-local)
 let _proxyPort = 39501;
 let _proxy: http.Server | undefined;
+let _proxyEnsureTimer: NodeJS.Timeout | undefined;
+let _proxyStarting = false;
 let _log: (m: string) => void = () => {};
 
 export function initServers(serversDir: string, stateDir: string, proxyPort: number, logger?: (m: string) => void): void {
@@ -59,6 +62,10 @@ export function initServers(serversDir: string, stateDir: string, proxyPort: num
   }
   reconcile();
   startProxy();
+  if (!_proxyEnsureTimer) {
+    _proxyEnsureTimer = setInterval(() => { void ensureProxyAvailable(); }, 15_000);
+    _proxyEnsureTimer.unref?.();
+  }
   for (const slug of listSlugs()) {
     const m = readManifest(slug);
     if (m?.autostart) { const st = readState()[slug]; if (!st || !isAlive(st.pid)) { try { startServer(slug); } catch { /* ignore */ } } }
@@ -75,6 +82,8 @@ export function disposeServers(): void {
   // activation). Only the proxy (tied to the extension host) is torn down.
   try { _proxy?.close(); } catch { /* ignore */ }
   _proxy = undefined;
+  if (_proxyEnsureTimer) clearInterval(_proxyEnsureTimer);
+  _proxyEnsureTimer = undefined;
 }
 
 export function proxyPort(): number { return _proxyPort; }
@@ -284,9 +293,46 @@ function readState(): Record<string, RunState> {
 function writeState(s: Record<string, RunState>): void {
   try { fs.mkdirSync(_stateDir, { recursive: true }); fs.writeFileSync(statePath(), JSON.stringify(s, null, 2) + "\n"); } catch { /* ignore */ }
 }
+
+function updateState(mutator: (state: Record<string, RunState>) => void): boolean {
+  const release = acquireProcessLock("runtime-state");
+  if (!release) return false;
+  try {
+    const state = readState();
+    mutator(state);
+    writeState(state);
+    return true;
+  } finally { release(); }
+}
 function isAlive(pid: number): boolean {
   if (!pid) return false;
   try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+function acquireProcessLock(name: string): (() => void) | undefined {
+  fs.mkdirSync(_stateDir, { recursive: true });
+  const lockPath = path.join(_stateDir, `${name}.lock`);
+  const nonce = randomUUID();
+  const record = { pid: process.pid, nonce, acquiredAt: Date.now() };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = fs.openSync(lockPath, "wx", 0o600);
+      try { fs.writeFileSync(fd, JSON.stringify(record)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+      return () => {
+        try {
+          const owner = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+          if (owner.nonce === nonce) fs.unlinkSync(lockPath);
+        } catch { /* already released or recovered */ }
+      };
+    } catch (error: any) {
+      if (error?.code !== "EEXIST") throw error;
+      let ownerPid = 0;
+      try { ownerPid = Number(JSON.parse(fs.readFileSync(lockPath, "utf8")).pid || 0); } catch { /* unreadable lock is stale */ }
+      if (ownerPid && isAlive(ownerPid)) return undefined;
+      try { fs.unlinkSync(lockPath); } catch { return undefined; }
+    }
+  }
+  return undefined;
 }
 function probePort(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -492,7 +538,7 @@ export function serverMoveGroup(oldPrefix: string, newPrefix: string): { ok: boo
 export function serverDelete(slug: string): boolean {
   stopServer(slug);
   try { fs.rmSync(serverDirOf(slug), { recursive: true, force: true }); } catch { /* ignore */ }
-  const st = readState(); if (st[slug]) { delete st[slug]; writeState(st); }
+  updateState(state => { delete state[slug]; });
   return true;
 }
 
@@ -503,6 +549,10 @@ function resolvePython(m: ServerManifest): string {
 }
 
 export function startServer(slug: string): { ok: boolean; error?: string } {
+  const lockName = `start-${createHash("sha256").update(slug).digest("hex").slice(0, 16)}`;
+  const release = acquireProcessLock(lockName);
+  if (!release) return { ok: false, error: `Server ${slug} is already being started by another PKM window` };
+  try {
   const m = readManifest(slug);
   if (!m) return { ok: false, error: "unknown server" };
   const owner = serverPortOwner(m.port, slug);
@@ -529,8 +579,11 @@ export function startServer(slug: string): { ok: boolean; error?: string } {
     child.on("error", err => { try { fs.writeSync(fd, `spawn error: ${err}\n`); } catch { /* ignore */ } });
     child.unref();
     if (!child.pid) return { ok: false, error: "failed to spawn" };
-    st[slug] = { pid: child.pid, port, startedAt: new Date().toISOString(), logFile, command: cmd };
-    writeState(st);
+    const run = { pid: child.pid, port, startedAt: new Date().toISOString(), logFile, command: cmd };
+    if (!updateState(state => { state[slug] = run; })) {
+      try { process.kill(-child.pid, "SIGTERM"); } catch { try { process.kill(child.pid, "SIGTERM"); } catch { /* already exited */ } }
+      return { ok: false, error: "Server runtime state is being updated by another PKM window; try again" };
+    }
     _log(`server start: ${slug} pid=${child.pid} port=${port}`);
     return { ok: true };
   } catch (e: any) {
@@ -538,19 +591,24 @@ export function startServer(slug: string): { ok: boolean; error?: string } {
   } finally {
     try { fs.closeSync(fd); } catch { /* ignore */ }
   }
+  } finally { release(); }
 }
 
 export function stopServer(slug: string): { ok: boolean } {
+  const lockName = `start-${createHash("sha256").update(slug).digest("hex").slice(0, 16)}`;
+  const release = acquireProcessLock(lockName);
+  if (!release) return { ok: false };
+  try {
   const st = readState();
   const run = st[slug];
   if (!run) return { ok: true };
   const pid = run.pid;
   try { process.kill(-pid, "SIGTERM"); } catch { try { process.kill(pid, "SIGTERM"); } catch { /* ignore */ } }
   setTimeout(() => { if (isAlive(pid)) { try { process.kill(-pid, "SIGKILL"); } catch { try { process.kill(pid, "SIGKILL"); } catch { /* ignore */ } } } }, 1500);
-  delete st[slug];
-  writeState(st);
+  updateState(state => { delete state[slug]; });
   _log(`server stop: ${slug} pid=${pid}`);
   return { ok: true };
+  } finally { release(); }
 }
 
 export async function restartServer(slug: string): Promise<{ ok: boolean; error?: string }> {
@@ -570,7 +628,7 @@ export async function setServerPort(slug: string, port: number): Promise<{ ok: b
 // ── Status / logs / python envs ──────────────────────────────────────────────
 export async function serverList(): Promise<any[]> {
   const st = readState();
-  const proxyRunning = await probePort(_proxyPort);
+  const proxyRunning = await probeProxyIdentity();
   const networkAddresses = serverNetworkAddresses();
   const suggestedPort = nextServerPort();
   const out: any[] = [];
@@ -685,10 +743,34 @@ function slugFromReferer(req: http.IncomingMessage): string | undefined {
   return rm ? decodeURIComponent(rm[1]) : undefined;
 }
 
+function proxyIdentity(): string {
+  return createHash("sha256").update(path.resolve(_serversDir)).digest("hex").slice(0, 24);
+}
+
+async function probeProxyIdentity(): Promise<boolean> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${_proxyPort}/.well-known/pkm-servers-proxy`, { signal: AbortSignal.timeout(500) });
+    const value = await response.json() as { protocol?: string; serversId?: string };
+    return value.protocol === "pkm-servers-proxy:v1" && value.serversId === proxyIdentity();
+  } catch { return false; }
+}
+
+async function ensureProxyAvailable(): Promise<void> {
+  if (_proxy?.listening || _proxyStarting) return;
+  if (await probeProxyIdentity()) return;
+  startProxy();
+}
+
 function startProxy(): void {
-  if (_proxy) return;
+  if (_proxy || _proxyStarting) return;
+  _proxyStarting = true;
   _proxy = http.createServer((req, res) => {
     const url = req.url || "/";
+    if (url === "/.well-known/pkm-servers-proxy") {
+      res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      res.end(JSON.stringify({ protocol: "pkm-servers-proxy:v1", serversId: proxyIdentity(), pid: process.pid, port: _proxyPort }));
+      return;
+    }
     const m = /^\/s\/([^/]+)(\/.*)?$/.exec(url);
     if (m) {
       const slug = decodeURIComponent(m[1]);
@@ -701,8 +783,21 @@ function startProxy(): void {
     if (url === "/" || url === "") { res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end(indexPage()); return; }
     res.writeHead(404, { "Content-Type": "text/plain" }); res.end("Not found");
   });
-  _proxy.on("error", e => _log(`servers proxy error: ${e}`));
-  _proxy.listen(_proxyPort, "127.0.0.1", () => _log(`servers proxy on http://127.0.0.1:${_proxyPort}`));
+  _proxy.once("error", error => {
+    _proxyStarting = false;
+    _proxy = undefined;
+    if ((error as NodeJS.ErrnoException).code === "EADDRINUSE") {
+      void probeProxyIdentity().then(reused => _log(reused
+        ? `servers proxy reused on http://127.0.0.1:${_proxyPort}`
+        : `servers proxy port ${_proxyPort} is owned by an unrelated service`));
+      return;
+    }
+    _log(`servers proxy error: ${error}`);
+  });
+  _proxy.listen(_proxyPort, "127.0.0.1", () => {
+    _proxyStarting = false;
+    _log(`servers proxy owner on http://127.0.0.1:${_proxyPort}`);
+  });
 }
 
 function indexPage(): string {

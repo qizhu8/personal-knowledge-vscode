@@ -11,12 +11,38 @@ export async function startLiveMarkdownServer(
   assetRoots: Array<{ prefix: string; root: string }>,
   renderDocument: (documentPath: string) => string | undefined,
   mimeByExt: Record<string, string>,
+  options: {
+    listenHost?: string;
+    port?: number;
+    accessToken?: string;
+    authorizePath?: (pathname: string) => boolean;
+    identity?: Record<string, string | number | boolean>;
+    favicon?: Buffer;
+  } = {},
 ): Promise<LiveMarkdownServer> {
   const roots = assetRoots.map(item => ({ prefix: item.prefix.replace(/^\/+|\/+$/g, ""), root: resolve(item.root) }))
     .sort((left, right) => right.prefix.length - left.prefix.length);
+  const accessToken = String(options.accessToken || "");
+  const cookieName = `pkm_preview_${accessToken.slice(0, 10)}`;
   const server = createServer((req, res) => {
     try {
-      const pathname = decodeURIComponent(new URL(String(req.url || "/"), "http://localhost").pathname);
+      const requestUrl = new URL(String(req.url || "/"), "http://localhost");
+      if (requestUrl.pathname === "/.well-known/pkm-content") {
+        res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+        res.end(JSON.stringify({ protocol: "pkm-content:v1", ...(options.identity || {}) })); return;
+      }
+      if (accessToken) {
+        const queryAuthorized = requestUrl.searchParams.get("_pkm_token") === accessToken;
+        const cookieAuthorized = String(req.headers.cookie || "").split(";").some(value => value.trim() === `${cookieName}=${accessToken}`);
+        if (!queryAuthorized && !cookieAuthorized) { res.writeHead(403); res.end("Preview access denied"); return; }
+        if (queryAuthorized) res.setHeader("Set-Cookie", `${cookieName}=${accessToken}; HttpOnly; SameSite=Strict; Path=/`);
+      }
+      const pathname = decodeURIComponent(requestUrl.pathname);
+      if (pathname === "/favicon.ico" && options.favicon) {
+        res.writeHead(200, { "Content-Type": "image/png", "Cache-Control": "public, max-age=86400" });
+        res.end(options.favicon); return;
+      }
+      if (options.authorizePath && !options.authorizePath(pathname)) { res.writeHead(404); res.end("Not found"); return; }
       if (pathname.endsWith(".html")) {
         const documentPath = pathname.replace(/^\/+/, "").replace(/\.html$/i, "");
         const html = renderDocument(documentPath);
@@ -39,7 +65,7 @@ export async function startLiveMarkdownServer(
   });
   await new Promise<void>((resolveStarted, reject) => {
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolveStarted);
+    server.listen(options.port || 0, options.listenHost || "127.0.0.1", resolveStarted);
   });
   const port = (server.address() as any).port;
   return { server, localBaseUrl: `http://127.0.0.1:${port}` };

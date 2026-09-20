@@ -220,9 +220,14 @@ new MutationObserver(scheduleUiTranslation).observe(document.body, { childList: 
 scheduleUiTranslation();
 
 let state = { tab:'skills', filter:'all', search:'', items:[], folders:[], subscriptionGroups:[], knowledgeTrash:[], privateTopLevels:[], active:null };
+let initialLoadComplete = false;
+let loadingProgressTimer = null;
+let loadingRevealTimer = null;
+let latestLoadingProgress = null;
+let loadingProgressVisible = false;
 const pendingActionButtons = new Map();
 const actionTimeouts = {
-  subscriptionCopyLink:10000, subscriptionConfigure:15000, subscriptionSetOnline:30000,
+  subscriptionCopyLink:10000, subscriptionConfigure:15000, subscriptionSetOnline:30000, subscriptionSetSharePublished:30000,
   subscriptionUpsertShare:30000, subscriptionDeleteShare:30000, subscriptionAdd:60000,
   subscriptionRename:10000, subscriptionRefresh:60000, subscriptionRemove:30000,
   subscriptionRevealSecret:10000, subscriptionRotateSecret:30000, subscriptionUnblockIp:15000, subscriptionFork:30000, subscriptionOpenServerLink:15000,
@@ -230,6 +235,7 @@ const actionTimeouts = {
   knowledgeTrashMove:15000, knowledgeTrashRestore:15000, knowledgeTrashDelete:15000, knowledgeTrashEmpty:30000,
   serverSubscriptionStatus:15000,
   serverSubscriptionRefresh:60000,
+  chatAddManagedAgent:180000,
   mcpRepairRuntime:600000, mcpSetPython:600000, generateMcp:90000,
   checkMcp:15000, mcpDetectPython:60000, refreshMcpPathSizes:30000,
 };
@@ -332,6 +338,7 @@ let notePinnedFolders = []; // note folder paths pinned to the top of their leve
 let currentDetail = null; // current detail item for edit/delete actions
 let currentDetailRequest = null; // authoritative {type,key}, including packageFile/prompt variants
 let catExpanded = {}; // expanded state per folder key (default: collapsed)
+let pendingTreeRefresh = null; // identifies disk changes whose category path should be revealed
 let pendingEditSlug = null; // note slug awaiting detail load for edit
 let pendingEditType = null; // item type awaiting detail load to enter edit mode (from tree right-click)
 let searchDebounce = null; // debounce timer for search
@@ -418,34 +425,49 @@ document.getElementById('item-list').addEventListener('contextmenu', e => {
   e.preventDefault();
   ctxTarget = li.dataset.noteSlug;
   ctxPinned = li.dataset.notePinned === '1';
-  const pinItem = document.getElementById('ctx-pin');
-  if (pinItem) pinItem.textContent = ctxPinned ? '★ Unpin' : '☆ Pin';
-  ctxMenu.style.left = e.clientX + 'px';
-  ctxMenu.style.top  = e.clientY + 'px';
-  ctxMenu.classList.add('open');
+  showPaperMenu(e.clientX, e.clientY, noteContextMenuItems(ctxTarget, ctxPinned));
 });
+
+function noteContextMenuItems(slug, pinned) {
+  const note = state.items.find(item => item.slug === slug);
+  return [
+    { label: 'Open', onClick: () => openItem('note', slug) },
+    { label: 'Copy Path', onClick: () => copyContextPath('notes/' + slug + '.md') },
+    { sep: true },
+    { label: pinned ? 'Unpin' : 'Pin', onClick: () => ask('noteSetPinned', { slug, pinned: !pinned }) },
+    { label: 'Edit Content', onClick: () => openMarkdownItem('notes', '', slug) },
+    { label: 'Edit Metadata', onClick: () => editMarkdownMetadataItem('notes', note?.category || '', slug) },
+    { label: 'Move', onClick: () => pkModal({ title:'Move note', message:'Target folder path (blank = root; missing parents are created).', input:true, defaultValue:note?.category||'', okLabel:'Move', onOk:value=>ask('noteMove',{slug,category:value.trim()}) }) },
+    { label: 'Mark as Done', onClick: () => ask('markDone', { slug }) },
+    { sep: true },
+    { label: 'Move to Trash…', danger: true, onClick: () => pkModal({ title:'Move Note to Trash?', message:slug+'\n\nThe Note remains recoverable from Trash.', okLabel:'Move to Trash', danger:true, onOk:()=>ask('knowledgeTrashMove',{area:'notes',path:slug+'.md',kind:'item',name:slug}) }) },
+  ];
+}
 
 // Right-click blank space in a content list -> create a top-level item/folder.
 document.getElementById('item-list').addEventListener('contextmenu', e => {
   if (!['skills', 'notes', 'papers', 'prompts', 'scripts'].includes(state.tab)) return;
   if (e.target.closest('.li') || e.target.closest('.tree-cat-hdr')) return;  // items/folders have their own menus
   e.preventDefault();
-  const area = state.tab;
+  showPaperMenu(e.clientX, e.clientY, blankContextMenuItems(state.tab));
+});
+
+function blankContextMenuItems(area) {
   const items = [];
-  if (area === 'skills') items.push({ label: '＋ New Skill…', onClick: () => ask('createKnowledgeItem', { area: 'skills', category: '' }) });
-  if (area === 'notes') items.push({ label: '＋ New Note…', onClick: () => ask('createKnowledgeItem', { area: 'notes', category: '' }) });
+  if (area === 'skills') items.push({ label: 'New Skill…', onClick: () => ask('createKnowledgeItem', { area: 'skills', category: '' }) });
+  if (area === 'notes') items.push({ label: 'New Note…', onClick: () => ask('createKnowledgeItem', { area: 'notes', category: '' }) });
   if (area === 'papers') {
-    items.push({ label: '＋ New Paper…', onClick: () => ask('createKnowledgeItem', { area: 'papers', kind: 'paper', category: '' }) });
-    items.push({ label: '💡 New Idea…', onClick: () => ask('createKnowledgeItem', { area: 'papers', kind: 'idea', category: '' }) });
+    items.push({ label: 'New Paper…', onClick: () => ask('createKnowledgeItem', { area: 'papers', kind: 'paper', category: '' }) });
+    items.push({ label: 'New Idea…', onClick: () => ask('createKnowledgeItem', { area: 'papers', kind: 'idea', category: '' }) });
   }
-  if (area === 'prompts') items.push({ label: '＋ New Prompt…', onClick: () => ask('createPromptItem', {}) });
-  if (area === 'scripts') items.push({ label: '＋ New Script…', onClick: () => ask('createScript', { folder: '' }) });
-  if (area === 'skills' || area === 'notes') items.push({ label: '➕ Create Folder…', onClick: () => pkModal({
+  if (area === 'prompts') items.push({ label: 'New Prompt…', onClick: () => ask('createPromptItem', {}) });
+  if (area === 'scripts') items.push({ label: 'New Script…', onClick: () => ask('createScript', { folder: '' }) });
+  if (area === 'skills' || area === 'notes') items.push({ label: 'Create Folder…', onClick: () => pkModal({
       title: 'Create folder', message: 'New top-level folder in ' + area + '.',
       input: true, okLabel: 'Create', onOk: v => { const n = v.trim(); if (n) ask('folderCreate', { area, parent: '', name: n }); } }) }
   );
-  showPaperMenu(e.clientX, e.clientY, items);
-});
+  return items;
+}
 
 document.addEventListener('click', () => ctxMenu.classList.remove('open'));
 document.addEventListener('contextmenu', e => {
@@ -496,15 +518,11 @@ document.getElementById('ctx-move').addEventListener('click', () => {
 // ── Message from extension ─────────────────────────────────────────────────
 window.addEventListener('message', e => {
   const { command, data } = e.data;
-  // Dismiss loading banner on first response
-  if (['list','subscriptionState','mcpStatus','chatState','serverList','envList'].includes(command)) {
-    const banner = document.getElementById('loading-banner');
-    if (banner && !banner.classList.contains('hidden')) {
-      banner.classList.add('hidden');
-      setTimeout(() => banner.remove(), 400);
-    }
+  if      (command === 'loadingProgress') { updateLoadingProgress(data); }
+  else if (command === 'inventoryBatch') {
+    if (['skills','notes','scripts'].includes(state.tab)) ask('list', { tab: state.tab, filter: state.filter, q: state.search }, null, true);
   }
-  if      (command === 'list')     { finishAction('list','deleteSkill','skillTrashFolder','skillTrashRestore','skillTrashDelete','skillTrashEmpty','knowledgeTrashMove','knowledgeTrashRestore','knowledgeTrashDelete','knowledgeTrashEmpty'); state.items = data; state.folders = e.data.folders || []; state.subscriptionGroups = e.data.subscriptionGroups || []; state.knowledgeTrash = e.data.knowledgeTrash || []; if (Array.isArray(e.data.privateTopLevels)) state.privateTopLevels = e.data.privateTopLevels; renderList(); highlightDetailMatches(document.getElementById('layout'), state.search); }
+  else if (command === 'list')     { finishAction('list','deleteSkill','skillTrashFolder','skillTrashRestore','skillTrashDelete','skillTrashEmpty','knowledgeTrashMove','knowledgeTrashRestore','knowledgeTrashDelete','knowledgeTrashEmpty'); if (revealRefreshedTreeItems(state.tab, state.items, data, pendingTreeRefresh)) pendingTreeRefresh = null; state.items = data; state.folders = e.data.folders || []; state.subscriptionGroups = e.data.subscriptionGroups || []; state.knowledgeTrash = e.data.knowledgeTrash || []; if (Array.isArray(e.data.privateTopLevels)) state.privateTopLevels = e.data.privateTopLevels; renderList(); highlightDetailMatches(document.getElementById('layout'), state.search); }
   else if (command === 'detail') {
     if (pendingEditSlug && data?.type === 'note' && data.slug === pendingEditSlug) {
       pendingEditSlug = null; editNote(data);
@@ -578,7 +596,7 @@ window.addEventListener('message', e => {
   }
   else if (command === 'serverLog') { onServerLog(e.data.slug, e.data.text); }
   else if (command === 'serverPickFolder') { onServerPickFolder(e.data.dir); }
-  else if (command === 'subscriptionState') { finishAction('subscriptionState','subscriptionConfigure','subscriptionSetOnline','subscriptionUpsertShare','subscriptionDeleteShare','subscriptionAdd','subscriptionRename','subscriptionRefresh','subscriptionRemove','subscriptionUnblockIp','subscriptionRotateSecret'); subscriptionOnState(data); }
+  else if (command === 'subscriptionState') { finishAction('subscriptionState','subscriptionConfigure','subscriptionSetOnline','subscriptionUpsertShare','subscriptionDeleteShare','subscriptionAdd','subscriptionRename','subscriptionRefresh','subscriptionRemove','subscriptionUnblockIp','subscriptionRotateSecret'); subscriptionOnState(data); finishLoadingProgress(); }
   else if (command === 'subscriptionChanged') {
     if (state.tab === 'subscriptions' && !hasPendingActionPrefix('subscription')) ask('subscriptionState', {});
     else if (state.tab === 'servers') ask('serverList', {});
@@ -588,8 +606,9 @@ window.addEventListener('message', e => {
     const action = String(data?.action || '');
     const message = data?.error || 'Subscription action failed.';
     if (action && pendingActionButtons.has(action)) failAction(message, action); else showViewActionError(message);
+    finishLoadingProgress();
   }
-  else if (command === 'subscriptionSecret') { finishAction('subscriptionRevealSecret','subscriptionRotateSecret'); subscriptionShowSecret(data?.secret || ''); }
+  else if (command === 'subscriptionSecret') { finishAction('subscriptionRevealSecret','subscriptionRotateSecret'); subscriptionShowSecret(data?.secret || ''); finishLoadingProgress(); }
   else if (command === 'subscriptionRenamed') {
     const subscription = (subscriptionData.subscriptions || []).find(item => item.id === data?.id);
     if (subscription) subscription.alias = data?.alias || '';
@@ -599,16 +618,24 @@ window.addEventListener('message', e => {
     vscode.postMessage({ command:'toast', text:data?.alias ? `Local name changed to ${data.alias}` : 'Using published Broker name' });
   }
   else if (command === 'subscriptionCompleted') {
-    if (data?.action === 'copied') finishAction('subscriptionCopyLink');
-    if (data?.action === 'serverOpened') finishAction('subscriptionOpenServerLink');
-    if (data?.action === 'serverContentRefreshed') finishAction('serverSubscriptionRefresh');
+    finishLoadingProgress();
+    const completedCommands = {
+      configured:'subscriptionConfigure', online:'subscriptionSetOnline', offline:'subscriptionSetOnline',
+      published:'subscriptionUpsertShare', created:'subscriptionUpsertShare', copied:'subscriptionCopyLink',
+      subscribed:'subscriptionAdd', refreshed:'subscriptionRefresh', removed:'subscriptionRemove',
+      brokerDeleted:'subscriptionDeleteShare', brokerDeleteCancelled:'subscriptionDeleteShare',
+      brokerPaused:'subscriptionSetSharePublished', brokerPublished:'subscriptionSetSharePublished',
+      unblocked:'subscriptionUnblockIp', serverOpened:'subscriptionOpenServerLink',
+      serverContentRefreshed:'serverSubscriptionRefresh',
+    };
+    if (completedCommands[data?.action]) finishAction(completedCommands[data.action]);
     if (data?.action === 'published' || data?.action === 'created') {
       subscriptionSelectionDrafts.delete(subscriptionEditingShare);
       if (data.action === 'created') subscriptionEditingShare = String(data.shareId || '');
     }
     const messages = {
       configured:'Gateway settings applied', online:'Gateway is online', offline:'Gateway is offline', copied:'Magic Link copied',
-      brokerDeleted:'Broker deleted', removed:'Subscription removed', unblocked:`Unblocked ${data?.ip || 'address'}`, serverOpened:`Opened ${data?.name || 'Server'}`, serverContentRefreshed:`Refreshed ${data?.name || 'Server subscription'} at revision ${data?.revision || 0}`,
+      brokerDeleted:`Deleted ${data?.name || 'Broker'}`, brokerDeleteCancelled:`Kept ${data?.name || 'Broker'}`, brokerPaused:`Paused ${data?.name || 'Broker'}`, brokerPublished:`Publishing ${data?.name || 'Broker'}`, removed:'Subscription removed', unblocked:`Unblocked ${data?.ip || 'address'}`, serverOpened:`Opened ${data?.name || 'Server'}`, serverContentRefreshed:`Refreshed ${data?.name || 'Server subscription'} at revision ${data?.revision || 0}`,
     };
     const text = data?.action === 'published' ? `Published ${data.name} revision ${data.revision}` : data?.action === 'created' ? `Created Broker ${data.name}` : data?.action === 'subscribed' ? `Subscribed to ${data.name}` : data?.action === 'refreshed' ? `Refreshed ${data.name} at revision ${data.revision}` : messages[data?.action] || 'Subscription action completed';
     vscode.postMessage({ command:'toast', text });
@@ -642,12 +669,18 @@ window.addEventListener('message', e => {
   }
   else if (command === 'reloaded') {
     renderNonce++; // force cached note images to reload after external regeneration
-    ask('list', { tab: state.tab, filter: state.filter, q: state.search });
+    pendingTreeRefresh = data || {};
+    if (['skills','notes','papers','prompts','packages','scripts'].includes(state.tab)) {
+      ask('list', { tab: state.tab, filter: state.filter, q: state.search }, null, true);
+    }
     // Re-render the currently open note/skill so external edits and regenerated
     // images (same path) are picked up, not just the sidebar list.
     if (currentDetailRequest) ask('detail', currentDetailRequest);
     const btn = document.querySelector('#topbar .tbtn[onclick="doReload()"]');
     if (btn) { btn.disabled = false; btn.textContent = '↻ Refresh'; }
+  }
+  else if (command === 'knowledgeFolderScanFailed') {
+    vscode.postMessage({ command: 'toast', text: `Could not refresh ${data?.category || 'folder'}: ${data?.error || 'scan failed'}` });
   }
   else if (command === 'exported') {
     const a = document.createElement('a');
@@ -705,6 +738,7 @@ window.addEventListener('message', e => {
     }
   }
   else if (command === 'mcpStatus')    { finishAction('checkMcp','reconfigureKnowledgeRoot','reconfigureEnvironmentsRoot'); updateGlobalMcpWarning(data); if (state.tab === 'mcp') renderMcpPane(data); }
+  else if (command === 'skillRouterStatus') { if (state.tab === 'skillRouter') renderSkillRouterPane(data); }
   else if (command === 'pkmSkillUpdateComplete') { finishPkmSkillUpdates(); if (!data?.ok) ask('checkMcp', {}); }
   else if (command === 'uiLanguage')   { applyUiLanguage(data); }
   else if (command === 'mcpPathSize')  { finishAction('refreshMcpPathSizes'); renderMcpPathSize(data); }
@@ -754,7 +788,7 @@ window.addEventListener('message', e => {
     // NOTE: type/key are top-level on the message, not under `data`.
     const itemType = e.data.type, itemKey = e.data.key, wantEdit = e.data.edit;
     const TAB = { note:'notes', skill:'skills', paper:'papers', prompt:'prompts', package:'packages', script:'scripts', packageFile:'packages' };
-    const tabName = TAB[itemType] || 'skills';
+    const tabName = e.data.tab || TAB[itemType] || 'skills';
     const btn = document.querySelector(`.tab[data-tab="${tabName}"]`);
     if (btn) btn.dispatchEvent(new MouseEvent('click'));
     pendingEditType = wantEdit ? itemType : null; // enter edit mode once detail loads
@@ -778,6 +812,8 @@ window.addEventListener('message', e => {
   else if (command === 'chatAgentState'){ chatOnAgentState(data); }
   else if (command === 'chatFileReady') { chatOnFileReady(data); }
   else if (command === 'chatToast')  { chatToast(data && data.error); }
+  else if (command === 'chatAddManagedAgentProgress') { updateLoadingProgress({ stage:'agent', percent:data?.percent || 20, message:data?.message || 'Preparing Agent…' }); }
+  else if (command === 'chatAddManagedAgentResult') { finishAction('chatAddManagedAgent'); finishLoadingProgress(); if (data?.error) chatToast(data.error); }
   else if (command === 'chatSecret') { chatOnSecret(data && data.secret); }
   else if (command === 'chatHubResult') { chatOnHubResult(data); }
   else if (command === 'syncError') {
@@ -792,9 +828,65 @@ window.addEventListener('message', e => {
   }
 });
 
-function ask(command, payload, button) {
+function ask(command, payload, button, silent = false) {
   if (!beginAction(command, button || window.event?.currentTarget)) return;
-  vscode.postMessage({ command, ...payload });
+  const loadingLabels = { list:`Scanning ${state.tab}…`, subscriptionState:'Loading subscriptions…', serverList:'Inspecting managed servers…', envList:'Detecting Python environments…', checkMcp:'Checking PKM integration…', chatAddManagedAgent:'Detecting available AI models…', reload:'Refreshing from disk…' };
+  if (!silent && loadingLabels[command]) updateLoadingProgress({ stage:'request', percent:8, message:loadingLabels[command] });
+  vscode.postMessage({ command, ...payload, ...(silent ? { silent:true } : {}) });
+}
+
+function updateLoadingProgress(progress = {}) {
+  latestLoadingProgress = progress;
+  if (progress.stage === 'ready') { finishLoadingProgress(); return; }
+  if (!loadingProgressVisible && !loadingRevealTimer) {
+    loadingRevealTimer = setTimeout(() => {
+      loadingRevealTimer = null;
+      if (!latestLoadingProgress || latestLoadingProgress.stage === 'ready') return;
+      loadingProgressVisible = true;
+      renderLoadingProgress(latestLoadingProgress);
+    }, 1000);
+  }
+  if (loadingProgressVisible) renderLoadingProgress(progress);
+}
+
+function finishLoadingProgress() {
+  clearTimeout(loadingRevealTimer);
+  loadingRevealTimer = null;
+  latestLoadingProgress = { stage:'ready' };
+  loadingProgressVisible = false;
+  initialLoadComplete = true;
+  const banner = document.getElementById('loading-banner');
+  const strip = document.getElementById('view-loading-progress');
+  if (banner) { banner.classList.add('hidden'); setTimeout(() => banner.remove(), 400); }
+  if (strip) strip.classList.add('hidden');
+}
+
+function renderLoadingProgress(progress = {}) {
+  const percent = Math.max(0, Math.min(100, Number(progress.percent ?? 0)));
+  const message = String(progress.message || 'Loading…');
+  const count = progress.total !== undefined
+    ? `${Number(progress.current || 0).toLocaleString()} / ${Number(progress.total || 0).toLocaleString()}`
+    : progress.current !== undefined ? `${Number(progress.current || 0).toLocaleString()} found` : '';
+  const banner = document.getElementById('loading-banner');
+  if (!initialLoadComplete && banner) {
+    banner.classList.remove('hidden');
+    const sub = banner.querySelector('.loading-sub');
+    const amount = banner.querySelector('.loading-stage-count');
+    const bar = banner.querySelector('progress');
+    if (sub) sub.textContent = message;
+    if (amount) amount.textContent = count;
+    if (bar) bar.value = percent;
+  }
+  const strip = document.getElementById('view-loading-progress');
+  if (strip) {
+    clearTimeout(loadingProgressTimer);
+    strip.classList.toggle('hidden', !initialLoadComplete);
+    document.getElementById('view-loading-stage').textContent = message;
+    document.getElementById('view-loading-detail').textContent = progress.detail || '';
+    document.getElementById('view-loading-count').textContent = count;
+    const bar = document.getElementById('view-loading-bar');
+    if (bar) bar.value = percent;
+  }
 }
 
 // ── Topbar overflow: sliding tabs + collapsing action buttons ───────────

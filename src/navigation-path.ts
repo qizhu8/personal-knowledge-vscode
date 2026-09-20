@@ -37,6 +37,10 @@ export function navigationItemPath(item: NavigationPathItem): string {
     case "server-item": return `servers/${data.slug}/server.json`;
     case "server-subscriber-group": return `pkm://subscriptions/${encodeURIComponent(data.subscriptionId || "")}/servers`;
     case "server-subscriber-item": return `pkm://subscriptions/servers/${encodeURIComponent(data.key || "")}`;
+    case "subscribed-content-root": return `pkm://subscriptions/${encodeURIComponent(data.model?.contentType || "")}`;
+    case "subscribed-content-broker":
+    case "subscribed-content-folder":
+    case "subscribed-content-item": return String(data.pkmPath || data.model?.pkmPath || "pkm://subscriptions");
     case "root-environments": return "pkm://environments";
     case "environment-group": return `pkm://environments/groups/${encodeURIComponent((data.path || []).join("/"))}`;
     case "environment-item": return `pkm://environments/${encodeURIComponent(data.id || "")}`;

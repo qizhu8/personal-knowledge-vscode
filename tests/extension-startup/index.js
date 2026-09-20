@@ -21,6 +21,16 @@ async function run() {
   const commands = await vscode.commands.getCommands(true);
   assert.ok(commands.includes("personalKnowledge.open"), "open command was not registered");
   assert.ok(commands.includes("personalKnowledge.setupMcp"), "config command was not registered");
+  const navigation = await vscode.commands.executeCommand(
+    "_personalKnowledge.testNavigationPath",
+    "notes",
+    ["Project", "AAGL_Improvement", "Module Optimizer", "LP Processor"],
+  );
+  assert.strictEqual(navigation.found, true, `Navigation hierarchy was missing: ${JSON.stringify(navigation)}`);
+  const progress = navigation.children.find(item => item.description === "progress.md.md");
+  assert.ok(progress, `progress.md.md was not visible under LP Processor: ${JSON.stringify(navigation.children)}`);
+  assert.strictEqual(progress.label, "LPFeatureProcessor v1.1 Optimization Progress");
+  assert.strictEqual(progress.relPath, "Project/AAGL_Improvement/Module Optimizer/LP Processor/progress.md.md");
 
   await vscode.commands.executeCommand("personalKnowledge.open");
   const logPath = process.env.PKM_STARTUP_LOG_PATH;
@@ -28,16 +38,25 @@ async function run() {
   await waitFor(() => {
     if (!fs.existsSync(logPath)) return false;
     const log = fs.readFileSync(logPath, "utf8");
-    return log.includes("activation complete") && log.includes("panel created") && log.includes('handleMessage: ready');
+    return /activation complete durationMs=\d+/.test(log) && log.includes("panel created") && log.includes('handleMessage: ready');
   }, "Panel did not complete its Webview ready handshake");
 
   const resultPath = process.env.PKM_STARTUP_RESULT_PATH;
   assert.ok(resultPath, "startup result path was not provided");
+  const startupLog = fs.readFileSync(logPath, "utf8");
+  const durationMs = Number(/activation complete durationMs=(\d+)/.exec(startupLog)?.[1]);
+  assert(Number.isFinite(durationMs), "activation duration metric was not recorded");
+  const panelCreatedAt = startupLog.indexOf("panel created");
+  const activationCompleteAt = startupLog.indexOf("activation complete durationMs=");
+  assert(panelCreatedAt >= 0 && panelCreatedAt < activationCompleteAt, "the panel framework must appear before activation completes");
   fs.writeFileSync(resultPath, JSON.stringify({
     activated: extension.isActive,
     commandsRegistered: true,
     panelCreated: true,
     webviewReady: true,
+    deepNavigationNoteVisible: true,
+    activationDurationMs: durationMs,
+    frameworkBeforeActivationComplete: true,
   }));
 }
 

@@ -6,6 +6,7 @@ const chat = {
   secretShown: false, secretVal: '',
   rendered: false, showJoin: false,
   mode: 'ask',
+  discussionLead: '',
   modeNoticeTimer: null,
   quote: null,
   manualRecipients: [],
@@ -18,6 +19,8 @@ const chat = {
   restoringScroll: false,
   defaultRecipientCache: null,
   logSnapshotKey: '',
+  drafts: {},
+  meetingSummarySelections: {},
   proto: {},   // user -> {state:'standby'|'working'|'engaged'}: live protocol status
 };
 const chatInactiveExpanded = { hosted: false, joined: false };
@@ -148,7 +151,8 @@ function renderChatroom() {
           <span id="chat-status-dot" class="chat-dot"></span>
           <span id="chat-pane-title"></span>
           <span style="flex:1"></span>
-          <button class="tbtn hidden" id="chat-add-agent-btn" onclick="ask('chatAddManagedAgent',{})" title="Add an AI agent managed by this extension">＋ Agent</button>
+          <button class="tbtn" id="chat-meeting-summary-btn" onclick="chatToggleMeetingSummary()" title="Open the continuously updated Meeting Summary">Meeting Summary</button>
+          <button class="tbtn hidden" id="chat-add-agent-btn" data-pending-label="Detecting models…" onclick="ask('chatAddManagedAgent',{},this)" title="Add an AI agent managed by this extension">＋ Agent</button>
           <button class="tbtn" onclick="chatRenameSelf()" title="Change your display name in this room">✏️ Rename me</button>
           <button class="tbtn" onclick="ask('chatShareFile',{})" title="Share a file with the room (peers must be online)">📎 Share</button>
           <button class="tbtn" onclick="ask('chatExport',{})" title="Download this room's transcript">⬇ Download</button>
@@ -156,6 +160,10 @@ function renderChatroom() {
         </div>
         <div id="chat-body">
           <div id="chat-main">
+            <section id="chat-meeting-summary" class="chat-meeting-summary hidden" aria-label="Meeting Summary">
+              <header class="chat-meeting-summary-head"><div><span>Meeting Summary</span><small>Generated from canonical state</small></div><button type="button" class="icon-btn" onclick="chatToggleMeetingSummary(false)" title="Close Meeting Summary" aria-label="Close Meeting Summary">×</button></header>
+              <div id="chat-meeting-summary-body" class="chat-meeting-summary-body"></div>
+            </section>
             <div id="chat-find" class="find-control">
               <input id="chat-searchbox" type="search" placeholder="Find messages…" oninput="chatRefreshSearch()" onkeydown="chatSearchKeydown(event)" title="Find in loaded messages">
               <span id="chat-search-count" class="find-count">0/0</span>
@@ -169,7 +177,7 @@ function renderChatroom() {
             <div id="chat-mode-control" class="chat-mode-control hidden" role="group" aria-label="Message mode">
               <button type="button" data-mode="announce" onclick="chatSetMode('announce')" title="Notify the selected recipients without requesting an acknowledgement or reply.">Announce</button>
               <button type="button" data-mode="ask" onclick="chatSetMode('ask')" class="active" title="Ask each selected recipient for one required response.">Ask</button>
-              <button type="button" data-mode="discuss" onclick="chatSetMode('discuss')" title="Invite the selected recipients into a shared peer discussion.">Discuss</button>
+              <button type="button" data-mode="discuss" onclick="chatSetMode('discuss')" title="Invite the selected recipients into a shared peer discussion.">Discuss</button><label id="chat-discussion-lead-wrap" class="chat-discussion-lead hidden"><span>Lead</span><select id="chat-discussion-lead" onchange="chat.discussionLead=this.value;chatCaptureDraft()" title="Choose the Lead for this Discussion"></select></label>
             </div>
             <div id="chat-mode-notice" class="chat-mode-notice hidden" role="status" aria-live="polite"></div>
             <div id="chat-quote-bar" class="chat-quote-bar hidden"></div>
@@ -210,7 +218,7 @@ function renderChatroom() {
   recipientInput.addEventListener('keydown', chatRecipientInputKeydown);
   document.getElementById('chat-log')?.addEventListener('scroll', chatTrackScroll, { passive: true });
   chatEnsureControlComments(d);
-  document.addEventListener('keydown', event => { if (event.key === 'Escape') chatCloseMessageViewer(); });
+  document.addEventListener('keydown', event => { if (event.key === 'Escape') { chatCloseMessageViewer(); chatToggleMeetingSummary(false); } });
   document.addEventListener('click', ev => {
     const pop = document.getElementById('chat-mention-pop');
     if (pop && !pop.classList.contains('hidden') && !pop.contains(ev.target) && ev.target.id !== 'chat-recipient-input') chatHideMentionPop();
@@ -222,6 +230,149 @@ function renderChatroom() {
   chatInitResizer();
   chatApplyHubPanelState();
   chatApplyMemberPaneState();
+  chatRestoreDraft();
+}
+
+function chatMeetingSummaryHtml() {
+  const meetings = chat.active?.meetings || { current: null, history: [], trash: [] };
+  const records = [meetings.current, ...(meetings.history || [])].filter(Boolean);
+  const selected = records.find(record => record.id === chat.meetingSummarySelections[chat.activeKey || '']) || meetings.current || records[0];
+  if (selected) chat.meetingSummarySelections[chat.activeKey || ''] = selected.id;
+  const rows = records.map((record, index) => `${index === 0 && meetings.current ? '<div class="chat-meeting-list-label">Current</div>' : index === (meetings.current ? 1 : 0) ? '<div class="chat-meeting-list-label">Earlier</div>' : ''}<button type="button" class="chat-meeting-list-item${record.id === selected?.id ? ' active' : ''}" data-meeting-id="${record.id}" onclick="chatSelectMeetingSummary('${record.id}',this)" ${record.status === 'adjourned' ? `oncontextmenu="chatMeetingContextMenu(event,'${record.id}')" title="Right-click for Meeting actions"` : ''}><strong>${chatMeetingDate(record.startedAt)}</strong><span>${esc(record.title)}</span><small>${record.status === 'active' ? 'In Discussion' : 'Completed'}</small></button>`).join('');
+  const trash = meetings.trash || [];
+  const trashHtml = `<details class="chat-meeting-trash"><summary><span>Trash</span><small>${trash.length}</small></summary><div>${trash.length ? trash.map(record => `<div class="chat-meeting-trash-item"><span><strong>${esc(record.title)}</strong><small>${chatMeetingDate(record.deletedAt)}</small></span>${chat.active?.selfHost ? `<span class="chat-meeting-trash-actions"><button type="button" onclick="chatRestoreMeeting('${record.id}',${record.revision})" title="Restore Meeting">↶</button><button type="button" onclick="chatDeleteMeeting('${record.id}',${record.revision})" title="Delete permanently">×</button></span>` : ''}</div>`).join('') : '<p>Trash is empty.</p>'}</div></details>`;
+  const empty = `<div class="chat-meeting-empty"><h2>No Meeting yet</h2><p>Send a Discuss message to start a continuously updated Meeting Summary. Ask and Announce never create Meeting state.</p>${chat.active?.selfHost ? '<button type="button" class="tbtn" onclick="chatStartMeeting()">Retry from latest Discuss</button>' : '<small>The Room Host records canonical Meeting state.</small>'}</div>`;
+  return `<div class="chat-meeting-workspace"><aside class="chat-meeting-list" aria-label="Meetings">${rows || '<div class="chat-meeting-list-label">No history</div>'}${trashHtml}</aside><div id="chat-meeting-document" class="chat-meeting-document">${selected ? chatMeetingRecordHtml(selected) : empty}</div></div>`;
+}
+
+function chatHistoricalMeetingSummaryHtml(meetingId) {
+  const meetings = chat.active?.meetings || { current: null, history: [] };
+  const record = [meetings.current, ...(meetings.history || [])].find(item => item?.id === meetingId);
+  return record ? chatMeetingRecordHtml(record) : '';
+}
+
+function chatMeetingDate(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? esc(value) : date.toLocaleString([], { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+}
+
+function chatMeetingTopicHtml(topic, activeTopicId, depth = 0) {
+  const rounds = (topic.rounds || []).map(round => `<article class="chat-meeting-round"><header><strong>Round ${round.number}</strong><small>${round.status}</small></header>${(round.opinions || []).map(opinion => `<div class="chat-meeting-opinion"><b>${esc(opinion.participant)}</b><span>${esc(opinion.text)}</span></div>`).join('')}<div class="chat-meeting-result"><b>Conclusion</b><span class="${round.conclusion ? 'complete' : 'pending'}">${esc(round.conclusion || 'Pending')}</span></div><div class="chat-meeting-result"><b>Next</b><span class="active">${esc(round.next || 'Continue discussion')}</span></div></article>`).join('');
+  const work = (topic.workItems || []).length ? topic.workItems.map(item => `<div class="chat-meeting-work"><b>${esc(item.owner || 'Unassigned')}</b><span>${esc(item.objective || '')}</span><em>${esc(item.status || 'Pending Acceptance')}</em></div>`).join('') : '<p class="chat-muted">No WorkItems recorded.</p>';
+  const subtopics = (topic.subtopics || []).map(child => chatMeetingTopicHtml(child, activeTopicId, depth + 1)).join('');
+  return `<details class="chat-meeting-topic" ${topic.id === activeTopicId || depth === 0 ? 'open' : ''}><summary><span class="chat-meeting-arrow">▶</span><span><strong>${depth ? 'Subtopic' : 'Topic'} · ${esc(topic.title)}</strong><small>Owner: ${esc(topic.owner)} · Round ${topic.round} ${topic.id === activeTopicId ? '· active DFS node' : ''}</small></span><em class="chat-meeting-state ${topic.status === 'discussing' ? 'active' : topic.status}">${esc(topic.status)}</em></summary><div class="chat-meeting-topic-body"><section class="chat-meeting-branch"><label>Problem statement</label><p>${esc(topic.problemStatement)}</p></section><section class="chat-meeting-branch"><label>Discussion result</label>${rounds}</section><section class="chat-meeting-branch"><label>WorkItems</label>${work}</section>${subtopics ? `<div class="chat-meeting-subtopics"><label>Subtopics</label>${subtopics}</div>` : ''}</div></details>`;
+}
+
+function chatMeetingRecordHtml(record) {
+  const active = record.status === 'active';
+  const action = active && chat.active?.selfHost ? `<button type="button" class="tbtn chat-meeting-adjourn" onclick="chatAdjournMeeting('${record.id}',${record.revision})">Adjourn</button>` : '';
+  const note = chat.active?.selfHost ? `<button type="button" class="tbtn" onclick="chatOpenMeetingNote('${record.id}')">Open detailed Note</button>` : '';
+  const participants = (record.participants || []).map(name => `<span>${esc(name)}</span>`).join('') || '<span>Not recorded</span>';
+  return `<div class="chat-meeting-document-head"><div><small>${active ? 'Active meeting' : 'Read-only history'}</small><h2>${esc(record.title)}</h2></div><div class="chat-meeting-head-actions"><span class="chat-meeting-state ${active ? 'active' : 'complete'}">${active ? 'In Discussion' : 'Completed'}</span>${note}${action}</div></div><dl class="chat-meeting-minutes-meta"><div><dt>Participants</dt><dd class="chat-meeting-participants">${participants}</dd></div><div><dt>Lead</dt><dd>${esc(record.lead || 'Not assigned')}</dd></div><div><dt>Recorder</dt><dd>${esc(record.recorder || record.lead)}</dd></div><div><dt>Started</dt><dd>${chatMeetingDate(record.startedAt)}</dd></div><div><dt>Ended</dt><dd>${record.endedAt ? chatMeetingDate(record.endedAt) : 'In progress'}</dd></div></dl>${(record.topics || []).map(topic => chatMeetingTopicHtml(topic, record.activeTopicId)).join('')}`;
+}
+
+function chatOpenMeetingNote(meetingId) {
+  vscode.postMessage({ command:'chatMeetingOpenNote', meetingId });
+}
+
+function chatMeetingRequestId() {
+  return globalThis.crypto?.randomUUID?.() || `meeting-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function chatStartMeeting() {
+  vscode.postMessage({ command:'chatMeetingStart', requestId:chatMeetingRequestId(), expectedRevision:0 });
+}
+
+function chatAdjournMeeting(meetingId, expectedRevision) {
+  pkModal({ title:'Adjourn Meeting?', message:'This closes the current Meeting and moves its generated Summary into Room history.', okLabel:'Adjourn', onOk:() => vscode.postMessage({ command:'chatMeetingAdjourn', meetingId, requestId:chatMeetingRequestId(), expectedRevision }) });
+}
+
+function chatMeetingContextMenu(event, meetingId) {
+  event.preventDefault(); event.stopPropagation();
+  const record = (chat.active?.meetings?.history || []).find(item => item.id === meetingId);
+  if (!record || !chat.active?.selfHost) return;
+  showPaperMenu(event.clientX, event.clientY, [
+    { label:record.title, header:true },
+    { sep:true },
+    { label:'Move to Trash…', danger:true, onClick:() => pkModal({ title:'Move Meeting to Trash?', message:'The generated Meeting Note will leave Notes until this Meeting is restored.', okLabel:'Move to Trash', danger:true, onOk:() => vscode.postMessage({ command:'chatMeetingTrash', meetingId, requestId:chatMeetingRequestId(), expectedRevision:record.revision }) }) },
+  ]);
+}
+
+function chatRestoreMeeting(meetingId, expectedRevision) {
+  vscode.postMessage({ command:'chatMeetingRestore', meetingId, requestId:chatMeetingRequestId(), expectedRevision });
+}
+
+function chatDeleteMeeting(meetingId, expectedRevision) {
+  pkModal({ title:'Delete Meeting permanently?', message:'This permanently deletes the canonical Meeting Summary and cannot be undone. Raw Chat History is not changed.', okLabel:'Delete Permanently', danger:true, onOk:() => vscode.postMessage({ command:'chatMeetingDelete', meetingId, requestId:chatMeetingRequestId(), expectedRevision }) });
+}
+
+function chatSelectMeetingSummary(meetingId, button) {
+  chat.meetingSummarySelections[chat.activeKey || ''] = meetingId;
+  const documentView = document.getElementById('chat-meeting-document');
+  if (!documentView) return;
+  document.querySelectorAll('.chat-meeting-list-item').forEach(item => item.classList.toggle('active', item === button));
+  documentView.innerHTML = chatHistoricalMeetingSummaryHtml(meetingId);
+}
+
+function chatPaintMeetingSummary() {
+  const body = document.getElementById('chat-meeting-summary-body');
+  if (!body) return;
+  body.innerHTML = chatMeetingSummaryHtml();
+}
+
+function chatToggleMeetingSummary(force) {
+  const panel = document.getElementById('chat-meeting-summary');
+  const button = document.getElementById('chat-meeting-summary-btn');
+  if (!panel) return;
+  const open = typeof force === 'boolean' ? force : panel.classList.contains('hidden');
+  if (open) chatPaintMeetingSummary();
+  panel.classList.toggle('hidden', !open);
+  button?.classList.toggle('active', open);
+  button?.setAttribute('aria-pressed', String(open));
+}
+
+function chatDraftKey(key = chat.activeKey) { return key || ''; }
+function chatCaptureDraft(key = chat.activeKey) {
+  const draftKey = chatDraftKey(key);
+  if (!draftKey) return;
+  const input = document.getElementById('chat-input');
+  const recipientInput = document.getElementById('chat-recipient-input');
+  const existing = chat.drafts[draftKey] || {};
+  chat.drafts[draftKey] = {
+    ...existing,
+    text: input ? input.value : existing.text || '',
+    selectionStart: input ? input.selectionStart : existing.selectionStart,
+    selectionEnd: input ? input.selectionEnd : existing.selectionEnd,
+    recipientText: recipientInput ? recipientInput.value : existing.recipientText || '',
+    manualRecipients: [...chat.manualRecipients],
+    removedRecipients: [...chat.removedRecipients],
+    mode: chat.mode,
+    discussionLead: chat.discussionLead,
+    quote: chat.quote ? { ...chat.quote } : null,
+  };
+}
+
+function chatRestoreDraft(key = chat.activeKey) {
+  const draftKey = chatDraftKey(key);
+  const input = document.getElementById('chat-input');
+  if (!draftKey || !input) return;
+  const draft = chat.drafts[draftKey];
+  chat.manualRecipients = [...(draft?.manualRecipients || [])];
+  chat.removedRecipients = [...(draft?.removedRecipients || [])];
+  chat.mode = draft?.mode || 'ask';
+  chat.discussionLead = draft?.discussionLead || '';
+  chat.quote = draft?.quote ? { ...draft.quote } : null;
+  input.value = draft?.text || '';
+  const recipientInput = document.getElementById('chat-recipient-input');
+  if (recipientInput) recipientInput.value = draft?.recipientText || '';
+  if (Number.isInteger(draft?.selectionStart)) {
+    input.selectionStart = Math.min(draft.selectionStart, input.value.length);
+    input.selectionEnd = Math.min(draft.selectionEnd ?? draft.selectionStart, input.value.length);
+  }
+  chatResizeInput(input);
+  chatUpdateDefaultRecipient();
+  chatPaintMode();
+  chatPaintQuote();
 }
 
 // Drag the divider between the left rail (Hub/Rooms) and the chat pane to resize.
@@ -454,6 +605,7 @@ function chatOnState(s) {
   if (!s) return;
   const existingLog = document.getElementById('chat-log');
   const previousKey = chat.activeKey;
+  if (previousKey) chatCaptureDraft(previousKey);
   if (existingLog && previousKey) {
     chat.scrollPositions[previousKey] = existingLog.scrollTop;
     chat.followLatest = chatIsNearBottom(existingLog);
@@ -477,6 +629,7 @@ function chatOnState(s) {
   chatPaintRoomCards();
   chatPaintActive();
   chatPaintHub();
+  if (chat.activeKey !== previousKey) chatRestoreDraft();
 }
 
 function chatOnRecents(d) {
@@ -624,8 +777,19 @@ function chatSend() {
   const text = draft.trim();
   const recipients = chatComposerRecipientNames(draft);
   const mode = chat.active?.selfHost ? chat.mode : undefined;
+  if (mode === 'discuss') {
+    const audienceSize = recipients.some(name => ['all','everyone'].includes(name.toLowerCase()))
+      ? (chat.active?.members || []).filter(member => member.user !== chat.active.self).length
+      : recipients.length;
+    if (audienceSize < 1) {
+      chatToast("Discuss requires at least one recipient.");
+      return;
+    }
+  }
   const replyPolicy = mode === 'announce' ? 'none' : mode === 'discuss' ? 'required' : 'required';
-  ask('chatSend', { text, mode, replyPolicy, recipients, replyToMessageId: chat.quote?.id || '' });
+  const discussionLead = mode === 'discuss' ? chatSelectedDiscussionLead() : '';
+  ask('chatSend', { text, mode, replyPolicy, recipients, discussionLead, replyToMessageId: chat.quote?.id || '' });
+  delete chat.drafts[chatDraftKey()];
   chatPreserveReadingLayout(() => {
     inp.value = ''; inp.style.height = 'auto';
     chat.manualRecipients = [];
@@ -645,16 +809,23 @@ function chatQuoteMessage(messageId) {
   const message = chatMessageById(messageId);
   if (!message) return;
   chat.quote = { id: message.id, from: message.from, ts: message.ts, text: message.text };
+  if (typeof chatCaptureDraft === 'function') chatCaptureDraft();
+  chatPaintQuote();
+  document.getElementById('chat-input')?.focus();
+}
+function chatPaintQuote() {
   const bar = document.getElementById('chat-quote-bar');
   if (!bar) return;
+  const message = chat.quote;
+  if (!message) { bar.classList.add('hidden'); bar.innerHTML = ''; return; }
   const summary = String(message.text || '').replace(/\s+/g, ' ').trim().slice(0, 140);
   const time = new Date(message.ts || Date.now()).toLocaleString();
   bar.innerHTML = `<button type="button" class="chat-quote-jump" title="Jump to the quoted message" onclick="chatJumpToMessage('${esc(message.id)}')"><b>${esc(message.from)}</b><span>${esc(time)} · ${esc(summary)} · ${esc(message.id)}</span></button><button type="button" class="chat-quote-close" title="Remove quoted message" onclick="chatClearQuote()">×</button>`;
   bar.classList.remove('hidden');
-  document.getElementById('chat-input')?.focus();
 }
 function chatClearQuote() {
   chat.quote = null;
+  chatCaptureDraft();
   const bar = document.getElementById('chat-quote-bar');
   if (bar) { bar.classList.add('hidden'); bar.innerHTML = ''; }
 }
@@ -701,10 +872,33 @@ function chatMessageMenu(event, messageId) {
   ]);
 }
 
+function chatPaintMode() {
+  document.querySelectorAll('#chat-mode-control button').forEach(button => button.classList.toggle('active', button.dataset.mode === chat.mode));
+  chatPaintDiscussionLead();
+}
+
+function chatSelectedDiscussionLead() {
+  const select = document.getElementById('chat-discussion-lead');
+  return select?.value || chat.discussionLead || chat.active?.self || '';
+}
+
+function chatPaintDiscussionLead() {
+  const wrap = document.getElementById('chat-discussion-lead-wrap');
+  const select = document.getElementById('chat-discussion-lead');
+  if (!wrap || !select) return;
+  wrap.classList.toggle('hidden', chat.mode !== 'discuss');
+  const members = (chat.active?.members || []).filter(member => member.present !== false);
+  const preferred = chat.discussionLead || chat.active?.self || members.find(member => member.host)?.user || '';
+  select.innerHTML = members.map(member => `<option value="${esc(member.user).replace(/"/g, '&quot;')}" ${member.user === preferred ? 'selected' : ''}>${esc(member.user)}</option>`).join('');
+  chat.discussionLead = select.value || preferred;
+}
+
 function chatSetMode(mode) {
   if (!['announce', 'ask', 'discuss'].includes(mode)) return;
   chat.mode = mode;
   document.querySelectorAll('#chat-mode-control button').forEach(button => button.classList.toggle('active', button.dataset.mode === mode));
+  chatPaintDiscussionLead();
+  if (typeof chatCaptureDraft === 'function') chatCaptureDraft();
   const notices = {
     announce: 'Switched to Announce mode: Recipients are notified, but no acknowledgement or reply is requested.',
     ask: 'Switched to Ask mode: Each selected recipient is asked to reply once.',
@@ -799,6 +993,7 @@ function chatResizeInput(input) {
 function chatBodyInput() {
   const input = document.getElementById('chat-input');
   if (!input) return;
+  chatCaptureDraft();
   const mentioned = chatSyncBodyRecipients(input.value);
   chatResizeInput(input);
   chatSuggestOnInput();
@@ -808,6 +1003,7 @@ function chatBodyInput() {
 function chatRecipientInputChanged() {
   const input = document.getElementById('chat-recipient-input');
   if (!input) return;
+  chatCaptureDraft();
   const value = input.value;
   const match = /^@?(.*)$/.exec(value);
   chatShowMentionPop(match?.[1] || '', { recipientMode: true });
@@ -961,10 +1157,34 @@ function chatInputKeydown(ev) {
 }
 
 // Parse @names out of a message (mirror of protocol.parse_mentions).
+function chatMentionSearchText(text) {
+  let fence = '';
+  return String(text || '').split(/\r?\n/).map(line => {
+    const fenceMatch = /^\s*(`{3,}|~{3,})/.exec(line);
+    if (fenceMatch) {
+      const marker = fenceMatch[1][0];
+      if (!fence) fence = marker; else if (fence === marker) fence = '';
+      return '';
+    }
+    if (fence || /^\s*>/.test(line)) return '';
+    let visible = '';
+    for (let index = 0; index < line.length;) {
+      if (line[index] !== '`') { visible += line[index++]; continue; }
+      let end = index;
+      while (end < line.length && line[end] === '`') end += 1;
+      const marker = line.slice(index, end);
+      const closing = line.indexOf(marker, end);
+      if (closing < 0) { visible += ' '.repeat(line.length - index); break; }
+      visible += ' '.repeat(closing + marker.length - index);
+      index = closing + marker.length;
+    }
+    return visible;
+  }).join('\n');
+}
 function chatParseMentions(text) {
   const re = /(?<![\p{L}\p{N}_@])@(?:"([^"]{1,60})"|([\p{L}\p{N}_][\p{L}\p{N}_\-]{0,59}))/gu;
   const out = []; let m;
-  while ((m = re.exec(text || ''))) {
+  while ((m = re.exec(chatMentionSearchText(text)))) {
     const n = m[1] || m[2];
     if (n && !out.some(x => x.toLowerCase() === n.toLowerCase())) out.push(n);
   }
@@ -1006,7 +1226,7 @@ function chatExplicitRecipientNames(text) {
 function chatStructuredRecipientNames(text) {
   const valid = chatValidRecipientMap();
   const recipients = [];
-  const source = String(text || '');
+  const source = chatMentionSearchText(text);
   const unquotedAliases = [...new Set([...valid.values()])].filter(name => !/\s/.test(name)).sort((a, b) => b.length - a.length);
   for (let index = 0; index < source.length; index += 1) {
     if (source[index] !== '@' || (index > 0 && /[\p{L}\p{N}_@]/u.test(source[index - 1]))) continue;
@@ -1064,7 +1284,8 @@ function chatMaterializeRecipient(text) {
 }
 function chatComposerRecipientNames(text, explicit = chatStructuredRecipientNames(text)) {
   const inherited = chatDefaultRecipientNames();
-  const selected = [...inherited, ...chat.manualRecipients, ...explicit];
+  const effectiveInherited = explicit.length && inherited.some(name => ['all', 'everyone'].includes(name.toLowerCase())) ? [] : inherited;
+  const selected = [...effectiveInherited, ...chat.manualRecipients, ...explicit];
   const removed = new Set(chat.removedRecipients.map(name => name.toLowerCase()));
   const unique = selected.filter(name => !removed.has(name.toLowerCase()))
     .filter((name, index, items) => items.findIndex(item => item.toLowerCase() === name.toLowerCase()) === index);
@@ -1332,7 +1553,10 @@ function chatPaintRoomCards() {
 function chatActiveRoomMenu(event, key, roomId, roomName) {
   event.preventDefault(); event.stopPropagation();
   showPaperMenu(event.clientX, event.clientY, [
-    { label: '✏ Rename…', onClick: () => ask('chatRenameActiveRoom', { roomId, roomName }) },
+    { label: roomName, header: true },
+    copyPathMenu(`pkm://chatroom/rooms/${encodeURIComponent(roomId || roomName)}`),
+    { sep: true },
+    { label: 'Rename…', onClick: () => ask('chatRenameActiveRoom', { roomId, roomName }) },
     { sep: true },
     { label: 'Close Room', onClick: () => ask('chatLeave', { key }) },
   ]);
@@ -1341,18 +1565,24 @@ function chatActiveRoomMenu(event, key, roomId, roomName) {
 function chatStoredRoomMenu(event, roomId, roomName) {
   event.preventDefault(); event.stopPropagation();
   showPaperMenu(event.clientX, event.clientY, [
-    { label: '▶ Rehost', onClick: () => ask('chatRehostStoredRoom', { roomId }) },
-    { label: 'Repair Room', onClick: () => ask('chatRepairStoredRoom', { roomId }) },
-    { label: '✏ Rename…', onClick: () => ask('chatRenameStoredRoom', { roomId, roomName }) },
+    { label: roomName, header: true },
+    copyPathMenu(`pkm://chatroom/rooms/${encodeURIComponent(roomId || roomName)}`),
     { sep: true },
-    { label: '🗑 Delete Data…', danger: true, onClick: () => ask('chatDeleteStoredRoom', { roomId, roomName }) },
+    { label: 'Rehost', onClick: () => ask('chatRehostStoredRoom', { roomId }) },
+    { label: 'Repair Room', onClick: () => ask('chatRepairStoredRoom', { roomId }) },
+    { label: 'Rename…', onClick: () => ask('chatRenameStoredRoom', { roomId, roomName }) },
+    { sep: true },
+    { label: 'Delete Data…', danger: true, onClick: () => ask('chatDeleteStoredRoom', { roomId, roomName }) },
   ]);
 }
 
 function chatActiveElsewhereRoomMenu(event, roomId, roomName) {
   event.preventDefault(); event.stopPropagation();
   showPaperMenu(event.clientX, event.clientY, [
-    { label: '■ Force Close Host…', danger: true, onClick: () => ask('chatForceCloseHostedRoom', { roomId, roomName }) },
+    { label: roomName, header: true },
+    copyPathMenu(`pkm://chatroom/rooms/${encodeURIComponent(roomId || roomName)}`),
+    { sep: true },
+    { label: 'Force Close Host…', danger: true, onClick: () => ask('chatForceCloseHostedRoom', { roomId, roomName }) },
   ]);
 }
 
@@ -1368,6 +1598,7 @@ function chatPaintActive() {
   document.getElementById('chat-status-dot').className = 'chat-dot ' + a.status;
   document.getElementById('chat-status-dot').title = connected ? 'Connected to this Room.' : `Room connection state: ${a.statusDetail || a.status}.`;
   document.getElementById('chat-pane-title').textContent = a.room + (a.statusDetail ? ' — ' + a.statusDetail : (connected ? '' : ' — ' + a.status));
+  if (!document.getElementById('chat-meeting-summary')?.classList.contains('hidden')) chatPaintMeetingSummary();
   const inp = document.getElementById('chat-input'), sbtn = document.getElementById('chat-send-btn');
   const muted = !!a.selfMuted;
   const addAgent = document.getElementById('chat-add-agent-btn');
@@ -1376,6 +1607,7 @@ function chatPaintActive() {
   if (addAgent) addAgent.classList.toggle('hidden', !a.selfHost);
   if (leave) { leave.textContent = a.selfHost ? 'Close Room' : 'Leave Room'; leave.title = a.selfHost ? 'Close and store this Room; data remains available under Stored Rooms' : 'Leave this Room'; }
   if (modeControl) modeControl.classList.toggle('hidden', !a.selfHost);
+  chatPaintDiscussionLead();
   if (inp)  { inp.disabled  = !connected || muted; inp.placeholder = muted ? 'You are muted by the host — you can read but not post.' : 'Message the room…  (Enter to send, Shift+Enter for newline)'; }
   if (sbtn) sbtn.disabled = !connected || muted;
   const recipientInput = document.getElementById('chat-recipient-input');
@@ -1488,9 +1720,13 @@ function chatPaintMembers() {
   let html = '<div class="chat-proto-legend"><span class="chat-proto standby" title="Standby: the Agent has an active blocking wait for directed messages."><span class="chat-legend-dot standby"></span>standby</span><span class="chat-proto working" title="Working: the Agent is processing a delivered message or task."><span class="chat-legend-dot working"></span>working</span><span class="chat-proto engaged" title="In session: the Agent is participating in a coordinated multi-step exchange."><span class="chat-legend-dot engaged"></span>in session</span></div>';
   if (amHost && managed.length) {
     html += '<div class="chat-side-sub">Managed agents</div>' + managed.map(agent => {
-      const stateLabel = agent.busy ? '⚙️ working' : agent.active ? '🟢 standby' : '⚪ idle';
+      const detail = String(agent.status || '');
+      const runtimeState = agent.busy || detail.startsWith('queued') ? 'thinking' : agent.active ? 'standby' : 'idle';
+      const stateLabel = detail.startsWith('error')
+        ? `<span class="chat-proto idle" title="${attr(detail)}">error</span>`
+        : chatProtoBadge(runtimeState);
       const role = agent.role ? `<span class="chat-role">${esc(agent.role)}</span>` : '';
-      return `<div class="chat-member" title="${attr(agent.backend)}"><span class="chat-mdot agent"></span><span class="chat-mname">🤖 ${esc(agent.name)}<span class="chat-sid">${stateLabel}</span>${role}</span><span class="chat-mod-actions"><button class="chat-mod" title="Edit name and role" onclick="ask('chatEditManagedAgent',{id:'${attr(agent.id)}',name:'${attr(agent.name)}',role:'${attr(agent.role || '')}'})">✏️</button><button class="chat-mod chat-mod-kick" title="Permanently remove managed agent" onclick="ask('chatRemoveManagedAgent',{id:'${attr(agent.id)}'})">🚫</button></span></div>`;
+      return `<div class="chat-member" title="${attr(agent.backend)}"><span class="chat-mdot agent state-${runtimeState}"></span><span class="chat-mname"><span class="chat-avatar">${esc(agent.icon || '🤖')}</span><span class="chat-member-name-text">${esc(agent.name)}</span>${stateLabel}${role}</span><span class="chat-mod-actions"><button class="chat-mod" title="Edit profile, name, and role" onclick="ask('chatEditManagedAgent',{id:'${attr(agent.id)}',name:'${attr(agent.name)}',role:'${attr(agent.role || '')}',icon:'${attr(agent.icon || '🤖')}'})">✏️</button><button class="chat-mod chat-mod-kick" title="Permanently remove managed agent" onclick="ask('chatRemoveManagedAgent',{id:'${attr(agent.id)}'})">🚫</button></span></div>`;
     }).join('');
   }
   html += here.map(row).join('');

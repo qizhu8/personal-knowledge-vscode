@@ -6,7 +6,7 @@ const vm = require("vm");
 
 const panelJs = fs.readFileSync(path.join(__dirname, "..", "dist", "webview", "panel.js"), "utf8");
 const panelCss = fs.readFileSync(path.join(__dirname, "..", "dist", "webview", "panel.css"), "utf8");
-const match = panelJs.match(/function chatParseMentions\(text\)\s*\{[\s\S]*?function chatCollapseFullAudience\(names\)\s*\{[\s\S]*?\n\}/);
+const match = panelJs.match(/function chatMentionSearchText\(text\)\s*\{[\s\S]*?function chatCollapseFullAudience\(names\)\s*\{[\s\S]*?\n\}/);
 assert(match, "Chatroom recipient materializer must be present in the bundled panel script");
 
 const context = { chat: { active: null, manualRecipients: [], bodyRecipients: [], removedRecipients: [] }, String };
@@ -33,8 +33,10 @@ assert.deepStrictEqual(Array.from(context.recipients("@Someone unknown")), ["Age
 assert.deepStrictEqual(Array.from(context.recipients("discuss @Agent B inline")), ["Agent A", "Agent B"]);
 assert.deepStrictEqual(Array.from(context.recipients("```\n@Agent B\n```")), ["Agent A", "Agent B"]);
 assert.deepStrictEqual(Array.from(context.structured('@Host report\n\n@"Agent A" @"Agent B" review')), ["Host", "Agent A", "Agent B"]);
-assert.deepStrictEqual(Array.from(context.structured('@Host report `@"Agent B"`\n```\n@"Agent A"\n```')), ["Host", "Agent B", "Agent A"],
-	"all valid mentions anywhere in the message must become recipients");
+assert.deepStrictEqual(Array.from(context.structured('@Host report `@"Agent B"`\n```\n@"Agent A"\n```')), ["Host"],
+	"mentions inside inline and fenced code must remain literal technical content");
+assert.deepStrictEqual(Array.from(context.structured('@Host report\n> @"Agent B" quoted context')), ["Host"],
+	"mentions inside Markdown quotes must not become recipients");
 
 context.chat.active = { selfHost: false, members: [{ user: "Room Host", host: true, present: true }, { user: "Guest", present: true }] };
 context.chat.manualRecipients = [];
@@ -98,6 +100,8 @@ context.chat.active = { selfHost: true, self: "Host", members: [
 context.chat.manualRecipients = [];
 context.chat.removedRecipients = [];
 assert.deepStrictEqual(Array.from(context.recipients("draft")), ["all"]);
+assert.deepStrictEqual(Array.from(context.recipients('@"Agent A" targeted correction')), ["Agent A"],
+	"an explicit target must replace inherited @all so a correction cannot restart a room-wide discussion");
 context.chat.removedRecipients = ["all"];
 assert.deepStrictEqual(Array.from(context.recipients("draft")), [], "removing inherited @all must leave this draft with no recipients");
 assert.deepStrictEqual(Array.from(context.recipients('@"Agent A" draft')), ["Agent A"],
@@ -181,6 +185,7 @@ const notice = {
 let hideNotice;
 const modeContext = {
 	chat: { mode: "ask", modeNoticeTimer: null },
+	chatPaintDiscussionLead: () => {},
 	document: {
 		querySelectorAll: selector => selector === "#chat-mode-control button" ? buttons : [],
 		getElementById: id => id === "chat-mode-notice" ? notice : null,
@@ -201,6 +206,8 @@ modeContext.setMode("discuss");
 assert.match(notice.textContent, /shared peer discussion/);
 assert.doesNotMatch(panelJs, /input\.style\.paddingLeft/);
 assert.match(panelJs, /id="chat-composer"/);
+assert.match(panelJs, /mode === 'discuss'[\s\S]{0,500}audienceSize < 1/);
+assert.match(panelJs, /Discuss requires at least one recipient/);
 assert.match(panelJs, /id="chat-recipient-row"/);
 assert.match(panelJs, /id="chat-recipient-chips"/);
 assert.match(panelJs, /id="chat-recipient-input"/);
