@@ -5,8 +5,15 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-09-20
+
+### Changed
+- Promoted the validated 2.7.33 Chatroom and Meeting candidate to the stable 2.8.0 release line.
+
 ### Fixed
 - Marketplace OIDC now uses the supported Azure Login v3 action, with release coverage preventing regressions to deprecated action runtimes or publish-before-verify ordering.
+- Malformed Subscription state is quarantined intact and replaced with a valid local identity instead of blocking extension activation.
+- The release gate now runs the packaged extension through clean-install, persisted-upgrade, offline, malformed-state, repeated-reload, and panel-closed startup scenarios on one durable profile.
 
 ## [2.7.33] - 2026-09-20
 

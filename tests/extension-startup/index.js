@@ -32,14 +32,16 @@ async function run() {
   assert.strictEqual(progress.label, "LPFeatureProcessor v1.1 Optimization Progress");
   assert.strictEqual(progress.relPath, "Project/AAGL_Improvement/Module Optimizer/LP Processor/progress.md.md");
 
-  await vscode.commands.executeCommand("personalKnowledge.open");
+  const expectPanel = process.env.PKM_STARTUP_EXPECT_PANEL === "true";
+  if (expectPanel) await vscode.commands.executeCommand("personalKnowledge.open");
   const logPath = process.env.PKM_STARTUP_LOG_PATH;
   assert.ok(logPath, "startup log path was not provided");
   await waitFor(() => {
     if (!fs.existsSync(logPath)) return false;
     const log = fs.readFileSync(logPath, "utf8");
-    return /activation complete durationMs=\d+/.test(log) && log.includes("panel created") && log.includes('handleMessage: ready');
-  }, "Panel did not complete its Webview ready handshake");
+    return /activation complete durationMs=\d+/.test(log) && (!expectPanel || log.includes("panel created") && log.includes('handleMessage: ready'));
+  }, expectPanel ? "Panel did not complete its Webview ready handshake" : "Extension activation did not complete with the panel closed");
+  if (!expectPanel) await new Promise(resolve => setTimeout(resolve, 500));
 
   const resultPath = process.env.PKM_STARTUP_RESULT_PATH;
   assert.ok(resultPath, "startup result path was not provided");
@@ -48,15 +50,14 @@ async function run() {
   assert(Number.isFinite(durationMs), "activation duration metric was not recorded");
   const panelCreatedAt = startupLog.indexOf("panel created");
   const activationCompleteAt = startupLog.indexOf("activation complete durationMs=");
-  assert(panelCreatedAt >= 0 && panelCreatedAt < activationCompleteAt, "the panel framework must appear before activation completes");
+  if (expectPanel) assert(panelCreatedAt >= 0 && panelCreatedAt < activationCompleteAt, "the panel framework must appear before activation completes");
+  else assert.strictEqual(panelCreatedAt, -1, `panel must remain closed during ${process.env.PKM_STARTUP_SCENARIO || "closed-panel startup"}`);
   fs.writeFileSync(resultPath, JSON.stringify({
     activated: extension.isActive,
     commandsRegistered: true,
-    panelCreated: true,
-    webviewReady: true,
+    panelExpectationMet: expectPanel ? panelCreatedAt >= 0 && startupLog.includes('handleMessage: ready') : panelCreatedAt === -1,
     deepNavigationNoteVisible: true,
     activationDurationMs: durationMs,
-    frameworkBeforeActivationComplete: true,
   }));
 }
 

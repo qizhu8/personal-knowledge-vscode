@@ -13,7 +13,6 @@ async function main() {
   const storeDir = path.join(testRoot, "knowledge");
   const settingsDir = path.join(userDataDir, "User");
   const logPath = path.join(userDataDir, "User", "globalStorage", "uone.personal-knowledge", "personal-knowledge.log");
-  const resultPath = path.join(testRoot, "startup-result.json");
 
   fs.mkdirSync(settingsDir, { recursive: true });
   fs.mkdirSync(workspaceDir, { recursive: true });
@@ -27,36 +26,64 @@ async function main() {
     "---",
     "fixture",
   ].join("\n"));
-  fs.writeFileSync(path.join(settingsDir, "settings.json"), JSON.stringify({
-    "personalKnowledge.storePath": storeDir,
-    "personalKnowledge.openOnStartup": true,
-    "personalKnowledge.logLevel": "debug",
-  }, null, 2));
-
   const packagedExtensionPath = packageExtension(root, testRoot);
   const virtualDisplay = await startVirtualDisplay(root);
   try {
-    await runTests({
-      version: "1.90.0",
-      extensionDevelopmentPath: packagedExtensionPath,
-      extensionTestsPath: path.join(root, "tests", "extension-startup"),
-      extensionTestsEnv: {
-        DISPLAY: virtualDisplay?.display || process.env.DISPLAY,
-        PKM_STARTUP_LOG_PATH: logPath,
-        PKM_STARTUP_RESULT_PATH: resultPath,
-      },
-      launchArgs: [
-        workspaceDir,
-        `--user-data-dir=${userDataDir}`,
-        `--extensions-dir=${path.join(testRoot, "extensions")}`,
-        "--disable-extensions",
-        "--disable-gpu",
-      ],
-    });
-    assertStartupResult(resultPath);
+    const scenarios = [
+      { name: "clean-install", openPanel: true },
+      { name: "persisted-upgrade", openPanel: false },
+      { name: "offline", openPanel: false, offline: true },
+      { name: "malformed-state", openPanel: false, malformed: true },
+      { name: "repeated-reload", openPanel: false },
+    ];
+    for (const scenario of scenarios) {
+      fs.writeFileSync(path.join(settingsDir, "settings.json"), JSON.stringify({
+        "personalKnowledge.storePath": storeDir,
+        "personalKnowledge.openOnStartup": scenario.openPanel,
+        "personalKnowledge.logLevel": "debug",
+      }, null, 2));
+      if (scenario.malformed) injectMalformedState(userDataDir);
+      fs.rmSync(logPath, { force: true });
+      const resultPath = path.join(testRoot, `startup-result-${scenario.name}.json`);
+      await runTests({
+        version: "1.90.0",
+        extensionDevelopmentPath: packagedExtensionPath,
+        extensionTestsPath: path.join(root, "tests", "extension-startup"),
+        extensionTestsEnv: {
+          DISPLAY: virtualDisplay?.display || process.env.DISPLAY,
+          PKM_STARTUP_LOG_PATH: logPath,
+          PKM_STARTUP_RESULT_PATH: resultPath,
+          PKM_STARTUP_SCENARIO: scenario.name,
+          PKM_STARTUP_EXPECT_PANEL: String(scenario.openPanel),
+          ...(scenario.offline ? {
+            HTTP_PROXY: "http://127.0.0.1:9",
+            HTTPS_PROXY: "http://127.0.0.1:9",
+            ALL_PROXY: "http://127.0.0.1:9",
+            NO_PROXY: "",
+          } : {}),
+        },
+        launchArgs: [
+          workspaceDir,
+          `--user-data-dir=${userDataDir}`,
+          `--extensions-dir=${path.join(testRoot, "extensions")}`,
+          "--disable-extensions",
+          "--disable-gpu",
+        ],
+      });
+      assertStartupResult(resultPath, scenario.name);
+    }
   } finally {
     virtualDisplay?.process.kill("SIGTERM");
     fs.rmSync(testRoot, { recursive: true, force: true });
+  }
+}
+
+function injectMalformedState(userDataDir) {
+  const stateRoot = path.join(userDataDir, "User", "globalStorage", "uone.personal-knowledge");
+  for (const relative of ["performance/metrics.json", "inventory/manifest.json", "subscriptions/subscriptions.json"]) {
+    const target = path.join(stateRoot, relative);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, "{malformed-state");
   }
 }
 
@@ -103,15 +130,15 @@ async function startVirtualDisplay(root) {
   return { display, process: child };
 }
 
-function assertStartupResult(resultPath) {
+function assertStartupResult(resultPath, scenario) {
   if (!fs.existsSync(resultPath)) throw new Error("VS Code exited without running the startup assertions");
   const result = JSON.parse(fs.readFileSync(resultPath, "utf8"));
-  const required = ["activated", "commandsRegistered", "panelCreated", "webviewReady", "deepNavigationNoteVisible", "frameworkBeforeActivationComplete"];
+  const required = ["activated", "commandsRegistered", "panelExpectationMet", "deepNavigationNoteVisible"];
   for (const key of required) {
     if (result[key] !== true) throw new Error(`Startup assertion did not pass: ${key}`);
   }
   if (!Number.isFinite(result.activationDurationMs)) throw new Error("Startup assertion did not report activationDurationMs");
-  console.log(`Extension startup test: activation ${result.activationDurationMs}ms, commands, panel creation, and Webview ready handshake OK`);
+  console.log(`Extension startup soak [${scenario}]: activation ${result.activationDurationMs}ms, commands, state, and panel expectation OK`);
 }
 
 main().catch(error => {
