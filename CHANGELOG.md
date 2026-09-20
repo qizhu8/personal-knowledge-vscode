@@ -12,6 +12,7 @@ This project follows [Semantic Versioning](https://semver.org/).
 - Managed Agents now have editable profile icons and use the same standby/thinking status indicators as other Agents instead of the legacy gear-and-working label.
 
 ### Fixed
+- New Knowledge Roots now seed the complete generated/runtime ignore policy used by storage protection, and the release check validates that product policy without depending on the developer machine's parent repository layout.
 - Closing or leaving a Room now disconnects its temporary Managed Agents, clears queued work, and removes their in-memory entries.
 - Managed Agent identity is now persisted explicitly as temporary instead of inferred from connection IDs. Closing or Rehosting permanently forgets those memberships, while durable Agents remain reusable even when their client ID begins with `managed-`.
 - Every Room deactivation path, including Host leave, Force Close, Close All, Hub shutdown, and extension disposal, now uses one lifecycle hook to adjourn the active Meeting exactly once. History reconciliation ignores Discuss messages from completed Meetings, so the first new Discuss after Rehost creates a separate Meeting Note.

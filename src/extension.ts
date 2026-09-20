@@ -58,6 +58,7 @@ import { createChatMagicLink, chatInviteMessage } from "./chat-magic-link";
 import { startLiveMarkdownServer } from "./live-note-server";
 import { browserFaviconTag, browserIconBuffer } from "./browser-branding";
 import { managedEnvironmentsRoot } from "./environment-paths";
+import { defaultKnowledgeGitignore } from "./root-storage-policy";
 import { NavigationStatus, summarizeChatNavigation, summarizeServerNavigation } from "./navigation-status";
 import { navigationItemPath } from "./navigation-path";
 import { subscriptionNavigationRoot, SubscriptionNavigationNode } from "./navigation-subscriptions";
@@ -517,10 +518,10 @@ function ensureGitRepo(): void {
     if (!store || !fs.existsSync(store)) return;
     if (fs.existsSync(path.join(store, ".git"))) return;
     execSync(`git -C "${store}" init`, { stdio: "pipe" });
-    // Ignore the binary DB + WAL and generated MCP server; track the markdown mirror instead
+    // Keep generated and machine-local state out of the portable Knowledge Root repository.
     const gitignore = path.join(store, ".gitignore");
     if (!fs.existsSync(gitignore)) {
-      fs.writeFileSync(gitignore, "knowledge.db\nknowledge.db-shm\nknowledge.db-wal\nmcp-server/\nchatrooms/**/*.db\nchatrooms/**/*.journal\nchatrooms/**/*.db-shm\nchatrooms/**/*.db-wal\n");
+      fs.writeFileSync(gitignore, defaultKnowledgeGitignore());
     }
     execSync(`git -C "${store}" add -A && git -C "${store}" commit -m "init: personal knowledge store" --allow-empty`, { stdio: "pipe" });
     log.info(`initialized git repo in ${store}`);
