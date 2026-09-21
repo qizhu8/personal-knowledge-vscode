@@ -141,7 +141,7 @@ function renderPkmSkillTargets(data) {
   const proposals = data?.skillProposals || [];
   return `<div class="pkm-config-section">
     <div class="pkm-config-heading"><div><strong>PKM Skill Router</strong><div class="pkm-skill-detail" ${mcpI18nAttrs('config.routerNative', { version: skill.routerVersion, minimum: skill.minimumMcpSchema })}>Native discovery adapter · router v${esc(skill.routerVersion)} · requires MCP ≥ ${esc(skill.minimumMcpSchema)}</div></div>
-      <div class="pkm-config-actions">${updateTargets.length > 1 ? `<button class="tbtn pkm-skill-update-all ${guideSkill ? 'pkm-first-run-target' : ''}" style="border-color:var(--accent)" onclick='${guideSkill ? 'completeIntegrationGuide();' : ''}pkmSkillInjectAll(this,${JSON.stringify(updateTargets.map(target => target.id))})' ${pkmSkillUpdatingAll ? 'disabled aria-busy="true"' : ''}>${pkmSkillUpdatingAll ? '<span class="pkm-action-spinner"></span> Updating all…' : `↻ Update All (${updateTargets.length})`}</button>` : ''}<button class="tbtn" onclick="ask('pkmSkillBrowseCustomTarget',{})">Browse Directory</button><button class="tbtn" onclick="ask('pkmSkillEnterCustomTarget',{})">Enter Path</button></div></div>
+      <div class="pkm-config-actions">${updateTargets.length > 1 ? `<button class="tbtn pkm-skill-update-all ${guideSkill ? 'pkm-first-run-target' : ''}" style="border-color:var(--accent)" onclick='${guideSkill ? 'completeIntegrationGuide();' : ''}pkmSkillInjectAll(this,${JSON.stringify(updateTargets.map(target => target.id))})' ${pkmSkillUpdatingAll ? 'disabled aria-busy="true"' : ''}>${pkmSkillUpdatingAll ? '<span class="pkm-action-spinner"></span> Updating all…' : `${uiIcon('refresh')} Update All (${updateTargets.length})`}</button>` : ''}<button class="tbtn" onclick="ask('pkmSkillBrowseCustomTarget',{})">${uiIcon('folder-opened', 'Browse Directory')}</button><button class="tbtn" onclick="ask('pkmSkillEnterCustomTarget',{})">${uiIcon('edit', 'Enter Path')}</button></div></div>
     <div class="pkm-skill-source">Canonical source: <code>${esc(skill.sourcePath)}</code>${skill.sourceExists ? '' : ' · created on first Inject'}</div>
     <div class="pkm-skill-detail" style="margin-bottom:8px"><span data-i18n="config.routerTargetHelpStart">Choose any Agent Skills root. PKM creates</span> <code>&lt;root&gt;/pkm-skills/SKILL.md</code>. <span data-i18n="config.routerTargetHelpEnd">Windows drive, UNC, user-home, and environment-variable paths are supported on their matching host.</span></div>
     ${rows || '<div class="empty">No Agent targets configured.</div>'}
@@ -196,7 +196,7 @@ function renderIntegrationGuide(data) {
   if (!guide?.visible) return '';
   const python = guide.step === 'python';
   return `<aside id="pkm-first-run-guide" class="pkm-first-run-guide" data-step="${esc(guide.step)}" role="dialog" aria-label="First configuration guide">
-    <div><strong>${python ? 'Choose Python once' : 'Connect PKM to your Agents'}</strong><button class="icon-btn" onclick="completeIntegrationGuide()" title="Dismiss guide">×</button></div>
+    <div><strong>${python ? 'Choose Python once' : 'Connect PKM to your Agents'}</strong><button class="icon-btn" onclick="completeIntegrationGuide()" title="Dismiss guide" aria-label="Dismiss guide">${uiIcon('close')}</button></div>
     <p>${python
       ? 'Click List Pythons, choose a detected interpreter, then Validate & Save. PKM will create an isolated runtime, install its managed dependencies, generate the MCP server, and build the retrieval index automatically.'
       : 'Click the highlighted Inject or Update All button. PKM writes only a generated discovery adapter into the selected Agent Skill directories; your canonical Skills remain in PKM. Future Router updates are automatic.'}</p>
@@ -244,7 +244,7 @@ function renderMcpDashboard(data) {
     [missingAgentTargets.length === 0, 'Agent connection', missingAgentTargets.length ? 'Authorize PKM to add its discovery adapter to an Agent Skills directory.' : 'Agent discovery adapters are connected and future updates are automatic.', missingAgentTargets.length ? '<button class="tbtn pkm-first-run-target" onclick="document.getElementById(\'pkm-skill-router-section\')?.scrollIntoView({behavior:\'smooth\'})">Review & Connect</button>' : '<span class="mcp-no-action">Connected</span>'],
   ];
   return `<section class="mcp-dashboard">
-    <div class="mcp-dashboard-head"><div><h2>PKM Integration Status</h2><p>Server runtime, generated schemas, and Agent Skill Router are versioned independently.</p></div><div class="mcp-running">${mcpStatusLight(processKind, processLabel, processLabelKey, { pid: status.process.pid || '' })}<button class="tbtn" onclick="ask('checkMcp',{})" title="Refresh process and version status">↻</button></div></div>
+    <div class="mcp-dashboard-head"><div><h2>PKM Integration Status</h2><p>Server runtime, generated schemas, and Agent Skill Router are versioned independently.</p></div><div class="mcp-running">${mcpStatusLight(processKind, processLabel, processLabelKey, { pid: status.process.pid || '' })}<button class="tbtn" onclick="ask('checkMcp',{})" title="Refresh process and version status" aria-label="Refresh process and version status">${uiIcon('refresh')}</button></div></div>
     <div class="mcp-runtime-note" ${status.process.detail === 'Generated server process detected.' ? 'data-i18n="config.processDetected"' : ''}>${esc(status.process.detail || '')}${!status.process.running && status.ready ? ' <span data-i18n="config.onDemandHelp">Stdio MCP servers start when an MCP client requests pkm; use MCP: List Servers to start it manually.</span>' : ''}</div>
     ${renderSkillRouterField(data)}
     <div class="mcp-paths"><div class="mcp-paths-head"><h3>External links</h3></div>
@@ -252,15 +252,15 @@ function renderMcpDashboard(data) {
       <div class="mcp-setup-step done"><span class="mcp-step-number">:</span><span><strong>Public Content Gateway port</strong><small>Stable across restarts. Private content is excluded and returns 404.</small></span><span class="mcp-row-action"><input type="number" min="1024" max="65535" value="${Number(externalLink.contentPort || 39502)}" onchange="ask('setContentGatewayPort',{port:Number(this.value)})" title="Fixed port for stable public content links"></span></div>
     </div>
     <div class="mcp-version-table-wrap"><table class="mcp-version-table"><colgroup><col class="mcp-version-component-col"><col class="mcp-version-number-col"><col class="mcp-version-number-col"><col class="mcp-version-status-col"><col class="mcp-version-action-col"></colgroup><thead><tr><th>Component</th><th>Installed</th><th>Target</th><th>Status</th><th>Action</th></tr></thead><tbody>${rows.map(row => `<tr><th scope="row">${row[0]}</th><td><code>${esc(row[1])}</code></td><td><code>${esc(row[2])}</code></td><td>${mcpStatusLight(row[6] || (row[3] ? 'good' : 'warn'), row[5] || (row[3] ? 'Current' : 'Update available'))}</td><td class="mcp-row-action">${row[4]}</td></tr>`).join('')}</tbody></table></div>
-    <div class="mcp-paths"><div class="mcp-paths-head"><h3>Paths</h3><div class="pkm-config-actions"><button class="tbtn" onclick="refreshMcpPathSizes()" title="Recalculate disk usage">↻ Refresh sizes</button></div></div>
+    <div class="mcp-paths"><div class="mcp-paths-head"><h3>Paths</h3><div class="pkm-config-actions"><button class="tbtn" onclick="refreshMcpPathSizes()" title="Recalculate disk usage">${uiIcon('refresh', 'Refresh sizes')}</button></div></div>
       <div class="mcp-path-table-wrap"><table class="mcp-path-table"><colgroup><col class="mcp-path-type-col"><col><col class="mcp-path-size-col"><col class="mcp-path-source-col"></colgroup>
         <thead><tr><th>Path Type</th><th>Location</th><th>Disk Usage</th><th>Action</th></tr></thead>
         <tbody>
-          <tr><td>Knowledge root</td><td><code title="${esc(paths.store || '')}">${esc(paths.store || 'Not configured')}</code><div class="pkm-skill-detail">${esc(data?.store?.host ? `machine-local · ${data.store.host}` : 'machine-local')}</div></td><td data-mcp-path-size="store">Calculating…</td><td><button class="tbtn" onclick="ask('reconfigureKnowledgeRoot',{})" title="Choose a different machine-local Knowledge Root">⚙ Reconfigure</button></td></tr>
-          <tr><td>Environments root</td><td><code title="${esc(paths.environments || '')}">${esc(paths.environments || 'Not configured')}</code><div class="pkm-skill-detail">Machine-local storage for migrated/created conda, venv, uv environments and the managed pkm-mcp runtime. This directory can grow very large.</div></td><td data-mcp-path-size="environments">Calculating…</td><td><button class="tbtn" onclick="ask('reconfigureEnvironmentsRoot',{})" title="Choose where managed environments are stored on this machine">⚙ Reconfigure</button></td></tr>
-          <tr><td>Managed MCP runtime</td><td><code title="${esc(paths.runtime || '')}">${esc(paths.runtime || 'Not created')}</code><div class="pkm-skill-detail">Machine-local virtual environment; reconfiguration rebuilds it at the new path.</div></td><td data-mcp-path-size="runtime">Calculating…</td><td><button class="tbtn" onclick="ask('reconfigureMcpRuntimePath',{})">⚙ Reconfigure &amp; Rebuild</button></td></tr>
-          <tr><td>MCP Base Python</td><td><code title="${esc(paths.python || '')}">${esc(paths.python || 'Not configured')}</code><div class="pkm-skill-detail">Machine-local Python executable used to build the managed runtime.</div></td><td data-mcp-path-size="python">Calculating…</td><td><button class="tbtn" onclick="document.getElementById('mcp-python-path')?.scrollIntoView({behavior:'smooth'})">⚙ Configure &amp; Rebuild</button></td></tr>
-          <tr><td>MCP server directory</td><td><code title="${esc(paths.serverDirectory || '')}">${esc(paths.serverDirectory || 'Not generated')}</code><div class="pkm-skill-detail">Machine-local generated server code; reconfiguration regenerates all files.</div></td><td data-mcp-path-size="serverDirectory">Calculating…</td><td><button class="tbtn" onclick="ask('reconfigureMcpServerPath',{})">⚙ Reconfigure &amp; Regenerate</button></td></tr>
+          <tr><td>Knowledge root</td><td><code title="${esc(paths.store || '')}">${esc(paths.store || 'Not configured')}</code><div class="pkm-skill-detail">${esc(data?.store?.host ? `machine-local · ${data.store.host}` : 'machine-local')}</div></td><td data-mcp-path-size="store">Calculating…</td><td><button class="tbtn" onclick="ask('reconfigureKnowledgeRoot',{})" title="Choose a different machine-local Knowledge Root">${uiIcon('settings-gear', 'Reconfigure')}</button></td></tr>
+          <tr><td>Environments root</td><td><code title="${esc(paths.environments || '')}">${esc(paths.environments || 'Not configured')}</code><div class="pkm-skill-detail">Machine-local storage for migrated/created conda, venv, uv environments and the managed pkm-mcp runtime. This directory can grow very large.</div></td><td data-mcp-path-size="environments">Calculating…</td><td><button class="tbtn" onclick="ask('reconfigureEnvironmentsRoot',{})" title="Choose where managed environments are stored on this machine">${uiIcon('settings-gear', 'Reconfigure')}</button></td></tr>
+          <tr><td>Managed MCP runtime</td><td><code title="${esc(paths.runtime || '')}">${esc(paths.runtime || 'Not created')}</code><div class="pkm-skill-detail">Machine-local virtual environment; reconfiguration rebuilds it at the new path.</div></td><td data-mcp-path-size="runtime">Calculating…</td><td><button class="tbtn" onclick="ask('reconfigureMcpRuntimePath',{})">${uiIcon('settings-gear', 'Reconfigure & Rebuild')}</button></td></tr>
+          <tr><td>MCP Base Python</td><td><code title="${esc(paths.python || '')}">${esc(paths.python || 'Not configured')}</code><div class="pkm-skill-detail">Machine-local Python executable used to build the managed runtime.</div></td><td data-mcp-path-size="python">Calculating…</td><td><button class="tbtn" onclick="document.getElementById('mcp-python-path')?.scrollIntoView({behavior:'smooth'})">${uiIcon('settings-gear', 'Configure & Rebuild')}</button></td></tr>
+          <tr><td>MCP server directory</td><td><code title="${esc(paths.serverDirectory || '')}">${esc(paths.serverDirectory || 'Not generated')}</code><div class="pkm-skill-detail">Machine-local generated server code; reconfiguration regenerates all files.</div></td><td data-mcp-path-size="serverDirectory">Calculating…</td><td><button class="tbtn" onclick="ask('reconfigureMcpServerPath',{})">${uiIcon('settings-gear', 'Reconfigure & Regenerate')}</button></td></tr>
         </tbody>
       </table></div>
     </div>
@@ -279,7 +279,7 @@ function renderMcpPane(data) {
   el.innerHTML = `
     <div style="padding:28px 36px;max-width:980px">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px">
-        <span style="font-size:22px">⚡</span>
+        <span style="font-size:22px">${uiIcon('library')}</span>
         <span style="font-size:17px;font-weight:700">Personal Knowledge Manager</span>
         <span id="extension-version-badge" style="font-size:11px;padding:2px 8px;border-radius:8px;background:var(--panel);color:var(--muted)">Extension v${esc(data?.extensionVersion || 'unknown')}</span>
         <span style="flex:1"></span>
@@ -411,7 +411,7 @@ function renderMcpPythonResult(data) {
   if (input && data?.path) input.value = data.path;
   if (status) {
     status.style.color = data?.valid ? '#4ade80' : '#f87171';
-    status.textContent = data?.valid ? `✓ Python ${data.version} validated${data.saved ? ' and saved' : '. Click Validate & Save to use it.'}` : `✕ ${data?.error || 'Invalid Python executable.'}`;
+    status.innerHTML = data?.valid ? `${uiIcon('check')} Python ${esc(data.version)} validated${data.saved ? ' and saved' : '. Click Validate & Save to use it.'}` : `${uiIcon('error')} ${esc(data?.error || 'Invalid Python executable.')}`;
   }
   if (data?.saved) setTimeout(() => ask('checkMcp', {}), 200);
 }
@@ -474,12 +474,12 @@ function renderMcpRuntimeProgress(data) {
 
 function renderMcpRuntimeResult(data) {
   const status = document.getElementById('mcp-runtime-status');
-  if (data?.ok) { if (status) { status.style.color = '#4ade80'; status.textContent = '✓ Managed runtime is healthy and registered in PKM Envs.'; } setTimeout(() => ask('checkMcp', {}), 200); return; }
+  if (data?.ok) { if (status) { status.style.color = '#4ade80'; status.innerHTML = `${uiIcon('check')} Managed runtime is healthy and registered in PKM Envs.`; } setTimeout(() => ask('checkMcp', {}), 200); return; }
   if (!status) return;
   const commands = data?.commands || [];
   window._mcpManualCommands = commands.join('\n');
   status.style.color = '#f87171';
-  status.innerHTML = `✕ ${esc(data?.error || 'Managed runtime setup failed.')}` + (commands.length
+  status.innerHTML = `${uiIcon('error')} ${esc(data?.error || 'Managed runtime setup failed.')}` + (commands.length
     ? `<pre style="white-space:pre-wrap;background:var(--vscode-textCodeBlock-background);padding:8px;border-radius:5px;margin-top:7px;color:var(--text)">${esc(commands.join('\n'))}</pre><button class="tbtn" style="margin-top:5px" onclick="navigator.clipboard.writeText(window._mcpManualCommands || '')">Copy manual commands</button>`
     : '');
 }

@@ -10,6 +10,7 @@ import * as net from "net";
 import * as fs from "fs";
 import { syncServer } from "./sync-server";
 import { SharedContentType, SharedMarketManager, SHARED_CONTENT_TYPES } from "./subscriptions";
+import { brokerShareMarkers, sharedContentIdentity } from "./broker-share-markers";
 import { isContentItemPrivate, isContentPathPrivate, isTopLevelPrivate, privateTopLevels, PrivacyContentType, renameTopLevelPrivacy, setPrivacyStoreRoot, setTopLevelPrivacy } from "./content-privacy";
 import { forkSubscriptionContent } from "./subscription-fork";
 import {
@@ -78,6 +79,26 @@ import {
   removeInjectedPkmSkill, removePkmSkillCustomTarget, resolvePkmSkillTargetPath,
 } from "./pkm-skill-projection";
 import { cachedPromptAnalysis, inspectPromptCached, renderPrompt } from "./prompt-manager";
+import { canonicalJson } from "./workflow-contracts";
+import { ProjectStore, ProjectStoreCommand } from "./workflows/project-store";
+
+let projectStoreBinding: { root: string; store: ProjectStore } | undefined;
+
+function currentProjectStore(): ProjectStore {
+  const root = path.resolve(getStorePath());
+  if (!projectStoreBinding || projectStoreBinding.root !== root) {
+    projectStoreBinding = { root, store: new ProjectStore(path.join(root, ".pkm", "state")) };
+  }
+  return projectStoreBinding.store;
+}
+
+function projectCommand(store: ProjectStore, operation: string, input: object): ProjectStoreCommand {
+  return {
+    commandId: randomUUID(),
+    fingerprint: createHash("sha256").update(canonicalJson({ operation, input }), "utf8").digest("hex"),
+    expectedStoreVersion: store.list().storeVersion
+  };
+}
 
 // Background one-shot sweep to compute on-disk sizes for envs missing a cached
 // value, then refresh the panel so sizes show up "by default".
@@ -3004,8 +3025,10 @@ function getWebviewHtml(webview: vscode.Webview, context: vscode.ExtensionContex
 
   const panelJs = webview.asWebviewUri(vscode.Uri.file(path.join(webviewDir, "panel.js")));
   const panelCss = webview.asWebviewUri(vscode.Uri.file(path.join(webviewDir, "panel.css")));
+  const codiconCss = webview.asWebviewUri(vscode.Uri.file(path.join(webviewDir, "codicon.css")));
   html = html.replace(/%%PANEL_JS%%/g, panelJs.toString());
   html = html.replace(/%%PANEL_CSS%%/g, panelCss.toString());
+  html = html.replace(/%%CODICON_CSS%%/g, codiconCss.toString());
 
   // Load marked as an external file (inlining breaks HTML parsing due to <!-- --> in marked)
   const markedFsPath = fs.existsSync(path.join(distDir, "marked.umd.js"))
@@ -3078,7 +3101,7 @@ function initializePanel(target: vscode.WebviewPanel, context: vscode.ExtensionC
   panel = target;
   if (performanceStateDir && activationStartedAt) recordPerformanceMetric(performanceStateDir, "startup.framework_ms", Date.now() - activationStartedAt);
   target.webview.options = makeWebviewOptions(context);
-  target.iconPath = vscode.Uri.parse("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📚</text></svg>");
+  target.iconPath = vscode.Uri.file(path.join(context.extensionPath, "resources", "brand-icon.svg"));
   _panelReady = false; // fresh webview; wait for its "ready" signal
   _panelLastHeartbeat = Date.now();
   _panelLastDiagnostic = "";
@@ -3114,9 +3137,12 @@ function initializePanel(target: vscode.WebviewPanel, context: vscode.ExtensionC
 async function serverListForUi(context: vscode.ExtensionContext): Promise<any[]> {
   const autoForward = context.globalState.get<boolean>("servers.autoForward.global.v1", true);
   const externalLinkHost = externalLinkHostOptions().resolved;
-  return (await serverList()).map(server => ({
+  const servers = await serverList();
+  const markers = brokerShareMarkers("servers", servers, (sharedMarket?.snapshot as any)?.shares || []);
+  return servers.map(server => ({
     ...server,
     isPrivate: isContentItemPrivate("servers", server),
+    brokerShares: markers.items[sharedContentIdentity("servers", server)]?.brokers || [],
     autoForward,
     remoteName: vscode.env.remoteName || "",
     externalLinkHost,
@@ -3183,6 +3209,12 @@ async function handleMessage(
     log.debug(`handleMessage: ${msg.command}`);
   }
   switch (msg.command) {
+    case "setPanelTitle": {
+      const title = String(msg.title || "").replace(/[\r\n\t]+/g, " ").trim().slice(0, 120);
+      if (panel && title) panel.title = title;
+      break;
+    }
+
     case "webviewDiagnostic": {
       if (msg.kind === "heartbeat") {
         _panelLastHeartbeat = Date.now();
@@ -3207,7 +3239,7 @@ async function handleMessage(
     case "ready": {
       // Webview finished loading — flush any queued item to open
       _panelReady = true;
-      respond({ command: "loadingProgress", data: { stage: "preparing", percent: 5, message: "Preparing PKM services…" } });
+      respond({ command: "loadingProgress", data: { stage: "preparing", percent: 5, message: "Brewing the startup potion…" } });
       if (_pendingOpen) {
         const { type, key, edit, tab } = _pendingOpen;
         _pendingOpen = undefined;
@@ -3407,6 +3439,42 @@ async function handleMessage(
       if (!link) throw new Error("Subscribed Server link was not found.");
       await vscode.env.openExternal(vscode.Uri.parse(link.url));
       respond({ command: "subscriptionCompleted", data: { action: "serverOpened", name: server.name } });
+      break;
+    }
+
+    case "projectState": {
+      respond({ command: "projectState", data: currentProjectStore().list() });
+      break;
+    }
+
+    case "projectCreate": {
+      const store = currentProjectStore();
+      const input = { name: String(msg.name || "") };
+      const result = store.createProject(projectCommand(store, "project-create", input), input.name);
+      respond({ command: "projectResult", data: { action: "projectCreate", ...result } });
+      break;
+    }
+
+    case "threadCreate": {
+      const store = currentProjectStore();
+      const input = { projectId: String(msg.projectId || ""), name: String(msg.name || "") };
+      const result = store.createThread(projectCommand(store, "thread-create", input), input.projectId, input.name);
+      respond({ command: "projectResult", data: { action: "threadCreate", ...result } });
+      break;
+    }
+
+    case "threadMove": {
+      const store = currentProjectStore();
+      const input = {
+        threadId: String(msg.threadId || ""),
+        destinationProjectId: String(msg.destinationProjectId || ""),
+        linkedActiveRunIds: [] as string[],
+        includedRunIds: [] as string[],
+        audienceChanges: false,
+        audienceChangeConfirmed: false
+      };
+      const result = store.moveThread(projectCommand(store, "thread-move", input), input);
+      respond({ command: "projectResult", data: { action: "threadMove", ...result } });
       break;
     }
 
@@ -3904,7 +3972,15 @@ async function handleMessage(
 
     case "list": {
       const { tab, filter, q } = msg;
-      if (!msg.silent) respond({ command: "loadingProgress", data: { stage: "scanning", percent: 25, message: `Scanning ${tab || "knowledge"} files…` } });
+      const openingMessage = ({
+        skills: "Opening the spellbook…",
+        notes: "Opening the enchanted notebook…",
+        papers: "Consulting the ancient scrolls…",
+        prompts: "Preparing the incantations…",
+        packages: "Unlocking the supply chest…",
+        scripts: "Reading the runes…",
+      } as Record<string, string>)[String(tab || "")] || "Brewing a potion…";
+      if (!msg.silent) respond({ command: "loadingProgress", data: { stage: "scanning", percent: 25, message: openingMessage } });
       await new Promise(resolve => setImmediate(resolve));
       const searchOptions = { regex: !!msg.regex, caseSensitive: !!msg.caseSensitive };
       const source = searchOptions.regex ? String(q || "") : String(q || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -3919,8 +3995,16 @@ async function handleMessage(
       else if (tab === "packages") { const rows = packagesWithGit(); data = q ? rows.filter(listMatches) : rows; }
       else if (tab === "scripts")  data = q ? scriptSearch(q, searchOptions) : knowledgeInventory?.snapshot.revision ? knowledgeInventory.scripts() : scriptList();
       else data = [];
+      let brokerSharedFolders: Record<string, any> = {};
       if (SHARED_CONTENT_TYPES.includes(tab as SharedContentType) && Array.isArray(data)) {
-        data = data.map(item => ({ ...item, isPrivate: isContentItemPrivate(tab as PrivacyContentType, item) }));
+        const type = tab as SharedContentType;
+        const markers = brokerShareMarkers(type, data, (sharedMarket?.snapshot as any)?.shares || []);
+        brokerSharedFolders = markers.folders;
+        data = data.map(item => ({
+          ...item,
+          isPrivate: isContentItemPrivate(type as PrivacyContentType, item),
+          brokerShares: markers.items[sharedContentIdentity(type, item)]?.brokers || [],
+        }));
       }
       const folders = (tab === "skills" || tab === "notes") ? (tab === "notes" && knowledgeInventory?.snapshot.revision ? knowledgeInventory.folders("notes") : folderList(tab)) : undefined;
       const subscriptionGroups = sharedMarket && SHARED_CONTENT_TYPES.includes(tab as SharedContentType)
@@ -3931,9 +4015,9 @@ async function handleMessage(
       const privacyTopLevels = SHARED_CONTENT_TYPES.includes(tab as SharedContentType) ? privateTopLevels(tab as PrivacyContentType) : [];
       const itemCount = Array.isArray(data) ? data.length : 0;
       const folderCount = Array.isArray(folders) ? folders.length : 0;
-      if (!msg.silent) respond({ command: "loadingProgress", data: { stage: "building-tree", percent: 78, current: itemCount, total: itemCount, message: "Building category tree…", detail: `${folderCount} folders` } });
+      if (!msg.silent) respond({ command: "loadingProgress", data: { stage: "building-tree", percent: 78, current: itemCount, total: itemCount, message: "Arranging the enchanted shelves…", detail: `${folderCount} folders` } });
       await new Promise(resolve => setImmediate(resolve));
-      respond({ command: "list", data, folders, subscriptionGroups, knowledgeTrash, privateTopLevels: privacyTopLevels });
+      respond({ command: "list", tab, data, folders, subscriptionGroups, knowledgeTrash, privateTopLevels: privacyTopLevels, brokerSharedFolders });
       if (!firstContentRecorded && performanceStateDir && activationStartedAt) {
         firstContentRecorded = true;
         recordPerformanceMetric(performanceStateDir, "startup.first_content_ms", Date.now() - activationStartedAt, itemCount);
@@ -3944,7 +4028,7 @@ async function handleMessage(
 
     case "folderCreate": {
       const area = String(msg.area || "");
-      if (area !== "skills" && area !== "notes") break;
+      if (area !== "skills" && area !== "notes" && area !== "papers") break;
       const parent = String(msg.parent || "").replace(/^\/+|\/+$/g, "");
       const name = String(msg.name || "").trim();
       if (!name) break;
@@ -3954,8 +4038,8 @@ async function handleMessage(
         _treeProvider?.refresh();
         vscode.window.setStatusBarMessage("$(new-folder) Folder created", 3000);
       }
-      const data = area === "skills" ? skillList() : noteList(undefined, 500);
-      respond({ command: "list", data, folders: folderList(area) });
+      const data = area === "skills" ? skillList() : area === "notes" ? noteList(undefined, 500) : paperList();
+      respond({ command: "list", tab: area, data, folders: folderList(area) });
       break;
     }
 
@@ -5802,7 +5886,9 @@ async function handleMessage(
     // Ensure the webview never hangs on a loading banner due to an unhandled error
     log.error(`handleMessage(${msg.command}) failed: ${e?.stack ?? e?.message ?? e}`);
     if (msg.command === "list") {
-      respond({ command: "list", data: [] });
+      respond({ command: "list", tab: String(msg.tab || ""), data: [] });
+    } else if (["projectState", "projectCreate", "threadCreate", "threadMove"].includes(String(msg.command || ""))) {
+      respond({ command: "projectError", data: { action: String(msg.command || ""), code: String(e?.code || "project-error"), error: e?.message || String(e) } });
     } else if (String(msg.command || "").startsWith("subscription")) {
       respond({ command: "subscriptionError", data: { action: String(msg.command || ""), error: e?.message || String(e) } });
     }
@@ -7065,7 +7151,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const openPanelOnStartup = !!configuredPath && (firstConfiguration || cfg.get<boolean>("openOnStartup"));
   if (openPanelOnStartup) {
     getOrCreatePanel(context);
-    panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "framework", percent: 3, message: "PKM interface ready", detail: "Loading content in stages…" } });
+    panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "framework", percent: 3, message: "The library doors are opening…", detail: "Preparing each collection in turn…" } });
   }
   if (configuredPath) {
     const chatroomsRoot = path.join(getStorePath(), "chatrooms");
@@ -8077,7 +8163,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       treeProvider.refresh();
       panel?.webview.postMessage({ command: "saved" }); // re-fetch if panel already open
       setImmediate(() => {
-        panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "background", percent: 82, message: "Starting background services…" } });
+        panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "background", percent: 82, message: "Setting the library wards…" } });
         if (!fs.existsSync(path.join(getStorePath(), ".git"))) ensureGitRepo();
         void sharedMarket?.refreshPublishedShares().then(refreshedShares => {
           if (refreshedShares) log.info(`refreshed ${refreshedShares} published Broker snapshot${refreshedShares === 1 ? "" : "s"} after store initialization`);
@@ -8097,7 +8183,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   recordPerformanceMetric(performanceStateDir, "startup.activation_ms", activationDuration);
   log.info(`activation complete durationMs=${activationDuration}`);
   setImmediate(() => {
-    panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "servers", percent: 12, message: "Discovering managed servers…" } });
+    panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "servers", percent: 12, message: "Preparing the Muggle gateway…" } });
     try { initializeServers(); }
     catch (error) { log.warn(`deferred Servers initialization failed: ${(error as Error).message}`); }
     void treeProvider.refreshServerStatus();
@@ -8164,7 +8250,7 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
         panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
         void maintainPkmIntegration(context);
       }
-    }, 100);
+    }, 250);
     _watcherRefreshTimer.unref?.();
   };
   _watcher.onDidCreate(onChange);

@@ -15,7 +15,10 @@ const stored = new Map([["pkm-server-group-Research/Vision", "0"]]);
 const context = {
   Map, Set, encodeURIComponent, decodeURIComponent,
   serverGroupPaths: ["Hidden"],
-  serverPrivacyLock: path => String(path).startsWith("Research") ? '<span class="content-private-lock">🔒</span>' : '',
+  serverPrivacyLock: path => String(path).startsWith("Research") ? '<span class="content-private-lock codicon codicon-lock"></span>' : '',
+  uiIcon: name => `<span class="codicon codicon-${name}"></span>`,
+  mergeBrokerShares: (...groups) => groups.flat().filter(Boolean),
+  brokerShareMarker: brokers => brokers.length ? '<span class="content-broker-cloud"></span>' : '',
   localStorage: { getItem: key => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, value) },
   esc: value => String(value),
 };
@@ -32,12 +35,12 @@ const tree = context.tree(entries);
 assert.strictEqual(context.count(tree), 4);
 const html = context.render(tree);
 assert(html.indexOf("root") < html.indexOf("Research"), "ungrouped root servers remain directly visible");
-assert(html.indexOf("pinned") < html.indexOf("old"), "starred servers sort first inside their group");
-assert.match(html, /📁 Research/);
-assert.match(html, /content-private-lock[^>]*>🔒<\/span>📁 Research/, "private top-level and inherited Server groups must display a lock");
-assert.match(html, /📁 Vision/);
-assert.match(html, /📁 Models/);
-assert.match(html, /🙈 Hidden/);
+assert(html.indexOf("<article>pinned</article>") < html.indexOf("<article>old</article>"), "starred servers sort first inside their group");
+assert.match(html, /codicon-folder"><\/span> Research/);
+assert.match(html, /content-private-lock codicon codicon-lock[^>]*><\/span><span class="codicon codicon-folder"><\/span> Research/, "private top-level and inherited Server groups must display a lock");
+assert.match(html, /codicon-folder"><\/span> Vision/);
+assert.match(html, /codicon-folder"><\/span> Models/);
+assert.match(html, /codicon-eye-closed"><\/span> Hidden/);
 assert(html.indexOf("Research") < html.indexOf("Hidden"), "Hidden must always render after normal Server groups");
 assert.match(html, /excluded from Navigation/);
 assert.match(html, /srv-group-count">3</);

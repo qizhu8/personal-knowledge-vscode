@@ -97,6 +97,9 @@ Treat Magic Links like temporary passwords. **🔄 Refresh key** copies a replac
 
 ## Features
 
+- **Four focused workspaces** — use **Knowledge** for Skills, Notes, and Research; **Tools** for Prompts, Scripts, Packages, Environments, and Servers; **Projects** for durable work and conversation threads; and **Settings** for MCP, Skill Router, and network sharing. Each workspace remembers its last route without changing existing content identities.
+- **Projects and Threads** — organize ongoing work under Knowledge Root-local Projects, create and move Threads without losing identity, and open a Thread directly in Chatroom. A permanent Default Project and General Thread provide a deterministic home for legacy and unassigned conversations.
+- **Versioned workflow foundation** — compile typed Workflow Definition v1 graphs into canonical, digest-addressed plans with durable runs, scheduling, evidence, catalogs, execution controls, migration, API contracts, and fail-closed natural-language compilation. Immutable receipts and compare-and-swap state protect retries and concurrent operators.
 - **Skills** — reusable know-how as searchable Markdown, organised into an arbitrary-depth category tree, with pinning, live browser preview, and standalone HTML download
 - **Notes** — quick-capture Markdown notes with a **split live-preview editor**, hierarchical categories, tags, and types; **pin** a note to the top of its folder or a folder to the top of its level; task lists render as colour-coded status badges (`[ ]` todo, `[x]` done, `[~]` in progress, `[!]` blocked) that stay legible under any theme
 - **Prompts** — browse versioned prompt files (project -> task -> version -> file)

@@ -28,12 +28,10 @@ assert.match(extension, /ws:\/\/\$\{this\.advertisedHost\(\)\}:\$\{this\.hub\.po
 assert.match(extension, /let base = this\.hub\?\.port \? `ws:\/\/\$\{this\.advertisedHost\(\)\}/);
 
 const panel = fs.readFileSync(path.join(root, "dist", "webview", "panel.js"), "utf8");
-assert.match(panel, /id="chat-invite-host"/);
-assert.match(panel, /function chatPaintInviteHosts\(\)/);
-assert.match(panel, /function chatInviteHostChanged\(address\)/);
-assert.match(panel, /class="chat-host-interface"><span>Hosting on<\/span><select id="chat-invite-host"/);
-assert.match(panel, /Magic Links will advertise/);
-assert.match(panel, /Saved interface is unavailable/);
-assert.match(panel, /ask\('chatSetInviteHost', \{ address \}\)/);
+assert.doesNotMatch(panel, /id="chat-invite-host"/,
+	"Projects/Threads must not duplicate the machine-level Invite interface setting");
+assert.doesNotMatch(panel, /Hosting on/);
+assert.doesNotMatch(panel, /function chatPaintInviteHosts\(\)/);
+assert.doesNotMatch(panel, /function chatInviteHostChanged\(address\)/);
 
-console.log("Chat invite host test: selectable machine-local hostname/interface, unavailable-state protection, and advertised URL wiring OK");
+console.log("Chat invite host test: machine-local Settings wiring retained without duplicate Threads controls OK");

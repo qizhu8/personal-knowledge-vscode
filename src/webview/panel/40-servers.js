@@ -9,7 +9,7 @@ let serverSearchQuery = '';
 let serverFocusSlug = '';
 let serverPrivateTopLevels = [];
 function serverPathPrivate(path) { const top = String(path || '').split('/').filter(Boolean)[0] || ''; return !!top && serverPrivateTopLevels.includes(top); }
-function serverPrivacyLock(path) { return serverPathPrivate(path) ? '<span class="content-private-lock" title="Private: excluded from Subscription sharing and public links" aria-label="Private">🔒</span>' : ''; }
+function serverPrivacyLock(path) { return serverPathPrivate(path) ? '<span class="content-private-lock codicon codicon-lock" title="Private: excluded from Subscription sharing and public links" aria-label="Private"></span>' : ''; }
 function serverGroupTree(entries) {
   const root = { groups: new Map(), entries: [] };
   entries.forEach(entry => {
@@ -143,12 +143,15 @@ function renderServerGroupNode(node, parentPath = '') {
     const path = parentPath ? `${parentPath}/${name}` : name;
     const count = serverGroupCount(child);
     const hidden = path === 'Hidden';
-    return `<details class="srv-group${hidden ? ' srv-hidden-group' : ''}" data-group-path="${encodeURIComponent(path)}" ${serverGroupOpen(path) ? 'open' : ''} ontoggle="serverGroupToggled(this,decodeURIComponent('${encodeURIComponent(path)}'))" ondragover="serverGroupDragOver(event)" ondragleave="serverGroupDragLeave(event)" ondrop="serverGroupDrop(event,decodeURIComponent('${encodeURIComponent(path)}'))"><summary ${parentPath ? '' : `oncontextmenu="serverGroupMenu(event,decodeURIComponent('${encodeURIComponent(path)}'))"`}><span>${serverPrivacyLock(path)}${hidden ? '🙈' : '📁'} ${esc(name)}</span>${hidden ? '<span class="srv-hidden-hint">excluded from Navigation</span>' : ''}<span class="srv-group-count">${count}</span>${hidden ? '' : `<span class="srv-group-actions"><button class="srv-group-action" onclick="event.preventDefault();event.stopPropagation();renameServerGroup(decodeURIComponent('${encodeURIComponent(path)}'))" title="Rename subgroup" aria-label="Rename ${esc(name)} subgroup">✎</button><button class="srv-group-action srv-group-delete" onclick="event.preventDefault();event.stopPropagation();deleteServerGroup(decodeURIComponent('${encodeURIComponent(path)}'))" title="Delete subgroup without deleting servers" aria-label="Delete ${esc(name)} subgroup">×</button></span>`}</summary><div class="srv-group-body">${renderServerGroupNode(child, path)}</div></details>`;
+    return `<details class="srv-group${hidden ? ' srv-hidden-group' : ''}" data-group-path="${encodeURIComponent(path)}" ${serverGroupOpen(path) ? 'open' : ''} ontoggle="serverGroupToggled(this,decodeURIComponent('${encodeURIComponent(path)}'))" ondragover="serverGroupDragOver(event)" ondragleave="serverGroupDragLeave(event)" ondrop="serverGroupDrop(event,decodeURIComponent('${encodeURIComponent(path)}'))"><summary ${parentPath ? '' : `oncontextmenu="serverGroupMenu(event,decodeURIComponent('${encodeURIComponent(path)}'))"`}><span>${serverPrivacyLock(path)}${uiIcon(hidden ? 'eye-closed' : 'folder')} ${esc(name)}</span>${hidden ? '<span class="srv-hidden-hint">excluded from Navigation</span>' : ''}${brokerShareMarker(serverGroupBrokerShares(child))}<span class="srv-group-count">${count}</span>${hidden ? '' : `<span class="srv-group-actions"><button class="srv-group-action" onclick="event.preventDefault();event.stopPropagation();renameServerGroup(decodeURIComponent('${encodeURIComponent(path)}'))" title="Rename subgroup" aria-label="Rename ${esc(name)} subgroup">${uiIcon('edit')}</button><button class="srv-group-action srv-group-delete" onclick="event.preventDefault();event.stopPropagation();deleteServerGroup(decodeURIComponent('${encodeURIComponent(path)}'))" title="Delete subgroup without deleting servers" aria-label="Delete ${esc(name)} subgroup">${uiIcon('trash')}</button></span>`}</summary><div class="srv-group-body">${renderServerGroupNode(child, path)}</div></details>`;
   }).join('');
   return cards + groups;
 }
 function serverGroupCount(node) {
   return node.entries.length + [...node.groups.values()].reduce((count, child) => count + serverGroupCount(child), 0);
+}
+function serverGroupBrokerShares(node) {
+  return mergeBrokerShares(...node.entries.map(entry => entry.server.brokerShares || []), ...[...node.groups.values()].map(serverGroupBrokerShares));
 }
 function filterServerDashboard(value) {
   serverSearchQuery = String(value || '').trim().toLowerCase();
@@ -191,8 +194,8 @@ function renderServerDashboard(servers) {
       <div class="ec-row">
         <span class="srv-drag-handle" draggable="true" ondragstart="serverDragStart(event,'${esc(s.slug)}');this.closest('.srv-card').classList.add('srv-dragging')" ondragend="serverDragEnd(event)" title="Drag this Server to another group" aria-label="Drag ${esc(s.name)} to another group">⋮⋮</span>
         <span class="srv-dot" style="background:${dot(s.status)}"></span>
-        <button class="srv-star ${s.pinned ? 'active' : ''}" onclick="serverPinChanged('${esc(s.slug)}',${s.pinned ? 'false' : 'true'})" title="${s.pinned ? 'Unstar this server' : 'Star and pin this server to the top of its group'}" aria-label="${s.pinned ? 'Unstar' : 'Star'} ${esc(s.name)}">${s.pinned ? '★' : '☆'}</button>
-        <b>${esc(s.name)}</b>${serverPrivacyLock(s.category)}<span class="cat">${esc(s.slug)}</span>
+        <button class="srv-star ${s.pinned ? 'active' : ''}" onclick="serverPinChanged('${esc(s.slug)}',${s.pinned ? 'false' : 'true'})" title="${s.pinned ? 'Unstar this server' : 'Star and pin this server to the top of its group'}" aria-label="${s.pinned ? 'Unstar' : 'Star'} ${esc(s.name)}">${uiIcon(s.pinned ? 'pinned' : 'pin')}</button>
+        <b>${esc(s.name)}</b>${serverPrivacyLock(s.category)}<span class="cat">${esc(s.slug)}</span>${brokerShareMarker(s.brokerShares)}
         ${s.category ? `<span class="srv-category">${esc(s.category)}</span>` : ''}
         ${(s.tags || []).map(tag => `<span class="srv-tag">${esc(tag)}</span>`).join('')}
         <span style="font-size:11px;color:var(--muted)">:${s.activePort} · ${esc(s.status)}${s.pid ? ' · pid ' + s.pid : ''}</span>
@@ -200,14 +203,14 @@ function renderServerDashboard(servers) {
       </div>
       <div class="srv-actions" role="toolbar" aria-label="Actions for ${esc(s.name)}">
         <span class="srv-lifecycle-actions">${s.status === 'stopped'
-          ? `<button class="tbtn" onclick="ask('serverStart',{slug:'${esc(s.slug)}'})" title="Start ${esc(s.name)} with its configured command and port">▶ Start</button>`
+          ? `<button class="tbtn" onclick="ask('serverStart',{slug:'${esc(s.slug)}'})" title="Start ${esc(s.name)} with its configured command and port">${uiIcon('play', 'Start')}</button>`
           : s.status === 'external'
-            ? `<span class="srv-external" title="A listener exists on this port but was not started by PKM.">◉ External listener detected · ${(s.externalProcesses || []).map(process => `PID ${process.pid} · ${esc(process.name)}`).join(', ') || 'PID unavailable'}</span><button class="tbtn srv-force-stop" onclick="forceStopExternalServerUi('${esc(s.slug)}')" ${(s.externalProcesses || []).length ? '' : 'disabled'} title="Force-terminate the process listening on port ${s.port}">■ Force Stop</button>`
-            : `<button class="tbtn" onclick="ask('serverStop',{slug:'${esc(s.slug)}'})" title="Stop the detached ${esc(s.name)} process">■ Stop</button><button class="tbtn" onclick="ask('serverRestart',{slug:'${esc(s.slug)}'})" title="Restart ${esc(s.name)} with its saved settings">↻ Restart</button>`}</span>
-        <span class="srv-management-actions"><button class="tbtn" onclick="ask('serverOpenFolder',{slug:'${esc(s.slug)}'})" title="Open the server folder (code + any data it writes)">📂 Folder</button>
-        <button class="tbtn" onclick="editServer('${esc(s.slug)}')" title="Edit server settings: command, port, and Python">⚙ Settings</button>
-        <button class="tbtn" onclick="serverLogView('${esc(s.slug)}')" title="Open the latest managed process log">📜 Log</button>
-        <button class="tbtn srv-danger" onclick="deleteServer('${esc(s.slug)}',${JSON.stringify(s.name).replace(/"/g,'&quot;')})" title="Permanently delete this managed server folder and settings">🗑 Delete</button></span>
+            ? `<span class="srv-external" title="A listener exists on this port but was not started by PKM.">${uiIcon('radio-tower')} External listener detected · ${(s.externalProcesses || []).map(process => `PID ${process.pid} · ${esc(process.name)}`).join(', ') || 'PID unavailable'}</span><button class="tbtn srv-force-stop" onclick="forceStopExternalServerUi('${esc(s.slug)}')" ${(s.externalProcesses || []).length ? '' : 'disabled'} title="Force-terminate the process listening on port ${s.port}">${uiIcon('debug-stop', 'Force Stop')}</button>`
+            : `<button class="tbtn" onclick="ask('serverStop',{slug:'${esc(s.slug)}'})" title="Stop the detached ${esc(s.name)} process">${uiIcon('debug-stop', 'Stop')}</button><button class="tbtn" onclick="ask('serverRestart',{slug:'${esc(s.slug)}'})" title="Restart ${esc(s.name)} with its saved settings">${uiIcon('refresh', 'Restart')}</button>`}</span>
+          <span class="srv-management-actions"><button class="tbtn" onclick="ask('serverOpenFolder',{slug:'${esc(s.slug)}'})" title="Open the server folder (code + any data it writes)">${uiIcon('folder-opened', 'Folder')}</button>
+          <button class="tbtn" onclick="editServer('${esc(s.slug)}')" title="Edit server settings: command, port, and Python">${uiIcon('settings-gear', 'Settings')}</button>
+          <button class="tbtn" onclick="serverLogView('${esc(s.slug)}')" title="Open the latest managed process log">${uiIcon('output', 'Log')}</button>
+          <button class="tbtn srv-danger" onclick="deleteServer('${esc(s.slug)}',${JSON.stringify(s.name).replace(/"/g,'&quot;')})" title="Permanently delete this managed server folder and settings">${uiIcon('trash', 'Delete')}</button></span>
       </div>
       <div class="ec-path"><code>${esc(s.command)}</code> · env: ${esc(s.python || 'python3')}</div>
       <div class="srv-link-block srv-stable-link">
@@ -232,17 +235,17 @@ function renderServerDashboard(servers) {
   document.getElementById('detail').innerHTML = `
     <div class="dash">
       <div class="dash-hd">
-        <span class="dash-title">🖥 Servers</span>
+        <span class="dash-title">${uiIcon('server')} Servers</span>
         <input id="server-search" oninput="filterServerDashboard(this.value)" placeholder="Search…" data-i18n-placeholder="search.placeholder" aria-label="Search servers" title="Search name, slug, group, tags, command, Python, and status">
         <span style="flex:1"></span>
-        <button class="tbtn srv-new-group" onclick="createServerGroup()" title="Create an empty subgroup, then drag or right-click a Server to move it">＋ New subgroup</button>
-        <button class="tbtn" onclick="importServer()" title="Move an existing server folder into the PKM store">＋ Import folder</button>
-        <button class="tbtn" onclick="createServer()" title="Create a new managed server package">＋ New</button>
-        <button class="tbtn" onclick="ask('serverList',{})" title="Force-refresh server process, port, and link status">↻ Refresh</button>
+        <button class="tbtn srv-new-group" onclick="createServerGroup()" title="Create an empty subgroup, then drag or right-click a Server to move it">${uiIcon('new-folder', 'New subgroup')}</button>
+        <button class="tbtn" onclick="importServer()" title="Move an existing server folder into the PKM store">${uiIcon('folder-opened', 'Import folder')}</button>
+        <button class="tbtn" onclick="createServer()" title="Create a new managed server package">${uiIcon('add', 'New')}</button>
+        <button class="tbtn" onclick="ask('serverList',{})" title="Force-refresh server process, port, and link status">${uiIcon('refresh', 'Refresh')}</button>
       </div>
       <div class="srv-global-controls">
         <label><span data-i18n="servers.networkInterface">Stable Link interface</span><select onchange="serverNetworkChanged(this.value)" title="Select a hostname or network interface/IP for every Stable Link" ${networkLinks.length ? '' : 'disabled'}>${networkOptions || '<option data-i18n="servers.noNetwork">No hostname or network IPv4 found</option>'}</select></label>
-        <button class="tbtn srv-forward-toggle ${autoForward ? 'active' : ''}" aria-pressed="${autoForward}" onclick="serverForwardChanged(!${autoForward})" title="Request VS Code Remote-SSH port forwarding for all Server Local Links. Enabled by default." ${remoteName ? '' : 'disabled'}><span data-i18n="servers.portForward">↔ Port Forward</span>: <span data-i18n="${autoForward ? 'servers.on' : 'servers.off'}">${autoForward ? 'On' : 'Off'}</span></button>
+        <button class="tbtn srv-forward-toggle ${autoForward ? 'active' : ''}" aria-pressed="${autoForward}" onclick="serverForwardChanged(!${autoForward})" title="Request VS Code Remote-SSH port forwarding for all Server Local Links. Enabled by default." ${remoteName ? '' : 'disabled'}><span data-i18n="servers.portForward">${uiIcon('plug')} Port Forward</span>: <span data-i18n="${autoForward ? 'servers.on' : 'servers.off'}">${autoForward ? 'On' : 'Off'}</span></button>
         ${remoteName ? `<span class="srv-global-remote">Remote: ${esc(remoteName)}</span>` : '<span class="srv-global-remote">Local window · forwarding not required</span>'}
       </div>
       <div class="srv-port-registry"><strong>Managed ports</strong><span class="srv-port-list">${portChips || '<span class="empty">No ports reserved</span>'}</span><span class="srv-next-port">Next free: <b>${suggestedPort}</b></span></div>
@@ -372,7 +375,7 @@ function serverLogView(slug) {
 }
 function onServerLog(slug, text) {
   const out = serverOutput(slug); if (!out) return;
-  out.innerHTML = '<div class="ec-row srv-output-head"><b>Log · ' + esc(slug) + '</b><span style="flex:1"></span><button class="tbtn" style="font-size:11px" onclick="serverLogView(\'' + esc(slug) + '\')" title="Refresh this log output">↻ Refresh</button><button class="tbtn" style="font-size:11px" onclick="closeServerOutput(\'' + esc(slug) + '\')" title="Close log panel">Close</button></div>' +
+  out.innerHTML = '<div class="ec-row srv-output-head"><b>Log · ' + esc(slug) + '</b><span style="flex:1"></span><button class="tbtn" style="font-size:11px" onclick="serverLogView(\'' + esc(slug) + '\')" title="Refresh this log output">' + uiIcon('refresh', 'Refresh') + '</button><button class="tbtn" style="font-size:11px" onclick="closeServerOutput(\'' + esc(slug) + '\')" title="Close log panel">Close</button></div>' +
     '<pre class="srv-log">' + esc(text) + '</pre>';
 }
 function deleteServer(slug, name) {

@@ -1,0 +1,20 @@
+{
+  "schema": "pkm.workflow.diagnostics/v1",
+  "codes": {
+    "E3001": { "severity": "error", "messageTemplateId": "workflow.schema.unknownField", "remediationClass": "author" },
+    "E3002": { "severity": "error", "messageTemplateId": "workflow.schema.invalidIdentifier", "remediationClass": "author" },
+    "E3003": { "severity": "error", "messageTemplateId": "workflow.schema.type", "remediationClass": "author" },
+    "E3004": { "severity": "error", "messageTemplateId": "workflow.schema.nonEmptySet", "remediationClass": "author" },
+    "E3005": { "severity": "error", "messageTemplateId": "workflow.schema.const", "remediationClass": "author" },
+    "E3006": { "severity": "error", "messageTemplateId": "workflow.schema.duplicateSetKey", "remediationClass": "author" },
+    "E3007": { "severity": "error", "messageTemplateId": "workflow.schema.noopConfig", "remediationClass": "author" },
+    "E3008": { "severity": "error", "messageTemplateId": "workflow.schema.unsupported", "remediationClass": "author" },
+    "E3009": { "severity": "error", "messageTemplateId": "workflow.schema.unsupportedFoundationField", "remediationClass": "author" },
+    "E3010": { "severity": "error", "messageTemplateId": "workflow.schema.invalidPort", "remediationClass": "author" },
+    "E3101": { "severity": "error", "messageTemplateId": "workflow.registry.unknownNodeKind", "remediationClass": "registry" },
+    "E3201": { "severity": "error", "messageTemplateId": "workflow.graph.unknownRequiredNode", "remediationClass": "author" },
+    "E3202": { "severity": "error", "messageTemplateId": "workflow.graph.invalidDependency", "remediationClass": "author" },
+    "E3203": { "severity": "error", "messageTemplateId": "workflow.graph.cycle", "remediationClass": "author" },
+    "E4001": { "severity": "error", "messageTemplateId": "workflow.canonical.invalidValue", "remediationClass": "author" }
+  }
+}

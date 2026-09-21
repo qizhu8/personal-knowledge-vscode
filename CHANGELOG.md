@@ -5,12 +5,37 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-09-21
+
+### Added
+- Added the Workflow Definition v1 platform with typed contracts, durable runs, scheduling, evidence, catalogs, execution controls, migration, natural-language compilation, and project-scoped workflow views.
+- Added Knowledge Root-local Projects and Threads with durable project context and Chatroom handoff.
+- Added path-scoped Broker sharing indicators and native tri-state folder selection for partially shared hierarchies.
+
+### Changed
+- Reorganized the panel into Knowledge, Tools, Projects, and Settings workspaces with compact context navigation and remembered routes.
+- Introduced a restrained magical-academy visual system for domain icons and transient progress feedback while keeping product text professional.
+- Replaced the extension identity with a cauldron-and-wand brand, a smoking-cauldron Activity Bar mark, and an original moonlit witch Projects icon. In-product potion steam and bubbles animate with reduced-motion support.
+- Simplified Threads by removing duplicate Hosting and room-card Magic Link controls while preserving machine-level hosting and invite workflows.
+
+### Fixed
+- Broker folder markers now respect exact path boundaries and no longer imply that sibling folders are shared.
+- Partial Broker selections now expose correct mixed checkbox state and accessible `aria-checked="mixed"` semantics.
+
 ## [2.8.0] - 2026-09-20
+
+### Added
+- Reorganized the panel into four stable workspaces: **Knowledge**, **Tools**, **Projects**, and **Settings**, with compact workspace navigation and remembered routes.
+- Added Knowledge Root-local **Projects** and **Threads**, including a permanent Default Project/General Thread fallback, atomic persistence, compare-and-swap updates, and Chatroom handoff.
+- Added the versioned Workflow Definition v1 platform: typed ports, canonical digests, durable run state, scheduling, evidence, catalogs, execution controls, operations, API contracts, migration, and natural-language compilation.
+- Added a combined release-blocking workflow redesign coverage gate with 100% statements, branches, functions, and lines across the included contract and domain modules.
 
 ### Changed
 - Promoted the validated 2.7.33 Chatroom and Meeting candidate to the stable 2.8.0 release line.
+- Replaced the twelve-tab horizontal panel navigation with workspace-specific context navigation while preserving existing content routes.
 
 ### Fixed
+- Project section navigation now remains fully visible on narrow panels, and the release preview includes a privacy-safe synthetic Projects fixture for desktop/mobile acceptance.
 - Marketplace OIDC now uses the supported Azure Login v3 action, with release coverage preventing regressions to deprecated action runtimes or publish-before-verify ordering.
 - Malformed Subscription state is quarantined intact and replaced with a valid local identity instead of blocking extension activation.
 - The release gate now runs the packaged extension through clean-install, persisted-upgrade, offline, malformed-state, repeated-reload, and panel-closed startup scenarios on one durable profile.

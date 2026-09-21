@@ -60,11 +60,11 @@ try {
   if (!html.includes('data-tab="servers">Servers</button>') || html.includes('data-tab="servers">🖥')) {
     throw new Error("Servers menu tab must use text only, without a leading icon");
   }
-  if (!html.includes('data-tab="mcp">Config</button>') || !panelJs.includes("renderPkmSkillTargets") ||
+  if (!html.includes('data-tab="mcp">General &amp; MCP</button>') || !panelJs.includes("renderPkmSkillTargets") ||
       !panelJs.includes("pkmSkillInject") || !panelJs.includes("pkmSkillOpenProposals") ||
       !panelJs.includes("pkmSkillBrowseCustomTarget") || !panelJs.includes("pkmSkillEnterCustomTarget") ||
       !panelCss.includes("pkm-skill-target")) {
-    throw new Error("Config tab must expose PKM Skill Router target controls");
+    throw new Error("MCP settings route must expose PKM Skill Router target controls");
   }
   if (!panelJs.includes('id="chat-composer"') || !panelJs.includes('id="chat-recipient-chips"') ||
       !panelJs.includes("function chatComposerRecipientNames") || !panelJs.includes("chatDefaultRecipientNames") ||

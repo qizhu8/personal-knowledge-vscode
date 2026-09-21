@@ -1,0 +1,16 @@
+{
+  "name": "minimal-noop",
+  "input": {
+    "schema": "pkm.workflow.definition/v1",
+    "spec": {
+      "inputs": {},
+      "nodes": [
+        { "nodeId": "complete", "kind": "pkm.step.noop/v1", "config": {}, "dependsOn": [] }
+      ],
+      "outputs": {},
+      "completion": { "requiredNodes": ["complete"] }
+    }
+  },
+  "canonical": "{\"schema\":\"pkm.workflow.definition/v1\",\"spec\":{\"completion\":{\"requiredNodes\":[\"complete\"]},\"inputs\":{},\"nodes\":[{\"config\":{},\"dependsOn\":[],\"kind\":\"pkm.step.noop/v1\",\"nodeId\":\"complete\"}],\"outputs\":{}}}",
+  "executableDigest": "52b97c67277843962d5ad7914ec9f456d22ca0213bbb32b4b8196659b84d2f35"
+}

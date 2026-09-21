@@ -1,0 +1,20 @@
+{
+  "schema": "pkm.workflow.yaml-profile/v1",
+  "encoding": "UTF-8",
+  "allowBom": false,
+  "documentCount": 1,
+  "yamlVersion": "1.2",
+  "scalarKeysOnly": true,
+  "rejectDuplicateKeys": true,
+  "allowMergeKeys": false,
+  "implicitScalarTyping": false,
+  "limits": {
+    "sourceBytes": 1048576,
+    "nestingDepth": 64,
+    "scalarBytes": 262144,
+    "collectionEntries": 100000,
+    "aliasExpansionDepth": 32,
+    "aliasReferences": 10000,
+    "expandedNodes": 100000
+  }
+}

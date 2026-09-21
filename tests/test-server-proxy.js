@@ -196,10 +196,10 @@ async function main() {
   assert.match(panel, /class="srv-actions"/);
   assert.match(panel, /class="srv-lifecycle-actions"/);
   assert.match(panel, /class="srv-management-actions"/);
-  assert.match(panel, />📂 Folder<\/button>/);
-  assert.match(panel, />⚙ Settings<\/button>/);
+  assert.match(panel, /uiIcon\('folder-opened', 'Folder'\)/);
+  assert.match(panel, /uiIcon\('settings-gear', 'Settings'\)/);
   assert.match(panel, /class="tbtn srv-danger"/);
-  assert.match(panel, />🗑 Delete<\/button>/);
+  assert.match(panel, /uiIcon\('trash', 'Delete'\)/);
   assert.doesNotMatch(panel, />🌐<\/button>/);
   assert.match(panel, /title="Edit server settings: command, port, and Python"/);
   assert.match(panel, /id="srv-out-\$\{esc\(s\.slug\)\}"/);
@@ -232,7 +232,7 @@ async function main() {
   assert.match(panel, /Next free:/);
   assert.match(panel, /function useSuggestedServerPort\(slug, port\)/);
   assert.match(panel, /External listener detected ·/);
-  assert.match(panel, /■ Force Stop/);
+  assert.match(panel, /uiIcon\('debug-stop', 'Force Stop'\)/);
   assert.match(panel, /serverForceStopExternal/);
   assert.match(panel, /name: document\.getElementById\('se-name-' \+ slug\)\.value/);
   assert.doesNotMatch(panel, /id="srv-out"/);

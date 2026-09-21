@@ -20,9 +20,11 @@ const noteRenderStart = knowledge.indexOf('function noteFilename');
 const noteRenderEnd = knowledge.indexOf('\nfunction toggleNotePin', noteRenderStart);
 const renderContext = {
   ICON: { general: 'N' },
+  uiIcon: name => `<span class="codicon codicon-${name}"></span>`,
   esc: value => String(value),
   hl: value => String(value),
   privacyLock: () => '',
+  brokerShareMarker: () => '',
 };
 vm.createContext(renderContext);
 vm.runInContext(knowledge.slice(noteRenderStart, noteRenderEnd), renderContext);
@@ -42,20 +44,58 @@ context.revealRefreshedTreeItems('notes', [], [note], { changedPath: `notes/${ca
 
 const segments = category.split('/');
 for (let depth = 1; depth <= segments.length; depth++) {
-  const key = context.expandedCategoryKey(segments.slice(0, depth));
+  const key = context.expandedCategoryKey(segments.slice(0, depth), 'notes');
   assert.strictEqual(context.catExpanded[key], true, `ancestor ${segments.slice(0, depth).join('/')} must be expanded`);
 }
 
 assert.strictEqual(context.revealRefreshedTreeItems('skills', [], [], { changedPath: `notes/${category}/progress.md.md` }), false, 'another tab must not consume a pending note path');
 
 context.catExpanded = {};
+context.revealRefreshedTreeItems('notes', [{ ...note, updated_at: 'old' }], [note], { changedPath: `notes/${category}/progress.md.md` });
+assert.strictEqual(context.catExpanded[context.expandedCategoryKey(segments, 'notes')], undefined, 'editing an existing note must not expand its category');
+
 context.revealRefreshedTreeItems('notes', [{ ...note, updated_at: 'old' }], [note], { manual: true });
-assert.strictEqual(context.catExpanded[context.expandedCategoryKey(segments)], true, 'manual refresh must reveal an updated note');
+assert.strictEqual(context.catExpanded[context.expandedCategoryKey(segments, 'notes')], true, 'manual refresh must reveal one updated note');
+
+context.catExpanded = {};
+const skills = [
+  { name: 'changed-skill', category: 'Coding/Changed', updated_at: 'new' },
+  { name: 'unrelated-skill', category: 'Research/Unrelated', updated_at: 'new' },
+];
+context.revealRefreshedTreeItems('skills', [], skills, { changedPath: 'skills/Coding/Changed/changed-skill.md' });
+assert.strictEqual(context.catExpanded[context.expandedCategoryKey(['Coding', 'Changed'], 'skills')], true, 'the changed Skill category must be revealed');
+assert.strictEqual(context.catExpanded[context.expandedCategoryKey(['Research', 'Unrelated'], 'skills')], undefined, 'an initial or cross-tab list must not expand unrelated Skill categories');
+const catTreeAreas = ['skills', 'notes', 'papers', 'scripts', 'environments'];
+const sharedPathKeys = catTreeAreas.map(area => context.expandedCategoryKey(['Shared'], area));
+assert.strictEqual(new Set(sharedPathKeys).size, catTreeAreas.length, 'all shared CatTree areas must have isolated expansion state');
+
+const markupStart = knowledge.indexOf("let knowledgeListMarkup =");
+const markupEnd = knowledge.indexOf('\nfunction renderList', markupStart);
+assert(markupStart >= 0 && markupEnd > markupStart, 'stable CatTree markup helper must be present');
+const markupContext = { CSS: { escape: value => value } };
+vm.createContext(markupContext);
+vm.runInContext(knowledge.slice(markupStart, markupEnd), markupContext);
+let markupWrites = 0;
+const listElement = {
+  _html: '', scrollTop: 0, scrollHeight: 100, clientHeight: 50,
+  get innerHTML() { return this._html; },
+  set innerHTML(value) { markupWrites++; this._html = value; },
+  querySelector: () => null,
+};
+assert.strictEqual(markupContext.setKnowledgeListMarkup(listElement, 'notes', '<div>same</div>'), true);
+listElement.scrollTop = 35;
+assert.strictEqual(markupContext.setKnowledgeListMarkup(listElement, 'notes', '<div>same</div>'), false, 'identical markup must preserve the live DOM');
+assert.strictEqual(markupWrites, 1, 'identical markup must not write innerHTML twice');
+assert.strictEqual(listElement.scrollTop, 35, 'skipped render must preserve scroll position');
+assert.strictEqual(markupContext.setKnowledgeListMarkup(listElement, 'notes', '<div>changed</div>'), true);
+assert.strictEqual(listElement.scrollTop, 35, 'real rerender must restore scroll position');
 
 const extension = fs.readFileSync(path.join(root, 'src/extension.ts'), 'utf8');
 const core = fs.readFileSync(path.join(root, 'src/webview/panel/00-core.js'), 'utf8');
 assert.match(extension, /changedPath = path\.relative\(getStorePath\(\), uri\.fsPath\)/);
 assert.match(core, /pendingTreeRefresh = data \|\| \{\}/);
+assert.match(extension, /respond\(\{ command: "list", tab, data, folders/);
+assert.match(core, /e\.data\.tab && e\.data\.tab !== state\.tab\) return/);
 assert.match(knowledge, /search\.value = ''[\s\S]{0,80}state\.search = ''/);
 assert.match(knowledge, /ask\('refreshKnowledgeFolder', \{ area: state\.tab, category \}\)/);
 assert.match(extension, /case "refreshKnowledgeFolder"[\s\S]{0,1200}Folder scan timed out after 3 seconds/);

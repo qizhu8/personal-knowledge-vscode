@@ -14,10 +14,14 @@ const materializer = fs.readFileSync(path.join(root, "src", "subscription-materi
 const gateway = fs.readFileSync(path.join(root, "src", "subscription-gateway-entry.ts"), "utf8");
 const mcp = fs.readFileSync(path.join(root, "src", "mcp.ts"), "utf8");
 
-assert.match(html, /data-tab="subscriptions">Subscription</);
+assert.match(html, /data-workspace-group="settings"[\s\S]*data-tab="subscriptions">Network &amp; Sharing</);
+assert.doesNotMatch(html, /id="content-toolbar"[\s\S]{0,1800}onclick="openSyncModal\(\)"/,
+	"Knowledge actions must not retain the old Sync button");
 assert.ok(html.indexOf('id="loading-banner"') < html.indexOf('<script src="%%PANEL_JS%%"></script>'), "loading banner must exist before the panel script runs");
 assert.strictEqual(manifest.contributes.viewsWelcome, undefined, "legacy sidebar welcome prompt must remain removed");
 assert.match(panel, /function renderSubscriptionPane\(\)/);
+assert.match(panel, /<h3>Direct Sync<\/h3>[\s\S]*onclick="openSyncModal\(\)">Open Direct Sync<\/button>/,
+	"Network & Sharing must expose the existing one-time encrypted Sync flow");
 assert.match(panel, /My Share Brokers/);
 assert.match(panel, /sub-broker-card/);
 assert.match(panel, /pk-card sub-broker-card/);
@@ -122,6 +126,17 @@ assert.match(panel, /draft\?\.folders\?\.\[type\] \?\? share\?\.folders\?\.\[typ
 assert.match(panel, /\$\{selectedCount\} selected/);
 assert.match(panel, /subscriptionCaptureSelectionDraft\(\);\s*subscriptionData/);
 assert.match(panel, /input\[data-sub-item="\$\{type\}"\],input\[data-sub-folder="\$\{type\}"\]/);
+assert.match(panel, /function subscriptionSyncFolderStates\(type\)/);
+assert.match(panel, /folder\.indeterminate = !folder\.checked && descendants\.some\(item => item\.checked\)/,
+	"a folder with selected descendants must render as partially selected");
+assert.match(panel, /folder\.setAttribute\('aria-checked', folder\.indeterminate \? 'mixed'/,
+	"partial folder selection must be exposed to assistive technology");
+assert.match(panel, /function renderSubscriptionPane\(\)[\s\S]*?subscriptionSyncFolderStates\(\);\s*}/,
+	"initial Broker editor rendering must synchronize partial folder states");
+assert.match(panel, /targets\.forEach\(item => item\.checked=input\.checked\);\s*subscriptionSyncFolderStates\(type\);/,
+	"folder toggles must refresh ancestor partial states");
+assert.match(panel, /function subscriptionItemToggle[\s\S]{0,250}subscriptionSyncFolderStates\(input\.dataset\.subItem\)/,
+	"item toggles must refresh ancestor partial states");
 assert.match(panel, /subscriptionUpdateSelectedCount\(type\)/);
 assert.match(panel, /Discoverable · Gateway catalog/);
 assert.match(panel, /Unlisted · Magic Link only/);

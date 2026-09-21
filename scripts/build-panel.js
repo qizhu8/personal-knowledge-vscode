@@ -9,6 +9,7 @@ const parts = [
   path.join(root, "src", "webview", "components", "disclosure-action-card.js"),
   "00-core.js",
   "10-chatroom.js",
+  "15-projects.js",
   "20-knowledge.js",
   "30-environments.js",
   "40-servers.js",

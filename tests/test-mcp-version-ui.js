@@ -75,6 +75,7 @@ const skillCalls = [];
 const updateActions = [{ disabled: false, setAttribute() {} }, { disabled: false, setAttribute() {} }];
 const skillContext = {
   esc,
+  uiIcon: (name, label = '') => `<span class="codicon codicon-${name}"></span>${label ? `<span>${esc(label)}</span>` : ''}`,
   ask: (command, data) => skillCalls.push({ command, data }),
   document: { querySelectorAll: () => updateActions },
   mcpI18nAttrs: (key, params = {}) => `data-i18n="${key}" ${Object.entries(params).map(([name, value]) => `data-i18n-param-${name}="${value}"`).join(' ')}`,
@@ -170,12 +171,12 @@ assert(extensionTs.includes("generation !== mcpPathSizeGeneration"));
 assert(extensionTs.includes("sendMcpPathSizes(respond, mcpPathSizeGeneration)"));
 assert.doesNotMatch(extensionTs, /300_000|Date\.now\(\) - cached\.at/);
 assert(panelJs.includes("function refreshMcpPathSizes"));
-assert(panelJs.includes("↻ Refresh sizes"));
+assert(panelJs.includes("uiIcon('refresh', 'Refresh sizes')"));
 assert(panelJs.includes("ask('reconfigureKnowledgeRoot',{})"));
 assert(panelJs.includes("ask('reconfigureEnvironmentsRoot',{})"));
 assert(panelJs.includes("ask('reconfigureMcpRuntimePath',{})"));
 assert(panelJs.includes("ask('reconfigureMcpServerPath',{})"));
-for (const text of ["Knowledge root", "Environments root", "Managed MCP runtime", "MCP Base Python", "MCP server directory", "This directory can grow very large", "Reconfigure &amp; Rebuild", "Reconfigure &amp; Regenerate"]) assert(panelJs.includes(text));
+for (const text of ["Knowledge root", "Environments root", "Managed MCP runtime", "MCP Base Python", "MCP server directory", "This directory can grow very large", "Reconfigure & Rebuild", "Reconfigure & Regenerate"]) assert(panelJs.includes(text));
 assert(panelJs.includes("command === 'pkmSkillUpdateComplete'"));
 assert(panelJs.includes("finishPkmSkillUpdates(); if (!data?.ok) ask('checkMcp', {})"));
 assert.doesNotMatch(/command === 'mcpStatus'[^\n]*/.exec(panelJs)?.[0] || "", /finishPkmSkillUpdates/);

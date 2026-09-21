@@ -1,0 +1,20 @@
+{
+  "name": "rejected-duplicates",
+  "input": {
+    "schema": "pkm.workflow.definition/v1",
+    "extra": true,
+    "spec": {
+      "inputs": {},
+      "nodes": [
+        { "nodeId": "complete", "kind": "pkm.step.noop/v1", "config": {}, "dependsOn": [] },
+        { "nodeId": "complete", "kind": "pkm.step.noop/v1", "config": {}, "dependsOn": [] }
+      ],
+      "outputs": {},
+      "completion": { "requiredNodes": ["complete"] }
+    }
+  },
+  "diagnostics": [
+    { "phase": "P3", "code": "E3001", "severity": "error", "pointer": "/extra", "details": { "key": "extra" }, "messageTemplateId": "workflow.schema.unknownField", "remediationClass": "author" },
+    { "phase": "P3", "code": "E3006", "severity": "error", "pointer": "/spec/nodes", "details": { "nodeId": "complete" }, "messageTemplateId": "workflow.schema.duplicateSetKey", "remediationClass": "author" }
+  ]
+}

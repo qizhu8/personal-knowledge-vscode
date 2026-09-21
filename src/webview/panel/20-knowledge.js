@@ -1,4 +1,18 @@
 // ── Tabs ──────────────────────────────────────────────────────────────────
+function paintWorkspaceNavigation() {
+  state.workspace = workspaceForTab(state.tab);
+  document.querySelectorAll('.workspace-button').forEach(button => button.classList.toggle('active', button.dataset.workspace === state.workspace));
+  document.querySelectorAll('.workspace-context-group').forEach(group => group.classList.toggle('active', group.dataset.workspaceGroup === state.workspace));
+  const title = document.getElementById('workspace-title');
+  if (title) title.textContent = state.workspace[0].toUpperCase() + state.workspace.slice(1);
+  setPanelTitle(surfacePanelTitles[state.tab] || 'Personal Knowledge Manager');
+}
+document.querySelectorAll('.workspace-button').forEach(button => button.addEventListener('click', () => {
+  const workspace = button.dataset.workspace;
+  const persisted = vscode.getState()?.workspaceRoutes?.[workspace];
+  const tab = workspaceSurfaces[workspace]?.includes(persisted) ? persisted : workspaceDefaultSurface[workspace];
+  document.querySelector(`.tab[data-tab="${tab}"]`)?.click();
+}));
 document.querySelectorAll('.tab').forEach(t =>
   t.addEventListener('click', () => {
     if (state.tab === 'chatroom' && t.dataset.tab !== 'chatroom') chatCaptureDraft();
@@ -6,19 +20,31 @@ document.querySelectorAll('.tab').forEach(t =>
     state.tab = t.dataset.tab; state.filter = 'all'; state.search = '';
     currentDetail = null;
     currentDetailRequest = null;
-    vscode.setState({ ...(vscode.getState() || {}), tab: state.tab });
+    state.workspace = workspaceForTab(state.tab);
+    const persisted = vscode.getState() || {};
+    vscode.setState({ ...persisted, tab: state.tab, workspace: state.workspace, workspaceRoutes: { ...(persisted.workspaceRoutes || {}), [state.workspace]: state.tab } });
     document.getElementById('searchbox').value = '';
-    document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x.dataset.tab === state.tab));
+    document.querySelectorAll('.tab').forEach(x => {
+      const active = x.dataset.tab === state.tab;
+      x.classList.toggle('active', active);
+      x.setAttribute('aria-selected', String(active));
+    });
+    paintWorkspaceNavigation();
     const _detail = document.getElementById('detail');
     _detail.style.padding = ''; _detail.style.overflow = '';   // reset chatroom overrides
     renderEmptyDetail();
     closePaperViews();
     updatePaperChrome();
-    const fullWidthTab = ['mcp', 'skillRouter', 'environments', 'servers', 'subscriptions', 'chatroom'].includes(state.tab);
+    const fullWidthTab = ['mcp', 'skillRouter', 'environments', 'servers', 'subscriptions', 'projects', 'chatroom'].includes(state.tab);
     document.getElementById('layout-resizer').style.display = fullWidthTab ? 'none' : '';
     document.getElementById('sidebar-toggle').style.display = fullWidthTab ? 'none' : '';
     document.getElementById('content-toolbar').style.display = fullWidthTab ? 'none' : '';
-    if (state.tab === 'mcp') {
+    if (state.tab === 'projects') {
+      document.getElementById('sidebar').style.display = 'none';
+      document.getElementById('searchbox').style.display = 'none';
+      renderProjects();
+      ask('projectState', {});
+    } else if (state.tab === 'mcp') {
       // Hide sidebar for MCP full-width pane
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
@@ -64,9 +90,20 @@ document.querySelectorAll('.tab').forEach(t =>
 // Show/hide the Papers-specific topbar buttons.
 function updatePaperChrome() {
   const on = state.tab === 'papers';
-  document.getElementById('btn-add-paper').style.display = on ? '' : 'none';
+  const add = document.getElementById('btn-add-knowledge');
+  if (add) {
+    const nouns = { skills: 'Skill', notes: 'Note', papers: 'Paper' };
+    add.innerHTML = uiIcon('add', nouns[state.tab] || 'Add');
+    add.title = 'Create a new ' + (nouns[state.tab] || 'item');
+  }
   document.getElementById('btn-paper-graph').style.display = on ? '' : 'none';
   relayoutTopbar();
+}
+
+function addCurrentKnowledge() {
+  if (state.tab === 'skills') ask('createKnowledgeItem', { area: 'skills' });
+  else if (state.tab === 'notes') toggleNoteForm();
+  else if (state.tab === 'papers') openPaperForm();
 }
 // Return to the plain list/detail view (hide paper form + graph).
 function closePaperViews() {
@@ -76,7 +113,7 @@ function closePaperViews() {
   document.getElementById('detail').style.display = '';
   paperGraphOpen = false;
   const gb = document.getElementById('btn-paper-graph');
-  if (gb) gb.textContent = '🕸 Graph';
+  if (gb) gb.innerHTML = uiIcon('type-hierarchy', 'Graph');
 }
 
 function contentSearchChanged(requestList = true) {
@@ -117,7 +154,25 @@ function privacyInherited(path) {
   const top = String(Array.isArray(path) ? path[0] || '' : path || '').replace(/\\/g, '/').split('/').filter(Boolean)[0] || '';
   return !!top && (state.privateTopLevels || []).includes(top);
 }
-function privacyLock(isPrivate) { return isPrivate ? '<span class="content-private-lock" title="Private: excluded from Subscription sharing" aria-label="Private">🔒</span>' : ''; }
+function privacyLock(isPrivate) { return isPrivate ? '<span class="content-private-lock codicon codicon-lock" title="Private: excluded from Subscription sharing" aria-label="Private"></span>' : ''; }
+function privacyDivider() { return '<div class="tree-privacy-divider" role="separator"><span>Private</span></div>'; }
+function mergeBrokerShares(...groups) {
+  const byId = new Map();
+  groups.flat().filter(Boolean).forEach(broker => byId.set(String(broker.id || broker.name), broker));
+  return [...byId.values()].sort((a, b) => String(a.name).localeCompare(String(b.name)));
+}
+function brokerSharesForItems(items) { return mergeBrokerShares(...(items || []).map(item => item.brokerShares || [])); }
+function brokerShareMarker(brokers) {
+  const refs = mergeBrokerShares(brokers || []);
+  if (!refs.length) return '';
+  const active = refs.filter(broker => broker.published !== false);
+  const paused = refs.filter(broker => broker.published === false);
+  const names = refs.map(broker => `${broker.name}${broker.published === false ? ' (paused)' : ''}`).join(', ');
+  const status = paused.length ? `${active.length} active, ${paused.length} paused. Subscribers may retain previously synchronized copies.` : `${active.length} active.`;
+  const label = `Included in ${refs.length} Share Broker${refs.length === 1 ? '' : 's'}: ${names}. ${status}`;
+  return `<span class="content-broker-cloud${active.length ? '' : ' paused'}" title="${esc(label)}" aria-label="${esc(label)}">${uiIcon('cloud')}${refs.length > 1 ? `<small>${refs.length}</small>` : ''}</span>`;
+}
+function brokerFolderMarker(path) { return brokerShareMarker(state.brokerSharedFolders?.[String(path || '')]?.brokers || []); }
 function appendPrivacyMenu(items, type, path) {
   const parts = String(path || '').split('/').filter(Boolean);
   if (parts.length !== 1) return;
@@ -133,6 +188,25 @@ function copyContextPath(path) {
 function copyPathMenu(path) { return { label: 'Copy Path', onClick: () => copyContextPath(path) }; }
 
 // ── Render list ────────────────────────────────────────────────────────────
+let knowledgeListMarkup = { tab: '', html: '' };
+
+function setKnowledgeListMarkup(el, tab, html) {
+  if (knowledgeListMarkup.tab === tab && knowledgeListMarkup.html === html) return false;
+  const preserveState = knowledgeListMarkup.tab === tab;
+  const previousScrollTop = preserveState ? el.scrollTop : 0;
+  const active = preserveState ? el.querySelector('.li.active') : null;
+  const activeSelector = active?.dataset?.noteSlug
+    ? `.li[data-note-slug="${CSS.escape(active.dataset.noteSlug)}"]`
+    : active?.dataset?.skillName
+      ? `.li[data-skill-name="${CSS.escape(active.dataset.skillName)}"]`
+      : '';
+  el.innerHTML = html;
+  knowledgeListMarkup = { tab, html };
+  if (activeSelector) el.querySelector(activeSelector)?.classList.add('active');
+  el.scrollTop = Math.min(previousScrollTop, Math.max(0, el.scrollHeight - el.clientHeight));
+  return true;
+}
+
 function renderList() {
   const { tab, items, filter } = state;
   const el = document.getElementById('item-list');
@@ -153,7 +227,7 @@ function renderList() {
     };
     const html = renderCatTree(root, [], 0, (r, depth) =>
       skillLi(r, r.name, q, 8 + (depth + 1) * 12), q, folderAttr, { isLeafPinned: it => !!it.pinned });
-    el.innerHTML = html || '<div class="empty">No skills</div>';
+    setKnowledgeListMarkup(el, tab, html || '<div class="empty">No skills</div>');
 
   } else if (tab === 'notes') {
     // Recursive N-level tree by category path. Pinned notes sort to the top of
@@ -173,7 +247,7 @@ function renderList() {
       isLeafPinned: (it) => !!it.pinned,
     };
     const html = renderCatTree(root, [], 0, (r, depth) => noteLi(r, q, 8 + (depth + 1) * 12), q, folderAttr, order);
-    el.innerHTML = html || '<div class="empty">No notes</div>';
+    setKnowledgeListMarkup(el, tab, html || '<div class="empty">No notes</div>');
 
   } else if (tab === 'papers') {
     renderPaperFilters(fEl);
@@ -191,7 +265,7 @@ function renderList() {
     let html = '';
     if (pinned.length) {
       html += '<div class="pk-group pk-group-pinned"><div class="pk-group-hdr">' +
-        '<span class="pk-group-arrow">★</span><span class="pk-group-name">Pinned</span>' +
+        '<span class="pk-group-arrow">' + uiIcon('pinned') + '</span><span class="pk-group-name">Pinned</span>' +
         '<span class="pk-group-count">' + pinned.length + '</span></div><div class="pk-group-body">' +
         pinned.sort((a, b) => (b.citationCount - a.citationCount) || a.title.localeCompare(b.title)).map(p => paperCard(p, q, 8)).join('') +
         '</div></div>';
@@ -206,8 +280,8 @@ function renderList() {
       html += '<div class="pk-group' + (custom ? ' pk-group-custom' : '') + '">' +
         '<div class="pk-group-hdr" onclick="togglePaperGroup(' + JSON.stringify(g).replace(/"/g, '&quot;') + ')" ' +
         'oncontextmenu="paperGroupMenu(event,' + JSON.stringify(g).replace(/"/g, '&quot;') + ')">' +
-        '<span class="pk-group-arrow">' + (expanded ? '▼' : '▶') + '</span>' +
-        '<span class="pk-group-name">' + (custom ? '📁' : '📄') + ' ' + esc(g) + '</span>' +
+        '<span class="pk-group-arrow">' + uiIcon(expanded ? 'chevron-down' : 'chevron-right') + '</span>' +
+        '<span class="pk-group-name">' + uiIcon(custom ? 'folder' : 'files') + ' ' + esc(g) + '</span>' + brokerShareMarker(brokerSharesForItems(groups[g])) +
         '<span class="pk-group-count">' + groups[g].length + '</span></div>' +
         '<div class="pk-group-body" style="display:' + (expanded ? '' : 'none') + '">';
       const root = buildCatTree(groups[g], r => r.category || '(uncategorized)', '(uncategorized)');
@@ -225,17 +299,18 @@ function renderList() {
     // Group by project
     const byProj = {};
     shown.forEach(r => { (byProj[r.project]||(byProj[r.project]=[])).push(r); });
-    el.innerHTML = Object.entries(byProj).map(([proj, tasks]) =>
-      `<div class="tree-proj">
-        <div class="tree-proj-hdr" onclick="toggleTree(this)" oncontextmenu="promptFolderMenu(event,${JSON.stringify(proj).replace(/"/g,'&quot;')},'','')">▶ ${privacyLock(privacyInherited([proj]))}${folkDisplayPath(proj)}</div>
+    const projectEntries = Object.entries(byProj).sort(([a], [b]) => Number(privacyInherited([a])) - Number(privacyInherited([b])) || a.localeCompare(b));
+    el.innerHTML = projectEntries.map(([proj, tasks], index) =>
+      `${privacyInherited([proj]) && (index === 0 || !privacyInherited([projectEntries[index - 1][0]])) ? privacyDivider() : ''}<div class="tree-proj">
+        <div class="tree-proj-hdr" onclick="toggleTree(this)" oncontextmenu="promptFolderMenu(event,${JSON.stringify(proj).replace(/"/g,'&quot;')},'','')"><span class="tree-toggle-icon codicon codicon-chevron-right" aria-hidden="true"></span>${privacyLock(privacyInherited([proj]))}${folkDisplayPath(proj)}${brokerShareMarker(brokerSharesForItems(tasks))}</div>
         <div class="tree-proj-body collapsed">${tasks.map(r =>
           `<div class="tree-task">
-            <div class="tree-task-hdr" onclick="toggleTree(this)" oncontextmenu="promptFolderMenu(event,${JSON.stringify(proj).replace(/"/g,'&quot;')},${JSON.stringify(r.task).replace(/"/g,'&quot;')},'')">▷ ${privacyLock(r.isPrivate)}${esc(r.task)}</div>
+            <div class="tree-task-hdr" onclick="toggleTree(this)" oncontextmenu="promptFolderMenu(event,${JSON.stringify(proj).replace(/"/g,'&quot;')},${JSON.stringify(r.task).replace(/"/g,'&quot;')},'')"><span class="tree-toggle-icon codicon codicon-chevron-right" aria-hidden="true"></span>${privacyLock(r.isPrivate)}${esc(r.task)}${brokerShareMarker(r.brokerShares)}</div>
             <div class="tree-task-body collapsed">${(r.versions||[]).map(v =>
               `<div class="tree-ver">
-                <div class="tree-ver-hdr" onclick="toggleTree(this)" oncontextmenu="promptFolderMenu(event,${JSON.stringify(proj).replace(/"/g,'&quot;')},${JSON.stringify(r.task).replace(/"/g,'&quot;')},${JSON.stringify(v.version).replace(/"/g,'&quot;')})">📁 ${privacyLock(r.isPrivate)}${esc(v.version)}</div>
+                <div class="tree-ver-hdr" onclick="toggleTree(this)" oncontextmenu="promptFolderMenu(event,${JSON.stringify(proj).replace(/"/g,'&quot;')},${JSON.stringify(r.task).replace(/"/g,'&quot;')},${JSON.stringify(v.version).replace(/"/g,'&quot;')})">${uiIcon('folder')} ${privacyLock(r.isPrivate)}${esc(v.version)}</div>
                 <div class="tree-ver-body collapsed">${(v.files||[]).map(f =>
-                  `<div class="tree-file" data-prompt-project="${esc(proj)}" data-prompt-task="${esc(r.task)}" data-prompt-version="${esc(v.version)}" data-prompt-file="${esc(f.name)}" onclick="openPromptFile('${esc(proj)}','${esc(r.task)}','${esc(v.version)}','${esc(f.name)}')" oncontextmenu="promptItemTrashMenu(event,${JSON.stringify(`${proj}/${r.task}/${v.version}/${f.name}`).replace(/"/g,'&quot;')},${JSON.stringify(f.name).replace(/"/g,'&quot;')},${JSON.stringify(proj).replace(/"/g,'&quot;')},${JSON.stringify(r.task).replace(/"/g,'&quot;')},${JSON.stringify(v.version).replace(/"/g,'&quot;')})">📄 ${privacyLock(r.isPrivate)}${esc(f.name)}</div>`
+                  `<div class="tree-file" data-prompt-project="${esc(proj)}" data-prompt-task="${esc(r.task)}" data-prompt-version="${esc(v.version)}" data-prompt-file="${esc(f.name)}" onclick="openPromptFile('${esc(proj)}','${esc(r.task)}','${esc(v.version)}','${esc(f.name)}')" oncontextmenu="promptItemTrashMenu(event,${JSON.stringify(`${proj}/${r.task}/${v.version}/${f.name}`).replace(/"/g,'&quot;')},${JSON.stringify(f.name).replace(/"/g,'&quot;')},${JSON.stringify(proj).replace(/"/g,'&quot;')},${JSON.stringify(r.task).replace(/"/g,'&quot;')},${JSON.stringify(v.version).replace(/"/g,'&quot;')})">${uiIcon('file-code')} ${privacyLock(r.isPrivate)}${esc(f.name)}</div>`
                 ).join('')}</div>
               </div>`
             ).join('')}</div>
@@ -258,7 +333,7 @@ function renderList() {
           : '<span class="pkg-git untracked" title="Not tracked by git yet (uncommitted)">untracked</span>';
           const sourceTag = packageSourceTag(r.source);
       return `<div class="li" onclick="openItem('package','${esc(r.name)}')" oncontextmenu="packageItemMenu(event,${JSON.stringify(r.name).replace(/"/g,'&quot;')})">
-      <div class="li-name">${privacyLock(r.isPrivate)}${folkDisplayPath(r.name)} ${gitTag}</div>
+      <div class="li-name">${privacyLock(r.isPrivate)}${folkDisplayPath(r.name)} ${gitTag}${brokerShareMarker(r.brokerShares)}</div>
           <div class="li-meta">${esc(r.lang)} · ${esc((r.description||'').slice(0,50))}${sourceTag}</div>
     </div>`;
     }).join('') || '<div class="empty">No local packages</div>');
@@ -283,7 +358,7 @@ function renderList() {
       const pad = 8 + (depth + 1) * 12;
       const cat = r.category === '(root)' ? '' : r.category;
       return `<div class="li" style="padding-left:${pad}px" onclick="openItem('script','${esc(r.path)}')" oncontextmenu="scriptItemMenu(event,'${esc(r.path)}',${JSON.stringify(cat).replace(/"/g, '&quot;')})">
-        <div class="li-name">📄 ${privacyLock(r.isPrivate)}${hl(r.file, q)}</div>
+        <div class="li-name">${uiIcon('file-code')} ${privacyLock(r.isPrivate)}${hl(r.file, q)}${brokerShareMarker(r.brokerShares)}</div>
         <div class="li-meta">${cat ? `<span style="margin-right:5px">${hl(cat, q)}</span>` : ''}${(r.langs||(r.lang?r.lang.split(' + '):[])).map(l=>`<span class="cat" style="font-size:9px;margin-right:3px">${hl(l, q)}</span>`).join('')}</div>
       </div>`;
     }, q, folderAttr);
@@ -392,7 +467,7 @@ function renderKnowledgeTrashDock(area) {
   dock.classList.toggle('hidden', !visible);
   if (!visible) { dock.replaceChildren(); return; }
   const entries = state.knowledgeTrash || [];
-  dock.innerHTML = `<div class="knowledge-trash-popover hidden">${entries.length ? entries.map(entry => `<div class="li knowledge-trash-item"><div class="li-name"><span>${entry.kind === 'folder' ? '📁' : '📄'} ${esc(entry.name)}</span><span class="knowledge-trash-actions"><button class="sub-fork-btn" data-pending-label="Restoring…" onclick="restoreKnowledgeTrash('${area}','${esc(entry.id)}',this)">Restore</button><button class="sub-fork-btn danger" onclick="deleteKnowledgeTrashEntry('${area}','${esc(entry.id)}','${esc(entry.name)}','${esc(entry.kind)}')">Delete Permanently</button></span></div><div class="li-meta">${esc(entry.originalPath)} · ${entry.deletedAt ? new Date(entry.deletedAt).toLocaleString() : ''}</div></div>`).join('') : '<div class="empty">Trash is empty</div>'}</div><div class="knowledge-trash-dock-row" role="button" tabindex="0" aria-expanded="false" onclick="toggleKnowledgeTrashDock()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleKnowledgeTrashDock()}"><span>Trash</span><span class="pk-group-count">${entries.length}</span><button class="knowledge-trash-empty" onclick="event.stopPropagation();emptyKnowledgeTrash('${area}')" title="Permanently delete everything in ${area} Trash" ${entries.length ? '' : 'disabled'}>Empty Trash</button><i>▴</i></div>`;
+  dock.innerHTML = `<div class="knowledge-trash-popover hidden">${entries.length ? entries.map(entry => `<div class="li knowledge-trash-item"><div class="li-name"><span>${uiIcon(entry.kind === 'folder' ? 'folder' : 'file')} ${esc(entry.name)}</span><span class="knowledge-trash-actions"><button class="sub-fork-btn" data-pending-label="Restoring…" onclick="restoreKnowledgeTrash('${area}','${esc(entry.id)}',this)">Restore</button><button class="sub-fork-btn danger" onclick="deleteKnowledgeTrashEntry('${area}','${esc(entry.id)}','${esc(entry.name)}','${esc(entry.kind)}')">Delete Permanently</button></span></div><div class="li-meta">${esc(entry.originalPath)} · ${entry.deletedAt ? new Date(entry.deletedAt).toLocaleString() : ''}</div></div>`).join('') : '<div class="empty">Trash is empty</div>'}</div><div class="knowledge-trash-dock-row" role="button" tabindex="0" aria-expanded="false" onclick="toggleKnowledgeTrashDock()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleKnowledgeTrashDock()}"><span>${uiIcon('trash')} Trash</span><span class="pk-group-count">${entries.length}</span><button class="knowledge-trash-empty" onclick="event.stopPropagation();emptyKnowledgeTrash('${area}')" title="Permanently delete everything in ${area} Trash" ${entries.length ? '' : 'disabled'}>Empty Trash</button><i>${uiIcon('chevron-up')}</i></div>`;
 }
 
 function toggleKnowledgeTrashDock() {
@@ -427,7 +502,7 @@ function deleteSkillTrashEntry(id, name, kind) {
 
 function skillLi(r, displayName, q, indent) {
   return `<div class="li${r.pinned ? ' nt-pinned' : ''}" data-skill-name="${esc(r.name)}" onclick="openItem('skill','${esc(r.name)}')" oncontextmenu="skillItemMenu(event,'${esc(r.name)}',${JSON.stringify(r.category || '').replace(/"/g, '&quot;')})" style="padding-left:${indent}px">
-    <div class="li-name"><span class="pc-star${r.pinned ? ' on' : ''}" onclick="event.stopPropagation();toggleSkillPin('${esc(r.name)}',${r.pinned ? 'false' : 'true'})" title="${r.pinned ? 'Unpin' : 'Pin to top of folder'}">${r.pinned ? '★' : '☆'}</span> ${privacyLock(r.isPrivate)}${hl(displayName||r.name, q)}</div>
+    <div class="li-name"><span class="pc-star${r.pinned ? ' on' : ''}" onclick="event.stopPropagation();toggleSkillPin('${esc(r.name)}',${r.pinned ? 'false' : 'true'})" title="${r.pinned ? 'Unpin' : 'Pin to top of folder'}">${uiIcon(r.pinned ? 'pinned' : 'pin')}</span> ${privacyLock(r.isPrivate)}${hl(displayName||r.name, q)}${brokerShareMarker(r.brokerShares)}</div>
     <div class="li-meta">${r.description ? hl(r.description.slice(0,50), q) : ''}</div>
   </div>`;
 }
@@ -447,7 +522,7 @@ function noteFilename(note) {
 function noteLi(r, q, indent) {
   const filename = noteFilename(r);
   return `<div class="li nt-${r.type}${r.pinned ? ' nt-pinned' : ''}" data-note-slug="${esc(r.slug)}" data-note-pinned="${r.pinned ? '1' : ''}" style="padding-left:${indent}px" onclick="openItem('note','${esc(r.slug)}')" title="notes/${esc(r.slug)}.md">
-    <div class="li-name"><span class="pc-star${r.pinned ? ' on' : ''}" onclick="event.stopPropagation();toggleNotePin('${esc(r.slug)}',${r.pinned ? 'false' : 'true'})" title="${r.pinned ? 'Unpin' : 'Pin to top of folder'}">${r.pinned ? '★' : '☆'}</span> ${ICON[r.type]||'📝'} ${privacyLock(r.isPrivate)}${hl(r.title, q)}</div>
+    <div class="li-name"><span class="pc-star${r.pinned ? ' on' : ''}" onclick="event.stopPropagation();toggleNotePin('${esc(r.slug)}',${r.pinned ? 'false' : 'true'})" title="${r.pinned ? 'Unpin' : 'Pin to top of folder'}">${uiIcon(r.pinned ? 'pinned' : 'pin')}</span> ${ICON[r.type]||uiIcon('note')} ${privacyLock(r.isPrivate)}${hl(r.title, q)}${brokerShareMarker(r.brokerShares)}</div>
     <div class="li-meta">${hl(filename, q)} · ${(r.updated_at||'').slice(0,10)}</div>
   </div>`;
 }
@@ -490,13 +565,13 @@ function countTreeLeaves(node) {
   return n;
 }
 
-function expandedCategoryKey(path) {
-  return btoa(unescape(encodeURIComponent(JSON.stringify(path))));
+function expandedCategoryKey(path, area = '') {
+  return `${area}:` + btoa(unescape(encodeURIComponent(JSON.stringify(path))));
 }
 
-function expandCategoryPath(category) {
+function expandCategoryPath(category, area) {
   const segments = String(category || '').split('/').map(value => value.trim()).filter(Boolean);
-  for (let depth = 1; depth <= segments.length; depth++) catExpanded[expandedCategoryKey(segments.slice(0, depth))] = true;
+  for (let depth = 1; depth <= segments.length; depth++) catExpanded[expandedCategoryKey(segments.slice(0, depth), area)] = true;
 }
 
 function refreshedItemKey(item) {
@@ -510,39 +585,51 @@ function revealRefreshedTreeItems(tab, previousItems, nextItems, refresh) {
   if (changedPath && !changedPath.startsWith(area)) return !/^notes\/|^skills\//.test(changedPath);
   if (!['notes', 'skills'].includes(tab) || !Array.isArray(nextItems)) return true;
   if (changedPath.startsWith(area)) {
-    const relative = changedPath.slice(area.length);
-    expandCategoryPath(relative.includes('/') ? relative.slice(0, relative.lastIndexOf('/')) : '');
+    const previousKeys = new Set((previousItems || []).map(refreshedItemKey));
+    const relativePath = changedPath.slice(area.length).replace(/\/+$/, '');
+    const separator = relativePath.lastIndexOf('/');
+    const changedCategory = changedPath.endsWith('/') ? relativePath : separator >= 0 ? relativePath.slice(0, separator) : '';
+    nextItems
+      .filter(item => !previousKeys.has(refreshedItemKey(item)) && String(item.category || '') === changedCategory)
+      .forEach(item => expandCategoryPath(item.category, tab));
     return true;
   }
   const previous = new Map((previousItems || []).map(item => [refreshedItemKey(item), item.updated_at || '']));
   const changed = nextItems.filter(item => !previous.has(refreshedItemKey(item)) || previous.get(refreshedItemKey(item)) !== (item.updated_at || ''));
-  if (changed.length) changed.forEach(item => expandCategoryPath(item.category));
-  else if (refresh.manual && nextItems[0]) expandCategoryPath(nextItems[0].category);
+  if (refresh.manual && changed.length === 1) expandCategoryPath(changed[0].category, tab);
   return true;
 }
 
 function renderCatTree(node, path, depth, renderLeaf, q, folderAttr, order) {
   const isFP = (order && order.isFolderPinned) ? order.isFolderPinned : null;
   const folderKeys = Object.keys(node.folders).sort((a, b) => {
+    if (path.length === 0) {
+      const privacyOrder = Number(privacyInherited([a])) - Number(privacyInherited([b]));
+      if (privacyOrder) return privacyOrder;
+    }
     if (a === '(uncategorized)') return 1;
     if (b === '(uncategorized)') return -1;
     if (isFP) { const pa = isFP(path.concat(a)) ? 0 : 1, pb = isFP(path.concat(b)) ? 0 : 1; if (pa !== pb) return pa - pb; }
     return a.localeCompare(b);
   });
   let html = '';
-  for (const name of folderKeys) {
+  for (let index = 0; index < folderKeys.length; index++) {
+    const name = folderKeys[index];
     const child = node.folders[name];
     if (q && countTreeLeaves(child) === 0) continue;
+    if (path.length === 0 && privacyInherited([name]) && !folderKeys.slice(0, index).some(previous => privacyInherited([previous]))) html += privacyDivider();
     // Base64 key: safe inside HTML attrs and JS strings (no quotes/null/unicode issues)
-    const key = btoa(unescape(encodeURIComponent(JSON.stringify(path.concat(name)))));
+    const key = expandedCategoryKey(path.concat(name), state.tab);
     const open = !!catExpanded[key];
     const pad = 8 + depth * 12;
     const pinnedFolder = isFP && name !== '(uncategorized)' && isFP(path.concat(name));
+    const addPath = name === '(uncategorized)' ? '' : path.concat(name).join('/');
     html += `<div class="tree-cat">
       <div class="tree-cat-hdr${pinnedFolder ? ' cat-pinned' : ''}" style="padding-left:${pad}px" onclick="toggleCat('${key}')" title="${esc(name)}"${folderAttr ? folderAttr(child, name, path.concat(name)) : ''}>
-        <span class="tree-cat-arrow">${open ? '▾' : '▸'}</span>
-        <span class="tree-cat-label">${pinnedFolder ? '★ ' : ''}${privacyLock(privacyInherited(path.concat(name)))}${name === '(uncategorized)' ? '<em style="opacity:.6">(uncategorized)</em>' : path.length === 0 ? folkDisplayName(name) : esc(name)}</span>
+        <span class="tree-cat-arrow">${uiIcon(open ? 'chevron-down' : 'chevron-right')}</span>
+        <span class="tree-cat-label">${pinnedFolder ? uiIcon('pinned') + ' ' : ''}${privacyLock(privacyInherited(path.concat(name)))}${name === '(uncategorized)' ? '<em style="opacity:.6">(uncategorized)</em>' : path.length === 0 ? folkDisplayName(name) : esc(name)}</span>${brokerFolderMarker(name === '(uncategorized)' ? '' : path.concat(name).join('/'))}
         <span class="tree-cat-count">${countTreeLeaves(child)}</span>
+        ${['skills', 'notes', 'papers'].includes(state.tab) ? `<button class="tree-cat-add" type="button" title="Add inside ${esc(name)}" aria-label="Add inside ${esc(name)}" onclick="openCatFolderAddMenu(event,${JSON.stringify(state.tab).replace(/"/g, '&quot;')},${JSON.stringify(addPath).replace(/"/g, '&quot;')})">${uiIcon('add')}</button>` : ''}
       </div>
       <div class="tree-cat-body" style="${open ? '' : 'display:none'}">${renderCatTree(child, path.concat(name), depth + 1, renderLeaf, q, folderAttr, order)}</div>
     </div>`;
@@ -551,6 +638,22 @@ function renderCatTree(node, path, depth, renderLeaf, q, folderAttr, order) {
   if (order && order.isLeafPinned) leaves = [...leaves].sort((a, b) => (order.isLeafPinned(b) ? 1 : 0) - (order.isLeafPinned(a) ? 1 : 0));
   for (const it of leaves) html += renderLeaf(it, depth, q);
   return html;
+}
+
+function openCatFolderAddMenu(event, area, category) {
+  event.preventDefault(); event.stopPropagation();
+  const itemLabels = { skills: 'Skill', notes: 'Note', papers: 'Paper' };
+  const itemLabel = itemLabels[area];
+  if (!itemLabel) return;
+  const items = [
+    { label: `New ${itemLabel}…`, onClick: () => ask('createKnowledgeItem', { area, ...(area === 'papers' ? { kind: 'paper' } : {}), category }) },
+    { label: 'Create Subfolder…', onClick: () => pkModal({
+      title: 'Create sub-folder', message: category ? `New folder under “${category}”.` : 'New top-level folder.',
+      input: true, okLabel: 'Create', onOk: value => { const name = value.trim(); if (name) ask('folderCreate', { area, parent: category, name }); },
+    }) },
+  ];
+  if (area === 'papers') items.splice(1, 0, { label: 'New Idea…', onClick: () => ask('createKnowledgeItem', { area, kind: 'idea', category }) });
+  showPaperMenu(event.clientX, event.clientY, items);
 }
 // Collect all leaf slugs under a cat-tree folder (papers only).
 function collectLeafSlugs(node) {
@@ -593,8 +696,10 @@ function highlightSelectedPromptTree(data) {
     [versionBody,taskBody,projectBody].forEach(body => body?.classList.remove('collapsed'));
     const taskHeader = node.closest('.tree-task')?.querySelector('.tree-task-hdr');
     const projectHeader = node.closest('.tree-proj')?.querySelector('.tree-proj-hdr');
-    if (taskHeader) taskHeader.innerHTML = taskHeader.innerHTML.replace(/^▷/, '▽');
-    if (projectHeader) projectHeader.innerHTML = projectHeader.innerHTML.replace(/^▶/, '▼');
+    [taskHeader, projectHeader].forEach(header => {
+      const icon = header?.querySelector('.tree-toggle-icon');
+      if (icon) icon.className = 'tree-toggle-icon codicon codicon-chevron-down';
+    });
   });
 }
 
@@ -623,11 +728,8 @@ function toggleTree(hdr) {
   const body = hdr.nextElementSibling;
   if (!body) return;
   const collapsed = body.classList.toggle('collapsed');
-  const arrow = hdr.textContent[0];
-  if (arrow === '▶') hdr.textContent = '▼' + hdr.textContent.slice(1);
-  else if (arrow === '▼') hdr.textContent = '▶' + hdr.textContent.slice(1);
-  else if (arrow === '▷') hdr.textContent = '▽' + hdr.textContent.slice(1);
-  else if (arrow === '▽') hdr.textContent = '▷' + hdr.textContent.slice(1);
+  const icon = hdr.querySelector('.tree-toggle-icon');
+  if (icon) icon.className = `tree-toggle-icon codicon codicon-chevron-${collapsed ? 'right' : 'down'}`;
 }
 
 function openPrompt(proj, task, ver) {
@@ -897,7 +999,7 @@ function promptAddCurrentToDataset() {
   promptRefreshDataset();
   promptRefreshAddToDatasetState();
   const button = document.getElementById('prompt-add-to-dataset');
-  if (button) { button.textContent = existing >= 0 ? 'Already in Dataset' : 'Added to Dataset'; setTimeout(() => { if (button.isConnected) button.textContent = '＋ Add to Dataset'; },1200); }
+  if (button) { button.innerHTML = existing >= 0 ? uiIcon('info', 'Already in Dataset') : uiIcon('check', 'Added to Dataset'); setTimeout(() => { if (button.isConnected) button.innerHTML = uiIcon('add', 'Add to Dataset'); },1200); }
 }
 
 function promptDatasetVariables() {
@@ -921,7 +1023,7 @@ function promptRenderDatasetTable(variables = promptDatasetVariables()) {
   if (!dataset) { target.innerHTML = '<div class="prompt-dataset-empty">Load or paste JSON/JSONL to create Dataset rows.</div>'; return; }
   const extra = [...new Set(dataset.rows.flatMap(row => Object.keys(row)).filter(key => !variables.includes(key)))].sort();
   const columns = [...variables, ...extra];
-  target.innerHTML = `<div class="prompt-dataset-table-wrap"><table><thead><tr><th class="prompt-dataset-index">#</th>${columns.map(column => `<th title="${esc(column)}">${esc(column)}${extra.includes(column)?'<small>extra</small>':''}</th>`).join('')}<th class="prompt-dataset-delete-column"><span class="sr-only">Actions</span></th></tr></thead><tbody>${dataset.rows.map((row,index)=>`<tr class="${index===dataset.index?'selected':''}" tabindex="0" onclick="promptDatasetSelect(${index})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();promptDatasetSelect(${index})}" aria-selected="${index===dataset.index}"><td class="prompt-dataset-index">${index+1}</td>${columns.map(column=>`<td>${promptDatasetCell(row[column],index,column)}</td>`).join('')}<td class="prompt-dataset-delete-column"><button type="button" onclick="promptDatasetDelete(${index},event)" title="Delete Dataset row ${index+1}" aria-label="Delete Dataset row ${index+1}">×</button></td></tr>`).join('')}</tbody></table></div>`;
+  target.innerHTML = `<div class="prompt-dataset-table-wrap"><table><thead><tr><th class="prompt-dataset-index">#</th>${columns.map(column => `<th title="${esc(column)}">${esc(column)}${extra.includes(column)?'<small>extra</small>':''}</th>`).join('')}<th class="prompt-dataset-delete-column"><span class="sr-only">Actions</span></th></tr></thead><tbody>${dataset.rows.map((row,index)=>`<tr class="${index===dataset.index?'selected':''}" tabindex="0" onclick="promptDatasetSelect(${index})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();promptDatasetSelect(${index})}" aria-selected="${index===dataset.index}"><td class="prompt-dataset-index">${index+1}</td>${columns.map(column=>`<td>${promptDatasetCell(row[column],index,column)}</td>`).join('')}<td class="prompt-dataset-delete-column"><button type="button" onclick="promptDatasetDelete(${index},event)" title="Delete Dataset row ${index+1}" aria-label="Delete Dataset row ${index+1}">${uiIcon('trash')}</button></td></tr>`).join('')}</tbody></table></div>`;
 }
 
 function promptRefreshDataset(renderTable = true) {
@@ -1140,13 +1242,13 @@ function markdownToolbar(data) {
   const category = type === 'skill' ? data.category || '' : '';
   const stableKey = type === 'skill' ? [category, key].filter(Boolean).join('/') : key;
   return `
-    <button class="tbtn" style="font-size:11px" onclick="${pin}" title="${data.pinned ? 'Unpin' : 'Pin to top'}">${data.pinned ? '★ Pinned' : '☆ Pin'}</button>
-    <button class="tbtn" style="font-size:11px" onclick="exportMarkdown('browser')" title="Open the browser preview">🌐 Browser</button>
-    <button class="tbtn" style="font-size:11px" onclick="ask('copyPublicContentLink',{kind:'${type}',key:'${esc(stableKey)}'})" title="Copy the stable public browser link">🔗 Copy Link</button>
-    ${type === 'note' ? '<button class="tbtn" style="font-size:11px" onclick="exportMarkdown(\'linkedSave\')" title="Save this Note and its linked Notes as a shareable site">📦 Site</button>' : ''}
-    <button class="tbtn" style="font-size:11px" onclick="exportMarkdown('file')" title="Download as a self-contained HTML file">⬇ Download</button>
-    <button class="tbtn" style="font-size:11px" onclick="openMarkdownItem('${area}', '${esc(category)}', '${esc(key)}')">✏ Edit Content</button>
-    <button class="tbtn" style="font-size:11px" onclick="editMarkdownMetadataItem('${area}', '${esc(category)}', '${esc(key)}')">⚙ Edit Metadata</button>`;
+    <button class="tbtn" style="font-size:11px" onclick="${pin}" title="${data.pinned ? 'Unpin' : 'Pin to top'}">${uiIcon(data.pinned ? 'pinned' : 'pin', data.pinned ? 'Pinned' : 'Pin')}</button>
+    <button class="tbtn" style="font-size:11px" onclick="exportMarkdown('browser')" title="Open the browser preview">${uiIcon('globe', 'Browser')}</button>
+    <button class="tbtn" style="font-size:11px" onclick="ask('copyPublicContentLink',{kind:'${type}',key:'${esc(stableKey)}'})" title="Copy the stable public browser link">${uiIcon('link', 'Copy Link')}</button>
+    ${type === 'note' ? `<button class="tbtn" style="font-size:11px" onclick="exportMarkdown('linkedSave')" title="Save this Note and its linked Notes as a shareable site">${uiIcon('package', 'Site')}</button>` : ''}
+    <button class="tbtn" style="font-size:11px" onclick="exportMarkdown('file')" title="Download as a self-contained HTML file">${uiIcon('cloud-download', 'Download')}</button>
+    <button class="tbtn" style="font-size:11px" onclick="openMarkdownItem('${area}', '${esc(category)}', '${esc(key)}')">${uiIcon('edit', 'Edit Content')}</button>
+    <button class="tbtn" style="font-size:11px" onclick="editMarkdownMetadataItem('${area}', '${esc(category)}', '${esc(key)}')">${uiIcon('settings-gear', 'Edit Metadata')}</button>`;
 }
 
 function detailContentPath(data) {
@@ -1165,6 +1267,7 @@ function detailPathHtml(data) {
 function renderDetail(data) {
   renderNonce++; // fresh asset URLs each open so late-added images bypass stale cache
   const el = document.getElementById('detail');
+  setPanelTitle(detailPanelTitle(data));
   if (!data) { currentDetail = null; currentDetailRequest = null; el.innerHTML = '<div class="empty">Not found.</div>'; return; }
   const previousDetailType = currentDetail?.type;
   currentDetail = data;
@@ -1203,7 +1306,7 @@ function renderDetail(data) {
         <span>Updated ${(data.updated_at||'').slice(0,10)}</span>
         <span style="flex:1"></span>
         ${markdownToolbar(data)}
-        <button class="tbtn" style="font-size:11px" onclick="confirmDeleteSkill(this)">🗑 Move to Trash</button>
+        <button class="tbtn" style="font-size:11px" onclick="confirmDeleteSkill(this)">${uiIcon('trash', 'Move to Trash')}</button>
       </div>
       <div class="meta-grid">
         <span class="ml">Source</span><span class="mv meta-value"><span>${esc(data.source_project||'—')}</span><button class="meta-edit" onclick="editCurrentMetadata('source_project')" title="Edit source">✎</button></span>
@@ -1216,7 +1319,7 @@ function renderDetail(data) {
     currentDetail = data;
     const tags = JSON.parse(data.tags||'[]');
     el.innerHTML = `
-      <div class="d-title"><span>${ICON[data.note_type]||'📝'} ${esc(data.title)}</span>${privacyLock(data.isPrivate)}<button class="meta-edit" onclick="editCurrentMetadata('title')" title="Edit title">✎</button></div>
+      <div class="d-title"><span>${ICON[data.note_type]||uiIcon('note')} ${esc(data.title)}</span>${privacyLock(data.isPrivate)}<button class="meta-edit" onclick="editCurrentMetadata('title')" title="Edit title">${uiIcon('edit')}</button></div>
       ${detailPathHtml(data)}
       <div class="d-meta">
         <span>${esc(data.note_type)}</span>
@@ -1239,7 +1342,7 @@ function renderDetail(data) {
     document.getElementById('paper-graph-view').classList.add('hidden');
     document.getElementById('detail').style.display = '';
     paperGraphOpen = false;
-    const gb = document.getElementById('btn-paper-graph'); if (gb) gb.textContent = '🕸 Graph';
+    const gb = document.getElementById('btn-paper-graph'); if (gb) gb.innerHTML = uiIcon('type-hierarchy', 'Graph');
     el.innerHTML = paperDetailHtml(data);
 
   } else if (data.type === 'prompt') {
@@ -1275,7 +1378,7 @@ function renderDetail(data) {
     el.innerHTML = `
       <div class="prompt-workbench">
         <header class="prompt-workbench-head">
-          <div><div class="prompt-title-line"><div class="d-title">${esc(meta?.title || task)} ${privacyLock(data.isPrivate)}</div><div class="prompt-version-clock ${syntaxState}" role="spinbutton" tabindex="0" aria-label="Prompt version ${esc(version)}, ${syntaxState==='syntax-valid'?'syntax valid':syntaxState==='syntax-invalid'?'syntax invalid':'analyzing'}" aria-valuemin="1" aria-valuemax="${versions.length}" aria-valuenow="${versionIndex+1}" aria-valuetext="${esc(version)}" onwheel="promptVersionWheel(event)" onkeydown="if(event.key==='ArrowUp'){event.preventDefault();promptChangeVersion(-1)}else if(event.key==='ArrowDown'){event.preventDefault();promptChangeVersion(1)}"><button type="button" class="prompt-version-face" onclick="promptVersionMenu(event)" title="Choose Prompt version">${esc(version)}</button><span class="prompt-version-steppers"><button type="button" onclick="event.stopPropagation();promptChangeVersion(-1)" title="Previous Prompt version" aria-label="Previous Prompt version" ${versionIndex===0?'disabled':''}>▴</button><button type="button" onclick="event.stopPropagation();promptChangeVersion(1)" title="Next Prompt version" aria-label="Next Prompt version" ${versionIndex===versions.length-1?'disabled':''}>▾</button></span></div></div>${detailPathHtml(data)}</div>
+          <div><div class="prompt-title-line"><div class="d-title">${esc(meta?.title || task)} ${privacyLock(data.isPrivate)}</div><div class="prompt-version-clock ${syntaxState}" role="spinbutton" tabindex="0" aria-label="Prompt version ${esc(version)}, ${syntaxState==='syntax-valid'?'syntax valid':syntaxState==='syntax-invalid'?'syntax invalid':'analyzing'}" aria-valuemin="1" aria-valuemax="${versions.length}" aria-valuenow="${versionIndex+1}" aria-valuetext="${esc(version)}" onwheel="promptVersionWheel(event)" onkeydown="if(event.key==='ArrowUp'){event.preventDefault();promptChangeVersion(-1)}else if(event.key==='ArrowDown'){event.preventDefault();promptChangeVersion(1)}"><button type="button" class="prompt-version-face" onclick="promptVersionMenu(event)" title="Choose Prompt version">${esc(version)}</button><span class="prompt-version-steppers"><button type="button" onclick="event.stopPropagation();promptChangeVersion(-1)" title="Previous Prompt version" aria-label="Previous Prompt version" ${versionIndex===0?'disabled':''}>${uiIcon('chevron-up')}</button><button type="button" onclick="event.stopPropagation();promptChangeVersion(1)" title="Next Prompt version" aria-label="Next Prompt version" ${versionIndex===versions.length-1?'disabled':''}>${uiIcon('chevron-down')}</button></span></div></div>${detailPathHtml(data)}</div>
           <div class="prompt-health-row"><span class="prompt-format">${esc(format)}</span>${syntaxHtml}</div>
         </header>
         <nav class="prompt-workspace-tabs" role="tablist">
@@ -1286,12 +1389,12 @@ function renderDetail(data) {
           <button class="prompt-workspace-tab ${promptWorkspaceTab==='dataset'?'active':''}" data-prompt-tab="dataset" role="tab" aria-selected="${promptWorkspaceTab==='dataset'}" onclick="promptWorkspaceSetTab('dataset')">Dataset</button>
         </nav>
         <section class="prompt-workspace-panel ${promptWorkspaceTab==='source'?'active':''}" data-prompt-panel="source">
-          <div class="prompt-source-toolbar"><span>${Number(analysis.lineCount)||0} lines · ${Number(analysis.charCount)||0} chars</span><button type="button" class="tbtn" onclick="promptOpenTextEditor()" title="Open this Prompt in the VS Code Text Editor">↗ Open in Text Editor</button></div>
+          <div class="prompt-source-toolbar"><span>${Number(analysis.lineCount)||0} lines · ${Number(analysis.charCount)||0} chars</span><button type="button" class="tbtn" onclick="promptOpenTextEditor()" title="Open this Prompt in the VS Code Text Editor">${uiIcon('go-to-file', 'Open in Text Editor')}</button></div>
           <pre class="prompt-source"><code class="language-${lang}">${esc(content||'')}</code></pre>${!analysis.syntaxValid && analysis.syntaxError ? `<div class="prompt-render-error">${esc(analysis.syntaxError)}</div>` : ''}
         </section>
         <section class="prompt-workspace-panel ${promptWorkspaceTab==='render'?'active':''}" data-prompt-panel="render">
-          <div class="prompt-render-toolbar"><div class="prompt-mode" aria-label="Output mode"><button class="prompt-mode-button ${mode==='completion'?'active':''}" data-mode="completion" aria-pressed="${mode==='completion'}" onclick="promptSetRenderMode('completion')">Completion</button><button class="prompt-mode-button ${mode==='chat'?'active':''}" data-mode="chat" aria-pressed="${mode==='chat'}" onclick="promptSetRenderMode('chat')">Chat</button></div><button id="prompt-render-button" class="tbtn primary" onclick="promptRunRender(this)" ${analysis.syntaxValid !== true ? 'disabled' : ''}>▶ Render</button><span class="prompt-render-spacer"></span><select id="prompt-inference-backend" title="Model for Prompt inference"><option value="">Loading models…</option></select><button id="prompt-inference-button" type="button" class="tbtn" onclick="promptRunInference(this)" disabled>Run Inference</button></div>
-          <div class="prompt-render-form-head"><div><strong>Render inputs</strong><span>Enter values directly or populate the form from a Dataset row.</span></div><label class="prompt-render-dataset-picker"><span>Dataset row</span><select id="prompt-render-dataset-row" onchange="promptRenderDatasetSelect(this.value)" disabled><option value="">No Dataset rows</option></select></label><button id="prompt-add-to-dataset" type="button" class="tbtn" onclick="promptAddCurrentToDataset()" disabled>＋ Add to Dataset</button></div>
+          <div class="prompt-render-toolbar"><div class="prompt-mode" aria-label="Output mode"><button class="prompt-mode-button ${mode==='completion'?'active':''}" data-mode="completion" aria-pressed="${mode==='completion'}" onclick="promptSetRenderMode('completion')">Completion</button><button class="prompt-mode-button ${mode==='chat'?'active':''}" data-mode="chat" aria-pressed="${mode==='chat'}" onclick="promptSetRenderMode('chat')">Chat</button></div><button id="prompt-render-button" class="tbtn primary" onclick="promptRunRender(this)" ${analysis.syntaxValid !== true ? 'disabled' : ''}>${uiIcon('play', 'Render')}</button><span class="prompt-render-spacer"></span><select id="prompt-inference-backend" title="Model for Prompt inference"><option value="">Loading models…</option></select><button id="prompt-inference-button" type="button" class="tbtn" onclick="promptRunInference(this)" disabled>Run Inference</button></div>
+          <div class="prompt-render-form-head"><div><strong>Render inputs</strong><span>Enter values directly or populate the form from a Dataset row.</span></div><label class="prompt-render-dataset-picker"><span>Dataset row</span><select id="prompt-render-dataset-row" onchange="promptRenderDatasetSelect(this.value)" disabled><option value="">No Dataset rows</option></select></label><button id="prompt-add-to-dataset" type="button" class="tbtn" onclick="promptAddCurrentToDataset()" disabled>${uiIcon('add', 'Add to Dataset')}</button></div>
           <div id="prompt-render-inputs" class="prompt-context-grid"></div>
           <div id="prompt-render-output" class="prompt-render-output"><div class="prompt-render-empty">Enter sample values, then render the final prompt.</div></div>
           <div id="prompt-inference-output" class="prompt-inference-output hidden"></div>
@@ -1301,7 +1404,7 @@ function renderDetail(data) {
           <div id="prompt-inline-diff"></div>
         </section>
         <section class="prompt-workspace-panel prompt-metadata-panel ${promptWorkspaceTab==='metadata'?'active':''}" data-prompt-panel="metadata">
-          <div class="prompt-note"><strong>Version note</strong><span>${esc(meta?.note || 'No version note')}</span><button type="button" class="prompt-note-edit" onclick="promptEditVersionNote()" title="Edit Version note" aria-label="Edit Version note">✎</button></div>
+          <div class="prompt-note"><strong>Version note</strong><span>${esc(meta?.note || 'No version note')}</span><button type="button" class="prompt-note-edit" onclick="promptEditVersionNote()" title="Edit Version note" aria-label="Edit Version note">${uiIcon('edit')}</button></div>
           <div id="prompt-note-editor" class="prompt-note-editor hidden"><textarea id="prompt-note-input" rows="4" aria-label="Version note"></textarea><div><span id="prompt-note-error"></span><button type="button" class="tbtn" onclick="promptCancelVersionNote()">Cancel</button><button type="button" id="prompt-note-save" class="tbtn primary" onclick="promptSaveVersionNote(this)">Save…</button></div></div>
           <section class="prompt-inheritance"><div class="prompt-inheritance-title"><strong>Template inheritance</strong><span>base → extender</span></div>${promptInheritanceTreeHtml(analysis.templateTree)}</section>
           <section class="prompt-flow" aria-label="Prompt flow">
@@ -1315,7 +1418,7 @@ function renderDetail(data) {
         </section>
         <section class="prompt-workspace-panel prompt-dataset-panel ${promptWorkspaceTab==='dataset'?'active':''}" data-prompt-panel="dataset">
           <div class="prompt-variable-summary"><div><strong>Jinja variables</strong><span>Hover a variable to inspect its closed version ranges.</span></div><div id="prompt-variable-coverage"></div></div>
-          <div class="prompt-dataset-bar"><strong>Test Dataset</strong><span id="prompt-dataset-status">No Dataset</span><span class="prompt-dataset-spacer"></span><input id="prompt-dataset-file" type="file" accept=".json,.jsonl,.ndjson,application/json" onchange="promptLoadDatasetFile(this)"><button type="button" class="tbtn" onclick="promptDatasetAddRow()">＋ Add Row</button><button type="button" class="tbtn" onclick="document.getElementById('prompt-dataset-file').click()">↥ Load</button><button type="button" class="tbtn" onclick="promptToggleDatasetPaste()">Paste</button><div id="prompt-dataset-controls" class="prompt-dataset-controls hidden"><button id="prompt-dataset-prev" type="button" onclick="promptDatasetMove(-1)" title="Previous Dataset row" aria-label="Previous Dataset row">‹</button><span id="prompt-dataset-position"></span><button id="prompt-dataset-next" type="button" onclick="promptDatasetMove(1)" title="Next Dataset row" aria-label="Next Dataset row">›</button><button type="button" onclick="promptClearDataset()" title="Clear Dataset" aria-label="Clear Dataset">×</button></div></div>
+          <div class="prompt-dataset-bar"><strong>Test Dataset</strong><span id="prompt-dataset-status">No Dataset</span><span class="prompt-dataset-spacer"></span><input id="prompt-dataset-file" type="file" accept=".json,.jsonl,.ndjson,application/json" onchange="promptLoadDatasetFile(this)"><button type="button" class="tbtn" onclick="promptDatasetAddRow()">${uiIcon('add', 'Add Row')}</button><button type="button" class="tbtn" onclick="document.getElementById('prompt-dataset-file').click()">${uiIcon('folder-opened', 'Load')}</button><button type="button" class="tbtn" onclick="promptToggleDatasetPaste()">Paste</button><div id="prompt-dataset-controls" class="prompt-dataset-controls hidden"><button id="prompt-dataset-prev" type="button" onclick="promptDatasetMove(-1)" title="Previous Dataset row" aria-label="Previous Dataset row">${uiIcon('chevron-left')}</button><span id="prompt-dataset-position"></span><button id="prompt-dataset-next" type="button" onclick="promptDatasetMove(1)" title="Next Dataset row" aria-label="Next Dataset row">${uiIcon('chevron-right')}</button><button type="button" onclick="promptClearDataset()" title="Clear Dataset" aria-label="Clear Dataset">${uiIcon('trash')}</button></div></div>
           <div id="prompt-dataset-paste" class="prompt-dataset-paste hidden"><textarea id="prompt-dataset-text" rows="5" placeholder='[{"AdAsset":"Example ad","Src":"Landing page text"}]' aria-label="JSON or JSONL Dataset"></textarea><div><button type="button" class="tbtn" onclick="promptToggleDatasetPaste()">Cancel</button><button type="button" class="tbtn primary" onclick="promptCommitPastedDataset()">Use Dataset</button></div></div>
           <div id="prompt-dataset-table" class="prompt-dataset-table"><div class="prompt-dataset-empty">Load or paste JSON/JSONL to create Dataset rows.</div></div>
         </section>
@@ -1384,8 +1487,8 @@ function renderDetail(data) {
     function renderTree(nodes, depth=0) {
       return (nodes||[]).map(n => {
         const pad = '&nbsp;'.repeat(depth*3);
-        if (n.type==='dir') return `<div>${pad}<span class="ft-dir">📁 ${esc(n.name)}/</span></div>${renderTree(n.children,depth+1)}`;
-        return `<div>${pad}<span class="ft-file" onclick="loadPkgFile('${esc(data.name)}','${esc(n.name)}')">📄 ${esc(n.name)}</span></div>`;
+        if (n.type==='dir') return `<div>${pad}<span class="ft-dir">${uiIcon('folder')} ${esc(n.name)}/</span></div>${renderTree(n.children,depth+1)}`;
+        return `<div>${pad}<span class="ft-file" onclick="loadPkgFile('${esc(data.name)}','${esc(n.name)}')">${uiIcon('file-code')} ${esc(n.name)}</span></div>`;
       }).join('');
     }
     const toc = buildToc(data.readme||'');
@@ -1406,17 +1509,17 @@ function renderDetail(data) {
       <div class="d-title">${esc(data.file||'')} ${privacyLock(data.isPrivate)}</div>
       ${detailPathHtml(data)}
       <div class="d-meta">
-        ${(data.langs||(data.lang?data.lang.split(' + '):[])).map(l=>`<span class="tag" style="background:var(--panel)">🏷 ${esc(l)}</span>`).join('')}
+        ${(data.langs||(data.lang?data.lang.split(' + '):[])).map(l=>`<span class="tag" style="background:var(--panel)">${uiIcon('tag')} ${esc(l)}</span>`).join('')}
         <span>${wordCount(data.content||'')}</span>
         <span style="flex:1"></span>
-        <button class="tbtn" style="font-size:11px" onclick="ask('openMarkdownPreview',{kind:'script',key:'${esc(data.path || data.file)}'})" title="Open the browser preview">🌐 Browser</button>
-        <button class="tbtn" style="font-size:11px" onclick="ask('copyPublicContentLink',{kind:'script',key:'${esc(data.path || data.file)}'})" title="Copy the stable public browser link">🔗 Copy Link</button>
-        <button class="tbtn" style="font-size:11px" onclick="startEditScript()">✏ Edit</button>
+        <button class="tbtn" style="font-size:11px" onclick="ask('openMarkdownPreview',{kind:'script',key:'${esc(data.path || data.file)}'})" title="Open the browser preview">${uiIcon('globe', 'Browser')}</button>
+        <button class="tbtn" style="font-size:11px" onclick="ask('copyPublicContentLink',{kind:'script',key:'${esc(data.path || data.file)}'})" title="Copy the stable public browser link">${uiIcon('link', 'Copy Link')}</button>
+        <button class="tbtn" style="font-size:11px" onclick="startEditScript()">${uiIcon('edit', 'Edit')}</button>
         <select id="ai-backend-select" title="AI backend for summarization"
           style="font-size:11px;background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:3px 6px;outline:none;max-width:200px">
           <option value="">Loading backends…</option>
         </select>
-        <button class="tbtn" style="font-size:11px;border-color:var(--accent)" onclick="doAiSummary()">✨ AI Summary</button>
+        <button class="tbtn" style="font-size:11px;border-color:var(--accent)" onclick="doAiSummary()">${uiIcon('sparkle', 'AI Summary')}</button>
       </div>
       <div id="ai-summary"></div>
       <hr class="div">
@@ -1458,12 +1561,12 @@ function startEditScript() {
   const d = currentDetail;
   if (!d || d.type !== 'script') return;
   document.getElementById('detail').innerHTML = `
-    <div class="d-title">✏ Edit: <span style="color:var(--accent)">${esc(d.file)}</span></div>
+    <div class="d-title">${uiIcon('edit')} Edit: <span style="color:var(--accent)">${esc(d.file)}</span></div>
     ${detailPathHtml(d)}
     <textarea id="se-script" style="width:100%;height:calc(100vh - 200px);background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:10px;font-size:12px;font-family:var(--vscode-editor-font-family);resize:none;outline:none;line-height:1.5">${esc(d.content||'')}</textarea>
     <div class="form-actions" style="margin-top:8px">
       <button class="tbtn" onclick="ask('detail',{type:'script',key:currentDetail.path})">Cancel</button>
-      <button class="tbtn" style="border-color:var(--accent)" onclick="submitScriptEdit()">💾 Save</button>
+      <button class="tbtn" style="border-color:var(--accent)" onclick="submitScriptEdit()">${uiIcon('save', 'Save')}</button>
     </div>`;
   document.getElementById('se-script').focus();
 }
@@ -1482,7 +1585,7 @@ function doAiSummary() {
   const backend = sel ? sel.value : '';
   const box = document.getElementById('ai-summary');
   if (box) box.innerHTML = `<div style="padding:12px 14px;margin:12px 0;border:1px solid var(--border);border-radius:8px;background:var(--panel)">
-    <span style="color:var(--muted);font-size:12px">✨ Generating AI summary${backend?' via '+esc(sel.options[sel.selectedIndex]?.text||''):''}… (this may take a few seconds)</span></div>`;
+    <span style="color:var(--muted);font-size:12px">${uiIcon('loading')} Generating AI summary${backend?' via '+esc(sel.options[sel.selectedIndex]?.text||''):''}… (this may take a few seconds)</span></div>`;
   ask('aiSummary', { path: d.path, backend });
 }
 
@@ -1684,8 +1787,8 @@ function doExport() { ask('export', {}); }
 
 // Reload the DB from disk (picks up external / MCP changes), then re-render current tab
 function doReload() {
-  const btn = document.querySelector('#topbar .tbtn[onclick="doReload()"]');
-  if (btn) { btn.disabled = true; btn.textContent = '↻ …'; }
+  const btn = document.querySelector('#content-toolbar .tbtn[onclick="doReload()"]');
+  if (btn) { btn.disabled = true; btn.innerHTML = uiIcon('loading', 'Refreshing…'); }
   if (state.tab === 'environments') { ask('envList', {}); return; }
   const search = document.getElementById('searchbox');
   if (search) search.value = '';
@@ -1732,12 +1835,12 @@ function toggleAllSkills() {
 function buildTypeSections(content) {
   syncContent = content;
   const TYPES = [
-    { id: 'skills',   label: 'Skills',   icon: '🧠', items: content.skills   || [] },
-    { id: 'notes',    label: 'Notes',    icon: '📝', items: content.notes    || [] },
-    { id: 'papers',   label: 'Papers',   icon: '📄', items: content.papers   || [] },
-    { id: 'prompts',  label: 'Prompts',  icon: '💬', items: content.prompts  || [] },
-    { id: 'scripts',  label: 'Scripts',  icon: '⚙️', items: content.scripts  || [] },
-    { id: 'packages', label: 'Packages', icon: '📦', items: content.packages || [] },
+    { id: 'skills',   label: 'Skills',   icon: uiIcon('tools'), items: content.skills   || [] },
+    { id: 'notes',    label: 'Notes',    icon: uiIcon('note'), items: content.notes    || [] },
+    { id: 'papers',   label: 'Papers',   icon: uiIcon('book'), items: content.papers   || [] },
+    { id: 'prompts',  label: 'Prompts',  icon: uiIcon('comment-discussion'), items: content.prompts  || [] },
+    { id: 'scripts',  label: 'Scripts',  icon: uiIcon('file-code'), items: content.scripts  || [] },
+    { id: 'packages', label: 'Packages', icon: uiIcon('package'), items: content.packages || [] },
   ];
   const wrap = document.getElementById('sync-type-sections');
   wrap.innerHTML = TYPES.map(t => {
@@ -1751,7 +1854,7 @@ function buildTypeSections(content) {
         <input type="checkbox" id="ct-${t.id}" onclick="event.stopPropagation();syncTypeCheck('${t.id}')">
         <span style="font-size:12px;font-weight:600">${t.icon} ${t.label}</span>
         <span style="font-size:11px;color:var(--muted);margin-left:auto">${t.items.length} items</span>
-        <span id="ct-arrow-${t.id}" style="font-size:10px;color:var(--muted)">${open?'▼':'▶'}</span>
+        <span id="ct-arrow-${t.id}" style="font-size:10px;color:var(--muted)">${uiIcon(open?'chevron-down':'chevron-right')}</span>
       </div>
       <div id="ct-list-${t.id}" style="display:${open?'':'none'};max-height:220px;overflow-y:auto;padding:4px">${body}</div>
     </div>`;
@@ -1784,8 +1887,8 @@ function synRenderNode(type, node, path, depth) {
     html += `<div class="syn-folder">
       <div class="syn-frow" style="padding-left:${pad}px">
         <input type="checkbox" class="syn-fchk" data-type="${type}" onchange="synFolderToggle(this)" title="Select everything in this folder">
-        <span class="syn-farrow" onclick="synToggleFolder('${fid}',this)">▶</span>
-        <span class="syn-fname" onclick="synToggleFolder('${fid}',this.parentElement.querySelector('.syn-farrow'))">📁 ${esc(name)}</span>
+        <span class="syn-farrow" onclick="synToggleFolder('${fid}',this)">${uiIcon('chevron-right')}</span>
+        <span class="syn-fname" onclick="synToggleFolder('${fid}',this.parentElement.querySelector('.syn-farrow'))">${uiIcon('folder')} ${esc(name)}</span>
         <span class="syn-fcount">${synCountLeaves(child)}</span>
       </div>
       <div id="${fid}" class="syn-fbody" style="display:none">${synRenderNode(type, child, fpath, depth + 1)}</div>
@@ -1804,7 +1907,7 @@ function synToggleFolder(fid, arrowEl) {
   const el = document.getElementById(fid); if (!el) return;
   const open = el.style.display === 'none';
   el.style.display = open ? '' : 'none';
-  if (arrowEl && arrowEl.classList.contains('syn-farrow')) arrowEl.textContent = open ? '▼' : '▶';
+  if (arrowEl && arrowEl.classList.contains('syn-farrow')) arrowEl.innerHTML = uiIcon(open ? 'chevron-down' : 'chevron-right');
 }
 // Recompute every folder + type header tri-state from the leaf checkboxes.
 function synRefresh(type) {
@@ -1832,7 +1935,7 @@ function toggleSyncType(id) {
   const arrow = document.getElementById('ct-arrow-'+id);
   const hidden = list.style.display === 'none';
   list.style.display = hidden ? '' : 'none';
-  arrow.textContent = hidden ? '▼' : '▶';
+  arrow.innerHTML = uiIcon(hidden ? 'chevron-down' : 'chevron-right');
 }
 
 function syncTypeCheck(id) {
@@ -1924,7 +2027,8 @@ function toggleCat(cat) {
   catExpanded[cat] = !catExpanded[cat];
   if (catExpanded[cat] && ['skills', 'notes', 'papers', 'scripts'].includes(state.tab)) {
     try {
-      const category = JSON.parse(decodeURIComponent(escape(atob(cat)))).join('/');
+      const encodedPath = cat.slice(cat.indexOf(':') + 1);
+      const category = JSON.parse(decodeURIComponent(escape(atob(encodedPath)))).join('/');
       ask('refreshKnowledgeFolder', { area: state.tab, category });
     } catch { /* malformed tree state still remains locally expandable */ }
   }
@@ -1948,7 +2052,7 @@ function startEditSkill() {
   const d = currentDetail; if (!d) return;
   const tags = JSON.parse(d.tags||'[]');
   document.getElementById('detail').innerHTML = `
-    <div class="d-title">✏ Edit: <span style="color:var(--accent)">${esc(d.name)}</span></div>
+    <div class="d-title">${uiIcon('edit')} Edit: <span style="color:var(--accent)">${esc(d.name)}</span></div>
     <div class="form-row" style="gap:8px;margin-bottom:8px">
       <input id="se-desc" value="${esc(d.description||'')}" placeholder="Description" style="flex:2;background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 8px;font-size:12px;outline:none">
       <input id="se-cat" value="${esc(d.category||'')}" placeholder="Category" style="flex:1;background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 8px;font-size:12px;outline:none">
@@ -1957,7 +2061,7 @@ function startEditSkill() {
     <textarea id="se-content" style="width:100%;height:calc(100vh - 250px);background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:8px;font-size:12px;font-family:var(--vscode-editor-font-family);resize:none;outline:none;line-height:1.5">${esc(d.content||'')}</textarea>
     <div class="form-actions" style="margin-top:8px">
       <button class="tbtn" onclick="ask('detail',{type:'skill',key:currentDetail.name})">Cancel</button>
-      <button class="tbtn" style="border-color:var(--accent)" onclick="submitSkillEdit()">💾 Save</button>
+      <button class="tbtn" style="border-color:var(--accent)" onclick="submitSkillEdit()">${uiIcon('save', 'Save')}</button>
     </div>`;
   document.getElementById('se-content').focus();
 }
@@ -1980,7 +2084,7 @@ function confirmDeleteSkill(btn) {
 
 // ── Note edit ─────────────────────────────────────────────────────────────
 function editNote(data) {
-  document.getElementById('note-form-title').textContent = '✏ Edit Note';
+  document.getElementById('note-form-title').textContent = 'Edit Note';
   document.getElementById('note-title').value   = data.title || '';
   document.getElementById('note-content').value  = data.content || '';
   document.getElementById('note-type').value    = data.note_type || data.type || 'general';
@@ -2385,9 +2489,9 @@ function paperCard(p, q, pad) {
   const grp = JSON.stringify(p.group || 'Papers').replace(/"/g, '&quot;');
   const tpc = JSON.stringify(p.topic || '').replace(/"/g, '&quot;');
   return `<div class="paper-card${p.pinned ? ' pc-pinned' : ''}" style="margin-left:${pad}px" onclick="openItem('paper','${esc(p.slug)}')" oncontextmenu="paperCardMenu(event,'${esc(p.slug)}',${grp},${p.pinned ? 'true' : 'false'},${tpc})">
-    <div class="pc-title"><span class="pc-star${p.pinned ? ' on' : ''}" onclick="event.stopPropagation();togglePin('${esc(p.slug)}',${p.pinned ? 'false' : 'true'})" title="${p.pinned ? 'Unpin' : 'Pin'}">${p.pinned ? '★' : '☆'}</span> ${privacyLock(p.isPrivate)}${hl(p.title, q)}</div>
+    <div class="pc-title"><span class="pc-star${p.pinned ? ' on' : ''}" onclick="event.stopPropagation();togglePin('${esc(p.slug)}',${p.pinned ? 'false' : 'true'})" title="${p.pinned ? 'Unpin' : 'Pin'}">${uiIcon(p.pinned ? 'pinned' : 'pin')}</span> ${privacyLock(p.isPrivate)}${hl(p.title, q)}${brokerShareMarker(p.brokerShares)}</div>
     <div class="pc-meta">
-      ${p.citationCount ? `<span class="pc-cite" title="cited by ${p.citationCount} paper(s)">${p.citationCount}★</span>` : ''}
+      ${p.citationCount ? `<span class="pc-cite" title="cited by ${p.citationCount} paper(s)">${uiIcon('references')} ${p.citationCount}</span>` : ''}
       ${p.year ? `<span>${p.year}</span>` : ''}
       ${authors ? `<span>${esc(authors)}</span>` : ''}
       ${p.publisher ? `<span>${esc(p.publisher)}</span>` : ''}
@@ -2413,19 +2517,19 @@ function paperDetailHtml(d) {
     ${detailPathHtml(d)}
     <div class="d-meta">
       ${d.kind === 'idea' ? '<span class="pc-cite" style="background:#f4b400;color:#1a1200">Idea</span>' : ''}
-      ${d.group && d.group !== 'Papers' ? `<span class="pc-tag">📁 ${esc(d.group)}</span>` : ''}
-      ${d.citationCount ? `<span class="pc-cite">${d.citationCount}★ cited</span>` : ''}
+      ${d.group && d.group !== 'Papers' ? `<span class="pc-tag">${uiIcon('folder')} ${esc(d.group)}</span>` : ''}
+      ${d.citationCount ? `<span class="pc-cite">${uiIcon('references')} ${d.citationCount} cited</span>` : ''}
       ${d.year ? `<span>${d.year}</span>` : ''}
       ${d.topic ? `<span class="cat">${esc(d.topic)}</span>` : ''}
       ${d.publisher ? `<span>${esc(d.publisher)}</span>` : ''}
       ${tags}
       <button class="meta-edit" onclick="editCurrentMetadata('tags')" title="Edit tags">✎</button>
       <span style="flex:1"></span>
-      ${d.url ? `<button class="tbtn" style="font-size:11px" onclick="openPaperLink('${esc(d.url)}','','')">🔗 Link</button>` : ''}
-      ${d.file ? `<button class="tbtn" style="font-size:11px" onclick="openPaperLink('','${esc(d.file)}','${esc(d.category)}')">📄 File</button>` : ''}
+      ${d.url ? `<button class="tbtn" style="font-size:11px" onclick="openPaperLink('${esc(d.url)}','','')">${uiIcon('link', 'Link')}</button>` : ''}
+      ${d.file ? `<button class="tbtn" style="font-size:11px" onclick="openPaperLink('','${esc(d.file)}','${esc(d.category)}')">${uiIcon('file', 'File')}</button>` : ''}
       <button class="tbtn" style="font-size:11px" onclick="openPaperForm(currentDetail)">✎ Edit Fields</button>
       ${markdownToolbar(d)}
-      <button class="tbtn" style="font-size:11px" onclick="confirmDeletePaper()">🗑 Move to Trash</button>
+      <button class="tbtn" style="font-size:11px" onclick="confirmDeletePaper()">${uiIcon('trash', 'Move to Trash')}</button>
     </div>
     <div class="meta-grid">
       <span class="ml">Description</span><span class="mv meta-value"><span>${esc(d.description || '—')}</span><button class="meta-edit" onclick="editCurrentMetadata('description')" title="Edit description">✎</button></span>
@@ -2517,7 +2621,7 @@ function renderPaperCites(cites) {
     const selected = match ? match.slug : cite.paper;
     const missing = selected && !match ? `<option value="${esc(selected)}" selected disabled>Missing: ${esc(selected)}</option>` : '';
     const options = papers.map(paper => `<option value="${esc(paper.slug)}"${paper.slug === selected ? ' selected' : ''}>${esc(paper.title)}</option>`).join('');
-    return `<div class="paper-cite-row"><select aria-label="Cited paper">${missing}${options}</select><input aria-label="Citation note" value="${esc(cite.note || '')}" placeholder="How this paper builds on it"><button type="button" class="tbtn" onclick="removePaperCite(${index})" title="Remove citation">✕</button></div>`;
+    return `<div class="paper-cite-row"><select aria-label="Cited paper">${missing}${options}</select><input aria-label="Citation note" value="${esc(cite.note || '')}" placeholder="How this paper builds on it"><button type="button" class="tbtn" onclick="removePaperCite(${index})" title="Remove citation">${uiIcon('close')}</button></div>`;
   }).join('') || '<div class="paper-section-empty">No citations selected.</div>';
 }
 function addPaperCite() {
@@ -2586,7 +2690,7 @@ function togglePaperGraph() {
   } else {
     document.getElementById('paper-graph-view').classList.add('hidden');
     document.getElementById('detail').style.display = '';
-    gb.textContent = '🕸 Graph';
+    gb.innerHTML = uiIcon('type-hierarchy', 'Graph');
   }
 }
 function populatePaperTopicSelect() {

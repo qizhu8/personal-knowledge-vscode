@@ -1,6 +1,13 @@
 // ── Init ───────────────────────────────────────────────────────────────────
 ask('ready', {});                              // tell the extension the webview is loaded
-ask('list', { tab:'skills', filter:'all', q:'' });
+const restoredUiState = vscode.getState() || {};
+const restoredWorkspace = workspaceSurfaces[restoredUiState.workspace] ? restoredUiState.workspace : workspaceForTab(restoredUiState.tab);
+const restoredTab = workspaceSurfaces[restoredWorkspace]?.includes(restoredUiState.tab)
+  ? restoredUiState.tab
+  : workspaceDefaultSurface[restoredWorkspace] || 'skills';
+const restoredButton = document.querySelector(`.tab[data-tab="${restoredTab}"]`);
+if (restoredButton) restoredButton.dispatchEvent(new MouseEvent('click'));
+else ask('list', { tab:'skills', filter:'all', q:'' });
 
 // Safety: if no response after 8 s, DB is still initializing — retry automatically
 setTimeout(() => {
@@ -10,6 +17,6 @@ setTimeout(() => {
     const sub = document.querySelector('.loading-sub');
     if (sub) sub.textContent = 'Database is initializing, retrying…';
     // Retry the list request after another 3 s
-    setTimeout(() => ask('list', { tab:'skills', filter:'all', q:'' }), 3000);
+    setTimeout(() => state.tab === 'projects' ? ask('projectState', {}) : ask('list', { tab:state.tab, filter:'all', q:'' }), 3000);
   }
 }, 8000);

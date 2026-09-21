@@ -22,8 +22,14 @@ assert.match(extension, /const activationDuration = Date\.now\(\) - activationSt
 assert.match(extension, /if \(firstConfiguration\) void maybeSeedExamples/);
 assert.match(extension, /private noteRootCache: PkFolder \| undefined/);
 assert.match(core, /if \(progress\.stage === 'ready'\)/);
+assert.match(core, /function updateLoadingProgress\(progress = \{\}\) \{\s*if \(initialLoadComplete\) return;/,
+  'progress events must be ignored after the first page load');
 assert.doesNotMatch(core, /Dismiss loading banner on first response/);
 assert.match(core, /loadingLabels = \{ list:/);
+for (const message of ['Opening the spellbook…', 'Opening the enchanted notebook…', 'Preparing the Muggle gateway…', 'Summoning a house-elf…']) {
+  assert(core.includes(message), `Magical progress copy must include: ${message}`);
+}
+assert(html.includes('Brewing a potion for your knowledge store…'));
 assert.match(core, /command === 'inventoryBatch'[\s\S]{0,180}\['skills','notes','scripts'\]\.includes\(state\.tab\)/);
 assert.match(core, /command === 'inventoryBatch'[\s\S]{0,260}ask\('list',[^\n]+null, true\)/,
   'background inventory refreshes must not reveal progress');
@@ -72,28 +78,24 @@ const context = {
 };
 vm.createContext(context);
 vm.runInContext(`${core.slice(start, end)};this.update=updateLoadingProgress;this.finish=finishLoadingProgress`, context);
-context.update({ stage: 'scanning', percent: 25, current: 473, message: 'Scanning notes files…' });
+context.update({ stage: 'scanning', percent: 25, current: 473, message: 'Opening the enchanted notebook…' });
 assert(banner.classList.contains('hidden'), 'progress must remain hidden before one second');
 context.update({ stage: 'ready', percent: 100, current: 473, total: 473, message: 'Ready' });
 assert(banner.classList.contains('hidden'), 'fast jobs must finish without ever revealing progress');
 assert.strictEqual(context.loadingProgressVisible, false);
 
 context.initialLoadComplete = true;
+const postLoadTimerCount = timers.size;
 context.update({ stage: 'request', percent: 8, message: 'Refreshing from disk…' });
-assert(strip.classList.contains('hidden'), 'post-load progress must also wait one second');
-const reveal = [...timers.values()].pop();
-assert(reveal, 'slow jobs must schedule a delayed reveal');
-reveal();
-assert(!strip.classList.contains('hidden'), 'slow jobs must reveal progress after one second');
-assert.strictEqual(stage.textContent, 'Refreshing from disk…');
-context.finish();
-assert(strip.classList.contains('hidden'), 'terminal responses must close progress');
+assert(strip.classList.contains('hidden'), 'post-load progress must remain hidden');
+assert.strictEqual(timers.size, postLoadTimerCount, 'post-load progress must not schedule a delayed reveal');
+assert.notStrictEqual(stage.textContent, 'Refreshing from disk…', 'post-load progress must not update the hidden strip');
 
 context.initialLoadComplete = false;
 banner.classList.add('hidden');
-context.update({ stage: 'scanning', percent: 25, current: 473, message: 'Scanning notes files…' });
+context.update({ stage: 'scanning', percent: 25, current: 473, message: 'Opening the enchanted notebook…' });
 [...timers.values()].pop()();
-assert.strictEqual(sub.textContent, 'Scanning notes files…');
+assert.strictEqual(sub.textContent, 'Opening the enchanted notebook…');
 assert.strictEqual(amount.textContent, '473 found');
 assert.strictEqual(bannerBar.value, 25);
 assert.strictEqual(context.initialLoadComplete, false);
@@ -101,4 +103,4 @@ context.update({ stage: 'ready', percent: 100, current: 473, total: 473, message
 assert.strictEqual(context.initialLoadComplete, true);
 assert(banner.classList.contains('hidden'));
 
-console.log('loading progress test: one-second threshold, staged counts, fast-job suppression, and Subscription cleanup OK');
+console.log('loading progress test: initial-load-only progress, staged counts, and fast-job suppression OK');

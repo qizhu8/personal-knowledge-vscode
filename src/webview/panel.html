@@ -7,6 +7,7 @@
 <title>Personal Knowledge Manager</title>
 <meta name="pkm-notes-base" content="%%NOTES_BASE%%">
 <meta name="pkm-i18n" content="%%I18N_PAYLOAD_B64%%">
+<link rel="stylesheet" href="%%CODICON_CSS%%">
 <link rel="stylesheet" href="%%HLJS_CSS%%">
 <link rel="stylesheet" href="%%KATEX_CSS%%">
 <script src="%%MARKED_SRC%%"></script>
@@ -19,24 +20,8 @@
 </head>
 <body>
 <div id="topbar">
-  <div id="tabwrap">
-    <button id="tab-left" class="tabnav" onclick="scrollTabs(-1)" title="Scroll tabs left" style="display:none">‹</button>
-    <div id="tabs">
-      <button class="tab active" data-tab="skills">Skills</button>
-      <button class="tab" data-tab="notes">Notes</button>
-      <button class="tab" data-tab="papers">Papers</button>
-      <button class="tab" data-tab="prompts">Prompts</button>
-      <button class="tab" data-tab="packages">Packages</button>
-      <button class="tab" data-tab="scripts">Scripts</button>
-      <button class="tab" data-tab="environments">Envs</button>
-      <button class="tab" data-tab="servers">Servers</button>
-      <button class="tab" data-tab="subscriptions">Subscription</button>
-      <button class="tab" data-tab="chatroom">Chatroom</button>
-      <button class="tab" data-tab="mcp">Config</button>
-      <button class="tab" data-tab="skillRouter">Skill Router</button>
-    </div>
-    <button id="tab-right" class="tabnav" onclick="scrollTabs(1)" title="Scroll tabs right" style="display:none">›</button>
-  </div>
+  <strong>Personal Knowledge</strong>
+  <span id="workspace-title">Knowledge</span>
   <span id="pkm-version" title="Personal Knowledge Manager extension version" style="font-size:10px;color:var(--muted);opacity:.7;padding-left:4px">v%%PKM_VERSION%%</span>
 </div>
 <div id="mcp-global-warning" class="hidden" role="status">
@@ -44,7 +29,72 @@
   <button class="tbtn mcp-regenerate-action" onclick="doGenerateMcp()">Regenerate Server Code</button>
   <button class="tbtn" onclick="openMcpSetup()">Open Config</button>
 </div>
-<div id="layout">
+<div id="workspace-shell">
+<nav id="workspace-rail" aria-label="Primary workspaces">
+  <button class="workspace-button active" data-workspace="knowledge" title="Knowledge" aria-label="Knowledge"><span class="knowledge-library-icon" aria-hidden="true"><span class="codicon codicon-library"></span><span class="knowledge-library-spark">✦</span></span></button>
+  <button class="workspace-button" data-workspace="tools" title="Tools" aria-label="Tools"><svg class="academy-icon academy-wand" viewBox="0 0 24 24" aria-hidden="true"><path class="wand-stick" d="m4 20 12-12"/><path class="academy-spark" d="m18 2 .8 2.2L21 5l-2.2.8L18 8l-.8-2.2L15 5l2.2-.8zM8 3l.4 1.1 1.1.4-1.1.4L8 6l-.4-1.1-1.1-.4 1.1-.4z"/></svg></button>
+  <button class="workspace-button" data-workspace="projects" title="Projects" aria-label="Projects"><svg class="academy-icon academy-witch-original" viewBox="0 0 24 24" aria-hidden="true"><circle class="witch-moon" cx="12" cy="12" r="10"/><g class="witch-flight"><path class="witch-hat" d="M4.9 7.35c1.4-.55 2.6-.9 3.65-1.1.65-2.15 1.95-3.75 4.05-4.85-.15 1.15.35 1.9 1.3 2.45.85.5 1.75.55 2.6.1-.45 1.2-1.45 2.1-2.85 2.55.8.05 1.55.2 2.25.4-.65 1.05-2.55 1.55-5.35 1.55-2.55 0-4.35-.45-5.4-1.4z"/><circle cx="11.1" cy="9.65" r="1.35"/><path class="witch-cape" d="M9.6 11.6c1.8-.7 3.8-.2 5 1.4l1.3 2.1-3.7 1.3-4.7-1.9c.3-1.3 1-2.3 2.1-2.9z"/><path class="witch-limbs" d="m13.4 12.6 3.1 1.8M10 15l-2.1 2.8M12.8 15.6l2.3 1.5"/><path class="witch-broom" d="M3.6 19.1 21.1 14.5"/><path d="M5.2 17.4c-2-.5-3.7 0-4.7 1.5 1.7.3 3.1 1 4.8 1.1l1.1-1.4z"/></g></svg></button>
+  <button class="workspace-button" data-workspace="settings" title="Settings" aria-label="Settings"><svg class="academy-icon academy-dials" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/><circle class="dial dial-one" cx="9" cy="6" r="2"/><circle class="dial dial-two" cx="15" cy="12" r="2"/><circle class="dial dial-three" cx="8" cy="18" r="2"/><path class="dial-spark" d="m19 8 .5 1.2 1.2.5-1.2.5-.5 1.2-.5-1.2-1.2-.5 1.2-.5z"/></svg></button>
+</nav>
+<div id="workspace-stage">
+  <nav id="workspace-context" aria-label="Workspace navigation">
+    <div class="workspace-context-group active" data-workspace-group="knowledge">
+      <span class="workspace-context-title">Knowledge</span>
+      <div class="workspace-context-tabs" role="tablist" aria-label="Knowledge views">
+        <button class="tab active" role="tab" aria-selected="true" data-tab="skills">Skills</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="notes">Notes</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="papers">Research</button>
+      </div>
+      <div id="content-toolbar">
+        <div class="find-control" id="content-find-control">
+          <input id="searchbox" type="search" placeholder="Search…" title="Search the current content collection">
+          <span id="search-count" class="find-count">0/0</span>
+          <button id="search-prev" type="button" onclick="navigateFind('content',-1)" title="Previous match" aria-label="Previous match"><span class="codicon codicon-arrow-up" aria-hidden="true"></span></button>
+          <button id="search-next" type="button" onclick="navigateFind('content',1)" title="Next match" aria-label="Next match"><span class="codicon codicon-arrow-down" aria-hidden="true"></span></button>
+          <button id="search-case" type="button" onclick="toggleFindOption('content','case')" title="Match case">Aa</button>
+          <button id="search-regex" type="button" onclick="toggleFindOption('content','regex')" title="Use regular expression">.*</button>
+        </div>
+        <div id="toolbar">
+          <button class="tbtn" data-ord="1" onclick="doReload()" title="Reload from disk (pick up external / MCP changes)"><span class="codicon codicon-refresh" aria-hidden="true"></span><span>Refresh</span></button>
+          <button class="tbtn" data-ord="2" id="btn-add-knowledge" onclick="addCurrentKnowledge()" title="Create a new Skill"><span class="codicon codicon-add" aria-hidden="true"></span><span>Skill</span></button>
+          <button class="tbtn" data-ord="3" id="btn-paper-graph" onclick="togglePaperGraph()" title="Open or close the paper graph" style="display:none"><span class="codicon codicon-type-hierarchy" aria-hidden="true"></span><span>Graph</span></button>
+          <button class="tbtn" data-ord="4" onclick="doExport()" title="Export Personal Knowledge content"><span class="codicon codicon-export" aria-hidden="true"></span><span>Export</span></button>
+          <button class="tbtn" data-ord="5" onclick="triggerImport()" title="Import Personal Knowledge content"><span class="codicon codicon-cloud-upload" aria-hidden="true"></span><span>Import</span></button>
+        </div>
+        <div id="more-wrap">
+          <button id="more-btn" class="tbtn" onclick="toggleMoreMenu(event)" title="More content actions" style="display:none">⋯</button>
+          <div id="more-menu"></div>
+        </div>
+        <input type="file" id="import-file" accept=".json" style="display:none" onchange="doImport(this)">
+      </div>
+    </div>
+    <div class="workspace-context-group" data-workspace-group="tools">
+      <span class="workspace-context-title">Tools</span>
+      <div class="workspace-context-tabs" role="tablist" aria-label="Tool views">
+        <button class="tab" role="tab" aria-selected="false" data-tab="prompts">Prompts</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="scripts">Scripts</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="packages">Packages</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="environments">Environments</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="servers">Servers</button>
+      </div>
+    </div>
+    <div class="workspace-context-group" data-workspace-group="projects">
+      <span class="workspace-context-title">Projects</span>
+      <div class="workspace-context-tabs" role="tablist" aria-label="Project views">
+        <button class="tab" role="tab" aria-selected="false" data-tab="projects">Overview</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="chatroom">Threads</button>
+      </div>
+    </div>
+    <div class="workspace-context-group" data-workspace-group="settings">
+      <span class="workspace-context-title">Settings</span>
+      <div class="workspace-context-tabs" role="tablist" aria-label="Setting views">
+        <button class="tab" role="tab" aria-selected="false" data-tab="mcp">General &amp; MCP</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="skillRouter">Skill Router</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="subscriptions">Network &amp; Sharing</button>
+      </div>
+    </div>
+  </nav>
+  <div id="layout">
   <div id="view-loading-progress" class="view-loading-progress hidden" role="status" aria-live="polite">
     <div class="view-loading-copy"><strong id="view-loading-stage">Loading</strong><span id="view-loading-detail"></span><span id="view-loading-count"></span></div>
     <progress id="view-loading-bar" max="100"></progress>
@@ -54,32 +104,8 @@
     <div id="item-list"></div>
     <div id="knowledge-trash-dock" class="hidden"></div>
   </div>
-  <div id="layout-resizer" title="Drag to resize navigation"><button id="sidebar-toggle" class="panel-collapse-toggle" onclick="event.stopPropagation();toggleMainSidebar()" onmousedown="event.stopPropagation()" title="Minimize category tree" aria-label="Minimize category tree">◀</button></div>
+  <div id="layout-resizer" title="Drag to resize navigation"><button id="sidebar-toggle" class="panel-collapse-toggle" onclick="event.stopPropagation();toggleMainSidebar()" onmousedown="event.stopPropagation()" title="Minimize category tree" aria-label="Minimize category tree"><span class="codicon codicon-chevron-left" aria-hidden="true"></span></button></div>
   <div id="main">
-    <div id="content-toolbar">
-      <div class="find-control" id="content-find-control">
-        <input id="searchbox" type="search" placeholder="Search…" title="Search the current content collection">
-        <span id="search-count" class="find-count">0/0</span>
-        <button id="search-prev" type="button" onclick="navigateFind('content',-1)" title="Previous match">↑</button>
-        <button id="search-next" type="button" onclick="navigateFind('content',1)" title="Next match">↓</button>
-        <button id="search-case" type="button" onclick="toggleFindOption('content','case')" title="Match case">Aa</button>
-        <button id="search-regex" type="button" onclick="toggleFindOption('content','regex')" title="Use regular expression">.*</button>
-      </div>
-      <div id="toolbar">
-        <button class="tbtn" data-ord="1" onclick="doReload()" title="Reload from disk (pick up external / MCP changes)">↻ Refresh</button>
-        <button class="tbtn" data-ord="2" onclick="toggleNoteForm()" title="Create a new note">+ Note</button>
-        <button class="tbtn" data-ord="3" id="btn-add-paper" onclick="openPaperForm()" title="Create a new paper entry" style="display:none">+ Paper</button>
-        <button class="tbtn" data-ord="4" id="btn-paper-graph" onclick="togglePaperGraph()" title="Open or close the paper graph" style="display:none">🕸 Graph</button>
-        <button class="tbtn" data-ord="5" onclick="doExport()" title="Export Personal Knowledge content">⬇ Export</button>
-        <button class="tbtn" data-ord="6" onclick="triggerImport()" title="Import Personal Knowledge content">⬆ Import</button>
-        <button class="tbtn" data-ord="7" onclick="openSyncModal()" title="Open knowledge synchronization">🔄 Sync</button>
-      </div>
-      <div id="more-wrap">
-        <button id="more-btn" class="tbtn" onclick="toggleMoreMenu(event)" title="More content actions" style="display:none">⋯</button>
-        <div id="more-menu"></div>
-      </div>
-      <input type="file" id="import-file" accept=".json" style="display:none" onchange="doImport(this)">
-    </div>
     <div id="detail"><div class="empty empty-select-item">Select an item from the sidebar.</div></div>
     <div id="note-form" class="hidden">
       <h3 id="note-form-title">Quick Note</h3>
@@ -104,7 +130,7 @@
         </div>
         <div class="split-resizer" id="note-split-resizer" title="Drag to resize editor"></div>
         <div class="note-pane">
-          <div class="note-pane-label">👁 Preview</div>
+          <div class="note-pane-label"><span class="codicon codicon-preview" aria-hidden="true"></span> Preview</div>
           <div id="note-preview" class="prose"></div>
         </div>
       </div>
@@ -135,7 +161,7 @@
       </div>
       <div class="form-row">
         <input id="pf-url" placeholder="Remote URL (arXiv / DOI / link)" style="flex:2">
-        <button class="tbtn" onclick="document.getElementById('pf-file-input').click()">⬆ Upload file</button>
+        <button class="tbtn" onclick="document.getElementById('pf-file-input').click()"><span class="codicon codicon-cloud-upload" aria-hidden="true"></span> Upload file</button>
         <span id="pf-file-label" style="font-size:11px;color:var(--muted);align-self:center"></span>
         <input type="file" id="pf-file-input" style="display:none" onchange="uploadPaperFile(this)">
         <input type="hidden" id="pf-file">
@@ -173,7 +199,7 @@
 
     <div id="paper-graph-view" class="hidden">
       <div id="pg-toolbar">
-        <span style="font-weight:600;font-size:12px">🕸 Citation Graph</span>
+        <span style="font-weight:600;font-size:12px"><span class="codicon codicon-type-hierarchy" aria-hidden="true"></span> Citation Graph</span>
         <select id="pg-topic" onchange="loadPaperGraph()" title="Filter by topic"><option value="">All topics</option></select>
         <label style="font-size:11px;display:flex;align-items:center;gap:4px">Top
           <input id="pg-limit" type="number" value="10" min="1" max="200" style="width:52px" onchange="loadPaperGraph()"> by citations</label>
@@ -188,6 +214,8 @@
       <div id="pg-tooltip" class="hidden"></div>
     </div>
   </div>
+</div>
+</div>
 </div>
 
 <!-- Context menu (note right-click) -->
@@ -204,8 +232,8 @@
 <div id="sync-modal-bg">
 <div id="sync-modal">
   <div class="sm-header">
-    <h3>🔄 Knowledge Sync</h3>
-    <button class="sm-close" onclick="closeSyncModal()">✕</button>
+    <h3><span class="codicon codicon-sync" aria-hidden="true"></span> Knowledge Sync</h3>
+    <button class="sm-close" onclick="closeSyncModal()" title="Close" aria-label="Close"><span class="codicon codicon-close" aria-hidden="true"></span></button>
   </div>
   <div class="sm-tabs">
     <div class="sm-tab active" id="sm-tab-host" onclick="switchSmTab('host')">Host</div>
@@ -265,9 +293,9 @@
 
 <!-- Loading banner (shown until first data arrives) -->
 <div id="loading-banner" class="hidden">
-  <div class="loading-logo">📚</div>
+  <div class="loading-logo" aria-hidden="true"><svg class="academy-loading-sigil" viewBox="0 0 96 96"><g class="loading-steam"><path class="loading-steam-one" d="M35 42c-6-5 3-8 0-13-2-4 1-7 4-9"/><path class="loading-steam-two" d="M49 41c6-6-3-9 1-15 3-4 0-7-2-10"/><path class="loading-steam-three" d="M63 42c-5-5 3-8 0-13-2-3 1-6 3-8"/></g><g class="loading-brand-wand"><path d="m15 17 23 17"/><path d="m16 17 23 17"/></g><path class="loading-brand-star" d="m76 12 3 8 8 3-8 3-3 8-3-8-8-3 8-3z"/><g class="loading-cauldron"><path class="loading-cauldron-body" d="M18 55h60c-2 23-12 32-30 32s-28-9-30-32z"/><ellipse class="loading-cauldron-rim" cx="48" cy="55" rx="30" ry="9"/><ellipse class="loading-potion" cx="48" cy="55" rx="24" ry="5.5"/><path class="loading-cauldron-frame" d="M19 63h-8M77 63h8M30 82l-4 9M66 82l4 9"/><circle class="loading-bubble loading-bubble-one" cx="39" cy="55" r="2.3"/><circle class="loading-bubble loading-bubble-two" cx="57" cy="53" r="3"/></g></svg></div>
   <div class="loading-title">Personal Knowledge Manager</div>
-  <div class="loading-sub">Preparing your knowledge store…</div>
+  <div class="loading-sub">Brewing a potion for your knowledge store…</div>
   <div class="loading-stage-count"></div>
   <progress class="loading-bar" max="100" value="5"></progress>
 </div>

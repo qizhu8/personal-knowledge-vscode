@@ -122,7 +122,27 @@ function renderMermaid(root) {
   return Promise.all(jobs);
 }
 const esc = s => String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-const ICON = {todo:'☐',done:'✓','data-path':'📂',observation:'👁',general:'📝'};
+const uiIcon = (name, label = '') => `<span class="codicon codicon-${name}" aria-hidden="true"></span>${label ? `<span>${esc(label)}</span>` : ''}`;
+const ICON = {todo:uiIcon('circle-outline'),done:uiIcon('pass-filled'),'data-path':uiIcon('folder'),observation:uiIcon('eye'),general:uiIcon('note')};
+const surfacePanelTitles = { skills:'Skills', notes:'Notes', papers:'Research', prompts:'Prompts', scripts:'Scripts', packages:'Packages', environments:'Environments', servers:'Servers', projects:'Projects', chatroom:'Threads', subscriptions:'Network & Sharing', mcp:'General & MCP', skillRouter:'Skill Router' };
+let lastPanelTitle = '';
+function setPanelTitle(title) {
+  const next = String(title || 'Personal Knowledge Manager').trim();
+  if (!next || next === lastPanelTitle) return;
+  lastPanelTitle = next;
+  document.title = next;
+  vscode.postMessage({ command:'setPanelTitle', title:next });
+}
+function detailPanelTitle(data) {
+  if (!data) return surfacePanelTitles[state.tab] || 'Personal Knowledge Manager';
+  if (data.type === 'skill') return data.name;
+  if (data.type === 'note' || data.type === 'paper' || data.type === 'subscription') return data.title;
+  if (data.type === 'prompt') return data.meta?.title || data.file || data.task;
+  if (data.type === 'promptDiff') return `${data.file || data.task || 'Prompt'} · Compare`;
+  if (data.type === 'package') return data.name;
+  if (data.type === 'script') return data.file || String(data.path || '').split('/').pop();
+  return surfacePanelTitles[state.tab] || 'Personal Knowledge Manager';
+}
 
 let uiI18n = (() => {
   try {
@@ -219,7 +239,17 @@ function languageOptionsHtml() {
 new MutationObserver(scheduleUiTranslation).observe(document.body, { childList: true, subtree: true });
 scheduleUiTranslation();
 
-let state = { tab:'skills', filter:'all', search:'', items:[], folders:[], subscriptionGroups:[], knowledgeTrash:[], privateTopLevels:[], active:null };
+const workspaceSurfaces = Object.freeze({
+  knowledge:['skills','notes','papers'],
+  tools:['prompts','scripts','packages','environments','servers'],
+  projects:['projects','chatroom'],
+  settings:['mcp','skillRouter','subscriptions']
+});
+const workspaceDefaultSurface = Object.freeze({ knowledge:'skills', tools:'prompts', projects:'projects', settings:'mcp' });
+function workspaceForTab(tab) {
+  return Object.keys(workspaceSurfaces).find(workspace => workspaceSurfaces[workspace].includes(tab)) || 'projects';
+}
+let state = { workspace:'knowledge', tab:'skills', filter:'all', search:'', items:[], folders:[], subscriptionGroups:[], knowledgeTrash:[], privateTopLevels:[], brokerSharedFolders:{}, active:null };
 let initialLoadComplete = false;
 let loadingProgressTimer = null;
 let loadingRevealTimer = null;
@@ -522,7 +552,7 @@ window.addEventListener('message', e => {
   else if (command === 'inventoryBatch') {
     if (['skills','notes','scripts'].includes(state.tab)) ask('list', { tab: state.tab, filter: state.filter, q: state.search }, null, true);
   }
-  else if (command === 'list')     { finishAction('list','deleteSkill','skillTrashFolder','skillTrashRestore','skillTrashDelete','skillTrashEmpty','knowledgeTrashMove','knowledgeTrashRestore','knowledgeTrashDelete','knowledgeTrashEmpty'); if (revealRefreshedTreeItems(state.tab, state.items, data, pendingTreeRefresh)) pendingTreeRefresh = null; state.items = data; state.folders = e.data.folders || []; state.subscriptionGroups = e.data.subscriptionGroups || []; state.knowledgeTrash = e.data.knowledgeTrash || []; if (Array.isArray(e.data.privateTopLevels)) state.privateTopLevels = e.data.privateTopLevels; renderList(); highlightDetailMatches(document.getElementById('layout'), state.search); }
+  else if (command === 'list')     { if (e.data.tab && e.data.tab !== state.tab) return; finishAction('list','deleteSkill','skillTrashFolder','skillTrashRestore','skillTrashDelete','skillTrashEmpty','knowledgeTrashMove','knowledgeTrashRestore','knowledgeTrashDelete','knowledgeTrashEmpty'); if (revealRefreshedTreeItems(state.tab, state.items, data, pendingTreeRefresh)) pendingTreeRefresh = null; state.items = data; state.folders = e.data.folders || []; state.subscriptionGroups = e.data.subscriptionGroups || []; state.knowledgeTrash = e.data.knowledgeTrash || []; state.brokerSharedFolders = e.data.brokerSharedFolders || {}; if (Array.isArray(e.data.privateTopLevels)) state.privateTopLevels = e.data.privateTopLevels; renderList(); highlightDetailMatches(document.getElementById('layout'), state.search); }
   else if (command === 'detail') {
     if (pendingEditSlug && data?.type === 'note' && data.slug === pendingEditSlug) {
       pendingEditSlug = null; editNote(data);
@@ -568,8 +598,8 @@ window.addEventListener('message', e => {
   else if (command === 'envList') {
     envCache = data || [];
     if (state.tab === 'environments') renderEnvDashboard(envCache);
-    const refresh = document.querySelector('#topbar .tbtn[onclick="doReload()"]');
-    if (refresh) { refresh.disabled = false; refresh.textContent = '↻ Refresh'; }
+    const refresh = document.querySelector('#content-toolbar .tbtn[onclick="doReload()"]');
+    if (refresh) { refresh.disabled = false; refresh.innerHTML = uiIcon('refresh', 'Refresh'); }
   }
   else if (command === 'envPackages') { onEnvPackages(e.data); }
   else if (command === 'envCompare') { renderEnvCompare(data); }
@@ -659,6 +689,9 @@ window.addEventListener('message', e => {
     if (!document.getElementById('paper-form').classList.contains('hidden')) renderPaperCites(draft);
   }
   else if (command === 'paperGraph') { renderPaperGraph(e.data.data); }
+  else if (command === 'projectState') { projectOnState(data); }
+  else if (command === 'projectResult') { projectOnResult(data); }
+  else if (command === 'projectError') { projectOnError(data); }
   else if (command === 'promptRendered') { promptRendered(data); }
   else if (command === 'promptInferenceResult') { promptInferenceResult(data); }
   else if (command === 'promptVersionAnalysis') { promptOnVersionAnalysis(data); }
@@ -676,8 +709,8 @@ window.addEventListener('message', e => {
     // Re-render the currently open note/skill so external edits and regenerated
     // images (same path) are picked up, not just the sidebar list.
     if (currentDetailRequest) ask('detail', currentDetailRequest);
-    const btn = document.querySelector('#topbar .tbtn[onclick="doReload()"]');
-    if (btn) { btn.disabled = false; btn.textContent = '↻ Refresh'; }
+    const btn = document.querySelector('#content-toolbar .tbtn[onclick="doReload()"]');
+    if (btn) { btn.disabled = false; btn.innerHTML = uiIcon('refresh', 'Refresh'); }
   }
   else if (command === 'knowledgeFolderScanFailed') {
     vscode.postMessage({ command: 'toast', text: `Could not refresh ${data?.category || 'folder'}: ${data?.error || 'scan failed'}` });
@@ -717,7 +750,7 @@ window.addEventListener('message', e => {
       button.disabled = false;
     } else {
       delete input.dataset.verifiedValue;
-      status.innerHTML = `<span style="color:#f87171">✕ ${esc(data.error || 'Magic Code verification failed.')}</span>`;
+      status.innerHTML = `<span style="color:#f87171">${uiIcon('error')} ${esc(data.error || 'Magic Code verification failed.')}</span>`;
       button.disabled = true;
     }
   }
@@ -769,7 +802,7 @@ window.addEventListener('message', e => {
         // Strip the machine-readable header comment before rendering
         const body = (data.summary||'').replace(/^<!--[^>]*-->\s*/, '');
         box.innerHTML = `<div style="padding:14px 16px;margin:12px 0;border:1px solid var(--accent);border-radius:8px;background:var(--panel)">
-          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--accent);margin-bottom:8px">✨ AI Summary${data.cached?' (cached)':''}${data.backend?' · '+esc(data.backend):''}</div>
+          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--accent);margin-bottom:8px">${uiIcon('sparkle')} AI Summary${data.cached?' (cached)':''}${data.backend?' · '+esc(data.backend):''}</div>
           <div class="prose" style="font-size:13px">${safeMarked(body)}</div></div>`;
         postProcess();
       }
@@ -812,7 +845,7 @@ window.addEventListener('message', e => {
   else if (command === 'chatAgentState'){ chatOnAgentState(data); }
   else if (command === 'chatFileReady') { chatOnFileReady(data); }
   else if (command === 'chatToast')  { chatToast(data && data.error); }
-  else if (command === 'chatAddManagedAgentProgress') { updateLoadingProgress({ stage:'agent', percent:data?.percent || 20, message:data?.message || 'Preparing Agent…' }); }
+  else if (command === 'chatAddManagedAgentProgress') { updateLoadingProgress({ stage:'agent', percent:data?.percent || 20, message:data?.message || 'Summoning a house-elf…' }); }
   else if (command === 'chatAddManagedAgentResult') { finishAction('chatAddManagedAgent'); finishLoadingProgress(); if (data?.error) chatToast(data.error); }
   else if (command === 'chatSecret') { chatOnSecret(data && data.secret); }
   else if (command === 'chatHubResult') { chatOnHubResult(data); }
@@ -830,12 +863,21 @@ window.addEventListener('message', e => {
 
 function ask(command, payload, button, silent = false) {
   if (!beginAction(command, button || window.event?.currentTarget)) return;
-  const loadingLabels = { list:`Scanning ${state.tab}…`, subscriptionState:'Loading subscriptions…', serverList:'Inspecting managed servers…', envList:'Detecting Python environments…', checkMcp:'Checking PKM integration…', chatAddManagedAgent:'Detecting available AI models…', reload:'Refreshing from disk…' };
+  const knowledgeLoadingLabels = {
+    skills: 'Opening the spellbook…',
+    notes: 'Opening the enchanted notebook…',
+    papers: 'Consulting the ancient scrolls…',
+    prompts: 'Preparing the incantations…',
+    packages: 'Unlocking the supply chest…',
+    scripts: 'Reading the runes…',
+  };
+  const loadingLabels = { list:knowledgeLoadingLabels[state.tab] || 'Brewing a potion…', subscriptionState:'Consulting the exchange ledger…', serverList:'Preparing the Muggle gateway…', envList:'Inspecting the alchemy instruments…', checkMcp:'Checking the protective wards…', chatAddManagedAgent:'Summoning a house-elf…', reload:'Reopening the archive…' };
   if (!silent && loadingLabels[command]) updateLoadingProgress({ stage:'request', percent:8, message:loadingLabels[command] });
   vscode.postMessage({ command, ...payload, ...(silent ? { silent:true } : {}) });
 }
 
 function updateLoadingProgress(progress = {}) {
+  if (initialLoadComplete) return;
   latestLoadingProgress = progress;
   if (progress.stage === 'ready') { finishLoadingProgress(); return; }
   if (!loadingProgressVisible && !loadingRevealTimer) {
@@ -863,7 +905,7 @@ function finishLoadingProgress() {
 
 function renderLoadingProgress(progress = {}) {
   const percent = Math.max(0, Math.min(100, Number(progress.percent ?? 0)));
-  const message = String(progress.message || 'Loading…');
+  const message = String(progress.message || 'Brewing a potion…');
   const count = progress.total !== undefined
     ? `${Number(progress.current || 0).toLocaleString()} / ${Number(progress.total || 0).toLocaleString()}`
     : progress.current !== undefined ? `${Number(progress.current || 0).toLocaleString()} found` : '';
@@ -880,7 +922,7 @@ function renderLoadingProgress(progress = {}) {
   const strip = document.getElementById('view-loading-progress');
   if (strip) {
     clearTimeout(loadingProgressTimer);
-    strip.classList.toggle('hidden', !initialLoadComplete);
+    strip.classList.add('hidden');
     document.getElementById('view-loading-stage').textContent = message;
     document.getElementById('view-loading-detail').textContent = progress.detail || '';
     document.getElementById('view-loading-count').textContent = count;
@@ -993,7 +1035,7 @@ function applyMainSidebarState(collapsed = mainSidebarCollapsed()) {
   const toggle = document.getElementById('sidebar-toggle');
   if (!layout || !toggle) return;
   layout.classList.toggle('main-sidebar-collapsed', collapsed);
-  toggle.textContent = collapsed ? '▶' : '◀';
+  toggle.innerHTML = uiIcon(collapsed ? 'chevron-right' : 'chevron-left');
   toggle.title = collapsed ? 'Restore category tree' : 'Minimize category tree';
   toggle.setAttribute('aria-label', toggle.title);
   toggle.setAttribute('aria-expanded', String(!collapsed));

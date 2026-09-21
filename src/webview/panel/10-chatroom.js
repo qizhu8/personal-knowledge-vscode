@@ -97,9 +97,7 @@ function renderChatroom() {
       <section class="chat-room-section chat-hosted-section">
         <div class="chat-room-section-head"><span>Hosted by me</span><span id="chat-hosted-count" class="chat-muted"></span></div>
         <div class="chat-host-controls">
-        <label class="chat-host-interface"><span>Hosting on</span><select id="chat-invite-host" class="chat-in" onchange="chatInviteHostChanged(this.value)" title="Hostname or network interface advertised in every hosted Room Magic Link. The Hub still listens on all interfaces."></select></label>
-        <div id="chat-invite-url" class="chat-hint"></div>
-        <button class="tbtn chat-wide" id="chat-host-toggle" onclick="chatToggleHostForm()">＋ Host a Room</button>
+        <button class="tbtn chat-wide" id="chat-host-toggle" onclick="chatToggleHostForm()">${uiIcon('add', 'Host a Room')}</button>
         <div id="chat-host-form" class="chat-join hidden">
           <label class="chat-field-lbl">Room</label>
           <input id="chat-hub-room" class="chat-in" placeholder="general" title="Room to host and auto-join. You'll appear in this room in the extension too.">
@@ -108,7 +106,7 @@ function renderChatroom() {
           <label class="chat-field-lbl">Room secret</label>
           <div style="display:flex;gap:4px">
             <input id="chat-hub-key" class="chat-in" placeholder="type or generate" title="Secret for THIS room. Teammates must enter it to join. Leave blank to auto-generate.">
-            <button class="tbtn" onclick="chatGenKey()" title="Generate a random secret" style="flex-shrink:0">🎲</button>
+            <button class="tbtn" onclick="chatGenKey()" title="Generate a random secret" aria-label="Generate a random secret" style="flex-shrink:0">${uiIcon('key')}</button>
           </div>
           <div id="chat-hub-port-wrap">
             <label class="chat-field-lbl">Port <span class="chat-muted">(blank = auto)</span></label>
@@ -127,7 +125,7 @@ function renderChatroom() {
       </section>
       <section class="chat-room-section chat-joined-section">
         <div class="chat-room-section-head"><span>Joined before</span><span id="chat-joined-count" class="chat-muted"></span></div>
-        <button class="tbtn chat-wide" onclick="chatToggleJoin()">＋ Join room</button>
+        <button class="tbtn chat-wide" onclick="chatToggleJoin()">${uiIcon('add', 'Join room')}</button>
         <div id="chat-join" class="chat-join hidden">
         <label class="chat-field-lbl">Hub URL</label>
         <input id="chat-url" class="chat-in" placeholder="ws://host:port  or  ws://host:port/room" oninput="chatUrlAutoRoom()" title="Address of the hub, e.g. ws://10.0.0.5:7345. You can paste a full room link (ws://host:port/room) and the Room below is filled automatically.">
@@ -143,7 +141,7 @@ function renderChatroom() {
         <div id="chat-joined-rooms" class="chat-room-cards"></div>
       </section>
     </div>
-    <div id="chat-rail-resizer" title="Drag to resize"><button id="chat-rail-toggle" class="panel-collapse-toggle chat-rail-toggle" onclick="event.stopPropagation();chatToggleHubPanel()" onmousedown="event.stopPropagation()" title="Minimize Chatroom Hub panel" aria-label="Minimize Chatroom Hub panel">◀</button></div>
+    <div id="chat-rail-resizer" title="Drag to resize"><button id="chat-rail-toggle" class="panel-collapse-toggle chat-rail-toggle" onclick="event.stopPropagation();chatToggleHubPanel()" onmousedown="event.stopPropagation()" title="Minimize Chatroom Hub panel" aria-label="Minimize Chatroom Hub panel">${uiIcon('chevron-left')}</button></div>
     <div id="chat-pane">
       <div id="chat-empty-pane" class="chat-empty-pane">Join a room to start or host one through Hub on the left.</div>
       <div id="chat-active" class="hidden">
@@ -152,28 +150,28 @@ function renderChatroom() {
           <span id="chat-pane-title"></span>
           <span style="flex:1"></span>
           <button class="tbtn" id="chat-meeting-summary-btn" onclick="chatToggleMeetingSummary()" title="Open the continuously updated Meeting Summary">Meeting Summary</button>
-          <button class="tbtn hidden" id="chat-add-agent-btn" data-pending-label="Detecting models…" onclick="ask('chatAddManagedAgent',{},this)" title="Add an AI agent managed by this extension">＋ Agent</button>
-          <button class="tbtn" onclick="chatRenameSelf()" title="Change your display name in this room">✏️ Rename me</button>
-          <button class="tbtn" onclick="ask('chatShareFile',{})" title="Share a file with the room (peers must be online)">📎 Share</button>
-          <button class="tbtn" onclick="ask('chatExport',{})" title="Download this room's transcript">⬇ Download</button>
+          <button class="tbtn hidden" id="chat-add-agent-btn" data-pending-label="Summoning a house-elf…" onclick="ask('chatAddManagedAgent',{},this)" title="Add an AI agent managed by this extension">${uiIcon('add', 'Agent')}</button>
+          <button class="tbtn" onclick="chatRenameSelf()" title="Change your display name in this room">${uiIcon('edit', 'Rename me')}</button>
+          <button class="tbtn" onclick="ask('chatShareFile',{})" title="Share a file with the room (peers must be online)">${uiIcon('files', 'Share')}</button>
+          <button class="tbtn" onclick="ask('chatExport',{})" title="Download this room's transcript">${uiIcon('cloud-download', 'Download')}</button>
           <button class="tbtn" id="chat-leave-btn" onclick="chatLeaveActive()" title="Leave this room">Leave Room</button>
         </div>
         <div id="chat-body">
           <div id="chat-main">
             <section id="chat-meeting-summary" class="chat-meeting-summary hidden" aria-label="Meeting Summary">
-              <header class="chat-meeting-summary-head"><div><span>Meeting Summary</span><small>Generated from canonical state</small></div><button type="button" class="icon-btn" onclick="chatToggleMeetingSummary(false)" title="Close Meeting Summary" aria-label="Close Meeting Summary">×</button></header>
+              <header class="chat-meeting-summary-head"><div><span>Meeting Summary</span><small>Generated from canonical state</small></div><button type="button" class="icon-btn" onclick="chatToggleMeetingSummary(false)" title="Close Meeting Summary" aria-label="Close Meeting Summary">${uiIcon('close')}</button></header>
               <div id="chat-meeting-summary-body" class="chat-meeting-summary-body"></div>
             </section>
             <div id="chat-find" class="find-control">
               <input id="chat-searchbox" type="search" placeholder="Find messages…" oninput="chatRefreshSearch()" onkeydown="chatSearchKeydown(event)" title="Find in loaded messages">
               <span id="chat-search-count" class="find-count">0/0</span>
-              <button type="button" onclick="navigateFind('chat',-1)" title="Previous matching message">↑</button>
-              <button type="button" onclick="navigateFind('chat',1)" title="Next matching message">↓</button>
+              <button type="button" onclick="navigateFind('chat',-1)" title="Previous matching message" aria-label="Previous matching message">${uiIcon('arrow-up')}</button>
+              <button type="button" onclick="navigateFind('chat',1)" title="Next matching message" aria-label="Next matching message">${uiIcon('arrow-down')}</button>
               <button id="chat-search-case" type="button" onclick="toggleFindOption('chat','case')" title="Match case">Aa</button>
               <button id="chat-search-regex" type="button" onclick="toggleFindOption('chat','regex')" title="Use regular expression">.*</button>
             </div>
             <div id="chat-log"></div>
-            <button id="chat-jump-latest" class="chat-jump-latest hidden" type="button" onclick="chatPinLatest()" data-i18n="chat.jumpLatest" data-i18n-title="chat.followLatestTitle" title="Show the latest message and keep following new messages">↓ Show latest message</button>
+            <button id="chat-jump-latest" class="chat-jump-latest hidden" type="button" onclick="chatPinLatest()" data-i18n="chat.jumpLatest" data-i18n-title="chat.followLatestTitle" title="Show the latest message and keep following new messages">${uiIcon('arrow-down', 'Show latest message')}</button>
             <div id="chat-mode-control" class="chat-mode-control hidden" role="group" aria-label="Message mode">
               <button type="button" data-mode="announce" onclick="chatSetMode('announce')" title="Notify the selected recipients without requesting an acknowledgement or reply.">Announce</button>
               <button type="button" data-mode="ask" onclick="chatSetMode('ask')" class="active" title="Ask each selected recipient for one required response.">Ask</button>
@@ -192,7 +190,7 @@ function renderChatroom() {
               <button class="tbtn" id="chat-send-btn" onclick="chatSend()" disabled>Send</button>
             </div>
           </div>
-          <div id="chat-side-resizer" title="Drag to resize members"><button id="chat-side-toggle" class="panel-collapse-toggle chat-side-toggle" onclick="event.stopPropagation();chatToggleMemberPane()" onmousedown="event.stopPropagation()" title="Minimize In the room panel" aria-label="Minimize In the room panel">▶</button></div>
+          <div id="chat-side-resizer" title="Drag to resize members"><button id="chat-side-toggle" class="panel-collapse-toggle chat-side-toggle" onclick="event.stopPropagation();chatToggleMemberPane()" onmousedown="event.stopPropagation()" title="Minimize In the room panel" aria-label="Minimize In the room panel">${uiIcon('chevron-right')}</button></div>
           <div id="chat-side">
             <div class="chat-side-hdr">In the room</div>
             <div id="chat-members"><div class="chat-empty">—</div></div>
@@ -240,7 +238,7 @@ function chatMeetingSummaryHtml() {
   if (selected) chat.meetingSummarySelections[chat.activeKey || ''] = selected.id;
   const rows = records.map((record, index) => `${index === 0 && meetings.current ? '<div class="chat-meeting-list-label">Current</div>' : index === (meetings.current ? 1 : 0) ? '<div class="chat-meeting-list-label">Earlier</div>' : ''}<button type="button" class="chat-meeting-list-item${record.id === selected?.id ? ' active' : ''}" data-meeting-id="${record.id}" onclick="chatSelectMeetingSummary('${record.id}',this)" ${record.status === 'adjourned' ? `oncontextmenu="chatMeetingContextMenu(event,'${record.id}')" title="Right-click for Meeting actions"` : ''}><strong>${chatMeetingDate(record.startedAt)}</strong><span>${esc(record.title)}</span><small>${record.status === 'active' ? 'In Discussion' : 'Completed'}</small></button>`).join('');
   const trash = meetings.trash || [];
-  const trashHtml = `<details class="chat-meeting-trash"><summary><span>Trash</span><small>${trash.length}</small></summary><div>${trash.length ? trash.map(record => `<div class="chat-meeting-trash-item"><span><strong>${esc(record.title)}</strong><small>${chatMeetingDate(record.deletedAt)}</small></span>${chat.active?.selfHost ? `<span class="chat-meeting-trash-actions"><button type="button" onclick="chatRestoreMeeting('${record.id}',${record.revision})" title="Restore Meeting">↶</button><button type="button" onclick="chatDeleteMeeting('${record.id}',${record.revision})" title="Delete permanently">×</button></span>` : ''}</div>`).join('') : '<p>Trash is empty.</p>'}</div></details>`;
+  const trashHtml = `<details class="chat-meeting-trash"><summary><span>Trash</span><small>${trash.length}</small></summary><div>${trash.length ? trash.map(record => `<div class="chat-meeting-trash-item"><span><strong>${esc(record.title)}</strong><small>${chatMeetingDate(record.deletedAt)}</small></span>${chat.active?.selfHost ? `<span class="chat-meeting-trash-actions"><button type="button" onclick="chatRestoreMeeting('${record.id}',${record.revision})" title="Restore Meeting" aria-label="Restore Meeting">${uiIcon('discard')}</button><button type="button" onclick="chatDeleteMeeting('${record.id}',${record.revision})" title="Delete permanently" aria-label="Delete permanently">${uiIcon('trash')}</button></span>` : ''}</div>`).join('') : '<p>Trash is empty.</p>'}</div></details>`;
   const empty = `<div class="chat-meeting-empty"><h2>No Meeting yet</h2><p>Send a Discuss message to start a continuously updated Meeting Summary. Ask and Announce never create Meeting state.</p>${chat.active?.selfHost ? '<button type="button" class="tbtn" onclick="chatStartMeeting()">Retry from latest Discuss</button>' : '<small>The Room Host records canonical Meeting state.</small>'}</div>`;
   return `<div class="chat-meeting-workspace"><aside class="chat-meeting-list" aria-label="Meetings">${rows || '<div class="chat-meeting-list-label">No history</div>'}${trashHtml}</aside><div id="chat-meeting-document" class="chat-meeting-document">${selected ? chatMeetingRecordHtml(selected) : empty}</div></div>`;
 }
@@ -260,7 +258,7 @@ function chatMeetingTopicHtml(topic, activeTopicId, depth = 0) {
   const rounds = (topic.rounds || []).map(round => `<article class="chat-meeting-round"><header><strong>Round ${round.number}</strong><small>${round.status}</small></header>${(round.opinions || []).map(opinion => `<div class="chat-meeting-opinion"><b>${esc(opinion.participant)}</b><span>${esc(opinion.text)}</span></div>`).join('')}<div class="chat-meeting-result"><b>Conclusion</b><span class="${round.conclusion ? 'complete' : 'pending'}">${esc(round.conclusion || 'Pending')}</span></div><div class="chat-meeting-result"><b>Next</b><span class="active">${esc(round.next || 'Continue discussion')}</span></div></article>`).join('');
   const work = (topic.workItems || []).length ? topic.workItems.map(item => `<div class="chat-meeting-work"><b>${esc(item.owner || 'Unassigned')}</b><span>${esc(item.objective || '')}</span><em>${esc(item.status || 'Pending Acceptance')}</em></div>`).join('') : '<p class="chat-muted">No WorkItems recorded.</p>';
   const subtopics = (topic.subtopics || []).map(child => chatMeetingTopicHtml(child, activeTopicId, depth + 1)).join('');
-  return `<details class="chat-meeting-topic" ${topic.id === activeTopicId || depth === 0 ? 'open' : ''}><summary><span class="chat-meeting-arrow">▶</span><span><strong>${depth ? 'Subtopic' : 'Topic'} · ${esc(topic.title)}</strong><small>Owner: ${esc(topic.owner)} · Round ${topic.round} ${topic.id === activeTopicId ? '· active DFS node' : ''}</small></span><em class="chat-meeting-state ${topic.status === 'discussing' ? 'active' : topic.status}">${esc(topic.status)}</em></summary><div class="chat-meeting-topic-body"><section class="chat-meeting-branch"><label>Problem statement</label><p>${esc(topic.problemStatement)}</p></section><section class="chat-meeting-branch"><label>Discussion result</label>${rounds}</section><section class="chat-meeting-branch"><label>WorkItems</label>${work}</section>${subtopics ? `<div class="chat-meeting-subtopics"><label>Subtopics</label>${subtopics}</div>` : ''}</div></details>`;
+  return `<details class="chat-meeting-topic" ${topic.id === activeTopicId || depth === 0 ? 'open' : ''}><summary><span class="chat-meeting-arrow">${uiIcon('chevron-right')}</span><span><strong>${depth ? 'Subtopic' : 'Topic'} · ${esc(topic.title)}</strong><small>Owner: ${esc(topic.owner)} · Round ${topic.round} ${topic.id === activeTopicId ? '· active DFS node' : ''}</small></span><em class="chat-meeting-state ${topic.status === 'discussing' ? 'active' : topic.status}">${esc(topic.status)}</em></summary><div class="chat-meeting-topic-body"><section class="chat-meeting-branch"><label>Problem statement</label><p>${esc(topic.problemStatement)}</p></section><section class="chat-meeting-branch"><label>Discussion result</label>${rounds}</section><section class="chat-meeting-branch"><label>WorkItems</label>${work}</section>${subtopics ? `<div class="chat-meeting-subtopics"><label>Subtopics</label>${subtopics}</div>` : ''}</div></details>`;
 }
 
 function chatMeetingRecordHtml(record) {
@@ -442,7 +440,7 @@ function chatApplyMemberPaneState() {
   try { width = Number(localStorage.getItem(collapsed ? 'pk-chat-side-compact' : 'pk-chat-side')) || width; } catch {}
   side.style.width = `${Math.max(54, Math.min(500, width))}px`;
   body.classList.toggle('chat-side-collapsed', collapsed);
-  toggle.textContent = collapsed ? '◀' : '▶';
+  toggle.innerHTML = uiIcon(collapsed ? 'chevron-left' : 'chevron-right');
   toggle.title = collapsed ? 'Restore full In the room panel' : 'Minimize In the room panel to status and name';
   toggle.setAttribute('aria-label', toggle.title);
   toggle.setAttribute('aria-expanded', String(!collapsed));
@@ -467,7 +465,7 @@ function chatApplyHubPanelState() {
   if (!root || !toggle) return;
   const collapsed = chatHubPanelCollapsed();
   root.classList.toggle('chat-rail-collapsed', collapsed);
-  toggle.textContent = collapsed ? '▶' : '◀';
+  toggle.innerHTML = uiIcon(collapsed ? 'chevron-right' : 'chevron-left');
   toggle.title = collapsed ? 'Restore Chatroom Hub panel' : 'Minimize Chatroom Hub panel';
   toggle.setAttribute('aria-label', toggle.title);
   toggle.setAttribute('aria-expanded', String(!collapsed));
@@ -576,29 +574,6 @@ function chatOnConfig(cfg) {
   const u = document.getElementById('chat-url');   if (u && !u.value) u.value = chat.cfg.hubUrl || '';
   const r = document.getElementById('chat-room');  if (r && !r.value) r.value = chat.cfg.room || 'general';
   const n = document.getElementById('chat-name');  if (n && !n.value) n.value = chat.cfg.displayName || 'user';
-  chatPaintInviteHosts();
-}
-
-function chatPaintInviteHosts() {
-  const select = document.getElementById('chat-invite-host');
-  const hint = document.getElementById('chat-invite-url');
-  if (!select) return;
-  const options = chat.cfg.inviteHosts || [];
-  select.innerHTML = options.map(item => `<option value="${esc(item.address)}" ${item.address === chat.cfg.inviteHost ? 'selected' : ''}>${esc(item.label || ((item.interface || 'Interface') + ' · ' + item.address))}</option>`).join('');
-  if (chat.cfg.inviteHostUnavailable) select.insertAdjacentHTML('afterbegin', `<option value="${esc(chat.cfg.inviteHost)}" selected disabled>Unavailable · ${esc(chat.cfg.inviteHost)}</option>`);
-  select.disabled = !options.length;
-  const port = chat.hubPort || chat.cfg.hubPort || 7345;
-  if (hint) hint.innerHTML = chat.cfg.inviteHostUnavailable
-    ? `<span style="color:#f87171">Saved interface is unavailable. Choose another hostname or network interface.</span>`
-    : chat.cfg.inviteHost ? `Magic Links will advertise <code>ws://${esc(chat.cfg.inviteHost)}:${port}</code>` : '<span style="color:#f87171">No hostname or network interface is available.</span>';
-}
-
-function chatInviteHostChanged(address) {
-  if (!address) return;
-  chat.cfg.inviteHost = address;
-  chat.cfg.inviteHostUnavailable = false;
-  chatPaintInviteHosts();
-  ask('chatSetInviteHost', { address });
 }
 
 function chatOnState(s) {
@@ -820,7 +795,7 @@ function chatPaintQuote() {
   if (!message) { bar.classList.add('hidden'); bar.innerHTML = ''; return; }
   const summary = String(message.text || '').replace(/\s+/g, ' ').trim().slice(0, 140);
   const time = new Date(message.ts || Date.now()).toLocaleString();
-  bar.innerHTML = `<button type="button" class="chat-quote-jump" title="Jump to the quoted message" onclick="chatJumpToMessage('${esc(message.id)}')"><b>${esc(message.from)}</b><span>${esc(time)} · ${esc(summary)} · ${esc(message.id)}</span></button><button type="button" class="chat-quote-close" title="Remove quoted message" onclick="chatClearQuote()">×</button>`;
+  bar.innerHTML = `<button type="button" class="chat-quote-jump" title="Jump to the quoted message" onclick="chatJumpToMessage('${esc(message.id)}')"><b>${esc(message.from)}</b><span>${esc(time)} · ${esc(summary)} · ${esc(message.id)}</span></button><button type="button" class="chat-quote-close" title="Remove quoted message" aria-label="Remove quoted message" onclick="chatClearQuote()">${uiIcon('close')}</button>`;
   bar.classList.remove('hidden');
 }
 function chatClearQuote() {
@@ -1317,7 +1292,7 @@ function chatUpdateDefaultRecipient(explicitMentions) {
   const mentioned = new Set(mentionedNames.map(name => name.toLowerCase()));
   const html = names.map(name => {
     const sources = [inherited.has(name.toLowerCase()) ? 'inherited' : '', manual.has(name.toLowerCase()) ? 'manual' : '', mentioned.has(name.toLowerCase()) ? 'mentioned' : ''].filter(Boolean).join(', ');
-    return `<span class="chat-recipient-chip" title="Recipient: ${esc(name)} · ${esc(sources)}">${esc(chatRecipientToken(name))}<button type="button" title="Remove ${esc(name)} from this message" onclick="chatRemoveRecipient(decodeURIComponent('${encodeURIComponent(name)}'))">×</button></span>`;
+    return `<span class="chat-recipient-chip" title="Recipient: ${esc(name)} · ${esc(sources)}">${esc(chatRecipientToken(name))}<button type="button" title="Remove ${esc(name)} from this message" aria-label="Remove ${esc(name)} from this message" onclick="chatRemoveRecipient(decodeURIComponent('${encodeURIComponent(name)}'))">${uiIcon('close')}</button></span>`;
   }).join('');
   if (chips.innerHTML !== html) {
     chips.innerHTML = html;
@@ -1498,7 +1473,7 @@ function chatInactiveRoomCard(room) {
   const attr = value => esc(value).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   const actions = (room.actions || []).map(action => `<button slot="actions" type="button" class="chat-room-card-action${action.danger ? ' danger' : ''}" onclick="event.stopPropagation();${action.onclick}">${esc(action.label)}</button>`).join('');
   return `<uone-disclosure-card class="chat-room-card chat-room-card-inactive" action-label="Room actions" ${room.unavailable ? 'unavailable' : ''} tabindex="0" title="${attr(room.title || room.meta || room.name)}">
-    <button slot="primary-action" type="button" class="chat-inactive-resume" ${room.resume ? `onclick="event.stopPropagation();${room.resume.onclick}"` : 'disabled'} title="${esc(room.resume?.title || 'Unavailable')}" aria-label="${esc(room.resume?.title || 'Unavailable')}">▶</button><strong slot="title">${esc(room.name)}</strong><small slot="description">${esc(room.meta || '')}</small>${actions}
+    <button slot="primary-action" type="button" class="chat-inactive-resume" ${room.resume ? `onclick="event.stopPropagation();${room.resume.onclick}"` : 'disabled'} title="${esc(room.resume?.title || 'Unavailable')}" aria-label="${esc(room.resume?.title || 'Unavailable')}">${uiIcon('play')}</button><strong slot="title">${esc(room.name)}</strong><small slot="description">${esc(room.meta || '')}</small>${actions}
   </uone-disclosure-card>`;
 }
 function chatToggleInactive(group) {
@@ -1509,7 +1484,7 @@ function chatRoomCardCollection(group, active, inactive) {
   let html = active.map(chatRoomCard).join('');
   if (inactive.length) {
     const expanded = !!chatInactiveExpanded[group];
-    html += `<button type="button" class="chat-room-card-divider" aria-expanded="${expanded}" onclick="chatToggleInactive('${group}')"><span class="chat-room-card-divider-arrow">${expanded ? '▾' : '▸'}</span><span>Inactive · ${inactive.length}</span></button>`;
+    html += `<button type="button" class="chat-room-card-divider" aria-expanded="${expanded}" onclick="chatToggleInactive('${group}')"><span class="chat-room-card-divider-arrow">${uiIcon(expanded ? 'chevron-down' : 'chevron-right')}</span><span>Inactive · ${inactive.length}</span></button>`;
     if (expanded) html += `<div class="chat-room-inactive">${inactive.map(chatInactiveRoomCard).join('')}</div>`;
   }
   return html;
@@ -1524,7 +1499,6 @@ function chatPaintRoomCards() {
     return { name:room.room, status:'connected', selected:connection?.key === chat.activeKey, unread:connection?.unread || 0, meta:`Active · ${room.members} member${room.members === 1 ? '' : 's'}`,
       onclick:connection ? `ask('chatSetActive',{key:'${esc(connection.key)}'})` : '', actions:[
         ...(connection ? [{label:'Open',onclick:`ask('chatSetActive',{key:'${esc(connection.key)}'})`}] : []),
-        ...(room.hasKey ? [{label:'Magic Link',onclick:`ask('chatCopyInvite',{roomId:'${esc(room.roomId)}',roomName:'${esc(room.room)}'})`}] : []),
         {label:'Browser',onclick:`chatOpenRoomBrowser('${esc(room.room)}')`},
         ...(room.hasKey ? [{label:'Refresh Key',onclick:`ask('chatRotateSecret',{roomId:'${esc(room.roomId)}',roomName:'${esc(room.room)}'})`}] : []),
         {label:'Close',danger:true,onclick:`ask('chatAdminCloseRoom',{roomId:'${esc(room.roomId)}'})`},
@@ -1709,11 +1683,11 @@ function chatPaintMembers() {
     if (canManage) {
       // Icon reflects the CURRENT state: 🔊 = can speak (click to mute), 🔇 = muted (click to unmute).
       const tog = !isHere ? '' : m.muted
-        ? `<button class="chat-mod" title="Muted — click to unmute" onclick="chatModerate('unmute',this)">🔇</button>`
-        : `<button class="chat-mod" title="Can speak — click to mute" onclick="chatModerate('mute',this)">🔊</button>`;
+        ? `<button class="chat-mod" title="Muted — click to unmute" onclick="chatModerate('unmute',this)">${uiIcon('mute')}</button>`
+        : `<button class="chat-mod" title="Can speak — click to mute" onclick="chatModerate('mute',this)">${uiIcon('unmute')}</button>`;
       actions = `<span class="chat-mod-actions">${tog}`
-        + `<button class="chat-mod" title="Edit name and role" onclick="chatModerate('edit',this)">✏️</button>`
-        + `<button class="chat-mod chat-mod-kick" title="Permanently remove from this room and Earlier" onclick="chatModerate('kick',this)">🚫</button></span>`;
+        + `<button class="chat-mod" title="Edit name and role" onclick="chatModerate('edit',this)">${uiIcon('edit')}</button>`
+        + `<button class="chat-mod chat-mod-kick" title="Permanently remove from this room and Earlier" onclick="chatModerate('kick',this)">${uiIcon('circle-slash')}</button></span>`;
     }
     return `<div class="chat-member${isHere ? '' : ' gone'}${m.muted ? ' muted' : ''}" data-participant-id="${attr(m.participantId || '')}" data-sid="${attr(m.sid || '')}" data-user="${attr(m.user)}" data-role="${attr(m.role || '')}" title="${attr(identityComment)}"><span class="chat-mdot ${dotK}${runtimeState ? ' state-' + runtimeState : ''}" title="${attr(runtimeComment || (isHere ? 'Present in the Room.' : 'Not currently connected.'))}"></span><span class="chat-mname"><span class="chat-avatar">${icon}</span><span class="chat-member-name-text">${esc(m.user)}</span>${sid}${unv}${mut}${proto}${role}</span>${tail}${actions}</div>`;
   };
@@ -1726,7 +1700,7 @@ function chatPaintMembers() {
         ? `<span class="chat-proto idle" title="${attr(detail)}">error</span>`
         : chatProtoBadge(runtimeState);
       const role = agent.role ? `<span class="chat-role">${esc(agent.role)}</span>` : '';
-      return `<div class="chat-member" title="${attr(agent.backend)}"><span class="chat-mdot agent state-${runtimeState}"></span><span class="chat-mname"><span class="chat-avatar">${esc(agent.icon || '🤖')}</span><span class="chat-member-name-text">${esc(agent.name)}</span>${stateLabel}${role}</span><span class="chat-mod-actions"><button class="chat-mod" title="Edit profile, name, and role" onclick="ask('chatEditManagedAgent',{id:'${attr(agent.id)}',name:'${attr(agent.name)}',role:'${attr(agent.role || '')}',icon:'${attr(agent.icon || '🤖')}'})">✏️</button><button class="chat-mod chat-mod-kick" title="Permanently remove managed agent" onclick="ask('chatRemoveManagedAgent',{id:'${attr(agent.id)}'})">🚫</button></span></div>`;
+      return `<div class="chat-member" title="${attr(agent.backend)}"><span class="chat-mdot agent state-${runtimeState}"></span><span class="chat-mname"><span class="chat-avatar">${esc(agent.icon || '🤖')}</span><span class="chat-member-name-text">${esc(agent.name)}</span>${stateLabel}${role}</span><span class="chat-mod-actions"><button class="chat-mod" title="Edit profile, name, and role" onclick="ask('chatEditManagedAgent',{id:'${attr(agent.id)}',name:'${attr(agent.name)}',role:'${attr(agent.role || '')}',icon:'${attr(agent.icon || '🤖')}'})">${uiIcon('edit')}</button><button class="chat-mod chat-mod-kick" title="Permanently remove managed agent" onclick="ask('chatRemoveManagedAgent',{id:'${attr(agent.id)}'})">${uiIcon('circle-slash')}</button></span></div>`;
     }).join('');
   }
   html += here.map(row).join('');
@@ -1764,7 +1738,7 @@ function chatPaintHub() {
   const toggle = document.getElementById('chat-host-toggle');
   const portWrap = document.getElementById('chat-hub-port-wrap');
   if (stopBtn) stopBtn.classList.toggle('hidden', !chat.hubRunning);
-  if (toggle)  toggle.textContent = chat.hubRunning ? '＋ Host another Room' : '＋ Host a Room';
+  if (toggle)  toggle.innerHTML = uiIcon('add', chat.hubRunning ? 'Host another Room' : 'Host a Room');
   if (portWrap) portWrap.style.display = chat.hubRunning ? 'none' : '';
   const closeAll = document.getElementById('chat-admin-closeall');
   if (closeAll) closeAll.classList.toggle('hidden', !chat.hubRunning || !(chat.hubAdminRooms || []).length);

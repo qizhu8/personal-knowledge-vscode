@@ -94,7 +94,7 @@ function subscriptionShareEditor() {
   const share = (subscriptionData.shares || []).find(item => item.shareId === subscriptionEditingShare);
   if (!subscriptionEditingShare && subscriptionEditingShare !== 'new') return '<div class="sub-broker-placeholder"><strong>Broker Settings</strong><span>Select a Broker to configure its audience and shared content tree.</span></div>';
   return `<div class="sub-editor sub-broker-settings">
-    <div class="sub-editor-head"><div><strong>Broker Settings</strong><small>${share ? esc(share.shareId) : 'New Share Broker'}</small></div><button class="icon-btn" onclick="subscriptionCancelShare()" title="Close">✕</button></div>
+    <div class="sub-editor-head"><div><strong>Broker Settings</strong><small>${share ? esc(share.shareId) : 'New Share Broker'}</small></div><button class="icon-btn" onclick="subscriptionCancelShare()" title="Close" aria-label="Close">${uiIcon('close')}</button></div>
     <div class="sub-editor-tabs" role="tablist"><button class="${subscriptionEditorTab === 'general' ? 'active' : ''}" onclick="subscriptionSetEditorTab('general')">General</button><button class="${subscriptionEditorTab === 'acl' ? 'active' : ''}" onclick="subscriptionSetEditorTab('acl')">ACL</button><button class="${subscriptionEditorTab === 'content' ? 'active' : ''}" onclick="subscriptionSetEditorTab('content')">Shared Content</button><button class="${subscriptionEditorTab === 'subscribers' ? 'active' : ''}" onclick="subscriptionSetEditorTab('subscribers')">Subscribers</button></div>
     <div class="sub-editor-pane ${subscriptionEditorTab === 'general' ? 'active' : ''}">
     <div class="sub-form-line"><label>Broker name<input id="sub-share-name" value="${esc(share?.name || '')}" placeholder="AAGL Working Set"></label><label>Audience<select id="sub-share-visibility"><option value="public" ${share?.visibility !== 'unlisted' ? 'selected' : ''}>Discoverable · Gateway catalog</option><option value="unlisted" ${share?.visibility === 'unlisted' ? 'selected' : ''}>Unlisted · Magic Link only</option></select><small>Discovery requires Account policy Open. Network ACL, Account ACL, and Protection still control access.</small></label></div>
@@ -160,16 +160,20 @@ function renderSubscriptionPane() {
   document.getElementById('detail').innerHTML = `<div class="sub-dashboard">
     <header class="sub-head"><div><h2>Subscription</h2><p>PKM Shared Market · ${esc(d.displayName || 'This machine')}</p></div><span class="sub-node-state ${d.gatewayStatus === 'error' ? 'error' : d.gatewayStatus === 'running' ? 'running' : 'stopped'}" title="${esc(d.gatewayError || '')}"><i></i>${d.gatewayStatus === 'error' ? 'Gateway unavailable' : d.gatewayStatus === 'running' ? 'Broker online' : d.enabled ? 'Broker starting' : 'Broker stopped'}</span></header>
     ${d.gatewayStatus === 'error' ? `<div class="sub-warning">Common Communication Port ${Number(d.port)||19877} is unavailable · ${esc(d.gatewayError || 'Check the port and network listener.')}</div>` : ''}
+    <section class="sub-band sub-direct-sync"><div class="sub-band-title"><div><h3>Direct Sync</h3><span>One-time encrypted sharing between invited devices</span></div><button class="pk-button primary" onclick="openSyncModal()">Open Direct Sync</button></div>
+      <p class="sub-control-note">Use Direct Sync for a temporary host-and-join transfer. Use Share Brokers below for persistent, refreshable collections.</p>
+    </section>
     <section class="sub-band"><div class="sub-band-title"><div><h3>Node Gateway</h3><code>${esc((d.nodeId || '').slice(0,20))}</code></div><div class="sub-gateway-actions"><button class="pk-button" data-pending-label="Applying…" onclick="subscriptionSaveGateway(this)">Apply Settings</button>${d.enabled ? '<button class="pk-button danger" data-pending-label="Stopping…" onclick="subscriptionSetOnline(false,this)">Go Offline</button>' : '<button class="pk-button primary" data-pending-label="Starting…" onclick="subscriptionSetOnline(true,this)">Go Online</button>'}</div></div>
       <p class="sub-control-note">Online runs a detached machine daemon that survives VS Code and SSH disconnects. The Common Port carries discovery and metadata only; authorized Sync uses a separate Data Broker port.</p>
       <div class="sub-gateway-grid"><label>Service status<strong class="sub-service-status ${d.enabled ? 'online' : 'offline'}">${d.enabled ? 'Online · persistent daemon' : 'Offline'}</strong></label><label>Node label<input id="sub-display-name" value="${esc(d.displayName || '')}"></label><label>Invite interface<select id="sub-host">${subscriptionHostOptions()}</select></label><label>Port<input id="sub-port" type="number" min="1024" max="65535" value="${Number(d.port)||19877}"></label></div>
     </section>
-    <section class="sub-band"><div class="sub-band-title"><div><h3>My Share Brokers</h3><span>${(d.shares || []).length} audiences</span></div><button class="pk-button primary" onclick="subscriptionNewShare()">+ Broker</button></div><div class="pk-list sub-broker-list">${subscriptionShareRows()}</div></section>
+    <section class="sub-band"><div class="sub-band-title"><div><h3>My Share Brokers</h3><span>${(d.shares || []).length} audiences</span></div><button class="pk-button primary" onclick="subscriptionNewShare()">${uiIcon('add', 'Broker')}</button></div><div class="pk-list sub-broker-list">${subscriptionShareRows()}</div></section>
     <section class="sub-band"><div class="sub-band-title"><div><h3>Subscribed Brokers</h3><span>${(d.subscriptions || []).length} cached collections</span></div></div>
       <div class="sub-add"><input id="sub-alias" placeholder="Alias (optional)"><textarea id="sub-magic-link" rows="2" placeholder="Paste pkmshare:v1 Magic Link"></textarea><input id="sub-broker-secret" type="password" placeholder="Broker Secret (protected only)"><button class="pk-button primary" data-pending-label="Subscribing…" onclick="subscriptionAdd(this)">Subscribe</button></div>
       <div class="pk-list sub-list">${subscriptionRows()}</div>
     </section>
   </div>`;
+  subscriptionSyncFolderStates();
 }
 
 function subscriptionSaveGateway(button) {
@@ -200,16 +204,30 @@ function subscriptionRotateSecret(shareId) {
   const current = Number(document.getElementById('sub-share-control-port')?.value)||0;
   pkModal({ title:'Rotate Broker Secret', message:'The old secret stops authorizing new Sync transfers immediately. Existing caches remain readable.', input:true, defaultValue:String(current), okLabel:'Rotate', danger:true, onOk:value=>ask('subscriptionRotateSecret',{shareId,controlPort:Number(value)||current}) });
 }
+function subscriptionSyncFolderStates(type) {
+  const pickers = type ? document.querySelectorAll(`.sub-picker[data-sub-picker="${type}"]`) : document.querySelectorAll('.sub-picker');
+  pickers.forEach(picker => {
+    const items = [...picker.querySelectorAll('input[data-sub-item]')];
+    picker.querySelectorAll('input[data-sub-folder]').forEach(folder => {
+      const path = folder.value;
+      const descendants = items.filter(item => path === '' || item.dataset.subCat === path || item.dataset.subCat?.startsWith(path + '/'));
+      folder.indeterminate = !folder.checked && descendants.some(item => item.checked);
+      folder.setAttribute('aria-checked', folder.indeterminate ? 'mixed' : folder.checked ? 'true' : 'false');
+    });
+  });
+}
 function subscriptionFolderToggle(input) {
   const details=input.closest('details'), type=input.dataset.subFolder, folder=input.value;
   if (!input.checked) subscriptionUncheckCoveringFolders(type, folder, input);
   const targets = folder === '' ? details.querySelectorAll(`input[data-sub-item="${type}"],input[data-sub-folder="${type}"]`) : [...details.querySelectorAll(`input[data-sub-item="${type}"],input[data-sub-folder="${type}"]`)].filter(item => item === input || item.dataset.subCat === folder || item.dataset.subCat?.startsWith(folder + '/') || item.dataset.subFolder === type && (item.value === folder || item.value.startsWith(folder + '/')));
   targets.forEach(item => item.checked=input.checked);
+  subscriptionSyncFolderStates(type);
   subscriptionCaptureSelectionDraft();
   subscriptionUpdateSelectedCount(type);
 }
 function subscriptionItemToggle(input) {
   if (!input.checked) subscriptionUncheckCoveringFolders(input.dataset.subItem, input.dataset.subCat || '');
+  subscriptionSyncFolderStates(input.dataset.subItem);
   subscriptionCaptureSelectionDraft(); subscriptionUpdateSelectedCount(input.dataset.subItem);
 }
 function subscriptionUncheckCoveringFolders(type, itemPath, except) {

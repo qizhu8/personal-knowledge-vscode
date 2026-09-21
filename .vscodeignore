@@ -23,6 +23,7 @@ docs/**
 **/*.spec.ts
 coverage/
 .nyc_output/
+artifacts/**
 
 # Misc
 *.vsix

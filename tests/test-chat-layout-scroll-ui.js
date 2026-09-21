@@ -16,13 +16,16 @@ const panelHtml = fs.readFileSync(path.join(__dirname, "..", "dist", "webview", 
 const topbarHtml = panelHtml.slice(panelHtml.indexOf('<div id="topbar">'), panelHtml.indexOf('<div id="mcp-global-warning"'));
 const mainHtml = panelHtml.slice(panelHtml.indexOf('<div id="main">'), panelHtml.indexOf('<div id="note-form"'));
 assert.doesNotMatch(topbarHtml, /id="searchbox"|id="toolbar"|id="more-wrap"/);
-assert.match(mainHtml, /<div id="content-toolbar">[\s\S]*id="searchbox"[\s\S]*id="toolbar"[\s\S]*id="more-wrap"/);
-assert(mainHtml.indexOf('id="content-toolbar"') < mainHtml.indexOf('id="detail"'));
+const knowledgeContextHtml = panelHtml.match(/<div class="workspace-context-group active" data-workspace-group="knowledge">([\s\S]*?)<div class="workspace-context-group" data-workspace-group="tools">/)[1];
+assert.match(knowledgeContextHtml, /<div id="content-toolbar">[\s\S]*id="searchbox"[\s\S]*id="toolbar"[\s\S]*id="more-wrap"/);
+assert.match(knowledgeContextHtml, /id="btn-add-knowledge" onclick="addCurrentKnowledge\(\)"/);
+assert.doesNotMatch(knowledgeContextHtml, /onclick="openSyncModal\(\)"/);
+assert(panelHtml.indexOf('id="content-toolbar"') < panelHtml.indexOf('id="detail"'));
 assert(panelJs.includes("document.getElementById('content-toolbar')"));
 assert(panelJs.includes("actionbar.scrollWidth > actionbar.clientWidth"));
 assert(panelJs.includes("document.getElementById('content-toolbar').style.display = fullWidthTab ? 'none' : ''"));
 assert(panelCss.includes("#content-toolbar{display:flex"));
-assert.match(panelJs, /id="chat-add-agent-btn"[^>]*data-pending-label="Detecting models…"[^>]*onclick="ask\('chatAddManagedAgent',\{\},this\)"/,
+assert.match(panelJs, /id="chat-add-agent-btn"[^>]*data-pending-label="Summoning a house-elf…"[^>]*onclick="ask\('chatAddManagedAgent',\{\},this\)"/,
   "+ Agent must enter a visible pending state in the same click frame");
 assert.match(panelJs, /chatAddManagedAgent:180000/,
   "managed-Agent discovery must have an explicit timeout and pending lifecycle");
@@ -59,9 +62,9 @@ assert(panelJs.includes("log.scrollTop = Math.max(0, log.scrollHeight - log.clie
 const chatBodyInputSource = panelJs.match(/function chatBodyInput\(\)\s*\{[\s\S]*?\n\}/)?.[0] || "";
 assert.doesNotMatch(chatBodyInputSource, /style\.height = 'auto'/);
 assert.match(panelHtml, /id="layout-resizer"[^>]*><button id="sidebar-toggle"/);
-assert(panelHtml.includes('>◀</button>'));
+assert.match(panelHtml, /id="sidebar-toggle"[\s\S]{0,300}codicon-chevron-left/);
 assert(panelJs.includes("pk-main-sidebar-collapsed"));
-assert(panelJs.includes("collapsed ? '▶' : '◀'"));
+assert(panelJs.includes("collapsed ? 'chevron-right' : 'chevron-left'"));
 assert(panelJs.includes("pk-chat-side-collapsed"));
 assert(panelJs.includes("pk-chat-rail-collapsed"));
 assert(panelCss.includes("#layout.main-sidebar-collapsed #sidebar"));
@@ -154,11 +157,12 @@ assert.doesNotMatch(panelJs, /Managed Agent reconnect reliability|Recipient rout
 assert(panelJs.includes("meetingSummarySelections: {}"));
 assert(panelJs.includes("chat.meetingSummarySelections[chat.activeKey || ''] = meetingId"));
 assert(panelCss.includes(".chat-meeting-list"));
-assert.match(panelJs, /chatCopyInvite',\{roomId:/);
+assert.doesNotMatch(panelJs, /chatCopyInvite',\{roomId:/,
+  "Room cards must not duplicate the Magic Link action");
 assert.match(panelJs, /chatRotateSecret',\{roomId:/);
 const extensionSource = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
 assert.match(extensionSource, /hasKey: this\.hostedKeys\.has\(r\.roomId\)/,
-  "Rooms on my hub must reveal Magic Link actions from the UUID-keyed Host secret");
+  "Rooms on my hub must retain UUID-keyed Host secret state for Agent joining");
 assert.doesNotMatch(extensionSource, /hasKey: this\.hostedKeys\.has\(r\.room\)/);
 for (const id of ["search-count", "search-prev", "search-next", "search-case", "search-regex"]) {
   assert(panelHtml.includes(`id="${id}"`), `missing global search control ${id}`);

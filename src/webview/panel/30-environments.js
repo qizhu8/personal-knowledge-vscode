@@ -6,14 +6,14 @@ function renderEnvDashboard(envs) {
   document.getElementById('detail').innerHTML = `
     <div class="dash">
       <div class="dash-hd">
-        <span class="dash-title">🐍 Python Environments</span>
+        <span class="dash-title">${uiIcon('terminal')} Python Environments</span>
         <span style="flex:1"></span>
-        <button class="tbtn" onclick="newEnvForm()">✨ New</button>
-        <button class="tbtn" onclick="registerCondaEnv()">＋ conda</button>
-        <button class="tbtn" onclick="registerFolderEnv()">＋ venv/uv folder</button>
-        <button class="tbtn" onclick="startCompare()"${envCache.length < 2 ? ' disabled' : ''}>⇄ Compare</button>
-        <button class="tbtn" onclick="findSimilar()"${envCache.length < 2 ? ' disabled' : ''} title="Find near-duplicate environments that could be merged">≈ Similar</button>
-        <button id="env-refresh-btn" class="tbtn" onclick="refreshEnvDashboard()" title="Force-refresh paths, Python versions, and disk sizes for every registered environment">↻ Refresh</button>
+        <button class="tbtn" onclick="newEnvForm()">${uiIcon('new-file', 'New')}</button>
+        <button class="tbtn" onclick="registerCondaEnv()">${uiIcon('add', 'conda')}</button>
+        <button class="tbtn" onclick="registerFolderEnv()">${uiIcon('add', 'venv/uv folder')}</button>
+        <button class="tbtn" onclick="startCompare()"${envCache.length < 2 ? ' disabled' : ''}>${uiIcon('compare-changes', 'Compare')}</button>
+        <button class="tbtn" onclick="findSimilar()"${envCache.length < 2 ? ' disabled' : ''} title="Find near-duplicate environments that could be merged">${uiIcon('search', 'Similar')}</button>
+        <button id="env-refresh-btn" class="tbtn" onclick="refreshEnvDashboard()" title="Force-refresh paths, Python versions, and disk sizes for every registered environment">${uiIcon('refresh', 'Refresh')}</button>
       </div>
       <div id="env-tree"></div>
       <div id="env-out"></div>
@@ -22,7 +22,7 @@ function renderEnvDashboard(envs) {
 }
 function refreshEnvDashboard() {
   const button = document.getElementById('env-refresh-btn');
-  if (button) { button.disabled = true; button.textContent = '↻ …'; }
+  if (button) { button.disabled = true; button.innerHTML = uiIcon('loading', 'Refreshing…'); }
   ask('envList', { refresh: true });
 }
 function renderEnvTree() {
@@ -54,17 +54,17 @@ function envCardHtml(e, indent) {
         <span class="env-badge" style="background:${ENV_MGR_COLOR[e.manager] || '#8b949e'}">${esc(e.manager)}</span>
         <b>${esc(e.name)}</b>
         ${e.pyVersion ? `<span class="py-ver" title="Python version">py ${esc(e.pyVersion)}</span>` : ''}
-        ${size ? `<span class="env-size" title="on-disk size">💾 ${esc(size)}</span>` : ''}
-        ${e.managed ? `<span class="env-managed" title="Stored in the extension-managed location">📍 managed</span>` : ''}
+        ${size ? `<span class="env-size" title="on-disk size">${uiIcon('database')} ${esc(size)}</span>` : ''}
+        ${e.managed ? `<span class="env-managed" title="Stored in the extension-managed location">${uiIcon('location')} managed</span>` : ''}
         ${e.missing ? `<span style="font-size:10px;color:#f87171;border:1px solid #f8717166;border-radius:8px;padding:0 6px">Missing on disk</span>` : ''}
         <span style="flex:1"></span>
-        <button class="tbtn" style="font-size:11px" onclick="viewEnvPackages('${esc(e.id)}',false)"${disabled}>📦 Packages</button>
-        <button class="tbtn" style="font-size:11px" onclick="activateEnv('${esc(e.id)}')" title="Open a terminal with this environment activated (auto Windows/Linux)"${disabled}>⚡ Activate Env</button>
-        <button class="tbtn" style="font-size:11px" onclick="refreshEnvSize('${esc(e.id)}')" title="Compute on-disk size"${disabled}>📐</button>
-        ${e.managed ? '' : `<button class="tbtn" style="font-size:11px" onclick="migrateEnv('${esc(e.id)}',${JSON.stringify(e.name).replace(/"/g,'&quot;')})" title="Move this environment into the extension-managed location">🚚 Migrate</button>`}
-        <button class="tbtn" style="font-size:11px" onclick="editEnv('${esc(e.id)}')" title="Edit name / description">✏</button>
-        <button class="tbtn" style="font-size:11px" onclick="deleteEnvScript('${esc(e.id)}')" title="Generate a delete script for you to run manually">🧾 Del script</button>
-        <button class="tbtn" style="font-size:11px" onclick="deleteEnv('${esc(e.id)}',${JSON.stringify(e.name).replace(/"/g,'&quot;')})" title="Unregister">🗑</button>
+        <button class="tbtn" style="font-size:11px" onclick="viewEnvPackages('${esc(e.id)}',false)"${disabled}>${uiIcon('package', 'Packages')}</button>
+        <button class="tbtn" style="font-size:11px" onclick="activateEnv('${esc(e.id)}')" title="Open a terminal with this environment activated (auto Windows/Linux)"${disabled}>${uiIcon('terminal', 'Activate Env')}</button>
+        <button class="tbtn" style="font-size:11px" onclick="refreshEnvSize('${esc(e.id)}')" title="Compute on-disk size" aria-label="Compute on-disk size"${disabled}>${uiIcon('database')}</button>
+        ${e.managed ? '' : `<button class="tbtn" style="font-size:11px" onclick="migrateEnv('${esc(e.id)}',${JSON.stringify(e.name).replace(/"/g,'&quot;')})" title="Move this environment into the extension-managed location">${uiIcon('move', 'Migrate')}</button>`}
+        <button class="tbtn" style="font-size:11px" onclick="editEnv('${esc(e.id)}')" title="Edit name / description" aria-label="Edit name / description">${uiIcon('edit')}</button>
+        <button class="tbtn" style="font-size:11px" onclick="deleteEnvScript('${esc(e.id)}')" title="Generate a delete script for you to run manually">${uiIcon('file-code', 'Del script')}</button>
+        <button class="tbtn" style="font-size:11px" onclick="deleteEnv('${esc(e.id)}',${JSON.stringify(e.name).replace(/"/g,'&quot;')})" title="Unregister" aria-label="Unregister">${uiIcon('trash')}</button>
       </div>
       ${e.description ? `<div class="ec-desc">${renderEnvTags(e.description)}</div>` : ''}
       <div class="ec-path">${esc(e.python || e.path || '')}</div>
@@ -84,7 +84,7 @@ function renderEnvTags(desc) {
 function activateEnv(id) { ask('envActivate', { id }); }
 function onEnvActivate(d) {
   if (d.error) { envOut('<div style="color:#f87171">' + esc(d.error) + '</div>'); return; }
-  envOut(`<div class="ec-row" style="margin:10px 0 6px"><b>⚡ Activated in terminal “${esc(d.termName || 'env')}”</b><span style="font-size:11px;color:var(--muted)">the environment is now active there — run <code>python</code> / <code>pip</code> as usual</span></div><pre class="env-activate">${esc(d.script)}</pre>`);
+  envOut(`<div class="ec-row" style="margin:10px 0 6px"><b>${uiIcon('terminal')} Activated in terminal “${esc(d.termName || 'env')}”</b><span style="font-size:11px;color:var(--muted)">the environment is now active there — run <code>python</code> / <code>pip</code> as usual</span></div><pre class="env-activate">${esc(d.script)}</pre>`);
 }
 function refreshEnvSize(id) { envOut('<div class="empty">Computing on-disk size…</div>'); ask('envSize', { id, refresh: true }); }
 function onEnvSize(d) {
@@ -118,7 +118,7 @@ function onEnvPackages(d) {
       <span style="font-size:11px;color:var(--muted)">${d.cached ? 'cached' : 'captured'} ${(d.capturedAt || '').slice(0, 19).replace('T', ' ')}</span>
       <span style="flex:1"></span>
       <input id="pkg-filter" placeholder="filter…" style="font-size:11px;width:130px" oninput="filterPkgs()">
-      <button class="tbtn" style="font-size:11px" onclick="viewEnvPackages('${esc(d.id)}',true)">↻ Refresh</button>
+      <button class="tbtn" style="font-size:11px" onclick="viewEnvPackages('${esc(d.id)}',true)">${uiIcon('refresh', 'Refresh')}</button>
     </div>
     <table class="pkg-table"><tbody id="pkg-body">${rows}</tbody></table>`);
 }
@@ -159,8 +159,8 @@ function renderEnvSimilarity(d) {
         <b>${esc(p.b.name)}</b> <span style="color:var(--muted)">${humanSizeJs(p.b.size)}</span>
         ${p.py ? `<span class="py-ver" title="Python version">py ${esc(p.py)}</span>` : ''}
         <span style="flex:1"></span>
-        <button class="tbtn" style="font-size:11px" onclick="comparePair('${esc(p.a.id)}','${esc(p.b.id)}')">⇄ Diff</button>
-        <button class="tbtn" style="font-size:11px" onclick="mergeScript('${esc(p.a.id)}','${esc(p.b.id)}')" title="Generate a merge script for you to run manually">🧬 Merge script</button>
+        <button class="tbtn" style="font-size:11px" onclick="comparePair('${esc(p.a.id)}','${esc(p.b.id)}')">${uiIcon('diff', 'Diff')}</button>
+        <button class="tbtn" style="font-size:11px" onclick="mergeScript('${esc(p.a.id)}','${esc(p.b.id)}')" title="Generate a merge script for you to run manually">${uiIcon('git-merge', 'Merge script')}</button>
       </div>
       <div class="sim-meta">${tg.t} · ${p.shared} shared (${epct}% exact) · ${p.diffVer} version-diff · ${p.onlyA} only in ${esc(p.a.name)} / ${p.onlyB} only in ${esc(p.b.name)} · potential save <b style="color:${tg.c}">~${save}</b></div>
     </div>`;
@@ -180,7 +180,7 @@ function comparePair(a, b) {
 function mergeScript(a, b) { envOut('<div class="empty">Generating merge script…</div>'); ask('envMergeScript', { a, b }); }
 function onEnvMergeScript(d) {
   if (d.error) { envOut('<div style="color:#f87171">' + esc(d.error) + '</div>'); return; }
-  envOut(`<div class="ec-row" style="margin:10px 0 6px"><b>🧬 Merge script</b><span style="font-size:11px;color:var(--muted)">keep <b>${esc(d.keep)}</b>, drop <b>${esc(d.drop)}</b> — copied to clipboard; review and run it yourself, the extension will not execute it</span></div><pre class="env-activate">${esc(d.script)}</pre>`);
+  envOut(`<div class="ec-row" style="margin:10px 0 6px"><b>${uiIcon('git-merge')} Merge script</b><span style="font-size:11px;color:var(--muted)">keep <b>${esc(d.keep)}</b>, drop <b>${esc(d.drop)}</b> — copied to clipboard; review and run it yourself, the extension will not execute it</span></div><pre class="env-activate">${esc(d.script)}</pre>`);
 }
 const CMP_ST = {
   same:      { s: '=', c: 'var(--muted)', label: 'same' },
@@ -309,7 +309,7 @@ function deleteEnv(id, name) {
 function newEnvForm() {
   envOut(`
   <div class="srv-edit" style="margin-top:10px">
-    <b>✨ Create a new environment</b>
+    <b>${uiIcon('new-file')} Create a new environment</b>
     <div class="form-row"><label>Type</label>
       <select id="ne-mgr" onchange="updateNewEnvFields()">
         <option value="conda">conda</option>
@@ -321,7 +321,7 @@ function newEnvForm() {
     <div class="form-row" id="ne-ver-row"><label>Python version</label><input id="ne-ver" placeholder="e.g. 3.11 (optional)"></div>
     <div class="form-row" id="ne-base-row" style="display:none"><label>Base interpreter</label><input id="ne-base" placeholder="python3"></div>
     <div class="form-row" id="ne-dir-row" style="display:none"><label>Parent folder</label>
-      <span style="display:flex;gap:6px;flex:1"><input id="ne-dir" placeholder="/path/to/parent" style="flex:1"><button class="tbtn" onclick="ask('envCreatePickDir',{})" title="Browse">📁</button></span>
+      <span style="display:flex;gap:6px;flex:1"><input id="ne-dir" placeholder="/path/to/parent" style="flex:1"><button class="tbtn" onclick="ask('envCreatePickDir',{})" title="Browse" aria-label="Browse">${uiIcon('folder')}</button></span>
     </div>
     <div class="form-row"><label>Description</label><input id="ne-desc" placeholder="tags / crucial packages (optional)"></div>
     <div id="ne-msg" style="font-size:11px;color:var(--muted)"></div>
@@ -368,18 +368,18 @@ function onEnvDeleteResult(d) {
   }
   if (!d.ok) {
     const action = d.filesRequested ? 'Deleting environment files and registration failed.' : 'Removing the environment registration failed.';
-    envOut('<div style="color:#f87171"><b>✕ ' + esc(action) + '</b><br>' + esc(d.error || 'No error details were returned.') + (d.path ? '<br><span style="color:var(--muted)">Path:</span> <code>' + esc(d.path) + '</code>' : '') + '</div>');
+    envOut('<div style="color:#f87171"><b>' + uiIcon('error') + ' ' + esc(action) + '</b><br>' + esc(d.error || 'No error details were returned.') + (d.path ? '<br><span style="color:var(--muted)">Path:</span> <code>' + esc(d.path) + '</code>' : '') + '</div>');
     return;
   }
   let text = d.filesRequested
     ? (d.filesRemoved ? 'Environment registration and files were deleted.' : d.pathStillExists ? 'Registration removed, but the environment path still exists.' : 'Registration removed; no environment files remained.')
     : 'Environment was unregistered. Files were left on disk.';
-  envOut('<div style="color:' + (d.pathStillExists && d.filesRequested ? '#f4b400' : '#4ade80') + '">✓ ' + esc(text) + (d.path ? '<br><code>' + esc(d.path) + '</code>' : '') + '</div>');
+  envOut('<div style="color:' + (d.pathStillExists && d.filesRequested ? '#f4b400' : '#4ade80') + '">' + uiIcon('check') + ' ' + esc(text) + (d.path ? '<br><code>' + esc(d.path) + '</code>' : '') + '</div>');
   if (d.path && /[\\/]pkm-mcp$/.test(d.path)) setTimeout(() => ask('checkMcp', {}), 100);
 }
 function deleteEnvScript(id) { ask('envDeleteScript', { id }); }
 function onEnvDeleteScript(d) {
   if (d.error) { envOut('<div style="color:#f87171">' + esc(d.error) + '</div>'); return; }
-  envOut(`<div class="ec-row" style="margin:10px 0 6px"><b>🧾 Delete script</b><span style="font-size:11px;color:var(--muted)">copied to clipboard — review and run it yourself; the extension will not execute it</span></div><pre class="env-activate">${esc(d.script)}</pre>`);
+  envOut(`<div class="ec-row" style="margin:10px 0 6px"><b>${uiIcon('file-code')} Delete script</b><span style="font-size:11px;color:var(--muted)">copied to clipboard — review and run it yourself; the extension will not execute it</span></div><pre class="env-activate">${esc(d.script)}</pre>`);
 }
 

@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pkm.workflow.definition/v1",
+  "title": "PKM Workflow Definition v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "spec"],
+  "properties": {
+    "schema": { "const": "pkm.workflow.definition/v1" },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inputs", "nodes", "outputs", "completion"],
+      "properties": {
+        "inputs": { "type": "object", "additionalProperties": { "$ref": "#/$defs/port" } },
+        "nodes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "x-pkm-order": "set",
+          "x-pkm-sort-key": ["nodeId"],
+          "items": { "$ref": "#/$defs/noopNode" }
+        },
+        "outputs": { "type": "object", "additionalProperties": { "$ref": "#/$defs/port" } },
+        "completion": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["requiredNodes"],
+          "properties": {
+            "requiredNodes": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "x-pkm-order": "set",
+              "x-pkm-sort-key": ["$value"],
+              "items": { "$ref": "#/$defs/identifier" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "identifier": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9._-]{0,127}$" },
+    "port": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "required", "nullable", "schema"],
+      "properties": {
+        "type": { "enum": ["object", "array", "string", "boolean", "int64", "decimal", "null", "artifact", "secret-handle"] },
+        "required": { "type": "boolean" },
+        "nullable": { "type": "boolean" },
+        "schema": { "type": "object" },
+        "default": true
+      },
+      "allOf": [
+        { "if": { "properties": { "type": { "const": "object" } } }, "then": { "properties": { "schema": { "$ref": "#/$defs/objectSchema" } } } },
+        { "if": { "properties": { "type": { "const": "array" } } }, "then": { "properties": { "schema": { "$ref": "#/$defs/arraySchema" } } } },
+        { "if": { "properties": { "type": { "enum": ["string", "boolean", "int64", "decimal", "null", "artifact", "secret-handle"] } } }, "then": { "properties": { "schema": { "type": "object", "maxProperties": 0 } } } }
+      ]
+    },
+    "objectSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["properties"],
+      "properties": { "properties": { "type": "object", "additionalProperties": { "$ref": "#/$defs/port" } } }
+    },
+    "arraySchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["items"],
+      "properties": {
+        "items": { "$ref": "#/$defs/port" },
+        "minItems": { "type": "integer", "minimum": 0 },
+        "maxItems": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "noopNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodeId", "kind", "config", "dependsOn"],
+      "properties": {
+        "nodeId": { "$ref": "#/$defs/identifier" },
+        "kind": { "const": "pkm.step.noop/v1" },
+        "config": { "type": "object", "maxProperties": 0 },
+        "dependsOn": {
+          "type": "array",
+          "uniqueItems": true,
+          "x-pkm-order": "set",
+          "x-pkm-sort-key": ["from", "accept"],
+          "items": { "$ref": "#/$defs/dependency" }
+        }
+      }
+    },
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "accept", "required"],
+      "properties": {
+        "from": { "$ref": "#/$defs/identifier" },
+        "accept": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "x-pkm-order": "set",
+          "x-pkm-sort-key": ["$value"],
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "required": { "const": true }
+      }
+    }
+  }
+}
