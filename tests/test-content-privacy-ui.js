@@ -39,6 +39,13 @@ assert.match(extension, /`\$\{inheritedPrivate \? "🔒 " : ""\}\$\{server\.pinn
   "private Server items must retain their inherited lock in Navigation");
 assert.match(panel, /serverGroupMenu\(event/);
 assert.match(extension, /case "contentSetPrivacy"/);
+assert.match(extension, /currentProjectStore\(\)\.list\(\), privateTopLevels: privateTopLevels\("recipes"\)/,
+  "Recipe Library state must include its private top-level categories");
+assert.match(extension, /type !== "recipes"/,
+  "Recipe privacy must be accepted without adding Recipes to Subscription content types");
+assert.match(panel, /function recipeFolderMenu\(event, category\)/);
+assert.match(panel, /buildCatTree\(matchedRecipes, recipe => recipe\.category, '\(uncategorized\)'\)/);
+assert.match(panel, /type:'recipes', topLevel, isPrivate:!isPrivate/);
 assert.match(extension, /isPrivate: isContentItemPrivate/);
 assert.match(extension, /privateTopLevels: privacyTopLevels/);
 assert.match(extension, /command: "serverPrivacy"/);

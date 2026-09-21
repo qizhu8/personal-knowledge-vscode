@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 const assert = require("assert");
 const {
-  ProjectModelError, createProject, createThread, deriveSystemId, ensureSystemEntities,
-  initializeProjectModel, migrateLegacyRoom, moveThread, resolveThreadId
+  ProjectModelError, createProject, createRecipe, createThread, deriveSystemId, ensureSystemEntities,
+  initializeProjectModel, migrateLegacyRoom, moveThread, resolveThreadId, updateRecipe
 } = require("../dist/workflows/project-model.js");
 
 const errorCode = (action, code) => assert.throws(action, error => error instanceof ProjectModelError && error.code === code);
@@ -10,6 +10,17 @@ let state = initializeProjectModel(undefined, () => "root-seed");
 assert.strictEqual(state.rootId, "root_root-seed");
 assert.strictEqual(state.projects.length, 1);
 assert.strictEqual(state.threads.length, 1);
+assert.deepStrictEqual(state.recipes.map(recipe => recipe.name), ["Software Development", "Bug Fix", "UI Development"]);
+for (const builtIn of state.recipes) {
+  assert.strictEqual(builtIn.scope, "global");
+  assert.strictEqual(builtIn.category, "Software Development");
+  assert.strictEqual(builtIn.systemKind, "built-in");
+  assert.strictEqual(builtIn.definition.spec.nodes.length, 5);
+  assert.match(builtIn.executableDigest, /^[a-f0-9]{64}$/);
+}
+const bugFix = state.recipes.find(recipe => recipe.name === "Bug Fix");
+assert.deepStrictEqual(bugFix.definition.spec.completion.requiredNodes, ["report"]);
+assert.deepStrictEqual(bugFix.definition.spec.nodes.find(node => node.nodeId === "fix").dependsOn.map(dependency => dependency.from), ["investigate"]);
 assert.strictEqual(state.audit.length, 2);
 const defaultProject = state.projects[0];
 assert.strictEqual(defaultProject.projectId, deriveSystemId(state.rootId, "pkm/default-project/v1"));
@@ -27,6 +38,7 @@ const randomRoot = initializeProjectModel(undefined);
 assert.match(randomRoot.rootId, /^root_[0-9a-f-]{36}$/);
 const restoredDefaults = initializeProjectModel({ schema: 1, rootId: "root_existing" });
 assert.strictEqual(restoredDefaults.projects.length, 1);
+assert.strictEqual(restoredDefaults.recipes.length, 3);
 const restoredComplete = initializeProjectModel(state);
 assert.deepStrictEqual(restoredComplete, state);
 errorCode(() => initializeProjectModel({ schema: 1, projects: [{ projectId: "p", name: "P", version: 1 }] }), "root-identity-missing");
@@ -53,6 +65,64 @@ const randomThreadState = createThread(state, projectA.projectId, "Random Thread
 assert.match(randomThreadState.threads.at(-1).threadId, /^thread_[0-9a-f-]{36}$/);
 const topic = state.threads.find(thread => thread.name === "Topic");
 assert(topic);
+
+errorCode(() => createRecipe(state, { kind: "project", projectId: "missing" }, "Recipe"), "project-not-found");
+errorCode(() => createRecipe(state, { kind: "project", projectId: projectA.projectId }, " "), "recipe-name-required");
+state = createRecipe(state, { kind: "project", projectId: projectA.projectId }, " First Recipe ", () => "first");
+const recipe = state.recipes.find(candidate => candidate.recipeId === "recipe_first");
+assert(recipe);
+assert.strictEqual(recipe.scope, "project");
+assert.strictEqual(recipe.projectId, projectA.projectId);
+assert.strictEqual(recipe.name, "First Recipe");
+assert.strictEqual(recipe.revision, 1);
+assert.strictEqual(recipe.definition.schema, "pkm.workflow.definition/v1");
+assert.deepStrictEqual(recipe.definition.spec.completion.requiredNodes, ["start"]);
+assert.match(recipe.executableDigest, /^[a-f0-9]{64}$/);
+state = createRecipe(state, { kind: "global" }, " Universal Recipe ", () => "universal");
+const globalRecipe = state.recipes.find(candidate => candidate.recipeId === "recipe_universal");
+assert(globalRecipe);
+assert.strictEqual(globalRecipe.scope, "global");
+assert.strictEqual(globalRecipe.projectId, undefined);
+const originalDigest = globalRecipe.executableDigest;
+state = updateRecipe(state, globalRecipe.recipeId, {
+  name: " Universal Recipe v2 ", category: "Automation/Review", description: " Updated description ",
+  metadata: {
+    applicableFunctions: [" Review ", "Review", "Delivery"], solution: " Inspect and report. ",
+    requiredInputs: [{ name: " change ", description: " Diff to inspect. ", required: true }, { name: "", description: "ignored" }],
+    expectedOutputs: [{ name: " report ", description: " Findings. " }]
+  },
+  editorLayout: { nodePositions: { start: { x: 20.4, y: 30.6 }, finish: { x: 400, y: 50 }, missing: { x: 1, y: 2 } } },
+  definition: {
+    ...globalRecipe.definition,
+    spec: {
+      ...globalRecipe.definition.spec,
+      nodes: [...globalRecipe.definition.spec.nodes, { nodeId: "finish", kind: "pkm.step.noop/v1", config: {}, dependsOn: [] }],
+      completion: { requiredNodes: ["finish", "start"] }
+    }
+  }
+});
+const updatedGlobalRecipe = state.recipes.find(candidate => candidate.recipeId === globalRecipe.recipeId);
+assert.strictEqual(updatedGlobalRecipe.name, "Universal Recipe v2");
+assert.strictEqual(updatedGlobalRecipe.category, "Automation/Review");
+assert.strictEqual(updatedGlobalRecipe.description, "Updated description");
+assert.deepStrictEqual(updatedGlobalRecipe.metadata, {
+  applicableFunctions: ["Review", "Delivery"], solution: "Inspect and report.",
+  requiredInputs: [{ name: "change", description: "Diff to inspect.", required: true }],
+  expectedOutputs: [{ name: "report", description: "Findings." }]
+});
+assert.deepStrictEqual(updatedGlobalRecipe.editorLayout, { nodePositions: { start: { x:20, y:31 }, finish: { x:400, y:50 } } });
+assert.strictEqual(updatedGlobalRecipe.revision, 2);
+assert.notStrictEqual(updatedGlobalRecipe.executableDigest, originalDigest);
+const updatedDigest = updatedGlobalRecipe.executableDigest;
+state = updateRecipe(state, updatedGlobalRecipe.recipeId, {
+  name:updatedGlobalRecipe.name, category:updatedGlobalRecipe.category, description:updatedGlobalRecipe.description,
+  metadata:updatedGlobalRecipe.metadata, editorLayout:{ nodePositions:{ start:{ x:80, y:90 }, finish:{ x:500, y:120 } } }, definition:updatedGlobalRecipe.definition
+});
+assert.strictEqual(state.recipes.find(candidate => candidate.recipeId === updatedGlobalRecipe.recipeId).executableDigest, updatedDigest, "layout-only edits do not change executable identity");
+errorCode(() => updateRecipe(state, "missing", { name: "Missing", category: "", description: "", definition: globalRecipe.definition }), "recipe-not-found");
+errorCode(() => updateRecipe(state, globalRecipe.recipeId, { name: " ", category: "", description: "", definition: globalRecipe.definition }), "recipe-name-required");
+errorCode(() => updateRecipe(state, globalRecipe.recipeId, { name: "Bad", category: "", description: "", definition: { schema: "bad", spec: {} } }), "recipe-definition-invalid");
+errorCode(() => createRecipe(state, { kind: "global" }, "Duplicate identity", () => "first"), "identity-conflict");
 
 const journalSeed = { ...state, migrations: [{ legacyIdentity: "kept", state: "pending" }] };
 const deferred = migrateLegacyRoom(journalSeed, { identity: "legacy-active", roomId: "room-active", name: "Active", active: true });

@@ -8,13 +8,28 @@ export interface WorkflowDependencyV1 {
   from: string;
   accept: string[];
   required: true;
+  fromOutput?: string;
+  toInput?: string;
+  loop?: { termination: { condition: string; maxIterations: number } };
 }
+
+export interface WorkflowNodePortsV1 {
+  inputs: string[];
+  outputs: string[];
+}
+
+export type WorkflowNodeControlV1 =
+  | { mode: "single" }
+  | { mode: "repeat"; count: { kind: "fixed"; value: number } | { kind: "dynamic" } }
+  | { mode: "branch"; kind: "if" | "switch"; cases: string[] };
 
 export interface WorkflowNodeV1 {
   nodeId: string;
   kind: typeof NOOP_NODE_KIND;
   config: Record<string, never>;
   dependsOn: WorkflowDependencyV1[];
+  ports?: WorkflowNodePortsV1;
+  control?: WorkflowNodeControlV1;
 }
 
 export interface WorkflowDefinitionV1 {
@@ -87,8 +102,10 @@ function normalizeDependency(value: unknown, pointer: string, diagnostics: Workf
     diagnostics.push(diagnostic("E3003", pointer, { expected: "object" }, "workflow.schema.type", "author"));
     return undefined;
   }
-  unexpectedKeys(value, ["from", "accept", "required"], pointer, diagnostics);
+  unexpectedKeys(value, ["from", "accept", "required", "fromOutput", "toInput", "loop"], pointer, diagnostics);
   const fromValid = validateIdentifier(value.from, `${pointer}/from`, diagnostics);
+  const fromOutputValid = value.fromOutput === undefined || validateIdentifier(value.fromOutput, `${pointer}/fromOutput`, diagnostics);
+  const toInputValid = value.toInput === undefined || validateIdentifier(value.toInput, `${pointer}/toInput`, diagnostics);
   const accept = value.accept === undefined ? ["succeeded"] : value.accept;
   if (!Array.isArray(accept) || !accept.length || accept.some(outcome => typeof outcome !== "string" || !outcome)) {
     diagnostics.push(diagnostic("E3004", `${pointer}/accept`, { expected: "non-empty unique outcome set" }, "workflow.schema.nonEmptySet", "author"));
@@ -101,8 +118,90 @@ function normalizeDependency(value: unknown, pointer: string, diagnostics: Workf
   if (normalizedAccept.length !== accept.length) {
     diagnostics.push(diagnostic("E3006", `${pointer}/accept`, {}, "workflow.schema.duplicateSetKey", "author"));
   }
-  if (!fromValid) return undefined;
-  return { from: value.from as string, accept: normalizedAccept, required: true };
+  let loop: WorkflowDependencyV1["loop"];
+  if (value.loop !== undefined) {
+    if (!isRecord(value.loop)) {
+      diagnostics.push(diagnostic("E3003", `${pointer}/loop`, { expected: "object" }, "workflow.schema.type", "author"));
+    } else {
+      unexpectedKeys(value.loop, ["termination"], `${pointer}/loop`, diagnostics);
+      if (!isRecord(value.loop.termination)) {
+        diagnostics.push(diagnostic("E3003", `${pointer}/loop/termination`, { expected: "object" }, "workflow.schema.type", "author"));
+      } else {
+        unexpectedKeys(value.loop.termination, ["condition", "maxIterations"], `${pointer}/loop/termination`, diagnostics);
+        const condition = typeof value.loop.termination.condition === "string" ? value.loop.termination.condition.trim() : "";
+        const maxIterations = value.loop.termination.maxIterations;
+        if (!condition) diagnostics.push(diagnostic("E3005", `${pointer}/loop/termination/condition`, { expected: "non-empty exit condition" }, "workflow.schema.const", "author"));
+        if (!Number.isSafeInteger(maxIterations) || (maxIterations as number) < 1) diagnostics.push(diagnostic("E3005", `${pointer}/loop/termination/maxIterations`, { expected: "positive safe integer" }, "workflow.schema.const", "author"));
+        if (condition && Number.isSafeInteger(maxIterations) && (maxIterations as number) > 0) loop = { termination: { condition, maxIterations: maxIterations as number } };
+      }
+    }
+  }
+  if (!fromValid || !fromOutputValid || !toInputValid) return undefined;
+  return {
+    from: value.from as string,
+    accept: normalizedAccept,
+    required: true,
+    ...(value.fromOutput === undefined ? {} : { fromOutput: value.fromOutput as string }),
+    ...(value.toInput === undefined ? {} : { toInput: value.toInput as string }),
+    ...(loop ? { loop } : {})
+  };
+}
+
+function normalizeIdentifiers(value: unknown, pointer: string, diagnostics: WorkflowDiagnostic[], allowEmpty: boolean): string[] | undefined {
+  if (!Array.isArray(value) || (!allowEmpty && !value.length)) {
+    diagnostics.push(diagnostic("E3004", pointer, { expected: allowEmpty ? "unique identifier set" : "non-empty unique identifier set" }, "workflow.schema.nonEmptySet", "author"));
+    return undefined;
+  }
+  const normalized = value.filter((item, index): item is string => validateIdentifier(item, `${pointer}/${index}`, diagnostics)).sort(compareCodePoints);
+  if (new Set(normalized).size !== normalized.length) diagnostics.push(diagnostic("E3006", pointer, {}, "workflow.schema.duplicateSetKey", "author"));
+  return [...new Set(normalized)];
+}
+
+function normalizeNodePorts(value: unknown, pointer: string, diagnostics: WorkflowDiagnostic[]): WorkflowNodePortsV1 | undefined {
+  if (!isRecord(value)) {
+    diagnostics.push(diagnostic("E3003", pointer, { expected: "object" }, "workflow.schema.type", "author"));
+    return undefined;
+  }
+  unexpectedKeys(value, ["inputs", "outputs"], pointer, diagnostics);
+  const inputs = normalizeIdentifiers(value.inputs, `${pointer}/inputs`, diagnostics, true);
+  const outputs = normalizeIdentifiers(value.outputs, `${pointer}/outputs`, diagnostics, true);
+  return inputs && outputs ? { inputs, outputs } : undefined;
+}
+
+function normalizeNodeControl(value: unknown, pointer: string, diagnostics: WorkflowDiagnostic[]): WorkflowNodeControlV1 | undefined {
+  if (!isRecord(value)) {
+    diagnostics.push(diagnostic("E3003", pointer, { expected: "object" }, "workflow.schema.type", "author"));
+    return undefined;
+  }
+  if (value.mode === "single") {
+    unexpectedKeys(value, ["mode"], pointer, diagnostics);
+    return { mode: "single" };
+  }
+  if (value.mode === "repeat") {
+    unexpectedKeys(value, ["mode", "count"], pointer, diagnostics);
+    if (!isRecord(value.count)) {
+      diagnostics.push(diagnostic("E3003", `${pointer}/count`, { expected: "object" }, "workflow.schema.type", "author"));
+      return undefined;
+    }
+    if (value.count.kind === "dynamic") {
+      unexpectedKeys(value.count, ["kind"], `${pointer}/count`, diagnostics);
+      return { mode: "repeat", count: { kind: "dynamic" } };
+    }
+    unexpectedKeys(value.count, ["kind", "value"], `${pointer}/count`, diagnostics);
+    if (value.count.kind !== "fixed" || !Number.isSafeInteger(value.count.value) || (value.count.value as number) < 1) {
+      diagnostics.push(diagnostic("E3005", `${pointer}/count`, { expected: "fixed positive safe integer or dynamic" }, "workflow.schema.const", "author"));
+      return undefined;
+    }
+    return { mode: "repeat", count: { kind: "fixed", value: value.count.value as number } };
+  }
+  if (value.mode === "branch") {
+    unexpectedKeys(value, ["mode", "kind", "cases"], pointer, diagnostics);
+    if (value.kind !== "if" && value.kind !== "switch") diagnostics.push(diagnostic("E3005", `${pointer}/kind`, { expected: "if or switch" }, "workflow.schema.const", "author"));
+    const cases = normalizeIdentifiers(value.cases, `${pointer}/cases`, diagnostics, false);
+    return (value.kind === "if" || value.kind === "switch") && cases ? { mode: "branch", kind: value.kind, cases } : undefined;
+  }
+  diagnostics.push(diagnostic("E3005", `${pointer}/mode`, { expected: "single, repeat, or branch" }, "workflow.schema.const", "author"));
+  return undefined;
 }
 
 function normalizeNode(value: unknown, index: number, diagnostics: WorkflowDiagnostic[]): WorkflowNodeV1 | undefined {
@@ -111,7 +210,7 @@ function normalizeNode(value: unknown, index: number, diagnostics: WorkflowDiagn
     diagnostics.push(diagnostic("E3003", pointer, { expected: "object" }, "workflow.schema.type", "author"));
     return undefined;
   }
-  unexpectedKeys(value, ["nodeId", "kind", "config", "dependsOn"], pointer, diagnostics);
+  unexpectedKeys(value, ["nodeId", "kind", "config", "dependsOn", "ports", "control"], pointer, diagnostics);
   const nodeIdValid = validateIdentifier(value.nodeId, `${pointer}/nodeId`, diagnostics);
   if (value.kind !== NOOP_NODE_KIND) {
     diagnostics.push(diagnostic("E3101", `${pointer}/kind`, { kind: value.kind }, "workflow.registry.unknownNodeKind", "registry"));
@@ -125,15 +224,31 @@ function normalizeNode(value: unknown, index: number, diagnostics: WorkflowDiagn
   const dependencies = Array.isArray(value.dependsOn)
     ? value.dependsOn.map((dependency, dependencyIndex) => normalizeDependency(dependency, `${pointer}/dependsOn/${dependencyIndex}`, diagnostics)).filter((dependency): dependency is WorkflowDependencyV1 => Boolean(dependency))
     : [];
-  dependencies.sort((left, right) => compareCodePoints(left.from, right.from) || compareCodePoints(canonicalJson(left.accept), canonicalJson(right.accept)));
+  dependencies.sort((left, right) => compareCodePoints(left.from, right.from)
+    || compareCodePoints(left.fromOutput || "", right.fromOutput || "")
+    || compareCodePoints(left.toInput || "", right.toInput || "")
+    || compareCodePoints(canonicalJson(left.accept), canonicalJson(right.accept))
+    || compareCodePoints(canonicalJson(left.loop || null), canonicalJson(right.loop || null)));
   const dependencyKeys = new Set<string>();
   for (const dependency of dependencies) {
-    const key = canonicalJson([dependency.from, dependency.accept]);
+    const key = canonicalJson([dependency.from, dependency.fromOutput || "", dependency.toInput || "", dependency.accept, dependency.loop || null]);
     if (dependencyKeys.has(key)) diagnostics.push(diagnostic("E3006", `${pointer}/dependsOn`, { key }, "workflow.schema.duplicateSetKey", "author"));
     dependencyKeys.add(key);
   }
+  const ports = value.ports === undefined ? undefined : normalizeNodePorts(value.ports, `${pointer}/ports`, diagnostics);
+  const control = value.control === undefined ? undefined : normalizeNodeControl(value.control, `${pointer}/control`, diagnostics);
+  if (control?.mode === "branch" && ports && control.cases.some(caseId => !ports.outputs.includes(caseId))) {
+    diagnostics.push(diagnostic("E3005", `${pointer}/control/cases`, { expected: "cases declared as output ports" }, "workflow.schema.const", "author"));
+  }
   if (!nodeIdValid || value.kind !== NOOP_NODE_KIND) return undefined;
-  return { nodeId: value.nodeId as string, kind: NOOP_NODE_KIND, config: {}, dependsOn: dependencies };
+  return {
+    nodeId: value.nodeId as string,
+    kind: NOOP_NODE_KIND,
+    config: {},
+    dependsOn: dependencies,
+    ...(ports ? { ports } : {}),
+    ...(control ? { control } : {})
+  };
 }
 
 function normalizePortMap(value: unknown, pointer: string, diagnostics: WorkflowDiagnostic[]): Record<string, WorkflowPortDescriptor> | undefined {
@@ -193,13 +308,42 @@ export function compileWorkflowDefinitionV1(input: unknown): WorkflowCompileResu
   }
   for (const node of nodes) {
     for (const dependency of node.dependsOn) {
-      if (!nodeIds.has(dependency.from) || dependency.from === node.nodeId) {
+      if (!nodeIds.has(dependency.from)) {
         diagnostics.push(diagnostic("E3202", `/spec/nodes/${escapePointer(node.nodeId)}/dependsOn`, { from: dependency.from }, "workflow.graph.invalidDependency", "author"));
+      }
+      const source = nodes.find(candidate => candidate.nodeId === dependency.from);
+      if (dependency.fromOutput && source?.ports && !source.ports.outputs.includes(dependency.fromOutput)) {
+        diagnostics.push(diagnostic("E3202", `/spec/nodes/${escapePointer(node.nodeId)}/dependsOn`, { fromOutput: dependency.fromOutput }, "workflow.graph.invalidDependency", "author"));
+      }
+      if (dependency.toInput && node.ports && !node.ports.inputs.includes(dependency.toInput)) {
+        diagnostics.push(diagnostic("E3202", `/spec/nodes/${escapePointer(node.nodeId)}/dependsOn`, { toInput: dependency.toInput }, "workflow.graph.invalidDependency", "author"));
       }
     }
   }
-  for (const witness of canonicalCycleWitnesses(nodes)) {
-    diagnostics.push(diagnostic("E3203", "/spec/nodes", { witness }, "workflow.graph.cycle", "author"));
+  const nonTerminatingNodes = nodes.map(node => ({ ...node, dependsOn: node.dependsOn.filter(dependency => !dependency.loop) }));
+  for (const witness of canonicalCycleWitnesses(nonTerminatingNodes)) {
+    const edges = witness.slice(0, -1).map((from, index) => {
+      const to = witness[index + 1];
+      const dependency = nonTerminatingNodes.find(node => node.nodeId === to)?.dependsOn.find(candidate => candidate.from === from);
+      return {
+        from,
+        to,
+        ...(dependency?.fromOutput ? { fromOutput: dependency.fromOutput } : {}),
+        ...(dependency?.toInput ? { toInput: dependency.toInput } : {})
+      };
+    });
+    const suggestedLoopEdge = edges[edges.length - 1];
+    diagnostics.push(diagnostic("E3203", "/spec/nodes", {
+      kind: "accidental-cycle",
+      witness,
+      cycle: witness.join(" → "),
+      edges,
+      suggestedLoopEdge,
+      remediation: {
+        action: "declare-terminating-loop-edge",
+        requiredFields: ["loop.termination.condition", "loop.termination.maxIterations"]
+      }
+    }, "workflow.graph.cycle", "author"));
   }
   if (diagnostics.length) return { ok: false, diagnostics: sortDiagnostics(diagnostics) };
   const model: WorkflowDefinitionV1 = {
@@ -259,7 +403,7 @@ function canonicalCycleWitnesses(nodes: WorkflowNodeV1[]): string[][] {
   const outgoing = new Map(nodes.map(node => [node.nodeId, [] as string[]]));
   for (const node of nodes) {
     for (const dependency of node.dependsOn) {
-      if (outgoing.has(dependency.from) && dependency.from !== node.nodeId) outgoing.get(dependency.from)!.push(node.nodeId);
+      if (outgoing.has(dependency.from)) outgoing.get(dependency.from)!.push(node.nodeId);
     }
   }
   for (const targets of outgoing.values()) targets.sort(compareCodePoints);
@@ -292,7 +436,7 @@ function canonicalCycleWitnesses(nodes: WorkflowNodeV1[]): string[][] {
       onStack.delete(member);
       component.push(member);
     } while (member !== nodeId);
-    if (component.length > 1) components.push(component.sort(compareCodePoints));
+    if (component.length > 1 || outgoing.get(component[0])!.includes(component[0])) components.push(component.sort(compareCodePoints));
   };
   for (const nodeId of [...outgoing.keys()].sort(compareCodePoints)) if (!indexes.has(nodeId)) visit(nodeId);
   components.sort((left, right) => compareCodePoints(left[0], right[0]));

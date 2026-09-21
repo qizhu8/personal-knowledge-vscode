@@ -11,13 +11,14 @@ import { isAbsoluteForPlatform, isForeignAbsolutePath } from "./store-path";
 import { compareVersionOrder } from "./version-order";
 
 // ── MCP server scaffold ────────────────────────────────────────────────────
-export const UNIFIED_MCP_VERSION = "2.8.3";
+export const UNIFIED_MCP_VERSION = "2.9.0";
 const PROMPT_MANAGER_WHEEL = "uone_prompt_manager-0.1.0-py3-none-any.whl";
 const PROMPT_MANAGER_WHEEL_SHA256 = "eb9fd76058134f9ab9711d8e7604c75f761db5762d93e67f65740dc07fdc1518";
 const RETRIEVAL_ENGINE_WHEEL = "adaptive_skill_retrieval-0.3.0.dev2026091601-py3-none-any.whl";
 const RETRIEVAL_ENGINE_WHEEL_SHA256 = "04560cf29966c8c267adf8ea8502819fd005222ca1e383af63cc115996afbf21";
 const KNOWLEDGE_MCP_VERSION = "1.3.3";
 const CHAT_MCP_VERSION = "2.3.5";
+const RECIPE_MCP_VERSION = "1.0.0";
 
 interface McpServerStatus {
   installed: boolean;
@@ -416,6 +417,7 @@ export function generateMcpServer(context: vscode.ExtensionContext): { serverPat
   const storePath = getStorePath();
   const mcpDir    = managedMcpServerDirectory();
   const serverPy  = path.join(mcpDir, "server.py");
+  const recipeRuntimePy = path.join(mcpDir, "recipe_runtime.py");
   const reqTxt    = path.join(mcpDir, "requirements.txt");
   const storeFwd  = storePath.replace(/\\/g, "/");
   const subscriptionCacheFwd = path.join(context.globalStorageUri.fsPath, "subscriptions", "cache").replace(/\\/g, "/");
@@ -429,6 +431,7 @@ export function generateMcpServer(context: vscode.ExtensionContext): { serverPat
 
   fs.mkdirSync(mcpDir, { recursive: true });
   generateChatMcpServer(context);
+  fs.copyFileSync(path.join(context.extensionPath, "resources", "recipe_runtime.py"), recipeRuntimePy);
 
   fs.writeFileSync(serverPy, `#!/usr/bin/env python3
 """
@@ -459,6 +462,7 @@ from pathlib import Path
 SERVER_VERSION = "${UNIFIED_MCP_VERSION}"
 KNOWLEDGE_SCHEMA_VERSION = "${KNOWLEDGE_MCP_VERSION}"
 CHAT_SCHEMA_VERSION = "${CHAT_MCP_VERSION}"
+RECIPE_SCHEMA_VERSION = "${RECIPE_MCP_VERSION}"
 MODEL_BASED_ROUTING_ENABLED = False
 from typing import Optional, List
 
@@ -473,6 +477,8 @@ SKILLS = STORE / "skills"
 SUBSCRIPTIONS = Path(r"${subscriptionCacheFwd}")
 RETRIEVAL_STATE = Path(r"${retrievalStateFwd}")
 mcp = FastMCP("pkm")
+from recipe_runtime import register_recipe_tools
+register_recipe_tools(mcp, STORE)
 
 
 def _enabled_router_solutions():
@@ -493,10 +499,11 @@ def _disabled_router_response(tool_name):
 def check_version() -> dict:
   """Return the unified server version and its component schema versions."""
   return {"name": "pkm", "version": SERVER_VERSION,
-          "components": {"knowledge": KNOWLEDGE_SCHEMA_VERSION, "chat": CHAT_SCHEMA_VERSION},
-          "capabilities": ["personal-knowledge", "papers", "pkm-chatroom", "pkm-skills", "subscriptions"],
+          "components": {"knowledge": KNOWLEDGE_SCHEMA_VERSION, "chat": CHAT_SCHEMA_VERSION, "recipes": RECIPE_SCHEMA_VERSION},
+          "capabilities": ["personal-knowledge", "papers", "pkm-chatroom", "pkm-skills", "subscriptions", "pkm-recipes"],
           "chat_discovery_tool": "chat_capabilities",
-          "skill_discovery_tool": "skill_capabilities"}
+          "skill_discovery_tool": "skill_capabilities",
+          "recipe_discovery_tool": "recipe_capabilities"}
 
 
 def _now() -> str:
@@ -881,7 +888,14 @@ def _skill_id(row):
 def _skill_hash(row):
   value = json.dumps({"name": row["name"], "description": row.get("description", ""),
             "category": row.get("category", ""), "tags": row.get("tags", []),
-            "content": row.get("content", "")}, ensure_ascii=False, sort_keys=True)
+            "content": row.get("content", "")}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+  return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _note_hash(row):
+  value = json.dumps({"title": row["title"], "type": row.get("type", "general"),
+            "category": row.get("category", ""), "tags": row.get("tags", []),
+            "content": row.get("content", "")}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
   return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
@@ -1158,7 +1172,7 @@ def get_note(slug: str) -> str:
     r = _note_get(slug)
     if not r:
         return f"Note '{slug}' not found. Use list_notes or search_notes to find it."
-    return json.dumps({"slug": r["slug"], "title": r["title"], "content": r["content"],
+    return json.dumps({"slug": r["slug"], "content_hash": _note_hash(r), "title": r["title"], "content": r["content"],
                        "type": r["type"], "tags": r["tags"], "category": r["category"],
                        "updated_at": r["updated_at"]})
 

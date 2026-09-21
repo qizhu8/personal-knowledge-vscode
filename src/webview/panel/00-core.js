@@ -124,7 +124,7 @@ function renderMermaid(root) {
 const esc = s => String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 const uiIcon = (name, label = '') => `<span class="codicon codicon-${name}" aria-hidden="true"></span>${label ? `<span>${esc(label)}</span>` : ''}`;
 const ICON = {todo:uiIcon('circle-outline'),done:uiIcon('pass-filled'),'data-path':uiIcon('folder'),observation:uiIcon('eye'),general:uiIcon('note')};
-const surfacePanelTitles = { skills:'Skills', notes:'Notes', papers:'Research', prompts:'Prompts', scripts:'Scripts', packages:'Packages', environments:'Environments', servers:'Servers', projects:'Projects', chatroom:'Threads', subscriptions:'Network & Sharing', mcp:'General & MCP', skillRouter:'Skill Router' };
+const surfacePanelTitles = { skills:'Skills', notes:'Notes', papers:'Research', agentSessions:'Agent Sessions', recipes:'Recipe Library', prompts:'Prompts', scripts:'Scripts', packages:'Packages', environments:'Environments', servers:'Servers', projects:'Projects', chatroom:'Threads', subscriptions:'Network & Sharing', mcp:'General & MCP', skillRouter:'Skill Router' };
 let lastPanelTitle = '';
 function setPanelTitle(title) {
   const next = String(title || 'Personal Knowledge Manager').trim();
@@ -242,10 +242,11 @@ scheduleUiTranslation();
 const workspaceSurfaces = Object.freeze({
   knowledge:['skills','notes','papers'],
   tools:['prompts','scripts','packages','environments','servers'],
+  automation:['agentSessions','recipes'],
   projects:['projects','chatroom'],
   settings:['mcp','skillRouter','subscriptions']
 });
-const workspaceDefaultSurface = Object.freeze({ knowledge:'skills', tools:'prompts', projects:'projects', settings:'mcp' });
+const workspaceDefaultSurface = Object.freeze({ knowledge:'skills', tools:'prompts', automation:'agentSessions', projects:'projects', settings:'mcp' });
 function workspaceForTab(tab) {
   return Object.keys(workspaceSurfaces).find(workspace => workspaceSurfaces[workspace].includes(tab)) || 'projects';
 }
@@ -621,6 +622,7 @@ window.addEventListener('message', e => {
   else if (command === 'serverSubscriptionGroups') { finishAction('serverSubscriptionStatus','serverSubscriptionRefresh'); serverSubscriptionGroups = data || []; if (state.tab === 'servers') renderServerDashboard(serverCache); }
   else if (command === 'privacyChanged') {
     if (state.tab === 'servers') { serverPrivateTopLevels = data?.type === 'servers' ? (data?.isPrivate ? [...new Set([...serverPrivateTopLevels, data.topLevel])] : serverPrivateTopLevels.filter(name => name !== data.topLevel)) : serverPrivateTopLevels; ask('serverList', {}); }
+    else if (state.tab === 'recipes' && data?.type === 'recipes') ask('projectState', {});
     else if (['skills','notes','papers','prompts','packages','scripts'].includes(state.tab)) ask('list', { tab: state.tab, filter: state.filter, q: state.search });
     if (currentDetailRequest) requestDetail(currentDetailRequest.type, currentDetailRequest.key);
   }

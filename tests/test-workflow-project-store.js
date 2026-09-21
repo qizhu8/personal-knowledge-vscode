@@ -31,12 +31,14 @@ const resign = envelope => {
 try {
   assert.strictEqual(PROJECT_STORE_SCHEMA, 1);
   const directory = temporary();
-  const store = new ProjectStore(directory, ids("root", "alpha", "topic"));
+  const store = new ProjectStore(directory, ids("root", "alpha", "topic", "daily", "universal"));
   const initial = store.list();
   assert.strictEqual(initial.storeVersion, 1);
   assert.strictEqual(initial.rootId, "root_root");
   assert.deepStrictEqual(initial.projects.map(project => [project.name, project.systemKind]), [["Default Project", "default-project"]]);
   assert.deepStrictEqual(initial.threads.map(thread => [thread.name, thread.systemKind]), [["General", "general-thread"]]);
+  assert.deepStrictEqual(initial.recipes.map(recipe => recipe.name), ["Software Development", "Bug Fix", "UI Development"]);
+  assert(initial.recipes.every(recipe => recipe.scope === "global" && recipe.category === "Software Development" && recipe.systemKind === "built-in"));
   assert.strictEqual(fs.statSync(file(directory)).mode & 0o777, 0o600);
   initial.projects[0].name = "caller mutation";
   assert.strictEqual(store.list().projects[0].name, "Default Project");
@@ -76,6 +78,34 @@ try {
   assert.strictEqual(moved.snapshot.storeVersion, 4);
   assert.strictEqual(moved.snapshot.threads.find(candidate => candidate.threadId === "thread_topic").projectId, initial.projects[0].projectId);
   assert.strictEqual(store.moveThread(command("move-topic", 0), {}).replayed, true);
+
+  const recipe = store.createRecipe(command("create-recipe", 4), { kind: "project", projectId: "project_alpha" }, " Daily Review ");
+  assert.strictEqual(recipe.snapshot.storeVersion, 5);
+  assert.strictEqual(recipe.entityId, "recipe_daily");
+  const createdRecipe = recipe.snapshot.recipes.find(candidate => candidate.recipeId === recipe.entityId);
+  assert.strictEqual(createdRecipe.name, "Daily Review");
+  assert.strictEqual(createdRecipe.scope, "project");
+  assert.strictEqual(createdRecipe.definition.spec.nodes[0].kind, "pkm.step.noop/v1");
+  assert.strictEqual(store.createRecipe(command("create-recipe", 0), { kind: "global" }, "ignored").replayed, true);
+
+  const globalRecipe = store.createRecipe(command("create-global-recipe", 5), { kind: "global" }, " Universal Review ");
+  assert.strictEqual(globalRecipe.snapshot.storeVersion, 6);
+  assert.strictEqual(globalRecipe.entityId, "recipe_universal");
+  const createdGlobalRecipe = globalRecipe.snapshot.recipes.find(candidate => candidate.recipeId === globalRecipe.entityId);
+  assert.strictEqual(createdGlobalRecipe.scope, "global");
+  assert.strictEqual(createdGlobalRecipe.projectId, undefined);
+  const updatedRecipe = store.updateRecipe(command("update-global-recipe", 6), createdGlobalRecipe.recipeId, {
+    name: "Universal Review v2", category: "Automation/Review", description: "Review changes.",
+    definition: createdGlobalRecipe.definition
+  });
+  assert.strictEqual(updatedRecipe.snapshot.storeVersion, 7);
+  assert.strictEqual(updatedRecipe.snapshot.recipes.find(candidate => candidate.recipeId === createdGlobalRecipe.recipeId).revision, 2);
+  assert.strictEqual(store.updateRecipe(command("update-global-recipe", 0), createdGlobalRecipe.recipeId, {}).replayed, true);
+
+  const legacyDirectory = temporary();
+  new ProjectStore(legacyDirectory, ids("legacy-root")).list();
+  const legacy = read(legacyDirectory); delete legacy.payload.state.recipes; write(legacyDirectory, resign(legacy));
+  assert.deepStrictEqual(new ProjectStore(legacyDirectory).list().recipes.map(recipe => recipe.name), ["Software Development", "Bug Fix", "UI Development"]);
 
   const malformedDirectory = temporary();
   fs.mkdirSync(malformedDirectory, { recursive: true });

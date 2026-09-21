@@ -79,8 +79,10 @@ import {
   removeInjectedPkmSkill, removePkmSkillCustomTarget, resolvePkmSkillTargetPath,
 } from "./pkm-skill-projection";
 import { cachedPromptAnalysis, inspectPromptCached, renderPrompt } from "./prompt-manager";
-import { canonicalJson } from "./workflow-contracts";
+import { canonicalJson, WorkflowDefinitionV1 } from "./workflow-contracts";
 import { ProjectStore, ProjectStoreCommand } from "./workflows/project-store";
+import { RecipeMetadata, RecipeRecord } from "./workflows/project-model";
+import { BundledKnowledgeContent, exportProjectRecipeBundle } from "./workflows/project-recipe-bundle";
 
 let projectStoreBinding: { root: string; store: ProjectStore } | undefined;
 
@@ -98,6 +100,53 @@ function projectCommand(store: ProjectStore, operation: string, input: object): 
     fingerprint: createHash("sha256").update(canonicalJson({ operation, input }), "utf8").digest("hex"),
     expectedStoreVersion: store.list().storeVersion
   };
+}
+
+function knowledgeTags(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(String);
+  try { const parsed = JSON.parse(String(value || "[]")); return Array.isArray(parsed) ? parsed.map(String) : []; }
+  catch { return []; }
+}
+
+function projectRecipeKnowledge(kind: "skill" | "note", knowledgeId: string): BundledKnowledgeContent {
+  const parts = knowledgeId.split("/").filter(Boolean);
+  if (!parts.length || parts.some(part => part === "." || part === "..")) throw new Error(`Knowledge binding has an invalid identity: ${knowledgeId}`);
+  let document: Record<string, unknown>;
+  if (kind === "skill") {
+    const item = skillGet(parts[parts.length - 1]);
+    if (!item || [item.category, item.name].filter(Boolean).join("/") !== knowledgeId) throw new Error(`Bound Skill was not found: ${knowledgeId}`);
+    document = { name: item.name, description: item.description || "", category: item.category || "", tags: knowledgeTags(item.tags), content: item.content || "" };
+  } else {
+    const item = noteGet(knowledgeId);
+    if (!item) throw new Error(`Bound Note was not found: ${knowledgeId}`);
+    document = { title: item.title, type: item.type || "general", category: item.category || "", tags: knowledgeTags(item.tags), content: item.content || "" };
+  }
+  const contentHash = createHash("sha256").update(canonicalJson(document), "utf8").digest("hex");
+  return { knowledgeId, kind, contentHash, document };
+}
+
+async function exportProjectRecipes(projectId: string): Promise<string | undefined> {
+  const snapshot = currentProjectStore().list();
+  const project = snapshot.projects.find(candidate => candidate.projectId === projectId);
+  if (!project) throw new Error("Project was not found.");
+  const recipes = snapshot.recipes.filter(recipe => recipe.scope === "project" && recipe.projectId === projectId);
+  if (!recipes.length) throw new Error("This Project has no Recipes to export.");
+  const knowledge = new Map<string, BundledKnowledgeContent>();
+  for (const recipe of recipes) for (const node of recipe.nodeBindings || []) for (const binding of node.bindings) {
+    const item = projectRecipeKnowledge(binding.kind, binding.knowledgeId);
+    if (item.contentHash !== binding.contentHash) throw new Error(`Bound ${binding.kind} changed since Recipe revision ${recipe.revision}: ${binding.knowledgeId}`);
+    knowledge.set(`${binding.kind}:${binding.knowledgeId}`, item);
+  }
+  const bundle = exportProjectRecipeBundle({ project, recipes, knowledge: [...knowledge.values()] });
+  const filename = `${safeFilePart(project.name).toLowerCase().replace(/\s+/g, "-") || "project"}.pkm-recipes.json`;
+  const target = await vscode.window.showSaveDialog({
+    saveLabel: "Export Project Recipes",
+    defaultUri: vscode.Uri.file(path.join(os.homedir(), filename)),
+    filters: { "PKM Project Recipe Bundle": ["json"] }
+  });
+  if (!target) return undefined;
+  fs.writeFileSync(target.fsPath, JSON.stringify(bundle, null, 2) + "\n", "utf8");
+  return target.fsPath;
 }
 
 // Background one-shot sweep to compute on-disk sizes for envs missing a cached
@@ -3443,7 +3492,7 @@ async function handleMessage(
     }
 
     case "projectState": {
-      respond({ command: "projectState", data: currentProjectStore().list() });
+      respond({ command: "projectState", data: { ...currentProjectStore().list(), privateTopLevels: privateTopLevels("recipes") } });
       break;
     }
 
@@ -3460,6 +3509,44 @@ async function handleMessage(
       const input = { projectId: String(msg.projectId || ""), name: String(msg.name || "") };
       const result = store.createThread(projectCommand(store, "thread-create", input), input.projectId, input.name);
       respond({ command: "projectResult", data: { action: "threadCreate", ...result } });
+      break;
+    }
+
+    case "recipeCreate": {
+      const store = currentProjectStore();
+      const input = {
+        scope: msg.scope === "global" ? "global" as const : "project" as const,
+        projectId: String(msg.projectId || ""),
+        name: String(msg.name || "")
+      };
+      const scope = input.scope === "global" ? { kind: "global" as const } : { kind: "project" as const, projectId: input.projectId };
+      const result = store.createRecipe(projectCommand(store, "recipe-create", input), scope, input.name);
+      respond({ command: "projectResult", data: { action: "recipeCreate", ...result } });
+      break;
+    }
+
+    case "recipeUpdate": {
+      const store = currentProjectStore();
+      const recipeId = String(msg.recipeId || "");
+      const input = {
+        name: String(msg.name || ""),
+        category: String(msg.category || ""),
+        description: String(msg.description || ""),
+        metadata: msg.metadata as RecipeMetadata | undefined,
+        editorLayout: msg.editorLayout as RecipeRecord["editorLayout"],
+        definition: msg.definition as WorkflowDefinitionV1
+      };
+      const result = store.updateRecipe(projectCommand(store, "recipe-update", { recipeId, ...input }), recipeId, input);
+      respond({ command: "projectResult", data: { action: "recipeUpdate", ...result } });
+      break;
+    }
+
+    case "projectRecipesExport": {
+      const exported = await exportProjectRecipes(String(msg.projectId || ""));
+      if (exported) {
+        vscode.window.showInformationMessage(`Project Recipes exported to ${path.basename(exported)}.`);
+        respond({ command: "projectExported", data: { path: exported } });
+      }
       break;
     }
 
@@ -3961,10 +4048,10 @@ async function handleMessage(
     case "contentSetPrivacy": {
       const type = String(msg.type || "") as PrivacyContentType;
       const topLevel = String(msg.topLevel || "");
-      if (!(SHARED_CONTENT_TYPES as readonly string[]).includes(type)) throw new Error(`Unsupported privacy content type: ${type}`);
+      if (!(SHARED_CONTENT_TYPES as readonly string[]).includes(type) && type !== "recipes") throw new Error(`Unsupported privacy content type: ${type}`);
       setTopLevelPrivacy(type, topLevel, !!msg.isPrivate);
       gitCommit(`privacy(${type}): ${topLevel} ${msg.isPrivate ? "private" : "public"}`);
-      const changed = await sharedMarket?.refreshPublishedShares() || 0;
+      const changed = type === "recipes" ? 0 : await sharedMarket?.refreshPublishedShares() || 0;
       _treeProvider?.refresh();
       respond({ command: "privacyChanged", data: { type, topLevel, isPrivate: !!msg.isPrivate, brokersRefreshed: changed } });
       break;
@@ -5887,8 +5974,8 @@ async function handleMessage(
     log.error(`handleMessage(${msg.command}) failed: ${e?.stack ?? e?.message ?? e}`);
     if (msg.command === "list") {
       respond({ command: "list", tab: String(msg.tab || ""), data: [] });
-    } else if (["projectState", "projectCreate", "threadCreate", "threadMove"].includes(String(msg.command || ""))) {
-      respond({ command: "projectError", data: { action: String(msg.command || ""), code: String(e?.code || "project-error"), error: e?.message || String(e) } });
+    } else if (["projectState", "projectCreate", "threadCreate", "threadMove", "recipeCreate", "recipeUpdate", "projectRecipesExport"].includes(String(msg.command || ""))) {
+      respond({ command: "projectError", data: { action: String(msg.command || ""), code: String(e?.code || "project-error"), error: e?.message || String(e), ...(e?.details ? { details: e.details } : {}) } });
     } else if (String(msg.command || "").startsWith("subscription")) {
       respond({ command: "subscriptionError", data: { action: String(msg.command || ""), error: e?.message || String(e) } });
     }

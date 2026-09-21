@@ -30,6 +30,7 @@ for (const [type, item] of [
 	["packages", { name: "Private" }],
 	["servers", { category: "Private/Nested" }],
 	["scripts", { category: "Private/Nested" }],
+	["recipes", { category: "Private/Nested" }],
 ]) {
 	privacy.setTopLevelPrivacy(type, "Private", true);
 	assert.strictEqual(privacy.isContentItemPrivate(type, item), true, `${type} item shape must honor top-level privacy`);

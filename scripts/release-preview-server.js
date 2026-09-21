@@ -80,6 +80,33 @@ const demoChatRecents = [
   { id:"recent-quality", room:"Asset Quality", roomId:"recent-quality-room", url:"ws://quality-host:7345", user:"Yu", host:false, lastJoined:1786900000000 },
   { id:"recent-retrieval", room:"生成式检索", roomId:"recent-retrieval-room", url:"ws://retrieval-host:7345", user:"Yu", host:false, lastJoined:1786800000000 },
 ];
+function demoLinearRecipe(recipeId, name, description, steps, executableDigest) {
+  return {
+    recipeId,
+    scope: "global",
+    category: "Software Development",
+    systemKind: "built-in",
+    name,
+    description,
+    metadata: {
+      applicableFunctions: ["Software Development"],
+      solution: description,
+      requiredInputs: [{ name: "task", description: "The requested outcome and its constraints.", required: true }],
+      expectedOutputs: [{ name: "result", description: "The completed result with validation evidence." }],
+    },
+    revision: 1,
+    executableDigest,
+    definition: {
+      spec: {
+        nodes: steps.map((nodeId, index) => ({
+          nodeId,
+          dependsOn: index ? [{ from: steps[index - 1], accept: ["succeeded"], required: true }] : [],
+        })),
+        completion: { requiredNodes: [steps[steps.length - 1]] },
+      },
+    },
+  };
+}
 const demoProjects = {
   schema: 1,
   storeVersion: 4,
@@ -95,6 +122,13 @@ const demoProjects = {
     { threadId: "thread_aagl_pipeline", projectId: "project_aagl", name: "Pipeline Design", description: "Consumer workflow planning", archived: false, legacyAliases: [], version: 2 },
     { threadId: "thread_pkm_general", projectId: "project_pkm", name: "General", description: "", archived: false, systemKind: "general-thread", legacyAliases: [], version: 1 },
     { threadId: "thread_pkm_redesign", projectId: "project_pkm", name: "Four-workspace redesign", description: "Release acceptance", archived: false, legacyAliases: [], version: 4 },
+  ],
+  privateTopLevels: ["Personal"],
+  recipes: [
+    demoLinearRecipe("recipe_builtin_software", "Software Development", "Develop a software change from requirements through delivery.", ["understand", "plan", "implement", "validate", "deliver"], "3a9ff4d48a10d90e"),
+    demoLinearRecipe("recipe_builtin_bugfix", "Bug Fix", "Reproduce, diagnose, fix, and verify a defect.", ["reproduce", "investigate", "fix", "regression-check", "report"], "53ae27b7bb7539ce"),
+    demoLinearRecipe("recipe_builtin_ui", "UI Development", "Design, implement, and validate an interface.", ["understand-ux", "prototype", "implement-ui", "validate-ui", "review"], "2b72642253116bd5"),
+    { recipeId: "recipe_demo_private", scope: "global", category: "Personal", name: "Private Review (Demo)", description: "Preview-only Recipe used to verify privacy presentation.", revision: 1, executableDigest: "92e0f615fce4591a", definition: { spec: { nodes: [{ nodeId: "review" }] } } },
   ],
 };
 

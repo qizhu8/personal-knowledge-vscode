@@ -8,9 +8,12 @@ import {
   ProjectModelState,
   ThreadMovePlan,
   createProject,
+  createRecipe,
   createThread,
   initializeProjectModel,
-  moveThread
+  moveThread,
+  RecipeUpdate,
+  updateRecipe
 } from "./project-model";
 
 export const PROJECT_STORE_SCHEMA = 1;
@@ -27,6 +30,7 @@ export interface ProjectSnapshot {
   rootId: string;
   projects: ProjectModelState["projects"];
   threads: ProjectModelState["threads"];
+  recipes: NonNullable<ProjectModelState["recipes"]>;
 }
 
 export interface ProjectStoreResult {
@@ -88,6 +92,20 @@ export class ProjectStore {
     });
   }
 
+  createRecipe(command: ProjectStoreCommand, scope: { kind: "global" } | { kind: "project"; projectId: string }, name: string): ProjectStoreResult {
+    return this.mutate(command, "recipe-create", state => {
+      const next = createRecipe(state, scope, name, this.createId);
+      return { state: next, entityId: next.recipes![next.recipes!.length - 1].recipeId };
+    });
+  }
+
+  updateRecipe(command: ProjectStoreCommand, recipeId: string, update: RecipeUpdate): ProjectStoreResult {
+    return this.mutate(command, "recipe-update", state => ({
+      state: updateRecipe(state, recipeId, update),
+      entityId: recipeId
+    }));
+  }
+
   moveThread(command: ProjectStoreCommand, plan: ThreadMovePlan): ProjectStoreResult {
     return this.mutate(command, "thread-move", state => ({ state: moveThread(state, plan), entityId: plan.threadId }));
   }
@@ -133,12 +151,14 @@ export class ProjectStore {
     let value: unknown;
     try { value = JSON.parse(fs.readFileSync(this.filePath, "utf8")); }
     catch { fail("store-corrupt", "Project store JSON is corrupt."); }
-    return verifyEnvelope(value);
+    const verified = verifyEnvelope(value);
+    if ((value as ProjectStoreEnvelope).digest !== verified.digest) this.write(verified);
+    return verified;
   }
 
   private snapshot(envelope: ProjectStoreEnvelope): ProjectSnapshot {
     const state = envelope.payload.state;
-    return clone({ schema: 1, storeVersion: envelope.storeVersion, rootId: state.rootId, projects: state.projects, threads: state.threads });
+    return clone({ schema: 1, storeVersion: envelope.storeVersion, rootId: state.rootId, projects: state.projects, threads: state.threads, recipes: state.recipes || [] });
   }
 
   private write(envelope: ProjectStoreEnvelope): void {
@@ -168,14 +188,20 @@ function verifyEnvelope(value: unknown): ProjectStoreEnvelope {
   const envelope = value as unknown as ProjectStoreEnvelope;
   if (digest(envelope.payload) !== envelope.digest) fail("store-corrupt", "Project store digest does not match its payload.");
   const state = initializeProjectModel(envelope.payload.state);
-  if (canonicalJson(state) !== canonicalJson(envelope.payload.state)) fail("store-repair-required", "Project store system records require repair.");
+  const { recipes: _migratedRecipes, ...stateWithoutRecipes } = state;
+  const stateBeforeRecipeMigration = Object.prototype.hasOwnProperty.call(envelope.payload.state, "recipes")
+    ? { ...stateWithoutRecipes, recipes: envelope.payload.state.recipes }
+    : stateWithoutRecipes;
+  if (canonicalJson(stateBeforeRecipeMigration) !== canonicalJson(envelope.payload.state)) fail("store-repair-required", "Project store system records require repair.");
   for (const receipt of envelope.payload.receipts) {
     if (!isRecord(receipt) || typeof receipt.commandId !== "string" || typeof receipt.fingerprint !== "string"
       || typeof receipt.operation !== "string" || !Number.isSafeInteger(receipt.storeVersion) || typeof receipt.entityId !== "string") {
       fail("store-corrupt", "Project store receipt is invalid.");
     }
   }
-  return clone(envelope);
+  return canonicalJson(state) === canonicalJson(envelope.payload.state)
+    ? clone(envelope)
+    : makeEnvelope(envelope.storeVersion, { state, receipts: envelope.payload.receipts });
 }
 
 function validateCommand(command: ProjectStoreCommand): void {

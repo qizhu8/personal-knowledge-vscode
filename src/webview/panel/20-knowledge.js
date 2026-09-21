@@ -35,11 +35,20 @@ document.querySelectorAll('.tab').forEach(t =>
     renderEmptyDetail();
     closePaperViews();
     updatePaperChrome();
-    const fullWidthTab = ['mcp', 'skillRouter', 'environments', 'servers', 'subscriptions', 'projects', 'chatroom'].includes(state.tab);
+    const fullWidthTab = ['mcp', 'skillRouter', 'environments', 'servers', 'subscriptions', 'agentSessions', 'recipes', 'projects', 'chatroom'].includes(state.tab);
     document.getElementById('layout-resizer').style.display = fullWidthTab ? 'none' : '';
     document.getElementById('sidebar-toggle').style.display = fullWidthTab ? 'none' : '';
     document.getElementById('content-toolbar').style.display = fullWidthTab ? 'none' : '';
-    if (state.tab === 'projects') {
+    if (state.tab === 'agentSessions') {
+      document.getElementById('sidebar').style.display = 'none';
+      document.getElementById('searchbox').style.display = 'none';
+      renderAgentSessions();
+    } else if (state.tab === 'recipes') {
+      document.getElementById('sidebar').style.display = 'none';
+      document.getElementById('searchbox').style.display = 'none';
+      renderGlobalRecipes();
+      ask('projectState', {});
+    } else if (state.tab === 'projects') {
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
       renderProjects();
@@ -2033,6 +2042,7 @@ function toggleCat(cat) {
     } catch { /* malformed tree state still remains locally expandable */ }
   }
   if (state.tab === 'environments') renderEnvTree();
+  else if (state.tab === 'recipes') renderGlobalRecipes();
   else renderList();
 }
 
@@ -2211,6 +2221,7 @@ function pkModal(opts) {
   bg.innerHTML = '<div id="pk-modal">' +
     '<div class="pk-modal-title">' + esc(opts.title || '') + '</div>' +
     (opts.message ? '<div class="pk-modal-msg">' + esc(opts.message) + '</div>' : '') +
+    (opts.options ? '<select id="pk-modal-select" style="width:100%;box-sizing:border-box;margin-top:8px;background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px;font-size:12px">' + opts.options.map(option => '<option value="' + esc(option.value) + '">' + esc(option.label) + '</option>').join('') + '</select>' : '') +
     (opts.input ? '<input id="pk-modal-input" type="text">' : '') +
     (opts.textarea ? '<textarea id="pk-modal-textarea" rows="3" placeholder="' + esc(opts.textareaPlaceholder || '') + '" style="width:100%;box-sizing:border-box;margin-top:8px;background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px;font-size:12px;resize:vertical;outline:none"></textarea>' : '') +
     (opts.checkbox ? '<label style="display:flex;align-items:center;gap:6px;margin-top:10px;font-size:12px;cursor:pointer"><input type="checkbox" id="pk-modal-check"> ' + esc(opts.checkbox.label || '') + '</label>' : '') +
@@ -2225,7 +2236,8 @@ function pkModal(opts) {
   if (ta) ta.value = opts.textareaValue || '';
   const chk = document.getElementById('pk-modal-check');
   if (chk && opts.checkbox && opts.checkbox.checked) chk.checked = true;
-  const done = ok => { const v = input ? input.value : ''; const tv = ta ? ta.value : ''; const cv = chk ? chk.checked : false; closePkModal(); if (ok && opts.onOk) opts.onOk(v, tv, cv); };
+  const select = document.getElementById('pk-modal-select');
+  const done = ok => { const v = input ? input.value : ''; const tv = ta ? ta.value : ''; const cv = chk ? chk.checked : false; const sv = select ? select.value : ''; closePkModal(); if (ok && opts.onOk) opts.onOk(v, tv, cv, sv); };
   document.getElementById('pk-modal-ok').onclick = () => done(true);
   document.getElementById('pk-modal-cancel').onclick = () => done(false);
   bg.onclick = e => { if (e.target === bg) done(false); };

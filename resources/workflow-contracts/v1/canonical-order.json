@@ -2,7 +2,10 @@
   "schema": "pkm.workflow.canonical-order/v1",
   "arrays": {
     "/spec/nodes": { "order": "set", "sortKey": ["nodeId"] },
-    "/spec/nodes/*/dependsOn": { "order": "set", "sortKey": ["from", "accept"] },
+    "/spec/nodes/*/ports/inputs": { "order": "set", "sortKey": ["$value"] },
+    "/spec/nodes/*/ports/outputs": { "order": "set", "sortKey": ["$value"] },
+    "/spec/nodes/*/control/cases": { "order": "set", "sortKey": ["$value"] },
+    "/spec/nodes/*/dependsOn": { "order": "set", "sortKey": ["from", "fromOutput", "toInput", "accept", "loop"] },
     "/spec/nodes/*/dependsOn/*/accept": { "order": "set", "sortKey": ["$value"] },
     "/spec/completion/requiredNodes": { "order": "set", "sortKey": ["$value"] }
   }

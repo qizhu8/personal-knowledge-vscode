@@ -27,8 +27,11 @@ assert.strictEqual(yamlProfile.limits.aliasExpansionDepth, 32);
 assert.deepStrictEqual(Object.keys(orderRegistry.arrays).sort(), [
   "/spec/completion/requiredNodes",
   "/spec/nodes",
+  "/spec/nodes/*/control/cases",
   "/spec/nodes/*/dependsOn",
-  "/spec/nodes/*/dependsOn/*/accept"
+  "/spec/nodes/*/dependsOn/*/accept",
+  "/spec/nodes/*/ports/inputs",
+  "/spec/nodes/*/ports/outputs"
 ]);
 
 const fixtures = path.join(contracts, "fixtures");
@@ -59,6 +62,23 @@ assert.strictEqual(invalidPort.ok, false);
 assert.strictEqual(invalidPort.diagnostics[0].code, "E3010");
 assert(diagnosticRegistry.codes.E3010);
 
+const graphControls = compileWorkflowDefinitionV1({
+  ...positiveFixture.input,
+  spec: {
+    ...positiveFixture.input.spec,
+    nodes: [
+      { nodeId: "directions", kind: "pkm.step.noop/v1", config: {}, dependsOn: [], ports: { inputs: ["brief"], outputs: ["directions", "risks"] }, control: { mode: "single" } },
+      { nodeId: "explore", kind: "pkm.step.noop/v1", config: {}, dependsOn: [{ from: "directions", fromOutput: "directions", toInput: "direction", accept: ["succeeded"], required: true }], ports: { inputs: ["direction"], outputs: ["candidate"] }, control: { mode: "repeat", count: { kind: "dynamic" } } },
+      { nodeId: "optimize", kind: "pkm.step.noop/v1", config: {}, dependsOn: [{ from: "explore", fromOutput: "candidate", toInput: "candidate", accept: ["succeeded"], required: true }], ports: { inputs: ["candidate"], outputs: ["best"] }, control: { mode: "repeat", count: { kind: "fixed", value: 8 } } },
+      { nodeId: "route", kind: "pkm.step.noop/v1", config: {}, dependsOn: [{ from: "optimize", fromOutput: "best", toInput: "result", accept: ["succeeded"], required: true }], ports: { inputs: ["result"], outputs: ["accept", "revise"] }, control: { mode: "branch", kind: "if", cases: ["accept", "revise"] } }
+    ],
+    completion: { requiredNodes: ["route"] }
+  }
+});
+assert.strictEqual(graphControls.ok, true);
+assert.deepStrictEqual(graphControls.model.spec.nodes.find(node => node.nodeId === "explore").control, { mode: "repeat", count: { kind: "dynamic" } });
+assert.deepStrictEqual(graphControls.model.spec.nodes.find(node => node.nodeId === "route").ports.outputs, ["accept", "revise"]);
+
 const cycle = compileWorkflowDefinitionV1({
   ...positiveFixture.input,
   spec: {
@@ -71,7 +91,64 @@ const cycle = compileWorkflowDefinitionV1({
   }
 });
 assert.strictEqual(cycle.ok, false);
-assert.deepStrictEqual(cycle.diagnostics.find(item => item.code === "E3203").details.witness, ["a", "b", "a"]);
+const cycleDiagnostic = cycle.diagnostics.find(item => item.code === "E3203");
+assert.deepStrictEqual(cycleDiagnostic.details.witness, ["a", "b", "a"]);
+assert.strictEqual(cycleDiagnostic.details.cycle, "a → b → a");
+assert.deepStrictEqual(cycleDiagnostic.details.edges, [{ from: "a", to: "b" }, { from: "b", to: "a" }]);
+assert.deepStrictEqual(cycleDiagnostic.details.suggestedLoopEdge, { from: "b", to: "a" });
+assert.deepStrictEqual(cycleDiagnostic.details.remediation, {
+  action: "declare-terminating-loop-edge",
+  requiredFields: ["loop.termination.condition", "loop.termination.maxIterations"]
+});
+
+const selfCycle = compileWorkflowDefinitionV1({
+  ...positiveFixture.input,
+  spec: {
+    ...positiveFixture.input.spec,
+    nodes: [{ nodeId: "retry", kind: "pkm.step.noop/v1", config: {}, dependsOn: [{ from: "retry", accept: ["again"], required: true }] }],
+    completion: { requiredNodes: ["retry"] }
+  }
+});
+assert.strictEqual(selfCycle.ok, false);
+assert.strictEqual(selfCycle.diagnostics.find(item => item.code === "E3203").details.cycle, "retry → retry");
+
+const terminatingSelfLoop = compileWorkflowDefinitionV1({
+  ...positiveFixture.input,
+  spec: {
+    ...positiveFixture.input.spec,
+    nodes: [{ nodeId: "retry", kind: "pkm.step.noop/v1", config: {}, dependsOn: [{ from: "retry", accept: ["again"], required: true, loop: { termination: { condition: "done", maxIterations: 5 } } }] }],
+    completion: { requiredNodes: ["retry"] }
+  }
+});
+assert.strictEqual(terminatingSelfLoop.ok, true, JSON.stringify(terminatingSelfLoop.diagnostics));
+
+const terminatingLoop = compileWorkflowDefinitionV1({
+  ...positiveFixture.input,
+  spec: {
+    ...positiveFixture.input.spec,
+    nodes: [
+      { nodeId: "check", kind: "pkm.step.noop/v1", config: {}, dependsOn: [{ from: "work", accept: ["continue"], required: true }] },
+      { nodeId: "work", kind: "pkm.step.noop/v1", config: {}, dependsOn: [{ from: "check", accept: ["repeat"], required: true, loop: { termination: { condition: "score >= target", maxIterations: 25 } } }] }
+    ],
+    completion: { requiredNodes: ["check"] }
+  }
+});
+assert.strictEqual(terminatingLoop.ok, true, JSON.stringify(terminatingLoop.diagnostics));
+assert.deepStrictEqual(terminatingLoop.model.spec.nodes.find(node => node.nodeId === "work").dependsOn[0].loop, { termination: { condition: "score >= target", maxIterations: 25 } });
+
+const unboundedLoop = {
+  ...positiveFixture.input,
+  spec: {
+    ...positiveFixture.input.spec,
+    nodes: [
+      { nodeId: "check", kind: "pkm.step.noop/v1", config: {}, dependsOn: [{ from: "work", accept: ["continue"], required: true }] },
+      { nodeId: "work", kind: "pkm.step.noop/v1", config: {}, dependsOn: [{ from: "check", accept: ["repeat"], required: true, loop: { termination: { condition: "done" } } }] }
+    ],
+    completion: { requiredNodes: ["check"] }
+  }
+};
+assertDiagnostic(unboundedLoop, "E3005", "/spec/nodes/1/dependsOn/0/loop/termination/maxIterations");
+assertDiagnostic(unboundedLoop, "E3203", "/spec/nodes");
 
 const repeated = compileWorkflowDefinitionV1(positiveFixture.input);
 assert.strictEqual(repeated.ok, true);
@@ -163,7 +240,7 @@ const duplicateDependency = dependencyBase({ from: "start", accept: ["failed"], 
 duplicateDependency.spec.nodes[1].dependsOn.push({ from: "start", accept: ["failed"], required: true });
 assertDiagnostic(duplicateDependency, "E3006", "/spec/nodes/1/dependsOn");
 assertDiagnostic(dependencyBase({ from: "missing", accept: ["succeeded"], required: true }), "E3202", "/spec/nodes/done/dependsOn");
-assertDiagnostic(definition({ nodes: [{ nodeId: "done", kind: "pkm.step.noop/v1", config: {}, dependsOn: [{ from: "done" }] }] }), "E3202", "/spec/nodes/done/dependsOn");
+assertDiagnostic(definition({ nodes: [{ nodeId: "done", kind: "pkm.step.noop/v1", config: {}, dependsOn: [{ from: "done" }] }] }), "E3203", "/spec/nodes");
 
 for (const completion of [null, [], "done"]) {
   assertDiagnostic(definition({ completion }), "E3003", "/spec/completion");

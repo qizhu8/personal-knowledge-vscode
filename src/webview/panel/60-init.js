@@ -17,6 +17,6 @@ setTimeout(() => {
     const sub = document.querySelector('.loading-sub');
     if (sub) sub.textContent = 'Database is initializing, retrying…';
     // Retry the list request after another 3 s
-    setTimeout(() => state.tab === 'projects' ? ask('projectState', {}) : ask('list', { tab:state.tab, filter:'all', q:'' }), 3000);
+    setTimeout(() => state.tab === 'agentSessions' ? renderAgentSessions() : ['projects','recipes'].includes(state.tab) ? ask('projectState', {}) : ask('list', { tab:state.tab, filter:'all', q:'' }), 3000);
   }
 }, 8000);
