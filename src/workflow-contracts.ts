@@ -3,6 +3,10 @@ import { WorkflowPortDescriptor, WorkflowValueError, normalizePortDescriptor } f
 
 export const WORKFLOW_DEFINITION_SCHEMA = "pkm.workflow.definition/v1" as const;
 export const NOOP_NODE_KIND = "pkm.step.noop/v1" as const;
+export const COMMAND_NODE_KIND = "pkm.step.command/v1" as const;
+export const SCRIPT_NODE_KIND = "pkm.step.script/v1" as const;
+export const HUMAN_GATE_NODE_KIND = "pkm.gate.human/v1" as const;
+export const SUBFLOW_NODE_KIND = "pkm.subflow/v1" as const;
 
 export interface WorkflowDependencyV1 {
   from: string;
@@ -21,16 +25,65 @@ export interface WorkflowNodePortsV1 {
 export type WorkflowNodeControlV1 =
   | { mode: "single" }
   | { mode: "repeat"; count: { kind: "fixed"; value: number } | { kind: "dynamic" } }
-  | { mode: "branch"; kind: "if" | "switch"; cases: string[] };
+  | { mode: "branch"; kind: "if" | "switch"; cases: string[]; dynamicCases?: true };
 
-export interface WorkflowNodeV1 {
+export interface WorkflowCronTriggerV1 {
+  kind: "cron";
+  expression: string;
+  timezone: string;
+}
+
+interface WorkflowNodeBaseV1 {
   nodeId: string;
-  kind: typeof NOOP_NODE_KIND;
-  config: Record<string, never>;
+  generalInstruction?: string;
   dependsOn: WorkflowDependencyV1[];
   ports?: WorkflowNodePortsV1;
   control?: WorkflowNodeControlV1;
 }
+
+export interface WorkflowNoopNodeV1 extends WorkflowNodeBaseV1 {
+  kind: typeof NOOP_NODE_KIND;
+  config: Record<string, never>;
+}
+
+export interface WorkflowCommandNodeV1 extends WorkflowNodeBaseV1 {
+  kind: typeof COMMAND_NODE_KIND;
+  config: {
+    program: string;
+    args: string[];
+    timeoutSeconds: number;
+    maxOutputBytes: number;
+    cwd?: string;
+  };
+}
+
+export interface WorkflowScriptNodeV1 extends WorkflowNodeBaseV1 {
+  kind: typeof SCRIPT_NODE_KIND;
+  config: {
+    runtime: "bash" | "powershell" | "python";
+    script: string;
+    environmentId?: string;
+    timeoutSeconds: number;
+    maxOutputBytes: number;
+    cwd?: string;
+  };
+}
+
+export interface WorkflowHumanGateNodeV1 extends WorkflowNodeBaseV1 {
+  kind: typeof HUMAN_GATE_NODE_KIND;
+  config: {
+    prompt: string;
+    inputKind: "approval" | "text" | "choice";
+    choices?: string[];
+  };
+}
+
+export interface WorkflowSubflowNodeV1 extends WorkflowNodeBaseV1 {
+  kind: typeof SUBFLOW_NODE_KIND;
+  config: { recipeId: string; revision: number; executableDigest: string };
+}
+
+export type WorkflowNodeV1 = WorkflowNoopNodeV1 | WorkflowCommandNodeV1 | WorkflowScriptNodeV1 | WorkflowHumanGateNodeV1 | WorkflowSubflowNodeV1;
 
 export interface WorkflowDefinitionV1 {
   schema: typeof WORKFLOW_DEFINITION_SCHEMA;
@@ -39,6 +92,7 @@ export interface WorkflowDefinitionV1 {
     nodes: WorkflowNodeV1[];
     outputs: Record<string, WorkflowPortDescriptor>;
     completion: { requiredNodes: string[] };
+    trigger?: WorkflowCronTriggerV1;
   };
 }
 
@@ -195,10 +249,13 @@ function normalizeNodeControl(value: unknown, pointer: string, diagnostics: Work
     return { mode: "repeat", count: { kind: "fixed", value: value.count.value as number } };
   }
   if (value.mode === "branch") {
-    unexpectedKeys(value, ["mode", "kind", "cases"], pointer, diagnostics);
+    unexpectedKeys(value, ["mode", "kind", "cases", "dynamicCases"], pointer, diagnostics);
     if (value.kind !== "if" && value.kind !== "switch") diagnostics.push(diagnostic("E3005", `${pointer}/kind`, { expected: "if or switch" }, "workflow.schema.const", "author"));
+    if (value.dynamicCases !== undefined && value.dynamicCases !== true) diagnostics.push(diagnostic("E3005", `${pointer}/dynamicCases`, { expected: true }, "workflow.schema.const", "author"));
     const cases = normalizeIdentifiers(value.cases, `${pointer}/cases`, diagnostics, false);
-    return (value.kind === "if" || value.kind === "switch") && cases ? { mode: "branch", kind: value.kind, cases } : undefined;
+    return (value.kind === "if" || value.kind === "switch") && cases
+      ? { mode: "branch", kind: value.kind, cases, ...(value.dynamicCases === true ? { dynamicCases: true as const } : {}) }
+      : undefined;
   }
   diagnostics.push(diagnostic("E3005", `${pointer}/mode`, { expected: "single, repeat, or branch" }, "workflow.schema.const", "author"));
   return undefined;
@@ -210,16 +267,118 @@ function normalizeNode(value: unknown, index: number, diagnostics: WorkflowDiagn
     diagnostics.push(diagnostic("E3003", pointer, { expected: "object" }, "workflow.schema.type", "author"));
     return undefined;
   }
-  unexpectedKeys(value, ["nodeId", "kind", "config", "dependsOn", "ports", "control"], pointer, diagnostics);
+  unexpectedKeys(value, ["nodeId", "kind", "config", "generalInstruction", "dependsOn", "ports", "control"], pointer, diagnostics);
   const nodeIdValid = validateIdentifier(value.nodeId, `${pointer}/nodeId`, diagnostics);
-  if (value.kind !== NOOP_NODE_KIND) {
+  if (value.kind !== NOOP_NODE_KIND && value.kind !== COMMAND_NODE_KIND && value.kind !== SCRIPT_NODE_KIND
+    && value.kind !== HUMAN_GATE_NODE_KIND && value.kind !== SUBFLOW_NODE_KIND) {
     diagnostics.push(diagnostic("E3101", `${pointer}/kind`, { kind: value.kind }, "workflow.registry.unknownNodeKind", "registry"));
   }
-  if (!isRecord(value.config) || Object.keys(value.config).length) {
-    diagnostics.push(diagnostic("E3007", `${pointer}/config`, { kind: NOOP_NODE_KIND }, "workflow.schema.noopConfig", "author"));
+  let config: WorkflowNodeV1["config"] | undefined;
+  if (value.kind === NOOP_NODE_KIND) {
+    if (!isRecord(value.config) || Object.keys(value.config).length) diagnostics.push(diagnostic("E3007", `${pointer}/config`, { kind: NOOP_NODE_KIND }, "workflow.schema.noopConfig", "author"));
+    config = {};
+  } else if (value.kind === COMMAND_NODE_KIND) {
+    if (!isRecord(value.config)) {
+      diagnostics.push(diagnostic("E3003", `${pointer}/config`, { expected: "object" }, "workflow.schema.type", "author"));
+    } else {
+      unexpectedKeys(value.config, ["program", "args", "timeoutSeconds", "maxOutputBytes", "cwd"], `${pointer}/config`, diagnostics);
+      const program = typeof value.config.program === "string" ? value.config.program.trim() : "";
+      const args = value.config.args;
+      const timeoutSeconds = value.config.timeoutSeconds === undefined ? 300 : value.config.timeoutSeconds;
+      const maxOutputBytes = value.config.maxOutputBytes === undefined ? 65536 : value.config.maxOutputBytes;
+      const cwd = value.config.cwd === undefined ? undefined
+        : typeof value.config.cwd === "string" ? value.config.cwd.trim() : "";
+      if (!program || /[\r\n\0]/.test(program)) diagnostics.push(diagnostic("E3005", `${pointer}/config/program`, { expected: "non-empty executable without control characters" }, "workflow.schema.const", "author"));
+      if (!Array.isArray(args) || args.some(argument => typeof argument !== "string" || /[\0]/.test(argument))) diagnostics.push(diagnostic("E3003", `${pointer}/config/args`, { expected: "string array" }, "workflow.schema.type", "author"));
+      if (!Number.isSafeInteger(timeoutSeconds) || (timeoutSeconds as number) < 1 || (timeoutSeconds as number) > 3600) diagnostics.push(diagnostic("E3005", `${pointer}/config/timeoutSeconds`, { expected: "integer from 1 through 3600" }, "workflow.schema.const", "author"));
+      if (!Number.isSafeInteger(maxOutputBytes) || (maxOutputBytes as number) < 1024 || (maxOutputBytes as number) > 1048576) diagnostics.push(diagnostic("E3005", `${pointer}/config/maxOutputBytes`, { expected: "integer from 1024 through 1048576" }, "workflow.schema.const", "author"));
+      if (value.config.cwd !== undefined && (!cwd || /[\r\n\0]/.test(cwd))) diagnostics.push(diagnostic("E3005", `${pointer}/config/cwd`, { expected: "non-empty path without control characters" }, "workflow.schema.const", "author"));
+      if (program && Array.isArray(args) && args.every(argument => typeof argument === "string" && !/[\0]/.test(argument))
+          && Number.isSafeInteger(timeoutSeconds) && (timeoutSeconds as number) >= 1 && (timeoutSeconds as number) <= 3600
+          && Number.isSafeInteger(maxOutputBytes) && (maxOutputBytes as number) >= 1024 && (maxOutputBytes as number) <= 1048576
+          && (value.config.cwd === undefined || Boolean(cwd))) {
+        config = { program, args: args as string[], timeoutSeconds: timeoutSeconds as number,
+          maxOutputBytes: maxOutputBytes as number, ...(cwd ? { cwd } : {}) };
+      }
+    }
+  } else if (value.kind === SCRIPT_NODE_KIND) {
+    if (!isRecord(value.config)) {
+      diagnostics.push(diagnostic("E3003", `${pointer}/config`, { expected: "object" }, "workflow.schema.type", "author"));
+    } else {
+      unexpectedKeys(value.config, ["runtime", "script", "environmentId", "timeoutSeconds", "maxOutputBytes", "cwd"], `${pointer}/config`, diagnostics);
+      const runtime = value.config.runtime;
+      const script = typeof value.config.script === "string" ? value.config.script : "";
+      const environmentId = typeof value.config.environmentId === "string" ? value.config.environmentId.trim() : "";
+      const timeoutSeconds = value.config.timeoutSeconds === undefined ? 300 : value.config.timeoutSeconds;
+      const maxOutputBytes = value.config.maxOutputBytes === undefined ? 65536 : value.config.maxOutputBytes;
+      const cwd = value.config.cwd === undefined ? undefined
+        : typeof value.config.cwd === "string" ? value.config.cwd.trim() : "";
+      if (!(runtime === "bash" || runtime === "powershell" || runtime === "python")) diagnostics.push(diagnostic("E3005", `${pointer}/config/runtime`, { expected: "bash, powershell, or python" }, "workflow.schema.const", "author"));
+      if (!script.trim() || script.includes("\0")) diagnostics.push(diagnostic("E3005", `${pointer}/config/script`, { expected: "non-empty script without null characters" }, "workflow.schema.const", "author"));
+      if (runtime === "python" && !IDENTIFIER.test(environmentId)) diagnostics.push(diagnostic("E3005", `${pointer}/config/environmentId`, { expected: "PKM Environment ID required for Python" }, "workflow.schema.const", "author"));
+      if (runtime !== "python" && value.config.environmentId !== undefined) diagnostics.push(diagnostic("E3005", `${pointer}/config/environmentId`, { expected: "environmentId only for Python" }, "workflow.schema.const", "author"));
+      if (!Number.isSafeInteger(timeoutSeconds) || (timeoutSeconds as number) < 1 || (timeoutSeconds as number) > 3600) diagnostics.push(diagnostic("E3005", `${pointer}/config/timeoutSeconds`, { expected: "integer from 1 through 3600" }, "workflow.schema.const", "author"));
+      if (!Number.isSafeInteger(maxOutputBytes) || (maxOutputBytes as number) < 1024 || (maxOutputBytes as number) > 1048576) diagnostics.push(diagnostic("E3005", `${pointer}/config/maxOutputBytes`, { expected: "integer from 1024 through 1048576" }, "workflow.schema.const", "author"));
+      if (value.config.cwd !== undefined && (!cwd || /[\r\n\0]/.test(cwd))) diagnostics.push(diagnostic("E3005", `${pointer}/config/cwd`, { expected: "non-empty path without control characters" }, "workflow.schema.const", "author"));
+      if ((runtime === "bash" || runtime === "powershell" || runtime === "python") && script.trim() && !script.includes("\0")
+          && (runtime !== "python" || IDENTIFIER.test(environmentId))
+          && (runtime === "python" || value.config.environmentId === undefined)
+          && Number.isSafeInteger(timeoutSeconds) && (timeoutSeconds as number) >= 1 && (timeoutSeconds as number) <= 3600
+          && Number.isSafeInteger(maxOutputBytes) && (maxOutputBytes as number) >= 1024 && (maxOutputBytes as number) <= 1048576
+          && (value.config.cwd === undefined || Boolean(cwd))) {
+        config = { runtime, script, ...(runtime === "python" ? { environmentId } : {}),
+          timeoutSeconds: timeoutSeconds as number, maxOutputBytes: maxOutputBytes as number, ...(cwd ? { cwd } : {}) };
+      }
+    }
+  } else if (value.kind === HUMAN_GATE_NODE_KIND) {
+    if (!isRecord(value.config)) {
+      diagnostics.push(diagnostic("E3003", `${pointer}/config`, { expected: "object" }, "workflow.schema.type", "author"));
+    } else {
+      unexpectedKeys(value.config, ["prompt", "inputKind", "choices"], `${pointer}/config`, diagnostics);
+      const prompt = typeof value.config.prompt === "string" ? value.config.prompt.trim() : "";
+      const inputKind = value.config.inputKind;
+      const choices = value.config.choices;
+      if (!prompt) diagnostics.push(diagnostic("E3005", `${pointer}/config/prompt`, { expected: "non-empty prompt" }, "workflow.schema.const", "author"));
+      if (!(["approval", "text", "choice"] as unknown[]).includes(inputKind)) diagnostics.push(diagnostic("E3005", `${pointer}/config/inputKind`, { expected: "approval, text, or choice" }, "workflow.schema.const", "author"));
+      if (inputKind === "choice" && (!Array.isArray(choices) || choices.length < 2 || choices.some(choice => typeof choice !== "string" || !choice.trim()) || new Set(choices).size !== choices.length)) diagnostics.push(diagnostic("E3004", `${pointer}/config/choices`, { expected: "at least two unique non-empty choices" }, "workflow.schema.nonEmptySet", "author"));
+      if (inputKind !== "choice" && choices !== undefined) diagnostics.push(diagnostic("E3005", `${pointer}/config/choices`, { expected: "choices only for choice input" }, "workflow.schema.const", "author"));
+      if (prompt && (["approval", "text", "choice"] as unknown[]).includes(inputKind)
+          && (inputKind !== "choice" || (Array.isArray(choices) && choices.length >= 2 && choices.every(choice => typeof choice === "string" && choice.trim()) && new Set(choices).size === choices.length))) {
+        config = { prompt, inputKind: inputKind as "approval" | "text" | "choice",
+          ...(inputKind === "choice" ? { choices: choices as string[] } : {}) };
+      }
+    }
+  } else if (value.kind === SUBFLOW_NODE_KIND) {
+    if (!isRecord(value.config)) {
+      diagnostics.push(diagnostic("E3003", `${pointer}/config`, { expected: "object" }, "workflow.schema.type", "author"));
+    } else {
+      unexpectedKeys(value.config, ["recipeId", "revision", "executableDigest"], `${pointer}/config`, diagnostics);
+      const recipeIdValid = validateIdentifier(value.config.recipeId, `${pointer}/config/recipeId`, diagnostics);
+      const revisionValid = Number.isSafeInteger(value.config.revision) && (value.config.revision as number) > 0;
+      const digestValid = typeof value.config.executableDigest === "string" && /^[a-f0-9]{64}$/.test(value.config.executableDigest);
+      if (!revisionValid) diagnostics.push(diagnostic("E3005", `${pointer}/config/revision`, { expected: "positive safe integer" }, "workflow.schema.const", "author"));
+      if (!digestValid) diagnostics.push(diagnostic("E3005", `${pointer}/config/executableDigest`, { expected: "SHA-256 hex digest" }, "workflow.schema.const", "author"));
+      if (recipeIdValid && revisionValid && digestValid) config = {
+        recipeId: value.config.recipeId as string,
+        revision: value.config.revision as number,
+        executableDigest: value.config.executableDigest as string
+      };
+    }
+  } else if (!isRecord(value.config) || Object.keys(value.config).length) {
+    diagnostics.push(diagnostic("E3007", `${pointer}/config`, { kind: value.kind }, "workflow.schema.noopConfig", "author"));
   }
   if (!Array.isArray(value.dependsOn)) {
     diagnostics.push(diagnostic("E3003", `${pointer}/dependsOn`, { expected: "array" }, "workflow.schema.type", "author"));
+  }
+  let generalInstruction: string | undefined;
+  if (value.generalInstruction !== undefined) {
+    if (typeof value.generalInstruction !== "string") {
+      diagnostics.push(diagnostic("E3003", `${pointer}/generalInstruction`, { expected: "string" }, "workflow.schema.type", "author"));
+    } else if (!value.generalInstruction.trim()) {
+      diagnostics.push(diagnostic("E3005", `${pointer}/generalInstruction`, { expected: "non-empty instruction" }, "workflow.schema.const", "author"));
+    } else {
+      generalInstruction = value.generalInstruction.trim();
+    }
   }
   const dependencies = Array.isArray(value.dependsOn)
     ? value.dependsOn.map((dependency, dependencyIndex) => normalizeDependency(dependency, `${pointer}/dependsOn/${dependencyIndex}`, diagnostics)).filter((dependency): dependency is WorkflowDependencyV1 => Boolean(dependency))
@@ -240,15 +399,23 @@ function normalizeNode(value: unknown, index: number, diagnostics: WorkflowDiagn
   if (control?.mode === "branch" && ports && control.cases.some(caseId => !ports.outputs.includes(caseId))) {
     diagnostics.push(diagnostic("E3005", `${pointer}/control/cases`, { expected: "cases declared as output ports" }, "workflow.schema.const", "author"));
   }
-  if (!nodeIdValid || value.kind !== NOOP_NODE_KIND) return undefined;
-  return {
+  if (!nodeIdValid || !config || ![NOOP_NODE_KIND, COMMAND_NODE_KIND, SCRIPT_NODE_KIND, HUMAN_GATE_NODE_KIND, SUBFLOW_NODE_KIND].includes(value.kind as typeof NOOP_NODE_KIND)) return undefined;
+  const base = {
     nodeId: value.nodeId as string,
-    kind: NOOP_NODE_KIND,
-    config: {},
+    ...(generalInstruction ? { generalInstruction } : {}),
     dependsOn: dependencies,
     ...(ports ? { ports } : {}),
     ...(control ? { control } : {})
   };
+  return value.kind === NOOP_NODE_KIND
+    ? { ...base, kind: NOOP_NODE_KIND, config: config as Record<string, never> }
+    : value.kind === COMMAND_NODE_KIND
+      ? { ...base, kind: COMMAND_NODE_KIND, config: config as WorkflowCommandNodeV1["config"] }
+      : value.kind === SCRIPT_NODE_KIND
+        ? { ...base, kind: SCRIPT_NODE_KIND, config: config as WorkflowScriptNodeV1["config"] }
+      : value.kind === HUMAN_GATE_NODE_KIND
+        ? { ...base, kind: HUMAN_GATE_NODE_KIND, config: config as WorkflowHumanGateNodeV1["config"] }
+    : { ...base, kind: SUBFLOW_NODE_KIND, config: config as WorkflowSubflowNodeV1["config"] };
 }
 
 function normalizePortMap(value: unknown, pointer: string, diagnostics: WorkflowDiagnostic[]): Record<string, WorkflowPortDescriptor> | undefined {
@@ -269,6 +436,20 @@ function normalizePortMap(value: unknown, pointer: string, diagnostics: Workflow
   return result;
 }
 
+function normalizeTrigger(value: unknown, pointer: string, diagnostics: WorkflowDiagnostic[]): WorkflowCronTriggerV1 | undefined {
+  if (!isRecord(value)) {
+    diagnostics.push(diagnostic("E3003", pointer, { expected: "object" }, "workflow.schema.type", "author"));
+    return undefined;
+  }
+  unexpectedKeys(value, ["kind", "expression", "timezone"], pointer, diagnostics);
+  if (value.kind !== "cron") diagnostics.push(diagnostic("E3005", `${pointer}/kind`, { expected: "cron" }, "workflow.schema.const", "author"));
+  const expression = typeof value.expression === "string" ? value.expression.trim() : "";
+  const timezone = typeof value.timezone === "string" ? value.timezone.trim() : "";
+  if (!expression || expression.split(/\s+/).length !== 5) diagnostics.push(diagnostic("E3005", `${pointer}/expression`, { expected: "five-field cron expression" }, "workflow.schema.const", "author"));
+  if (!timezone) diagnostics.push(diagnostic("E3005", `${pointer}/timezone`, { expected: "IANA timezone or UTC" }, "workflow.schema.const", "author"));
+  return value.kind === "cron" && expression.split(/\s+/).length === 5 && timezone ? { kind: "cron", expression, timezone } : undefined;
+}
+
 export function compileWorkflowDefinitionV1(input: unknown): WorkflowCompileResult {
   const diagnostics: WorkflowDiagnostic[] = [];
   if (!isRecord(input)) return { ok: false, diagnostics: [diagnostic("E3003", "", { expected: "object" }, "workflow.schema.type", "author")] };
@@ -280,9 +461,10 @@ export function compileWorkflowDefinitionV1(input: unknown): WorkflowCompileResu
     diagnostics.push(diagnostic("E3003", "/spec", { expected: "object" }, "workflow.schema.type", "author"));
     return { ok: false, diagnostics: sortDiagnostics(diagnostics) };
   }
-  unexpectedKeys(input.spec, ["inputs", "nodes", "outputs", "completion"], "/spec", diagnostics);
+  unexpectedKeys(input.spec, ["inputs", "nodes", "outputs", "completion", "trigger"], "/spec", diagnostics);
   const inputs = normalizePortMap(input.spec.inputs, "/spec/inputs", diagnostics);
   const outputs = normalizePortMap(input.spec.outputs, "/spec/outputs", diagnostics);
+  const trigger = input.spec.trigger === undefined ? undefined : normalizeTrigger(input.spec.trigger, "/spec/trigger", diagnostics);
   if (!Array.isArray(input.spec.nodes) || !input.spec.nodes.length) {
     diagnostics.push(diagnostic("E3004", "/spec/nodes", { expected: "non-empty node set" }, "workflow.schema.nonEmptySet", "author"));
   }
@@ -348,7 +530,7 @@ export function compileWorkflowDefinitionV1(input: unknown): WorkflowCompileResu
   if (diagnostics.length) return { ok: false, diagnostics: sortDiagnostics(diagnostics) };
   const model: WorkflowDefinitionV1 = {
     schema: WORKFLOW_DEFINITION_SCHEMA,
-    spec: { inputs: inputs!, nodes, outputs: outputs!, completion: { requiredNodes: normalizedRequiredNodes } }
+    spec: { inputs: inputs!, nodes, outputs: outputs!, completion: { requiredNodes: normalizedRequiredNodes }, ...(trigger ? { trigger } : {}) }
   };
   try {
     const canonicalBytes = Buffer.from(canonicalJson(model), "utf8");

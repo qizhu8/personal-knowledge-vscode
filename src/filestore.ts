@@ -598,6 +598,9 @@ function skillFromFile(f: MdFile): any {
     category: catOf(key),
     tags: JSON.stringify(asArray(fm.tags)),
     source_project: fm.source_project ?? null,
+    recipe_required: fm.recipe_required === true,
+    recipe_hint: String(fm.recipe_hint || ""),
+    related_skills: asArray(fm.related_skills),
     pinned: fm.pinned === true,
     content: body,
     created_at: fm.created || new Date(f.mtime).toISOString(),
@@ -613,6 +616,14 @@ export function skillList(category?: string, tag?: string): any[] {
   if (tag) rows = rows.filter(r => asArray(JSON.parse(r.tags || "[]")).includes(tag));
   rows.sort((a, b) => (a.category || "").localeCompare(b.category || "") || a.name.localeCompare(b.name));
   return rows.map(({ content, _key, ...meta }) => meta);
+}
+
+export function knowledgeFilePath(type: "skills" | "notes" | "papers", id: string): string | undefined {
+  if (type === "skills") return findSkillFile(id)?.full;
+  const root = type === "notes" ? notesRoot() : papersRoot();
+  const target = resolve(root, `${id}.md`);
+  if (!target.startsWith(resolve(root) + sep) || !existsSync(target) || statSync(target).isDirectory()) return undefined;
+  return target;
 }
 
 export function skillSearch(q: string, options: SearchOptions = {}): any[] {
@@ -637,6 +648,7 @@ export function skillGet(name: string): any {
 
 export function skillUpsert(row: {
   name: string; content: string; description?: string; category?: string; tags?: string[]; source_project?: string; pinned?: boolean;
+  recipe_required?: boolean; recipe_hint?: string; related_skills?: string[];
 }): boolean {
   const existingFile = findSkillFile(row.name);
   const existing = existingFile ? skillFromFile(existingFile) : null;
@@ -655,6 +667,9 @@ export function skillUpsert(row: {
     description: row.description ?? existing?.description ?? "",
     tags: row.tags ?? (existing ? JSON.parse(existing.tags || "[]") : []),
     source_project: row.source_project ?? existing?.source_project ?? undefined,
+    recipe_required: (row.recipe_required ?? existing?.recipe_required) ? true : undefined,
+    recipe_hint: row.recipe_hint ?? existing?.recipe_hint ?? undefined,
+    related_skills: row.related_skills ?? existing?.related_skills ?? undefined,
     pinned: (row.pinned ?? existing?.pinned) ? true : undefined,
     created,
   };

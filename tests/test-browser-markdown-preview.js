@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 
 const extension = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
+const branding = fs.readFileSync(path.join(__dirname, "..", "src", "browser-branding.ts"), "utf8");
 const panel = fs.readFileSync(path.join(__dirname, "..", "dist", "webview", "panel.js"), "utf8");
 const chatBrowser = fs.readFileSync(path.join(__dirname, "..", "src", "chatroom-browser.ts"), "utf8");
 const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
@@ -21,6 +22,18 @@ assert.match(preview, /@media\(max-width:700px\)\{\.wrap\{width:100%;margin:0/,
 assert.match(preview, /@media print\{body\{background:#fff\}\.wrap\{border:none;box-shadow:none;margin:0;max-width:none\}\}/,
   "wide preview changes must preserve print layout");
 assert.match(preview, /browserFaviconTag\(faviconHref\)/, "generated Markdown pages must select routed or embedded extension icons");
+assert.match(branding, /function ensureBrowserFavicon\(/, "browser documents share one favicon injection helper");
+assert.match(extension, /const brandedDocument = ensureBrowserFavicon\(doc\)/, "Open in Browser always applies shared branding");
+assert.match(extension, /openExternal\(vscode\.Uri\.parse\(`http:\/\/\$\{externalUrlHost\(\)\}:\$\{port\}\//,
+  "ephemeral browser previews must use the configured external hostname");
+assert.match(extension, /function authorizeEphemeralBrowserRequest\(/,
+  "hostname-bound ephemeral previews must require an access token");
+assert.match(extension, /const cookieName = `pkm_ephemeral_preview_\$\{accessToken\.slice\(0, 12\)\}`/,
+  "each ephemeral preview must use an instance-specific cookie");
+assert.match(extension, /_pkm_token=\$\{accessToken\}/,
+  "Open in Browser URLs must carry a high-entropy access token");
+assert.doesNotMatch(extension, /vscode\.Uri\.parse\(`http:\/\/127\.0\.0\.1:\$\{port\}/,
+  "Open in Browser must not expose a literal loopback IP");
 assert.match(extension, /function publicContentPath[\s\S]{0,300}`\$\{kind\}s\/\$\{key\}`/);
 assert.match(extension, /authorizePath: publicContentRouteAllowed/);
 assert.match(extension, /!isContentPathPrivate\(match\[1\] as PrivacyContentType, match\[2\]\)/,

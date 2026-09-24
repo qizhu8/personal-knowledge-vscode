@@ -14,6 +14,10 @@ async function main() {
     const skillDir = path.join(root, 'skills', 'Coding');
     fs.mkdirSync(noteDir, { recursive: true });
     fs.mkdirSync(skillDir, { recursive: true });
+    fs.mkdirSync(path.join(root, 'notes', 'Project', 'Future Empty'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'skills', 'Planned', 'Empty Skill Group'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'notes', '.hidden'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'notes', '_assets'), { recursive: true });
     const scriptDir = path.join(root, 'scripts', 'Tools');
     fs.mkdirSync(scriptDir, { recursive: true });
     const notePath = path.join(noteDir, 'progress.md');
@@ -28,8 +32,11 @@ async function main() {
     assert.strictEqual(first.stats.scanned, 3);
     assert.strictEqual(first.stats.parsed, 3);
     assert.strictEqual(manager.notes()[0].title, 'First Progress');
-    assert.deepStrictEqual(manager.folders('notes'), ['Project', 'Project/Deep']);
+    assert.deepStrictEqual(manager.folders('notes'), ['Project', 'Project/Deep', 'Project/Future Empty']);
+    fs.mkdirSync(path.join(root, 'notes', 'Project', 'Visible After Refresh'), { recursive: true });
+    assert.deepStrictEqual(manager.folders('notes'), ['Project', 'Project/Deep', 'Project/Future Empty'], 'repeated folder reads must reuse the cached tree');
     assert.strictEqual(manager.skills()[0].name, 'Testing');
+    assert.deepStrictEqual(manager.folders('skills'), ['Coding', 'Planned', 'Planned/Empty Skill Group']);
     assert.deepStrictEqual(manager.scripts()[0], {
       path: 'Tools/check.py', file: 'check.py', category: 'Tools', extension: '.py', lang: 'Python', size: 11, updatedAt: manager.scripts()[0].updatedAt,
     });
@@ -37,6 +44,7 @@ async function main() {
     const second = await manager.refresh();
     assert.strictEqual(second.stats.reused, 3);
     assert.strictEqual(second.stats.parsed, 0);
+    assert.deepStrictEqual(manager.folders('notes'), ['Project', 'Project/Deep', 'Project/Future Empty', 'Project/Visible After Refresh'], 'inventory refresh must invalidate the folder cache');
     fs.writeFileSync(notePath, '---\ntitle: Updated Progress\ntype: general\n---\nupdated body is larger');
     const third = await manager.refresh();
     assert.strictEqual(third.stats.reused, 2);

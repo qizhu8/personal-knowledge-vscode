@@ -10,9 +10,16 @@ import {
   createProject,
   createRecipe,
   createThread,
+  deleteRecipeFromTrash,
+  deleteRecipe,
   initializeProjectModel,
+  importRecipe,
+  moveRecipeToTrash,
   moveThread,
+  RecipeImportOptions,
+  RecipeRecord,
   RecipeUpdate,
+  restoreRecipeFromTrash,
   updateRecipe
 } from "./project-model";
 
@@ -31,6 +38,7 @@ export interface ProjectSnapshot {
   projects: ProjectModelState["projects"];
   threads: ProjectModelState["threads"];
   recipes: NonNullable<ProjectModelState["recipes"]>;
+  recipeTrash: NonNullable<ProjectModelState["recipeTrash"]>;
 }
 
 export interface ProjectStoreResult {
@@ -92,9 +100,9 @@ export class ProjectStore {
     });
   }
 
-  createRecipe(command: ProjectStoreCommand, scope: { kind: "global" } | { kind: "project"; projectId: string }, name: string): ProjectStoreResult {
+  createRecipe(command: ProjectStoreCommand, scope: { kind: "global" } | { kind: "project"; projectId: string }, name: string, category = ""): ProjectStoreResult {
     return this.mutate(command, "recipe-create", state => {
-      const next = createRecipe(state, scope, name, this.createId);
+      const next = createRecipe(state, scope, name, this.createId, category);
       return { state: next, entityId: next.recipes![next.recipes!.length - 1].recipeId };
     });
   }
@@ -104,6 +112,35 @@ export class ProjectStore {
       state: updateRecipe(state, recipeId, update),
       entityId: recipeId
     }));
+  }
+
+  importRecipe(command: ProjectStoreCommand, recipe: RecipeRecord, options: RecipeImportOptions): ProjectStoreResult {
+    return this.mutate(command, "recipe-import", state => {
+      const next = importRecipe(state, recipe, options, this.createId);
+      const imported = next.recipes!.find(candidate => candidate.origin?.kind === options.kind
+        && candidate.origin?.sourceKey === options.sourceKey && candidate.origin?.sourceRecipeId === recipe.recipeId);
+      if (!imported) throw new ProjectStoreError("recipe-import-failed", "Imported Recipe was not persisted.");
+      return { state: next, entityId: imported.recipeId };
+    });
+  }
+
+  deleteRecipe(command: ProjectStoreCommand, recipeId: string): ProjectStoreResult {
+    return this.mutate(command, "recipe-delete", state => ({
+      state: deleteRecipe(state, recipeId),
+      entityId: recipeId
+    }));
+  }
+
+  moveRecipeToTrash(command: ProjectStoreCommand, recipeId: string): ProjectStoreResult {
+    return this.mutate(command, "recipe-trash-move", state => ({ state: moveRecipeToTrash(state, recipeId), entityId: recipeId }));
+  }
+
+  restoreRecipeFromTrash(command: ProjectStoreCommand, recipeId: string): ProjectStoreResult {
+    return this.mutate(command, "recipe-trash-restore", state => ({ state: restoreRecipeFromTrash(state, recipeId), entityId: recipeId }));
+  }
+
+  deleteRecipeFromTrash(command: ProjectStoreCommand, recipeId: string): ProjectStoreResult {
+    return this.mutate(command, "recipe-trash-delete", state => ({ state: deleteRecipeFromTrash(state, recipeId), entityId: recipeId }));
   }
 
   moveThread(command: ProjectStoreCommand, plan: ThreadMovePlan): ProjectStoreResult {
@@ -158,7 +195,7 @@ export class ProjectStore {
 
   private snapshot(envelope: ProjectStoreEnvelope): ProjectSnapshot {
     const state = envelope.payload.state;
-    return clone({ schema: 1, storeVersion: envelope.storeVersion, rootId: state.rootId, projects: state.projects, threads: state.threads, recipes: state.recipes || [] });
+    return clone({ schema: 1, storeVersion: envelope.storeVersion, rootId: state.rootId, projects: state.projects, threads: state.threads, recipes: state.recipes || [], recipeTrash: state.recipeTrash || [] });
   }
 
   private write(envelope: ProjectStoreEnvelope): void {

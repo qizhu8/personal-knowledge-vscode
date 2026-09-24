@@ -1,8 +1,10 @@
 // ── Shared Market subscriptions ────────────────────────────────────────────
-let subscriptionData = { enabled:false, port:19877, advertisedHost:'', displayName:'', shares:[], subscriptions:[], catalog:{}, networkAddresses:[] };
+let subscriptionData = { enabled:false, port:19877, advertisedHost:'', displayName:'', shares:[], subscriptions:[], catalog:{}, networkAddresses:[], githubConnections:[] };
 let subscriptionEditingShare = '';
 let subscriptionEditorTab = 'general';
 let subscriptionExpandedId = '';
+let subscriptionSourceMode = 'broker';
+let subscriptionGitHubDraft = { repository:'', branch:'main', credentialTargetId:'', alias:'', result:null };
 const subscriptionSelectionDrafts = new Map();
 
 function renderSubscriptionLoading() {
@@ -11,6 +13,7 @@ function renderSubscriptionLoading() {
 
 function subscriptionOnState(data) {
   if (subscriptionSelectionDrafts.has(subscriptionEditingShare)) subscriptionCaptureSelectionDraft();
+  subscriptionCaptureGitHubDraft();
   subscriptionData = { ...subscriptionData, ...(data || {}) };
   if (subscriptionEditingShare && subscriptionEditingShare !== 'new' && !(subscriptionData.shares || []).some(share => share.shareId === subscriptionEditingShare)) subscriptionEditingShare = '';
   if (state.tab === 'subscriptions') renderSubscriptionPane();
@@ -38,17 +41,7 @@ function subscriptionShareRows() {
   return cards + createCard || '<div class="sub-empty">No Share Brokers.</div>';
 }
 
-function subscriptionCategoryTree(items) {
-  const root = { folders:{}, items:[] };
-  for (const item of items) {
-    const parts = String(item.treePath ?? item.cat ?? '').split('/').map(part => part.trim()).filter(Boolean);
-    let node = root;
-    for (const part of parts) node = node.folders[part] ||= { folders:{}, items:[] };
-    node.items.push(item);
-  }
-  return root;
-}
-function subscriptionTreeCount(node) { return node.items.length + Object.values(node.folders).reduce((total,child) => total + subscriptionTreeCount(child), 0); }
+function subscriptionTreeCount(node) { return (node.items || node.files || []).length + Object.values(node.folders).reduce((total,child) => total + subscriptionTreeCount(child), 0); }
 function subscriptionRenderTree(type, node, path, picked, folders, openFolders) {
   const folderRows = Object.entries(node.folders).sort(([a],[b]) => {
     const aSynthetic = a === '(uncategorized)' || a === 'Ungrouped', bSynthetic = b === '(uncategorized)' || b === 'Ungrouped';
@@ -56,7 +49,7 @@ function subscriptionRenderTree(type, node, path, picked, folders, openFolders) 
   }).map(([name,child]) => {
     const fullPath = [...path,name].join('/');
     const inherited = folders.has('') || [...folders].some(folder => folder && (fullPath === folder || fullPath.startsWith(folder + '/')));
-    const actualPaths = subscriptionTreeItems(child).map(item => String(item.cat || ''));
+    const actualPaths = fileSelectorTreeItems(child).map(item => String(item.cat || ''));
     const canShareFolder = actualPaths.length > 0 && actualPaths.every(actual => actual === fullPath || actual.startsWith(fullPath + '/'));
     const checkbox = canShareFolder ? `<input type="checkbox" data-sub-folder="${type}" value="${esc(fullPath)}" ${inherited ? 'checked' : ''} onclick="event.stopPropagation()" onchange="subscriptionFolderToggle(this)" title="Include this folder and future files">` : '<span class="sub-tree-folder-spacer"></span>';
     return `<details class="sub-tree-folder" data-sub-tree-type="${type}" data-sub-tree-path="${esc(fullPath)}" ${openFolders.has(fullPath) ? 'open' : ''}><summary>${checkbox}<span>${esc(name)}</span><small>${subscriptionTreeCount(child)}</small></summary><div>${subscriptionRenderTree(type,child,[...path,name],picked,folders,openFolders)}</div></details>`;
@@ -68,17 +61,15 @@ function subscriptionRenderTree(type, node, path, picked, folders, openFolders) 
   }).join('');
   return folderRows + leaves;
 }
-function subscriptionTreeItems(node) { return [...node.items, ...Object.values(node.folders).flatMap(subscriptionTreeItems)]; }
-
 function subscriptionContentPicker(share) {
-  const labels = { skills:'Skills', notes:'Notes', papers:'Papers', prompts:'Prompts', scripts:'Scripts', packages:'Packages', servers:'Servers' };
+  const labels = { skills:'Skills', notes:'Notes', papers:'Papers', prompts:'Prompts', scripts:'Scripts', packages:'Packages', servers:'Servers', recipes:'Recipes' };
   const draft = subscriptionSelectionDrafts.get(subscriptionEditingShare);
   return Object.entries(labels).map(([type,label]) => {
     const items = subscriptionData.catalog?.[type] || [];
     const picked = new Set(draft?.selected?.[type] ?? share?.selected?.[type] ?? []);
     const folders = new Set(draft?.folders?.[type] ?? share?.folders?.[type] ?? []);
     const openFolders = new Set(draft?.openFolders?.[type] || []);
-    const tree = subscriptionCategoryTree(items);
+    const tree = fileSelectorCategoryTree(items);
     const selectedCount = items.filter(item => folders.has('') || picked.has(item.id) || [...folders].some(folder => folder && (item.cat === folder || item.cat.startsWith(folder + '/')))).length;
     const publishedCount = Number(share?.summary?.counts?.[type]) || 0;
     const countLabel = draft ? `${selectedCount} selected · draft` : `${publishedCount} selected`;
@@ -133,10 +124,11 @@ function subscriptionRows() {
     const taxonomy = [...(item.topics || []), ...(item.tags || []).map(tag => `#${tag}`)].slice(0,12);
     const expanded = subscriptionExpandedId === item.id;
     const menuPayload = subscriptionMenuPayload({ id:item.id, alias:item.alias || '', name, nodeId:item.nodeId, shareId:item.shareId });
+    const github = item.source?.type === 'github';
     return `<article class="pk-card sub-subscriber-card ${expanded ? 'active' : ''}" oncontextmenu="subscriptionBrokerMenu(event,'${menuPayload}')"><div class="sub-row" role="button" tabindex="0" aria-expanded="${expanded}" onclick="subscriptionToggleDetail('${esc(item.id)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();subscriptionToggleDetail('${esc(item.id)}')}">
       <div class="sub-status ${esc(item.status)}" title="${esc(item.error || item.status)}"></div>
-      <div class="sub-row-main"><strong>${esc(name)}</strong><span>${esc(item.status || 'unknown')} · revision ${Number(item.revision)||0}</span><small>Last synced ${item.lastUpdated ? new Date(item.lastUpdated).toLocaleString() : 'never'}</small></div><i class="sub-card-arrow">›</i>
-    </div>${expanded ? `<div class="sub-subscriber-detail"><div class="sub-subscriber-facts"><span>Host · ${esc(item.publisher || 'Unknown')}</span><span>${esc(item.endpoint || '')}</span><span>${Number(item.itemCount)||0} cached items</span></div>${counts ? `<div class="sub-content-counts">${esc(counts)}</div>` : ''}${taxonomy.length ? `<div class="sub-taxonomy">${taxonomy.map(value => `<span>${esc(value)}</span>`).join('')}</div>` : ''}${item.error ? `<div class="sub-warning">${esc(item.error)}</div>` : ''}<div class="sub-row-actions"><button class="tbtn" onclick="subscriptionRename('${esc(item.id)}','${esc(item.alias || '')}')">Rename</button><button class="tbtn" onclick="ask('subscriptionRefresh',{id:'${esc(item.id)}',force:true})">Refresh</button><button class="tbtn danger" onclick="subscriptionRemove('${esc(item.id)}','${esc(name)}')">Remove</button></div></div>` : ''}</article>`;
+      <div class="sub-row-main"><strong>${esc(name)}</strong><span>${github ? 'GitHub branch' : esc(item.status || 'unknown') + ' · revision ' + (Number(item.revision)||0)}</span><small>${github ? `${esc(item.source.branch)} · ${esc((item.source.commit || '').slice(0,10))}` : `Last synced ${item.lastUpdated ? new Date(item.lastUpdated).toLocaleString() : 'never'}`}</small></div><i class="sub-card-arrow">›</i>
+    </div>${expanded ? `<div class="sub-subscriber-detail"><div class="sub-subscriber-facts"><span>${github ? 'Source · GitHub' : `Host · ${esc(item.publisher || 'Unknown')}`}</span><span>${esc(item.endpoint || '')}</span><span>${Number(item.itemCount)||0} cached items</span></div>${counts ? `<div class="sub-content-counts">${esc(counts)}</div>` : ''}${taxonomy.length ? `<div class="sub-taxonomy">${taxonomy.map(value => `<span>${esc(value)}</span>`).join('')}</div>` : ''}${item.error ? `<div class="sub-warning">${esc(item.error)}</div>` : ''}<div class="sub-row-actions"><button class="tbtn" onclick="subscriptionRename('${esc(item.id)}','${esc(item.alias || '')}')">Rename</button><button class="tbtn" data-pending-label="Refreshing…" onclick="ask('subscriptionRefresh',{id:'${esc(item.id)}',force:true},this)">${github ? 'Refresh branch' : 'Refresh'}</button><button class="tbtn danger" onclick="subscriptionRemove('${esc(item.id)}','${esc(name)}')">Remove</button></div></div>` : ''}</article>`;
   }).join('');
 }
 
@@ -168,12 +160,78 @@ function renderSubscriptionPane() {
       <div class="sub-gateway-grid"><label>Service status<strong class="sub-service-status ${d.enabled ? 'online' : 'offline'}">${d.enabled ? 'Online · persistent daemon' : 'Offline'}</strong></label><label>Node label<input id="sub-display-name" value="${esc(d.displayName || '')}"></label><label>Invite interface<select id="sub-host">${subscriptionHostOptions()}</select></label><label>Port<input id="sub-port" type="number" min="1024" max="65535" value="${Number(d.port)||19877}"></label></div>
     </section>
     <section class="sub-band"><div class="sub-band-title"><div><h3>My Share Brokers</h3><span>${(d.shares || []).length} audiences</span></div><button class="pk-button primary" onclick="subscriptionNewShare()">${uiIcon('add', 'Broker')}</button></div><div class="pk-list sub-broker-list">${subscriptionShareRows()}</div></section>
-    <section class="sub-band"><div class="sub-band-title"><div><h3>Subscribed Brokers</h3><span>${(d.subscriptions || []).length} cached collections</span></div></div>
-      <div class="sub-add"><input id="sub-alias" placeholder="Alias (optional)"><textarea id="sub-magic-link" rows="2" placeholder="Paste pkmshare:v1 Magic Link"></textarea><input id="sub-broker-secret" type="password" placeholder="Broker Secret (protected only)"><button class="pk-button primary" data-pending-label="Subscribing…" onclick="subscriptionAdd(this)">Subscribe</button></div>
+    <section class="sub-band"><div class="sub-band-title"><div><h3>Subscribed Brokers</h3><span>${(d.subscriptions || []).length} mounted collections</span></div><div class="sub-source-switch" role="tablist" aria-label="Subscription source"><button class="${subscriptionSourceMode === 'broker' ? 'active' : ''}" role="tab" aria-selected="${subscriptionSourceMode === 'broker'}" onclick="subscriptionSetSourceMode('broker')">Broker</button><button class="${subscriptionSourceMode === 'github' ? 'active' : ''}" role="tab" aria-selected="${subscriptionSourceMode === 'github'}" onclick="subscriptionSetSourceMode('github')">GitHub Branch</button></div></div>
+      ${subscriptionSourceMode === 'github' ? subscriptionGitHubMountEditor() : `<div class="sub-add"><input id="sub-alias" placeholder="Alias (optional)"><textarea id="sub-magic-link" rows="2" placeholder="Paste pkmshare:v1 Magic Link"></textarea><input id="sub-broker-secret" type="password" placeholder="Broker Secret (protected only)"><button class="pk-button primary" data-pending-label="Subscribing…" onclick="subscriptionAdd(this)">Subscribe</button></div>`}
       <div class="pk-list sub-list">${subscriptionRows()}</div>
     </section>
   </div>`;
   subscriptionSyncFolderStates();
+}
+
+function subscriptionGitHubMountEditor() {
+  const connections = subscriptionData.githubConnections || [];
+  const options = connections.map(item => `<option value="${esc(item.id)}" ${item.id === subscriptionGitHubDraft.credentialTargetId ? 'selected' : ''}>${esc(item.name)} · ${esc(item.method === 'ssh' ? 'SSH' : 'HTTPS / GCM')}${item.account ? ` · ${esc(item.account)}` : ''}</option>`).join('');
+  const result = subscriptionGitHubDraft.result;
+  return `<div class="sub-github-subscribe"><div class="sub-github-fields"><label>Repository<input id="sub-github-repository" value="${esc(subscriptionGitHubDraft.repository)}" placeholder="https://github.com/owner/repository.git"></label><label>Branch<input id="sub-github-branch" value="${esc(subscriptionGitHubDraft.branch || 'main')}" placeholder="main"></label><label>Credential profile<select id="sub-github-credential"><option value="">None / Public repository</option>${options}</select></label><label>Local alias<input id="sub-github-alias" value="${esc(subscriptionGitHubDraft.alias)}" placeholder="Optional"></label><button class="pk-button" data-pending-label="Testing…" onclick="subscriptionTestGitHub(this)">${uiIcon('check','Test')}</button></div>
+    ${result ? `<div class="sub-github-result"><div class="sub-github-result-head"><span><strong>${esc(result.name || 'GitHub repository')}</strong><small>${esc(result.repository)} · ${esc(result.branch)}</small></span><code title="${esc(result.commit)}">${esc(result.commit.slice(0,12))}</code></div><div class="sub-tree-heading"><strong>Content found</strong><span>${result.files.length} files · folder selection includes future files</span></div><div class="sub-github-tree">${subscriptionGitHubTree(result.files)}</div><div class="sub-github-actions"><span>Read-only cache · exact tested commit</span><button class="pk-button primary" data-pending-label="Subscribing…" onclick="subscriptionMountGitHub(this)">Subscribe Selected</button></div></div>` : '<div class="sub-control-note">Public repositories need no credential. Private access reuses a credential profile from GitHub Sync.</div>'}</div>`;
+}
+
+function subscriptionSetSourceMode(mode) { subscriptionCaptureGitHubDraft(); subscriptionSourceMode = mode === 'github' ? 'github' : 'broker'; renderSubscriptionPane(); }
+function subscriptionCaptureGitHubDraft() {
+  const repository = document.getElementById('sub-github-repository');
+  if (!repository) return;
+  subscriptionGitHubDraft.repository = repository.value.trim();
+  subscriptionGitHubDraft.branch = document.getElementById('sub-github-branch')?.value.trim() || 'main';
+  subscriptionGitHubDraft.credentialTargetId = document.getElementById('sub-github-credential')?.value || '';
+  subscriptionGitHubDraft.alias = document.getElementById('sub-github-alias')?.value.trim() || '';
+}
+function subscriptionGitHubTestResult(data) {
+  subscriptionGitHubDraft = { ...subscriptionGitHubDraft, repository:data.repository || '', branch:data.branch || 'main', credentialTargetId:data.credentialTargetId || '', result:{ ...data, selectedFolders:new Set([...new Set((data.files || []).map(file => String(file.path).split('/')[0]))]), selectedPaths:new Set() } };
+  subscriptionSourceMode = 'github';
+  if (state.tab === 'subscriptions') renderSubscriptionPane();
+}
+function subscriptionGitHubTree(files) {
+  const root = { folders:{}, files:[] };
+  for (const file of files || []) {
+    const parts = String(file.path || '').split('/'); let node = root;
+    parts.slice(0,-1).forEach(part => { node = node.folders[part] ||= { folders:{}, files:[] }; });
+    node.files.push({ ...file, name:parts.at(-1) });
+  }
+  const selectedFolders = subscriptionGitHubDraft.result?.selectedFolders || new Set();
+  const selectedPaths = subscriptionGitHubDraft.result?.selectedPaths || new Set();
+  const render = (node, parent) => Object.entries(node.folders).sort(([a],[b]) => a.localeCompare(b)).map(([name,child]) => {
+    const folder = [parent,name].filter(Boolean).join('/');
+    const checked = selectedFolders.has(folder) || [...selectedFolders].some(rule => folder.startsWith(rule + '/'));
+    return `<details class="sub-tree-folder"><summary><input type="checkbox" data-gh-folder value="${esc(folder)}" ${checked ? 'checked' : ''} onclick="event.stopPropagation()" onchange="subscriptionGitHubFolderToggle(this)"><span>${esc(name)}</span><small>${subscriptionTreeCount(child)}</small></summary><div>${render(child,folder)}</div></details>`;
+  }).join('') + node.files.sort((a,b) => a.name.localeCompare(b.name)).map(file => {
+    const inherited = [...selectedFolders].some(folder => file.path.startsWith(folder + '/'));
+    return `<label class="sub-tree-leaf"><input type="checkbox" data-gh-file value="${esc(file.path)}" ${(inherited || selectedPaths.has(file.path)) ? 'checked' : ''} onchange="subscriptionGitHubFileToggle(this)"><span>${esc(file.name)}</span><small>${esc(file.type || '')}</small></label>`;
+  }).join('');
+  return render(root,'');
+}
+function subscriptionGitHubFolderToggle(input) {
+  const folder = input.value; const result = subscriptionGitHubDraft.result; if (!result) return;
+  if (input.checked) result.selectedFolders.add(folder); else result.selectedFolders.delete(folder);
+  input.closest('details')?.querySelectorAll('input[data-gh-folder],input[data-gh-file]').forEach(child => { if (child !== input) { child.checked = input.checked; result.selectedFolders.delete(child.dataset.ghFolder || ''); result.selectedPaths.delete(child.dataset.ghFile || ''); } });
+}
+function subscriptionGitHubFileToggle(input) {
+  const result = subscriptionGitHubDraft.result; if (!result) return;
+  if (input.checked) result.selectedPaths.add(input.value); else result.selectedPaths.delete(input.value);
+  if (!input.checked) {
+    let folder = input.closest('.sub-tree-folder');
+    while (folder) {
+      const checkbox = folder.querySelector(':scope > summary input[data-gh-folder]');
+      if (checkbox) { checkbox.checked = false; result.selectedFolders.delete(checkbox.value); }
+      folder = folder.parentElement?.closest('.sub-tree-folder');
+    }
+  }
+}
+function subscriptionTestGitHub(button) { subscriptionCaptureGitHubDraft(); subscriptionGitHubDraft.result = null; ask('subscriptionTestGitHubBranch', { repository:subscriptionGitHubDraft.repository, branch:subscriptionGitHubDraft.branch, credentialTargetId:subscriptionGitHubDraft.credentialTargetId }, button); }
+function subscriptionMountGitHub(button) {
+  subscriptionCaptureGitHubDraft(); const result = subscriptionGitHubDraft.result; if (!result) return;
+  const selectedPaths = [...document.querySelectorAll('input[data-gh-file]:checked')].map(input => input.value);
+  const selectedFolders = [...document.querySelectorAll('input[data-gh-folder]:checked')].map(input => input.value);
+  ask('subscriptionMountGitHub', { repository:subscriptionGitHubDraft.repository, branch:subscriptionGitHubDraft.branch, credentialTargetId:subscriptionGitHubDraft.credentialTargetId, alias:subscriptionGitHubDraft.alias, expectedCommit:result.commit, selectedPaths, selectedFolders }, button);
 }
 
 function subscriptionSaveGateway(button) {
@@ -238,7 +296,7 @@ function subscriptionUncheckCoveringFolders(type, itemPath, except) {
 function subscriptionCaptureSelectionDraft() {
   if (!subscriptionEditingShare || !document.querySelector('.sub-broker-settings')) return;
   const selected = {}, folders = {}, openFolders = {};
-  for (const type of ['skills','notes','papers','prompts','scripts','packages','servers']) {
+  for (const type of ['skills','notes','papers','prompts','scripts','packages','servers','recipes']) {
     selected[type] = [...document.querySelectorAll(`input[data-sub-item="${type}"]:checked`)].map(input => input.value);
     folders[type] = [...document.querySelectorAll(`input[data-sub-folder="${type}"]:checked`)].map(input => input.value);
     openFolders[type] = [...document.querySelectorAll(`.sub-tree-folder[open][data-sub-tree-type="${type}"]`)].map(folder => folder.dataset.subTreePath);
@@ -256,7 +314,7 @@ function subscriptionUpdateSelectedCount(type) {
 }
 function subscriptionSaveShare(shareId, button) {
   const selected = {}, folders = {}, contentTypes = [];
-  for (const type of ['skills','notes','papers','prompts','scripts','packages','servers']) {
+  for (const type of ['skills','notes','papers','prompts','scripts','packages','servers','recipes']) {
     folders[type] = [...document.querySelectorAll(`input[data-sub-folder="${type}"]:checked`)].map(input => input.value);
     const covers = folder => folders[type].includes('') || folders[type].includes(folder);
     selected[type] = [...document.querySelectorAll(`input[data-sub-item="${type}"]:checked`)].filter(input => !covers(input.dataset.subCat || '')).map(input => input.value);

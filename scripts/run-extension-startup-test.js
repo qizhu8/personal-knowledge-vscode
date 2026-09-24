@@ -29,13 +29,15 @@ async function main() {
   const packagedExtensionPath = packageExtension(root, testRoot);
   const virtualDisplay = await startVirtualDisplay(root);
   try {
+    const requestedScenario = String(process.env.PKM_STARTUP_ONLY || "").trim();
     const scenarios = [
       { name: "clean-install", openPanel: true },
       { name: "persisted-upgrade", openPanel: false },
       { name: "offline", openPanel: false, offline: true },
       { name: "malformed-state", openPanel: false, malformed: true },
       { name: "repeated-reload", openPanel: false },
-    ];
+    ].filter(scenario => !requestedScenario || scenario.name === requestedScenario);
+    if (!scenarios.length) throw new Error(`Unknown PKM_STARTUP_ONLY scenario: ${requestedScenario}`);
     for (const scenario of scenarios) {
       fs.writeFileSync(path.join(settingsDir, "settings.json"), JSON.stringify({
         "personalKnowledge.storePath": storeDir,

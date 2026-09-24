@@ -2,6 +2,7 @@ import { withCrossProcessLock } from "./cross-process-lock";
 import { stableUserPort } from "./user-service-ports";
 import { KnowledgeInventoryManager } from "./knowledge-inventory";
 import { performanceSummary, recordPerformanceMetric } from "./performance-telemetry";
+import { createAgentSnapshot, deleteAgentSnapshot, listAgentSnapshots } from "./agent-snapshots";
 import * as vscode from "vscode";
 import * as path from "path";
 import * as os from "os";
@@ -23,7 +24,7 @@ import {
   paperFacets, paperGraph, savePaperFile,
   paperGroups, paperSetGroup, paperGroupRename, paperGroupDelete, paperSetPinned, paperSetTopic,
   setStorePath as fsSetStorePath, getStorePath,
-  folderCreate, folderList, folderRename, folderDeletePromote, storeEntryMove, storeSafeName,
+  folderCreate, folderList, folderRename, folderDeletePromote, storeEntryMove, storeSafeName, knowledgeFilePath,
 } from "./filestore";
 import { migrateDbToFiles } from "./migrate";
 import {
@@ -57,7 +58,7 @@ import { createHash, randomBytes, randomUUID } from "crypto";
 import { createSyncMagicCode, parseSyncMagicCode } from "./sync-magic-code";
 import { createChatMagicLink, chatInviteMessage } from "./chat-magic-link";
 import { startLiveMarkdownServer } from "./live-note-server";
-import { browserFaviconTag, browserIconBuffer } from "./browser-branding";
+import { browserFaviconTag, browserIconBuffer, ensureBrowserFavicon } from "./browser-branding";
 import { managedEnvironmentsRoot } from "./environment-paths";
 import { defaultKnowledgeGitignore } from "./root-storage-policy";
 import { NavigationStatus, summarizeChatNavigation, summarizeServerNavigation } from "./navigation-status";
@@ -79,10 +80,16 @@ import {
   removeInjectedPkmSkill, removePkmSkillCustomTarget, resolvePkmSkillTargetPath,
 } from "./pkm-skill-projection";
 import { cachedPromptAnalysis, inspectPromptCached, renderPrompt } from "./prompt-manager";
-import { canonicalJson, WorkflowDefinitionV1 } from "./workflow-contracts";
+import { canonicalJson, compileWorkflowDefinitionV1, WorkflowDefinitionV1 } from "./workflow-contracts";
 import { ProjectStore, ProjectStoreCommand } from "./workflows/project-store";
-import { RecipeMetadata, RecipeRecord } from "./workflows/project-model";
+import { ProjectModelError, RecipeKnowledgeBinding, RecipeMetadata, RecipeRecord } from "./workflows/project-model";
 import { BundledKnowledgeContent, exportProjectRecipeBundle } from "./workflows/project-recipe-bundle";
+import { recipeBrowserEditorDocument } from "./recipe-browser";
+import {
+  GITHUB_SYNC_CONTENT_TYPES, GitHubSyncCatalog, GitHubSyncCatalogItem, GitHubSyncContentType, GitHubSyncTarget,
+  createGitHubSyncIdentity, discoverGitHubCredentialManagerAccounts, discoverGitHubSshIdentities, fetchGitHubRemoteSnapshot, githubSyncSafeRelativePath, githubSyncShield, githubSyncTargetFingerprints, normalizeGitHubSyncTarget,
+  probeGitHubSyncAuthentication, probeGitHubSyncHttpsAuthentication, readGitHubRemoteFile, restoreGitHubRemoteFiles, syncGitHubTarget, testGitHubSyncAuthentication,
+} from "./github-sync";
 
 let projectStoreBinding: { root: string; store: ProjectStore } | undefined;
 
@@ -123,6 +130,170 @@ function projectRecipeKnowledge(kind: "skill" | "note", knowledgeId: string): Bu
   }
   const contentHash = createHash("sha256").update(canonicalJson(document), "utf8").digest("hex");
   return { knowledgeId, kind, contentHash, document };
+}
+
+function recipeReferenceCatalog(): Record<"skills" | "notes", any[]> {
+  return {
+    skills: (skillList() as any[]).map(row => ({
+      id: [row.category, row.name].filter(Boolean).join("/"),
+      label: row.name,
+      cat: row.category || "",
+      treePath: row.category || "(uncategorized)",
+      meta: compactTags(row.tags)
+    })),
+    notes: (noteList(undefined, 500) as any[]).map(row => ({
+      id: row.slug,
+      label: row.title,
+      cat: row.category || "",
+      treePath: row.category || "(uncategorized)",
+      meta: row.type || "note"
+    }))
+  };
+}
+
+function agentSessionSnapshots(recipes: any[]): any[] {
+  const directory = path.join(getStorePath(), ".pkm", "state", "agent-sessions");
+  const runsDirectory = path.join(getStorePath(), ".pkm", "state", "recipe-runs");
+  if (!fs.existsSync(directory)) return [];
+  const recipeNames = new Map(recipes.map(recipe => [String(recipe.recipeId || ""), String(recipe.name || recipe.recipeId || "Recipe")]));
+  const readRun = (runId: string): any | undefined => {
+    try {
+      const run = JSON.parse(fs.readFileSync(path.join(runsDirectory, `${runId}.json`), "utf8"));
+      if (run?.schema !== "pkm.recipe.run/v1" || run?.runId !== runId) return undefined;
+      const definitions = Array.isArray(run?.definition?.spec?.nodes) ? run.definition.spec.nodes : [];
+      return {
+        runId,
+        recipeId: String(run.recipeId || ""),
+        recipeName: String(run.recipeName || recipeNames.get(String(run.recipeId || "")) || run.recipeId || "Task plan"),
+        origin: run.origin && typeof run.origin === "object" ? { kind: String(run.origin.kind || "library") } : { kind: "library" },
+        recipeRevision: Number(run.recipeRevision || 0),
+        executableDigest: String(run.executableDigest || ""),
+        status: String(run.status || "unknown"),
+        parent: run.parent && typeof run.parent === "object"
+          ? { runId: String(run.parent.runId || ""), nodeId: String(run.parent.nodeId || "") } : undefined,
+        createdAt: String(run.createdAt || ""),
+        updatedAt: String(run.updatedAt || ""),
+        nodes: definitions.map((node: any) => {
+          const record = run.nodes?.[node.nodeId] || {};
+          return {
+            nodeId: String(node.nodeId || ""),
+            kind: String(node.kind || ""),
+            instruction: String(node.generalInstruction || ""),
+            dependsOn: (Array.isArray(node.dependsOn) ? node.dependsOn : []).map((dependency: any) => ({
+              from: String(dependency.from || ""),
+              accept: Array.isArray(dependency.accept) ? dependency.accept.map(String) : [],
+              loop: !!dependency.loop,
+            })),
+            control: node.control && typeof node.control === "object" ? node.control : { mode: "single" },
+            state: String(record.state || "pending"),
+            outcome: String(record.outcome || ""),
+            error: String(record.error || ""),
+            childRunId: String(record.childRunId || ""),
+          };
+        }),
+        loops: Object.values(run.loops && typeof run.loops === "object" ? run.loops : {}).map((loop: any) => ({
+          source: String(loop.source || ""), target: String(loop.target || ""), state: String(loop.state || ""),
+          iteration: Number(loop.iteration || 0), maxIterations: Number(loop.maxIterations || 0),
+          condition: String(loop.condition || ""),
+        })),
+      };
+    } catch { return undefined; }
+  };
+  const snapshots: any[] = [];
+  for (const name of fs.readdirSync(directory)) {
+    if (!name.endsWith(".json")) continue;
+    try {
+      const session = JSON.parse(fs.readFileSync(path.join(directory, name), "utf8"));
+      if (session?.schema !== "pkm.agent.session/v1" || !String(session.sessionId || "").startsWith("agent_session_")) continue;
+      const checkpoints = Array.isArray(session.checkpoints) ? session.checkpoints : [];
+      const latest = checkpoints.at(-1);
+      const state = latest?.state && typeof latest.state === "object" ? latest.state : {};
+      snapshots.push({
+        sessionId: String(session.sessionId), status: String(session.status || "unknown"),
+        task: String(session.task || "Managed task"), projectId: String(session.projectId || ""),
+        hostSessionId: String(session.hostSessionId || ""),
+        agent: { name: String(session.agent?.name || "Agent"), product: String(session.agent?.product || "") },
+        createdAt: String(session.createdAt || ""), updatedAt: String(session.updatedAt || ""),
+        lastActivity: session.lastActivity && typeof session.lastActivity === "object" ? {
+          tool: String(session.lastActivity.tool || ""), ok: session.lastActivity.ok !== false, at: String(session.lastActivity.at || ""),
+        } : undefined,
+        todos: (Array.isArray(session.todos) ? session.todos : []).map((todo: any) => ({
+          todoId: String(todo.todoId || ""), title: String(todo.title || ""), details: String(todo.details || ""),
+          status: String(todo.status || "pending"), summary: String(todo.summary || ""),
+          recipeRunId: String(todo.recipeRunId || ""), createdAt: String(todo.createdAt || ""),
+          updatedAt: String(todo.updatedAt || ""),
+        })),
+        checkpoint: latest ? {
+          checkpointId: String(latest.checkpointId || ""), sequence: Number(latest.sequence || checkpoints.length),
+          createdAt: String(latest.createdAt || ""), reason: String(latest.reason || ""),
+          summary: typeof state.summary === "string" ? state.summary : "",
+          nextActionCount: Array.isArray(state.next_actions) ? state.next_actions.length : Array.isArray(state.nextActions) ? state.nextActions.length : 0,
+        } : undefined,
+        runs: (Array.isArray(session.recipeRunIds) ? session.recipeRunIds : []).map(String).map(readRun).filter(Boolean),
+      });
+    } catch { /* A corrupt record must not hide healthy Agent Sessions. */ }
+  }
+  return snapshots.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
+function agentSessionTrashSnapshots(): any[] {
+  const directory = path.join(getStorePath(), ".pkm", "state", "agent-sessions-trash");
+  if (!fs.existsSync(directory)) return [];
+  const snapshots: any[] = [];
+  for (const name of fs.readdirSync(directory)) {
+    if (!name.endsWith(".json")) continue;
+    try {
+      const session = JSON.parse(fs.readFileSync(path.join(directory, name), "utf8"));
+      if (session?.schema !== "pkm.agent.session/v1" || !String(session.sessionId || "").startsWith("agent_session_")) continue;
+      snapshots.push({
+        sessionId: String(session.sessionId), status: String(session.status || "unknown"),
+        task: String(session.task || "Managed task"), hostSessionId: String(session.hostSessionId || ""),
+        agent: { name: String(session.agent?.name || "Agent"), product: String(session.agent?.product || "") },
+        updatedAt: String(session.updatedAt || ""), trashedAt: String(session.trashedAt || ""),
+      });
+    } catch { /* A corrupt Trash record must not hide healthy entries. */ }
+  }
+  return snapshots.sort((left, right) => right.trashedAt.localeCompare(left.trashedAt));
+}
+
+function mutateAgentSessionTrash(action: "move" | "restore" | "delete", sessionId: string): void {
+  if (!/^agent_session_[a-zA-Z0-9_-]+$/.test(sessionId)) throw new Error("Agent Session identity is invalid.");
+  const stateDirectory = path.join(getStorePath(), ".pkm", "state");
+  const activeDirectory = path.join(stateDirectory, "agent-sessions");
+  const trashDirectory = path.join(stateDirectory, "agent-sessions-trash");
+  const activePath = path.join(activeDirectory, `${sessionId}.json`);
+  const trashPath = path.join(trashDirectory, `${sessionId}.json`);
+  if (action === "delete") {
+    if (!fs.existsSync(trashPath)) throw new Error("Agent Session is not in Trash.");
+    fs.unlinkSync(trashPath);
+    return;
+  }
+  const source = action === "move" ? activePath : trashPath;
+  const target = action === "move" ? trashPath : activePath;
+  if (!fs.existsSync(source)) throw new Error(`Agent Session cannot be ${action === "move" ? "moved to Trash" : "restored"}.`);
+  if (fs.existsSync(target)) throw new Error("An Agent Session with the same identity already exists at the destination.");
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const session = JSON.parse(fs.readFileSync(source, "utf8"));
+  if (action === "move") session.trashedAt = new Date().toISOString();
+  else delete session.trashedAt;
+  fs.writeFileSync(source, JSON.stringify(session), { encoding: "utf8", mode: 0o600 });
+  fs.renameSync(source, target);
+}
+
+function hydrateRecipeNodeBindings(value: unknown): RecipeRecord["nodeBindings"] {
+  if (!Array.isArray(value)) return [];
+  return value.map((node: any) => ({
+    nodeId: String(node?.nodeId || ""),
+    bindings: (Array.isArray(node?.bindings) ? node.bindings : []).map((binding: any) => {
+      const kind = binding?.kind === "skill" ? "skill" as const : binding?.kind === "note" ? "note" as const : undefined;
+      if (!kind) throw new ProjectModelError("recipe-binding-kind-invalid", "Recipe references currently support Skills and Notes.");
+      const knowledgeId = String(binding.knowledgeId || "");
+      const content = projectRecipeKnowledge(kind, knowledgeId);
+      const usage = ["required", "recommended", "reference"].includes(String(binding.usage)) ? binding.usage as RecipeKnowledgeBinding["usage"] : "reference";
+      const bindingId = String(binding.bindingId || `binding_${createHash("sha256").update(`${node?.nodeId}\0${kind}\0${knowledgeId}`).digest("hex").slice(0, 20)}`);
+      return { bindingId, kind, knowledgeId, contentHash: content.contentHash, usage };
+    })
+  }));
 }
 
 async function exportProjectRecipes(projectId: string): Promise<string | undefined> {
@@ -361,14 +532,13 @@ function refreshKnowledgeInventory(context: vscode.ExtensionContext): Promise<vo
   const startedAt = Date.now();
   return knowledgeInventory.refresh(progress => {
     if (progress.batchCount) {
-      _treeProvider?.refresh();
       panel?.webview.postMessage({ command: "inventoryBatch", data: { count: progress.batchCount, scanned: progress.scanned } });
     }
   }).then(snapshot => {
     if (performanceStateDir) recordPerformanceMetric(performanceStateDir, "inventory.refresh_ms", Date.now() - startedAt, snapshot.stats.scanned);
     log.info(`knowledge inventory ready revision=${snapshot.revision.slice(0, 12)} scanned=${snapshot.stats.scanned} reused=${snapshot.stats.reused} parsed=${snapshot.stats.parsed} removed=${snapshot.stats.removed}`);
     _treeProvider?.refresh();
-    if (panel) void handleMessage({ command: "list", tab: "notes", filter: "all", q: "" }, message => panel?.webview.postMessage(message), context);
+    panel?.webview.postMessage({ command: "inventoryReady", data: { revision: snapshot.revision, stats: snapshot.stats } });
   }).catch(error => log.warn(`knowledge inventory refresh failed: ${(error as Error).message}`));
 }
 
@@ -568,6 +738,7 @@ async function sharedContentCatalog(): Promise<Record<string, any[]>> {
     scripts: (scriptList() as any[]).filter(row => !isContentItemPrivate("scripts", row)).map(row => ({ id: row.path, label: row.file, cat: row.category === "(root)" ? "" : row.category ?? "", treePath: row.category === "(root)" ? "" : row.category ?? "", meta: row.lang })),
     packages: packageList().filter((row: any) => !isContentItemPrivate("packages", row)).map((row: any) => ({ id: row.name, label: row.name, cat: "", treePath: "", meta: row.lang })),
     servers: (await serverList()).filter(row => !isContentItemPrivate("servers", row)).map(row => ({ id: row.slug, label: row.name, cat: row.category ?? "", treePath: row.category || "Ungrouped", meta: (row.tags || []).join(", ") })),
+    recipes: currentProjectStore().list().recipes.filter(row => !isContentItemPrivate("recipes", row)).map(row => ({ id: row.recipeId, label: row.name, cat: row.category ?? "", treePath: row.category || "Uncategorized", meta: row.scope === "project" ? "Project Recipe" : "Global Recipe" })),
   }))();
   sharedCatalogBuild = { revision, promise };
   try {
@@ -579,6 +750,154 @@ async function sharedContentCatalog(): Promise<Record<string, any[]>> {
   } finally {
     if (sharedCatalogBuild?.promise === promise) sharedCatalogBuild = undefined;
   }
+}
+
+const GITHUB_SYNC_TARGETS_SCHEMA = 1;
+function githubSyncStateDirectory(context: vscode.ExtensionContext): string {
+  return path.join(context.globalStorageUri.fsPath, "github-sync");
+}
+
+function githubSyncTargetsPath(context: vscode.ExtensionContext): string {
+  return path.join(githubSyncStateDirectory(context), "targets.json");
+}
+
+function githubSyncTargetById(context: vscode.ExtensionContext, targetId: string): GitHubSyncTarget {
+  const target = readGitHubSyncTargets(context).find(candidate => candidate.id === targetId);
+  if (!target) throw new Error("GitHub Sync target was not found.");
+  return target;
+}
+
+function readGitHubSyncTargets(context: vscode.ExtensionContext): GitHubSyncTarget[] {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(githubSyncTargetsPath(context), "utf8"));
+    if (parsed?.schema !== GITHUB_SYNC_TARGETS_SCHEMA || !Array.isArray(parsed.targets)) throw new Error("unsupported target file");
+    return parsed.targets.map((target: unknown) => normalizeGitHubSyncTarget(target));
+  } catch (error: any) {
+    if (error?.code === "ENOENT") return [];
+    throw new Error(`Cannot read GitHub Sync targets: ${error?.message || String(error)}`);
+  }
+}
+
+function writeGitHubSyncTargets(context: vscode.ExtensionContext, targets: GitHubSyncTarget[]): void {
+  const targetPath = githubSyncTargetsPath(context);
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  const temporary = `${targetPath}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify({ schema: GITHUB_SYNC_TARGETS_SCHEMA, targets }, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+  fs.renameSync(temporary, targetPath);
+}
+
+async function subscriptionStateData(context: vscode.ExtensionContext): Promise<object> {
+  const githubConnections = readGitHubSyncTargets(context).map(target => ({ id: target.id, name: target.name, repository: target.repository, branch: target.branch, method: target.authentication?.method, account: target.authentication?.expectedLogin }));
+  return { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses(), githubConnections };
+}
+
+interface GitHubSubscriptionRequest {
+  targetId?: string;
+  credentialTargetId?: string;
+  repository?: string;
+  branch?: string;
+  expectedCommit?: string;
+  selectedPaths?: string[];
+  selectedFolders?: string[];
+}
+
+function githubSubscriptionTarget(context: vscode.ExtensionContext, input: GitHubSubscriptionRequest): { target: GitHubSyncTarget; credentialTargetId?: string } {
+  const credentialTargetId = String(input.credentialTargetId || input.targetId || "").trim() || undefined;
+  const credentialTarget = credentialTargetId ? githubSyncTargetById(context, credentialTargetId) : undefined;
+  const repository = String(input.repository || credentialTarget?.repository || "").trim();
+  const branch = String(input.branch || credentialTarget?.branch || "main").trim();
+  const id = `subscription-${createHash("sha256").update(`${repository}\0${branch}\0${credentialTargetId || "public"}`).digest("hex").slice(0, 24)}`;
+  return { target: normalizeGitHubSyncTarget({ id, name: repository.split(/[/:]/).pop()?.replace(/\.git$/i, "") || "GitHub Branch", repository, branch, authentication: credentialTarget?.authentication }), credentialTargetId };
+}
+
+async function githubSubscriptionSnapshot(context: vscode.ExtensionContext, input: GitHubSubscriptionRequest) {
+  const resolved = githubSubscriptionTarget(context, input);
+  const checkoutRoot = path.join(githubSyncStateDirectory(context), "checkouts");
+  const snapshot = await fetchGitHubRemoteSnapshot(resolved.target, checkoutRoot, true);
+  return { ...resolved, checkoutRoot, snapshot };
+}
+
+async function mountGitHubBranchSubscription(context: vscode.ExtensionContext, input: GitHubSubscriptionRequest, alias = "") {
+  const { target, credentialTargetId, checkoutRoot, snapshot } = await githubSubscriptionSnapshot(context, input);
+  if (input.expectedCommit && snapshot.commit !== input.expectedCommit) throw new Error("The GitHub branch changed after Test. Test it again before subscribing.");
+  const selectedPaths = [...new Set((input.selectedPaths || []).map(githubSyncSafeRelativePath))];
+  const selectedFolders = [...new Set((input.selectedFolders || []).map(value => githubSyncSafeRelativePath(`${String(value).replace(/\/$/, "")}/_folder_rule_`).replace(/\/_folder_rule_$/, "")))];
+  const hasRules = input.selectedPaths !== undefined || input.selectedFolders !== undefined;
+  const selected = hasRules ? snapshot.files.filter(file => selectedPaths.includes(file.path) || selectedFolders.some(folder => file.path.startsWith(`${folder}/`))) : snapshot.files;
+  if (!selected.length) throw new Error("Select at least one GitHub file or folder to subscribe.");
+  const files = await Promise.all(selected.map(async file => ({
+    path: file.path,
+    content: await readGitHubRemoteFile(target, checkoutRoot, snapshot.commit, file.path),
+  })));
+  return getSharedMarket().mountGitHubBranch({
+    credentialTargetId, name: target.name, repository: target.repository, branch: target.branch,
+    commit: snapshot.commit, account: target.authentication?.expectedLogin, selectedPaths, selectedFolders, files,
+  }, alias);
+}
+
+function githubSyncDestination(source: string): string {
+  return path.relative(path.resolve(getStorePath()), path.resolve(source)).replace(/\\/g, "/");
+}
+
+function githubSyncItem(row: any, type: PrivacyContentType, source: string, destination = githubSyncDestination(source)): GitHubSyncCatalogItem {
+  return {
+    id: type === "skills" ? row.name : type === "prompts" ? `${row.project}/${row.task}` : type === "scripts" ? row.path : type === "packages" ? row.name : type === "servers" ? row.slug : row.slug,
+    label: type === "skills" || type === "packages" ? row.name : type === "prompts" ? row.task : type === "scripts" ? row.file : type === "servers" ? row.name : row.title,
+    cat: type === "prompts" ? row.project : type === "scripts" ? (row.category === "(root)" ? "" : row.category || "") : row.category || row.topic || "",
+    meta: type === "skills" ? compactTags(row.tags) : type === "papers" ? [row.topic, row.year].filter(Boolean).join(" · ") : type === "scripts" ? row.lang : type === "packages" ? row.lang : type === "servers" ? (row.tags || []).join(", ") : row.type || row.latest || "",
+    isPrivate: isContentItemPrivate(type, row),
+    source,
+    destination,
+  };
+}
+
+async function githubSyncCatalog(): Promise<GitHubSyncCatalog> {
+  const root = path.resolve(getStorePath());
+  const skills = (skillList() as any[]).flatMap(row => {
+    const source = knowledgeFilePath("skills", row.name);
+    return source ? [githubSyncItem(row, "skills", source)] : [];
+  });
+  const notes = (noteList(undefined, Number.MAX_SAFE_INTEGER) as any[]).flatMap(row => {
+    const source = knowledgeFilePath("notes", row.slug);
+    return source ? [githubSyncItem(row, "notes", source)] : [];
+  });
+  const papers = (paperList() as any[]).flatMap(row => {
+    const source = knowledgeFilePath("papers", row.slug);
+    return source ? [githubSyncItem(row, "papers", source)] : [];
+  });
+  const prompts = promptList().map(row => githubSyncItem(row, "prompts", path.join(root, "prompts", row.project, row.task)));
+  const scripts = (scriptList() as any[]).map(row => githubSyncItem(row, "scripts", path.join(root, "scripts", row.path)));
+  const packages = packageList().map((row: any) => githubSyncItem(row, "packages", path.join(root, "packages", row.name)));
+  const servers = (await serverList()).map(row => githubSyncItem(row, "servers", serverDir(row.slug)));
+  const recipes = currentProjectStore().list().recipes.map(recipe => ({
+    id: recipe.recipeId,
+    label: recipe.name,
+    cat: recipe.category || "",
+    meta: recipe.scope === "project" ? "Project Recipe" : "Global Recipe",
+    isPrivate: isContentItemPrivate("recipes", recipe),
+    destination: ["recipes", ...(recipe.category || "").split("/").filter(Boolean).map(storeSafeName), `${storeSafeName(recipe.name)}.${recipe.recipeId}.json`].join("/"),
+    content: canonicalJson(recipe) + "\n",
+  }));
+  return { skills, notes, papers, prompts, scripts, packages, servers, recipes };
+}
+
+async function githubSyncStateData(context: vscode.ExtensionContext): Promise<object> {
+  const targets = readGitHubSyncTargets(context);
+  const accounts = new Set(await discoverGitHubCredentialManagerAccounts());
+  const identities = new Set(discoverGitHubSshIdentities());
+  for (const target of targets) {
+    if (target.authentication?.expectedLogin) accounts.add(target.authentication.expectedLogin);
+    if (target.authentication?.method === "ssh" && target.authentication.identityFile) identities.add(target.authentication.identityFile);
+  }
+  const catalog = await githubSyncCatalog();
+  const currentFingerprints: Record<string, Partial<Record<GitHubSyncContentType, string>>> = {};
+  for (const target of targets) {
+    try { currentFingerprints[target.id] = githubSyncTargetFingerprints(target, catalog); }
+    catch { currentFingerprints[target.id] = {}; }
+  }
+  const shields = Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type => [type, githubSyncShield(targets, type, currentFingerprints)]));
+  const uiCatalog = Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type => [type, catalog[type].map(({ source, content, destination, ...item }) => item)]));
+  return { targets, catalog: uiCatalog, shields, authenticationOptions: { accounts: [...accounts].sort(), identities: [...identities].sort() } };
 }
 
 /** Ensure the knowledge store is a git repository (init on first use). */
@@ -643,6 +962,24 @@ function safeFilePart(s: string): string {
   return (s || "").replace(/[/\\:*?"<>|\u0000-\u001f]/g, "").trim().slice(0, 120);
 }
 
+function authorizeEphemeralBrowserRequest(req: http.IncomingMessage, res: http.ServerResponse, accessToken: string): boolean {
+  const requestUrl = new URL(String(req.url || "/"), "http://localhost");
+  const cookieName = `pkm_ephemeral_preview_${accessToken.slice(0, 12)}`;
+  const cookieToken = String(req.headers.cookie || "")
+    .split(";")
+    .map(value => value.trim())
+    .find(value => value.startsWith(`${cookieName}=`))
+    ?.slice(cookieName.length + 1);
+  if (requestUrl.searchParams.get("_pkm_token") === accessToken) {
+    res.setHeader("Set-Cookie", `${cookieName}=${accessToken}; HttpOnly; SameSite=Strict; Path=/`);
+    return true;
+  }
+  if (cookieToken === accessToken) return true;
+  res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
+  res.end("Forbidden");
+  return false;
+}
+
 /**
  * Open a self-contained HTML document in the user's real browser — works both
  * locally and over Remote-SSH. We serve the doc from an ephemeral loopback HTTP
@@ -653,22 +990,23 @@ function safeFilePart(s: string): string {
 async function openHtmlInBrowser(doc: string): Promise<boolean> {
   return await new Promise<boolean>((resolve) => {
     let settled = false;
+    const brandedDocument = ensureBrowserFavicon(doc);
+    const accessToken = randomBytes(24).toString("base64url");
     const finish = (v: boolean) => { if (!settled) { settled = true; resolve(v); } };
     try {
       const server = http.createServer((req, res) => {
+        if (!authorizeEphemeralBrowserRequest(req, res, accessToken)) return;
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
-        res.end(doc);
+        res.end(brandedDocument);
       });
       server.on("error", () => finish(false));
       // Auto-close after a grace period; a self-contained page needs one GET.
       const closeTimer = setTimeout(() => { try { server.close(); } catch { /* ignore */ } }, 120_000);
       closeTimer.unref?.();
-      server.listen(0, "127.0.0.1", async () => {
+      server.listen(0, "0.0.0.0", async () => {
         try {
           const port = (server.address() as any).port;
-          const local = vscode.Uri.parse(`http://127.0.0.1:${port}/`);
-          const external = await vscode.env.asExternalUri(local);
-          const opened = await vscode.env.openExternal(external);
+          const opened = await vscode.env.openExternal(vscode.Uri.parse(`http://${externalUrlHost()}:${port}/?_pkm_token=${accessToken}`));
           finish(!!opened);
         } catch {
           try { server.close(); } catch { /* ignore */ }
@@ -679,6 +1017,130 @@ async function openHtmlInBrowser(doc: string): Promise<boolean> {
       finish(false);
     }
   });
+}
+
+function readBrowserJson(req: http.IncomingMessage, maximumBytes = 2_000_000): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on("data", chunk => {
+      size += chunk.length;
+      if (size > maximumBytes) {
+        reject(new Error("Request body is too large."));
+        req.destroy();
+        return;
+      }
+      chunks.push(Buffer.from(chunk));
+    });
+    req.on("end", () => {
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}")); }
+      catch { reject(new Error("Request body must be valid JSON.")); }
+    });
+    req.on("error", reject);
+  });
+}
+
+function browserJson(res: http.ServerResponse, status: number, value: unknown): void {
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+  res.end(JSON.stringify(value));
+}
+
+async function openRecipeEditorInBrowser(recipeId: string): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    let settled = false;
+    const accessToken = randomBytes(24).toString("base64url");
+    const finish = (value: boolean) => { if (!settled) { settled = true; resolve(value); } };
+    const findRecipe = () => currentProjectStore().list().recipes.find(candidate => candidate.recipeId === recipeId);
+    try {
+      const server = http.createServer(async (req, res) => {
+        if (!authorizeEphemeralBrowserRequest(req, res, accessToken)) return;
+        const requestUrl = new URL(String(req.url || "/"), "http://localhost");
+        try {
+          if (req.method === "GET" && requestUrl.pathname === "/") {
+            const recipe = findRecipe();
+            if (!recipe) { res.writeHead(404); res.end("Recipe not found"); return; }
+            res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+            res.end(ensureBrowserFavicon(recipeBrowserEditorDocument(recipe, pyenvList())));
+            return;
+          }
+          if (req.method === "GET" && requestUrl.pathname === "/api/recipe") {
+            const recipe = findRecipe();
+            browserJson(res, recipe ? 200 : 404, recipe ? { recipe } : { error: "Recipe not found." });
+            return;
+          }
+          if (req.method === "POST" && requestUrl.pathname === "/api/validate") {
+            const body = await readBrowserJson(req) as { definition?: unknown };
+            const compiled = compileWorkflowDefinitionV1(body.definition);
+            if (!compiled.ok) throw new ProjectModelError("recipe-definition-invalid", "Recipe definition is invalid.", { diagnostics: compiled.diagnostics });
+            browserJson(res, 200, { definition: compiled.model, executableDigest: compiled.executableDigest, nodeCount: compiled.model.spec.nodes.length });
+            return;
+          }
+          if (req.method === "PUT" && requestUrl.pathname === "/api/recipe") {
+            const body = await readBrowserJson(req) as RecipeRecord;
+            const current = findRecipe();
+            if (!current) { browserJson(res, 404, { error: "Recipe not found." }); return; }
+            if (Number(body.revision) !== current.revision) {
+              browserJson(res, 409, { error: `Recipe changed since this page opened (current revision ${current.revision}). Reload before saving.` });
+              return;
+            }
+            const input = {
+              name: String(body.name || ""), category: String(body.category || ""), description: String(body.description || ""),
+              metadata: body.metadata as RecipeMetadata | undefined,
+              editorLayout: body.editorLayout as RecipeRecord["editorLayout"],
+              definition: body.definition as WorkflowDefinitionV1,
+              nodeBindings: hydrateRecipeNodeBindings(body.nodeBindings)
+            };
+            const store = currentProjectStore();
+            store.updateRecipe(projectCommand(store, "recipe-browser-update", { recipeId, ...input }), recipeId, input);
+            const recipe = findRecipe();
+            browserJson(res, 200, { recipe });
+            return;
+          }
+          browserJson(res, 404, { error: "Not found." });
+        } catch (error: any) {
+          browserJson(res, 400, { error: String(error?.message || error || "Request failed.") });
+        }
+      });
+      server.on("error", () => finish(false));
+      const closeTimer = setTimeout(() => { try { server.close(); } catch { /* ignore */ } }, 1_800_000);
+      closeTimer.unref?.();
+      server.listen(0, "0.0.0.0", async () => {
+        try {
+          const port = (server.address() as any).port;
+          const opened = await vscode.env.openExternal(vscode.Uri.parse(`http://${externalUrlHost()}:${port}/?_pkm_token=${accessToken}`));
+          finish(!!opened);
+        } catch {
+          try { server.close(); } catch { /* ignore */ }
+          finish(false);
+        }
+      });
+    } catch { finish(false); }
+  });
+}
+
+function recipeBrowserDocument(recipe: RecipeRecord): string {
+  const escape = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!);
+  const nodes = recipe.definition.spec.nodes;
+  const dependentIds = new Set(nodes.flatMap(node => node.dependsOn.filter(dependency => !dependency.loop).map(dependency => dependency.from)));
+  const roots = nodes.filter(node => !node.dependsOn.some(dependency => !dependency.loop));
+  const terminals = nodes.filter(node => !dependentIds.has(node.nodeId));
+  const bindings = new Map((recipe.nodeBindings || []).map(item => [item.nodeId, item.bindings]));
+  const portList = (ports: Record<string, unknown>) => Object.keys(ports).length
+    ? Object.keys(ports).map(port => `<code>${escape(port)}</code>`).join("")
+    : '<span class="empty">None</span>';
+  const cards = nodes.map(node => {
+    const incoming = node.dependsOn.map(dependency => {
+      const route = [dependency.fromOutput, dependency.toInput].filter(Boolean).map(escape).join(" → ");
+      const loop = dependency.loop ? ` · loop until ${escape(dependency.loop.termination.condition)} · max ${dependency.loop.termination.maxIterations}` : "";
+      return `<li><strong>${escape(dependency.from)}</strong>${route ? ` · ${route}` : ""}${loop}</li>`;
+    }).join("");
+    const references = (bindings.get(node.nodeId) || []).map(binding => `<li><span class="kind">${escape(binding.kind)}</span><strong>${escape(binding.knowledgeId)}</strong><small>${escape(binding.usage)}</small></li>`).join("");
+    const control = node.control ? JSON.stringify(node.control) : "single";
+    const config = node.kind === "pkm.subflow/v1" ? `<div class="facts"><span>Recipe ${escape(node.config.recipeId)}</span><span>Revision ${node.config.revision}</span></div>` : "";
+    return `<article class="node"><header><span>${escape(node.kind)}</span><h2>${escape(node.nodeId)}</h2></header>${config}<dl><div><dt>Control</dt><dd>${escape(control)}</dd></div><div><dt>Inputs</dt><dd>${(node.ports?.inputs || []).map(port => `<code>${escape(port)}</code>`).join("") || '<span class="empty">None</span>'}</dd></div><div><dt>Outputs</dt><dd>${(node.ports?.outputs || []).map(port => `<code>${escape(port)}</code>`).join("") || '<span class="empty">None</span>'}</dd></div></dl><section><h3>Intent &amp; Guidance</h3><p>${escape(node.generalInstruction || "No guidance provided.")}</p></section><section><h3>Incoming routes</h3>${incoming ? `<ul>${incoming}</ul>` : '<p class="empty">Source</p>'}</section><section><h3>References</h3>${references ? `<ul class="references">${references}</ul>` : '<p class="empty">None</p>'}</section></article>`;
+  }).join('<div class="arrow" aria-hidden="true">↓</div>');
+  const trigger = recipe.definition.spec.trigger ? `<span class="pill">${escape(recipe.definition.spec.trigger.expression)} · ${escape(recipe.definition.spec.trigger.timezone)}</span>` : '<span class="empty">Manual</span>';
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(recipe.name)} · Recipe</title><style>:root{color-scheme:light dark;--bg:#111315;--panel:#1b1e21;--line:#3c4248;--text:#f3f4f6;--muted:#9da5ad;--accent:#e25555}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 ui-sans-serif,system-ui,sans-serif}main{width:min(920px,calc(100% - 28px));margin:0 auto;padding:34px 0 70px}.eyebrow,.node header span{color:var(--accent);font-size:11px;font-weight:700;text-transform:uppercase}h1{margin:3px 0 5px;font-size:clamp(25px,5vw,42px)}.subtitle{color:var(--muted)}.summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin:28px 0;border-block:1px solid var(--line)}.summary>div{padding:13px;border-right:1px solid var(--line)}.summary>div:last-child{border:0}.summary small,dt{display:block;color:var(--muted);font-size:10px;text-transform:uppercase}.io{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px}.band{padding:15px;border-left:3px solid var(--accent);background:var(--panel)}.band h2{margin:0 0 8px;font-size:14px}.flow{display:flex;align-items:center;flex-direction:column}.boundary{min-width:180px;padding:9px 16px;border:1px solid var(--accent);text-align:center;font-weight:700}.node{width:100%;padding:18px;border:1px solid var(--line);border-top:3px solid var(--accent);background:var(--panel)}.node header h2{margin:2px 0 12px;font-size:19px}.node dl{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:0}.node dl>div,.node section{min-width:0;padding-top:11px;border-top:1px solid var(--line)}dd{margin:4px 0;overflow-wrap:anywhere}.node section{margin-top:12px}.node h3{margin:0 0 5px;font-size:11px;text-transform:uppercase}.node p{margin:0;white-space:pre-wrap}.arrow{height:40px;color:var(--accent);font-size:25px}.facts{display:flex;gap:8px;margin-bottom:12px;color:var(--muted)}code,.pill,.kind{display:inline-block;margin:2px 4px 2px 0;padding:2px 6px;border:1px solid var(--line);background:#0002;font:12px ui-monospace,monospace}.empty{color:var(--muted)}ul{margin:4px 0;padding-left:19px}.references{padding:0;list-style:none}.references li{display:flex;align-items:center;gap:7px}.references small{color:var(--muted)}@media(max-width:620px){main{padding-top:20px}.summary{grid-template-columns:1fr 1fr}.summary>div:nth-child(2){border-right:0}.io,.node dl{grid-template-columns:1fr}.summary>div{border-bottom:1px solid var(--line)}}</style></head><body><main><header><div class="eyebrow">Automation Recipe</div><h1>${escape(recipe.name)}</h1><div class="subtitle">${escape(recipe.description || "No description provided.")}</div></header><section class="summary"><div><small>Revision</small><strong>${recipe.revision}</strong></div><div><small>Nodes</small><strong>${nodes.length}</strong></div><div><small>Trigger</small>${trigger}</div><div><small>Digest</small><strong title="${escape(recipe.executableDigest)}">${escape(recipe.executableDigest.slice(0, 12))}</strong></div></section><section class="io"><div class="band"><h2>Recipe inputs</h2>${portList(recipe.definition.spec.inputs)}</div><div class="band"><h2>Recipe outputs</h2>${portList(recipe.definition.spec.outputs)}</div></section><section class="flow"><div class="boundary">Source · ${roots.map(node => escape(node.nodeId)).join(", ") || "None"}</div><div class="arrow" aria-hidden="true">↓</div>${cards || '<p class="empty">No steps.</p>'}<div class="arrow" aria-hidden="true">↓</div><div class="boundary">Sink · ${terminals.map(node => escape(node.nodeId)).join(", ") || "None"}</div></section></main></body></html>`;
 }
 
 const MIME_BY_EXT: Record<string, string> = {
@@ -710,9 +1172,11 @@ function inlineMarkdownAssets(html: string, area = "notes", category = ""): stri
 async function serveFolderInBrowser(dir: string, entry: string): Promise<boolean> {
   return await new Promise<boolean>((resolve) => {
     let settled = false;
+    const accessToken = randomBytes(24).toString("base64url");
     const finish = (v: boolean) => { if (!settled) { settled = true; resolve(v); } };
     try {
       const server = http.createServer((req, res) => {
+        if (!authorizeEphemeralBrowserRequest(req, res, accessToken)) return;
         try {
           const urlPath = decodeURIComponent(String(req.url || "/").replace(/[?#].*$/, ""));
           const rel = urlPath === "/" ? entry : urlPath.replace(/^\/+/, "");
@@ -731,12 +1195,10 @@ async function serveFolderInBrowser(dir: string, entry: string): Promise<boolean
       server.on("error", () => finish(false));
       const closeTimer = setTimeout(() => { try { server.close(); } catch { /* ignore */ } }, 600_000);
       closeTimer.unref?.();
-      server.listen(0, "127.0.0.1", async () => {
+      server.listen(0, "0.0.0.0", async () => {
         try {
           const port = (server.address() as any).port;
-          const local = vscode.Uri.parse(`http://127.0.0.1:${port}/${encodeURIComponent(entry)}`);
-          const external = await vscode.env.asExternalUri(local);
-          const opened = await vscode.env.openExternal(external);
+          const opened = await vscode.env.openExternal(vscode.Uri.parse(`http://${externalUrlHost()}:${port}/${encodeURIComponent(entry)}?_pkm_token=${accessToken}`));
           finish(!!opened);
         } catch { try { server.close(); } catch { /* ignore */ } finish(false); }
       });
@@ -1409,6 +1871,55 @@ class KnowledgeContentFileSystem implements vscode.FileSystemProvider {
     }
     return info.area === "notes" ? noteGet(info.key) : paperGet(info.key);
   }
+}
+
+class RecipeDraftFileSystem implements vscode.FileSystemProvider {
+  private readonly changed = new vscode.EventEmitter<vscode.FileChangeEvent[]>();
+  private readonly content = new Map<string, Uint8Array>();
+  readonly onDidChangeFile = this.changed.event;
+  watch(): vscode.Disposable { return new vscode.Disposable(() => undefined); }
+  stat(uri: vscode.Uri): vscode.FileStat {
+    const content = this.content.get(uri.toString());
+    if (!content) throw vscode.FileSystemError.FileNotFound(uri);
+    return { type: vscode.FileType.File, ctime: 0, mtime: Date.now(), size: content.byteLength };
+  }
+  readDirectory(): [string, vscode.FileType][] { return []; }
+  createDirectory(): void { throw vscode.FileSystemError.NoPermissions("Directories are not supported."); }
+  readFile(uri: vscode.Uri): Uint8Array {
+    const content = this.content.get(uri.toString());
+    if (!content) throw vscode.FileSystemError.FileNotFound(uri);
+    return content;
+  }
+  writeFile(uri: vscode.Uri, content: Uint8Array): void {
+    if (!this.content.has(uri.toString())) throw vscode.FileSystemError.FileNotFound(uri);
+    const next = Uint8Array.from(content);
+    this.content.set(uri.toString(), next);
+    this.changed.fire([{ type: vscode.FileChangeType.Changed, uri }]);
+    panel?.webview.postMessage({ command: "recipeIntentEdited", data: {
+      recipeId: uri.authority,
+      nodeId: uri.path.replace(/^\//, "").replace(/\.md$/i, ""),
+      guidance: Buffer.from(next).toString("utf8")
+    } });
+  }
+  delete(): void { throw vscode.FileSystemError.NoPermissions("Recipe drafts are removed with their editor session."); }
+  rename(): void { throw vscode.FileSystemError.NoPermissions("Recipe draft documents cannot be renamed."); }
+  seed(uri: vscode.Uri, content: string): void {
+    this.content.set(uri.toString(), Buffer.from(content, "utf8"));
+    this.changed.fire([{ type: vscode.FileChangeType.Changed, uri }]);
+  }
+}
+
+let recipeDraftFileSystem: RecipeDraftFileSystem | undefined;
+
+async function openRecipeIntentEditor(recipeId: string, nodeId: string, guidance: string): Promise<void> {
+  if (!/^[A-Za-z][A-Za-z0-9._-]{0,127}$/.test(recipeId) || !/^[A-Za-z][A-Za-z0-9._-]{0,127}$/.test(nodeId)) {
+    throw new Error("Recipe or Step identity is invalid.");
+  }
+  const uri = vscode.Uri.from({ scheme: "pkm-recipe-draft", authority: recipeId, path: `/${nodeId}.md` });
+  const open = vscode.workspace.textDocuments.find(document => document.uri.toString() === uri.toString());
+  if (!open?.isDirty) recipeDraftFileSystem?.seed(uri, guidance);
+  const document = open || await vscode.workspace.openTextDocument(uri);
+  await vscode.window.showTextDocument(document, { preview: false });
 }
 
 async function editMarkdownMetadata(uri?: vscode.Uri): Promise<void> {
@@ -2366,6 +2877,7 @@ class ChatRoomManager {
     if (!target) return;
     try {
       fs.writeFileSync(target.fsPath, rec.data);
+      rc?.files.delete(fileId);
       vscode.window.showInformationMessage(`Saved ${rec.meta.name}`);
       log.action("chat.fileSaved", { name: rec.meta.name });
     } catch (e: any) {
@@ -3055,7 +3567,7 @@ function resolveNoteSlugFromPath(target: string, from: string): string | null {
 function makeWebviewOptions(context: vscode.ExtensionContext): vscode.WebviewOptions & vscode.WebviewPanelOptions {
   return {
     enableScripts: true,
-    retainContextWhenHidden: true,
+    retainContextWhenHidden: false,
     localResourceRoots: [
       vscode.Uri.file(path.join(context.extensionPath, "dist", "webview")),
       vscode.Uri.file(path.join(context.extensionPath, "src",  "webview")),        // dev fallback
@@ -3353,7 +3865,7 @@ async function handleMessage(
     }
 
     case "subscriptionState": {
-      respond({ command: "subscriptionState", data: { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses() } });
+      respond({ command: "subscriptionState", data: await subscriptionStateData(context) });
       break;
     }
 
@@ -3365,14 +3877,14 @@ async function handleMessage(
         displayName: String(msg.displayName || ""),
       });
       respond({ command: "subscriptionCompleted", data: { action: "configured" } });
-      respond({ command: "subscriptionState", data: { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses() } });
+      respond({ command: "subscriptionState", data: await subscriptionStateData(context) });
       break;
     }
 
     case "subscriptionSetOnline": {
       await getSharedMarket().setGatewayOnline(!!msg.online);
       respond({ command: "subscriptionCompleted", data: { action: msg.online ? "online" : "offline" } });
-      respond({ command: "subscriptionState", data: { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses() } });
+      respond({ command: "subscriptionState", data: await subscriptionStateData(context) });
       break;
     }
 
@@ -3396,7 +3908,7 @@ async function handleMessage(
         dataPort: Number(msg.dataPort || 0),
       });
       respond({ command: "subscriptionCompleted", data: { action: String(msg.shareId || "") ? "published" : "created", shareId: published.shareId, name: published.name, revision: published.revision } });
-      respond({ command: "subscriptionState", data: { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses() } });
+      respond({ command: "subscriptionState", data: await subscriptionStateData(context) });
       break;
     }
 
@@ -3415,14 +3927,14 @@ async function handleMessage(
       }
       await getSharedMarket().deleteShare(shareId);
       respond({ command: "subscriptionCompleted", data: { action: "brokerDeleted", name: share.name } });
-      respond({ command: "subscriptionState", data: { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses() } });
+      respond({ command: "subscriptionState", data: await subscriptionStateData(context) });
       break;
     }
 
     case "subscriptionSetSharePublished": {
       const share = await getSharedMarket().setSharePublished(String(msg.shareId || ""), !!msg.published);
       respond({ command: "subscriptionCompleted", data: { action: share.published === false ? "brokerPaused" : "brokerPublished", name: share.name } });
-      respond({ command: "subscriptionState", data: { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses() } });
+      respond({ command: "subscriptionState", data: await subscriptionStateData(context) });
       break;
     }
 
@@ -3441,21 +3953,43 @@ async function handleMessage(
     case "subscriptionRotateSecret": {
       const result = await getSharedMarket().rotateShareSecret(String(msg.shareId || ""), Number(msg.controlPort || 0));
       respond({ command: "subscriptionSecret", data: { secret: result.secret } });
-      respond({ command: "subscriptionState", data: { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses() } });
+      respond({ command: "subscriptionState", data: await subscriptionStateData(context) });
       break;
     }
 
     case "subscriptionUnblockIp": {
       await getSharedMarket().unblockIp(String(msg.shareId || ""), String(msg.ip || ""));
       respond({ command: "subscriptionCompleted", data: { action: "unblocked", ip: String(msg.ip || "") } });
-      respond({ command: "subscriptionState", data: { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses() } });
+      respond({ command: "subscriptionState", data: await subscriptionStateData(context) });
       break;
     }
 
     case "subscriptionAdd": {
       const subscribed = await getSharedMarket().subscribe(String(msg.magicLink || ""), String(msg.alias || ""), String(msg.secret || ""));
       respond({ command: "subscriptionCompleted", data: { action: "subscribed", name: subscribed.alias || subscribed.brokerName || subscribed.shareId } });
-      respond({ command: "subscriptionState", data: { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses() } });
+      respond({ command: "subscriptionState", data: await subscriptionStateData(context) });
+      break;
+    }
+
+    case "subscriptionMountGitHub": {
+      const mounted = await mountGitHubBranchSubscription(context, {
+        targetId: String(msg.targetId || "") || undefined, credentialTargetId: String(msg.credentialTargetId || "") || undefined,
+        repository: String(msg.repository || "") || undefined, branch: String(msg.branch || "") || undefined,
+        expectedCommit: String(msg.expectedCommit || "") || undefined,
+        selectedPaths: Array.isArray(msg.selectedPaths) ? msg.selectedPaths.map(String) : undefined,
+        selectedFolders: Array.isArray(msg.selectedFolders) ? msg.selectedFolders.map(String) : undefined,
+      }, String(msg.alias || ""));
+      invalidateSharedContentCatalog();
+      scheduleRetrievalRefresh(context);
+      respond({ command: "subscriptionCompleted", data: { action: "githubMounted", name: mounted.alias || mounted.brokerName || mounted.shareId } });
+      respond({ command: "subscriptionState", data: await subscriptionStateData(context) });
+      break;
+    }
+
+    case "subscriptionTestGitHubBranch": {
+      const request = { repository: String(msg.repository || ""), branch: String(msg.branch || "main"), credentialTargetId: String(msg.credentialTargetId || "") || undefined };
+      const { target, snapshot } = await githubSubscriptionSnapshot(context, request);
+      respond({ command: "subscriptionGitHubTestResult", data: { ...request, name: target.name, commit: snapshot.commit, files: snapshot.files } });
       break;
     }
 
@@ -3464,21 +3998,29 @@ async function handleMessage(
       const subscriptionId = String(msg.id || "");
       getSharedMarket().renameSubscription(subscriptionId, alias);
       respond({ command: "subscriptionRenamed", data: { id: subscriptionId, alias } });
-      respond({ command: "subscriptionState", data: { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses() } });
+      respond({ command: "subscriptionState", data: await subscriptionStateData(context) });
       break;
     }
 
     case "subscriptionRefresh": {
-      const refreshed = await getSharedMarket().refresh(String(msg.id || ""), !!msg.force);
+      const subscription = getSharedMarket().subscription(String(msg.id || ""));
+      const refreshed = subscription.source?.type === "github"
+        ? await mountGitHubBranchSubscription(context, {
+            repository: subscription.source.repository, branch: subscription.source.branch,
+            credentialTargetId: subscription.source.credentialTargetId || subscription.source.targetId,
+            selectedPaths: subscription.source.selectedPaths, selectedFolders: subscription.source.selectedFolders,
+          }, subscription.alias)
+        : await getSharedMarket().refresh(subscription.id, !!msg.force);
+      if (subscription.source?.type === "github") { invalidateSharedContentCatalog(); scheduleRetrievalRefresh(context); }
       respond({ command: "subscriptionCompleted", data: { action: "refreshed", name: refreshed.alias || refreshed.brokerName || refreshed.shareId, revision: refreshed.revision } });
-      respond({ command: "subscriptionState", data: { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses() } });
+      respond({ command: "subscriptionState", data: await subscriptionStateData(context) });
       break;
     }
 
     case "subscriptionRemove": {
       getSharedMarket().removeSubscription(String(msg.id || ""));
       respond({ command: "subscriptionCompleted", data: { action: "removed" } });
-      respond({ command: "subscriptionState", data: { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses() } });
+      respond({ command: "subscriptionState", data: await subscriptionStateData(context) });
       break;
     }
 
@@ -3492,7 +4034,32 @@ async function handleMessage(
     }
 
     case "projectState": {
-      respond({ command: "projectState", data: { ...currentProjectStore().list(), privateTopLevels: privateTopLevels("recipes") } });
+      const snapshot = currentProjectStore().list();
+      respond({ command: "projectState", data: { ...snapshot, agentSessions: agentSessionSnapshots(snapshot.recipes), agentSessionTrash: agentSessionTrashSnapshots(), agentSnapshots: listAgentSnapshots(getStorePath()), privateTopLevels: privateTopLevels("recipes"), referenceCatalog: recipeReferenceCatalog() } });
+      break;
+    }
+
+    case "agentSessionTrash": {
+      const action = String(msg.action || "");
+      if (!(["move", "restore", "delete"] as string[]).includes(action)) throw new Error("Unsupported Agent Session Trash action.");
+      mutateAgentSessionTrash(action as "move" | "restore" | "delete", String(msg.sessionId || ""));
+      const snapshot = currentProjectStore().list();
+      respond({ command: "projectState", data: { ...snapshot, agentSessions: agentSessionSnapshots(snapshot.recipes), agentSessionTrash: agentSessionTrashSnapshots(), agentSnapshots: listAgentSnapshots(getStorePath()), privateTopLevels: privateTopLevels("recipes"), referenceCatalog: recipeReferenceCatalog() } });
+      break;
+    }
+
+    case "agentSnapshotCreate": {
+      const created = createAgentSnapshot(getStorePath(), String(msg.sessionId || ""), String(msg.reason || "manual"));
+      const snapshot = currentProjectStore().list();
+      respond({ command: "agentSnapshotCreated", data: created });
+      respond({ command: "projectState", data: { ...snapshot, agentSessions: agentSessionSnapshots(snapshot.recipes), agentSessionTrash: agentSessionTrashSnapshots(), agentSnapshots: listAgentSnapshots(getStorePath()), privateTopLevels: privateTopLevels("recipes"), referenceCatalog: recipeReferenceCatalog() } });
+      break;
+    }
+
+    case "agentSnapshotDelete": {
+      deleteAgentSnapshot(getStorePath(), String(msg.snapshotId || ""));
+      const snapshot = currentProjectStore().list();
+      respond({ command: "projectState", data: { ...snapshot, agentSessions: agentSessionSnapshots(snapshot.recipes), agentSessionTrash: agentSessionTrashSnapshots(), agentSnapshots: listAgentSnapshots(getStorePath()), privateTopLevels: privateTopLevels("recipes"), referenceCatalog: recipeReferenceCatalog() } });
       break;
     }
 
@@ -3517,10 +4084,11 @@ async function handleMessage(
       const input = {
         scope: msg.scope === "global" ? "global" as const : "project" as const,
         projectId: String(msg.projectId || ""),
-        name: String(msg.name || "")
+        name: String(msg.name || ""),
+        category: String(msg.category || "")
       };
       const scope = input.scope === "global" ? { kind: "global" as const } : { kind: "project" as const, projectId: input.projectId };
-      const result = store.createRecipe(projectCommand(store, "recipe-create", input), scope, input.name);
+      const result = store.createRecipe(projectCommand(store, "recipe-create", input), scope, input.name, input.category);
       respond({ command: "projectResult", data: { action: "recipeCreate", ...result } });
       break;
     }
@@ -3534,10 +4102,59 @@ async function handleMessage(
         description: String(msg.description || ""),
         metadata: msg.metadata as RecipeMetadata | undefined,
         editorLayout: msg.editorLayout as RecipeRecord["editorLayout"],
-        definition: msg.definition as WorkflowDefinitionV1
+        definition: msg.definition as WorkflowDefinitionV1,
+        nodeBindings: hydrateRecipeNodeBindings(msg.nodeBindings)
       };
       const result = store.updateRecipe(projectCommand(store, "recipe-update", { recipeId, ...input }), recipeId, input);
       respond({ command: "projectResult", data: { action: "recipeUpdate", ...result } });
+      break;
+    }
+
+    case "recipeDelete": {
+      const store = currentProjectStore();
+      const recipeId = String(msg.recipeId || "");
+      const result = store.deleteRecipe(projectCommand(store, "recipe-delete", { recipeId }), recipeId);
+      respond({ command: "projectResult", data: { action: "recipeDelete", ...result } });
+      break;
+    }
+
+    case "recipeTrash": {
+      const store = currentProjectStore();
+      const recipeId = String(msg.recipeId || "");
+      const action = String(msg.action || "");
+      const command = projectCommand(store, `recipe-trash-${action}`, { recipeId });
+      const result = action === "move" ? store.moveRecipeToTrash(command, recipeId)
+        : action === "restore" ? store.restoreRecipeFromTrash(command, recipeId)
+          : action === "delete" ? store.deleteRecipeFromTrash(command, recipeId)
+            : (() => { throw new Error("Unsupported Recipe Trash action."); })();
+      respond({ command: "projectResult", data: { action: "recipeTrash", ...result } });
+      break;
+    }
+
+    case "recipeValidateDefinition": {
+      const compiled = compileWorkflowDefinitionV1(msg.definition);
+      if (!compiled.ok) throw new ProjectModelError("recipe-definition-invalid", "Recipe definition cannot be parsed into a valid Graph.", { diagnostics: compiled.diagnostics });
+      respond({ command: "recipeValidationResult", data: {
+        definition: compiled.model,
+        executableDigest: compiled.executableDigest,
+        nodeCount: compiled.model.spec.nodes.length
+      } });
+      break;
+    }
+
+    case "recipeEditIntent": {
+      await openRecipeIntentEditor(String(msg.recipeId || ""), String(msg.nodeId || ""), String(msg.guidance || ""));
+      break;
+    }
+
+    case "recipeOpenBrowser": {
+      const recipeId = String(msg.recipeId || "");
+      const recipe = currentProjectStore().list().recipes.find(candidate => candidate.recipeId === recipeId);
+      if (!recipe) throw new ProjectModelError("recipe-not-found", "Recipe was not found.");
+      const opened = await openRecipeEditorInBrowser(recipeId);
+      if (!opened) throw new ProjectModelError("recipe-browser-open-failed", "The Recipe workbench could not be opened in the browser.");
+      vscode.window.setStatusBarMessage(`$(globe) Opened ${recipe.name} in browser`, 3000);
+      respond({ command: "projectResult", data: { action: "recipeOpenBrowser", recipeId } });
       break;
     }
 
@@ -4051,9 +4668,117 @@ async function handleMessage(
       if (!(SHARED_CONTENT_TYPES as readonly string[]).includes(type) && type !== "recipes") throw new Error(`Unsupported privacy content type: ${type}`);
       setTopLevelPrivacy(type, topLevel, !!msg.isPrivate);
       gitCommit(`privacy(${type}): ${topLevel} ${msg.isPrivate ? "private" : "public"}`);
-      const changed = type === "recipes" ? 0 : await sharedMarket?.refreshPublishedShares() || 0;
+      const changed = await sharedMarket?.refreshPublishedShares() || 0;
       _treeProvider?.refresh();
       respond({ command: "privacyChanged", data: { type, topLevel, isPrivate: !!msg.isPrivate, brokersRefreshed: changed } });
+      break;
+    }
+
+    case "githubSyncState": {
+      respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
+      break;
+    }
+
+    case "githubSyncPickIdentity": {
+      const sshDirectory = path.join(os.homedir(), ".ssh");
+      const picked = await vscode.window.showOpenDialog({
+        canSelectFolders: false,
+        canSelectFiles: true,
+        canSelectMany: false,
+        defaultUri: fs.existsSync(sshDirectory) ? vscode.Uri.file(sshDirectory) : vscode.Uri.file(os.homedir()),
+        title: "Select a GitHub SSH private key",
+        openLabel: "Select SSH Key",
+      });
+      respond({ command: "githubSyncIdentityPicked", data: { identityFile: picked?.[0]?.fsPath || "" } });
+      break;
+    }
+
+    case "githubSyncCreateIdentity": {
+      const expectedLogin = String(msg.expectedLogin || "").trim();
+      const created = await createGitHubSyncIdentity(expectedLogin, path.join(os.homedir(), ".ssh"));
+      await vscode.env.clipboard.writeText(created.publicKey);
+      await vscode.env.openExternal(vscode.Uri.parse("https://github.com/settings/ssh/new"));
+      respond({ command: "githubSyncIdentityCreated", data: { identityFile: created.identityFile, expectedLogin } });
+      break;
+    }
+
+    case "githubSyncTestAuthentication": {
+      const authentication = msg.target?.authentication || {};
+      const repository = String(msg.target?.repository || "");
+      const expectedLogin = String(authentication.expectedLogin || "");
+      const result = authentication.method === "https"
+        ? await probeGitHubSyncHttpsAuthentication(repository, expectedLogin)
+        : await probeGitHubSyncAuthentication(repository, String(authentication.identityFile || ""), expectedLogin);
+      respond({ command: "githubSyncAuthenticationResult", data: result });
+      break;
+    }
+
+    case "githubSyncSave": {
+      const targets = readGitHubSyncTargets(context);
+      const existing = targets.find(target => target.id === String(msg.target?.id || ""));
+      const target = normalizeGitHubSyncTarget({ ...msg.target, lastSync: existing?.lastSync });
+      const duplicate = targets.find(candidate => candidate.id !== target.id && candidate.repository === target.repository && candidate.branch === target.branch);
+      if (duplicate) throw new Error(`Target ${duplicate.name} already synchronizes this repository and branch.`);
+      if (target.authentication) await testGitHubSyncAuthentication(target);
+      const next = [...targets.filter(candidate => candidate.id !== target.id), target].sort((left, right) => left.name.localeCompare(right.name));
+      writeGitHubSyncTargets(context, next);
+      respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
+      break;
+    }
+
+    case "githubSyncDelete": {
+      const targetId = String(msg.targetId || "");
+      const targets = readGitHubSyncTargets(context);
+      const mounted = ((getSharedMarket().snapshot as any).subscriptions || []).find((subscription: any) => subscription.source?.type === "github" && (subscription.source.credentialTargetId || subscription.source.targetId) === targetId);
+      if (mounted) throw new Error(`Remove the mounted subscription "${mounted.alias || mounted.brokerName || mounted.shareId}" before deleting this GitHub target.`);
+      writeGitHubSyncTargets(context, targets.filter(target => target.id !== targetId));
+      fs.rmSync(path.join(githubSyncStateDirectory(context), "checkouts", targetId), { recursive: true, force: true });
+      respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
+      break;
+    }
+
+    case "githubSyncRun": {
+      const targetId = String(msg.targetId || "");
+      const targets = readGitHubSyncTargets(context);
+      const target = targets.find(candidate => candidate.id === targetId);
+      if (!target) throw new Error("GitHub Sync target was not found.");
+      const result = await syncGitHubTarget(target, await githubSyncCatalog(), path.join(githubSyncStateDirectory(context), "checkouts"));
+      target.lastSync = { at: new Date().toISOString(), commit: result.commit, fingerprints: result.fingerprints };
+      writeGitHubSyncTargets(context, targets);
+      respond({ command: "githubSyncCompleted", data: { targetId, changed: result.changed, commit: result.commit } });
+      respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
+      break;
+    }
+
+    case "githubSyncRestore": {
+      const target = githubSyncTargetById(context, String(msg.targetId || ""));
+      const checkoutRoot = path.join(githubSyncStateDirectory(context), "checkouts");
+      const snapshot = await fetchGitHubRemoteSnapshot(target, checkoutRoot);
+      const selected = await vscode.window.showQuickPick(snapshot.files.map(file => ({ label: path.basename(file.path), description: file.path, path: file.path })), {
+        canPickMany: true, matchOnDescription: true, title: `Restore from ${target.name}`, placeHolder: `Select files from ${target.branch} at ${snapshot.commit.slice(0, 10)}`,
+      });
+      if (!selected?.length) { respond({ command: "githubSyncRestoreCancelled", data: { targetId: target.id } }); break; }
+      const selectedPaths = selected.map(item => item.path);
+      const commit = snapshot.commit;
+      let result = await restoreGitHubRemoteFiles(target, checkoutRoot, getStorePath(), commit, selectedPaths, false);
+      if (result.conflicts.length) {
+        const detail = result.conflicts.slice(0, 8).join("\n") + (result.conflicts.length > 8 ? `\n...and ${result.conflicts.length - 8} more` : "");
+        const choice = await vscode.window.showWarningMessage(
+          `${result.conflicts.length} selected file${result.conflicts.length === 1 ? "" : "s"} already exist locally. Overwrite them?`,
+          { modal: true, detail },
+          "Overwrite and Restore"
+        );
+        if (choice !== "Overwrite and Restore") {
+          respond({ command: "githubSyncRestoreCancelled", data: { targetId: target.id } });
+          break;
+        }
+        result = await restoreGitHubRemoteFiles(target, checkoutRoot, getStorePath(), commit, selectedPaths, true);
+      }
+      invalidateSharedContentCatalog();
+      await refreshKnowledgeInventory(context);
+      _treeProvider?.refresh();
+      respond({ command: "githubSyncRestored", data: { targetId: target.id, restored: result.restored } });
+      respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
       break;
     }
 
@@ -4386,7 +5111,19 @@ async function handleMessage(
       const source = keys.length
         ? market.forkFolderSource(keys, String(msg.path || ""))
         : market.forkSource(String(msg.key || ""));
-      const forkPath = forkSubscriptionContent(getStorePath(), source);
+      let forkPath: string;
+      if (source.type === "recipes") {
+        const recipe = JSON.parse(source.content || "null") as RecipeRecord;
+        const store = currentProjectStore();
+        const result = store.importRecipe(projectCommand(store, "recipe-subscription-fork", {
+          sourceRecipeId: recipe?.recipeId, brokerName: source.brokerName, remotePath: source.remotePath,
+        }), recipe, {
+          kind: "subscription-fork", sourceKey: `${source.publisherUser}@${source.publisherHost}/${source.brokerName}/${source.remotePath}`,
+          preserveIdentity: false, rejectExisting: true, brokerName: source.brokerName,
+          publisherUser: source.publisherUser, publisherHost: source.publisherHost,
+        });
+        forkPath = `recipes/${result.entityId}`;
+      } else forkPath = forkSubscriptionContent(getStorePath(), source);
       gitCommit(`fork(${source.type === "packages" ? "package" : source.type}): ${source.brokerName}/${source.remotePath}`);
       _treeProvider?.refresh();
       respond({ command: "subscriptionForked", data: { type: source.type, path: forkPath } });
@@ -5412,7 +6149,7 @@ async function handleMessage(
         const pcat = (c?: string) => prefix ? (c ? `${prefix}/${c}` : prefix) : (c || "");
         const slugPfx = prefix ? prefix.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "") : "";
         const counts: Record<string, number> = {};
-        const totalItems = ["skills", "notes", "papers", "prompts", "scripts", "packages"]
+        const totalItems = ["skills", "notes", "papers", "prompts", "scripts", "packages", "recipes"]
           .reduce((count, type) => count + (Array.isArray(bundle?.[type]) ? bundle[type].length : 0), 0);
         let importedItems = 0;
         const reportImported = async (type: string): Promise<void> => {
@@ -5480,6 +6217,17 @@ async function handleMessage(
             await reportImported("packages");
           }
         }
+        for (const recipe of bundle?.recipes ?? []) {
+          const store = currentProjectStore();
+          const result = store.importRecipe(projectCommand(store, "recipe-direct-sync", {
+            sourceRecipeId: recipe?.recipeId, from, group: label || "overwrite",
+          }), recipe as RecipeRecord, {
+            kind: "direct-sync", sourceKey: `${from}/${label || "overwrite"}`,
+            preserveIdentity: !prefix, categoryPrefix: prefix,
+          });
+          counts.recipes = (counts.recipes ?? 0) + (result.replayed ? 0 : 1);
+          await reportImported("recipes");
+        }
         const total   = Object.values(counts).reduce((a, b) => a + b, 0);
         const summary = Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(", ");
         gitCommit(`sync: ${summary} from ${from}${label ? ` (group ${label})` : ""}`);
@@ -5515,7 +6263,8 @@ async function handleMessage(
       const prompts  = promptList().flatMap(t => ({ id: `${t.project}/${t.task}`, label: t.task, cat: t.project, meta: "" }));
       const scripts  = (scriptList() as any[]).map((s: any) => ({ id: s.path, label: s.file, cat: s.category ?? "", meta: s.lang }));
       const packages = packageList().map((p: any) => ({ id: p.name, label: p.name, cat: "", meta: p.lang }));
-      respond({ command: "syncContentList", data: { skills, notes, papers, prompts, scripts, packages } });
+      const recipes  = currentProjectStore().list().recipes.filter(recipe => !isContentItemPrivate("recipes", recipe)).map(recipe => ({ id: recipe.recipeId, label: recipe.name, cat: recipe.category ?? "", meta: recipe.scope === "project" ? "Project Recipe" : "Global Recipe" }));
+      respond({ command: "syncContentList", data: { skills, notes, papers, prompts, scripts, packages, recipes } });
       break;
     }
 
@@ -5974,10 +6723,12 @@ async function handleMessage(
     log.error(`handleMessage(${msg.command}) failed: ${e?.stack ?? e?.message ?? e}`);
     if (msg.command === "list") {
       respond({ command: "list", tab: String(msg.tab || ""), data: [] });
-    } else if (["projectState", "projectCreate", "threadCreate", "threadMove", "recipeCreate", "recipeUpdate", "projectRecipesExport"].includes(String(msg.command || ""))) {
+    } else if (["projectState", "projectCreate", "threadCreate", "threadMove", "recipeCreate", "recipeUpdate", "recipeDelete", "recipeTrash", "recipeValidateDefinition", "recipeOpenBrowser", "projectRecipesExport"].includes(String(msg.command || ""))) {
       respond({ command: "projectError", data: { action: String(msg.command || ""), code: String(e?.code || "project-error"), error: e?.message || String(e), ...(e?.details ? { details: e.details } : {}) } });
     } else if (String(msg.command || "").startsWith("subscription")) {
       respond({ command: "subscriptionError", data: { action: String(msg.command || ""), error: e?.message || String(e) } });
+    } else if (String(msg.command || "").startsWith("githubSync")) {
+      respond({ command: "githubSyncError", data: { action: String(msg.command || ""), error: e?.message || String(e) } });
     }
   }
 }
@@ -6199,6 +6950,9 @@ function maintainPkmIntegration(context: vscode.ExtensionContext): Promise<void>
 
 // ── Sidebar tree provider ──────────────────────────────────────────────────
 type PkNodeType =
+  | 'module-knowledge' | 'module-tools' | 'module-automation' | 'module-projects' | 'module-settings'
+  | 'page-agent-sessions' | 'page-agent-snapshots' | 'page-recipes' | 'page-projects' | 'page-skill-router'
+  | 'recipe-folder' | 'recipe'
   | 'root-skills' | 'root-notes' | 'root-papers' | 'root-prompts' | 'root-packages' | 'root-scripts' | 'root-environments' | 'root-servers' | 'root-chatroom' | 'root-subscriptions' | 'root-mcp'
   | 'environment-group' | 'environment-item'
   | 'server-group' | 'server-ungrouped-group' | 'server-item' | 'server-subscriber-group' | 'server-subscriber-item'
@@ -6230,6 +6984,9 @@ class PkTreeItem extends vscode.TreeItem {
   ) {
     super(label, collapsibleState);
     const ICONS: Partial<Record<PkNodeType, string>> = {
+      "module-knowledge": "library", "module-tools": "tools", "module-automation": "run-all", "module-projects": "project", "module-settings": "settings-gear",
+      "page-agent-sessions": "hubot", "page-agent-snapshots": "save", "page-recipes": "notebook", "page-projects": "project", "page-skill-router": "git-branch",
+      "recipe-folder": "folder", "recipe": "notebook",
       "root-skills": "book", "root-notes": "note", "root-papers": "library", "root-prompts": "comment-discussion",
       "root-packages": "package", "root-scripts": "terminal", "root-environments": "beaker", "root-servers": "server-environment", "root-chatroom": "comment-discussion", "root-subscriptions": "broadcast", "root-mcp": "server-process",
       "environment-group": "folder", "environment-item": "python",
@@ -6247,7 +7004,10 @@ class PkTreeItem extends vscode.TreeItem {
     if (nodeData?.description) this.tooltip = nodeData.description;
 
     // contextValue drives right-click "New item" menus (see package.json view/item/context)
-    if (nodeType === 'root-skills') this.contextValue = 'pk-skills-root';
+    if (nodeType === 'page-recipes') this.contextValue = 'pk-recipes-root';
+    else if (nodeType === 'recipe-folder') this.contextValue = 'pk-recipes-group';
+    else if (nodeType === 'recipe') this.contextValue = 'pk-recipe-item';
+    else if (nodeType === 'root-skills') this.contextValue = 'pk-skills-root';
     else if (nodeType === 'skill-folder') this.contextValue = label === "(uncategorized)" ? 'pk-skills-virtual-root' : 'pk-skills-group';
     else if (nodeType === 'skill-trash') this.contextValue = 'pk-skill-trash';
     else if (nodeType === 'skill-trash-item') this.contextValue = 'pk-skill-trash-item';
@@ -6333,33 +7093,64 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
   getChildren(element?: PkTreeItem): PkTreeItem[] {
     const C = vscode.TreeItemCollapsibleState.Collapsed;
     if (!element) {
-      const chatroom = new PkTreeItem(this.text("tabs.chatroom"), 'root-chatroom', C);
-      chatroom.command = { command: "personalKnowledge.openChatroom", title: "Open Chatroom" };
+      return [
+        new PkTreeItem("Knowledge", "module-knowledge", C),
+        new PkTreeItem("Tools", "module-tools", C),
+        new PkTreeItem("Automation", "module-automation", C),
+        new PkTreeItem("Projects", "module-projects", C),
+        new PkTreeItem("Settings", "module-settings", C),
+      ];
+    }
+    if (element.nodeType === "module-knowledge") {
+      return [
+        new PkTreeItem(this.text("tabs.skills"), "root-skills", C),
+        new PkTreeItem(this.text("tabs.notes"), "root-notes", C),
+        new PkTreeItem(this.text("tabs.papers"), "root-papers", C),
+      ];
+    }
+    if (element.nodeType === "module-tools") {
       const servers = new PkTreeItem(this.text("tabs.servers"), "root-servers", C);
       servers.command = { command: "personalKnowledge.openServers", title: "Open Servers" };
       const environments = new PkTreeItem(this.text("tabs.environments"), "root-environments", C);
       environments.command = { command: "personalKnowledge.openEnvironments", title: "Open Environments" };
-      const subscriptions = new PkTreeItem("Subscription", "root-subscriptions", C);
-      subscriptions.command = { command: "personalKnowledge.openSubscriptions", title: "Open Subscription" };
-      const mcp = new PkTreeItem(this.text("tabs.config"), "root-mcp", vscode.TreeItemCollapsibleState.None);
-      mcp.command = { command: "personalKnowledge.setupMcp", title: "Open Config" };
       return [
-        new PkTreeItem(this.text("tabs.skills"),   'root-skills',   vscode.TreeItemCollapsibleState.Collapsed),
-        new PkTreeItem(this.text("tabs.notes"),    'root-notes',    C),
-        new PkTreeItem(this.text("tabs.papers"),   'root-papers',   C),
-        new PkTreeItem(this.text("tabs.prompts"),  'root-prompts',  C),
-        new PkTreeItem(this.text("tabs.packages"), 'root-packages', C),
-        new PkTreeItem(this.text("tabs.scripts"),  'root-scripts',  C),
+        new PkTreeItem(this.text("tabs.prompts"), "root-prompts", C),
+        new PkTreeItem(this.text("tabs.scripts"), "root-scripts", C),
+        new PkTreeItem(this.text("tabs.packages"), "root-packages", C),
         environments,
         servers,
-        chatroom,
-        subscriptions,
+      ];
+    }
+    if (element.nodeType === "module-automation") {
+      const recipes = new PkTreeItem("Recipe Library", "page-recipes", C);
+      recipes.command = { command: "personalKnowledge.openPanelTab", title: "Open Recipe Library", arguments: ["recipes"] };
+      return [
+        this._panelPage("Agent Sessions", "page-agent-sessions", "agentSessions"),
+        this._panelPage("Agent Snapshot", "page-agent-snapshots", "agentSnapshots"),
+        recipes,
+      ];
+    }
+    if (element.nodeType === "module-projects") {
+      const chatroom = new PkTreeItem("Threads", "root-chatroom", C);
+      chatroom.command = { command: "personalKnowledge.openChatroom", title: "Open Threads" };
+      return [this._panelPage("Overview", "page-projects", "projects"), chatroom];
+    }
+    if (element.nodeType === "module-settings") {
+      const mcp = new PkTreeItem("General & MCP", "root-mcp", vscode.TreeItemCollapsibleState.None);
+      mcp.command = { command: "personalKnowledge.setupMcp", title: "Open General & MCP" };
+      const subscriptions = new PkTreeItem("Network & Sharing", "root-subscriptions", C);
+      subscriptions.command = { command: "personalKnowledge.openSubscriptions", title: "Open Network & Sharing" };
+      return [
         mcp,
+        this._panelPage("Skill Router", "page-skill-router", "skillRouter"),
+        subscriptions,
       ];
     }
     try {
       switch (element.nodeType) {
         case 'root-skills':    return this._withSubscribedContent("skills", this._skillRootItems());
+        case 'page-recipes':   return this._recipeFolder([]);
+        case 'recipe-folder':  return this._recipeFolder(element.nodeData.path);
         case 'skill-folder':   return this._skillFolder(element.nodeData.path);
         case 'skill-trash':    return this._skillTrashItems();
         case 'root-notes':     return this._withSubscribedContent("notes", this._withKnowledgeTrash("notes", this._noteFolder([])));
@@ -6392,6 +7183,12 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
       }
     } catch { /* DB/store not ready yet */ }
     return [];
+  }
+
+  private _panelPage(label: string, nodeType: PkNodeType, tab: string): PkTreeItem {
+    const item = new PkTreeItem(label, nodeType, vscode.TreeItemCollapsibleState.None);
+    item.command = { command: "personalKnowledge.openPanelTab", title: `Open ${label}`, arguments: [tab] };
+    return item;
   }
 
   private _subscriptionGroups(): PkTreeItem[] {
@@ -6725,6 +7522,34 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
     let n = node.items.length;
     for (const f of node.folders.values()) n += this._countLeaves(f);
     return n;
+  }
+
+  private _recipeFolder(path: string[]): PkTreeItem[] {
+    const entries = currentProjectStore().list().recipes
+      .filter(recipe => recipe.scope === "global")
+      .map(recipe => ({
+        path: String(recipe.category || "").split("/").map(segment => segment.trim()).filter(Boolean),
+        data: recipe,
+      }));
+    const node = this._navigate(this._buildPathTree(entries), path);
+    if (!node) return [];
+    const folders = [...node.folders.keys()].sort((left, right) => left.localeCompare(right)).map(name => {
+      const folder = node.folders.get(name)!;
+      const folderPath = [...path, name];
+      const topLevel = path.length === 0;
+      const item = new PkTreeItem(privateNavigationLabel("recipes", name, topLevel), "recipe-folder", vscode.TreeItemCollapsibleState.Collapsed,
+        { path: folderPath, relPath: folderPath.join("/"), privacyTopLevel: topLevel, isPrivate: topLevel && isTopLevelPrivate("recipes", name), privacyType: "recipes", privacyName: name });
+      item.description = String(this._countLeaves(folder));
+      return item;
+    });
+    const recipes = node.items.sort((left: any, right: any) => left.name.localeCompare(right.name)).map((recipe: RecipeRecord) => {
+      const relPath = `${recipe.category ? `${recipe.category}/` : ""}${recipe.recipeId}.json`;
+      const item = new PkTreeItem(recipe.name, "recipe", vscode.TreeItemCollapsibleState.None, { ...recipe, relPath });
+      item.description = recipe.description;
+      item.command = { command: "personalKnowledge.openRecipe", title: "Open Recipe", arguments: [recipe.recipeId] };
+      return item;
+    });
+    return [...folders, ...recipes];
   }
 
   // ── Notes (recursive by category path; uncategorized grouped together) ───
@@ -7162,8 +7987,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (store) getChatMgr().configurePersistence(path.join(store, "chatrooms"), getChatInstallationId(context), context.secrets);
   };
   applyChatArchiveCfg();
+  recipeDraftFileSystem = new RecipeDraftFileSystem();
   context.subscriptions.push(
     vscode.workspace.registerFileSystemProvider("pkm-content", new KnowledgeContentFileSystem(), { isCaseSensitive: true }),
+    vscode.workspace.registerFileSystemProvider("pkm-recipe-draft", recipeDraftFileSystem, { isCaseSensitive: true }),
     vscode.languages.registerCodeLensProvider([{ language: "markdown", scheme: "file" }, { language: "markdown", scheme: "pkm-content" }], new KnowledgeMetadataCodeLensProvider()),
     vscode.workspace.onDidChangeConfiguration(e => {
       if (e.affectsConfiguration("personalKnowledge.logLevel")) log.refreshLevel();
@@ -7311,6 +8138,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(vscode.commands.registerCommand("_personalKnowledge.testNavigationPath", (area: string, segments: string[]) => {
     const rootType = `root-${area}`;
     let children = treeProvider.getChildren();
+    const moduleType = ["skills", "notes", "papers"].includes(area) ? "module-knowledge"
+      : ["prompts", "scripts", "packages", "environments", "servers"].includes(area) ? "module-tools"
+      : undefined;
+    if (moduleType) {
+      const module = children.find(item => item.nodeType === moduleType);
+      if (!module) return { found: false, missing: moduleType, children: children.map(item => item.label) };
+      children = treeProvider.getChildren(module);
+    }
     let current = children.find(item => item.nodeType === rootType);
     if (!current) return { found: false, missing: rootType, children: children.map(item => item.label) };
     for (const segment of segments || []) {
@@ -7321,6 +8156,35 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     children = treeProvider.getChildren(current);
     return { found: true, children: children.map(item => ({ label: item.label, description: item.description, relPath: item.nodeData?.relPath, key: item.nodeData?.key })) };
+  }));
+  context.subscriptions.push(vscode.commands.registerCommand("_personalKnowledge.testRecipeIntentDraft", async () => {
+    const recipeId = "recipe_test_intent";
+    const nodeId = "validate-guidance";
+    const initial = "Brief: initial test intent.";
+    const refreshed = "Brief: latest unsaved webview intent.";
+    const edited = "Brief: edited through a real VS Code document save.";
+    const storeBefore = canonicalJson(currentProjectStore().list());
+    const uri = vscode.Uri.from({ scheme: "pkm-recipe-draft", authority: recipeId, path: `/${nodeId}.md` });
+    recipeDraftFileSystem?.seed(uri, initial);
+    const document = await vscode.workspace.openTextDocument(uri);
+    recipeDraftFileSystem?.seed(uri, refreshed);
+    const refreshDeadline = Date.now() + 3000;
+    while (document.getText() !== refreshed && Date.now() < refreshDeadline) {
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    const refreshedFromWebview = document.getText() === refreshed;
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), edited);
+    const applied = await vscode.workspace.applyEdit(edit);
+    const saved = applied && await document.save();
+    const persistedDraft = Buffer.from(recipeDraftFileSystem?.readFile(uri) || []).toString("utf8");
+    return {
+      applied,
+      saved,
+      refreshedFromWebview,
+      persistedDraft,
+      projectStoreUnchanged: storeBefore === canonicalJson(currentProjectStore().list())
+    };
   }));
   // Clicking the Activity Bar icon: ensure setup then open main panel
   treeView.onDidChangeVisibility(async e => {
@@ -7337,6 +8201,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       log.action("command.open");
       if (!(await ensureSetup(context))) return;
       getOrCreatePanel(context);
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.openPanelTab", async (tab: string) => {
+      if (!(await ensureSetup(context))) return;
+      openPanelTab(context, String(tab || ""));
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.openRecipe", async (value: string | PkTreeItem) => {
+      const recipeId = typeof value === "string" ? value : String(value?.nodeData?.recipeId || "");
+      const opened = await openRecipeEditorInBrowser(recipeId);
+      if (!opened) vscode.window.showErrorMessage("Could not open the Recipe editor in your browser.");
     }),
 
     vscode.commands.registerCommand("personalKnowledge.openSubscriptions", async (shareId?: string) => {
@@ -7584,6 +8459,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
 
     // ── Add new item at a folder (right-click on container) ────────────────
+    vscode.commands.registerCommand("personalKnowledge.addRecipeHere", async (item?: PkTreeItem) => {
+      if (!(await ensureSetup(context))) return;
+      const category = item?.nodeType === "recipe-folder" ? String(item.nodeData.relPath || "") : "";
+      const name = await vscode.window.showInputBox({ prompt: "New Recipe name", placeHolder: "e.g. Publish release" });
+      if (!name?.trim()) return;
+      const store = currentProjectStore();
+      const input = { scope: "global", name: name.trim(), category };
+      const result = store.createRecipe(projectCommand(store, "recipe-create", input), { kind: "global" }, input.name, category);
+      gitCommit(`add(recipe): ${category ? `${category}/` : ""}${input.name}`);
+      treeProvider.refresh();
+      await openRecipeEditorInBrowser(result.entityId || "");
+    }),
+
     vscode.commands.registerCommand("personalKnowledge.addSkillHere", async (item?: PkTreeItem) => {
       if (!(await ensureSetup(context))) return;
       const cat = await selectKnowledgeFolder("skills", categoryFromTreeItem(item));
@@ -8280,7 +9168,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 // ── File watcher: auto-refresh when notes/skills change on disk ─────────────
 let _watcher: vscode.FileSystemWatcher | undefined;
 let _privacyWatcher: vscode.FileSystemWatcher | undefined;
+let _projectStateWatcher: vscode.FileSystemWatcher | undefined;
 let _watcherRefreshTimer: NodeJS.Timeout | undefined;
+let _projectStateRefreshTimer: NodeJS.Timeout | undefined;
 let _watcherFallbackTimer: NodeJS.Timeout | undefined;
 let _knowledgeTreeSignature = "";
 let _watcherSkillProjectionChanged = false;
@@ -8307,9 +9197,12 @@ function knowledgeTreeSignature(): string {
 function startFileWatcher(context: vscode.ExtensionContext): void {
   _watcher?.dispose();
   _privacyWatcher?.dispose();
+  _projectStateWatcher?.dispose();
   if (_watcherRefreshTimer) clearTimeout(_watcherRefreshTimer);
+  if (_projectStateRefreshTimer) clearTimeout(_projectStateRefreshTimer);
   if (_watcherFallbackTimer) clearInterval(_watcherFallbackTimer);
   _watcherRefreshTimer = undefined;
+  _projectStateRefreshTimer = undefined;
   _watcherFallbackTimer = undefined;
   _watcherSkillProjectionChanged = false;
   _knowledgeTreeSignature = knowledgeTreeSignature();
@@ -8347,6 +9240,28 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
   _privacyWatcher.onDidCreate(onChange);
   _privacyWatcher.onDidChange(onChange);
   _privacyWatcher.onDidDelete(onChange);
+  _projectStateWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(getStorePath(), ".pkm/state/{projects.json,agent-sessions/**/*.json,agent-sessions-trash/**/*.json,recipe-runs/**/*.json}"));
+  const onProjectStateChange = (uri: vscode.Uri) => {
+    const relativeStatePath = path.relative(path.join(getStorePath(), ".pkm", "state"), uri.fsPath).replace(/\\/g, "/");
+    const scope = relativeStatePath === "projects.json" ? "projects"
+      : relativeStatePath.startsWith("recipe-runs/") ? "recipeRuns" : "agentSessions";
+    if (scope === "projects") {
+      invalidateSharedContentCatalog();
+      void sharedMarket?.refreshPublishedShares().then(changed => {
+        if (changed) log.info(`Recipe Library change refreshed ${changed} published Share Broker(s)`);
+      }).catch(error => log.warn(`Recipe Library publish refresh failed: ${(error as Error).message}`));
+    }
+    if (_projectStateRefreshTimer) clearTimeout(_projectStateRefreshTimer);
+    _projectStateRefreshTimer = setTimeout(() => {
+      _projectStateRefreshTimer = undefined;
+      if (!panel?.visible || !_panelReady) return;
+      void panel.webview.postMessage({ command: "projectStateChanged", data: { scope } });
+    }, 250);
+    _projectStateRefreshTimer.unref?.();
+  };
+  _projectStateWatcher.onDidCreate(onProjectStateChange);
+  _projectStateWatcher.onDidChange(onProjectStateChange);
+  _projectStateWatcher.onDidDelete(onProjectStateChange);
   _watcherFallbackTimer = setInterval(() => {
     if (!panel?.visible || !_panelReady) return;
     const signature = knowledgeTreeSignature();
@@ -8357,18 +9272,21 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
     panel.webview.postMessage({ command: "reloaded", data: { fallback: true } });
     scheduleRetrievalRefresh(context);
     log.info("file watcher fallback detected a knowledge tree change");
-  }, 15_000);
+  }, 5 * 60_000);
   _watcherFallbackTimer.unref?.();
-  context.subscriptions.push(_watcher, _privacyWatcher);
+  context.subscriptions.push(_watcher, _privacyWatcher, _projectStateWatcher);
 }
 
 export async function deactivate(): Promise<void> {
   _watcher?.dispose();
   _privacyWatcher?.dispose();
+  _projectStateWatcher?.dispose();
   if (_watcherRefreshTimer) clearTimeout(_watcherRefreshTimer);
+  if (_projectStateRefreshTimer) clearTimeout(_projectStateRefreshTimer);
   if (_watcherFallbackTimer) clearInterval(_watcherFallbackTimer);
   if (retrievalRefreshTimer) clearTimeout(retrievalRefreshTimer);
   _watcherRefreshTimer = undefined;
+  _projectStateRefreshTimer = undefined;
   _watcherFallbackTimer = undefined;
   retrievalRefreshTimer = undefined;
   disposeServers();

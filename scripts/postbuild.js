@@ -121,8 +121,10 @@ try {
       !/resolveMcpServerDefinition:\s*\(\)\s*=>\s*createDefinition\(\)/.test(extensionTs)) {
     throw new Error("MCP preview/provider resolution must not regenerate server code implicitly");
   }
-  if (!extensionTs.includes('new PkTreeItem(this.text("tabs.config"), "root-mcp"') || extensionTs.includes('new PkTreeItem("MCP", "root-mcp"')) {
-    throw new Error("Localized Config navigation label is missing or regressed to MCP");
+  if (!extensionTs.includes('new PkTreeItem("General & MCP", "root-mcp"')
+      || !extensionTs.includes('this._panelPage("Skill Router", "page-skill-router"')
+      || !extensionTs.includes('new PkTreeItem("Network & Sharing", "root-subscriptions"')) {
+    throw new Error("Settings navigation must expose General & MCP, Skill Router, and Network & Sharing");
   }
   console.log("post-build: hljs CDN removed, panel.js syntax OK");
 } catch (e) {

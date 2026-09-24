@@ -20,3 +20,9 @@ export function browserFaviconTag(href = ""): string {
   }
   return favicon;
 }
+
+export function ensureBrowserFavicon(document: string, href = ""): string {
+  if (/<link\b[^>]*\brel=["'][^"']*\b(?:shortcut\s+)?icon\b/i.test(document)) return document;
+  const tag = browserFaviconTag(href);
+  return tag ? document.replace(/<head(\s[^>]*)?>/i, match => `${match}${tag}`) : document;
+}

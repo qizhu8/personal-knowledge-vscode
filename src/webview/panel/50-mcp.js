@@ -6,7 +6,7 @@ function mcpI18nAttrs(key, params = {}) {
 
 function renderMcpLoading() {
   document.getElementById('detail').innerHTML = `<div style="padding:32px 36px;max-width:720px">
-    <div style="color:var(--muted);font-size:12px">Checking MCP server status…</div>
+    <div style="color:var(--muted);font-size:12px">Consulting the MCP server wards…</div>
   </div>`;
 }
 
@@ -56,14 +56,18 @@ function mcpRegeneratePresentation(data) {
   const knowledgeExpected = data?.knowledgeVersion || '?';
   const chatInstalled = data?.installedChatVersion || 'missing';
   const chatExpected = data?.chatVersion || '?';
+  const recipeInstalled = data?.installedRecipeVersion || 'missing';
+  const recipeExpected = data?.recipeVersion || '?';
+  const agentSessionInstalled = data?.installedAgentSessionVersion || 'missing';
+  const agentSessionExpected = data?.agentSessionVersion || '?';
   const label = !data?.installed
     ? `Generate Server Code · target v${expected}`
     : data?.current
       ? `Regenerate Server Code · v${expected}`
       : `Regenerate Server Code · v${installed} → v${expected}`;
   const title = data?.current
-    ? `Generated server is current: Unified v${expected}, Knowledge v${knowledgeExpected}, Chat v${chatExpected}.`
-    : `Regenerate Unified v${installed} → v${expected}; Knowledge v${knowledgeInstalled} → v${knowledgeExpected}; Chat v${chatInstalled} → v${chatExpected}.`;
+    ? `Generated server is current: Unified v${expected}, Knowledge v${knowledgeExpected}, Chat v${chatExpected}, Recipes v${recipeExpected}, Agent Sessions v${agentSessionExpected}.`
+    : `Regenerate Unified v${installed} → v${expected}; Knowledge v${knowledgeInstalled} → v${knowledgeExpected}; Chat v${chatInstalled} → v${chatExpected}; Recipes v${recipeInstalled} → v${recipeExpected}; Agent Sessions v${agentSessionInstalled} → v${agentSessionExpected}.`;
   const key = !data?.installed ? 'config.generateServerTarget' : data?.current ? 'config.regenerateServerCurrent' : 'config.regenerateServerTransition';
   const params = !data?.installed ? { version: expected } : data?.current ? { version: expected } : { installed, expected };
   return { label, title, key, params };
@@ -235,6 +239,8 @@ function renderMcpDashboard(data) {
     ['Unified MCP Server', data?.installedVersion ? `v${data.installedVersion}` : 'Missing', `v${data?.expectedVersion || '?'}`, data?.current || data?.newerThanExpected, '<span class="mcp-no-action">Automatic</span>', data?.newerThanExpected ? 'Newer installed' : '', data?.newerThanExpected ? 'info' : ''],
     ['Knowledge schema', data?.installedKnowledgeVersion ? `v${data.installedKnowledgeVersion}` : 'Missing', `v${data?.knowledgeVersion || '?'}`, data?.installedKnowledgeVersion === data?.knowledgeVersion, '<span class="mcp-no-action">Automatic</span>'],
     ['Chat schema', data?.installedChatVersion ? `v${data.installedChatVersion}` : 'Missing', `v${data?.chatVersion || '?'}`, data?.installedChatVersion === data?.chatVersion, '<span class="mcp-no-action">Automatic</span>'],
+    ['Recipe runtime', data?.installedRecipeVersion ? `v${data.installedRecipeVersion}` : 'Missing', `v${data?.recipeVersion || '?'}`, data?.installedRecipeVersion === data?.recipeVersion, '<span class="mcp-no-action">Automatic</span>'],
+    ['Agent Session runtime', data?.installedAgentSessionVersion ? `v${data.installedAgentSessionVersion}` : 'Missing', `v${data?.agentSessionVersion || '?'}`, data?.installedAgentSessionVersion === data?.agentSessionVersion, '<span class="mcp-no-action">Automatic</span>'],
     ['PKM Skill Router', status.routerInstalled, `v${status.skill?.routerVersion || '?'}`, true, '<span class="mcp-no-action">No action</span>', 'Info', 'info'],
   ];
   const setup = [

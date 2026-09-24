@@ -58,7 +58,11 @@ export function createRetrievalSnapshot(sources: RetrievalSnapshotSources): Retr
       body: String(skill.content || ""),
       content_type: "skill",
       source_uri: `pkm://skills/${uriPath(key)}`,
-      metadata: { category: String(skill.category || ""), tags: tags(skill.tags), source_project: String(skill.source_project || "") },
+      metadata: {
+        category: String(skill.category || ""), tags: tags(skill.tags), source_project: String(skill.source_project || ""),
+        recipe_required: skill.recipe_required === true ? "true" : "false", recipe_hint: String(skill.recipe_hint || ""),
+        related_skills: tags(skill.related_skills),
+      },
       provenance: { provider: "pkm", collection: "skills" },
       read_only: false,
     });

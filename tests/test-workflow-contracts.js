@@ -27,6 +27,8 @@ assert.strictEqual(yamlProfile.limits.aliasExpansionDepth, 32);
 assert.deepStrictEqual(Object.keys(orderRegistry.arrays).sort(), [
   "/spec/completion/requiredNodes",
   "/spec/nodes",
+  "/spec/nodes/*/config/args",
+  "/spec/nodes/*/config/choices",
   "/spec/nodes/*/control/cases",
   "/spec/nodes/*/dependsOn",
   "/spec/nodes/*/dependsOn/*/accept",
@@ -67,17 +69,70 @@ const graphControls = compileWorkflowDefinitionV1({
   spec: {
     ...positiveFixture.input.spec,
     nodes: [
-      { nodeId: "directions", kind: "pkm.step.noop/v1", config: {}, dependsOn: [], ports: { inputs: ["brief"], outputs: ["directions", "risks"] }, control: { mode: "single" } },
+      { nodeId: "directions", kind: "pkm.step.noop/v1", config: {}, generalInstruction: "  Clarify the reusable brief before planning.  ", dependsOn: [], ports: { inputs: ["brief"], outputs: ["directions", "risks"] }, control: { mode: "single" } },
       { nodeId: "explore", kind: "pkm.step.noop/v1", config: {}, dependsOn: [{ from: "directions", fromOutput: "directions", toInput: "direction", accept: ["succeeded"], required: true }], ports: { inputs: ["direction"], outputs: ["candidate"] }, control: { mode: "repeat", count: { kind: "dynamic" } } },
       { nodeId: "optimize", kind: "pkm.step.noop/v1", config: {}, dependsOn: [{ from: "explore", fromOutput: "candidate", toInput: "candidate", accept: ["succeeded"], required: true }], ports: { inputs: ["candidate"], outputs: ["best"] }, control: { mode: "repeat", count: { kind: "fixed", value: 8 } } },
-      { nodeId: "route", kind: "pkm.step.noop/v1", config: {}, dependsOn: [{ from: "optimize", fromOutput: "best", toInput: "result", accept: ["succeeded"], required: true }], ports: { inputs: ["result"], outputs: ["accept", "revise"] }, control: { mode: "branch", kind: "if", cases: ["accept", "revise"] } }
+      { nodeId: "route", kind: "pkm.step.noop/v1", config: {}, dependsOn: [{ from: "optimize", fromOutput: "best", toInput: "result", accept: ["succeeded"], required: true }], ports: { inputs: ["result"], outputs: ["accept", "revise"] }, control: { mode: "branch", kind: "switch", cases: ["accept", "revise"], dynamicCases: true } }
     ],
-    completion: { requiredNodes: ["route"] }
+    completion: { requiredNodes: ["route"] },
+    trigger: { kind: "cron", expression: "0 9 * * 1", timezone: "UTC" }
   }
 });
 assert.strictEqual(graphControls.ok, true);
+assert.strictEqual(graphControls.model.spec.nodes.find(node => node.nodeId === "directions").generalInstruction, "Clarify the reusable brief before planning.");
 assert.deepStrictEqual(graphControls.model.spec.nodes.find(node => node.nodeId === "explore").control, { mode: "repeat", count: { kind: "dynamic" } });
 assert.deepStrictEqual(graphControls.model.spec.nodes.find(node => node.nodeId === "route").ports.outputs, ["accept", "revise"]);
+assert.strictEqual(graphControls.model.spec.nodes.find(node => node.nodeId === "route").control.dynamicCases, true);
+assert.deepStrictEqual(graphControls.model.spec.trigger, { kind: "cron", expression: "0 9 * * 1", timezone: "UTC" });
+const childDigest = "a".repeat(64);
+const subflow = compileWorkflowDefinitionV1(definition({
+  nodes: [{ nodeId: "child", kind: "pkm.subflow/v1", config: { recipeId: "recipe_child", revision: 3, executableDigest: childDigest }, dependsOn: [] }],
+  completion: { requiredNodes: ["child"] }
+}));
+assert.strictEqual(subflow.ok, true);
+assert.deepStrictEqual(subflow.model.spec.nodes[0].config, { recipeId: "recipe_child", revision: 3, executableDigest: childDigest });
+assertDiagnostic(definition({ nodes: [{ nodeId: "child", kind: "pkm.subflow/v1", config: { recipeId: "recipe_child", revision: 0, executableDigest: "bad" }, dependsOn: [] }] }), "E3005", "/spec/nodes/0/config/revision");
+assertDiagnostic(definition({ nodes: [{ nodeId: "child", kind: "pkm.subflow/v1", config: { recipeId: "recipe_child", revision: 1, executableDigest: "bad" }, dependsOn: [] }] }), "E3005", "/spec/nodes/0/config/executableDigest");
+
+const executable = compileWorkflowDefinitionV1(definition({
+  nodes: [{ nodeId: "download", kind: "pkm.step.command/v1", config: {
+    program: "python3", args: ["scripts/download-log.py", "${inputs.runId}"], cwd: "${inputs.workspace}"
+  }, dependsOn: [] }],
+  completion: { requiredNodes: ["download"] }
+}));
+assert.strictEqual(executable.ok, true);
+assert.deepStrictEqual(executable.model.spec.nodes[0].config, {
+  program: "python3", args: ["scripts/download-log.py", "${inputs.runId}"],
+  timeoutSeconds: 300, maxOutputBytes: 65536, cwd: "${inputs.workspace}"
+});
+assertDiagnostic(definition({ nodes: [{ nodeId: "run", kind: "pkm.step.command/v1", config: { program: "python3", args: [], timeoutSeconds: 0 }, dependsOn: [] }] }), "E3005", "/spec/nodes/0/config/timeoutSeconds");
+
+const pythonScript = compileWorkflowDefinitionV1(definition({
+  nodes: [{ nodeId: "analyze", kind: "pkm.step.script/v1", config: {
+    runtime: "python", environmentId: "analysis-env", script: "print('ready')"
+  }, dependsOn: [] }],
+  completion: { requiredNodes: ["analyze"] }
+}));
+assert.strictEqual(pythonScript.ok, true);
+assert.deepStrictEqual(pythonScript.model.spec.nodes[0].config, {
+  runtime: "python", script: "print('ready')", environmentId: "analysis-env",
+  timeoutSeconds: 300, maxOutputBytes: 65536
+});
+assertDiagnostic(definition({ nodes: [{ nodeId: "run", kind: "pkm.step.script/v1", config: { runtime: "python", script: "print('no fallback')" }, dependsOn: [] }] }), "E3005", "/spec/nodes/0/config/environmentId");
+assertDiagnostic(definition({ nodes: [{ nodeId: "run", kind: "pkm.step.script/v1", config: { runtime: "bash", script: "echo ready", environmentId: "invalid-for-bash" }, dependsOn: [] }] }), "E3005", "/spec/nodes/0/config/environmentId");
+assertDiagnostic(definition({ nodes: [{ nodeId: "run", kind: "pkm.step.script/v1", config: { runtime: "ruby", script: "puts 'no'" }, dependsOn: [] }] }), "E3005", "/spec/nodes/0/config/runtime");
+
+const humanGate = compileWorkflowDefinitionV1(definition({
+  nodes: [{ nodeId: "permission", kind: "pkm.gate.human/v1", config: {
+    prompt: "Proceed with the download?", inputKind: "approval"
+  }, dependsOn: [] }],
+  completion: { requiredNodes: ["permission"] }
+}));
+assert.strictEqual(humanGate.ok, true);
+assert.deepStrictEqual(humanGate.model.spec.nodes[0].config, { prompt: "Proceed with the download?", inputKind: "approval" });
+assertDiagnostic(definition({ nodes: [{ nodeId: "choose", kind: "pkm.gate.human/v1", config: { prompt: "Choose", inputKind: "choice", choices: ["only"] }, dependsOn: [] }] }), "E3004", "/spec/nodes/0/config/choices");
+assertDiagnostic(definition({ trigger: { kind: "cron", expression: "daily", timezone: "UTC" } }), "E3005", "/spec/trigger/expression");
+assertDiagnostic(definition({ trigger: { kind: "cron", expression: "0 9 * * *", timezone: "" } }), "E3005", "/spec/trigger/timezone");
 
 const cycle = compileWorkflowDefinitionV1({
   ...positiveFixture.input,
@@ -211,6 +266,8 @@ assertDiagnostic(invalidNode, "E3101", "/spec/nodes/0/kind");
 assertDiagnostic(invalidNode, "E3007", "/spec/nodes/0/config");
 assertDiagnostic(invalidNode, "E3003", "/spec/nodes/0/dependsOn");
 assertDiagnostic(definition({ nodes: [{ nodeId: "done", kind: "pkm.step.noop/v1", config: null, dependsOn: [] }] }), "E3007", "/spec/nodes/0/config");
+assertDiagnostic(definition({ nodes: [{ nodeId: "done", kind: "pkm.step.noop/v1", config: {}, generalInstruction: 42, dependsOn: [] }] }), "E3003", "/spec/nodes/0/generalInstruction");
+assertDiagnostic(definition({ nodes: [{ nodeId: "done", kind: "pkm.step.noop/v1", config: {}, generalInstruction: "   ", dependsOn: [] }] }), "E3005", "/spec/nodes/0/generalInstruction");
 
 for (const nodeId of [42, "e\u0301", `a${"b".repeat(128)}`]) {
   assertDiagnostic(definition({ nodes: [{ nodeId, kind: "pkm.step.noop/v1", config: {}, dependsOn: [] }] }), "E3002", "/spec/nodes/0/nodeId");

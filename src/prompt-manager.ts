@@ -35,6 +35,17 @@ export interface PromptIdentity { project: string; task: string; version: string
 
 const promptAnalysisCache = new Map<string, { signature: string; analysis: PromptManagerAnalysis }>();
 const promptAnalysisPending = new Map<string, Promise<PromptManagerAnalysis>>();
+const PROMPT_ANALYSIS_CACHE_LIMIT = 100;
+
+function cachePromptAnalysis(key: string, signature: string, analysis: PromptManagerAnalysis): void {
+  promptAnalysisCache.delete(key);
+  promptAnalysisCache.set(key, { signature, analysis });
+  while (promptAnalysisCache.size > PROMPT_ANALYSIS_CACHE_LIMIT) {
+    const oldestKey = promptAnalysisCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    promptAnalysisCache.delete(oldestKey);
+  }
+}
 
 function resolvePromptPath(identity: PromptIdentity): string {
   const root = path.resolve(getStorePath(), "prompts");
@@ -86,9 +97,17 @@ export function inspectPrompt(extensionPath: string, identity: PromptIdentity): 
 }
 
 export function cachedPromptAnalysis(identity: PromptIdentity): PromptManagerAnalysis | undefined {
-  const cached = promptAnalysisCache.get(promptAnalysisKey(identity));
+  const key = promptAnalysisKey(identity);
+  const cached = promptAnalysisCache.get(key);
   if (!cached) return undefined;
-  try { return cached.signature === promptVersionSignature(identity) ? cached.analysis : undefined; }
+  try {
+    if (cached.signature !== promptVersionSignature(identity)) {
+      promptAnalysisCache.delete(key);
+      return undefined;
+    }
+    cachePromptAnalysis(key, cached.signature, cached.analysis);
+    return cached.analysis;
+  }
   catch { return undefined; }
 }
 
@@ -100,7 +119,7 @@ export function inspectPromptCached(extensionPath: string, identity: PromptIdent
   if (pending) return pending;
   const signature = promptVersionSignature(identity);
   const analysis = inspectPrompt(extensionPath, identity).then(result => {
-    if (promptVersionSignature(identity) === signature) promptAnalysisCache.set(key, { signature, analysis: result });
+    if (promptVersionSignature(identity) === signature) cachePromptAnalysis(key, signature, result);
     return result;
   }).finally(() => promptAnalysisPending.delete(key));
   promptAnalysisPending.set(key, analysis);

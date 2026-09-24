@@ -18,6 +18,7 @@ export interface KnowledgeInventorySnapshot {
 export class KnowledgeInventoryManager {
   private snapshotValue: KnowledgeInventorySnapshot;
   private refreshPromise: Promise<KnowledgeInventorySnapshot> | undefined;
+  private readonly folderCache = new Map<string, string[]>();
 
   constructor(private readonly root: string, private readonly stateDir: string, private readonly workerScript: string) {
     fs.mkdirSync(stateDir, { recursive: true });
@@ -52,16 +53,32 @@ export class KnowledgeInventoryManager {
     })).sort((left, right) => left.path.localeCompare(right.path));
   }
   folders(area: string): string[] {
+    const cached = this.folderCache.get(area);
+    if (cached) return cached;
     const folders = new Set<string>();
     for (const entry of this.entries(area)) {
       const parts = entry.category.split("/").filter(Boolean);
       for (let depth = 1; depth <= parts.length; depth++) folders.add(parts.slice(0, depth).join("/"));
     }
-    return [...folders].sort();
+    const walk = (directory: string, relative: string): void => {
+      let children: fs.Dirent[];
+      try { children = fs.readdirSync(directory, { withFileTypes: true }); } catch { return; }
+      for (const child of children) {
+        if (!child.isDirectory() || child.name.startsWith(".") || child.name === "_assets") continue;
+        const childRelative = relative ? `${relative}/${child.name}` : child.name;
+        folders.add(childRelative);
+        walk(path.join(directory, child.name), childRelative);
+      }
+    };
+    walk(path.join(this.root, area), "");
+    const result = [...folders].sort();
+    this.folderCache.set(area, result);
+    return result;
   }
 
   refresh(onProgress?: (progress: { scanned: number; reused: number; parsed: number; batchCount: number }) => void): Promise<KnowledgeInventorySnapshot> {
     if (this.refreshPromise) return this.refreshPromise;
+    this.folderCache.clear();
     this.refreshPromise = this.refreshInner(onProgress);
     return this.refreshPromise.finally(() => { this.refreshPromise = undefined; });
   }

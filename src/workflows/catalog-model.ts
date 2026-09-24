@@ -131,6 +131,7 @@ const DIGEST = /^[a-f0-9]{64}$/;
 export const BUILTIN_NODE_KIND_IDS = [
   "pkm.step.noop/v1",
   "pkm.step.command/v1",
+  "pkm.step.script/v1",
   "pkm.step.agent/v1",
   "pkm.check/v1",
   "pkm.gate.human/v1",
@@ -309,7 +310,7 @@ function normalizePorts(ports: Readonly<Record<string, WorkflowPortDescriptor>>)
 }
 
 function builtinRegistration(kindId: typeof BUILTIN_NODE_KIND_IDS[number], runtimeAvailable: boolean): NodeKindRegistration {
-  const adapterClass: AdapterClass = kindId.includes(".command/") ? "command"
+  const adapterClass: AdapterClass = kindId.includes(".command/") || kindId.includes(".script/") ? "command"
     : kindId.includes(".agent/") ? "agent"
       : kindId === "pkm.check/v1" ? "check"
         : kindId === "pkm.gate.human/v1" ? "human-gate"

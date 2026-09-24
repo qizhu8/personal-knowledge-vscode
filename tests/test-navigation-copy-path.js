@@ -5,6 +5,9 @@ const path = require("path");
 const { navigationItemPath } = require("../dist/navigation-path.js");
 
 const cases = [
+  ["page-recipes", {}, "recipes/"],
+  ["recipe-folder", { relPath: "Operations/Release" }, "recipes/Operations/Release/"],
+  ["recipe", { relPath: "Operations/Release/recipe-123.json" }, "recipes/Operations/Release/recipe-123.json"],
   ["root-skills", {}, "skills/"],
   ["skill-folder", { relPath: "Coding/Python" }, "skills/Coding/Python/"],
   ["skill-folder", { relPath: "(uncategorized)" }, "skills/"],
@@ -28,7 +31,7 @@ const cases = [
   ["root-servers", {}, "servers/"],
   ["server-group", { path: ["Research", "Vision"] }, "pkm://servers/subgroups/Research%2FVision"],
   ["server-ungrouped-group", {}, "pkm://servers/subgroups/ungrouped"],
-  ["server-item", { slug: "asset-quality" }, "servers/asset-quality/server.json"],
+  ["server-item", { slug: "asset/quality" }, "pkm://servers/asset%2Fquality"],
   ["server-subscriber-group", { subscriptionId: "sub/id" }, "pkm://subscriptions/sub%2Fid/servers"],
   ["server-subscriber-item", { key: "server key" }, "pkm://subscriptions/servers/server%20key"],
   ["subscribed-content-root", { model: { contentType: "skills" } }, "pkm://subscriptions/skills"],

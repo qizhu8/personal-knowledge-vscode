@@ -22,6 +22,7 @@ const chat = {
   drafts: {},
   meetingSummarySelections: {},
   proto: {},   // user -> {state:'standby'|'working'|'engaged'}: live protocol status
+  documentListenersBound: false,
 };
 const chatInactiveExpanded = { hosted: false, joined: false };
 
@@ -84,6 +85,21 @@ function chatOnAgentState(data) {
   if (!data || data.key !== chat.activeKey || !data.user) return;
   chat.proto[data.user] = { state: data.state || 'idle' };
   chatPaintMembers();
+}
+
+function chatBindDocumentListeners() {
+  if (chat.documentListenersBound) return;
+  chat.documentListenersBound = true;
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape') {
+      chatCloseMessageViewer();
+      chatToggleMeetingSummary(false);
+    }
+  });
+  document.addEventListener('click', event => {
+    const pop = document.getElementById('chat-mention-pop');
+    if (pop && !pop.classList.contains('hidden') && !pop.contains(event.target) && event.target.id !== 'chat-recipient-input') chatHideMentionPop();
+  });
 }
 
 function renderChatroom() {
@@ -159,10 +175,11 @@ function renderChatroom() {
         <div id="chat-body">
           <div id="chat-main">
             <section id="chat-meeting-summary" class="chat-meeting-summary hidden" aria-label="Meeting Summary">
-              <header class="chat-meeting-summary-head"><div><span>Meeting Summary</span><small>Generated from canonical state</small></div><button type="button" class="icon-btn" onclick="chatToggleMeetingSummary(false)" title="Close Meeting Summary" aria-label="Close Meeting Summary">${uiIcon('close')}</button></header>
+              <header class="chat-meeting-summary-head"><div><span>Meeting Summary</span><small>Canonical minutes workspace</small></div><div class="chat-meeting-summary-actions"><span id="chat-meeting-summary-meta" class="chat-meeting-summary-meta"></span><button type="button" class="icon-btn" onclick="chatToggleMeetingSummary(false)" title="Close Meeting Summary" aria-label="Close Meeting Summary">${uiIcon('close')}</button></div></header>
               <div id="chat-meeting-summary-body" class="chat-meeting-summary-body"></div>
             </section>
-            <div id="chat-find" class="find-control">
+            <div id="chat-find" class="find-control pkm-search-field">
+              <span class="codicon codicon-search pkm-search-icon" aria-hidden="true"></span>
               <input id="chat-searchbox" type="search" placeholder="Find messages…" oninput="chatRefreshSearch()" onkeydown="chatSearchKeydown(event)" title="Find in loaded messages">
               <span id="chat-search-count" class="find-count">0/0</span>
               <button type="button" onclick="navigateFind('chat',-1)" title="Previous matching message" aria-label="Previous matching message">${uiIcon('arrow-up')}</button>
@@ -216,13 +233,8 @@ function renderChatroom() {
   recipientInput.addEventListener('keydown', chatRecipientInputKeydown);
   document.getElementById('chat-log')?.addEventListener('scroll', chatTrackScroll, { passive: true });
   chatEnsureControlComments(d);
-  document.addEventListener('keydown', event => { if (event.key === 'Escape') { chatCloseMessageViewer(); chatToggleMeetingSummary(false); } });
-  document.addEventListener('click', ev => {
-    const pop = document.getElementById('chat-mention-pop');
-    if (pop && !pop.classList.contains('hidden') && !pop.contains(ev.target) && ev.target.id !== 'chat-recipient-input') chatHideMentionPop();
-  });
+  chatBindDocumentListeners();
   chat.secretShown = false; chat.secretVal = '';
-  chatPaintRoomCards();
   chatPaintActive();
   chatPaintHub();
   chatInitResizer();
@@ -241,6 +253,11 @@ function chatMeetingSummaryHtml() {
   const trashHtml = `<details class="chat-meeting-trash"><summary><span>Trash</span><small>${trash.length}</small></summary><div>${trash.length ? trash.map(record => `<div class="chat-meeting-trash-item"><span><strong>${esc(record.title)}</strong><small>${chatMeetingDate(record.deletedAt)}</small></span>${chat.active?.selfHost ? `<span class="chat-meeting-trash-actions"><button type="button" onclick="chatRestoreMeeting('${record.id}',${record.revision})" title="Restore Meeting" aria-label="Restore Meeting">${uiIcon('discard')}</button><button type="button" onclick="chatDeleteMeeting('${record.id}',${record.revision})" title="Delete permanently" aria-label="Delete permanently">${uiIcon('trash')}</button></span>` : ''}</div>`).join('') : '<p>Trash is empty.</p>'}</div></details>`;
   const empty = `<div class="chat-meeting-empty"><h2>No Meeting yet</h2><p>Send a Discuss message to start a continuously updated Meeting Summary. Ask and Announce never create Meeting state.</p>${chat.active?.selfHost ? '<button type="button" class="tbtn" onclick="chatStartMeeting()">Retry from latest Discuss</button>' : '<small>The Room Host records canonical Meeting state.</small>'}</div>`;
   return `<div class="chat-meeting-workspace"><aside class="chat-meeting-list" aria-label="Meetings">${rows || '<div class="chat-meeting-list-label">No history</div>'}${trashHtml}</aside><div id="chat-meeting-document" class="chat-meeting-document">${selected ? chatMeetingRecordHtml(selected) : empty}</div></div>`;
+}
+
+function chatMeetingSummaryMeta() {
+  const meetings = chat.active?.meetings || { current: null, history: [], trash: [] };
+  return `${meetings.current ? '1 active' : 'No active meeting'} · ${(meetings.history || []).length} archived · ${(meetings.trash || []).length} trash`;
 }
 
 function chatHistoricalMeetingSummaryHtml(meetingId) {
@@ -315,6 +332,8 @@ function chatSelectMeetingSummary(meetingId, button) {
 function chatPaintMeetingSummary() {
   const body = document.getElementById('chat-meeting-summary-body');
   if (!body) return;
+  const meta = document.getElementById('chat-meeting-summary-meta');
+  if (meta) meta.textContent = chatMeetingSummaryMeta();
   body.innerHTML = chatMeetingSummaryHtml();
 }
 
@@ -427,7 +446,13 @@ function chatInitMemberResizer() {
   });
 }
 
+let chatNarrowMemberExpanded = false;
+let chatNarrowHubExpanded = false;
+function chatNarrowViewport() {
+  return typeof matchMedia === 'function' && matchMedia('(max-width: 480px)').matches;
+}
 function chatMemberPaneCollapsed() {
+  if (chatNarrowViewport()) return !chatNarrowMemberExpanded;
   try { return localStorage.getItem('pk-chat-side-collapsed') === '1'; } catch { return false; }
 }
 function chatApplyMemberPaneState() {
@@ -446,6 +471,11 @@ function chatApplyMemberPaneState() {
   toggle.setAttribute('aria-expanded', String(!collapsed));
 }
 function chatToggleMemberPane() {
+  if (chatNarrowViewport()) {
+    chatNarrowMemberExpanded = !chatNarrowMemberExpanded;
+    chatApplyMemberPaneState();
+    return;
+  }
   const side = document.getElementById('chat-side');
   const currentlyCollapsed = chatMemberPaneCollapsed();
   if (side) {
@@ -457,6 +487,7 @@ function chatToggleMemberPane() {
 }
 
 function chatHubPanelCollapsed() {
+  if (chatNarrowViewport()) return !chatNarrowHubExpanded;
   try { return localStorage.getItem('pk-chat-rail-collapsed') === '1'; } catch { return false; }
 }
 function chatApplyHubPanelState() {
@@ -471,6 +502,11 @@ function chatApplyHubPanelState() {
   toggle.setAttribute('aria-expanded', String(!collapsed));
 }
 function chatToggleHubPanel() {
+  if (chatNarrowViewport()) {
+    chatNarrowHubExpanded = !chatNarrowHubExpanded;
+    chatApplyHubPanelState();
+    return;
+  }
   const collapsed = !chatHubPanelCollapsed();
   try { localStorage.setItem('pk-chat-rail-collapsed', collapsed ? '1' : '0'); } catch {}
   chatApplyHubPanelState();
@@ -598,10 +634,8 @@ function chatOnState(s) {
   chat.hubAdminRooms = s.hubAdminRooms || [];
   chat.pendingApprovals = s.pendingApprovals || [];
   chat.managedAgents = s.managedAgents || [];
-  chatPaintInviteHosts();
   if (chat.hubRunning) chat.hubError = '';   // running truth clears any stale error
   if (state.tab !== 'chatroom') return;
-  chatPaintRoomCards();
   chatPaintActive();
   chatPaintHub();
   if (chat.activeKey !== previousKey) chatRestoreDraft();
@@ -644,7 +678,6 @@ function chatOnHubResult(res) {
   } else {
     chat.hubError = res.error || 'unknown — run “Personal Knowledge Manager: Show Logs” for details';
   }
-  chatPaintInviteHosts();
   chatPaintHub();
 }
 

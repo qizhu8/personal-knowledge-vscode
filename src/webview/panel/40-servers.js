@@ -105,7 +105,7 @@ function serverCardMenu(event, slug) {
   children.push({ label: 'New subgroup…', onClick: () => createAndMoveServerGroup(slug) });
   showPaperMenu(event.clientX, event.clientY, [
     { label: server.name, header: true },
-    copyPathMenu(`servers/${slug}/server.json`),
+    copyPathMenu(`pkm://servers/${encodeURIComponent(slug)}`),
     { sep: true },
     { label: 'Move to group', children },
   ]);
@@ -169,11 +169,20 @@ function filterServerDashboard(value) {
     else if (!serverSearchQuery) group.open = serverGroupOpen(decodeURIComponent(group.dataset.groupPath || ''));
   });
 }
+function prepareServerFocusGroups() {
+  if (!serverFocusSlug) return;
+  const server = serverCache.find(item => item.slug === serverFocusSlug);
+  const parts = String(server?.category || '').split('/').filter(Boolean);
+  for (let index = 1; index <= parts.length; index++) {
+    try { localStorage.setItem('pkm-server-group-' + parts.slice(0, index).join('/'), '1'); } catch {}
+  }
+}
 function renderServerDashboard(servers) {
   const searchInput = document.getElementById('server-search');
   const restoreSearchFocus = document.activeElement === searchInput;
   const restoreSearchCaret = searchInput?.selectionStart ?? serverSearchQuery.length;
   serverCache = servers || [];
+  prepareServerFocusGroups();
   const dot = s => s === 'running' ? '#3fb950' : s === 'external' ? '#4daafc' : s === 'starting' ? '#e5c07b' : '#8b949e';
   const networkLinks = serverCache[0]?.networkLinks || [];
   let savedNetwork = ''; try { savedNetwork = localStorage.getItem('pkm-server-network') || ''; } catch {}
@@ -236,7 +245,7 @@ function renderServerDashboard(servers) {
     <div class="dash">
       <div class="dash-hd">
         <span class="dash-title">${uiIcon('server')} Servers</span>
-        <input id="server-search" oninput="filterServerDashboard(this.value)" placeholder="Search…" data-i18n-placeholder="search.placeholder" aria-label="Search servers" title="Search name, slug, group, tags, command, Python, and status">
+        <label class="pkm-search-field server-search-field"><span class="codicon codicon-search pkm-search-icon" aria-hidden="true"></span><input id="server-search" type="search" oninput="filterServerDashboard(this.value)" placeholder="Search…" data-i18n-placeholder="search.placeholder" aria-label="Search servers" title="Search name, slug, group, tags, command, Python, and status"></label>
         <span style="flex:1"></span>
         <button class="tbtn srv-new-group" onclick="createServerGroup()" title="Create an empty subgroup, then drag or right-click a Server to move it">${uiIcon('new-folder', 'New subgroup')}</button>
         <button class="tbtn" onclick="importServer()" title="Move an existing server folder into the PKM store">${uiIcon('folder-opened', 'Import folder')}</button>
@@ -285,12 +294,7 @@ function focusServerDashboard(slug) {
   serverSearchQuery = '';
   const server = serverCache.find(item => item.slug === serverFocusSlug);
   if (!server && state.tab === 'servers') { ask('serverList', {}); return; }
-  if (server?.category) {
-    const parts = String(server.category).split('/').filter(Boolean);
-    for (let index = 1; index <= parts.length; index++) {
-      try { localStorage.setItem('pkm-server-group-' + parts.slice(0, index).join('/'), '1'); } catch {}
-    }
-  }
+  prepareServerFocusGroups();
   const tab = document.querySelector('.tab[data-tab="servers"]');
   if (state.tab !== 'servers' && tab) tab.dispatchEvent(new MouseEvent('click'));
   else renderServerDashboard(serverCache);

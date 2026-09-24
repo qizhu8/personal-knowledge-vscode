@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 const assert = require("assert");
 const {
-  ProjectModelError, createProject, createRecipe, createThread, deriveSystemId, ensureSystemEntities,
-  initializeProjectModel, migrateLegacyRoom, moveThread, resolveThreadId, updateRecipe
+  ProjectModelError, createProject, createRecipe, createThread, deleteRecipe, deleteRecipeFromTrash, deriveSystemId, ensureSystemEntities,
+  initializeProjectModel, migrateLegacyRoom, moveRecipeToTrash, moveThread, resolveThreadId, restoreRecipeFromTrash, updateRecipe
 } = require("../dist/workflows/project-model.js");
 
 const errorCode = (action, code) => assert.throws(action, error => error instanceof ProjectModelError && error.code === code);
@@ -10,14 +10,64 @@ let state = initializeProjectModel(undefined, () => "root-seed");
 assert.strictEqual(state.rootId, "root_root-seed");
 assert.strictEqual(state.projects.length, 1);
 assert.strictEqual(state.threads.length, 1);
-assert.deepStrictEqual(state.recipes.map(recipe => recipe.name), ["Software Development", "Bug Fix", "UI Development"]);
-for (const builtIn of state.recipes) {
+assert.deepStrictEqual(state.recipes.map(recipe => recipe.name), ["Software Development", "Bug Fix", "UI Development", "Reflection", "Use Recipe Library", "Publish Personal Knowledge VSIX", "PKM Tutorial"]);
+for (const builtIn of state.recipes.filter(recipe => recipe.category === "Software Development")) {
   assert.strictEqual(builtIn.scope, "global");
   assert.strictEqual(builtIn.category, "Software Development");
   assert.strictEqual(builtIn.systemKind, "built-in");
   assert.strictEqual(builtIn.definition.spec.nodes.length, 5);
+  assert(builtIn.definition.spec.nodes.every(node => node.generalInstruction?.length > 80), `${builtIn.name} modules must define specific Intent guidance`);
   assert.match(builtIn.executableDigest, /^[a-f0-9]{64}$/);
 }
+const staleBuiltIns = JSON.parse(JSON.stringify(state));
+const staleSoftwareRecipe = staleBuiltIns.recipes.find(recipe => recipe.name === "Software Development");
+staleSoftwareRecipe.executableDigest = "0".repeat(64);
+staleSoftwareRecipe.editorLayout = { nodePositions: { understand: { x: 12, y: 24 }, removed: { x: 48, y: 96 } } };
+staleSoftwareRecipe.nodeBindings = [
+  { nodeId: "understand", bindings: [{ bindingId: "keep", kind: "skill", knowledgeId: "kept", contentHash: "1".repeat(64), usage: "reference" }] },
+  { nodeId: "removed", bindings: [{ bindingId: "drop", kind: "note", knowledgeId: "orphaned", contentHash: "2".repeat(64), usage: "required" }] }
+];
+const upgradedBuiltIns = initializeProjectModel(staleBuiltIns);
+const upgradedSoftwareRecipe = upgradedBuiltIns.recipes.find(recipe => recipe.name === "Software Development");
+assert.strictEqual(upgradedSoftwareRecipe.revision, staleSoftwareRecipe.revision + 1);
+assert.notStrictEqual(upgradedSoftwareRecipe.executableDigest, staleSoftwareRecipe.executableDigest);
+assert.deepStrictEqual(upgradedSoftwareRecipe.editorLayout.nodePositions, { understand: { x: 12, y: 24 } });
+assert.deepStrictEqual(upgradedSoftwareRecipe.nodeBindings.map(binding => binding.nodeId), ["understand"]);
+const pkmTutorial = state.recipes.find(recipe => recipe.name === "PKM Tutorial");
+assert.strictEqual(pkmTutorial.category, "Examples/PKM");
+assert.deepStrictEqual(pkmTutorial.definition.spec.nodes.map(node => node.nodeId), ["find-relevant-guidance", "synthesize-answer", "understand-question", "validate-guidance"]);
+assert(pkmTutorial.definition.spec.nodes.every(node => node.generalInstruction?.startsWith("Brief:")));
+assert.deepStrictEqual(pkmTutorial.definition.spec.nodes.find(node => node.nodeId === "validate-guidance").control, {
+  mode: "branch", kind: "switch", cases: ["known", "unknown", "validated"]
+});
+assert.match(pkmTutorial.definition.spec.nodes.find(node => node.nodeId === "find-relevant-guidance").generalInstruction, /System\/PKM\/PKM Skills/);
+assert.match(pkmTutorial.definition.spec.nodes.find(node => node.nodeId === "synthesize-answer").generalInstruction, /explicitly say that the answer is not known/);
+const reflection = state.recipes.find(recipe => recipe.name === "Reflection");
+assert.strictEqual(reflection.category, "Learning & Improvement");
+assert.deepStrictEqual(reflection.definition.spec.nodes.map(node => node.nodeId), ["find-related-skills", "maintain-skills", "reflect-on-outcome"]);
+assert.match(reflection.definition.spec.nodes.find(node => node.nodeId === "maintain-skills").generalInstruction, /skill_feedback/);
+assert.match(reflection.definition.spec.nodes.find(node => node.nodeId === "maintain-skills").generalInstruction, /Propose a Skill update only/);
+const useRecipeLibrary = state.recipes.find(recipe => recipe.name === "Use Recipe Library");
+assert.strictEqual(useRecipeLibrary.category, "System/PKM");
+assert.deepStrictEqual(useRecipeLibrary.definition.spec.nodes.map(node => node.nodeId), ["establish-task-contract", "execute-and-report", "search-and-qualify", "start-pinned-run", "validate-and-reflect"]);
+assert.match(useRecipeLibrary.definition.spec.nodes.find(node => node.nodeId === "search-and-qualify").generalInstruction, /never force a weak match/);
+assert.match(useRecipeLibrary.definition.spec.nodes.find(node => node.nodeId === "start-pinned-run").generalInstruction, /expected_revision and expected_digest/);
+assert.match(useRecipeLibrary.definition.spec.nodes.find(node => node.nodeId === "execute-and-report").generalInstruction, /Never report unverified work as succeeded/);
+assert.match(useRecipeLibrary.definition.spec.nodes.find(node => node.nodeId === "validate-and-reflect").generalInstruction, /Reflection Recipe/);
+const publishVsix = state.recipes.find(recipe => recipe.name === "Publish Personal Knowledge VSIX");
+assert.strictEqual(publishVsix.category, "Release/VS Code");
+assert.strictEqual(publishVsix.definition.spec.nodes.length, 10);
+assert.match(publishVsix.description, /dedicated branch/);
+assert.match(publishVsix.definition.spec.nodes.find(node => node.nodeId === "create-release-branch").generalInstruction, /Never perform release development.*directly on main/);
+assert.deepStrictEqual(publishVsix.definition.spec.nodes.find(node => node.nodeId === "define-release-contract").dependsOn.map(dependency => dependency.from), ["create-release-branch"]);
+assert.match(publishVsix.definition.spec.nodes.find(node => node.nodeId === "commit-and-push-release-source").generalInstruction, /is not main/);
+assert.deepStrictEqual(publishVsix.definition.spec.nodes.find(node => node.nodeId === "merge-release-branch").dependsOn.map(dependency => dependency.from), ["commit-and-push-release-source"]);
+assert.deepStrictEqual(publishVsix.definition.spec.nodes.find(node => node.nodeId === "obtain-marketplace-approval").dependsOn.map(dependency => dependency.from), ["merge-release-branch"]);
+assert.match(publishVsix.definition.spec.nodes.find(node => node.nodeId === "obtain-marketplace-approval").generalInstruction, /explicit current approval/);
+assert.match(publishVsix.definition.spec.nodes.find(node => node.nodeId === "obtain-marketplace-approval").generalInstruction, /does not authorize publication/);
+assert.match(publishVsix.definition.spec.nodes.find(node => node.nodeId === "dispatch-publish-workflow").generalInstruction, /GitHub Actions OIDC/);
+assert.match(publishVsix.definition.spec.nodes.find(node => node.nodeId === "dispatch-publish-workflow").generalInstruction, /merged main commit/);
+assert.match(publishVsix.definition.spec.nodes.find(node => node.nodeId === "verify-marketplace-release").generalInstruction, /requires renewed explicit approval/);
 const bugFix = state.recipes.find(recipe => recipe.name === "Bug Fix");
 assert.deepStrictEqual(bugFix.definition.spec.completion.requiredNodes, ["report"]);
 assert.deepStrictEqual(bugFix.definition.spec.nodes.find(node => node.nodeId === "fix").dependsOn.map(dependency => dependency.from), ["investigate"]);
@@ -38,7 +88,7 @@ const randomRoot = initializeProjectModel(undefined);
 assert.match(randomRoot.rootId, /^root_[0-9a-f-]{36}$/);
 const restoredDefaults = initializeProjectModel({ schema: 1, rootId: "root_existing" });
 assert.strictEqual(restoredDefaults.projects.length, 1);
-assert.strictEqual(restoredDefaults.recipes.length, 3);
+assert.strictEqual(restoredDefaults.recipes.length, 7);
 const restoredComplete = initializeProjectModel(state);
 assert.deepStrictEqual(restoredComplete, state);
 errorCode(() => initializeProjectModel({ schema: 1, projects: [{ projectId: "p", name: "P", version: 1 }] }), "root-identity-missing");
@@ -83,6 +133,7 @@ const globalRecipe = state.recipes.find(candidate => candidate.recipeId === "rec
 assert(globalRecipe);
 assert.strictEqual(globalRecipe.scope, "global");
 assert.strictEqual(globalRecipe.projectId, undefined);
+errorCode(() => deleteRecipe(state, reflection.recipeId), "system-recipe-delete");
 const originalDigest = globalRecipe.executableDigest;
 state = updateRecipe(state, globalRecipe.recipeId, {
   name: " Universal Recipe v2 ", category: "Automation/Review", description: " Updated description ",
@@ -123,6 +174,17 @@ errorCode(() => updateRecipe(state, "missing", { name: "Missing", category: "", 
 errorCode(() => updateRecipe(state, globalRecipe.recipeId, { name: " ", category: "", description: "", definition: globalRecipe.definition }), "recipe-name-required");
 errorCode(() => updateRecipe(state, globalRecipe.recipeId, { name: "Bad", category: "", description: "", definition: { schema: "bad", spec: {} } }), "recipe-definition-invalid");
 errorCode(() => createRecipe(state, { kind: "global" }, "Duplicate identity", () => "first"), "identity-conflict");
+state = deleteRecipe(state, recipe.recipeId);
+assert(!state.recipes.some(candidate => candidate.recipeId === recipe.recipeId));
+assert.strictEqual(state.audit.at(-1).event, "recipe-deleted");
+state = moveRecipeToTrash(state, globalRecipe.recipeId, "2026-09-22T00:00:00.000Z");
+assert(!state.recipes.some(candidate => candidate.recipeId === globalRecipe.recipeId));
+assert.strictEqual(state.recipeTrash.find(candidate => candidate.recipeId === globalRecipe.recipeId).trashedAt, "2026-09-22T00:00:00.000Z");
+state = restoreRecipeFromTrash(state, globalRecipe.recipeId);
+assert(state.recipes.some(candidate => candidate.recipeId === globalRecipe.recipeId));
+state = moveRecipeToTrash(state, globalRecipe.recipeId, "2026-09-22T00:00:01.000Z");
+state = deleteRecipeFromTrash(state, globalRecipe.recipeId);
+assert(!state.recipeTrash.some(candidate => candidate.recipeId === globalRecipe.recipeId));
 
 const journalSeed = { ...state, migrations: [{ legacyIdentity: "kept", state: "pending" }] };
 const deferred = migrateLegacyRoom(journalSeed, { identity: "legacy-active", roomId: "room-active", name: "Active", active: true });

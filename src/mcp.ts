@@ -11,14 +11,15 @@ import { isAbsoluteForPlatform, isForeignAbsolutePath } from "./store-path";
 import { compareVersionOrder } from "./version-order";
 
 // ── MCP server scaffold ────────────────────────────────────────────────────
-export const UNIFIED_MCP_VERSION = "2.9.0";
+export const UNIFIED_MCP_VERSION = "2.12.0";
 const PROMPT_MANAGER_WHEEL = "uone_prompt_manager-0.1.0-py3-none-any.whl";
 const PROMPT_MANAGER_WHEEL_SHA256 = "eb9fd76058134f9ab9711d8e7604c75f761db5762d93e67f65740dc07fdc1518";
 const RETRIEVAL_ENGINE_WHEEL = "adaptive_skill_retrieval-0.3.0.dev2026091601-py3-none-any.whl";
 const RETRIEVAL_ENGINE_WHEEL_SHA256 = "04560cf29966c8c267adf8ea8502819fd005222ca1e383af63cc115996afbf21";
-const KNOWLEDGE_MCP_VERSION = "1.3.3";
+const KNOWLEDGE_MCP_VERSION = "1.4.0";
 const CHAT_MCP_VERSION = "2.3.5";
-const RECIPE_MCP_VERSION = "1.0.0";
+const RECIPE_MCP_VERSION = "1.4.0";
+const AGENT_SESSION_MCP_VERSION = "1.3.0";
 
 interface McpServerStatus {
   installed: boolean;
@@ -30,6 +31,10 @@ interface McpServerStatus {
   chatVersion: string;
   installedKnowledgeVersion: string;
   installedChatVersion: string;
+  recipeVersion: string;
+  installedRecipeVersion: string;
+  agentSessionVersion: string;
+  installedAgentSessionVersion: string;
   newerThanExpected: boolean;
 }
 
@@ -396,19 +401,29 @@ export function mcpStatus(): McpServerStatus {
   const installedVersion = readMcpVersion(serverPath);
   const installedKnowledgeVersion = readMcpComponentVersion(serverPath, "KNOWLEDGE_SCHEMA_VERSION");
   const installedChatVersion = readMcpComponentVersion(serverPath, "CHAT_SCHEMA_VERSION");
+  const installedRecipeVersion = readMcpComponentVersion(serverPath, "RECIPE_SCHEMA_VERSION");
+  const installedAgentSessionVersion = readMcpComponentVersion(serverPath, "AGENT_SESSION_SCHEMA_VERSION");
   const newerThanExpected = [
     compareVersionOrder(installedVersion, UNIFIED_MCP_VERSION),
     compareVersionOrder(installedKnowledgeVersion, KNOWLEDGE_MCP_VERSION),
     compareVersionOrder(installedChatVersion, CHAT_MCP_VERSION),
+    compareVersionOrder(installedRecipeVersion, RECIPE_MCP_VERSION),
+    compareVersionOrder(installedAgentSessionVersion, AGENT_SESSION_MCP_VERSION),
   ].some(order => order !== undefined && order > 0);
   return {
     installed: !!installedVersion, serverPath,
     expectedVersion: UNIFIED_MCP_VERSION, installedVersion,
-    current: installedVersion === UNIFIED_MCP_VERSION && installedKnowledgeVersion === KNOWLEDGE_MCP_VERSION && installedChatVersion === CHAT_MCP_VERSION,
+    current: installedVersion === UNIFIED_MCP_VERSION && installedKnowledgeVersion === KNOWLEDGE_MCP_VERSION
+      && installedChatVersion === CHAT_MCP_VERSION && installedRecipeVersion === RECIPE_MCP_VERSION
+      && installedAgentSessionVersion === AGENT_SESSION_MCP_VERSION,
     knowledgeVersion: KNOWLEDGE_MCP_VERSION,
     chatVersion: CHAT_MCP_VERSION,
+    recipeVersion: RECIPE_MCP_VERSION,
+    agentSessionVersion: AGENT_SESSION_MCP_VERSION,
     installedKnowledgeVersion,
     installedChatVersion,
+    installedRecipeVersion,
+    installedAgentSessionVersion,
     newerThanExpected,
   };
 }
@@ -418,9 +433,11 @@ export function generateMcpServer(context: vscode.ExtensionContext): { serverPat
   const mcpDir    = managedMcpServerDirectory();
   const serverPy  = path.join(mcpDir, "server.py");
   const recipeRuntimePy = path.join(mcpDir, "recipe_runtime.py");
+  const agentSessionRuntimePy = path.join(mcpDir, "agent_session_runtime.py");
   const reqTxt    = path.join(mcpDir, "requirements.txt");
   const storeFwd  = storePath.replace(/\\/g, "/");
   const subscriptionCacheFwd = path.join(context.globalStorageUri.fsPath, "subscriptions", "cache").replace(/\\/g, "/");
+  const environmentsRegistryFwd = path.join(context.globalStorageUri.fsPath, "environments", "registry.json").replace(/\\/g, "/");
   const retrievalIdentity = createHash("sha256").update(path.resolve(storePath)).digest("hex").slice(0, 16);
   const retrievalStateFwd = path.join(context.globalStorageUri.fsPath, "retrieval", retrievalIdentity).replace(/\\/g, "/");
 
@@ -432,6 +449,7 @@ export function generateMcpServer(context: vscode.ExtensionContext): { serverPat
   fs.mkdirSync(mcpDir, { recursive: true });
   generateChatMcpServer(context);
   fs.copyFileSync(path.join(context.extensionPath, "resources", "recipe_runtime.py"), recipeRuntimePy);
+  fs.copyFileSync(path.join(context.extensionPath, "resources", "agent_session_runtime.py"), agentSessionRuntimePy);
 
   fs.writeFileSync(serverPy, `#!/usr/bin/env python3
 """
@@ -463,6 +481,7 @@ SERVER_VERSION = "${UNIFIED_MCP_VERSION}"
 KNOWLEDGE_SCHEMA_VERSION = "${KNOWLEDGE_MCP_VERSION}"
 CHAT_SCHEMA_VERSION = "${CHAT_MCP_VERSION}"
 RECIPE_SCHEMA_VERSION = "${RECIPE_MCP_VERSION}"
+AGENT_SESSION_SCHEMA_VERSION = "${AGENT_SESSION_MCP_VERSION}"
 MODEL_BASED_ROUTING_ENABLED = False
 from typing import Optional, List
 
@@ -475,10 +494,13 @@ STORE  = Path(r"${storeFwd}")
 NOTES  = STORE / "notes"
 SKILLS = STORE / "skills"
 SUBSCRIPTIONS = Path(r"${subscriptionCacheFwd}")
+ENVIRONMENTS = Path(r"${environmentsRegistryFwd}")
 RETRIEVAL_STATE = Path(r"${retrievalStateFwd}")
 mcp = FastMCP("pkm")
-from recipe_runtime import register_recipe_tools
-register_recipe_tools(mcp, STORE)
+from recipe_runtime import register_recipe_tools, related_recipes
+register_recipe_tools(mcp, STORE, SUBSCRIPTIONS, ENVIRONMENTS)
+from agent_session_runtime import register_agent_session_tools
+register_agent_session_tools(mcp, STORE)
 
 
 def _enabled_router_solutions():
@@ -499,11 +521,13 @@ def _disabled_router_response(tool_name):
 def check_version() -> dict:
   """Return the unified server version and its component schema versions."""
   return {"name": "pkm", "version": SERVER_VERSION,
-          "components": {"knowledge": KNOWLEDGE_SCHEMA_VERSION, "chat": CHAT_SCHEMA_VERSION, "recipes": RECIPE_SCHEMA_VERSION},
-          "capabilities": ["personal-knowledge", "papers", "pkm-chatroom", "pkm-skills", "subscriptions", "pkm-recipes"],
+          "components": {"knowledge": KNOWLEDGE_SCHEMA_VERSION, "chat": CHAT_SCHEMA_VERSION, "recipes": RECIPE_SCHEMA_VERSION,
+                         "agent_sessions": AGENT_SESSION_SCHEMA_VERSION},
+          "capabilities": ["personal-knowledge", "papers", "pkm-chatroom", "pkm-skills", "subscriptions", "pkm-recipes", "agent-session-management"],
           "chat_discovery_tool": "chat_capabilities",
           "skill_discovery_tool": "skill_capabilities",
-          "recipe_discovery_tool": "recipe_capabilities"}
+          "recipe_discovery_tool": "recipe_capabilities",
+          "agent_session_discovery_tool": "agent_session_capabilities"}
 
 
 def _now() -> str:
@@ -563,13 +587,17 @@ def search_knowledge(query: str, limit: int = 5, content_type_filter: Optional[L
     provenance = hit.get("provenance") or {}
     compact_provenance = {key: provenance.get(key) for key in
       ["provider", "broker", "subscription_id", "revision"] if provenance.get(key) is not None}
-    hits.append({
+    compact_hit = {
       "rank": hit.get("rank"), "score": round(float(hit.get("score") or 0), 6),
       "skill_id": hit.get("skill_id"), "content_hash": hit.get("content_hash"),
       "content_type": hit.get("content_type"), "source_uri": hit.get("source_uri"),
       "title": hit.get("title"), "description": hit.get("description"),
       "read_only": bool(hit.get("read_only")), "provenance": compact_provenance,
-    })
+    }
+    linkage = _retrieval_hit_linkage(hit)
+    if linkage:
+      compact_hit["linkage"] = linkage
+    hits.append(compact_hit)
   compact = {key: result.get(key) for key in [
     "ok", "request_id", "corpus_revision", "query_intent", "exact_terms",
     "lexical_anchors", "requested_content_types", "content_type_routing"]}
@@ -728,7 +756,10 @@ def _skill(p, key):
     fm, body = _parse(p.read_text(encoding="utf-8"))
     return {"name": fm.get("name") or _name_of(key), "description": fm.get("description") or "",
             "category": _cat_of(key), "tags": fm.get("tags") or [],
-            "source_project": fm.get("source_project"), "content": body, "updated_at": _mtime(p)}
+      "source_project": fm.get("source_project"), "recipe_required": fm.get("recipe_required") is True,
+      "recipe_hint": str(fm.get("recipe_hint") or ""),
+      "related_skills": _arr(fm.get("related_skills")),
+      "content": body, "updated_at": _mtime(p)}
 
 
 def _all_skills():
@@ -763,7 +794,8 @@ def _skill_get(name):
     return _skill(p, k) if p else None
 
 
-def _skill_write(name, content, description, category, tags, source_project=None, created=None):
+def _skill_write(name, content, description, category, tags, source_project=None, created=None,
+                 recipe_required=False, recipe_hint="", related_skills=None):
     cat = _safe_cat(category or "")
     fname = _safe_name(name) + ".md"
     rel = (cat + "/" + fname) if cat else fname
@@ -774,7 +806,9 @@ def _skill_write(name, content, description, category, tags, source_project=None
         except Exception: pass
     full.parent.mkdir(parents=True, exist_ok=True)
     fm = {"name": name, "description": description or "", "tags": tags or [],
-          "source_project": source_project, "created": created or _now()}
+          "source_project": source_project, "recipe_required": True if recipe_required else None,
+          "recipe_hint": recipe_hint or None, "related_skills": related_skills or None,
+          "created": created or _now()}
     full.write_text(_serialize(fm, content or ""), encoding="utf-8")
     return name
 
@@ -888,6 +922,8 @@ def _skill_id(row):
 def _skill_hash(row):
   value = json.dumps({"name": row["name"], "description": row.get("description", ""),
             "category": row.get("category", ""), "tags": row.get("tags", []),
+            "recipe_required": row.get("recipe_required", False),
+            "recipe_hint": row.get("recipe_hint", ""), "related_skills": row.get("related_skills", []),
             "content": row.get("content", "")}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
   return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
@@ -904,6 +940,32 @@ def _skill_by_id(skill_id):
   for row in _all_skills():
     if _skill_id(row).casefold() == wanted or row["name"].casefold() == wanted:
       return row
+  return None
+
+
+def _skill_linkage(row):
+  skill_id = _skill_id(row)
+  recipes = related_recipes(STORE, skill_id, "skill")
+  required = bool(row.get("recipe_required"))
+  hint = str(row.get("recipe_hint") or row.get("description") or row.get("name") or "").strip()
+  linkage = {"recipe_required": required, "recipe_hint": hint if required else str(row.get("recipe_hint") or ""),
+             "related_skills": row.get("related_skills") or [], "related_recipes": recipes}
+  if required:
+    linkage["next_action"] = ({"kind": "use_related_recipe", "recipe_ids": [item["recipe_id"] for item in recipes]}
+      if recipes else {"kind": "search_or_create_recipe", "search_query": hint,
+        "search_tool": "recipe_search", "create_tool": "recipe_create_from_skill",
+        "instruction": "Search for a qualified Recipe. If none matches, proactively design and create a reusable Library Recipe from this Skill before continuing."})
+  return linkage
+
+
+def _retrieval_hit_linkage(hit):
+  content_type = hit.get("content_type")
+  identifier = str(hit.get("skill_id") or "")
+  if content_type == "skill" and identifier.startswith("skill:"):
+    row = _skill_by_id(identifier[6:])
+    return _skill_linkage(row) if row else None
+  if content_type == "note" and identifier.startswith("note:"):
+    return {"related_recipes": related_recipes(STORE, identifier[5:], "note")}
   return None
 
 
@@ -999,7 +1061,7 @@ def skill_context(task: str, workspace: str = "", files: Optional[List[str]] = N
              "provenance": row.get("provenance"),
              "content_hash": _skill_hash(row), "score": score, "task_coverage": round(coverage, 3),
              "priority": "required" if index == 0 and metadata_count >= 2 and coverage >= 0.5 else "recommended",
-             "match_reason": reasons})
+             "match_reason": reasons, "linkage": _skill_linkage(row)})
   no_match = not skills
   interaction_id = str(uuid.uuid4())
   candidates = []
@@ -1011,13 +1073,13 @@ def skill_context(task: str, workspace: str = "", files: Optional[List[str]] = N
                "provenance": row.get("provenance"),
                "content_hash": _skill_hash(row), "rank": index + 1, "score": score,
                "task_coverage": round(coverage, 3), "metadata_match_count": metadata_count,
-               "match_reason": reasons})
+               "match_reason": reasons, "linkage": _skill_linkage(row)})
   _collect_search_invocation("pkm.skill_context", started_at,
         [item.get("content_hash") for item in skills], True, ["metadata-threshold"])
   return json.dumps({"ok": True, "interaction_id": interaction_id, "task": task, "count": len(skills), "no_match": no_match,
              "retrieval": "summary", "skills": skills,
              "instruction": "No relevant PKM Skill met the threshold; continue without one."
-               if no_match else "Call get_skill with the skill_id and interaction_id for each candidate you choose. Follow required Skills, then report outcomes with skill_feedback using the same interaction_id."}, ensure_ascii=False)
+               if no_match else "Call get_skill with the skill_id and interaction_id for each candidate you choose. Follow required Skills and linkage.next_action. A search_or_create_recipe action requires recipe_search, then recipe_create_from_skill when no qualified Recipe exists. Report outcomes with skill_feedback using the same interaction_id."}, ensure_ascii=False)
 
 
 @mcp.tool()
@@ -1111,7 +1173,8 @@ def search_skills(query: str) -> str:
             [_skill_hash(skill) for skill in hits], True, ["fts5", "substring-fallback"])
     return json.dumps([{"skill_id": _skill_id(s), "name": s["name"], "description": s["description"],
               "category": s["category"], "source": s.get("source", "local"),
-              "read_only": s.get("read_only", False), "provenance": s.get("provenance")}
+              "read_only": s.get("read_only", False), "provenance": s.get("provenance"),
+              "linkage": _skill_linkage(s)}
                for s in hits], ensure_ascii=False)
 
 
@@ -1125,7 +1188,7 @@ def get_skill(name: str, interaction_id: str = "") -> str:
              "name": r["name"], "content": r["content"], "description": r["description"],
              "category": r["category"], "tags": r["tags"], "updated_at": r["updated_at"],
              "source": r.get("source", "local"), "read_only": r.get("read_only", False),
-             "provenance": r.get("provenance")}
+             "provenance": r.get("provenance"), "linkage": _skill_linkage(r)}
   _collector_post("skill_load", interaction_id or str(uuid.uuid4()), {"skill": {
        "content_hash": result["content_hash"], "source": result["source"],
        "read_only": result["read_only"]}})
@@ -1174,7 +1237,8 @@ def get_note(slug: str) -> str:
         return f"Note '{slug}' not found. Use list_notes or search_notes to find it."
     return json.dumps({"slug": r["slug"], "content_hash": _note_hash(r), "title": r["title"], "content": r["content"],
                        "type": r["type"], "tags": r["tags"], "category": r["category"],
-                       "updated_at": r["updated_at"]})
+                       "updated_at": r["updated_at"],
+                       "linkage": {"related_recipes": related_recipes(STORE, r["slug"], "note")}})
 
 
 # ── Write tools ─────────────────────────────────────────────────────────────
@@ -1222,18 +1286,22 @@ def delete_note(slug: str) -> str:
 
 @mcp.tool()
 def add_skill(name: str, content: str, description: str = "", category: str = "",
-              tags: Optional[List[str]] = None, source_project: str = "") -> str:
+              tags: Optional[List[str]] = None, source_project: str = "", recipe_required: bool = False,
+              recipe_hint: str = "", related_skills: Optional[List[str]] = None) -> str:
     """Create or overwrite a skill. 'category' is a slash-separated folder path
     (e.g. General/DLIS/docker); 'name' is the skill's unique identifier."""
     created = None
     existing = _skill_get(name)
-    _skill_write(name, content, description, category, tags or [], source_project or None, created)
+    _skill_write(name, content, description, category, tags or [], source_project or None, created,
+           recipe_required, recipe_hint, related_skills or [])
     return json.dumps({"ok": True, "name": name})
 
 
 @mcp.tool()
 def update_skill(name: str, content: Optional[str] = None, description: Optional[str] = None,
-                 category: Optional[str] = None, tags: Optional[List[str]] = None) -> str:
+                 category: Optional[str] = None, tags: Optional[List[str]] = None,
+                 recipe_required: Optional[bool] = None, recipe_hint: Optional[str] = None,
+                 related_skills: Optional[List[str]] = None) -> str:
     """Update fields of an existing skill by name. Only provided fields are changed."""
     row = _skill_get(name)
     if not row:
@@ -1245,6 +1313,9 @@ def update_skill(name: str, content: Optional[str] = None, description: Optional
         category if category is not None else row["category"],
         tags if tags is not None else row["tags"],
         row["source_project"],
+        recipe_required=row["recipe_required"] if recipe_required is None else recipe_required,
+        recipe_hint=row["recipe_hint"] if recipe_hint is None else recipe_hint,
+        related_skills=row["related_skills"] if related_skills is None else related_skills,
     )
     return json.dumps({"ok": True, "name": name})
 
@@ -1521,8 +1592,12 @@ export function chatMcpStatus(): McpServerStatus {
     current: installedVersion === CHAT_MCP_VERSION,
     knowledgeVersion: KNOWLEDGE_MCP_VERSION,
     chatVersion: CHAT_MCP_VERSION,
+    recipeVersion: RECIPE_MCP_VERSION,
+    agentSessionVersion: AGENT_SESSION_MCP_VERSION,
     installedKnowledgeVersion: readMcpComponentVersion(serverPath, "KNOWLEDGE_SCHEMA_VERSION"),
     installedChatVersion: readMcpComponentVersion(serverPath, "CHAT_SCHEMA_VERSION"),
+    installedRecipeVersion: readMcpComponentVersion(serverPath, "RECIPE_SCHEMA_VERSION"),
+    installedAgentSessionVersion: readMcpComponentVersion(serverPath, "AGENT_SESSION_SCHEMA_VERSION"),
     newerThanExpected: (compareVersionOrder(installedVersion, CHAT_MCP_VERSION) || 0) > 0,
   };
 }
@@ -1921,4 +1996,3 @@ if __name__ == "__main__":
 
   return { serverPath: serverPy, configSnippet };
 }
-

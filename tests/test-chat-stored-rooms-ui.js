@@ -10,6 +10,15 @@ const css = fs.readFileSync(path.join(root, "dist", "webview", "panel.css"), "ut
 const extension = fs.readFileSync(path.join(root, "src", "extension.ts"), "utf8");
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 
+const renderChatroom = panel.slice(panel.indexOf("function renderChatroom()"), panel.indexOf("function chatMeetingSummaryHtml()"));
+const chatOnState = panel.slice(panel.indexOf("function chatOnState(s)"), panel.indexOf("function chatOnRecents(d)"));
+assert.doesNotMatch(renderChatroom, /chatPaintRoomCards\(\)/,
+  "initial Chatroom render must let chatPaintHub paint Room cards once");
+assert.doesNotMatch(chatOnState, /chatPaintRoomCards\(\)/,
+  "Chatroom state updates must let chatPaintHub paint Room cards once");
+assert.match(panel, /function chatBindDocumentListeners\(\) \{\s*if \(chat\.documentListenersBound\) return;/,
+  "document-level Chatroom listeners must only be bound once");
+
 assert.match(panel, /Hosted by me/);
 assert.match(panel, /Joined before/);
 assert.match(panel, /id="chat-hosted-rooms" class="chat-room-cards"/);

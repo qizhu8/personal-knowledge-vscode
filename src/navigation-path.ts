@@ -12,6 +12,9 @@ export function navigationItemPath(item: NavigationPathItem): string {
     return rel && rel !== "(uncategorized)" ? `${area}/${rel}/` : `${area}/`;
   };
   switch (item.nodeType) {
+    case "page-recipes": return "recipes/";
+    case "recipe-folder": return folderPath("recipes");
+    case "recipe": return `recipes/${data.relPath}`;
     case "root-skills": return "skills/";
     case "skill-folder": return folderPath("skills");
     case "skill": return `skills/${data.relPath}`;
@@ -34,7 +37,7 @@ export function navigationItemPath(item: NavigationPathItem): string {
     case "root-servers": return "servers/";
     case "server-group": return `pkm://servers/subgroups/${encodeURIComponent((data.path || []).join("/"))}`;
     case "server-ungrouped-group": return "pkm://servers/subgroups/ungrouped";
-    case "server-item": return `servers/${data.slug}/server.json`;
+    case "server-item": return `pkm://servers/${encodeURIComponent(data.slug || "")}`;
     case "server-subscriber-group": return `pkm://subscriptions/${encodeURIComponent(data.subscriptionId || "")}/servers`;
     case "server-subscriber-item": return `pkm://subscriptions/servers/${encodeURIComponent(data.key || "")}`;
     case "subscribed-content-root": return `pkm://subscriptions/${encodeURIComponent(data.model?.contentType || "")}`;

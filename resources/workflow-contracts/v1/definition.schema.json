@@ -19,9 +19,18 @@
           "uniqueItems": true,
           "x-pkm-order": "set",
           "x-pkm-sort-key": ["nodeId"],
-          "items": { "$ref": "#/$defs/noopNode" }
+          "items": {
+            "oneOf": [
+              { "$ref": "#/$defs/noopNode" },
+              { "$ref": "#/$defs/commandNode" },
+              { "$ref": "#/$defs/scriptNode" },
+              { "$ref": "#/$defs/humanGateNode" },
+              { "$ref": "#/$defs/subflowNode" }
+            ]
+          }
         },
         "outputs": { "type": "object", "additionalProperties": { "$ref": "#/$defs/port" } },
+        "trigger": { "$ref": "#/$defs/trigger" },
         "completion": {
           "type": "object",
           "additionalProperties": false,
@@ -42,6 +51,16 @@
   },
   "$defs": {
     "identifier": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9._-]{0,127}$" },
+    "trigger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "expression", "timezone"],
+      "properties": {
+        "kind": { "const": "cron" },
+        "expression": { "type": "string", "pattern": "^\\S+(?:\\s+\\S+){4}$" },
+        "timezone": { "type": "string", "minLength": 1 }
+      }
+    },
     "port": {
       "type": "object",
       "additionalProperties": false,
@@ -83,6 +102,154 @@
         "nodeId": { "$ref": "#/$defs/identifier" },
         "kind": { "const": "pkm.step.noop/v1" },
         "config": { "type": "object", "maxProperties": 0 },
+        "generalInstruction": { "type": "string", "minLength": 1 },
+        "ports": { "$ref": "#/$defs/nodePorts" },
+        "control": { "$ref": "#/$defs/nodeControl" },
+        "dependsOn": {
+          "type": "array",
+          "uniqueItems": true,
+          "x-pkm-order": "set",
+          "x-pkm-sort-key": ["from", "accept"],
+          "items": { "$ref": "#/$defs/dependency" }
+        }
+      }
+    },
+    "commandNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodeId", "kind", "config", "dependsOn"],
+      "properties": {
+        "nodeId": { "$ref": "#/$defs/identifier" },
+        "kind": { "const": "pkm.step.command/v1" },
+        "config": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["program", "args"],
+          "properties": {
+            "program": { "type": "string", "minLength": 1, "pattern": "^[^\\r\\n\\u0000]+$" },
+            "args": {
+              "type": "array",
+              "x-pkm-order": "semantic",
+              "x-pkm-sort-key": ["$index"],
+              "items": { "type": "string", "pattern": "^[^\\u0000]*$" }
+            },
+            "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 3600, "default": 300 },
+            "maxOutputBytes": { "type": "integer", "minimum": 1024, "maximum": 1048576, "default": 65536 },
+            "cwd": { "type": "string", "minLength": 1, "pattern": "^[^\\r\\n\\u0000]+$" }
+          }
+        },
+        "generalInstruction": { "type": "string", "minLength": 1 },
+        "ports": { "$ref": "#/$defs/nodePorts" },
+        "control": { "$ref": "#/$defs/nodeControl" },
+        "dependsOn": {
+          "type": "array",
+          "uniqueItems": true,
+          "x-pkm-order": "set",
+          "x-pkm-sort-key": ["from", "accept"],
+          "items": { "$ref": "#/$defs/dependency" }
+        }
+      }
+    },
+    "scriptNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodeId", "kind", "config", "dependsOn"],
+      "properties": {
+        "nodeId": { "$ref": "#/$defs/identifier" },
+        "kind": { "const": "pkm.step.script/v1" },
+        "config": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["runtime", "script"],
+          "properties": {
+            "runtime": { "enum": ["bash", "powershell", "python"] },
+            "script": { "type": "string", "minLength": 1, "pattern": "^[^\\u0000]+$" },
+            "environmentId": { "$ref": "#/$defs/identifier" },
+            "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 3600, "default": 300 },
+            "maxOutputBytes": { "type": "integer", "minimum": 1024, "maximum": 1048576, "default": 65536 },
+            "cwd": { "type": "string", "minLength": 1, "pattern": "^[^\\r\\n\\u0000]+$" }
+          },
+          "allOf": [
+            {
+              "if": { "properties": { "runtime": { "const": "python" } }, "required": ["runtime"] },
+              "then": { "required": ["environmentId"] },
+              "else": { "not": { "required": ["environmentId"] } }
+            }
+          ]
+        },
+        "generalInstruction": { "type": "string", "minLength": 1 },
+        "ports": { "$ref": "#/$defs/nodePorts" },
+        "control": { "$ref": "#/$defs/nodeControl" },
+        "dependsOn": {
+          "type": "array",
+          "uniqueItems": true,
+          "x-pkm-order": "set",
+          "x-pkm-sort-key": ["from", "accept"],
+          "items": { "$ref": "#/$defs/dependency" }
+        }
+      }
+    },
+    "humanGateNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodeId", "kind", "config", "dependsOn"],
+      "properties": {
+        "nodeId": { "$ref": "#/$defs/identifier" },
+        "kind": { "const": "pkm.gate.human/v1" },
+        "config": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["prompt", "inputKind"],
+          "properties": {
+            "prompt": { "type": "string", "minLength": 1 },
+            "inputKind": { "enum": ["approval", "text", "choice"] },
+            "choices": {
+              "type": "array",
+              "minItems": 2,
+              "uniqueItems": true,
+              "x-pkm-order": "set",
+              "x-pkm-sort-key": ["$value"],
+              "items": { "type": "string", "minLength": 1 }
+            }
+          },
+          "allOf": [
+            {
+              "if": { "properties": { "inputKind": { "const": "choice" } } },
+              "then": { "required": ["choices"] },
+              "else": { "not": { "required": ["choices"] } }
+            }
+          ]
+        },
+        "generalInstruction": { "type": "string", "minLength": 1 },
+        "ports": { "$ref": "#/$defs/nodePorts" },
+        "control": { "$ref": "#/$defs/nodeControl" },
+        "dependsOn": {
+          "type": "array",
+          "uniqueItems": true,
+          "x-pkm-order": "set",
+          "x-pkm-sort-key": ["from", "accept"],
+          "items": { "$ref": "#/$defs/dependency" }
+        }
+      }
+    },
+    "subflowNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodeId", "kind", "config", "dependsOn"],
+      "properties": {
+        "nodeId": { "$ref": "#/$defs/identifier" },
+        "kind": { "const": "pkm.subflow/v1" },
+        "config": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["recipeId", "revision", "executableDigest"],
+          "properties": {
+            "recipeId": { "$ref": "#/$defs/identifier" },
+            "revision": { "type": "integer", "minimum": 1 },
+            "executableDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+          }
+        },
+        "generalInstruction": { "type": "string", "minLength": 1 },
         "ports": { "$ref": "#/$defs/nodePorts" },
         "control": { "$ref": "#/$defs/nodeControl" },
         "dependsOn": {
@@ -190,6 +357,7 @@
           "properties": {
             "mode": { "const": "branch" },
             "kind": { "enum": ["if", "switch"] },
+            "dynamicCases": { "const": true },
             "cases": {
               "type": "array",
               "minItems": 1,

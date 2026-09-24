@@ -10,8 +10,8 @@ const port = Number(process.env.PORT || 4178);
 const demoMcp = {
   installed: true,
   current: true,
-  installedVersion: "3.0.0",
-  expectedVersion: "3.0.0",
+  installedVersion: "3.0.1",
+  expectedVersion: "3.0.1",
   knowledgeVersion: "1.0.0",
   chatVersion: "2.3.1",
   installedKnowledgeVersion: "1.0.0",
@@ -60,7 +60,7 @@ const demoChat = {
       { user: "Build Monitor", participantId: "demo-build", present: false, kind: "agent", runtimeState: "idle" },
     ],
     messages: [
-      { id: "d1", from: "Release Host", kind: "human", ts: 1787010000000, text: '@"Docs Reviewer" @"QA Agent" Please review the 3.0.0 release notes and regression matrix.', recipients: ["Docs Reviewer", "QA Agent"], replyPolicy: "required", mode: "ask", receipt: { read: 2, total: 2 } },
+      { id: "d1", from: "Release Host", kind: "human", ts: 1787010000000, text: '@"Docs Reviewer" @"QA Agent" Please review the 3.1.0 release notes and regression matrix.', recipients: ["Docs Reviewer", "QA Agent"], replyPolicy: "required", mode: "ask", receipt: { read: 2, total: 2 } },
       { id: "d2", from: "Docs Reviewer", kind: "agent", ts: 1787010060000, text: "Documentation review is complete. The setup guide now separates server, schema, and Skill Router versions.", recipients: ["Release Host"], replyPolicy: "none" },
       { id: "d3", from: "QA Agent", kind: "agent", ts: 1787010120000, text: "Search navigation, quoted mentions, offline roster routing, and standby wake tests are passing.", recipients: ["Release Host"], replyPolicy: "none" },
       { id: "d4", from: "Release Host", kind: "human", ts: 1787010180000, text: '@all Final check: verify the package and publish workflow.', recipients: ["all"], replyPolicy: "required", mode: "announce", receipt: { read: 2, total: 2 } },
@@ -107,10 +107,40 @@ function demoLinearRecipe(recipeId, name, description, steps, executableDigest) 
     },
   };
 }
+function demoPkmTutorialRecipe() {
+  const node = (nodeId, generalInstruction, dependsOn = [], ports = { inputs: ["dependency"], outputs: ["completion"] }, control = { mode: "single" }) => ({
+    nodeId, kind: "pkm.step.noop/v1", config: {}, generalInstruction, dependsOn, ports, control,
+  });
+  return {
+    recipeId: "recipe_builtin_pkm_tutorial", scope: "global", category: "Examples/PKM", systemKind: "built-in",
+    name: "PKM Tutorial",
+    description: "Answer PKM usage questions through question understanding, system guidance retrieval, validation, and honest synthesis.",
+    metadata: {
+      applicableFunctions: ["PKM help", "PKM tutorial", "Usage question"],
+      solution: "Ground PKM answers in the system Skill and explicitly allow an unknown result.",
+      requiredInputs: [{ name: "question", description: "A question about using PKM.", required: true }],
+      expectedOutputs: [{ name: "answer", description: "A grounded answer or an explicit unknown result." }],
+    },
+    revision: 1, executableDigest: "8f8f67a6a020f1f1",
+    definition: { spec: {
+      nodes: [
+        node("understand-question", "Brief: determine what the user is trying to do in PKM.", [], { inputs:["question"], outputs:["understood-question"] }),
+        node("find-relevant-guidance", "Brief: find the relevant section in the System/PKM/PKM Skills system Skill and retain its identity and content hash.", [{ from:"understand-question", accept:["succeeded"], required:true, fromOutput:"understood-question", toInput:"question" }], { inputs:["question"], outputs:["guidance"] }),
+        node("validate-guidance", "Brief: return validated, known, or unknown. Insufficient evidence is a valid result, not an execution failure.", [{ from:"find-relevant-guidance", accept:["succeeded"], required:true, fromOutput:"guidance", toInput:"guidance" }], { inputs:["guidance"], outputs:["validated","known","unknown"] }, { mode:"branch", kind:"switch", cases:["validated","known","unknown"] }),
+        node("synthesize-answer", "Brief: integrate the evidence and disposition. When unknown, explicitly say the answer is not known and state what evidence is missing.", [{ from:"validate-guidance", accept:["succeeded"], required:true }], { inputs:["validation"], outputs:["answer"] }),
+      ],
+      completion: { requiredNodes:["synthesize-answer"] },
+    } },
+  };
+}
 const demoProjects = {
   schema: 1,
   storeVersion: 4,
   rootId: "root_demo-release",
+  referenceCatalog: {
+    skills: [{ id:"System/PKM/PKM Skills", label:"PKM Skills", cat:"System/PKM", treePath:"System/PKM", meta:"system, pkm" }],
+    notes: [{ id:"Research/Automation/recipe-design", label:"Recipe Design", cat:"Research/Automation", treePath:"Research/Automation", meta:"research" }],
+  },
   projects: [
     { projectId: "project_default", name: "Default Project", systemKind: "default-project", version: 1 },
     { projectId: "project_aagl", name: "AAGL Improvement", version: 2 },
@@ -128,8 +158,32 @@ const demoProjects = {
     demoLinearRecipe("recipe_builtin_software", "Software Development", "Develop a software change from requirements through delivery.", ["understand", "plan", "implement", "validate", "deliver"], "3a9ff4d48a10d90e"),
     demoLinearRecipe("recipe_builtin_bugfix", "Bug Fix", "Reproduce, diagnose, fix, and verify a defect.", ["reproduce", "investigate", "fix", "regression-check", "report"], "53ae27b7bb7539ce"),
     demoLinearRecipe("recipe_builtin_ui", "UI Development", "Design, implement, and validate an interface.", ["understand-ux", "prototype", "implement-ui", "validate-ui", "review"], "2b72642253116bd5"),
+    demoPkmTutorialRecipe(),
     { recipeId: "recipe_demo_private", scope: "global", category: "Personal", name: "Private Review (Demo)", description: "Preview-only Recipe used to verify privacy presentation.", revision: 1, executableDigest: "92e0f615fce4591a", definition: { spec: { nodes: [{ nodeId: "review" }] } } },
   ],
+  agentSessions: [{
+    sessionId: "agent_session_demo_snapshot_source", status: "running", task: "Implement Agent Snapshot recovery",
+    projectId: "project_pkm", hostSessionId: "copilot-demo-session",
+    agent: { name: "Copilot Agent", product: "GitHub Copilot" },
+    createdAt: "2026-09-23T22:30:00Z", updatedAt: "2026-09-23T23:10:00Z",
+    lastActivity: { tool: "agent_session_checkpoint", ok: true, at: "2026-09-23T23:10:00Z" },
+    checkpoint: { checkpointId: "checkpoint_demo_snapshot", sequence: 3, createdAt: "2026-09-23T23:10:00Z", reason: "restart", summary: "Runtime and UI implementation are ready for validation.", nextActionCount: 2 },
+    todos: [
+      { todoId: "todo_design", title: "Design Snapshot contract", status: "succeeded", summary: "Immutable clone-on-recovery contract defined." },
+      { todoId: "todo_validate", title: "Validate recovery", status: "running", details: "Run runtime and UI tests." },
+    ],
+    runs: [],
+  }],
+  agentSessionTrash: [],
+  agentSnapshots: [{
+    snapshotId: "agent_snapshot_demo_20260923", magicCode: "PKM-SNAP-92E0-F615-FCE4-591A",
+    sourceSessionId: "agent_session_demo_snapshot_source", sourceHostSessionId: "copilot-demo-session",
+    task: "Implement Agent Snapshot recovery", projectId: "project_pkm",
+    agent: { name: "Copilot Agent", product: "GitHub Copilot" }, reason: "restart",
+    createdAt: "2026-09-23T23:10:05Z", recipeRunCount: 1, todoCount: 2,
+    checkpoint: { checkpointId: "checkpoint_demo_snapshot", sequence: 3, createdAt: "2026-09-23T23:10:00Z", reason: "restart" },
+    recoveryCount: 2,
+  }],
 };
 
 const demoPapers = [
@@ -180,6 +234,7 @@ let demoSubscriptions = {
   displayName: "Demo Publisher / Workstation",
   port: 19877,
   advertisedHost: "demo-workstation.local",
+  githubConnections: [{ id: "demo-github", name: "Knowledge Backup", repository: "git@github.com:example/knowledge.git", branch: "main", method: "ssh", account: "demo-emu" }, { id: "demo-personal", name: "Personal GitHub", repository: "https://github.com/example/public-notes.git", branch: "main", method: "https", account: "demo-personal" }],
   networkAddresses: [{ interface: "Hostname", address: "demo-workstation.local", kind: "hostname" }, { interface: "ethernet0", address: "10.0.0.8", kind: "interface" }],
   shares: [{ shareId: "demo-aagl-share", name: "AAGL Working Set", visibility: "unlisted", revision: 4, protection: "secret-protected", controlPort: 19891, dataPort: 0, accessMode: "block-list", ipRules: ["10.99.*.*"], accountMode: "white-list", accountRules: ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"], contentTypes: ["skills", "notes", "papers"], selected: { skills: ["Pipeline Review"] }, folders: { notes: ["Research/AAGL"], papers: ["AAGL"] }, subscribers: [{ nodeId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", name: "Docs Reviewer / Laptop", names: ["Docs Reviewer / Laptop"], syncCount: 7, lastIp: "10.0.0.24", lastSeenAt: "2026-09-03T01:04:00Z", abnormal: [] }], automaticBlocks: [{ ip: "10.99.4.8", reason: "three-secret-failures", failedAttempts: 3, blockedAt: "2026-09-03T00:40:00Z" }], securityEvents: [{ at: "2026-09-03T00:40:00Z", ip: "10.99.4.8", reason: "IP blocked after three incorrect Broker secrets." }], summary: { counts: { skills: 3, notes: 8, papers: 4 }, topics: ["AAGL", "Asset Quality"], tags: ["pipeline", "evaluation"], itemCount: 15, secretProtected: true } }],
   subscriptions: [{ id: "demo-sub", alias: "", brokerName: "CreativeGen", publisher: "Colleague / Team Node", publisherUser: "colleague", publisherHost: "team-node", nodeId: "demo-peer", shareId: "demo-team-share", endpoint: "http://team-node:19877", revision: 12, collectionHash: "sha256:demo", topics: ["DLIS", "Consumer"], tags: ["docker", "research"], counts: { skills: 6, notes: 5, servers: 1 }, itemCount: 12, status: "current", lastUpdated: "2026-09-03T01:00:00Z" }],
@@ -189,6 +244,12 @@ let demoSubscriptions = {
     papers: [{ id: "AAGL/Retrieval", label: "Retrieval Planning", cat: "AAGL", meta: "2026" }],
     prompts: [], scripts: [], packages: [], servers: [{ id: "review-api", label: "Review API", cat: "Team/APIs", meta: "api" }],
   },
+};
+const demoGitHubSync = {
+  targets: [{ id: "demo-github", name: "Knowledge Backup", repository: "git@github.com:example/knowledge.git", branch: "main", authentication: { method: "ssh", identityFile: "~/.ssh/id_ed25519_demo", expectedLogin: "demo-emu" }, selection: { public: {}, private: {} }, lastSync: { at: "2026-09-03T01:10:00Z", commit: "1234567890abcdef1234567890abcdef12345678", fingerprints: {} } }],
+  catalog: { skills: [], notes: [], papers: [], prompts: [], scripts: [], packages: [], servers: [], recipes: [] },
+  shields: { skills: "none", notes: "none", papers: "none", prompts: "none", scripts: "none", packages: "none", servers: "none", recipes: "none" },
+  authenticationOptions: { accounts: ["demo-emu", "demo-personal"], identities: ["/home/demo/.ssh/id_ed25519_emu", "/home/demo/.ssh/id_ed25519_personal"] },
 };
 const demoLocalPackages = [{ name: "local-evaluator", lang: "python", description: "Local package", gitTracked: true, gitRepo: false }];
 const demoSubscribedPackages = [{
@@ -208,7 +269,7 @@ function bootstrap(view) {
   return `<style id="release-theme">
   :root{--vscode-editor-background:#1f1f1f;--vscode-sideBar-background:#181818;--vscode-panel-border:#343434;--vscode-focusBorder:#0078d4;--vscode-foreground:#cccccc;--vscode-descriptionForeground:#9d9d9d;--vscode-list-hoverBackground:#2a2d2e;--vscode-input-background:#313131;--vscode-list-activeSelectionBackground:#04395e;--vscode-list-activeSelectionForeground:#ffffff;--vscode-textCodeBlock-background:#181818;--vscode-font-family:"Segoe UI",sans-serif;--vscode-editor-font-family:"Cascadia Code",Consolas,monospace;--vscode-font-size:13px}
   </style><script>
-  const __state = { tab: ${JSON.stringify(view === "projects" ? "projects" : view === "chat" ? "chatroom" : view === "papers" ? "papers" : view === "prompts" ? "prompts" : view === "subscriptions" ? "subscriptions" : "mcp")} };
+  const __state = { tab: ${JSON.stringify(view === "projects" ? "projects" : view === "agentSnapshots" ? "agentSnapshots" : view === "chat" ? "chatroom" : view === "papers" ? "papers" : view === "prompts" ? "prompts" : view === "subscriptions" ? "subscriptions" : "mcp")} };
   let __demoPromptNote = 'Adds concise output guidance.';
   const __chat = ${JSON.stringify(demoChat)};
   let __messageSequence = 10;
@@ -219,6 +280,7 @@ function bootstrap(view) {
       const send = (command, data) => window.dispatchEvent(new MessageEvent('message', { data: { command, data } }));
       if (message.command === 'ready') {
         send('subscriptionState', ${JSON.stringify(demoSubscriptions)});
+        send('githubSyncState', ${JSON.stringify(demoGitHubSync)});
         window.dispatchEvent(new MessageEvent('message', { data: { command: 'openTab', tab: __state.tab } }));
         send('mcpStatus', ${JSON.stringify(demoMcp)});
         Object.entries(${JSON.stringify(sizes)}).forEach(([key, bytes]) => send('mcpPathSize', { key, bytes }));
@@ -227,7 +289,11 @@ function bootstrap(view) {
         Object.entries(${JSON.stringify(sizes)}).forEach(([key, bytes]) => send('mcpPathSize', { key, bytes }));
       } else if (message.command === 'chatState') { send('chatState', __chat); send('chatRecents', { recents: ${JSON.stringify(demoChatRecents)} }); }
       else if (message.command === 'projectState') send('projectState', ${JSON.stringify(demoProjects)});
+      else if (message.command === 'recipeOpenBrowser') window.dispatchEvent(new CustomEvent('releaseRecipeOpenBrowser', { detail:message }));
+      else if (message.command === 'recipeUpdate') window.dispatchEvent(new CustomEvent('releaseRecipeUpdate', { detail:message }));
       else if (message.command === 'subscriptionState') send('subscriptionState', ${JSON.stringify(demoSubscriptions)});
+      else if (message.command === 'subscriptionTestGitHubBranch') send('subscriptionGitHubTestResult', { repository:message.repository, branch:message.branch || 'main', credentialTargetId:message.credentialTargetId || '', name:'public-notes', commit:'4f8c2b739ca6c4dc449e812f0c5f581b0ad64867', files:[{path:'notes/Research/Retrieval Design.md',type:'notes'},{path:'notes/Research/Evaluation Plan.md',type:'notes'},{path:'skills/Coding/GitHub Subscription.md',type:'skills'},{path:'prompts/Review/Repository Audit.md',type:'prompts'},{path:'packages/branch-reader/README.md',type:'packages'}] });
+      else if (message.command === 'githubSyncState') send('githubSyncState', ${JSON.stringify(demoGitHubSync)});
       else if (message.command === 'subscriptionRename') {
         const state = ${JSON.stringify(demoSubscriptions)};
         const subscription = state.subscriptions.find(item => item.id === message.id);
@@ -318,7 +384,7 @@ function panelHtml(view) {
     "%%NOTES_BASE%%": "/demo/notes", "%%CODICON_CSS%%": "/codicon.css", "%%HLJS_CSS%%": "/hljs.css", "%%KATEX_CSS%%": "/katex.css",
     "%%MARKED_SRC%%": "/marked.umd.js", "%%HLJS_SRC%%": "/hljs.js", "%%KATEX_SRC%%": "/katex.js",
     "%%CYTOSCAPE_SRC%%": "/cytoscape.js", "%%MERMAID_SRC%%": "/mermaid.js", "%%FORCEGRAPH3D_SRC%%": "/forcegraph3d.js",
-    "%%PANEL_CSS%%": "/panel.css", "%%PANEL_JS%%": "/panel.js", "%%PKM_VERSION%%": "3.0.0",
+    "%%PANEL_CSS%%": "/panel.css", "%%PANEL_JS%%": "/panel.js", "%%PKM_VERSION%%": "3.0.1",
     "%%I18N_PAYLOAD_B64%%": Buffer.from(JSON.stringify({ setting: "en", resolved: "en", locales: localeManifest.locales, catalogs }), "utf8").toString("base64"),
   };
   for (const [token, value] of Object.entries(replacements)) html = html.split(token).join(value);

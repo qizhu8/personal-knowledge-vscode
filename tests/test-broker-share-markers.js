@@ -23,6 +23,13 @@ assert.deepStrictEqual(markers.folders["Team/Future"].brokers.map(item => item.n
 assert.strictEqual(markers.items["Private Elsewhere"], undefined, "unselected content must stay unmarked");
 assert.deepStrictEqual(brokerShareMarkers("skills", items, []).items, {}, "removing content from all Brokers must clear item markers");
 
+const recipes = [{ recipeId: "recipe_release", name: "Release", category: "Operations/Release" }];
+const recipeShare = { shareId: "share-recipes", name: "Recipe Broker", published: true,
+  contentTypes: ["recipes"], selected: { recipes: ["recipe_release"] }, folders: {} };
+const recipeMarkers = brokerShareMarkers("recipes", recipes, [recipeShare]);
+assert.strictEqual(recipeMarkers.items.recipe_release.brokers[0].name, "Recipe Broker");
+assert.strictEqual(recipeMarkers.folders["Operations/Release"].brokers[0].id, "share-recipes");
+
 const notes = [
   { slug: "Project/Shared/Published Note", category: "Project/Shared" },
   { slug: "Project/Personal Knowledge Manager/Private Plan", category: "Project/Personal Knowledge Manager" },

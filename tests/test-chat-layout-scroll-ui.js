@@ -123,7 +123,11 @@ assert(panelJs.includes("chat-jump-latest"));
 assert.match(panelJs, /id="chat-meeting-summary-btn"[^>]*onclick="chatToggleMeetingSummary\(\)"/);
 assert.match(panelJs, /id="chat-meeting-summary" class="chat-meeting-summary hidden"/);
 assert(panelJs.includes("function chatMeetingTopicHtml(topic, activeTopicId, depth = 0)"));
+assert(panelJs.includes('id="chat-meeting-summary-meta"'));
+assert.match(panelJs, /function chatMeetingSummaryMeta\(\)[\s\S]{0,500}No active meeting[\s\S]{0,200}archived[\s\S]{0,100}trash/,
+  "Meeting Summary header must project live current, archive, and trash counts");
 assert(panelCss.includes(".chat-meeting-summary{position:absolute;inset:0"));
+assert(panelCss.includes(".chat-meeting-summary-meta{"));
 assert(panelCss.includes(".chat-meeting-subtopics"));
 assert(panelJs.includes("chat.active?.meetings || { current: null, history: [] }"));
 assert(panelJs.includes("function chatStartMeeting()"));
@@ -170,6 +174,11 @@ for (const id of ["search-count", "search-prev", "search-next", "search-case", "
 for (const id of ["chat-searchbox", "chat-search-count", "chat-search-case", "chat-search-regex"]) {
   assert(panelJs.includes(`id="${id}"`), `missing Chatroom search control ${id}`);
 }
+assert.match(panelHtml, /find-control pkm-search-field[^>]*id="content-find-control"/, "Knowledge search uses the shared search field");
+assert.match(panelJs, /id="chat-find" class="find-control pkm-search-field"/, "Chatroom search uses the shared search field");
+assert.match(panelJs, /chatNarrowViewport\(\)[\s\S]*?return !chatNarrowMemberExpanded/, "narrow Chatroom defaults the member pane to collapsed");
+assert.match(panelJs, /chatNarrowViewport\(\)[\s\S]*?return !chatNarrowHubExpanded/, "narrow Chatroom defaults the Hub pane to collapsed");
+assert.match(panelCss, /#chat-body\.chat-side-collapsed #chat-side\{display:none\}/, "collapsed member pane does not consume narrow-screen width");
 for (const name of ["compileFindPattern", "markFindMatches", "navigateFind", "preservedFindIndex", "toggleFindOption", "chatRefreshSearch", "chatSearchKeydown"]) {
   assert(panelJs.includes(`function ${name}`), `missing search behavior ${name}`);
 }

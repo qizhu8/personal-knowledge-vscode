@@ -37,8 +37,9 @@ try {
   assert.strictEqual(initial.rootId, "root_root");
   assert.deepStrictEqual(initial.projects.map(project => [project.name, project.systemKind]), [["Default Project", "default-project"]]);
   assert.deepStrictEqual(initial.threads.map(thread => [thread.name, thread.systemKind]), [["General", "general-thread"]]);
-  assert.deepStrictEqual(initial.recipes.map(recipe => recipe.name), ["Software Development", "Bug Fix", "UI Development"]);
-  assert(initial.recipes.every(recipe => recipe.scope === "global" && recipe.category === "Software Development" && recipe.systemKind === "built-in"));
+  assert.deepStrictEqual(initial.recipes.map(recipe => recipe.name), ["Software Development", "Bug Fix", "UI Development", "Reflection", "Use Recipe Library", "Publish Personal Knowledge VSIX", "PKM Tutorial"]);
+  assert(initial.recipes.every(recipe => recipe.scope === "global" && recipe.systemKind === "built-in"));
+  assert.strictEqual(initial.recipes.find(recipe => recipe.name === "PKM Tutorial").category, "Examples/PKM");
   assert.strictEqual(fs.statSync(file(directory)).mode & 0o777, 0o600);
   initial.projects[0].name = "caller mutation";
   assert.strictEqual(store.list().projects[0].name, "Default Project");
@@ -101,11 +102,63 @@ try {
   assert.strictEqual(updatedRecipe.snapshot.storeVersion, 7);
   assert.strictEqual(updatedRecipe.snapshot.recipes.find(candidate => candidate.recipeId === createdGlobalRecipe.recipeId).revision, 2);
   assert.strictEqual(store.updateRecipe(command("update-global-recipe", 0), createdGlobalRecipe.recipeId, {}).replayed, true);
+  const trashedRecipe = store.moveRecipeToTrash(command("trash-daily-recipe", 7), createdRecipe.recipeId);
+  assert.strictEqual(trashedRecipe.snapshot.storeVersion, 8);
+  assert(!trashedRecipe.snapshot.recipes.some(candidate => candidate.recipeId === createdRecipe.recipeId));
+  assert.strictEqual(trashedRecipe.snapshot.recipeTrash[0].recipeId, createdRecipe.recipeId);
+  assert.strictEqual(store.moveRecipeToTrash(command("trash-daily-recipe", 0), createdRecipe.recipeId).replayed, true);
+  const restoredRecipe = store.restoreRecipeFromTrash(command("restore-daily-recipe", 8), createdRecipe.recipeId);
+  assert.strictEqual(restoredRecipe.snapshot.storeVersion, 9);
+  assert(restoredRecipe.snapshot.recipes.some(candidate => candidate.recipeId === createdRecipe.recipeId));
+  assert.strictEqual(restoredRecipe.snapshot.recipeTrash.length, 0);
+  store.moveRecipeToTrash(command("retrash-daily-recipe", 9), createdRecipe.recipeId);
+  const deletedRecipe = store.deleteRecipeFromTrash(command("delete-daily-recipe", 10), createdRecipe.recipeId);
+  assert.strictEqual(deletedRecipe.snapshot.storeVersion, 11);
+  assert(!deletedRecipe.snapshot.recipes.some(candidate => candidate.recipeId === createdRecipe.recipeId));
+  assert.strictEqual(deletedRecipe.snapshot.recipeTrash.length, 0);
+  assert.strictEqual(store.deleteRecipeFromTrash(command("delete-daily-recipe", 0), createdRecipe.recipeId).replayed, true);
+
+  const importDirectory = temporary();
+  const importStore = new ProjectStore(importDirectory, ids("import-root", "forked-copy"));
+  const remoteRecipe = {
+    ...createdGlobalRecipe, recipeId: "recipe_remote", scope: "project", projectId: "remote-project",
+    name: "Remote Release", revision: 7,
+  };
+  const directImport = importStore.importRecipe(command("direct-import", 1), remoteRecipe, {
+    kind: "direct-sync", sourceKey: "remote-machine/overwrite", preserveIdentity: true,
+  });
+  const directRecipe = directImport.snapshot.recipes.find(candidate => candidate.recipeId === "recipe_remote");
+  assert(directRecipe, "Direct Sync must persist a transferred Recipe");
+  assert.strictEqual(directRecipe.scope, "global", "portable imports must not retain a dangling remote Project ID");
+  assert.deepStrictEqual(directRecipe.origin, {
+    kind: "direct-sync", sourceRecipeId: "recipe_remote", sourceKey: "remote-machine/overwrite",
+    sourceRevision: 7, sourceScope: "project",
+  });
+  const directUpdate = importStore.importRecipe(command("direct-update", 2), { ...remoteRecipe, name: "Remote Release v2", revision: 8 }, {
+    kind: "direct-sync", sourceKey: "remote-machine/overwrite", preserveIdentity: true,
+  });
+  assert.strictEqual(directUpdate.entityId, "recipe_remote");
+  assert.strictEqual(directUpdate.snapshot.recipes.find(candidate => candidate.recipeId === "recipe_remote").revision, 2);
+  assert.strictEqual(directUpdate.snapshot.recipes.find(candidate => candidate.recipeId === "recipe_remote").name, "Remote Release v2");
+  assert.throws(() => importStore.importRecipe(command("bad-digest", 3), { ...remoteRecipe, executableDigest: "bad" }, {
+    kind: "direct-sync", sourceKey: "other/overwrite", preserveIdentity: true,
+  }), value => value instanceof ProjectModelError && value.code === "recipe-import-digest-invalid");
+  assert.strictEqual(importStore.list().storeVersion, 3, "rejected imports must not mutate the Project store");
+  const forked = importStore.importRecipe(command("subscription-fork", 3), remoteRecipe, {
+    kind: "subscription-fork", sourceKey: "alice@host-a/Release Broker/recipe_remote.json",
+    preserveIdentity: false, rejectExisting: true, brokerName: "Release Broker", publisherUser: "alice", publisherHost: "host-a",
+  });
+  assert.strictEqual(forked.entityId, "recipe_forked-copy");
+  assert.strictEqual(forked.snapshot.recipes.find(candidate => candidate.recipeId === forked.entityId).origin.brokerName, "Release Broker");
+  assert.throws(() => importStore.importRecipe(command("duplicate-fork", 4), remoteRecipe, {
+    kind: "subscription-fork", sourceKey: "alice@host-a/Release Broker/recipe_remote.json",
+    preserveIdentity: false, rejectExisting: true,
+  }), value => value instanceof ProjectModelError && value.code === "recipe-import-conflict");
 
   const legacyDirectory = temporary();
   new ProjectStore(legacyDirectory, ids("legacy-root")).list();
   const legacy = read(legacyDirectory); delete legacy.payload.state.recipes; write(legacyDirectory, resign(legacy));
-  assert.deepStrictEqual(new ProjectStore(legacyDirectory).list().recipes.map(recipe => recipe.name), ["Software Development", "Bug Fix", "UI Development"]);
+  assert.deepStrictEqual(new ProjectStore(legacyDirectory).list().recipes.map(recipe => recipe.name), ["Software Development", "Bug Fix", "UI Development", "Reflection", "Use Recipe Library", "Publish Personal Knowledge VSIX", "PKM Tutorial"]);
 
   const malformedDirectory = temporary();
   fs.mkdirSync(malformedDirectory, { recursive: true });
