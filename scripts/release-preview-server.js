@@ -10,8 +10,8 @@ const port = Number(process.env.PORT || 4178);
 const demoMcp = {
   installed: true,
   current: true,
-  installedVersion: "3.0.1",
-  expectedVersion: "3.0.1",
+  installedVersion: "3.1.0",
+  expectedVersion: "3.1.0",
   knowledgeVersion: "1.0.0",
   chatVersion: "2.3.1",
   installedKnowledgeVersion: "1.0.0",
@@ -384,7 +384,7 @@ function panelHtml(view) {
     "%%NOTES_BASE%%": "/demo/notes", "%%CODICON_CSS%%": "/codicon.css", "%%HLJS_CSS%%": "/hljs.css", "%%KATEX_CSS%%": "/katex.css",
     "%%MARKED_SRC%%": "/marked.umd.js", "%%HLJS_SRC%%": "/hljs.js", "%%KATEX_SRC%%": "/katex.js",
     "%%CYTOSCAPE_SRC%%": "/cytoscape.js", "%%MERMAID_SRC%%": "/mermaid.js", "%%FORCEGRAPH3D_SRC%%": "/forcegraph3d.js",
-    "%%PANEL_CSS%%": "/panel.css", "%%PANEL_JS%%": "/panel.js", "%%PKM_VERSION%%": "3.0.1",
+    "%%PANEL_CSS%%": "/panel.css", "%%PANEL_JS%%": "/panel.js", "%%PKM_VERSION%%": "3.1.0",
     "%%I18N_PAYLOAD_B64%%": Buffer.from(JSON.stringify({ setting: "en", resolved: "en", locales: localeManifest.locales, catalogs }), "utf8").toString("base64"),
   };
   for (const [token, value] of Object.entries(replacements)) html = html.split(token).join(value);
