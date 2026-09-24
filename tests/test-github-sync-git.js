@@ -54,6 +54,8 @@ const run = (cwd, args) => execFileSync("git", args, { cwd, encoding: "utf8" }).
     assert.strictEqual(first.changed, true);
     const verify = path.join(root, "verify");
     run(root, ["clone", "--branch", "main", remote, verify]);
+    run(verify, ["config", "user.name", "Remote Test"]);
+    run(verify, ["config", "user.email", "remote@example.com"]);
     assert.strictEqual(fs.readFileSync(path.join(verify, "README.md"), "utf8"), "keep me\n");
     assert.strictEqual(fs.readFileSync(path.join(verify, "skills", "Public", "One.md"), "utf8"), "public\n");
     assert.strictEqual(fs.readFileSync(path.join(verify, "skills", "Private", "Two.md"), "utf8"), "private\n");
@@ -127,8 +129,6 @@ const run = (cwd, args) => execFileSync("git", args, { cwd, encoding: "utf8" }).
 
     fs.writeFileSync(path.join(verify, "REMOTE.md"), "remote addition\n");
     run(verify, ["add", "REMOTE.md"]);
-    run(verify, ["config", "user.name", "Remote Test"]);
-    run(verify, ["config", "user.email", "remote@example.com"]);
     run(verify, ["commit", "-m", "remote fast-forward"]);
     run(verify, ["push"]);
     const fastForward = await syncGitHubTarget(target, catalog, path.join(root, "checkouts"));
@@ -161,6 +161,8 @@ const run = (cwd, args) => execFileSync("git", args, { cwd, encoding: "utf8" }).
     );
 
     const checkout = path.join(root, "checkouts", target.id, "repository");
+    run(checkout, ["config", "user.name", "Local Test"]);
+    run(checkout, ["config", "user.email", "local@example.com"]);
     fs.writeFileSync(path.join(checkout, "DIRTY.md"), "dirty\n");
     await assert.rejects(() => syncGitHubTarget(target, catalog, path.join(root, "checkouts")), /uncommitted changes/);
     fs.rmSync(path.join(checkout, "DIRTY.md"));
