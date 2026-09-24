@@ -15,6 +15,7 @@ function canonical(value) {
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-skill-mcp-"));
 try {
   const source = fs.readFileSync(path.join(__dirname, "..", "src", "mcp.ts"), "utf8");
+  assert(source.includes("fastmcp>=2.0.0,<4.0.0"), "generated MCP requirements must exclude incompatible FastMCP major versions");
   const match = /fs\.writeFileSync\(serverPy, `([\s\S]*?)`\);\n\n  fs\.writeFileSync\(reqTxt/.exec(source);
   assert(match, "could not extract generated unified MCP server template");
   const store = path.join(root, "store");
