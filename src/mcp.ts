@@ -1563,7 +1563,7 @@ if __name__ == "__main__":
     mcp.run()
 `);
 
-  fs.writeFileSync(reqTxt, "fastmcp>=2.0.0\nuone-prompt-manager==0.1.0\nwebsockets>=12.0\nPyYAML>=6\n");
+  fs.writeFileSync(reqTxt, "fastmcp>=2.0.0,<4.0.0\nuone-prompt-manager==0.1.0\nwebsockets>=12.0\nPyYAML>=6\n");
   fs.rmSync(path.join(mcpDir, "chat_requirements.txt"), { force: true });
 
   const configSnippet = JSON.stringify({

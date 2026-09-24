@@ -67,7 +67,7 @@ jobs:
 
       - name: Install Python test dependencies
         if: inputs.mode == 'publish'
-        run: python -m pip install "fastmcp>=2.0.0" "uone-prompt-manager==0.1.0" "websockets>=12.0"
+        run: python -m pip install "fastmcp>=2.0.0,<4.0.0" "uone-prompt-manager==0.1.0" "websockets>=12.0"
 
       - name: Build and validate
         if: inputs.mode == 'publish'

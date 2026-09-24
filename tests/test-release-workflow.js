@@ -9,6 +9,8 @@ for (const action of ["actions/checkout@v7", "actions/setup-node@v7", "actions/s
   assert(workflow.includes(`uses: ${action}`), `release workflow must use ${action}`);
 }
 assert(!workflow.includes("azure/login@v2"), "release workflow must not regress to the Node 20 Azure Login action");
+assert(workflow.includes('"fastmcp>=2.0.0,<4.0.0"'),
+  "release validation must exclude incompatible FastMCP major versions");
 
 const packageStep = workflow.indexOf("- name: Package VSIX");
 const verifyStep = workflow.indexOf("- name: Verify VSIX metadata and boundaries");
