@@ -1,4 +1,55 @@
 // ── Tabs ──────────────────────────────────────────────────────────────────
+const cachedKnowledgeTabs = new Set(['skills','notes','papers','prompts','packages','scripts']);
+const knowledgeTabViewCache = new Map();
+
+function detachChildren(element) {
+  const fragment = document.createDocumentFragment();
+  while (element?.firstChild) fragment.appendChild(element.firstChild);
+  return fragment;
+}
+
+function stashKnowledgeTabView(tab) {
+  if (!cachedKnowledgeTabs.has(tab)) return;
+  if (state.filter !== 'all' || state.search) {
+    knowledgeTabViewCache.delete(tab);
+    return;
+  }
+  const list = document.getElementById('item-list');
+  const filters = document.getElementById('sidebar-filters');
+  const trash = document.getElementById('knowledge-trash-dock');
+  if (!list || !filters || !trash || !list.childNodes.length) return;
+  knowledgeTabViewCache.set(tab, {
+    items: state.items,
+    folders: state.folders,
+    subscriptionGroups: state.subscriptionGroups,
+    knowledgeTrash: state.knowledgeTrash,
+    privateTopLevels: state.privateTopLevels,
+    brokerSharedFolders: state.brokerSharedFolders,
+    list: detachChildren(list),
+    filters: detachChildren(filters),
+    trash: detachChildren(trash),
+  });
+}
+
+function restoreKnowledgeTabView(tab) {
+  const cached = knowledgeTabViewCache.get(tab);
+  if (!cached) return false;
+  state.items = cached.items;
+  state.folders = cached.folders;
+  state.subscriptionGroups = cached.subscriptionGroups;
+  state.knowledgeTrash = cached.knowledgeTrash;
+  state.privateTopLevels = cached.privateTopLevels;
+  state.brokerSharedFolders = cached.brokerSharedFolders;
+  document.getElementById('item-list')?.replaceChildren(cached.list);
+  document.getElementById('sidebar-filters')?.replaceChildren(cached.filters);
+  document.getElementById('knowledge-trash-dock')?.replaceChildren(cached.trash);
+  return true;
+}
+
+function invalidateKnowledgeTabView(tab) {
+  if (cachedKnowledgeTabs.has(tab)) knowledgeTabViewCache.delete(tab);
+}
+
 function paintWorkspaceNavigation() {
   state.workspace = workspaceForTab(state.tab);
   document.querySelectorAll('.workspace-button').forEach(button => button.classList.toggle('active', button.dataset.workspace === state.workspace));
@@ -15,12 +66,14 @@ document.querySelectorAll('.workspace-button').forEach(button => button.addEvent
 }));
 document.querySelectorAll('.tab').forEach(t =>
   t.addEventListener('click', () => {
+    stashKnowledgeTabView(state.tab);
     if (state.tab === 'chatroom' && t.dataset.tab !== 'chatroom') chatCaptureDraft();
     if (state.tab === 'servers' && t.dataset.tab !== 'servers') stopSubscribedServerMonitoring();
     state.tab = t.dataset.tab; state.filter = 'all'; state.search = '';
     currentDetail = null;
     currentDetailRequest = null;
     state.workspace = workspaceForTab(state.tab);
+    agentSessionSetActive(['agentSessions','agentSnapshots'].includes(state.tab));
     const persisted = vscode.getState() || {};
     vscode.setState({ ...persisted, tab: state.tab, workspace: state.workspace, workspaceRoutes: { ...(persisted.workspaceRoutes || {}), [state.workspace]: state.tab } });
     document.getElementById('searchbox').value = '';
@@ -35,7 +88,7 @@ document.querySelectorAll('.tab').forEach(t =>
     renderEmptyDetail();
     closePaperViews();
     updatePaperChrome();
-    const fullWidthTab = ['mcp', 'skillRouter', 'environments', 'servers', 'subscriptions', 'agentSessions', 'recipes', 'projects', 'chatroom'].includes(state.tab);
+    const fullWidthTab = ['mcp', 'skillRouter', 'environments', 'servers', 'subscriptions', 'githubSync', 'agentSessions', 'agentSnapshots', 'recipes', 'projects', 'chatroom'].includes(state.tab);
     document.getElementById('layout-resizer').style.display = fullWidthTab ? 'none' : '';
     document.getElementById('sidebar-toggle').style.display = fullWidthTab ? 'none' : '';
     document.getElementById('content-toolbar').style.display = fullWidthTab ? 'none' : '';
@@ -43,16 +96,20 @@ document.querySelectorAll('.tab').forEach(t =>
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
       renderAgentSessions();
+    } else if (state.tab === 'agentSnapshots') {
+      document.getElementById('sidebar').style.display = 'none';
+      document.getElementById('searchbox').style.display = 'none';
+      renderAgentSnapshots();
     } else if (state.tab === 'recipes') {
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
       renderGlobalRecipes();
-      ask('projectState', {});
+      if (!projectSnapshot || projectSnapshotDirty) ask('projectState', {});
     } else if (state.tab === 'projects') {
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
       renderProjects();
-      ask('projectState', {});
+      if (!projectSnapshot || projectSnapshotDirty) ask('projectState', {});
     } else if (state.tab === 'mcp') {
       // Hide sidebar for MCP full-width pane
       document.getElementById('sidebar').style.display = 'none';
@@ -80,6 +137,11 @@ document.querySelectorAll('.tab').forEach(t =>
       document.getElementById('searchbox').style.display = 'none';
       renderSubscriptionLoading();
       ask('subscriptionState', {});
+    } else if (state.tab === 'githubSync') {
+      document.getElementById('sidebar').style.display = 'none';
+      document.getElementById('searchbox').style.display = 'none';
+      renderGitHubSyncLoading();
+      ask('githubSyncState', {});
     } else if (state.tab === 'chatroom') {
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
@@ -91,7 +153,7 @@ document.querySelectorAll('.tab').forEach(t =>
       applyMainSidebarState();
       if (state.tab === 'papers') { ask('paperFacets', {}); ask('paperGroups', {}); }
       if (state.tab === 'notes') { ask('noteFolderPins', {}); }
-      ask('list', { tab: state.tab, filter: 'all', q: '' });
+      if (!restoreKnowledgeTabView(state.tab)) ask('list', { tab: state.tab, filter: 'all', q: '' });
     }
   })
 );
@@ -546,8 +608,11 @@ function toggleNotePin(slug, pinned) {
 function buildCatTree(items, getCat, fallback) {
   const root = { folders: {}, items: [] };
   (items || []).forEach(it => {
-    const cat = (getCat(it) || '').trim();
-    const segs = cat ? cat.split('/').map(s => s.trim()).filter(Boolean) : [fallback];
+    const category = getCat(it);
+    const segs = Array.isArray(category)
+      ? category.map(segment => String(segment || '').trim()).filter(Boolean)
+      : String(category || '').split('/').map(segment => segment.trim()).filter(Boolean);
+    if (!segs.length) segs.push(fallback);
     let node = root;
     for (const seg of segs) {
       node.folders[seg] = node.folders[seg] || { folders: {}, items: [] };
@@ -572,6 +637,14 @@ function countTreeLeaves(node) {
   let n = node.items.length;
   for (const k in node.folders) n += countTreeLeaves(node.folders[k]);
   return n;
+}
+
+function treeFolderPathMatches(node, path, query) {
+  const needle = String(query || '').toLocaleLowerCase();
+  return Object.entries(node.folders).some(([name, child]) => {
+    const childPath = path.concat(name);
+    return childPath.join('/').toLocaleLowerCase().includes(needle) || treeFolderPathMatches(child, childPath, needle);
+  });
 }
 
 function expandedCategoryKey(path, area = '') {
@@ -609,7 +682,7 @@ function revealRefreshedTreeItems(tab, previousItems, nextItems, refresh) {
   return true;
 }
 
-function renderCatTree(node, path, depth, renderLeaf, q, folderAttr, order) {
+function renderCatTree(node, path, depth, renderLeaf, q, folderAttr, order, options = {}) {
   const isFP = (order && order.isFolderPinned) ? order.isFolderPinned : null;
   const folderKeys = Object.keys(node.folders).sort((a, b) => {
     if (path.length === 0) {
@@ -625,22 +698,28 @@ function renderCatTree(node, path, depth, renderLeaf, q, folderAttr, order) {
   for (let index = 0; index < folderKeys.length; index++) {
     const name = folderKeys[index];
     const child = node.folders[name];
-    if (q && countTreeLeaves(child) === 0) continue;
+    const folderPath = path.concat(name).join('/');
+    if (q && countTreeLeaves(child) === 0
+      && !folderPath.toLocaleLowerCase().includes(String(q).toLocaleLowerCase())
+      && !treeFolderPathMatches(child, path.concat(name), q)) continue;
     if (path.length === 0 && privacyInherited([name]) && !folderKeys.slice(0, index).some(previous => privacyInherited([previous]))) html += privacyDivider();
     // Base64 key: safe inside HTML attrs and JS strings (no quotes/null/unicode issues)
-    const key = expandedCategoryKey(path.concat(name), state.tab);
-    const open = !!catExpanded[key];
+    const key = expandedCategoryKey(path.concat(name), options.area || state.tab);
+    const open = !!q || (Object.prototype.hasOwnProperty.call(catExpanded, key) ? !!catExpanded[key] : !!options.defaultOpen);
     const pad = 8 + depth * 12;
     const pinnedFolder = isFP && name !== '(uncategorized)' && isFP(path.concat(name));
     const addPath = name === '(uncategorized)' ? '' : path.concat(name).join('/');
+    const folderLabel = options.renderFolderLabel
+      ? options.renderFolderLabel(name, path.concat(name))
+      : `${pinnedFolder ? uiIcon('pinned') + ' ' : ''}${privacyLock(privacyInherited(path.concat(name)))}${name === '(uncategorized)' ? '<em style="opacity:.6">(uncategorized)</em>' : path.length === 0 ? folkDisplayName(name) : esc(name)}${brokerFolderMarker(name === '(uncategorized)' ? '' : path.concat(name).join('/'))}`;
     html += `<div class="tree-cat">
-      <div class="tree-cat-hdr${pinnedFolder ? ' cat-pinned' : ''}" style="padding-left:${pad}px" onclick="toggleCat('${key}')" title="${esc(name)}"${folderAttr ? folderAttr(child, name, path.concat(name)) : ''}>
+      <div class="tree-cat-hdr${pinnedFolder ? ' cat-pinned' : ''}" style="padding-left:${pad}px" onclick="toggleCat('${key}',this)" title="${esc(name)}" aria-expanded="${open}"${folderAttr ? folderAttr(child, name, path.concat(name)) : ''}>
         <span class="tree-cat-arrow">${uiIcon(open ? 'chevron-down' : 'chevron-right')}</span>
-        <span class="tree-cat-label">${pinnedFolder ? uiIcon('pinned') + ' ' : ''}${privacyLock(privacyInherited(path.concat(name)))}${name === '(uncategorized)' ? '<em style="opacity:.6">(uncategorized)</em>' : path.length === 0 ? folkDisplayName(name) : esc(name)}</span>${brokerFolderMarker(name === '(uncategorized)' ? '' : path.concat(name).join('/'))}
+        <span class="tree-cat-label">${folderLabel}</span>
         <span class="tree-cat-count">${countTreeLeaves(child)}</span>
         ${['skills', 'notes', 'papers'].includes(state.tab) ? `<button class="tree-cat-add" type="button" title="Add inside ${esc(name)}" aria-label="Add inside ${esc(name)}" onclick="openCatFolderAddMenu(event,${JSON.stringify(state.tab).replace(/"/g, '&quot;')},${JSON.stringify(addPath).replace(/"/g, '&quot;')})">${uiIcon('add')}</button>` : ''}
       </div>
-      <div class="tree-cat-body" style="${open ? '' : 'display:none'}">${renderCatTree(child, path.concat(name), depth + 1, renderLeaf, q, folderAttr, order)}</div>
+      <div class="tree-cat-body" style="${open ? '' : 'display:none'}">${renderCatTree(child, path.concat(name), depth + 1, renderLeaf, q, folderAttr, order, options)}</div>
     </div>`;
   }
   let leaves = node.items;
@@ -1850,6 +1929,7 @@ function buildTypeSections(content) {
     { id: 'prompts',  label: 'Prompts',  icon: uiIcon('comment-discussion'), items: content.prompts  || [] },
     { id: 'scripts',  label: 'Scripts',  icon: uiIcon('file-code'), items: content.scripts  || [] },
     { id: 'packages', label: 'Packages', icon: uiIcon('package'), items: content.packages || [] },
+    { id: 'recipes',  label: 'Recipes',  icon: uiIcon('list-tree'), items: content.recipes  || [] },
   ];
   const wrap = document.getElementById('sync-type-sections');
   wrap.innerHTML = TYPES.map(t => {
@@ -1977,7 +2057,7 @@ function doCreateSync() {
     const all     = [...document.querySelectorAll(`#ct-list-${type} input[data-item]`)];
     return checked.length === all.length ? [] : checked.map(b => b.dataset.item);
   };
-  const contentTypes = ['skills','notes','papers','prompts','scripts','packages']
+  const contentTypes = ['skills','notes','papers','prompts','scripts','packages','recipes']
     .filter(t => document.querySelectorAll(`#ct-list-${t} input[data-item]:checked`).length > 0);
   if (!contentTypes.length) {
     document.getElementById('sm-cred-result').innerHTML = '<span style="color:#f87171;font-size:12px">Select at least one item to share (check items under a section).</span>';
@@ -1990,6 +2070,7 @@ function doCreateSync() {
     prompts:  getSelected('prompts'),
     scripts:  getSelected('scripts'),
     packages: getSelected('packages'),
+    recipes:  getSelected('recipes'),
   };
   const expiry = parseInt(document.getElementById('sm-expiry').value);
   const port   = parseInt(document.getElementById('sm-port').value) || 19878;
@@ -2032,8 +2113,18 @@ function toggleJoinGroup() {
 }
 
 // ── Category tree ─────────────────────────────────────────────────────────
-function toggleCat(cat) {
-  catExpanded[cat] = !catExpanded[cat];
+function toggleCat(cat, header) {
+  const body = header?.nextElementSibling;
+  const currentlyOpen = body ? body.style.display !== 'none' : !!catExpanded[cat];
+  catExpanded[cat] = !currentlyOpen;
+  if (body && ['agentSessions', 'recipes'].includes(state.tab)) {
+    body.style.display = catExpanded[cat] ? '' : 'none';
+    header.setAttribute('aria-expanded', String(catExpanded[cat]));
+    const icon = header.querySelector('.tree-cat-arrow .codicon');
+    icon?.classList.toggle('codicon-chevron-down', catExpanded[cat]);
+    icon?.classList.toggle('codicon-chevron-right', !catExpanded[cat]);
+    return;
+  }
   if (catExpanded[cat] && ['skills', 'notes', 'papers', 'scripts'].includes(state.tab)) {
     try {
       const encodedPath = cat.slice(cat.indexOf(':') + 1);
@@ -2042,7 +2133,6 @@ function toggleCat(cat) {
     } catch { /* malformed tree state still remains locally expandable */ }
   }
   if (state.tab === 'environments') renderEnvTree();
-  else if (state.tab === 'recipes') renderGlobalRecipes();
   else renderList();
 }
 
@@ -2178,10 +2268,11 @@ let paperGroupExpanded = {};   // group name -> expanded (default true)
 function togglePaperGroup(g) { paperGroupExpanded[g] = (paperGroupExpanded[g] === false); renderList(); }
 
 // Floating context menu (built dynamically)
-function showPaperMenu(x, y, items) {
+function showPaperMenu(x, y, items, className = '') {
   closePaperMenu();
   const m = document.createElement('div');
   m.id = 'paper-ctx';
+  m.className = className;
   const visibleItems = items.filter((item, index, all) => !item.sep || (index > 0 && index < all.length - 1 && !all[index - 1].sep));
   for (const it of visibleItems) {
     if (it.sep) { const d = document.createElement('div'); d.className = 'pctx-sep'; m.appendChild(d); continue; }
@@ -2900,4 +2991,3 @@ function toggleAllConclusions() {
     });
   });
 }
-

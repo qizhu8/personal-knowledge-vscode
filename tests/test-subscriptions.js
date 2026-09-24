@@ -9,6 +9,7 @@ const filestore = require("../dist/filestore");
 const storage = require("../dist/storage");
 const servers = require("../dist/servers");
 const privacy = require("../dist/content-privacy");
+const { ProjectStore } = require("../dist/workflows/project-store");
 const { SharedMarketManager, parseShareMagicLink, parseSubscribedContentPath, verifyShareSummary } = require("../dist/subscriptions");
 
 class MemorySecretStorage {
@@ -33,6 +34,20 @@ async function waitUntil(predicate, timeout = 4000) {
     await new Promise(resolve => setTimeout(resolve, 50));
   }
   throw new Error("Condition timed out");
+}
+
+async function testMqttRefreshWaitsForActiveMutation() {
+  const manager = Object.create(SharedMarketManager.prototype);
+  manager.stateMutationDepth = 1;
+  manager.mqttRefreshesInFlight = new Set();
+  let refreshes = 0;
+  manager.refresh = async () => { refreshes++; };
+  manager.queueMqttRefresh("subscription");
+  await new Promise(resolve => setTimeout(resolve, 25));
+  assert.strictEqual(refreshes, 0, "MQTT refresh must not run inside an unrelated state mutation");
+  manager.stateMutationDepth = 0;
+  await waitUntil(() => refreshes === 1);
+  assert.strictEqual(manager.mqttRefreshesInFlight.size, 0);
 }
 
 function subscriberProof(statePath, shareId) {
@@ -66,8 +81,57 @@ function testMalformedStateRecovery() {
   }
 }
 
+async function testGitHubBranchMount() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-github-mount-test-"));
+  const manager = new SharedMarketManager(root, path.join(__dirname, "..", "dist", "subscription-gateway.js"), "GitHub Mount Test");
+  try {
+    const first = await manager.mountGitHubBranch({
+      credentialTargetId: "team-credential", name: "Team Knowledge", repository: "https://github.com/example/knowledge.git", branch: "main",
+      commit: "1".repeat(40), account: "team-user",
+      selectedPaths: ["notes/Research/Status.md"], selectedFolders: ["skills/Coding", "packages/tools"],
+      files: [
+        { path: "skills/Coding/Review.md", content: Buffer.from("# Review\nMounted skill\n") },
+        { path: "notes/Research/Status.md", content: Buffer.from("# Status\nMounted note\n") },
+        { path: "packages/tools/README.md", content: Buffer.from("# Tools\n") },
+        { path: "packages/tools/src/tool.js", content: Buffer.from("export const value = 1;\n") },
+      ],
+    }, "Remote Team");
+    assert.strictEqual(first.source.type, "github");
+    assert.strictEqual(first.source.targetId, undefined, "direct subscriptions do not require a GitHub Sync target");
+    assert.strictEqual(first.source.credentialTargetId, "team-credential");
+    assert.deepStrictEqual(first.source.selectedFolders, ["skills/Coding", "packages/tools"]);
+    assert.strictEqual(first.publisherHost, "github.com");
+    assert.deepStrictEqual(first.counts, { skills: 1, notes: 1, packages: 2 });
+    const skills = manager.cachedGroups("skills");
+    assert.strictEqual(skills.length, 1);
+    assert.strictEqual(skills[0].alias, "Remote Team");
+    const detail = manager.cachedDetail(skills[0].items[0].key);
+    assert.match(detail.content, /Mounted skill/);
+    assert.strictEqual(detail.provenance.commit, "1".repeat(40));
+    const packageGroup = manager.cachedGroups("packages")[0];
+    const packageSource = manager.forkSource(packageGroup.items[0].key);
+    assert.deepStrictEqual(packageSource.package.files.map(file => file.path).sort(), ["README.md", "src/tool.js"]);
+
+    const refreshed = await manager.mountGitHubBranch({
+      credentialTargetId: "team-credential", name: "Team Knowledge", repository: "https://github.com/example/knowledge.git", branch: "main",
+      commit: "2".repeat(40), account: "team-user",
+      selectedPaths: ["notes/Research/Status.md"], selectedFolders: ["skills/Coding", "packages/tools"],
+      files: [{ path: "notes/Research/Status.md", content: Buffer.from("# Status\nUpdated note\n") }],
+    }, "Remote Team");
+    assert.strictEqual(refreshed.id, first.id, "refresh must retain the mounted subscription identity");
+    assert.strictEqual(refreshed.revision, 2);
+    assert.strictEqual(manager.cachedGroups("skills").length, 0, "refresh must remove files deleted from the remote commit");
+    assert.match(manager.cachedDetail(manager.cachedGroups("notes")[0].items[0].key).content, /Updated note/);
+  } finally {
+    manager.dispose();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
 async function main() {
   testMalformedStateRecovery();
+  await testGitHubBranchMount();
+  await testMqttRefreshWaitsForActiveMutation();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-subscriptions-test-"));
   const store = path.join(root, "store");
   const state = path.join(root, "state");
@@ -87,6 +151,14 @@ async function main() {
   filestore.noteUpsert({ slug: "", title: "Shared Note", category: "Team", type: "general", tags: ["shared"], content: "UNIQUE SUBSCRIBED NOTE BODY" });
   storage.promptImport([{ project: "Ads", task: "Review", version: "v1", file: "prompt.md", content: "UNIQUE SUBSCRIBED PROMPT BODY" }]);
   storage.scriptImport([{ category: "Team", file: "check.script", content: "UNIQUE SUBSCRIBED SCRIPT BODY" }]);
+  const projectStore = new ProjectStore(path.join(store, ".pkm", "state"), () => "shared-recipe-id");
+  const projectSnapshot = projectStore.list();
+  const recipeResult = projectStore.createRecipe({
+    commandId: "create-shared-recipe", fingerprint: "create-shared-recipe",
+    expectedStoreVersion: projectSnapshot.storeVersion,
+  }, { kind: "global" }, "Shared Release Recipe", "Operations/Sharing");
+  const sharedRecipe = recipeResult.snapshot.recipes.find(recipe => recipe.recipeId === recipeResult.entityId);
+  assert(sharedRecipe, "test fixture must create a canonical Recipe Library entry");
   assert.strictEqual(filestore.noteList(undefined, 10).find(note => note.title === "Indexed Note").content, undefined, "noteList must remain metadata-only by default");
   assert.strictEqual(filestore.noteList(undefined, 10, true).find(note => note.title === "Indexed Note").content, "INDEXED NOTE BODY", "internal link indexing may opt into parsed content");
   fs.mkdirSync(path.join(store, "packages", "shared-tool", "src"), { recursive: true });
@@ -104,13 +176,13 @@ async function main() {
   const port = await freePort();
   try {
     await manager.configure({ enabled: false, port, advertisedHost: "127.0.0.1", displayName: "PKM Test Node" });
-    const sharedContentTypes = ["skills", "notes", "prompts", "scripts", "packages", "servers"];
-    const sharedSelection = { skills: ["Shared Skill"], notes: ["Team/Shared Note"], prompts: ["Ads/Review"], scripts: ["Team/check.script"], packages: ["shared-tool"], servers: ["sample-api"] };
+    const sharedContentTypes = ["skills", "notes", "prompts", "scripts", "packages", "servers", "recipes"];
+    const sharedSelection = { skills: ["Shared Skill"], notes: ["Team/Shared Note"], prompts: ["Ads/Review"], scripts: ["Team/check.script"], packages: ["shared-tool"], servers: ["sample-api"], recipes: [sharedRecipe.recipeId] };
     const share = await manager.upsertShare({ name: "AAGL Context", visibility: "public", contentTypes: sharedContentTypes, selected: sharedSelection });
     assert.strictEqual(share.revision, 1);
     assert.match(share.revisionLabel, /^\d{8}\.r1$/, "first Broker snapshot of a day must use YYYYMMDD.r1");
     assert.strictEqual(share.summary.snapshotBytes, fs.statSync(share.snapshotPath).size);
-    assert.deepStrictEqual(share.summary.counts, { skills: 1, notes: 1, prompts: 1, scripts: 1, packages: 1, servers: 1 });
+    assert.deepStrictEqual(share.summary.counts, { skills: 1, notes: 1, prompts: 1, scripts: 1, packages: 1, servers: 1, recipes: 1 });
     assert(share.summary.topics.includes("Research/AAGL"));
     assert(share.summary.tags.includes("aagl"));
     assert.strictEqual(share.summary.metadataOnly, true);
@@ -166,6 +238,7 @@ async function main() {
     assert(fs.existsSync(cached), "background Sync must populate the machine-local subscription cache");
     assert.deepStrictEqual(fs.readdirSync(path.join(state, "downloads")), [], "completed Sync must remove temporary downloads");
     assert(JSON.parse(fs.readFileSync(cached, "utf8")).skills[0].content.includes("SECRET BODY"));
+    assert.strictEqual(JSON.parse(fs.readFileSync(cached, "utf8")).recipes[0].executableDigest, sharedRecipe.executableDigest);
     const cachedSkill = path.join(state, "cache", subscribed.nodeId, subscribed.shareId, "content", "skills", "Research", "AAGL", "Shared Skill.md");
     assert(fs.existsSync(cachedSkill), "subscribed Skills must be materialized as isolated Markdown files");
     const provenance = JSON.parse(fs.readFileSync(`${cachedSkill}.pkm-source.json`, "utf8"));
@@ -196,6 +269,7 @@ async function main() {
       ["prompts", "UNIQUE SUBSCRIBED PROMPT", "Ads/Review/v1/prompt.md"],
       ["scripts", "UNIQUE SUBSCRIBED SCRIPT", "Team/check.script"],
       ["servers", "Sample API", "sample-api/server.link.json"],
+      ["recipes", "Shared Release Recipe", `Operations/Sharing/${sharedRecipe.recipeId}.json`],
     ];
     for (const [type, query, expectedPath] of searchableTypes) {
       const group = manager.cachedGroups(type, query)[0];
@@ -212,6 +286,14 @@ async function main() {
     assert.strictEqual(serverGroups[0].items.length, 1, "each subscribed Server must aggregate into one link row");
     assert.strictEqual(serverGroups[0].items[0].title, "Sample API");
     assert.strictEqual(serverGroups[0].items[0].path, "sample-api/server.link.json");
+    const recipeGroups = manager.cachedGroups("recipes");
+    assert.strictEqual(recipeGroups[0].items[0].title, "Shared Release Recipe");
+    assert.strictEqual(JSON.parse(manager.cachedDetail(recipeGroups[0].items[0].key).content).recipeId, sharedRecipe.recipeId);
+    const recipeFork = manager.forkSource(recipeGroups[0].items[0].key);
+    assert.strictEqual(recipeFork.type, "recipes");
+    assert.strictEqual(recipeFork.brokerName, "AAGL Context");
+    assert.strictEqual(recipeFork.publisherUser, "alice");
+    assert.strictEqual(JSON.parse(recipeFork.content).executableDigest, sharedRecipe.executableDigest);
     assert.strictEqual(packageGroups[0].items.length, 1, "subscribed package files must aggregate into one package row");
     assert.strictEqual(packageGroups[0].items[0].title, "shared-tool");
     const packageFork = manager.forkSource(packageGroups[0].items[0].key);
@@ -393,6 +475,8 @@ async function main() {
 
     const protectedSubscription = await manager.subscribe(protectedLink, "Protected Alias", protectedSecret);
     assert.strictEqual(protectedSubscription.status, "current");
+    const protectedMqttClient = manager.mqttClients.get(protectedSubscription.nodeId);
+    protectedMqttClient.end(true);
     const rotated = await manager.rotateShareSecret(protectedShare.shareId, protectedControlPort);
     assert.notStrictEqual(rotated.secret, protectedSecret);
     const rotatedParts = rotated.secret.split(":");
@@ -409,6 +493,12 @@ async function main() {
         catch (error) { rotationProbe = String(error); return false; }
       });
     } catch { throw new Error(`Rotated Broker did not accept its new secret (${rotationProbe}).`); }
+    const rotatedSummaryPayload = Buffer.from(JSON.stringify(rotated.share.summary));
+    for (let duplicate = 0; duplicate < 3; duplicate++) protectedMqttClient.emit("message", mqttTopic, rotatedSummaryPayload);
+    await waitUntil(() => manager.snapshot.subscriptions.find(item => item.id === protectedSubscription.id)?.status === "offline");
+    protectedTelemetry = manager.snapshot.shares.find(item => item.shareId === protectedShare.shareId);
+    assert(!protectedTelemetry.automaticBlocks.some(block => block.ip === "127.0.0.1"),
+      "duplicate QoS 1 rotation notifications must coalesce into one failed old-secret refresh");
     await assert.rejects(manager.refresh(protectedSubscription.id, true), /secret proof|401|Broker/i, "rotated Broker secret must invalidate the subscriber's old secret");
     const refreshedProtected = await manager.subscribe(protectedLink, "Protected Alias", rotated.secret);
     assert.strictEqual(refreshedProtected.revision, rotated.share.revision, "new rotated secret must restore protected synchronization");

@@ -1,9 +1,13 @@
 import { createServer, Server, IncomingMessage, ServerResponse } from "http";
 import { networkInterfaces } from "os";
+import * as path from "path";
 import { randomBytes } from "crypto";
-import { skillList, skillGet, noteExport, paperList, paperGet } from "./filestore";
+import { getStorePath, skillList, skillGet, noteExport, paperList, paperGet } from "./filestore";
 import { promptExport, scriptExport, packageExport } from "./storage";
 import { serverExport } from "./servers";
+import { compileWorkflowDefinitionV1 } from "./workflow-contracts";
+import { RecipeRecord } from "./workflows/project-model";
+import { ProjectStore } from "./workflows/project-store";
 
 export interface SyncSelection {
   [contentType: string]: string[];
@@ -14,6 +18,7 @@ export interface SyncSelection {
   scripts: string[];
   packages: string[];
   servers: string[];
+  recipes: string[];
 }
 
 export interface SyncSession {
@@ -165,7 +170,20 @@ class SyncServer {
 export const syncServer = new SyncServer();
 
 export function emptySyncSelection(): SyncSelection {
-  return { skills: [], notes: [], papers: [], prompts: [], scripts: [], packages: [], servers: [] };
+  return { skills: [], notes: [], papers: [], prompts: [], scripts: [], packages: [], servers: [], recipes: [] };
+}
+
+export function recipeExport(selected: string[] = []): RecipeRecord[] {
+  const wanted = new Set(selected);
+  return new ProjectStore(path.join(getStorePath(), ".pkm", "state")).list().recipes
+    .filter(recipe => !wanted.size || wanted.has(recipe.recipeId))
+    .map(recipe => {
+      const compiled = compileWorkflowDefinitionV1(recipe.definition);
+      if (!compiled.ok || compiled.executableDigest !== recipe.executableDigest) {
+        throw new Error(`Recipe ${recipe.recipeId} has an invalid definition or executable digest.`);
+      }
+      return recipe;
+    });
 }
 
 export function buildSyncBundle(selection: SyncSelection, contentTypes: string[], from = process.env.USER ?? "uone"): any {
@@ -203,5 +221,6 @@ export function buildSyncBundle(selection: SyncSelection, contentTypes: string[]
     bundle.packages = selected.packages.length ? all.filter(pkg => selected.packages.includes(pkg.name)) : all;
   }
   if (types.includes("servers")) bundle.servers = serverExport(selected.servers);
+  if (types.includes("recipes")) bundle.recipes = recipeExport(selected.recipes);
   return bundle;
 }

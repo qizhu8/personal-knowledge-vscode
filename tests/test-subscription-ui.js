@@ -8,6 +8,8 @@ const html = fs.readFileSync(path.join(root, "src", "webview", "panel.html"), "u
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const panel = fs.readFileSync(path.join(root, "dist", "webview", "panel.js"), "utf8");
 const panelCss = fs.readFileSync(path.join(root, "dist", "webview", "panel.css"), "utf8");
+const subscriptionPanel = fs.readFileSync(path.join(root, "src", "webview", "panel", "45-subscriptions.js"), "utf8");
+const knowledgePanel = fs.readFileSync(path.join(root, "src", "webview", "panel", "20-knowledge.js"), "utf8");
 const extension = fs.readFileSync(path.join(root, "src", "extension.ts"), "utf8");
 const subscriptions = fs.readFileSync(path.join(root, "src", "subscriptions.ts"), "utf8");
 const materializer = fs.readFileSync(path.join(root, "src", "subscription-materialize-worker.ts"), "utf8");
@@ -119,12 +121,22 @@ assert.match(panel, /draft\?\.openTypes\?\.includes\(type\) \? 'open' : ''/);
 assert.doesNotMatch(panel, /included \|\| draft\?\.openTypes/);
 assert.match(panel, /Broker Settings/);
 assert.match(panel, /Shared Content/);
+assert.match(subscriptionPanel, /recipes:'Recipes'/, "Share Brokers must expose Recipe Library selection");
+assert.match(subscriptionPanel, /'servers','recipes'/, "Share Broker payloads must preserve selected Recipes");
+assert.match(knowledgePanel, /id: 'recipes',\s+label: 'Recipes'/, "Direct Sync must expose Recipe Library selection");
+assert.match(knowledgePanel, /'packages','recipes'/, "Direct Sync payloads must preserve selected Recipes");
+assert.match(extension, /const totalItems = \["skills", "notes", "papers", "prompts", "scripts", "packages", "recipes"\]/,
+	"Direct Sync receive progress must count transferred Recipes");
+assert.match(extension, /for \(const recipe of bundle\?\.recipes \?\? \[\]\)[\s\S]{0,700}store\.importRecipe[\s\S]{0,700}reportImported\("recipes"\)/,
+	"Direct Sync receiver must validate and import transferred Recipes");
+assert.match(extension, /source\.type === "recipes"[\s\S]{0,900}kind: "subscription-fork"[\s\S]{0,500}preserveIdentity: false/,
+	"subscribed Recipes must require an explicit fork into an independent local identity");
 assert.match(panel, /sub-tree-folder/);
 assert.match(panel, /item\.treePath \?\? item\.cat/);
 assert.match(panel, /draft\?\.selected\?\.\[type\] \?\? share\?\.selected\?\.\[type\] \?\? \[\]/);
 assert.match(panel, /draft\?\.folders\?\.\[type\] \?\? share\?\.folders\?\.\[type\] \?\? \[\]/);
 assert.match(panel, /\$\{selectedCount\} selected/);
-assert.match(panel, /subscriptionCaptureSelectionDraft\(\);\s*subscriptionData/);
+assert.match(panel, /subscriptionCaptureSelectionDraft\(\);[\s\S]{0,100}subscriptionCaptureGitHubDraft\(\);[\s\S]{0,100}subscriptionData/);
 assert.match(panel, /input\[data-sub-item="\$\{type\}"\],input\[data-sub-folder="\$\{type\}"\]/);
 assert.match(panel, /function subscriptionSyncFolderStates\(type\)/);
 assert.match(panel, /folder\.indeterminate = !folder\.checked && descendants\.some\(item => item\.checked\)/,
@@ -143,7 +155,7 @@ assert.match(panel, /Unlisted · Magic Link only/);
 assert.match(panel, /Discovery requires Account policy Open\. Network ACL, Account ACL, and Protection still control access/);
 assert.doesNotMatch(panel, /Public market|Link holders/);
 assert.match(panel, /a === '\(uncategorized\)' \|\| a === 'Ungrouped'/);
-assert.doesNotMatch(panel, /class="sub-tree-folder" open/);
+assert.doesNotMatch(subscriptionPanel, /class="sub-tree-folder" open/);
 assert.match(panel, /Include this folder and future files/);
 assert.match(panelCss, /\.sub-picker-grid\{grid-template-columns:1fr\}/);
 assert.match(panelCss, /\.sub-tree-folder\[open\]>summary::before/);

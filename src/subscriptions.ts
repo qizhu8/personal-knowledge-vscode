@@ -14,8 +14,8 @@ import { ChatRoomLock } from "./chat-room-lock";
 import { withCrossProcessLock, withCrossProcessLockSync } from "./cross-process-lock";
 import { stableUserPort } from "./user-service-ports";
 
-export type SharedContentType = "skills" | "notes" | "papers" | "prompts" | "scripts" | "packages" | "servers";
-export const SHARED_CONTENT_TYPES: SharedContentType[] = ["skills", "notes", "papers", "prompts", "scripts", "packages", "servers"];
+export type SharedContentType = "skills" | "notes" | "papers" | "prompts" | "scripts" | "packages" | "servers" | "recipes";
+export const SHARED_CONTENT_TYPES: SharedContentType[] = ["skills", "notes", "papers", "prompts", "scripts", "packages", "servers", "recipes"];
 
 export interface ShareSummary {
   shareId: string;
@@ -83,6 +83,19 @@ export interface SubscriptionRecord {
   lastUpdated?: string;
   status: "new" | "current" | "updating" | "offline" | "error";
   error?: string;
+  source?: { type: "github"; targetId?: string; credentialTargetId?: string; repository: string; branch: string; commit: string; selectedPaths?: string[]; selectedFolders?: string[] };
+}
+export interface GitHubBranchMount {
+  targetId?: string;
+  credentialTargetId?: string;
+  name: string;
+  repository: string;
+  branch: string;
+  commit: string;
+  account?: string;
+  selectedPaths?: string[];
+  selectedFolders?: string[];
+  files: { path: string; content: Buffer }[];
 }
 export interface CachedSubscriptionGroup {
   subscriptionId: string;
@@ -249,7 +262,7 @@ export class SharedMarketManager {
   private readonly publisherHost: string;
   private readonly gatewayRuntimeVersion: string;
   private stateMutationDepth = 0;
-  private pendingMqttRefreshes = new Set<string>();
+  private mqttRefreshesInFlight = new Set<string>();
 
   constructor(private readonly storageDir: string, private readonly gatewayScript: string, displayName: string, private readonly events: SharedMarketEvents = {}, private readonly secrets?: SubscriptionSecretStorage, identity?: { user: string; host: string; version?: string }) {
     this.publisherUser = identity?.user.trim() || "";
@@ -331,11 +344,6 @@ export class SharedMarketManager {
       try { return await action(); }
       finally {
         this.stateMutationDepth--;
-        if (!this.stateMutationDepth && this.pendingMqttRefreshes.size) {
-          const pending = [...this.pendingMqttRefreshes];
-          this.pendingMqttRefreshes.clear();
-          setImmediate(() => { for (const id of pending) void this.refresh(id).catch(() => {}); });
-        }
       }
     });
   }
@@ -399,6 +407,14 @@ export class SharedMarketManager {
         }
         items.splice(0, items.length, ...packages.values());
       }
+      if (type === "recipes") {
+        for (const item of items) {
+          try {
+            const recipe = JSON.parse(fs.readFileSync(path.join(contentRoot, ...item.path.split("/")), "utf8"));
+            item.title = String(recipe?.name || item.title).trim() || item.title;
+          } catch { /* retain the stable Recipe identity when cached metadata is malformed */ }
+        }
+      }
       if (type === "servers") {
         const recipes: CachedSubscriptionGroup["items"] = [];
         for (const item of items) {
@@ -458,13 +474,28 @@ export class SharedMarketManager {
     const brokerName = record.brokerName || this.cachedBrokerName(record) || record.alias || record.publisher || record.shareId;
     if (decoded.type === "packages") {
       const packageName = safeRelativePath(decoded.path).split("/")[0];
+      if (record.source?.type === "github") {
+        const packageRoot = path.join(this.storageDir, "cache", record.nodeId, record.shareId, "content", "packages", packageName);
+        if (!fs.existsSync(packageRoot) || !fs.statSync(packageRoot).isDirectory()) throw new Error(`Subscribed package was not found: ${packageName}`);
+        const files: { path: string; content: string }[] = [];
+        const walk = (directory: string, relative: string): void => {
+          for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+            const childRelative = relative ? `${relative}/${entry.name}` : entry.name;
+            const child = path.join(directory, entry.name);
+            if (entry.isDirectory()) walk(child, childRelative);
+            else if (entry.isFile() && !entry.name.endsWith(".pkm-source.json")) files.push({ path: childRelative, content: fs.readFileSync(child, "utf8") });
+          }
+        };
+        walk(packageRoot, "");
+        return { type: "packages", brokerName, publisherUser: record.publisherUser!, publisherHost: record.publisherHost!, remotePath: packageName, package: { name: packageName, files } };
+      }
       const bundlePath = path.join(this.storageDir, "cache", record.nodeId, record.shareId, "bundle.json");
       const bundle = JSON.parse(fs.readFileSync(bundlePath, "utf8"));
       const pkg = (bundle.packages || []).find((item: any) => String(item.name || "") === packageName);
       if (!pkg) throw new Error(`Subscribed package was not found: ${packageName}`);
       return { type: "packages", brokerName, publisherUser: record.publisherUser!, publisherHost: record.publisherHost!, remotePath: packageName, package: { name: packageName, files: (pkg.files || []).map((file: any) => ({ path: safeRelativePath(file.path), content: String(file.content || "") })) } };
     }
-    if (!(["skills", "notes", "papers", "prompts", "scripts"] as SharedContentType[]).includes(decoded.type)) throw new Error(`Fork is not supported for ${decoded.type}.`);
+    if (!(["skills", "notes", "papers", "prompts", "scripts", "recipes"] as SharedContentType[]).includes(decoded.type)) throw new Error(`Fork is not supported for ${decoded.type}.`);
     const detail = this.cachedDetail(key);
     return { type: decoded.type, brokerName, publisherUser: record.publisherUser!, publisherHost: record.publisherHost!, remotePath: safeRelativePath(detail.path), content: detail.content };
   }
@@ -719,6 +750,67 @@ export class SharedMarketManager {
     return record;
   }
 
+  async mountGitHubBranch(input: GitHubBranchMount, alias = ""): Promise<SubscriptionRecord> {
+    if (!this.stateMutationDepth) return this.withStateMutation(() => this.mountGitHubBranch(input, alias));
+    const repository = input.repository.trim(), branch = input.branch.trim(), commit = input.commit.trim();
+    if (!repository || !branch || !/^[0-9a-f]{40}$/i.test(commit)) throw new Error("GitHub repository, branch, and exact commit are required.");
+    const sourceKey = hash(`${repository}\n${branch}`).slice("sha256:".length);
+    const nodeId = `github-${hash(repository).slice("sha256:".length, "sha256:".length + 24)}`;
+    const shareId = `branch-${sourceKey.slice(0, 24)}`;
+    const repositoryHost = (() => { try { return new URL(repository).hostname; } catch { return /^(?:[^@/\s]+@)?([^/:\s]+):/.exec(repository)?.[1] || "github.com"; } })();
+    const existing = this.state.subscriptions.find(record => record.source?.type === "github" && ((input.targetId && record.source.targetId === input.targetId) || record.source.repository === repository && record.source.branch === branch));
+    const record: SubscriptionRecord = existing || {
+      id: randomBytes(12).toString("base64url"), alias: "", nodeId, publisher: "GitHub",
+      publisherUser: input.account?.trim() || "github", publisherHost: repositoryHost,
+      endpoint: repository, shareId, publicKey: "", magicLink: "", revision: 0, collectionHash: "",
+      topics: [], tags: [], counts: {}, itemCount: 0, etag: "", status: "new",
+    };
+    const root = path.join(this.storageDir, "cache", nodeId, shareId);
+    const staging = `${root}.mount-${process.pid}-${randomBytes(4).toString("hex")}`;
+    const backup = `${root}.previous-${process.pid}-${randomBytes(4).toString("hex")}`;
+    const counts: Record<string, number> = {};
+    let totalBytes = 0;
+    try {
+      for (const file of input.files) {
+        const relative = String(file.path || "").replace(/\\/g, "/");
+        const [type, ...rest] = relative.split("/");
+        if (!SHARED_CONTENT_TYPES.includes(type as SharedContentType) || !rest.length || rest.some(part => !part || part === "." || part === "..")) throw new Error(`GitHub branch contains an invalid subscribed path: ${relative}`);
+        totalBytes += file.content.length;
+        if (totalBytes > MAX_SNAPSHOT_DOWNLOAD_BYTES) throw new Error(`GitHub branch exceeds the ${MAX_SNAPSHOT_DOWNLOAD_BYTES / 1024 / 1024} MB subscription cache limit.`);
+        const remotePath = rest.join("/");
+        const target = path.join(staging, "content", type, ...rest);
+        atomicWrite(target, file.content, 0o600);
+        atomicWrite(`${target}.pkm-source.json`, JSON.stringify({ brokerName: input.name, publisherUser: record.publisherUser, publisherHost: record.publisherHost, remotePath, repository, branch, commit }, null, 2), 0o600);
+        counts[type] = (counts[type] || 0) + 1;
+      }
+      const syncedAt = new Date().toISOString();
+      atomicWrite(path.join(staging, "summary.json"), JSON.stringify({ name: input.name, revision: existing && existing.collectionHash === commit ? existing.revision : (existing?.revision || 0) + 1, collectionHash: commit, updatedAt: syncedAt, counts, itemCount: input.files.length, metadataOnly: true }, null, 2), 0o600);
+      atomicWrite(path.join(staging, "_subscription.json"), JSON.stringify({ id: record.id, alias: alias.trim() || record.alias, publisher: "GitHub", nodeId, shareId, endpoint: repository, syncedAt, source: { type: "github", targetId: input.targetId, credentialTargetId: input.credentialTargetId, repository, branch, commit, selectedPaths: input.selectedPaths, selectedFolders: input.selectedFolders } }, null, 2), 0o600);
+      fs.mkdirSync(path.dirname(root), { recursive: true });
+      if (fs.existsSync(root)) fs.renameSync(root, backup);
+      fs.renameSync(staging, root);
+      fs.rmSync(backup, { recursive: true, force: true });
+      record.alias = alias.trim() || record.alias;
+      record.brokerName = input.name.trim() || `${repository}:${branch}`;
+      record.nodeId = nodeId; record.shareId = shareId; record.endpoint = repository;
+      record.publisherUser = input.account?.trim() || record.publisherUser || "github";
+      record.publisherHost = repositoryHost;
+      record.revision = existing && existing.collectionHash === commit ? existing.revision : (existing?.revision || 0) + 1;
+      record.collectionHash = commit; record.etag = commit; record.counts = counts; record.itemCount = input.files.length;
+      record.lastChecked = syncedAt; record.lastUpdated = syncedAt; record.status = "current"; record.error = undefined;
+      record.source = { type: "github", targetId: input.targetId, credentialTargetId: input.credentialTargetId, repository, branch, commit, selectedPaths: input.selectedPaths, selectedFolders: input.selectedFolders };
+      if (!existing) this.state.subscriptions.push(record);
+      this.save(); this.changed();
+      return record;
+    } catch (error) {
+      fs.rmSync(staging, { recursive: true, force: true });
+      if (!fs.existsSync(root) && fs.existsSync(backup)) fs.renameSync(backup, root);
+      throw error;
+    }
+  }
+
+  subscription(id: string): SubscriptionRecord { return { ...this.requireSubscription(id) }; }
+
   renameSubscription(id: string, alias: string): void {
     if (!this.stateMutationDepth) return this.withStateMutationSync(() => this.renameSubscription(id, alias));
     const record = this.requireSubscription(id);
@@ -749,6 +841,7 @@ export class SharedMarketManager {
   async refresh(id: string, forceDownload = false): Promise<SubscriptionRecord> {
     if (!this.stateMutationDepth) return this.withStateMutation(() => this.refresh(id, forceDownload));
     const record = this.requireSubscription(id);
+    if (record.source?.type === "github") throw new Error("GitHub branch subscriptions are refreshed through their configured GitHub connection.");
     const previousStatus = record.status;
     const previousError = record.error;
     record.status = "updating"; record.error = undefined; this.save();
@@ -803,7 +896,7 @@ export class SharedMarketManager {
     try { this.backgroundLock = ChatRoomLock.acquire(path.join(this.storageDir, "subscription-background.lock"), this.state.nodeId); }
     catch { return; }
     this.reloadPersistedState();
-    for (const record of this.state.subscriptions) this.connectMqtt(record);
+    for (const record of this.state.subscriptions.filter(item => item.source?.type !== "github")) this.connectMqtt(record);
     if (!this.pollTimer) {
       this.pollTimer = setInterval(() => { for (const record of this.state.subscriptions) void this.refresh(record.id).catch(() => {}); }, 30 * 60_000);
       this.pollTimer.unref?.();
@@ -850,7 +943,7 @@ export class SharedMarketManager {
         this.warning(key, `Secret Protected Broker "${share.name}" Control Port ${share.controlPort} is unavailable: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    for (const record of this.state.subscriptions) {
+    for (const record of this.state.subscriptions.filter(item => item.source?.type !== "github")) {
       try { await this.refresh(record.id); }
       catch { /* refresh emits one transition warning and preserves cache */ }
     }
@@ -898,6 +991,7 @@ export class SharedMarketManager {
       if (type === "prompts") return `${item.project}/${item.task}`;
       if (type === "scripts") return `${item.category === "(root)" ? "" : `${item.category}/`}${item.file}`;
       if (type === "packages") return String(item.name || "");
+      if (type === "recipes") return String(item.recipeId || "");
       return String(item.slug || "");
     };
     const folder = (type: SharedContentType, item: any): string => {
@@ -907,6 +1001,7 @@ export class SharedMarketManager {
       if (type === "prompts") return String(item.project || "");
       if (type === "scripts") return item.category === "(root)" ? "" : String(item.category || "");
       if (type === "servers") return String(item.category || "");
+      if (type === "recipes") return String(item.category || "");
       return "";
     };
     for (const type of contentTypes) {
@@ -1008,6 +1103,7 @@ export class SharedMarketManager {
   }
 
   private connectMqtt(record: SubscriptionRecord): void {
+    if (record.source?.type === "github") return;
     if (this.mqttClients.has(record.nodeId)) return;
     const endpoint = new URL(record.endpoint);
     const client = connect(`${endpoint.protocol === "https:" ? "wss" : "ws"}://${endpoint.host}/mqtt`, {
@@ -1029,15 +1125,23 @@ export class SharedMarketManager {
       try {
         const summary = JSON.parse(payload.toString()) as ShareSummary;
         const subscription = this.state.subscriptions.find(item => item.shareId === summary.shareId && item.nodeId === record.nodeId);
-        if (subscription && summary.revision > subscription.revision) {
-          if (this.stateMutationDepth) this.pendingMqttRefreshes.add(subscription.id);
-          else void this.refresh(subscription.id).catch(() => {});
-        }
+        if (subscription && summary.revision > subscription.revision) this.queueMqttRefresh(subscription.id);
       } catch { /* polling remains the canonical fallback */ }
     });
     client.on("error", () => {
       this.warning(`mqtt-node:${record.nodeId}`, `Realtime Subscription updates from ${record.publisher} are unavailable; periodic and manual Refresh remain available.`);
     });
+  }
+
+  private queueMqttRefresh(subscriptionId: string): void {
+    if (this.mqttRefreshesInFlight.has(subscriptionId)) return;
+    this.mqttRefreshesInFlight.add(subscriptionId);
+    void this.refreshFromMqttWhenIdle(subscriptionId).catch(() => {}).finally(() => this.mqttRefreshesInFlight.delete(subscriptionId));
+  }
+
+  private async refreshFromMqttWhenIdle(subscriptionId: string): Promise<void> {
+    while (this.stateMutationDepth) await new Promise(resolve => setTimeout(resolve, 10));
+    await this.refresh(subscriptionId);
   }
 
   private async ensureGateway(): Promise<void> {

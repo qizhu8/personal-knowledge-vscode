@@ -69,6 +69,25 @@ const catTreeAreas = ['skills', 'notes', 'papers', 'scripts', 'environments'];
 const sharedPathKeys = catTreeAreas.map(area => context.expandedCategoryKey(['Shared'], area));
 assert.strictEqual(new Set(sharedPathKeys).size, catTreeAreas.length, 'all shared CatTree areas must have isolated expansion state');
 
+const treeStart = knowledge.indexOf('function buildCatTree');
+const treeEnd = knowledge.indexOf('\nfunction openCatFolderAddMenu', treeStart);
+assert(treeStart >= 0 && treeEnd > treeStart, 'CatTree helpers must be present');
+const treeContext = {
+  state: { tab: 'notes' }, catExpanded: {}, notePinnedFolders: [],
+  btoa: value => Buffer.from(value, 'binary').toString('base64'), unescape, encodeURIComponent,
+  privacyInherited: () => false, privacyDivider: () => '', privacyLock: () => '',
+  brokerFolderMarker: () => '', uiIcon: () => '', folkDisplayName: value => value,
+  esc: value => String(value),
+};
+vm.createContext(treeContext);
+vm.runInContext(knowledge.slice(treeStart, treeEnd), treeContext);
+const emptyFolderTree = treeContext.buildCatTree([], item => item.category, '(uncategorized)');
+treeContext.seedFolders(emptyFolderTree, ['Research/Future Work', 'Project/Unrelated']);
+const matchedEmptyFolder = treeContext.renderCatTree(emptyFolderTree, [], 0, () => '', 'future work');
+assert.match(matchedEmptyFolder, /Future Work/, 'search must return an empty folder whose path matches');
+assert.doesNotMatch(matchedEmptyFolder, /Unrelated/, 'search must still hide unrelated empty folders');
+assert.doesNotMatch(matchedEmptyFolder, /tree-cat-body" style="display:none"/, 'search must expand the retained path so the empty folder is visible');
+
 const markupStart = knowledge.indexOf("let knowledgeListMarkup =");
 const markupEnd = knowledge.indexOf('\nfunction renderList', markupStart);
 assert(markupStart >= 0 && markupEnd > markupStart, 'stable CatTree markup helper must be present');
@@ -89,6 +108,50 @@ assert.strictEqual(markupWrites, 1, 'identical markup must not write innerHTML t
 assert.strictEqual(listElement.scrollTop, 35, 'skipped render must preserve scroll position');
 assert.strictEqual(markupContext.setKnowledgeListMarkup(listElement, 'notes', '<div>changed</div>'), true);
 assert.strictEqual(listElement.scrollTop, 35, 'real rerender must restore scroll position');
+
+const tabCacheStart = knowledge.indexOf('const cachedKnowledgeTabs =');
+const tabCacheEnd = knowledge.indexOf('\nfunction paintWorkspaceNavigation', tabCacheStart);
+assert(tabCacheStart >= 0 && tabCacheEnd > tabCacheStart, 'per-tab view cache helpers must be present');
+class FakeContainer {
+  constructor(children = []) { this.childNodes = []; children.forEach(child => this.appendChild(child)); }
+  get firstChild() { return this.childNodes[0] || null; }
+  appendChild(child) {
+    if (child instanceof FakeContainer) {
+      while (child.firstChild) this.appendChild(child.firstChild);
+      return child;
+    }
+    if (child.parent) child.parent.childNodes.splice(child.parent.childNodes.indexOf(child), 1);
+    child.parent = this;
+    this.childNodes.push(child);
+    return child;
+  }
+  replaceChildren(fragment) {
+    this.childNodes.forEach(child => { child.parent = null; });
+    this.childNodes = [];
+    this.appendChild(fragment);
+  }
+}
+const cachedNodes = Array.from({ length: 5000 }, (_, index) => ({ index, parent: null }));
+const cacheElements = {
+  'item-list': new FakeContainer(cachedNodes),
+  'sidebar-filters': new FakeContainer([{ kind: 'filter', parent: null }]),
+  'knowledge-trash-dock': new FakeContainer([{ kind: 'trash', parent: null }]),
+};
+const cachedItems = Array.from({ length: 5000 }, (_, index) => ({ slug: `note-${index}` }));
+const tabCacheContext = {
+  state: { filter: 'all', search: '', items: cachedItems, folders: ['Large'], subscriptionGroups: [], knowledgeTrash: [], privateTopLevels: [], brokerSharedFolders: {} },
+  document: { createDocumentFragment: () => new FakeContainer(), getElementById: id => cacheElements[id] },
+};
+vm.createContext(tabCacheContext);
+vm.runInContext(knowledge.slice(tabCacheStart, tabCacheEnd), tabCacheContext);
+tabCacheContext.stashKnowledgeTabView('notes');
+assert.strictEqual(cacheElements['item-list'].childNodes.length, 0, 'switching away must detach the mounted large tree');
+assert.strictEqual(tabCacheContext.restoreKnowledgeTabView('notes'), true, 'a previously loaded tab must restore without requesting another list');
+assert.strictEqual(cacheElements['item-list'].childNodes.length, 5000);
+assert.strictEqual(cacheElements['item-list'].childNodes[3210], cachedNodes[3210], 'restoration must reuse the original DOM nodes instead of rebuilding markup');
+assert.strictEqual(tabCacheContext.state.items, cachedItems, 'restoration must reuse the matching data snapshot');
+tabCacheContext.invalidateKnowledgeTabView('notes');
+assert.strictEqual(tabCacheContext.restoreKnowledgeTabView('notes'), false, 'an invalidated tab must require fresh data');
 
 const extension = fs.readFileSync(path.join(root, 'src/extension.ts'), 'utf8');
 const core = fs.readFileSync(path.join(root, 'src/webview/panel/00-core.js'), 'utf8');

@@ -2,6 +2,8 @@
   "schema": "pkm.workflow.canonical-order/v1",
   "arrays": {
     "/spec/nodes": { "order": "set", "sortKey": ["nodeId"] },
+    "/spec/nodes/*/config/args": { "order": "semantic", "sortKey": ["$index"] },
+    "/spec/nodes/*/config/choices": { "order": "set", "sortKey": ["$value"] },
     "/spec/nodes/*/ports/inputs": { "order": "set", "sortKey": ["$value"] },
     "/spec/nodes/*/ports/outputs": { "order": "set", "sortKey": ["$value"] },
     "/spec/nodes/*/control/cases": { "order": "set", "sortKey": ["$value"] },

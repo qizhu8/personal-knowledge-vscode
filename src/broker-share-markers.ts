@@ -21,6 +21,7 @@ export function sharedContentIdentity(type: SharedContentType, item: any): strin
   if (type === "prompts") return `${item.project || ""}/${item.task || ""}`;
   if (type === "scripts") return String(item.path || `${item.category === "(root)" ? "" : `${item.category || ""}/`}${item.file || ""}`).replace(/^\/+/, "");
   if (type === "packages") return String(item.name || "");
+  if (type === "recipes") return String(item.recipeId || "");
   return String(item.slug || "");
 }
 
@@ -31,6 +32,7 @@ export function sharedContentFolder(type: SharedContentType, item: any): string 
   if (type === "prompts") return String(item.project || "");
   if (type === "scripts") return item.category === "(root)" ? "" : String(item.category || "");
   if (type === "servers") return String(item.category || "");
+  if (type === "recipes") return String(item.category || "");
   return "";
 }
 

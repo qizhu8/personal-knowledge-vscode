@@ -8,6 +8,9 @@ const panelJs = fs.readFileSync(path.join(__dirname, "..", "dist", "webview", "p
 const panelCss = fs.readFileSync(path.join(__dirname, "..", "dist", "webview", "panel.css"), "utf8");
 const sourceTs = fs.readFileSync(path.join(__dirname, "..", "src", "mcp.ts"), "utf8");
 const extensionTs = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
+const sourcePanelCss = fs.readFileSync(path.join(__dirname, "..", "src", "webview", "panel.css"), "utf8");
+assert.match(sourcePanelCss, /\.srv-global-controls select,\.srv-edit input,\.mcp-setup-step select,\.mcp-setup-step input\{[^}]*background:var\(--input\)[^}]*color:var\(--text\)[^}]*color-scheme:dark/,
+  "Settings hostname, IP, and port controls must use the dark themed input surface");
 assert.match(extensionTs, /function maintainPkmIntegration\(context: vscode\.ExtensionContext\)/);
 assert.match(extensionTs, /server\.newerThanExpected \|\| newerRouters\.length[\s\S]{0,900}This window will not downgrade shared PKM files/,
   "an older window must stop maintenance and recommend a manual Reload Window");
@@ -48,6 +51,7 @@ assert.match(extensionTs, /extensionVersion: String\(chatCtx\?\.extension\?\.pac
 assert.match(extensionTs, /skillRouters: \[[\s\S]{0,600}name: "Exact"[\s\S]{0,300}name: "BM25"/);
 const esc = value => String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 assert.match(panelCss, /\.mcp-version-table \.mcp-row-action\{text-align:left;/);
+assert.match(panelCss, /\.mcp-setup-step select,\.mcp-setup-step input\{[^}]*background:var\(--input\)[^}]*color:var\(--text\)[^}]*color-scheme:dark/, "MCP hostname and port controls share the dark input contract");
 
 const presentation = panelJs.match(/function mcpRegeneratePresentation\(data\)\s*\{[\s\S]*?\n\}/);
 assert(presentation, "MCP regenerate presentation helper must be bundled");
@@ -59,10 +63,14 @@ const outdated = presentationContext.present({
   installed: true, current: false, installedVersion: "2.4.0", expectedVersion: "2.5.5",
   installedKnowledgeVersion: "1.0.0", knowledgeVersion: "1.0.0",
   installedChatVersion: "2.3.0", chatVersion: "2.3.1",
+  installedRecipeVersion: "1.0.0", recipeVersion: "1.1.0",
+  installedAgentSessionVersion: "1.0.0", agentSessionVersion: "1.1.0",
 });
 assert.strictEqual(outdated.label, "Regenerate Server Code · v2.4.0 → v2.5.5");
 assert.match(outdated.title, /Unified v2\.4\.0 → v2\.5\.5/);
 assert.match(outdated.title, /Chat v2\.3\.0 → v2\.3\.1/);
+assert.match(outdated.title, /Recipes v1\.0\.0 → v1\.1\.0/);
+assert.match(outdated.title, /Agent Sessions v1\.0\.0 → v1\.1\.0/);
 assert.strictEqual(presentationContext.present({ installed: true, current: true, expectedVersion: "2.5.5", knowledgeVersion: "1.0.0", chatVersion: "2.3.1" }).label,
   "Regenerate Server Code · v2.5.5");
 assert.strictEqual(presentationContext.present({ installed: false, expectedVersion: "2.5.5" }).label,
@@ -112,9 +120,11 @@ skillContext.finish();
 
 assert(sourceTs.includes("installedKnowledgeVersion === KNOWLEDGE_MCP_VERSION"));
 assert(sourceTs.includes("installedChatVersion === CHAT_MCP_VERSION"));
+assert(sourceTs.includes("installedRecipeVersion === RECIPE_MCP_VERSION"));
+assert(sourceTs.includes("installedAgentSessionVersion === AGENT_SESSION_MCP_VERSION"));
 assert(panelJs.includes("Knowledge: installed v"));
 assert(panelJs.includes("Chat: installed v"));
-for (const text of ["PKM Integration Status", "Unified MCP Server", "Knowledge schema", "Chat schema", "PKM Skill Router", "Setup progress", "Ready · starts on demand", "Automatic integration", "Agent connection"]) {
+for (const text of ["PKM Integration Status", "Unified MCP Server", "Knowledge schema", "Chat schema", "Recipe runtime", "Agent Session runtime", "PKM Skill Router", "Setup progress", "Ready · starts on demand", "Automatic integration", "Agent connection"]) {
   assert(panelJs.includes(text), `missing dashboard text: ${text}`);
 }
 assert.doesNotMatch(panelJs, />Update with Server<\/button>|>Update Code<\/button>|>Repair Runtime<\/button>/,

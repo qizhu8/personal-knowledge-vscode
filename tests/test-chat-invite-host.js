@@ -32,6 +32,8 @@ assert.doesNotMatch(panel, /id="chat-invite-host"/,
 	"Projects/Threads must not duplicate the machine-level Invite interface setting");
 assert.doesNotMatch(panel, /Hosting on/);
 assert.doesNotMatch(panel, /function chatPaintInviteHosts\(\)/);
+assert.doesNotMatch(panel, /chatPaintInviteHosts\(\)/,
+	"Chatroom must not call the removed Invite interface painter");
 assert.doesNotMatch(panel, /function chatInviteHostChanged\(address\)/);
 
 console.log("Chat invite host test: machine-local Settings wiring retained without duplicate Threads controls OK");

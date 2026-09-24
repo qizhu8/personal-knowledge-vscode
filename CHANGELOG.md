@@ -5,6 +5,28 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Added the **Recipe Library** workbench under Automation with searchable category navigation, visual Graph and JSON editing, typed inputs/outputs, dependency wiring, Script adapters, Skill/Note references, validation, immutable revisions, Browser editing, Trash recovery, and project-scoped Recipe bundles.
+- Added durable Recipe execution controls for branches, bounded loops, pinned subrecipes, background commands, mandatory human gates, runtime evidence, Agent Session progress graphs, and fast indexed Recipe discovery.
+- Added **Agent Snapshot** under Automation for immutable Agent Session restart points. Each Snapshot captures durable todos, checkpoints, and linked Recipe runs, returns a one-time recovery passphrase alongside a copyable Magic Code, and can be recovered repeatedly into independent successor Sessions.
+- Added Agent Session MCP snapshot create/list/recover tools with scrypt-protected recovery verification, clone-on-recovery identities, and explicit wrong-passphrase failures. Plaintext recovery passphrases are never persisted.
+- Added multi-target GitHub Sync with target-scoped SSH keys or HTTPS Credential Manager accounts.
+- Added editable account and SSH identity dropdowns populated from Credential Manager, local SSH configuration, and saved GitHub targets.
+- Added direct read-only GitHub Branch subscriptions with public access or reusable GitHub Sync credential profiles, exact-commit Test results, and file/folder selection that feeds the existing Broker cache, browsing, retrieval, provenance, and Fork workflows.
+- Added selected-file restore to GitHub Sync for explicit recovery and version control without merging remote content into the Knowledge Root.
+
+### Changed
+- Expanded the product into five aligned workspaces—Knowledge, Tools, Automation, Projects, and Settings—with matching Navigation groups, shared search controls, dark form controls, and technical loading progress paired with playful magical-academy copy.
+- Reworked Agent Sessions to group records by Agent identity and short Session ID, archive completed work by default, expose durable Recipe progress, and support two-stage Trash, Restore, and permanent deletion.
+- Reworked Meeting Summary into a dedicated current/archive/trash minutes workspace with live metadata and responsive layouts.
+- Migrated the completed sequential improvements workflow to an Agent Session ad hoc Recipe run while preserving durable run and checkpoint history.
+
+### Fixed
+- GitHub restore now reports local conflicts without writing files and requires explicit confirmation before overwriting them.
+- GitHub Sync paths, filenames, and managed checkouts outside the Knowledge Root now behave consistently across Windows, macOS, and Linux.
+- HTTPS Credential Manager authentication now accepts accessible newly created repositories that do not yet contain a `HEAD` ref while still rejecting inaccessible repositories.
+- GitHub Branch folder trees now start collapsed instead of expanding every directory by default.
+
 ## [3.0.0] - 2026-09-21
 
 ### Added

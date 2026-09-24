@@ -52,7 +52,7 @@ const requiredPathContracts = [
   /copyPathMenu\(`scripts\/\$\{prefix\}\/`\)/,
   /copyPathMenu\(`scripts\/\$\{relPath\}`\)/,
   /copyPathMenu\(`packages\/\$\{name\}\/`\)/,
-  /copyPathMenu\(`servers\/\$\{slug\}\/server\.json`\)/,
+  /copyPathMenu\(`pkm:\/\/servers\/\$\{encodeURIComponent\(slug\)\}`\)/,
   /copyPathMenu\(`pkm:\/\/chatroom\/rooms\//,
   /copyPathMenu\(`pkm:\/\/subscriptions\/\$\{encodeURIComponent\(item\.nodeId\)\}\/\$\{encodeURIComponent\(item\.shareId\)\}`\)/,
 ];

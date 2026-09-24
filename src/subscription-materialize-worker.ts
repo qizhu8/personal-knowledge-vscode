@@ -98,6 +98,7 @@ function materialize(task: MaterializeTask): number {
   for (const script of bundle.scripts || []) writeCached("scripts", `${script.category === "(root)" ? "" : `${script.category}/`}${script.file}`, String(script.content || ""));
   for (const pkg of bundle.packages || []) for (const file of pkg.files || []) writeCached("packages", `${pkg.name}/${file.path}`, String(file.content || ""));
   for (const server of bundle.servers || []) writeCached("servers", `${server.slug}/server.link.json`, JSON.stringify({ name: server.name, category: server.category, tags: server.tags, url: server.url || "" }, null, 2));
+  for (const recipe of bundle.recipes || []) writeCached("recipes", `${recipe.category ? `${recipe.category}/` : ""}${recipe.recipeId}.json`, JSON.stringify(recipe, null, 2));
   atomicWrite(path.join(staging, "bundle.json"), bytes, 0o600);
   atomicWrite(path.join(staging, "summary.json"), JSON.stringify(task.summary, null, 2), 0o600);
   atomicWrite(path.join(staging, "_subscription.json"), JSON.stringify({

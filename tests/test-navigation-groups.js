@@ -68,12 +68,38 @@ try {
   assert.match(extension, /Prompts support three group levels/);
   assert.match(extension, /folderDeletePromote\(group\.area, group\.path, fallback\)/);
   assert.match(extension, /"skill-folder": "skills", "note-folder": "notes", "paper-folder": "papers", "script-folder": "scripts"/);
-  assert.match(extension, /new PkTreeItem\("Subscription", "root-subscriptions"/);
+  for (const module of ["knowledge", "tools", "automation", "projects", "settings"]) {
+    assert.match(extension, new RegExp(`new PkTreeItem\\("${module[0].toUpperCase()}${module.slice(1)}", "module-${module}"`),
+      `Navigation must expose the ${module} rail module`);
+  }
+  assert.match(extension, /element\.nodeType === "module-knowledge"[\s\S]{0,500}"root-skills"[\s\S]{0,500}"root-notes"[\s\S]{0,500}"root-papers"/);
+  assert.match(extension, /element\.nodeType === "module-tools"[\s\S]{0,1400}"root-prompts"[\s\S]{0,500}"root-scripts"[\s\S]{0,500}"root-packages"[\s\S]{0,500}environments,[\s\S]{0,200}servers/);
+  assert.match(extension, /element\.nodeType === "module-automation"[\s\S]{0,700}"Agent Sessions"[\s\S]{0,200}recipes/);
+  assert.match(extension, /new PkTreeItem\("Recipe Library", "page-recipes", C\)/,
+    "Recipe Library must be expandable in Navigation");
+  assert.match(extension, /case 'page-recipes':\s+return this\._recipeFolder\(\[\]\)/);
+  assert.match(extension, /case 'recipe-folder':\s+return this\._recipeFolder\(element\.nodeData\.path\)/);
+  assert.match(extension, /split\("\/"\)\.map\(segment => segment\.trim\(\)\)\.filter\(Boolean\)/,
+    "Recipe categories must preserve their complete hierarchy");
+  assert.match(extension, /command: "personalKnowledge\.openRecipe"[\s\S]{0,100}recipe\.recipeId/,
+    "Recipe leaves must open the existing Recipe editor");
+  assert.match(extension, /nodeType === 'page-recipes'\) this\.contextValue = 'pk-recipes-root'/);
+  assert.match(extension, /nodeType === 'recipe-folder'\) this\.contextValue = 'pk-recipes-group'/);
+  assert.match(extension, /nodeType === 'recipe'\) this\.contextValue = 'pk-recipe-item'/);
+  assert.match(extension, /privateNavigationLabel\("recipes", name, topLevel\)/);
+  assert.match(extension, /privacyType: "recipes", privacyName: name/);
+  assert.match(extension, /registerCommand\("personalKnowledge\.addRecipeHere"[\s\S]{0,900}createRecipe\([\s\S]{0,250}\{ kind: "global" \}/);
+  assert.match(extension, /element\.nodeType === "module-projects"[\s\S]{0,500}"Overview"[\s\S]{0,200}chatroom/);
+  assert.match(extension, /element\.nodeType === "module-settings"[\s\S]{0,700}"General & MCP"[\s\S]{0,500}"Skill Router"[\s\S]{0,300}subscriptions/);
+  assert.match(extension, /registerCommand\("personalKnowledge\.openPanelTab"/);
+  assert.match(extension, /new PkTreeItem\("Network & Sharing", "root-subscriptions"/);
   assert.match(extension, /return \[brokers, subscribers\]/);
   assert.match(extension, /case 'subscription-brokers-group': return this\._subscriptionBrokers\(\)/);
   assert.match(extension, /case 'subscription-subscribers-group': return this\._subscriptionSubscribers\(\)/);
   const commandTitles = Object.fromEntries(packageJson.contributes.commands.map(command => [command.command, command.title]));
   assert.strictEqual(commandTitles["personalKnowledge.openSubscriptions"], "Open Subscription");
+  assert.strictEqual(commandTitles["personalKnowledge.openRecipe"], "Open");
+  assert.strictEqual(commandTitles["personalKnowledge.addRecipeHere"], "New Recipe Here");
   assert.match(extension, /function folkNavigationLabel\(value: string, root: boolean\)/);
   assert.match(extension, /replace\(\/--\[a-f0-9\]\{12\}\$\/i, ""\)/);
   assert.match(extension, /privateNavigationLabel\("skills", name, topLevel\)/);
@@ -90,6 +116,10 @@ try {
   assert.doesNotMatch(subgroupMenus.find(menu => menu.command === "personalKnowledge.newSubgroup").when, /terminal-group/);
   assert.match(subgroupMenus.find(menu => menu.command === "personalKnowledge.renameSubgroup").when, /terminal-group/);
   assert.match(subgroupMenus.find(menu => menu.command === "personalKnowledge.deleteSubgroup").when, /terminal-group/);
+  const recipeMenus = packageJson.contributes.menus["view/item/context"].filter(menu => ["personalKnowledge.openRecipe", "personalKnowledge.addRecipeHere"].includes(menu.command));
+  assert.strictEqual(recipeMenus.filter(menu => menu.command === "personalKnowledge.openRecipe").length, 1);
+  assert.strictEqual(recipeMenus.filter(menu => menu.command === "personalKnowledge.addRecipeHere").length, 2);
+  assert(recipeMenus.some(menu => menu.command === "personalKnowledge.addRecipeHere" && menu.group === "inline"), "Recipe folders must expose an inline + action");
 
   console.log("navigation groups test: multi-level create, rename, safe promote-delete, collision protection, and unified menus OK");
 } finally {

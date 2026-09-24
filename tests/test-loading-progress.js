@@ -9,6 +9,9 @@ const core = fs.readFileSync(path.join(root, 'src/webview/panel/00-core.js'), 'u
 const extension = fs.readFileSync(path.join(root, 'src/extension.ts'), 'utf8');
 const html = fs.readFileSync(path.join(root, 'src/webview/panel.html'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'src/webview/panel.css'), 'utf8');
+const projects = fs.readFileSync(path.join(root, 'src/webview/panel/15-projects.js'), 'utf8');
+const mcp = fs.readFileSync(path.join(root, 'src/webview/panel/50-mcp.js'), 'utf8');
+const init = fs.readFileSync(path.join(root, 'src/webview/panel/60-init.js'), 'utf8');
 
 for (const id of ['loading-banner', 'view-loading-progress', 'view-loading-stage', 'view-loading-count', 'view-loading-bar']) assert(html.includes(`id="${id}"`), `${id} must exist`);
 assert.match(html, /id="loading-banner" class="hidden"/);
@@ -30,13 +33,23 @@ for (const message of ['Opening the spellbook…', 'Opening the enchanted notebo
   assert(core.includes(message), `Magical progress copy must include: ${message}`);
 }
 assert(html.includes('Brewing a potion for your knowledge store…'));
-assert.match(core, /command === 'inventoryBatch'[\s\S]{0,180}\['skills','notes','scripts'\]\.includes\(state\.tab\)/);
-assert.match(core, /command === 'inventoryBatch'[\s\S]{0,260}ask\('list',[^\n]+null, true\)/,
-  'background inventory refreshes must not reveal progress');
-assert.match(core, /command === 'reloaded'[\s\S]{0,260}\['skills','notes','papers','prompts','packages','scripts'\]\.includes\(state\.tab\)/,
-  'filesystem reload must not request a list for Chatroom');
-assert.match(core, /command === 'reloaded'[\s\S]{0,360}ask\('list',[^\n]+null, true\)/,
-  'filesystem reload list refreshes must remain silent');
+assert(init.includes('Still waiting for data from the extension…'));
+for (const command of ['projectState', 'envList', 'serverList', 'subscriptionState', 'chatState', 'checkMcp', 'skillRouterStatus', 'list']) {
+  assert.match(init, new RegExp(`ask\\('${command}'`), `Initial-load retry must support ${command}`);
+}
+assert(!init.includes('Retrying the current view'), 'waiting copy must not imply that the initial request failed');
+assert(!init.includes('Database is initializing'), 'the retry fallback must not speculate about database state');
+for (const message of ['Revealing the Projects map…', 'Opening the Recipes grimoire…']) {
+  assert(projects.includes(message), `Wizard loading copy must preserve its technical term: ${message}`);
+}
+assert(mcp.includes('Consulting the MCP server wards…'));
+assert.match(core, /command === 'inventoryBatch'[^\n]+progress only/,
+  'incremental inventory batches must not repeatedly rebuild the visible tree');
+assert.match(core, /command === 'inventoryReady'[\s\S]{0,260}\['skills','notes','scripts'\]\.forEach\(invalidateKnowledgeTabView\)/);
+assert.match(core, /command === 'inventoryReady'[\s\S]{0,360}ask\('list',[^\n]+null, true\)/,
+  'completed inventory refreshes the visible indexed tab exactly once and silently');
+assert.match(core, /command === 'reloaded'[\s\S]{0,420}changedArea === state\.tab/,
+  'filesystem reload refreshes only the affected visible content tab');
 assert.match(core, /function ask\(command, payload, button, silent = false\)/);
 assert.match(core, /if \(!silent && loadingLabels\[command\]\)/);
 assert.match(core, /\.\.\.\(silent \? \{ silent:true \} : \{\}\)/,
@@ -48,8 +61,24 @@ for (const stage of ['scanning', 'building-tree', 'ready']) {
     `${stage} list progress must be suppressed for background refreshes`);
 }
 assert.match(core, /setTimeout\([\s\S]{0,300}, 1000\)/);
+assert.match(core, /if \(isInitialViewResponse\(command, e\.data\)\) finishLoadingProgress\(\)/);
 for (const command of ['subscriptionState', 'subscriptionError', 'subscriptionSecret', 'subscriptionCompleted']) {
   assert.match(core, new RegExp(`command === '${command}'[\\s\\S]{0,1200}finishLoadingProgress\\(\\)`), `${command} must close loading progress`);
+}
+
+const responseStart = core.indexOf('function isInitialViewResponse');
+const responseEnd = core.indexOf('\nfunction finishLoadingProgress', responseStart);
+const responseContext = { state: { tab: 'recipes' } };
+vm.createContext(responseContext);
+vm.runInContext(`${core.slice(responseStart, responseEnd)};this.matches=isInitialViewResponse`, responseContext);
+assert.strictEqual(responseContext.matches('projectState', {}), true);
+assert.strictEqual(responseContext.matches('list', { tab:'recipes' }), false);
+responseContext.state.tab = 'notes';
+assert.strictEqual(responseContext.matches('list', { tab:'skills' }), false, 'A stale list response must not finish the active view');
+assert.strictEqual(responseContext.matches('list', { tab:'notes' }), true);
+for (const [tab, command] of Object.entries({ environments:'envList', servers:'serverList', agentSessions:'projectState', chatroom:'chatState', mcp:'mcpStatus', skillRouter:'skillRouterStatus', subscriptions:'subscriptionState' })) {
+  responseContext.state.tab = tab;
+  assert.strictEqual(responseContext.matches(command, {}), true, `${command} must finish ${tab} startup`);
 }
 
 function element() {

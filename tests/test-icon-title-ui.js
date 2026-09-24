@@ -34,12 +34,15 @@ assert.strictEqual((sidebarIcon.match(/<path /g) || []).length, 5, "the Activity
 assert.doesNotMatch(sidebarIcon, /data-role=["'](?:wand|star|potion|flame)["']/, "the Activity Bar icon must remain a focused smoking cauldron");
 assert.match(html, /knowledge-library-icon[^>]*[\s\S]{0,120}codicon-library/,
   "Knowledge must retain the original VS Code library icon");
-for (const icon of ["academy-wizard-tools", "academy-witch-original", "academy-dials"]) {
+for (const icon of ["academy-magic-tools", "academy-witch-original", "academy-dials"]) {
   assert(html.includes(icon), `workspace rail must include ${icon}`);
 }
-for (const wizardPart of ["wizard-hat", "wizard-robe", "wizard-wand"]) {
-  assert(html.includes(wizardPart), `Tools icon must include ${wizardPart}`);
+for (const toolPart of ["tools-wand-left", "tools-wand", "tools-broom-right", "tools-broom-handle", "tools-broom-bristles"]) {
+  assert(html.includes(toolPart), `Tools icon must include ${toolPart}`);
 }
+assert.doesNotMatch(html, /wizard-(?:hat|robe|wand)/, "the replaced Tools wizard must not return");
+assert.match(html, /data-workspace="automation"[^>]*>[\s\S]*?academy-cauldron/,
+  "Recipe automation must retain the cauldron artwork");
 assert.doesNotMatch(html, /academy-banner/, "the replaced Projects quest banner must not return");
 assert.doesNotMatch(html, /academy-broom-rider/, "the rejected Projects line-art rider must not return");
 assert.match(html, /academy-loading-sigil/);

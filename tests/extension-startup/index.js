@@ -34,6 +34,14 @@ async function run() {
 
   const expectPanel = process.env.PKM_STARTUP_EXPECT_PANEL === "true";
   if (expectPanel) await vscode.commands.executeCommand("personalKnowledge.open");
+  if (process.env.PKM_STARTUP_SCENARIO === "clean-install") {
+    const recipeIntentDraft = await vscode.commands.executeCommand("_personalKnowledge.testRecipeIntentDraft");
+    assert.strictEqual(recipeIntentDraft.refreshedFromWebview, true, "an open clean editor did not receive the latest webview draft");
+    assert.strictEqual(recipeIntentDraft.applied, true, "Recipe intent edit was not applied");
+    assert.strictEqual(recipeIntentDraft.saved, true, "Recipe intent document did not save");
+    assert.strictEqual(recipeIntentDraft.persistedDraft, "Brief: edited through a real VS Code document save.");
+    assert.strictEqual(recipeIntentDraft.projectStoreUnchanged, true, "saving an Intent draft persisted the Recipe prematurely");
+  }
   const logPath = process.env.PKM_STARTUP_LOG_PATH;
   assert.ok(logPath, "startup log path was not provided");
   await waitFor(() => {

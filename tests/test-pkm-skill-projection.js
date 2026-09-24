@@ -24,9 +24,22 @@ try {
   filestore.setStorePath(path.join(root, "store"));
   const projection = require("../dist/pkm-skill-projection");
   const bundledSource = fs.readFileSync(path.join(__dirname, "..", "resources", "pkm-skills-router.md"), "utf8");
-  assert.match(bundledSource, /^router_version:\s*1\.1\.6$/m);
-  const legacySource = bundledSource.replace("router_version: 1.1.6", "router_version: 1.1.5").replace(/\n## Unified Retrieval[\s\S]*?(?=\n## Maintaining Skills)/, "");
-  assert.strictEqual(crypto.createHash("sha256").update(legacySource, "utf8").digest("hex"), "614f9aec0acd2f90d4072d83649b7cfc1b0625723ede396505c82c11a86e49aa");
+  assert.match(bundledSource, /^router_version:\s*1\.5\.0$/m);
+  assert.match(bundledSource, /MUST use for every substantial/);
+  assert.match(bundledSource, /agent_session_todo_append/);
+  assert.match(bundledSource, /start of every later user turn/);
+  assert.match(bundledSource, /agent_session_todo_replan/);
+  assert.match(bundledSource, /`report_status` action/);
+  assert.match(bundledSource, /do not abandon, reorder, or preempt/);
+  assert.match(bundledSource, /Do not execute a substantial todo outside a Recipe run/);
+  assert.match(bundledSource, /the user does\s+not need to mention a Recipe/, "Recipe discovery must be proactive rather than keyword-gated");
+  assert.match(bundledSource, /"kind":"pkm\.step\.noop\/v1"/);
+  const legacySource = bundledSource
+    .replace("router_version: 1.5.0", "router_version: 1.1.6")
+    .replace("MUST use for every substantial coding, research, debugging, or operational task, and again when later user instructions arrive, to preserve Agent Session todos and execute work through Recipes.", "Use when: starting substantial coding, research, debugging, or workflow tasks that may benefit from personal conventions or domain knowledge; also use when reusable knowledge should be added to or updated in PKM.")
+    .replace(/\n## Managed Task Routing[\s\S]*?(?=\n## Before Substantial Work)/, "")
+    .replace(/\n## Recipe Discovery and Evolution[\s\S]*?(?=\n## Broker Skills)/, "");
+  assert.strictEqual(crypto.createHash("sha256").update(legacySource, "utf8").digest("hex"), "346a18db7462d92957e820f5c49b6e528de123071db49733ba1a1069cc990eb8");
   const canonicalSource = path.join(root, "store", "skills", "System", "PKM", "PKM Skills.md");
   fs.mkdirSync(path.dirname(canonicalSource), { recursive: true });
   fs.writeFileSync(canonicalSource, legacySource, "utf8");
@@ -53,20 +66,20 @@ try {
   );
 
   let status = projection.pkmSkillProjectionStatus(context);
-  assert.strictEqual(status.routerVersion, "1.1.6");
+  assert.strictEqual(status.routerVersion, "1.5.0");
   assert.strictEqual(status.minimumMcpSchema, "2.8.0");
   assert.strictEqual(status.targets.find(target => target.id === "copilot").state, "missing");
 
   const injected = projection.injectPkmSkill(context, "copilot");
   assert.strictEqual(injected.state, "current");
   assert(fs.existsSync(injected.skillPath));
-  assert.match(fs.readFileSync(canonicalSource, "utf8"), /^router_version:\s*1\.1\.6$/m);
+  assert.match(fs.readFileSync(canonicalSource, "utf8"), /^router_version:\s*1\.5\.0$/m);
   const generated = fs.readFileSync(injected.skillPath, "utf8");
   assert.match(generated, /^---\nname: pkm-skills/m);
   assert.match(generated, /<!-- pkm-managed /);
   assert(fs.existsSync(status.sourcePath), "inject must create the canonical PKM source");
 
-  const newerGenerated = generated.replace('"routerVersion":"1.1.6"', '"routerVersion":"1.1.7"');
+  const newerGenerated = generated.replace('"routerVersion":"1.5.0"', '"routerVersion":"1.5.1"');
   fs.writeFileSync(injected.skillPath, newerGenerated, "utf8");
   status = projection.pkmSkillProjectionStatus(context);
   assert.strictEqual(status.targets.find(target => target.id === "copilot").state, "newer");

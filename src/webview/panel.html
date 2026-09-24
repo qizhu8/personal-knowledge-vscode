@@ -32,9 +32,13 @@
 <div id="workspace-shell">
 <nav id="workspace-rail" aria-label="Primary workspaces">
   <button class="workspace-button active" data-workspace="knowledge" title="Knowledge" aria-label="Knowledge"><span class="knowledge-library-icon" aria-hidden="true"><span class="codicon codicon-library"></span><span class="knowledge-library-spark">✦</span></span></button>
-  <button class="workspace-button" data-workspace="tools" title="Tools" aria-label="Tools"><svg class="academy-icon academy-wizard-tools" viewBox="0 0 24 24" aria-hidden="true"><path class="wizard-hat" d="m5.2 7.8 6.5-4.9 6.6 4.9M4.3 8h14.8"/><circle class="wizard-head" cx="11.7" cy="10.4" r="1.7"/><path class="wizard-robe" d="M9.3 12.4h4.8l2.1 7.3H7.1l2.2-7.3Zm.2.2 2.2 2 2.2-2m-5 1.5-2.5 3m8.1-3 2 2.4"/><path class="wizard-wand" d="m16.8 19.5 3.4-5.2"/><path class="academy-spark" d="m21 10 .55 1.45L23 12l-1.45.55L21 14l-.55-1.45L19 12l1.45-.55z"/></svg></button>
+  <span class="workspace-separator" aria-hidden="true"></span>
+  <button class="workspace-button" data-workspace="tools" title="Tools" aria-label="Tools"><svg class="academy-icon academy-magic-tools" viewBox="0 0 24 24" aria-hidden="true"><g class="tools-wand-left"><path class="tools-wand" d="M3.2 20.4 10.4 10"/><path class="academy-spark" d="m11.2 5.4.65 1.65 1.65.65-1.65.65-.65 1.65-.65-1.65-1.65-.65 1.65-.65z"/></g><g class="tools-broom-right"><path class="tools-broom-handle" d="M14.2 18.4 20.8 4.2"/><path class="tools-broom-bristles" d="m13.7 17.5-2.2 3.2m3-2.7-.6 3.8m1.4-3.4 1.4 2.6m-4.1-4.2 4.3 2"/></g></svg></button>
+  <span class="workspace-separator" aria-hidden="true"></span>
   <button class="workspace-button" data-workspace="automation" title="Automation" aria-label="Automation"><svg class="academy-icon academy-cauldron" viewBox="0 0 24 24" aria-hidden="true"><path class="cauldron-steam steam-one" d="M9 6c-1-1.2 1-1.7 0-3"/><path class="cauldron-steam steam-two" d="M14 6c-1.1-1.4 1.2-2 0-3.4"/><path d="M5 8h14M6.5 8.5c0 5.2 1.7 8 5.5 8s5.5-2.8 5.5-8m-9.3 7.5-1.4 2.3m9-2.3 1.4 2.3M6.5 10H4.8m12.7 0h1.7"/><circle class="cauldron-bubble bubble-one" cx="11" cy="9.8" r=".7"/><circle class="cauldron-bubble bubble-two" cx="14.2" cy="11.2" r=".55"/></svg></button>
+  <span class="workspace-separator" aria-hidden="true"></span>
   <button class="workspace-button" data-workspace="projects" title="Projects" aria-label="Projects"><svg class="academy-icon academy-witch-original" viewBox="0 0 24 24" aria-hidden="true"><circle class="witch-moon" cx="12" cy="12" r="10"/><g class="witch-flight"><path class="witch-hat" d="M4.9 7.35c1.4-.55 2.6-.9 3.65-1.1.65-2.15 1.95-3.75 4.05-4.85-.15 1.15.35 1.9 1.3 2.45.85.5 1.75.55 2.6.1-.45 1.2-1.45 2.1-2.85 2.55.8.05 1.55.2 2.25.4-.65 1.05-2.55 1.55-5.35 1.55-2.55 0-4.35-.45-5.4-1.4z"/><circle cx="11.1" cy="9.65" r="1.35"/><path class="witch-cape" d="M9.6 11.6c1.8-.7 3.8-.2 5 1.4l1.3 2.1-3.7 1.3-4.7-1.9c.3-1.3 1-2.3 2.1-2.9z"/><path class="witch-limbs" d="m13.4 12.6 3.1 1.8M10 15l-2.1 2.8M12.8 15.6l2.3 1.5"/><path class="witch-broom" d="M3.6 19.1 21.1 14.5"/><path d="M5.2 17.4c-2-.5-3.7 0-4.7 1.5 1.7.3 3.1 1 4.8 1.1l1.1-1.4z"/></g></svg></button>
+  <span class="workspace-separator" aria-hidden="true"></span>
   <button class="workspace-button" data-workspace="settings" title="Settings" aria-label="Settings"><svg class="academy-icon academy-dials" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/><circle class="dial dial-one" cx="9" cy="6" r="2"/><circle class="dial dial-two" cx="15" cy="12" r="2"/><circle class="dial dial-three" cx="8" cy="18" r="2"/><path class="dial-spark" d="m19 8 .5 1.2 1.2.5-1.2.5-.5 1.2-.5-1.2-1.2-.5 1.2-.5z"/></svg></button>
 </nav>
 <div id="workspace-stage">
@@ -47,7 +51,8 @@
         <button class="tab" role="tab" aria-selected="false" data-tab="papers">Research</button>
       </div>
       <div id="content-toolbar">
-        <div class="find-control" id="content-find-control">
+        <div class="find-control pkm-search-field" id="content-find-control">
+          <span class="codicon codicon-search pkm-search-icon" aria-hidden="true"></span>
           <input id="searchbox" type="search" placeholder="Search…" title="Search the current content collection">
           <span id="search-count" class="find-count">0/0</span>
           <button id="search-prev" type="button" onclick="navigateFind('content',-1)" title="Previous match" aria-label="Previous match"><span class="codicon codicon-arrow-up" aria-hidden="true"></span></button>
@@ -83,6 +88,7 @@
       <span class="workspace-context-title">Automation</span>
       <div class="workspace-context-tabs" role="tablist" aria-label="Automation views">
         <button class="tab" role="tab" aria-selected="false" data-tab="agentSessions">Agent Sessions</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="agentSnapshots">Agent Snapshot</button>
         <button class="tab" role="tab" aria-selected="false" data-tab="recipes">Recipe Library</button>
       </div>
     </div>
@@ -99,6 +105,7 @@
         <button class="tab" role="tab" aria-selected="false" data-tab="mcp">General &amp; MCP</button>
         <button class="tab" role="tab" aria-selected="false" data-tab="skillRouter">Skill Router</button>
         <button class="tab" role="tab" aria-selected="false" data-tab="subscriptions">Network &amp; Sharing</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="githubSync">GitHub Sync</button>
       </div>
     </div>
   </nav>

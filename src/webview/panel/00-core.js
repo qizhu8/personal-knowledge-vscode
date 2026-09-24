@@ -122,9 +122,20 @@ function renderMermaid(root) {
   return Promise.all(jobs);
 }
 const esc = s => String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+function fileSelectorCategoryTree(items) {
+  const root = { folders:{}, items:[] };
+  for (const item of items) {
+    const parts = String(item.treePath ?? item.cat ?? '').split('/').map(part => part.trim()).filter(Boolean);
+    let node = root;
+    for (const part of parts) node = node.folders[part] ||= { folders:{}, items:[] };
+    node.items.push(item);
+  }
+  return root;
+}
+function fileSelectorTreeItems(node) { return [...node.items, ...Object.values(node.folders).flatMap(fileSelectorTreeItems)]; }
 const uiIcon = (name, label = '') => `<span class="codicon codicon-${name}" aria-hidden="true"></span>${label ? `<span>${esc(label)}</span>` : ''}`;
 const ICON = {todo:uiIcon('circle-outline'),done:uiIcon('pass-filled'),'data-path':uiIcon('folder'),observation:uiIcon('eye'),general:uiIcon('note')};
-const surfacePanelTitles = { skills:'Skills', notes:'Notes', papers:'Research', agentSessions:'Agent Sessions', recipes:'Recipe Library', prompts:'Prompts', scripts:'Scripts', packages:'Packages', environments:'Environments', servers:'Servers', projects:'Projects', chatroom:'Threads', subscriptions:'Network & Sharing', mcp:'General & MCP', skillRouter:'Skill Router' };
+const surfacePanelTitles = { skills:'Skills', notes:'Notes', papers:'Research', agentSessions:'Agent Sessions', recipes:'Recipe Library', prompts:'Prompts', scripts:'Scripts', packages:'Packages', environments:'Environments', servers:'Servers', projects:'Projects', chatroom:'Threads', subscriptions:'Network & Sharing', githubSync:'GitHub Sync', mcp:'General & MCP', skillRouter:'Skill Router' };
 let lastPanelTitle = '';
 function setPanelTitle(title) {
   const next = String(title || 'Personal Knowledge Manager').trim();
@@ -242,9 +253,9 @@ scheduleUiTranslation();
 const workspaceSurfaces = Object.freeze({
   knowledge:['skills','notes','papers'],
   tools:['prompts','scripts','packages','environments','servers'],
-  automation:['agentSessions','recipes'],
+  automation:['agentSessions','agentSnapshots','recipes'],
   projects:['projects','chatroom'],
-  settings:['mcp','skillRouter','subscriptions']
+  settings:['mcp','skillRouter','subscriptions','githubSync']
 });
 const workspaceDefaultSurface = Object.freeze({ knowledge:'skills', tools:'prompts', automation:'agentSessions', projects:'projects', settings:'mcp' });
 function workspaceForTab(tab) {
@@ -267,6 +278,9 @@ const actionTimeouts = {
   serverSubscriptionStatus:15000,
   serverSubscriptionRefresh:60000,
   chatAddManagedAgent:180000,
+  agentSnapshotCreate:30000, agentSnapshotDelete:15000,
+  recipeOpenBrowser:30000,
+  githubSyncSave:30000, githubSyncRun:120000, githubSyncCreateIdentity:30000, githubSyncTestAuthentication:30000,
   mcpRepairRuntime:600000, mcpSetPython:600000, generateMcp:90000,
   checkMcp:15000, mcpDetectPython:60000, refreshMcpPathSizes:30000,
 };
@@ -549,8 +563,11 @@ document.getElementById('ctx-move').addEventListener('click', () => {
 // ── Message from extension ─────────────────────────────────────────────────
 window.addEventListener('message', e => {
   const { command, data } = e.data;
+  if (isInitialViewResponse(command, e.data)) finishLoadingProgress();
   if      (command === 'loadingProgress') { updateLoadingProgress(data); }
-  else if (command === 'inventoryBatch') {
+  else if (command === 'inventoryBatch') { /* progress only; refresh once when the inventory is ready */ }
+  else if (command === 'inventoryReady') {
+    ['skills','notes','scripts'].forEach(invalidateKnowledgeTabView);
     if (['skills','notes','scripts'].includes(state.tab)) ask('list', { tab: state.tab, filter: state.filter, q: state.search }, null, true);
   }
   else if (command === 'list')     { if (e.data.tab && e.data.tab !== state.tab) return; finishAction('list','deleteSkill','skillTrashFolder','skillTrashRestore','skillTrashDelete','skillTrashEmpty','knowledgeTrashMove','knowledgeTrashRestore','knowledgeTrashDelete','knowledgeTrashEmpty'); if (revealRefreshedTreeItems(state.tab, state.items, data, pendingTreeRefresh)) pendingTreeRefresh = null; state.items = data; state.folders = e.data.folders || []; state.subscriptionGroups = e.data.subscriptionGroups || []; state.knowledgeTrash = e.data.knowledgeTrash || []; state.brokerSharedFolders = e.data.brokerSharedFolders || {}; if (Array.isArray(e.data.privateTopLevels)) state.privateTopLevels = e.data.privateTopLevels; renderList(); highlightDetailMatches(document.getElementById('layout'), state.search); }
@@ -628,7 +645,15 @@ window.addEventListener('message', e => {
   }
   else if (command === 'serverLog') { onServerLog(e.data.slug, e.data.text); }
   else if (command === 'serverPickFolder') { onServerPickFolder(e.data.dir); }
-  else if (command === 'subscriptionState') { finishAction('subscriptionState','subscriptionConfigure','subscriptionSetOnline','subscriptionUpsertShare','subscriptionDeleteShare','subscriptionAdd','subscriptionRename','subscriptionRefresh','subscriptionRemove','subscriptionUnblockIp','subscriptionRotateSecret'); subscriptionOnState(data); finishLoadingProgress(); }
+  else if (command === 'subscriptionState') { finishAction('subscriptionState','subscriptionConfigure','subscriptionSetOnline','subscriptionUpsertShare','subscriptionDeleteShare','subscriptionAdd','subscriptionMountGitHub','subscriptionRename','subscriptionRefresh','subscriptionRemove','subscriptionUnblockIp','subscriptionRotateSecret'); subscriptionOnState(data); finishLoadingProgress(); }
+  else if (command === 'githubSyncState') { finishAction('githubSyncState','githubSyncSave','githubSyncDelete','githubSyncRun'); githubSyncOnState(data); finishLoadingProgress(); }
+  else if (command === 'githubSyncCompleted') { finishAction('githubSyncRun'); vscode.postMessage({ command:'toast', text:data?.changed ? 'GitHub target synchronized' : 'GitHub target is already current' }); }
+  else if (command === 'githubSyncRestored') { finishAction('githubSyncRestore'); vscode.postMessage({ command:'toast', text:`Restored ${data?.restored?.length || 0} file(s) from GitHub` }); }
+  else if (command === 'githubSyncRestoreCancelled') { finishAction('githubSyncRestore'); }
+  else if (command === 'githubSyncIdentityPicked') { finishAction('githubSyncPickIdentity'); githubSyncIdentityPicked(data?.identityFile || ''); }
+  else if (command === 'githubSyncIdentityCreated') { finishAction('githubSyncCreateIdentity'); githubSyncIdentityPicked(data?.identityFile || ''); vscode.postMessage({ command:'toast', text:'SSH public key copied; add it to GitHub, then test the account' }); }
+  else if (command === 'githubSyncAuthenticationResult') { finishAction('githubSyncTestAuthentication'); githubSyncOnAuthenticationResult(data); vscode.postMessage({ command:'toast', text:`Authenticated as ${data?.login || 'unknown'}` }); }
+  else if (command === 'githubSyncError') { githubSyncSaving = false; const action = String(data?.action || ''); if (action && pendingActionButtons.has(action)) failAction(data?.error || 'GitHub Sync failed.', action); else showViewActionError(data?.error || 'GitHub Sync failed.'); finishLoadingProgress(); }
   else if (command === 'subscriptionChanged') {
     if (state.tab === 'subscriptions' && !hasPendingActionPrefix('subscription')) ask('subscriptionState', {});
     else if (state.tab === 'servers') ask('serverList', {});
@@ -641,6 +666,7 @@ window.addEventListener('message', e => {
     finishLoadingProgress();
   }
   else if (command === 'subscriptionSecret') { finishAction('subscriptionRevealSecret','subscriptionRotateSecret'); subscriptionShowSecret(data?.secret || ''); finishLoadingProgress(); }
+  else if (command === 'subscriptionGitHubTestResult') { finishAction('subscriptionTestGitHubBranch'); subscriptionGitHubTestResult(data || {}); finishLoadingProgress(); }
   else if (command === 'subscriptionRenamed') {
     const subscription = (subscriptionData.subscriptions || []).find(item => item.id === data?.id);
     if (subscription) subscription.alias = data?.alias || '';
@@ -654,7 +680,7 @@ window.addEventListener('message', e => {
     const completedCommands = {
       configured:'subscriptionConfigure', online:'subscriptionSetOnline', offline:'subscriptionSetOnline',
       published:'subscriptionUpsertShare', created:'subscriptionUpsertShare', copied:'subscriptionCopyLink',
-      subscribed:'subscriptionAdd', refreshed:'subscriptionRefresh', removed:'subscriptionRemove',
+      subscribed:'subscriptionAdd', githubMounted:'subscriptionMountGitHub', refreshed:'subscriptionRefresh', removed:'subscriptionRemove',
       brokerDeleted:'subscriptionDeleteShare', brokerDeleteCancelled:'subscriptionDeleteShare',
       brokerPaused:'subscriptionSetSharePublished', brokerPublished:'subscriptionSetSharePublished',
       unblocked:'subscriptionUnblockIp', serverOpened:'subscriptionOpenServerLink',
@@ -692,7 +718,18 @@ window.addEventListener('message', e => {
   }
   else if (command === 'paperGraph') { renderPaperGraph(e.data.data); }
   else if (command === 'projectState') { projectOnState(data); }
+  else if (command === 'projectStateChanged') {
+    projectSnapshotDirty = true;
+    const scope = String(data?.scope || 'all');
+    const relevant = state.tab === 'recipes' ? scope === 'projects' || scope === 'all'
+      : ['agentSessions','agentSnapshots'].includes(state.tab) ? scope !== 'projects' || scope === 'all'
+      : state.tab === 'projects';
+    if (relevant) ask('projectState', {});
+  }
   else if (command === 'projectResult') { projectOnResult(data); }
+  else if (command === 'agentSnapshotCreated') { finishAction('agentSnapshotCreate'); agentSnapshotOnCreated(data); }
+  else if (command === 'recipeValidationResult') { recipeOnValidation(data); }
+  else if (command === 'recipeIntentEdited') { recipeOnIntentEdited(data); }
   else if (command === 'projectError') { projectOnError(data); }
   else if (command === 'promptRendered') { promptRendered(data); }
   else if (command === 'promptInferenceResult') { promptInferenceResult(data); }
@@ -705,7 +742,10 @@ window.addEventListener('message', e => {
   else if (command === 'reloaded') {
     renderNonce++; // force cached note images to reload after external regeneration
     pendingTreeRefresh = data || {};
-    if (['skills','notes','papers','prompts','packages','scripts'].includes(state.tab)) {
+    const changedArea = String(data?.changedPath || '').split('/')[0];
+    if (cachedKnowledgeTabs.has(changedArea)) invalidateKnowledgeTabView(changedArea);
+    else cachedKnowledgeTabs.forEach(invalidateKnowledgeTabView);
+    if (cachedKnowledgeTabs.has(state.tab) && (!changedArea || changedArea === state.tab)) {
       ask('list', { tab: state.tab, filter: state.filter, q: state.search }, null, true);
     }
     // Re-render the currently open note/skill so external edits and regenerated
@@ -893,6 +933,15 @@ function updateLoadingProgress(progress = {}) {
   if (loadingProgressVisible) renderLoadingProgress(progress);
 }
 
+function isInitialViewResponse(command, message = {}) {
+  const responseByTab = {
+    skills:'list', notes:'list', papers:'list', prompts:'list', packages:'list', scripts:'list',
+    environments:'envList', servers:'serverList', agentSessions:'projectState', recipes:'projectState', projects:'projectState',
+    chatroom:'chatState', mcp:'mcpStatus', skillRouter:'skillRouterStatus', subscriptions:'subscriptionState', githubSync:'githubSyncState',
+  };
+  return responseByTab[state.tab] === command && (command !== 'list' || message.tab === state.tab);
+}
+
 function finishLoadingProgress() {
   clearTimeout(loadingRevealTimer);
   loadingRevealTimer = null;
@@ -1056,4 +1105,3 @@ applyMainSidebarState();
 initColumnResizer('layout-resizer', 'sidebar', 'pk-main-sidebar', 150, 600, 1, false);
 initColumnResizer('note-split-resizer', 'note-editor-pane', 'pk-note-editor', 140, 1000, 1, true);
 initColumnResizer('paper-split-resizer', 'pf-content', 'pk-paper-editor', 140, 1000, 1, true);
-
