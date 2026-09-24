@@ -5,6 +5,8 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-09-24
+
 ### Added
 - Added the **Recipe Library** workbench under Automation with searchable category navigation, visual Graph and JSON editing, typed inputs/outputs, dependency wiring, Script adapters, Skill/Note references, validation, immutable revisions, Browser editing, Trash recovery, and project-scoped Recipe bundles.
 - Added durable Recipe execution controls for branches, bounded loops, pinned subrecipes, background commands, mandatory human gates, runtime evidence, Agent Session progress graphs, and fast indexed Recipe discovery.
