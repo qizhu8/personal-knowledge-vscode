@@ -5,6 +5,11 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.1.2] - 2026-09-25
+
+### Changed
+- Published the verified 3.1.1 bug-fix candidate as the Stable release under version 3.1.2 because version 3.1.1 was used for the Marketplace Pre-Release. Runtime behavior is unchanged from 3.1.1.
+
 ## [3.1.1] - 2026-09-25
 
 ### Added
