@@ -8,6 +8,7 @@ interface MaterializeTask {
   record: {
     id: string;
     alias: string;
+    priority: "normal" | "high" | "highest";
     publisher: string;
     nodeId: string;
     shareId: string;
@@ -105,6 +106,7 @@ function materialize(task: MaterializeTask): number {
     schema: 1,
     subscriptionId: task.record.id,
     alias: task.record.alias,
+    priority: task.record.priority,
     brokerName: task.summary.name,
     publisher: task.record.publisher,
     nodeId: task.record.nodeId,

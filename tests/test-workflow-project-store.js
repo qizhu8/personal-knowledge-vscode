@@ -37,7 +37,7 @@ try {
   assert.strictEqual(initial.rootId, "root_root");
   assert.deepStrictEqual(initial.projects.map(project => [project.name, project.systemKind]), [["Default Project", "default-project"]]);
   assert.deepStrictEqual(initial.threads.map(thread => [thread.name, thread.systemKind]), [["General", "general-thread"]]);
-  assert.deepStrictEqual(initial.recipes.map(recipe => recipe.name), ["Software Development", "Bug Fix", "UI Development", "Reflection", "Use Recipe Library", "Publish Personal Knowledge VSIX", "PKM Tutorial"]);
+  assert.deepStrictEqual(initial.recipes.map(recipe => recipe.name), ["Software Development", "Bug Fix", "UI Development", "Reflection", "Use Recipe Library", "PKM Tutorial"]);
   assert(initial.recipes.every(recipe => recipe.scope === "global" && recipe.systemKind === "built-in"));
   assert.strictEqual(initial.recipes.find(recipe => recipe.name === "PKM Tutorial").category, "Examples/PKM");
   assert.strictEqual(fs.statSync(file(directory)).mode & 0o777, 0o600);
@@ -158,7 +158,7 @@ try {
   const legacyDirectory = temporary();
   new ProjectStore(legacyDirectory, ids("legacy-root")).list();
   const legacy = read(legacyDirectory); delete legacy.payload.state.recipes; write(legacyDirectory, resign(legacy));
-  assert.deepStrictEqual(new ProjectStore(legacyDirectory).list().recipes.map(recipe => recipe.name), ["Software Development", "Bug Fix", "UI Development", "Reflection", "Use Recipe Library", "Publish Personal Knowledge VSIX", "PKM Tutorial"]);
+  assert.deepStrictEqual(new ProjectStore(legacyDirectory).list().recipes.map(recipe => recipe.name), ["Software Development", "Bug Fix", "UI Development", "Reflection", "Use Recipe Library", "PKM Tutorial"]);
 
   const malformedDirectory = temporary();
   fs.mkdirSync(malformedDirectory, { recursive: true });

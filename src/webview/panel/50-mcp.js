@@ -119,19 +119,19 @@ function renderPkmSkillTargets(data) {
   const guideSkill = data?.firstRunGuide?.visible && data.firstRunGuide.step === 'skill';
   const rows = (skill.targets || []).map(target => {
     const update = ['missing','outdated','content-outdated','modified'].includes(target.state);
-    const label = target.state === 'missing'
+    const label = target.state === 'missing' && !target.connected
       ? `Inject PKM Skill · v${target.expectedVersion || skill.routerVersion}`
-      : `Update PKM Skill · v${target.installedVersion || 'unknown'} → v${target.expectedVersion || skill.routerVersion}`;
-    const labelKey = target.state === 'missing' ? 'config.injectSkill' : 'config.updateSkill';
-    const labelParams = target.state === 'missing'
+      : `Repair PKM Skill · v${target.expectedVersion || skill.routerVersion}`;
+    const labelKey = target.state === 'missing' && !target.connected ? 'config.injectSkill' : '';
+    const labelParams = target.state === 'missing' && !target.connected
       ? { version: target.expectedVersion || skill.routerVersion }
-      : { installed: target.installedVersion || 'unknown', expected: target.expectedVersion || skill.routerVersion };
+      : {};
     const pending = pkmSkillPendingTargets.has(target.id) || pkmSkillUpdatingAll;
     const action = update
-      ? `<button class="tbtn pkm-skill-update-action ${guideSkill && updateTargets.length === 1 ? 'pkm-first-run-target' : ''}" style="border-color:var(--accent)" onclick="${guideSkill && updateTargets.length === 1 ? 'completeIntegrationGuide();' : ''}pkmSkillInjectOne(this,'${esc(target.id)}')" ${pending ? 'disabled aria-busy="true"' : ''}>${pending ? '<span class="pkm-action-spinner"></span> Updating…' : `<span ${mcpI18nAttrs(labelKey, labelParams)}>${label}</span>`}</button>`
+      ? `<button class="tbtn pkm-skill-update-action ${guideSkill && updateTargets.length === 1 ? 'pkm-first-run-target' : ''}" style="border-color:var(--accent)" onclick="${guideSkill && updateTargets.length === 1 ? 'completeIntegrationGuide();' : ''}pkmSkillInjectOne(this,'${esc(target.id)}')" ${pending ? 'disabled aria-busy="true"' : ''}>${pending ? '<span class="pkm-action-spinner"></span> Updating…' : `<span ${labelKey ? mcpI18nAttrs(labelKey, labelParams) : ''}>${label}</span>`}</button>`
       : '';
-    const remove = target.managed
-      ? `<button class="tbtn" onclick="ask('pkmSkillRemove',{id:'${esc(target.id)}'})">Remove</button>`
+    const remove = target.connected
+      ? `<button class="tbtn" onclick="ask('pkmSkillRemove',{id:'${esc(target.id)}'})">${target.managed ? 'Disconnect & Remove' : 'Disconnect'}</button>`
       : '';
     const removeTarget = target.kind === 'custom'
       ? `<button class="tbtn" onclick="ask('pkmSkillRemoveCustomTarget',{id:'${esc(target.id)}'})">Remove Target</button>`
@@ -147,7 +147,7 @@ function renderPkmSkillTargets(data) {
     <div class="pkm-config-heading"><div><strong>PKM Skill Router</strong><div class="pkm-skill-detail" ${mcpI18nAttrs('config.routerNative', { version: skill.routerVersion, minimum: skill.minimumMcpSchema })}>Native discovery adapter · router v${esc(skill.routerVersion)} · requires MCP ≥ ${esc(skill.minimumMcpSchema)}</div></div>
       <div class="pkm-config-actions">${updateTargets.length > 1 ? `<button class="tbtn pkm-skill-update-all ${guideSkill ? 'pkm-first-run-target' : ''}" style="border-color:var(--accent)" onclick='${guideSkill ? 'completeIntegrationGuide();' : ''}pkmSkillInjectAll(this,${JSON.stringify(updateTargets.map(target => target.id))})' ${pkmSkillUpdatingAll ? 'disabled aria-busy="true"' : ''}>${pkmSkillUpdatingAll ? '<span class="pkm-action-spinner"></span> Updating all…' : `${uiIcon('refresh')} Update All (${updateTargets.length})`}</button>` : ''}<button class="tbtn" onclick="ask('pkmSkillBrowseCustomTarget',{})">${uiIcon('folder-opened', 'Browse Directory')}</button><button class="tbtn" onclick="ask('pkmSkillEnterCustomTarget',{})">${uiIcon('edit', 'Enter Path')}</button></div></div>
     <div class="pkm-skill-source">Canonical source: <code>${esc(skill.sourcePath)}</code>${skill.sourceExists ? '' : ' · created on first Inject'}</div>
-    <div class="pkm-skill-detail" style="margin-bottom:8px"><span data-i18n="config.routerTargetHelpStart">Choose any Agent Skills root. PKM creates</span> <code>&lt;root&gt;/pkm-skills/SKILL.md</code>. <span data-i18n="config.routerTargetHelpEnd">Windows drive, UNC, user-home, and environment-variable paths are supported on their matching host.</span></div>
+    <div class="pkm-skill-detail" style="margin-bottom:8px"><span data-i18n="config.routerTargetHelpStart">Choose any Agent Skills root. PKM creates</span> <code>&lt;root&gt;/pkm-skills/SKILL.md</code>. Connected PKM-managed files are automatically reconciled from the canonical source; unrelated Agent files are never changed. <span data-i18n="config.routerTargetHelpEnd">Windows drive, UNC, user-home, and environment-variable paths are supported on their matching host.</span></div>
     ${rows || '<div class="empty">No Agent targets configured.</div>'}
     <div class="pkm-skill-proposals"><span><strong>Skill Proposals</strong> · <span ${mcpI18nAttrs('config.pendingCount', { count: proposals.length })}>${proposals.length} pending</span></span>
       <button class="tbtn" onclick="ask('pkmSkillOpenProposals',{})">Open Proposals Folder</button></div>
@@ -511,4 +511,3 @@ function copyAgencyInstall() {
   const text = document.getElementById('agency-install-code')?.textContent || '';
   navigator.clipboard.writeText(text).then(() => vscode.window.setStatusBarMessage?.('Copied!'));
 }
-

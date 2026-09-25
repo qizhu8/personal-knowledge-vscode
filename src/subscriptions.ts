@@ -16,6 +16,7 @@ import { stableUserPort } from "./user-service-ports";
 
 export type SharedContentType = "skills" | "notes" | "papers" | "prompts" | "scripts" | "packages" | "servers" | "recipes";
 export const SHARED_CONTENT_TYPES: SharedContentType[] = ["skills", "notes", "papers", "prompts", "scripts", "packages", "servers", "recipes"];
+export type SubscriptionPriority = "normal" | "high" | "highest";
 
 export interface ShareSummary {
   shareId: string;
@@ -61,6 +62,7 @@ export interface ShareDefinition {
 export interface SubscriptionRecord {
   id: string;
   alias: string;
+  priority?: SubscriptionPriority;
   brokerName?: string;
   nodeId: string;
   publisher: string;
@@ -100,6 +102,7 @@ export interface GitHubBranchMount {
 export interface CachedSubscriptionGroup {
   subscriptionId: string;
   alias: string;
+  priority: SubscriptionPriority;
   publisher: string;
   nodeId: string;
   shareId: string;
@@ -186,6 +189,12 @@ function tagsOf(value: unknown): string[] {
   if (Array.isArray(value)) return unique(value, 50);
   if (typeof value === "string") { try { return tagsOf(JSON.parse(value)); } catch { return unique(value.split(","), 50); } }
   return [];
+}
+function subscriptionPriority(value: unknown, strict = false): SubscriptionPriority {
+  const normalized = String(value || "normal").trim().toLowerCase();
+  if (normalized === "normal" || normalized === "high" || normalized === "highest") return normalized;
+  if (strict) throw new Error("Subscription priority must be normal, high, or highest.");
+  return "normal";
 }
 function normalizeEndpoint(value: string): string {
   const raw = value.trim().replace(/\/$/, "");
@@ -302,7 +311,10 @@ export class SharedMarketManager {
         share.revisionLabel = `${share.revisionDate}.r${share.dailyRevision}`;
       }
       this.state.subscriptions ||= [];
-      for (const record of this.state.subscriptions || []) record.brokerName ||= this.cachedBrokerName(record);
+      for (const record of this.state.subscriptions || []) {
+        record.brokerName ||= this.cachedBrokerName(record);
+        record.priority = subscriptionPriority(record.priority);
+      }
       this.save();
       this.prunePublishedSnapshots();
     }
@@ -325,14 +337,21 @@ export class SharedMarketManager {
       nodeId: this.state.nodeId, displayName: this.state.displayName, port: this.state.port, advertisedHost: this.state.advertisedHost,
       enabled: this.state.enabled, gatewayStatus: this.gatewayStatus, gatewayError: this.gatewayError,
       shares: this.state.shares.map(share => ({ ...share, magicLink: this.magicLink(share.shareId), ...this.brokerTelemetry(share.shareId) })),
-      subscriptions: this.state.subscriptions.map(record => ({ ...record, brokerName: record.brokerName || this.cachedBrokerName(record) })),
+      subscriptions: this.state.subscriptions.map(record => ({
+        ...record,
+        priority: subscriptionPriority(record.priority),
+        brokerName: record.brokerName || this.cachedBrokerName(record),
+      })),
     };
   }
 
   private reloadPersistedState(): void {
     try {
       const latest = JSON.parse(fs.readFileSync(this.statePath(), "utf8")) as PersistedState;
-      if (latest?.nodeId === this.state.nodeId) this.state = latest;
+      if (latest?.nodeId === this.state.nodeId) {
+        for (const record of latest.subscriptions || []) record.priority = subscriptionPriority(record.priority);
+        this.state = latest;
+      }
     } catch { /* retain the last complete atomic snapshot */ }
   }
 
@@ -431,7 +450,17 @@ export class SharedMarketManager {
         items.splice(0, items.length, ...recipes);
       }
       if (!items.length) return [];
-      return [{ subscriptionId: record.id, alias: record.alias || record.brokerName || this.cachedBrokerName(record) || record.publisher, publisher: record.publisher, nodeId: record.nodeId, shareId: record.shareId, revision: record.revision, syncedAt: cacheMetadata.syncedAt || record.lastUpdated || "", items }];
+      return [{
+        subscriptionId: record.id,
+        alias: record.alias || record.brokerName || this.cachedBrokerName(record) || record.publisher,
+        priority: subscriptionPriority(record.priority),
+        publisher: record.publisher,
+        nodeId: record.nodeId,
+        shareId: record.shareId,
+        revision: record.revision,
+        syncedAt: cacheMetadata.syncedAt || record.lastUpdated || "",
+        items,
+      }];
     });
   }
 
@@ -448,6 +477,7 @@ export class SharedMarketManager {
     let provenance: any = {};
     try { provenance = JSON.parse(fs.readFileSync(`${target}.pkm-source.json`, "utf8")); } catch { /* older cache */ }
     provenance.brokerName ||= record.brokerName || this.cachedBrokerName(record) || record.alias || record.publisher;
+    provenance.sourcePriority = subscriptionPriority(record.priority);
     return { type: "subscription", contentType: decoded.type, title: path.basename(decoded.path, path.extname(decoded.path)), path: decoded.path, content, provenance };
   }
 
@@ -548,6 +578,29 @@ export class SharedMarketManager {
     if (online) await this.ensureGateway();
     else await this.stopGateway();
     this.changed();
+  }
+
+  async refreshGatewayStatus(): Promise<void> {
+    const previousGatewayStatus = this.gatewayStatus;
+    const previousGatewayError = this.gatewayError;
+    if (this.state.enabled) {
+      try {
+        await this.ensureGateway();
+        this.gatewayStatus = "running";
+        this.gatewayError = "";
+        this.warned.delete("gateway");
+      } catch (error) {
+        this.gatewayStatus = "error";
+        this.gatewayError = error instanceof Error ? error.message : String(error);
+        this.warning("gateway", `PKM Common Communication Port ${this.state.port} is unavailable: ${this.gatewayError}`);
+      }
+    } else {
+      this.gatewayStatus = "stopped";
+      this.gatewayError = "";
+      this.warned.delete("gateway");
+      this.warned.delete("gateway-restarted");
+    }
+    if (previousGatewayStatus !== this.gatewayStatus || previousGatewayError !== this.gatewayError) this.changed();
   }
 
   async upsertShare(input: { shareId?: string; name: string; visibility?: "public" | "unlisted"; contentTypes: SharedContentType[]; selected?: Partial<SyncSelection>; folders?: Partial<Record<SharedContentType, string[]>>; accessMode?: "block-list" | "white-list"; ipRules?: string[]; accountMode?: "open" | "block-list" | "white-list"; accountRules?: string[]; protection?: "open" | "secret-protected"; secret?: string; controlPort?: number; dataPort?: number }): Promise<ShareDefinition> {
@@ -732,7 +785,7 @@ export class SharedMarketManager {
     } else endpoint = normalizeEndpoint(endpoint);
     const existing = this.state.subscriptions.find(item => item.nodeId === payload.nodeId && item.shareId === payload.shareId);
     const record: SubscriptionRecord = existing || {
-      id: randomBytes(12).toString("base64url"), alias: "", nodeId: payload.nodeId, publisher: payload.publisher,
+      id: randomBytes(12).toString("base64url"), alias: "", priority: "normal", nodeId: payload.nodeId, publisher: payload.publisher,
       publisherUser: payload.publisherUser, publisherHost: payload.publisherHost,
       endpoint, shareId: payload.shareId, publicKey: payload.publicKey, magicLink, revision: 0, collectionHash: "",
       topics: [], tags: [], counts: {}, itemCount: 0, etag: "", status: "new",
@@ -760,7 +813,7 @@ export class SharedMarketManager {
     const repositoryHost = (() => { try { return new URL(repository).hostname; } catch { return /^(?:[^@/\s]+@)?([^/:\s]+):/.exec(repository)?.[1] || "github.com"; } })();
     const existing = this.state.subscriptions.find(record => record.source?.type === "github" && ((input.targetId && record.source.targetId === input.targetId) || record.source.repository === repository && record.source.branch === branch));
     const record: SubscriptionRecord = existing || {
-      id: randomBytes(12).toString("base64url"), alias: "", nodeId, publisher: "GitHub",
+      id: randomBytes(12).toString("base64url"), alias: "", priority: "normal", nodeId, publisher: "GitHub",
       publisherUser: input.account?.trim() || "github", publisherHost: repositoryHost,
       endpoint: repository, shareId, publicKey: "", magicLink: "", revision: 0, collectionHash: "",
       topics: [], tags: [], counts: {}, itemCount: 0, etag: "", status: "new",
@@ -780,12 +833,30 @@ export class SharedMarketManager {
         const remotePath = rest.join("/");
         const target = path.join(staging, "content", type, ...rest);
         atomicWrite(target, file.content, 0o600);
-        atomicWrite(`${target}.pkm-source.json`, JSON.stringify({ brokerName: input.name, publisherUser: record.publisherUser, publisherHost: record.publisherHost, remotePath, repository, branch, commit }, null, 2), 0o600);
+        atomicWrite(`${target}.pkm-source.json`, JSON.stringify({
+          brokerName: input.name,
+          publisherUser: record.publisherUser,
+          publisherHost: record.publisherHost,
+          remotePath,
+          repository,
+          branch,
+          commit,
+        }, null, 2), 0o600);
         counts[type] = (counts[type] || 0) + 1;
       }
       const syncedAt = new Date().toISOString();
       atomicWrite(path.join(staging, "summary.json"), JSON.stringify({ name: input.name, revision: existing && existing.collectionHash === commit ? existing.revision : (existing?.revision || 0) + 1, collectionHash: commit, updatedAt: syncedAt, counts, itemCount: input.files.length, metadataOnly: true }, null, 2), 0o600);
-      atomicWrite(path.join(staging, "_subscription.json"), JSON.stringify({ id: record.id, alias: alias.trim() || record.alias, publisher: "GitHub", nodeId, shareId, endpoint: repository, syncedAt, source: { type: "github", targetId: input.targetId, credentialTargetId: input.credentialTargetId, repository, branch, commit, selectedPaths: input.selectedPaths, selectedFolders: input.selectedFolders } }, null, 2), 0o600);
+      atomicWrite(path.join(staging, "_subscription.json"), JSON.stringify({
+        id: record.id,
+        alias: alias.trim() || record.alias,
+        priority: subscriptionPriority(record.priority),
+        publisher: "GitHub",
+        nodeId,
+        shareId,
+        endpoint: repository,
+        syncedAt,
+        source: { type: "github", targetId: input.targetId, credentialTargetId: input.credentialTargetId, repository, branch, commit, selectedPaths: input.selectedPaths, selectedFolders: input.selectedFolders },
+      }, null, 2), 0o600);
       fs.mkdirSync(path.dirname(root), { recursive: true });
       if (fs.existsSync(root)) fs.renameSync(root, backup);
       fs.renameSync(staging, root);
@@ -825,6 +896,21 @@ export class SharedMarketManager {
     }
     this.save();
     this.changed();
+  }
+
+  setSubscriptionPriority(id: string, priority: SubscriptionPriority): SubscriptionRecord {
+    if (!this.stateMutationDepth) return this.withStateMutationSync(() => this.setSubscriptionPriority(id, priority));
+    const record = this.requireSubscription(id);
+    record.priority = subscriptionPriority(priority, true);
+    const metadataPath = path.join(this.storageDir, "cache", record.nodeId, record.shareId, "_subscription.json");
+    if (fs.existsSync(metadataPath)) {
+      const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
+      metadata.priority = record.priority;
+      atomicWrite(metadataPath, JSON.stringify(metadata, null, 2), 0o600);
+    }
+    this.save();
+    this.changed();
+    return { ...record };
   }
 
   removeSubscription(id: string): void {
@@ -1067,7 +1153,15 @@ export class SharedMarketManager {
     const snapshotBytes = await this.materializeInChild({
       inputPath: downloadPath,
       storageDir: this.storageDir,
-      record: { id: record.id, alias: record.alias, publisher: record.publisher, nodeId: record.nodeId, shareId: record.shareId, endpoint: record.endpoint },
+      record: {
+        id: record.id,
+        alias: record.alias,
+        priority: subscriptionPriority(record.priority),
+        publisher: record.publisher,
+        nodeId: record.nodeId,
+        shareId: record.shareId,
+        endpoint: record.endpoint,
+      },
       summary,
       syncedAt,
       transferKey: transferKey?.toString("base64url"),
@@ -1079,7 +1173,10 @@ export class SharedMarketManager {
 
   private materializeInChild(task: Record<string, unknown>): Promise<number> {
     return new Promise((resolve, reject) => {
-      const child = fork(path.join(__dirname, "subscription-materialize-worker.js"), [], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+      const child = fork(path.join(__dirname, "subscription-materialize-worker.js"), [], {
+        stdio: ["ignore", "ignore", "ignore", "ipc"],
+        windowsHide: process.platform === "win32",
+      } as NonNullable<Parameters<typeof fork>[2]> & { windowsHide: boolean });
       let settled = false;
       let timeout: NodeJS.Timeout | undefined;
       const finish = (error?: Error, snapshotBytes?: number): void => {
@@ -1162,7 +1259,11 @@ export class SharedMarketManager {
     } catch (error) {
       if (error instanceof Error && (error.message.includes("another PKM node") || error.message.includes("handoff"))) throw error;
     }
-    const child = spawn(process.execPath, [this.gatewayScript, this.gatewayStatePath(), this.gatewayRuntimeVersion], { detached: true, stdio: "ignore" });
+    const child = spawn(process.execPath, [this.gatewayScript, this.gatewayStatePath(), this.gatewayRuntimeVersion], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: process.platform === "win32",
+    });
     child.unref();
     this.state.gatewayPid = child.pid;
     this.save(false);

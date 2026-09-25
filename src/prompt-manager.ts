@@ -74,7 +74,10 @@ function invokePromptManager(extensionPath: string, payload: Record<string, unkn
     try { python = resolveMcpPython(); }
     catch (error: any) { reject(new Error(error?.message || String(error))); return; }
     const bridge = path.join(extensionPath, "resources", "prompt_manager_bridge.py");
-    const child = spawn(python, [bridge], { stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(python, [bridge], {
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: process.platform === "win32",
+    });
     let stdout = "", stderr = "", settled = false;
     const finish = (callback: () => void) => { if (settled) return; settled = true; clearTimeout(timer); callback(); };
     const timer = setTimeout(() => { child.kill(); finish(() => reject(new Error("Prompt Manager timed out after 10 seconds."))); }, 10000);

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 const assert = require("assert");
+const { createHash } = require("crypto");
 const {
   ProjectModelError, createProject, createRecipe, createThread, deleteRecipe, deleteRecipeFromTrash, deriveSystemId, ensureSystemEntities,
   initializeProjectModel, migrateLegacyRoom, moveRecipeToTrash, moveThread, resolveThreadId, restoreRecipeFromTrash, updateRecipe
@@ -10,7 +11,7 @@ let state = initializeProjectModel(undefined, () => "root-seed");
 assert.strictEqual(state.rootId, "root_root-seed");
 assert.strictEqual(state.projects.length, 1);
 assert.strictEqual(state.threads.length, 1);
-assert.deepStrictEqual(state.recipes.map(recipe => recipe.name), ["Software Development", "Bug Fix", "UI Development", "Reflection", "Use Recipe Library", "Publish Personal Knowledge VSIX", "PKM Tutorial"]);
+assert.deepStrictEqual(state.recipes.map(recipe => recipe.name), ["Software Development", "Bug Fix", "UI Development", "Reflection", "Use Recipe Library", "PKM Tutorial"]);
 for (const builtIn of state.recipes.filter(recipe => recipe.category === "Software Development")) {
   assert.strictEqual(builtIn.scope, "global");
   assert.strictEqual(builtIn.category, "Software Development");
@@ -54,20 +55,26 @@ assert.match(useRecipeLibrary.definition.spec.nodes.find(node => node.nodeId ===
 assert.match(useRecipeLibrary.definition.spec.nodes.find(node => node.nodeId === "start-pinned-run").generalInstruction, /expected_revision and expected_digest/);
 assert.match(useRecipeLibrary.definition.spec.nodes.find(node => node.nodeId === "execute-and-report").generalInstruction, /Never report unverified work as succeeded/);
 assert.match(useRecipeLibrary.definition.spec.nodes.find(node => node.nodeId === "validate-and-reflect").generalInstruction, /Reflection Recipe/);
-const publishVsix = state.recipes.find(recipe => recipe.name === "Publish Personal Knowledge VSIX");
-assert.strictEqual(publishVsix.category, "Release/VS Code");
-assert.strictEqual(publishVsix.definition.spec.nodes.length, 10);
-assert.match(publishVsix.description, /dedicated branch/);
-assert.match(publishVsix.definition.spec.nodes.find(node => node.nodeId === "create-release-branch").generalInstruction, /Never perform release development.*directly on main/);
-assert.deepStrictEqual(publishVsix.definition.spec.nodes.find(node => node.nodeId === "define-release-contract").dependsOn.map(dependency => dependency.from), ["create-release-branch"]);
-assert.match(publishVsix.definition.spec.nodes.find(node => node.nodeId === "commit-and-push-release-source").generalInstruction, /is not main/);
-assert.deepStrictEqual(publishVsix.definition.spec.nodes.find(node => node.nodeId === "merge-release-branch").dependsOn.map(dependency => dependency.from), ["commit-and-push-release-source"]);
-assert.deepStrictEqual(publishVsix.definition.spec.nodes.find(node => node.nodeId === "obtain-marketplace-approval").dependsOn.map(dependency => dependency.from), ["merge-release-branch"]);
-assert.match(publishVsix.definition.spec.nodes.find(node => node.nodeId === "obtain-marketplace-approval").generalInstruction, /explicit current approval/);
-assert.match(publishVsix.definition.spec.nodes.find(node => node.nodeId === "obtain-marketplace-approval").generalInstruction, /does not authorize publication/);
-assert.match(publishVsix.definition.spec.nodes.find(node => node.nodeId === "dispatch-publish-workflow").generalInstruction, /GitHub Actions OIDC/);
-assert.match(publishVsix.definition.spec.nodes.find(node => node.nodeId === "dispatch-publish-workflow").generalInstruction, /merged main commit/);
-assert.match(publishVsix.definition.spec.nodes.find(node => node.nodeId === "verify-marketplace-release").generalInstruction, /requires renewed explicit approval/);
+const retiredReleaseRecipeId = `recipe_${createHash("sha256").update("pkm/built-in-recipe/v1\0publish-personal-knowledge-vsix", "utf8").digest("hex").slice(0, 32)}`;
+const retiredReleaseRecipe = {
+  ...JSON.parse(JSON.stringify(state.recipes[0])),
+  recipeId: retiredReleaseRecipeId,
+  name: "Publish Personal Knowledge VSIX",
+  category: "Release/VS Code",
+  systemKind: "built-in"
+};
+const userReleaseRecipe = {
+  ...JSON.parse(JSON.stringify(state.recipes[0])),
+  recipeId: "recipe_user_release",
+  name: "Publish Personal Knowledge VSIX",
+  category: "Release/VS Code"
+};
+delete userReleaseRecipe.systemKind;
+const retiredCleaned = initializeProjectModel({ ...state, recipes: [...state.recipes, retiredReleaseRecipe, userReleaseRecipe] });
+assert(!retiredCleaned.recipes.some(recipe => recipe.recipeId === retiredReleaseRecipeId),
+  "upgrades must remove the retired built-in release Recipe");
+assert(retiredCleaned.recipes.some(recipe => recipe.recipeId === userReleaseRecipe.recipeId),
+  "upgrades must preserve user-created Recipes even when they use the retired Recipe name");
 const bugFix = state.recipes.find(recipe => recipe.name === "Bug Fix");
 assert.deepStrictEqual(bugFix.definition.spec.completion.requiredNodes, ["report"]);
 assert.deepStrictEqual(bugFix.definition.spec.nodes.find(node => node.nodeId === "fix").dependsOn.map(dependency => dependency.from), ["investigate"]);
@@ -88,7 +95,7 @@ const randomRoot = initializeProjectModel(undefined);
 assert.match(randomRoot.rootId, /^root_[0-9a-f-]{36}$/);
 const restoredDefaults = initializeProjectModel({ schema: 1, rootId: "root_existing" });
 assert.strictEqual(restoredDefaults.projects.length, 1);
-assert.strictEqual(restoredDefaults.recipes.length, 7);
+assert.strictEqual(restoredDefaults.recipes.length, 6);
 const restoredComplete = initializeProjectModel(state);
 assert.deepStrictEqual(restoredComplete, state);
 errorCode(() => initializeProjectModel({ schema: 1, projects: [{ projectId: "p", name: "P", version: 1 }] }), "root-identity-missing");

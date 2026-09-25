@@ -346,7 +346,7 @@ function probePort(port: number): Promise<boolean> {
 }
 function probePortSync(port: number): boolean {
   const script = "const n=require('net'),s=n.connect({host:'127.0.0.1',port:+process.argv[1]});s.setTimeout(350);s.on('connect',()=>{s.destroy();process.exit(0)});const no=()=>{s.destroy();process.exit(1)};s.on('error',no);s.on('timeout',no)";
-  try { return spawnSync(process.execPath, ["-e", script, String(port)], { timeout: 1000, stdio: "ignore" }).status === 0; }
+  try { return spawnSync(process.execPath, ["-e", script, String(port)], { timeout: 1000, stdio: "ignore", windowsHide: process.platform === "win32" }).status === 0; }
   catch { return false; }
 }
 export function serverListenerProcesses(port: number): ServerListenerProcess[] {
@@ -356,20 +356,20 @@ export function serverListenerProcesses(port: number): ServerListenerProcess[] {
   const names = new Map<number, string>();
   if (process.platform === "win32") {
     const script = `$p=(Get-NetTCPConnection -State Listen -LocalPort ${value} -ErrorAction SilentlyContinue).OwningProcess|Sort-Object -Unique; $p|ForEach-Object{Write-Output (\"$($_)|\"+(Get-Process -Id $_ -ErrorAction SilentlyContinue).ProcessName)}`;
-    const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", timeout: 2500 });
+    const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", timeout: 2500, windowsHide: true });
     for (const line of String(result.stdout || "").split(/\r?\n/)) {
       const match = /^(\d+)\|(.*)$/.exec(line.trim());
       if (match) { pids.add(Number(match[1])); names.set(Number(match[1]), match[2]); }
     }
   } else {
-    const lsof = spawnSync("lsof", ["-nP", "-a", `-iTCP:${value}`, "-sTCP:LISTEN", "-Fpc"], { encoding: "utf8", timeout: 2500 });
+    const lsof = spawnSync("lsof", ["-nP", "-a", `-iTCP:${value}`, "-sTCP:LISTEN", "-Fpc"], { encoding: "utf8", timeout: 2500, windowsHide: false });
     let currentPid = 0;
     for (const line of String(lsof.stdout || "").split(/\r?\n/)) {
       if (line.startsWith("p") && /^p\d+$/.test(line)) { currentPid = Number(line.slice(1)); pids.add(currentPid); }
       else if (line.startsWith("c") && currentPid) names.set(currentPid, line.slice(1));
     }
     if (!pids.size) {
-      const ss = spawnSync("ss", ["-ltnp", "sport", "=", `:${value}`], { encoding: "utf8", timeout: 2500 });
+      const ss = spawnSync("ss", ["-ltnp", "sport", "=", `:${value}`], { encoding: "utf8", timeout: 2500, windowsHide: false });
       for (const match of String(ss.stdout || "").matchAll(/\(\("([^"]+)"[^)]*pid=(\d+)/g)) {
         const pid = Number(match[2]); pids.add(pid); names.set(pid, match[1]);
       }
@@ -378,7 +378,7 @@ export function serverListenerProcesses(port: number): ServerListenerProcess[] {
   return [...pids].filter(pid => pid > 1).sort((a, b) => a - b).map(pid => {
     let command = names.get(pid) || "unknown process";
     if (process.platform !== "win32") {
-      const ps = spawnSync("ps", ["-p", String(pid), "-o", "args="], { encoding: "utf8", timeout: 1500 });
+      const ps = spawnSync("ps", ["-p", String(pid), "-o", "args="], { encoding: "utf8", timeout: 1500, windowsHide: false });
       command = String(ps.stdout || "").trim() || command;
     }
     return { pid, name: names.get(pid) || path.basename(command.split(/\s+/)[0] || "process"), command };
@@ -400,7 +400,7 @@ export async function forceStopExternalServer(slug: string, expectedPids: number
   if (actualPids.includes(process.pid)) return { ok: false, error: "refusing to terminate the VS Code extension host" };
   for (const pid of actualPids) {
     try {
-      if (process.platform === "win32") spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { timeout: 5000, stdio: "ignore" });
+      if (process.platform === "win32") spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { timeout: 5000, stdio: "ignore", windowsHide: true });
       else process.kill(pid, "SIGTERM");
     } catch (error: any) { return { ok: false, error: `could not terminate PID ${pid}: ${error?.message || error}` }; }
   }
@@ -575,6 +575,7 @@ export function startServer(slug: string): { ok: boolean; error?: string } {
       detached: true,                                       // own process group
       env: { ...process.env, PORT: String(port) },
       stdio: ["ignore", fd, fd],
+      windowsHide: process.platform === "win32",
     });
     child.on("error", err => { try { fs.writeSync(fd, `spawn error: ${err}\n`); } catch { /* ignore */ } });
     child.unref();
@@ -671,10 +672,10 @@ export function listPythonEnvs(): Promise<{ label: string; path: string }[]> {
     const out: { label: string; path: string }[] = [];
     const seen = new Set<string>();
     const add = (label: string, p: string) => { if (p && !seen.has(p) && fs.existsSync(p)) { seen.add(p); out.push({ label, path: p }); } };
-    execFile("bash", ["-lc", "command -v python3 || true"], { timeout: 4000 }, (_e, sysOut) => {
+    execFile("bash", ["-lc", "command -v python3 || true"], { timeout: 4000, windowsHide: process.platform === "win32" }, (_e, sysOut) => {
       const sys = String(sysOut || "").trim().split("\n")[0];
       if (sys) add("system python3", sys);
-      execFile("conda", ["env", "list", "--json"], { timeout: 6000 }, (err, condaOut) => {
+      execFile("conda", ["env", "list", "--json"], { timeout: 6000, windowsHide: process.platform === "win32" }, (err, condaOut) => {
         if (!err) {
           try {
             const j = JSON.parse(String(condaOut || "{}"));

@@ -101,7 +101,11 @@ export class RetrievalWorkerManager {
       }
     }
     try { fs.rmSync(this.endpointPath(), { force: true }); } catch { /* ignore */ }
-    const child = spawn(this.python, [this.workerScript, this.stateDir, this.configurationHash], { detached: true, stdio: "ignore" });
+    const child = spawn(this.python, [this.workerScript, this.stateDir, this.configurationHash], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: process.platform === "win32",
+    });
     child.unref();
     const deadline = Date.now() + 10_000;
     while (Date.now() < deadline) {
@@ -152,8 +156,14 @@ export class RetrievalWorkerManager {
       createHash("sha256").update(JSON.stringify(document)).digest("hex")]));
     let previous: { corpus_revision?: string; hashes?: Record<string, string> } = {};
     try { previous = JSON.parse(fs.readFileSync(manifestPath, "utf8")); } catch { /* first full submission */ }
-    if (previous.corpus_revision === snapshot.corpus_revision) return { mode: "reused", upserts: 0, deletes: 0 };
     const endpoint = await this.ensure();
+    if (previous.corpus_revision === snapshot.corpus_revision) {
+      const status = await this.request<RetrievalWorkerStatus>(endpoint, "/status");
+      if (status.ready && status.corpus_revision === snapshot.corpus_revision) {
+        return { mode: "reused", upserts: 0, deletes: 0 };
+      }
+      previous = {};
+    }
     const previousHashes = previous.hashes || {};
     const upserts = snapshot.documents.filter(document => previousHashes[document.skill_id] !== hashes[document.skill_id]);
     const deletes = Object.keys(previousHashes).filter(skillId => hashes[skillId] === undefined);

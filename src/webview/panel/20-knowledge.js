@@ -40,14 +40,23 @@ function restoreKnowledgeTabView(tab) {
   state.knowledgeTrash = cached.knowledgeTrash;
   state.privateTopLevels = cached.privateTopLevels;
   state.brokerSharedFolders = cached.brokerSharedFolders;
-  document.getElementById('item-list')?.replaceChildren(cached.list);
+  const list = document.getElementById('item-list');
+  list?.replaceChildren(cached.list);
   document.getElementById('sidebar-filters')?.replaceChildren(cached.filters);
   document.getElementById('knowledge-trash-dock')?.replaceChildren(cached.trash);
+  renderSubscribedGroups(list);
   return true;
 }
 
 function invalidateKnowledgeTabView(tab) {
   if (cachedKnowledgeTabs.has(tab)) knowledgeTabViewCache.delete(tab);
+}
+
+function updateCachedKnowledgeTabSubscriptions(tab, groups) {
+  const cached = knowledgeTabViewCache.get(tab);
+  if (!cached) return false;
+  cached.subscriptionGroups = groups;
+  return true;
 }
 
 function paintWorkspaceNavigation() {
@@ -441,6 +450,7 @@ function renderList() {
 
 function renderSubscribedGroups(container) {
   const groups = state.subscriptionGroups || [];
+  container.querySelectorAll(':scope > .sub-virtual-groups, :scope > .sub-virtual-divider, :scope > .sub-virtual-group').forEach(element => element.remove());
   if (!groups.length) return;
   const html = groups.map(group => {
     const groupPayload = subscriptionEncodeForkPayload({ name:group.alias, subscriptionId:group.subscriptionId, keys:group.items.map(item => item.key), pkmPath:`pkm://subscriptions/${encodeURIComponent(group.nodeId)}/${encodeURIComponent(group.shareId)}` });
@@ -451,7 +461,7 @@ function renderSubscribedGroups(container) {
     <div class="pk-group-body collapsed">${subscriptionRenderItemTree(subscriptionBuildItemTree(group.items), 0, group.revision, [], group)}</div>
   </div>`;
   }).join('');
-  container.insertAdjacentHTML('beforeend', `<div class="sub-virtual-divider"><span>${state.tab === 'packages' ? 'Subscribed Packages' : 'Subscriptions'}</span></div>${html}`);
+  container.insertAdjacentHTML('beforeend', `<div class="sub-virtual-groups"><div class="sub-virtual-divider"><span>${state.tab === 'packages' ? 'Subscribed Packages' : 'Subscriptions'}</span></div>${html}</div>`);
 }
 
 function subscriptionBuildItemTree(items) {
@@ -572,9 +582,10 @@ function deleteSkillTrashEntry(id, name, kind) {
 }
 
 function skillLi(r, displayName, q, indent) {
+  const priority = r.priority === 'high' || r.priority === 'highest' ? `<span class="tag" title="Retrieval priority">${esc(r.priority)}</span>` : '';
   return `<div class="li${r.pinned ? ' nt-pinned' : ''}" data-skill-name="${esc(r.name)}" onclick="openItem('skill','${esc(r.name)}')" oncontextmenu="skillItemMenu(event,'${esc(r.name)}',${JSON.stringify(r.category || '').replace(/"/g, '&quot;')})" style="padding-left:${indent}px">
     <div class="li-name"><span class="pc-star${r.pinned ? ' on' : ''}" onclick="event.stopPropagation();toggleSkillPin('${esc(r.name)}',${r.pinned ? 'false' : 'true'})" title="${r.pinned ? 'Unpin' : 'Pin to top of folder'}">${uiIcon(r.pinned ? 'pinned' : 'pin')}</span> ${privacyLock(r.isPrivate)}${hl(displayName||r.name, q)}${brokerShareMarker(r.brokerShares)}</div>
-    <div class="li-meta">${r.description ? hl(r.description.slice(0,50), q) : ''}</div>
+    <div class="li-meta">${r.description ? hl(r.description.slice(0,50), q) : ''}${priority}</div>
   </div>`;
 }
 
@@ -1399,6 +1410,9 @@ function renderDetail(data) {
       <div class="meta-grid">
         <span class="ml">Source</span><span class="mv meta-value"><span>${esc(data.source_project||'—')}</span><button class="meta-edit" onclick="editCurrentMetadata('source_project')" title="Edit source">✎</button></span>
         <span class="ml">Created</span><span class="mv">${(data.created_at||'').slice(0,10)}</span>
+        <span class="ml">Retrieval priority</span><span class="mv"><select aria-label="Skill retrieval priority" onchange="ask('skillSetPriority',{name:currentDetail.name,priority:this.value})">
+          ${['normal','high','highest'].map(priority=>`<option value="${priority}" ${priority === (data.priority||'normal') ? 'selected' : ''}>${priority[0].toUpperCase()+priority.slice(1)}</option>`).join('')}
+        </select></span>
         <span class="ml">Description</span><span class="mv meta-value"><span>${esc(data.description||'—')}</span><button class="meta-edit" onclick="editCurrentMetadata('description')" title="Edit description">✎</button></span>
       </div>
       <hr class="div">${toc}<div class="prose">${safeMarked(data.content||'')}</div>`;
@@ -1791,11 +1805,9 @@ async function exportMarkdown(mode) {
   tmp.innerHTML = inner;
   // Inline mermaid diagrams as self-contained SVG so the exported file needs no
   // runtime. Use the light theme to match the export page's white background.
-  if (typeof mermaid !== 'undefined') {
-    try { mermaid.initialize({ startOnLoad: false, suppressErrorRendering: true, securityLevel: 'antiscript', theme: 'default', fontFamily: 'inherit' }); _mermaidReady = true; } catch (e) {}
-    try { await renderMermaid(tmp); } catch (e) {}
-    _mermaidReady = false; initMermaidOnce(); // restore the panel's theme
-  }
+  await renderMermaid(tmp, 'default');
+  _mermaidReady = false;
+  initMermaidOnce();
   tmp.querySelectorAll('pre code').forEach(el => safeHljs(el));
   ask('exportNoteHtml', {
     mode: mode,
@@ -1822,8 +1834,6 @@ async function exportMarkdown(mode) {
 async function renderLinkedExport(data) {
   const notes = (data && data.notes) || [];
   if (!notes.length) { vscode.postMessage({ command: 'toast', text: 'Nothing to export' }); return; }
-  const useMermaid = (typeof mermaid !== 'undefined');
-  if (useMermaid) { try { mermaid.initialize({ startOnLoad: false, suppressErrorRendering: true, securityLevel: 'antiscript', theme: 'default', fontFamily: 'inherit' }); _mermaidReady = true; } catch (e) {} }
   const files = [];
   for (const n of notes) {
     let inner;
@@ -1831,11 +1841,12 @@ async function renderLinkedExport(data) {
     catch (e) { inner = '<pre>' + esc(n.content || '') + '</pre>'; }
     const tmp = document.createElement('div');
     tmp.innerHTML = inner;
-    try { await renderMermaid(tmp); } catch (e) {}
+    await renderMermaid(tmp, 'default');
     tmp.querySelectorAll('pre code').forEach(el => safeHljs(el));
     files.push({ filename: n.filename, slug: n.slug, bodyHtml: tmp.innerHTML });
   }
-  if (useMermaid) { _mermaidReady = false; initMermaidOnce(); }
+  _mermaidReady = false;
+  initMermaidOnce();
   ask('writeLinkedExport', { entryFilename: data.entryFilename, files, mode: data.mode || 'browser' });
 }
 
@@ -2157,6 +2168,9 @@ function startEditSkill() {
       <input id="se-desc" value="${esc(d.description||'')}" placeholder="Description" style="flex:2;background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 8px;font-size:12px;outline:none">
       <input id="se-cat" value="${esc(d.category||'')}" placeholder="Category" style="flex:1;background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 8px;font-size:12px;outline:none">
       <input id="se-tags" value="${esc(tags.join(', '))}" placeholder="tags, comma-sep" style="flex:1.5;background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 8px;font-size:12px;outline:none">
+      <select id="se-priority" aria-label="Retrieval priority" style="border-radius:4px;padding:5px 8px;font-size:12px">
+        ${['normal','high','highest'].map(priority=>`<option value="${priority}" ${priority === (d.priority||'normal') ? 'selected' : ''}>${priority[0].toUpperCase()+priority.slice(1)}</option>`).join('')}
+      </select>
     </div>
     <textarea id="se-content" style="width:100%;height:calc(100vh - 250px);background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:8px;font-size:12px;font-family:var(--vscode-editor-font-family);resize:none;outline:none;line-height:1.5">${esc(d.content||'')}</textarea>
     <div class="form-actions" style="margin-top:8px">
@@ -2172,7 +2186,8 @@ function submitSkillEdit() {
     content:     document.getElementById('se-content').value,
     description: document.getElementById('se-desc').value.trim(),
     category:    document.getElementById('se-cat').value.trim(),
-    tags:        document.getElementById('se-tags').value.split(',').map(t=>t.trim()).filter(Boolean) });
+    tags:        document.getElementById('se-tags').value.split(',').map(t=>t.trim()).filter(Boolean),
+    priority:    document.getElementById('se-priority').value });
   ask('detail', { type:'skill', key: d.name });
 }
 
@@ -2847,7 +2862,7 @@ function togglePaper3d() {
   currentGraphSig = ''; // force a full re-render with the other renderer
   if (currentGraphData) renderPaperGraph(currentGraphData);
 }
-function renderPaperGraph(data) {
+async function renderPaperGraph(data) {
   const el = document.getElementById('pg-canvas');
   document.getElementById('pg-count').textContent = data ? `${data.shown} of ${data.total} papers` : '';
   // Skip re-layout only when the SAME renderer already shows the SAME node set
@@ -2859,12 +2874,26 @@ function renderPaperGraph(data) {
     return;
   }
   currentGraphData = data;
-  currentGraphSig = sig;
   if (!data || !data.nodes || !data.nodes.length) {
+    currentGraphSig = sig;
     destroyCy(); destroyFg3d();
     el.innerHTML = '<div class="empty" style="padding:24px">No papers match — add papers or widen the filter.</div>';
     return;
   }
+  const use3d = paper3d;
+  const globalName = use3d ? 'ForceGraph3D' : 'cytoscape';
+  const metaName = use3d ? 'pkm-forcegraph3d-src' : 'pkm-cytoscape-src';
+  if (!globalThis[globalName]) {
+    el.innerHTML = '<div class="empty" style="padding:24px">Loading graph renderer…</div>';
+    try {
+      await ensurePanelLibrary(globalName, metaName);
+    } catch (error) {
+      el.innerHTML = `<div class="empty" style="padding:24px">${esc(error instanceof Error ? error.message : String(error))}</div>`;
+      return;
+    }
+    if (use3d !== paper3d || data !== currentGraphData) return;
+  }
+  currentGraphSig = sig;
   if (paper3d) { destroyCy(); render3dGraph(el, data); }
   else { destroyFg3d(); render2dGraph(el, data); }
 }

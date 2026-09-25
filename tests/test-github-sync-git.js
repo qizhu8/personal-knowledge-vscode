@@ -39,6 +39,7 @@ const run = (cwd, args) => execFileSync("git", args, { cwd, encoding: "utf8" }).
     fs.writeFileSync(path.join(sources, "skills", "public.md"), "public\n");
     fs.writeFileSync(path.join(sources, "skills", "private.md"), "private\n");
     fs.writeFileSync(path.join(sources, "scripts", "run.sh"), "echo ready\n");
+    fs.writeFileSync(path.join(sources, "snapshot.json"), JSON.stringify({ schema: "pkm.agent.snapshot/v1", payload: { algorithm: "A256GCM-PKM-INTERNAL/v1", ciphertext: "encrypted" } }));
     const catalog = Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type => [type, []]));
     catalog.skills = [
       { id: "Public/One", label: "One", cat: "Public", isPrivate: false, source: path.join(sources, "skills", "public.md"), destination: "skills/Public/One.md" },
@@ -47,8 +48,12 @@ const run = (cwd, args) => execFileSync("git", args, { cwd, encoding: "utf8" }).
     catalog.scripts = [
       { id: "run.sh", label: "run.sh", cat: "", isPrivate: false, source: path.join(sources, "scripts", "run.sh"), destination: "scripts/run.sh" }
     ];
+    catalog.agentSnapshots = [
+      { id: "agent_snapshot_test", label: "Snapshot", cat: "Agent", isPrivate: true, source: path.join(sources, "snapshot.json"), destination: "agentSnapshots/agent_snapshot_test.json" }
+    ];
     const target = normalizeGitHubSyncTarget({ name: "Test", repository: remote, branch: "main" }, () => "target-1");
     target.selection.private.skills = { items: [], folders: [""] };
+    target.selection.private.agentSnapshots = { items: ["agent_snapshot_test"], folders: [] };
     const checkoutRoot = path.join(root, "checkouts");
     const first = await syncGitHubTarget(target, catalog, checkoutRoot);
     assert.strictEqual(first.changed, true);
@@ -60,6 +65,7 @@ const run = (cwd, args) => execFileSync("git", args, { cwd, encoding: "utf8" }).
     assert.strictEqual(fs.readFileSync(path.join(verify, "skills", "Public", "One.md"), "utf8"), "public\n");
     assert.strictEqual(fs.readFileSync(path.join(verify, "skills", "Private", "Two.md"), "utf8"), "private\n");
     assert.strictEqual(fs.readFileSync(path.join(verify, "scripts", "run.sh"), "utf8"), "echo ready\n");
+    assert.match(fs.readFileSync(path.join(verify, "agentSnapshots", "agent_snapshot_test.json"), "utf8"), /A256GCM-PKM-INTERNAL/);
 
     const second = await syncGitHubTarget(target, catalog, checkoutRoot);
     assert.strictEqual(second.changed, false);
@@ -78,10 +84,11 @@ const run = (cwd, args) => execFileSync("git", args, { cwd, encoding: "utf8" }).
     const conflict = await restoreGitHubRemoteFiles(target, checkoutRoot, restoreRoot, snapshot.commit, ["skills/Public/One.md"], false);
     assert.deepStrictEqual(conflict, { restored: [], conflicts: ["skills/Public/One.md"] });
     assert.strictEqual(fs.readFileSync(path.join(restoreRoot, "skills", "Public", "One.md"), "utf8"), "local\n");
-    const restored = await restoreGitHubRemoteFiles(target, checkoutRoot, restoreRoot, snapshot.commit, ["skills/Public/One.md", "scripts/run.sh"], true);
-    assert.deepStrictEqual(restored.restored, ["scripts/run.sh", "skills/Public/One.md"]);
+    const restored = await restoreGitHubRemoteFiles(target, checkoutRoot, restoreRoot, snapshot.commit, ["agentSnapshots/agent_snapshot_test.json", "skills/Public/One.md", "scripts/run.sh"], true);
+    assert.deepStrictEqual(restored.restored, ["agentSnapshots/agent_snapshot_test.json", "scripts/run.sh", "skills/Public/One.md"]);
     assert.strictEqual(fs.readFileSync(path.join(restoreRoot, "skills", "Public", "One.md"), "utf8"), "public\n");
     assert.strictEqual(fs.readFileSync(path.join(restoreRoot, "scripts", "run.sh"), "utf8"), "echo ready\n");
+    assert.match(fs.readFileSync(path.join(restoreRoot, ".pkm", "state", "agent-snapshots", "agent_snapshot_test.json"), "utf8"), /A256GCM-PKM-INTERNAL/);
     await assert.rejects(() => restoreGitHubRemoteFiles(target, checkoutRoot, restoreRoot, snapshot.commit, ["README.md"], true), /not in the PKM manifest/);
 
     run(verify, ["checkout", "-b", "public-tree"]);

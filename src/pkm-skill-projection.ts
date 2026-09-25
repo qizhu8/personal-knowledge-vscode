@@ -28,6 +28,7 @@ const LEGACY_BUNDLED_SOURCE_HASHES = new Set([
 ]);
 
 const CUSTOM_TARGETS_KEY = "pkm.skillProjection.customTargets.v1";
+const CONNECTED_TARGETS_KEY = "pkm.skillProjection.connectedTargets.v1";
 const MARKER_PREFIX = "<!-- pkm-managed ";
 const MARKER_SUFFIX = " -->";
 
@@ -77,6 +78,7 @@ export interface PkmSkillTargetStatus extends PkmSkillTarget {
   expectedSourceHash: string;
   detail: string;
   managed: boolean;
+  connected: boolean;
 }
 
 interface ProjectionMarker {
@@ -180,7 +182,9 @@ function skillPath(target: PkmSkillTarget): string {
 }
 
 function presetTargets(): PkmSkillTarget[] {
-  const home = os.homedir();
+  const home = process.platform === "win32"
+    ? process.env.USERPROFILE || os.homedir()
+    : process.env.HOME || os.homedir();
   return [
     { id: "copilot", kind: "copilot", label: "GitHub Copilot", root: path.join(home, ".copilot", "skills") },
     { id: "agents", kind: "agents", label: "Generic Agents", root: path.join(home, ".agents", "skills") },
@@ -212,6 +216,10 @@ export async function addPkmSkillCustomTarget(context: vscode.ExtensionContext, 
 export async function removePkmSkillCustomTarget(context: vscode.ExtensionContext, id: string): Promise<void> {
   const custom = context.globalState.get<PkmSkillTarget[]>(CUSTOM_TARGETS_KEY, []);
   await context.globalState.update(CUSTOM_TARGETS_KEY, custom.filter(target => target.id !== id));
+  const connected = context.globalState.get<string[]>(CONNECTED_TARGETS_KEY, []);
+  if (connected.includes(id)) {
+    await context.globalState.update(CONNECTED_TARGETS_KEY, connected.filter(targetId => targetId !== id));
+  }
 }
 
 function findTarget(context: vscode.ExtensionContext, id: string): PkmSkillTarget {
@@ -222,6 +230,7 @@ function findTarget(context: vscode.ExtensionContext, id: string): PkmSkillTarge
 
 export function pkmSkillProjectionStatus(context: vscode.ExtensionContext): { routerVersion: string; minimumMcpSchema: string; sourcePath: string; sourceExists: boolean; targets: PkmSkillTargetStatus[] } {
   const source = readSource(context, false);
+  const connectedIds = new Set(context.globalState.get<string[]>(CONNECTED_TARGETS_KEY, []));
   const targets = pkmSkillTargets(context).map(target => {
     const projected = renderProjection(context, target, false);
     const file = skillPath(target);
@@ -275,6 +284,7 @@ export function pkmSkillProjectionStatus(context: vscode.ExtensionContext): { ro
       expectedSourceHash: source.hash,
       detail,
       managed,
+      connected: connectedIds.has(target.id) || managed,
     };
   });
   return {
@@ -314,4 +324,52 @@ export function removeInjectedPkmSkill(context: vscode.ExtensionContext, id: str
   if (!parseMarker(current)) throw new Error(`Refusing to remove a non-PKM Skill at ${file}`);
   fs.rmSync(file, { force: true });
   try { fs.rmdirSync(path.dirname(file)); } catch { /* target contains other files */ }
+}
+
+async function updateConnectedTargets(context: vscode.ExtensionContext, ids: Iterable<string>): Promise<void> {
+  const next = [...new Set(ids)].sort();
+  const current = [...new Set(context.globalState.get<string[]>(CONNECTED_TARGETS_KEY, []))].sort();
+  if (JSON.stringify(next) !== JSON.stringify(current)) {
+    await context.globalState.update(CONNECTED_TARGETS_KEY, next);
+  }
+}
+
+export async function connectPkmSkill(context: vscode.ExtensionContext, id: string): Promise<PkmSkillTargetStatus> {
+  const target = injectPkmSkill(context, id);
+  const connected = new Set(context.globalState.get<string[]>(CONNECTED_TARGETS_KEY, []));
+  connected.add(id);
+  await updateConnectedTargets(context, connected);
+  return { ...target, connected: true };
+}
+
+export async function disconnectPkmSkill(context: vscode.ExtensionContext, id: string): Promise<void> {
+  removeInjectedPkmSkill(context, id);
+  const connected = new Set(context.globalState.get<string[]>(CONNECTED_TARGETS_KEY, []));
+  connected.delete(id);
+  await updateConnectedTargets(context, connected);
+}
+
+export async function reconcilePkmSkillProjections(
+  context: vscode.ExtensionContext,
+): Promise<{ updated: PkmSkillTargetStatus[]; actionRequired: PkmSkillTargetStatus[] }> {
+  const before = pkmSkillProjectionStatus(context);
+  const connected = new Set(context.globalState.get<string[]>(CONNECTED_TARGETS_KEY, []));
+  for (const target of before.targets) {
+    if (target.managed) connected.add(target.id);
+  }
+  await updateConnectedTargets(context, connected);
+
+  const repairable = new Set<PkmSkillTargetState>(["missing", "outdated", "content-outdated", "modified"]);
+  const updated: PkmSkillTargetStatus[] = [];
+  for (const target of before.targets) {
+    if (connected.has(target.id) && repairable.has(target.state)) {
+      updated.push(injectPkmSkill(context, target.id));
+    }
+  }
+  const after = pkmSkillProjectionStatus(context);
+  return {
+    updated,
+    actionRequired: after.targets.filter(target => target.connected
+      && (target.state === "newer" || target.state === "conflict" || target.state === "unavailable")),
+  };
 }

@@ -109,6 +109,37 @@ assert.strictEqual(listElement.scrollTop, 35, 'skipped render must preserve scro
 assert.strictEqual(markupContext.setKnowledgeListMarkup(listElement, 'notes', '<div>changed</div>'), true);
 assert.strictEqual(listElement.scrollTop, 35, 'real rerender must restore scroll position');
 
+const subscribedStart = knowledge.indexOf('function renderSubscribedGroups');
+const subscribedEnd = knowledge.indexOf('\nfunction subscriptionBuildItemTree', subscribedStart);
+assert(subscribedStart >= 0 && subscribedEnd > subscribedStart, 'subscribed group renderer must be present');
+const appendedSubscriptions = [];
+const existingSubscriptions = [];
+const subscribedContainer = {
+  querySelectorAll: () => existingSubscriptions,
+  insertAdjacentHTML: (_position, html) => {
+    const node = { html, remove: () => {
+      const index = existingSubscriptions.indexOf(node);
+      if (index >= 0) existingSubscriptions.splice(index, 1);
+    } };
+    existingSubscriptions.push(node);
+    appendedSubscriptions.push(html);
+  },
+};
+const subscribedContext = {
+  state: { tab: 'skills', subscriptionGroups: [{ alias: 'Broker', subscriptionId: 'sub', nodeId: 'node', shareId: 'share', revision: 1, items: [] }] },
+  subscriptionEncodeForkPayload: () => 'payload',
+  subscriptionRenderItemTree: () => '',
+  subscriptionBuildItemTree: () => ({}),
+  esc: value => String(value),
+};
+vm.createContext(subscribedContext);
+vm.runInContext(knowledge.slice(subscribedStart, subscribedEnd), subscribedContext);
+subscribedContext.renderSubscribedGroups(subscribedContainer);
+subscribedContext.renderSubscribedGroups(subscribedContainer);
+assert.strictEqual(existingSubscriptions.length, 1, 'repeated lists must replace the subscribed region instead of duplicating it');
+assert.match(existingSubscriptions[0].html, /^<div class="sub-virtual-groups">/);
+assert.strictEqual((existingSubscriptions[0].html.match(/class="pk-group sub-virtual-group"/g) || []).length, 1, 'the subscribed region must contain exactly one Broker group');
+
 const tabCacheStart = knowledge.indexOf('const cachedKnowledgeTabs =');
 const tabCacheEnd = knowledge.indexOf('\nfunction paintWorkspaceNavigation', tabCacheStart);
 assert(tabCacheStart >= 0 && tabCacheEnd > tabCacheStart, 'per-tab view cache helpers must be present');
@@ -141,6 +172,7 @@ const cachedItems = Array.from({ length: 5000 }, (_, index) => ({ slug: `note-${
 const tabCacheContext = {
   state: { filter: 'all', search: '', items: cachedItems, folders: ['Large'], subscriptionGroups: [], knowledgeTrash: [], privateTopLevels: [], brokerSharedFolders: {} },
   document: { createDocumentFragment: () => new FakeContainer(), getElementById: id => cacheElements[id] },
+  renderSubscribedGroups: () => {},
 };
 vm.createContext(tabCacheContext);
 vm.runInContext(knowledge.slice(tabCacheStart, tabCacheEnd), tabCacheContext);
@@ -150,6 +182,8 @@ assert.strictEqual(tabCacheContext.restoreKnowledgeTabView('notes'), true, 'a pr
 assert.strictEqual(cacheElements['item-list'].childNodes.length, 5000);
 assert.strictEqual(cacheElements['item-list'].childNodes[3210], cachedNodes[3210], 'restoration must reuse the original DOM nodes instead of rebuilding markup');
 assert.strictEqual(tabCacheContext.state.items, cachedItems, 'restoration must reuse the matching data snapshot');
+assert.strictEqual(tabCacheContext.updateCachedKnowledgeTabSubscriptions('notes', [{ alias: 'Late Broker' }]), true, 'late Broker results must update the detached tab cache');
+assert.strictEqual(vm.runInContext("knowledgeTabViewCache.get('notes').subscriptionGroups[0].alias", tabCacheContext), 'Late Broker');
 tabCacheContext.invalidateKnowledgeTabView('notes');
 assert.strictEqual(tabCacheContext.restoreKnowledgeTabView('notes'), false, 'an invalidated tab must require fresh data');
 
@@ -158,7 +192,20 @@ const core = fs.readFileSync(path.join(root, 'src/webview/panel/00-core.js'), 'u
 assert.match(extension, /changedPath = path\.relative\(getStorePath\(\), uri\.fsPath\)/);
 assert.match(core, /pendingTreeRefresh = data \|\| \{\}/);
 assert.match(extension, /respond\(\{ command: "list", tab, data, folders/);
+assert.match(extension, /subscriptionGroups: \[\][\s\S]{0,900}setImmediate\(\(\) => \{[\s\S]{0,900}command: "listSubscriptionGroups"/,
+  'local CatTree must respond before subscribed cache scanning runs in the background');
+assert.match(core, /command === 'listSubscriptionGroups'[\s\S]{0,300}renderSubscribedGroups/,
+  'subscribed groups must attach without rebuilding the local CatTree');
+assert.match(core, /command === 'listSubscriptionGroups'[\s\S]{0,200}updateCachedKnowledgeTabSubscriptions/,
+  'late subscribed groups must preserve the detached local CatTree cache');
+assert.match(knowledge, /Retrieval priority[\s\S]{0,500}skillSetPriority/,
+  'local Skill details must expose retrieval priority controls');
+assert.match(extension, /case "skillSetPriority"[\s\S]{0,900}scheduleRetrievalRefresh\(context\)/,
+  'changing Skill priority must persist and refresh retrieval');
 assert.match(core, /e\.data\.tab && e\.data\.tab !== state\.tab\) return/);
+assert.match(core, /inventoryReady[\s\S]{0,300}fresh: true/);
+assert.match(core, /skillTrashResult[\s\S]{0,700}fresh:true/);
+assert.match(extension, /const useInventory = !msg\.fresh/);
 assert.match(knowledge, /search\.value = ''[\s\S]{0,80}state\.search = ''/);
 assert.match(knowledge, /ask\('refreshKnowledgeFolder', \{ area: state\.tab, category \}\)/);
 assert.match(extension, /case "refreshKnowledgeFolder"[\s\S]{0,1200}Folder scan timed out after 3 seconds/);
@@ -174,6 +221,14 @@ fs.mkdirSync(compiled, { recursive: true });
 childProcess.execFileSync('npx', ['esbuild', path.join(root, 'src/filestore.ts'), '--bundle', '--platform=node', '--format=cjs', `--outfile=${path.join(compiled, 'filestore.js')}`], { cwd: root, stdio: 'ignore' });
 const filestore = require(path.join(compiled, 'filestore.js'));
 filestore.setStorePath(fixtureRoot);
+filestore.skillUpsert({ name: 'Priority Skill', content: 'body', category: 'Coding', priority: 'high' });
+assert.strictEqual(filestore.skillGet('Priority Skill').priority, 'high', 'Skill priority must round-trip through frontmatter');
+filestore.skillUpsert({ name: 'Priority Skill', content: 'updated body' });
+assert.strictEqual(filestore.skillGet('Priority Skill').priority, 'high', 'unrelated Skill edits must preserve retrieval priority');
+filestore.skillUpsert({ name: 'Priority Skill', content: 'normal body', priority: 'normal' });
+assert.strictEqual(filestore.skillGet('Priority Skill').priority, 'normal');
+assert.doesNotMatch(fs.readFileSync(path.join(fixtureRoot, 'skills', 'Coding', 'Priority Skill.md'), 'utf8'), /^priority:/m,
+  'normal priority must keep frontmatter clean');
 const expectedSlug = 'Project/AAGL_Improvement/Module Optimizer/LP Processor/progress.md';
 for (const query of ['progress.md.md', 'notes/Project/AAGL_Improvement/Module Optimizer/LP Processor/progress.md.md', notePath]) {
   assert.strictEqual(filestore.noteSearch(query)[0]?.slug, expectedSlug, `note search must match original path: ${query}`);
@@ -183,6 +238,22 @@ assert.strictEqual(firstMetadata.content, undefined, 'tree metadata must not car
 fs.writeFileSync(notePath, '---\ntitle: "Updated Progress Title"\ntype: "general"\n---\nupdated body with a different size');
 const updatedMetadata = filestore.noteList(undefined, 10)[0];
 assert.strictEqual(updatedMetadata.title, 'Updated Progress Title', 'mtime/size changes must invalidate only the changed Note metadata');
+
+const removedSkillDir = path.join(fixtureRoot, 'skills', 'Delete Me');
+const retainedSkillDir = path.join(fixtureRoot, 'skills', 'Keep');
+fs.mkdirSync(removedSkillDir, { recursive: true });
+fs.mkdirSync(retainedSkillDir, { recursive: true });
+for (let index = 0; index < 100; index++) {
+  fs.writeFileSync(path.join(removedSkillDir, `removed-${index}.md`), `---\nname: removed-${index}\n---\n`);
+  fs.writeFileSync(path.join(retainedSkillDir, `retained-${index}.md`), `---\nname: retained-${index}\n---\n`);
+}
+assert(filestore.skillFolderMoveToTrash('Delete Me'), 'the Skill folder must move to Trash');
+const refreshStartedAt = process.hrtime.bigint();
+const skillsAfterTrash = filestore.skillList();
+const refreshDurationMs = Number(process.hrtime.bigint() - refreshStartedAt) / 1e6;
+assert(!skillsAfterTrash.some(skill => skill.category === 'Delete Me'), 'the authoritative live list must omit the deleted Skill folder immediately');
+assert(skillsAfterTrash.some(skill => skill.category === 'Keep'), 'the authoritative live list must retain unrelated Skill folders');
+assert(refreshDurationMs < 1000, `the live Skill refresh must complete within 1 second (actual ${refreshDurationMs.toFixed(1)} ms)`);
 fs.rmSync(fixtureRoot, { recursive: true, force: true });
 
 console.log('Category tree refresh test: live folder scans and original double-extension path search OK');

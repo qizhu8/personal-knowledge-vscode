@@ -321,82 +321,6 @@ const BUILT_IN_RECIPES: ReadonlyArray<{
     }
   },
   {
-    key: "publish-personal-knowledge-vsix",
-    name: "Publish Personal Knowledge VSIX",
-    category: "Release/VS Code",
-    description: "Prepare releases on a dedicated branch, validate and push the branch, merge and push main, then publish the Personal Knowledge Manager VSIX to the VS Code Marketplace through the canonical GitHub Actions workflow.",
-    applicableFunctions: ["VSIX packaging", "VS Code extension release", "Marketplace publishing", "Pre-release promotion"],
-    definition: {
-      schema: WORKFLOW_DEFINITION_SCHEMA,
-      spec: {
-        inputs: {},
-        nodes: [
-          {
-            nodeId: "create-release-branch", kind: NOOP_NODE_KIND, config: {}, dependsOn: [],
-            generalInstruction: "Before any release edit, build, version bump, commit, or other mutation, fetch origin and verify main is synchronized and free of unrelated changes. Create and switch to a new dedicated release/<version> branch from that synchronized main commit. Never perform release development or commit release changes directly on main. If work was accidentally started on main but remains uncommitted, immediately create the release branch in place so the working tree moves without stash, reset, or data loss; record the branch name and base SHA.",
-            ports: { inputs: ["release-request"], outputs: ["release-branch"] }, control: { mode: "single" }
-          },
-          {
-            nodeId: "define-release-contract", kind: NOOP_NODE_KIND, config: {},
-            generalInstruction: "On the dedicated release branch, confirm the exact release source, package.json version, publisher Uone, extension personal-knowledge, stable or pre-release channel, canonical GitHub Actions method, branch name and base SHA, and expected user impact. Creating or running this Recipe is not approval to mutate the Marketplace.",
-            dependsOn: [{ from: "create-release-branch", fromOutput: "release-branch", toInput: "release-branch", accept: ["succeeded"], required: true }],
-            ports: { inputs: ["release-branch"], outputs: ["release-contract"] }, control: { mode: "single" }
-          },
-          {
-            nodeId: "verify-release-readiness", kind: NOOP_NODE_KIND, config: {},
-            generalInstruction: "Verify package.json, package-lock.json, and CHANGELOG.md agree on the target version; inspect the exact release diff and privacy-safe media; run npm run test:release and git diff --check. Treat activation loops or repeated popup failures as release blockers. Stable releases require successful pre-release soak covering clean install, upgrade, offline or stale state, and repeated reload startup behavior.",
-            dependsOn: [{ from: "define-release-contract", fromOutput: "release-contract", toInput: "release-contract", accept: ["succeeded"], required: true }],
-            ports: { inputs: ["release-contract"], outputs: ["readiness-evidence"] }, control: { mode: "single" }
-          },
-          {
-            nodeId: "package-and-verify-vsix", kind: NOOP_NODE_KIND, config: {},
-            generalInstruction: "Build and package the exact target version locally with the selected channel marker. Run scripts/verify-vsix-package.js against the artifact and confirm identity Uone.personal-knowledge, version, channel, file boundaries, and installability. Preserve the artifact digest and validation output as evidence; do not publish from this node.",
-            dependsOn: [{ from: "verify-release-readiness", fromOutput: "readiness-evidence", toInput: "readiness-evidence", accept: ["succeeded"], required: true }],
-            ports: { inputs: ["readiness-evidence"], outputs: ["verified-artifact"] }, control: { mode: "single" }
-          },
-          {
-            nodeId: "commit-and-push-release-source", kind: NOOP_NODE_KIND, config: {},
-            generalInstruction: "Verify the current branch is the dedicated release/<version> branch and is not main. Stage only the audited release files, commit the exact tested release source on that branch, and push the branch to origin. Never commit release changes directly on main. Record the immutable branch commit SHA and verify origin/<release-branch> resolves to it. Do not tag, merge, create a GitHub Release, or mutate Marketplace state unless the user requested the corresponding operation.",
-            dependsOn: [{ from: "package-and-verify-vsix", fromOutput: "verified-artifact", toInput: "verified-artifact", accept: ["succeeded"], required: true }],
-            ports: { inputs: ["verified-artifact"], outputs: ["release-branch-source"] }, control: { mode: "single" }
-          },
-          {
-            nodeId: "merge-release-branch", kind: NOOP_NODE_KIND, config: {},
-            generalInstruction: "Only after the validated release commit is pushed to origin, merge the release branch into main using the repository release convention. Synchronize main first, refuse force-push or history rewrites, merge the reviewed release branch, and push main. Verify origin/main contains the exact release branch commit and record the resulting main commit SHA. Marketplace publication must use this merged main commit, never the unmerged branch.",
-            dependsOn: [{ from: "commit-and-push-release-source", fromOutput: "release-branch-source", toInput: "release-branch-source", accept: ["succeeded"], required: true }],
-            ports: { inputs: ["release-branch-source"], outputs: ["merged-release-source"] }, control: { mode: "single" }
-          },
-          {
-            nodeId: "obtain-marketplace-approval", kind: NOOP_NODE_KIND, config: {},
-            generalInstruction: "After the release branch is committed, pushed, merged into main, and main is pushed, obtain the user's explicit current approval immediately before any Marketplace mutation for exactly: publisher Uone, extension personal-knowledge, merged main commit, target version, stable or pre-release channel, publication method .github/workflows/publish-marketplace.yml, and expected user impact. Prior build, package, install, branch commit or push, merge, tag, GitHub Release, Recipe start, or earlier approval does not authorize publication. Do not report this node succeeded until that exact approval is received.",
-            dependsOn: [{ from: "merge-release-branch", fromOutput: "merged-release-source", toInput: "merged-release-source", accept: ["succeeded"], required: true }],
-            ports: { inputs: ["merged-release-source"], outputs: ["approval"] }, control: { mode: "single" }
-          },
-          {
-            nodeId: "dispatch-publish-workflow", kind: NOOP_NODE_KIND, config: {},
-            generalInstruction: "Only after the immediately preceding approval, dispatch Publish VS Code Marketplace from the verified merged main commit with mode publish, the exact approved version, and exact approved channel. Confirm the workflow head SHA equals origin/main and includes the release branch commit. Use GitHub Actions OIDC and vsce --azure-credential through the canonical workflow; never introduce PAT, client-secret, local Azure login, or Device Code Flow credentials.",
-            dependsOn: [{ from: "obtain-marketplace-approval", fromOutput: "approval", toInput: "approval", accept: ["succeeded"], required: true }],
-            ports: { inputs: ["approval"], outputs: ["workflow-run"] }, control: { mode: "single" }
-          },
-          {
-            nodeId: "verify-marketplace-release", kind: NOOP_NODE_KIND, config: {},
-            generalInstruction: "Verify the workflow's build, tests, package boundary check, publisher permission check, and publish step all succeeded. Confirm the exact version and channel on the Uone.personal-knowledge Marketplace listing, allowing for validation delay. A retry, promotion, unpublish, deprecation, removal, or availability change is a new mutation and requires renewed explicit approval.",
-            dependsOn: [{ from: "dispatch-publish-workflow", fromOutput: "workflow-run", toInput: "workflow-run", accept: ["succeeded"], required: true }],
-            ports: { inputs: ["workflow-run"], outputs: ["publication-evidence"] }, control: { mode: "single" }
-          },
-          {
-            nodeId: "report-and-reflect", kind: NOOP_NODE_KIND, config: {},
-            generalInstruction: "Report the release branch, branch commit and push evidence, main merge and push evidence, published identity, immutable version, channel, merged source commit, workflow run, Marketplace verification, and user impact. Then run the Reflection Recipe to capture evidence-backed release or Recipe improvements without storing credentials or transient secrets.",
-            dependsOn: [{ from: "verify-marketplace-release", fromOutput: "publication-evidence", toInput: "publication-evidence", accept: ["succeeded"], required: true }],
-            ports: { inputs: ["publication-evidence"], outputs: ["release-result"] }, control: { mode: "single" }
-          }
-        ],
-        outputs: {},
-        completion: { requiredNodes: ["report-and-reflect"] }
-      }
-    }
-  },
-  {
     key: "pkm-tutorial",
     name: "PKM Tutorial",
     category: "Examples/PKM",
@@ -443,6 +367,8 @@ function builtInRecipeId(key: string): string {
   return `recipe_${createHash("sha256").update(`pkm/built-in-recipe/v1\0${key}`, "utf8").digest("hex").slice(0, 32)}`;
 }
 
+const RETIRED_BUILT_IN_RECIPE_KEYS = ["publish-personal-knowledge-vsix"] as const;
+
 function linearRecipeDefinition(steps: ReadonlyArray<readonly [nodeId: string, generalInstruction: string]>): unknown {
   return {
     schema: WORKFLOW_DEFINITION_SCHEMA,
@@ -468,7 +394,9 @@ function compileBuiltInRecipe(definition: unknown): { definition: WorkflowDefini
 }
 
 export function ensureBuiltInRecipes(state: ProjectModelState): ProjectModelState {
-  const recipes = [...(state.recipes || [])];
+  const retiredRecipeIds = new Set(RETIRED_BUILT_IN_RECIPE_KEYS.map(builtInRecipeId));
+  const recipes = [...(state.recipes || [])].filter(recipe =>
+    recipe.systemKind !== "built-in" || !retiredRecipeIds.has(recipe.recipeId));
   for (const descriptor of BUILT_IN_RECIPES) {
     const recipeId = builtInRecipeId(descriptor.key);
     const existing = recipes.find(recipe => recipe.recipeId === recipeId);
