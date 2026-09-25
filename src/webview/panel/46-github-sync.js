@@ -1,12 +1,12 @@
 // ── GitHub Sync ───────────────────────────────────────────────────────────
-let githubSyncData = { targets:[], catalog:{}, shields:{}, authenticationOptions:{ accounts:[], identities:[] } };
+let githubSyncData = { targets:[], catalog:{}, shields:{}, runtime:{}, connected:{}, authenticationOptions:{ accounts:[], identities:[] } };
 let githubSyncEditing = '';
 let githubSyncEditorTab = 'general';
 let githubSyncSaving = false;
 let githubSyncAuthenticationResult = null;
 const githubSyncDrafts = new Map();
-const githubSyncTypes = ['skills','notes','papers','prompts','scripts','packages','servers','recipes'];
-const githubSyncLabels = { skills:'Skills', notes:'Notes', papers:'Research', prompts:'Prompts', scripts:'Scripts', packages:'Packages', servers:'Servers', recipes:'Recipes' };
+const githubSyncTypes = ['skills','notes','papers','prompts','scripts','packages','servers','recipes','agentSnapshots'];
+const githubSyncLabels = { skills:'Skills', notes:'Notes', papers:'Research', prompts:'Prompts', scripts:'Scripts', packages:'Packages', servers:'Servers', recipes:'Recipes', agentSnapshots:'Agent Snapshots' };
 
 function renderGitHubSyncLoading() {
   document.getElementById('detail').innerHTML = '<div class="empty">Loading GitHub Sync…</div>';
@@ -16,7 +16,7 @@ function githubSyncDefaultSelection() {
   const publicScope = {};
   const privateScope = {};
   for (const type of githubSyncTypes) {
-    publicScope[type] = { items:[], folders:['packages','servers'].includes(type) ? [] : [''] };
+    publicScope[type] = { items:[], folders:['packages','servers','agentSnapshots'].includes(type) ? [] : [''] };
     privateScope[type] = { items:[], folders:[] };
   }
   return { public:publicScope, private:privateScope };
@@ -95,11 +95,15 @@ function githubSyncEditor() {
   const target = githubSyncTarget();
   const draft = githubSyncDrafts.get(githubSyncEditing);
   const authentication = draft?.authentication ?? target?.authentication ?? {};
+  const automation = draft?.automation ?? target?.automation ?? { enabled:true, intervalMinutes:5, syncOnChange:true };
+  const accountConnected = !!target && authentication.method === 'vscode' && githubSyncData.connected?.[target.id];
   const authenticationStatus = githubSyncAuthenticationResult
     ? `<div class="github-sync-auth-status success"><span class="codicon codicon-verified-filled"></span><span><strong>${esc(githubSyncAuthenticationResult.login)}</strong><small>${esc(githubSyncAuthenticationResult.fingerprint)}</small></span></div>`
-    : '<div class="github-sync-auth-status"><span class="codicon codicon-key"></span><span>Account not tested</span></div>';
+    : accountConnected
+      ? `<div class="github-sync-auth-status success"><span class="codicon codicon-verified-filled"></span><span><strong>${esc(authentication.expectedLogin)}</strong><small>Stored securely for automatic backup</small></span></div>`
+      : '<div class="github-sync-auth-status"><span class="codicon codicon-key"></span><span>Connect and test this account before automatic backup</span></div>';
   if (!githubSyncEditing) return '';
-  return `<div class="sub-editor sub-broker-settings github-sync-editor"><div class="sub-editor-head"><div><strong>GitHub Target</strong><small>${target ? esc(target.id) : 'New target'}</small></div><button class="icon-btn" onclick="githubSyncClose()" title="Close" aria-label="Close">${uiIcon('close')}</button></div><div class="sub-editor-tabs"><button class="${githubSyncEditorTab === 'general' ? 'active' : ''}" onclick="githubSyncSetEditorTab('general')">General</button><button class="${githubSyncEditorTab === 'content' ? 'active' : ''}" onclick="githubSyncSetEditorTab('content')">Content</button></div><div class="sub-editor-pane ${githubSyncEditorTab === 'general' ? 'active' : ''}"><div class="github-sync-general"><label>Target name<input id="github-sync-name" value="${esc(draft?.name ?? target?.name ?? '')}" placeholder="Primary backup"></label><label>Repository<input id="github-sync-repository" value="${esc(draft?.repository ?? target?.repository ?? '')}" placeholder="git@github.com:owner/repository.git" oninput="githubSyncAuthenticationChanged()"></label><label>Branch<input id="github-sync-branch" value="${esc(draft?.branch ?? target?.branch ?? 'main')}" placeholder="main"></label><section class="github-sync-auth"><div class="github-sync-auth-grid"><label>GitHub account<input id="github-sync-expected-login" value="${esc(authentication.expectedLogin || '')}" placeholder="Auto-detect" oninput="githubSyncAuthenticationChanged()"></label><label>SSH identity<div class="github-sync-identity-control"><input id="github-sync-identity-file" value="${esc(authentication.identityFile || '')}" placeholder="~/.ssh/id_ed25519" oninput="githubSyncAuthenticationChanged()"><button class="icon-btn" onclick="githubSyncPickIdentity(this)" title="Select SSH key" aria-label="Select SSH key">${uiIcon('folder-opened')}</button><button class="icon-btn" data-pending-label="…" onclick="githubSyncCreateIdentity(this)" title="Create dedicated SSH key" aria-label="Create dedicated SSH key">${uiIcon('add')}</button></div></label><button class="pk-button github-sync-test-auth" data-pending-label="Testing…" onclick="githubSyncTestAuthentication(this)">${uiIcon('verified','Test Account')}</button></div>${authenticationStatus}</section></div></div><div class="sub-editor-pane ${githubSyncEditorTab === 'content' ? 'active' : ''}"><div class="github-sync-privacy-grid"><section><div class="github-sync-privacy-head public"><span class="codicon codicon-globe"></span><strong>Public</strong></div>${githubSyncPrivacyTree(target, 'public')}</section><section><div class="github-sync-privacy-head private"><span class="codicon codicon-lock"></span><strong>Private</strong></div>${githubSyncPrivacyTree(target, 'private')}</section></div></div><div class="sub-editor-actions"><span class="sub-action-spacer"></span><button class="pk-button" onclick="githubSyncClose()">Cancel</button><button class="pk-button primary" data-pending-label="Saving…" onclick="githubSyncSave(this)">Save Target</button></div></div>`;
+  return `<div class="sub-editor sub-broker-settings github-sync-editor"><div class="sub-editor-head"><div><strong>GitHub Target</strong><small>${target ? esc(target.id) : 'New target'}</small></div><button class="icon-btn" onclick="githubSyncClose()" title="Close" aria-label="Close">${uiIcon('close')}</button></div><div class="sub-editor-tabs"><button class="${githubSyncEditorTab === 'general' ? 'active' : ''}" onclick="githubSyncSetEditorTab('general')">General</button><button class="${githubSyncEditorTab === 'automation' ? 'active' : ''}" onclick="githubSyncSetEditorTab('automation')">Automation</button><button class="${githubSyncEditorTab === 'content' ? 'active' : ''}" onclick="githubSyncSetEditorTab('content')">Content</button></div><div class="sub-editor-pane ${githubSyncEditorTab === 'general' ? 'active' : ''}"><div class="github-sync-general"><label>Target name<input id="github-sync-name" value="${esc(draft?.name ?? target?.name ?? '')}" placeholder="Primary backup"></label><label>Repository<input id="github-sync-repository" value="${esc(draft?.repository ?? target?.repository ?? '')}" placeholder="https://github.com/owner/repository.git" oninput="githubSyncAuthenticationChanged()"></label><label>Branch<input id="github-sync-branch" value="${esc(draft?.branch ?? target?.branch ?? 'main')}" placeholder="main"></label><section class="github-sync-auth"><div class="github-sync-auth-grid"><label>GitHub account<input id="github-sync-expected-login" value="${esc(authentication.expectedLogin || '')}" placeholder="GitHub login" oninput="githubSyncAuthenticationChanged()"></label><label>SSH identity<div class="github-sync-identity-control"><input id="github-sync-identity-file" value="${esc(authentication.identityFile || '')}" placeholder="~/.ssh/id_ed25519" oninput="githubSyncAuthenticationChanged()"><button class="icon-btn" onclick="githubSyncPickIdentity(this)" title="Select SSH key" aria-label="Select SSH key">${uiIcon('folder-opened')}</button><button class="icon-btn" data-pending-label="…" onclick="githubSyncCreateIdentity(this)" title="Create dedicated SSH key" aria-label="Create dedicated SSH key">${uiIcon('add')}</button></div></label><button class="pk-button github-sync-test-auth" data-pending-label="Testing…" onclick="githubSyncTestAuthentication(this)">${uiIcon('verified','Test Account')}</button></div>${authenticationStatus}</section></div></div><div class="sub-editor-pane ${githubSyncEditorTab === 'automation' ? 'active' : ''}"><div class="github-sync-automation"><label class="github-sync-check"><input id="github-sync-automation-enabled" type="checkbox" ${automation.enabled ? 'checked' : ''}><span><strong>Automatic backup</strong><small>Run in the background without a manual Sync action.</small></span></label><label>Minimum sync interval (minutes)<input id="github-sync-interval-minutes" type="number" min="1" max="1440" step="1" value="${esc(automation.intervalMinutes)}"></label><label class="github-sync-check"><input id="github-sync-on-change" type="checkbox" ${automation.syncOnChange ? 'checked' : ''}><span><strong>Sync when selected content changes</strong><small>Changes inside the minimum interval are coalesced into one backup. No changes means no sync.</small></span></label><p>VS Code GitHub Authentication is recommended for unattended HTTPS backup and keeps personal and EMU credentials separate per Target. Save the Target once and choose its exact account; the credential is stored in VS Code SecretStorage, never in the Target file. Credential Manager cache targets may require login again after restart.</p></div></div><div class="sub-editor-pane ${githubSyncEditorTab === 'content' ? 'active' : ''}"><div class="github-sync-privacy-grid"><section><div class="github-sync-privacy-head public"><span class="codicon codicon-globe"></span><strong>Public</strong></div>${githubSyncPrivacyTree(target, 'public')}</section><section><div class="github-sync-privacy-head private"><span class="codicon codicon-lock"></span><strong>Private</strong></div>${githubSyncPrivacyTree(target, 'private')}</section></div></div><div class="sub-editor-actions"><span class="sub-action-spacer"></span><button class="pk-button" onclick="githubSyncClose()">Cancel</button><button class="pk-button primary" data-pending-label="Saving…" onclick="githubSyncSave(this)">Save & Start</button></div></div>`;
 }
 
 function githubSyncRenderAuthenticationMethod() {
@@ -126,13 +130,14 @@ function githubSyncRenderAuthenticationMethod() {
   label.textContent = 'Authentication';
   const select = document.createElement('select');
   select.id = 'github-sync-auth-method';
-  select.innerHTML = '<option value="https">HTTPS / Credential Manager</option><option value="ssh">SSH key</option>';
+  select.innerHTML = '<option value="vscode">VS Code GitHub Authentication (recommended)</option><option value="https">HTTPS / Credential Manager (legacy cache)</option><option value="ssh">SSH key</option>';
   select.value = method;
   select.addEventListener('change', githubSyncAuthenticationMethodChanged);
   label.appendChild(select);
   grid.prepend(label);
   identity.closest('label').hidden = method !== 'ssh';
-  account.placeholder = method === 'https' ? 'Required for GCM account selection' : 'Auto-detect';
+  document.querySelector('.github-sync-test-auth').hidden = method === 'vscode';
+  account.placeholder = method === 'https' ? 'Required for GCM account selection' : 'GitHub login';
 }
 
 function githubSyncAuthenticationMethodChanged() {
@@ -144,7 +149,11 @@ function githubSyncCards() {
   const cards = githubSyncData.targets.map(target => {
     const expanded = githubSyncEditing === target.id;
     const last = target.lastSync?.at ? new Date(target.lastSync.at).toLocaleString() : 'Never synchronized';
-    return `<article class="pk-card sub-broker-card ${expanded ? 'active' : ''}"><div class="sub-broker-row" role="button" tabindex="0" aria-expanded="${expanded}" onclick="githubSyncEdit('${esc(target.id)}')"><span><span class="sub-broker-title"><strong>${esc(target.name)}</strong><span class="sub-broker-actions"><button class="pk-button" data-pending-label="Syncing…" onclick="event.stopPropagation();githubSyncRun('${esc(target.id)}',this)">${uiIcon('sync','Sync')}</button><button class="pk-button" data-pending-label="Loading…" onclick="event.stopPropagation();githubSyncRestore('${esc(target.id)}',this)">${uiIcon('history','Restore…')}</button><button class="pk-button danger" onclick="event.stopPropagation();githubSyncDelete('${esc(target.id)}')" title="Delete target">${uiIcon('trash')}</button></span></span><small>${esc(target.repository)}</small></span><span class="sub-broker-meta"><b>${esc(target.branch)}</b><small>${esc(last)}</small><i>›</i></span></div>${expanded ? `<div class="sub-broker-expanded">${githubSyncEditor()}</div>` : ''}</article>`;
+    const runtime = githubSyncData.runtime?.[target.id] || {};
+    const status = runtime.status || (target.lastFailure ? 'error' : 'scheduled');
+    const next = runtime.nextSyncAt ? `Pending changes sync after ${new Date(runtime.nextSyncAt).toLocaleString()}` : target.automation?.enabled ? 'Watching for selected content changes' : 'Automatic backup paused';
+    const error = runtime.lastError || target.lastFailure?.error || '';
+    return `<article class="pk-card sub-broker-card ${expanded ? 'active' : ''}"><div class="sub-broker-row" role="button" tabindex="0" aria-expanded="${expanded}" onclick="githubSyncEdit('${esc(target.id)}')"><span><span class="sub-broker-title"><strong>${esc(target.name)}</strong><span class="github-sync-status ${esc(status)}">${esc(status)}</span><span class="sub-broker-actions"><button class="pk-button" data-pending-label="Syncing…" onclick="event.stopPropagation();githubSyncForce('${esc(target.id)}',this)" ${status === 'syncing' ? 'disabled' : ''}>${uiIcon('refresh','Force sync')}</button><button class="pk-button" data-pending-label="Loading…" onclick="event.stopPropagation();githubSyncRestore('${esc(target.id)}',this)">${uiIcon('history','Restore…')}</button><button class="pk-button danger" onclick="event.stopPropagation();githubSyncDelete('${esc(target.id)}')" title="Delete target">${uiIcon('trash')}</button></span></span><small>${esc(target.repository)}</small>${error ? `<small class="github-sync-error" onclick="event.stopPropagation()" onpointerdown="event.stopPropagation()" title="Select and copy this error">${esc(error)}</small>` : ''}</span><span class="sub-broker-meta"><b>${esc(target.branch)} · ${target.automation?.intervalMinutes || 5} min minimum</b><small>Last  ${esc(last)}</small><small>${esc(next)}</small><i>›</i></span></div>${expanded ? `<div class="sub-broker-expanded">${githubSyncEditor()}</div>` : ''}</article>`;
   }).join('');
   const create = githubSyncEditing === 'new' ? `<article class="pk-card sub-broker-card active"><div class="sub-broker-expanded">${githubSyncEditor()}</div></article>` : '';
   return cards + create || '<div class="sub-empty">No GitHub targets.</div>';
@@ -161,7 +170,7 @@ function githubSyncNew() {
   githubSyncEditing = 'new';
   githubSyncEditorTab = 'general';
   githubSyncAuthenticationResult = null;
-  githubSyncDrafts.set('new', { name:'', repository:'', branch:'main', selection:githubSyncDefaultSelection(), openFolders:{public:{},private:{}}, openTypes:{public:[],private:[]} });
+  githubSyncDrafts.set('new', { name:'', repository:'', branch:'main', authentication:{method:'vscode',expectedLogin:''}, automation:{enabled:true,intervalMinutes:5,syncOnChange:true}, selection:githubSyncDefaultSelection(), openFolders:{public:{},private:{}}, openTypes:{public:[],private:[]} });
   renderGitHubSyncPane();
 }
 function githubSyncEdit(id) { githubSyncCaptureDraft(); githubSyncEditing = githubSyncEditing === id ? '' : id; githubSyncEditorTab = 'general'; githubSyncAuthenticationResult = null; renderGitHubSyncPane(); }
@@ -194,7 +203,12 @@ function githubSyncCaptureDraft() {
   const authentication = expectedLogin || (method === 'ssh' && identityFile)
     ? method === 'ssh' ? { method, identityFile, expectedLogin } : { method, expectedLogin }
     : undefined;
-  githubSyncDrafts.set(githubSyncEditing, { ...previous, name:document.getElementById('github-sync-name')?.value ?? previous.name, repository:document.getElementById('github-sync-repository')?.value ?? previous.repository, branch:document.getElementById('github-sync-branch')?.value ?? previous.branch, authentication, selection, openFolders, openTypes });
+  const automation = {
+    enabled:document.getElementById('github-sync-automation-enabled')?.checked ?? previous.automation?.enabled ?? githubSyncTarget()?.automation?.enabled ?? true,
+    intervalMinutes:Number(document.getElementById('github-sync-interval-minutes')?.value ?? previous.automation?.intervalMinutes ?? githubSyncTarget()?.automation?.intervalMinutes ?? 5),
+    syncOnChange:document.getElementById('github-sync-on-change')?.checked ?? previous.automation?.syncOnChange ?? githubSyncTarget()?.automation?.syncOnChange ?? true
+  };
+  githubSyncDrafts.set(githubSyncEditing, { ...previous, name:document.getElementById('github-sync-name')?.value ?? previous.name, repository:document.getElementById('github-sync-repository')?.value ?? previous.repository, branch:document.getElementById('github-sync-branch')?.value ?? previous.branch, authentication, automation, selection, openFolders, openTypes });
 }
 
 function githubSyncSyncFolderStates(key) {
@@ -225,7 +239,7 @@ function githubSyncSave(button) {
   githubSyncCaptureDraft();
   const draft = githubSyncDrafts.get(githubSyncEditing);
   githubSyncSaving = true;
-  ask('githubSyncSave', { target:{ id:githubSyncEditing === 'new' ? '' : githubSyncEditing, name:draft.name, repository:draft.repository, branch:draft.branch, authentication:draft.authentication, selection:draft.selection } }, button);
+  ask('githubSyncSave', { target:{ id:githubSyncEditing === 'new' ? '' : githubSyncEditing, name:draft.name, repository:draft.repository, branch:draft.branch, authentication:draft.authentication, automation:draft.automation, selection:draft.selection } }, button);
 }
 function githubSyncAuthenticationChanged() { githubSyncAuthenticationResult = null; githubSyncCaptureDraft(); const status = document.querySelector('.github-sync-auth-status'); if (status) status.outerHTML = '<div class="github-sync-auth-status"><span class="codicon codicon-key"></span><span>Account not tested</span></div>'; }
 function githubSyncPickIdentity(button) { githubSyncCaptureDraft(); ask('githubSyncPickIdentity', {}, button); }
@@ -237,6 +251,7 @@ function githubSyncTestAuthentication(button) {
   ask('githubSyncTestAuthentication', { target:{ id:githubSyncEditing === 'new' ? '' : githubSyncEditing, name:draft.name || 'Authentication test', repository:draft.repository, branch:draft.branch, authentication:draft.authentication } }, button);
 }
 function githubSyncOnAuthenticationResult(data) { githubSyncCaptureDraft(); const draft = githubSyncDrafts.get(githubSyncEditing); if (draft?.authentication && !draft.authentication.expectedLogin) draft.authentication.expectedLogin = data?.login || ''; githubSyncAuthenticationResult = data || null; renderGitHubSyncPane(); }
-function githubSyncRun(targetId, button) { ask('githubSyncRun', { targetId }, button); }
+function githubSyncOnRuntimeState(data) { if (!data?.targetId) return; githubSyncData.runtime = { ...(githubSyncData.runtime || {}), [data.targetId]:data.state || {} }; if (state.tab === 'githubSync') renderGitHubSyncPane(); }
 function githubSyncDelete(targetId) { const target = githubSyncData.targets.find(item => item.id === targetId); pkModal({ title:'Delete GitHub Target?', message:`${target?.name || targetId}\n\nThe remote repository is not changed.`, okLabel:'Delete Target', danger:true, onOk:()=>ask('githubSyncDelete',{targetId}) }); }
+function githubSyncForce(targetId, button) { ask('githubSyncRun', { targetId }, button); }
 function githubSyncRestore(targetId, button) { ask('githubSyncRestore', { targetId }, button); }

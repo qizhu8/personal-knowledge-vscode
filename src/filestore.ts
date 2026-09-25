@@ -601,6 +601,7 @@ function skillFromFile(f: MdFile): any {
     recipe_required: fm.recipe_required === true,
     recipe_hint: String(fm.recipe_hint || ""),
     related_skills: asArray(fm.related_skills),
+    priority: skillPriority(fm.priority),
     pinned: fm.pinned === true,
     content: body,
     created_at: fm.created || new Date(f.mtime).toISOString(),
@@ -609,6 +610,12 @@ function skillFromFile(f: MdFile): any {
 }
 
 function allSkillFiles(): MdFile[] { const out: MdFile[] = []; walkMd(skillsRoot(), "", out); return out; }
+
+export type SkillPriority = "normal" | "high" | "highest";
+
+function skillPriority(value: unknown): SkillPriority {
+  return value === "high" || value === "highest" ? value : "normal";
+}
 
 export function skillList(category?: string, tag?: string): any[] {
   let rows = allSkillFiles().map(skillFromFile);
@@ -648,7 +655,7 @@ export function skillGet(name: string): any {
 
 export function skillUpsert(row: {
   name: string; content: string; description?: string; category?: string; tags?: string[]; source_project?: string; pinned?: boolean;
-  recipe_required?: boolean; recipe_hint?: string; related_skills?: string[];
+  recipe_required?: boolean; recipe_hint?: string; related_skills?: string[]; priority?: SkillPriority;
 }): boolean {
   const existingFile = findSkillFile(row.name);
   const existing = existingFile ? skillFromFile(existingFile) : null;
@@ -670,6 +677,7 @@ export function skillUpsert(row: {
     recipe_required: (row.recipe_required ?? existing?.recipe_required) ? true : undefined,
     recipe_hint: row.recipe_hint ?? existing?.recipe_hint ?? undefined,
     related_skills: row.related_skills ?? existing?.related_skills ?? undefined,
+    priority: skillPriority(row.priority ?? existing?.priority) === "normal" ? undefined : skillPriority(row.priority ?? existing?.priority),
     pinned: (row.pinned ?? existing?.pinned) ? true : undefined,
     created,
   };
@@ -1054,4 +1062,3 @@ export function paperGroupDelete(name: string): number {
   }
   return n;
 }
-

@@ -99,6 +99,7 @@ async function testGitHubBranchMount() {
     assert.strictEqual(first.source.type, "github");
     assert.strictEqual(first.source.targetId, undefined, "direct subscriptions do not require a GitHub Sync target");
     assert.strictEqual(first.source.credentialTargetId, "team-credential");
+    assert.strictEqual(first.priority, "normal");
     assert.deepStrictEqual(first.source.selectedFolders, ["skills/Coding", "packages/tools"]);
     assert.strictEqual(first.publisherHost, "github.com");
     assert.deepStrictEqual(first.counts, { skills: 1, notes: 1, packages: 2 });
@@ -108,6 +109,9 @@ async function testGitHubBranchMount() {
     const detail = manager.cachedDetail(skills[0].items[0].key);
     assert.match(detail.content, /Mounted skill/);
     assert.strictEqual(detail.provenance.commit, "1".repeat(40));
+    manager.setSubscriptionPriority(first.id, "highest");
+    assert.strictEqual(manager.snapshot.subscriptions[0].priority, "highest");
+    assert.strictEqual(manager.cachedGroups("skills")[0].priority, "highest");
     const packageGroup = manager.cachedGroups("packages")[0];
     const packageSource = manager.forkSource(packageGroup.items[0].key);
     assert.deepStrictEqual(packageSource.package.files.map(file => file.path).sort(), ["README.md", "src/tool.js"]);
@@ -119,6 +123,7 @@ async function testGitHubBranchMount() {
       files: [{ path: "notes/Research/Status.md", content: Buffer.from("# Status\nUpdated note\n") }],
     }, "Remote Team");
     assert.strictEqual(refreshed.id, first.id, "refresh must retain the mounted subscription identity");
+    assert.strictEqual(refreshed.priority, "highest", "GitHub refresh must retain Subscriber source priority");
     assert.strictEqual(refreshed.revision, 2);
     assert.strictEqual(manager.cachedGroups("skills").length, 0, "refresh must remove files deleted from the remote commit");
     assert.match(manager.cachedDetail(manager.cachedGroups("notes")[0].items[0].key).content, /Updated note/);
@@ -221,6 +226,7 @@ async function main() {
     assert.strictEqual(subscribed.revision, 1);
     assert.strictEqual(subscribed.status, "current");
     assert.strictEqual(subscribed.brokerName, "AAGL Context");
+    assert.strictEqual(subscribed.priority, "normal");
     assert.strictEqual(subscribed.publisherUser, "alice");
     assert.strictEqual(subscribed.publisherHost, "host-a");
     assert(diagnostics.some(event => event.operation === "publish" && event.snapshotBytes > 0));
@@ -234,6 +240,12 @@ async function main() {
     manager.renameSubscription(subscribed.id, "My Creative Context");
     assert.strictEqual(manager.snapshot.subscriptions[0].alias, "My Creative Context");
     assert.strictEqual(manager.snapshot.subscriptions[0].brokerName, "AAGL Context", "Subscriber rename must not alter the published Broker name");
+    manager.setSubscriptionPriority(subscribed.id, "high");
+    assert.strictEqual(manager.snapshot.subscriptions[0].priority, "high");
+    assert.strictEqual(manager.cachedGroups("skills")[0].priority, "high");
+    assert.strictEqual(JSON.parse(fs.readFileSync(path.join(state, "subscriptions.json"), "utf8")).subscriptions[0].priority, "high");
+    assert.strictEqual(JSON.parse(fs.readFileSync(path.join(state, "cache", subscribed.nodeId, subscribed.shareId, "_subscription.json"), "utf8")).priority, "high");
+    assert.throws(() => manager.setSubscriptionPriority(subscribed.id, "urgent"), /normal, high, or highest/);
     const cached = path.join(state, "cache", subscribed.nodeId, subscribed.shareId, "bundle.json");
     assert(fs.existsSync(cached), "background Sync must populate the machine-local subscription cache");
     assert.deepStrictEqual(fs.readdirSync(path.join(state, "downloads")), [], "completed Sync must remove temporary downloads");
@@ -558,6 +570,7 @@ async function testPersistentGatewayLifecycle() {
   const first = new SharedMarketManager(state, gatewayScript, "Persistent Gateway Test", {}, undefined, { user: "test", host: "host", version: "2.6.1" });
   let resumed;
   let resumedPeer;
+  let observer;
   try {
     assert.strictEqual(first.snapshot.advertisedHost, os.hostname().replace(/\.$/, ""), "new Broker Invite interface must default to hostname");
     await first.configure({ enabled: false, port, advertisedHost: "", displayName: "Persistent Gateway Test" });
@@ -596,6 +609,10 @@ async function testPersistentGatewayLifecycle() {
     assert.strictEqual(upgradedNode.gatewayVersion, "2.7.20", "replacement Gateway must report the current extension version");
     assert.strictEqual(upgradedNode.gatewayPid, upgradedState.gatewayPid, "replacement endpoint and persisted state must agree on owner PID");
     assert.strictEqual(upgradedNode.gatewayProtocolVersion, "pkm-node-gateway:v2");
+    observer = new SharedMarketManager(state, gatewayScript, "Persistent Gateway Test", {}, undefined, { user: "test", host: "host", version: "2.7.20" });
+    assert.strictEqual(observer.snapshot.gatewayStatus, "stopped", "a new window starts without process-local Gateway status");
+    await observer.refreshGatewayStatus();
+    assert.strictEqual(observer.snapshot.gatewayStatus, "running", "a new window must detect the already-running persistent Gateway");
     assert(diagnostics.some(event => event.operation === "gateway-handoff" && event.previousVersion === "2.6.1" && event.nextVersion === "2.7.20"));
     assert(warnings.some(message => message.includes("2.6.1") && message.includes("2.7.20")), "upgrade handoff must emit one visible transition warning");
     const gatewayState = JSON.parse(fs.readFileSync(path.join(state, "gateway-state.json"), "utf8"));
@@ -614,6 +631,7 @@ async function testPersistentGatewayLifecycle() {
     first.dispose();
     resumed?.dispose();
     resumedPeer?.dispose();
+    observer?.dispose();
     fs.rmSync(root, { recursive: true, force: true });
   }
 }

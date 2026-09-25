@@ -26,8 +26,8 @@ assert.match(extensionTs, /if \(!runtime\.healthy\)[\s\S]{0,500}await ensureMcpR
   "automatic maintenance must create or repair the managed runtime");
 assert.match(extensionTs, /else if \(!server\.current\)[\s\S]{0,500}generateMcpServer\(context\)/,
   "automatic maintenance must regenerate stale server code");
-assert.match(extensionTs, /target\.managed[\s\S]{0,180}target\.state === "outdated"[\s\S]{0,700}injectPkmSkill\(context, staleManaged\[index\]\.id\)/,
-  "automatic maintenance must update existing managed Skill projections");
+assert.match(extensionTs, /await reconcilePkmSkillProjections\(context\)[\s\S]{0,900}const python = detectMcpPython\(\)/,
+  "automatic Skill projection reconciliation must run independently before Python runtime checks");
 assert.doesNotMatch(extensionTs, /void offerMcpRuntimeDependencyRepair\(context\)/);
 assert.doesNotMatch(extensionTs, /void offerMcpServerRegeneration\(context\)/);
 assert.match(extensionTs, /await ensureMcpRuntime\(context\)/);
@@ -95,7 +95,7 @@ const currentHtml = skillContext.render({ pkmSkill: { ...baseSkill, targets: [{ 
 assert.match(currentHtml, /data-i18n="config\.current"[^>]*>Current<\/span> · v1\.1\.6/);
 assert.doesNotMatch(currentHtml, /Reinstall|pkmSkillInject/);
 const outdatedHtml = skillContext.render({ pkmSkill: { ...baseSkill, targets: [{ id: "copilot", kind: "copilot", label: "GitHub Copilot", root: "/x", skillPath: "/x/pkm-skills/SKILL.md", state: "outdated", installedVersion: "1.1.5", expectedVersion: "1.1.6", managed: true, detail: "Router 1.1.5 -> 1.1.6" }] }, skillProposals: [] });
-assert.match(outdatedHtml, /data-i18n="config\.updateSkill"[^>]*data-i18n-param-installed="1\.1\.5"[^>]*data-i18n-param-expected="1\.1\.6"[^>]*>Update PKM Skill · v1\.1\.5 → v1\.1\.6<\/span>/);
+assert.match(outdatedHtml, />Repair PKM Skill · v1\.1\.6<\/span>/);
 assert.match(outdatedHtml, /pkmSkillInject/);
 const bulkHtml = skillContext.render({ pkmSkill: { ...baseSkill, targets: [
   { id: "copilot", label: "Copilot", skillPath: "/x", state: "outdated" },

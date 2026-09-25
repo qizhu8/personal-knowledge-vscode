@@ -62,6 +62,7 @@ export function createRetrievalSnapshot(sources: RetrievalSnapshotSources): Retr
         category: String(skill.category || ""), tags: tags(skill.tags), source_project: String(skill.source_project || ""),
         recipe_required: skill.recipe_required === true ? "true" : "false", recipe_hint: String(skill.recipe_hint || ""),
         related_skills: tags(skill.related_skills),
+        priority: skill.priority === "high" || skill.priority === "highest" ? skill.priority : "normal",
       },
       provenance: { provider: "pkm", collection: "skills" },
       read_only: false,
@@ -108,9 +109,14 @@ export function createRetrievalSnapshot(sources: RetrievalSnapshotSources): Retr
         body: String(detail.content || ""),
         content_type: "subscription",
         source_uri: item.pkmPath,
-        metadata: { category: item.path.includes("/") ? item.path.slice(0, item.path.lastIndexOf("/")) : "", upstream_type: detail.contentType },
+        metadata: {
+          category: item.path.includes("/") ? item.path.slice(0, item.path.lastIndexOf("/")) : "",
+          upstream_type: detail.contentType,
+          source_priority: group.priority,
+        },
         provenance: {
           provider: "broker", subscription_id: group.subscriptionId, broker: group.alias,
+          source_priority: group.priority,
           publisher: group.publisher, node_id: group.nodeId, share_id: group.shareId,
           revision: group.revision, synced_at: group.syncedAt, upstream_uri: item.pkmPath,
           ...(detail.provenance || {}),

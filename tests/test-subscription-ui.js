@@ -67,6 +67,13 @@ assert.match(panel, /command === 'subscriptionRenamed'/);
 assert.match(panel, /group\.subscriptionId === data\?\.id/);
 assert.match(panel, /group\.alias = data\?\.alias \|\| fallbackName/);
 assert.match(panel, /command === 'subscriptionCompleted'/);
+assert.match(panel, /subscriptionSetPriority:15000/);
+assert.match(subscriptionPanel, /Retrieval priority/);
+assert.match(subscriptionPanel, /subscriptionSetPriority/);
+assert.match(subscriptionPanel, /Applied after relevance checks to all content from this source/);
+assert.match(extension, /case "subscriptionSetPriority"/);
+assert.match(extension, /scheduleRetrievalRefresh\(context\)/);
+assert.match(subscriptions, /setSubscriptionPriority\(id: string, priority: SubscriptionPriority\)/);
 assert.match(extension, /command: "subscriptionCompleted"/);
 assert.match(panel, /subscriptionSelectionDrafts\.delete\(subscriptionEditingShare\)/);
 assert.match(panel, /subscriptionEditingShare = String\(data\.shareId \|\| ''\)/);
@@ -278,10 +285,13 @@ assert.match(extension, /personalKnowledge\.openSubscribedServer/);
 assert.match(extension, /getSharedMarket\(\)\.cachedServerLinks/);
 assert.match(extension, /treePath: row\.category \|\| "\(uncategorized\)"/);
 assert.match(extension, /treePath: row\.category \|\| "Ungrouped"/);
-assert.match(extension, /subscription publish refresh failed/);
-assert.match(extension, /setImmediate\(\(\) => \{[\s\S]{0,900}sharedMarket\?\.refreshPublishedShares\(\)\.then/,
-	"Broker rebuild must run after activation instead of blocking the UI framework");
 assert.match(extension, /background Broker refresh failed/);
+assert.match(extension, /setImmediate\(\(\) => \{[\s\S]{0,1800}schedulePublishedShareRefresh\(context, 10_000\)/,
+	"Broker rebuild must be deferred until first content can render");
+assert.match(extension, /function schedulePublishedShareRefresh\(context: vscode\.ExtensionContext, delay = 5_000\)/,
+	"repeated file events must coalesce before rebuilding published Brokers");
+assert.match(extension, /title: "PKM: Refreshing published Brokers"/,
+	"background Broker rebuilding must be visible without blocking the CatTree");
 assert.match(materializer, /globalStorage; outside Knowledge Root/);
 assert.match(materializer, /\.pkm-source\.json/);
 assert.match(subscriptions, /cannot reach Broker/);

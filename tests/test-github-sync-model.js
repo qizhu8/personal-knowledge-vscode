@@ -9,6 +9,8 @@ const {
   defaultGitHubSyncSelection,
   discoverGitHubSshIdentities,
   fingerprintGitHubSyncEntries,
+  githubSyncAuthenticationFailureGuidance,
+  githubSyncAuthenticationSessionOptions,
   githubSyncGitArguments,
   githubSyncRepositoryHttpsHost,
   githubSyncRepositorySshHost,
@@ -20,11 +22,20 @@ const {
   parseGitHubSshLogin
 } = require("../dist/github-sync.js");
 
+assert.deepStrictEqual(githubSyncAuthenticationSessionOptions(), { createIfNone: true },
+  "normal GitHub reconnect must reuse the extension's global session preference across VS Code windows");
+assert.deepStrictEqual(githubSyncAuthenticationSessionOptions(true), { createIfNone: true, clearSessionPreference: true },
+  "account selection must be cleared only after the preferred account does not match the target");
+
 const defaults = defaultGitHubSyncSelection();
+assert(GITHUB_SYNC_CONTENT_TYPES.includes("agentSnapshots"));
 for (const type of GITHUB_SYNC_CONTENT_TYPES) {
-  assert.deepStrictEqual(defaults.public[type], { items: [], folders: ["packages", "servers"].includes(type) ? [] : [""] });
+  assert.deepStrictEqual(defaults.public[type], { items: [], folders: ["packages", "servers", "agentSnapshots"].includes(type) ? [] : [""] });
   assert.deepStrictEqual(defaults.private[type], { items: [], folders: [] });
 }
+const extensionSource = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
+assert.match(extensionSource, /files:\s*fetched\.files\.filter\(file => file\.type !== "agentSnapshots"\)/,
+  "GitHub Branch subscriptions must never expose synchronized Agent Snapshots");
 
 const target = normalizeGitHubSyncTarget({
   name: "Primary",
@@ -33,6 +44,17 @@ const target = normalizeGitHubSyncTarget({
 }, () => "target-1");
 assert.strictEqual(target.id, "target-1");
 assert.deepStrictEqual(target.selection, defaults);
+assert.deepStrictEqual(target.automation, { enabled: true, intervalMinutes: 5, syncOnChange: true });
+const scheduledTarget = normalizeGitHubSyncTarget({
+  name: "Scheduled",
+  repository: "https://github.com/qizhu8/knowledge.git",
+  branch: "main",
+  authentication: { method: "vscode", expectedLogin: "qizhu8", accountId: "account-1" },
+  automation: { enabled: false, intervalMinutes: 30, syncOnChange: false }
+}, () => "target-scheduled");
+assert.deepStrictEqual(scheduledTarget.authentication, { method: "vscode", expectedLogin: "qizhu8", accountId: "account-1" });
+assert.deepStrictEqual(scheduledTarget.automation, { enabled: false, intervalMinutes: 30, syncOnChange: false });
+assert.throws(() => normalizeGitHubSyncTarget({ name: "Bad interval", repository: "repo", branch: "main", automation: { intervalMinutes: 0 } }), /between 1 and 1440/);
 assert.throws(() => normalizeGitHubSyncTarget({ name: "Bad", repository: "repo", branch: "bad..branch" }), /valid Git branch/);
 assert.throws(() => normalizeGitHubSyncTarget({ name: "", repository: "repo", branch: "main" }), /name is required/);
 const emuTarget = normalizeGitHubSyncTarget({
@@ -57,6 +79,14 @@ assert.deepStrictEqual(githubSyncGitArguments(["fetch", "origin"], gcmTarget), [
   "-c", "credential.username=yuwang8_microsoft",
   "fetch", "origin"
 ]);
+assert.match(githubSyncAuthenticationFailureGuidance(gcmTarget, "remote: Repository not found.\nfatal: Authentication failed"), /did not authenticate as yuwang8_microsoft.*switch this target to VS Code GitHub Authentication/,
+  "GCM failures must explain the exact account recovery path");
+assert.strictEqual(githubSyncAuthenticationFailureGuidance(gcmTarget, "fatal: unable to access: connection timed out"), "",
+  "non-authentication failures must not be mislabeled as credential failures");
+assert.match(githubSyncAuthenticationFailureGuidance(scheduledTarget, "fatal: Authentication failed"), /Reconnect the VS Code GitHub account qizhu8/,
+  "VS Code Authentication failures must identify the target account to reconnect");
+assert.deepStrictEqual(githubSyncGitArguments(["fetch", "origin"], scheduledTarget).slice(-2), ["fetch", "origin"]);
+assert(!githubSyncGitArguments(["fetch", "origin"], scheduledTarget).join(" ").includes("github_pat_example"), "VS Code access token is never included in git arguments");
 assert.strictEqual(githubSyncRepositoryHttpsHost(gcmTarget.repository), "github.com");
 assert.throws(() => normalizeGitHubSyncTarget({ name: "Bad GCM", repository: "git@github.com:owner/repo.git", branch: "main", authentication: { method: "https", expectedLogin: "owner" } }), /HTTPS repository URL/);
 assert.throws(() => githubSyncRepositoryHttpsHost("https://token@github.com/owner/repo.git"), /HTTPS repository URL/);

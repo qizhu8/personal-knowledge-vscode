@@ -1,6 +1,7 @@
 """Opt-in Agent Session registration and managed PKM activity tracking."""
 
 import contextlib
+import base64
 import datetime
 import hashlib
 import hmac
@@ -11,13 +12,16 @@ import time
 import uuid
 from pathlib import Path
 
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastmcp import Context
 from fastmcp.server.middleware import Middleware
 
 
-AGENT_SESSION_SCHEMA_VERSION = "1.3.0"
+AGENT_SESSION_SCHEMA_VERSION = "1.4.0"
 SESSION_SCHEMA = "pkm.agent.session/v1"
 SNAPSHOT_SCHEMA = "pkm.agent.snapshot/v1"
+SNAPSHOT_PAYLOAD_ALGORITHM = "A256GCM-PKM-INTERNAL/v1"
+SNAPSHOT_PAYLOAD_KEY = hashlib.sha256(b"uone:agent-snapshot:payload:v1").digest()
 TODO_TERMINAL_STATES = {"succeeded", "failed", "skipped"}
 
 
@@ -102,6 +106,54 @@ def _snapshot_verifier(passphrase, salt):
     ).hex()
 
 
+def _snapshot_b64encode(value):
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def _snapshot_b64decode(value):
+    text = str(value or "")
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def _snapshot_aad(snapshot_id, magic_code):
+    return (SNAPSHOT_SCHEMA + ":" + str(snapshot_id) + ":" + str(magic_code)).encode("utf-8")
+
+
+def _snapshot_encrypt_payload(payload, snapshot_id, magic_code):
+    iv = secrets.token_bytes(12)
+    encrypted = AESGCM(SNAPSHOT_PAYLOAD_KEY).encrypt(
+        iv, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        _snapshot_aad(snapshot_id, magic_code))
+    return {
+        "algorithm": SNAPSHOT_PAYLOAD_ALGORITHM,
+        "iv": _snapshot_b64encode(iv),
+        "ciphertext": _snapshot_b64encode(encrypted[:-16]),
+        "tag": _snapshot_b64encode(encrypted[-16:]),
+    }
+
+
+def _snapshot_decrypt_payload(snapshot):
+    payload = snapshot.get("payload")
+    if not isinstance(payload, dict) or payload.get("algorithm") != SNAPSHOT_PAYLOAD_ALGORITHM:
+        return payload or {}
+    encrypted = _snapshot_b64decode(payload.get("ciphertext")) + _snapshot_b64decode(payload.get("tag"))
+    plaintext = AESGCM(SNAPSHOT_PAYLOAD_KEY).decrypt(
+        _snapshot_b64decode(payload.get("iv")), encrypted,
+        _snapshot_aad(snapshot.get("snapshotId"), snapshot.get("magicCode")))
+    return json.loads(plaintext.decode("utf-8"))
+
+
+def _snapshot_encrypt_legacy(path, snapshot):
+    payload = snapshot.get("payload") or {}
+    if isinstance(payload, dict) and payload.get("algorithm") == SNAPSHOT_PAYLOAD_ALGORITHM:
+        return snapshot
+    snapshot["capture"] = _snapshot_capture(payload)
+    snapshot["payload"] = _snapshot_encrypt_payload(
+        payload, snapshot.get("snapshotId"), snapshot.get("magicCode"))
+    _atomic_write(path, snapshot)
+    return snapshot
+
+
 def _snapshot_payload(store, session):
     runs = []
     for run_id in session.get("recipeRunIds") or []:
@@ -116,10 +168,24 @@ def _snapshot_payload(store, session):
     return {"session": session_copy, "recipeRuns": runs}
 
 
-def _snapshot_summary(snapshot, recovery_count=0):
-    payload_session = (snapshot.get("payload") or {}).get("session") or {}
+def _snapshot_capture(payload):
+    payload_session = (payload or {}).get("session") or {}
     checkpoints = payload_session.get("checkpoints") or []
     latest = checkpoints[-1] if checkpoints else None
+    return {
+        "recipeRunCount": len((payload or {}).get("recipeRuns") or []),
+        "todoCount": len(payload_session.get("todos") or []),
+        "checkpoint": {
+            "checkpointId": str(latest.get("checkpointId") or ""),
+            "sequence": int(latest.get("sequence") or len(checkpoints)),
+            "createdAt": str(latest.get("createdAt") or ""),
+            "reason": str(latest.get("reason") or ""),
+        } if latest else None,
+    }
+
+
+def _snapshot_summary(snapshot, recovery_count=0):
+    capture = snapshot.get("capture") or _snapshot_capture(snapshot.get("payload") or {})
     return {
         "snapshotId": str(snapshot.get("snapshotId") or ""),
         "magicCode": str(snapshot.get("magicCode") or ""),
@@ -130,14 +196,9 @@ def _snapshot_summary(snapshot, recovery_count=0):
         "agent": snapshot.get("agent") or {"name": "Agent", "product": ""},
         "reason": str(snapshot.get("reason") or ""),
         "createdAt": str(snapshot.get("createdAt") or ""),
-        "recipeRunCount": len((snapshot.get("payload") or {}).get("recipeRuns") or []),
-        "todoCount": len(payload_session.get("todos") or []),
-        "checkpoint": {
-            "checkpointId": str(latest.get("checkpointId") or ""),
-            "sequence": int(latest.get("sequence") or len(checkpoints)),
-            "createdAt": str(latest.get("createdAt") or ""),
-            "reason": str(latest.get("reason") or ""),
-        } if latest else None,
+        "recipeRunCount": int(capture.get("recipeRunCount") or 0),
+        "todoCount": int(capture.get("todoCount") or 0),
+        "checkpoint": capture.get("checkpoint"),
         "recoveryCount": recovery_count,
     }
 
@@ -154,7 +215,7 @@ def _load_snapshot_by_magic(store, magic_code):
             except (json.JSONDecodeError, OSError):
                 continue
             if snapshot.get("schema") == SNAPSHOT_SCHEMA and snapshot.get("magicCode") == normalized:
-                return snapshot
+                return _snapshot_encrypt_legacy(path, snapshot)
     raise ValueError("Agent Snapshot was not found.")
 
 
@@ -312,7 +373,8 @@ def register_agent_session_tools(mcp, store):
             "tools": ["agent_session_start", "agent_session_status", "agent_session_checkpoint",
                       "agent_session_load", "agent_session_resume", "agent_session_export_checkpoint",
                       "agent_session_import_checkpoint", "agent_session_snapshot_create",
-                      "agent_session_snapshot_list", "agent_session_snapshot_recover", "agent_session_todo_append",
+                      "agent_session_snapshot_list", "agent_session_snapshot_rotate",
+                      "agent_session_snapshot_recover", "agent_session_todo_append",
                       "agent_session_todo_replan", "agent_session_todo_next", "agent_session_todo_report", "agent_session_end"],
             "host_session_grouping": "Pass the current host chat/session ID to agent_session_start when available so related managed tasks are grouped together.",
             "recipe_progress": "Recipe runs started after registration are projected as a live task graph.",
@@ -516,7 +578,8 @@ def register_agent_session_tools(mcp, store):
                 "salt": salt,
                 "verifier": _snapshot_verifier(recovery_passphrase, salt),
             },
-            "payload": payload,
+            "capture": _snapshot_capture(payload),
+            "payload": _snapshot_encrypt_payload(payload, snapshot_id, magic_code),
         }
         snapshot_path = _snapshot_directory(store) / (snapshot_id + ".json")
         if snapshot_path.exists():
@@ -554,12 +617,43 @@ def register_agent_session_tools(mcp, store):
                 try:
                     snapshot = json.loads(path.read_text(encoding="utf-8"))
                     if snapshot.get("schema") == SNAPSHOT_SCHEMA:
+                        snapshot = _snapshot_encrypt_legacy(path, snapshot)
                         snapshots.append(_snapshot_summary(
                             snapshot, recoveries.get(str(snapshot.get("snapshotId") or ""), 0)))
                 except (json.JSONDecodeError, OSError):
                     continue
         snapshots.sort(key=lambda item: item["createdAt"], reverse=True)
         return {"ok": True, "snapshots": snapshots}
+
+    @mcp.tool()
+    def agent_session_snapshot_rotate(magic_code: str) -> dict:
+        """Rotate one Agent Snapshot recovery passphrase and invalidate the previous passphrase."""
+        snapshot = _load_snapshot_by_magic(store, magic_code)
+        if (snapshot.get("payload") or {}).get("algorithm") != SNAPSHOT_PAYLOAD_ALGORITHM:
+            payload = _snapshot_decrypt_payload(snapshot)
+            snapshot["capture"] = _snapshot_capture(payload)
+            snapshot["payload"] = _snapshot_encrypt_payload(
+                payload, snapshot.get("snapshotId"), snapshot.get("magicCode"))
+        recovery_passphrase = _snapshot_passphrase()
+        salt = secrets.token_hex(16)
+        snapshot["recovery"] = {
+            "algorithm": "scrypt-sha256/v1",
+            "salt": salt,
+            "verifier": _snapshot_verifier(recovery_passphrase, salt),
+            "rotatedAt": _now(),
+        }
+        snapshot_path = _snapshot_directory(store) / (str(snapshot["snapshotId"]) + ".json")
+        _atomic_write(snapshot_path, snapshot)
+        return {
+            "ok": True,
+            "snapshot": _snapshot_summary(snapshot),
+            "recovery_passphrase": recovery_passphrase,
+            "recovery_prompt": (
+                "Recover PKM Agent Snapshot " + str(snapshot["magicCode"])
+                + " with recovery passphrase " + recovery_passphrase + "."
+            ),
+            "warning": "The previous recovery passphrase is no longer valid.",
+        }
 
     @mcp.tool()
     def agent_session_snapshot_recover(magic_code: str, recovery_passphrase: str,
@@ -578,8 +672,9 @@ def register_agent_session_tools(mcp, store):
         supplied = _snapshot_verifier(recovery_passphrase, str(recovery.get("salt") or ""))
         if not hmac.compare_digest(supplied, str(recovery.get("verifier") or "")):
             raise ValueError("Agent Snapshot recovery passphrase is incorrect.")
-        source_session = ((snapshot.get("payload") or {}).get("session") or {})
-        source_runs = ((snapshot.get("payload") or {}).get("recipeRuns") or [])
+        payload = _snapshot_decrypt_payload(snapshot)
+        source_session = (payload.get("session") or {})
+        source_runs = (payload.get("recipeRuns") or [])
         recovery_key = uuid.uuid4().hex
         session_id = "agent_session_" + hashlib.sha256(
             (str(snapshot["snapshotId"]) + ":" + recovery_key).encode("utf-8")

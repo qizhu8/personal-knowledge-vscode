@@ -107,12 +107,41 @@ try {
   assert.throws(() => projection.injectPkmSkill(context, "copilot"), /Refusing to overwrite/);
   assert.throws(() => projection.removeInjectedPkmSkill(context, "copilot"), /Refusing to remove/);
 
-  const custom = path.join(root, "custom-skills");
-  projection.addPkmSkillCustomTarget(context, custom, "Custom Test").then(target => {
+  projection.connectPkmSkill(context, "agents").then(async connected => {
+    assert.strictEqual(connected.connected, true);
+    const connectedPath = connected.skillPath;
+    const canonicalProjection = fs.readFileSync(connectedPath, "utf8");
+    const currentMtime = fs.statSync(connectedPath).mtimeMs;
+    const unchanged = await projection.reconcilePkmSkillProjections(context);
+    assert.strictEqual(unchanged.updated.length, 0, "current projections must not be rewritten");
+    assert.strictEqual(fs.statSync(connectedPath).mtimeMs, currentMtime);
+    fs.rmSync(connectedPath);
+    const restored = await projection.reconcilePkmSkillProjections(context);
+    assert.deepStrictEqual(restored.updated.map(target => target.id), ["agents"]);
+    assert.strictEqual(fs.readFileSync(connectedPath, "utf8"), canonicalProjection, "a missing connected projection must be restored");
+
+    fs.appendFileSync(connectedPath, "\nmanual edit\n");
+    const repaired = await projection.reconcilePkmSkillProjections(context);
+    assert.deepStrictEqual(repaired.updated.map(target => target.id), ["agents"]);
+    assert.strictEqual(fs.readFileSync(connectedPath, "utf8"), canonicalProjection, "a modified PKM-managed projection must return to canonical content");
+
+    await projection.disconnectPkmSkill(context, "agents");
+    await projection.reconcilePkmSkillProjections(context);
+    assert(!fs.existsSync(connectedPath), "an explicitly disconnected target must remain absent");
+
+    const custom = path.join(root, "custom-skills");
+    const target = await projection.addPkmSkillCustomTarget(context, custom, "Custom Test");
     assert.strictEqual(target.root, custom);
-    console.log("PKM Skill projection: inject, hash update, conflict protection, remove, and custom target OK");
+    console.log("PKM Skill projection: connect, automatic reconcile, conflict protection, disconnect, and custom target OK");
+  }).catch(error => {
+    console.error(error);
+    process.exitCode = 1;
+  }).finally(() => {
+    process.env.HOME = previousHome;
   });
 } finally {
-  process.env.HOME = previousHome;
-  process.on("exit", () => fs.rmSync(root, { recursive: true, force: true }));
+  process.on("exit", () => {
+    process.env.HOME = previousHome;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
 }

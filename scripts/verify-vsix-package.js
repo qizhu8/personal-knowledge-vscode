@@ -27,5 +27,10 @@ assert.strictEqual(preRelease, expectedChannel === "pre-release", "VSIX channel 
 
 const forbidden = entries.filter(entry => /^(extension\/(tests|docs|\.vscode|coverage|artifacts)\/|extension\/(?:[^/]+\/)*\.pytest_cache\/|extension\/planning\.md$|extension\/scripts\/verify-vsix-package\.js$)/.test(entry));
 assert.deepStrictEqual(forbidden, [], `VSIX contains forbidden development files: ${forbidden.join(", ")}`);
+assert(entries.includes("extension/node_modules/ws/index.js"), "VSIX must include the ws runtime dependency used by Chatroom");
+for (const arch of ["x64", "arm64", "ia32"]) {
+  assert(entries.includes(`extension/resources/windows/pkm-stdio-launcher-${arch}.exe`),
+    `VSIX must include the ${arch} no-console Windows MCP stdio launcher`);
+}
 
 console.log(`VSIX package test: Uone.personal-knowledge ${expectedVersion} (${expectedChannel}) metadata and boundaries OK`);

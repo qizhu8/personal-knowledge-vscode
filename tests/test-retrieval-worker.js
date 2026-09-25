@@ -6,6 +6,13 @@ const path = require("path");
 const { execFileSync } = require("child_process");
 const { RetrievalWorkerManager } = require("../dist/retrieval-worker.js");
 
+const source = fs.readFileSync(path.join(__dirname, "..", "src", "retrieval-worker.ts"), "utf8");
+assert.match(
+  source,
+  /spawn\(this\.python,[\s\S]{0,300}windowsHide:\s*process\.platform === "win32"/,
+  "the detached retrieval Python worker must not create a Windows console window",
+);
+
 async function waitUntil(check, timeout = 10000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
@@ -64,7 +71,12 @@ async function main() {
     let endpoint = JSON.parse(fs.readFileSync(path.join(state, "worker.json"), "utf8"));
     await fetch(`http://127.0.0.1:${endpoint.port}/shutdown`, { method: "POST", headers: { "X-PKM-Retrieval-Token": endpoint.token } });
     await waitUntil(async () => !fs.existsSync(path.join(state, "worker.json")) || undefined);
+    fs.writeFileSync(path.join(state, "worker.json"), JSON.stringify(endpoint));
     const restarted = new RetrievalWorkerManager(state, script, python, "0.3.0.dev2026091601");
+    assert.deepStrictEqual(await restarted.sync(restoredSnapshot), { mode: "reused", upserts: 0, deletes: 0 },
+      "an unchanged corpus must still recover a stale endpoint before reporting reuse");
+    const recoveredEndpoint = JSON.parse(fs.readFileSync(path.join(state, "worker.json"), "utf8"));
+    assert.notStrictEqual(recoveredEndpoint.pid, endpoint.pid, "stale endpoint recovery must start a replacement worker");
     const restored = await waitUntil(async () => { const value = await restarted.status(); return value.ready ? value : undefined; });
     assert.strictEqual(restored.corpus_revision, "revision-3", "restart must restore the last successfully merged snapshot");
     assert.strictEqual(restored.document_count, 2);

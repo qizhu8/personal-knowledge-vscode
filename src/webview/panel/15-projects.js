@@ -151,7 +151,9 @@ function agentSnapshotOnCreated(data) {
   agentSnapshotCredential = {
     snapshotId:snapshot.snapshotId,
     recoveryPassphrase:String(data.recoveryPassphrase || ''),
-    recoveryPrompt:String(data.recoveryPrompt || '')
+    recoveryPrompt:String(data.recoveryPrompt || ''),
+    copied:data.copied !== false,
+    rotated:!!data.rotated
   };
   if (state.tab === 'agentSnapshots') renderAgentSnapshots();
 }
@@ -168,6 +170,16 @@ function agentSnapshotCopy(text, button) {
 function agentSnapshotDismissCredential() {
   agentSnapshotCredential = null;
   renderAgentSnapshots();
+}
+
+function agentSnapshotRotate(snapshotId) {
+  pkModal({
+    title:'Rotate recovery passphrase?',
+    message:'The existing recovery passphrase will stop working immediately. PKM will create and automatically copy a new Recovery Prompt.',
+    okLabel:'Rotate and Copy',
+    danger:true,
+    onOk:()=>ask('agentSnapshotRotate',{snapshotId})
+  });
 }
 
 function agentSnapshotContextMenu(event, snapshotId) {
@@ -1683,7 +1695,7 @@ function renderAgentSnapshots() {
     const credential = agentSnapshotCredential?.snapshotId === selected.snapshotId ? agentSnapshotCredential : null;
     const encodedMagic = encodeURIComponent(selected.magicCode);
     const encodedPrompt = credential ? encodeURIComponent(credential.recoveryPrompt) : '';
-    content = `<article class="agent-snapshot-detail"><header><div><span>Immutable recovery point</span><h3>${esc(selected.task)}</h3><p>${esc(selected.snapshotId)}</p></div><b>${selected.recoveryCount || 0} recoveries</b></header>${credential ? `<section class="agent-snapshot-secret"><div><span class="codicon codicon-warning"></span><div><strong>Save this recovery passphrase now</strong><p>It is shown only once and is never stored in plaintext. Keep it separate from the Magic Code.</p></div></div><code>${esc(credential.recoveryPassphrase)}</code><div><button class="pk-button" onclick="agentSnapshotCopy(decodeURIComponent('${encodedPrompt}'),this)">Copy Recovery Prompt</button><button class="pk-button secondary" onclick="agentSnapshotDismissCredential()">I saved it</button></div></section>` : ''}<section class="agent-snapshot-identity"><div><span>Magic Code</span><code>${esc(selected.magicCode)}</code><button class="pk-button secondary" onclick="agentSnapshotCopy(decodeURIComponent('${encodedMagic}'),this)">Copy</button></div><p>The Magic Code identifies this local Snapshot. Recovery also requires the one-time passphrase shown when it was created.</p></section><div class="agent-snapshot-metrics"><div><span>Source Session</span><strong>${esc(selected.sourceSessionId)}</strong></div><div><span>Captured</span><strong>${esc(selected.createdAt)}</strong></div><div><span>Session Todos</span><strong>${selected.todoCount || 0}</strong></div><div><span>Recipe Runs</span><strong>${selected.recipeRunCount || 0}</strong></div></div><section class="agent-snapshot-recover"><span class="codicon codicon-debug-restart"></span><div><strong>Recover in a new conversation</strong><ol><li>Open a new Copilot session in this Knowledge Root.</li><li>Paste the recovery prompt containing the Magic Code and passphrase.</li><li>The Agent calls <code>agent_session_snapshot_recover</code> and continues from the captured todos and Recipe runs.</li></ol><p>Each recovery creates a new independent Session. Right-click this Snapshot to delete it when it is no longer needed.</p></div></section></article>`;
+    content = `<article class="agent-snapshot-detail"><header><div><span>Immutable recovery point</span><h3>${esc(selected.task)}</h3><p>${esc(selected.snapshotId)}</p></div><b>${selected.recoveryCount || 0} recoveries</b></header>${credential ? `<section class="agent-snapshot-secret"><div><span class="codicon codicon-warning"></span><div><strong>${credential.rotated ? 'New recovery passphrase' : 'Save this recovery passphrase now'}</strong><p>${credential.copied ? 'The complete Recovery Prompt was copied automatically. ' : 'Automatic copy failed; use the button below. '}It is shown only once and is never stored in plaintext.${credential.rotated ? ' The previous passphrase is no longer valid.' : ''}</p></div></div><code>${esc(credential.recoveryPassphrase)}</code><div><button class="pk-button" onclick="agentSnapshotCopy(decodeURIComponent('${encodedPrompt}'),this)">Copy Recovery Prompt</button><button class="pk-button secondary" onclick="agentSnapshotDismissCredential()">I saved it</button></div></section>` : ''}<section class="agent-snapshot-identity"><div><span>Magic Code</span><code>${esc(selected.magicCode)}</code><button class="pk-button secondary" onclick="agentSnapshotCopy(decodeURIComponent('${encodedMagic}'),this)">Copy</button><button class="pk-button secondary" data-pending-label="Rotating…" onclick="agentSnapshotRotate(decodeURIComponent('${encodeURIComponent(selected.snapshotId)}'))">Rotate Passphrase…</button></div><p>The Magic Code identifies this Snapshot. Its encrypted payload may be selected explicitly for GitHub Sync; other Sync and Subscribe surfaces exclude Agent Snapshots.</p></section><div class="agent-snapshot-metrics"><div><span>Source Session</span><strong>${esc(selected.sourceSessionId)}</strong></div><div><span>Captured</span><strong>${esc(selected.createdAt)}</strong></div><div><span>Session Todos</span><strong>${selected.todoCount || 0}</strong></div><div><span>Recipe Runs</span><strong>${selected.recipeRunCount || 0}</strong></div></div><section class="agent-snapshot-recover"><span class="codicon codicon-debug-restart"></span><div><strong>Recover in a new conversation</strong><ol><li>Open a new Copilot session in this Knowledge Root.</li><li>Paste the recovery prompt containing the Magic Code and passphrase.</li><li>The Agent calls <code>agent_session_snapshot_recover</code> and continues from the captured todos and Recipe runs.</li></ol><p>Each recovery creates a new independent Session. Right-click this Snapshot to delete it when it is no longer needed.</p></div></section></article>`;
   }
   detail.innerHTML = `<div class="agent-snapshot-page">${create}<div class="agent-snapshot-workspace"><aside><header><strong>Agent Snapshots</strong><span>${snapshots.length}</span></header><div>${list}</div></aside><main>${content}</main></div></div>`;
 }

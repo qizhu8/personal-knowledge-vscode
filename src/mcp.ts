@@ -9,6 +9,7 @@ import { condaEnvs, pyenvAdd, pyenvCreate, pyenvDelete, pyenvList, pyenvUpdate }
 import { managedEnvironmentsRoot } from "./environment-paths";
 import { isAbsoluteForPlatform, isForeignAbsolutePath } from "./store-path";
 import { compareVersionOrder } from "./version-order";
+import { mcpStdioCommand } from "./mcp-stdio-command";
 
 // ── MCP server scaffold ────────────────────────────────────────────────────
 export const UNIFIED_MCP_VERSION = "2.12.0";
@@ -19,7 +20,7 @@ const RETRIEVAL_ENGINE_WHEEL_SHA256 = "04560cf29966c8c267adf8ea8502819fd005222ca
 const KNOWLEDGE_MCP_VERSION = "1.4.0";
 const CHAT_MCP_VERSION = "2.3.5";
 const RECIPE_MCP_VERSION = "1.4.0";
-const AGENT_SESSION_MCP_VERSION = "1.3.0";
+const AGENT_SESSION_MCP_VERSION = "1.4.0";
 
 interface McpServerStatus {
   installed: boolean;
@@ -76,8 +77,8 @@ export function mcpProcessStatus(): McpProcessStatus {
   const serverPath = path.join(managedMcpServerDirectory(), "server.py");
   try {
     const output = process.platform === "win32"
-      ? execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"], { encoding: "utf8", timeout: 3000 })
-      : execFileSync("ps", ["-eo", "pid=,args="], { encoding: "utf8", timeout: 3000 });
+      ? execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"], { encoding: "utf8", timeout: 3000, windowsHide: true })
+      : execFileSync("ps", ["-eo", "pid=,args="], { encoding: "utf8", timeout: 3000, windowsHide: false });
     const normalizedPath = serverPath.replace(/\\/g, "/").toLowerCase();
     const lines = process.platform === "win32"
       ? (() => { const parsed = JSON.parse(output || "[]"); return (Array.isArray(parsed) ? parsed : [parsed]).map(item => `${item.ProcessId || ""} ${item.CommandLine || ""}`); })()
@@ -103,7 +104,7 @@ export function validateMcpPython(candidate: string): { path: string; version: s
   try {
     const executable = path.normalize(value);
     const version = execFileSync(executable, ["-c", "import platform;print(platform.python_version())"], {
-      encoding: "utf-8", timeout: 8000, stdio: ["ignore", "pipe", "pipe"],
+      encoding: "utf-8", timeout: 8000, stdio: ["ignore", "pipe", "pipe"], windowsHide: process.platform === "win32",
     }).trim();
     const match = /^(\d+)\.(\d+)(?:\.(\d+))?/.exec(version);
     if (!match || Number(match[1]) < 3 || (Number(match[1]) === 3 && Number(match[2]) < 10)) {
@@ -129,7 +130,7 @@ export function detectMcpPython(ignoreConfigured = false): McpPythonStatus {
   }
   try {
     const command = process.platform === "win32" ? "where python" : "command -v python3 || command -v python";
-    candidates.push(...execSync(command, { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).split(/\r?\n/));
+    candidates.push(...execSync(command, { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], windowsHide: process.platform === "win32" }).split(/\r?\n/));
   } catch { /* no executable on PATH */ }
   for (const candidate of [...new Set(candidates.map(value => value.trim()).filter(Boolean))]) {
     const result = validateMcpPython(candidate);
@@ -164,16 +165,16 @@ async function listMcpPythonCandidates(): Promise<McpPythonCandidate[]> {
   try {
     if (process.platform === "win32") {
       for (const command of ["where python", "where python3"]) {
-        try { execSync(command, { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).split(/\r?\n/).forEach(value => add(value, "path", "PATH")); } catch { /* absent */ }
+        try { execSync(command, { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true }).split(/\r?\n/).forEach(value => add(value, "path", "PATH")); } catch { /* absent */ }
       }
       try {
-        execSync("py -0p", { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).split(/\r?\n/).forEach(line => {
+        execSync("py -0p", { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true }).split(/\r?\n/).forEach(line => {
           const match = /([A-Za-z]:\\[^*]+python\.exe)\s*$/i.exec(line.trim()); if (match) add(match[1], "py-launcher", "Python Launcher");
         });
       } catch { /* py launcher absent */ }
     } else {
       const names = ["python3", "python", "python3.14", "python3.13", "python3.12", "python3.11", "python3.10"];
-      execSync(`which -a ${names.join(" ")} 2>/dev/null || true`, { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] })
+      execSync(`which -a ${names.join(" ")} 2>/dev/null || true`, { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], windowsHide: false })
         .split(/\r?\n/).forEach(value => add(value, "path", "PATH"));
     }
   } catch { /* no PATH candidates */ }
@@ -222,14 +223,14 @@ export async function streamMcpPythonCandidates(respond: (message: object) => vo
   }
   try {
     const command = process.platform === "win32" ? "where python" : "which -a python3 python python3.14 python3.13 python3.12 python3.11 python3.10 2>/dev/null || true";
-    execSync(command, { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).split(/\r?\n/).forEach(value => emit(value, "path", "PATH"));
+    execSync(command, { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], windowsHide: process.platform === "win32" }).split(/\r?\n/).forEach(value => emit(value, "path", "PATH"));
   } catch { /* no PATH Python */ }
   if (generation !== mcpPythonScanGeneration) return;
   respond({ command: "mcpPythonScanProgress", data: { text: `Scanning conda/miniconda installations… ${count} found`, count } });
   const condaRoots = new Set<string>();
   for (const root of [process.env.CONDA_PREFIX, process.env.CONDA_EXE ? path.dirname(path.dirname(process.env.CONDA_EXE)) : "", path.join(os.homedir(), "miniconda3"), path.join(os.homedir(), "anaconda3")].filter(Boolean).map(String)) condaRoots.add(root);
   try {
-    const raw = await new Promise<string>((resolve) => execFile("conda", ["env", "list", "--json"], { timeout: 20000, maxBuffer: 1 << 20 }, (_error, stdout) => resolve(String(stdout || ""))));
+    const raw = await new Promise<string>((resolve) => execFile("conda", ["env", "list", "--json"], { timeout: 20000, maxBuffer: 1 << 20, windowsHide: process.platform === "win32" }, (_error, stdout) => resolve(String(stdout || ""))));
     const parsed = JSON.parse(raw || "{}");
     for (const prefix of parsed.envs || []) {
       const base = String(prefix); if (!/[\\/]envs[\\/]/.test(base)) condaRoots.add(base);
@@ -250,10 +251,11 @@ export function resolveMcpPython(): string {
 
 export function mcpServerDefinitionData(): { label: string; command: string; args: string[]; cwd: string; version: string } {
   const cwd = managedMcpServerDirectory();
+  const launch = mcpStdioCommand(resolveMcpPython(), [path.join(cwd, "server.py")]);
   return {
     label: "pkm",
-    command: resolveMcpPython(),
-    args: [path.join(cwd, "server.py")],
+    command: launch.command,
+    args: launch.args,
     cwd,
     version: UNIFIED_MCP_VERSION,
   };
@@ -266,7 +268,7 @@ export function mcpRuntimeStatus(): McpRuntimeStatus {
   const registered = pyenvList().some(env => env.path && path.resolve(env.path) === path.resolve(runtimePath));
   if (validation.error) return { path: runtimePath, python, exists, healthy: false, version: validation.version, error: exists ? validation.error : "Managed MCP runtime has not been created.", registered };
   try {
-    execFileSync(validation.path, ["-c", "import fastmcp, prompt_manager, websockets, adaptive_skill_retrieval"], { timeout: 10000, stdio: ["ignore", "pipe", "pipe"] });
+    execFileSync(validation.path, ["-c", "import fastmcp, prompt_manager, websockets, adaptive_skill_retrieval, cryptography"], { timeout: 10000, stdio: ["ignore", "pipe", "pipe"], windowsHide: process.platform === "win32" });
     return { path: runtimePath, python: validation.path, exists: true, healthy: true, version: validation.version, error: "", registered };
   } catch (error: any) {
     return { path: runtimePath, python: validation.path, exists: true, healthy: false, version: validation.version, error: `MCP dependencies are missing or broken: ${error?.message || String(error)}`, registered };
@@ -306,7 +308,7 @@ export async function ensureMcpRuntime(context: vscode.ExtensionContext): Promis
   generateMcpServer(context);
   const requirements = path.join(managedMcpServerDirectory(), "requirements.txt");
   const pipInstall = (args: string[]) => new Promise<void>((resolve, reject) => execFile(validation.path, ["-m", "pip", "install", ...args], {
-    timeout: 600000, maxBuffer: 1 << 24,
+    timeout: 600000, maxBuffer: 1 << 24, windowsHide: process.platform === "win32",
   }, (error, stdout, stderr) => error ? reject(new Error(`${error.message}\n${String(stdout || "")}\n${String(stderr || "")}`.trim())) : resolve()));
   try {
     await pipInstall(["-r", requirements]);
@@ -347,10 +349,10 @@ export function mcpRuntimeManualCommands(basePython: string): string[] {
 
 export function combinedMcpRegistry(): string {
   const mcpDir = managedMcpServerDirectory();
-  const python = resolveMcpPython();
+  const launch = mcpStdioCommand(resolveMcpPython(), [path.join(mcpDir, "server.py")]);
   return JSON.stringify({
     servers: {
-      pkm: { type: "stdio", command: python, args: [path.join(mcpDir, "server.py")] },
+      pkm: { type: "stdio", command: launch.command, args: launch.args },
     },
   }, null, 2);
 }
@@ -360,6 +362,7 @@ export function combinedMcpInstallInstruction(): string {
   const mcpDir = managedMcpServerDirectory();
   const runtimePython = mcpRuntimePythonPath();
   const serverPath = path.join(mcpDir, "server.py");
+  const launch = mcpStdioCommand(runtimePython, [serverPath], process.platform, process.arch, path.resolve(__dirname, ".."), () => true);
   const requirementsPath = path.join(mcpDir, "requirements.txt");
   const chatServerPath = path.join(mcpDir, "chat_server.py");
   const quote = (value: string) => `"${value.replace(/"/g, '\\"')}"`;
@@ -381,7 +384,7 @@ export function combinedMcpInstallInstruction(): string {
     "```json",
     JSON.stringify({
       servers: {
-        pkm: { type: "stdio", command: runtimePython, args: [serverPath] },
+        pkm: { type: "stdio", command: launch.command, args: launch.args },
       },
     }, null, 2),
     "```",
@@ -574,10 +577,27 @@ def search_knowledge(query: str, limit: int = 5, content_type_filter: Optional[L
   if content_type_filter is not None and any(str(value) not in allowed for value in content_type_filter):
     _collect_search_invocation("pkm.search_knowledge", started_at, [], False, ["exact", "bm25"])
     return json.dumps({"ok": False, "error": "Invalid content_type_filter"})
+  requested_limit = max(1, min(int(limit or 5), 100))
   result = _retrieval_request("/search", {
-    "query": query, "limit": max(1, min(int(limit or 5), 100)),
+    "query": query, "limit": min(100, max(requested_limit, requested_limit * 5)),
     "content_type_filter": content_type_filter, "request_id": request_id,
   })
+  if result.get("ok"):
+    def priority_multiplier(hit):
+      metadata = hit.get("metadata") or {}
+      provenance = hit.get("provenance") or {}
+      priority = _skill_priority(metadata.get("source_priority") or metadata.get("priority")
+                                 or provenance.get("source_priority"))
+      return {"normal": 1.0, "high": 1.12, "highest": 1.24}[priority]
+    ranked_hits = list(result.get("hits") or [])
+    ranked_hits.sort(key=lambda hit: (
+      -(float(hit.get("score") or 0) * priority_multiplier(hit)),
+      int(hit.get("rank") or 0),
+      str(hit.get("skill_id") or ""),
+    ))
+    for index, hit in enumerate(ranked_hits[:requested_limit], 1):
+      hit["rank"] = index
+    result["hits"] = ranked_hits[:requested_limit]
   result_ids = [hit.get("content_hash") or hit.get("skill_id") for hit in (result.get("hits") or [])]
   _collect_search_invocation("pkm.search_knowledge", started_at, result_ids, bool(result.get("ok")), ["exact", "bm25"])
   if debug or not result.get("ok"):
@@ -586,7 +606,7 @@ def search_knowledge(query: str, limit: int = 5, content_type_filter: Optional[L
   for hit in result.get("hits") or []:
     provenance = hit.get("provenance") or {}
     compact_provenance = {key: provenance.get(key) for key in
-      ["provider", "broker", "subscription_id", "revision"] if provenance.get(key) is not None}
+      ["provider", "broker", "subscription_id", "revision", "source_priority"] if provenance.get(key) is not None}
     compact_hit = {
       "rank": hit.get("rank"), "score": round(float(hit.get("score") or 0), 6),
       "skill_id": hit.get("skill_id"), "content_hash": hit.get("content_hash"),
@@ -752,6 +772,15 @@ def _note_write(slug, title, content, type_, tags, category, created=None):
 
 
 # ── Skills ───────────────────────────────────────────────────────────────────
+def _skill_priority(value, strict=False):
+    normalized = str(value or "normal").strip().lower()
+    if normalized in {"normal", "high", "highest"}:
+        return normalized
+    if strict:
+        raise ValueError("Skill priority must be normal, high, or highest.")
+    return "normal"
+
+
 def _skill(p, key):
     fm, body = _parse(p.read_text(encoding="utf-8"))
     return {"name": fm.get("name") or _name_of(key), "description": fm.get("description") or "",
@@ -759,6 +788,7 @@ def _skill(p, key):
       "source_project": fm.get("source_project"), "recipe_required": fm.get("recipe_required") is True,
       "recipe_hint": str(fm.get("recipe_hint") or ""),
       "related_skills": _arr(fm.get("related_skills")),
+      "priority": _skill_priority(fm.get("priority")),
       "content": body, "updated_at": _mtime(p)}
 
 
@@ -774,9 +804,11 @@ def _all_skills():
           urllib.parse.quote(str(record.get("nodeId") or ""), safe=""),
           urllib.parse.quote(str(record.get("shareId") or ""), safe=""), encoded_path)
         row.update({"skill_id": pkm_path, "source": "subscription", "read_only": True,
+          "priority": _skill_priority(record.get("priority")),
           "provenance": {"subscription_id": record.get("subscriptionId"), "alias": record.get("alias"),
             "publisher": record.get("publisher"), "node_id": record.get("nodeId"), "share_id": record.get("shareId"),
-            "revision": record.get("revision"), "synced_at": record.get("syncedAt"), "pkm_path": pkm_path}})
+            "revision": record.get("revision"), "synced_at": record.get("syncedAt"),
+            "source_priority": _skill_priority(record.get("priority")), "pkm_path": pkm_path}})
         rows.append(row)
     return rows
 
@@ -795,7 +827,7 @@ def _skill_get(name):
 
 
 def _skill_write(name, content, description, category, tags, source_project=None, created=None,
-                 recipe_required=False, recipe_hint="", related_skills=None):
+                 recipe_required=False, recipe_hint="", related_skills=None, priority="normal"):
     cat = _safe_cat(category or "")
     fname = _safe_name(name) + ".md"
     rel = (cat + "/" + fname) if cat else fname
@@ -805,9 +837,11 @@ def _skill_write(name, content, description, category, tags, source_project=None
         try: oldp.unlink()
         except Exception: pass
     full.parent.mkdir(parents=True, exist_ok=True)
+    normalized_priority = _skill_priority(priority, strict=True)
     fm = {"name": name, "description": description or "", "tags": tags or [],
           "source_project": source_project, "recipe_required": True if recipe_required else None,
           "recipe_hint": recipe_hint or None, "related_skills": related_skills or None,
+          "priority": normalized_priority if normalized_priority != "normal" else None,
           "created": created or _now()}
     full.write_text(_serialize(fm, content or ""), encoding="utf-8")
     return name
@@ -1049,6 +1083,11 @@ def skill_context(task: str, workspace: str = "", files: Optional[List[str]] = N
     enough_coverage = coverage >= (0.5 if len(task_terms) <= 2 else 0.34)
     anchor_matched = not rare_task_terms or bool(metadata_hits & rare_task_terms)
     if enough_metadata and enough_coverage and anchor_matched:
+      priority = row.get("priority") if row.get("priority") in {"high", "highest"} else "normal"
+      priority_boost = {"normal": 0, "high": 12, "highest": 24}[priority]
+      score += priority_boost
+      if priority != "normal":
+        matched.insert(0, "priority:" + priority)
       ranked.append((score, coverage, len(metadata_hits), row, matched[:8]))
   ranked.sort(key=lambda item: (-item[0], -item[1], -item[2], _skill_id(item[3]).casefold()))
   selected = ranked[:max(1, min(int(limit or 3), 5))]
@@ -1058,6 +1097,7 @@ def skill_context(task: str, workspace: str = "", files: Optional[List[str]] = N
              "description": row.get("description", ""), "category": row.get("category", ""),
              "tags": row.get("tags", []), "source_project": row.get("source_project"),
              "source": row.get("source", "local"), "read_only": row.get("read_only", False),
+             "skill_priority": row.get("priority", "normal"),
              "provenance": row.get("provenance"),
              "content_hash": _skill_hash(row), "score": score, "task_coverage": round(coverage, 3),
              "priority": "required" if index == 0 and metadata_count >= 2 and coverage >= 0.5 else "recommended",
@@ -1070,6 +1110,7 @@ def skill_context(task: str, workspace: str = "", files: Optional[List[str]] = N
                "description": row.get("description", ""), "category": row.get("category", ""),
                "tags": row.get("tags", []), "source_project": row.get("source_project"),
                "source": row.get("source", "local"), "read_only": row.get("read_only", False),
+               "skill_priority": row.get("priority", "normal"),
                "provenance": row.get("provenance"),
                "content_hash": _skill_hash(row), "rank": index + 1, "score": score,
                "task_coverage": round(coverage, 3), "metadata_match_count": metadata_count,
@@ -1145,6 +1186,7 @@ def list_skills(category: Optional[str] = None) -> str:
     rows.sort(key=lambda r: (r["category"], r["name"]))
     return json.dumps([{"skill_id": _skill_id(r), "name": r["name"], "description": r["description"],
               "category": r["category"], "tags": r["tags"],
+              "priority": r.get("priority", "normal"),
               "source": r.get("source", "local"), "read_only": r.get("read_only", False),
               "provenance": r.get("provenance")} for r in rows], ensure_ascii=False)
 
@@ -1173,6 +1215,7 @@ def search_skills(query: str) -> str:
             [_skill_hash(skill) for skill in hits], True, ["fts5", "substring-fallback"])
     return json.dumps([{"skill_id": _skill_id(s), "name": s["name"], "description": s["description"],
               "category": s["category"], "source": s.get("source", "local"),
+              "priority": s.get("priority", "normal"),
               "read_only": s.get("read_only", False), "provenance": s.get("provenance"),
               "linkage": _skill_linkage(s)}
                for s in hits], ensure_ascii=False)
@@ -1187,6 +1230,7 @@ def get_skill(name: str, interaction_id: str = "") -> str:
   result = {"skill_id": _skill_id(r), "content_hash": _skill_hash(r),
              "name": r["name"], "content": r["content"], "description": r["description"],
              "category": r["category"], "tags": r["tags"], "updated_at": r["updated_at"],
+             "priority": r.get("priority", "normal"),
              "source": r.get("source", "local"), "read_only": r.get("read_only", False),
              "provenance": r.get("provenance"), "linkage": _skill_linkage(r)}
   _collector_post("skill_load", interaction_id or str(uuid.uuid4()), {"skill": {
@@ -1287,13 +1331,14 @@ def delete_note(slug: str) -> str:
 @mcp.tool()
 def add_skill(name: str, content: str, description: str = "", category: str = "",
               tags: Optional[List[str]] = None, source_project: str = "", recipe_required: bool = False,
-              recipe_hint: str = "", related_skills: Optional[List[str]] = None) -> str:
+              recipe_hint: str = "", related_skills: Optional[List[str]] = None,
+              priority: str = "normal") -> str:
     """Create or overwrite a skill. 'category' is a slash-separated folder path
     (e.g. General/DLIS/docker); 'name' is the skill's unique identifier."""
     created = None
     existing = _skill_get(name)
     _skill_write(name, content, description, category, tags or [], source_project or None, created,
-           recipe_required, recipe_hint, related_skills or [])
+           recipe_required, recipe_hint, related_skills or [], priority)
     return json.dumps({"ok": True, "name": name})
 
 
@@ -1301,7 +1346,7 @@ def add_skill(name: str, content: str, description: str = "", category: str = ""
 def update_skill(name: str, content: Optional[str] = None, description: Optional[str] = None,
                  category: Optional[str] = None, tags: Optional[List[str]] = None,
                  recipe_required: Optional[bool] = None, recipe_hint: Optional[str] = None,
-                 related_skills: Optional[List[str]] = None) -> str:
+                 related_skills: Optional[List[str]] = None, priority: Optional[str] = None) -> str:
     """Update fields of an existing skill by name. Only provided fields are changed."""
     row = _skill_get(name)
     if not row:
@@ -1316,6 +1361,7 @@ def update_skill(name: str, content: Optional[str] = None, description: Optional
         recipe_required=row["recipe_required"] if recipe_required is None else recipe_required,
         recipe_hint=row["recipe_hint"] if recipe_hint is None else recipe_hint,
         related_skills=row["related_skills"] if related_skills is None else related_skills,
+        priority=row["priority"] if priority is None else priority,
     )
     return json.dumps({"ok": True, "name": name})
 
@@ -1458,6 +1504,7 @@ def _subscription_records():
     for metadata_path in SUBSCRIPTIONS.glob("*/*/_subscription.json"):
       try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["priority"] = _skill_priority(metadata.get("priority"))
         metadata["cache_root"] = str(metadata_path.parent)
         rows.append(metadata)
       except Exception:
@@ -1471,7 +1518,7 @@ def list_subscriptions() -> str:
     This does not search or modify the user's local Knowledge Root."""
     rows = []
     for record in _subscription_records():
-      rows.append({k: record.get(k) for k in ["subscriptionId", "alias", "publisher", "nodeId", "shareId", "revision", "collectionHash", "syncedAt"]})
+      rows.append({k: record.get(k) for k in ["subscriptionId", "alias", "priority", "publisher", "nodeId", "shareId", "revision", "collectionHash", "syncedAt"]})
     return json.dumps(rows, ensure_ascii=False)
 
 
@@ -1485,13 +1532,18 @@ def search_subscribed_content(query: str, content_type: Optional[str] = None,
     wanted_type = (content_type or "").strip().lower()
     wanted_alias = (alias or "").casefold()
     results = []
+    candidate_limit = min(500, max(100, max(1, min(limit, 100)) * 5))
     for record in _subscription_records():
+      if len(results) >= candidate_limit:
+        break
       if wanted_alias and wanted_alias not in str(record.get("alias") or record.get("publisher") or "").casefold():
         continue
       root = Path(record["cache_root"]) / "content"
       if not root.exists():
         continue
       for file_path in root.rglob("*"):
+        if len(results) >= candidate_limit:
+          break
         if not file_path.is_file() or file_path.name.endswith(".pkm-source.json"):
           continue
         relative = file_path.relative_to(root)
@@ -1510,13 +1562,16 @@ def search_subscribed_content(query: str, content_type: Optional[str] = None,
           "node_id": record.get("nodeId"), "share_id": record.get("shareId"),
           "alias": record.get("alias") or record.get("publisher"), "content_type": item_type,
           "path": "/".join(relative.parts[1:]), "snippet": snippet,
+          "source_priority": record.get("priority"),
           "revision": record.get("revision"), "synced_at": record.get("syncedAt"),
+          "_path_match": bool(needle and needle in str(relative).casefold()),
         })
-        if len(results) >= max(1, min(limit, 100)):
-          _collect_search_invocation("pkm.search_subscribed_content", started_at,
-                    ["{}:{}:{}:{}".format(item.get("node_id"), item.get("share_id"), item.get("content_type"), item.get("path")) for item in results],
-                    True, ["subscription-substring"])
-          return json.dumps(results, ensure_ascii=False)
+    results.sort(key=lambda item: (
+      -((4 if item.pop("_path_match", False) else 0)
+        + {"normal": 0, "high": 1, "highest": 2}[_skill_priority(item.get("source_priority"))]),
+      str(item.get("alias") or "").casefold(), str(item.get("path") or "").casefold(),
+    ))
+    results = results[:max(1, min(limit, 100))]
     _collect_search_invocation("pkm.search_subscribed_content", started_at,
                   ["{}:{}:{}:{}".format(item.get("node_id"), item.get("share_id"), item.get("content_type"), item.get("path")) for item in results],
                   True, ["subscription-substring"])
@@ -1535,6 +1590,9 @@ def get_subscribed_content(node_id: str, share_id: str, content_type: str, path:
       content = target.read_text(encoding="utf-8")
       provenance_path = Path(str(target) + ".pkm-source.json")
       provenance = json.loads(provenance_path.read_text(encoding="utf-8")) if provenance_path.exists() else {}
+      metadata_path = SUBSCRIPTIONS / node_id / share_id / "_subscription.json"
+      metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.exists() else {}
+      provenance["sourcePriority"] = _skill_priority(metadata.get("priority"))
       return json.dumps({"content": content, "provenance": provenance}, ensure_ascii=False)
     except Exception as error:
       return json.dumps({"error": str(error)})
@@ -1563,15 +1621,16 @@ if __name__ == "__main__":
     mcp.run()
 `);
 
-  fs.writeFileSync(reqTxt, "fastmcp>=2.0.0,<4.0.0\nuone-prompt-manager==0.1.0\nwebsockets>=12.0\nPyYAML>=6\n");
+  fs.writeFileSync(reqTxt, "fastmcp>=2.0.0,<4.0.0\nuone-prompt-manager==0.1.0\nwebsockets>=12.0\nPyYAML>=6\ncryptography>=42.0.0\n");
   fs.rmSync(path.join(mcpDir, "chat_requirements.txt"), { force: true });
 
+  const launch = mcpStdioCommand(resolveMcpPython(), [serverPy]);
   const configSnippet = JSON.stringify({
     servers: {
       "pkm": {
         type: "stdio",
-        command: resolveMcpPython(),
-        args: [serverPy],
+        command: launch.command,
+        args: launch.args,
       }
     }
   }, null, 2);
@@ -1984,12 +2043,13 @@ if __name__ == "__main__":
   if (missingSkillTools.length) throw new Error(`Unified MCP server is missing required Skill tools: ${missingSkillTools.join(", ")}`);
   fs.writeFileSync(serverPy, template);
 
+  const launch = mcpStdioCommand(resolveMcpPython(), [path.join(mcpDir, "server.py")]);
   const configSnippet = JSON.stringify({
     servers: {
       "pkm": {
         type: "stdio",
-        command: resolveMcpPython(),
-        args: [path.join(mcpDir, "server.py")],
+        command: launch.command,
+        args: launch.args,
       }
     }
   }, null, 2);

@@ -14,6 +14,11 @@ const mcp = fs.readFileSync(path.join(root, 'src/webview/panel/50-mcp.js'), 'utf
 const init = fs.readFileSync(path.join(root, 'src/webview/panel/60-init.js'), 'utf8');
 
 for (const id of ['loading-banner', 'view-loading-progress', 'view-loading-stage', 'view-loading-count', 'view-loading-bar']) assert(html.includes(`id="${id}"`), `${id} must exist`);
+assert.doesNotMatch(html, /<script src="%%(?:CYTOSCAPE|MERMAID|FORCEGRAPH3D)_SRC%%"><\/script>/, 'large graph libraries must not block initial panel rendering');
+for (const [library, meta] of [['CYTOSCAPE', 'cytoscape'], ['MERMAID', 'mermaid'], ['FORCEGRAPH3D', 'forcegraph3d']]) {
+  assert.match(html, new RegExp(`<meta name="pkm-${meta}-src" content="%%${library}_SRC%%">`));
+}
+assert.match(core, /function ensurePanelLibrary\(globalName, metaName\)/);
 assert.match(html, /id="loading-banner" class="hidden"/);
 assert.match(css, /\.view-loading-progress/);
 assert.match(css, /\.loading-bar\{[^}]*accent-color/);

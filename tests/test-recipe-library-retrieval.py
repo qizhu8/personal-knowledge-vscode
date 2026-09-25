@@ -39,15 +39,14 @@ with tempfile.TemporaryDirectory(prefix="pkm-recipe-retrieval-") as temporary:
     mcp = FakeMcp()
     tools = MODULE.register_recipe_tools(mcp, knowledge_root)
     task_contract = json.dumps({
-        "outcome": "Release the tested extension package to Marketplace",
-        "artifact": "VSIX",
-        "channel": "pre-release or stable",
-        "safety": "require explicit approval immediately before publication",
+        "outcome": "Fix a reproducible authentication regression",
+        "symptom": "the same account authorization prompt appears in every window",
+        "validation": "focused regression test and neighboring checks",
     })
     queries = [
-        "publish extension marketplace",
-        "release vsix marketplace",
-        "pre-release extension marketplace",
+        "reproduce defect",
+        "fix defect",
+        "regression fix",
     ]
 
     durations = []
@@ -56,13 +55,13 @@ with tempfile.TemporaryDirectory(prefix="pkm-recipe-retrieval-") as temporary:
         started = time.perf_counter()
         response = json.loads(tools["recipe_search"](
             query=query,
-            category="Release",
+            category="Software Development",
             task_contract_json=task_contract,
         ))
         durations.append((time.perf_counter() - started) * 1000)
         assert response["outcome"] == "candidates", response
         candidate = response["candidates"][0]
-        assert candidate["name"] == "Publish Personal Knowledge VSIX", response
+        assert candidate["name"] == "Bug Fix", response
         assert candidate["revision"] == 1, candidate
         assert len(candidate["executable_digest"]) == 64, candidate
         assert response["next_action"]["kind"] == "qualify_recipe", response
@@ -72,6 +71,6 @@ with tempfile.TemporaryDirectory(prefix="pkm-recipe-retrieval-") as temporary:
     assert average_ms < 25, f"average Recipe retrieval took {average_ms:.2f}ms"
     assert maximum_ms < 100, f"maximum Recipe retrieval took {maximum_ms:.2f}ms"
     print(
-        "recipe library retrieval test: semantic task queries ranked "
-        f"Publish Personal Knowledge VSIX first; average={average_ms:.2f}ms max={maximum_ms:.2f}ms"
+        "recipe library retrieval test: semantic defect queries ranked "
+        f"Bug Fix first; average={average_ms:.2f}ms max={maximum_ms:.2f}ms"
     )

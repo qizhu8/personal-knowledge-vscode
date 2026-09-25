@@ -220,7 +220,9 @@ async def main():
             assert snapshot["recovery_passphrase"] not in snapshot_text
             snapshot_record = json.loads(snapshot_text)
             assert snapshot_record["recovery"]["algorithm"] == "scrypt-sha256/v1"
-            assert snapshot_record["payload"]["session"]["todos"]
+            assert snapshot_record["payload"]["algorithm"] == "A256GCM-PKM-INTERNAL/v1"
+            assert "continue validation" not in snapshot_text
+            assert snapshot_record["capture"]["todoCount"] > 0
 
             listed = response_json(await client.call_tool("agent_session_snapshot_list", {}))
             assert listed["snapshots"][0]["magicCode"] == snapshot["snapshot"]["magicCode"]
@@ -258,6 +260,49 @@ async def main():
             second_linked_todo = next(todo for todo in second_session["todos"] if todo.get("recipeRunId"))
             assert first_linked_todo["recipeRunId"] != second_linked_todo["recipeRunId"]
             assert snapshot_files[0].read_text(encoding="utf-8") == snapshot_text
+            legacy_snapshot = dict(snapshot_record)
+            legacy_snapshot["snapshotId"] = "agent_snapshot_legacy_runtime"
+            legacy_snapshot["magicCode"] = "PKM-SNAP-AAAA-BBBB-CCCC-DDDD"
+            legacy_snapshot["capture"] = {
+                "todoCount": len(loaded["session"]["todos"]),
+                "recipeRunCount": 1,
+                "latestCheckpointSummary": "Implementation complete.",
+            }
+            legacy_snapshot["payload"] = {
+                "session": loaded["session"],
+                "recipeRuns": [source_run],
+            }
+            legacy_path = snapshot_files[0].parent / "agent_snapshot_legacy_runtime.json"
+            legacy_path.write_text(json.dumps(legacy_snapshot), encoding="utf-8")
+            await client.call_tool("agent_session_snapshot_list", {})
+            migrated_legacy_text = legacy_path.read_text(encoding="utf-8")
+            assert "Implementation complete." not in migrated_legacy_text
+            assert json.loads(migrated_legacy_text)["payload"]["algorithm"] == "A256GCM-PKM-INTERNAL/v1"
+            legacy_recovery = response_json(await client.call_tool("agent_session_snapshot_recover", {
+                "magic_code": legacy_snapshot["magicCode"],
+                "recovery_passphrase": snapshot["recovery_passphrase"],
+                "host_session_id": "copilot-successor-legacy",
+            }))
+            assert legacy_recovery["snapshot_id"] == legacy_snapshot["snapshotId"]
+            rotated = response_json(await client.call_tool("agent_session_snapshot_rotate", {
+                "magic_code": snapshot["snapshot"]["magicCode"],
+            }))
+            assert rotated["recovery_passphrase"] != snapshot["recovery_passphrase"]
+            assert rotated["recovery_passphrase"] in rotated["recovery_prompt"]
+            try:
+                await client.call_tool("agent_session_snapshot_recover", {
+                    "magic_code": snapshot["snapshot"]["magicCode"],
+                    "recovery_passphrase": snapshot["recovery_passphrase"],
+                })
+                raise AssertionError("Rotated Snapshot accepted the previous recovery passphrase.")
+            except ToolError as error:
+                assert "incorrect" in str(error)
+            rotated_recovery = response_json(await client.call_tool("agent_session_snapshot_recover", {
+                "magic_code": snapshot["snapshot"]["magicCode"],
+                "recovery_passphrase": rotated["recovery_passphrase"],
+                "host_session_id": "copilot-successor-rotated",
+            }))
+            assert rotated_recovery["snapshot_id"] == first_recovery["snapshot_id"]
 
     print("agent session MCP runtime tests passed")
 

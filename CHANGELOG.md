@@ -5,6 +5,29 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-09-25
+
+### Added
+- Added automatic Recovery Prompt clipboard copy and recovery-passphrase rotation to Agent Snapshot. Rotation invalidates the previous passphrase without changing captured Agent state.
+- Added an explicit, default-off Agent Snapshot content type to GitHub Sync. Other Sync, Broker publishing, and subscription surfaces continue to exclude Snapshot records.
+- Added Normal, High, and Highest retrieval priority controls for individual local Skills and each subscribed Broker or GitHub Branch source. Local and subscribed candidates use the same post-relevance priority scale.
+
+### Changed
+- Agent Snapshot payloads are now stored as AES-256-GCM ciphertext using the PKM internal compatibility key; legacy plaintext Snapshot payloads migrate on access. This prevents accidental plaintext disclosure but is not intended to resist an attacker who possesses the PKM implementation.
+- CatTree loading and refresh work now runs through background task progress instead of blocking workspace and tab changes.
+- Removed the obsolete built-in **Publish Personal Knowledge VSIX** Recipe from new and upgraded Recipe Libraries while preserving user-created Recipes, including user Recipes with the same name.
+- Connected GitHub Copilot, Generic Agents, Claude, and custom PKM Skill projections now reconcile automatically from the canonical source, independently of MCP runtime health.
+
+### Fixed
+- Fixed duplicate Broker rows and long Skill CatTree refreshes caused by overlapping refresh work.
+- Fixed scheduled GitHub Sync runs reporting Syncing when no selected content changed.
+- Fixed Windows console flashes across first-run integration checks, managed runtime setup, MCP and retrieval processes, Subscription Gateway, Server autostart, GitHub Sync, environment operations, and other extension-managed child processes.
+- Fixed retrieval worker restart recovery when a stale endpoint survived an extension restart.
+- Fixed VS Code GitHub Authentication asking users to authorize or select the same account again in every new window by preserving the extension's global session preference and clearing it only when the remembered account does not match the target.
+- Fixed opaque GitHub Sync failures when a cached Credential Manager account expires by identifying the affected account and recommending durable per-Target VS Code Authentication; successful reauthorization clears stale failures, every target exposes **Force sync** for explicit verification, and card errors can be selected and copied without opening the Target.
+- Fixed Network & Sharing remaining on **Broker starting** in windows that did not launch the persistent Broker daemon by probing the live Gateway before returning subscription state.
+- Fixed white native dropdown surfaces, including Skill retrieval priority, by applying VS Code theme-aware colors to every webview select, option, focus, selected, and disabled state.
+
 ## [3.1.0] - 2026-09-24
 
 ### Added

@@ -8,7 +8,7 @@ import { promisify } from "util";
 const execFileAsync = promisify(execFile);
 
 export const GITHUB_SYNC_CONTENT_TYPES = [
-  "skills", "notes", "papers", "prompts", "scripts", "packages", "servers", "recipes"
+  "skills", "notes", "papers", "prompts", "scripts", "packages", "servers", "recipes", "agentSnapshots"
 ] as const;
 
 export type GitHubSyncContentType = typeof GITHUB_SYNC_CONTENT_TYPES[number];
@@ -16,7 +16,19 @@ export type GitHubSyncPrivacy = "public" | "private";
 export type GitHubSyncShield = "outline" | "yellow" | "green";
 export type GitHubSyncAuthentication =
   | { method: "ssh"; identityFile: string; expectedLogin: string }
-  | { method: "https"; expectedLogin: string };
+  | { method: "https"; expectedLogin: string }
+  | { method: "vscode"; expectedLogin: string; accountId?: string };
+
+export interface GitHubSyncCredentials {
+  accessToken: string;
+}
+
+export function githubSyncAuthenticationSessionOptions(selectAccount = false): {
+  createIfNone: true;
+  clearSessionPreference?: true;
+} {
+  return selectAccount ? { createIfNone: true, clearSessionPreference: true } : { createIfNone: true };
+}
 
 export interface GitHubSyncTypeSelection {
   items: string[];
@@ -32,11 +44,21 @@ export interface GitHubSyncTarget {
   repository: string;
   branch: string;
   authentication?: GitHubSyncAuthentication;
+  automation: {
+    enabled: boolean;
+    intervalMinutes: number;
+    syncOnChange: boolean;
+  };
   selection: Record<GitHubSyncPrivacy, GitHubSyncSelectionScope>;
   lastSync?: {
     at: string;
     commit: string;
     fingerprints: Partial<Record<GitHubSyncContentType, string>>;
+  };
+  lastFailure?: {
+    at: string;
+    error: string;
+    reason: string;
   };
 }
 
@@ -80,6 +102,17 @@ export interface GitHubSyncAuthenticationOptions {
   identities: string[];
 }
 
+export function githubSyncAuthenticationFailureGuidance(target: GitHubSyncTarget | undefined, detail: string): string {
+  if (!target?.authentication || !/(?:authentication failed|repository not found)/i.test(detail)) return "";
+  if (target.authentication.method === "https") {
+    return `Credential Manager did not authenticate as ${target.authentication.expectedLogin}. Reconnect that exact account or switch this target to VS Code GitHub Authentication.`;
+  }
+  if (target.authentication.method === "vscode") {
+    return `Reconnect the VS Code GitHub account ${target.authentication.expectedLogin} for this target.`;
+  }
+  return "";
+}
+
 export interface GitHubSyncRemoteFile {
   path: string;
   type: GitHubSyncContentType;
@@ -99,7 +132,7 @@ export interface GitHubSyncRestoreResult {
 function emptyScope(includeAll: boolean): GitHubSyncSelectionScope {
   const scope = {} as GitHubSyncSelectionScope;
   for (const type of GITHUB_SYNC_CONTENT_TYPES) {
-    const selectedByDefault = type !== "packages" && type !== "servers";
+    const selectedByDefault = type !== "packages" && type !== "servers" && type !== "agentSnapshots";
     scope[type] = { items: [], folders: includeAll && selectedByDefault ? [""] : [] };
   }
   return scope;
@@ -136,15 +169,34 @@ export function normalizeGitHubSyncTarget(value: any, createId: () => string = r
     : defaultGitHubSyncSelection();
   const id = String(value?.id || createId()).trim();
   if (!/^[A-Za-z0-9._-]+$/.test(id)) throw new Error("Target ID is invalid.");
-  const target: GitHubSyncTarget = { schema: 1, id, name, repository, branch, selection };
+  const configuredInterval = value?.automation?.intervalMinutes;
+  const intervalMinutes = configuredInterval === undefined ? 5 : Number(configuredInterval);
+  if (!Number.isInteger(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 1440) {
+    throw new Error("Automatic sync interval must be between 1 and 1440 minutes.");
+  }
+  const target: GitHubSyncTarget = {
+    schema: 1,
+    id,
+    name,
+    repository,
+    branch,
+    automation: {
+      enabled: value?.automation?.enabled !== false,
+      intervalMinutes,
+      syncOnChange: value?.automation?.syncOnChange !== false,
+    },
+    selection
+  };
   if (value?.authentication) {
-    const method = value.authentication.method === "https" ? "https" : "ssh";
+    const method = value.authentication.method === "https" ? "https" : value.authentication.method === "vscode" ? "vscode" : "ssh";
     const identityFile = String(value.authentication.identityFile || "").trim().replace(/^~(?=$|[\\/])/, os.homedir());
     const expectedLogin = String(value.authentication.expectedLogin || "").trim();
     if (!/^[A-Za-z0-9-]+(?:_[A-Za-z0-9-]+)*$/.test(expectedLogin)) throw new Error("Expected GitHub login is required.");
-    if (method === "https") {
+    if (method === "https" || method === "vscode") {
       githubSyncRepositoryHttpsHost(repository);
-      target.authentication = { method, expectedLogin };
+      target.authentication = method === "vscode"
+        ? { method, expectedLogin, ...(value.authentication.accountId ? { accountId: String(value.authentication.accountId) } : {}) }
+        : { method, expectedLogin };
     } else {
       if (!identityFile || /[\0\r\n]/.test(identityFile)) throw new Error("SSH identity file is required.");
       githubSyncRepositorySshHost(repository);
@@ -159,6 +211,13 @@ export function normalizeGitHubSyncTarget(value: any, createId: () => string = r
       at: String(value.lastSync.at || ""),
       commit: String(value.lastSync.commit || ""),
       fingerprints
+    };
+  }
+  if (value?.lastFailure?.at && value?.lastFailure?.error) {
+    target.lastFailure = {
+      at: String(value.lastFailure.at),
+      error: String(value.lastFailure.error),
+      reason: String(value.lastFailure.reason || "automatic"),
     };
   }
   return target;
@@ -212,7 +271,7 @@ export function parseGitHubCredentialManagerAccounts(output: string): string[] {
 export async function discoverGitHubCredentialManagerAccounts(): Promise<string[]> {
   try {
     const result = await execFileAsync("git", ["credential-manager", "github", "list", "--url", "https://github.com", "--no-ui"], {
-      encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 5000,
+      encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 5000, windowsHide: process.platform === "win32",
     });
     return parseGitHubCredentialManagerAccounts(String(result.stdout || ""));
   } catch { return []; }
@@ -257,7 +316,7 @@ export async function createGitHubSyncIdentity(expectedLogin: string, sshDirecto
   fs.mkdirSync(sshDirectory, { recursive: true, mode: 0o700 });
   const identityFile = path.join(sshDirectory, `pkm_github_${login}_${randomUUID().slice(0, 8)}`);
   try {
-    await execFileAsync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", `pkm:${login}`, "-f", identityFile], { encoding: "utf8", maxBuffer: 1024 * 1024 });
+    await execFileAsync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", `pkm:${login}`, "-f", identityFile], { encoding: "utf8", maxBuffer: 1024 * 1024, windowsHide: process.platform === "win32" });
     return { identityFile, publicKey: fs.readFileSync(`${identityFile}.pub`, "utf8").trim() };
   } catch (error) {
     fs.rmSync(identityFile, { force: true });
@@ -266,17 +325,23 @@ export async function createGitHubSyncIdentity(expectedLogin: string, sshDirecto
   }
 }
 
-function gitEnvironment(target?: GitHubSyncTarget): NodeJS.ProcessEnv {
+const VSCODE_GITHUB_CREDENTIAL_HELPER = "!f() { if [ \"$1\" = get ]; then printf '%s\\n' 'username=x-access-token' \"password=$PKM_GITHUB_SYNC_TOKEN\"; fi; }; f";
+
+function gitEnvironment(target?: GitHubSyncTarget, credentials?: GitHubSyncCredentials): NodeJS.ProcessEnv {
   return target?.authentication?.method === "ssh"
     ? { ...process.env, GIT_SSH_COMMAND: githubSyncSshCommand(target.authentication.identityFile), GIT_SSH_VARIANT: "ssh" }
     : target?.authentication?.method === "https"
       ? { ...process.env, GIT_TERMINAL_PROMPT: "0" }
+      : target?.authentication?.method === "vscode"
+        ? { ...process.env, GIT_TERMINAL_PROMPT: "0", PKM_GITHUB_SYNC_TOKEN: credentials?.accessToken || "" }
       : process.env;
 }
 
 export function githubSyncGitArguments(args: string[], target?: GitHubSyncTarget): string[] {
   return target?.authentication?.method === "https"
     ? ["-c", "credential.gitHubAccountFiltering=true", "-c", `credential.username=${target.authentication.expectedLogin}`, ...args]
+    : target?.authentication?.method === "vscode"
+      ? ["-c", "credential.helper=", "-c", `credential.helper=${VSCODE_GITHUB_CREDENTIAL_HELPER}`, "-c", "credential.username=x-access-token", ...args]
     : args;
 }
 
@@ -287,7 +352,7 @@ export async function probeGitHubSyncAuthentication(repository: string, selected
   const host = githubSyncRepositorySshHost(repository);
   let output = "";
   try {
-    const result = await execFileAsync("ssh", ["-T", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "ConnectTimeout=10", "-i", identityFile, `git@${host}`], { encoding: "utf8", maxBuffer: 1024 * 1024 });
+    const result = await execFileAsync("ssh", ["-T", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "ConnectTimeout=10", "-i", identityFile, `git@${host}`], { encoding: "utf8", maxBuffer: 1024 * 1024, windowsHide: process.platform === "win32" });
     output = `${result.stdout || ""}\n${result.stderr || ""}`;
   } catch (error: any) {
     output = `${error?.stdout || ""}\n${error?.stderr || ""}`;
@@ -297,7 +362,7 @@ export async function probeGitHubSyncAuthentication(repository: string, selected
   if (expectedLogin && login.toLowerCase() !== expectedLogin.toLowerCase()) {
     throw new Error(`SSH key authenticates as ${login}, not ${expectedLogin}. Select the correct account key.`);
   }
-  const fingerprint = await execFileAsync("ssh-keygen", ["-lf", identityFile], { encoding: "utf8", maxBuffer: 1024 * 1024 });
+  const fingerprint = await execFileAsync("ssh-keygen", ["-lf", identityFile], { encoding: "utf8", maxBuffer: 1024 * 1024, windowsHide: process.platform === "win32" });
   return { host, login, fingerprint: String(fingerprint.stdout || "").trim() };
 }
 
@@ -314,6 +379,7 @@ export async function probeGitHubSyncHttpsAuthentication(repository: string, exp
     await execFileAsync("git", githubSyncGitArguments(["ls-remote", repository], target), {
       encoding: "utf8",
       maxBuffer: 1024 * 1024,
+      windowsHide: process.platform === "win32",
       env: gitEnvironment(target)
     });
   } catch (error: any) {
@@ -323,12 +389,37 @@ export async function probeGitHubSyncHttpsAuthentication(repository: string, exp
   return { host, login: expectedLogin, fingerprint: "HTTPS credential helper · repository access verified" };
 }
 
-export async function testGitHubSyncAuthentication(target: GitHubSyncTarget): Promise<GitHubSyncAuthenticationResult> {
+export async function probeGitHubSyncVscodeAuthentication(repository: string, expectedLogin: string, credentials: GitHubSyncCredentials): Promise<GitHubSyncAuthenticationResult> {
+  const target = normalizeGitHubSyncTarget({
+    id: "authentication-test",
+    name: "Authentication test",
+    repository,
+    branch: "main",
+    authentication: { method: "vscode", expectedLogin }
+  });
+  const host = githubSyncRepositoryHttpsHost(repository);
+  try {
+    await execFileAsync("git", githubSyncGitArguments(["ls-remote", repository], target), {
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      windowsHide: process.platform === "win32",
+      env: gitEnvironment(target, credentials)
+    });
+  } catch (error: any) {
+    const detail = String(error?.stderr || error?.stdout || error?.message || error).trim();
+    throw new Error(`The VS Code GitHub account could not access this repository as ${expectedLogin}${detail ? `: ${detail}` : "."}`);
+  }
+  return { host, login: expectedLogin, fingerprint: "VS Code GitHub Authentication · repository access verified" };
+}
+
+export async function testGitHubSyncAuthentication(target: GitHubSyncTarget, credentials?: GitHubSyncCredentials): Promise<GitHubSyncAuthenticationResult> {
   const normalized = normalizeGitHubSyncTarget(target, () => target.id);
   if (!normalized.authentication) throw new Error("Choose an authentication method and GitHub account first.");
   return normalized.authentication.method === "https"
     ? probeGitHubSyncHttpsAuthentication(normalized.repository, normalized.authentication.expectedLogin)
-    : probeGitHubSyncAuthentication(normalized.repository, normalized.authentication.identityFile, normalized.authentication.expectedLogin);
+    : normalized.authentication.method === "vscode"
+      ? probeGitHubSyncVscodeAuthentication(normalized.repository, normalized.authentication.expectedLogin, credentials || { accessToken: "" })
+      : probeGitHubSyncAuthentication(normalized.repository, normalized.authentication.identityFile, normalized.authentication.expectedLogin);
 }
 
 export function selectionIncludesType(target: GitHubSyncTarget, type: GitHubSyncContentType): boolean {
@@ -453,20 +544,21 @@ export function githubSyncTargetFingerprints(
   return selectedFiles(target, catalog).fingerprints;
 }
 
-async function git(cwd: string, args: string[], target?: GitHubSyncTarget, allowFailure = false): Promise<string> {
+async function git(cwd: string, args: string[], target?: GitHubSyncTarget, allowFailure = false, credentials?: GitHubSyncCredentials): Promise<string> {
   try {
-    const result = await execFileAsync("git", githubSyncGitArguments(args, target), { cwd, encoding: "utf8", maxBuffer: 4 * 1024 * 1024, env: gitEnvironment(target) });
+    const result = await execFileAsync("git", githubSyncGitArguments(args, target), { cwd, encoding: "utf8", maxBuffer: 4 * 1024 * 1024, env: gitEnvironment(target, credentials), windowsHide: process.platform === "win32" });
     return String(result.stdout || "").trim();
   } catch (error: any) {
     if (allowFailure) return "";
     const detail = String(error?.stderr || error?.stdout || error?.message || error).trim();
-    throw new Error(`git ${args[0]} failed${detail ? `: ${detail}` : "."}`);
+    const guidance = githubSyncAuthenticationFailureGuidance(target, detail);
+    throw new Error(`git ${args[0]} failed${detail ? `: ${detail}` : "."}${guidance ? ` ${guidance}` : ""}`);
   }
 }
 
 async function gitBuffer(cwd: string, args: string[], target?: GitHubSyncTarget): Promise<Buffer> {
   try {
-    const result = await execFileAsync("git", githubSyncGitArguments(args, target), { cwd, encoding: "buffer", maxBuffer: 8 * 1024 * 1024, env: gitEnvironment(target) });
+    const result = await execFileAsync("git", githubSyncGitArguments(args, target), { cwd, encoding: "buffer", maxBuffer: 8 * 1024 * 1024, env: gitEnvironment(target), windowsHide: process.platform === "win32" });
     return Buffer.from(result.stdout);
   } catch (error: any) {
     const detail = String(error?.stderr || error?.stdout || error?.message || error).trim();
@@ -476,14 +568,14 @@ async function gitBuffer(cwd: string, args: string[], target?: GitHubSyncTarget)
 
 async function hasRef(cwd: string, ref: string): Promise<boolean> {
   try {
-    await execFileAsync("git", ["show-ref", "--verify", "--quiet", ref], { cwd });
+    await execFileAsync("git", ["show-ref", "--verify", "--quiet", ref], { cwd, windowsHide: process.platform === "win32" });
     return true;
   } catch { return false; }
 }
 
 async function isAncestor(cwd: string, ancestor: string, descendant: string): Promise<boolean> {
   try {
-    await execFileAsync("git", ["merge-base", "--is-ancestor", ancestor, descendant], { cwd });
+    await execFileAsync("git", ["merge-base", "--is-ancestor", ancestor, descendant], { cwd, windowsHide: process.platform === "win32" });
     return true;
   } catch { return false; }
 }
@@ -492,15 +584,15 @@ function githubSyncCheckoutPath(target: GitHubSyncTarget, checkoutRoot: string):
   return path.join(checkoutRoot, target.id, "repository");
 }
 
-async function fetchRemoteBranch(target: GitHubSyncTarget, checkoutRoot: string): Promise<{ checkout: string; commit: string }> {
+async function fetchRemoteBranch(target: GitHubSyncTarget, checkoutRoot: string, credentials?: GitHubSyncCredentials): Promise<{ checkout: string; commit: string }> {
   const checkout = githubSyncCheckoutPath(target, checkoutRoot);
   if (!fs.existsSync(path.join(checkout, ".git"))) {
     fs.mkdirSync(path.dirname(checkout), { recursive: true });
-    await git(path.dirname(checkout), ["clone", "--no-checkout", "--origin", "origin", target.repository, checkout], target);
+    await git(path.dirname(checkout), ["clone", "--no-checkout", "--origin", "origin", target.repository, checkout], target, false, credentials);
   }
   const remote = await git(checkout, ["remote", "get-url", "origin"]);
   if (remote !== target.repository) throw new Error("Managed checkout points to a different repository. Delete the target and create it again.");
-  await git(checkout, ["fetch", "origin", "--prune"], target);
+  await git(checkout, ["fetch", "origin", "--prune"], target, false, credentials);
   const remoteRef = `refs/remotes/origin/${target.branch}`;
   if (!(await hasRef(checkout, remoteRef))) throw new Error(`Remote branch ${target.branch} does not exist.`);
   return { checkout, commit: await git(checkout, ["rev-parse", remoteRef]) };
@@ -524,9 +616,9 @@ function remoteManifestFiles(raw: string, repositoryFiles: Set<string>): GitHubS
   }).sort((left: GitHubSyncRemoteFile, right: GitHubSyncRemoteFile) => left.path.localeCompare(right.path));
 }
 
-export async function fetchGitHubRemoteSnapshot(target: GitHubSyncTarget, checkoutRoot: string, allowRepositoryTree = false): Promise<GitHubSyncRemoteSnapshot> {
+export async function fetchGitHubRemoteSnapshot(target: GitHubSyncTarget, checkoutRoot: string, allowRepositoryTree = false, credentials?: GitHubSyncCredentials): Promise<GitHubSyncRemoteSnapshot> {
   const normalized = normalizeGitHubSyncTarget(target, () => target.id);
-  const { checkout, commit } = await fetchRemoteBranch(normalized, checkoutRoot);
+  const { checkout, commit } = await fetchRemoteBranch(normalized, checkoutRoot, credentials);
   const repositoryFiles = new Set((await git(checkout, ["ls-tree", "-r", "--name-only", "-z", commit])).split("\0").filter(Boolean));
   let manifest: string;
   try {
@@ -575,15 +667,21 @@ export async function restoreGitHubRemoteFiles(
   storeRoot: string,
   commit: string,
   selectedPaths: string[],
-  overwrite: boolean
+  overwrite: boolean,
+  credentials?: GitHubSyncCredentials
 ): Promise<GitHubSyncRestoreResult> {
-  const snapshot = await fetchGitHubRemoteSnapshot(target, checkoutRoot);
+  const snapshot = await fetchGitHubRemoteSnapshot(target, checkoutRoot, false, credentials);
   if (snapshot.commit !== commit) throw new Error("Remote content changed. Refresh the remote browser before restoring.");
   const available = new Set(snapshot.files.map(file => file.path));
   const selected = [...new Set(selectedPaths.map(githubSyncSafeRelativePath))].sort((left, right) => left.localeCompare(right));
   if (!selected.length) throw new Error("Select at least one remote file to restore.");
   for (const file of selected) if (!available.has(file)) throw new Error(`Remote file is not in the PKM manifest: ${file}`);
-  const destinations = selected.map(file => ({ file, destination: managedPath(storeRoot, file) }));
+  const destinations = selected.map(file => ({
+    file,
+    destination: file.startsWith("agentSnapshots/")
+      ? managedPath(path.join(storeRoot, ".pkm", "state"), `agent-snapshots/${file.slice("agentSnapshots/".length)}`)
+      : managedPath(storeRoot, file),
+  }));
   const conflicts = destinations.filter(item => fs.existsSync(item.destination)).map(item => item.file);
   if (conflicts.length && !overwrite) return { restored: [], conflicts };
   const contents = await Promise.all(destinations.map(async item => ({
@@ -603,15 +701,15 @@ export async function restoreGitHubRemoteFiles(
   return { restored: selected, conflicts };
 }
 
-async function prepareCheckout(target: GitHubSyncTarget, checkout: string): Promise<void> {
+async function prepareCheckout(target: GitHubSyncTarget, checkout: string, credentials?: GitHubSyncCredentials): Promise<void> {
   if (!fs.existsSync(path.join(checkout, ".git"))) {
     fs.mkdirSync(path.dirname(checkout), { recursive: true });
-    await git(path.dirname(checkout), ["clone", "--origin", "origin", target.repository, checkout], target);
+    await git(path.dirname(checkout), ["clone", "--origin", "origin", target.repository, checkout], target, false, credentials);
   }
   const remote = await git(checkout, ["remote", "get-url", "origin"]);
   if (remote !== target.repository) throw new Error("Managed checkout points to a different repository. Delete the target and create it again.");
   if (await git(checkout, ["status", "--porcelain"])) throw new Error("Managed checkout has uncommitted changes; synchronization stopped.");
-  await git(checkout, ["fetch", "origin", "--prune"], target);
+  await git(checkout, ["fetch", "origin", "--prune"], target, false, credentials);
   const localRef = `refs/heads/${target.branch}`;
   const remoteRef = `refs/remotes/origin/${target.branch}`;
   const localExists = await hasRef(checkout, localRef);
@@ -635,12 +733,13 @@ const MANIFEST_PATH = ".pkm-github-sync.json";
 export async function syncGitHubTarget(
   target: GitHubSyncTarget,
   catalog: GitHubSyncCatalog,
-  checkoutRoot: string
+  checkoutRoot: string,
+  credentials?: GitHubSyncCredentials
 ): Promise<GitHubSyncResult> {
   const normalized = normalizeGitHubSyncTarget(target, () => target.id);
   const checkout = path.join(checkoutRoot, normalized.id, "repository");
   const materialized = selectedFiles(normalized, catalog);
-  await prepareCheckout(normalized, checkout);
+  await prepareCheckout(normalized, checkout, credentials);
   let previousFiles: string[] = [];
   try {
     const manifest = JSON.parse(fs.readFileSync(path.join(checkout, MANIFEST_PATH), "utf8"));
@@ -663,7 +762,7 @@ export async function syncGitHubTarget(
     await git(checkout, ["config", "user.email", "pkm@localhost"]);
     await git(checkout, ["commit", "-m", `PKM sync ${new Date().toISOString()}`]);
   }
-  await git(checkout, ["push", "origin", `HEAD:refs/heads/${normalized.branch}`], normalized);
+  await git(checkout, ["push", "origin", `HEAD:refs/heads/${normalized.branch}`], normalized, false, credentials);
   const commit = await git(checkout, ["rev-parse", "HEAD"]);
   return { commit, changed, fingerprints: materialized.fingerprints };
 }

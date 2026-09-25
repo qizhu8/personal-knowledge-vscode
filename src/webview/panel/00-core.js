@@ -77,15 +77,40 @@ function styleTasks(html) {
     .replace(/<li>\s*\[!\]\s*/g, '<li class="tk tk-block"><span class="tkm">!</span>');
 }
 function safeHljs(el) { try { if (typeof hljs !== 'undefined') hljs.highlightElement(el); } catch(e) {} }
+const panelLibraryLoads = new Map();
+function ensurePanelLibrary(globalName, metaName) {
+  if (globalThis[globalName]) return Promise.resolve(globalThis[globalName]);
+  if (panelLibraryLoads.has(globalName)) return panelLibraryLoads.get(globalName);
+  const source = document.querySelector(`meta[name="${metaName}"]`)?.content;
+  if (!source) return Promise.reject(new Error(`${globalName} library URL is unavailable.`));
+  const load = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = source;
+    script.onload = () => globalThis[globalName]
+      ? resolve(globalThis[globalName])
+      : reject(new Error(`${globalName} did not initialize after loading.`));
+    script.onerror = () => reject(new Error(`Could not load ${globalName}.`));
+    document.head.appendChild(script);
+  }).catch(error => {
+    panelLibraryLoads.delete(globalName);
+    console.error(error);
+    throw error;
+  });
+  panelLibraryLoads.set(globalName, load);
+  return load;
+}
 // ── Mermaid diagrams (```mermaid fenced blocks) ─────────────────────────────
 let _mermaidReady = false;
-function initMermaidOnce() {
+let _mermaidTheme = '';
+function initMermaidOnce(theme) {
   if (_mermaidReady || typeof mermaid === 'undefined') return _mermaidReady;
   try {
     const light = /vscode-light|vscode-high-contrast-light/.test(document.body.className || '');
+    const selectedTheme = theme || (light ? 'default' : 'dark');
     // 'antiscript' keeps <b>/<br/> HTML labels working while stripping <script>.
-    mermaid.initialize({ startOnLoad: false, suppressErrorRendering: true, securityLevel: 'antiscript', theme: light ? 'default' : 'dark', fontFamily: 'inherit' });
+    mermaid.initialize({ startOnLoad: false, suppressErrorRendering: true, securityLevel: 'antiscript', theme: selectedTheme, fontFamily: 'inherit' });
     _mermaidReady = true;
+    _mermaidTheme = selectedTheme;
   } catch (e) {}
   return _mermaidReady;
 }
@@ -93,10 +118,26 @@ let _mmSeq = 0;
 // Replace each mermaid code block inside `root` with a rendered SVG diagram.
 // Returns a promise that resolves once every diagram in `root` has rendered,
 // so callers (e.g. HTML export) can await fully-inlined SVGs.
-function renderMermaid(root) {
-  if (!root || typeof mermaid === 'undefined' || !initMermaidOnce()) return Promise.resolve();
-  const jobs = [];
-  root.querySelectorAll('code.language-mermaid').forEach(code => {
+async function renderMermaid(root, theme) {
+  if (!root) return;
+  const blocks = [...root.querySelectorAll('code.language-mermaid')];
+  if (!blocks.length) return;
+  try {
+    await ensurePanelLibrary('mermaid', 'pkm-mermaid-src');
+  } catch (error) {
+    blocks.forEach(code => {
+      const holder = document.createElement('div');
+      holder.className = 'mermaid-diagram mermaid-error';
+      holder.textContent = error instanceof Error ? error.message : String(error);
+      (code.closest('pre') || code).replaceWith(holder);
+    });
+    return;
+  }
+  const light = /vscode-light|vscode-high-contrast-light/.test(document.body.className || '');
+  const selectedTheme = theme || (light ? 'default' : 'dark');
+  if (_mermaidTheme !== selectedTheme) _mermaidReady = false;
+  if (!initMermaidOnce(selectedTheme)) return;
+  const jobs = blocks.map(code => {
     const pre = code.closest('pre') || code;
     const src = code.textContent || '';
     const holder = document.createElement('div');
@@ -108,7 +149,7 @@ function renderMermaid(root) {
         if (el !== root && (el.id === id || el.id === 'd' + id || el.id === 'i' + id || el.querySelector('[id="' + id + '"]'))) el.remove();
       });
     };
-    jobs.push(Promise.resolve().then(() => mermaid.render(id, src)).then(res => {
+    return Promise.resolve().then(() => mermaid.render(id, src)).then(res => {
       cleanupTemporaryNodes();
       holder.innerHTML = res.svg;
       if (res.bindFunctions) res.bindFunctions(holder);
@@ -117,9 +158,9 @@ function renderMermaid(root) {
       holder.className = 'mermaid-diagram mermaid-error';
       const message = String(err && err.message ? err.message : err || 'Invalid diagram').split('\n')[0].slice(0, 500);
       holder.textContent = 'Mermaid syntax error: ' + message;
-    }));
+    });
   });
-  return Promise.all(jobs);
+  await Promise.all(jobs);
 }
 const esc = s => String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 function fileSelectorCategoryTree(items) {
@@ -271,14 +312,14 @@ const pendingActionButtons = new Map();
 const actionTimeouts = {
   subscriptionCopyLink:10000, subscriptionConfigure:15000, subscriptionSetOnline:30000, subscriptionSetSharePublished:30000,
   subscriptionUpsertShare:30000, subscriptionDeleteShare:30000, subscriptionAdd:60000,
-  subscriptionRename:10000, subscriptionRefresh:60000, subscriptionRemove:30000,
+  subscriptionRename:10000, subscriptionSetPriority:15000, subscriptionRefresh:60000, subscriptionRemove:30000,
   subscriptionRevealSecret:10000, subscriptionRotateSecret:30000, subscriptionUnblockIp:15000, subscriptionFork:30000, subscriptionOpenServerLink:15000,
   skillTrashRestore:15000, skillTrashDelete:15000, skillTrashEmpty:30000,
   knowledgeTrashMove:15000, knowledgeTrashRestore:15000, knowledgeTrashDelete:15000, knowledgeTrashEmpty:30000,
   serverSubscriptionStatus:15000,
   serverSubscriptionRefresh:60000,
   chatAddManagedAgent:180000,
-  agentSnapshotCreate:30000, agentSnapshotDelete:15000,
+  agentSnapshotCreate:30000, agentSnapshotRotate:30000, agentSnapshotDelete:15000,
   recipeOpenBrowser:30000,
   githubSyncSave:30000, githubSyncRun:120000, githubSyncCreateIdentity:30000, githubSyncTestAuthentication:30000,
   mcpRepairRuntime:600000, mcpSetPython:600000, generateMcp:90000,
@@ -568,9 +609,17 @@ window.addEventListener('message', e => {
   else if (command === 'inventoryBatch') { /* progress only; refresh once when the inventory is ready */ }
   else if (command === 'inventoryReady') {
     ['skills','notes','scripts'].forEach(invalidateKnowledgeTabView);
-    if (['skills','notes','scripts'].includes(state.tab)) ask('list', { tab: state.tab, filter: state.filter, q: state.search }, null, true);
+    if (['skills','notes','scripts'].includes(state.tab)) ask('list', { tab: state.tab, filter: state.filter, q: state.search, fresh: true }, null, true);
   }
   else if (command === 'list')     { if (e.data.tab && e.data.tab !== state.tab) return; finishAction('list','deleteSkill','skillTrashFolder','skillTrashRestore','skillTrashDelete','skillTrashEmpty','knowledgeTrashMove','knowledgeTrashRestore','knowledgeTrashDelete','knowledgeTrashEmpty'); if (revealRefreshedTreeItems(state.tab, state.items, data, pendingTreeRefresh)) pendingTreeRefresh = null; state.items = data; state.folders = e.data.folders || []; state.subscriptionGroups = e.data.subscriptionGroups || []; state.knowledgeTrash = e.data.knowledgeTrash || []; state.brokerSharedFolders = e.data.brokerSharedFolders || {}; if (Array.isArray(e.data.privateTopLevels)) state.privateTopLevels = e.data.privateTopLevels; renderList(); highlightDetailMatches(document.getElementById('layout'), state.search); }
+  else if (command === 'listSubscriptionGroups') {
+    if (e.data.tab !== state.tab) {
+      updateCachedKnowledgeTabSubscriptions(e.data.tab, data || []);
+      return;
+    }
+    state.subscriptionGroups = data || [];
+    renderSubscribedGroups(document.getElementById('item-list'));
+  }
   else if (command === 'detail') {
     if (pendingEditSlug && data?.type === 'note' && data.slug === pendingEditSlug) {
       pendingEditSlug = null; editNote(data);
@@ -593,13 +642,13 @@ window.addEventListener('message', e => {
     if (!data?.ok) pkModal({ title:'Skills Trash', message:data?.error || 'Trash action failed.', okLabel:'OK' });
     else vscode.postMessage({ command:'toast', text:data.action === 'emptied' ? `Emptied ${Number(data.count)||0} Trash entries` : `${data.action === 'restored' ? 'Restored' : data.action === 'deleted' ? 'Permanently deleted' : 'Moved to Trash'}: ${data.path || ''}` });
     currentDetail = null; currentDetailRequest = null; renderEmptyDetail();
-    ask('list', { tab:'skills', filter:'all', q:state.tab === 'skills' ? state.search : '' });
+    ask('list', { tab:'skills', filter:'all', q:state.tab === 'skills' ? state.search : '', fresh:true });
   }
   else if (command === 'knowledgeTrashResult') {
     if (!data?.ok) pkModal({ title:'Trash', message:data?.error || 'Trash action failed.', okLabel:'OK' });
     else vscode.postMessage({ command:'toast', text:data.action === 'emptied' ? `Emptied ${Number(data.count)||0} Trash entries` : `${data.action === 'restored' ? 'Restored' : data.action === 'deleted' ? 'Permanently deleted' : 'Moved to Trash'}: ${data.path || ''}` });
     currentDetail = null; currentDetailRequest = null; renderEmptyDetail();
-    ask('list', { tab:data?.area || state.tab, filter:'all', q:data?.area === state.tab ? state.search : '' });
+    ask('list', { tab:data?.area || state.tab, filter:'all', q:data?.area === state.tab ? state.search : '', fresh:true });
   }
   else if (command === 'noteFolderPins') {
     notePinnedFolders = e.data.data || [];
@@ -645,9 +694,10 @@ window.addEventListener('message', e => {
   }
   else if (command === 'serverLog') { onServerLog(e.data.slug, e.data.text); }
   else if (command === 'serverPickFolder') { onServerPickFolder(e.data.dir); }
-  else if (command === 'subscriptionState') { finishAction('subscriptionState','subscriptionConfigure','subscriptionSetOnline','subscriptionUpsertShare','subscriptionDeleteShare','subscriptionAdd','subscriptionMountGitHub','subscriptionRename','subscriptionRefresh','subscriptionRemove','subscriptionUnblockIp','subscriptionRotateSecret'); subscriptionOnState(data); finishLoadingProgress(); }
+  else if (command === 'subscriptionState') { finishAction('subscriptionState','subscriptionConfigure','subscriptionSetOnline','subscriptionUpsertShare','subscriptionDeleteShare','subscriptionAdd','subscriptionMountGitHub','subscriptionRename','subscriptionSetPriority','subscriptionRefresh','subscriptionRemove','subscriptionUnblockIp','subscriptionRotateSecret'); subscriptionOnState(data); finishLoadingProgress(); }
   else if (command === 'githubSyncState') { finishAction('githubSyncState','githubSyncSave','githubSyncDelete','githubSyncRun'); githubSyncOnState(data); finishLoadingProgress(); }
-  else if (command === 'githubSyncCompleted') { finishAction('githubSyncRun'); vscode.postMessage({ command:'toast', text:data?.changed ? 'GitHub target synchronized' : 'GitHub target is already current' }); }
+  else if (command === 'githubSyncRunQueued') { finishAction('githubSyncRun'); vscode.postMessage({ command:'toast', text:'GitHub sync started' }); }
+  else if (command === 'githubSyncRuntimeState') { githubSyncOnRuntimeState(data); }
   else if (command === 'githubSyncRestored') { finishAction('githubSyncRestore'); vscode.postMessage({ command:'toast', text:`Restored ${data?.restored?.length || 0} file(s) from GitHub` }); }
   else if (command === 'githubSyncRestoreCancelled') { finishAction('githubSyncRestore'); }
   else if (command === 'githubSyncIdentityPicked') { finishAction('githubSyncPickIdentity'); githubSyncIdentityPicked(data?.identityFile || ''); }
@@ -680,7 +730,7 @@ window.addEventListener('message', e => {
     const completedCommands = {
       configured:'subscriptionConfigure', online:'subscriptionSetOnline', offline:'subscriptionSetOnline',
       published:'subscriptionUpsertShare', created:'subscriptionUpsertShare', copied:'subscriptionCopyLink',
-      subscribed:'subscriptionAdd', githubMounted:'subscriptionMountGitHub', refreshed:'subscriptionRefresh', removed:'subscriptionRemove',
+      subscribed:'subscriptionAdd', githubMounted:'subscriptionMountGitHub', prioritySet:'subscriptionSetPriority', refreshed:'subscriptionRefresh', removed:'subscriptionRemove',
       brokerDeleted:'subscriptionDeleteShare', brokerDeleteCancelled:'subscriptionDeleteShare',
       brokerPaused:'subscriptionSetSharePublished', brokerPublished:'subscriptionSetSharePublished',
       unblocked:'subscriptionUnblockIp', serverOpened:'subscriptionOpenServerLink',
@@ -728,6 +778,7 @@ window.addEventListener('message', e => {
   }
   else if (command === 'projectResult') { projectOnResult(data); }
   else if (command === 'agentSnapshotCreated') { finishAction('agentSnapshotCreate'); agentSnapshotOnCreated(data); }
+  else if (command === 'agentSnapshotRotated') { finishAction('agentSnapshotRotate'); agentSnapshotOnCreated(data); }
   else if (command === 'recipeValidationResult') { recipeOnValidation(data); }
   else if (command === 'recipeIntentEdited') { recipeOnIntentEdited(data); }
   else if (command === 'projectError') { projectOnError(data); }

@@ -117,7 +117,7 @@ export function pyenvDelete(id: string, removeFiles = false): Promise<PyEnvDelet
       if (!env.path || !/[\\/]envs[\\/]/.test(env.path)) {
         return resolve({ ok: false, id, path: envPath, unregistered: false, filesRequested: true, filesRemoved: false, pathStillExists: !!envPath && fs.existsSync(envPath), error: "Refusing to delete a conda base/root environment from disk." });
       }
-      execFile("conda", ["env", "remove", "-y", "-p", env.path], { timeout: 120000 }, (err) => {
+      execFile("conda", ["env", "remove", "-y", "-p", env.path], { timeout: 120000, windowsHide: process.platform === "win32" }, (err) => {
         if (err) return resolve({ ok: false, id, path: envPath, unregistered: false, filesRequested: true, filesRemoved: false, pathStillExists: fs.existsSync(env.path), error: `conda env remove failed: ${err.message}` });
         finish(true);
       });
@@ -144,13 +144,13 @@ export function pyenvCreate(input: {
     const ver = String(input.pythonVersion || "").trim();
     const desc = input.description ? String(input.description).trim() : undefined;
     const run = (cmd: string, args: string[], then: (err: any, out: string) => void) =>
-      execFile(cmd, args, { timeout: 600000, maxBuffer: 1 << 24 }, (err, so, se) => then(err, String(so || "") + String(se || "")));
+      execFile(cmd, args, { timeout: 600000, maxBuffer: 1 << 24, windowsHide: process.platform === "win32" }, (err, so, se) => then(err, String(so || "") + String(se || "")));
 
     if (input.manager === "conda") {
       const args = ["create", "-y", "-n", name, ver ? `python=${ver}` : "python"];
       run("conda", args, (err, out) => {
         if (err) return resolve({ ok: false, error: `conda create failed: ${err.message}`, log: out });
-        execFile("conda", ["env", "list", "--json"], { timeout: 8000 }, (_e, so) => {
+        execFile("conda", ["env", "list", "--json"], { timeout: 8000, windowsHide: process.platform === "win32" }, (_e, so) => {
           let prefix = "";
           try { const j = JSON.parse(String(so || "{}")); prefix = (j.envs || []).find((p: string) => path.basename(p) === name) || ""; } catch { /* ignore */ }
           const python = prefix ? path.join(prefix, "bin", "python") : "";
@@ -186,7 +186,7 @@ export function pyenvCreate(input: {
 /** List conda environments via `conda env list --json`. */
 export function condaEnvs(): Promise<{ name: string; prefix: string; python: string }[]> {
   return new Promise(resolve => {
-    execFile("conda", ["env", "list", "--json"], { timeout: 8000 }, (err, stdout) => {
+    execFile("conda", ["env", "list", "--json"], { timeout: 8000, windowsHide: process.platform === "win32" }, (err, stdout) => {
       if (err) return resolve([]);
       try {
         const j = JSON.parse(String(stdout || "{}"));
@@ -240,13 +240,13 @@ export function pyenvPackages(id: string, refresh = false): Promise<{ packages: 
       resolve({ packages, capturedAt, cached: false, error });
     };
     if (env.manager === "conda" && env.path) {
-      execFile("conda", ["list", "--json", "-p", env.path], { timeout: 20000, maxBuffer: 1 << 24 }, (err, stdout) => {
+      execFile("conda", ["list", "--json", "-p", env.path], { timeout: 20000, maxBuffer: 1 << 24, windowsHide: process.platform === "win32" }, (err, stdout) => {
         if (err) return done([], `conda list failed: ${err.message}`);
         try { done(normalizePkgs(JSON.parse(String(stdout || "[]")))); } catch (e: any) { done([], String(e?.message || e)); }
       });
     } else {
       const py = env.python || "python3";
-      execFile(py, ["-m", "pip", "list", "--format=json"], { timeout: 20000, maxBuffer: 1 << 24 }, (err, stdout) => {
+      execFile(py, ["-m", "pip", "list", "--format=json"], { timeout: 20000, maxBuffer: 1 << 24, windowsHide: process.platform === "win32" }, (err, stdout) => {
         if (err) return done([], `pip list failed: ${err.message}`);
         try { done(normalizePkgs(JSON.parse(String(stdout || "[]")))); } catch (e: any) { done([], String(e?.message || e)); }
       });
@@ -418,7 +418,7 @@ export function pyenvSize(id: string, refresh = false): Promise<{ bytes: number;
     if (!refresh && typeof env.sizeBytes === "number") {
       return resolve({ bytes: env.sizeBytes, human: humanSize(env.sizeBytes), at: env.sizeAt || "", cached: true });
     }
-    execFile("du", ["-sk", env.path], { timeout: 120000, maxBuffer: 1 << 20 }, (err, stdout) => {
+    execFile("du", ["-sk", env.path], { timeout: 120000, maxBuffer: 1 << 20, windowsHide: process.platform === "win32" }, (err, stdout) => {
       if (err) return resolve({ bytes: 0, human: "", at: "", cached: false, error: `du failed: ${err.message}` });
       const kb = parseInt(String(stdout).split(/\s+/)[0], 10) || 0;
       const bytes = kb * 1024;
@@ -450,7 +450,7 @@ export function pyenvPyVersion(id: string, refresh = false): Promise<{ version: 
       if (v) { pyenvUpdate(id, { pyVersion: v }); return resolve({ version: v, cached: false }); }
     }
     const py = env.python || (env.path ? path.join(env.path, "bin", "python") : "python3");
-    execFile(py, ["-c", "import platform;print(platform.python_version())"], { timeout: 8000 }, (err, stdout) => {
+    execFile(py, ["-c", "import platform;print(platform.python_version())"], { timeout: 8000, windowsHide: process.platform === "win32" }, (err, stdout) => {
       if (err) return resolve({ version: "", cached: false, error: err.message });
       const v = String(stdout || "").trim();
       if (v) pyenvUpdate(id, { pyVersion: v });
@@ -558,7 +558,7 @@ export async function pyenvMigrate(id: string, destRoot: string): Promise<{ ok: 
   try { fs.mkdirSync(destRoot, { recursive: true }); } catch { /* ignore */ }
 
   const runP = (cmd: string, args: string[]) => new Promise<{ err: any; out: string }>(res =>
-    execFile(cmd, args, { timeout: 1800000, maxBuffer: 1 << 24 }, (err, so, se) => res({ err, out: String(so || "") + String(se || "") })));
+    execFile(cmd, args, { timeout: 1800000, maxBuffer: 1 << 24, windowsHide: process.platform === "win32" }, (err, so, se) => res({ err, out: String(so || "") + String(se || "") })));
 
   if (env.manager === "conda") {
     if (!env.path.includes("/envs/")) return { ok: false, error: "refusing to migrate the conda base environment" };
@@ -580,5 +580,4 @@ export async function pyenvMigrate(id: string, destRoot: string): Promise<{ ok: 
     return { ok: true, env: pyenvGet(id) };
   } catch (e: any) { return { ok: false, error: String(e?.message || e) }; }
 }
-
 

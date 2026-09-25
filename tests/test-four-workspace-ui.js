@@ -13,6 +13,23 @@ const extensionSource = fs.readFileSync(path.join(root, "src", "extension.ts"), 
 const previewSource = fs.readFileSync(path.join(root, "scripts", "release-preview-server.js"), "utf8");
 const knowledgeSource = fs.readFileSync(path.join(root, "src", "webview", "panel", "20-knowledge.js"), "utf8");
 
+assert.match(css, /select,select option,select optgroup\{[^}]*--vscode-dropdown-background[^}]*--vscode-dropdown-foreground/,
+  "every webview dropdown and option must inherit VS Code theme colors");
+assert.match(css, /select option,select optgroup\{[^}]*--vscode-dropdown-listBackground/,
+  "native dropdown lists must use the VS Code dropdown list surface");
+assert.match(css, /body\.vscode-dark select,body\.vscode-high-contrast select\{color-scheme:dark\}/,
+  "dark and high-contrast themes must request dark native dropdown chrome");
+assert.match(css, /body\.vscode-light select,body\.vscode-high-contrast-light select\{color-scheme:light\}/,
+  "light themes must request light native dropdown chrome");
+assert.match(knowledgeSource, /aria-label="Skill retrieval priority"/, "Skill details expose a retrieval priority dropdown");
+assert.match(knowledgeSource, /id="se-priority" aria-label="Retrieval priority"/, "Skill editing exposes a retrieval priority dropdown");
+assert.doesNotMatch(knowledgeSource, /<select[^>]*background:\s*(?:white|#fff(?:fff)?)/i,
+  "Skill dropdowns must not override the shared theme with a white background");
+assert.match(css, /\.recipe-design-body select\{[^}]*--vscode-dropdown-background[^}]*--vscode-dropdown-foreground/,
+  "Recipe designer dropdowns must retain VS Code theme colors");
+assert.doesNotMatch(css, /\.recipe-design-body (?:input,)?\.recipe-design-body select\{[^}]*(?:background:#fff|color:#202124)/,
+  "Recipe designer dropdowns must not restore the light-only input palette");
+
 assert.match(previewSource, /demoPkmTutorialRecipe/);
 assert.match(previewSource, /System\/PKM\/PKM Skills/);
 assert.match(previewSource, /validated","known","unknown/);
@@ -148,9 +165,12 @@ assert.match(bundle, /tools:\['prompts','scripts','packages','environments','ser
 assert.match(bundle, /automation:\['agentSessions','agentSnapshots','recipes'\]/);
 assert.match(html, /data-tab="agentSnapshots">Agent Snapshot</);
 assert.match(extensionSource, /case "agentSnapshotCreate"/);
+assert.match(extensionSource, /case "agentSnapshotRotate"/);
 assert.match(extensionSource, /case "agentSnapshotDelete"/);
+assert.match(extensionSource, /vscode\.env\.clipboard\.writeText\(created\.recoveryPrompt\)/);
 assert.match(projectsSource, /function renderAgentSnapshots\(\)/);
 assert.match(projectsSource, /Copy Recovery Prompt/);
+assert.match(projectsSource, /Rotate Passphrase/);
 assert.match(projectsSource, /Right-click this Snapshot to delete it/);
 assert.match(projectsSource, /agent-session-adhoc' \? 'Ad hoc task' : 'Recipe run'/,
   "Agent Sessions distinguish instance-only task plans from reusable Recipe runs");
@@ -189,6 +209,25 @@ assert.match(bundle, /github-sync-shield/, "GitHub Sync decorates covered conten
 assert.match(bundle, /id="github-sync-expected-login"/, "GitHub Sync exposes a target-level GitHub account");
 assert.match(bundle, /id = 'github-sync-auth-method'/, "GitHub Sync exposes a target-level authentication method");
 assert.match(bundle, /HTTPS \/ Credential Manager/, "GitHub Sync supports cross-platform credential-helper authentication");
+assert.match(bundle, /VS Code GitHub Authentication \(recommended\)/, "GitHub Sync recommends durable VS Code authentication");
+assert.match(bundle, /keeps personal and EMU credentials separate per Target/, "GitHub Sync explains durable multi-account isolation");
+assert.match(bundle, /class="github-sync-error" onclick="event\.stopPropagation\(\)" onpointerdown="event\.stopPropagation\(\)"/,
+  "GitHub Sync errors remain selectable without opening their Target card");
+assert.match(css, /\.github-sync-error\{[^}]*cursor:text;user-select:text/,
+  "GitHub Sync errors visibly support text selection");
+assert.match(bundle, /id="github-sync-interval-minutes"/, "GitHub Sync exposes a per-target interval");
+assert.match(bundle, /id="github-sync-on-change"/, "GitHub Sync exposes change-triggered backup");
+assert.match(bundle, /Automatic backup/, "GitHub Sync describes background automation");
+assert.match(bundle, /Minimum sync interval \(minutes\)/, "GitHub Sync describes the interval as a throttle");
+assert.match(bundle, /No changes means no sync/, "GitHub Sync makes unchanged-content behavior explicit");
+assert.doesNotMatch(bundle, /Waiting for schedule/, "GitHub Sync must not imply periodic forced synchronization");
+assert.match(bundle, /githubSyncForce\('\$\{esc\(target\.id\)\}',this\)[^>]*\$\{status === 'syncing' \? 'disabled' : ''\}[^>]*>[^<]*.*Force sync/,
+  "every GitHub target exposes Force sync and disables duplicate requests while syncing");
+assert.match(bundle, /function githubSyncForce\(targetId, button\) \{ ask\('githubSyncRun'/, "Force sync uses the automatic scheduler");
+assert.match(extensionSource, /delete target\.lastFailure;[\s\S]{0,240}writeGitHubSyncTargets/,
+  "successful target authentication clears stale errors before automatic retry");
+assert.match(bundle, /command === 'githubSyncRunQueued'[\s\S]{0,180}GitHub sync started/,
+  "Force sync reports that work started rather than claiming synchronization completed");
 assert.match(bundle, /id="github-sync-identity-file"/, "GitHub Sync exposes a target-level SSH identity");
 assert.match(bundle, /identity\.closest\('label'\)\.hidden = method !== 'ssh'/, "GitHub Sync hides SSH-only controls for GCM targets");
 assert.match(bundle, /githubSyncPickIdentity\(this\)/, "GitHub Sync can browse for an SSH key");
@@ -205,7 +244,14 @@ assert.match(bundle, /ask\('subscriptionMountGitHub'/, "Subscribe mounts selecte
 assert.match(bundle, /Read-only cache/, "GitHub branch mounts are explicitly read-only");
 assert.match(bundle, /function githubSyncRestore\(targetId, button\)/, "GitHub Sync retains an explicit restore action");
 assert.doesNotMatch(bundle, /githubSyncRemoteBrowse|githubSyncRemotePreview|github-sync-remote/, "GitHub Sync does not duplicate Broker browsing");
-assert.match(extensionSource, /if \(target\.authentication\) await testGitHubSyncAuthentication\(target\)/, "GitHub Sync verifies configured authentication before saving");
+assert.match(extensionSource, /authorizeGitHubSyncTarget\(context, target\)/, "GitHub Sync securely authorizes VS Code GitHub targets before saving");
+assert.match(extensionSource, /githubSyncAuthenticationSessionOptions\(\)/,
+  "GitHub Sync reuses the globally remembered VS Code GitHub session in new windows");
+assert.match(extensionSource, /githubSyncAuthenticationSessionOptions\(true\)/,
+  "GitHub Sync clears account preference only when the remembered account does not match");
+assert.match(extensionSource, /if \(session\.account\.label\.toLowerCase\(\) !== target\.authentication\.expectedLogin\.toLowerCase\(\)\) \{\s*session = await vscode\.authentication\.getSession\("github", \["repo"\], githubSyncAuthenticationSessionOptions\(true\)\)/,
+  "GitHub Sync may prompt for account selection only after the remembered account mismatches");
+assert.match(extensionSource, /githubSyncScheduler\?\.notifyContentChanged\(\)/, "knowledge changes trigger automatic GitHub Sync");
 assert.match(extensionSource, /case "subscriptionMountGitHub"/, "extension host materializes GitHub branches as subscriptions");
 assert.match(extensionSource, /case "subscriptionTestGitHubBranch"/, "extension host inventories a GitHub branch before subscription");
 assert.match(extensionSource, /authentication: credentialTarget\?\.authentication/, "GitHub subscriptions reuse only a selected GitHub Sync credential profile");
@@ -583,7 +629,11 @@ assert.match(detailHtml, /Create Agent Snapshot/);
 assert.match(detailHtml, /PKM-SNAP-1234-5678-90AB-CDEF/);
 assert.match(detailHtml, /2 recoveries/);
 assert.match(detailHtml, /agent_session_snapshot_recover/);
+assert.match(detailHtml, /Rotate Passphrase/);
 assert.match(detailHtml, /Right-click this Snapshot to delete it/);
+context.agentSnapshotRotate("agent_snapshot_portable");
+modal.onOk();
+assert.deepStrictEqual(JSON.parse(JSON.stringify(messages.at(-1))), { command: "agentSnapshotRotate", data: { snapshotId: "agent_snapshot_portable" } });
 context.agentSnapshotContextMenu({ preventDefault() {}, stopPropagation() {}, clientX: 4, clientY: 8 }, "agent_snapshot_portable");
 assert.ok(contextMenu.items.some(item => item.label === "Delete Snapshot…"));
 contextMenu.items.find(item => item.label === "Delete Snapshot…").onClick();
