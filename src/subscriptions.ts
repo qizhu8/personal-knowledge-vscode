@@ -16,7 +16,9 @@ import { stableUserPort } from "./user-service-ports";
 
 export type SharedContentType = "skills" | "notes" | "papers" | "prompts" | "scripts" | "packages" | "servers" | "recipes";
 export const SHARED_CONTENT_TYPES: SharedContentType[] = ["skills", "notes", "papers", "prompts", "scripts", "packages", "servers", "recipes"];
+export const MAX_SUBSCRIPTION_CACHE_BYTES = 512 * 1024 * 1024;
 export type SubscriptionPriority = "normal" | "high" | "highest";
+export type GatewayStatus = "stopped" | "starting" | "running" | "error";
 
 export interface ShareSummary {
   shareId: string;
@@ -97,7 +99,16 @@ export interface GitHubBranchMount {
   account?: string;
   selectedPaths?: string[];
   selectedFolders?: string[];
-  files: { path: string; content: Buffer }[];
+  files: { path: string; size?: number; content: Buffer | (() => Promise<Buffer>) }[];
+}
+export interface GitHubBranchMountProgress {
+  stage: "validating" | "reading" | "caching" | "finalizing";
+  current: number;
+  total: number;
+  path?: string;
+  currentFileBytes?: number;
+  cachedBytes: number;
+  totalBytes: number;
 }
 export interface CachedSubscriptionGroup {
   subscriptionId: string;
@@ -251,19 +262,25 @@ function revisionDate(value = new Date().toISOString()): string {
 
 const MAX_CACHED_SEARCH_FILE_BYTES = 256 * 1024;
 const MAX_CACHED_SEARCH_RESULTS = 200;
-const MAX_SNAPSHOT_DOWNLOAD_BYTES = 512 * 1024 * 1024;
+const MAX_SNAPSHOT_DOWNLOAD_BYTES = MAX_SUBSCRIPTION_CACHE_BYTES;
+const GATEWAY_STARTUP_GRACE_MS = 10_000;
+const GATEWAY_STARTUP_RETRY_MS = 500;
 
 export class SharedMarketManager {
   private state: PersistedState;
   private mqttClients = new Map<string, MqttClient>();
   private pollTimer: NodeJS.Timeout | undefined;
   private healthTimer: NodeJS.Timeout | undefined;
+  private gatewayStartupRetryTimer: NodeJS.Timeout | undefined;
   private backgroundElectionTimer: NodeJS.Timeout | undefined;
   private backgroundLock: ChatRoomLock | undefined;
-  private gatewayStatus: "stopped" | "running" | "error" = "stopped";
+  private gatewayStatus: GatewayStatus = "stopped";
   private gatewayError = "";
+  private gatewayStartupDeadline = 0;
+  private gatewayStartupLastError = "";
   private gatewayConfigurationId = "";
   private gatewayEnsure: Promise<void> | undefined;
+  private disposed = false;
   private warned = new Set<string>();
   private publishedRefresh: Promise<number> | undefined;
   private publishedRefreshAgain = false;
@@ -584,19 +601,17 @@ export class SharedMarketManager {
     const previousGatewayStatus = this.gatewayStatus;
     const previousGatewayError = this.gatewayError;
     if (this.state.enabled) {
+      if (this.gatewayStatus === "stopped") this.beginGatewayStartupGrace();
       try {
         await this.ensureGateway();
-        this.gatewayStatus = "running";
-        this.gatewayError = "";
+        this.setGatewayRunning();
         this.warned.delete("gateway");
       } catch (error) {
-        this.gatewayStatus = "error";
-        this.gatewayError = error instanceof Error ? error.message : String(error);
-        this.warning("gateway", `PKM Common Communication Port ${this.state.port} is unavailable: ${this.gatewayError}`);
+        if (this.gatewayStatus === "starting") this.handleGatewayStartupFailure(error);
+        else this.setGatewayError(error);
       }
     } else {
-      this.gatewayStatus = "stopped";
-      this.gatewayError = "";
+      this.setGatewayStopped();
       this.warned.delete("gateway");
       this.warned.delete("gateway-restarted");
     }
@@ -803,8 +818,8 @@ export class SharedMarketManager {
     return record;
   }
 
-  async mountGitHubBranch(input: GitHubBranchMount, alias = ""): Promise<SubscriptionRecord> {
-    if (!this.stateMutationDepth) return this.withStateMutation(() => this.mountGitHubBranch(input, alias));
+  async mountGitHubBranch(input: GitHubBranchMount, alias = "", onProgress?: (progress: GitHubBranchMountProgress) => void): Promise<SubscriptionRecord> {
+    if (!this.stateMutationDepth) return this.withStateMutation(() => this.mountGitHubBranch(input, alias, onProgress));
     const repository = input.repository.trim(), branch = input.branch.trim(), commit = input.commit.trim();
     if (!repository || !branch || !/^[0-9a-f]{40}$/i.test(commit)) throw new Error("GitHub repository, branch, and exact commit are required.");
     const sourceKey = hash(`${repository}\n${branch}`).slice("sha256:".length);
@@ -823,16 +838,22 @@ export class SharedMarketManager {
     const backup = `${root}.previous-${process.pid}-${randomBytes(4).toString("hex")}`;
     const counts: Record<string, number> = {};
     let totalBytes = 0;
+    const declaredBytes = input.files.reduce((sum, file) => sum + Math.max(0, Number(file.size) || (Buffer.isBuffer(file.content) ? file.content.length : 0)), 0);
+    if (declaredBytes > MAX_SNAPSHOT_DOWNLOAD_BYTES) throw new Error(`GitHub branch exceeds the ${MAX_SNAPSHOT_DOWNLOAD_BYTES / 1024 / 1024} MB subscription cache limit.`);
     try {
-      for (const file of input.files) {
+      onProgress?.({ stage: "validating", current: 0, total: input.files.length, cachedBytes: 0, totalBytes: declaredBytes });
+      for (let index = 0; index < input.files.length; index++) {
+        const file = input.files[index];
         const relative = String(file.path || "").replace(/\\/g, "/");
         const [type, ...rest] = relative.split("/");
         if (!SHARED_CONTENT_TYPES.includes(type as SharedContentType) || !rest.length || rest.some(part => !part || part === "." || part === "..")) throw new Error(`GitHub branch contains an invalid subscribed path: ${relative}`);
-        totalBytes += file.content.length;
+        onProgress?.({ stage: "reading", current: index, total: input.files.length, path: relative, currentFileBytes: Math.max(0, Number(file.size) || 0), cachedBytes: totalBytes, totalBytes: declaredBytes });
+        const content = Buffer.isBuffer(file.content) ? file.content : await file.content();
+        totalBytes += content.length;
         if (totalBytes > MAX_SNAPSHOT_DOWNLOAD_BYTES) throw new Error(`GitHub branch exceeds the ${MAX_SNAPSHOT_DOWNLOAD_BYTES / 1024 / 1024} MB subscription cache limit.`);
         const remotePath = rest.join("/");
         const target = path.join(staging, "content", type, ...rest);
-        atomicWrite(target, file.content, 0o600);
+        atomicWrite(target, content, 0o600);
         atomicWrite(`${target}.pkm-source.json`, JSON.stringify({
           brokerName: input.name,
           publisherUser: record.publisherUser,
@@ -843,7 +864,9 @@ export class SharedMarketManager {
           commit,
         }, null, 2), 0o600);
         counts[type] = (counts[type] || 0) + 1;
+        onProgress?.({ stage: "caching", current: index + 1, total: input.files.length, path: relative, currentFileBytes: content.length, cachedBytes: totalBytes, totalBytes: declaredBytes || totalBytes });
       }
+      onProgress?.({ stage: "finalizing", current: input.files.length, total: input.files.length, cachedBytes: totalBytes, totalBytes: declaredBytes || totalBytes });
       const syncedAt = new Date().toISOString();
       atomicWrite(path.join(staging, "summary.json"), JSON.stringify({ name: input.name, revision: existing && existing.collectionHash === commit ? existing.revision : (existing?.revision || 0) + 1, collectionHash: commit, updatedAt: syncedAt, counts, itemCount: input.files.length, metadataOnly: true }, null, 2), 0o600);
       atomicWrite(path.join(staging, "_subscription.json"), JSON.stringify({
@@ -998,25 +1021,25 @@ export class SharedMarketManager {
     const previousGatewayStatus = this.gatewayStatus;
     const previousGatewayError = this.gatewayError;
     if (this.state.enabled) {
+      if (this.gatewayStatus === "stopped") this.beginGatewayStartupGrace();
       try {
         const response = await fetch(`http://127.0.0.1:${this.state.port}/.well-known/pkm-node`, { signal: AbortSignal.timeout(2_000) });
         const node = await response.json() as { nodeId?: string; gatewayVersion?: string; gatewayProtocolVersion?: string };
         if (node.nodeId !== this.state.nodeId) throw new Error(`Port ${this.state.port} is not serving this PKM node.`);
         if (!this.gatewayCompatible(node)) await this.ensureGateway();
-        this.gatewayStatus = "running"; this.gatewayError = ""; this.warned.delete("gateway"); this.warned.delete("gateway-restarted");
+        this.setGatewayRunning(); this.warned.delete("gateway"); this.warned.delete("gateway-restarted");
       } catch (probeError) {
         try {
           await this.ensureGateway();
-          this.gatewayStatus = "running"; this.gatewayError = "";
-          this.warning("gateway-restarted", `PKM Common Communication Port ${this.state.port} became unavailable and the Node Gateway was restarted.`);
+          this.setGatewayRunning();
+          if (previousGatewayStatus === "running") this.warning("gateway-restarted", `PKM Common Communication Port ${this.state.port} became unavailable and the Node Gateway was restarted.`);
         } catch (restartError) {
-          this.gatewayStatus = "error";
-          this.gatewayError = restartError instanceof Error ? restartError.message : String(restartError || probeError);
-          this.warning("gateway", `PKM Common Communication Port ${this.state.port} is unavailable: ${this.gatewayError}`);
+          if (this.gatewayStatus === "starting") this.handleGatewayStartupFailure(restartError || probeError);
+          else this.setGatewayError(restartError || probeError);
         }
       }
     } else {
-      this.gatewayStatus = "stopped"; this.gatewayError = ""; this.warned.delete("gateway"); this.warned.delete("gateway-restarted");
+      this.setGatewayStopped(); this.warned.delete("gateway"); this.warned.delete("gateway-restarted");
     }
     for (const share of this.state.shares.filter(item => item.protection === "secret-protected")) {
       const key = `protected-control:${share.shareId}`;
@@ -1037,8 +1060,10 @@ export class SharedMarketManager {
   }
 
   dispose(): void {
+    this.disposed = true;
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.healthTimer) clearInterval(this.healthTimer);
+    this.clearGatewayStartupRetry();
     if (this.backgroundElectionTimer) clearInterval(this.backgroundElectionTimer);
     this.backgroundElectionTimer = undefined;
     for (const client of this.mqttClients.values()) client.end(true);
@@ -1253,7 +1278,7 @@ export class SharedMarketManager {
     try {
       const response = await fetch(`http://127.0.0.1:${this.state.port}/.well-known/pkm-node`, { signal: AbortSignal.timeout(1_000) });
       const node = await response.json() as { nodeId?: string; gatewayVersion?: string; gatewayProtocolVersion?: string; gatewayPid?: number };
-      if (node.nodeId === this.state.nodeId && this.gatewayCompatible(node)) { this.refreshGatewayPid(); this.gatewayStatus = "running"; this.gatewayError = ""; return; }
+      if (node.nodeId === this.state.nodeId && this.gatewayCompatible(node)) { this.refreshGatewayPid(); this.setGatewayRunning(); return; }
       if (node.nodeId === this.state.nodeId) await this.handoffGateway(node.gatewayVersion || "legacy", node.gatewayPid);
       else throw new Error(`Port ${this.state.port} is owned by another PKM node.`);
     } catch (error) {
@@ -1272,7 +1297,7 @@ export class SharedMarketManager {
       try {
         const response = await fetch(`http://127.0.0.1:${this.state.port}/.well-known/pkm-node`, { signal: AbortSignal.timeout(500) });
         const node = await response.json() as { nodeId?: string; gatewayVersion?: string; gatewayProtocolVersion?: string };
-        if (node.nodeId === this.state.nodeId && this.gatewayCompatible(node)) { this.gatewayStatus = "running"; this.gatewayError = ""; return; }
+        if (node.nodeId === this.state.nodeId && this.gatewayCompatible(node)) { this.setGatewayRunning(); return; }
       } catch { /* retry */ }
       await new Promise(resolve => setTimeout(resolve, 100));
     }
@@ -1374,16 +1399,82 @@ export class SharedMarketManager {
   }
 
   private async stopGateway(): Promise<void> {
-    if (!this.state.gatewayPid) return;
-    try {
-      const response = await fetch(`http://127.0.0.1:${this.state.port}/.well-known/pkm-node`, { signal: AbortSignal.timeout(1_000) });
-      const node = await response.json() as { nodeId?: string };
-      if (node.nodeId === this.state.nodeId) process.kill(this.state.gatewayPid, "SIGTERM");
-    } catch { /* already stopped */ }
+    if (this.state.gatewayPid) {
+      try {
+        const response = await fetch(`http://127.0.0.1:${this.state.port}/.well-known/pkm-node`, { signal: AbortSignal.timeout(1_000) });
+        const node = await response.json() as { nodeId?: string };
+        if (node.nodeId === this.state.nodeId) process.kill(this.state.gatewayPid, "SIGTERM");
+      } catch { /* already stopped */ }
+    }
     this.state.gatewayPid = undefined;
+    this.setGatewayStopped();
+    this.save(false);
+  }
+
+  private beginGatewayStartupGrace(): void {
+    this.gatewayStartupDeadline = Date.now() + GATEWAY_STARTUP_GRACE_MS;
+    this.gatewayStartupLastError = "";
+    this.gatewayStatus = "starting";
+    this.gatewayError = "";
+  }
+
+  private handleGatewayStartupFailure(error: unknown): void {
+    this.gatewayStartupLastError = error instanceof Error ? error.message : String(error);
+    if (Date.now() >= this.gatewayStartupDeadline) {
+      this.setGatewayError(this.gatewayStartupLastError);
+      return;
+    }
+    this.gatewayStatus = "starting";
+    this.gatewayError = "";
+    this.scheduleGatewayStartupRetry();
+  }
+
+  private scheduleGatewayStartupRetry(): void {
+    if (this.gatewayStartupRetryTimer || this.disposed) return;
+    const delay = Math.max(1, Math.min(GATEWAY_STARTUP_RETRY_MS, this.gatewayStartupDeadline - Date.now()));
+    this.gatewayStartupRetryTimer = setTimeout(() => {
+      this.gatewayStartupRetryTimer = undefined;
+      if (this.disposed || !this.state.enabled || this.gatewayStatus !== "starting") return;
+      void this.refreshGatewayStatus().catch(error => {
+        if (this.disposed) return;
+        const previousStatus = this.gatewayStatus;
+        const previousError = this.gatewayError;
+        this.handleGatewayStartupFailure(error);
+        if (previousStatus !== this.gatewayStatus || previousError !== this.gatewayError) this.changed();
+      });
+    }, delay);
+    this.gatewayStartupRetryTimer.unref?.();
+  }
+
+  private clearGatewayStartupRetry(): void {
+    if (this.gatewayStartupRetryTimer) clearTimeout(this.gatewayStartupRetryTimer);
+    this.gatewayStartupRetryTimer = undefined;
+  }
+
+  private setGatewayRunning(): void {
+    this.clearGatewayStartupRetry();
+    this.gatewayStartupDeadline = 0;
+    this.gatewayStartupLastError = "";
+    this.gatewayStatus = "running";
+    this.gatewayError = "";
+  }
+
+  private setGatewayStopped(): void {
+    this.clearGatewayStartupRetry();
+    this.gatewayStartupDeadline = 0;
+    this.gatewayStartupLastError = "";
     this.gatewayStatus = "stopped";
     this.gatewayError = "";
-    this.save(false);
+  }
+
+  private setGatewayError(error: unknown): void {
+    this.clearGatewayStartupRetry();
+    const message = error instanceof Error ? error.message : String(error);
+    this.gatewayStartupDeadline = 0;
+    this.gatewayStartupLastError = message;
+    this.gatewayStatus = "error";
+    this.gatewayError = message;
+    this.warning("gateway", `PKM Common Communication Port ${this.state.port} is unavailable: ${message}`);
   }
 
   private async reloadGatewayConfiguration(controlPort: number, configurationId: string): Promise<void> {

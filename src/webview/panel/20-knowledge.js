@@ -21,6 +21,7 @@ function stashKnowledgeTabView(tab) {
   knowledgeTabViewCache.set(tab, {
     items: state.items,
     folders: state.folders,
+    knowledgeGroups: state.knowledgeGroups,
     subscriptionGroups: state.subscriptionGroups,
     knowledgeTrash: state.knowledgeTrash,
     privateTopLevels: state.privateTopLevels,
@@ -36,6 +37,7 @@ function restoreKnowledgeTabView(tab) {
   if (!cached) return false;
   state.items = cached.items;
   state.folders = cached.folders;
+  state.knowledgeGroups = cached.knowledgeGroups;
   state.subscriptionGroups = cached.subscriptionGroups;
   state.knowledgeTrash = cached.knowledgeTrash;
   state.privateTopLevels = cached.privateTopLevels;
@@ -57,6 +59,12 @@ function updateCachedKnowledgeTabSubscriptions(tab, groups) {
   if (!cached) return false;
   cached.subscriptionGroups = groups;
   return true;
+}
+
+function invalidateSubscriptionKnowledgeViews() {
+  cachedKnowledgeTabs.forEach(invalidateKnowledgeTabView);
+  state.subscriptionGroups = [];
+  if (cachedKnowledgeTabs.has(state.tab)) renderSubscribedGroups(document.getElementById('item-list'));
 }
 
 function paintWorkspaceNavigation() {
@@ -94,10 +102,11 @@ document.querySelectorAll('.tab').forEach(t =>
     paintWorkspaceNavigation();
     const _detail = document.getElementById('detail');
     _detail.style.padding = ''; _detail.style.overflow = '';   // reset chatroom overrides
-    renderEmptyDetail();
+    const hasCachedProjectView = ['agentSessions','agentSnapshots','recipes','projects'].includes(state.tab) && projectSnapshot;
+    if (!hasCachedProjectView) renderEmptyDetail();
     closePaperViews();
     updatePaperChrome();
-    const fullWidthTab = ['mcp', 'skillRouter', 'environments', 'servers', 'subscriptions', 'githubSync', 'agentSessions', 'agentSnapshots', 'recipes', 'projects', 'chatroom'].includes(state.tab);
+    const fullWidthTab = ['mcp', 'skillRouter', 'environments', 'servers', 'subscriptions', 'githubSync', 'backgroundTasks', 'agentSessions', 'agentSnapshots', 'recipes', 'projects', 'chatroom'].includes(state.tab);
     document.getElementById('layout-resizer').style.display = fullWidthTab ? 'none' : '';
     document.getElementById('sidebar-toggle').style.display = fullWidthTab ? 'none' : '';
     document.getElementById('content-toolbar').style.display = fullWidthTab ? 'none' : '';
@@ -123,13 +132,11 @@ document.querySelectorAll('.tab').forEach(t =>
       // Hide sidebar for MCP full-width pane
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
-      renderMcpLoading();
-      ask('checkMcp', {});
+      showMcpTab();
     } else if (state.tab === 'skillRouter') {
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
-      renderSkillRouterLoading();
-      ask('skillRouterStatus', {});
+      showSkillRouterTab();
     } else if (state.tab === 'environments') {
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
@@ -149,8 +156,11 @@ document.querySelectorAll('.tab').forEach(t =>
     } else if (state.tab === 'githubSync') {
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
-      renderGitHubSyncLoading();
-      ask('githubSyncState', {});
+      showGitHubSyncTab();
+    } else if (state.tab === 'backgroundTasks') {
+      document.getElementById('sidebar').style.display = 'none';
+      document.getElementById('searchbox').style.display = 'none';
+      showBackgroundTasksTab();
     } else if (state.tab === 'chatroom') {
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
@@ -287,13 +297,48 @@ function setKnowledgeListMarkup(el, tab, html) {
   return true;
 }
 
+function renderKnowledgeGroupControls(element, area) {
+  element.innerHTML = `<button class="knowledge-group-create" type="button" onclick="createKnowledgeGroup('${area}')">${uiIcon('add')} Group</button>`;
+}
+
+function renderGroupedKnowledgeTree(root, area, renderLeaf, q, folderAttr, order) {
+  const model = state.knowledgeGroups;
+  if (!model?.groups?.length) return renderCatTree(root, [], 0, renderLeaf, q, folderAttr, order);
+  const pinned = new Set(model.pinnedFolders || []);
+  const folders = Object.keys(root.folders || {}).sort((left, right) =>
+    Number(pinned.has(right)) - Number(pinned.has(left)) || left.localeCompare(right));
+  const byGroup = new Map(model.groups.map(group => [group.id, { group, folders: [] }]));
+  const defaultEntry = byGroup.get('default') || byGroup.values().next().value;
+  for (const folder of folders) {
+    const assigned = byGroup.get(model.assignments?.[folder]) || defaultEntry;
+    assigned?.folders.push(folder);
+  }
+  let html = '';
+  for (const { group, folders: groupFolders } of byGroup.values()) {
+    if (!groupFolders.length && group.id === 'unnamed') continue;
+    const key = `${area}:${group.id}`;
+    const expanded = paperGroupExpanded[key] !== false;
+    const groupRoot = { folders: Object.fromEntries(groupFolders.map(folder => [folder, root.folders[folder]])), items: [] };
+    const count = countTreeLeaves(groupRoot);
+    html += `<div class="pk-group knowledge-visual-group" style="--knowledge-group-color:${esc(group.color)}">
+      <div class="pk-group-hdr" onclick="togglePaperGroup(${JSON.stringify(key).replace(/"/g, '&quot;')})" oncontextmenu="knowledgeGroupMenu(event,${JSON.stringify(area).replace(/"/g, '&quot;')},${JSON.stringify(group.id).replace(/"/g, '&quot;')},${JSON.stringify(group.name).replace(/"/g, '&quot;')},${JSON.stringify(group.color).replace(/"/g, '&quot;')})">
+        <span class="pk-group-arrow">${uiIcon(expanded ? 'chevron-down' : 'chevron-right')}</span>
+        <span class="pk-group-color" aria-hidden="true"></span><span class="pk-group-name">${esc(group.name)}</span>
+        <span class="pk-group-count">${count}</span>
+      </div>
+      <div class="pk-group-body" style="display:${expanded ? '' : 'none'}">${renderCatTree(groupRoot, [], 0, renderLeaf, q, folderAttr, order, { area })}</div>
+    </div>`;
+  }
+  return html;
+}
+
 function renderList() {
   const { tab, items, filter } = state;
   const el = document.getElementById('item-list');
   const fEl = document.getElementById('sidebar-filters');
 
   if (tab === 'skills') {
-    fEl.innerHTML = '';
+    renderKnowledgeGroupControls(fEl, 'skills');
     const q = state.search;
     // Recursive N-level tree by category path; leaf = skill (shows skill name)
     const root = buildCatTree(items, r => r.category, '(uncategorized)');
@@ -305,14 +350,14 @@ function renderList() {
       const b64 = btoa(unescape(encodeURIComponent(prefix)));
       return ` oncontextmenu="skillFolderMenu(event,'${b64}',${JSON.stringify(name).replace(/"/g, '&quot;')})"`;
     };
-    const html = renderCatTree(root, [], 0, (r, depth) =>
+    const html = renderGroupedKnowledgeTree(root, 'skills', (r, depth) =>
       skillLi(r, r.name, q, 8 + (depth + 1) * 12), q, folderAttr, { isLeafPinned: it => !!it.pinned });
     setKnowledgeListMarkup(el, tab, html || '<div class="empty">No skills</div>');
 
   } else if (tab === 'notes') {
     // Recursive N-level tree by category path. Pinned notes sort to the top of
     // their own folder; pinned folders sort before sibling folders (same level).
-    fEl.innerHTML = '';
+    renderKnowledgeGroupControls(fEl, 'notes');
     const q = state.search;
     const folderAttr = (child, name, fullPath) => {
       const prefix = fullPath.join('/');
@@ -326,11 +371,12 @@ function renderList() {
       isFolderPinned: (arr) => notePinnedFolders.includes(arr.join('/')),
       isLeafPinned: (it) => !!it.pinned,
     };
-    const html = renderCatTree(root, [], 0, (r, depth) => noteLi(r, q, 8 + (depth + 1) * 12), q, folderAttr, order);
+    const html = renderGroupedKnowledgeTree(root, 'notes', (r, depth) => noteLi(r, q, 8 + (depth + 1) * 12), q, folderAttr, order);
     setKnowledgeListMarkup(el, tab, html || '<div class="empty">No notes</div>');
 
   } else if (tab === 'papers') {
     renderPaperFilters(fEl);
+    fEl.insertAdjacentHTML('beforeend', `<button class="knowledge-group-create" type="button" onclick="createKnowledgeGroup('papers')">${uiIcon('add')} Group</button>`);
     const q = state.search;
     let list = items.slice();
     if (paperTopicFilter) list = list.filter(p => p.topic === paperTopicFilter);
@@ -350,25 +396,10 @@ function renderList() {
         pinned.sort((a, b) => (b.citationCount - a.citationCount) || a.title.localeCompare(b.title)).map(p => paperCard(p, q, 8)).join('') +
         '</div></div>';
     }
-    // Top-level = user-assigned group; custom groups pinned above the default "Papers".
-    const groups = {};
-    for (const p of rest) { const g = p.group || 'Papers'; (groups[g] = groups[g] || []).push(p); }
-    const names = Object.keys(groups).sort((a, b) => a === 'Papers' ? 1 : b === 'Papers' ? -1 : a.localeCompare(b));
-    for (const g of names) {
-      const expanded = paperGroupExpanded[g] !== false;
-      const custom = g !== 'Papers';
-      html += '<div class="pk-group' + (custom ? ' pk-group-custom' : '') + '">' +
-        '<div class="pk-group-hdr" onclick="togglePaperGroup(' + JSON.stringify(g).replace(/"/g, '&quot;') + ')" ' +
-        'oncontextmenu="paperGroupMenu(event,' + JSON.stringify(g).replace(/"/g, '&quot;') + ')">' +
-        '<span class="pk-group-arrow">' + uiIcon(expanded ? 'chevron-down' : 'chevron-right') + '</span>' +
-        '<span class="pk-group-name">' + uiIcon(custom ? 'folder' : 'files') + ' ' + esc(g) + '</span>' + brokerShareMarker(brokerSharesForItems(groups[g])) +
-        '<span class="pk-group-count">' + groups[g].length + '</span></div>' +
-        '<div class="pk-group-body" style="display:' + (expanded ? '' : 'none') + '">';
-      const root = buildCatTree(groups[g], r => r.category || '(uncategorized)', '(uncategorized)');
-      html += renderCatTree(root, [], 0, (r, depth) => paperCard(r, q, 8 + (depth + 1) * 12), q, folderAttr);
-      html += '</div></div>';
-    }
-    el.innerHTML = html || '<div class="empty">No papers yet — click “+ Paper”.</div>';
+    const root = buildCatTree(rest, r => r.category || '(uncategorized)', '(uncategorized)');
+    seedFolders(root, state.folders);
+    html += renderGroupedKnowledgeTree(root, 'papers', (r, depth) => paperCard(r, q, 8 + (depth + 1) * 12), q, folderAttr);
+    setKnowledgeListMarkup(el, tab, html || '<div class="empty">No papers yet — click “+ Paper”.</div>');
 
   } else if (tab === 'prompts') {
     // Tree: project → task → versions → files
@@ -448,20 +479,20 @@ function renderList() {
   renderKnowledgeTrashDock(tab);
 }
 
-function renderSubscribedGroups(container) {
-  const groups = state.subscriptionGroups || [];
+function renderSubscribedGroups(container, groups = state.subscriptionGroups || [], contentType = state.tab) {
+  if (!container) return;
   container.querySelectorAll(':scope > .sub-virtual-groups, :scope > .sub-virtual-divider, :scope > .sub-virtual-group').forEach(element => element.remove());
   if (!groups.length) return;
   const html = groups.map(group => {
     const groupPayload = subscriptionEncodeForkPayload({ name:group.alias, subscriptionId:group.subscriptionId, keys:group.items.map(item => item.key), pkmPath:`pkm://subscriptions/${encodeURIComponent(group.nodeId)}/${encodeURIComponent(group.shareId)}` });
     return `<div class="pk-group sub-virtual-group">
     <div class="pk-group-hdr" onclick="this.nextElementSibling.classList.toggle('collapsed')" oncontextmenu="subscriptionGroupForkMenu(event,'${groupPayload}')">
-      <span class="pk-group-arrow">◈</span><span class="pk-group-name">${esc(group.alias)}</span><span class="pk-group-count">${group.items.length}</span>${state.tab === 'skills' ? `<button class="sub-fork-btn" data-pending-label="Forking…" onclick="event.stopPropagation();subscriptionForkAll('${groupPayload}',this)">Fork All</button>` : ''}
+      <span class="pk-group-arrow">◈</span><span class="pk-group-name">${esc(group.alias)}</span><span class="pk-group-count">${group.items.length}</span>${contentType === 'skills' ? `<button class="sub-fork-btn" data-pending-label="Forking…" onclick="event.stopPropagation();subscriptionForkAll('${groupPayload}',this)">Fork All</button>` : ''}
     </div>
-    <div class="pk-group-body collapsed">${subscriptionRenderItemTree(subscriptionBuildItemTree(group.items), 0, group.revision, [], group)}</div>
+    <div class="pk-group-body collapsed">${subscriptionRenderItemTree(subscriptionBuildItemTree(group.items), 0, group.revision, [], group, contentType)}</div>
   </div>`;
   }).join('');
-  container.insertAdjacentHTML('beforeend', `<div class="sub-virtual-groups"><div class="sub-virtual-divider"><span>${state.tab === 'packages' ? 'Subscribed Packages' : 'Subscriptions'}</span></div>${html}</div>`);
+  container.insertAdjacentHTML('beforeend', `<div class="sub-virtual-groups"><div class="sub-virtual-divider"><span>${contentType === 'packages' ? 'Subscribed Packages' : 'Subscriptions'}</span></div>${html}</div>`);
 }
 
 function subscriptionBuildItemTree(items) {
@@ -475,12 +506,12 @@ function subscriptionBuildItemTree(items) {
   return root;
 }
 
-function subscriptionRenderItemTree(node, depth, revision, parentPath = [], group = {}) {
+function subscriptionRenderItemTree(node, depth, revision, parentPath = [], group = {}, contentType = state.tab) {
   const folders = Object.entries(node.folders).sort(([left],[right]) => left.localeCompare(right)).map(([name,child]) => {
     const folderPath = [...parentPath, name];
-    const folderPkmPath = `pkm://subscriptions/${encodeURIComponent(group.nodeId || '')}/${encodeURIComponent(group.shareId || '')}/${encodeURIComponent(state.tab)}/${folderPath.map(encodeURIComponent).join('/')}`;
+    const folderPkmPath = `pkm://subscriptions/${encodeURIComponent(group.nodeId || '')}/${encodeURIComponent(group.shareId || '')}/${encodeURIComponent(contentType)}/${folderPath.map(encodeURIComponent).join('/')}`;
     const payload = subscriptionEncodeForkPayload({ path:folderPath.join('/'), pkmPath:folderPkmPath, subscriptionId:group.subscriptionId, keys:subscriptionCachedTreeItems(child).map(item => item.key) });
-    return `<details class="sub-cache-folder"><summary style="padding-left:${8 + depth * 12}px" oncontextmenu="subscriptionFolderForkMenu(event,'${payload}')"><span class="sub-cache-arrow">›</span><span class="sub-cache-name">${esc(name)}</span><small>${subscriptionTreeCount(child)}</small></summary><div>${subscriptionRenderItemTree(child, depth + 1, revision, folderPath, group)}</div></details>`;
+    return `<details class="sub-cache-folder"><summary style="padding-left:${8 + depth * 12}px" oncontextmenu="subscriptionFolderForkMenu(event,'${payload}')"><span class="sub-cache-arrow">›</span><span class="sub-cache-name">${esc(name)}</span><small>${subscriptionTreeCount(child)}</small></summary><div>${subscriptionRenderItemTree(child, depth + 1, revision, folderPath, group, contentType)}</div></details>`;
   }
   ).join('');
   const leaves = node.items.sort((left,right) => left.title.localeCompare(right.title)).map(item => `<div class="li sub-virtual-item" style="padding-left:${8 + depth * 12}px" onclick="openItem('subscriptionItem','${esc(item.key)}')" oncontextmenu="subscriptionItemForkMenu(event,'${subscriptionEncodeForkPayload({key:item.key,title:item.title,pkmPath:item.pkmPath,subscriptionId:group.subscriptionId})}')" title="${esc(item.path)}">
@@ -717,14 +748,14 @@ function renderCatTree(node, path, depth, renderLeaf, q, folderAttr, order, opti
     // Base64 key: safe inside HTML attrs and JS strings (no quotes/null/unicode issues)
     const key = expandedCategoryKey(path.concat(name), options.area || state.tab);
     const open = !!q || (Object.prototype.hasOwnProperty.call(catExpanded, key) ? !!catExpanded[key] : !!options.defaultOpen);
-    const pad = 8 + depth * 12;
+    const pad = (Number.isFinite(options.baseIndent) ? options.baseIndent : 8) + depth * 12;
     const pinnedFolder = isFP && name !== '(uncategorized)' && isFP(path.concat(name));
     const addPath = name === '(uncategorized)' ? '' : path.concat(name).join('/');
     const folderLabel = options.renderFolderLabel
       ? options.renderFolderLabel(name, path.concat(name))
       : `${pinnedFolder ? uiIcon('pinned') + ' ' : ''}${privacyLock(privacyInherited(path.concat(name)))}${name === '(uncategorized)' ? '<em style="opacity:.6">(uncategorized)</em>' : path.length === 0 ? folkDisplayName(name) : esc(name)}${brokerFolderMarker(name === '(uncategorized)' ? '' : path.concat(name).join('/'))}`;
     html += `<div class="tree-cat">
-      <div class="tree-cat-hdr${pinnedFolder ? ' cat-pinned' : ''}" style="padding-left:${pad}px" onclick="toggleCat('${key}',this)" title="${esc(name)}" aria-expanded="${open}"${folderAttr ? folderAttr(child, name, path.concat(name)) : ''}>
+      <div class="tree-cat-hdr${pinnedFolder ? ' cat-pinned' : ''}" role="button" tabindex="0" style="padding-left:${pad}px" onclick="toggleCat('${key}',this)" onkeydown="if(event.target===this&&(event.key==='Enter'||event.key===' ')){event.preventDefault();toggleCat('${key}',this)}" title="${esc(name)}" aria-expanded="${open}"${folderAttr ? folderAttr(child, name, path.concat(name)) : ''}>
         <span class="tree-cat-arrow">${uiIcon(open ? 'chevron-down' : 'chevron-right')}</span>
         <span class="tree-cat-label">${folderLabel}</span>
         <span class="tree-cat-count">${countTreeLeaves(child)}</span>
@@ -841,6 +872,9 @@ const promptVersionStatuses = new Map();
 const promptDatasets = new Map();
 const promptTaskVariableSets = new Map();
 const promptRenderDrafts = new Map();
+const promptInferenceSelections = new Map();
+const promptWorkbenchStates = new Map();
+let aiBackendCache = null;
 
 function promptDatasetKey() {
   return currentDetail?.type === 'prompt' ? [currentDetail.project,currentDetail.task].join('|') : '';
@@ -848,6 +882,53 @@ function promptDatasetKey() {
 
 function promptRenderDraftKey() {
   return currentDetail?.type === 'prompt' ? [currentDetail.project,currentDetail.task,currentDetail.version,currentDetail.file].join('|') : '';
+}
+
+function promptIdentityKey(detail = currentDetail) {
+  return detail?.type === 'prompt' ? [detail.project,detail.task,detail.version,detail.file].join('|') : '';
+}
+
+function promptCaptureWorkbenchState() {
+  const key = promptIdentityKey();
+  const workbench = document.querySelector('.prompt-workbench');
+  if (!key || !workbench) return null;
+  const renderOutput = document.getElementById('prompt-render-output');
+  const inferenceOutput = document.getElementById('prompt-inference-output');
+  const active = document.activeElement;
+  const state = {
+    key,
+    scrollTop:workbench.scrollTop,
+    backend:document.getElementById('prompt-inference-backend')?.value || promptInferenceSelections.get(key) || '',
+    renderHtml:renderOutput?.innerHTML || '',
+    inferenceHtml:inferenceOutput?.innerHTML || '',
+    inferenceHidden:inferenceOutput?.classList.contains('hidden') !== false,
+    focusId:workbench.contains(active) ? active.id || '' : '',
+    selectionStart:Number.isInteger(active?.selectionStart) ? active.selectionStart : null,
+    selectionEnd:Number.isInteger(active?.selectionEnd) ? active.selectionEnd : null
+  };
+  if (state.backend) promptInferenceSelections.set(key, state.backend);
+  promptWorkbenchStates.set(key, state);
+  return state;
+}
+
+function promptRestoreWorkbenchState(state) {
+  if (!state || state.key !== promptIdentityKey()) return;
+  const workbench = document.querySelector('.prompt-workbench');
+  const renderOutput = document.getElementById('prompt-render-output');
+  const inferenceOutput = document.getElementById('prompt-inference-output');
+  const backend = document.getElementById('prompt-inference-backend');
+  if (backend && state.backend && [...backend.options].some(option => option.value === state.backend)) backend.value = state.backend;
+  if (renderOutput && state.renderHtml) renderOutput.innerHTML = state.renderHtml;
+  if (inferenceOutput && state.inferenceHtml) {
+    inferenceOutput.innerHTML = state.inferenceHtml;
+    inferenceOutput.classList.toggle('hidden', state.inferenceHidden);
+  }
+  if (workbench) workbench.scrollTop = state.scrollTop || 0;
+  const focusTarget = state.focusId ? document.getElementById(state.focusId) : null;
+  focusTarget?.focus?.({ preventScroll:true });
+  if (focusTarget?.setSelectionRange && Number.isInteger(state.selectionStart) && Number.isInteger(state.selectionEnd)) {
+    focusTarget.setSelectionRange(state.selectionStart, state.selectionEnd);
+  }
 }
 
 function promptVersionCompare(left, right) {
@@ -1209,6 +1290,7 @@ function promptRunInference(button) {
   const backend = document.getElementById('prompt-inference-backend');
   const output = document.getElementById('prompt-inference-output');
   if (!backend?.value || !output) return;
+  promptInferenceSelections.set(promptRenderDraftKey(), backend.value);
   button.disabled = true; button.setAttribute('aria-busy', 'true');
   output.classList.remove('hidden');
   output.innerHTML = `<div class="prompt-render-empty">Running inference with ${esc(backend.options[backend.selectedIndex]?.text || 'selected model')}…</div>`;
@@ -1364,6 +1446,9 @@ function detailPathHtml(data) {
 }
 
 function renderDetail(data) {
+  const promptViewState = data?.type === 'prompt' && promptIdentityKey(data) === promptIdentityKey()
+    ? promptCaptureWorkbenchState()
+    : null;
   renderNonce++; // fresh asset URLs each open so late-added images bypass stale cache
   const el = document.getElementById('detail');
   setPanelTitle(detailPanelTitle(data));
@@ -1531,7 +1616,9 @@ function renderDetail(data) {
     if (promptWorkspaceTab === 'compare') promptRenderComparison();
     if (promptWorkspaceTab === 'dataset') { promptRefreshVariableCoverage(); promptRefreshDataset(); }
     if (promptWorkspaceTab === 'render') promptRefreshRenderForm();
-    ask('listAiBackends', {});
+    if (Array.isArray(aiBackendCache)) renderAiBackends(aiBackendCache);
+    else ask('listAiBackends', {});
+    promptRestoreWorkbenchState(promptViewState || promptWorkbenchStates.get(promptIdentityKey()));
     highlightSelectedPromptTree(data);
     if (window.innerWidth <= 760) setMainSidebarCollapsed(true, false);
 
@@ -1693,6 +1780,7 @@ function doAiSummary() {
 
 // Populate the AI backend dropdown from the scan result
 function renderAiBackends(backends) {
+  aiBackendCache = Array.isArray(backends) ? backends : [];
   const sel = document.getElementById('ai-backend-select');
   if (sel) {
     if (!backends || !backends.length) sel.innerHTML = '<option value="">No backend available</option>';
@@ -1709,6 +1797,11 @@ function renderAiBackends(backends) {
   if (!promptSelect || !promptButton) return;
   const usable = (backends || []).filter(backend => !backend.id.endsWith(':needkey'));
   promptSelect.innerHTML = usable.length ? usable.map(backend => `<option value="${esc(backend.id)}">${esc(backend.label)}</option>`).join('') : '<option value="">No model available</option>';
+  const key = promptRenderDraftKey();
+  const selected = promptInferenceSelections.get(key);
+  if (selected && usable.some(backend => backend.id === selected)) promptSelect.value = selected;
+  else if (promptSelect.value) promptInferenceSelections.set(key, promptSelect.value);
+  promptSelect.onchange = () => promptInferenceSelections.set(key, promptSelect.value);
   promptButton.disabled = !usable.length || currentDetail?.analysis?.syntaxValid !== true;
 }
 
@@ -2282,6 +2375,61 @@ let paperGroupExpanded = {};   // group name -> expanded (default true)
 
 function togglePaperGroup(g) { paperGroupExpanded[g] = (paperGroupExpanded[g] === false); renderList(); }
 
+function createKnowledgeGroup(area) {
+  pkModal({
+    title: 'New Group',
+    message: 'Groups organize top-level folders visually. They never move files.',
+    input: true,
+    okLabel: 'Create',
+    onOk: value => { if (value.trim()) ask('knowledgeGroupCreate', { area, name: value.trim(), color: '#4f6b8a' }); },
+  });
+}
+
+function knowledgeGroupMenu(event, area, groupId, name, color) {
+  event.preventDefault(); event.stopPropagation();
+  const items = [
+    { label: name, header: true },
+    { label: 'New Group…', onClick: () => createKnowledgeGroup(area) },
+  ];
+  if (groupId !== 'unnamed') {
+    items.push({ label: 'Rename Group…', onClick: () => pkModal({
+      title: 'Rename Group', message: 'Folder paths and files will not change.', input: true,
+      defaultValue: name, okLabel: 'Rename',
+      onOk: value => { if (value.trim() && value.trim() !== name) ask('knowledgeGroupRename', { area, groupId, name: value.trim() }); },
+    }) });
+  }
+  items.push({ sep: true }, { label: 'Group color', header: true });
+  for (const [label, value] of [['Blue','#4f6b8a'],['Yellow','#d29922'],['Green','#3f8f5f'],['Purple','#8250df'],['Red','#cf4a4a'],['Gray','#6b7280']]) {
+    items.push({ label: `${value === color ? '✓ ' : ''}${label}`, onClick: () => ask('knowledgeGroupSetColor', { area, groupId, color: value }) });
+  }
+  if (!['default', 'unnamed', 'my-ideas'].includes(groupId)) {
+    items.push({ sep: true }, {
+      label: 'Delete Group…', danger: true,
+      onClick: () => pkModal({
+        title: `Delete Group “${name}”?`,
+        message: 'Its folders will move to Unnamed Group. No files or folders will be moved or deleted.',
+        okLabel: 'Delete Group', danger: true,
+        onOk: () => ask('knowledgeGroupDelete', { area, groupId }),
+      }),
+    });
+  }
+  showPaperMenu(event.clientX, event.clientY, items);
+}
+
+function appendKnowledgeGroupFolderMenu(items, area, folderPath) {
+  if (!folderPath || folderPath.includes('/')) return;
+  const groups = state.knowledgeGroups?.groups || [];
+  if (!groups.length) return;
+  const assigned = state.knowledgeGroups?.assignments?.[folderPath] || 'default';
+  items.push({ sep: true }, { label: 'Move top-level folder to Group', header: true });
+  for (const group of groups) {
+    items.push({
+      label: `${group.id === assigned ? '✓ ' : '   '}${group.name}`,
+      onClick: () => ask('knowledgeGroupAssign', { area, folder: folderPath, groupId: group.id }),
+    });
+  }
+}
+
 // Floating context menu (built dynamically)
 function showPaperMenu(x, y, items, className = '') {
   closePaperMenu();
@@ -2331,6 +2479,7 @@ function pkModal(opts) {
     (opts.input ? '<input id="pk-modal-input" type="text">' : '') +
     (opts.textarea ? '<textarea id="pk-modal-textarea" rows="3" placeholder="' + esc(opts.textareaPlaceholder || '') + '" style="width:100%;box-sizing:border-box;margin-top:8px;background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px;font-size:12px;resize:vertical;outline:none"></textarea>' : '') +
     (opts.checkbox ? '<label style="display:flex;align-items:center;gap:6px;margin-top:10px;font-size:12px;cursor:pointer"><input type="checkbox" id="pk-modal-check"> ' + esc(opts.checkbox.label || '') + '</label>' : '') +
+    (opts.validate ? '<div id="pk-modal-error" role="alert" style="min-height:18px;margin-top:7px;color:#f87171;font-size:11px"></div>' : '') +
     '<div class="pk-modal-actions">' +
       '<button class="tbtn" id="pk-modal-cancel">Cancel</button>' +
       '<button class="tbtn" id="pk-modal-ok" style="border-color:var(--accent)' + (opts.danger ? ';color:#f87171' : '') + '">' + esc(opts.okLabel || 'OK') + '</button>' +
@@ -2343,7 +2492,17 @@ function pkModal(opts) {
   const chk = document.getElementById('pk-modal-check');
   if (chk && opts.checkbox && opts.checkbox.checked) chk.checked = true;
   const select = document.getElementById('pk-modal-select');
-  const done = ok => { const v = input ? input.value : ''; const tv = ta ? ta.value : ''; const cv = chk ? chk.checked : false; const sv = select ? select.value : ''; closePkModal(); if (ok && opts.onOk) opts.onOk(v, tv, cv, sv); };
+  const done = ok => {
+    const v = input ? input.value : ''; const tv = ta ? ta.value : ''; const cv = chk ? chk.checked : false; const sv = select ? select.value : '';
+    if (ok && opts.validate) {
+      const message = String(opts.validate(v, tv, cv, sv) || '');
+      const error = document.getElementById('pk-modal-error');
+      if (error) error.textContent = message;
+      if (message) { input?.focus(); return; }
+    }
+    closePkModal();
+    if (ok && opts.onOk) opts.onOk(v, tv, cv, sv);
+  };
   document.getElementById('pk-modal-ok').onclick = () => done(true);
   document.getElementById('pk-modal-cancel').onclick = () => done(false);
   bg.onclick = e => { if (e.target === bg) done(false); };
@@ -2358,13 +2517,7 @@ function paperCardMenu(ev, slug, group, pinned, topic) {
   items.push({ label: 'Edit Content', onClick: () => openMarkdownItem('papers', '', slug) });
   items.push({ label: 'Edit Metadata', onClick: () => editMarkdownMetadataItem('papers', '', slug) });
   items.push({ label: pinned ? 'Unpin' : 'Pin', onClick: () => ask('paperSetPinned', { slug, pinned: !pinned }) });
-  items.push({ label: 'Change topic…', onClick: () => pkModal({ title: 'Change topic', message: 'Moves this paper to a different topic folder.', input: true, defaultValue: topic || '', okLabel: 'Move', onOk: v => ask('paperSetTopic', { slug, topic: v.trim() }) }) });
-  items.push({ sep: true });
-  items.push({ label: 'Move to group', header: true });
-  for (const g of paperGroupsList) {
-    items.push({ label: g.name, active: g.name === group, onClick: () => ask('paperSetGroup', { slug, group: g.name }) });
-  }
-  items.push({ label: 'New group…', onClick: () => pkModal({ title: 'New group', input: true, okLabel: 'Create', onOk: v => { if (v.trim()) ask('paperSetGroup', { slug, group: v.trim() }); } }) });
+  items.push({ label: 'Change topic…', onClick: () => pkModal({ title: 'Change topic', input: true, defaultValue: topic || '', okLabel: 'Save', onOk: v => ask('paperSetTopic', { slug, topic: v.trim() }) }) });
   items.push({ sep: true });
   items.push({ label: 'Move to Trash…', danger: true, onClick: () => pkModal({ title: 'Move this Paper to Trash?', message:'The Paper remains recoverable until permanently deleted.', okLabel: 'Move to Trash', danger: true, onOk: () => ask('deletePaper', { slug }) }) });
   showPaperMenu(ev.clientX, ev.clientY, items);
@@ -2391,18 +2544,40 @@ function paperFolderMenu(ev, b64, name, path) {
   ev.preventDefault(); ev.stopPropagation();
   let slugs = [];
   try { slugs = JSON.parse(decodeURIComponent(escape(atob(b64)))); } catch (e) {}
-  if (!slugs.length) return;
   const physicalPath = path === '(uncategorized)' ? '' : path;
   const items = [{ label: 'Folder: ' + (physicalPath ? name : 'Root'), header: true }, copyPathMenu(`papers/${physicalPath ? physicalPath + '/' : ''}`), { sep: true }];
   items.push({ label: 'New Paper…', onClick: () => ask('createKnowledgeItem', { area: 'papers', kind: 'paper', category: physicalPath }) });
   items.push({ label: 'New Idea…', onClick: () => ask('createKnowledgeItem', { area: 'papers', kind: 'idea', category: physicalPath }) });
   appendPrivacyMenu(items, 'papers', physicalPath);
-  items.push({ sep: true });
-  items.push({ label: 'Move folder contents (' + slugs.length + ') to group', header: true });
-  for (const g of paperGroupsList) {
-    items.push({ label: '   ' + g.name, onClick: () => ask('paperSetGroupMany', { slugs, group: g.name }) });
+  appendKnowledgeGroupFolderMenu(items, 'papers', physicalPath);
+  if (physicalPath) {
+    items.push({ sep: true });
+    items.push({ label: 'Rename folder…', onClick: () => pkModal({
+      title: 'Rename Research folder', message: `Renames “${physicalPath}” without changing its visual Group.`,
+      input: true, defaultValue: name, okLabel: 'Rename', onOk: value => {
+        const renamed = value.trim();
+        if (!renamed || renamed === name) return;
+        const parts = physicalPath.split('/'); parts[parts.length - 1] = renamed;
+        ask('paperFolderRename', { oldPath: physicalPath, newPath: parts.join('/') });
+      },
+    }) });
+    items.push({ label: 'Move folder…', onClick: () => pkModal({
+      title: 'Move Research folder', message: 'Enter the full destination path.',
+      input: true, defaultValue: physicalPath, okLabel: 'Move', onOk: value => {
+        const destination = value.trim().replace(/^\/+|\/+$/g, '');
+        if (destination && destination !== physicalPath) ask('paperFolderRename', { oldPath: physicalPath, newPath: destination });
+      },
+    }) });
+    items.push({
+      label: 'Delete folder container…', danger: true,
+      onClick: () => pkModal({
+        title: `Delete folder “${physicalPath}”?`,
+        message: 'Its contents move to the parent folder. No Papers or Ideas will be deleted.',
+        okLabel: 'Delete Folder', danger: true,
+        onOk: () => ask('paperFolderDelete', { path: physicalPath }),
+      }),
+    });
   }
-  items.push({ label: 'New group…', onClick: () => pkModal({ title: 'Move folder “' + name + '” to a new group', input: true, okLabel: 'Create & move', onOk: v => { if (v.trim()) ask('paperSetGroupMany', { slugs, group: v.trim() }); } }) });
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
 
@@ -2461,6 +2636,7 @@ function skillFolderMenu(ev, b64, name) {
       if (np && np !== prefix) ask('skillRenameFolder', { oldPrefix: prefix, newPrefix: np });
     } }) });
   appendPrivacyMenu(items, 'skills', prefix);
+  appendKnowledgeGroupFolderMenu(items, 'skills', prefix);
   items.push({ sep: true });
   items.push({ label: 'Move folder to Trash…', danger: true, onClick: () => pkModal({ title:'Move Skill folder to Trash?', message:`${prefix}\n\nAll Skills and subfolders will remain recoverable from Trash.`, okLabel:'Move to Trash', danger:true, onOk:()=>ask('skillTrashFolder',{path:prefix}) }) });
   showPaperMenu(ev.clientX, ev.clientY, items);
@@ -2510,6 +2686,7 @@ function noteFolderMenu(ev, b64, name) {
       if (np && np !== prefix) ask('noteMoveFolder', { oldPrefix: prefix, newPrefix: np });
     } }) });
   appendPrivacyMenu(items, 'notes', prefix);
+  appendKnowledgeGroupFolderMenu(items, 'notes', prefix);
   items.push({ sep:true });
   items.push({ label:'Move folder to Trash…',danger:true,onClick:()=>moveKnowledgeFolderToTrash('notes',prefix,name) });
   showPaperMenu(ev.clientX, ev.clientY, items);
@@ -2598,9 +2775,19 @@ function confirmDeletePackage(name) {
 function renderPaperFilters(fEl) {
   const opts = ['<option value="">All topics</option>'].concat(
     paperFacetsData.topics.map(t => `<option value="${esc(t.name)}"${t.name === paperTopicFilter ? ' selected' : ''}>${esc(t.name)} (${t.count})</option>`)).join('');
-  fEl.innerHTML = `<div style="padding:6px 8px"><select id="paper-topic-filter" style="width:100%" onchange="setPaperTopic(this.value)">${opts}</select></div>`;
+  fEl.innerHTML = `<div style="padding:6px 8px"><select id="paper-topic-filter" style="width:100%" onchange="setPaperTopic(this.value)">${opts}</select></div>
+    <button class="knowledge-group-create paper-delete-all" type="button" onclick="confirmDeleteAllPapers()">${uiIcon('trash')} Move All to Trash</button>`;
 }
 function setPaperTopic(v) { paperTopicFilter = v; renderList(); }
+function confirmDeleteAllPapers() {
+  pkModal({
+    title: 'Move all Research Papers to Trash?',
+    message: 'This includes Papers and Ideas hidden by the current search or topic filter. Each item remains individually recoverable from Trash. Folders and attached files are kept.',
+    okLabel: 'Move All to Trash',
+    danger: true,
+    onOk: () => ask('deleteAllPapers'),
+  });
+}
 function paperCard(p, q, pad) {
   const authors = (p.authors || []).slice(0, 3).join(', ') + ((p.authors || []).length > 3 ? ' et al.' : '');
   const tags = (p.tags || []).map(t => `<span class="pc-tag">${esc(t)}</span>`).join('');

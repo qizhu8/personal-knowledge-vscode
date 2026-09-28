@@ -1,6 +1,7 @@
 import { createHash } from "crypto";
 import { canonicalJson, compileWorkflowDefinitionV1 } from "../workflow-contracts";
 import { ProjectRecord, RecipeKnowledgeBinding, RecipeRecord } from "./project-model";
+import { compileRecipeMethodologyV1 } from "./methodology-model";
 
 export const PROJECT_RECIPE_BUNDLE_SCHEMA = "pkm.project-recipe-bundle/v1" as const;
 
@@ -86,6 +87,10 @@ function normalizeRecipe(value: unknown): RecipeRecord {
     || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1) fail("recipe-invalid", "Bundled Recipe metadata is invalid.");
   const compiled = compileWorkflowDefinitionV1(value.definition);
   if (!compiled.ok || compiled.executableDigest !== value.executableDigest) fail("recipe-definition-invalid", `Recipe ${value.recipeId} definition or executable digest is invalid.`);
+  const methodology = value.methodology === undefined ? undefined : compileRecipeMethodologyV1(value.methodology);
+  if (methodology && (!methodology.ok || methodology.methodologyDigest !== value.methodologyDigest)) {
+    fail("recipe-methodology-invalid", `Recipe ${value.recipeId} Methodology Manifest or digest is invalid.`);
+  }
   const nodeBindings = value.nodeBindings === undefined ? undefined : normalizeNodeBindings(value.nodeBindings, compiled.model.spec.nodes.map(node => node.nodeId));
   const metadata = isRecord(value.metadata) ? {
     applicableFunctions: Array.isArray(value.metadata.applicableFunctions) ? value.metadata.applicableFunctions.map(String) : [],
@@ -103,7 +108,9 @@ function normalizeRecipe(value: unknown): RecipeRecord {
   return JSON.parse(canonicalJson({
     recipeId: value.recipeId, scope: value.scope, ...(typeof value.projectId === "string" ? { projectId: value.projectId } : {}),
     ...(typeof value.category === "string" ? { category: value.category } : {}), ...(value.systemKind === "built-in" ? { systemKind: value.systemKind } : {}),
-    name: value.name, description: value.description, ...(metadata ? { metadata } : {}), ...(editorLayout && Object.keys(editorLayout.nodePositions).length ? { editorLayout } : {}), definition: compiled.model, ...(nodeBindings ? { nodeBindings } : {}),
+    name: value.name, description: value.description,
+    ...(methodology?.ok ? { methodology: methodology.model, methodologyDigest: methodology.methodologyDigest } : {}),
+    ...(metadata ? { metadata } : {}), ...(editorLayout && Object.keys(editorLayout.nodePositions).length ? { editorLayout } : {}), definition: compiled.model, ...(nodeBindings ? { nodeBindings } : {}),
     executableDigest: value.executableDigest, revision: Number(value.revision)
   }));
 }

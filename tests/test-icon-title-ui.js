@@ -32,17 +32,17 @@ assert.match(sidebarIcon, /data-role=["']cauldron["']/, "the Activity Bar icon m
 assert.match(sidebarIcon, /data-role=["']smoke["'][^>]*stroke-width=["']\.75["']/, "the Activity Bar smoke must retain its fine outline");
 assert.strictEqual((sidebarIcon.match(/<path /g) || []).length, 5, "the Activity Bar icon must contain three smoke wisps and two cauldron paths");
 assert.doesNotMatch(sidebarIcon, /data-role=["'](?:wand|star|potion|flame)["']/, "the Activity Bar icon must remain a focused smoking cauldron");
-assert.match(html, /knowledge-library-icon[^>]*[\s\S]{0,120}codicon-library/,
-  "Knowledge must retain the original VS Code library icon");
-for (const icon of ["academy-magic-tools", "academy-witch-original", "academy-dials"]) {
+assert.match(html, /data-workspace="knowledge"[^>]*><span class="codicon codicon-library" aria-hidden="true"><\/span><\/button>/,
+  "Knowledge must use the VS Code library icon");
+for (const icon of ["academy-dials"]) {
   assert(html.includes(icon), `workspace rail must include ${icon}`);
 }
-for (const toolPart of ["tools-wand-left", "tools-wand", "tools-broom-right", "tools-broom-handle", "tools-broom-bristles"]) {
-  assert(html.includes(toolPart), `Tools icon must include ${toolPart}`);
+for (const [workspace, icon] of [["tools", "tools"], ["automation", "play"], ["projects", "folder"]]) {
+  assert.match(html, new RegExp(`data-workspace="${workspace}"[^>]*><span class="codicon codicon-${icon}" aria-hidden="true"></span></button>`),
+    `${workspace} must use the familiar ${icon} navigation icon`);
 }
-assert.doesNotMatch(html, /wizard-(?:hat|robe|wand)/, "the replaced Tools wizard must not return");
-assert.match(html, /data-workspace="automation"[^>]*>[\s\S]*?academy-cauldron/,
-  "Recipe automation must retain the cauldron artwork");
+assert.doesNotMatch(html, /academy-(?:magic-tools|cauldron|witch-original)/,
+  "abstract workspace artwork must not return");
 assert.doesNotMatch(html, /academy-banner/, "the replaced Projects quest banner must not return");
 assert.doesNotMatch(html, /academy-broom-rider/, "the rejected Projects line-art rider must not return");
 assert.match(html, /academy-loading-sigil/);
@@ -55,14 +55,10 @@ assert.doesNotMatch(html, /<div class="loading-logo">📚<\/div>/);
 const panelCss = fs.readFileSync(path.join(root, "src", "webview", "panel.css"), "utf8");
 assert.match(panelCss, /@keyframes academySteamRise/);
 assert.match(panelCss, /@keyframes academyPotionRoll/);
-assert.match(panelCss, /@keyframes academyWitchFlight/);
-assert.match(panelCss, /@keyframes academyWitchCape/);
 assert.match(panelCss, /@media\(prefers-reduced-motion:reduce\)/,
   "academy motion must respect reduced-motion preferences");
 assert.match(panelCss, /prefers-reduced-motion:reduce[^}]*loading-steam path[^}]*loading-bubble/,
   "cauldron motion must stop when reduced motion is requested");
-assert.match(panelCss, /prefers-reduced-motion:reduce[^}]*witch-flight[^}]*witch-cape/,
-  "Projects witch motion must stop when reduced motion is requested");
 assert.doesNotMatch(extension, /iconPath = vscode\.Uri\.parse\([^\n]*📚/);
 assert.match(panel, /const uiIcon = \(name, label = ''\)/);
 assert.match(panel, /function setPanelTitle\(title\)/);

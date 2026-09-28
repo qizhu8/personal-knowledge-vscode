@@ -1,0 +1,249 @@
+import { randomUUID } from "crypto";
+import * as fs from "fs";
+import * as path from "path";
+import {
+  GitHubSyncConflict,
+  GitHubSyncConflictError,
+  GitHubSyncContentType,
+  GitHubSyncPrivacy,
+  githubSyncSafeRelativePath,
+  validateGitHubSyncCandidate,
+} from "./github-sync";
+
+export interface GitHubSyncStoredConflictFile {
+  path: string;
+  type: GitHubSyncContentType;
+  itemId: string;
+  category: string;
+  privacy: GitHubSyncPrivacy;
+  hasBase: boolean;
+  hasLocal: boolean;
+  hasRemote: boolean;
+  candidateSource: "unresolved" | "base" | "local" | "remote" | "manual" | "agent";
+  rationale?: string;
+}
+
+export interface GitHubSyncStoredConflict {
+  schema: 1;
+  id: string;
+  targetId: string;
+  remoteCommit: string;
+  createdAt: string;
+  explicitResolution: boolean;
+  files: GitHubSyncStoredConflictFile[];
+}
+
+function conflictRoot(stateDirectory: string): string {
+  return path.join(stateDirectory, "conflicts");
+}
+
+function recordDirectory(stateDirectory: string, targetId: string): string {
+  return path.join(conflictRoot(stateDirectory), targetId);
+}
+
+function metadataPath(stateDirectory: string, targetId: string): string {
+  return path.join(recordDirectory(stateDirectory, targetId), "conflict.json");
+}
+
+function variantPath(stateDirectory: string, targetId: string, variant: "base" | "local" | "remote" | "merged", relative: string): string {
+  return path.join(recordDirectory(stateDirectory, targetId), variant, ...githubSyncSafeRelativePath(relative).split("/"));
+}
+
+function writeVariant(stateDirectory: string, targetId: string, variant: "base" | "local" | "remote" | "merged", relative: string, content: Buffer): void {
+  const destination = variantPath(stateDirectory, targetId, variant, relative);
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.writeFileSync(destination, content);
+}
+
+function writeMetadata(stateDirectory: string, record: GitHubSyncStoredConflict): void {
+  const destination = metadataPath(stateDirectory, record.targetId);
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  const temporary = `${destination}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify(record, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+  fs.renameSync(temporary, destination);
+}
+
+export function storeGitHubSyncConflict(
+  stateDirectory: string,
+  targetId: string,
+  error: GitHubSyncConflictError
+): GitHubSyncStoredConflict {
+  const directory = recordDirectory(stateDirectory, targetId);
+  fs.rmSync(directory, { recursive: true, force: true });
+  const files = error.conflicts.map((conflict: GitHubSyncConflict): GitHubSyncStoredConflictFile => {
+    if (conflict.base) writeVariant(stateDirectory, targetId, "base", conflict.path, conflict.base);
+    if (conflict.local) writeVariant(stateDirectory, targetId, "local", conflict.path, conflict.local);
+    if (conflict.remote) writeVariant(stateDirectory, targetId, "remote", conflict.path, conflict.remote);
+    const candidate = conflict.local || conflict.remote || conflict.base;
+    if (!candidate) throw new Error(`Conflict has no recoverable candidate: ${conflict.path}`);
+    writeVariant(stateDirectory, targetId, "merged", conflict.path, candidate);
+    return {
+      path: conflict.path,
+      type: conflict.type,
+      itemId: conflict.itemId,
+      category: conflict.category,
+      privacy: conflict.privacy,
+      hasBase: !!conflict.base,
+      hasLocal: !!conflict.local,
+      hasRemote: !!conflict.remote,
+      candidateSource: "unresolved",
+    };
+  });
+  const record: GitHubSyncStoredConflict = {
+    schema: 1,
+    id: randomUUID(),
+    targetId,
+    remoteCommit: error.remoteCommit,
+    createdAt: new Date().toISOString(),
+    explicitResolution: true,
+    files,
+  };
+  writeMetadata(stateDirectory, record);
+  return record;
+}
+
+export function readGitHubSyncConflict(stateDirectory: string, targetId: string): GitHubSyncStoredConflict | undefined {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(metadataPath(stateDirectory, targetId), "utf8")) as GitHubSyncStoredConflict;
+    if (parsed?.schema !== 1 || parsed.targetId !== targetId || !Array.isArray(parsed.files)) throw new Error("unsupported conflict record");
+    if (parsed.explicitResolution !== true) {
+      parsed.explicitResolution = true;
+      for (const file of parsed.files) {
+        file.candidateSource = "unresolved";
+        delete file.rationale;
+      }
+      writeMetadata(stateDirectory, parsed);
+    }
+    return parsed;
+  } catch (error: any) {
+    if (error?.code === "ENOENT") return undefined;
+    throw new Error(`Cannot read GitHub Sync conflict: ${error?.message || String(error)}`);
+  }
+}
+
+export function listGitHubSyncConflicts(stateDirectory: string): GitHubSyncStoredConflict[] {
+  const root = conflictRoot(stateDirectory);
+  if (!fs.existsSync(root)) return [];
+  return fs.readdirSync(root)
+    .map(targetId => readGitHubSyncConflict(stateDirectory, targetId))
+    .filter((record): record is GitHubSyncStoredConflict => !!record)
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
+export function gitHubSyncConflictVariantPath(
+  stateDirectory: string,
+  targetId: string,
+  variant: "base" | "local" | "remote" | "merged",
+  relative: string
+): string {
+  const record = readGitHubSyncConflict(stateDirectory, targetId);
+  const file = record?.files.find(candidate => candidate.path === relative);
+  if (!file) throw new Error("GitHub Sync conflict file was not found.");
+  const destination = variantPath(stateDirectory, targetId, variant, relative);
+  if (!fs.existsSync(destination)) throw new Error(`${variant} conflict content is not available for ${relative}.`);
+  return destination;
+}
+
+export function updateGitHubSyncAgentCandidate(
+  stateDirectory: string,
+  targetId: string,
+  relative: string,
+  content: string,
+  rationale: string
+): void {
+  const record = readGitHubSyncConflict(stateDirectory, targetId);
+  const file = record?.files.find(candidate => candidate.path === relative);
+  if (!record || !file) throw new Error("GitHub Sync conflict file was not found.");
+  const candidate = Buffer.from(content, "utf8");
+  validateGitHubSyncCandidate(relative, candidate);
+  writeVariant(stateDirectory, targetId, "merged", relative, candidate);
+  file.candidateSource = "agent";
+  file.rationale = rationale.trim();
+  writeMetadata(stateDirectory, record);
+}
+
+export function selectGitHubSyncConflictCandidate(
+  stateDirectory: string,
+  targetId: string,
+  relative: string,
+  source: "base" | "local" | "remote"
+): void {
+  const record = readGitHubSyncConflict(stateDirectory, targetId);
+  const file = record?.files.find(candidate => candidate.path === relative);
+  if (!record || !file) throw new Error("GitHub Sync conflict file was not found.");
+  const candidate = fs.readFileSync(gitHubSyncConflictVariantPath(stateDirectory, targetId, source, relative));
+  validateGitHubSyncCandidate(relative, candidate);
+  writeVariant(stateDirectory, targetId, "merged", relative, candidate);
+  file.candidateSource = source;
+  file.rationale = source === "local"
+    ? "Keep the version currently stored on this machine."
+    : source === "remote"
+      ? "Use the version currently stored on GitHub."
+      : "Restore the common version from before either side changed.";
+  writeMetadata(stateDirectory, record);
+}
+
+export function selectAllGitHubSyncConflictCandidates(
+  stateDirectory: string,
+  targetId: string,
+  source: "local" | "remote"
+): { selected: number; unavailable: string[] } {
+  const record = readGitHubSyncConflict(stateDirectory, targetId);
+  if (!record) throw new Error("GitHub Sync conflict was not found.");
+  const unavailable: string[] = [];
+  const candidates: Array<{ file: GitHubSyncStoredConflictFile; content: Buffer }> = [];
+  for (const file of record.files) {
+    if (source === "local" ? !file.hasLocal : !file.hasRemote) {
+      unavailable.push(file.path);
+      continue;
+    }
+    const content = fs.readFileSync(variantPath(stateDirectory, targetId, source, file.path));
+    validateGitHubSyncCandidate(file.path, content);
+    candidates.push({ file, content });
+  }
+  for (const { file, content } of candidates) {
+    writeVariant(stateDirectory, targetId, "merged", file.path, content);
+    file.candidateSource = source;
+    file.rationale = source === "local"
+      ? "Keep the version currently stored on this machine."
+      : "Use the version currently stored on GitHub.";
+  }
+  writeMetadata(stateDirectory, record);
+  return { selected: candidates.length, unavailable };
+}
+
+export function validateGitHubSyncManualCandidate(
+  stateDirectory: string,
+  targetId: string,
+  relative: string
+): void {
+  const record = readGitHubSyncConflict(stateDirectory, targetId);
+  const file = record?.files.find(candidate => candidate.path === relative);
+  if (!record || !file) throw new Error("GitHub Sync conflict file was not found.");
+  const candidate = fs.readFileSync(gitHubSyncConflictVariantPath(stateDirectory, targetId, "merged", relative));
+  validateGitHubSyncCandidate(relative, candidate);
+  file.candidateSource = "manual";
+  file.rationale = "Validated after manual editing.";
+  writeMetadata(stateDirectory, record);
+}
+
+export function readGitHubSyncConflictCandidate(stateDirectory: string, targetId: string, relative: string): Buffer {
+  const candidate = fs.readFileSync(gitHubSyncConflictVariantPath(stateDirectory, targetId, "merged", relative));
+  validateGitHubSyncCandidate(relative, candidate);
+  return candidate;
+}
+
+export function validateGitHubSyncConflictLocalState(
+  relative: string,
+  originalLocal: Buffer | undefined,
+  candidate: Buffer,
+  currentLocal: Buffer | undefined
+): void {
+  if (currentLocal?.equals(candidate)) return;
+  if (originalLocal ? currentLocal?.equals(originalLocal) : currentLocal === undefined) return;
+  throw new Error(`Local content changed after the conflict was prepared: ${githubSyncSafeRelativePath(relative)}`);
+}
+
+export function clearGitHubSyncConflict(stateDirectory: string, targetId: string): void {
+  fs.rmSync(recordDirectory(stateDirectory, targetId), { recursive: true, force: true });
+}

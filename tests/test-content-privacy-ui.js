@@ -27,7 +27,7 @@ assert.match(panel, /parts\.length !== 1/,
 assert.match(panel, /ask\('contentSetPrivacy'/);
 assert.match(panel, /privacyLock\(r\.isPrivate\)/);
 assert.match(panel, /privacyLock\(p\.isPrivate\)/);
-assert.match(panel, /buildCatTree\(groups\[g\], r => r\.category \|\| '\(uncategorized\)'/,
+assert.match(panel, /buildCatTree\(rest, r => r\.category \|\| '\(uncategorized\)'/,
   "Paper privacy CatTree must use the physical category path rather than topic metadata");
 assert.match(panel, /privacyLock\(data\.isPrivate\)/);
 assert.match(panel, /privacyLock\(d\.isPrivate\)/);
@@ -39,8 +39,10 @@ assert.match(extension, /`\$\{inheritedPrivate \? "🔒 " : ""\}\$\{server\.pinn
   "private Server items must retain their inherited lock in Navigation");
 assert.match(panel, /serverGroupMenu\(event/);
 assert.match(extension, /case "contentSetPrivacy"/);
-assert.match(extension, /case "projectState"[\s\S]{0,500}currentProjectStore\(\)\.list\(\)[\s\S]{0,500}privateTopLevels: privateTopLevels\("recipes"\)/,
+assert.match(extension, /async function agentSessionProjectStateData\(\)[\s\S]*?currentProjectStore\(\)\.list\(\)[\s\S]*?privateTopLevels: privateTopLevels\("recipes"\)[\s\S]*?\n\}/,
   "Recipe Library state must include its private top-level categories");
+assert.match(extension, /case "projectState"[\s\S]{0,200}agentSessionProjectStateData\(\)/,
+  "Recipe Library state must use the privacy-aware Project snapshot");
 assert.match(extension, /type !== "recipes"/,
   "Recipe privacy must be accepted without adding Recipes to Subscription content types");
 assert.match(panel, /function recipeFolderMenu\(event, category\)/);

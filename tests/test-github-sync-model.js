@@ -34,8 +34,14 @@ for (const type of GITHUB_SYNC_CONTENT_TYPES) {
   assert.deepStrictEqual(defaults.private[type], { items: [], folders: [] });
 }
 const extensionSource = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
-assert.match(extensionSource, /files:\s*fetched\.files\.filter\(file => file\.type !== "agentSnapshots"\)/,
+assert.match(extensionSource, /const files = fetched\.files\.filter\(file => file\.type !== "agentSnapshots"\)/,
   "GitHub Branch subscriptions must never expose synchronized Agent Snapshots");
+assert.match(extensionSource, /enabled: target\.automation\.enabled && target\.automation\.initialSyncCompleted/,
+  "the scheduler must enforce the initial manual-sync gate even if persisted automation is enabled");
+assert.match(extensionSource, /reason === "manual"[\s\S]*current\.automation\.initialSyncCompleted = true/,
+  "only a successful manual synchronization unlocks the automation control");
+assert.match(extensionSource, /existing\?\.automation\.initialSyncCompleted === true[\s\S]*automationBlocked/,
+  "target save must preserve host-owned readiness and reject client attempts to bypass the gate");
 
 const target = normalizeGitHubSyncTarget({
   name: "Primary",
@@ -44,17 +50,42 @@ const target = normalizeGitHubSyncTarget({
 }, () => "target-1");
 assert.strictEqual(target.id, "target-1");
 assert.deepStrictEqual(target.selection, defaults);
-assert.deepStrictEqual(target.automation, { enabled: true, intervalMinutes: 5, syncOnChange: true });
+assert.deepStrictEqual(target.automation, { enabled: false, intervalMinutes: 5, syncOnChange: true, initialSyncCompleted: false });
+assert.strictEqual(target.conflictResolution, "manual");
 const scheduledTarget = normalizeGitHubSyncTarget({
   name: "Scheduled",
   repository: "https://github.com/qizhu8/knowledge.git",
   branch: "main",
   authentication: { method: "vscode", expectedLogin: "qizhu8", accountId: "account-1" },
-  automation: { enabled: false, intervalMinutes: 30, syncOnChange: false }
+  conflictResolution: "agent",
+  automation: { enabled: true, intervalMinutes: 30, syncOnChange: false, initialSyncCompleted: true }
 }, () => "target-scheduled");
 assert.deepStrictEqual(scheduledTarget.authentication, { method: "vscode", expectedLogin: "qizhu8", accountId: "account-1" });
-assert.deepStrictEqual(scheduledTarget.automation, { enabled: false, intervalMinutes: 30, syncOnChange: false });
+assert.strictEqual(scheduledTarget.conflictResolution, "agent");
+assert.deepStrictEqual(scheduledTarget.automation, { enabled: true, intervalMinutes: 30, syncOnChange: false, initialSyncCompleted: true });
+assert.deepStrictEqual(normalizeGitHubSyncTarget(JSON.parse(JSON.stringify(scheduledTarget))).automation, scheduledTarget.automation,
+  "the per-target interval survives target-file serialization and reload");
+const unsafeAutomaticTarget = normalizeGitHubSyncTarget({
+  name: "Needs initial sync",
+  repository: "https://github.com/qizhu8/knowledge.git",
+  branch: "main",
+  automation: { enabled: true, intervalMinutes: 5, syncOnChange: true }
+}, () => "target-needs-initial-sync");
+assert.deepStrictEqual(unsafeAutomaticTarget.automation, {
+  enabled: false, intervalMinutes: 5, syncOnChange: true, initialSyncCompleted: false
+}, "automatic synchronization stays off until a successful manual sync is persisted");
+const legacyAutomaticTarget = normalizeGitHubSyncTarget({
+  name: "Legacy synchronized target",
+  repository: "https://github.com/qizhu8/knowledge.git",
+  branch: "main",
+  automation: { enabled: true, intervalMinutes: 5, syncOnChange: true },
+  lastSync: { at: "2026-09-24T20:00:00.000Z", commit: "a".repeat(40), fingerprints: {} }
+}, () => "target-legacy-ready");
+assert.strictEqual(legacyAutomaticTarget.automation.initialSyncCompleted, true,
+  "existing synchronized targets migrate without unexpectedly disabling their schedule");
 assert.throws(() => normalizeGitHubSyncTarget({ name: "Bad interval", repository: "repo", branch: "main", automation: { intervalMinutes: 0 } }), /between 1 and 1440/);
+assert.throws(() => normalizeGitHubSyncTarget({ name: "Fractional interval", repository: "repo", branch: "main", automation: { intervalMinutes: 1.5 } }), /between 1 and 1440/);
+assert.throws(() => normalizeGitHubSyncTarget({ name: "Large interval", repository: "repo", branch: "main", automation: { intervalMinutes: 1441 } }), /between 1 and 1440/);
 assert.throws(() => normalizeGitHubSyncTarget({ name: "Bad", repository: "repo", branch: "bad..branch" }), /valid Git branch/);
 assert.throws(() => normalizeGitHubSyncTarget({ name: "", repository: "repo", branch: "main" }), /name is required/);
 const emuTarget = normalizeGitHubSyncTarget({
@@ -75,10 +106,13 @@ const gcmTarget = normalizeGitHubSyncTarget({
 }, () => "target-gcm");
 assert.deepStrictEqual(gcmTarget.authentication, { method: "https", expectedLogin: "yuwang8_microsoft" });
 assert.deepStrictEqual(githubSyncGitArguments(["fetch", "origin"], gcmTarget), [
+  "-c", "core.longpaths=true",
   "-c", "credential.gitHubAccountFiltering=true",
   "-c", "credential.username=yuwang8_microsoft",
   "fetch", "origin"
 ]);
+assert.deepStrictEqual(githubSyncGitArguments(["status"]), ["-c", "core.longpaths=true", "status"],
+  "all extension-managed Git commands must enable long-path support without changing global Git configuration");
 assert.match(githubSyncAuthenticationFailureGuidance(gcmTarget, "remote: Repository not found.\nfatal: Authentication failed"), /did not authenticate as yuwang8_microsoft.*switch this target to VS Code GitHub Authentication/,
   "GCM failures must explain the exact account recovery path");
 assert.strictEqual(githubSyncAuthenticationFailureGuidance(gcmTarget, "fatal: unable to access: connection timed out"), "",

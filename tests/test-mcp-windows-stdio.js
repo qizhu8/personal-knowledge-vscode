@@ -22,14 +22,17 @@ const { mcpStdioCommand } = require(compiled);
 const windowsPython = String.raw`C:\Users\person\pkm-envs\pkm-mcp\Scripts\python.exe`;
 const server = String.raw`C:\Users\person\OneDrive\PersonalKnowledge\mcp-server\server.py`;
 const extensionRoot = String.raw`C:\Users\person\.vscode\extensions\uone.personal-knowledge-3.1.1`;
+const signedCodeExecutable = String.raw`C:\Program Files\Microsoft VS Code\Code.exe`;
+const proxy = path.join(extensionRoot, 'resources', 'windows', 'pkm-stdio-proxy.js');
 
 assert.deepStrictEqual(
-  mcpStdioCommand(windowsPython, [server], 'win32', 'x64', extensionRoot, () => true),
+  mcpStdioCommand(windowsPython, [server], 'win32', extensionRoot, signedCodeExecutable, () => true),
   {
-    command: path.join(extensionRoot, 'resources', 'windows', 'pkm-stdio-launcher-x64.exe'),
-    args: [windowsPython, server],
+    command: signedCodeExecutable,
+    args: [proxy, windowsPython, server],
+    env: { ELECTRON_RUN_AS_NODE: '1' },
   },
-  'Windows stdio MCP launch must use the packaged no-console launcher and preserve Python arguments',
+  'Windows stdio MCP launch must use the signed VS Code executable and packaged JavaScript proxy',
 );
 assert.deepStrictEqual(
   mcpStdioCommand('/home/person/pkm-envs/pkm-mcp/bin/python', ['/home/person/pkm/mcp-server/server.py'], 'linux'),
@@ -37,39 +40,72 @@ assert.deepStrictEqual(
   'non-Windows stdio MCP launch must remain unchanged',
 );
 assert.throws(
-  () => mcpStdioCommand(windowsPython, [server], 'win32', 'arm64', extensionRoot, () => false),
-  /PKM Windows stdio launcher is missing/,
+  () => mcpStdioCommand(windowsPython, [server], 'win32', extensionRoot, signedCodeExecutable, () => false),
+  /PKM Windows stdio proxy is missing/,
   'Windows must fail explicitly instead of falling back to a console-subsystem executable',
 );
 
-const peMachines = { x64: 0x8664, arm64: 0xaa64, ia32: 0x014c };
-for (const arch of ['x64', 'arm64', 'ia32']) {
-  const executable = path.join(root, 'resources', 'windows', `pkm-stdio-launcher-${arch}.exe`);
-  const bytes = fs.readFileSync(executable);
-  assert.strictEqual(bytes.subarray(0, 2).toString('ascii'), 'MZ', `${arch} launcher must be a Windows PE executable`);
-  const peOffset = bytes.readUInt32LE(0x3c);
-  assert.strictEqual(bytes.subarray(peOffset, peOffset + 4).toString('binary'), 'PE\u0000\u0000');
-  assert.strictEqual(bytes.readUInt16LE(peOffset + 4), peMachines[arch], `${arch} launcher must target the matching Windows architecture`);
-  assert.strictEqual(bytes.readUInt16LE(peOffset + 24 + 68), 2, `${arch} launcher must use the Windows GUI subsystem`);
-}
+const proxyPath = path.join(root, 'resources', 'windows', 'pkm-stdio-proxy.js');
+const proxySource = fs.readFileSync(proxyPath, 'utf8');
+assert.match(proxySource, /spawn\(command, args,/);
+assert.match(proxySource, /stdio:\s*"inherit"/);
+assert.match(proxySource, /windowsHide:\s*true/);
+assert.match(proxySource, /delete env\.ELECTRON_RUN_AS_NODE/);
+assert.deepStrictEqual(
+  fs.readdirSync(path.join(root, 'resources', 'windows')).filter(name => name.toLowerCase().endsWith('.exe')),
+  [],
+  'the extension must not ship custom unsigned Windows executables',
+);
 
-const launcherSource = fs.readFileSync(path.join(root, 'scripts/windows-stdio-launcher.go'), 'utf8');
-assert.match(launcherSource, /CreationFlags: createNoWindow/);
-assert.match(launcherSource, /command\.Stdin = os\.Stdin[\s\S]*command\.Stdout = os\.Stdout[\s\S]*command\.Stderr = os\.Stderr/);
+const echoChild = path.join(fixture, 'echo-child.js');
+fs.writeFileSync(echoChild, `
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", chunk => input += chunk);
+process.stdin.on("end", () => process.stdout.write(process.argv[2] + ":" + input));
+`);
+const roundTrip = childProcess.spawnSync(process.execPath, [proxyPath, process.execPath, echoChild, 'argument'], {
+  encoding: 'utf8',
+  env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+  input: 'payload',
+});
+assert.strictEqual(roundTrip.status, 0, roundTrip.stderr);
+assert.strictEqual(roundTrip.stdout, 'argument:payload', 'the proxy must preserve target arguments and stdio');
+const exitCode = childProcess.spawnSync(process.execPath, [proxyPath, process.execPath, '-e', 'process.exit(7)']);
+assert.strictEqual(exitCode.status, 7, 'the proxy must preserve the target exit code');
 
 const mcpSource = fs.readFileSync(path.join(root, 'src/mcp.ts'), 'utf8');
 assert.strictEqual((mcpSource.match(/mcpStdioCommand\(/g) || []).length, 5, 'every MCP registration and instruction surface must use the Windows-safe launcher');
+assert.match(mcpSource, /env:\s*launch\.env/,
+  'native MCP definition data must carry the signed-host environment');
+assert.strictEqual((mcpSource.match(/\.\.\.\(launch\.env \? \{ env: launch\.env \} : \{\}\)/g) || []).length, 4,
+  'every JSON registry and instruction surface must carry ELECTRON_RUN_AS_NODE');
+const extensionSource = fs.readFileSync(path.join(root, 'src/extension.ts'), 'utf8');
+assert.match(extensionSource, /new api\.McpStdioServerDefinition\(data\.label, data\.command, data\.args, data\.env \|\| \{\}, data\.version\)/,
+  'the native VS Code MCP provider must pass the signed-host environment');
+assert.doesNotMatch(mcpSource, /Get-CimInstance Win32_Process/,
+  'passive MCP status must not launch a visible PowerShell process on Windows');
+assert.match(mcpSource, /Passive MCP process inspection is disabled on Windows/,
+  'Windows MCP status must explain why passive process inspection is unavailable');
+const serversSource = fs.readFileSync(path.join(root, 'src/servers.ts'), 'utf8');
+assert.match(serversSource, /status === "external" && slug === inspectExternalSlug \? serverListenerProcesses\(m\.port\) : \[\]/,
+  'passive Server status must defer Windows listener inspection until the user explicitly requests it');
+const retrievalSource = fs.readFileSync(path.join(root, 'src/retrieval-worker.ts'), 'utf8');
+assert.match(retrievalSource, /const launch = mcpStdioCommand\(this\.python, \[this\.workerScript, this\.stateDir, this\.configurationHash\]\)/,
+  'the long-lived Windows retrieval worker must use the signed-host JavaScript no-console proxy');
+assert.match(retrievalSource, /spawn\(launch\.command, launch\.args,/,
+  'retrieval must execute the platform-safe launch command rather than python.exe directly');
+assert.match(retrievalSource, /env:\s*\{\s*\.\.\.process\.env,\s*\.\.\.launch\.env\s*\}/,
+  'retrieval must pass ELECTRON_RUN_AS_NODE to the signed VS Code executable');
+assert.doesNotMatch(retrievalSource, /spawn\(this\.python,/,
+  'the Windows retrieval worker must never directly start the console-subsystem Python executable');
 
-const runtimeProcessFiles = [
-  'src/extension.ts',
-  'src/github-sync.ts',
-  'src/mcp.ts',
-  'src/prompt-manager.ts',
-  'src/pyenvs.ts',
-  'src/retrieval-worker.ts',
-  'src/servers.ts',
-  'src/subscriptions.ts',
-];
+const runtimeProcessFiles = fs.readdirSync(path.join(root, 'src'), { recursive: true })
+  .filter(entry => String(entry).endsWith('.ts'))
+  .map(entry => path.join('src', String(entry)))
+  .filter(relative => /from ["']child_process["']/.test(fs.readFileSync(path.join(root, relative), 'utf8')))
+  .sort();
+assert(runtimeProcessFiles.length >= 8, 'the Windows process audit must discover every extension-runtime child_process import');
 const childOptionIndex = new Map([
   ['execFile', 2],
   ['execFileAsync', 2],
@@ -94,7 +130,16 @@ for (const relative of runtimeProcessFiles) {
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
+  assert.doesNotMatch(sourceText, /windowsHide\s*:\s*false/, `${relative} must never opt into visible Windows console windows`);
 }
 
+const recipeRuntimeSource = fs.readFileSync(path.join(root, 'resources', 'recipe_runtime.py'), 'utf8');
+assert.match(recipeRuntimeSource, /CREATE_NO_WINDOW/);
+assert.strictEqual((recipeRuntimeSource.match(/subprocess\.Popen\(/g) || []).length, 2);
+assert.strictEqual((recipeRuntimeSource.match(/\*\*_background_process_options\(\)/g) || []).length, 2,
+  'Recipe worker and Recipe commands must both suppress Windows console windows');
+assert.match(recipeRuntimeSource, /subprocess\.run\(\["taskkill"[\s\S]{0,300}\*\*_hidden_process_options\(\)/,
+  'Recipe timeout cleanup must suppress the taskkill console window');
+
 fs.rmSync(fixture, { recursive: true, force: true });
-console.log('Windows process launch test: MCP launchers and every extension-runtime child process suppress console windows');
+console.log('Windows process launch test: MCP, Recipe, and every extension-runtime child process suppress console windows');

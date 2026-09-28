@@ -17,7 +17,7 @@ from fastmcp import Context
 from fastmcp.server.middleware import Middleware
 
 
-AGENT_SESSION_SCHEMA_VERSION = "1.4.0"
+AGENT_SESSION_SCHEMA_VERSION = "1.5.0"
 SESSION_SCHEMA = "pkm.agent.session/v1"
 SNAPSHOT_SCHEMA = "pkm.agent.snapshot/v1"
 SNAPSHOT_PAYLOAD_ALGORITHM = "A256GCM-PKM-INTERNAL/v1"
@@ -79,6 +79,33 @@ def _paths(store, session_id):
 
 def _active_path(store, transport_key):
     return store / ".pkm" / "state" / "agent-sessions" / "active" / (transport_key + ".json")
+
+
+def _projected_session_status(session):
+    status = str(session.get("status") or "unknown")
+    todos = session.get("todos") if isinstance(session.get("todos"), list) else []
+    if status == "running" and todos and all(
+            isinstance(todo, dict) and str(todo.get("status") or "") in {"succeeded", "failed", "skipped"}
+            for todo in todos):
+        return "completed"
+    return status
+
+
+def _clear_active_session_mappings(store, session_id):
+    directory = store / ".pkm" / "state" / "agent-sessions" / "active"
+    if not directory.exists():
+        return 0
+    removed = 0
+    for path in directory.glob("*.json"):
+        try:
+            mapping = json.loads(path.read_text(encoding="utf-8"))
+            if str(mapping.get("sessionId") or "") != session_id:
+                continue
+            path.unlink(missing_ok=True)
+            removed += 1
+        except (json.JSONDecodeError, OSError):
+            continue
+    return removed
 
 
 def _snapshot_directory(store):
@@ -184,6 +211,36 @@ def _snapshot_capture(payload):
     }
 
 
+def _snapshot_continuation_todo(session, session_id, now):
+    todos = session.get("todos") if isinstance(session.get("todos"), list) else []
+    if any(str(todo.get("status") or "") in {"pending", "running", "paused"}
+           for todo in todos if isinstance(todo, dict)):
+        return None
+    checkpoints = session.get("checkpoints") if isinstance(session.get("checkpoints"), list) else []
+    latest = checkpoints[-1] if checkpoints and isinstance(checkpoints[-1], dict) else {}
+    state = latest.get("state") if isinstance(latest.get("state"), dict) else {}
+    summary = str(state.get("summary") or session.get("summary") or
+                  "Continue from the recovered Agent Snapshot.").strip()
+    next_actions = state.get("next_actions")
+    if not isinstance(next_actions, list):
+        next_actions = state.get("nextInfrastructurePriority")
+    actions = [str(value).strip() for value in (next_actions or [])
+               if str(value).strip()][:12]
+    details = summary
+    if actions:
+        details += "\n\nNext actions:\n" + "\n".join("- " + action for action in actions)
+    return {
+        "todoId": "todo_" + hashlib.sha256(
+            (session_id + ":resume-snapshot").encode("utf-8")).hexdigest()[:20],
+        "title": "Continuing recovered Agent Snapshot",
+        "details": details[:12000],
+        "actionType": "resume_snapshot",
+        "status": "pending",
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
 def _snapshot_summary(snapshot, recovery_count=0):
     capture = snapshot.get("capture") or _snapshot_capture(snapshot.get("payload") or {})
     return {
@@ -223,8 +280,15 @@ def _active_session_id(store, transport_key):
     path = _active_path(store, transport_key)
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-        return str(value.get("sessionId") or "")
+        session_id = str(value.get("sessionId") or "")
+        session_path, _ = _paths(store, session_id)
+        session = json.loads(session_path.read_text(encoding="utf-8"))
+        if session.get("schema") != SESSION_SCHEMA or session.get("status") != "running":
+            path.unlink(missing_ok=True)
+            return ""
+        return session_id
     except (FileNotFoundError, json.JSONDecodeError, OSError):
+        path.unlink(missing_ok=True)
         return ""
 
 
@@ -312,9 +376,16 @@ def _update_managed_session(store, transport_key, tool_name, result):
         if run_id.startswith("recipe_run_") and run_id not in session["recipeRunIds"]:
             session["recipeRunIds"].append(run_id)
             running_todo = next((todo for todo in session.get("todos") or []
-                                 if todo.get("status") == "running" and not todo.get("recipeRunId")), None)
+                                 if todo.get("status") == "running"), None)
             if running_todo is not None:
-                running_todo["recipeRunId"] = run_id
+                linked_run_ids = running_todo.setdefault("recipeRunIds", [])
+                legacy_run_id = str(running_todo.get("recipeRunId") or "")
+                if legacy_run_id and legacy_run_id not in linked_run_ids:
+                    linked_run_ids.append(legacy_run_id)
+                if run_id not in linked_run_ids:
+                    linked_run_ids.append(run_id)
+                if not legacy_run_id:
+                    running_todo["recipeRunId"] = run_id
                 running_todo["updatedAt"] = _now()
             run_path = store / ".pkm" / "state" / "recipe-runs" / (run_id + ".json")
             run_lock = run_path.with_suffix(".lock")
@@ -375,13 +446,15 @@ def register_agent_session_tools(mcp, store):
                       "agent_session_import_checkpoint", "agent_session_snapshot_create",
                       "agent_session_snapshot_list", "agent_session_snapshot_rotate",
                       "agent_session_snapshot_recover", "agent_session_todo_append",
-                      "agent_session_todo_replan", "agent_session_todo_next", "agent_session_todo_report", "agent_session_end"],
+                      "agent_session_todo_replan", "agent_session_todo_next", "agent_session_todo_report",
+                      "agent_session_stop", "agent_session_end"],
             "host_session_grouping": "Pass the current host chat/session ID to agent_session_start when available so related managed tasks are grouped together.",
             "recipe_progress": "Recipe runs started after registration are projected as a live task graph.",
             "todo_queue": {
                 "policy": "FIFO by default; explicit user redirects may atomically pause current work and insert an interrupt action before it.",
                 "additive_instruction": "Append non-conflicting new work with agent_session_todo_append. Do not abandon or reorder unfinished todos.",
                 "redirect_instruction": "Use agent_session_todo_replan for explicit user redirects, including report_status before continuing current work.",
+                "completion_instruction": "After reporting the final todo, validate and checkpoint as needed, then call agent_session_end when next_action.kind is call_agent_session_end.",
                 "example_todos_json": '[{"title":"Implement change","details":"Preserve existing behavior"},{"title":"Validate","details":"Run focused tests"}]',
             },
             "handoff": "checkpoint/load/resume persists agent-authored recovery context; Agent Snapshots add a magic code plus recovery passphrase and clone a new independent Session; hidden model state is not inspectable.",
@@ -390,6 +463,7 @@ def register_agent_session_tools(mcp, store):
     @mcp.tool()
     def agent_session_start(task: str, command_id: str, project_id: str = "",
                             agent_name: str = "GitHub Copilot", host_session_id: str = "",
+                            traversal_strategy: str = "",
                             ctx: Context = None) -> dict:
         """Start durable management for a substantial task before its first substantive mutation.
 
@@ -401,19 +475,34 @@ def register_agent_session_tools(mcp, store):
         task = str(task or "").strip()
         command_id = str(command_id or "").strip()
         host_session_id = str(host_session_id or "").strip()
+        traversal_strategy = str(traversal_strategy or "").strip().lower()
+        traversal_strategy = {"bfs": "breadth-first", "dfs": "depth-first"}.get(
+            traversal_strategy, traversal_strategy)
         if not task or not command_id:
             raise ValueError("task and command_id are required.")
+        if traversal_strategy not in {"", "breadth-first", "depth-first"}:
+            raise ValueError("traversal_strategy must be breadth-first, depth-first, bfs, or dfs.")
         if len(host_session_id) > 256:
             raise ValueError("host_session_id must be at most 256 characters.")
         session_id = "agent_session_" + hashlib.sha256(command_id.encode("utf-8")).hexdigest()[:24]
         path, lock = _paths(store, session_id)
         transport_key = _transport_key(ctx)
+        active_session_id = _active_session_id(store, transport_key)
+        if active_session_id and active_session_id != session_id:
+            active_path, _ = _paths(store, active_session_id)
+            if active_path.exists():
+                active_session = json.loads(active_path.read_text(encoding="utf-8"))
+                if _projected_session_status(active_session) == "running":
+                    raise ValueError(
+                        "This transport already has a different running Agent Session. "
+                        "End, stop, or explicitly hand off that Session before starting another.")
         with _file_lock(lock):
             if path.exists():
                 session = json.loads(path.read_text(encoding="utf-8"))
                 if (session.get("task") != task
                     or session.get("projectId", "") != str(project_id or "")
-                    or session.get("hostSessionId", "") != host_session_id):
+                    or session.get("hostSessionId", "") != host_session_id
+                    or session.get("traversalStrategy", "") != traversal_strategy):
                     raise ValueError("command_id was reused with different Agent Session parameters.")
             else:
                 now = _now()
@@ -424,6 +513,7 @@ def register_agent_session_tools(mcp, store):
                     "task": task,
                     "projectId": str(project_id or ""),
                     "hostSessionId": host_session_id,
+                    "traversalStrategy": traversal_strategy,
                     "agent": {"name": str(agent_name or "GitHub Copilot"), "product": "GitHub Copilot"},
                     "recipeRunIds": [],
                     "todos": [],
@@ -437,7 +527,8 @@ def register_agent_session_tools(mcp, store):
         _atomic_write(_active_path(store, transport_key), {"sessionId": session_id})
         return {"ok": True, "schema": SESSION_SCHEMA, "session_id": session_id,
             "status": session["status"], "task": session["task"],
-            "host_session_id": session.get("hostSessionId", "")}
+            "host_session_id": session.get("hostSessionId", ""),
+            "traversal_strategy": session.get("traversalStrategy", "")}
 
     @mcp.tool()
     def agent_session_status(ctx: Context = None) -> dict:
@@ -450,6 +541,32 @@ def register_agent_session_tools(mcp, store):
         path, _ = _paths(store, session_id)
         session = json.loads(path.read_text(encoding="utf-8"))
         return {"ok": True, "managed": session.get("status") == "running", "session": session}
+
+    @mcp.tool()
+    def agent_session_stop(session_id: str, reason: str = "user-requested", summary: str = "",
+                           ctx: Context = None) -> dict:
+        """Stop one running Agent Session without representing unfinished work as completed."""
+        if ctx is None:
+            raise ValueError("MCP request context is required.")
+        session_id = str(session_id or "").strip()
+        if not session_id.startswith("agent_session_") or not all(
+                character.isalnum() or character in "_-" for character in session_id):
+            raise ValueError("Invalid Agent Session identity.")
+        path, lock = _paths(store, session_id)
+        with _file_lock(lock):
+            session = _load_session(store, session_id)
+            if session.get("status") != "running":
+                raise ValueError("Only a running Agent Session can be stopped.")
+            now = _now()
+            session["status"] = "stopped"
+            session["stopReason"] = str(reason or "user-requested")
+            session["summary"] = str(summary or "")
+            session["stoppedAt"] = now
+            session["updatedAt"] = now
+            _atomic_write(path, session)
+        cleared = _clear_active_session_mappings(store, session_id)
+        return {"ok": True, "managed": False, "session_id": session_id,
+                "status": "stopped", "cleared_active_mappings": cleared}
 
     @mcp.tool()
     def agent_session_checkpoint(state_json: str, reason: str = "manual", ctx: Context = None) -> dict:
@@ -498,12 +615,17 @@ def register_agent_session_tools(mcp, store):
         if ctx is None:
             raise ValueError("MCP request context is required.")
         session_id = str(session_id or "")
+        if not session_id.startswith("agent_session_") or not all(
+                character.isalnum() or character in "_-" for character in session_id):
+            raise ValueError("Invalid Agent Session identity.")
         path, lock = _paths(store, session_id)
         with _file_lock(lock):
             session = _load_session(store, session_id)
             if session.get("status") == "completed":
                 raise ValueError("Completed Agent Sessions are immutable and cannot be resumed.")
             session["status"] = "running"
+            session.pop("stoppedAt", None)
+            session.pop("stopReason", None)
             session["resumeCount"] = int(session.get("resumeCount") or 0) + 1
             session["resumedAt"] = _now()
             session["updatedAt"] = session["resumedAt"]
@@ -672,6 +794,16 @@ def register_agent_session_tools(mcp, store):
         supplied = _snapshot_verifier(recovery_passphrase, str(recovery.get("salt") or ""))
         if not hmac.compare_digest(supplied, str(recovery.get("verifier") or "")):
             raise ValueError("Agent Snapshot recovery passphrase is incorrect.")
+        transport_key = _transport_key(ctx)
+        active_session_id = _active_session_id(store, transport_key)
+        if active_session_id:
+            active_path, _ = _paths(store, active_session_id)
+            if active_path.exists():
+                active_session = json.loads(active_path.read_text(encoding="utf-8"))
+                if active_session.get("status") == "running":
+                    raise ValueError(
+                        "This transport already has a different running Agent Session. "
+                        "End, stop, or explicitly hand off that Session before recovering a Snapshot.")
         payload = _snapshot_decrypt_payload(snapshot)
         source_session = (payload.get("session") or {})
         source_runs = (payload.get("recipeRuns") or [])
@@ -685,6 +817,7 @@ def register_agent_session_tools(mcp, store):
             ).hexdigest()[:24]
             for run in source_runs if run.get("runId")
         }
+        recovered_runs = []
         for source_run in source_runs:
             run = json.loads(_json(source_run))
             old_run_id = str(run.get("runId") or "")
@@ -698,7 +831,7 @@ def register_agent_session_tools(mcp, store):
             for record in (run.get("nodes") or {}).values():
                 if record.get("childRunId"):
                     record["childRunId"] = run_id_map.get(str(record["childRunId"]), "")
-            _atomic_write(store / ".pkm" / "state" / "recipe-runs" / (run["runId"] + ".json"), run)
+            recovered_runs.append(run)
         now = _now()
         session = json.loads(_json(source_session))
         session.update({
@@ -723,8 +856,40 @@ def register_agent_session_tools(mcp, store):
         for todo in session.get("todos") or []:
             if todo.get("recipeRunId"):
                 todo["recipeRunId"] = run_id_map.get(str(todo["recipeRunId"]), "")
-        _atomic_write(_paths(store, session_id)[0], session)
-        _atomic_write(_active_path(store, _transport_key(ctx)), {"sessionId": session_id})
+            if isinstance(todo.get("recipeRunIds"), list):
+                todo["recipeRunIds"] = [run_id_map[run_id] for run_id in todo["recipeRunIds"]
+                                        if run_id in run_id_map]
+        continuation_todo = _snapshot_continuation_todo(session, session_id, now)
+        if continuation_todo:
+            session.setdefault("todos", []).append(continuation_todo)
+        session_path, session_lock = _paths(store, session_id)
+        active_path = _active_path(store, transport_key)
+        run_paths = [
+            store / ".pkm" / "state" / "recipe-runs" / (run["runId"] + ".json")
+            for run in recovered_runs
+        ]
+        created_paths = []
+        try:
+            with _file_lock(session_lock):
+                if session_path.exists() or any(path.exists() for path in run_paths):
+                    raise ValueError("Recovered Agent Session identity collision.")
+                for run_path, run in zip(run_paths, recovered_runs):
+                    _atomic_write(run_path, run)
+                    created_paths.append(run_path)
+                _atomic_write(session_path, session)
+                created_paths.append(session_path)
+                _atomic_write(active_path, {"sessionId": session_id})
+        except Exception:
+            try:
+                if active_path.exists():
+                    mapping = json.loads(active_path.read_text(encoding="utf-8"))
+                    if str(mapping.get("sessionId") or "") == session_id:
+                        active_path.unlink(missing_ok=True)
+            except (json.JSONDecodeError, OSError):
+                pass
+            for created_path in reversed(created_paths):
+                created_path.unlink(missing_ok=True)
+            raise
         checkpoints = session.get("checkpoints") or []
         return {
             "ok": True,
@@ -733,6 +898,11 @@ def register_agent_session_tools(mcp, store):
             "snapshot_id": snapshot["snapshotId"],
             "latest_checkpoint": checkpoints[-1] if checkpoints else None,
             "recipe_run_ids": session["recipeRunIds"],
+            "recovery_todo_created": continuation_todo is not None,
+            "next_action": {
+                "kind": "call_agent_session_todo_next",
+                "reason": "Claim the recovered continuation or unfinished todo.",
+            },
             "resume_instruction": "Continue the restored todos, then call recipe_run_get for each non-terminal Recipe run.",
         }
 
@@ -938,7 +1108,25 @@ def register_agent_session_tools(mcp, store):
                 if resumed_todo is not None and resumed_todo.get("status") == "paused":
                     resumed_todo.update({"status": "pending", "resumedAt": now, "updatedAt": now})
             session["updatedAt"] = now
-            result = {"ok": True, "session_id": session_id, "todo": todo, "resumed_todo": resumed_todo}
+            unfinished = [item for item in session.get("todos") or []
+                          if item.get("status") in {"pending", "running", "paused"}]
+            if resumed_todo is not None:
+                next_action = {
+                    "kind": "call_agent_session_todo_next",
+                    "reason": "The interrupted todo is ready to resume.",
+                }
+            elif unfinished:
+                next_action = {
+                    "kind": "call_agent_session_todo_next",
+                    "reason": "The Agent Session still has unfinished todos.",
+                }
+            else:
+                next_action = {
+                    "kind": "call_agent_session_end",
+                    "reason": "All Session todos are terminal. Validate the overall outcome, checkpoint if useful, then end the Session.",
+                }
+            result = {"ok": True, "session_id": session_id, "todo": todo,
+                      "resumed_todo": resumed_todo, "next_action": next_action}
             save_todo_receipt(session, command_id, fingerprint, result)
             _atomic_write(path, session)
             return result
@@ -1036,6 +1224,9 @@ def register_agent_session_tools(mcp, store):
         for todo in session.get("todos") or []:
             if todo.get("recipeRunId"):
                 todo["recipeRunId"] = run_id_map.get(str(todo["recipeRunId"]), "")
+            if isinstance(todo.get("recipeRunIds"), list):
+                todo["recipeRunIds"] = [run_id_map[run_id] for run_id in todo["recipeRunIds"]
+                                        if run_id in run_id_map]
         session_path, _ = _paths(store, session_id)
         _atomic_write(session_path, session)
         return {"ok": True, "session_id": session_id, "status": "checkpointed",

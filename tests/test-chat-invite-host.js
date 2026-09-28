@@ -26,8 +26,15 @@ assert.match(extension, /Choose an available Invite interface before hosting a R
 assert.match(extension, /ConfigurationTarget\.Global/);
 assert.match(extension, /ws:\/\/\$\{this\.advertisedHost\(\)\}:\$\{this\.hub\.port\}/);
 assert.match(extension, /let base = this\.hub\?\.port \? `ws:\/\/\$\{this\.advertisedHost\(\)\}/);
+const chatState = extension.match(/case "chatState": \{([\s\S]*?)\n\s*case "/)?.[1] || "";
+assert.match(chatState, /command: "chatConfig"/);
+assert.doesNotMatch(chatState, /chatSecret|\bsecret\s*:/,
+	"Chatroom initialization must not disclose the shared secret");
+assert.match(extension, /case "chatRevealSecret": \{[\s\S]*?get<string>\("chatSharedSecret"\)[\s\S]*?command: "chatSecret"/,
+	"Chatroom must return the secret only through the explicit reveal command");
 
 const panel = fs.readFileSync(path.join(root, "dist", "webview", "panel.js"), "utf8");
+assert.match(panel, /ask\('chatRevealSecret', \{\}\)/);
 assert.doesNotMatch(panel, /id="chat-invite-host"/,
 	"Projects/Threads must not duplicate the machine-level Invite interface setting");
 assert.doesNotMatch(panel, /Hosting on/);

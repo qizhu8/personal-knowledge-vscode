@@ -6,7 +6,19 @@ const { execFileSync, spawn, spawnSync } = require("child_process");
 const { runTests } = require("@vscode/test-electron");
 
 async function main() {
+  const suiteStartedAt = Date.now();
+  let phase = "preparing startup fixtures";
+  const heartbeat = setInterval(() => {
+    console.log(`[extension-startup] running · ${phase} · ${Math.round((Date.now() - suiteStartedAt) / 1000)}s elapsed`);
+  }, 15_000);
+  heartbeat.unref();
+  console.log(`[extension-startup] phase=${phase}`);
   const root = path.resolve(__dirname, "..");
+  const requestedScenario = String(process.env.PKM_STARTUP_ONLY || "").trim();
+  const scenarioBudgetMs = Number(process.env.PKM_STARTUP_SCENARIO_BUDGET_MS || 15_000);
+  if (!Number.isFinite(scenarioBudgetMs) || scenarioBudgetMs < 1) {
+    throw new Error("PKM_STARTUP_SCENARIO_BUDGET_MS must be a positive number");
+  }
   const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-startup-"));
   const userDataDir = path.join(testRoot, "user-data");
   const workspaceDir = path.join(testRoot, "workspace");
@@ -26,10 +38,15 @@ async function main() {
     "---",
     "fixture",
   ].join("\n"));
+  phase = "packaging extension fixture";
+  const packageStartedAt = Date.now();
   const packagedExtensionPath = packageExtension(root, testRoot);
+  const packageDurationMs = Date.now() - packageStartedAt;
+  console.log(`[extension-startup] fixture packaged · ${packageDurationMs}ms`);
+  phase = "starting virtual display";
   const virtualDisplay = await startVirtualDisplay(root);
+  const scenarioTimings = [];
   try {
-    const requestedScenario = String(process.env.PKM_STARTUP_ONLY || "").trim();
     const scenarios = [
       { name: "clean-install", openPanel: true },
       { name: "persisted-upgrade", openPanel: false },
@@ -39,6 +56,9 @@ async function main() {
     ].filter(scenario => !requestedScenario || scenario.name === requestedScenario);
     if (!scenarios.length) throw new Error(`Unknown PKM_STARTUP_ONLY scenario: ${requestedScenario}`);
     for (const scenario of scenarios) {
+      phase = `scenario ${scenario.name}`;
+      const scenarioStartedAt = Date.now();
+      console.log(`[extension-startup] scenario=${scenario.name} started`);
       fs.writeFileSync(path.join(settingsDir, "settings.json"), JSON.stringify({
         "personalKnowledge.storePath": storeDir,
         "personalKnowledge.openOnStartup": scenario.openPanel,
@@ -73,8 +93,24 @@ async function main() {
         ],
       });
       assertStartupResult(resultPath, scenario.name);
+      const durationMs = Date.now() - scenarioStartedAt;
+      scenarioTimings.push({ name:scenario.name, durationMs });
+      console.log(`[extension-startup] scenario=${scenario.name} completed · ${durationMs}ms`);
+      if (durationMs > scenarioBudgetMs) {
+        throw new Error(`Startup scenario ${scenario.name} exceeded its ${scenarioBudgetMs}ms budget (${durationMs}ms)`);
+      }
     }
+    console.log(`[extension-startup] summary ${scenarioTimings.map(timing => `${timing.name}=${timing.durationMs}ms`).join(" · ")}`);
+    console.log(`[extension-startup] summary-json=${JSON.stringify({
+      schema: "pkm.browser-suite-timing/v1",
+      suite: "extension-startup",
+      packageMs: packageDurationMs,
+      scenarioBudgetMs,
+      scenarios: scenarioTimings,
+      durationMs: Date.now() - suiteStartedAt,
+    })}`);
   } finally {
+    clearInterval(heartbeat);
     virtualDisplay?.process.kill("SIGTERM");
     fs.rmSync(testRoot, { recursive: true, force: true });
   }
@@ -140,10 +176,12 @@ function assertStartupResult(resultPath, scenario) {
     if (result[key] !== true) throw new Error(`Startup assertion did not pass: ${key}`);
   }
   if (!Number.isFinite(result.activationDurationMs)) throw new Error("Startup assertion did not report activationDurationMs");
-  console.log(`Extension startup soak [${scenario}]: activation ${result.activationDurationMs}ms, commands, state, and panel expectation OK`);
+  const webview = result.webviewFirstPaintMs == null ? "" : `, panel HTML ${result.panelHtmlDurationMs}ms, script ${result.webviewScriptStartMs}ms, first paint ${result.webviewFirstPaintMs}ms`;
+  console.log(`Extension startup soak [${scenario}]: activation ${result.activationDurationMs}ms${webview}, commands, state, and panel expectation OK`);
 }
 
 main().catch(error => {
+  console.error(`[extension-startup] failed after ${Math.round(process.uptime())}s`);
   console.error("Extension startup test failed:", error);
   process.exitCode = 1;
 });

@@ -214,7 +214,7 @@ function renderServerDashboard(servers) {
         <span class="srv-lifecycle-actions">${s.status === 'stopped'
           ? `<button class="tbtn" onclick="ask('serverStart',{slug:'${esc(s.slug)}'})" title="Start ${esc(s.name)} with its configured command and port">${uiIcon('play', 'Start')}</button>`
           : s.status === 'external'
-            ? `<span class="srv-external" title="A listener exists on this port but was not started by PKM.">${uiIcon('radio-tower')} External listener detected · ${(s.externalProcesses || []).map(process => `PID ${process.pid} · ${esc(process.name)}`).join(', ') || 'PID unavailable'}</span><button class="tbtn srv-force-stop" onclick="forceStopExternalServerUi('${esc(s.slug)}')" ${(s.externalProcesses || []).length ? '' : 'disabled'} title="Force-terminate the process listening on port ${s.port}">${uiIcon('debug-stop', 'Force Stop')}</button>`
+            ? `<span class="srv-external" title="A listener exists on this port but was not started by PKM.">${uiIcon('radio-tower')} External listener detected · ${(s.externalProcesses || []).map(process => `PID ${process.pid} · ${esc(process.name)}`).join(', ') || 'PID not inspected'}</span>${(s.externalProcesses || []).length ? `<button class="tbtn srv-force-stop" onclick="forceStopExternalServerUi('${esc(s.slug)}')" title="Force-terminate the process listening on port ${s.port}">${uiIcon('debug-stop', 'Force Stop')}</button>` : `<button class="tbtn" onclick="ask('serverInspectExternal',{slug:'${esc(s.slug)}'})" title="Inspect the process listening on port ${s.port}">${uiIcon('search', 'Inspect')}</button>`}`
             : `<button class="tbtn" onclick="ask('serverStop',{slug:'${esc(s.slug)}'})" title="Stop the detached ${esc(s.name)} process">${uiIcon('debug-stop', 'Stop')}</button><button class="tbtn" onclick="ask('serverRestart',{slug:'${esc(s.slug)}'})" title="Restart ${esc(s.name)} with its saved settings">${uiIcon('refresh', 'Restart')}</button>`}</span>
           <span class="srv-management-actions"><button class="tbtn" onclick="ask('serverOpenFolder',{slug:'${esc(s.slug)}'})" title="Open the server folder (code + any data it writes)">${uiIcon('folder-opened', 'Folder')}</button>
           <button class="tbtn" onclick="editServer('${esc(s.slug)}')" title="Edit server settings: command, port, and Python">${uiIcon('settings-gear', 'Settings')}</button>
@@ -385,4 +385,3 @@ function onServerLog(slug, text) {
 function deleteServer(slug, name) {
   pkModal({ title: 'Delete server “' + name + '”?', message: 'Removes “' + slug + '” and its code from the store.', okLabel: 'Delete', danger: true, onOk: () => ask('serverDelete', { slug }) });
 }
-

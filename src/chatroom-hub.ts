@@ -13,6 +13,7 @@ import { ChatPersistence, PersistedChatMessage } from "./chat-persistence";
 import { ChatRoomLifecycle, ActiveChatRoom, StoredChatRoom } from "./chat-room-lifecycle";
 import { SecretStorageLike } from "./chat-room-credentials";
 import { ChatJoinApprovalManager, JoinApprovalResult, PendingJoinApproval } from "./chat-join-approval";
+import { assertCollaborationMessageCanConverge, CollaborationError, CollaborationWarning, communicationReceiptTemplate, normalizeCollaborationMessage } from "./collaboration-model";
 
 function constantTimeEquals(a: string, b: string): boolean {
   const ba = Buffer.from(a, "utf-8");
@@ -57,6 +58,8 @@ interface RoomState {
   muted: Set<string>;                 // identity keys the host has muted (persists across reconnects)
   receipts: Map<string, { targets: Set<string>; readers: Set<string> }>;
   meetingSnapshot?: Record<string, unknown>;
+  projectId?: string;
+  threadId?: string;
 }
 
 // One identity's lifetime in a room. Keyed by a stable identity (cid) when the
@@ -346,14 +349,14 @@ export class ChatHub {
     this.log(`chat hub listening on ${this._port} (ws + browser view)`);
   }
 
-  async createRoom(roomName: string, requestedJoinSecret?: string): Promise<{ roomId: string; room: string; secret: string; hostToken: string }> {
+  async createRoom(roomName: string, requestedJoinSecret?: string, ownership?: { projectId: string; threadId: string }): Promise<{ roomId: string; room: string; secret: string; hostToken: string; projectId?: string; threadId?: string }> {
     if (!this.lifecycle) throw new Error("Chat Hub lifecycle is not configured or running.");
     const room = ChatHub.displayRoomName(roomName);
     this.storedRooms = await this.lifecycle.listStoredRooms();
     if (this.findRoomIdByName(room) || this.storedRooms.some(item => ChatHub.canonRoom(item.roomName) === ChatHub.canonRoom(room))) {
       throw new Error(`A Room named "${room}" already exists. Rehost the stored Room instead.`);
     }
-    const active = await this.lifecycle.createRoom(room, requestedJoinSecret);
+    const active = await this.lifecycle.createRoom(room, requestedJoinSecret, ownership);
     this.lifecycle.publishActiveDescriptor(active.roomId, room, `ws://${this.publicHost}:${this.port}`);
     if (!active.messages.length) {
       const legacy = this.readLegacyArchive(room);
@@ -365,18 +368,22 @@ export class ChatHub {
     this.installActiveRoom(active);
     const hostToken = randomBytes(24).toString("base64url");
     this.hostTokens.set(active.roomId, hostToken);
-    return { roomId: active.roomId, room, secret: active.joinSecret, hostToken };
+    return { roomId: active.roomId, room, secret: active.joinSecret, hostToken, projectId: active.projectId, threadId: active.threadId };
   }
 
   async rehostRoom(roomId: string): Promise<{ roomId: string; room: string; secret: string; hostToken: string }> {
     if (!this.lifecycle) throw new Error("Chat Hub lifecycle is not configured or running.");
+    const alreadyActive = this.rooms.get(roomId);
+    if (alreadyActive) throw new Error(`Room "${alreadyActive.displayName}" is already active in this Hub.`);
+    this.storedRooms = await this.lifecycle.listStoredRooms();
+    const stored = this.storedRooms.find(item => item.roomId === roomId);
+    if (stored) {
+      const storedRoom = ChatHub.displayRoomName(stored.roomName);
+      if (this.findRoomIdByName(storedRoom)) throw new Error(`An active Room named "${storedRoom}" already exists.`);
+    }
     const active = await this.lifecycle.rehostRoom(roomId);
     const room = ChatHub.displayRoomName(active.roomName);
     this.lifecycle.publishActiveDescriptor(active.roomId, room, `ws://${this.publicHost}:${this.port}`);
-    if (this.rooms.has(roomId)) {
-      await this.lifecycle.deactivateRoom(roomId, "name-conflict");
-      throw new Error(`An active Room named "${room}" already exists.`);
-    }
     this.installActiveRoom(active);
     const hostToken = randomBytes(24).toString("base64url");
     this.hostTokens.set(roomId, hostToken);
@@ -413,6 +420,7 @@ export class ChatHub {
       roomId: active.roomId, displayName: room, history: active.messages.map(message => this.fromPersisted(message)),
       owner: active.hostParticipantId || "", ownerName, graceTimer: null, roster, muted: new Set(),
       receipts: new Map(),
+      projectId: active.projectId, threadId: active.threadId,
     };
     this.rooms.set(active.roomId, state);
     this.roomSecret.set(active.roomId, active.joinSecret);
@@ -550,7 +558,9 @@ export class ChatHub {
         responseRequired: message.responseRequired, replyPolicy: message.replyPolicy, mode: message.mode,
         discussionAudience: message.discussionAudience, discussionLead: message.discussionLead, finalTopicSummary: message.finalTopicSummary,
         replyToMessageId: message.replyToMessageId,
-        recipients: message.recipients },
+        recipients: message.recipients, projectId: message.projectId, threadId: message.threadId,
+        collaboration: message.collaboration, clientRequestId: message.clientRequestId,
+        requestFingerprint: message.requestFingerprint, convergenceWarnings: message.convergenceWarnings },
       createdAt: message.ts,
     };
   }
@@ -561,6 +571,10 @@ export class ChatHub {
       ts: message.createdAt, kind: message.senderKind as MemberKind, system: !!metadata.system,
       file: metadata.file, receipt: metadata.receipt, responseRequired: metadata.responseRequired,
       replyPolicy: metadata.replyPolicy, mode: metadata.mode, discussionAudience: metadata.discussionAudience, discussionLead: metadata.discussionLead,
+      projectId: metadata.projectId, threadId: metadata.threadId,
+      collaboration: metadata.collaboration,
+      clientRequestId: metadata.clientRequestId, requestFingerprint: metadata.requestFingerprint,
+      convergenceWarnings: metadata.convergenceWarnings,
       finalTopicSummary: metadata.finalTopicSummary === true,
       replyToMessageId: metadata.replyToMessageId, recipients: metadata.recipients };
   }
@@ -819,6 +833,10 @@ export class ChatHub {
         : [];
       const requestedRecipients = structuredRecipients.length ? structuredRecipients : this.allMentionNames(text);
       const recipientNames = this.validRecipientNames(roomState, conn, requestedRecipients);
+      if (structuredRecipients.length && new Set(structuredRecipients.map(name => name.toLocaleLowerCase())).size !== recipientNames.length) {
+        rejectMessage("structured-recipient-invalid", "Structured recipients are authoritative and every recipient must be a current Room participant.");
+        return;
+      }
       if (!text.trim().startsWith("/") && !recipientNames.length) {
         rejectMessage("mention-required", "Every Chatroom message must address @all or a specific @participant.");
         return;
@@ -845,7 +863,141 @@ export class ChatHub {
         replyToMessageId: String(frame.replyToMessageId || "").slice(0, 120) || undefined,
         recipients: recipientNames,
         finalTopicSummary: frame.finalTopicSummary === true,
+        projectId: roomState.projectId,
+        threadId: roomState.threadId,
+        clientRequestId: clientRequestId || undefined,
       };
+      if (clientRequestId) {
+        m.requestFingerprint = createHash("sha256").update(JSON.stringify({
+          text, recipients: recipientNames.map(name => name.toLocaleLowerCase()).sort(),
+          replyPolicy: m.replyPolicy, replyToMessageId: m.replyToMessageId || "", collaboration: frame.collaboration || null,
+        })).digest("hex");
+        const priorRequest = roomState.history.find(message => message.clientRequestId === clientRequestId && message.fromId === conn.participantId);
+        if (priorRequest) {
+          if (priorRequest.requestFingerprint !== m.requestFingerprint) {
+            rejectMessage("client-request-conflict", "Client request ID was already used for different work.");
+          } else {
+            this.sendTo(conn.ws, { t: "msg.accepted", room: conn.room, clientRequestId, messageId: priorRequest.id });
+          }
+          return;
+        }
+      }
+      if (frame.collaboration != null) {
+        try {
+          const collaboration = normalizeCollaborationMessage(frame.collaboration, {
+            projectId: roomState.projectId,
+            threadId: roomState.threadId,
+          })!;
+          const receiptTemplate = communicationReceiptTemplate(collaboration.receiptKind);
+          if (receiptTemplate && m.replyPolicy !== receiptTemplate.replyPolicy) {
+            rejectMessage("collaboration-receipt-reply-policy-mismatch", `${receiptTemplate.label} requires ${receiptTemplate.replyPolicy} reply policy.`);
+            return;
+          }
+          const prior = roomState.history.filter(message =>
+            message.collaboration?.collaborationId === collaboration.collaborationId
+            && !message.collaboration.stale);
+          const latestVersion = prior.reduce((latest, message) =>
+            Math.max(latest, message.collaboration?.taskVersion || 0), 0);
+          if (collaboration.taskVersion > Math.max(1, latestVersion + 1)) {
+            rejectMessage("collaboration-version-gap", `Collaboration is at version ${latestVersion}; refresh before sending version ${collaboration.taskVersion}.`);
+            return;
+          }
+          if (collaboration.taskVersion < latestVersion
+            || (collaboration.action && collaboration.taskVersion === latestVersion)) {
+            rejectMessage("collaboration-stale-context", `Stale collaboration context: version ${collaboration.taskVersion}; current Room version is ${latestVersion}. Refresh and retry.`);
+            return;
+          }
+          if (collaboration.expectedResponders.length) {
+            const expected = [...collaboration.expectedResponders].map(name => name.toLocaleLowerCase()).sort();
+            const actual = recipientNames.map(name => name.toLocaleLowerCase()).sort();
+            if (expected.length !== actual.length || expected.some((name, index) => name !== actual[index])) {
+              rejectMessage("collaboration-recipient-mismatch", `Structured recipients must exactly match required responders: ${collaboration.expectedResponders.join(", ")}.`);
+              return;
+            }
+          }
+          if (frame.finalTopicSummary && collaboration.decisionRequired && !collaboration.decisionResult) {
+            rejectMessage("collaboration-summary-decision-required", "Final synthesis requires the contract decision/result.");
+            return;
+          }
+          assertCollaborationMessageCanConverge(collaboration);
+          if ((frame.acknowledgement === true || collaboration.acknowledgement) && m.replyPolicy === "none" && m.replyToMessageId) {
+            const parent = roomState.history.find(message => message.id === m.replyToMessageId);
+            if (parent?.replyPolicy === "none") {
+              rejectMessage("ack-chain-suppressed", "Acknowledgement chain suppressed because the referenced message requires no reply.");
+              return;
+            }
+          }
+          const now = new Date().toISOString();
+          const warnings: CollaborationWarning[] = [];
+          if (collaboration.evidenceMatchesContract === false) {
+            warnings.push({ code: "collaboration-evidence-mismatch", message: "Evidence was explicitly marked as unrelated to the contract; no semantic classifier was used.", at: now });
+          }
+          if (collaboration.deadlineAt && Date.now() >= Date.parse(collaboration.deadlineAt)) {
+            const unresolved = collaboration.expectedResponders.filter(name => !collaboration.resolvedResponders.includes(name));
+            if (unresolved.length) warnings.push({
+              code: "collaboration-responder-timeout",
+              message: `Required responder deadline passed; unresolved: ${unresolved.join(", ")}.`,
+              at: now,
+            });
+          }
+          const owner = collaboration.primaryOwner;
+          if (owner && collaboration.blockedWaitingOn.length) {
+            const waits = new Map<string, string[]>();
+            for (const message of prior) {
+              const metadata = message.collaboration;
+              if (metadata?.primaryOwner) waits.set(metadata.primaryOwner, metadata.blockedWaitingOn);
+            }
+            waits.set(owner, collaboration.blockedWaitingOn);
+            const visiting = new Set<string>();
+            const visited = new Set<string>();
+            const cyclic = (node: string): boolean => {
+              if (visiting.has(node)) return true;
+              if (visited.has(node)) return false;
+              visiting.add(node);
+              for (const dependency of waits.get(node) || []) if (cyclic(dependency)) return true;
+              visiting.delete(node);
+              visited.add(node);
+              return false;
+            };
+            if (cyclic(owner)) warnings.push({
+              code: "collaboration-dependency-cycle",
+              message: "Mutual waiting/dependency cycle detected; reassign ownership or remove a waiting dependency.",
+              at: now,
+            });
+          }
+          collaboration.warnings = [...collaboration.warnings, ...warnings];
+          if (warnings.some(item => item.code === "collaboration-responder-timeout")) collaboration.convergenceState = "escalated";
+          else if (warnings.some(item => item.code === "collaboration-dependency-cycle")) collaboration.convergenceState = "blocked";
+          m.convergenceWarnings = collaboration.warnings;
+          m.collaboration = collaboration;
+        } catch (error) {
+          const collaborationError = error as CollaborationError;
+          rejectMessage(collaborationError.code || "collaboration-invalid", collaborationError.message || "Collaboration metadata is invalid.");
+          return;
+        }
+      }
+      if (frame.collaboration == null && frame.acknowledgement === true && m.replyPolicy === "none" && m.replyToMessageId) {
+        const parent = roomState.history.find(message => message.id === m.replyToMessageId);
+        if (parent?.replyPolicy === "none") {
+          rejectMessage("ack-chain-suppressed", "Acknowledgement chain suppressed because the referenced message requires no reply.");
+          return;
+        }
+      }
+      const normalizedText = text.normalize("NFKC").trim().replace(/\s+/g, " ").toLocaleLowerCase();
+      const repeated = roomState.history.slice(-8).filter(message =>
+        message.fromId === conn.participantId
+        && message.text.normalize("NFKC").trim().replace(/\s+/g, " ").toLocaleLowerCase() === normalizedText
+        && JSON.stringify([...(message.recipients || [])].map(name => name.toLocaleLowerCase()).sort())
+          === JSON.stringify([...recipientNames].map(name => name.toLocaleLowerCase()).sort()));
+      if (repeated.length >= 2) {
+        const repeatedWarning: CollaborationWarning = {
+          code: "normalized-message-loop",
+          message: "Repeated normalized message loop detected; delivery continued and human review is recommended.",
+          at: new Date().toISOString(),
+        };
+        m.convergenceWarnings = [...(m.convergenceWarnings || []), repeatedWarning];
+        if (m.collaboration) m.collaboration.warnings = [...m.collaboration.warnings, repeatedWarning];
+      }
       const targets = this.mentionTargets(conn.room, conn, text, recipientNames);
       m.responseRequired = m.replyPolicy === "required";
       if (m.mode === "discuss") {
@@ -895,7 +1047,7 @@ export class ChatHub {
       const note: ChatMessage = {
         id: randomBytes(6).toString("hex"), from: conn.user, fromId: conn.participantId,
         text: `📎 shared a file: ${f.name} (${humanSize(f.size)})`,
-        ts: Date.now(), kind: conn.kind, file: f,
+        ts: Date.now(), kind: conn.kind, file: f, projectId: this.roomState(conn.room).projectId, threadId: this.roomState(conn.room).threadId,
       };
       await this.remember(conn.room, note);
       // Relay the live offer to everyone EXCEPT the sender.
@@ -1471,4 +1623,3 @@ export class ChatHub {
     return "127.0.0.1";
   }
 }
-

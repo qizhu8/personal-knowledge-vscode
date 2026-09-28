@@ -21,8 +21,8 @@ async function main() {
     const scriptDir = path.join(root, 'scripts', 'Tools');
     fs.mkdirSync(scriptDir, { recursive: true });
     const notePath = path.join(noteDir, 'progress.md');
-    fs.writeFileSync(notePath, '---\ntitle: First Progress\ntype: general\n---\nbody');
-    fs.writeFileSync(path.join(skillDir, 'Testing.md'), '---\nname: Testing\ndescription: tests\n---\nbody');
+    fs.writeFileSync(notePath, '---\nschema: "pkm.knowledge/v1"\nknowledgeId: "knowledge_0123456789abcdef01234567"\nrevision: 2\naliases: ["note:Project/Deep/progress"]\ntitle: First Progress\ntype: general\n---\nbody');
+    fs.writeFileSync(path.join(skillDir, 'Testing.md'), '---\nschema: "pkm.knowledge/v1"\nknowledgeId: "knowledge_aaaaaaaaaaaaaaaaaaaaaaaa"\nrevision: 1\naliases: ["skill:Coding/Testing"]\nname: Testing\ndescription: tests\n---\nbody');
     fs.writeFileSync(path.join(scriptDir, 'check.py'), 'print("ok")');
 
     const manager = new KnowledgeInventoryManager(root, state, worker);
@@ -32,10 +32,13 @@ async function main() {
     assert.strictEqual(first.stats.scanned, 3);
     assert.strictEqual(first.stats.parsed, 3);
     assert.strictEqual(manager.notes()[0].title, 'First Progress');
+    assert.strictEqual(manager.notes()[0].knowledgeId, 'knowledge_0123456789abcdef01234567');
+    assert.strictEqual(manager.notes()[0].revision, 2);
     assert.deepStrictEqual(manager.folders('notes'), ['Project', 'Project/Deep', 'Project/Future Empty']);
     fs.mkdirSync(path.join(root, 'notes', 'Project', 'Visible After Refresh'), { recursive: true });
     assert.deepStrictEqual(manager.folders('notes'), ['Project', 'Project/Deep', 'Project/Future Empty'], 'repeated folder reads must reuse the cached tree');
     assert.strictEqual(manager.skills()[0].name, 'Testing');
+    assert.strictEqual(manager.skills()[0].knowledgeId, 'knowledge_aaaaaaaaaaaaaaaaaaaaaaaa');
     assert.deepStrictEqual(manager.folders('skills'), ['Coding', 'Planned', 'Planned/Empty Skill Group']);
     assert.deepStrictEqual(manager.scripts()[0], {
       path: 'Tools/check.py', file: 'check.py', category: 'Tools', extension: '.py', lang: 'Python', size: 11, updatedAt: manager.scripts()[0].updatedAt,
@@ -45,7 +48,7 @@ async function main() {
     assert.strictEqual(second.stats.reused, 3);
     assert.strictEqual(second.stats.parsed, 0);
     assert.deepStrictEqual(manager.folders('notes'), ['Project', 'Project/Deep', 'Project/Future Empty', 'Project/Visible After Refresh'], 'inventory refresh must invalidate the folder cache');
-    fs.writeFileSync(notePath, '---\ntitle: Updated Progress\ntype: general\n---\nupdated body is larger');
+    fs.writeFileSync(notePath, '---\nschema: "pkm.knowledge/v1"\nknowledgeId: "knowledge_0123456789abcdef01234567"\nrevision: 3\naliases: ["note:Project/Deep/progress"]\ntitle: Updated Progress\ntype: general\n---\nupdated body is larger');
     const third = await manager.refresh();
     assert.strictEqual(third.stats.reused, 2);
     assert.strictEqual(third.stats.parsed, 1);

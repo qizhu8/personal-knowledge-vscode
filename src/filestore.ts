@@ -14,6 +14,7 @@ import {
   existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, rmSync, renameSync,
 } from "fs";
 import { createHash, randomBytes } from "crypto";
+import { compileKnowledgeLinksV1, nextKnowledgeIdentity, readKnowledgeIdentity } from "./knowledge-contracts";
 
 let _store = "";
 
@@ -32,7 +33,7 @@ export function setStorePath(p: string): void {
 export function getStorePath(): string { return _store; }
 
 // ── Frontmatter (minimal, self-produced YAML subset) ───────────────────────
-function parseFrontmatter(text: string): { fm: Record<string, any>; body: string } {
+export function parseStoreFrontmatter(text: string): { fm: Record<string, any>; body: string } {
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text);
   if (!m) return { fm: {}, body: text };
   const fm: Record<string, any> = {};
@@ -48,16 +49,20 @@ function parseFrontmatter(text: string): { fm: Record<string, any>; body: string
   return { fm, body: text.slice(m[0].length) };
 }
 
-function serializeFrontmatter(fm: Record<string, any>, body: string): string {
+export function serializeStoreFrontmatter(fm: Record<string, any>, body: string): string {
   const lines = ["---"];
   for (const [k, v] of Object.entries(fm)) {
     if (v === undefined || v === null) continue;
     if (Array.isArray(v) || typeof v === "string") lines.push(`${k}: ${JSON.stringify(v)}`);
     else lines.push(`${k}: ${v}`);
   }
+
   lines.push("---", "");
   return lines.join("\n") + (body ?? "");
 }
+
+const parseFrontmatter = parseStoreFrontmatter;
+const serializeFrontmatter = serializeStoreFrontmatter;
 
 // ── Path helpers ────────────────────────────────────────────────────────────
 function safeName(s: string): string {
@@ -83,6 +88,11 @@ export interface KnowledgeTrashEntry {
   deletedAt: string;
 }
 
+interface RemoveOperations {
+  remove?: (target: string) => void;
+  sleep?: (milliseconds: number) => void;
+}
+
 function knowledgeTrashRoot(area: KnowledgeTrashArea): string { return join(areaRoot(area), ".trash"); }
 function knowledgeTrashPath(area: KnowledgeTrashArea, relativePath: string): { rel: string; full: string } | undefined {
   const rel = String(relativePath || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
@@ -104,6 +114,7 @@ export function knowledgeMoveToTrash(area: KnowledgeTrashArea, relativePath: str
     mkdirSync(entryDir, { recursive: true });
     writeFileSync(join(entryDir, "metadata.json"), JSON.stringify(entry, null, 2) + "\n");
     renameSync(source.full, join(entryDir, "payload"));
+    pruneEmptyAncestors(resolve(source.full, ".."), resolve(areaRoot(area)));
     return entry;
   } catch {
     rmSync(entryDir, { recursive: true, force: true });
@@ -141,20 +152,24 @@ export function knowledgeTrashRestore(area: KnowledgeTrashArea, id: string): { o
   } catch (error: any) { return { ok: false, error: error?.message || String(error) }; }
 }
 
-export function knowledgeTrashDelete(area: KnowledgeTrashArea, id: string): { ok: boolean; name?: string; path?: string; kind?: KnowledgeTrashEntry["kind"]; error?: string } {
+export function knowledgeTrashDelete(area: KnowledgeTrashArea, id: string, operations: RemoveOperations = {}): { ok: boolean; name?: string; path?: string; kind?: KnowledgeTrashEntry["kind"]; error?: string } {
   const entry = knowledgeTrashList(area).find(item => item.id === id);
   if (!entry) return { ok: false, error: "Trash item was not found." };
   try {
-    rmSync(join(knowledgeTrashRoot(area), id), { recursive: true, force: true });
-    if (existsSync(knowledgeTrashRoot(area)) && readdirSync(knowledgeTrashRoot(area)).length === 0) rmSync(knowledgeTrashRoot(area), { recursive: true, force: true });
+    removePathWithRetry(join(knowledgeTrashRoot(area), id), operations);
     return { ok: true, name: entry.name, path: entry.originalPath, kind: entry.kind };
   } catch (error: any) { return { ok: false, error: error?.message || String(error) }; }
 }
 
-export function knowledgeTrashEmpty(area: KnowledgeTrashArea): number {
+export function knowledgeTrashEmpty(area: KnowledgeTrashArea, operations: RemoveOperations = {}): { ok: boolean; count: number; error?: string } {
   const count = knowledgeTrashList(area).length;
-  rmSync(knowledgeTrashRoot(area), { recursive: true, force: true });
-  return count;
+  try {
+    removePathWithRetry(knowledgeTrashRoot(area), operations);
+    return { ok: true, count };
+  } catch (error: any) {
+    const remaining = knowledgeTrashList(area).length;
+    return { ok: false, count: Math.max(0, count - remaining), error: error?.message || String(error) };
+  }
 }
 
 function walkMd(dir: string, rel: string, out: MdFile[]): void {
@@ -171,6 +186,12 @@ function walkMd(dir: string, rel: string, out: MdFile[]): void {
 }
 
 const now = () => new Date().toISOString();
+function validatedKnowledgeLinks(value: unknown): unknown[] | undefined {
+  if (value === undefined) return undefined;
+  const compiled = compileKnowledgeLinksV1(value);
+  if (!compiled.ok) throw new Error(`Invalid Knowledge links: ${compiled.diagnostics.map(item => `${item.pointer} ${item.message}`).join("; ")}`);
+  return compiled.links;
+}
 function relNoExt(rel: string): string { return rel.replace(/\.md$/i, ""); }
 function catOf(keyPath: string): string {
   return keyPath.includes("/") ? keyPath.slice(0, keyPath.lastIndexOf("/")) : "";
@@ -193,11 +214,13 @@ function noteFromFile(f: MdFile, includeContent = true): any {
   const key = relNoExt(f.rel);
   const row = {
     slug: key,
+    ...readKnowledgeIdentity(fm, "note", key),
     title: fm.title || nameOf(key),
     description: fm.description || "",
     type: fm.type || "general",
     tags: JSON.stringify(asArray(fm.tags)),
     pinned: fm.pinned === true,
+    links: Array.isArray(fm.links) ? fm.links : [],
     category: catOf(key),
     ...(includeContent ? { content: body } : {}),
     created_at: fm.created || new Date(f.mtime).toISOString(),
@@ -236,7 +259,7 @@ export function noteGet(slug: string): any {
 }
 
 export function noteUpsert(row: {
-  slug: string; title: string; content: string; type: string; tags: string[]; category?: string; pinned?: boolean; description?: string;
+  slug: string; title: string; content: string; type: string; tags: string[]; category?: string; pinned?: boolean; description?: string; links?: unknown[];
 }): boolean {
   const existing = noteGet(row.slug);
   const category = safeCategory(row.category ?? existing?.category ?? "");
@@ -244,6 +267,7 @@ export function noteUpsert(row: {
   const newRel = category ? `${category}/${filename}` : filename;
   const full = join(notesRoot(), newRel);
   const created = existing?.created_at ?? now();
+  const identity = nextKnowledgeIdentity(existing, "note", existing?.slug || row.slug || newRel, relNoExt(newRel));
 
   // Move/rename: if the identity path changed, remove the old file
   const oldFull = join(notesRoot(), row.slug + ".md");
@@ -252,7 +276,11 @@ export function noteUpsert(row: {
   }
   mkdirSync(join(full, ".."), { recursive: true });
   const pinned = (row.pinned ?? existing?.pinned) ? true : undefined;
-  const fm: any = { title: row.title, description: row.description ?? existing?.description ?? "", type: row.type, tags: row.tags ?? [], created };
+  const fm: any = {
+    schema: identity.schema, knowledgeId: identity.knowledgeId, revision: identity.revision, aliases: identity.aliases,
+    title: row.title, description: row.description ?? existing?.description ?? "", type: row.type, tags: row.tags ?? [], created,
+    links: validatedKnowledgeLinks(row.links ?? existing?.links),
+  };
   if (pinned) fm.pinned = true; // only write when set, to keep frontmatter clean
   writeFileSync(full, serializeFrontmatter(fm, row.content ?? ""));
   return !existing;
@@ -312,6 +340,22 @@ export function folderCreate(area: string, relPath: string): boolean {
 export function folderList(area: string): string[] {
   if (!["skills", "notes", "papers", "prompts", "scripts"].includes(area)) return [];
   const out: string[] = [];
+  if (area === "papers") {
+    const walkMeaningful = (dir: string, rel: string): boolean => {
+      let ents: any[];
+      try { ents = readdirSync(dir, { withFileTypes: true }); } catch { return false; }
+      let meaningful = ents.some(entry => entry.isFile() && (entry.name === ".gitkeep" || (!entry.name.startsWith(".") && entry.name.toLowerCase().endsWith(".md"))));
+      for (const entry of ents) {
+        if (!entry.isDirectory() || entry.name.startsWith(".") || entry.name === "_assets") continue;
+        const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+        if (walkMeaningful(join(dir, entry.name), childRel)) meaningful = true;
+      }
+      if (rel && meaningful) out.push(rel);
+      return meaningful;
+    };
+    walkMeaningful(areaRoot(area), "");
+    return out.sort((left, right) => left.localeCompare(right));
+  }
   const walk = (dir: string, rel: string): void => {
     let ents: any[];
     try { ents = readdirSync(dir, { withFileTypes: true }); } catch { return; }
@@ -355,7 +399,57 @@ export function folderRename(area: FolderArea, oldRelPath: string, newRelPath: s
 }
 
 /** Delete only the folder container, moving children to its parent or a same-level fallback group. */
-export function folderDeletePromote(area: FolderArea, relPath: string, fallbackGroup = ""): { ok: boolean; moved: number; error?: string } {
+interface FolderDeleteOperations {
+  rename?: (source: string, destination: string) => void;
+  remove?: (folder: string) => void;
+  sleep?: (milliseconds: number) => void;
+}
+
+const FOLDER_DELETE_RETRY_DELAYS_MS = [0, 50, 100, 200, 400, 800, 800, 800];
+const RETRYABLE_FOLDER_DELETE_ERRORS = new Set(["EACCES", "EBUSY", "EMFILE", "ENFILE", "ENOTEMPTY", "EPERM"]);
+
+function sleepSync(milliseconds: number): void {
+  if (milliseconds <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+function removePathWithRetry(target: string, operations: RemoveOperations): void {
+  if (!existsSync(target)) return;
+  const remove = operations.remove || ((target: string) => rmSync(target, { recursive: true, force: true }));
+  const sleep = operations.sleep || sleepSync;
+  let lastError: any;
+  for (const delay of FOLDER_DELETE_RETRY_DELAYS_MS) {
+    if (delay) sleep(delay);
+    try {
+      remove(target);
+      return;
+    } catch (error: any) {
+      if (!existsSync(target)) return;
+      lastError = error;
+      if (!RETRYABLE_FOLDER_DELETE_ERRORS.has(String(error?.code || ""))) throw error;
+    }
+  }
+  throw lastError;
+}
+
+function pruneEmptyAncestors(start: string, boundary: string): void {
+  const root = resolve(boundary);
+  let current = resolve(start);
+  while (current !== root && current.startsWith(root + sep)) {
+    let entries: string[];
+    try { entries = readdirSync(current); } catch { return; }
+    if (entries.length) return;
+    try { rmSync(current, { recursive: true, force: true }); } catch { return; }
+    current = resolve(current, "..");
+  }
+}
+
+export function folderDeletePromote(
+  area: FolderArea,
+  relPath: string,
+  fallbackGroup = "",
+  operations: FolderDeleteOperations = {},
+): { ok: boolean; moved: number; error?: string } {
   const source = safeFolderOperationPath(area, relPath);
   if (!source || !existsSync(source.full) || !statSync(source.full).isDirectory()) return { ok: false, moved: 0, error: "Folder not found." };
   const parentRel = source.rel.includes("/") ? source.rel.slice(0, source.rel.lastIndexOf("/")) : "";
@@ -364,13 +458,49 @@ export function folderDeletePromote(area: FolderArea, relPath: string, fallbackG
   const entries = readdirSync(source.full).filter(name => name !== ".gitkeep");
   const collision = entries.find(name => existsSync(join(destinationFull, name)));
   if (collision) return { ok: false, moved: 0, error: `Cannot delete group: "${collision}" already exists in ${destinationRel || "Root"}.` };
+  const rename = operations.rename || renameSync;
+  const moved: string[] = [];
+  let removingContainer = false;
   try {
     if (entries.length) mkdirSync(destinationFull, { recursive: true });
-    for (const name of entries) renameSync(join(source.full, name), join(destinationFull, name));
-    rmSync(source.full, { recursive: true, force: true });
+    for (const name of entries) {
+      rename(join(source.full, name), join(destinationFull, name));
+      moved.push(name);
+    }
+    removingContainer = true;
+    removePathWithRetry(source.full, operations);
     if (area === "notes") repathFolderPins(source.rel, destinationRel);
     return { ok: true, moved: entries.length };
-  } catch (error: any) { return { ok: false, moved: 0, error: error?.message || String(error) }; }
+  } catch (error: any) {
+    if (!existsSync(source.full)) {
+      if (area === "notes") repathFolderPins(source.rel, destinationRel);
+      return { ok: true, moved: entries.length };
+    }
+    const rollbackFailures: string[] = [];
+    for (const name of moved.slice().reverse()) {
+      try {
+        rename(join(destinationFull, name), join(source.full, name));
+      } catch {
+        rollbackFailures.push(name);
+      }
+    }
+    const detail = error?.message || String(error);
+    const failure = removingContainer
+      ? `Could not delete folder after ${FOLDER_DELETE_RETRY_DELAYS_MS.length} attempts`
+      : "Could not move all folder contents to their destination";
+    if (rollbackFailures.length) {
+      return {
+        ok: false,
+        moved: rollbackFailures.length,
+        error: `${failure}: ${detail}. Rollback was incomplete for: ${rollbackFailures.join(", ")}.`,
+      };
+    }
+    return {
+      ok: false,
+      moved: 0,
+      error: `${failure}: ${detail}. Its contents were restored; OneDrive or another application may still be holding the folder.`,
+    };
+  }
 }
 
 export function storeEntryMove(
@@ -594,6 +724,7 @@ function skillFromFile(f: MdFile): any {
   return {
     name: fm.name || nameOf(key),
     _key: key,
+    ...readKnowledgeIdentity(fm, "skill", key),
     description: fm.description ?? "",
     category: catOf(key),
     tags: JSON.stringify(asArray(fm.tags)),
@@ -601,6 +732,7 @@ function skillFromFile(f: MdFile): any {
     recipe_required: fm.recipe_required === true,
     recipe_hint: String(fm.recipe_hint || ""),
     related_skills: asArray(fm.related_skills),
+    links: Array.isArray(fm.links) ? fm.links : [],
     priority: skillPriority(fm.priority),
     pinned: fm.pinned === true,
     content: body,
@@ -655,7 +787,7 @@ export function skillGet(name: string): any {
 
 export function skillUpsert(row: {
   name: string; content: string; description?: string; category?: string; tags?: string[]; source_project?: string; pinned?: boolean;
-  recipe_required?: boolean; recipe_hint?: string; related_skills?: string[]; priority?: SkillPriority;
+  recipe_required?: boolean; recipe_hint?: string; related_skills?: string[]; priority?: SkillPriority; links?: unknown[];
 }): boolean {
   const existingFile = findSkillFile(row.name);
   const existing = existingFile ? skillFromFile(existingFile) : null;
@@ -664,12 +796,17 @@ export function skillUpsert(row: {
   const newRel = category ? `${category}/${filename}` : filename;
   const full = join(skillsRoot(), newRel);
   const created = existing?.created_at ?? now();
+  const identity = nextKnowledgeIdentity(existing, "skill", existing?._key || newRel, relNoExt(newRel));
 
   if (existingFile && existingFile.full !== full) {
     try { rmSync(existingFile.full, { force: true }); } catch { /* ignore */ }
   }
   mkdirSync(join(full, ".."), { recursive: true });
   const fm = {
+    schema: identity.schema,
+    knowledgeId: identity.knowledgeId,
+    revision: identity.revision,
+    aliases: identity.aliases,
     name: row.name,
     description: row.description ?? existing?.description ?? "",
     tags: row.tags ?? (existing ? JSON.parse(existing.tags || "[]") : []),
@@ -677,6 +814,7 @@ export function skillUpsert(row: {
     recipe_required: (row.recipe_required ?? existing?.recipe_required) ? true : undefined,
     recipe_hint: row.recipe_hint ?? existing?.recipe_hint ?? undefined,
     related_skills: row.related_skills ?? existing?.related_skills ?? undefined,
+    links: validatedKnowledgeLinks(row.links ?? existing?.links),
     priority: skillPriority(row.priority ?? existing?.priority) === "normal" ? undefined : skillPriority(row.priority ?? existing?.priority),
     pinned: (row.pinned ?? existing?.pinned) ? true : undefined,
     created,
@@ -807,6 +945,7 @@ function paperFromFile(f: MdFile): any {
   const key = relNoExt(f.rel);
   return {
     slug: key,
+    ...readKnowledgeIdentity(fm, "research", key),
     title: fm.title || nameOf(key),
     description: fm.description || "",
     kind: fm.kind === "idea" ? "idea" : "paper",
@@ -822,6 +961,7 @@ function paperFromFile(f: MdFile): any {
     conclusions: asArray(fm.conclusions),
     implementation: asArray(fm.implementation),
     assumptions: asArray(fm.assumptions),
+    links: Array.isArray(fm.links) ? fm.links : [],
     cites: normalizeCites(fm.cites),
     category: catOf(key),
     content: body,
@@ -882,7 +1022,7 @@ export function paperUpsert(row: {
   slug: string; title: string; content?: string; authors?: string[]; year?: number | string | null;
   topic?: string; publisher?: string; tags?: string[]; url?: string; file?: string;
   conclusions?: string[]; implementation?: string[]; assumptions?: string[]; cites?: Cite[];
-  category?: string; kind?: string; group?: string; pinned?: boolean; description?: string;
+  category?: string; kind?: string; group?: string; pinned?: boolean; description?: string; links?: unknown[];
 }): boolean {
   const existing = paperGet(row.slug);
   const category = safeCategory(row.category ?? existing?.category ?? "");
@@ -890,6 +1030,7 @@ export function paperUpsert(row: {
   const newRel = category ? `${category}/${filename}` : filename;
   const full = join(papersRoot(), newRel);
   const created = existing?.created_at ?? now();
+  const identity = nextKnowledgeIdentity(existing, "research", existing?.slug || row.slug || newRel, relNoExt(newRel));
   const resolvePaper = buildPaperResolver(allPaperFiles().map(paperFromFile));
   const cites = normalizeCites(row.cites ?? existing?.cites ?? []).flatMap(cite => {
     const target = resolvePaper(cite.paper);
@@ -898,10 +1039,17 @@ export function paperUpsert(row: {
 
   const oldFull = join(papersRoot(), row.slug + ".md");
   if (existing && relNoExt(newRel) !== row.slug && existsSync(oldFull)) {
-    try { rmSync(oldFull, { force: true }); } catch { /* ignore */ }
+    try {
+      rmSync(oldFull, { force: true });
+      pruneEmptyAncestors(resolve(oldFull, ".."), resolve(papersRoot()));
+    } catch { /* preserve the existing paper if its old file cannot be removed */ }
   }
   mkdirSync(join(full, ".."), { recursive: true });
   const fm: Record<string, any> = {
+    schema: identity.schema,
+    knowledgeId: identity.knowledgeId,
+    revision: identity.revision,
+    aliases: identity.aliases,
     title: row.title,
     description: row.description ?? existing?.description ?? "",
     kind: (row.kind ?? existing?.kind) === "idea" ? "idea" : undefined,
@@ -918,6 +1066,7 @@ export function paperUpsert(row: {
     implementation: row.implementation ?? existing?.implementation ?? [],
     assumptions: row.assumptions ?? existing?.assumptions ?? [],
     cites,
+    links: validatedKnowledgeLinks(row.links ?? existing?.links),
     created,
   };
   writeFileSync(full, serializeFrontmatter(fm, row.content ?? existing?.content ?? ""));
@@ -927,7 +1076,94 @@ export function paperUpsert(row: {
 export function paperDelete(slug: string): boolean {
   const full = join(papersRoot(), slug + ".md");
   if (!existsSync(full)) return false;
-  try { rmSync(full, { force: true }); return true; } catch { return false; }
+  try {
+    rmSync(full, { force: true });
+    pruneEmptyAncestors(resolve(full, ".."), resolve(papersRoot()));
+    return true;
+  } catch { return false; }
+}
+
+export function paperMoveAllToTrash(): { ok: boolean; moved: number; error?: string } {
+  const papers = paperList();
+  const moved: KnowledgeTrashEntry[] = [];
+  for (const paper of papers) {
+    const entry = knowledgeMoveToTrash("papers", `${paper.slug}.md`, "item", paper.title || basename(paper.slug));
+    if (entry) {
+      moved.push(entry);
+      continue;
+    }
+    const restoreFailures = moved
+      .slice()
+      .reverse()
+      .map(item => knowledgeTrashRestore("papers", item.id))
+      .filter(result => !result.ok);
+    return {
+      ok: false,
+      moved: restoreFailures.length,
+      error: restoreFailures.length
+        ? `Could not move all Papers to Trash, and ${restoreFailures.length} rollback operation(s) failed.`
+        : `Could not move Paper to Trash: ${paper.slug}.md`,
+    };
+  }
+  return { ok: true, moved: moved.length };
+}
+
+export function migrateLegacyMyIdeasFolder(): { moved: number; updatedReferences: number } {
+  const files = allPaperFiles();
+  const papers = files.map(paperFromFile);
+  const moves = papers
+    .filter(paper => (paper.kind === "idea" || paper.group === "MyIdeas") && paper.category.split("/")[0] !== "MyIdeas")
+    .map(paper => ({
+      oldSlug: paper.slug,
+      newSlug: `MyIdeas/${paper.slug}`,
+      source: join(papersRoot(), paper.slug + ".md"),
+      destination: join(papersRoot(), "MyIdeas", paper.slug + ".md"),
+    }));
+  for (const move of moves) {
+    if (existsSync(move.destination)) throw new Error(`Cannot migrate MyIdeas because the destination already exists: ${move.newSlug}.md`);
+  }
+
+  const completed: typeof moves = [];
+  try {
+    for (const move of moves) {
+      mkdirSync(join(move.destination, ".."), { recursive: true });
+      renameSync(move.source, move.destination);
+      completed.push(move);
+    }
+  } catch (error) {
+    for (const move of completed.reverse()) {
+      try {
+        mkdirSync(join(move.source, ".."), { recursive: true });
+        renameSync(move.destination, move.source);
+      } catch { /* preserve the original migration error */ }
+    }
+    throw error;
+  }
+
+  const slugMap = new Map(moves.map(move => [move.oldSlug, move.newSlug]));
+  let updatedReferences = 0;
+  for (const file of allPaperFiles()) {
+    const source = readFileSync(file.full, "utf8");
+    const { fm, body } = parseFrontmatter(source);
+    let changed = false;
+    if (String(fm.group || "") === "MyIdeas") {
+      delete fm.group;
+      changed = true;
+    }
+    const cites = normalizeCites(fm.cites);
+    const mappedCites = cites.map(cite => {
+      const mapped = slugMap.get(cite.paper);
+      if (!mapped) return cite;
+      changed = true;
+      updatedReferences += 1;
+      return { ...cite, paper: mapped };
+    });
+    if (changed) {
+      fm.cites = mappedCites.length ? mappedCites : undefined;
+      writeFileSync(file.full, serializeFrontmatter(fm, body));
+    }
+  }
+  return { moved: moves.length, updatedReferences };
 }
 
 /** Distinct topics / tags / year range for filter UIs (each with a count). */

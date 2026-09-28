@@ -146,6 +146,9 @@ export class ChatClient {
             finalTopicSummary: frame.finalTopicSummary,
             replyToMessageId: frame.replyToMessageId,
             recipients: frame.recipients,
+            projectId: frame.projectId,
+            threadId: frame.threadId,
+            collaboration: frame.collaboration,
         });
         break;
       case "msg.read":
@@ -211,7 +214,8 @@ export class ChatClient {
       }
       case "error":
         // A rejected action is scoped to that action; it must not poison the live connection.
-        if (["muted", "moderation", "mention-required", "host-only-broadcast", "discuss-requires-peers", "phase-closed", "duplicate-slot"].includes(frame.code)) {
+        if (["muted", "moderation", "mention-required", "host-only-broadcast", "discuss-requires-peers", "phase-closed", "duplicate-slot"].includes(frame.code)
+          || frame.code.startsWith("collaboration-")) {
           this.events.onMessage({ id: randomBytes(6).toString("hex"), from: "", fromId: "", text: frame.msg, ts: Date.now(), kind: "human", system: true });
           break;
         }
@@ -225,12 +229,12 @@ export class ChatClient {
     }
   }
 
-  sendText(text: string, responseRequired?: boolean, replyPolicy?: ReplyPolicy, mode?: ChatMode, recipients?: string[], replyToMessageId?: string, discussionLead?: string, finalTopicSummary?: boolean): boolean {
+  sendText(text: string, responseRequired?: boolean, replyPolicy?: ReplyPolicy, mode?: ChatMode, recipients?: string[], replyToMessageId?: string, discussionLead?: string, finalTopicSummary?: boolean, collaboration?: import("./collaboration-model").CollaborationMessageMetadata): boolean {
     if (!this.isConnected || !this.opts) return false;
     const t = text.trim();
     if (!t) return false;
     this.send({ t: "msg", room: this.opts.room, from: this.opts.user, text: t, kind: this.opts.kind ?? "human", responseRequired, replyPolicy, mode,
-      clientRequestId: randomBytes(8).toString("hex"), recipients, replyToMessageId, discussionLead, finalTopicSummary });
+      clientRequestId: randomBytes(8).toString("hex"), recipients, replyToMessageId, discussionLead, finalTopicSummary, collaboration });
     return true;
   }
 
@@ -322,4 +326,3 @@ export class ChatClient {
     this.events.onStatus(status, detail);
   }
 }
-

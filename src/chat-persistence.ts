@@ -29,12 +29,16 @@ export interface StoredRoomInfo {
   joinSecretHash?: string;
   hostParticipantId?: string;
   activeUrl?: string;
+  projectId?: string;
+  threadId?: string;
 }
 
 export interface RoomCredentialsMetadata {
   ownerInstallationId: string;
   hostCredentialHash: string;
   joinSecretHash: string;
+  projectId?: string;
+  threadId?: string;
 }
 
 export type JoinDecision = "new" | "reuse" | "reject" | "timeout" | "cancel";

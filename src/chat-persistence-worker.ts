@@ -28,6 +28,8 @@ interface RoomCredentialsMetadata {
   ownerInstallationId: string;
   hostCredentialHash: string;
   joinSecretHash: string;
+  projectId?: string;
+  threadId?: string;
 }
 
 interface PendingJoinRequest {
@@ -183,6 +185,8 @@ function ensureMetadataColumns(db: any): void {
   if (!columns.has("join_secret_hash")) db.run("ALTER TABLE room_metadata ADD COLUMN join_secret_hash TEXT");
   if (!columns.has("deactivated_at")) db.run("ALTER TABLE room_metadata ADD COLUMN deactivated_at INTEGER");
   if (!columns.has("host_participant_id")) db.run("ALTER TABLE room_metadata ADD COLUMN host_participant_id TEXT");
+  if (!columns.has("project_id")) db.run("ALTER TABLE room_metadata ADD COLUMN project_id TEXT");
+  if (!columns.has("thread_id")) db.run("ALTER TABLE room_metadata ADD COLUMN thread_id TEXT");
 }
 
 function ensureMembershipColumns(db: any): void {
@@ -434,15 +438,17 @@ function createRoom(roomId: string, roomName: string, credentials: RoomCredentia
   }
   const result = openRoom(roomId, roomName);
   const room = rooms.get(roomId)!;
-  room.db.run(`UPDATE room_metadata SET schema_version=2, owner_installation_id=?, host_credential_hash=?, join_secret_hash=? WHERE room_id=?`,
-    [credentials.ownerInstallationId, credentials.hostCredentialHash, credentials.joinSecretHash, roomId]);
-  appendLifecycle(roomId, { id: randomUUID(), type: "room.created", payload: { roomName }, createdAt: Date.now(), state: "active" });
+  room.db.run(`UPDATE room_metadata SET schema_version=2, owner_installation_id=?, host_credential_hash=?, join_secret_hash=?, project_id=?, thread_id=? WHERE room_id=?`,
+    [credentials.ownerInstallationId, credentials.hostCredentialHash, credentials.joinSecretHash,
+      credentials.projectId || null, credentials.threadId || null, roomId]);
+  appendLifecycle(roomId, { id: randomUUID(), type: "room.created",
+    payload: { roomName, projectId: credentials.projectId, threadId: credentials.threadId }, createdAt: Date.now(), state: "active" });
   atomicFlush(room);
   return result;
 }
 
-function listStoredRooms(): { roomId: string; roomName: string; state: "stored" | "active"; updatedAt: number; messageCount: number; ownerInstallationId?: string; hostCredentialHash?: string; joinSecretHash?: string; hostParticipantId?: string; activeUrl?: string }[] {
-  const result: { roomId: string; roomName: string; state: "stored" | "active"; updatedAt: number; messageCount: number; ownerInstallationId?: string; hostCredentialHash?: string; joinSecretHash?: string; hostParticipantId?: string; activeUrl?: string }[] = [];
+function listStoredRooms(): { roomId: string; roomName: string; state: "stored" | "active"; updatedAt: number; messageCount: number; ownerInstallationId?: string; hostCredentialHash?: string; joinSecretHash?: string; hostParticipantId?: string; activeUrl?: string; projectId?: string; threadId?: string }[] {
+  const result: { roomId: string; roomName: string; state: "stored" | "active"; updatedAt: number; messageCount: number; ownerInstallationId?: string; hostCredentialHash?: string; joinSecretHash?: string; hostParticipantId?: string; activeUrl?: string; projectId?: string; threadId?: string }[] = [];
   if (!fs.existsSync(rootDir)) return result;
   for (const entry of fs.readdirSync(rootDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
@@ -463,7 +469,7 @@ function listStoredRooms(): { roomId: string; roomName: string; state: "stored" 
       };
       if (!lock) replayJournal(discovered);
       const metadata = db.exec(`SELECT room_id, current_name, state, updated_at,
-        owner_installation_id, host_credential_hash, join_secret_hash, host_participant_id FROM room_metadata LIMIT 1`)[0]?.values?.[0];
+        owner_installation_id, host_credential_hash, join_secret_hash, host_participant_id, project_id, thread_id FROM room_metadata LIMIT 1`)[0]?.values?.[0];
       if (!metadata) continue;
       if (!lock && String(metadata[2]) !== "stored") {
         insertLifecycleEvent(discovered, {
@@ -480,6 +486,8 @@ function listStoredRooms(): { roomId: string; roomName: string; state: "stored" 
         hostCredentialHash: metadata[5] == null ? undefined : String(metadata[5]),
         joinSecretHash: metadata[6] == null ? undefined : String(metadata[6]),
         hostParticipantId: metadata[7] == null ? undefined : String(metadata[7]),
+        projectId: metadata[8] == null ? undefined : String(metadata[8]),
+        threadId: metadata[9] == null ? undefined : String(metadata[9]),
         activeUrl: lock?.activeUrl,
       });
     } catch { /* ignore corrupt/unrecognized room DB; caller can surface diagnostics later */ }

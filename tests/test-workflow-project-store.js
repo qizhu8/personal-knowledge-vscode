@@ -37,7 +37,12 @@ try {
   assert.strictEqual(initial.rootId, "root_root");
   assert.deepStrictEqual(initial.projects.map(project => [project.name, project.systemKind]), [["Default Project", "default-project"]]);
   assert.deepStrictEqual(initial.threads.map(thread => [thread.name, thread.systemKind]), [["General", "general-thread"]]);
-  assert.deepStrictEqual(initial.recipes.map(recipe => recipe.name), ["Software Development", "Bug Fix", "UI Development", "Reflection", "Use Recipe Library", "PKM Tutorial"]);
+  assert.deepStrictEqual(initial.recipes.map(recipe => recipe.name), [
+    "Universal Unknown Task", "Conditional Closed-Loop Communication", "Configurable Validation and Testing",
+    "Software Development", "Bug Fix", "UI Development", "Reflection", "Evolve Recipes from Evidence", "Use Recipe Library",
+    "Publish Personal Knowledge VSIX", "Executable Module Examples", "Branch and Repeat Module Examples",
+    "DLIS Offline Job Log Diagnosis Example", "PKM Tutorial"
+  ]);
   assert(initial.recipes.every(recipe => recipe.scope === "global" && recipe.systemKind === "built-in"));
   assert.strictEqual(initial.recipes.find(recipe => recipe.name === "PKM Tutorial").category, "Examples/PKM");
   assert.strictEqual(fs.statSync(file(directory)).mode & 0o777, 0o600);
@@ -158,7 +163,44 @@ try {
   const legacyDirectory = temporary();
   new ProjectStore(legacyDirectory, ids("legacy-root")).list();
   const legacy = read(legacyDirectory); delete legacy.payload.state.recipes; write(legacyDirectory, resign(legacy));
-  assert.deepStrictEqual(new ProjectStore(legacyDirectory).list().recipes.map(recipe => recipe.name), ["Software Development", "Bug Fix", "UI Development", "Reflection", "Use Recipe Library", "PKM Tutorial"]);
+  const migratedRecipes = new ProjectStore(legacyDirectory).list().recipes;
+  assert.deepStrictEqual(migratedRecipes.map(recipe => recipe.name), [
+    "Universal Unknown Task", "Conditional Closed-Loop Communication", "Configurable Validation and Testing",
+    "Software Development", "Bug Fix", "UI Development", "Reflection", "Evolve Recipes from Evidence", "Use Recipe Library",
+    "Publish Personal Knowledge VSIX", "Executable Module Examples", "Branch and Repeat Module Examples",
+    "DLIS Offline Job Log Diagnosis Example", "PKM Tutorial"
+  ]);
+  assert.strictEqual(migratedRecipes.find(recipe => recipe.name === "Evolve Recipes from Evidence").systemKind, "built-in");
+
+  const legacyFolderDirectory = temporary();
+  const legacyFolderStore = new ProjectStore(legacyFolderDirectory, ids("legacy-folder-root"));
+  const legacyFolderInitial = legacyFolderStore.list();
+  const legacyFolderEnvelope = read(legacyFolderDirectory);
+  delete legacyFolderEnvelope.payload.state.recipeFolders;
+  write(legacyFolderDirectory, resign(legacyFolderEnvelope));
+  const migratedFolders = legacyFolderStore.list();
+  assert.deepStrictEqual(migratedFolders.recipeFolders, [], "store load adds the Recipe folder collection introduced after 3.1.1");
+  assert.deepStrictEqual(migratedFolders.projects, legacyFolderInitial.projects, "Recipe folder migration preserves Projects");
+  assert.deepStrictEqual(migratedFolders.threads, legacyFolderInitial.threads, "Recipe folder migration preserves Threads");
+  assert.deepStrictEqual(migratedFolders.recipes, legacyFolderInitial.recipes, "Recipe folder migration preserves Recipes");
+  assert.deepStrictEqual(read(legacyFolderDirectory).payload.state.recipeFolders, [], "Recipe folder migration is persisted");
+  assert.deepStrictEqual(legacyFolderStore.list(), migratedFolders, "Recipe folder migration is idempotent");
+
+  const upgradeDirectory = temporary();
+  new ProjectStore(upgradeDirectory, ids("upgrade-root")).list();
+  const beforeUpgrade = read(upgradeDirectory);
+  const builtInEvidence = beforeUpgrade.payload.state.recipes.find(recipe => recipe.name === "Evolve Recipes from Evidence");
+  const userEvidence = { ...builtInEvidence, recipeId: "recipe_user_evidence" };
+  delete userEvidence.systemKind;
+  beforeUpgrade.payload.state.recipes = beforeUpgrade.payload.state.recipes
+    .filter(recipe => recipe.recipeId !== builtInEvidence.recipeId)
+    .concat(userEvidence);
+  write(upgradeDirectory, resign(beforeUpgrade));
+  const upgradedRecipes = new ProjectStore(upgradeDirectory).list().recipes;
+  assert(upgradedRecipes.some(recipe => recipe.recipeId === builtInEvidence.recipeId && recipe.systemKind === "built-in"),
+    "store load seeds the new protected built-in through the canonical migration path");
+  assert(upgradedRecipes.some(recipe => recipe.recipeId === userEvidence.recipeId && !recipe.systemKind),
+    "store load preserves a user-created Recipe with the same name");
 
   const malformedDirectory = temporary();
   fs.mkdirSync(malformedDirectory, { recursive: true });
@@ -200,6 +242,60 @@ try {
     const envelope = read(receiptDirectory); envelope.payload.receipts[0] = receipt; write(receiptDirectory, resign(envelope));
     error(() => new ProjectStore(receiptDirectory).list(), "store-corrupt");
   }
+
+  const folderDirectory = temporary();
+  const folderStore = new ProjectStore(folderDirectory, ids("root", "nested"));
+  const folderInitial = folderStore.list();
+  assert.deepStrictEqual(folderInitial.recipeFolders, []);
+  const folderCreated = folderStore.createRecipeFolder(command("create-recipe-folder", 1), "Release", "Validation / Windows");
+  assert.strictEqual(folderCreated.entityId, "Release/Validation/Windows");
+  assert.deepStrictEqual(folderCreated.snapshot.recipeFolders, ["Release", "Release/Validation", "Release/Validation/Windows"]);
+  const folderRecipe = folderStore.createRecipe(command("create-folder-recipe", 2), { kind: "global" }, "Nested", "Release/Validation/Windows");
+  const folderDeleted = folderStore.deleteRecipeFolder(command("delete-recipe-folder", 3), "Release/Validation");
+  assert.strictEqual(folderDeleted.entityId, "Release/Validation");
+  assert.deepStrictEqual(folderDeleted.snapshot.recipeFolders, ["Release", "Release/Windows"]);
+  assert.strictEqual(folderDeleted.snapshot.recipes.find(candidate => candidate.recipeId === folderRecipe.entityId).category, "Release/Windows");
+  assert.strictEqual(folderDeleted.snapshot.recipes.length, folderRecipe.snapshot.recipes.length, "deleting a Recipe folder must not delete Recipes");
+  assert.throws(() => folderStore.createRecipeFolder(command("invalid-recipe-folder", 4), "", "../Invalid"),
+    value => value instanceof ProjectModelError && value.code === "recipe-folder-path-invalid");
+
+  const ganttDirectory = temporary();
+  const ganttStore = new ProjectStore(ganttDirectory, ids("root", "project", "thread", "design", "ship"));
+  const ganttProject = ganttStore.createProject(command("gantt-project", 1), "Roadmap");
+  const ganttThread = ganttStore.createThread(command("gantt-thread", 2), ganttProject.entityId, "Delivery");
+  const renamedThread = ganttStore.renameThread(command("thread-rename", 3), ganttThread.entityId, "Delivery Plan");
+  assert.strictEqual(renamedThread.entityId, ganttThread.entityId);
+  assert.strictEqual(renamedThread.snapshot.threads.find(item => item.threadId === ganttThread.entityId).version, 2);
+  const linkedThread = ganttStore.linkThreadChatroom(command("thread-chatroom", 4), ganttThread.entityId, {
+    roomId:"room_delivery", roomName:"Roadmap · Delivery Plan", linkedAt:"2026-09-27T00:00:00.000Z"
+  });
+  assert.strictEqual(linkedThread.snapshot.threads.find(item => item.threadId === ganttThread.entityId).chatroom.roomId, "room_delivery");
+  const design = ganttStore.createGanttTask(command("gantt-design", 5), ganttProject.entityId, {
+    threadId:ganttThread.entityId, title:"Design", startDate:"2026-09-27", endDate:"2026-09-28",
+    progress:25, status:"in-progress", owners:[{ name:"Alex", role:"Owner" }], dependencyIds:[]
+  });
+  const ship = ganttStore.createGanttTask(command("gantt-ship", 6), ganttProject.entityId, {
+    title:"Ship", startDate:"2026-09-29", endDate:"2026-09-30", progress:0, status:"not-started",
+    owners:[], dependencyIds:[design.entityId]
+  });
+  assert.strictEqual(ship.snapshot.ganttTasks.length, 2);
+  assert.strictEqual(ganttStore.createGanttTask(command("gantt-ship", 0), ganttProject.entityId, {}).replayed, true);
+  error(() => ganttStore.updateGanttTask(command("gantt-stale", 6), ship.entityId, {
+    title:"Ship", startDate:"2026-09-29", endDate:"2026-09-30", progress:1, status:"in-progress"
+  }), "store-version-conflict");
+  assert.throws(() => ganttStore.deleteGanttTask(command("gantt-delete-blocked", 7), design.entityId),
+    value => value instanceof ProjectModelError && value.code === "gantt-task-dependency-in-use");
+  assert.strictEqual(new ProjectStore(ganttDirectory).list().ganttTasks.length, 2, "Gantt tasks survive restart");
+  const malformedGanttDirectory = temporary();
+  new ProjectStore(malformedGanttDirectory, ids("root")).list();
+  const malformed = read(malformedGanttDirectory);
+  malformed.payload.state.ganttTasks = [{
+    taskId:"task_bad", projectId:malformed.payload.state.projects[0].projectId, title:"Bad", startDate:"2026-02-30",
+    endDate:"2026-03-01", progress:0, status:"not-started", owners:[], dependencyIds:[], version:1
+  }];
+  write(malformedGanttDirectory, resign(malformed));
+  assert.throws(() => new ProjectStore(malformedGanttDirectory).list(),
+    value => value instanceof ProjectModelError && value.code === "gantt-date-invalid");
 
   const fsyncDirectory = temporary();
   const originalOpen = fs.openSync;

@@ -1,3 +1,5 @@
+import type { CollaborationMessageMetadata, CollaborationWarning } from "./collaboration-model";
+
 // ── Protocol ────────────────────────────────────────────────────────────────
 export type MemberKind = "human" | "agent" | "browser";
 export type ReplyPolicy = "none" | "required" | "optional";
@@ -17,7 +19,7 @@ export type Frame =
   | { t: "join.ready"; room: string }
   | { t: "leave";      room: string }
   | { t: "presence";   room: string; members: Member[] }
-  | { t: "msg";        id?: string; room: string; from: string; fromId?: string; text: string; ts?: number; kind?: MemberKind; receipt?: ReadReceipt; requireReply?: boolean; responseRequired?: boolean; replyPolicy?: ReplyPolicy; mode?: ChatMode; discussionAudience?: string[]; discussionLead?: string; finalTopicSummary?: boolean; clientRequestId?: string; recipients?: string[]; replyToMessageId?: string }
+  | { t: "msg";        id?: string; room: string; from: string; fromId?: string; text: string; ts?: number; kind?: MemberKind; receipt?: ReadReceipt; requireReply?: boolean; responseRequired?: boolean; replyPolicy?: ReplyPolicy; mode?: ChatMode; discussionAudience?: string[]; discussionLead?: string; finalTopicSummary?: boolean; acknowledgement?: boolean; clientRequestId?: string; recipients?: string[]; replyToMessageId?: string; projectId?: string; threadId?: string; collaboration?: CollaborationMessageMetadata }
   | { t: "msg.accepted"; room: string; clientRequestId: string; messageId: string }
   | { t: "msg.read";   room: string; messageId: string; read?: number; total?: number }
   | { t: "system";     room: string; text: string; ts: number }
@@ -74,6 +76,12 @@ export interface ChatMessage {
   finalTopicSummary?: boolean;
   replyToMessageId?: string;
   recipients?: string[];
+  projectId?: string;
+  threadId?: string;
+  collaboration?: CollaborationMessageMetadata;
+  clientRequestId?: string;
+  requestFingerprint?: string;
+  convergenceWarnings?: CollaborationWarning[];
 }
 
 export interface ReadReceipt {
@@ -85,4 +93,3 @@ export interface ReadReceipt {
 // File-transfer limits (in-memory relay; keeps the DoS surface small).
 export const MAX_FILE_BYTES = 25 * 1024 * 1024; // 25 MB
 export const CHUNK_BYTES     = 64 * 1024;        // 64 KB raw per chunk
-

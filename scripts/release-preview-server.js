@@ -6,16 +6,24 @@ const path = require("path");
 const root = path.join(__dirname, "..");
 const webview = path.join(root, "dist", "webview");
 const port = Number(process.env.PORT || 4178);
+const { initializeProjectModel } = require(path.join(root, "dist", "workflows", "project-model.js"));
+const { FEATURE_TOUR_MODULES } = require(path.join(root, "dist", "onboarding-experience.js"));
+const configurableTestingRecipe = initializeProjectModel(undefined, () => "release-preview")
+  .recipes.find(recipe => recipe.name === "Configurable Validation and Testing");
 
 const demoMcp = {
   installed: true,
   current: true,
-  installedVersion: "3.1.0",
-  expectedVersion: "3.1.0",
-  knowledgeVersion: "1.0.0",
-  chatVersion: "2.3.1",
-  installedKnowledgeVersion: "1.0.0",
-  installedChatVersion: "2.3.1",
+  installedVersion: "2.13.1",
+  expectedVersion: "2.13.1",
+  knowledgeVersion: "1.5.0",
+  chatVersion: "2.3.5",
+  recipeVersion: "1.6.0",
+  agentSessionVersion: "1.5.0",
+  installedKnowledgeVersion: "1.5.0",
+  installedChatVersion: "2.3.5",
+  installedRecipeVersion: "1.6.0",
+  installedAgentSessionVersion: "1.5.0",
   serverPath: "/home/demo/pkm/mcp-server/server.py",
   nativeMcpProvider: true,
   mcpProcess: { running: true, pid: "24501", available: true, detail: "Generated server process detected." },
@@ -155,6 +163,7 @@ const demoProjects = {
   ],
   privateTopLevels: ["Personal"],
   recipes: [
+    configurableTestingRecipe,
     demoLinearRecipe("recipe_builtin_software", "Software Development", "Develop a software change from requirements through delivery.", ["understand", "plan", "implement", "validate", "deliver"], "3a9ff4d48a10d90e"),
     demoLinearRecipe("recipe_builtin_bugfix", "Bug Fix", "Reproduce, diagnose, fix, and verify a defect.", ["reproduce", "investigate", "fix", "regression-check", "report"], "53ae27b7bb7539ce"),
     demoLinearRecipe("recipe_builtin_ui", "UI Development", "Design, implement, and validate an interface.", ["understand-ux", "prototype", "implement-ui", "validate-ui", "review"], "2b72642253116bd5"),
@@ -163,16 +172,47 @@ const demoProjects = {
   ],
   agentSessions: [{
     sessionId: "agent_session_demo_snapshot_source", status: "running", task: "Implement Agent Snapshot recovery",
+    traversalStrategy: "breadth-first",
+    recipeTreeEdges: [{
+      fromRunId:"recipe_run_demo_design", fromNodeId:"approve-contract",
+      toRunId:"recipe_run_demo_observable", toNodeId:"understand"
+    }],
     projectId: "project_pkm", hostSessionId: "copilot-demo-session",
     agent: { name: "Copilot Agent", product: "GitHub Copilot" },
     createdAt: "2026-09-23T22:30:00Z", updatedAt: "2026-09-23T23:10:00Z",
     lastActivity: { tool: "agent_session_checkpoint", ok: true, at: "2026-09-23T23:10:00Z" },
     checkpoint: { checkpointId: "checkpoint_demo_snapshot", sequence: 3, createdAt: "2026-09-23T23:10:00Z", reason: "restart", summary: "Runtime and UI implementation are ready for validation.", nextActionCount: 2 },
     todos: [
-      { todoId: "todo_design", title: "Design Snapshot contract", status: "succeeded", summary: "Immutable clone-on-recovery contract defined." },
-      { todoId: "todo_validate", title: "Validate recovery", status: "running", details: "Run runtime and UI tests." },
+      { todoId: "todo_design", title: "Design Snapshot contract", status: "succeeded", summary: "Immutable clone-on-recovery contract defined.", recipeRunId: "recipe_run_demo_design" },
+      { todoId: "todo_validate", title: "Validate recovery", status: "running", details: "Run runtime and UI tests.", recipeRunId: "recipe_run_demo_observable" },
     ],
-    runs: [],
+    runs: [{
+      runId: "recipe_run_demo_design", recipeId: "recipe_builtin_design", recipeName: "Snapshot Contract Design",
+      recipeRevision: 1, executableDigest: "41b6c1d9e20a", status: "running", origin: { kind: "agent-session-adhoc" },
+      nodes: [
+        { nodeId: "clarify-contract", kind: "pkm.step.noop/v1", state: "succeeded", outcome: "succeeded", dependsOn: [] },
+        { nodeId: "approve-contract", kind: "pkm.step.noop/v1", state: "succeeded", outcome: "succeeded", dependsOn: [{ from: "clarify-contract", outcomes: ["succeeded"] }] },
+      ],
+      loops: [],
+    }, {
+      runId: "recipe_run_demo_observable", recipeId: "recipe_builtin_validation", recipeName: "Configurable Validation and Testing",
+      recipeRevision: 1, executableDigest: "7f83a2d05a91", status: "running", origin: { kind: "agent-session-adhoc" },
+      nodes: [
+        { nodeId: "understand", kind: "pkm.step.noop/v1", state: "succeeded", outcome: "succeeded", dependsOn: [] },
+        { nodeId: "browser-validation", kind: "pkm.step.noop/v1", state: "running", dependsOn: [{ from: "understand", outcomes: ["succeeded"] }],
+          startedAt: new Date().toISOString(), lastHeartbeatAt: new Date().toISOString(), lastProgressAt: new Date().toISOString(),
+          progress: { phase: "browser-e2e", message: "Validating focus and viewport persistence.", completed: 3, total: 5,
+            checkpoint: "Runtime projection verified", nextStep: "Exercise full-screen graph", etaSeconds: 20,
+            safeToInterrupt: false, sideEffects: ["Browser process is active"], staleAfterSeconds: 300,
+            events: [{ at: new Date().toISOString(), level: "info", message: "Opened Agent Session dashboard." }] } },
+        { nodeId: "security-validation", kind: "pkm.step.noop/v1", state: "pending", dependsOn: [{ from: "understand", outcomes: ["succeeded"] }] },
+        { nodeId: "acceptance", kind: "pkm.step.noop/v1", state: "pending", dependsOn: [
+          { from: "browser-validation", outcomes: ["succeeded"] },
+          { from: "security-validation", outcomes: ["succeeded"] },
+        ] },
+      ],
+      loops: [],
+    }],
   }],
   agentSessionTrash: [],
   agentSnapshots: [{
@@ -273,12 +313,15 @@ function bootstrap(view) {
   let __demoPromptNote = 'Adds concise output guidance.';
   const __chat = ${JSON.stringify(demoChat)};
   let __messageSequence = 10;
+  window.__previewMessages = [];
   window.acquireVsCodeApi = () => ({
     getState: () => __state,
     setState: value => Object.assign(__state, value || {}),
     postMessage: message => setTimeout(() => {
+      window.__previewMessages.push(message);
       const send = (command, data) => window.dispatchEvent(new MessageEvent('message', { data: { command, data } }));
       if (message.command === 'ready') {
+        send('tourCatalog', { version:'3.2.0', modules:${JSON.stringify(FEATURE_TOUR_MODULES)} });
         send('subscriptionState', ${JSON.stringify(demoSubscriptions)});
         send('githubSyncState', ${JSON.stringify(demoGitHubSync)});
         window.dispatchEvent(new MessageEvent('message', { data: { command: 'openTab', tab: __state.tab } }));
@@ -384,7 +427,7 @@ function panelHtml(view) {
     "%%NOTES_BASE%%": "/demo/notes", "%%CODICON_CSS%%": "/codicon.css", "%%HLJS_CSS%%": "/hljs.css", "%%KATEX_CSS%%": "/katex.css",
     "%%MARKED_SRC%%": "/marked.umd.js", "%%HLJS_SRC%%": "/hljs.js", "%%KATEX_SRC%%": "/katex.js",
     "%%CYTOSCAPE_SRC%%": "/cytoscape.js", "%%MERMAID_SRC%%": "/mermaid.js", "%%FORCEGRAPH3D_SRC%%": "/forcegraph3d.js",
-    "%%PANEL_CSS%%": "/panel.css", "%%PANEL_JS%%": "/panel.js", "%%PKM_VERSION%%": "3.1.0",
+    "%%PANEL_CSS%%": "/panel.css", "%%PANEL_JS%%": "/panel.js", "%%PKM_VERSION%%": "3.2.0",
     "%%I18N_PAYLOAD_B64%%": Buffer.from(JSON.stringify({ setting: "en", resolved: "en", locales: localeManifest.locales, catalogs }), "utf8").toString("base64"),
   };
   for (const [token, value] of Object.entries(replacements)) html = html.split(token).join(value);

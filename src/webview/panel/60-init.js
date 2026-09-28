@@ -1,5 +1,6 @@
 // ── Init ───────────────────────────────────────────────────────────────────
 ask('ready', {});                              // tell the extension the webview is loaded
+void loadMarkdownLibraries();                  // markdown assets are not on the first-paint critical path
 const restoredUiState = vscode.getState() || {};
 const restoredWorkspace = workspaceSurfaces[restoredUiState.workspace] ? restoredUiState.workspace : workspaceForTab(restoredUiState.tab);
 const restoredTab = workspaceSurfaces[restoredWorkspace]?.includes(restoredUiState.tab)
@@ -16,6 +17,7 @@ function retryInitialViewRequest() {
   else if (state.tab === 'servers') ask('serverList', {});
   else if (state.tab === 'subscriptions') ask('subscriptionState', {});
   else if (state.tab === 'githubSync') ask('githubSyncState', {});
+  else if (state.tab === 'backgroundTasks') ask('backgroundTasks', {});
   else if (state.tab === 'chatroom') ask('chatState', {});
   else if (state.tab === 'mcp') ask('checkMcp', {});
   else if (state.tab === 'skillRouter') ask('skillRouterStatus', {});

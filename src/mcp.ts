@@ -10,17 +10,18 @@ import { managedEnvironmentsRoot } from "./environment-paths";
 import { isAbsoluteForPlatform, isForeignAbsolutePath } from "./store-path";
 import { compareVersionOrder } from "./version-order";
 import { mcpStdioCommand } from "./mcp-stdio-command";
+import { hasNewerMcpRuntime } from "./mcp-version-policy";
 
 // ── MCP server scaffold ────────────────────────────────────────────────────
-export const UNIFIED_MCP_VERSION = "2.12.0";
+export const UNIFIED_MCP_VERSION = "2.13.1";
 const PROMPT_MANAGER_WHEEL = "uone_prompt_manager-0.1.0-py3-none-any.whl";
 const PROMPT_MANAGER_WHEEL_SHA256 = "eb9fd76058134f9ab9711d8e7604c75f761db5762d93e67f65740dc07fdc1518";
 const RETRIEVAL_ENGINE_WHEEL = "adaptive_skill_retrieval-0.3.0.dev2026091601-py3-none-any.whl";
 const RETRIEVAL_ENGINE_WHEEL_SHA256 = "04560cf29966c8c267adf8ea8502819fd005222ca1e383af63cc115996afbf21";
-const KNOWLEDGE_MCP_VERSION = "1.4.0";
+const KNOWLEDGE_MCP_VERSION = "1.5.0";
 const CHAT_MCP_VERSION = "2.3.5";
-const RECIPE_MCP_VERSION = "1.4.0";
-const AGENT_SESSION_MCP_VERSION = "1.4.0";
+const RECIPE_MCP_VERSION = "1.6.0";
+const AGENT_SESSION_MCP_VERSION = "1.5.0";
 
 interface McpServerStatus {
   installed: boolean;
@@ -57,6 +58,25 @@ interface McpPythonStatus { path: string; version: string; valid: boolean; sourc
 interface McpPythonCandidate { path: string; version: string; source: string; label: string; }
 interface McpRuntimeStatus { path: string; python: string; exists: boolean; healthy: boolean; version: string; error: string; registered: boolean; }
 export interface McpProcessStatus { running: boolean; pid: string; checkedAt: number; available: boolean; detail: string; }
+export const MCP_FEATURE_DOMAINS = ["knowledge", "automation", "skillRouter"] as const;
+export type McpFeatureDomain = typeof MCP_FEATURE_DOMAINS[number];
+
+export function configuredMcpFeatureDomains(): McpFeatureDomain[] {
+  const configured = vscode.workspace.getConfiguration("personalKnowledge").get<string[]>("mcpEnabledFeatureDomains");
+  if (!Array.isArray(configured)) return [...MCP_FEATURE_DOMAINS];
+  const enabled = new Set(configured);
+  return MCP_FEATURE_DOMAINS.filter(domain => enabled.has(domain));
+}
+
+export function writeMcpFeatureDomainConfig(domains = configuredMcpFeatureDomains()): string {
+  const directory = managedMcpServerDirectory();
+  const destination = path.join(directory, "feature-domains.json");
+  fs.mkdirSync(directory, { recursive: true });
+  const temporary = `${destination}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify({ schema: 1, enabled: domains }, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+  fs.renameSync(temporary, destination);
+  return destination;
+}
 
 export function managedMcpServerDirectory(): string {
   const configured = vscode.workspace.getConfiguration("personalKnowledge").get<string>("mcpServerPath", "").trim();
@@ -75,14 +95,19 @@ export function managedMcpRuntimePath(): string {
 
 export function mcpProcessStatus(): McpProcessStatus {
   const serverPath = path.join(managedMcpServerDirectory(), "server.py");
+  if (process.platform === "win32") {
+    return {
+      running: false,
+      pid: "",
+      checkedAt: Date.now(),
+      available: false,
+      detail: "Passive MCP process inspection is disabled on Windows to avoid opening a PowerShell console.",
+    };
+  }
   try {
-    const output = process.platform === "win32"
-      ? execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"], { encoding: "utf8", timeout: 3000, windowsHide: true })
-      : execFileSync("ps", ["-eo", "pid=,args="], { encoding: "utf8", timeout: 3000, windowsHide: false });
+    const output = execFileSync("ps", ["-eo", "pid=,args="], { encoding: "utf8", timeout: 3000, windowsHide: true });
     const normalizedPath = serverPath.replace(/\\/g, "/").toLowerCase();
-    const lines = process.platform === "win32"
-      ? (() => { const parsed = JSON.parse(output || "[]"); return (Array.isArray(parsed) ? parsed : [parsed]).map(item => `${item.ProcessId || ""} ${item.CommandLine || ""}`); })()
-      : output.split(/\r?\n/);
+    const lines = output.split(/\r?\n/);
     const match = lines.find(line => String(line).replace(/\\/g, "/").toLowerCase().includes(normalizedPath));
     const pid = match ? /^\s*(\d+)/.exec(String(match))?.[1] || "" : "";
     return { running: !!match, pid, checkedAt: Date.now(), available: true, detail: match ? "Generated server process detected." : "No generated server process detected." };
@@ -174,7 +199,7 @@ async function listMcpPythonCandidates(): Promise<McpPythonCandidate[]> {
       } catch { /* py launcher absent */ }
     } else {
       const names = ["python3", "python", "python3.14", "python3.13", "python3.12", "python3.11", "python3.10"];
-      execSync(`which -a ${names.join(" ")} 2>/dev/null || true`, { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], windowsHide: false })
+      execSync(`which -a ${names.join(" ")} 2>/dev/null || true`, { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true })
         .split(/\r?\n/).forEach(value => add(value, "path", "PATH"));
     }
   } catch { /* no PATH candidates */ }
@@ -249,13 +274,14 @@ export function resolveMcpPython(): string {
   throw new Error("Managed PKM MCP runtime is missing or broken. Create or Repair it in the Config tab.");
 }
 
-export function mcpServerDefinitionData(): { label: string; command: string; args: string[]; cwd: string; version: string } {
+export function mcpServerDefinitionData(): { label: string; command: string; args: string[]; env?: Record<string, string>; cwd: string; version: string } {
   const cwd = managedMcpServerDirectory();
   const launch = mcpStdioCommand(resolveMcpPython(), [path.join(cwd, "server.py")]);
   return {
     label: "pkm",
     command: launch.command,
     args: launch.args,
+    env: launch.env,
     cwd,
     version: UNIFIED_MCP_VERSION,
   };
@@ -352,7 +378,7 @@ export function combinedMcpRegistry(): string {
   const launch = mcpStdioCommand(resolveMcpPython(), [path.join(mcpDir, "server.py")]);
   return JSON.stringify({
     servers: {
-      pkm: { type: "stdio", command: launch.command, args: launch.args },
+      pkm: { type: "stdio", command: launch.command, args: launch.args, ...(launch.env ? { env: launch.env } : {}) },
     },
   }, null, 2);
 }
@@ -362,7 +388,7 @@ export function combinedMcpInstallInstruction(): string {
   const mcpDir = managedMcpServerDirectory();
   const runtimePython = mcpRuntimePythonPath();
   const serverPath = path.join(mcpDir, "server.py");
-  const launch = mcpStdioCommand(runtimePython, [serverPath], process.platform, process.arch, path.resolve(__dirname, ".."), () => true);
+  const launch = mcpStdioCommand(runtimePython, [serverPath]);
   const requirementsPath = path.join(mcpDir, "requirements.txt");
   const chatServerPath = path.join(mcpDir, "chat_server.py");
   const quote = (value: string) => `"${value.replace(/"/g, '\\"')}"`;
@@ -384,7 +410,7 @@ export function combinedMcpInstallInstruction(): string {
     "```json",
     JSON.stringify({
       servers: {
-        pkm: { type: "stdio", command: launch.command, args: launch.args },
+        pkm: { type: "stdio", command: launch.command, args: launch.args, ...(launch.env ? { env: launch.env } : {}) },
       },
     }, null, 2),
     "```",
@@ -406,13 +432,22 @@ export function mcpStatus(): McpServerStatus {
   const installedChatVersion = readMcpComponentVersion(serverPath, "CHAT_SCHEMA_VERSION");
   const installedRecipeVersion = readMcpComponentVersion(serverPath, "RECIPE_SCHEMA_VERSION");
   const installedAgentSessionVersion = readMcpComponentVersion(serverPath, "AGENT_SESSION_SCHEMA_VERSION");
-  const newerThanExpected = [
-    compareVersionOrder(installedVersion, UNIFIED_MCP_VERSION),
-    compareVersionOrder(installedKnowledgeVersion, KNOWLEDGE_MCP_VERSION),
-    compareVersionOrder(installedChatVersion, CHAT_MCP_VERSION),
-    compareVersionOrder(installedRecipeVersion, RECIPE_MCP_VERSION),
-    compareVersionOrder(installedAgentSessionVersion, AGENT_SESSION_MCP_VERSION),
-  ].some(order => order !== undefined && order > 0);
+  const newerThanExpected = hasNewerMcpRuntime(
+    {
+      unified: installedVersion,
+      knowledge: installedKnowledgeVersion,
+      chat: installedChatVersion,
+      recipe: installedRecipeVersion,
+      agentSession: installedAgentSessionVersion,
+    },
+    {
+      unified: UNIFIED_MCP_VERSION,
+      knowledge: KNOWLEDGE_MCP_VERSION,
+      chat: CHAT_MCP_VERSION,
+      recipe: RECIPE_MCP_VERSION,
+      agentSession: AGENT_SESSION_MCP_VERSION,
+    },
+  );
   return {
     installed: !!installedVersion, serverPath,
     expectedVersion: UNIFIED_MCP_VERSION, installedVersion,
@@ -436,6 +471,7 @@ export function generateMcpServer(context: vscode.ExtensionContext): { serverPat
   const mcpDir    = managedMcpServerDirectory();
   const serverPy  = path.join(mcpDir, "server.py");
   const recipeRuntimePy = path.join(mcpDir, "recipe_runtime.py");
+  const recipeHealthPy = path.join(mcpDir, "recipe_health.py");
   const agentSessionRuntimePy = path.join(mcpDir, "agent_session_runtime.py");
   const reqTxt    = path.join(mcpDir, "requirements.txt");
   const storeFwd  = storePath.replace(/\\/g, "/");
@@ -446,12 +482,22 @@ export function generateMcpServer(context: vscode.ExtensionContext): { serverPat
 
   const existingStatus = mcpStatus();
   if (existingStatus.newerThanExpected) {
-    throw new Error(`Refusing to replace newer PKM MCP server v${existingStatus.installedVersion} with v${UNIFIED_MCP_VERSION}. Reload this VS Code window.`);
+    throw new Error(
+      `Refusing to downgrade the installed PKM MCP runtime with the older runtime bundled by this extension. `
+      + `Installed unified/components: ${existingStatus.installedVersion || "unknown"} / `
+      + `${existingStatus.installedKnowledgeVersion || "unknown"} / ${existingStatus.installedChatVersion || "unknown"} / `
+      + `${existingStatus.installedRecipeVersion || "unknown"} / ${existingStatus.installedAgentSessionVersion || "unknown"}; `
+      + `bundled: ${UNIFIED_MCP_VERSION} / ${KNOWLEDGE_MCP_VERSION} / ${CHAT_MCP_VERSION} / `
+      + `${RECIPE_MCP_VERSION} / ${AGENT_SESSION_MCP_VERSION}. The newer runtime was preserved. `
+      + `Upgrade Personal Knowledge Manager before regenerating or repairing the MCP server.`,
+    );
   }
 
   fs.mkdirSync(mcpDir, { recursive: true });
+  writeMcpFeatureDomainConfig();
   generateChatMcpServer(context);
   fs.copyFileSync(path.join(context.extensionPath, "resources", "recipe_runtime.py"), recipeRuntimePy);
+  fs.copyFileSync(path.join(context.extensionPath, "resources", "recipe_health.py"), recipeHealthPy);
   fs.copyFileSync(path.join(context.extensionPath, "resources", "agent_session_runtime.py"), agentSessionRuntimePy);
 
   fs.writeFileSync(serverPy, `#!/usr/bin/env python3
@@ -490,6 +536,7 @@ from typing import Optional, List
 
 try:
     from fastmcp import FastMCP
+    from fastmcp.server.middleware import Middleware
 except ImportError:
     raise SystemExit("fastmcp not found. Run: pip install fastmcp")
 
@@ -500,10 +547,35 @@ SUBSCRIPTIONS = Path(r"${subscriptionCacheFwd}")
 ENVIRONMENTS = Path(r"${environmentsRegistryFwd}")
 RETRIEVAL_STATE = Path(r"${retrievalStateFwd}")
 mcp = FastMCP("pkm")
+
+
+def _enabled_feature_domains():
+  try:
+    payload = json.loads(Path(__file__).with_name("feature-domains.json").read_text(encoding="utf-8"))
+    return set(str(item) for item in (payload.get("enabled") or []))
+  except FileNotFoundError:
+    return {"knowledge", "automation", "skillRouter"}
+  except Exception:
+    return set()
+
+
+_FEATURE_DOMAINS = _enabled_feature_domains()
+
+
+def _feature_tool(*domains):
+  def decorator(function):
+    if any(domain in _FEATURE_DOMAINS for domain in domains):
+      return mcp.tool()(function)
+    return function
+  return decorator
+
+
 from recipe_runtime import register_recipe_tools, related_recipes
-register_recipe_tools(mcp, STORE, SUBSCRIPTIONS, ENVIRONMENTS)
+if "automation" in _FEATURE_DOMAINS:
+  register_recipe_tools(mcp, STORE, SUBSCRIPTIONS, ENVIRONMENTS)
 from agent_session_runtime import register_agent_session_tools
-register_agent_session_tools(mcp, STORE)
+if "automation" in _FEATURE_DOMAINS:
+  register_agent_session_tools(mcp, STORE)
 
 
 def _enabled_router_solutions():
@@ -523,14 +595,24 @@ def _disabled_router_response(tool_name):
 @mcp.tool()
 def check_version() -> dict:
   """Return the unified server version and its component schema versions."""
-  return {"name": "pkm", "version": SERVER_VERSION,
-          "components": {"knowledge": KNOWLEDGE_SCHEMA_VERSION, "chat": CHAT_SCHEMA_VERSION, "recipes": RECIPE_SCHEMA_VERSION,
-                         "agent_sessions": AGENT_SESSION_SCHEMA_VERSION},
-          "capabilities": ["personal-knowledge", "papers", "pkm-chatroom", "pkm-skills", "subscriptions", "pkm-recipes", "agent-session-management"],
-          "chat_discovery_tool": "chat_capabilities",
-          "skill_discovery_tool": "skill_capabilities",
-          "recipe_discovery_tool": "recipe_capabilities",
-          "agent_session_discovery_tool": "agent_session_capabilities"}
+  capabilities = []
+  if "knowledge" in _FEATURE_DOMAINS:
+    capabilities.extend(["personal-knowledge", "papers", "subscriptions"])
+  if "skillRouter" in _FEATURE_DOMAINS:
+    capabilities.append("pkm-skills")
+  if "automation" in _FEATURE_DOMAINS:
+    capabilities.extend(["pkm-chatroom", "pkm-recipes", "agent-session-management"])
+  result = {"name": "pkm", "version": SERVER_VERSION,
+       "components": {"knowledge": KNOWLEDGE_SCHEMA_VERSION, "chat": CHAT_SCHEMA_VERSION, "recipes": RECIPE_SCHEMA_VERSION,
+                "agent_sessions": AGENT_SESSION_SCHEMA_VERSION},
+       "enabled_feature_domains": sorted(_FEATURE_DOMAINS),
+       "capabilities": capabilities}
+  if "automation" in _FEATURE_DOMAINS:
+    result.update({"chat_discovery_tool": "chat_capabilities", "recipe_discovery_tool": "recipe_capabilities",
+             "agent_session_discovery_tool": "agent_session_capabilities"})
+  if "skillRouter" in _FEATURE_DOMAINS:
+    result["skill_discovery_tool"] = "skill_capabilities"
+  return result
 
 
 def _now() -> str:
@@ -552,19 +634,24 @@ def _retrieval_request(route, payload=None):
     return {"ok": False, "error": "Subscriber retrieval worker unavailable: " + str(error)}
 
 
-@mcp.tool()
+@_feature_tool("knowledge", "skillRouter")
 def retrieval_status() -> str:
   """Return the Subscriber-owned persistent retrieval worker and ready corpus revision."""
   return json.dumps(_retrieval_request("/status"), ensure_ascii=False)
 
 
-@mcp.tool()
+@_feature_tool("knowledge", "skillRouter")
 def search_knowledge(query: str, limit: int = 5, content_type_filter: Optional[List[str]] = None,
-             request_id: str = "", debug: bool = False) -> str:
-  """Search one typed index containing local Skills/Notes/Scripts and all subscribed Broker content.
+             request_id: str = "", debug: bool = False, route: str = "lexical",
+             generation_mode: str = "latest-ready", generation: int = 0,
+             graph_max_depth: int = 2, graph_max_nodes: int = 100, graph_max_edges: int = 500,
+             graph_relations: Optional[List[str]] = None, graph_direction: str = "both",
+             capability_source_ids: Optional[List[str]] = None, deadline_ms: int = 5000) -> str:
+  """Search one typed index containing local Skills/Notes/Research/Scripts/Recipes and subscribed content.
 
   Query text is passed unchanged so mixed exact syntax remains observable. An explicit
-  content_type_filter is strict; type words in query text are only soft preferences.
+  content_type_filter is strict; type words in query text are only soft preferences. Graph
+  traversal is bounded and filtered before unavailable targets can enter the result.
   """
   started_at = time.perf_counter()
   if "l1_online" not in _enabled_router_solutions():
@@ -573,14 +660,33 @@ def search_knowledge(query: str, limit: int = 5, content_type_filter: Optional[L
   if not str(query or "").strip():
     _collect_search_invocation("pkm.search_knowledge", started_at, [], False, ["exact", "bm25"])
     return json.dumps({"ok": False, "error": "query is required"})
-  allowed = {"skill", "note", "script", "subscription"}
+  allowed = {"skill", "note", "research", "script", "recipe", "subscription"}
   if content_type_filter is not None and any(str(value) not in allowed for value in content_type_filter):
     _collect_search_invocation("pkm.search_knowledge", started_at, [], False, ["exact", "bm25"])
     return json.dumps({"ok": False, "error": "Invalid content_type_filter"})
   requested_limit = max(1, min(int(limit or 5), 100))
+  if route not in {"lexical", "semantic", "graph", "hybrid"}:
+    return json.dumps({"ok": False, "error": "Invalid route"})
+  if generation_mode not in {"latest-ready", "exact", "minimum"}:
+    return json.dumps({"ok": False, "error": "Invalid generation_mode"})
+  if generation_mode != "latest-ready" and int(generation or 0) < 1:
+    return json.dumps({"ok": False, "error": "generation must be positive for exact or minimum policy"})
+  if graph_direction not in {"forward", "backlink", "both"}:
+    return json.dumps({"ok": False, "error": "Invalid graph_direction"})
+  deadline_at_ms = int(time.time() * 1000) + max(1, min(int(deadline_ms or 5000), 300000))
   result = _retrieval_request("/search", {
     "query": query, "limit": min(100, max(requested_limit, requested_limit * 5)),
     "content_type_filter": content_type_filter, "request_id": request_id,
+    "route": route,
+    "generation": {"mode": generation_mode, **({"generation": int(generation)} if generation_mode != "latest-ready" else {})},
+    "scope": {"capability_id": "mcp.search_knowledge", "source_ids": capability_source_ids},
+    "graph": {
+      "max_depth": max(1, min(int(graph_max_depth or 2), 32)),
+      "max_nodes": max(1, min(int(graph_max_nodes or 100), 10000)),
+      "max_edges": max(1, min(int(graph_max_edges or 500), 50000)),
+      "relations": graph_relations, "direction": graph_direction,
+    },
+    "deadline_at_ms": deadline_at_ms,
   })
   if result.get("ok"):
     def priority_multiplier(hit):
@@ -610,6 +716,8 @@ def search_knowledge(query: str, limit: int = 5, content_type_filter: Optional[L
     compact_hit = {
       "rank": hit.get("rank"), "score": round(float(hit.get("score") or 0), 6),
       "skill_id": hit.get("skill_id"), "content_hash": hit.get("content_hash"),
+      "source_id": hit.get("source_id"), "source_revision": hit.get("source_revision"),
+      "score_components": hit.get("score_components") or {},
       "content_type": hit.get("content_type"), "source_uri": hit.get("source_uri"),
       "title": hit.get("title"), "description": hit.get("description"),
       "read_only": bool(hit.get("read_only")), "provenance": compact_provenance,
@@ -619,8 +727,8 @@ def search_knowledge(query: str, limit: int = 5, content_type_filter: Optional[L
       compact_hit["linkage"] = linkage
     hits.append(compact_hit)
   compact = {key: result.get(key) for key in [
-    "ok", "request_id", "corpus_revision", "query_intent", "exact_terms",
-    "lexical_anchors", "requested_content_types", "content_type_routing"]}
+    "schema", "ok", "request_id", "corpus_revision", "ready_generation", "route", "query_intent", "exact_terms",
+    "lexical_anchors", "requested_content_types", "content_type_routing", "stale", "incomplete", "diagnostics"]}
   compact["hits"] = hits
   return json.dumps(compact, ensure_ascii=False)
 
@@ -663,6 +771,119 @@ def _collect_search_invocation(tool_name, started_at, result_ids, success=True, 
     "routes": list(routes or []),
     "model_based_routing_enabled": False,
   })
+
+
+_SKILL_ROUTER_TOOLS = {
+  "skill_capabilities", "skill_context", "skill_feedback", "propose_skill_update",
+  "search_knowledge", "search_skills", "get_skill", "retrieval_status",
+}
+
+
+def _tool_domain(tool_name):
+  if tool_name.startswith("agent_session_") or tool_name.startswith("recipe_") or tool_name.startswith("chat_") or tool_name == "check_chat_version":
+    return "automation"
+  if tool_name in _SKILL_ROUTER_TOOLS:
+    return "skillRouter"
+  return "knowledge"
+
+
+def _plain_value(value):
+  if hasattr(value, "model_dump"):
+    try:
+      return value.model_dump()
+    except Exception:
+      pass
+  if isinstance(value, dict):
+    return {str(key): _plain_value(item) for key, item in value.items()}
+  if isinstance(value, (list, tuple)):
+    return [_plain_value(item) for item in value]
+  if isinstance(value, (str, int, float, bool)) or value is None:
+    return value
+  return str(value)
+
+
+def _usage_metrics(value):
+  reported = {"input": 0, "output": 0}
+  result_count = 0
+
+  def visit(item):
+    nonlocal result_count
+    if isinstance(item, str):
+      text = item.strip()
+      if text.startswith("{") or text.startswith("["):
+        try:
+          visit(json.loads(text))
+        except Exception:
+          pass
+      return
+    if isinstance(item, list):
+      for child in item:
+        visit(child)
+      return
+    if not isinstance(item, dict):
+      return
+    for key in ("hits", "skills", "results", "items"):
+      if isinstance(item.get(key), list):
+        result_count = max(result_count, len(item[key]))
+    usage = item.get("usage")
+    if isinstance(usage, dict):
+      reported["input"] += int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
+      reported["output"] += int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
+    for child in item.values():
+      visit(child)
+
+  visit(value)
+  return result_count, reported
+
+
+def _record_tool_usage(tool_name, arguments, result, duration_ms, success):
+  try:
+    plain_arguments = _plain_value(arguments)
+    plain_result = _plain_value(result)
+    input_bytes = len(json.dumps(plain_arguments, ensure_ascii=False, default=str).encode("utf-8"))
+    output_bytes = len(json.dumps(plain_result, ensure_ascii=False, default=str).encode("utf-8"))
+    result_count, reported = _usage_metrics(plain_result)
+    event_id = str(uuid.uuid4())
+    event = {
+      "schema": 1, "eventId": event_id, "sessionId": _COLLECTOR_SESSION_ID,
+      "occurredAt": _now(), "toolName": tool_name, "domain": _tool_domain(tool_name),
+      "inputBytes": input_bytes, "outputBytes": output_bytes,
+      "durationMs": max(0, round(duration_ms, 3)), "success": bool(success),
+      "resultCount": result_count,
+      "estimatedTokenEquivalent": (input_bytes + output_bytes + 3) // 4,
+      "reportedTokens": reported,
+    }
+    directory = STORE / ".pkm" / "state" / "mcp-usage" / "events"
+    directory.mkdir(parents=True, exist_ok=True)
+    destination = directory / (event_id + ".json")
+    temporary = directory / (event_id + "." + str(os.getpid()) + ".tmp")
+    with open(temporary, "x", encoding="utf-8") as handle:
+      handle.write(json.dumps(event, ensure_ascii=False, sort_keys=True))
+      handle.flush()
+      os.fsync(handle.fileno())
+    os.replace(temporary, destination)
+  except Exception:
+    pass
+
+
+class ToolUsageMiddleware(Middleware):
+  async def on_call_tool(self, context, call_next):
+    started_at = time.perf_counter()
+    message = getattr(context, "message", None)
+    tool_name = str(getattr(message, "name", "") or "")
+    arguments = getattr(message, "arguments", None) or {}
+    try:
+      result = await call_next(context)
+    except Exception:
+      _record_tool_usage(tool_name, arguments, {}, (time.perf_counter() - started_at) * 1000, False)
+      raise
+    plain_result = _plain_value(result)
+    success = not (isinstance(plain_result, dict) and (plain_result.get("ok") is False or plain_result.get("error")))
+    _record_tool_usage(tool_name, arguments, plain_result, (time.perf_counter() - started_at) * 1000, success)
+    return result
+
+
+mcp.add_middleware(ToolUsageMiddleware())
 
 
 # ── Frontmatter (matches the extension's minimal YAML subset) ────────────────
@@ -803,8 +1024,11 @@ def _all_skills():
         pkm_path = "pkm://subscriptions/{}/{}/skills/{}".format(
           urllib.parse.quote(str(record.get("nodeId") or ""), safe=""),
           urllib.parse.quote(str(record.get("shareId") or ""), safe=""), encoded_path)
+        source_priority = _skill_priority(record.get("priority"))
+        effective_priority = max([row.get("priority", "normal"), source_priority],
+                     key=lambda value: {"normal": 0, "high": 1, "highest": 2}.get(value, 0))
         row.update({"skill_id": pkm_path, "source": "subscription", "read_only": True,
-          "priority": _skill_priority(record.get("priority")),
+          "priority": effective_priority,
           "provenance": {"subscription_id": record.get("subscriptionId"), "alias": record.get("alias"),
             "publisher": record.get("publisher"), "node_id": record.get("nodeId"), "share_id": record.get("shareId"),
             "revision": record.get("revision"), "synced_at": record.get("syncedAt"),
@@ -1012,7 +1236,7 @@ def _skill_terms(value):
          if term not in _SKILL_STOP_WORDS and not term.isdigit())
 
 
-@mcp.tool()
+@_feature_tool("skillRouter")
 def skill_capabilities() -> str:
   """Discover the PKM secondary-Skill workflow for finding, using, and maintaining reusable knowledge."""
   return json.dumps({
@@ -1024,7 +1248,7 @@ def skill_capabilities() -> str:
   })
 
 
-@mcp.tool()
+@_feature_tool("skillRouter")
 def skill_context(task: str, workspace: str = "", files: Optional[List[str]] = None,
           diagnostics: str = "", limit: int = 3) -> str:
   """Find and activate the smallest relevant PKM Skill set for a substantial task.
@@ -1042,6 +1266,23 @@ def skill_context(task: str, workspace: str = "", files: Optional[List[str]] = N
     return json.dumps({"ok": False, "error": "task is required"})
   task_terms = _skill_terms(task)
   context_terms = _skill_terms(" ".join([str(workspace or ""), " ".join(files or []), str(diagnostics or "")]))
+  normalized_context = re.sub(r"[^\\w]+", " ", " ".join([
+    str(task or ""), str(workspace or ""), " ".join(files or []), str(diagnostics or "")
+  ]).casefold()).strip()
+  boundary = _retrieval_request("/search", {
+    "query": task,
+    "limit": max(10, min(int(limit or 3) * 10, 100)),
+    "content_type_filter": ["skill"],
+    "request_id": str(uuid.uuid4()),
+    "route": "lexical",
+    "generation": {"mode": "latest-ready"},
+    "scope": {"capability_id": "pkm.skill_context"},
+    "deadline_at_ms": int(time.time() * 1000) + 5000,
+  })
+  boundary_rank = {
+    str(hit.get("skill_id") or "").removeprefix("skill:"): index
+    for index, hit in enumerate(boundary.get("hits") or [])
+  } if boundary.get("ok") else {}
   rows = _all_skills()
   metadata_documents = []
   for candidate in rows:
@@ -1077,15 +1318,28 @@ def skill_context(task: str, workspace: str = "", files: Optional[List[str]] = N
     # Body and execution context are tie-breakers only. They cannot increase
     # admission coverage or turn an unrelated Skill into a candidate.
     score += min(len(content_hits), 4) + min(len(context_metadata) * 2, 8)
+    if _skill_id(row) in boundary_rank:
+      score += max(1, 20 - boundary_rank[_skill_id(row)])
+      matched.insert(0, "retrieval-boundary")
     matched.extend("content:" + term for term in sorted(content_hits)[:3])
     matched.extend("context:" + term for term in sorted(context_metadata)[:2])
     enough_metadata = len(metadata_hits) >= (1 if len(task_terms) <= 2 else 2)
     enough_coverage = coverage >= (0.5 if len(task_terms) <= 2 else 0.34)
     anchor_matched = not rare_task_terms or bool(metadata_hits & rare_task_terms)
-    if enough_metadata and enough_coverage and anchor_matched:
-      priority = row.get("priority") if row.get("priority") in {"high", "highest"} else "normal"
-      priority_boost = {"normal": 0, "high": 12, "highest": 24}[priority]
+    priority = row.get("priority") if row.get("priority") in {"high", "highest"} else "normal"
+    identifiers = [row.get("name") or "", _skill_id(row)]
+    exact_identifier = any(
+      len(re.sub(r"[^\\w]+", " ", str(identifier).casefold()).strip()) >= 4
+      and re.sub(r"[^\\w]+", " ", str(identifier).casefold()).strip() in normalized_context
+      for identifier in identifiers
+    )
+    priority_admission = priority in {"high", "highest"} and len(metadata_hits) >= 2 and coverage >= 0.12 and anchor_matched
+    if exact_identifier or (enough_metadata and enough_coverage and anchor_matched) or priority_admission:
+      priority_boost = {"normal": 0, "high": 30, "highest": 60}[priority]
       score += priority_boost
+      if exact_identifier:
+        score += 80
+        matched.insert(0, "exact-identifier")
       if priority != "normal":
         matched.insert(0, "priority:" + priority)
       ranked.append((score, coverage, len(metadata_hits), row, matched[:8]))
@@ -1100,7 +1354,7 @@ def skill_context(task: str, workspace: str = "", files: Optional[List[str]] = N
              "skill_priority": row.get("priority", "normal"),
              "provenance": row.get("provenance"),
              "content_hash": _skill_hash(row), "score": score, "task_coverage": round(coverage, 3),
-             "priority": "required" if index == 0 and metadata_count >= 2 and coverage >= 0.5 else "recommended",
+             "priority": "required" if row.get("priority") == "highest" or (index == 0 and metadata_count >= 2 and coverage >= 0.5) else "recommended",
              "match_reason": reasons, "linkage": _skill_linkage(row)})
   no_match = not skills
   interaction_id = str(uuid.uuid4())
@@ -1116,14 +1370,15 @@ def skill_context(task: str, workspace: str = "", files: Optional[List[str]] = N
                "task_coverage": round(coverage, 3), "metadata_match_count": metadata_count,
                "match_reason": reasons, "linkage": _skill_linkage(row)})
   _collect_search_invocation("pkm.skill_context", started_at,
-        [item.get("content_hash") for item in skills], True, ["metadata-threshold"])
+        [item.get("content_hash") for item in skills], True, ["metadata-threshold", "retrieval-boundary"])
   return json.dumps({"ok": True, "interaction_id": interaction_id, "task": task, "count": len(skills), "no_match": no_match,
-             "retrieval": "summary", "skills": skills,
+             "retrieval": "summary", "retrieval_generation": boundary.get("ready_generation") if boundary.get("ok") else None,
+             "skills": skills,
              "instruction": "No relevant PKM Skill met the threshold; continue without one."
                if no_match else "Call get_skill with the skill_id and interaction_id for each candidate you choose. Follow required Skills and linkage.next_action. A search_or_create_recipe action requires recipe_search, then recipe_create_from_skill when no qualified Recipe exists. Report outcomes with skill_feedback using the same interaction_id."}, ensure_ascii=False)
 
 
-@mcp.tool()
+@_feature_tool("skillRouter")
 def skill_feedback(task: str, used_skills: List[str], outcome: str,
            observations: Optional[List[str]] = None, evidence: Optional[List[str]] = None,
            interaction_id: str = "") -> str:
@@ -1144,7 +1399,7 @@ def skill_feedback(task: str, used_skills: List[str], outcome: str,
   return json.dumps({"ok": True, "feedback_id": entry["id"]})
 
 
-@mcp.tool()
+@_feature_tool("skillRouter")
 def propose_skill_update(skill_id: str, base_hash: str, reason: str,
              evidence: Optional[List[str]] = None, proposed_content: str = "",
              confidence: float = 0.0) -> str:
@@ -1177,7 +1432,7 @@ def propose_skill_update(skill_id: str, base_hash: str, reason: str,
              "current_hash": current_hash, "conflict": conflict})
 
 
-@mcp.tool()
+@_feature_tool("knowledge")
 def list_skills(category: Optional[str] = None) -> str:
     """List personal skills, optionally filtered by category (a slash-separated folder path)."""
     rows = _all_skills()
@@ -1191,7 +1446,7 @@ def list_skills(category: Optional[str] = None) -> str:
               "provenance": r.get("provenance")} for r in rows], ensure_ascii=False)
 
 
-@mcp.tool()
+@_feature_tool("knowledge", "skillRouter")
 def search_skills(query: str) -> str:
     """Ranked full-text search across skill names, content, and descriptions (CJK-friendly)."""
     skills = _all_skills(); started_at = time.perf_counter()
@@ -1221,7 +1476,7 @@ def search_skills(query: str) -> str:
                for s in hits], ensure_ascii=False)
 
 
-@mcp.tool()
+@_feature_tool("knowledge", "skillRouter")
 def get_skill(name: str, interaction_id: str = "") -> str:
   """Get the full content of a skill by stable skill_id or exact name."""
   r = _skill_by_id(name)
@@ -1239,7 +1494,7 @@ def get_skill(name: str, interaction_id: str = "") -> str:
   return json.dumps(result)
 
 
-@mcp.tool()
+@_feature_tool("knowledge")
 def list_notes(type: Optional[str] = None) -> str:
     """List notes. type can be: general, todo, done, observation, data-path."""
     rows = _all_notes()
@@ -1250,7 +1505,7 @@ def list_notes(type: Optional[str] = None) -> str:
                         "category": r["category"], "updated_at": r["updated_at"]} for r in rows[:50]])
 
 
-@mcp.tool()
+@_feature_tool("knowledge")
 def search_notes(query: str) -> str:
     """Ranked full-text search across note titles and content (CJK-friendly)."""
     notes = _all_notes(); started_at = time.perf_counter()
@@ -1273,7 +1528,7 @@ def search_notes(query: str) -> str:
     return json.dumps([{"slug": r["slug"], "title": r["title"], "type": r["type"]} for r in hits])
 
 
-@mcp.tool()
+@_feature_tool("knowledge")
 def get_note(slug: str) -> str:
     """Get the full content of a note by slug (its relative path without .md)."""
     r = _note_get(slug)
@@ -1286,7 +1541,7 @@ def get_note(slug: str) -> str:
 
 
 # ── Write tools ─────────────────────────────────────────────────────────────
-@mcp.tool()
+@_feature_tool("knowledge")
 def add_note(title: str, content: str, type: str = "general", tags: Optional[List[str]] = None,
              category: Optional[str] = None, slug: Optional[str] = None) -> str:
     """Create a new note. 'category' is a slash-separated path (e.g. Project/AutoLabeling/C2 Guideline)
@@ -1300,7 +1555,7 @@ def add_note(title: str, content: str, type: str = "general", tags: Optional[Lis
     return json.dumps({"ok": True, "slug": new_slug})
 
 
-@mcp.tool()
+@_feature_tool("knowledge")
 def update_note(slug: str, title: Optional[str] = None, content: Optional[str] = None,
                 type: Optional[str] = None, category: Optional[str] = None, tags: Optional[List[str]] = None) -> str:
     """Update fields of an existing note by slug. Only provided fields are changed.
@@ -1319,7 +1574,7 @@ def update_note(slug: str, title: Optional[str] = None, content: Optional[str] =
     return json.dumps({"ok": True, "slug": new_slug})
 
 
-@mcp.tool()
+@_feature_tool("knowledge")
 def delete_note(slug: str) -> str:
     """Delete a note by slug (its relative path without .md)."""
     p = NOTES / (slug + ".md")
@@ -1328,7 +1583,7 @@ def delete_note(slug: str) -> str:
     return json.dumps({"ok": True, "slug": slug})
 
 
-@mcp.tool()
+@_feature_tool("knowledge")
 def add_skill(name: str, content: str, description: str = "", category: str = "",
               tags: Optional[List[str]] = None, source_project: str = "", recipe_required: bool = False,
               recipe_hint: str = "", related_skills: Optional[List[str]] = None,
@@ -1342,7 +1597,7 @@ def add_skill(name: str, content: str, description: str = "", category: str = ""
     return json.dumps({"ok": True, "name": name})
 
 
-@mcp.tool()
+@_feature_tool("knowledge")
 def update_skill(name: str, content: Optional[str] = None, description: Optional[str] = None,
                  category: Optional[str] = None, tags: Optional[List[str]] = None,
                  recipe_required: Optional[bool] = None, recipe_hint: Optional[str] = None,
@@ -1366,7 +1621,7 @@ def update_skill(name: str, content: Optional[str] = None, description: Optional
     return json.dumps({"ok": True, "name": name})
 
 
-@mcp.tool()
+@_feature_tool("knowledge")
 def delete_skill(name: str) -> str:
     """Delete a skill by name."""
     p, _ = _find_skill(name)
@@ -1377,7 +1632,7 @@ def delete_skill(name: str) -> str:
 
 
 # ── Paper tools ──────────────────────────────────────────────────────────────
-@mcp.tool()
+@_feature_tool("knowledge")
 def list_papers(topic: Optional[str] = None) -> str:
     """List papers (optionally filtered by topic), sorted by citation count (popularity)."""
     all_p = _all_papers(); counts = _citation_counts(all_p)
@@ -1388,7 +1643,7 @@ def list_papers(topic: Optional[str] = None) -> str:
                         "tags": p["tags"], "citation_count": counts.get(p["slug"], 0)} for p in rows])
 
 
-@mcp.tool()
+@_feature_tool("knowledge")
 def search_papers(query: str) -> str:
     """Search papers by title, authors, topic, publisher, tags, or year."""
     q = query.lower(); started_at = time.perf_counter(); all_p = _all_papers(); counts = _citation_counts(all_p)
@@ -1403,7 +1658,7 @@ def search_papers(query: str) -> str:
                         "topic": p["topic"], "citation_count": counts.get(p["slug"], 0)} for p in hits[:50]])
 
 
-@mcp.tool()
+@_feature_tool("knowledge")
 def get_paper(slug: str) -> str:
     """Get a paper's full record (metadata, conclusions, cites with notes, body) by slug."""
     p = _paper_get(slug)
@@ -1413,7 +1668,7 @@ def get_paper(slug: str) -> str:
     return json.dumps(p)
 
 
-@mcp.tool()
+@_feature_tool("knowledge")
 def add_paper(title: str, authors: Optional[List[str]] = None, year: Optional[int] = None,
               topic: str = "", publisher: str = "", tags: Optional[List[str]] = None,
               url: str = "", conclusions: Optional[List[str]] = None,
@@ -1430,7 +1685,7 @@ def add_paper(title: str, authors: Optional[List[str]] = None, year: Optional[in
     return json.dumps({"ok": True, "slug": new})
 
 
-@mcp.tool()
+@_feature_tool("knowledge")
 def update_paper(slug: str, title: Optional[str] = None, authors: Optional[List[str]] = None,
                  year: Optional[int] = None, topic: Optional[str] = None, publisher: Optional[str] = None,
                  tags: Optional[List[str]] = None, url: Optional[str] = None,
@@ -1456,7 +1711,7 @@ def update_paper(slug: str, title: Optional[str] = None, authors: Optional[List[
     return json.dumps({"ok": True, "slug": new})
 
 
-@mcp.tool()
+@_feature_tool("knowledge")
 def delete_paper(slug: str) -> str:
     """Delete a paper by slug."""
     try: (PAPERS / (slug + ".md")).unlink(missing_ok=True)
@@ -1464,7 +1719,7 @@ def delete_paper(slug: str) -> str:
     return json.dumps({"ok": True, "slug": slug})
 
 
-@mcp.tool()
+@_feature_tool("knowledge")
 def paper_graph(topic: Optional[str] = None, limit: int = 10, neighbors: bool = False) -> str:
     """Citation graph of the top papers. Returns {nodes, edges}: each edge is
     {from: cited_parent, to: citing_child, note}. 'limit' keeps the top-N by citations
@@ -1512,7 +1767,7 @@ def _subscription_records():
     return rows
 
 
-@mcp.tool()
+@_feature_tool("knowledge")
 def list_subscriptions() -> str:
     """List physically isolated, machine-local PKM subscriptions and their provenance.
     This does not search or modify the user's local Knowledge Root."""
@@ -1522,7 +1777,7 @@ def list_subscriptions() -> str:
     return json.dumps(rows, ensure_ascii=False)
 
 
-@mcp.tool()
+@_feature_tool("knowledge")
 def search_subscribed_content(query: str, content_type: Optional[str] = None,
                   alias: Optional[str] = None, limit: int = 20) -> str:
     """Explicitly search downloaded subscription caches. Results remain read-only and
@@ -1578,7 +1833,7 @@ def search_subscribed_content(query: str, content_type: Optional[str] = None,
     return json.dumps(results, ensure_ascii=False)
 
 
-@mcp.tool()
+@_feature_tool("knowledge")
 def get_subscribed_content(node_id: str, share_id: str, content_type: str, path: str) -> str:
     """Read one explicit subscribed cache item returned by search_subscribed_content.
     Returns content plus its publisher/subscriber provenance; never writes local content."""
@@ -1598,7 +1853,7 @@ def get_subscribed_content(node_id: str, share_id: str, content_type: str, path:
       return json.dumps({"error": str(error)})
 
 
-@mcp.tool()
+@_feature_tool("knowledge")
 def get_subscribed_content_by_path(pkm_path: str) -> str:
     """Read a subscribed item directly from its canonical Copy Path URI."""
     try:
@@ -1614,8 +1869,9 @@ def get_subscribed_content_by_path(pkm_path: str) -> str:
       return json.dumps({"error": str(error)})
 
 
-from chat_server import mcp as chat_mcp
-mcp.mount(chat_mcp)
+if "automation" in _FEATURE_DOMAINS:
+  from chat_server import mcp as chat_mcp
+  mcp.mount(chat_mcp)
 
 if __name__ == "__main__":
     mcp.run()
@@ -1631,6 +1887,7 @@ if __name__ == "__main__":
         type: "stdio",
         command: launch.command,
         args: launch.args,
+        ...(launch.env ? { env: launch.env } : {}),
       }
     }
   }, null, 2);
@@ -2050,6 +2307,7 @@ if __name__ == "__main__":
         type: "stdio",
         command: launch.command,
         args: launch.args,
+        ...(launch.env ? { env: launch.env } : {}),
       }
     }
   }, null, 2);

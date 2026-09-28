@@ -1,4 +1,5 @@
-export type GitHubSyncReason = "startup" | "interval" | "change" | "configuration";
+export type GitHubSyncReason = "startup" | "interval" | "change" | "configuration" | "manual";
+export type GitHubSyncPhase = "scheduled" | "waiting-for-lock" | "authenticating" | "fetch" | "resolve-conflicts" | "commit" | "push" | "refresh-index";
 
 export interface AutomaticGitHubSyncTarget {
   id: string;
@@ -11,6 +12,9 @@ export interface AutomaticGitHubSyncTarget {
 
 export interface GitHubSyncRuntimeState {
   status: "paused" | "scheduled" | "syncing" | "error";
+  phase?: GitHubSyncPhase;
+  detail?: string;
+  activityAt?: string;
   reason?: GitHubSyncReason;
   lastAttemptAt?: string;
   lastSuccessAt?: string;
@@ -34,6 +38,7 @@ export class GitHubSyncScheduler {
   private readonly scheduledTimers = new Map<string, NodeJS.Timeout>();
   private readonly changeTimers = new Map<string, NodeJS.Timeout>();
   private readonly pending = new Map<string, GitHubSyncReason>();
+  private readonly activeTargets = new Set<string>();
   private draining = false;
   private disposed = false;
 
@@ -48,40 +53,58 @@ export class GitHubSyncScheduler {
     this.targets.clear();
     const activeIds = new Set(targets.map(target => target.id));
     for (const id of this.states.keys()) if (!activeIds.has(id)) this.states.delete(id);
+    for (const id of this.pending.keys()) if (!activeIds.has(id)) this.pending.delete(id);
     for (const target of targets) {
       this.targets.set(target.id, target);
+      const activeFailure = target.lastFailure
+        && (!target.lastSuccessAt || target.lastFailure.at > target.lastSuccessAt)
+        ? target.lastFailure
+        : undefined;
       if (!target.enabled) {
         this.updateState(target.id, {
           status: "paused",
-          lastAttemptAt: target.lastFailure?.at || target.lastSuccessAt,
+          lastAttemptAt: activeFailure?.at || target.lastSuccessAt,
           lastSuccessAt: target.lastSuccessAt,
-          lastError: target.lastFailure?.error,
+          lastError: activeFailure?.error,
         });
         continue;
       }
       const previous = this.states.get(target.id);
       this.states.set(target.id, {
-        status: target.lastFailure && (!target.lastSuccessAt || target.lastFailure.at > target.lastSuccessAt) ? "error" : "scheduled",
-        lastAttemptAt: previous?.lastAttemptAt || target.lastFailure?.at || target.lastSuccessAt,
+        status: activeFailure ? "error" : "scheduled",
+        lastAttemptAt: previous?.lastAttemptAt || activeFailure?.at || target.lastSuccessAt,
         lastSuccessAt: target.lastSuccessAt,
-        lastError: target.lastFailure?.error,
+        lastError: activeFailure?.error,
       });
       this.enqueue(target.id, "startup");
     }
   }
 
-  request(targetId: string, reason: GitHubSyncReason): void {
+  request(targetId: string, reason: GitHubSyncReason): boolean {
     const target = this.targets.get(targetId);
-    if (this.disposed || !target?.enabled) return;
+    if (this.disposed || !target || (!target.enabled && reason !== "manual")) return false;
+    if (reason === "manual" && (this.activeTargets.has(targetId) || this.pending.get(targetId) === "manual")) return false;
     this.enqueue(targetId, reason);
+    return true;
+  }
+
+  report(targetId: string, phase: GitHubSyncPhase, detail?: string): void {
+    if (this.disposed || !this.targets.has(targetId)) return;
+    this.updateState(targetId, {
+      ...this.states.get(targetId),
+      status: "syncing",
+      phase,
+      detail,
+      activityAt: new Date(this.now()).toISOString(),
+    });
   }
 
   private enqueue(targetId: string, reason: GitHubSyncReason): void {
     const target = this.targets.get(targetId);
-    if (this.disposed || !target?.enabled) return;
+    if (this.disposed || !target || (!target.enabled && reason !== "manual")) return;
     const current = this.pending.get(targetId);
     if (!current || this.reasonPriority(reason) > this.reasonPriority(current)) this.pending.set(targetId, reason);
-    if (reason === "configuration") {
+    if (reason === "configuration" || reason === "manual") {
       const timer = this.scheduledTimers.get(targetId);
       if (timer) this.clearTimer(timer);
       this.scheduledTimers.delete(targetId);
@@ -156,35 +179,60 @@ export class GitHubSyncScheduler {
         const [targetId, reason] = ready;
         this.pending.delete(targetId);
         const target = this.targets.get(targetId);
-        if (!target?.enabled) continue;
-        if (reason !== "configuration" && this.options.shouldExecute && !(await this.options.shouldExecute(targetId, reason))) {
-          this.updateState(targetId, {
-            status: "scheduled",
-            reason,
-            lastAttemptAt: this.states.get(targetId)?.lastAttemptAt,
-            lastSuccessAt: target.lastSuccessAt,
-          });
-          continue;
-        }
+        if (!target || (!target.enabled && reason !== "manual")) continue;
         const attemptedAt = new Date(this.now()).toISOString();
-        this.updateState(targetId, { ...this.states.get(targetId), status: "syncing", reason, lastAttemptAt: attemptedAt, lastError: undefined, nextSyncAt: undefined });
+        this.activeTargets.add(targetId);
+        const currentState = this.states.get(targetId);
+        if (currentState) this.states.set(targetId, { ...currentState, lastAttemptAt: attemptedAt, nextSyncAt: undefined });
         try {
+          if (this.options.shouldExecute && !(await this.options.shouldExecute(targetId, reason))) {
+            this.updateState(targetId, {
+              status: "scheduled",
+              reason,
+              lastAttemptAt: attemptedAt,
+              lastSuccessAt: target.lastSuccessAt,
+            });
+            this.scheduleNextInterval(target);
+            continue;
+          }
+          this.updateState(targetId, { ...this.states.get(targetId), status: "syncing", phase: "waiting-for-lock", detail: "Waiting for Git lock", activityAt: attemptedAt, reason, lastAttemptAt: attemptedAt, lastError: undefined, nextSyncAt: undefined });
           await this.options.execute(targetId, reason);
           const succeededAt = new Date(this.now()).toISOString();
           target.lastSuccessAt = succeededAt;
           target.lastFailure = undefined;
           const current = this.targets.get(targetId);
-          if (current) {
-            current.lastSuccessAt = succeededAt;
-            current.lastFailure = undefined;
+          if (!current) {
+            this.states.delete(targetId);
+            this.pending.delete(targetId);
+            continue;
           }
-          this.updateState(targetId, { status: "scheduled", reason, lastAttemptAt: attemptedAt, lastSuccessAt: succeededAt });
+          current.lastSuccessAt = succeededAt;
+          current.lastFailure = undefined;
+          this.updateState(targetId, {
+            status: target.enabled ? "scheduled" : "paused",
+            phase: target.enabled ? "scheduled" : undefined,
+            detail: target.enabled ? "Next fetch scheduled" : "Automatic pull/push is off",
+            activityAt: succeededAt,
+            reason,
+            lastAttemptAt: attemptedAt,
+            lastSuccessAt: succeededAt,
+          });
+          this.scheduleNextInterval(target);
         } catch (error) {
+          if (!this.targets.has(targetId)) {
+            this.states.delete(targetId);
+            this.pending.delete(targetId);
+            continue;
+          }
           const message = error instanceof Error ? error.message : String(error);
           target.lastFailure = { at: attemptedAt, error: message, reason };
           this.updateState(targetId, { ...this.states.get(targetId), status: "error", reason, lastAttemptAt: attemptedAt, lastError: message });
-          this.pending.set(targetId, reason);
-          this.scheduleWhenEligible(target);
+          if (target.enabled) {
+            this.pending.set(targetId, reason);
+            this.scheduleWhenEligible(target);
+          }
+        } finally {
+          this.activeTargets.delete(targetId);
         }
       }
     } finally {
@@ -193,13 +241,19 @@ export class GitHubSyncScheduler {
     }
   }
 
+  private scheduleNextInterval(target: AutomaticGitHubSyncTarget): void {
+    if (this.disposed || !this.targets.has(target.id) || !target.enabled || this.pending.has(target.id)) return;
+    this.pending.set(target.id, "interval");
+    this.scheduleWhenEligible(target);
+  }
+
   private updateState(targetId: string, state: GitHubSyncRuntimeState): void {
     this.states.set(targetId, state);
     this.options.onState?.(targetId, { ...state });
   }
 
   private reasonPriority(reason: GitHubSyncReason): number {
-    return reason === "configuration" ? 4 : reason === "change" ? 3 : reason === "interval" ? 2 : 1;
+    return reason === "manual" ? 5 : reason === "configuration" ? 4 : reason === "change" ? 3 : reason === "interval" ? 2 : 1;
   }
 
   private now(): number {

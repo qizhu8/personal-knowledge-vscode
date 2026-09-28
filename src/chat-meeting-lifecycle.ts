@@ -28,10 +28,9 @@ export class ChatMeetingLifecycle {
 }
 
 export function latestDiscussAfterCompletedMeeting(snapshot: MeetingRoomSnapshot, messages: ChatMessage[]): ChatMessage | undefined {
-  const latestEndedAt = snapshot.history
-    .map(meeting => Date.parse(meeting.endedAt || ""))
-    .filter(Number.isFinite)
-    .sort((left, right) => right - left)[0] || 0;
+  const completedBoundaries = snapshot.history.map(meeting => Date.parse(meeting.endedAt || ""));
+  if (completedBoundaries.some(boundary => !Number.isFinite(boundary))) return undefined;
+  const latestEndedAt = completedBoundaries.length ? Math.max(...completedBoundaries) : 0;
   return [...messages].reverse().find(message =>
     !message.system && message.mode === "discuss" && Number(message.ts || 0) > latestEndedAt);
 }

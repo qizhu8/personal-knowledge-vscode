@@ -30,11 +30,13 @@ artifacts/**
 **/*.map
 improvement_*.md
 improvements.md
+bug.md
 planning.md
 skill_vault.md
 
 **/__pycache__/**
 **/.pytest_cache/**
+.venv/**
 resources/.chat_cids.json
 
 # demo/screenshot harness (never ship)
@@ -44,3 +46,4 @@ scripts/release-preview-server.js
 scripts/capture-release-screenshots.py
 scripts/poc-*.js
 scripts/verify-vsix-package.js
+scripts/package-extension.js

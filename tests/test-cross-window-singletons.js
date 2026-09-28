@@ -40,6 +40,19 @@ async function main() {
     assert.match(servers, /acquireProcessLock\(lockName\)/);
     assert.match(servers, /updateState\(state => \{ state\[slug\] = run; \}\)/);
     assert.match(extension, /Public Content Gateway transition/);
+    assert.match(extension, /path\.join\(githubSyncStateDirectory\(context\), "locks", `\$\{targetId\}\.lock`\)/);
+    assert.match(extension, /`GitHub Sync target \$\{targetId\}`/);
+    assert.match(extension, /4 \* 60 \* 60_000/);
+    assert.match(extension, /"targets-state\.lock"/);
+    assert.match(extension, /mutateGitHubSyncTargets\(context, `sync \$\{targetId\}`/);
+    assert.match(extension, /mutateGitHubSyncTargets\(context, `failure \$\{targetId\}`/);
+    assert.match(extension, /mutateGitHubSyncTargets\(context, `save \$\{target\.id\}`/);
+    assert.match(extension, /mutateGitHubSyncTargets\(context, `delete \$\{targetId\}`/);
+    assert.match(extension, /mutateGitHubSyncTargets\(context, "Knowledge Root change"/);
+    assert.match(extension, /existing\.repository !== target\.repository \|\| existing\.branch !== target\.branch/);
+    assert.match(extension, /if \(!changed\) \{[\s\S]{0,180}target\.lastSync = existing\?\.lastSync;[\s\S]{0,180}target\.pendingDeletions = existing\?\.pendingDeletions;[\s\S]{0,180}target\.publication = existing\?\.publication;/,
+      'target edits must preserve cross-window sync, deletion, and publication migration state');
+    assert.match(extension, /if \(result\.endpointChanged\)[\s\S]{0,300}clearGitHubSyncConflict/);
     assert.match(extension, /publicContentTimer = setInterval[\s\S]{0,120}, 5_000\)/);
     assert.doesNotMatch(extension, /Use \$\{fallback\} and save it as the new machine default/);
     assert.match(extension, /for \(let attempt = 0; attempt < 20; attempt\+\+\)/);

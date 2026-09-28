@@ -5,6 +5,7 @@ const path = require('path');
 const vm = require('vm');
 const os = require('os');
 const childProcess = require('child_process');
+const { SHARED_CONTENT_TYPES } = require('../dist/subscriptions.js');
 
 const root = path.join(__dirname, '..');
 const knowledge = fs.readFileSync(path.join(root, 'src/webview/panel/20-knowledge.js'), 'utf8');
@@ -87,6 +88,10 @@ const matchedEmptyFolder = treeContext.renderCatTree(emptyFolderTree, [], 0, () 
 assert.match(matchedEmptyFolder, /Future Work/, 'search must return an empty folder whose path matches');
 assert.doesNotMatch(matchedEmptyFolder, /Unrelated/, 'search must still hide unrelated empty folders');
 assert.doesNotMatch(matchedEmptyFolder, /tree-cat-body" style="display:none"/, 'search must expand the retained path so the empty folder is visible');
+assert.match(matchedEmptyFolder, /class="tree-cat-hdr[^"]*" role="button" tabindex="0"/, 'CatTree folders must be keyboard-focusable buttons');
+assert.match(matchedEmptyFolder, /aria-expanded="true"/, 'CatTree folders must expose expansion state');
+assert.match(matchedEmptyFolder, /onkeydown="if\(event\.target===this&&\(event\.key==='Enter'\|\|event\.key===' '\)\)\{event\.preventDefault\(\);toggleCat\(/,
+  'CatTree folders must toggle with Enter or Space without intercepting nested controls');
 
 const markupStart = knowledge.indexOf("let knowledgeListMarkup =");
 const markupEnd = knowledge.indexOf('\nfunction renderList', markupStart);
@@ -128,7 +133,7 @@ const subscribedContainer = {
 const subscribedContext = {
   state: { tab: 'skills', subscriptionGroups: [{ alias: 'Broker', subscriptionId: 'sub', nodeId: 'node', shareId: 'share', revision: 1, items: [] }] },
   subscriptionEncodeForkPayload: () => 'payload',
-  subscriptionRenderItemTree: () => '',
+  subscriptionRenderItemTree: (...args) => { subscribedContext.renderedContentType = args[5]; return ''; },
   subscriptionBuildItemTree: () => ({}),
   esc: value => String(value),
 };
@@ -139,6 +144,9 @@ subscribedContext.renderSubscribedGroups(subscribedContainer);
 assert.strictEqual(existingSubscriptions.length, 1, 'repeated lists must replace the subscribed region instead of duplicating it');
 assert.match(existingSubscriptions[0].html, /^<div class="sub-virtual-groups">/);
 assert.strictEqual((existingSubscriptions[0].html.match(/class="pk-group sub-virtual-group"/g) || []).length, 1, 'the subscribed region must contain exactly one Broker group');
+subscribedContext.renderSubscribedGroups(subscribedContainer, subscribedContext.state.subscriptionGroups, 'recipes');
+assert.strictEqual(subscribedContext.renderedContentType, 'recipes', 'custom CatTrees must render subscribed items with their explicit content type');
+assert.doesNotMatch(existingSubscriptions[0].html, /Fork All/, 'Recipe subscription groups must not expose the Skill-only Fork All action');
 
 const tabCacheStart = knowledge.indexOf('const cachedKnowledgeTabs =');
 const tabCacheEnd = knowledge.indexOf('\nfunction paintWorkspaceNavigation', tabCacheStart);
@@ -184,11 +192,17 @@ assert.strictEqual(cacheElements['item-list'].childNodes[3210], cachedNodes[3210
 assert.strictEqual(tabCacheContext.state.items, cachedItems, 'restoration must reuse the matching data snapshot');
 assert.strictEqual(tabCacheContext.updateCachedKnowledgeTabSubscriptions('notes', [{ alias: 'Late Broker' }]), true, 'late Broker results must update the detached tab cache');
 assert.strictEqual(vm.runInContext("knowledgeTabViewCache.get('notes').subscriptionGroups[0].alias", tabCacheContext), 'Late Broker');
-tabCacheContext.invalidateKnowledgeTabView('notes');
+tabCacheContext.state.tab = 'skills';
+tabCacheContext.state.subscriptionGroups = [{ alias: 'Removed Broker' }];
+tabCacheContext.invalidateSubscriptionKnowledgeViews();
+assert.strictEqual(tabCacheContext.state.subscriptionGroups.length, 0, 'subscription changes must clear the active subscribed groups immediately');
 assert.strictEqual(tabCacheContext.restoreKnowledgeTabView('notes'), false, 'an invalidated tab must require fresh data');
 
 const extension = fs.readFileSync(path.join(root, 'src/extension.ts'), 'utf8');
 const core = fs.readFileSync(path.join(root, 'src/webview/panel/00-core.js'), 'utf8');
+const genericSubscribedTabs = [...knowledge.match(/const cachedKnowledgeTabs = new Set\(\[([^\]]+)\]\)/)[1].matchAll(/'([^']+)'/g)].map(match => match[1]);
+assert.deepStrictEqual(genericSubscribedTabs.sort(), SHARED_CONTENT_TYPES.filter(type => type !== 'servers' && type !== 'recipes').sort(),
+  'generic Knowledge CatTrees plus explicit Server and Recipe surfaces must cover every shared content type');
 assert.match(extension, /changedPath = path\.relative\(getStorePath\(\), uri\.fsPath\)/);
 assert.match(core, /pendingTreeRefresh = data \|\| \{\}/);
 assert.match(extension, /respond\(\{ command: "list", tab, data, folders/);
@@ -198,6 +212,20 @@ assert.match(core, /command === 'listSubscriptionGroups'[\s\S]{0,300}renderSubsc
   'subscribed groups must attach without rebuilding the local CatTree');
 assert.match(core, /command === 'listSubscriptionGroups'[\s\S]{0,200}updateCachedKnowledgeTabSubscriptions/,
   'late subscribed groups must preserve the detached local CatTree cache');
+assert.match(extension, /onChanged: \(\) => \{\s*invalidatePendingSubscriptionGroupLists\(\)/,
+  'subscription mutation must invalidate every queued subscribed-group response before notifying the webview');
+assert.match(core, /command === 'subscriptionChanged'[\s\S]{0,120}invalidateSubscriptionKnowledgeViews\(\)/,
+  'subscription mutation must invalidate every detached Knowledge tab before refreshing the active surface');
+assert.match(core, /state\.tab === 'servers'[\s\S]{0,120}serverSubscriptionGroups = \[\]/,
+  'subscription mutation must remove stale Server groups before the replacement list arrives');
+assert.match(core, /command === 'recipeSubscriptionGroups'[\s\S]{0,120}recipeSubscriptionGroupsOnResult/,
+  'Recipe Library must accept subscribed Recipe groups independently of Knowledge tab cache state');
+assert.match(core, /command === 'subscriptionChanged'[\s\S]{0,160}invalidateRecipeSubscriptionGroups\(\)/,
+  'every subscription mutation must invalidate Recipe groups even when Recipe Library is detached');
+assert.match(extension, /case "recipeSubscriptionGroups"[\s\S]{0,180}cachedGroups\("recipes"\)/,
+  'Recipe Library must request subscribed Recipe groups from the canonical subscription cache');
+assert.match(extension, /case 'page-recipes':\s+return this\._withSubscribedContent\("recipes", this\._recipeFolder\(\[\]\)\)/,
+  'Native Navigation Recipe Library must attach the same From Brokers model as every shared content root');
 assert.match(knowledge, /Retrieval priority[\s\S]{0,500}skillSetPriority/,
   'local Skill details must expose retrieval priority controls');
 assert.match(extension, /case "skillSetPriority"[\s\S]{0,900}scheduleRetrievalRefresh\(context\)/,

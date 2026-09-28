@@ -26,16 +26,20 @@ assert.match(extension, /_watcherRefreshTimer = setTimeout/);
 assert.match(extension, /\.pkm\/content-privacy\.json/);
 assert.match(extension, /_watcherRefreshTimer\.unref\?\.\(\)/);
 assert.match(extension, /if \(_watcherRefreshTimer\) clearTimeout\(_watcherRefreshTimer\)/);
-assert.match(extension, /new vscode\.RelativePattern\(getStorePath\(\), "\.pkm\/state\/\{projects\.json,agent-sessions\/\*\*\/\*\.json,agent-sessions-trash\/\*\*\/\*\.json,recipe-runs\/\*\*\/\*\.json\}"\)/,
-	"out-of-process Recipe and Agent Session writes must be watched");
+assert.match(extension, /new vscode\.RelativePattern\(getStorePath\(\), "\.pkm\/state\/\{projects\.json,project-store\.json,agent-sessions\/\*\*\/\*\.json,agent-sessions-trash\/\*\*\/\*\.json,recipe-runs\/\*\*\/\*\.json\}"\)/,
+	"out-of-process Project, Recipe Run, and Agent Session writes must be watched");
+assert.match(extension, /new vscode\.RelativePattern\(getStorePath\(\), "recipes\/\*\*\/\*"\)/,
+	"out-of-process canonical Recipe file writes must be watched");
 assert.match(extension, /const scope = relativeStatePath === "projects\.json"[\s\S]{0,1200}postMessage\(\{ command: "projectStateChanged", data: \{ scope \} \}\)/,
 	"managed state changes must send a lightweight invalidation instead of eagerly rebuilding snapshots");
-assert.match(core, /state\.tab === 'recipes' \? scope === 'projects'/,
+assert.match(core, /state\.tab === 'recipes' \? scope === 'recipes'/,
 	"Recipe Library must ignore high-frequency Agent Session and Recipe run writes");
 assert.match(extension, /if \(!panel\?\.visible \|\| !_panelReady\) return/);
 assert.match(extension, /signature === _knowledgeTreeSignature/);
 assert.match(extension, /file watcher fallback detected a knowledge tree change/);
-assert.match(extension, /}, 5 \* 60_000\)/, "fallback full-tree scans are infrequent safeguards for native watcher failures");
+assert.match(extension, /const fallbackIntervalMs = 5 \* 60_000/);
+assert.match(extension, /_watcherFallbackTimer = setInterval\([\s\S]*}, fallbackIntervalMs\)/,
+	"fallback full-tree scans are infrequent safeguards for native watcher failures");
 assert.match(extension, /if \(_watcherFallbackTimer\) clearInterval\(_watcherFallbackTimer\)/);
 assert.match(extension, /retainContextWhenHidden: false/, "hidden all-in-one panels release their DOM and tab snapshots");
 assert.match(extension, /fs\.writeFileSync\(target\.fsPath, rec\.data\);\s*rc\?\.files\.delete\(fileId\);/, "saved received-file buffers are released");

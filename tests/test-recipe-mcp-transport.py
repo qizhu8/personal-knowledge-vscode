@@ -150,7 +150,8 @@ async def main():
             tool_names = {tool.name for tool in await client.list_tools()}
             assert tool_names == {"recipe_capabilities", "recipe_search", "recipe_create_from_skill", "recipe_run_start",
                                   "recipe_run_start_adhoc", "recipe_run_get", "recipe_run_next",
-                                  "recipe_run_report", "recipe_run_submit_input"}
+                                  "recipe_run_progress", "recipe_run_report", "recipe_run_submit_input",
+                                  "recipe_usage_summary"}
 
             started = response_json(await client.call_tool("recipe_run_start", {
                 "recipe_id": "recipe_transport", "command_id": "transport-start",

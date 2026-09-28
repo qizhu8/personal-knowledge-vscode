@@ -15,7 +15,7 @@ const skillDocument = { name: "Verify", description: "", category: "Coding", tag
 const noteDocument = { title: "Release Constraints", type: "general", category: "Projects", tags: [], content: "Do not publish automatically.\n" };
 const skillHash = hash(canonicalJson(skillDocument));
 const noteHash = hash(canonicalJson(noteDocument));
-const recipe = JSON.parse(JSON.stringify(state.recipes[0]));
+const recipe = JSON.parse(JSON.stringify(state.recipes.find(candidate => candidate.name === "Software Development")));
 recipe.editorLayout = { nodePositions: { validate: { x: 480, y: 120 } } };
 recipe.nodeBindings = [{ nodeId: "validate", bindings: [
   { bindingId: "validation-skill", kind: "skill", knowledgeId: "Coding/Verify", contentHash: skillHash, usage: "required" },
@@ -43,4 +43,21 @@ const { digest: _digest, ...unresolvedPayload } = unresolved;
 error(() => exportProjectRecipeBundle({ project: unresolvedPayload.project, recipes: unresolvedPayload.recipes, knowledge: unresolvedPayload.knowledge, exportedAt: unresolvedPayload.exportedAt }), "binding-unresolved");
 const wrongDigest = { ...bundle, digest: "0".repeat(64) };
 error(() => parseProjectRecipeBundle(wrongDigest), "bundle-digest-mismatch");
+
+const methodologyRecipe = JSON.parse(JSON.stringify(
+  state.recipes.find(candidate => candidate.name === "Universal Unknown Task")
+));
+assert.ok(methodologyRecipe.methodology);
+const methodologyBundle = exportProjectRecipeBundle({
+  project, recipes: [methodologyRecipe], exportedAt: "2026-09-21T01:00:00.000Z", knowledge: []
+});
+assert.deepStrictEqual(methodologyBundle.recipes[0].methodology, methodologyRecipe.methodology);
+assert.strictEqual(methodologyBundle.recipes[0].methodologyDigest, methodologyRecipe.methodologyDigest);
+assert.deepStrictEqual(parseProjectRecipeBundle(JSON.parse(JSON.stringify(methodologyBundle))), methodologyBundle);
+const methodologyDigestMismatch = JSON.parse(JSON.stringify(methodologyRecipe));
+methodologyDigestMismatch.methodologyDigest = "0".repeat(64);
+error(() => exportProjectRecipeBundle({
+  project, recipes: [methodologyDigestMismatch], exportedAt: "2026-09-21T02:00:00.000Z", knowledge: []
+}), "recipe-methodology-invalid");
+
 console.log("Project Recipe bundle: canonical JSON, pinned knowledge, integrity, and reproducibility OK");

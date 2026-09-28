@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pkm.module.usage/v1",
+  "title": "PKM Module Usage Event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "eventId",
+    "sourceModule",
+    "occurredAt",
+    "attribution",
+    "measurement"
+  ],
+  "properties": {
+    "schema": {
+      "const": "pkm.module.usage/v1"
+    },
+    "eventId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sourceModule": {
+      "$ref": "#/$defs/identifier"
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "attribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "recipeRunId",
+        "nodeId",
+        "attemptId"
+      ],
+      "properties": {
+        "recipeRunId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "nodeId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "attemptId": {
+          "$ref": "#/$defs/identifier"
+        }
+      }
+    },
+    "measurement": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/measured"
+        },
+        {
+          "$ref": "#/$defs/estimated"
+        },
+        {
+          "$ref": "#/$defs/unknown"
+        }
+      ]
+    },
+    "derivedCost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "currency",
+        "amountMicros",
+        "priceVersion"
+      ],
+      "properties": {
+        "currency": {
+          "type": "string",
+          "minLength": 1
+        },
+        "amountMicros": {
+          "$ref": "#/$defs/count"
+        },
+        "priceVersion": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9._-]{0,127}$"
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "measured": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "provider",
+        "model",
+        "inputTokens",
+        "outputTokens",
+        "cachedInputTokens",
+        "reasoningTokens",
+        "totalTokens"
+      ],
+      "properties": {
+        "kind": {
+          "const": "measured"
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inputTokens": {
+          "$ref": "#/$defs/count"
+        },
+        "outputTokens": {
+          "$ref": "#/$defs/count"
+        },
+        "cachedInputTokens": {
+          "$ref": "#/$defs/count"
+        },
+        "reasoningTokens": {
+          "$ref": "#/$defs/count"
+        },
+        "totalTokens": {
+          "$ref": "#/$defs/count"
+        }
+      }
+    },
+    "estimated": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "estimator",
+        "estimatorVersion",
+        "confidence",
+        "estimatedTokens"
+      ],
+      "properties": {
+        "kind": {
+          "const": "estimated"
+        },
+        "estimator": {
+          "type": "string",
+          "minLength": 1
+        },
+        "estimatorVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "confidence": {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "estimatedTokens": {
+          "$ref": "#/$defs/count"
+        }
+      }
+    },
+    "unknown": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "reason",
+        "modelCalls"
+      ],
+      "properties": {
+        "kind": {
+          "const": "unknown"
+        },
+        "reason": {
+          "enum": [
+            "host-not-reported",
+            "provider-not-reported",
+            "unsupported-runtime"
+          ]
+        },
+        "modelCalls": {
+          "$ref": "#/$defs/count"
+        }
+      }
+    }
+  }
+}

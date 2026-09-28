@@ -16,8 +16,18 @@ assert.match(extensionTs, /server\.newerThanExpected \|\| newerRouters\.length[\
   "an older window must stop maintenance and recommend a manual Reload Window");
 assert.doesNotMatch(extensionTs, /executeCommand\([^\n]*(reloadWindow|reload)/i,
   "PKM must never reload the user's window automatically");
-assert.match(sourceTs, /Refusing to replace newer PKM MCP server/,
+assert.match(sourceTs, /Refusing to downgrade the installed PKM MCP runtime/,
   "the generated server write boundary must reject downgrades");
+assert.match(sourceTs, /The newer runtime was preserved[\s\S]*Upgrade Personal Knowledge Manager/,
+  "downgrade protection must preserve the newer runtime and recommend an extension upgrade");
+assert.match(sourceTs, /UNIFIED_MCP_VERSION = "2\.13\.1"/,
+  "generated MCP changes must carry a new unified runtime patch version");
+assert.doesNotMatch(panelJs, /PKM MCP server is outdated/,
+  "equal unified versions must not be mislabeled as an outdated server");
+assert.match(panelJs, /server v\$\{installed\} is current, but runtime components need update/,
+  "equal unified versions with changed components must identify the component transition");
+assert.match(panelJs, /A newer PKM MCP runtime is installed and was preserved/,
+  "newer installed runtimes must receive preservation and Extension upgrade guidance");
 assert.match(panelJs, /data\?\.current \|\| data\?\.newerThanExpected/,
   "a newer shared server must remain usable in an older window");
 assert.match(panelJs, /data\?\.newerThanExpected \? 'Newer installed'/,

@@ -47,7 +47,7 @@ async function run() {
   await waitFor(() => {
     if (!fs.existsSync(logPath)) return false;
     const log = fs.readFileSync(logPath, "utf8");
-    return /activation complete durationMs=\d+/.test(log) && (!expectPanel || log.includes("panel created") && log.includes('handleMessage: ready'));
+    return /activation complete durationMs=\d+/.test(log) && (!expectPanel || log.includes("panel created") && log.includes('handleMessage: ready') && log.includes("webview startup scriptStartMs="));
   }, expectPanel ? "Panel did not complete its Webview ready handshake" : "Extension activation did not complete with the panel closed");
   if (!expectPanel) await new Promise(resolve => setTimeout(resolve, 500));
 
@@ -55,10 +55,18 @@ async function run() {
   assert.ok(resultPath, "startup result path was not provided");
   const startupLog = fs.readFileSync(logPath, "utf8");
   const durationMs = Number(/activation complete durationMs=(\d+)/.exec(startupLog)?.[1]);
+  const panelHtmlDurationMs = Number(/panel (?:created|restored) \(html \d+ bytes, generated (\d+)ms\)/.exec(startupLog)?.[1]);
+  const webviewTiming = /webview startup scriptStartMs=(\d+) firstPaintMs=(\d+) firstContentfulPaintMs=(\d+)/.exec(startupLog);
   assert(Number.isFinite(durationMs), "activation duration metric was not recorded");
   const panelCreatedAt = startupLog.indexOf("panel created");
   const activationCompleteAt = startupLog.indexOf("activation complete durationMs=");
-  if (expectPanel) assert(panelCreatedAt >= 0 && panelCreatedAt < activationCompleteAt, "the panel framework must appear before activation completes");
+  if (expectPanel) {
+    assert(panelCreatedAt >= 0 && panelCreatedAt < activationCompleteAt, "the panel framework must appear before activation completes");
+    assert(Number.isFinite(panelHtmlDurationMs) && panelHtmlDurationMs <= 1000, `panel HTML generation exceeded 1000ms: ${panelHtmlDurationMs}`);
+    assert(webviewTiming, "webview startup timing was not recorded");
+    assert(Number(webviewTiming[1]) <= 2000, `webview script start exceeded 2000ms: ${webviewTiming[1]}`);
+    assert(Number(webviewTiming[2]) <= 2500, `webview first paint exceeded 2500ms: ${webviewTiming[2]}`);
+  }
   else assert.strictEqual(panelCreatedAt, -1, `panel must remain closed during ${process.env.PKM_STARTUP_SCENARIO || "closed-panel startup"}`);
   fs.writeFileSync(resultPath, JSON.stringify({
     activated: extension.isActive,
@@ -66,6 +74,9 @@ async function run() {
     panelExpectationMet: expectPanel ? panelCreatedAt >= 0 && startupLog.includes('handleMessage: ready') : panelCreatedAt === -1,
     deepNavigationNoteVisible: true,
     activationDurationMs: durationMs,
+    panelHtmlDurationMs: expectPanel ? panelHtmlDurationMs : null,
+    webviewScriptStartMs: expectPanel ? Number(webviewTiming[1]) : null,
+    webviewFirstPaintMs: expectPanel ? Number(webviewTiming[2]) : null,
   }));
 }
 

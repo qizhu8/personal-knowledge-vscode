@@ -1,12 +1,13 @@
 import { parentPort, workerData } from "worker_threads";
 import * as fs from "fs";
 import * as path from "path";
+import { compileWorkflowDefinitionV1 } from "./workflow-contracts";
 
 interface PreviousEntry { fingerprint: string; [key: string]: unknown; }
 interface WorkerInput { root: string; previous: Record<string, PreviousEntry>; }
 
 const { root, previous } = workerData as WorkerInput;
-const areas = ["skills", "notes", "papers", "prompts", "scripts", "packages", "servers"];
+const areas = ["skills", "notes", "papers", "prompts", "scripts", "packages", "servers", "recipes"];
 const ignoredDirectories = new Set([".git", ".trash", "_assets", "node_modules", "dist", "artifacts", ".vscode-test", "__pycache__", ".pytest_cache", ".venv", "venv", "env"]);
 const entries: Record<string, any> = {};
 let scanned = 0;
@@ -30,7 +31,7 @@ function frontmatter(text: string): Record<string, unknown> {
   return result;
 }
 
-function metadata(area: string, relativePath: string, fullPath: string, stat: fs.Stats, fingerprint: string): any {
+function metadata(area: string, relativePath: string, fullPath: string, stat: fs.Stats, fingerprint: string): any | undefined {
   const extension = path.extname(relativePath).toLowerCase();
   const withoutExtension = relativePath.slice(0, relativePath.length - extension.length).replace(/\\/g, "/");
   const category = path.posix.dirname(withoutExtension) === "." ? "" : path.posix.dirname(withoutExtension);
@@ -39,6 +40,17 @@ function metadata(area: string, relativePath: string, fullPath: string, stat: fs
   if (["skills", "notes", "papers"].includes(area) && extension === ".md") {
     try { fields = frontmatter(fs.readFileSync(fullPath, "utf8")); } catch { /* unreadable file remains discoverable */ }
   }
+  if (area === "recipes") {
+    try {
+      fields = JSON.parse(fs.readFileSync(fullPath, "utf8"));
+      const compiled = compileWorkflowDefinitionV1(fields.definition);
+      const recipeId = String(fields.recipeId || "");
+      const physicalCategory = category === "Uncategorized" ? "" : category;
+      if (fields.schema !== "pkm.knowledge/v1" || !/^knowledge_[a-f0-9]{24}$/.test(String(fields.knowledgeId || ""))
+        || !compiled.ok || compiled.executableDigest !== fields.executableDigest
+        || !basename.endsWith(`.${recipeId}`) || String(fields.category || "") !== physicalCategory) return undefined;
+    } catch { return undefined; }
+  }
   const title = String(fields.title || fields.name || basename);
   return {
     area, relativePath: relativePath.replace(/\\/g, "/"), fullPath, fingerprint,
@@ -46,6 +58,9 @@ function metadata(area: string, relativePath: string, fullPath: string, stat: fs
     slug: withoutExtension, name: String(fields.name || title), description: String(fields.description || ""),
     type: String(fields.type || "general"), tags: JSON.stringify(Array.isArray(fields.tags) ? fields.tags : []),
     source_project: String(fields.source_project || ""), pinned: fields.pinned === true, extension,
+    knowledgeId: /^knowledge_[a-f0-9]{24}$/.test(String(fields.knowledgeId || "")) ? String(fields.knowledgeId) : undefined,
+    knowledgeRevision: Number.isSafeInteger(fields.revision) && Number(fields.revision) > 0 ? Number(fields.revision) : undefined,
+    aliases: Array.isArray(fields.aliases) ? fields.aliases.map(String) : [],
   };
 }
 
@@ -64,7 +79,10 @@ function walk(area: string, directory: string, relative = ""): void {
     const key = `${area}/${childRelative.replace(/\\/g, "/")}`;
     const fingerprint = `${stat.mtimeMs}:${stat.size}`;
     if (previous[key]?.fingerprint === fingerprint) { entries[key] = previous[key]; reused++; }
-    else { entries[key] = metadata(area, childRelative, fullPath, stat, fingerprint); batch[key] = entries[key]; parsed++; }
+    else {
+      const item = metadata(area, childRelative, fullPath, stat, fingerprint);
+      if (item) { entries[key] = item; batch[key] = item; parsed++; }
+    }
     if (scanned % 100 === 0) { parentPort?.postMessage({ event: "progress", scanned, reused, parsed, batch }); batch = {}; }
   }
 }

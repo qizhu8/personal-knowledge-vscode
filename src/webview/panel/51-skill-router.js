@@ -4,6 +4,8 @@ const skillRouterBenchmarks = [
   { profile: 'l1_online', name: 'Exact + BM25', detail: 'Current production engine', state: 'Serving' },
   { profile: 'l1_weighted', name: 'Hybrid', detail: 'Model-based path temporarily disabled', state: 'Disabled' },
 ];
+let skillRouterStatusCache = null;
+let skillRouterStatusUpdatedAt = 0;
 
 const skillRouterParameterDetails = {
   embedding: ['Embedding', 'Frozen local model', 'Model tensors are never trained by PKM.'],
@@ -15,6 +17,17 @@ const skillRouterParameterDetails = {
 
 function renderSkillRouterLoading() {
   document.getElementById('detail').innerHTML = '<div class="empty">Loading Skill Router…</div>';
+}
+
+function showSkillRouterTab() {
+  if (skillRouterStatusCache) renderSkillRouterPane(skillRouterStatusCache); else renderSkillRouterLoading();
+  if (!tabCacheIsFresh(skillRouterStatusUpdatedAt)) ask('skillRouterStatus', {}, null, Boolean(skillRouterStatusCache));
+}
+
+function skillRouterOnStatus(data) {
+  skillRouterStatusCache = data || {};
+  skillRouterStatusUpdatedAt = Date.now();
+  if (state.tab === 'skillRouter') renderSkillRouterPane(skillRouterStatusCache);
 }
 
 function skillRouterStatusBadge(label, tone) {

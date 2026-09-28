@@ -178,7 +178,7 @@ async function main() {
     sockets[1].send(JSON.stringify({ t: "msg", room: room.room, text: "private metadata", kind: "agent",
       recipients: ["Ghost"], clientRequestId: "unknown-structured-1" }));
     const unknownStructured = await waitFor(() => sockets[1].frames.find(frame => frame.t === "error" && frame.clientRequestId === "unknown-structured-1"));
-    assert.strictEqual(unknownStructured.code, "mention-required");
+    assert.strictEqual(unknownStructured.code, "structured-recipient-invalid");
     assert(!host.frames.some(frame => frame.t === "msg" && frame.text === "private metadata"));
     console.log("chat multi-recipient test: explicit one/many recipient Discuss and non-Host @all rejection OK");
   } finally {

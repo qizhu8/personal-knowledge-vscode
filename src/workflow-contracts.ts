@@ -93,6 +93,7 @@ export interface WorkflowDefinitionV1 {
     outputs: Record<string, WorkflowPortDescriptor>;
     completion: { requiredNodes: string[] };
     trigger?: WorkflowCronTriggerV1;
+    traversalStrategy?: "breadth-first" | "depth-first";
   };
 }
 
@@ -461,10 +462,14 @@ export function compileWorkflowDefinitionV1(input: unknown): WorkflowCompileResu
     diagnostics.push(diagnostic("E3003", "/spec", { expected: "object" }, "workflow.schema.type", "author"));
     return { ok: false, diagnostics: sortDiagnostics(diagnostics) };
   }
-  unexpectedKeys(input.spec, ["inputs", "nodes", "outputs", "completion", "trigger"], "/spec", diagnostics);
+  unexpectedKeys(input.spec, ["inputs", "nodes", "outputs", "completion", "trigger", "traversalStrategy"], "/spec", diagnostics);
   const inputs = normalizePortMap(input.spec.inputs, "/spec/inputs", diagnostics);
   const outputs = normalizePortMap(input.spec.outputs, "/spec/outputs", diagnostics);
   const trigger = input.spec.trigger === undefined ? undefined : normalizeTrigger(input.spec.trigger, "/spec/trigger", diagnostics);
+  const traversalStrategy = input.spec.traversalStrategy;
+  if (traversalStrategy !== undefined && traversalStrategy !== "breadth-first" && traversalStrategy !== "depth-first") {
+    diagnostics.push(diagnostic("E3005", "/spec/traversalStrategy", { expected: "breadth-first or depth-first" }, "workflow.schema.const", "author"));
+  }
   if (!Array.isArray(input.spec.nodes) || !input.spec.nodes.length) {
     diagnostics.push(diagnostic("E3004", "/spec/nodes", { expected: "non-empty node set" }, "workflow.schema.nonEmptySet", "author"));
   }
@@ -530,7 +535,11 @@ export function compileWorkflowDefinitionV1(input: unknown): WorkflowCompileResu
   if (diagnostics.length) return { ok: false, diagnostics: sortDiagnostics(diagnostics) };
   const model: WorkflowDefinitionV1 = {
     schema: WORKFLOW_DEFINITION_SCHEMA,
-    spec: { inputs: inputs!, nodes, outputs: outputs!, completion: { requiredNodes: normalizedRequiredNodes }, ...(trigger ? { trigger } : {}) }
+    spec: {
+      inputs: inputs!, nodes, outputs: outputs!, completion: { requiredNodes: normalizedRequiredNodes },
+      ...(trigger ? { trigger } : {}),
+      ...(traversalStrategy === "breadth-first" || traversalStrategy === "depth-first" ? { traversalStrategy } : {})
+    }
   };
   try {
     const canonicalBytes = Buffer.from(canonicalJson(model), "utf8");

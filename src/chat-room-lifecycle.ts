@@ -11,6 +11,8 @@ export interface ActiveChatRoom extends OpenRoomResult {
   joinSecret: string;
   hostParticipantId?: string;
   identityState: ParticipantIdentityState;
+  projectId?: string;
+  threadId?: string;
 }
 
 export interface StoredChatRoom {
@@ -23,6 +25,8 @@ export interface StoredChatRoom {
   activeUrl?: string;
   canForceClose?: boolean;
   unavailableReason?: string;
+  projectId?: string;
+  threadId?: string;
 }
 
 export interface RepairedChatRoom {
@@ -70,6 +74,8 @@ export class ChatRoomLifecycle {
         activeUrl: room.activeUrl,
         canForceClose: room.state === "active" && !!room.activeUrl && hostVerified,
         unavailableReason,
+        projectId: room.projectId,
+        threadId: room.threadId,
       });
     }
     return result;
@@ -92,7 +98,7 @@ export class ChatRoomLifecycle {
     return this.persistence.listStoredRooms();
   }
 
-  async createRoom(roomName: string, requestedJoinSecret?: string): Promise<ActiveChatRoom> {
+  async createRoom(roomName: string, requestedJoinSecret?: string, ownership?: { projectId: string; threadId: string }): Promise<ActiveChatRoom> {
     const roomId = randomUUID();
     const roomDir = path.join(this.rootDir, roomId);
     fs.mkdirSync(roomDir, { recursive: true });
@@ -104,9 +110,11 @@ export class ChatRoomLifecycle {
           ownerInstallationId: this.installationId,
           hostCredentialHash: credentials.hostCredentialHash,
           joinSecretHash: credentials.joinSecretHash,
+          projectId: ownership?.projectId,
+          threadId: ownership?.threadId,
         });
         this.locks.set(roomId, lock);
-        return { roomId, roomName, joinSecret: credentials.joinSecret, identityState: await this.persistence.identityState(roomId), ...opened };
+        return { roomId, roomName, joinSecret: credentials.joinSecret, identityState: await this.persistence.identityState(roomId), ...ownership, ...opened };
       } catch (error) {
         await this.credentials.delete(roomId);
         throw error;
@@ -147,7 +155,8 @@ export class ChatRoomLifecycle {
       }
       if (managedParticipantIds.size) identityState = await this.persistence.identityState(roomId);
       this.locks.set(roomId, lock);
-      return { roomId, roomName: stored.roomName, joinSecret: credentials.joinSecret, hostParticipantId: stored.hostParticipantId, identityState, ...opened };
+      return { roomId, roomName: stored.roomName, joinSecret: credentials.joinSecret, hostParticipantId: stored.hostParticipantId,
+        projectId: stored.projectId, threadId: stored.threadId, identityState, ...opened };
     } catch (error) {
       lock.release();
       throw error;

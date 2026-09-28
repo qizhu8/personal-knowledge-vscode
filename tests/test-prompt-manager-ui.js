@@ -61,6 +61,18 @@ assert.match(panel, /onwheel="promptVersionWheel\(event\)"/);
 assert.doesNotMatch(panel, /class="prompt-version-strip"/);
 assert.match(panel, /ask\('promptRender'/);
 assert.match(panel, /ask\('promptInference'/);
+assert.match(panel, /const promptInferenceSelections = new Map\(\)/,
+	"Prompt inference model selection must survive asynchronous detail refreshes");
+assert.match(panel, /const promptWorkbenchStates = new Map\(\)/,
+	"Prompt Render output and viewport state must survive analysis refreshes");
+assert.match(panel, /if \(Array\.isArray\(aiBackendCache\)\) renderAiBackends\(aiBackendCache\)/,
+	"cached models must be restored without returning to a Loading models placeholder");
+assert.match(panel, /else ask\('listAiBackends', \{\}\)/,
+	"model discovery must only run while the shared cache is uninitialized");
+assert.match(panel, /promptRestoreWorkbenchState\(promptViewState \|\| promptWorkbenchStates\.get\(promptIdentityKey\(\)\)\)/,
+	"the Prompt workbench must restore its output, viewport, and focus after an analysis refresh");
+assert.match(panel, /promptSelect\.onchange = \(\) => promptInferenceSelections\.set\(key, promptSelect\.value\)/,
+	"changing the inference model must persist the selected backend");
 assert.match(panel, /prompt-dataset-bar/);
 assert.match(panel, /prompt-dataset-table/);
 assert.match(panel, /function promptDatasetSelect\(index\)/);

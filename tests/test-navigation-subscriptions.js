@@ -3,15 +3,17 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const { subscriptionNavigationRoot } = require("../dist/navigation-subscriptions.js");
+const { SHARED_CONTENT_TYPES } = require("../dist/subscriptions.js");
 
 const root = path.join(__dirname, "..");
 const extension = fs.readFileSync(path.join(root, "src", "extension.ts"), "utf8");
 const webview = fs.readFileSync(path.join(root, "src", "webview", "panel", "00-core.js"), "utf8");
-const types = ["skills", "notes", "papers", "prompts", "scripts", "packages", "servers"];
+const types = [...SHARED_CONTENT_TYPES];
 
 function group(type) {
   const itemPath = type === "packages" ? "asset-tool"
     : type === "servers" ? "sample-api/server.link.json"
+    : type === "recipes" ? "Operations/Sharing/shared-release-recipe.json"
     : type === "prompts" ? "Ads/Review/v1/prompt.md"
     : `Team/Nested/Remote ${type.slice(0, -1)}.md`;
   return {
@@ -69,4 +71,4 @@ assert.match(extension, /openInPanel\(context, "subscriptionItem", String\(key \
 assert.match(webview, /const tabName = e\.data\.tab \|\| TAB\[itemType\]/,
   "remote items must select their matching content tab");
 
-console.log("navigation subscriptions test: From Brokers covers Skills, Notes, Papers, Prompts, Scripts, Packages, and Servers with collapsed Broker trees OK");
+console.log(`navigation subscriptions test: From Brokers covers all ${types.length} shared content types with collapsed Broker trees OK`);

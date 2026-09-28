@@ -1,0 +1,140 @@
+const dimensions = ["functionality", "ui", "refresh", "error", "fallback"];
+
+const surface = (workspace, source, renderer, viewKinds, evidence) => ({
+  workspace,
+  source,
+  renderer,
+  viewKinds,
+  evidence,
+});
+
+const surfaces = {
+  skills: surface("knowledge", "src/webview/panel/20-knowledge.js", "renderList", ["cattree", "detail", "card"], {
+    functionality: ["test-cattree-refresh.js", "test-content-privacy-ui.js"],
+    ui: ["test-knowledge-groups-ui.js", "test-detail-path-ui.js"],
+    refresh: ["test-cattree-refresh.js", "test-refresh-actions.js"],
+    error: ["test-skill-trash-ui.js", "test-context-menu-actions.js"],
+    fallback: ["test-loading-progress.js", "test-skill-trash-ui.js"],
+  }),
+  notes: surface("knowledge", "src/webview/panel/20-knowledge.js", "renderList", ["cattree", "detail", "card"], {
+    functionality: ["test-cattree-refresh.js", "test-context-menu-actions.js"],
+    ui: ["test-knowledge-groups-ui.js", "test-detail-path-ui.js"],
+    refresh: ["test-cattree-refresh.js", "test-refresh-actions.js"],
+    error: ["test-knowledge-trash-ui.js", "test-context-menu-actions.js"],
+    fallback: ["test-loading-progress.js", "test-knowledge-trash-ui.js"],
+  }),
+  papers: surface("knowledge", "src/webview/panel/20-knowledge.js", "renderList", ["cattree", "detail", "card", "graph"], {
+    functionality: ["test-cattree-refresh.js", "test-knowledge-trash.js"],
+    ui: ["test-knowledge-groups-ui.js", "test-detail-path-ui.js"],
+    refresh: ["test-cattree-refresh.js", "test-refresh-actions.js"],
+    error: ["test-knowledge-trash-ui.js", "test-context-menu-actions.js"],
+    fallback: ["test-loading-progress.js", "test-knowledge-trash-ui.js"],
+  }),
+  prompts: surface("tools", "src/webview/panel/20-knowledge.js", "renderList", ["cattree", "detail", "table"], {
+    functionality: ["test-prompt-manager-ui.js", "test-prompt-version-note.js"],
+    ui: ["test-prompt-manager-ui.js", "test-detail-path-ui.js"],
+    refresh: ["test-tab-cache-ui.js", "test-refresh-actions.js"],
+    error: ["test-prompt-manager-ui.js"],
+    fallback: ["test-prompt-manager-ui.js", "test-loading-progress.js"],
+  }),
+  scripts: surface("tools", "src/webview/panel/20-knowledge.js", "renderList", ["cattree", "detail"], {
+    functionality: ["test-context-menu-actions.js", "test-detail-path-ui.js"],
+    ui: ["test-four-workspace-ui.js", "test-detail-path-ui.js"],
+    refresh: ["test-cattree-refresh.js", "test-refresh-actions.js"],
+    error: ["test-context-menu-actions.js"],
+    fallback: ["test-loading-progress.js"],
+  }),
+  packages: surface("tools", "src/webview/panel/20-knowledge.js", "renderList", ["cattree", "detail"], {
+    functionality: ["test-context-menu-actions.js", "test-detail-path-ui.js"],
+    ui: ["test-four-workspace-ui.js", "test-detail-path-ui.js"],
+    refresh: ["test-tab-cache-ui.js", "test-refresh-actions.js"],
+    error: ["test-context-menu-actions.js"],
+    fallback: ["test-loading-progress.js"],
+  }),
+  environments: surface("tools", "src/webview/panel/30-environments.js", "renderEnvDashboard", ["cattree", "card", "table"], {
+    functionality: ["test-environment-refresh.js", "test-context-menu-actions.js"],
+    ui: ["test-four-workspace-ui.js", "test-environment-refresh.js"],
+    refresh: ["test-environment-refresh.js", "test-refresh-actions.js"],
+    error: ["test-environment-refresh.js"],
+    fallback: ["test-environment-refresh.js", "test-loading-progress.js"],
+  }),
+  servers: surface("tools", "src/webview/panel/40-servers.js", "renderServerDashboard", ["cattree", "card", "table"], {
+    functionality: ["test-server-grouping.js", "test-context-menu-actions.js"],
+    ui: ["test-server-grouping.js", "test-four-workspace-ui.js"],
+    refresh: ["test-resource-polling.js", "test-refresh-actions.js"],
+    error: ["test-server-proxy.js", "test-context-menu-actions.js"],
+    fallback: ["test-resource-polling.js", "test-loading-progress.js"],
+  }),
+  agentSessions: surface("automation", "src/webview/panel/15-projects.js", "renderAgentSessions", ["cattree", "card", "table"], {
+    functionality: ["test-agent-session-lifecycle.js", "test-four-workspace-ui.js"],
+    ui: ["test-four-workspace-ui.js", "test-context-menus.js"],
+    refresh: ["test-tab-cache-ui.js", "test-refresh-actions.js"],
+    error: ["test-agent-session-lifecycle.js", "test-context-menu-actions.js"],
+    fallback: ["test-four-workspace-ui.js", "test-loading-progress.js"],
+  }),
+  agentSnapshots: surface("automation", "src/webview/panel/15-projects.js", "renderAgentSnapshots", ["cattree", "card"], {
+    functionality: ["test-agent-snapshots.js", "test-four-workspace-ui.js"],
+    ui: ["test-four-workspace-ui.js", "test-context-menus.js"],
+    refresh: ["test-tab-cache-ui.js", "test-refresh-actions.js"],
+    error: ["test-agent-snapshots.js", "test-context-menu-actions.js"],
+    fallback: ["test-four-workspace-ui.js", "test-loading-progress.js"],
+  }),
+  recipes: surface("automation", "src/webview/panel/15-projects.js", "renderGlobalRecipes", ["cattree", "card", "table", "graph"], {
+    functionality: ["test-recipe-browser-editor.js", "test-workflow-project-model.js"],
+    ui: ["test-four-workspace-ui.js", "test-recipe-browser-editor.js"],
+    refresh: ["test-tab-cache-ui.js", "test-cattree-refresh.js"],
+    error: ["test-recipe-browser-editor.js", "test-context-menu-actions.js"],
+    fallback: ["test-four-workspace-ui.js", "test-loading-progress.js"],
+  }),
+  projects: surface("projects", "src/webview/panel/15-projects.js", "renderProjects", ["cattree", "card", "graph"], {
+    functionality: ["test-workflow-project-model.js", "test-workflow-project-store.js"],
+    ui: ["test-four-workspace-ui.js", "test-context-menus.js"],
+    refresh: ["test-tab-cache-ui.js", "test-refresh-actions.js"],
+    error: ["test-workflow-project-store.js", "test-context-menu-actions.js"],
+    fallback: ["test-four-workspace-ui.js", "test-loading-progress.js"],
+  }),
+  chatroom: surface("projects", "src/webview/panel/10-chatroom.js", "renderChatroom", ["card", "table", "timeline"], {
+    functionality: ["test-chat-persistence.js", "test-chat-browser-ui.js"],
+    ui: ["test-chat-layout-scroll-ui.js", "test-chat-stored-rooms-ui.js"],
+    refresh: ["test-chat-persistence.js", "test-resource-polling.js"],
+    error: ["test-chat-room-repair.js", "test-chat-hub-health.js"],
+    fallback: ["test-chat-stored-rooms-ui.js", "test-chat-hub-health.js"],
+  }),
+  mcp: surface("settings", "src/webview/panel/50-mcp.js", "renderMcpPane", ["card", "table"], {
+    functionality: ["test-mcp-feature-domains.js", "test-mcp-version-ui.js"],
+    ui: ["test-mcp-version-ui.js", "test-four-workspace-ui.js"],
+    refresh: ["test-tab-cache-ui.js", "test-refresh-actions.js"],
+    error: ["test-mcp-version-ui.js", "test-mcp-windows-stdio.js"],
+    fallback: ["test-mcp-version-ui.js", "test-tab-cache-ui.js"],
+  }),
+  skillRouter: surface("settings", "src/webview/panel/51-skill-router.js", "renderSkillRouterPane", ["card", "table"], {
+    functionality: ["test-skill-router-ui.js", "test-pkm-skill-mcp.js"],
+    ui: ["test-skill-router-ui.js", "test-four-workspace-ui.js"],
+    refresh: ["test-tab-cache-ui.js", "test-refresh-actions.js"],
+    error: ["test-skill-router-ui.js", "test-pkm-skill-mcp.js"],
+    fallback: ["test-skill-router-ui.js", "test-tab-cache-ui.js"],
+  }),
+  subscriptions: surface("settings", "src/webview/panel/45-subscriptions.js", "renderSubscriptionPane", ["cattree", "card", "table"], {
+    functionality: ["test-subscriptions.js", "test-subscription-actions.js"],
+    ui: ["test-subscription-ui.js", "test-navigation-subscriptions.js"],
+    refresh: ["test-subscriptions.js", "test-cattree-refresh.js"],
+    error: ["test-subscription-ui.js", "test-subscriptions.js"],
+    fallback: ["test-subscription-ui.js", "test-subscriptions.js"],
+  }),
+  githubSync: surface("settings", "src/webview/panel/46-github-sync.js", "renderGitHubSyncPane", ["cattree", "card"], {
+    functionality: ["test-github-sync-ui.js", "test-github-sync-file-safety.js"],
+    ui: ["test-github-sync-ui.js", "test-four-workspace-ui.js"],
+    refresh: ["test-github-sync-ui.js", "test-tab-cache-ui.js"],
+    error: ["test-github-sync-ui.js", "test-github-sync-conflicts.js"],
+    fallback: ["test-github-sync-ui.js", "test-tab-cache-ui.js"],
+  }),
+  backgroundTasks: surface("settings", "src/webview/panel/52-background-tasks.js", "renderBackgroundTasks", ["card"], {
+    functionality: ["test-background-tasks.js"],
+    ui: ["test-background-tasks.js", "test-four-workspace-ui.js"],
+    refresh: ["test-background-tasks.js", "test-refresh-actions.js"],
+    error: ["test-background-tasks.js"],
+    fallback: ["test-background-tasks.js"],
+  }),
+};
+
+module.exports = { dimensions, surfaces };

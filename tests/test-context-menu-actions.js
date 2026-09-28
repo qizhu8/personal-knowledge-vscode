@@ -35,6 +35,7 @@ const common = {
   showPaperMenu: (_x, _y, items) => { captured = items; },
   copyPathMenu: value => ({ label: "Copy Path", onClick: () => calls.push({ command: "copyText", payload: { text: value } }) }),
   appendPrivacyMenu: (items, type, value) => items.push({ label: "Set as Private", onClick: () => calls.push({ command: "contentSetPrivacy", payload: { type, value } }) }),
+  appendKnowledgeGroupFolderMenu: (items, area, folder) => items.push({ label: "Move to Group", onClick: () => calls.push({ command: "knowledgeGroupAssign", payload: { area, folder } }) }),
   pkModal: options => { calls.push({ command: "modal", payload: { title: options.title } }); options.onOk?.("Target", "Body", true); },
   openMarkdownItem: (...args) => calls.push({ command: "openMarkdownItem", payload: args }),
   editMarkdownMetadataItem: (...args) => calls.push({ command: "editMarkdownMetadataItem", payload: args }),

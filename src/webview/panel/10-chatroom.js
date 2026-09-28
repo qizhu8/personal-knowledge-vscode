@@ -25,6 +25,17 @@ const chat = {
   documentListenersBound: false,
 };
 const chatInactiveExpanded = { hosted: false, joined: false };
+const CHAT_RECEIPT_TEMPLATES = Object.freeze({
+  'clarify-question':{label:'Clarify Question',phase:'work',action:'',role:'Lead',replyPolicy:'required',evidence:false,decision:false,claim:false},
+  'assign-work':{label:'Assign Work',phase:'assignment',action:'assign',role:'Lead',replyPolicy:'required',evidence:false,decision:false,claim:false},
+  'review-request':{label:'Review Request',phase:'handoff',action:'handoff',role:'Worker',replyPolicy:'required',evidence:true,decision:false,claim:false},
+  'review-decision':{label:'Review Decision',phase:'review',action:'approve',role:'Reviewer',replyPolicy:'required',evidence:true,decision:true,claim:false},
+  'blocked-escalation':{label:'Blocked / Escalation',phase:'work',action:'block',role:'Lead',replyPolicy:'required',evidence:true,decision:true,claim:false},
+  handoff:{label:'Handoff',phase:'handoff',action:'handoff',role:'Worker',replyPolicy:'required',evidence:true,decision:false,claim:false},
+  'progress-update':{label:'Progress Update',phase:'work',action:'',role:'Worker',replyPolicy:'none',evidence:true,decision:false,claim:false},
+  'decision-synthesis':{label:'Decision / Synthesis',phase:'synthesis',action:'synthesize',role:'Lead',replyPolicy:'required',evidence:true,decision:true,claim:false},
+  completion:{label:'Completion',phase:'completion',action:'complete',role:'Lead',replyPolicy:'none',evidence:true,decision:true,claim:true},
+});
 
 // Sentinel that marks an agent-to-agent protocol frame carried in a chat message
 // (must match WIRE_PREFIX in protocol.py).
@@ -195,6 +206,30 @@ function renderChatroom() {
               <button type="button" data-mode="discuss" onclick="chatSetMode('discuss')" title="Invite the selected recipients into a shared peer discussion.">Discuss</button><label id="chat-discussion-lead-wrap" class="chat-discussion-lead hidden"><span>Lead</span><select id="chat-discussion-lead" onchange="chat.discussionLead=this.value;chatCaptureDraft()" title="Choose the Lead for this Discussion"></select></label>
             </div>
             <div id="chat-mode-notice" class="chat-mode-notice hidden" role="status" aria-live="polite"></div>
+            <details id="chat-receipt" class="project-band"><summary>Structured communication receipt</summary>
+              <div class="gantt-editor-grid">
+                <label>Receipt template<select id="chat-receipt-kind" onchange="chatApplyReceiptTemplate(this.value)"><option value="">Unstructured message</option>${Object.entries(CHAT_RECEIPT_TEMPLATES).map(([kind,item]) => `<option value="${kind}">${item.label}</option>`).join('')}</select></label>
+                <label>Task ID<input id="chat-receipt-id" placeholder="collaboration-id"></label>
+                <label>Current task version<input id="chat-receipt-version" type="number" min="1" value="1"></label>
+                <label>Objective<input id="chat-receipt-objective"></label>
+                <label>Context / version<input id="chat-receipt-context"></label>
+                <label>Expected output<input id="chat-receipt-output"></label>
+                <label>Artifact type<input id="chat-receipt-artifact-type" value="message"></label>
+                <label>Acceptance criteria<textarea id="chat-receipt-criteria" placeholder="One criterion per line"></textarea></label>
+                <label>Primary owner<input id="chat-receipt-owner"></label>
+                <label>Reviewer(s)<input id="chat-receipt-reviewers"></label>
+                <label>Evidence summary<textarea id="chat-receipt-evidence"></textarea></label>
+                <label>Evidence links<textarea id="chat-receipt-links"></textarea></label>
+                <label>Result artifact<input id="chat-receipt-result"></label>
+                <label>Decision / result<input id="chat-receipt-decision"></label>
+                <label>Resolved responders<input id="chat-receipt-resolved"></label>
+                <label>Reviewer approvals<input id="chat-receipt-approvals"></label>
+                <label>Blocked / waiting on<input id="chat-receipt-waiting"></label>
+                <label>Response policy<select id="chat-receipt-reply-policy"><option value="required">Required</option><option value="optional">Optional</option><option value="none">No reply</option></select></label>
+                <label><input id="chat-receipt-claim" type="checkbox"> Explicit completion claim</label>
+              </div>
+              <p id="chat-receipt-help" role="status" aria-live="polite">Select a template to populate its deterministic contract and response policy.</p>
+            </details>
             <div id="chat-quote-bar" class="chat-quote-bar hidden"></div>
             <div id="chat-input-row">
               <div id="chat-composer">
@@ -778,6 +813,59 @@ function chatGenKey() {
   kv.value = Array.from(a).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+function chatApplyReceiptTemplate(kind) {
+  const template = CHAT_RECEIPT_TEMPLATES[kind];
+  if (!template) {
+    document.getElementById('chat-receipt-help').textContent = 'Unstructured messages remain readable but cannot complete structured tasks.';
+    return;
+  }
+  const set = (id,value) => { const element = document.getElementById(id); if (element && !element.value) element.value = value; };
+  set('chat-receipt-objective', `${template.label}: `);
+  set('chat-receipt-context', 'v1');
+  set('chat-receipt-output', `${template.label} response`);
+  set('chat-receipt-artifact-type', 'message');
+  set('chat-receipt-criteria', 'Recipient addresses the stated objective.');
+  set('chat-receipt-owner', chat.active?.self || '');
+  document.getElementById('chat-receipt-reply-policy').value = template.replyPolicy;
+  document.getElementById('chat-receipt-claim').checked = template.claim;
+  document.getElementById('chat-receipt-help').textContent =
+    `${template.label}: ${template.replyPolicy} reply; ${template.evidence ? 'evidence required' : 'evidence optional'}; ${template.decision ? 'decision required' : 'decision optional'}.`;
+}
+
+function chatStructuredReceipt(recipients) {
+  const kind = document.getElementById('chat-receipt-kind')?.value || '';
+  if (!kind) return undefined;
+  const template = CHAT_RECEIPT_TEMPLATES[kind];
+  const value = id => document.getElementById(id)?.value?.trim() || '';
+  const list = id => value(id).split(/[\n,]/).map(item => item.trim()).filter(Boolean);
+  const required = {
+    'Task ID':value('chat-receipt-id'), 'objective':value('chat-receipt-objective'),
+    'context/version':value('chat-receipt-context'), 'expected output':value('chat-receipt-output'),
+    'artifact type':value('chat-receipt-artifact-type'), 'acceptance criteria':list('chat-receipt-criteria'),
+    'primary owner':value('chat-receipt-owner'), 'reviewer':list('chat-receipt-reviewers'),
+  };
+  const missing = Object.entries(required).filter(([,item]) => Array.isArray(item) ? !item.length : !item).map(([label]) => label);
+  if (!Number.isSafeInteger(Number(value('chat-receipt-version'))) || Number(value('chat-receipt-version')) < 1) missing.push('current task version');
+  if (!recipients.length) missing.push('authoritative recipient');
+  if (template.evidence && !value('chat-receipt-evidence') && !list('chat-receipt-links').length) missing.push('evidence');
+  if (template.decision && !value('chat-receipt-decision')) missing.push('decision/result');
+  if (template.claim && !document.getElementById('chat-receipt-claim')?.checked) missing.push('completion claim');
+  if (missing.length) throw new Error(`${template.label} requires: ${missing.join(', ')}.`);
+  return {
+    receiptKind:kind, collaborationId:required['Task ID'], taskVersion:Number(value('chat-receipt-version')),
+    actorRole:template.role, responsibility:'ownership', phase:template.phase, ...(template.action ? { action:template.action } : {}),
+    expectedResponders:recipients, objective:required.objective, context:required['context/version'],
+    expectedOutput:required['expected output'], artifactType:required['artifact type'],
+    acceptanceCriteria:required['acceptance criteria'], primaryOwner:required['primary owner'], ownerPartitions:[],
+    expectedReviewers:required.reviewer, evidenceSummary:value('chat-receipt-evidence') || undefined,
+    evidenceLinks:list('chat-receipt-links'), resultArtifact:value('chat-receipt-result') || undefined,
+    decisionRequired:template.decision, decisionResult:value('chat-receipt-decision') || undefined,
+    resolvedResponders:list('chat-receipt-resolved'), reviewerApprovals:list('chat-receipt-approvals'),
+    blockedWaitingOn:list('chat-receipt-waiting'), completionClaim:document.getElementById('chat-receipt-claim')?.checked === true,
+    evidenceMatchesContract:true, warnings:[],
+  };
+}
+
 function chatSend() {
   const inp = document.getElementById('chat-input');
   const draft = inp.value;
@@ -794,9 +882,14 @@ function chatSend() {
       return;
     }
   }
-  const replyPolicy = mode === 'announce' ? 'none' : mode === 'discuss' ? 'required' : 'required';
+  let collaboration;
+  try { collaboration = chatStructuredReceipt(recipients); }
+  catch (error) { chatToast(error.message || String(error)); return; }
+  const replyPolicy = collaboration
+    ? document.getElementById('chat-receipt-reply-policy').value
+    : mode === 'announce' ? 'none' : mode === 'discuss' ? 'required' : 'required';
   const discussionLead = mode === 'discuss' ? chatSelectedDiscussionLead() : '';
-  ask('chatSend', { text, mode, replyPolicy, recipients, discussionLead, replyToMessageId: chat.quote?.id || '' });
+  ask('chatSend', { text, mode, replyPolicy, recipients, discussionLead, replyToMessageId: chat.quote?.id || '', collaboration });
   delete chat.drafts[chatDraftKey()];
   chatPreserveReadingLayout(() => {
     inp.value = ''; inp.style.height = 'auto';
@@ -1453,7 +1546,23 @@ function chatAppend(m, refreshSearch = true) {
     const receipt = mine && m.receipt ? `<span class="chat-read-receipt" data-message-id="${esc(m.id)}" title="Mentioned recipients who received this message">✓ ${m.receipt.read}/${m.receipt.total}</span>` : '';
     const quoted = m.replyToMessageId ? chatMessageById(m.replyToMessageId) : null;
     const quoteHeader = m.replyToMessageId ? `<button type="button" class="chat-reply-reference" title="Jump to quoted message ${esc(m.replyToMessageId)}" onclick="chatJumpToMessage('${esc(m.replyToMessageId)}')">Reply to ${esc(quoted?.from || 'message')} · ${esc(m.replyToMessageId)}</button>` : '';
-    el.innerHTML = `<div class="chat-msg-hdr"><span class="chat-who">${m.kind === 'agent' ? '🤖 ' : ''}${esc(m.from)}</span><span class="chat-time">${hh}</span>${receipt}<span class="chat-msg-actions"><button type="button" title="Quote this message" onclick="chatQuoteMessage('${esc(m.id)}')">Quote</button><button type="button" title="Open this message in a larger resizable viewer" onclick="chatOpenMessageViewer('${esc(m.id)}')">Open</button></span></div>${quoteHeader}<div class="chat-msg-body prose"></div>`;
+    const collaboration = m.collaboration;
+    const convergenceWarnings = [...(collaboration?.warnings || []), ...(m.convergenceWarnings || [])]
+      .filter((item,index,all) => all.findIndex(candidate => candidate.code === item.code && candidate.message === item.message) === index);
+    const collaborationState = collaboration ? `<div class="chat-collaboration-state ${collaboration.stale || convergenceWarnings.length ? 'stale' : ''}" ${collaboration.stale || convergenceWarnings.length ? 'role="alert"' : ''} aria-label="Collaboration ${esc(collaboration.collaborationId)}, version ${collaboration.taskVersion}, convergence ${esc(collaboration.convergenceState || 'awaiting-work')}">
+      <strong>${esc(collaboration.actorRole)}</strong><span>${esc(collaboration.responsibility)}</span><span>${esc(collaboration.phase)}</span><span>v${collaboration.taskVersion}</span><span>${esc(collaboration.convergenceState || 'awaiting-work')}</span>
+      ${collaboration.action ? `<span>${esc(collaboration.action)}</span>` : ''}${collaboration.expectedResponders?.length ? `<span>Expected: ${esc(collaboration.expectedResponders.join(', '))}</span>` : ''}
+      ${collaboration.objective ? `<span><b>Objective:</b> ${esc(collaboration.objective)}</span>` : ''}
+      ${collaboration.expectedOutput ? `<span><b>Output:</b> ${esc(collaboration.expectedOutput)} (${esc(collaboration.artifactType || 'unspecified')})</span>` : ''}
+      ${collaboration.acceptanceCriteria?.length ? `<span><b>Criteria:</b> ${esc(collaboration.acceptanceCriteria.join('; '))}</span>` : ''}
+      ${collaboration.primaryOwner ? `<span><b>Owner:</b> ${esc(collaboration.primaryOwner)}</span>` : ''}
+      ${collaboration.evidenceSummary ? `<span><b>Evidence:</b> ${esc(collaboration.evidenceSummary)}</span>` : ''}
+      ${collaboration.decisionResult ? `<span><b>Decision:</b> ${esc(collaboration.decisionResult)}</span>` : ''}
+      ${collaboration.blockedWaitingOn?.length ? `<span><b>Waiting on:</b> ${esc(collaboration.blockedWaitingOn.join(', '))}</span>` : ''}
+      ${collaboration.stale ? `<b>${esc(collaboration.staleReason || 'Stale collaboration reply')}</b>` : ''}
+      ${convergenceWarnings.map(item => `<b>${esc(item.code)}: ${esc(item.message)}</b>`).join('')}
+    </div>` : convergenceWarnings.length ? `<div class="chat-collaboration-state stale" role="alert" aria-label="Communication convergence warnings">${convergenceWarnings.map(item => `<b>${esc(item.code)}: ${esc(item.message)}</b>`).join('')}</div>` : '';
+    el.innerHTML = `<div class="chat-msg-hdr"><span class="chat-who">${m.kind === 'agent' ? '🤖 ' : ''}${esc(m.from)}</span><span class="chat-time">${hh}</span>${receipt}<span class="chat-msg-actions"><button type="button" title="Quote this message" onclick="chatQuoteMessage('${esc(m.id)}')">Quote</button><button type="button" title="Open this message in a larger resizable viewer" onclick="chatOpenMessageViewer('${esc(m.id)}')">Open</button></span></div>${collaborationState}${quoteHeader}<div class="chat-msg-body prose"></div>`;
     renderDone = chatRenderMarkdown(el.querySelector('.chat-msg-body'), m.text);
     el.addEventListener('dblclick', event => { if (!event.target.closest('button,a')) chatOpenMessageViewer(m.id); });
     el.addEventListener('contextmenu', event => chatMessageMenu(event, m.id));
@@ -1786,4 +1895,3 @@ function chatPaintPendingJoins() {
   wrap.classList.add('hidden');
   box.innerHTML = '';
 }
-

@@ -47,6 +47,52 @@ try {
   assert.match(collision.error, /already exists/);
   assert.ok(fs.existsSync(path.join(store, "skills", "Collision", "Child", "same.md")), "collision rejection must leave source unchanged");
 
+  const transientFolder = path.join(store, "papers", "Generative Retrieval");
+  fs.mkdirSync(transientFolder, { recursive: true });
+  fs.writeFileSync(path.join(transientFolder, "paper.md"), "paper");
+  let removeAttempts = 0;
+  const transient = folderDeletePromote("papers", "Generative Retrieval", "", {
+    remove(folder) {
+      removeAttempts++;
+      if (removeAttempts < 3) {
+        const error = new Error("OneDrive is synchronizing the folder");
+        error.code = "EPERM";
+        throw error;
+      }
+      fs.rmSync(folder, { recursive: true, force: true });
+    },
+    sleep() {},
+  });
+  assert.deepStrictEqual(transient, { ok: true, moved: 1 });
+  assert.strictEqual(removeAttempts, 3, "transient Windows EPERM must be retried");
+  assert.ok(fs.existsSync(path.join(store, "papers", "paper.md")), "successful retry must preserve promoted content");
+
+  const lockedFolder = path.join(store, "papers", "Locked");
+  fs.mkdirSync(lockedFolder, { recursive: true });
+  fs.writeFileSync(path.join(lockedFolder, "locked.md"), "locked");
+  let persistentAttempts = 0;
+  const persistent = folderDeletePromote("papers", "Locked", "", {
+    remove() {
+      persistentAttempts++;
+      const error = new Error("OneDrive still owns the directory");
+      error.code = "EPERM";
+      throw error;
+    },
+    sleep() {},
+  });
+  assert.strictEqual(persistent.ok, false);
+  assert.strictEqual(persistent.moved, 0);
+  assert.strictEqual(persistentAttempts, 8, "persistent Windows EPERM must use the bounded retry budget");
+  assert.match(persistent.error, /contents were restored/);
+  assert.ok(fs.existsSync(path.join(lockedFolder, "locked.md")), "persistent failure must roll promoted content back");
+  assert.strictEqual(fs.existsSync(path.join(store, "papers", "locked.md")), false, "rollback must not leave a duplicate in the destination");
+
+  const nestedPaperFolder = path.join(store, "papers", "Parent", "Child");
+  fs.mkdirSync(nestedPaperFolder, { recursive: true });
+  fs.writeFileSync(path.join(nestedPaperFolder, "nested.md"), "nested");
+  assert.deepStrictEqual(folderDeletePromote("papers", "Parent/Child"), { ok: true, moved: 1 });
+  assert.ok(fs.existsSync(path.join(store, "papers", "Parent", "nested.md")), "nested Research delete must promote to its direct parent without duplicating the path");
+
   const extension = fs.readFileSync(path.join(root, "src", "extension.ts"), "utf8");
   const manifest = fs.readFileSync(path.join(root, "package.json"), "utf8");
   const packageJson = JSON.parse(manifest);
@@ -67,6 +113,8 @@ try {
   assert.match(extension, /item\.tooltip = `\$\{n\.title\}\\nnotes\/\$\{relativePath\}`/, "Navigation Notes must expose their full relative path");
   assert.match(extension, /Prompts support three group levels/);
   assert.match(extension, /folderDeletePromote\(group\.area, group\.path, fallback\)/);
+  assert.match(extension, /folderDeletePromote\("papers", folderPath\)/,
+    "Research webview folder deletion must promote directly to the parent folder");
   assert.match(extension, /"skill-folder": "skills", "note-folder": "notes", "paper-folder": "papers", "script-folder": "scripts"/);
   for (const module of ["knowledge", "tools", "automation", "projects", "settings"]) {
     assert.match(extension, new RegExp(`new PkTreeItem\\("${module[0].toUpperCase()}${module.slice(1)}", "module-${module}"`),
@@ -77,7 +125,7 @@ try {
   assert.match(extension, /element\.nodeType === "module-automation"[\s\S]{0,700}"Agent Sessions"[\s\S]{0,200}recipes/);
   assert.match(extension, /new PkTreeItem\("Recipe Library", "page-recipes", C\)/,
     "Recipe Library must be expandable in Navigation");
-  assert.match(extension, /case 'page-recipes':\s+return this\._recipeFolder\(\[\]\)/);
+  assert.match(extension, /case 'page-recipes':\s+return this\._withSubscribedContent\("recipes", this\._recipeFolder\(\[\]\)\)/);
   assert.match(extension, /case 'recipe-folder':\s+return this\._recipeFolder\(element\.nodeData\.path\)/);
   assert.match(extension, /split\("\/"\)\.map\(segment => segment\.trim\(\)\)\.filter\(Boolean\)/,
     "Recipe categories must preserve their complete hierarchy");
@@ -89,6 +137,11 @@ try {
   assert.match(extension, /privateNavigationLabel\("recipes", name, topLevel\)/);
   assert.match(extension, /privacyType: "recipes", privacyName: name/);
   assert.match(extension, /registerCommand\("personalKnowledge\.addRecipeHere"[\s\S]{0,900}createRecipe\([\s\S]{0,250}\{ kind: "global" \}/);
+  assert.match(extension, /_addFolderPaths\(this\._buildPathTree\(entries\), snapshot\.recipeFolders\)/,
+    "Navigation must render persisted empty Recipe folders");
+  assert.match(extension, /registerCommand\("personalKnowledge\.newRecipeSubfolder"[\s\S]{0,1400}createRecipeFolder\(/);
+  assert.match(extension, /registerCommand\("personalKnowledge\.deleteRecipeFolder"[\s\S]{0,1800}deleteRecipeFolder\(/);
+  assert.match(extension, /no Recipes will be deleted/i, "Recipe folder deletion must clearly preserve Recipes");
   assert.match(extension, /element\.nodeType === "module-projects"[\s\S]{0,500}"Overview"[\s\S]{0,200}chatroom/);
   assert.match(extension, /element\.nodeType === "module-settings"[\s\S]{0,700}"General & MCP"[\s\S]{0,500}"Skill Router"[\s\S]{0,300}subscriptions/);
   assert.match(extension, /registerCommand\("personalKnowledge\.openPanelTab"/);
@@ -100,6 +153,8 @@ try {
   assert.strictEqual(commandTitles["personalKnowledge.openSubscriptions"], "Open Subscription");
   assert.strictEqual(commandTitles["personalKnowledge.openRecipe"], "Open");
   assert.strictEqual(commandTitles["personalKnowledge.addRecipeHere"], "New Recipe Here");
+  assert.strictEqual(commandTitles["personalKnowledge.newRecipeSubfolder"], "New Recipe Subfolder…");
+  assert.strictEqual(commandTitles["personalKnowledge.deleteRecipeFolder"], "Delete Recipe Folder…");
   assert.match(extension, /function folkNavigationLabel\(value: string, root: boolean\)/);
   assert.match(extension, /replace\(\/--\[a-f0-9\]\{12\}\$\/i, ""\)/);
   assert.match(extension, /privateNavigationLabel\("skills", name, topLevel\)/);
@@ -120,6 +175,11 @@ try {
   assert.strictEqual(recipeMenus.filter(menu => menu.command === "personalKnowledge.openRecipe").length, 1);
   assert.strictEqual(recipeMenus.filter(menu => menu.command === "personalKnowledge.addRecipeHere").length, 2);
   assert(recipeMenus.some(menu => menu.command === "personalKnowledge.addRecipeHere" && menu.group === "inline"), "Recipe folders must expose an inline + action");
+  const recipeFolderMenus = packageJson.contributes.menus["view/item/context"].filter(menu =>
+    ["personalKnowledge.newRecipeSubfolder", "personalKnowledge.deleteRecipeFolder"].includes(menu.command));
+  assert.strictEqual(recipeFolderMenus.length, 2);
+  assert.match(recipeFolderMenus.find(menu => menu.command === "personalKnowledge.newRecipeSubfolder").when, /pk-recipes-\(root\|group\)/);
+  assert.match(recipeFolderMenus.find(menu => menu.command === "personalKnowledge.deleteRecipeFolder").when, /pk-recipes-group/);
 
   console.log("navigation groups test: multi-level create, rename, safe promote-delete, collision protection, and unified menus OK");
 } finally {

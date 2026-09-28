@@ -18,11 +18,18 @@ assert.match(panel, /moveKnowledgeFolderToTrash\('prompts'/);
 assert.match(panel, /moveKnowledgeItemToTrash\('prompts'/);
 assert.match(panel, /moveKnowledgeItemToTrash\('scripts'/);
 assert.match(panel, /Move this Paper to Trash/);
+assert.match(panel, /Move All to Trash/);
+assert.match(panel, /function confirmDeleteAllPapers\(\)/);
+assert.match(panel, /ask\('deleteAllPapers'\)/);
 assert.match(panel, /Move Note to Trash/);
 assert.match(extension, /case "knowledgeTrashMove"/);
 assert.match(extension, /case "knowledgeTrashRestore"/);
 assert.match(extension, /case "knowledgeTrashDelete"/);
 assert.match(extension, /case "knowledgeTrashEmpty"/);
+assert.match(extension, /if \(!result\.ok\) \{\s*vscode\.window\.showErrorMessage\(`Empty \$\{area\} Trash failed after deleting \$\{result\.count\} of \$\{count\} entries:/,
+  "Navigation Empty Trash must surface partial or failed OneDrive deletion");
+assert.match(extension, /case "deleteAllPapers"/);
+assert.match(extension, /paperMoveAllToTrash\(\)/);
 assert.match(extension, /new PkTreeItem\("Trash", "knowledge-trash"/);
 assert.match(extension, /case 'knowledge-trash': return this\._knowledgeTrashItems/);
 for (const command of ["personalKnowledge.trashKnowledgeItem", "personalKnowledge.restoreKnowledgeTrash", "personalKnowledge.deleteKnowledgeTrashEntry", "personalKnowledge.emptyKnowledgeTrash"]) {

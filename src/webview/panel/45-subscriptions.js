@@ -1,10 +1,12 @@
 // ── Shared Market subscriptions ────────────────────────────────────────────
-let subscriptionData = { enabled:false, port:19877, advertisedHost:'', displayName:'', shares:[], subscriptions:[], catalog:{}, networkAddresses:[], githubConnections:[] };
+let subscriptionData = { enabled:false, gatewayStatus:'stopped', gatewayError:'', port:19877, advertisedHost:'', displayName:'', shares:[], subscriptions:[], catalog:{}, networkAddresses:[], githubConnections:[] };
 let subscriptionEditingShare = '';
 let subscriptionEditorTab = 'general';
 let subscriptionExpandedId = '';
 let subscriptionSourceMode = 'broker';
 let subscriptionGitHubDraft = { repository:'', branch:'main', credentialTargetId:'', alias:'', result:null };
+let subscriptionGitHubMounted = null;
+let subscriptionGitHubProgress = null;
 const subscriptionSelectionDrafts = new Map();
 
 function renderSubscriptionLoading() {
@@ -16,7 +18,15 @@ function subscriptionOnState(data) {
   subscriptionCaptureGitHubDraft();
   subscriptionData = { ...subscriptionData, ...(data || {}) };
   if (subscriptionEditingShare && subscriptionEditingShare !== 'new' && !(subscriptionData.shares || []).some(share => share.shareId === subscriptionEditingShare)) subscriptionEditingShare = '';
-  if (state.tab === 'subscriptions') renderSubscriptionPane();
+  if (state.tab === 'subscriptions') {
+    renderSubscriptionPane();
+    if (subscriptionGitHubMounted?.id && (subscriptionData.subscriptions || []).some(item => item.id === subscriptionGitHubMounted.id)) {
+      requestAnimationFrame(() => {
+        const row = [...document.querySelectorAll('[data-subscription-id]')].find(item => item.dataset.subscriptionId === subscriptionGitHubMounted.id);
+        row?.scrollIntoView({ block:'nearest', behavior:'smooth' });
+      });
+    }
+  }
 }
 
 function subscriptionHostOptions() {
@@ -125,7 +135,7 @@ function subscriptionRows() {
     const expanded = subscriptionExpandedId === item.id;
     const menuPayload = subscriptionMenuPayload({ id:item.id, alias:item.alias || '', name, nodeId:item.nodeId, shareId:item.shareId });
     const github = item.source?.type === 'github';
-    return `<article class="pk-card sub-subscriber-card ${expanded ? 'active' : ''}" oncontextmenu="subscriptionBrokerMenu(event,'${menuPayload}')"><div class="sub-row" role="button" tabindex="0" aria-expanded="${expanded}" onclick="subscriptionToggleDetail('${esc(item.id)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();subscriptionToggleDetail('${esc(item.id)}')}">
+    return `<article class="pk-card sub-subscriber-card ${expanded ? 'active' : ''}" data-subscription-id="${esc(item.id)}" oncontextmenu="subscriptionBrokerMenu(event,'${menuPayload}')"><div class="sub-row" role="button" tabindex="0" aria-expanded="${expanded}" onclick="subscriptionToggleDetail('${esc(item.id)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();subscriptionToggleDetail('${esc(item.id)}')}">
       <div class="sub-status ${esc(item.status)}" title="${esc(item.error || item.status)}"></div>
       <div class="sub-row-main"><strong>${esc(name)}</strong><span>${github ? 'GitHub branch' : esc(item.status || 'unknown') + ' · revision ' + (Number(item.revision)||0)}</span><small>${github ? `${esc(item.source.branch)} · ${esc((item.source.commit || '').slice(0,10))}` : `Last synced ${item.lastUpdated ? new Date(item.lastUpdated).toLocaleString() : 'never'}`}</small></div><i class="sub-card-arrow">›</i>
     </div>${expanded ? `<div class="sub-subscriber-detail"><div class="sub-subscriber-facts"><span>${github ? 'Source · GitHub' : `Host · ${esc(item.publisher || 'Unknown')}`}</span><span>${esc(item.endpoint || '')}</span><span>${Number(item.itemCount)||0} cached items</span></div>${counts ? `<div class="sub-content-counts">${esc(counts)}</div>` : ''}${taxonomy.length ? `<div class="sub-taxonomy">${taxonomy.map(value => `<span>${esc(value)}</span>`).join('')}</div>` : ''}${item.error ? `<div class="sub-warning">${esc(item.error)}</div>` : ''}<label class="sub-priority">Retrieval priority<select aria-label="Retrieval priority for ${esc(name)}" onchange="ask('subscriptionSetPriority',{id:'${esc(item.id)}',priority:this.value},this)"><option value="normal" ${(item.priority || 'normal') === 'normal' ? 'selected' : ''}>Normal</option><option value="high" ${item.priority === 'high' ? 'selected' : ''}>High</option><option value="highest" ${item.priority === 'highest' ? 'selected' : ''}>Highest</option></select><small>Applied after relevance checks to all content from this source.</small></label><div class="sub-row-actions"><button class="tbtn" onclick="subscriptionRename('${esc(item.id)}','${esc(item.alias || '')}')">Rename</button><button class="tbtn" data-pending-label="Refreshing…" onclick="ask('subscriptionRefresh',{id:'${esc(item.id)}',force:true},this)">${github ? 'Refresh branch' : 'Refresh'}</button><button class="tbtn danger" onclick="subscriptionRemove('${esc(item.id)}','${esc(name)}')">Remove</button></div></div>` : ''}</article>`;
@@ -150,7 +160,7 @@ function subscriptionBrokerMenu(ev, payload) {
 function renderSubscriptionPane() {
   const d = subscriptionData;
   document.getElementById('detail').innerHTML = `<div class="sub-dashboard">
-    <header class="sub-head"><div><h2>Subscription</h2><p>PKM Shared Market · ${esc(d.displayName || 'This machine')}</p></div><span class="sub-node-state ${d.gatewayStatus === 'error' ? 'error' : d.gatewayStatus === 'running' ? 'running' : 'stopped'}" title="${esc(d.gatewayError || '')}"><i></i>${d.gatewayStatus === 'error' ? 'Gateway unavailable' : d.gatewayStatus === 'running' ? 'Broker online' : d.enabled ? 'Broker starting' : 'Broker stopped'}</span></header>
+    <header class="sub-head"><div><h2>Subscription</h2><p>PKM Shared Market · ${esc(d.displayName || 'This machine')}</p></div><span class="sub-node-state ${d.gatewayStatus === 'error' ? 'error' : d.gatewayStatus === 'running' ? 'running' : d.gatewayStatus === 'starting' ? 'starting' : 'stopped'}" title="${esc(d.gatewayStatus === 'error' ? d.gatewayError || '' : '')}"><i></i>${d.gatewayStatus === 'error' ? 'Gateway unavailable' : d.gatewayStatus === 'running' ? 'Broker online' : d.gatewayStatus === 'starting' ? 'Broker starting' : 'Broker stopped'}</span></header>
     ${d.gatewayStatus === 'error' ? `<div class="sub-warning">Common Communication Port ${Number(d.port)||19877} is unavailable · ${esc(d.gatewayError || 'Check the port and network listener.')}</div>` : ''}
     <section class="sub-band sub-direct-sync"><div class="sub-band-title"><div><h3>Direct Sync</h3><span>One-time encrypted sharing between invited devices</span></div><button class="pk-button primary" onclick="openSyncModal()">Open Direct Sync</button></div>
       <p class="sub-control-note">Use Direct Sync for a temporary host-and-join transfer. Use Share Brokers below for persistent, refreshable collections.</p>
@@ -162,6 +172,7 @@ function renderSubscriptionPane() {
     <section class="sub-band"><div class="sub-band-title"><div><h3>My Share Brokers</h3><span>${(d.shares || []).length} audiences</span></div><button class="pk-button primary" onclick="subscriptionNewShare()">${uiIcon('add', 'Broker')}</button></div><div class="pk-list sub-broker-list">${subscriptionShareRows()}</div></section>
     <section class="sub-band"><div class="sub-band-title"><div><h3>Subscribed Brokers</h3><span>${(d.subscriptions || []).length} mounted collections</span></div><div class="sub-source-switch" role="tablist" aria-label="Subscription source"><button class="${subscriptionSourceMode === 'broker' ? 'active' : ''}" role="tab" aria-selected="${subscriptionSourceMode === 'broker'}" onclick="subscriptionSetSourceMode('broker')">Broker</button><button class="${subscriptionSourceMode === 'github' ? 'active' : ''}" role="tab" aria-selected="${subscriptionSourceMode === 'github'}" onclick="subscriptionSetSourceMode('github')">GitHub Branch</button></div></div>
       ${subscriptionSourceMode === 'github' ? subscriptionGitHubMountEditor() : `<div class="sub-add"><input id="sub-alias" placeholder="Alias (optional)"><textarea id="sub-magic-link" rows="2" placeholder="Paste pkmshare:v1 Magic Link"></textarea><input id="sub-broker-secret" type="password" placeholder="Broker Secret (protected only)"><button class="pk-button primary" data-pending-label="Subscribing…" onclick="subscriptionAdd(this)">Subscribe</button></div>`}
+      ${subscriptionGitHubMounted ? `<div class="sub-control-note sub-github-mounted"><strong>Subscribed to ${esc(subscriptionGitHubMounted.name)}</strong> · ${Number(subscriptionGitHubMounted.itemCount) || 0} cached items. The mounted collection is expanded below.</div>` : ''}
       <div class="pk-list sub-list">${subscriptionRows()}</div>
     </section>
   </div>`;
@@ -170,10 +181,45 @@ function renderSubscriptionPane() {
 
 function subscriptionGitHubMountEditor() {
   const connections = subscriptionData.githubConnections || [];
-  const options = connections.map(item => `<option value="${esc(item.id)}" ${item.id === subscriptionGitHubDraft.credentialTargetId ? 'selected' : ''}>${esc(item.name)} · ${esc(item.method === 'ssh' ? 'SSH' : 'HTTPS / GCM')}${item.account ? ` · ${esc(item.account)}` : ''}</option>`).join('');
+  const methodLabel = method => method === 'ssh' ? 'SSH key' : method === 'vscode' ? 'VS Code GitHub' : method === 'https' ? 'HTTPS / GCM' : 'Default Git credentials';
+  const options = connections.map(item => `<option value="${esc(item.id)}" ${item.id === subscriptionGitHubDraft.credentialTargetId ? 'selected' : ''}>${esc(item.name)} · ${esc(methodLabel(item.method))}${item.account ? ` · ${esc(item.account)}` : ''}</option>`).join('');
   const result = subscriptionGitHubDraft.result;
-  return `<div class="sub-github-subscribe"><div class="sub-github-fields"><label>Repository<input id="sub-github-repository" value="${esc(subscriptionGitHubDraft.repository)}" placeholder="https://github.com/owner/repository.git"></label><label>Branch<input id="sub-github-branch" value="${esc(subscriptionGitHubDraft.branch || 'main')}" placeholder="main"></label><label>Credential profile<select id="sub-github-credential"><option value="">None / Public repository</option>${options}</select></label><label>Local alias<input id="sub-github-alias" value="${esc(subscriptionGitHubDraft.alias)}" placeholder="Optional"></label><button class="pk-button" data-pending-label="Testing…" onclick="subscriptionTestGitHub(this)">${uiIcon('check','Test')}</button></div>
-    ${result ? `<div class="sub-github-result"><div class="sub-github-result-head"><span><strong>${esc(result.name || 'GitHub repository')}</strong><small>${esc(result.repository)} · ${esc(result.branch)}</small></span><code title="${esc(result.commit)}">${esc(result.commit.slice(0,12))}</code></div><div class="sub-tree-heading"><strong>Content found</strong><span>${result.files.length} files · folder selection includes future files</span></div><div class="sub-github-tree">${subscriptionGitHubTree(result.files)}</div><div class="sub-github-actions"><span>Read-only cache · exact tested commit</span><button class="pk-button primary" data-pending-label="Subscribing…" onclick="subscriptionMountGitHub(this)">Subscribe Selected</button></div></div>` : '<div class="sub-control-note">Public repositories need no credential. Private access reuses a credential profile from GitHub Sync.</div>'}</div>`;
+  const validation = result?.validation || {};
+  const authentication = result?.authentication || {};
+  const authenticationText = result ? `${methodLabel(authentication.method)}${authentication.profileName ? ` · ${authentication.profileName}` : ''}${authentication.account ? ` · ${authentication.account}` : ''}` : '';
+  const validationText = result ? `${Number(validation.importableFiles || result.files.length).toLocaleString()} importable · ${subscriptionFormatBytes(validation.importableBytes)}${Number(validation.invalidFiles) ? ` · ${Number(validation.invalidFiles).toLocaleString()} invalid path(s) skipped` : ''}${Number(validation.ignoredFiles) ? ` · ${Number(validation.ignoredFiles).toLocaleString()} ignored outside the subscription specification` : ''}` : '';
+  const largeFileText = Number(validation.filesOverPreviewLimit) ? `${Number(validation.filesOverPreviewLimit).toLocaleString()} valid file(s) exceed the 1 MiB preview limit; Subscribe caches their full content.` : '';
+  const validationTitle = Number(validation.invalidFiles) ? 'Partially compatible' : 'Valid for subscription';
+  return `<div class="sub-github-subscribe"><div class="sub-github-fields"><label>Repository<input id="sub-github-repository" value="${esc(subscriptionGitHubDraft.repository)}" placeholder="https://github.com/owner/repository.git"></label><label>Branch<input id="sub-github-branch" value="${esc(subscriptionGitHubDraft.branch || 'main')}" placeholder="main"></label><label>Credential profile<select id="sub-github-credential"><option value="">Default Git credentials / public</option>${options}</select></label><label>Local alias<input id="sub-github-alias" value="${esc(subscriptionGitHubDraft.alias)}" placeholder="Optional"></label><button id="sub-github-test" class="pk-button" data-pending-label="Testing…" onclick="subscriptionTestGitHub(this)">${uiIcon('check','Test')}</button></div>
+    ${subscriptionGitHubProgressHtml()}${result ? `<div class="sub-github-result"><div class="sub-github-result-head"><span><strong>${esc(result.name || 'GitHub repository')}</strong><small>${esc(result.repository)} · ${esc(result.branch)}</small></span><code title="${esc(result.commit)}">${esc(result.commit.slice(0,12))}</code></div><div class="sub-github-auth"><strong>Connected with</strong><span>${esc(authenticationText)}</span><small>Test fetched this exact commit. Subscribe Selected reads the local tested checkout and does not reconnect to GitHub.</small></div><div class="sub-github-validation ${Number(validation.invalidFiles) ? 'partial' : ''}"><strong>${validationTitle}</strong><span>${esc(validationText)}</span>${largeFileText ? `<small>${esc(largeFileText)}</small>` : ''}</div>${Number(validation.invalidFiles) ? `<div class="sub-control-note sub-github-invalid">Skipped paths are not portable to Windows. Example: <code>${esc(validation.invalidExamples?.[0] || '')}</code></div>` : ''}<div class="sub-tree-heading"><strong>Content found</strong><span>${result.files.length} files · folder selection includes future files</span></div><div class="sub-github-tree">${subscriptionGitHubTree(result.files)}</div><div class="sub-github-actions"><span>Read-only cache · exact tested commit</span><button class="pk-button primary" data-pending-label="Subscribing…" onclick="subscriptionMountGitHub(this)">Subscribe Selected</button></div></div>` : '<div class="sub-control-note">Private access uses the selected GitHub Sync profile. Without one, Git may use the machine credential helper; Test shows the method and account that were requested.</div>'}</div>`;
+}
+
+function subscriptionFormatBytes(value) {
+  const bytes = Math.max(0, Number(value) || 0);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+}
+function subscriptionGitHubProgressHtml() {
+  const progress = subscriptionGitHubProgress;
+  const hidden = progress ? '' : ' hidden';
+  const current = Number(progress?.current) || 0, total = Number(progress?.total) || 0;
+  const cachedBytes = Number(progress?.cachedBytes) || 0, totalBytes = Number(progress?.totalBytes) || 0;
+  const percent = totalBytes ? Math.max(0, Math.min(100, cachedBytes * 100 / totalBytes)) : total ? Math.max(0, Math.min(100, current * 100 / total)) : 0;
+  const labels = { credentials:'Resolving the credential profile', cloning:'Creating the private local checkout', fetching:'Fetching the selected branch', inventory:'Reading the repository inventory', validating:'Validating subscribable content', reading:'Reading from the tested commit', caching:'Writing the read-only cache', finalizing:'Finalizing the subscription', indexing:'Updating the content catalog' };
+  const elapsedSeconds = Math.max(0, Math.floor((Number(progress?.elapsedMs) || 0) / 1000));
+  const detail = progress?.path ? `${current.toLocaleString()} / ${total.toLocaleString()} · ${progress.path}${Number(progress.currentFileBytes) ? ` · ${subscriptionFormatBytes(progress.currentFileBytes)}` : ''}` : total ? `${current.toLocaleString()} / ${total.toLocaleString()} files` : 'Working…';
+  const byteDetail = totalBytes ? `${subscriptionFormatBytes(cachedBytes)} / ${subscriptionFormatBytes(totalBytes)}` : progress?.operation === 'test' ? 'Network access occurs during Test only' : '';
+  const progressValue = totalBytes || total ? ` value="${percent}"` : '';
+  return `<div id="sub-github-progress" class="sub-github-progress${hidden}" role="status"><div><strong>${esc(labels[progress?.stage] || 'Preparing subscription')}</strong><span>${esc(detail)}</span></div><progress max="100"${progressValue}></progress><small>${esc(byteDetail)}${elapsedSeconds ? ` · ${elapsedSeconds.toLocaleString()}s elapsed` : ''}</small></div>`;
+}
+function subscriptionGitHubProgressUpdate(progress) {
+  subscriptionGitHubProgress = progress || null;
+  const current = document.getElementById('sub-github-progress');
+  if (!current || state.tab !== 'subscriptions') return;
+  const replacement = document.createElement('div');
+  replacement.innerHTML = subscriptionGitHubProgressHtml();
+  current.replaceWith(replacement.firstElementChild);
 }
 
 function subscriptionSetSourceMode(mode) { subscriptionCaptureGitHubDraft(); subscriptionSourceMode = mode === 'github' ? 'github' : 'broker'; renderSubscriptionPane(); }
@@ -187,6 +233,7 @@ function subscriptionCaptureGitHubDraft() {
 }
 function subscriptionGitHubTestResult(data) {
   subscriptionGitHubDraft = { ...subscriptionGitHubDraft, repository:data.repository || '', branch:data.branch || 'main', credentialTargetId:data.credentialTargetId || '', result:{ ...data, selectedFolders:new Set([...new Set((data.files || []).map(file => String(file.path).split('/')[0]))]), selectedPaths:new Set() } };
+  subscriptionGitHubProgress = null;
   subscriptionSourceMode = 'github';
   if (state.tab === 'subscriptions') renderSubscriptionPane();
 }
@@ -226,11 +273,12 @@ function subscriptionGitHubFileToggle(input) {
     }
   }
 }
-function subscriptionTestGitHub(button) { subscriptionCaptureGitHubDraft(); subscriptionGitHubDraft.result = null; ask('subscriptionTestGitHubBranch', { repository:subscriptionGitHubDraft.repository, branch:subscriptionGitHubDraft.branch, credentialTargetId:subscriptionGitHubDraft.credentialTargetId }, button); }
+function subscriptionTestGitHub(button) { subscriptionCaptureGitHubDraft(); subscriptionGitHubDraft.result = null; subscriptionGitHubMounted = null; subscriptionGitHubProgress = { operation:'test', stage:'credentials', current:0, total:0, cachedBytes:0, totalBytes:0, elapsedMs:0 }; renderSubscriptionPane(); ask('subscriptionTestGitHubBranch', { repository:subscriptionGitHubDraft.repository, branch:subscriptionGitHubDraft.branch, credentialTargetId:subscriptionGitHubDraft.credentialTargetId }, document.getElementById('sub-github-test') || button); }
 function subscriptionMountGitHub(button) {
   subscriptionCaptureGitHubDraft(); const result = subscriptionGitHubDraft.result; if (!result) return;
   const selectedPaths = [...document.querySelectorAll('input[data-gh-file]:checked')].map(input => input.value);
   const selectedFolders = [...document.querySelectorAll('input[data-gh-folder]:checked')].map(input => input.value);
+  subscriptionGitHubProgressUpdate({ operation:'subscribe', stage:'validating', current:0, total:result.files.length, cachedBytes:0, totalBytes:Number(result.validation?.importableBytes) || 0, elapsedMs:0 });
   ask('subscriptionMountGitHub', { repository:subscriptionGitHubDraft.repository, branch:subscriptionGitHubDraft.branch, credentialTargetId:subscriptionGitHubDraft.credentialTargetId, alias:subscriptionGitHubDraft.alias, expectedCommit:result.commit, selectedPaths, selectedFolders }, button);
 }
 

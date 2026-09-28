@@ -25,12 +25,15 @@ assert.strictEqual(attributes.Version, expectedVersion, "VSIX manifest version m
 assert.strictEqual(packageJson.version, expectedVersion, "embedded package.json version must match the requested release");
 assert.strictEqual(preRelease, expectedChannel === "pre-release", "VSIX channel marker must match the requested release channel");
 
-const forbidden = entries.filter(entry => /^(extension\/(tests|docs|\.vscode|coverage|artifacts)\/|extension\/(?:[^/]+\/)*\.pytest_cache\/|extension\/planning\.md$|extension\/scripts\/verify-vsix-package\.js$)/.test(entry));
+const forbidden = entries.filter(entry => /^(extension\/(tests|docs|\.vscode|coverage|artifacts)\/|extension\/(?:bug|planning)\.md$|extension\/(?:[^/]+\/)*\.pytest_cache\/|extension\/scripts\/(?:verify-vsix-package|package-extension)\.js$)/.test(entry));
 assert.deepStrictEqual(forbidden, [], `VSIX contains forbidden development files: ${forbidden.join(", ")}`);
 assert(entries.includes("extension/node_modules/ws/index.js"), "VSIX must include the ws runtime dependency used by Chatroom");
-for (const arch of ["x64", "arm64", "ia32"]) {
-  assert(entries.includes(`extension/resources/windows/pkm-stdio-launcher-${arch}.exe`),
-    `VSIX must include the ${arch} no-console Windows MCP stdio launcher`);
-}
+assert(entries.includes("extension/resources/windows/pkm-stdio-proxy.js"),
+  "VSIX must include the Windows JavaScript stdio proxy");
+assert.deepStrictEqual(
+  entries.filter(entry => /^extension\/resources\/windows\/.*\.exe$/i.test(entry)),
+  [],
+  "VSIX must not ship unsigned custom Windows launcher executables",
+);
 
 console.log(`VSIX package test: Uone.personal-knowledge ${expectedVersion} (${expectedChannel}) metadata and boundaries OK`);

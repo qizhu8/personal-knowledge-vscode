@@ -1,4 +1,9 @@
 // ── MCP wizard ────────────────────────────────────────────────────────────
+let mcpStatusCache = null;
+let mcpStatusUpdatedAt = 0;
+let mcpGeneratedCache = null;
+const mcpPathSizeCache = new Map();
+
 function mcpI18nAttrs(key, params = {}) {
   const attr = value => String(value ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   return [`data-i18n="${attr(key)}"`, ...Object.entries(params).map(([name, value]) => `data-i18n-param-${attr(name)}="${attr(value)}"`)].join(' ');
@@ -10,20 +15,58 @@ function renderMcpLoading() {
   </div>`;
 }
 
+function showMcpTab() {
+  if (mcpStatusCache) renderMcpPane(mcpStatusCache); else renderMcpLoading();
+  if (!tabCacheIsFresh(mcpStatusUpdatedAt)) ask('checkMcp', {}, null, Boolean(mcpStatusCache));
+}
+
+function mcpOnStatus(data) {
+  mcpStatusCache = data || {};
+  mcpStatusUpdatedAt = Date.now();
+  updateGlobalMcpWarning(mcpStatusCache);
+  if (state.tab === 'mcp') renderMcpPane(mcpStatusCache);
+}
+
+function mcpOnGenerated(data) {
+  if (data?.preview) mcpGeneratedCache = data;
+  if (state.tab === 'mcp') renderMcpGenerated(data || {});
+}
+
+function mcpOnPathSize(data) {
+  if (data?.key) mcpPathSizeCache.set(String(data.key), data);
+  if (state.tab === 'mcp') renderMcpPathSize(data);
+}
+
 function updateGlobalMcpWarning(data) {
   const banner = document.getElementById('mcp-global-warning');
   const text = document.getElementById('mcp-global-warning-text');
+  const regenerate = banner?.querySelector('.mcp-regenerate-action');
   if (!banner || !text) return;
   if (data?.installed && data?.current) {
     banner.classList.add('hidden');
     text.textContent = '';
+    if (regenerate) regenerate.hidden = false;
     return;
   }
   const installed = data?.installedVersion || 'missing';
   const expected = data?.expectedVersion || '?';
-  text.textContent = data?.installed
-    ? `PKM MCP server is outdated (installed v${installed}, expected v${expected}). Regenerate it and restart pkm.`
-    : `PKM MCP server is missing (expected v${expected}). Create the managed runtime and generate the server.`;
+  const components = [
+    ['Knowledge', data?.installedKnowledgeVersion, data?.knowledgeVersion],
+    ['Chat', data?.installedChatVersion, data?.chatVersion],
+    ['Recipes', data?.installedRecipeVersion, data?.recipeVersion],
+    ['Agent Sessions', data?.installedAgentSessionVersion, data?.agentSessionVersion],
+  ].filter(([, actual, target]) => actual && target && actual !== target);
+  if (regenerate) regenerate.hidden = !!data?.newerThanExpected;
+  if (!data?.installed) {
+    text.textContent = `PKM MCP server is missing (expected v${expected}). Create the managed runtime and generate the server.`;
+  } else if (data?.newerThanExpected) {
+    text.textContent = `A newer PKM MCP runtime is installed and was preserved. Upgrade Personal Knowledge Manager before regenerating server code.`;
+  } else if (installed === expected && components.length) {
+    const detail = components.map(([name, actual, target]) => `${name} v${actual} → v${target}`).join(', ');
+    text.textContent = `PKM MCP server v${installed} is current, but runtime components need update (${detail}). Regenerate server code and restart pkm.`;
+  } else {
+    text.textContent = `PKM MCP server needs update (installed v${installed}, expected v${expected}). Regenerate server code and restart pkm.`;
+  }
   banner.classList.remove('hidden');
 }
 
@@ -295,6 +338,7 @@ function renderMcpPane(data) {
         Configure the external runtimes and Agent integrations used by Personal Knowledge Manager.
       </p>
       ${renderMcpDashboard(data)}
+      ${renderMcpFeatureDomains(data)}
       <div id="pkm-skill-router-section">${renderPkmSkillTargets(data)}</div>
       <div style="background:var(--panel);border:1px solid ${data?.nativeMcpProvider ? '#4ade8066' : '#f4b40066'};border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:11px;line-height:1.6;color:var(--muted)">
         ${data?.nativeMcpProvider
@@ -387,10 +431,42 @@ function renderMcpPane(data) {
     el.scrollTop = Math.min(previousScrollTop, maxScrollTop);
   });
 
-  if (installed && runtime.healthy) {
-    // Populate config snippet async after render
-    ask('generateMcp', { previewOnly: true });
-  }
+  for (const cached of mcpPathSizeCache.values()) renderMcpPathSize(cached);
+  if (mcpGeneratedCache) renderMcpGenerated(mcpGeneratedCache);
+  else if (installed && runtime.healthy) ask('generateMcp', { previewOnly: true }, null, true);
+}
+
+function renderMcpFeatureDomains(data) {
+  const featureDomains = data?.featureDomains;
+  if (!featureDomains?.domains?.length) return '';
+  const session = data?.usage?.sessions?.[0];
+  const formatBytes = value => {
+    const bytes = Number(value) || 0;
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  };
+  const usage = session ? `<div class="mcp-usage-evidence">
+    <div class="mcp-usage-heading"><strong>Latest MCP process evidence</strong><small>${esc(data.usage.measurementNote || '')}</small></div>
+    <div class="mcp-usage-summary">
+      <span><strong>${session.calls}</strong> calls</span>
+      <span><strong>${session.successes}/${session.calls}</strong> successful</span>
+      <span><strong>${formatBytes(session.inputBytes + session.outputBytes)}</strong> payload</span>
+      <span><strong>${Math.round(session.durationMs)} ms</strong> elapsed</span>
+      <span title="Estimated from serialized request and response bytes; not provider billing usage."><strong>~${session.estimatedTokenEquivalent}</strong> estimated token equivalent</span>
+      <span><strong>${session.reportedInputTokens + session.reportedOutputTokens || 'Not reported'}</strong> provider-reported tokens</span>
+    </div>
+    <div class="mcp-usage-domains">${Object.entries(session.domains || {}).map(([domain, value]) => `<span>${esc(featureDomains.domains.find(item => item.id === domain)?.name || domain)} · ${value.calls} calls · ${formatBytes(value.inputBytes + value.outputBytes)} · ${Math.round(value.durationMs)} ms</span>`).join('')}</div>
+  </div>` : `<div class="mcp-usage-evidence empty">No MCP tool calls have been observed yet. PKM does not claim access to Copilot's total conversation tokens.</div>`;
+  return `<section class="mcp-feature-domains">
+    <div class="mcp-feature-domains-title"><span><strong>Agent feature access</strong><small>${esc(featureDomains.note || '')}</small></span><span class="mcp-feature-domain-scope">Global</span></div>
+    <div class="mcp-feature-domain-grid">${featureDomains.domains.map(domain => `
+      <label class="mcp-feature-domain-card">
+        <span><strong>${esc(domain.name)}</strong><small>${esc(domain.description)}</small></span>
+        <input type="checkbox" ${domain.enabled ? 'checked' : ''} onchange="ask('mcpSetFeatureDomain',{domain:${JSON.stringify(domain.id).replace(/"/g, '&quot;')},enabled:this.checked})">
+      </label>`).join('')}</div>
+    ${usage}
+  </section>`;
 }
 
 function renderMcpGenerated(data) {

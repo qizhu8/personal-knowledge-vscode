@@ -1,4 +1,25 @@
 const vscode = acquireVsCodeApi();
+const panelStylesReady = getComputedStyle(document.documentElement).getPropertyValue('--pkm-panel-css-ready').trim() === '1';
+if (panelStylesReady) {
+  for (const id of ['topbar', 'mcp-global-warning', 'workspace-shell', 'ctx-menu', 'sync-modal-bg']) {
+    document.getElementById(id)?.removeAttribute('hidden');
+  }
+  document.querySelectorAll('#loading-banner [hidden]').forEach(element => element.removeAttribute('hidden'));
+} else {
+  const loadingMessage = document.querySelector('#loading-banner .loading-sub');
+  if (loadingMessage) loadingMessage.textContent = 'The interface styles did not load. Reload this window to try again.';
+  vscode.postMessage({ command:'webviewDiagnostic', kind:'error', message:'Panel stylesheet did not load; startup UI remained isolated.' });
+}
+const webviewScriptStartedAt = performance.now();
+requestAnimationFrame(() => requestAnimationFrame(() => {
+  const paints = performance.getEntriesByType?.('paint') || [];
+  vscode.postMessage({
+    command: 'webviewStartupTiming',
+    scriptStartMs: Math.round(webviewScriptStartedAt),
+    firstPaintMs: Math.round(paints.find(entry => entry.name === 'first-paint')?.startTime || performance.now()),
+    firstContentfulPaintMs: Math.round(paints.find(entry => entry.name === 'first-contentful-paint')?.startTime || 0),
+  });
+}));
 window.addEventListener('error', event => vscode.postMessage({
   command: 'webviewDiagnostic', kind: 'error', message: `${event.message || 'window error'} @ ${event.filename || '?'}:${event.lineno || 0}`,
 }));
@@ -6,15 +27,17 @@ window.addEventListener('unhandledrejection', event => vscode.postMessage({
   command: 'webviewDiagnostic', kind: 'unhandledrejection', message: String(event.reason?.stack || event.reason || 'unknown rejection'),
 }));
 setInterval(() => { if (document.visibilityState === 'visible') vscode.postMessage({ command: 'webviewDiagnostic', kind: 'heartbeat' }); }, 120000);
-// CDN libs may be unavailable in offline/remote environments — use safe fallbacks
-try { if (typeof marked !== 'undefined') marked.setOptions({ breaks: true }); } catch(e) {}
 // KaTeX math support for marked: $$...$$ (block) and $...$ (inline). marked
 // tokenizes code fences/spans first, so `$` inside code is left untouched.
 function renderMath(tex, display) {
   try { return katex.renderToString(tex, { displayMode: display, throwOnError: false, strict: false }); }
   catch (e) { return '<code class="math-error">' + String(tex).replace(/</g,'&lt;') + '</code>'; }
 }
-try {
+let markdownLibrariesConfigured = false;
+function configureMarkdownLibraries() {
+  if (markdownLibrariesConfigured || typeof marked === 'undefined' || typeof katex === 'undefined') return false;
+  try {
+  marked.setOptions({ breaks: true });
   if (typeof marked !== 'undefined' && typeof katex !== 'undefined') {
     marked.use({ extensions: [
       { name: 'blockMath', level: 'block',
@@ -27,21 +50,19 @@ try {
         renderer(t) { return renderMath(t.text, false); } },
     ] });
   }
-} catch(e) {}
-// Wiki links [[Title]] / [[Title|alias]] as a marked INLINE extension. Because
-// marked tokenizes code fences/spans first, [[...]] inside code (e.g. a mermaid
-// `[[Kafka]]` subroutine node) is left untouched instead of being rewritten to
-// an <a> tag, which previously corrupted diagrams and code blocks.
-try {
-  if (typeof marked !== 'undefined') {
-    marked.use({ extensions: [
-      { name: 'wikiLink', level: 'inline',
+  marked.use({ extensions: [
+    { name: 'wikiLink', level: 'inline',
         start(src) { const i = src.indexOf('[['); return i < 0 ? undefined : i; },
         tokenizer(src) { const m = /^\[\[([^\]|\n]+)(?:\|([^\]\n]+))?\]\]/.exec(src); if (m) return { type: 'wikiLink', raw: m[0], target: m[1].trim(), label: (m[2] || m[1]).trim() }; },
         renderer(t) { const e = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); return '<a href="#" class="wikilink" data-note="' + e(t.target) + '">' + e(t.label) + '</a>'; } },
     ] });
+    markdownLibrariesConfigured = true;
+    return true;
+  } catch(e) {
+    console.error('Markdown library configuration failed', e);
+    return false;
   }
-} catch(e) {}
+}
 // Base URI for note image assets; `_assets/...` refs are rewritten relative to
 // the note's OWN folder (its category path), matching the on-disk convention
 // notes/<category>/_assets/<file> so links stay portable (Obsidian-style).
@@ -98,6 +119,32 @@ function ensurePanelLibrary(globalName, metaName) {
   });
   panelLibraryLoads.set(globalName, load);
   return load;
+}
+function ensurePanelStylesheet(metaName) {
+  const source = document.querySelector(`meta[name="${metaName}"]`)?.content;
+  if (!source || document.querySelector(`link[data-pkm-library="${metaName}"]`)) return;
+  const link = document.createElement('link');
+  link.rel = 'stylesheet';
+  link.href = source;
+  link.dataset.pkmLibrary = metaName;
+  document.head.appendChild(link);
+}
+async function loadMarkdownLibraries() {
+  const startedAt = performance.now();
+  ensurePanelStylesheet('pkm-highlight-css');
+  ensurePanelStylesheet('pkm-katex-css');
+  const results = await Promise.allSettled([
+    ensurePanelLibrary('marked', 'pkm-marked-src'),
+    ensurePanelLibrary('hljs', 'pkm-highlight-src'),
+    ensurePanelLibrary('katex', 'pkm-katex-src'),
+  ]);
+  configureMarkdownLibraries();
+  vscode.postMessage({
+    command: 'webviewLibraryTiming',
+    durationMs: Math.round(performance.now() - startedAt),
+    loaded: results.filter(result => result.status === 'fulfilled').length,
+    failed: results.filter(result => result.status === 'rejected').length,
+  });
 }
 // ── Mermaid diagrams (```mermaid fenced blocks) ─────────────────────────────
 let _mermaidReady = false;
@@ -176,7 +223,7 @@ function fileSelectorCategoryTree(items) {
 function fileSelectorTreeItems(node) { return [...node.items, ...Object.values(node.folders).flatMap(fileSelectorTreeItems)]; }
 const uiIcon = (name, label = '') => `<span class="codicon codicon-${name}" aria-hidden="true"></span>${label ? `<span>${esc(label)}</span>` : ''}`;
 const ICON = {todo:uiIcon('circle-outline'),done:uiIcon('pass-filled'),'data-path':uiIcon('folder'),observation:uiIcon('eye'),general:uiIcon('note')};
-const surfacePanelTitles = { skills:'Skills', notes:'Notes', papers:'Research', agentSessions:'Agent Sessions', recipes:'Recipe Library', prompts:'Prompts', scripts:'Scripts', packages:'Packages', environments:'Environments', servers:'Servers', projects:'Projects', chatroom:'Threads', subscriptions:'Network & Sharing', githubSync:'GitHub Sync', mcp:'General & MCP', skillRouter:'Skill Router' };
+const surfacePanelTitles = { skills:'Skills', notes:'Notes', papers:'Research', agentSessions:'Agent Sessions', recipes:'Recipe Library', prompts:'Prompts', scripts:'Scripts', packages:'Packages', environments:'Environments', servers:'Servers', projects:'Projects', chatroom:'Threads', subscriptions:'Network & Sharing', githubSync:'GitHub Sync', backgroundTasks:'Background Tasks', mcp:'General & MCP', skillRouter:'Skill Router' };
 let lastPanelTitle = '';
 function setPanelTitle(title) {
   const next = String(title || 'Personal Knowledge Manager').trim();
@@ -296,22 +343,27 @@ const workspaceSurfaces = Object.freeze({
   tools:['prompts','scripts','packages','environments','servers'],
   automation:['agentSessions','agentSnapshots','recipes'],
   projects:['projects','chatroom'],
-  settings:['mcp','skillRouter','subscriptions','githubSync']
+  settings:['mcp','skillRouter','subscriptions','githubSync','backgroundTasks']
 });
 const workspaceDefaultSurface = Object.freeze({ knowledge:'skills', tools:'prompts', automation:'agentSessions', projects:'projects', settings:'mcp' });
 function workspaceForTab(tab) {
   return Object.keys(workspaceSurfaces).find(workspace => workspaceSurfaces[workspace].includes(tab)) || 'projects';
 }
-let state = { workspace:'knowledge', tab:'skills', filter:'all', search:'', items:[], folders:[], subscriptionGroups:[], knowledgeTrash:[], privateTopLevels:[], brokerSharedFolders:{}, active:null };
-let initialLoadComplete = false;
+let state = { workspace:'knowledge', tab:'skills', filter:'all', search:'', items:[], folders:[], knowledgeGroups:null, subscriptionGroups:[], knowledgeTrash:[], privateTopLevels:[], brokerSharedFolders:{}, active:null };
+let initialLoadComplete = !panelStylesReady;
 let loadingProgressTimer = null;
 let loadingRevealTimer = null;
 let latestLoadingProgress = null;
 let loadingProgressVisible = false;
+const TAB_CACHE_FRESH_MS = 2 * 60_000;
+function tabCacheIsFresh(updatedAt, now = Date.now()) {
+  return Number(updatedAt) > 0 && now - Number(updatedAt) < TAB_CACHE_FRESH_MS;
+}
 const pendingActionButtons = new Map();
 const actionTimeouts = {
   subscriptionCopyLink:10000, subscriptionConfigure:15000, subscriptionSetOnline:30000, subscriptionSetSharePublished:30000,
   subscriptionUpsertShare:30000, subscriptionDeleteShare:30000, subscriptionAdd:60000,
+  subscriptionTestGitHubBranch:150000, subscriptionMountGitHub:150000,
   subscriptionRename:10000, subscriptionSetPriority:15000, subscriptionRefresh:60000, subscriptionRemove:30000,
   subscriptionRevealSecret:10000, subscriptionRotateSecret:30000, subscriptionUnblockIp:15000, subscriptionFork:30000, subscriptionOpenServerLink:15000,
   skillTrashRestore:15000, skillTrashDelete:15000, skillTrashEmpty:30000,
@@ -322,6 +374,7 @@ const actionTimeouts = {
   agentSnapshotCreate:30000, agentSnapshotRotate:30000, agentSnapshotDelete:15000,
   recipeOpenBrowser:30000,
   githubSyncSave:30000, githubSyncRun:120000, githubSyncCreateIdentity:30000, githubSyncTestAuthentication:30000,
+  githubSyncConflictOpen:30000, githubSyncConflictChooseAll:120000, githubSyncConflictAgent:120000, githubSyncConflictAgentAll:1800000, githubSyncConflictAccept:120000, githubSyncConflictDiscard:30000,
   mcpRepairRuntime:600000, mcpSetPython:600000, generateMcp:90000,
   checkMcp:15000, mcpDetectPython:60000, refreshMcpPathSizes:30000,
 };
@@ -404,6 +457,15 @@ function finishAction(...commands) {
       restoreActionButton(entry);
     }
     pendingActionButtons.delete(command);
+  }
+}
+
+function refreshActionTimeout(command) {
+  const timeout = actionTimeouts[command];
+  if (!timeout) return;
+  for (const entry of pendingActionButtons.get(command) || []) {
+    clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => timeoutAction(command, entry), timeout);
   }
 }
 
@@ -611,7 +673,7 @@ window.addEventListener('message', e => {
     ['skills','notes','scripts'].forEach(invalidateKnowledgeTabView);
     if (['skills','notes','scripts'].includes(state.tab)) ask('list', { tab: state.tab, filter: state.filter, q: state.search, fresh: true }, null, true);
   }
-  else if (command === 'list')     { if (e.data.tab && e.data.tab !== state.tab) return; finishAction('list','deleteSkill','skillTrashFolder','skillTrashRestore','skillTrashDelete','skillTrashEmpty','knowledgeTrashMove','knowledgeTrashRestore','knowledgeTrashDelete','knowledgeTrashEmpty'); if (revealRefreshedTreeItems(state.tab, state.items, data, pendingTreeRefresh)) pendingTreeRefresh = null; state.items = data; state.folders = e.data.folders || []; state.subscriptionGroups = e.data.subscriptionGroups || []; state.knowledgeTrash = e.data.knowledgeTrash || []; state.brokerSharedFolders = e.data.brokerSharedFolders || {}; if (Array.isArray(e.data.privateTopLevels)) state.privateTopLevels = e.data.privateTopLevels; renderList(); highlightDetailMatches(document.getElementById('layout'), state.search); }
+  else if (command === 'list')     { if (e.data.tab && e.data.tab !== state.tab) return; finishAction('list','deleteSkill','skillTrashFolder','skillTrashRestore','skillTrashDelete','skillTrashEmpty','knowledgeTrashMove','knowledgeTrashRestore','knowledgeTrashDelete','knowledgeTrashEmpty'); if (revealRefreshedTreeItems(state.tab, state.items, data, pendingTreeRefresh)) pendingTreeRefresh = null; state.items = data; state.folders = e.data.folders || []; state.knowledgeGroups = e.data.knowledgeGroups || null; state.subscriptionGroups = e.data.subscriptionGroups || []; state.knowledgeTrash = e.data.knowledgeTrash || []; state.brokerSharedFolders = e.data.brokerSharedFolders || {}; if (Array.isArray(e.data.privateTopLevels)) state.privateTopLevels = e.data.privateTopLevels; renderList(); highlightDetailMatches(document.getElementById('layout'), state.search); }
   else if (command === 'listSubscriptionGroups') {
     if (e.data.tab !== state.tab) {
       updateCachedKnowledgeTabSubscriptions(e.data.tab, data || []);
@@ -646,7 +708,11 @@ window.addEventListener('message', e => {
   }
   else if (command === 'knowledgeTrashResult') {
     if (!data?.ok) pkModal({ title:'Trash', message:data?.error || 'Trash action failed.', okLabel:'OK' });
-    else vscode.postMessage({ command:'toast', text:data.action === 'emptied' ? `Emptied ${Number(data.count)||0} Trash entries` : `${data.action === 'restored' ? 'Restored' : data.action === 'deleted' ? 'Permanently deleted' : 'Moved to Trash'}: ${data.path || ''}` });
+    else vscode.postMessage({ command:'toast', text:data.action === 'emptied'
+      ? `Emptied ${Number(data.count)||0} Trash entries`
+      : data.action === 'moved-all'
+        ? `Moved ${Number(data.count)||0} Research Paper${Number(data.count) === 1 ? '' : 's'} to Trash`
+        : `${data.action === 'restored' ? 'Restored' : data.action === 'deleted' ? 'Permanently deleted' : 'Moved to Trash'}: ${data.path || ''}` });
     currentDetail = null; currentDetailRequest = null; renderEmptyDetail();
     ask('list', { tab:data?.area || state.tab, filter:'all', q:data?.area === state.tab ? state.search : '', fresh:true });
   }
@@ -686,6 +752,7 @@ window.addEventListener('message', e => {
   else if (command === 'serverGroupList') { serverGroupPaths = data || ['Hidden']; if (state.tab === 'servers') renderServerDashboard(serverCache); }
   else if (command === 'serverPrivacy') { serverPrivateTopLevels = data || []; if (state.tab === 'servers') renderServerDashboard(serverCache); }
   else if (command === 'serverSubscriptionGroups') { finishAction('serverSubscriptionStatus','serverSubscriptionRefresh'); serverSubscriptionGroups = data || []; if (state.tab === 'servers') renderServerDashboard(serverCache); }
+  else if (command === 'recipeSubscriptionGroups') { recipeSubscriptionGroupsOnResult(data); }
   else if (command === 'privacyChanged') {
     if (state.tab === 'servers') { serverPrivateTopLevels = data?.type === 'servers' ? (data?.isPrivate ? [...new Set([...serverPrivateTopLevels, data.topLevel])] : serverPrivateTopLevels.filter(name => name !== data.topLevel)) : serverPrivateTopLevels; ask('serverList', {}); }
     else if (state.tab === 'recipes' && data?.type === 'recipes') ask('projectState', {});
@@ -695,26 +762,35 @@ window.addEventListener('message', e => {
   else if (command === 'serverLog') { onServerLog(e.data.slug, e.data.text); }
   else if (command === 'serverPickFolder') { onServerPickFolder(e.data.dir); }
   else if (command === 'subscriptionState') { finishAction('subscriptionState','subscriptionConfigure','subscriptionSetOnline','subscriptionUpsertShare','subscriptionDeleteShare','subscriptionAdd','subscriptionMountGitHub','subscriptionRename','subscriptionSetPriority','subscriptionRefresh','subscriptionRemove','subscriptionUnblockIp','subscriptionRotateSecret'); subscriptionOnState(data); finishLoadingProgress(); }
-  else if (command === 'githubSyncState') { finishAction('githubSyncState','githubSyncSave','githubSyncDelete','githubSyncRun'); githubSyncOnState(data); finishLoadingProgress(); }
-  else if (command === 'githubSyncRunQueued') { finishAction('githubSyncRun'); vscode.postMessage({ command:'toast', text:'GitHub sync started' }); }
+  else if (command === 'githubSyncState') { finishAction('githubSyncState','githubSyncSave','githubSyncDelete','githubSyncRun','githubSyncAutomationToggle'); githubSyncOnState(data); finishLoadingProgress(); }
+  else if (command === 'githubSyncRunQueued') { finishAction('githubSyncRun'); githubSyncOnRunQueued(data); }
   else if (command === 'githubSyncRuntimeState') { githubSyncOnRuntimeState(data); }
+  else if (command === 'backgroundTasks') { backgroundTasksOnSnapshot(data); finishLoadingProgress(); }
   else if (command === 'githubSyncRestored') { finishAction('githubSyncRestore'); vscode.postMessage({ command:'toast', text:`Restored ${data?.restored?.length || 0} file(s) from GitHub` }); }
   else if (command === 'githubSyncRestoreCancelled') { finishAction('githubSyncRestore'); }
   else if (command === 'githubSyncIdentityPicked') { finishAction('githubSyncPickIdentity'); githubSyncIdentityPicked(data?.identityFile || ''); }
   else if (command === 'githubSyncIdentityCreated') { finishAction('githubSyncCreateIdentity'); githubSyncIdentityPicked(data?.identityFile || ''); vscode.postMessage({ command:'toast', text:'SSH public key copied; add it to GitHub, then test the account' }); }
   else if (command === 'githubSyncAuthenticationResult') { finishAction('githubSyncTestAuthentication'); githubSyncOnAuthenticationResult(data); vscode.postMessage({ command:'toast', text:`Authenticated as ${data?.login || 'unknown'}` }); }
-  else if (command === 'githubSyncError') { githubSyncSaving = false; const action = String(data?.action || ''); if (action && pendingActionButtons.has(action)) failAction(data?.error || 'GitHub Sync failed.', action); else showViewActionError(data?.error || 'GitHub Sync failed.'); finishLoadingProgress(); }
+  else if (command === 'githubSyncError') { githubSyncSaving = false; const action = String(data?.action || ''); if (action === 'githubSyncRun') githubSyncForcePending.clear(); if (action && pendingActionButtons.has(action)) failAction(data?.error || 'GitHub Sync failed.', action); else showViewActionError(data?.error || 'GitHub Sync failed.'); finishLoadingProgress(); }
   else if (command === 'subscriptionChanged') {
+    invalidateSubscriptionKnowledgeViews();
+    invalidateRecipeSubscriptionGroups();
     if (state.tab === 'subscriptions' && !hasPendingActionPrefix('subscription')) ask('subscriptionState', {});
-    else if (state.tab === 'servers') ask('serverList', {});
-    else if (['skills','notes','papers','prompts','scripts','packages'].includes(state.tab)) ask('list', { tab: state.tab, filter: state.filter, q: state.search });
+    else if (state.tab === 'servers') {
+      serverSubscriptionGroups = [];
+      renderServerDashboard(serverCache);
+      ask('serverList', {});
+    }
+    else if (cachedKnowledgeTabs.has(state.tab)) ask('list', { tab: state.tab, filter: state.filter, q: state.search, fresh: true });
   }
   else if (command === 'subscriptionError') {
     const action = String(data?.action || '');
     const message = data?.error || 'Subscription action failed.';
+    if (action === 'subscriptionMountGitHub' || action === 'subscriptionTestGitHubBranch') subscriptionGitHubProgressUpdate(null);
     if (action && pendingActionButtons.has(action)) failAction(message, action); else showViewActionError(message);
     finishLoadingProgress();
   }
+  else if (command === 'subscriptionGitHubProgress') { refreshActionTimeout(data?.operation === 'test' ? 'subscriptionTestGitHubBranch' : 'subscriptionMountGitHub'); subscriptionGitHubProgressUpdate(data || {}); }
   else if (command === 'subscriptionSecret') { finishAction('subscriptionRevealSecret','subscriptionRotateSecret'); subscriptionShowSecret(data?.secret || ''); finishLoadingProgress(); }
   else if (command === 'subscriptionGitHubTestResult') { finishAction('subscriptionTestGitHubBranch'); subscriptionGitHubTestResult(data || {}); finishLoadingProgress(); }
   else if (command === 'subscriptionRenamed') {
@@ -737,6 +813,13 @@ window.addEventListener('message', e => {
       serverContentRefreshed:'serverSubscriptionRefresh',
     };
     if (completedCommands[data?.action]) finishAction(completedCommands[data.action]);
+    if (data?.action === 'githubMounted') {
+      subscriptionGitHubProgress = null;
+      subscriptionExpandedId = String(data.id || '');
+      subscriptionGitHubMounted = { id:subscriptionExpandedId, name:String(data.name || 'GitHub branch'), itemCount:Number(data.itemCount) || 0 };
+      subscriptionGitHubDraft = { repository:'', branch:'main', credentialTargetId:'', alias:'', result:null };
+      if (state.tab === 'subscriptions') renderSubscriptionPane();
+    }
     if (data?.action === 'published' || data?.action === 'created') {
       subscriptionSelectionDrafts.delete(subscriptionEditingShare);
       if (data.action === 'created') subscriptionEditingShare = String(data.shareId || '');
@@ -745,7 +828,7 @@ window.addEventListener('message', e => {
       configured:'Gateway settings applied', online:'Gateway is online', offline:'Gateway is offline', copied:'Magic Link copied',
       brokerDeleted:`Deleted ${data?.name || 'Broker'}`, brokerDeleteCancelled:`Kept ${data?.name || 'Broker'}`, brokerPaused:`Paused ${data?.name || 'Broker'}`, brokerPublished:`Publishing ${data?.name || 'Broker'}`, removed:'Subscription removed', unblocked:`Unblocked ${data?.ip || 'address'}`, serverOpened:`Opened ${data?.name || 'Server'}`, serverContentRefreshed:`Refreshed ${data?.name || 'Server subscription'} at revision ${data?.revision || 0}`,
     };
-    const text = data?.action === 'published' ? `Published ${data.name} revision ${data.revision}` : data?.action === 'created' ? `Created Broker ${data.name}` : data?.action === 'subscribed' ? `Subscribed to ${data.name}` : data?.action === 'refreshed' ? `Refreshed ${data.name} at revision ${data.revision}` : messages[data?.action] || 'Subscription action completed';
+    const text = data?.action === 'published' ? `Published ${data.name} revision ${data.revision}` : data?.action === 'created' ? `Created Broker ${data.name}` : data?.action === 'subscribed' || data?.action === 'githubMounted' ? `Subscribed to ${data.name}` : data?.action === 'refreshed' ? `Refreshed ${data.name} at revision ${data.revision}` : messages[data?.action] || 'Subscription action completed';
     vscode.postMessage({ command:'toast', text });
   }
   else if (command === 'subscriptionForked') {
@@ -771,9 +854,9 @@ window.addEventListener('message', e => {
   else if (command === 'projectStateChanged') {
     projectSnapshotDirty = true;
     const scope = String(data?.scope || 'all');
-    const relevant = state.tab === 'recipes' ? scope === 'projects' || scope === 'all'
-      : ['agentSessions','agentSnapshots'].includes(state.tab) ? scope !== 'projects' || scope === 'all'
-      : state.tab === 'projects';
+    const relevant = state.tab === 'recipes' ? scope === 'recipes' || scope === 'all'
+      : ['agentSessions','agentSnapshots'].includes(state.tab) ? ['agentSessions','recipeRuns','all'].includes(scope)
+      : state.tab === 'projects' && (scope === 'projects' || scope === 'all');
     if (relevant) ask('projectState', {});
   }
   else if (command === 'projectResult') { projectOnResult(data); }
@@ -863,11 +946,13 @@ window.addEventListener('message', e => {
       progress.innerHTML = `<div class="sync-progress"><div><strong>${esc(data.message || 'Synchronizing…')}</strong><span>${percent === null ? '' : percent + '%'}${amount ? ' · ' + esc(amount) : ''}</span></div><progress ${percent === null ? '' : `value="${percent}" max="100"`}></progress></div>`;
     }
   }
-  else if (command === 'mcpStatus')    { finishAction('checkMcp','reconfigureKnowledgeRoot','reconfigureEnvironmentsRoot'); updateGlobalMcpWarning(data); if (state.tab === 'mcp') renderMcpPane(data); }
-  else if (command === 'skillRouterStatus') { if (state.tab === 'skillRouter') renderSkillRouterPane(data); }
+  else if (command === 'mcpStatus')    { finishAction('checkMcp','reconfigureKnowledgeRoot','reconfigureEnvironmentsRoot'); mcpOnStatus(data); }
+  else if (command === 'skillRouterStatus') { skillRouterOnStatus(data); }
   else if (command === 'pkmSkillUpdateComplete') { finishPkmSkillUpdates(); if (!data?.ok) ask('checkMcp', {}); }
   else if (command === 'uiLanguage')   { applyUiLanguage(data); }
-  else if (command === 'mcpPathSize')  { finishAction('refreshMcpPathSizes'); renderMcpPathSize(data); }
+  else if (command === 'tourCatalog') { updateFeatureTourCatalog(data); }
+  else if (command === 'initialExperience') { queueInitialExperience(data); }
+  else if (command === 'mcpPathSize')  { finishAction('refreshMcpPathSizes'); mcpOnPathSize(data); }
   else if (command === 'chatReadReceipt') { chatUpdateReadReceipt(data); }
   else if (command === 'mcpPythonResult') { finishAction('mcpSetPython','mcpBrowsePython'); renderMcpPythonResult(data); }
   else if (command === 'mcpPythonCandidates') { renderMcpPythonCandidates(data); }
@@ -877,7 +962,7 @@ window.addEventListener('message', e => {
   else if (command === 'mcpPythonScanComplete') { finishAction('mcpDetectPython','mcpCancelPythonScan'); finishMcpPythonScan(data); }
   else if (command === 'mcpRuntimeProgress') { renderMcpRuntimeProgress(data); }
   else if (command === 'mcpRuntimeResult') { finishAction('mcpRepairRuntime','mcpSetPython','reconfigureMcpRuntimePath'); renderMcpRuntimeResult(data); }
-  else if (command === 'mcpGenerated') { finishAction('generateMcp','reconfigureMcpServerPath'); renderMcpGenerated(data); }
+  else if (command === 'mcpGenerated') { finishAction('generateMcp','reconfigureMcpServerPath'); mcpOnGenerated(data); }
   else if (command === 'mcpError')     {
     failAction(data?.error || 'The operation failed.','checkMcp','mcpRepairRuntime','mcpSetPython','generateMcp','mcpDetectPython','refreshMcpPathSizes','reconfigureKnowledgeRoot','reconfigureEnvironmentsRoot','reconfigureMcpRuntimePath','reconfigureMcpServerPath');
     const el = document.getElementById('mcp-result');
@@ -988,7 +1073,7 @@ function isInitialViewResponse(command, message = {}) {
   const responseByTab = {
     skills:'list', notes:'list', papers:'list', prompts:'list', packages:'list', scripts:'list',
     environments:'envList', servers:'serverList', agentSessions:'projectState', recipes:'projectState', projects:'projectState',
-    chatroom:'chatState', mcp:'mcpStatus', skillRouter:'skillRouterStatus', subscriptions:'subscriptionState', githubSync:'githubSyncState',
+    chatroom:'chatState', mcp:'mcpStatus', skillRouter:'skillRouterStatus', subscriptions:'subscriptionState', githubSync:'githubSyncState', backgroundTasks:'backgroundTasks',
   };
   return responseByTab[state.tab] === command && (command !== 'list' || message.tab === state.tab);
 }
@@ -1003,6 +1088,7 @@ function finishLoadingProgress() {
   const strip = document.getElementById('view-loading-progress');
   if (banner) { banner.classList.add('hidden'); setTimeout(() => banner.remove(), 400); }
   if (strip) strip.classList.add('hidden');
+  if (typeof maybeStartPendingExperience === 'function') maybeStartPendingExperience();
 }
 
 function renderLoadingProgress(progress = {}) {

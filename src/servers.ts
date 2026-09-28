@@ -362,14 +362,14 @@ export function serverListenerProcesses(port: number): ServerListenerProcess[] {
       if (match) { pids.add(Number(match[1])); names.set(Number(match[1]), match[2]); }
     }
   } else {
-    const lsof = spawnSync("lsof", ["-nP", "-a", `-iTCP:${value}`, "-sTCP:LISTEN", "-Fpc"], { encoding: "utf8", timeout: 2500, windowsHide: false });
+    const lsof = spawnSync("lsof", ["-nP", "-a", `-iTCP:${value}`, "-sTCP:LISTEN", "-Fpc"], { encoding: "utf8", timeout: 2500, windowsHide: true });
     let currentPid = 0;
     for (const line of String(lsof.stdout || "").split(/\r?\n/)) {
       if (line.startsWith("p") && /^p\d+$/.test(line)) { currentPid = Number(line.slice(1)); pids.add(currentPid); }
       else if (line.startsWith("c") && currentPid) names.set(currentPid, line.slice(1));
     }
     if (!pids.size) {
-      const ss = spawnSync("ss", ["-ltnp", "sport", "=", `:${value}`], { encoding: "utf8", timeout: 2500, windowsHide: false });
+      const ss = spawnSync("ss", ["-ltnp", "sport", "=", `:${value}`], { encoding: "utf8", timeout: 2500, windowsHide: true });
       for (const match of String(ss.stdout || "").matchAll(/\(\("([^"]+)"[^)]*pid=(\d+)/g)) {
         const pid = Number(match[2]); pids.add(pid); names.set(pid, match[1]);
       }
@@ -378,7 +378,7 @@ export function serverListenerProcesses(port: number): ServerListenerProcess[] {
   return [...pids].filter(pid => pid > 1).sort((a, b) => a - b).map(pid => {
     let command = names.get(pid) || "unknown process";
     if (process.platform !== "win32") {
-      const ps = spawnSync("ps", ["-p", String(pid), "-o", "args="], { encoding: "utf8", timeout: 1500, windowsHide: false });
+      const ps = spawnSync("ps", ["-p", String(pid), "-o", "args="], { encoding: "utf8", timeout: 1500, windowsHide: true });
       command = String(ps.stdout || "").trim() || command;
     }
     return { pid, name: names.get(pid) || path.basename(command.split(/\s+/)[0] || "process"), command };
@@ -627,7 +627,7 @@ export async function setServerPort(slug: string, port: number): Promise<{ ok: b
 }
 
 // ── Status / logs / python envs ──────────────────────────────────────────────
-export async function serverList(): Promise<any[]> {
+export async function serverList(inspectExternalSlug = ""): Promise<any[]> {
   const st = readState();
   const proxyRunning = await probeProxyIdentity();
   const networkAddresses = serverNetworkAddresses();
@@ -650,7 +650,7 @@ export async function serverList(): Promise<any[]> {
       category: m.category || "", pinned: !!m.pinned,
       tags: m.tags || [],
       suggestedPort,
-      externalProcesses: status === "external" ? serverListenerProcesses(m.port) : [],
+      externalProcesses: status === "external" && slug === inspectExternalSlug ? serverListenerProcesses(m.port) : [],
       stableUrl: `http://localhost:${_proxyPort}/s/${slug}/`,
       localUrl: `http://localhost:${activePort}/`,
       proxyRunning,

@@ -2,7 +2,9 @@ import { withCrossProcessLock } from "./cross-process-lock";
 import { stableUserPort } from "./user-service-ports";
 import { KnowledgeInventoryManager } from "./knowledge-inventory";
 import { performanceSummary, recordPerformanceMetric } from "./performance-telemetry";
+import { mcpUsageSummary } from "./mcp-usage";
 import { agentSnapshotIsEncrypted, createAgentSnapshot, deleteAgentSnapshot, listAgentSnapshots, rotateAgentSnapshotPassphrase } from "./agent-snapshots";
+import { agentSessionArchiveKeepLatestK, emptyAgentSessionTrash, enforceAgentSessionArchiveRetention, moveAgentSessionToTrash, permanentlyDeleteTrashedAgentSession, projectedAgentSessionStatus, recipeNodeObservability, reconcileAgentSessionActiveMappings, restoreAgentSessionFromTrash, stopAgentSession } from "./agent-session-lifecycle";
 import * as vscode from "vscode";
 import * as path from "path";
 import * as os from "os";
@@ -10,9 +12,10 @@ import * as http from "http";
 import * as net from "net";
 import * as fs from "fs";
 import { syncServer } from "./sync-server";
-import { SharedContentType, SharedMarketManager, SHARED_CONTENT_TYPES } from "./subscriptions";
+import { MAX_SUBSCRIPTION_CACHE_BYTES, SharedContentType, SharedMarketManager, SHARED_CONTENT_TYPES } from "./subscriptions";
 import { brokerShareMarkers, sharedContentIdentity } from "./broker-share-markers";
 import { isContentItemPrivate, isContentPathPrivate, isTopLevelPrivate, privateTopLevels, PrivacyContentType, renameTopLevelPrivacy, setPrivacyStoreRoot, setTopLevelPrivacy } from "./content-privacy";
+import { knowledgeGroupAssign, knowledgeGroupCreate, knowledgeGroupDelete, knowledgeGroupFolderRenamed, knowledgeGroupRename, knowledgeGroupSetColor, knowledgeGroupSnapshot, KnowledgeGroupArea, setKnowledgeGroupStoreRoot } from "./knowledge-groups";
 import { forkSubscriptionContent } from "./subscription-fork";
 import {
   skillList, skillSearch, skillGet, skillUpsert, skillDelete, skillMoveCategory, skillMove, skillSetPinned,
@@ -20,7 +23,8 @@ import {
   knowledgeMoveToTrash, knowledgeTrashList, knowledgeTrashRestore, knowledgeTrashDelete, knowledgeTrashEmpty, KnowledgeTrashArea,
   noteList, noteSearch, noteGet, noteUpsert, noteDelete, slugExists, noteMove, noteMoveFolder, noteSetPinned, noteFolderPins, noteSetFolderPinned,
   noteExport, noteImport, saveNoteAsset,
-  paperList, paperSearch, paperGet, paperUpsert, paperDelete,
+  paperList, paperSearch, paperGet, paperUpsert, paperDelete, paperMoveAllToTrash,
+  migrateLegacyMyIdeasFolder,
   paperFacets, paperGraph, savePaperFile,
   paperGroups, paperSetGroup, paperGroupRename, paperGroupDelete, paperSetPinned, paperSetTopic,
   setStorePath as fsSetStorePath, getStorePath,
@@ -69,12 +73,13 @@ import { createRetrievalSnapshot } from "./retrieval-snapshot";
 import { RetrievalWorkerManager } from "./retrieval-worker";
 import { extensionHostDescription, isAbsoluteForPlatform, isForeignAbsolutePath, resolveMachineStorePath } from "./store-path";
 import { loadLocaleCatalogs, loadLocaleManifest, localizedText, normalizeUiLanguage, resolveUiLanguage, UiLanguageSetting, uiLanguageSetting } from "./localization";
+import { decideInitialExperience, FEATURE_TOUR_MODULES, minorRelease } from "./onboarding-experience";
 import { AiBackend, aiSummarizeScript, listAiBackends, runAiPrompt, scriptCacheDir } from "./ai";
 import {
   cancelMcpPythonScan, combinedMcpInstallInstruction, combinedMcpRegistry,
-  detectMcpPython, ensureMcpRuntime, generateMcpServer,
+  configuredMcpFeatureDomains, detectMcpPython, ensureMcpRuntime, generateMcpServer, MCP_FEATURE_DOMAINS, McpFeatureDomain,
   managedMcpRuntimePath, managedMcpServerDirectory, mcpProcessStatus, mcpRuntimeManualCommands, mcpRuntimeStatus, mcpServerDefinitionData, mcpStatus, streamMcpPythonCandidates,
-  resolveMcpPython, validateMcpPython,
+  resolveMcpPython, validateMcpPython, writeMcpFeatureDomainConfig,
 } from "./mcp";
 import {
   addPkmSkillCustomTarget, connectPkmSkill, disconnectPkmSkill,
@@ -84,15 +89,22 @@ import {
 import { cachedPromptAnalysis, inspectPromptCached, renderPrompt } from "./prompt-manager";
 import { canonicalJson, compileWorkflowDefinitionV1, WorkflowDefinitionV1 } from "./workflow-contracts";
 import { ProjectStore, ProjectStoreCommand } from "./workflows/project-store";
-import { ProjectModelError, RecipeKnowledgeBinding, RecipeMetadata, RecipeRecord } from "./workflows/project-model";
+import { GanttTaskInput, ProjectModelError, RecipeKnowledgeBinding, RecipeMetadata, RecipeRecord } from "./workflows/project-model";
+import { CollaborationMessageMetadata, CollaborationTransition } from "./collaboration-model";
 import { BundledKnowledgeContent, exportProjectRecipeBundle } from "./workflows/project-recipe-bundle";
 import { recipeBrowserEditorDocument } from "./recipe-browser";
 import {
-  GITHUB_SYNC_CONTENT_TYPES, GitHubSyncCatalog, GitHubSyncCatalogItem, GitHubSyncContentType, GitHubSyncCredentials, GitHubSyncTarget,
+  GITHUB_SYNC_CONTENT_TYPES, GitHubPublicationMigration, GitHubPublicationMigrationSource, GitHubSyncCatalog, GitHubSyncCatalogItem, GitHubSyncConflictError, GitHubSyncContentType, GitHubSyncCredentials, GitHubSyncExtensionCompatibilityError, GitHubSyncRecipePull, GitHubSyncTarget,
   createGitHubSyncIdentity, discoverGitHubCredentialManagerAccounts, discoverGitHubSshIdentities, fetchGitHubRemoteSnapshot, githubSyncAuthenticationSessionOptions, githubSyncSafeRelativePath, githubSyncShield, githubSyncTargetFingerprints, normalizeGitHubSyncTarget,
-  probeGitHubSyncAuthentication, probeGitHubSyncHttpsAuthentication, probeGitHubSyncVscodeAuthentication, readGitHubRemoteFile, restoreGitHubRemoteFiles, syncGitHubTarget, testGitHubSyncAuthentication,
+  probeGitHubSyncAuthentication, probeGitHubSyncHttpsAuthentication, probeGitHubSyncVscodeAuthentication, readGitHubRemoteFile, readGitHubRemoteFilesForSubscription, readGitHubRemoteManifest, replaceGitHubSyncFilesAtomically, restoreGitHubRemoteFiles, syncGitHubTarget, testGitHubSyncAuthentication,
 } from "./github-sync";
-import { GitHubSyncScheduler } from "./github-sync-scheduler";
+import {
+  clearGitHubSyncConflict, gitHubSyncConflictVariantPath, listGitHubSyncConflicts, readGitHubSyncConflict,
+  readGitHubSyncConflictCandidate, selectAllGitHubSyncConflictCandidates, selectGitHubSyncConflictCandidate, storeGitHubSyncConflict, updateGitHubSyncAgentCandidate,
+  validateGitHubSyncConflictLocalState, validateGitHubSyncManualCandidate,
+} from "./github-sync-conflicts";
+import { GitHubSyncRuntimeState, GitHubSyncScheduler } from "./github-sync-scheduler";
+import { BackgroundTaskProducer, BackgroundTaskRegistry } from "./background-task-registry";
 
 let projectStoreBinding: { root: string; store: ProjectStore } | undefined;
 
@@ -101,6 +113,7 @@ function currentProjectStore(): ProjectStore {
   if (!projectStoreBinding || projectStoreBinding.root !== root) {
     projectStoreBinding = { root, store: new ProjectStore(path.join(root, ".pkm", "state")) };
   }
+
   return projectStoreBinding.store;
 }
 
@@ -172,6 +185,7 @@ function agentSessionSnapshots(recipes: any[]): any[] {
         recipeRevision: Number(run.recipeRevision || 0),
         executableDigest: String(run.executableDigest || ""),
         status: String(run.status || "unknown"),
+        traversalStrategy: String(run.definition?.spec?.traversalStrategy || ""),
         parent: run.parent && typeof run.parent === "object"
           ? { runId: String(run.parent.runId || ""), nodeId: String(run.parent.nodeId || "") } : undefined,
         createdAt: String(run.createdAt || ""),
@@ -192,6 +206,16 @@ function agentSessionSnapshots(recipes: any[]): any[] {
             outcome: String(record.outcome || ""),
             error: String(record.error || ""),
             childRunId: String(record.childRunId || ""),
+            startedAt: String(record.startedAt || ""),
+            lastHeartbeatAt: String(record.lastHeartbeatAt || ""),
+            lastProgressAt: String(record.lastProgressAt || ""),
+            progress: record.progress && typeof record.progress === "object" ? record.progress : undefined,
+            observability: recipeNodeObservability(record),
+            background: record.background && typeof record.background === "object" ? {
+              state: String(record.background.state || ""),
+              launcherPid: Number(record.background.launcherPid || 0),
+              startedAt: String(record.background.startedAt || ""),
+            } : undefined,
           };
         }),
         loops: Object.values(run.loops && typeof run.loops === "object" ? run.loops : {}).map((loop: any) => ({
@@ -212,9 +236,14 @@ function agentSessionSnapshots(recipes: any[]): any[] {
       const latest = checkpoints.at(-1);
       const state = latest?.state && typeof latest.state === "object" ? latest.state : {};
       snapshots.push({
-        sessionId: String(session.sessionId), status: String(session.status || "unknown"),
+        sessionId: String(session.sessionId), status: projectedAgentSessionStatus(session),
         task: String(session.task || "Managed task"), projectId: String(session.projectId || ""),
         hostSessionId: String(session.hostSessionId || ""),
+        traversalStrategy: String(session.traversalStrategy || ""),
+        recipeTreeEdges: (Array.isArray(session.recipeTreeEdges) ? session.recipeTreeEdges : []).map((edge: any) => ({
+          fromRunId: String(edge.fromRunId || ""), fromNodeId: String(edge.fromNodeId || ""),
+          toRunId: String(edge.toRunId || ""), toNodeId: String(edge.toNodeId || ""),
+        })).filter((edge: any) => edge.fromRunId && edge.fromNodeId && edge.toRunId && edge.toNodeId),
         agent: { name: String(session.agent?.name || "Agent"), product: String(session.agent?.product || "") },
         createdAt: String(session.createdAt || ""), updatedAt: String(session.updatedAt || ""),
         lastActivity: session.lastActivity && typeof session.lastActivity === "object" ? {
@@ -224,6 +253,8 @@ function agentSessionSnapshots(recipes: any[]): any[] {
           todoId: String(todo.todoId || ""), title: String(todo.title || ""), details: String(todo.details || ""),
           status: String(todo.status || "pending"), summary: String(todo.summary || ""),
           recipeRunId: String(todo.recipeRunId || ""), createdAt: String(todo.createdAt || ""),
+          recipeRunIds: (Array.isArray(todo.recipeRunIds) ? todo.recipeRunIds : [todo.recipeRunId])
+            .filter(Boolean).map(String),
           updatedAt: String(todo.updatedAt || ""),
         })),
         checkpoint: latest ? {
@@ -259,28 +290,57 @@ function agentSessionTrashSnapshots(): any[] {
   return snapshots.sort((left, right) => right.trashedAt.localeCompare(left.trashedAt));
 }
 
-function mutateAgentSessionTrash(action: "move" | "restore" | "delete", sessionId: string): void {
-  if (!/^agent_session_[a-zA-Z0-9_-]+$/.test(sessionId)) throw new Error("Agent Session identity is invalid.");
+function configuredAgentSessionArchiveKeepLatestK(): number {
+  return agentSessionArchiveKeepLatestK(
+    vscode.workspace.getConfiguration("personalKnowledge").get<number>("agentSessionArchiveKeepLatestK")
+  );
+}
+
+let agentSessionRetentionPending: Promise<void> = Promise.resolve();
+function applyAgentSessionArchiveRetention(): Promise<void> {
+  if (!_storeReady) return Promise.resolve();
   const stateDirectory = path.join(getStorePath(), ".pkm", "state");
-  const activeDirectory = path.join(stateDirectory, "agent-sessions");
-  const trashDirectory = path.join(stateDirectory, "agent-sessions-trash");
-  const activePath = path.join(activeDirectory, `${sessionId}.json`);
-  const trashPath = path.join(trashDirectory, `${sessionId}.json`);
-  if (action === "delete") {
-    if (!fs.existsSync(trashPath)) throw new Error("Agent Session is not in Trash.");
-    fs.unlinkSync(trashPath);
+  const run = async () => {
+    const result = await enforceAgentSessionArchiveRetention(stateDirectory, configuredAgentSessionArchiveKeepLatestK());
+    if (result.moved.length) log.info(`Agent Session archive retention moved ${result.moved.length} completed Session(s) to Trash.`);
+    for (const error of result.errors) log.warn(`Agent Session archive retention: ${error}`);
+  };
+  agentSessionRetentionPending = agentSessionRetentionPending.then(run, run);
+  return agentSessionRetentionPending;
+}
+
+async function agentSessionProjectStateData(): Promise<any> {
+  await applyAgentSessionArchiveRetention();
+  const mappingResult = reconcileAgentSessionActiveMappings(path.join(getStorePath(), ".pkm", "state"));
+  for (const error of mappingResult.errors) log.warn(`Agent Session active mapping reconciliation: ${error}`);
+  const snapshot = currentProjectStore().list();
+  return {
+    ...snapshot,
+    agentSessions: agentSessionSnapshots(snapshot.recipes),
+    agentSessionTrash: agentSessionTrashSnapshots(),
+    agentSessionArchiveKeepLatestK: configuredAgentSessionArchiveKeepLatestK(),
+    agentSnapshots: listAgentSnapshots(getStorePath()),
+    privateTopLevels: privateTopLevels("recipes"),
+    referenceCatalog: recipeReferenceCatalog(),
+  };
+}
+
+async function mutateAgentSessionTrash(action: "move" | "restore" | "delete" | "empty", sessionId: string): Promise<void> {
+  const stateDirectory = path.join(getStorePath(), ".pkm", "state");
+  if (action === "empty") {
+    emptyAgentSessionTrash(stateDirectory);
     return;
   }
-  const source = action === "move" ? activePath : trashPath;
-  const target = action === "move" ? trashPath : activePath;
-  if (!fs.existsSync(source)) throw new Error(`Agent Session cannot be ${action === "move" ? "moved to Trash" : "restored"}.`);
-  if (fs.existsSync(target)) throw new Error("An Agent Session with the same identity already exists at the destination.");
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  const session = JSON.parse(fs.readFileSync(source, "utf8"));
-  if (action === "move") session.trashedAt = new Date().toISOString();
-  else delete session.trashedAt;
-  fs.writeFileSync(source, JSON.stringify(session), { encoding: "utf8", mode: 0o600 });
-  fs.renameSync(source, target);
+  if (!/^agent_session_[a-zA-Z0-9_-]+$/.test(sessionId)) throw new Error("Agent Session identity is invalid.");
+  if (action === "move") {
+    await moveAgentSessionToTrash(stateDirectory, sessionId, { requireCompleted: true });
+    return;
+  }
+  if (action === "delete") {
+    permanentlyDeleteTrashedAgentSession(stateDirectory, sessionId);
+    return;
+  }
+  restoreAgentSessionFromTrash(stateDirectory, sessionId);
 }
 
 function hydrateRecipeNodeBindings(value: unknown): RecipeRecord["nodeBindings"] {
@@ -404,6 +464,8 @@ function mcpPanelStatusData(): object {
     },
     mcpPython: python,
     mcpRuntime: runtime,
+    featureDomains: mcpFeatureDomainState(),
+    usage: activeStorePath ? mcpUsageSummary(activeStorePath) : { sessions: [], measurementNote: "Configure a Knowledge Root to observe MCP usage." },
     skillRouters: [
       { id: "exact", name: "Exact", kind: "Deterministic", version: "1", status: "active", description: "Hard exact constraints and identifier matches." },
       { id: "bm25", name: "BM25", kind: "Lexical", version: "academic-k1=0.9-b=0.4", status: "active", description: "Frozen relevance ranking across the typed Subscriber index." },
@@ -415,6 +477,22 @@ function mcpPanelStatusData(): object {
     externalLink: { ...externalLinkHostOptions(), contentPort: publicContentActivePort || publicContentPort() },
     skillProposals,
     skillProposalDir: proposalDir,
+  };
+}
+
+function enabledMcpFeatureDomains(): McpFeatureDomain[] {
+  return configuredMcpFeatureDomains();
+}
+
+function mcpFeatureDomainState(): object {
+  const enabled = new Set(enabledMcpFeatureDomains());
+  return {
+    domains: [
+      { id: "knowledge", name: "Knowledge + Tools", enabled: enabled.has("knowledge"), description: "Search, read, and maintain PKM content and configuration." },
+      { id: "automation", name: "Automation", enabled: enabled.has("automation"), description: "Recipes, Agent Sessions, Chatrooms, and operational workflows." },
+      { id: "skillRouter", name: "Skill Router", enabled: enabled.has("skillRouter"), description: "Retrieve and apply relevant Skills before substantial work." },
+    ],
+    note: "These switches control Agent/MCP exposure only. They do not disable the extension UI.",
   };
 }
 
@@ -521,7 +599,7 @@ class Logger {
 const log = new Logger();
 let sharedMarket: SharedMarketManager | undefined;
 const RETRIEVAL_ENGINE_VERSION = "0.3.0.dev2026091601";
-const RETRIEVAL_CONFIGURATION_HASH = createHash("sha256").update("exact-match-v1|bm25-academic-k1=0.9-b=0.4|typed-prior-v1").digest("hex");
+const RETRIEVAL_CONFIGURATION_HASH = createHash("sha256").update("retrieval-boundary-v2|exact-match-v1|bm25-academic-k1=0.9-b=0.4|typed-prior-v1|derived-link-graph-v1").digest("hex");
 let retrievalWorker: RetrievalWorkerManager | undefined;
 let retrievalRefreshTimer: NodeJS.Timeout | undefined;
 let retrievalRefreshRunning: Promise<void> | undefined;
@@ -529,16 +607,34 @@ let publishedShareRefreshTimer: NodeJS.Timeout | undefined;
 let publishedShareRefreshRunning: Promise<void> | undefined;
 let githubSyncStartupTimer: NodeJS.Timeout | undefined;
 let knowledgeInventory: KnowledgeInventoryManager | undefined;
+const backgroundTaskRegistry = new BackgroundTaskRegistry();
+const inventoryTask = backgroundTaskRegistry.producer({ id: "inventory:refresh", kind: "inventory", label: "Refresh knowledge inventory" });
+const retrievalQueuedTask = backgroundTaskRegistry.producer({ id: "retrieval:queued", kind: "retrieval", label: "Refresh search index" });
+const retrievalRunningTask = backgroundTaskRegistry.producer({ id: "retrieval:running", kind: "retrieval", label: "Refresh search index" });
+const brokerRefreshQueuedTask = backgroundTaskRegistry.producer({ id: "broker-refresh:queued", kind: "broker-refresh", label: "Refresh published Brokers" });
+const brokerRefreshRunningTask = backgroundTaskRegistry.producer({ id: "broker-refresh:running", kind: "broker-refresh", label: "Refresh published Brokers" });
+const contentCheckTask = backgroundTaskRegistry.producer({ id: "content-check:periodic", kind: "content-check", label: "Check Knowledge Root for changes" });
+const githubSyncTasks = new Map<string, BackgroundTaskProducer>();
 let performanceStateDir = "";
 let activationStartedAt = 0;
 let firstContentRecorded = false;
 let knowledgeListRequestSequence = 0;
 const latestKnowledgeListRequest = new Map<string, number>();
 
+function invalidatePendingSubscriptionGroupLists(): void {
+  knowledgeListRequestSequence += 1;
+  latestKnowledgeListRequest.clear();
+}
+
 function refreshKnowledgeInventory(context: vscode.ExtensionContext): Promise<void> {
   if (!knowledgeInventory) return Promise.resolve();
   const startedAt = Date.now();
+  inventoryTask.running({ detail: "Scanning files" });
   return knowledgeInventory.refresh(progress => {
+    inventoryTask.running({
+      detail: progress.parsed ? `Scanning files · ${progress.parsed} changed` : "Scanning files",
+      progress: { current: progress.scanned, unit: "files" },
+    });
     if (progress.batchCount) {
       panel?.webview.postMessage({ command: "inventoryBatch", data: { count: progress.batchCount, scanned: progress.scanned } });
     }
@@ -547,7 +643,8 @@ function refreshKnowledgeInventory(context: vscode.ExtensionContext): Promise<vo
     log.info(`knowledge inventory ready revision=${snapshot.revision.slice(0, 12)} scanned=${snapshot.stats.scanned} reused=${snapshot.stats.reused} parsed=${snapshot.stats.parsed} removed=${snapshot.stats.removed}`);
     _treeProvider?.refresh();
     panel?.webview.postMessage({ command: "inventoryReady", data: { revision: snapshot.revision, stats: snapshot.stats } });
-  }).catch(error => log.warn(`knowledge inventory refresh failed: ${(error as Error).message}`));
+  }).catch(error => log.warn(`knowledge inventory refresh failed: ${(error as Error).message}`))
+    .finally(() => inventoryTask.idle());
 }
 
 function getSharedMarket(): SharedMarketManager {
@@ -566,6 +663,10 @@ function currentRetrievalSnapshot() {
     return detail ? [{ ...row, ...detail }] : [];
   });
   const notes = noteList(undefined, Number.MAX_SAFE_INTEGER, true);
+  const papers = paperList().flatMap(row => {
+    const detail = paperGet(row.slug);
+    return detail ? [{ ...row, ...detail }] : [];
+  });
   const scripts = scriptList().flatMap(row => {
     const detail = scriptGet(row.path);
     return detail ? [{ ...row, ...detail, extension: path.extname(row.path) }] : [];
@@ -574,7 +675,9 @@ function currentRetrievalSnapshot() {
     ? SHARED_CONTENT_TYPES.flatMap(type => sharedMarket!.cachedGroups(type, "", Number.MAX_SAFE_INTEGER))
     : [];
   return createRetrievalSnapshot({
-    skills, notes, scripts, subscriptionGroups,
+    skills, notes, papers, scripts,
+    recipes: currentProjectStore().list().recipes,
+    subscriptionGroups,
     readSubscription: key => getSharedMarket().cachedDetail(key),
   });
 }
@@ -618,9 +721,20 @@ async function skillRouterStatusData(context: vscode.ExtensionContext): Promise<
       runtime = {
         ready: status.ready,
         documentCount: status.document_count,
+        edgeCount: status.edge_count,
         corpusRevision: status.corpus_revision,
+        readyGeneration: status.ready_generation,
+        buildingGeneration: status.building_generation,
         engineVersion: status.engine_version,
+        engine: status.engine,
         configurationHash: status.configuration_hash,
+        schema: status.schema,
+        supportedRoutes: status.supported_routes,
+        unsupportedRoutes: status.unsupported_routes,
+        tokenizers: status.tokenizers,
+        facets: status.facets,
+        updateMode: status.update_mode,
+        limitations: status.limitations,
         error: status.error,
       };
     } catch (error: any) {
@@ -670,34 +784,56 @@ async function refreshRetrievalIndex(context: vscode.ExtensionContext): Promise<
 
 function scheduleRetrievalRefresh(context: vscode.ExtensionContext, delay = 5_000): void {
   if (retrievalRefreshTimer) clearTimeout(retrievalRefreshTimer);
+  retrievalQueuedTask.queued({
+    detail: "Waiting for content changes to settle",
+    nextRunAt: new Date(Date.now() + delay).toISOString(),
+  });
   retrievalRefreshTimer = setTimeout(() => {
     retrievalRefreshTimer = undefined;
+    retrievalQueuedTask.idle();
     const previous = retrievalRefreshRunning || Promise.resolve();
-    retrievalRefreshRunning = previous.catch(() => {}).then(() => vscode.window.withProgress({
-      location: vscode.ProgressLocation.Window,
-      title: "PKM: Updating search index",
-    }, () => refreshRetrievalIndex(context)))
+    retrievalRefreshRunning = previous.catch(() => {}).then(() => {
+      retrievalRunningTask.running({ detail: "Updating the local search corpus" });
+      return vscode.window.withProgress({
+        location: vscode.ProgressLocation.Window,
+        title: "PKM: Updating search index",
+      }, () => refreshRetrievalIndex(context));
+    })
       .catch(error => log.warn(`retrieval refresh failed: ${(error as Error).message}`))
-      .finally(() => { retrievalRefreshRunning = undefined; });
+      .finally(() => {
+        retrievalRefreshRunning = undefined;
+        retrievalRunningTask.idle();
+      });
   }, delay);
   retrievalRefreshTimer.unref?.();
 }
 
 function schedulePublishedShareRefresh(context: vscode.ExtensionContext, delay = 5_000): void {
   if (!sharedMarket) return;
+  brokerRefreshQueuedTask.queued({
+    detail: "Waiting for content changes to settle",
+    nextRunAt: new Date(Date.now() + delay).toISOString(),
+  });
   if (publishedShareRefreshTimer) clearTimeout(publishedShareRefreshTimer);
   publishedShareRefreshTimer = setTimeout(() => {
     publishedShareRefreshTimer = undefined;
+    brokerRefreshQueuedTask.idle();
     const previous = publishedShareRefreshRunning || Promise.resolve();
-    publishedShareRefreshRunning = previous.catch(() => {}).then(() => vscode.window.withProgress({
-      location: vscode.ProgressLocation.Window,
-      title: "PKM: Refreshing published Brokers",
-    }, async () => {
-      const changed = await sharedMarket?.refreshPublishedShares() || 0;
-      if (changed && panel) void handleMessage({ command: "subscriptionState" }, message => panel?.webview.postMessage(message), context);
-    })).catch(error => {
+    publishedShareRefreshRunning = previous.catch(() => {}).then(() => {
+      brokerRefreshRunningTask.running({ detail: "Checking published share revisions" });
+      return vscode.window.withProgress({
+        location: vscode.ProgressLocation.Window,
+        title: "PKM: Refreshing published Brokers",
+      }, async () => {
+        const changed = await sharedMarket?.refreshPublishedShares() || 0;
+        if (changed && panel) void handleMessage({ command: "subscriptionState" }, message => panel?.webview.postMessage(message), context);
+      });
+    }).catch(error => {
       log.warn(`background Broker refresh failed: ${(error as Error).message}`);
-    }).finally(() => { publishedShareRefreshRunning = undefined; });
+    }).finally(() => {
+      publishedShareRefreshRunning = undefined;
+      brokerRefreshRunningTask.idle();
+    });
   }, delay);
   publishedShareRefreshTimer.unref?.();
 }
@@ -790,8 +926,252 @@ function githubSyncStateDirectory(context: vscode.ExtensionContext): string {
   return path.join(context.globalStorageUri.fsPath, "github-sync");
 }
 
+function withGitHubSyncTargetLock<T>(context: vscode.ExtensionContext, targetId: string, action: () => Promise<T>): Promise<T> {
+  return withCrossProcessLock(
+    path.join(githubSyncStateDirectory(context), "locks", `${targetId}.lock`),
+    `GitHub Sync target ${targetId}`,
+    10 * 60_000,
+    action,
+    4 * 60 * 60_000,
+  );
+}
+
+function cleanupDeletedGitHubSyncTarget(context: vscode.ExtensionContext, targetId: string): void {
+  void withGitHubSyncTargetLock(context, targetId, async () => {
+    fs.rmSync(path.join(githubSyncStateDirectory(context), "checkouts", targetId), {
+      recursive: true,
+      force: true,
+      maxRetries: 8,
+      retryDelay: 150,
+    });
+    clearGitHubSyncConflict(githubSyncStateDirectory(context), targetId);
+  }).catch(error => {
+    log.warn(`GitHub Sync target ${targetId} was deleted, but background checkout cleanup will need a later retry: ${error instanceof Error ? error.message : String(error)}`);
+  });
+}
+
 function githubSyncTargetsPath(context: vscode.ExtensionContext): string {
   return path.join(githubSyncStateDirectory(context), "targets.json");
+}
+
+function githubPublicationMigration(context: vscode.ExtensionContext, targetId: string): GitHubPublicationMigration {
+  return new GitHubPublicationMigration(githubSyncStateDirectory(context), targetId);
+}
+
+async function githubPublicationMigrationSource(
+  context: vscode.ExtensionContext,
+  target: GitHubSyncTarget,
+): Promise<GitHubPublicationMigrationSource> {
+  const checkoutRoot = path.join(githubSyncStateDirectory(context), "checkouts");
+  const credentials = await readGitHubSyncCredentials(context, target);
+  const snapshot = await fetchGitHubRemoteSnapshot(target, checkoutRoot, false, credentials);
+  const manifest = await readGitHubRemoteManifest(target, checkoutRoot, snapshot.commit);
+  const repositoryDigests = Object.fromEntries(await Promise.all(snapshot.files.map(async file => [
+    file.path,
+    createHash("sha256").update(await readGitHubRemoteFile(target, checkoutRoot, snapshot.commit, file.path, 64 * 1024 * 1024)).digest("hex"),
+  ])));
+  const catalog = await githubSyncCatalog();
+  const folderCount = new Set(snapshot.files.map(file => path.posix.dirname(file.path)).filter(folder => folder !== ".")).size;
+  const idCount = new Set(GITHUB_SYNC_CONTENT_TYPES.flatMap(type => catalog[type].map(item => `${type}\0${item.id}`))).size;
+  return {
+    target,
+    remoteCommit: snapshot.commit,
+    manifest,
+    repositoryFiles: snapshot.files.map(file => file.path),
+    repositoryDigests,
+    activeCount: snapshot.files.length,
+    trashCount: snapshot.files.filter(file => file.path.split("/").includes(".trash")).length,
+    folderCount,
+    idCount,
+  };
+}
+
+function optionalConflictText(filePath: string): string {
+  try { return fs.readFileSync(filePath, "utf8"); }
+  catch (error: any) {
+    if (error?.code === "ENOENT") return "(file does not exist in this version)";
+    throw error;
+  }
+}
+
+function parseAgentMergeResponse(raw: string, type: GitHubSyncContentType): { mergedContent: string; rationale: string; safeToApply: boolean } {
+  const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  let parsed: any;
+  try { parsed = JSON.parse(cleaned); }
+  catch { throw new Error("The Agent did not return a valid merge candidate."); }
+  const mergedContent = type === "recipes" && parsed?.mergedContent && typeof parsed.mergedContent === "object"
+    ? JSON.stringify(parsed.mergedContent, null, 2) + "\n"
+    : parsed?.mergedContent;
+  if (typeof mergedContent !== "string" || typeof parsed?.rationale !== "string" || typeof parsed?.safeToApply !== "boolean") {
+    throw new Error("The Agent merge response is missing required fields.");
+  }
+  return { mergedContent, rationale: parsed.rationale, safeToApply: parsed.safeToApply };
+}
+
+interface GitHubSyncAgentBatchResult {
+  prepared: number;
+  unsupported: number;
+  failed: Array<{ path: string; error: string }>;
+}
+
+async function prepareGitHubSyncAgentCandidates(
+  context: vscode.ExtensionContext,
+  targetId: string,
+  relative = "",
+  reportProgress?: (message: string, increment?: number) => void,
+): Promise<GitHubSyncAgentBatchResult> {
+  const stateDirectory = githubSyncStateDirectory(context);
+  const record = readGitHubSyncConflict(stateDirectory, targetId);
+  if (!record) throw new Error("GitHub Sync conflict was not found.");
+  const backends = await listAiBackends(context);
+  const backend = backends.find(candidate => candidate.kind === "copilot") || backends[0];
+  if (!backend || backend.id.endsWith(":needkey")) throw new Error("No available Agent model can prepare this conflict. Keep manual review or configure an AI backend.");
+  const files = relative ? record.files.filter(file => file.path === relative) : record.files;
+  if (!files.length) throw new Error("GitHub Sync conflict file was not found.");
+  const result: GitHubSyncAgentBatchResult = { prepared: 0, unsupported: 0, failed: [] };
+  for (const file of files) {
+    if (file.type !== "skills" && file.type !== "recipes") {
+      if (relative) throw new Error(`Agent-assisted merge supports Skills and Recipes. Choose this machine, choose GitHub, or edit ${file.path} manually.`);
+      result.unsupported += 1;
+      continue;
+    }
+    reportProgress?.(file.path, 100 / Math.max(1, files.length));
+    try {
+      const variants = {
+        base: optionalConflictText(path.join(stateDirectory, "conflicts", targetId, "base", ...file.path.split("/"))),
+        local: optionalConflictText(path.join(stateDirectory, "conflicts", targetId, "local", ...file.path.split("/"))),
+        remote: optionalConflictText(path.join(stateDirectory, "conflicts", targetId, "remote", ...file.path.split("/"))),
+      };
+      if (Object.values(variants).some(value => Buffer.byteLength(value, "utf8") > 512 * 1024)) {
+        throw new Error(`Agent-assisted merge is limited to 512 KiB per version: ${file.path}`);
+      }
+      const recipe = file.type === "recipes";
+      const response = parseAgentMergeResponse(await runAiPrompt(context, backend, [
+        recipe
+          ? "Merge this PKM Recipe conflict structurally and semantically, not by line concatenation."
+          : "Merge this PKM Skill conflict by meaning, not by line concatenation.",
+        recipe
+          ? "Preserve the Recipe schema, node IDs, dependency graph, required completion nodes, configuration, and compatible changes from both sides. Do not invent unsupported node kinds."
+          : "Preserve correct and compatible instructions from both sides, remove stale contradictions, and do not invent unverified facts.",
+        recipe
+          ? "Return JSON only with: mergedContent (the complete Recipe JSON object or a complete JSON string), rationale, safeToApply."
+          : "Return JSON only with: mergedContent (complete Skill Markdown), rationale, safeToApply.",
+        "Set safeToApply=false when intent is ambiguous or the result could create an incorrect PKM item.",
+        `Path: ${file.path}`,
+        `BASE:\n${variants.base}`,
+        `LOCAL:\n${variants.local}`,
+        `REMOTE:\n${variants.remote}`,
+      ].join("\n\n")), file.type);
+      if (!response.safeToApply) throw new Error(`The Agent declined to produce a safe merge for ${file.path}: ${response.rationale}`);
+      updateGitHubSyncAgentCandidate(stateDirectory, targetId, file.path, response.mergedContent, response.rationale);
+      result.prepared += 1;
+    } catch (error: any) {
+      if (relative) throw error;
+      result.failed.push({ path: file.path, error: error?.message || String(error) });
+    }
+  }
+  return result;
+}
+
+function githubSyncCandidateDestination(root: string, relative: string): string {
+  const safe = githubSyncSafeRelativePath(relative);
+  let current = path.resolve(root);
+  for (const segment of safe.split("/")) {
+    current = path.join(current, segment);
+    if (fs.existsSync(current) && fs.lstatSync(current).isSymbolicLink()) {
+      throw new Error(`GitHub Sync candidate crosses a symbolic link: ${relative}`);
+    }
+  }
+  return current;
+}
+
+async function acceptGitHubSyncConflict(context: vscode.ExtensionContext, targetId: string): Promise<number> {
+  const stateDirectory = githubSyncStateDirectory(context);
+  const record = readGitHubSyncConflict(stateDirectory, targetId);
+  if (!record) throw new Error("GitHub Sync conflict was not found.");
+  const unresolved = record.files.filter(file => file.candidateSource === "unresolved");
+  if (unresolved.length) {
+    throw new Error(`Choose a resolution for every conflicting file before syncing: ${unresolved.map(file => file.path).join(", ")}`);
+  }
+  const target = githubSyncTargetById(context, targetId);
+  const credentials = await readGitHubSyncCredentials(context, target);
+  const snapshot = await fetchGitHubRemoteSnapshot(target, path.join(stateDirectory, "checkouts"), false, credentials);
+  if (snapshot.commit !== record.remoteCommit) throw new Error("The remote branch changed after this conflict was prepared. Sync again before accepting a merge.");
+  const recipeSnapshot = currentProjectStore().list();
+  const candidates = record.files.map(file => {
+    const content = readGitHubSyncConflictCandidate(stateDirectory, targetId, file.path);
+    return {
+      file,
+      content,
+      originalLocal: file.hasLocal
+        ? fs.readFileSync(gitHubSyncConflictVariantPath(stateDirectory, targetId, "local", file.path))
+        : undefined,
+      currentLocal: file.type === "recipes"
+        ? (() => {
+          const recipe = recipeSnapshot.recipes.find(candidate => candidate.recipeId === file.itemId);
+          return recipe ? githubSyncRecipeContent(recipe) : undefined;
+        })()
+        : undefined,
+      destination: file.type === "recipes"
+        ? undefined
+        : file.path.startsWith("agentSnapshots/")
+          ? githubSyncCandidateDestination(path.join(getStorePath(), ".pkm", "state"), `agent-snapshots/${file.path.slice("agentSnapshots/".length)}`)
+          : githubSyncCandidateDestination(getStorePath(), file.path),
+    };
+  });
+  for (const { file, content, originalLocal, currentLocal, destination } of candidates) {
+    const current = file.type === "recipes"
+      ? currentLocal
+      : destination && fs.existsSync(destination) ? fs.readFileSync(destination) : undefined;
+    validateGitHubSyncConflictLocalState(file.path, originalLocal, content, current);
+  }
+  const recipeCandidates = candidates.filter(candidate => candidate.file.type === "recipes").map(candidate => {
+    const recipe = JSON.parse(candidate.content.toString("utf8")) as RecipeRecord;
+    if (recipe.recipeId !== candidate.file.itemId) {
+      throw new Error(`Recipe identity does not match the conflict record: ${candidate.file.path}`);
+    }
+    return recipe;
+  });
+  replaceGitHubSyncFilesAtomically(
+    candidates
+      .filter(candidate => !!candidate.destination)
+      .map(({ destination, content }) => ({ destination: destination!, content })),
+    "GitHub Sync conflict acceptance",
+  );
+  if (recipeCandidates.length) {
+    const store = currentProjectStore();
+    store.replaceRecipesFromSync(projectCommand(store, "recipe-github-sync", {
+      targetId,
+      conflictId: record.id,
+      recipes: recipeCandidates.map(recipe => ({ recipeId: recipe.recipeId, revision: recipe.revision }))
+    }), recipeCandidates);
+  }
+  for (const { file } of candidates) {
+    if (file.privacy === "private" && file.type !== "agentSnapshots") {
+      const topLevel = file.category.split("/").filter(Boolean)[0];
+      if (topLevel) setTopLevelPrivacy(file.type as PrivacyContentType, topLevel, true);
+    }
+  }
+  await mutateGitHubSyncTargets(context, `accept ${targetId}`, targets => {
+    const current = targets.find(candidate => candidate.id === targetId);
+    if (!current) throw new Error("GitHub Sync target was not found.");
+    current.lastSync = {
+      at: new Date().toISOString(),
+      commit: record.remoteCommit,
+      fingerprints: current.lastSync?.fingerprints || {},
+      repository: current.repository,
+      branch: current.branch,
+      storeRoot: path.resolve(getStorePath()),
+    };
+    delete current.lastFailure;
+    return { targets, result: undefined };
+  });
+  clearGitHubSyncConflict(stateDirectory, targetId);
+  invalidateSharedContentCatalog();
+  await refreshKnowledgeInventory(context);
+  _treeProvider?.refresh();
+  githubSyncScheduler?.request(targetId, "manual");
+  return record.files.length;
 }
 
 function githubSyncTargetById(context: vscode.ExtensionContext, targetId: string): GitHubSyncTarget {
@@ -817,6 +1197,23 @@ function writeGitHubSyncTargets(context: vscode.ExtensionContext, targets: GitHu
   const temporary = `${targetPath}.${process.pid}.tmp`;
   fs.writeFileSync(temporary, JSON.stringify({ schema: GITHUB_SYNC_TARGETS_SCHEMA, targets }, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
   fs.renameSync(temporary, targetPath);
+}
+
+async function mutateGitHubSyncTargets<T>(
+  context: vscode.ExtensionContext,
+  owner: string,
+  mutation: (targets: GitHubSyncTarget[]) => { targets: GitHubSyncTarget[]; result: T },
+): Promise<T> {
+  return withCrossProcessLock(
+    path.join(githubSyncStateDirectory(context), "targets-state.lock"),
+    `GitHub Sync target state (${owner})`,
+    10 * 60_000,
+    async () => {
+      const { targets, result } = mutation(readGitHubSyncTargets(context));
+      writeGitHubSyncTargets(context, targets);
+      return result;
+    },
+  );
 }
 
 interface StoredGitHubSyncCredentials {
@@ -874,56 +1271,161 @@ async function authorizeGitHubSyncTarget(context: vscode.ExtensionContext, targe
   }
 }
 
+function updateGitHubSyncBackgroundTask(context: vscode.ExtensionContext, targetId: string, state: GitHubSyncRuntimeState): void {
+  const target = readGitHubSyncTargets(context).find(candidate => candidate.id === targetId);
+  if (!target) {
+    githubSyncTasks.get(targetId)?.idle();
+    githubSyncTasks.delete(targetId);
+    return;
+  }
+  let producer = githubSyncTasks.get(targetId);
+  if (!producer) {
+    producer = backgroundTaskRegistry.producer({ id: `github-sync:${targetId}`, kind: "github-sync", label: `GitHub sync · ${target.name}` });
+    githubSyncTasks.set(targetId, producer);
+  }
+  const label = `GitHub sync · ${target.name}`;
+  if (state.status === "syncing") {
+    producer.running({ label, detail: state.detail || state.phase || "Waiting for Git" });
+  } else if (state.status === "scheduled" || state.nextSyncAt) {
+    producer.queued({
+      label,
+      detail: state.status === "error" ? `${state.phase || "Git operation"} failed · retry scheduled` : "Scheduled",
+      nextRunAt: state.nextSyncAt,
+    });
+  } else {
+    producer.idle();
+  }
+}
+
 function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
   if (!githubSyncScheduler) {
     githubSyncScheduler = new GitHubSyncScheduler({
       shouldExecute: async (targetId, reason) => {
-        if (reason === "configuration") return true;
-        const target = githubSyncTargetById(context, targetId);
-        if (!target.lastSync) return true;
-        const catalog = await githubSyncCatalog();
-        const currentFingerprints = githubSyncTargetFingerprints(target, catalog);
-        const changed = GITHUB_SYNC_CONTENT_TYPES.some(type => currentFingerprints[type] !== target.lastSync?.fingerprints[type]);
-        if (!changed) log.info(`automatic GitHub Sync target=${target.name} reason=${reason} skipped=selected-content-unchanged`);
-        return changed;
-      },
-      execute: async (targetId, reason) => {
-        const target = githubSyncTargetById(context, targetId);
-        const attemptedAt = new Date().toISOString();
-        try {
-          const credentials = await readGitHubSyncCredentials(context, target);
-          const catalog = await githubSyncCatalog();
-          const result = await syncGitHubTarget(target, catalog, path.join(githubSyncStateDirectory(context), "checkouts"), credentials);
-          const currentTargets = readGitHubSyncTargets(context);
-          const current = currentTargets.find(candidate => candidate.id === targetId);
-          if (!current) return;
-          current.lastSync = { at: new Date().toISOString(), commit: result.commit, fingerprints: result.fingerprints };
-          delete current.lastFailure;
-          writeGitHubSyncTargets(context, currentTargets);
-          log.info(`automatic GitHub Sync target=${target.name} reason=${reason} changed=${result.changed} commit=${result.commit}`);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          const currentTargets = readGitHubSyncTargets(context);
-          const current = currentTargets.find(candidate => candidate.id === targetId);
-          if (current) {
-            current.lastFailure = { at: attemptedAt, error: message, reason };
-            writeGitHubSyncTargets(context, currentTargets);
-          }
-          log.error(`automatic GitHub Sync target=${target.name} reason=${reason}: ${message}`);
-          throw error;
-        } finally {
-          if (panel?.visible) void githubSyncStateData(context).then(data => panel?.webview.postMessage({ command: "githubSyncState", data })).catch(error => log.warn(`GitHub Sync state refresh failed: ${(error as Error).message}`));
+        if (readGitHubSyncConflict(githubSyncStateDirectory(context), targetId)) {
+          log.info(`automatic GitHub Sync target=${targetId} reason=${reason} skipped=conflict-awaiting-approval`);
+          return false;
         }
+        const migration = githubPublicationMigration(context, targetId).status();
+        if (migration && migration.phase !== "cutover" && migration.phase !== "rolled-back") {
+          log.info(`automatic GitHub Sync target=${targetId} reason=${reason} skipped=migration-${migration.phase}`);
+          return false;
+        }
+        return true;
+      },
+      execute: (targetId, reason) => {
+        githubSyncScheduler?.report(targetId, "waiting-for-lock", "Waiting for Git lock");
+        return withGitHubSyncTargetLock(context, targetId, async () => {
+          const target = githubSyncTargetById(context, targetId);
+          const attemptedAt = new Date().toISOString();
+          try {
+            githubSyncScheduler?.report(targetId, "authenticating", "Authenticating GitHub credentials");
+            const credentials = await readGitHubSyncCredentials(context, target);
+            const catalog = await githubSyncCatalog();
+            const result = await syncGitHubTarget(
+              target,
+              catalog,
+              path.join(githubSyncStateDirectory(context), "checkouts"),
+              credentials,
+              getStorePath(),
+              (phase, detail) => githubSyncScheduler?.report(targetId, phase, detail),
+            );
+            githubSyncScheduler?.report(targetId, "refresh-index", "Refreshing the PKM inventory and retrieval index");
+            applyGitHubSyncRecipePulls(result.recipePulls);
+            applyGitHubSyncRecipeDeletes(result.recipeDeletes);
+            for (const [type, topLevels] of Object.entries(result.privateTopLevels)) {
+              for (const topLevel of topLevels || []) setTopLevelPrivacy(type as PrivacyContentType, topLevel, true);
+            }
+            if (result.pulled.length || result.deletedLocal.length || result.recipeDeletes.length) {
+              invalidateSharedContentCatalog();
+              _treeProvider?.refresh();
+            }
+            await refreshKnowledgeInventory(context);
+            await refreshRetrievalIndex(context);
+            const updated = await mutateGitHubSyncTargets(context, `sync ${targetId}`, currentTargets => {
+              const current = currentTargets.find(candidate => candidate.id === targetId);
+              if (!current) return { targets: currentTargets, result: false };
+              current.lastSync = {
+                at: new Date().toISOString(),
+                commit: result.commit,
+                fingerprints: result.fingerprints,
+                repository: current.repository,
+                branch: current.branch,
+                storeRoot: path.resolve(getStorePath()),
+              };
+              const acknowledged = new Set(result.acknowledgedDeletions.map(item => `${item.type}\0${item.itemId}`));
+              current.pendingDeletions = (current.pendingDeletions || [])
+                .filter(item => !acknowledged.has(`${item.type}\0${item.itemId}`));
+              if (reason === "manual") {
+                current.automation.initialSyncCompleted = true;
+                if (current.publication) current.publication.manualVerificationCompleted = true;
+              }
+              delete current.lastFailure;
+              return { targets: currentTargets, result: true };
+            });
+            if (!updated) return;
+            githubSyncScheduler?.report(targetId, "scheduled", "Next fetch scheduled");
+            log.info(`automatic GitHub Sync target=${target.name} reason=${reason} changed=${result.changed} commit=${result.commit}`);
+          } catch (error) {
+            let message = error instanceof Error ? error.message : String(error);
+            if (error instanceof GitHubSyncExtensionCompatibilityError) {
+              message = localizedText(context.extensionPath, "githubSync.extensionUpgradeRequired", {
+                required: error.requiredVersion,
+                installed: error.installedVersion,
+              });
+            }
+            if (error instanceof GitHubSyncConflictError) {
+              applyGitHubSyncRecipePulls(error.recipePulls);
+              applyGitHubSyncRecipeDeletes(error.recipeDeletes);
+              for (const [type, topLevels] of Object.entries(error.privateTopLevels)) {
+                for (const topLevel of topLevels || []) setTopLevelPrivacy(type as PrivacyContentType, topLevel, true);
+              }
+              if (error.pulled.length || error.deletedLocal.length || error.recipeDeletes.length) {
+                invalidateSharedContentCatalog();
+                await refreshKnowledgeInventory(context);
+                scheduleRetrievalRefresh(context, 0);
+                _treeProvider?.refresh();
+              }
+              storeGitHubSyncConflict(githubSyncStateDirectory(context), target.id, error);
+              githubSyncScheduler?.report(targetId, "resolve-conflicts", `${error.conflicts.length} conflicting file${error.conflicts.length === 1 ? "" : "s"} require resolution`);
+              if (target.conflictResolution === "agent") {
+                try {
+                  await prepareGitHubSyncAgentCandidates(context, target.id);
+                  message += " Agent merge candidates are ready for review and Accept & Push.";
+                } catch (agentError) {
+                  message += ` Agent preparation stopped: ${agentError instanceof Error ? agentError.message : String(agentError)}`;
+                }
+              } else {
+                message += " Review the staged candidates, then Accept & Push.";
+              }
+            }
+            await mutateGitHubSyncTargets(context, `failure ${targetId}`, currentTargets => {
+              const current = currentTargets.find(candidate => candidate.id === targetId);
+              if (current) current.lastFailure = { at: attemptedAt, error: message, reason };
+              return { targets: currentTargets, result: undefined };
+            });
+            log.error(`automatic GitHub Sync target=${target.name} reason=${reason}: ${message}`);
+            throw error;
+          } finally {
+            if (panel?.visible) void githubSyncStateData(context).then(data => panel?.webview.postMessage({ command: "githubSyncState", data })).catch(error => log.warn(`GitHub Sync state refresh failed: ${(error as Error).message}`));
+          }
+        });
       },
       onState: (targetId, state) => {
+        updateGitHubSyncBackgroundTask(context, targetId, state);
         panel?.webview.postMessage({ command: "githubSyncRuntimeState", data: { targetId, state } });
       },
     });
   }
   const targets = readGitHubSyncTargets(context);
+  const activeTargetIds = new Set(targets.map(target => target.id));
+  for (const [targetId, producer] of githubSyncTasks) {
+    if (activeTargetIds.has(targetId)) continue;
+    producer.idle();
+    githubSyncTasks.delete(targetId);
+  }
   githubSyncScheduler.configure(targets.map(target => ({
     id: target.id,
-    enabled: target.automation.enabled,
+    enabled: target.automation.enabled && target.automation.initialSyncCompleted,
     intervalMinutes: target.automation.intervalMinutes,
     syncOnChange: target.automation.syncOnChange,
     lastSuccessAt: target.lastSync?.at,
@@ -947,6 +1449,22 @@ interface GitHubSubscriptionRequest {
   selectedFolders?: string[];
 }
 
+interface TestedGitHubSubscription {
+  testedAt: number;
+  target: GitHubSyncTarget;
+  credentialTargetId?: string;
+  checkoutRoot: string;
+  snapshot: Awaited<ReturnType<typeof fetchGitHubRemoteSnapshot>>;
+}
+
+const testedGitHubSubscriptions = new Map<string, TestedGitHubSubscription>();
+const GITHUB_SUBSCRIPTION_TEST_TTL_MS = 10 * 60_000;
+
+function githubSubscriptionTestKey(context: vscode.ExtensionContext, input: GitHubSubscriptionRequest): string {
+  const { target, credentialTargetId } = githubSubscriptionTarget(context, input);
+  return `${target.repository}\0${target.branch}\0${credentialTargetId || "public"}`;
+}
+
 function githubSubscriptionTarget(context: vscode.ExtensionContext, input: GitHubSubscriptionRequest): { target: GitHubSyncTarget; credentialTargetId?: string } {
   const credentialTargetId = String(input.credentialTargetId || input.targetId || "").trim() || undefined;
   const credentialTarget = credentialTargetId ? githubSyncTargetById(context, credentialTargetId) : undefined;
@@ -956,32 +1474,94 @@ function githubSubscriptionTarget(context: vscode.ExtensionContext, input: GitHu
   return { target: normalizeGitHubSyncTarget({ id, name: repository.split(/[/:]/).pop()?.replace(/\.git$/i, "") || "GitHub Branch", repository, branch, authentication: credentialTarget?.authentication }), credentialTargetId };
 }
 
-async function githubSubscriptionSnapshot(context: vscode.ExtensionContext, input: GitHubSubscriptionRequest) {
+async function githubSubscriptionSnapshot(context: vscode.ExtensionContext, input: GitHubSubscriptionRequest, onProgress?: (stage: string) => void) {
   const resolved = githubSubscriptionTarget(context, input);
   const checkoutRoot = path.join(githubSyncStateDirectory(context), "checkouts");
   const credentialTarget = resolved.credentialTargetId ? githubSyncTargetById(context, resolved.credentialTargetId) : resolved.target;
+  onProgress?.("credentials");
   const credentials = await readGitHubSyncCredentials(context, credentialTarget);
-  const fetched = await fetchGitHubRemoteSnapshot(resolved.target, checkoutRoot, true, credentials);
-  const snapshot = { ...fetched, files: fetched.files.filter(file => file.type !== "agentSnapshots") };
-  return { ...resolved, checkoutRoot, snapshot };
+  const fetched = await fetchGitHubRemoteSnapshot(resolved.target, checkoutRoot, true, credentials, onProgress);
+  const files = fetched.files.filter(file => file.type !== "agentSnapshots");
+  const snapshot = {
+    ...fetched,
+    files,
+    validation: {
+      ...fetched.validation,
+      importableFiles: files.length,
+      ignoredFiles: fetched.validation.repositoryFiles - files.length - fetched.validation.invalidFiles,
+      importableBytes: files.reduce((sum, file) => sum + file.size, 0),
+      largestFileBytes: files.reduce((largest, file) => Math.max(largest, file.size), 0),
+      filesOverPreviewLimit: files.filter(file => file.size > 1024 * 1024).length,
+    },
+  };
+  return {
+    ...resolved,
+    checkoutRoot,
+    snapshot,
+    authentication: {
+      profileName: resolved.credentialTargetId ? credentialTarget.name : "Default Git credentials",
+      method: resolved.target.authentication?.method || "default",
+      account: resolved.target.authentication?.expectedLogin || "",
+    },
+  };
 }
 
-async function mountGitHubBranchSubscription(context: vscode.ExtensionContext, input: GitHubSubscriptionRequest, alias = "") {
-  const { target, credentialTargetId, checkoutRoot, snapshot } = await githubSubscriptionSnapshot(context, input);
-  if (input.expectedCommit && snapshot.commit !== input.expectedCommit) throw new Error("The GitHub branch changed after Test. Test it again before subscribing.");
+function githubSubscriptionContentReaders(
+  target: GitHubSyncTarget,
+  checkoutRoot: string,
+  commit: string,
+  selected: { path: string; size: number }[]
+): { path: string; size: number; content: () => Promise<Buffer> }[] {
+  const batches: { path: string; size: number }[][] = [];
+  const maximumBatchFiles = 128;
+  const maximumBatchBytes = 16 * 1024 * 1024;
+  for (const file of selected) {
+    const current = batches[batches.length - 1];
+    const currentBytes = current?.reduce((sum, item) => sum + item.size, 0) || 0;
+    if (!current || current.length >= maximumBatchFiles || currentBytes + file.size > maximumBatchBytes) batches.push([file]);
+    else current.push(file);
+  }
+  return batches.flatMap(batch => {
+    let pending: Promise<Map<string, Buffer>> | undefined;
+    const load = () => pending ||= readGitHubRemoteFilesForSubscription(target, checkoutRoot, commit, batch, MAX_SUBSCRIPTION_CACHE_BYTES);
+    return batch.map(file => ({
+      ...file,
+      content: async () => {
+        const contents = await load();
+        const content = contents.get(file.path);
+        if (!content) throw new Error(`GitHub batch did not return ${file.path}.`);
+        contents.delete(file.path);
+        return content;
+      },
+    }));
+  });
+}
+
+async function mountGitHubBranchSubscription(context: vscode.ExtensionContext, input: GitHubSubscriptionRequest, alias = "", onProgress?: (progress: any) => void) {
+  const testKey = githubSubscriptionTestKey(context, input);
+  let tested = testedGitHubSubscriptions.get(testKey);
+  if (tested && Date.now() - tested.testedAt > GITHUB_SUBSCRIPTION_TEST_TTL_MS) {
+    testedGitHubSubscriptions.delete(testKey);
+    tested = undefined;
+  }
+  if (!input.expectedCommit || !tested || tested.snapshot.commit !== input.expectedCommit) {
+    throw new Error("Test this GitHub repository again before subscribing. The tested result is missing, expired, or changed.");
+  }
+  const { target, credentialTargetId, checkoutRoot, snapshot } = tested;
   const selectedPaths = [...new Set((input.selectedPaths || []).map(githubSyncSafeRelativePath))];
   const selectedFolders = [...new Set((input.selectedFolders || []).map(value => githubSyncSafeRelativePath(`${String(value).replace(/\/$/, "")}/_folder_rule_`).replace(/\/_folder_rule_$/, "")))];
   const hasRules = input.selectedPaths !== undefined || input.selectedFolders !== undefined;
   const selected = hasRules ? snapshot.files.filter(file => selectedPaths.includes(file.path) || selectedFolders.some(folder => file.path.startsWith(`${folder}/`))) : snapshot.files;
   if (!selected.length) throw new Error("Select at least one GitHub file or folder to subscribe.");
-  const files = await Promise.all(selected.map(async file => ({
-    path: file.path,
-    content: await readGitHubRemoteFile(target, checkoutRoot, snapshot.commit, file.path),
-  })));
-  return getSharedMarket().mountGitHubBranch({
+  const selectedBytes = selected.reduce((sum, file) => sum + file.size, 0);
+  if (selectedBytes > MAX_SUBSCRIPTION_CACHE_BYTES) throw new Error(`Selected GitHub content exceeds the ${MAX_SUBSCRIPTION_CACHE_BYTES / 1024 / 1024} MB subscription cache limit.`);
+  const files = githubSubscriptionContentReaders(target, checkoutRoot, snapshot.commit, selected);
+  const mounted = await getSharedMarket().mountGitHubBranch({
     credentialTargetId, name: target.name, repository: target.repository, branch: target.branch,
     commit: snapshot.commit, account: target.authentication?.expectedLogin, selectedPaths, selectedFolders, files,
-  }, alias);
+  }, alias, onProgress);
+  testedGitHubSubscriptions.delete(testKey);
+  return mounted;
 }
 
 function githubSyncDestination(source: string): string {
@@ -998,6 +1578,42 @@ function githubSyncItem(row: any, type: PrivacyContentType, source: string, dest
     source,
     destination,
   };
+}
+
+function githubSyncRecipeContent(recipe: RecipeRecord): Buffer {
+  return Buffer.from(canonicalJson(recipe) + "\n", "utf8");
+}
+
+function applyGitHubSyncRecipePulls(pulls: GitHubSyncRecipePull[]): void {
+  if (!pulls.length) return;
+  const store = currentProjectStore();
+  const snapshot = store.list();
+  const syncContent = new Map(store.recipeSyncEntries()
+    .map(entry => [entry.recipe.recipeId, Buffer.from(entry.content, "utf8")]));
+  const recipes = pulls.map(pull => {
+    const current = snapshot.recipes.find(recipe => recipe.recipeId === pull.itemId);
+    validateGitHubSyncConflictLocalState(
+      pull.path,
+      pull.expectedLocal,
+      pull.content,
+      current ? syncContent.get(current.recipeId) || githubSyncRecipeContent(current) : undefined,
+    );
+    const recipe = JSON.parse(pull.content.toString("utf8")) as RecipeRecord;
+    if (recipe.recipeId !== pull.itemId) throw new Error(`Recipe identity does not match the remote manifest: ${pull.path}`);
+    return recipe;
+  });
+  store.replaceRecipesFromSync(projectCommand(store, "recipe-github-pull", {
+    recipes: pulls.map(pull => ({ path: pull.path, recipeId: pull.itemId }))
+  }), recipes);
+}
+
+function applyGitHubSyncRecipeDeletes(recipeIds: string[]): void {
+  if (!recipeIds.length) return;
+  const store = currentProjectStore();
+  for (const recipeId of recipeIds) {
+    if (!store.list().recipes.some(recipe => recipe.recipeId === recipeId)) continue;
+    store.moveRecipeToTrash(projectCommand(store, "recipe-github-delete", { recipeId }), recipeId);
+  }
 }
 
 async function githubSyncCatalog(): Promise<GitHubSyncCatalog> {
@@ -1018,14 +1634,14 @@ async function githubSyncCatalog(): Promise<GitHubSyncCatalog> {
   const scripts = (scriptList() as any[]).map(row => githubSyncItem(row, "scripts", path.join(root, "scripts", row.path)));
   const packages = packageList().map((row: any) => githubSyncItem(row, "packages", path.join(root, "packages", row.name)));
   const servers = (await serverList()).map(row => githubSyncItem(row, "servers", serverDir(row.slug)));
-  const recipes = currentProjectStore().list().recipes.map(recipe => ({
+  const recipes = currentProjectStore().recipeSyncEntries().map(({ recipe, destination, content }) => ({
     id: recipe.recipeId,
     label: recipe.name,
     cat: recipe.category || "",
     meta: recipe.scope === "project" ? "Project Recipe" : "Global Recipe",
     isPrivate: isContentItemPrivate("recipes", recipe),
-    destination: ["recipes", ...(recipe.category || "").split("/").filter(Boolean).map(storeSafeName), `${storeSafeName(recipe.name)}.${recipe.recipeId}.json`].join("/"),
-    content: canonicalJson(recipe) + "\n",
+    destination,
+    content,
   }));
   const agentSnapshots = listAgentSnapshots(root).flatMap(snapshot => {
     if (!agentSnapshotIsEncrypted(root, snapshot.snapshotId)) return [];
@@ -1068,6 +1684,24 @@ async function githubSyncStateData(context: vscode.ExtensionContext): Promise<ob
     catalog: uiCatalog,
     shields,
     runtime: githubSyncScheduler?.snapshot() || {},
+    migrations: Object.fromEntries(targets.flatMap(target => {
+      const status = githubPublicationMigration(context, target.id).status();
+      return status ? [[target.id, status]] : [];
+    })),
+    conflicts: Object.fromEntries(listGitHubSyncConflicts(githubSyncStateDirectory(context)).map(record => [record.targetId, {
+      id: record.id,
+      remoteCommit: record.remoteCommit,
+      createdAt: record.createdAt,
+      files: record.files.map(file => ({
+        path: file.path,
+        type: file.type,
+        hasBase: file.hasBase,
+        hasLocal: file.hasLocal,
+        hasRemote: file.hasRemote,
+        candidateSource: file.candidateSource,
+        rationale: file.rationale,
+      })),
+    }])),
     connected,
     authenticationOptions: { accounts: [...accounts].sort(), identities: [...identities].sort() }
   };
@@ -1258,6 +1892,7 @@ async function openRecipeEditorInBrowser(recipeId: string): Promise<boolean> {
             }
             const input = {
               name: String(body.name || ""), category: String(body.category || ""), description: String(body.description || ""),
+              methodology: body.methodology,
               metadata: body.metadata as RecipeMetadata | undefined,
               editorLayout: body.editorLayout as RecipeRecord["editorLayout"],
               definition: body.definition as WorkflowDefinitionV1,
@@ -1847,6 +2482,11 @@ function katexCssForExport(context: vscode.ExtensionContext): string {
 let panel: vscode.WebviewPanel | undefined;
 let _treeProvider: PkTreeProvider | undefined;
 const MACHINE_STORE_PATH_KEY = "machineStorePath.v1";
+const ONBOARDING_PENDING_KEY = "pkm.onboarding.pending.v2";
+const ONBOARDING_COMPLETED_KEY = "pkm.onboarding.completed.v2";
+const TOUR_LAST_SEEN_RELEASE_KEY = "pkm.tours.lastSeenRelease.v1";
+const TOUR_SEEN_MODULES_KEY = "pkm.tours.seenModules.v1";
+const LEGACY_LAST_SHOWN_VERSION_KEY = "pkm.whatsNew.lastShownVersion.v1";
 
 function directoryExists(candidate: string): boolean {
   try { return fs.existsSync(candidate) && fs.statSync(candidate).isDirectory(); }
@@ -1901,7 +2541,7 @@ function registerNativeMcpProvider(context: vscode.ExtensionContext): void {
   _mcpDefinitionsChanged = changed;
   const createDefinition = () => {
     const data = mcpServerDefinitionData();
-    const definition = new api.McpStdioServerDefinition(data.label, data.command, data.args, {}, data.version);
+    const definition = new api.McpStdioServerDefinition(data.label, data.command, data.args, data.env || {}, data.version);
     definition.cwd = vscode.Uri.file(data.cwd);
     return definition;
   };
@@ -2990,9 +3630,9 @@ class ChatRoomManager {
     log.action("chat.joinRejected", { room: rc.room, code });
   }
 
-  send(text: string, responseRequired?: boolean, replyPolicy?: ReplyPolicy, mode?: ChatMode, recipients?: string[], replyToMessageId?: string, discussionLead?: string, finalTopicSummary?: boolean): boolean {
+  send(text: string, responseRequired?: boolean, replyPolicy?: ReplyPolicy, mode?: ChatMode, recipients?: string[], replyToMessageId?: string, discussionLead?: string, finalTopicSummary?: boolean, collaboration?: CollaborationMessageMetadata): boolean {
     const rc = this.activeRoom;
-    return rc ? rc.client.sendText(text, responseRequired, replyPolicy, mode, recipients, replyToMessageId, discussionLead, finalTopicSummary) : false;
+    return rc ? rc.client.sendText(text, responseRequired, replyPolicy, mode, recipients, replyToMessageId, discussionLead, finalTopicSummary, collaboration) : false;
   }
 
   /** Host-only: moderate a member in the active room. Target identified by its
@@ -3200,9 +3840,9 @@ class ChatRoomManager {
     await this.refreshStoredRooms();
   }
 
-  async createHostedRoom(room: string, requestedSecret?: string): Promise<{ roomId: string; room: string; secret: string; hostToken: string }> {
+  async createHostedRoom(room: string, requestedSecret?: string, ownership?: { projectId: string; threadId: string }): Promise<{ roomId: string; room: string; secret: string; hostToken: string }> {
     if (!this.hub?.isRunning) throw new Error("Start the Chat Hub before creating a Room.");
-    const created = await this.hub.createRoom(room, requestedSecret);
+    const created = await this.hub.createRoom(room, requestedSecret, ownership);
     this.hostedKeys.set(created.roomId, created.secret);
     await this.refreshStoredRooms();
     this.push();
@@ -3417,6 +4057,7 @@ async function openHostedRoom(context: vscode.ExtensionContext, roomId: string):
     openChatroomPanel(context);
     return;
   }
+  await manager.refreshStoredRooms();
   const stored = manager.hostedRoomsForNavigation().find(room => room.roomId === roomId);
   if (!stored) throw new Error("Hosted Room was not found.");
   if (!stored.canRehost) throw new Error(stored.unavailableReason || "This Room cannot be Rehosted.");
@@ -3464,6 +4105,7 @@ async function initStore(context: vscode.ExtensionContext, storePath: string): P
   fsSetStorePath(storePath);
   storageSetStorePath(storePath);
   setPrivacyStoreRoot(storePath);
+  setKnowledgeGroupStoreRoot(storePath);
   // Hidden, idempotent migration from the legacy SQLite DB to files-as-truth
   if (!context.globalState.get<boolean>("migratedToFiles", false)) {
     try {
@@ -3471,6 +4113,17 @@ async function initStore(context: vscode.ExtensionContext, storePath: string): P
       if (r.migrated) log.info(`migrated ${r.skills} skills, ${r.notes} notes from DB to files`);
       await context.globalState.update("migratedToFiles", true);
     } catch (e: any) { log.warn(`migration skipped: ${e?.message}`); }
+  }
+  try {
+    const ideas = migrateLegacyMyIdeasFolder();
+    if (ideas.moved) {
+      gitCommit(`migrate(papers): move ${ideas.moved} ideas into MyIdeas`);
+      log.info(`migrated ${ideas.moved} ideas into papers/MyIdeas and updated ${ideas.updatedReferences} citations`);
+    }
+  } catch (error) {
+    const message = `MyIdeas folder migration failed: ${(error as Error).message}`;
+    log.error(message);
+    void vscode.window.showErrorMessage(message);
   }
   _storeReady = true;
   void ensurePublicContentGateway(context).catch(error => log.warn(`public content gateway: ${(error as Error).message}`));
@@ -3838,17 +4491,19 @@ function initializePanel(target: vscode.WebviewPanel, context: vscode.ExtensionC
   _panelReady = false; // fresh webview; wait for its "ready" signal
   _panelLastHeartbeat = Date.now();
   _panelLastDiagnostic = "";
+  const htmlStartedAt = Date.now();
   const html = getWebviewHtml(target.webview, context);
+  const htmlDuration = Date.now() - htmlStartedAt;
+  if (performanceStateDir) recordPerformanceMetric(performanceStateDir, "startup.panel_html_ms", htmlDuration, html.length);
   target.webview.html = html;
-  log.info(`panel ${restored ? "restored" : "created"} (html ${html.length} bytes)`);
+  log.info(`panel ${restored ? "restored" : "created"} (html ${html.length} bytes, generated ${htmlDuration}ms)`);
 
   // Debug: dump generated HTML for inspection (debug level only)
-  if (LEVEL_ORDER["debug"] >= 0) {
-    try {
-      const dbgDir = context.globalStorageUri.fsPath;
-      fs.mkdirSync(dbgDir, { recursive: true });
-      fs.writeFileSync(path.join(dbgDir, "panel-generated.html"), html);
-    } catch { /* ignore */ }
+  if (vscode.workspace.getConfiguration("personalKnowledge").get<string>("logLevel", "info") === "debug") {
+    const dbgDir = context.globalStorageUri.fsPath;
+    void fs.promises.mkdir(dbgDir, { recursive: true })
+      .then(() => fs.promises.writeFile(path.join(dbgDir, "panel-generated.html"), html))
+      .catch(() => undefined);
   }
 
   target.webview.onDidReceiveMessage(
@@ -3867,10 +4522,10 @@ function initializePanel(target: vscode.WebviewPanel, context: vscode.ExtensionC
 }
 
 // ── Shared message handler (panel + sidebar) ───────────────────────────────
-async function serverListForUi(context: vscode.ExtensionContext): Promise<any[]> {
+async function serverListForUi(context: vscode.ExtensionContext, inspectExternalSlug = ""): Promise<any[]> {
   const autoForward = context.globalState.get<boolean>("servers.autoForward.global.v1", true);
   const externalLinkHost = externalLinkHostOptions().resolved;
-  const servers = await serverList();
+  const servers = await serverList(inspectExternalSlug);
   const markers = brokerShareMarkers("servers", servers, (sharedMarket?.snapshot as any)?.shares || []);
   return servers.map(server => ({
     ...server,
@@ -3958,6 +4613,26 @@ async function handleMessage(
       break;
     }
 
+    case "webviewStartupTiming": {
+      const scriptStartMs = Math.max(0, Number(msg.scriptStartMs) || 0);
+      const firstPaintMs = Math.max(0, Number(msg.firstPaintMs) || 0);
+      const firstContentfulPaintMs = Math.max(0, Number(msg.firstContentfulPaintMs) || 0);
+      if (performanceStateDir) {
+        recordPerformanceMetric(performanceStateDir, "startup.webview_script_ms", scriptStartMs);
+        recordPerformanceMetric(performanceStateDir, "startup.webview_first_paint_ms", firstPaintMs);
+        if (firstContentfulPaintMs) recordPerformanceMetric(performanceStateDir, "startup.webview_first_contentful_paint_ms", firstContentfulPaintMs);
+      }
+      log.info(`webview startup scriptStartMs=${scriptStartMs} firstPaintMs=${firstPaintMs} firstContentfulPaintMs=${firstContentfulPaintMs}`);
+      break;
+    }
+
+    case "webviewLibraryTiming": {
+      const durationMs = Math.max(0, Number(msg.durationMs) || 0);
+      if (performanceStateDir) recordPerformanceMetric(performanceStateDir, "startup.webview_libraries_ms", durationMs);
+      log.debug(`webview markdown libraries durationMs=${durationMs} loaded=${Number(msg.loaded) || 0} failed=${Number(msg.failed) || 0}`);
+      break;
+    }
+
     case "setUiLanguage": {
       const requested = String(msg.language || "auto") as UiLanguageSetting;
       const setting: UiLanguageSetting = requested === "auto" ? "auto" : normalizeUiLanguage(context.extensionPath, requested) || "auto";
@@ -3998,7 +4673,42 @@ async function handleMessage(
         respond({ command: "highlightMcpRegenerate" });
       }
       respond({ command: "mcpStatus", data: mcpPanelStatusData() });
+      respond({ command: "backgroundTasks", data: backgroundTaskRegistry.snapshot() });
+      const version = String(context.extension?.packageJSON?.version || "").trim();
+      const previousVersion = context.globalState.get<string>(TOUR_LAST_SEEN_RELEASE_KEY, "")
+        || context.globalState.get<string>(LEGACY_LAST_SHOWN_VERSION_KEY, "");
+      const experience = decideInitialExperience({
+        version,
+        previousVersion,
+        onboardingPending: context.globalState.get<boolean>(ONBOARDING_PENDING_KEY, false),
+        onboardingCompleted: context.globalState.get<boolean>(ONBOARDING_COMPLETED_KEY, false),
+        seenModuleIds: context.globalState.get<string[]>(TOUR_SEEN_MODULES_KEY, []),
+      });
+      respond({ command: "tourCatalog", data: { version, modules: FEATURE_TOUR_MODULES } });
+      if (experience) respond({ command: "initialExperience", data: experience });
       void sendMcpPathSizes(respond);
+      break;
+    }
+
+    case "completeTourModules": {
+      const validIds = new Set(FEATURE_TOUR_MODULES.map(module => module.id));
+      const completedIds = Array.isArray(msg.moduleIds)
+        ? msg.moduleIds.map((id: unknown) => String(id || "")).filter((id: string) => validIds.has(id))
+        : [];
+      const seen = new Set(context.globalState.get<string[]>(TOUR_SEEN_MODULES_KEY, []));
+      completedIds.forEach((id: string) => seen.add(id));
+      await context.globalState.update(TOUR_SEEN_MODULES_KEY, [...seen].sort());
+      const currentRelease = minorRelease(String(context.extension?.packageJSON?.version || ""));
+      if (currentRelease) await context.globalState.update(TOUR_LAST_SEEN_RELEASE_KEY, currentRelease);
+      if (msg.audience === "new") {
+        await context.globalState.update(ONBOARDING_COMPLETED_KEY, true);
+        await context.globalState.update(ONBOARDING_PENDING_KEY, false);
+      }
+      break;
+    }
+
+    case "backgroundTasks": {
+      respond({ command: "backgroundTasks", data: backgroundTaskRegistry.snapshot() });
       break;
     }
 
@@ -4144,24 +4854,69 @@ async function handleMessage(
     }
 
     case "subscriptionMountGitHub": {
-      const mounted = await mountGitHubBranchSubscription(context, {
-        targetId: String(msg.targetId || "") || undefined, credentialTargetId: String(msg.credentialTargetId || "") || undefined,
-        repository: String(msg.repository || "") || undefined, branch: String(msg.branch || "") || undefined,
-        expectedCommit: String(msg.expectedCommit || "") || undefined,
-        selectedPaths: Array.isArray(msg.selectedPaths) ? msg.selectedPaths.map(String) : undefined,
-        selectedFolders: Array.isArray(msg.selectedFolders) ? msg.selectedFolders.map(String) : undefined,
-      }, String(msg.alias || ""));
+      let lastProgressAt = 0;
+      const startedAt = Date.now();
+      let latestProgress: any;
+      const heartbeat = setInterval(() => {
+        if (latestProgress) respond({ command: "subscriptionGitHubProgress", data: { ...latestProgress, elapsedMs: Date.now() - startedAt, heartbeat: true } });
+      }, 1_000);
+      let mounted;
+      try {
+        mounted = await mountGitHubBranchSubscription(context, {
+          targetId: String(msg.targetId || "") || undefined, credentialTargetId: String(msg.credentialTargetId || "") || undefined,
+          repository: String(msg.repository || "") || undefined, branch: String(msg.branch || "") || undefined,
+          expectedCommit: String(msg.expectedCommit || "") || undefined,
+          selectedPaths: Array.isArray(msg.selectedPaths) ? msg.selectedPaths.map(String) : undefined,
+          selectedFolders: Array.isArray(msg.selectedFolders) ? msg.selectedFolders.map(String) : undefined,
+        }, String(msg.alias || ""), progress => {
+          const now = Date.now();
+          latestProgress = { ...progress, operation: "subscribe", elapsedMs: now - startedAt };
+          if (progress.stage === "caching" && progress.current < progress.total && now - lastProgressAt < 100) return;
+          lastProgressAt = now;
+          respond({ command: "subscriptionGitHubProgress", data: latestProgress });
+        });
+      } finally {
+        clearInterval(heartbeat);
+      }
       invalidateSharedContentCatalog();
+      respond({ command: "subscriptionGitHubProgress", data: { stage: "indexing", operation: "subscribe", current: mounted.itemCount, total: mounted.itemCount, cachedBytes: latestProgress?.cachedBytes || 0, totalBytes: latestProgress?.totalBytes || 0, elapsedMs: Date.now() - startedAt } });
       scheduleRetrievalRefresh(context);
-      respond({ command: "subscriptionCompleted", data: { action: "githubMounted", name: mounted.alias || mounted.brokerName || mounted.shareId } });
+      respond({
+        command: "subscriptionCompleted",
+        data: {
+          action: "githubMounted",
+          id: mounted.id,
+          name: mounted.alias || mounted.brokerName || mounted.shareId,
+          itemCount: mounted.itemCount,
+          counts: mounted.counts,
+        },
+      });
       respond({ command: "subscriptionState", data: await subscriptionStateData(context) });
       break;
     }
 
     case "subscriptionTestGitHubBranch": {
       const request = { repository: String(msg.repository || ""), branch: String(msg.branch || "main"), credentialTargetId: String(msg.credentialTargetId || "") || undefined };
-      const { target, snapshot } = await githubSubscriptionSnapshot(context, request);
-      respond({ command: "subscriptionGitHubTestResult", data: { ...request, name: target.name, commit: snapshot.commit, files: snapshot.files } });
+      const startedAt = Date.now();
+      let stage = "credentials";
+      const emitProgress = (heartbeat = false) => respond({
+        command: "subscriptionGitHubProgress",
+        data: { operation: "test", stage, current: 0, total: 0, cachedBytes: 0, totalBytes: 0, elapsedMs: Date.now() - startedAt, heartbeat },
+      });
+      emitProgress();
+      const heartbeat = setInterval(() => emitProgress(true), 1_000);
+      let tested;
+      try {
+        tested = await githubSubscriptionSnapshot(context, request, nextStage => {
+          stage = nextStage;
+          emitProgress();
+        });
+      } finally {
+        clearInterval(heartbeat);
+      }
+      const { target, snapshot } = tested;
+      testedGitHubSubscriptions.set(githubSubscriptionTestKey(context, request), { ...tested, testedAt: Date.now() });
+      respond({ command: "subscriptionGitHubTestResult", data: { ...request, name: target.name, commit: snapshot.commit, files: snapshot.files, validation: snapshot.validation, authentication: tested.authentication, elapsedMs: Date.now() - startedAt } });
       break;
     }
 
@@ -4219,17 +4974,24 @@ async function handleMessage(
     }
 
     case "projectState": {
-      const snapshot = currentProjectStore().list();
-      respond({ command: "projectState", data: { ...snapshot, agentSessions: agentSessionSnapshots(snapshot.recipes), agentSessionTrash: agentSessionTrashSnapshots(), agentSnapshots: listAgentSnapshots(getStorePath()), privateTopLevels: privateTopLevels("recipes"), referenceCatalog: recipeReferenceCatalog() } });
+      respond({ command: "projectState", data: await agentSessionProjectStateData() });
       break;
     }
 
     case "agentSessionTrash": {
       const action = String(msg.action || "");
-      if (!(["move", "restore", "delete"] as string[]).includes(action)) throw new Error("Unsupported Agent Session Trash action.");
-      mutateAgentSessionTrash(action as "move" | "restore" | "delete", String(msg.sessionId || ""));
-      const snapshot = currentProjectStore().list();
-      respond({ command: "projectState", data: { ...snapshot, agentSessions: agentSessionSnapshots(snapshot.recipes), agentSessionTrash: agentSessionTrashSnapshots(), agentSnapshots: listAgentSnapshots(getStorePath()), privateTopLevels: privateTopLevels("recipes"), referenceCatalog: recipeReferenceCatalog() } });
+      if (!(["move", "restore", "delete", "empty"] as string[]).includes(action)) throw new Error("Unsupported Agent Session Trash action.");
+      await mutateAgentSessionTrash(action as "move" | "restore" | "delete" | "empty", String(msg.sessionId || ""));
+      respond({ command: "projectState", data: await agentSessionProjectStateData() });
+      break;
+    }
+
+    case "agentSessionStop": {
+      await stopAgentSession(path.join(getStorePath(), ".pkm", "state"), String(msg.sessionId || ""), {
+        reason: "user-requested",
+        summary: String(msg.summary || "Stopped from the Agent Sessions UI."),
+      });
+      respond({ command: "projectState", data: await agentSessionProjectStateData() });
       break;
     }
 
@@ -4242,9 +5004,8 @@ async function handleMessage(
         copied = false;
         void vscode.window.showWarningMessage(`Agent Snapshot created, but the Recovery Prompt could not be copied: ${(error as Error).message}`);
       }
-      const snapshot = currentProjectStore().list();
       respond({ command: "agentSnapshotCreated", data: { ...created, copied } });
-      respond({ command: "projectState", data: { ...snapshot, agentSessions: agentSessionSnapshots(snapshot.recipes), agentSessionTrash: agentSessionTrashSnapshots(), agentSnapshots: listAgentSnapshots(getStorePath()), privateTopLevels: privateTopLevels("recipes"), referenceCatalog: recipeReferenceCatalog() } });
+      respond({ command: "projectState", data: await agentSessionProjectStateData() });
       break;
     }
 
@@ -4257,16 +5018,14 @@ async function handleMessage(
         copied = false;
         void vscode.window.showWarningMessage(`Passphrase rotated, but the Recovery Prompt could not be copied: ${(error as Error).message}`);
       }
-      const snapshot = currentProjectStore().list();
       respond({ command: "agentSnapshotRotated", data: { ...rotated, copied, rotated: true } });
-      respond({ command: "projectState", data: { ...snapshot, agentSessions: agentSessionSnapshots(snapshot.recipes), agentSessionTrash: agentSessionTrashSnapshots(), agentSnapshots: listAgentSnapshots(getStorePath()), privateTopLevels: privateTopLevels("recipes"), referenceCatalog: recipeReferenceCatalog() } });
+      respond({ command: "projectState", data: await agentSessionProjectStateData() });
       break;
     }
 
     case "agentSnapshotDelete": {
       deleteAgentSnapshot(getStorePath(), String(msg.snapshotId || ""));
-      const snapshot = currentProjectStore().list();
-      respond({ command: "projectState", data: { ...snapshot, agentSessions: agentSessionSnapshots(snapshot.recipes), agentSessionTrash: agentSessionTrashSnapshots(), agentSnapshots: listAgentSnapshots(getStorePath()), privateTopLevels: privateTopLevels("recipes"), referenceCatalog: recipeReferenceCatalog() } });
+      respond({ command: "projectState", data: await agentSessionProjectStateData() });
       break;
     }
 
@@ -4286,6 +5045,134 @@ async function handleMessage(
       break;
     }
 
+    case "threadRename": {
+      const store = currentProjectStore();
+      const input = { threadId: String(msg.threadId || ""), name: String(msg.name || "") };
+      const result = store.renameThread(projectCommand(store, "thread-rename", input), input.threadId, input.name);
+      respond({ command: "projectResult", data: { action: "threadRename", ...result } });
+      break;
+    }
+
+    case "threadOpenChatroom": {
+      const store = currentProjectStore();
+      const snapshot = store.list();
+      const thread = snapshot.threads.find(candidate => candidate.threadId === String(msg.threadId || ""));
+      if (!thread) throw new ProjectModelError("thread-not-found", "Thread was not found.");
+      const project = snapshot.projects.find(candidate => candidate.projectId === thread.projectId);
+      if (!project) throw new ProjectModelError("project-not-found", "Thread Project was not found.");
+      if (thread.chatroom) {
+        await openHostedRoom(context, thread.chatroom.roomId);
+        respond({ command: "projectResult", data: { action: "threadOpenChatroom", snapshot: store.list(), entityId: thread.threadId, replayed: true } });
+        break;
+      }
+      const manager = getChatMgr();
+      const cfg = vscode.workspace.getConfiguration("personalKnowledge");
+      const started = await manager.startHub(cfg.get<number>("chatHubPort") ?? 7345);
+      if (!started.ok) throw new Error(started.error || "Couldn't start Chat Hub.");
+      const hosted = await manager.createHostedRoom(`${project.name} · ${thread.name}`, undefined, {
+        projectId: project.projectId,
+        threadId: thread.threadId
+      });
+      const url = `ws://127.0.0.1:${manager.hubPort}`;
+      manager.joinRoom({ url, room: hosted.room, roomId: hosted.roomId, user: "Host", token: hosted.secret,
+        cid: getChatCid(context), hostToken: hosted.hostToken });
+      const association = { roomId: hosted.roomId, roomName: hosted.room, linkedAt: new Date().toISOString() };
+      const result = store.linkThreadChatroom(projectCommand(store, "thread-chatroom-link", { threadId: thread.threadId, ...association }), thread.threadId, association);
+      openChatroomPanel(context);
+      respond({ command: "projectResult", data: { action: "threadOpenChatroom", ...result } });
+      break;
+    }
+
+    case "ganttTaskCreate":
+    case "ganttTaskUpdate": {
+      const store = currentProjectStore();
+      const input: GanttTaskInput = {
+        threadId: String(msg.threadId || "") || undefined,
+        title: String(msg.title || ""),
+        startDate: String(msg.startDate || ""),
+        endDate: String(msg.endDate || ""),
+        progress: Number(msg.progress),
+        status: String(msg.status || "") as GanttTaskInput["status"],
+        owners: Array.isArray(msg.owners) ? msg.owners.map((owner: any) => ({ name: String(owner?.name || ""), role: String(owner?.role || "") })) : [],
+        dependencyIds: Array.isArray(msg.dependencyIds) ? msg.dependencyIds.map(String) : []
+      };
+      const taskId = String(msg.taskId || "");
+      const projectId = String(msg.projectId || "");
+      const operation = msg.command === "ganttTaskCreate" ? "gantt-task-create" : "gantt-task-update";
+      const result = msg.command === "ganttTaskCreate"
+        ? store.createGanttTask(projectCommand(store, operation, { projectId, ...input }), projectId, input)
+        : store.updateGanttTask(projectCommand(store, operation, { taskId, ...input }), taskId, input);
+      respond({ command: "projectResult", data: { action: msg.command, ...result } });
+      break;
+    }
+
+    case "ganttTaskDelete": {
+      const store = currentProjectStore();
+      const taskId = String(msg.taskId || "");
+      const result = store.deleteGanttTask(projectCommand(store, "gantt-task-delete", { taskId }), taskId);
+      respond({ command: "projectResult", data: { action: "ganttTaskDelete", ...result } });
+      break;
+    }
+
+    case "collaborationCreate": {
+      const store = currentProjectStore();
+      const projectId = String(msg.projectId || "");
+      const input = {
+        collaborationId: String(msg.collaborationId || ""),
+        title: String(msg.title || ""),
+        threadId: String(msg.threadId || ""),
+        ganttTaskId: String(msg.ganttTaskId || "") || undefined,
+        lead: String(msg.lead || ""),
+        owners: Array.isArray(msg.owners) ? msg.owners.map(String) : [],
+        reviewers: Array.isArray(msg.reviewers) ? msg.reviewers.map(String) : [],
+        expectedResponders: Array.isArray(msg.expectedResponders) ? msg.expectedResponders.map(String) : [],
+        deadlineAt: String(msg.deadlineAt || "") || undefined,
+        agentSessionId: String(msg.agentSessionId || "") || undefined,
+        recipeRunId: String(msg.recipeRunId || "") || undefined,
+        objective: String(msg.objective || "") || undefined,
+        context: String(msg.context || "") || undefined,
+        expectedOutput: String(msg.expectedOutput || "") || undefined,
+        artifactType: String(msg.artifactType || "") || undefined,
+        acceptanceCriteria: Array.isArray(msg.acceptanceCriteria) ? msg.acceptanceCriteria.map(String) : [],
+        decisionRequired: msg.decisionRequired === true,
+        primaryOwner: String(msg.primaryOwner || "") || undefined,
+        ownerPartitions: Array.isArray(msg.ownerPartitions) ? msg.ownerPartitions.map((item: any) => ({
+          owner: String(item?.owner || ""), scope: String(item?.scope || "")
+        })) : [],
+        at: String(msg.at || new Date().toISOString()),
+      };
+      const result = store.createCollaborationTask(projectCommand(store, "collaboration-create", { projectId, ...input }), projectId, input);
+      respond({ command: "projectResult", data: { action: "collaborationCreate", ...result } });
+      break;
+    }
+
+    case "collaborationTransition": {
+      const store = currentProjectStore();
+      const transition: CollaborationTransition = {
+        collaborationId: String(msg.collaborationId || ""),
+        expectedVersion: Number(msg.expectedVersion),
+        action: String(msg.action || "") as CollaborationTransition["action"],
+        actor: String(msg.actor || ""),
+        actorRole: String(msg.actorRole || "") as CollaborationTransition["actorRole"],
+        at: String(msg.at || new Date().toISOString()),
+        note: String(msg.note || "") || undefined,
+        expectedResponders: Array.isArray(msg.expectedResponders) ? msg.expectedResponders.map(String) : undefined,
+        deadlineAt: String(msg.deadlineAt || "") || undefined,
+        expectedGanttTaskVersion: msg.expectedGanttTaskVersion == null ? undefined : Number(msg.expectedGanttTaskVersion),
+        evidenceLinks: Array.isArray(msg.evidenceLinks) ? msg.evidenceLinks.map(String) : undefined,
+        evidenceSummary: String(msg.evidenceSummary || "") || undefined,
+        decisionResult: String(msg.decisionResult || "") || undefined,
+        resultArtifact: String(msg.resultArtifact || "") || undefined,
+        blockedWaitingOn: Array.isArray(msg.blockedWaitingOn) ? msg.blockedWaitingOn.map(String) : undefined,
+        completionClaim: msg.completionClaim === true,
+        resolvedResponders: Array.isArray(msg.resolvedResponders) ? msg.resolvedResponders.map(String) : undefined,
+        evidenceMatchesContract: typeof msg.evidenceMatchesContract === "boolean" ? msg.evidenceMatchesContract : undefined,
+      };
+      const result = store.transitionCollaborationTask(projectCommand(store, `collaboration-${transition.action}`, transition), transition);
+      respond({ command: "projectResult", data: { action: "collaborationTransition", ...result } });
+      break;
+    }
+
     case "recipeCreate": {
       const store = currentProjectStore();
       const input = {
@@ -4300,6 +5187,33 @@ async function handleMessage(
       break;
     }
 
+    case "recipeFolderCreate": {
+      const store = currentProjectStore();
+      const input = { parent: String(msg.parent || ""), name: String(msg.name || "") };
+      const result = store.createRecipeFolder(projectCommand(store, "recipe-folder-create", input), input.parent, input.name);
+      _treeProvider?.refresh();
+      respond({ command: "projectResult", data: {
+        action: "recipeFolderCreate",
+        ...result,
+        snapshot: { ...result.snapshot, privateTopLevels: privateTopLevels("recipes") }
+      } });
+      break;
+    }
+
+    case "recipeFolderDelete": {
+      const store = currentProjectStore();
+      const folder = String(msg.folder || "");
+      const result = store.deleteRecipeFolder(projectCommand(store, "recipe-folder-delete", { folder }), folder);
+      if (!folder.includes("/") && isTopLevelPrivate("recipes", folder)) setTopLevelPrivacy("recipes", folder, false);
+      _treeProvider?.refresh();
+      respond({ command: "projectResult", data: {
+        action: "recipeFolderDelete",
+        ...result,
+        snapshot: { ...result.snapshot, privateTopLevels: privateTopLevels("recipes") }
+      } });
+      break;
+    }
+
     case "recipeUpdate": {
       const store = currentProjectStore();
       const recipeId = String(msg.recipeId || "");
@@ -4307,6 +5221,7 @@ async function handleMessage(
         name: String(msg.name || ""),
         category: String(msg.category || ""),
         description: String(msg.description || ""),
+        methodology: msg.methodology as RecipeRecord["methodology"],
         metadata: msg.metadata as RecipeMetadata | undefined,
         editorLayout: msg.editorLayout as RecipeRecord["editorLayout"],
         definition: msg.definition as WorkflowDefinitionV1,
@@ -4329,11 +5244,38 @@ async function handleMessage(
       const store = currentProjectStore();
       const recipeId = String(msg.recipeId || "");
       const action = String(msg.action || "");
+      const recipe = store.list().recipes.find(candidate => candidate.recipeId === recipeId);
       const command = projectCommand(store, `recipe-trash-${action}`, { recipeId });
       const result = action === "move" ? store.moveRecipeToTrash(command, recipeId)
         : action === "restore" ? store.restoreRecipeFromTrash(command, recipeId)
           : action === "delete" ? store.deleteRecipeFromTrash(command, recipeId)
             : (() => { throw new Error("Unsupported Recipe Trash action."); })();
+      if (action === "move" && recipe) {
+        await mutateGitHubSyncTargets(context, `recipe deletion evidence ${recipeId}`, targets => {
+          for (const target of targets) {
+            const evidence = {
+              type: "recipes" as const,
+              itemId: recipeId,
+              deletedAt: new Date().toISOString(),
+              category: recipe.category || "",
+              privacy: isContentItemPrivate("recipes", recipe) ? "private" as const : "public" as const,
+            };
+            target.pendingDeletions = [
+              ...(target.pendingDeletions || []).filter(item => !(item.type === "recipes" && item.itemId === recipeId)),
+              evidence,
+            ];
+          }
+          return { targets, result: undefined };
+        });
+      } else if (action === "restore") {
+        await mutateGitHubSyncTargets(context, `remove recipe deletion evidence ${recipeId}`, targets => {
+          for (const target of targets) {
+            target.pendingDeletions = (target.pendingDeletions || [])
+              .filter(item => !(item.type === "recipes" && item.itemId === recipeId));
+          }
+          return { targets, result: undefined };
+        });
+      }
       respond({ command: "projectResult", data: { action: "recipeTrash", ...result } });
       break;
     }
@@ -4519,7 +5461,9 @@ async function handleMessage(
       const replyToMessageId = String(msg.replyToMessageId || "").slice(0, 120) || undefined;
       const discussionLead = mode === "discuss" ? String(msg.discussionLead || "").slice(0, 60) || undefined : undefined;
       const finalTopicSummary = msg.finalTopicSummary === true;
-      const ok = getChatMgr().send((msg.text || "").toString(), responseRequired, replyPolicy, mode, recipients, replyToMessageId, discussionLead, finalTopicSummary);
+      const collaboration = msg.collaboration && typeof msg.collaboration === "object"
+        ? msg.collaboration as CollaborationMessageMetadata : undefined;
+      const ok = getChatMgr().send((msg.text || "").toString(), responseRequired, replyPolicy, mode, recipients, replyToMessageId, discussionLead, finalTopicSummary, collaboration);
       if (!ok) getChatMgr().push();
       break;
     }
@@ -4793,6 +5737,12 @@ async function handleMessage(
       break;
     }
 
+    case "chatRevealSecret": {
+      const secret = (vscode.workspace.getConfiguration("personalKnowledge").get<string>("chatSharedSecret") || "").trim();
+      respond({ command: "chatSecret", data: { secret } });
+      break;
+    }
+
     case "chatRotateSecret": {
       const roomId = String(msg.roomId || "").trim();
       const roomName = String(msg.roomName || roomId);
@@ -4933,16 +5883,37 @@ async function handleMessage(
     }
 
     case "githubSyncSave": {
-      const targets = readGitHubSyncTargets(context);
-      const existing = targets.find(target => target.id === String(msg.target?.id || ""));
-      const target = normalizeGitHubSyncTarget({ ...msg.target, lastSync: existing?.lastSync, lastFailure: existing?.lastFailure });
-      const duplicate = targets.find(candidate => candidate.id !== target.id && candidate.repository === target.repository && candidate.branch === target.branch);
-      if (duplicate) throw new Error(`Target ${duplicate.name} already synchronizes this repository and branch.`);
+      const target = normalizeGitHubSyncTarget(msg.target);
       if (target.authentication?.method === "vscode") await authorizeGitHubSyncTarget(context, target);
       else if (target.authentication) await testGitHubSyncAuthentication(target);
       delete target.lastFailure;
-      const next = [...targets.filter(candidate => candidate.id !== target.id), target].sort((left, right) => left.name.localeCompare(right.name));
-      writeGitHubSyncTargets(context, next);
+      const saveResult = await withGitHubSyncTargetLock(context, target.id, async () => {
+        const result = await mutateGitHubSyncTargets(context, `save ${target.id}`, targets => {
+          const existing = targets.find(candidate => candidate.id === target.id);
+          const duplicate = targets.find(candidate => candidate.id !== target.id && candidate.repository === target.repository && candidate.branch === target.branch);
+          if (duplicate) throw new Error(`Target ${duplicate.name} already synchronizes this repository and branch.`);
+          const changed = !!existing && (existing.repository !== target.repository || existing.branch !== target.branch);
+          const initialSyncCompleted = !changed && existing?.automation.initialSyncCompleted === true;
+          const automationBlocked = target.automation.enabled && !initialSyncCompleted;
+          target.automation.initialSyncCompleted = initialSyncCompleted;
+          if (automationBlocked) target.automation.enabled = false;
+          if (!changed) {
+            target.lastSync = existing?.lastSync;
+            target.pendingDeletions = existing?.pendingDeletions;
+            target.publication = existing?.publication;
+          }
+          const next = [...targets.filter(candidate => candidate.id !== target.id), target].sort((left, right) => left.name.localeCompare(right.name));
+          return { targets: next, result: { endpointChanged: changed, automationBlocked } };
+        });
+        if (result.endpointChanged) {
+          fs.rmSync(path.join(githubSyncStateDirectory(context), "checkouts", target.id), { recursive: true, force: true });
+          clearGitHubSyncConflict(githubSyncStateDirectory(context), target.id);
+        }
+        return result;
+      });
+      if (saveResult.automationBlocked) {
+        vscode.window.showWarningMessage("Automatic synchronization remains off. Run Initial Sync successfully, resolve and push every conflict, then enable automation manually.");
+      }
       if (target.authentication?.method !== "vscode") await context.secrets.delete(githubSyncSecretKey(target.id));
       configureGitHubSyncScheduler(context);
       githubSyncScheduler?.request(target.id, "configuration");
@@ -4952,22 +5923,187 @@ async function handleMessage(
 
     case "githubSyncDelete": {
       const targetId = String(msg.targetId || "");
-      const targets = readGitHubSyncTargets(context);
+      githubSyncTargetById(context, targetId);
       const mounted = ((getSharedMarket().snapshot as any).subscriptions || []).find((subscription: any) => subscription.source?.type === "github" && (subscription.source.credentialTargetId || subscription.source.targetId) === targetId);
       if (mounted) throw new Error(`Remove the mounted subscription "${mounted.alias || mounted.brokerName || mounted.shareId}" before deleting this GitHub target.`);
-      writeGitHubSyncTargets(context, targets.filter(target => target.id !== targetId));
+      await mutateGitHubSyncTargets(context, `delete ${targetId}`, currentTargets => ({
+        targets: currentTargets.filter(target => target.id !== targetId),
+        result: undefined,
+      }));
       await context.secrets.delete(githubSyncSecretKey(targetId));
       configureGitHubSyncScheduler(context);
-      fs.rmSync(path.join(githubSyncStateDirectory(context), "checkouts", targetId), { recursive: true, force: true });
+      try {
+        clearGitHubSyncConflict(githubSyncStateDirectory(context), targetId);
+      } catch (error) {
+        log.warn(`GitHub Sync target ${targetId} conflict cleanup is deferred: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      cleanupDeletedGitHubSyncTarget(context, targetId);
+      respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
+      break;
+    }
+
+    case "githubSyncAutomationToggle": {
+      const targetId = String(msg.targetId || "");
+      const enabled = msg.enabled === true;
+      if (enabled && readGitHubSyncConflict(githubSyncStateDirectory(context), targetId)) {
+        throw new Error("Resolve every GitHub Sync conflict before enabling automatic synchronization.");
+      }
+      await mutateGitHubSyncTargets(context, `automation ${targetId} ${enabled ? "on" : "off"}`, targets => {
+        const target = targets.find(candidate => candidate.id === targetId);
+        if (!target) throw new Error("GitHub Sync target was not found.");
+        if (enabled && !target.automation.initialSyncCompleted) {
+          throw new Error("Run Initial Sync successfully before enabling automatic synchronization.");
+        }
+        if (enabled && target.publication && !target.publication.manualVerificationCompleted) {
+          throw new Error("Complete a manual Fetch/Pull, conflict resolution, Commit, Push, inventory refresh, and retrieval refresh before enabling automatic synchronization.");
+        }
+        target.automation.enabled = enabled;
+        return { targets, result: undefined };
+      });
+      configureGitHubSyncScheduler(context);
+      respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
+      break;
+    }
+
+    case "githubSyncMigration": {
+      const targetId = String(msg.targetId || "");
+      const action = String(msg.action || "");
+      const receipt = await withGitHubSyncTargetLock(context, targetId, async () => {
+        const target = githubSyncTargetById(context, targetId);
+        const source = await githubPublicationMigrationSource(context, target);
+        const migration = githubPublicationMigration(context, targetId);
+        const result = action === "preview" ? migration.preview(source)
+          : action === "stage" ? migration.stage(source)
+            : action === "verify" ? migration.verify(source)
+              : action === "cutover" ? migration.cutover(source)
+                : action === "rollback" ? migration.rollback(source)
+                  : (() => { throw new Error("Unsupported GitHub publication migration action."); })();
+        if (["stage", "cutover", "rollback"].includes(action)) {
+          await mutateGitHubSyncTargets(context, `migration ${action} ${targetId}`, targets => ({
+            targets: targets.map(candidate => candidate.id === targetId ? target : candidate),
+            result: undefined,
+          }));
+        }
+        return result;
+      });
+      configureGitHubSyncScheduler(context);
+      respond({ command: "githubSyncMigrationResult", data: { targetId, action, receipt } });
       respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
       break;
     }
 
     case "githubSyncRun": {
       const targetId = String(msg.targetId || "");
-      githubSyncTargetById(context, targetId);
-      githubSyncScheduler?.request(targetId, "configuration");
-      respond({ command: "githubSyncRunQueued", data: { targetId } });
+      const target = githubSyncTargetById(context, targetId);
+      const migration = githubPublicationMigration(context, targetId).status();
+      if (migration && migration.phase !== "cutover" && migration.phase !== "rolled-back") {
+        throw new Error(`Complete or roll back the ${migration.phase} GitHub publication migration before synchronization.`);
+      }
+      if (target.publication && !target.publication.manualVerificationCompleted) {
+        target.automation.enabled = false;
+      }
+      const queued = githubSyncScheduler?.request(targetId, "manual") === true;
+      respond({ command: "githubSyncRunQueued", data: { targetId, queued } });
+      respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
+      break;
+    }
+
+    case "githubSyncConflictOpen": {
+      const targetId = String(msg.targetId || "");
+      const record = readGitHubSyncConflict(githubSyncStateDirectory(context), targetId);
+      if (!record) throw new Error("GitHub Sync conflict was not found.");
+      const requestedPath = String(msg.path || "");
+      const selected = requestedPath
+        ? record.files.find(file => file.path === requestedPath)
+        : record.files.length === 1
+        ? record.files[0]
+        : await vscode.window.showQuickPick(record.files.map(file => ({ label: path.basename(file.path), description: file.path, file })), {
+            title: "Review GitHub Sync conflict",
+            placeHolder: "Choose a conflicting file",
+          }).then(item => item?.file);
+      if (!selected) break;
+      const stateDirectory = githubSyncStateDirectory(context);
+      const merged = gitHubSyncConflictVariantPath(stateDirectory, targetId, "merged", selected.path);
+      if (msg.mode === "edit") {
+        await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(merged));
+        vscode.window.showInformationMessage("Edit and save the merge candidate, then choose Validate edited copy in GitHub Sync.");
+      } else {
+        const comparisonVariant = selected.hasRemote ? "remote" : selected.hasBase ? "base" : "local";
+        const comparison = gitHubSyncConflictVariantPath(stateDirectory, targetId, comparisonVariant, selected.path);
+        await vscode.commands.executeCommand("vscode.diff", vscode.Uri.file(comparison), vscode.Uri.file(merged), `${selected.path} · GitHub/base ↔ candidate`);
+      }
+      break;
+    }
+
+    case "githubSyncConflictChoose": {
+      const targetId = String(msg.targetId || "");
+      const relative = String(msg.path || "");
+      const source = String(msg.source || "");
+      if (source !== "local" && source !== "remote" && source !== "base") throw new Error("Choose this machine, GitHub, or the common base.");
+      selectGitHubSyncConflictCandidate(githubSyncStateDirectory(context), targetId, relative, source);
+      respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
+      break;
+    }
+
+    case "githubSyncConflictChooseAll": {
+      const targetId = String(msg.targetId || "");
+      const source = String(msg.source || "");
+      if (source !== "local" && source !== "remote") throw new Error("Choose this machine or GitHub for bulk conflict resolution.");
+      const result = selectAllGitHubSyncConflictCandidates(githubSyncStateDirectory(context), targetId, source);
+      const unavailable = result.unavailable.length
+        ? ` ${result.unavailable.length} file${result.unavailable.length === 1 ? "" : "s"} do not have a ${source === "remote" ? "GitHub" : "machine-local"} version and remain unchanged.`
+        : "";
+      vscode.window.showInformationMessage(`Prepared ${result.selected} ${source === "remote" ? "GitHub" : "machine-local"} conflict candidate${result.selected === 1 ? "" : "s"}.${unavailable}`);
+      respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
+      break;
+    }
+
+    case "githubSyncConflictValidate": {
+      const targetId = String(msg.targetId || "");
+      const relative = String(msg.path || "");
+      validateGitHubSyncManualCandidate(githubSyncStateDirectory(context), targetId, relative);
+      vscode.window.showInformationMessage(`Validated edited merge candidate: ${relative}`);
+      respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
+      break;
+    }
+
+    case "githubSyncConflictAgent": {
+      const targetId = String(msg.targetId || "");
+      const relative = String(msg.path || "");
+      await prepareGitHubSyncAgentCandidates(context, targetId, relative);
+      vscode.window.showInformationMessage("Agent merge candidates are ready. Review them before Accept & Push.");
+      respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
+      break;
+    }
+
+    case "githubSyncConflictAgentAll": {
+      const targetId = String(msg.targetId || "");
+      const result = await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: "Preparing GitHub Sync Agent merges",
+      }, async progress => prepareGitHubSyncAgentCandidates(context, targetId, "", (message, increment) => {
+        progress.report({ message, increment });
+      }));
+      const remaining = result.unsupported + result.failed.length;
+      vscode.window.showInformationMessage(
+        `Agent prepared ${result.prepared} merge candidate${result.prepared === 1 ? "" : "s"}.`
+        + (remaining ? ` ${remaining} conflict${remaining === 1 ? "" : "s"} still require GitHub, machine-local, or manual resolution.` : "")
+      );
+      respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
+      break;
+    }
+
+    case "githubSyncConflictAccept": {
+      const targetId = String(msg.targetId || "");
+      const count = await withGitHubSyncTargetLock(context, targetId, () => acceptGitHubSyncConflict(context, targetId));
+      vscode.window.showInformationMessage(`Accepted ${count} GitHub Sync merge candidate${count === 1 ? "" : "s"}. Push is queued.`);
+      respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
+      break;
+    }
+
+    case "githubSyncConflictDiscard": {
+      const targetId = String(msg.targetId || "");
+      clearGitHubSyncConflict(githubSyncStateDirectory(context), targetId);
       respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
       break;
     }
@@ -4976,14 +6112,14 @@ async function handleMessage(
       const target = githubSyncTargetById(context, String(msg.targetId || ""));
       const checkoutRoot = path.join(githubSyncStateDirectory(context), "checkouts");
       const credentials = await readGitHubSyncCredentials(context, target);
-      const snapshot = await fetchGitHubRemoteSnapshot(target, checkoutRoot, false, credentials);
+      const snapshot = await withGitHubSyncTargetLock(context, target.id, () => fetchGitHubRemoteSnapshot(target, checkoutRoot, false, credentials));
       const selected = await vscode.window.showQuickPick(snapshot.files.map(file => ({ label: path.basename(file.path), description: file.path, path: file.path })), {
         canPickMany: true, matchOnDescription: true, title: `Restore from ${target.name}`, placeHolder: `Select files from ${target.branch} at ${snapshot.commit.slice(0, 10)}`,
       });
       if (!selected?.length) { respond({ command: "githubSyncRestoreCancelled", data: { targetId: target.id } }); break; }
       const selectedPaths = selected.map(item => item.path);
       const commit = snapshot.commit;
-      let result = await restoreGitHubRemoteFiles(target, checkoutRoot, getStorePath(), commit, selectedPaths, false, credentials);
+      let result = await withGitHubSyncTargetLock(context, target.id, () => restoreGitHubRemoteFiles(target, checkoutRoot, getStorePath(), commit, selectedPaths, false, credentials));
       if (result.conflicts.length) {
         const detail = result.conflicts.slice(0, 8).join("\n") + (result.conflicts.length > 8 ? `\n...and ${result.conflicts.length - 8} more` : "");
         const choice = await vscode.window.showWarningMessage(
@@ -4995,13 +6131,18 @@ async function handleMessage(
           respond({ command: "githubSyncRestoreCancelled", data: { targetId: target.id } });
           break;
         }
-        result = await restoreGitHubRemoteFiles(target, checkoutRoot, getStorePath(), commit, selectedPaths, true, credentials);
+        result = await withGitHubSyncTargetLock(context, target.id, () => restoreGitHubRemoteFiles(target, checkoutRoot, getStorePath(), commit, selectedPaths, true, credentials));
       }
       invalidateSharedContentCatalog();
       await refreshKnowledgeInventory(context);
       _treeProvider?.refresh();
       respond({ command: "githubSyncRestored", data: { targetId: target.id, restored: result.restored } });
       respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
+      break;
+    }
+
+    case "recipeSubscriptionGroups": {
+      respond({ command: "recipeSubscriptionGroups", data: sharedMarket?.cachedGroups("recipes") || [] });
       break;
     }
 
@@ -5045,7 +6186,14 @@ async function handleMessage(
           brokerShares: markers.items[sharedContentIdentity(type, item)]?.brokers || [],
         }));
       }
-      const folders = (tab === "skills" || tab === "notes") ? (tab === "notes" && useInventory && knowledgeInventory?.snapshot.revision ? knowledgeInventory.folders("notes") : folderList(tab)) : undefined;
+      const isGroupedKnowledgeArea = tab === "skills" || tab === "notes" || tab === "papers";
+      const folders = isGroupedKnowledgeArea ? (tab === "notes" && useInventory && knowledgeInventory?.snapshot.revision ? knowledgeInventory.folders("notes") : folderList(tab)) : undefined;
+      const knowledgeGroups = isGroupedKnowledgeArea
+        ? knowledgeGroupSnapshot(tab, [
+          ...(folders || []),
+          ...(Array.isArray(data) ? data.map(item => String(item?.category || "")).filter(Boolean) : []),
+        ])
+        : undefined;
       const trashAreas = ["notes", "papers", "prompts", "scripts"] as KnowledgeTrashArea[];
       const knowledgeTrash = tab === "skills" ? skillTrashList() : trashAreas.includes(tab as KnowledgeTrashArea) ? knowledgeTrashList(tab as KnowledgeTrashArea) : [];
       const privacyTopLevels = SHARED_CONTENT_TYPES.includes(tab as SharedContentType) ? privateTopLevels(tab as PrivacyContentType) : [];
@@ -5053,7 +6201,7 @@ async function handleMessage(
       const folderCount = Array.isArray(folders) ? folders.length : 0;
       if (!msg.silent) respond({ command: "loadingProgress", data: { stage: "building-tree", percent: 78, current: itemCount, total: itemCount, message: "Arranging the enchanted shelves…", detail: `${folderCount} folders` } });
       await new Promise(resolve => setImmediate(resolve));
-      respond({ command: "list", tab, data, folders, subscriptionGroups: [], knowledgeTrash, privateTopLevels: privacyTopLevels, brokerSharedFolders });
+      respond({ command: "list", tab, data, folders, knowledgeGroups, subscriptionGroups: [], knowledgeTrash, privateTopLevels: privacyTopLevels, brokerSharedFolders });
       const localDuration = Date.now() - listStartedAt;
       if (performanceStateDir) recordPerformanceMetric(performanceStateDir, "cattree.local_list_ms", localDuration, itemCount);
       if (localDuration > 250) log.warn(`slow local CatTree list tab=${tab} durationMs=${localDuration} items=${itemCount}`);
@@ -5095,6 +6243,56 @@ async function handleMessage(
       }
       const data = area === "skills" ? skillList() : area === "notes" ? noteList(undefined, 500) : paperList();
       respond({ command: "list", tab: area, data, folders: folderList(area) });
+      break;
+    }
+
+    case "knowledgeGroupCreate":
+    case "knowledgeGroupRename":
+    case "knowledgeGroupSetColor":
+    case "knowledgeGroupDelete":
+    case "knowledgeGroupAssign": {
+      const area = String(msg.area || "") as KnowledgeGroupArea;
+      if (area !== "skills" && area !== "notes" && area !== "papers") break;
+      try {
+        if (msg.command === "knowledgeGroupCreate") knowledgeGroupCreate(area, String(msg.name || ""), String(msg.color || ""));
+        else if (msg.command === "knowledgeGroupRename") knowledgeGroupRename(area, String(msg.groupId || ""), String(msg.name || ""));
+        else if (msg.command === "knowledgeGroupSetColor") knowledgeGroupSetColor(area, String(msg.groupId || ""), String(msg.color || ""));
+        else if (msg.command === "knowledgeGroupDelete") knowledgeGroupDelete(area, String(msg.groupId || ""));
+        else knowledgeGroupAssign(area, String(msg.folder || ""), String(msg.groupId || ""));
+        respond({ command: "saved" });
+      } catch (error) {
+        vscode.window.showErrorMessage(`Knowledge Group update failed: ${(error as Error).message}`);
+      }
+      break;
+    }
+
+    case "paperFolderRename": {
+      const oldPath = String(msg.oldPath || "");
+      const newPath = String(msg.newPath || "");
+      const result = folderRename("papers", oldPath, newPath);
+      if (!result.ok) {
+        vscode.window.showErrorMessage(`Paper folder rename failed: ${result.error || "unknown error"}`);
+        break;
+      }
+      knowledgeGroupFolderRenamed("papers", oldPath, newPath);
+      gitCommit(`rename(paper-folder): ${oldPath} -> ${newPath}`);
+      _treeProvider?.refresh();
+      respond({ command: "saved" });
+      break;
+    }
+
+    case "paperFolderDelete": {
+      const folderPath = String(msg.path || "");
+      const parts = folderPath.split("/").filter(Boolean);
+      if (!parts.length) break;
+      const result = folderDeletePromote("papers", folderPath);
+      if (!result.ok) {
+        vscode.window.showErrorMessage(`Paper folder delete failed: ${result.error || "unknown error"}`);
+        break;
+      }
+      gitCommit(`delete(paper-folder): ${folderPath} (${result.moved} promoted)`);
+      _treeProvider?.refresh();
+      respond({ command: "saved" });
       break;
     }
 
@@ -5632,6 +6830,10 @@ async function handleMessage(
       await _treeProvider?.refreshServerStatus();
       break;
     }
+    case "serverInspectExternal": {
+      respond({ command: "serverList", data: await serverListForUi(context, String(msg.slug || "")) });
+      break;
+    }
     case "serverForceStopExternal": {
       const result = await forceStopExternalServer(String(msg.slug || ""), Array.isArray(msg.expectedPids) ? msg.expectedPids : []);
       if (!result.ok) vscode.window.showErrorMessage(`Force Stop failed: ${result.error || "unknown error"}`);
@@ -5937,7 +7139,10 @@ async function handleMessage(
 
     case "skillRenameFolder": {
       const n = skillMoveCategory(String(msg.oldPrefix || ""), String(msg.newPrefix || ""));
-      if (n) gitCommit(`rename(skill-folder): ${msg.oldPrefix} -> ${msg.newPrefix} (${n})`);
+      if (n) {
+        knowledgeGroupFolderRenamed("skills", String(msg.oldPrefix || ""), String(msg.newPrefix || ""));
+        gitCommit(`rename(skill-folder): ${msg.oldPrefix} -> ${msg.newPrefix} (${n})`);
+      }
       _treeProvider?.refresh();
       respond({ command: "saved" });
       vscode.window.setStatusBarMessage(`$(check) Renamed folder (${n} skill${n === 1 ? "" : "s"})`, 3000);
@@ -5966,7 +7171,10 @@ async function handleMessage(
 
     case "noteMoveFolder": {
       const n = noteMoveFolder(String(msg.oldPrefix || ""), String(msg.newPrefix || ""));
-      if (n) gitCommit(`move(note-folder): ${msg.oldPrefix} -> ${msg.newPrefix} (${n})`);
+      if (n) {
+        knowledgeGroupFolderRenamed("notes", String(msg.oldPrefix || ""), String(msg.newPrefix || ""));
+        gitCommit(`move(note-folder): ${msg.oldPrefix} -> ${msg.newPrefix} (${n})`);
+      }
       _treeProvider?.refresh();
       respond({ command: "saved" });
       vscode.window.setStatusBarMessage(`$(check) Moved folder (${n} note${n === 1 ? "" : "s"})`, 3000);
@@ -6260,6 +7468,21 @@ async function handleMessage(
       const entry = knowledgeMoveToTrash("papers", `${slug}.md`, "item", paper?.title || path.basename(String(slug || "")));
       if (entry) gitCommit(`trash(paper): ${entry.originalPath}`);
       respond({ command: "knowledgeTrashResult", data: entry ? { ok: true, action: "moved", area: "papers", path: entry.originalPath } : { ok: false, area: "papers", error: "Paper was not found." } });
+      break;
+    }
+
+    case "deleteAllPapers": {
+      const result = paperMoveAllToTrash();
+      if (result.ok && result.moved) gitCommit(`trash(papers): all (${result.moved})`);
+      respond({
+        command: "knowledgeTrashResult",
+        data: result.ok
+          ? { ok: true, action: "moved-all", area: "papers", count: result.moved }
+          : { ok: false, area: "papers", error: result.error || "Could not move all Papers to Trash." },
+      });
+      if (result.ok) {
+        vscode.window.setStatusBarMessage(`$(check) Moved ${result.moved} Paper${result.moved === 1 ? "" : "s"} to Trash`, 4000);
+      }
       break;
     }
 
@@ -6605,9 +7828,9 @@ async function handleMessage(
     case "knowledgeTrashEmpty": {
       const area = String(msg.area || "") as KnowledgeTrashArea;
       if (!("notes papers prompts scripts".split(" ") as string[]).includes(area)) throw new Error("Unsupported Trash area.");
-      const count = knowledgeTrashEmpty(area);
-      if (count) gitCommit(`empty(${area}-trash): ${count} entries`);
-      respond({ command: "knowledgeTrashResult", data: { ok: true, action: "emptied", area, count } });
+      const result = knowledgeTrashEmpty(area);
+      if (result.ok && result.count) gitCommit(`empty(${area}-trash): ${result.count} entries`);
+      respond({ command: "knowledgeTrashResult", data: { ...result, action: "emptied", area } });
       break;
     }
 
@@ -6646,6 +7869,26 @@ async function handleMessage(
       respond({ command: "mcpStatus", data: mcpPanelStatusData() });
       void sendMcpPathSizes(respond);
       void maintainPkmIntegration(context);
+      break;
+    }
+
+    case "mcpSetFeatureDomain": {
+      const domain = String(msg.domain || "") as McpFeatureDomain;
+      if (!MCP_FEATURE_DOMAINS.includes(domain)) {
+        vscode.window.showErrorMessage("Unknown MCP feature domain.");
+        break;
+      }
+      const enabled = new Set(enabledMcpFeatureDomains());
+      if (msg.enabled) enabled.add(domain); else enabled.delete(domain);
+      await vscode.workspace.getConfiguration("personalKnowledge").update(
+        "mcpEnabledFeatureDomains",
+        MCP_FEATURE_DOMAINS.filter(candidate => enabled.has(candidate)),
+        vscode.ConfigurationTarget.Global,
+      );
+      writeMcpFeatureDomainConfig(MCP_FEATURE_DOMAINS.filter(candidate => enabled.has(candidate)));
+      refreshMcpDefinitions();
+      respond({ command: "mcpStatus", data: mcpPanelStatusData() });
+      vscode.window.setStatusBarMessage(`$(settings) ${domain} Agent tools ${msg.enabled ? "enabled" : "disabled"}`, 3500);
       break;
     }
 
@@ -6984,7 +8227,7 @@ async function handleMessage(
     log.error(`handleMessage(${msg.command}) failed: ${e?.stack ?? e?.message ?? e}`);
     if (msg.command === "list") {
       respond({ command: "list", tab: String(msg.tab || ""), data: [] });
-    } else if (["projectState", "projectCreate", "threadCreate", "threadMove", "recipeCreate", "recipeUpdate", "recipeDelete", "recipeTrash", "recipeValidateDefinition", "recipeOpenBrowser", "projectRecipesExport"].includes(String(msg.command || ""))) {
+    } else if (["projectState", "projectCreate", "threadCreate", "threadRename", "threadMove", "threadOpenChatroom", "ganttTaskCreate", "ganttTaskUpdate", "ganttTaskDelete", "collaborationCreate", "collaborationTransition", "recipeCreate", "recipeFolderCreate", "recipeFolderDelete", "recipeUpdate", "recipeDelete", "recipeTrash", "recipeValidateDefinition", "recipeOpenBrowser", "projectRecipesExport", "agentSessionTrash", "agentSessionStop"].includes(String(msg.command || ""))) {
       respond({ command: "projectError", data: { action: String(msg.command || ""), code: String(e?.code || "project-error"), error: e?.message || String(e), ...(e?.details ? { details: e.details } : {}) } });
     } else if (String(msg.command || "").startsWith("subscription")) {
       respond({ command: "subscriptionError", data: { action: String(msg.command || ""), error: e?.message || String(e) } });
@@ -7190,7 +8433,7 @@ function maintainPkmIntegration(context: vscode.ExtensionContext): Promise<void>
 // ── Sidebar tree provider ──────────────────────────────────────────────────
 type PkNodeType =
   | 'module-knowledge' | 'module-tools' | 'module-automation' | 'module-projects' | 'module-settings'
-  | 'page-agent-sessions' | 'page-agent-snapshots' | 'page-recipes' | 'page-projects' | 'page-skill-router'
+  | 'page-agent-sessions' | 'page-agent-snapshots' | 'page-recipes' | 'page-projects' | 'page-skill-router' | 'page-background-tasks'
   | 'recipe-folder' | 'recipe'
   | 'root-skills' | 'root-notes' | 'root-papers' | 'root-prompts' | 'root-packages' | 'root-scripts' | 'root-environments' | 'root-servers' | 'root-chatroom' | 'root-subscriptions' | 'root-mcp'
   | 'environment-group' | 'environment-item'
@@ -7383,12 +8626,13 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
         mcp,
         this._panelPage("Skill Router", "page-skill-router", "skillRouter"),
         subscriptions,
+        this._panelPage("Background Tasks", "page-background-tasks", "backgroundTasks"),
       ];
     }
     try {
       switch (element.nodeType) {
         case 'root-skills':    return this._withSubscribedContent("skills", this._skillRootItems());
-        case 'page-recipes':   return this._recipeFolder([]);
+        case 'page-recipes':   return this._withSubscribedContent("recipes", this._recipeFolder([]));
         case 'recipe-folder':  return this._recipeFolder(element.nodeData.path);
         case 'skill-folder':   return this._skillFolder(element.nodeData.path);
         case 'skill-trash':    return this._skillTrashItems();
@@ -7478,7 +8722,8 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
     return (snapshot?.shares || []).map((share: any) => {
       const item = new PkTreeItem(share.name, "subscription-broker", vscode.TreeItemCollapsibleState.None, { shareId: share.shareId });
       item.description = `r${Number(share.revision) || 0} · ${share.visibility === "public" ? "discoverable" : "unlisted"}`;
-      item.iconPath = new vscode.ThemeIcon(snapshot.gatewayStatus === "running" ? "radio-tower" : "circle-slash", new vscode.ThemeColor(snapshot.gatewayStatus === "running" ? "testing.iconPassed" : "disabledForeground"));
+      const gatewayStarting = snapshot.gatewayStatus === "starting";
+      item.iconPath = new vscode.ThemeIcon(snapshot.gatewayStatus === "running" ? "radio-tower" : gatewayStarting ? "sync~spin" : "circle-slash", new vscode.ThemeColor(snapshot.gatewayStatus === "running" ? "testing.iconPassed" : gatewayStarting ? "notificationsWarningIcon.foreground" : "disabledForeground"));
       item.command = { command: "personalKnowledge.openSubscriptions", title: "Open Broker", arguments: [share.shareId] };
       return item;
     });
@@ -7764,13 +9009,14 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
   }
 
   private _recipeFolder(path: string[]): PkTreeItem[] {
-    const entries = currentProjectStore().list().recipes
+    const snapshot = currentProjectStore().list();
+    const entries = snapshot.recipes
       .filter(recipe => recipe.scope === "global")
       .map(recipe => ({
         path: String(recipe.category || "").split("/").map(segment => segment.trim()).filter(Boolean),
         data: recipe,
       }));
-    const node = this._navigate(this._buildPathTree(entries), path);
+    const node = this._navigate(this._addFolderPaths(this._buildPathTree(entries), snapshot.recipeFolders), path);
     if (!node) return [];
     const folders = [...node.folders.keys()].sort((left, right) => left.localeCompare(right)).map(name => {
       const folder = node.folders.get(name)!;
@@ -8208,6 +9454,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   performanceStateDir = path.join(context.globalStorageUri.fsPath, "performance");
   log.init(context);
   log.info(`activating extension v${context.extension?.packageJSON?.version ?? "?"}`);
+  context.subscriptions.push(backgroundTaskRegistry.subscribe(snapshot => {
+    if (panel && _panelReady) void panel.webview.postMessage({ command: "backgroundTasks", data: snapshot });
+  }));
   const userPortConfiguration = vscode.workspace.getConfiguration("personalKnowledge");
   for (const setting of ["serversProxyPort", "contentGatewayPort", "chatHubPort"] as const) {
     const inspected = userPortConfiguration.inspect<number>(setting);
@@ -8249,6 +9498,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         writeSkillRouterRuntimeConfig(context);
         void skillRouterStatusData(context).then(data => panel?.webview.postMessage({ command: "skillRouterStatus", data }));
       }
+      if (e.affectsConfiguration("personalKnowledge.mcpEnabledFeatureDomains") && getStorePath()) {
+        try {
+          writeMcpFeatureDomainConfig();
+          refreshMcpDefinitions();
+          panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+        } catch (error) {
+          log.error(`MCP feature domain update failed: ${(error as Error).message}`);
+          void vscode.window.showErrorMessage(`MCP feature domain update failed: ${(error as Error).message}`);
+        }
+      }
+      if (e.affectsConfiguration("personalKnowledge.agentSessionArchiveKeepLatestK") && _storeReady) {
+        void agentSessionProjectStateData()
+          .then(data => panel?.webview.postMessage({ command: "projectState", data }))
+          .catch(error => {
+            log.warn(`Agent Session archive retention configuration refresh failed: ${(error as Error).message}`);
+            void vscode.window.showErrorMessage(`Agent Session archive retention failed: ${(error as Error).message}`);
+          });
+      }
       if (e.affectsConfiguration("personalKnowledge.storePath") || e.affectsConfiguration("personalKnowledge.environmentsPath") || e.affectsConfiguration("personalKnowledge.mcpPythonPath") || e.affectsConfiguration("personalKnowledge.mcpRuntimePath") || e.affectsConfiguration("personalKnowledge.mcpServerPath")) refreshMcpDefinitions();
     })
   );
@@ -8272,12 +9539,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     configuredPath = chosen ?? "";
     firstConfiguration = !!chosen;
+    if (firstConfiguration) {
+      await context.globalState.update(ONBOARDING_PENDING_KEY, true);
+      await context.globalState.update(ONBOARDING_COMPLETED_KEY, false);
+    }
   }
 
   if (configuredPath) {
     fsSetStorePath(configuredPath);
     storageSetStorePath(configuredPath);
     setPrivacyStoreRoot(configuredPath);
+    setKnowledgeGroupStoreRoot(configuredPath);
     knowledgeInventory = new KnowledgeInventoryManager(
       configuredPath,
       path.join(context.globalStorageUri.fsPath, "inventory"),
@@ -8342,6 +9614,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       `${os.userInfo().username || "user"} / ${os.hostname()}`,
       {
         onChanged: () => {
+          invalidatePendingSubscriptionGroupLists();
           panel?.webview.postMessage({ command: "subscriptionChanged" });
           _treeProvider?.refresh();
           scheduleRetrievalRefresh(context);
@@ -8692,8 +9965,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!count) return;
       const choice = await vscode.window.showWarningMessage(`Permanently delete all ${count} entries in ${area} Trash? This cannot be undone.`, { modal: true }, "Empty Trash");
       if (choice !== "Empty Trash") return;
-      knowledgeTrashEmpty(area);
-      gitCommit(`empty(${area}-trash): ${count} entries`);
+      const result = knowledgeTrashEmpty(area);
+      if (!result.ok) {
+        vscode.window.showErrorMessage(`Empty ${area} Trash failed after deleting ${result.count} of ${count} entries: ${result.error}`);
+        refreshKnowledgeGroups();
+        return;
+      }
+      gitCommit(`empty(${area}-trash): ${result.count} entries`);
       refreshKnowledgeGroups();
     }),
 
@@ -8709,6 +9987,47 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       gitCommit(`add(recipe): ${category ? `${category}/` : ""}${input.name}`);
       treeProvider.refresh();
       await openRecipeEditorInBrowser(result.entityId || "");
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.newRecipeSubfolder", async (item?: PkTreeItem) => {
+      if (!(await ensureSetup(context))) return;
+      const parent = item?.nodeType === "recipe-folder" ? String(item.nodeData.relPath || "") : "";
+      const value = await vscode.window.showInputBox({
+        title: "New Recipe Subfolder",
+        prompt: `Create inside ${parent || "Recipe Library"}; slash-separated paths create multiple levels`,
+        placeHolder: "e.g. Release/Validation",
+        validateInput: input => normalizedSubgroupPath(input) && !input.split("/").some(segment => segment.trim() === "(uncategorized)")
+          ? undefined : "Enter one or more valid folder names separated by slashes",
+      });
+      if (!value) return;
+      const name = normalizedSubgroupPath(value);
+      if (!name) return;
+      const store = currentProjectStore();
+      const input = { parent, name };
+      const result = store.createRecipeFolder(projectCommand(store, "recipe-folder-create", input), parent, name);
+      gitCommit(`add(recipe-folder): ${result.entityId}`);
+      treeProvider.refresh();
+      if (panel) panel.webview.postMessage({ command: "projectState", data: await agentSessionProjectStateData() });
+      vscode.window.setStatusBarMessage(`$(new-folder) Created Recipe folder ${result.entityId}`, 3000);
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.deleteRecipeFolder", async (item?: PkTreeItem) => {
+      if (!(await ensureSetup(context))) return;
+      const folder = item?.nodeType === "recipe-folder" ? String(item.nodeData.relPath || "") : "";
+      if (!folder) { vscode.window.showWarningMessage("Select a Recipe folder to delete."); return; }
+      const parent = folder.includes("/") ? folder.slice(0, folder.lastIndexOf("/")) : "Recipe Library root";
+      const choice = await vscode.window.showWarningMessage(
+        `Delete Recipe folder “${folder}”? Its Recipes and subfolders will move to ${parent}; no Recipes will be deleted.`,
+        { modal: true }, "Delete Folder",
+      );
+      if (choice !== "Delete Folder") return;
+      const store = currentProjectStore();
+      store.deleteRecipeFolder(projectCommand(store, "recipe-folder-delete", { folder }), folder);
+      if (!folder.includes("/") && isTopLevelPrivate("recipes", folder)) setTopLevelPrivacy("recipes", folder, false);
+      gitCommit(`delete(recipe-folder): ${folder}`);
+      treeProvider.refresh();
+      if (panel) panel.webview.postMessage({ command: "projectState", data: await agentSessionProjectStateData() });
+      vscode.window.setStatusBarMessage(`$(trash) Deleted Recipe folder ${folder}; contents moved to ${parent}`, 4000);
     }),
 
     vscode.commands.registerCommand("personalKnowledge.addSkillHere", async (item?: PkTreeItem) => {
@@ -8920,6 +10239,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         applyChatArchiveCfg();
         ensureGitRepo();
         startFileWatcher(context);
+        const resetTargetIds = await mutateGitHubSyncTargets(context, "Knowledge Root change", targets => {
+          for (const target of targets) {
+            delete target.lastSync;
+            delete target.lastFailure;
+          }
+          return { targets, result: targets.map(target => target.id) };
+        });
+        for (const targetId of resetTargetIds) clearGitHubSyncConflict(githubSyncStateDirectory(context), targetId);
         configureGitHubSyncScheduler(context);
         initServers(path.join(chosen, "servers"), path.join(context.globalStorageUri.fsPath, "servers"), proxyPort, message => log.info(`[servers] ${message}`));
         mcpPathSizeGeneration += 1;
@@ -9414,6 +10741,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 let _watcher: vscode.FileSystemWatcher | undefined;
 let _privacyWatcher: vscode.FileSystemWatcher | undefined;
 let _projectStateWatcher: vscode.FileSystemWatcher | undefined;
+let _projectContentWatcher: vscode.FileSystemWatcher | undefined;
+let _recipeContentWatcher: vscode.FileSystemWatcher | undefined;
 let _watcherRefreshTimer: NodeJS.Timeout | undefined;
 let _projectStateRefreshTimer: NodeJS.Timeout | undefined;
 let _watcherFallbackTimer: NodeJS.Timeout | undefined;
@@ -9435,7 +10764,7 @@ function knowledgeTreeSignature(): string {
       } catch { /* file changed while scanning; the next pass will observe it */ }
     }
   };
-  for (const area of ["notes", "skills", "papers", "prompts", "scripts", "packages", "servers"]) visit(path.join(getStorePath(), area));
+  for (const area of ["notes", "skills", "papers", "prompts", "scripts", "packages", "servers", "recipes"]) visit(path.join(getStorePath(), area));
   return entries.sort().join("\n");
 }
 
@@ -9443,12 +10772,15 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
   _watcher?.dispose();
   _privacyWatcher?.dispose();
   _projectStateWatcher?.dispose();
+  _projectContentWatcher?.dispose();
+  _recipeContentWatcher?.dispose();
   if (_watcherRefreshTimer) clearTimeout(_watcherRefreshTimer);
   if (_projectStateRefreshTimer) clearTimeout(_projectStateRefreshTimer);
   if (_watcherFallbackTimer) clearInterval(_watcherFallbackTimer);
   _watcherRefreshTimer = undefined;
   _projectStateRefreshTimer = undefined;
   _watcherFallbackTimer = undefined;
+  contentCheckTask.idle();
   _watcherSkillProjectionChanged = false;
   _knowledgeTreeSignature = knowledgeTreeSignature();
   const pattern = new vscode.RelativePattern(getStorePath(), "{notes,skills,papers,prompts,scripts,packages,servers}/**/*");
@@ -9484,10 +10816,10 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
   _privacyWatcher.onDidCreate(onChange);
   _privacyWatcher.onDidChange(onChange);
   _privacyWatcher.onDidDelete(onChange);
-  _projectStateWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(getStorePath(), ".pkm/state/{projects.json,agent-sessions/**/*.json,agent-sessions-trash/**/*.json,recipe-runs/**/*.json}"));
+  _projectStateWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(getStorePath(), ".pkm/state/{projects.json,project-store.json,agent-sessions/**/*.json,agent-sessions-trash/**/*.json,recipe-runs/**/*.json}"));
   const onProjectStateChange = (uri: vscode.Uri) => {
     const relativeStatePath = path.relative(path.join(getStorePath(), ".pkm", "state"), uri.fsPath).replace(/\\/g, "/");
-    const scope = relativeStatePath === "projects.json" ? "projects"
+    const scope = relativeStatePath === "projects.json" || relativeStatePath === "project-store.json" ? "projects"
       : relativeStatePath.startsWith("recipe-runs/") ? "recipeRuns" : "agentSessions";
     if (scope === "projects") {
       invalidateSharedContentCatalog();
@@ -9505,19 +10837,69 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
   _projectStateWatcher.onDidCreate(onProjectStateChange);
   _projectStateWatcher.onDidChange(onProjectStateChange);
   _projectStateWatcher.onDidDelete(onProjectStateChange);
-  _watcherFallbackTimer = setInterval(() => {
-    const signature = knowledgeTreeSignature();
-    if (signature === _knowledgeTreeSignature) return;
-    _knowledgeTreeSignature = signature;
+  _projectContentWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(getStorePath(), "project/**/*"));
+  const onProjectContentChange = (uri: vscode.Uri) => {
     invalidateSharedContentCatalog();
-    _treeProvider?.refresh();
-    if (panel?.visible && _panelReady) panel.webview.postMessage({ command: "reloaded", data: { fallback: true } });
-    scheduleRetrievalRefresh(context);
     githubSyncScheduler?.notifyContentChanged();
-    log.info("file watcher fallback detected a knowledge tree change");
-  }, 5 * 60_000);
+    schedulePublishedShareRefresh(context);
+    if (_projectStateRefreshTimer) clearTimeout(_projectStateRefreshTimer);
+    _projectStateRefreshTimer = setTimeout(() => {
+      _projectStateRefreshTimer = undefined;
+      if (!panel?.visible || !_panelReady) return;
+      void panel.webview.postMessage({
+        command: "projectStateChanged",
+        data: { scope: "projects", changedPath: path.relative(getStorePath(), uri.fsPath).replace(/\\/g, "/") },
+      });
+    }, 250);
+    _projectStateRefreshTimer.unref?.();
+  };
+  _projectContentWatcher.onDidCreate(onProjectContentChange);
+  _projectContentWatcher.onDidChange(onProjectContentChange);
+  _projectContentWatcher.onDidDelete(onProjectContentChange);
+  _recipeContentWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(getStorePath(), "recipes/**/*"));
+  const onRecipeContentChange = (uri: vscode.Uri) => {
+    invalidateSharedContentCatalog();
+    githubSyncScheduler?.notifyContentChanged();
+    schedulePublishedShareRefresh(context);
+    scheduleRetrievalRefresh(context);
+    if (_projectStateRefreshTimer) clearTimeout(_projectStateRefreshTimer);
+    _projectStateRefreshTimer = setTimeout(() => {
+      _projectStateRefreshTimer = undefined;
+      if (!panel?.visible || !_panelReady) return;
+      void panel.webview.postMessage({
+        command: "projectStateChanged",
+        data: { scope: "recipes", changedPath: path.relative(getStorePath(), uri.fsPath).replace(/\\/g, "/") },
+      });
+    }, 250);
+    _projectStateRefreshTimer.unref?.();
+  };
+  _recipeContentWatcher.onDidCreate(onRecipeContentChange);
+  _recipeContentWatcher.onDidChange(onRecipeContentChange);
+  _recipeContentWatcher.onDidDelete(onRecipeContentChange);
+  const fallbackIntervalMs = 5 * 60_000;
+  const queueNextContentCheck = () => contentCheckTask.queued({
+    detail: "Periodic filesystem safety check",
+    nextRunAt: new Date(Date.now() + fallbackIntervalMs).toISOString(),
+  });
+  queueNextContentCheck();
+  _watcherFallbackTimer = setInterval(() => {
+    contentCheckTask.running({ detail: "Comparing Knowledge Root contents" });
+    try {
+      const signature = knowledgeTreeSignature();
+      if (signature === _knowledgeTreeSignature) return;
+      _knowledgeTreeSignature = signature;
+      invalidateSharedContentCatalog();
+      _treeProvider?.refresh();
+      if (panel?.visible && _panelReady) panel.webview.postMessage({ command: "reloaded", data: { fallback: true } });
+      scheduleRetrievalRefresh(context);
+      githubSyncScheduler?.notifyContentChanged();
+      log.info("file watcher fallback detected a knowledge tree change");
+    } finally {
+      queueNextContentCheck();
+    }
+  }, fallbackIntervalMs);
   _watcherFallbackTimer.unref?.();
-  context.subscriptions.push(_watcher, _privacyWatcher, _projectStateWatcher);
+  context.subscriptions.push(_watcher, _privacyWatcher, _projectStateWatcher, _projectContentWatcher, _recipeContentWatcher);
 }
 
 export async function deactivate(): Promise<void> {
@@ -9526,6 +10908,8 @@ export async function deactivate(): Promise<void> {
   _watcher?.dispose();
   _privacyWatcher?.dispose();
   _projectStateWatcher?.dispose();
+  _projectContentWatcher?.dispose();
+  _recipeContentWatcher?.dispose();
   if (_watcherRefreshTimer) clearTimeout(_watcherRefreshTimer);
   if (_projectStateRefreshTimer) clearTimeout(_projectStateRefreshTimer);
   if (_watcherFallbackTimer) clearInterval(_watcherFallbackTimer);
@@ -9538,6 +10922,8 @@ export async function deactivate(): Promise<void> {
   retrievalRefreshTimer = undefined;
   publishedShareRefreshTimer = undefined;
   githubSyncStartupTimer = undefined;
+  backgroundTaskRegistry.clear();
+  githubSyncTasks.clear();
   disposeServers();
   await chatMgr?.dispose();
   sharedMarket?.dispose();

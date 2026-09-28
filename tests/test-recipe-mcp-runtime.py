@@ -7,6 +7,7 @@ import pathlib
 import sys
 import tempfile
 import time
+import types
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -15,6 +16,14 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 register_recipe_tools = MODULE.register_recipe_tools
 related_recipes = MODULE.related_recipes
+
+original_runtime_os = MODULE.os
+MODULE.os = types.SimpleNamespace(name="nt")
+windows_background_flags = MODULE._background_process_options()["creationflags"]
+assert windows_background_flags & 0x08000000
+assert windows_background_flags & 0x00000200
+assert MODULE._hidden_process_options()["creationflags"] & 0x08000000
+MODULE.os = original_runtime_os
 
 
 def canonical(value):
@@ -58,6 +67,25 @@ with tempfile.TemporaryDirectory(prefix="pkm-recipe-runtime-") as temporary:
             "requiredInputs": [{"name": "diff", "description": "The source patch", "required": True}],
             "expectedOutputs": [{"name": "review", "description": "Actionable findings"}],
         },
+        "methodology": {
+            "schema": "pkm.recipe.methodology/v1",
+            "family": "validation-and-testing",
+            "phase": "validation",
+            "abstract": False,
+            "mixins": [],
+            "capabilities": ["evidence-validation"],
+            "artifacts": {"inputs": ["task-contract"], "outputs": ["evidence-bundle"]},
+            "gates": ["independent-acceptance"],
+            "invariants": ["coverage-is-not-acceptance"],
+            "expansion": {"signals": ["risk"], "minimumDepth": 1, "maximumDepth": 4},
+            "communication": {"minimumAssurance": "structured-acknowledgement"},
+            "retrieval": {
+                "intents": ["validate a complete user journey"],
+                "terminology": ["behavior-first testing", "acceptance gate"],
+                "operationalPoints": ["browser interaction", "runtime recovery"],
+            },
+        },
+        "methodologyDigest": "methodology-digest-test",
         "definition": definition, "executableDigest": "digest-test", "revision": 3,
         "nodeBindings": [{"nodeId": "implement", "bindings": [{
             "bindingId": "verify", "kind": "skill", "knowledgeId": "Coding/Verify",
@@ -99,14 +127,20 @@ with tempfile.TemporaryDirectory(prefix="pkm-recipe-runtime-") as temporary:
     mcp = FakeMcp()
     tools = register_recipe_tools(mcp, store, subscription_cache, environments_registry)
     assert set(tools) == {"recipe_capabilities", "recipe_search", "recipe_create_from_skill", "recipe_run_start", "recipe_run_start_adhoc",
-                          "recipe_run_get", "recipe_run_next", "recipe_run_report", "recipe_run_submit_input"}
+                          "recipe_run_get", "recipe_run_next", "recipe_run_progress", "recipe_run_report",
+                          "recipe_run_submit_input", "recipe_usage_summary"}
 
     capabilities = json.loads(tools["recipe_capabilities"]())
     assert capabilities["proactive"] is True
     assert capabilities["next_tool"] == "recipe_search"
     assert "substantial multi-step task" in capabilities["use_when"]
     assert capabilities["execution"]["next_is_claim"] is True
-    assert capabilities["version"] == "1.4.0"
+    assert capabilities["version"] == "1.6.0"
+    assert "recipe_usage_summary" in capabilities["tools"]
+    assert capabilities["usage_accounting"]["measured_and_estimated_are_separate"] is True
+    assert capabilities["usage_accounting"]["host_tokens"].startswith("unknown")
+    assert capabilities["run_health"]["receipt_schema"] == "pkm.recipe.run-health/v1"
+    assert capabilities["run_health"]["healthy_path_model_calls"] == 0
     assert capabilities["execution"]["dynamic_v2"] is True
     assert capabilities["execution"]["strategy"] == "persisted-control-state-machine"
     assert capabilities["execution"]["supported_controls"] == [
@@ -126,6 +160,16 @@ with tempfile.TemporaryDirectory(prefix="pkm-recipe-runtime-") as temporary:
     assert subscribed_found["next_action"]["kind"] == "review_subscribed_recipe"
     metadata_found = json.loads(tools["recipe_search"](query="actionable findings"))
     assert metadata_found["candidates"][0]["metadata"]["required_inputs"][0]["name"] == "diff", metadata_found
+    methodology_found = json.loads(tools["recipe_search"](query="browser interaction acceptance gate"))
+    methodology_candidate = next(item for item in methodology_found["candidates"] if item["recipe_id"] == "recipe_test")
+    assert methodology_candidate["methodology"]["family"] == "validation-and-testing"
+    assert methodology_candidate["methodology"]["retrieval"]["operationalPoints"] == [
+        "browser interaction", "runtime recovery"]
+    family_fallback = json.loads(tools["recipe_search"](
+        query="does-not-match-metadata", task_contract_json='{"family":"validation-and-testing"}'))
+    assert family_fallback["outcome"] == "family-fallback", family_fallback
+    assert any(item["recipe_id"] == "recipe_test" for item in family_fallback["candidates"])
+    assert family_fallback["next_action"]["fallback"] == "family-fallback"
     missing = json.loads(tools["recipe_search"](query="unrelated", task_contract_json='{"goal":"new flow"}'))
     assert missing["outcome"] == "no-match" and missing["next_action"]["kind"] == "design_recipe", missing
     assert missing["next_action"]["task_contract"]["goal"] == "new flow"
@@ -151,6 +195,61 @@ with tempfile.TemporaryDirectory(prefix="pkm-recipe-runtime-") as temporary:
     assert adhoc_run["origin"] == {"kind": "agent-session-adhoc"}
     assert recipe["recipeId"] != adhoc["recipe"]["recipe_id"]
 
+    typed_definition = {
+        "schema": "pkm.workflow.definition/v1",
+        "spec": {
+            "inputs": {
+                "task": {"type": "string", "required": True},
+                "attempts": {"type": "int64", "default": "3"},
+                "threshold": {"type": "decimal", "default": "1.500"},
+                "evidence": {"type": "artifact", "nullable": True},
+                "policy": {
+                    "type": "object",
+                    "required": True,
+                    "schema": {
+                        "properties": {
+                            "strict": {"type": "boolean", "required": True},
+                            "labels": {
+                                "type": "array",
+                                "schema": {
+                                    "items": {"type": "string"},
+                                    "minItems": 1,
+                                    "maxItems": 2,
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+            "nodes": [{"nodeId": "work", "kind": "pkm.step.noop/v1", "config": {}, "dependsOn": []}],
+            "outputs": {},
+            "completion": {"requiredNodes": ["work"]},
+        },
+    }
+    typed_missing = json.loads(tools["recipe_run_start_adhoc"](
+        "Typed inputs", json.dumps(typed_definition), "typed-missing", '{"policy":{"strict":true}}'))
+    assert not typed_missing["ok"] and "/inputs/task is required" in typed_missing["error"]["message"], typed_missing
+    typed_unknown = json.loads(tools["recipe_run_start_adhoc"](
+        "Typed inputs", json.dumps(typed_definition), "typed-unknown",
+        '{"task":"verify","policy":{"strict":true},"surprise":1}'))
+    assert not typed_unknown["ok"] and "unknown fields: surprise" in typed_unknown["error"]["message"], typed_unknown
+    typed_invalid = json.loads(tools["recipe_run_start_adhoc"](
+        "Typed inputs", json.dumps(typed_definition), "typed-invalid",
+        '{"task":"verify","attempts":3,"policy":{"strict":true,"labels":[]}}'))
+    assert not typed_invalid["ok"] and "canonical int64 string" in typed_invalid["error"]["message"], typed_invalid
+    typed_started = json.loads(tools["recipe_run_start_adhoc"](
+        "Typed inputs", json.dumps(typed_definition), "typed-valid",
+        '{"task":"verify","policy":{"strict":true,"labels":["runtime"]},"evidence":null}'))
+    assert typed_started["ok"], typed_started
+    typed_run = json.loads((state_dir / "recipe-runs" / f"{typed_started['run_id']}.json").read_text())
+    assert typed_run["inputs"] == {
+        "attempts": "3",
+        "evidence": None,
+        "policy": {"labels": ["runtime"], "strict": True},
+        "task": "verify",
+        "threshold": "1.5",
+    }, typed_run["inputs"]
+
     started = json.loads(tools["recipe_run_start"]("recipe_test", "start-command", '{"request":"demo"}',
                                                     expected_revision=3, expected_digest="digest-test"))
     assert started["ok"] and started["next_action"]["kind"] == "call_recipe_run_next", started
@@ -165,7 +264,55 @@ with tempfile.TemporaryDirectory(prefix="pkm-recipe-runtime-") as temporary:
     assert claimed["next_action"]["kind"] == "execute_node"
     assert claimed["next_action"]["node_id"] == "understand"
     assert claimed["current_result"]["progress"]["running_node_id"] == "understand"
+    assert claimed["current_result"]["running_progress"]["progress"]["phase"] == "claimed"
     assert claimed["next_action"]["knowledge_bindings"] == []
+    progress = json.loads(tools["recipe_run_progress"](
+        run_id, "understand", "progress-understand",
+        json.dumps({
+            "phase": "inspection", "message": "Reviewed 4 of 10 files.", "completed": 4, "total": 10,
+            "etaSeconds": 30, "safeToInterrupt": True, "sideEffects": [],
+            "staleAfterSeconds": 120, "events": [{"level": "info", "message": "Repository scan complete."}],
+        })))
+    assert progress["ok"] and progress["current_result"]["running_progress"]["progress"]["completed"] == 4
+    assert progress["current_result"]["running_progress"]["progress"]["events"][0]["message"] == "Repository scan complete."
+    assert progress["current_result"]["running_progress"]["observability"]["state"] == "active"
+    progress_run_path = state_dir / "recipe-runs" / f"{run_id}.json"
+    progress_run = json.loads(progress_run_path.read_text())
+    last_progress_at = progress_run["nodes"]["understand"]["lastProgressAt"]
+    progress_run["nodes"]["understand"]["lastProgressAt"] = "2026-01-01T00:00:00+00:00"
+    progress_run_path.write_text(json.dumps(progress_run))
+    heartbeat_only = json.loads(tools["recipe_run_progress"](
+        run_id, "understand", "heartbeat-understand",
+        json.dumps({
+            "phase": "inspection", "message": "Still processing the same bounded batch.",
+            "safeToInterrupt": True, "staleAfterSeconds": 120, "progressed": False,
+            "toolCallCount": 5, "currentValidation": "not-started",
+        })))
+    assert heartbeat_only["ok"]
+    heartbeat_observability = heartbeat_only["current_result"]["running_progress"]["observability"]
+    assert heartbeat_observability["state"] == "intervention-required", heartbeat_observability
+    assert heartbeat_observability["recommended_action"] == "checkpoint-cancel-or-reassign"
+    heartbeat_run = json.loads(progress_run_path.read_text())
+    assert heartbeat_run["nodes"]["understand"]["lastProgressAt"] == "2026-01-01T00:00:00+00:00"
+    assert heartbeat_run["nodes"]["understand"]["lastHeartbeatAt"] != last_progress_at
+    waiting = json.loads(tools["recipe_run_progress"](
+        run_id, "understand", "waiting-understand",
+        json.dumps({
+            "phase": "waiting", "message": "Waiting for human approval.", "waitingOn": "human-gate",
+            "safeToInterrupt": True, "staleAfterSeconds": 120, "progressed": False,
+        })))
+    assert waiting["current_result"]["running_progress"]["observability"]["state"] == "waiting"
+    replayed_progress = json.loads(tools["recipe_run_progress"](
+        run_id, "understand", "progress-understand",
+        json.dumps({
+            "phase": "inspection", "message": "Reviewed 4 of 10 files.", "completed": 4, "total": 10,
+            "etaSeconds": 30, "safeToInterrupt": True, "sideEffects": [],
+            "staleAfterSeconds": 120, "events": [{"level": "info", "message": "Repository scan complete."}],
+        })))
+    assert replayed_progress["replayed"] is True
+    invalid_progress = json.loads(tools["recipe_run_progress"](
+        run_id, "understand", "progress-invalid", '{"surprise":true}'))
+    assert not invalid_progress["ok"] and "unknown fields" in invalid_progress["error"]["message"]
     while_running = json.loads(tools["recipe_run_get"](run_id))
     assert while_running["next_action"]["kind"] == "report_node"
 
@@ -181,13 +328,95 @@ with tempfile.TemporaryDirectory(prefix="pkm-recipe-runtime-") as temporary:
         run_id, "understand", "succeeded", "report-understand", '{"summary":"clear"}'))
     assert replayed_report["replayed"] is True and replayed_report["next_action"]["node_id"] == "implement"
 
+    invalid_usage = json.loads(tools["recipe_run_report"](
+        run_id, "implement", "succeeded", "invalid-usage", '{"artifact":"diff"}', "",
+        '{"measured_tokens":{"input_tokens":true}}'))
+    assert invalid_usage["ok"] is False and "non-negative integer" in invalid_usage["error"]["message"]
+    unknown_usage_field = json.loads(tools["recipe_run_report"](
+        run_id, "implement", "succeeded", "invalid-usage-field", '{"artifact":"diff"}', "",
+        '{"unknown_model_calls":1,"host_tokens":12}'))
+    assert unknown_usage_field["ok"] is False and "unknown fields" in unknown_usage_field["error"]["message"]
+    invalid_cached_tokens = json.loads(tools["recipe_run_report"](
+        run_id, "implement", "succeeded", "invalid-cached-tokens", '{"artifact":"diff"}', "",
+        json.dumps({
+            "measured_tokens": {
+                "input_tokens": 1, "output_tokens": 1, "cached_input_tokens": 2,
+                "reasoning_tokens": 0, "total_tokens": 2,
+            },
+            "provider": "example-provider", "model": "example-model",
+        })))
+    assert invalid_cached_tokens["ok"] is False and "cannot exceed" in invalid_cached_tokens["error"]["message"]
+    still_running = json.loads(tools["recipe_run_get"](run_id))
+    assert still_running["current_result"]["progress"]["running_node_id"] == "implement"
+
+    reported_usage = {
+        "measured_tokens": {
+            "input_tokens": 120, "output_tokens": 30, "cached_input_tokens": 40,
+            "reasoning_tokens": 10, "total_tokens": 160,
+        },
+        "estimated_tokens": 30,
+        "unknown_model_calls": 1,
+        "provider": "example-provider",
+        "model": "example-model",
+        "derived_cost": {"amount_micros": 12500, "currency": "USD", "price_version": "2026-09"},
+    }
     completed = json.loads(tools["recipe_run_report"](
-        run_id, "implement", "succeeded", "report-implement", '{"artifact":"diff"}'))
+        run_id, "implement", "succeeded", "report-implement", '{"artifact":"diff"}', "",
+        json.dumps(reported_usage)))
     assert completed["status"] == "completed" and completed["next_action"]["kind"] == "none", completed
     assert completed["current_result"]["counts"] == {"pending": 0, "running": 0, "succeeded": 2, "failed": 0}
     assert completed["current_result"]["progress"] == {"completed": 2, "total": 2, "percent": 100,
                                                           "running_node_id": None}
     assert completed["current_result"]["completed_nodes"][-1]["result"]["artifact"] == "diff"
+    assert completed["usage"]["measured_total_tokens"] == 160
+    assert completed["usage"]["estimated_tokens"] == 30
+    assert completed["usage"]["unknown_model_calls"] == 1
+    assert completed["usage"]["protocol_payload_estimate"]["estimated_tokens"] > 0
+    assert completed["usage"]["measured_tokens"]["cached_input_tokens"] == 40
+    assert completed["usage"]["derived_cost_micros_by_currency"] == {"USD": 12500}
+    assert completed["usage"]["providers"] == ["example-provider"]
+    assert completed["usage"]["models"] == ["example-model"]
+    assert completed["usage"]["reported_attempts"] == 2
+    stored_run = json.loads((state_dir / "recipe-runs" / (run_id + ".json")).read_text(encoding="utf-8"))
+    assert stored_run["recipeId"] == "recipe_test"
+    assert stored_run["recipeRevision"] == 3
+    assert stored_run["executableDigest"] == "digest-test"
+    assert stored_run["terminalAt"]
+    assert all(stored_run["nodes"][node_id]["completedAt"] for node_id in ("understand", "implement"))
+    assert stored_run["healthReceipt"]["classification"] == "healthy"
+    usage_record = stored_run["usage"]["records"][-1]
+    assert usage_record["recipeRunId"] == run_id
+    assert usage_record["nodeId"] == "implement" and usage_record["attempt"] == 1
+    assert usage_record["measuredTokens"]["input_tokens"] == 120
+    assert usage_record["estimatedTokens"] == 30
+    assert usage_record["protocolPayloadEstimate"]["estimated_tokens"] > 0
+    health_state = json.loads((state_dir / "recipe-health.json").read_text(encoding="utf-8"))
+    run_health = next(item for item in health_state["receipts"] if item["runId"] == run_id)
+    assert run_health["schema"] == "pkm.recipe.run-health/v1"
+    assert run_health["recipe"] == {
+        "recipeId": "recipe_test", "revision": 3, "executableDigest": "digest-test"}
+    assert run_health["classification"] == "healthy"
+    assert run_health["cost"]["attribution"]["attempts"][-1]["nodeId"] == "implement"
+    assert run_health["cost"]["attribution"]["attempts"][-1]["attempt"] == 1
+    assert run_health["cost"]["measured"]["total-tokens"] == 160
+    assert health_state["candidateRequests"] == []
+    replayed_usage = json.loads(tools["recipe_run_report"](
+        run_id, "implement", "succeeded", "report-implement", '{"artifact":"diff"}', "",
+        json.dumps(reported_usage)))
+    assert replayed_usage["replayed"] is True
+    assert replayed_usage["usage"] == completed["usage"]
+
+    usage_summary = json.loads(tools["recipe_usage_summary"]("recipe_test"))
+    assert usage_summary["ok"] and usage_summary["runs_scanned"] >= 1, usage_summary
+    recipe_usage = usage_summary["summaries"][0]
+    assert recipe_usage["recipe_id"] == "recipe_test" and recipe_usage["revision"] == 3
+    assert recipe_usage["run_count"] == 1
+    assert recipe_usage["average_measured_tokens_per_run"] == 160
+    assert recipe_usage["average_estimated_tokens_per_run"] == 30
+    assert recipe_usage["runs_with_measured_usage"] == 1
+    assert recipe_usage["runs_with_unknown_usage"] == 1
+    assert recipe_usage["retries"] == 0 and recipe_usage["failures"] == 0
+    assert recipe_usage["failed_runs"] == 0
 
     automated_definition = {
         "schema": "pkm.workflow.definition/v1",
@@ -207,6 +436,33 @@ with tempfile.TemporaryDirectory(prefix="pkm-recipe-runtime-") as temporary:
             "completion": {"requiredNodes": ["execute"]},
         },
     }
+    incompatible_gate_definition = json.loads(json.dumps(automated_definition))
+    incompatible_gate_definition["spec"]["nodes"][1]["dependsOn"][0]["accept"] = ["succeeded"]
+    incompatible_gate = json.loads(tools["recipe_run_start_adhoc"](
+        "Incompatible approval outcome", json.dumps(incompatible_gate_definition),
+        "incompatible-gate-start", '{"logId":"must-not-run"}'))
+    assert incompatible_gate["ok"] is False, incompatible_gate
+    assert "cannot emit accepted outcome" in incompatible_gate["error"]["message"], incompatible_gate
+
+    rejected = json.loads(tools["recipe_run_start_adhoc"](
+        "Rejected background module", json.dumps(automated_definition),
+        "rejected-start", '{"logId":"must-not-run"}'))
+    rejected_id = rejected["run_id"]
+    rejected_gate = json.loads(tools["recipe_run_next"](rejected_id, "claim-rejected-gate"))
+    rejected_result = json.loads(tools["recipe_run_submit_input"](
+        rejected_id, "permission", rejected_gate["next_action"]["challenge_id"],
+        '{"approved":false,"comment":"Do not proceed"}', "reject-gate"))
+    assert rejected_result["status"] == "failed", rejected_result
+    assert rejected_result["next_action"]["reason"] == "required-node-skipped", rejected_result
+    rejected_nodes = {
+        item["node_id"]: item for item in rejected_result["current_result"]["completed_nodes"]
+    }
+    assert rejected_nodes["permission"]["outcome"] == "rejected", rejected_nodes
+    assert rejected_nodes["execute"]["outcome"] == "skipped", rejected_nodes
+    rejected_run = json.loads(
+        (state_dir / "recipe-runs" / f"{rejected_id}.json").read_text(encoding="utf-8"))
+    assert rejected_run["healthReceipt"]["classification"] == "recipe-failure"
+
     automated = json.loads(tools["recipe_run_start_adhoc"](
         "Approved background module", json.dumps(automated_definition), "automated-start", '{"logId":"run-42"}'))
     automated_id = automated["run_id"]
@@ -236,6 +492,9 @@ with tempfile.TemporaryDirectory(prefix="pkm-recipe-runtime-") as temporary:
     command_result = final_automated["current_result"]["completed_nodes"][-1]["result"]
     assert command_result["exit_code"] == 0 and command_result["stdout"] == "downloaded:run-42\n", command_result
     assert command_result["stdout_truncated"] is False and command_result["timed_out"] is False
+    automated_run = json.loads(
+        (state_dir / "recipe-runs" / f"{automated_id}.json").read_text(encoding="utf-8"))
+    assert automated_run["healthReceipt"]["classification"] == "healthy"
 
     def run_script(runtime, script, command_prefix, environment_id=None):
         config = {"runtime": runtime, "script": script, "timeoutSeconds": 10, "maxOutputBytes": 4096}
@@ -271,6 +530,12 @@ with tempfile.TemporaryDirectory(prefix="pkm-recipe-runtime-") as temporary:
     assert missing_environment["status"] == "failed", missing_environment
     missing_result = missing_environment["current_result"]["completed_nodes"][-1]["result"]
     assert "not registered: deleted-env" in missing_result["error"], missing_result
+    missing_health_state = json.loads((state_dir / "recipe-health.json").read_text(encoding="utf-8"))
+    missing_health = next(
+        item for item in missing_health_state["receipts"]
+        if item["runId"] == missing_environment["run_id"])
+    assert missing_health["classification"] == "environment-failure"
+    assert not missing_health_state["candidateRequests"]
 
     if os.name != "nt":
         bash_script = run_script("bash", "printf 'bash-script\\n'", "bash-script")
@@ -280,5 +545,30 @@ with tempfile.TemporaryDirectory(prefix="pkm-recipe-runtime-") as temporary:
         assert powershell_script["status"] == "failed", powershell_script
         powershell_result = powershell_script["current_result"]["completed_nodes"][-1]["result"]
         assert "supported only on Windows" in powershell_result["error"], powershell_result
+
+    escaped = json.loads(tools["recipe_run_start"](
+        "recipe_test", "validation-escape-start", '{"request":"validate"}',
+        expected_revision=3, expected_digest="digest-test"))
+    escaped_id = escaped["run_id"]
+    json.loads(tools["recipe_run_next"](escaped_id, "validation-escape-claim-understand"))
+    escaped_implement = json.loads(tools["recipe_run_report"](
+        escaped_id, "understand", "succeeded", "validation-escape-report-understand", '{}'))
+    assert escaped_implement["next_action"]["node_id"] == "implement"
+    escaped_done = json.loads(tools["recipe_run_report"](
+        escaped_id, "implement", "succeeded", "validation-escape-report-implement",
+        '{"validationPassed":false,"secret":"DO-NOT-PERSIST"}'))
+    assert escaped_done["status"] == "completed"
+    escaped_run = json.loads((state_dir / "recipe-runs" / f"{escaped_id}.json").read_text())
+    assert escaped_run["healthReceipt"]["classification"] == "recipe-failure"
+    escaped_state = json.loads((state_dir / "recipe-health.json").read_text())
+    escaped_receipt = next(item for item in escaped_state["receipts"] if item["runId"] == escaped_id)
+    assert escaped_receipt["codes"] == ["validation-escape"]
+    assert len(escaped_state["candidateRequests"]) == 1
+    assert "DO-NOT-PERSIST" not in json.dumps(escaped_receipt)
+    escaped_replay = json.loads(tools["recipe_run_report"](
+        escaped_id, "implement", "succeeded", "validation-escape-report-implement",
+        '{"validationPassed":false,"secret":"DO-NOT-PERSIST"}'))
+    assert escaped_replay["replayed"] is True
+    assert len(json.loads((state_dir / "recipe-health.json").read_text())["candidateRequests"]) == 1
 
 print("Recipe MCP runtime: discovery, lazy claims, command/script adapters, mandatory input, results, and replay OK")

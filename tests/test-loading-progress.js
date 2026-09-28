@@ -18,8 +18,31 @@ assert.doesNotMatch(html, /<script src="%%(?:CYTOSCAPE|MERMAID|FORCEGRAPH3D)_SRC
 for (const [library, meta] of [['CYTOSCAPE', 'cytoscape'], ['MERMAID', 'mermaid'], ['FORCEGRAPH3D', 'forcegraph3d']]) {
   assert.match(html, new RegExp(`<meta name="pkm-${meta}-src" content="%%${library}_SRC%%">`));
 }
+for (const [placeholder, meta] of [['MARKED', 'marked'], ['HLJS', 'highlight'], ['KATEX', 'katex']]) {
+  assert.match(html, new RegExp(`<meta name="pkm-${meta}-src" content="%%${placeholder}_SRC%%">`));
+}
+for (const placeholder of ['MARKED', 'HLJS', 'KATEX']) {
+  assert.doesNotMatch(html, new RegExp(`<script src="%%${placeholder}_SRC%%"><\\/script>`), `${placeholder} must not block first paint`);
+}
+assert.match(html, /Opening the interface…/);
+for (const id of ['topbar', 'mcp-global-warning', 'workspace-shell', 'ctx-menu', 'sync-modal-bg']) {
+  assert.match(html, new RegExp(`<div id="${id}"[^>]* hidden(?:>| )`),
+    `${id} must use native first-paint isolation before external CSS loads`);
+}
+assert.match(html, /class="loading-logo"[^>]* hidden/);
+assert.match(html, /class="loading-stage-count" hidden/);
+assert.match(html, /class="loading-bar"[^>]* hidden/);
+assert.match(css, /--pkm-panel-css-ready:1/);
+assert.match(core, /const panelStylesReady = getComputedStyle\(document\.documentElement\)[\s\S]{0,180}=== '1';/);
+assert.match(core, /if \(panelStylesReady\) \{[\s\S]{0,260}removeAttribute\('hidden'\);/,
+  'the panel must reveal application roots only after its stylesheet readiness marker is present');
+assert.match(core, /Panel stylesheet did not load; startup UI remained isolated\./,
+  'stylesheet failure must fail closed instead of exposing raw controls');
+assert.match(init, /void loadMarkdownLibraries\(\)/);
+assert.match(core, /command: 'webviewStartupTiming'/);
+assert.match(core, /function loadMarkdownLibraries\(\)/);
 assert.match(core, /function ensurePanelLibrary\(globalName, metaName\)/);
-assert.match(html, /id="loading-banner" class="hidden"/);
+assert.match(html, /id="loading-banner"(?![^>]*class="hidden")/, 'the first-paint loading shell must be visible before JavaScript runs');
 assert.match(css, /\.view-loading-progress/);
 assert.match(css, /\.loading-bar\{[^}]*accent-color/);
 for (const stage of ['preparing', 'scanning', 'building-tree', 'ready']) assert(extension.includes(`stage: "${stage}"`), `Extension must report ${stage}`);
@@ -37,7 +60,7 @@ assert.match(core, /loadingLabels = \{ list:/);
 for (const message of ['Opening the spellbook…', 'Opening the enchanted notebook…', 'Preparing the Muggle gateway…', 'Summoning a house-elf…']) {
   assert(core.includes(message), `Magical progress copy must include: ${message}`);
 }
-assert(html.includes('Brewing a potion for your knowledge store…'));
+assert(html.includes('Opening the interface…'));
 assert(init.includes('Still waiting for data from the extension…'));
 for (const command of ['projectState', 'envList', 'serverList', 'subscriptionState', 'chatState', 'checkMcp', 'skillRouterStatus', 'list']) {
   assert.match(init, new RegExp(`ask\\('${command}'`), `Initial-load retry must support ${command}`);

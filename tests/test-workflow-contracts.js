@@ -84,6 +84,11 @@ assert.deepStrictEqual(graphControls.model.spec.nodes.find(node => node.nodeId =
 assert.deepStrictEqual(graphControls.model.spec.nodes.find(node => node.nodeId === "route").ports.outputs, ["accept", "revise"]);
 assert.strictEqual(graphControls.model.spec.nodes.find(node => node.nodeId === "route").control.dynamicCases, true);
 assert.deepStrictEqual(graphControls.model.spec.trigger, { kind: "cron", expression: "0 9 * * 1", timezone: "UTC" });
+
+const traversal = compileWorkflowDefinitionV1(definition({ traversalStrategy: "depth-first" }));
+assert.strictEqual(traversal.ok, true);
+assert.strictEqual(traversal.model.spec.traversalStrategy, "depth-first");
+assertDiagnostic(definition({ traversalStrategy: "random" }), "E3005", "/spec/traversalStrategy");
 const childDigest = "a".repeat(64);
 const subflow = compileWorkflowDefinitionV1(definition({
   nodes: [{ nodeId: "child", kind: "pkm.subflow/v1", config: { recipeId: "recipe_child", revision: 3, executableDigest: childDigest }, dependsOn: [] }],

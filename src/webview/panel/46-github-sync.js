@@ -1,15 +1,22 @@
 // ── GitHub Sync ───────────────────────────────────────────────────────────
-let githubSyncData = { targets:[], catalog:{}, shields:{}, runtime:{}, connected:{}, authenticationOptions:{ accounts:[], identities:[] } };
+let githubSyncData = { targets:[], catalog:{}, shields:{}, runtime:{}, migrations:{}, connected:{}, authenticationOptions:{ accounts:[], identities:[] } };
 let githubSyncEditing = '';
 let githubSyncEditorTab = 'general';
 let githubSyncSaving = false;
 let githubSyncAuthenticationResult = null;
+let githubSyncUpdatedAt = 0;
 const githubSyncDrafts = new Map();
+const githubSyncForcePending = new Set();
 const githubSyncTypes = ['skills','notes','papers','prompts','scripts','packages','servers','recipes','agentSnapshots'];
 const githubSyncLabels = { skills:'Skills', notes:'Notes', papers:'Research', prompts:'Prompts', scripts:'Scripts', packages:'Packages', servers:'Servers', recipes:'Recipes', agentSnapshots:'Agent Snapshots' };
 
 function renderGitHubSyncLoading() {
   document.getElementById('detail').innerHTML = '<div class="empty">Loading GitHub Sync…</div>';
+}
+
+function showGitHubSyncTab() {
+  if (githubSyncUpdatedAt) renderGitHubSyncPane(); else renderGitHubSyncLoading();
+  if (!tabCacheIsFresh(githubSyncUpdatedAt)) ask('githubSyncState', {}, null, Boolean(githubSyncUpdatedAt));
 }
 
 function githubSyncDefaultSelection() {
@@ -25,6 +32,7 @@ function githubSyncDefaultSelection() {
 function githubSyncOnState(data) {
   if (githubSyncEditing) githubSyncCaptureDraft();
   githubSyncData = { ...githubSyncData, ...(data || {}) };
+  githubSyncUpdatedAt = Date.now();
   if (githubSyncSaving) {
     githubSyncDrafts.delete(githubSyncEditing);
     githubSyncEditing = '';
@@ -95,7 +103,8 @@ function githubSyncEditor() {
   const target = githubSyncTarget();
   const draft = githubSyncDrafts.get(githubSyncEditing);
   const authentication = draft?.authentication ?? target?.authentication ?? {};
-  const automation = draft?.automation ?? target?.automation ?? { enabled:true, intervalMinutes:5, syncOnChange:true };
+  const automation = draft?.automation ?? target?.automation ?? { enabled:false, intervalMinutes:5, syncOnChange:true, initialSyncCompleted:false };
+  const automaticReady = !!automation.initialSyncCompleted;
   const accountConnected = !!target && authentication.method === 'vscode' && githubSyncData.connected?.[target.id];
   const authenticationStatus = githubSyncAuthenticationResult
     ? `<div class="github-sync-auth-status success"><span class="codicon codicon-verified-filled"></span><span><strong>${esc(githubSyncAuthenticationResult.login)}</strong><small>${esc(githubSyncAuthenticationResult.fingerprint)}</small></span></div>`
@@ -103,7 +112,8 @@ function githubSyncEditor() {
       ? `<div class="github-sync-auth-status success"><span class="codicon codicon-verified-filled"></span><span><strong>${esc(authentication.expectedLogin)}</strong><small>Stored securely for automatic backup</small></span></div>`
       : '<div class="github-sync-auth-status"><span class="codicon codicon-key"></span><span>Connect and test this account before automatic backup</span></div>';
   if (!githubSyncEditing) return '';
-  return `<div class="sub-editor sub-broker-settings github-sync-editor"><div class="sub-editor-head"><div><strong>GitHub Target</strong><small>${target ? esc(target.id) : 'New target'}</small></div><button class="icon-btn" onclick="githubSyncClose()" title="Close" aria-label="Close">${uiIcon('close')}</button></div><div class="sub-editor-tabs"><button class="${githubSyncEditorTab === 'general' ? 'active' : ''}" onclick="githubSyncSetEditorTab('general')">General</button><button class="${githubSyncEditorTab === 'automation' ? 'active' : ''}" onclick="githubSyncSetEditorTab('automation')">Automation</button><button class="${githubSyncEditorTab === 'content' ? 'active' : ''}" onclick="githubSyncSetEditorTab('content')">Content</button></div><div class="sub-editor-pane ${githubSyncEditorTab === 'general' ? 'active' : ''}"><div class="github-sync-general"><label>Target name<input id="github-sync-name" value="${esc(draft?.name ?? target?.name ?? '')}" placeholder="Primary backup"></label><label>Repository<input id="github-sync-repository" value="${esc(draft?.repository ?? target?.repository ?? '')}" placeholder="https://github.com/owner/repository.git" oninput="githubSyncAuthenticationChanged()"></label><label>Branch<input id="github-sync-branch" value="${esc(draft?.branch ?? target?.branch ?? 'main')}" placeholder="main"></label><section class="github-sync-auth"><div class="github-sync-auth-grid"><label>GitHub account<input id="github-sync-expected-login" value="${esc(authentication.expectedLogin || '')}" placeholder="GitHub login" oninput="githubSyncAuthenticationChanged()"></label><label>SSH identity<div class="github-sync-identity-control"><input id="github-sync-identity-file" value="${esc(authentication.identityFile || '')}" placeholder="~/.ssh/id_ed25519" oninput="githubSyncAuthenticationChanged()"><button class="icon-btn" onclick="githubSyncPickIdentity(this)" title="Select SSH key" aria-label="Select SSH key">${uiIcon('folder-opened')}</button><button class="icon-btn" data-pending-label="…" onclick="githubSyncCreateIdentity(this)" title="Create dedicated SSH key" aria-label="Create dedicated SSH key">${uiIcon('add')}</button></div></label><button class="pk-button github-sync-test-auth" data-pending-label="Testing…" onclick="githubSyncTestAuthentication(this)">${uiIcon('verified','Test Account')}</button></div>${authenticationStatus}</section></div></div><div class="sub-editor-pane ${githubSyncEditorTab === 'automation' ? 'active' : ''}"><div class="github-sync-automation"><label class="github-sync-check"><input id="github-sync-automation-enabled" type="checkbox" ${automation.enabled ? 'checked' : ''}><span><strong>Automatic backup</strong><small>Run in the background without a manual Sync action.</small></span></label><label>Minimum sync interval (minutes)<input id="github-sync-interval-minutes" type="number" min="1" max="1440" step="1" value="${esc(automation.intervalMinutes)}"></label><label class="github-sync-check"><input id="github-sync-on-change" type="checkbox" ${automation.syncOnChange ? 'checked' : ''}><span><strong>Sync when selected content changes</strong><small>Changes inside the minimum interval are coalesced into one backup. No changes means no sync.</small></span></label><p>VS Code GitHub Authentication is recommended for unattended HTTPS backup and keeps personal and EMU credentials separate per Target. Save the Target once and choose its exact account; the credential is stored in VS Code SecretStorage, never in the Target file. Credential Manager cache targets may require login again after restart.</p></div></div><div class="sub-editor-pane ${githubSyncEditorTab === 'content' ? 'active' : ''}"><div class="github-sync-privacy-grid"><section><div class="github-sync-privacy-head public"><span class="codicon codicon-globe"></span><strong>Public</strong></div>${githubSyncPrivacyTree(target, 'public')}</section><section><div class="github-sync-privacy-head private"><span class="codicon codicon-lock"></span><strong>Private</strong></div>${githubSyncPrivacyTree(target, 'private')}</section></div></div><div class="sub-editor-actions"><span class="sub-action-spacer"></span><button class="pk-button" onclick="githubSyncClose()">Cancel</button><button class="pk-button primary" data-pending-label="Saving…" onclick="githubSyncSave(this)">Save & Start</button></div></div>`;
+  const conflictResolution = draft?.conflictResolution ?? target?.conflictResolution ?? 'manual';
+  return `<div class="sub-editor sub-broker-settings github-sync-editor"><div class="sub-editor-head"><div><strong>GitHub Target</strong><small>${target ? esc(target.id) : 'New target'}</small></div><button class="icon-btn" onclick="githubSyncClose()" title="Close" aria-label="Close">${uiIcon('close')}</button></div><div class="sub-editor-tabs"><button class="${githubSyncEditorTab === 'general' ? 'active' : ''}" onclick="githubSyncSetEditorTab('general')">General</button><button class="${githubSyncEditorTab === 'automation' ? 'active' : ''}" onclick="githubSyncSetEditorTab('automation')">Automation</button><button class="${githubSyncEditorTab === 'content' ? 'active' : ''}" onclick="githubSyncSetEditorTab('content')">Content</button></div><div class="sub-editor-pane ${githubSyncEditorTab === 'general' ? 'active' : ''}"><div class="github-sync-general"><label>Target name<input id="github-sync-name" value="${esc(draft?.name ?? target?.name ?? '')}" placeholder="Primary sync"></label><label>Repository<input id="github-sync-repository" value="${esc(draft?.repository ?? target?.repository ?? '')}" placeholder="https://github.com/owner/repository.git" oninput="githubSyncAuthenticationChanged()"></label><label>Branch<input id="github-sync-branch" value="${esc(draft?.branch ?? target?.branch ?? 'main')}" placeholder="main"></label><section class="github-sync-auth"><div class="github-sync-auth-grid"><label>GitHub account<input id="github-sync-expected-login" value="${esc(authentication.expectedLogin || '')}" placeholder="GitHub login" oninput="githubSyncAuthenticationChanged()"></label><label>SSH identity<div class="github-sync-identity-control"><input id="github-sync-identity-file" value="${esc(authentication.identityFile || '')}" placeholder="~/.ssh/id_ed25519" oninput="githubSyncAuthenticationChanged()"><button class="icon-btn" onclick="githubSyncPickIdentity(this)" title="Select SSH key" aria-label="Select SSH key">${uiIcon('folder-opened')}</button><button class="icon-btn" data-pending-label="…" onclick="githubSyncCreateIdentity(this)" title="Create dedicated SSH key" aria-label="Create dedicated SSH key">${uiIcon('add')}</button></div></label><button class="pk-button github-sync-test-auth" data-pending-label="Testing…" onclick="githubSyncTestAuthentication(this)">${uiIcon('verified','Test Account')}</button></div>${authenticationStatus}</section></div></div><div class="sub-editor-pane ${githubSyncEditorTab === 'automation' ? 'active' : ''}"><div class="github-sync-automation"><label class="github-sync-check"><input id="github-sync-automation-enabled" type="checkbox" ${automation.enabled ? 'checked' : ''} ${automaticReady ? '' : 'disabled'}><span><strong>Automatic synchronization</strong><small>${automaticReady ? 'Pull and push non-conflicting changes in the background.' : 'Run Initial Sync successfully, resolve every conflict, and finish the push before enabling this manually.'}</small></span></label><label>Sync interval (minutes)<input id="github-sync-interval-minutes" type="number" min="1" max="1440" step="1" required value="${esc(automation.intervalMinutes)}" oninput="this.setCustomValidity('')"><small>Check this Target on this schedule; changes inside the interval are coalesced.</small></label><label class="github-sync-check"><input id="github-sync-on-change" type="checkbox" ${automation.syncOnChange ? 'checked' : ''}><span><strong>Sync when selected content changes</strong><small>Changes inside the sync interval are coalesced. Unchanged checks do not create commits.</small></span></label><label>Conflict resolution<select id="github-sync-conflict-resolution"><option value="manual" ${conflictResolution === 'manual' ? 'selected' : ''}>Manual review · explicit choice for every file</option><option value="agent" ${conflictResolution === 'agent' ? 'selected' : ''}>Agent-assisted Skill/Recipe merge · review before push</option></select><small>Conflicts always stop the push. Choose this machine, choose GitHub, edit a combined copy, or ask the Agent; approval is still required.</small></label><p>VS Code GitHub Authentication is recommended for unattended HTTPS synchronization and keeps personal and EMU credentials separate per Target. Saving a new Target does not start synchronization. Run Initial Sync manually, resolve and push any conflicts, then return here to enable automation.</p></div></div><div class="sub-editor-pane ${githubSyncEditorTab === 'content' ? 'active' : ''}"><div class="github-sync-privacy-grid"><section><div class="github-sync-privacy-head public"><span class="codicon codicon-globe"></span><strong>Public</strong></div>${githubSyncPrivacyTree(target, 'public')}</section><section><div class="github-sync-privacy-head private"><span class="codicon codicon-lock"></span><strong>Private</strong></div>${githubSyncPrivacyTree(target, 'private')}</section></div></div><div class="sub-editor-actions"><span class="sub-action-spacer"></span><button class="pk-button" onclick="githubSyncClose()">Cancel</button><button class="pk-button primary" data-pending-label="Saving…" onclick="githubSyncSave(this)">Save Target</button></div></div>`;
 }
 
 function githubSyncRenderAuthenticationMethod() {
@@ -145,22 +155,91 @@ function githubSyncAuthenticationMethodChanged() {
   renderGitHubSyncPane();
 }
 
+function githubSyncConflictPanel(targetId, conflict) {
+  const sourceLabels = {
+    unresolved:'Choice required',
+    local:'This machine',
+    remote:'GitHub',
+    base:'Common base',
+    manual:'Edited copy',
+    agent:'Agent merge'
+  };
+  const conflictFiles = conflict.files || [];
+  const files = conflictFiles.map(file => {
+    const encodedPath = encodeURIComponent(file.path);
+    const canAgent = file.type === 'skills' || file.type === 'recipes';
+    return `<article class="github-sync-conflict-file ${file.candidateSource === 'unresolved' ? 'unresolved' : 'resolved'}"><header><span><strong>${esc(file.path)}</strong><small>${esc(githubSyncLabels[file.type] || file.type)}</small></span><b>${esc(sourceLabels[file.candidateSource] || file.candidateSource)}</b></header>${file.rationale ? `<p>${esc(file.rationale)}</p>` : ''}<div><button class="pk-button" onclick="githubSyncConflictOpen('${esc(targetId)}',decodeURIComponent('${encodedPath}'),'compare',this)">Compare</button>${file.hasLocal ? `<button class="pk-button" onclick="githubSyncConflictChoose('${esc(targetId)}',decodeURIComponent('${encodedPath}'),'local',this)">Use this machine</button>` : ''}${file.hasRemote ? `<button class="pk-button" onclick="githubSyncConflictChoose('${esc(targetId)}',decodeURIComponent('${encodedPath}'),'remote',this)">Use GitHub</button>` : ''}${file.hasBase ? `<button class="pk-button" onclick="githubSyncConflictChoose('${esc(targetId)}',decodeURIComponent('${encodedPath}'),'base',this)">Use common base</button>` : ''}<button class="pk-button" onclick="githubSyncConflictOpen('${esc(targetId)}',decodeURIComponent('${encodedPath}'),'edit',this)">Edit combined copy</button><button class="pk-button" onclick="githubSyncConflictValidate('${esc(targetId)}',decodeURIComponent('${encodedPath}'),this)">Validate edited copy</button>${canAgent ? `<button class="pk-button" data-pending-label="Merging…" onclick="githubSyncConflictAgent('${esc(targetId)}',decodeURIComponent('${encodedPath}'),this)">Merge with Agent</button>` : ''}</div></article>`;
+  }).join('');
+  const unresolved = conflictFiles.filter(file => file.candidateSource === 'unresolved').length;
+  const missingLocal = conflictFiles.filter(file => file.hasBase && !file.hasLocal && file.hasRemote).length;
+  const missingRemote = conflictFiles.filter(file => file.hasBase && file.hasLocal && !file.hasRemote).length;
+  const changedBoth = conflictFiles.length - missingLocal - missingRemote;
+  const supportedByAgent = conflictFiles.filter(file => file.type === 'skills' || file.type === 'recipes').length;
+  const summary = [
+    missingLocal ? `${missingLocal} missing on this machine` : '',
+    missingRemote ? `${missingRemote} missing on GitHub` : '',
+    changedBoth ? `${changedBoth} changed on both sides` : ''
+  ].filter(Boolean).join(' · ');
+  return `<div class="github-sync-conflict-actions" onclick="event.stopPropagation()"><strong>${conflictFiles.length} conflicting file${conflictFiles.length === 1 ? '' : 's'}</strong><p>${esc(summary)}. A missing-file conflict is a deletion safeguard, not necessarily a text merge. Nothing is pushed until every file has an explicit resolution.</p><div class="github-sync-conflict-bulk"><button class="pk-button" onclick="githubSyncConflictChooseAll('${esc(targetId)}','remote',${unresolved})">Use GitHub for all</button><button class="pk-button" onclick="githubSyncConflictChooseAll('${esc(targetId)}','local',${unresolved})">Use this machine for all</button>${supportedByAgent ? `<button class="pk-button" data-pending-label="Merging…" onclick="githubSyncConflictAgentAll('${esc(targetId)}',${supportedByAgent},this)">Ask Agent for ${supportedByAgent} supported</button>` : ''}</div><div class="github-sync-conflict-files">${files}</div><footer><span>${unresolved ? `${unresolved} still need a choice` : 'All files have a candidate ready for approval'}</span><button class="pk-button primary" data-pending-label="Applying…" onclick="githubSyncConflictAccept('${esc(targetId)}',this)" ${unresolved ? 'disabled' : ''}>Apply resolutions &amp; Sync</button><button class="pk-button" onclick="githubSyncConflictDiscard('${esc(targetId)}')">Cancel resolution workspace</button></footer></div>`;
+}
+
 function githubSyncCards() {
+  const gitPhaseLabels = {
+    'scheduled':'Scheduled',
+    'waiting-for-lock':'Waiting for Git lock',
+    'authenticating':'Authenticating',
+    'fetch':'Fetch / Pull',
+    'resolve-conflicts':'Resolve conflicts',
+    'commit':'Commit',
+    'push':'Push',
+    'refresh-index':'Refresh PKM index',
+  };
   const cards = githubSyncData.targets.map(target => {
     const expanded = githubSyncEditing === target.id;
     const last = target.lastSync?.at ? new Date(target.lastSync.at).toLocaleString() : 'Never synchronized';
     const runtime = githubSyncData.runtime?.[target.id] || {};
-    const status = runtime.status || (target.lastFailure ? 'error' : 'scheduled');
-    const next = runtime.nextSyncAt ? `Pending changes sync after ${new Date(runtime.nextSyncAt).toLocaleString()}` : target.automation?.enabled ? 'Watching for selected content changes' : 'Automatic backup paused';
-    const error = runtime.lastError || target.lastFailure?.error || '';
-    return `<article class="pk-card sub-broker-card ${expanded ? 'active' : ''}"><div class="sub-broker-row" role="button" tabindex="0" aria-expanded="${expanded}" onclick="githubSyncEdit('${esc(target.id)}')"><span><span class="sub-broker-title"><strong>${esc(target.name)}</strong><span class="github-sync-status ${esc(status)}">${esc(status)}</span><span class="sub-broker-actions"><button class="pk-button" data-pending-label="Syncing…" onclick="event.stopPropagation();githubSyncForce('${esc(target.id)}',this)" ${status === 'syncing' ? 'disabled' : ''}>${uiIcon('refresh','Force sync')}</button><button class="pk-button" data-pending-label="Loading…" onclick="event.stopPropagation();githubSyncRestore('${esc(target.id)}',this)">${uiIcon('history','Restore…')}</button><button class="pk-button danger" onclick="event.stopPropagation();githubSyncDelete('${esc(target.id)}')" title="Delete target">${uiIcon('trash')}</button></span></span><small>${esc(target.repository)}</small>${error ? `<small class="github-sync-error" onclick="event.stopPropagation()" onpointerdown="event.stopPropagation()" title="Select and copy this error">${esc(error)}</small>` : ''}</span><span class="sub-broker-meta"><b>${esc(target.branch)} · ${target.automation?.intervalMinutes || 5} min minimum</b><small>Last  ${esc(last)}</small><small>${esc(next)}</small><i>›</i></span></div>${expanded ? `<div class="sub-broker-expanded">${githubSyncEditor()}</div>` : ''}</article>`;
+    const automaticReady = !!target.automation?.initialSyncCompleted;
+    const conflict = githubSyncData.conflicts?.[target.id];
+    const migration = githubSyncData.migrations?.[target.id];
+    const phase = conflict ? 'resolve-conflicts' : runtime.phase || (runtime.status === 'scheduled' ? 'scheduled' : '');
+    const status = conflict ? 'conflicts' : runtime.status || (target.lastFailure ? 'error' : target.automation?.enabled && automaticReady ? 'scheduled' : 'paused');
+    const phaseLabel = gitPhaseLabels[phase] || (status === 'paused' ? 'Auto sync off' : status);
+    const statusLabel = status === 'error' ? `${phaseLabel} failed` : phaseLabel;
+    const next = conflict ? 'Pull completed · resolve conflicts before commit and push' : runtime.detail || (!automaticReady ? 'Initial manual sync required before automation can be enabled' : runtime.nextSyncAt ? `Next fetch after ${new Date(runtime.nextSyncAt).toLocaleString()}` : target.automation?.enabled ? 'Scheduled to fetch remote changes' : 'Automatic pull/push is off');
+    const error = status === 'error' ? runtime.lastError || target.lastFailure?.error || '' : '';
+    const conflictActions = conflict ? githubSyncConflictPanel(target.id, conflict) : '';
+    const forcePending = githubSyncForcePending.has(target.id);
+    const syncLabel = conflict ? 'Resolve conflicts below' : forcePending ? 'Sync queued' : automaticReady ? 'Sync now' : 'Run Initial Sync';
+    const scheduleLabel = target.automation?.enabled && automaticReady ? `every ${target.automation?.intervalMinutes || 5} min` : 'manual only';
+    const autoEnabled = !!target.automation?.enabled && automaticReady;
+    const migrationReady = !target.publication || !!target.publication.manualVerificationCompleted;
+    const autoDisabled = !automaticReady || !migrationReady || status === 'syncing' || !!conflict;
+    const autoTitle = !automaticReady ? 'Run Initial Sync successfully before enabling Auto Sync'
+      : !migrationReady ? 'Complete the required manual publication verification before enabling Auto Sync'
+      : conflict ? 'Resolve every conflict before enabling Auto Sync'
+      : status === 'syncing' ? 'Wait for the current synchronization to finish'
+      : autoEnabled ? 'Turn off automatic synchronization' : 'Turn on automatic synchronization';
+    const autoToggle = `<button class="github-sync-auto-toggle ${autoEnabled ? 'on' : ''}" role="switch" aria-checked="${autoEnabled}" aria-label="Auto Sync for ${esc(target.name)}" title="${esc(autoTitle)}" onclick="event.stopPropagation();githubSyncAutomationToggle('${esc(target.id)}',${autoEnabled ? 'false' : 'true'},this)" ${autoDisabled ? 'disabled' : ''}><span></span><em>Auto</em></button>`;
+    const migrationActions = !migration
+      ? `<button class="pk-button" onclick="event.stopPropagation();githubSyncMigration('${esc(target.id)}','preview',this)">Preview migration</button>`
+      : migration.phase === 'previewed'
+        ? `<button class="pk-button" onclick="event.stopPropagation();githubSyncMigration('${esc(target.id)}','stage',this)">Stage migration</button>`
+        : migration.phase === 'staged'
+          ? `<button class="pk-button" onclick="event.stopPropagation();githubSyncMigration('${esc(target.id)}','verify',this)">Verify staged data</button><button class="pk-button" onclick="event.stopPropagation();githubSyncMigration('${esc(target.id)}','rollback',this)">Rollback</button>`
+          : migration.phase === 'verified'
+            ? `<button class="pk-button primary" onclick="event.stopPropagation();githubSyncMigration('${esc(target.id)}','cutover',this)">Cut over</button><button class="pk-button" onclick="event.stopPropagation();githubSyncMigration('${esc(target.id)}','rollback',this)">Rollback</button>`
+            : migration.phase === 'cutover' && !target.publication?.manualVerificationCompleted
+              ? '<small>Cutover complete · run one manual Fetch/Pull → resolve → Commit → Push → inventory/retrieval refresh. Auto Sync remains off.</small>'
+              : `<small>${migration.phase === 'cutover' ? 'Manual publication verification complete · Auto Sync may now be enabled manually.' : 'Migration rolled back.'}</small>`;
+    const migrationPanel = `<div class="github-sync-migration" onclick="event.stopPropagation()"><span><strong>Publication format migration</strong><small>${migration ? `${migration.phase} · ${migration.activeCount} managed · ${migration.folderCount} folders · ${migration.idCount} IDs · ${migration.collisions.length} collisions` : 'Preview schema 3 stable-ID publication without changing the repository.'}</small></span><span class="sub-broker-actions">${migrationActions}</span></div>`;
+    return `<article class="pk-card sub-broker-card ${expanded ? 'active' : ''}"><div class="sub-broker-row" role="button" tabindex="0" aria-expanded="${expanded}" onclick="githubSyncEdit('${esc(target.id)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();githubSyncEdit('${esc(target.id)}')}"><span><span class="sub-broker-title"><strong>${esc(target.name)}</strong><span class="github-sync-status ${esc(status)}">${esc(statusLabel)}</span><span class="sub-broker-actions"><button class="pk-button" data-pending-label="Pulling…" onclick="event.stopPropagation();githubSyncForce('${esc(target.id)}',this)" ${status === 'syncing' || forcePending || conflict || (migration && !['cutover','rolled-back'].includes(migration.phase)) ? 'disabled' : ''}>${uiIcon('refresh',syncLabel)}</button><button class="pk-button" data-pending-label="Loading…" onclick="event.stopPropagation();githubSyncRestore('${esc(target.id)}',this)">${uiIcon('history','Restore…')}</button><button class="pk-button danger" onclick="event.stopPropagation();githubSyncDelete('${esc(target.id)}')" title="Delete target">${uiIcon('trash')}</button></span></span><small>${esc(target.repository)}</small>${error ? `<small class="github-sync-error" onclick="event.stopPropagation()" onpointerdown="event.stopPropagation()" title="Select and copy this error">${esc(error)}</small>` : ''}${conflictActions}${migrationPanel}</span><span class="sub-broker-meta"><span class="github-sync-meta-head"><b>${esc(target.branch)} · ${esc(scheduleLabel)}</b>${autoToggle}</span><small>Last ${esc(last)}</small><small>${esc(next)}</small><i>›</i></span></div>${expanded ? `<div class="sub-broker-expanded">${githubSyncEditor()}</div>` : ''}</article>`;
   }).join('');
   const create = githubSyncEditing === 'new' ? `<article class="pk-card sub-broker-card active"><div class="sub-broker-expanded">${githubSyncEditor()}</div></article>` : '';
   return cards + create || '<div class="sub-empty">No GitHub targets.</div>';
 }
 
 function renderGitHubSyncPane() {
-  document.getElementById('detail').innerHTML = `<div class="sub-dashboard github-sync-dashboard"><header class="sub-head"><div><h2>GitHub Sync</h2><p>${githubSyncData.targets.length} configured targets</p></div><button class="pk-button primary" onclick="githubSyncNew()">${uiIcon('add','Target')}</button></header><section class="sub-band"><div class="pk-list sub-broker-list">${githubSyncCards()}</div></section></div>`;
+  document.getElementById('detail').innerHTML = `<div class="sub-dashboard github-sync-dashboard"><header class="sub-head"><div><h2>GitHub Sync</h2><p>${githubSyncData.targets.length} configured targets</p></div><div class="project-header-actions"><button class="recipe-icon-button" title="Refresh GitHub Sync" aria-label="Refresh GitHub Sync" onclick="ask('githubSyncState',{})"><span class="codicon codicon-refresh"></span></button><button class="pk-button primary" onclick="githubSyncNew()">${uiIcon('add','Target')}</button></div></header><section class="sub-band"><div class="pk-list sub-broker-list">${githubSyncCards()}</div></section></div>`;
   githubSyncRenderAuthenticationMethod();
   githubSyncSyncFolderStates();
 }
@@ -170,7 +249,7 @@ function githubSyncNew() {
   githubSyncEditing = 'new';
   githubSyncEditorTab = 'general';
   githubSyncAuthenticationResult = null;
-  githubSyncDrafts.set('new', { name:'', repository:'', branch:'main', authentication:{method:'vscode',expectedLogin:''}, automation:{enabled:true,intervalMinutes:5,syncOnChange:true}, selection:githubSyncDefaultSelection(), openFolders:{public:{},private:{}}, openTypes:{public:[],private:[]} });
+  githubSyncDrafts.set('new', { name:'', repository:'', branch:'main', authentication:{method:'vscode',expectedLogin:''}, automation:{enabled:false,intervalMinutes:5,syncOnChange:true,initialSyncCompleted:false}, selection:githubSyncDefaultSelection(), openFolders:{public:{},private:{}}, openTypes:{public:[],private:[]} });
   renderGitHubSyncPane();
 }
 function githubSyncEdit(id) { githubSyncCaptureDraft(); githubSyncEditing = githubSyncEditing === id ? '' : id; githubSyncEditorTab = 'general'; githubSyncAuthenticationResult = null; renderGitHubSyncPane(); }
@@ -204,11 +283,13 @@ function githubSyncCaptureDraft() {
     ? method === 'ssh' ? { method, identityFile, expectedLogin } : { method, expectedLogin }
     : undefined;
   const automation = {
-    enabled:document.getElementById('github-sync-automation-enabled')?.checked ?? previous.automation?.enabled ?? githubSyncTarget()?.automation?.enabled ?? true,
+    enabled:document.getElementById('github-sync-automation-enabled')?.checked ?? previous.automation?.enabled ?? githubSyncTarget()?.automation?.enabled ?? false,
     intervalMinutes:Number(document.getElementById('github-sync-interval-minutes')?.value ?? previous.automation?.intervalMinutes ?? githubSyncTarget()?.automation?.intervalMinutes ?? 5),
-    syncOnChange:document.getElementById('github-sync-on-change')?.checked ?? previous.automation?.syncOnChange ?? githubSyncTarget()?.automation?.syncOnChange ?? true
+    syncOnChange:document.getElementById('github-sync-on-change')?.checked ?? previous.automation?.syncOnChange ?? githubSyncTarget()?.automation?.syncOnChange ?? true,
+    initialSyncCompleted:previous.automation?.initialSyncCompleted ?? githubSyncTarget()?.automation?.initialSyncCompleted ?? false
   };
-  githubSyncDrafts.set(githubSyncEditing, { ...previous, name:document.getElementById('github-sync-name')?.value ?? previous.name, repository:document.getElementById('github-sync-repository')?.value ?? previous.repository, branch:document.getElementById('github-sync-branch')?.value ?? previous.branch, authentication, automation, selection, openFolders, openTypes });
+  const conflictResolution = document.getElementById('github-sync-conflict-resolution')?.value ?? previous.conflictResolution ?? githubSyncTarget()?.conflictResolution ?? 'manual';
+  githubSyncDrafts.set(githubSyncEditing, { ...previous, name:document.getElementById('github-sync-name')?.value ?? previous.name, repository:document.getElementById('github-sync-repository')?.value ?? previous.repository, branch:document.getElementById('github-sync-branch')?.value ?? previous.branch, authentication, automation, conflictResolution, selection, openFolders, openTypes });
 }
 
 function githubSyncSyncFolderStates(key) {
@@ -238,8 +319,19 @@ function githubSyncUpdateCount(key) { const picker = document.querySelector(`.gi
 function githubSyncSave(button) {
   githubSyncCaptureDraft();
   const draft = githubSyncDrafts.get(githubSyncEditing);
+  const intervalInput = document.getElementById('github-sync-interval-minutes');
+  const intervalMinutes = Number(draft?.automation?.intervalMinutes);
+  if (!Number.isInteger(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 1440) {
+    githubSyncEditorTab = 'automation';
+    if (!intervalInput) renderGitHubSyncPane();
+    const visibleInput = document.getElementById('github-sync-interval-minutes');
+    visibleInput?.setCustomValidity('Enter a whole number from 1 to 1440.');
+    visibleInput?.reportValidity();
+    visibleInput?.focus();
+    return;
+  }
   githubSyncSaving = true;
-  ask('githubSyncSave', { target:{ id:githubSyncEditing === 'new' ? '' : githubSyncEditing, name:draft.name, repository:draft.repository, branch:draft.branch, authentication:draft.authentication, automation:draft.automation, selection:draft.selection } }, button);
+  ask('githubSyncSave', { target:{ id:githubSyncEditing === 'new' ? '' : githubSyncEditing, name:draft.name, repository:draft.repository, branch:draft.branch, authentication:draft.authentication, automation:draft.automation, conflictResolution:draft.conflictResolution, selection:draft.selection } }, button);
 }
 function githubSyncAuthenticationChanged() { githubSyncAuthenticationResult = null; githubSyncCaptureDraft(); const status = document.querySelector('.github-sync-auth-status'); if (status) status.outerHTML = '<div class="github-sync-auth-status"><span class="codicon codicon-key"></span><span>Account not tested</span></div>'; }
 function githubSyncPickIdentity(button) { githubSyncCaptureDraft(); ask('githubSyncPickIdentity', {}, button); }
@@ -251,7 +343,21 @@ function githubSyncTestAuthentication(button) {
   ask('githubSyncTestAuthentication', { target:{ id:githubSyncEditing === 'new' ? '' : githubSyncEditing, name:draft.name || 'Authentication test', repository:draft.repository, branch:draft.branch, authentication:draft.authentication } }, button);
 }
 function githubSyncOnAuthenticationResult(data) { githubSyncCaptureDraft(); const draft = githubSyncDrafts.get(githubSyncEditing); if (draft?.authentication && !draft.authentication.expectedLogin) draft.authentication.expectedLogin = data?.login || ''; githubSyncAuthenticationResult = data || null; renderGitHubSyncPane(); }
-function githubSyncOnRuntimeState(data) { if (!data?.targetId) return; githubSyncData.runtime = { ...(githubSyncData.runtime || {}), [data.targetId]:data.state || {} }; if (state.tab === 'githubSync') renderGitHubSyncPane(); }
-function githubSyncDelete(targetId) { const target = githubSyncData.targets.find(item => item.id === targetId); pkModal({ title:'Delete GitHub Target?', message:`${target?.name || targetId}\n\nThe remote repository is not changed.`, okLabel:'Delete Target', danger:true, onOk:()=>ask('githubSyncDelete',{targetId}) }); }
-function githubSyncForce(targetId, button) { ask('githubSyncRun', { targetId }, button); }
+function githubSyncOnRuntimeState(data) { if (!data?.targetId) return; githubSyncData.runtime = { ...(githubSyncData.runtime || {}), [data.targetId]:data.state || {} }; if (data.state?.status !== 'syncing') githubSyncForcePending.delete(data.targetId); if (state.tab === 'githubSync') renderGitHubSyncPane(); }
+function githubSyncOnRunQueued(data) { if (!data?.targetId) return; if (!data.queued) githubSyncForcePending.delete(data.targetId); if (state.tab === 'githubSync') renderGitHubSyncPane(); vscode.postMessage({ command:'toast', text:data.queued ? 'GitHub sync queued' : 'GitHub sync is already queued or running' }); }
+function githubSyncDelete(targetId) { const target = githubSyncData.targets.find(item => item.id === targetId); pkModal({ title:'Delete GitHub Target?', message:`${target?.name || targetId}\n\nStops future pull/push operations and removes the local target configuration immediately. Local checkout cleanup continues in the background if Git still holds Windows file handles. The GitHub repository and Knowledge Root content are not deleted. An already-started push may still finish.`, okLabel:'Delete Target', danger:true, onOk:()=>ask('githubSyncDelete',{targetId}) }); }
+function githubSyncForce(targetId, button) { if (githubSyncForcePending.has(targetId) || pendingActionButtons.has('githubSyncRun')) return; githubSyncForcePending.add(targetId); ask('githubSyncRun', { targetId }, button); }
+function githubSyncAutomationToggle(targetId, enabled, button) { ask('githubSyncAutomationToggle', { targetId, enabled }, button); }
+function githubSyncMigration(targetId, action, button) { ask('githubSyncMigration', { targetId, action }, button); }
 function githubSyncRestore(targetId, button) { ask('githubSyncRestore', { targetId }, button); }
+function githubSyncConflictOpen(targetId, path, mode, button) { ask('githubSyncConflictOpen', { targetId, path, mode }, button); }
+function githubSyncConflictChoose(targetId, path, source, button) { ask('githubSyncConflictChoose', { targetId, path, source }, button); }
+function githubSyncConflictChooseAll(targetId, source, count) {
+  const label = source === 'remote' ? 'GitHub' : 'this machine';
+  pkModal({ title:`Use ${label} for all conflicts?`, message:`Prepare the ${label} version for every conflict where it exists (${count} currently unresolved). This only stages candidates; review and Apply resolutions & Sync are still required.`, okLabel:`Use ${label} for all`, onOk:()=>ask('githubSyncConflictChooseAll',{targetId,source}) });
+}
+function githubSyncConflictValidate(targetId, path, button) { ask('githubSyncConflictValidate', { targetId, path }, button); }
+function githubSyncConflictAgent(targetId, path, button) { ask('githubSyncConflictAgent', { targetId, path }, button); }
+function githubSyncConflictAgentAll(targetId, count, button) { pkModal({ title:'Ask Agent to merge supported conflicts?', message:`Prepare Agent merge candidates for ${count} Skill/Recipe conflicts. Unsupported or unsafe conflicts remain unresolved for explicit review.`, okLabel:'Merge supported conflicts', onOk:()=>ask('githubSyncConflictAgentAll',{targetId},button) }); }
+function githubSyncConflictAccept(targetId, button) { pkModal({ title:'Apply resolved files and sync?', message:'Each selected or edited candidate will replace the local file, pass structural validation, and then run a manual pull/push. Automatic synchronization remains off until that sync succeeds and you enable it yourself.', okLabel:'Apply & Sync', onOk:()=>ask('githubSyncConflictAccept',{targetId},button) }); }
+function githubSyncConflictDiscard(targetId) { pkModal({ title:'Cancel this resolution workspace?', message:'Only the staged resolution choices are deleted. Files on this machine and GitHub are unchanged, and the same conflicts will be detected by the next manual sync.', okLabel:'Cancel workspace', danger:true, onOk:()=>ask('githubSyncConflictDiscard',{targetId}) }); }

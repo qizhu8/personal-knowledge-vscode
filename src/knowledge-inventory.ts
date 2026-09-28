@@ -7,6 +7,7 @@ export interface KnowledgeInventoryEntry {
   area: string; relativePath: string; fullPath: string; fingerprint: string;
   mtimeMs: number; size: number; category: string; title: string; slug: string;
   name: string; description: string; type: string; tags: string; source_project: string; extension: string;
+  knowledgeId?: string; knowledgeRevision?: number; aliases?: string[];
   pinned?: boolean;
 }
 export interface KnowledgeInventorySnapshot {
@@ -33,6 +34,7 @@ export class KnowledgeInventoryManager {
     return this.entries("notes").filter(entry => entry.extension === ".md").map(entry => ({
       slug: entry.slug, title: entry.title, description: entry.description, type: entry.type,
       tags: entry.tags, pinned: false, category: entry.category,
+      knowledgeId: entry.knowledgeId, revision: entry.knowledgeRevision, aliases: entry.aliases || [],
       created_at: new Date(entry.mtimeMs).toISOString(), updated_at: new Date(entry.mtimeMs).toISOString(),
     })).sort((left, right) => right.updated_at.localeCompare(left.updated_at));
   }
@@ -40,6 +42,7 @@ export class KnowledgeInventoryManager {
     return this.entries("skills").filter(entry => entry.extension === ".md").map(entry => ({
       name: entry.name, description: entry.description, category: entry.category, tags: entry.tags,
       source_project: entry.source_project, pinned: !!entry.pinned, updated_at: new Date(entry.mtimeMs).toISOString(),
+      knowledgeId: entry.knowledgeId, revision: entry.knowledgeRevision, aliases: entry.aliases || [],
     })).sort((left, right) => left.name.localeCompare(right.name));
   }
   scripts(): any[] {
@@ -51,6 +54,18 @@ export class KnowledgeInventoryManager {
       path: entry.relativePath, file: path.posix.basename(entry.relativePath), category: entry.category || "(root)",
       extension: entry.extension, lang: language(entry.extension), size: entry.size, updatedAt: new Date(entry.mtimeMs).toISOString(),
     })).sort((left, right) => left.path.localeCompare(right.path));
+  }
+  recipes(): any[] {
+    return this.entries("recipes").map(entry => ({
+      recipeId: entry.slug.slice(entry.slug.lastIndexOf(".") + 1),
+      name: entry.name,
+      description: entry.description,
+      category: entry.category === "Uncategorized" ? "" : entry.category,
+      knowledgeId: entry.knowledgeId,
+      revision: entry.knowledgeRevision,
+      aliases: entry.aliases || [],
+      path: entry.relativePath,
+    })).sort((left, right) => left.recipeId.localeCompare(right.recipeId));
   }
   folders(area: string): string[] {
     const cached = this.folderCache.get(area);

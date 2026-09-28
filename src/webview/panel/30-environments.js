@@ -120,7 +120,7 @@ function onEnvPackages(d) {
       <input id="pkg-filter" placeholder="filter…" style="font-size:11px;width:130px" oninput="filterPkgs()">
       <button class="tbtn" style="font-size:11px" onclick="viewEnvPackages('${esc(d.id)}',true)">${uiIcon('refresh', 'Refresh')}</button>
     </div>
-    <table class="pkg-table"><tbody id="pkg-body">${rows}</tbody></table>`);
+    <table class="pkg-table env-package-table"><thead><tr><th>Package</th><th>Version</th></tr></thead><tbody id="pkg-body">${rows}</tbody></table>`);
 }
 function filterPkgs() {
   const q = (document.getElementById('pkg-filter').value || '').toLowerCase();
@@ -191,12 +191,12 @@ const CMP_ST = {
 };
 const CMP_DELTA_ORDER = ['upgrade', 'downgrade', 'added', 'deleted', 'same'];
 let _cmpData = null;
-let _cmpSort = { col: 'status', dir: 1, deltaIdx: 0 };
+let _cmpSort = { col: '', dir: 0 };
 
 function renderEnvCompare(d) {
   const out = document.getElementById('cmp-out'); if (!out) return;
   _cmpData = d;
-  _cmpSort = { col: 'status', dir: 1, deltaIdx: 0 };
+  _cmpSort = { col: '', dir: 0 };
   const c = d.counts || {};
   const summary = CMP_DELTA_ORDER.filter(k => c[k])
     .map(k => `<span style="color:${CMP_ST[k].c}">${CMP_ST[k].s} ${c[k]} ${CMP_ST[k].label}</span>`).join(' · ');
@@ -215,23 +215,23 @@ function renderEnvCompare(d) {
 }
 
 function cmpHeader() {
-  const arrow = k => _cmpSort.col === k ? (_cmpSort.dir > 0 ? ' ▲' : ' ▼') : '';
-  const dh = _cmpSort.col === 'status' ? ' ' + CMP_ST[CMP_DELTA_ORDER[_cmpSort.deltaIdx]].s : '';
+  const arrow = key => _cmpSort.col === key ? (_cmpSort.dir > 0 ? ' ▲' : ' ▼') : '';
+  const ariaSort = key => _cmpSort.col === key ? (_cmpSort.dir > 0 ? 'ascending' : 'descending') : 'none';
+  const header = (key, label, title = '') => `<th class="cmp-sort${key === 'status' ? ' cmp-delta' : ''}" tabindex="0" aria-sort="${ariaSort(key)}" onclick="sortCmp('${key}')" onkeydown="cmpSortKeydown(event,'${key}')"${title ? ` title="${title}"` : ''}>${label}${arrow(key)}</th>`;
   return `<tr>
-    <th class="cmp-sort" onclick="sortCmp('name')">Package${arrow('name')}</th>
-    <th class="cmp-sort" onclick="sortCmp('va')">${esc(_cmpData.a.name)}${arrow('va')}</th>
-    <th class="cmp-sort" onclick="sortCmp('vb')">${esc(_cmpData.b.name)}${arrow('vb')}</th>
-    <th class="cmp-sort cmp-delta" onclick="sortCmp('status')" title="click to cycle: prioritize upgrade / downgrade / added / deleted / same">Δ${dh}</th>
+    ${header('name', 'Package')}
+    ${header('va', esc(_cmpData.a.name))}
+    ${header('vb', esc(_cmpData.b.name))}
+    ${header('status', 'Δ', 'Sort by change type')}
   </tr>`;
 }
 
 function cmpSortRows() {
   const rows = (_cmpData && _cmpData.rows) ? _cmpData.rows.slice() : [];
+  if (!_cmpSort.col) return rows;
   if (_cmpSort.col === 'status') {
-    const prio = CMP_DELTA_ORDER[_cmpSort.deltaIdx];
     const base = { added: 0, deleted: 1, upgrade: 2, downgrade: 3, same: 4 };
-    const rank = s => s === prio ? -1 : base[s];
-    rows.sort((a, b) => (rank(a.status) - rank(b.status)) || a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+    rows.sort((a, b) => _cmpSort.dir * ((base[a.status] - base[b.status]) || a.name.toLowerCase().localeCompare(b.name.toLowerCase())));
   } else {
     const k = _cmpSort.col;
     rows.sort((a, b) => _cmpSort.dir * String(a[k]).localeCompare(String(b[k]), undefined, { numeric: true, sensitivity: 'base' }));
@@ -240,12 +240,15 @@ function cmpSortRows() {
 }
 
 function sortCmp(col) {
-  if (col === 'status') {
-    if (_cmpSort.col === 'status') _cmpSort.deltaIdx = (_cmpSort.deltaIdx + 1) % CMP_DELTA_ORDER.length;
-    else { _cmpSort.col = 'status'; _cmpSort.deltaIdx = 0; }
-  } else if (_cmpSort.col === col) _cmpSort.dir *= -1;
-  else { _cmpSort.col = col; _cmpSort.dir = 1; }
+  if (_cmpSort.col !== col) _cmpSort = { col, dir: 1 };
+  else if (_cmpSort.dir > 0) _cmpSort.dir = -1;
+  else _cmpSort = { col: '', dir: 0 };
   renderCmpBody();
+}
+function cmpSortKeydown(event, col) {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  event.preventDefault();
+  sortCmp(col);
 }
 
 function renderCmpBody() {
@@ -382,4 +385,3 @@ function onEnvDeleteScript(d) {
   if (d.error) { envOut('<div style="color:#f87171">' + esc(d.error) + '</div>'); return; }
   envOut(`<div class="ec-row" style="margin:10px 0 6px"><b>${uiIcon('file-code')} Delete script</b><span style="font-size:11px;color:var(--muted)">copied to clipboard — review and run it yourself; the extension will not execute it</span></div><pre class="env-activate">${esc(d.script)}</pre>`);
 }
-

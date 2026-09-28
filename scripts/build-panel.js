@@ -7,8 +7,12 @@ const sourceDir = path.join(root, "src", "webview", "panel");
 const outputDir = path.join(root, "dist", "webview");
 const parts = [
   path.join(root, "src", "webview", "components", "disclosure-action-card.js"),
+  path.join(root, "src", "webview", "components", "accessible-interactions.js"),
+  path.join(root, "src", "webview", "components", "sortable-data-table.js"),
   "00-core.js",
+  "05-onboarding.js",
   "10-chatroom.js",
+  path.join(root, "src", "webview", "recipe-graph-shared.js"),
   "15-projects.js",
   "20-knowledge.js",
   "30-environments.js",
@@ -17,6 +21,7 @@ const parts = [
   "46-github-sync.js",
   "50-mcp.js",
   "51-skill-router.js",
+  "52-background-tasks.js",
   "60-init.js",
 ];
 

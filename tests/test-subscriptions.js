@@ -50,6 +50,47 @@ async function testMqttRefreshWaitsForActiveMutation() {
   assert.strictEqual(manager.mqttRefreshesInFlight.size, 0);
 }
 
+async function testGatewayStartupGrace() {
+  const createManager = () => {
+    const warnings = [];
+    const manager = Object.create(SharedMarketManager.prototype);
+    Object.assign(manager, {
+      state: { enabled: true, port: 19877, nodeId: "test-node", displayName: "Test", advertisedHost: "127.0.0.1", shares: [], subscriptions: [] },
+      gatewayStatus: "stopped",
+      gatewayError: "",
+      gatewayStartupDeadline: 0,
+      gatewayStartupLastError: "",
+      gatewayStartupRetryTimer: undefined,
+      warned: new Set(),
+      disposed: false,
+      events: { onWarning: message => warnings.push(message) },
+    });
+    return { manager, warnings };
+  };
+
+  const recovering = createManager();
+  recovering.manager.ensureGateway = async () => { throw new Error("Gateway is still booting"); };
+  await recovering.manager.refreshGatewayStatus();
+  assert.strictEqual(recovering.manager.snapshot.gatewayStatus, "starting", "the first startup failure must remain in grace");
+  assert.strictEqual(recovering.manager.snapshot.gatewayError, "", "startup errors must remain non-actionable during grace");
+  assert.deepStrictEqual(recovering.warnings, [], "startup grace must not emit an unavailable warning");
+  assert(recovering.manager.gatewayStartupRetryTimer, "startup grace must schedule another probe");
+  recovering.manager.ensureGateway = async () => {};
+  await recovering.manager.refreshGatewayStatus();
+  assert.strictEqual(recovering.manager.snapshot.gatewayStatus, "running", "recovery inside grace must immediately become running");
+  assert.strictEqual(recovering.manager.gatewayStartupRetryTimer, undefined, "successful recovery must clear the startup retry");
+
+  const failing = createManager();
+  failing.manager.ensureGateway = async () => { throw new Error("last startup failure"); };
+  await failing.manager.refreshGatewayStatus();
+  failing.manager.gatewayStartupDeadline = Date.now() - 1;
+  await failing.manager.refreshGatewayStatus();
+  assert.strictEqual(failing.manager.snapshot.gatewayStatus, "error", "persistent failure must become actionable after grace");
+  assert.strictEqual(failing.manager.snapshot.gatewayError, "last startup failure", "the promoted state must preserve the last probe error");
+  assert.strictEqual(failing.warnings.length, 1, "grace expiry must emit one unavailable warning");
+  assert.strictEqual(failing.manager.gatewayStartupRetryTimer, undefined, "grace expiry must clear the startup retry");
+}
+
 function subscriberProof(statePath, shareId) {
   const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
   const unsigned = { schema: 1, nodeId: state.nodeId, name: state.displayName, publicKey: state.publicKey, shareId, timestamp: Date.now(), nonce: randomBytes(12).toString("base64url") };
@@ -85,6 +126,8 @@ async function testGitHubBranchMount() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-github-mount-test-"));
   const manager = new SharedMarketManager(root, path.join(__dirname, "..", "dist", "subscription-gateway.js"), "GitHub Mount Test");
   try {
+    let lazyReads = 0;
+    const progress = [];
     const first = await manager.mountGitHubBranch({
       credentialTargetId: "team-credential", name: "Team Knowledge", repository: "https://github.com/example/knowledge.git", branch: "main",
       commit: "1".repeat(40), account: "team-user",
@@ -93,9 +136,14 @@ async function testGitHubBranchMount() {
         { path: "skills/Coding/Review.md", content: Buffer.from("# Review\nMounted skill\n") },
         { path: "notes/Research/Status.md", content: Buffer.from("# Status\nMounted note\n") },
         { path: "packages/tools/README.md", content: Buffer.from("# Tools\n") },
-        { path: "packages/tools/src/tool.js", content: Buffer.from("export const value = 1;\n") },
+        { path: "packages/tools/src/tool.js", size: 24, content: async () => { lazyReads++; return Buffer.from("export const value = 1;\n"); } },
       ],
-    }, "Remote Team");
+    }, "Remote Team", update => progress.push(update));
+    assert.strictEqual(lazyReads, 1, "GitHub mount must materialize lazy file readers exactly once");
+    assert(progress.some(update => update.stage === "reading" && update.path === "packages/tools/src/tool.js"), "GitHub mount must report the file being read");
+    assert(progress.some(update => update.stage === "reading" && update.path === "packages/tools/src/tool.js" && update.currentFileBytes === 24), "GitHub mount must report the current file size");
+    assert(progress.some(update => update.stage === "caching" && update.current === 4), "GitHub mount must report cache progress");
+    assert.strictEqual(progress.at(-1).stage, "finalizing", "GitHub mount must report finalization before publishing state");
     assert.strictEqual(first.source.type, "github");
     assert.strictEqual(first.source.targetId, undefined, "direct subscriptions do not require a GitHub Sync target");
     assert.strictEqual(first.source.credentialTargetId, "team-credential");
@@ -137,6 +185,7 @@ async function main() {
   testMalformedStateRecovery();
   await testGitHubBranchMount();
   await testMqttRefreshWaitsForActiveMutation();
+  await testGatewayStartupGrace();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-subscriptions-test-"));
   const store = path.join(root, "store");
   const state = path.join(root, "state");
