@@ -45,7 +45,10 @@ export async function withCrossProcessLock<T>(lockPath: string, owner: string, t
 export function withCrossProcessLockSync<T>(lockPath: string, owner: string, action: () => T): T {
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   const record: LockRecord = { pid: process.pid, nonce: randomUUID(), acquiredAt: Date.now(), owner };
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const deadline = Date.now() + 2_000;
+  const leaseMs = 30_000;
+  const waitArray = new Int32Array(new SharedArrayBuffer(4));
+  while (true) {
     try {
       const fd = fs.openSync(lockPath, "wx", 0o600);
       try { fs.writeFileSync(fd, JSON.stringify(record)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
@@ -57,9 +60,15 @@ export function withCrossProcessLockSync<T>(lockPath: string, owner: string, act
     } catch (error: any) {
       if (error?.code !== "EEXIST") throw error;
       const existing = readLock(lockPath);
-      if (existing && processAlive(existing.pid)) throw new Error(`${owner} is busy in another PKM window (PID ${existing.pid}). Try again.`);
-      try { fs.unlinkSync(lockPath); } catch { /* another contender recovered it */ }
+      const expired = !!existing && Date.now() - Number(existing.acquiredAt || 0) > leaseMs;
+      if (!existing || !processAlive(existing.pid) || expired) {
+        try { fs.unlinkSync(lockPath); } catch { /* another contender recovered it */ }
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`${owner} is busy in another PKM window (PID ${existing.pid}). Try again.`);
+      }
+      Atomics.wait(waitArray, 0, 0, 50);
     }
   }
-  throw new Error(`${owner} lock could not be acquired.`);
 }
