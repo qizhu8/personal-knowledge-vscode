@@ -299,6 +299,110 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
       return { store, skills, catalog, target };
     };
 
+    const orderedRemoteStore = path.join(root, "ordered-remote-store");
+    const orderedRemoteSkills = path.join(orderedRemoteStore, "skills", "Shared");
+    fs.mkdirSync(orderedRemoteSkills, { recursive: true });
+    const orderedRemoteCatalog = emptyCatalog();
+    const orderedRemotePublisher = normalizeGitHubSyncTarget({
+      name: "Ordered remote publisher",
+      repository: remote,
+      branch: "ordered-operations"
+    }, () => "target-ordered-remote-publisher");
+    const orderedRemoteConsumer = normalizeGitHubSyncTarget({
+      name: "Ordered remote consumer",
+      repository: remote,
+      branch: "ordered-operations"
+    }, () => "target-ordered-remote-consumer");
+    rememberSync(orderedRemoteConsumer, await syncGitHubTarget(
+      orderedRemoteConsumer,
+      emptyCatalog(),
+      checkoutRoot,
+      undefined,
+      path.join(root, "ordered-remote-consumer-store"),
+    ));
+    orderedRemoteConsumer.pendingDeletions = [{
+      type: "skills",
+      itemId: "knowledge_remote_later",
+      deletedAt: "2000-01-01T00:00:00.000Z",
+      category: "Shared",
+      privacy: "public",
+    }];
+    const remoteLaterPath = path.join(orderedRemoteSkills, "Remote Later.md");
+    fs.writeFileSync(remoteLaterPath, skill("Remote Later", "created after the local deletion"));
+    orderedRemoteCatalog.skills = [{
+      id: "knowledge_remote_later",
+      label: "Remote Later",
+      cat: "Shared",
+      isPrivate: false,
+      source: remoteLaterPath,
+      destination: "skills/Shared/Remote Later.md",
+    }];
+    rememberSync(orderedRemotePublisher, await syncGitHubTarget(
+      orderedRemotePublisher,
+      orderedRemoteCatalog,
+      checkoutRoot,
+      undefined,
+      orderedRemoteStore,
+    ));
+    const orderedRemoteManifest = JSON.parse(run(root, [
+      "--git-dir", remote, "show", "ordered-operations:.pkm-github-sync.json"
+    ]));
+    assert(orderedRemoteManifest.files.every(file => file.localModifiedAt === undefined),
+      "machine-local file timestamps must guide reconciliation without leaking into the shared manifest");
+    const acceptedLaterRemote = await syncGitHubTarget(
+      orderedRemoteConsumer,
+      emptyCatalog(),
+      checkoutRoot,
+      undefined,
+      path.join(root, "ordered-remote-consumer-store"),
+    );
+    assert.strictEqual(acceptedLaterRemote.resolutionReport.rules["newer-remote-operation"], 1,
+      "a Remote create after an older Local deletion must be accepted automatically");
+    assert(acceptedLaterRemote.pulled.includes("skills/Shared/Remote Later.md"));
+    assert(acceptedLaterRemote.acknowledgedDeletions.some(deletion => deletion.itemId === "knowledge_remote_later"),
+      "accepting the later Remote create must clear the superseded Local deletion evidence");
+
+    const localLaterPath = path.join(orderedRemoteSkills, "Local Later.md");
+    fs.writeFileSync(localLaterPath, skill("Local Later", "created before the later local deletion"));
+    orderedRemoteCatalog.skills.push({
+      id: "knowledge_local_later",
+      label: "Local Later",
+      cat: "Shared",
+      isPrivate: false,
+      source: localLaterPath,
+      destination: "skills/Shared/Local Later.md",
+    });
+    rememberSync(orderedRemotePublisher, await syncGitHubTarget(
+      orderedRemotePublisher,
+      orderedRemoteCatalog,
+      checkoutRoot,
+      undefined,
+      orderedRemoteStore,
+    ));
+    rememberSync(orderedRemoteConsumer, acceptedLaterRemote);
+    orderedRemoteConsumer.pendingDeletions = [{
+      type: "skills",
+      itemId: "knowledge_local_later",
+      deletedAt: "2100-01-01T00:00:00.000Z",
+      category: "Shared",
+      privacy: "public",
+    }];
+    const acceptedLaterLocalDelete = await syncGitHubTarget(
+      orderedRemoteConsumer,
+      emptyCatalog(),
+      checkoutRoot,
+      undefined,
+      path.join(root, "ordered-remote-consumer-store"),
+    );
+    assert.strictEqual(acceptedLaterLocalDelete.resolutionReport.rules["newer-local-operation"], 1,
+      "a Local deletion after an older Remote create must remove the Remote entity automatically");
+    assert(acceptedLaterLocalDelete.acknowledgedDeletions.some(deletion => deletion.itemId === "knowledge_local_later"));
+    assert.throws(
+      () => run(root, ["--git-dir", remote, "show", "ordered-operations:skills/Shared/Local Later.md"]),
+      /does not exist in|exists on disk, but not in/i,
+      "the later Local deletion must remove the older Remote file",
+    );
+
     const linux = createMachine("linux");
     const windows = createMachine("windows");
     const authority = createMachine("authority");
@@ -642,17 +746,19 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
       type: "skills", itemId: "Shared/Two", deletedAt: new Date().toISOString(), category: "Shared", privacy: "public"
     }];
     fs.writeFileSync(path.join(windows.skills, "One.md"), skill("One", "windows modifies while linux deletes"));
-    await assert.rejects(
-      () => syncGitHubTarget(windows.target, windows.catalog, checkoutRoot, undefined, windows.store),
-      error => error instanceof GitHubSyncConflictError
-        && error.conflicts.some(conflict => conflict.path === "skills/Shared/Two.md" && !conflict.local && !!conflict.remote),
-      "an explicit local deletion must conflict with a concurrent remote edit"
+    const laterWindowsDeletion = await syncGitHubTarget(windows.target, windows.catalog, checkoutRoot, undefined, windows.store);
+    rememberSync(windows.target, laterWindowsDeletion);
+    assert.strictEqual(laterWindowsDeletion.resolutionReport.rules["newer-local-operation"], 1,
+      "a Local deletion after an older Remote edit must win without manual conflict resolution");
+    assert.throws(
+      () => run(root, ["--git-dir", remote, "show", "main:skills/Shared/Two.md"]),
+      /does not exist in|exists on disk, but not in/i,
     );
 
     run(verify, ["pull", "--ff-only"]);
     const remoteOne = skill("One", "windows modifies while linux deletes");
     fs.writeFileSync(path.join(verify, "skills", "Shared", "One.md"), remoteOne);
-    fs.rmSync(path.join(verify, "skills", "Shared", "Two.md"));
+    fs.rmSync(path.join(verify, "skills", "Shared", "Two.md"), { force: true });
     const manifestPath = path.join(verify, ".pkm-github-sync.json");
     const remoteManifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
     remoteManifest.files = remoteManifest.files
@@ -660,7 +766,8 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
       .map(file => file.path === "skills/Shared/One.md"
         ? { ...file, digest: createHash("sha256").update(remoteOne).digest("hex") }
         : file);
-    remoteManifest.deletions = [...(remoteManifest.deletions || []), {
+    remoteManifest.deletions = [...(remoteManifest.deletions || [])
+      .filter(deletion => !(deletion.type === "skills" && deletion.itemId === "Shared/Two")), {
       type: "skills", itemId: "Shared/Two", deletedAt: new Date().toISOString(), category: "Shared", privacy: "public"
     }];
     fs.writeFileSync(manifestPath, `${JSON.stringify(remoteManifest, null, 2)}\n`);
@@ -674,29 +781,28 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
     linux.target.pendingDeletions = [{
       type: "skills", itemId: "Shared/One", deletedAt: new Date().toISOString(), category: "Shared", privacy: "public"
     }];
-    let localResolutionConflict;
-    await assert.rejects(
-      async () => {
-        try {
-          await syncGitHubTarget(linux.target, linux.catalog, checkoutRoot, undefined, linux.store);
-        } catch (error) {
-          localResolutionConflict = error;
-          throw error;
-        }
-      },
-      error => error instanceof GitHubSyncConflictError
-        && error.conflicts.some(conflict => conflict.path === "skills/Shared/One.md" && !conflict.local && !!conflict.remote)
-        && error.conflicts.some(conflict => conflict.path === "skills/Shared/Two.md" && !!conflict.local && !conflict.remote),
-      "modify/delete and delete/modify races must both require explicit conflict approval"
+    const orderedRaceResolution = await syncGitHubTarget(linux.target, linux.catalog, checkoutRoot, undefined, linux.store);
+    rememberSync(linux.target, orderedRaceResolution);
+    linux.target.pendingDeletions = (linux.target.pendingDeletions || []).filter(deletion =>
+      !orderedRaceResolution.acknowledgedDeletions.some(acknowledged =>
+        acknowledged.type === deletion.type && acknowledged.itemId === deletion.itemId));
+    assert.strictEqual(orderedRaceResolution.resolutionReport.rules["newer-local-operation"], 2,
+      "later Local delete and modify operations must both beat older Remote operations without manual conflicts");
+    run(verify, ["pull", "--ff-only"]);
+    assert.strictEqual(fs.existsSync(path.join(verify, "skills", "Shared", "One.md")), false,
+      "the later Local deletion must remove the older Remote edit");
+    assert.strictEqual(
+      fs.readFileSync(path.join(verify, "skills", "Shared", "Two.md"), "utf8"),
+      skill("Two", "linux modifies while windows deletes"),
+      "the later Local modification must recreate the file after the older Remote deletion",
     );
 
-    const acceptedRemoteCommit = localResolutionConflict.remoteCommit;
-    const acceptedManifest = JSON.parse(run(verify, ["show", `${acceptedRemoteCommit}:.pkm-github-sync.json`]));
-    assert(
-      acceptedManifest.deletions.some(deletion => deletion.type === "skills" && deletion.itemId === "Shared/Two"),
-      "the accepted Remote commit must preserve deletion evidence as the next merge base"
-    );
-    fs.writeFileSync(path.join(linux.skills, "One.md"), remoteOne);
+    const unchangedAfterOrderedRace = await syncGitHubTarget(linux.target, linux.catalog, checkoutRoot, undefined, linux.store);
+    rememberSync(linux.target, unchangedAfterOrderedRace);
+    assert.strictEqual(unchangedAfterOrderedRace.changed, false,
+      "accepted operation order must become the stable next merge base");
+
+    fs.writeFileSync(path.join(linux.skills, "One.md"), skill("One", "linux recreates after deletion"));
     linux.catalog.skills.push({
       id: "Shared/One",
       label: "One",
@@ -705,34 +811,13 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
       source: path.join(linux.skills, "One.md"),
       destination: "skills/Shared/One.md"
     });
-    linux.target.pendingDeletions = [];
-    linux.target.lastSync.commit = acceptedRemoteCommit;
-    fs.rmSync(path.join(linux.skills, "Two.md"));
-    linux.catalog.skills = linux.catalog.skills.filter(file => file.id !== "Shared/Two");
-    const acceptedRemoteDeletion = await syncGitHubTarget(linux.target, linux.catalog, checkoutRoot, undefined, linux.store);
-    rememberSync(linux.target, acceptedRemoteDeletion);
-    assert.strictEqual(
-      acceptedRemoteDeletion.changed,
-      false,
-      "accepting a Remote tombstone must treat the still-missing local file as unchanged without requiring local deletion evidence"
-    );
-
-    fs.writeFileSync(path.join(linux.skills, "Two.md"), skill("Two", "linux modifies while windows deletes"));
-    linux.catalog.skills.push({
-      id: "Shared/Two",
-      label: "Two",
-      cat: "Shared",
-      isPrivate: false,
-      source: path.join(linux.skills, "Two.md"),
-      destination: "skills/Shared/Two.md"
-    });
-    const acceptedLocal = await syncGitHubTarget(linux.target, linux.catalog, checkoutRoot, undefined, linux.store);
-    rememberSync(linux.target, acceptedLocal);
-    assert(acceptedLocal.changed, "choosing the local file against a remote tombstone must create a push");
+    const recreatedLocal = await syncGitHubTarget(linux.target, linux.catalog, checkoutRoot, undefined, linux.store);
+    rememberSync(linux.target, recreatedLocal);
+    assert(recreatedLocal.changed, "a new Local operation after an accepted tombstone must recreate the Remote entity");
     run(verify, ["pull", "--ff-only"]);
     assert.strictEqual(
-      fs.readFileSync(path.join(verify, "skills", "Shared", "Two.md"), "utf8"),
-      skill("Two", "linux modifies while windows deletes")
+      fs.readFileSync(path.join(verify, "skills", "Shared", "One.md"), "utf8"),
+      skill("One", "linux recreates after deletion")
     );
 
     fs.writeFileSync(path.join(verify, "skills", "Shared", "One.md"), skill("One", "tampered without manifest update"));

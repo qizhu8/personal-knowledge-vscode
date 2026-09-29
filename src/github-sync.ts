@@ -24,6 +24,8 @@ export type GitHubSyncResolutionRule =
   | "initial-remote-authority"
   | "move-edit"
   | "deterministic-three-way"
+  | "newer-remote-operation"
+  | "newer-local-operation"
   | "remote-only"
   | "local-only"
   | "unchanged"
@@ -689,16 +691,16 @@ function managedPath(root: string, relative: string): string {
   return current;
 }
 
-function collectItemFiles(item: GitHubSyncCatalogItem): Array<{ destination: string; member: string; content: Buffer }> {
+function collectItemFiles(item: GitHubSyncCatalogItem): Array<{ destination: string; member: string; content: Buffer; localModifiedAt?: number }> {
   const destination = githubSyncSafeRelativePath(item.destination);
   if (item.content !== undefined) return [{ destination, member: "", content: Buffer.from(item.content, "utf8") }];
   if (!item.source) throw new Error(`Catalog item ${item.id} has no source.`);
   const source = path.resolve(item.source);
   const stat = fs.lstatSync(source);
   if (stat.isSymbolicLink()) throw new Error(`Symbolic links cannot be synchronized: ${item.source}`);
-  if (stat.isFile()) return [{ destination, member: "", content: fs.readFileSync(source) }];
+  if (stat.isFile()) return [{ destination, member: "", content: fs.readFileSync(source), localModifiedAt: stat.mtimeMs }];
   if (!stat.isDirectory()) throw new Error(`Unsupported catalog source: ${item.source}`);
-  const files: Array<{ destination: string; member: string; content: Buffer }> = [];
+  const files: Array<{ destination: string; member: string; content: Buffer; localModifiedAt?: number }> = [];
   const walk = (directory: string, relative: string): void => {
     for (const name of fs.readdirSync(directory).sort((left, right) => left.localeCompare(right))) {
       if (name === ".git") continue;
@@ -707,7 +709,7 @@ function collectItemFiles(item: GitHubSyncCatalogItem): Array<{ destination: str
       const childStat = fs.lstatSync(child);
       if (childStat.isSymbolicLink()) throw new Error(`Symbolic links cannot be synchronized: ${child}`);
       if (childStat.isDirectory()) walk(child, childRelative);
-      else if (childStat.isFile()) files.push({ destination: `${destination}/${childRelative}`, member: childRelative, content: fs.readFileSync(child) });
+      else if (childStat.isFile()) files.push({ destination: `${destination}/${childRelative}`, member: childRelative, content: fs.readFileSync(child), localModifiedAt: childStat.mtimeMs });
     }
   };
   walk(source, "");
@@ -723,6 +725,7 @@ interface GitHubSyncManagedFile {
   privacy: GitHubSyncPrivacy;
   digest: string;
   content?: Buffer;
+  localModifiedAt?: number;
 }
 
 interface GitHubSyncManifest {
@@ -799,6 +802,7 @@ function selectedFiles(target: GitHubSyncTarget, catalog: GitHubSyncCatalog): {
           privacy: item.isPrivate ? "private" : "public",
           digest,
           content,
+          localModifiedAt: file.localModifiedAt,
         });
         entries.push({ path: file.destination, digest });
       }
@@ -827,7 +831,7 @@ export function manifestJson(files: GitHubSyncManagedFile[], deletions: GitHubSy
       required: [...GITHUB_SYNC_REQUIRED_CAPABILITIES],
       storage: "pkm.github.publication/v1",
     },
-    files: ordered.map(({ content, ...file }) => file),
+    files: ordered.map(({ content, localModifiedAt, ...file }) => file),
     deletions: [...deletions].sort((left, right) =>
       `${left.type}\0${left.itemId}`.localeCompare(`${right.type}\0${right.itemId}`)),
   }, null, 2) + "\n";
@@ -1935,6 +1939,7 @@ async function syncGitHubTargetAttempt(
         ...managed,
         digest: fileDigest(content),
         content,
+        localModifiedAt: fs.lstatSync(source).mtimeMs,
       });
     }
   }
@@ -1983,6 +1988,16 @@ async function syncGitHubTargetAttempt(
     rules: { ...resolutionRules },
     generatedAt: new Date().toISOString(),
   });
+  const remoteEntityOperationAt = async (files: GitHubSyncManagedFile[] | undefined): Promise<number | undefined> => {
+    if (!remoteCommit || !files?.length) return undefined;
+    const value = await git(checkout, ["log", "-1", "--format=%cI", remoteCommit, "--", ...files.map(file => file.path)]);
+    const timestamp = Date.parse(value.trim());
+    return Number.isFinite(timestamp) ? timestamp : undefined;
+  };
+  const localEntityOperationAt = (files: GitHubSyncManagedFile[] | undefined): number | undefined => {
+    const values = (files || []).map(file => file.localModifiedAt).filter((value): value is number => Number.isFinite(value));
+    return values.length ? Math.max(...values) : undefined;
+  };
 
   const replaceRemoteEntity = (key: string, files: GitHubSyncManagedFile[] | undefined): void => {
     for (const [relative, file] of finalRemote) if (entityKey(file.type, file.itemId) === key) finalRemote.delete(relative);
@@ -2095,6 +2110,44 @@ async function syncGitHubTargetAttempt(
     const remoteState = remoteDeletionMap.has(key) ? "deleted" : entityState(remote);
     const localChanged = localState !== baseState;
     const remoteChanged = remoteState !== baseState;
+
+    if (localChanged && remoteChanged && !local && remote && localDeletionMap.has(key)) {
+      const localDeletion = localDeletionMap.get(key)!;
+      const localOperationAt = Date.parse(localDeletion.deletedAt);
+      const remoteOperationAt = await remoteEntityOperationAt(remote);
+      if (remoteOperationAt !== undefined && remoteOperationAt !== localOperationAt) {
+        acknowledgedDeletions.push(localDeletion);
+        if (remoteOperationAt > localOperationAt) {
+          recordResolution("newer-remote-operation", remote, base);
+          replaceRemoteEntity(key, remote);
+          finalDeletions.delete(key);
+          applyRemoteEntity(base, local, remote);
+        } else {
+          recordResolution("newer-local-operation", undefined, base, remote);
+          replaceRemoteEntity(key, undefined);
+          finalDeletions.set(key, localDeletion);
+        }
+        continue;
+      }
+    }
+    if (localChanged && remoteChanged && local && !remote && remoteDeletionMap.has(key)) {
+      const remoteDeletion = remoteDeletionMap.get(key)!;
+      const localOperationAt = localEntityOperationAt(local);
+      const remoteOperationAt = Date.parse(remoteDeletion.deletedAt);
+      if (localOperationAt !== undefined && Number.isFinite(remoteOperationAt) && localOperationAt !== remoteOperationAt) {
+        if (localOperationAt > remoteOperationAt) {
+          recordResolution("newer-local-operation", local, base);
+          replaceRemoteEntity(key, local);
+          finalDeletions.delete(key);
+        } else {
+          recordResolution("newer-remote-operation", undefined, base, local);
+          replaceRemoteEntity(key, undefined);
+          finalDeletions.set(key, remoteDeletion);
+          applyRemoteEntity(base, local, undefined);
+        }
+        continue;
+      }
+    }
 
     if (localChanged && remoteChanged && localState !== remoteState) {
       if (!local || !remote) {
