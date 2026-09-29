@@ -187,6 +187,71 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
     assert.strictEqual(layoutSecondMachine.changed, false,
       "different graph coordinates on another machine must not conflict or create a commit");
 
+    const frontmatterStore = path.join(root, "frontmatter-store");
+    const frontmatterSource = path.join(frontmatterStore, "skills", "Shared", "Migrated.md");
+    fs.mkdirSync(path.dirname(frontmatterSource), { recursive: true });
+    const legacyFrontmatter = "---\nname: \"Migrated\"\ndescription: \"same metadata\"\ntags: [\"pkm\", \"sync\"]\n---\n# Migrated\n\nSame body.\n";
+    const migratedFrontmatter = "---\nname: \"Migrated\"\ndescription: \"same metadata\"\ntags:\n  - sync\n  - pkm\nschema: 1\nknowledgeId: \"knowledge_migrated\"\nrevision: 1\naliases: []\n---\n# Migrated\n\nSame body.\n";
+    fs.writeFileSync(frontmatterSource, legacyFrontmatter);
+    const frontmatterCatalog = emptyCatalog();
+    frontmatterCatalog.skills = [{
+      id: "Shared/Migrated",
+      label: "Migrated",
+      cat: "Shared",
+      isPrivate: false,
+      source: frontmatterSource,
+      destination: "skills/Shared/Migrated.md"
+    }];
+    const frontmatterPublisher = normalizeGitHubSyncTarget({
+      name: "Legacy frontmatter publisher",
+      repository: remote,
+      branch: "frontmatter-migration"
+    }, () => "target-frontmatter-publisher");
+    await syncGitHubTarget(frontmatterPublisher, frontmatterCatalog, checkoutRoot, undefined, frontmatterStore);
+
+    fs.writeFileSync(frontmatterSource, migratedFrontmatter);
+    frontmatterCatalog.skills[0].id = "knowledge_migrated";
+    const frontmatterConsumer = normalizeGitHubSyncTarget({
+      name: "Migrated frontmatter consumer",
+      repository: remote,
+      branch: "frontmatter-migration"
+    }, () => "target-frontmatter-consumer");
+    const frontmatterPreview = await previewGitHubSyncTarget(frontmatterConsumer, frontmatterCatalog, checkoutRoot);
+    assert.strictEqual(frontmatterPreview.same, 1,
+      "Initial comparison treats PKM-managed frontmatter migration and equivalent tags YAML as semantic equality");
+    assert.strictEqual(frontmatterPreview.modified, 0);
+    const frontmatterSync = await syncGitHubTarget(
+      frontmatterConsumer,
+      frontmatterCatalog,
+      checkoutRoot,
+      undefined,
+      frontmatterStore,
+    );
+    assert.strictEqual(frontmatterSync.resolutionReport.rules["initial-remote-authority"], 1,
+      "body-identical Markdown automatically uses Remote frontmatter during Initial Sync");
+    assert.strictEqual(frontmatterSync.changed, false,
+      "Initial Remote authority must not publish a local frontmatter-only commit");
+    assert.strictEqual(
+      run(root, ["--git-dir", remote, "show", "frontmatter-migration:skills/Shared/Migrated.md"]),
+      legacyFrontmatter.trim(),
+      "Initial Sync leaves Remote frontmatter unchanged",
+    );
+    assert.strictEqual(fs.readFileSync(frontmatterSource, "utf8"), legacyFrontmatter,
+      "Initial Sync replaces Local PKM frontmatter with the Remote canonical file");
+
+    fs.writeFileSync(frontmatterSource, legacyFrontmatter.replace("same metadata", "different metadata"));
+    const metadataConflictTarget = normalizeGitHubSyncTarget({
+      name: "Frontmatter metadata conflict",
+      repository: remote,
+      branch: "frontmatter-migration"
+    }, () => "target-frontmatter-metadata-conflict");
+    await assert.rejects(
+      () => syncGitHubTarget(metadataConflictTarget, frontmatterCatalog, checkoutRoot, undefined, frontmatterStore),
+      error => error instanceof GitHubSyncConflictError
+        && error.conflicts.some(conflict => conflict.path === "skills/Shared/Migrated.md"),
+      "human-authored frontmatter differences remain explicit conflicts even when the Markdown body is unchanged",
+    );
+
     const createMachine = name => {
       const store = path.join(root, `${name}-store`);
       const skills = path.join(store, "skills", "Shared");

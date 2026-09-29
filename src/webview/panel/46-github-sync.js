@@ -161,6 +161,7 @@ function githubSyncResolutionDiagram(report, files = []) {
     'force-local-authority':'Force local authority',
     'built-in-authority':'Built-in authority',
     'identical-convergence':'Identical convergence',
+    'initial-remote-authority':'Initial Remote authority',
     'move-edit':'Move + edit',
     'deterministic-three-way':'Three-way merge',
     'remote-only':'Remote-only pull',

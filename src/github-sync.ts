@@ -21,6 +21,7 @@ export type GitHubSyncResolutionRule =
   | "force-local-authority"
   | "built-in-authority"
   | "identical-convergence"
+  | "initial-remote-authority"
   | "move-edit"
   | "deterministic-three-way"
   | "remote-only"
@@ -1102,7 +1103,7 @@ export async function previewGitHubSyncTarget(
   for (const relative of [...paths].sort((left, right) => left.localeCompare(right))) {
     const local = localFiles.get(relative);
     const remote = remoteFiles.get(relative);
-    if (local && remote && local.digest === remote.digest) {
+    if (local && remote && (local.digest === remote.digest || frontmatterMigrationEquivalent(local, remote))) {
       same++;
       continue;
     }
@@ -1325,6 +1326,72 @@ const MANIFEST_PATH = ".pkm-github-sync.json";
 
 function fileDigest(content: Buffer): string {
   return createHash("sha256").update(content).digest("hex");
+}
+
+const PKM_MANAGED_FRONTMATTER_FIELDS = new Set(["schema", "knowledgeId", "revision", "aliases"]);
+
+function markdownFrontmatterParts(file: GitHubSyncManagedFile): { fields: Map<string, string>; body: string } | undefined {
+  if (!file.path.toLocaleLowerCase("en-US").endsWith(".md") || !file.content) return undefined;
+  const text = file.content.toString("utf8");
+  if (!Buffer.from(text, "utf8").equals(file.content)) return undefined;
+  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(text);
+  if (!match) return undefined;
+  const fields = new Map<string, string>();
+  let key = "";
+  let value: string[] = [];
+  const commit = (): void => {
+    if (key) fields.set(key, value.join("\n").trim());
+  };
+  for (const line of match[1].replace(/\r\n/g, "\n").split("\n")) {
+    const field = /^([A-Za-z][A-Za-z0-9_-]*):(?:\s*(.*))?$/.exec(line);
+    if (field) {
+      commit();
+      key = field[1];
+      value = [field[2] || ""];
+    } else if (key) {
+      value.push(line);
+    }
+  }
+  commit();
+  return { fields, body: match[2].replace(/\r\n/g, "\n") };
+}
+
+function normalizedTags(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const inline = value.trim();
+  let tags: string[];
+  if (inline.startsWith("[") && inline.endsWith("]")) {
+    try {
+      const parsed = JSON.parse(inline);
+      if (!Array.isArray(parsed)) return undefined;
+      tags = parsed.map(tag => String(tag));
+    } catch {
+      tags = inline.slice(1, -1).split(",").map(tag => tag.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
+    }
+  } else {
+    tags = inline.split("\n").map(line => /^\s*-\s*(.*?)\s*$/.exec(line)?.[1] || "")
+      .map(tag => tag.replace(/^["']|["']$/g, "")).filter(Boolean);
+  }
+  return JSON.stringify([...new Set(tags)].sort((left, right) => left.localeCompare(right)));
+}
+
+function frontmatterMigrationEquivalent(local: GitHubSyncManagedFile, remote: GitHubSyncManagedFile): boolean {
+  const localParts = markdownFrontmatterParts(local);
+  const remoteParts = markdownFrontmatterParts(remote);
+  if (!localParts || !remoteParts || localParts.body !== remoteParts.body) return false;
+  const hasManagedMigration = [...PKM_MANAGED_FRONTMATTER_FIELDS]
+    .some(key => localParts.fields.get(key) !== remoteParts.fields.get(key));
+  if (!hasManagedMigration && local.digest !== remote.digest) return false;
+  const keys = new Set([...localParts.fields.keys(), ...remoteParts.fields.keys()]);
+  for (const key of keys) {
+    if (PKM_MANAGED_FRONTMATTER_FIELDS.has(key)) continue;
+    if (key === "tags") {
+      if (normalizedTags(localParts.fields.get(key)) !== normalizedTags(remoteParts.fields.get(key))) return false;
+      continue;
+    }
+    if (localParts.fields.get(key) !== remoteParts.fields.get(key)) return false;
+  }
+  return true;
 }
 
 function isBuiltInRecipe(file: GitHubSyncManagedFile | undefined): boolean {
@@ -1818,6 +1885,7 @@ async function syncGitHubTargetAttempt(
       const content = fs.readFileSync(managedPath(checkout, file.path));
       if (!file.digest) file.digest = fileDigest(content);
       validateManagedContent(file, content);
+      file.content = content;
     }
     const trackedManagedFiles = (await git(checkout, ["ls-files", "-z", "--cached", "--", ...GITHUB_SYNC_CONTENT_TYPES]))
       .split("\0")
@@ -2018,6 +2086,18 @@ async function syncGitHubTargetAttempt(
         continue;
       }
       const sameContent = entityContentState(local) === entityContentState(remote);
+      const frontmatterMigration = local.length === remote.length
+        && local.every(localFile => {
+          const remoteFile = entityFileByMember(remote, localFile.member);
+          return !!remoteFile && localFile.path === remoteFile.path && frontmatterMigrationEquivalent(localFile, remoteFile);
+        });
+      if (remoteMetadataAuthority && frontmatterMigration) {
+        recordResolution("initial-remote-authority", remote, local);
+        replaceRemoteEntity(key, remote);
+        finalDeletions.delete(key);
+        applyRemoteEntity(base, local, remote);
+        continue;
+      }
       const basePaths = entityPathState(base);
       const localPaths = entityPathState(local);
       const remotePaths = entityPathState(remote);
