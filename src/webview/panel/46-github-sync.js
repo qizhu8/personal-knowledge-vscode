@@ -156,7 +156,6 @@ function githubSyncAuthenticationMethodChanged() {
 }
 
 function githubSyncResolutionDiagram(report, files = []) {
-  if (!report?.totalFiles) return '';
   const labels = {
     'authoritative-migration':'Migration authority',
     'force-local-authority':'Force local authority',
@@ -168,20 +167,20 @@ function githubSyncResolutionDiagram(report, files = []) {
     'local-only':'Local-only push',
     'unchanged':'Unchanged',
   };
-  const rules = Object.entries(report.rules || {})
+  const rules = Object.entries(report?.rules || {})
     .filter(([rule, count]) => rule !== 'human-required' && count > 0)
     .map(([rule, count]) => ({ rule, label:labels[rule] || rule, count, kind:'automatic' }));
   const agent = files.filter(file => file.candidateSource === 'agent').length;
   const human = files.filter(file => file.candidateSource !== 'agent').length;
   if (agent) rules.push({ rule:'agent-prepared', label:'Agent prepared', count:agent, kind:'agent' });
   if (human) rules.push({ rule:'human-required', label:'Human decision', count:human, kind:'human' });
-  const total = Math.max(report.totalFiles, rules.reduce((sum, item) => sum + item.count, 0));
+  const total = Math.max(report?.totalFiles || 0, rules.reduce((sum, item) => sum + item.count, 0));
   const automatic = rules.filter(item => item.kind === 'automatic').reduce((sum, item) => sum + item.count, 0);
-  const percent = count => Math.round(count * 1000 / total) / 10;
-  const segments = rules.map(item => `<span class="${item.kind}" style="width:${percent(item.count)}%" title="${esc(item.label)} · ${item.count} files · ${percent(item.count)}%"></span>`).join('');
-  const legend = rules.map(item => `<li class="${item.kind}"><i></i><span>${esc(item.label)}</span><b>${item.count}</b><small>${percent(item.count)}%</small></li>`).join('');
   const humanRequired = agent + human;
-  return `<section class="github-sync-resolution-diagram" onclick="event.stopPropagation()"><header><span><strong>Resolution flow</strong><small>${total} files classified by merge rule</small></span><b>${percent(automatic)}% automatic</b></header><div class="github-sync-resolution-flow"><span><b>${total}</b><small>Observed</small></span><i>→</i><span class="automatic"><b>${automatic}</b><small>Rules resolved</small></span><i>→</i><span class="agent"><b>${agent}</b><small>Agent prepared</small></span><i>→</i><span class="human"><b>${humanRequired}</b><small>Human Final Review</small></span></div><div class="github-sync-resolution-bar">${segments}</div><ul>${legend}</ul></section>`;
+  const detail = report?.generatedAt
+    ? `${total} files · last reconciliation ${new Date(report.generatedAt).toLocaleString()}`
+    : 'No reconciliation recorded yet';
+  return `<section class="github-sync-resolution-diagram" onclick="event.stopPropagation()"><header><span><strong>Resolution flow</strong><small>${esc(detail)}</small></span></header><div class="github-sync-resolution-flow"><span><b>${total}</b><small>Observed</small></span><i>→</i><span class="automatic"><b>${automatic}</b><small>Rules resolved</small></span><i>→</i><span class="agent"><b>${agent}</b><small>Agent prepared</small></span><i>→</i><span class="human"><b>${humanRequired}</b><small>Human Final Review</small></span></div></section>`;
 }
 
 function githubSyncConflictPanel(targetId, conflict) {
@@ -249,7 +248,7 @@ function githubSyncCards() {
     const conflictActions = conflict ? githubSyncConflictPanel(target.id, conflict) : '';
     const resolutionDiagram = !conflict ? githubSyncResolutionDiagram(target.lastResolutionReport) : '';
     const forcePending = githubSyncForcePending.has(target.id);
-    const syncLabel = conflict ? 'Resolve conflicts below' : forcePending ? 'Sync queued' : automaticReady ? 'Sync now' : 'Run Initial Sync';
+    const syncLabel = conflict ? 'Resolve conflicts below' : forcePending ? 'Sync queued' : 'Sync with Remote';
     const scheduleLabel = target.automation?.enabled && automaticReady ? `every ${target.automation?.intervalMinutes || 5} min` : 'manual only';
     const autoEnabled = !!target.automation?.enabled && automaticReady;
     const migrationReady = !target.publication || !!target.publication.manualVerificationCompleted;
@@ -273,7 +272,7 @@ function githubSyncCards() {
               ? '<small>Cutover complete · run one manual Fetch/Pull → resolve → Commit → Push → inventory/retrieval refresh. Auto Sync remains off.</small>'
               : `<small>${migration.phase === 'cutover' ? 'Manual publication verification complete · Auto Sync may now be enabled manually.' : 'Migration rolled back.'}</small>`;
     const migrationPanel = migrationCompleted ? '' : `<div class="github-sync-migration" onclick="event.stopPropagation()"><span><strong>One-time GitHub publication upgrade</strong><small>${migration ? `${migration.phase} · ${migration.activeCount} managed · ${migration.folderCount} folders · ${migration.idCount} IDs · ${migration.collisions.length} collisions` : 'Required once for targets created before PKM 3.2.1. The read-only check finds stable-ID collisions; it does not change local files or GitHub. Follow Stage, Verify, and Cut over, then run one manual Sync. This panel disappears after that successful sync.'}</small></span><span class="sub-broker-actions">${migrationActions}</span></div>`;
-    return `<article class="pk-card sub-broker-card ${expanded ? 'active' : ''}"><div class="sub-broker-row" role="button" tabindex="0" aria-expanded="${expanded}" onclick="githubSyncEdit('${esc(target.id)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();githubSyncEdit('${esc(target.id)}')}"><span><span class="sub-broker-title"><strong>${esc(target.name)}</strong><span class="github-sync-status ${esc(status)}">${esc(statusLabel)}</span><span class="sub-broker-actions"><button class="pk-button" data-pending-label="Pulling…" onclick="event.stopPropagation();githubSyncForce('${esc(target.id)}',this)" ${status === 'syncing' || forcePending || conflict || (migration && !['cutover','rolled-back'].includes(migration.phase)) ? 'disabled' : ''}>${uiIcon('refresh',syncLabel)}</button><button class="pk-button danger" data-pending-label="Forcing…" onclick="event.stopPropagation();githubSyncForceUpdate('${esc(target.id)}',this)" ${status === 'syncing' || forcePending || (migration && !['cutover','rolled-back'].includes(migration.phase)) ? 'disabled' : ''}>Force Update</button><button class="pk-button" data-pending-label="Loading…" onclick="event.stopPropagation();githubSyncRestore('${esc(target.id)}',this)">${uiIcon('history','Restore…')}</button><button class="pk-button danger" onclick="event.stopPropagation();githubSyncDelete('${esc(target.id)}')" title="Delete target">${uiIcon('trash')}</button></span></span><small>${esc(target.repository)}</small>${error ? `<small class="github-sync-error" onclick="event.stopPropagation()" onpointerdown="event.stopPropagation()" title="Select and copy this error">${esc(error)}</small>` : ''}${conflictActions}${resolutionDiagram}${migrationPanel}</span><span class="sub-broker-meta"><span class="github-sync-meta-head"><b>${esc(target.branch)} · ${esc(scheduleLabel)}</b>${autoToggle}</span><small>Last ${esc(last)}</small><small>${esc(next)}</small><i>›</i></span></div>${expanded ? `<div class="sub-broker-expanded">${githubSyncEditor()}</div>` : ''}</article>`;
+    return `<article class="pk-card sub-broker-card ${expanded ? 'active' : ''}"><div class="sub-broker-row" role="button" tabindex="0" aria-expanded="${expanded}" onclick="githubSyncEdit('${esc(target.id)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();githubSyncEdit('${esc(target.id)}')}"><span><span class="sub-broker-title"><strong>${esc(target.name)}</strong><span class="github-sync-status ${esc(status)}">${esc(statusLabel)}</span><span class="sub-broker-actions"><button class="pk-button" data-pending-label="Pulling…" onclick="event.stopPropagation();githubSyncForce('${esc(target.id)}',this)" ${status === 'syncing' || forcePending || conflict || (migration && !['cutover','rolled-back'].includes(migration.phase)) ? 'disabled' : ''}>${uiIcon('refresh',syncLabel)}</button><button class="pk-button danger" data-pending-label="Forcing…" onclick="event.stopPropagation();githubSyncForceUpdate('${esc(target.id)}',this)" ${status === 'syncing' || forcePending || (migration && !['cutover','rolled-back'].includes(migration.phase)) ? 'disabled' : ''}>Force Update</button><button class="pk-button" data-pending-label="Loading…" onclick="event.stopPropagation();githubSyncRestore('${esc(target.id)}',this)">${uiIcon('history','Restore snapshot…')}</button><button class="pk-button danger" onclick="event.stopPropagation();githubSyncDelete('${esc(target.id)}')" title="Delete target">${uiIcon('trash')}</button></span></span><small>${esc(target.repository)}</small>${error ? `<small class="github-sync-error" onclick="event.stopPropagation()" onpointerdown="event.stopPropagation()" title="Select and copy this error">${esc(error)}</small>` : ''}${conflictActions}${resolutionDiagram}${migrationPanel}</span><span class="sub-broker-meta"><span class="github-sync-meta-head"><b>${esc(target.branch)} · ${esc(scheduleLabel)}</b>${autoToggle}</span><small>Last ${esc(last)}</small><small>${esc(next)}</small><i>›</i></span></div>${expanded ? `<div class="sub-broker-expanded">${githubSyncEditor()}</div>` : ''}</article>`;
   }).join('');
   const create = githubSyncEditing === 'new' ? `<article class="pk-card sub-broker-card active"><div class="sub-broker-expanded">${githubSyncEditor()}</div></article>` : '';
   return cards + create || '<div class="sub-empty">No GitHub targets.</div>';

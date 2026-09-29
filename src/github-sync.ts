@@ -1857,9 +1857,17 @@ async function syncGitHubTargetAttempt(
       continue;
     }
 
-    if (base && ((!local && !localDeletionMap.has(key)) || (!remote && !remoteDeletionMap.has(key)))) {
-      recordResolution("human-required", local, base, remote);
-      await conflictEntity(base, local, remote);
+    if (base && !local && !localDeletionMap.has(key) && remote) {
+      recordResolution("remote-only", remote, base);
+      replaceRemoteEntity(key, remote);
+      finalDeletions.delete(key);
+      applyRemoteEntity(base, local, remote);
+      continue;
+    }
+    if (base && !remote && !remoteDeletionMap.has(key) && local) {
+      recordResolution("local-only", local, base);
+      replaceRemoteEntity(key, local);
+      finalDeletions.delete(key);
       continue;
     }
 

@@ -141,6 +141,15 @@ assert.match(extension, /case "subscriptionState":[\s\S]{0,260}respond\(\{ comma
   'Network & Sharing must respond before refreshing gateway status in the background');
 assert.match(extension, /Promise\.race\(\[[\s\S]{0,220}setTimeout\(\(\) => resolve\(undefined\), 1_000\)/,
   'Skill Router status must bound the foreground worker wait');
+const skillRouterState = extension.slice(extension.indexOf('async function skillRouterStatusData'), extension.indexOf('\nasync function refreshRetrievalIndex'));
+assert.doesNotMatch(skillRouterState, /currentRetrievalSnapshot\(\)/,
+  'Skill Router status must not synchronously rebuild the complete retrieval corpus');
+assert.match(skillRouterState, /knowledgeInventory\?\.snapshot/,
+  'Skill Router status must use cached inventory metadata');
+assert.match(extension, /case "githubSyncState":[\s\S]{0,180}githubSyncStateData\(context, false\)[\s\S]{0,260}githubSyncStateData\(context, true\)/,
+  'GitHub Sync must return cached state before its single-flight catalog and credential refresh');
+assert.match(extension, /githubSyncCatalogBuild\?\.revision === revision[\s\S]{0,220}return githubSyncCatalogBuild\.promise/,
+  'concurrent GitHub state requests must share one catalog build');
 assert.match(extension, /case "checkMcp":[\s\S]{0,180}mcpPanelStatusData\(String\(msg\.profileRequestId \|\| ""\), false\)/,
   'opening General & MCP must defer usage scanning');
 assert.doesNotMatch(extension.slice(extension.indexOf('case "checkMcp":'), extension.indexOf('case "mcpSetFeatureDomain":')), /sendMcpPathSizes/,

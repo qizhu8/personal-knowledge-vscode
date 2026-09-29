@@ -145,6 +145,10 @@ assert.match(conflictCard, /github-sync-status conflicts">Resolve conflicts</, "
 assert.match(conflictCard, /Pull completed · resolve conflicts before commit and push/, "the target explains which Git phases are blocked");
 assert.match(source, /Resolution flow[\s\S]*Rules resolved[\s\S]*Agent prepared[\s\S]*Human Final Review/,
   "complex reconciliation renders an algorithm-performance and review-flow diagram");
+assert.doesNotMatch(source, /github-sync-resolution-bar/,
+  "the persistent resolution flow omits the percentage bar and rule legend");
+assert.match(extensionSource, /target\.lastResolutionReport = existing\?\.lastResolutionReport/,
+  "saving an unchanged target preserves its persistent resolution report");
 assert.match(source, /authoritative-migration':'Migration authority'[\s\S]*deterministic-three-way':'Three-way merge'/,
   "the resolution diagram names the deterministic rules that resolved files");
 assert.match(source, /Force Update GitHub from this machine\?[\s\S]*one more native confirmation/,
@@ -154,6 +158,8 @@ assert.match(extensionSource, /showInputBox\(\{[\s\S]*Explain why this destructi
 assert.match(extensionSource, /Actor: \$\{actor\}[\s\S]*Reason: \$\{comment\.trim\(\)\}[\s\S]*Force Update GitHub/,
   "the final native confirmation identifies the actor and audit comment");
 assert.match(conflictCard, /Resolve conflicts below/, "the disabled sync action directs the user to the required Git step");
+assert.match(source, /Sync with Remote/, "the primary action names the pull-merge-push workflow");
+assert.match(source, /Restore snapshot…/, "historical file selection is clearly distinguished from normal synchronization");
 assert.match(conflictCard, /Choice required/, "unresolved files visibly require a decision");
 assert.match(conflictCard, /Agent merge/, "resolved files show which candidate will be applied");
 assert.match(conflictCard, /2 changed on both sides/, "the conflict workspace summarizes conflict shape");

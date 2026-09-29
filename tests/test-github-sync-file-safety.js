@@ -7,7 +7,6 @@ const path = require("path");
 const { execFileSync } = require("child_process");
 const {
   GITHUB_SYNC_CONTENT_TYPES,
-  GitHubSyncConflictError,
   normalizeGitHubSyncTarget,
   restoreGitHubRemoteFiles,
   syncGitHubTarget,
@@ -110,19 +109,37 @@ async function scenario(name, action) {
 }
 
 (async () => {
-  await scenario("local absence is not an approved remote deletion", async () => {
+  await scenario("local absence without a tombstone restores from remote", async () => {
     const fixture = createFixture("local-delete");
     try {
       await initialize(fixture);
       fs.rmSync(path.join(fixture.skills, "One.md"));
       fixture.catalog.skills = fixture.catalog.skills.filter(item => item.id !== "Shared/One");
-      await assert.rejects(
-        () => syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store),
-        error => error instanceof GitHubSyncConflictError
-          && error.conflicts.some(conflict => conflict.path === "skills/Shared/One.md" && !conflict.local && !!conflict.remote),
-      );
+      const result = await syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store);
+      assert(result.pulled.includes("skills/Shared/One.md"));
+      assert.strictEqual(fs.readFileSync(path.join(fixture.skills, "One.md"), "utf8"), skill("One", "one v1"));
       const verify = cloneRemote(fixture);
       assert.strictEqual(fs.readFileSync(path.join(verify, "skills", "Shared", "One.md"), "utf8"), skill("One", "one v1"));
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  await scenario("sparse local state restores all selected remote files", async () => {
+    const fixture = createFixture("sparse-restore");
+    try {
+      await initialize(fixture);
+      fs.rmSync(path.join(fixture.skills, "One.md"));
+      fs.rmSync(path.join(fixture.skills, "Two.md"));
+      fixture.catalog.skills = [];
+      const result = await syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store);
+      assert.deepStrictEqual(
+        result.pulled.sort(),
+        ["skills/Shared/One.md", "skills/Shared/Two.md"],
+      );
+      assert.strictEqual(fs.readFileSync(path.join(fixture.skills, "One.md"), "utf8"), skill("One", "one v1"));
+      assert.strictEqual(fs.readFileSync(path.join(fixture.skills, "Two.md"), "utf8"), skill("Two", "two v1"));
+      assert.strictEqual(result.resolutionReport.rules["remote-only"], 2);
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -145,7 +162,7 @@ async function scenario(name, action) {
     }
   });
 
-  await scenario("remote absence is not an approved local deletion", async () => {
+  await scenario("remote absence without a tombstone republishes local content", async () => {
     const fixture = createFixture("remote-delete");
     try {
       await initialize(fixture);
@@ -158,18 +175,17 @@ async function scenario(name, action) {
       run(verify, ["add", "-A"]);
       run(verify, ["commit", "-m", "remote deletion"]);
       run(verify, ["push"]);
-      await assert.rejects(
-        () => syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store),
-        error => error instanceof GitHubSyncConflictError
-          && error.conflicts.some(conflict => conflict.path === "skills/Shared/One.md" && !!conflict.local && !conflict.remote),
-      );
+      const result = await syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store);
+      assert.strictEqual(result.changed, true);
       assert.strictEqual(fs.readFileSync(path.join(fixture.skills, "One.md"), "utf8"), skill("One", "one v1"));
+      run(verify, ["pull", "--ff-only"]);
+      assert.strictEqual(fs.readFileSync(path.join(verify, "skills", "Shared", "One.md"), "utf8"), skill("One", "one v1"));
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
   });
 
-  await scenario("both-sided absence retains the recoverable base candidate", async () => {
+  await scenario("both-sided absence without tombstones converges without inventing a deletion conflict", async () => {
     const fixture = createFixture("both-delete");
     try {
       await initialize(fixture);
@@ -184,11 +200,8 @@ async function scenario(name, action) {
       run(verify, ["push"]);
       fs.rmSync(path.join(fixture.skills, "One.md"));
       fixture.catalog.skills = fixture.catalog.skills.filter(item => item.id !== "Shared/One");
-      await assert.rejects(
-        () => syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store),
-        error => error instanceof GitHubSyncConflictError
-          && error.conflicts.some(conflict => conflict.path === "skills/Shared/One.md" && !!conflict.base && !conflict.local && !conflict.remote),
-      );
+      const result = await syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store);
+      assert.strictEqual(result.changed, false);
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }

@@ -495,14 +495,29 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
     assert.strictEqual(fs.readFileSync(path.join(windows.skills, "Two.md"), "utf8"), skill("Two", "windows remote update"));
     const finalWindowsCatchUp = await syncGitHubTarget(windows.target, windows.catalog, checkoutRoot, undefined, windows.store);
     rememberSync(windows.target, finalWindowsCatchUp);
+    run(verify, ["pull", "--ff-only"]);
+    const concurrentRemoteTwo = skill("Two", "remote edit before windows deletion");
+    fs.writeFileSync(path.join(verify, "skills", "Shared", "Two.md"), concurrentRemoteTwo);
+    const concurrentManifestPath = path.join(verify, ".pkm-github-sync.json");
+    const concurrentManifest = JSON.parse(fs.readFileSync(concurrentManifestPath, "utf8"));
+    concurrentManifest.files = concurrentManifest.files.map(file => file.path === "skills/Shared/Two.md"
+      ? { ...file, digest: createHash("sha256").update(concurrentRemoteTwo).digest("hex") }
+      : file);
+    fs.writeFileSync(concurrentManifestPath, `${JSON.stringify(concurrentManifest, null, 2)}\n`);
+    run(verify, ["add", "-A"]);
+    run(verify, ["commit", "-m", "edit before concurrent deletion"]);
+    run(verify, ["push"]);
     fs.rmSync(path.join(windows.skills, "Two.md"));
     windows.catalog.skills = windows.catalog.skills.filter(file => file.id !== "Shared/Two");
+    windows.target.pendingDeletions = [{
+      type: "skills", itemId: "Shared/Two", deletedAt: new Date().toISOString(), category: "Shared", privacy: "public"
+    }];
     fs.writeFileSync(path.join(windows.skills, "One.md"), skill("One", "windows modifies while linux deletes"));
     await assert.rejects(
       () => syncGitHubTarget(windows.target, windows.catalog, checkoutRoot, undefined, windows.store),
       error => error instanceof GitHubSyncConflictError
         && error.conflicts.some(conflict => conflict.path === "skills/Shared/Two.md" && !conflict.local && !!conflict.remote),
-      "local absence must not be treated as approval to delete the remote file"
+      "an explicit local deletion must conflict with a concurrent remote edit"
     );
 
     run(verify, ["pull", "--ff-only"]);
@@ -516,6 +531,9 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
       .map(file => file.path === "skills/Shared/One.md"
         ? { ...file, digest: createHash("sha256").update(remoteOne).digest("hex") }
         : file);
+    remoteManifest.deletions = [...(remoteManifest.deletions || []), {
+      type: "skills", itemId: "Shared/Two", deletedAt: new Date().toISOString(), category: "Shared", privacy: "public"
+    }];
     fs.writeFileSync(manifestPath, `${JSON.stringify(remoteManifest, null, 2)}\n`);
     run(verify, ["add", "-A"]);
     run(verify, ["commit", "-m", "remote modify and approved delete"]);
@@ -524,6 +542,9 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
     fs.writeFileSync(path.join(linux.skills, "Two.md"), skill("Two", "linux modifies while windows deletes"));
     fs.rmSync(path.join(linux.skills, "One.md"));
     linux.catalog.skills = linux.catalog.skills.filter(file => file.id !== "Shared/One");
+    linux.target.pendingDeletions = [{
+      type: "skills", itemId: "Shared/One", deletedAt: new Date().toISOString(), category: "Shared", privacy: "public"
+    }];
     await assert.rejects(
       () => syncGitHubTarget(linux.target, linux.catalog, checkoutRoot, undefined, linux.store),
       error => error instanceof GitHubSyncConflictError

@@ -814,13 +814,9 @@ function writeSkillRouterRuntimeConfig(context: vscode.ExtensionContext): Mature
 async function skillRouterStatusData(context: vscode.ExtensionContext): Promise<object> {
   const enabledSolutions = writeSkillRouterRuntimeConfig(context);
   const activeProfile = enabledSolutions.includes("l1_online") ? "l1_online" : "copilot_default";
-  let documentCount = 0;
-  let revision = "";
-  try {
-    const snapshot = currentRetrievalSnapshot();
-    documentCount = snapshot.documents.length;
-    revision = snapshot.corpus_revision;
-  } catch { /* the Knowledge Root may still be initializing */ }
+  const inventory = knowledgeInventory?.snapshot;
+  const documentCount = inventory ? Object.keys(inventory.entries).length : Number(skillRouterRuntimeCache?.documentCount || 0);
+  const revision = inventory?.revision || String(skillRouterRuntimeCache?.corpusRevision || "");
   let runtime: Record<string, unknown> = skillRouterRuntimeCache || { ready: false };
   if (retrievalWorker) {
     const refresh = skillRouterRuntimeRefresh ||= retrievalWorker.status()
@@ -996,10 +992,13 @@ function privateTopLevelPromotionBlocked(type: PrivacyContentType, oldPath: stri
 let sharedCatalogRevision = 0;
 let sharedCatalogCache: { revision: number; value: Record<string, any[]> } | undefined;
 let sharedCatalogBuild: { revision: number; promise: Promise<Record<string, any[]>> } | undefined;
+let githubSyncCatalogCache: { revision: number; value: GitHubSyncCatalog } | undefined;
+let githubSyncCatalogBuild: { revision: number; promise: Promise<GitHubSyncCatalog> } | undefined;
 
 function invalidateSharedContentCatalog(): void {
   sharedCatalogRevision += 1;
   sharedCatalogCache = undefined;
+  githubSyncCatalogCache = undefined;
 }
 
 function memorySample(): { heapUsed: number; external: number; arrayBuffers: number } {
@@ -1861,7 +1860,7 @@ function applyGitHubSyncRecipeDeletes(recipeIds: string[]): void {
   }
 }
 
-async function githubSyncCatalog(): Promise<GitHubSyncCatalog> {
+async function buildGitHubSyncCatalog(): Promise<GitHubSyncCatalog> {
   const root = path.resolve(getStorePath());
   const skills = (skillList() as any[]).flatMap(row => {
     const source = knowledgeFilePath("skills", row.name);
@@ -1902,6 +1901,23 @@ async function githubSyncCatalog(): Promise<GitHubSyncCatalog> {
     }];
   });
   return { skills, notes, papers, prompts, scripts, packages, servers, recipes, agentSnapshots };
+}
+
+async function githubSyncCatalog(): Promise<GitHubSyncCatalog> {
+  const revision = sharedCatalogRevision;
+  if (githubSyncCatalogCache?.revision === revision) return githubSyncCatalogCache.value;
+  if (githubSyncCatalogBuild?.revision === revision) return githubSyncCatalogBuild.promise;
+  const startedAt = Date.now();
+  const promise = buildGitHubSyncCatalog();
+  githubSyncCatalogBuild = { revision, promise };
+  try {
+    const value = await promise;
+    if (sharedCatalogRevision === revision) githubSyncCatalogCache = { revision, value };
+    log.info(`GitHub Sync catalog build revision=${revision} durationMs=${Date.now() - startedAt} items=${GITHUB_SYNC_CONTENT_TYPES.reduce((sum, type) => sum + value[type].length, 0)}`);
+    return value;
+  } finally {
+    if (githubSyncCatalogBuild?.promise === promise) githubSyncCatalogBuild = undefined;
+  }
 }
 
 function refreshStaleGitHubSyncConflicts(context: vscode.ExtensionContext): number {
@@ -1959,15 +1975,32 @@ function clearEquivalentGitHubSyncConflict(context: vscode.ExtensionContext, tar
   return true;
 }
 
-async function githubSyncStateData(context: vscode.ExtensionContext): Promise<object> {
+let githubAuthenticationOptionsCache: { accounts: string[]; identities: string[] } | undefined;
+
+function emptyGitHubSyncCatalog(): GitHubSyncCatalog {
+  return Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type => [type, []])) as unknown as GitHubSyncCatalog;
+}
+
+async function githubSyncStateData(context: vscode.ExtensionContext, waitForExpensive = true): Promise<object> {
   const targets = readGitHubSyncTargets(context);
-  const accounts = new Set(await discoverGitHubCredentialManagerAccounts());
-  const identities = new Set(discoverGitHubSshIdentities());
+  const accounts = new Set(githubAuthenticationOptionsCache?.accounts || []);
+  const identities = new Set(githubAuthenticationOptionsCache?.identities || []);
   for (const target of targets) {
     if (target.authentication?.expectedLogin) accounts.add(target.authentication.expectedLogin);
     if (target.authentication?.method === "ssh" && target.authentication.identityFile) identities.add(target.authentication.identityFile);
   }
-  const catalog = await githubSyncCatalog();
+  let catalog = githubSyncCatalogCache?.value || emptyGitHubSyncCatalog();
+  if (waitForExpensive) {
+    const [freshCatalog, discoveredAccounts, discoveredIdentities] = await Promise.all([
+      githubSyncCatalog(),
+      discoverGitHubCredentialManagerAccounts(),
+      new Promise<string[]>(resolve => setImmediate(() => resolve(discoverGitHubSshIdentities()))),
+    ]);
+    catalog = freshCatalog;
+    for (const account of discoveredAccounts) accounts.add(account);
+    for (const identity of discoveredIdentities) identities.add(identity);
+    githubAuthenticationOptionsCache = { accounts: [...accounts], identities: [...identities] };
+  }
   for (const record of listGitHubSyncConflicts(githubSyncStateDirectory(context))) {
     clearEquivalentGitHubSyncConflict(context, record.targetId);
   }
@@ -6220,7 +6253,10 @@ async function handleMessage(
     }
 
     case "githubSyncState": {
-      respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
+      respond({ command: "githubSyncState", data: await githubSyncStateData(context, false) });
+      void githubSyncStateData(context, true)
+        .then(data => panel?.webview.postMessage({ command: "githubSyncState", data }))
+        .catch(error => log.warn(`GitHub Sync background state refresh failed: ${error instanceof Error ? error.message : String(error)}`));
       break;
     }
 
@@ -6287,6 +6323,7 @@ async function handleMessage(
           if (automationBlocked) target.automation.enabled = false;
           if (!changed) {
             target.lastSync = existing?.lastSync;
+            target.lastResolutionReport = existing?.lastResolutionReport;
             target.pendingDeletions = existing?.pendingDeletions;
             target.publication = existing?.publication;
           }
