@@ -7,6 +7,7 @@ let githubSyncAuthenticationResult = null;
 let githubSyncUpdatedAt = 0;
 const githubSyncDrafts = new Map();
 const githubSyncForcePending = new Set();
+const githubSyncResolvedExpanded = new Set();
 const githubSyncTypes = ['skills','notes','papers','prompts','scripts','packages','servers','recipes','agentSnapshots'];
 const githubSyncLabels = { skills:'Skills', notes:'Notes', papers:'Research', prompts:'Prompts', scripts:'Scripts', packages:'Packages', servers:'Servers', recipes:'Recipes', agentSnapshots:'Agent Snapshots' };
 
@@ -184,7 +185,15 @@ function githubSyncResolutionDiagram(report, files = []) {
   return `<section class="github-sync-resolution-diagram" onclick="event.stopPropagation()"><header><span><strong>Resolution flow</strong><small>${esc(detail)}</small></span></header><div class="github-sync-resolution-flow"><span><b>${total}</b><small>Observed</small></span><i>→</i><span class="automatic"><b>${automatic}</b><small>Rules resolved</small></span><i>→</i><span class="agent"><b>${agent}</b><small>Agent prepared</small></span><i>→</i><span class="human"><b>${humanRequired}</b><small>Human Final Review</small></span></div></section>`;
 }
 
-function githubSyncDifferenceTree(entries) {
+function githubSyncResolvedGroupToggle(targetId, details) {
+  const expanded = githubSyncResolvedExpanded.has(targetId);
+  if (details.open === expanded) return;
+  if (details.open) githubSyncResolvedExpanded.add(targetId);
+  else githubSyncResolvedExpanded.delete(targetId);
+  renderGitHubSyncPane();
+}
+
+function githubSyncDifferenceTree(targetId, entries) {
   const tree = items => {
     const root = { folders:new Map(), leaves:[] };
     for (const entry of items) {
@@ -208,7 +217,8 @@ function githubSyncDifferenceTree(entries) {
   };
   const unresolved = entries.filter(entry => !entry.resolved);
   const resolved = entries.filter(entry => entry.resolved);
-  return `<div class="github-sync-diff-tree">${render(tree(unresolved), true)}${resolved.length ? `<details class="github-sync-resolved-group"><summary>${uiIcon('pass-filled','Resolved')}<small>${resolved.length}</small></summary>${render(tree(resolved), false)}</details>` : ''}</div>`;
+  const showResolved = githubSyncResolvedExpanded.has(targetId);
+  return `<div class="github-sync-diff-tree">${render(tree(unresolved), true)}${resolved.length ? `<details class="github-sync-resolved-group" ${showResolved ? 'open' : ''} ontoggle="githubSyncResolvedGroupToggle('${esc(targetId)}',this)"><summary>${uiIcon('pass-filled','Resolved')}<small>${resolved.length} · ${showResolved ? 'hide completed' : 'show completed'}</small></summary>${showResolved ? render(tree(resolved), false) : ''}</details>` : ''}</div>`;
 }
 
 function githubSyncConflictPanel(targetId, conflict) {
@@ -231,14 +241,14 @@ function githubSyncConflictPanel(targetId, conflict) {
   const missingLocal = conflictFiles.filter(file => file.hasBase && !file.hasLocal && file.hasRemote).length;
   const missingRemote = conflictFiles.filter(file => file.hasBase && file.hasLocal && !file.hasRemote).length;
   const changedBoth = conflictFiles.length - missingLocal - missingRemote;
-  const supportedByAgent = conflictFiles.filter(file => file.type === 'skills' || file.type === 'recipes').length;
+  const supportedByAgent = conflictFiles.filter(file => file.candidateSource === 'unresolved' && (file.type === 'skills' || file.type === 'recipes')).length;
   const initialPreview = conflict.purpose === 'initial-preview';
   const schemaReady = !initialPreview || conflict.remoteSchema === 3;
   const heading = initialPreview ? `${conflictFiles.length} differences found` : `${conflictFiles.length} conflicting file${conflictFiles.length === 1 ? '' : 's'}`;
   const guidance = initialPreview
     ? `Remote was fetched read-only. One-sided files are preserved automatically; choose GitHub, this machine, or Merge for files changed on both sides. Nothing is written or pushed before approval.${schemaReady ? '' : ` Repository schema ${conflict.remoteSchema} must be migrated to schema 3 first.`}`
     : `${missingLocal} missing on this machine · ${missingRemote} missing on GitHub · ${changedBoth} changed on both sides. A missing-file conflict is a deletion safeguard, not necessarily a text merge. Nothing is pushed until every file has an explicit resolution.${missingLocal ? ' Delete GitHub confirms the local deletion and stages remote removal until Apply resolutions & Sync.' : ''}`;
-  return `<div class="github-sync-conflict-actions" onclick="event.stopPropagation()"><strong>${esc(heading)}</strong><p>${esc(guidance)}</p>${githubSyncResolutionDiagram(conflict.resolutionReport, conflictFiles)}<div class="github-sync-conflict-bulk">${unresolvedWithRemote ? `<button class="pk-button" data-pending-label="Selecting…" onclick="githubSyncConflictChooseAll('${esc(targetId)}','remote',${unresolvedWithRemote},this)">All Use GitHub</button>` : ''}${!initialPreview && unresolvedDeletions ? `<button class="pk-button danger" data-pending-label="Selecting…" onclick="githubSyncConflictDeleteAll('${esc(targetId)}',${unresolvedDeletions},this)">Delete GitHub</button>` : ''}${unresolvedWithLocal ? `<button class="pk-button" data-pending-label="Selecting…" onclick="githubSyncConflictChooseAll('${esc(targetId)}','local',${unresolvedWithLocal},this)">All Use This Machine</button>` : ''}${supportedByAgent ? `<button class="pk-button" data-pending-label="Merging…" onclick="githubSyncConflictAgentAll('${esc(targetId)}',${supportedByAgent},this)">Ask Agent for ${supportedByAgent} supported</button>` : ''}</div>${githubSyncDifferenceTree(entries)}<footer><span>${!schemaReady ? 'Complete schema migration before applying' : unresolved ? `${unresolved} still need a choice` : 'All files have a candidate ready for approval'}</span><button class="pk-button primary" data-pending-label="Applying…" onclick="githubSyncConflictAccept('${esc(targetId)}',this)" ${unresolved || !schemaReady ? 'disabled' : ''}>${initialPreview ? 'Apply choices &amp; Initial Sync' : 'Apply resolutions &amp; Sync'}</button><button class="pk-button" onclick="githubSyncConflictDiscard('${esc(targetId)}')">Cancel resolution workspace</button></footer></div>`;
+  return `<div class="github-sync-conflict-actions" onclick="event.stopPropagation()"><strong>${esc(heading)}</strong><p>${esc(guidance)}</p>${githubSyncResolutionDiagram(conflict.resolutionReport, conflictFiles)}<div class="github-sync-conflict-bulk">${unresolvedWithRemote ? `<button class="pk-button" data-pending-label="Selecting…" onclick="githubSyncConflictChooseAll('${esc(targetId)}','remote',${unresolvedWithRemote},this)">All Use GitHub</button>` : ''}${!initialPreview && unresolvedDeletions ? `<button class="pk-button danger" data-pending-label="Selecting…" onclick="githubSyncConflictDeleteAll('${esc(targetId)}',${unresolvedDeletions},this)">Delete GitHub</button>` : ''}${unresolvedWithLocal ? `<button class="pk-button" data-pending-label="Selecting…" onclick="githubSyncConflictChooseAll('${esc(targetId)}','local',${unresolvedWithLocal},this)">All Use This Machine</button>` : ''}${supportedByAgent ? `<button class="pk-button" data-pending-label="Merging…" onclick="githubSyncConflictAgentAll('${esc(targetId)}',${supportedByAgent},this)">Ask Agent for ${supportedByAgent} unresolved</button>` : ''}</div>${githubSyncDifferenceTree(targetId, entries)}<footer><span>${!schemaReady ? 'Complete schema migration before applying' : unresolved ? `${unresolved} still need a choice` : 'All files have a candidate ready for approval'}</span><button class="pk-button primary" data-pending-label="Applying…" onclick="githubSyncConflictAccept('${esc(targetId)}',this)" ${unresolved || !schemaReady ? 'disabled' : ''}>${initialPreview ? 'Apply choices &amp; Initial Sync' : 'Apply resolutions &amp; Sync'}</button><button class="pk-button" onclick="githubSyncConflictDiscard('${esc(targetId)}')">Cancel resolution workspace</button></footer></div>`;
 }
 
 function githubSyncCards() {
@@ -307,7 +317,10 @@ function githubSyncCards() {
 }
 
 function renderGitHubSyncPane() {
-  document.getElementById('detail').innerHTML = `<div class="sub-dashboard github-sync-dashboard"><header class="sub-head"><div><h2>GitHub Sync</h2><p>${githubSyncData.targets.length} configured targets</p></div><div class="project-header-actions"><button class="recipe-icon-button" title="Refresh GitHub Sync" aria-label="Refresh GitHub Sync" onclick="ask('githubSyncState',{})"><span class="codicon codicon-refresh"></span></button><button class="pk-button primary" onclick="githubSyncNew()">${uiIcon('add','Target')}</button></div></header><section class="sub-band"><div class="pk-list sub-broker-list">${githubSyncCards()}</div></section></div>`;
+  const detail = document.getElementById('detail');
+  const previousScrollTop = detail?.scrollTop || 0;
+  detail.innerHTML = `<div class="sub-dashboard github-sync-dashboard"><header class="sub-head"><div><h2>GitHub Sync</h2><p>${githubSyncData.targets.length} configured targets</p></div><div class="project-header-actions"><button class="recipe-icon-button" title="Refresh GitHub Sync" aria-label="Refresh GitHub Sync" onclick="ask('githubSyncState',{})"><span class="codicon codicon-refresh"></span></button><button class="pk-button primary" onclick="githubSyncNew()">${uiIcon('add','Target')}</button></div></header><section class="sub-band"><div class="pk-list sub-broker-list">${githubSyncCards()}</div></section></div>`;
+  detail.scrollTop = Math.min(previousScrollTop, Math.max(0, detail.scrollHeight - detail.clientHeight));
   githubSyncRenderAuthenticationMethod();
   githubSyncSyncFolderStates();
 }

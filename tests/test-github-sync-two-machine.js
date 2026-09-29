@@ -187,6 +187,32 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
     assert.strictEqual(layoutSecondMachine.changed, false,
       "different graph coordinates on another machine must not conflict or create a commit");
 
+    run(seed, ["fetch", "origin", "layout-isolation"]);
+    run(seed, ["checkout", "-B", "recipe-formatting", "origin/layout-isolation"]);
+    const formattedRecipePath = path.join(seed, "recipes", "Shared", "Layout isolation.recipe_layout.json");
+    const compactRecipe = JSON.stringify(JSON.parse(fs.readFileSync(formattedRecipePath, "utf8")));
+    fs.writeFileSync(formattedRecipePath, compactRecipe);
+    const compactManifestPath = path.join(seed, ".pkm-github-sync.json");
+    const compactManifest = JSON.parse(fs.readFileSync(compactManifestPath, "utf8"));
+    compactManifest.files.find(file => file.path === "recipes/Shared/Layout isolation.recipe_layout.json").digest =
+      createHash("sha256").update(compactRecipe).digest("hex");
+    fs.writeFileSync(compactManifestPath, JSON.stringify(compactManifest, null, 2) + "\n");
+    run(seed, ["add", "-A"]);
+    run(seed, ["commit", "-m", "compact recipe formatting"]);
+    run(seed, ["push", "-u", "origin", "recipe-formatting"]);
+    const formatTarget = normalizeGitHubSyncTarget({
+      name: "Recipe formatting",
+      repository: remote,
+      branch: "recipe-formatting"
+    }, () => "target-recipe-formatting");
+    const formatPreview = await previewGitHubSyncTarget(formatTarget, layoutCatalogB, checkoutRoot);
+    assert.strictEqual(formatPreview.same, 1,
+      "compact and expanded Recipe JSON are semantically identical during Initial Sync");
+    assert.strictEqual(formatPreview.modified, 0);
+    const formatSync = await syncGitHubTarget(formatTarget, layoutCatalogB, checkoutRoot);
+    assert.strictEqual(formatSync.changed, false,
+      "Recipe formatting-only differences neither conflict nor create a GitHub commit");
+
     const frontmatterStore = path.join(root, "frontmatter-store");
     const frontmatterSource = path.join(frontmatterStore, "skills", "Shared", "Migrated.md");
     fs.mkdirSync(path.dirname(frontmatterSource), { recursive: true });

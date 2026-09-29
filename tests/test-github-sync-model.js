@@ -181,6 +181,11 @@ assert.deepStrictEqual(
   "Recipe graph coordinates must not affect GitHub Sync content or fingerprints"
 );
 assert.deepStrictEqual(
+  githubSyncManagedContent("recipes", Buffer.from(JSON.stringify(recipeWithoutLayout))),
+  githubSyncManagedContent("recipes", Buffer.from(JSON.stringify(recipeWithoutLayout, null, 2) + "\n")),
+  "compact and expanded Recipe JSON must have identical GitHub Sync content"
+);
+assert.deepStrictEqual(
   githubSyncManagedContent("notes", Buffer.from("unchanged")),
   Buffer.from("unchanged"),
   "non-Recipe content must remain byte-preserving"

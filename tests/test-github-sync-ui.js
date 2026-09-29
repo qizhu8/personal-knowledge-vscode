@@ -185,14 +185,22 @@ assert.match(source, /Merge manually/, "modified files expose an explicit merge 
 assert.match(extensionSource, /previewGitHubSyncTarget[\s\S]*initial-preview/,
   "saving an initial target fetches a comparison instead of immediately scheduling synchronization");
 assert.match(conflictCard, /Choice required/, "unresolved files visibly require a decision");
-assert.match(conflictCard, /Agent merge/, "resolved files show which candidate will be applied");
-assert.match(conflictCard, /github-sync-resolved-group"><summary>Resolved<small>1<\/small>/,
-  "selected files move into one compact resolved group");
+assert.doesNotMatch(conflictCard, /Agent merge|skills\/System\/PKM\/PKM Skills\.md/,
+  "selected files disappear from the working tree instead of rendering hidden cards");
+assert.match(conflictCard, /github-sync-resolved-group"[^>]*><summary>Resolved<small>1 · show completed<\/small>/,
+  "selected files leave only one compact opt-in review entry");
 assert.doesNotMatch(conflictCard, /github-sync-resolved-group" open/,
   "the resolved group is collapsed by default");
+const expandedResolvedCard = vm.runInContext(`(() => {
+  githubSyncResolvedExpanded.add('shared');
+  return githubSyncCards();
+})()`, context);
+assert.match(expandedResolvedCard, /skills\/System\/PKM\/PKM Skills\.md[\s\S]*Agent merge/,
+  "completed files remain available only after the user explicitly expands them");
+vm.runInContext("githubSyncResolvedExpanded.delete('shared')", context);
 assert.match(conflictCard, /2 changed on both sides/, "the conflict workspace summarizes conflict shape");
 assert.match(conflictCard, /All Use GitHub/, "the conflict workspace offers one-click GitHub staging for unresolved files");
-assert.match(conflictCard, /Ask Agent for 2 supported/, "the conflict workspace counts Agent-compatible conflicts");
+assert.match(conflictCard, /Ask Agent for 1 unresolved/, "the Agent bulk action counts only unresolved compatible files");
 assert.match(conflictCard, /Apply resolutions &amp; Sync<\/button>/);
 assert.match(conflictCard, /onclick="githubSyncConflictAccept\('shared',this\)" disabled/,
   "Apply remains disabled until every file has an explicit resolution");
@@ -216,14 +224,22 @@ const initialResolvedCard = vm.runInContext(`(() => {
   ]};
   return githubSyncCards();
 })()`, context);
-assert.match(initialResolvedCard, /github-sync-resolved-group"><summary>Resolved<small>2<\/small>/,
+assert.match(initialResolvedCard, /github-sync-resolved-group"[^>]*><summary>Resolved<small>2 · show completed<\/small>/,
   "automatically preserved one-sided files stay collapsed even for large initial comparisons");
 assert.doesNotMatch(initialResolvedCard, /github-sync-conflict-file unresolved/,
   "a fully selected initial comparison does not render expanded unresolved files");
+assert.doesNotMatch(initialResolvedCard, /notes\/Remote\.md|notes\/Local\.md/,
+  "collapsed completed files are not rendered into the initial comparison DOM");
+assert.match(source, /const previousScrollTop = detail\?\.scrollTop \|\| 0[\s\S]*detail\.scrollTop = Math\.min\(previousScrollTop/,
+  "choosing a file preserves the comparison scroll position after host state rerenders");
 assert.match(extensionSource, /candidateSource === "delete"[\s\S]*pendingDeletions/,
   "accepted deletion candidates become explicit GitHub Sync tombstones");
 assert.match(extensionSource, /function refreshStaleGitHubSyncConflicts[\s\S]*refreshGitHubSyncConflictLocalCandidate/,
   "opening GitHub Sync refreshes stale machine-local conflict candidates");
+assert.match(extensionSource, /function refreshStaleGitHubSyncConflicts[\s\S]*recipeSyncEntries\(\)[\s\S]*githubSyncManagedContent\("recipes"/,
+  "Recipe stale checks compare the same layout-free canonical content used by GitHub publication");
+assert.match(extensionSource, /function applyGitHubSyncRecipePulls[\s\S]*recipeSyncEntries\(\)[\s\S]*githubSyncManagedContent\("recipes"/,
+  "Recipe pull safety checks ignore machine-local editor layout without weakening executable validation");
 assert.match(extensionSource, /async function githubSyncStateData[\s\S]*refreshStaleGitHubSyncConflicts\(context\)[\s\S]*listGitHubSyncConflicts/,
   "stale conflict snapshots are refreshed before the resolution workspace is serialized");
 assert.match(extensionSource, /function clearEquivalentGitHubSyncConflict[\s\S]*current\.equals\(remote\)[\s\S]*clearGitHubSyncConflict/,

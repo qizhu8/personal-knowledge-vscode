@@ -1103,7 +1103,7 @@ export async function previewGitHubSyncTarget(
   for (const relative of [...paths].sort((left, right) => left.localeCompare(right))) {
     const local = localFiles.get(relative);
     const remote = remoteFiles.get(relative);
-    if (local && remote && (local.digest === remote.digest || frontmatterMigrationEquivalent(local, remote))) {
+    if (local && remote && (managedContentsEquivalent(local, remote) || frontmatterMigrationEquivalent(local, remote))) {
       same++;
       continue;
     }
@@ -1407,9 +1407,21 @@ async function manifestAtCommit(checkout: string, commit: string): Promise<GitHu
   const raw = (await gitBuffer(checkout, ["cat-file", "blob", `${commit}:${MANIFEST_PATH}`], undefined, 16 * 1024 * 1024)).toString("utf8");
   const manifest = parseManagedManifest(raw);
   for (const file of manifest.files) {
-    if (!file.digest) file.digest = fileDigest(await gitBuffer(checkout, ["cat-file", "blob", `${commit}:${file.path}`], undefined, 64 * 1024 * 1024));
+    const content = await gitBuffer(checkout, ["cat-file", "blob", `${commit}:${file.path}`], undefined, 64 * 1024 * 1024);
+    if (!file.digest) file.digest = fileDigest(content);
+    file.content = content;
   }
   return manifest;
+}
+
+function managedComparisonDigest(file: GitHubSyncManagedFile): string {
+  if (file.type !== "recipes" || !file.content) return file.digest;
+  return fileDigest(githubSyncManagedContent("recipes", file.content));
+}
+
+function managedContentsEquivalent(local: GitHubSyncManagedFile, remote: GitHubSyncManagedFile): boolean {
+  return local.digest === remote.digest
+    || local.type === remote.type && managedComparisonDigest(local) === managedComparisonDigest(remote);
 }
 
 function enrichLegacyFiles(files: GitHubSyncManagedFile[], known: Map<string, GitHubSyncManagedFile>): void {
@@ -1644,7 +1656,7 @@ function migrateBaseManifestToCanonicalSchema(
   const remoteByPath = new Map(remote.files.map(file => [file.path, file]));
   const remoteByContent = new Map<string, GitHubSyncManagedFile[]>();
   for (const file of remote.files) {
-    const key = `${file.type}\0${file.digest}`;
+    const key = `${file.type}\0${managedComparisonDigest(file)}`;
     const matches = remoteByContent.get(key) || [];
     matches.push(file);
     remoteByContent.set(key, matches);
@@ -1654,7 +1666,7 @@ function migrateBaseManifestToCanonicalSchema(
     minimumExtensionVersion: remote.minimumExtensionVersion,
     files: base.files.map(file => {
       const exact = remoteByPath.get(file.path);
-      const contentMatches = remoteByContent.get(`${file.type}\0${file.digest}`) || [];
+      const contentMatches = remoteByContent.get(`${file.type}\0${managedComparisonDigest(file)}`) || [];
       const canonical = exact || (contentMatches.length === 1 ? contentMatches[0] : undefined);
       return canonical
         ? {
@@ -1676,7 +1688,7 @@ function entityState(files: GitHubSyncManagedFile[] | undefined): string | undef
   return JSON.stringify(files.map(file => ({
     member: file.member,
     path: file.path,
-    digest: file.digest,
+    digest: managedComparisonDigest(file),
     category: file.category,
     privacy: file.privacy,
   })));
@@ -1684,7 +1696,7 @@ function entityState(files: GitHubSyncManagedFile[] | undefined): string | undef
 
 function entityContentState(files: GitHubSyncManagedFile[] | undefined): string | undefined {
   if (!files) return undefined;
-  return JSON.stringify(files.map(file => ({ member: file.member, digest: file.digest })));
+  return JSON.stringify(files.map(file => ({ member: file.member, digest: managedComparisonDigest(file) })));
 }
 
 function entityPathState(files: GitHubSyncManagedFile[] | undefined): string | undefined {
@@ -1698,7 +1710,7 @@ function entityPathContentState(files: GitHubSyncManagedFile[] | undefined): str
     type: file.type,
     member: file.member,
     path: file.path,
-    digest: file.digest,
+    digest: managedComparisonDigest(file),
   })));
 }
 

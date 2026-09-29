@@ -1847,7 +1847,7 @@ function applyGitHubSyncRecipePulls(pulls: GitHubSyncRecipePull[]): void {
   const store = currentProjectStore();
   const snapshot = store.list();
   const syncContent = new Map(store.recipeSyncEntries()
-    .map(entry => [entry.recipe.recipeId, Buffer.from(entry.content, "utf8")]));
+    .map(entry => [entry.recipe.recipeId, githubSyncManagedContent("recipes", Buffer.from(entry.content, "utf8"))]));
   const recipes = pulls.map(pull => {
     const current = snapshot.recipes.find(recipe => recipe.recipeId === pull.itemId);
     validateGitHubSyncConflictLocalState(
@@ -1938,7 +1938,7 @@ async function githubSyncCatalog(): Promise<GitHubSyncCatalog> {
 function refreshStaleGitHubSyncConflicts(context: vscode.ExtensionContext): number {
   const stateDirectory = githubSyncStateDirectory(context);
   const recipeContent = new Map(currentProjectStore().recipeSyncEntries()
-    .map(entry => [entry.recipe.recipeId, Buffer.from(entry.content, "utf8")]));
+    .map(entry => [entry.recipe.recipeId, githubSyncManagedContent("recipes", Buffer.from(entry.content, "utf8"))]));
   let refreshed = 0;
   for (const record of listGitHubSyncConflicts(stateDirectory)) {
     for (const file of record.files) {
@@ -1970,7 +1970,7 @@ function clearEquivalentGitHubSyncConflict(context: vscode.ExtensionContext, tar
   const record = readGitHubSyncConflict(stateDirectory, targetId);
   if (!record?.files.length || record.files.some(file => !file.hasRemote)) return false;
   const recipeContent = new Map(currentProjectStore().recipeSyncEntries()
-    .map(entry => [entry.recipe.recipeId, Buffer.from(entry.content, "utf8")]));
+    .map(entry => [entry.recipe.recipeId, githubSyncManagedContent("recipes", Buffer.from(entry.content, "utf8"))]));
   const equivalent = record.files.every(file => {
     const current = file.type === "recipes"
       ? recipeContent.get(file.itemId)
