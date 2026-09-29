@@ -15,6 +15,8 @@ assert(workflow.includes('"playwright>=1.47.0,<2.0.0"'),
   "release validation must install the Python Playwright dependency used by browser tests");
 assert(workflow.includes("python -m playwright install --with-deps chromium"),
   "release validation must install Chromium and its runner dependencies");
+assert(workflow.includes("PKM_STARTUP_SCENARIO_BUDGET_MS: 20000"),
+  "release validation must allow bounded cold-runner startup overhead");
 
 const packageStep = workflow.indexOf("- name: Package VSIX");
 const verifyStep = workflow.indexOf("- name: Verify VSIX metadata and boundaries");

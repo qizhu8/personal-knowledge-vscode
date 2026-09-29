@@ -73,6 +73,8 @@ jobs:
 
       - name: Build and validate
         if: inputs.mode == 'publish'
+        env:
+          PKM_STARTUP_SCENARIO_BUDGET_MS: 20000
         run: npm run test:release
 
       - name: Package VSIX

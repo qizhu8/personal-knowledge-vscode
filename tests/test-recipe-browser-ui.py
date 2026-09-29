@@ -444,6 +444,7 @@ with sync_playwright() as playwright:
     assert "Do not skip active work" in running_module.inner_text()
     running_module.focus()
     page.evaluate("renderAgentSessions()")
+    page.wait_for_function("document.activeElement?.dataset?.nodeId === 'browser-validation'")
     assert page.evaluate("document.activeElement?.dataset?.nodeId") == "browser-validation"
     assert page.locator('.agent-runtime-run[data-run-id="recipe_run_demo_observable"]').get_attribute("open") is not None
     page.evaluate("selectedAgentSessionTodoId = ''")
