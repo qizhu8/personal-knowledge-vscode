@@ -8581,21 +8581,25 @@ async function handleMessage(
 
     case "reconfigureKnowledgeRoot": {
       await vscode.commands.executeCommand("personalKnowledge.reconfigureKnowledgeRoot");
+      respond({ command: "mcpStatus", data: mcpPanelStatusData() });
       break;
     }
 
     case "reconfigureEnvironmentsRoot": {
       await vscode.commands.executeCommand("personalKnowledge.reconfigureEnvironmentsRoot");
+      respond({ command: "mcpStatus", data: mcpPanelStatusData() });
       break;
     }
 
     case "reconfigureMcpRuntimePath": {
       await vscode.commands.executeCommand("personalKnowledge.reconfigureMcpRuntimePath");
+      respond({ command: "mcpStatus", data: mcpPanelStatusData() });
       break;
     }
 
     case "reconfigureMcpServerPath": {
       await vscode.commands.executeCommand("personalKnowledge.reconfigureMcpServerPath");
+      respond({ command: "mcpStatus", data: mcpPanelStatusData() });
       break;
     }
 
@@ -8670,7 +8674,7 @@ async function handleMessage(
       if (picks?.[0]) {
         const result = validateMcpPython(picks[0].fsPath);
         respond({ command: "mcpPythonResult", data: { ...result, valid: !result.error, source: "configured" } });
-      }
+      } else respond({ command: "mcpPythonBrowseCancelled", data: {} });
       break;
     }
 

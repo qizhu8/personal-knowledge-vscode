@@ -139,7 +139,7 @@ for (const text of ["PKM Integration Status", "Unified MCP Server", "Knowledge s
 }
 assert.doesNotMatch(panelJs, />Update with Server<\/button>|>Update Code<\/button>|>Repair Runtime<\/button>/,
   "normal Config state must not ask new users to maintain internal components manually");
-assert.match(panelJs, /automatic\.state === 'error' \? '<button class="tbtn" onclick="ask\(\\'checkMcp\\'/,
+assert.match(panelJs, /automatic\.state === 'error' \? '<button class="tbtn" data-pending-label="Retrying…" onclick="beginMcpUiAction\(\\'checkMcp\\'/,
   "automatic failures must expose one Retry action");
 assert.match(panelJs, /Personal Knowledge Manager<\/span>[\s\S]{0,300}Extension v\$\{esc\(data\?\.extensionVersion \|\| 'unknown'\)\}/,
   "the Config header must show the complete Extension semver independently from MCP schema versions");
@@ -192,10 +192,29 @@ assert(extensionTs.includes("sendMcpPathSizes(respond, mcpPathSizeGeneration)"))
 assert.doesNotMatch(extensionTs, /300_000|Date\.now\(\) - cached\.at/);
 assert(panelJs.includes("function refreshMcpPathSizes"));
 assert(panelJs.includes("uiIcon('refresh', 'Refresh sizes')"));
-assert(panelJs.includes("ask('reconfigureKnowledgeRoot',{})"));
-assert(panelJs.includes("ask('reconfigureEnvironmentsRoot',{})"));
-assert(panelJs.includes("ask('reconfigureMcpRuntimePath',{})"));
-assert(panelJs.includes("ask('reconfigureMcpServerPath',{})"));
+assert(panelJs.includes("beginMcpUiAction('reconfigureKnowledgeRoot',{},this)"));
+assert(panelJs.includes("beginMcpUiAction('reconfigureEnvironmentsRoot',{},this)"));
+assert(panelJs.includes("beginMcpUiAction('reconfigureMcpRuntimePath',{},this)"));
+assert(panelJs.includes("beginMcpUiAction('reconfigureMcpServerPath',{},this)"));
+for (const label of ["Searching…", "Browsing…", "Configuring…", "Rebuilding…", "Regenerating…"]) {
+  assert(panelJs.includes(`data-pending-label="${label}"`), `missing MCP pending feedback: ${label}`);
+}
+assert.match(panelJs, /data-pending-label="\$\{runtime\.exists \? 'Repairing…' : 'Creating…'\}"/,
+  "runtime creation and repair must expose operation-specific pending feedback");
+assert.match(panelJs, /function saveMcpPython\(button\)[\s\S]{0,500}beginMcpUiAction\('mcpSetPython', \{ path \}, button\)/,
+  "Validate & Save must bind its button to the long-running runtime setup");
+assert.match(panelJs, /Python configured and managed MCP runtime is ready/,
+  "successful runtime configuration must survive the status refresh as an explicit completion notice");
+assert.match(panelJs, /id="mcp-completion-notice" role="status"/,
+  "MCP completion feedback must remain visible after the panel rerenders");
+assert.match(panelJs, /command === 'mcpPythonBrowseCancelled'[\s\S]{0,100}finishAction\('mcpBrowsePython'\)/,
+  "cancelling the Python picker must restore its pending button");
+assert.match(extensionTs, /case "mcpBrowsePython"[\s\S]{0,700}mcpPythonBrowseCancelled/,
+  "the host must explicitly acknowledge Python picker cancellation");
+for (const command of ["reconfigureKnowledgeRoot", "reconfigureEnvironmentsRoot", "reconfigureMcpRuntimePath", "reconfigureMcpServerPath"]) {
+  assert.match(extensionTs, new RegExp(`case "${command}":[\\s\\S]{0,300}command: "mcpStatus"`),
+    `${command} must return a completion state even when its native picker is cancelled`);
+}
 for (const text of ["Knowledge root", "Environments root", "Managed MCP runtime", "MCP Base Python", "MCP server directory", "This directory can grow very large", "Reconfigure & Rebuild", "Reconfigure & Regenerate"]) assert(panelJs.includes(text));
 assert(panelJs.includes("command === 'pkmSkillUpdateComplete'"));
 assert(panelJs.includes("finishPkmSkillUpdates(); if (!data?.ok) ask('checkMcp', {})"));

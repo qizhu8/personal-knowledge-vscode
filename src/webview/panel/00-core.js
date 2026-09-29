@@ -418,7 +418,8 @@ const actionTimeouts = {
   githubSyncSave:30000, githubSyncDelete:120000, githubSyncRun:120000, githubSyncCreateIdentity:30000, githubSyncTestAuthentication:30000,
   githubSyncMigration:180000,
   githubSyncConflictOpen:30000, githubSyncConflictChooseAll:120000, githubSyncConflictDelete:120000, githubSyncConflictDeleteAll:120000, githubSyncConflictAgent:120000, githubSyncConflictAgentAll:1800000, githubSyncConflictAccept:120000, githubSyncConflictDiscard:30000,
-  mcpRepairRuntime:600000, mcpSetPython:600000, generateMcp:90000,
+  mcpRepairRuntime:600000, mcpSetPython:600000, mcpBrowsePython:600000, generateMcp:90000,
+  reconfigureKnowledgeRoot:600000, reconfigureEnvironmentsRoot:600000, reconfigureMcpRuntimePath:600000, reconfigureMcpServerPath:600000,
   checkMcp:15000, mcpDetectPython:60000, refreshMcpPathSizes:30000,
 };
 
@@ -1015,7 +1016,7 @@ window.addEventListener('message', e => {
       progress.innerHTML = `<div class="sync-progress"><div><strong>${esc(data.message || 'Synchronizing…')}</strong><span>${percent === null ? '' : percent + '%'}${amount ? ' · ' + esc(amount) : ''}</span></div><progress ${percent === null ? '' : `value="${percent}" max="100"`}></progress></div>`;
     }
   }
-  else if (command === 'mcpStatus')    { finishAction('checkMcp','reconfigureKnowledgeRoot','reconfigureEnvironmentsRoot'); mcpOnStatus(data); }
+  else if (command === 'mcpStatus')    { finishAction('checkMcp','reconfigureKnowledgeRoot','reconfigureEnvironmentsRoot','reconfigureMcpRuntimePath','reconfigureMcpServerPath'); mcpOnStatus(data); }
   else if (command === 'skillRouterStatus') { skillRouterOnStatus(data); }
   else if (command === 'pkmSkillUpdateComplete') { finishPkmSkillUpdates(); if (!data?.ok) ask('checkMcp', {}); }
   else if (command === 'uiLanguage')   { applyUiLanguage(data); }
@@ -1024,6 +1025,7 @@ window.addEventListener('message', e => {
   else if (command === 'mcpPathSize')  { finishAction('refreshMcpPathSizes'); mcpOnPathSize(data); }
   else if (command === 'chatReadReceipt') { chatUpdateReadReceipt(data); }
   else if (command === 'mcpPythonResult') { finishAction('mcpSetPython','mcpBrowsePython'); renderMcpPythonResult(data); }
+  else if (command === 'mcpPythonBrowseCancelled') { finishAction('mcpBrowsePython'); }
   else if (command === 'mcpPythonCandidates') { renderMcpPythonCandidates(data); }
   else if (command === 'mcpPythonScanStarted') { startMcpPythonScan(data); }
   else if (command === 'mcpPythonCandidate') { appendMcpPythonCandidate(data); }

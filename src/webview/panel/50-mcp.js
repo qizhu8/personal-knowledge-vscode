@@ -2,7 +2,19 @@
 let mcpStatusCache = null;
 let mcpStatusUpdatedAt = 0;
 let mcpGeneratedCache = null;
+let mcpCompletionNotice = '';
 const mcpPathSizeCache = new Map();
+
+function beginMcpUiAction(command, payload, button) {
+  mcpCompletionNotice = '';
+  document.getElementById('mcp-completion-notice')?.remove();
+  ask(command, payload, button);
+}
+
+function completeMcpUiAction(message) {
+  mcpCompletionNotice = String(message || '');
+  vscode.postMessage({ command:'toast', text:mcpCompletionNotice });
+}
 
 function mcpI18nAttrs(key, params = {}) {
   const attr = value => String(value ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -36,6 +48,7 @@ function mcpOnUsage(data) {
 
 function mcpOnGenerated(data) {
   if (data?.preview) mcpGeneratedCache = data;
+  else if (data && !data.error) completeMcpUiAction('MCP server configuration generated successfully.');
   if (state.tab === 'mcp') renderMcpGenerated(data || {});
 }
 
@@ -234,9 +247,9 @@ function renderMcpPathSize(data) {
   element.textContent = data?.error ? data.error : mcpPathSizeText(Number(data?.bytes));
   element.title = data?.error ? data.error : `${Number(data?.bytes || 0).toLocaleString()} bytes`;
 }
-function refreshMcpPathSizes() {
+function refreshMcpPathSizes(button) {
   document.querySelectorAll('[data-mcp-path-size]').forEach(element => { element.textContent = 'Calculating…'; element.title = ''; });
-  ask('refreshMcpPathSizes', {});
+  beginMcpUiAction('refreshMcpPathSizes', {}, button);
 }
 
 function completeIntegrationGuide() {
@@ -296,11 +309,11 @@ function renderMcpDashboard(data) {
   const setup = [
     [status.store.valid, 'Knowledge location', status.store.valid ? status.store.path : 'Choose where this machine stores PKM Markdown files.', '<span class="mcp-no-action">Chosen at startup</span>'],
     [!!data?.mcpPython?.valid, 'Python 3.10+', data?.mcpPython?.valid ? `${data.mcpPython.path} · ${data.mcpPython.version}` : 'Select and validate a Python executable.', '<button class="tbtn" onclick="document.getElementById(\'mcp-python-path\')?.scrollIntoView({behavior:\'smooth\'})">Choose Python</button>'],
-    [automaticReady, 'Automatic integration', automaticDetail, automatic.state === 'error' ? '<button class="tbtn" onclick="ask(\'checkMcp\',{})">Retry</button>' : `<span class="mcp-no-action">${automatic.state === 'running' ? 'Working…' : automaticReady ? 'Ready' : 'Automatic'}</span>`],
+    [automaticReady, 'Automatic integration', automaticDetail, automatic.state === 'error' ? '<button class="tbtn" data-pending-label="Retrying…" onclick="beginMcpUiAction(\'checkMcp\',{},this)">Retry</button>' : `<span class="mcp-no-action">${automatic.state === 'running' ? 'Working…' : automaticReady ? 'Ready' : 'Automatic'}</span>`],
     [missingAgentTargets.length === 0, 'Agent connection', missingAgentTargets.length ? 'Authorize PKM to add its discovery adapter to an Agent Skills directory.' : 'Agent discovery adapters are connected and future updates are automatic.', missingAgentTargets.length ? '<button class="tbtn pkm-first-run-target" onclick="document.getElementById(\'pkm-skill-router-section\')?.scrollIntoView({behavior:\'smooth\'})">Review & Connect</button>' : '<span class="mcp-no-action">Connected</span>'],
   ];
   return `<section class="mcp-dashboard">
-    <div class="mcp-dashboard-head"><div><h2>PKM Integration Status</h2><p>Server runtime, generated schemas, and Agent Skill Router are versioned independently.</p></div><div class="mcp-running">${mcpStatusLight(processKind, processLabel, processLabelKey, { pid: status.process.pid || '' })}<button class="tbtn" onclick="ask('checkMcp',{})" title="Refresh process and version status" aria-label="Refresh process and version status">${uiIcon('refresh')}</button></div></div>
+    <div class="mcp-dashboard-head"><div><h2>PKM Integration Status</h2><p>Server runtime, generated schemas, and Agent Skill Router are versioned independently.</p></div><div class="mcp-running">${mcpStatusLight(processKind, processLabel, processLabelKey, { pid: status.process.pid || '' })}<button class="tbtn" data-pending-label="Refreshing…" onclick="beginMcpUiAction('checkMcp',{},this)" title="Refresh process and version status" aria-label="Refresh process and version status">${uiIcon('refresh')}</button></div></div>
     <div class="mcp-runtime-note" ${status.process.detail === 'Generated server process detected.' ? 'data-i18n="config.processDetected"' : ''}>${esc(status.process.detail || '')}${!status.process.running && status.ready ? ' <span data-i18n="config.onDemandHelp">Stdio MCP servers start when an MCP client requests pkm; use MCP: List Servers to start it manually.</span>' : ''}</div>
     ${renderSkillRouterField(data)}
     <div class="mcp-paths"><div class="mcp-paths-head"><h3>External links</h3></div>
@@ -308,15 +321,15 @@ function renderMcpDashboard(data) {
       <div class="mcp-setup-step done"><span class="mcp-step-number">:</span><span><strong>Public Content Gateway port</strong><small>Stable across restarts. Private content is excluded and returns 404.</small></span><span class="mcp-row-action"><input type="number" min="1024" max="65535" value="${Number(externalLink.contentPort || 39502)}" onchange="ask('setContentGatewayPort',{port:Number(this.value)})" title="Fixed port for stable public content links"></span></div>
     </div>
     <div class="mcp-version-table-wrap"><table class="mcp-version-table"><colgroup><col class="mcp-version-component-col"><col class="mcp-version-number-col"><col class="mcp-version-number-col"><col class="mcp-version-status-col"><col class="mcp-version-action-col"></colgroup><thead><tr><th>Component</th><th>Installed</th><th>Target</th><th>Status</th><th>Action</th></tr></thead><tbody>${rows.map(row => `<tr><th scope="row">${row[0]}</th><td><code>${esc(row[1])}</code></td><td><code>${esc(row[2])}</code></td><td>${mcpStatusLight(row[6] || (row[3] ? 'good' : 'warn'), row[5] || (row[3] ? 'Current' : 'Update available'))}</td><td class="mcp-row-action">${row[4]}</td></tr>`).join('')}</tbody></table></div>
-    <div class="mcp-paths"><div class="mcp-paths-head"><h3>Paths</h3><div class="pkm-config-actions"><button class="tbtn" onclick="refreshMcpPathSizes()" title="Recalculate disk usage">${uiIcon('refresh', 'Refresh sizes')}</button></div></div>
+    <div class="mcp-paths"><div class="mcp-paths-head"><h3>Paths</h3><div class="pkm-config-actions"><button class="tbtn" data-pending-label="Calculating…" onclick="refreshMcpPathSizes(this)" title="Recalculate disk usage">${uiIcon('refresh', 'Refresh sizes')}</button></div></div>
       <div class="mcp-path-table-wrap"><table class="mcp-path-table"><colgroup><col class="mcp-path-type-col"><col><col class="mcp-path-size-col"><col class="mcp-path-source-col"></colgroup>
         <thead><tr><th>Path Type</th><th>Location</th><th>Disk Usage</th><th>Action</th></tr></thead>
         <tbody>
-          <tr><td>Knowledge root</td><td><code title="${esc(paths.store || '')}">${esc(paths.store || 'Not configured')}</code><div class="pkm-skill-detail">${esc(data?.store?.host ? `machine-local · ${data.store.host}` : 'machine-local')}</div>${data?.store?.cloudSynchronized ? `<div class="mcp-cloud-root-warning">${uiIcon('warning')} ${esc(data.store.cloudSynchronized.provider)} can cause file locks and permission races. GitHub Sync already provides cross-machine sync; move this root to a normal local folder.</div>` : ''}</td><td data-mcp-path-size="store">Not calculated</td><td><button class="tbtn" onclick="ask('reconfigureKnowledgeRoot',{})" title="Choose a different machine-local Knowledge Root">${uiIcon('settings-gear', 'Reconfigure')}</button></td></tr>
-          <tr><td>Environments root</td><td><code title="${esc(paths.environments || '')}">${esc(paths.environments || 'Not configured')}</code><div class="pkm-skill-detail">Machine-local storage for migrated/created conda, venv, uv environments and the managed pkm-mcp runtime. This directory can grow very large.</div></td><td data-mcp-path-size="environments">Not calculated</td><td><button class="tbtn" onclick="ask('reconfigureEnvironmentsRoot',{})" title="Choose where managed environments are stored on this machine">${uiIcon('settings-gear', 'Reconfigure')}</button></td></tr>
-          <tr><td>Managed MCP runtime</td><td><code title="${esc(paths.runtime || '')}">${esc(paths.runtime || 'Not created')}</code><div class="pkm-skill-detail">Machine-local virtual environment; reconfiguration rebuilds it at the new path.</div></td><td data-mcp-path-size="runtime">Not calculated</td><td><button class="tbtn" onclick="ask('reconfigureMcpRuntimePath',{})">${uiIcon('settings-gear', 'Reconfigure & Rebuild')}</button></td></tr>
+          <tr><td>Knowledge root</td><td><code title="${esc(paths.store || '')}">${esc(paths.store || 'Not configured')}</code><div class="pkm-skill-detail">${esc(data?.store?.host ? `machine-local · ${data.store.host}` : 'machine-local')}</div>${data?.store?.cloudSynchronized ? `<div class="mcp-cloud-root-warning">${uiIcon('warning')} ${esc(data.store.cloudSynchronized.provider)} can cause file locks and permission races. GitHub Sync already provides cross-machine sync; move this root to a normal local folder.</div>` : ''}</td><td data-mcp-path-size="store">Not calculated</td><td><button class="tbtn" data-pending-label="Reconfiguring…" onclick="beginMcpUiAction('reconfigureKnowledgeRoot',{},this)" title="Choose a different machine-local Knowledge Root">${uiIcon('settings-gear', 'Reconfigure')}</button></td></tr>
+          <tr><td>Environments root</td><td><code title="${esc(paths.environments || '')}">${esc(paths.environments || 'Not configured')}</code><div class="pkm-skill-detail">Machine-local storage for migrated/created conda, venv, uv environments and the managed pkm-mcp runtime. This directory can grow very large.</div></td><td data-mcp-path-size="environments">Not calculated</td><td><button class="tbtn" data-pending-label="Reconfiguring…" onclick="beginMcpUiAction('reconfigureEnvironmentsRoot',{},this)" title="Choose where managed environments are stored on this machine">${uiIcon('settings-gear', 'Reconfigure')}</button></td></tr>
+          <tr><td>Managed MCP runtime</td><td><code title="${esc(paths.runtime || '')}">${esc(paths.runtime || 'Not created')}</code><div class="pkm-skill-detail">Machine-local virtual environment; reconfiguration rebuilds it at the new path.</div></td><td data-mcp-path-size="runtime">Not calculated</td><td><button class="tbtn" data-pending-label="Rebuilding…" onclick="beginMcpUiAction('reconfigureMcpRuntimePath',{},this)">${uiIcon('settings-gear', 'Reconfigure & Rebuild')}</button></td></tr>
           <tr><td>MCP Base Python</td><td><code title="${esc(paths.python || '')}">${esc(paths.python || 'Not configured')}</code><div class="pkm-skill-detail">Machine-local Python executable used to build the managed runtime.</div></td><td data-mcp-path-size="python">Not calculated</td><td><button class="tbtn" onclick="document.getElementById('mcp-python-path')?.scrollIntoView({behavior:'smooth'})">${uiIcon('settings-gear', 'Configure & Rebuild')}</button></td></tr>
-          <tr><td>MCP server directory</td><td><code title="${esc(paths.serverDirectory || '')}">${esc(paths.serverDirectory || 'Not generated')}</code><div class="pkm-skill-detail">Machine-local generated server code; reconfiguration regenerates all files.</div></td><td data-mcp-path-size="serverDirectory">Not calculated</td><td><button class="tbtn" onclick="ask('reconfigureMcpServerPath',{})">${uiIcon('settings-gear', 'Reconfigure & Regenerate')}</button></td></tr>
+          <tr><td>MCP server directory</td><td><code title="${esc(paths.serverDirectory || '')}">${esc(paths.serverDirectory || 'Not generated')}</code><div class="pkm-skill-detail">Machine-local generated server code; reconfiguration regenerates all files.</div></td><td data-mcp-path-size="serverDirectory">Not calculated</td><td><button class="tbtn" data-pending-label="Regenerating…" onclick="beginMcpUiAction('reconfigureMcpServerPath',{},this)">${uiIcon('settings-gear', 'Reconfigure & Regenerate')}</button></td></tr>
         </tbody>
       </table></div>
     </div>
@@ -360,6 +373,7 @@ function renderMcpPane(data) {
       <p style="color:var(--muted);font-size:12px;margin-bottom:14px;line-height:1.6">
         Configure the external runtimes and Agent integrations used by Personal Knowledge Manager.
       </p>
+      ${mcpCompletionNotice ? `<div id="mcp-completion-notice" role="status" style="margin-bottom:14px;padding:9px 11px;border:1px solid #4ade8066;border-radius:6px;background:#4ade8012;color:#4ade80;font-size:11px">${uiIcon('check')} ${esc(mcpCompletionNotice)}</div>` : ''}
       ${renderMcpDashboard(data)}
       ${renderMcpFeatureDomains(data)}
       <div id="pkm-skill-router-section">${renderPkmSkillTargets(data)}</div>
@@ -376,9 +390,9 @@ function renderMcpPane(data) {
         </div>
         <div style="display:flex;gap:6px;align-items:center">
           <input id="mcp-python-path" value="${esc(python.path || '')}" placeholder="Absolute path to Python 3.10+" style="flex:1;background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 8px;font-size:11px">
-          <button class="tbtn ${data?.firstRunGuide?.step === 'python' ? 'pkm-first-run-target' : ''}" id="mcp-python-scan-btn" onclick="ask('mcpDetectPython',{})">List Pythons</button>
-          <button class="tbtn" onclick="ask('mcpBrowsePython',{})">Browse…</button>
-          <button class="tbtn" style="border-color:var(--accent)" onclick="saveMcpPython()">Validate &amp; Save</button>
+          <button class="tbtn ${data?.firstRunGuide?.step === 'python' ? 'pkm-first-run-target' : ''}" id="mcp-python-scan-btn" data-pending-label="Searching…" onclick="beginMcpUiAction('mcpDetectPython',{},this)">List Pythons</button>
+          <button class="tbtn" data-pending-label="Browsing…" onclick="beginMcpUiAction('mcpBrowsePython',{},this)">Browse…</button>
+          <button class="tbtn" style="border-color:var(--accent)" data-pending-label="Configuring…" onclick="saveMcpPython(this)">Validate &amp; Save</button>
         </div>
         <select id="mcp-python-candidates" class="hidden" onchange="selectMcpPythonCandidate(this)" style="width:100%;margin-top:7px;background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 8px;font-size:11px"></select>
         <div id="mcp-python-scan" class="hidden" style="margin-top:7px">
@@ -392,7 +406,7 @@ function renderMcpPane(data) {
           <strong style="font-size:13px">Managed PKM MCP runtime</strong>
           <span style="font-size:10px;color:${runtime.healthy ? '#4ade80' : '#f4b400'}">${runtime.healthy ? '● <span data-i18n="config.healthy">Healthy</span>' : runtime.exists ? '● Broken' : '○ Missing'}</span>
           <span style="flex:1"></span>
-          <button class="tbtn" onclick="ask('mcpRepairRuntime',{})" ${python.valid ? '' : 'disabled'}>${runtime.exists ? 'Repair / Reinstall' : 'Create Runtime'}</button>
+          <button class="tbtn" data-pending-label="${runtime.exists ? 'Repairing…' : 'Creating…'}" onclick="beginMcpUiAction('mcpRepairRuntime',{},this)" ${python.valid ? '' : 'disabled'}>${runtime.exists ? 'Repair / Reinstall' : 'Create Runtime'}</button>
         </div>
         <div style="font-size:10px;color:var(--muted);margin-top:6px;overflow-wrap:anywhere">${esc(runtime.python || runtime.path || '')}${runtime.version ? ' · Python ' + esc(runtime.version) : ''} · ${runtime.registered ? 'Registered in PKM Envs' : 'Not registered'}</div>
         <div id="mcp-runtime-status" ${runtime.healthy || !runtime.error ? `data-i18n="${runtime.healthy ? 'config.runtimeDedicatedDescription' : 'config.runtimeCreateDescription'}"` : ''} style="font-size:11px;color:${runtime.healthy ? 'var(--muted)' : '#f4b400'};margin-top:5px">${esc(runtime.healthy ? 'The unified pkm server uses this dedicated environment.' : runtime.error || 'Create the runtime before generating MCP configuration.')}</div>
@@ -425,7 +439,7 @@ function renderMcpPane(data) {
         <hr class="div" style="margin:18px 0">
         <div style="font-size:12px;color:var(--muted);margin:10px 0 4px" data-i18n="config.restartServer">Run MCP: List Servers, select pkm, then Start/Restart. Remote SSH windows use the provider and paths from the remote extension host.</div>
         <hr class="div" style="margin:18px 0">
-        <button class="tbtn ${data?.current ? '' : 'mcp-regenerate-action mcp-regenerate-highlight'}" id="mcp-regenerate-server-code" title="${esc(regenerate.title)}" onclick="doGenerateMcp()" ${python.valid ? '' : 'disabled'}>↺ <span ${mcpI18nAttrs(regenerate.key, regenerate.params)}>${esc(regenerate.label)}</span></button>
+        <button class="tbtn ${data?.current ? '' : 'mcp-regenerate-action mcp-regenerate-highlight'}" id="mcp-regenerate-server-code" title="${esc(regenerate.title)}" data-pending-label="Generating…" onclick="doGenerateMcp(this)" ${python.valid ? '' : 'disabled'}>↺ <span ${mcpI18nAttrs(regenerate.key, regenerate.params)}>${esc(regenerate.label)}</span></button>
       ` : `
         <div style="border:1px solid var(--border);border-radius:8px;padding:16px 18px;margin-bottom:16px">
           <div style="font-size:13px;font-weight:600;margin-bottom:8px" data-i18n="config.setupSteps">Setup steps</div>
@@ -436,7 +450,7 @@ function renderMcpPane(data) {
             4. <span data-i18n="config.setupStepStart">Use MCP: List Servers to start it.</span>
           </div>
         </div>
-        <button class="tbtn mcp-regenerate-action mcp-regenerate-highlight" id="mcp-regenerate-server-code" title="${esc(regenerate.title)}" style="padding:6px 18px;font-size:13px" onclick="doGenerateMcp()" ${python.valid ? '' : 'disabled'}>
+        <button class="tbtn mcp-regenerate-action mcp-regenerate-highlight" id="mcp-regenerate-server-code" title="${esc(regenerate.title)}" style="padding:6px 18px;font-size:13px" data-pending-label="Generating…" onclick="doGenerateMcp(this)" ${python.valid ? '' : 'disabled'}>
           ✦ <span ${mcpI18nAttrs(regenerate.key, regenerate.params)}>${esc(regenerate.label)}</span>
         </button>
       `}
@@ -519,7 +533,10 @@ function renderMcpPythonResult(data) {
     status.style.color = data?.valid ? '#4ade80' : '#f87171';
     status.innerHTML = data?.valid ? `${uiIcon('check')} Python ${esc(data.version)} validated${data.saved ? ' and saved' : '. Click Validate & Save to use it.'}` : `${uiIcon('error')} ${esc(data?.error || 'Invalid Python executable.')}`;
   }
-  if (data?.saved) setTimeout(() => ask('checkMcp', {}), 200);
+  if (data?.saved) {
+    completeMcpUiAction('Python configured and managed MCP runtime is ready.');
+    setTimeout(() => ask('checkMcp', {}), 200);
+  }
 }
 
 function renderMcpPythonCandidates(data) {
@@ -580,7 +597,7 @@ function renderMcpRuntimeProgress(data) {
 
 function renderMcpRuntimeResult(data) {
   const status = document.getElementById('mcp-runtime-status');
-  if (data?.ok) { if (status) { status.style.color = '#4ade80'; status.innerHTML = `${uiIcon('check')} Managed runtime is healthy and registered in PKM Envs.`; } setTimeout(() => ask('checkMcp', {}), 200); return; }
+  if (data?.ok) { if (status) { status.style.color = '#4ade80'; status.innerHTML = `${uiIcon('check')} Managed runtime is healthy and registered in PKM Envs.`; } completeMcpUiAction('Managed MCP runtime is healthy and registered.'); setTimeout(() => ask('checkMcp', {}), 200); return; }
   if (!status) return;
   const commands = data?.commands || [];
   window._mcpManualCommands = commands.join('\n');
@@ -590,16 +607,16 @@ function renderMcpRuntimeResult(data) {
     : '');
 }
 
-function saveMcpPython() {
+function saveMcpPython(button) {
   const path = document.getElementById('mcp-python-path')?.value.trim() || '';
   if (path && document.getElementById('pkm-first-run-guide')?.dataset.step === 'python') completeIntegrationGuide();
-  ask('mcpSetPython', { path });
+  beginMcpUiAction('mcpSetPython', { path }, button);
 }
 
-function doGenerateMcp() {
+function doGenerateMcp(button) {
   const el = document.getElementById('mcp-result');
   if (el) el.innerHTML = '<span style="color:var(--muted)">Generating…</span>';
-  ask('generateMcp', {});
+  beginMcpUiAction('generateMcp', {}, button);
 }
 
 function copyCfg() {
