@@ -116,6 +116,17 @@ const recoveredCard = vm.runInContext(`(() => {
 })()`, context);
 assert.match(recoveredCard, /github-sync-status scheduled/);
 assert.doesNotMatch(recoveredCard, /stale failure/, "scheduled targets must not render stale persisted failures");
+assert.match(recoveredCard, /githubSyncForce\('primary',this\)" disabled/, "Auto Sync disables manual Sync with Remote");
+assert.match(recoveredCard, /githubSyncForceUpdate\('primary',this\)" disabled/, "Auto Sync disables Force Update");
+assert.match(recoveredCard, /githubSyncRestore\('primary',this\)" disabled/, "Auto Sync disables snapshot restore");
+const enabledAutoToggle = recoveredCard.match(/<button class="github-sync-auto-toggle[\s\S]*?<\/button>/)?.[0] || "";
+assert.doesNotMatch(enabledAutoToggle, /disabled/, "an enabled Auto Sync switch remains available so the user can turn Auto off");
+assert.match(extensionSource, /function requireGitHubSyncManualMode[\s\S]*Turn off Auto Sync/,
+  "the Extension Host owns the Auto/manual exclusivity boundary");
+for (const handler of ["githubSyncRun", "githubSyncForceUpdate", "githubSyncRestore"]) {
+  const block = extensionSource.match(new RegExp(`case "${handler}":[\\s\\S]*?break;`))?.[0] || "";
+  assert.match(block, /requireGitHubSyncManualMode/, `${handler} rejects direct Host requests while Auto Sync is enabled`);
+}
 
 const failingCard = vm.runInContext(`(() => {
   githubSyncData.runtime.primary = {status:'error',lastError:'current failure'};

@@ -1394,6 +1394,12 @@ function githubSyncTargetById(context: vscode.ExtensionContext, targetId: string
   return target;
 }
 
+function requireGitHubSyncManualMode(target: GitHubSyncTarget, action: string): void {
+  if (target.automation.enabled) {
+    throw new Error(`Turn off Auto Sync for ${target.name} before ${action}.`);
+  }
+}
+
 function readGitHubSyncTargets(context: vscode.ExtensionContext): GitHubSyncTarget[] {
   try {
     const parsed = JSON.parse(fs.readFileSync(githubSyncTargetsPath(context), "utf8"));
@@ -6479,6 +6485,7 @@ async function handleMessage(
     case "githubSyncRun": {
       const targetId = String(msg.targetId || "");
       const target = githubSyncTargetById(context, targetId);
+      requireGitHubSyncManualMode(target, "running Sync with Remote");
       const migration = githubPublicationMigration(context, targetId).status();
       if (migration && migration.phase !== "cutover" && migration.phase !== "rolled-back") {
         throw new Error(`Complete or roll back the ${migration.phase} GitHub publication migration before synchronization.`);
@@ -6495,6 +6502,7 @@ async function handleMessage(
     case "githubSyncForceUpdate": {
       const targetId = String(msg.targetId || "");
       const target = githubSyncTargetById(context, targetId);
+      requireGitHubSyncManualMode(target, "using Force Update");
       const migration = githubPublicationMigration(context, targetId).status();
       if (migration && migration.phase !== "cutover" && migration.phase !== "rolled-back") {
         throw new Error(`Complete or roll back the ${migration.phase} GitHub publication migration before Force Update.`);
@@ -6523,14 +6531,8 @@ async function handleMessage(
         respond({ command: "githubSyncRunQueued", data: { targetId, queued: false } });
         break;
       }
+      requireGitHubSyncManualMode(githubSyncTargetById(context, targetId), "using Force Update");
       clearGitHubSyncConflict(githubSyncStateDirectory(context), targetId);
-      await mutateGitHubSyncTargets(context, `force update ${targetId}`, targets => {
-        const current = targets.find(candidate => candidate.id === targetId);
-        if (!current) throw new Error("GitHub Sync target was not found.");
-        current.automation.enabled = false;
-        return { targets, result: undefined };
-      });
-      configureGitHubSyncScheduler(context);
       githubSyncForceUpdateAudit.set(targetId, { actor, comment: comment.trim() });
       const queued = githubSyncScheduler?.request(targetId, "force-local-authority") === true;
       if (!queued) githubSyncForceUpdateAudit.delete(targetId);
@@ -6663,6 +6665,10 @@ async function handleMessage(
 
     case "githubSyncRestore": {
       const target = githubSyncTargetById(context, String(msg.targetId || ""));
+      requireGitHubSyncManualMode(target, "restoring a snapshot");
+      if (readGitHubSyncConflict(githubSyncStateDirectory(context), target.id)) {
+        throw new Error(`Resolve or discard the current GitHub Sync comparison before restoring a snapshot for ${target.name}.`);
+      }
       const checkoutRoot = path.join(githubSyncStateDirectory(context), "checkouts");
       const credentials = await readGitHubSyncCredentials(context, target);
       const snapshot = await withGitHubSyncTargetLock(context, target.id, () => fetchGitHubRemoteSnapshot(target, checkoutRoot, false, credentials));
@@ -6672,7 +6678,15 @@ async function handleMessage(
       if (!selected?.length) { respond({ command: "githubSyncRestoreCancelled", data: { targetId: target.id } }); break; }
       const selectedPaths = selected.map(item => item.path);
       const commit = snapshot.commit;
-      let result = await withGitHubSyncTargetLock(context, target.id, () => restoreGitHubRemoteFiles(target, checkoutRoot, getStorePath(), commit, selectedPaths, false, credentials));
+      const restore = (overwrite: boolean) => withGitHubSyncTargetLock(context, target.id, () => {
+        const current = githubSyncTargetById(context, target.id);
+        requireGitHubSyncManualMode(current, "restoring a snapshot");
+        if (readGitHubSyncConflict(githubSyncStateDirectory(context), target.id)) {
+          throw new Error(`Resolve or discard the current GitHub Sync comparison before restoring a snapshot for ${current.name}.`);
+        }
+        return restoreGitHubRemoteFiles(current, checkoutRoot, getStorePath(), commit, selectedPaths, overwrite, credentials);
+      });
+      let result = await restore(false);
       if (result.conflicts.length) {
         const detail = result.conflicts.slice(0, 8).join("\n") + (result.conflicts.length > 8 ? `\n...and ${result.conflicts.length - 8} more` : "");
         const choice = await vscode.window.showWarningMessage(
@@ -6684,7 +6698,7 @@ async function handleMessage(
           respond({ command: "githubSyncRestoreCancelled", data: { targetId: target.id } });
           break;
         }
-        result = await withGitHubSyncTargetLock(context, target.id, () => restoreGitHubRemoteFiles(target, checkoutRoot, getStorePath(), commit, selectedPaths, true, credentials));
+        result = await restore(true);
       }
       invalidateSharedContentCatalog();
       await refreshKnowledgeInventory(context);
