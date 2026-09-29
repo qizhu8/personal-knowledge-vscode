@@ -65,6 +65,12 @@ assert.match(deleteHandler, /mutateGitHubSyncTargets[\s\S]*configureGitHubSyncSc
   "target configuration is removed immediately before checkout cleanup continues in the background");
 assert.match(source, /Stops future pull\/push operations[\s\S]*already-started push may still finish/,
   "the delete confirmation explains immediate logical removal and the in-flight Git boundary");
+assert.match(source, /data-pending-label="Deleting…"[\s\S]*githubSyncDelete\('\$\{esc\(target\.id\)\}',this\)/,
+  "the target delete button exposes immediate pending feedback");
+assert.match(source, /function githubSyncDelete\(targetId, button\)[\s\S]*ask\('githubSyncDelete',\{targetId\},button\)/,
+  "the confirmed delete request binds the original target button to the action lifecycle");
+assert.match(coreSource, /githubSyncDelete:120000/,
+  "slow target deletion remains visibly pending and reports timeout failures");
 assert.match(source, /Manual review · explicit choice for every file/,
   "each target defaults to explicit per-file conflict resolution");
 assert.match(source, /Agent-assisted Skill\/Recipe merge · review before push/,

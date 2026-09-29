@@ -415,7 +415,7 @@ const actionTimeouts = {
   chatAddManagedAgent:180000,
   agentSnapshotCreate:30000, agentSnapshotRotate:30000, agentSnapshotDelete:15000,
   recipeOpenBrowser:30000,
-  githubSyncSave:30000, githubSyncRun:120000, githubSyncCreateIdentity:30000, githubSyncTestAuthentication:30000,
+  githubSyncSave:30000, githubSyncDelete:120000, githubSyncRun:120000, githubSyncCreateIdentity:30000, githubSyncTestAuthentication:30000,
   githubSyncMigration:180000,
   githubSyncConflictOpen:30000, githubSyncConflictChooseAll:120000, githubSyncConflictDelete:120000, githubSyncConflictDeleteAll:120000, githubSyncConflictAgent:120000, githubSyncConflictAgentAll:1800000, githubSyncConflictAccept:120000, githubSyncConflictDiscard:30000,
   mcpRepairRuntime:600000, mcpSetPython:600000, generateMcp:90000,
