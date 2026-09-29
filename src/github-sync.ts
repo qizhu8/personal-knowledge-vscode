@@ -256,6 +256,16 @@ export interface GitHubSyncRemoteSnapshot {
   validation: GitHubSyncRemoteValidation;
 }
 
+export interface GitHubSyncInitialPreview {
+  remoteCommit: string;
+  remoteSchema: 1 | 2 | 3;
+  differences: GitHubSyncConflict[];
+  same: number;
+  remoteOnly: number;
+  localOnly: number;
+  modified: number;
+}
+
 export interface GitHubSyncRestoreResult {
   restored: string[];
   conflicts: string[];
@@ -1061,6 +1071,58 @@ export async function fetchGitHubRemoteSnapshot(
   return snapshot(remoteManifestFiles(manifest, repositoryFiles));
 }
 
+export async function previewGitHubSyncTarget(
+  target: GitHubSyncTarget,
+  catalog: GitHubSyncCatalog,
+  checkoutRoot: string,
+  credentials?: GitHubSyncCredentials,
+): Promise<GitHubSyncInitialPreview> {
+  const normalized = normalizeGitHubSyncTarget(target, () => target.id);
+  const localMaterialized = selectedFiles(normalized, catalog);
+  for (const file of localMaterialized.files) validateManagedContent(file, file.content!);
+  const localFiles = new Map(localMaterialized.files.map(file => [file.path, file]));
+  const checkout = githubSyncCheckoutPath(normalized, checkoutRoot);
+  await prepareCheckout(normalized, checkout, credentials);
+  const commit = await git(checkout, ["rev-parse", "HEAD"]);
+  const raw = (await gitBuffer(checkout, ["cat-file", "blob", `${commit}:${MANIFEST_PATH}`], undefined, 16 * 1024 * 1024)).toString("utf8");
+  const manifest = parseManagedManifest(raw);
+  const remoteFiles = new Map<string, GitHubSyncManagedFile>();
+  for (const file of manifest.files) {
+    const content = await gitBuffer(checkout, ["cat-file", "blob", `${commit}:${file.path}`], undefined, 64 * 1024 * 1024);
+    if (!file.digest) file.digest = fileDigest(content);
+    validateManagedContent(file, content);
+    remoteFiles.set(file.path, { ...file, content });
+  }
+  const differences: GitHubSyncConflict[] = [];
+  let same = 0;
+  let remoteOnly = 0;
+  let localOnly = 0;
+  let modified = 0;
+  const paths = new Set([...localFiles.keys(), ...remoteFiles.keys()]);
+  for (const relative of [...paths].sort((left, right) => left.localeCompare(right))) {
+    const local = localFiles.get(relative);
+    const remote = remoteFiles.get(relative);
+    if (local && remote && local.digest === remote.digest) {
+      same++;
+      continue;
+    }
+    if (!local) remoteOnly++;
+    else if (!remote) localOnly++;
+    else modified++;
+    const metadata = local || remote!;
+    differences.push({
+      path: relative,
+      type: metadata.type,
+      itemId: metadata.itemId,
+      category: metadata.category,
+      privacy: metadata.privacy,
+      local: local?.content,
+      remote: remote?.content,
+    });
+  }
+  return { remoteCommit: commit, remoteSchema: manifest.schema, differences, same, remoteOnly, localOnly, modified };
+}
+
 async function assertRemoteCommit(target: GitHubSyncTarget, checkoutRoot: string, commit: string): Promise<string> {
   if (!/^[0-9a-f]{40,64}$/i.test(commit)) throw new Error("Remote snapshot commit is invalid.");
   const checkout = githubSyncCheckoutPath(target, checkoutRoot);
@@ -1508,6 +1570,40 @@ function groupManagedFiles(files: Iterable<GitHubSyncManagedFile>): GitHubSyncEn
   return groups;
 }
 
+function migrateBaseManifestToCanonicalSchema(
+  base: GitHubSyncManifest,
+  remote: GitHubSyncManifest,
+): GitHubSyncManifest {
+  const remoteByPath = new Map(remote.files.map(file => [file.path, file]));
+  const remoteByContent = new Map<string, GitHubSyncManagedFile[]>();
+  for (const file of remote.files) {
+    const key = `${file.type}\0${file.digest}`;
+    const matches = remoteByContent.get(key) || [];
+    matches.push(file);
+    remoteByContent.set(key, matches);
+  }
+  return {
+    schema: GITHUB_SYNC_MANIFEST_SCHEMA,
+    minimumExtensionVersion: remote.minimumExtensionVersion,
+    files: base.files.map(file => {
+      const exact = remoteByPath.get(file.path);
+      const contentMatches = remoteByContent.get(`${file.type}\0${file.digest}`) || [];
+      const canonical = exact || (contentMatches.length === 1 ? contentMatches[0] : undefined);
+      return canonical
+        ? {
+          ...file,
+          type: canonical.type,
+          itemId: canonical.itemId,
+          member: canonical.member,
+          category: canonical.category,
+          privacy: canonical.privacy,
+        }
+        : file;
+    }),
+    deletions: [],
+  };
+}
+
 function entityState(files: GitHubSyncManagedFile[] | undefined): string | undefined {
   if (!files) return undefined;
   return JSON.stringify(files.map(file => ({
@@ -1696,6 +1792,12 @@ async function syncGitHubTargetAttempt(
     remoteManifest = { schema: GITHUB_SYNC_MANIFEST_SCHEMA, files: [], deletions: [] };
   } else {
     remoteManifest = parseManagedManifest(remoteManifestRaw);
+    if (remoteManifest.schema !== GITHUB_SYNC_MANIFEST_SCHEMA && !authoritativeMigrationCutover && !forceLocalAuthority) {
+      throw new Error(
+        `GitHub Sync requires manifest schema ${GITHUB_SYNC_MANIFEST_SCHEMA}, but the repository uses schema ${remoteManifest.schema}. `
+        + "Complete the one-time GitHub publication migration before synchronizing files.",
+      );
+    }
     for (const file of remoteManifest.files) {
       const content = fs.readFileSync(managedPath(checkout, file.path));
       if (!file.digest) file.digest = fileDigest(content);
@@ -1713,9 +1815,14 @@ async function syncGitHubTargetAttempt(
   const remoteFiles = new Map(remoteManifest.files.map(file => [file.path, file]));
 
   let baseManifest: GitHubSyncManifest = { schema: GITHUB_SYNC_MANIFEST_SCHEMA, files: [], deletions: [] };
+  let migratedLocalSyncSchema = false;
   if (normalized.lastSync?.commit) {
     baseManifest = await manifestAtCommit(checkout, normalized.lastSync.commit);
     enrichLegacyFiles(baseManifest.files, new Map([...remoteFiles, ...localFiles]));
+    if (baseManifest.schema !== GITHUB_SYNC_MANIFEST_SCHEMA && remoteManifest.schema === GITHUB_SYNC_MANIFEST_SCHEMA) {
+      baseManifest = migrateBaseManifestToCanonicalSchema(baseManifest, remoteManifest);
+      migratedLocalSyncSchema = true;
+    }
   }
   const baseFiles = new Map(baseManifest.files.map(file => [file.path, file]));
   if (storeRoot) {
@@ -1738,7 +1845,8 @@ async function syncGitHubTargetAttempt(
   const finalRemote = new Map(remoteFiles);
   reconcileMigratedEntityIdentities(localEntities, baseEntities);
   reconcileMigratedEntityIdentities(localEntities, remoteEntities, finalRemote);
-  const localDeletionMap = new Map((normalized.pendingDeletions || []).map(deletion => [entityKey(deletion.type, deletion.itemId), deletion]));
+  const localDeletionMap = new Map((migratedLocalSyncSchema ? [] : normalized.pendingDeletions || [])
+    .map(deletion => [entityKey(deletion.type, deletion.itemId), deletion]));
   const remoteDeletionMap = new Map(remoteManifest.deletions.map(deletion => [entityKey(deletion.type, deletion.itemId), deletion]));
   const baseDeletionMap = new Map(baseManifest.deletions.map(deletion => [entityKey(deletion.type, deletion.itemId), deletion]));
   const finalDeletions = new Map(remoteDeletionMap);
@@ -1753,7 +1861,9 @@ async function syncGitHubTargetAttempt(
   const localWrites: GitHubSyncLocalWrite[] = [];
   const localDeletes: Array<{ file: GitHubSyncManagedFile; expectedLocal?: Buffer }> = [];
   const conflicts: GitHubSyncConflict[] = [];
-  const acknowledgedDeletions: GitHubSyncDeletionEvidence[] = [];
+  const acknowledgedDeletions: GitHubSyncDeletionEvidence[] = migratedLocalSyncSchema
+    ? [...(normalized.pendingDeletions || [])]
+    : [];
   const resolutionRules: GitHubSyncResolutionReport["rules"] = {};
   const recordResolution = (rule: GitHubSyncResolutionRule, files: GitHubSyncManagedFile[] | undefined, ...others: Array<GitHubSyncManagedFile[] | undefined>): void => {
     const paths = new Set([...(files || []), ...others.flatMap(items => items || [])].map(file => file.path));

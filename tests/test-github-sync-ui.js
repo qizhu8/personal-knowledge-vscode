@@ -69,7 +69,7 @@ assert.match(source, /Manual review · explicit choice for every file/,
   "each target defaults to explicit per-file conflict resolution");
 assert.match(source, /Agent-assisted Skill\/Recipe merge · review before push/,
   "Agent resolution clearly covers both Skills and Recipes without bypassing review");
-assert.match(source, /Use this machine[\s\S]*Use GitHub[\s\S]*Edit combined copy[\s\S]*Validate edited copy[\s\S]*Merge with Agent/,
+assert.match(source, /Use this machine[\s\S]*Use GitHub[\s\S]*Merge manually[\s\S]*Validate merge[\s\S]*Merge with Agent/,
   "each conflict exposes understandable local, remote, manual, and Agent resolution paths");
 assert.match(source, /All Use GitHub[\s\S]*All Use This Machine[\s\S]*Ask Agent for/,
   "large conflict sets expose host-backed bulk resolution actions");
@@ -157,9 +157,16 @@ assert.match(extensionSource, /showInputBox\(\{[\s\S]*Explain why this destructi
   "Force Update requires a non-empty user comment before the final native confirmation");
 assert.match(extensionSource, /Actor: \$\{actor\}[\s\S]*Reason: \$\{comment\.trim\(\)\}[\s\S]*Force Update GitHub/,
   "the final native confirmation identifies the actor and audit comment");
-assert.match(conflictCard, /Resolve conflicts below/, "the disabled sync action directs the user to the required Git step");
+assert.match(source, /Recheck with Remote/, "a manual sync can re-evaluate conflicts after schema migration or remote changes");
 assert.match(source, /Sync with Remote/, "the primary action names the pull-merge-push workflow");
 assert.match(source, /Restore snapshot…/, "historical file selection is clearly distinguished from normal synchronization");
+assert.match(source, /differences found[\s\S]*Remote was fetched read-only/,
+  "initial setup presents a read-only comparison before applying changes");
+assert.match(source, /githubSyncDifferenceTree[\s\S]*All Use GitHub[\s\S]*All Use This Machine/,
+  "initial differences are organized as a file tree with bulk remote and local choices");
+assert.match(source, /Merge manually/, "modified files expose an explicit merge choice");
+assert.match(extensionSource, /previewGitHubSyncTarget[\s\S]*initial-preview/,
+  "saving an initial target fetches a comparison instead of immediately scheduling synchronization");
 assert.match(conflictCard, /Choice required/, "unresolved files visibly require a decision");
 assert.match(conflictCard, /Agent merge/, "resolved files show which candidate will be applied");
 assert.match(conflictCard, /2 changed on both sides/, "the conflict workspace summarizes conflict shape");

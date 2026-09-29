@@ -11,6 +11,7 @@ const {
   GitHubSyncConflictError,
   completeGitHubSyncTransaction,
   normalizeGitHubSyncTarget,
+  previewGitHubSyncTarget,
   syncGitHubTarget
 } = require("../dist/github-sync.js");
 
@@ -136,22 +137,14 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
       repository: remote,
       branch: "legacy"
     }, () => "target-legacy");
-    const legacyResult = await syncGitHubTarget(legacyTarget, emptyCatalog(), checkoutRoot, undefined, legacyStore);
-    assert.deepStrictEqual(legacyResult.pulled.sort(), [
-      "notes/Imported/Remote.md",
-      "recipes/Imported/Remote.recipe_legacy_remote.json",
-      "skills/Legacy/Remote.md"
-    ],
-      "a new machine must materialize selected files from a schema-1 manifest even when its local catalog is empty");
-    assert(fs.existsSync(path.join(legacyStore, "skills", "Legacy", "Remote.md")));
-    assert(fs.existsSync(path.join(legacyStore, "notes", "Imported", "Remote.md")));
-    assert(!fs.existsSync(path.join(legacyStore, "recipes", "Imported", "Remote.recipe_legacy_remote.json")),
-      "Recipe pulls are virtual Project Store updates, not synthetic Knowledge Root files");
-    assert.strictEqual(legacyResult.recipePulls[0].itemId, "recipe_legacy_remote");
-    const migratedManifest = JSON.parse(run(root, ["--git-dir", remote, "show", "legacy:.pkm-github-sync.json"]));
-    assert.strictEqual(migratedManifest.schema, 3, "the first successful reconciliation upgrades a legacy manifest to schema 3");
-    assert.deepStrictEqual(migratedManifest.capabilities.required, ["explicit-deletions", "stable-entity-identity"]);
-
+    const legacyPreview = await previewGitHubSyncTarget(legacyTarget, emptyCatalog(), checkoutRoot);
+    assert.strictEqual(legacyPreview.remoteSchema, 1);
+    assert.strictEqual(legacyPreview.remoteOnly, 3, "legacy repositories remain available for read-only initial comparison");
+    await assert.rejects(
+      () => syncGitHubTarget(legacyTarget, emptyCatalog(), checkoutRoot, undefined, legacyStore),
+      /requires manifest schema 3/i,
+      "schema-1 repositories must migrate before file reconciliation can write either side",
+    );
     const layoutCatalogA = emptyCatalog();
     layoutCatalogA.recipes = [{
       id: "recipe_layout",

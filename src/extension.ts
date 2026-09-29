@@ -95,7 +95,7 @@ import { BundledKnowledgeContent, exportProjectRecipeBundle } from "./workflows/
 import { recipeBrowserEditorDocument } from "./recipe-browser";
 import {
   GITHUB_SYNC_CONTENT_TYPES, GitHubPublicationMigration, GitHubPublicationMigrationSource, GitHubSyncCatalog, GitHubSyncCatalogItem, GitHubSyncConflictError, GitHubSyncContentType, GitHubSyncCredentials, GitHubSyncExtensionCompatibilityError, GitHubSyncRecipePull, GitHubSyncTarget, githubSyncMigrationCanonicalFiles,
-  completeGitHubSyncTransaction, createGitHubSyncIdentity, discoverGitHubCredentialManagerAccounts, discoverGitHubSshIdentities, fetchGitHubRemoteSnapshot, githubSyncAuthenticationSessionOptions, githubSyncManagedContent, githubSyncSafeRelativePath, githubSyncShield, normalizeGitHubSyncTarget,
+  completeGitHubSyncTransaction, createGitHubSyncIdentity, discoverGitHubCredentialManagerAccounts, discoverGitHubSshIdentities, fetchGitHubRemoteSnapshot, githubSyncAuthenticationSessionOptions, githubSyncManagedContent, githubSyncSafeRelativePath, githubSyncShield, normalizeGitHubSyncTarget, previewGitHubSyncTarget,
   probeGitHubSyncAuthentication, probeGitHubSyncHttpsAuthentication, probeGitHubSyncVscodeAuthentication, readGitHubRemoteFile, readGitHubRemoteFilesForSubscription, readGitHubRemoteManifest, replaceGitHubSyncFilesAtomically, restoreGitHubRemoteFiles, syncGitHubTarget, testGitHubSyncAuthentication,
 } from "./github-sync";
 import {
@@ -1199,6 +1199,9 @@ async function prepareGitHubSyncAgentCandidates(
   const stateDirectory = githubSyncStateDirectory(context);
   const record = readGitHubSyncConflict(stateDirectory, targetId);
   if (!record) throw new Error("GitHub Sync conflict was not found.");
+  if (record.purpose === "initial-preview" && record.remoteSchema !== 3) {
+    throw new Error(`Complete the GitHub publication migration from schema ${record.remoteSchema || "unknown"} to schema 3 before applying the initial comparison.`);
+  }
   const backends = await listAiBackends(context);
   const backend = backends.find(candidate => candidate.kind === "copilot") || backends[0];
   if (!backend || backend.id.endsWith(":needkey")) throw new Error("No available Agent model can prepare this conflict. Keep manual review or configure an AI backend.");
@@ -1269,6 +1272,9 @@ async function acceptGitHubSyncConflict(context: vscode.ExtensionContext, target
   const stateDirectory = githubSyncStateDirectory(context);
   const record = readGitHubSyncConflict(stateDirectory, targetId);
   if (!record) throw new Error("GitHub Sync conflict was not found.");
+  if (record.purpose === "initial-preview" && record.remoteSchema !== 3) {
+    throw new Error(`Complete the GitHub publication migration from schema ${record.remoteSchema || "unknown"} to schema 3 before applying the initial comparison.`);
+  }
   const unresolved = record.files.filter(file => file.candidateSource === "unresolved");
   if (unresolved.length) {
     throw new Error(`Choose a resolution for every conflicting file before syncing: ${unresolved.map(file => file.path).join(", ")}`);
@@ -1364,11 +1370,13 @@ async function acceptGitHubSyncConflict(context: vscode.ExtensionContext, target
       category: file.category,
       privacy: file.privacy,
     }));
-    current.pendingDeletions = [
-      ...(current.pendingDeletions || []).filter(existing =>
-        !deletions.some(deletion => deletion.type === existing.type && deletion.itemId === existing.itemId)),
-      ...deletions,
-    ];
+    current.pendingDeletions = record.purpose === "initial-preview"
+      ? []
+      : [
+        ...(current.pendingDeletions || []).filter(existing =>
+          !deletions.some(deletion => deletion.type === existing.type && deletion.itemId === existing.itemId)),
+        ...deletions,
+      ];
     delete current.lastFailure;
     return { targets, result: undefined };
   });
@@ -1507,7 +1515,7 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
   if (!githubSyncScheduler) {
     githubSyncScheduler = new GitHubSyncScheduler({
       shouldExecute: async (targetId, reason) => {
-        if (reason !== "force-local-authority" && readGitHubSyncConflict(githubSyncStateDirectory(context), targetId)
+        if (reason !== "force-local-authority" && reason !== "manual" && readGitHubSyncConflict(githubSyncStateDirectory(context), targetId)
           && !clearEquivalentGitHubSyncConflict(context, targetId)) {
           log.info(`automatic GitHub Sync target=${targetId} reason=${reason} skipped=conflict-awaiting-approval`);
           return false;
@@ -2027,6 +2035,8 @@ async function githubSyncStateData(context: vscode.ExtensionContext, waitForExpe
       id: record.id,
       remoteCommit: record.remoteCommit,
       createdAt: record.createdAt,
+      purpose: record.purpose,
+      remoteSchema: record.remoteSchema,
       resolutionReport: record.resolutionReport,
       files: record.files.map(file => ({
         path: file.path,
@@ -6328,7 +6338,7 @@ async function handleMessage(
             target.publication = existing?.publication;
           }
           const next = [...targets.filter(candidate => candidate.id !== target.id), target].sort((left, right) => left.name.localeCompare(right.name));
-          return { targets: next, result: { endpointChanged: changed, automationBlocked } };
+          return { targets: next, result: { endpointChanged: changed, automationBlocked, initialSetup: !existing || changed || !initialSyncCompleted } };
         });
         if (result.endpointChanged) {
           fs.rmSync(path.join(githubSyncStateDirectory(context), "checkouts", target.id), { recursive: true, force: true });
@@ -6341,7 +6351,56 @@ async function handleMessage(
       }
       if (target.authentication?.method !== "vscode") await context.secrets.delete(githubSyncSecretKey(target.id));
       configureGitHubSyncScheduler(context);
-      githubSyncScheduler?.request(target.id, "configuration");
+      if (saveResult.initialSetup) {
+        const savedTarget = githubSyncTargetById(context, target.id);
+        const credentials = await readGitHubSyncCredentials(context, savedTarget);
+        const catalog = await githubSyncCatalog();
+        const preview = await withGitHubSyncTargetLock(context, target.id, () => previewGitHubSyncTarget(
+          savedTarget,
+          catalog,
+          path.join(githubSyncStateDirectory(context), "checkouts"),
+          credentials,
+        ));
+        clearGitHubSyncConflict(githubSyncStateDirectory(context), target.id);
+        if (preview.differences.length) {
+          storeGitHubSyncConflict(
+            githubSyncStateDirectory(context),
+            target.id,
+            new GitHubSyncConflictError(preview.remoteCommit, preview.differences, [], [], {}, [], [], {
+              totalFiles: preview.same + preview.differences.length,
+              rules: {
+                unchanged: preview.same,
+                "remote-only": preview.remoteOnly,
+                "local-only": preview.localOnly,
+                "human-required": preview.modified,
+              },
+              generatedAt: new Date().toISOString(),
+            }),
+            "initial-preview",
+            preview.remoteSchema,
+          );
+        } else {
+          vscode.window.showInformationMessage(`Initial GitHub comparison found no differences for ${savedTarget.name}.`);
+        }
+        if (preview.remoteSchema === 3) {
+          await mutateGitHubSyncTargets(context, `record schema compatibility ${target.id}`, targets => {
+            const current = targets.find(candidate => candidate.id === target.id);
+            if (!current) throw new Error("GitHub Sync target was not found.");
+            current.publication = {
+              requiredCapability: "stable-entity-identity",
+              sourceCommit: preview.remoteCommit,
+              sourceDigest: createHash("sha256").update(preview.remoteCommit).digest("hex"),
+              manualVerificationCompleted: true,
+            };
+            return { targets, result: undefined };
+          });
+        }
+        if (preview.remoteSchema !== 3) {
+          vscode.window.showWarningMessage(
+            `GitHub uses PKM manifest schema ${preview.remoteSchema}. Complete the one-time publication migration before applying the initial sync choices.`
+          );
+        }
+      }
       respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
       break;
     }

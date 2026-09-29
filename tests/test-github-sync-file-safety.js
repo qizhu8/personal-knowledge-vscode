@@ -145,6 +145,49 @@ async function scenario(name, action) {
     }
   });
 
+  await scenario("canonical remote schema migrates a legacy local sync base before reconciliation", async () => {
+    const fixture = createFixture("local-schema-migration");
+    try {
+      await initialize(fixture);
+      const verify = cloneRemote(fixture);
+      const manifestPath = path.join(verify, ".pkm-github-sync.json");
+      const canonicalManifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      const legacyManifest = {
+        schema: 2,
+        files: canonicalManifest.files.map(({ member, ...file }) => file),
+      };
+      fs.writeFileSync(manifestPath, JSON.stringify(legacyManifest, null, 2) + "\n");
+      run(verify, ["add", ".pkm-github-sync.json"]);
+      run(verify, ["commit", "-m", "legacy local sync base"]);
+      run(verify, ["push"]);
+      fixture.target.lastSync.commit = run(verify, ["rev-parse", "HEAD"]);
+
+      fs.writeFileSync(manifestPath, JSON.stringify(canonicalManifest, null, 2) + "\n");
+      run(verify, ["add", ".pkm-github-sync.json"]);
+      run(verify, ["commit", "-m", "remote publication schema migration"]);
+      run(verify, ["push"]);
+
+      fs.rmSync(path.join(fixture.skills, "One.md"));
+      fs.rmSync(path.join(fixture.skills, "Two.md"));
+      fixture.catalog.skills = [];
+      fixture.target.pendingDeletions = [
+        { type: "skills", itemId: "Shared/One", deletedAt: new Date().toISOString() },
+        { type: "skills", itemId: "Shared/Two", deletedAt: new Date().toISOString() },
+      ];
+      const result = await syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store);
+      assert.deepStrictEqual(result.pulled.sort(), ["skills/Shared/One.md", "skills/Shared/Two.md"]);
+      assert.deepStrictEqual(
+        result.acknowledgedDeletions.map(item => item.itemId).sort(),
+        ["Shared/One", "Shared/Two"],
+        "deletion evidence from the incompatible local schema must not cross the migration boundary",
+      );
+      assert.strictEqual(fs.readFileSync(path.join(fixture.skills, "One.md"), "utf8"), skill("One", "one v1"));
+      assert.strictEqual(fs.readFileSync(path.join(fixture.skills, "Two.md"), "utf8"), skill("Two", "two v1"));
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   await scenario("managed files on disk survive temporary catalog omission", async () => {
     const fixture = createFixture("catalog-omission");
     try {

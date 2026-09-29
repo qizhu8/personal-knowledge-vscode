@@ -100,6 +100,28 @@ try {
     "acceptance must not overwrite an edit made after conflict staging"
   );
 
+  const preview = storeGitHubSyncConflict(root, "target-preview", new GitHubSyncConflictError("c".repeat(40), [
+    {
+      path: "notes/Remote.md", type: "notes", itemId: "Remote", category: "", privacy: "public",
+      remote: Buffer.from("# Remote\n"),
+    },
+    {
+      path: "notes/Local.md", type: "notes", itemId: "Local", category: "", privacy: "public",
+      local: Buffer.from("# Local\n"),
+    },
+    {
+      path: "notes/Both.md", type: "notes", itemId: "Both", category: "", privacy: "public",
+      local: Buffer.from("# Local edit\n"), remote: Buffer.from("# Remote edit\n"),
+    },
+  ]), "initial-preview", 3);
+  assert.strictEqual(preview.purpose, "initial-preview");
+  assert.strictEqual(preview.remoteSchema, 3);
+  assert.deepStrictEqual(
+    preview.files.map(file => file.candidateSource),
+    ["remote", "local", "unresolved"],
+    "initial comparison preserves one-sided files automatically and asks only for true two-sided differences",
+  );
+
   const deletedOnBothSides = storeGitHubSyncConflict(root, "target-2", new GitHubSyncConflictError("b".repeat(40), [{
     path: "skills/Shared/Deleted.md",
     type: "skills",

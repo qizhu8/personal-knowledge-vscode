@@ -46,6 +46,8 @@ export interface GitHubSyncStoredConflict {
   remoteCommit: string;
   createdAt: string;
   explicitResolution: boolean;
+  purpose?: "conflict" | "initial-preview";
+  remoteSchema?: 1 | 2 | 3;
   resolutionReport?: GitHubSyncResolutionReport;
   files: GitHubSyncStoredConflictFile[];
 }
@@ -83,7 +85,9 @@ function writeMetadata(stateDirectory: string, record: GitHubSyncStoredConflict)
 export function storeGitHubSyncConflict(
   stateDirectory: string,
   targetId: string,
-  error: GitHubSyncConflictError
+  error: GitHubSyncConflictError,
+  purpose: "conflict" | "initial-preview" = "conflict",
+  remoteSchema?: 1 | 2 | 3,
 ): GitHubSyncStoredConflict {
   const directory = recordDirectory(stateDirectory, targetId);
   fs.rmSync(directory, { recursive: true, force: true });
@@ -94,6 +98,13 @@ export function storeGitHubSyncConflict(
     const candidate = conflict.local || conflict.remote || conflict.base;
     if (!candidate) throw new Error(`Conflict has no recoverable candidate: ${conflict.path}`);
     writeVariant(stateDirectory, targetId, "merged", conflict.path, candidate);
+    const candidateSource = purpose === "initial-preview"
+      ? conflict.local && !conflict.remote
+        ? "local"
+        : conflict.remote && !conflict.local
+          ? "remote"
+          : "unresolved"
+      : "unresolved";
     return {
       path: conflict.path,
       type: conflict.type,
@@ -103,7 +114,9 @@ export function storeGitHubSyncConflict(
       hasBase: !!conflict.base,
       hasLocal: !!conflict.local,
       hasRemote: !!conflict.remote,
-      candidateSource: "unresolved",
+      candidateSource,
+      ...(candidateSource === "local" ? { rationale: "Only this machine has this file; keep it in the merged result." } : {}),
+      ...(candidateSource === "remote" ? { rationale: "Only GitHub has this file; restore it in the merged result." } : {}),
     };
   });
   const record: GitHubSyncStoredConflict = {
@@ -113,6 +126,8 @@ export function storeGitHubSyncConflict(
     remoteCommit: error.remoteCommit,
     createdAt: new Date().toISOString(),
     explicitResolution: true,
+    purpose,
+    ...(remoteSchema ? { remoteSchema } : {}),
     resolutionReport: error.resolutionReport,
     files,
   };

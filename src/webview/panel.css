@@ -1129,6 +1129,11 @@ body.chat-resizing{cursor:col-resize;user-select:none}
 .github-sync-conflict-actions>p{margin:5px 0 8px;color:var(--muted);font-size:9px;line-height:1.45}
 .github-sync-conflict-bulk{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border)}
 .github-sync-conflict-files{display:flex;width:100%;flex-direction:column;gap:6px}
+.github-sync-diff-tree{display:flex;width:100%;flex-direction:column;gap:5px}
+.github-sync-diff-folder{border-left:1px solid var(--border);padding-left:8px}
+.github-sync-diff-folder>summary{display:flex;align-items:center;gap:5px;padding:4px 0;color:var(--text);cursor:pointer;font-size:9px}
+.github-sync-diff-folder>summary small{margin-left:auto;color:var(--muted);font-size:8px}
+.github-sync-diff-folder>.github-sync-conflict-file,.github-sync-diff-folder>.github-sync-diff-folder{margin:0 0 5px}
 .github-sync-conflict-file{border:1px solid var(--border);border-left:3px solid #3fb950;border-radius:3px;background:var(--panel)}
 .github-sync-conflict-file.unresolved{border-left-color:#d29922}
 .github-sync-conflict-file>header{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;padding:7px 8px}

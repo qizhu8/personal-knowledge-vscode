@@ -183,25 +183,40 @@ function githubSyncResolutionDiagram(report, files = []) {
   return `<section class="github-sync-resolution-diagram" onclick="event.stopPropagation()"><header><span><strong>Resolution flow</strong><small>${esc(detail)}</small></span></header><div class="github-sync-resolution-flow"><span><b>${total}</b><small>Observed</small></span><i>→</i><span class="automatic"><b>${automatic}</b><small>Rules resolved</small></span><i>→</i><span class="agent"><b>${agent}</b><small>Agent prepared</small></span><i>→</i><span class="human"><b>${humanRequired}</b><small>Human Final Review</small></span></div></section>`;
 }
 
-function githubSyncConflictPanel(targetId, conflict) {
-  const sourceLabels = {
-    unresolved:'Choice required',
-    local:'This machine',
-    remote:'GitHub',
-    delete:'Delete GitHub',
-    base:'Common base',
-    manual:'Edited copy',
-    agent:'Agent merge'
+function githubSyncDifferenceTree(entries) {
+  const root = { folders:new Map(), leaves:[] };
+  for (const entry of entries) {
+    const parts = entry.path.split('/');
+    entry.file = parts.pop();
+    let node = root;
+    for (const part of parts) {
+      if (!node.folders.has(part)) node.folders.set(part, { folders:new Map(), leaves:[] });
+      node = node.folders.get(part);
+    }
+    node.leaves.push(entry);
+  }
+  const count = node => node.leaves.length + [...node.folders.values()].reduce((sum, child) => sum + count(child), 0);
+  const render = node => {
+    const folders = [...node.folders.entries()].sort(([left],[right]) => left.localeCompare(right)).map(([name, child]) =>
+      `<details class="github-sync-diff-folder" open><summary>${uiIcon('folder',name)}<small>${count(child)}</small></summary>${render(child)}</details>`
+    ).join('');
+    return folders + node.leaves.sort((left,right) => left.file.localeCompare(right.file)).map(entry => entry.html).join('');
   };
+  return `<div class="github-sync-diff-tree">${render(root)}</div>`;
+}
+
+function githubSyncConflictPanel(targetId, conflict) {
+  const sourceLabels = { unresolved:'Choice required', local:'This machine', remote:'GitHub', delete:'Delete GitHub', base:'Common base', manual:'Manual merge', agent:'Agent merge' };
   const conflictFiles = conflict.files || [];
-  const files = conflictFiles.map(file => {
+  const entries = conflictFiles.map(file => {
     const encodedPath = encodeURIComponent(file.path);
     const canAgent = file.type === 'skills' || file.type === 'recipes';
     const canDeleteRemote = file.hasBase && !file.hasLocal && file.hasRemote;
     const review = file.agentReview;
     const agentReview = review ? `<section class="github-sync-agent-review"><strong>${review.accuracyRisk ? 'Accuracy review required' : 'Human Final Review required'}</strong><p>Confidence ${Math.round(review.confidence * 100)}% · ${review.decisions.length} decisions · ${review.evidence.length} evidence items</p>${review.unresolvedConflicts.length ? `<p>Unresolved: ${esc(review.unresolvedConflicts.join(' · '))}</p>` : ''}${review.introducedContent.length ? `<p>Introduced content: ${esc(review.introducedContent.join(' · '))}</p>` : ''}</section>` : '';
-    return `<article class="github-sync-conflict-file ${file.candidateSource === 'unresolved' ? 'unresolved' : 'resolved'}"><header><span><strong>${esc(file.path)}</strong><small>${esc(githubSyncLabels[file.type] || file.type)}</small></span><b>${esc(sourceLabels[file.candidateSource] || file.candidateSource)}</b></header>${file.rationale ? `<p>${esc(file.rationale)}</p>` : ''}${agentReview}<div><button class="pk-button" onclick="githubSyncConflictOpen('${esc(targetId)}',decodeURIComponent('${encodedPath}'),'compare',this)">Compare</button>${file.hasLocal ? `<button class="pk-button" onclick="githubSyncConflictChoose('${esc(targetId)}',decodeURIComponent('${encodedPath}'),'local',this)">Use this machine</button>` : ''}${file.hasRemote ? `<button class="pk-button" onclick="githubSyncConflictChoose('${esc(targetId)}',decodeURIComponent('${encodedPath}'),'remote',this)">Use GitHub</button>` : ''}${canDeleteRemote ? `<button class="pk-button danger" data-pending-label="Selecting…" onclick="githubSyncConflictDelete('${esc(targetId)}',decodeURIComponent('${encodedPath}'),this)">Delete GitHub</button>` : ''}${file.hasBase ? `<button class="pk-button" onclick="githubSyncConflictChoose('${esc(targetId)}',decodeURIComponent('${encodedPath}'),'base',this)">Use common base</button>` : ''}<button class="pk-button" onclick="githubSyncConflictOpen('${esc(targetId)}',decodeURIComponent('${encodedPath}'),'edit',this)">Edit combined copy</button><button class="pk-button" onclick="githubSyncConflictValidate('${esc(targetId)}',decodeURIComponent('${encodedPath}'),this)">Validate edited copy</button>${canAgent ? `<button class="pk-button" data-pending-label="Merging…" onclick="githubSyncConflictAgent('${esc(targetId)}',decodeURIComponent('${encodedPath}'),this)">Merge with Agent</button>` : ''}</div></article>`;
-  }).join('');
+    const html = `<article class="github-sync-conflict-file ${file.candidateSource === 'unresolved' ? 'unresolved' : 'resolved'}"><header><span><strong>${esc(file.path.split('/').pop())}</strong><small>${esc(githubSyncLabels[file.type] || file.type)} · ${esc(file.path)}</small></span><b>${esc(sourceLabels[file.candidateSource] || file.candidateSource)}</b></header>${file.rationale ? `<p>${esc(file.rationale)}</p>` : ''}${agentReview}<div><button class="pk-button" onclick="githubSyncConflictOpen('${esc(targetId)}',decodeURIComponent('${encodedPath}'),'compare',this)">Compare</button>${file.hasLocal ? `<button class="pk-button" onclick="githubSyncConflictChoose('${esc(targetId)}',decodeURIComponent('${encodedPath}'),'local',this)">Use this machine</button>` : ''}${file.hasRemote ? `<button class="pk-button" onclick="githubSyncConflictChoose('${esc(targetId)}',decodeURIComponent('${encodedPath}'),'remote',this)">Use GitHub</button>` : ''}${canDeleteRemote ? `<button class="pk-button danger" data-pending-label="Selecting…" onclick="githubSyncConflictDelete('${esc(targetId)}',decodeURIComponent('${encodedPath}'),this)">Delete GitHub</button>` : ''}${file.hasBase ? `<button class="pk-button" onclick="githubSyncConflictChoose('${esc(targetId)}',decodeURIComponent('${encodedPath}'),'base',this)">Use common base</button>` : ''}<button class="pk-button" onclick="githubSyncConflictOpen('${esc(targetId)}',decodeURIComponent('${encodedPath}'),'edit',this)">Merge manually</button><button class="pk-button" onclick="githubSyncConflictValidate('${esc(targetId)}',decodeURIComponent('${encodedPath}'),this)">Validate merge</button>${canAgent ? `<button class="pk-button" data-pending-label="Merging…" onclick="githubSyncConflictAgent('${esc(targetId)}',decodeURIComponent('${encodedPath}'),this)">Merge with Agent</button>` : ''}</div></article>`;
+    return { path:file.path, html };
+  });
   const unresolved = conflictFiles.filter(file => file.candidateSource === 'unresolved').length;
   const unresolvedWithLocal = conflictFiles.filter(file => file.candidateSource === 'unresolved' && file.hasLocal).length;
   const unresolvedWithRemote = conflictFiles.filter(file => file.candidateSource === 'unresolved' && file.hasRemote).length;
@@ -210,15 +225,13 @@ function githubSyncConflictPanel(targetId, conflict) {
   const missingRemote = conflictFiles.filter(file => file.hasBase && file.hasLocal && !file.hasRemote).length;
   const changedBoth = conflictFiles.length - missingLocal - missingRemote;
   const supportedByAgent = conflictFiles.filter(file => file.type === 'skills' || file.type === 'recipes').length;
-  const summary = [
-    missingLocal ? `${missingLocal} missing on this machine` : '',
-    missingRemote ? `${missingRemote} missing on GitHub` : '',
-    changedBoth ? `${changedBoth} changed on both sides` : ''
-  ].filter(Boolean).join(' · ');
-  const deletionGuidance = missingLocal
-    ? ` ${missingLocal} file${missingLocal === 1 ? '' : 's'} have no machine-local copy. All Use GitHub restores them; Delete GitHub confirms the local deletion and removes them from the remote repository only after Apply resolutions & Sync.`
-    : '';
-  return `<div class="github-sync-conflict-actions" onclick="event.stopPropagation()"><strong>${conflictFiles.length} conflicting file${conflictFiles.length === 1 ? '' : 's'}</strong><p>${esc(summary)}. A missing-file conflict is a deletion safeguard, not necessarily a text merge. Nothing is pushed until every file has an explicit resolution.${esc(deletionGuidance)}</p>${githubSyncResolutionDiagram(conflict.resolutionReport, conflictFiles)}<div class="github-sync-conflict-bulk">${unresolvedWithRemote ? `<button class="pk-button" data-pending-label="Selecting…" onclick="githubSyncConflictChooseAll('${esc(targetId)}','remote',${unresolvedWithRemote},this)">All Use GitHub</button>` : ''}${unresolvedDeletions ? `<button class="pk-button danger" data-pending-label="Selecting…" onclick="githubSyncConflictDeleteAll('${esc(targetId)}',${unresolvedDeletions},this)">Delete GitHub</button>` : ''}${unresolvedWithLocal ? `<button class="pk-button" data-pending-label="Selecting…" onclick="githubSyncConflictChooseAll('${esc(targetId)}','local',${unresolvedWithLocal},this)">All Use This Machine</button>` : ''}${supportedByAgent ? `<button class="pk-button" data-pending-label="Merging…" onclick="githubSyncConflictAgentAll('${esc(targetId)}',${supportedByAgent},this)">Ask Agent for ${supportedByAgent} supported</button>` : ''}</div><div class="github-sync-conflict-files">${files}</div><footer><span>${unresolved ? `${unresolved} still need a choice` : 'All files have a candidate ready for approval'}</span><button class="pk-button primary" data-pending-label="Applying…" onclick="githubSyncConflictAccept('${esc(targetId)}',this)" ${unresolved ? 'disabled' : ''}>Apply resolutions &amp; Sync</button><button class="pk-button" onclick="githubSyncConflictDiscard('${esc(targetId)}')">Cancel resolution workspace</button></footer></div>`;
+  const initialPreview = conflict.purpose === 'initial-preview';
+  const schemaReady = !initialPreview || conflict.remoteSchema === 3;
+  const heading = initialPreview ? `${conflictFiles.length} differences found` : `${conflictFiles.length} conflicting file${conflictFiles.length === 1 ? '' : 's'}`;
+  const guidance = initialPreview
+    ? `Remote was fetched read-only. One-sided files are preserved automatically; choose GitHub, this machine, or Merge for files changed on both sides. Nothing is written or pushed before approval.${schemaReady ? '' : ` Repository schema ${conflict.remoteSchema} must be migrated to schema 3 first.`}`
+    : `${missingLocal} missing on this machine · ${missingRemote} missing on GitHub · ${changedBoth} changed on both sides. A missing-file conflict is a deletion safeguard, not necessarily a text merge. Nothing is pushed until every file has an explicit resolution.${missingLocal ? ' Delete GitHub confirms the local deletion and stages remote removal until Apply resolutions & Sync.' : ''}`;
+  return `<div class="github-sync-conflict-actions" onclick="event.stopPropagation()"><strong>${esc(heading)}</strong><p>${esc(guidance)}</p>${githubSyncResolutionDiagram(conflict.resolutionReport, conflictFiles)}<div class="github-sync-conflict-bulk">${unresolvedWithRemote ? `<button class="pk-button" data-pending-label="Selecting…" onclick="githubSyncConflictChooseAll('${esc(targetId)}','remote',${unresolvedWithRemote},this)">All Use GitHub</button>` : ''}${!initialPreview && unresolvedDeletions ? `<button class="pk-button danger" data-pending-label="Selecting…" onclick="githubSyncConflictDeleteAll('${esc(targetId)}',${unresolvedDeletions},this)">Delete GitHub</button>` : ''}${unresolvedWithLocal ? `<button class="pk-button" data-pending-label="Selecting…" onclick="githubSyncConflictChooseAll('${esc(targetId)}','local',${unresolvedWithLocal},this)">All Use This Machine</button>` : ''}${supportedByAgent ? `<button class="pk-button" data-pending-label="Merging…" onclick="githubSyncConflictAgentAll('${esc(targetId)}',${supportedByAgent},this)">Ask Agent for ${supportedByAgent} supported</button>` : ''}</div>${githubSyncDifferenceTree(entries)}<footer><span>${!schemaReady ? 'Complete schema migration before applying' : unresolved ? `${unresolved} still need a choice` : 'All files have a candidate ready for approval'}</span><button class="pk-button primary" data-pending-label="Applying…" onclick="githubSyncConflictAccept('${esc(targetId)}',this)" ${unresolved || !schemaReady ? 'disabled' : ''}>${initialPreview ? 'Apply choices &amp; Initial Sync' : 'Apply resolutions &amp; Sync'}</button><button class="pk-button" onclick="githubSyncConflictDiscard('${esc(targetId)}')">Cancel resolution workspace</button></footer></div>`;
 }
 
 function githubSyncCards() {
@@ -227,6 +240,7 @@ function githubSyncCards() {
     'waiting-for-lock':'Waiting for Git lock',
     'authenticating':'Authenticating',
     'fetch':'Fetch / Pull',
+    'initial-preview':'Compare files',
     'resolve-conflicts':'Resolve conflicts',
     'commit':'Commit',
     'push':'Push',
@@ -239,16 +253,17 @@ function githubSyncCards() {
     const automaticReady = !!target.automation?.initialSyncCompleted;
     const conflict = githubSyncData.conflicts?.[target.id];
     const migration = githubSyncData.migrations?.[target.id];
-    const phase = conflict ? 'resolve-conflicts' : runtime.phase || (runtime.status === 'scheduled' ? 'scheduled' : '');
+    const initialPreview = conflict?.purpose === 'initial-preview';
+    const phase = initialPreview ? 'initial-preview' : conflict ? 'resolve-conflicts' : runtime.phase || (runtime.status === 'scheduled' ? 'scheduled' : '');
     const status = conflict ? 'conflicts' : runtime.status || (target.lastFailure ? 'error' : target.automation?.enabled && automaticReady ? 'scheduled' : 'paused');
     const phaseLabel = gitPhaseLabels[phase] || (status === 'paused' ? 'Auto sync off' : status);
     const statusLabel = status === 'error' ? `${phaseLabel} failed` : phaseLabel;
-    const next = conflict ? 'Pull completed · resolve conflicts before commit and push' : runtime.detail || (!automaticReady ? 'Initial manual sync required before automation can be enabled' : runtime.nextSyncAt ? `Next fetch after ${new Date(runtime.nextSyncAt).toLocaleString()}` : target.automation?.enabled ? 'Scheduled to fetch remote changes' : 'Automatic pull/push is off');
+    const next = initialPreview ? 'Remote fetched read-only · review the file tree before applying' : conflict ? 'Pull completed · resolve conflicts before commit and push' : runtime.detail || (!automaticReady ? 'Initial manual sync required before automation can be enabled' : runtime.nextSyncAt ? `Next fetch after ${new Date(runtime.nextSyncAt).toLocaleString()}` : target.automation?.enabled ? 'Scheduled to fetch remote changes' : 'Automatic pull/push is off');
     const error = status === 'error' ? runtime.lastError || target.lastFailure?.error || '' : '';
     const conflictActions = conflict ? githubSyncConflictPanel(target.id, conflict) : '';
     const resolutionDiagram = !conflict ? githubSyncResolutionDiagram(target.lastResolutionReport) : '';
     const forcePending = githubSyncForcePending.has(target.id);
-    const syncLabel = conflict ? 'Resolve conflicts below' : forcePending ? 'Sync queued' : 'Sync with Remote';
+    const syncLabel = conflict ? 'Recheck with Remote' : forcePending ? 'Sync queued' : 'Sync with Remote';
     const scheduleLabel = target.automation?.enabled && automaticReady ? `every ${target.automation?.intervalMinutes || 5} min` : 'manual only';
     const autoEnabled = !!target.automation?.enabled && automaticReady;
     const migrationReady = !target.publication || !!target.publication.manualVerificationCompleted;
@@ -259,7 +274,7 @@ function githubSyncCards() {
       : status === 'syncing' ? 'Wait for the current synchronization to finish'
       : autoEnabled ? 'Turn off automatic synchronization' : 'Turn on automatic synchronization';
     const autoToggle = `<button class="github-sync-auto-toggle ${autoEnabled ? 'on' : ''}" role="switch" aria-checked="${autoEnabled}" aria-label="Auto Sync for ${esc(target.name)}" title="${esc(autoTitle)}" onclick="event.stopPropagation();githubSyncAutomationToggle('${esc(target.id)}',${autoEnabled ? 'false' : 'true'},this)" ${autoDisabled ? 'disabled' : ''}><span></span><em>Auto</em></button>`;
-    const migrationCompleted = migration?.phase === 'cutover' && target.publication?.manualVerificationCompleted;
+    const migrationCompleted = !!target.publication?.manualVerificationCompleted && (!migration || migration.phase === 'cutover');
     const migrationActions = !migration || migration.phase === 'rolled-back'
       ? `<button class="pk-button" data-pending-label="Checking…" onclick="event.stopPropagation();githubSyncMigration('${esc(target.id)}','preview',this)">Start read-only check</button>`
       : migration.phase === 'previewed'
@@ -272,7 +287,7 @@ function githubSyncCards() {
               ? '<small>Cutover complete · run one manual Fetch/Pull → resolve → Commit → Push → inventory/retrieval refresh. Auto Sync remains off.</small>'
               : `<small>${migration.phase === 'cutover' ? 'Manual publication verification complete · Auto Sync may now be enabled manually.' : 'Migration rolled back.'}</small>`;
     const migrationPanel = migrationCompleted ? '' : `<div class="github-sync-migration" onclick="event.stopPropagation()"><span><strong>One-time GitHub publication upgrade</strong><small>${migration ? `${migration.phase} · ${migration.activeCount} managed · ${migration.folderCount} folders · ${migration.idCount} IDs · ${migration.collisions.length} collisions` : 'Required once for targets created before PKM 3.2.1. The read-only check finds stable-ID collisions; it does not change local files or GitHub. Follow Stage, Verify, and Cut over, then run one manual Sync. This panel disappears after that successful sync.'}</small></span><span class="sub-broker-actions">${migrationActions}</span></div>`;
-    return `<article class="pk-card sub-broker-card ${expanded ? 'active' : ''}"><div class="sub-broker-row" role="button" tabindex="0" aria-expanded="${expanded}" onclick="githubSyncEdit('${esc(target.id)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();githubSyncEdit('${esc(target.id)}')}"><span><span class="sub-broker-title"><strong>${esc(target.name)}</strong><span class="github-sync-status ${esc(status)}">${esc(statusLabel)}</span><span class="sub-broker-actions"><button class="pk-button" data-pending-label="Pulling…" onclick="event.stopPropagation();githubSyncForce('${esc(target.id)}',this)" ${status === 'syncing' || forcePending || conflict || (migration && !['cutover','rolled-back'].includes(migration.phase)) ? 'disabled' : ''}>${uiIcon('refresh',syncLabel)}</button><button class="pk-button danger" data-pending-label="Forcing…" onclick="event.stopPropagation();githubSyncForceUpdate('${esc(target.id)}',this)" ${status === 'syncing' || forcePending || (migration && !['cutover','rolled-back'].includes(migration.phase)) ? 'disabled' : ''}>Force Update</button><button class="pk-button" data-pending-label="Loading…" onclick="event.stopPropagation();githubSyncRestore('${esc(target.id)}',this)">${uiIcon('history','Restore snapshot…')}</button><button class="pk-button danger" onclick="event.stopPropagation();githubSyncDelete('${esc(target.id)}')" title="Delete target">${uiIcon('trash')}</button></span></span><small>${esc(target.repository)}</small>${error ? `<small class="github-sync-error" onclick="event.stopPropagation()" onpointerdown="event.stopPropagation()" title="Select and copy this error">${esc(error)}</small>` : ''}${conflictActions}${resolutionDiagram}${migrationPanel}</span><span class="sub-broker-meta"><span class="github-sync-meta-head"><b>${esc(target.branch)} · ${esc(scheduleLabel)}</b>${autoToggle}</span><small>Last ${esc(last)}</small><small>${esc(next)}</small><i>›</i></span></div>${expanded ? `<div class="sub-broker-expanded">${githubSyncEditor()}</div>` : ''}</article>`;
+    return `<article class="pk-card sub-broker-card ${expanded ? 'active' : ''}"><div class="sub-broker-row" role="button" tabindex="0" aria-expanded="${expanded}" onclick="githubSyncEdit('${esc(target.id)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();githubSyncEdit('${esc(target.id)}')}"><span><span class="sub-broker-title"><strong>${esc(target.name)}</strong><span class="github-sync-status ${esc(status)}">${esc(statusLabel)}</span><span class="sub-broker-actions"><button class="pk-button" data-pending-label="Pulling…" onclick="event.stopPropagation();githubSyncForce('${esc(target.id)}',this)" ${status === 'syncing' || forcePending || (migration && !['cutover','rolled-back'].includes(migration.phase)) ? 'disabled' : ''}>${uiIcon('refresh',syncLabel)}</button><button class="pk-button danger" data-pending-label="Forcing…" onclick="event.stopPropagation();githubSyncForceUpdate('${esc(target.id)}',this)" ${status === 'syncing' || forcePending || (migration && !['cutover','rolled-back'].includes(migration.phase)) ? 'disabled' : ''}>Force Update</button><button class="pk-button" data-pending-label="Loading…" onclick="event.stopPropagation();githubSyncRestore('${esc(target.id)}',this)">${uiIcon('history','Restore snapshot…')}</button><button class="pk-button danger" onclick="event.stopPropagation();githubSyncDelete('${esc(target.id)}')" title="Delete target">${uiIcon('trash')}</button></span></span><small>${esc(target.repository)}</small>${error ? `<small class="github-sync-error" onclick="event.stopPropagation()" onpointerdown="event.stopPropagation()" title="Select and copy this error">${esc(error)}</small>` : ''}${conflictActions}${resolutionDiagram}${migrationPanel}</span><span class="sub-broker-meta"><span class="github-sync-meta-head"><b>${esc(target.branch)} · ${esc(scheduleLabel)}</b>${autoToggle}</span><small>Last ${esc(last)}</small><small>${esc(next)}</small><i>›</i></span></div>${expanded ? `<div class="sub-broker-expanded">${githubSyncEditor()}</div>` : ''}</article>`;
   }).join('');
   const create = githubSyncEditing === 'new' ? `<article class="pk-card sub-broker-card active"><div class="sub-broker-expanded">${githubSyncEditor()}</div></article>` : '';
   return cards + create || '<div class="sub-empty">No GitHub targets.</div>';
