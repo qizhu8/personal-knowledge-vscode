@@ -674,15 +674,48 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
     linux.target.pendingDeletions = [{
       type: "skills", itemId: "Shared/One", deletedAt: new Date().toISOString(), category: "Shared", privacy: "public"
     }];
+    let localResolutionConflict;
     await assert.rejects(
-      () => syncGitHubTarget(linux.target, linux.catalog, checkoutRoot, undefined, linux.store),
+      async () => {
+        try {
+          await syncGitHubTarget(linux.target, linux.catalog, checkoutRoot, undefined, linux.store);
+        } catch (error) {
+          localResolutionConflict = error;
+          throw error;
+        }
+      },
       error => error instanceof GitHubSyncConflictError
         && error.conflicts.some(conflict => conflict.path === "skills/Shared/One.md" && !conflict.local && !!conflict.remote)
         && error.conflicts.some(conflict => conflict.path === "skills/Shared/Two.md" && !!conflict.local && !conflict.remote),
       "modify/delete and delete/modify races must both require explicit conflict approval"
     );
 
+    const acceptedRemoteCommit = localResolutionConflict.remoteCommit;
+    const acceptedManifest = JSON.parse(run(verify, ["show", `${acceptedRemoteCommit}:.pkm-github-sync.json`]));
+    assert(
+      acceptedManifest.deletions.some(deletion => deletion.type === "skills" && deletion.itemId === "Shared/Two"),
+      "the accepted Remote commit must preserve deletion evidence as the next merge base"
+    );
+    fs.writeFileSync(path.join(linux.skills, "One.md"), remoteOne);
+    linux.catalog.skills.push({
+      id: "Shared/One",
+      label: "One",
+      cat: "Shared",
+      isPrivate: false,
+      source: path.join(linux.skills, "One.md"),
+      destination: "skills/Shared/One.md"
+    });
+    linux.target.pendingDeletions = [];
+    linux.target.lastSync.commit = acceptedRemoteCommit;
+    const acceptedLocal = await syncGitHubTarget(linux.target, linux.catalog, checkoutRoot, undefined, linux.store);
+    rememberSync(linux.target, acceptedLocal);
+    assert(acceptedLocal.changed, "choosing the local file against a remote tombstone must create a push");
     run(verify, ["pull", "--ff-only"]);
+    assert.strictEqual(
+      fs.readFileSync(path.join(verify, "skills", "Shared", "Two.md"), "utf8"),
+      skill("Two", "linux modifies while windows deletes")
+    );
+
     fs.writeFileSync(path.join(verify, "skills", "Shared", "One.md"), skill("One", "tampered without manifest update"));
     run(verify, ["add", "skills/Shared/One.md"]);
     run(verify, ["commit", "-m", "tamper managed content"]);

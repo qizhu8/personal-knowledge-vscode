@@ -2085,11 +2085,11 @@ async function syncGitHubTargetAttempt(
       continue;
     }
 
-    const baseState = entityState(base);
-    const localState = localDeletionMap.has(key) ? `deleted:${localDeletionMap.get(key)!.deletedAt}` : entityState(local);
-    const remoteState = remoteDeletionMap.has(key) ? `deleted:${remoteDeletionMap.get(key)!.deletedAt}` : entityState(remote);
-    const localChanged = localDeletionMap.has(key) || localState !== baseState;
-    const remoteChanged = remoteDeletionMap.has(key) || remoteState !== baseState;
+    const baseState = baseDeletionMap.has(key) ? "deleted" : entityState(base);
+    const localState = localDeletionMap.has(key) ? "deleted" : entityState(local);
+    const remoteState = remoteDeletionMap.has(key) ? "deleted" : entityState(remote);
+    const localChanged = localState !== baseState;
+    const remoteChanged = remoteState !== baseState;
 
     if (localChanged && remoteChanged && localState !== remoteState) {
       if (!local || !remote) {
