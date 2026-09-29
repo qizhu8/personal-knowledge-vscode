@@ -1134,14 +1134,18 @@ body.chat-resizing{cursor:col-resize;user-select:none}
 .github-sync-diff-folder>summary{display:flex;align-items:center;gap:5px;padding:4px 0;color:var(--text);cursor:pointer;font-size:9px}
 .github-sync-diff-folder>summary small{margin-left:auto;color:var(--muted);font-size:8px}
 .github-sync-diff-folder>.github-sync-conflict-file,.github-sync-diff-folder>.github-sync-diff-folder{margin:0 0 5px}
+.github-sync-resolved-group{border:1px solid var(--border);border-radius:3px;background:var(--panel)}
+.github-sync-resolved-group>summary{display:flex;align-items:center;gap:5px;padding:7px 8px;color:#3fb950;cursor:pointer;font-size:9px;font-weight:600}
+.github-sync-resolved-group>summary small{margin-left:auto;color:var(--muted);font-size:8px}
+.github-sync-resolved-group>.github-sync-diff-folder,.github-sync-resolved-group>.github-sync-conflict-file{margin:5px 8px}
 .github-sync-conflict-file{border:1px solid var(--border);border-left:3px solid #3fb950;border-radius:3px;background:var(--panel)}
 .github-sync-conflict-file.unresolved{border-left-color:#d29922}
-.github-sync-conflict-file>header{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;padding:7px 8px}
-.github-sync-conflict-file>header>span{display:flex;min-width:0;flex-direction:column;gap:2px}
-.github-sync-conflict-file>header strong{overflow:hidden;margin:0;color:var(--text);font-size:9px;text-overflow:ellipsis;white-space:nowrap}
-.github-sync-conflict-file>header small,.github-sync-conflict-file>header b{color:var(--muted);font-size:8px}
-.github-sync-conflict-file>header b{flex:none;color:#3fb950}
-.github-sync-conflict-file.unresolved>header b{color:#d29922}
+.github-sync-conflict-file>summary{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;padding:7px 8px;cursor:pointer}
+.github-sync-conflict-file>summary>span{display:flex;min-width:0;flex-direction:column;gap:2px}
+.github-sync-conflict-file>summary strong{overflow:hidden;margin:0;color:var(--text);font-size:9px;text-overflow:ellipsis;white-space:nowrap}
+.github-sync-conflict-file>summary small,.github-sync-conflict-file>summary b{color:var(--muted);font-size:8px}
+.github-sync-conflict-file>summary b{flex:none;color:#3fb950}
+.github-sync-conflict-file.unresolved>summary b{color:#d29922}
 .github-sync-conflict-file>p{margin:0;padding:0 8px 6px;color:var(--muted);font-size:8px}
 .github-sync-conflict-file>div{display:flex;gap:5px;padding:0 8px 8px;flex-wrap:wrap}
 .github-sync-conflict-actions>footer{display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-top:8px}

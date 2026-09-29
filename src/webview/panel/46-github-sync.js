@@ -184,25 +184,30 @@ function githubSyncResolutionDiagram(report, files = []) {
 }
 
 function githubSyncDifferenceTree(entries) {
-  const root = { folders:new Map(), leaves:[] };
-  for (const entry of entries) {
-    const parts = entry.path.split('/');
-    entry.file = parts.pop();
-    let node = root;
-    for (const part of parts) {
-      if (!node.folders.has(part)) node.folders.set(part, { folders:new Map(), leaves:[] });
-      node = node.folders.get(part);
+  const tree = items => {
+    const root = { folders:new Map(), leaves:[] };
+    for (const entry of items) {
+      const parts = entry.path.split('/');
+      entry.file = parts.pop();
+      let node = root;
+      for (const part of parts) {
+        if (!node.folders.has(part)) node.folders.set(part, { folders:new Map(), leaves:[] });
+        node = node.folders.get(part);
+      }
+      node.leaves.push(entry);
     }
-    node.leaves.push(entry);
-  }
+    return root;
+  };
   const count = node => node.leaves.length + [...node.folders.values()].reduce((sum, child) => sum + count(child), 0);
-  const render = node => {
+  const render = (node, expanded) => {
     const folders = [...node.folders.entries()].sort(([left],[right]) => left.localeCompare(right)).map(([name, child]) =>
-      `<details class="github-sync-diff-folder" open><summary>${uiIcon('folder',name)}<small>${count(child)}</small></summary>${render(child)}</details>`
+      `<details class="github-sync-diff-folder" ${expanded ? 'open' : ''}><summary>${uiIcon('folder',name)}<small>${count(child)}</small></summary>${render(child, expanded)}</details>`
     ).join('');
     return folders + node.leaves.sort((left,right) => left.file.localeCompare(right.file)).map(entry => entry.html).join('');
   };
-  return `<div class="github-sync-diff-tree">${render(root)}</div>`;
+  const unresolved = entries.filter(entry => !entry.resolved);
+  const resolved = entries.filter(entry => entry.resolved);
+  return `<div class="github-sync-diff-tree">${render(tree(unresolved), true)}${resolved.length ? `<details class="github-sync-resolved-group"><summary>${uiIcon('pass-filled','Resolved')}<small>${resolved.length}</small></summary>${render(tree(resolved), false)}</details>` : ''}</div>`;
 }
 
 function githubSyncConflictPanel(targetId, conflict) {
@@ -214,8 +219,9 @@ function githubSyncConflictPanel(targetId, conflict) {
     const canDeleteRemote = file.hasBase && !file.hasLocal && file.hasRemote;
     const review = file.agentReview;
     const agentReview = review ? `<section class="github-sync-agent-review"><strong>${review.accuracyRisk ? 'Accuracy review required' : 'Human Final Review required'}</strong><p>Confidence ${Math.round(review.confidence * 100)}% · ${review.decisions.length} decisions · ${review.evidence.length} evidence items</p>${review.unresolvedConflicts.length ? `<p>Unresolved: ${esc(review.unresolvedConflicts.join(' · '))}</p>` : ''}${review.introducedContent.length ? `<p>Introduced content: ${esc(review.introducedContent.join(' · '))}</p>` : ''}</section>` : '';
-    const html = `<article class="github-sync-conflict-file ${file.candidateSource === 'unresolved' ? 'unresolved' : 'resolved'}"><header><span><strong>${esc(file.path.split('/').pop())}</strong><small>${esc(githubSyncLabels[file.type] || file.type)} · ${esc(file.path)}</small></span><b>${esc(sourceLabels[file.candidateSource] || file.candidateSource)}</b></header>${file.rationale ? `<p>${esc(file.rationale)}</p>` : ''}${agentReview}<div><button class="pk-button" onclick="githubSyncConflictOpen('${esc(targetId)}',decodeURIComponent('${encodedPath}'),'compare',this)">Compare</button>${file.hasLocal ? `<button class="pk-button" onclick="githubSyncConflictChoose('${esc(targetId)}',decodeURIComponent('${encodedPath}'),'local',this)">Use this machine</button>` : ''}${file.hasRemote ? `<button class="pk-button" onclick="githubSyncConflictChoose('${esc(targetId)}',decodeURIComponent('${encodedPath}'),'remote',this)">Use GitHub</button>` : ''}${canDeleteRemote ? `<button class="pk-button danger" data-pending-label="Selecting…" onclick="githubSyncConflictDelete('${esc(targetId)}',decodeURIComponent('${encodedPath}'),this)">Delete GitHub</button>` : ''}${file.hasBase ? `<button class="pk-button" onclick="githubSyncConflictChoose('${esc(targetId)}',decodeURIComponent('${encodedPath}'),'base',this)">Use common base</button>` : ''}<button class="pk-button" onclick="githubSyncConflictOpen('${esc(targetId)}',decodeURIComponent('${encodedPath}'),'edit',this)">Merge manually</button><button class="pk-button" onclick="githubSyncConflictValidate('${esc(targetId)}',decodeURIComponent('${encodedPath}'),this)">Validate merge</button>${canAgent ? `<button class="pk-button" data-pending-label="Merging…" onclick="githubSyncConflictAgent('${esc(targetId)}',decodeURIComponent('${encodedPath}'),this)">Merge with Agent</button>` : ''}</div></article>`;
-    return { path:file.path, html };
+    const resolved = file.candidateSource !== 'unresolved';
+    const html = `<details class="github-sync-conflict-file ${resolved ? 'resolved' : 'unresolved'}" ${resolved ? '' : 'open'}><summary><span><strong>${esc(file.path.split('/').pop())}</strong><small>${esc(githubSyncLabels[file.type] || file.type)} · ${esc(file.path)}</small></span><b>${esc(sourceLabels[file.candidateSource] || file.candidateSource)}</b></summary>${file.rationale ? `<p>${esc(file.rationale)}</p>` : ''}${agentReview}<div><button class="pk-button" onclick="githubSyncConflictOpen('${esc(targetId)}',decodeURIComponent('${encodedPath}'),'compare',this)">Compare</button>${file.hasLocal ? `<button class="pk-button" onclick="githubSyncConflictChoose('${esc(targetId)}',decodeURIComponent('${encodedPath}'),'local',this)">Use this machine</button>` : ''}${file.hasRemote ? `<button class="pk-button" onclick="githubSyncConflictChoose('${esc(targetId)}',decodeURIComponent('${encodedPath}'),'remote',this)">Use GitHub</button>` : ''}${canDeleteRemote ? `<button class="pk-button danger" data-pending-label="Selecting…" onclick="githubSyncConflictDelete('${esc(targetId)}',decodeURIComponent('${encodedPath}'),this)">Delete GitHub</button>` : ''}${file.hasBase ? `<button class="pk-button" onclick="githubSyncConflictChoose('${esc(targetId)}',decodeURIComponent('${encodedPath}'),'base',this)">Use common base</button>` : ''}<button class="pk-button" onclick="githubSyncConflictOpen('${esc(targetId)}',decodeURIComponent('${encodedPath}'),'edit',this)">Merge manually</button><button class="pk-button" onclick="githubSyncConflictValidate('${esc(targetId)}',decodeURIComponent('${encodedPath}'),this)">Validate merge</button>${canAgent ? `<button class="pk-button" data-pending-label="Merging…" onclick="githubSyncConflictAgent('${esc(targetId)}',decodeURIComponent('${encodedPath}'),this)">Merge with Agent</button>` : ''}</div></details>`;
+    return { path:file.path, resolved, html };
   });
   const unresolved = conflictFiles.filter(file => file.candidateSource === 'unresolved').length;
   const unresolvedWithLocal = conflictFiles.filter(file => file.candidateSource === 'unresolved' && file.hasLocal).length;

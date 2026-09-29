@@ -180,6 +180,10 @@ assert.match(extensionSource, /previewGitHubSyncTarget[\s\S]*initial-preview/,
   "saving an initial target fetches a comparison instead of immediately scheduling synchronization");
 assert.match(conflictCard, /Choice required/, "unresolved files visibly require a decision");
 assert.match(conflictCard, /Agent merge/, "resolved files show which candidate will be applied");
+assert.match(conflictCard, /github-sync-resolved-group"><summary>Resolved<small>1<\/small>/,
+  "selected files move into one compact resolved group");
+assert.doesNotMatch(conflictCard, /github-sync-resolved-group" open/,
+  "the resolved group is collapsed by default");
 assert.match(conflictCard, /2 changed on both sides/, "the conflict workspace summarizes conflict shape");
 assert.match(conflictCard, /All Use GitHub/, "the conflict workspace offers one-click GitHub staging for unresolved files");
 assert.match(conflictCard, /Ask Agent for 2 supported/, "the conflict workspace counts Agent-compatible conflicts");
@@ -198,6 +202,18 @@ assert.doesNotMatch(missingLocalCard, /All Use This Machine/, "a missing-local c
 assert.match(missingLocalCard, /Delete GitHub/, "a missing-local conflict offers an explicit remote deletion choice");
 assert.match(missingLocalCard, /confirms the local deletion[\s\S]*Apply resolutions &amp; Sync/,
   "deletion safeguards explain that remote deletion is staged before approval");
+
+const initialResolvedCard = vm.runInContext(`(() => {
+  githubSyncData.conflicts.shared = {purpose:'initial-preview',remoteSchema:3,files:[
+    {path:'notes/Remote.md',type:'notes',hasBase:false,hasLocal:false,hasRemote:true,candidateSource:'remote'},
+    {path:'notes/Local.md',type:'notes',hasBase:false,hasLocal:true,hasRemote:false,candidateSource:'local'}
+  ]};
+  return githubSyncCards();
+})()`, context);
+assert.match(initialResolvedCard, /github-sync-resolved-group"><summary>Resolved<small>2<\/small>/,
+  "automatically preserved one-sided files stay collapsed even for large initial comparisons");
+assert.doesNotMatch(initialResolvedCard, /github-sync-conflict-file unresolved/,
+  "a fully selected initial comparison does not render expanded unresolved files");
 assert.match(extensionSource, /candidateSource === "delete"[\s\S]*pendingDeletions/,
   "accepted deletion candidates become explicit GitHub Sync tombstones");
 assert.match(extensionSource, /function refreshStaleGitHubSyncConflicts[\s\S]*refreshGitHubSyncConflictLocalCandidate/,
