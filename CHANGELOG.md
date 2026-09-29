@@ -5,6 +5,8 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.2] - 2026-09-29
+
 ### Added
 - Added an opt-in, machine-local load profiler for diagnosing slow first-open behavior on Windows and other hosts. The Settings workspace can enable privacy-safe correlated Webview/Extension Host timings, inspect or clear a dedicated JSONL log, and open a dedicated Output channel; profiling is disabled by default and excludes knowledge content, search text, file paths, and credentials.
 - Added cloud-synchronized Knowledge Root detection for OneDrive, Dropbox, Google Drive, and iCloud Drive. Setup recommends a normal local folder, requires explicit confirmation before using a detected cloud folder, and General & MCP shows a persistent reliability warning for existing cloud-hosted roots while directing cross-machine synchronization and version history to GitHub Sync.
@@ -23,6 +25,9 @@ This project follows [Semantic Versioning](https://semver.org/).
 - Restored the protected built-in **Publish Personal Knowledge VSIX** Recipe with dedicated-branch validation, package/install/soak evidence, merge verification, a mandatory current-user approval gate, canonical GitHub Actions publication, and Marketplace verification.
 
 ### Fixed
+- GitHub Sync now propagates content pulled by one Target through the local Knowledge Root to other overlapping Targets immediately after the change debounce, without waiting for their periodic interval or re-queuing the source Target.
+- Completed long-running UI action feedback for MCP Runtime setup, Server operations, GitHub Sync conflict application, and repository deletion; Navigation now opens and focuses concrete Environment and Server items, and exposes GitHub Sync under Settings.
+- GitHub Sync now resolves concurrent create, modify, delete, move, and recreate races by operation order when both sides changed from the stable-identity base, reserving manual conflicts for missing or tied ordering evidence.
 - Removed unrelated startup work that could block first-open Knowledge and Settings responses on Windows. GitHub Sync content fingerprints, Network gateway refresh, MCP usage/path-size scans, and Skill Router worker probes now load on demand, from cache, in the background, or behind a bounded wait instead of monopolizing the Extension Host.
 - Fixed GitHub Sync conflict actions that appeared to do nothing for missing-local deletion safeguards. Bulk choices now show only sources that actually exist, offer an explicit confirmed **Delete GitHub** tombstone alongside **All Use GitHub**, display pending feedback, and clear that feedback when refreshed state arrives.
 - GitHub Sync now refreshes stale conflict snapshots before rendering the resolution workspace. If a file appears or changes after a conflict was prepared, its current machine-local content becomes a new unresolved candidate immediately, so one explicit choice followed by one Apply is sufficient and no changed local content is overwritten.

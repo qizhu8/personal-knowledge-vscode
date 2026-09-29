@@ -104,7 +104,7 @@ export class GitHubSyncScheduler {
     if (this.disposed || !target || (!target.enabled && reason !== "manual" && reason !== "force-local-authority")) return;
     const current = this.pending.get(targetId);
     if (!current || this.reasonPriority(reason) > this.reasonPriority(current)) this.pending.set(targetId, reason);
-    if (reason === "configuration" || reason === "manual" || reason === "force-local-authority") {
+    if (reason === "configuration" || reason === "manual" || reason === "force-local-authority" || reason === "change") {
       const timer = this.scheduledTimers.get(targetId);
       if (timer) this.clearTimer(timer);
       this.scheduledTimers.delete(targetId);
@@ -114,10 +114,15 @@ export class GitHubSyncScheduler {
     this.scheduleWhenEligible(target);
   }
 
-  notifyContentChanged(): void {
+  notifyContentChanged(excludedTargetId?: string): void {
     if (this.disposed) return;
+    if (excludedTargetId) {
+      const excludedTimer = this.changeTimers.get(excludedTargetId);
+      if (excludedTimer) this.clearTimer(excludedTimer);
+      this.changeTimers.delete(excludedTargetId);
+    }
     for (const target of this.targets.values()) {
-      if (!target.enabled || !target.syncOnChange) continue;
+      if (target.id === excludedTargetId || !target.enabled || !target.syncOnChange) continue;
       const existing = this.changeTimers.get(target.id);
       if (existing) this.clearTimer(existing);
       const timer = this.setTimer(() => {

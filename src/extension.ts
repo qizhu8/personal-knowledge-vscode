@@ -1647,6 +1647,10 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
             );
             applyGitHubSyncRecipePulls(result.recipePulls);
             applyGitHubSyncRecipeDeletes(result.recipeDeletes);
+            const changedLocalContent = result.pulled.length > 0
+              || result.deletedLocal.length > 0
+              || result.recipePulls.length > 0
+              || result.recipeDeletes.length > 0;
             for (const [type, topLevels] of Object.entries(result.privateTopLevels)) {
               for (const topLevel of topLevels || []) setTopLevelPrivacy(type as PrivacyContentType, topLevel, true);
             }
@@ -1706,6 +1710,7 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
               log.warn(`GitHub Sync target=${target.name} committed=${result.commit}; inventory/retrieval post-processing will retry: ${detail}`);
               scheduleRetrievalRefresh(context, 0);
             }
+            if (changedLocalContent) githubSyncScheduler?.notifyContentChanged(targetId);
             githubSyncScheduler?.report(targetId, "scheduled", "Next fetch scheduled");
             githubSyncDiagnostics.record("github_sync.completed", {
               traceId,

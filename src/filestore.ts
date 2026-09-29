@@ -1111,7 +1111,7 @@ export function paperMoveAllToTrash(): { ok: boolean; moved: number; error?: str
 function migrationComparablePaper(file: string): { metadata: string; body: string } {
   const { fm, body } = parseFrontmatter(readFileSync(file, "utf8"));
   const metadata = { ...fm };
-  for (const key of ["group", "schema", "knowledgeId", "revision", "aliases", "links"]) delete metadata[key];
+  for (const key of ["group", "schema", "knowledgeId", "revision", "aliases", "links", "created"]) delete metadata[key];
   const normalize = (value: any): any => {
     if (Array.isArray(value)) {
       const normalized = value.map(normalize);

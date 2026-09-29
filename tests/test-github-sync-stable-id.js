@@ -234,11 +234,13 @@ async function sync(machine, checkouts) {
       fs.rmSync(path.join(publisher.store, "skills", "Original", "Shared.md"));
       await sync(publisher, test.checkouts);
       fs.writeFileSync(reader.catalog.skills[0].source, skill("Shared", "local edit"));
-      await assert.rejects(
-        () => syncGitHubTarget(reader.target, reader.catalog, test.checkouts, undefined, reader.store),
-        error => error instanceof GitHubSyncConflictError
-          && error.conflicts.some(conflict => conflict.itemId === "knowledge_shared" && !conflict.remote),
-        "an explicit remote deletion must conflict with a local edit",
+      fs.utimesSync(reader.catalog.skills[0].source, new Date("2026-09-29T00:00:00.000Z"), new Date("2026-09-29T00:00:00.000Z"));
+      const recreated = await sync(reader, test.checkouts);
+      assert.strictEqual(recreated.resolutionReport.rules["newer-local-operation"], 1,
+        "a local edit newer than an explicit remote deletion recreates the stable entity");
+      assert.strictEqual(
+        run(test.root, ["--git-dir", test.remote, "show", "main:skills/Original/Shared.md"]),
+        skill("Shared", "local edit").trim(),
       );
     } finally {
       fs.rmSync(test.root, { recursive: true, force: true });

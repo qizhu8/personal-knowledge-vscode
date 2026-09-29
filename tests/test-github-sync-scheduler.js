@@ -61,36 +61,53 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
   timers.delete(changeTimerId);
   changeTimer.callback();
   await flush();
-  assert.strictEqual(timers.size, 1, "a changed target remains throttled until its configured interval");
-
-  const [throttleTimerId, throttleTimer] = [...timers.entries()][0];
-  timers.delete(throttleTimerId);
-  now += 7 * 60_000;
-  throttleTimer.callback();
   await flush();
   assert.deepStrictEqual(calls, [["primary", "change"]]);
+  assert.strictEqual(timers.size, 0, "sync-on-change runs immediately after its debounce instead of waiting for the interval");
   assert.strictEqual(scheduler.snapshot().primary.status, "syncing");
 
   dirty = true;
   scheduler.request("primary", "change");
   scheduler.request("primary", "change");
-  assert.strictEqual(timers.size, 1, "scheduler requests during a run coalesce behind one interval timer");
+  assert.strictEqual(timers.size, 0, "scheduler requests during a run remain immediately eligible");
   release();
   await flush();
   await flush();
-  assert.deepStrictEqual(calls, [["primary", "change"]], "coalesced work does not duplicate the active run");
-
-  const [queuedTimerId, queuedTimer] = [...timers.entries()][0];
-  timers.delete(queuedTimerId);
-  now += 7 * 60_000;
-  queuedTimer.callback();
-  await flush();
-  assert.deepStrictEqual(calls, [["primary", "change"], ["primary", "change"]]);
+  assert.deepStrictEqual(calls, [["primary", "change"], ["primary", "change"]],
+    "content changes during a run coalesce into one immediate follow-up");
   release();
   await flush();
   await flush();
   assert.strictEqual([...timers.values()][0].delay, 7 * 60_000, "successful runs continue the periodic schedule");
   scheduler.dispose();
+
+  const fanoutTimers = new Map();
+  const fanoutCalls = [];
+  const fanout = new GitHubSyncScheduler({
+    setTimeout: (callback, delay) => {
+      const timer = { id: nextTimer++, unref() {} };
+      fanoutTimers.set(timer.id, { callback, delay });
+      return timer;
+    },
+    clearTimeout: timer => fanoutTimers.delete(timer.id),
+    changeDebounceMs: 25,
+    execute: async (targetId, reason) => fanoutCalls.push([targetId, reason]),
+  });
+  fanout.configure([
+    { id: "creative", enabled: true, intervalMinutes: 5, syncOnChange: true, lastSuccessAt: new Date().toISOString() },
+    { id: "backup", enabled: true, intervalMinutes: 5, syncOnChange: true, lastSuccessAt: new Date().toISOString() },
+  ]);
+  fanout.notifyContentChanged("creative");
+  const fanoutChangeTimers = [...fanoutTimers.entries()].filter(([, timer]) => timer.delay === 25);
+  assert.strictEqual(fanoutChangeTimers.length, 1, "a pulled change schedules other targets only");
+  const [fanoutTimerId, fanoutTimer] = fanoutChangeTimers[0];
+  fanoutTimers.delete(fanoutTimerId);
+  fanoutTimer.callback();
+  await flush();
+  await flush();
+  assert.deepStrictEqual(fanoutCalls, [["backup", "change"]],
+    "a source target pull fans out immediately to the other sync-on-change target");
+  fanout.dispose();
 
   const manualTimers = new Map();
   const manualCalls = [];
