@@ -439,6 +439,51 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
       "identity reconciliation creates one initial publication and one metadata-only correction without a conflict"
     );
 
+    const remoteIdentityTarget = normalizeGitHubSyncTarget({
+      name: "Remote identity authority",
+      repository: remote,
+      branch: "identity-migration",
+      selection: {
+        public: { scripts: { items: [], folders: [""] } },
+        private: {}
+      }
+    }, () => "target-remote-identity-authority");
+    const localIdentityCatalog = emptyCatalog();
+    localIdentityCatalog.scripts = [{
+      ...canonicalIdentityCatalog.scripts[0],
+      id: "machine-local-legacy-id"
+    }];
+    const remoteIdentityCommit = run(root, ["--git-dir", remote, "rev-parse", "identity-migration"]);
+    const identicalInitialSync = await syncGitHubTarget(
+      remoteIdentityTarget,
+      localIdentityCatalog,
+      checkoutRoot,
+      undefined,
+      identityStore,
+    );
+    assert.strictEqual(identicalInitialSync.changed, false,
+      "Initial Sync must not publish an identity-only difference when document content is unchanged");
+    assert.strictEqual(identicalInitialSync.commit, remoteIdentityCommit);
+    const remoteAuthorityManifest = JSON.parse(run(root, ["--git-dir", remote, "show", "identity-migration:.pkm-github-sync.json"]));
+    assert.strictEqual(remoteAuthorityManifest.files[0].itemId, "Analysis/tool.script",
+      "Remote stable identity remains canonical on Initial Sync");
+
+    fs.writeFileSync(identitySource, "SELECT 2;\n");
+    const contentConflictTarget = normalizeGitHubSyncTarget({
+      ...remoteIdentityTarget,
+      id: "",
+      name: "Remote identity content conflict",
+    }, () => "target-remote-identity-content-conflict");
+    await assert.rejects(
+      () => syncGitHubTarget(contentConflictTarget, localIdentityCatalog, checkoutRoot, undefined, identityStore),
+      error => error instanceof GitHubSyncConflictError
+        && error.conflicts.some(conflict => conflict.path === "scripts/Analysis/tool.script"
+          && conflict.itemId === "Analysis/tool.script"
+          && !!conflict.local
+          && !!conflict.remote),
+      "same-path files with different content still require Remote, Local, or Merge selection",
+    );
+
     fs.writeFileSync(path.join(linux.skills, "One.md"), skill("One", "linux concurrent edit"));
     fs.writeFileSync(path.join(windows.skills, "Two.md"), skill("Two", "windows concurrent edit"));
     const linuxCheckout = path.join(checkoutRoot, linux.target.id, "repository");

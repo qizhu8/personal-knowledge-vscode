@@ -206,6 +206,8 @@ assert.match(extensionSource, /async function githubSyncStateData[\s\S]*refreshS
   "stale conflict snapshots are refreshed before the resolution workspace is serialized");
 assert.match(extensionSource, /function clearEquivalentGitHubSyncConflict[\s\S]*current\.equals\(remote\)[\s\S]*clearGitHubSyncConflict/,
   "identity-only conflicts are retired only when every machine-local file exactly matches its remote candidate");
+assert.match(extensionSource, /completeGitHubSyncTransaction[\s\S]*clearGitHubSyncConflict[\s\S]*report\(targetId, "refresh-index"/,
+  "a successful recheck explicitly retires the previous conflict workspace before post-processing");
 assert.match(extensionSource, /shouldExecute:[\s\S]*clearEquivalentGitHubSyncConflict\(context, targetId\)[\s\S]*conflict-awaiting-approval/,
   "the scheduler clears proven identity-only conflicts before applying the ordinary conflict gate");
 

@@ -1635,34 +1635,50 @@ function entityPathContentState(files: GitHubSyncManagedFile[] | undefined): str
   })));
 }
 
+function entityPathLayoutState(files: GitHubSyncManagedFile[] | undefined): string | undefined {
+  if (!files) return undefined;
+  return JSON.stringify(files.map(file => ({
+    type: file.type,
+    member: file.member,
+    path: file.path,
+  })));
+}
+
 function reconcileMigratedEntityIdentities(
-  localEntities: GitHubSyncEntityMap,
+  authorityEntities: GitHubSyncEntityMap,
   entities: GitHubSyncEntityMap,
   finalRemote?: Map<string, GitHubSyncManagedFile>,
 ): number {
-  const localByPathContent = new Map<string, Array<{ key: string; files: GitHubSyncManagedFile[] }>>();
-  for (const [key, files] of localEntities) {
-    const signature = entityPathContentState(files)!;
-    const matches = localByPathContent.get(signature) || [];
+  const authorityByPathContent = new Map<string, Array<{ key: string; files: GitHubSyncManagedFile[] }>>();
+  const authorityByPathLayout = new Map<string, Array<{ key: string; files: GitHubSyncManagedFile[] }>>();
+  for (const [key, files] of authorityEntities) {
+    const contentSignature = entityPathContentState(files)!;
+    const matches = authorityByPathContent.get(contentSignature) || [];
     matches.push({ key, files });
-    localByPathContent.set(signature, matches);
+    authorityByPathContent.set(contentSignature, matches);
+    const layoutSignature = entityPathLayoutState(files)!;
+    const layoutMatches = authorityByPathLayout.get(layoutSignature) || [];
+    layoutMatches.push({ key, files });
+    authorityByPathLayout.set(layoutSignature, layoutMatches);
   }
   let reconciled = 0;
   for (const [legacyKey, files] of [...entities]) {
-    if (localEntities.has(legacyKey)) continue;
-    const matches = localByPathContent.get(entityPathContentState(files)!) || [];
+    if (authorityEntities.has(legacyKey)) continue;
+    let matches = authorityByPathContent.get(entityPathContentState(files)!) || [];
+    if (matches.length !== 1) matches = authorityByPathLayout.get(entityPathLayoutState(files)!) || [];
     if (matches.length !== 1 || entities.has(matches[0].key)) continue;
     const canonical = matches[0];
-    const localByMember = new Map(canonical.files.map(file => [file.member || "", file]));
+    const authorityByMember = new Map(canonical.files.map(file => [file.member || "", file]));
     const canonicalized = files.map(file => {
-      const local = localByMember.get(file.member || "");
-      if (!local || local.path !== file.path || local.digest !== file.digest) return file;
+      const authority = authorityByMember.get(file.member || "")
+        || canonical.files.find(candidate => candidate.path === file.path);
+      if (!authority) return file;
       return {
         ...file,
-        itemId: local.itemId,
-        category: local.category,
-        privacy: local.privacy,
-        member: local.member,
+        itemId: authority.itemId,
+        category: authority.category,
+        privacy: authority.privacy,
+        member: authority.member,
       };
     });
     entities.delete(legacyKey);
@@ -1843,8 +1859,16 @@ async function syncGitHubTargetAttempt(
   const remoteEntities = groupManagedFiles(remoteFiles.values());
   const baseEntities = groupManagedFiles(baseFiles.values());
   const finalRemote = new Map(remoteFiles);
-  reconcileMigratedEntityIdentities(localEntities, baseEntities);
-  reconcileMigratedEntityIdentities(localEntities, remoteEntities, finalRemote);
+  const remoteMetadataAuthority = !authoritativeMigrationCutover
+    && !forceLocalAuthority
+    && !normalized.lastSync?.commit;
+  if (remoteMetadataAuthority) {
+    reconcileMigratedEntityIdentities(remoteEntities, localEntities);
+    reconcileMigratedEntityIdentities(remoteEntities, baseEntities);
+  } else {
+    reconcileMigratedEntityIdentities(localEntities, baseEntities);
+    reconcileMigratedEntityIdentities(localEntities, remoteEntities, finalRemote);
+  }
   const localDeletionMap = new Map((migratedLocalSyncSchema ? [] : normalized.pendingDeletions || [])
     .map(deletion => [entityKey(deletion.type, deletion.itemId), deletion]));
   const remoteDeletionMap = new Map(remoteManifest.deletions.map(deletion => [entityKey(deletion.type, deletion.itemId), deletion]));

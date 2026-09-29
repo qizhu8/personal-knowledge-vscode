@@ -1611,6 +1611,7 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
             });
             if (!updated) return;
             completeGitHubSyncTransaction(path.join(githubSyncStateDirectory(context), "checkouts"), targetId, result.transactionId);
+            clearGitHubSyncConflict(githubSyncStateDirectory(context), targetId);
             githubSyncScheduler?.report(targetId, "refresh-index", "Refreshing the PKM inventory and retrieval index");
             try {
               await refreshKnowledgeInventory(context);
