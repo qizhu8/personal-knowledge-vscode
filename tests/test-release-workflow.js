@@ -11,6 +11,10 @@ for (const action of ["actions/checkout@v7", "actions/setup-node@v7", "actions/s
 assert(!workflow.includes("azure/login@v2"), "release workflow must not regress to the Node 20 Azure Login action");
 assert(workflow.includes('"fastmcp>=2.0.0,<4.0.0"'),
   "release validation must exclude incompatible FastMCP major versions");
+assert(workflow.includes('"playwright>=1.47.0,<2.0.0"'),
+  "release validation must install the Python Playwright dependency used by browser tests");
+assert(workflow.includes("python -m playwright install --with-deps chromium"),
+  "release validation must install Chromium and its runner dependencies");
 
 const packageStep = workflow.indexOf("- name: Package VSIX");
 const verifyStep = workflow.indexOf("- name: Verify VSIX metadata and boundaries");
