@@ -1268,7 +1268,11 @@ function githubSyncCandidateDestination(root: string, relative: string): string 
   return current;
 }
 
-async function acceptGitHubSyncConflict(context: vscode.ExtensionContext, targetId: string): Promise<{ accepted: number; refreshed: string[] }> {
+async function acceptGitHubSyncConflict(
+  context: vscode.ExtensionContext,
+  targetId: string,
+  reportProgress?: (text: string) => void,
+): Promise<{ accepted: number; refreshed: string[] }> {
   const stateDirectory = githubSyncStateDirectory(context);
   const record = readGitHubSyncConflict(stateDirectory, targetId);
   if (!record) throw new Error("GitHub Sync conflict was not found.");
@@ -1279,10 +1283,12 @@ async function acceptGitHubSyncConflict(context: vscode.ExtensionContext, target
   if (unresolved.length) {
     throw new Error(`Choose a resolution for every conflicting file before syncing: ${unresolved.map(file => file.path).join(", ")}`);
   }
+  reportProgress?.("Verifying the Remote commit…");
   const target = githubSyncTargetById(context, targetId);
   const credentials = await readGitHubSyncCredentials(context, target);
   const snapshot = await fetchGitHubRemoteSnapshot(target, path.join(stateDirectory, "checkouts"), false, credentials);
   if (snapshot.commit !== record.remoteCommit) throw new Error("The remote branch changed after this conflict was prepared. Sync again before accepting a merge.");
+  reportProgress?.("Checking machine-local files…");
   const recipeSnapshot = currentProjectStore().list();
   const candidates = record.files.map(file => {
     const deleteRemote = file.candidateSource === "delete";
@@ -1324,6 +1330,7 @@ async function acceptGitHubSyncConflict(context: vscode.ExtensionContext, target
   if (refreshed.length) {
     return { accepted: 0, refreshed };
   }
+  reportProgress?.(`Applying ${record.files.length} choices locally…`);
   const recipeCandidates = candidates.filter(candidate => candidate.file.type === "recipes" && !candidate.deleteRemote).map(candidate => {
     const recipe = JSON.parse(candidate.content!.toString("utf8")) as RecipeRecord;
     if (recipe.recipeId !== candidate.file.itemId) {
@@ -1382,8 +1389,10 @@ async function acceptGitHubSyncConflict(context: vscode.ExtensionContext, target
   });
   clearGitHubSyncConflict(stateDirectory, targetId);
   invalidateSharedContentCatalog();
+  reportProgress?.("Refreshing the Knowledge inventory…");
   await refreshKnowledgeInventory(context);
   _treeProvider?.refresh();
+  reportProgress?.("Queueing Fetch, Commit, and Push…");
   githubSyncScheduler?.request(targetId, "manual");
   return { accepted: record.files.length, refreshed: [] };
 }
@@ -6645,7 +6654,9 @@ async function handleMessage(
 
     case "githubSyncConflictAccept": {
       const targetId = String(msg.targetId || "");
-      const result = await withGitHubSyncTargetLock(context, targetId, () => acceptGitHubSyncConflict(context, targetId));
+      const progress = (text: string) => respond({ command: "githubSyncConflictAcceptProgress", data: { targetId, text } });
+      progress("Preparing Initial Sync choices…");
+      const result = await withGitHubSyncTargetLock(context, targetId, () => acceptGitHubSyncConflict(context, targetId, progress));
       if (result.refreshed.length) {
         vscode.window.showWarningMessage(
           `${result.refreshed.length} machine-local file${result.refreshed.length === 1 ? "" : "s"} changed after the conflict was prepared. The conflict choices were refreshed; review them again before applying.`
@@ -6653,6 +6664,7 @@ async function handleMessage(
       } else {
         vscode.window.showInformationMessage(`Accepted ${result.accepted} GitHub Sync merge candidate${result.accepted === 1 ? "" : "s"}. Push is queued.`);
       }
+      respond({ command: "githubSyncConflictAccepted", data: { targetId, accepted: result.accepted, refreshed: result.refreshed } });
       respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
       break;
     }

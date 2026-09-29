@@ -204,6 +204,16 @@ assert.match(conflictCard, /Ask Agent for 1 unresolved/, "the Agent bulk action 
 assert.match(conflictCard, /Apply resolutions &amp; Sync<\/button>/);
 assert.match(conflictCard, /onclick="githubSyncConflictAccept\('shared',this\)" disabled/,
   "Apply remains disabled until every file has an explicit resolution");
+assert.match(source, /data-pending-label="\$\{initialPreview \? 'Preparing Initial Sync…' : 'Applying resolutions…'\}"[\s\S]*githubSyncConflictAccept/,
+  "Apply choices exposes immediate Initial Sync feedback");
+assert.match(coreSource, /githubSyncConflictAccept:900000/,
+  "Initial Sync Apply has a dedicated stalled-operation timeout");
+assert.match(coreSource, /githubSyncConflictAcceptProgress[\s\S]*updateActionProgress\('githubSyncConflictAccept'/,
+  "Initial Sync progress renews the timeout and updates the pending button");
+assert.doesNotMatch(/command === 'githubSyncState'[^\n]*/.exec(coreSource)?.[0] || "", /githubSyncConflictAccept/,
+  "ordinary state refreshes cannot prematurely clear Initial Sync Apply feedback");
+assert.match(extensionSource, /case "githubSyncConflictAccept"[\s\S]*githubSyncConflictAcceptProgress[\s\S]*githubSyncConflictAccepted/,
+  "the host sends dedicated progress and terminal completion events for conflict acceptance");
 
 const missingLocalCard = vm.runInContext(`(() => {
   githubSyncData.conflicts.shared = {files:[

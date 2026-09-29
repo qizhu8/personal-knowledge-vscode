@@ -417,7 +417,7 @@ const actionTimeouts = {
   recipeOpenBrowser:30000,
   githubSyncSave:30000, githubSyncDelete:120000, githubSyncRun:120000, githubSyncCreateIdentity:30000, githubSyncTestAuthentication:30000,
   githubSyncMigration:180000,
-  githubSyncConflictOpen:30000, githubSyncConflictChooseAll:120000, githubSyncConflictDelete:120000, githubSyncConflictDeleteAll:120000, githubSyncConflictAgent:120000, githubSyncConflictAgentAll:1800000, githubSyncConflictAccept:120000, githubSyncConflictDiscard:30000,
+  githubSyncConflictOpen:30000, githubSyncConflictChooseAll:120000, githubSyncConflictDelete:120000, githubSyncConflictDeleteAll:120000, githubSyncConflictAgent:120000, githubSyncConflictAgentAll:1800000, githubSyncConflictAccept:900000, githubSyncConflictDiscard:30000,
   mcpRepairRuntime:600000, mcpSetPython:600000, mcpBrowsePython:600000, generateMcp:90000,
   reconfigureKnowledgeRoot:600000, reconfigureEnvironmentsRoot:600000, reconfigureMcpRuntimePath:600000, reconfigureMcpServerPath:600000,
   checkMcp:15000, mcpDetectPython:60000, refreshMcpPathSizes:30000,
@@ -531,6 +531,13 @@ function refreshActionTimeout(command) {
   for (const entry of pendingActionButtons.get(command) || []) {
     clearTimeout(entry.timer);
     entry.timer = setTimeout(() => timeoutAction(command, entry), timeout);
+  }
+}
+
+function updateActionProgress(command, label) {
+  refreshActionTimeout(command);
+  for (const entry of pendingActionButtons.get(command) || []) {
+    if (entry.button.isConnected) entry.button.textContent = label || entry.button.dataset.pendingLabel || 'Working…';
   }
 }
 
@@ -830,7 +837,12 @@ window.addEventListener('message', e => {
   else if (command === 'serverLog') { onServerLog(e.data.slug, e.data.text); }
   else if (command === 'serverPickFolder') { onServerPickFolder(e.data.dir); }
   else if (command === 'subscriptionState') { finishAction('subscriptionState','subscriptionConfigure','subscriptionSetOnline','subscriptionUpsertShare','subscriptionDeleteShare','subscriptionAdd','subscriptionMountGitHub','subscriptionRename','subscriptionSetPriority','subscriptionRefresh','subscriptionRemove','subscriptionUnblockIp','subscriptionRotateSecret'); subscriptionOnState(data); finishLoadingProgress(); }
-  else if (command === 'githubSyncState') { finishAction('githubSyncState','githubSyncSave','githubSyncDelete','githubSyncRun','githubSyncAutomationToggle','githubSyncMigration','githubSyncConflictChoose','githubSyncConflictChooseAll','githubSyncConflictDelete','githubSyncConflictDeleteAll','githubSyncConflictValidate','githubSyncConflictAgent','githubSyncConflictAgentAll','githubSyncConflictAccept','githubSyncConflictDiscard'); githubSyncOnState(data); finishLoadingProgress(); }
+  else if (command === 'githubSyncState') { finishAction('githubSyncState','githubSyncSave','githubSyncDelete','githubSyncRun','githubSyncAutomationToggle','githubSyncMigration','githubSyncConflictChoose','githubSyncConflictChooseAll','githubSyncConflictDelete','githubSyncConflictDeleteAll','githubSyncConflictValidate','githubSyncConflictAgent','githubSyncConflictAgentAll','githubSyncConflictDiscard'); githubSyncOnState(data); finishLoadingProgress(); }
+  else if (command === 'githubSyncConflictAcceptProgress') { updateActionProgress('githubSyncConflictAccept', data?.text || 'Applying choices…'); }
+  else if (command === 'githubSyncConflictAccepted') {
+    finishAction('githubSyncConflictAccept');
+    vscode.postMessage({ command:'toast', text:data?.refreshed?.length ? `${data.refreshed.length} changed files need review` : `Applied ${data?.accepted || 0} choices; Initial Sync is queued` });
+  }
   else if (command === 'githubSyncRunQueued') { finishAction('githubSyncRun'); githubSyncOnRunQueued(data); }
   else if (command === 'githubSyncRuntimeState') { githubSyncOnRuntimeState(data); }
   else if (command === 'backgroundTasks') { backgroundTasksOnSnapshot(data); finishLoadingProgress(); }
