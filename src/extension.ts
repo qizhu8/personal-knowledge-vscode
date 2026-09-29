@@ -101,7 +101,8 @@ import {
 import {
   clearGitHubSyncConflict, GitHubSyncAgentReview, gitHubSyncConflictVariantPath, listGitHubSyncConflicts, readGitHubSyncConflict,
   readGitHubSyncConflictCandidate, refreshGitHubSyncConflictLocalCandidate, selectAllGitHubSyncConflictCandidates, selectAllGitHubSyncConflictDeletions,
-  selectGitHubSyncConflictCandidate, selectGitHubSyncConflictDeletion, storeGitHubSyncConflict, updateGitHubSyncAgentCandidate,
+  selectAllGitHubSyncConflictLocalDeletions, selectGitHubSyncConflictCandidate, selectGitHubSyncConflictDeletion,
+  selectGitHubSyncConflictLocalDeletion, storeGitHubSyncConflict, updateGitHubSyncAgentCandidate,
   validateGitHubSyncConflictLocalState, validateGitHubSyncManualCandidate,
 } from "./github-sync-conflicts";
 import { GitHubSyncRuntimeState, GitHubSyncScheduler } from "./github-sync-scheduler";
@@ -1292,11 +1293,13 @@ async function acceptGitHubSyncConflict(
   const recipeSnapshot = currentProjectStore().list();
   const candidates = record.files.map(file => {
     const deleteRemote = file.candidateSource === "delete";
-    const content = deleteRemote ? undefined : readGitHubSyncConflictCandidate(stateDirectory, targetId, file.path);
+    const deleteLocal = file.candidateSource === "delete-local";
+    const content = deleteRemote || deleteLocal ? undefined : readGitHubSyncConflictCandidate(stateDirectory, targetId, file.path);
     return {
       file,
       content,
       deleteRemote,
+      deleteLocal,
       originalLocal: file.hasLocal
         ? fs.readFileSync(gitHubSyncConflictVariantPath(stateDirectory, targetId, "local", file.path))
         : undefined,
@@ -1314,12 +1317,14 @@ async function acceptGitHubSyncConflict(
     };
   });
   const refreshed: string[] = [];
-  for (const { file, content, deleteRemote, originalLocal, currentLocal, destination } of candidates) {
+  for (const { file, content, deleteRemote, deleteLocal, originalLocal, currentLocal, destination } of candidates) {
     const current = file.type === "recipes"
       ? currentLocal
       : destination && fs.existsSync(destination) ? fs.readFileSync(destination) : undefined;
     if (deleteRemote) {
       if (current) refreshed.push(file.path);
+    } else if (deleteLocal) {
+      if (current && (!originalLocal || !current.equals(originalLocal))) refreshed.push(file.path);
     } else if (!current?.equals(content!) && !(originalLocal ? current?.equals(originalLocal) : current === undefined)) {
       refreshed.push(file.path);
     }
@@ -1331,7 +1336,9 @@ async function acceptGitHubSyncConflict(
     return { accepted: 0, refreshed };
   }
   reportProgress?.(`Applying ${record.files.length} choices locally…`);
-  const recipeCandidates = candidates.filter(candidate => candidate.file.type === "recipes" && !candidate.deleteRemote).map(candidate => {
+  const recipeCandidates = candidates.filter(candidate =>
+    candidate.file.type === "recipes" && !candidate.deleteRemote && !candidate.deleteLocal
+  ).map(candidate => {
     const recipe = JSON.parse(candidate.content!.toString("utf8")) as RecipeRecord;
     if (recipe.recipeId !== candidate.file.itemId) {
       throw new Error(`Recipe identity does not match the conflict record: ${candidate.file.path}`);
@@ -1341,7 +1348,7 @@ async function acceptGitHubSyncConflict(
   replaceGitHubSyncFilesAtomically(
     candidates
       .filter(candidate => !candidate.deleteRemote && !!candidate.destination)
-      .map(({ destination, content }) => ({ destination: destination!, content: content! })),
+      .map(({ destination, content }) => ({ destination: destination!, content })),
     "GitHub Sync conflict acceptance",
   );
   if (recipeCandidates.length) {
@@ -1352,6 +1359,9 @@ async function acceptGitHubSyncConflict(
       recipes: recipeCandidates.map(recipe => ({ recipeId: recipe.recipeId, revision: recipe.revision }))
     }), recipeCandidates);
   }
+  applyGitHubSyncRecipeDeletes(candidates
+    .filter(candidate => candidate.deleteLocal && candidate.file.type === "recipes")
+    .map(candidate => candidate.file.itemId));
   for (const { file } of candidates) {
     if (file.privacy === "private" && file.type !== "agentSnapshots") {
       const topLevel = file.category.split("/").filter(Boolean)[0];
@@ -1670,7 +1680,8 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
               if (current) current.lastFailure = { at: attemptedAt, error: message, reason };
               return { targets: currentTargets, result: undefined };
             });
-            log.error(`automatic GitHub Sync target=${target.name} reason=${reason}: ${message}`);
+            const diagnostic = error instanceof Error ? error.stack || error.message : String(error);
+            log.error(`automatic GitHub Sync target=${target.name} reason=${reason}: ${diagnostic}`);
             throw error;
           } finally {
             if (reason === "force-local-authority") githubSyncForceUpdateAudit.delete(targetId);
@@ -1959,9 +1970,12 @@ function refreshStaleGitHubSyncConflicts(context: vscode.ExtensionContext): numb
             : githubSyncCandidateDestination(getStorePath(), file.path);
           return fs.existsSync(destination) ? fs.readFileSync(destination) : undefined;
         })();
-      const selected = file.candidateSource !== "unresolved" && file.candidateSource !== "delete"
+      const selected = file.candidateSource !== "unresolved"
+        && file.candidateSource !== "delete"
+        && file.candidateSource !== "delete-local"
         ? readGitHubSyncConflictCandidate(stateDirectory, record.targetId, file.path)
         : undefined;
+      if (file.candidateSource === "delete-local" && current === undefined) continue;
       if (selected && current?.equals(selected)) continue;
       const original = file.hasLocal
         ? fs.readFileSync(gitHubSyncConflictVariantPath(stateDirectory, record.targetId, "local", file.path))
@@ -6613,6 +6627,22 @@ async function handleMessage(
       const targetId = String(msg.targetId || "");
       const result = selectAllGitHubSyncConflictDeletions(githubSyncStateDirectory(context), targetId);
       vscode.window.showWarningMessage(`Prepared ${result.selected} deletion${result.selected === 1 ? "" : "s"} for GitHub. Nothing is deleted until Apply resolutions & Sync succeeds.`);
+      respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
+      break;
+    }
+
+    case "githubSyncConflictDeleteLocal": {
+      const targetId = String(msg.targetId || "");
+      const relative = String(msg.path || "");
+      selectGitHubSyncConflictLocalDeletion(githubSyncStateDirectory(context), targetId, relative);
+      respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
+      break;
+    }
+
+    case "githubSyncConflictDeleteLocalAll": {
+      const targetId = String(msg.targetId || "");
+      const result = selectAllGitHubSyncConflictLocalDeletions(githubSyncStateDirectory(context), targetId);
+      vscode.window.showWarningMessage(`Prepared ${result.selected} machine-local deletion${result.selected === 1 ? "" : "s"}. Nothing is deleted until Apply resolutions & Sync succeeds.`);
       respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
       break;
     }

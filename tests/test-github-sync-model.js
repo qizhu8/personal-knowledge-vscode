@@ -20,7 +20,8 @@ const {
   githubSyncSshCommand,
   normalizeGitHubSyncTarget,
   parseGitHubCredentialManagerAccounts,
-  parseGitHubSshLogin
+  parseGitHubSshLogin,
+  replaceGitHubSyncFilesAtomically
 } = require("../dist/github-sync.js");
 
 assert.deepStrictEqual(githubSyncAuthenticationSessionOptions(), { createIfNone: true },
@@ -35,6 +36,20 @@ for (const type of GITHUB_SYNC_CONTENT_TYPES) {
   assert.deepStrictEqual(defaults.private[type], { items: [], folders: [] });
 }
 const extensionSource = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
+const atomicRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-github-sync-atomic-"));
+try {
+  const removed = path.join(atomicRoot, "removed.md");
+  const written = path.join(atomicRoot, "written.md");
+  fs.writeFileSync(removed, "local only\n");
+  replaceGitHubSyncFilesAtomically([
+    { destination: removed, content: undefined },
+    { destination: written, content: Buffer.from("remote\n") },
+  ], "conflict acceptance");
+  assert.strictEqual(fs.existsSync(removed), false, "atomic conflict acceptance supports explicit local deletion");
+  assert.strictEqual(fs.readFileSync(written, "utf8"), "remote\n");
+} finally {
+  fs.rmSync(atomicRoot, { recursive: true, force: true });
+}
 assert.match(extensionSource, /const files = fetched\.files\.filter\(file => file\.type !== "agentSnapshots"\)/,
   "GitHub Branch subscriptions must never expose synchronized Agent Snapshots");
 assert.match(extensionSource, /enabled: target\.automation\.enabled && target\.automation\.initialSyncCompleted/,

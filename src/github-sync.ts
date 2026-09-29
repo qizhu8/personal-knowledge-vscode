@@ -1499,7 +1499,7 @@ function writeAtomic(destination: string, content: Buffer): void {
 }
 
 export function replaceGitHubSyncFilesAtomically(
-  replacements: Array<{ destination: string; content: Buffer }>,
+  replacements: Array<{ destination: string; content: Buffer | undefined }>,
   operation = "GitHub Sync"
 ): void {
   const originals = replacements.map(item => ({
@@ -1509,7 +1509,9 @@ export function replaceGitHubSyncFilesAtomically(
   const completed: number[] = [];
   try {
     for (let index = 0; index < replacements.length; index++) {
-      writeAtomic(replacements[index].destination, replacements[index].content);
+      const replacement = replacements[index];
+      if (replacement.content) writeAtomic(replacement.destination, replacement.content);
+      else fs.rmSync(replacement.destination, { force: true });
       completed.push(index);
     }
   } catch (error) {

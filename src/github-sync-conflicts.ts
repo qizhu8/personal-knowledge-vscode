@@ -20,7 +20,7 @@ export interface GitHubSyncStoredConflictFile {
   hasBase: boolean;
   hasLocal: boolean;
   hasRemote: boolean;
-  candidateSource: "unresolved" | "base" | "local" | "remote" | "delete" | "manual" | "agent";
+  candidateSource: "unresolved" | "base" | "local" | "remote" | "delete" | "delete-local" | "manual" | "agent";
   rationale?: string;
   agentReview?: GitHubSyncAgentReview;
 }
@@ -281,6 +281,42 @@ export function selectAllGitHubSyncConflictDeletions(
     selected++;
   }
   if (!selected) throw new Error("No missing-local conflicts are available to delete from GitHub.");
+  writeMetadata(stateDirectory, record);
+  return { selected };
+}
+
+export function selectGitHubSyncConflictLocalDeletion(
+  stateDirectory: string,
+  targetId: string,
+  relative: string,
+): void {
+  const record = readGitHubSyncConflict(stateDirectory, targetId);
+  const file = record?.files.find(candidate => candidate.path === relative);
+  if (!record || !file) throw new Error("GitHub Sync conflict file was not found.");
+  if (!file.hasLocal || file.hasRemote) {
+    throw new Error("Delete This Machine is available only when the file exists locally but is absent from GitHub.");
+  }
+  file.candidateSource = "delete-local";
+  delete file.agentReview;
+  file.rationale = "Accept the file's absence from GitHub and delete the machine-local copy.";
+  writeMetadata(stateDirectory, record);
+}
+
+export function selectAllGitHubSyncConflictLocalDeletions(
+  stateDirectory: string,
+  targetId: string,
+): { selected: number } {
+  const record = readGitHubSyncConflict(stateDirectory, targetId);
+  if (!record) throw new Error("GitHub Sync conflict was not found.");
+  let selected = 0;
+  for (const file of record.files) {
+    if (!file.hasLocal || file.hasRemote) continue;
+    file.candidateSource = "delete-local";
+    delete file.agentReview;
+    file.rationale = "Accept the file's absence from GitHub and delete the machine-local copy.";
+    selected++;
+  }
+  if (!selected) throw new Error("No missing-GitHub conflicts are available to delete from this machine.");
   writeMetadata(stateDirectory, record);
   return { selected };
 }

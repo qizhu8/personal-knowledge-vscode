@@ -14,8 +14,10 @@ const {
   refreshGitHubSyncConflictLocalCandidate,
   selectAllGitHubSyncConflictCandidates,
   selectAllGitHubSyncConflictDeletions,
+  selectAllGitHubSyncConflictLocalDeletions,
   selectGitHubSyncConflictCandidate,
   selectGitHubSyncConflictDeletion,
+  selectGitHubSyncConflictLocalDeletion,
   storeGitHubSyncConflict,
   updateGitHubSyncAgentCandidate,
   validateGitHubSyncConflictLocalState,
@@ -168,6 +170,24 @@ try {
     () => selectGitHubSyncConflictDeletion(root, "target-1", stored.files[0].path),
     /available only when/,
     "remote deletion cannot be selected when a machine-local candidate still exists"
+  );
+  const missingRemote = storeGitHubSyncConflict(root, "target-delete-local", new GitHubSyncConflictError("f".repeat(40), [{
+    path: "notes/Ideas/Local.md",
+    type: "notes",
+    itemId: "Ideas/Local",
+    category: "Ideas",
+    privacy: "public",
+    local: Buffer.from("# Local\n"),
+  }]), "initial-preview", 3);
+  assert.strictEqual(missingRemote.files[0].candidateSource, "local");
+  selectGitHubSyncConflictLocalDeletion(root, "target-delete-local", missingRemote.files[0].path);
+  assert.strictEqual(readGitHubSyncConflict(root, "target-delete-local").files[0].candidateSource, "delete-local");
+  assert.match(readGitHubSyncConflict(root, "target-delete-local").files[0].rationale, /delete the machine-local copy/);
+  assert.deepStrictEqual(selectAllGitHubSyncConflictLocalDeletions(root, "target-delete-local"), { selected: 1 });
+  assert.throws(
+    () => selectGitHubSyncConflictLocalDeletion(root, "target-delete", missingLocal.files[0].path),
+    /available only when/,
+    "local deletion cannot be selected while a GitHub candidate exists"
   );
   refreshGitHubSyncConflictLocalCandidate(
     root,

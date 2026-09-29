@@ -214,6 +214,14 @@ assert.doesNotMatch(/command === 'githubSyncState'[^\n]*/.exec(coreSource)?.[0] 
   "ordinary state refreshes cannot prematurely clear Initial Sync Apply feedback");
 assert.match(extensionSource, /case "githubSyncConflictAccept"[\s\S]*githubSyncConflictAcceptProgress[\s\S]*githubSyncConflictAccepted/,
   "the host sends dedicated progress and terminal completion events for conflict acceptance");
+assert.match(source, /Delete this machine[\s\S]*githubSyncConflictDeleteLocal/,
+  "local-only files can explicitly accept GitHub absence");
+assert.match(source, /Delete This Machine \(\$\{localOnly\}\)[\s\S]*githubSyncConflictDeleteLocalAll/,
+  "local-only files support a visible bulk deletion action");
+assert.match(extensionSource, /filter\(candidate => !candidate\.deleteRemote && !!candidate\.destination\)[\s\S]*map\(\(\{ destination, content \}\) => \(\{ destination: destination!, content \}\)\)/,
+  "accepted machine-local deletions are applied through the atomic file mutation path");
+assert.match(extensionSource, /candidate\.deleteLocal && candidate\.file\.type === "recipes"[\s\S]*applyGitHubSyncRecipeDeletes/,
+  "accepted machine-local Recipe deletions use Project Store trash semantics");
 
 const missingLocalCard = vm.runInContext(`(() => {
   githubSyncData.conflicts.shared = {files:[
