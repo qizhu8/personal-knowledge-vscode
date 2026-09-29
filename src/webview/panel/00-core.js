@@ -412,6 +412,7 @@ const actionTimeouts = {
   knowledgeTrashMove:15000, knowledgeTrashRestore:15000, knowledgeTrashDelete:15000, knowledgeTrashEmpty:30000,
   serverSubscriptionStatus:15000,
   serverSubscriptionRefresh:60000,
+  serverList:30000, serverStart:60000, serverStop:60000, serverRestart:90000, serverInspectExternal:30000,
   chatAddManagedAgent:180000,
   agentSnapshotCreate:30000, agentSnapshotRotate:30000, agentSnapshotDelete:15000,
   recipeOpenBrowser:30000,
@@ -420,7 +421,7 @@ const actionTimeouts = {
   githubSyncConflictOpen:30000, githubSyncConflictChooseAll:120000, githubSyncConflictDelete:120000, githubSyncConflictDeleteAll:120000, githubSyncConflictDeleteLocal:120000, githubSyncConflictDeleteLocalAll:120000, githubSyncConflictAgent:120000, githubSyncConflictAgentAll:1800000, githubSyncConflictAccept:900000, githubSyncConflictDiscard:30000,
   mcpRepairRuntime:600000, mcpSetPython:600000, mcpBrowsePython:600000, generateMcp:90000,
   reconfigureKnowledgeRoot:600000, reconfigureEnvironmentsRoot:600000, reconfigureMcpRuntimePath:600000, reconfigureMcpServerPath:600000,
-  checkMcp:15000, mcpDetectPython:60000, refreshMcpPathSizes:30000,
+  checkMcp:600000, mcpDetectPython:60000, refreshMcpPathSizes:30000,
 };
 
 function restoreActionButton(entry) {
@@ -823,7 +824,7 @@ window.addEventListener('message', e => {
   else if (command === 'envCondaList') { onCondaList(data); }
   else if (command === 'envDetectFolder') { onEnvFolderDetected(e.data.data); }
   else if (command === 'envPickFolder') { onEnvPickFolder(e.data.dir); }
-  else if (command === 'serverList') { serverCache = data || []; if (state.tab === 'servers') renderServerDashboard(serverCache); }
+  else if (command === 'serverList') { finishAction('serverList','serverStart','serverStop','serverRestart','serverInspectExternal'); serverCache = data || []; if (state.tab === 'servers') renderServerDashboard(serverCache); }
   else if (command === 'serverGroupList') { serverGroupPaths = data || ['Hidden']; if (state.tab === 'servers') renderServerDashboard(serverCache); }
   else if (command === 'serverPrivacy') { serverPrivateTopLevels = data || []; if (state.tab === 'servers') renderServerDashboard(serverCache); }
   else if (command === 'serverSubscriptionGroups') { finishAction('serverSubscriptionStatus','serverSubscriptionRefresh'); serverSubscriptionGroups = data || []; if (state.tab === 'servers') renderServerDashboard(serverCache); }
@@ -1028,7 +1029,17 @@ window.addEventListener('message', e => {
       progress.innerHTML = `<div class="sync-progress"><div><strong>${esc(data.message || 'Synchronizing…')}</strong><span>${percent === null ? '' : percent + '%'}${amount ? ' · ' + esc(amount) : ''}</span></div><progress ${percent === null ? '' : `value="${percent}" max="100"`}></progress></div>`;
     }
   }
-  else if (command === 'mcpStatus')    { finishAction('checkMcp','reconfigureKnowledgeRoot','reconfigureEnvironmentsRoot','reconfigureMcpRuntimePath','reconfigureMcpServerPath'); mcpOnStatus(data); }
+  else if (command === 'mcpStatus')    { mcpOnStatus(data); }
+  else if (command === 'mcpCheckComplete') {
+    if (data?.state === 'error') failAction(data?.error || 'PKM integration setup failed.','checkMcp');
+    else finishAction('checkMcp');
+  }
+  else if (command === 'mcpActionResult') {
+    const action = String(data?.action || '');
+    if (data?.cancelled) finishAction(action);
+    else if (data?.ok) { finishAction(action); completeMcpUiAction(data?.message || 'MCP configuration updated successfully.'); }
+    else failAction(data?.error || 'MCP configuration failed.', action);
+  }
   else if (command === 'skillRouterStatus') { skillRouterOnStatus(data); }
   else if (command === 'pkmSkillUpdateComplete') { finishPkmSkillUpdates(); if (!data?.ok) ask('checkMcp', {}); }
   else if (command === 'uiLanguage')   { applyUiLanguage(data); }

@@ -253,7 +253,9 @@ assert.match(bundle, /Automatic synchronization/, "GitHub Sync describes backgro
 assert.match(bundle, /Sync interval \(minutes\)/, "GitHub Sync exposes the periodic per-target interval");
 assert.match(bundle, /Unchanged checks do not create commits/, "GitHub Sync makes unchanged-content behavior explicit");
 assert.doesNotMatch(bundle, /Waiting for schedule/, "GitHub Sync must not imply periodic forced synchronization");
-assert.match(bundle, /githubSyncForce\('\$\{esc\(target\.id\)\}',this\)[^>]*\$\{status === 'syncing' \|\| forcePending \|\| conflict \|\| \(migration && !\['cutover','rolled-back'\]\.includes\(migration\.phase\)\) \? 'disabled' : ''\}/,
+assert.match(bundle, /const forceDisabled = autoEnabled \|\| status === 'syncing' \|\| forcePending \|\| !!conflict \|\| migrationBusy;/,
+  "Force sync disabled state must include queued, syncing, conflict, automatic, and migration states");
+assert.match(bundle, /githubSyncForceUpdate\('\$\{esc\(target\.id\)\}',this\)" \$\{forceDisabled \? 'disabled' : ''\}/,
   "every GitHub target disables Force sync while queued, syncing, waiting for conflict approval, or inside a pre-cutover migration");
 assert.match(bundle, /function githubSyncForce\(targetId, button\) \{ if \(githubSyncForcePending\.has\(targetId\) \|\| pendingActionButtons\.has\('githubSyncRun'\)\) return;/,
   "Force sync synchronously deduplicates before posting to the scheduler");

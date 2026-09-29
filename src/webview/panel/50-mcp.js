@@ -13,6 +13,10 @@ function beginMcpUiAction(command, payload, button) {
 
 function completeMcpUiAction(message) {
   mcpCompletionNotice = String(message || '');
+  const slot = document.getElementById('mcp-completion-slot');
+  if (slot) slot.innerHTML = mcpCompletionNotice
+    ? `<div id="mcp-completion-notice" role="status" style="margin-bottom:14px;padding:9px 11px;border:1px solid #4ade8066;border-radius:6px;background:#4ade8012;color:#4ade80;font-size:11px">${uiIcon('check')} ${esc(mcpCompletionNotice)}</div>`
+    : '';
   vscode.postMessage({ command:'toast', text:mcpCompletionNotice });
 }
 
@@ -373,7 +377,7 @@ function renderMcpPane(data) {
       <p style="color:var(--muted);font-size:12px;margin-bottom:14px;line-height:1.6">
         Configure the external runtimes and Agent integrations used by Personal Knowledge Manager.
       </p>
-      ${mcpCompletionNotice ? `<div id="mcp-completion-notice" role="status" style="margin-bottom:14px;padding:9px 11px;border:1px solid #4ade8066;border-radius:6px;background:#4ade8012;color:#4ade80;font-size:11px">${uiIcon('check')} ${esc(mcpCompletionNotice)}</div>` : ''}
+      <div id="mcp-completion-slot">${mcpCompletionNotice ? `<div id="mcp-completion-notice" role="status" style="margin-bottom:14px;padding:9px 11px;border:1px solid #4ade8066;border-radius:6px;background:#4ade8012;color:#4ade80;font-size:11px">${uiIcon('check')} ${esc(mcpCompletionNotice)}</div>` : ''}</div>
       ${renderMcpDashboard(data)}
       ${renderMcpFeatureDomains(data)}
       <div id="pkm-skill-router-section">${renderPkmSkillTargets(data)}</div>

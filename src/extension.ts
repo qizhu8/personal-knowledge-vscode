@@ -2994,6 +2994,7 @@ let _mcpDefinitionsChanged: vscode.EventEmitter<void> | undefined;
 let _mcpRegenerationPromptedFor = "";
 
 function refreshMcpDefinitions(): void {
+  mcpRuntimeStatusCache = undefined;
   _mcpDefinitionsChanged?.fire();
 }
 
@@ -8580,7 +8581,11 @@ async function handleMessage(
     // ── MCP ──────────────────────────────────────────────────────────────
     case "checkMcp": {
       respond({ command: "mcpStatus", data: mcpPanelStatusData(String(msg.profileRequestId || ""), false) });
-      void maintainPkmIntegration(context);
+      await maintainPkmIntegration(context);
+      respond({ command: "mcpCheckComplete", data: {
+        state: integrationMaintenanceState,
+        error: integrationMaintenanceError,
+      } });
       break;
     }
 
@@ -8713,26 +8718,30 @@ async function handleMessage(
     }
 
     case "reconfigureKnowledgeRoot": {
-      await vscode.commands.executeCommand("personalKnowledge.reconfigureKnowledgeRoot");
+      const result = await vscode.commands.executeCommand<{ ok?: boolean; cancelled?: boolean; message?: string; error?: string }>("personalKnowledge.reconfigureKnowledgeRoot");
       respond({ command: "mcpStatus", data: mcpPanelStatusData() });
+      respond({ command: "mcpActionResult", data: { action: "reconfigureKnowledgeRoot", ...(result || { cancelled: true }) } });
       break;
     }
 
     case "reconfigureEnvironmentsRoot": {
-      await vscode.commands.executeCommand("personalKnowledge.reconfigureEnvironmentsRoot");
+      const result = await vscode.commands.executeCommand<{ ok?: boolean; cancelled?: boolean; message?: string; error?: string }>("personalKnowledge.reconfigureEnvironmentsRoot");
       respond({ command: "mcpStatus", data: mcpPanelStatusData() });
+      respond({ command: "mcpActionResult", data: { action: "reconfigureEnvironmentsRoot", ...(result || { cancelled: true }) } });
       break;
     }
 
     case "reconfigureMcpRuntimePath": {
-      await vscode.commands.executeCommand("personalKnowledge.reconfigureMcpRuntimePath");
+      const result = await vscode.commands.executeCommand<{ ok?: boolean; cancelled?: boolean; message?: string; error?: string }>("personalKnowledge.reconfigureMcpRuntimePath");
       respond({ command: "mcpStatus", data: mcpPanelStatusData() });
+      respond({ command: "mcpActionResult", data: { action: "reconfigureMcpRuntimePath", ...(result || { cancelled: true }) } });
       break;
     }
 
     case "reconfigureMcpServerPath": {
-      await vscode.commands.executeCommand("personalKnowledge.reconfigureMcpServerPath");
+      const result = await vscode.commands.executeCommand<{ ok?: boolean; cancelled?: boolean; message?: string; error?: string }>("personalKnowledge.reconfigureMcpServerPath");
       respond({ command: "mcpStatus", data: mcpPanelStatusData() });
+      respond({ command: "mcpActionResult", data: { action: "reconfigureMcpServerPath", ...(result || { cancelled: true }) } });
       break;
     }
 
@@ -10974,7 +10983,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("personalKnowledge.reconfigureKnowledgeRoot", async () => {
       const previousRoot = _storeReady ? getStorePath() : "";
       const chosen = await firstTimeSetup(context, true);
-      if (!chosen || chosen === previousRoot) return;
+      if (!chosen || chosen === previousRoot) return { cancelled: true };
       await chatMgr?.dispose();
       chatMgr = undefined;
       disposeServers();
@@ -11003,6 +11012,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
         vscode.window.showInformationMessage(`Knowledge Root changed on ${extensionHostDescription(process.platform, os.hostname(), vscode.env.remoteName || "")}: ${chosen}. Chatroom history now uses ${path.join(chosen, "chatrooms")}; existing Rooms were not moved.`);
         void maintainPkmIntegration(context);
+        return { ok: true, message: `Knowledge Root changed to ${chosen}.` };
       } catch (error: any) {
         if (previousRoot && directoryExists(previousRoot)) {
           await rememberMachineStorePath(context, previousRoot);
@@ -11018,19 +11028,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         panel?.webview.postMessage({ command: "reloaded" });
         panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
         vscode.window.showErrorMessage(`Knowledge Root change failed and the previous root was restored: ${error?.message || String(error)}`);
+        return { ok: false, error: `Knowledge Root change failed and the previous root was restored: ${error?.message || String(error)}` };
       }
     }),
 
     vscode.commands.registerCommand("personalKnowledge.reconfigureEnvironmentsRoot", async () => {
       const chosen = await chooseEnvironmentsRoot(context);
-      if (!chosen) return;
+      if (!chosen) return { cancelled: true };
       const configuration = vscode.workspace.getConfiguration("personalKnowledge");
       const previous = configuration.get<string>("environmentsPath", "");
       const runtimeIsDerived = !configuration.get<string>("mcpRuntimePath", "").trim();
       const derivedRuntime = path.join(chosen, "pkm-mcp");
       if (runtimeIsDerived && !safeMcpRuntimeTarget(derivedRuntime)) {
         vscode.window.showErrorMessage(`Cannot use this Environments Root: ${derivedRuntime} is not an empty or PKM-managed runtime directory.`);
-        return;
+        return { ok: false, error: `Cannot use this Environments Root: ${derivedRuntime} is not an empty or PKM-managed runtime directory.` };
       }
       await configuration.update("environmentsPath", chosen, vscode.ConfigurationTarget.Global);
       try {
@@ -11047,7 +11058,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         panel?.webview.postMessage({ command: "envList", data: envListForUi() });
         panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
         vscode.window.showErrorMessage(`Environments Root was restored because reconfiguration failed: ${error?.message || String(error)}`);
-        return;
+        return { ok: false, error: `Environments Root was restored because reconfiguration failed: ${error?.message || String(error)}` };
       }
       mcpPathSizeGeneration += 1;
       mcpPathSizeCache.clear();
@@ -11055,16 +11066,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       panel?.webview.postMessage({ command: "envList", data: envListForUi() });
       panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
       vscode.window.showInformationMessage(`Environments Root changed to ${chosen}. Existing environments were not moved.`);
+      return { ok: true, message: `Environments Root changed to ${chosen}. Managed runtime status was refreshed.` };
     }),
 
     vscode.commands.registerCommand("personalKnowledge.reconfigureMcpRuntimePath", async () => {
       const current = managedMcpRuntimePath();
       const defaultPath = path.join(managedEnvironmentsRoot(), "pkm-mcp");
       const chosen = await chooseMachineDirectory("Managed MCP Runtime Path", current, defaultPath, "The runtime will be created or rebuilt at the new path. The previous runtime directory is not deleted automatically.");
-      if (!chosen) return;
+      if (!chosen) return { cancelled: true };
       if (!safeMcpRuntimeTarget(chosen)) {
         vscode.window.showErrorMessage(`Refusing to replace non-PKM directory: ${chosen}. Choose an empty directory or an existing PKM-managed runtime.`);
-        return;
+        return { ok: false, error: `Refusing to replace non-PKM directory: ${chosen}. Choose an empty directory or an existing PKM-managed runtime.` };
       }
       const configuration = vscode.workspace.getConfiguration("personalKnowledge");
       const previous = configuration.get<string>("mcpRuntimePath", "");
@@ -11081,7 +11093,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         panel?.webview.postMessage({ command: "envList", data: envListForUi() });
         panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
         vscode.window.showErrorMessage(`Managed MCP Runtime path was restored because rebuilding failed: ${error?.message || String(error)}`);
-        return;
+        return { ok: false, error: `Managed MCP Runtime path was restored because rebuilding failed: ${error?.message || String(error)}` };
       }
       mcpPathSizeGeneration += 1;
       mcpPathSizeCache.clear();
@@ -11089,16 +11101,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       panel?.webview.postMessage({ command: "envList", data: envListForUi() });
       panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
       vscode.window.showInformationMessage(`Managed MCP Runtime is ready at ${chosen}.`);
+      return { ok: true, message: `Managed MCP Runtime is healthy and ready at ${chosen}.` };
     }),
 
     vscode.commands.registerCommand("personalKnowledge.reconfigureMcpServerPath", async () => {
       const current = managedMcpServerDirectory();
       const defaultPath = path.join(getStorePath(), "mcp-server");
       const chosen = await chooseMachineDirectory("MCP Server Directory", current, defaultPath, "Generated server.py, chat_server.py, and requirements.txt will be regenerated at the new path. The previous directory is not deleted automatically.");
-      if (!chosen) return;
+      if (!chosen) return { cancelled: true };
       if (!safeMcpServerTarget(chosen)) {
         vscode.window.showErrorMessage(`Refusing to overwrite non-PKM directory: ${chosen}. Choose an empty directory or an existing PKM-generated server directory.`);
-        return;
+        return { ok: false, error: `Refusing to overwrite non-PKM directory: ${chosen}. Choose an empty directory or an existing PKM-generated server directory.` };
       }
       const configuration = vscode.workspace.getConfiguration("personalKnowledge");
       const previous = configuration.get<string>("mcpServerPath", "");
@@ -11112,13 +11125,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         mcpPathSizeCache.clear();
         panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
         vscode.window.showErrorMessage(`MCP Server Directory was restored because generation failed: ${error?.message || String(error)}`);
-        return;
+        return { ok: false, error: `MCP Server Directory was restored because generation failed: ${error?.message || String(error)}` };
       }
       mcpPathSizeGeneration += 1;
       mcpPathSizeCache.clear();
       refreshMcpDefinitions();
       panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
       vscode.window.showInformationMessage(`PKM MCP server code regenerated at ${chosen}. Restart pkm in each MCP client.`);
+      return { ok: true, message: `PKM MCP server code was regenerated at ${chosen}. Restart pkm in each MCP client.` };
     }),
 
     vscode.commands.registerCommand("personalKnowledge.openChatroom", async () => {

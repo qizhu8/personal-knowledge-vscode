@@ -12,6 +12,14 @@ const sourcePanelCss = fs.readFileSync(path.join(__dirname, "..", "src", "webvie
 assert.match(sourcePanelCss, /\.srv-global-controls select,\.srv-edit input,\.mcp-setup-step select,\.mcp-setup-step input\{[^}]*background:var\(--input\)[^}]*color:var\(--text\)[^}]*color-scheme:dark/,
   "Settings hostname, IP, and port controls must use the dark themed input surface");
 assert.match(extensionTs, /function maintainPkmIntegration\(context: vscode\.ExtensionContext\)/);
+assert.match(extensionTs, /function refreshMcpDefinitions\(\): void \{\s*mcpRuntimeStatusCache = undefined;/,
+  "runtime mutations must invalidate the cached MCP health before refreshing the UI");
+assert.match(extensionTs, /case "checkMcp":[\s\S]{0,350}await maintainPkmIntegration\(context\)[\s\S]{0,250}command: "mcpCheckComplete"/,
+  "the MCP refresh action must remain pending until automatic integration maintenance finishes");
+assert.match(extensionTs, /case "reconfigureMcpRuntimePath":[\s\S]{0,500}command: "mcpActionResult"[\s\S]{0,120}action: "reconfigureMcpRuntimePath"/,
+  "managed runtime reconfiguration must send a dedicated terminal result");
+assert.match(extensionTs, /case "reconfigureMcpServerPath":[\s\S]{0,500}command: "mcpActionResult"[\s\S]{0,120}action: "reconfigureMcpServerPath"/,
+  "server directory reconfiguration must send a dedicated terminal result");
 assert.match(extensionTs, /server\.newerThanExpected \|\| newerRouters\.length[\s\S]{0,900}This window will not downgrade shared PKM files/,
   "an older window must stop maintenance and recommend a manual Reload Window");
 assert.doesNotMatch(extensionTs, /executeCommand\([^\n]*(reloadWindow|reload)/i,
@@ -28,6 +36,18 @@ assert.match(panelJs, /server v\$\{installed\} is current, but runtime component
   "equal unified versions with changed components must identify the component transition");
 assert.match(panelJs, /A newer PKM MCP runtime is installed and was preserved/,
   "newer installed runtimes must receive preservation and Extension upgrade guidance");
+assert.match(panelJs, /checkMcp:600000/,
+  "automatic integration checks can install dependencies and need a realistic timeout");
+assert.match(panelJs, /command === 'mcpStatus'\)\s*\{\s*mcpOnStatus\(data\);\s*\}/,
+  "generic MCP status refreshes must not prematurely finish mutating actions");
+assert.match(panelJs, /command === 'mcpCheckComplete'[\s\S]{0,350}finishAction\('checkMcp'\)/,
+  "only the dedicated MCP check terminal event may finish the check action");
+assert.match(panelJs, /command === 'mcpActionResult'[\s\S]{0,500}completeMcpUiAction/,
+  "MCP reconfiguration results must finish the action and publish visible completion");
+assert.match(panelJs, /function completeMcpUiAction\(message\)[\s\S]{0,450}getElementById\('mcp-completion-slot'\)[\s\S]{0,450}role="status"/,
+  "MCP completion must update the visible pane immediately instead of waiting for a later rerender");
+assert.match(panelJs, /id="mcp-completion-slot"/,
+  "the MCP pane must preserve a dedicated completion status surface across rerenders");
 assert.match(panelJs, /data\?\.current \|\| data\?\.newerThanExpected/,
   "a newer shared server must remain usable in an older window");
 assert.match(panelJs, /data\?\.newerThanExpected \? 'Newer installed'/,

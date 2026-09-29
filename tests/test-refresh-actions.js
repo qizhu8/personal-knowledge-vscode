@@ -17,8 +17,15 @@ assert.match(knowledge, /state\.tab = t\.dataset\.tab;[\s\S]{0,120}currentDetail
 for (const type of ["prompt", "promptDiff", "packageFile"]) assert(knowledge.includes(`requestDetail('${type}'`), `${type} must retain its exact refresh request`);
 assert.match(knowledge, /currentDetail = data;/);
 
-assert.match(servers, /ask\('serverList',\{\}\).*Force-refresh server process, port, and link status/);
-assert.match(mcp, /ask\('refreshMcpPathSizes', \{\}\)/);
+assert.match(servers, /data-pending-label="Refreshing…" onclick="ask\('serverList',\{\},this\)".*Force-refresh server process, port, and link status/);
+for (const [command, label] of [["serverStart", "Starting…"], ["serverStop", "Stopping…"], ["serverRestart", "Restarting…"], ["serverInspectExternal", "Inspecting…"]]) {
+  assert(servers.includes(`data-pending-label="${label}"`), `${command} must render its pending label`);
+  assert(servers.includes(`ask('${command}',{slug:'\${esc(s.slug)}'},this)`), `${command} must provide immediate click feedback`);
+  assert.match(core, new RegExp(`${command}:\\d+`), `${command} must have an operation timeout`);
+}
+assert.match(core, /command === 'serverList'\) \{ finishAction\('serverList','serverStart','serverStop','serverRestart','serverInspectExternal'\)/,
+  "the authoritative Server refresh must finish every lifecycle action");
+assert.match(mcp, /beginMcpUiAction\('refreshMcpPathSizes', \{\}, button\)/);
 assert.match(extension, /mcpPathSizeGeneration \+= 1;[\s\S]{0,100}mcpPathSizeCache\.clear\(\)/);
 assert.match(extension, /case "reload":[\s\S]{0,300}respond\(\{ command: "reloaded", data: \{ manual: true \} \}\)/);
 assert.match(vscodeIgnore, /^\*\*\/\*\.map$/m);
