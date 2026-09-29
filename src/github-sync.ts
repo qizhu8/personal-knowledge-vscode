@@ -2091,7 +2091,7 @@ async function syncGitHubTargetAttempt(
     }
 
     const baseState = baseDeletionMap.has(key) ? "deleted" : entityState(base);
-    const localState = localDeletionMap.has(key) ? "deleted" : entityState(local);
+    const localState = localDeletionMap.has(key) || (baseState === "deleted" && !local) ? "deleted" : entityState(local);
     const remoteState = remoteDeletionMap.has(key) ? "deleted" : entityState(remote);
     const localChanged = localState !== baseState;
     const remoteChanged = remoteState !== baseState;
@@ -2174,7 +2174,8 @@ async function syncGitHubTargetAttempt(
       replaceRemoteEntity(key, local);
       if (local) finalDeletions.delete(key);
       else {
-        const evidence = localDeletionMap.get(key)!;
+        const evidence = localDeletionMap.get(key);
+        if (!evidence) throw new Error(`GitHub Sync cannot record a machine-local deletion without evidence: ${type}/${itemId}`);
         finalDeletions.set(key, {
           ...evidence,
           category: evidence.category ?? base?.[0]?.category,

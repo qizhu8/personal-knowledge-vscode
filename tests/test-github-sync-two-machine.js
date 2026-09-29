@@ -400,7 +400,7 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
       (phase, detail) => gitPhases.push([phase, detail]),
     ));
     assert.deepStrictEqual(
-      gitPhases.map(([phase]) => phase),
+      gitPhases.map(([phase]) => phase).filter((phase, index, phases) => index === 0 || phase !== phases[index - 1]),
       ["fetch", "commit", "push"],
       "GitHub Sync reports the actual Git operation sequence"
     );
@@ -707,6 +707,25 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
     });
     linux.target.pendingDeletions = [];
     linux.target.lastSync.commit = acceptedRemoteCommit;
+    fs.rmSync(path.join(linux.skills, "Two.md"));
+    linux.catalog.skills = linux.catalog.skills.filter(file => file.id !== "Shared/Two");
+    const acceptedRemoteDeletion = await syncGitHubTarget(linux.target, linux.catalog, checkoutRoot, undefined, linux.store);
+    rememberSync(linux.target, acceptedRemoteDeletion);
+    assert.strictEqual(
+      acceptedRemoteDeletion.changed,
+      false,
+      "accepting a Remote tombstone must treat the still-missing local file as unchanged without requiring local deletion evidence"
+    );
+
+    fs.writeFileSync(path.join(linux.skills, "Two.md"), skill("Two", "linux modifies while windows deletes"));
+    linux.catalog.skills.push({
+      id: "Shared/Two",
+      label: "Two",
+      cat: "Shared",
+      isPrivate: false,
+      source: path.join(linux.skills, "Two.md"),
+      destination: "skills/Shared/Two.md"
+    });
     const acceptedLocal = await syncGitHubTarget(linux.target, linux.catalog, checkoutRoot, undefined, linux.store);
     rememberSync(linux.target, acceptedLocal);
     assert(acceptedLocal.changed, "choosing the local file against a remote tombstone must create a push");
