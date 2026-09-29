@@ -21,6 +21,33 @@ interface RetrievalEndpoint {
   configuration_hash: string;
 }
 
+export interface RetrievalWorkerStartupProfile {
+  schema: 1;
+  successfulStartupMs: number[];
+  consecutiveTimeouts: number;
+}
+
+const RETRIEVAL_STARTUP_MIN_MS = 10_000;
+const RETRIEVAL_STARTUP_MAX_MS = 90_000;
+
+export function retrievalWorkerStartupTimeoutMs(
+  profile: Partial<RetrievalWorkerStartupProfile> | undefined,
+  expectedDocumentCount = 0,
+  platform = process.platform,
+): number {
+  const samples = (profile?.successfulStartupMs || [])
+    .map(Number)
+    .filter(value => Number.isFinite(value) && value > 0 && value <= RETRIEVAL_STARTUP_MAX_MS)
+    .sort((left, right) => left - right);
+  const percentile = samples.length ? samples[Math.ceil(samples.length * 0.9) - 1] : 0;
+  const historyBudget = percentile ? percentile * 2.5 + 2_000 : RETRIEVAL_STARTUP_MIN_MS;
+  const workloadBudget = RETRIEVAL_STARTUP_MIN_MS + Math.ceil(Math.max(0, expectedDocumentCount) / 500) * 2_000;
+  const timeoutBudget = RETRIEVAL_STARTUP_MIN_MS * 2 ** Math.min(3, Math.max(0, Number(profile?.consecutiveTimeouts || 0)));
+  const platformFloor = platform === "win32" ? 20_000 : RETRIEVAL_STARTUP_MIN_MS;
+  return Math.min(RETRIEVAL_STARTUP_MAX_MS,
+    Math.ceil(Math.max(historyBudget, workloadBudget, timeoutBudget, platformFloor) / 1_000) * 1_000);
+}
+
 export interface RetrievalWorkerStatus {
   ok: boolean;
   engine_version: string;
@@ -42,6 +69,19 @@ export interface RetrievalWorkerStatus {
   update_mode: string;
   limitations: string[];
   error: string;
+  work_state?: string;
+  work_detail?: string;
+  work_current?: number;
+  work_total?: number;
+  work_updated_at?: string;
+}
+
+export interface RetrievalWorkerLifecycle {
+  state: "idle" | "starting" | "working" | "ready" | "failed";
+  startedAt?: string;
+  detail?: string;
+  progress?: { current: number; total?: number; unit?: string };
+  error?: string;
 }
 
 function compareEngineVersion(left: string, right: string): number | undefined {
@@ -60,6 +100,8 @@ function compareEngineVersion(left: string, right: string): number | undefined {
 
 export class RetrievalWorkerManager {
   private ensurePromise: Promise<RetrievalEndpoint> | undefined;
+  private ensureExpectedDocumentCount = 0;
+  private lifecycle: RetrievalWorkerLifecycle = { state: "idle" };
 
   constructor(
     private readonly stateDir: string,
@@ -70,6 +112,28 @@ export class RetrievalWorkerManager {
   ) {}
 
   private endpointPath(): string { return path.join(this.stateDir, "worker.json"); }
+  private startupProfilePath(): string { return path.join(this.stateDir, "worker-startup-profile.json"); }
+
+  private readStartupProfile(): RetrievalWorkerStartupProfile {
+    try {
+      const value = JSON.parse(fs.readFileSync(this.startupProfilePath(), "utf8"));
+      if (value?.schema === 1 && Array.isArray(value.successfulStartupMs)) {
+        return {
+          schema: 1,
+          successfulStartupMs: value.successfulStartupMs.map(Number).filter((item: number) => Number.isFinite(item) && item > 0).slice(-20),
+          consecutiveTimeouts: Math.max(0, Number(value.consecutiveTimeouts || 0)),
+        };
+      }
+    } catch { /* first startup or invalid profile */ }
+    return { schema: 1, successfulStartupMs: [], consecutiveTimeouts: 0 };
+  }
+
+  private writeStartupProfile(profile: RetrievalWorkerStartupProfile): void {
+    const target = this.startupProfilePath();
+    const temporary = `${target}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, JSON.stringify(profile), { mode: 0o600 });
+    fs.renameSync(temporary, target);
+  }
 
   private readEndpoint(): RetrievalEndpoint | undefined {
     try {
@@ -77,6 +141,60 @@ export class RetrievalWorkerManager {
       if (Number(value.port) > 0 && Number(value.pid) > 1 && value.token) return value;
     } catch { /* worker may still be starting */ }
     return undefined;
+  }
+
+  private processAlive(pid: number): boolean {
+    try {
+      if (pid <= 1) return false;
+      process.kill(pid, 0);
+      return true;
+    } catch (error: any) {
+      return error?.code === "EPERM";
+    }
+  }
+
+  private readWorkerLockPid(): number {
+    try { return Number(fs.readFileSync(path.join(this.stateDir, "worker.lock"), "utf8").trim()) || 0; }
+    catch { return 0; }
+  }
+
+  private async retireUnresponsiveWorker(pid: number): Promise<void> {
+    if (!this.processAlive(pid)) return;
+    try { process.kill(pid, "SIGTERM"); } catch (error: any) {
+      if (error?.code !== "ESRCH") throw error;
+    }
+    let deadline = Date.now() + 2_000;
+    while (this.processAlive(pid) && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    if (this.processAlive(pid)) {
+      try { process.kill(pid, "SIGKILL"); } catch (error: any) {
+        if (error?.code !== "ESRCH") throw error;
+      }
+      deadline = Date.now() + 3_000;
+      while (this.processAlive(pid) && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
+    if (this.processAlive(pid)) {
+      throw new Error(`Unresponsive retrieval worker process ${pid} could not be stopped.`);
+    }
+  }
+
+  private async recoverWorkerWithoutEndpoint(): Promise<boolean> {
+    const pid = this.readWorkerLockPid();
+    if (!this.processAlive(pid)) {
+      try { fs.rmSync(path.join(this.stateDir, "worker.lock"), { force: true }); } catch { /* another client recovered it */ }
+      return false;
+    }
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      if (this.readEndpoint()) return true;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    await this.retireUnresponsiveWorker(pid);
+    try { fs.rmSync(path.join(this.stateDir, "worker.lock"), { force: true }); } catch { /* worker cleanup won */ }
+    return false;
   }
 
   private async request<T>(
@@ -111,24 +229,47 @@ export class RetrievalWorkerManager {
     return value as T;
   }
 
-  async ensure(): Promise<RetrievalEndpoint> {
+  async ensure(expectedDocumentCount = 0): Promise<RetrievalEndpoint> {
+    this.ensureExpectedDocumentCount = Math.max(this.ensureExpectedDocumentCount, expectedDocumentCount);
     if (this.ensurePromise) return this.ensurePromise;
+    this.lifecycle = {
+      state: "starting",
+      startedAt: new Date().toISOString(),
+      detail: `Starting local retrieval worker for ${this.ensureExpectedDocumentCount} documents`,
+    };
     this.ensurePromise = this.ensureInner();
     try { return await this.ensurePromise; }
-    finally { this.ensurePromise = undefined; }
+    catch (error) {
+      this.lifecycle = {
+        ...this.lifecycle,
+        state: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      };
+      throw error;
+    }
+    finally {
+      this.ensurePromise = undefined;
+      this.ensureExpectedDocumentCount = 0;
+    }
   }
 
   private async ensureInner(): Promise<RetrievalEndpoint> {
     fs.mkdirSync(this.stateDir, { recursive: true });
-    return this.withTransitionLock(() => this.ensureLocked());
+    const lockBudget = Math.max(30_000,
+      retrievalWorkerStartupTimeoutMs(this.readStartupProfile(), this.ensureExpectedDocumentCount) + 5_000);
+    return this.withTransitionLock(() => this.ensureLocked(), lockBudget);
   }
 
   private async ensureLocked(): Promise<RetrievalEndpoint> {
     const current = this.readEndpoint();
+    if (!current && await this.recoverWorkerWithoutEndpoint()) return this.ensureLocked();
     if (current) {
       try {
         const status = await this.request<RetrievalWorkerStatus>(current, "/status");
-        if (status.engine_version === this.engineVersion && status.configuration_hash === this.configurationHash) return current;
+        if (status.engine_version === this.engineVersion && status.configuration_hash === this.configurationHash) {
+          this.updateLifecycleFromStatus(status);
+          return current;
+        }
         const order = compareEngineVersion(status.engine_version, this.engineVersion);
         if (order === 1) {
           if (status.configuration_hash === this.configurationHash) return current;
@@ -137,7 +278,7 @@ export class RetrievalWorkerManager {
         await this.request(current, "/shutdown", "POST", {});
       } catch (error) {
         if (error instanceof Error && error.message.includes("newer PKM retrieval worker")) throw error;
-        /* stale endpoint */
+        await this.retireUnresponsiveWorker(current.pid);
       }
     }
     try { fs.rmSync(this.endpointPath(), { force: true }); } catch { /* ignore */ }
@@ -149,23 +290,104 @@ export class RetrievalWorkerManager {
       windowsHide: true,
     });
     child.unref();
-    const deadline = Date.now() + 10_000;
-    while (Date.now() < deadline) {
+    const startedAt = Date.now();
+    let startupSlow = false;
+    while (true) {
       const endpoint = this.readEndpoint();
       if (endpoint) {
         try {
           const status = await this.request<RetrievalWorkerStatus>(endpoint, "/status");
-          if (status.engine_version === this.engineVersion && status.configuration_hash === this.configurationHash) return endpoint;
+          if (status.engine_version === this.engineVersion && status.configuration_hash === this.configurationHash) {
+            const profile = this.readStartupProfile();
+            profile.successfulStartupMs = [...profile.successfulStartupMs, Date.now() - startedAt].slice(-20);
+            profile.consecutiveTimeouts = 0;
+            this.writeStartupProfile(profile);
+            this.updateLifecycleFromStatus(status);
+            return endpoint;
+          }
         } catch { /* keep waiting */ }
       }
-      await new Promise(resolve => setTimeout(resolve, 50));
+      const profile = this.readStartupProfile();
+      const timeoutMs = retrievalWorkerStartupTimeoutMs(profile, this.ensureExpectedDocumentCount);
+      const elapsedMs = Date.now() - startedAt;
+      if (elapsedMs >= timeoutMs) {
+        startupSlow = true;
+        this.lifecycle = {
+          ...this.lifecycle,
+          state: "starting",
+          detail: `Retrieval worker is still starting · ${Math.floor(elapsedMs / 1_000)}s elapsed`,
+        };
+        let alive = false;
+        try {
+          if (child.pid && child.pid > 1) {
+            process.kill(child.pid, 0);
+            alive = true;
+          }
+        } catch (error: any) {
+          alive = error?.code === "EPERM";
+        }
+        if (!alive) {
+          profile.consecutiveTimeouts += 1;
+          this.writeStartupProfile(profile);
+          throw new Error(`Retrieval worker process exited before becoming ready after ${Math.ceil(elapsedMs / 1_000)} seconds.`);
+        }
+      }
+      await new Promise(resolve => setTimeout(resolve, startupSlow ? 250 : 50));
     }
-    throw new Error("Retrieval worker did not become ready within 10 seconds.");
   }
 
-  private async withTransitionLock<T>(action: () => Promise<T>): Promise<T> {
+  lifecycleStatus(): RetrievalWorkerLifecycle {
+    return {
+      ...this.lifecycle,
+      progress: this.lifecycle.progress ? { ...this.lifecycle.progress } : undefined,
+    };
+  }
+
+  private updateLifecycleFromStatus(status: RetrievalWorkerStatus): void {
+    if (status.error && !status.building_revision) {
+      this.lifecycle = { ...this.lifecycle, state: "failed", detail: status.work_detail, error: status.error };
+      return;
+    }
+    if (status.building_revision || status.work_state && status.work_state !== "idle") {
+      this.lifecycle = {
+        state: "working",
+        startedAt: this.lifecycle.startedAt || new Date().toISOString(),
+        detail: status.work_detail || "Building the local retrieval index",
+        progress: Number.isFinite(Number(status.work_current))
+          ? {
+            current: Number(status.work_current),
+            total: Number.isFinite(Number(status.work_total)) ? Number(status.work_total) : undefined,
+            unit: "documents",
+          }
+          : undefined,
+      };
+      return;
+    }
+    this.lifecycle = {
+      state: status.ready ? "ready" : "working",
+      startedAt: this.lifecycle.startedAt,
+      detail: status.ready ? "Retrieval worker ready" : "Waiting for the first retrieval index",
+    };
+  }
+
+  async waitUntilReady(
+    revision: string,
+    onProgress?: (lifecycle: RetrievalWorkerLifecycle) => void,
+  ): Promise<RetrievalWorkerStatus> {
+    const endpoint = await this.ensure();
+    while (true) {
+      const status = await this.request<RetrievalWorkerStatus>(endpoint, "/status");
+      this.updateLifecycleFromStatus(status);
+      onProgress?.(this.lifecycleStatus());
+      if (status.error && !status.building_revision) throw new Error(`Retrieval index build failed: ${status.error}`);
+      if (status.ready && status.corpus_revision === revision) return status;
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+  }
+
+  private async withTransitionLock<T>(action: () => Promise<T>, timeoutMs = 30_000): Promise<T> {
     const lockPath = path.join(this.stateDir, "worker-transition.lock");
-    const deadline = Date.now() + 12_000;
+    const deadline = Date.now() + timeoutMs;
     let owned = false;
     while (!owned) {
       try {
@@ -188,7 +410,7 @@ export class RetrievalWorkerManager {
   }
 
   async index(snapshot: RetrievalSnapshot): Promise<void> {
-    const endpoint = await this.ensure();
+    const endpoint = await this.ensure(snapshot.documents.length);
     await this.request(endpoint, "/index", "POST", snapshot);
   }
 
@@ -199,7 +421,7 @@ export class RetrievalWorkerManager {
       return {
         ...document,
         source_id: document.source_id || document.source_uri || document.skill_id,
-        source_revision: document.source_revision || hash,
+        source_revision: `${document.source_revision || "content"}:${hash}`,
         visibility: document.visibility || "available" as const,
         links: document.links || [],
       };
@@ -215,7 +437,7 @@ export class RetrievalWorkerManager {
       source_ids?: Record<string, string>;
     } = {};
     try { previous = JSON.parse(fs.readFileSync(manifestPath, "utf8")); } catch { /* first full submission */ }
-    const endpoint = await this.ensure();
+    const endpoint = await this.ensure(snapshot.documents.length);
     let retryGeneration: number | undefined;
     if (previous.corpus_revision === snapshot.corpus_revision) {
       const status = await this.request<RetrievalWorkerStatus>(endpoint, "/status");

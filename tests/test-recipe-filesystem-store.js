@@ -250,6 +250,7 @@ try {
   const adapterState = path.join(adapterRoot, ".pkm", "state");
   const adapter = new ProjectStore(adapterState);
   const before = adapter.list();
+  const legacyAuthority = JSON.parse(fs.readFileSync(path.join(adapterState, "projects.json"), "utf8"));
   const adapterPreview = adapter.migrateLegacyRecipes("preview");
   adapter.migrateLegacyRecipes("stage", { sourceDigest: adapterPreview.sourceDigest });
   adapter.migrateLegacyRecipes("verify", { sourceDigest: adapterPreview.sourceDigest });
@@ -258,6 +259,63 @@ try {
   assert(!Object.prototype.hasOwnProperty.call(legacyEnvelope.payload.state, "recipes"));
   assert(!Object.prototype.hasOwnProperty.call(legacyEnvelope.payload.state, "recipeFolders"));
   assert(!Object.prototype.hasOwnProperty.call(legacyEnvelope.payload.state, "recipeTrash"));
+
+  const staleAuthority = JSON.parse(JSON.stringify(legacyEnvelope));
+  for (const field of ["recipes", "recipeFolders", "recipeTrash"]) {
+    if (Object.prototype.hasOwnProperty.call(legacyAuthority.payload.state, field)) {
+      staleAuthority.payload.state[field] = legacyAuthority.payload.state[field];
+    }
+  }
+  staleAuthority.digest = crypto.createHash("sha256")
+    .update(canonicalJson(staleAuthority.payload), "utf8").digest("hex");
+  fs.writeFileSync(path.join(adapterState, "projects.json"), canonicalJson(staleAuthority));
+  new ProjectStore(adapterState).list();
+  const healedAuthority = JSON.parse(fs.readFileSync(path.join(adapterState, "projects.json"), "utf8"));
+  for (const field of ["recipes", "recipeFolders", "recipeTrash"]) {
+    assert(!Object.prototype.hasOwnProperty.call(healedAuthority.payload.state, field),
+      `loader must remove stale ${field} authority after canonical Recipe cutover`);
+  }
+
+  const divergentRecipeAuthority = JSON.parse(JSON.stringify(staleAuthority));
+  divergentRecipeAuthority.payload.state.recipes[0].description = "written by an older process";
+  divergentRecipeAuthority.digest = crypto.createHash("sha256")
+    .update(canonicalJson(divergentRecipeAuthority.payload), "utf8").digest("hex");
+  fs.writeFileSync(path.join(adapterState, "projects.json"), canonicalJson(divergentRecipeAuthority));
+  assert.throws(
+    () => new ProjectStore(adapterState).list(),
+    error => error instanceof ProjectStoreError && error.code === "migration-legacy-writer-conflict",
+    "post-cutover Recipe writes from an older process must be preserved as an explicit conflict",
+  );
+  assert.strictEqual(
+    JSON.parse(fs.readFileSync(path.join(adapterState, "projects.json"), "utf8"))
+      .payload.state.recipes[0].description,
+    "written by an older process",
+    "a conflicting legacy Recipe write must never be discarded",
+  );
+  fs.writeFileSync(path.join(adapterState, "projects.json"), canonicalJson(healedAuthority));
+
+  const divergentProjectAuthority = JSON.parse(JSON.stringify(healedAuthority));
+  divergentProjectAuthority.payload.state.projects.push({
+    projectId: "project_old_writer",
+    name: "Old Writer Project",
+    createdAt: "2026-09-28T00:00:00.000Z",
+    updatedAt: "2026-09-28T00:00:00.000Z",
+  });
+  divergentProjectAuthority.digest = crypto.createHash("sha256")
+    .update(canonicalJson(divergentProjectAuthority.payload), "utf8").digest("hex");
+  fs.writeFileSync(path.join(adapterState, "projects.json"), canonicalJson(divergentProjectAuthority));
+  assert.throws(
+    () => new ProjectStore(adapterState).list(),
+    error => error instanceof ProjectStoreError && error.code === "migration-legacy-writer-conflict",
+    "post-cutover Project writes from an older process must be preserved as an explicit conflict",
+  );
+  assert(
+    JSON.parse(fs.readFileSync(path.join(adapterState, "projects.json"), "utf8"))
+      .payload.state.projects.some(project => project.projectId === "project_old_writer"),
+    "a conflicting legacy Project write must never be discarded",
+  );
+  fs.writeFileSync(path.join(adapterState, "projects.json"), canonicalJson(healedAuthority));
+
   const after = new ProjectStore(adapterState).list();
   const parity = items => items.map(item => [item.recipeId, item.revision, item.executableDigest])
     .sort((left, right) => left[0].localeCompare(right[0]));

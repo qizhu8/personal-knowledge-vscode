@@ -1333,8 +1333,10 @@ function recipeGraphReorganize() {
     card.style.left = `${position.x}px`;
     card.style.top = `${position.y + recipeGraphBoundaryOffset}px`;
   });
+  recipeGraphMountBoundaries(canvas);
   recipeGraphSizeCanvas(canvas);
   recipeGraphLayoutLinks();
+  recipeRefreshSaveState();
 }
 function recipeGraphAddToolbarActions() {
   const tools = document.querySelector('.recipe-graph-tools');
@@ -1345,14 +1347,6 @@ function recipeGraphAddToolbarActions() {
   if (definitionHint) definitionHint.textContent = 'Build executable Modules and Connections.';
   const add = tools.querySelector('[onclick="recipeGraphAddStep()"]');
   if (add) add.innerHTML = '<span class="codicon codicon-add"></span> Add Module';
-  const cancel = document.createElement('button');
-  cancel.className = 'tbtn';
-  cancel.type = 'button';
-  cancel.textContent = 'Cancel';
-  cancel.title = 'Discard every unsaved Recipe draft change';
-  cancel.onclick = recipeCancel;
-  const save = tools.querySelector('[onclick="recipeSave(this)"]');
-  tools.insertBefore(cancel, save);
   const button = document.createElement('button');
   button.className = 'tbtn';
   button.dataset.recipeReorganize = 'true';
@@ -1925,7 +1919,7 @@ function projectTodoBody(project) {
 }
 
 function recipeCopyPathMenu(value, label = 'Copy Path') {
-  return { label, onClick:() => vscode.postMessage({ command:'copyText', text:value }) };
+  return { label, onClick:() => vscode.postMessage({ command:'copyText', text:label === 'Copy Path' ? canonicalPkmPath(value) : value }) };
 }
 
 function recipeRootMenu(event) {
@@ -1962,7 +1956,7 @@ function recipeFolderMenu(event, category) {
     { label:`Folder: ${folder}`, header:true },
     { label:'New Recipe Here', onClick:() => projectNewRecipe(folder) },
     { label:'Create Subfolder…', onClick:() => recipeCreateFolder(folder) },
-    recipeCopyPathMenu(`pkm://recipes/${encodeURIComponent(folder)}/`),
+    recipeCopyPathMenu(`pkm://recipes/${folder.split('/').filter(Boolean).map(encodeURIComponent).join('/')}/`),
     { sep:true },
     { label:isPrivate ? 'Set as Public' : 'Set as Private', onClick:() => ask('contentSetPrivacy', { type:'recipes', topLevel, isPrivate:!isPrivate }) },
     { sep:true },
@@ -2000,7 +1994,7 @@ function recipeItemMenu(event, recipeId) {
     { label:'Open Recipe', onClick:() => recipeSelect(recipe.recipeId) },
     { label:'Rename…', onClick:() => pkModal({ title:'Rename Recipe', message:'Enter a new Recipe name.', input:true, inputValue:recipe.name, okLabel:'Rename', onOk:name => { if (name.trim() && name.trim() !== recipe.name) recipePersistUpdate(recipe, { name:name.trim() }); } }) },
     { label:'Move to Folder…', onClick:() => pkModal({ title:'Move Recipe', message:'Enter a folder path. Leave empty for uncategorized.', input:true, inputValue:recipe.category || '', okLabel:'Move', onOk:category => recipePersistUpdate(recipe, { category:String(category || '').trim() }) }) },
-    recipeCopyPathMenu(`pkm://recipes/${encodeURIComponent(recipe.category || '')}/${encodeURIComponent(recipe.name)}`),
+    recipeCopyPathMenu(`pkm://recipes/${[recipe.category, recipe.name].filter(Boolean).flatMap(value => String(value).split('/').filter(Boolean)).map(encodeURIComponent).join('/')}`),
     recipeCopyPathMenu(recipe.recipeId, 'Copy Recipe ID')
   ];
   if (recipe.systemKind !== 'built-in') items.push(
@@ -2092,7 +2086,7 @@ function globalRecipeEditor(recipe) {
   const metadataRows = (collection, label, emptyText) => `<section class="recipe-metadata-list"><header><div><strong>${label}</strong><span>${emptyText}</span></div><button class="tbtn" onclick="recipeMetadataAdd('${collection}')"><span class="codicon codicon-add"></span> Add</button></header>${draft.metadata[collection].length ? draft.metadata[collection].map((field, index) => `<div class="recipe-metadata-row"><input value="${esc(field.name)}" placeholder="Name" aria-label="${label} name" oninput="recipeDraftMetadataField('${collection}',${index},'name',this.value)"><input value="${esc(field.description)}" placeholder="Description" aria-label="${label} description" oninput="recipeDraftMetadataField('${collection}',${index},'description',this.value)">${collection === 'requiredInputs' ? `<label title="Required input"><input type="checkbox" ${field.required !== false ? 'checked' : ''} onchange="recipeDraftMetadataField('${collection}',${index},'required',this.checked)"><span>Required</span></label>` : ''}<button class="recipe-icon-button" title="Remove" aria-label="Remove ${label}" onclick="recipeMetadataRemove('${collection}',${index})"><span class="codicon codicon-trash"></span></button></div>`).join('') : `<p class="recipe-list-empty">None defined.</p>`}</section>`;
   const nodes = draft.definition?.spec?.nodes || [];
   const completion = new Set(draft.definition?.spec?.completion?.requiredNodes || []);
-  const graph = `<div class="recipe-graph-toolbar"><div><strong>Definition Graph</strong><span>Drag a Module output onto another Module input to create a Connection.</span></div><div class="recipe-graph-tools" role="toolbar" aria-label="Definition Graph actions"><button class="recipe-icon-button" title="Zoom out" aria-label="Zoom out" onclick="recipeGraphZoomSet(recipeGraphZoom-.1)"><span class="codicon codicon-zoom-out"></span></button><span id="recipe-graph-zoom-label">${Math.round(recipeGraphZoom * 100)}%</span><button class="recipe-icon-button" title="Zoom in" aria-label="Zoom in" onclick="recipeGraphZoomSet(recipeGraphZoom+.1)"><span class="codicon codicon-zoom-in"></span></button><button class="recipe-icon-button" title="Reset zoom" aria-label="Reset zoom" onclick="recipeGraphZoomSet(1)"><span class="codicon codicon-screen-normal"></span></button><button class="tbtn" onclick="recipeGraphAddStep()"><span class="codicon codicon-add"></span> Add Module</button><button class="tbtn primary" data-recipe-save onclick="recipeSave(this)" ${recipeDraftChanged() ? '' : 'disabled'}><span class="codicon codicon-save"></span> Save</button></div></div><div class="recipe-graph-viewport"><div class="recipe-graph-canvas" style="--recipe-graph-zoom:${recipeGraphZoom}"><svg class="recipe-graph-links" aria-hidden="true"></svg>${nodes.map((node, index) => recipeGraphNodeHtml(node, index, nodes, completion)).join('')}</div></div>`;
+  const graph = `<div class="recipe-graph-toolbar"><div><strong>Definition Graph</strong><span>Drag a Module output onto another Module input to create a Connection.</span></div><div class="recipe-graph-tools" role="toolbar" aria-label="Definition Graph actions"><button class="recipe-icon-button" title="Zoom out" aria-label="Zoom out" onclick="recipeGraphZoomSet(recipeGraphZoom-.1)"><span class="codicon codicon-zoom-out"></span></button><span id="recipe-graph-zoom-label">${Math.round(recipeGraphZoom * 100)}%</span><button class="recipe-icon-button" title="Zoom in" aria-label="Zoom in" onclick="recipeGraphZoomSet(recipeGraphZoom+.1)"><span class="codicon codicon-zoom-in"></span></button><button class="recipe-icon-button" title="Reset zoom" aria-label="Reset zoom" onclick="recipeGraphZoomSet(1)"><span class="codicon codicon-screen-normal"></span></button><button class="tbtn" onclick="recipeGraphAddStep()"><span class="codicon codicon-add"></span> Add Module</button></div></div><div class="recipe-graph-viewport"><div class="recipe-graph-canvas" style="--recipe-graph-zoom:${recipeGraphZoom}"><svg class="recipe-graph-links" aria-hidden="true"></svg>${nodes.map((node, index) => recipeGraphNodeHtml(node, index, nodes, completion)).join('')}</div></div><div class="recipe-graph-actions"><button class="tbtn" type="button" onclick="recipeCancel()" title="Discard every unsaved Recipe draft change">Cancel</button><button class="tbtn primary" type="button" data-recipe-save onclick="recipeSave(this)" ${recipeDraftChanged() ? '' : 'disabled'}><span class="codicon codicon-save"></span> Save</button></div>`;
   return `<div class="recipe-editor">
     <header class="recipe-editor-header"><div><span>Global Recipe</span><h3>${esc(recipe.name)}</h3><p>Revision ${recipe.revision} · <code title="Executable digest">${esc(recipe.executableDigest || '')}</code></p></div><div><button class="tbtn recipe-open-browser" data-pending-label="Opening…" onclick="ask('recipeOpenBrowser',{recipeId:selectedRecipeId},this)" title="Open the Recipe workbench in a browser"><span class="codicon codicon-globe"></span> Open in Browser</button></div></header>
     <div class="recipe-editor-form">
@@ -2141,6 +2135,15 @@ function agentSessionNodeHealth(node) {
   if (Number.isFinite(heartbeat) && Date.now() - heartbeat > staleMs) return 'possibly-stalled';
   if (Number.isFinite(lastProgress) && Date.now() - lastProgress > staleMs / 2) return 'slow-but-progressing';
   return 'healthy-running';
+}
+
+function agentSessionLivenessLabel(liveness) {
+  const stateName = String(liveness?.state || '');
+  if (stateName === 'suspected-stalled') return 'Suspected stalled';
+  if (stateName === 'suspected-interrupted') return 'Suspected interrupted';
+  if (stateName === 'waiting') return 'Waiting';
+  if (stateName === 'healthy') return 'Live';
+  return '';
 }
 
 function agentSessionProgressDetails(node) {
@@ -2532,7 +2535,7 @@ function agentSessionTree(sessions, archived = false) {
     session.agent?.name || 'Agent',
     session.hostSessionId ? `Copilot Session ${session.hostSessionId}` : 'Unlinked sessions'
   ], 'Unlinked sessions');
-  return `<div class="agent-session-tree">${renderCatTree(tree, [], 0, (session, depth) => `<div class="li cattree-item agent-session-row ${session.sessionId === selectedAgentSessionId ? 'active' : ''}" style="padding-left:${8 + depth * 12}px" role="button" tabindex="0" onclick="agentSessionSelect(decodeURIComponent('${encodeURIComponent(session.sessionId)}'))" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();agentSessionSelect(decodeURIComponent('${encodeURIComponent(session.sessionId)}'))}" oncontextmenu="agentSessionContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'),'${esc(session.status)}')"><span><i class="${session.status === 'running' ? '' : 'idle'}"></i><strong>${esc(session.task)}</strong></span><b>${esc(session.sessionId.replace(/^agent_session_/, '').slice(0,12))}</b><small>${esc(session.lastActivity?.tool || (session.checkpoint ? 'Checkpoint ready' : 'Registered'))}</small>${archived ? `<button class="agent-session-quick-trash" title="Move archived Agent Session to Trash" aria-label="Move ${esc(session.task)} to Trash" onclick="event.stopPropagation();ask('agentSessionTrash',{action:'move',sessionId:decodeURIComponent('${encodeURIComponent(session.sessionId)}')},this)"><span class="codicon codicon-trash"></span></button>` : ''}<button class="cattree-item-menu" title="Agent Session actions" aria-label="Actions for ${esc(session.task)}" onclick="event.stopPropagation();agentSessionContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'),'${esc(session.status)}')"><span class="codicon codicon-ellipsis"></span></button></div>`, '', (_child, _name, fullPath) => ` oncontextmenu="agentSessionFolderMenu(event,decodeURIComponent('${encodeURIComponent(fullPath.join('/'))}'))"`, null, {
+  return `<div class="agent-session-tree">${renderCatTree(tree, [], 0, (session, depth) => `<div class="li cattree-item agent-session-row ${session.sessionId === selectedAgentSessionId ? 'active' : ''}" style="padding-left:${8 + depth * 12}px" role="button" tabindex="0" onclick="agentSessionSelect(decodeURIComponent('${encodeURIComponent(session.sessionId)}'))" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();agentSessionSelect(decodeURIComponent('${encodeURIComponent(session.sessionId)}'))}" oncontextmenu="agentSessionContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'),'${esc(session.status)}')"><span><i class="${session.status === 'running' ? '' : 'idle'}"></i><strong>${esc(session.task)}</strong></span><b>${esc(session.sessionId.replace(/^agent_session_/, '').slice(0,12))}</b><small>${esc(session.lastActivity?.tool || (session.checkpoint ? 'Checkpoint ready' : 'Registered'))}${agentSessionLivenessLabel(session.liveness) ? ` · <em class="agent-session-liveness ${esc(session.liveness.state)}">${esc(agentSessionLivenessLabel(session.liveness))}</em>` : ''}</small>${archived ? `<button class="agent-session-quick-trash" title="Move archived Agent Session to Trash" aria-label="Move ${esc(session.task)} to Trash" onclick="event.stopPropagation();ask('agentSessionTrash',{action:'move',sessionId:decodeURIComponent('${encodeURIComponent(session.sessionId)}')},this)"><span class="codicon codicon-trash"></span></button>` : ''}<button class="cattree-item-menu" title="Agent Session actions" aria-label="Actions for ${esc(session.task)}" onclick="event.stopPropagation();agentSessionContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'),'${esc(session.status)}')"><span class="codicon codicon-ellipsis"></span></button></div>`, '', (_child, _name, fullPath) => ` oncontextmenu="agentSessionFolderMenu(event,decodeURIComponent('${encodeURIComponent(fullPath.join('/'))}'))"`, null, {
     area:'agentSessions',
     defaultOpen:true,
     renderFolderLabel:(name, path) => path.length === 1
@@ -2576,7 +2579,7 @@ function renderAgentSessions() {
     const progressDone = sessionTodos.length ? todoTerminal : terminal;
     const progressTotal = sessionTodos.length || nodes.length;
     const percent = progressTotal ? Math.round(progressDone * 100 / progressTotal) : 0;
-    content = `<div class="agent-dashboard"><header class="agent-session-head"><div><span>PKM-managed Agent Session</span><h3>${esc(selected.task)}</h3><p>${esc(selected.sessionId)} · Updated ${esc(selected.updatedAt || 'unknown')}</p></div><div class="agent-session-head-actions"><button class="tbtn" title="Refresh without resetting graph focus" onclick="agentSessionRefresh()"><span class="codicon codicon-refresh"></span>Refresh</button><span class="agent-status ${selected.status === 'running' ? 'running' : ''}">${selected.status === 'running' ? '<i class="agent-live-dot"></i> ' : ''}${esc(selected.status)}</span></div></header><div class="agent-session-summary"><div><span>Agent</span><strong>${esc(selected.agent?.name || 'Agent')}</strong><small>${esc(selected.agent?.product || '')}</small></div><div><span>Current task</span><strong>${esc(runningTodo?.title || running?.nodeId || (selected.runs.length ? 'No running node' : 'Awaiting task plan'))}</strong><small>${esc(selected.lastActivity?.tool || 'Registered')}</small></div><div><span>${sessionTodos.length ? 'Session todos' : 'Task runs'}</span><strong>${sessionTodos.length || selected.runs.length}</strong><small>${sessionTodos.length ? `${sessionTodos.filter(todo => todo.status === 'pending').length} queued` : `${nodes.length} graph tasks`}</small></div><div><span>Progress</span><strong>${progressDone} / ${progressTotal}</strong><small>${percent}% complete</small><div class="agent-progress" aria-label="${progressDone} of ${progressTotal} tasks terminal"><i style="width:${percent}%"></i></div></div></div>${selected.checkpoint ? `<div class="agent-checkpoint-strip"><span class="codicon codicon-save"></span><div><strong>Checkpoint ${selected.checkpoint.sequence}</strong><small>${esc(selected.checkpoint.summary || selected.checkpoint.reason || 'Recovery state saved')} · ${selected.checkpoint.nextActionCount} next actions</small></div><code>${esc(selected.checkpoint.checkpointId)}</code></div>` : ''}${agentSessionTodoFlow(selected, sessionTodos, selected.runs)}</div>${agentSessionFullscreenGraph(selected)}`;
+    content = `<div class="agent-dashboard"><header class="agent-session-head"><div><span>PKM-managed Agent Session</span><h3>${esc(selected.task)}</h3><p>${esc(selected.sessionId)} · Updated ${esc(selected.updatedAt || 'unknown')}</p></div><div class="agent-session-head-actions"><button class="tbtn" title="Refresh without resetting graph focus" onclick="agentSessionRefresh()"><span class="codicon codicon-refresh"></span>Refresh</button><span class="agent-status ${selected.status === 'running' ? 'running' : ''}">${selected.status === 'running' ? '<i class="agent-live-dot"></i> ' : ''}${esc(selected.status)}</span>${agentSessionLivenessLabel(selected.liveness) ? `<span class="agent-session-liveness ${esc(selected.liveness.state)}" title="Heartbeat age: ${selected.liveness.heartbeatAgeSeconds === null ? 'unknown' : `${Math.round(selected.liveness.heartbeatAgeSeconds)}s`} · Lease: ${selected.liveness.leaseSeconds}s">${esc(agentSessionLivenessLabel(selected.liveness))}</span>` : ''}</div></header><div class="agent-session-summary"><div><span>Agent</span><strong>${esc(selected.agent?.name || 'Agent')}</strong><small>${esc(selected.agent?.product || '')}</small></div><div><span>Current task</span><strong>${esc(runningTodo?.title || running?.nodeId || (selected.runs.length ? 'No running node' : 'Awaiting task plan'))}</strong><small>${esc(selected.lastActivity?.tool || 'Registered')}</small></div><div><span>${sessionTodos.length ? 'Session todos' : 'Task runs'}</span><strong>${sessionTodos.length || selected.runs.length}</strong><small>${sessionTodos.length ? `${sessionTodos.filter(todo => todo.status === 'pending').length} queued` : `${nodes.length} graph tasks`}</small></div><div><span>Progress</span><strong>${progressDone} / ${progressTotal}</strong><small>${percent}% complete</small><div class="agent-progress" aria-label="${progressDone} of ${progressTotal} tasks terminal"><i style="width:${percent}%"></i></div></div></div>${selected.checkpoint ?  `<div class="agent-checkpoint-strip"><span class="codicon codicon-save"></span><div><strong>Checkpoint ${selected.checkpoint.sequence}</strong><small>${esc(selected.checkpoint.summary || selected.checkpoint.reason || 'Recovery state saved')} · ${selected.checkpoint.nextActionCount} next actions</small></div><code>${esc(selected.checkpoint.checkpointId)}</code></div>` : ''}${agentSessionTodoFlow(selected, sessionTodos, selected.runs)}</div>${agentSessionFullscreenGraph(selected)}`;
   }
   detail.innerHTML = `<div class="agent-sessions-workspace ${agentSessionTreeCollapsed ? 'cattree-collapsed' : ''}"><aside class="agent-session-list"><div class="agent-session-list-head"><strong>Agent Sessions</strong><span>${sessions.length} ${sessions.length === 1 ? 'session' : 'sessions'}</span></div><div class="agent-session-tree-scroll" oncontextmenu="if(event.target===this)agentSessionRootMenu(event)">${list}</div>${catTreeTrashDock('Trash', trash.length, trashList)}</aside>${workspaceCatTreeDivider('agentSessions',agentSessionTreeCollapsed)}<main class="agent-session-content">${content}</main></div>`;
   const nextTree = detail.querySelector?.('.agent-session-tree-scroll');

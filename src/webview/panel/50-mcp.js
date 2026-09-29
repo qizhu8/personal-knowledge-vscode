@@ -23,7 +23,14 @@ function showMcpTab() {
 function mcpOnStatus(data) {
   mcpStatusCache = data || {};
   mcpStatusUpdatedAt = Date.now();
+  loadProfilingEnabled = !!data?.loadProfiling?.enabled;
   updateGlobalMcpWarning(mcpStatusCache);
+  if (state.tab === 'mcp') renderMcpPane(mcpStatusCache);
+}
+
+function mcpOnUsage(data) {
+  if (!mcpStatusCache) return;
+  mcpStatusCache.usage = data || {};
   if (state.tab === 'mcp') renderMcpPane(mcpStatusCache);
 }
 
@@ -305,15 +312,31 @@ function renderMcpDashboard(data) {
       <div class="mcp-path-table-wrap"><table class="mcp-path-table"><colgroup><col class="mcp-path-type-col"><col><col class="mcp-path-size-col"><col class="mcp-path-source-col"></colgroup>
         <thead><tr><th>Path Type</th><th>Location</th><th>Disk Usage</th><th>Action</th></tr></thead>
         <tbody>
-          <tr><td>Knowledge root</td><td><code title="${esc(paths.store || '')}">${esc(paths.store || 'Not configured')}</code><div class="pkm-skill-detail">${esc(data?.store?.host ? `machine-local · ${data.store.host}` : 'machine-local')}</div></td><td data-mcp-path-size="store">Calculating…</td><td><button class="tbtn" onclick="ask('reconfigureKnowledgeRoot',{})" title="Choose a different machine-local Knowledge Root">${uiIcon('settings-gear', 'Reconfigure')}</button></td></tr>
-          <tr><td>Environments root</td><td><code title="${esc(paths.environments || '')}">${esc(paths.environments || 'Not configured')}</code><div class="pkm-skill-detail">Machine-local storage for migrated/created conda, venv, uv environments and the managed pkm-mcp runtime. This directory can grow very large.</div></td><td data-mcp-path-size="environments">Calculating…</td><td><button class="tbtn" onclick="ask('reconfigureEnvironmentsRoot',{})" title="Choose where managed environments are stored on this machine">${uiIcon('settings-gear', 'Reconfigure')}</button></td></tr>
-          <tr><td>Managed MCP runtime</td><td><code title="${esc(paths.runtime || '')}">${esc(paths.runtime || 'Not created')}</code><div class="pkm-skill-detail">Machine-local virtual environment; reconfiguration rebuilds it at the new path.</div></td><td data-mcp-path-size="runtime">Calculating…</td><td><button class="tbtn" onclick="ask('reconfigureMcpRuntimePath',{})">${uiIcon('settings-gear', 'Reconfigure & Rebuild')}</button></td></tr>
-          <tr><td>MCP Base Python</td><td><code title="${esc(paths.python || '')}">${esc(paths.python || 'Not configured')}</code><div class="pkm-skill-detail">Machine-local Python executable used to build the managed runtime.</div></td><td data-mcp-path-size="python">Calculating…</td><td><button class="tbtn" onclick="document.getElementById('mcp-python-path')?.scrollIntoView({behavior:'smooth'})">${uiIcon('settings-gear', 'Configure & Rebuild')}</button></td></tr>
-          <tr><td>MCP server directory</td><td><code title="${esc(paths.serverDirectory || '')}">${esc(paths.serverDirectory || 'Not generated')}</code><div class="pkm-skill-detail">Machine-local generated server code; reconfiguration regenerates all files.</div></td><td data-mcp-path-size="serverDirectory">Calculating…</td><td><button class="tbtn" onclick="ask('reconfigureMcpServerPath',{})">${uiIcon('settings-gear', 'Reconfigure & Regenerate')}</button></td></tr>
+          <tr><td>Knowledge root</td><td><code title="${esc(paths.store || '')}">${esc(paths.store || 'Not configured')}</code><div class="pkm-skill-detail">${esc(data?.store?.host ? `machine-local · ${data.store.host}` : 'machine-local')}</div>${data?.store?.cloudSynchronized ? `<div class="mcp-cloud-root-warning">${uiIcon('warning')} ${esc(data.store.cloudSynchronized.provider)} can cause file locks and permission races. GitHub Sync already provides cross-machine sync; move this root to a normal local folder.</div>` : ''}</td><td data-mcp-path-size="store">Not calculated</td><td><button class="tbtn" onclick="ask('reconfigureKnowledgeRoot',{})" title="Choose a different machine-local Knowledge Root">${uiIcon('settings-gear', 'Reconfigure')}</button></td></tr>
+          <tr><td>Environments root</td><td><code title="${esc(paths.environments || '')}">${esc(paths.environments || 'Not configured')}</code><div class="pkm-skill-detail">Machine-local storage for migrated/created conda, venv, uv environments and the managed pkm-mcp runtime. This directory can grow very large.</div></td><td data-mcp-path-size="environments">Not calculated</td><td><button class="tbtn" onclick="ask('reconfigureEnvironmentsRoot',{})" title="Choose where managed environments are stored on this machine">${uiIcon('settings-gear', 'Reconfigure')}</button></td></tr>
+          <tr><td>Managed MCP runtime</td><td><code title="${esc(paths.runtime || '')}">${esc(paths.runtime || 'Not created')}</code><div class="pkm-skill-detail">Machine-local virtual environment; reconfiguration rebuilds it at the new path.</div></td><td data-mcp-path-size="runtime">Not calculated</td><td><button class="tbtn" onclick="ask('reconfigureMcpRuntimePath',{})">${uiIcon('settings-gear', 'Reconfigure & Rebuild')}</button></td></tr>
+          <tr><td>MCP Base Python</td><td><code title="${esc(paths.python || '')}">${esc(paths.python || 'Not configured')}</code><div class="pkm-skill-detail">Machine-local Python executable used to build the managed runtime.</div></td><td data-mcp-path-size="python">Not calculated</td><td><button class="tbtn" onclick="document.getElementById('mcp-python-path')?.scrollIntoView({behavior:'smooth'})">${uiIcon('settings-gear', 'Configure & Rebuild')}</button></td></tr>
+          <tr><td>MCP server directory</td><td><code title="${esc(paths.serverDirectory || '')}">${esc(paths.serverDirectory || 'Not generated')}</code><div class="pkm-skill-detail">Machine-local generated server code; reconfiguration regenerates all files.</div></td><td data-mcp-path-size="serverDirectory">Not calculated</td><td><button class="tbtn" onclick="ask('reconfigureMcpServerPath',{})">${uiIcon('settings-gear', 'Reconfigure & Regenerate')}</button></td></tr>
         </tbody>
       </table></div>
     </div>
     <div class="mcp-setup-guide"><h3>Setup progress</h3><div class="mcp-setup-list">${setup.map((step, index) => `<div class="mcp-setup-step ${step[0] ? 'done' : 'needed'}"><span class="mcp-step-number">${step[0] ? '✓' : index + 1}</span><span><strong>${esc(step[1])}</strong><small ${step[4] ? mcpI18nAttrs(step[4], step[5] || {}) : ''}>${esc(step[2])}</small></span><span class="mcp-row-action">${step[3]}</span></div>`).join('')}</div></div>
+  </section>`;
+}
+
+function renderLoadProfiling(data) {
+  const loadProfiling = data?.loadProfiling || {};
+  return `<section class="mcp-paths mcp-load-profiling"><div class="mcp-paths-head"><h3>Load profiling</h3><div class="pkm-config-actions">
+    <button class="tbtn" onclick="ask('showLoadProfilingOutput',{})">${uiIcon('output', 'Show output')}</button>
+    <button class="tbtn" onclick="ask('openLoadProfilingLog',{})">${uiIcon('file-text', 'Open log')}</button>
+    <button class="tbtn" onclick="ask('clearLoadProfilingLog',{})">${uiIcon('clear-all', 'Clear')}</button>
+  </div></div>
+    <div class="mcp-setup-step ${loadProfiling.enabled ? 'done' : ''}">
+      <span class="mcp-step-number">${loadProfiling.enabled ? '●' : '○'}</span>
+      <span><strong>Profile first-open and view loading</strong><small>Records privacy-safe phase timings and counts only. Knowledge content, search text, file paths, and credentials are excluded. Disabled by default.</small></span>
+      <span class="mcp-row-action"><label class="pkm-inline-toggle"><input type="checkbox" ${loadProfiling.enabled ? 'checked' : ''} onchange="ask('setLoadProfiling',{enabled:this.checked})"> Debug profiling</label></span>
+    </div>
+    <div class="pkm-skill-detail"><code>${esc(loadProfiling.logFile || 'Profiling log is created after the extension initializes.')}</code></div>
   </section>`;
 }
 
@@ -424,7 +447,7 @@ function renderMcpPane(data) {
       <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:8px" data-i18n="config.agencyDescription">The extension cannot reliably inspect an external Agency registry. If pkm is not registered there, copy these current-machine instructions into Copilot or Agency. The resolved paths let the agent register the single pkm entry and verify its unified tool surface.</div>
       <pre style="background:var(--vscode-textCodeBlock-background);border-radius:6px;padding:12px;font-size:11px;overflow:auto;max-height:340px"><code id="agency-install-code">${esc(data?.agencyInstallInstruction || '')}</code></pre>
       <button class="tbtn" style="margin-top:8px;border-color:var(--accent)" onclick="copyAgencyInstall()" data-i18n="config.copyAgencyInstructions">Copy Agency installation instructions</button>
-    </div>${renderIntegrationGuide(data)}`;
+    </div>${renderIntegrationGuide(data)}${renderLoadProfiling(data)}`;
 
   requestAnimationFrame(() => {
     const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
@@ -446,8 +469,9 @@ function renderMcpFeatureDomains(data) {
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   };
+  const usageAction = `<button class="tbtn" onclick="ask('refreshMcpUsage',{})">${uiIcon('refresh', 'Load usage')}</button>`;
   const usage = session ? `<div class="mcp-usage-evidence">
-    <div class="mcp-usage-heading"><strong>Latest MCP process evidence</strong><small>${esc(data.usage.measurementNote || '')}</small></div>
+    <div class="mcp-usage-heading"><strong>Latest MCP process evidence</strong><span>${usageAction}</span><small>${esc(data.usage.measurementNote || '')}</small></div>
     <div class="mcp-usage-summary">
       <span><strong>${session.calls}</strong> calls</span>
       <span><strong>${session.successes}/${session.calls}</strong> successful</span>
@@ -457,7 +481,7 @@ function renderMcpFeatureDomains(data) {
       <span><strong>${session.reportedInputTokens + session.reportedOutputTokens || 'Not reported'}</strong> provider-reported tokens</span>
     </div>
     <div class="mcp-usage-domains">${Object.entries(session.domains || {}).map(([domain, value]) => `<span>${esc(featureDomains.domains.find(item => item.id === domain)?.name || domain)} · ${value.calls} calls · ${formatBytes(value.inputBytes + value.outputBytes)} · ${Math.round(value.durationMs)} ms</span>`).join('')}</div>
-  </div>` : `<div class="mcp-usage-evidence empty">No MCP tool calls have been observed yet. PKM does not claim access to Copilot's total conversation tokens.</div>`;
+  </div>` : `<div class="mcp-usage-evidence empty">${data?.usage?.deferred ? 'Usage evidence has not been loaded.' : "No MCP tool calls have been observed yet. PKM does not claim access to Copilot's total conversation tokens."} ${usageAction}</div>`;
   return `<section class="mcp-feature-domains">
     <div class="mcp-feature-domains-title"><span><strong>Agent feature access</strong><small>${esc(featureDomains.note || '')}</small></span><span class="mcp-feature-domain-scope">Global</span></div>
     <div class="mcp-feature-domain-grid">${featureDomains.domains.map(domain => `

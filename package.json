@@ -2,7 +2,7 @@
   "name": "personal-knowledge",
   "displayName": "Personal Knowledge Manager",
   "description": "%extension.description%",
-  "version": "3.2.0",
+  "version": "3.2.1",
   "publisher": "Uone",
   "author": {
     "name": "Yu Wang"
@@ -686,7 +686,7 @@
           "type": "string",
           "default": "",
           "scope": "machine",
-          "description": "Machine-local absolute path for the knowledge store directory. This pointer is excluded from VS Code Settings Sync; content synchronization is configured separately."
+          "description": "Machine-local absolute path for the knowledge store directory. Prefer a normal local folder rather than OneDrive, Dropbox, Google Drive, or iCloud Drive; cloud-drive clients can cause file locks and permission races. This pointer is excluded from VS Code Settings Sync; use GitHub Sync for cross-machine content synchronization and version history."
         },
         "personalKnowledge.environmentsPath": {
           "type": "string",
@@ -801,6 +801,12 @@
           ],
           "default": "info",
           "description": "Logging verbosity. Use 'debug' to record all activity (including page views and messages) to the Output panel and log file; 'info' logs user actions only."
+        },
+        "personalKnowledge.loadProfilingEnabled": {
+          "type": "boolean",
+          "default": false,
+          "scope": "machine",
+          "description": "Record privacy-safe first-open and view-loading timings to the PKM Load Profiling output and JSONL log. Disabled by default. Enable only while diagnosing slow Knowledge, Tools, or Settings loading."
         },
         "personalKnowledge.aiBackend": {
           "type": "string",

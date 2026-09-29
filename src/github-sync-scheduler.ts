@@ -1,4 +1,4 @@
-export type GitHubSyncReason = "startup" | "interval" | "change" | "configuration" | "manual";
+export type GitHubSyncReason = "startup" | "interval" | "change" | "configuration" | "manual" | "force-local-authority";
 export type GitHubSyncPhase = "scheduled" | "waiting-for-lock" | "authenticating" | "fetch" | "resolve-conflicts" | "commit" | "push" | "refresh-index";
 
 export interface AutomaticGitHubSyncTarget {
@@ -82,8 +82,8 @@ export class GitHubSyncScheduler {
 
   request(targetId: string, reason: GitHubSyncReason): boolean {
     const target = this.targets.get(targetId);
-    if (this.disposed || !target || (!target.enabled && reason !== "manual")) return false;
-    if (reason === "manual" && (this.activeTargets.has(targetId) || this.pending.get(targetId) === "manual")) return false;
+    if (this.disposed || !target || (!target.enabled && reason !== "manual" && reason !== "force-local-authority")) return false;
+    if ((reason === "manual" || reason === "force-local-authority") && (this.activeTargets.has(targetId) || ["manual", "force-local-authority"].includes(this.pending.get(targetId) || ""))) return false;
     this.enqueue(targetId, reason);
     return true;
   }
@@ -101,10 +101,10 @@ export class GitHubSyncScheduler {
 
   private enqueue(targetId: string, reason: GitHubSyncReason): void {
     const target = this.targets.get(targetId);
-    if (this.disposed || !target || (!target.enabled && reason !== "manual")) return;
+    if (this.disposed || !target || (!target.enabled && reason !== "manual" && reason !== "force-local-authority")) return;
     const current = this.pending.get(targetId);
     if (!current || this.reasonPriority(reason) > this.reasonPriority(current)) this.pending.set(targetId, reason);
-    if (reason === "configuration" || reason === "manual") {
+    if (reason === "configuration" || reason === "manual" || reason === "force-local-authority") {
       const timer = this.scheduledTimers.get(targetId);
       if (timer) this.clearTimer(timer);
       this.scheduledTimers.delete(targetId);
@@ -179,7 +179,7 @@ export class GitHubSyncScheduler {
         const [targetId, reason] = ready;
         this.pending.delete(targetId);
         const target = this.targets.get(targetId);
-        if (!target || (!target.enabled && reason !== "manual")) continue;
+        if (!target || (!target.enabled && reason !== "manual" && reason !== "force-local-authority")) continue;
         const attemptedAt = new Date(this.now()).toISOString();
         this.activeTargets.add(targetId);
         const currentState = this.states.get(targetId);
@@ -253,7 +253,7 @@ export class GitHubSyncScheduler {
   }
 
   private reasonPriority(reason: GitHubSyncReason): number {
-    return reason === "manual" ? 5 : reason === "configuration" ? 4 : reason === "change" ? 3 : reason === "interval" ? 2 : 1;
+    return reason === "force-local-authority" ? 6 : reason === "manual" ? 5 : reason === "configuration" ? 4 : reason === "change" ? 3 : reason === "interval" ? 2 : 1;
   }
 
   private now(): number {

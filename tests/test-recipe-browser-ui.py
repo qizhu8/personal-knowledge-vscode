@@ -329,7 +329,7 @@ with sync_playwright() as playwright:
         && nodeRect.bottom > viewportRect.top && nodeRect.top < viewportRect.bottom;
     }""")
     assert visibility, "New Module was created outside the visible Graph viewport"
-    page.locator('.recipe-graph-tools button[onclick="recipeSave(this)"]').click()
+    page.locator('.recipe-graph-actions button[onclick="recipeSave(this)"]').click()
     assert page.locator('#pk-modal .pk-modal-title').inner_text() == "Incomplete Recipe Graph"
     assert "browser-step" in page.locator('#pk-modal .pk-modal-msg').inner_text()
     assert page.evaluate("window.__recipeSave") is None
@@ -339,7 +339,38 @@ with sync_playwright() as playwright:
     ).terminals[0].nodeId""")
     page.evaluate("([sourceId,targetId]) => recipeGraphCommitDependency(sourceId,targetId,false)", [terminal_id, "browser-step"])
     assert "invalid" not in created.get_attribute("class")
+    page.evaluate("""() => {
+      const output = document.querySelector('[data-graph-boundary="sink"]');
+      output.style.left = '12px';
+      output.style.top = '12px';
+      recipeDraft.editorLayout.boundaryPositions = { output:{x:12,y:12} };
+    }""")
     page.get_by_role("button", name="Re-organize").click()
+    organized_geometry = page.evaluate("""() => {
+      const modules = [...document.querySelectorAll('.recipe-graph-node')];
+      const terminals = RecipeGraph.topology(recipeDraft.definition.spec.nodes, recipeGraphPendingNodeIds).terminals;
+      const terminalCards = terminals.map(node => modules.find(card => card.dataset.nodeId === node.nodeId));
+      const output = document.querySelector('[data-graph-boundary="sink"]');
+      const outputCenter = parseFloat(output.style.left) + output.offsetWidth / 2;
+      const terminalCenter = terminalCards.reduce(
+        (sum, card) => sum + parseFloat(card.style.left) + card.offsetWidth / 2, 0
+      ) / terminalCards.length;
+      return {
+        outputCenter,
+        terminalCenter,
+        outputTop:parseFloat(output.style.top),
+        moduleBottom:Math.max(...modules.map(card => parseFloat(card.style.top) + card.offsetHeight))
+      };
+    }""")
+    assert abs(organized_geometry["outputCenter"] - organized_geometry["terminalCenter"]) <= 2, organized_geometry
+    assert organized_geometry["outputTop"] > organized_geometry["moduleBottom"], organized_geometry
+    action_geometry = page.evaluate("""() => {
+      const viewport = document.querySelector('.recipe-graph-viewport').getBoundingClientRect();
+      const actions = document.querySelector('.recipe-graph-actions').getBoundingClientRect();
+      return { viewportRight:viewport.right, viewportBottom:viewport.bottom, actionsRight:actions.right, actionsTop:actions.top };
+    }""")
+    assert abs(action_geometry["actionsRight"] - action_geometry["viewportRight"]) <= 2, action_geometry
+    assert action_geometry["actionsTop"] >= action_geometry["viewportBottom"], action_geometry
 
     page.get_by_role("button", name="Zoom in").click()
     assert zoom.inner_text() == "110%"
@@ -381,7 +412,7 @@ with sync_playwright() as playwright:
     page.wait_for_function("window.__recipeOpen !== null")
     assert page.evaluate("window.__recipeOpen.recipeId") == "recipe_builtin_pkm_tutorial"
 
-    page.locator('.recipe-graph-tools button[onclick="recipeSave(this)"]').click()
+    page.locator('.recipe-graph-actions button[onclick="recipeSave(this)"]').click()
     page.wait_for_function("window.__recipeSave !== null")
     bindings = page.evaluate("window.__recipeSave.nodeBindings")
     assert bindings == [{

@@ -13,7 +13,7 @@ import { mcpStdioCommand } from "./mcp-stdio-command";
 import { hasNewerMcpRuntime } from "./mcp-version-policy";
 
 // ── MCP server scaffold ────────────────────────────────────────────────────
-export const UNIFIED_MCP_VERSION = "2.13.1";
+export const UNIFIED_MCP_VERSION = "2.13.2";
 const PROMPT_MANAGER_WHEEL = "uone_prompt_manager-0.1.0-py3-none-any.whl";
 const PROMPT_MANAGER_WHEEL_SHA256 = "eb9fd76058134f9ab9711d8e7604c75f761db5762d93e67f65740dc07fdc1518";
 const RETRIEVAL_ENGINE_WHEEL = "adaptive_skill_retrieval-0.3.0.dev2026091601-py3-none-any.whl";
@@ -21,7 +21,7 @@ const RETRIEVAL_ENGINE_WHEEL_SHA256 = "04560cf29966c8c267adf8ea8502819fd005222ca
 const KNOWLEDGE_MCP_VERSION = "1.5.0";
 const CHAT_MCP_VERSION = "2.3.5";
 const RECIPE_MCP_VERSION = "1.6.0";
-const AGENT_SESSION_MCP_VERSION = "1.5.0";
+const AGENT_SESSION_MCP_VERSION = "1.6.0";
 
 interface McpServerStatus {
   installed: boolean;

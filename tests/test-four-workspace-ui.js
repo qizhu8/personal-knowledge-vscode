@@ -173,7 +173,12 @@ assert.match(projectsSource, /recipeRestoreViewState\(recipeViewState\)/,
 assert.match(projectsSource, /nodes\.some\(node => !Number\.isFinite\(positions\[node\.nodeId\]\?\.x\)/,
   "Recipes with missing graph coordinates receive an organized default layout");
 assert.match(projectsSource, /class="recipe-graph-tools" role="toolbar" aria-label="Definition Graph actions"/, "all Definition Graph actions share one toolbar row");
-assert.match(projectsSource, /recipeGraphAddStep\(\)[\s\S]{0,300}recipeSave\(this\)/, "Save sits beside Add Step in the Definition Graph toolbar");
+assert.match(projectsSource, /recipeGraphMountBoundaries\(canvas\);[\s\S]{0,150}recipeGraphSizeCanvas\(canvas\);/,
+  "Re-organize realigns Input and Output after moving graph Modules");
+assert.match(projectsSource, /class="recipe-graph-actions"[\s\S]{0,400}recipeCancel\(\)[\s\S]{0,400}recipeSave\(this\)/,
+  "Cancel and Save share a dedicated action bar below the Definition Graph");
+assert.match(css, /\.recipe-graph-actions\{[^}]*justify-content:flex-end/,
+  "Definition Graph actions are aligned to the lower-right edge");
 assert.doesNotMatch(projectsSource, /recipe-editor-header[\s\S]{0,700}recipeSave\(this\)/, "Recipe Save is not placed in the top editor header");
 assert.match(projectsSource, /recipe-json-actions[\s\S]{0,500}recipeValidateJson\(this\)[\s\S]{0,500}recipeSave\(this\)/, "JSON mode keeps validation and Save together in the Definition section");
 assert.match(projectsSource, /function recipeGraphEdgeRoute\(startX, startY, endX, endY, outerX\)/, "Recipe and Agent graphs share edge routing");
@@ -640,6 +645,7 @@ context.projectOnState({ ...snapshot, recipes: [
   projectId: "project_pkm", agent: { name: "Copilot Agent", product: "GitHub Copilot" },
   createdAt: "2026-09-22T08:00:00Z", updatedAt: "2026-09-22T08:01:00Z",
   lastActivity: { tool: "recipe_run_report", ok: true, at: "2026-09-22T08:01:00Z" },
+  liveness: { state: "suspected-stalled", heartbeatAgeSeconds: 320, leaseSeconds: 300 },
   checkpoint: { checkpointId: "checkpoint_portable", sequence: 2, createdAt: "2026-09-22T08:00:30Z", reason: "handoff", summary: "Implementation is ready for validation.", nextActionCount: 1 },
   todos: [
     { todoId: "todo_review", title: "Review existing behavior", details: "Inspect the current flow.", status: "succeeded", summary: "Review complete." },
@@ -710,6 +716,7 @@ assert.match(detailHtml, /Parent Workflow/);
 assert.match(detailHtml, /understand/);
 assert.match(detailHtml, /implement/);
 assert.match(detailHtml, /running/);
+assert.match(detailHtml, /Suspected stalled/, "Session lease diagnostics appear in both navigation and detail status without replacing running");
 assert.match(detailHtml, /2\/3/);
 assert.match(detailHtml, /Nested Recipe/);
 assert.match(detailHtml, /Nested Validation/);

@@ -33,7 +33,15 @@ const common = {
   escape, unescape,
   ask: (command, payload) => { askCommands.add(command); calls.push({ command, payload }); },
   showPaperMenu: (_x, _y, items) => { captured = items; },
-  copyPathMenu: value => ({ label: "Copy Path", onClick: () => calls.push({ command: "copyText", payload: { text: value } }) }),
+  canonicalPkmPath: value => {
+    if (!value || value.startsWith("pkm://")) return value;
+    const folder = value.endsWith("/");
+    return `pkm://${value.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean).map(encodeURIComponent).join("/")}${folder ? "/" : ""}`;
+  },
+  copyPathMenu: value => ({ label: "Copy Path", onClick: () => {
+    const locator = common.canonicalPkmPath(value);
+    calls.push({ command: "copyText", payload: { text: locator } });
+  } }),
   appendPrivacyMenu: (items, type, value) => items.push({ label: "Set as Private", onClick: () => calls.push({ command: "contentSetPrivacy", payload: { type, value } }) }),
   appendKnowledgeGroupFolderMenu: (items, area, folder) => items.push({ label: "Move to Group", onClick: () => calls.push({ command: "knowledgeGroupAssign", payload: { area, folder } }) }),
   pkModal: options => { calls.push({ command: "modal", payload: { title: options.title } }); options.onOk?.("Target", "Body", true); },
@@ -72,7 +80,7 @@ const note = vm.createContext({
   ...common,
   state: { items: [{ slug: "Research/Test", category: "Research" }] },
   openItem: (...args) => calls.push({ command: "openItem", payload: args }),
-  copyContextPath: value => calls.push({ command: "copyText", payload: { text: value } }),
+  copyContextPath: value => calls.push({ command: "copyText", payload: { text: common.canonicalPkmPath(value) } }),
 });
 new vm.Script(`${slice("function noteContextMenuItems(", "// Right-click blank space")};this.menu=noteContextMenuItems;`).runInContext(note);
 assert.doesNotThrow(() => invoke(note.menu("Research/Test", false)), "Note actions must execute");
@@ -149,6 +157,8 @@ for (const required of ["copyText", "noteMove", "knowledgeTrashMove", "skillMove
   assert(calls.some(call => call.command === required), `executed menu suite must dispatch ${required}`);
 }
 assert(calls.filter(call => call.command === "copyText").length >= 15, "every folder/document menu must execute Copy Path");
+assert(calls.filter(call => call.command === "copyText").every(call => call.payload.text.startsWith("pkm://")),
+  "every folder/document Copy Path action must return a PKM URI");
 
 const nativeCommands = [...new Set(manifest.contributes.menus["view/item/context"].map(item => item.command))];
 for (const command of nativeCommands) {

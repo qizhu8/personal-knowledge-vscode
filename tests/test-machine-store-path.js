@@ -3,7 +3,7 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { isAbsoluteForPlatform, isForeignAbsolutePath, resolveMachineStorePath, extensionHostDescription } = require("../dist/store-path.js");
+const { cloudSynchronizedPath, isAbsoluteForPlatform, isForeignAbsolutePath, resolveMachineStorePath, extensionHostDescription } = require("../dist/store-path.js");
 
 const existing = new Set(["/linux/store", "/linux/previous", "C:\\Users\\me\\knowledge"]);
 const isDirectory = value => existing.has(value);
@@ -27,6 +27,12 @@ assert.deepStrictEqual(resolveMachineStorePath({ configuredPath: "/linux/store" 
 assert.strictEqual(resolveMachineStorePath({ configuredPath: "D:\\Missing" }, () => false, "linux"), undefined);
 assert.strictEqual(extensionHostDescription("win32", "DESKTOP-1"), "Local Windows machine DESKTOP-1");
 assert.strictEqual(extensionHostDescription("linux", "gpu-01", "ssh-remote"), "Remote extension host gpu-01 (Linux, ssh-remote)");
+assert.deepStrictEqual(cloudSynchronizedPath(String.raw`C:\Users\me\OneDrive\Knowledge`), { provider: "OneDrive" });
+assert.deepStrictEqual(cloudSynchronizedPath(String.raw`C:\Users\me\OneDrive - Contoso\Knowledge`), { provider: "OneDrive" });
+assert.deepStrictEqual(cloudSynchronizedPath("/Users/me/Dropbox/Knowledge"), { provider: "Dropbox" });
+assert.deepStrictEqual(cloudSynchronizedPath("/Users/me/Library/Mobile Documents/com~apple~CloudDocs/Knowledge"), { provider: "iCloud Drive" });
+assert.deepStrictEqual(cloudSynchronizedPath(String.raw`G:\My Drive\Google Drive\Knowledge`), { provider: "Google Drive" });
+assert.strictEqual(cloudSynchronizedPath(String.raw`C:\Users\me\uone-knowledge`), undefined);
 
 const root = path.join(__dirname, "..");
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
@@ -46,6 +52,11 @@ assert.match(extension, /MACHINE_STORE_PATH_KEY = "machineStorePath\.v1"/);
 assert.doesNotMatch(extension, /homedir\(\), "personal-knowledge"/);
 assert.match(extension, /placeHolder: path\.join\(os\.homedir\(\), "your-knowledge-root"\)/);
 assert.match(extension, /This path stays on this extension host and is not copied by VS Code Settings Sync/);
+assert.match(extension, /Cloud-drive clients can lock files, expose placeholders, and race PKM's atomic writes or renames/);
+assert.match(extension, /GitHub Sync already provides cross-machine synchronization and version history/);
+const mcpPanel = fs.readFileSync(path.join(root, "src", "webview", "panel", "50-mcp.js"), "utf8");
+assert.match(mcpPanel, /cloudSynchronized[\s\S]{0,300}file locks and permission races/);
+assert.match(mcpPanel, /GitHub Sync already provides cross-machine sync/);
 assert.doesNotMatch(extension, /Use default  \(~\/personal-knowledge\)/);
 assert.match(extension, /const activeStorePath = _storeReady \? getStorePath\(\) : ""/);
 assert.match(extension, /Download synchronized knowledge into this machine-local root/);

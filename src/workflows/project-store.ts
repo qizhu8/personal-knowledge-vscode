@@ -173,6 +173,9 @@ export class ProjectStore {
       if (action === "cutover") {
         if (status?.phase === "cutover" && status.sourceDigest === source.sourceDigest) {
           if (current.payload.state.recipes || current.payload.state.recipeFolders || current.payload.state.recipeTrash) {
+            if (!this.recipeFilesystem.legacySourceMatchesCutover(this.recipeMigrationSource(current))) {
+              fail("migration-legacy-writer-conflict", "An older PKM process wrote Recipe data after migration. No data was discarded; restart all PKM clients before recovery.");
+            }
             this.write(makeEnvelope(current.storeVersion, {
               state: stripLegacyRecipeState(current.payload.state),
               receipts: current.payload.receipts,
@@ -454,10 +457,19 @@ export class ProjectStore {
       : {};
     const containsLegacyRecipes = ["recipes", "recipeFolders", "recipeTrash"]
       .some(field => Object.prototype.hasOwnProperty.call(state, field));
-    const verified = verifyEnvelope(
-      value,
-      this.recipeFilesystem.hasCanonicalStore() && !(allowLegacyRecipes && containsLegacyRecipes),
-    );
+    const canonicalRecipes = this.recipeFilesystem.hasCanonicalStore();
+    const legacyVerified = canonicalRecipes && containsLegacyRecipes
+      ? verifyEnvelope(value)
+      : undefined;
+    if (legacyVerified && !this.recipeFilesystem.legacySourceMatchesCutover(this.recipeMigrationSource(legacyVerified))) {
+      fail("migration-legacy-writer-conflict", "An older PKM process wrote Recipe data after migration. No data was discarded; restart all PKM clients before recovery.");
+    }
+    const verified = legacyVerified && allowLegacyRecipes
+      ? legacyVerified
+      : verifyEnvelope(value, canonicalRecipes);
+    if (this.filesystem.hasCanonicalStore() && !this.filesystem.legacySourceMatchesCutover(verified.payload.state)) {
+      fail("migration-legacy-writer-conflict", "An older PKM process wrote Project data after migration. No data was discarded; restart all PKM clients before recovery.");
+    }
     if ((value as ProjectStoreEnvelope).digest !== verified.digest) this.write(verified);
     return verified;
   }
@@ -500,9 +512,27 @@ export class ProjectStore {
     if (this.filesystem.hasCanonicalStore() || this.options.autoMigrate === false) return;
     const source = this.migrationSource(envelope);
     const preview = this.filesystem.previewMigration(source);
+    this.ensureProjectMigrationBackup(source.sourceDigest);
     this.filesystem.stageMigration(source, preview.sourceDigest);
     this.filesystem.verifyMigration(source, preview.sourceDigest);
     this.filesystem.cutoverMigration(source, preview.sourceDigest);
+  }
+
+  private ensureProjectMigrationBackup(sourceDigest: string): void {
+    const directory = path.join(this.directory, "project-store-migration", "backups");
+    const backupPath = path.join(directory, `${sourceDigest}.projects.json`);
+    fs.mkdirSync(directory, { recursive: true });
+    if (fs.existsSync(backupPath)) return;
+    const content = fs.readFileSync(this.filePath);
+    const descriptor = fs.openSync(backupPath, "wx", 0o400);
+    try {
+      fs.writeFileSync(descriptor, content);
+      fs.fsyncSync(descriptor);
+    } finally {
+      fs.closeSync(descriptor);
+    }
+    fs.chmodSync(backupPath, 0o400);
+    fsyncDirectory(directory);
   }
 
   private upgradeManagedBuiltIns(): void {
@@ -590,7 +620,10 @@ function verifyEnvelope(value: unknown, omitRecipes = false): ProjectStoreEnvelo
   if (Object.prototype.hasOwnProperty.call(envelope.payload.state, "collaborationTasks")) {
     stateBeforeSafeMigrations.collaborationTasks = envelope.payload.state.collaborationTasks;
   }
-  if (canonicalJson(stateBeforeSafeMigrations) !== canonicalJson(envelope.payload.state)) fail("store-repair-required", "Project store system records require repair.");
+  const persistedState = omitRecipes
+    ? stripLegacyRecipeState(envelope.payload.state)
+    : envelope.payload.state;
+  if (canonicalJson(stateBeforeSafeMigrations) !== canonicalJson(persistedState)) fail("store-repair-required", "Project store system records require repair.");
   for (const receipt of envelope.payload.receipts) {
     if (!isRecord(receipt) || typeof receipt.commandId !== "string" || typeof receipt.fingerprint !== "string"
       || typeof receipt.operation !== "string" || !Number.isSafeInteger(receipt.storeVersion) || typeof receipt.entityId !== "string") {

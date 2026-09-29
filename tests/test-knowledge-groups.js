@@ -62,5 +62,46 @@ assert.strictEqual(filestore.paperGet("Published/Citing Paper").cites[0].paper, 
 migration = filestore.migrateLegacyMyIdeasFolder();
 assert.deepStrictEqual(migration, { moved: 0, updatedReferences: 0 }, "migration must be idempotent");
 
+filestore.paperUpsert({
+  slug: "Interrupted/Recovered Idea",
+  title: "Recovered Idea",
+  category: "Interrupted",
+  kind: "idea",
+  group: "MyIdeas",
+  cites: [],
+  content: "same user-authored body",
+});
+filestore.paperUpsert({
+  slug: "MyIdeas/Interrupted/Recovered Idea",
+  title: "Recovered Idea",
+  category: "MyIdeas/Interrupted",
+  kind: "idea",
+  content: "same user-authored body",
+});
+migration = filestore.migrateLegacyMyIdeasFolder();
+assert.deepStrictEqual(migration, { moved: 1, updatedReferences: 0 });
+assert.strictEqual(filestore.paperGet("Interrupted/Recovered Idea"), null,
+  "an interrupted migration must retire an equivalent legacy source");
+assert(filestore.paperGet("MyIdeas/Interrupted/Recovered Idea"),
+  "an interrupted migration must preserve the canonical destination");
+
+filestore.paperUpsert({
+  slug: "Interrupted/Diverged Idea",
+  title: "Diverged Idea",
+  category: "Interrupted",
+  kind: "idea",
+  group: "MyIdeas",
+  content: "source body",
+});
+filestore.paperUpsert({
+  slug: "MyIdeas/Interrupted/Diverged Idea",
+  title: "Diverged Idea",
+  category: "MyIdeas/Interrupted",
+  kind: "idea",
+  content: "different destination body",
+});
+assert.throws(() => filestore.migrateLegacyMyIdeasFolder(), /destination contains different content/,
+  "migration must never discard a divergent source");
+
 fs.rmSync(root, { recursive: true, force: true });
 console.log("knowledge groups test: visual grouping and idempotent MyIdeas migration OK");

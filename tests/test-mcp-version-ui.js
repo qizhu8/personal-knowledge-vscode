@@ -20,7 +20,7 @@ assert.match(sourceTs, /Refusing to downgrade the installed PKM MCP runtime/,
   "the generated server write boundary must reject downgrades");
 assert.match(sourceTs, /The newer runtime was preserved[\s\S]*Upgrade Personal Knowledge Manager/,
   "downgrade protection must preserve the newer runtime and recommend an extension upgrade");
-assert.match(sourceTs, /UNIFIED_MCP_VERSION = "2\.13\.1"/,
+assert.match(sourceTs, /UNIFIED_MCP_VERSION = "2\.13\.2"/,
   "generated MCP changes must carry a new unified runtime patch version");
 assert.doesNotMatch(panelJs, /PKM MCP server is outdated/,
   "equal unified versions must not be mislabeled as an outdated server");

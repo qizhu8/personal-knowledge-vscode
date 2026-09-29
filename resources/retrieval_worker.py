@@ -6,6 +6,7 @@ import signal
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -39,6 +40,20 @@ building_revision = ""
 ready_generation = 0
 building_generation = 0
 last_error = ""
+work_state = "starting"
+work_detail = "Starting retrieval worker"
+work_current = 0
+work_total = 0
+work_updated_at = datetime.now(timezone.utc).isoformat()
+
+
+def update_work(state, detail, current=0, total=0):
+    global work_state, work_detail, work_current, work_total, work_updated_at
+    work_state = str(state)
+    work_detail = str(detail)
+    work_current = int(current or 0)
+    work_total = int(total or 0)
+    work_updated_at = datetime.now(timezone.utc).isoformat()
 
 
 def process_alive(pid):
@@ -116,8 +131,15 @@ def build_snapshot_unlocked(snapshot):
     building_generation = generation
     try:
         source_values = list(snapshot.get("documents") or [])
-        documents = [make_document(value) for value in source_values]
+        total = len(source_values)
+        update_work("preparing", "Preparing retrieval documents", 0, total)
+        documents = []
+        for index, value in enumerate(source_values, 1):
+            documents.append(make_document(value))
+            if index == total or index % 25 == 0:
+                update_work("preparing", "Preparing retrieval documents", index, total)
         engine = RetrievalEngine([exact_match_route(), academic_bm25_benchmark_route()])
+        update_work("indexing", "Building Exact and BM25 indexes", total, total)
         engine.index(documents)
         by_version = {document.version: document for document in documents}
         values_by_version = {
@@ -132,7 +154,8 @@ def build_snapshot_unlocked(snapshot):
             uri_to_id[str(value.get("source_uri") or "")] = source_id
         forward = {}
         backlinks = {}
-        for value in source_values:
+        update_work("linking", "Building retrieval links", 0, total)
+        for index, value in enumerate(source_values, 1):
             source_id = str(value.get("source_id") or value.get("skill_id") or "")
             for link in value.get("links") or []:
                 target_uri = str(link.get("target") or "")
@@ -145,6 +168,9 @@ def build_snapshot_unlocked(snapshot):
                 }
                 forward.setdefault(source_id, []).append(edge)
                 backlinks.setdefault(target_id, []).append(edge)
+            if index == total or index % 25 == 0:
+                update_work("linking", "Building retrieval links", index, total)
+        update_work("persisting", "Persisting the retrieval snapshot", total, total)
         atomic_json(snapshot_path, snapshot)
         with engine_lock:
             ready_engine = engine
@@ -160,6 +186,7 @@ def build_snapshot_unlocked(snapshot):
     finally:
         building_revision = ""
         building_generation = 0
+        update_work("idle", "Retrieval worker ready" if ready_engine is not None else "Retrieval build failed")
 
 
 def build_snapshot(snapshot):
@@ -216,6 +243,11 @@ def status():
             "Cancellation is cooperative at request/deadline boundaries; an in-flight lexical call cannot be interrupted.",
         ],
         "error": last_error,
+        "work_state": work_state,
+        "work_detail": work_detail,
+        "work_current": work_current,
+        "work_total": work_total,
+        "work_updated_at": work_updated_at,
     }
 
 
@@ -460,10 +492,16 @@ server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
 server.daemon_threads = True
 atomic_json(endpoint_path, {"pid": os.getpid(), "port": server.server_port, "token": token, "engine_version": ENGINE_VERSION, "configuration_hash": CONFIGURATION_HASH})
 if snapshot_path.exists():
-    try:
-        build_snapshot(json.loads(snapshot_path.read_text(encoding="utf-8")))
-    except Exception as error:
-        last_error = str(error)
+    def restore_snapshot():
+        global last_error
+        try:
+            build_snapshot(json.loads(snapshot_path.read_text(encoding="utf-8")))
+        except Exception as error:
+            last_error = str(error)
+            update_work("idle", "Retrieval snapshot restore failed")
+    threading.Thread(target=restore_snapshot, daemon=True).start()
+else:
+    update_work("idle", "Retrieval worker ready")
 
 
 def cleanup(*_args):

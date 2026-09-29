@@ -17,8 +17,9 @@ from fastmcp import Context
 from fastmcp.server.middleware import Middleware
 
 
-AGENT_SESSION_SCHEMA_VERSION = "1.5.0"
+AGENT_SESSION_SCHEMA_VERSION = "1.6.0"
 SESSION_SCHEMA = "pkm.agent.session/v1"
+SESSION_LEASE_SECONDS = 300
 SNAPSHOT_SCHEMA = "pkm.agent.snapshot/v1"
 SNAPSHOT_PAYLOAD_ALGORITHM = "A256GCM-PKM-INTERNAL/v1"
 SNAPSHOT_PAYLOAD_KEY = hashlib.sha256(b"uone:agent-snapshot:payload:v1").digest()
@@ -31,6 +32,21 @@ def _json(value):
 
 def _now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _touch_liveness(session, transport_key, now=None):
+    heartbeat = now or datetime.datetime.now(datetime.timezone.utc)
+    previous = session.get("liveness") if isinstance(session.get("liveness"), dict) else {}
+    session["liveness"] = {
+        "owner": {
+            "transportId": transport_key,
+            "hostSessionId": str(session.get("hostSessionId") or ""),
+        },
+        "heartbeatAt": heartbeat.isoformat(),
+        "leaseSeconds": SESSION_LEASE_SECONDS,
+        "leaseExpiresAt": (heartbeat + datetime.timedelta(seconds=SESSION_LEASE_SECONDS)).isoformat(),
+        "heartbeatSequence": int(previous.get("heartbeatSequence") or 0) + 1,
+    }
 
 
 def _atomic_write(path, value):
@@ -192,6 +208,7 @@ def _snapshot_payload(store, session):
         runs.append(run)
     session_copy = json.loads(_json(session))
     session_copy.pop("todoCommandReceipts", None)
+    session_copy.pop("liveness", None)
     return {"session": session_copy, "recipeRuns": runs}
 
 
@@ -342,7 +359,7 @@ def _checkpoint_package_payload(store, session, checkpoint):
         "exportedAt": _now(),
         "source": {"sessionId": session["sessionId"], "checkpointId": checkpoint["checkpointId"]},
         "session": {key: value for key, value in session.items()
-                    if key not in {"sessionId", "recipeRunIds", "checkpoints", "lastActivity"}},
+                    if key not in {"sessionId", "recipeRunIds", "checkpoints", "lastActivity", "liveness"}},
         "checkpoint": checkpoint,
         "recipeRuns": runs,
         "recipes": recipes,
@@ -399,8 +416,13 @@ def _update_managed_session(store, transport_key, tool_name, result):
             "ok": response.get("ok") is not False,
             "at": _now(),
         }
+        _touch_liveness(session, transport_key)
         session["updatedAt"] = session["lastActivity"]["at"]
         _atomic_write(path, session)
+        _atomic_write(_active_path(store, transport_key), {
+            "sessionId": session_id,
+            "heartbeatAt": session["liveness"]["heartbeatAt"],
+        })
 
 
 class AgentSessionMiddleware(Middleware):
@@ -523,8 +545,12 @@ def register_agent_session_tools(mcp, store):
                     "createdAt": now,
                     "updatedAt": now,
                 }
-                _atomic_write(path, session)
-        _atomic_write(_active_path(store, transport_key), {"sessionId": session_id})
+            _touch_liveness(session, transport_key)
+            _atomic_write(path, session)
+        _atomic_write(_active_path(store, transport_key), {
+            "sessionId": session_id,
+            "heartbeatAt": session["liveness"]["heartbeatAt"],
+        })
         return {"ok": True, "schema": SESSION_SCHEMA, "session_id": session_id,
             "status": session["status"], "task": session["task"],
             "host_session_id": session.get("hostSessionId", ""),
@@ -628,9 +654,13 @@ def register_agent_session_tools(mcp, store):
             session.pop("stopReason", None)
             session["resumeCount"] = int(session.get("resumeCount") or 0) + 1
             session["resumedAt"] = _now()
+            _touch_liveness(session, _transport_key(ctx))
             session["updatedAt"] = session["resumedAt"]
             _atomic_write(path, session)
-        _atomic_write(_active_path(store, _transport_key(ctx)), {"sessionId": session_id})
+        _atomic_write(_active_path(store, _transport_key(ctx)), {
+            "sessionId": session_id,
+            "heartbeatAt": session["liveness"]["heartbeatAt"],
+        })
         checkpoints = session.get("checkpoints") or []
         return {"ok": True, "managed": True, "session_id": session_id,
                 "latest_checkpoint": checkpoints[-1] if checkpoints else None,
@@ -853,6 +883,7 @@ def register_agent_session_tools(mcp, store):
             "updatedAt": now,
             "recoveredAt": now,
         })
+        _touch_liveness(session, transport_key)
         for todo in session.get("todos") or []:
             if todo.get("recipeRunId"):
                 todo["recipeRunId"] = run_id_map.get(str(todo["recipeRunId"]), "")
@@ -878,7 +909,10 @@ def register_agent_session_tools(mcp, store):
                     created_paths.append(run_path)
                 _atomic_write(session_path, session)
                 created_paths.append(session_path)
-                _atomic_write(active_path, {"sessionId": session_id})
+                _atomic_write(active_path, {
+                    "sessionId": session_id,
+                    "heartbeatAt": session["liveness"]["heartbeatAt"],
+                })
         except Exception:
             try:
                 if active_path.exists():

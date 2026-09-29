@@ -41,6 +41,52 @@ export interface RecipeNodeObservability {
   staleAfterSeconds: number;
 }
 
+export interface AgentSessionLiveness {
+  state: "healthy" | "waiting" | "suspected-stalled" | "suspected-interrupted" | "inactive";
+  heartbeatAgeSeconds: number | null;
+  leaseSeconds: number;
+  ownerTransportId: string;
+  hostSessionId: string;
+}
+
+export function agentSessionLiveness(
+  record: SessionRecord,
+  waiting = false,
+  now = Date.now(),
+): AgentSessionLiveness {
+  const liveness = record.liveness && typeof record.liveness === "object"
+    ? record.liveness as Record<string, unknown>
+    : {};
+  const owner = liveness.owner && typeof liveness.owner === "object"
+    ? liveness.owner as Record<string, unknown>
+    : {};
+  const configuredLease = typeof liveness.leaseSeconds === "number" && Number.isFinite(liveness.leaseSeconds)
+    ? liveness.leaseSeconds
+    : 300;
+  const leaseSeconds = Math.max(30, configuredLease);
+  const heartbeat = Date.parse(String(liveness.heartbeatAt
+    || (record.lastActivity && typeof record.lastActivity === "object"
+      ? (record.lastActivity as Record<string, unknown>).at
+      : "")
+    || record.updatedAt
+    || ""));
+  const heartbeatAgeSeconds = Number.isFinite(heartbeat) ? Math.max(0, (now - heartbeat) / 1000) : null;
+  let state: AgentSessionLiveness["state"] = "inactive";
+  if (projectedAgentSessionStatus(record) === "running") {
+    if (waiting) state = "waiting";
+    else if (heartbeatAgeSeconds === null || heartbeatAgeSeconds >= leaseSeconds * 3) state = "suspected-interrupted";
+    else if (heartbeatAgeSeconds >= leaseSeconds) state = "suspected-stalled";
+    else state = "healthy";
+  }
+  return {
+    state,
+    heartbeatAgeSeconds,
+    leaseSeconds,
+    ownerTransportId: String(owner.transportId || ""),
+    hostSessionId: String(owner.hostSessionId || record.hostSessionId || ""),
+  };
+}
+
 export function recipeNodeObservability(
   record: { lastHeartbeatAt?: unknown; lastProgressAt?: unknown; progress?: unknown },
   now = Date.now(),

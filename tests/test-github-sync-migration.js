@@ -5,6 +5,7 @@ const os = require("os");
 const path = require("path");
 const {
   GitHubPublicationMigration,
+  githubSyncMigrationCanonicalFiles,
   normalizeGitHubSyncTarget,
 } = require("../dist/github-sync.js");
 
@@ -29,6 +30,46 @@ try {
     branch: "main",
     automation: { enabled: true, intervalMinutes: 5, syncOnChange: true, initialSyncCompleted: true },
   }, () => "target-1");
+  const selectedSkill = path.join(root, "Selected.md");
+  fs.writeFileSync(selectedSkill, "# Selected\n");
+  const selectionTarget = normalizeGitHubSyncTarget({
+    name: "Selection boundary",
+    repository: "https://github.com/example/knowledge.git",
+    branch: "main",
+    selection: {
+      public: {
+        skills: { items: ["selected-skill"], folders: [] },
+        packages: { items: [], folders: [] },
+      },
+      private: {},
+    },
+  }, () => "target-selection");
+  const canonicalCatalog = {
+    skills: [{ id: "selected-skill", label: "Selected", cat: "", isPrivate: false, source: selectedSkill, destination: "skills/Selected.md" }],
+    notes: [],
+    papers: [],
+    prompts: [],
+    scripts: [],
+    packages: [{
+      id: "unselected-package",
+      label: "Unselected package",
+      cat: "",
+      isPrivate: false,
+      source: path.join(root, "must-not-be-read"),
+      destination: "packages/unselected-package",
+    }],
+    servers: [],
+    recipes: [],
+    agentSnapshots: [],
+  };
+  assert.deepStrictEqual(githubSyncMigrationCanonicalFiles(canonicalCatalog, selectionTarget), [{
+    path: "skills/Selected.md",
+    type: "skills",
+    itemId: "selected-skill",
+    member: "",
+    category: "",
+    privacy: "public",
+  }], "migration identity inventory must never traverse catalog items outside the target selection");
   const migration = new GitHubPublicationMigration(stateRoot, target.id);
   const source = {
     target,
@@ -54,8 +95,14 @@ try {
     "preview is persisted and fenced against a changing source",
   );
 
+  const markerPath = path.join(stateRoot, "migrations", target.id, "migration.json");
+  const legacyPreviewMarker = JSON.parse(fs.readFileSync(markerPath, "utf8"));
+  legacyPreviewMarker.sourceDigest = "f".repeat(64);
+  fs.writeFileSync(markerPath, JSON.stringify(legacyPreviewMarker, null, 2));
   const staged = migration.stage(source);
   assert.strictEqual(staged.phase, "staged");
+  assert.notStrictEqual(staged.sourceDigest, legacyPreviewMarker.sourceDigest,
+    "staging refreshes an obsolete preview digest when the remote commit is unchanged");
   assert.strictEqual(target.automation.enabled, false, "staging disables Auto Sync before any authority change");
   assert.strictEqual(target.automation.initialSyncCompleted, false);
   assert.strictEqual(JSON.parse(fs.readFileSync(migration.stagedManifestPath(), "utf8")).schema, 3);
@@ -150,6 +197,43 @@ try {
   assert.strictEqual(migratedLegacyManifest.files[0].digest, "b".repeat(64));
   assert.strictEqual(migratedLegacyManifest.minimumExtensionVersion, require("../package.json").version);
   legacyMigration.verify(digestSource);
+
+  const basenameTarget = normalizeGitHubSyncTarget({
+    name: "Legacy duplicate basenames",
+    repository: "https://github.com/example/legacy-basenames.git",
+    branch: "main",
+  }, () => "target-legacy-basenames");
+  const basenameMigration = new GitHubPublicationMigration(stateRoot, basenameTarget.id);
+  const basenamePaths = [
+    "skills/User/A6000/machine-info.md",
+    "skills/User/A6000-CG/machine-info.md",
+    "skills/User/VSCode Marketplace/publish-vscode-extension.md",
+    "skills/Project/Release/publish-vscode-extension.md",
+  ];
+  const basenameSource = {
+    ...legacySource,
+    target: basenameTarget,
+    remoteCommit: "4".repeat(40),
+    manifest: JSON.stringify({ schema: 1, files: basenamePaths }),
+    repositoryFiles: basenamePaths,
+    repositoryDigests: Object.fromEntries(basenamePaths.map((file, index) => [file, String(index + 1).repeat(64)])),
+    activeCount: basenamePaths.length,
+    canonicalFiles: [
+      { path: basenamePaths[0], type: "skills", itemId: "a6000-machine-info", member: "", category: "User/A6000", privacy: "private" },
+      { path: basenamePaths[1], type: "skills", itemId: "a6000-cg-machine-info", member: "", category: "User/A6000-CG", privacy: "private" },
+      { path: basenamePaths[3], type: "skills", itemId: "publish-vscode-extension", member: "", category: "Project/Release", privacy: "public" },
+    ],
+  };
+  assert.deepStrictEqual(basenameMigration.preview(basenameSource).collisions, [],
+    "schema-1 basename collisions must converge to canonical catalog identities");
+  basenameMigration.stage(basenameSource);
+  const basenameManifest = JSON.parse(fs.readFileSync(basenameMigration.stagedManifestPath(), "utf8"));
+  assert.deepStrictEqual(basenameManifest.files.map(file => file.itemId), [
+    "publish-vscode-extension",
+    "a6000-cg-machine-info",
+    "a6000-machine-info",
+    "User/VSCode Marketplace/publish-vscode-extension",
+  ], "unselected legacy files must receive a unique path identity until normal sync retires them");
 
   console.log("github-sync migration tests passed");
 } finally {

@@ -10,6 +10,19 @@ export interface ResolvedStorePath {
   rejected: string[];
 }
 
+export interface CloudSynchronizedPath {
+  provider: "OneDrive" | "Dropbox" | "Google Drive" | "iCloud Drive";
+}
+
+export function cloudSynchronizedPath(value: string): CloudSynchronizedPath | undefined {
+  const segments = String(value || "").replace(/\\/g, "/").split("/").filter(Boolean).map(segment => segment.toLocaleLowerCase("en-US"));
+  if (segments.some(segment => segment === "onedrive" || segment.startsWith("onedrive - "))) return { provider: "OneDrive" };
+  if (segments.includes("dropbox")) return { provider: "Dropbox" };
+  if (segments.some(segment => segment === "google drive" || segment === "googledrive" || segment === "drivefs")) return { provider: "Google Drive" };
+  if (segments.some(segment => segment === "icloud drive" || segment === "iclouddrive" || segment === "mobile documents")) return { provider: "iCloud Drive" };
+  return undefined;
+}
+
 export function isAbsoluteForPlatform(value: string, platform: NodeJS.Platform = process.platform): boolean {
   const path = String(value || "").trim();
   return platform === "win32" ? /^[a-z]:[\\/]/i.test(path) || /^\\\\[^\\]+\\[^\\]+/.test(path) : path.startsWith("/");

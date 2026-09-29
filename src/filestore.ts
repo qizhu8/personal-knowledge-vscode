@@ -1108,6 +1108,32 @@ export function paperMoveAllToTrash(): { ok: boolean; moved: number; error?: str
   return { ok: true, moved: moved.length };
 }
 
+function migrationComparablePaper(file: string): { metadata: string; body: string } {
+  const { fm, body } = parseFrontmatter(readFileSync(file, "utf8"));
+  const metadata = { ...fm };
+  for (const key of ["group", "schema", "knowledgeId", "revision", "aliases", "links"]) delete metadata[key];
+  const normalize = (value: any): any => {
+    if (Array.isArray(value)) {
+      const normalized = value.map(normalize);
+      return normalized.length ? normalized : undefined;
+    }
+    if (value && typeof value === "object") {
+      const entries = Object.keys(value).sort()
+        .map(key => [key, normalize(value[key])] as const)
+        .filter(([, child]) => child !== undefined);
+      return entries.length ? Object.fromEntries(entries) : undefined;
+    }
+    return value;
+  };
+  return { metadata: JSON.stringify(normalize(metadata)), body: body.replace(/\r\n/g, "\n") };
+}
+
+function equivalentMyIdeasMigrationSource(source: string, destination: string): boolean {
+  const left = migrationComparablePaper(source);
+  const right = migrationComparablePaper(destination);
+  return left.metadata === right.metadata && left.body === right.body;
+}
+
 export function migrateLegacyMyIdeasFolder(): { moved: number; updatedReferences: number } {
   const files = allPaperFiles();
   const papers = files.map(paperFromFile);
@@ -1118,23 +1144,35 @@ export function migrateLegacyMyIdeasFolder(): { moved: number; updatedReferences
       newSlug: `MyIdeas/${paper.slug}`,
       source: join(papersRoot(), paper.slug + ".md"),
       destination: join(papersRoot(), "MyIdeas", paper.slug + ".md"),
+      duplicate: false,
+      sourceContent: Buffer.alloc(0),
     }));
   for (const move of moves) {
-    if (existsSync(move.destination)) throw new Error(`Cannot migrate MyIdeas because the destination already exists: ${move.newSlug}.md`);
+    if (!existsSync(move.destination)) continue;
+    if (!equivalentMyIdeasMigrationSource(move.source, move.destination)) {
+      throw new Error(`Cannot migrate MyIdeas because the destination contains different content: ${move.newSlug}.md`);
+    }
+    move.duplicate = true;
+    move.sourceContent = readFileSync(move.source);
   }
 
   const completed: typeof moves = [];
   try {
     for (const move of moves) {
-      mkdirSync(join(move.destination, ".."), { recursive: true });
-      renameSync(move.source, move.destination);
+      if (move.duplicate) {
+        rmSync(move.source);
+      } else {
+        mkdirSync(join(move.destination, ".."), { recursive: true });
+        renameSync(move.source, move.destination);
+      }
       completed.push(move);
     }
   } catch (error) {
     for (const move of completed.reverse()) {
       try {
         mkdirSync(join(move.source, ".."), { recursive: true });
-        renameSync(move.destination, move.source);
+        if (move.duplicate) writeFileSync(move.source, move.sourceContent);
+        else renameSync(move.destination, move.source);
       } catch { /* preserve the original migration error */ }
     }
     throw error;

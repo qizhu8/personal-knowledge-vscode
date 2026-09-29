@@ -195,7 +195,9 @@ export class ProjectFilesystemStore {
     if (marker && marker.sourceDigest !== source.sourceDigest) {
       fail("migration-source-changed", "Legacy Project source changed after migration staging began.");
     }
-    fs.rmSync(this.migrationRoot, { recursive: true, force: true });
+    fs.rmSync(path.join(this.migrationRoot, "stage"), { recursive: true, force: true });
+    fs.rmSync(path.join(this.migrationRoot, "backup"), { recursive: true, force: true });
+    fs.rmSync(this.markerPath, { force: true });
     fs.mkdirSync(this.migrationRoot, { recursive: true });
     writeProjectTree(this.stagingProjectRoot(), domain);
     this.writeMarker({ ...receipt, hadTarget: fs.existsSync(this.projectRoot) });
@@ -289,6 +291,12 @@ export class ProjectFilesystemStore {
     });
     this.writeMarker({ ...marker, phase: "rolled-back" });
     return receipt;
+  }
+
+  legacySourceMatchesCutover(state: ProjectModelState): boolean {
+    const migration = this.readControl(false)?.migration;
+    if (!migration || migration.phase !== "cutover") return true;
+    return domainDigest(projectDomain(state)) === migration.canonicalDigest;
   }
 
   private readControl(required = true): ProjectStoreControl | undefined {

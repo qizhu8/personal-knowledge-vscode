@@ -4,37 +4,43 @@ export interface NavigationPathItem {
   label?: unknown;
 }
 
+function contentPath(area: string, relativePath = "", folder = false): string {
+  const normalized = String(relativePath || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  const suffix = normalized ? `/${normalized.split("/").map(encodeURIComponent).join("/")}` : "";
+  return `pkm://${area}${suffix}${folder ? "/" : ""}`;
+}
+
 /** Return an Agent-readable PKM locator for every Navigation tree node. */
 export function navigationItemPath(item: NavigationPathItem): string {
   const data = item.nodeData || {};
   const folderPath = (area: string): string => {
     const rel = String(data.relPath || "");
-    return rel && rel !== "(uncategorized)" ? `${area}/${rel}/` : `${area}/`;
+    return contentPath(area, rel && rel !== "(uncategorized)" ? rel : "", true);
   };
   switch (item.nodeType) {
-    case "page-recipes": return "recipes/";
+    case "page-recipes": return contentPath("recipes", "", true);
     case "recipe-folder": return folderPath("recipes");
-    case "recipe": return `recipes/${data.relPath}`;
-    case "root-skills": return "skills/";
+    case "recipe": return contentPath("recipes", data.relPath);
+    case "root-skills": return contentPath("skills", "", true);
     case "skill-folder": return folderPath("skills");
-    case "skill": return `skills/${data.relPath}`;
-    case "root-notes": return "notes/";
+    case "skill": return contentPath("skills", data.relPath);
+    case "root-notes": return contentPath("notes", "", true);
     case "note-folder": return folderPath("notes");
-    case "note": return `notes/${data.relPath}`;
-    case "root-papers": return "papers/";
+    case "note": return contentPath("notes", data.relPath);
+    case "root-papers": return contentPath("papers", "", true);
     case "paper-folder": return folderPath("papers");
-    case "paper": return `papers/${data.relPath}`;
-    case "root-prompts": return "prompts/";
-    case "prompt-project": return `prompts/${data.project}/`;
-    case "prompt-task": return `prompts/${data.project}/${data.task}/`;
-    case "prompt-version": return `prompts/${data.project}/${data.task}/${data.version}/`;
-    case "prompt-file": return `prompts/${data.project}/${data.task}/${data.version}/${data.file}`;
-    case "root-packages": return "packages/";
-    case "package": return `packages/${data.key}/`;
-    case "root-scripts": return "scripts/";
+    case "paper": return contentPath("papers", data.relPath);
+    case "root-prompts": return contentPath("prompts", "", true);
+    case "prompt-project": return contentPath("prompts", data.project, true);
+    case "prompt-task": return contentPath("prompts", `${data.project}/${data.task}`, true);
+    case "prompt-version": return contentPath("prompts", `${data.project}/${data.task}/${data.version}`, true);
+    case "prompt-file": return contentPath("prompts", `${data.project}/${data.task}/${data.version}/${data.file}`);
+    case "root-packages": return contentPath("packages", "", true);
+    case "package": return contentPath("packages", data.key, true);
+    case "root-scripts": return contentPath("scripts", "", true);
     case "script-folder": return folderPath("scripts");
-    case "script-file": return `scripts/${data.key}`;
-    case "root-servers": return "servers/";
+    case "script-file": return contentPath("scripts", data.key);
+    case "root-servers": return "pkm://servers/";
     case "server-group": return `pkm://servers/subgroups/${encodeURIComponent((data.path || []).join("/"))}`;
     case "server-ungrouped-group": return "pkm://servers/subgroups/ungrouped";
     case "server-item": return `pkm://servers/${encodeURIComponent(data.slug || "")}`;

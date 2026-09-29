@@ -11,8 +11,11 @@ const {
   listGitHubSyncConflicts,
   readGitHubSyncConflict,
   readGitHubSyncConflictCandidate,
+  refreshGitHubSyncConflictLocalCandidate,
   selectAllGitHubSyncConflictCandidates,
+  selectAllGitHubSyncConflictDeletions,
   selectGitHubSyncConflictCandidate,
+  selectGitHubSyncConflictDeletion,
   storeGitHubSyncConflict,
   updateGitHubSyncAgentCandidate,
   validateGitHubSyncConflictLocalState,
@@ -56,6 +59,7 @@ try {
   }]);
   const stored = storeGitHubSyncConflict(root, "target-1", error);
   assert.strictEqual(stored.files.length, 1);
+  assert.strictEqual(stored.resolutionReport.rules["human-required"], 1);
   assert.strictEqual(stored.files[0].candidateSource, "unresolved", "every conflict requires an explicit resolution");
   assert.deepStrictEqual(listGitHubSyncConflicts(root).map(item => item.targetId), ["target-1"]);
   assert(readGitHubSyncConflictCandidate(root, "target-1", stored.files[0].path).equals(skill("local")));
@@ -71,10 +75,20 @@ try {
     /conflict markers/,
     "invalid Agent output must never become an approved candidate"
   );
-  updateGitHubSyncAgentCandidate(root, "target-1", stored.files[0].path, skill("merged meaning").toString("utf8"), "Preserved both valid requirements.");
+  updateGitHubSyncAgentCandidate(root, "target-1", stored.files[0].path, skill("merged meaning").toString("utf8"), "Preserved both valid requirements.", {
+    decisions: [{ subject: "requirements", choice: "combined", reason: "Both are compatible." }],
+    evidence: ["Base, local, and remote variants"],
+    unresolvedConflicts: [],
+    introducedContent: [],
+    confidence: 0.93,
+    accuracyRisk: false,
+    humanFinalReviewRequired: true,
+  });
   const updated = readGitHubSyncConflict(root, "target-1");
   assert.strictEqual(updated.files[0].candidateSource, "agent");
   assert.match(updated.files[0].rationale, /Preserved/);
+  assert.strictEqual(updated.files[0].agentReview.confidence, 0.93);
+  assert.strictEqual(updated.files[0].agentReview.humanFinalReviewRequired, true);
   assert(readGitHubSyncConflictCandidate(root, "target-1", stored.files[0].path).equals(skill("merged meaning")));
   validateGitHubSyncManualCandidate(root, "target-1", stored.files[0].path);
   assert.strictEqual(readGitHubSyncConflict(root, "target-1").files[0].candidateSource, "manual");
@@ -104,6 +118,47 @@ try {
   assert.strictEqual(readGitHubSyncConflict(root, "target-2").files[0].candidateSource, "unresolved");
   selectGitHubSyncConflictCandidate(root, "target-2", deletedOnBothSides.files[0].path, "base");
   assert.strictEqual(readGitHubSyncConflict(root, "target-2").files[0].candidateSource, "base");
+
+  const missingLocal = storeGitHubSyncConflict(root, "target-delete", new GitHubSyncConflictError("d".repeat(40), [{
+    path: "papers/Ideas/Delete.md",
+    type: "papers",
+    itemId: "Ideas/Delete",
+    category: "Ideas",
+    privacy: "public",
+    base: Buffer.from("# Previous\n"),
+    remote: Buffer.from("# Remote\n"),
+  }]));
+  selectGitHubSyncConflictDeletion(root, "target-delete", missingLocal.files[0].path);
+  assert.strictEqual(readGitHubSyncConflict(root, "target-delete").files[0].candidateSource, "delete");
+  assert.match(readGitHubSyncConflict(root, "target-delete").files[0].rationale, /remove this file from GitHub/);
+  const missingLocalBatch = storeGitHubSyncConflict(root, "target-delete-all", new GitHubSyncConflictError("e".repeat(40), [{
+    path: "papers/Ideas/Delete.md",
+    type: "papers",
+    itemId: "Ideas/Delete",
+    category: "Ideas",
+    privacy: "public",
+    base: Buffer.from("# Previous\n"),
+    remote: Buffer.from("# Remote\n"),
+  }]));
+  assert.deepStrictEqual(selectAllGitHubSyncConflictDeletions(root, "target-delete-all"), { selected: 1 });
+  assert.strictEqual(readGitHubSyncConflict(root, "target-delete-all").files[0].candidateSource, "delete");
+  assert.throws(
+    () => selectGitHubSyncConflictDeletion(root, "target-1", stored.files[0].path),
+    /available only when/,
+    "remote deletion cannot be selected when a machine-local candidate still exists"
+  );
+  refreshGitHubSyncConflictLocalCandidate(
+    root,
+    "target-delete",
+    missingLocal.files[0].path,
+    Buffer.from("# Newly restored locally\n"),
+  );
+  const refreshedLocal = readGitHubSyncConflict(root, "target-delete").files[0];
+  assert.strictEqual(refreshedLocal.hasLocal, true);
+  assert.strictEqual(refreshedLocal.candidateSource, "unresolved");
+  assert.match(refreshedLocal.rationale, /changed after this conflict was prepared/);
+  assert(readGitHubSyncConflictCandidate(root, "target-delete", missingLocal.files[0].path)
+    .equals(Buffer.from("# Newly restored locally\n")));
 
   const recipeConflict = storeGitHubSyncConflict(root, "target-recipes", new GitHubSyncConflictError("c".repeat(40), [{
     path: "recipes/Examples/Shared.recipe_shared.json",

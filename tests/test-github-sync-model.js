@@ -12,6 +12,7 @@ const {
   githubSyncAuthenticationFailureGuidance,
   githubSyncAuthenticationSessionOptions,
   githubSyncGitArguments,
+  githubSyncManagedContent,
   githubSyncRepositoryHttpsHost,
   githubSyncRepositorySshHost,
   githubSyncSafeRelativePath,
@@ -163,6 +164,27 @@ assert.strictEqual(fingerprint, fingerprintGitHubSyncEntries([
   { path: "skills/a.md", digest: entryDigest("a") },
   { path: "notes/b.md", digest: entryDigest("b") }
 ]));
+
+const recipeWithoutLayout = {
+  schema: 1,
+  recipeId: "recipe-layout-test",
+  name: "Layout test",
+  definition: { schema: "pkm.workflow.definition/v1", spec: { inputs: {}, nodes: [], outputs: {}, completion: { requiredNodes: [] } } }
+};
+const recipeWithLayout = {
+  ...recipeWithoutLayout,
+  editorLayout: { nodePositions: { work: { x: 123, y: 456 } } }
+};
+assert.deepStrictEqual(
+  githubSyncManagedContent("recipes", Buffer.from(JSON.stringify(recipeWithLayout))),
+  githubSyncManagedContent("recipes", Buffer.from(JSON.stringify(recipeWithoutLayout))),
+  "Recipe graph coordinates must not affect GitHub Sync content or fingerprints"
+);
+assert.deepStrictEqual(
+  githubSyncManagedContent("notes", Buffer.from("unchanged")),
+  Buffer.from("unchanged"),
+  "non-Recipe content must remain byte-preserving"
+);
 
 assert.strictEqual(githubSyncShield([], "skills", {}), "outline");
 assert.strictEqual(githubSyncShield([target], "skills", { "target-1": { skills: fingerprint } }), "yellow");

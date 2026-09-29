@@ -5,6 +5,7 @@ const path = require("path");
 const vm = require("vm");
 
 const source = fs.readFileSync(path.join(__dirname, "..", "src", "webview", "panel", "46-github-sync.js"), "utf8");
+const coreSource = fs.readFileSync(path.join(__dirname, "..", "src", "webview", "panel", "00-core.js"), "utf8");
 const extensionSource = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
 const requests = [];
 const context = vm.createContext({
@@ -44,8 +45,17 @@ assert.match(extensionSource, /manualVerificationCompleted[\s\S]*Fetch\/Pull, co
   "Auto Sync remains gated until the post-cutover manual publication cycle is verified");
 assert.match(extensionSource, /case "githubSyncMigration"[\s\S]*preview[\s\S]*stage[\s\S]*verify[\s\S]*cutover[\s\S]*rollback/,
   "the host exposes the complete persisted publication migration transaction");
-assert.match(source, /Preview migration[\s\S]*Stage migration[\s\S]*Verify staged data[\s\S]*Cut over[\s\S]*Rollback/,
+assert.match(source, /Start read-only check[\s\S]*Stage migration[\s\S]*Verify staged data[\s\S]*Cut over[\s\S]*Rollback/,
   "the target card exposes the ordered migration workflow and rollback");
+assert.match(coreSource, /githubSyncMigration:180000/,
+  "migration actions must stay visibly pending and surface backend errors instead of appearing inert");
+for (const label of ["Staging…", "Verifying…", "Cutting over…", "Rolling back…"]) {
+  assert(source.includes(`data-pending-label="${label}"`), `${label} must provide migration progress feedback`);
+}
+assert.match(source, /One-time GitHub publication upgrade[\s\S]*Required once for targets created before PKM 3\.2\.1[\s\S]*does not change local files or GitHub/,
+  "the target card explains the migration purpose, scope, and read-only preview");
+assert.match(source, /migrationCompleted \? ''/,
+  "the one-time migration panel disappears after a successful post-cutover sync");
 assert.match(source, /inventory\/retrieval refresh[\s\S]*Auto Sync remains off/,
   "the cutover UI explains the required manual verification and automation gate");
 const deleteHandler = extensionSource.match(/case "githubSyncDelete":[\s\S]*?case "githubSyncAutomationToggle":/)?.[0] || "";
@@ -61,8 +71,10 @@ assert.match(source, /Agent-assisted Skill\/Recipe merge · review before push/,
   "Agent resolution clearly covers both Skills and Recipes without bypassing review");
 assert.match(source, /Use this machine[\s\S]*Use GitHub[\s\S]*Edit combined copy[\s\S]*Validate edited copy[\s\S]*Merge with Agent/,
   "each conflict exposes understandable local, remote, manual, and Agent resolution paths");
-assert.match(source, /Use GitHub for all[\s\S]*Use this machine for all[\s\S]*Ask Agent for/,
+assert.match(source, /All Use GitHub[\s\S]*All Use This Machine[\s\S]*Ask Agent for/,
   "large conflict sets expose host-backed bulk resolution actions");
+assert.match(source, /Delete GitHub[\s\S]*githubSyncConflictDeleteAll/,
+  "missing-local conflict sets expose an explicit destructive GitHub deletion choice");
 assert.match(source, /missing on this machine[\s\S]*missing on GitHub[\s\S]*deletion safeguard/,
   "conflict summaries distinguish missing-file safeguards from content merges");
 assert.match(extensionSource, /case "githubSyncConflictChooseAll"[\s\S]*selectAllGitHubSyncConflictCandidates/,
@@ -131,14 +143,46 @@ const conflictCard = vm.runInContext(`(() => {
 })()`, context);
 assert.match(conflictCard, /github-sync-status conflicts">Resolve conflicts</, "conflicts replace generic Syncing with a Git-native resolve state");
 assert.match(conflictCard, /Pull completed · resolve conflicts before commit and push/, "the target explains which Git phases are blocked");
+assert.match(source, /Resolution flow[\s\S]*Rules resolved[\s\S]*Agent prepared[\s\S]*Human Final Review/,
+  "complex reconciliation renders an algorithm-performance and review-flow diagram");
+assert.match(source, /authoritative-migration':'Migration authority'[\s\S]*deterministic-three-way':'Three-way merge'/,
+  "the resolution diagram names the deterministic rules that resolved files");
+assert.match(source, /Force Update GitHub from this machine\?[\s\S]*one more native confirmation/,
+  "Force Update is available only through a local danger button with a first explicit confirmation");
+assert.match(extensionSource, /showInputBox\(\{[\s\S]*Explain why this destructive local-authority update is required[\s\S]*A reason is required/,
+  "Force Update requires a non-empty user comment before the final native confirmation");
+assert.match(extensionSource, /Actor: \$\{actor\}[\s\S]*Reason: \$\{comment\.trim\(\)\}[\s\S]*Force Update GitHub/,
+  "the final native confirmation identifies the actor and audit comment");
 assert.match(conflictCard, /Resolve conflicts below/, "the disabled sync action directs the user to the required Git step");
 assert.match(conflictCard, /Choice required/, "unresolved files visibly require a decision");
 assert.match(conflictCard, /Agent merge/, "resolved files show which candidate will be applied");
 assert.match(conflictCard, /2 changed on both sides/, "the conflict workspace summarizes conflict shape");
-assert.match(conflictCard, /Use GitHub for all/, "the conflict workspace offers one-click GitHub staging");
+assert.match(conflictCard, /All Use GitHub/, "the conflict workspace offers one-click GitHub staging for unresolved files");
 assert.match(conflictCard, /Ask Agent for 2 supported/, "the conflict workspace counts Agent-compatible conflicts");
 assert.match(conflictCard, /Apply resolutions &amp; Sync<\/button>/);
 assert.match(conflictCard, /onclick="githubSyncConflictAccept\('shared',this\)" disabled/,
   "Apply remains disabled until every file has an explicit resolution");
+
+const missingLocalCard = vm.runInContext(`(() => {
+  githubSyncData.conflicts.shared = {files:[
+    {path:'papers/Idea.md',type:'papers',hasBase:true,hasLocal:false,hasRemote:true,candidateSource:'unresolved'}
+  ]};
+  return githubSyncCards();
+})()`, context);
+assert.match(missingLocalCard, /All Use GitHub/, "a missing-local conflict offers the available restore candidate");
+assert.doesNotMatch(missingLocalCard, /All Use This Machine/, "a missing-local conflict must not offer a no-op machine candidate");
+assert.match(missingLocalCard, /Delete GitHub/, "a missing-local conflict offers an explicit remote deletion choice");
+assert.match(missingLocalCard, /confirms the local deletion[\s\S]*Apply resolutions &amp; Sync/,
+  "deletion safeguards explain that remote deletion is staged before approval");
+assert.match(extensionSource, /candidateSource === "delete"[\s\S]*pendingDeletions/,
+  "accepted deletion candidates become explicit GitHub Sync tombstones");
+assert.match(extensionSource, /function refreshStaleGitHubSyncConflicts[\s\S]*refreshGitHubSyncConflictLocalCandidate/,
+  "opening GitHub Sync refreshes stale machine-local conflict candidates");
+assert.match(extensionSource, /async function githubSyncStateData[\s\S]*refreshStaleGitHubSyncConflicts\(context\)[\s\S]*listGitHubSyncConflicts/,
+  "stale conflict snapshots are refreshed before the resolution workspace is serialized");
+assert.match(extensionSource, /function clearEquivalentGitHubSyncConflict[\s\S]*current\.equals\(remote\)[\s\S]*clearGitHubSyncConflict/,
+  "identity-only conflicts are retired only when every machine-local file exactly matches its remote candidate");
+assert.match(extensionSource, /shouldExecute:[\s\S]*clearEquivalentGitHubSyncConflict\(context, targetId\)[\s\S]*conflict-awaiting-approval/,
+  "the scheduler clears proven identity-only conflicts before applying the ordinary conflict gate");
 
 console.log("github-sync UI tests passed");

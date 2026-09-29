@@ -9,7 +9,6 @@ const restoredTab = workspaceSurfaces[restoredWorkspace]?.includes(restoredUiSta
 const restoredButton = document.querySelector(`.tab[data-tab="${restoredTab}"]`);
 if (restoredButton) restoredButton.dispatchEvent(new MouseEvent('click'));
 else ask('list', { tab:'skills', filter:'all', q:'' });
-if (restoredTab !== 'githubSync') ask('githubSyncState', {}, null, true);
 
 function retryInitialViewRequest() {
   if (['agentSessions','agentSnapshots','projects','recipes'].includes(state.tab)) ask('projectState', {});

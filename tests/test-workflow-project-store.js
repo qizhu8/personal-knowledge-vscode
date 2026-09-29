@@ -46,6 +46,13 @@ try {
   assert(initial.recipes.every(recipe => recipe.scope === "global" && recipe.systemKind === "built-in"));
   assert.strictEqual(initial.recipes.find(recipe => recipe.name === "PKM Tutorial").category, "Examples/PKM");
   assert.strictEqual(fs.statSync(file(directory)).mode & 0o777, 0o600);
+  const migrationBackups = fs.readdirSync(path.join(directory, "project-store-migration", "backups"));
+  assert.strictEqual(migrationBackups.length, 1, "automatic Project cutover must create one immutable source backup");
+  assert.strictEqual(
+    fs.statSync(path.join(directory, "project-store-migration", "backups", migrationBackups[0])).mode & 0o777,
+    0o400,
+    "automatic Project migration backup must be read-only",
+  );
   initial.projects[0].name = "caller mutation";
   assert.strictEqual(store.list().projects[0].name, "Default Project");
 

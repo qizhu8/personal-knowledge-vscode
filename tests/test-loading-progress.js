@@ -12,6 +12,7 @@ const css = fs.readFileSync(path.join(root, 'src/webview/panel.css'), 'utf8');
 const projects = fs.readFileSync(path.join(root, 'src/webview/panel/15-projects.js'), 'utf8');
 const mcp = fs.readFileSync(path.join(root, 'src/webview/panel/50-mcp.js'), 'utf8');
 const init = fs.readFileSync(path.join(root, 'src/webview/panel/60-init.js'), 'utf8');
+const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 
 for (const id of ['loading-banner', 'view-loading-progress', 'view-loading-stage', 'view-loading-count', 'view-loading-bar']) assert(html.includes(`id="${id}"`), `${id} must exist`);
 assert.doesNotMatch(html, /<script src="%%(?:CYTOSCAPE|MERMAID|FORCEGRAPH3D)_SRC%%"><\/script>/, 'large graph libraries must not block initial panel rendering');
@@ -93,6 +94,59 @@ assert.match(core, /if \(isInitialViewResponse\(command, e\.data\)\) finishLoadi
 for (const command of ['subscriptionState', 'subscriptionError', 'subscriptionSecret', 'subscriptionCompleted']) {
   assert.match(core, new RegExp(`command === '${command}'[\\s\\S]{0,1200}finishLoadingProgress\\(\\)`), `${command} must close loading progress`);
 }
+assert.match(core, /function showInitialViewError\(title, message, retryCommand\)/);
+assert.match(core, /GitHub Sync could not load[\s\S]{0,180}'githubSyncState'/,
+  'GitHub Sync state failures must replace the indefinite loading view with a retryable error');
+assert.match(core, /Network & Sharing could not load[\s\S]{0,180}'subscriptionState'/,
+  'Network & Sharing state failures must replace the indefinite loading view with a retryable error');
+const profilingSetting = manifest.contributes.configuration.properties['personalKnowledge.loadProfilingEnabled'];
+assert.deepStrictEqual(profilingSetting && { type:profilingSetting.type, default:profilingSetting.default, scope:profilingSetting.scope },
+  { type:'boolean', default:false, scope:'machine' },
+  'load profiling must be an explicit machine-local opt-in');
+for (const event of [
+  'host.request.received', 'host.request.completed', 'host.list.source', 'host.list.sharing',
+  'host.list.folders', 'host.list.groups', 'host.list.trash', 'host.list.privacy', 'host.list.respond',
+  'host.mcp.status', 'host.mcp.python', 'host.mcp.runtime', 'host.mcp.skill_proposals',
+  'host.mcp.skill_projection', 'host.mcp.usage'
+]) assert(extension.includes(`"${event}"`), `load profiling must record ${event}`);
+const knowledgePanel = fs.readFileSync(path.join(root, 'src/webview/panel/20-knowledge.js'), 'utf8');
+for (const event of ['webview.workspace.clicked', 'webview.tab.clicked', 'webview.response.received', 'webview.response.rendered']) {
+  assert(core.includes(`'${event}'`) || knowledgePanel.includes(`'${event}'`),
+    `webview load profiling must record ${event}`);
+}
+assert.match(mcp, /Profile first-open and view loading/);
+assert.match(mcp, /showLoadProfilingOutput/);
+assert.match(mcp, /openLoadProfilingLog/);
+assert.match(mcp, /clearLoadProfilingLog/);
+assert(mcp.indexOf('${renderIntegrationGuide(data)}${renderLoadProfiling(data)}') > mcp.indexOf('function renderMcpPane'),
+  'low-frequency Load profiling controls must render after the General & MCP integration guide at the bottom');
+assert.match(extension, /type LoadProfileFields = Record<string, string \| number \| boolean \| undefined>/,
+  'profiling fields must remain constrained to privacy-safe scalar metadata');
+assert.strictEqual((init.match(/ask\('githubSyncState'/g) || []).length, 1,
+  'GitHub Sync state must load only when its tab is restored, not as an unconditional startup prefetch');
+const readyHandler = extension.slice(extension.indexOf('case "ready":'), extension.indexOf('case "projectState":'));
+assert.match(readyHandler, /command: "mcpSummary"/,
+  'ready must send only the lightweight MCP warning summary');
+assert.doesNotMatch(readyHandler, /mcpPanelStatusData|sendMcpPathSizes/,
+  'ready must not probe the MCP runtime, scan usage, or calculate path sizes');
+const githubState = extension.slice(extension.indexOf('async function githubSyncStateData'), extension.indexOf('\nasync function gitHubSyncConflictData'));
+assert.doesNotMatch(githubState, /githubSyncTargetFingerprints/,
+  'opening GitHub Sync must not synchronously read and hash all selected content');
+assert.match(githubState, /fingerprintsDeferred: true/,
+  'deferred GitHub fingerprints must be explicit to the client');
+const subscriptionState = extension.slice(extension.indexOf('async function subscriptionStateData'), extension.indexOf('\ninterface GitHubSubscriptionRequest'));
+assert.doesNotMatch(subscriptionState, /refreshGatewayStatus/,
+  'the first Network & Sharing response must use cached gateway state');
+assert.match(extension, /case "subscriptionState":[\s\S]{0,260}respond\(\{ command: "subscriptionState"[\s\S]{0,260}refreshGatewayStatus/,
+  'Network & Sharing must respond before refreshing gateway status in the background');
+assert.match(extension, /Promise\.race\(\[[\s\S]{0,220}setTimeout\(\(\) => resolve\(undefined\), 1_000\)/,
+  'Skill Router status must bound the foreground worker wait');
+assert.match(extension, /case "checkMcp":[\s\S]{0,180}mcpPanelStatusData\(String\(msg\.profileRequestId \|\| ""\), false\)/,
+  'opening General & MCP must defer usage scanning');
+assert.doesNotMatch(extension.slice(extension.indexOf('case "checkMcp":'), extension.indexOf('case "mcpSetFeatureDomain":')), /sendMcpPathSizes/,
+  'opening General & MCP must defer disk-size traversal until explicitly requested');
+assert.match(mcp, /ask\('refreshMcpUsage'/);
+assert.match(mcp, /Not calculated/);
 
 const responseStart = core.indexOf('function isInitialViewResponse');
 const responseEnd = core.indexOf('\nfunction finishLoadingProgress', responseStart);

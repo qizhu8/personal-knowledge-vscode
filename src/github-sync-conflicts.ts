@@ -6,6 +6,7 @@ import {
   GitHubSyncConflictError,
   GitHubSyncContentType,
   GitHubSyncPrivacy,
+  GitHubSyncResolutionReport,
   githubSyncSafeRelativePath,
   validateGitHubSyncCandidate,
 } from "./github-sync";
@@ -19,8 +20,23 @@ export interface GitHubSyncStoredConflictFile {
   hasBase: boolean;
   hasLocal: boolean;
   hasRemote: boolean;
-  candidateSource: "unresolved" | "base" | "local" | "remote" | "manual" | "agent";
+  candidateSource: "unresolved" | "base" | "local" | "remote" | "delete" | "manual" | "agent";
   rationale?: string;
+  agentReview?: GitHubSyncAgentReview;
+}
+
+export interface GitHubSyncAgentReview {
+  decisions: Array<{
+    subject: string;
+    choice: "base" | "local" | "remote" | "combined" | "removed";
+    reason: string;
+  }>;
+  evidence: string[];
+  unresolvedConflicts: string[];
+  introducedContent: string[];
+  confidence: number;
+  accuracyRisk: boolean;
+  humanFinalReviewRequired: true;
 }
 
 export interface GitHubSyncStoredConflict {
@@ -30,6 +46,7 @@ export interface GitHubSyncStoredConflict {
   remoteCommit: string;
   createdAt: string;
   explicitResolution: boolean;
+  resolutionReport?: GitHubSyncResolutionReport;
   files: GitHubSyncStoredConflictFile[];
 }
 
@@ -96,6 +113,7 @@ export function storeGitHubSyncConflict(
     remoteCommit: error.remoteCommit,
     createdAt: new Date().toISOString(),
     explicitResolution: true,
+    resolutionReport: error.resolutionReport,
     files,
   };
   writeMetadata(stateDirectory, record);
@@ -149,7 +167,8 @@ export function updateGitHubSyncAgentCandidate(
   targetId: string,
   relative: string,
   content: string,
-  rationale: string
+  rationale: string,
+  agentReview?: GitHubSyncAgentReview,
 ): void {
   const record = readGitHubSyncConflict(stateDirectory, targetId);
   const file = record?.files.find(candidate => candidate.path === relative);
@@ -159,6 +178,7 @@ export function updateGitHubSyncAgentCandidate(
   writeVariant(stateDirectory, targetId, "merged", relative, candidate);
   file.candidateSource = "agent";
   file.rationale = rationale.trim();
+  file.agentReview = agentReview;
   writeMetadata(stateDirectory, record);
 }
 
@@ -175,6 +195,7 @@ export function selectGitHubSyncConflictCandidate(
   validateGitHubSyncCandidate(relative, candidate);
   writeVariant(stateDirectory, targetId, "merged", relative, candidate);
   file.candidateSource = source;
+  delete file.agentReview;
   file.rationale = source === "local"
     ? "Keep the version currently stored on this machine."
     : source === "remote"
@@ -204,12 +225,49 @@ export function selectAllGitHubSyncConflictCandidates(
   for (const { file, content } of candidates) {
     writeVariant(stateDirectory, targetId, "merged", file.path, content);
     file.candidateSource = source;
+    delete file.agentReview;
     file.rationale = source === "local"
       ? "Keep the version currently stored on this machine."
       : "Use the version currently stored on GitHub.";
   }
   writeMetadata(stateDirectory, record);
   return { selected: candidates.length, unavailable };
+}
+
+export function selectGitHubSyncConflictDeletion(
+  stateDirectory: string,
+  targetId: string,
+  relative: string,
+): void {
+  const record = readGitHubSyncConflict(stateDirectory, targetId);
+  const file = record?.files.find(candidate => candidate.path === relative);
+  if (!record || !file) throw new Error("GitHub Sync conflict file was not found.");
+  if (!file.hasBase || file.hasLocal || !file.hasRemote) {
+    throw new Error("Delete GitHub is available only when a previously synchronized file is missing on this machine but still exists on GitHub.");
+  }
+  file.candidateSource = "delete";
+  delete file.agentReview;
+  file.rationale = "Confirm the machine-local deletion and remove this file from GitHub.";
+  writeMetadata(stateDirectory, record);
+}
+
+export function selectAllGitHubSyncConflictDeletions(
+  stateDirectory: string,
+  targetId: string,
+): { selected: number } {
+  const record = readGitHubSyncConflict(stateDirectory, targetId);
+  if (!record) throw new Error("GitHub Sync conflict was not found.");
+  let selected = 0;
+  for (const file of record.files) {
+    if (file.candidateSource !== "unresolved" || !file.hasBase || file.hasLocal || !file.hasRemote) continue;
+    file.candidateSource = "delete";
+    delete file.agentReview;
+    file.rationale = "Confirm the machine-local deletion and remove this file from GitHub.";
+    selected++;
+  }
+  if (!selected) throw new Error("No missing-local conflicts are available to delete from GitHub.");
+  writeMetadata(stateDirectory, record);
+  return { selected };
 }
 
 export function validateGitHubSyncManualCandidate(
@@ -223,6 +281,7 @@ export function validateGitHubSyncManualCandidate(
   const candidate = fs.readFileSync(gitHubSyncConflictVariantPath(stateDirectory, targetId, "merged", relative));
   validateGitHubSyncCandidate(relative, candidate);
   file.candidateSource = "manual";
+  delete file.agentReview;
   file.rationale = "Validated after manual editing.";
   writeMetadata(stateDirectory, record);
 }
@@ -231,6 +290,31 @@ export function readGitHubSyncConflictCandidate(stateDirectory: string, targetId
   const candidate = fs.readFileSync(gitHubSyncConflictVariantPath(stateDirectory, targetId, "merged", relative));
   validateGitHubSyncCandidate(relative, candidate);
   return candidate;
+}
+
+export function refreshGitHubSyncConflictLocalCandidate(
+  stateDirectory: string,
+  targetId: string,
+  relative: string,
+  currentLocal: Buffer | undefined,
+): void {
+  const record = readGitHubSyncConflict(stateDirectory, targetId);
+  const file = record?.files.find(candidate => candidate.path === relative);
+  if (!record || !file) throw new Error("GitHub Sync conflict file was not found.");
+  const localPath = variantPath(stateDirectory, targetId, "local", relative);
+  if (currentLocal) {
+    validateGitHubSyncCandidate(relative, currentLocal);
+    writeVariant(stateDirectory, targetId, "local", relative, currentLocal);
+    writeVariant(stateDirectory, targetId, "merged", relative, currentLocal);
+    file.hasLocal = true;
+  } else {
+    fs.rmSync(localPath, { force: true });
+    file.hasLocal = false;
+  }
+  file.candidateSource = "unresolved";
+  delete file.agentReview;
+  file.rationale = "The machine-local file changed after this conflict was prepared. Review the refreshed candidates.";
+  writeMetadata(stateDirectory, record);
 }
 
 export function validateGitHubSyncConflictLocalState(

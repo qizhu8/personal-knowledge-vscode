@@ -77,12 +77,14 @@ function paintWorkspaceNavigation() {
 }
 document.querySelectorAll('.workspace-button').forEach(button => button.addEventListener('click', () => {
   const workspace = button.dataset.workspace;
+  loadProfileEvent('webview.workspace.clicked', { workspace, surface:state.tab });
   const persisted = vscode.getState()?.workspaceRoutes?.[workspace];
   const tab = workspaceSurfaces[workspace]?.includes(persisted) ? persisted : workspaceDefaultSurface[workspace];
   document.querySelector(`.tab[data-tab="${tab}"]`)?.click();
 }));
 document.querySelectorAll('.tab').forEach(t =>
   t.addEventListener('click', () => {
+    loadProfileEvent('webview.tab.clicked', { workspace:workspaceForTab(t.dataset.tab), surface:t.dataset.tab });
     stashKnowledgeTabView(state.tab);
     if (state.tab === 'chatroom' && t.dataset.tab !== 'chatroom') chatCaptureDraft();
     if (state.tab === 'servers' && t.dataset.tab !== 'servers') stopSubscribedServerMonitoring();
@@ -271,8 +273,18 @@ function appendPrivacyMenu(items, type, path) {
   items.push({ label: isPrivate ? 'Set as Public' : 'Set as Private', onClick: () => ask('contentSetPrivacy', { type, topLevel: parts[0], isPrivate: !isPrivate }) });
 }
 
+function canonicalPkmPath(path) {
+  const value = String(path || '').trim();
+  if (!value || value.startsWith('pkm://')) return value;
+  const normalized = value.replace(/\\/g, '/').replace(/^\/+/, '');
+  const folder = normalized.endsWith('/');
+  const segments = normalized.replace(/\/+$/, '').split('/').filter(Boolean);
+  return segments.length ? `pkm://${segments.map(encodeURIComponent).join('/')}${folder ? '/' : ''}` : '';
+}
+
 function copyContextPath(path) {
-  if (path) vscode.postMessage({ command: 'copyText', text: path });
+  const locator = canonicalPkmPath(path);
+  if (locator) vscode.postMessage({ command: 'copyText', text: locator });
 }
 
 function copyPathMenu(path) { return { label: 'Copy Path', onClick: () => copyContextPath(path) }; }
@@ -1433,16 +1445,16 @@ function markdownToolbar(data) {
 }
 
 function detailContentPath(data) {
-  if (data.type === 'skill') return `skills/${data._key || [data.category, data.name].filter(Boolean).join('/')}.md`;
-  if (data.type === 'note') return `notes/${data.slug}.md`;
-  if (data.type === 'paper') return `papers/${data.slug}.md`;
-  if (data.type === 'prompt') return `prompts/${data.project}/${data.task}/${data.version}/${data.file}`;
-  if (data.type === 'script') return data.pkmPath || `scripts/${data.path || data.file}`;
+  if (data.type === 'skill') return canonicalPkmPath(`skills/${data._key || [data.category, data.name].filter(Boolean).join('/')}.md`);
+  if (data.type === 'note') return canonicalPkmPath(`notes/${data.slug}.md`);
+  if (data.type === 'paper') return canonicalPkmPath(`papers/${data.slug}.md`);
+  if (data.type === 'prompt') return canonicalPkmPath(`prompts/${data.project}/${data.task}/${data.version}/${data.file}`);
+  if (data.type === 'script') return canonicalPkmPath(data.pkmPath || `scripts/${data.path || data.file}`);
   return '';
 }
 function detailPathHtml(data) {
   const value = detailContentPath(data);
-  return value ? `<div class="d-path" title="PKM relative path">${esc(value)}</div>` : '';
+  return value ? `<div class="d-path" title="PKM URI">${esc(value)}</div>` : '';
 }
 
 function renderDetail(data) {

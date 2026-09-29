@@ -62,6 +62,13 @@ async def main():
             }))
             assert started["host_session_id"] == "copilot-session-test"
             assert started["traversal_strategy"] == "depth-first"
+            live_status = response_json(await client.call_tool("agent_session_status", {}))
+            liveness = live_status["session"]["liveness"]
+            assert liveness["owner"]["hostSessionId"] == "copilot-session-test"
+            assert len(liveness["owner"]["transportId"]) == 64
+            assert liveness["leaseSeconds"] == 300
+            assert liveness["heartbeatSequence"] >= 1
+            assert liveness["leaseExpiresAt"] > liveness["heartbeatAt"]
             try:
                 await client.call_tool("agent_session_start", {
                     "task": "Unrelated child task",
@@ -217,6 +224,8 @@ async def main():
             assert package.is_dir()
             manifest = json.loads((package / "manifest.json").read_text(encoding="utf-8"))
             assert manifest["sha256"] == exported["sha256"]
+            checkpoint_payload = json.loads((package / "checkpoint.json").read_text(encoding="utf-8"))
+            assert "liveness" not in checkpoint_payload["session"]
 
             imported = response_json(await client.call_tool("agent_session_import_checkpoint", {
                 "package_name": exported["package_name"],

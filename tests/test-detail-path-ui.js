@@ -6,20 +6,22 @@ const vm = require("vm");
 
 const root = path.join(__dirname, "..");
 const panel = fs.readFileSync(path.join(root, "dist", "webview", "panel.js"), "utf8");
+const canonicalStart = panel.indexOf("function canonicalPkmPath(path)");
+const canonicalEnd = panel.indexOf("function copyContextPath(path)", canonicalStart);
 const start = panel.indexOf("function detailContentPath(data)");
 const end = panel.indexOf("function renderDetail(data)", start);
-assert(start >= 0 && end > start, "detail path helpers must be bundled");
+assert(canonicalStart >= 0 && canonicalEnd > canonicalStart && start >= 0 && end > start, "detail path helpers must be bundled");
 const context = { esc: value => String(value) };
 vm.createContext(context);
-new vm.Script(`${panel.slice(start, end)}; this.pathFor=detailContentPath; this.pathHtml=detailPathHtml;`).runInContext(context);
+new vm.Script(`${panel.slice(canonicalStart, canonicalEnd)};${panel.slice(start, end)}; this.pathFor=detailContentPath; this.pathHtml=detailPathHtml;`).runInContext(context);
 
 const cases = [
-  [{ type: "skill", name: "Testing", category: "Wrong Parent", _key: "Coding/Python/Testing" }, "skills/Coding/Python/Testing.md"],
-  [{ type: "note", slug: "Research/RAG/Index" }, "notes/Research/RAG/Index.md"],
-  [{ type: "paper", slug: "Generative Retrieval/DSI" }, "papers/Generative Retrieval/DSI.md"],
-  [{ type: "prompt", project: "Ads", task: "Review", version: "v3", file: "prompt.md" }, "prompts/Ads/Review/v3/prompt.md"],
-  [{ type: "script", path: "Scope/Checks/query.script", file: "query.script" }, "scripts/Scope/Checks/query.script"],
-  [{ type: "script", pkmPath: "packages/demo/src/index.ts", file: "src/index.ts" }, "packages/demo/src/index.ts"],
+  [{ type: "skill", name: "Testing", category: "Wrong Parent", _key: "Coding/Python/Testing" }, "pkm://skills/Coding/Python/Testing.md"],
+  [{ type: "note", slug: "Research/RAG/Index" }, "pkm://notes/Research/RAG/Index.md"],
+  [{ type: "paper", slug: "Generative Retrieval/DSI" }, "pkm://papers/Generative%20Retrieval/DSI.md"],
+  [{ type: "prompt", project: "Ads", task: "Review", version: "v3", file: "prompt.md" }, "pkm://prompts/Ads/Review/v3/prompt.md"],
+  [{ type: "script", path: "Scope/Quality Checks/query.script", file: "query.script" }, "pkm://scripts/Scope/Quality%20Checks/query.script"],
+  [{ type: "script", pkmPath: "packages/demo/src/index.ts", file: "src/index.ts" }, "pkm://packages/demo/src/index.ts"],
 ];
 for (const [data, expected] of cases) {
   assert.strictEqual(context.pathFor(data), expected);

@@ -28,12 +28,17 @@ assert.match(extension, /case "copyText"[\s\S]{0,180}vscode\.env\.clipboard\.wri
   "webview Copy Path must be handled by the extension-host clipboard API");
 
 const posted = [];
-const copyContextPath = path => { if (path) posted.push({ command: "copyText", text: path }); };
+const canonicalPkmPath = value => {
+  if (!value || value.startsWith("pkm://")) return value;
+  const folder = value.endsWith("/");
+  return `pkm://${value.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean).map(encodeURIComponent).join("/")}${folder ? "/" : ""}`;
+};
+const copyContextPath = path => { const locator = canonicalPkmPath(path); if (locator) posted.push({ command: "copyText", text: locator }); };
 const copyPathMenu = path => ({ label: "Copy Path", onClick: () => copyContextPath(path) });
-const executableCopy = copyPathMenu("notes/Research/Test.md");
+const executableCopy = copyPathMenu("notes/Research Notes/Test.md");
 executableCopy.onClick();
-assert.deepStrictEqual(posted, [{ command: "copyText", text: "notes/Research/Test.md" }],
-  "Copy Path action must dispatch the exact path to the clipboard handler");
+assert.deepStrictEqual(posted, [{ command: "copyText", text: "pkm://notes/Research%20Notes/Test.md" }],
+  "Copy Path action must dispatch a portable PKM URI to the clipboard handler");
 assert.match(panel, /function virtualRootFolderMenu\(event, area\)/);
 for (const area of ["skills", "notes", "scripts"]) {
   assert.match(panel, new RegExp(`virtualRootFolderMenu\\(event,'${area}'\\)`), `${area} virtual root must expose Copy Path`);
@@ -57,6 +62,13 @@ const requiredPathContracts = [
   /copyPathMenu\(`pkm:\/\/subscriptions\/\$\{encodeURIComponent\(item\.nodeId\)\}\/\$\{encodeURIComponent\(item\.shareId\)\}`\)/,
 ];
 for (const contract of requiredPathContracts) assert.match(panel, contract, `missing Copy Path coverage: ${contract}`);
+assert.match(panel, /function canonicalPkmPath\(path\)/);
+assert.match(panel, /`pkm:\/\/\$\{segments\.map\(encodeURIComponent\)\.join\('\/'\)\}/,
+  "local folder and document paths must be normalized to encoded PKM URIs");
+assert.match(panel, /function detailContentPath\(data\)[\s\S]{0,700}canonicalPkmPath/,
+  "visible Knowledge detail paths must use PKM URIs too");
+assert.match(panel, /function recipeCopyPathMenu\(value, label = 'Copy Path'\)[\s\S]{0,220}canonicalPkmPath\(value\)/,
+  "Recipe Copy Path must pass through the shared PKM URI normalizer");
 
 assert.doesNotMatch(html.slice(html.indexOf('<div id="ctx-menu">'), html.indexOf("<!-- Sync modal -->")), /[★☆✏⚙🗑🔓🔒📂📁📄📦💡↗↪■▶＋➕✓]/u,
   "legacy Note context menu markup must remain icon-free");

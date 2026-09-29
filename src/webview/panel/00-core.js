@@ -350,6 +350,48 @@ function workspaceForTab(tab) {
   return Object.keys(workspaceSurfaces).find(workspace => workspaceSurfaces[workspace].includes(tab)) || 'projects';
 }
 let state = { workspace:'knowledge', tab:'skills', filter:'all', search:'', items:[], folders:[], knowledgeGroups:null, subscriptionGroups:[], knowledgeTrash:[], privateTopLevels:[], brokerSharedFolders:{}, active:null };
+let loadProfilingEnabled = false;
+let loadProfileRequestSequence = 0;
+const loadProfileRequests = new Map();
+const loadProfileResponseCommands = Object.freeze({
+  list:'list', projectState:'projectState', envList:'envList', serverList:'serverList',
+  subscriptionState:'subscriptionState', githubSyncState:'githubSyncState',
+  backgroundTasks:'backgroundTasks', chatState:'chatState', checkMcp:'mcpStatus',
+  skillRouterStatus:'skillRouterStatus', setLoadProfiling:'mcpStatus',
+});
+function loadProfileEvent(event, detail = {}) {
+  if (!loadProfilingEnabled) return;
+  vscode.postMessage({ command:'loadProfileEvent', event, ...detail });
+}
+function loadProfileRequest(command) {
+  const traceId = `wv-${Date.now().toString(36)}-${(++loadProfileRequestSequence).toString(36)}`;
+  const responseCommand = loadProfileResponseCommands[command];
+  if (responseCommand) {
+    loadProfileRequests.set(traceId, {
+      command, responseCommand, surface:state.tab, workspace:state.workspace, startedAt:performance.now(),
+    });
+  }
+  return traceId;
+}
+function loadProfileResponse(command, message) {
+  const traceId = String(message?.profileRequestId || '');
+  const request = traceId ? loadProfileRequests.get(traceId) : null;
+  if (!request || request.responseCommand !== command) return null;
+  loadProfileRequests.delete(traceId);
+  const responseAt = performance.now();
+  loadProfileEvent('webview.response.received', {
+    traceId, profileCommand:request.command, surface:request.surface, workspace:request.workspace,
+    durationMs:Math.round(responseAt - request.startedAt),
+  });
+  return { ...request, traceId, responseAt };
+}
+function loadProfileRendered(request) {
+  if (!request) return;
+  requestAnimationFrame(() => requestAnimationFrame(() => loadProfileEvent('webview.response.rendered', {
+    traceId:request.traceId, profileCommand:request.command, surface:request.surface, workspace:request.workspace,
+    durationMs:Math.round(performance.now() - request.startedAt),
+  })));
+}
 let initialLoadComplete = !panelStylesReady;
 let loadingProgressTimer = null;
 let loadingRevealTimer = null;
@@ -374,7 +416,8 @@ const actionTimeouts = {
   agentSnapshotCreate:30000, agentSnapshotRotate:30000, agentSnapshotDelete:15000,
   recipeOpenBrowser:30000,
   githubSyncSave:30000, githubSyncRun:120000, githubSyncCreateIdentity:30000, githubSyncTestAuthentication:30000,
-  githubSyncConflictOpen:30000, githubSyncConflictChooseAll:120000, githubSyncConflictAgent:120000, githubSyncConflictAgentAll:1800000, githubSyncConflictAccept:120000, githubSyncConflictDiscard:30000,
+  githubSyncMigration:180000,
+  githubSyncConflictOpen:30000, githubSyncConflictChooseAll:120000, githubSyncConflictDelete:120000, githubSyncConflictDeleteAll:120000, githubSyncConflictAgent:120000, githubSyncConflictAgentAll:1800000, githubSyncConflictAccept:120000, githubSyncConflictDiscard:30000,
   mcpRepairRuntime:600000, mcpSetPython:600000, generateMcp:90000,
   checkMcp:15000, mcpDetectPython:60000, refreshMcpPathSizes:30000,
 };
@@ -425,6 +468,27 @@ function showViewActionError(message) {
   const text = document.createElement('span'); text.textContent = message;
   const dismiss = document.createElement('button'); dismiss.type = 'button'; dismiss.className = 'pk-action-error-dismiss'; dismiss.textContent = '×'; dismiss.title = 'Dismiss error'; dismiss.setAttribute('aria-label','Dismiss error'); dismiss.onclick = () => error.remove();
   error.append(text, dismiss); host.insertAdjacentElement('afterend', error);
+}
+
+function showInitialViewError(title, message, retryCommand) {
+  const detail = document.getElementById('detail');
+  if (!detail) return;
+  const container = document.createElement('div');
+  container.className = 'empty';
+  const heading = document.createElement('strong');
+  heading.textContent = title;
+  const body = document.createElement('p');
+  body.textContent = message;
+  const retry = document.createElement('button');
+  retry.className = 'tbtn primary';
+  retry.type = 'button';
+  retry.textContent = 'Retry';
+  retry.addEventListener('click', () => {
+    detail.innerHTML = '<div class="empty">Retrying…</div>';
+    ask(retryCommand, {});
+  });
+  container.append(heading, body, retry);
+  detail.replaceChildren(container);
 }
 
 function timeoutAction(command, entry) {
@@ -666,8 +730,11 @@ document.getElementById('ctx-move').addEventListener('click', () => {
 // ── Message from extension ─────────────────────────────────────────────────
 window.addEventListener('message', e => {
   const { command, data } = e.data;
+  const loadProfileRender = loadProfileResponse(command, e.data);
   if (isInitialViewResponse(command, e.data)) finishLoadingProgress();
   if      (command === 'loadingProgress') { updateLoadingProgress(data); }
+  else if (command === 'mcpSummary') { updateGlobalMcpWarning(data || {}); }
+  else if (command === 'mcpUsage') { mcpOnUsage(data || {}); }
   else if (command === 'inventoryBatch') { /* progress only; refresh once when the inventory is ready */ }
   else if (command === 'inventoryReady') {
     ['skills','notes','scripts'].forEach(invalidateKnowledgeTabView);
@@ -762,7 +829,7 @@ window.addEventListener('message', e => {
   else if (command === 'serverLog') { onServerLog(e.data.slug, e.data.text); }
   else if (command === 'serverPickFolder') { onServerPickFolder(e.data.dir); }
   else if (command === 'subscriptionState') { finishAction('subscriptionState','subscriptionConfigure','subscriptionSetOnline','subscriptionUpsertShare','subscriptionDeleteShare','subscriptionAdd','subscriptionMountGitHub','subscriptionRename','subscriptionSetPriority','subscriptionRefresh','subscriptionRemove','subscriptionUnblockIp','subscriptionRotateSecret'); subscriptionOnState(data); finishLoadingProgress(); }
-  else if (command === 'githubSyncState') { finishAction('githubSyncState','githubSyncSave','githubSyncDelete','githubSyncRun','githubSyncAutomationToggle'); githubSyncOnState(data); finishLoadingProgress(); }
+  else if (command === 'githubSyncState') { finishAction('githubSyncState','githubSyncSave','githubSyncDelete','githubSyncRun','githubSyncAutomationToggle','githubSyncMigration','githubSyncConflictChoose','githubSyncConflictChooseAll','githubSyncConflictDelete','githubSyncConflictDeleteAll','githubSyncConflictValidate','githubSyncConflictAgent','githubSyncConflictAgentAll','githubSyncConflictAccept','githubSyncConflictDiscard'); githubSyncOnState(data); finishLoadingProgress(); }
   else if (command === 'githubSyncRunQueued') { finishAction('githubSyncRun'); githubSyncOnRunQueued(data); }
   else if (command === 'githubSyncRuntimeState') { githubSyncOnRuntimeState(data); }
   else if (command === 'backgroundTasks') { backgroundTasksOnSnapshot(data); finishLoadingProgress(); }
@@ -771,7 +838,7 @@ window.addEventListener('message', e => {
   else if (command === 'githubSyncIdentityPicked') { finishAction('githubSyncPickIdentity'); githubSyncIdentityPicked(data?.identityFile || ''); }
   else if (command === 'githubSyncIdentityCreated') { finishAction('githubSyncCreateIdentity'); githubSyncIdentityPicked(data?.identityFile || ''); vscode.postMessage({ command:'toast', text:'SSH public key copied; add it to GitHub, then test the account' }); }
   else if (command === 'githubSyncAuthenticationResult') { finishAction('githubSyncTestAuthentication'); githubSyncOnAuthenticationResult(data); vscode.postMessage({ command:'toast', text:`Authenticated as ${data?.login || 'unknown'}` }); }
-  else if (command === 'githubSyncError') { githubSyncSaving = false; const action = String(data?.action || ''); if (action === 'githubSyncRun') githubSyncForcePending.clear(); if (action && pendingActionButtons.has(action)) failAction(data?.error || 'GitHub Sync failed.', action); else showViewActionError(data?.error || 'GitHub Sync failed.'); finishLoadingProgress(); }
+  else if (command === 'githubSyncError') { githubSyncSaving = false; const action = String(data?.action || ''); const message = data?.error || 'GitHub Sync failed.'; if (action === 'githubSyncRun') githubSyncForcePending.clear(); if (action === 'githubSyncState' && !githubSyncUpdatedAt && state.tab === 'githubSync') showInitialViewError('GitHub Sync could not load', message, 'githubSyncState'); else if (action && pendingActionButtons.has(action)) failAction(message, action); else showViewActionError(message); finishLoadingProgress(); }
   else if (command === 'subscriptionChanged') {
     invalidateSubscriptionKnowledgeViews();
     invalidateRecipeSubscriptionGroups();
@@ -787,7 +854,9 @@ window.addEventListener('message', e => {
     const action = String(data?.action || '');
     const message = data?.error || 'Subscription action failed.';
     if (action === 'subscriptionMountGitHub' || action === 'subscriptionTestGitHubBranch') subscriptionGitHubProgressUpdate(null);
-    if (action && pendingActionButtons.has(action)) failAction(message, action); else showViewActionError(message);
+    if (action === 'subscriptionState' && state.tab === 'subscriptions') showInitialViewError('Network & Sharing could not load', message, 'subscriptionState');
+    else if (action && pendingActionButtons.has(action)) failAction(message, action);
+    else showViewActionError(message);
     finishLoadingProgress();
   }
   else if (command === 'subscriptionGitHubProgress') { refreshActionTimeout(data?.operation === 'test' ? 'subscriptionTestGitHubBranch' : 'subscriptionMountGitHub'); subscriptionGitHubProgressUpdate(data || {}); }
@@ -1037,6 +1106,7 @@ window.addEventListener('message', e => {
       if (button) { button.disabled = false; button.removeAttribute('aria-busy'); button.textContent = 'Download'; }
     }
   }
+  loadProfileRendered(loadProfileRender);
 });
 
 function ask(command, payload, button, silent = false) {
@@ -1051,7 +1121,11 @@ function ask(command, payload, button, silent = false) {
   };
   const loadingLabels = { list:knowledgeLoadingLabels[state.tab] || 'Brewing a potion…', subscriptionState:'Consulting the exchange ledger…', serverList:'Preparing the Muggle gateway…', envList:'Inspecting the alchemy instruments…', checkMcp:'Checking the protective wards…', chatAddManagedAgent:'Summoning a house-elf…', reload:'Reopening the archive…' };
   if (!silent && loadingLabels[command]) updateLoadingProgress({ stage:'request', percent:8, message:loadingLabels[command] });
-  vscode.postMessage({ command, ...payload, ...(silent ? { silent:true } : {}) });
+  const profileRequestId = loadProfileRequest(command);
+  vscode.postMessage({
+    command, ...payload, ...(silent ? { silent:true } : {}),
+    profileRequestId, profileSurface:state.tab, profileWorkspace:state.workspace,
+  });
 }
 
 function updateLoadingProgress(progress = {}) {

@@ -4,7 +4,22 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
-const { RetrievalWorkerManager } = require("../dist/retrieval-worker.js");
+const { RetrievalWorkerManager, retrievalWorkerStartupTimeoutMs } = require("../dist/retrieval-worker.js");
+
+assert.strictEqual(retrievalWorkerStartupTimeoutMs(undefined, 0, "linux"), 10000);
+assert.strictEqual(retrievalWorkerStartupTimeoutMs(undefined, 701, "linux"), 14000,
+  "larger corpora must receive a larger cold-start budget");
+assert.strictEqual(retrievalWorkerStartupTimeoutMs(undefined, 0, "win32"), 20000,
+  "Windows process startup must have a safer initial floor");
+assert.strictEqual(retrievalWorkerStartupTimeoutMs({
+  schema: 1, successfulStartupMs: [4000, 8000, 12000], consecutiveTimeouts: 0,
+}, 0, "linux"), 32000, "recent slow starts must expand the safety budget");
+assert.strictEqual(retrievalWorkerStartupTimeoutMs({
+  schema: 1, successfulStartupMs: [], consecutiveTimeouts: 3,
+}, 0, "linux"), 80000, "repeated timeouts must use bounded exponential backoff");
+assert.strictEqual(retrievalWorkerStartupTimeoutMs({
+  schema: 1, successfulStartupMs: [90000], consecutiveTimeouts: 9,
+}, 100000, "win32"), 90000, "adaptive startup budgets must remain bounded");
 
 const source = fs.readFileSync(path.join(__dirname, "..", "src", "retrieval-worker.ts"), "utf8");
 assert.match(

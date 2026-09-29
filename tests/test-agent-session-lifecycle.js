@@ -36,6 +36,31 @@ assert.strictEqual(lifecycle.recipeNodeObservability({
   lastProgressAt: "2026-04-01T00:05:00Z",
   progress: { staleAfterSeconds: 120, waitingOn: "human-gate" },
 }, observabilityNow).state, "waiting", "explicit waits are not classified as stale");
+const liveSession = {
+  schema: "pkm.agent.session/v1",
+  sessionId: "agent_session_liveness",
+  status: "running",
+  hostSessionId: "host-session",
+  liveness: {
+    owner: { transportId: "transport-hash", hostSessionId: "host-session" },
+    heartbeatAt: "2026-04-01T00:08:00Z",
+    leaseSeconds: 120,
+  },
+};
+assert.deepStrictEqual(lifecycle.agentSessionLiveness(liveSession, false, observabilityNow), {
+  state: "suspected-stalled",
+  heartbeatAgeSeconds: 120,
+  leaseSeconds: 120,
+  ownerTransportId: "transport-hash",
+  hostSessionId: "host-session",
+});
+assert.strictEqual(lifecycle.agentSessionLiveness(liveSession, true, observabilityNow).state, "waiting",
+  "explicit Session waits must override a stale heartbeat");
+liveSession.liveness.heartbeatAt = "2026-04-01T00:03:00Z";
+assert.strictEqual(lifecycle.agentSessionLiveness(liveSession, false, observabilityNow).state, "suspected-interrupted");
+liveSession.status = "completed";
+assert.strictEqual(lifecycle.agentSessionLiveness(liveSession, false, observabilityNow).state, "inactive",
+  "terminal Sessions never retain a live or suspected label");
 
 const scratch = path.join(__dirname, `.agent-session-lifecycle-${process.pid}`);
 const stateDirectory = path.join(scratch, ".pkm", "state");
@@ -175,6 +200,10 @@ function writeSession(id, status, updatedAt) {
     assert.match(projectsSource, /focusedIdentity/, "Session refresh restores the focused module by stable identity");
     assert.match(projectsSource, /agentSessionOpenRunIds/, "expanded Recipe runs persist across refresh");
     assert.match(extensionSource, /lastHeartbeatAt/, "Agent Session projection includes durable heartbeat data");
+    assert.match(extensionSource, /liveness: agentSessionLiveness\(session, waiting\)/,
+      "Agent Session projection includes Session-level lease health");
+    assert.match(projectsSource, /Suspected stalled[\s\S]*Suspected interrupted/,
+      "Agent Session UI distinguishes stalled and interrupted suspicion without changing lifecycle status");
     assert.match(extensionSource, /progress: record\.progress/, "Agent Session projection includes structured module progress");
     assert.match(extensionSource, /await applyAgentSessionArchiveRetention\(\)/, "state projection waits for retention before reading");
     assert.match(extensionSource, /"agentSessionTrash", "agentSessionStop"\]\.includes/, "file failures are returned to the Agent Sessions UI");

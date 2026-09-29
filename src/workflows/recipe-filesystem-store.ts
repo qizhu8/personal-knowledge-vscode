@@ -405,6 +405,22 @@ export class RecipeFilesystemStore {
     return receipt;
   }
 
+  legacySourceMatchesCutover(source: RecipeMigrationSource): boolean {
+    const migration = this.readControl()?.migration;
+    if (!migration || migration.phase !== "cutover") return true;
+    const projected = projectLegacyRecipes(source);
+    const collisions = sourceMigrationCollisions(projected);
+    if (collisions.length) return false;
+    return migrationReceipt(
+      "previewed",
+      source.sourceDigest,
+      projected.recipes,
+      projected.trash,
+      collisions,
+      source,
+    ).canonicalDigest === migration.canonicalDigest;
+  }
+
   private ensureControl(): void {
     fs.mkdirSync(this.stateDirectory, { recursive: true });
     if (!fs.existsSync(this.controlPath)) this.writeControl({ schema: 1 });

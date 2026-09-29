@@ -9,6 +9,7 @@ const { canonicalJson } = require("../dist/workflow-contracts.js");
 const {
   GITHUB_SYNC_CONTENT_TYPES,
   GitHubSyncConflictError,
+  completeGitHubSyncTransaction,
   normalizeGitHubSyncTarget,
   syncGitHubTarget
 } = require("../dist/github-sync.js");
@@ -34,6 +35,28 @@ const builtInRecipe = description => {
     description,
     revision: 2,
     executableDigest: createHash("sha256").update(canonicalJson(definition)).digest("hex"),
+    definition,
+  }, null, 2) + "\n";
+};
+const recipeWithLayout = (x, y) => {
+  const definition = {
+    schema: "pkm.workflow.definition/v1",
+    spec: {
+      inputs: {},
+      nodes: [{ nodeId: "work", kind: "pkm.step.noop/v1", config: {}, dependsOn: [] }],
+      outputs: {},
+      completion: { requiredNodes: ["work"] }
+    }
+  };
+  return JSON.stringify({
+    recipeId: "recipe_layout",
+    scope: "global",
+    category: "Shared",
+    name: "Layout isolation",
+    description: "Shared logic with machine-local graph coordinates",
+    revision: 1,
+    executableDigest: createHash("sha256").update(canonicalJson(definition)).digest("hex"),
+    editorLayout: { nodePositions: { work: { x, y } } },
     definition,
   }, null, 2) + "\n";
 };
@@ -129,6 +152,48 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
     assert.strictEqual(migratedManifest.schema, 3, "the first successful reconciliation upgrades a legacy manifest to schema 3");
     assert.deepStrictEqual(migratedManifest.capabilities.required, ["explicit-deletions", "stable-entity-identity"]);
 
+    const layoutCatalogA = emptyCatalog();
+    layoutCatalogA.recipes = [{
+      id: "recipe_layout",
+      label: "Layout isolation",
+      cat: "Shared",
+      isPrivate: false,
+      destination: "recipes/Shared/Layout isolation.recipe_layout.json",
+      content: recipeWithLayout(40, 80)
+    }];
+    const layoutTargetA = normalizeGitHubSyncTarget({
+      name: "Layout A",
+      repository: remote,
+      branch: "layout-isolation"
+    }, () => "target-layout-a");
+    const layoutInitial = await syncGitHubTarget(layoutTargetA, layoutCatalogA, checkoutRoot);
+    rememberSync(layoutTargetA, layoutInitial);
+    const publishedLayoutRecipe = JSON.parse(run(root, [
+      "--git-dir", remote, "show", "layout-isolation:recipes/Shared/Layout isolation.recipe_layout.json"
+    ]));
+    assert.strictEqual(publishedLayoutRecipe.editorLayout, undefined,
+      "GitHub publication must exclude machine-local Recipe graph coordinates");
+
+    layoutCatalogA.recipes[0].content = recipeWithLayout(600, 320);
+    const layoutOnlyUpdate = await syncGitHubTarget(layoutTargetA, layoutCatalogA, checkoutRoot);
+    assert.strictEqual(layoutOnlyUpdate.changed, false,
+      "moving Recipe graph nodes on one machine must not create a GitHub commit");
+    assert.strictEqual(layoutOnlyUpdate.commit, layoutInitial.commit);
+
+    const layoutCatalogB = emptyCatalog();
+    layoutCatalogB.recipes = [{
+      ...layoutCatalogA.recipes[0],
+      content: recipeWithLayout(920, 510)
+    }];
+    const layoutTargetB = normalizeGitHubSyncTarget({
+      name: "Layout B",
+      repository: remote,
+      branch: "layout-isolation"
+    }, () => "target-layout-b");
+    const layoutSecondMachine = await syncGitHubTarget(layoutTargetB, layoutCatalogB, checkoutRoot);
+    assert.strictEqual(layoutSecondMachine.changed, false,
+      "different graph coordinates on another machine must not conflict or create a commit");
+
     const createMachine = name => {
       const store = path.join(root, `${name}-store`);
       const skills = path.join(store, "skills", "Shared");
@@ -152,6 +217,95 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
 
     const linux = createMachine("linux");
     const windows = createMachine("windows");
+    const authority = createMachine("authority");
+    authority.target.branch = "authority-cutover";
+    const authorityInitial = await syncGitHubTarget(authority.target, authority.catalog, checkoutRoot, undefined, authority.store);
+    const authorityReceiptPath = path.join(checkoutRoot, authority.target.id, "transactions", "latest.json");
+    assert.strictEqual(JSON.parse(fs.readFileSync(authorityReceiptPath, "utf8")).state, "pushed",
+      "a durable receipt must exist before extension-level post-processing");
+    completeGitHubSyncTransaction(checkoutRoot, authority.target.id, authorityInitial.transactionId);
+    assert.strictEqual(JSON.parse(fs.readFileSync(authorityReceiptPath, "utf8")).state, "recorded",
+      "the receipt must record durable target-state persistence");
+    rememberSync(authority.target, authorityInitial);
+    const authorityMigrated = path.join(authority.store, "skills", "Migrated");
+    fs.mkdirSync(authorityMigrated, { recursive: true });
+    fs.renameSync(path.join(authority.skills, "One.md"), path.join(authorityMigrated, "One.md"));
+    authority.catalog.skills = [{
+      ...authority.catalog.skills[0],
+      id: "knowledge-one",
+      source: path.join(authorityMigrated, "One.md"),
+      destination: "skills/Migrated/One.md",
+    }];
+    fs.rmSync(path.join(authority.skills, "Two.md"));
+    authority.target.publication = {
+      requiredCapability: "stable-entity-identity",
+      sourceCommit: authorityInitial.commit,
+      sourceDigest: "a".repeat(64),
+      manualVerificationCompleted: false,
+    };
+    const authorityCutover = await syncGitHubTarget(authority.target, authority.catalog, checkoutRoot, undefined, authority.store);
+    assert.strictEqual(authorityCutover.changed, true, "the first post-cutover sync publishes the local migration as one authoritative commit");
+    assert(authorityCutover.resolutionReport.rules["authoritative-migration"] >= 3,
+      "migration reports how many physical paths were resolved by local authority");
+    const authorityFiles = run(root, ["--git-dir", remote, "ls-tree", "-r", "--name-only", "authority-cutover"]).split("\n");
+    assert(authorityFiles.includes("skills/Migrated/One.md"));
+    assert(!authorityFiles.includes("skills/Shared/One.md") && !authorityFiles.includes("skills/Shared/Two.md"),
+      "authoritative migration removes obsolete selected paths without creating delete conflicts");
+    rememberSync(authority.target, authorityCutover);
+    const forceRemote = path.join(root, "force-remote");
+    run(root, ["clone", "--branch", "authority-cutover", remote, forceRemote]);
+    const forceRemoteContent = skill("One", "remote edit that will be explicitly overwritten");
+    fs.writeFileSync(path.join(forceRemote, "skills", "Migrated", "One.md"), forceRemoteContent);
+    const forceManifestPath = path.join(forceRemote, ".pkm-github-sync.json");
+    const forceManifest = JSON.parse(fs.readFileSync(forceManifestPath, "utf8"));
+    forceManifest.files = forceManifest.files.map(file => file.path === "skills/Migrated/One.md"
+      ? { ...file, digest: createHash("sha256").update(forceRemoteContent).digest("hex") }
+      : file);
+    fs.writeFileSync(forceManifestPath, `${JSON.stringify(forceManifest, null, 2)}\n`);
+    run(forceRemote, ["config", "user.name", "Remote User"]);
+    run(forceRemote, ["config", "user.email", "remote@example.com"]);
+    run(forceRemote, ["add", "-A"]);
+    run(forceRemote, ["commit", "-m", "remote conflicting edit"]);
+    run(forceRemote, ["push"]);
+    fs.writeFileSync(path.join(authority.store, "skills", "Migrated", "One.md"), skill("One", "local recovery truth"));
+    await assert.rejects(
+      () => syncGitHubTarget(authority.target, authority.catalog, checkoutRoot, undefined, authority.store, undefined,
+        { mode: "force-local-authority", actor: "oak", comment: "" }),
+      /requires a non-empty user comment/,
+      "Force Update cannot run without an audit reason",
+    );
+    const forced = await syncGitHubTarget(authority.target, authority.catalog, checkoutRoot, undefined, authority.store, undefined,
+      { mode: "force-local-authority", actor: "oak", comment: "Recover the repository after a broken migration." });
+    assert(forced.resolutionReport.rules["force-local-authority"] >= 1);
+    const forceCommit = run(root, ["--git-dir", remote, "show", "-s", "--format=%B", "authority-cutover"]);
+    assert.match(forceCommit, /PKM force update by oak/);
+    assert.match(forceCommit, /PKM-Comment: Recover the repository after a broken migration\./);
+    const forceReceipt = JSON.parse(fs.readFileSync(path.join(checkoutRoot, authority.target.id, "transactions", "latest.json"), "utf8"));
+    assert.strictEqual(forceReceipt.actor, "oak");
+    assert.strictEqual(forceReceipt.comment, "Recover the repository after a broken migration.");
+
+    const mergeA = createMachine("merge-a");
+    const mergeB = createMachine("merge-b");
+    mergeA.target.branch = "deterministic-merge";
+    mergeB.target.branch = "deterministic-merge";
+    const mergeBase = skill("One", "alpha\nshared\nomega");
+    fs.writeFileSync(path.join(mergeA.skills, "One.md"), mergeBase);
+    fs.writeFileSync(path.join(mergeB.skills, "One.md"), mergeBase);
+    rememberSync(mergeA.target, await syncGitHubTarget(mergeA.target, mergeA.catalog, checkoutRoot, undefined, mergeA.store));
+    rememberSync(mergeB.target, await syncGitHubTarget(mergeB.target, mergeB.catalog, checkoutRoot, undefined, mergeB.store));
+    fs.writeFileSync(path.join(mergeA.skills, "One.md"), skill("One", "alpha from A\nshared\nomega"));
+    rememberSync(mergeA.target, await syncGitHubTarget(mergeA.target, mergeA.catalog, checkoutRoot, undefined, mergeA.store));
+    fs.writeFileSync(path.join(mergeB.skills, "One.md"), skill("One", "alpha\nshared\nomega from B"));
+    const deterministicMerge = await syncGitHubTarget(mergeB.target, mergeB.catalog, checkoutRoot, undefined, mergeB.store);
+    rememberSync(mergeB.target, deterministicMerge);
+    assert(deterministicMerge.resolutionReport.rules["deterministic-three-way"] >= 1,
+      "the resolution report attributes the automatic same-file merge to its rule");
+    assert.strictEqual(
+      fs.readFileSync(path.join(mergeB.skills, "One.md"), "utf8"),
+      skill("One", "alpha from A\nshared\nomega from B"),
+      "non-overlapping edits to the same entity must merge automatically from Base, Local, and Remote",
+    );
+
     const gitPhases = [];
     rememberSync(linux.target, await syncGitHubTarget(
       linux.target,
@@ -253,6 +407,45 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
       "GitHub converges to the current extension-owned built-in Recipe"
     );
 
+    const identityStore = path.join(root, "identity-store");
+    const identitySource = path.join(identityStore, "scripts", "Analysis", "tool.script");
+    fs.mkdirSync(path.dirname(identitySource), { recursive: true });
+    fs.writeFileSync(identitySource, "SELECT 1;\n");
+    const identityTarget = normalizeGitHubSyncTarget({
+      name: "Migrated identity",
+      repository: remote,
+      branch: "identity-migration",
+      selection: {
+        public: { scripts: { items: [], folders: [""] } },
+        private: {}
+      }
+    }, () => "target-identity-migration");
+    const legacyIdentityCatalog = emptyCatalog();
+    legacyIdentityCatalog.scripts = [{
+      id: "Analysis/tool",
+      label: "tool.script",
+      cat: "Analysis",
+      isPrivate: false,
+      source: identitySource,
+      destination: "scripts/Analysis/tool.script"
+    }];
+    rememberSync(identityTarget, await syncGitHubTarget(identityTarget, legacyIdentityCatalog, checkoutRoot, undefined, identityStore));
+    const canonicalIdentityCatalog = emptyCatalog();
+    canonicalIdentityCatalog.scripts = [{
+      ...legacyIdentityCatalog.scripts[0],
+      id: "Analysis/tool.script"
+    }];
+    const identityUpgrade = await syncGitHubTarget(identityTarget, canonicalIdentityCatalog, checkoutRoot, undefined, identityStore);
+    rememberSync(identityTarget, identityUpgrade);
+    assert.strictEqual(identityUpgrade.changed, true, "identity-only migration publishes corrected manifest metadata");
+    const identityManifest = JSON.parse(run(root, ["--git-dir", remote, "show", "identity-migration:.pkm-github-sync.json"]));
+    assert.strictEqual(identityManifest.files[0].itemId, "Analysis/tool.script");
+    assert.strictEqual(
+      run(root, ["--git-dir", remote, "log", "--format=%s", "--reverse", "identity-migration"]).split("\n").length,
+      2,
+      "identity reconciliation creates one initial publication and one metadata-only correction without a conflict"
+    );
+
     fs.writeFileSync(path.join(linux.skills, "One.md"), skill("One", "linux concurrent edit"));
     fs.writeFileSync(path.join(windows.skills, "Two.md"), skill("Two", "windows concurrent edit"));
     const linuxCheckout = path.join(checkoutRoot, linux.target.id, "repository");
@@ -266,12 +459,10 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
     const windowsRace = await syncGitHubTarget(windows.target, windows.catalog, checkoutRoot, undefined, windows.store);
     rememberSync(windows.target, windowsRace);
     fs.writeFileSync(releasePush, "continue\n");
-    await assert.rejects(linuxRace, /git push failed/, "the losing machine must surface the non-fast-forward push");
+    const linuxReconciled = await linuxRace;
     fs.rmSync(prePushHook);
-
-    const linuxRetry = await syncGitHubTarget(linux.target, linux.catalog, checkoutRoot, undefined, linux.store);
-    rememberSync(linux.target, linuxRetry);
-    assert(linuxRetry.pulled.includes("skills/Shared/Two.md"), "retry must pull the winning machine's independent edit");
+    rememberSync(linux.target, linuxReconciled);
+    assert(linuxReconciled.pulled.includes("skills/Shared/Two.md"), "the losing machine must automatically pull and reconcile the winning machine's independent edit");
     assert.strictEqual(fs.readFileSync(path.join(linux.skills, "Two.md"), "utf8"), skill("Two", "windows concurrent edit"));
 
     const verify = path.join(root, "verify");

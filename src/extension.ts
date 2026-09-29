@@ -4,7 +4,7 @@ import { KnowledgeInventoryManager } from "./knowledge-inventory";
 import { performanceSummary, recordPerformanceMetric } from "./performance-telemetry";
 import { mcpUsageSummary } from "./mcp-usage";
 import { agentSnapshotIsEncrypted, createAgentSnapshot, deleteAgentSnapshot, listAgentSnapshots, rotateAgentSnapshotPassphrase } from "./agent-snapshots";
-import { agentSessionArchiveKeepLatestK, emptyAgentSessionTrash, enforceAgentSessionArchiveRetention, moveAgentSessionToTrash, permanentlyDeleteTrashedAgentSession, projectedAgentSessionStatus, recipeNodeObservability, reconcileAgentSessionActiveMappings, restoreAgentSessionFromTrash, stopAgentSession } from "./agent-session-lifecycle";
+import { agentSessionArchiveKeepLatestK, agentSessionLiveness, emptyAgentSessionTrash, enforceAgentSessionArchiveRetention, moveAgentSessionToTrash, permanentlyDeleteTrashedAgentSession, projectedAgentSessionStatus, recipeNodeObservability, reconcileAgentSessionActiveMappings, restoreAgentSessionFromTrash, stopAgentSession } from "./agent-session-lifecycle";
 import * as vscode from "vscode";
 import * as path from "path";
 import * as os from "os";
@@ -71,7 +71,7 @@ import { navigationItemPath } from "./navigation-path";
 import { subscriptionNavigationRoot, SubscriptionNavigationNode } from "./navigation-subscriptions";
 import { createRetrievalSnapshot } from "./retrieval-snapshot";
 import { RetrievalWorkerManager } from "./retrieval-worker";
-import { extensionHostDescription, isAbsoluteForPlatform, isForeignAbsolutePath, resolveMachineStorePath } from "./store-path";
+import { cloudSynchronizedPath, extensionHostDescription, isAbsoluteForPlatform, isForeignAbsolutePath, resolveMachineStorePath } from "./store-path";
 import { loadLocaleCatalogs, loadLocaleManifest, localizedText, normalizeUiLanguage, resolveUiLanguage, UiLanguageSetting, uiLanguageSetting } from "./localization";
 import { decideInitialExperience, FEATURE_TOUR_MODULES, minorRelease } from "./onboarding-experience";
 import { AiBackend, aiSummarizeScript, listAiBackends, runAiPrompt, scriptCacheDir } from "./ai";
@@ -94,13 +94,14 @@ import { CollaborationMessageMetadata, CollaborationTransition } from "./collabo
 import { BundledKnowledgeContent, exportProjectRecipeBundle } from "./workflows/project-recipe-bundle";
 import { recipeBrowserEditorDocument } from "./recipe-browser";
 import {
-  GITHUB_SYNC_CONTENT_TYPES, GitHubPublicationMigration, GitHubPublicationMigrationSource, GitHubSyncCatalog, GitHubSyncCatalogItem, GitHubSyncConflictError, GitHubSyncContentType, GitHubSyncCredentials, GitHubSyncExtensionCompatibilityError, GitHubSyncRecipePull, GitHubSyncTarget,
-  createGitHubSyncIdentity, discoverGitHubCredentialManagerAccounts, discoverGitHubSshIdentities, fetchGitHubRemoteSnapshot, githubSyncAuthenticationSessionOptions, githubSyncSafeRelativePath, githubSyncShield, githubSyncTargetFingerprints, normalizeGitHubSyncTarget,
+  GITHUB_SYNC_CONTENT_TYPES, GitHubPublicationMigration, GitHubPublicationMigrationSource, GitHubSyncCatalog, GitHubSyncCatalogItem, GitHubSyncConflictError, GitHubSyncContentType, GitHubSyncCredentials, GitHubSyncExtensionCompatibilityError, GitHubSyncRecipePull, GitHubSyncTarget, githubSyncMigrationCanonicalFiles,
+  completeGitHubSyncTransaction, createGitHubSyncIdentity, discoverGitHubCredentialManagerAccounts, discoverGitHubSshIdentities, fetchGitHubRemoteSnapshot, githubSyncAuthenticationSessionOptions, githubSyncManagedContent, githubSyncSafeRelativePath, githubSyncShield, normalizeGitHubSyncTarget,
   probeGitHubSyncAuthentication, probeGitHubSyncHttpsAuthentication, probeGitHubSyncVscodeAuthentication, readGitHubRemoteFile, readGitHubRemoteFilesForSubscription, readGitHubRemoteManifest, replaceGitHubSyncFilesAtomically, restoreGitHubRemoteFiles, syncGitHubTarget, testGitHubSyncAuthentication,
 } from "./github-sync";
 import {
-  clearGitHubSyncConflict, gitHubSyncConflictVariantPath, listGitHubSyncConflicts, readGitHubSyncConflict,
-  readGitHubSyncConflictCandidate, selectAllGitHubSyncConflictCandidates, selectGitHubSyncConflictCandidate, storeGitHubSyncConflict, updateGitHubSyncAgentCandidate,
+  clearGitHubSyncConflict, GitHubSyncAgentReview, gitHubSyncConflictVariantPath, listGitHubSyncConflicts, readGitHubSyncConflict,
+  readGitHubSyncConflictCandidate, refreshGitHubSyncConflictLocalCandidate, selectAllGitHubSyncConflictCandidates, selectAllGitHubSyncConflictDeletions,
+  selectGitHubSyncConflictCandidate, selectGitHubSyncConflictDeletion, storeGitHubSyncConflict, updateGitHubSyncAgentCandidate,
   validateGitHubSyncConflictLocalState, validateGitHubSyncManualCandidate,
 } from "./github-sync-conflicts";
 import { GitHubSyncRuntimeState, GitHubSyncScheduler } from "./github-sync-scheduler";
@@ -235,6 +236,10 @@ function agentSessionSnapshots(recipes: any[]): any[] {
       const checkpoints = Array.isArray(session.checkpoints) ? session.checkpoints : [];
       const latest = checkpoints.at(-1);
       const state = latest?.state && typeof latest.state === "object" ? latest.state : {};
+      const runs = (Array.isArray(session.recipeRunIds) ? session.recipeRunIds : []).map(String).map(readRun).filter(Boolean);
+      const waiting = runs.some((run: any) => run.nodes.some((node: any) =>
+        node.state === "running"
+        && (node.kind === "pkm.gate.human/v1" || node.observability?.state === "waiting")));
       snapshots.push({
         sessionId: String(session.sessionId), status: projectedAgentSessionStatus(session),
         task: String(session.task || "Managed task"), projectId: String(session.projectId || ""),
@@ -246,6 +251,7 @@ function agentSessionSnapshots(recipes: any[]): any[] {
         })).filter((edge: any) => edge.fromRunId && edge.fromNodeId && edge.toRunId && edge.toNodeId),
         agent: { name: String(session.agent?.name || "Agent"), product: String(session.agent?.product || "") },
         createdAt: String(session.createdAt || ""), updatedAt: String(session.updatedAt || ""),
+        liveness: agentSessionLiveness(session, waiting),
         lastActivity: session.lastActivity && typeof session.lastActivity === "object" ? {
           tool: String(session.lastActivity.tool || ""), ok: session.lastActivity.ok !== false, at: String(session.lastActivity.at || ""),
         } : undefined,
@@ -263,7 +269,7 @@ function agentSessionSnapshots(recipes: any[]): any[] {
           summary: typeof state.summary === "string" ? state.summary : "",
           nextActionCount: Array.isArray(state.next_actions) ? state.next_actions.length : Array.isArray(state.nextActions) ? state.nextActions.length : 0,
         } : undefined,
-        runs: (Array.isArray(session.recipeRunIds) ? session.recipeRunIds : []).map(String).map(readRun).filter(Boolean),
+        runs,
       });
     } catch { /* A corrupt record must not hide healthy Agent Sessions. */ }
   }
@@ -431,18 +437,31 @@ function envListForUi(): any[] {
   });
 }
 
-function mcpPanelStatusData(): object {
-  const info = mcpStatus();
-  const python = detectMcpPython();
-  const runtime = mcpRuntimeStatus();
+let mcpRuntimeStatusCache: { at: number; value: ReturnType<typeof mcpRuntimeStatus> } | undefined;
+
+function cachedMcpRuntimeStatus(): ReturnType<typeof mcpRuntimeStatus> {
+  const now = Date.now();
+  if (mcpRuntimeStatusCache && now - mcpRuntimeStatusCache.at < 60_000) return mcpRuntimeStatusCache.value;
+  const value = mcpRuntimeStatus();
+  mcpRuntimeStatusCache = { at: now, value };
+  return value;
+}
+
+function mcpPanelStatusData(traceId = "", includeUsage = true): object {
+  const trace = { traceId, surface: "mcp" };
+  const info = loadProfiler.measure("host.mcp.status", trace, () => mcpStatus());
+  const python = loadProfiler.measure("host.mcp.python", trace, () => detectMcpPython());
+  const runtime = loadProfiler.measure("host.mcp.runtime", trace, () => cachedMcpRuntimeStatus());
   const activeStorePath = _storeReady ? getStorePath() : "";
   const storePathValid = !!activeStorePath && directoryExists(activeStorePath);
+  const cloudStore = activeStorePath ? cloudSynchronizedPath(activeStorePath) : undefined;
   const storeHost = extensionHostDescription(process.platform, os.hostname(), vscode.env.remoteName || "");
   const proposalDir = getStorePath() ? path.join(getStorePath(), "_proposals", "skills") : "";
-  const skillProposals = proposalDir && fs.existsSync(proposalDir)
+  const skillProposals = loadProfiler.measure("host.mcp.skill_proposals", trace, () => proposalDir && fs.existsSync(proposalDir)
     ? fs.readdirSync(proposalDir).filter(name => name.endsWith(".md")).sort().reverse().map(name => ({ name, path: path.join(proposalDir, name) }))
-    : [];
-  const pkmSkill = chatCtx && getStorePath() ? pkmSkillProjectionStatus(chatCtx) : null;
+    : []);
+  const pkmSkill = loadProfiler.measure("host.mcp.skill_projection", trace,
+    () => chatCtx && getStorePath() ? pkmSkillProjectionStatus(chatCtx) : null);
   const guideDismissed = !!chatCtx?.globalState.get<boolean>("pkm.integrationGuideDismissed.v1", false);
   const guideStep = !guideDismissed && !python.valid ? "python"
     : !guideDismissed && pkmSkill?.targets.some(target => target.state === "missing") ? "skill"
@@ -454,7 +473,13 @@ function mcpPanelStatusData(): object {
     agencyInstallInstruction: combinedMcpInstallInstruction(),
     nativeMcpProvider: _nativeMcpProvider,
     mcpProcess: mcpProcessStatus(),
-    store: { path: activeStorePath, configured: !!activeStorePath, valid: storePathValid, host: storeHost },
+    store: {
+      path: activeStorePath,
+      configured: !!activeStorePath,
+      valid: storePathValid,
+      host: storeHost,
+      cloudSynchronized: cloudStore ? { provider: cloudStore.provider } : null,
+    },
     paths: {
       store: activeStorePath,
       environments: managedEnvironmentsRoot(),
@@ -465,7 +490,10 @@ function mcpPanelStatusData(): object {
     mcpPython: python,
     mcpRuntime: runtime,
     featureDomains: mcpFeatureDomainState(),
-    usage: activeStorePath ? mcpUsageSummary(activeStorePath) : { sessions: [], measurementNote: "Configure a Knowledge Root to observe MCP usage." },
+    usage: includeUsage
+      ? loadProfiler.measure("host.mcp.usage", trace,
+        () => activeStorePath ? mcpUsageSummary(activeStorePath) : { sessions: [], measurementNote: "Configure a Knowledge Root to observe MCP usage." })
+      : { sessions: [], deferred: true, measurementNote: "Usage evidence is loaded only when requested." },
     skillRouters: [
       { id: "exact", name: "Exact", kind: "Deterministic", version: "1", status: "active", description: "Hard exact constraints and identifier matches." },
       { id: "bm25", name: "BM25", kind: "Lexical", version: "academic-k1=0.9-b=0.4", status: "active", description: "Frozen relevance ranking across the typed Subscriber index." },
@@ -474,6 +502,7 @@ function mcpPanelStatusData(): object {
     firstRunGuide: { visible: !!guideStep, step: guideStep },
     automaticSetup: { state: integrationMaintenanceState, error: integrationMaintenanceError },
     performance: performanceStateDir ? performanceSummary(performanceStateDir) : {},
+    loadProfiling: { enabled: loadProfiler.enabled(), logFile: loadProfiler.logPath() },
     externalLink: { ...externalLinkHostOptions(), contentPort: publicContentActivePort || publicContentPort() },
     skillProposals,
     skillProposalDir: proposalDir,
@@ -597,12 +626,90 @@ class Logger {
 }
 
 const log = new Logger();
+
+type LoadProfileFields = Record<string, string | number | boolean | undefined>;
+
+class LoadProfiler {
+  private channel = vscode.window.createOutputChannel("PKM Load Profiling");
+  private context: vscode.ExtensionContext | undefined;
+  private active = false;
+  private filePath = "";
+
+  init(context: vscode.ExtensionContext): void {
+    this.context = context;
+    this.filePath = path.join(context.globalStorageUri.fsPath, "load-profile.jsonl");
+    this.refresh();
+  }
+
+  refresh(): void {
+    this.active = vscode.workspace.getConfiguration("personalKnowledge").get<boolean>("loadProfilingEnabled", false);
+  }
+
+  enabled(): boolean { return this.active; }
+  logPath(): string { return this.filePath; }
+
+  record(event: string, fields: LoadProfileFields = {}): void {
+    if (!this.active || !/^[a-z][a-z0-9_.-]{1,79}$/.test(event)) return;
+    const detail = Object.fromEntries(Object.entries(fields).filter(([, value]) =>
+      typeof value === "string" || typeof value === "number" || typeof value === "boolean"));
+    const entry = {
+      at: new Date().toISOString(),
+      event,
+      ...detail,
+      platform: process.platform,
+      remote: vscode.env.remoteName || "local",
+      extensionVersion: String(this.context?.extension?.packageJSON?.version || "unknown"),
+    };
+    const line = JSON.stringify(entry);
+    this.channel.appendLine(line);
+    if (!this.filePath) return;
+    try {
+      fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+      if (fs.existsSync(this.filePath) && fs.statSync(this.filePath).size > 4 * 1024 * 1024) {
+        const previous = `${this.filePath}.previous`;
+        fs.rmSync(previous, { force: true });
+        fs.renameSync(this.filePath, previous);
+      }
+      fs.appendFileSync(this.filePath, `${line}\n`, { encoding: "utf8", mode: 0o600 });
+    } catch (error) {
+      log.warn(`load profiling write failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  measure<T>(event: string, fields: LoadProfileFields, work: () => T): T {
+    if (!this.active) return work();
+    const startedAt = performance.now();
+    try { return work(); }
+    finally { this.record(event, { ...fields, durationMs: Math.round(performance.now() - startedAt) }); }
+  }
+
+  show(): void { this.channel.show(); }
+
+  async open(): Promise<void> {
+    if (!this.filePath) return;
+    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+    if (!fs.existsSync(this.filePath)) fs.writeFileSync(this.filePath, "", { mode: 0o600 });
+    await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(this.filePath), { preview: false });
+  }
+
+  clear(): void {
+    if (this.filePath) {
+      fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+      fs.writeFileSync(this.filePath, "", { mode: 0o600 });
+    }
+    this.channel.clear();
+  }
+}
+
+const loadProfiler = new LoadProfiler();
 let sharedMarket: SharedMarketManager | undefined;
 const RETRIEVAL_ENGINE_VERSION = "0.3.0.dev2026091601";
 const RETRIEVAL_CONFIGURATION_HASH = createHash("sha256").update("retrieval-boundary-v2|exact-match-v1|bm25-academic-k1=0.9-b=0.4|typed-prior-v1|derived-link-graph-v1").digest("hex");
 let retrievalWorker: RetrievalWorkerManager | undefined;
 let retrievalRefreshTimer: NodeJS.Timeout | undefined;
 let retrievalRefreshRunning: Promise<void> | undefined;
+let skillRouterRuntimeCache: Record<string, unknown> | undefined;
+let skillRouterRuntimeRefresh: Promise<Record<string, unknown>> | undefined;
 let publishedShareRefreshTimer: NodeJS.Timeout | undefined;
 let publishedShareRefreshRunning: Promise<void> | undefined;
 let githubSyncStartupTimer: NodeJS.Timeout | undefined;
@@ -714,31 +821,40 @@ async function skillRouterStatusData(context: vscode.ExtensionContext): Promise<
     documentCount = snapshot.documents.length;
     revision = snapshot.corpus_revision;
   } catch { /* the Knowledge Root may still be initializing */ }
-  let runtime: Record<string, unknown> = { ready: false };
+  let runtime: Record<string, unknown> = skillRouterRuntimeCache || { ready: false };
   if (retrievalWorker) {
+    const refresh = skillRouterRuntimeRefresh ||= retrievalWorker.status()
+      .then(status => {
+        skillRouterRuntimeCache = {
+          ready: status.ready,
+          documentCount: status.document_count,
+          edgeCount: status.edge_count,
+          corpusRevision: status.corpus_revision,
+          readyGeneration: status.ready_generation,
+          buildingGeneration: status.building_generation,
+          engineVersion: status.engine_version,
+          engine: status.engine,
+          configurationHash: status.configuration_hash,
+          schema: status.schema,
+          supportedRoutes: status.supported_routes,
+          unsupportedRoutes: status.unsupported_routes,
+          tokenizers: status.tokenizers,
+          facets: status.facets,
+          updateMode: status.update_mode,
+          limitations: status.limitations,
+          error: status.error,
+        };
+        return skillRouterRuntimeCache;
+      })
+      .finally(() => { skillRouterRuntimeRefresh = undefined; });
     try {
-      const status = await retrievalWorker.status();
-      runtime = {
-        ready: status.ready,
-        documentCount: status.document_count,
-        edgeCount: status.edge_count,
-        corpusRevision: status.corpus_revision,
-        readyGeneration: status.ready_generation,
-        buildingGeneration: status.building_generation,
-        engineVersion: status.engine_version,
-        engine: status.engine,
-        configurationHash: status.configuration_hash,
-        schema: status.schema,
-        supportedRoutes: status.supported_routes,
-        unsupportedRoutes: status.unsupported_routes,
-        tokenizers: status.tokenizers,
-        facets: status.facets,
-        updateMode: status.update_mode,
-        limitations: status.limitations,
-        error: status.error,
-      };
+      const refreshed = await Promise.race([
+        refresh,
+        new Promise<undefined>(resolve => setTimeout(() => resolve(undefined), 1_000)),
+      ]);
+      runtime = refreshed || { ...runtime, refreshing: true };
     } catch (error: any) {
-      runtime = { ready: false, error: error?.message || String(error) };
+      runtime = { ...runtime, ready: false, error: error?.message || String(error) };
     }
   }
   return {
@@ -826,7 +942,7 @@ function schedulePublishedShareRefresh(context: vscode.ExtensionContext, delay =
         title: "PKM: Refreshing published Brokers",
       }, async () => {
         const changed = await sharedMarket?.refreshPublishedShares() || 0;
-        if (changed && panel) void handleMessage({ command: "subscriptionState" }, message => panel?.webview.postMessage(message), context);
+        if (changed && panel) void handleMessage({ command: "subscriptionState", refresh: false }, message => panel?.webview.postMessage(message), context);
       });
     }).catch(error => {
       log.warn(`background Broker refresh failed: ${(error as Error).message}`);
@@ -921,6 +1037,7 @@ async function sharedContentCatalog(): Promise<Record<string, any[]>> {
 const GITHUB_SYNC_TARGETS_SCHEMA = 1;
 const GITHUB_SYNC_SECRET_PREFIX = "personalKnowledge.githubSync.vscode.";
 let githubSyncScheduler: GitHubSyncScheduler | undefined;
+const githubSyncForceUpdateAudit = new Map<string, { actor: string; comment: string }>();
 
 function githubSyncStateDirectory(context: vscode.ExtensionContext): string {
   return path.join(context.globalStorageUri.fsPath, "github-sync");
@@ -961,15 +1078,45 @@ function githubPublicationMigration(context: vscode.ExtensionContext, targetId: 
 async function githubPublicationMigrationSource(
   context: vscode.ExtensionContext,
   target: GitHubSyncTarget,
+  includeRepositoryDigests = false,
 ): Promise<GitHubPublicationMigrationSource> {
   const checkoutRoot = path.join(githubSyncStateDirectory(context), "checkouts");
   const credentials = await readGitHubSyncCredentials(context, target);
   const snapshot = await fetchGitHubRemoteSnapshot(target, checkoutRoot, false, credentials);
   const manifest = await readGitHubRemoteManifest(target, checkoutRoot, snapshot.commit);
-  const repositoryDigests = Object.fromEntries(await Promise.all(snapshot.files.map(async file => [
-    file.path,
-    createHash("sha256").update(await readGitHubRemoteFile(target, checkoutRoot, snapshot.commit, file.path, 64 * 1024 * 1024)).digest("hex"),
-  ])));
+  let repositoryDigests: Record<string, string> | undefined;
+  if (includeRepositoryDigests) {
+    repositoryDigests = {};
+    const maximumBatchBytes = 64 * 1024 * 1024;
+    let batch: typeof snapshot.files = [];
+    let batchBytes = 0;
+    const digestBatch = async () => {
+      if (!batch.length) return;
+      const contents = await readGitHubRemoteFilesForSubscription(
+        target,
+        checkoutRoot,
+        snapshot.commit,
+        batch,
+        maximumBatchBytes,
+      );
+      for (const file of batch) {
+        const content = contents.get(file.path);
+        if (!content) throw new Error(`Remote file could not be read for migration: ${file.path}.`);
+        repositoryDigests![file.path] = createHash("sha256").update(content).digest("hex");
+      }
+      batch = [];
+      batchBytes = 0;
+    };
+    for (const file of snapshot.files) {
+      if (file.size > maximumBatchBytes) {
+        throw new Error(`Remote file is too large to migrate: ${file.path}.`);
+      }
+      if (batch.length && batchBytes + file.size > maximumBatchBytes) await digestBatch();
+      batch.push(file);
+      batchBytes += file.size;
+    }
+    await digestBatch();
+  }
   const catalog = await githubSyncCatalog();
   const folderCount = new Set(snapshot.files.map(file => path.posix.dirname(file.path)).filter(folder => folder !== ".")).size;
   const idCount = new Set(GITHUB_SYNC_CONTENT_TYPES.flatMap(type => catalog[type].map(item => `${type}\0${item.id}`))).size;
@@ -979,6 +1126,7 @@ async function githubPublicationMigrationSource(
     manifest,
     repositoryFiles: snapshot.files.map(file => file.path),
     repositoryDigests,
+    canonicalFiles: githubSyncMigrationCanonicalFiles(catalog, target),
     activeCount: snapshot.files.length,
     trashCount: snapshot.files.filter(file => file.path.split("/").includes(".trash")).length,
     folderCount,
@@ -994,7 +1142,12 @@ function optionalConflictText(filePath: string): string {
   }
 }
 
-function parseAgentMergeResponse(raw: string, type: GitHubSyncContentType): { mergedContent: string; rationale: string; safeToApply: boolean } {
+function parseAgentMergeResponse(raw: string, type: GitHubSyncContentType): {
+  mergedContent: string;
+  rationale: string;
+  safeToApply: boolean;
+  review: GitHubSyncAgentReview;
+} {
   const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
   let parsed: any;
   try { parsed = JSON.parse(cleaned); }
@@ -1002,10 +1155,34 @@ function parseAgentMergeResponse(raw: string, type: GitHubSyncContentType): { me
   const mergedContent = type === "recipes" && parsed?.mergedContent && typeof parsed.mergedContent === "object"
     ? JSON.stringify(parsed.mergedContent, null, 2) + "\n"
     : parsed?.mergedContent;
-  if (typeof mergedContent !== "string" || typeof parsed?.rationale !== "string" || typeof parsed?.safeToApply !== "boolean") {
+  const decisions = Array.isArray(parsed?.decisions) ? parsed.decisions : [];
+  const evidence = Array.isArray(parsed?.evidence) ? parsed.evidence : [];
+  const unresolvedConflicts = Array.isArray(parsed?.unresolvedConflicts) ? parsed.unresolvedConflicts : [];
+  const introducedContent = Array.isArray(parsed?.introducedContent) ? parsed.introducedContent : [];
+  const choices = new Set(["base", "local", "remote", "combined", "removed"]);
+  if (typeof mergedContent !== "string" || typeof parsed?.rationale !== "string" || typeof parsed?.safeToApply !== "boolean"
+    || typeof parsed?.confidence !== "number" || parsed.confidence < 0 || parsed.confidence > 1
+    || !decisions.every((decision: any) => decision && typeof decision.subject === "string"
+      && choices.has(decision.choice) && typeof decision.reason === "string")
+    || !evidence.every((item: unknown) => typeof item === "string")
+    || !unresolvedConflicts.every((item: unknown) => typeof item === "string")
+    || !introducedContent.every((item: unknown) => typeof item === "string")) {
     throw new Error("The Agent merge response is missing required fields.");
   }
-  return { mergedContent, rationale: parsed.rationale, safeToApply: parsed.safeToApply };
+  return {
+    mergedContent,
+    rationale: parsed.rationale,
+    safeToApply: parsed.safeToApply,
+    review: {
+      decisions,
+      evidence,
+      unresolvedConflicts,
+      introducedContent,
+      confidence: parsed.confidence,
+      accuracyRisk: unresolvedConflicts.length > 0 || introducedContent.length > 0 || parsed.confidence < 0.85,
+      humanFinalReviewRequired: true,
+    },
+  };
 }
 
 interface GitHubSyncAgentBatchResult {
@@ -1054,16 +1231,20 @@ async function prepareGitHubSyncAgentCandidates(
           ? "Preserve the Recipe schema, node IDs, dependency graph, required completion nodes, configuration, and compatible changes from both sides. Do not invent unsupported node kinds."
           : "Preserve correct and compatible instructions from both sides, remove stale contradictions, and do not invent unverified facts.",
         recipe
-          ? "Return JSON only with: mergedContent (the complete Recipe JSON object or a complete JSON string), rationale, safeToApply."
-          : "Return JSON only with: mergedContent (complete Skill Markdown), rationale, safeToApply.",
-        "Set safeToApply=false when intent is ambiguous or the result could create an incorrect PKM item.",
+          ? "Return JSON only with: mergedContent (the complete Recipe JSON object or a complete JSON string), rationale, safeToApply, decisions, evidence, unresolvedConflicts, introducedContent, confidence."
+          : "Return JSON only with: mergedContent (complete Skill Markdown), rationale, safeToApply, decisions, evidence, unresolvedConflicts, introducedContent, confidence.",
+        "decisions must be an array of {subject, choice, reason}; choice must be base, local, remote, combined, or removed.",
+        "evidence, unresolvedConflicts, and introducedContent must be string arrays. confidence must be between 0 and 1.",
+        "Treat numbers, dates, citations, factual claims, conclusions, privacy, deletion-vs-modification, executable logic, and ambiguous intent as accuracy-sensitive. List every unresolved accuracy risk. Do not silently invent content.",
+        "Set safeToApply=false when intent is ambiguous, an accuracy-sensitive conflict remains unresolved, or the result could create an incorrect PKM item.",
+        "A human will always perform Final Review before Accept & Push.",
         `Path: ${file.path}`,
         `BASE:\n${variants.base}`,
         `LOCAL:\n${variants.local}`,
         `REMOTE:\n${variants.remote}`,
       ].join("\n\n")), file.type);
       if (!response.safeToApply) throw new Error(`The Agent declined to produce a safe merge for ${file.path}: ${response.rationale}`);
-      updateGitHubSyncAgentCandidate(stateDirectory, targetId, file.path, response.mergedContent, response.rationale);
+      updateGitHubSyncAgentCandidate(stateDirectory, targetId, file.path, response.mergedContent, response.rationale, response.review);
       result.prepared += 1;
     } catch (error: any) {
       if (relative) throw error;
@@ -1085,7 +1266,7 @@ function githubSyncCandidateDestination(root: string, relative: string): string 
   return current;
 }
 
-async function acceptGitHubSyncConflict(context: vscode.ExtensionContext, targetId: string): Promise<number> {
+async function acceptGitHubSyncConflict(context: vscode.ExtensionContext, targetId: string): Promise<{ accepted: number; refreshed: string[] }> {
   const stateDirectory = githubSyncStateDirectory(context);
   const record = readGitHubSyncConflict(stateDirectory, targetId);
   if (!record) throw new Error("GitHub Sync conflict was not found.");
@@ -1099,10 +1280,12 @@ async function acceptGitHubSyncConflict(context: vscode.ExtensionContext, target
   if (snapshot.commit !== record.remoteCommit) throw new Error("The remote branch changed after this conflict was prepared. Sync again before accepting a merge.");
   const recipeSnapshot = currentProjectStore().list();
   const candidates = record.files.map(file => {
-    const content = readGitHubSyncConflictCandidate(stateDirectory, targetId, file.path);
+    const deleteRemote = file.candidateSource === "delete";
+    const content = deleteRemote ? undefined : readGitHubSyncConflictCandidate(stateDirectory, targetId, file.path);
     return {
       file,
       content,
+      deleteRemote,
       originalLocal: file.hasLocal
         ? fs.readFileSync(gitHubSyncConflictVariantPath(stateDirectory, targetId, "local", file.path))
         : undefined,
@@ -1119,14 +1302,25 @@ async function acceptGitHubSyncConflict(context: vscode.ExtensionContext, target
           : githubSyncCandidateDestination(getStorePath(), file.path),
     };
   });
-  for (const { file, content, originalLocal, currentLocal, destination } of candidates) {
+  const refreshed: string[] = [];
+  for (const { file, content, deleteRemote, originalLocal, currentLocal, destination } of candidates) {
     const current = file.type === "recipes"
       ? currentLocal
       : destination && fs.existsSync(destination) ? fs.readFileSync(destination) : undefined;
-    validateGitHubSyncConflictLocalState(file.path, originalLocal, content, current);
+    if (deleteRemote) {
+      if (current) refreshed.push(file.path);
+    } else if (!current?.equals(content!) && !(originalLocal ? current?.equals(originalLocal) : current === undefined)) {
+      refreshed.push(file.path);
+    }
+    if (refreshed.includes(file.path)) {
+      refreshGitHubSyncConflictLocalCandidate(stateDirectory, targetId, file.path, current);
+    }
   }
-  const recipeCandidates = candidates.filter(candidate => candidate.file.type === "recipes").map(candidate => {
-    const recipe = JSON.parse(candidate.content.toString("utf8")) as RecipeRecord;
+  if (refreshed.length) {
+    return { accepted: 0, refreshed };
+  }
+  const recipeCandidates = candidates.filter(candidate => candidate.file.type === "recipes" && !candidate.deleteRemote).map(candidate => {
+    const recipe = JSON.parse(candidate.content!.toString("utf8")) as RecipeRecord;
     if (recipe.recipeId !== candidate.file.itemId) {
       throw new Error(`Recipe identity does not match the conflict record: ${candidate.file.path}`);
     }
@@ -1134,8 +1328,8 @@ async function acceptGitHubSyncConflict(context: vscode.ExtensionContext, target
   });
   replaceGitHubSyncFilesAtomically(
     candidates
-      .filter(candidate => !!candidate.destination)
-      .map(({ destination, content }) => ({ destination: destination!, content })),
+      .filter(candidate => !candidate.deleteRemote && !!candidate.destination)
+      .map(({ destination, content }) => ({ destination: destination!, content: content! })),
     "GitHub Sync conflict acceptance",
   );
   if (recipeCandidates.length) {
@@ -1163,6 +1357,19 @@ async function acceptGitHubSyncConflict(context: vscode.ExtensionContext, target
       branch: current.branch,
       storeRoot: path.resolve(getStorePath()),
     };
+    current.lastResolutionReport = record.resolutionReport;
+    const deletions = candidates.filter(candidate => candidate.deleteRemote).map(({ file }) => ({
+      type: file.type,
+      itemId: file.itemId,
+      deletedAt: new Date().toISOString(),
+      category: file.category,
+      privacy: file.privacy,
+    }));
+    current.pendingDeletions = [
+      ...(current.pendingDeletions || []).filter(existing =>
+        !deletions.some(deletion => deletion.type === existing.type && deletion.itemId === existing.itemId)),
+      ...deletions,
+    ];
     delete current.lastFailure;
     return { targets, result: undefined };
   });
@@ -1171,7 +1378,7 @@ async function acceptGitHubSyncConflict(context: vscode.ExtensionContext, target
   await refreshKnowledgeInventory(context);
   _treeProvider?.refresh();
   githubSyncScheduler?.request(targetId, "manual");
-  return record.files.length;
+  return { accepted: record.files.length, refreshed: [] };
 }
 
 function githubSyncTargetById(context: vscode.ExtensionContext, targetId: string): GitHubSyncTarget {
@@ -1301,7 +1508,8 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
   if (!githubSyncScheduler) {
     githubSyncScheduler = new GitHubSyncScheduler({
       shouldExecute: async (targetId, reason) => {
-        if (readGitHubSyncConflict(githubSyncStateDirectory(context), targetId)) {
+        if (reason !== "force-local-authority" && readGitHubSyncConflict(githubSyncStateDirectory(context), targetId)
+          && !clearEquivalentGitHubSyncConflict(context, targetId)) {
           log.info(`automatic GitHub Sync target=${targetId} reason=${reason} skipped=conflict-awaiting-approval`);
           return false;
         }
@@ -1316,6 +1524,7 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
         githubSyncScheduler?.report(targetId, "waiting-for-lock", "Waiting for Git lock");
         return withGitHubSyncTargetLock(context, targetId, async () => {
           const target = githubSyncTargetById(context, targetId);
+          const forceAudit = githubSyncForceUpdateAudit.get(targetId);
           const attemptedAt = new Date().toISOString();
           try {
             githubSyncScheduler?.report(targetId, "authenticating", "Authenticating GitHub credentials");
@@ -1328,8 +1537,16 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
               credentials,
               getStorePath(),
               (phase, detail) => githubSyncScheduler?.report(targetId, phase, detail),
+              {
+                mode: reason === "force-local-authority" ? "force-local-authority" : "normal",
+                ...(reason === "force-local-authority"
+                  ? {
+                    actor: forceAudit?.actor || target.authentication?.expectedLogin || os.userInfo().username,
+                    comment: forceAudit?.comment,
+                  }
+                  : {}),
+              },
             );
-            githubSyncScheduler?.report(targetId, "refresh-index", "Refreshing the PKM inventory and retrieval index");
             applyGitHubSyncRecipePulls(result.recipePulls);
             applyGitHubSyncRecipeDeletes(result.recipeDeletes);
             for (const [type, topLevels] of Object.entries(result.privateTopLevels)) {
@@ -1339,11 +1556,11 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
               invalidateSharedContentCatalog();
               _treeProvider?.refresh();
             }
-            await refreshKnowledgeInventory(context);
-            await refreshRetrievalIndex(context);
             const updated = await mutateGitHubSyncTargets(context, `sync ${targetId}`, currentTargets => {
               const current = currentTargets.find(candidate => candidate.id === targetId);
               if (!current) return { targets: currentTargets, result: false };
+              const wasInitialSyncCompleted = current.automation.initialSyncCompleted;
+              const migration = githubPublicationMigration(context, targetId).status();
               current.lastSync = {
                 at: new Date().toISOString(),
                 commit: result.commit,
@@ -1352,17 +1569,44 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
                 branch: current.branch,
                 storeRoot: path.resolve(getStorePath()),
               };
+              current.lastResolutionReport = result.resolutionReport;
               const acknowledged = new Set(result.acknowledgedDeletions.map(item => `${item.type}\0${item.itemId}`));
               current.pendingDeletions = (current.pendingDeletions || [])
                 .filter(item => !acknowledged.has(`${item.type}\0${item.itemId}`));
-              if (reason === "manual") {
+              if (reason === "manual" || reason === "force-local-authority") {
                 current.automation.initialSyncCompleted = true;
-                if (current.publication) current.publication.manualVerificationCompleted = true;
+                if (migration?.phase === "cutover") {
+                  current.publication = {
+                    requiredCapability: "stable-entity-identity",
+                    sourceCommit: migration.remoteCommit,
+                    sourceDigest: migration.sourceDigest,
+                    manualVerificationCompleted: true,
+                  };
+                } else if (!wasInitialSyncCompleted && !current.publication) {
+                  current.publication = {
+                    requiredCapability: "stable-entity-identity",
+                    sourceCommit: result.commit,
+                    sourceDigest: createHash("sha256").update(JSON.stringify(result.fingerprints)).digest("hex"),
+                    manualVerificationCompleted: true,
+                  };
+                } else if (current.publication) {
+                  current.publication.manualVerificationCompleted = true;
+                }
               }
               delete current.lastFailure;
               return { targets: currentTargets, result: true };
             });
             if (!updated) return;
+            completeGitHubSyncTransaction(path.join(githubSyncStateDirectory(context), "checkouts"), targetId, result.transactionId);
+            githubSyncScheduler?.report(targetId, "refresh-index", "Refreshing the PKM inventory and retrieval index");
+            try {
+              await refreshKnowledgeInventory(context);
+              await refreshRetrievalIndex(context);
+            } catch (postProcessingError) {
+              const detail = postProcessingError instanceof Error ? postProcessingError.message : String(postProcessingError);
+              log.warn(`GitHub Sync target=${target.name} committed=${result.commit}; inventory/retrieval post-processing will retry: ${detail}`);
+              scheduleRetrievalRefresh(context, 0);
+            }
             githubSyncScheduler?.report(targetId, "scheduled", "Next fetch scheduled");
             log.info(`automatic GitHub Sync target=${target.name} reason=${reason} changed=${result.changed} commit=${result.commit}`);
           } catch (error) {
@@ -1406,6 +1650,7 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
             log.error(`automatic GitHub Sync target=${target.name} reason=${reason}: ${message}`);
             throw error;
           } finally {
+            if (reason === "force-local-authority") githubSyncForceUpdateAudit.delete(targetId);
             if (panel?.visible) void githubSyncStateData(context).then(data => panel?.webview.postMessage({ command: "githubSyncState", data })).catch(error => log.warn(`GitHub Sync state refresh failed: ${(error as Error).message}`));
           }
         });
@@ -1434,7 +1679,6 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
 }
 
 async function subscriptionStateData(context: vscode.ExtensionContext): Promise<object> {
-  await getSharedMarket().refreshGatewayStatus();
   const githubConnections = readGitHubSyncTargets(context).map(target => ({ id: target.id, name: target.name, repository: target.repository, branch: target.branch, method: target.authentication?.method, account: target.authentication?.expectedLogin }));
   return { ...getSharedMarket().snapshot, catalog: await sharedContentCatalog(), networkAddresses: serverNetworkAddresses(), githubConnections };
 }
@@ -1581,7 +1825,7 @@ function githubSyncItem(row: any, type: PrivacyContentType, source: string, dest
 }
 
 function githubSyncRecipeContent(recipe: RecipeRecord): Buffer {
-  return Buffer.from(canonicalJson(recipe) + "\n", "utf8");
+  return githubSyncManagedContent("recipes", Buffer.from(canonicalJson(recipe) + "\n", "utf8"));
 }
 
 function applyGitHubSyncRecipePulls(pulls: GitHubSyncRecipePull[]): void {
@@ -1600,6 +1844,7 @@ function applyGitHubSyncRecipePulls(pulls: GitHubSyncRecipePull[]): void {
     );
     const recipe = JSON.parse(pull.content.toString("utf8")) as RecipeRecord;
     if (recipe.recipeId !== pull.itemId) throw new Error(`Recipe identity does not match the remote manifest: ${pull.path}`);
+    if (current?.editorLayout) recipe.editorLayout = current.editorLayout;
     return recipe;
   });
   store.replaceRecipesFromSync(projectCommand(store, "recipe-github-pull", {
@@ -1659,6 +1904,61 @@ async function githubSyncCatalog(): Promise<GitHubSyncCatalog> {
   return { skills, notes, papers, prompts, scripts, packages, servers, recipes, agentSnapshots };
 }
 
+function refreshStaleGitHubSyncConflicts(context: vscode.ExtensionContext): number {
+  const stateDirectory = githubSyncStateDirectory(context);
+  const recipeContent = new Map(currentProjectStore().recipeSyncEntries()
+    .map(entry => [entry.recipe.recipeId, Buffer.from(entry.content, "utf8")]));
+  let refreshed = 0;
+  for (const record of listGitHubSyncConflicts(stateDirectory)) {
+    for (const file of record.files) {
+      const current = file.type === "recipes"
+        ? recipeContent.get(file.itemId)
+        : (() => {
+          const destination = file.path.startsWith("agentSnapshots/")
+            ? githubSyncCandidateDestination(path.join(getStorePath(), ".pkm", "state"), `agent-snapshots/${file.path.slice("agentSnapshots/".length)}`)
+            : githubSyncCandidateDestination(getStorePath(), file.path);
+          return fs.existsSync(destination) ? fs.readFileSync(destination) : undefined;
+        })();
+      const selected = file.candidateSource !== "unresolved" && file.candidateSource !== "delete"
+        ? readGitHubSyncConflictCandidate(stateDirectory, record.targetId, file.path)
+        : undefined;
+      if (selected && current?.equals(selected)) continue;
+      const original = file.hasLocal
+        ? fs.readFileSync(gitHubSyncConflictVariantPath(stateDirectory, record.targetId, "local", file.path))
+        : undefined;
+      if (original ? current?.equals(original) : current === undefined) continue;
+      refreshGitHubSyncConflictLocalCandidate(stateDirectory, record.targetId, file.path, current);
+      refreshed++;
+    }
+  }
+  return refreshed;
+}
+
+function clearEquivalentGitHubSyncConflict(context: vscode.ExtensionContext, targetId: string): boolean {
+  const stateDirectory = githubSyncStateDirectory(context);
+  const record = readGitHubSyncConflict(stateDirectory, targetId);
+  if (!record?.files.length || record.files.some(file => !file.hasRemote)) return false;
+  const recipeContent = new Map(currentProjectStore().recipeSyncEntries()
+    .map(entry => [entry.recipe.recipeId, Buffer.from(entry.content, "utf8")]));
+  const equivalent = record.files.every(file => {
+    const current = file.type === "recipes"
+      ? recipeContent.get(file.itemId)
+      : (() => {
+        const destination = file.path.startsWith("agentSnapshots/")
+          ? githubSyncCandidateDestination(path.join(getStorePath(), ".pkm", "state"), `agent-snapshots/${file.path.slice("agentSnapshots/".length)}`)
+          : githubSyncCandidateDestination(getStorePath(), file.path);
+        return fs.existsSync(destination) ? fs.readFileSync(destination) : undefined;
+      })();
+    if (!current) return false;
+    const remote = fs.readFileSync(gitHubSyncConflictVariantPath(stateDirectory, targetId, "remote", file.path));
+    return current.equals(remote);
+  });
+  if (!equivalent) return false;
+  clearGitHubSyncConflict(stateDirectory, targetId);
+  log.info(`cleared identity-only GitHub Sync conflict target=${targetId} files=${record.files.length}`);
+  return true;
+}
+
 async function githubSyncStateData(context: vscode.ExtensionContext): Promise<object> {
   const targets = readGitHubSyncTargets(context);
   const accounts = new Set(await discoverGitHubCredentialManagerAccounts());
@@ -1668,11 +1968,12 @@ async function githubSyncStateData(context: vscode.ExtensionContext): Promise<ob
     if (target.authentication?.method === "ssh" && target.authentication.identityFile) identities.add(target.authentication.identityFile);
   }
   const catalog = await githubSyncCatalog();
-  const currentFingerprints: Record<string, Partial<Record<GitHubSyncContentType, string>>> = {};
-  for (const target of targets) {
-    try { currentFingerprints[target.id] = githubSyncTargetFingerprints(target, catalog); }
-    catch { currentFingerprints[target.id] = {}; }
+  for (const record of listGitHubSyncConflicts(githubSyncStateDirectory(context))) {
+    clearEquivalentGitHubSyncConflict(context, record.targetId);
   }
+  const refreshedConflicts = refreshStaleGitHubSyncConflicts(context);
+  if (refreshedConflicts) log.info(`refreshed ${refreshedConflicts} stale GitHub Sync conflict candidate${refreshedConflicts === 1 ? "" : "s"}`);
+  const currentFingerprints: Record<string, Partial<Record<GitHubSyncContentType, string>>> = {};
   const shields = Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type => [type, githubSyncShield(targets, type, currentFingerprints)]));
   const uiCatalog = Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type => [type, catalog[type].map(({ source, content, destination, ...item }) => item)]));
   const connected: Record<string, boolean> = {};
@@ -1683,6 +1984,7 @@ async function githubSyncStateData(context: vscode.ExtensionContext): Promise<ob
     targets,
     catalog: uiCatalog,
     shields,
+    fingerprintsDeferred: true,
     runtime: githubSyncScheduler?.snapshot() || {},
     migrations: Object.fromEntries(targets.flatMap(target => {
       const status = githubPublicationMigration(context, target.id).status();
@@ -1692,6 +1994,7 @@ async function githubSyncStateData(context: vscode.ExtensionContext): Promise<ob
       id: record.id,
       remoteCommit: record.remoteCommit,
       createdAt: record.createdAt,
+      resolutionReport: record.resolutionReport,
       files: record.files.map(file => ({
         path: file.path,
         type: file.type,
@@ -1700,6 +2003,7 @@ async function githubSyncStateData(context: vscode.ExtensionContext): Promise<ob
         hasRemote: file.hasRemote,
         candidateSource: file.candidateSource,
         rationale: file.rationale,
+        agentReview: file.agentReview,
       })),
     }])),
     connected,
@@ -4496,6 +4800,11 @@ function initializePanel(target: vscode.WebviewPanel, context: vscode.ExtensionC
   const htmlDuration = Date.now() - htmlStartedAt;
   if (performanceStateDir) recordPerformanceMetric(performanceStateDir, "startup.panel_html_ms", htmlDuration, html.length);
   target.webview.html = html;
+  loadProfiler.record("host.panel.html_ready", {
+    restored,
+    durationMs: htmlDuration,
+    htmlBytes: html.length,
+  });
   log.info(`panel ${restored ? "restored" : "created"} (html ${html.length} bytes, generated ${htmlDuration}ms)`);
 
   // Debug: dump generated HTML for inspection (debug level only)
@@ -4509,7 +4818,29 @@ function initializePanel(target: vscode.WebviewPanel, context: vscode.ExtensionC
   target.webview.onDidReceiveMessage(
     msg => {
       log.debug(`webview → ${JSON.stringify(msg).slice(0, 200)}`);
-      handleMessage(msg, m => panel?.webview.postMessage(m), context);
+      const traceId = String(msg.profileRequestId || "");
+      const startedAt = performance.now();
+      if (traceId) {
+        loadProfiler.record("host.request.received", {
+          traceId,
+          command: String(msg.command || ""),
+          surface: String(msg.profileSurface || ""),
+          workspace: String(msg.profileWorkspace || ""),
+        });
+      }
+      void handleMessage(msg, m => panel?.webview.postMessage({
+        ...m,
+        ...(traceId ? { profileRequestId: traceId } : {}),
+      }), context).finally(() => {
+        if (traceId) {
+          loadProfiler.record("host.request.completed", {
+            traceId,
+            command: String(msg.command || ""),
+            surface: String(msg.profileSurface || ""),
+            durationMs: Math.round(performance.now() - startedAt),
+          });
+        }
+      });
     },
     undefined, context.subscriptions
   );
@@ -4517,6 +4848,7 @@ function initializePanel(target: vscode.WebviewPanel, context: vscode.ExtensionC
   target.onDidDispose(() => {
     if (panel === target) panel = undefined;
     _panelReady = false;
+    loadProfiler.record("host.panel.disposed", { heartbeatAgeMs: Date.now() - _panelLastHeartbeat });
     log.info(`panel disposed visible=${target.visible} active=${target.active} heartbeatAgeMs=${Date.now() - _panelLastHeartbeat}${_panelLastDiagnostic ? ` lastDiagnostic=${_panelLastDiagnostic}` : ""}`);
   }, undefined, context.subscriptions);
 }
@@ -4613,6 +4945,44 @@ async function handleMessage(
       break;
     }
 
+    case "loadProfileEvent": {
+      loadProfiler.record(String(msg.event || ""), {
+        traceId: String(msg.traceId || ""),
+        command: String(msg.profileCommand || ""),
+        surface: String(msg.surface || ""),
+        workspace: String(msg.workspace || ""),
+        durationMs: Math.max(0, Math.round(Number(msg.durationMs) || 0)),
+      });
+      break;
+    }
+
+    case "setLoadProfiling": {
+      const enabled = !!msg.enabled;
+      if (!enabled) loadProfiler.record("profiling.disabled", { surface: "mcp" });
+      await vscode.workspace.getConfiguration("personalKnowledge").update(
+        "loadProfilingEnabled", enabled, vscode.ConfigurationTarget.Global);
+      loadProfiler.refresh();
+      if (enabled) loadProfiler.record("profiling.enabled", { surface: "mcp" });
+      respond({ command: "mcpStatus", data: mcpPanelStatusData(String(msg.profileRequestId || "")) });
+      break;
+    }
+
+    case "showLoadProfilingOutput": {
+      loadProfiler.show();
+      break;
+    }
+
+    case "openLoadProfilingLog": {
+      await loadProfiler.open();
+      break;
+    }
+
+    case "clearLoadProfilingLog": {
+      loadProfiler.clear();
+      if (loadProfiler.enabled()) loadProfiler.record("profiling.cleared", { surface: "mcp" });
+      break;
+    }
+
     case "webviewStartupTiming": {
       const scriptStartMs = Math.max(0, Number(msg.scriptStartMs) || 0);
       const firstPaintMs = Math.max(0, Number(msg.firstPaintMs) || 0);
@@ -4622,6 +4992,7 @@ async function handleMessage(
         recordPerformanceMetric(performanceStateDir, "startup.webview_first_paint_ms", firstPaintMs);
         if (firstContentfulPaintMs) recordPerformanceMetric(performanceStateDir, "startup.webview_first_contentful_paint_ms", firstContentfulPaintMs);
       }
+      loadProfiler.record("webview.startup", { scriptStartMs, firstPaintMs, firstContentfulPaintMs });
       log.info(`webview startup scriptStartMs=${scriptStartMs} firstPaintMs=${firstPaintMs} firstContentfulPaintMs=${firstContentfulPaintMs}`);
       break;
     }
@@ -4629,6 +5000,11 @@ async function handleMessage(
     case "webviewLibraryTiming": {
       const durationMs = Math.max(0, Number(msg.durationMs) || 0);
       if (performanceStateDir) recordPerformanceMetric(performanceStateDir, "startup.webview_libraries_ms", durationMs);
+      loadProfiler.record("webview.libraries", {
+        durationMs,
+        loaded: Number(msg.loaded) || 0,
+        failed: Number(msg.failed) || 0,
+      });
       log.debug(`webview markdown libraries durationMs=${durationMs} loaded=${Number(msg.loaded) || 0} failed=${Number(msg.failed) || 0}`);
       break;
     }
@@ -4672,7 +5048,14 @@ async function handleMessage(
         _pendingMcpRegenerateHighlight = false;
         respond({ command: "highlightMcpRegenerate" });
       }
-      respond({ command: "mcpStatus", data: mcpPanelStatusData() });
+      respond({
+        command: "mcpSummary",
+        data: {
+          ...mcpStatus(),
+          extensionVersion: String(context.extension?.packageJSON?.version || "unknown"),
+          loadProfiling: { enabled: loadProfiler.enabled() },
+        },
+      });
       respond({ command: "backgroundTasks", data: backgroundTaskRegistry.snapshot() });
       const version = String(context.extension?.packageJSON?.version || "").trim();
       const previousVersion = context.globalState.get<string>(TOUR_LAST_SEEN_RELEASE_KEY, "")
@@ -4686,7 +5069,6 @@ async function handleMessage(
       });
       respond({ command: "tourCatalog", data: { version, modules: FEATURE_TOUR_MODULES } });
       if (experience) respond({ command: "initialExperience", data: experience });
-      void sendMcpPathSizes(respond);
       break;
     }
 
@@ -4748,6 +5130,12 @@ async function handleMessage(
 
     case "subscriptionState": {
       respond({ command: "subscriptionState", data: await subscriptionStateData(context) });
+      if (msg.refresh !== false) {
+        void getSharedMarket().refreshGatewayStatus()
+          .then(() => subscriptionStateData(context))
+          .then(data => respond({ command: "subscriptionState", data }))
+          .catch(error => log.warn(`Subscription gateway status refresh failed: ${error instanceof Error ? error.message : String(error)}`));
+      }
       break;
     }
 
@@ -5970,7 +6358,7 @@ async function handleMessage(
       const action = String(msg.action || "");
       const receipt = await withGitHubSyncTargetLock(context, targetId, async () => {
         const target = githubSyncTargetById(context, targetId);
-        const source = await githubPublicationMigrationSource(context, target);
+        const source = await githubPublicationMigrationSource(context, target, action === "stage");
         const migration = githubPublicationMigration(context, targetId);
         const result = action === "preview" ? migration.preview(source)
           : action === "stage" ? migration.stage(source)
@@ -6003,6 +6391,53 @@ async function handleMessage(
         target.automation.enabled = false;
       }
       const queued = githubSyncScheduler?.request(targetId, "manual") === true;
+      respond({ command: "githubSyncRunQueued", data: { targetId, queued } });
+      respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
+      break;
+    }
+
+    case "githubSyncForceUpdate": {
+      const targetId = String(msg.targetId || "");
+      const target = githubSyncTargetById(context, targetId);
+      const migration = githubPublicationMigration(context, targetId).status();
+      if (migration && migration.phase !== "cutover" && migration.phase !== "rolled-back") {
+        throw new Error(`Complete or roll back the ${migration.phase} GitHub publication migration before Force Update.`);
+      }
+      const comment = await vscode.window.showInputBox({
+        title: `Force Update ${target.name}`,
+        prompt: "Explain why this destructive local-authority update is required.",
+        placeHolder: "Required audit comment",
+        ignoreFocusOut: true,
+        validateInput: value => value.trim() ? undefined : "A reason is required.",
+      });
+      if (comment === undefined) {
+        respond({ command: "githubSyncRunQueued", data: { targetId, queued: false } });
+        break;
+      }
+      const actor = target.authentication?.expectedLogin || os.userInfo().username;
+      const confirmation = await vscode.window.showWarningMessage(
+        `Force Update ${target.name} from this machine?`,
+        {
+          modal: true,
+          detail: `Actor: ${actor}\nReason: ${comment.trim()}\n\nThis makes the current machine-local selected projection authoritative. Selected GitHub files that are absent locally will be deleted, and conflicting GitHub edits will be overwritten. Unselected GitHub content is preserved. The branch is fetched again and protected by a compare-and-swap lease before push.`,
+        },
+        "Force Update GitHub",
+      );
+      if (confirmation !== "Force Update GitHub") {
+        respond({ command: "githubSyncRunQueued", data: { targetId, queued: false } });
+        break;
+      }
+      clearGitHubSyncConflict(githubSyncStateDirectory(context), targetId);
+      await mutateGitHubSyncTargets(context, `force update ${targetId}`, targets => {
+        const current = targets.find(candidate => candidate.id === targetId);
+        if (!current) throw new Error("GitHub Sync target was not found.");
+        current.automation.enabled = false;
+        return { targets, result: undefined };
+      });
+      configureGitHubSyncScheduler(context);
+      githubSyncForceUpdateAudit.set(targetId, { actor, comment: comment.trim() });
+      const queued = githubSyncScheduler?.request(targetId, "force-local-authority") === true;
+      if (!queued) githubSyncForceUpdateAudit.delete(targetId);
       respond({ command: "githubSyncRunQueued", data: { targetId, queued } });
       respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
       break;
@@ -6058,6 +6493,22 @@ async function handleMessage(
       break;
     }
 
+    case "githubSyncConflictDelete": {
+      const targetId = String(msg.targetId || "");
+      const relative = String(msg.path || "");
+      selectGitHubSyncConflictDeletion(githubSyncStateDirectory(context), targetId, relative);
+      respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
+      break;
+    }
+
+    case "githubSyncConflictDeleteAll": {
+      const targetId = String(msg.targetId || "");
+      const result = selectAllGitHubSyncConflictDeletions(githubSyncStateDirectory(context), targetId);
+      vscode.window.showWarningMessage(`Prepared ${result.selected} deletion${result.selected === 1 ? "" : "s"} for GitHub. Nothing is deleted until Apply resolutions & Sync succeeds.`);
+      respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
+      break;
+    }
+
     case "githubSyncConflictValidate": {
       const targetId = String(msg.targetId || "");
       const relative = String(msg.path || "");
@@ -6095,8 +6546,14 @@ async function handleMessage(
 
     case "githubSyncConflictAccept": {
       const targetId = String(msg.targetId || "");
-      const count = await withGitHubSyncTargetLock(context, targetId, () => acceptGitHubSyncConflict(context, targetId));
-      vscode.window.showInformationMessage(`Accepted ${count} GitHub Sync merge candidate${count === 1 ? "" : "s"}. Push is queued.`);
+      const result = await withGitHubSyncTargetLock(context, targetId, () => acceptGitHubSyncConflict(context, targetId));
+      if (result.refreshed.length) {
+        vscode.window.showWarningMessage(
+          `${result.refreshed.length} machine-local file${result.refreshed.length === 1 ? "" : "s"} changed after the conflict was prepared. The conflict choices were refreshed; review them again before applying.`
+        );
+      } else {
+        vscode.window.showInformationMessage(`Accepted ${result.accepted} GitHub Sync merge candidate${result.accepted === 1 ? "" : "s"}. Push is queued.`);
+      }
       respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
       break;
     }
@@ -6151,6 +6608,11 @@ async function handleMessage(
       const requestSequence = ++knowledgeListRequestSequence;
       latestKnowledgeListRequest.set(String(tab || ""), requestSequence);
       const listStartedAt = Date.now();
+      const profileFields = {
+        traceId: String(msg.profileRequestId || ""),
+        surface: String(tab || ""),
+        workspace: String(msg.profileWorkspace || "knowledge"),
+      };
       const useInventory = !msg.fresh;
       const openingMessage = ({
         skills: "Opening the spellbook…",
@@ -6167,41 +6629,48 @@ async function handleMessage(
       let listPattern: RegExp | undefined;
       try { listPattern = new RegExp(source, searchOptions.caseSensitive ? "" : "i"); } catch { /* invalid regex returns no matches */ }
       const listMatches = (value: unknown) => !!listPattern?.test(JSON.stringify(value));
-      let data: unknown;
-      if (tab === "skills")    data = q ? skillSearch(q, searchOptions) : useInventory && knowledgeInventory?.snapshot.revision && filter === "all" ? knowledgeInventory.skills() : skillList(filter === "all" ? undefined : filter);
-      else if (tab === "notes")   data = q ? noteSearch(q, searchOptions) : useInventory && knowledgeInventory?.notes().length ? knowledgeInventory.notes() : noteList(undefined, 500); // persisted inventory first
-      else if (tab === "papers")  data = q ? paperSearch(q, searchOptions) : paperList();
-      else if (tab === "prompts")  data = q ? promptList().filter(listMatches) : promptList();
-      else if (tab === "packages") { const rows = packagesWithGit(); data = q ? rows.filter(listMatches) : rows; }
-      else if (tab === "scripts")  data = q ? scriptSearch(q, searchOptions) : useInventory && knowledgeInventory?.snapshot.revision ? knowledgeInventory.scripts() : scriptList();
-      else data = [];
+      const data = loadProfiler.measure("host.list.source", profileFields, (): unknown => {
+        if (tab === "skills") return q ? skillSearch(q, searchOptions) : useInventory && knowledgeInventory?.snapshot.revision && filter === "all" ? knowledgeInventory.skills() : skillList(filter === "all" ? undefined : filter);
+        if (tab === "notes") return q ? noteSearch(q, searchOptions) : useInventory && knowledgeInventory?.notes().length ? knowledgeInventory.notes() : noteList(undefined, 500);
+        if (tab === "papers") return q ? paperSearch(q, searchOptions) : paperList();
+        if (tab === "prompts") { const rows = promptList(); return q ? rows.filter(listMatches) : rows; }
+        if (tab === "packages") { const rows = packagesWithGit(); return q ? rows.filter(listMatches) : rows; }
+        if (tab === "scripts") return q ? scriptSearch(q, searchOptions) : useInventory && knowledgeInventory?.snapshot.revision ? knowledgeInventory.scripts() : scriptList();
+        return [];
+      });
+      let projectedData = data;
       let brokerSharedFolders: Record<string, any> = {};
-      if (SHARED_CONTENT_TYPES.includes(tab as SharedContentType) && Array.isArray(data)) {
+      loadProfiler.measure("host.list.sharing", profileFields, () => {
+        if (!SHARED_CONTENT_TYPES.includes(tab as SharedContentType) || !Array.isArray(projectedData)) return;
         const type = tab as SharedContentType;
-        const markers = brokerShareMarkers(type, data, (sharedMarket?.snapshot as any)?.shares || []);
+        const markers = brokerShareMarkers(type, projectedData, (sharedMarket?.snapshot as any)?.shares || []);
         brokerSharedFolders = markers.folders;
-        data = data.map(item => ({
+        projectedData = projectedData.map(item => ({
           ...item,
           isPrivate: isContentItemPrivate(type as PrivacyContentType, item),
           brokerShares: markers.items[sharedContentIdentity(type, item)]?.brokers || [],
         }));
-      }
+      });
       const isGroupedKnowledgeArea = tab === "skills" || tab === "notes" || tab === "papers";
-      const folders = isGroupedKnowledgeArea ? (tab === "notes" && useInventory && knowledgeInventory?.snapshot.revision ? knowledgeInventory.folders("notes") : folderList(tab)) : undefined;
-      const knowledgeGroups = isGroupedKnowledgeArea
+      const folders = loadProfiler.measure("host.list.folders", profileFields, () =>
+        isGroupedKnowledgeArea ? (tab === "notes" && useInventory && knowledgeInventory?.snapshot.revision ? knowledgeInventory.folders("notes") : folderList(tab)) : undefined);
+      const knowledgeGroups = loadProfiler.measure("host.list.groups", profileFields, () => isGroupedKnowledgeArea
         ? knowledgeGroupSnapshot(tab, [
           ...(folders || []),
-          ...(Array.isArray(data) ? data.map(item => String(item?.category || "")).filter(Boolean) : []),
+          ...(Array.isArray(projectedData) ? projectedData.map(item => String(item?.category || "")).filter(Boolean) : []),
         ])
-        : undefined;
+        : undefined);
       const trashAreas = ["notes", "papers", "prompts", "scripts"] as KnowledgeTrashArea[];
-      const knowledgeTrash = tab === "skills" ? skillTrashList() : trashAreas.includes(tab as KnowledgeTrashArea) ? knowledgeTrashList(tab as KnowledgeTrashArea) : [];
-      const privacyTopLevels = SHARED_CONTENT_TYPES.includes(tab as SharedContentType) ? privateTopLevels(tab as PrivacyContentType) : [];
-      const itemCount = Array.isArray(data) ? data.length : 0;
+      const knowledgeTrash = loadProfiler.measure("host.list.trash", profileFields,
+        () => tab === "skills" ? skillTrashList() : trashAreas.includes(tab as KnowledgeTrashArea) ? knowledgeTrashList(tab as KnowledgeTrashArea) : []);
+      const privacyTopLevels = loadProfiler.measure("host.list.privacy", profileFields,
+        () => SHARED_CONTENT_TYPES.includes(tab as SharedContentType) ? privateTopLevels(tab as PrivacyContentType) : []);
+      const itemCount = Array.isArray(projectedData) ? projectedData.length : 0;
       const folderCount = Array.isArray(folders) ? folders.length : 0;
       if (!msg.silent) respond({ command: "loadingProgress", data: { stage: "building-tree", percent: 78, current: itemCount, total: itemCount, message: "Arranging the enchanted shelves…", detail: `${folderCount} folders` } });
       await new Promise(resolve => setImmediate(resolve));
-      respond({ command: "list", tab, data, folders, knowledgeGroups, subscriptionGroups: [], knowledgeTrash, privateTopLevels: privacyTopLevels, brokerSharedFolders });
+      loadProfiler.measure("host.list.respond", { ...profileFields, itemCount, folderCount }, () =>
+        respond({ command: "list", tab, data: projectedData, folders, knowledgeGroups, subscriptionGroups: [], knowledgeTrash, privateTopLevels: privacyTopLevels, brokerSharedFolders }));
       const localDuration = Date.now() - listStartedAt;
       if (performanceStateDir) recordPerformanceMetric(performanceStateDir, "cattree.local_list_ms", localDuration, itemCount);
       if (localDuration > 250) log.warn(`slow local CatTree list tab=${tab} durationMs=${localDuration} items=${itemCount}`);
@@ -7866,9 +8335,19 @@ async function handleMessage(
 
     // ── MCP ──────────────────────────────────────────────────────────────
     case "checkMcp": {
-      respond({ command: "mcpStatus", data: mcpPanelStatusData() });
-      void sendMcpPathSizes(respond);
+      respond({ command: "mcpStatus", data: mcpPanelStatusData(String(msg.profileRequestId || ""), false) });
       void maintainPkmIntegration(context);
+      break;
+    }
+
+    case "refreshMcpUsage": {
+      const activeStorePath = _storeReady ? getStorePath() : "";
+      respond({
+        command: "mcpUsage",
+        data: activeStorePath
+          ? mcpUsageSummary(activeStorePath)
+          : { sessions: [], measurementNote: "Configure a Knowledge Root to observe MCP usage." },
+      });
       break;
     }
 
@@ -9332,6 +9811,22 @@ async function firstTimeSetup(context: vscode.ExtensionContext, reconfigure = fa
 
   } else return undefined;
 
+  chosenPath = path.resolve(chosenPath);
+  const cloudStore = cloudSynchronizedPath(chosenPath);
+  if (cloudStore) {
+    const cloudChoice = await vscode.window.showWarningMessage(
+      `${cloudStore.provider} is not recommended for the Knowledge Root.`,
+      {
+        modal: true,
+        detail: `${chosenPath}\n\nCloud-drive clients can lock files, expose placeholders, and race PKM's atomic writes or renames, causing permission and consistency errors. GitHub Sync already provides cross-machine synchronization and version history, so a normal local folder is more reliable.`,
+      },
+      "Choose Another Location",
+      "Use Cloud Folder Anyway",
+    );
+    if (cloudChoice === "Choose Another Location") return firstTimeSetup(context, reconfigure);
+    if (cloudChoice !== "Use Cloud Folder Anyway") return undefined;
+  }
+
   // Create the folder if it doesn't exist
   if (!fs.existsSync(chosenPath)) {
     if (!usedRecommendedPath) {
@@ -9345,7 +9840,6 @@ async function firstTimeSetup(context: vscode.ExtensionContext, reconfigure = fa
     fs.mkdirSync(chosenPath, { recursive: true });
   }
 
-  chosenPath = path.resolve(chosenPath);
   if (!usedRecommendedPath) {
     const confirmed = await vscode.window.showInformationMessage(
       `Use this machine-local Knowledge Root?`,
@@ -9453,6 +9947,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   firstContentRecorded = false;
   performanceStateDir = path.join(context.globalStorageUri.fsPath, "performance");
   log.init(context);
+  loadProfiler.init(context);
+  loadProfiler.record("host.activation.started");
   log.info(`activating extension v${context.extension?.packageJSON?.version ?? "?"}`);
   context.subscriptions.push(backgroundTaskRegistry.subscribe(snapshot => {
     if (panel && _panelReady) void panel.webview.postMessage({ command: "backgroundTasks", data: snapshot });
@@ -9482,6 +9978,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.languages.registerCodeLensProvider([{ language: "markdown", scheme: "file" }, { language: "markdown", scheme: "pkm-content" }], new KnowledgeMetadataCodeLensProvider()),
     vscode.workspace.onDidChangeConfiguration(e => {
       if (e.affectsConfiguration("personalKnowledge.logLevel")) log.refreshLevel();
+      if (e.affectsConfiguration("personalKnowledge.loadProfilingEnabled")) loadProfiler.refresh();
       if (e.affectsConfiguration("personalKnowledge.chatHistoryLimitMB")) applyChatArchiveCfg();
       if (e.affectsConfiguration("personalKnowledge.externalLinkHost")) {
         const selected = externalLinkHostOptions();
@@ -10728,6 +11225,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const activationDuration = Date.now() - activationStartedAt;
   recordPerformanceMetric(performanceStateDir, "startup.activation_ms", activationDuration);
+  loadProfiler.record("host.activation.completed", { durationMs: activationDuration });
   log.info(`activation complete durationMs=${activationDuration}`);
   setImmediate(() => {
     panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "servers", percent: 12, message: "Preparing the Muggle gateway…" } });
