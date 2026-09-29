@@ -1,8 +1,13 @@
 // ── Python Environments dashboard ───────────────────────────────────────────
 let envCache = [];
+let envFocusId = '';
 const ENV_MGR_COLOR = { conda: '#3fb950', venv: '#4daafc', uv: '#a371f7', other: '#8b949e' };
 function renderEnvDashboard(envs) {
   envCache = envs || [];
+  if (envFocusId) {
+    const environment = envCache.find(item => item.id === envFocusId);
+    if (environment) expandCategoryPath(envCategory(environment), 'environments');
+  }
   document.getElementById('detail').innerHTML = `
     <div class="dash">
       <div class="dash-hd">
@@ -19,6 +24,29 @@ function renderEnvDashboard(envs) {
       <div id="env-out"></div>
     </div>`;
   renderEnvTree();
+  if (envFocusId) {
+    const focused = document.querySelector(`.env-card[data-env-id="${CSS.escape(encodeURIComponent(envFocusId))}"]`);
+    if (focused) {
+      focused.classList.add('env-card-focused');
+      focused.focus({ preventScroll: true });
+      focused.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setTimeout(() => focused.classList.remove('env-card-focused'), 2200);
+      envFocusId = '';
+    }
+  }
+}
+function focusEnvironmentDashboard(environmentId) {
+  envFocusId = String(environmentId || '');
+  const tab = document.querySelector('.tab[data-tab="environments"]');
+  if (state.tab !== 'environments' && tab) {
+    tab.dispatchEvent(new MouseEvent('click'));
+    return;
+  }
+  if (!envCache.find(item => item.id === envFocusId)) {
+    ask('envList', {});
+    return;
+  }
+  renderEnvDashboard(envCache);
 }
 function refreshEnvDashboard() {
   const button = document.getElementById('env-refresh-btn');
@@ -49,7 +77,7 @@ function envCategory(e) {
 function envCardHtml(e, indent) {
   const size = typeof e.sizeBytes === 'number' ? humanSizeJs(e.sizeBytes) : '';
   const disabled = e.missing ? ' disabled' : '';
-  return `<div class="env-card" style="margin-left:${indent}px;${e.missing ? 'border-color:#f8717166;opacity:.8' : ''}">
+  return `<div class="env-card" tabindex="-1" data-env-id="${encodeURIComponent(e.id)}" style="margin-left:${indent}px;${e.missing ? 'border-color:#f8717166;opacity:.8' : ''}">
       <div class="ec-row">
         <span class="env-badge" style="background:${ENV_MGR_COLOR[e.manager] || '#8b949e'}">${esc(e.manager)}</span>
         <b>${esc(e.name)}</b>

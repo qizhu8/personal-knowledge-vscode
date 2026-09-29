@@ -2988,6 +2988,7 @@ let _pendingOpen: { type: string; key: string; edit?: boolean; tab?: string } | 
 let _pendingTab: string | undefined;           // tab to switch to once the webview is ready
 let _pendingSubscriptionShare: string | undefined;
 let _pendingServerSlug: string | undefined;
+let _pendingEnvironmentId: string | undefined;
 let _pendingMcpRegenerateHighlight = false;
 let _nativeMcpProvider = false;
 let _mcpDefinitionsChanged: vscode.EventEmitter<void> | undefined;
@@ -3063,6 +3064,16 @@ function openServerPanel(context: vscode.ExtensionContext, slug = ""): void {
   else {
     _pendingTab = "servers";
     _pendingServerSlug = slug;
+  }
+}
+
+function openEnvironmentPanel(context: vscode.ExtensionContext, environmentId = ""): void {
+  const target = getOrCreatePanel(context);
+  target.reveal(vscode.ViewColumn.One);
+  if (_panelReady) target.webview.postMessage({ command: "focusEnvironment", environmentId });
+  else {
+    _pendingTab = "environments";
+    _pendingEnvironmentId = environmentId;
   }
 }
 
@@ -5208,6 +5219,11 @@ async function handleMessage(
         const slug = _pendingServerSlug;
         _pendingServerSlug = undefined;
         respond({ command: "focusServer", slug });
+      }
+      if (_pendingEnvironmentId !== undefined) {
+        const environmentId = _pendingEnvironmentId;
+        _pendingEnvironmentId = undefined;
+        respond({ command: "focusEnvironment", environmentId });
       }
       if (_pendingMcpRegenerateHighlight) {
         _pendingMcpRegenerateHighlight = false;
@@ -9169,7 +9185,7 @@ function maintainPkmIntegration(context: vscode.ExtensionContext): Promise<void>
 // ── Sidebar tree provider ──────────────────────────────────────────────────
 type PkNodeType =
   | 'module-knowledge' | 'module-tools' | 'module-automation' | 'module-projects' | 'module-settings'
-  | 'page-agent-sessions' | 'page-agent-snapshots' | 'page-recipes' | 'page-projects' | 'page-skill-router' | 'page-background-tasks'
+  | 'page-agent-sessions' | 'page-agent-snapshots' | 'page-recipes' | 'page-projects' | 'page-skill-router' | 'page-github-sync' | 'page-background-tasks'
   | 'recipe-folder' | 'recipe'
   | 'root-skills' | 'root-notes' | 'root-papers' | 'root-prompts' | 'root-packages' | 'root-scripts' | 'root-environments' | 'root-servers' | 'root-chatroom' | 'root-subscriptions' | 'root-mcp'
   | 'environment-group' | 'environment-item'
@@ -9203,7 +9219,7 @@ class PkTreeItem extends vscode.TreeItem {
     super(label, collapsibleState);
     const ICONS: Partial<Record<PkNodeType, string>> = {
       "module-knowledge": "library", "module-tools": "tools", "module-automation": "run-all", "module-projects": "project", "module-settings": "settings-gear",
-      "page-agent-sessions": "hubot", "page-agent-snapshots": "save", "page-recipes": "notebook", "page-projects": "project", "page-skill-router": "git-branch",
+      "page-agent-sessions": "hubot", "page-agent-snapshots": "save", "page-recipes": "notebook", "page-projects": "project", "page-skill-router": "git-branch", "page-github-sync": "git-merge",
       "recipe-folder": "folder", "recipe": "notebook",
       "root-skills": "book", "root-notes": "note", "root-papers": "library", "root-prompts": "comment-discussion",
       "root-packages": "package", "root-scripts": "terminal", "root-environments": "beaker", "root-servers": "server-environment", "root-chatroom": "comment-discussion", "root-subscriptions": "broadcast", "root-mcp": "server-process",
@@ -9362,6 +9378,7 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
         mcp,
         this._panelPage("Skill Router", "page-skill-router", "skillRouter"),
         subscriptions,
+        this._panelPage("GitHub Sync", "page-github-sync", "githubSync"),
         this._panelPage("Background Tasks", "page-background-tasks", "backgroundTasks"),
       ];
     }
@@ -11155,9 +11172,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await vscode.env.openExternal(vscode.Uri.parse(link.url));
     }),
 
-    vscode.commands.registerCommand("personalKnowledge.openEnvironments", async () => {
+    vscode.commands.registerCommand("personalKnowledge.openEnvironments", async (environmentId?: string) => {
       log.action("command.openEnvironments");
-      openPanelTab(context, "environments");
+      openEnvironmentPanel(context, String(environmentId || ""));
       await closeNavigationSidebar();
     }),
 
