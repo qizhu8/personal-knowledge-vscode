@@ -700,6 +700,8 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
 
     const verify = path.join(root, "verify");
     run(root, ["clone", "--branch", "main", remote, verify]);
+    run(verify, ["config", "user.name", "Test"]);
+    run(verify, ["config", "user.email", "test@example.com"]);
     assert.strictEqual(fs.readFileSync(path.join(verify, "skills", "Shared", "One.md"), "utf8"), skill("One", "linux concurrent edit"));
     assert.strictEqual(fs.readFileSync(path.join(verify, "skills", "Shared", "Two.md"), "utf8"), skill("Two", "windows concurrent edit"));
 
