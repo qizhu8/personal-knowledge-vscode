@@ -630,6 +630,48 @@ const log = new Logger();
 
 type LoadProfileFields = Record<string, string | number | boolean | undefined>;
 
+class GitHubSyncDiagnostics {
+  private filePath = "";
+
+  init(context: vscode.ExtensionContext): void {
+    this.filePath = path.join(context.globalStorageUri.fsPath, "github-sync-diagnostic.jsonl");
+  }
+
+  logPath(): string { return this.filePath; }
+
+  record(event: string, fields: Record<string, string | number | boolean | undefined> = {}): void {
+    if (!this.filePath || !/^[a-z][a-z0-9_.-]{1,79}$/.test(event)) return;
+    const entry = {
+      at: new Date().toISOString(),
+      event,
+      ...Object.fromEntries(Object.entries(fields).filter(([, value]) =>
+        typeof value === "string" || typeof value === "number" || typeof value === "boolean")),
+      platform: process.platform,
+      remote: vscode.env.remoteName || "local",
+    };
+    try {
+      fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+      if (fs.existsSync(this.filePath) && fs.statSync(this.filePath).size > 4 * 1024 * 1024) {
+        const previous = `${this.filePath}.previous`;
+        fs.rmSync(previous, { force: true });
+        fs.renameSync(this.filePath, previous);
+      }
+      fs.appendFileSync(this.filePath, `${JSON.stringify(entry)}\n`, { encoding: "utf8", mode: 0o600 });
+    } catch (error) {
+      log.warn(`GitHub Sync diagnostic write failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  async open(): Promise<void> {
+    if (!this.filePath) return;
+    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+    if (!fs.existsSync(this.filePath)) fs.writeFileSync(this.filePath, "", { mode: 0o600 });
+    await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(this.filePath), { preview: false });
+  }
+}
+
+const githubSyncDiagnostics = new GitHubSyncDiagnostics();
+
 class LoadProfiler {
   private channel = vscode.window.createOutputChannel("PKM Load Profiling");
   private context: vscode.ExtensionContext | undefined;
@@ -1558,17 +1600,41 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
           const target = githubSyncTargetById(context, targetId);
           const forceAudit = githubSyncForceUpdateAudit.get(targetId);
           const attemptedAt = new Date().toISOString();
+          const traceId = randomUUID();
+          let diagnosticPhase = "waiting-for-lock";
+          const report = (phase: "fetch" | "resolve-conflicts" | "commit" | "push", detail: string): void => {
+            diagnosticPhase = phase;
+            githubSyncScheduler?.report(targetId, phase, detail);
+            githubSyncDiagnostics.record("github_sync.phase", { traceId, targetId, reason, phase, detail });
+          };
+          githubSyncDiagnostics.record("github_sync.started", {
+            traceId,
+            targetId,
+            reason,
+            branch: target.branch,
+            hasBase: !!target.lastSync?.commit,
+            baseCommit: target.lastSync?.commit || "",
+            pendingDeletions: target.pendingDeletions?.length || 0,
+          });
           try {
             githubSyncScheduler?.report(targetId, "authenticating", "Authenticating GitHub credentials");
+            diagnosticPhase = "authenticating";
+            githubSyncDiagnostics.record("github_sync.phase", { traceId, targetId, reason, phase: diagnosticPhase });
             const credentials = await readGitHubSyncCredentials(context, target);
             const catalog = await githubSyncCatalog();
+            githubSyncDiagnostics.record("github_sync.catalog", {
+              traceId,
+              targetId,
+              counts: GITHUB_SYNC_CONTENT_TYPES.map(type => `${type}:${catalog[type].length}`).join(","),
+              total: GITHUB_SYNC_CONTENT_TYPES.reduce((sum, type) => sum + catalog[type].length, 0),
+            });
             const result = await syncGitHubTarget(
               target,
               catalog,
               path.join(githubSyncStateDirectory(context), "checkouts"),
               credentials,
               getStorePath(),
-              (phase, detail) => githubSyncScheduler?.report(targetId, phase, detail),
+              report,
               {
                 mode: reason === "force-local-authority" ? "force-local-authority" : "normal",
                 ...(reason === "force-local-authority"
@@ -1641,6 +1707,17 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
               scheduleRetrievalRefresh(context, 0);
             }
             githubSyncScheduler?.report(targetId, "scheduled", "Next fetch scheduled");
+            githubSyncDiagnostics.record("github_sync.completed", {
+              traceId,
+              targetId,
+              reason,
+              commit: result.commit,
+              changed: result.changed,
+              pulled: result.pulled.length,
+              deletedLocal: result.deletedLocal.length,
+              recipePulls: result.recipePulls.length,
+              recipeDeletes: result.recipeDeletes.length,
+            });
             log.info(`automatic GitHub Sync target=${target.name} reason=${reason} changed=${result.changed} commit=${result.commit}`);
           } catch (error) {
             let message = error instanceof Error ? error.message : String(error);
@@ -1681,6 +1758,15 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
               return { targets: currentTargets, result: undefined };
             });
             const diagnostic = error instanceof Error ? error.stack || error.message : String(error);
+            githubSyncDiagnostics.record("github_sync.failed", {
+              traceId,
+              targetId,
+              reason,
+              phase: diagnosticPhase,
+              errorName: error instanceof Error ? error.name : typeof error,
+              error: message,
+              stack: diagnostic,
+            });
             log.error(`automatic GitHub Sync target=${target.name} reason=${reason}: ${diagnostic}`);
             throw error;
           } finally {
@@ -5047,6 +5133,11 @@ async function handleMessage(
 
     case "openLoadProfilingLog": {
       await loadProfiler.open();
+      break;
+    }
+
+    case "openGitHubSyncDiagnosticLog": {
+      await githubSyncDiagnostics.open();
       break;
     }
 
@@ -10104,6 +10195,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   firstContentRecorded = false;
   performanceStateDir = path.join(context.globalStorageUri.fsPath, "performance");
   log.init(context);
+  githubSyncDiagnostics.init(context);
   loadProfiler.init(context);
   loadProfiler.record("host.activation.started");
   log.info(`activating extension v${context.extension?.packageJSON?.version ?? "?"}`);

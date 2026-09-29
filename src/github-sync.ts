@@ -1911,6 +1911,7 @@ async function syncGitHubTargetAttempt(
   }
   enrichLegacyFiles(remoteManifest.files, localFiles);
   const remoteFiles = new Map(remoteManifest.files.map(file => [file.path, file]));
+  onProgress?.("fetch", `Loaded Remote manifest: ${remoteManifest.files.length} files, ${remoteManifest.deletions.length} deletions`);
 
   let baseManifest: GitHubSyncManifest = { schema: GITHUB_SYNC_MANIFEST_SCHEMA, files: [], deletions: [] };
   let migratedLocalSyncSchema = false;
@@ -1922,6 +1923,7 @@ async function syncGitHubTargetAttempt(
       migratedLocalSyncSchema = true;
     }
   }
+  onProgress?.("fetch", `Loaded Base manifest: ${baseManifest.files.length} files, ${baseManifest.deletions.length} deletions`);
   const baseFiles = new Map(baseManifest.files.map(file => [file.path, file]));
   if (storeRoot) {
     for (const managed of [...remoteFiles.values(), ...baseFiles.values()]) {
@@ -1940,6 +1942,7 @@ async function syncGitHubTargetAttempt(
   const localEntities = groupManagedFiles(localFiles.values());
   const remoteEntities = groupManagedFiles(remoteFiles.values());
   const baseEntities = groupManagedFiles(baseFiles.values());
+  onProgress?.("fetch", `Reconciling entities: ${localEntities.size} Local, ${baseEntities.size} Base, ${remoteEntities.size} Remote`);
   const finalRemote = new Map(remoteFiles);
   const remoteMetadataAuthority = !authoritativeMigrationCutover
     && !forceLocalAuthority

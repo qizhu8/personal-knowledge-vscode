@@ -35,7 +35,7 @@ assert.match(source, /'fetch':'Fetch \/ Pull'[\s\S]*'resolve-conflicts':'Resolve
   "target cards expose Git-native runtime phases instead of an opaque syncing state");
 assert.doesNotMatch(source, /'merge':'Merge'|'up-to-date':'Up to date'/,
   "target cards do not expose internal reconciliation or a terminal state instead of Scheduled");
-assert.match(extensionSource, /report\(targetId, "authenticating"[\s\S]*syncGitHubTarget\([\s\S]*report\(targetId, phase, detail\)[\s\S]*report\(targetId, "refresh-index"[\s\S]*report\(targetId, "scheduled"/,
+assert.match(extensionSource, /const report = \(phase:[\s\S]*githubSyncScheduler\?\.report\(targetId, phase, detail\)[\s\S]*report\(targetId, "authenticating"[\s\S]*syncGitHubTarget\([\s\S]*\n\s+report,[\s\S]*report\(targetId, "refresh-index"[\s\S]*report\(targetId, "scheduled"/,
   "the extension reports Git phases from the execution path through index refresh");
 assert.match(extensionSource, /report\(targetId, "refresh-index"[\s\S]*await refreshKnowledgeInventory\(context\)[\s\S]*await refreshRetrievalIndex\(context\)[\s\S]*report\(targetId, "scheduled"/,
   "Scheduled is reached only after materialization, inventory refresh, and retrieval refresh complete");
@@ -222,6 +222,12 @@ assert.match(extensionSource, /filter\(candidate => !candidate\.deleteRemote && 
   "accepted machine-local deletions are applied through the atomic file mutation path");
 assert.match(extensionSource, /candidate\.deleteLocal && candidate\.file\.type === "recipes"[\s\S]*applyGitHubSyncRecipeDeletes/,
   "accepted machine-local Recipe deletions use Project Store trash semantics");
+assert.match(source, /openGitHubSyncDiagnosticLog[\s\S]*Open Sync Diagnostic Log/,
+  "GitHub Sync exposes its persistent diagnostic log directly in the pane");
+assert.match(extensionSource, /github_sync\.started[\s\S]*github_sync\.phase[\s\S]*github_sync\.catalog[\s\S]*github_sync\.completed/,
+  "successful GitHub Sync runs emit structured lifecycle diagnostics");
+assert.match(extensionSource, /github_sync\.failed[\s\S]*stack: diagnostic/,
+  "failed GitHub Sync runs persist the full error stack");
 
 const missingLocalCard = vm.runInContext(`(() => {
   githubSyncData.conflicts.shared = {files:[

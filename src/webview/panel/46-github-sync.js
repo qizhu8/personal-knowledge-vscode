@@ -321,7 +321,7 @@ function githubSyncCards() {
 function renderGitHubSyncPane() {
   const detail = document.getElementById('detail');
   const previousScrollTop = detail?.scrollTop || 0;
-  detail.innerHTML = `<div class="sub-dashboard github-sync-dashboard"><header class="sub-head"><div><h2>GitHub Sync</h2><p>${githubSyncData.targets.length} configured targets</p></div><div class="project-header-actions"><button class="recipe-icon-button" title="Refresh GitHub Sync" aria-label="Refresh GitHub Sync" onclick="ask('githubSyncState',{})"><span class="codicon codicon-refresh"></span></button><button class="pk-button primary" onclick="githubSyncNew()">${uiIcon('add','Target')}</button></div></header><section class="sub-band"><div class="pk-list sub-broker-list">${githubSyncCards()}</div></section></div>`;
+  detail.innerHTML = `<div class="sub-dashboard github-sync-dashboard"><header class="sub-head"><div><h2>GitHub Sync</h2><p>${githubSyncData.targets.length} configured targets</p></div><div class="project-header-actions"><button class="pk-button" onclick="ask('openGitHubSyncDiagnosticLog',{})">${uiIcon('file-text','Open Sync Diagnostic Log')}</button><button class="recipe-icon-button" title="Refresh GitHub Sync" aria-label="Refresh GitHub Sync" onclick="ask('githubSyncState',{})"><span class="codicon codicon-refresh"></span></button><button class="pk-button primary" onclick="githubSyncNew()">${uiIcon('add','Target')}</button></div></header><section class="sub-band"><div class="pk-list sub-broker-list">${githubSyncCards()}</div></section></div>`;
   detail.scrollTop = Math.min(previousScrollTop, Math.max(0, detail.scrollHeight - detail.clientHeight));
   githubSyncRenderAuthenticationMethod();
   githubSyncSyncFolderStates();
