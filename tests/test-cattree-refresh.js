@@ -78,6 +78,7 @@ const treeContext = {
   btoa: value => Buffer.from(value, 'binary').toString('base64'), unescape, encodeURIComponent,
   privacyInherited: () => false, privacyDivider: () => '', privacyLock: () => '',
   brokerFolderMarker: () => '', uiIcon: () => '', folkDisplayName: value => value,
+  githubSyncTypes: [], githubSyncFolderMarker: () => '',
   esc: value => String(value),
 };
 vm.createContext(treeContext);
@@ -190,8 +191,10 @@ assert.strictEqual(tabCacheContext.restoreKnowledgeTabView('notes'), true, 'a pr
 assert.strictEqual(cacheElements['item-list'].childNodes.length, 5000);
 assert.strictEqual(cacheElements['item-list'].childNodes[3210], cachedNodes[3210], 'restoration must reuse the original DOM nodes instead of rebuilding markup');
 assert.strictEqual(tabCacheContext.state.items, cachedItems, 'restoration must reuse the matching data snapshot');
-assert.strictEqual(tabCacheContext.updateCachedKnowledgeTabSubscriptions('notes', [{ alias: 'Late Broker' }]), true, 'late Broker results must update the detached tab cache');
-assert.strictEqual(vm.runInContext("knowledgeTabViewCache.get('notes').subscriptionGroups[0].alias", tabCacheContext), 'Late Broker');
+assert.strictEqual(tabCacheContext.restoreKnowledgeTabView('notes'), false,
+  'a consumed DOM fragment must not remain as a false cache hit that restores an empty tab');
+assert.strictEqual(tabCacheContext.updateCachedKnowledgeTabSubscriptions('notes', [{ alias: 'Late Broker' }]), false,
+  'late Broker results must not mutate an already consumed detached cache');
 tabCacheContext.state.tab = 'skills';
 tabCacheContext.state.subscriptionGroups = [{ alias: 'Removed Broker' }];
 tabCacheContext.invalidateSubscriptionKnowledgeViews();

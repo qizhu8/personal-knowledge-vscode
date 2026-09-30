@@ -19,10 +19,12 @@ try {
     publisherUser: "alice",
     publisherHost: "host-a",
     remotePath: "Ads/Data Quality/assetquality-snorkel-weak-supervision.md",
-    content: "# Weak supervision\n",
+    content: "# Weak supervision\n\n![Chart](_assets/chart.png)\n",
+    assets: [{ path: "Ads/Data Quality/_assets/chart.png", content: Buffer.from("chart-bytes") }],
   });
   assert.strictEqual(skillPath, `skills/${creativeRoot}/Ads/Data Quality/assetquality-snorkel-weak-supervision.md`);
-  assert.strictEqual(fs.readFileSync(path.join(store, skillPath), "utf8"), "# Weak supervision\n");
+  assert.match(fs.readFileSync(path.join(store, skillPath), "utf8"), /_assets\/chart\.png/);
+  assert.deepStrictEqual(fs.readFileSync(path.join(store, "skills", creativeRoot, "Ads/Data Quality/_assets/chart.png")), Buffer.from("chart-bytes"));
   assert.strictEqual(fs.existsSync(path.join(store, "skills", creativeRoot, ".gitkeep")), true, "folk root must persist until explicitly deleted");
   assert.throws(() => forkSubscriptionContent(store, {
     type: "skills", brokerName: "CreativeGen", publisherUser: "alice", publisherHost: "host-a", remotePath: "Ads/Data Quality/assetquality-snorkel-weak-supervision.md", content: "overwrite",
@@ -38,7 +40,7 @@ try {
   assert.strictEqual(collectionPath, `skills/${creativeRoot}`);
   assert.strictEqual(fs.readFileSync(path.join(store, collectionPath, "Coding/Scope/scope-basics.md"), "utf8"), "# Scope\n");
   assert.strictEqual(fs.readFileSync(path.join(store, collectionPath, "General/AML/aml-basics.md"), "utf8"), "# AML\n");
-  assert.strictEqual(fs.readFileSync(path.join(store, skillPath), "utf8"), "# Weak supervision\n", "whole-Broker Fork must preserve prior non-conflicting Forks");
+  assert.match(fs.readFileSync(path.join(store, skillPath), "utf8"), /Weak supervision/, "whole-Broker Fork must preserve prior non-conflicting Forks");
   assert.throws(() => forkSubscriptionContent(store, {
     type: "skills", brokerName: "CreativeGen", publisherUser: "alice", publisherHost: "host-a", remotePath: "",
     folder: { path: "", files: [{ path: "Coding/Scope/scope-basics.md", content: "overwrite" }] },

@@ -20,7 +20,9 @@ def canonical(value):
 
 
 def response_json(result):
-    return json.loads(result.content[0].text)
+    value = json.loads(result.content[0].text)
+    assert result.structured_content == value, result.structured_content
+    return value
 
 
 async def main():
@@ -215,6 +217,7 @@ async def main():
             branch_completed = response_json(await client.call_tool("recipe_run_report", {
                 "run_id": branch_id, "node_id": "deliver", "outcome": "succeeded",
                 "command_id": "branch-report-deliver", "result_json": '{"delivered":true}',
+                "detail": "full",
             }))
             assert branch_completed["status"] == "completed"
             assert branch_completed["current_result"]["counts"] == {
@@ -329,6 +332,7 @@ async def main():
 
             parent_resumed = response_json(await client.call_tool("recipe_run_next", {
                 "run_id": parent_id, "command_id": "parent-next-after-child",
+                "detail": "full",
             }))
             assert parent_resumed["next_action"]["node_id"] == "deliver"
             mapped = {item["node_id"]: item for item in parent_resumed["current_result"]["completed_nodes"]}

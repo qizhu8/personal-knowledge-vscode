@@ -6,7 +6,6 @@ let projectRoute = { projectId:'', section:'', workflowView:'' };
 let selectedGanttTaskId = '';
 let selectedAgentSessionId = '';
 let selectedAgentSnapshotId = '';
-let agentSnapshotCredential = null;
 let agentSessionArchiveExpanded = vscode.getState()?.agentSessionArchiveExpanded;
 let agentSessionTreeCollapsed = !!vscode.getState()?.agentSessionTreeCollapsed;
 let agentSessionFullscreenRunId = String(vscode.getState()?.agentSessionFullscreenRunId || '');
@@ -266,14 +265,12 @@ function agentSnapshotOnCreated(data) {
   const snapshot = data?.snapshot;
   if (!snapshot?.snapshotId) return;
   selectedAgentSnapshotId = snapshot.snapshotId;
-  agentSnapshotCredential = {
-    snapshotId:snapshot.snapshotId,
-    recoveryPassphrase:String(data.recoveryPassphrase || ''),
-    recoveryPrompt:String(data.recoveryPrompt || ''),
-    copied:data.copied !== false,
-    rotated:!!data.rotated
-  };
   if (state.tab === 'agentSnapshots') renderAgentSnapshots();
+}
+
+function agentSnapshotRecoveryPrompt(magicCode) {
+  const code = String(magicCode || '');
+  return `Call the PKM MCP function agent_session_snapshot_recover with {"magic_code":"${code}"}.`;
 }
 
 function agentSnapshotCopy(text, button) {
@@ -282,21 +279,6 @@ function agentSnapshotCopy(text, button) {
     const label = button.textContent;
     button.textContent = 'Copied';
     setTimeout(() => { if (button.isConnected) button.textContent = label; }, 1200);
-  });
-}
-
-function agentSnapshotDismissCredential() {
-  agentSnapshotCredential = null;
-  renderAgentSnapshots();
-}
-
-function agentSnapshotRotate(snapshotId) {
-  pkModal({
-    title:'Rotate recovery passphrase?',
-    message:'The existing recovery passphrase will stop working immediately. PKM will create and automatically copy a new Recovery Prompt.',
-    okLabel:'Rotate and Copy',
-    danger:true,
-    onOk:()=>ask('agentSnapshotRotate',{snapshotId})
   });
 }
 
@@ -1992,8 +1974,10 @@ function recipeItemMenu(event, recipeId) {
   const items = [
     { label:recipe.name, header:true },
     { label:'Open Recipe', onClick:() => recipeSelect(recipe.recipeId) },
-    { label:'Rename…', onClick:() => pkModal({ title:'Rename Recipe', message:'Enter a new Recipe name.', input:true, inputValue:recipe.name, okLabel:'Rename', onOk:name => { if (name.trim() && name.trim() !== recipe.name) recipePersistUpdate(recipe, { name:name.trim() }); } }) },
-    { label:'Move to Folder…', onClick:() => pkModal({ title:'Move Recipe', message:'Enter a folder path. Leave empty for uncategorized.', input:true, inputValue:recipe.category || '', okLabel:'Move', onOk:category => recipePersistUpdate(recipe, { category:String(category || '').trim() }) }) },
+    ...(recipe.systemKind === 'built-in' ? [] : [
+      { label:'Rename…', onClick:() => pkModal({ title:'Rename Recipe', message:'Enter a new Recipe name.', input:true, inputValue:recipe.name, okLabel:'Rename', onOk:name => { if (name.trim() && name.trim() !== recipe.name) recipePersistUpdate(recipe, { name:name.trim() }); } }) },
+      { label:'Move to Folder…', onClick:() => pkModal({ title:'Move Recipe', message:'Enter a folder path. Leave empty for uncategorized.', input:true, inputValue:recipe.category || '', okLabel:'Move', onOk:category => recipePersistUpdate(recipe, { category:String(category || '').trim() }) }) }
+    ]),
     recipeCopyPathMenu(`pkm://recipes/${[recipe.category, recipe.name].filter(Boolean).flatMap(value => String(value).split('/').filter(Boolean)).map(encodeURIComponent).join('/')}`),
     recipeCopyPathMenu(recipe.recipeId, 'Copy Recipe ID')
   ];
@@ -2050,7 +2034,7 @@ function globalRecipeTree(recipes) {
   const html = renderCatTree(tree, [], 0, (recipe, depth) => {
     const stepCount = recipe.definition?.spec?.nodes?.length || 0;
     const privateRecipe = privacyInherited(recipe.category || '');
-    return `<div class="li cattree-item project-recipe-row ${recipe.recipeId === selectedRecipeId ? 'active' : ''}" style="margin-left:${depth * 12}px" role="button" tabindex="0" onclick="recipeSelect(decodeURIComponent('${encodeURIComponent(recipe.recipeId)}'))" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();recipeSelect(decodeURIComponent('${encodeURIComponent(recipe.recipeId)}'))}" oncontextmenu="recipeItemMenu(event,decodeURIComponent('${encodeURIComponent(recipe.recipeId)}'))"><div><strong>${privacyLock(privateRecipe)}${esc(recipe.name)}</strong><span>${recipe.scope === 'global' ? 'Global' : 'Project'} · Revision ${recipe.revision} · ${stepCount} ${stepCount === 1 ? 'step' : 'steps'} · <code title="Executable digest">${esc(String(recipe.executableDigest || '').slice(0,12))}</code></span></div><button class="cattree-item-menu" title="Recipe actions" aria-label="Actions for ${esc(recipe.name)}" onclick="event.stopPropagation();recipeItemMenu(event,decodeURIComponent('${encodeURIComponent(recipe.recipeId)}'))"><span class="codicon codicon-ellipsis"></span></button></div>`;
+    return `<div class="li cattree-item project-recipe-row ${recipe.recipeId === selectedRecipeId ? 'active' : ''}" style="margin-left:${depth * 12}px" role="button" tabindex="0" onclick="recipeSelect(decodeURIComponent('${encodeURIComponent(recipe.recipeId)}'))" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();recipeSelect(decodeURIComponent('${encodeURIComponent(recipe.recipeId)}'))}" oncontextmenu="recipeItemMenu(event,decodeURIComponent('${encodeURIComponent(recipe.recipeId)}'))"><div><strong>${privacyLock(privateRecipe)}${esc(recipe.name)}${recipe.systemKind === 'built-in' ? '<span class="recipe-system-badge">System</span>' : ''}</strong><span>${recipe.scope === 'global' ? 'Global' : 'Project'} · Revision ${recipe.revision} · ${stepCount} ${stepCount === 1 ? 'step' : 'steps'} · <code title="Executable digest">${esc(String(recipe.executableDigest || '').slice(0,12))}</code></span></div><button class="cattree-item-menu" title="Recipe actions" aria-label="Actions for ${esc(recipe.name)}" onclick="event.stopPropagation();recipeItemMenu(event,decodeURIComponent('${encodeURIComponent(recipe.recipeId)}'))"><span class="codicon codicon-ellipsis"></span></button></div>`;
   }, '', (_child, name, fullPath) => name !== '(uncategorized)'
     ? ` oncontextmenu="recipeFolderMenu(event,decodeURIComponent('${encodeURIComponent(fullPath.join('/'))}'))"`
     : ` oncontextmenu="recipeRootMenu(event)"`, undefined, { baseIndent:0 });
@@ -2082,6 +2066,17 @@ function recipeMethodologyProjection(recipe) {
 
 function globalRecipeEditor(recipe) {
   if (!recipe) return `<div class="recipe-editor-empty"><span class="codicon codicon-symbol-method"></span><strong>Select a Recipe</strong><p>Choose a Recipe from the CatTree to inspect or edit its executable definition.</p></div>`;
+  if (recipe.systemKind === 'built-in') {
+    return `<div class="recipe-editor recipe-system-editor">
+      <header class="recipe-editor-header"><div><span>Global Recipe <b class="recipe-system-badge">System</b></span><h3>${esc(recipe.name)}</h3><p>Revision ${recipe.revision} · <code title="Executable digest">${esc(recipe.executableDigest || '')}</code></p></div><div><button class="tbtn recipe-open-browser" data-pending-label="Opening…" onclick="ask('recipeOpenBrowser',{recipeId:selectedRecipeId},this)" title="Open the Recipe workbench in a browser"><span class="codicon codicon-globe"></span> Open in Browser</button></div></header>
+      <div class="recipe-system-notice"><span class="codicon codicon-verified-filled"></span><div><strong>PKM System Recipe</strong><p>Installed and upgraded with the Extension. It is read-only and cannot be renamed, moved, or deleted. Fork it before customization.</p></div></div>
+      <div class="recipe-editor-form">
+        <section class="recipe-editor-section wide"><header><span>Metadata</span><p>Trusted built-in identity used for retrieval and native operation pinning.</p></header><dl class="recipe-system-metadata"><div><dt>Category</dt><dd>${esc(recipe.category || '(uncategorized)')}</dd></div><div><dt>Description</dt><dd>${esc(recipe.description || '')}</dd></div><div><dt>Recipe ID</dt><dd><code>${esc(recipe.recipeId)}</code></dd></div></dl></section>
+        <section class="recipe-editor-section wide"><header><span>Methodology</span><p>Built-in methodology projections.</p></header>${recipeMethodologyProjection(recipe)}</section>
+        <section class="recipe-editor-section wide"><header><span>Definition</span><p>Read-only canonical workflow packaged by PKM.</p></header><pre class="recipe-system-definition">${esc(JSON.stringify(recipe.definition, null, 2))}</pre></section>
+      </div>
+    </div>`;
+  }
   const draft = recipeEnsureDraft(recipe);
   const metadataRows = (collection, label, emptyText) => `<section class="recipe-metadata-list"><header><div><strong>${label}</strong><span>${emptyText}</span></div><button class="tbtn" onclick="recipeMetadataAdd('${collection}')"><span class="codicon codicon-add"></span> Add</button></header>${draft.metadata[collection].length ? draft.metadata[collection].map((field, index) => `<div class="recipe-metadata-row"><input value="${esc(field.name)}" placeholder="Name" aria-label="${label} name" oninput="recipeDraftMetadataField('${collection}',${index},'name',this.value)"><input value="${esc(field.description)}" placeholder="Description" aria-label="${label} description" oninput="recipeDraftMetadataField('${collection}',${index},'description',this.value)">${collection === 'requiredInputs' ? `<label title="Required input"><input type="checkbox" ${field.required !== false ? 'checked' : ''} onchange="recipeDraftMetadataField('${collection}',${index},'required',this.checked)"><span>Required</span></label>` : ''}<button class="recipe-icon-button" title="Remove" aria-label="Remove ${label}" onclick="recipeMetadataRemove('${collection}',${index})"><span class="codicon codicon-trash"></span></button></div>`).join('') : `<p class="recipe-list-empty">None defined.</p>`}</section>`;
   const nodes = draft.definition?.spec?.nodes || [];
@@ -2317,10 +2312,45 @@ function agentSessionUnifiedNode(run, node, todo, position = { x:0, y:0 }, treeD
   </article>`;
 }
 
+function agentSessionUsageNumber(value) {
+  const number = Math.max(0, Number(value) || 0);
+  if (number >= 1000000) return `${(number / 1000000).toFixed(number >= 10000000 ? 0 : 1).replace(/\.0$/, '')}M`;
+  if (number >= 1000) return `${(number / 1000).toFixed(number >= 10000 ? 0 : 1).replace(/\.0$/, '')}K`;
+  return String(Math.round(number));
+}
+
+function agentSessionTodoUsage(todo) {
+  const usage = todo?.usage;
+  if (!usage) return '';
+  const protocol = usage.protocol || {};
+  const model = usage.model || {};
+  const protocolText = protocol.observed
+    ? `MCP ~${agentSessionUsageNumber(protocol.estimatedTokens)} est. · ${agentSessionUsageNumber(protocol.calls)} calls`
+    : 'MCP not observed';
+  let modelText = 'Model tokens unknown';
+  if (model.quality === 'measured') modelText = `Model ${agentSessionUsageNumber(model.measuredTokens?.totalTokens)} measured`;
+  else if (model.quality === 'estimated') modelText = `Model ~${agentSessionUsageNumber(model.estimatedTokens)} estimated`;
+  else if (model.quality === 'partial') {
+    const parts = [];
+    if (model.measuredTokens?.totalTokens || model.measuredTokens?.totalTokens === 0) parts.push(`${agentSessionUsageNumber(model.measuredTokens.totalTokens)} measured`);
+    if (model.estimatedTokens) parts.push(`~${agentSessionUsageNumber(model.estimatedTokens)} estimated`);
+    modelText = `Model ${parts.join(' + ') || 'partially reported'}`;
+  }
+  const detail = [
+    protocol.observed
+      ? `MCP protocol estimate: ${protocol.estimatedTokens} tokens from ${(protocol.inputBytes || 0) + (protocol.outputBytes || 0)} bytes across ${protocol.calls} calls; ${protocol.failures || 0} failed; ${Math.round(protocol.durationMs || 0)} ms total.`
+      : 'MCP protocol usage was not observed for this Todo.',
+    `Model token quality: ${model.quality || 'unknown'}.`,
+    model.unknownModelCalls ? `${model.unknownModelCalls} model call(s) have unknown token usage.` : '',
+    'Premium-request or credit usage is unavailable from the host.',
+  ].filter(Boolean).join(' ');
+  return `<span class="agent-session-todo-usage" title="${recipeAttribute(detail)}"><span>${esc(protocolText)}</span><span class="${model.quality === 'unknown' ? 'unknown' : ''}">${esc(modelText)}</span></span>`;
+}
+
 function agentSessionUnifiedTodoNode(todo, index) {
   const status = agentSessionNodeState(todo.status);
   return `<article class="agent-session-unified-todo ${status}${selectedAgentSessionTodoId === todo.todoId ? ' selected' : ''}" data-todo-id="${esc(todo.todoId)}" data-todo-node="${esc(todo.todoId)}" data-todo-status="${esc(status)}">
-    <header tabindex="0" role="button" onclick="agentSessionSelectTodo(decodeURIComponent('${encodeURIComponent(todo.todoId)}'))"><span>${index + 1}</span><div><small>Session Todo</small><strong>${esc(todo.title)}</strong><code>${esc(todo.todoId)}</code></div><b>${esc(todo.status)}</b></header>
+    <header tabindex="0" role="button" onclick="agentSessionSelectTodo(decodeURIComponent('${encodeURIComponent(todo.todoId)}'))"><span>${index + 1}</span><div><small>Session Todo</small><strong>${esc(todo.title)}</strong><code>${esc(todo.todoId)}</code>${agentSessionTodoUsage(todo)}</div><b>${esc(todo.status)}</b></header>
   </article>`;
 }
 
@@ -2499,7 +2529,7 @@ function agentSessionTodoFlow(session, todos, runs) {
     const linked = new Set(agentSessionTodoRunIds(todo));
     const todoRuns = rootRuns.filter(run => linked.has(run.runId));
     todoRuns.forEach(run => assigned.add(run.runId));
-    return `<article class="agent-session-task ${status}${selectedAgentSessionTodoId === todo.todoId ? ' selected' : ''}" data-todo-id="${esc(todo.todoId)}"><header tabindex="0" role="button" aria-label="Highlight modules for ${esc(todo.title)}" onclick="agentSessionSelectTodo(decodeURIComponent('${encodeURIComponent(todo.todoId)}'))" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();agentSessionSelectTodo(decodeURIComponent('${encodeURIComponent(todo.todoId)}'))}"><span class="agent-session-task-index">${index + 1}</span><span class="codicon ${icon}"></span><div><strong>${esc(todo.title)}</strong>${todo.details ? `<p>${esc(todo.details)}</p>` : ''}${todo.summary ? `<small>${esc(todo.summary)}</small>` : ''}</div><b>${esc(status)}</b></header><div class="agent-session-task-recipes">${todoRuns.map(run => agentSessionRunGraph(run, runs, new Set(), todo)).join('') || '<span class="agent-session-no-recipe">No Recipe attached</span>'}</div></article>`;
+    return `<article class="agent-session-task ${status}${selectedAgentSessionTodoId === todo.todoId ? ' selected' : ''}" data-todo-id="${esc(todo.todoId)}"><header tabindex="0" role="button" aria-label="Highlight modules for ${esc(todo.title)}" onclick="agentSessionSelectTodo(decodeURIComponent('${encodeURIComponent(todo.todoId)}'))" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();agentSessionSelectTodo(decodeURIComponent('${encodeURIComponent(todo.todoId)}'))}"><span class="agent-session-task-index">${index + 1}</span><span class="codicon ${icon}"></span><div><strong>${esc(todo.title)}</strong>${todo.details ? `<p>${esc(todo.details)}</p>` : ''}${todo.summary ? `<small>${esc(todo.summary)}</small>` : ''}${agentSessionTodoUsage(todo)}</div><b>${esc(status)}</b></header><div class="agent-session-task-recipes">${todoRuns.map(run => agentSessionRunGraph(run, runs, new Set(), todo)).join('') || '<span class="agent-session-no-recipe">No Recipe attached</span>'}</div></article>`;
   }).join('');
   const unassigned = rootRuns.filter(run => !assigned.has(run.runId));
   const unassignedHtml = unassigned.length ? `<article class="agent-session-task unassigned"><header><span class="agent-session-task-index"><span class="codicon codicon-history"></span></span><div><strong>Session activity</strong><p>Recipe runs retained without a Todo association.</p></div><b>${unassigned.length}</b></header><div class="agent-session-task-recipes">${unassigned.map(run => agentSessionRunGraph(run, runs)).join('')}</div></article>` : '';
@@ -2624,10 +2654,9 @@ function renderAgentSnapshots() {
   const list = snapshots.length ? snapshots.map(snapshot => `<button class="agent-snapshot-row ${snapshot.snapshotId === selectedAgentSnapshotId ? 'active' : ''}" onclick="agentSnapshotSelect(decodeURIComponent('${encodeURIComponent(snapshot.snapshotId)}'))" oncontextmenu="agentSnapshotContextMenu(event,decodeURIComponent('${encodeURIComponent(snapshot.snapshotId)}'))"><span class="codicon codicon-save"></span><span><strong>${esc(snapshot.task)}</strong><small>${esc(snapshot.magicCode)} · ${esc(snapshot.createdAt)}</small></span><b>${snapshot.recoveryCount || 0} recovered</b></button>`).join('') : `<div class="agent-snapshot-empty"><span class="codicon codicon-save"></span><strong>No Agent Snapshots</strong><p>Create one before closing a resource-heavy conversation.</p></div>`;
   let content = `<div class="agent-snapshot-empty detail"><span class="codicon codicon-key"></span><strong>Choose or create a Snapshot</strong><p>A Snapshot can be recovered repeatedly into independent Agent Sessions.</p></div>`;
   if (selected) {
-    const credential = agentSnapshotCredential?.snapshotId === selected.snapshotId ? agentSnapshotCredential : null;
     const encodedMagic = encodeURIComponent(selected.magicCode);
-    const encodedPrompt = credential ? encodeURIComponent(credential.recoveryPrompt) : '';
-    content = `<article class="agent-snapshot-detail"><header><div><span>Immutable recovery point</span><h3>${esc(selected.task)}</h3><p>${esc(selected.snapshotId)}</p></div><b>${selected.recoveryCount || 0} recoveries</b></header>${credential ? `<section class="agent-snapshot-secret"><div><span class="codicon codicon-warning"></span><div><strong>${credential.rotated ? 'New recovery passphrase' : 'Save this recovery passphrase now'}</strong><p>${credential.copied ? 'The complete Recovery Prompt was copied automatically. ' : 'Automatic copy failed; use the button below. '}It is shown only once and is never stored in plaintext.${credential.rotated ? ' The previous passphrase is no longer valid.' : ''}</p></div></div><code>${esc(credential.recoveryPassphrase)}</code><div><button class="pk-button" onclick="agentSnapshotCopy(decodeURIComponent('${encodedPrompt}'),this)">Copy Recovery Prompt</button><button class="pk-button secondary" onclick="agentSnapshotDismissCredential()">I saved it</button></div></section>` : ''}<section class="agent-snapshot-identity"><div><span>Magic Code</span><code>${esc(selected.magicCode)}</code><button class="pk-button secondary" onclick="agentSnapshotCopy(decodeURIComponent('${encodedMagic}'),this)">Copy</button><button class="pk-button secondary" data-pending-label="Rotating…" onclick="agentSnapshotRotate(decodeURIComponent('${encodeURIComponent(selected.snapshotId)}'))">Rotate Passphrase…</button></div><p>The Magic Code identifies this Snapshot. Its encrypted payload may be selected explicitly for GitHub Sync; other Sync and Subscribe surfaces exclude Agent Snapshots.</p></section><div class="agent-snapshot-metrics"><div><span>Source Session</span><strong>${esc(selected.sourceSessionId)}</strong></div><div><span>Captured</span><strong>${esc(selected.createdAt)}</strong></div><div><span>Session Todos</span><strong>${selected.todoCount || 0}</strong></div><div><span>Recipe Runs</span><strong>${selected.recipeRunCount || 0}</strong></div></div><section class="agent-snapshot-recover"><span class="codicon codicon-debug-restart"></span><div><strong>Recover in a new conversation</strong><ol><li>Open a new Copilot session in this Knowledge Root.</li><li>Paste the recovery prompt containing the Magic Code and passphrase.</li><li>The Agent calls <code>agent_session_snapshot_recover</code> and continues from the captured todos and Recipe runs.</li></ol><p>Each recovery creates a new independent Session. Right-click this Snapshot to delete it when it is no longer needed.</p></div></section></article>`;
+    const encodedPrompt = encodeURIComponent(agentSnapshotRecoveryPrompt(selected.magicCode));
+    content = `<article class="agent-snapshot-detail"><header><div><span>Immutable recovery point</span><h3>${esc(selected.task)}</h3><p>${esc(selected.snapshotId)}</p></div><b>${selected.recoveryCount || 0} recoveries</b></header><section class="agent-snapshot-identity"><div><span>Magic Code</span><code>${esc(selected.magicCode)}</code><button class="pk-button secondary" onclick="agentSnapshotCopy(decodeURIComponent('${encodedMagic}'),this)">Copy</button><button class="pk-button secondary" onclick="agentSnapshotCopy(decodeURIComponent('${encodedPrompt}'),this)">Copy Recovery Prompt</button></div><p>No recovery password is created or stored. The payload uses the fixed local <code>uone</code> obfuscation key only to avoid plaintext on disk; it is not credential protection. Keep the Snapshot in this Knowledge Root, or explicitly select it for GitHub Sync before recovering elsewhere.</p></section><div class="agent-snapshot-metrics"><div><span>Source Session</span><strong>${esc(selected.sourceSessionId)}</strong></div><div><span>Captured</span><strong>${esc(selected.createdAt)}</strong></div><div><span>Session Todos</span><strong>${selected.todoCount || 0}</strong></div><div><span>Recipe Runs</span><strong>${selected.recipeRunCount || 0}</strong></div></div><section class="agent-snapshot-recover"><span class="codicon codicon-debug-restart"></span><div><strong>Recover in a new conversation</strong><ol><li>Open a new Copilot session in this Knowledge Root, or restore the Snapshot through GitHub Sync first.</li><li>Paste the recovery prompt containing the Magic Code and explicit PKM recovery-tool instruction.</li><li>The Agent calls <code>agent_session_snapshot_recover</code> before starting any new Agent Session, then continues the captured todos and Recipe runs.</li></ol><p>Each recovery creates a new independent Session. Right-click this Snapshot to delete it when it is no longer needed.</p></div></section></article>`;
   }
   detail.innerHTML = `<div class="agent-snapshot-page">${create}<div class="agent-snapshot-workspace"><aside><header><strong>Agent Snapshots</strong><span>${snapshots.length}</span></header><div>${list}</div></aside><main>${content}</main></div></div>`;
 }
@@ -2725,6 +2754,7 @@ function renderProjects() {
 
 function renderGlobalRecipes() {
   if (state.tab !== 'recipes') return;
+  ensureGitHubSyncStatus();
   if (!recipeEnvironmentListRequested) { recipeEnvironmentListRequested = true; ask('envList', {}); }
   if (!recipeSubscriptionGroupsRequested) { recipeSubscriptionGroupsRequested = true; ask('recipeSubscriptionGroups', {}); }
   const detail = document.getElementById('detail');

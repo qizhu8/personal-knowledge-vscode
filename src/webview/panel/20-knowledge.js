@@ -35,6 +35,7 @@ function stashKnowledgeTabView(tab) {
 function restoreKnowledgeTabView(tab) {
   const cached = knowledgeTabViewCache.get(tab);
   if (!cached) return false;
+  knowledgeTabViewCache.delete(tab);
   state.items = cached.items;
   state.folders = cached.folders;
   state.knowledgeGroups = cached.knowledgeGroups;
@@ -348,6 +349,7 @@ function renderList() {
   const { tab, items, filter } = state;
   const el = document.getElementById('item-list');
   const fEl = document.getElementById('sidebar-filters');
+  if (['skills','notes','papers'].includes(tab)) ensureGitHubSyncStatus();
 
   if (tab === 'skills') {
     renderKnowledgeGroupControls(fEl, 'skills');
@@ -766,10 +768,12 @@ function renderCatTree(node, path, depth, renderLeaf, q, folderAttr, order, opti
     const folderLabel = options.renderFolderLabel
       ? options.renderFolderLabel(name, path.concat(name))
       : `${pinnedFolder ? uiIcon('pinned') + ' ' : ''}${privacyLock(privacyInherited(path.concat(name)))}${name === '(uncategorized)' ? '<em style="opacity:.6">(uncategorized)</em>' : path.length === 0 ? folkDisplayName(name) : esc(name)}${brokerFolderMarker(name === '(uncategorized)' ? '' : path.concat(name).join('/'))}`;
+    const syncType = options.githubSyncType || state.tab;
+    const syncFolder = path.concat(name).filter(part => !['(uncategorized)','(root)'].includes(part)).join('/');
     html += `<div class="tree-cat">
       <div class="tree-cat-hdr${pinnedFolder ? ' cat-pinned' : ''}" role="button" tabindex="0" style="padding-left:${pad}px" onclick="toggleCat('${key}',this)" onkeydown="if(event.target===this&&(event.key==='Enter'||event.key===' ')){event.preventDefault();toggleCat('${key}',this)}" title="${esc(name)}" aria-expanded="${open}"${folderAttr ? folderAttr(child, name, path.concat(name)) : ''}>
         <span class="tree-cat-arrow">${uiIcon(open ? 'chevron-down' : 'chevron-right')}</span>
-        <span class="tree-cat-label">${folderLabel}</span>
+        <span class="tree-cat-label">${folderLabel}${githubSyncTypes.includes(syncType) ? githubSyncFolderMarker(syncType, syncFolder) : ''}</span>
         <span class="tree-cat-count">${countTreeLeaves(child)}</span>
         ${['skills', 'notes', 'papers'].includes(state.tab) ? `<button class="tree-cat-add" type="button" title="Add inside ${esc(name)}" aria-label="Add inside ${esc(name)}" onclick="openCatFolderAddMenu(event,${JSON.stringify(state.tab).replace(/"/g, '&quot;')},${JSON.stringify(addPath).replace(/"/g, '&quot;')})">${uiIcon('add')}</button>` : ''}
       </div>
@@ -1474,7 +1478,9 @@ function renderDetail(data) {
     if (data.contentType === 'servers') { try { serverLinkData = JSON.parse(data.content || '{}'); } catch {} }
     const rendered = data.contentType === 'servers'
       ? `<div class="subscribed-server-links">${(serverLinkData?.links || []).map((link,index) => `<div><span>${esc(link.label || link.url)}</span><button class="pk-button" data-pending-label="Opening…" onclick="ask('subscriptionOpenServerLink',{key:'${esc(currentDetailRequest?.key || '')}',index:${index}},this)">Open</button></div>`).join('') || '<div class="empty">No network link is available from this Server.</div>'}</div>`
-      : ['skills','notes','papers'].includes(data.contentType) ? safeMarked(data.content || '') : `<pre><code>${esc(data.content || '')}</code></pre>`;
+      : ['skills','notes','papers'].includes(data.contentType)
+        ? safeMarked(data.content || '', '', '', SUBSCRIPTIONS_BASE, subscriptionResourceDirectory(data))
+        : `<pre><code>${esc(data.content || '')}</code></pre>`;
     const forkAction = data.contentType === 'servers' ? '<span class="tag">Link only</span>' : `<button class="pk-button" data-pending-label="Forking…" onclick="subscriptionFork('${esc(currentDetailRequest?.key || '')}',this)">Fork to Local</button>`;
     el.innerHTML = `<div class="d-title"><span>${esc(serverLinkData?.name || data.title)}</span><span class="tag">Read-only subscription</span><span style="flex:1"></span>${forkAction}</div>
       <div class="d-path" title="Remote path">${esc(data.path)}</div>
@@ -1512,7 +1518,7 @@ function renderDetail(data) {
         </select></span>
         <span class="ml">Description</span><span class="mv meta-value"><span>${esc(data.description||'—')}</span><button class="meta-edit" onclick="editCurrentMetadata('description')" title="Edit description">✎</button></span>
       </div>
-      <hr class="div">${toc}<div class="prose">${safeMarked(data.content||'')}</div>`;
+      <hr class="div">${toc}<div class="prose">${safeMarked(data.content||'', data.category, 'skills')}</div>`;
 
   } else if (data.type === 'note') {
     currentDetail = data;
@@ -1532,7 +1538,7 @@ function renderDetail(data) {
       <div class="meta-grid">
         <span class="ml">Description</span><span class="mv meta-value"><span>${esc(data.description||'—')}</span><button class="meta-edit" onclick="editCurrentMetadata('description')" title="Edit description">✎</button></span>
       </div>
-      <hr class="div"><div class="prose">${safeMarked(data.content||'', data.category)}</div>`;
+      <hr class="div"><div class="prose">${safeMarked(data.content||'', data.category, 'notes')}</div>`;
 
   } else if (data.type === 'paper') {
     currentDetail = data;
@@ -2454,7 +2460,9 @@ function showPaperMenu(x, y, items, className = '') {
     const el = document.createElement('div');
     el.className = 'pctx-item' + (it.header ? ' pctx-header' : '') + (it.danger ? ' pctx-danger' : '') + (it.active ? ' pctx-active' : '') + (it.status ? ` prompt-version-${it.status}` : '') + (it.children ? ' pctx-has-submenu' : '');
     if (it.version) el.dataset.promptVersion = it.version;
-    el.textContent = contextMenuLabel(it.label);
+    const label = contextMenuLabel(it.label);
+    el.textContent = label;
+    if (it.header) el.title = label;
     if (it.children) {
       const arrow = document.createElement('span'); arrow.className = 'pctx-arrow'; arrow.textContent = '›'; el.appendChild(arrow);
       const submenu = document.createElement('div'); submenu.className = 'pctx-submenu';
@@ -2881,7 +2889,7 @@ function paperLinksSection(title, papers, emptyText) {
 }
 function paperContentSection(content, category) {
   const value = String(content || '');
-  const body = value.trim() ? `<div class="prose">${safeMarked(value, category)}</div>` : '<div class="paper-section-empty">No content.</div>';
+  const body = value.trim() ? `<div class="prose">${safeMarked(value, category, 'papers')}</div>` : '<div class="paper-section-empty">No content.</div>';
   return paperSection('Content', value.trim() ? wordCount(value) : 0, body, !!value.trim());
 }
 function openPaperLink(url, file, category) { ask('openPaperLink', { url, file, category }); }

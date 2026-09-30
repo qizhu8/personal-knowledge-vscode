@@ -24,6 +24,7 @@
               { "$ref": "#/$defs/noopNode" },
               { "$ref": "#/$defs/commandNode" },
               { "$ref": "#/$defs/scriptNode" },
+              { "$ref": "#/$defs/nativeNode" },
               { "$ref": "#/$defs/humanGateNode" },
               { "$ref": "#/$defs/subflowNode" }
             ]
@@ -176,6 +177,38 @@
               "else": { "not": { "required": ["environmentId"] } }
             }
           ]
+        },
+        "generalInstruction": { "type": "string", "minLength": 1 },
+        "ports": { "$ref": "#/$defs/nodePorts" },
+        "control": { "$ref": "#/$defs/nodeControl" },
+        "dependsOn": {
+          "type": "array",
+          "uniqueItems": true,
+          "x-pkm-order": "set",
+          "x-pkm-sort-key": ["from", "accept"],
+          "items": { "$ref": "#/$defs/dependency" }
+        }
+      }
+    },
+    "nativeNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodeId", "kind", "config", "dependsOn"],
+      "properties": {
+        "nodeId": { "$ref": "#/$defs/identifier" },
+        "kind": { "const": "pkm.step.native/v1" },
+        "config": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["operation", "arguments"],
+          "properties": {
+            "operation": { "$ref": "#/$defs/identifier" },
+            "arguments": {
+              "type": "object",
+              "propertyNames": { "$ref": "#/$defs/identifier" },
+              "additionalProperties": { "type": "string", "pattern": "^[^\\u0000]*$" }
+            }
+          }
         },
         "generalInstruction": { "type": "string", "minLength": 1 },
         "ports": { "$ref": "#/$defs/nodePorts" },

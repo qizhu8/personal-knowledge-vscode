@@ -272,5 +272,17 @@ assert.match(extensionSource, /completeGitHubSyncTransaction[\s\S]*clearGitHubSy
   "a successful recheck explicitly retires the previous conflict workspace before post-processing");
 assert.match(extensionSource, /shouldExecute:[\s\S]*clearEquivalentGitHubSyncConflict\(context, targetId\)[\s\S]*conflict-awaiting-approval/,
   "the scheduler clears proven identity-only conflicts before applying the ordinary conflict gate");
+assert.match(extensionSource, /if \(waitForExpensive\)[\s\S]*githubSyncTargetFingerprintState[\s\S]*readGitHubCachedManifest/,
+  "the deferred state pass computes current type/folder fingerprints against the cached last-sync commit");
+assert.match(source, /fingerprintsDeferred && shield\.dataset\.status[\s\S]*continue/,
+  "the lightweight state pass preserves a previously resolved tab status instead of forcing yellow");
+assert.match(source, /function githubSyncFolderMarker[\s\S]*folderShields/,
+  "folder markers consume the deferred folder-level GitHub Sync status payload");
+assert.match(source, /function githubSyncOnState[\s\S]*updateGitHubSyncFolderShields\(\)/,
+  "deferred folder status updates patch existing markers in place");
+assert.doesNotMatch(source.match(/function githubSyncOnState[\s\S]*?\n}/)?.[0] || "", /renderList|renderGlobalRecipes/,
+  "GitHub Sync status responses must not rebuild or temporarily blank the active Knowledge view");
+assert.match(source, /githubSyncStatusRequested \|\| tabCacheIsFresh/,
+  "knowledge navigation coalesces lazy GitHub Sync status requests");
 
 console.log("github-sync UI tests passed");

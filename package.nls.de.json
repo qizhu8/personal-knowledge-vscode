@@ -1,6 +1,7 @@
 {
   "extension.description": "Durchsuchen, bearbeiten und synchronisieren Sie persönliches Wissen; verbinden Sie KI-Assistenten über MCP und arbeiten Sie in Chaträumen zusammen.",
   "command.open": "Personal Knowledge Manager: Bereich öffnen",
+  "command.goToPkmPath": "Personal Knowledge Manager: Zu PKM-Pfad wechseln…",
   "command.addNote": "Personal Knowledge Manager: Schnellnotiz",
   "command.saveSkill": "Personal Knowledge Manager: Auswahl als Skill speichern",
   "command.openConfig": "Personal Knowledge Manager: Konfiguration öffnen",

@@ -143,7 +143,7 @@ try {
   assert.match(extension, /registerCommand\("personalKnowledge\.deleteRecipeFolder"[\s\S]{0,1800}deleteRecipeFolder\(/);
   assert.match(extension, /no Recipes will be deleted/i, "Recipe folder deletion must clearly preserve Recipes");
   assert.match(extension, /element\.nodeType === "module-projects"[\s\S]{0,500}"Overview"[\s\S]{0,200}chatroom/);
-  assert.match(extension, /element\.nodeType === "module-settings"[\s\S]{0,700}"General & MCP"[\s\S]{0,500}"Skill Router"[\s\S]{0,300}subscriptions/);
+  assert.match(extension, /element\.nodeType === "module-settings"[\s\S]{0,700}"General & MCP"[\s\S]{0,500}"Router"[\s\S]{0,300}subscriptions/);
   assert.match(extension, /registerCommand\("personalKnowledge\.openPanelTab"/);
   assert.match(extension, /new PkTreeItem\("Network & Sharing", "root-subscriptions"/);
   assert.match(extension, /return \[brokers, subscribers\]/);

@@ -5,6 +5,16 @@ const vm = require("vm");
 const path = require("path");
 const esbuild = require("esbuild");
 
+const { builtInRecipeInventory } = require(path.join(__dirname, "..", "dist", "workflows", "project-model.js"));
+const systemRecipeInventory = {
+  schema: "pkm.system-recipes.inventory/v1",
+  recipes: builtInRecipeInventory(),
+};
+fs.writeFileSync(
+  path.join(__dirname, "..", "dist", "system-recipes.inventory.json"),
+  `${JSON.stringify(systemRecipeInventory, null, 2)}\n`,
+);
+
 esbuild.buildSync({
   entryPoints: [path.join(__dirname, "..", "src", "subscription-mqtt-client.ts")],
   bundle: true,
@@ -122,9 +132,9 @@ try {
     throw new Error("MCP preview/provider resolution must not regenerate server code implicitly");
   }
   if (!extensionTs.includes('new PkTreeItem("General & MCP", "root-mcp"')
-      || !extensionTs.includes('this._panelPage("Skill Router", "page-skill-router"')
+      || !extensionTs.includes('this._panelPage("Router", "page-skill-router"')
       || !extensionTs.includes('new PkTreeItem("Network & Sharing", "root-subscriptions"')) {
-    throw new Error("Settings navigation must expose General & MCP, Skill Router, and Network & Sharing");
+    throw new Error("Settings navigation must expose General & MCP, Router, and Network & Sharing");
   }
   console.log("post-build: hljs CDN removed, panel.js syntax OK");
 } catch (e) {
@@ -145,3 +155,6 @@ try {
   process.exit(1);
 }
 
+const { validateUiArtifacts } = require("./verify-ui-artifacts");
+const uiArtifactCount = validateUiArtifacts(path.join(__dirname, ".."));
+console.log(`post-build: ${uiArtifactCount} required UI artifacts OK`);

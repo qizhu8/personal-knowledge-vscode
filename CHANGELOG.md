@@ -5,6 +5,45 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Fixed native MCP startup from Remote Development windows by preserving the Extension Host URI scheme and authority for the server working directory. This prevents a Windows UI host from trying to execute Linux remote paths and reporting an opaque code 1 exit.
+- Added bounded recovery for restored PKM Webviews that never send their ready signal, including VS Code service-worker invalid-state failures. The stale restored panel is disposed and recreated once; replacement panels cannot enter a recreation loop.
+- Added release-blocking regressions for local and remote native MCP routing plus restored-Webview readiness, stale-panel recovery, superseded panels, and the no-loop replacement path. Packaging now runs these tests alongside the real stdio MCP smoke test.
+- Prevented read-only Chat, Recipe, and Agent Session discovery/state inspection from entering VS Code's approval state. A real stdio MCP smoke test now starts the generated server, checks advertised tool metadata, and calls every component discovery endpoint with hard timeouts before packaging or release.
+- Reduced Automation orchestration overhead by reserving Agent Sessions for durable mutating work and Recipes for graphs that add executable control. Read-only diagnosis and linear inspect/edit/validate Todos no longer require capability discovery or synthetic one-node ad hoc Recipes.
+- Made Skill routing and Recipe action responses compact by default. Recipe progression no longer repeats completed node results or usage on every call; explicit full-detail reads remain available.
+- Stopped Agent Session Todo claim/report responses from echoing instructions and outcome summaries by default, bounded durable Todo/Session text, and documented that Session-end summaries should not repeat Todo evidence.
+- Hardened malformed MCP call handling with a transport-local circuit breaker: after two identical schema-invalid calls, later unchanged attempts bypass tool validation and receive a minimal blocked-loop response.
+- Replaced the low-level Recipe dependency `str.get` failure with an actionable validation error for node-id strings where dependency objects are required.
+
+## [3.2.5] - 2026-09-30
+
+- Added privacy-safe per-Todo usage accounting for managed Agent Sessions. PKM now attributes MCP calls to the active Todo and persists only aggregate call counts, payload bytes, estimated protocol tokens, duration, failures, tool names, and domains—never prompts, arguments, file paths, Todo text, or model output.
+- Added separate Recipe model-usage aggregation with explicit `measured`, `estimated`, `partial`, and `unknown` quality. MCP protocol estimates are never combined with model tokens, and unavailable host credit or premium-request telemetry remains labeled unknown.
+- Added compact Todo usage badges to both Agent Session views, with detailed tooltips for protocol bytes, calls, failures, elapsed time, model reporting quality, and unavailable host credit telemetry.
+- Added regression coverage for real FastMCP active-Todo attribution, aggregate privacy, model-quality aggregation, Session projections, and Todo usage UI contracts.
+
+## [3.2.4] - 2026-09-30
+
+- Reduced PKM Agent token and protocol overhead by returning typed MCP objects instead of duplicated JSON-string `result` envelopes for Knowledge, Skill, and Recipe tools.
+- Made `agent_session_status`, todo append, and todo replan compact by default while retaining explicit `detail=full` access to complete durable state.
+- Prevented long-running Agent Session and Recipe files from amplifying historical results through receipts. New and legacy-on-write receipts omit reconstructable duplicate data, retain idempotent replay, and enforce a 256 KB per-record-set budget.
+- Reduced Agent Session dashboard refresh work with a bounded metadata-aware JSON projection cache, explicit file-watcher invalidation, and throttled archive-retention scans.
+- Added regression coverage for MCP transport shape, compact status behavior, receipt growth, replay rehydration, cache invalidation, cache bounds, and malformed-file recovery.
+
+## [3.2.3] - 2026-09-30
+
+- Added same-host, same-user GitHub Sync coordination per canonical Knowledge Root. One fenced lease owner runs automatic scheduling while other windows submit durable priority-coalesced intents and display shared queued/running state; accepted work remains durably claimed through execution and is replayed exactly once by a higher fence after a leader crash. Switching Knowledge Roots disposes and recreates the coordinator under the new canonical identity. Stale leaders recover automatically, overlapping Targets share a root-wide local-apply lock, and extension-version blocks remain typed waiting states that replay immediately after a compatible activation. Focused multi-process tests and a non-publishing Ubuntu/Windows/macOS Actions matrix cover election, fencing, in-flight crash recovery, intent deduplication, follow-up runs, root isolation, compatibility replay, canonical path identity, and apply-lock wiring.
+- Added **Go to PKM Path…** as a Command Palette action, Navigation title action, and PKM panel header button. It accepts stable `pkm://knowledge/<knowledgeId>` Agent results, local Skill/Note/Research Copy Paths, and canonical subscribed-item paths, with clipboard prefill, strict validation, one inventory-refresh retry, exact item navigation, and explicit missing/unsupported-path errors.
+- Fixed Markdown image portability across local Skills, Notes, and Research, including parent-relative `_assets` paths used by nested documents. Referenced assets now travel with Broker subscriptions/forks and GitHub Sync backup/restore, while `pkm://knowledge/...` remains a document locator rather than an image resource URL.
+- Added a protected built-in **Create Agent Snapshot** System Recipe backed by an allowlisted `pkm.step.native/v1` operation. Snapshot creation now runs in-process without an Agent model step, pins the exact built-in Recipe identity/revision/digest, and returns a reusable Magic Code recovery prompt.
+- Removed Agent Snapshot recovery passwords and rotation. Snapshot payloads now use the fixed local password `uone` only to avoid plaintext storage; the UI and documentation explicitly describe this as local obfuscation rather than credential protection, and existing internal-key ciphertext migrates on access.
+- Added an explicit **System** badge and read-only Recipe inspector for Extension-managed Recipes. Built-ins no longer expose rename, move, or Trash actions, while store-level mutation and deletion protections remain authoritative.
+- Added a generated System Recipe inventory and fail-closed VSIX release checks. Packages must contain only code-declared built-ins tagged `System` and now reject Knowledge Root, Trash, or personal Recipe payloads.
+- Made Agent Snapshot recovery prompts deterministic by naming the PKM recovery tool and forbidding a new Agent Session from being started first. The native PKM adapter now has an explicit recovery fast path, and missing Snapshot errors explain that the Magic Code does not contain the locally obfuscated payload and that the record must be restored from its origin Knowledge Root or explicit GitHub Sync backup.
+- Fixed Agent Snapshot recovery loops across mixed-version MCP reloads. Snapshot access now repairs accidentally nested encryption envelopes without replacing healthy immutable records, rejects non-canonical payloads instead of silently recovering an empty Session, and requeues cloned running todos and Recipe nodes as pending because execution claims cannot be transferred to a new Agent.
+- Added a uniform malformed-call guard across PKM MCP tools. Schema-invalid arguments now return a structured, non-retryable caller error with received, unexpected, missing, allowed, and required fields plus a minimal corrected shape; repeating the identical invalid call on one transport is explicitly marked as a loop and told to stop and correct. Agent Snapshot recovery also validates Magic Code shape before lookup and generated recovery prompts include the exact JSON argument while forbidding tool-discovery locator fields.
+- Renamed the Settings **Skill Router** tab to **Router** and added a persisted draggable Skill source order for PKM Personal, Agent Native, and each active Subscriber. Source order now participates in `skill_context` and `search_skills` ranking after relevance admission, while exact/required Skills remain protected and Agent Native remains explicitly host-managed.
+
 ## [3.2.2] - 2026-09-29
 
 ### Added

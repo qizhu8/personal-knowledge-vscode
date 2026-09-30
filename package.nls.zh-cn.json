@@ -1,6 +1,7 @@
 {
   "extension.description": "浏览、编辑和同步个人知识；通过 MCP 连接 AI 助手，并在聊天室中协作。",
   "command.open": "Personal Knowledge Manager：打开面板",
+  "command.goToPkmPath": "Personal Knowledge Manager：转到 PKM 路径…",
   "command.addNote": "Personal Knowledge Manager：快速笔记",
   "command.saveSkill": "Personal Knowledge Manager：将选中内容保存为技能",
   "command.openConfig": "Personal Knowledge Manager：打开配置",

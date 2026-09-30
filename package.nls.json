@@ -1,6 +1,7 @@
 {
   "extension.description": "Browse, edit, and sync personal knowledge; connect AI assistants through MCP and collaborate in Chatrooms.",
   "command.open": "Personal Knowledge Manager: Open Panel",
+  "command.goToPkmPath": "Personal Knowledge Manager: Go to PKM Path…",
   "command.addNote": "Personal Knowledge Manager: Quick Note",
   "command.saveSkill": "Personal Knowledge Manager: Save Selection as Skill",
   "command.openConfig": "Personal Knowledge Manager: Open Config",

@@ -23,11 +23,13 @@ export function forkSubscriptionContent(storeRoot: string, source: CachedForkSou
   const folkRoot = safeTarget(typeRoot, forkRootName(source.brokerName, source.publisherUser, source.publisherHost));
   const target = safeTarget(folkRoot, source.remotePath);
   if (fs.existsSync(target)) throw new Error(`Local fork already exists: ${relativeDisplay(storeRoot, target)}`);
+  const assets = checkedAssets(folkRoot, source.assets || []);
   ensureFolkRoot(folkRoot);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   const temporary = `${target}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
   fs.writeFileSync(temporary, source.content || "", "utf8");
   fs.renameSync(temporary, target);
+  writeAssets(assets);
   return relativeDisplay(storeRoot, target);
 }
 
@@ -39,6 +41,7 @@ function forkFolder(storeRoot: string, source: CachedForkSource): string {
   const target = safeTarget(folkRoot, folder.path);
   if (fs.existsSync(target)) throw new Error(`Local fork already exists: ${relativeDisplay(storeRoot, target)}`);
   const checked = folder.files.map(file => ({ ...file, target: safeTarget(target, file.path) }));
+  const assets = checkedAssets(folkRoot, source.assets || []);
   const staging = safeTarget(folkRoot, `.${path.basename(folder.path)}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`);
   try {
     ensureFolkRoot(folkRoot);
@@ -49,6 +52,7 @@ function forkFolder(storeRoot: string, source: CachedForkSource): string {
     }
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.renameSync(staging, target);
+    writeAssets(assets);
   } catch (error) {
     fs.rmSync(staging, { recursive: true, force: true });
     throw error;
@@ -116,6 +120,29 @@ function ensureFolkRoot(root: string): void {
   fs.mkdirSync(root, { recursive: true });
   const keep = path.join(root, ".gitkeep");
   if (!fs.existsSync(keep)) fs.writeFileSync(keep, "", "utf8");
+}
+
+function checkedAssets(root: string, assets: { path: string; content: Buffer }[]): { target: string; content: Buffer }[] {
+  return assets.map(asset => {
+    const target = safeTarget(root, asset.path);
+    if (fs.existsSync(target) && !fs.readFileSync(target).equals(asset.content)) {
+      throw new Error(`Fork asset conflicts with an existing file: ${target}`);
+    }
+    return { target, content: asset.content };
+  });
+}
+
+function writeAssets(assets: { target: string; content: Buffer }[]): void {
+  for (const asset of assets) {
+    if (fs.existsSync(asset.target)) {
+      if (!fs.readFileSync(asset.target).equals(asset.content)) throw new Error(`Fork asset conflicts with an existing file: ${asset.target}`);
+      continue;
+    }
+    fs.mkdirSync(path.dirname(asset.target), { recursive: true });
+    const temporary = `${asset.target}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+    fs.writeFileSync(temporary, asset.content);
+    fs.renameSync(temporary, asset.target);
+  }
 }
 
 function safeTarget(root: string, ...relativeParts: string[]): string {

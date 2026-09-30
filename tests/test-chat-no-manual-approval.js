@@ -28,6 +28,13 @@ assert.match(template, /"manual_approval_required": False/);
 assert.match(template, /"preferred_server": "pkm"/);
 assert.match(template, /Identity assignment is automatic/);
 assert.match(template, /self\.status = "joining"/);
+for (const tool of ["check_chat_version", "chat_capabilities"]) {
+  assert.match(
+    template,
+    new RegExp(`@mcp\\.tool\\(annotations=\\{"readOnlyHint": True\\}\\)\\s+def ${tool}\\(`),
+    `${tool} must not trigger host approval`,
+  );
+}
 
 const hub = fs.readFileSync(path.join(root, "src", "chatroom-hub.ts"), "utf8");
 assert.match(hub, /approveAutomatic\(pending\.approval\.requestId\)/);
@@ -38,4 +45,4 @@ const invite = fs.readFileSync(path.join(root, "src", "chat-magic-link.ts"), "ut
 assert.match(invite, /Discover the unified MCP server pkm/);
 assert.match(invite, /Identity assignment is automatic/);
 
-console.log("Chat Join test: no manual-approval wording, automatic identity assignment, and unified pkm guidance OK");
+console.log("Chat Join test: read-only discovery, automatic identity assignment, and unified pkm guidance OK");

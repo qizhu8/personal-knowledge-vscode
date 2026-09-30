@@ -6,13 +6,14 @@ import { hostname } from "os";
 import { Readable, Transform, TransformCallback } from "stream";
 import { pipeline } from "stream/promises";
 import { connect, MqttClient } from "./subscription-mqtt-client";
-import { buildSyncBundle, emptySyncSelection, SyncSelection } from "./sync-server";
+import { attachMarkdownAssetsToSyncBundle, buildSyncBundle, emptySyncSelection, SyncSelection } from "./sync-server";
 import { normalizeClientIp, normalizeIpBlockRules } from "./subscription-ip-policy";
 import { serverExport } from "./servers";
 import { isContentItemPrivate } from "./content-privacy";
 import { ChatRoomLock } from "./chat-room-lock";
 import { withCrossProcessLock, withCrossProcessLockSync } from "./cross-process-lock";
 import { stableUserPort } from "./user-service-ports";
+import { referencedMarkdownAssets } from "./markdown-assets";
 
 export type SharedContentType = "skills" | "notes" | "papers" | "prompts" | "scripts" | "packages" | "servers" | "recipes";
 export const SHARED_CONTENT_TYPES: SharedContentType[] = ["skills", "notes", "papers", "prompts", "scripts", "packages", "servers", "recipes"];
@@ -128,6 +129,7 @@ export interface CachedForkSource {
   publisherHost: string;
   remotePath: string;
   content?: string;
+  assets?: { path: string; content: Buffer }[];
   folder?: { path: string; files: { path: string; content: string }[] };
   package?: { name: string; files: { path: string; content: string }[] };
 }
@@ -409,6 +411,7 @@ export class SharedMarketManager {
         for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
           if (remaining <= 0) return;
           if (entry.name.endsWith(".pkm-source.json")) continue;
+          if (entry.isDirectory() && entry.name === "_assets") continue;
           const rel = relative ? `${relative}/${entry.name}` : entry.name;
           const full = path.join(directory, entry.name);
           if (entry.isDirectory()) { walk(full, rel); continue; }
@@ -494,6 +497,8 @@ export class SharedMarketManager {
     let provenance: any = {};
     try { provenance = JSON.parse(fs.readFileSync(`${target}.pkm-source.json`, "utf8")); } catch { /* older cache */ }
     provenance.brokerName ||= record.brokerName || this.cachedBrokerName(record) || record.alias || record.publisher;
+    provenance.nodeId ||= record.nodeId;
+    provenance.shareId ||= record.shareId;
     provenance.sourcePriority = subscriptionPriority(record.priority);
     return { type: "subscription", contentType: decoded.type, title: path.basename(decoded.path, path.extname(decoded.path)), path: decoded.path, content, provenance };
   }
@@ -544,7 +549,23 @@ export class SharedMarketManager {
     }
     if (!(["skills", "notes", "papers", "prompts", "scripts", "recipes"] as SharedContentType[]).includes(decoded.type)) throw new Error(`Fork is not supported for ${decoded.type}.`);
     const detail = this.cachedDetail(key);
-    return { type: decoded.type, brokerName, publisherUser: record.publisherUser!, publisherHost: record.publisherHost!, remotePath: safeRelativePath(detail.path), content: detail.content };
+    const assets = (["skills", "notes", "papers"] as SharedContentType[]).includes(decoded.type)
+      ? referencedMarkdownAssets(
+        path.join(this.storageDir, "cache", record.nodeId, record.shareId, "content"),
+        decoded.type as "skills" | "notes" | "papers",
+        detail.path,
+        detail.content,
+      ).map(asset => ({ path: asset.path, content: asset.content }))
+      : [];
+    return {
+      type: decoded.type,
+      brokerName,
+      publisherUser: record.publisherUser!,
+      publisherHost: record.publisherHost!,
+      remotePath: safeRelativePath(detail.path),
+      content: detail.content,
+      ...(assets.length ? { assets } : {}),
+    };
   }
 
   forkFolderSource(keys: string[], remotePath: string): CachedForkSource {
@@ -568,6 +589,7 @@ export class SharedMarketManager {
       publisherHost: sources[0].publisherHost,
       remotePath: folderPath,
       folder: { path: folderPath, files: sources.map(source => ({ path: prefix ? source.remotePath.slice(prefix.length) : source.remotePath, content: source.content || "" })) },
+      assets: [...new Map(sources.flatMap(source => source.assets || []).map(asset => [asset.path, asset])).values()],
     };
   }
 
@@ -1125,7 +1147,7 @@ export class SharedMarketManager {
         return exact.has(identity(type, item)) || dynamicFolders.some(sharedFolder => sharedFolder === "" || itemFolder === sharedFolder || itemFolder.startsWith(`${sharedFolder}/`));
       });
     }
-    return result;
+    return attachMarkdownAssetsToSyncBundle(result);
   }
 
   private async downloadSnapshot(record: SubscriptionRecord, summary: ShareSummary): Promise<void> {

@@ -1,6 +1,7 @@
 {
   "extension.description": "Просматривайте, редактируйте и синхронизируйте личные знания; подключайте ИИ-помощников через MCP и работайте совместно в чат-комнатах.",
   "command.open": "Personal Knowledge Manager: Открыть панель",
+  "command.goToPkmPath": "Personal Knowledge Manager: Перейти к пути PKM…",
   "command.addNote": "Personal Knowledge Manager: Быстрая заметка",
   "command.saveSkill": "Personal Knowledge Manager: Сохранить выделение как навык",
   "command.openConfig": "Personal Knowledge Manager: Открыть настройку",

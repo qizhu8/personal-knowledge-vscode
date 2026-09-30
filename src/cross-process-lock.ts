@@ -14,6 +14,24 @@ function readLock(lockPath: string): LockRecord | undefined {
   catch { return undefined; }
 }
 
+function retryableFileError(error: any): boolean {
+  return error?.code === "EPERM" || error?.code === "EBUSY" || error?.code === "EACCES";
+}
+
+function unlinkWithRetry(lockPath: string): void {
+  const waitArray = new Int32Array(new SharedArrayBuffer(4));
+  for (let attempt = 0; ; attempt++) {
+    try {
+      fs.unlinkSync(lockPath);
+      return;
+    } catch (error: any) {
+      if (error?.code === "ENOENT") return;
+      if (!retryableFileError(error) || attempt >= 7) throw error;
+      Atomics.wait(waitArray, 0, 0, 15 * (attempt + 1));
+    }
+  }
+}
+
 export async function withCrossProcessLock<T>(lockPath: string, owner: string, timeoutMs: number, action: () => Promise<T>, leaseMs = Math.max(timeoutMs * 2, 30_000)): Promise<T> {
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   const deadline = Date.now() + timeoutMs;
@@ -28,7 +46,7 @@ export async function withCrossProcessLock<T>(lockPath: string, owner: string, t
       const existing = readLock(lockPath);
       const expired = !!existing && Date.now() - Number(existing.acquiredAt || 0) > leaseMs;
       if (!existing || !processAlive(existing.pid) || expired) {
-        try { fs.unlinkSync(lockPath); } catch { /* another contender recovered it */ }
+        try { unlinkWithRetry(lockPath); } catch { /* another contender recovered it */ }
       } else if (Date.now() >= deadline) {
         throw new Error(`${owner} lock timed out; owned by ${existing.owner || "another PKM window"} (PID ${existing.pid}).`);
       }
@@ -38,7 +56,7 @@ export async function withCrossProcessLock<T>(lockPath: string, owner: string, t
   try { return await action(); }
   finally {
     const current = readLock(lockPath);
-    if (current?.nonce === record.nonce) { try { fs.unlinkSync(lockPath); } catch { /* already released */ } }
+    if (current?.nonce === record.nonce) { try { unlinkWithRetry(lockPath); } catch { /* already released */ } }
   }
 }
 
@@ -55,14 +73,14 @@ export function withCrossProcessLockSync<T>(lockPath: string, owner: string, act
       try { return action(); }
       finally {
         const current = readLock(lockPath);
-        if (current?.nonce === record.nonce) { try { fs.unlinkSync(lockPath); } catch { /* already released */ } }
+        if (current?.nonce === record.nonce) { try { unlinkWithRetry(lockPath); } catch { /* already released */ } }
       }
     } catch (error: any) {
       if (error?.code !== "EEXIST") throw error;
       const existing = readLock(lockPath);
       const expired = !!existing && Date.now() - Number(existing.acquiredAt || 0) > leaseMs;
       if (!existing || !processAlive(existing.pid) || expired) {
-        try { fs.unlinkSync(lockPath); } catch { /* another contender recovered it */ }
+        try { unlinkWithRetry(lockPath); } catch { /* another contender recovered it */ }
         continue;
       }
       if (Date.now() >= deadline) {

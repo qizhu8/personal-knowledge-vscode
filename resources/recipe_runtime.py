@@ -4,6 +4,7 @@ import contextlib
 import collections
 import datetime
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -14,7 +15,10 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote
+
+from fastmcp import Context
 
 try:
     from recipe_health import finalize_run_health
@@ -26,18 +30,20 @@ except ModuleNotFoundError:
     _HEALTH_SPEC.loader.exec_module(_HEALTH_MODULE)
     finalize_run_health = _HEALTH_MODULE.finalize_run_health
 
-RECIPE_SCHEMA_VERSION = "1.6.0"
+RECIPE_SCHEMA_VERSION = "1.7.3"
 API_SCHEMA = "pkm.recipe.api/v1"
 RUN_SCHEMA = "pkm.recipe.run/v1"
 DEFINITION_SCHEMA = "pkm.workflow.definition/v1"
 TERMINAL_NODE_STATES = {"succeeded", "failed", "skipped"}
 COMMAND_NODE_KIND = "pkm.step.command/v1"
 SCRIPT_NODE_KIND = "pkm.step.script/v1"
+NATIVE_NODE_KIND = "pkm.step.native/v1"
 HUMAN_GATE_NODE_KIND = "pkm.gate.human/v1"
 TEMPLATE = re.compile(r"\$\{inputs\.([A-Za-z][A-Za-z0-9._-]{0,127})\}")
 USAGE_RECORD_LIMIT = 200
 USAGE_SUMMARY_GROUP_LIMIT = 100
 USAGE_SUMMARY_RUN_SCAN_LIMIT = 5000
+RECEIPT_BYTE_LIMIT = 262144
 MEASURED_TOKEN_FIELDS = (
     "input_tokens", "output_tokens", "cached_input_tokens", "reasoning_tokens", "total_tokens")
 
@@ -48,6 +54,27 @@ def _json(value):
 
 def _response(**values):
     return _json({"schema": API_SCHEMA, **values})
+
+
+def _response_detail(detail, default="compact"):
+    normalized = str(detail or default).strip().lower()
+    if normalized not in {"compact", "full"}:
+        raise ValueError("detail must be compact or full.")
+    return normalized
+
+
+def _register_typed_tool(mcp, function, read_only=False):
+    def wrapper(*args, **kwargs):
+        value = function(*args, **kwargs)
+        return json.loads(value) if isinstance(value, str) else value
+
+    wrapper.__name__ = function.__name__
+    wrapper.__doc__ = function.__doc__
+    wrapper.__annotations__ = {**getattr(function, "__annotations__", {}), "return": Any}
+    wrapper.__signature__ = inspect.signature(function).replace(return_annotation=Any)
+    decorator = mcp.tool(annotations={"readOnlyHint": True}) if read_only else mcp.tool()
+    decorator(wrapper)
+    return function
 
 
 def _fingerprint(value):
@@ -886,9 +913,12 @@ def _validate_definition(recipe):
     if len(node_ids) != len(nodes) or None in node_ids:
         raise ValueError("Recipe node identities are invalid.")
     for node in nodes:
-        if node.get("kind") not in {"pkm.step.noop/v1", COMMAND_NODE_KIND, SCRIPT_NODE_KIND, HUMAN_GATE_NODE_KIND,
+        if node.get("kind") not in {"pkm.step.noop/v1", COMMAND_NODE_KIND, SCRIPT_NODE_KIND, NATIVE_NODE_KIND, HUMAN_GATE_NODE_KIND,
                                     "pkm.subflow/v1"} or not isinstance(node.get("dependsOn"), list):
             raise ValueError("Recipe contains an unsupported v1 node.")
+        if any(not isinstance(dependency, dict) for dependency in node["dependsOn"]):
+            raise ValueError(
+                "Recipe dependencies must be objects with a 'from' field, not node-id strings.")
         if any(dependency.get("from") not in node_ids for dependency in node["dependsOn"]):
             raise ValueError("Recipe dependency references an unknown node.")
         if node.get("kind") == "pkm.subflow/v1":
@@ -939,6 +969,21 @@ def _validate_definition(recipe):
                                                    or not config["cwd"].strip()
                                                    or any(character in config["cwd"] for character in "\r\n\0")):
                 raise ValueError("Recipe script cwd is invalid.")
+        if node.get("kind") == NATIVE_NODE_KIND:
+            if recipe.get("systemKind") != "built-in":
+                raise ValueError("Native Recipe operations are restricted to PKM built-in Recipes.")
+            config = node.get("config") or {}
+            operation = config.get("operation")
+            arguments = config.get("arguments")
+            if (not isinstance(operation, str)
+                    or not re.fullmatch(r"[A-Za-z][A-Za-z0-9._-]{0,127}", operation)):
+                raise ValueError("Recipe native operation identity is invalid.")
+            if (not isinstance(arguments, dict)
+                    or any(not isinstance(name, str)
+                           or not re.fullmatch(r"[A-Za-z][A-Za-z0-9._-]{0,127}", name)
+                           or not isinstance(value, str) or "\0" in value
+                           for name, value in arguments.items())):
+                raise ValueError("Recipe native operation arguments must be a string map.")
         if node.get("kind") == HUMAN_GATE_NODE_KIND:
             config = node.get("config") or {}
             input_kind = config.get("inputKind")
@@ -1087,6 +1132,7 @@ def _new_run(recipe, definition, node_bindings, inputs, run_id, project_id="", a
             "executableDigest": recipe.get("executableDigest"), "projectId": project_id,
             "recipeName": str(recipe.get("name") or recipe["recipeId"]),
             "origin": recipe.get("origin") or {"kind": "library"},
+            **({"systemKind": recipe["systemKind"]} if recipe.get("systemKind") else {}),
             "definition": definition, "nodeBindings": node_bindings, "inputs": inputs,
             "nodes": {node["nodeId"]: {"state": "pending"} for node in definition["spec"]["nodes"]},
             "nodeAttemptCounts": {},
@@ -1481,6 +1527,99 @@ def _accepted_outcomes(node):
     return list(dict.fromkeys([*(control.get("cases") or []), "failed"]))
 
 
+def _native_action(run, node):
+    return {
+        "kind": "execute_node",
+        "run_id": run["runId"],
+        "node_id": node["nodeId"],
+        "node": node,
+        "inputs": run["inputs"],
+        "accepted_outcomes": _accepted_outcomes(node),
+        "loop_context": _loop_context(run, node["nodeId"]),
+        "knowledge_bindings": run.get("nodeBindings", {}).get(node["nodeId"], []),
+    }
+
+
+def _execute_native_operation(run, node, native_operations, ctx):
+    if run.get("systemKind") != "built-in":
+        raise ValueError("Native Recipe operations are restricted to PKM built-in Recipes.")
+    operation = node["config"]["operation"]
+    descriptor = native_operations.get(operation)
+    if not isinstance(descriptor, dict) or not callable(descriptor.get("handler")):
+        raise ValueError("Recipe native operation is not registered: " + operation)
+    if (run.get("recipeId") != descriptor.get("recipe_id")
+            or run.get("recipeRevision") != descriptor.get("revision")
+            or run.get("executableDigest") != descriptor.get("executable_digest")):
+        raise ValueError("Recipe native operation is not authorized for this exact built-in Recipe revision.")
+    if ctx is None:
+        raise ValueError("MCP request context is required for Recipe native operations.")
+    arguments = {
+        name: _render_template(value, run["inputs"])
+        for name, value in node["config"]["arguments"].items()
+    }
+    record = run["nodes"][node["nodeId"]]
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    try:
+        result = descriptor["handler"](**arguments, ctx=ctx)
+        if isinstance(result, str):
+            result = json.loads(result)
+        if not isinstance(result, dict):
+            raise ValueError("Recipe native operation returned an invalid result.")
+        if result.get("ok") is False:
+            raise ValueError(str((result.get("error") or {}).get("message")
+                                 or result.get("error") or "Recipe native operation failed."))
+        ephemeral_fields = {
+            str(field) for field in (descriptor.get("ephemeral_fields") or [])
+            if isinstance(field, str) and field
+        }
+        ephemeral = {field: result[field] for field in ephemeral_fields if field in result}
+        persisted = {key: value for key, value in result.items() if key not in ephemeral_fields}
+        if ephemeral:
+            persisted["ephemeral_output"] = {
+                "available": True,
+                "replayable": False,
+                "fields": sorted(ephemeral),
+                "recovery": "Rotate the Snapshot recovery passphrase if this one-time output is lost.",
+            }
+        record.update({
+            "state": "succeeded",
+            "outcome": "succeeded",
+            "result": persisted,
+            "error": "",
+            "completedAt": now,
+            "lastHeartbeatAt": now,
+            "lastProgressAt": now,
+        })
+        _apply_loop_outcome(run, node["nodeId"], "succeeded")
+        return {
+            "operation": operation,
+            "replayable": False,
+            "value": ephemeral,
+        } if ephemeral else None
+    except Exception as error:
+        record.update({
+            "state": "failed",
+            "outcome": "failed",
+            "result": None,
+            "error": str(error),
+            "completedAt": now,
+            "lastHeartbeatAt": now,
+            "lastProgressAt": now,
+        })
+        _apply_loop_outcome(run, node["nodeId"], "failed")
+        return None
+
+
+def _response_with_ephemeral(response, ephemeral_output):
+    if not ephemeral_output:
+        return response
+    payload = json.loads(response)
+    payload["ephemeral_output"] = ephemeral_output
+    payload["ephemeral_output_warning"] = (
+        "This one-time output is not persisted in Recipe state or command receipts and cannot be replayed.")
+    return _json(payload)
+
+
 def _advance(run, claim):
     if run["status"] == "failed":
         return {"kind": "none", "reason": "recipe-failed"}, False
@@ -1489,6 +1628,8 @@ def _advance(run, claim):
     if running:
         if running.get("kind") == COMMAND_NODE_KIND:
             return _command_action(run, running), False
+        if running.get("kind") == NATIVE_NODE_KIND:
+            return _native_action(run, running), False
         if running.get("kind") == HUMAN_GATE_NODE_KIND:
             return _human_gate_action(run, running), False
         return {"kind": "report_node", "run_id": run["runId"], "node_id": running["nodeId"],
@@ -1521,22 +1662,46 @@ def _advance(run, claim):
                 "safeToInterrupt": False, "staleAfterSeconds": 300, "events": [],
             },
         })
+        if node.get("kind") == NATIVE_NODE_KIND:
+            return _native_action(run, node), True
         return {"kind": "execute_node", "run_id": run["runId"], "node_id": node["nodeId"],
                 "node": node, "inputs": run["inputs"],
-            "accepted_outcomes": _accepted_outcomes(node),
-            "loop_context": _loop_context(run, node["nodeId"]),
-            "knowledge_bindings": run.get("nodeBindings", {}).get(node["nodeId"], [])}, True
+                "accepted_outcomes": _accepted_outcomes(node),
+                "loop_context": _loop_context(run, node["nodeId"]),
+                "knowledge_bindings": run.get("nodeBindings", {}).get(node["nodeId"], [])}, True
     changed = run["status"] != "failed"
     run["status"] = "failed"
     blocked = [node_id for node_id, record in run["nodes"].items() if record["state"] == "pending"]
     return {"kind": "none", "reason": "recipe-blocked", "blocked_node_ids": blocked}, changed
 
 
-def _run_response(run, action, replayed=False):
-    return _response(ok=True, run_id=run["runId"], recipe={"recipe_id": run["recipeId"],
-                     "revision": run["recipeRevision"], "executable_digest": run["executableDigest"]},
-                     status=run["status"], version=run["version"], current_result=_current_result(run),
-                     usage=_usage_summary(run), next_action=action, replayed=replayed)
+def _run_response(run, action, replayed=False, detail="compact", include_recipe=False):
+    current_result = _current_result(run)
+    values = {
+        "ok": True,
+        "run_id": run["runId"],
+        "status": run["status"],
+        "version": run["version"],
+        "current_result": {
+            "counts": current_result["counts"],
+            "progress": current_result["progress"],
+        },
+        "next_action": action,
+        "replayed": replayed,
+    }
+    for key in ("running_progress", "control_state"):
+        if key in current_result:
+            values["current_result"][key] = current_result[key]
+    if include_recipe or detail == "full":
+        values["recipe"] = {
+            "recipe_id": run["recipeId"],
+            "revision": run["recipeRevision"],
+            "executable_digest": run["executableDigest"],
+        }
+    if detail == "full":
+        values["current_result"] = current_result
+        values["usage"] = _usage_summary(run)
+    return _response(**values)
 
 
 def _finalize_terminal_run(store, run):
@@ -1560,15 +1725,57 @@ def _receipt(run, command_id, fingerprint):
     if existing["fingerprint"] != fingerprint:
         raise ValueError("command_id was reused with different parameters.")
     replay = json.loads(existing["response"])
+    current_result = replay.get("current_result")
+    if isinstance(current_result, dict):
+        completed = current_result.get("completed_nodes")
+        if isinstance(completed, list):
+            for item in completed:
+                if not item.pop("result_omitted", False):
+                    continue
+                record = (run.get("nodes") or {}).get(item.get("node_id")) or {}
+                if "result" in record:
+                    item["result"] = record.get("result")
+                else:
+                    item["result_omitted"] = True
     replay["replayed"] = True
     return _json(replay)
 
 
+def _compact_receipt_response(response):
+    payload = json.loads(response) if isinstance(response, str) else dict(response)
+    current_result = payload.get("current_result")
+    if isinstance(current_result, dict):
+        completed = current_result.get("completed_nodes")
+        if isinstance(completed, list):
+            compact_completed = []
+            for item in completed:
+                compact = dict(item)
+                if compact.pop("result", None) is not None:
+                    compact["result_omitted"] = True
+                compact_completed.append(compact)
+            current_result["completed_nodes"] = compact_completed
+        running = current_result.get("running_progress")
+        if isinstance(running, dict):
+            progress = running.get("progress")
+            if isinstance(progress, dict) and isinstance(progress.get("events"), list):
+                progress["events"] = progress["events"][-3:]
+    return _json(payload)
+
+
 def _store_receipt(run, command_id, fingerprint, response):
-    run["receipts"][command_id] = {"fingerprint": fingerprint, "response": response}
-    if len(run["receipts"]) > 500:
-        oldest = next(iter(run["receipts"]))
-        del run["receipts"][oldest]
+    receipts = run["receipts"]
+    for key, receipt in list(receipts.items()):
+        stored_response = receipt.get("response")
+        if stored_response is not None:
+            receipt["response"] = _compact_receipt_response(stored_response)
+    receipts[command_id] = {
+        "fingerprint": fingerprint,
+        "response": _compact_receipt_response(response),
+    }
+    while len(receipts) > 500:
+        del receipts[next(iter(receipts))]
+    while len(receipts) > 1 and len(_json(receipts).encode("utf-8")) > RECEIPT_BYTE_LIMIT:
+        del receipts[next(iter(receipts))]
 
 
 def _run_retry_count(run):
@@ -1638,16 +1845,23 @@ def _recipe_usage_groups(store, recipe_id="", limit=50):
     return result[:limit], len(paths) > len(scanned), len(scanned)
 
 
-def register_recipe_tools(mcp, store, subscription_cache=None, environments_registry=None):
+def register_recipe_tools(mcp, store, subscription_cache=None, environments_registry=None,
+                          native_operations=None):
     store = Path(store)
+    native_operations = dict(native_operations or {})
 
-    @mcp.tool()
+    def typed_tool(function):
+        return _register_typed_tool(mcp, function)
+
+    def typed_read_only_tool(function):
+        return _register_typed_tool(mcp, function, read_only=True)
+
+    @typed_read_only_tool
     def recipe_capabilities() -> str:
-        """Proactively discover reusable or ad hoc Recipe workflows before planning substantial multi-step work.
+        """Discover Recipes when an executable control graph adds value.
 
-        Use for coding, research, debugging, and operational tasks with a stable sequence,
-        dependencies, branching, bounded repetition, or reusable inputs and outputs. The user
-        does not need to mention Recipes. Next call recipe_search with the complete task contract.
+        Use for branching, bounded repetition, mandatory gates, pinned reusable
+        procedures, or managed background/native operations. Linear work needs no Recipe.
         """
         return _response(
             ok=True,
@@ -1655,10 +1869,11 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
             version=RECIPE_SCHEMA_VERSION,
             proactive=True,
             use_when=[
-                "substantial multi-step task",
-                "stable or reusable sequence",
-                "dependencies, branching, or bounded repetition",
+                "branching or bounded repetition",
+                "mandatory human gate or pinned reusable procedure",
+                "managed background command or native operation",
             ],
+            do_not_use_when=["linear inspect-edit-validate work", "one-node noop tracking"],
             next_tool="recipe_search",
             tools=[
                 "recipe_search",
@@ -1679,7 +1894,13 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
                 "next_is_claim": True,
                 "dynamic_v2": True,
                 "supported_controls": ["branch", "bounded-loop", "pinned-subrecipe",
-                                       "background-command", "mandatory-human-gate"],
+                                       "background-command", "mandatory-human-gate",
+                                       "built-in-native-operation"],
+                "native_operations": {
+                    "built_in_only": True,
+                    "registered": sorted(native_operations),
+                    "ephemeral_output": "not persisted or replayed",
+                },
             },
             usage_accounting={
                 "report_parameter": "usage_json",
@@ -1702,7 +1923,7 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
             design_persistence="recipe_create_from_skill-for-declared-skill-gaps-or-extension-authoring-bridge",
         )
 
-    @mcp.tool()
+    @typed_read_only_tool
     def recipe_usage_summary(recipe_id: str = "", limit: int = 50) -> str:
         """Aggregate bounded Recipe usage by Recipe identity and revision.
 
@@ -1718,7 +1939,7 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
             return _response(ok=False, error={"code": "recipe-usage-summary-failed",
                                               "message": str(error)})
 
-    @mcp.tool()
+    @typed_read_only_tool
     def recipe_search(query: str = "", category: str = "", project_id: str = "", limit: int = 10,
                       task_contract_json: str = "{}") -> str:
         """Find Recipe candidates for a task contract; use proactively even when the user did not mention Recipes.
@@ -1732,7 +1953,7 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
         except Exception as error:
             return _response(ok=False, error={"code": "recipe-search-failed", "message": str(error)})
 
-    @mcp.tool()
+    @typed_tool
     def recipe_create_from_skill(name: str, definition_json: str, command_id: str,
                                  source_skill_id: str, source_skill_hash: str,
                                  description: str = "", category: str = "",
@@ -1753,11 +1974,13 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
         except Exception as error:
             return _response(ok=False, error={"code": "recipe-create-from-skill-failed", "message": str(error)})
 
-    @mcp.tool()
+    @typed_tool
     def recipe_run_start(recipe_id: str, command_id: str, inputs_json: str = "{}", project_id: str = "",
-                         expected_revision: int = 0, expected_digest: str = "") -> str:
-        """Create an idempotent lazy run pinned to one Recipe revision and digest."""
+                         expected_revision: int = 0, expected_digest: str = "",
+                         detail: str = "compact") -> str:
+        """Create a pinned lazy run; compact output omits historical results and usage."""
         try:
+            detail = _response_detail(detail)
             if not command_id.strip():
                 raise ValueError("command_id is required.")
             recipe = _recipe_by_id(store, recipe_id, project_id)
@@ -1768,7 +1991,8 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
                 raise ValueError("Recipe digest does not match expected_digest.")
             inputs = _normalize_run_inputs(definition, _parse_json(inputs_json, "inputs_json"))
             fingerprint = _fingerprint({"recipe_id": recipe_id, "project_id": project_id, "inputs": inputs,
-                                        "revision": expected_revision, "digest": expected_digest})
+                                        "revision": expected_revision, "digest": expected_digest,
+                                        "detail": detail})
             run_id = "recipe_run_" + hashlib.sha256(command_id.encode("utf-8")).hexdigest()[:24]
             path, lock = _run_paths(store, run_id)
             with _file_lock(lock):
@@ -1780,18 +2004,20 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
                     raise ValueError("Deterministic run identity already exists for another command.")
                 run = _new_run(recipe, definition, node_bindings, inputs, run_id, project_id)
                 action, _ = _advance(run, False)
-                response = _run_response(run, action)
+                response = _run_response(
+                    run, action, detail=detail, include_recipe=True)
                 _store_receipt(run, command_id, fingerprint, response)
                 _atomic_write(path, run)
                 return response
         except Exception as error:
             return _response(ok=False, error={"code": "recipe-run-start-failed", "message": str(error)})
 
-    @mcp.tool()
+    @typed_tool
     def recipe_run_start_adhoc(name: str, definition_json: str, command_id: str, inputs_json: str = "{}",
-                               node_bindings_json: str = "[]") -> str:
-        """Create an Agent Session task run from an instance-only workflow without adding it to Recipe Library."""
+                               node_bindings_json: str = "[]", detail: str = "compact") -> str:
+        """Create an instance-only run only when its graph adds executable control."""
         try:
+            detail = _response_detail(detail)
             name = str(name or "").strip()
             if not name or not command_id.strip():
                 raise ValueError("name and command_id are required.")
@@ -1806,7 +2032,8 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
             definition, bindings = _validate_definition(recipe)
             inputs = _normalize_run_inputs(definition, inputs)
             fingerprint = _fingerprint({"name": name, "definition": definition,
-                                        "node_bindings": node_bindings, "inputs": inputs})
+                                        "node_bindings": node_bindings, "inputs": inputs,
+                                        "detail": detail})
             run_id = "recipe_run_" + hashlib.sha256(command_id.encode("utf-8")).hexdigest()[:24]
             path, lock = _run_paths(store, run_id)
             with _file_lock(lock):
@@ -1818,17 +2045,19 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
                     raise ValueError("Deterministic run identity already exists for another command.")
                 run = _new_run(recipe, definition, bindings, inputs, run_id)
                 action, _ = _advance(run, False)
-                response = _run_response(run, action)
+                response = _run_response(
+                    run, action, detail=detail, include_recipe=True)
                 _store_receipt(run, command_id, fingerprint, response)
                 _atomic_write(path, run)
                 return response
         except Exception as error:
             return _response(ok=False, error={"code": "recipe-run-start-adhoc-failed", "message": str(error)})
 
-    @mcp.tool()
-    def recipe_run_get(run_id: str) -> str:
-        """Read current Recipe results and the next non-claiming action."""
+    @typed_read_only_tool
+    def recipe_run_get(run_id: str, detail: str = "full") -> str:
+        """Read Recipe state; full is intended for explicit result inspection."""
         try:
+            detail = _response_detail(detail, "full")
             path, lock = _run_paths(store, run_id)
             with _file_lock(lock):
                 run = _load_run(path)
@@ -1844,18 +2073,21 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
                 if changed:
                     run["version"] += 1
                     _atomic_write(path, run)
-                return _run_response(run, action)
+                return _run_response(run, action, detail=detail)
         except Exception as error:
             return _response(ok=False, error={"code": "recipe-run-get-failed", "message": str(error)})
 
-    @mcp.tool()
-    def recipe_run_next(run_id: str, command_id: str) -> str:
-        """Atomically claim and return exactly one ready Recipe node for the Agent to execute."""
+    @typed_tool
+    def recipe_run_next(run_id: str, command_id: str, detail: str = "compact",
+                        ctx: Context = None) -> str:
+        """Claim one ready node; compact output omits accumulated result history."""
         try:
+            detail = _response_detail(detail)
             if not command_id.strip():
                 raise ValueError("command_id is required.")
             path, lock = _run_paths(store, run_id)
-            fingerprint = _fingerprint({"run_id": run_id, "operation": "next"})
+            fingerprint = _fingerprint(
+                {"run_id": run_id, "operation": "next", "detail": detail})
             with _file_lock(lock):
                 run = _load_run(path)
                 replay = _receipt(run, command_id, fingerprint)
@@ -1865,25 +2097,36 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
                 changed = _sync_subflows(store, run) or changed
                 action, advanced = _advance(run, True)
                 changed = changed or advanced
-                action, materialized = _materialize_runtime_action(store, run, action, environments_registry)
-                changed = changed or materialized
+                ephemeral_output = None
+                if (action.get("kind") == "execute_node"
+                        and action.get("node", {}).get("kind") == NATIVE_NODE_KIND):
+                    ephemeral_output = _execute_native_operation(
+                        run, action["node"], native_operations, ctx)
+                    changed = True
+                    action, advanced = _advance(run, False)
+                    changed = changed or advanced
+                else:
+                    action, materialized = _materialize_runtime_action(
+                        store, run, action, environments_registry)
+                    changed = changed or materialized
                 if changed:
                     run["updatedAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
                 changed = _finalize_terminal_run(store, run) or changed
                 if changed:
                     run["version"] += 1
-                response = _run_response(run, action)
+                response = _run_response(run, action, detail=detail)
                 _store_receipt(run, command_id, fingerprint, response)
                 _atomic_write(path, run)
-                return response
+                return _response_with_ephemeral(response, ephemeral_output)
         except Exception as error:
             return _response(ok=False, error={"code": "recipe-run-next-failed", "message": str(error)})
 
-    @mcp.tool()
+    @typed_tool
     def recipe_run_progress(run_id: str, node_id: str, command_id: str,
-                            progress_json: str = "{}") -> str:
-        """Persist a heartbeat and structured progress for the currently running Recipe module."""
+                            progress_json: str = "{}", detail: str = "compact") -> str:
+        """Persist progress; request full detail only for observability diagnosis."""
         try:
+            detail = _response_detail(detail)
             if not command_id.strip():
                 raise ValueError("command_id is required.")
             value = _parse_json(progress_json, "progress_json")
@@ -1914,7 +2157,10 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
                                                    for item in events):
                 raise ValueError("events must be an array of objects with message.")
             path, lock = _run_paths(store, run_id)
-            fingerprint = _fingerprint({"run_id": run_id, "node_id": node_id, "progress": value})
+            fingerprint = _fingerprint({
+                "run_id": run_id, "node_id": node_id,
+                "progress": value, "detail": detail,
+            })
             with _file_lock(lock):
                 run = _load_run(path)
                 replay = _receipt(run, command_id, fingerprint)
@@ -1946,19 +2192,20 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
                     "kind": "report_node", "run_id": run_id, "node_id": node_id,
                     "accepted_outcomes": _accepted_outcomes(
                         next(item for item in run["definition"]["spec"]["nodes"] if item["nodeId"] == node_id)),
-                })
+                }, detail=detail)
                 _store_receipt(run, command_id, fingerprint, response)
                 _atomic_write(path, run)
                 return response
         except Exception as error:
             return _response(ok=False, error={"code": "recipe-run-progress-failed", "message": str(error)})
 
-    @mcp.tool()
+    @typed_tool
     def recipe_run_report(run_id: str, node_id: str, outcome: str, command_id: str,
                           result_json: str = "null", error: str = "",
-                          usage_json: str = "null") -> str:
-        """Commit one claimed node outcome, optional measured/estimated usage, and claim the next action."""
+                          usage_json: str = "null", detail: str = "compact") -> str:
+        """Commit one node outcome and advance without echoing prior results."""
         try:
+            detail = _response_detail(detail)
             if not command_id.strip():
                 raise ValueError("command_id is required.")
             if not isinstance(usage_json, str):
@@ -1969,7 +2216,8 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
             usage_value = _normalize_usage(_parse_json(usage_json, "usage_json", None))
             path, lock = _run_paths(store, run_id)
             fingerprint = _fingerprint({"run_id": run_id, "node_id": node_id, "outcome": outcome,
-                                        "result": result, "error": error, "usage": usage_value})
+                                        "result": result, "error": error, "usage": usage_value,
+                                        "detail": detail})
             with _file_lock(lock):
                 run = _load_run(path)
                 replay = _receipt(run, command_id, fingerprint)
@@ -1979,7 +2227,8 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
                 if not record or record["state"] != "running":
                     raise ValueError("Only the currently claimed running node can report an outcome.")
                 node = next(item for item in run["definition"]["spec"]["nodes"] if item["nodeId"] == node_id)
-                if node.get("kind") in {"pkm.subflow/v1", COMMAND_NODE_KIND, SCRIPT_NODE_KIND, HUMAN_GATE_NODE_KIND}:
+                if node.get("kind") in {"pkm.subflow/v1", COMMAND_NODE_KIND, SCRIPT_NODE_KIND,
+                                       NATIVE_NODE_KIND, HUMAN_GATE_NODE_KIND}:
                     raise ValueError("This node kind has a dedicated runtime adapter and cannot be reported manually.")
                 accepted = set(_accepted_outcomes(node))
                 if outcome not in accepted:
@@ -2000,24 +2249,27 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
                 run["version"] += 1
                 run["updatedAt"] = completed_at
                 _finalize_terminal_run(store, run)
-                response = _run_response(run, action)
+                response = _run_response(run, action, detail=detail)
                 _store_receipt(run, command_id, fingerprint, response)
                 _atomic_write(path, run)
                 return response
         except Exception as error_value:
             return _response(ok=False, error={"code": "recipe-run-report-failed", "message": str(error_value)})
 
-    @mcp.tool()
+    @typed_tool
     def recipe_run_submit_input(run_id: str, node_id: str, challenge_id: str,
-                                response_json: str, command_id: str) -> str:
+                                response_json: str, command_id: str,
+                                detail: str = "compact") -> str:
         """Submit required user input to a human gate; ordinary Recipe reports cannot replace this evidence."""
         try:
+            detail = _response_detail(detail)
             if not command_id.strip():
                 raise ValueError("command_id is required.")
             response = _parse_json(response_json, "response_json")
             path, lock = _run_paths(store, run_id)
             fingerprint = _fingerprint({"run_id": run_id, "node_id": node_id,
-                                        "challenge_id": challenge_id, "response": response})
+                                        "challenge_id": challenge_id, "response": response,
+                                        "detail": detail})
             with _file_lock(lock):
                 run = _load_run(path)
                 replay = _receipt(run, command_id, fingerprint)
@@ -2055,7 +2307,7 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
                 run["version"] += 1
                 run["updatedAt"] = responded_at
                 _finalize_terminal_run(store, run)
-                response_value = _run_response(run, action)
+                response_value = _run_response(run, action, detail=detail)
                 _store_receipt(run, command_id, fingerprint, response_value)
                 _atomic_write(path, run)
                 return response_value

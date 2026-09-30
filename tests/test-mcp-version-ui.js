@@ -28,7 +28,7 @@ assert.match(sourceTs, /Refusing to downgrade the installed PKM MCP runtime/,
   "the generated server write boundary must reject downgrades");
 assert.match(sourceTs, /The newer runtime was preserved[\s\S]*Upgrade Personal Knowledge Manager/,
   "downgrade protection must preserve the newer runtime and recommend an extension upgrade");
-assert.match(sourceTs, /UNIFIED_MCP_VERSION = "2\.13\.2"/,
+assert.match(sourceTs, /UNIFIED_MCP_VERSION = "2\.13\.6"/,
   "generated MCP changes must carry a new unified runtime patch version");
 assert.doesNotMatch(panelJs, /PKM MCP server is outdated/,
   "equal unified versions must not be mislabeled as an outdated server");
@@ -152,6 +152,8 @@ assert(sourceTs.includes("installedKnowledgeVersion === KNOWLEDGE_MCP_VERSION"))
 assert(sourceTs.includes("installedChatVersion === CHAT_MCP_VERSION"));
 assert(sourceTs.includes("installedRecipeVersion === RECIPE_MCP_VERSION"));
 assert(sourceTs.includes("installedAgentSessionVersion === AGENT_SESSION_MCP_VERSION"));
+assert(sourceTs.includes("mcp.add_middleware(McpCallGuardMiddleware(mcp))"));
+assert(sourceTs.includes('"resources", "mcp_call_guard.py"'));
 assert(panelJs.includes("Knowledge: installed v"));
 assert(panelJs.includes("Chat: installed v"));
 for (const text of ["PKM Integration Status", "Unified MCP Server", "Knowledge schema", "Chat schema", "Recipe runtime", "Agent Session runtime", "PKM Skill Router", "Setup progress", "Ready · starts on demand", "Automatic integration", "Agent connection"]) {

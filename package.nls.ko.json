@@ -1,6 +1,7 @@
 {
   "extension.description": "개인 지식을 탐색, 편집 및 동기화하고 MCP를 통해 AI 도우미에 연결하여 채팅방에서 협업합니다.",
   "command.open": "Personal Knowledge Manager: 패널 열기",
+  "command.goToPkmPath": "Personal Knowledge Manager: PKM 경로로 이동…",
   "command.addNote": "Personal Knowledge Manager: 빠른 노트",
   "command.saveSkill": "Personal Knowledge Manager: 선택 영역을 Skill로 저장",
   "command.openConfig": "Personal Knowledge Manager: 구성 열기",

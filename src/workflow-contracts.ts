@@ -5,6 +5,7 @@ export const WORKFLOW_DEFINITION_SCHEMA = "pkm.workflow.definition/v1" as const;
 export const NOOP_NODE_KIND = "pkm.step.noop/v1" as const;
 export const COMMAND_NODE_KIND = "pkm.step.command/v1" as const;
 export const SCRIPT_NODE_KIND = "pkm.step.script/v1" as const;
+export const NATIVE_NODE_KIND = "pkm.step.native/v1" as const;
 export const HUMAN_GATE_NODE_KIND = "pkm.gate.human/v1" as const;
 export const SUBFLOW_NODE_KIND = "pkm.subflow/v1" as const;
 
@@ -69,6 +70,14 @@ export interface WorkflowScriptNodeV1 extends WorkflowNodeBaseV1 {
   };
 }
 
+export interface WorkflowNativeNodeV1 extends WorkflowNodeBaseV1 {
+  kind: typeof NATIVE_NODE_KIND;
+  config: {
+    operation: string;
+    arguments: Record<string, string>;
+  };
+}
+
 export interface WorkflowHumanGateNodeV1 extends WorkflowNodeBaseV1 {
   kind: typeof HUMAN_GATE_NODE_KIND;
   config: {
@@ -83,7 +92,7 @@ export interface WorkflowSubflowNodeV1 extends WorkflowNodeBaseV1 {
   config: { recipeId: string; revision: number; executableDigest: string };
 }
 
-export type WorkflowNodeV1 = WorkflowNoopNodeV1 | WorkflowCommandNodeV1 | WorkflowScriptNodeV1 | WorkflowHumanGateNodeV1 | WorkflowSubflowNodeV1;
+export type WorkflowNodeV1 = WorkflowNoopNodeV1 | WorkflowCommandNodeV1 | WorkflowScriptNodeV1 | WorkflowNativeNodeV1 | WorkflowHumanGateNodeV1 | WorkflowSubflowNodeV1;
 
 export interface WorkflowDefinitionV1 {
   schema: typeof WORKFLOW_DEFINITION_SCHEMA;
@@ -271,6 +280,7 @@ function normalizeNode(value: unknown, index: number, diagnostics: WorkflowDiagn
   unexpectedKeys(value, ["nodeId", "kind", "config", "generalInstruction", "dependsOn", "ports", "control"], pointer, diagnostics);
   const nodeIdValid = validateIdentifier(value.nodeId, `${pointer}/nodeId`, diagnostics);
   if (value.kind !== NOOP_NODE_KIND && value.kind !== COMMAND_NODE_KIND && value.kind !== SCRIPT_NODE_KIND
+    && value.kind !== NATIVE_NODE_KIND
     && value.kind !== HUMAN_GATE_NODE_KIND && value.kind !== SUBFLOW_NODE_KIND) {
     diagnostics.push(diagnostic("E3101", `${pointer}/kind`, { kind: value.kind }, "workflow.registry.unknownNodeKind", "registry"));
   }
@@ -329,6 +339,31 @@ function normalizeNode(value: unknown, index: number, diagnostics: WorkflowDiagn
           && (value.config.cwd === undefined || Boolean(cwd))) {
         config = { runtime, script, ...(runtime === "python" ? { environmentId } : {}),
           timeoutSeconds: timeoutSeconds as number, maxOutputBytes: maxOutputBytes as number, ...(cwd ? { cwd } : {}) };
+      }
+    }
+  } else if (value.kind === NATIVE_NODE_KIND) {
+    if (!isRecord(value.config)) {
+      diagnostics.push(diagnostic("E3003", `${pointer}/config`, { expected: "object" }, "workflow.schema.type", "author"));
+    } else {
+      unexpectedKeys(value.config, ["operation", "arguments"], `${pointer}/config`, diagnostics);
+      const operationValid = validateIdentifier(value.config.operation, `${pointer}/config/operation`, diagnostics);
+      const argumentsValue = value.config.arguments;
+      if (!isRecord(argumentsValue)) {
+        diagnostics.push(diagnostic("E3003", `${pointer}/config/arguments`, { expected: "string map" }, "workflow.schema.type", "author"));
+      }
+      const argumentEntries = isRecord(argumentsValue) ? Object.entries(argumentsValue) : [];
+      for (const [name, argument] of argumentEntries) {
+        validateIdentifier(name, `${pointer}/config/arguments/${escapePointer(name)}`, diagnostics);
+        if (typeof argument !== "string" || argument.includes("\0")) {
+          diagnostics.push(diagnostic("E3003", `${pointer}/config/arguments/${escapePointer(name)}`, { expected: "string without null characters" }, "workflow.schema.type", "author"));
+        }
+      }
+      if (operationValid && isRecord(argumentsValue)
+          && argumentEntries.every(([name, argument]) => IDENTIFIER.test(name) && typeof argument === "string" && !argument.includes("\0"))) {
+        config = {
+          operation: value.config.operation as string,
+          arguments: Object.fromEntries(argumentEntries.sort(([left], [right]) => compareCodePoints(left, right))) as Record<string, string>,
+        };
       }
     }
   } else if (value.kind === HUMAN_GATE_NODE_KIND) {
@@ -400,7 +435,7 @@ function normalizeNode(value: unknown, index: number, diagnostics: WorkflowDiagn
   if (control?.mode === "branch" && ports && control.cases.some(caseId => !ports.outputs.includes(caseId))) {
     diagnostics.push(diagnostic("E3005", `${pointer}/control/cases`, { expected: "cases declared as output ports" }, "workflow.schema.const", "author"));
   }
-  if (!nodeIdValid || !config || ![NOOP_NODE_KIND, COMMAND_NODE_KIND, SCRIPT_NODE_KIND, HUMAN_GATE_NODE_KIND, SUBFLOW_NODE_KIND].includes(value.kind as typeof NOOP_NODE_KIND)) return undefined;
+  if (!nodeIdValid || !config || ![NOOP_NODE_KIND, COMMAND_NODE_KIND, SCRIPT_NODE_KIND, NATIVE_NODE_KIND, HUMAN_GATE_NODE_KIND, SUBFLOW_NODE_KIND].includes(value.kind as typeof NOOP_NODE_KIND)) return undefined;
   const base = {
     nodeId: value.nodeId as string,
     ...(generalInstruction ? { generalInstruction } : {}),
@@ -414,6 +449,8 @@ function normalizeNode(value: unknown, index: number, diagnostics: WorkflowDiagn
       ? { ...base, kind: COMMAND_NODE_KIND, config: config as WorkflowCommandNodeV1["config"] }
       : value.kind === SCRIPT_NODE_KIND
         ? { ...base, kind: SCRIPT_NODE_KIND, config: config as WorkflowScriptNodeV1["config"] }
+      : value.kind === NATIVE_NODE_KIND
+        ? { ...base, kind: NATIVE_NODE_KIND, config: config as WorkflowNativeNodeV1["config"] }
       : value.kind === HUMAN_GATE_NODE_KIND
         ? { ...base, kind: HUMAN_GATE_NODE_KIND, config: config as WorkflowHumanGateNodeV1["config"] }
     : { ...base, kind: SUBFLOW_NODE_KIND, config: config as WorkflowSubflowNodeV1["config"] };

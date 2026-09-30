@@ -5,7 +5,34 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { createAgentSnapshot, deleteAgentSnapshot, listAgentSnapshots, rotateAgentSnapshotPassphrase } = require("../dist/agent-snapshots");
+const { createAgentSnapshot, deleteAgentSnapshot, listAgentSnapshots } = require("../dist/agent-snapshots");
+
+function encryptPayload(payload, snapshotId, magicCode, keyText = "uone") {
+  const iv = crypto.randomBytes(12);
+  const key = crypto.createHash("sha256").update(keyText, "utf8").digest();
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  cipher.setAAD(Buffer.from(`pkm.agent.snapshot/v1:${snapshotId}:${magicCode}`, "utf8"));
+  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(payload), "utf8"), cipher.final()]);
+  return {
+    algorithm: keyText === "uone"
+      ? "A256GCM-PKM-LOCAL-OBFUSCATION/v1"
+      : "A256GCM-PKM-INTERNAL/v1",
+    iv: iv.toString("base64url"),
+    ciphertext: ciphertext.toString("base64url"),
+    tag: cipher.getAuthTag().toString("base64url"),
+  };
+}
+
+function decryptPayload(payload, snapshotId, magicCode) {
+  const key = crypto.createHash("sha256").update("uone", "utf8").digest();
+  const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(payload.iv, "base64url"));
+  decipher.setAAD(Buffer.from(`pkm.agent.snapshot/v1:${snapshotId}:${magicCode}`, "utf8"));
+  decipher.setAuthTag(Buffer.from(payload.tag, "base64url"));
+  return JSON.parse(Buffer.concat([
+    decipher.update(Buffer.from(payload.ciphertext, "base64url")),
+    decipher.final(),
+  ]).toString("utf8"));
+}
 
 const store = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-agent-snapshots-"));
 try {
@@ -42,51 +69,44 @@ try {
 
   const created = createAgentSnapshot(store, sessionId, "restart");
   assert.match(created.snapshot.magicCode, /^PKM-SNAP-(?:[A-F0-9]{4}-){3}[A-F0-9]{4}$/);
-  assert.match(created.recoveryPassphrase, /^(?:[A-F0-9]{4}-){7}[A-F0-9]{4}$/);
-  assert.ok(created.recoveryPrompt.includes(created.snapshot.magicCode));
-  assert.ok(created.recoveryPrompt.includes(created.recoveryPassphrase));
+  assert.strictEqual(
+    created.recoveryPrompt,
+    `Call the PKM MCP function agent_session_snapshot_recover with {"magic_code":"${created.snapshot.magicCode}"}.`,
+  );
 
   const snapshotPath = path.join(state, "agent-snapshots", `${created.snapshot.snapshotId}.json`);
   const snapshotText = fs.readFileSync(snapshotPath, "utf8");
-  assert.ok(!snapshotText.includes(created.recoveryPassphrase));
   const snapshot = JSON.parse(snapshotText);
   assert.strictEqual(snapshot.schema, "pkm.agent.snapshot/v1");
-  assert.strictEqual(snapshot.payload.algorithm, "A256GCM-PKM-INTERNAL/v1");
+  assert.strictEqual(snapshot.payload.algorithm, "A256GCM-PKM-LOCAL-OBFUSCATION/v1");
+  assert.strictEqual(snapshot.recovery, undefined);
   assert.ok(!snapshotText.includes("sensitive snapshot payload"));
   assert.strictEqual(snapshot.capture.todoCount, 1);
   assert.strictEqual(snapshot.capture.recipeRunCount, 1);
-  const verifier = crypto.scryptSync(
-    created.recoveryPassphrase,
-    Buffer.from(snapshot.recovery.salt, "hex"),
-    32,
-    { N: 16384, r: 8, p: 1, maxmem: 32 * 1024 * 1024 },
-  ).toString("hex");
-  assert.strictEqual(verifier, snapshot.recovery.verifier);
-  const originalPayload = JSON.stringify(snapshot.payload);
-
-  const rotated = rotateAgentSnapshotPassphrase(store, created.snapshot.snapshotId);
-  assert.notStrictEqual(rotated.recoveryPassphrase, created.recoveryPassphrase);
-  assert.ok(rotated.recoveryPrompt.includes(rotated.recoveryPassphrase));
-  const rotatedRecord = JSON.parse(fs.readFileSync(snapshotPath, "utf8"));
-  assert.strictEqual(JSON.stringify(rotatedRecord.payload), originalPayload, "rotation must not rewrite the captured payload");
-  assert.notStrictEqual(rotatedRecord.recovery.verifier, snapshot.recovery.verifier);
-  assert.notStrictEqual(
-    crypto.scryptSync(created.recoveryPassphrase, Buffer.from(rotatedRecord.recovery.salt, "hex"), 32,
-      { N: 16384, r: 8, p: 1, maxmem: 32 * 1024 * 1024 }).toString("hex"),
-    rotatedRecord.recovery.verifier,
-    "the previous passphrase must stop validating immediately",
-  );
-  assert.strictEqual(
-    crypto.scryptSync(rotated.recoveryPassphrase, Buffer.from(rotatedRecord.recovery.salt, "hex"), 32,
-      { N: 16384, r: 8, p: 1, maxmem: 32 * 1024 * 1024 }).toString("hex"),
-    rotatedRecord.recovery.verifier,
-  );
 
   const listed = listAgentSnapshots(store);
   assert.strictEqual(listed.length, 1);
   assert.strictEqual(listed[0].todoCount, 1);
   assert.strictEqual(listed[0].recipeRunCount, 1);
   assert.strictEqual(listed[0].recoveryCount, 0);
+  assert.strictEqual(fs.readFileSync(snapshotPath, "utf8"), snapshotText,
+    "listing a healthy Snapshot must not rewrite its immutable record");
+
+  const doubleWrapped = JSON.parse(fs.readFileSync(snapshotPath, "utf8"));
+  doubleWrapped.capture = { recipeRunCount: 0, todoCount: 0 };
+  doubleWrapped.payload = encryptPayload(
+    doubleWrapped.payload, doubleWrapped.snapshotId, doubleWrapped.magicCode);
+  fs.writeFileSync(snapshotPath, JSON.stringify(doubleWrapped));
+  const repaired = listAgentSnapshots(store).find(item => item.snapshotId === created.snapshot.snapshotId);
+  assert.strictEqual(repaired.todoCount, 1);
+  assert.strictEqual(repaired.recipeRunCount, 1);
+  const repairedRecord = JSON.parse(fs.readFileSync(snapshotPath, "utf8"));
+  const repairedPayload = decryptPayload(
+    repairedRecord.payload, repairedRecord.snapshotId, repairedRecord.magicCode);
+  assert.ok(repairedPayload.session);
+  assert.ok(Array.isArray(repairedPayload.recipeRuns));
+  assert.strictEqual(repairedPayload.algorithm, undefined, "migration removes nested encryption envelopes");
+
   fs.writeFileSync(path.join(sessions, "agent_session_recovered.json"), JSON.stringify({
     schema: "pkm.agent.session/v1",
     sessionId: "agent_session_recovered",
@@ -107,16 +127,39 @@ try {
     agent: { name: "Copilot Agent", product: "GitHub Copilot" },
     reason: "legacy",
     createdAt: "2026-09-22T00:00:00Z",
-    recovery: snapshot.recovery,
+    recovery: { algorithm: "scrypt-sha256/v1", salt: "00", verifier: "legacy" },
     payload: { session: { todos: [{ title: "legacy plaintext todo" }], checkpoints: [] }, recipeRuns: [] },
   }));
   listAgentSnapshots(store);
   const migratedLegacy = fs.readFileSync(legacyPath, "utf8");
   assert.doesNotMatch(migratedLegacy, /legacy plaintext todo/);
-  assert.strictEqual(JSON.parse(migratedLegacy).payload.algorithm, "A256GCM-PKM-INTERNAL/v1");
+  assert.strictEqual(JSON.parse(migratedLegacy).payload.algorithm, "A256GCM-PKM-LOCAL-OBFUSCATION/v1");
+  assert.strictEqual(JSON.parse(migratedLegacy).recovery, undefined);
+
+  const legacyEncryptedId = "agent_snapshot_legacy_encrypted";
+  const legacyEncryptedMagic = "PKM-SNAP-AAAA-BBBB-CCCC-DDDD";
+  const legacyEncryptedPath = path.join(state, "agent-snapshots", `${legacyEncryptedId}.json`);
+  const legacyPayload = { session: { todos: [{ title: "legacy encrypted todo" }], checkpoints: [] }, recipeRuns: [] };
+  fs.writeFileSync(legacyEncryptedPath, JSON.stringify({
+    schema: "pkm.agent.snapshot/v1",
+    snapshotId: legacyEncryptedId,
+    magicCode: legacyEncryptedMagic,
+    sourceSessionId: sessionId,
+    task: "Legacy encrypted snapshot",
+    createdAt: "2026-09-21T00:00:00Z",
+    recovery: { algorithm: "scrypt-sha256/v1", salt: "00", verifier: "legacy" },
+    payload: encryptPayload(
+      legacyPayload, legacyEncryptedId, legacyEncryptedMagic, "uone:agent-snapshot:payload:v1"),
+  }));
+  listAgentSnapshots(store);
+  const migratedEncrypted = JSON.parse(fs.readFileSync(legacyEncryptedPath, "utf8"));
+  assert.strictEqual(migratedEncrypted.payload.algorithm, "A256GCM-PKM-LOCAL-OBFUSCATION/v1");
+  assert.strictEqual(migratedEncrypted.recovery, undefined);
+  assert.doesNotMatch(JSON.stringify(migratedEncrypted), /legacy encrypted todo/);
 
   deleteAgentSnapshot(store, created.snapshot.snapshotId);
   deleteAgentSnapshot(store, legacyId);
+  deleteAgentSnapshot(store, legacyEncryptedId);
   assert.deepStrictEqual(listAgentSnapshots(store), []);
   assert.throws(() => deleteAgentSnapshot(store, created.snapshot.snapshotId), /not found/);
 } finally {

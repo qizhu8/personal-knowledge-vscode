@@ -7,6 +7,7 @@ const root = path.join(__dirname, "..");
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const panel = fs.readFileSync(path.join(root, "dist", "webview", "panel.js"), "utf8");
 const html = fs.readFileSync(path.join(root, "src", "webview", "panel.html"), "utf8");
+const css = fs.readFileSync(path.join(root, "src", "webview", "panel.css"), "utf8");
 const extension = fs.readFileSync(path.join(root, "src", "extension.ts"), "utf8");
 const menus = manifest.contributes.menus["view/item/context"];
 
@@ -74,5 +75,11 @@ assert.doesNotMatch(html.slice(html.indexOf('<div id="ctx-menu">'), html.indexOf
   "legacy Note context menu markup must remain icon-free");
 assert.match(panel, /visibleItems = items\.filter/,
   "shared menus must collapse duplicate/edge separators");
+assert.match(panel, /if \(it\.header\) el\.title = label/,
+  "truncated context-menu headers must expose their complete label as a tooltip");
+assert.match(css, /#paper-ctx\.agent-session-context-menu,\s*#paper-ctx\.agent-snapshot-context-menu\s*\{[\s\S]*?max-width:\s*min\(340px,\s*calc\(100vw - 16px\)\)/,
+  "Agent Session and Snapshot menus must share a viewport-bounded width");
+assert.match(css, /#paper-ctx\.agent-session-context-menu \.pctx-header,\s*#paper-ctx\.agent-snapshot-context-menu \.pctx-header\s*\{[\s\S]*?-webkit-line-clamp:\s*2/,
+  "long Agent Snapshot titles must be clamped to two context-menu lines");
 
 console.log("context menu test: logical native groups, icon-free labels, separators, and Copy Path coverage OK");

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "crypto";
 import {
   COMMAND_NODE_KIND,
   HUMAN_GATE_NODE_KIND,
+  NATIVE_NODE_KIND,
   NOOP_NODE_KIND,
   SCRIPT_NODE_KIND,
   WORKFLOW_DEFINITION_SCHEMA,
@@ -366,6 +367,8 @@ const BUILT_IN_RECIPES: ReadonlyArray<{
   category: string;
   description: string;
   applicableFunctions: string[];
+  requiredInputs?: RecipeMetadataField[];
+  expectedOutputs?: RecipeMetadataField[];
   methodology?: RecipeMethodologyV1;
   definition: unknown;
 }> = [
@@ -730,6 +733,53 @@ const BUILT_IN_RECIPES: ReadonlyArray<{
     }
   },
   {
+    key: "create-agent-snapshot",
+    name: "Create Agent Snapshot",
+    category: "System/PKM/Agent Sessions",
+    revision: 2,
+    description: "Create and persist an immutable PKM Agent Snapshot for the active managed Session, then return its one-time recovery credentials without storing them in Recipe state.",
+    applicableFunctions: [
+      "Create Agent Snapshot",
+      "Generate Agent Snapshot",
+      "Save conversation recovery point",
+      "Prepare Agent Session recovery",
+    ],
+    requiredInputs: [
+      { name: "reason", description: "Optional reason recorded with the Snapshot." },
+      { name: "stateJson", description: "Optional JSON object to checkpoint immediately before capture." },
+    ],
+    expectedOutputs: [
+      { name: "snapshot", description: "Persisted immutable Snapshot metadata." },
+      { name: "recoveryPrompt", description: "Reusable Magic Code recovery prompt with no user-managed password." },
+    ],
+    definition: {
+      schema: WORKFLOW_DEFINITION_SCHEMA,
+      spec: {
+        inputs: {
+          reason: { type: "string", required: false, nullable: false, schema: {}, default: "manual" },
+          stateJson: { type: "string", required: false, nullable: false, schema: {}, default: "" },
+        },
+        nodes: [{
+          nodeId: "create-snapshot",
+          kind: NATIVE_NODE_KIND,
+          config: {
+            operation: "agent_session_snapshot_create",
+            arguments: {
+              reason: "${inputs.reason}",
+              state_json: "${inputs.stateJson}",
+            },
+          },
+          generalInstruction: "PKM executes this allowlisted operation in-process. Return the ephemeral recovery credentials to the user immediately; they cannot be replayed from Recipe state.",
+          dependsOn: [],
+          ports: { inputs: ["reason", "stateJson"], outputs: ["snapshot", "ephemeralOutput"] },
+          control: { mode: "single" },
+        }],
+        outputs: {},
+        completion: { requiredNodes: ["create-snapshot"] },
+      },
+    },
+  },
+  {
     key: "publish-personal-knowledge-vsix",
     name: "Publish Personal Knowledge VSIX",
     category: "Release/VS Code",
@@ -973,8 +1023,44 @@ const BUILT_IN_RECIPES: ReadonlyArray<{
   }
 ] as const;
 
-function builtInRecipeId(key: string): string {
+export function builtInRecipeId(key: string): string {
   return `recipe_${createHash("sha256").update(`pkm/built-in-recipe/v1\0${key}`, "utf8").digest("hex").slice(0, 32)}`;
+}
+
+export function builtInRecipePin(key: string): { recipeId: string; revision: number; executableDigest: string } {
+  const descriptor = BUILT_IN_RECIPES.find(candidate => candidate.key === key);
+  if (!descriptor) throw new ProjectModelError("recipe-template-not-found", `Built-in Recipe template was not found: ${key}`);
+  const compiled = compileBuiltInRecipe(descriptor.definition);
+  return {
+    recipeId: builtInRecipeId(key),
+    revision: descriptor.revision || 1,
+    executableDigest: compiled.executableDigest,
+  };
+}
+
+export function builtInRecipeInventory(): ReadonlyArray<{
+  key: string;
+  recipeId: string;
+  name: string;
+  category: string;
+  revision: number;
+  executableDigest: string;
+  systemKind: "built-in";
+  tags: readonly ["System"];
+}> {
+  return BUILT_IN_RECIPES.map(descriptor => {
+    const compiled = compileBuiltInRecipe(descriptor.definition);
+    return {
+      key: descriptor.key,
+      recipeId: builtInRecipeId(descriptor.key),
+      name: descriptor.name,
+      category: descriptor.category,
+      revision: descriptor.revision || 1,
+      executableDigest: compiled.executableDigest,
+      systemKind: "built-in" as const,
+      tags: ["System"] as const,
+    };
+  });
 }
 
 const RETIRED_BUILT_IN_RECIPE_KEYS: ReadonlyArray<string> = [];
@@ -1040,7 +1126,11 @@ export function ensureBuiltInRecipes(state: ProjectModelState): ProjectModelStat
           metadata: {
             ...normalizeRecipeMetadata(existing.metadata),
             applicableFunctions: descriptor.applicableFunctions,
-            solution: descriptor.description
+            solution: descriptor.description,
+            requiredInputs: descriptor.requiredInputs
+              || normalizeRecipeMetadata(existing.metadata).requiredInputs,
+            expectedOutputs: descriptor.expectedOutputs
+              || normalizeRecipeMetadata(existing.metadata).expectedOutputs,
           },
           ...methodology,
           definition: compiled.definition,
@@ -1067,8 +1157,10 @@ export function ensureBuiltInRecipes(state: ProjectModelState): ProjectModelStat
       metadata: {
         applicableFunctions: descriptor.applicableFunctions,
         solution: descriptor.description,
-        requiredInputs: [{ name: "task", description: "The requested outcome and its constraints.", required: true }],
-        expectedOutputs: [{ name: "result", description: "The implemented or analyzed result with validation evidence." }]
+        requiredInputs: descriptor.requiredInputs
+          || [{ name: "task", description: "The requested outcome and its constraints.", required: true }],
+        expectedOutputs: descriptor.expectedOutputs
+          || [{ name: "result", description: "The implemented or analyzed result with validation evidence." }]
       },
       ...methodology,
       definition: compiled.definition,

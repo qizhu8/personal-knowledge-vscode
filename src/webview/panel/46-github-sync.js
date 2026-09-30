@@ -1,10 +1,11 @@
 // ── GitHub Sync ───────────────────────────────────────────────────────────
-let githubSyncData = { targets:[], catalog:{}, shields:{}, runtime:{}, migrations:{}, connected:{}, authenticationOptions:{ accounts:[], identities:[] } };
+let githubSyncData = { targets:[], catalog:{}, shields:{}, folderShields:{}, runtime:{}, migrations:{}, connected:{}, authenticationOptions:{ accounts:[], identities:[] } };
 let githubSyncEditing = '';
 let githubSyncEditorTab = 'general';
 let githubSyncSaving = false;
 let githubSyncAuthenticationResult = null;
 let githubSyncUpdatedAt = 0;
+let githubSyncStatusRequested = false;
 const githubSyncDrafts = new Map();
 const githubSyncForcePending = new Set();
 const githubSyncResolvedExpanded = new Set();
@@ -31,6 +32,7 @@ function githubSyncDefaultSelection() {
 }
 
 function githubSyncOnState(data) {
+  githubSyncStatusRequested = false;
   if (githubSyncEditing) githubSyncCaptureDraft();
   githubSyncData = { ...githubSyncData, ...(data || {}) };
   githubSyncUpdatedAt = Date.now();
@@ -41,6 +43,7 @@ function githubSyncOnState(data) {
   }
   if (githubSyncEditing && githubSyncEditing !== 'new' && !githubSyncData.targets.some(target => target.id === githubSyncEditing)) githubSyncEditing = '';
   updateGitHubSyncShields();
+  updateGitHubSyncFolderShields();
   if (state.tab === 'githubSync') renderGitHubSyncPane();
 }
 
@@ -55,10 +58,47 @@ function updateGitHubSyncShields() {
       shield.setAttribute('aria-hidden', 'true');
       tab.appendChild(shield);
     }
+    if (githubSyncData.fingerprintsDeferred && shield.dataset.status) continue;
     const status = githubSyncData.shields?.[type] || 'outline';
     shield.dataset.status = status;
-    shield.title = status === 'green' ? 'GitHub synchronized' : status === 'yellow' ? 'Local content differs from GitHub' : 'No GitHub target configured';
+    shield.title = githubSyncStatusTitle(status);
   }
+}
+
+function githubSyncStatusTitle(status, folder = '') {
+  const subject = folder ? `Folder ${folder}` : 'Content';
+  return status === 'green'
+    ? `${subject} matches the last successful GitHub Sync`
+    : status === 'yellow'
+      ? `${subject} has local content different from the last successful GitHub Sync`
+      : `${subject} is not included in GitHub Sync`;
+}
+
+function githubSyncFolderMarker(type, folder) {
+  const normalized = String(folder || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  const status = githubSyncData.folderShields?.[type]?.[normalized] || 'outline';
+  const icon = status === 'outline' ? 'circle-outline' : 'circle-filled';
+  return `<span class="github-sync-folder-status codicon codicon-${icon}" data-sync-type="${esc(type)}" data-sync-folder="${esc(normalized)}" data-status="${status}" title="${esc(githubSyncStatusTitle(status, normalized || '(uncategorized)'))}" aria-label="${esc(githubSyncStatusTitle(status, normalized || '(uncategorized)'))}"></span>`;
+}
+
+function updateGitHubSyncFolderShields() {
+  document.querySelectorAll('.github-sync-folder-status').forEach(marker => {
+    const type = marker.dataset.syncType;
+    const folder = marker.dataset.syncFolder || '';
+    const status = githubSyncData.folderShields?.[type]?.[folder] || 'outline';
+    const title = githubSyncStatusTitle(status, folder || '(uncategorized)');
+    marker.dataset.status = status;
+    marker.classList.toggle('codicon-circle-filled', status !== 'outline');
+    marker.classList.toggle('codicon-circle-outline', status === 'outline');
+    marker.title = title;
+    marker.setAttribute('aria-label', title);
+  });
+}
+
+function ensureGitHubSyncStatus() {
+  if (githubSyncStatusRequested || tabCacheIsFresh(githubSyncUpdatedAt)) return;
+  githubSyncStatusRequested = true;
+  ask('githubSyncState', {}, null, Boolean(githubSyncUpdatedAt));
 }
 
 function githubSyncTarget() {

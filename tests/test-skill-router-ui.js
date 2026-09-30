@@ -10,13 +10,14 @@ const panelJs = fs.readFileSync(path.join(root, 'dist', 'webview', 'panel.js'), 
 const panelCss = fs.readFileSync(path.join(root, 'dist', 'webview', 'panel.css'), 'utf8');
 const extensionTs = fs.readFileSync(path.join(root, 'src', 'extension.ts'), 'utf8');
 
-assert.match(panelHtml, /data-tab="skillRouter">Skill Router</);
+assert.match(panelHtml, /data-tab="skillRouter">Router</);
 assert.match(panelJs, /state\.tab === 'skillRouter'[\s\S]{0,300}ask\('skillRouterStatus'/);
 assert.match(panelJs, /command === 'skillRouterStatus'/);
 assert.match(extensionTs, /case "skillRouterStatus"/);
 assert.match(extensionTs, /activeProfile = enabledSolutions\.includes\("l1_online"\) \? "l1_online" : "copilot_default"/,
   'the active path must resolve from enabled mature solutions with automatic Copilot fallback');
 assert.match(extensionTs, /case "setSkillRouterSolutionEnabled"/);
+assert.match(extensionTs, /case "setSkillRouterSourcePriority"/);
 assert.match(extensionTs, /enabled\.add\("copilot_default"\)/,
   'every route update must preserve the automatic fallback');
 assert.match(extensionTs, /Copilot default is the required automatic fallback and cannot be disabled yet/);
@@ -38,8 +39,8 @@ const context = {
   },
 };
 vm.createContext(context);
-new vm.Script(`${panelJs.slice(start, end)}; this.renderSkillRouterPane = renderSkillRouterPane; this.toggleSolution = skillRouterToggleSolution;`).runInContext(context);
-context.renderSkillRouterPane({
+new vm.Script(`${panelJs.slice(start, end)}; this.renderSkillRouterPane = renderSkillRouterPane; this.toggleSolution = skillRouterToggleSolution; this.moveSource = skillRouterMoveSource; this.setStatusCache = data => { skillRouterStatusCache = data; };`).runInContext(context);
+const routerData = {
   activeProfile: 'l1_online',
   enabledSolutions: ['copilot_default', 'l1_online'],
   solutions: {
@@ -49,6 +50,12 @@ context.renderSkillRouterPane({
     l1_weighted: { available: false, mature: false, enabled: false, systemDisabled: true },
   },
   modelBasedRoutingEnabled: false,
+  sourcePriority: ['pkm-personal', 'agent-native', 'subscriber:sub-1'],
+  sources: [
+    { id: 'pkm-personal', label: 'PKM Personal', kind: 'personal', detail: 'Personal Skills' },
+    { id: 'agent-native', label: 'Agent Native', kind: 'native', detail: 'Host Skills' },
+    { id: 'subscriber:sub-1', label: 'Team Broker', kind: 'subscriber', detail: 'Subscriber · Colleague' },
+  ],
   collector: {
     collectedTools: ['pkm.skill_context', 'pkm.search_knowledge', 'pkm.search_notes'],
     unavailableTools: ['vscode.tool_search', 'vscode.grep_search'],
@@ -56,7 +63,9 @@ context.renderSkillRouterPane({
   },
   corpus: { documentCount: 523, revision: 'abcdef1234567890' },
   runtime: { ready: true, documentCount: 523, corpusRevision: 'abcdef1234567890', engineVersion: '0.3.0', configurationHash: '1234567890abcdef' },
-});
+};
+context.renderSkillRouterPane(routerData);
+context.setStatusCache(routerData);
 for (const text of ['Copilot default search', 'Exact only', 'Exact + BM25', 'Hybrid', 'Success rate', 'NDCG@5', 'Recall@1', 'Recall@5', 'Tokens saved', 'Latency']) {
   assert(detail.innerHTML.includes(text), `missing Skill Router performance content: ${text}`);
 }
@@ -64,20 +73,24 @@ for (const text of ['Embedding', 'Retrieval', 'Calibration', 'Ranker', 'Results'
   assert(detail.innerHTML.includes(text), `missing parameter component: ${text}`);
 }
 assert.match(detail.innerHTML, /Automatic fallback: Exact \+ BM25 → Copilot default/);
+assert.match(detail.innerHTML, /Skill source priority/);
+assert.match(detail.innerHTML, /PKM Personal[\s\S]*Agent Native[\s\S]*Team Broker/);
+assert.match(detail.innerHTML, /draggable="true"/);
+assert.match(detail.innerHTML, /Agent Native is selected by the active Agent host/);
 assert.match(detail.innerHTML, /Hybrid[\s\S]*System disabled/);
 assert.match(detail.innerHTML, /No benchmark has been imported/);
 assert.match(detail.innerHTML, /Copilot default search[\s\S]*Required fallback/);
 assert.match(detail.innerHTML, /Exact \+ BM25[\s\S]*Serving/);
 assert.match(detail.innerHTML, /Proposed Parameter Map/);
-assert.match(detail.innerHTML, /Skill Router privacy statement/);
+assert.match(detail.innerHTML, /Router privacy statement/);
 assert.match(detail.innerHTML, /Raw query and task text, workspace paths, file names, diagnostics, and loaded knowledge content are excluded/);
 assert.match(detail.innerHTML, /tool name, duration, success state, result count, hashed result identities, and active routes/);
 assert.match(detail.innerHTML, /_feedback\/skill-usage\.jsonl/);
 assert.match(detail.innerHTML, /does not train or modify embedding-model weights/);
 assert.match(detail.innerHTML, /github\.com\/qizhu8\/personal-knowledge-vscode/);
-assert(detail.innerHTML.indexOf('Proposed Parameter Map') < detail.innerHTML.indexOf('Skill Router privacy statement'),
+assert(detail.innerHTML.indexOf('Proposed Parameter Map') < detail.innerHTML.indexOf('Router privacy statement'),
   'privacy statement must appear below the parameter map');
-assert(detail.innerHTML.indexOf('Skill Router privacy statement') < detail.innerHTML.indexOf('<h3>Runtime</h3>'),
+assert(detail.innerHTML.indexOf('Router privacy statement') < detail.innerHTML.indexOf('<h3>Runtime</h3>'),
   'privacy statement must appear before runtime details');
 assert.match(detail.innerHTML, /Search data collector/);
 assert.match(detail.innerHTML, /pkm\.skill_context · pkm\.search_knowledge · pkm\.search_notes/);
@@ -85,8 +98,13 @@ assert.match(detail.innerHTML, /tool_search and grep_search do not expose invoca
 assert.doesNotMatch(detail.innerHTML, /type="radio"|Choose target|Preferred target/);
 assert.doesNotMatch(detail.innerHTML, /(^|[^a-z0-9])l2([^a-z0-9]|$)/i);
 context.toggleSolution('l1_online', false);
-assert.strictEqual(JSON.stringify(calls), JSON.stringify([{ command: 'setSkillRouterSolutionEnabled', data: { solution: 'l1_online', enabled: false } }]));
+context.moveSource('agent-native', -1);
+assert.strictEqual(JSON.stringify(calls), JSON.stringify([
+  { command: 'setSkillRouterSolutionEnabled', data: { solution: 'l1_online', enabled: false } },
+  { command: 'setSkillRouterSourcePriority', data: { sourceIds: ['agent-native', 'pkm-personal', 'subscriber:sub-1'] } },
+]));
 assert.match(panelCss, /\.sr-table-wrap\{max-width:100%;overflow-x:auto\}/);
 assert.match(panelCss, /\.sr-parameter-map\{[^}]*overflow-x:auto/);
+assert.match(panelCss, /\.sr-source-row\{[^}]*cursor:grab/);
 
-console.log('Skill Router UI: tab, truthful serving state, empty benchmark metrics, proposed parameters, and responsive containment OK');
+console.log('Router UI: source priority, drag persistence, truthful serving state, and responsive containment OK');

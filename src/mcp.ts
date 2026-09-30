@@ -11,17 +11,18 @@ import { isAbsoluteForPlatform, isForeignAbsolutePath } from "./store-path";
 import { compareVersionOrder } from "./version-order";
 import { mcpStdioCommand } from "./mcp-stdio-command";
 import { hasNewerMcpRuntime } from "./mcp-version-policy";
+import { builtInRecipePin } from "./workflows/project-model";
 
 // ── MCP server scaffold ────────────────────────────────────────────────────
-export const UNIFIED_MCP_VERSION = "2.13.2";
+export const UNIFIED_MCP_VERSION = "2.13.6";
 const PROMPT_MANAGER_WHEEL = "uone_prompt_manager-0.1.0-py3-none-any.whl";
 const PROMPT_MANAGER_WHEEL_SHA256 = "eb9fd76058134f9ab9711d8e7604c75f761db5762d93e67f65740dc07fdc1518";
 const RETRIEVAL_ENGINE_WHEEL = "adaptive_skill_retrieval-0.3.0.dev2026091601-py3-none-any.whl";
 const RETRIEVAL_ENGINE_WHEEL_SHA256 = "04560cf29966c8c267adf8ea8502819fd005222ca1e383af63cc115996afbf21";
-const KNOWLEDGE_MCP_VERSION = "1.5.0";
-const CHAT_MCP_VERSION = "2.3.5";
-const RECIPE_MCP_VERSION = "1.6.0";
-const AGENT_SESSION_MCP_VERSION = "1.6.0";
+const KNOWLEDGE_MCP_VERSION = "1.5.1";
+const CHAT_MCP_VERSION = "2.3.6";
+const RECIPE_MCP_VERSION = "1.7.3";
+const AGENT_SESSION_MCP_VERSION = "1.7.6";
 
 interface McpServerStatus {
   installed: boolean;
@@ -473,12 +474,14 @@ export function generateMcpServer(context: vscode.ExtensionContext): { serverPat
   const recipeRuntimePy = path.join(mcpDir, "recipe_runtime.py");
   const recipeHealthPy = path.join(mcpDir, "recipe_health.py");
   const agentSessionRuntimePy = path.join(mcpDir, "agent_session_runtime.py");
+  const callGuardPy = path.join(mcpDir, "mcp_call_guard.py");
   const reqTxt    = path.join(mcpDir, "requirements.txt");
   const storeFwd  = storePath.replace(/\\/g, "/");
   const subscriptionCacheFwd = path.join(context.globalStorageUri.fsPath, "subscriptions", "cache").replace(/\\/g, "/");
   const environmentsRegistryFwd = path.join(context.globalStorageUri.fsPath, "environments", "registry.json").replace(/\\/g, "/");
   const retrievalIdentity = createHash("sha256").update(path.resolve(storePath)).digest("hex").slice(0, 16);
   const retrievalStateFwd = path.join(context.globalStorageUri.fsPath, "retrieval", retrievalIdentity).replace(/\\/g, "/");
+  const snapshotRecipePin = builtInRecipePin("create-agent-snapshot");
 
   const existingStatus = mcpStatus();
   if (existingStatus.newerThanExpected) {
@@ -499,6 +502,7 @@ export function generateMcpServer(context: vscode.ExtensionContext): { serverPat
   fs.copyFileSync(path.join(context.extensionPath, "resources", "recipe_runtime.py"), recipeRuntimePy);
   fs.copyFileSync(path.join(context.extensionPath, "resources", "recipe_health.py"), recipeHealthPy);
   fs.copyFileSync(path.join(context.extensionPath, "resources", "agent_session_runtime.py"), agentSessionRuntimePy);
+  fs.copyFileSync(path.join(context.extensionPath, "resources", "mcp_call_guard.py"), callGuardPy);
 
   fs.writeFileSync(serverPy, `#!/usr/bin/env python3
 """
@@ -523,7 +527,7 @@ time, falling back to substring matching when FTS5 is unavailable.
 Install:  pip install fastmcp
 Run:      python server.py
 """
-import json, re, sqlite3, datetime, hashlib, uuid, os, socket, time, urllib.request, urllib.parse
+import inspect, json, re, sqlite3, datetime, hashlib, uuid, os, socket, time, urllib.request, urllib.parse
 from pathlib import Path
 
 SERVER_VERSION = "${UNIFIED_MCP_VERSION}"
@@ -532,7 +536,7 @@ CHAT_SCHEMA_VERSION = "${CHAT_MCP_VERSION}"
 RECIPE_SCHEMA_VERSION = "${RECIPE_MCP_VERSION}"
 AGENT_SESSION_SCHEMA_VERSION = "${AGENT_SESSION_MCP_VERSION}"
 MODEL_BASED_ROUTING_ENABLED = False
-from typing import Optional, List
+from typing import Any, Optional, List
 
 try:
     from fastmcp import FastMCP
@@ -562,29 +566,65 @@ def _enabled_feature_domains():
 _FEATURE_DOMAINS = _enabled_feature_domains()
 
 
-def _feature_tool(*domains):
+def _feature_tool(*domains, read_only=False):
   def decorator(function):
     if any(domain in _FEATURE_DOMAINS for domain in domains):
-      return mcp.tool()(function)
+      def wrapper(*args, **kwargs):
+        value = function(*args, **kwargs)
+        if not isinstance(value, str):
+          return value
+        try:
+          return json.loads(value)
+        except json.JSONDecodeError:
+          return value
+      wrapper.__name__ = function.__name__
+      wrapper.__doc__ = function.__doc__
+      wrapper.__annotations__ = {**getattr(function, "__annotations__", {}), "return": Any}
+      wrapper.__signature__ = inspect.signature(function).replace(return_annotation=Any)
+      mcp.tool(annotations={"readOnlyHint": read_only})(wrapper)
     return function
   return decorator
 
 
+from agent_session_runtime import register_agent_session_tools
+from mcp_call_guard import McpCallGuardMiddleware
+_AGENT_SESSION_TOOLS = {}
+if "automation" in _FEATURE_DOMAINS:
+  _AGENT_SESSION_TOOLS = register_agent_session_tools(mcp, STORE)
 from recipe_runtime import register_recipe_tools, related_recipes
 if "automation" in _FEATURE_DOMAINS:
-  register_recipe_tools(mcp, STORE, SUBSCRIPTIONS, ENVIRONMENTS)
-from agent_session_runtime import register_agent_session_tools
-if "automation" in _FEATURE_DOMAINS:
-  register_agent_session_tools(mcp, STORE)
+  register_recipe_tools(mcp, STORE, SUBSCRIPTIONS, ENVIRONMENTS, {
+    "agent_session_snapshot_create": {
+      "handler": _AGENT_SESSION_TOOLS["agent_session_snapshot_create"],
+      "ephemeral_fields": [],
+      "recipe_id": ${JSON.stringify(snapshotRecipePin.recipeId)},
+      "revision": ${snapshotRecipePin.revision},
+      "executable_digest": ${JSON.stringify(snapshotRecipePin.executableDigest)},
+    },
+  })
+
+
+def _router_config():
+  try:
+    return json.loads((RETRIEVAL_STATE / "router-config.json").read_text(encoding="utf-8"))
+  except Exception:
+    return {"enabledSolutions": ["copilot_default", "l1_online"],
+        "sourcePriority": ["pkm-personal", "agent-native"]}
 
 
 def _enabled_router_solutions():
-  try:
-    value = json.loads((RETRIEVAL_STATE / "router-config.json").read_text(encoding="utf-8"))
-    enabled = value.get("enabledSolutions") or []
-    return set(str(item) for item in enabled)
-  except Exception:
-    return {"copilot_default", "l1_online"}
+  enabled = _router_config().get("enabledSolutions") or []
+  return set(str(item) for item in enabled)
+
+
+def _router_source_priority():
+  configured = [str(item) for item in (_router_config().get("sourcePriority") or [])
+          if str(item).strip()]
+  result = []
+  for source_id in configured + ["pkm-personal", "agent-native"]:
+    if source_id not in result:
+      result.append(source_id)
+  return result
 
 
 def _disabled_router_response(tool_name):
@@ -592,7 +632,7 @@ def _disabled_router_response(tool_name):
              "fallback": "copilot_default",
              "message": "PKM Exact + BM25 is disabled. Continue with Copilot default search."})
 
-@mcp.tool()
+@mcp.tool(annotations={"readOnlyHint": True})
 def check_version() -> dict:
   """Return the unified server version and its component schema versions."""
   capabilities = []
@@ -628,19 +668,23 @@ def _retrieval_request(route, payload=None):
     request = urllib.request.Request(
       "http://127.0.0.1:{}{}".format(endpoint["port"], route),
       data=body, headers=headers, method="POST" if body is not None else "GET")
-    with urllib.request.urlopen(request, timeout=30) as response:
+    deadline_at_ms = payload.get("deadline_at_ms") if isinstance(payload, dict) else None
+    timeout = 30
+    if isinstance(deadline_at_ms, (int, float)):
+      timeout = max(0.1, min(timeout, (deadline_at_ms - int(time.time() * 1000)) / 1000))
+    with urllib.request.urlopen(request, timeout=timeout) as response:
       return json.loads(response.read().decode("utf-8"))
   except Exception as error:
     return {"ok": False, "error": "Subscriber retrieval worker unavailable: " + str(error)}
 
 
-@_feature_tool("knowledge", "skillRouter")
+@_feature_tool("knowledge", "skillRouter", read_only=True)
 def retrieval_status() -> str:
   """Return the Subscriber-owned persistent retrieval worker and ready corpus revision."""
   return json.dumps(_retrieval_request("/status"), ensure_ascii=False)
 
 
-@_feature_tool("knowledge", "skillRouter")
+@_feature_tool("knowledge", "skillRouter", read_only=True)
 def search_knowledge(query: str, limit: int = 5, content_type_filter: Optional[List[str]] = None,
              request_id: str = "", debug: bool = False, route: str = "lexical",
              generation_mode: str = "latest-ready", generation: int = 0,
@@ -836,7 +880,114 @@ def _usage_metrics(value):
   return result_count, reported
 
 
-def _record_tool_usage(tool_name, arguments, result, duration_ms, success):
+def _active_todo_attribution(context, arguments):
+  try:
+    fastmcp_context = getattr(context, "fastmcp_context", None)
+    transport_id = str(getattr(fastmcp_context, "session_id", "") or "")
+    if not transport_id:
+      return {}
+    transport_key = hashlib.sha256(transport_id.encode("utf-8")).hexdigest()
+    active_path = STORE / ".pkm" / "state" / "agent-sessions" / "active" / (transport_key + ".json")
+    active = json.loads(active_path.read_text(encoding="utf-8"))
+    agent_session_id = str(active.get("sessionId") or "")
+    if not re.fullmatch(r"agent_session_[A-Za-z0-9_-]+", agent_session_id):
+      return {}
+    session_path = STORE / ".pkm" / "state" / "agent-sessions" / (agent_session_id + ".json")
+    session = json.loads(session_path.read_text(encoding="utf-8"))
+    if session.get("schema") != "pkm.agent.session/v1":
+      return {}
+    todos = [todo for todo in (session.get("todos") or []) if isinstance(todo, dict)]
+    plain_arguments = _plain_value(arguments)
+    requested_todo_id = str(plain_arguments.get("todo_id") or "") if isinstance(plain_arguments, dict) else ""
+    todo = next((item for item in todos if item.get("todoId") == requested_todo_id), None)
+    if todo is None:
+      todo = next((item for item in todos if item.get("status") == "running"), None)
+    todo_id = str((todo or {}).get("todoId") or "")
+    if not re.fullmatch(r"todo_[A-Za-z0-9_-]+", todo_id):
+      return {}
+    return {"agentSessionId": agent_session_id, "todoId": todo_id}
+  except Exception:
+    return {}
+
+
+def _increment_usage_bucket(buckets, name, input_bytes, output_bytes, duration_ms, success):
+  if not name or (name not in buckets and len(buckets) >= 128):
+    return
+  bucket = buckets.setdefault(name, {
+    "calls": 0, "successes": 0, "inputBytes": 0, "outputBytes": 0, "durationMs": 0,
+  })
+  bucket["calls"] = int(bucket.get("calls") or 0) + 1
+  bucket["successes"] = int(bucket.get("successes") or 0) + int(bool(success))
+  bucket["inputBytes"] = int(bucket.get("inputBytes") or 0) + input_bytes
+  bucket["outputBytes"] = int(bucket.get("outputBytes") or 0) + output_bytes
+  bucket["durationMs"] = round(float(bucket.get("durationMs") or 0) + duration_ms, 3)
+
+
+def _record_todo_usage(attribution, event):
+  agent_session_id = str((attribution or {}).get("agentSessionId") or "")
+  todo_id = str((attribution or {}).get("todoId") or "")
+  if (not re.fullmatch(r"agent_session_[A-Za-z0-9_-]+", agent_session_id)
+      or not re.fullmatch(r"todo_[A-Za-z0-9_-]+", todo_id)):
+    return
+  directory = STORE / ".pkm" / "state" / "mcp-usage" / "todos" / agent_session_id
+  directory.mkdir(parents=True, exist_ok=True)
+  destination = directory / (todo_id + ".json")
+  lock = directory / (todo_id + ".lock")
+  deadline = time.monotonic() + 2
+  while True:
+    try:
+      descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+      os.close(descriptor)
+      break
+    except FileExistsError:
+      try:
+        if time.time() - lock.stat().st_mtime > 30:
+          lock.unlink(missing_ok=True)
+          continue
+      except FileNotFoundError:
+        continue
+      if time.monotonic() >= deadline:
+        return
+      time.sleep(0.01)
+  try:
+    try:
+      aggregate = json.loads(destination.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+      aggregate = {}
+    if (aggregate.get("schema") != "pkm.mcp.todo-usage/v1"
+        or aggregate.get("agentSessionId") != agent_session_id
+        or aggregate.get("todoId") != todo_id):
+      aggregate = {
+        "schema": "pkm.mcp.todo-usage/v1", "agentSessionId": agent_session_id, "todoId": todo_id,
+        "calls": 0, "successes": 0, "inputBytes": 0, "outputBytes": 0, "durationMs": 0,
+        "estimatedTokens": 0, "firstUsedAt": event["occurredAt"], "lastUsedAt": event["occurredAt"],
+        "domains": {}, "tools": {},
+      }
+    input_bytes = int(event["inputBytes"])
+    output_bytes = int(event["outputBytes"])
+    duration_ms = float(event["durationMs"])
+    aggregate["calls"] = int(aggregate.get("calls") or 0) + 1
+    aggregate["successes"] = int(aggregate.get("successes") or 0) + int(bool(event["success"]))
+    aggregate["inputBytes"] = int(aggregate.get("inputBytes") or 0) + input_bytes
+    aggregate["outputBytes"] = int(aggregate.get("outputBytes") or 0) + output_bytes
+    aggregate["durationMs"] = round(float(aggregate.get("durationMs") or 0) + duration_ms, 3)
+    aggregate["estimatedTokens"] = int(aggregate.get("estimatedTokens") or 0) + int(event["estimatedTokenEquivalent"])
+    aggregate["lastUsedAt"] = event["occurredAt"]
+    _increment_usage_bucket(aggregate.setdefault("domains", {}), event["domain"],
+                            input_bytes, output_bytes, duration_ms, event["success"])
+    _increment_usage_bucket(aggregate.setdefault("tools", {}), event["toolName"],
+                            input_bytes, output_bytes, duration_ms, event["success"])
+    temporary = directory / (todo_id + "." + str(os.getpid()) + "." + str(uuid.uuid4()) + ".tmp")
+    with open(temporary, "x", encoding="utf-8") as handle:
+      handle.write(json.dumps(aggregate, ensure_ascii=False, sort_keys=True))
+      handle.flush()
+      os.fsync(handle.fileno())
+    os.replace(temporary, destination)
+  finally:
+    lock.unlink(missing_ok=True)
+
+
+def _record_tool_usage(tool_name, arguments, result, duration_ms, success, attribution=None):
   try:
     plain_arguments = _plain_value(arguments)
     plain_result = _plain_value(result)
@@ -853,6 +1004,9 @@ def _record_tool_usage(tool_name, arguments, result, duration_ms, success):
       "estimatedTokenEquivalent": (input_bytes + output_bytes + 3) // 4,
       "reportedTokens": reported,
     }
+    if attribution:
+      event["agentSessionId"] = attribution["agentSessionId"]
+      event["todoId"] = attribution["todoId"]
     directory = STORE / ".pkm" / "state" / "mcp-usage" / "events"
     directory.mkdir(parents=True, exist_ok=True)
     destination = directory / (event_id + ".json")
@@ -862,6 +1016,7 @@ def _record_tool_usage(tool_name, arguments, result, duration_ms, success):
       handle.flush()
       os.fsync(handle.fileno())
     os.replace(temporary, destination)
+    _record_todo_usage(attribution, event)
   except Exception:
     pass
 
@@ -872,18 +1027,23 @@ class ToolUsageMiddleware(Middleware):
     message = getattr(context, "message", None)
     tool_name = str(getattr(message, "name", "") or "")
     arguments = getattr(message, "arguments", None) or {}
+    attribution_before = _active_todo_attribution(context, arguments)
     try:
       result = await call_next(context)
     except Exception:
-      _record_tool_usage(tool_name, arguments, {}, (time.perf_counter() - started_at) * 1000, False)
+      _record_tool_usage(tool_name, arguments, {}, (time.perf_counter() - started_at) * 1000, False,
+                         attribution_before)
       raise
     plain_result = _plain_value(result)
     success = not (isinstance(plain_result, dict) and (plain_result.get("ok") is False or plain_result.get("error")))
-    _record_tool_usage(tool_name, arguments, plain_result, (time.perf_counter() - started_at) * 1000, success)
+    attribution = attribution_before or _active_todo_attribution(context, arguments)
+    _record_tool_usage(tool_name, arguments, plain_result, (time.perf_counter() - started_at) * 1000, success,
+                       attribution)
     return result
 
 
 mcp.add_middleware(ToolUsageMiddleware())
+mcp.add_middleware(McpCallGuardMiddleware(mcp))
 
 
 # ── Frontmatter (matches the extension's minimal YAML subset) ────────────────
@@ -1177,6 +1337,22 @@ def _skill_id(row):
   return row.get("skill_id") or ((row.get("category") or "") + "/" + row["name"]).strip("/")
 
 
+def _skill_source_key(row):
+  if row.get("source") == "subscription":
+    subscription_id = str((row.get("provenance") or {}).get("subscription_id") or "").strip()
+    return "subscriber:" + subscription_id if subscription_id else "subscriber:unknown"
+  return "pkm-personal"
+
+
+def _skill_source_rank(row, source_priority=None):
+  priority = source_priority or _router_source_priority()
+  source_key = _skill_source_key(row)
+  try:
+    return priority.index(source_key)
+  except ValueError:
+    return len(priority)
+
+
 def _skill_hash(row):
   value = json.dumps({"name": row["name"], "description": row.get("description", ""),
             "category": row.get("category", ""), "tags": row.get("tags", []),
@@ -1236,7 +1412,7 @@ def _skill_terms(value):
          if term not in _SKILL_STOP_WORDS and not term.isdigit())
 
 
-@_feature_tool("skillRouter")
+@_feature_tool("skillRouter", read_only=True)
 def skill_capabilities() -> str:
   """Discover the PKM secondary-Skill workflow for finding, using, and maintaining reusable knowledge."""
   return json.dumps({
@@ -1248,16 +1424,19 @@ def skill_capabilities() -> str:
   })
 
 
-@_feature_tool("skillRouter")
+@_feature_tool("skillRouter", read_only=True)
 def skill_context(task: str, workspace: str = "", files: Optional[List[str]] = None,
-          diagnostics: str = "", limit: int = 3) -> str:
+          diagnostics: str = "", limit: int = 3, detail: str = "compact") -> str:
   """Find and activate the smallest relevant PKM Skill set for a substantial task.
 
   Call before coding, research, debugging, or operational workflows that may
-  depend on personal conventions or domain knowledge. Returns thresholded Skill
-  summaries; call get_skill with a selected skill_id to load its full body.
+  depend on personal conventions or domain knowledge. Compact output is the
+  default; call get_skill with a selected skill_id to load its full body.
   """
   started_at = time.perf_counter()
+  detail = str(detail or "compact").strip().lower()
+  if detail not in {"compact", "full"}:
+    return json.dumps({"ok": False, "error": "detail must be compact or full"})
   if "l1_online" not in _enabled_router_solutions():
     _collect_search_invocation("pkm.skill_context", started_at, [], False, ["copilot-fallback"])
     return _disabled_router_response("pkm.skill_context")
@@ -1292,6 +1471,7 @@ def skill_context(task: str, workspace: str = "", files: Optional[List[str]] = N
   rare_limit = max(1, int(len(rows) * 0.05))
   rare_task_terms = set(term for term in task_terms
              if sum(1 for document in metadata_documents if term in document) <= rare_limit)
+  source_priority = _router_source_priority()
   ranked = []
   for row in rows:
     fields = {
@@ -1342,28 +1522,42 @@ def skill_context(task: str, workspace: str = "", files: Optional[List[str]] = N
         matched.insert(0, "exact-identifier")
       if priority != "normal":
         matched.insert(0, "priority:" + priority)
-      ranked.append((score, coverage, len(metadata_hits), row, matched[:8]))
-  ranked.sort(key=lambda item: (-item[0], -item[1], -item[2], _skill_id(item[3]).casefold()))
+      source_rank = _skill_source_rank(row, source_priority)
+      matched.insert(0, "source-priority:" + str(source_rank + 1))
+      protected = exact_identifier or priority == "highest"
+      ranked.append((0 if protected else 1, source_rank, score, coverage, len(metadata_hits), row, matched[:8]))
+  ranked.sort(key=lambda item: (item[0], item[1], -item[2], -item[3], -item[4], _skill_id(item[5]).casefold()))
   selected = ranked[:max(1, min(int(limit or 3), 5))]
   skills = []
-  for index, (score, coverage, metadata_count, row, reasons) in enumerate(selected):
+  for index, (_, source_rank, score, coverage, metadata_count, row, reasons) in enumerate(selected):
     skills.append({"skill_id": _skill_id(row), "name": row["name"],
              "description": row.get("description", ""), "category": row.get("category", ""),
              "tags": row.get("tags", []), "source_project": row.get("source_project"),
              "source": row.get("source", "local"), "read_only": row.get("read_only", False),
+             "source_key": _skill_source_key(row), "source_rank": source_rank + 1,
              "skill_priority": row.get("priority", "normal"),
              "provenance": row.get("provenance"),
              "content_hash": _skill_hash(row), "score": score, "task_coverage": round(coverage, 3),
              "priority": "required" if row.get("priority") == "highest" or (index == 0 and metadata_count >= 2 and coverage >= 0.5) else "recommended",
              "match_reason": reasons, "linkage": _skill_linkage(row)})
   no_match = not skills
+  if detail == "compact":
+    skills = [{
+      key: value for key, value in skill.items()
+      if key in {
+        "skill_id", "name", "description", "source", "read_only", "source_key",
+        "source_rank", "skill_priority", "provenance", "content_hash", "priority", "linkage",
+        "task_coverage", "match_reason",
+      } and value not in [None, [], {}]
+    } for skill in skills]
   interaction_id = str(uuid.uuid4())
   candidates = []
-  for index, (score, coverage, metadata_count, row, reasons) in enumerate(ranked):
+  for index, (_, source_rank, score, coverage, metadata_count, row, reasons) in enumerate(ranked):
     candidates.append({"skill_id": _skill_id(row), "name": row["name"],
                "description": row.get("description", ""), "category": row.get("category", ""),
                "tags": row.get("tags", []), "source_project": row.get("source_project"),
                "source": row.get("source", "local"), "read_only": row.get("read_only", False),
+               "source_key": _skill_source_key(row), "source_rank": source_rank + 1,
                "skill_priority": row.get("priority", "normal"),
                "provenance": row.get("provenance"),
                "content_hash": _skill_hash(row), "rank": index + 1, "score": score,
@@ -1371,11 +1565,18 @@ def skill_context(task: str, workspace: str = "", files: Optional[List[str]] = N
                "match_reason": reasons, "linkage": _skill_linkage(row)})
   _collect_search_invocation("pkm.skill_context", started_at,
         [item.get("content_hash") for item in skills], True, ["metadata-threshold", "retrieval-boundary"])
-  return json.dumps({"ok": True, "interaction_id": interaction_id, "task": task, "count": len(skills), "no_match": no_match,
+  source_instruction = "Respect source_priority when relevant Skills overlap. Agent Native is host-managed and has no synthetic PKM candidate or score."
+  if source_priority and source_priority[0] == "agent-native":
+    source_instruction = "Evaluate applicable Agent Native Skills before the returned PKM candidates. Agent Native is host-managed and has no synthetic PKM candidate or score."
+  response = {"ok": True, "interaction_id": interaction_id, "count": len(skills), "no_match": no_match,
              "retrieval": "summary", "retrieval_generation": boundary.get("ready_generation") if boundary.get("ok") else None,
+             "source_priority": source_priority, "source_policy": source_instruction,
              "skills": skills,
-             "instruction": "No relevant PKM Skill met the threshold; continue without one."
-               if no_match else "Call get_skill with the skill_id and interaction_id for each candidate you choose. Follow required Skills and linkage.next_action. A search_or_create_recipe action requires recipe_search, then recipe_create_from_skill when no qualified Recipe exists. Report outcomes with skill_feedback using the same interaction_id."}, ensure_ascii=False)
+             "instruction": source_instruction + " No relevant PKM Skill met the threshold; continue without a PKM Skill."
+               if no_match else source_instruction + " Fetch only candidates you will apply. Follow required Skills and linkage.next_action; report feedback with this interaction_id."}
+  if detail == "full":
+    response["task"] = task
+  return json.dumps(response, ensure_ascii=False)
 
 
 @_feature_tool("skillRouter")
@@ -1432,7 +1633,7 @@ def propose_skill_update(skill_id: str, base_hash: str, reason: str,
              "current_hash": current_hash, "conflict": conflict})
 
 
-@_feature_tool("knowledge")
+@_feature_tool("knowledge", read_only=True)
 def list_skills(category: Optional[str] = None) -> str:
     """List personal skills, optionally filtered by category (a slash-separated folder path)."""
     rows = _all_skills()
@@ -1446,7 +1647,7 @@ def list_skills(category: Optional[str] = None) -> str:
               "provenance": r.get("provenance")} for r in rows], ensure_ascii=False)
 
 
-@_feature_tool("knowledge", "skillRouter")
+@_feature_tool("knowledge", "skillRouter", read_only=True)
 def search_skills(query: str) -> str:
     """Ranked full-text search across skill names, content, and descriptions (CJK-friendly)."""
     skills = _all_skills(); started_at = time.perf_counter()
@@ -1466,17 +1667,20 @@ def search_skills(query: str) -> str:
         q = query.lower()
         hits = [s for s in skills if q in s["name"].lower()
                 or q in (s["content"] or "").lower() or q in (s["description"] or "").lower()][:20]
+    source_priority = _router_source_priority()
+    hits.sort(key=lambda skill: _skill_source_rank(skill, source_priority))
     _collect_search_invocation("pkm.search_skills", started_at,
             [_skill_hash(skill) for skill in hits], True, ["fts5", "substring-fallback"])
     return json.dumps([{"skill_id": _skill_id(s), "name": s["name"], "description": s["description"],
               "category": s["category"], "source": s.get("source", "local"),
+              "source_key": _skill_source_key(s), "source_rank": _skill_source_rank(s, source_priority) + 1,
               "priority": s.get("priority", "normal"),
               "read_only": s.get("read_only", False), "provenance": s.get("provenance"),
               "linkage": _skill_linkage(s)}
                for s in hits], ensure_ascii=False)
 
 
-@_feature_tool("knowledge", "skillRouter")
+@_feature_tool("knowledge", "skillRouter", read_only=True)
 def get_skill(name: str, interaction_id: str = "") -> str:
   """Get the full content of a skill by stable skill_id or exact name."""
   r = _skill_by_id(name)
@@ -1922,7 +2126,9 @@ export function generateChatMcpServer(context: vscode.ExtensionContext): { serve
   const storePath = getStorePath();
   const mcpDir    = managedMcpServerDirectory();
   const serverPy  = path.join(mcpDir, "chat_server.py");
+  const extensionRoot = context?.extensionPath || path.join(__dirname, "..");
   fs.mkdirSync(mcpDir, { recursive: true });
+  fs.copyFileSync(path.join(extensionRoot, "resources", "mcp_call_guard.py"), path.join(mcpDir, "mcp_call_guard.py"));
 
   fs.writeFileSync(serverPy, `#!/usr/bin/env python3
 """
@@ -2288,7 +2494,6 @@ if __name__ == "__main__":
     mcp.run()
 `);
 
-  const extensionRoot = context?.extensionPath || path.join(__dirname, "..");
   const templatePath = path.join(extensionRoot, "resources", "chat_server.py.template");
   const template = fs.readFileSync(templatePath, "utf-8")
     .replace(/%%CHAT_MCP_VERSION%%/g, CHAT_MCP_VERSION);

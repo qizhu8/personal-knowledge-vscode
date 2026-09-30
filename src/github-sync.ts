@@ -16,6 +16,8 @@ export const GITHUB_SYNC_CONTENT_TYPES = [
 export type GitHubSyncContentType = typeof GITHUB_SYNC_CONTENT_TYPES[number];
 export type GitHubSyncPrivacy = "public" | "private";
 export type GitHubSyncShield = "outline" | "yellow" | "green";
+export type GitHubSyncFolderFingerprints = Record<GitHubSyncContentType, Record<string, string>>;
+export type GitHubSyncFolderShields = Record<GitHubSyncContentType, Record<string, GitHubSyncShield>>;
 export type GitHubSyncResolutionRule =
   | "authoritative-migration"
   | "force-local-authority"
@@ -139,6 +141,7 @@ export interface GitHubSyncCatalogItem {
   source?: string;
   destination: string;
   content?: string;
+  dependencies?: Array<{ source: string; destination: string }>;
 }
 
 export type GitHubSyncCatalog = Record<GitHubSyncContentType, GitHubSyncCatalogItem[]>;
@@ -649,6 +652,37 @@ export function githubSyncShield(
   }) ? "green" : "yellow";
 }
 
+export function githubSyncFolderShields(
+  targets: GitHubSyncTarget[],
+  currentFingerprints: Readonly<Record<string, Partial<Record<GitHubSyncContentType, string>>>>,
+  currentFolders: Readonly<Record<string, Partial<GitHubSyncFolderFingerprints>>>,
+  baseFolders: Readonly<Record<string, Partial<GitHubSyncFolderFingerprints>>>,
+): GitHubSyncFolderShields {
+  const result = Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type => [type, {}])) as GitHubSyncFolderShields;
+  for (const type of GITHUB_SYNC_CONTENT_TYPES) {
+    const folders = new Set<string>();
+    for (const target of targets) {
+      for (const folder of Object.keys(currentFolders[target.id]?.[type] || {})) folders.add(folder);
+      for (const folder of Object.keys(baseFolders[target.id]?.[type] || {})) folders.add(folder);
+    }
+    for (const folder of folders) {
+      const covering = targets.filter(target => (
+        currentFolders[target.id]?.[type]?.[folder] !== undefined
+        || baseFolders[target.id]?.[type]?.[folder] !== undefined));
+      if (!covering.length) continue;
+      result[type][folder] = covering.every(target => {
+        const current = currentFolders[target.id]?.[type]?.[folder];
+        const base = baseFolders[target.id]?.[type]?.[folder];
+        if (current !== undefined && base !== undefined) return current === base;
+        if (baseFolders[target.id]) return false;
+        return !!target.lastSync?.fingerprints[type]
+          && target.lastSync.fingerprints[type] === currentFingerprints[target.id]?.[type];
+      }) ? "green" : "yellow";
+    }
+  }
+  return result;
+}
+
 function selectionMatches(
   target: GitHubSyncTarget,
   type: GitHubSyncContentType,
@@ -698,7 +732,21 @@ function collectItemFiles(item: GitHubSyncCatalogItem): Array<{ destination: str
   const source = path.resolve(item.source);
   const stat = fs.lstatSync(source);
   if (stat.isSymbolicLink()) throw new Error(`Symbolic links cannot be synchronized: ${item.source}`);
-  if (stat.isFile()) return [{ destination, member: "", content: fs.readFileSync(source), localModifiedAt: stat.mtimeMs }];
+  if (stat.isFile()) {
+    const files = [{ destination, member: "", content: fs.readFileSync(source), localModifiedAt: stat.mtimeMs }];
+    for (const dependency of item.dependencies || []) {
+      const dependencySource = path.resolve(dependency.source);
+      const dependencyStat = fs.lstatSync(dependencySource);
+      if (dependencyStat.isSymbolicLink() || !dependencyStat.isFile()) throw new Error(`Markdown asset dependency is invalid: ${dependency.source}`);
+      files.push({
+        destination: githubSyncSafeRelativePath(dependency.destination),
+        member: githubSyncSafeRelativePath(dependency.destination),
+        content: fs.readFileSync(dependencySource),
+        localModifiedAt: dependencyStat.mtimeMs,
+      });
+    }
+    return files;
+  }
   if (!stat.isDirectory()) throw new Error(`Unsupported catalog source: ${item.source}`);
   const files: Array<{ destination: string; member: string; content: Buffer; localModifiedAt?: number }> = [];
   const walk = (directory: string, relative: string): void => {
@@ -777,22 +825,39 @@ function legacyManifestMetadata(filePath: string, type: GitHubSyncContentType): 
 function selectedFiles(target: GitHubSyncTarget, catalog: GitHubSyncCatalog): {
   files: GitHubSyncManagedFile[];
   fingerprints: Record<GitHubSyncContentType, string>;
+  folderFingerprints: GitHubSyncFolderFingerprints;
 } {
   const files: GitHubSyncManagedFile[] = [];
   const fingerprints = {} as Record<GitHubSyncContentType, string>;
+  const folderFingerprints = Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type => [type, {}])) as GitHubSyncFolderFingerprints;
   const destinations = new Set<string>();
   const portableDestinations = new Set<string>();
   for (const type of GITHUB_SYNC_CONTENT_TYPES) {
     const entries: GitHubSyncFingerprintEntry[] = [];
+    const folderEntries = new Map<string, GitHubSyncFingerprintEntry[]>();
     for (const item of catalog[type].filter(candidate => selectedItem(target, type, candidate))) {
+      const folders = githubSyncCategoryFolders(item.cat);
+      for (const folder of folders) if (!folderEntries.has(folder)) folderEntries.set(folder, []);
       for (const file of collectItemFiles(item)) {
-        if (destinations.has(file.destination)) throw new Error(`Multiple items map to ${file.destination}.`);
+        const content = githubSyncManagedContent(type, file.content);
+        const digest = createHash("sha256").update(content).digest("hex");
+        if (destinations.has(file.destination)) {
+          const existing = files.find(candidate => candidate.path === file.destination);
+          if (!existing || existing.digest !== digest) throw new Error(`Multiple items map different content to ${file.destination}.`);
+          if (existing.privacy === "private" && !item.isPrivate) {
+            existing.itemId = item.id;
+            existing.member = file.member;
+            existing.category = item.cat;
+            existing.privacy = "public";
+          }
+          entries.push({ path: file.destination, digest });
+          for (const folder of folders) folderEntries.get(folder)!.push({ path: file.destination, digest });
+          continue;
+        }
         const portableDestination = file.destination.toLocaleLowerCase("en-US");
         if (portableDestinations.has(portableDestination)) throw new Error(`Managed destinations differ only by case: ${file.destination}.`);
         destinations.add(file.destination);
         portableDestinations.add(portableDestination);
-        const content = githubSyncManagedContent(type, file.content);
-        const digest = createHash("sha256").update(content).digest("hex");
         files.push({
           path: file.destination,
           type,
@@ -805,11 +870,20 @@ function selectedFiles(target: GitHubSyncTarget, catalog: GitHubSyncCatalog): {
           localModifiedAt: file.localModifiedAt,
         });
         entries.push({ path: file.destination, digest });
+        for (const folder of folders) folderEntries.get(folder)!.push({ path: file.destination, digest });
       }
     }
     fingerprints[type] = fingerprintGitHubSyncEntries(entries);
+    folderFingerprints[type] = Object.fromEntries(
+      [...folderEntries].map(([folder, folderFiles]) => [folder, fingerprintGitHubSyncEntries(folderFiles)]),
+    );
   }
-  return { files, fingerprints };
+  return { files, fingerprints, folderFingerprints };
+}
+
+function githubSyncCategoryFolders(category: string): string[] {
+  const parts = String(category || "").replace(/\\/g, "/").split("/").filter(Boolean);
+  return parts.length ? parts.map((_part, index) => parts.slice(0, index + 1).join("/")) : [""];
 }
 
 export function manifestJson(files: GitHubSyncManagedFile[], deletions: GitHubSyncDeletionEvidence[] = []): string {
@@ -944,6 +1018,51 @@ export function githubSyncTargetFingerprints(
   catalog: GitHubSyncCatalog
 ): Record<GitHubSyncContentType, string> {
   return selectedFiles(target, catalog).fingerprints;
+}
+
+export function githubSyncTargetFingerprintState(
+  target: GitHubSyncTarget,
+  catalog: GitHubSyncCatalog,
+): { fingerprints: Record<GitHubSyncContentType, string>; folders: GitHubSyncFolderFingerprints } {
+  const selected = selectedFiles(target, catalog);
+  return { fingerprints: selected.fingerprints, folders: selected.folderFingerprints };
+}
+
+export function githubSyncManifestFolderFingerprints(
+  target: GitHubSyncTarget,
+  rawManifest: string,
+): GitHubSyncFolderFingerprints {
+  const manifest = parseManagedManifest(rawManifest);
+  const entries = Object.fromEntries(
+    GITHUB_SYNC_CONTENT_TYPES.map(type => [type, new Map<string, GitHubSyncFingerprintEntry[]>()]),
+  ) as Record<GitHubSyncContentType, Map<string, GitHubSyncFingerprintEntry[]>>;
+  for (const file of manifest.files) {
+    if (!selectionMatches(target, file.type, file.privacy, file.itemId, file.category)) continue;
+    for (const folder of githubSyncCategoryFolders(file.category)) {
+      const folderEntries = entries[file.type].get(folder) || [];
+      folderEntries.push({ path: file.path, digest: file.digest });
+      entries[file.type].set(folder, folderEntries);
+    }
+  }
+  return Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type => [
+    type,
+    Object.fromEntries([...entries[type]].map(([folder, files]) => [folder, fingerprintGitHubSyncEntries(files)])),
+  ])) as GitHubSyncFolderFingerprints;
+}
+
+export async function readGitHubCachedManifest(
+  target: GitHubSyncTarget,
+  checkoutRoot: string,
+  commit: string,
+): Promise<string | undefined> {
+  const normalized = normalizeGitHubSyncTarget(target, () => target.id);
+  const checkout = githubSyncCheckoutPath(normalized, checkoutRoot);
+  if (!fs.existsSync(path.join(checkout, ".git"))) return undefined;
+  try {
+    return (await gitBuffer(checkout, ["cat-file", "blob", `${commit}:${MANIFEST_PATH}`], undefined, 16 * 1024 * 1024)).toString("utf8");
+  } catch {
+    return undefined;
+  }
 }
 
 async function git(cwd: string, args: string[], target?: GitHubSyncTarget, allowFailure = false, credentials?: GitHubSyncCredentials): Promise<string> {
@@ -1496,9 +1615,18 @@ function writeAtomic(destination: string, content: Buffer): void {
   const temporary = `${destination}.pkm-sync-${process.pid}-${randomUUID()}.tmp`;
   try {
     fs.writeFileSync(temporary, content, { flag: "wx" });
-    fs.renameSync(temporary, destination);
+    const waitArray = new Int32Array(new SharedArrayBuffer(4));
+    for (let attempt = 0; ; attempt++) {
+      try {
+        fs.renameSync(temporary, destination);
+        break;
+      } catch (error: any) {
+        if (!["EPERM", "EBUSY", "EACCES"].includes(error?.code) || attempt >= 7) throw error;
+        Atomics.wait(waitArray, 0, 0, 15 * (attempt + 1));
+      }
+    }
   } finally {
-    fs.rmSync(temporary, { force: true });
+    fs.rmSync(temporary, { force: true, maxRetries: 4, retryDelay: 20 });
   }
 }
 
@@ -1780,7 +1908,38 @@ function entityFileByMember(files: GitHubSyncManagedFile[] | undefined, member: 
   return files?.find(file => file.member === member);
 }
 
-async function deterministicTextMerge(base: Buffer, local: Buffer, remote: Buffer): Promise<Buffer | undefined> {
+function nonEmptyOutput(value: unknown): string {
+  if (Buffer.isBuffer(value)) return value.toString("utf8").trim();
+  return String(value ?? "").trim();
+}
+
+function compactDiagnostic(value: string, maxLength = 500): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  return compact.length <= maxLength ? compact : `${compact.slice(0, maxLength)}…`;
+}
+
+export function formatGitMergeFileFailure(error: any, managedFilePath: string): string {
+  const numericExitCode = Number(error?.code);
+  const exitCode = Number.isInteger(numericExitCode)
+    ? String(numericExitCode)
+    : nonEmptyOutput(error?.code) || "unknown";
+  const stderr = nonEmptyOutput(error?.stderr);
+  const stdout = nonEmptyOutput(error?.stdout);
+  const message = nonEmptyOutput(error?.message);
+  const detail = stderr
+    ? compactDiagnostic(stderr)
+    : stdout
+      ? `git produced ${Buffer.byteLength(stdout, "utf8")} bytes of stdout`
+      : compactDiagnostic(message);
+  return `git merge-file failed for ${managedFilePath} (exit code ${exitCode})${detail ? `: ${detail}` : "."}`;
+}
+
+export async function deterministicTextMerge(
+  base: Buffer,
+  local: Buffer,
+  remote: Buffer,
+  managedFilePath: string,
+): Promise<Buffer | undefined> {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-github-merge-"));
   const localPath = path.join(directory, "local");
   const basePath = path.join(directory, "base");
@@ -1797,9 +1956,9 @@ async function deterministicTextMerge(base: Buffer, local: Buffer, remote: Buffe
       });
       return Buffer.from(result.stdout);
     } catch (error: any) {
-      if (error?.code === 1) return undefined;
-      const detail = String(error?.stderr || error?.stdout || error?.message || error).trim();
-      throw new Error(`git merge-file failed${detail ? `: ${detail}` : "."}`);
+      const exitCode = Number(error?.code);
+      if (Number.isInteger(exitCode) && exitCode >= 1 && exitCode <= 127) return undefined;
+      throw new Error(formatGitMergeFileFailure(error, managedFilePath));
     }
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
@@ -1856,7 +2015,7 @@ async function syncGitHubTargetAttempt(
   credentials?: GitHubSyncCredentials,
   storeRoot?: string,
   onProgress?: (phase: "fetch" | "resolve-conflicts" | "commit" | "push", detail: string) => void,
-  options?: { mode?: "normal" | "force-local-authority"; actor?: string; comment?: string },
+  options?: GitHubSyncExecutionOptions,
 ): Promise<GitHubSyncResult> {
   const normalized = normalizeGitHubSyncTarget(target, () => target.id);
   if (normalized.lastSync?.repository && normalized.lastSync.repository !== normalized.repository) {
@@ -2189,6 +2348,7 @@ async function syncGitHubTargetAttempt(
             await gitBuffer(checkout, ["cat-file", "blob", `${normalized.lastSync.commit}:${basePath}`], undefined, 64 * 1024 * 1024),
             local[0].content!,
             fs.readFileSync(managedPath(checkout, remotePath)),
+            chosenMetadata.path,
           );
           if (mergedContent) {
             const mergedFile = { ...chosenMetadata, digest: fileDigest(mergedContent), content: mergedContent };
@@ -2340,6 +2500,12 @@ function concurrentPushFailure(error: unknown): boolean {
     && /(?:stale info|non-fast-forward|fetch first|failed to push some refs|rejected)/i.test(message);
 }
 
+export interface GitHubSyncExecutionOptions {
+  mode?: "normal" | "force-local-authority";
+  actor?: string;
+  comment?: string;
+}
+
 export async function syncGitHubTarget(
   target: GitHubSyncTarget,
   catalog: GitHubSyncCatalog,
@@ -2347,7 +2513,7 @@ export async function syncGitHubTarget(
   credentials?: GitHubSyncCredentials,
   storeRoot?: string,
   onProgress?: (phase: "fetch" | "resolve-conflicts" | "commit" | "push", detail: string) => void,
-  options?: { mode?: "normal" | "force-local-authority"; actor?: string; comment?: string },
+  options?: GitHubSyncExecutionOptions,
 ): Promise<GitHubSyncResult> {
   const maximumAttempts = target.publication?.manualVerificationCompleted === false && options?.mode !== "force-local-authority" ? 1 : 3;
   for (let attempt = 1; attempt <= maximumAttempts; attempt++) {
@@ -2357,6 +2523,7 @@ export async function syncGitHubTarget(
       if (attempt >= maximumAttempts || !concurrentPushFailure(error)) throw error;
       onProgress?.("fetch", `GitHub advanced during push; fetching and reconciling again (${attempt + 1}/${maximumAttempts})`);
     }
+
   }
   throw new Error("GitHub Sync exhausted its reconciliation attempts.");
 }
@@ -2395,7 +2562,7 @@ export function githubSyncMigrationCanonicalFiles(
     for (const item of catalog[type].filter(candidate => !target || selectedItem(target, type, candidate))) {
       for (const file of collectItemFiles(item)) {
         const portable = file.destination.toLocaleLowerCase("en-US");
-        if (destinations.has(portable)) throw new Error(`Multiple catalog items map to ${file.destination}.`);
+        if (destinations.has(portable)) continue;
         destinations.add(portable);
         files.push({
           path: file.destination,

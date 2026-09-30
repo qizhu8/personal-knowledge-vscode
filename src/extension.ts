@@ -2,9 +2,10 @@ import { withCrossProcessLock } from "./cross-process-lock";
 import { stableUserPort } from "./user-service-ports";
 import { KnowledgeInventoryManager } from "./knowledge-inventory";
 import { performanceSummary, recordPerformanceMetric } from "./performance-telemetry";
-import { mcpUsageSummary } from "./mcp-usage";
-import { agentSnapshotIsEncrypted, createAgentSnapshot, deleteAgentSnapshot, listAgentSnapshots, rotateAgentSnapshotPassphrase } from "./agent-snapshots";
+import { mcpUsageSummary, todoUsageSummary } from "./mcp-usage";
+import { agentSnapshotIsEncrypted, createAgentSnapshot, deleteAgentSnapshot, listAgentSnapshots } from "./agent-snapshots";
 import { agentSessionArchiveKeepLatestK, agentSessionLiveness, emptyAgentSessionTrash, enforceAgentSessionArchiveRetention, moveAgentSessionToTrash, permanentlyDeleteTrashedAgentSession, projectedAgentSessionStatus, recipeNodeObservability, reconcileAgentSessionActiveMappings, restoreAgentSessionFromTrash, stopAgentSession } from "./agent-session-lifecycle";
+import { JsonFileCache } from "./json-file-cache";
 import * as vscode from "vscode";
 import * as path from "path";
 import * as os from "os";
@@ -68,6 +69,7 @@ import { managedEnvironmentsRoot } from "./environment-paths";
 import { defaultKnowledgeGitignore } from "./root-storage-policy";
 import { NavigationStatus, summarizeChatNavigation, summarizeServerNavigation } from "./navigation-status";
 import { navigationItemPath } from "./navigation-path";
+import { parsePkmLocator, PkmLocatorError, resolvePkmLocator, ResolvedPkmLocator } from "./knowledge-locator";
 import { subscriptionNavigationRoot, SubscriptionNavigationNode } from "./navigation-subscriptions";
 import { createRetrievalSnapshot } from "./retrieval-snapshot";
 import { RetrievalWorkerManager } from "./retrieval-worker";
@@ -81,6 +83,8 @@ import {
   managedMcpRuntimePath, managedMcpServerDirectory, mcpProcessStatus, mcpRuntimeManualCommands, mcpRuntimeStatus, mcpServerDefinitionData, mcpStatus, streamMcpPythonCandidates,
   resolveMcpPython, validateMcpPython, writeMcpFeatureDomainConfig,
 } from "./mcp";
+import { nativeMcpCwdUri } from "./mcp-native-location";
+import { scheduleRestoredWebviewRecovery } from "./webview-restoration";
 import {
   addPkmSkillCustomTarget, connectPkmSkill, disconnectPkmSkill,
   pkmSkillProjectionStatus, reconcilePkmSkillProjections,
@@ -93,11 +97,13 @@ import { GanttTaskInput, ProjectModelError, RecipeKnowledgeBinding, RecipeMetada
 import { CollaborationMessageMetadata, CollaborationTransition } from "./collaboration-model";
 import { BundledKnowledgeContent, exportProjectRecipeBundle } from "./workflows/project-recipe-bundle";
 import { recipeBrowserEditorDocument } from "./recipe-browser";
+import { availableSkillRouterSources, normalizeSkillRouterSourcePriority, SkillRouterSource } from "./skill-router-config";
 import {
-  GITHUB_SYNC_CONTENT_TYPES, GitHubPublicationMigration, GitHubPublicationMigrationSource, GitHubSyncCatalog, GitHubSyncCatalogItem, GitHubSyncConflictError, GitHubSyncContentType, GitHubSyncCredentials, GitHubSyncExtensionCompatibilityError, GitHubSyncRecipePull, GitHubSyncTarget, githubSyncMigrationCanonicalFiles,
-  completeGitHubSyncTransaction, createGitHubSyncIdentity, discoverGitHubCredentialManagerAccounts, discoverGitHubSshIdentities, fetchGitHubRemoteSnapshot, githubSyncAuthenticationSessionOptions, githubSyncManagedContent, githubSyncSafeRelativePath, githubSyncShield, normalizeGitHubSyncTarget, previewGitHubSyncTarget,
-  probeGitHubSyncAuthentication, probeGitHubSyncHttpsAuthentication, probeGitHubSyncVscodeAuthentication, readGitHubRemoteFile, readGitHubRemoteFilesForSubscription, readGitHubRemoteManifest, replaceGitHubSyncFilesAtomically, restoreGitHubRemoteFiles, syncGitHubTarget, testGitHubSyncAuthentication,
+  GITHUB_SYNC_CONTENT_TYPES, GitHubPublicationMigration, GitHubPublicationMigrationSource, GitHubSyncCatalog, GitHubSyncCatalogItem, GitHubSyncConflictError, GitHubSyncContentType, GitHubSyncCredentials, GitHubSyncExtensionCompatibilityError, GitHubSyncFolderFingerprints, GitHubSyncRecipePull, GitHubSyncTarget, githubSyncMigrationCanonicalFiles,
+  completeGitHubSyncTransaction, createGitHubSyncIdentity, discoverGitHubCredentialManagerAccounts, discoverGitHubSshIdentities, fetchGitHubRemoteSnapshot, githubSyncAuthenticationSessionOptions, githubSyncFolderShields, githubSyncManagedContent, githubSyncManifestFolderFingerprints, githubSyncSafeRelativePath, githubSyncShield, githubSyncTargetFingerprintState, normalizeGitHubSyncTarget, previewGitHubSyncTarget,
+  probeGitHubSyncAuthentication, probeGitHubSyncHttpsAuthentication, probeGitHubSyncVscodeAuthentication, readGitHubCachedManifest, readGitHubRemoteFile, readGitHubRemoteFilesForSubscription, readGitHubRemoteManifest, replaceGitHubSyncFilesAtomically, restoreGitHubRemoteFiles, syncGitHubTarget, testGitHubSyncAuthentication,
 } from "./github-sync";
+import { referencedMarkdownAssets } from "./markdown-assets";
 import {
   clearGitHubSyncConflict, GitHubSyncAgentReview, gitHubSyncConflictVariantPath, listGitHubSyncConflicts, readGitHubSyncConflict,
   readGitHubSyncConflictCandidate, refreshGitHubSyncConflictLocalCandidate, selectAllGitHubSyncConflictCandidates, selectAllGitHubSyncConflictDeletions,
@@ -105,7 +111,8 @@ import {
   selectGitHubSyncConflictLocalDeletion, storeGitHubSyncConflict, updateGitHubSyncAgentCandidate,
   validateGitHubSyncConflictLocalState, validateGitHubSyncManualCandidate,
 } from "./github-sync-conflicts";
-import { GitHubSyncRuntimeState, GitHubSyncScheduler } from "./github-sync-scheduler";
+import { GitHubSyncRuntimeState } from "./github-sync-scheduler";
+import { githubSyncCoordinatorDirectory, GitHubSyncCoordinator } from "./github-sync-coordinator";
 import { BackgroundTaskProducer, BackgroundTaskRegistry } from "./background-task-registry";
 
 let projectStoreBinding: { root: string; store: ProjectStore } | undefined;
@@ -169,14 +176,17 @@ function recipeReferenceCatalog(): Record<"skills" | "notes", any[]> {
   };
 }
 
+const agentSessionJsonCache = new JsonFileCache(512);
+
 function agentSessionSnapshots(recipes: any[]): any[] {
-  const directory = path.join(getStorePath(), ".pkm", "state", "agent-sessions");
-  const runsDirectory = path.join(getStorePath(), ".pkm", "state", "recipe-runs");
+  const storeRoot = getStorePath();
+  const directory = path.join(storeRoot, ".pkm", "state", "agent-sessions");
+  const runsDirectory = path.join(storeRoot, ".pkm", "state", "recipe-runs");
   if (!fs.existsSync(directory)) return [];
   const recipeNames = new Map(recipes.map(recipe => [String(recipe.recipeId || ""), String(recipe.name || recipe.recipeId || "Recipe")]));
   const readRun = (runId: string): any | undefined => {
     try {
-      const run = JSON.parse(fs.readFileSync(path.join(runsDirectory, `${runId}.json`), "utf8"));
+      const run = agentSessionJsonCache.read<any>(path.join(runsDirectory, `${runId}.json`));
       if (run?.schema !== "pkm.recipe.run/v1" || run?.runId !== runId) return undefined;
       const definitions = Array.isArray(run?.definition?.spec?.nodes) ? run.definition.spec.nodes : [];
       return {
@@ -192,6 +202,7 @@ function agentSessionSnapshots(recipes: any[]): any[] {
           ? { runId: String(run.parent.runId || ""), nodeId: String(run.parent.nodeId || "") } : undefined,
         createdAt: String(run.createdAt || ""),
         updatedAt: String(run.updatedAt || ""),
+        usage: run.usage && typeof run.usage === "object" ? run.usage : undefined,
         nodes: definitions.map((node: any) => {
           const record = run.nodes?.[node.nodeId] || {};
           return {
@@ -232,12 +243,18 @@ function agentSessionSnapshots(recipes: any[]): any[] {
   for (const name of fs.readdirSync(directory)) {
     if (!name.endsWith(".json")) continue;
     try {
-      const session = JSON.parse(fs.readFileSync(path.join(directory, name), "utf8"));
+      const session = agentSessionJsonCache.read<any>(path.join(directory, name));
       if (session?.schema !== "pkm.agent.session/v1" || !String(session.sessionId || "").startsWith("agent_session_")) continue;
       const checkpoints = Array.isArray(session.checkpoints) ? session.checkpoints : [];
       const latest = checkpoints.at(-1);
       const state = latest?.state && typeof latest.state === "object" ? latest.state : {};
-      const runs = (Array.isArray(session.recipeRunIds) ? session.recipeRunIds : []).map(String).map(readRun).filter(Boolean);
+      const rawRuns: any[] = (Array.isArray(session.recipeRunIds) ? session.recipeRunIds : [])
+        .map(String).map(readRun).filter(Boolean);
+      const runsById = new Map<string, any>(rawRuns.map((run: any) => [run.runId, run]));
+      const runs = rawRuns.map((run: any) => {
+        const { usage: _usage, ...projection } = run;
+        return projection;
+      });
       const waiting = runs.some((run: any) => run.nodes.some((node: any) =>
         node.state === "running"
         && (node.kind === "pkm.gate.human/v1" || node.observability?.state === "waiting")));
@@ -256,14 +273,20 @@ function agentSessionSnapshots(recipes: any[]): any[] {
         lastActivity: session.lastActivity && typeof session.lastActivity === "object" ? {
           tool: String(session.lastActivity.tool || ""), ok: session.lastActivity.ok !== false, at: String(session.lastActivity.at || ""),
         } : undefined,
-        todos: (Array.isArray(session.todos) ? session.todos : []).map((todo: any) => ({
-          todoId: String(todo.todoId || ""), title: String(todo.title || ""), details: String(todo.details || ""),
-          status: String(todo.status || "pending"), summary: String(todo.summary || ""),
-          recipeRunId: String(todo.recipeRunId || ""), createdAt: String(todo.createdAt || ""),
-          recipeRunIds: (Array.isArray(todo.recipeRunIds) ? todo.recipeRunIds : [todo.recipeRunId])
-            .filter(Boolean).map(String),
-          updatedAt: String(todo.updatedAt || ""),
-        })),
+        todos: (Array.isArray(session.todos) ? session.todos : []).map((todo: any) => {
+          const recipeRunIds = [...new Set<string>((Array.isArray(todo.recipeRunIds) ? todo.recipeRunIds : [todo.recipeRunId])
+            .filter(Boolean).map((value: unknown) => String(value)))];
+          const todoId = String(todo.todoId || "");
+          return {
+            todoId, title: String(todo.title || ""), details: String(todo.details || ""),
+            status: String(todo.status || "pending"), summary: String(todo.summary || ""),
+            recipeRunId: String(todo.recipeRunId || ""), createdAt: String(todo.createdAt || ""),
+            recipeRunIds,
+            updatedAt: String(todo.updatedAt || ""),
+            usage: todoUsageSummary(storeRoot, String(session.sessionId), todoId,
+              recipeRunIds.map(runId => runsById.get(runId)).filter(Boolean)),
+          };
+        }),
         checkpoint: latest ? {
           checkpointId: String(latest.checkpointId || ""), sequence: Number(latest.sequence || checkpoints.length),
           createdAt: String(latest.createdAt || ""), reason: String(latest.reason || ""),
@@ -284,7 +307,7 @@ function agentSessionTrashSnapshots(): any[] {
   for (const name of fs.readdirSync(directory)) {
     if (!name.endsWith(".json")) continue;
     try {
-      const session = JSON.parse(fs.readFileSync(path.join(directory, name), "utf8"));
+      const session = agentSessionJsonCache.read<any>(path.join(directory, name));
       if (session?.schema !== "pkm.agent.session/v1" || !String(session.sessionId || "").startsWith("agent_session_")) continue;
       snapshots.push({
         sessionId: String(session.sessionId), status: String(session.status || "unknown"),
@@ -304,8 +327,15 @@ function configuredAgentSessionArchiveKeepLatestK(): number {
 }
 
 let agentSessionRetentionPending: Promise<void> = Promise.resolve();
+let agentSessionRetentionLastRunAt = 0;
+const AGENT_SESSION_RETENTION_INTERVAL_MS = 30_000;
 function applyAgentSessionArchiveRetention(): Promise<void> {
   if (!_storeReady) return Promise.resolve();
+  const now = Date.now();
+  if (now - agentSessionRetentionLastRunAt < AGENT_SESSION_RETENTION_INTERVAL_MS) {
+    return agentSessionRetentionPending;
+  }
+  agentSessionRetentionLastRunAt = now;
   const stateDirectory = path.join(getStorePath(), ".pkm", "state");
   const run = async () => {
     const result = await enforceAgentSessionArchiveRetention(stateDirectory, configuredAgentSessionArchiveKeepLatestK());
@@ -520,7 +550,7 @@ function mcpFeatureDomainState(): object {
     domains: [
       { id: "knowledge", name: "Knowledge + Tools", enabled: enabled.has("knowledge"), description: "Search, read, and maintain PKM content and configuration." },
       { id: "automation", name: "Automation", enabled: enabled.has("automation"), description: "Recipes, Agent Sessions, Chatrooms, and operational workflows." },
-      { id: "skillRouter", name: "Skill Router", enabled: enabled.has("skillRouter"), description: "Retrieve and apply relevant Skills before substantial work." },
+      { id: "skillRouter", name: "Router", enabled: enabled.has("skillRouter"), description: "Retrieve and apply relevant Skills before substantial work." },
     ],
     note: "These switches control Agent/MCP exposure only. They do not disable the extension UI.",
   };
@@ -843,19 +873,36 @@ function enabledSkillRouterSolutions(): MatureSkillRouterSolution[] {
   return enabled;
 }
 
+function skillRouterSources(): SkillRouterSource[] {
+  const snapshot = getSharedMarket().snapshot as {
+    subscriptions?: Array<{ id: string; alias?: string; brokerName?: string; shareId?: string; publisher?: string }>;
+  };
+  return availableSkillRouterSources(snapshot.subscriptions || []);
+}
+
+function skillRouterSourcePriority(sources = skillRouterSources()): string[] {
+  const configured = vscode.workspace.getConfiguration("personalKnowledge")
+    .get<string[]>("skillRouterSourcePriority", []);
+  return normalizeSkillRouterSourcePriority(configured, sources);
+}
+
 function writeSkillRouterRuntimeConfig(context: vscode.ExtensionContext): MatureSkillRouterSolution[] {
   const enabledSolutions = enabledSkillRouterSolutions();
+  const sources = skillRouterSources();
+  const sourcePriority = skillRouterSourcePriority(sources);
   const stateDirectory = retrievalStateDirectory(context);
   fs.mkdirSync(stateDirectory, { recursive: true });
   const target = path.join(stateDirectory, "router-config.json");
   const temporary = `${target}.${process.pid}.tmp`;
-  fs.writeFileSync(temporary, JSON.stringify({ schema: 1, enabledSolutions }, null, 2), { mode: 0o600 });
+  fs.writeFileSync(temporary, JSON.stringify({ schema: 2, enabledSolutions, sourcePriority, sources }, null, 2), { mode: 0o600 });
   fs.renameSync(temporary, target);
   return enabledSolutions;
 }
 
 async function skillRouterStatusData(context: vscode.ExtensionContext): Promise<object> {
   const enabledSolutions = writeSkillRouterRuntimeConfig(context);
+  const sources = skillRouterSources();
+  const sourcePriority = skillRouterSourcePriority(sources);
   const activeProfile = enabledSolutions.includes("l1_online") ? "l1_online" : "copilot_default";
   const inventory = knowledgeInventory?.snapshot;
   const documentCount = inventory ? Object.keys(inventory.entries).length : Number(skillRouterRuntimeCache?.documentCount || 0);
@@ -900,6 +947,8 @@ async function skillRouterStatusData(context: vscode.ExtensionContext): Promise<
     activeProfile,
     fallbackProfile: "copilot_default",
     enabledSolutions,
+    sources,
+    sourcePriority,
     solutions: {
       copilot_default: { available: true, mature: true, enabled: enabledSolutions.includes("copilot_default"), externallyServed: true },
       l1_exact: { available: false, mature: false, enabled: false },
@@ -1078,17 +1127,32 @@ async function sharedContentCatalog(): Promise<Record<string, any[]>> {
 
 const GITHUB_SYNC_TARGETS_SCHEMA = 1;
 const GITHUB_SYNC_SECRET_PREFIX = "personalKnowledge.githubSync.vscode.";
-let githubSyncScheduler: GitHubSyncScheduler | undefined;
+let githubSyncScheduler: GitHubSyncCoordinator | undefined;
+let githubSyncCoordinatorStatePath: string | undefined;
 const githubSyncForceUpdateAudit = new Map<string, { actor: string; comment: string }>();
 
 function githubSyncStateDirectory(context: vscode.ExtensionContext): string {
   return path.join(context.globalStorageUri.fsPath, "github-sync");
 }
 
+function githubSyncCoordinatorStateDirectory(context: vscode.ExtensionContext): string {
+  return githubSyncCoordinatorDirectory(context.globalStorageUri.fsPath, getStorePath());
+}
+
 function withGitHubSyncTargetLock<T>(context: vscode.ExtensionContext, targetId: string, action: () => Promise<T>): Promise<T> {
   return withCrossProcessLock(
     path.join(githubSyncStateDirectory(context), "locks", `${targetId}.lock`),
     `GitHub Sync target ${targetId}`,
+    10 * 60_000,
+    action,
+    4 * 60 * 60_000,
+  );
+}
+
+function withGitHubSyncApplyLock<T>(context: vscode.ExtensionContext, action: () => Promise<T>): Promise<T> {
+  return withCrossProcessLock(
+    path.join(githubSyncCoordinatorStateDirectory(context), "apply.lock"),
+    "GitHub Sync Knowledge Root apply",
     10 * 60_000,
     action,
     4 * 60 * 60_000,
@@ -1567,10 +1631,14 @@ function updateGitHubSyncBackgroundTask(context: vscode.ExtensionContext, target
   const label = `GitHub sync · ${target.name}`;
   if (state.status === "syncing") {
     producer.running({ label, detail: state.detail || state.phase || "Waiting for Git" });
-  } else if (state.status === "scheduled" || state.nextSyncAt) {
+  } else if (state.status === "blocked") {
+    producer.queued({ label, detail: state.detail || "Waiting for extension upgrade" });
+  } else if (state.status === "queued" || state.status === "scheduled" || state.nextSyncAt) {
     producer.queued({
       label,
-      detail: state.status === "error" ? `${state.phase || "Git operation"} failed · retry scheduled` : "Scheduled",
+      detail: state.status === "error"
+        ? `${state.phase || "Git operation"} failed · retry scheduled`
+        : state.detail || (state.status === "queued" ? "Queued for shared coordinator" : "Scheduled"),
       nextRunAt: state.nextSyncAt,
     });
   } else {
@@ -1579,8 +1647,21 @@ function updateGitHubSyncBackgroundTask(context: vscode.ExtensionContext, target
 }
 
 function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
+  const coordinatorStatePath = githubSyncCoordinatorStateDirectory(context);
+  if (githubSyncScheduler && githubSyncCoordinatorStatePath !== coordinatorStatePath) {
+    githubSyncScheduler.dispose();
+    githubSyncScheduler = undefined;
+    githubSyncCoordinatorStatePath = undefined;
+  }
   if (!githubSyncScheduler) {
-    githubSyncScheduler = new GitHubSyncScheduler({
+    githubSyncCoordinatorStatePath = coordinatorStatePath;
+    githubSyncScheduler = new GitHubSyncCoordinator({
+      stateDirectory: coordinatorStatePath,
+      knowledgeRoot: getStorePath(),
+      extensionVersion: String(context.extension.packageJSON.version),
+      compatibilityBlock: error => error instanceof GitHubSyncExtensionCompatibilityError
+        ? { requiredVersion: error.requiredVersion, installedVersion: error.installedVersion }
+        : undefined,
       shouldExecute: async (targetId, reason) => {
         if (reason !== "force-local-authority" && reason !== "manual" && readGitHubSyncConflict(githubSyncStateDirectory(context), targetId)
           && !clearEquivalentGitHubSyncConflict(context, targetId)) {
@@ -1596,7 +1677,7 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
       },
       execute: (targetId, reason) => {
         githubSyncScheduler?.report(targetId, "waiting-for-lock", "Waiting for Git lock");
-        return withGitHubSyncTargetLock(context, targetId, async () => {
+        return withGitHubSyncTargetLock(context, targetId, () => withGitHubSyncApplyLock(context, async () => {
           const target = githubSyncTargetById(context, targetId);
           const forceAudit = githubSyncForceUpdateAudit.get(targetId);
           const attemptedAt = new Date().toISOString();
@@ -1757,13 +1838,15 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
                 message += " Review the staged candidates, then Accept & Push.";
               }
             }
-            await mutateGitHubSyncTargets(context, `failure ${targetId}`, currentTargets => {
-              const current = currentTargets.find(candidate => candidate.id === targetId);
-              if (current) current.lastFailure = { at: attemptedAt, error: message, reason };
-              return { targets: currentTargets, result: undefined };
-            });
+            if (!(error instanceof GitHubSyncExtensionCompatibilityError)) {
+              await mutateGitHubSyncTargets(context, `failure ${targetId}`, currentTargets => {
+                const current = currentTargets.find(candidate => candidate.id === targetId);
+                if (current) current.lastFailure = { at: attemptedAt, error: message, reason };
+                return { targets: currentTargets, result: undefined };
+              });
+            }
             const diagnostic = error instanceof Error ? error.stack || error.message : String(error);
-            githubSyncDiagnostics.record("github_sync.failed", {
+            githubSyncDiagnostics.record(error instanceof GitHubSyncExtensionCompatibilityError ? "github_sync.blocked" : "github_sync.failed", {
               traceId,
               targetId,
               reason,
@@ -1772,13 +1855,17 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
               error: message,
               stack: diagnostic,
             });
-            log.error(`automatic GitHub Sync target=${target.name} reason=${reason}: ${diagnostic}`);
+            if (error instanceof GitHubSyncExtensionCompatibilityError) {
+              log.info(`automatic GitHub Sync target=${target.name} reason=${reason} blocked=extension-upgrade required=${error.requiredVersion} installed=${error.installedVersion}`);
+            } else {
+              log.error(`automatic GitHub Sync target=${target.name} reason=${reason}: ${diagnostic}`);
+            }
             throw error;
           } finally {
             if (reason === "force-local-authority") githubSyncForceUpdateAudit.delete(targetId);
             if (panel?.visible) void githubSyncStateData(context).then(data => panel?.webview.postMessage({ command: "githubSyncState", data })).catch(error => log.warn(`GitHub Sync state refresh failed: ${(error as Error).message}`));
           }
-        });
+        }));
       },
       onState: (targetId, state) => {
         updateGitHubSyncBackgroundTask(context, targetId, state);
@@ -1938,6 +2025,10 @@ function githubSyncDestination(source: string): string {
 }
 
 function githubSyncItem(row: any, type: PrivacyContentType, source: string, destination = githubSyncDestination(source)): GitHubSyncCatalogItem {
+  const dependencies = (["skills", "notes", "papers"] as PrivacyContentType[]).includes(type) && fs.existsSync(source)
+    ? referencedMarkdownAssets(getStorePath(), type as "skills" | "notes" | "papers", destination.replace(new RegExp(`^${type}/`), ""), fs.readFileSync(source, "utf8"))
+      .map(asset => ({ source: asset.fullPath, destination: `${type}/${asset.path}` }))
+    : [];
   return {
     id: type === "skills" ? row.name : type === "prompts" ? `${row.project}/${row.task}` : type === "scripts" ? row.path : type === "packages" ? row.name : type === "servers" ? row.slug : row.slug,
     label: type === "skills" || type === "packages" ? row.name : type === "prompts" ? row.task : type === "scripts" ? row.file : type === "servers" ? row.name : row.title,
@@ -1946,6 +2037,7 @@ function githubSyncItem(row: any, type: PrivacyContentType, source: string, dest
     isPrivate: isContentItemPrivate(type, row),
     source,
     destination,
+    ...(dependencies.length ? { dependencies } : {}),
   };
 }
 
@@ -2020,7 +2112,7 @@ async function buildGitHubSyncCatalog(): Promise<GitHubSyncCatalog> {
       id: snapshot.snapshotId,
       label: snapshot.task,
       cat: snapshot.agent?.name || "Agent",
-      meta: `${snapshot.createdAt} · encrypted`,
+      meta: `${snapshot.createdAt} · locally obfuscated`,
       isPrivate: true,
       source,
       destination: `agentSnapshots/${snapshot.snapshotId}.json`,
@@ -2136,7 +2228,28 @@ async function githubSyncStateData(context: vscode.ExtensionContext, waitForExpe
   const refreshedConflicts = refreshStaleGitHubSyncConflicts(context);
   if (refreshedConflicts) log.info(`refreshed ${refreshedConflicts} stale GitHub Sync conflict candidate${refreshedConflicts === 1 ? "" : "s"}`);
   const currentFingerprints: Record<string, Partial<Record<GitHubSyncContentType, string>>> = {};
-  const shields = Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type => [type, githubSyncShield(targets, type, currentFingerprints)]));
+  const currentFolderFingerprints: Record<string, Partial<GitHubSyncFolderFingerprints>> = {};
+  const baseFolderFingerprints: Record<string, Partial<GitHubSyncFolderFingerprints>> = {};
+  if (waitForExpensive) {
+    await Promise.all(targets.map(async target => {
+      const current = githubSyncTargetFingerprintState(target, catalog);
+      currentFingerprints[target.id] = current.fingerprints;
+      currentFolderFingerprints[target.id] = current.folders;
+      if (!target.lastSync?.commit) return;
+      const rawManifest = await readGitHubCachedManifest(
+        target,
+        path.join(githubSyncStateDirectory(context), "checkouts"),
+        target.lastSync.commit,
+      );
+      if (rawManifest) baseFolderFingerprints[target.id] = githubSyncManifestFolderFingerprints(target, rawManifest);
+    }));
+  }
+  const shields = waitForExpensive
+    ? Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type => [type, githubSyncShield(targets, type, currentFingerprints)]))
+    : undefined;
+  const folderShields = waitForExpensive
+    ? githubSyncFolderShields(targets, currentFingerprints, currentFolderFingerprints, baseFolderFingerprints)
+    : undefined;
   const uiCatalog = Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type => [type, catalog[type].map(({ source, content, destination, ...item }) => item)]));
   const connected: Record<string, boolean> = {};
   await Promise.all(targets.map(async target => {
@@ -2145,8 +2258,9 @@ async function githubSyncStateData(context: vscode.ExtensionContext, waitForExpe
   return {
     targets,
     catalog: uiCatalog,
-    shields,
-    fingerprintsDeferred: true,
+    ...(shields ? { shields } : {}),
+    ...(folderShields ? { folderShields } : {}),
+    fingerprintsDeferred: !waitForExpensive,
     runtime: githubSyncScheduler?.snapshot() || {},
     migrations: Object.fromEntries(targets.flatMap(target => {
       const status = githubPublicationMigration(context, target.id).status();
@@ -2424,19 +2538,25 @@ const MIME_BY_EXT: Record<string, string> = {
   webp: "image/webp", svg: "image/svg+xml", bmp: "image/bmp", avif: "image/avif",
 };
 
-/** Inline `_assets/<file>` image references as base64 data URIs for a portable file. */
+/** Inline safe relative `_assets` image references as data URIs for a portable file. */
 function inlineMarkdownAssets(html: string, area = "notes", category = ""): string {
   const safeArea = ["notes", "skills", "papers"].includes(area) ? area : "notes";
-  const catSegs = String(category || "").split("/").map(s => s.trim()).filter(Boolean);
-  const assetsDir = path.join(getStorePath(), safeArea, ...catSegs, "_assets");
-  return html.replace(/(src\s*=\s*)("|')_assets\/([^"']+)\2/gi, (m, pre, q, file) => {
+  const areaRoot = path.resolve(getStorePath(), safeArea);
+  const documentDirectory = path.resolve(areaRoot, ...String(category || "").split("/").map(s => s.trim()).filter(Boolean));
+  return html.replace(/(src\s*=\s*)("|')([^"']+)\2/gi, (m, pre, q, reference) => {
     try {
-      const name = decodeURIComponent(file);
-      const full = path.join(assetsDir, name);
-      if (!full.startsWith(assetsDir) || !fs.existsSync(full)) return m;
-      const ext = (path.extname(name).slice(1) || "png").toLowerCase();
+      const value = String(reference || "").replace(/&amp;/g, "&").replace(/[?#].*$/, "");
+      if (!value || value.startsWith("/") || value.startsWith("\\") || value.startsWith("//") || /^[a-z][a-z0-9+.-]*:/i.test(value)) return m;
+      const full = path.resolve(documentDirectory, decodeURIComponent(value));
+      const relative = path.relative(areaRoot, full).replace(/\\/g, "/");
+      if (!relative || relative.startsWith("../") || path.isAbsolute(relative)
+        || !relative.split("/").includes("_assets") || !fs.existsSync(full) || !fs.statSync(full).isFile()) return m;
+      const realRoot = fs.realpathSync(areaRoot);
+      const realFile = fs.realpathSync(full);
+      if (realFile !== realRoot && !realFile.startsWith(`${realRoot}${path.sep}`)) return m;
+      const ext = (path.extname(realFile).slice(1) || "png").toLowerCase();
       const mime = MIME_BY_EXT[ext] || "application/octet-stream";
-      const b64 = fs.readFileSync(full).toString("base64");
+      const b64 = fs.readFileSync(realFile).toString("base64");
       return `${pre}${q}data:${mime};base64,${b64}${q}`;
     } catch { return m; }
   });
@@ -2998,6 +3118,7 @@ let _pendingMcpRegenerateHighlight = false;
 let _nativeMcpProvider = false;
 let _mcpDefinitionsChanged: vscode.EventEmitter<void> | undefined;
 let _mcpRegenerationPromptedFor = "";
+let _panelRestoredRecoveryTimer: ReturnType<typeof setTimeout> | undefined;
 
 function refreshMcpDefinitions(): void {
   mcpRuntimeStatusCache = undefined;
@@ -3012,7 +3133,7 @@ function registerNativeMcpProvider(context: vscode.ExtensionContext): void {
   const createDefinition = () => {
     const data = mcpServerDefinitionData();
     const definition = new api.McpStdioServerDefinition(data.label, data.command, data.args, data.env || {}, data.version);
-    definition.cwd = vscode.Uri.file(data.cwd);
+    definition.cwd = nativeMcpCwdUri(context.extensionUri, data.cwd, vscode.Uri.file);
     return definition;
   };
   const provider = {
@@ -3032,6 +3153,81 @@ function openInPanel(context: vscode.ExtensionContext, type: string, key: string
     p.webview.postMessage({ command: "openItem", type, key, edit, tab });
   } else {
     _pendingOpen = { type, key, edit, tab }; // flushed on the "ready" message
+  }
+}
+
+function quickOpenSubscriptionGroups() {
+  const market = getSharedMarket();
+  return SHARED_CONTENT_TYPES.flatMap(type => market.cachedGroups(type, "", Number.MAX_SAFE_INTEGER));
+}
+
+async function openResolvedPkmLocator(context: vscode.ExtensionContext, target: ResolvedPkmLocator): Promise<void> {
+  if (target.kind === "panel") {
+    openInPanel(context, target.type, target.key, false, target.tab);
+  } else if (target.kind === "recipe") {
+    if (!(await openRecipeEditorInBrowser(target.recipeId))) {
+      throw new Error(`Could not open Recipe: ${target.title}`);
+    }
+  } else {
+    await vscode.commands.executeCommand("personalKnowledge.openSubscribedServer", target.key);
+  }
+  vscode.window.setStatusBarMessage(`$(go-to-file) Opened ${target.title}`, 3000);
+}
+
+async function goToPkmPath(context: vscode.ExtensionContext, provided?: string): Promise<void> {
+  if (!(await ensureSetup(context))) return;
+  let value = String(provided || "").trim();
+  if (!value) {
+    const clipboard = (await vscode.env.clipboard.readText()).trim();
+    const initial = /^`?pkm:\/\//i.test(clipboard) ? clipboard : "";
+    const entered = await vscode.window.showInputBox({
+      title: "Go to PKM Path",
+      prompt: "Paste a PKM path from an Agent response or Copy Path.",
+      placeHolder: "pkm://knowledge/knowledge_ee2a7651bc4adc35bbf81ef7",
+      value: initial,
+      valueSelection: initial ? [0, initial.length] : undefined,
+      ignoreFocusOut: true,
+      validateInput: candidate => {
+        try { parsePkmLocator(candidate); return undefined; }
+        catch (error) { return error instanceof Error ? error.message : String(error); }
+      },
+    });
+    if (entered === undefined) return;
+    value = entered;
+  }
+  let parsed;
+  try { parsed = parsePkmLocator(value); }
+  catch (error) {
+    vscode.window.showErrorMessage(`Go to PKM Path failed: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
+  let subscriptionGroups: ReturnType<typeof quickOpenSubscriptionGroups> = [];
+  try {
+    subscriptionGroups = parsed.kind === "subscription" ? quickOpenSubscriptionGroups() : [];
+  } catch (error) {
+    vscode.window.showErrorMessage(`Go to PKM Path failed: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
+  const resolve = () => resolvePkmLocator(value, knowledgeInventory?.entries() || [], subscriptionGroups);
+  let target: ResolvedPkmLocator;
+  try {
+    target = resolve();
+  } catch (error) {
+    if (error instanceof PkmLocatorError && error.code === "not-found" && parsed.kind !== "subscription") {
+      await refreshKnowledgeInventory(context);
+      try { target = resolve(); }
+      catch (retryError) {
+        vscode.window.showErrorMessage(`Go to PKM Path failed: ${retryError instanceof Error ? retryError.message : String(retryError)}`);
+        return;
+      }
+    } else {
+      vscode.window.showErrorMessage(`Go to PKM Path failed: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+  }
+  try { await openResolvedPkmLocator(context, target); }
+  catch (error) {
+    vscode.window.showErrorMessage(`Go to PKM Path failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -4874,10 +5070,11 @@ function makeWebviewOptions(context: vscode.ExtensionContext): vscode.WebviewOpt
     enableScripts: true,
     retainContextWhenHidden: false,
     localResourceRoots: [
-      vscode.Uri.file(path.join(context.extensionPath, "dist", "webview")),
-      vscode.Uri.file(path.join(context.extensionPath, "src",  "webview")),        // dev fallback
-      vscode.Uri.file(path.join(context.extensionPath, "node_modules", "marked")), // dev marked
+      vscode.Uri.joinPath(context.extensionUri, "dist", "webview"),
+      vscode.Uri.joinPath(context.extensionUri, "src", "webview"),
+      vscode.Uri.joinPath(context.extensionUri, "node_modules", "marked"),
       vscode.Uri.file(getStorePath()),                                             // note/skill _assets
+      vscode.Uri.file(path.join(context.globalStorageUri.fsPath, "subscriptions", "cache")),
     ],
   };
 }
@@ -4887,11 +5084,14 @@ function getWebviewHtml(webview: vscode.Webview, context: vscode.ExtensionContex
   const distDir = path.join(context.extensionPath, "dist", "webview");
   const srcDir  = path.join(context.extensionPath, "src",  "webview");
   const webviewDir = fs.existsSync(path.join(distDir, "panel.html")) ? distDir : srcDir;
+  const webviewResourceDir = webviewDir === distDir
+    ? vscode.Uri.joinPath(context.extensionUri, "dist", "webview")
+    : vscode.Uri.joinPath(context.extensionUri, "src", "webview");
   let html = fs.readFileSync(path.join(webviewDir, "panel.html"), "utf-8");
 
-  const panelJs = webview.asWebviewUri(vscode.Uri.file(path.join(webviewDir, "panel.js")));
-  const panelCss = webview.asWebviewUri(vscode.Uri.file(path.join(webviewDir, "panel.css")));
-  const codiconCss = webview.asWebviewUri(vscode.Uri.file(path.join(webviewDir, "codicon.css")));
+  const panelJs = webview.asWebviewUri(vscode.Uri.joinPath(webviewResourceDir, "panel.js"));
+  const panelCss = webview.asWebviewUri(vscode.Uri.joinPath(webviewResourceDir, "panel.css"));
+  const codiconCss = webview.asWebviewUri(vscode.Uri.joinPath(webviewResourceDir, "codicon.css"));
   html = html.replace(/%%PANEL_JS%%/g, panelJs.toString());
   html = html.replace(/%%PANEL_CSS%%/g, panelCss.toString());
   html = html.replace(/%%CODICON_CSS%%/g, codiconCss.toString());
@@ -4900,41 +5100,50 @@ function getWebviewHtml(webview: vscode.Webview, context: vscode.ExtensionContex
   const markedFsPath = fs.existsSync(path.join(distDir, "marked.umd.js"))
     ? path.join(distDir, "marked.umd.js")
     : path.join(context.extensionPath, "node_modules", "marked", "lib", "marked.umd.js");
-  const markedUri = webview.asWebviewUri(vscode.Uri.file(markedFsPath));
+  const markedResource = markedFsPath.startsWith(distDir)
+    ? vscode.Uri.joinPath(webviewResourceDir, "marked.umd.js")
+    : vscode.Uri.joinPath(context.extensionUri, "node_modules", "marked", "lib", "marked.umd.js");
+  const markedUri = webview.asWebviewUri(markedResource);
   html = html.replace(/%%MARKED_SRC%%/g, markedUri.toString());
 
   // Syntax highlighting (highlight.js bundled locally with a custom Scope grammar)
-  const hljsJs  = webview.asWebviewUri(vscode.Uri.file(path.join(webviewDir, "hljs.js")));
-  const hljsCss = webview.asWebviewUri(vscode.Uri.file(path.join(webviewDir, "hljs.css")));
+  const hljsJs  = webview.asWebviewUri(vscode.Uri.joinPath(webviewResourceDir, "hljs.js"));
+  const hljsCss = webview.asWebviewUri(vscode.Uri.joinPath(webviewResourceDir, "hljs.css"));
   html = html.replace(/%%HLJS_SRC%%/g, hljsJs.toString());
   html = html.replace(/%%HLJS_CSS%%/g, hljsCss.toString());
 
   // Math rendering (KaTeX bundled locally: JS + CSS + fonts). Fonts are loaded
   // by katex.css via relative url(fonts/...) which resolve under webviewDir.
-  const katexJs  = webview.asWebviewUri(vscode.Uri.file(path.join(webviewDir, "katex.js")));
-  const katexCss = webview.asWebviewUri(vscode.Uri.file(path.join(webviewDir, "katex.css")));
+  const katexJs  = webview.asWebviewUri(vscode.Uri.joinPath(webviewResourceDir, "katex.js"));
+  const katexCss = webview.asWebviewUri(vscode.Uri.joinPath(webviewResourceDir, "katex.css"));
   html = html.replace(/%%KATEX_SRC%%/g, katexJs.toString());
   html = html.replace(/%%KATEX_CSS%%/g, katexCss.toString());
 
   // Graph rendering (Cytoscape.js bundled locally) for the Papers graph view.
-  const cytoscapeJs = webview.asWebviewUri(vscode.Uri.file(path.join(webviewDir, "cytoscape.js")));
+  const cytoscapeJs = webview.asWebviewUri(vscode.Uri.joinPath(webviewResourceDir, "cytoscape.js"));
   html = html.replace(/%%CYTOSCAPE_SRC%%/g, cytoscapeJs.toString());
 
   // Diagram rendering (Mermaid bundled locally) for ```mermaid fenced blocks.
-  const mermaidJs = webview.asWebviewUri(vscode.Uri.file(path.join(webviewDir, "mermaid.js")));
+  const mermaidJs = webview.asWebviewUri(vscode.Uri.joinPath(webviewResourceDir, "mermaid.js"));
   html = html.replace(/%%MERMAID_SRC%%/g, mermaidJs.toString());
 
   // 3D citation graph (3d-force-graph + three.js bundled locally).
-  const fg3dJs = webview.asWebviewUri(vscode.Uri.file(path.join(webviewDir, "forcegraph3d.js")));
+  const fg3dJs = webview.asWebviewUri(vscode.Uri.joinPath(webviewResourceDir, "forcegraph3d.js"));
   html = html.replace(/%%FORCEGRAPH3D_SRC%%/g, fg3dJs.toString());
 
   // Inject the webview CSP source — required for VS Code to allow scripts to run
   html = html.replace(/%%CSP_SOURCE%%/g, webview.cspSource);
 
-  // Base URI for note image assets (notes/_assets/...). The webview rewrites
-  // `_assets/` markdown image refs to `${NOTES_BASE}/_assets/...` at render time.
+  // Base URIs for portable Markdown resources. Relative image references are
+  // resolved against the source document's directory inside the approved root.
+  const skillsBase = webview.asWebviewUri(vscode.Uri.file(path.join(getStorePath(), "skills")));
   const notesBase = webview.asWebviewUri(vscode.Uri.file(path.join(getStorePath(), "notes")));
+  const papersBase = webview.asWebviewUri(vscode.Uri.file(path.join(getStorePath(), "papers")));
+  const subscriptionsBase = webview.asWebviewUri(vscode.Uri.file(path.join(context.globalStorageUri.fsPath, "subscriptions", "cache")));
+  html = html.replace(/%%SKILLS_BASE%%/g, skillsBase.toString());
   html = html.replace(/%%NOTES_BASE%%/g, notesBase.toString());
+  html = html.replace(/%%PAPERS_BASE%%/g, papersBase.toString());
+  html = html.replace(/%%SUBSCRIPTIONS_BASE%%/g, subscriptionsBase.toString());
 
   // Stamp the extension version so the running webview build is always visible.
   const version = (context.extension?.packageJSON?.version as string) || "?";
@@ -4967,7 +5176,7 @@ function initializePanel(target: vscode.WebviewPanel, context: vscode.ExtensionC
   panel = target;
   if (performanceStateDir && activationStartedAt) recordPerformanceMetric(performanceStateDir, "startup.framework_ms", Date.now() - activationStartedAt);
   target.webview.options = makeWebviewOptions(context);
-  target.iconPath = vscode.Uri.file(path.join(context.extensionPath, "resources", "brand-icon.svg"));
+  target.iconPath = vscode.Uri.joinPath(context.extensionUri, "resources", "brand-icon.svg");
   _panelReady = false; // fresh webview; wait for its "ready" signal
   _panelLastHeartbeat = Date.now();
   _panelLastDiagnostic = "";
@@ -4982,6 +5191,19 @@ function initializePanel(target: vscode.WebviewPanel, context: vscode.ExtensionC
     htmlBytes: html.length,
   });
   log.info(`panel ${restored ? "restored" : "created"} (html ${html.length} bytes, generated ${htmlDuration}ms)`);
+  if (_panelRestoredRecoveryTimer) clearTimeout(_panelRestoredRecoveryTimer);
+  _panelRestoredRecoveryTimer = scheduleRestoredWebviewRecovery({
+    restored,
+    isReady: () => _panelReady,
+    isCurrent: () => panel === target,
+    recover: () => {
+      _panelRestoredRecoveryTimer = undefined;
+      log.warn("restored panel did not become ready; recreating the webview");
+      target.dispose();
+      setTimeout(() => getOrCreatePanel(context), 0);
+    },
+  });
+  _panelRestoredRecoveryTimer?.unref?.();
 
   // Debug: dump generated HTML for inspection (debug level only)
   if (vscode.workspace.getConfiguration("personalKnowledge").get<string>("logLevel", "info") === "debug") {
@@ -5022,6 +5244,8 @@ function initializePanel(target: vscode.WebviewPanel, context: vscode.ExtensionC
   );
 
   target.onDidDispose(() => {
+    if (_panelRestoredRecoveryTimer) clearTimeout(_panelRestoredRecoveryTimer);
+    _panelRestoredRecoveryTimer = undefined;
     if (panel === target) panel = undefined;
     _panelReady = false;
     loadProfiler.record("host.panel.disposed", { heartbeatAgeMs: Date.now() - _panelLastHeartbeat });
@@ -5203,6 +5427,8 @@ async function handleMessage(
 
     case "ready": {
       // Webview finished loading — flush any queued item to open
+      if (_panelRestoredRecoveryTimer) clearTimeout(_panelRestoredRecoveryTimer);
+      _panelRestoredRecoveryTimer = undefined;
       _panelReady = true;
       respond({ command: "loadingProgress", data: { stage: "preparing", percent: 5, message: "Brewing the startup potion…" } });
       if (_pendingOpen) {
@@ -5579,20 +5805,6 @@ async function handleMessage(
         void vscode.window.showWarningMessage(`Agent Snapshot created, but the Recovery Prompt could not be copied: ${(error as Error).message}`);
       }
       respond({ command: "agentSnapshotCreated", data: { ...created, copied } });
-      respond({ command: "projectState", data: await agentSessionProjectStateData() });
-      break;
-    }
-
-    case "agentSnapshotRotate": {
-      const rotated = rotateAgentSnapshotPassphrase(getStorePath(), String(msg.snapshotId || ""));
-      let copied = true;
-      try {
-        await vscode.env.clipboard.writeText(rotated.recoveryPrompt);
-      } catch (error) {
-        copied = false;
-        void vscode.window.showWarningMessage(`Passphrase rotated, but the Recovery Prompt could not be copied: ${(error as Error).message}`);
-      }
-      respond({ command: "agentSnapshotRotated", data: { ...rotated, copied, rotated: true } });
       respond({ command: "projectState", data: await agentSessionProjectStateData() });
       break;
     }
@@ -6799,7 +7011,8 @@ async function handleMessage(
       const targetId = String(msg.targetId || "");
       const progress = (text: string) => respond({ command: "githubSyncConflictAcceptProgress", data: { targetId, text } });
       progress("Preparing Initial Sync choices…");
-      const result = await withGitHubSyncTargetLock(context, targetId, () => acceptGitHubSyncConflict(context, targetId, progress));
+      const result = await withGitHubSyncTargetLock(context, targetId, () =>
+        withGitHubSyncApplyLock(context, () => acceptGitHubSyncConflict(context, targetId, progress)));
       if (result.refreshed.length) {
         vscode.window.showWarningMessage(
           `${result.refreshed.length} machine-local file${result.refreshed.length === 1 ? "" : "s"} changed after the conflict was prepared. The conflict choices were refreshed; review them again before applying.`
@@ -6840,7 +7053,8 @@ async function handleMessage(
         if (readGitHubSyncConflict(githubSyncStateDirectory(context), target.id)) {
           throw new Error(`Resolve or discard the current GitHub Sync comparison before restoring a snapshot for ${current.name}.`);
         }
-        return restoreGitHubRemoteFiles(current, checkoutRoot, getStorePath(), commit, selectedPaths, overwrite, credentials);
+        return withGitHubSyncApplyLock(context, () =>
+          restoreGitHubRemoteFiles(current, checkoutRoot, getStorePath(), commit, selectedPaths, overwrite, credentials));
       });
       let result = await restore(false);
       if (result.conflicts.length) {
@@ -7509,6 +7723,11 @@ async function handleMessage(
       if (!text) break;
       await vscode.env.clipboard.writeText(text);
       vscode.window.setStatusBarMessage(`$(copy) Copied ${text}`, 3000);
+      break;
+    }
+
+    case "goToPkmPath": {
+      await vscode.commands.executeCommand("personalKnowledge.goToPkmPath");
       break;
     }
 
@@ -8662,6 +8881,22 @@ async function handleMessage(
       break;
     }
 
+    case "setSkillRouterSourcePriority": {
+      if (!Array.isArray(msg.sourceIds) || msg.sourceIds.some((id: unknown) => typeof id !== "string")) {
+        throw new Error("Router source priority must be an ordered list of source IDs.");
+      }
+      const sources = skillRouterSources();
+      const sourcePriority = normalizeSkillRouterSourcePriority(msg.sourceIds, sources);
+      await vscode.workspace.getConfiguration("personalKnowledge").update(
+        "skillRouterSourcePriority",
+        sourcePriority,
+        vscode.ConfigurationTarget.Global,
+      );
+      respond({ command: "skillRouterStatus", data: await skillRouterStatusData(context) });
+      vscode.window.setStatusBarMessage("$(check) Router source priority saved", 3000);
+      break;
+    }
+
     case "dismissIntegrationGuide": {
       await context.globalState.update("pkm.integrationGuideDismissed.v1", true);
       respond({ command: "mcpStatus", data: mcpPanelStatusData() });
@@ -9381,7 +9616,7 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
       subscriptions.command = { command: "personalKnowledge.openSubscriptions", title: "Open Network & Sharing" };
       return [
         mcp,
-        this._panelPage("Skill Router", "page-skill-router", "skillRouter"),
+        this._panelPage("Router", "page-skill-router", "skillRouter"),
         subscriptions,
         this._panelPage("GitHub Sync", "page-github-sync", "githubSync"),
         this._panelPage("Background Tasks", "page-background-tasks", "backgroundTasks"),
@@ -10271,7 +10506,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         publicContentActivePort = 0;
         void ensurePublicContentGateway(context).catch(error => log.warn(`public content gateway: ${(error as Error).message}`));
       }
-      if (e.affectsConfiguration("personalKnowledge.skillRouterEnabledSolutions")) {
+      if (e.affectsConfiguration("personalKnowledge.skillRouterEnabledSolutions")
+          || e.affectsConfiguration("personalKnowledge.skillRouterSourcePriority")) {
         writeSkillRouterRuntimeConfig(context);
         void skillRouterStatusData(context).then(data => panel?.webview.postMessage({ command: "skillRouterStatus", data }));
       }
@@ -10393,6 +10629,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         onChanged: () => {
           invalidatePendingSubscriptionGroupLists();
           panel?.webview.postMessage({ command: "subscriptionChanged" });
+          writeSkillRouterRuntimeConfig(context);
+          void skillRouterStatusData(context).then(data => panel?.webview.postMessage({ command: "skillRouterStatus", data }));
           _treeProvider?.refresh();
           scheduleRetrievalRefresh(context);
         },
@@ -10424,6 +10662,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     dragAndDropController: new PkTreeDragAndDropController(context),
     showCollapseAll: true,
   });
+  const openMainPanel = async () => {
+    log.action("command.open");
+    if (!(await ensureSetup(context))) return;
+    getOrCreatePanel(context);
+  };
+  context.subscriptions.push(vscode.commands.registerCommand("personalKnowledge.open", openMainPanel));
   context.subscriptions.push(vscode.commands.registerCommand("_personalKnowledge.testNavigationPath", (area: string, segments: string[]) => {
     const rootType = `root-${area}`;
     let children = treeProvider.getChildren();
@@ -10476,20 +10720,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     };
   }));
   // Clicking the Activity Bar icon: ensure setup then open main panel
-  treeView.onDidChangeVisibility(async e => {
+  const openVisibleSidebar = async () => {
+    log.action("sidebar.open");
+    await openMainPanel();
+  };
+  treeView.onDidChangeVisibility(e => {
     if (e.visible) {
-      log.action("sidebar.open");
-      if (!(await ensureSetup(context))) return;
-      vscode.commands.executeCommand("personalKnowledge.open");
+      void openVisibleSidebar();
     }
   });
   context.subscriptions.push(treeView);
+  if (treeView.visible) void openVisibleSidebar();
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("personalKnowledge.open", async () => {
-      log.action("command.open");
-      if (!(await ensureSetup(context))) return;
-      getOrCreatePanel(context);
+    vscode.commands.registerCommand("personalKnowledge.goToPkmPath", async (locator?: string) => {
+      log.action("command.goToPkmPath");
+      await goToPkmPath(context, locator);
     }),
 
     vscode.commands.registerCommand("personalKnowledge.openPanelTab", async (tab: string) => {
@@ -11599,8 +11845,9 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
   _privacyWatcher.onDidCreate(onChange);
   _privacyWatcher.onDidChange(onChange);
   _privacyWatcher.onDidDelete(onChange);
-  _projectStateWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(getStorePath(), ".pkm/state/{projects.json,project-store.json,agent-sessions/**/*.json,agent-sessions-trash/**/*.json,recipe-runs/**/*.json}"));
+  _projectStateWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(getStorePath(), ".pkm/state/{projects.json,project-store.json,agent-sessions/**/*.json,agent-sessions-trash/**/*.json,recipe-runs/**/*.json,mcp-usage/todos/**/*.json}"));
   const onProjectStateChange = (uri: vscode.Uri) => {
+    agentSessionJsonCache.invalidate(uri.fsPath);
     const relativeStatePath = path.relative(path.join(getStorePath(), ".pkm", "state"), uri.fsPath).replace(/\\/g, "/");
     const scope = relativeStatePath === "projects.json" || relativeStatePath === "project-store.json" ? "projects"
       : relativeStatePath.startsWith("recipe-runs/") ? "recipeRuns" : "agentSessions";
@@ -11688,6 +11935,7 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
 export async function deactivate(): Promise<void> {
   githubSyncScheduler?.dispose();
   githubSyncScheduler = undefined;
+  githubSyncCoordinatorStatePath = undefined;
   _watcher?.dispose();
   _privacyWatcher?.dispose();
   _projectStateWatcher?.dispose();

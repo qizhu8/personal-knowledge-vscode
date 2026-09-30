@@ -1,6 +1,7 @@
 {
   "extension.description": "Esplora, modifica e sincronizza le conoscenze personali; connetti gli assistenti IA tramite MCP e collabora nelle chatroom.",
   "command.open": "Personal Knowledge Manager: Apri pannello",
+  "command.goToPkmPath": "Personal Knowledge Manager: Vai al percorso PKM…",
   "command.addNote": "Personal Knowledge Manager: Nota rapida",
   "command.saveSkill": "Personal Knowledge Manager: Salva selezione come competenza",
   "command.openConfig": "Personal Knowledge Manager: Apri configurazione",

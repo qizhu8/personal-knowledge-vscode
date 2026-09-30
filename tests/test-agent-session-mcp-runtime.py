@@ -14,6 +14,10 @@ SPEC = importlib.util.spec_from_file_location(
     "agent_session_runtime", ROOT / "resources" / "agent_session_runtime.py")
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+GUARD_SPEC = importlib.util.spec_from_file_location(
+    "mcp_call_guard", ROOT / "resources" / "mcp_call_guard.py")
+GUARD_MODULE = importlib.util.module_from_spec(GUARD_SPEC)
+GUARD_SPEC.loader.exec_module(GUARD_MODULE)
 
 
 def response_json(result):
@@ -40,17 +44,21 @@ async def main():
             return json.dumps({"ok": True, "run_id": "recipe_run_followup"})
 
         MODULE.register_agent_session_tools(mcp, store)
+        mcp.add_middleware(GUARD_MODULE.McpCallGuardMiddleware(mcp))
 
         async with Client(mcp) as client:
             capabilities = response_json(await client.call_tool("agent_session_capabilities", {}))
             assert capabilities["proactive"] is True
+            assert capabilities["version"] == "1.7.6"
             assert capabilities["next_tool"] == "agent_session_start"
-            assert "substantial multi-step task" in capabilities["use_when"]
+            assert "substantial mutating multi-step task" in capabilities["use_when"]
+            assert "read-only diagnosis or assessment" in capabilities["do_not_use_when"]
             assert "host chat/session ID" in capabilities["host_session_grouping"]
             assert capabilities["todo_queue"]["policy"].startswith("FIFO")
             assert "call_agent_session_end" in capabilities["todo_queue"]["completion_instruction"]
             assert "agent_session_todo_replan" in capabilities["tools"]
             assert "agent_session_stop" in capabilities["tools"]
+            assert "agent_session_snapshot_rotate" not in capabilities["tools"]
             await client.call_tool("ordinary_tool", {})
             session_root = store / ".pkm" / "state" / "agent-sessions"
             assert not list(session_root.glob("*.json")) if session_root.exists() else True
@@ -63,7 +71,21 @@ async def main():
             assert started["host_session_id"] == "copilot-session-test"
             assert started["traversal_strategy"] == "depth-first"
             live_status = response_json(await client.call_tool("agent_session_status", {}))
-            liveness = live_status["session"]["liveness"]
+            assert set(live_status["session"]) == {
+                "sessionId", "status", "task", "projectId", "hostSessionId",
+                "traversalStrategy", "agent", "currentTodo", "todoCounts",
+                "recipeRunIds", "latestCheckpoint", "lastActivity", "liveness",
+                "createdAt", "updatedAt",
+            }
+            assert live_status["session"]["currentTodo"] is None
+            assert live_status["session"]["todoCounts"] == {
+                "pending": 0, "running": 0, "paused": 0,
+                "succeeded": 0, "failed": 0, "skipped": 0,
+            }
+            assert "todoCommandReceipts" not in live_status["session"]
+            full_status = response_json(await client.call_tool(
+                "agent_session_status", {"detail": "full"}))
+            liveness = full_status["session"]["liveness"]
             assert liveness["owner"]["hostSessionId"] == "copilot-session-test"
             assert len(liveness["owner"]["transportId"]) == 64
             assert liveness["leaseSeconds"] == 300
@@ -84,6 +106,7 @@ async def main():
                     {"title": "Handle additive request"},
                 ]),
                 "command_id": "append-initial-todos",
+                "detail": "full",
             }))
             assert [todo["title"] for todo in appended["todos"]] == ["Finish current work", "Handle additive request"]
             repeated = response_json(await client.call_tool("agent_session_todo_append", {
@@ -99,6 +122,8 @@ async def main():
             }))
             assert claimed["claimed"] is True
             assert claimed["todo"]["title"] == "Finish current work"
+            assert "details" not in claimed["todo"]
+            assert len(json.dumps(claimed, ensure_ascii=False).encode("utf-8")) < 800
             not_preempted = response_json(await client.call_tool("agent_session_todo_next", {
                 "command_id": "claim-while-running",
             }))
@@ -113,6 +138,7 @@ async def main():
                     "details": "Tell the user what happened before continuing.",
                 }),
                 "command_id": "interrupt-for-status",
+                "detail": "full",
             }))
             assert [todo["status"] for todo in interrupted["todos"][:2]] == ["pending", "paused"]
             status_action = response_json(await client.call_tool("agent_session_todo_next", {
@@ -124,6 +150,8 @@ async def main():
                 "summary": "Explained root cause and current evidence.", "command_id": "report-status-action",
             }))
             assert status_reported["resumed_todo"]["todoId"] == claimed["todo"]["todoId"]
+            assert "summary" not in status_reported["todo"]
+            assert len(json.dumps(status_reported, ensure_ascii=False).encode("utf-8")) < 1200
             resumed = response_json(await client.call_tool("agent_session_todo_next", {
                 "command_id": "resume-first-todo",
             }))
@@ -148,15 +176,35 @@ async def main():
                 "todos_json": json.dumps([{"title": "Obsolete pending work"}]),
                 "command_id": "append-cancel-candidate",
             }))
+            assert "todos" not in cancel_candidate
             cancelled = response_json(await client.call_tool("agent_session_todo_replan", {
                 "operation_json": json.dumps({
                     "type": "cancel", "todo_id": cancel_candidate["added_todo_ids"][0],
                     "reason": "Superseded by the latest instruction.",
                 }),
                 "command_id": "cancel-pending-todo",
+                "detail": "full",
             }))
             assert next(todo for todo in cancelled["todos"]
                         if todo["todoId"] == cancel_candidate["added_todo_ids"][0])["status"] == "skipped"
+            persisted_session = json.loads(
+                (session_root / f"{started['session_id']}.json").read_text(encoding="utf-8"))
+            receipt_results = [
+                receipt.get("result") or {}
+                for receipt in persisted_session["todoCommandReceipts"].values()
+            ]
+            assert all("todos" not in result for result in receipt_results)
+            compact_receipt_todos = [
+                result.get(key)
+                for result in receipt_results
+                for key in ("todo", "resumed_todo")
+                if isinstance(result.get(key), dict)
+            ]
+            assert all("details" not in todo and "summary" not in todo
+                       for todo in compact_receipt_todos)
+            assert len(json.dumps(
+                persisted_session["todoCommandReceipts"],
+                ensure_ascii=False, separators=(",", ":")).encode("utf-8")) <= 262144
             source_run = {
                 "schema": "pkm.recipe.run/v1", "runId": "recipe_run_original",
                 "status": "running", "version": 2, "recipeId": "recipe_test",
@@ -176,7 +224,8 @@ async def main():
             followup_run["recipeId"] = "recipe_followup"
             (runs / "recipe_run_followup.json").write_text(json.dumps(followup_run), encoding="utf-8")
             await client.call_tool("second_recipe_tool", {})
-            linked = response_json(await client.call_tool("agent_session_status", {}))
+            linked = response_json(await client.call_tool(
+                "agent_session_status", {"detail": "full"}))
             linked_todo = next(todo for todo in linked["session"]["todos"]
                                if todo["todoId"] == claimed["todo"]["todoId"])
             assert linked_todo["recipeRunId"] == "recipe_run_original"
@@ -259,33 +308,83 @@ async def main():
                 }),
             }))
             assert snapshot["snapshot"]["magicCode"].startswith("PKM-SNAP-")
-            assert snapshot["recovery_passphrase"] in snapshot["recovery_prompt"]
+            assert "recovery_passphrase" not in snapshot
+            assert snapshot["recovery_prompt"] == (
+                "Call the PKM MCP function agent_session_snapshot_recover with "
+                + json.dumps({
+                    "magic_code": snapshot["snapshot"]["magicCode"],
+                }, separators=(",", ":"))
+                + "."
+            )
+            assert "fixed local 'uone' obfuscation key" in snapshot["warning"]
             snapshot_files = list(
                 (store / ".pkm" / "state" / "agent-snapshots").glob("agent_snapshot_*.json"))
             assert len(snapshot_files) == 1
             snapshot_text = snapshot_files[0].read_text(encoding="utf-8")
-            assert snapshot["recovery_passphrase"] not in snapshot_text
             snapshot_record = json.loads(snapshot_text)
-            assert snapshot_record["recovery"]["algorithm"] == "scrypt-sha256/v1"
-            assert snapshot_record["payload"]["algorithm"] == "A256GCM-PKM-INTERNAL/v1"
+            assert "recovery" not in snapshot_record
+            assert snapshot_record["payload"]["algorithm"] == "A256GCM-PKM-LOCAL-OBFUSCATION/v1"
             assert "continue validation" not in snapshot_text
             assert snapshot_record["capture"]["todoCount"] > 0
 
+            snapshot_record["capture"] = {"recipeRunCount": 0, "todoCount": 0}
+            snapshot_record["payload"] = MODULE._snapshot_encrypt_payload(
+                snapshot_record["payload"], snapshot_record["snapshotId"],
+                snapshot_record["magicCode"])
+            snapshot_files[0].write_text(json.dumps(snapshot_record), encoding="utf-8")
+
             listed = response_json(await client.call_tool("agent_session_snapshot_list", {}))
             assert listed["snapshots"][0]["magicCode"] == snapshot["snapshot"]["magicCode"]
+            assert listed["snapshots"][0]["todoCount"] > 0
+            assert listed["snapshots"][0]["recipeRunCount"] == 2
             assert "recovery" not in listed["snapshots"][0]
+            repaired_snapshot = json.loads(snapshot_files[0].read_text(encoding="utf-8"))
+            repaired_payload = MODULE._snapshot_decrypt_payload(repaired_snapshot)
+            assert "session" in repaired_payload
+            assert len(repaired_payload["recipeRuns"]) == 2
+            assert "algorithm" not in repaired_payload
+            snapshot_text = snapshot_files[0].read_text(encoding="utf-8")
+            session_files_before_invalid_call = {
+                path.name: path.read_text(encoding="utf-8")
+                for path in session_root.glob("agent_session_*.json")
+            }
             try:
                 await client.call_tool("agent_session_snapshot_recover", {
-                    "magic_code": snapshot["snapshot"]["magicCode"],
-                    "recovery_passphrase": "WRONG-PASSPHRASE",
+                    "serverName": "pkm",
+                    "toolName": "pkm-agent_session_snapshot_recover",
                 })
-                raise AssertionError("Incorrect Snapshot recovery passphrase was accepted.")
+                raise AssertionError("Tool-locator arguments unexpectedly reached Snapshot recovery.")
             except ToolError as error:
-                assert "incorrect" in str(error)
+                assert '"code":"invalid-tool-arguments"' in str(error)
+                assert '"retryable":false' in str(error)
+                assert '"missingFields":["magic_code"]' in str(error)
+                assert '"unexpectedFields":["serverName","toolName"]' in str(error)
+                assert '"exampleArguments":{"magic_code":"<required>"}' in str(error)
+            assert snapshot_files[0].read_text(encoding="utf-8") == snapshot_text
+            assert {
+                path.name: path.read_text(encoding="utf-8")
+                for path in session_root.glob("agent_session_*.json")
+            } == session_files_before_invalid_call
+            try:
+                await client.call_tool("agent_session_snapshot_recover", {
+                    "magic_code": "pkm-agent_session_snapshot_recover",
+                })
+                raise AssertionError("Malformed Magic Code unexpectedly reached Snapshot lookup.")
+            except ToolError as error:
+                assert "Invalid Agent Snapshot Magic Code" in str(error)
+                assert "serverName or toolName" in str(error)
+            assert snapshot_files[0].read_text(encoding="utf-8") == snapshot_text
+            try:
+                await client.call_tool("agent_session_snapshot_recover", {
+                    "magic_code": "PKM-SNAP-0000-0000-0000-0000",
+                })
+                raise AssertionError("Missing Snapshot unexpectedly recovered.")
+            except ToolError as error:
+                assert "current Knowledge Root" in str(error)
+                assert "does not contain its locally obfuscated payload" in str(error)
             try:
                 await client.call_tool("agent_session_snapshot_recover", {
                     "magic_code": snapshot["snapshot"]["magicCode"],
-                    "recovery_passphrase": snapshot["recovery_passphrase"],
                     "host_session_id": "copilot-conflicting-session",
                 })
                 raise AssertionError("Snapshot recovery replaced an active Session on the same transport.")
@@ -295,7 +394,6 @@ async def main():
                 first_recovery = response_json(await asyncio.wait_for(
                     successor_one.call_tool("agent_session_snapshot_recover", {
                         "magic_code": snapshot["snapshot"]["magicCode"],
-                        "recovery_passphrase": snapshot["recovery_passphrase"],
                         "host_session_id": "copilot-successor-one",
                     }),
                     timeout=5,
@@ -304,7 +402,6 @@ async def main():
                 second_recovery = response_json(await asyncio.wait_for(
                     successor_two.call_tool("agent_session_snapshot_recover", {
                         "magic_code": snapshot["snapshot"]["magicCode"],
-                        "recovery_passphrase": snapshot["recovery_passphrase"],
                         "host_session_id": "copilot-successor-two",
                     }),
                     timeout=5,
@@ -333,7 +430,61 @@ async def main():
             assert len(second_linked_todo["recipeRunIds"]) == 2
             assert set(first_linked_todo["recipeRunIds"]).isdisjoint(
                 second_linked_todo["recipeRunIds"])
+            first_recovered_run = json.loads(
+                (runs / (first_recovery["recipe_run_ids"][0] + ".json")).read_text(encoding="utf-8"))
+            assert first_recovered_run["nodes"]["work"] == {"state": "pending"}
             assert snapshot_files[0].read_text(encoding="utf-8") == snapshot_text
+
+            running_magic = "PKM-SNAP-AAAA-1111-BBBB-2222"
+            running_snapshot_id = "agent_snapshot_running_claims"
+            running_payload = {
+                "session": {
+                    **first_session,
+                    "sessionId": "agent_session_running_source",
+                    "todos": [{
+                        "todoId": "todo_running", "title": "Resume safely",
+                        "status": "running", "startedAt": "2026-09-29T00:00:00Z",
+                        "recipeRunId": "recipe_run_running",
+                        "recipeRunIds": ["recipe_run_running"],
+                    }],
+                    "recipeRunIds": ["recipe_run_running"],
+                },
+                "recipeRuns": [{
+                    **source_run,
+                    "runId": "recipe_run_running",
+                    "nodes": {"work": {
+                        "state": "running", "attempt": 1,
+                        "startedAt": "2026-09-29T00:00:00Z",
+                        "progress": {"phase": "claimed"},
+                    }},
+                }],
+            }
+            running_snapshot = {
+                "schema": MODULE.SNAPSHOT_SCHEMA,
+                "snapshotId": running_snapshot_id,
+                "magicCode": running_magic,
+                "sourceSessionId": "agent_session_running_source",
+                "createdAt": "2026-09-29T00:00:00Z",
+                "capture": MODULE._snapshot_capture(running_payload),
+                "payload": MODULE._snapshot_encrypt_payload(
+                    running_payload, running_snapshot_id, running_magic),
+            }
+            (snapshot_files[0].parent / (running_snapshot_id + ".json")).write_text(
+                json.dumps(running_snapshot), encoding="utf-8")
+            async with Client(mcp) as running_successor:
+                running_recovery = response_json(await running_successor.call_tool(
+                    "agent_session_snapshot_recover", {
+                        "magic_code": running_magic,
+                        "host_session_id": "copilot-running-successor",
+                    }))
+            assert running_recovery["recovery_todo_created"] is False
+            recovered_running_session = json.loads(
+                (session_root / (running_recovery["session_id"] + ".json")).read_text(encoding="utf-8"))
+            assert recovered_running_session["todos"][0]["status"] == "pending"
+            assert "startedAt" not in recovered_running_session["todos"][0]
+            recovered_running_run = json.loads(
+                (runs / (running_recovery["recipe_run_ids"][0] + ".json")).read_text(encoding="utf-8"))
+            assert recovered_running_run["nodes"]["work"] == {"state": "pending"}
             sessions_before_failure = set(session_root.glob("agent_session_*.json"))
             runs_before_failure = set(runs.glob("recipe_run_*.json"))
             original_atomic_write = MODULE._atomic_write
@@ -351,7 +502,6 @@ async def main():
                         await asyncio.wait_for(failed_successor.call_tool(
                             "agent_session_snapshot_recover", {
                                 "magic_code": snapshot["snapshot"]["magicCode"],
-                                "recovery_passphrase": snapshot["recovery_passphrase"],
                                 "host_session_id": "copilot-successor-failed",
                             }), timeout=5)
                         raise AssertionError("Injected Snapshot recovery failure unexpectedly succeeded.")
@@ -379,40 +529,17 @@ async def main():
             await client.call_tool("agent_session_snapshot_list", {})
             migrated_legacy_text = legacy_path.read_text(encoding="utf-8")
             assert "Implementation complete." not in migrated_legacy_text
-            assert json.loads(migrated_legacy_text)["payload"]["algorithm"] == "A256GCM-PKM-INTERNAL/v1"
+            assert json.loads(migrated_legacy_text)["payload"]["algorithm"] == "A256GCM-PKM-LOCAL-OBFUSCATION/v1"
+            assert "recovery" not in json.loads(migrated_legacy_text)
             async with Client(mcp) as legacy_successor:
                 legacy_recovery = response_json(await asyncio.wait_for(
                     legacy_successor.call_tool("agent_session_snapshot_recover", {
                         "magic_code": legacy_snapshot["magicCode"],
-                        "recovery_passphrase": snapshot["recovery_passphrase"],
                         "host_session_id": "copilot-successor-legacy",
                     }),
                     timeout=5,
                 ))
             assert legacy_recovery["snapshot_id"] == legacy_snapshot["snapshotId"]
-            rotated = response_json(await client.call_tool("agent_session_snapshot_rotate", {
-                "magic_code": snapshot["snapshot"]["magicCode"],
-            }))
-            assert rotated["recovery_passphrase"] != snapshot["recovery_passphrase"]
-            assert rotated["recovery_passphrase"] in rotated["recovery_prompt"]
-            try:
-                await client.call_tool("agent_session_snapshot_recover", {
-                    "magic_code": snapshot["snapshot"]["magicCode"],
-                    "recovery_passphrase": snapshot["recovery_passphrase"],
-                })
-                raise AssertionError("Rotated Snapshot accepted the previous recovery passphrase.")
-            except ToolError as error:
-                assert "incorrect" in str(error)
-            async with Client(mcp) as rotated_successor:
-                rotated_recovery = response_json(await asyncio.wait_for(
-                    rotated_successor.call_tool("agent_session_snapshot_recover", {
-                        "magic_code": snapshot["snapshot"]["magicCode"],
-                        "recovery_passphrase": rotated["recovery_passphrase"],
-                        "host_session_id": "copilot-successor-rotated",
-                    }),
-                    timeout=5,
-                ))
-            assert rotated_recovery["snapshot_id"] == first_recovery["snapshot_id"]
             stopped = response_json(await client.call_tool("agent_session_stop", {
                 "session_id": first_recovery["session_id"],
                 "reason": "test-cleanup",

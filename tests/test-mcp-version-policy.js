@@ -4,7 +4,7 @@ const { hasNewerMcpRuntime, newerMcpRuntimeComponents } = require("../dist/mcp-v
 const bundled = {
   unified: "2.13.0",
   knowledge: "1.5.0",
-  chat: "2.3.5",
+  chat: "2.3.6",
   recipe: "1.6.0",
   agentSession: "1.5.0",
 };

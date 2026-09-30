@@ -202,7 +202,9 @@ async function main() {
   servers.initServers(serversRoot, path.join(root, "server-state"), await freePort());
   filestore.skillUpsert({ name: "Shared Skill", description: "Metadata only summary", category: "Research/AAGL", tags: ["aagl", "pipeline"], content: "SECRET BODY MUST NOT ENTER CONTROL SIGNAL" });
   filestore.noteUpsert({ slug: "", title: "Indexed Note", type: "general", tags: [], content: "INDEXED NOTE BODY" });
-  filestore.noteUpsert({ slug: "", title: "Shared Note", category: "Team", type: "general", tags: ["shared"], content: "UNIQUE SUBSCRIBED NOTE BODY" });
+  const sharedImage = Buffer.from("shared-image-bytes");
+  const sharedImageRef = filestore.saveNoteAsset(sharedImage.toString("base64"), "png", "Team");
+  filestore.noteUpsert({ slug: "", title: "Shared Note", category: "Team", type: "general", tags: ["shared"], content: `UNIQUE SUBSCRIBED NOTE BODY\n\n![Shared image](${sharedImageRef})` });
   storage.promptImport([{ project: "Ads", task: "Review", version: "v1", file: "prompt.md", content: "UNIQUE SUBSCRIBED PROMPT BODY" }]);
   storage.scriptImport([{ category: "Team", file: "check.script", content: "UNIQUE SUBSCRIBED SCRIPT BODY" }]);
   const projectStore = new ProjectStore(path.join(store, ".pkm", "state"), () => "shared-recipe-id");
@@ -300,6 +302,9 @@ async function main() {
     assert.deepStrictEqual(fs.readdirSync(path.join(state, "downloads")), [], "completed Sync must remove temporary downloads");
     assert(JSON.parse(fs.readFileSync(cached, "utf8")).skills[0].content.includes("SECRET BODY"));
     assert.strictEqual(JSON.parse(fs.readFileSync(cached, "utf8")).recipes[0].executableDigest, sharedRecipe.executableDigest);
+    const cachedBundle = JSON.parse(fs.readFileSync(cached, "utf8"));
+    assert.strictEqual(cachedBundle.assets.length, 1, "Broker bundle must include referenced Markdown assets");
+    assert.strictEqual(cachedBundle.assets[0].type, "notes");
     const cachedSkill = path.join(state, "cache", subscribed.nodeId, subscribed.shareId, "content", "skills", "Research", "AAGL", "Shared Skill.md");
     assert(fs.existsSync(cachedSkill), "subscribed Skills must be materialized as isolated Markdown files");
     const provenance = JSON.parse(fs.readFileSync(`${cachedSkill}.pkm-source.json`, "utf8"));
@@ -309,6 +314,10 @@ async function main() {
     assert.strictEqual(provenance.shareId, share.shareId);
     assert.strictEqual(provenance.revision, 1);
     assert(provenance.syncedAt);
+    const cachedImage = path.join(state, "cache", subscribed.nodeId, subscribed.shareId, "content", "notes", "Team", sharedImageRef);
+    assert.deepStrictEqual(fs.readFileSync(cachedImage), sharedImage, "subscription materialization must preserve referenced image bytes");
+    assert(!manager.cachedGroups("notes")[0].items.some(item => item.path.includes("/_assets/")),
+      "subscription navigation must not list materialized assets as documents");
     assert(!fs.existsSync(path.join(store, "skills", "_subscriptions")), "subscription refresh must never write into the Knowledge Root");
     const cachedScripts = path.join(state, "cache", subscribed.nodeId, subscribed.shareId, "content", "scripts");
     fs.mkdirSync(cachedScripts, { recursive: true });
@@ -342,6 +351,14 @@ async function main() {
       }, `subscribed ${type} Copy Path must round-trip into MCP read arguments`);
       assert.strictEqual(manager.cachedDetail(item.key).path, expectedPath);
     }
+    const subscribedNote = manager.cachedGroups("notes")[0].items.find(item => item.path === "Team/Shared Note.md");
+    const noteFork = manager.forkSource(subscribedNote.key);
+    assert.strictEqual(noteFork.assets.length, 1, "forking subscribed Markdown must retain its image dependencies");
+    assert.strictEqual(noteFork.assets[0].path, `Team/${sharedImageRef}`);
+    assert.deepStrictEqual(noteFork.assets[0].content, sharedImage);
+    const subscribedNoteDetail = manager.cachedDetail(subscribedNote.key);
+    assert.strictEqual(subscribedNoteDetail.provenance.nodeId, subscribed.nodeId);
+    assert.strictEqual(subscribedNoteDetail.provenance.shareId, subscribed.shareId);
     const serverGroups = manager.cachedGroups("servers");
     assert.strictEqual(serverGroups[0].alias, "My Creative Context");
     assert.strictEqual(serverGroups[0].items.length, 1, "each subscribed Server must aggregate into one link row");

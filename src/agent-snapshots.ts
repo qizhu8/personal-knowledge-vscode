@@ -1,10 +1,12 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes, scryptSync } from "crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 
 const SNAPSHOT_SCHEMA = "pkm.agent.snapshot/v1";
-const SNAPSHOT_PAYLOAD_ALGORITHM = "A256GCM-PKM-INTERNAL/v1";
-const SNAPSHOT_PAYLOAD_KEY = createHash("sha256").update("uone:agent-snapshot:payload:v1", "utf8").digest();
+const SNAPSHOT_PAYLOAD_ALGORITHM = "A256GCM-PKM-LOCAL-OBFUSCATION/v1";
+const LEGACY_SNAPSHOT_PAYLOAD_ALGORITHM = "A256GCM-PKM-INTERNAL/v1";
+const SNAPSHOT_PAYLOAD_KEY = createHash("sha256").update("uone", "utf8").digest();
+const LEGACY_SNAPSHOT_PAYLOAD_KEY = createHash("sha256").update("uone:agent-snapshot:payload:v1", "utf8").digest();
 
 export interface AgentSnapshotSummary {
   snapshotId: string;
@@ -29,7 +31,6 @@ export interface AgentSnapshotSummary {
 
 export interface CreatedAgentSnapshot {
   snapshot: AgentSnapshotSummary;
-  recoveryPassphrase: string;
   recoveryPrompt: string;
 }
 
@@ -50,16 +51,53 @@ function encryptPayload(payload: unknown, snapshotId: string, magicCode: string)
   };
 }
 
-function decryptPayload(snapshot: any): any {
-  const payload = snapshot?.payload;
-  if (payload?.algorithm !== SNAPSHOT_PAYLOAD_ALGORITHM) return payload;
-  const decipher = createDecipheriv("aes-256-gcm", SNAPSHOT_PAYLOAD_KEY, Buffer.from(payload.iv, "base64url"));
+function payloadKey(payload: any): Buffer | undefined {
+  return payload?.algorithm === SNAPSHOT_PAYLOAD_ALGORITHM
+    ? SNAPSHOT_PAYLOAD_KEY
+    : payload?.algorithm === LEGACY_SNAPSHOT_PAYLOAD_ALGORITHM
+      ? LEGACY_SNAPSHOT_PAYLOAD_KEY
+      : undefined;
+}
+
+function decryptEnvelope(payload: any, snapshot: any): any {
+  const key = payloadKey(payload);
+  if (!key) return payload;
+  const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(payload.iv, "base64url"));
   decipher.setAAD(snapshotAad(String(snapshot.snapshotId || ""), String(snapshot.magicCode || "")));
   decipher.setAuthTag(Buffer.from(payload.tag, "base64url"));
   return JSON.parse(Buffer.concat([
     decipher.update(Buffer.from(payload.ciphertext, "base64url")),
     decipher.final(),
   ]).toString("utf8"));
+}
+
+function decryptPayload(snapshot: any): any {
+  let payload = snapshot?.payload;
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (!payloadKey(payload)) return payload;
+    payload = decryptEnvelope(payload, snapshot);
+  }
+  if (payloadKey(payload)) throw new Error("Agent Snapshot payload contains too many nested encryption envelopes.");
+  return payload;
+}
+
+function isCanonicalPayload(payload: any): boolean {
+  return payload !== null
+    && typeof payload === "object"
+    && !Array.isArray(payload)
+    && payload.session !== null
+    && typeof payload.session === "object"
+    && !Array.isArray(payload.session)
+    && Array.isArray(payload.recipeRuns);
+}
+
+function snapshotNeedsMigration(snapshot: any): boolean {
+  const payload = snapshot?.payload;
+  if (payload?.algorithm !== SNAPSHOT_PAYLOAD_ALGORITHM) return true;
+  const decrypted = decryptEnvelope(payload, snapshot);
+  if (payloadKey(decrypted)) return true;
+  if (!isCanonicalPayload(decrypted)) throw new Error("Agent Snapshot payload is not a canonical Session capture.");
+  return false;
 }
 
 function snapshotCapture(payload: any): {
@@ -92,6 +130,10 @@ function sessionDirectory(store: string): string {
 
 function groupedHex(bytes: number): string {
   return randomBytes(bytes).toString("hex").toUpperCase().match(/.{1,4}/g)!.join("-");
+}
+
+function snapshotRecoveryPrompt(magicCode: string): string {
+  return `Call the PKM MCP function agent_session_snapshot_recover with {"magic_code":"${magicCode}"}.`;
 }
 
 function snapshotSummary(snapshot: any, recoveryCount = 0): AgentSnapshotSummary {
@@ -127,10 +169,12 @@ function writeSnapshotAtomic(snapshotPath: string, snapshot: any): void {
 }
 
 function encryptLegacySnapshot(snapshotPath: string, snapshot: any): any {
-  if (snapshot?.payload?.algorithm === SNAPSHOT_PAYLOAD_ALGORITHM) return snapshot;
+  if (!snapshotNeedsMigration(snapshot)) return snapshot;
   const payload = decryptPayload(snapshot);
+  if (!isCanonicalPayload(payload)) throw new Error("Agent Snapshot payload is not a canonical Session capture.");
   snapshot.capture = snapshotCapture(payload);
   snapshot.payload = encryptPayload(payload, snapshot.snapshotId, snapshot.magicCode);
+  delete snapshot.recovery;
   writeSnapshotAtomic(snapshotPath, snapshot);
   return snapshot;
 }
@@ -189,8 +233,6 @@ export function createAgentSnapshot(store: string, sessionId: string, reason = "
   const sessionCopy = JSON.parse(JSON.stringify(session));
   delete sessionCopy.todoCommandReceipts;
   const magicCode = `PKM-SNAP-${groupedHex(8)}`;
-  const recoveryPassphrase = groupedHex(16);
-  const salt = randomBytes(16).toString("hex");
   const createdAt = new Date().toISOString();
   const snapshotId = `agent_snapshot_${createHash("sha256")
     .update(`${magicCode}:${sessionId}:${createdAt}`, "utf8").digest("hex").slice(0, 24)}`;
@@ -206,13 +248,6 @@ export function createAgentSnapshot(store: string, sessionId: string, reason = "
     agent: session.agent || { name: "Agent", product: "" },
     reason: String(reason || "manual"),
     createdAt,
-    recovery: {
-      algorithm: "scrypt-sha256/v1",
-      salt,
-      verifier: scryptSync(recoveryPassphrase, Buffer.from(salt, "hex"), 32, {
-        N: 16384, r: 8, p: 1, maxmem: 32 * 1024 * 1024,
-      }).toString("hex"),
-    },
     capture: snapshotCapture(payload),
     payload: encryptPayload(payload, snapshotId, magicCode),
   };
@@ -220,34 +255,7 @@ export function createAgentSnapshot(store: string, sessionId: string, reason = "
   fs.mkdirSync(directory, { recursive: true });
   const snapshotPath = path.join(directory, `${snapshotId}.json`);
   fs.writeFileSync(snapshotPath, JSON.stringify(snapshot), { encoding: "utf8", flag: "wx", mode: 0o600 });
-  const recoveryPrompt = `Recover PKM Agent Snapshot ${magicCode} with recovery passphrase ${recoveryPassphrase}.`;
-  return { snapshot: snapshotSummary(snapshot), recoveryPassphrase, recoveryPrompt };
-}
-
-export function rotateAgentSnapshotPassphrase(store: string, snapshotId: string): CreatedAgentSnapshot {
-  if (!/^agent_snapshot_[A-Za-z0-9_-]+$/.test(snapshotId)) throw new Error("Agent Snapshot identity is invalid.");
-  const snapshotPath = path.join(snapshotDirectory(store), `${snapshotId}.json`);
-  if (!fs.existsSync(snapshotPath)) throw new Error("Agent Snapshot was not found.");
-  const snapshot = readJson(snapshotPath);
-  if (snapshot?.schema !== SNAPSHOT_SCHEMA || snapshot?.snapshotId !== snapshotId) {
-    throw new Error("Agent Snapshot schema is unsupported.");
-  }
-  if (snapshot.payload?.algorithm !== SNAPSHOT_PAYLOAD_ALGORITHM) {
-    encryptLegacySnapshot(snapshotPath, snapshot);
-  }
-  const recoveryPassphrase = groupedHex(16);
-  const salt = randomBytes(16).toString("hex");
-  snapshot.recovery = {
-    algorithm: "scrypt-sha256/v1",
-    salt,
-    verifier: scryptSync(recoveryPassphrase, Buffer.from(salt, "hex"), 32, {
-      N: 16384, r: 8, p: 1, maxmem: 32 * 1024 * 1024,
-    }).toString("hex"),
-    rotatedAt: new Date().toISOString(),
-  };
-  writeSnapshotAtomic(snapshotPath, snapshot);
-  const recoveryPrompt = `Recover PKM Agent Snapshot ${snapshot.magicCode} with recovery passphrase ${recoveryPassphrase}.`;
-  return { snapshot: snapshotSummary(snapshot), recoveryPassphrase, recoveryPrompt };
+  return { snapshot: snapshotSummary(snapshot), recoveryPrompt: snapshotRecoveryPrompt(magicCode) };
 }
 
 export function agentSnapshotIsEncrypted(store: string, snapshotId: string): boolean {

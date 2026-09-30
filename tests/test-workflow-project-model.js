@@ -2,7 +2,7 @@
 const assert = require("assert");
 const { createHash } = require("crypto");
 const {
-  ProjectModelError, createGanttTask, createProject, createRecipe, createRecipeFolder, createThread, deleteGanttTask, deleteRecipe, deleteRecipeFolder, deleteRecipeFromTrash, deriveSystemId, ensureSystemEntities,
+  ProjectModelError, builtInRecipeInventory, createGanttTask, createProject, createRecipe, createRecipeFolder, createThread, deleteGanttTask, deleteRecipe, deleteRecipeFolder, deleteRecipeFromTrash, deriveSystemId, ensureSystemEntities,
   initializeProjectModel, linkThreadChatroom, migrateLegacyRoom, moveRecipeToTrash, moveThread, renameThread, replaceRecipeFromSync, resolveThreadId, restoreRecipeFromTrash, updateGanttTask, updateRecipe
 } = require("../dist/workflows/project-model.js");
 const {
@@ -17,7 +17,7 @@ assert.strictEqual(state.threads.length, 1);
 assert.deepStrictEqual(state.recipes.map(recipe => recipe.name), [
   "Universal Unknown Task", "Conditional Closed-Loop Communication", "Configurable Validation and Testing",
   "Software Development", "Bug Fix", "UI Development", "Reflection", "Evolve Recipes from Evidence", "Use Recipe Library",
-  "Publish Personal Knowledge VSIX", "Executable Module Examples", "Branch and Repeat Module Examples",
+  "Create Agent Snapshot", "Publish Personal Knowledge VSIX", "Executable Module Examples", "Branch and Repeat Module Examples",
   "DLIS Offline Job Log Diagnosis Example", "PKM Tutorial"
 ]);
 const universalUnknownTask = state.recipes.find(recipe => recipe.name === "Universal Unknown Task");
@@ -107,6 +107,31 @@ assert.deepStrictEqual(new Set(executableExamples.definition.spec.nodes.map(node
 ]));
 assert.deepStrictEqual(executableExamples.definition.spec.nodes.filter(node => node.kind === "pkm.step.script/v1").map(node => node.config.runtime).sort(), ["bash", "python"]);
 assert.match(executableExamples.definition.spec.nodes.find(node => node.config?.runtime === "python").generalInstruction, /replace analysis-env/);
+const createAgentSnapshot = state.recipes.find(recipe => recipe.name === "Create Agent Snapshot");
+assert.strictEqual(createAgentSnapshot.category, "System/PKM/Agent Sessions");
+assert.strictEqual(createAgentSnapshot.systemKind, "built-in");
+assert.strictEqual(createAgentSnapshot.revision, 2);
+assert.strictEqual(createAgentSnapshot.definition.spec.nodes[0].kind, "pkm.step.native/v1");
+assert.strictEqual(createAgentSnapshot.definition.spec.nodes[0].config.operation, "agent_session_snapshot_create");
+const builtInInventory = builtInRecipeInventory();
+assert.strictEqual(builtInInventory.length, state.recipes.filter(recipe => recipe.systemKind === "built-in").length);
+assert(builtInInventory.every(recipe => recipe.systemKind === "built-in"));
+assert(builtInInventory.every(recipe => JSON.stringify(recipe.tags) === JSON.stringify(["System"])));
+assert.deepStrictEqual(
+  builtInInventory.find(recipe => recipe.key === "create-agent-snapshot"),
+  {
+    key: "create-agent-snapshot",
+    recipeId: createAgentSnapshot.recipeId,
+    name: createAgentSnapshot.name,
+    category: createAgentSnapshot.category,
+    revision: createAgentSnapshot.revision,
+    executableDigest: createAgentSnapshot.executableDigest,
+    systemKind: "built-in",
+    tags: ["System"],
+  },
+);
+assert.deepStrictEqual(createAgentSnapshot.metadata.requiredInputs.map(input => input.name), ["reason", "stateJson"]);
+assert.deepStrictEqual(createAgentSnapshot.metadata.expectedOutputs.map(output => output.name), ["snapshot", "recoveryPrompt"]);
 const controlExamples = state.recipes.find(recipe => recipe.name === "Branch and Repeat Module Examples");
 assert.strictEqual(controlExamples.definition.spec.nodes.find(node => node.nodeId === "repeat-bounded-check").control.mode, "repeat");
 assert.strictEqual(controlExamples.definition.spec.nodes.find(node => node.nodeId === "select-strategy").control.mode, "branch");
@@ -198,7 +223,7 @@ const randomRoot = initializeProjectModel(undefined);
 assert.match(randomRoot.rootId, /^root_[0-9a-f-]{36}$/);
 const restoredDefaults = initializeProjectModel({ schema: 1, rootId: "root_existing" });
 assert.strictEqual(restoredDefaults.projects.length, 1);
-assert.strictEqual(restoredDefaults.recipes.length, 14);
+assert.strictEqual(restoredDefaults.recipes.length, 15);
 const restoredComplete = initializeProjectModel(state);
 assert.deepStrictEqual(restoredComplete, state);
 errorCode(() => initializeProjectModel({ schema: 1, projects: [{ projectId: "p", name: "P", version: 1 }] }), "root-identity-missing");

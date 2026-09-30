@@ -130,10 +130,10 @@ assert.match(readyHandler, /command: "mcpSummary"/,
 assert.doesNotMatch(readyHandler, /mcpPanelStatusData|sendMcpPathSizes/,
   'ready must not probe the MCP runtime, scan usage, or calculate path sizes');
 const githubState = extension.slice(extension.indexOf('async function githubSyncStateData'), extension.indexOf('\nasync function gitHubSyncConflictData'));
-assert.doesNotMatch(githubState, /githubSyncTargetFingerprints/,
-  'opening GitHub Sync must not synchronously read and hash all selected content');
-assert.match(githubState, /fingerprintsDeferred: true/,
-  'deferred GitHub fingerprints must be explicit to the client');
+assert.match(githubState, /if \(waitForExpensive\)[\s\S]*githubSyncTargetFingerprintState/,
+  'selected content fingerprints must only be computed during the deferred GitHub state pass');
+assert.match(githubState, /fingerprintsDeferred: !waitForExpensive/,
+  'deferred GitHub fingerprints must be explicit until the expensive pass completes');
 const subscriptionState = extension.slice(extension.indexOf('async function subscriptionStateData'), extension.indexOf('\ninterface GitHubSubscriptionRequest'));
 assert.doesNotMatch(subscriptionState, /refreshGatewayStatus/,
   'the first Network & Sharing response must use cached gateway state');

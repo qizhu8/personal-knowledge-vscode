@@ -75,6 +75,12 @@ assert.match(css, /\.recipe-library-tree\{min-width:0;padding:12px 0 0/, "Recipe
 assert.match(css, /\.project-recipe-tree \.project-recipe-row\{align-items:flex-start;justify-content:flex-start;/, "Recipe CatTree leaves override the centered list-row alignment");
 assert.match(projectsSource, /'step' : 'steps'\} · <code title="Executable digest">/, "Recipe CatTree keeps digest metadata in the left-aligned detail line");
 assert.match(projectsSource, /agent-session-context-menu/, "Agent Session context menus use their bounded presentation");
+assert.match(projectsSource, /function agentSessionTodoUsage\(todo\)/, "Agent Session Todos render a usage summary");
+assert.match(projectsSource, /MCP ~.*est\..*calls/, "Todo usage labels MCP protocol tokens as estimates");
+assert.match(projectsSource, /Model tokens unknown/, "Todo usage explicitly distinguishes unknown model tokens");
+assert.match(projectsSource, /Premium-request or credit usage is unavailable from the host/, "Todo usage does not imply unavailable credit telemetry");
+assert.match(css, /\.agent-session-todo-usage\{/, "Todo usage badges have a compact presentation");
+assert.match(extensionSource, /mcp-usage\/todos\/\*\*\/\*\.json/, "Todo usage ledger changes refresh Agent Session projections");
 assert.match(knowledgeSource, /const currentlyOpen = body \? body\.style\.display !== 'none'/, "default-open CatTree folders derive their first toggle from rendered state");
 assert.match(knowledgeSource, /if \(body && \['agentSessions', 'recipes'\]\.includes\(state\.tab\)\)/, "Automation CatTree folders toggle locally without rerendering graphs");
 assert.strictEqual((knowledgeSource.match(/if \(!projectSnapshot \|\| projectSnapshotDirty\) ask\('projectState', \{\}\);/g) || []).length, 2, "Recipe and Project revisits reuse a clean cached snapshot");
@@ -100,7 +106,7 @@ assert.match(css, /\.recipe-design-references\{[^}]*overflow:hidden/, "Reference
 assert.match(css, /\.recipe-parameter-actions,\.recipe-reference-actions\{[^}]*justify-content:flex-end/, "module detail actions share a bottom action row");
 assert.match(css, /\.global-recipes-workspace,[\s\S]*?\.projects-workspace,[\s\S]*?\.agent-sessions-workspace \{[\s\S]*?height: 100%;[\s\S]*?overflow: hidden;/, "Projects and Automation constrain scrolling to their viewport");
 assert.match(css, /\.workspace-cattree-divider \{[\s\S]*?width: 6px;[\s\S]*?background: transparent;/, "workspace CatTrees reuse the native sidebar divider geometry");
-assert.match(css, /#paper-ctx\.agent-session-context-menu \{[\s\S]*?max-width: min\(340px, calc\(100vw - 16px\)\)/, "Agent Session context menus remain compact on long tasks");
+assert.match(css, /#paper-ctx\.agent-session-context-menu,\s*#paper-ctx\.agent-snapshot-context-menu \{[\s\S]*?max-width: min\(340px, calc\(100vw - 16px\)\)/, "Agent Session and Snapshot context menus remain compact on long tasks");
 assert.match(css, /\.recipe-library-workbench\.cattree-collapsed,[\s\S]*?\.projects-workspace\.cattree-collapsed,[\s\S]*?\.agent-sessions-workspace\.cattree-collapsed/, "Projects and Automation CatTrees share a collapsed layout");
 
 assert.strictEqual((html.match(/class="workspace-button/g) || []).length, 5, "five primary workspace buttons");
@@ -197,12 +203,13 @@ assert.match(bundle, /tools:\['prompts','scripts','packages','environments','ser
 assert.match(bundle, /automation:\['agentSessions','agentSnapshots','recipes'\]/);
 assert.match(html, /data-tab="agentSnapshots">Agent Snapshot</);
 assert.match(extensionSource, /case "agentSnapshotCreate"/);
-assert.match(extensionSource, /case "agentSnapshotRotate"/);
+assert.doesNotMatch(extensionSource, /case "agentSnapshotRotate"/);
 assert.match(extensionSource, /case "agentSnapshotDelete"/);
 assert.match(extensionSource, /vscode\.env\.clipboard\.writeText\(created\.recoveryPrompt\)/);
 assert.match(projectsSource, /function renderAgentSnapshots\(\)/);
 assert.match(projectsSource, /Copy Recovery Prompt/);
-assert.match(projectsSource, /Rotate Passphrase/);
+assert.doesNotMatch(projectsSource, /Rotate Passphrase/);
+assert.match(projectsSource, /fixed local <code>uone<\/code> obfuscation key/);
 assert.match(projectsSource, /Right-click this Snapshot to delete it/);
 assert.match(projectsSource, /agent-session-adhoc' \? 'Ad hoc task' : 'Recipe run'/,
   "Agent Sessions distinguish instance-only task plans from reusable Recipe runs");
@@ -238,6 +245,8 @@ assert.match(bundle, /github-sync-privacy-grid/, "GitHub Sync renders separate p
 assert.match(bundle, /githubSyncPrivacyTree\(target, 'public'\)/, "GitHub Sync renders a Public tree");
 assert.match(bundle, /githubSyncPrivacyTree\(target, 'private'\)/, "GitHub Sync renders a Private tree");
 assert.match(bundle, /github-sync-shield/, "GitHub Sync decorates covered content tabs with status shields");
+assert.match(bundle, /github-sync-folder-status/, "GitHub Sync decorates category folders with progressive status indicators");
+assert.match(bundle, /githubSyncFolderMarker\(syncType, syncFolder\)/, "shared category trees render their folder-level GitHub Sync status");
 assert.match(bundle, /id="github-sync-expected-login"/, "GitHub Sync exposes a target-level GitHub account");
 assert.match(bundle, /id = 'github-sync-auth-method'/, "GitHub Sync exposes a target-level authentication method");
 assert.match(bundle, /HTTPS \/ Credential Manager/, "GitHub Sync supports cross-platform credential-helper authentication");
@@ -364,6 +373,7 @@ const context = {
   showPaperMenu: (x, y, items) => { contextMenu = { x, y, items }; },
   pkModal: options => { modal = options; },
   ask: (command, data) => messages.push({ command, data }),
+  ensureGitHubSyncStatus() {},
   renderSubscribedGroups: (...args) => subscribedRecipeRenders.push(args),
   setInterval: () => 0,
   clearInterval() {},
@@ -602,8 +612,13 @@ context.projectOnState({ ...snapshot, recipes: [{
   executableDigest: "evidence1234567890", definition: { spec: { nodes: [{ nodeId: "summarize-work-and-evidence" }] } }
 }] });
 assert.match(detailHtml, /Evolve Recipes from Evidence/);
+assert.match(detailHtml, /recipe-system-badge">System</, "built-in Recipes display an explicit System badge");
+assert.match(detailHtml, /PKM System Recipe/, "built-in Recipe editor explains the protected System lifecycle");
+assert.match(detailHtml, /read-only and cannot be renamed, moved, or deleted/, "built-in Recipe editor describes the mutation boundary");
 context.recipeItemMenu({ preventDefault() {}, stopPropagation() {}, clientX: 4, clientY: 8 }, "recipe_builtin_evidence");
-assert.ok(!contextMenu.items.some(item => item.label === "Move to Trash…"), "protected built-in evidence Recipe cannot be moved to Trash");
+assert.deepStrictEqual(JSON.parse(JSON.stringify(contextMenu.items.filter(item => item.label).map(item => item.label))),
+  ["Evolve Recipes from Evidence", "Open Recipe", "Copy Path", "Copy Recipe ID"],
+  "protected built-in Recipe exposes no rename, move, or Trash action");
 context.state.tab = "projects";
 context.projectSelect("project_default");
 assert.match(detailHtml, /Default Project/);
@@ -740,11 +755,14 @@ assert.match(detailHtml, /Create Agent Snapshot/);
 assert.match(detailHtml, /PKM-SNAP-1234-5678-90AB-CDEF/);
 assert.match(detailHtml, /2 recoveries/);
 assert.match(detailHtml, /agent_session_snapshot_recover/);
-assert.match(detailHtml, /Rotate Passphrase/);
+assert.strictEqual(
+  context.agentSnapshotRecoveryPrompt("PKM-SNAP-1234-5678-90AB-CDEF"),
+  'Call the PKM MCP function agent_session_snapshot_recover with {"magic_code":"PKM-SNAP-1234-5678-90AB-CDEF"}.',
+);
+assert.match(detailHtml, /No recovery password is created or stored/);
+assert.match(detailHtml, /fixed local <code>uone<\/code> obfuscation key/);
+assert.doesNotMatch(detailHtml, /Rotate Passphrase/);
 assert.match(detailHtml, /Right-click this Snapshot to delete it/);
-context.agentSnapshotRotate("agent_snapshot_portable");
-modal.onOk();
-assert.deepStrictEqual(JSON.parse(JSON.stringify(messages.at(-1))), { command: "agentSnapshotRotate", data: { snapshotId: "agent_snapshot_portable" } });
 context.agentSnapshotContextMenu({ preventDefault() {}, stopPropagation() {}, clientX: 4, clientY: 8 }, "agent_snapshot_portable");
 assert.ok(contextMenu.items.some(item => item.label === "Delete Snapshot…"));
 contextMenu.items.find(item => item.label === "Delete Snapshot…").onClick();

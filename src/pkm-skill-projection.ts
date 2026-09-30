@@ -6,7 +6,7 @@ import * as vscode from "vscode";
 import { getStorePath } from "./filestore";
 import { compareVersionOrder } from "./version-order";
 
-export const PKM_SKILL_ROUTER_VERSION = "1.5.0";
+export const PKM_SKILL_ROUTER_VERSION = "1.7.0";
 export const PKM_SKILL_MIN_MCP_VERSION = "2.8.0";
 export const PKM_SKILL_SOURCE_RELATIVE = path.join("System", "PKM", "PKM Skills.md");
 
@@ -19,12 +19,17 @@ const LEGACY_BUNDLED_SOURCE_HASHES = new Set([
   "763311e1c6e8d7c3b9807914b81453b0da45c00ba7c47d2054719b3f179bb371", // Router 1.1.4
   "614f9aec0acd2f90d4072d83649b7cfc1b0625723ede396505c82c11a86e49aa", // Router 1.1.5
   "346a18db7462d92957e820f5c49b6e528de123071db49733ba1a1069cc990eb8", // Router 1.1.6
+  "ad2a744488a399d9bf93bce64364ec0cf62fe318352830b13689690df9cffb24", // Router 1.1.6 migration fixture
   "0cae8cda7b1aad7f3f5ac8b18acd4ac903cad815e5a91cfd571faaaf1a0b3943", // Router 1.2.0 bundled
   "bd3dc30cc22c6814ef518bfcabbe844440ed8de8ca6c439c2c6a56b8fd3d0b3e", // Router 1.2.0 canonical
   "b3644f21b8cf5f6f6a533088b40b60c364ee0b10ec333cc294eb6e4be379a17f", // Router 1.3.0 canonical
   "c0c2e516dfa19aaf8510dd847ed0318f997c1a7e5b90d50c869e15be54e7c3d2", // Router 1.3.1 bundled
   "87d95455175f8c1ca694ed1fae924b3fd96f5dab3f43723a0a3f1db7abc6a7ac", // Router 1.4.0 bundled
   "443d25a7a2c34350475d2008b612060e8aaf303a8fe06c5c10f6f92c2e231c5b", // Router 1.4.0 canonical
+  "c60be52f524bae0d853ac98785a3be39f038c0d2c9d9629da6c6901211695c8b", // Router 1.5.0 canonical
+  "b6dbcf44509a2c4c240d99a2e6573b83b21b3bc6e546c2d0a1ef707657be1325", // Router 1.5.1 bundled canonical
+  "46d9c22107cfc09eaec54fdfbe98af4c2ad9ace5bb5c05fd8ec492de3f146d1a", // Router 1.6.0 bundled canonical
+  "f8f28f95af02e8f15dbcd632452af46b020267dac89e7b036e383ef171e8cf49", // Router 1.6.1 canonical
 ]);
 
 const CUSTOM_TARGETS_KEY = "pkm.skillProjection.customTargets.v1";

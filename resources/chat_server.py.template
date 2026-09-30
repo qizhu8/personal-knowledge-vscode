@@ -12,6 +12,7 @@ from urllib.parse import unquote, urlparse
 
 import websockets
 from fastmcp import FastMCP
+from mcp_call_guard import McpCallGuardMiddleware
 
 mcp = FastMCP("pkm-chat")
 SERVER_VERSION = "%%CHAT_MCP_VERSION%%"
@@ -19,7 +20,7 @@ CHAT_TOOLS = ["chat_capabilities", "chat_join", "chat_post", "chat_read", "chat_
               "chat_standby", "chat_members", "chat_status", "chat_leave"]
 
 
-@mcp.tool()
+@mcp.tool(annotations={"readOnlyHint": True})
 def check_chat_version() -> dict:
     """Discover the PKM Chatroom component version and available chat tools."""
     return {"name": "pkm-chat", "version": SERVER_VERSION, "capability": "pkm-chatroom",
@@ -28,7 +29,7 @@ def check_chat_version() -> dict:
             "chat_tools": CHAT_TOOLS}
 
 
-@mcp.tool()
+@mcp.tool(annotations={"readOnlyHint": True})
 def chat_capabilities() -> dict:
     """Discover all PKM Chatroom tools and the Join -> Standby -> Post workflow.
 
@@ -693,7 +694,7 @@ async def chat_post(text: str, name: str = "", continue_working: bool = False,
                            "instruction": "The call was cancelled; call chat_standby again to resume waiting."})
 
 
-@mcp.tool()
+@mcp.tool(annotations={"readOnlyHint": True})
 async def chat_read(limit: int = 50, only_new: bool = True, name: str = "") -> str:
     """Read messages for one identity. Pass name when multiple aliases are active."""
     try:
@@ -705,7 +706,7 @@ async def chat_read(limit: int = 50, only_new: bool = True, name: str = "") -> s
                        "messages": items, "status": connection.status})
 
 
-@mcp.tool()
+@mcp.tool(annotations={"readOnlyHint": True})
 async def chat_history(limit: int = 50, name: str = "") -> str:
     """Read recent history for one identity without changing its cursor."""
     try:
@@ -717,7 +718,7 @@ async def chat_history(limit: int = 50, name: str = "") -> str:
                        "messages": connection.messages[-limit:]})
 
 
-@mcp.tool()
+@mcp.tool(annotations={"readOnlyHint": True})
 async def chat_standby(timeout: int = 300, max_messages: int = 8, max_bytes: int = 32768,
                        batch_wait_ms: int = 250, name: str = "") -> str:
     """PKM Chatroom: block until @name/@all, stop, close, transport, or timeout.
@@ -744,7 +745,7 @@ async def chat_standby(timeout: int = 300, max_messages: int = 8, max_bytes: int
     return json.dumps({"ok": True, "alias": connection.alias, **result})
 
 
-@mcp.tool()
+@mcp.tool(annotations={"readOnlyHint": True})
 async def chat_members(name: str = "") -> str:
     """List members visible to one joined identity."""
     try:
@@ -758,7 +759,7 @@ async def chat_members(name: str = "") -> str:
                        "present": present, "left": left, "members": present})
 
 
-@mcp.tool()
+@mcp.tool(annotations={"readOnlyHint": True})
 async def chat_status(name: str = "") -> str:
     """PKM Chatroom: report connection, Room lifecycle, identity, and standby status."""
     if not str(name or "").strip() and len(_connections) != 1:
@@ -781,6 +782,9 @@ async def chat_leave(name: str = "") -> str:
     await connection.leave()
     _connections.pop(connection.alias.casefold(), None)
     return json.dumps({"ok": True, "alias": connection.alias, "active_aliases": _aliases()})
+
+
+mcp.add_middleware(McpCallGuardMiddleware(mcp))
 
 
 if __name__ == "__main__":

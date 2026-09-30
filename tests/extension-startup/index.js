@@ -33,7 +33,7 @@ async function run() {
   assert.strictEqual(progress.relPath, "Project/AAGL_Improvement/Module Optimizer/LP Processor/progress.md.md");
 
   const expectPanel = process.env.PKM_STARTUP_EXPECT_PANEL === "true";
-  if (expectPanel) await vscode.commands.executeCommand("personalKnowledge.open");
+  if (expectPanel) await vscode.commands.executeCommand("workbench.view.extension.personalKnowledgeBar");
   if (process.env.PKM_STARTUP_SCENARIO === "clean-install") {
     const recipeIntentDraft = await vscode.commands.executeCommand("_personalKnowledge.testRecipeIntentDraft");
     assert.strictEqual(recipeIntentDraft.refreshedFromWebview, true, "an open clean editor did not receive the latest webview draft");

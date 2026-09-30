@@ -1,6 +1,7 @@
 {
   "extension.description": "استعرض معارفك الشخصية وحرّرها وزامنها؛ وصّل مساعدي الذكاء الاصطناعي عبر MCP وتعاون في غرف الدردشة.",
   "command.open": "Personal Knowledge Manager: فتح اللوحة",
+  "command.goToPkmPath": "Personal Knowledge Manager: الانتقال إلى مسار PKM…",
   "command.addNote": "Personal Knowledge Manager: ملاحظة سريعة",
   "command.saveSkill": "Personal Knowledge Manager: حفظ التحديد كمهارة",
   "command.openConfig": "Personal Knowledge Manager: فتح الإعداد",

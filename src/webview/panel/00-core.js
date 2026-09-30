@@ -63,29 +63,63 @@ function configureMarkdownLibraries() {
     return false;
   }
 }
-// Base URI for note image assets; `_assets/...` refs are rewritten relative to
-// the note's OWN folder (its category path), matching the on-disk convention
-// notes/<category>/_assets/<file> so links stay portable (Obsidian-style).
-const NOTES_BASE = document.querySelector('meta[name="pkm-notes-base"]')?.content || '';
+const CONTENT_BASES = {
+  skills: document.querySelector('meta[name="pkm-skills-base"]')?.content || '',
+  notes: document.querySelector('meta[name="pkm-notes-base"]')?.content || '',
+  papers: document.querySelector('meta[name="pkm-papers-base"]')?.content || '',
+};
+const SUBSCRIPTIONS_BASE = document.querySelector('meta[name="pkm-subscriptions-base"]')?.content || '';
 // Cache-buster for note/paper `_assets/` images. Seeded uniquely and bumped on
 // every detail render + Refresh, so a newly-added image is never blocked by a
 // stale (or negative/404) webview resource cache entry from an earlier render.
 let renderNonce = Date.now();
-function assetBase(category) {
-  const cat = String(category || '').split('/').map(s => s.trim()).filter(Boolean).map(encodeURIComponent).join('/');
-  return cat ? NOTES_BASE + '/' + cat : NOTES_BASE;
+function resourceSegments(value) {
+  return String(value || '').replace(/\\/g, '/').split('/').map(segment => segment.trim()).filter(Boolean);
 }
-function fixAssets(html, category) {
-  const base = assetBase(category);
-  return String(html).replace(/(src|href)=("|')_assets\/([^"']+)\2/g, function(m, attr, q, file) {
-    const sep = file.indexOf('?') < 0 ? '?_r=' : '&_r=';
-    return attr + '=' + q + base + '/_assets/' + file + sep + renderNonce + q;
+function encodeResourceSegment(value) {
+  try { return encodeURIComponent(decodeURIComponent(value)); }
+  catch { return encodeURIComponent(value); }
+}
+function resolveRelativeResource(reference, root, directory, cacheBust) {
+  const value = String(reference || '').replace(/&amp;/g, '&');
+  if (!value || value.startsWith('/') || value.startsWith('#') || /^[a-z][a-z0-9+.-]*:/i.test(value) || value.startsWith('//')) return '';
+  const match = /^([^?#]*)(\?[^#]*)?(#.*)?$/.exec(value);
+  if (!match) return '';
+  const segments = resourceSegments(directory);
+  for (const segment of match[1].split('/')) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') {
+      if (!segments.length) return '';
+      segments.pop();
+    } else {
+      segments.push(segment);
+    }
+  }
+  if (!root || !segments.length) return '';
+  let query = match[2] || '';
+  if (cacheBust) query += (query ? '&' : '?') + '_r=' + renderNonce;
+  return root.replace(/\/+$/, '') + '/' + segments.map(encodeResourceSegment).join('/') + query + (match[3] || '');
+}
+function fixAssets(html, category, area, resourceRoot, resourceDirectory) {
+  const root = resourceRoot || CONTENT_BASES[area || 'notes'] || '';
+  const directory = resourceDirectory === undefined ? category : resourceDirectory;
+  return String(html).replace(/\b(src|href)=("|')([^"']+)\2/g, function(m, attr, q, reference) {
+    if (attr === 'href' && !/(^|\/)_assets\//.test(reference)) return m;
+    const resolved = resolveRelativeResource(reference, root, directory, attr === 'src');
+    return resolved ? attr + '=' + q + resolved + q : m;
   });
 }
 // Wiki links are handled by the `wikiLink` marked extension above (code-safe).
-function safeMarked(text, category) {
-  try { return styleTasks(fixAssets(typeof marked !== 'undefined' ? marked.parse(text||'') : '<pre>' + esc(text||'') + '</pre>', category)); }
+function safeMarked(text, category, area, resourceRoot, resourceDirectory) {
+  try { return styleTasks(fixAssets(typeof marked !== 'undefined' ? marked.parse(text||'') : '<pre>' + esc(text||'') + '</pre>', category, area, resourceRoot, resourceDirectory)); }
   catch(e) { return '<pre>' + esc(text||'') + '</pre>'; }
+}
+function subscriptionResourceDirectory(data) {
+  const source = data?.provenance || {};
+  const path = String(data?.path || '').replace(/\\/g, '/');
+  const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+  if (!source.nodeId || !source.shareId || !data?.contentType) return '';
+  return [source.nodeId, source.shareId, 'content', data.contentType, parent].filter(Boolean).join('/');
 }
 // Turn task-list markers into clearly-coloured status badges so checked/unchecked
 // and the custom [~]/[!] states are distinguishable in any theme. marked emits
@@ -223,7 +257,7 @@ function fileSelectorCategoryTree(items) {
 function fileSelectorTreeItems(node) { return [...node.items, ...Object.values(node.folders).flatMap(fileSelectorTreeItems)]; }
 const uiIcon = (name, label = '') => `<span class="codicon codicon-${name}" aria-hidden="true"></span>${label ? `<span>${esc(label)}</span>` : ''}`;
 const ICON = {todo:uiIcon('circle-outline'),done:uiIcon('pass-filled'),'data-path':uiIcon('folder'),observation:uiIcon('eye'),general:uiIcon('note')};
-const surfacePanelTitles = { skills:'Skills', notes:'Notes', papers:'Research', agentSessions:'Agent Sessions', recipes:'Recipe Library', prompts:'Prompts', scripts:'Scripts', packages:'Packages', environments:'Environments', servers:'Servers', projects:'Projects', chatroom:'Threads', subscriptions:'Network & Sharing', githubSync:'GitHub Sync', backgroundTasks:'Background Tasks', mcp:'General & MCP', skillRouter:'Skill Router' };
+const surfacePanelTitles = { skills:'Skills', notes:'Notes', papers:'Research', agentSessions:'Agent Sessions', recipes:'Recipe Library', prompts:'Prompts', scripts:'Scripts', packages:'Packages', environments:'Environments', servers:'Servers', projects:'Projects', chatroom:'Threads', subscriptions:'Network & Sharing', githubSync:'GitHub Sync', backgroundTasks:'Background Tasks', mcp:'General & MCP', skillRouter:'Router' };
 let lastPanelTitle = '';
 function setPanelTitle(title) {
   const next = String(title || 'Personal Knowledge Manager').trim();
@@ -414,7 +448,7 @@ const actionTimeouts = {
   serverSubscriptionRefresh:60000,
   serverList:30000, serverStart:60000, serverStop:60000, serverRestart:90000, serverInspectExternal:30000,
   chatAddManagedAgent:180000,
-  agentSnapshotCreate:30000, agentSnapshotRotate:30000, agentSnapshotDelete:15000,
+  agentSnapshotCreate:30000, agentSnapshotDelete:15000,
   recipeOpenBrowser:30000,
   githubSyncSave:30000, githubSyncDelete:120000, githubSyncRun:120000, githubSyncCreateIdentity:30000, githubSyncTestAuthentication:30000,
   githubSyncMigration:180000,
@@ -944,7 +978,6 @@ window.addEventListener('message', e => {
   }
   else if (command === 'projectResult') { projectOnResult(data); }
   else if (command === 'agentSnapshotCreated') { finishAction('agentSnapshotCreate'); agentSnapshotOnCreated(data); }
-  else if (command === 'agentSnapshotRotated') { finishAction('agentSnapshotRotate'); agentSnapshotOnCreated(data); }
   else if (command === 'recipeValidationResult') { recipeOnValidation(data); }
   else if (command === 'recipeIntentEdited') { recipeOnIntentEdited(data); }
   else if (command === 'projectError') { projectOnError(data); }
@@ -965,6 +998,8 @@ window.addEventListener('message', e => {
     if (cachedKnowledgeTabs.has(state.tab) && (!changedArea || changedArea === state.tab)) {
       ask('list', { tab: state.tab, filter: state.filter, q: state.search }, null, true);
     }
+    githubSyncUpdatedAt = 0;
+    if (['skills','notes','papers','recipes'].includes(state.tab)) ensureGitHubSyncStatus();
     // Re-render the currently open note/skill so external edits and regenerated
     // images (same path) are picked up, not just the sidebar list.
     if (currentDetailRequest) ask('detail', currentDetailRequest);

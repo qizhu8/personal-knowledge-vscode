@@ -6,6 +6,8 @@ const skillRouterBenchmarks = [
 ];
 let skillRouterStatusCache = null;
 let skillRouterStatusUpdatedAt = 0;
+let skillRouterDraggedSourceId = '';
+let skillRouterSourceSaving = false;
 
 const skillRouterParameterDetails = {
   embedding: ['Embedding', 'Frozen local model', 'Model tensors are never trained by PKM.'],
@@ -16,7 +18,7 @@ const skillRouterParameterDetails = {
 };
 
 function renderSkillRouterLoading() {
-  document.getElementById('detail').innerHTML = '<div class="empty">Loading Skill Router…</div>';
+  document.getElementById('detail').innerHTML = '<div class="empty">Loading Router…</div>';
 }
 
 function showSkillRouterTab() {
@@ -27,11 +29,72 @@ function showSkillRouterTab() {
 function skillRouterOnStatus(data) {
   skillRouterStatusCache = data || {};
   skillRouterStatusUpdatedAt = Date.now();
+  skillRouterSourceSaving = false;
   if (state.tab === 'skillRouter') renderSkillRouterPane(skillRouterStatusCache);
 }
 
 function skillRouterStatusBadge(label, tone) {
   return `<span class="sr-status sr-status-${tone}"><i></i>${esc(label)}</span>`;
+}
+
+function skillRouterOrderedSources(data) {
+  const sources = Array.isArray(data?.sources) ? data.sources : [];
+  const byId = new Map(sources.map(source => [String(source.id), source]));
+  return (Array.isArray(data?.sourcePriority) ? data.sourcePriority : [])
+    .map(id => byId.get(String(id))).filter(Boolean);
+}
+
+function skillRouterCommitSourcePriority(sourceIds) {
+  if (!skillRouterStatusCache) return;
+  skillRouterSourceSaving = true;
+  skillRouterStatusCache = { ...skillRouterStatusCache, sourcePriority: sourceIds };
+  renderSkillRouterPane(skillRouterStatusCache);
+  ask('setSkillRouterSourcePriority', { sourceIds });
+}
+
+function skillRouterMoveSource(sourceId, direction) {
+  const sourceIds = skillRouterOrderedSources(skillRouterStatusCache).map(source => String(source.id));
+  const from = sourceIds.indexOf(String(sourceId));
+  const to = from + Number(direction);
+  if (from < 0 || to < 0 || to >= sourceIds.length) return;
+  sourceIds.splice(to, 0, sourceIds.splice(from, 1)[0]);
+  skillRouterCommitSourcePriority(sourceIds);
+}
+
+function skillRouterSourceDragStart(event) {
+  skillRouterDraggedSourceId = String(event.currentTarget.dataset.sourceId || '');
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('text/plain', skillRouterDraggedSourceId);
+  event.currentTarget.classList.add('dragging');
+}
+
+function skillRouterSourceDragOver(event) {
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'move';
+  event.currentTarget.classList.add('drop-target');
+}
+
+function skillRouterSourceDragLeave(event) {
+  event.currentTarget.classList.remove('drop-target');
+}
+
+function skillRouterSourceDrop(event) {
+  event.preventDefault();
+  event.currentTarget.classList.remove('drop-target');
+  const targetId = String(event.currentTarget.dataset.sourceId || '');
+  const sourceId = String(event.dataTransfer.getData('text/plain') || skillRouterDraggedSourceId);
+  const sourceIds = skillRouterOrderedSources(skillRouterStatusCache).map(source => String(source.id));
+  const from = sourceIds.indexOf(sourceId);
+  const to = sourceIds.indexOf(targetId);
+  if (from < 0 || to < 0 || from === to) return;
+  sourceIds.splice(to, 0, sourceIds.splice(from, 1)[0]);
+  skillRouterCommitSourcePriority(sourceIds);
+}
+
+function skillRouterSourceDragEnd(event) {
+  skillRouterDraggedSourceId = '';
+  event.currentTarget.classList.remove('dragging');
+  document.querySelectorAll('.sr-source-row.drop-target').forEach(row => row.classList.remove('drop-target'));
 }
 
 function renderSkillRouterPane(data) {
@@ -40,6 +103,11 @@ function renderSkillRouterPane(data) {
   const corpus = data?.corpus || {};
   const collector = data?.collector || {};
   const solutions = data?.solutions || {};
+  const orderedSources = skillRouterOrderedSources(data);
+  const sourceRows = orderedSources.map((source, index) => `<article class="sr-source-row" draggable="true" data-source-id="${esc(source.id)}" ondragstart="skillRouterSourceDragStart(event)" ondragover="skillRouterSourceDragOver(event)" ondragleave="skillRouterSourceDragLeave(event)" ondrop="skillRouterSourceDrop(event)" ondragend="skillRouterSourceDragEnd(event)">
+    <span class="sr-source-handle" aria-hidden="true">⋮⋮</span><span class="sr-source-rank">${index + 1}</span><span class="sr-source-copy"><strong>${esc(source.label)}</strong><small>${esc(source.detail || '')}</small></span><span class="sr-source-kind">${esc(source.kind || 'source')}</span>
+    <span class="sr-source-actions"><button class="ibtn" data-source-id="${esc(source.id)}" onclick="skillRouterMoveSource(this.dataset.sourceId,-1)" ${index === 0 ? 'disabled' : ''} aria-label="Move source up">↑</button><button class="ibtn" data-source-id="${esc(source.id)}" onclick="skillRouterMoveSource(this.dataset.sourceId,1)" ${index === orderedSources.length - 1 ? 'disabled' : ''} aria-label="Move source down">↓</button></span>
+  </article>`).join('');
   const rows = skillRouterBenchmarks.map(item => {
     const serving = item.profile === active;
     const solution = solutions[item.profile] || {};
@@ -55,11 +123,12 @@ function renderSkillRouterPane(data) {
     </tr>`;
   }).join('');
   document.getElementById('detail').innerHTML = `<div class="sr-dashboard">
-    <header class="sr-head"><div><h2>Skill Router</h2><p>Inspect the implemented retrieval engine and the evaluation surfaces required before adding another path.</p></div><button class="tbtn" onclick="ask('skillRouterStatus',{})">Refresh</button></header>
+    <header class="sr-head"><div><h2>Router</h2><p>Control Skill source priority and inspect the implemented retrieval engine.</p></div><button class="tbtn" onclick="ask('skillRouterStatus',{})">Refresh</button></header>
     <div class="sr-contract current"><strong>Automatic fallback: ${active === 'l1_online' ? 'Exact + BM25 → Copilot default' : 'Copilot default'}.</strong><span>Disable or enable any mature solution below. If every PKM solution is disabled or unavailable, the router falls back automatically. Model-based Hybrid remains system-disabled until its engine matures.</span></div>
+    <section class="sr-section"><div class="sr-section-head"><div><h3>Skill source priority</h3><p>Drag sources into precedence order. Relevance admission still applies, and explicit or required Skills remain protected.</p></div>${skillRouterStatusBadge(skillRouterSourceSaving ? 'Saving…' : `${orderedSources.length} sources`, skillRouterSourceSaving ? 'warn' : 'good')}</div><div class="sr-source-list">${sourceRows || '<div class="empty">No Skill sources are available.</div>'}</div><p class="sr-source-note">PKM Personal and individual Subscribers are ranked here after relevance admission. Agent Native is selected by the active Agent host; its position is sent as a routing preference without inventing host candidates or scores.</p></section>
     <section class="sr-section"><div class="sr-section-head"><div><h3>Routing path performance</h3><p>No benchmark has been imported. Metrics remain empty until every path runs on the same judged set.</p></div><div><span>Active: <strong>${esc(active)}</strong></span></div></div><div class="sr-table-wrap"><table class="sr-table"><thead><tr><th>Routing path</th><th>Success rate</th><th>NDCG@5</th><th>Recall@1</th><th>Recall@5</th><th>Tokens saved</th><th>Latency</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div></section>
     <section class="sr-section"><div class="sr-section-head"><div><h3>Proposed Parameter Map</h3><p>Planned coordination surface. Model-based routing and online learning are disabled.</p></div>${skillRouterStatusBadge('Disabled', 'warn')}</div><div class="sr-parameter-layout"><div class="sr-parameter-map">${['embedding','retrieval','calibration','ranker','results'].map((id, index) => `${index ? '<span aria-hidden="true">→</span>' : ''}<button class="sr-parameter-node ${id === 'embedding' ? 'frozen' : id === 'results' ? 'output' : 'trainable'}" onclick="skillRouterInspectParameter('${id}',this)"><strong>${skillRouterParameterDetails[id][0]}</strong><small>${id === 'embedding' ? 'Disabled model' : id === 'results' ? 'Derived output' : 'Proposed coordinator'}</small></button>`).join('')}</div><aside class="sr-inspector" id="sr-inspector"><h4>Retrieval</h4><span>Proposed coordinator</span><p>${skillRouterParameterDetails.retrieval[2]}</p></aside></div></section>
-    <section class="sr-privacy-declaration" aria-labelledby="sr-privacy-title"><div class="sr-privacy-mark" aria-hidden="true">P</div><div><h3 id="sr-privacy-title">Skill Router privacy statement</h3><p>Raw query and task text, workspace paths, file names, diagnostics, and loaded knowledge content are excluded from collector events. Search events contain only the tool name, duration, success state, result count, hashed result identities, and active routes. PKM does not train or modify embedding-model weights.</p><p>When you explicitly call <code>skill_feedback</code>, the observations and evidence you provide are stored locally under <code>_feedback/skill-usage.jsonl</code>; that text is not forwarded to the collector. Your configured knowledge is indexed by the local retrieval worker.</p><p class="sr-privacy-proof">This implementation is open source and reviewable at <a href="https://github.com/qizhu8/personal-knowledge-vscode">github.com/qizhu8/personal-knowledge-vscode</a>.</p></div></section>
+    <section class="sr-privacy-declaration" aria-labelledby="sr-privacy-title"><div class="sr-privacy-mark" aria-hidden="true">P</div><div><h3 id="sr-privacy-title">Router privacy statement</h3><p>Raw query and task text, workspace paths, file names, diagnostics, and loaded knowledge content are excluded from collector events. Search events contain only the tool name, duration, success state, result count, hashed result identities, and active routes. PKM does not train or modify embedding-model weights.</p><p>When you explicitly call <code>skill_feedback</code>, the observations and evidence you provide are stored locally under <code>_feedback/skill-usage.jsonl</code>; that text is not forwarded to the collector. Your configured knowledge is indexed by the local retrieval worker.</p><p class="sr-privacy-proof">This implementation is open source and reviewable at <a href="https://github.com/qizhu8/personal-knowledge-vscode">github.com/qizhu8/personal-knowledge-vscode</a>.</p></div></section>
     <section class="sr-section"><div class="sr-section-head"><div><h3>Search data collector</h3><p>Collects search-function outcomes, never search text.</p></div>${skillRouterStatusBadge('Query-free', 'good')}</div><ul class="sr-boundary"><li><b>Collected</b><span>Tool name, duration, success, result count, hashed result identities, and active routes.</span></li><li><b>PKM tools</b><span>${(collector.collectedTools || []).map(esc).join(' · ') || 'Not reported'}</span></li><li><b>Unavailable</b><span>VS Code built-in tool_search and grep_search do not expose invocation events to this extension.</span></li></ul></section>
     <div class="sr-lower-grid"><section class="sr-section"><div class="sr-section-head"><div><h3>Runtime</h3><p>Current local retrieval worker and indexed corpus.</p></div>${skillRouterStatusBadge(runtime.ready ? 'Ready' : 'Unavailable', runtime.ready ? 'good' : 'warn')}</div><dl class="sr-facts"><div><dt>Documents</dt><dd>${Number(corpus.documentCount || runtime.documentCount || 0).toLocaleString()}</dd></div><div><dt>Corpus revision</dt><dd><code>${esc(String(corpus.revision || runtime.corpusRevision || 'Not ready').slice(0, 12))}</code></dd></div><div><dt>Engine</dt><dd>${esc(runtime.engineVersion || 'Not running')}</dd></div><div><dt>Configuration</dt><dd><code>${esc(String(runtime.configurationHash || '').slice(0, 12) || 'Not available')}</code></dd></div></dl>${runtime.error ? `<p class="sr-runtime-error">${esc(runtime.error)}</p>` : ''}</section>
       <section class="sr-section"><div class="sr-section-head"><div><h3>Privacy boundary</h3><p>Current retrieval behavior.</p></div>${skillRouterStatusBadge('Local index', 'good')}</div><ul class="sr-boundary"><li><b>Index</b><span>PKM builds a local Exact + BM25 index over configured knowledge.</span></li><li><b>Collector</b><span>Task identity is hashed; only aggregate retrieval and outcome fields are emitted.</span></li><li><b>Training</b><span>No parameter training or embedding-model modification is active.</span></li></ul></section></div>

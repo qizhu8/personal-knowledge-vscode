@@ -100,6 +100,18 @@ function materialize(task: MaterializeTask): number {
   for (const pkg of bundle.packages || []) for (const file of pkg.files || []) writeCached("packages", `${pkg.name}/${file.path}`, String(file.content || ""));
   for (const server of bundle.servers || []) writeCached("servers", `${server.slug}/server.link.json`, JSON.stringify({ name: server.name, category: server.category, tags: server.tags, url: server.url || "" }, null, 2));
   for (const recipe of bundle.recipes || []) writeCached("recipes", `${recipe.category ? `${recipe.category}/` : ""}${recipe.recipeId}.json`, JSON.stringify(recipe, null, 2));
+  for (const asset of bundle.assets || []) {
+    const type = String(asset?.type || "");
+    const remotePath = String(asset?.path || "").replace(/\\/g, "/");
+    if (!["skills", "notes", "papers"].includes(type) || !remotePath.split("/").includes("_assets")) {
+      throw new Error("Background Sync contains an invalid Markdown asset path.");
+    }
+    const relative = safeRelativePath("content", type, remotePath);
+    const target = path.join(staging, ...relative.split("/"));
+    const content = Buffer.from(String(asset?.data || ""), "base64");
+    if (hash(content) !== String(asset?.digest || "")) throw new Error(`Background Sync Markdown asset checksum mismatch: ${remotePath}`);
+    atomicWrite(target, content, 0o600);
+  }
   atomicWrite(path.join(staging, "bundle.json"), bytes, 0o600);
   atomicWrite(path.join(staging, "summary.json"), JSON.stringify(task.summary, null, 2), 0o600);
   atomicWrite(path.join(staging, "_subscription.json"), JSON.stringify({

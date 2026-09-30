@@ -124,6 +124,27 @@ assert.deepStrictEqual(pythonScript.model.spec.nodes[0].config, {
   timeoutSeconds: 300, maxOutputBytes: 65536
 });
 assertDiagnostic(definition({ nodes: [{ nodeId: "run", kind: "pkm.step.script/v1", config: { runtime: "python", script: "print('no fallback')" }, dependsOn: [] }] }), "E3005", "/spec/nodes/0/config/environmentId");
+
+const nativeOperation = compileWorkflowDefinitionV1(definition({
+  inputs: {
+    reason: { type: "string", required: false, nullable: false, schema: {}, default: "manual" },
+  },
+  nodes: [{ nodeId: "snapshot", kind: "pkm.step.native/v1", config: {
+    operation: "agent_session_snapshot_create",
+    arguments: { state_json: "", reason: "${inputs.reason}" },
+  }, dependsOn: [] }],
+  completion: { requiredNodes: ["snapshot"] },
+}));
+assert.strictEqual(nativeOperation.ok, true);
+assert.deepStrictEqual(nativeOperation.model.spec.nodes[0].config, {
+  operation: "agent_session_snapshot_create",
+  arguments: { reason: "${inputs.reason}", state_json: "" },
+});
+assertDiagnostic(definition({
+  nodes: [{ nodeId: "snapshot", kind: "pkm.step.native/v1", config: {
+    operation: "invalid operation", arguments: {},
+  }, dependsOn: [] }],
+}), "E3002", "/spec/nodes/0/config/operation");
 assertDiagnostic(definition({ nodes: [{ nodeId: "run", kind: "pkm.step.script/v1", config: { runtime: "bash", script: "echo ready", environmentId: "invalid-for-bash" }, dependsOn: [] }] }), "E3005", "/spec/nodes/0/config/environmentId");
 assertDiagnostic(definition({ nodes: [{ nodeId: "run", kind: "pkm.step.script/v1", config: { runtime: "ruby", script: "puts 'no'" }, dependsOn: [] }] }), "E3005", "/spec/nodes/0/config/runtime");
 

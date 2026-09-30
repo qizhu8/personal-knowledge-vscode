@@ -8,6 +8,7 @@ import { serverExport } from "./servers";
 import { compileWorkflowDefinitionV1 } from "./workflow-contracts";
 import { RecipeRecord } from "./workflows/project-model";
 import { ProjectStore } from "./workflows/project-store";
+import { MarkdownAssetArea, referencedMarkdownAssets } from "./markdown-assets";
 
 export interface SyncSelection {
   [contentType: string]: string[];
@@ -222,5 +223,36 @@ export function buildSyncBundle(selection: SyncSelection, contentTypes: string[]
   }
   if (types.includes("servers")) bundle.servers = serverExport(selected.servers);
   if (types.includes("recipes")) bundle.recipes = recipeExport(selected.recipes);
+  return attachMarkdownAssetsToSyncBundle(bundle);
+}
+
+export function attachMarkdownAssetsToSyncBundle(bundle: any): any {
+  const root = getStorePath();
+  const assets = new Map<string, { type: MarkdownAssetArea; path: string; digest: string; data: string }>();
+  const documents: Array<{ type: MarkdownAssetArea; path: string; content: string }> = [
+    ...(bundle.skills || []).map((item: any) => ({
+      type: "skills" as const,
+      path: `${item.metadata?.category ? `${item.metadata.category}/` : ""}${item.name}.md`,
+      content: String(item.content || ""),
+    })),
+    ...(bundle.notes || []).map((item: any) => ({
+      type: "notes" as const,
+      path: `${item.slug || item.title || "note"}.md`,
+      content: String(item.content || ""),
+    })),
+    ...(bundle.papers || []).map((item: any) => ({
+      type: "papers" as const,
+      path: `${item.category ? `${item.category}/` : ""}${item.slug || item.title || "paper"}.md`,
+      content: String(item.content || ""),
+    })),
+  ];
+  for (const document of documents) {
+    for (const asset of referencedMarkdownAssets(root, document.type, document.path, document.content)) {
+      const key = `${asset.area}\0${asset.path}`;
+      assets.set(key, { type: asset.area, path: asset.path, digest: asset.digest, data: asset.content.toString("base64") });
+    }
+  }
+  if (assets.size) bundle.assets = [...assets.values()];
+  else delete bundle.assets;
   return bundle;
 }

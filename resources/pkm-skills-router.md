@@ -1,13 +1,13 @@
 ---
 name: PKM Skills
-description: "MUST use for every substantial coding, research, debugging, or operational task, and again when later user instructions arrive, to preserve Agent Session todos and execute work through Recipes."
+description: "Route substantial work into PKM guardrails without adding orchestration that does not change execution."
 tags:
   - pkm
   - copilot
   - skill-router
   - knowledge-management
 type: system
-router_version: 1.5.0
+router_version: 1.7.0
 created: 2026-08-12
 ---
 
@@ -15,17 +15,52 @@ created: 2026-08-12
 
 PKM is the canonical source for personal, workflow, and domain-specific skills. Native `SKILL.md` files are generated discovery adapters and are not independent sources of truth.
 
+## Agent Snapshot Creation Fast Path
+
+When a user asks to create, generate, or save an Agent Snapshot, use the
+PKM-provided `Create Agent Snapshot` Recipe under
+`System/PKM/Agent Sessions`. Search for that exact built-in, start its pinned
+revision and digest, then call `recipe_run_next`. Its native operation creates
+and verifies the Snapshot in-process without an Agent-executed step.
+
+Return the Recipe's reusable Magic Code recovery prompt to the user. No
+recovery password exists. The Snapshot payload is stored with PKM's fixed local
+`uone` obfuscation key only to avoid plaintext on disk; it is not credential
+protection and must not be described as security encryption.
+
+Do not replace a missing built-in with an ad hoc Recipe. Report that the
+installed Extension or MCP runtime needs upgrade/repair so the System Recipe
+identity, executable digest, and allowlisted native operation remain pinned
+together.
+
+## Agent Snapshot Recovery Fast Path
+
+When a user pastes `Recover PKM Agent Snapshot PKM-SNAP-...`, call
+`pkm.agent_session_snapshot_recover` immediately with that Magic Code. This
+recovery call creates and activates the successor Agent Session, so do not call
+`agent_session_start` first. After successful recovery, follow the returned
+`next_action` and continue the restored todos and Recipe runs.
+
+If recovery reports that the Snapshot is absent from the current Knowledge
+Root, do not create a replacement Session that looks recovered. Explain that
+the Magic Code identifies the Snapshot but does not contain the locally
+obfuscated payload. The Agent Snapshot record must first be restored from the
+origin Knowledge Root or an explicitly configured GitHub Sync backup.
+
 ## Managed Task Routing
 
-For a substantial task, call `pkm.agent_session_capabilities`, then call
-`pkm.agent_session_start` before the first substantive edit or operational
-mutation. A substantial task is a user goal that needs multiple execution or
-validation steps, benefits from progress/recovery state, or may continue across
-turns. Use one Agent Session for the user goal, not one per todo item.
+For a substantial mutating task, call `pkm.agent_session_start` before the first
+substantive edit or operational mutation. Call `agent_session_capabilities`
+only when the tool contract is not already available in the current
+conversation or its version changed. A substantial task is a user goal that
+needs multiple execution or validation steps and benefits from durable
+progress/recovery state. Use one Agent Session for the user goal.
 
-Do not start an Agent Session for a quick answer, a single read-only lookup, a
-trivial one-command request, or casual conversation. When the host chat/session
-ID is available, pass it as `host_session_id` so related tasks remain grouped.
+Do not start an Agent Session for assessment, explanation, code review, or
+read-only diagnosis, even when several reads or tests are needed, unless the
+user asks for durable tracking or the work is likely to continue across turns.
+Also skip it for a quick answer, trivial command, or casual conversation. When
+the host chat/session ID is available, pass it as `host_session_id`.
 
 At the start of every later user turn while work may still be active, call
 `pkm.agent_session_status` before planning or using tools. Reconcile the new
@@ -33,13 +68,19 @@ instruction against the durable running and pending todos. This turn gate is
 mandatory: do not rely on chat memory alone and do not begin the new request
 until earlier unfinished work has been preserved, explicitly redirected, or
 explicitly cancelled.
+Use its default compact projection for this turn gate. Request `detail=full`
+only when complete historical todos, checkpoints, or receipts are specifically
+needed for recovery or diagnosis.
 
-After starting a substantial task, append its actionable plan with
+After starting a substantial task, append a small outcome-oriented plan with
 `pkm.agent_session_todo_append`, then claim work with
 `pkm.agent_session_todo_next`. Report a todo as `succeeded`, `failed`, or
 `skipped` with `pkm.agent_session_todo_report` only after obtaining relevant
-evidence. Session todos are the ordered user-goal backlog; Recipe runs may
-provide a more detailed executable graph for the currently running todo.
+evidence. Prefer one to three durable outcome Todos; do not create separate
+Todos for narration, status summaries, or steps already enforced by a Recipe.
+Keep report summaries concise and evidence-oriented. Session todos are the
+ordered user-goal backlog; Recipe runs may provide a more detailed executable
+graph only when they add control value.
 
 When a later user instruction arrives, classify it before changing the queue.
 If it replaces, contradicts, or cancels earlier work, treat it as a redirect and
@@ -54,45 +95,49 @@ running and pending todos. A valid payload is
 `[{"title":"Implement change","details":"Preserve existing behavior"},{"title":"Validate","details":"Run focused tests"}]`.
 
 Checkpoint only at useful recovery boundaries. End the Agent Session after the
-overall user outcome is validated; do not equate a completed checklist with a
-validated outcome.
+overall user outcome is validated. Omit the Session-end summary when Todo
+outcomes already contain the evidence; do not restate the final answer in
+durable state.
 
 ## Before Substantial Work
 
-For coding, research, debugging, operational workflows, or domain-specific tasks:
+Use `pkm.skill_context` when personal conventions, domain knowledge, or a
+project-specific procedure could materially change execution. Repository-local
+inspection with an obvious native workflow does not need Skill retrieval.
+Call `skill_capabilities` only when its contract is not already available or
+its version changed.
 
-1. Call `pkm.skill_capabilities` to discover the current PKM Skill workflow.
-2. Call `pkm.skill_context` with the task and relevant workspace, file, and diagnostic context.
-3. If it returns `disabled: true`, immediately continue with Copilot's native search tools; this is the automatic fallback contract.
-4. If it returns `no_match: true`, continue without a PKM Skill; do not force a weak match.
-5. Review the returned summaries and call `pkm.get_skill(skill_id)` only for candidates you will apply.
-6. Follow every returned `required` Skill and apply `recommended` Skills when they fit the task.
-7. Keep each returned `skill_id` and `content_hash` for maintenance feedback.
+If `skill_context` returns `disabled: true` or `no_match: true`, continue with
+native tools. Fetch only candidates you will actually apply with
+`pkm.get_skill`; follow every `required` Skill and retain its ID/hash for
+feedback. Reuse an already loaded applicable Skill during the same task instead
+of retrieving it again.
 
 Do not load the entire Skill catalog. Prefer the smallest relevant set.
 
 ## Recipe Discovery and Evolution
 
-For every claimed substantial todo, call `pkm.recipe_capabilities` and
-`pkm.recipe_search` before inventing its execution plan. Apply this to coding,
-research, debugging, and operational work; the user does not need to mention a Recipe,
-Recipe Library, or workflow. Start a qualified Library Recipe when one
-matches. Otherwise start an ad hoc Recipe run that represents the intended
-steps and validation. Do not execute a substantial todo outside a Recipe run
-merely because search returned no match.
-Pass the complete task contract and qualify candidates by purpose, inputs,
-outputs, safety constraints, and graph shape rather than name or score alone.
+Use a Recipe only when its executable graph adds a guardrail that ordinary Todo
+tracking does not provide: branching, bounded repetition, a mandatory human
+gate, a pinned reusable procedure, a background command, or an allowlisted
+native operation. Linear inspect → edit → validate work should stay in the
+Agent Session Todo and native tools.
+
+For a Todo that needs those controls, call `pkm.recipe_search` once with the
+complete task contract. Call `recipe_capabilities` only when its contract is
+not already available or its version changed. Qualify candidates by purpose,
+inputs, outputs, constraints, and graph shape rather than name or score alone.
 
 Use a qualified Library Recipe with its pinned revision and executable digest.
-A no-match result is valid: use an ad hoc Recipe rather than forcing a weak
-Library match or misrepresenting a Skill as a Recipe. The Agent Session todo is
-the durable cross-turn commitment; its linked Recipe run is the executable
-graph for that todo. Report the todo complete only after the Recipe is terminal
-and the requested outcome has independent validation evidence.
+A no-match result is valid. Create an ad hoc Recipe only when the required
+control graph still exists; never create a one-node noop Recipe merely to
+represent work already tracked by a Todo. The Agent Session Todo remains the
+durable cross-turn commitment. Report it complete only after any attached
+Recipe is terminal and the outcome has independent validation evidence.
 
-For an ad hoc plan, use supported workflow nodes rather than guessing a node
-kind. The minimal definition is
-`{"schema":"pkm.workflow.definition/v1","spec":{"inputs":{},"nodes":[{"nodeId":"work","kind":"pkm.step.noop/v1","config":{},"dependsOn":[]}],"outputs":{},"completion":{"requiredNodes":["work"]}}}`.
+Recipe action tools return compact state by default. Request full run detail
+only when historical node results, usage, or observability diagnostics are
+needed.
 
 After execution, record concrete friction and reusable evidence. When a Recipe
 should be corrected or expanded, use the advertised Recipe authoring/proposal

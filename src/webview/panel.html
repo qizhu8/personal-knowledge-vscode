@@ -5,7 +5,10 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' %%CSP_SOURCE%%; style-src 'unsafe-inline' %%CSP_SOURCE%%; font-src %%CSP_SOURCE%%; img-src data: https: %%CSP_SOURCE%%;">
 <title>Personal Knowledge Manager</title>
+<meta name="pkm-skills-base" content="%%SKILLS_BASE%%">
 <meta name="pkm-notes-base" content="%%NOTES_BASE%%">
+<meta name="pkm-papers-base" content="%%PAPERS_BASE%%">
+<meta name="pkm-subscriptions-base" content="%%SUBSCRIPTIONS_BASE%%">
 <meta name="pkm-i18n" content="%%I18N_PAYLOAD_B64%%">
 <meta name="pkm-cytoscape-src" content="%%CYTOSCAPE_SRC%%">
 <meta name="pkm-mermaid-src" content="%%MERMAID_SRC%%">
@@ -23,6 +26,7 @@
   <strong>Personal Knowledge</strong>
   <span id="workspace-title">Knowledge</span>
   <span id="pkm-version" title="Personal Knowledge Manager extension version" style="font-size:10px;color:var(--muted);opacity:.7;padding-left:4px">v%%PKM_VERSION%%</span>
+  <button id="go-to-pkm-path-button" class="topbar-help-button" type="button" onclick="ask('goToPkmPath')" title="Go to PKM Path…" aria-label="Go to PKM Path…"><span class="codicon codicon-go-to-file" aria-hidden="true"></span></button>
   <button id="whats-new-button" class="topbar-help-button" type="button" title="What's new" aria-label="What's new" data-i18n-title="experience.whatsNewButton" data-i18n-aria-label="experience.whatsNewButton"><span class="codicon codicon-sparkle" aria-hidden="true"></span></button>
   <button id="start-tour-button" class="topbar-help-button" type="button" title="Start guided tour" aria-label="Start guided tour" data-i18n-title="experience.startTourButton" data-i18n-aria-label="experience.startTourButton"><span class="codicon codicon-question" aria-hidden="true"></span></button>
 </div>
@@ -105,7 +109,7 @@
       <span class="workspace-context-title">Settings</span>
       <div class="workspace-context-tabs" role="tablist" aria-label="Setting views">
         <button class="tab" role="tab" aria-selected="false" data-tab="mcp">General &amp; MCP</button>
-        <button class="tab" role="tab" aria-selected="false" data-tab="skillRouter">Skill Router</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="skillRouter">Router</button>
         <button class="tab" role="tab" aria-selected="false" data-tab="subscriptions">Network &amp; Sharing</button>
         <button class="tab" role="tab" aria-selected="false" data-tab="githubSync">GitHub Sync</button>
         <button class="tab" role="tab" aria-selected="false" data-tab="backgroundTasks">Background Tasks</button>

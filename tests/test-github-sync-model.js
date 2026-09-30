@@ -12,6 +12,7 @@ const {
   githubSyncAuthenticationFailureGuidance,
   githubSyncAuthenticationSessionOptions,
   githubSyncGitArguments,
+  githubSyncFolderShields,
   githubSyncManagedContent,
   githubSyncRepositoryHttpsHost,
   githubSyncRepositorySshHost,
@@ -223,5 +224,68 @@ const notesOnly = normalizeGitHubSyncTarget({
 }, () => "notes-only");
 assert.strictEqual(githubSyncShield([notesOnly], "skills", {}), "outline");
 assert.strictEqual(githubSyncShield([notesOnly], "notes", {}), "yellow");
+
+const folderCurrent = {
+  "target-1": {
+    skills: {
+      Work: "work-current",
+      "Work/Shared": "shared-current",
+    },
+  },
+};
+const folderBase = {
+  "target-1": {
+    skills: {
+      Work: "work-current",
+      "Work/Shared": "shared-current",
+    },
+  },
+};
+assert.deepStrictEqual(githubSyncFolderShields(
+  [target],
+  { "target-1": { skills: fingerprint } },
+  folderCurrent,
+  folderBase,
+).skills, { Work: "green", "Work/Shared": "green" },
+"nested folders are green when their current projection matches the exact last-sync manifest");
+
+folderCurrent["target-1"].skills.Work = "work-changed";
+folderCurrent["target-1"].skills["Work/Shared"] = "shared-changed";
+assert.deepStrictEqual(githubSyncFolderShields(
+  [target],
+  { "target-1": { skills: entryDigest("changed") } },
+  folderCurrent,
+  folderBase,
+).skills, { Work: "yellow", "Work/Shared": "yellow" },
+"a nested edit marks both the folder and its ancestor as different");
+
+const secondTarget = normalizeGitHubSyncTarget({
+  name: "Secondary",
+  repository: "repo",
+  branch: "main",
+}, () => "target-2");
+secondTarget.lastSync = { at: "2026-01-01T00:00:00Z", commit: "def", fingerprints: { skills: fingerprint } };
+assert.strictEqual(githubSyncFolderShields(
+  [target, secondTarget],
+  {
+    "target-1": { skills: fingerprint },
+    "target-2": { skills: entryDigest("changed") },
+  },
+  {
+    "target-1": { skills: { Work: "same" } },
+    "target-2": { skills: { Work: "different" } },
+  },
+  {
+    "target-1": { skills: { Work: "same" } },
+    "target-2": { skills: { Work: "base" } },
+  },
+).skills.Work, "yellow", "one differing target keeps a multiply-covered folder yellow");
+
+assert.strictEqual(githubSyncFolderShields(
+  [target],
+  { "target-1": { skills: fingerprint } },
+  { "target-1": { skills: { Work: "current" } } },
+  {},
+).skills.Work, "green", "legacy sync records fall back to their matching type fingerprint when the cached manifest is unavailable");
 
 console.log("github-sync model tests passed");

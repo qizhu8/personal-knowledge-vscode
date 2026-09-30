@@ -1,0 +1,34 @@
+name: GitHub Sync Coordinator
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/github-sync-coordinator.yml"
+      - "package.json"
+      - "src/cross-process-lock.ts"
+      - "src/github-sync*.ts"
+      - "src/extension.ts"
+      - "tests/test-cross-process-lock.js"
+      - "tests/test-github-sync-*.js"
+      - "tests/fixtures/github-sync-coordinator-child.js"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:github-sync-coordinator

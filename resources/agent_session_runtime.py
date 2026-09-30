@@ -4,9 +4,9 @@ import contextlib
 import base64
 import datetime
 import hashlib
-import hmac
 import json
 import os
+import re
 import secrets
 import time
 import uuid
@@ -17,13 +17,22 @@ from fastmcp import Context
 from fastmcp.server.middleware import Middleware
 
 
-AGENT_SESSION_SCHEMA_VERSION = "1.6.0"
+AGENT_SESSION_SCHEMA_VERSION = "1.7.6"
 SESSION_SCHEMA = "pkm.agent.session/v1"
 SESSION_LEASE_SECONDS = 300
 SNAPSHOT_SCHEMA = "pkm.agent.snapshot/v1"
-SNAPSHOT_PAYLOAD_ALGORITHM = "A256GCM-PKM-INTERNAL/v1"
-SNAPSHOT_PAYLOAD_KEY = hashlib.sha256(b"uone:agent-snapshot:payload:v1").digest()
+SNAPSHOT_PAYLOAD_ALGORITHM = "A256GCM-PKM-LOCAL-OBFUSCATION/v1"
+LEGACY_SNAPSHOT_PAYLOAD_ALGORITHM = "A256GCM-PKM-INTERNAL/v1"
+SNAPSHOT_PAYLOAD_KEY = hashlib.sha256(b"uone").digest()
+LEGACY_SNAPSHOT_PAYLOAD_KEY = hashlib.sha256(b"uone:agent-snapshot:payload:v1").digest()
+SNAPSHOT_MAGIC_CODE_PATTERN = re.compile(
+    r"PKM-SNAP-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}")
 TODO_TERMINAL_STATES = {"succeeded", "failed", "skipped"}
+TODO_RECEIPT_BYTE_LIMIT = 262144
+TODO_TITLE_CHARACTER_LIMIT = 240
+TODO_DETAILS_CHARACTER_LIMIT = 2000
+TODO_SUMMARY_CHARACTER_LIMIT = 1000
+SESSION_SUMMARY_CHARACTER_LIMIT = 1000
 
 
 def _json(value):
@@ -107,6 +116,80 @@ def _projected_session_status(session):
     return status
 
 
+def _compact_todo(todo):
+    if not isinstance(todo, dict):
+        return None
+    keys = (
+        "todoId", "title", "status", "actionType", "resumeTodoId", "recipeRunId",
+        "recipeRunIds", "createdAt", "startedAt", "updatedAt", "completedAt",
+    )
+    return {key: todo[key] for key in keys if key in todo}
+
+
+def _todo_projection(todo, detail="compact"):
+    if todo is None or detail == "full":
+        return todo
+    return _compact_todo(todo)
+
+
+def _validate_detail(detail):
+    normalized = str(detail or "compact").strip().lower()
+    if normalized not in {"compact", "full"}:
+        raise ValueError("detail must be compact or full.")
+    return normalized
+
+
+def _bounded_text(value, field, maximum):
+    text = str(value or "").strip()
+    if len(text) > maximum:
+        raise ValueError("{} must be at most {} characters.".format(field, maximum))
+    return text
+
+
+def _compact_session(session):
+    todos = [todo for todo in (session.get("todos") or []) if isinstance(todo, dict)]
+    current = next(
+        (todo for todo in todos if str(todo.get("status") or "") in {"running", "paused"}),
+        None,
+    )
+    counts = {
+        status: sum(str(todo.get("status") or "") == status for todo in todos)
+        for status in ("pending", "running", "paused", "succeeded", "failed", "skipped")
+    }
+    checkpoints = [
+        checkpoint for checkpoint in (session.get("checkpoints") or [])
+        if isinstance(checkpoint, dict)
+    ]
+    latest = checkpoints[-1] if checkpoints else None
+    latest_checkpoint = None
+    if latest:
+        state = latest.get("state") if isinstance(latest.get("state"), dict) else {}
+        latest_checkpoint = {
+            "checkpointId": str(latest.get("checkpointId") or ""),
+            "sequence": int(latest.get("sequence") or len(checkpoints)),
+            "reason": str(latest.get("reason") or ""),
+            "createdAt": str(latest.get("createdAt") or ""),
+            "summary": str(state.get("summary") or "")[:2000],
+        }
+    return {
+        "sessionId": str(session.get("sessionId") or ""),
+        "status": _projected_session_status(session),
+        "task": str(session.get("task") or ""),
+        "projectId": str(session.get("projectId") or ""),
+        "hostSessionId": str(session.get("hostSessionId") or ""),
+        "traversalStrategy": str(session.get("traversalStrategy") or ""),
+        "agent": session.get("agent") or {},
+        "currentTodo": _compact_todo(current),
+        "todoCounts": counts,
+        "recipeRunIds": [str(value) for value in (session.get("recipeRunIds") or [])],
+        "latestCheckpoint": latest_checkpoint,
+        "lastActivity": session.get("lastActivity"),
+        "liveness": session.get("liveness"),
+        "createdAt": str(session.get("createdAt") or ""),
+        "updatedAt": str(session.get("updatedAt") or ""),
+    }
+
+
 def _clear_active_session_mappings(store, session_id):
     directory = store / ".pkm" / "state" / "agent-sessions" / "active"
     if not directory.exists():
@@ -128,25 +211,27 @@ def _snapshot_directory(store):
     return store / ".pkm" / "state" / "agent-snapshots"
 
 
-def _snapshot_passphrase():
-    value = secrets.token_hex(16).upper()
-    return "-".join(value[index:index + 4] for index in range(0, len(value), 4))
-
-
 def _snapshot_magic_code():
     value = secrets.token_hex(8).upper()
     return "PKM-SNAP-" + "-".join(value[index:index + 4] for index in range(0, len(value), 4))
 
 
-def _snapshot_verifier(passphrase, salt):
-    return hashlib.scrypt(
-        str(passphrase or "").encode("utf-8"),
-        salt=bytes.fromhex(salt),
-        n=16384,
-        r=8,
-        p=1,
-        dklen=32,
-    ).hex()
+def _snapshot_recovery_prompt(magic_code):
+    normalized = _normalize_snapshot_magic_code(magic_code)
+    return (
+        "Call the PKM MCP function agent_session_snapshot_recover with "
+        + '{"magic_code":"' + normalized + '"}.'
+    )
+
+
+def _normalize_snapshot_magic_code(magic_code):
+    normalized = str(magic_code or "").strip().upper()
+    if not SNAPSHOT_MAGIC_CODE_PATTERN.fullmatch(normalized):
+        raise ValueError(
+            "Invalid Agent Snapshot Magic Code. Call agent_session_snapshot_recover with exactly "
+            'one recovery argument shaped like {"magic_code":"PKM-SNAP-XXXX-XXXX-XXXX-XXXX"}. '
+            "Do not pass tool-discovery fields such as serverName or toolName.")
+    return normalized
 
 
 def _snapshot_b64encode(value):
@@ -175,24 +260,62 @@ def _snapshot_encrypt_payload(payload, snapshot_id, magic_code):
     }
 
 
-def _snapshot_decrypt_payload(snapshot):
-    payload = snapshot.get("payload")
-    if not isinstance(payload, dict) or payload.get("algorithm") != SNAPSHOT_PAYLOAD_ALGORITHM:
-        return payload or {}
+def _snapshot_payload_key(payload):
+    if not isinstance(payload, dict):
+        return None
+    algorithm = payload.get("algorithm")
+    if algorithm == SNAPSHOT_PAYLOAD_ALGORITHM:
+        return SNAPSHOT_PAYLOAD_KEY
+    if algorithm == LEGACY_SNAPSHOT_PAYLOAD_ALGORITHM:
+        return LEGACY_SNAPSHOT_PAYLOAD_KEY
+    return None
+
+
+def _snapshot_decrypt_envelope(payload, snapshot):
+    key = _snapshot_payload_key(payload)
+    if key is None:
+        return payload
     encrypted = _snapshot_b64decode(payload.get("ciphertext")) + _snapshot_b64decode(payload.get("tag"))
-    plaintext = AESGCM(SNAPSHOT_PAYLOAD_KEY).decrypt(
+    plaintext = AESGCM(key).decrypt(
         _snapshot_b64decode(payload.get("iv")), encrypted,
         _snapshot_aad(snapshot.get("snapshotId"), snapshot.get("magicCode")))
     return json.loads(plaintext.decode("utf-8"))
 
 
+def _snapshot_decrypt_payload(snapshot):
+    payload = snapshot.get("payload")
+    for _ in range(4):
+        if _snapshot_payload_key(payload) is None:
+            return payload or {}
+        payload = _snapshot_decrypt_envelope(payload, snapshot)
+    if _snapshot_payload_key(payload) is not None:
+        raise ValueError("Agent Snapshot payload contains too many nested encryption envelopes.")
+    return payload or {}
+
+
+def _snapshot_payload_is_canonical(payload):
+    return (
+        isinstance(payload, dict)
+        and isinstance(payload.get("session"), dict)
+        and isinstance(payload.get("recipeRuns"), list)
+    )
+
+
 def _snapshot_encrypt_legacy(path, snapshot):
-    payload = snapshot.get("payload") or {}
-    if isinstance(payload, dict) and payload.get("algorithm") == SNAPSHOT_PAYLOAD_ALGORITHM:
-        return snapshot
+    stored_payload = snapshot.get("payload") or {}
+    if isinstance(stored_payload, dict) and stored_payload.get("algorithm") == SNAPSHOT_PAYLOAD_ALGORITHM:
+        decrypted = _snapshot_decrypt_envelope(stored_payload, snapshot)
+        if _snapshot_payload_key(decrypted) is None:
+            if not _snapshot_payload_is_canonical(decrypted):
+                raise ValueError("Agent Snapshot payload is not a canonical Session capture.")
+            return snapshot
+    payload = _snapshot_decrypt_payload(snapshot)
+    if not _snapshot_payload_is_canonical(payload):
+        raise ValueError("Agent Snapshot payload is not a canonical Session capture.")
     snapshot["capture"] = _snapshot_capture(payload)
     snapshot["payload"] = _snapshot_encrypt_payload(
         payload, snapshot.get("snapshotId"), snapshot.get("magicCode"))
+    snapshot.pop("recovery", None)
     _atomic_write(path, snapshot)
     return snapshot
 
@@ -290,7 +413,12 @@ def _load_snapshot_by_magic(store, magic_code):
                 continue
             if snapshot.get("schema") == SNAPSHOT_SCHEMA and snapshot.get("magicCode") == normalized:
                 return _snapshot_encrypt_legacy(path, snapshot)
-    raise ValueError("Agent Snapshot was not found.")
+    raise ValueError(
+        "Agent Snapshot was not found in the current Knowledge Root. "
+        "The Magic Code identifies the Snapshot but does not contain its locally obfuscated "
+        "payload. Restore the "
+        "Agent Snapshot record from its origin Knowledge Root or an explicitly configured "
+        "GitHub Sync backup, then retry.")
 
 
 def _active_session_id(store, transport_key):
@@ -430,10 +558,10 @@ class AgentSessionMiddleware(Middleware):
         self.store = Path(store)
 
     async def on_call_tool(self, context, call_next):
+        tool_name = str(getattr(context.message, "name", "") or "")
         result = await call_next(context)
         fastmcp_context = context.fastmcp_context
         if fastmcp_context is not None:
-            tool_name = str(getattr(context.message, "name", "") or "")
             _update_managed_session(self.store, _transport_key(fastmcp_context), tool_name, result)
         return result
 
@@ -441,14 +569,12 @@ class AgentSessionMiddleware(Middleware):
 def register_agent_session_tools(mcp, store):
     store = Path(store)
 
-    @mcp.tool()
+    @mcp.tool(annotations={"readOnlyHint": True})
     def agent_session_capabilities() -> dict:
-        """Proactively discover durable Agent Session management before substantial multi-step work.
+        """Discover durable Agent Session management for substantial mutating work.
 
-        Use for coding, research, debugging, and operational tasks that need several actions,
-        validation, checkpoints, handoff, or continuation across turns. The user does not need
-        to mention Agent Sessions. Do not use for quick answers or trivial read-only lookups.
-        Next call agent_session_start before the first substantive mutation.
+        Use when edits or operations need durable progress, recovery, handoff, or
+        continuation across turns. Read-only diagnosis does not need a Session.
         """
         return {
             "schema": SESSION_SCHEMA,
@@ -456,17 +582,21 @@ def register_agent_session_tools(mcp, store):
             "registration": "explicit-opt-in",
             "proactive": True,
             "use_when": [
-                "substantial multi-step task",
-                "work requiring validation or recovery",
-                "work that may continue across turns",
+                "substantial mutating multi-step task",
+                "mutating work requiring validation or recovery",
+                "mutating work that may continue across turns",
             ],
-            "do_not_use_when": ["quick answer", "single read-only lookup", "trivial one-command request"],
+            "do_not_use_when": [
+                "read-only diagnosis or assessment",
+                "quick answer",
+                "trivial one-command request",
+            ],
             "next_tool": "agent_session_start",
             "first_managed_action": "agent_session_start",
             "tools": ["agent_session_start", "agent_session_status", "agent_session_checkpoint",
                       "agent_session_load", "agent_session_resume", "agent_session_export_checkpoint",
                       "agent_session_import_checkpoint", "agent_session_snapshot_create",
-                      "agent_session_snapshot_list", "agent_session_snapshot_rotate",
+                      "agent_session_snapshot_list",
                       "agent_session_snapshot_recover", "agent_session_todo_append",
                       "agent_session_todo_replan", "agent_session_todo_next", "agent_session_todo_report",
                       "agent_session_stop", "agent_session_end"],
@@ -479,7 +609,7 @@ def register_agent_session_tools(mcp, store):
                 "completion_instruction": "After reporting the final todo, validate and checkpoint as needed, then call agent_session_end when next_action.kind is call_agent_session_end.",
                 "example_todos_json": '[{"title":"Implement change","details":"Preserve existing behavior"},{"title":"Validate","details":"Run focused tests"}]',
             },
-            "handoff": "checkpoint/load/resume persists agent-authored recovery context; Agent Snapshots add a magic code plus recovery passphrase and clone a new independent Session; hidden model state is not inspectable.",
+            "handoff": "checkpoint/load/resume persists agent-authored recovery context; Agent Snapshots use a Magic Code to clone a new independent Session while the locally obfuscated payload remains in the Knowledge Root; hidden model state is not inspectable.",
         }
 
     @mcp.tool()
@@ -556,17 +686,23 @@ def register_agent_session_tools(mcp, store):
             "host_session_id": session.get("hostSessionId", ""),
             "traversal_strategy": session.get("traversalStrategy", "")}
 
-    @mcp.tool()
-    def agent_session_status(ctx: Context = None) -> dict:
-        """Return the active PKM-managed Agent Session for this MCP transport."""
+    @mcp.tool(annotations={"readOnlyHint": True})
+    def agent_session_status(detail: str = "compact", ctx: Context = None) -> dict:
+        """Return compact active Session state, or the complete record when detail is full."""
         if ctx is None:
             raise ValueError("MCP request context is required.")
+        detail = _validate_detail(detail)
         session_id = _active_session_id(store, _transport_key(ctx))
         if not session_id:
             return {"ok": True, "managed": False}
         path, _ = _paths(store, session_id)
         session = json.loads(path.read_text(encoding="utf-8"))
-        return {"ok": True, "managed": session.get("status") == "running", "session": session}
+        return {
+            "ok": True,
+            "managed": session.get("status") == "running",
+            "detail": detail,
+            "session": session if detail == "full" else _compact_session(session),
+        }
 
     @mcp.tool()
     def agent_session_stop(session_id: str, reason: str = "user-requested", summary: str = "",
@@ -586,7 +722,12 @@ def register_agent_session_tools(mcp, store):
             now = _now()
             session["status"] = "stopped"
             session["stopReason"] = str(reason or "user-requested")
-            session["summary"] = str(summary or "")
+            bounded_summary = _bounded_text(
+                summary, "summary", SESSION_SUMMARY_CHARACTER_LIMIT)
+            if bounded_summary:
+                session["summary"] = bounded_summary
+            else:
+                session.pop("summary", None)
             session["stoppedAt"] = now
             session["updatedAt"] = now
             _atomic_write(path, session)
@@ -626,7 +767,7 @@ def register_agent_session_tools(mcp, store):
         return {"ok": True, "session_id": session_id, "checkpoint_id": checkpoint_id,
                 "sequence": sequence, "recipe_run_ids": session.get("recipeRunIds") or []}
 
-    @mcp.tool()
+    @mcp.tool(annotations={"readOnlyHint": True})
     def agent_session_load(session_id: str) -> dict:
         """Load a durable Agent Session handoff in a new conversation without activating it."""
         session = _load_session(store, str(session_id or ""))
@@ -669,10 +810,10 @@ def register_agent_session_tools(mcp, store):
     @mcp.tool()
     def agent_session_snapshot_create(reason: str = "manual", state_json: str = "",
                                       ctx: Context = None) -> dict:
-        """Create an immutable Agent Snapshot and return its recovery passphrase exactly once.
+        """Create an immutable Agent Snapshot and return a reusable Magic Code recovery prompt.
 
         Use before closing a resource-heavy conversation. In a new conversation, paste the
-        magic code and recovery passphrase so the Agent can call agent_session_snapshot_recover.
+        Magic Code recovery prompt so the Agent can call agent_session_snapshot_recover.
         """
         if ctx is None:
             raise ValueError("MCP request context is required.")
@@ -708,8 +849,6 @@ def register_agent_session_tools(mcp, store):
                 _atomic_write(path, session)
             payload = _snapshot_payload(store, session)
         magic_code = _snapshot_magic_code()
-        recovery_passphrase = _snapshot_passphrase()
-        salt = secrets.token_hex(16)
         created_at = _now()
         snapshot_id = "agent_snapshot_" + hashlib.sha256(
             (magic_code + ":" + session_id + ":" + created_at).encode("utf-8")
@@ -725,11 +864,6 @@ def register_agent_session_tools(mcp, store):
             "agent": session.get("agent") or {"name": "Agent", "product": ""},
             "reason": str(reason or "manual"),
             "createdAt": created_at,
-            "recovery": {
-                "algorithm": "scrypt-sha256/v1",
-                "salt": salt,
-                "verifier": _snapshot_verifier(recovery_passphrase, salt),
-            },
             "capture": _snapshot_capture(payload),
             "payload": _snapshot_encrypt_payload(payload, snapshot_id, magic_code),
         }
@@ -740,15 +874,16 @@ def register_agent_session_tools(mcp, store):
         return {
             "ok": True,
             "snapshot": _snapshot_summary(snapshot),
-            "recovery_passphrase": recovery_passphrase,
-            "recovery_prompt": (
-                "Recover PKM Agent Snapshot " + magic_code
-                + " with recovery passphrase " + recovery_passphrase + "."
+            "recovery_prompt": _snapshot_recovery_prompt(magic_code),
+            "warning": (
+                "The Snapshot payload uses the fixed local 'uone' obfuscation key only to avoid "
+                "plaintext storage; it is not credential protection. Recovery requires this "
+                "Snapshot record to remain in the current Knowledge Root or be restored from "
+                "an explicitly configured GitHub Sync backup."
             ),
-            "warning": "The recovery passphrase is shown only once. Store it separately from the magic code.",
         }
 
-    @mcp.tool()
+    @mcp.tool(annotations={"readOnlyHint": True})
     def agent_session_snapshot_list() -> dict:
         """List immutable Agent Snapshots without exposing recovery verifiers or captured payloads."""
         directory = _snapshot_directory(store)
@@ -778,52 +913,17 @@ def register_agent_session_tools(mcp, store):
         return {"ok": True, "snapshots": snapshots}
 
     @mcp.tool()
-    def agent_session_snapshot_rotate(magic_code: str) -> dict:
-        """Rotate one Agent Snapshot recovery passphrase and invalidate the previous passphrase."""
-        snapshot = _load_snapshot_by_magic(store, magic_code)
-        if (snapshot.get("payload") or {}).get("algorithm") != SNAPSHOT_PAYLOAD_ALGORITHM:
-            payload = _snapshot_decrypt_payload(snapshot)
-            snapshot["capture"] = _snapshot_capture(payload)
-            snapshot["payload"] = _snapshot_encrypt_payload(
-                payload, snapshot.get("snapshotId"), snapshot.get("magicCode"))
-        recovery_passphrase = _snapshot_passphrase()
-        salt = secrets.token_hex(16)
-        snapshot["recovery"] = {
-            "algorithm": "scrypt-sha256/v1",
-            "salt": salt,
-            "verifier": _snapshot_verifier(recovery_passphrase, salt),
-            "rotatedAt": _now(),
-        }
-        snapshot_path = _snapshot_directory(store) / (str(snapshot["snapshotId"]) + ".json")
-        _atomic_write(snapshot_path, snapshot)
-        return {
-            "ok": True,
-            "snapshot": _snapshot_summary(snapshot),
-            "recovery_passphrase": recovery_passphrase,
-            "recovery_prompt": (
-                "Recover PKM Agent Snapshot " + str(snapshot["magicCode"])
-                + " with recovery passphrase " + recovery_passphrase + "."
-            ),
-            "warning": "The previous recovery passphrase is no longer valid.",
-        }
-
-    @mcp.tool()
-    def agent_session_snapshot_recover(magic_code: str, recovery_passphrase: str,
-                                       host_session_id: str = "", ctx: Context = None) -> dict:
+    def agent_session_snapshot_recover(magic_code: str, host_session_id: str = "",
+                                       ctx: Context = None) -> dict:
         """Recover a pasted Agent Snapshot into a new independent managed Session.
 
         The source Session and immutable Snapshot remain unchanged, so the same recovery
-        credentials may intentionally create multiple Sessions with the same starting state.
+        Magic Code may intentionally create multiple Sessions with the same starting state.
         """
+        magic_code = _normalize_snapshot_magic_code(magic_code)
         if ctx is None:
             raise ValueError("MCP request context is required.")
         snapshot = _load_snapshot_by_magic(store, magic_code)
-        recovery = snapshot.get("recovery") or {}
-        if recovery.get("algorithm") != "scrypt-sha256/v1":
-            raise ValueError("Agent Snapshot recovery algorithm is unsupported.")
-        supplied = _snapshot_verifier(recovery_passphrase, str(recovery.get("salt") or ""))
-        if not hmac.compare_digest(supplied, str(recovery.get("verifier") or "")):
-            raise ValueError("Agent Snapshot recovery passphrase is incorrect.")
         transport_key = _transport_key(ctx)
         active_session_id = _active_session_id(store, transport_key)
         if active_session_id:
@@ -858,8 +958,16 @@ def register_agent_session_tools(mcp, store):
             run["receipts"] = {}
             if isinstance(run.get("parent"), dict):
                 run["parent"]["runId"] = run_id_map.get(str(run["parent"].get("runId") or ""), "")
-            for record in (run.get("nodes") or {}).values():
-                if record.get("childRunId"):
+            for node_id, record in (run.get("nodes") or {}).items():
+                if record.get("state") == "running":
+                    reset_record = {"state": "pending"}
+                    if record.get("childRunId"):
+                        reset_record["childRunId"] = run_id_map.get(str(record["childRunId"]), "")
+                    if record.get("childRecipeId"):
+                        reset_record["childRecipeId"] = record["childRecipeId"]
+                    run["nodes"][node_id] = reset_record
+                    record = run["nodes"][node_id]
+                elif record.get("childRunId"):
                     record["childRunId"] = run_id_map.get(str(record["childRunId"]), "")
             recovered_runs.append(run)
         now = _now()
@@ -885,6 +993,11 @@ def register_agent_session_tools(mcp, store):
         })
         _touch_liveness(session, transport_key)
         for todo in session.get("todos") or []:
+            if todo.get("status") in {"running", "paused"}:
+                todo["status"] = "pending"
+                for field in ("startedAt", "pausedAt", "pauseReason", "resumedAt"):
+                    todo.pop(field, None)
+                todo["updatedAt"] = now
             if todo.get("recipeRunId"):
                 todo["recipeRunId"] = run_id_map.get(str(todo["recipeRunId"]), "")
             if isinstance(todo.get("recipeRunIds"), list):
@@ -957,19 +1070,46 @@ def register_agent_session_tools(mcp, store):
         if existing:
             if existing.get("fingerprint") != fingerprint:
                 raise ValueError("command_id was reused with different todo parameters.")
-            return command_id, fingerprint, existing.get("result") or {}
+            replay = dict(existing.get("result") or {})
+            if isinstance(arguments, dict) and arguments.get("detail") == "full":
+                todos_by_id = {
+                    todo.get("todoId"): todo
+                    for todo in (session.get("todos") or [])
+                    if isinstance(todo, dict)
+                }
+                for key in ("todo", "resumed_todo"):
+                    compact = replay.get(key)
+                    if isinstance(compact, dict) and compact.get("todoId") in todos_by_id:
+                        replay[key] = todos_by_id[compact["todoId"]]
+            return command_id, fingerprint, replay
         return command_id, fingerprint, None
 
     def save_todo_receipt(session, command_id, fingerprint, result):
         receipts = session.setdefault("todoCommandReceipts", {})
-        receipts[command_id] = {"fingerprint": fingerprint, "result": result}
+        for receipt in receipts.values():
+            stored_result = receipt.get("result")
+            if isinstance(stored_result, dict):
+                stored_result.pop("todos", None)
+                for key in ("todo", "resumed_todo"):
+                    if isinstance(stored_result.get(key), dict):
+                        stored_result[key] = _compact_todo(stored_result[key])
+        compact_result = dict(result)
+        compact_result.pop("todos", None)
+        for key in ("todo", "resumed_todo"):
+            if isinstance(compact_result.get(key), dict):
+                compact_result[key] = _compact_todo(compact_result[key])
+        receipts[command_id] = {"fingerprint": fingerprint, "result": compact_result}
         while len(receipts) > 200:
+            del receipts[next(iter(receipts))]
+        while len(receipts) > 1 and len(_json(receipts).encode("utf-8")) > TODO_RECEIPT_BYTE_LIMIT:
             del receipts[next(iter(receipts))]
 
     @mcp.tool()
-    def agent_session_todo_append(todos_json: str, command_id: str, ctx: Context = None) -> dict:
-        """Append one or more non-conflicting todos to the tail of the active Session queue without preempting unfinished work."""
+    def agent_session_todo_append(todos_json: str, command_id: str, detail: str = "compact",
+                                  ctx: Context = None) -> dict:
+        """Append todos and return compact IDs by default; use detail full to include the queue."""
         session_id = active_session_for_todo(ctx)
+        detail = _validate_detail(detail)
         try:
             raw_todos = json.loads(todos_json or "[]")
         except json.JSONDecodeError as error:
@@ -981,7 +1121,12 @@ def register_agent_session_tools(mcp, store):
             item = {"title": value, "details": ""} if isinstance(value, str) else value
             if not isinstance(item, dict) or not str(item.get("title") or "").strip():
                 raise ValueError("Each todo must be a title string or an object with a non-empty title.")
-            normalized.append({"title": str(item["title"]).strip(), "details": str(item.get("details") or "").strip()})
+            normalized.append({
+                "title": _bounded_text(
+                    item["title"], "todo title", TODO_TITLE_CHARACTER_LIMIT),
+                "details": _bounded_text(
+                    item.get("details"), "todo details", TODO_DETAILS_CHARACTER_LIMIT),
+            })
         path, lock = _paths(store, session_id)
         with _file_lock(lock):
             session = _load_session(store, session_id)
@@ -999,14 +1144,17 @@ def register_agent_session_tools(mcp, store):
                 added.append(todo_id)
             session["updatedAt"] = now
             result = {"ok": True, "session_id": session_id, "added_todo_ids": added,
-                      "queue_length": len(todos), "todos": todos}
+                      "queue_length": len(todos)}
+            if detail == "full":
+                result["todos"] = todos
             save_todo_receipt(session, command_id, fingerprint, result)
             _atomic_write(path, session)
             return result
 
     @mcp.tool()
     def agent_session_todo_replan(operation_json: str, command_id: str,
-                                  session_id: str = "", ctx: Context = None) -> dict:
+                                  session_id: str = "", detail: str = "compact",
+                                  ctx: Context = None) -> dict:
         """Apply an explicit user-directed todo change without adopting another Session transport.
 
         Use type=interrupt to pause the running todo and insert a report_status or work action
@@ -1018,6 +1166,7 @@ def register_agent_session_tools(mcp, store):
             raise ValueError("operation_json must be a JSON object: " + str(error)) from error
         if not isinstance(operation, dict):
             raise ValueError("operation_json must be a JSON object.")
+        detail = _validate_detail(detail)
         target_session_id = str(session_id or "").strip() or active_session_for_todo(ctx)
         path, lock = _paths(store, target_session_id)
         with _file_lock(lock):
@@ -1080,19 +1229,24 @@ def register_agent_session_tools(mcp, store):
                 raise ValueError("type must be interrupt, update, or cancel.")
             session["updatedAt"] = now
             result = {"ok": True, "session_id": target_session_id, "operation": operation_type,
-                      "affected_todo_ids": affected, "todos": todos}
+                      "affected_todo_ids": affected, "queue_length": len(todos)}
+            if detail == "full":
+                result["todos"] = todos
             save_todo_receipt(session, command_id, fingerprint, result)
             _atomic_write(path, session)
             return result
 
     @mcp.tool()
-    def agent_session_todo_next(command_id: str, ctx: Context = None) -> dict:
-        """Claim the first pending Session todo; return the current running todo without preempting it."""
+    def agent_session_todo_next(command_id: str, detail: str = "compact",
+                                ctx: Context = None) -> dict:
+        """Claim the first pending Todo; compact output avoids echoing its instructions."""
         session_id = active_session_for_todo(ctx)
+        detail = _validate_detail(detail)
         path, lock = _paths(store, session_id)
         with _file_lock(lock):
             session = _load_session(store, session_id)
-            command_id, fingerprint, prior = todo_receipt(session, command_id, "next", {})
+            command_id, fingerprint, prior = todo_receipt(
+                session, command_id, "next", {"detail": detail})
             if prior is not None:
                 return prior
             todos = session.setdefault("todos", [])
@@ -1105,7 +1259,12 @@ def register_agent_session_tools(mcp, store):
                     todo["startedAt"] = _now()
                     todo["updatedAt"] = todo["startedAt"]
                     claimed = True
-            result = {"ok": True, "session_id": session_id, "claimed": claimed, "todo": todo}
+            result = {
+                "ok": True,
+                "session_id": session_id,
+                "claimed": claimed,
+                "todo": _todo_projection(todo, detail),
+            }
             save_todo_receipt(session, command_id, fingerprint, result)
             session["updatedAt"] = _now()
             _atomic_write(path, session)
@@ -1113,14 +1272,22 @@ def register_agent_session_tools(mcp, store):
 
     @mcp.tool()
     def agent_session_todo_report(todo_id: str, status: str, command_id: str,
-                                  summary: str = "", ctx: Context = None) -> dict:
-        """Finish a running Session todo as succeeded, failed, or skipped and retain its outcome summary."""
+                                  summary: str = "", detail: str = "compact",
+                                  ctx: Context = None) -> dict:
+        """Finish a running Todo; use a concise durable outcome and compact output."""
         session_id = active_session_for_todo(ctx)
         todo_id = str(todo_id or "").strip()
         status = str(status or "").strip()
+        detail = _validate_detail(detail)
         if status not in TODO_TERMINAL_STATES:
             raise ValueError("status must be succeeded, failed, or skipped.")
-        arguments = {"todo_id": todo_id, "status": status, "summary": str(summary or "")}
+        arguments = {
+            "todo_id": todo_id,
+            "status": status,
+            "summary": _bounded_text(
+                summary, "summary", TODO_SUMMARY_CHARACTER_LIMIT),
+            "detail": detail,
+        }
         path, lock = _paths(store, session_id)
         with _file_lock(lock):
             session = _load_session(store, session_id)
@@ -1159,8 +1326,13 @@ def register_agent_session_tools(mcp, store):
                     "kind": "call_agent_session_end",
                     "reason": "All Session todos are terminal. Validate the overall outcome, checkpoint if useful, then end the Session.",
                 }
-            result = {"ok": True, "session_id": session_id, "todo": todo,
-                      "resumed_todo": resumed_todo, "next_action": next_action}
+            result = {
+                "ok": True,
+                "session_id": session_id,
+                "todo": _todo_projection(todo, detail),
+                "resumed_todo": _todo_projection(resumed_todo, detail),
+                "next_action": next_action,
+            }
             save_todo_receipt(session, command_id, fingerprint, result)
             _atomic_write(path, session)
             return result
@@ -1269,7 +1441,7 @@ def register_agent_session_tools(mcp, store):
 
     @mcp.tool()
     def agent_session_end(summary: str = "", ctx: Context = None) -> dict:
-        """End the active managed Agent Session while retaining its durable dashboard history."""
+        """End the Session; omit summary when Todo outcomes already contain the evidence."""
         if ctx is None:
             raise ValueError("MCP request context is required.")
         transport_key = _transport_key(ctx)
@@ -1280,7 +1452,12 @@ def register_agent_session_tools(mcp, store):
         with _file_lock(lock):
             session = json.loads(path.read_text(encoding="utf-8"))
             session["status"] = "completed"
-            session["summary"] = str(summary or "")
+            bounded_summary = _bounded_text(
+                summary, "summary", SESSION_SUMMARY_CHARACTER_LIMIT)
+            if bounded_summary:
+                session["summary"] = bounded_summary
+            else:
+                session.pop("summary", None)
             session["updatedAt"] = _now()
             _atomic_write(path, session)
         _active_path(store, transport_key).unlink(missing_ok=True)
