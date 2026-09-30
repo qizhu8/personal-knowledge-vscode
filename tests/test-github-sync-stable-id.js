@@ -235,12 +235,12 @@ async function sync(machine, checkouts) {
       await sync(publisher, test.checkouts);
       fs.writeFileSync(reader.catalog.skills[0].source, skill("Shared", "local edit"));
       fs.utimesSync(reader.catalog.skills[0].source, new Date("2026-09-29T00:00:00.000Z"), new Date("2026-09-29T00:00:00.000Z"));
-      const recreated = await sync(reader, test.checkouts);
-      assert.strictEqual(recreated.resolutionReport.rules["newer-local-operation"], 1,
-        "a local edit newer than an explicit remote deletion recreates the stable entity");
-      assert.strictEqual(
-        run(test.root, ["--git-dir", test.remote, "show", "main:skills/Original/Shared.md"]),
-        skill("Shared", "local edit").trim(),
+      await assert.rejects(
+        () => sync(reader, test.checkouts),
+        error => error instanceof GitHubSyncConflictError
+          && error.resolutionReport.rules["human-required"] === 1
+          && error.conflicts[0].itemId === "knowledge_shared",
+        "file mtime cannot resolve a Local edit against an explicit Remote deletion",
       );
     } finally {
       fs.rmSync(test.root, { recursive: true, force: true });

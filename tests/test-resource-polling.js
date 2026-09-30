@@ -26,8 +26,8 @@ assert.match(extension, /_watcherRefreshTimer = setTimeout/);
 assert.match(extension, /\.pkm\/content-privacy\.json/);
 assert.match(extension, /_watcherRefreshTimer\.unref\?\.\(\)/);
 assert.match(extension, /if \(_watcherRefreshTimer\) clearTimeout\(_watcherRefreshTimer\)/);
-assert.match(extension, /new vscode\.RelativePattern\(getStorePath\(\), "\.pkm\/state\/\{projects\.json,project-store\.json,agent-sessions\/\*\*\/\*\.json,agent-sessions-trash\/\*\*\/\*\.json,recipe-runs\/\*\*\/\*\.json\}"\)/,
-	"out-of-process Project, Recipe Run, and Agent Session writes must be watched");
+assert.match(extension, /new vscode\.RelativePattern\(getStorePath\(\), "\.pkm\/state\/\{projects\.json,project-store\.json,agent-sessions\/\*\*\/\*\.json,agent-sessions-trash\/\*\*\/\*\.json,recipe-runs\/\*\*\/\*\.json,mcp-usage\/todos\/\*\*\/\*\.json\}"\)/,
+	"out-of-process Project, Recipe Run, Agent Session, and Todo usage writes must be watched");
 assert.match(extension, /new vscode\.RelativePattern\(getStorePath\(\), "recipes\/\*\*\/\*"\)/,
 	"out-of-process canonical Recipe file writes must be watched");
 assert.match(extension, /const scope = relativeStatePath === "projects\.json"[\s\S]{0,1200}postMessage\(\{ command: "projectStateChanged", data: \{ scope \} \}\)/,

@@ -45,7 +45,7 @@ def assert_private_demo(page, route: str, require_markers: bool = True) -> None:
         "config": ["/home/demo/", "PKM Integration Status"],
         "chat": ["Release Planning", "Docs Reviewer"],
         "papers": [],
-        "subscriptions": ["AAGL Working Set", "Creative Generation Team"],
+        "subscriptions": ["AAGL Working Set", "CreativeGen"],
     }[route]
     if require_markers:
         for value in required:
@@ -146,23 +146,22 @@ def capture_chat_gif(page) -> None:
     assert_private_demo(page, "chat")
     install_cursor(page)
     steps = [
-        ["Copy the Magic Link", "Click Invite beside the hosted Room."],
-        ["Give it to an Agent", "Paste the complete invite and assign an exact Agent name."],
+        ["Open the hosted Room", "Select the active Room from the sidebar."],
+        ["Direct an Agent", "Choose a recipient before sending a task."],
         ["Select Docs Reviewer", "Use To autocomplete instead of hand-typing a spaced alias."],
         ["Send the first task", "The Agent changes from standby to working, responds, then returns."],
         ["Select QA Agent", "Start a second directed round with another Agent."],
         ["Send the second task", "Observe working, response, and standby again."],
     ]
-    install_lesson_rail(page, "Chatroom: Invite and Direct Agents", steps)
+    install_lesson_rail(page, "Chatroom: Direct Agents", steps)
     static_guide = SCREENSHOTS / "chatroom-guide.png"
     page.screenshot(path=str(static_guide), full_page=False)
     validate_image_metadata(static_guide)
     remove_lesson_rail(page)
     index = 0
-    invite = page.locator("#chat-hub-info a", has_text="Invite")
-    move_cursor(page, invite); index = frame(page, frames_dir, index); invite.click()
+    room = page.locator("#chat-hosted-rooms uone-disclosure-card").first
+    move_cursor(page, room); index = frame(page, frames_dir, index); room.click()
     page.wait_for_timeout(250)
-    details = page.evaluate("() => new Promise(resolve => { const handler=e=>{window.removeEventListener('releaseInviteCopied',handler);resolve(e.detail)}; window.addEventListener('releaseInviteCopied',handler); document.querySelector('#chat-hub-info a')?.click(); })")
     index = frame(page, frames_dir, index)
     for round_index, (agent, prompt) in enumerate([
         ("Docs Reviewer", "Review the installation guide and version table."),
@@ -254,7 +253,7 @@ def capture_installation_gif(page) -> None:
     index = 0
     steps = [
         ("1 — Check component versions", "Server, Knowledge, Chat, and Skill Router versions are independent. Orange means action is required.", ".mcp-version-table"),
-        ("2 — Verify resolved paths", "Confirm the Knowledge Root, environment root, runtime, Python, and generated server directory.", ".mcp-paths"),
+        ("2 — Verify resolved paths", "Confirm the Knowledge Root, environment root, runtime, Python, and generated server directory.", ".mcp-paths:has(h3:text-is('Paths'))"),
         ("3 — Follow Setup guideline", "Complete each row from top to bottom. Green checks are already done.", ".mcp-setup-guide"),
         ("4 — Select Python 3.10+", "Validate a machine-local Python, then create or repair the isolated pkm-mcp runtime.", "#mcp-python-path"),
         ("5 — Generate server code", "Generate server.py, chat_server.py, and requirements.txt. Current code needs no highlighted action.", "#mcp-regenerate-server-code"),

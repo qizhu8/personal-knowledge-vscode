@@ -15,7 +15,7 @@ assert.ok(fs.existsSync(path.join(root, "dist", "webview", "codicon.css")));
 assert.ok(fs.existsSync(path.join(root, "dist", "webview", "codicon.ttf")));
 assert.match(html, /href="%%CODICON_CSS%%"/);
 assert.match(extension, /%%CODICON_CSS%%/);
-assert.match(extension, /target\.iconPath = vscode\.Uri\.file\(path\.join\(context\.extensionPath, "resources", "brand-icon\.svg"\)\)/,
+assert.match(extension, /target\.iconPath = vscode\.Uri\.joinPath\(context\.extensionUri, "resources", "brand-icon\.svg"\)/,
   "editor tabs must use the colorful brand icon");
 assert.strictEqual(manifest.contributes.viewsContainers.activitybar[0].icon, "resources/sidebar-icon.svg",
   "Activity Bar navigation must retain a theme-colored monochrome icon");

@@ -135,6 +135,14 @@ represent work already tracked by a Todo. The Agent Session Todo remains the
 durable cross-turn commitment. Report it complete only after any attached
 Recipe is terminal and the outcome has independent validation evidence.
 
+For a qualified recurring Recipe, call `recipe_usage_summary` with its
+`recipe_id` only when past execution cost or failure patterns could change
+the run plan. Compare the matching revision, not aggregate results from older
+definitions. Repeated failures or retries are a hint to inspect that node and
+its current prerequisites before execution, not proof that the Recipe is wrong;
+unknown token usage is not zero cost. Keep raw run history out of the task
+context unless the compact summary identifies a specific failure to inspect.
+
 Recipe action tools return compact state by default. Request full run detail
 only when historical node results, usage, or observability diagnostics are
 needed.

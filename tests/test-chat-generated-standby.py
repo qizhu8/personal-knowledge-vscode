@@ -4,10 +4,12 @@ import importlib.machinery
 import importlib.util
 import os
 import json
+import sys
 import tempfile
 
 
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(root, "resources"))
 template = os.path.join(root, "resources", "chat_server.py.template")
 loader = importlib.machinery.SourceFileLoader("generated_chat_template", template)
 spec = importlib.util.spec_from_loader(loader.name, loader)

@@ -18,7 +18,7 @@ function renderGitHubSyncLoading() {
 
 function showGitHubSyncTab() {
   if (githubSyncUpdatedAt) renderGitHubSyncPane(); else renderGitHubSyncLoading();
-  if (!tabCacheIsFresh(githubSyncUpdatedAt)) ask('githubSyncState', {}, null, Boolean(githubSyncUpdatedAt));
+  ensureGitHubSyncStatus();
 }
 
 function githubSyncDefaultSelection() {

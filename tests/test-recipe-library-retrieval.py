@@ -19,7 +19,7 @@ class FakeMcp:
     def __init__(self):
         self.tools = {}
 
-    def tool(self):
+    def tool(self, annotations=None):
         def decorate(function):
             self.tools[function.__name__] = function
             return function

@@ -188,6 +188,9 @@ export function updateGitHubSyncAgentCandidate(
   const record = readGitHubSyncConflict(stateDirectory, targetId);
   const file = record?.files.find(candidate => candidate.path === relative);
   if (!record || !file) throw new Error("GitHub Sync conflict file was not found.");
+  if (agentReview?.accuracyRisk || agentReview?.unresolvedConflicts.length || agentReview?.introducedContent.length) {
+    throw new Error("Agent merge still has accuracy risks; resolve this conflict manually.");
+  }
   const candidate = Buffer.from(content, "utf8");
   validateGitHubSyncCandidate(relative, candidate);
   writeVariant(stateDirectory, targetId, "merged", relative, candidate);

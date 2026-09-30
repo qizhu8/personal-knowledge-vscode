@@ -29,21 +29,21 @@ def open_recipe(page):
     page.goto(BASE_URL, wait_until="networkidle")
     page.locator('[data-workspace="automation"]').click()
     page.locator('.tab[data-tab="recipes"]').click()
-    page.get_by_role("searchbox", name="Search Recipes").fill("PKM Tutorial")
+    page.get_by_role("searchbox", name="Search Recipes").fill("PKM Tutorial (Editable Demo)")
     page.locator('.tree-cat-hdr[title="Examples"]').click()
     page.locator('.tree-cat-hdr[title="PKM"]').click()
-    page.locator('.project-recipe-row', has_text="PKM Tutorial").click()
+    page.locator('.project-recipe-row', has_text="PKM Tutorial (Editable Demo)").click()
     page.locator('.recipe-graph-toolbar').wait_for()
     page.wait_for_function("recipeDraftBaselinePending === false")
 
 
 def open_configurable_testing_recipe(page):
-    page.get_by_role("searchbox", name="Search Recipes").fill("Configurable Validation and Testing")
+    page.get_by_role("searchbox", name="Search Recipes").fill("Configurable Validation and Testing (Editable Demo)")
     for category in ["System", "PKM", "Fundamental"]:
         header = page.locator(f'.tree-cat-hdr[title="{category}"]')
         if header.count() and "expanded" not in (header.get_attribute("class") or ""):
             header.click()
-    page.locator('.project-recipe-row', has_text="Configurable Validation and Testing").click()
+    page.locator('.project-recipe-row', has_text="Configurable Validation and Testing (Editable Demo)").click()
     page.locator('.recipe-methodology-projections').wait_for()
     page.wait_for_function("recipeDraftBaselinePending === false")
 
@@ -410,7 +410,7 @@ with sync_playwright() as playwright:
     assert browser_button.get_attribute("aria-busy") == "true"
     assert "Opening" in browser_button.inner_text()
     page.wait_for_function("window.__recipeOpen !== null")
-    assert page.evaluate("window.__recipeOpen.recipeId") == "recipe_builtin_pkm_tutorial"
+    assert page.evaluate("window.__recipeOpen.recipeId") == "recipe_demo_pkm_tutorial"
 
     page.locator('.recipe-graph-actions button[onclick="recipeSave(this)"]').click()
     page.wait_for_function("window.__recipeSave !== null")

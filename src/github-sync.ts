@@ -2147,17 +2147,6 @@ async function syncGitHubTargetAttempt(
     rules: { ...resolutionRules },
     generatedAt: new Date().toISOString(),
   });
-  const remoteEntityOperationAt = async (files: GitHubSyncManagedFile[] | undefined): Promise<number | undefined> => {
-    if (!remoteCommit || !files?.length) return undefined;
-    const value = await git(checkout, ["log", "-1", "--format=%cI", remoteCommit, "--", ...files.map(file => file.path)]);
-    const timestamp = Date.parse(value.trim());
-    return Number.isFinite(timestamp) ? timestamp : undefined;
-  };
-  const localEntityOperationAt = (files: GitHubSyncManagedFile[] | undefined): number | undefined => {
-    const values = (files || []).map(file => file.localModifiedAt).filter((value): value is number => Number.isFinite(value));
-    return values.length ? Math.max(...values) : undefined;
-  };
-
   const replaceRemoteEntity = (key: string, files: GitHubSyncManagedFile[] | undefined): void => {
     for (const [relative, file] of finalRemote) if (entityKey(file.type, file.itemId) === key) finalRemote.delete(relative);
     if (files) for (const file of files) finalRemote.set(file.path, file);
@@ -2269,44 +2258,6 @@ async function syncGitHubTargetAttempt(
     const remoteState = remoteDeletionMap.has(key) ? "deleted" : entityState(remote);
     const localChanged = localState !== baseState;
     const remoteChanged = remoteState !== baseState;
-
-    if (localChanged && remoteChanged && !local && remote && localDeletionMap.has(key)) {
-      const localDeletion = localDeletionMap.get(key)!;
-      const localOperationAt = Date.parse(localDeletion.deletedAt);
-      const remoteOperationAt = await remoteEntityOperationAt(remote);
-      if (remoteOperationAt !== undefined && remoteOperationAt !== localOperationAt) {
-        acknowledgedDeletions.push(localDeletion);
-        if (remoteOperationAt > localOperationAt) {
-          recordResolution("newer-remote-operation", remote, base);
-          replaceRemoteEntity(key, remote);
-          finalDeletions.delete(key);
-          applyRemoteEntity(base, local, remote);
-        } else {
-          recordResolution("newer-local-operation", undefined, base, remote);
-          replaceRemoteEntity(key, undefined);
-          finalDeletions.set(key, localDeletion);
-        }
-        continue;
-      }
-    }
-    if (localChanged && remoteChanged && local && !remote && remoteDeletionMap.has(key)) {
-      const remoteDeletion = remoteDeletionMap.get(key)!;
-      const localOperationAt = localEntityOperationAt(local);
-      const remoteOperationAt = Date.parse(remoteDeletion.deletedAt);
-      if (localOperationAt !== undefined && Number.isFinite(remoteOperationAt) && localOperationAt !== remoteOperationAt) {
-        if (localOperationAt > remoteOperationAt) {
-          recordResolution("newer-local-operation", local, base);
-          replaceRemoteEntity(key, local);
-          finalDeletions.delete(key);
-        } else {
-          recordResolution("newer-remote-operation", undefined, base, local);
-          replaceRemoteEntity(key, undefined);
-          finalDeletions.set(key, remoteDeletion);
-          applyRemoteEntity(base, local, undefined);
-        }
-        continue;
-      }
-    }
 
     if (localChanged && remoteChanged && localState !== remoteState) {
       if (!local || !remote) {

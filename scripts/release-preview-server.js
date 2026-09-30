@@ -10,6 +10,9 @@ const { initializeProjectModel } = require(path.join(root, "dist", "workflows", 
 const { FEATURE_TOUR_MODULES } = require(path.join(root, "dist", "onboarding-experience.js"));
 const configurableTestingRecipe = initializeProjectModel(undefined, () => "release-preview")
   .recipes.find(recipe => recipe.name === "Configurable Validation and Testing");
+const { systemKind: _configurableSystemKind, ...editableConfigurableTestingRecipe } = configurableTestingRecipe;
+editableConfigurableTestingRecipe.recipeId = "recipe_demo_configurable_testing";
+editableConfigurableTestingRecipe.name = "Configurable Validation and Testing (Editable Demo)";
 
 const demoMcp = {
   installed: true,
@@ -115,13 +118,14 @@ function demoLinearRecipe(recipeId, name, description, steps, executableDigest) 
     },
   };
 }
-function demoPkmTutorialRecipe() {
+function demoPkmTutorialRecipe(editable = false) {
   const node = (nodeId, generalInstruction, dependsOn = [], ports = { inputs: ["dependency"], outputs: ["completion"] }, control = { mode: "single" }) => ({
     nodeId, kind: "pkm.step.noop/v1", config: {}, generalInstruction, dependsOn, ports, control,
   });
   return {
-    recipeId: "recipe_builtin_pkm_tutorial", scope: "global", category: "Examples/PKM", systemKind: "built-in",
-    name: "PKM Tutorial",
+    recipeId: editable ? "recipe_demo_pkm_tutorial" : "recipe_builtin_pkm_tutorial", scope: "global", category: "Examples/PKM",
+    ...(editable ? {} : { systemKind: "built-in" }),
+    name: editable ? "PKM Tutorial (Editable Demo)" : "PKM Tutorial",
     description: "Answer PKM usage questions through question understanding, system guidance retrieval, validation, and honest synthesis.",
     metadata: {
       applicableFunctions: ["PKM help", "PKM tutorial", "Usage question"],
@@ -164,10 +168,12 @@ const demoProjects = {
   privateTopLevels: ["Personal"],
   recipes: [
     configurableTestingRecipe,
+    editableConfigurableTestingRecipe,
     demoLinearRecipe("recipe_builtin_software", "Software Development", "Develop a software change from requirements through delivery.", ["understand", "plan", "implement", "validate", "deliver"], "3a9ff4d48a10d90e"),
     demoLinearRecipe("recipe_builtin_bugfix", "Bug Fix", "Reproduce, diagnose, fix, and verify a defect.", ["reproduce", "investigate", "fix", "regression-check", "report"], "53ae27b7bb7539ce"),
     demoLinearRecipe("recipe_builtin_ui", "UI Development", "Design, implement, and validate an interface.", ["understand-ux", "prototype", "implement-ui", "validate-ui", "review"], "2b72642253116bd5"),
     demoPkmTutorialRecipe(),
+    demoPkmTutorialRecipe(true),
     { recipeId: "recipe_demo_private", scope: "global", category: "Personal", name: "Private Review (Demo)", description: "Preview-only Recipe used to verify privacy presentation.", revision: 1, executableDigest: "92e0f615fce4591a", definition: { spec: { nodes: [{ nodeId: "review" }] } } },
   ],
   agentSessions: [{

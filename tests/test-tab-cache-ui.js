@@ -71,13 +71,14 @@ verifyCachedTab(skillRouter, "showSkillRouterTab", "skillRouterStatusCache", "sk
 const githubCalls = [];
 const githubContext = {
   githubSyncUpdatedAt: 100,
+  githubSyncStatusRequested: false,
   renderGitHubSyncPane: () => githubCalls.push(["render"]),
   renderGitHubSyncLoading: () => githubCalls.push(["loading"]),
   tabCacheIsFresh: value => value === 100,
   ask: (...args) => githubCalls.push(["ask", ...args]),
 };
 vm.createContext(githubContext);
-vm.runInContext(`${functionSource(github, "showGitHubSyncTab")};this.show=showGitHubSyncTab`, githubContext);
+vm.runInContext(`${functionSource(github, "ensureGitHubSyncStatus")};${functionSource(github, "showGitHubSyncTab")};this.show=showGitHubSyncTab`, githubContext);
 githubContext.show();
 assert.deepStrictEqual(plain(githubCalls), [["render"]]);
 githubCalls.length = 0;
@@ -85,6 +86,10 @@ githubContext.githubSyncUpdatedAt = 50;
 githubContext.show();
 assert.deepStrictEqual(plain(githubCalls), [["render"], ["ask", "githubSyncState", {}, null, true]]);
 githubCalls.length = 0;
+githubContext.show();
+assert.deepStrictEqual(plain(githubCalls), [["render"]], "pending GitHub Sync state requests must be deduplicated");
+githubCalls.length = 0;
+githubContext.githubSyncStatusRequested = false;
 githubContext.githubSyncUpdatedAt = 0;
 githubContext.show();
 assert.deepStrictEqual(plain(githubCalls), [["loading"], ["ask", "githubSyncState", {}, null, false]]);

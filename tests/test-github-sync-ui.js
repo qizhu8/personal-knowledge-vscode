@@ -22,6 +22,13 @@ vm.runInContext("githubSyncForce('primary', {})", context);
 assert.strictEqual(requests.length, 1, "rapid Force Sync clicks must synchronously post at most one request before host state returns");
 assert.strictEqual(requests[0].command, "githubSyncRun");
 assert.strictEqual(requests[0].payload.targetId, "primary");
+vm.runInContext("tabCacheIsFresh = () => false; ensureGitHubSyncStatus(); ensureGitHubSyncStatus()", context);
+assert.strictEqual(requests.filter(request => request.command === "githubSyncState").length, 1,
+  "concurrent GitHub Sync status refreshes must post only one request");
+assert.match(source, /function showGitHubSyncTab\(\) \{[\s\S]*?ensureGitHubSyncStatus\(\);/,
+  "opening GitHub Sync uses the same deduplicated status request");
+assert.match(coreSource, /action === 'githubSyncState'\) githubSyncStatusRequested = false/,
+  "a failed status request must release the refresh guard for the next retry");
 
 assert.match(source, /Sync interval \(minutes\)[\s\S]*min="1" max="1440" step="1" required/,
   "the per-target interval is visible and constrained");

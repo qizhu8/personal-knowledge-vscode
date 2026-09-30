@@ -5,6 +5,13 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.7] - 2026-09-30
+
+- Required human review for concurrent GitHub Sync deletion and modification conflicts instead of deciding between machines by file or commit timestamps.
+- Rejected accuracy-risk Agent merge candidates before staging them, leaving existing conflict choices intact for manual review.
+- Restored GitHub Sync status retry after a failed load and deduplicated simultaneous view refreshes.
+- Added revision-aware, on-demand historical Recipe usage guidance without loading raw run histories into routine task context.
+- Updated browser preview fixtures so editable Recipe scenarios no longer rely on read-only built-in Recipes.
 - Fixed native MCP startup from Remote Development windows by preserving the Extension Host URI scheme and authority for the server working directory. This prevents a Windows UI host from trying to execute Linux remote paths and reporting an opaque code 1 exit.
 - Added bounded recovery for restored PKM Webviews that never send their ready signal, including VS Code service-worker invalid-state failures. The stale restored panel is disposed and recreated once; replacement panels cannot enter a recreation loop.
 - Added release-blocking regressions for local and remote native MCP routing plus restored-Webview readiness, stale-panel recovery, superseded panels, and the no-loop replacement path. Packaging now runs these tests alongside the real stdio MCP smoke test.

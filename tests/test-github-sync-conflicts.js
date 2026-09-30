@@ -77,6 +77,16 @@ try {
     /conflict markers/,
     "invalid Agent output must never become an approved candidate"
   );
+  assert.throws(
+    () => updateGitHubSyncAgentCandidate(root, "target-1", stored.files[0].path, skill("uncertain merge").toString("utf8"), "Unresolved.", {
+      decisions: [], evidence: [], unresolvedConflicts: ["Conflicting instructions"], introducedContent: [],
+      confidence: 0.9, accuracyRisk: true, humanFinalReviewRequired: true,
+    }),
+    /accuracy risks/,
+    "an Agent cannot stage an unresolved conflict even when it claims the candidate is safe"
+  );
+  assert.strictEqual(readGitHubSyncConflict(root, "target-1").files[0].candidateSource, "remote");
+  assert(readGitHubSyncConflictCandidate(root, "target-1", stored.files[0].path).equals(skill("remote")));
   updateGitHubSyncAgentCandidate(root, "target-1", stored.files[0].path, skill("merged meaning").toString("utf8"), "Preserved both valid requirements.", {
     decisions: [{ subject: "requirements", choice: "combined", reason: "Both are compatible." }],
     evidence: ["Base, local, and remote variants"],

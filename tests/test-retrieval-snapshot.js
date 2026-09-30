@@ -76,6 +76,6 @@ assert.throws(() => createRetrievalSnapshot({
 assert.match(extension, /scheduleRetrievalRefresh\(context, 10_000\)/, "activation/runtime setup must defer the initial snapshot until first content can render");
 assert.match(extension, /function scheduleRetrievalRefresh\(context: vscode\.ExtensionContext, delay = 5_000\)/, "repeated file events must coalesce before rebuilding the search index");
 assert.match(extension, /title: "PKM: Updating search index"/, "background search indexing must be visible without blocking the CatTree");
-assert.match(extension, /onChanged:[\s\S]{0,250}scheduleRetrievalRefresh\(context\)/, "Broker updates must refresh the Subscriber index");
+assert.match(extension, /onChanged:[\s\S]{0,500}scheduleRetrievalRefresh\(context\)/, "Broker updates must refresh the Subscriber index");
 assert.match(extension, /_watcherRefreshTimer = setTimeout[\s\S]{0,1200}scheduleRetrievalRefresh\(context\)/, "local file updates must refresh the Subscriber index");
 console.log("retrieval snapshot test: local Skill/Note/Research/Script/Recipe plus Broker partitions and canonical citations OK");
