@@ -208,7 +208,7 @@ assert.deepStrictEqual(genericSubscribedTabs.sort(), SHARED_CONTENT_TYPES.filter
   'generic Knowledge CatTrees plus explicit Server and Recipe surfaces must cover every shared content type');
 assert.match(extension, /changedPath = path\.relative\(getStorePath\(\), uri\.fsPath\)/);
 assert.match(core, /pendingTreeRefresh = data \|\| \{\}/);
-assert.match(extension, /respond\(\{ command: "list", tab, data: projectedData, folders/,
+assert.match(extension, /respond\(\{ command: "list", tab, q, filter, data: projectedData, folders/,
   'local CatTree response must use the privacy/share projection produced by the profiled list pipeline');
 assert.match(extension, /subscriptionGroups: \[\][\s\S]{0,900}setImmediate\(\(\) => \{[\s\S]{0,900}command: "listSubscriptionGroups"/,
   'local CatTree must respond before subscribed cache scanning runs in the background');

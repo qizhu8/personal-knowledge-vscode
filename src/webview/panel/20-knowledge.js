@@ -1,6 +1,7 @@
 // ── Tabs ──────────────────────────────────────────────────────────────────
 const cachedKnowledgeTabs = new Set(['skills','notes','papers','prompts','packages','scripts']);
 const knowledgeTabViewCache = new Map();
+let skillsListLoading = false;
 
 function detachChildren(element) {
   const fragment = document.createDocumentFragment();
@@ -53,6 +54,18 @@ function restoreKnowledgeTabView(tab) {
 
 function invalidateKnowledgeTabView(tab) {
   if (cachedKnowledgeTabs.has(tab)) knowledgeTabViewCache.delete(tab);
+}
+
+function applyKnowledgeTrashResultToView(data) {
+  if (!data?.ok) return;
+  invalidateKnowledgeTabView(data.area);
+  if (data.area !== 'notes' || state.tab !== 'notes' || data.action !== 'moved' || !data.entry) return;
+  const removed = data.path;
+  const contains = path => path === removed || (data.entry.kind === 'folder' && path.startsWith(removed + '/'));
+  state.items = state.items.filter(item => !contains(item.slug + '.md'));
+  if (data.entry.kind === 'folder') state.folders = state.folders.filter(folder => !contains(folder));
+  state.knowledgeTrash = [data.entry, ...(state.knowledgeTrash || []).filter(entry => entry.id !== data.entry.id)];
+  renderList();
 }
 
 function updateCachedKnowledgeTabSubscriptions(tab, groups) {
@@ -175,7 +188,13 @@ document.querySelectorAll('.tab').forEach(t =>
       applyMainSidebarState();
       if (state.tab === 'papers') { ask('paperFacets', {}); ask('paperGroups', {}); }
       if (state.tab === 'notes') { ask('noteFolderPins', {}); }
-      if (!restoreKnowledgeTabView(state.tab)) ask('list', { tab: state.tab, filter: 'all', q: '' });
+      if (!restoreKnowledgeTabView(state.tab)) {
+        if (state.tab === 'skills') {
+          skillsListLoading = true;
+          setKnowledgeListMarkup(document.getElementById('item-list'), 'skills', '<div class="skill-list-progress" role="status" aria-live="polite"><span>Finding skills...</span><progress aria-label="Finding skills"></progress></div>');
+        }
+        ask('list', { tab: state.tab, filter: 'all', q: '' });
+      }
     }
   })
 );
@@ -217,8 +236,15 @@ function contentSearchChanged(requestList = true) {
   if (!requestList) return;
   clearTimeout(searchDebounce);
   searchDebounce = setTimeout(() => {
-    if (compileFindPattern(state.search, options.regex, options.caseSensitive) !== false)
+    if (compileFindPattern(state.search, options.regex, options.caseSensitive) !== false) {
+      if (state.tab === 'skills') {
+        skillsListLoading = true;
+        state.items = [];
+        state.folders = [];
+        renderList();
+      }
       ask('list', { tab: state.tab, filter: state.filter, q: state.search, regex: options.regex, caseSensitive: options.caseSensitive });
+    }
   }, 250);
 }
 document.getElementById('searchbox').addEventListener('input', e => {
@@ -366,7 +392,7 @@ function renderList() {
     };
     const html = renderGroupedKnowledgeTree(root, 'skills', (r, depth) =>
       skillLi(r, r.name, q, 8 + (depth + 1) * 12), q, folderAttr, { isLeafPinned: it => !!it.pinned });
-    setKnowledgeListMarkup(el, tab, html || '<div class="empty">No skills</div>');
+    setKnowledgeListMarkup(el, tab, (skillsListLoading ? `<div class="skill-list-progress" role="status" aria-live="polite"><span>${items.length} skills found; loading more...</span><progress aria-label="Loading skills"></progress></div>` : '') + (html || (skillsListLoading ? '' : '<div class="empty">No skills</div>')));
 
   } else if (tab === 'notes') {
     // Recursive N-level tree by category path. Pinned notes sort to the top of
@@ -443,6 +469,11 @@ function renderList() {
         ).join('')}</div>
       </div>`
     ).join('') || '<div class="empty">No prompts</div>';
+    el.querySelectorAll('.tree-file').forEach(file => {
+      const { promptProject, promptTask, promptVersion, promptFile } = file.dataset;
+      file.insertAdjacentHTML('beforeend', githubSyncFileMarker('prompts', `${promptProject}/${promptTask}`,
+        `prompts/${promptProject}/${promptTask}/${promptVersion}/${promptFile}`));
+    });
     if (currentDetail?.type === 'prompt') highlightSelectedPromptTree(currentDetail);
 
   } else if (tab === 'packages') {
@@ -458,7 +489,7 @@ function renderList() {
           : '<span class="pkg-git untracked" title="Not tracked by git yet (uncommitted)">untracked</span>';
           const sourceTag = packageSourceTag(r.source);
       return `<div class="li" onclick="openItem('package','${esc(r.name)}')" oncontextmenu="packageItemMenu(event,${JSON.stringify(r.name).replace(/"/g,'&quot;')})">
-      <div class="li-name">${privacyLock(r.isPrivate)}${folkDisplayPath(r.name)} ${gitTag}${brokerShareMarker(r.brokerShares)}</div>
+      <div class="li-name">${privacyLock(r.isPrivate)}${folkDisplayPath(r.name)} ${gitTag}${brokerShareMarker(r.brokerShares)}${githubSyncFileMarker('packages', r.name)}</div>
           <div class="li-meta">${esc(r.lang)} · ${esc((r.description||'').slice(0,50))}${sourceTag}</div>
     </div>`;
     }).join('') || '<div class="empty">No local packages</div>');
@@ -483,7 +514,7 @@ function renderList() {
       const pad = 8 + (depth + 1) * 12;
       const cat = r.category === '(root)' ? '' : r.category;
       return `<div class="li" style="padding-left:${pad}px" onclick="openItem('script','${esc(r.path)}')" oncontextmenu="scriptItemMenu(event,'${esc(r.path)}',${JSON.stringify(cat).replace(/"/g, '&quot;')})">
-        <div class="li-name">${uiIcon('file-code')} ${privacyLock(r.isPrivate)}${hl(r.file, q)}${brokerShareMarker(r.brokerShares)}</div>
+        <div class="li-name">${uiIcon('file-code')} ${privacyLock(r.isPrivate)}${hl(r.file, q)}${brokerShareMarker(r.brokerShares)}${githubSyncFileMarker('scripts', r.path)}</div>
         <div class="li-meta">${cat ? `<span style="margin-right:5px">${hl(cat, q)}</span>` : ''}${(r.langs||(r.lang?r.lang.split(' + '):[])).map(l=>`<span class="cat" style="font-size:9px;margin-right:3px">${hl(l, q)}</span>`).join('')}</div>
       </div>`;
     }, q, folderAttr);
@@ -593,7 +624,8 @@ function renderKnowledgeTrashDock(area) {
   dock.classList.toggle('hidden', !visible);
   if (!visible) { dock.replaceChildren(); return; }
   const entries = state.knowledgeTrash || [];
-  dock.innerHTML = `<div class="knowledge-trash-popover hidden">${entries.length ? entries.map(entry => `<div class="li knowledge-trash-item"><div class="li-name"><span>${uiIcon(entry.kind === 'folder' ? 'folder' : 'file')} ${esc(entry.name)}</span><span class="knowledge-trash-actions"><button class="sub-fork-btn" data-pending-label="Restoring…" onclick="restoreKnowledgeTrash('${area}','${esc(entry.id)}',this)">Restore</button><button class="sub-fork-btn danger" onclick="deleteKnowledgeTrashEntry('${area}','${esc(entry.id)}','${esc(entry.name)}','${esc(entry.kind)}')">Delete Permanently</button></span></div><div class="li-meta">${esc(entry.originalPath)} · ${entry.deletedAt ? new Date(entry.deletedAt).toLocaleString() : ''}</div></div>`).join('') : '<div class="empty">Trash is empty</div>'}</div><div class="knowledge-trash-dock-row" role="button" tabindex="0" aria-expanded="false" onclick="toggleKnowledgeTrashDock()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleKnowledgeTrashDock()}"><span>${uiIcon('trash')} Trash</span><span class="pk-group-count">${entries.length}</span><button class="knowledge-trash-empty" onclick="event.stopPropagation();emptyKnowledgeTrash('${area}')" title="Permanently delete everything in ${area} Trash" ${entries.length ? '' : 'disabled'}>Empty Trash</button><i>${uiIcon('chevron-up')}</i></div>`;
+  const itemsHtml = entries.map(entry => `<div class="li knowledge-trash-item"><div class="li-name"><span>${uiIcon(entry.kind === 'folder' ? 'folder' : 'file')} ${esc(entry.name)}</span><span class="knowledge-trash-actions"><button class="sub-fork-btn" data-pending-label="Restoring…" onclick="restoreKnowledgeTrash('${area}','${esc(entry.id)}',this)">Restore</button><button class="sub-fork-btn danger" onclick="deleteKnowledgeTrashEntry('${area}','${esc(entry.id)}','${esc(entry.name)}','${esc(entry.kind)}')">Delete Permanently</button></span></div><div class="li-meta">${esc(entry.originalPath)} · ${entry.deletedAt ? new Date(entry.deletedAt).toLocaleString() : ''}</div></div>`).join('');
+  dock.innerHTML = catTreeTrashDock('Trash', entries.length, itemsHtml, `emptyKnowledgeTrash('${area}')`);
 }
 
 function toggleKnowledgeTrashDock() {
@@ -629,7 +661,7 @@ function deleteSkillTrashEntry(id, name, kind) {
 function skillLi(r, displayName, q, indent) {
   const priority = r.priority === 'high' || r.priority === 'highest' ? `<span class="tag" title="Retrieval priority">${esc(r.priority)}</span>` : '';
   return `<div class="li${r.pinned ? ' nt-pinned' : ''}" data-skill-name="${esc(r.name)}" onclick="openItem('skill','${esc(r.name)}')" oncontextmenu="skillItemMenu(event,'${esc(r.name)}',${JSON.stringify(r.category || '').replace(/"/g, '&quot;')})" style="padding-left:${indent}px">
-    <div class="li-name"><span class="pc-star${r.pinned ? ' on' : ''}" onclick="event.stopPropagation();toggleSkillPin('${esc(r.name)}',${r.pinned ? 'false' : 'true'})" title="${r.pinned ? 'Unpin' : 'Pin to top of folder'}">${uiIcon(r.pinned ? 'pinned' : 'pin')}</span> ${privacyLock(r.isPrivate)}${hl(displayName||r.name, q)}${brokerShareMarker(r.brokerShares)}</div>
+    <div class="li-name"><span class="pc-star${r.pinned ? ' on' : ''}" onclick="event.stopPropagation();toggleSkillPin('${esc(r.name)}',${r.pinned ? 'false' : 'true'})" title="${r.pinned ? 'Unpin' : 'Pin to top of folder'}">${uiIcon(r.pinned ? 'pinned' : 'pin')}</span> ${privacyLock(r.isPrivate)}${hl(displayName||r.name, q)}${brokerShareMarker(r.brokerShares)}${typeof githubSyncFileMarker === 'function' ? githubSyncFileMarker('skills', r.name) : ''}</div>
     <div class="li-meta">${r.description ? hl(r.description.slice(0,50), q) : ''}${priority}</div>
   </div>`;
 }
@@ -649,7 +681,7 @@ function noteFilename(note) {
 function noteLi(r, q, indent) {
   const filename = noteFilename(r);
   return `<div class="li nt-${r.type}${r.pinned ? ' nt-pinned' : ''}" data-note-slug="${esc(r.slug)}" data-note-pinned="${r.pinned ? '1' : ''}" style="padding-left:${indent}px" onclick="openItem('note','${esc(r.slug)}')" title="notes/${esc(r.slug)}.md">
-    <div class="li-name"><span class="pc-star${r.pinned ? ' on' : ''}" onclick="event.stopPropagation();toggleNotePin('${esc(r.slug)}',${r.pinned ? 'false' : 'true'})" title="${r.pinned ? 'Unpin' : 'Pin to top of folder'}">${uiIcon(r.pinned ? 'pinned' : 'pin')}</span> ${ICON[r.type]||uiIcon('note')} ${privacyLock(r.isPrivate)}${hl(r.title, q)}${brokerShareMarker(r.brokerShares)}</div>
+    <div class="li-name"><span class="pc-star${r.pinned ? ' on' : ''}" onclick="event.stopPropagation();toggleNotePin('${esc(r.slug)}',${r.pinned ? 'false' : 'true'})" title="${r.pinned ? 'Unpin' : 'Pin to top of folder'}">${uiIcon(r.pinned ? 'pinned' : 'pin')}</span> ${ICON[r.type]||uiIcon('note')} ${privacyLock(r.isPrivate)}${hl(r.title, q)}${brokerShareMarker(r.brokerShares)}${typeof githubSyncFileMarker === 'function' ? githubSyncFileMarker('notes', r.slug) : ''}</div>
     <div class="li-meta">${hl(filename, q)} · ${(r.updated_at||'').slice(0,10)}</div>
   </div>`;
 }
@@ -2239,7 +2271,7 @@ function toggleCat(cat, header) {
   const body = header?.nextElementSibling;
   const currentlyOpen = body ? body.style.display !== 'none' : !!catExpanded[cat];
   catExpanded[cat] = !currentlyOpen;
-  if (body && ['agentSessions', 'recipes'].includes(state.tab)) {
+  if (body && ['agentSessions', 'agentSnapshots', 'recipes'].includes(state.tab)) {
     body.style.display = catExpanded[cat] ? '' : 'none';
     header.setAttribute('aria-expanded', String(catExpanded[cat]));
     const icon = header.querySelector('.tree-cat-arrow .codicon');
@@ -2814,7 +2846,7 @@ function paperCard(p, q, pad) {
   const grp = JSON.stringify(p.group || 'Papers').replace(/"/g, '&quot;');
   const tpc = JSON.stringify(p.topic || '').replace(/"/g, '&quot;');
   return `<div class="paper-card${p.pinned ? ' pc-pinned' : ''}" style="margin-left:${pad}px" onclick="openItem('paper','${esc(p.slug)}')" oncontextmenu="paperCardMenu(event,'${esc(p.slug)}',${grp},${p.pinned ? 'true' : 'false'},${tpc})">
-    <div class="pc-title"><span class="pc-star${p.pinned ? ' on' : ''}" onclick="event.stopPropagation();togglePin('${esc(p.slug)}',${p.pinned ? 'false' : 'true'})" title="${p.pinned ? 'Unpin' : 'Pin'}">${uiIcon(p.pinned ? 'pinned' : 'pin')}</span> ${privacyLock(p.isPrivate)}${hl(p.title, q)}${brokerShareMarker(p.brokerShares)}</div>
+    <div class="pc-title"><span class="pc-star${p.pinned ? ' on' : ''}" onclick="event.stopPropagation();togglePin('${esc(p.slug)}',${p.pinned ? 'false' : 'true'})" title="${p.pinned ? 'Unpin' : 'Pin'}">${uiIcon(p.pinned ? 'pinned' : 'pin')}</span> ${privacyLock(p.isPrivate)}${hl(p.title, q)}${brokerShareMarker(p.brokerShares)}${typeof githubSyncFileMarker === 'function' ? githubSyncFileMarker('papers', p.slug) : ''}</div>
     <div class="pc-meta">
       ${p.citationCount ? `<span class="pc-cite" title="cited by ${p.citationCount} paper(s)">${uiIcon('references')} ${p.citationCount}</span>` : ''}
       ${p.year ? `<span>${p.year}</span>` : ''}

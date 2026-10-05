@@ -3,9 +3,11 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { createHash } = require("crypto");
 const githubSyncSource = fs.readFileSync(path.join(__dirname, "..", "src", "github-sync.ts"), "utf8");
 const { execFileSync } = require("child_process");
 const { storeGitHubSyncConflict } = require("../dist/github-sync-conflicts.js");
+const scriptStorage = require("../dist/storage.js");
 const {
   deterministicTextMerge,
   fetchGitHubRemoteSnapshot,
@@ -132,6 +134,9 @@ const rememberSync = (target, result) => {
     fs.writeFileSync(path.join(sources, "skills", "public-three.md"), twoConflictSkill("base first", "base second"));
     fs.writeFileSync(path.join(sources, "skills", "private.md"), skill("Two", "private"));
     fs.writeFileSync(path.join(sources, "scripts", "run.sh"), "echo ready\n");
+    scriptStorage.setStorePath(sources);
+    const scriptIdentity = scriptStorage.scriptGet("run.sh").knowledgeId;
+    const sidecar = scriptStorage.scriptIdentityFile("run.sh");
     const unicodeNoteName = "AutoLabeling Prompt Tuning — Summary & Results (unified_c3_r1 v1→v2.5, + w_fix).md";
     fs.mkdirSync(path.join(sources, "notes", "_assets"), { recursive: true });
     fs.writeFileSync(path.join(sources, "notes", unicodeNoteName), "# Unicode path\n\n![Chart](_assets/chart one.png)\n");
@@ -144,7 +149,8 @@ const rememberSync = (target, result) => {
       { id: "Private/Two", label: "Two", cat: "Private", isPrivate: true, source: path.join(sources, "skills", "private.md"), destination: "skills/Private/Two.md" }
     ];
     catalog.scripts = [
-      { id: "run.sh", label: "run.sh", cat: "", isPrivate: false, source: path.join(sources, "scripts", "run.sh"), destination: "scripts/run.sh" }
+      { id: "run.sh", label: "run.sh", cat: "", isPrivate: false, source: path.join(sources, "scripts", "run.sh"), destination: "scripts/run.sh",
+        dependencies: [{ source: sidecar, destination: "scripts/.run.sh.pkm.json" }] }
     ];
     catalog.notes = [
       {
@@ -157,21 +163,50 @@ const rememberSync = (target, result) => {
       { id: "agent_snapshot_test", label: "Snapshot", cat: "Agent", isPrivate: true, source: path.join(sources, "snapshot.json"), destination: "agentSnapshots/agent_snapshot_test.json" }
     ];
     const target = normalizeGitHubSyncTarget({ name: "Test", repository: remote, branch: "main" }, () => "target-1");
+    for (const type of ['notes','skills','prompts','recipes']) {
+      catalog[type].push({id:'System/PKM/protected',label:'Protected',cat:'System/PKM',isPrivate:false,
+        destination:`${type}/System/PKM/protected.md`,content:'protected'});
+    }
     target.selection.private.skills = { items: [], folders: [""] };
     target.selection.private.agentSnapshots = { items: ["agent_snapshot_test"], folders: [] };
     const checkoutRoot = path.join(root, "checkouts");
+    for (const [lastSync, message] of [
+      [{ repository: path.join(root, "previous.git") }, /repository changed/],
+      [{ branch: "previous-branch" }, /branch changed/],
+    ]) {
+      const phases = [];
+      await assert.rejects(
+        () => syncGitHubTarget({ ...target, lastSync }, catalog, checkoutRoot, undefined, undefined,
+          phase => phases.push(phase)),
+        message,
+      );
+      assert.deepStrictEqual(phases, ["fetch"],
+        "preflight failures must report Fetch before throwing, not retain Authentication");
+    }
+    const failedFetchPhases = [];
+    await assert.rejects(
+      () => syncGitHubTarget({ ...target, repository: path.join(root, "missing.git") }, catalog,
+        checkoutRoot, undefined, undefined, phase => failedFetchPhases.push(phase)),
+      /does not exist|not a git repository/,
+    );
+    assert(failedFetchPhases.length > 0 && failedFetchPhases.every(phase => phase === "fetch"),
+      "a failed Git remote operation must stay in Fetch, not Authentication");
     const first = await syncGitHubTarget(target, catalog, checkoutRoot);
     rememberSync(target, first);
     assert.strictEqual(first.changed, true);
     const verify = path.join(root, "verify");
     run(root, ["clone", "--branch", "main", remote, verify]);
     run(verify, ["config", "user.name", "Remote Test"]);
+    for (const type of ['notes','skills','prompts','recipes']) {
+      assert(!fs.existsSync(path.join(verify, type, 'System')), 'System content must not be published');
+    }
     run(verify, ["config", "user.email", "remote@example.com"]);
     assert.strictEqual(fs.readFileSync(path.join(verify, "README.md"), "utf8"), "keep me\n");
     assert.strictEqual(fs.readFileSync(path.join(verify, "skills", "Public", "One.md"), "utf8"), skill("One", "public"));
     assert.strictEqual(fs.readFileSync(path.join(verify, "skills", "Design", "Three.md"), "utf8"), twoConflictSkill("base first", "base second"));
     assert.strictEqual(fs.readFileSync(path.join(verify, "skills", "Private", "Two.md"), "utf8"), skill("Two", "private"));
     assert.strictEqual(fs.readFileSync(path.join(verify, "scripts", "run.sh"), "utf8"), "echo ready\n");
+    assert.strictEqual(JSON.parse(fs.readFileSync(path.join(verify, "scripts", ".run.sh.pkm.json"), "utf8")).knowledgeId, scriptIdentity);
     assert.match(fs.readFileSync(path.join(verify, "notes", unicodeNoteName), "utf8"), /_assets\/chart one\.png/);
     assert.deepStrictEqual(fs.readFileSync(path.join(verify, "notes", "_assets", "chart one.png")), Buffer.from("chart-image"));
     assert.match(fs.readFileSync(path.join(verify, "agentSnapshots", "agent_snapshot_test.json"), "utf8"), /A256GCM-PKM-LOCAL-OBFUSCATION/);
@@ -179,6 +214,7 @@ const rememberSync = (target, result) => {
     assert.strictEqual(manifest.schema, 3, "new syncs publish stable identity, capability, privacy, and digest metadata");
     assert.deepStrictEqual(manifest.capabilities.required, ["explicit-deletions", "stable-entity-identity"]);
     assert(manifest.files.some(file => file.path === "skills/Private/Two.md" && file.privacy === "private" && file.itemId === "Private/Two"));
+    assert(manifest.files.some(file => file.path === "scripts/.run.sh.pkm.json" && file.itemId === "run.sh"));
 
     const second = await syncGitHubTarget(target, catalog, checkoutRoot);
     assert.strictEqual(second.changed, false);
@@ -200,9 +236,18 @@ const rememberSync = (target, result) => {
     assert.deepStrictEqual(conflict, { restored: [], conflicts: ["skills/Public/One.md"] });
     assert.strictEqual(fs.readFileSync(path.join(restoreRoot, "skills", "Public", "One.md"), "utf8"), "local\n");
     const restored = await restoreGitHubRemoteFiles(target, checkoutRoot, restoreRoot, snapshot.commit, ["agentSnapshots/agent_snapshot_test.json", "notes/_assets/chart one.png", "skills/Public/One.md", "scripts/run.sh"], true);
-    assert.deepStrictEqual(restored.restored, ["agentSnapshots/agent_snapshot_test.json", "notes/_assets/chart one.png", "scripts/run.sh", "skills/Public/One.md"]);
+    assert.deepStrictEqual(restored.restored, ["agentSnapshots/agent_snapshot_test.json", "notes/_assets/chart one.png", "scripts/.run.sh.pkm.json", "scripts/run.sh", "skills/Public/One.md"]);
     assert.strictEqual(fs.readFileSync(path.join(restoreRoot, "skills", "Public", "One.md"), "utf8"), skill("One", "public"));
     assert.strictEqual(fs.readFileSync(path.join(restoreRoot, "scripts", "run.sh"), "utf8"), "echo ready\n");
+    assert.strictEqual(JSON.parse(fs.readFileSync(path.join(restoreRoot, "scripts", ".run.sh.pkm.json"), "utf8")).knowledgeId, scriptIdentity,
+      "restoring a Script must restore its persisted identity alongside the executable");
+    const sidecarConflictRoot = path.join(root, "sidecar-conflict-store");
+    fs.mkdirSync(path.join(sidecarConflictRoot, "scripts"), { recursive: true });
+    fs.writeFileSync(path.join(sidecarConflictRoot, "scripts", ".run.sh.pkm.json"), "local identity");
+    const sidecarConflict = await restoreGitHubRemoteFiles(target, checkoutRoot, sidecarConflictRoot, snapshot.commit, ["scripts/run.sh"], false);
+    assert.deepStrictEqual(sidecarConflict, { restored: [], conflicts: ["scripts/.run.sh.pkm.json"] });
+    assert.strictEqual(fs.existsSync(path.join(sidecarConflictRoot, "scripts", "run.sh")), false,
+      "sidecar conflicts must prevent a partial Script restore");
     assert.deepStrictEqual(fs.readFileSync(path.join(restoreRoot, "notes", "_assets", "chart one.png")), Buffer.from("chart-image"));
     assert.match(fs.readFileSync(path.join(restoreRoot, ".pkm", "state", "agent-snapshots", "agent_snapshot_test.json"), "utf8"), /A256GCM-PKM-LOCAL-OBFUSCATION/);
     await assert.rejects(() => restoreGitHubRemoteFiles(target, checkoutRoot, restoreRoot, snapshot.commit, ["README.md"], true), /not in the PKM manifest/);
@@ -392,6 +437,34 @@ const rememberSync = (target, result) => {
     fs.rmSync(hook);
     await syncGitHubTarget(rejectedTarget, catalog, path.join(root, "checkouts"));
     assert(run(root, ["--git-dir", remote, "show-ref", "--verify", "refs/heads/rejected"]));
+    run(verify, ['pull', '--ff-only']);
+    const protectedRelative = 'notes/System/PKM/protected.md';
+    const remoteProtectedContent = Buffer.from('---\ntitle: Protected\n---\n\nremote content\n');
+    fs.mkdirSync(path.dirname(path.join(verify, protectedRelative)), {recursive:true});
+    fs.writeFileSync(path.join(verify, protectedRelative), remoteProtectedContent);
+    const manifestPath = path.join(verify, '.pkm-github-sync.json');
+    const protectedManifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    protectedManifest.files.push({path:protectedRelative,type:'notes',itemId:'Adhoc/disguised-system',member:'',category:'Adhoc',privacy:'public',digest:createHash('sha256').update(remoteProtectedContent).digest('hex')});
+    fs.writeFileSync(manifestPath, JSON.stringify(protectedManifest));
+    run(verify, ['add', '.']);
+    run(verify, ['commit', '-m', 'historical System file with disguised metadata']);
+    run(verify, ['push']);
+    const protectedLocal = path.join(restoreRoot, protectedRelative);
+    fs.mkdirSync(path.dirname(protectedLocal), {recursive:true});
+    fs.writeFileSync(protectedLocal, 'local System authority');
+    const protectedSync = await syncGitHubTarget(target, catalog, checkoutRoot, undefined, restoreRoot);
+    rememberSync(target, protectedSync);
+    assert.strictEqual(fs.readFileSync(protectedLocal, 'utf8'), 'local System authority');
+    assert(!protectedSync.pulled.includes(protectedRelative));
+    assert.strictEqual(run(root, ['--git-dir', remote, 'show', `main:${protectedRelative}`]), remoteProtectedContent.toString().trim(), 'historical remote System content is preserved, not deleted');
+    await assert.rejects(() => restoreGitHubRemoteFiles(target, checkoutRoot, restoreRoot, protectedSync.commit, [protectedRelative], true), /System content is excluded/);
+    assert.strictEqual(fs.readFileSync(protectedLocal, 'utf8'), 'local System authority');
+    const forcedProtectedSync = await syncGitHubTarget(target, catalog, checkoutRoot, undefined, restoreRoot, undefined, {mode:'force-local-authority',comment:'Verify excluded System content is preserved'});
+    rememberSync(target, forcedProtectedSync);
+    assert.strictEqual(fs.readFileSync(protectedLocal, 'utf8'), 'local System authority');
+    const forcedManifest = JSON.parse(run(root, ['--git-dir', remote, 'show', 'main:.pkm-github-sync.json']));
+    assert(forcedManifest.files.some(file => file.path === protectedRelative));
+    assert(!forcedManifest.deletions.some(file => file.itemId === 'Adhoc/disguised-system'), 'forced sync must not create deletion evidence for excluded System files');
     console.log("github-sync git tests passed");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

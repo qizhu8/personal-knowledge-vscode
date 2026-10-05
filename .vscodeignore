@@ -27,6 +27,7 @@ artifacts/**
 
 # Misc
 *.vsix
+Picture1.png
 **/*.map
 improvement_*.md
 improvements.md

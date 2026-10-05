@@ -1,11 +1,16 @@
 #!/usr/bin/env node
 const assert = require('assert');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const vm = require('vm');
+const { githubSyncCatalogInWorker } = require('../dist/github-sync-catalog-worker');
+const { GITHUB_SYNC_CONTENT_TYPES, githubSyncTargetFingerprintState, normalizeGitHubSyncTarget } = require('../dist/github-sync');
+const { githubSyncFingerprintInWorker } = require('../dist/github-sync-fingerprint-worker');
 
 const root = path.join(__dirname, '..');
 const core = fs.readFileSync(path.join(root, 'src/webview/panel/00-core.js'), 'utf8');
+const knowledge = fs.readFileSync(path.join(root, 'src/webview/panel/20-knowledge.js'), 'utf8');
 const extension = fs.readFileSync(path.join(root, 'src/extension.ts'), 'utf8');
 const html = fs.readFileSync(path.join(root, 'src/webview/panel.html'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'src/webview/panel.css'), 'utf8');
@@ -74,6 +79,42 @@ for (const message of ['Revealing the Projects map…', 'Opening the Recipes gri
 assert(mcp.includes('Consulting the MCP server wards…'));
 assert.match(core, /command === 'inventoryBatch'[^\n]+progress only/,
   'incremental inventory batches must not repeatedly rebuild the visible tree');
+assert.match(knowledge, /skill-list-progress[^\n]+Finding skills/,
+  'opening Skills must show progress before its first result');
+assert.match(css, /\.skill-list-progress progress\{/);
+assert.match(extension, /if \(tab === "skills" && !msg\.silent[\s\S]{0,520}command: "listPartial"[\s\S]{0,140}setTimeout\(resolve, 16\)/,
+  'Skills must stream bounded visible batches while yielding for paint');
+assert.match(core, /command === 'list' \|\| command === 'listPartial'/);
+assert.match(core, /\(e\.data\.q \|\| ''\) !== state\.search/,
+  'stale Skills search results must not overwrite the active query');
+assert.match(knowledge, /skillsListLoading \? `<div class="skill-list-progress"[^\n]+items\.length/,
+  'partial Skills results must retain a visible count and pending indicator');
+const skillList = { innerHTML: '' };
+const skillView = {
+  state: { tab:'skills', items:[], folders:[], search:'', filter:'all' },
+  skillsListLoading: true,
+  document: { getElementById: id => id === 'item-list' ? skillList : {} },
+  ensureGitHubSyncStatus() {}, renderKnowledgeGroupControls() {},
+  buildCatTree: items => items, seedFolders() {},
+  renderGroupedKnowledgeTree: items => items.map(item => `<div>${item.name}</div>`).join(''),
+  setKnowledgeListMarkup: (element, tab, markup) => { element.innerHTML = markup; },
+  renderSubscribedGroups() {}, renderKnowledgeTrashDock() {},
+};
+vm.createContext(skillView);
+const skillRenderStart = knowledge.indexOf('function renderList()');
+vm.runInContext(`${knowledge.slice(skillRenderStart, knowledge.indexOf('\nfunction renderSubscribedGroups(', skillRenderStart))};this.render=renderList`, skillView);
+skillView.render();
+assert.match(skillList.innerHTML, /0 skills found; loading more/);
+assert.doesNotMatch(skillList.innerHTML, /No skills/);
+skillView.state.items = [{ name:'First' }, { name:'Second' }];
+skillView.render();
+assert.match(skillList.innerHTML, /2 skills found; loading more/);
+assert.match(skillList.innerHTML, /First/);
+assert.match(skillList.innerHTML, /Second/);
+skillView.skillsListLoading = false;
+skillView.render();
+assert.doesNotMatch(skillList.innerHTML, /loading more/);
+assert.match(skillList.innerHTML, /First/);
 assert.match(core, /command === 'inventoryReady'[\s\S]{0,260}\['skills','notes','scripts'\]\.forEach\(invalidateKnowledgeTabView\)/);
 assert.match(core, /command === 'inventoryReady'[\s\S]{0,360}ask\('list',[^\n]+null, true\)/,
   'completed inventory refreshes the visible indexed tab exactly once and silently');
@@ -130,7 +171,7 @@ assert.match(readyHandler, /command: "mcpSummary"/,
 assert.doesNotMatch(readyHandler, /mcpPanelStatusData|sendMcpPathSizes/,
   'ready must not probe the MCP runtime, scan usage, or calculate path sizes');
 const githubState = extension.slice(extension.indexOf('async function githubSyncStateData'), extension.indexOf('\nasync function gitHubSyncConflictData'));
-assert.match(githubState, /if \(waitForExpensive\)[\s\S]*githubSyncTargetFingerprintState/,
+assert.match(githubState, /if \(waitForExpensive\)[\s\S]*await githubSyncFingerprintInWorker/,
   'selected content fingerprints must only be computed during the deferred GitHub state pass');
 assert.match(githubState, /fingerprintsDeferred: !waitForExpensive/,
   'deferred GitHub fingerprints must be explicit until the expensive pass completes');
@@ -150,6 +191,10 @@ assert.match(extension, /case "githubSyncState":[\s\S]{0,180}githubSyncStateData
   'GitHub Sync must return cached state before its single-flight catalog and credential refresh');
 assert.match(extension, /githubSyncCatalogBuild\?\.revision === revision[\s\S]{0,220}return githubSyncCatalogBuild\.promise/,
   'concurrent GitHub state requests must share one catalog build');
+assert.match(extension, /return githubSyncCatalogInWorker\(\{ root, servers, recipes \}\)/,
+  'opening GitHub Sync must scan content outside the Extension Host');
+assert.match(extension, /previousBuild\.catch\(\(\) => undefined\)\.then\(buildGitHubSyncCatalog\)/,
+  'invalidated catalog scans must not race while creating Script identity sidecars');
 assert.match(extension, /case "checkMcp":[\s\S]{0,180}mcpPanelStatusData\(String\(msg\.profileRequestId \|\| ""\), false\)/,
   'opening General & MCP must defer usage scanning');
 assert.doesNotMatch(extension.slice(extension.indexOf('case "checkMcp":'), extension.indexOf('case "mcpSetFeatureDomain":')), /sendMcpPathSizes/,
@@ -223,4 +268,59 @@ context.update({ stage: 'ready', percent: 100, current: 473, total: 473, message
 assert.strictEqual(context.initialLoadComplete, true);
 assert(banner.classList.contains('hidden'));
 
-console.log('loading progress test: initial-load-only progress, staged counts, and fast-job suppression OK');
+async function verifyFingerprintWorker() {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pkm-fingerprint-worker-'));
+  try {
+    const source = path.join(directory, 'skill.md');
+    fs.writeFileSync(source, '---\nname: Test\n---\n# Test\n');
+    const catalog = Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type => [type, []]));
+    catalog.skills.push({ id: 'Test', label: 'Test', cat: '', isPrivate: false, source, destination: 'skills/skill.md' });
+    catalog.recipes.push({ id: 'recipe', label: 'Recipe', cat: '', isPrivate: false, content: '{"name":"Recipe","editorLayout":{}}', destination: 'recipes/recipe.json' });
+    const target = normalizeGitHubSyncTarget({ name: 'Test', repository: 'owner/repo', branch: 'main' }, () => 'test');
+    const expected = githubSyncTargetFingerprintState(target, catalog);
+    let timerFired = false;
+    const resultPromise = githubSyncFingerprintInWorker(target, catalog);
+    setTimeout(() => { timerFired = true; }, 0);
+    const actual = await resultPromise;
+    assert.deepStrictEqual(actual, expected, 'worker must preserve fingerprint and folder semantics');
+    assert(timerFired, 'the Extension Host event loop must keep running while fingerprints are calculated');
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+async function verifyCatalogWorker() {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pkm-catalog-worker-'));
+  try {
+    const skillDir = path.join(directory, 'skills', 'Shared');
+    const assets = path.join(skillDir, '_assets');
+    fs.mkdirSync(assets, { recursive: true });
+    fs.writeFileSync(path.join(assets, 'icon.png'), Buffer.from([1, 2, 3]));
+    fs.writeFileSync(path.join(skillDir, 'Test.md'), '---\nname: "Test"\n---\n![icon](_assets/icon.png)\n');
+    fs.mkdirSync(path.join(directory, 'scripts'));
+    fs.writeFileSync(path.join(directory, 'scripts', 'example.py'), 'print("hello")\n');
+    fs.mkdirSync(path.join(directory, '.pkm'));
+    fs.writeFileSync(path.join(directory, '.pkm', 'content-privacy.json'), JSON.stringify({ schema: 1, private: { skills: ['Shared'] } }));
+    const recipe = { id: 'recipe', label: 'Recipe', cat: '', isPrivate: false, destination: 'recipes/recipe.json', content: '{}' };
+    let timerFired = false;
+    const pending = githubSyncCatalogInWorker({ root: directory, servers: [{ slug: 'server', name: 'Server', category: '', tags: [] }], recipes: [recipe] });
+    setTimeout(() => { timerFired = true; }, 0);
+    const catalog = await pending;
+    assert(timerFired, 'the Host must remain responsive during catalog scanning');
+    assert.strictEqual(catalog.skills.length, 1);
+    assert.strictEqual(catalog.skills[0].isPrivate, true);
+    assert.strictEqual(catalog.skills[0].dependencies[0].destination, 'skills/Shared/_assets/icon.png');
+    assert.strictEqual(catalog.scripts[0].dependencies[0].destination.startsWith('scripts/'), true);
+    assert.strictEqual(catalog.servers[0].source, path.join(directory, 'servers', 'server'));
+    assert.deepStrictEqual(catalog.recipes, [recipe]);
+    fs.writeFileSync(path.join(directory, '.pkm', 'content-privacy.json'), '{bad json');
+    await assert.rejects(githubSyncCatalogInWorker({ root: directory, servers: [], recipes: [] }), /privacy metadata/,
+      'catalog worker errors must propagate to Settings rather than hanging');
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+Promise.all([verifyFingerprintWorker(), verifyCatalogWorker()]).then(() => {
+  console.log('loading progress test: staged loading and nonblocking catalog and fingerprints OK');
+}).catch(error => { console.error(error); process.exitCode = 1; });

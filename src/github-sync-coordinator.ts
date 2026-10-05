@@ -8,6 +8,7 @@ import {
   GitHubSyncReason,
   GitHubSyncRuntimeState,
   GitHubSyncScheduler,
+  MAX_GITHUB_SYNC_FAILURE_ATTEMPTS,
 } from "./github-sync-scheduler";
 import { compareVersionOrder } from "./version-order";
 
@@ -62,6 +63,8 @@ export interface GitHubSyncCoordinatorOptions {
   extensionVersion: string;
   shouldExecute?: (targetId: string, reason: GitHubSyncReason) => Promise<boolean>;
   execute: (targetId: string, reason: GitHubSyncReason, fencingToken: number) => Promise<void>;
+  shouldRetryFailure?: (error: unknown) => boolean;
+  onAutoPaused?: (targetId: string) => void;
   compatibilityBlock?: (error: unknown) => GitHubSyncCompatibilityBlock | undefined;
   onState?: (targetId: string, state: GitHubSyncRuntimeState) => void;
   now?: () => number;
@@ -203,6 +206,11 @@ export class GitHubSyncCoordinator {
       state.targets = Object.fromEntries(targets.map(target => [target.id, { ...target }]));
       for (const targetId of Object.keys(state.intents)) if (!activeIds.has(targetId)) delete state.intents[targetId];
       for (const targetId of Object.keys(state.claims)) if (!activeIds.has(targetId)) delete state.claims[targetId];
+      for (const target of targets) {
+        if (target.enabled && (!target.lastFailure || (target.lastFailure.attempts || 1) < MAX_GITHUB_SYNC_FAILURE_ATTEMPTS)) continue;
+        if (state.intents[target.id]?.reason !== "manual" && state.intents[target.id]?.reason !== "force-local-authority") delete state.intents[target.id];
+        if (state.claims[target.id] && !this.scheduler?.snapshot()[target.id]?.nextSyncAt) delete state.claims[target.id];
+      }
       for (const targetId of Object.keys(state.blocked)) if (!activeIds.has(targetId)) delete state.blocked[targetId];
       for (const targetId of Object.keys(state.runtime)) if (!activeIds.has(targetId)) delete state.runtime[targetId];
       return state.configurationRevision;
@@ -213,6 +221,8 @@ export class GitHubSyncCoordinator {
   request(targetId: string, reason: GitHubSyncReason): boolean {
     const target = this.targets.get(targetId);
     if (this.disposed || !target || (!target.enabled && reason !== "manual" && reason !== "force-local-authority")) return false;
+    if (reason !== "manual" && reason !== "force-local-authority" && target.lastFailure
+      && (reason === "change" || reason === "configuration" || (target.lastFailure.attempts || 1) >= MAX_GITHUB_SYNC_FAILURE_ATTEMPTS)) return false;
     return this.mutateSync(state => {
       const current = state.intents[targetId];
       if (current && PRIORITY[current.reason] >= PRIORITY[reason]) return false;
@@ -228,7 +238,7 @@ export class GitHubSyncCoordinator {
 
   notifyContentChanged(excludedTargetId?: string): void {
     for (const target of this.targets.values()) {
-      if (target.id === excludedTargetId || !target.enabled || !target.syncOnChange) continue;
+      if (target.id === excludedTargetId || !target.enabled || !target.syncOnChange || target.lastFailure) continue;
       const existing = this.changeTimers.get(target.id);
       if (existing) clearTimeout(existing);
       const timer = setTimeout(() => {
@@ -282,6 +292,10 @@ export class GitHubSyncCoordinator {
           if (!ownsLease) {
             for (const [targetId, claim] of Object.entries(state.claims)) {
               if (leader && (claim.leaderNonce !== leader.nonce || claim.fencingToken !== leader.fencingToken)) continue;
+              if (state.targets[targetId]?.lastFailure) {
+                delete state.claims[targetId];
+                continue;
+              }
               const pending = state.intents[targetId];
               if (!pending || PRIORITY[claim.reason] > PRIORITY[pending.reason]) {
                 state.intents[targetId] = {
@@ -335,6 +349,22 @@ export class GitHubSyncCoordinator {
     if (!this.scheduler) {
       this.scheduler = new GitHubSyncScheduler({
         shouldExecute: this.options.shouldExecute,
+        shouldRetryFailure: this.options.shouldRetryFailure,
+        onAutoPaused: targetId => {
+          const target = this.targets.get(targetId);
+          if (!target) return;
+          target.enabled = false;
+          this.configurationRevision = this.mutateSync(state => {
+            if (state.targets[targetId]) {
+              state.targets[targetId].enabled = false;
+              state.targets[targetId].lastFailure = target.lastFailure;
+            }
+            state.configurationRevision += 1;
+            return state.configurationRevision;
+          });
+          this.schedulerRevision = this.configurationRevision;
+          this.options.onAutoPaused?.(targetId);
+        },
         beforeExecute: async (targetId, reason) => {
           this.mutateSync(state => {
             const intent = state.intents[targetId];
@@ -355,8 +385,20 @@ export class GitHubSyncCoordinator {
           });
         },
         onSettled: (targetId, reason, outcome) => {
-          if (outcome !== "skipped") return;
-          this.resolvePendingIntent(targetId, reason);
+          if (outcome === "skipped") this.resolvePendingIntent(targetId, reason);
+          if (outcome === "failed") {
+            const runtime = this.scheduler?.snapshot()[targetId];
+            const target = this.targets.get(targetId);
+            if (target && runtime?.lastAttemptAt && runtime.lastError) {
+              target.lastFailure = {
+                at: runtime.lastAttemptAt, error: runtime.lastError, reason,
+                attempts: target.lastFailure?.attempts || 1,
+              };
+              this.mutateSync(state => { if (state.targets[targetId]) state.targets[targetId].lastFailure = target.lastFailure; });
+            }
+            this.resolveOwnedClaim(targetId, reason);
+            this.resolvePendingIntent(targetId, reason);
+          }
         },
         execute: async (targetId, reason) => {
           this.verifyOwnership();

@@ -17,7 +17,7 @@ from fastmcp import Context
 from fastmcp.server.middleware import Middleware
 
 
-AGENT_SESSION_SCHEMA_VERSION = "1.7.6"
+AGENT_SESSION_SCHEMA_VERSION = "1.7.8"
 SESSION_SCHEMA = "pkm.agent.session/v1"
 SESSION_LEASE_SECONDS = 300
 SNAPSHOT_SCHEMA = "pkm.agent.snapshot/v1"
@@ -121,7 +121,7 @@ def _compact_todo(todo):
         return None
     keys = (
         "todoId", "title", "status", "actionType", "resumeTodoId", "recipeRunId",
-        "recipeRunIds", "createdAt", "startedAt", "updatedAt", "completedAt",
+        "recipeRunIds",
     )
     return {key: todo[key] for key in keys if key in todo}
 
@@ -130,6 +130,23 @@ def _todo_projection(todo, detail="compact"):
     if todo is None or detail == "full":
         return todo
     return _compact_todo(todo)
+
+
+def _todo_report_projection(result, detail):
+    if detail == "full":
+        return result
+    todo = result.get("todo") or {}
+    projected = {
+        "ok": result.get("ok", False),
+        "todo": {key: todo[key] for key in ("todoId", "status") if key in todo},
+        "next_action": {"kind": (result.get("next_action") or {}).get("kind", "")},
+    }
+    resumed = result.get("resumed_todo")
+    if isinstance(resumed, dict):
+        projected["resumed_todo"] = {
+            key: resumed[key] for key in ("todoId", "status") if key in resumed
+        }
+    return projected
 
 
 def _validate_detail(detail):
@@ -571,10 +588,10 @@ def register_agent_session_tools(mcp, store):
 
     @mcp.tool(annotations={"readOnlyHint": True})
     def agent_session_capabilities() -> dict:
-        """Discover durable Agent Session management for substantial mutating work.
+        """Discover goal and Todo continuity for all multi-step Agent work.
 
-        Use when edits or operations need durable progress, recovery, handoff, or
-        continuation across turns. Read-only diagnosis does not need a Session.
+        Include read-only research, analysis, diagnosis and review. Scene
+        preservation through checkpoints or snapshots is an explicit operation.
         """
         return {
             "schema": SESSION_SCHEMA,
@@ -582,14 +599,14 @@ def register_agent_session_tools(mcp, store):
             "registration": "explicit-opt-in",
             "proactive": True,
             "use_when": [
-                "substantial mutating multi-step task",
-                "mutating work requiring validation or recovery",
-                "mutating work that may continue across turns",
+                "multi-step coding, implementation or refactoring",
+                "multi-step research, analysis, diagnosis or review",
+                "work that needs goal continuity across turns",
             ],
             "do_not_use_when": [
-                "read-only diagnosis or assessment",
                 "quick answer",
                 "trivial one-command request",
+                "casual conversation",
             ],
             "next_tool": "agent_session_start",
             "first_managed_action": "agent_session_start",
@@ -606,7 +623,7 @@ def register_agent_session_tools(mcp, store):
                 "policy": "FIFO by default; explicit user redirects may atomically pause current work and insert an interrupt action before it.",
                 "additive_instruction": "Append non-conflicting new work with agent_session_todo_append. Do not abandon or reorder unfinished todos.",
                 "redirect_instruction": "Use agent_session_todo_replan for explicit user redirects, including report_status before continuing current work.",
-                "completion_instruction": "After reporting the final todo, validate and checkpoint as needed, then call agent_session_end when next_action.kind is call_agent_session_end.",
+                "completion_instruction": "After reporting the final todo, validate then call agent_session_end when next_action.kind is call_agent_session_end. Checkpoints and snapshots require an explicit scene-preservation operation.",
                 "example_todos_json": '[{"title":"Implement change","details":"Preserve existing behavior"},{"title":"Validate","details":"Run focused tests"}]',
             },
             "handoff": "checkpoint/load/resume persists agent-authored recovery context; Agent Snapshots use a Magic Code to clone a new independent Session while the locally obfuscated payload remains in the Knowledge Root; hidden model state is not inspectable.",
@@ -617,7 +634,7 @@ def register_agent_session_tools(mcp, store):
                             agent_name: str = "GitHub Copilot", host_session_id: str = "",
                             traversal_strategy: str = "",
                             ctx: Context = None) -> dict:
-        """Start durable management for a substantial task before its first substantive mutation.
+        """Start goal and Todo tracking before multi-step investigation or execution.
 
         Pass the host chat/session ID when available, then append an actionable todo plan.
         Use proactively based on task complexity; explicit user mention is not required.
@@ -1293,7 +1310,7 @@ def register_agent_session_tools(mcp, store):
             session = _load_session(store, session_id)
             command_id, fingerprint, prior = todo_receipt(session, command_id, "report", arguments)
             if prior is not None:
-                return prior
+                return _todo_report_projection(prior, detail)
             todo = next((item for item in session.get("todos") or [] if item.get("todoId") == todo_id), None)
             if todo is None:
                 raise ValueError("Agent Session todo was not found.")
@@ -1324,7 +1341,7 @@ def register_agent_session_tools(mcp, store):
             else:
                 next_action = {
                     "kind": "call_agent_session_end",
-                    "reason": "All Session todos are terminal. Validate the overall outcome, checkpoint if useful, then end the Session.",
+                    "reason": "All Session todos are terminal. Validate the overall outcome, then end the Session.",
                 }
             result = {
                 "ok": True,
@@ -1333,6 +1350,7 @@ def register_agent_session_tools(mcp, store):
                 "resumed_todo": _todo_projection(resumed_todo, detail),
                 "next_action": next_action,
             }
+            result = _todo_report_projection(result, detail)
             save_todo_receipt(session, command_id, fingerprint, result)
             _atomic_write(path, session)
             return result

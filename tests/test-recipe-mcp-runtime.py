@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import types
+from concurrent.futures import ThreadPoolExecutor
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -224,9 +225,15 @@ with tempfile.TemporaryDirectory(prefix="pkm-recipe-runtime-") as temporary:
     assert capabilities["proactive"] is True
     assert capabilities["next_tool"] == "recipe_search"
     assert "branching or bounded repetition" in capabilities["use_when"]
+    assert "validated reusable solution, including mature linear Recipes" in capabilities["use_when"]
     assert "one-node noop tracking" in capabilities["do_not_use_when"]
+    assert "linear inspect-edit-validate work" not in capabilities["do_not_use_when"]
     assert capabilities["execution"]["next_is_claim"] is True
-    assert capabilities["version"] == "1.7.3"
+    assert capabilities["execution"]["parallel_agent_claims"] is False
+    assert capabilities["execution"]["autonomous_run_scheduler"] is True
+    assert capabilities["execution"]["autonomous_execution"]["strategy"] == "serial-worker-completion-driven"
+    assert capabilities["execution"]["automatic_model_escalation"] is False
+    assert capabilities["version"] == "1.8.0"
     assert "recipe_usage_summary" in capabilities["tools"]
     assert capabilities["usage_accounting"]["measured_and_estimated_are_separate"] is True
     assert capabilities["usage_accounting"]["host_tokens"].startswith("unknown")
@@ -628,6 +635,245 @@ with tempfile.TemporaryDirectory(prefix="pkm-recipe-runtime-") as temporary:
         (state_dir / "recipe-runs" / f"{automated_id}.json").read_text(encoding="utf-8"))
     assert automated_run["healthReceipt"]["classification"] == "healthy"
 
+    autonomous_artifact = pathlib.Path(temporary) / "autonomous-result.txt"
+    autonomous_definition = {
+        "schema": "pkm.workflow.definition/v1",
+        "spec": {"inputs": {}, "nodes": [
+            {"nodeId": "prepare", "kind": "pkm.step.command/v1", "config": {
+                "program": sys.executable, "args": ["-c",
+                    "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('prepared')",
+                    str(autonomous_artifact)], "timeoutSeconds": 10, "maxOutputBytes": 4096,
+            }, "dependsOn": []},
+            {"nodeId": "verify", "kind": "pkm.step.command/v1", "config": {
+                "program": sys.executable, "args": ["-c",
+                    "import pathlib,sys; assert pathlib.Path(sys.argv[1]).read_text() == 'prepared'; print('verified')",
+                    str(autonomous_artifact)], "timeoutSeconds": 10, "maxOutputBytes": 4096,
+            }, "dependsOn": [{"from": "prepare"}]},
+        ], "outputs": {}, "completion": {"requiredNodes": ["verify"]}},
+    }
+    autonomous = response_value(tools["recipe_run_start_adhoc"](
+        "Autonomous command chain", json.dumps(autonomous_definition),
+        "autonomous-command-start", autonomous=True))
+    assert "poll_with" not in autonomous["next_action"]
+    assert autonomous["next_action"]["inspect_with"] == "recipe_run_get"
+    autonomous_path = state_dir / "recipe-runs" / f"{autonomous['run_id']}.json"
+    for _ in range(300):
+        autonomous_run = json.loads(autonomous_path.read_text(encoding="utf-8"))
+        if autonomous_run["status"] != "running":
+            break
+        time.sleep(0.02)
+    assert autonomous_run["status"] == "completed", autonomous_run
+    assert autonomous_run["nodes"]["verify"]["result"]["stdout"] == "verified\n"
+    assert autonomous_run["nodeAttemptCounts"] == {"prepare": 1, "verify": 1}
+
+    def wait_for_autonomous(started, predicate=None):
+        run_path = state_dir / "recipe-runs" / f"{started['run_id']}.json"
+        for _ in range(500):
+            persisted = json.loads(run_path.read_text(encoding="utf-8"))
+            if predicate(persisted) if predicate else persisted["status"] != "running":
+                return persisted
+            time.sleep(0.02)
+        raise AssertionError(f"Autonomous run did not reach the expected boundary: {persisted}")
+
+    replayed_autonomous = response_value(tools["recipe_run_start_adhoc"](
+        "Autonomous command chain", json.dumps(autonomous_definition),
+        "autonomous-command-start", autonomous=True))
+    assert replayed_autonomous["replayed"] is True
+    changed_autonomous = response_value(tools["recipe_run_start_adhoc"](
+        "Autonomous command chain", json.dumps(autonomous_definition),
+        "autonomous-command-start", autonomous=True, max_auto_nodes=1))
+    assert changed_autonomous["ok"] is False
+    assert MODULE._automation_parameters(False, 100, 300) == {}
+    for invalid_budget in [0, -1, True, 1001]:
+        invalid_automation = response_value(tools["recipe_run_start_adhoc"](
+            "Invalid automation budget", json.dumps(autonomous_definition),
+            f"invalid-auto-budget-{invalid_budget}", autonomous=True, max_auto_nodes=invalid_budget))
+        assert invalid_automation["ok"] is False, invalid_automation
+
+    limited = response_value(tools["recipe_run_start_adhoc"](
+        "Node-budget boundary", json.dumps(autonomous_definition),
+        "autonomous-node-budget", autonomous=True, max_auto_nodes=1))
+    limited_run = wait_for_autonomous(limited)
+    assert limited_run["automation"]["status"] == "budget-exceeded", limited_run
+    assert limited_run["nodes"]["prepare"]["state"] == "succeeded"
+    assert limited_run["nodes"]["verify"]["state"] == "pending"
+
+    failing_definition = json.loads(json.dumps(autonomous_definition))
+    failing_definition["spec"]["nodes"][0]["config"]["args"] = ["-c", "raise SystemExit(7)"]
+    failing = response_value(tools["recipe_run_start_adhoc"](
+        "Failure boundary", json.dumps(failing_definition), "autonomous-failure", autonomous=True))
+    failing_run = wait_for_autonomous(failing)
+    assert failing_run["status"] == "failed", failing_run
+    assert failing_run["nodes"]["prepare"]["result"]["exit_code"] == 7
+    assert failing_run["nodes"]["verify"]["state"] == "pending"
+
+    timeout_definition = json.loads(json.dumps(autonomous_definition))
+    timeout_definition["spec"]["nodes"][0]["config"]["args"] = ["-c", "import time; time.sleep(30)"]
+    timed = response_value(tools["recipe_run_start_adhoc"](
+        "Wall-time boundary", json.dumps(timeout_definition), "autonomous-timeout",
+        autonomous=True, max_auto_seconds=1))
+    timed_run = wait_for_autonomous(timed)
+    assert timed_run["automation"]["status"] == "budget-exceeded", timed_run
+    assert timed_run["nodes"]["prepare"]["result"]["timed_out"] is True
+    assert timed_run["nodes"]["verify"]["state"] == "pending"
+
+    cancellation_marker = pathlib.Path(temporary) / "cancellation-started.txt"
+    cancel_definition = json.loads(json.dumps(timeout_definition))
+    cancel_definition["spec"]["nodes"][0]["config"]["args"] = ["-c",
+        "import pathlib,sys,time; pathlib.Path(sys.argv[1]).write_text('started'); time.sleep(30)",
+        str(cancellation_marker)]
+    cancellable = response_value(tools["recipe_run_start_adhoc"](
+        "Cancellation boundary", json.dumps(cancel_definition), "autonomous-cancel", autonomous=True))
+    wait_for_autonomous(cancellable, lambda persisted: cancellation_marker.exists())
+    cancellation = response_value(tools["recipe_run_progress"](
+        cancellable["run_id"], "prepare", "autonomous-cancel-request",
+        '{"cancellationRequested":true}'))
+    assert cancellation["ok"] is True, cancellation
+    cancelled_run = wait_for_autonomous(cancellable)
+    assert cancelled_run["automation"]["status"] == "cancelled", cancelled_run
+    assert cancelled_run["nodes"]["prepare"]["result"]["cancelled"] is True
+    assert cancelled_run["nodes"]["verify"]["state"] == "pending"
+
+    gate_definition = json.loads(json.dumps(autonomous_definition))
+    gate_definition["spec"]["nodes"].insert(1, {
+        "nodeId": "approval", "kind": "pkm.gate.human/v1",
+        "config": {"prompt": "Approve verification?", "inputKind": "approval"},
+        "dependsOn": [{"from": "prepare"}],
+    })
+    gate_definition["spec"]["nodes"][2]["dependsOn"] = [{"from": "approval", "accept": ["approved"]}]
+    gated = response_value(tools["recipe_run_start_adhoc"](
+        "Human boundary", json.dumps(gate_definition), "autonomous-human", autonomous=True))
+    waiting_gate = wait_for_autonomous(gated, lambda persisted: persisted["automation"]["status"] == "waiting")
+    assert waiting_gate["nodes"]["approval"]["state"] == "running"
+    assert waiting_gate["nodes"]["verify"]["state"] == "pending"
+    gate_resumed = response_value(tools["recipe_run_submit_input"](
+        gated["run_id"], "approval", waiting_gate["nodes"]["approval"]["challengeId"],
+        '{"approved":true}', "autonomous-human-approve"))
+    assert gate_resumed["ok"] is True, gate_resumed
+    assert wait_for_autonomous(gated)["status"] == "completed"
+
+    agent_definition = json.loads(json.dumps(gate_definition))
+    agent_definition["spec"]["nodes"][1].update({"kind": "pkm.step.noop/v1", "config": {}})
+    agent_definition["spec"]["nodes"][2]["dependsOn"] = [{"from": "approval"}]
+    agent_boundary = response_value(tools["recipe_run_start_adhoc"](
+        "Agent boundary", json.dumps(agent_definition), "autonomous-agent", autonomous=True))
+    waiting_agent = wait_for_autonomous(agent_boundary, lambda persisted: persisted["automation"]["status"] == "waiting")
+    assert waiting_agent["nodes"]["approval"]["state"] == "pending"
+    assert waiting_agent["nodes"]["verify"]["state"] == "pending"
+    claimed_agent = response_value(tools["recipe_run_next"](agent_boundary["run_id"], "autonomous-agent-claim"))
+    assert claimed_agent["next_action"]["node_id"] == "approval", claimed_agent
+    reported_agent = response_value(tools["recipe_run_report"](
+        agent_boundary["run_id"], "approval", "succeeded", "autonomous-agent-report", '{}'))
+    assert reported_agent["ok"] is True, reported_agent
+    assert wait_for_autonomous(agent_boundary)["status"] == "completed"
+
+    original_launcher = MODULE.subprocess.Popen
+    def failing_launcher(*arguments, **keywords):
+        raise OSError("Injected background launcher failure")
+    try:
+        MODULE.subprocess.Popen = failing_launcher
+        failed_launch = response_value(tools["recipe_run_start_adhoc"](
+            "Launcher failure", json.dumps(autonomous_definition), "autonomous-launch-failure", autonomous=True))
+    finally:
+        MODULE.subprocess.Popen = original_launcher
+    assert failed_launch["ok"] is True and failed_launch["status"] == "failed", failed_launch
+    assert failed_launch["automation"]["stopReason"] == "command-launch-failed"
+    assert wait_for_autonomous(failed_launch)["nodes"]["verify"]["state"] == "pending"
+    try:
+        MODULE.subprocess.Popen = lambda *arguments, **keywords: type("DeferredLauncher", (), {"pid": 0})()
+        recovering = response_value(tools["recipe_run_start_adhoc"](
+            "Interrupted completion callback", json.dumps(failing_definition),
+            "autonomous-recovery", autonomous=True))
+    finally:
+        MODULE.subprocess.Popen = original_launcher
+    recovery_path = state_dir / "recipe-runs" / f"{recovering['run_id']}.json"
+    recovery_state = json.loads(recovery_path.read_text(encoding="utf-8"))
+    recovery_result = pathlib.Path(recovery_state["nodes"]["prepare"]["background"]["resultPath"])
+    unknown_launch = response_value(tools["recipe_run_next"](recovering["run_id"], "autonomous-unknown-launch"))
+    assert unknown_launch["next_action"]["kind"] == "wait_for_background"
+    assert unknown_launch["next_action"]["reason"] == "reconciliation-required"
+    assert json.loads(recovery_path.read_text())["nodeAttemptCounts"] == {"prepare": 1}
+    MODULE._atomic_write(recovery_result, {"ok": True, "exit_code": 0, "stdout": "reconciled"})
+    resumed_recovery = response_value(tools["recipe_run_next"](recovering["run_id"], "autonomous-recovery-resume"))
+    assert resumed_recovery["ok"] is True, resumed_recovery
+    recovered_run = wait_for_autonomous(recovering)
+    assert recovered_run["status"] == "completed", recovered_run
+    assert recovered_run["nodeAttemptCounts"] == {"prepare": 1, "verify": 1}
+    assert recovered_run["nodes"]["prepare"]["result"]["stdout"] == "reconciled"
+
+    script_chain_definition = json.loads(json.dumps(autonomous_definition))
+    for node in script_chain_definition["spec"]["nodes"]:
+        script = (f"from pathlib import Path; Path({str(autonomous_artifact)!r}).write_text('prepared')"
+                  if node["nodeId"] == "prepare" else
+                  f"from pathlib import Path; assert Path({str(autonomous_artifact)!r}).read_text() == 'prepared'; print('script-verified')")
+        node.update({"kind": "pkm.step.script/v1", "config": {
+            "runtime": "python", "environmentId": "runtime-test", "script": script,
+            "timeoutSeconds": 10, "maxOutputBytes": 4096,
+        }})
+    script_chain = response_value(tools["recipe_run_start_adhoc"](
+        "Autonomous Script chain", json.dumps(script_chain_definition), "autonomous-scripts", autonomous=True))
+    script_chain_run = wait_for_autonomous(script_chain)
+    assert script_chain_run["status"] == "completed", script_chain_run
+    assert script_chain_run["nodes"]["verify"]["result"]["stdout"] == "script-verified\n"
+    assert script_chain_run["nodes"]["prepare"]["result"]["argv"][0] == sys.executable
+
+    concurrency_artifact = pathlib.Path(temporary) / "concurrent-launches.txt"
+    concurrency_definition = json.loads(json.dumps(autonomous_definition))
+    concurrency_definition["spec"]["nodes"][0]["config"]["args"] = ["-c",
+        "import pathlib,sys,time; pathlib.Path(sys.argv[1]).open('a').write('once\\n'); time.sleep(0.2)",
+        str(concurrency_artifact)]
+    concurrency_definition["spec"]["nodes"][1]["config"]["args"] = ["-c", "print('joined')"]
+    concurrent = response_value(tools["recipe_run_start_adhoc"](
+        "Concurrent observation", json.dumps(concurrency_definition), "autonomous-concurrent", autonomous=True))
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        observations = list(executor.map(
+            lambda command_id: response_value(tools["recipe_run_next"](concurrent["run_id"], command_id)),
+            [f"autonomous-concurrent-next-{index}" for index in range(4)],
+        ))
+    assert all(observation["ok"] for observation in observations), observations
+    concurrent_run = wait_for_autonomous(concurrent)
+    assert concurrent_run["status"] == "completed", concurrent_run
+    assert concurrent_run["nodeAttemptCounts"] == {"prepare": 1, "verify": 1}
+    assert concurrency_artifact.read_text() == "once\n"
+
+    native_count = len(native_calls)
+    autonomous_native = response_value(tools["recipe_run_start"](
+        native_recipe["recipeId"], "autonomous-native-start", '{"reason":"boundary test"}',
+        expected_revision=2, expected_digest=native_digest, autonomous=True))
+    assert autonomous_native["automation"]["status"] == "waiting", autonomous_native
+    assert len(native_calls) == native_count
+    completed_native = response_value(tools["recipe_run_next"](
+        autonomous_native["run_id"], "autonomous-native-explicit", ctx=object()))
+    assert completed_native["status"] == "completed", completed_native
+    assert completed_native["automation"]["status"] == "completed"
+    assert len(native_calls) == native_count + 1
+    replayed_native = response_value(tools["recipe_run_next"](
+        autonomous_native["run_id"], "autonomous-native-explicit", ctx=object()))
+    assert replayed_native["replayed"] is True
+    assert len(native_calls) == native_count + 1
+
+    for boundary in ("cancelled", "budget-exceeded"):
+        waiting_start = response_value(tools["recipe_run_start_adhoc"](
+            "Human wait limits", json.dumps(gate_definition),
+            "autonomous-human-" + boundary, autonomous=True))
+        waiting_state = wait_for_autonomous(
+            waiting_start, lambda persisted: persisted["automation"]["status"] == "waiting")
+        if boundary == "cancelled":
+            cancel_wait = response_value(tools["recipe_run_progress"](
+                waiting_start["run_id"], "approval", "autonomous-human-cancel-request",
+                '{"cancellationRequested":true}'))
+            assert cancel_wait["ok"] is True, cancel_wait
+        else:
+            waiting_state["automation"]["deadlineAt"] = "2000-01-01T00:00:00+00:00"
+            MODULE._atomic_write(state_dir / "recipe-runs" / f"{waiting_start['run_id']}.json", waiting_state)
+        after_wait = response_value(tools["recipe_run_submit_input"](
+            waiting_start["run_id"], "approval", waiting_state["nodes"]["approval"]["challengeId"],
+            '{"approved":true}', "autonomous-human-resume-" + boundary))
+        assert after_wait["ok"] is True and after_wait["status"] == "failed", after_wait
+        terminal_wait = wait_for_autonomous(waiting_start)
+        assert terminal_wait["automation"]["status"] == boundary, terminal_wait
+        assert terminal_wait["nodes"]["verify"]["state"] == "pending"
+
     def run_script(runtime, script, command_prefix, environment_id=None):
         config = {"runtime": runtime, "script": script, "timeoutSeconds": 10, "maxOutputBytes": 4096}
         if environment_id is not None:
@@ -703,4 +949,4 @@ with tempfile.TemporaryDirectory(prefix="pkm-recipe-runtime-") as temporary:
     assert escaped_replay["replayed"] is True
     assert len(json.loads((state_dir / "recipe-health.json").read_text())["candidateRequests"]) == 1
 
-print("Recipe MCP runtime: discovery, lazy claims, command/script adapters, mandatory input, results, and replay OK")
+print("Recipe MCP runtime: autonomous command/Script chains, boundaries, cancellation, budgets, recovery, lazy adapters and replay OK")

@@ -69,6 +69,7 @@ verifyCachedTab(mcp, "showMcpTab", "mcpStatusCache", "mcpStatusUpdatedAt", "rend
 verifyCachedTab(skillRouter, "showSkillRouterTab", "skillRouterStatusCache", "skillRouterStatusUpdatedAt", "renderSkillRouterPane", "renderSkillRouterLoading", "skillRouterStatus");
 
 const githubCalls = [];
+const githubRuntimeRequest = ["ask", "githubSyncRuntimeSnapshot", {}, null, true];
 const githubContext = {
   githubSyncUpdatedAt: 100,
   githubSyncStatusRequested: false,
@@ -80,19 +81,20 @@ const githubContext = {
 vm.createContext(githubContext);
 vm.runInContext(`${functionSource(github, "ensureGitHubSyncStatus")};${functionSource(github, "showGitHubSyncTab")};this.show=showGitHubSyncTab`, githubContext);
 githubContext.show();
-assert.deepStrictEqual(plain(githubCalls), [["render"]]);
+assert.deepStrictEqual(plain(githubCalls), [["render"], githubRuntimeRequest],
+  "fresh GitHub Sync cache must render immediately and refresh only lightweight runtime state");
 githubCalls.length = 0;
 githubContext.githubSyncUpdatedAt = 50;
 githubContext.show();
-assert.deepStrictEqual(plain(githubCalls), [["render"], ["ask", "githubSyncState", {}, null, true]]);
+assert.deepStrictEqual(plain(githubCalls), [["render"], githubRuntimeRequest, ["ask", "githubSyncState", {}, null, true]]);
 githubCalls.length = 0;
 githubContext.show();
-assert.deepStrictEqual(plain(githubCalls), [["render"]], "pending GitHub Sync state requests must be deduplicated");
+assert.deepStrictEqual(plain(githubCalls), [["render"], githubRuntimeRequest], "pending full GitHub Sync state requests must be deduplicated");
 githubCalls.length = 0;
 githubContext.githubSyncStatusRequested = false;
 githubContext.githubSyncUpdatedAt = 0;
 githubContext.show();
-assert.deepStrictEqual(plain(githubCalls), [["loading"], ["ask", "githubSyncState", {}, null, false]]);
+assert.deepStrictEqual(plain(githubCalls), [["loading"], githubRuntimeRequest, ["ask", "githubSyncState", {}, null, false]]);
 
 assert.match(knowledge, /state\.tab === 'mcp'[\s\S]{0,220}showMcpTab\(\)/);
 assert.match(knowledge, /state\.tab === 'skillRouter'[\s\S]{0,220}showSkillRouterTab\(\)/);

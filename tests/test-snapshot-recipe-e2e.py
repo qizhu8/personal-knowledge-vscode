@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
+import argparse
 import asyncio
 import hashlib
 import importlib.util
 import json
 import pathlib
+import secrets
+import subprocess
 import tempfile
 
 from fastmcp import Client, FastMCP
@@ -27,7 +30,96 @@ def response_json(result):
     return json.loads(result.content[0].text)
 
 
+def snapshot_yaml_experiment(store, snapshot_path, record, runtime, encodings):
+    import yaml
+
+    payload = runtime._snapshot_decrypt_payload(record)
+    assert runtime._snapshot_payload_is_canonical(payload)
+    original = snapshot_path.read_bytes()
+    node_command = [
+        "node", "-e",
+        "const snapshots=require(process.argv[1]);process.stdout.write(JSON.stringify(snapshots.readAgentSnapshotContents(process.argv[2],process.argv[3])));",
+        str(ROOT / "dist" / "agent-snapshots.js"), str(store), record["snapshotId"],
+    ]
+
+    def verify_node():
+        result = subprocess.run(node_command, check=True, capture_output=True, text=True)
+        captured = json.loads(result.stdout)
+        assert captured["snapshotId"] == record["snapshotId"]
+        assert captured["session"] == payload["session"]
+        assert captured["recipeRuns"] == payload["recipeRuns"]
+
+    verify_node()
+    measurements = []
+    for name, value in (("encrypted-record", record), ("decrypted-capture", payload)):
+        formats = {
+            "compact-json": canonical(value),
+            "pretty-json": json.dumps(value, ensure_ascii=False, indent=2),
+            "yaml": yaml.safe_dump(value, allow_unicode=True, sort_keys=False),
+        }
+        assert yaml.safe_load(formats["yaml"]) == value
+        measurements.append({"case": name, "formats": {
+            format: {"bytes": len(text.encode("utf-8")),
+                     "estimated_text_tokens": {
+                         tokenizer: len(encoding.encode(text, disallowed_special=()))
+                         for tokenizer, encoding in encodings.items()}}
+            for format, text in formats.items()
+        }})
+
+    outer_yaml = yaml.safe_dump(record, allow_unicode=True, sort_keys=False)
+    try:
+        snapshot_path.write_text(outer_yaml, encoding="utf-8")
+        try:
+            runtime._load_snapshot_by_magic(store, record["magicCode"])
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Current runtime unexpectedly accepted a raw YAML Snapshot record")
+        assert subprocess.run(node_command, capture_output=True).returncode != 0
+    finally:
+        snapshot_path.write_bytes(original)
+
+    payload_yaml = yaml.safe_dump(payload, allow_unicode=True, sort_keys=False)
+    iv = secrets.token_bytes(12)
+    encrypted = runtime.AESGCM(runtime.SNAPSHOT_PAYLOAD_KEY).encrypt(
+        iv, payload_yaml.encode("utf-8"), runtime._snapshot_aad(record["snapshotId"], record["magicCode"]))
+    incompatible = json.loads(canonical(record))
+    incompatible["payload"].update({"iv": runtime._snapshot_b64encode(iv),
+                                    "ciphertext": runtime._snapshot_b64encode(encrypted[:-16]),
+                                    "tag": runtime._snapshot_b64encode(encrypted[-16:])})
+    try:
+        runtime._snapshot_decrypt_payload(incompatible)
+    except json.JSONDecodeError:
+        pass
+    else:
+        raise AssertionError("Current payload decoder unexpectedly accepted YAML plaintext")
+    try:
+        snapshot_path.write_text(canonical(incompatible), encoding="utf-8")
+        assert subprocess.run(node_command, capture_output=True).returncode != 0
+    finally:
+        snapshot_path.write_bytes(original)
+
+    roundtripped = yaml.safe_load(outer_yaml)
+    roundtripped["payload"] = runtime._snapshot_encrypt_payload(
+        yaml.safe_load(payload_yaml), record["snapshotId"], record["magicCode"])
+    assert roundtripped["snapshotId"] == record["snapshotId"]
+    assert roundtripped["magicCode"] == record["magicCode"]
+    assert runtime._snapshot_decrypt_payload(roundtripped) == payload
+    snapshot_path.write_text(canonical(roundtripped), encoding="utf-8")
+    verify_node()
+    return measurements
+
+
 async def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--yaml-experiment", action="store_true")
+    parser.add_argument("--tokens", action="store_true")
+    args = parser.parse_args()
+    encodings = {}
+    if args.tokens:
+        import tiktoken
+        encodings = {name: tiktoken.get_encoding(name) for name in ("cl100k_base", "o200k_base")}
+    measurements = []
     agent_runtime = load_module("snapshot_recipe_agent_runtime", ROOT / "resources" / "agent_session_runtime.py")
     recipe_runtime = load_module("snapshot_recipe_runtime", ROOT / "resources" / "recipe_runtime.py")
     with tempfile.TemporaryDirectory(prefix="pkm-snapshot-recipe-e2e-") as temporary:
@@ -124,6 +216,13 @@ async def main():
                 "command_id": "snapshot-e2e-session-start",
                 "host_session_id": "snapshot-e2e-host",
             })
+            if args.yaml_experiment:
+                await client.call_tool("agent_session_todo_append", {
+                    "todos_json": json.dumps([{"title": "Captured task {}".format(index),
+                                               "details": "Preserve Session commitments and verify recovery evidence."}
+                                              for index in range(100)]),
+                    "command_id": "snapshot-yaml-todos",
+                })
             started = response_json(await client.call_tool("recipe_run_start", {
                 "recipe_id": recipe_id,
                 "command_id": "snapshot-e2e-recipe-start",
@@ -173,6 +272,9 @@ async def main():
             listed = response_json(await client.call_tool("agent_session_snapshot_list", {}))
             assert len(listed["snapshots"]) == 1
             magic_code = listed["snapshots"][0]["magicCode"]
+            if args.yaml_experiment:
+                measurements = snapshot_yaml_experiment(
+                    store, snapshot_files[0], snapshot_record, agent_runtime, encodings)
 
         async with Client(mcp) as successor:
             recovered = response_json(await successor.call_tool("agent_session_snapshot_recover", {
@@ -181,8 +283,17 @@ async def main():
             }))
             assert recovered["snapshot_id"] == snapshot_record["snapshotId"]
             assert recovered["next_action"]["kind"] == "call_agent_session_todo_next"
+            if args.yaml_experiment:
+                restored = response_json(await successor.call_tool("agent_session_status", {"detail": "full"}))
+                assert [todo["title"] for todo in restored["session"]["todos"]] == [
+                    "Captured task {}".format(index) for index in range(100)]
 
     print("Snapshot System Recipe E2E: native creation, zero model tokens, and password-free recovery OK")
+    if args.yaml_experiment:
+        print(json.dumps({"status": "passed", "yaml_roundtrip_and_json_recovery": True,
+                          "direct_yaml_storage_supported": False,
+                          "tokenizers_are_billing_proxies": True,
+                          "measurements": measurements}, indent=2))
 
 
 if __name__ == "__main__":

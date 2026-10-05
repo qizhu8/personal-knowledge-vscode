@@ -6,7 +6,7 @@ import * as vscode from "vscode";
 import { getStorePath } from "./filestore";
 import { compareVersionOrder } from "./version-order";
 
-export const PKM_SKILL_ROUTER_VERSION = "1.7.0";
+export const PKM_SKILL_ROUTER_VERSION = "1.7.2";
 export const PKM_SKILL_MIN_MCP_VERSION = "2.8.0";
 export const PKM_SKILL_SOURCE_RELATIVE = path.join("System", "PKM", "PKM Skills.md");
 
@@ -30,6 +30,9 @@ const LEGACY_BUNDLED_SOURCE_HASHES = new Set([
   "b6dbcf44509a2c4c240d99a2e6573b83b21b3bc6e546c2d0a1ef707657be1325", // Router 1.5.1 bundled canonical
   "46d9c22107cfc09eaec54fdfbe98af4c2ad9ace5bb5c05fd8ec492de3f146d1a", // Router 1.6.0 bundled canonical
   "f8f28f95af02e8f15dbcd632452af46b020267dac89e7b036e383ef171e8cf49", // Router 1.6.1 canonical
+  "269e06b053f5d48b31bac2823068c3a55a8681801c68222352116c65209ae193",
+  "a819465ccec50d589891fe12a86d1bfd003eeee0bcf1e725048c4338208b2d67",
+  "0cd7549ee9b7ee3c5d8da25d38056dc1772354db64b2adc83a7b88a13356738a",
 ]);
 
 const CUSTOM_TARGETS_KEY = "pkm.skillProjection.customTargets.v1";

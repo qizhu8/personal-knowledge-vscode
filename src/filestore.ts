@@ -15,6 +15,7 @@ import {
 } from "fs";
 import { createHash, randomBytes } from "crypto";
 import { compileKnowledgeLinksV1, nextKnowledgeIdentity, readKnowledgeIdentity } from "./knowledge-contracts";
+import { withCrossProcessLockSync } from "./cross-process-lock";
 
 let _store = "";
 
@@ -93,6 +94,81 @@ interface RemoveOperations {
   sleep?: (milliseconds: number) => void;
 }
 
+export interface KnowledgeSyncDeletionRecord {
+  path: string;
+  deletedAt: string;
+}
+
+function knowledgeDeletionFile(root: string): string {
+  return join(root, ".pkm", "state", "knowledge-deletions.json");
+}
+
+function loadKnowledgeSyncDeletions(root: string): KnowledgeSyncDeletionRecord[] {
+  const file = knowledgeDeletionFile(root);
+  if (!existsSync(file)) return [];
+  const value = JSON.parse(readFileSync(file, "utf8"));
+  if (value.schema !== 1 || !Array.isArray(value.records) || value.records.some((record: any) =>
+    typeof record?.path !== "string" || !record.path.startsWith("notes/")
+    || record.path.split("/").some((part: string) => !part || part === "." || part === "..")
+    || typeof record.deletedAt !== "string" || !Number.isFinite(Date.parse(record.deletedAt)))) {
+    throw new Error("The local knowledge deletion journal is invalid. Sync cannot safely ignore deletion intent.");
+  }
+  return value.records;
+}
+
+export function knowledgeSyncDeletionRecords(root = getStorePath()): KnowledgeSyncDeletionRecord[] {
+  if (!existsSync(knowledgeDeletionFile(root))) return [];
+  return withCrossProcessLockSync(knowledgeDeletionFile(root) + ".lock", "read knowledge deletions", () => loadKnowledgeSyncDeletions(root));
+}
+
+function writeKnowledgeSyncDeletions(root: string, records: KnowledgeSyncDeletionRecord[]): void {
+  const file = knowledgeDeletionFile(root);
+  const temporary = `${file}.${process.pid}.${randomBytes(5).toString("hex")}.tmp`;
+  mkdirSync(resolve(file, ".."), { recursive: true });
+  try {
+    writeFileSync(temporary, JSON.stringify({ schema: 1, records }, null, 2) + "\n");
+    renameSync(temporary, file);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+}
+
+function changeKnowledgeSyncDeletions<T>(
+  change: (records: KnowledgeSyncDeletionRecord[]) => KnowledgeSyncDeletionRecord[],
+  action: () => T,
+  succeeded: (result: T) => boolean,
+): T {
+  const root = getStorePath();
+  return withCrossProcessLockSync(knowledgeDeletionFile(root) + ".lock", "change knowledge deletions", () => {
+    const before = loadKnowledgeSyncDeletions(root);
+    writeKnowledgeSyncDeletions(root, change(before));
+    try {
+      const result = action();
+      if (!succeeded(result)) writeKnowledgeSyncDeletions(root, before);
+      return result;
+    } catch (error) {
+      writeKnowledgeSyncDeletions(root, before);
+      throw error;
+    }
+  });
+}
+
+function recordKnowledgeTrashDeletion<T>(entry: KnowledgeTrashEntry, source: string, action: () => T): T {
+  const paths: string[] = [];
+  const collect = (full: string, relative: string): void => {
+    if (statSync(full).isDirectory()) {
+      for (const item of readdirSync(full, { withFileTypes: true })) {
+        if (!item.isSymbolicLink() && !item.name.startsWith(".")) collect(join(full, item.name), `${relative}/${item.name}`);
+      }
+    } else if (relative.endsWith(".md")) paths.push(`notes/${relative}`);
+  };
+  collect(source, entry.originalPath);
+  return changeKnowledgeSyncDeletions(records => [
+    ...records.filter(record => !paths.includes(record.path)),
+    ...paths.map(path => ({ path, deletedAt: entry.deletedAt })),
+  ], action, result => !!result);
+}
+
 function knowledgeTrashRoot(area: KnowledgeTrashArea): string { return join(areaRoot(area), ".trash"); }
 function knowledgeTrashPath(area: KnowledgeTrashArea, relativePath: string): { rel: string; full: string } | undefined {
   const rel = String(relativePath || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
@@ -110,16 +186,19 @@ export function knowledgeMoveToTrash(area: KnowledgeTrashArea, relativePath: str
   const id = `${Date.now()}-${randomBytes(5).toString("hex")}`;
   const entryDir = join(knowledgeTrashRoot(area), id);
   const entry: KnowledgeTrashEntry = { id, kind, name, originalPath: source.rel, deletedAt: now() };
-  try {
-    mkdirSync(entryDir, { recursive: true });
-    writeFileSync(join(entryDir, "metadata.json"), JSON.stringify(entry, null, 2) + "\n");
-    renameSync(source.full, join(entryDir, "payload"));
-    pruneEmptyAncestors(resolve(source.full, ".."), resolve(areaRoot(area)));
-    return entry;
-  } catch {
-    rmSync(entryDir, { recursive: true, force: true });
-    return undefined;
-  }
+  const move = (): KnowledgeTrashEntry | undefined => {
+    try {
+      mkdirSync(entryDir, { recursive: true });
+      writeFileSync(join(entryDir, "metadata.json"), JSON.stringify(entry, null, 2) + "\n");
+      renameSync(source.full, join(entryDir, "payload"));
+          try { pruneEmptyAncestors(resolve(source.full, ".."), resolve(areaRoot(area))); } catch {}
+      return entry;
+    } catch {
+      rmSync(entryDir, { recursive: true, force: true });
+      return undefined;
+    }
+  };
+  return area === "notes" ? recordKnowledgeTrashDeletion(entry, source.full, move) : move();
 }
 
 export function knowledgeTrashList(area: KnowledgeTrashArea): KnowledgeTrashEntry[] {
@@ -130,7 +209,8 @@ export function knowledgeTrashList(area: KnowledgeTrashArea): KnowledgeTrashEntr
     if (!/^[0-9]+-[a-f0-9]+$/.test(id)) continue;
     try {
       const entry = JSON.parse(readFileSync(join(root, id, "metadata.json"), "utf8")) as KnowledgeTrashEntry;
-      if (entry.id === id && (entry.kind === "item" || entry.kind === "folder") && entry.originalPath) entries.push(entry);
+          if (entry.id === id && (entry.kind === "item" || entry.kind === "folder") && entry.originalPath
+            && existsSync(join(root, id, "payload"))) entries.push(entry);
     } catch { /* ignore incomplete entries */ }
   }
   return entries.sort((left, right) => right.deletedAt.localeCompare(left.deletedAt));
@@ -143,13 +223,20 @@ export function knowledgeTrashRestore(area: KnowledgeTrashArea, id: string): { o
   if (!destination) return { ok: false, error: "Trash restore path is invalid." };
   if (existsSync(destination.full)) return { ok: false, error: `Restore target already exists: ${entry.originalPath}` };
   const entryDir = join(knowledgeTrashRoot(area), id);
-  try {
-    mkdirSync(resolve(destination.full, ".."), { recursive: true });
-    renameSync(join(entryDir, "payload"), destination.full);
-    rmSync(entryDir, { recursive: true, force: true });
-    if (existsSync(knowledgeTrashRoot(area)) && readdirSync(knowledgeTrashRoot(area)).length === 0) rmSync(knowledgeTrashRoot(area), { recursive: true, force: true });
-    return { ok: true, path: entry.originalPath };
-  } catch (error: any) { return { ok: false, error: error?.message || String(error) }; }
+  const restore = (): { ok: boolean; path?: string; error?: string } => {
+    try {
+      mkdirSync(resolve(destination.full, ".."), { recursive: true });
+      renameSync(join(entryDir, "payload"), destination.full);
+      try {
+        rmSync(entryDir, { recursive: true, force: true });
+        if (existsSync(knowledgeTrashRoot(area)) && readdirSync(knowledgeTrashRoot(area)).length === 0) rmSync(knowledgeTrashRoot(area), { recursive: true, force: true });
+      } catch {}
+      return { ok: true, path: entry.originalPath };
+    } catch (error: any) { return { ok: false, error: error?.message || String(error) }; }
+  };
+  const restoredPath = `notes/${entry.originalPath}`;
+  return area === "notes" ? changeKnowledgeSyncDeletions(records => records.filter(record =>
+    record.path !== restoredPath && !(entry.kind === "folder" && record.path.startsWith(restoredPath + "/"))), restore, result => result.ok) : restore();
 }
 
 export function knowledgeTrashDelete(area: KnowledgeTrashArea, id: string, operations: RemoveOperations = {}): { ok: boolean; name?: string; path?: string; kind?: KnowledgeTrashEntry["kind"]; error?: string } {
@@ -281,9 +368,14 @@ export function noteUpsert(row: {
     title: row.title, description: row.description ?? existing?.description ?? "", type: row.type, tags: row.tags ?? [], created,
     links: validatedKnowledgeLinks(row.links ?? existing?.links),
   };
-  if (pinned) fm.pinned = true; // only write when set, to keep frontmatter clean
-  writeFileSync(full, serializeFrontmatter(fm, row.content ?? ""));
-  return !existing;
+  if (pinned) fm.pinned = true;
+      const write = (): boolean => {
+        writeFileSync(full, serializeFrontmatter(fm, row.content ?? ""));
+        return !existing;
+      };
+      return existsSync(knowledgeDeletionFile(getStorePath()))
+        ? changeKnowledgeSyncDeletions(records => records.filter(record => record.path !== `notes/${newRel}`), write, () => true)
+        : write();
 }
 
 /** Toggle a single note's pinned flag (sorts it to the top of its own folder). */

@@ -2,7 +2,7 @@
   "name": "personal-knowledge",
   "displayName": "Personal Knowledge Manager",
   "description": "%extension.description%",
-  "version": "3.2.7",
+  "version": "3.2.11",
   "publisher": "Uone",
   "author": {
     "name": "Yu Wang"
@@ -731,8 +731,8 @@
           "type": "integer",
           "default": 50,
           "minimum": 1,
-          "maximum": 1000,
-          "description": "Number of newest completed Agent Sessions to keep in Archived. Older completed Sessions are automatically moved to Agent Session Trash, where they remain recoverable until explicitly deleted."
+          "maximum": 50,
+          "description": "Maximum number of Agent Sessions retained in Trash (up to 50). Completed and stopped Sessions move directly to Trash; the oldest overflow is permanently deleted. Explicitly restored Sessions remain outside Trash until changed or manually trashed."
         },
         "personalKnowledge.mcpEnabledFeatureDomains": {
           "type": "array",

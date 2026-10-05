@@ -185,19 +185,23 @@ export function createRetrievalSnapshot(sources: RetrievalSnapshotSources): Retr
   for (const script of sources.scripts) {
     const key = String(script.path || "");
     if (!key) continue;
-    const stableId = `script_${createHash("sha256").update(key).digest("hex").slice(0, 24)}`;
+    const legacyId = `script_${createHash("sha256").update(key).digest("hex").slice(0, 24)}`;
+    const knowledgeId = /^script_[A-Za-z0-9._-]+$/.test(String(script.knowledgeId || "")) ? String(script.knowledgeId) : legacyId;
+    const sourceId = `pkm://script/${knowledgeId}`;
+    const contentHash = createHash("sha256").update(String(script.content || "")).digest("hex");
     documents.push({
-      skill_id: `script:${key}`,
-      source_id: `pkm://script/${stableId}`,
-      source_revision: sourceRevision(script.revision || script.updatedAt, createHash("sha256").update(String(script.content || "")).digest("hex")),
+      skill_id: sourceId,
+      source_id: sourceId,
+      source_revision: `sha256:${contentHash}`,
+      knowledge_id: knowledgeId,
       title: String(script.file || key.split("/").pop() || key),
       description: `Script in ${String(script.category || "")}`,
       body: String(script.content || ""),
       content_type: "script",
-      source_uri: `pkm://scripts/${uriPath(key)}`,
+      source_uri: sourceId,
       metadata: {
         category: String(script.category || ""), extension: String(script.extension || ""), language: String(script.lang || ""),
-        canonical_uri: `pkm://script/${stableId}`,
+        canonical_uri: sourceId, legacy_uri: `pkm://scripts/${uriPath(key)}`, content_hash: `sha256:${contentHash}`,
       },
       provenance: { provider: "pkm", collection: "scripts" },
       read_only: false,

@@ -122,8 +122,8 @@ async def main():
                 expected_component_versions = {
                     "check_chat_version": "chat-test",
                     "chat_capabilities": "chat-test",
-                    "recipe_capabilities": "1.7.3",
-                    "agent_session_capabilities": "1.7.6",
+                    "recipe_capabilities": "1.8.0",
+                    "agent_session_capabilities": "1.7.8",
                 }
                 for name in ["check_chat_version", *discovery_names]:
                     result = await asyncio.wait_for(client.call_tool(name, {}), 3)

@@ -30,7 +30,7 @@ except ModuleNotFoundError:
     _HEALTH_SPEC.loader.exec_module(_HEALTH_MODULE)
     finalize_run_health = _HEALTH_MODULE.finalize_run_health
 
-RECIPE_SCHEMA_VERSION = "1.7.3"
+RECIPE_SCHEMA_VERSION = "1.8.0"
 API_SCHEMA = "pkm.recipe.api/v1"
 RUN_SCHEMA = "pkm.recipe.run/v1"
 DEFINITION_SCHEMA = "pkm.workflow.definition/v1"
@@ -274,6 +274,29 @@ def _hidden_process_options():
     return {}
 
 
+def _command_cancelled(spec):
+    owner = spec.get("recipeOwner")
+    if not owner:
+        return False
+    path, _ = _run_paths(Path(owner["store"]), owner["runId"])
+    run = _load_run(path)
+    record = run["nodes"].get(owner["nodeId"], {})
+    return bool(record.get("attempt") != owner["attempt"]
+                or (run.get("automation") or {}).get("cancellationRequested")
+                or (record.get("progress") or {}).get("cancellationRequested"))
+
+
+def _kill_command(process):
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, check=False, **_hidden_process_options())
+    else:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+    return process.wait()
+
+
 def _execute_command_worker(spec_path, result_path):
     started = datetime.datetime.now(datetime.timezone.utc).isoformat()
     spec = json.loads(Path(spec_path).read_text(encoding="utf-8"))
@@ -284,34 +307,44 @@ def _execute_command_worker(spec_path, result_path):
     try:
         if spec.get("preflightError"):
             raise RuntimeError(spec["preflightError"])
+        if _command_cancelled(spec):
+            result["cancelled"] = True
+            raise RuntimeError("Recipe cancellation requested before command launch.")
         with open(stdout_path, "wb") as stdout_handle, open(stderr_path, "wb") as stderr_handle:
             process = subprocess.Popen(
                 [spec["program"], *spec["args"]], cwd=spec.get("cwd") or None,
                 stdin=subprocess.DEVNULL, stdout=stdout_handle, stderr=stderr_handle,
                 shell=False, **_background_process_options())
-            try:
-                exit_code = process.wait(timeout=spec["timeoutSeconds"])
-                timed_out = False
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                if os.name == "nt":
-                    subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL, check=False,
-                                   **_hidden_process_options())
-                else:
-                    os.killpg(process.pid, signal.SIGKILL)
-                exit_code = process.wait()
+            deadline = time.monotonic() + spec["timeoutSeconds"]
+            timed_out = False
+            cancelled = False
+            while True:
+                cancelled = _command_cancelled(spec)
+                remaining = deadline - time.monotonic()
+                timed_out = remaining <= 0
+                if cancelled or timed_out:
+                    exit_code = _kill_command(process)
+                    break
+                try:
+                    exit_code = process.wait(timeout=min(0.1, remaining))
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
         stdout, stdout_truncated = _bounded_file_text(stdout_path, spec["maxOutputBytes"])
         stderr, stderr_truncated = _bounded_file_text(stderr_path, spec["maxOutputBytes"])
-        result.update({"ok": exit_code == 0 and not timed_out, "exit_code": exit_code,
+        result.update({"ok": exit_code == 0 and not timed_out and not cancelled, "exit_code": exit_code,
+                   "cancelled": cancelled,
                        "timed_out": timed_out, "stdout": stdout, "stderr": stderr,
                        "stdout_truncated": stdout_truncated, "stderr_truncated": stderr_truncated})
-        if timed_out:
+        if cancelled:
+            result["error"] = "Recipe cancellation requested."
+        elif timed_out:
             result["error"] = "Command exceeded its configured timeout."
         elif exit_code != 0:
             result["error"] = "Command exited with a non-zero status."
     except Exception as error:
+        if process is not None and process.poll() is None:
+            _kill_command(process)
         result.update({"ok": False, "exit_code": None, "timed_out": False,
                        "stdout": "", "stderr": "", "stdout_truncated": False,
                        "stderr_truncated": False, "error": str(error)})
@@ -322,6 +355,8 @@ def _execute_command_worker(spec_path, result_path):
         stderr_path.unlink(missing_ok=True)
         if spec.get("cleanupPath"):
             Path(spec["cleanupPath"]).unlink(missing_ok=True)
+        if (spec.get("recipeOwner") or {}).get("autonomous"):
+            _resume_automation(spec["recipeOwner"], result_path)
 
 
 def _input_value(inputs, path):
@@ -537,12 +572,15 @@ def _author_recipe_from_skill(store, name, description, category, definition, co
         raise ValueError("source_skill_hash must be a SHA-256 content hash.")
     if scope not in {"global", "project"}:
         raise ValueError("scope must be global or project.")
+    portable_category = _portable_recipe_category(category)
+    if scope == "global" and portable_category.split("/")[0].casefold() == "system":
+        raise PermissionError("System files and folders are read-only for Agent MCP writes.")
     executable_digest = _fingerprint(definition)
     first_node = (((definition or {}).get("spec") or {}).get("nodes") or [{}])[0].get("nodeId")
     recipe_id = "recipe_" + hashlib.sha256(("skill-recipe\0" + command_id).encode("utf-8")).hexdigest()[:32]
     binding = {"bindingId": "source-skill", "kind": "skill", "knowledgeId": source_skill_id,
                "contentHash": source_skill_hash, "usage": "required"}
-    recipe = {"recipeId": recipe_id, "scope": "global", "category": _portable_recipe_category(category),
+    recipe = {"recipeId": recipe_id, "scope": "global", "category": portable_category,
               "name": str(name).strip(), "description": str(description or "").strip(),
               "metadata": {"applicableFunctions": [], "solution": str(description or "").strip(),
                            "requiredInputs": [], "expectedOutputs": []},
@@ -579,10 +617,18 @@ def _author_recipe_from_skill(store, name, description, category, definition, co
     recipe["knowledgeId"] = "knowledge_" + hashlib.sha256(("recipe\0" + recipe_id).encode("utf-8")).hexdigest()[:24]
     recipe["aliases"] = sorted({"recipe:" + recipe_id, "recipe:" + relative})
     path = store / "recipes" / relative
+    try:
+        resolved_relative = path.resolve().relative_to((store / "recipes").resolve())
+    except ValueError:
+        raise PermissionError("MCP Recipe writes must remain inside the Recipe directory.")
+    if resolved_relative.parts[0].casefold() == "system":
+        raise PermissionError("System files and folders are read-only for Agent MCP writes.")
     lock = store / ".pkm" / "state" / "recipes.lock"
     with _file_lock(lock):
         existing = next((item for item in _project_recipes(store) if item.get("recipeId") == recipe_id), None)
         if existing:
+            if existing.get("systemKind") == "built-in" or str(existing.get("category") or "").split("/")[0].casefold() == "system":
+                raise PermissionError("System Recipes are read-only for Agent MCP writes.")
             comparable = dict(existing)
             for field in ["schema", "knowledgeId", "aliases"]:
                 comparable.pop(field, None)
@@ -1294,17 +1340,40 @@ def _start_command(store, run, node, environments_registry=None):
             "maxOutputBytes": config.get("maxOutputBytes", 65536),
             **({"cwd": _render_template(config["cwd"], run["inputs"])} if config.get("cwd") else {}),
         }
+    automation = run.get("automation")
+    if automation:
+        remaining = (datetime.datetime.fromisoformat(automation["deadlineAt"])
+                     - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+        spec["timeoutSeconds"] = min(spec["timeoutSeconds"], max(0, remaining))
+        if remaining <= 0:
+            spec["preflightError"] = "Automation wall-time budget exceeded."
+    spec["recipeOwner"] = {
+        "store": str(Path(store).resolve()), "runId": run["runId"],
+        "nodeId": node["nodeId"], "attempt": attempt, "autonomous": bool(automation),
+        "environmentsRegistry": str(environments_registry) if environments_registry else None,
+    }
     _atomic_write(spec_path, spec)
-    process = subprocess.Popen(
-        [sys.executable, str(Path(__file__).resolve()), "--recipe-command-worker",
-         str(spec_path), str(result_path)],
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        close_fds=True, **_background_process_options())
     record.update({"attempt": attempt, "background": {
-        "state": "running", "launcherPid": process.pid, "resultPath": str(result_path),
+        "state": "running", "launcherPid": None, "resultPath": str(result_path),
         "startedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "command": {"program": spec["program"], "args": spec["args"]},
     }})
+    path, _ = _run_paths(store, run["runId"])
+    _atomic_write(path, run)
+    try:
+        process = subprocess.Popen(
+            [sys.executable, str(Path(__file__).resolve()), "--recipe-command-worker",
+             str(spec_path), str(result_path)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            close_fds=True, **_background_process_options())
+        record["background"]["launcherPid"] = process.pid
+    except Exception as error:
+        _atomic_write(result_path, {"ok": False, "error": str(error),
+                                   "completed_at": datetime.datetime.now(datetime.timezone.utc).isoformat()})
+        _sync_commands(run)
+        spec_path.unlink(missing_ok=True)
+        if spec.get("cleanupPath"):
+            Path(spec["cleanupPath"]).unlink(missing_ok=True)
     return True
 
 
@@ -1330,9 +1399,13 @@ def _sync_commands(run):
 
 def _command_action(run, node):
     background = run["nodes"][node["nodeId"]].get("background") or {}
-    return {"kind": "wait_for_background", "run_id": run["runId"], "node_id": node["nodeId"],
+    action = {"kind": "wait_for_background", "run_id": run["runId"], "node_id": node["nodeId"],
             "state": background.get("state", "starting"), "started_at": background.get("startedAt"),
-            "command": background.get("command"), "poll_with": "recipe_run_get"}
+            "command": background.get("command")}
+    action["inspect_with" if run.get("automation") else "poll_with"] = "recipe_run_get"
+    if run.get("automation") and not background.get("launcherPid"):
+        action.update({"state": "launch-outcome-unknown", "reason": "reconciliation-required"})
+    return action
 
 
 def _human_gate_action(run, node):
@@ -1675,6 +1748,104 @@ def _advance(run, claim):
     return {"kind": "none", "reason": "recipe-blocked", "blocked_node_ids": blocked}, changed
 
 
+def _automation_parameters(autonomous, max_auto_nodes, max_auto_seconds):
+    if autonomous is False and max_auto_nodes == 100 and max_auto_seconds == 300:
+        return {}
+    return {"autonomous": autonomous, "max_auto_nodes": max_auto_nodes,
+            "max_auto_seconds": max_auto_seconds}
+
+
+def _configure_automation(run, autonomous, max_auto_nodes, max_auto_seconds):
+    if not isinstance(autonomous, bool):
+        raise ValueError("autonomous must be a boolean.")
+    for name, value, maximum in (("max_auto_nodes", max_auto_nodes, 1000),
+                                  ("max_auto_seconds", max_auto_seconds, 3600)):
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= maximum:
+            raise ValueError(f"{name} must be an integer between 1 and {maximum}.")
+    if not autonomous:
+        return
+    if _loop_edges(run["definition"]):
+        raise ValueError("Autonomous execution does not support loop edges; use the lazy adapter.")
+    now = datetime.datetime.now(datetime.timezone.utc)
+    run["automation"] = {
+        "status": "running", "maxNodes": max_auto_nodes, "startedNodes": 0,
+        "deadlineAt": (now + datetime.timedelta(seconds=max_auto_seconds)).isoformat(),
+        "cancellationRequested": False,
+    }
+
+
+def _advance_automation(store, run, environments_registry=None):
+    automation = run.get("automation")
+    if not automation:
+        return _advance(run, False)
+    before = _json(automation)
+    cancellation = automation.get("cancellationRequested", False)
+    failed_command = any(
+        node["kind"] in {COMMAND_NODE_KIND, SCRIPT_NODE_KIND}
+        and run["nodes"][node["nodeId"]]["state"] == "failed"
+        for node in run["definition"]["spec"]["nodes"])
+    if failed_command or (cancellation and not any(
+            record["state"] == "running" for record in run["nodes"].values())):
+        run["status"] = "failed"
+        automation.update({"status": "cancelled" if cancellation else "failed",
+                           "stopReason": "cancellation-requested" if cancellation else "command-failed"})
+        if not cancellation and datetime.datetime.now(datetime.timezone.utc) >= datetime.datetime.fromisoformat(automation["deadlineAt"]):
+            automation.update({"status": "budget-exceeded", "stopReason": "automation-budget-exceeded"})
+    action, changed = _advance(run, False)
+    if run["status"] != "running":
+        if automation["status"] not in {"cancelled", "failed", "budget-exceeded"}:
+            automation["status"] = run["status"]
+    elif action["kind"] == "call_recipe_run_next" and not cancellation:
+        node = _ready_nodes(run)[0]
+        if node["kind"] in {COMMAND_NODE_KIND, SCRIPT_NODE_KIND}:
+            if (automation["startedNodes"] >= automation["maxNodes"]
+                    or datetime.datetime.now(datetime.timezone.utc)
+                    >= datetime.datetime.fromisoformat(automation["deadlineAt"])):
+                run["status"] = "failed"
+                automation.update({"status": "budget-exceeded", "stopReason": "automation-budget-exceeded"})
+                action = {"kind": "none", "reason": "automation-budget-exceeded"}
+                changed = True
+            else:
+                automation["startedNodes"] += 1
+                automation["status"] = "running"
+                automation.pop("waitingOn", None)
+                action, advanced = _advance(run, True)
+                changed = changed or advanced
+        elif node["kind"] == HUMAN_GATE_NODE_KIND:
+            automation.update({"status": "waiting", "waitingOn": node["nodeId"]})
+            action, advanced = _advance(run, True)
+            changed = changed or advanced
+        else:
+            automation.update({"status": "waiting", "waitingOn": node["nodeId"]})
+    action, materialized = _materialize_runtime_action(store, run, action, environments_registry)
+    if (action.get("kind") == "wait_for_background"
+            and run["nodes"][action["node_id"]]["state"] == "failed"):
+        run["status"] = "failed"
+        automation.update({"status": "failed", "stopReason": "command-launch-failed"})
+        action, _ = _advance(run, False)
+        changed = True
+    return action, changed or materialized or before != _json(automation)
+
+
+def _resume_automation(owner, result_path):
+    store = Path(owner["store"])
+    path, lock = _run_paths(store, owner["runId"])
+    with _file_lock(lock):
+        run = _load_run(path)
+        record = run["nodes"].get(owner["nodeId"], {})
+        if (record.get("attempt") != owner["attempt"]
+                or (record.get("background") or {}).get("resultPath") != str(result_path)):
+            return
+        changed = _sync_commands(run)
+        _, advanced = _advance_automation(store, run, owner.get("environmentsRegistry"))
+        changed = changed or advanced
+        changed = _finalize_terminal_run(store, run) or changed
+        if changed:
+            run["version"] += 1
+            run["updatedAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            _atomic_write(path, run)
+
+
 def _run_response(run, action, replayed=False, detail="compact", include_recipe=False):
     current_result = _current_result(run)
     values = {
@@ -1692,6 +1863,8 @@ def _run_response(run, action, replayed=False, detail="compact", include_recipe=
     for key in ("running_progress", "control_state"):
         if key in current_result:
             values["current_result"][key] = current_result[key]
+    if run.get("automation"):
+        values["automation"] = run["automation"]
     if include_recipe or detail == "full":
         values["recipe"] = {
             "recipe_id": run["recipeId"],
@@ -1858,10 +2031,10 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
 
     @typed_read_only_tool
     def recipe_capabilities() -> str:
-        """Discover Recipes when an executable control graph adds value.
+        """Discover reusable solutions, Script automation and structured Agent tasks.
 
-        Use for branching, bounded repetition, mandatory gates, pinned reusable
-        procedures, or managed background/native operations. Linear work needs no Recipe.
+        Mature linear Recipes are valid. Extra control flow is optional, not a
+        prerequisite for reusing a validated solution.
         """
         return _response(
             ok=True,
@@ -1869,11 +2042,12 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
             version=RECIPE_SCHEMA_VERSION,
             proactive=True,
             use_when=[
+                "validated reusable solution, including mature linear Recipes",
                 "branching or bounded repetition",
                 "mandatory human gate or pinned reusable procedure",
                 "managed background command or native operation",
             ],
-            do_not_use_when=["linear inspect-edit-validate work", "one-node noop tracking"],
+            do_not_use_when=["one-node noop tracking", "work with no reusable solution or useful structure"],
             next_tool="recipe_search",
             tools=[
                 "recipe_search",
@@ -1892,6 +2066,18 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
                 "strategy": "persisted-control-state-machine",
                 "adapter_protocol": "next-action-report/v1",
                 "next_is_claim": True,
+                "parallel_agent_claims": False,
+                "autonomous_run_scheduler": True,
+                "autonomous_execution": {
+                    "opt_in_parameter": "autonomous",
+                    "node_kinds": [COMMAND_NODE_KIND, SCRIPT_NODE_KIND],
+                    "strategy": "serial-worker-completion-driven",
+                    "bounds": ["max_auto_nodes", "max_auto_seconds", "node-timeout"],
+                    "loop_edges": False,
+                    "cancel_with": "recipe_run_progress(cancellationRequested=true)",
+                    "recover_with": "recipe_run_next; reconcile receipts without relaunching unknown work",
+                },
+                "automatic_model_escalation": False,
                 "dynamic_v2": True,
                 "supported_controls": ["branch", "bounded-loop", "pinned-subrecipe",
                                        "background-command", "mandatory-human-gate",
@@ -1977,8 +2163,13 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
     @typed_tool
     def recipe_run_start(recipe_id: str, command_id: str, inputs_json: str = "{}", project_id: str = "",
                          expected_revision: int = 0, expected_digest: str = "",
-                         detail: str = "compact") -> str:
-        """Create a pinned lazy run; compact output omits historical results and usage."""
+                         detail: str = "compact", autonomous: bool = False,
+                         max_auto_nodes: int = 100, max_auto_seconds: int = 300) -> str:
+        """Create a pinned run; autonomous=True drains bounded command/Script chains.
+
+        Human gates and Agent/native/subflow nodes remain explicit boundaries.
+        The default preserves lazy execution. Compact output omits historical results.
+        """
         try:
             detail = _response_detail(detail)
             if not command_id.strip():
@@ -1992,7 +2183,8 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
             inputs = _normalize_run_inputs(definition, _parse_json(inputs_json, "inputs_json"))
             fingerprint = _fingerprint({"recipe_id": recipe_id, "project_id": project_id, "inputs": inputs,
                                         "revision": expected_revision, "digest": expected_digest,
-                                        "detail": detail})
+                                        "detail": detail,
+                                        **_automation_parameters(autonomous, max_auto_nodes, max_auto_seconds)})
             run_id = "recipe_run_" + hashlib.sha256(command_id.encode("utf-8")).hexdigest()[:24]
             path, lock = _run_paths(store, run_id)
             with _file_lock(lock):
@@ -2003,7 +2195,10 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
                         return replay
                     raise ValueError("Deterministic run identity already exists for another command.")
                 run = _new_run(recipe, definition, node_bindings, inputs, run_id, project_id)
-                action, _ = _advance(run, False)
+                _configure_automation(run, autonomous, max_auto_nodes, max_auto_seconds)
+                action, _ = _advance_automation(store, run, environments_registry)
+                if run.get("automation"):
+                    _finalize_terminal_run(store, run)
                 response = _run_response(
                     run, action, detail=detail, include_recipe=True)
                 _store_receipt(run, command_id, fingerprint, response)
@@ -2014,8 +2209,10 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
 
     @typed_tool
     def recipe_run_start_adhoc(name: str, definition_json: str, command_id: str, inputs_json: str = "{}",
-                               node_bindings_json: str = "[]", detail: str = "compact") -> str:
-        """Create an instance-only run only when its graph adds executable control."""
+                               node_bindings_json: str = "[]", detail: str = "compact",
+                               autonomous: bool = False, max_auto_nodes: int = 100,
+                               max_auto_seconds: int = 300) -> str:
+        """Create an instance-only solution; autonomous=True drains bounded command/Script chains."""
         try:
             detail = _response_detail(detail)
             name = str(name or "").strip()
@@ -2033,7 +2230,8 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
             inputs = _normalize_run_inputs(definition, inputs)
             fingerprint = _fingerprint({"name": name, "definition": definition,
                                         "node_bindings": node_bindings, "inputs": inputs,
-                                        "detail": detail})
+                                        "detail": detail,
+                                        **_automation_parameters(autonomous, max_auto_nodes, max_auto_seconds)})
             run_id = "recipe_run_" + hashlib.sha256(command_id.encode("utf-8")).hexdigest()[:24]
             path, lock = _run_paths(store, run_id)
             with _file_lock(lock):
@@ -2044,7 +2242,10 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
                         return replay
                     raise ValueError("Deterministic run identity already exists for another command.")
                 run = _new_run(recipe, definition, bindings, inputs, run_id)
-                action, _ = _advance(run, False)
+                _configure_automation(run, autonomous, max_auto_nodes, max_auto_seconds)
+                action, _ = _advance_automation(store, run, environments_registry)
+                if run.get("automation"):
+                    _finalize_terminal_run(store, run)
                 response = _run_response(
                     run, action, detail=detail, include_recipe=True)
                 _store_receipt(run, command_id, fingerprint, response)
@@ -2095,7 +2296,13 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
                     return replay
                 changed = _sync_commands(run)
                 changed = _sync_subflows(store, run) or changed
-                action, advanced = _advance(run, True)
+                if run.get("automation"):
+                    action, advanced = _advance_automation(store, run, environments_registry)
+                    if action.get("kind") == "call_recipe_run_next":
+                        action, claimed = _advance(run, True)
+                        advanced = advanced or claimed
+                else:
+                    action, advanced = _advance(run, True)
                 changed = changed or advanced
                 ephemeral_output = None
                 if (action.get("kind") == "execute_node"
@@ -2103,7 +2310,8 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
                     ephemeral_output = _execute_native_operation(
                         run, action["node"], native_operations, ctx)
                     changed = True
-                    action, advanced = _advance(run, False)
+                    action, advanced = (_advance_automation(store, run, environments_registry)
+                                        if run.get("automation") else _advance(run, False))
                     changed = changed or advanced
                 else:
                     action, materialized = _materialize_runtime_action(
@@ -2183,6 +2391,8 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
                 current.update({key: item for key, item in value.items() if key not in {"events", "progressed"}})
                 current["events"] = (existing_events + normalized_events)[-20:]
                 record["progress"] = current
+                if run.get("automation") and value.get("cancellationRequested"):
+                    run["automation"]["cancellationRequested"] = True
                 record["lastHeartbeatAt"] = now
                 if value.get("progressed", True):
                     record["lastProgressAt"] = now
@@ -2244,7 +2454,8 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
                                "completedAt": completed_at})
                 action = _apply_loop_outcome(run, node_id, outcome)
                 if action is None:
-                    action, _ = _advance(run, True)
+                    action, _ = (_advance_automation(store, run, environments_registry)
+                                 if run.get("automation") else _advance(run, True))
                 action, _ = _materialize_runtime_action(store, run, action, environments_registry)
                 run["version"] += 1
                 run["updatedAt"] = completed_at
@@ -2302,7 +2513,8 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
                                "humanIntervention": True})
                 action = _apply_loop_outcome(run, node_id, outcome)
                 if action is None:
-                    action, _ = _advance(run, True)
+                    action, _ = (_advance_automation(store, run, environments_registry)
+                                 if run.get("automation") else _advance(run, True))
                 action, _ = _materialize_runtime_action(store, run, action, environments_registry)
                 run["version"] += 1
                 run["updatedAt"] = responded_at

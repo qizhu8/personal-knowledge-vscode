@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import base64
+import json
 import os
 from pathlib import Path
 from playwright.sync_api import sync_playwright
@@ -57,8 +58,86 @@ def assert_single_toolbar_row(page):
     assert max(centers) - min(centers) <= 1, f"Definition Graph controls wrapped onto multiple rows: {centers}; styles={styles}"
 
 
+def assert_shared_trash_docks(browser):
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.goto(BASE_URL, wait_until="networkidle")
+    page.wait_for_function("projectSnapshot !== null")
+    page.evaluate("""() => {
+      projectSnapshot.agentSessionTrash = [{sessionId:'agent_session_trash_ui', task:'Trashed Session',
+        status:'completed', agent:{name:'Copilot'}, trashedAt:'2026-10-04T00:00:00Z'}];
+      projectSnapshot.recipeTrash = [{...projectSnapshot.recipes[0], scope:'global',
+        recipeId:'recipe_trash_ui', name:'Trashed Recipe'}];
+    }""")
+    for width, height in [(1280, 900), (390, 844)]:
+      page.set_viewport_size({"width": width, "height": height})
+      reference = None
+      for workspace, area, command in [
+        ("knowledge", "skills", "skillTrashEmpty"),
+        ("automation", "recipes", "recipeTrash"),
+        ("automation", "agentSessions", "agentSessionTrash"),
+      ]:
+        page.locator(f'[data-workspace="{workspace}"]').click()
+        page.locator(f'.tab[data-tab="{area}"]').click()
+        if area == "skills":
+          page.evaluate("""() => {
+            state.knowledgeTrash = [{id:'trash_ui', name:'Trashed Skill', kind:'file', originalPath:'Testing/Skill'}];
+            renderKnowledgeTrashDock('skills');
+          }""")
+        else:
+          page.evaluate("renderGlobalRecipes()" if area == "recipes" else "renderAgentSessions()")
+        dock = page.locator('.cattree-trash-dock:visible')
+        row = dock.locator('.knowledge-trash-dock-row')
+        button = row.get_by_role("button", name="Delete All", exact=True)
+        assert button.is_visible() and button.is_enabled()
+        assert row.get_attribute("aria-expanded") == "false"
+        assert page.locator('.agent-session-archive').count() == 0
+        styles = row.evaluate("""element => {
+          const style = getComputedStyle(element);
+          const button = element.querySelector('.knowledge-trash-empty');
+          const action = getComputedStyle(button);
+          return [style.fontSize, style.color, style.padding, element.getBoundingClientRect().height,
+            action.fontSize, action.color, action.padding, action.borderWidth, action.minHeight,
+            action.display, action.flexDirection, button.getBoundingClientRect().height];
+        }""")
+        if reference is None:
+          reference = styles
+        assert styles == reference, f"{area} Trash differs from Skills: {styles}"
+        bounds = button.bounding_box()
+        assert bounds["x"] >= 0 and bounds["x"] + bounds["width"] <= width
+        assert bounds["y"] >= 0 and bounds["y"] + bounds["height"] <= height
+        row.focus()
+        row.press("Space")
+        assert row.get_attribute("aria-expanded") == "true"
+        row.press("Space")
+        assert row.get_attribute("aria-expanded") == "false"
+        button.focus()
+        button.press("Enter")
+        assert page.locator('#pk-modal-ok').is_visible()
+        assert row.get_attribute("aria-expanded") == "false", "Delete All must not toggle the popover"
+        page.locator('#pk-modal-ok').click()
+        page.wait_for_function("command => window.__previewMessages.some(message => message.command === command)", arg=command)
+        request = page.evaluate("command => window.__previewMessages.filter(message => message.command === command).at(-1)", command)
+        if area != "skills":
+          assert request["action"] == "empty"
+        screenshots_dir = os.environ.get("PKM_TRASH_SCREENSHOT_DIR")
+        if screenshots_dir:
+          Path(screenshots_dir).mkdir(parents=True, exist_ok=True)
+          page.screenshot(path=str(Path(screenshots_dir) / f"{area}-trash-{width}.png"))
+        if area == "skills":
+          page.evaluate("state.knowledgeTrash = []; renderKnowledgeTrashDock('skills')")
+        else:
+          page.evaluate("""area => {
+            const key = area === 'recipes' ? 'recipeTrash' : 'agentSessionTrash';
+            const entries = projectSnapshot[key]; projectSnapshot[key] = [];
+            area === 'recipes' ? renderGlobalRecipes() : renderAgentSessions();
+            projectSnapshot[key] = entries;
+          }""", area)
+        assert dock.get_by_role("button", name="Delete All", exact=True).is_disabled()
+    page.close()
+
+
 with sync_playwright() as playwright:
-    browser = playwright.chromium.launch(headless=True)
+    browser = playwright.chromium.launch(headless=True, executable_path=os.environ.get("PKM_CHROMIUM_EXECUTABLE") or None)
     isolated_startup = browser.new_page(viewport={"width": 1440, "height": 1000})
     isolated_startup.route("**/panel.css", lambda route: route.abort())
     isolated_startup.goto(BASE_URL, wait_until="domcontentloaded")
@@ -467,6 +546,12 @@ with sync_playwright() as playwright:
     assert fullscreen.locator('.agent-session-unified-node').count() == 6
     assert fullscreen.locator('.agent-session-unified-node[data-run-id="recipe_run_demo_design"]').count() == 2
     assert fullscreen.locator('.agent-session-unified-node[data-run-id="recipe_run_demo_observable"]').count() == 4
+    queue_geometry = """graph => {
+      const origin = graph.querySelector('.agent-session-unified-graph').getBoundingClientRect();
+      return [...graph.querySelectorAll('[data-todo-node]')].map(node => {
+        const rect = node.getBoundingClientRect(); return {id:node.dataset.todoNode,x:rect.left-origin.left,y:rect.top-origin.top};
+      });
+    }"""
     tree_levels = fullscreen.locator('.agent-session-recipe-tree-canvas').evaluate("""tree => {
       const box = id => tree.querySelector(`[data-node-id="${id}"]`).getBoundingClientRect();
       const browser = box('browser-validation'), security = box('security-validation'), acceptance = box('acceptance');
@@ -496,8 +581,8 @@ with sync_playwright() as playwright:
         .map(card => [card.dataset.nodeKey, card]));
       const structural = [...graph.querySelectorAll('.agent-session-structure-edge')];
       const ownership = [...graph.querySelectorAll('.agent-session-ownership-edge')];
-      const dependencies = [...graph.querySelectorAll('.agent-session-unified-edge')];
-      const arrows = [...graph.querySelectorAll(':scope > .agent-graph-arrow')];
+      const dependencies = [...graph.querySelectorAll('.agent-session-unified-edge[data-edge-relation="prerequisite"]')];
+      const arrows = [...graph.querySelectorAll(':scope > .agent-graph-arrow[data-edge-source]')];
       return {structural:structural.length, ownership:ownership.length, dependencies:dependencies.length,
         arrows:arrows.map(arrow => {
         const source = cards.get(arrow.dataset.edgeSource), target = cards.get(arrow.dataset.edgeTarget);
@@ -509,25 +594,176 @@ with sync_playwright() as playwright:
         };
       })};
     }""")
-    assert edge_geometry["structural"] == 2, edge_geometry
+    assert edge_geometry["structural"] == 3, edge_geometry
     assert edge_geometry["ownership"] == 2, edge_geometry
     assert edge_geometry["dependencies"] == len(edge_geometry["arrows"]) > 0, edge_geometry
     assert all(edge["sourceExists"] and edge["targetExists"] for edge in edge_geometry["arrows"]), edge_geometry
     assert all(edge["centerDelta"] <= 2 and 5 <= edge["targetGap"] <= 14 for edge in edge_geometry["arrows"]), edge_geometry
     fullscreen_module = fullscreen.locator('.agent-runtime-node[data-node-id="browser-validation"]')
+    queue_before_drag = fullscreen.evaluate(queue_geometry)
     module_box = fullscreen_module.bounding_box()
     page.mouse.move(module_box["x"] + 40, module_box["y"] + 20)
     page.mouse.down()
     page.mouse.move(module_box["x"] + 100, module_box["y"] + 80, steps=6)
     page.mouse.up()
-    assert "translate(60px,60px)" in fullscreen_module.get_attribute("style").replace(" ", "")
+    moved_box = fullscreen_module.bounding_box()
+    assert abs(moved_box["x"] - module_box["x"] - 60) <= 2, moved_box
+    assert abs(moved_box["y"] - module_box["y"] - 60) <= 2, moved_box
+    moved_transform = fullscreen_module.evaluate("node => node.style.transform")
     page.evaluate("renderAgentSessions()")
     fullscreen = page.locator('.agent-session-fullscreen')
-    assert "translate(60px,60px)" in fullscreen.locator('.agent-runtime-node[data-node-id="browser-validation"]').get_attribute("style").replace(" ", "")
-    fullscreen.locator('button[title="Re-organize graph"]').click()
+    assert fullscreen.locator('.agent-runtime-node[data-node-id="browser-validation"]').evaluate("node => node.style.transform") == moved_transform
+    assert fullscreen.evaluate(queue_geometry) == queue_before_drag
+    fullscreen.locator('.agent-session-recipe-tree button[title="Reorganize Recipes"]').click()
     assert "translate(0px,0px)" in page.locator('.agent-session-fullscreen .agent-runtime-node[data-node-id="browser-validation"]').get_attribute("style").replace(" ", "")
+    assert fullscreen.evaluate(queue_geometry) == queue_before_drag
     fullscreen.locator('button[title="Close full-screen graph"]').click()
     assert page.locator('.agent-session-fullscreen').count() == 0
+
+    session_path = os.environ.get("PKM_AGENT_SESSION_GRAPH_DATA", "")
+    graph_session = json.loads(Path(session_path).read_text()) if session_path else {
+      "sessionId": "session_no_recipe", "task": "Sync recovery and graph parity", "status": "running",
+      "todos": [{"todoId": name, "title": name, "status": status} for name, status in
+            [("Sync recovery", "succeeded"), ("Graph parity", "running"), ("Watcher deferred", "pending")]],
+    }
+    assert graph_session["todos"], "The parity test must use actual durable Todos"
+    assert not graph_session.get("recipeRunIds"), "This regression expects a Session without Recipe Runs"
+    graph_session["runs"] = []
+    install_graph = """session => {
+      projectSnapshot.agentSessions = [session]; selectedAgentSessionId = session.sessionId;
+      selectedAgentSessionTodoId = ''; agentSessionFullscreenRunId = ''; state.tab = 'agentSessions';
+      renderAgentSessions();
+    }"""
+    page.evaluate(install_graph, graph_session)
+    overview = page.locator('.agent-session-overview-graph')
+    assert overview.locator('[data-module-kind="todo"]').count() == len(graph_session["todos"])
+    parallel_geometry = """graph => {
+      const origin = graph.querySelector('.agent-session-unified-graph').getBoundingClientRect();
+      return [...graph.querySelectorAll('[data-module-kind="todo"]')].map(node => {
+        const rect = node.getBoundingClientRect(); return {top:rect.top-origin.top,left:rect.left-origin.left,right:rect.right-origin.left};
+      }).sort((left,right) => left.left - right.left);
+    }"""
+    parallel_before_drag = overview.evaluate(parallel_geometry)
+    assert max(node['top'] for node in parallel_before_drag) - min(node['top'] for node in parallel_before_drag) <= 2, parallel_before_drag
+    assert all(left['right'] < right['left'] for left,right in zip(parallel_before_drag,parallel_before_drag[1:])), parallel_before_drag
+    queue_before_drag = overview.evaluate(queue_geometry)
+    inline_module = overview.locator('[data-module-kind="todo"]').first
+    module_box = inline_module.bounding_box()
+    page.mouse.move(module_box["x"] + 30, module_box["y"] + 20)
+    page.mouse.down()
+    page.mouse.move(module_box["x"] + 75, module_box["y"] + 55, steps=6)
+    page.mouse.up()
+    moved_box = inline_module.bounding_box()
+    assert abs(moved_box["x"] - module_box["x"] - 45) <= 2, moved_box
+    assert abs(moved_box["y"] - module_box["y"] - 35) <= 2, moved_box
+    assert overview.evaluate(queue_geometry) == queue_before_drag
+    moved_transform = inline_module.evaluate("node => node.style.transform")
+    page.evaluate("renderAgentSessions()")
+    assert inline_module.evaluate("node => node.style.transform") == moved_transform
+    page.evaluate("agentSessionNodePositions['unrelated-run:node'] = {x:17,y:23}")
+    overview.locator('button[title="Reorganize Recipes"]').click()
+    assert inline_module.evaluate("node => node.style.transform") == 'translate(0px, 0px)'
+    assert overview.evaluate(queue_geometry) == queue_before_drag, {"before":queue_before_drag,"after":overview.evaluate(queue_geometry)}
+    assert page.evaluate("agentSessionNodePositions['unrelated-run:node']") == {"x":17,"y":23}
+    assert overview.evaluate(parallel_geometry) == parallel_before_drag
+    page.locator('.agent-session-flow > header button[title="Open full-screen Session graph"]').click()
+    fullscreen = page.locator('.agent-session-fullscreen')
+    assert fullscreen.locator('[data-module-kind="todo"]').count() == len(graph_session["todos"])
+    parallel_fullscreen = fullscreen.evaluate(parallel_geometry)
+    assert max(node['top'] for node in parallel_fullscreen) - min(node['top'] for node in parallel_fullscreen) <= 2, parallel_fullscreen
+    assert fullscreen.locator('[data-session-node]').count() == 1
+    page.wait_for_function("document.querySelector('.agent-session-fullscreen .agent-session-structure-edge') !== null")
+    branches = fullscreen.locator('.agent-session-structure-edge').evaluate_all(
+      "elements => elements.map(element => ({source:element.dataset.structureSource, target:element.dataset.structureTarget, relation:element.dataset.edgeRelation}))")
+    queue = [graph_session["sessionId"], *[todo["todoId"] for todo in graph_session["todos"]], graph_session["sessionId"] + ':stop']
+    assert len(branches) == len(queue) - 1
+    assert [(edge["source"], edge["target"]) for edge in branches] == list(zip(queue, queue[1:])), branches
+    assert all(edge["relation"] == 'queue-order' for edge in branches), branches
+    assert fullscreen.locator('[data-module-boundary]').count() == 2
+    assert fullscreen.locator('[data-queue-boundary]').count() == 2
+    boundary_geometry = fullscreen.locator('.agent-session-unified-graph').evaluate("""graph => {
+      const rect = graph.getBoundingClientRect(), scale = rect.width / graph.offsetWidth;
+      const cards = [...graph.querySelectorAll('.agent-session-unified-node')].map(card => card.getBoundingClientRect());
+      let intersections = 0;
+      for (const edge of graph.querySelectorAll('.agent-session-module-boundary-edge')) {
+        const length = edge.getTotalLength();
+        for (let distance = 4; distance < length - 4; distance += 4) {
+          const point = edge.getPointAtLength(distance), x = rect.left + point.x * scale, y = rect.top + point.y * scale;
+          if (cards.some(card => x > card.left + 1 && x < card.right - 1 && y > card.top + 1 && y < card.bottom - 1)) intersections++;
+        }
+      }
+      const tree = graph.querySelector('.agent-session-recipe-tree-canvas').getBoundingClientRect();
+      const start = graph.querySelector('[data-module-boundary="start"]').getBoundingClientRect();
+      const complete = graph.querySelector('[data-module-boundary="stop"]').getBoundingClientRect();
+      const center = rect => rect.left + rect.width / 2;
+      return {intersections, startDelta:Math.abs(center(start)-center(tree)), completeDelta:Math.abs(center(complete)-center(tree)),
+        completeGap:complete.top-Math.max(...cards.map(card=>card.bottom)),
+        entryPaths:[...graph.querySelectorAll('[data-edge-relation="module-entry"]')].map(edge=>edge.getAttribute('d')),
+        exitPaths:[...graph.querySelectorAll('[data-edge-relation="module-exit"]')].map(edge=>edge.getAttribute('d'))};
+    }""")
+    assert boundary_geometry["intersections"] == 0, boundary_geometry
+    assert boundary_geometry["startDelta"] <= 2 and boundary_geometry["completeDelta"] <= 2, boundary_geometry
+    assert 20 < boundary_geometry["completeGap"] < 100, boundary_geometry
+    assert len(boundary_geometry['entryPaths']) == len(graph_session['todos']), boundary_geometry
+    assert len(boundary_geometry['exitPaths']) == len(graph_session['todos']), boundary_geometry
+    assert all(path.split()[3::2] == ['V','H','V'] for path in boundary_geometry['entryPaths'] + boundary_geometry['exitPaths']), boundary_geometry
+    assert fullscreen.locator('[data-module-boundary="stop"] strong').inner_text() == 'Complete'
+    for todo in graph_session["todos"]:
+      assert fullscreen.locator(f'[data-todo-node="{todo["todoId"]}"]').get_attribute("data-todo-status") == todo["status"]
+    if SCREENSHOT_PATH:
+      fullscreen.screenshot(path=str(Path(SCREENSHOT_PATH).with_name("agent-session-no-recipe.png")))
+
+    sketch_session = {
+      "sessionId":"session_sketch", "task":"Sketch: two branches, Check join, final Todo", "status":"running",
+      "todos":[{"todoId":name,"title":name,"status":"pending","recipeRunIds":["run_" + name]} for name in ["Todo1","Todo2","Check","Todo3"]],
+      "runs":[{"runId":"run_" + name,"recipeName":name,"status":"pending","nodes":[
+        {"nodeId":"step" + str(index),"state":"pending","dependsOn":[] if index == 1 else [{"from":"step" + str(index - 1)}]}
+        for index in range(1,count + 1)]} for name,count in [("Todo1",2),("Todo2",3),("Check",1),("Todo3",1)]],
+      "recipeTreeEdges":[
+        {"fromRunId":"run_Todo1","fromNodeId":"step2","toRunId":"run_Check","toNodeId":"step1"},
+        {"fromRunId":"run_Todo2","fromNodeId":"step3","toRunId":"run_Check","toNodeId":"step1"},
+        {"fromRunId":"run_Check","fromNodeId":"step1","toRunId":"run_Todo3","toNodeId":"step1"}],
+    }
+    page.evaluate(install_graph, sketch_session)
+    page.locator('.agent-session-flow > header button[title="Open full-screen Session graph"]').click()
+    sketch = page.locator('.agent-session-fullscreen')
+    page.wait_for_function("document.querySelectorAll('.agent-session-fullscreen [data-edge-relation=prerequisite]').length === 6")
+    sketch_geometry = sketch.evaluate("""graph => {
+      const box = todo => graph.querySelector(`[data-recipe-group="${todo}"]`).getBoundingClientRect();
+      const first = box('Todo1'), second = box('Todo2'), check = box('Check'), last = box('Todo3');
+      const start = graph.querySelector('[data-module-boundary="start"]').getBoundingClientRect();
+      const stop = graph.querySelector('[data-module-boundary="stop"]').getBoundingClientRect();
+      const columns = todo => [...graph.querySelectorAll(`[data-run-id="run_${todo}"]`)].map(node => node.getBoundingClientRect().left);
+      const rect = graph.querySelector('.agent-session-unified-graph').getBoundingClientRect();
+      const scale = rect.width / graph.querySelector('.agent-session-unified-graph').offsetWidth;
+      const cards = [...graph.querySelectorAll('.agent-session-unified-node')].map(node => node.getBoundingClientRect());
+      let ownershipIntersections = 0;
+      for (const edge of graph.querySelectorAll('.agent-session-ownership-edge')) {
+        for (let distance = 4; distance < edge.getTotalLength() - 4; distance += 4) {
+          const point = edge.getPointAtLength(distance), x = rect.left + point.x * scale, y = rect.top + point.y * scale;
+          if (cards.some(card => x > card.left + 1 && x < card.right - 1 && y > card.top + 1 && y < card.bottom - 1)) ownershipIntersections++;
+        }
+      }
+      return {firstRight:first.right, secondLeft:second.left, firstTop:first.top, secondTop:second.top,
+        branchesBottom:Math.max(first.bottom,second.bottom), checkTop:check.top, checkBottom:check.bottom, lastTop:last.top,
+        firstColumns:columns('Todo1'),secondColumns:columns('Todo2'),ownershipIntersections,
+        alignedColumns:[...columns('Todo1'),...columns('Check'),...columns('Todo3')],
+        boundaryCenterDelta:Math.abs(start.left+start.width/2-stop.left-stop.width/2)};
+    }""")
+    assert abs(sketch_geometry['firstTop'] - sketch_geometry['secondTop']) <= 2, sketch_geometry
+    assert sketch_geometry['firstRight'] < sketch_geometry['secondLeft'], sketch_geometry
+    assert sketch_geometry['checkTop'] > sketch_geometry['branchesBottom'], sketch_geometry
+    assert sketch_geometry['lastTop'] > sketch_geometry['checkBottom'], sketch_geometry
+    assert max(sketch_geometry['firstColumns']) - min(sketch_geometry['firstColumns']) <= 2, sketch_geometry
+    assert max(sketch_geometry['secondColumns']) - min(sketch_geometry['secondColumns']) <= 2, sketch_geometry
+    assert sketch_geometry['ownershipIntersections'] == 0, sketch_geometry
+    assert max(sketch_geometry['alignedColumns']) - min(sketch_geometry['alignedColumns']) <= 2, sketch_geometry
+    assert sketch_geometry['boundaryCenterDelta'] <= 2, sketch_geometry
+    if SCREENSHOT_PATH:
+      sketch.locator('button[title="Zoom out"]').click()
+      sketch.locator('button[title="Zoom out"]').click()
+      sketch.screenshot(path=str(Path(SCREENSHOT_PATH).with_name('agent-session-sketch.png')))
+    sketch.locator('button[title="Close full-screen graph"]').click()
 
     mobile = browser.new_page(viewport={"width": 390, "height": 844})
     mobile_errors = []
@@ -535,8 +771,18 @@ with sync_playwright() as playwright:
     open_recipe(mobile)
     assert mobile.locator('.workspace-separator').count() == 4
     assert_single_toolbar_row(mobile)
+    mobile.evaluate(install_graph, graph_session)
+    assert mobile.locator('.agent-session-overview-graph [data-module-kind="todo"]').count() == len(graph_session["todos"])
+    assert mobile.evaluate("document.documentElement.scrollWidth <= innerWidth"), "The graph must scroll within its viewport, not widen the phone page"
+    mobile.locator('.agent-session-flow > header button[title="Open full-screen Session graph"]').click()
+    assert mobile.locator('.agent-session-fullscreen [data-module-kind="todo"]').count() == len(graph_session["todos"])
+    close_box = mobile.locator('.agent-session-fullscreen button[title="Close full-screen graph"]').bounding_box()
+    assert close_box["x"] >= 0 and close_box["x"] + close_box["width"] <= 390, "The close control must remain inside the phone viewport"
+    if SCREENSHOT_PATH:
+      mobile.screenshot(path=str(Path(SCREENSHOT_PATH).with_name("agent-session-mobile.png")))
     assert not errors, f"Desktop page errors: {errors}"
     assert not mobile_errors, f"Mobile page errors: {mobile_errors}"
+    assert_shared_trash_docks(browser)
     browser.close()
 
 print("Recipe browser UI tests passed")

@@ -290,7 +290,7 @@ def main() -> int:
     try:
         wait_for_server(f"{PREVIEW_URL}/config")
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
+            browser = playwright.chromium.launch(executable_path=os.environ.get("PKM_CHROMIUM_EXECUTABLE"), headless=True)
             page = browser.new_page(viewport={"width": 1600, "height": 1000}, device_scale_factor=1)
             capture_page(page, "config", "config-dashboard.png")
             capture_page(page, "chat", "chatroom.png")

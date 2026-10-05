@@ -49,13 +49,15 @@ async def main():
         async with Client(mcp) as client:
             capabilities = response_json(await client.call_tool("agent_session_capabilities", {}))
             assert capabilities["proactive"] is True
-            assert capabilities["version"] == "1.7.6"
+            assert capabilities["version"] == "1.7.8"
             assert capabilities["next_tool"] == "agent_session_start"
-            assert "substantial mutating multi-step task" in capabilities["use_when"]
-            assert "read-only diagnosis or assessment" in capabilities["do_not_use_when"]
+            assert "multi-step research, analysis, diagnosis or review" in capabilities["use_when"]
+            assert "read-only diagnosis or assessment" not in capabilities["do_not_use_when"]
+            assert "quick answer" in capabilities["do_not_use_when"]
             assert "host chat/session ID" in capabilities["host_session_grouping"]
             assert capabilities["todo_queue"]["policy"].startswith("FIFO")
             assert "call_agent_session_end" in capabilities["todo_queue"]["completion_instruction"]
+            assert "explicit scene-preservation operation" in capabilities["todo_queue"]["completion_instruction"]
             assert "agent_session_todo_replan" in capabilities["tools"]
             assert "agent_session_stop" in capabilities["tools"]
             assert "agent_session_snapshot_rotate" not in capabilities["tools"]
@@ -123,6 +125,7 @@ async def main():
             assert claimed["claimed"] is True
             assert claimed["todo"]["title"] == "Finish current work"
             assert "details" not in claimed["todo"]
+            assert not any(key.endswith("At") for key in claimed["todo"])
             assert len(json.dumps(claimed, ensure_ascii=False).encode("utf-8")) < 800
             not_preempted = response_json(await client.call_tool("agent_session_todo_next", {
                 "command_id": "claim-while-running",
@@ -151,7 +154,11 @@ async def main():
             }))
             assert status_reported["resumed_todo"]["todoId"] == claimed["todo"]["todoId"]
             assert "summary" not in status_reported["todo"]
-            assert len(json.dumps(status_reported, ensure_ascii=False).encode("utf-8")) < 1200
+            assert set(status_reported["todo"]) == {"todoId", "status"}
+            assert set(status_reported["resumed_todo"]) == {"todoId", "status"}
+            assert "session_id" not in status_reported
+            assert set(status_reported["next_action"]) == {"kind"}
+            assert len(json.dumps(status_reported, ensure_ascii=False).encode("utf-8")) < 350
             resumed = response_json(await client.call_tool("agent_session_todo_next", {
                 "command_id": "resume-first-todo",
             }))
@@ -236,6 +243,24 @@ async def main():
             }))
             assert reported["todo"]["status"] == "succeeded"
             assert reported["next_action"]["kind"] == "call_agent_session_todo_next"
+            assert set(reported) == {"ok", "todo", "next_action"}
+            assert set(reported["todo"]) == {"todoId", "status"}
+            replayed_report = response_json(await client.call_tool("agent_session_todo_report", {
+                "todo_id": claimed["todo"]["todoId"], "status": "succeeded",
+                "summary": "Focused validation passed.", "command_id": "report-first-todo",
+            }))
+            assert replayed_report == reported
+            full_status = response_json(await client.call_tool("agent_session_status", {"detail": "full"}))
+            completed_todo = next(todo for todo in full_status["session"]["todos"]
+                                  if todo["todoId"] == claimed["todo"]["todoId"])
+            assert completed_todo["title"] == "Finish current work"
+            assert completed_todo["summary"] == "Focused validation passed."
+            assert all(field in completed_todo for field in ("createdAt", "startedAt", "updatedAt", "completedAt"))
+            historical = {"ok": True, "session_id": started["session_id"],
+                          "todo": completed_todo, "resumed_todo": None,
+                          "next_action": {"kind": "call_agent_session_todo_next", "reason": "Verbose historical receipt"}}
+            assert MODULE._todo_report_projection(historical, "compact") == reported
+            assert MODULE._todo_report_projection(historical, "full") is historical
             second = response_json(await client.call_tool("agent_session_todo_next", {
                 "command_id": "claim-second-todo",
             }))
@@ -256,8 +281,19 @@ async def main():
             final_report = response_json(await client.call_tool("agent_session_todo_report", {
                 "todo_id": second["todo"]["todoId"], "status": "succeeded",
                 "summary": "All queued work passed.", "command_id": "report-final-todo",
+                "detail": "full",
             }))
             assert final_report["next_action"]["kind"] == "call_agent_session_end"
+            assert final_report["todo"]["title"] == "Handle revised request"
+            assert final_report["todo"]["summary"] == "All queued work passed."
+            assert all(field in final_report["todo"] for field in (
+                "createdAt", "startedAt", "updatedAt", "completedAt"))
+            final_replay = response_json(await client.call_tool("agent_session_todo_report", {
+                "todo_id": second["todo"]["todoId"], "status": "succeeded",
+                "summary": "All queued work passed.", "command_id": "report-final-todo",
+                "detail": "full",
+            }))
+            assert final_replay == final_report
             loaded = response_json(await client.call_tool("agent_session_load", {
                 "session_id": started["session_id"],
             }))

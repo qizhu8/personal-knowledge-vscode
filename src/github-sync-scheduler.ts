@@ -18,8 +18,10 @@ export interface AutomaticGitHubSyncTarget {
   intervalMinutes: number;
   syncOnChange: boolean;
   lastSuccessAt?: string;
-  lastFailure?: { at: string; error: string; reason: string };
+  lastFailure?: { at: string; error: string; reason: string; attempts?: number };
 }
+
+export const MAX_GITHUB_SYNC_FAILURE_ATTEMPTS = 3;
 
 export interface GitHubSyncRuntimeState {
   status: "paused" | "scheduled" | "queued" | "syncing" | "blocked" | "error";
@@ -37,6 +39,8 @@ export interface GitHubSyncRuntimeState {
 export interface GitHubSyncSchedulerOptions {
   shouldExecute?: (targetId: string, reason: GitHubSyncReason) => Promise<boolean>;
   execute: (targetId: string, reason: GitHubSyncReason) => Promise<void>;
+  shouldRetryFailure?: (error: unknown) => boolean;
+  onAutoPaused?: (targetId: string) => void;
   beforeExecute?: (targetId: string, reason: GitHubSyncReason) => Promise<void>;
   onSettled?: (targetId: string, reason: GitHubSyncReason, outcome: "skipped" | "succeeded" | "blocked" | "failed") => void;
   onState?: (targetId: string, state: GitHubSyncRuntimeState) => void;
@@ -74,9 +78,13 @@ export class GitHubSyncScheduler {
         && (!target.lastSuccessAt || target.lastFailure.at > target.lastSuccessAt)
         ? target.lastFailure
         : undefined;
+      if (target.enabled && activeFailure && (activeFailure.attempts || 1) >= MAX_GITHUB_SYNC_FAILURE_ATTEMPTS) {
+        target.enabled = false;
+        this.options.onAutoPaused?.(target.id);
+      }
       if (!target.enabled) {
         this.updateState(target.id, {
-          status: "paused",
+          status: activeFailure ? "error" : "paused",
           lastAttemptAt: activeFailure?.at || target.lastSuccessAt,
           lastSuccessAt: target.lastSuccessAt,
           lastError: activeFailure?.error,
@@ -90,13 +98,15 @@ export class GitHubSyncScheduler {
         lastSuccessAt: target.lastSuccessAt,
         lastError: activeFailure?.error,
       });
-      this.enqueue(target.id, "startup");
+      if (!activeFailure || (activeFailure.attempts || 1) < MAX_GITHUB_SYNC_FAILURE_ATTEMPTS) this.enqueue(target.id, "startup");
     }
   }
 
   request(targetId: string, reason: GitHubSyncReason): boolean {
     const target = this.targets.get(targetId);
     if (this.disposed || !target || (!target.enabled && reason !== "manual" && reason !== "force-local-authority")) return false;
+    if (target.lastFailure && reason !== "manual" && reason !== "force-local-authority"
+      && (reason !== "startup" && reason !== "interval" || (target.lastFailure.attempts || 1) >= MAX_GITHUB_SYNC_FAILURE_ATTEMPTS)) return false;
     if ((reason === "manual" || reason === "force-local-authority") && (this.activeTargets.has(targetId) || ["manual", "force-local-authority"].includes(this.pending.get(targetId) || ""))) return false;
     this.enqueue(targetId, reason);
     return true;
@@ -136,7 +146,7 @@ export class GitHubSyncScheduler {
       this.changeTimers.delete(excludedTargetId);
     }
     for (const target of this.targets.values()) {
-      if (target.id === excludedTargetId || !target.enabled || !target.syncOnChange) continue;
+      if (target.id === excludedTargetId || !target.enabled || !target.syncOnChange || target.lastFailure) continue;
       const existing = this.changeTimers.get(target.id);
       if (existing) this.clearTimer(existing);
       const timer = this.setTimer(() => {
@@ -261,11 +271,24 @@ export class GitHubSyncScheduler {
             this.options.onSettled?.(targetId, reason, "blocked");
             continue;
           }
-          target.lastFailure = { at: attemptedAt, error: message, reason };
-          this.updateState(targetId, { ...this.states.get(targetId), status: "error", reason, lastAttemptAt: attemptedAt, lastError: message });
-          if (target.enabled) {
-            this.pending.set(targetId, reason);
-            this.scheduleWhenEligible(target);
+          const attempts = this.options.shouldRetryFailure?.(error) === false
+            ? MAX_GITHUB_SYNC_FAILURE_ATTEMPTS
+            : Math.min(MAX_GITHUB_SYNC_FAILURE_ATTEMPTS, (target.lastFailure?.attempts || 0) + 1);
+          target.lastFailure = { at: attemptedAt, error: message, reason, attempts };
+          const current = this.targets.get(targetId)!;
+          current.lastFailure = target.lastFailure;
+          if (current.enabled && attempts >= MAX_GITHUB_SYNC_FAILURE_ATTEMPTS && reason !== "manual" && reason !== "force-local-authority") {
+            current.enabled = false;
+            this.options.onAutoPaused?.(targetId);
+          }
+          this.pending.delete(targetId);
+          const changeTimer = this.changeTimers.get(targetId);
+          if (changeTimer) this.clearTimer(changeTimer);
+          this.changeTimers.delete(targetId);
+          this.updateState(targetId, { ...this.states.get(targetId), status: "error", reason, lastAttemptAt: attemptedAt, lastError: message, nextSyncAt: undefined });
+          if (current.enabled && attempts < MAX_GITHUB_SYNC_FAILURE_ATTEMPTS) {
+            this.pending.set(targetId, "interval");
+            this.scheduleWhenEligible(current);
           }
           this.options.onSettled?.(targetId, reason, "failed");
         } finally {

@@ -3,6 +3,7 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
+const ts = require("typescript");
 
 const root = path.join(__dirname, "..");
 const html = fs.readFileSync(path.join(root, "dist", "webview", "panel.html"), "utf8");
@@ -82,7 +83,7 @@ assert.match(projectsSource, /Premium-request or credit usage is unavailable fro
 assert.match(css, /\.agent-session-todo-usage\{/, "Todo usage badges have a compact presentation");
 assert.match(extensionSource, /mcp-usage\/todos\/\*\*\/\*\.json/, "Todo usage ledger changes refresh Agent Session projections");
 assert.match(knowledgeSource, /const currentlyOpen = body \? body\.style\.display !== 'none'/, "default-open CatTree folders derive their first toggle from rendered state");
-assert.match(knowledgeSource, /if \(body && \['agentSessions', 'recipes'\]\.includes\(state\.tab\)\)/, "Automation CatTree folders toggle locally without rerendering graphs");
+assert.match(knowledgeSource, /if \(body && \['agentSessions', 'agentSnapshots', 'recipes'\]\.includes\(state\.tab\)\)/, "Automation and Snapshot CatTree folders toggle locally without rerendering graphs");
 assert.strictEqual((knowledgeSource.match(/if \(!projectSnapshot \|\| projectSnapshotDirty\) ask\('projectState', \{\}\);/g) || []).length, 2, "Recipe and Project revisits reuse a clean cached snapshot");
 assert.match(bundle, /projectSnapshotDirty = true;[\s\S]{0,500}if \(relevant\) ask\('projectState', \{\}\)/, "hidden Project changes invalidate the cache without forcing an off-screen reload");
 assert.match(projectsSource, /Ad hoc task · No Recipe run attached/, "Agent Sessions without a task graph still expose their top-level task as an ad hoc task");
@@ -211,18 +212,18 @@ assert.match(projectsSource, /Copy Recovery Prompt/);
 assert.doesNotMatch(projectsSource, /Rotate Passphrase/);
 assert.match(projectsSource, /fixed local <code>uone<\/code> obfuscation key/);
 assert.match(projectsSource, /Right-click this Snapshot to delete it/);
-assert.match(projectsSource, /agent-session-adhoc' \? 'Ad hoc task' : 'Recipe run'/,
-  "Agent Sessions distinguish instance-only task plans from reusable Recipe runs");
+assert.match(projectsSource, /agent-session-adhoc' \? 'Ad hoc Recipe'[\s\S]{0,160}'Recipe source unknown' : 'Recipe Library'/,
+  "Agent Sessions distinguish ad hoc Recipes, reusable library Recipes, and unknown Recipe sources");
 assert.match(projectsSource, /sessionTodos\.length \? 'Session todos' : 'Task runs'/, "Agent Session summaries prefer the ordered todo queue and retain the legacy run fallback");
 assert.match(projectsSource, /function agentSessionTodoFlow\(session, todos, runs\)/, "Agent Sessions render their durable FIFO todo queue as a Session-level flow");
-assert.match(projectsSource, /agent-session-archive/, "completed Agent Sessions are grouped into an archive");
+assert.match(projectsSource, /const trash = projectSnapshot\?\.agentSessionTrash \|\| \[\]/, "Agent Sessions render their durable Trash projection");
 assert.match(projectsSource, /selectedAgentSessionId = activeSessions\[0\]/, "Agent Sessions prefer active work over archived history");
 assert.doesNotMatch(projectsSource, /agentSessionPollTimer|agentSessionSetPolling|setInterval\([\s\S]{0,200}projectState/,
   "Agent Sessions must use file-change invalidation instead of periodic full-state polling");
-assert.match(projectsSource, /agentSessionArchiveExpanded = vscode\.getState\(\)\?\.agentSessionArchiveExpanded/,
-  "Agent Sessions must restore the user's Archive disclosure state");
-assert.match(projectsSource, /ontoggle="agentSessionGroupToggle\('archive',this\.open\)"/,
-  "Agent Sessions must persist Archive disclosure changes");
+assert.match(projectsSource, /catTreeTrashDock\('Trash', trash\.length, trashList, 'emptyAgentSessionTrash\(\)'\)/,
+  "Agent Sessions use the shared Trash dock with an explicit bulk-delete action");
+assert.doesNotMatch(projectsSource, /ontoggle="agentSessionGroupToggle\('archive',this\.open\)"/,
+  "completed Agent Sessions do not expose a separate Archive disclosure");
 assert.match(projectsSource, /recipe-search pkm-search-field/, "Recipe Library search uses the shared search field");
 assert.match(projectsSource, /onclick="recipeRefresh\(\)"[\s\S]{0,200}codicon-refresh/,
   "Recipe Library exposes an explicit icon Refresh action");
@@ -266,7 +267,7 @@ assert.match(bundle, /const forceDisabled = autoEnabled \|\| status === 'syncing
   "Force sync disabled state must include queued, syncing, conflict, automatic, and migration states");
 assert.match(bundle, /githubSyncForceUpdate\('\$\{esc\(target\.id\)\}',this\)" \$\{forceDisabled \? 'disabled' : ''\}/,
   "every GitHub target disables Force sync while queued, syncing, waiting for conflict approval, or inside a pre-cutover migration");
-assert.match(bundle, /function githubSyncForce\(targetId, button\) \{ if \(githubSyncForcePending\.has\(targetId\) \|\| pendingActionButtons\.has\('githubSyncRun'\)\) return;/,
+assert.match(bundle, /function githubSyncForce\(targetId, button\) \{\s*if \(githubSyncForcePending\.has\(targetId\) \|\| pendingActionButtons\.has\('githubSyncRun'\)\) return;/,
   "Force sync synchronously deduplicates before posting to the scheduler");
 assert.match(extensionSource, /delete target\.lastFailure;[\s\S]{0,240}withGitHubSyncTargetLock/,
   "successful target authentication clears stale errors before automatic retry");
@@ -304,10 +305,16 @@ assert.match(extensionSource, /testedGitHubSubscriptions\.set\(githubSubscriptio
   "GitHub subscription Test must retain the exact tested local snapshot for Subscribe");
 assert.match(extensionSource, /Test this GitHub repository again before subscribing/,
   "Subscribe must fail explicitly when its tested snapshot is missing or expired");
-const mountSubscriptionStart = extensionSource.indexOf("async function mountGitHubBranchSubscription");
-const mountSubscriptionEnd = extensionSource.indexOf("function githubSyncDestination", mountSubscriptionStart);
-assert(mountSubscriptionStart >= 0 && mountSubscriptionEnd > mountSubscriptionStart, "GitHub subscription mount function must exist");
-assert.doesNotMatch(extensionSource.slice(mountSubscriptionStart, mountSubscriptionEnd), /githubSubscriptionSnapshot\(/,
+const extensionAst = ts.createSourceFile("extension.ts", extensionSource, ts.ScriptTarget.Latest, true);
+const mountSubscription = extensionAst.statements.find(statement => ts.isFunctionDeclaration(statement)
+  && statement.name?.text === "mountGitHubBranchSubscription");
+assert(mountSubscription, "GitHub subscription mount function must exist");
+const mountSubscriptionSource = mountSubscription.getText(extensionAst);
+assert.match(mountSubscriptionSource, /testedGitHubSubscriptions\.get\(testKey\)/,
+  "Subscribe must reuse the cached test result");
+assert.match(mountSubscriptionSource, /tested\.snapshot\.commit !== input\.expectedCommit/,
+  "Subscribe must reject a different commit from the tested snapshot");
+assert.doesNotMatch(mountSubscriptionSource, /githubSubscriptionSnapshot\(/,
   "Subscribe must reuse the tested checkout instead of fetching again and restarting authentication");
 assert.match(extensionSource, /authentication: credentialTarget\?\.authentication/, "GitHub subscriptions reuse only a selected GitHub Sync credential profile");
 assert.match(githubSyncSource, /timeout: 120_000[\s\S]{0,180}windowsHide: process\.platform === "win32"/,
@@ -342,6 +349,7 @@ const context = {
   },
   MouseEvent: function MouseEvent(type) { this.type = type; },
   esc: value => String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"),
+  uiIcon: name => `<span class="codicon codicon-${name}" aria-hidden="true"></span>`,
   buildCatTree: (items, getCategory, fallback) => {
     const root = { folders: {}, items: [] };
     for (const item of items) {
@@ -649,14 +657,6 @@ context.projectOnState({ ...snapshot, recipes: [
   { recipeId: "recipe_daily", scope: "project", projectId: "project_default", name: "Daily Review", description: "", revision: 1, executableDigest: "abcdef1234567890", definition: { spec: { nodes: [{ nodeId: "start" }] } } },
   { recipeId: "recipe_global", scope: "global", category: "Software Development", name: "Universal Review", description: "", revision: 1, executableDigest: "123456abcdef7890", definition: { spec: { nodes: [{ nodeId: "start" }] } } }
 ], agentSessions: [{
-  sessionId: "agent_session_archived", status: "completed", task: "Completed historical task",
-  agent: { name: "Copilot Agent", product: "GitHub Copilot" }, createdAt: "2026-09-21T08:00:00Z", updatedAt: "2026-09-21T08:01:00Z",
-  lastActivity: { tool: "agent_session_end", ok: true, at: "2026-09-21T08:01:00Z" }, runs: []
-}, {
-  sessionId: "agent_session_stopped", status: "stopped", task: "Stopped unfinished task",
-  agent: { name: "Copilot Agent", product: "GitHub Copilot" }, createdAt: "2026-09-21T07:00:00Z", updatedAt: "2026-09-21T07:01:00Z",
-  lastActivity: { tool: "agent_session_stop", ok: true, at: "2026-09-21T07:01:00Z" }, runs: []
-}, {
   sessionId: "agent_session_managed", status: "running", task: "Validate portable workflow",
   hostSessionId: "bad9a5a4-4dc6-4633-adef-a0858284b965",
   projectId: "project_pkm", agent: { name: "Copilot Agent", product: "GitHub Copilot" },
@@ -699,6 +699,14 @@ context.projectOnState({ ...snapshot, recipes: [
   recipeId: "recipe_trashed", scope: "global", category: "Software Development", name: "Discarded Review", description: "", revision: 1,
   executableDigest: "9876543210abcdef", trashedAt: "2026-09-22T09:00:00Z", definition: { spec: { nodes: [{ nodeId: "start" }] } }
 }], agentSessionTrash: [{
+  sessionId: "agent_session_archived", status: "completed", task: "Completed historical task",
+  agent: { name: "Copilot Agent", product: "GitHub Copilot" }, createdAt: "2026-09-21T08:00:00Z", updatedAt: "2026-09-21T08:01:00Z", trashedAt: "2026-09-21T08:01:00Z",
+  lastActivity: { tool: "agent_session_end", ok: true, at: "2026-09-21T08:01:00Z" }, runs: []
+}, {
+  sessionId: "agent_session_stopped", status: "stopped", task: "Stopped unfinished task",
+  agent: { name: "Copilot Agent", product: "GitHub Copilot" }, createdAt: "2026-09-21T07:00:00Z", updatedAt: "2026-09-21T07:01:00Z", trashedAt: "2026-09-21T07:01:00Z",
+  lastActivity: { tool: "agent_session_stop", ok: true, at: "2026-09-21T07:01:00Z" }, runs: []
+}, {
   sessionId: "agent_session_trashed", status: "completed", task: "Discarded historical task",
   agent: { name: "Other Agent", product: "GitHub Copilot" }, updatedAt: "2026-09-20T08:01:00Z", trashedAt: "2026-09-22T09:00:00Z"
 }], agentSnapshots: [{
@@ -710,13 +718,13 @@ context.projectOnState({ ...snapshot, recipes: [
   checkpoint: { checkpointId: "checkpoint_portable", sequence: 2, createdAt: "2026-09-22T08:00:30Z", reason: "handoff" },
   recoveryCount: 2
 }] });
-assert.match(detailHtml, /4 sessions/);
+assert.match(detailHtml, /2 sessions/);
 assert.match(detailHtml, /Validate portable workflow/);
-assert.match(detailHtml, /<details class="agent-session-archive"(?![^>]*\sopen(?:\s|>))[^>]*>/, "completed Sessions are collapsed by default");
+assert.doesNotMatch(detailHtml, /agent-session-archive/, "terminal Sessions use Trash instead of a separate Archive");
 assert.match(detailHtml, /Completed historical task/);
 assert.match(detailHtml, /Stopped unfinished task/);
 assert.match(detailHtml, /agent-session-tree/, "Agent Sessions use the shared CatTree surface");
-assert.strictEqual((detailHtml.match(/class="tree-cat"/g) || []).length, 4, "active and archived Sessions share Agent and Copilot Session hierarchy levels");
+assert.strictEqual((detailHtml.match(/class="tree-cat"/g) || []).length, 2, "active Sessions share one Agent and Copilot Session hierarchy");
 assert.doesNotMatch(detailHtml, /agent-session-agent-group|agent-session-host-group/, "Agent Sessions do not maintain a parallel tree schema");
 assert.strictEqual((detailHtml.match(/Copilot Session bad9a5a4/g) || []).length, 1, "Sessions sharing one Copilot ID render in one host group");
 assert.match(detailHtml, /Group related workflow/, "Every managed task remains visible within its Copilot Session group");

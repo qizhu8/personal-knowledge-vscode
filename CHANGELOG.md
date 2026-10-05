@@ -5,6 +5,33 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.11] - 2026-10-04
+
+- Turned off Auto Sync for only the failing target after three consecutive automatic failures, preserved the actual error, and enabled ordinary Sync with Remote recovery. Fixed duplicate failure counting across the scheduler and coordinator and reconciled exhausted retries on restart.
+- Made sync failures consistently red, kept long multiline errors fully visible and selectable, and displayed an explicit diagnostic message when no error details were recorded.
+- Added file-level GitHub Sync status markers, excluded Extension-managed System content from synchronization, and persisted local deletion intent before removing Knowledge files to prevent resurrection during sync.
+- Enforced read-only System content across Knowledge, Skill, and Recipe Agent/MCP mutation paths.
+- Rebuilt Agent Session Recipe graphs around actual dependency levels, with centered Start and Complete boundaries, parallel independent modules, shared fork/join links, persistent module dragging, and a scoped Reorganize action. Todos without Recipe runs remain truthful and do not create synthetic runs.
+- Unified Knowledge and Automation Trash controls, added bulk deletion, and moved completed or stopped Agent Sessions directly to bounded Trash while preserving running work and explicit restoration.
+
+## [3.2.10] - 2026-10-02
+
+- Fixed Agent Session context menus accidentally inheriting the Snapshot title's horizontal layout, and restored shared menu width constraints.
+- Removed redundant Session titles from Session and trashed Session context menus.
+
+## [3.2.9] - 2026-10-02
+
+- Added editable Agent Snapshot names without changing captured Session data, recovery identities, or payloads.
+- Replaced the Snapshot context-menu Magic Code action with Copy Recovery Prompt and reused the shared CatTree, keyboard navigation, and item action menus.
+- Added read-only, on-demand inspection of captured Session records, ordered Todos, Checkpoints, and Recipe runs, with escaped content and retryable load errors.
+- Reduced compact Agent Session Todo acknowledgments and replay responses while retaining full durable records and transport-local Session ownership protections.
+- Added opt-in bounded autonomous command and Script chains that pause at Agent, human, native, and subflow boundaries and preserve cancellation and failure evidence.
+
+## [3.2.8] - 2026-09-30
+
+- Made GitHub Sync use committed Git blobs for remote validation and staged blobs for published manifest digests, so Windows and Linux agree despite checkout line-ending conversion. Equivalent CRLF/LF text no longer creates duplicate changes or rewrites local Scripts.
+- Kept manual Sync failures red and displayed their error even when Auto Sync is off; preserved Script identity across sync bundles, moves, and snapshot restores.
+
 ## [3.2.7] - 2026-09-30
 
 - Required human review for concurrent GitHub Sync deletion and modification conflicts instead of deciding between machines by file or commit timestamps.

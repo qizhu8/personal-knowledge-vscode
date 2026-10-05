@@ -3,7 +3,7 @@ import * as path from "path";
 
 export const AGENT_SESSION_ARCHIVE_KEEP_LATEST_DEFAULT = 50;
 export const AGENT_SESSION_ARCHIVE_KEEP_LATEST_MIN = 1;
-export const AGENT_SESSION_ARCHIVE_KEEP_LATEST_MAX = 1000;
+export const AGENT_SESSION_ARCHIVE_KEEP_LATEST_MAX = 50;
 
 export function agentSessionArchiveKeepLatestK(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return AGENT_SESSION_ARCHIVE_KEEP_LATEST_DEFAULT;
@@ -24,6 +24,7 @@ interface SessionRecord {
 export interface AgentSessionRetentionResult {
   retained: string[];
   moved: string[];
+  deleted: string[];
   errors: string[];
 }
 
@@ -305,6 +306,7 @@ export function restoreAgentSessionFromTrash(
   if (!validSession(session, sessionId)) throw new Error("Agent Session Trash record is invalid and was not restored.");
   delete session.trashedAt;
   session.updatedAt = now();
+  session.restoredAt = session.updatedAt;
   fs.mkdirSync(path.dirname(activePath), { recursive: true });
   fs.writeFileSync(trashPath, JSON.stringify(session), { encoding: "utf8", mode: 0o600 });
   fs.renameSync(trashPath, activePath);
@@ -344,13 +346,12 @@ export async function enforceAgentSessionArchiveRetention(
   keepLatest: number,
   now: () => string = () => new Date().toISOString(),
 ): Promise<AgentSessionRetentionResult> {
-  const limit = agentSessionArchiveKeepLatestK(keepLatest);
+  const limit = Math.min(50, agentSessionArchiveKeepLatestK(keepLatest));
   const activeDirectory = path.join(stateDirectory, "agent-sessions");
-  const result: AgentSessionRetentionResult = { retained: [], moved: [], errors: [] };
-  if (!fs.existsSync(activeDirectory)) return result;
+  const result: AgentSessionRetentionResult = { retained: [], moved: [], deleted: [], errors: [] };
   const completed: Array<{ sessionId: string; timestamp: string }> = [];
   let names: string[];
-  try { names = fs.readdirSync(activeDirectory).filter(name => name.endsWith(".json")); }
+  try { names = fs.existsSync(activeDirectory) ? fs.readdirSync(activeDirectory).filter(name => name.endsWith(".json")) : []; }
   catch (error: any) {
     result.errors.push(`Agent Session archive could not be listed: ${error?.message || error}`);
     return result;
@@ -359,7 +360,8 @@ export async function enforceAgentSessionArchiveRetention(
     const sessionId = name.slice(0, -5);
     try {
       const record = JSON.parse(fs.readFileSync(path.join(activeDirectory, name), "utf8")) as SessionRecord;
-      if (validSession(record, sessionId) && terminalAgentSessionStatus(record)) {
+      if (validSession(record, sessionId) && terminalAgentSessionStatus(record)
+        && record.status !== "running" && (!record.restoredAt || record.restoredAt !== record.updatedAt)) {
         completed.push({ sessionId, timestamp: archiveTimestamp(record) });
       }
     } catch (error: any) {
@@ -367,14 +369,40 @@ export async function enforceAgentSessionArchiveRetention(
     }
   }
   completed.sort((left, right) => right.timestamp.localeCompare(left.timestamp) || right.sessionId.localeCompare(left.sessionId));
-  result.retained = completed.slice(0, limit).map(item => item.sessionId);
-  for (const item of completed.slice(limit)) {
+  for (const item of completed) {
     try {
       await moveAgentSessionToTrash(stateDirectory, item.sessionId, { requireCompleted: true, now });
       result.moved.push(item.sessionId);
     } catch (error: any) {
       result.errors.push(`${item.sessionId}: ${error?.message || error}`);
     }
+  }
+  const trashDirectory = path.join(stateDirectory, "agent-sessions-trash");
+  if (!fs.existsSync(trashDirectory)) return result;
+  const trashed: Array<{ sessionId: string; timestamp: string; updatedAt: string }> = [];
+  let trashNames: string[];
+  try { trashNames = fs.readdirSync(trashDirectory).filter(name => name.endsWith(".json")); }
+  catch (error: any) {
+    result.errors.push(`Agent Session Trash could not be listed: ${error?.message || error}`);
+    return result;
+  }
+  for (const name of trashNames) {
+    const sessionId = name.slice(0, -5);
+    try {
+      const record = JSON.parse(fs.readFileSync(path.join(trashDirectory, name), "utf8")) as SessionRecord;
+      if (!/^agent_session_[a-zA-Z0-9_-]+$/.test(sessionId) || !validSession(record, sessionId)
+        || typeof record.trashedAt !== "string" || !record.trashedAt) throw new Error("Invalid Trash record; left untouched.");
+      trashed.push({sessionId, timestamp:record.trashedAt, updatedAt:archiveTimestamp(record)});
+    } catch (error: any) { result.errors.push(`${name}: ${error?.message || error}`); }
+  }
+  trashed.sort((left, right) => right.timestamp.localeCompare(left.timestamp)
+    || right.updatedAt.localeCompare(left.updatedAt) || right.sessionId.localeCompare(left.sessionId));
+  result.retained = trashed.slice(0, limit).map(item => item.sessionId);
+  for (const item of trashed.slice(limit)) {
+    try {
+      permanentlyDeleteTrashedAgentSession(stateDirectory, item.sessionId);
+      result.deleted.push(item.sessionId);
+    } catch (error: any) { result.errors.push(`${item.sessionId}: ${error?.message || error}`); }
   }
   return result;
 }

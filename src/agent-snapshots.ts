@@ -10,6 +10,7 @@ const LEGACY_SNAPSHOT_PAYLOAD_KEY = createHash("sha256").update("uone:agent-snap
 
 export interface AgentSnapshotSummary {
   snapshotId: string;
+  name?: string;
   magicCode: string;
   sourceSessionId: string;
   sourceHostSessionId: string;
@@ -32,6 +33,12 @@ export interface AgentSnapshotSummary {
 export interface CreatedAgentSnapshot {
   snapshot: AgentSnapshotSummary;
   recoveryPrompt: string;
+}
+
+export interface AgentSnapshotContents {
+  snapshotId: string;
+  session: Record<string, unknown>;
+  recipeRuns: unknown[];
 }
 
 function snapshotAad(snapshotId: string, magicCode: string): Buffer {
@@ -140,6 +147,7 @@ function snapshotSummary(snapshot: any, recoveryCount = 0): AgentSnapshotSummary
   const capture = snapshot.capture || snapshotCapture(snapshot.payload);
   return {
     snapshotId: String(snapshot.snapshotId || ""),
+    name: String(snapshot.name || snapshot.task || "Agent Session snapshot"),
     magicCode: String(snapshot.magicCode || ""),
     sourceSessionId: String(snapshot.sourceSessionId || ""),
     sourceHostSessionId: String(snapshot.sourceHostSessionId || ""),
@@ -258,6 +266,19 @@ export function createAgentSnapshot(store: string, sessionId: string, reason = "
   return { snapshot: snapshotSummary(snapshot), recoveryPrompt: snapshotRecoveryPrompt(magicCode) };
 }
 
+export function readAgentSnapshotContents(store: string, snapshotId: string): AgentSnapshotContents {
+  if (!/^agent_snapshot_[A-Za-z0-9_-]+$/.test(snapshotId)) throw new Error("Agent Snapshot identity is invalid.");
+  const snapshotPath = path.join(snapshotDirectory(store), `${snapshotId}.json`);
+  if (!fs.existsSync(snapshotPath)) throw new Error("Agent Snapshot was not found.");
+  const snapshot = readJson(snapshotPath);
+  if (snapshot?.schema !== SNAPSHOT_SCHEMA || snapshot?.snapshotId !== snapshotId) {
+    throw new Error("Agent Snapshot schema is unsupported.");
+  }
+  const payload = decryptPayload(snapshot);
+  if (!isCanonicalPayload(payload)) throw new Error("Agent Snapshot payload is not a canonical Session capture.");
+  return { snapshotId, session: payload.session, recipeRuns: payload.recipeRuns };
+}
+
 export function agentSnapshotIsEncrypted(store: string, snapshotId: string): boolean {
   if (!/^agent_snapshot_[A-Za-z0-9_-]+$/.test(snapshotId)) return false;
   try {
@@ -268,6 +289,22 @@ export function agentSnapshotIsEncrypted(store: string, snapshotId: string): boo
   } catch {
     return false;
   }
+}
+
+export function renameAgentSnapshot(store: string, snapshotId: string, name: string): void {
+  if (!/^agent_snapshot_[A-Za-z0-9_-]+$/.test(snapshotId)) throw new Error("Agent Snapshot identity is invalid.");
+  const trimmed = name.trim();
+  if (!trimmed || trimmed.length > 200 || /[\r\n]/.test(trimmed)) {
+    throw new Error("Agent Snapshot name must be a single line between 1 and 200 characters.");
+  }
+  const snapshotPath = path.join(snapshotDirectory(store), `${snapshotId}.json`);
+  if (!fs.existsSync(snapshotPath)) throw new Error("Agent Snapshot was not found.");
+  const snapshot = readJson(snapshotPath);
+  if (snapshot?.schema !== SNAPSHOT_SCHEMA || snapshot?.snapshotId !== snapshotId) {
+    throw new Error("Agent Snapshot schema is unsupported.");
+  }
+  snapshot.name = trimmed;
+  writeSnapshotAtomic(snapshotPath, snapshot);
 }
 
 export function deleteAgentSnapshot(store: string, snapshotId: string): void {

@@ -3,7 +3,7 @@ import { stableUserPort } from "./user-service-ports";
 import { KnowledgeInventoryManager } from "./knowledge-inventory";
 import { performanceSummary, recordPerformanceMetric } from "./performance-telemetry";
 import { mcpUsageSummary, todoUsageSummary } from "./mcp-usage";
-import { agentSnapshotIsEncrypted, createAgentSnapshot, deleteAgentSnapshot, listAgentSnapshots } from "./agent-snapshots";
+import { agentSnapshotIsEncrypted, createAgentSnapshot, deleteAgentSnapshot, listAgentSnapshots, renameAgentSnapshot, readAgentSnapshotContents } from "./agent-snapshots";
 import { agentSessionArchiveKeepLatestK, agentSessionLiveness, emptyAgentSessionTrash, enforceAgentSessionArchiveRetention, moveAgentSessionToTrash, permanentlyDeleteTrashedAgentSession, projectedAgentSessionStatus, recipeNodeObservability, reconcileAgentSessionActiveMappings, restoreAgentSessionFromTrash, stopAgentSession } from "./agent-session-lifecycle";
 import { JsonFileCache } from "./json-file-cache";
 import * as vscode from "vscode";
@@ -99,11 +99,12 @@ import { BundledKnowledgeContent, exportProjectRecipeBundle } from "./workflows/
 import { recipeBrowserEditorDocument } from "./recipe-browser";
 import { availableSkillRouterSources, normalizeSkillRouterSourcePriority, SkillRouterSource } from "./skill-router-config";
 import {
-  GITHUB_SYNC_CONTENT_TYPES, GitHubPublicationMigration, GitHubPublicationMigrationSource, GitHubSyncCatalog, GitHubSyncCatalogItem, GitHubSyncConflictError, GitHubSyncContentType, GitHubSyncCredentials, GitHubSyncExtensionCompatibilityError, GitHubSyncFolderFingerprints, GitHubSyncRecipePull, GitHubSyncTarget, githubSyncMigrationCanonicalFiles,
-  completeGitHubSyncTransaction, createGitHubSyncIdentity, discoverGitHubCredentialManagerAccounts, discoverGitHubSshIdentities, fetchGitHubRemoteSnapshot, githubSyncAuthenticationSessionOptions, githubSyncFolderShields, githubSyncManagedContent, githubSyncManifestFolderFingerprints, githubSyncSafeRelativePath, githubSyncShield, githubSyncTargetFingerprintState, normalizeGitHubSyncTarget, previewGitHubSyncTarget,
+  GITHUB_SYNC_CONTENT_TYPES, GitHubPublicationMigration, GitHubPublicationMigrationSource, GitHubSyncCatalog, GitHubSyncConflictError, GitHubSyncContentType, GitHubSyncCredentials, GitHubSyncExtensionCompatibilityError, GitHubSyncFolderFingerprints, GitHubSyncRecipePull, GitHubSyncTarget, githubSyncMigrationCanonicalFiles,
+  completeGitHubSyncTransaction, createGitHubSyncIdentity, discoverGitHubCredentialManagerAccounts, discoverGitHubSshIdentities, fetchGitHubRemoteSnapshot, githubSyncAuthenticationSessionOptions, githubSyncEntryShields, githubSyncFolderShields, githubSyncManagedContent, githubSyncManifestFileFingerprints, githubSyncManifestFolderFingerprints, githubSyncSafeRelativePath, githubSyncShield, normalizeGitHubSyncTarget, previewGitHubSyncTarget,
   probeGitHubSyncAuthentication, probeGitHubSyncHttpsAuthentication, probeGitHubSyncVscodeAuthentication, readGitHubCachedManifest, readGitHubRemoteFile, readGitHubRemoteFilesForSubscription, readGitHubRemoteManifest, replaceGitHubSyncFilesAtomically, restoreGitHubRemoteFiles, syncGitHubTarget, testGitHubSyncAuthentication,
 } from "./github-sync";
-import { referencedMarkdownAssets } from "./markdown-assets";
+import { githubSyncCatalogInWorker } from "./github-sync-catalog-worker";
+import { githubSyncFingerprintInWorker } from "./github-sync-fingerprint-worker";
 import {
   clearGitHubSyncConflict, GitHubSyncAgentReview, gitHubSyncConflictVariantPath, listGitHubSyncConflicts, readGitHubSyncConflict,
   readGitHubSyncConflictCandidate, refreshGitHubSyncConflictLocalCandidate, selectAllGitHubSyncConflictCandidates, selectAllGitHubSyncConflictDeletions,
@@ -327,19 +328,12 @@ function configuredAgentSessionArchiveKeepLatestK(): number {
 }
 
 let agentSessionRetentionPending: Promise<void> = Promise.resolve();
-let agentSessionRetentionLastRunAt = 0;
-const AGENT_SESSION_RETENTION_INTERVAL_MS = 30_000;
 function applyAgentSessionArchiveRetention(): Promise<void> {
   if (!_storeReady) return Promise.resolve();
-  const now = Date.now();
-  if (now - agentSessionRetentionLastRunAt < AGENT_SESSION_RETENTION_INTERVAL_MS) {
-    return agentSessionRetentionPending;
-  }
-  agentSessionRetentionLastRunAt = now;
   const stateDirectory = path.join(getStorePath(), ".pkm", "state");
   const run = async () => {
     const result = await enforceAgentSessionArchiveRetention(stateDirectory, configuredAgentSessionArchiveKeepLatestK());
-    if (result.moved.length) log.info(`Agent Session archive retention moved ${result.moved.length} completed Session(s) to Trash.`);
+    if (result.moved.length || result.deleted.length) log.info(`Agent Session Trash retention: moved ${result.moved.length}, permanently deleted ${result.deleted.length} overflow Session(s).`);
     for (const error of result.errors) log.warn(`Agent Session archive retention: ${error}`);
   };
   agentSessionRetentionPending = agentSessionRetentionPending.then(run, run);
@@ -899,6 +893,32 @@ function writeSkillRouterRuntimeConfig(context: vscode.ExtensionContext): Mature
   return enabledSolutions;
 }
 
+let skillRouterBenchmarkRunning = false;
+let skillRouterBenchmarkError = "";
+
+function readSkillRouterBenchmarkReport(target: string) {
+  try {
+    const report = JSON.parse(fs.readFileSync(target, "utf8"));
+    const measured = report.measured?.find((tier: any) => tier.tier === 1000 && tier.status === "measured");
+    const pathMetrics = measured?.routingPath;
+    if (report.schema === "pkm.retrieval.benchmark/v1" && report.engineVersion === RETRIEVAL_ENGINE_VERSION
+        && pathMetrics?.profile === "l1_online" && pathMetrics.corpus === "synthetic"
+        && pathMetrics.judgedQueries === 5 && pathMetrics.samples >= 5
+        && [pathMetrics.successRate, pathMetrics.precisionAt5, pathMetrics.ndcgAt5, pathMetrics.latencyMs?.p50, pathMetrics.latencyMs?.p95]
+          .every(value => typeof value === "number" && Number.isFinite(value) && value >= 0)) {
+      return { generatedAt: report.generatedAt, metrics: pathMetrics };
+    }
+  } catch { /* no compatible report yet */ }
+  return undefined;
+}
+
+function skillRouterBenchmarkState(context: vscode.ExtensionContext) {
+  const target = path.join(retrievalStateDirectory(context), "router-benchmark.json");
+  const measured = readSkillRouterBenchmarkReport(target);
+  if (measured) return { running: skillRouterBenchmarkRunning, error: skillRouterBenchmarkError, ...measured };
+  return { running: skillRouterBenchmarkRunning, error: skillRouterBenchmarkError };
+}
+
 async function skillRouterStatusData(context: vscode.ExtensionContext): Promise<object> {
   const enabledSolutions = writeSkillRouterRuntimeConfig(context);
   const sources = skillRouterSources();
@@ -966,6 +986,7 @@ async function skillRouterStatusData(context: vscode.ExtensionContext): Promise<
       queryTextCollected: false,
     },
     corpus: { documentCount, revision },
+    benchmark: skillRouterBenchmarkState(context),
     runtime,
   };
 }
@@ -1656,6 +1677,17 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
   if (!githubSyncScheduler) {
     githubSyncCoordinatorStatePath = coordinatorStatePath;
     githubSyncScheduler = new GitHubSyncCoordinator({
+      shouldRetryFailure: error => !(error instanceof GitHubSyncConflictError),
+      onAutoPaused: targetId => {
+        void mutateGitHubSyncTargets(context, `automatic failure pause ${targetId}`, currentTargets => {
+          const current = currentTargets.find(candidate => candidate.id === targetId);
+          if (current) current.automation.enabled = false;
+          return { targets: currentTargets, result: undefined };
+        }).then(async () => {
+          log.warn(`GitHub Sync target=${targetId}: Auto Sync disabled after exhausting automatic retries`);
+          if (panel?.visible) panel.webview.postMessage({ command: "githubSyncState", data: await githubSyncStateData(context) });
+        }).catch(error => log.error(`GitHub Sync auto-pause persistence failed: ${error instanceof Error ? error.message : String(error)}`));
+      },
       stateDirectory: coordinatorStatePath,
       knowledgeRoot: getStorePath(),
       extensionVersion: String(context.extension.packageJSON.version),
@@ -1702,6 +1734,7 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
             diagnosticPhase = "authenticating";
             githubSyncDiagnostics.record("github_sync.phase", { traceId, targetId, reason, phase: diagnosticPhase });
             const credentials = await readGitHubSyncCredentials(context, target);
+            report("fetch", "Preparing Local files for Fetch / Pull");
             const catalog = await githubSyncCatalog();
             githubSyncDiagnostics.record("github_sync.catalog", {
               traceId,
@@ -1827,21 +1860,30 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
               }
               storeGitHubSyncConflict(githubSyncStateDirectory(context), target.id, error);
               githubSyncScheduler?.report(targetId, "resolve-conflicts", `${error.conflicts.length} conflicting file${error.conflicts.length === 1 ? "" : "s"} require resolution`);
-              if (target.conflictResolution === "agent") {
+              if (target.conflictResolution === "agent" && error.conflicts.some(conflict => conflict.type === "skills" || conflict.type === "recipes")) {
                 try {
                   await prepareGitHubSyncAgentCandidates(context, target.id);
-                  message += " Agent merge candidates are ready for review and Accept & Push.";
+                  message += " Agent merge candidates are ready in GitHub Sync. Review and apply resolutions there; unsupported files require a human choice.";
                 } catch (agentError) {
-                  message += ` Agent preparation stopped: ${agentError instanceof Error ? agentError.message : String(agentError)}`;
+                  message += ` Agent preparation stopped: ${agentError instanceof Error ? agentError.message : String(agentError)}. Review the conflicts manually in GitHub Sync.`;
                 }
               } else {
-                message += " Review the staged candidates, then Accept & Push.";
+                message += " Open GitHub Sync, choose This Machine or GitHub for each file, then Apply resolutions & Sync.";
               }
+              void vscode.window.showWarningMessage(
+                `GitHub Sync "${target.name}" needs a decision for ${error.conflicts.length} file${error.conflicts.length === 1 ? "" : "s"}. ${error.conflicts.some(conflict => conflict.type !== "skills" && conflict.type !== "recipes") ? "Images and other unsupported files need a human choice." : "Review the Agent or manual candidates."}`,
+                "Review conflicts",
+              ).then(choice => {
+                if (choice === "Review conflicts") openPanelTab(context, "githubSync");
+              });
             }
             if (!(error instanceof GitHubSyncExtensionCompatibilityError)) {
               await mutateGitHubSyncTargets(context, `failure ${targetId}`, currentTargets => {
                 const current = currentTargets.find(candidate => candidate.id === targetId);
-                if (current) current.lastFailure = { at: attemptedAt, error: message, reason };
+                if (current) current.lastFailure = {
+                  at: attemptedAt, error: message, reason,
+                  attempts: error instanceof GitHubSyncConflictError ? 3 : Math.min(3, (current.lastFailure?.attempts || 0) + 1),
+                };
                 return { targets: currentTargets, result: undefined };
               });
             }
@@ -2020,27 +2062,6 @@ async function mountGitHubBranchSubscription(context: vscode.ExtensionContext, i
   return mounted;
 }
 
-function githubSyncDestination(source: string): string {
-  return path.relative(path.resolve(getStorePath()), path.resolve(source)).replace(/\\/g, "/");
-}
-
-function githubSyncItem(row: any, type: PrivacyContentType, source: string, destination = githubSyncDestination(source)): GitHubSyncCatalogItem {
-  const dependencies = (["skills", "notes", "papers"] as PrivacyContentType[]).includes(type) && fs.existsSync(source)
-    ? referencedMarkdownAssets(getStorePath(), type as "skills" | "notes" | "papers", destination.replace(new RegExp(`^${type}/`), ""), fs.readFileSync(source, "utf8"))
-      .map(asset => ({ source: asset.fullPath, destination: `${type}/${asset.path}` }))
-    : [];
-  return {
-    id: type === "skills" ? row.name : type === "prompts" ? `${row.project}/${row.task}` : type === "scripts" ? row.path : type === "packages" ? row.name : type === "servers" ? row.slug : row.slug,
-    label: type === "skills" || type === "packages" ? row.name : type === "prompts" ? row.task : type === "scripts" ? row.file : type === "servers" ? row.name : row.title,
-    cat: type === "prompts" ? row.project : type === "scripts" ? (row.category === "(root)" ? "" : row.category || "") : row.category || row.topic || "",
-    meta: type === "skills" ? compactTags(row.tags) : type === "papers" ? [row.topic, row.year].filter(Boolean).join(" · ") : type === "scripts" ? row.lang : type === "packages" ? row.lang : type === "servers" ? (row.tags || []).join(", ") : row.type || row.latest || "",
-    isPrivate: isContentItemPrivate(type, row),
-    source,
-    destination,
-    ...(dependencies.length ? { dependencies } : {}),
-  };
-}
-
 function githubSyncRecipeContent(recipe: RecipeRecord): Buffer {
   return githubSyncManagedContent("recipes", Buffer.from(canonicalJson(recipe) + "\n", "utf8"));
 }
@@ -2080,22 +2101,6 @@ function applyGitHubSyncRecipeDeletes(recipeIds: string[]): void {
 
 async function buildGitHubSyncCatalog(): Promise<GitHubSyncCatalog> {
   const root = path.resolve(getStorePath());
-  const skills = (skillList() as any[]).flatMap(row => {
-    const source = knowledgeFilePath("skills", row.name);
-    return source ? [githubSyncItem(row, "skills", source)] : [];
-  });
-  const notes = (noteList(undefined, Number.MAX_SAFE_INTEGER) as any[]).flatMap(row => {
-    const source = knowledgeFilePath("notes", row.slug);
-    return source ? [githubSyncItem(row, "notes", source)] : [];
-  });
-  const papers = (paperList() as any[]).flatMap(row => {
-    const source = knowledgeFilePath("papers", row.slug);
-    return source ? [githubSyncItem(row, "papers", source)] : [];
-  });
-  const prompts = promptList().map(row => githubSyncItem(row, "prompts", path.join(root, "prompts", row.project, row.task)));
-  const scripts = (scriptList() as any[]).map(row => githubSyncItem(row, "scripts", path.join(root, "scripts", row.path)));
-  const packages = packageList().map((row: any) => githubSyncItem(row, "packages", path.join(root, "packages", row.name)));
-  const servers = (await serverList()).map(row => githubSyncItem(row, "servers", serverDir(row.slug)));
   const recipes = currentProjectStore().recipeSyncEntries().map(({ recipe, destination, content }) => ({
     id: recipe.recipeId,
     label: recipe.name,
@@ -2105,20 +2110,8 @@ async function buildGitHubSyncCatalog(): Promise<GitHubSyncCatalog> {
     destination,
     content,
   }));
-  const agentSnapshots = listAgentSnapshots(root).flatMap(snapshot => {
-    if (!agentSnapshotIsEncrypted(root, snapshot.snapshotId)) return [];
-    const source = path.join(root, ".pkm", "state", "agent-snapshots", `${snapshot.snapshotId}.json`);
-    return [{
-      id: snapshot.snapshotId,
-      label: snapshot.task,
-      cat: snapshot.agent?.name || "Agent",
-      meta: `${snapshot.createdAt} · locally obfuscated`,
-      isPrivate: true,
-      source,
-      destination: `agentSnapshots/${snapshot.snapshotId}.json`,
-    }];
-  });
-  return { skills, notes, papers, prompts, scripts, packages, servers, recipes, agentSnapshots };
+  const servers = (await serverList()).map(({ slug, name, category, tags }) => ({ slug, name, category, tags }));
+  return githubSyncCatalogInWorker({ root, servers, recipes });
 }
 
 async function githubSyncCatalog(): Promise<GitHubSyncCatalog> {
@@ -2126,7 +2119,10 @@ async function githubSyncCatalog(): Promise<GitHubSyncCatalog> {
   if (githubSyncCatalogCache?.revision === revision) return githubSyncCatalogCache.value;
   if (githubSyncCatalogBuild?.revision === revision) return githubSyncCatalogBuild.promise;
   const startedAt = Date.now();
-  const promise = buildGitHubSyncCatalog();
+  const previousBuild = githubSyncCatalogBuild?.promise;
+  const promise = previousBuild
+    ? previousBuild.catch(() => undefined).then(buildGitHubSyncCatalog)
+    : buildGitHubSyncCatalog();
   githubSyncCatalogBuild = { revision, promise };
   try {
     const value = await promise;
@@ -2230,27 +2226,36 @@ async function githubSyncStateData(context: vscode.ExtensionContext, waitForExpe
   const currentFingerprints: Record<string, Partial<Record<GitHubSyncContentType, string>>> = {};
   const currentFolderFingerprints: Record<string, Partial<GitHubSyncFolderFingerprints>> = {};
   const baseFolderFingerprints: Record<string, Partial<GitHubSyncFolderFingerprints>> = {};
+  const currentFileFingerprints: Record<string, Partial<GitHubSyncFolderFingerprints>> = {};
+  const baseFileFingerprints: Record<string, Partial<GitHubSyncFolderFingerprints>> = {};
   if (waitForExpensive) {
     await Promise.all(targets.map(async target => {
-      const current = githubSyncTargetFingerprintState(target, catalog);
+      const current = await githubSyncFingerprintInWorker(target, catalog);
       currentFingerprints[target.id] = current.fingerprints;
       currentFolderFingerprints[target.id] = current.folders;
+      currentFileFingerprints[target.id] = current.files;
       if (!target.lastSync?.commit) return;
       const rawManifest = await readGitHubCachedManifest(
         target,
         path.join(githubSyncStateDirectory(context), "checkouts"),
         target.lastSync.commit,
       );
-      if (rawManifest) baseFolderFingerprints[target.id] = githubSyncManifestFolderFingerprints(target, rawManifest);
+      if (rawManifest) {
+        baseFolderFingerprints[target.id] = githubSyncManifestFolderFingerprints(target, rawManifest);
+        baseFileFingerprints[target.id] = githubSyncManifestFileFingerprints(target, rawManifest);
+      }
     }));
   }
   const shields = waitForExpensive
-    ? Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type => [type, githubSyncShield(targets, type, currentFingerprints)]))
+    ? Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type => [type, githubSyncShield(targets, type, currentFingerprints, baseFileFingerprints)]))
     : undefined;
   const folderShields = waitForExpensive
     ? githubSyncFolderShields(targets, currentFingerprints, currentFolderFingerprints, baseFolderFingerprints)
     : undefined;
-  const uiCatalog = Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type => [type, catalog[type].map(({ source, content, destination, ...item }) => item)]));
+  const fileShields = waitForExpensive
+    ? githubSyncEntryShields(targets, currentFingerprints, currentFileFingerprints, baseFileFingerprints)
+    : undefined;
+  const uiCatalog = Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type => [type, catalog[type].map(({ source, content, destination, ...item }) => ({ ...item, syncPath: destination }))]));
   const connected: Record<string, boolean> = {};
   await Promise.all(targets.map(async target => {
     connected[target.id] = target.authentication?.method !== "vscode" || !!(await context.secrets.get(githubSyncSecretKey(target.id)));
@@ -2260,6 +2265,7 @@ async function githubSyncStateData(context: vscode.ExtensionContext, waitForExpe
     catalog: uiCatalog,
     ...(shields ? { shields } : {}),
     ...(folderShields ? { folderShields } : {}),
+    ...(fileShields ? { fileShields } : {}),
     fingerprintsDeferred: !waitForExpensive,
     runtime: githubSyncScheduler?.snapshot() || {},
     migrations: Object.fromEntries(targets.flatMap(target => {
@@ -2694,7 +2700,7 @@ async function startPublicContentGatewayAt(context: vscode.ExtensionContext, por
       { prefix: "papers", root: path.join(getStorePath(), "papers") },
       { prefix: "scripts", root: path.join(getStorePath(), "scripts") },
     ],
-    documentPath => liveMarkdownHtml(documentPath, context),
+    documentPath => liveMarkdownHtml(documentPath, context, false),
     MIME_BY_EXT,
     { listenHost: "0.0.0.0", port, authorizePath: publicContentRouteAllowed, identity, favicon: browserIconBuffer() },
   );
@@ -2745,8 +2751,9 @@ function noteLinkIndex(notes: any[]): {
   return { bySlug, titleIndex, basenameIndex };
 }
 
-function rewriteLiveNoteLinks(markdown: string, slug: string): string {
-  const all = noteList(undefined, 100000, true) as any[];
+function rewriteLiveNoteLinks(markdown: string, slug: string, includePrivate = false): string {
+  const all = (noteList(undefined, 100000, true) as any[])
+    .filter(note => includePrivate || !isContentPathPrivate("notes", String(note.slug || "")));
   const index = noteLinkIndex(all);
   const resolve = (target: string): string | null => {
     if (/\.md(?:[?#]|$)/i.test(target) || target.includes("/")) {
@@ -2777,7 +2784,27 @@ function rewriteLiveNoteLinks(markdown: string, slug: string): string {
     }));
 }
 
-function liveMarkdownHtml(documentPath: string, context: vscode.ExtensionContext): string | undefined {
+function liveMarkdownNavigation(documentPath: string, includePrivate: boolean): string {
+  const esc = (value: unknown) => String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const groups = [
+    { label:"Notes", type:"notes" as const, kind:"note" as const, items:(noteList(undefined, 100000, true) as any[]).map(note => ({key:String(note.slug || ""), title:String(note.title || note.slug || "")})) },
+    { label:"Skills", type:"skills" as const, kind:"skill" as const, items:(skillList() as any[]).map(skill => ({key:[skill.category, skill.name].filter(Boolean).join("/"), title:String(skill.name || "")})) },
+  ];
+  const sections = groups.map(group => {
+    const items = group.items.filter(item => item.key && (includePrivate || !isContentPathPrivate(group.type, item.key)))
+      .sort((left, right) => left.key.localeCompare(right.key));
+    const links = items.map(item => {
+      const active = documentPath === `${group.type}/${item.key}`;
+      const category = item.key.split("/").slice(0, -1).join("/");
+      return `<a class="reader-nav-item" href="${esc(markdownPreviewPath(group.kind, item.key))}" title="${esc(item.key)}"${active ? ' aria-current="page"' : ''}><span>${esc(item.title)}</span>${category ? `<small>${esc(category)}</small>` : ''}</a>`;
+    }).join("");
+    return `<section class="reader-nav-group"><h2>${group.label}</h2>${links || '<p class="reader-nav-empty">No content</p>'}</section>`;
+  }).join("");
+  return `<aside class="reader-sidebar" aria-label="Knowledge navigation"><details open><summary>Library</summary><label class="reader-search"><input type="search" aria-label="Search Notes and Skills" placeholder="Search library" oninput="const query=this.value.toLocaleLowerCase();this.closest('aside').querySelectorAll('.reader-nav-item').forEach(item=>{item.hidden=!item.textContent.toLocaleLowerCase().includes(query)&&!item.title.toLocaleLowerCase().includes(query)});this.closest('aside').querySelectorAll('.reader-nav-group').forEach(group=>{group.hidden=!!query&&!group.querySelector('.reader-nav-item:not([hidden])')})"></label><nav>${sections}</nav></details></aside>`;
+}
+
+function liveMarkdownHtml(documentPath: string, context: vscode.ExtensionContext, includePrivate = false): string | undefined {
+  if (!includePrivate && !publicContentRouteAllowed(`/${documentPath}.html`)) return undefined;
   let item: any;
   let kind: "note" | "skill" | "paper" | "script";
   if (documentPath.startsWith("skills/")) {
@@ -2785,6 +2812,7 @@ function liveMarkdownHtml(documentPath: string, context: vscode.ExtensionContext
     const key = documentPath.slice("skills/".length);
     const listed = (skillList() as any[]).find(skill => (skill.category ? `${skill.category}/${skill.name}` : skill.name) === key);
     item = listed ? skillGet(listed.name) : undefined;
+    if (item && [item.category, item.name].filter(Boolean).join("/") !== key) return undefined;
   } else if (documentPath.startsWith("papers/")) {
     kind = "paper";
     item = paperGet(documentPath.slice("papers/".length));
@@ -2800,7 +2828,7 @@ function liveMarkdownHtml(documentPath: string, context: vscode.ExtensionContext
   }
   if (!item) return undefined;
   const { renderMarkdown } = require("./live-markdown") as { renderMarkdown(markdown: string): string };
-  const markdown = kind === "note" ? rewriteLiveNoteLinks(item.content || "", item.slug) : item.content || "";
+  const markdown = kind === "note" ? rewriteLiveNoteLinks(item.content || "", item.slug, includePrivate) : item.content || "";
   const bodyHtml = kind === "script"
     ? `<pre><code>${String(item.content || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</code></pre>`
     : renderMarkdown(markdown);
@@ -2810,6 +2838,7 @@ function liveMarkdownHtml(documentPath: string, context: vscode.ExtensionContext
     noteType: kind, updatedAt: item.updated_at, bodyHtml,
     description: item.description, sourceProject: item.source_project,
     authors: item.authors, year: item.year, publisher: item.publisher, url: item.url,
+    navigationHtml:liveMarkdownNavigation(documentPath, includePrivate),
   }, katexCssForExport(context), "/favicon.ico");
 }
 
@@ -2828,7 +2857,7 @@ async function openLiveMarkdownPreview(kind: "note" | "skill" | "paper" | "scrip
         { prefix: "papers", root: path.join(getStorePath(), "papers") },
         { prefix: "scripts", root: path.join(getStorePath(), "scripts") },
       ],
-      documentPath => liveMarkdownHtml(documentPath, context),
+      documentPath => liveMarkdownHtml(documentPath, context, true),
       MIME_BY_EXT,
       { accessToken, favicon: browserIconBuffer() },
     );
@@ -2963,6 +2992,7 @@ function buildStandaloneNoteHtml(msg: any, katexCss = "", faviconHref = ""): str
   const details = detailRows.length
     ? `<dl class="details">${detailRows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>`
     : "";
+  const navigation = String(msg.navigationHtml || "");
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -3025,16 +3055,31 @@ h1.doc-title{font-size:28px;line-height:1.25;margin:0 0 12px;color:#0b1220}
 .katex-display{margin:.5em 0}
 @media(max-width:700px){.wrap{width:100%;margin:0;border-width:0;border-radius:0;padding:20px 16px;box-shadow:none}.upd{width:100%;margin-left:0}}
 @media print{body{background:#fff}.wrap{border:none;box-shadow:none;margin:0;max-width:none}}
+.reader-layout{display:grid;grid-template-columns:260px minmax(0,1fr);min-height:100vh;background:#fff}
+.reader-layout .wrap{width:100%;min-width:0;margin:0;border:0;border-radius:0;box-shadow:none;overflow-wrap:anywhere}
+.reader-sidebar{position:sticky;top:0;align-self:start;height:100vh;overflow-y:auto;background:#f6f7f9;border-right:1px solid #e2e5e9;padding:16px 12px;font-size:13px}
+.reader-sidebar summary{padding:4px 8px;font-size:15px;font-weight:650;cursor:pointer}
+.reader-search{display:block;padding:12px 4px}.reader-search input{width:100%;padding:8px 10px;border:1px solid #cdd3da;border-radius:4px;background:#fff;font:inherit}
+.reader-nav-group h2{margin:12px 8px 6px;font-size:12px;color:#57606a}
+.reader-nav-item{display:block;margin:2px 0;padding:7px 8px;border-radius:4px;color:#24292f;text-decoration:none;overflow-wrap:anywhere;line-height:1.45}
+.reader-nav-item span,.reader-nav-item small{display:block}.reader-nav-item small{font-size:11px;color:#667085}
+.reader-nav-item:hover{background:#e9edf2}.reader-nav-item[aria-current=page]{background:#dcebed;color:#145b60;box-shadow:inset 3px 0 #287f85}
+.reader-nav-item:focus-visible,.reader-sidebar summary:focus-visible{outline:2px solid #287f85;outline-offset:2px}.reader-nav-item[hidden],.reader-nav-group[hidden]{display:none}
+.reader-nav-empty{margin:8px;color:#667085}
+@media(max-width:700px){.reader-layout{display:block}.reader-sidebar{position:relative;height:auto;max-height:38vh;border-right:0;border-bottom:1px solid #e2e5e9;padding:8px 12px}.reader-layout .wrap{padding:20px 16px}.reader-search{padding:8px 4px}}
+@media print{.reader-sidebar{display:none}.reader-layout{display:block}}
 ${katexCss}
 </style>
 </head>
 <body>
+${navigation ? `<div class="reader-layout">${navigation}` : ""}
 <div class="wrap">
 <h1 class="doc-title">${esc(title)}</h1>
 <div class="meta">${metaBits}</div>
 ${details}
 <div class="prose">${body}</div>
 </div>
+${navigation ? "</div>" : ""}
 </body>
 </html>`;
 }
@@ -5809,6 +5854,22 @@ async function handleMessage(
       break;
     }
 
+    case "agentSnapshotContents": {
+      const snapshotId = String(msg.snapshotId || "");
+      try {
+        respond({ command: "agentSnapshotContents", data: readAgentSnapshotContents(getStorePath(), snapshotId) });
+      } catch (error) {
+        respond({ command: "agentSnapshotContents", data: { snapshotId, error: (error as Error).message } });
+      }
+      break;
+    }
+
+    case "agentSnapshotRename": {
+      renameAgentSnapshot(getStorePath(), String(msg.snapshotId || ""), String(msg.name || ""));
+      respond({ command: "projectState", data: await agentSessionProjectStateData() });
+      break;
+    }
+
     case "agentSnapshotDelete": {
       deleteAgentSnapshot(getStorePath(), String(msg.snapshotId || ""));
       respond({ command: "projectState", data: await agentSessionProjectStateData() });
@@ -6030,6 +6091,13 @@ async function handleMessage(
       const store = currentProjectStore();
       const recipeId = String(msg.recipeId || "");
       const action = String(msg.action || "");
+      if (action === "empty") {
+        for (const recipe of store.list().recipeTrash.filter(candidate => candidate.scope === "global")) {
+          store.deleteRecipeFromTrash(projectCommand(store, "recipe-trash-delete", { recipeId: recipe.recipeId }), recipe.recipeId);
+        }
+        respond({ command: "projectState", data: await agentSessionProjectStateData() });
+        break;
+      }
       const recipe = store.list().recipes.find(candidate => candidate.recipeId === recipeId);
       const command = projectCommand(store, `recipe-trash-${action}`, { recipeId });
       const result = action === "move" ? store.moveRecipeToTrash(command, recipeId)
@@ -6621,7 +6689,16 @@ async function handleMessage(
       respond({ command: "githubSyncState", data: await githubSyncStateData(context, false) });
       void githubSyncStateData(context, true)
         .then(data => panel?.webview.postMessage({ command: "githubSyncState", data }))
-        .catch(error => log.warn(`GitHub Sync background state refresh failed: ${error instanceof Error ? error.message : String(error)}`));
+        .catch(error => {
+          const message = error instanceof Error ? error.message : String(error);
+          log.warn(`GitHub Sync background state refresh failed: ${message}`);
+          panel?.webview.postMessage({ command: "githubSyncError", data: { action: "githubSyncState", error: message } });
+        });
+      break;
+    }
+
+    case "githubSyncRuntimeSnapshot": {
+      respond({ command: "githubSyncRuntimeSnapshot", data: githubSyncScheduler?.snapshot() || {} });
       break;
     }
 
@@ -6833,12 +6910,22 @@ async function handleMessage(
 
     case "githubSyncRun": {
       const targetId = String(msg.targetId || "");
-      const target = githubSyncTargetById(context, targetId);
-      requireGitHubSyncManualMode(target, "running Sync with Remote");
+      let target = githubSyncTargetById(context, targetId);
       const migration = githubPublicationMigration(context, targetId).status();
       if (migration && migration.phase !== "cutover" && migration.phase !== "rolled-back") {
         throw new Error(`Complete or roll back the ${migration.phase} GitHub publication migration before synchronization.`);
       }
+      if (msg.pauseAutomation === true) {
+        await mutateGitHubSyncTargets(context, `pause automation and retry ${targetId}`, targets => {
+          const selected = targets.find(candidate => candidate.id === targetId);
+          if (!selected) throw new Error("GitHub Sync target was not found.");
+          selected.automation.enabled = false;
+          return { targets, result: undefined };
+        });
+        configureGitHubSyncScheduler(context);
+        target = githubSyncTargetById(context, targetId);
+      }
+      requireGitHubSyncManualMode(target, "running Sync with Remote");
       if (target.publication && !target.publication.manualVerificationCompleted) {
         target.automation.enabled = false;
       }
@@ -6912,7 +6999,9 @@ async function handleMessage(
       } else {
         const comparisonVariant = selected.hasRemote ? "remote" : selected.hasBase ? "base" : "local";
         const comparison = gitHubSyncConflictVariantPath(stateDirectory, targetId, comparisonVariant, selected.path);
-        await vscode.commands.executeCommand("vscode.diff", vscode.Uri.file(comparison), vscode.Uri.file(merged), `${selected.path} · GitHub/base ↔ candidate`);
+        const leftLabel = comparisonVariant === "remote" ? "GitHub" : comparisonVariant === "base" ? "Common base" : "This machine";
+        const rightLabel = selected.candidateSource === "unresolved" ? "Merge candidate (unresolved)" : `Merge candidate (${selected.candidateSource === "local" ? "This machine" : selected.candidateSource === "remote" ? "GitHub" : selected.candidateSource === "base" ? "Common base" : selected.candidateSource === "manual" ? "Manual merge" : selected.candidateSource === "agent" ? "Agent merge" : selected.candidateSource})`;
+        await vscode.commands.executeCommand("vscode.diff", vscode.Uri.file(comparison), vscode.Uri.file(merged), `LEFT: ${leftLabel} | RIGHT: ${rightLabel} · ${selected.path}`);
       }
       break;
     }
@@ -7131,6 +7220,17 @@ async function handleMessage(
           brokerShares: markers.items[sharedContentIdentity(type, item)]?.brokers || [],
         }));
       });
+      const privacyTopLevels = loadProfiler.measure("host.list.privacy", profileFields,
+        () => SHARED_CONTENT_TYPES.includes(tab as SharedContentType) ? privateTopLevels(tab as PrivacyContentType) : []);
+      if (tab === "skills" && !msg.silent && Array.isArray(projectedData) && projectedData.length) {
+        for (let count = Math.min(200, projectedData.length); ; count = Math.min(count + 200, projectedData.length)) {
+          if (latestKnowledgeListRequest.get("skills") !== requestSequence) break;
+          respond({ command: "listPartial", tab, q, filter, data: projectedData.slice(0, count), privateTopLevels: privacyTopLevels });
+          await new Promise(resolve => setTimeout(resolve, 16));
+          if (count === projectedData.length) break;
+        }
+      }
+      if (latestKnowledgeListRequest.get(String(tab || "")) !== requestSequence) break;
       const isGroupedKnowledgeArea = tab === "skills" || tab === "notes" || tab === "papers";
       const folders = loadProfiler.measure("host.list.folders", profileFields, () =>
         isGroupedKnowledgeArea ? (tab === "notes" && useInventory && knowledgeInventory?.snapshot.revision ? knowledgeInventory.folders("notes") : folderList(tab)) : undefined);
@@ -7143,14 +7243,13 @@ async function handleMessage(
       const trashAreas = ["notes", "papers", "prompts", "scripts"] as KnowledgeTrashArea[];
       const knowledgeTrash = loadProfiler.measure("host.list.trash", profileFields,
         () => tab === "skills" ? skillTrashList() : trashAreas.includes(tab as KnowledgeTrashArea) ? knowledgeTrashList(tab as KnowledgeTrashArea) : []);
-      const privacyTopLevels = loadProfiler.measure("host.list.privacy", profileFields,
-        () => SHARED_CONTENT_TYPES.includes(tab as SharedContentType) ? privateTopLevels(tab as PrivacyContentType) : []);
       const itemCount = Array.isArray(projectedData) ? projectedData.length : 0;
       const folderCount = Array.isArray(folders) ? folders.length : 0;
       if (!msg.silent) respond({ command: "loadingProgress", data: { stage: "building-tree", percent: 78, current: itemCount, total: itemCount, message: "Arranging the enchanted shelves…", detail: `${folderCount} folders` } });
       await new Promise(resolve => setImmediate(resolve));
+      if (latestKnowledgeListRequest.get(String(tab || "")) !== requestSequence) break;
       loadProfiler.measure("host.list.respond", { ...profileFields, itemCount, folderCount }, () =>
-        respond({ command: "list", tab, data: projectedData, folders, knowledgeGroups, subscriptionGroups: [], knowledgeTrash, privateTopLevels: privacyTopLevels, brokerSharedFolders }));
+        respond({ command: "list", tab, q, filter, data: projectedData, folders, knowledgeGroups, subscriptionGroups: [], knowledgeTrash, privateTopLevels: privacyTopLevels, brokerSharedFolders }));
       const localDuration = Date.now() - listStartedAt;
       if (performanceStateDir) recordPerformanceMetric(performanceStateDir, "cattree.local_list_ms", localDuration, itemCount);
       if (localDuration > 250) log.warn(`slow local CatTree list tab=${tab} durationMs=${localDuration} items=${itemCount}`);
@@ -8642,7 +8741,7 @@ async function handleMessage(
           }
         }
         if (bundle?.scripts?.length) {
-          const scripts = prefix ? bundle.scripts.map((x: any) => ({ ...x, category: pcat(x.category) })) : bundle.scripts;
+          const scripts = prefix ? bundle.scripts.map((x: any) => ({ ...x, category: pcat(x.category), identity: undefined })) : bundle.scripts;
           for (const script of scripts) {
             counts.scripts = (counts.scripts ?? 0) + scriptImport([script]);
             await reportImported("scripts");
@@ -8711,7 +8810,7 @@ async function handleMessage(
       const note = noteGet(String(slug || ""));
       const entry = knowledgeMoveToTrash("notes", `${slug}.md`, "item", note?.title || path.basename(String(slug || "")));
       if (entry) gitCommit(`trash(note): ${entry.originalPath}`);
-      respond({ command: "knowledgeTrashResult", data: entry ? { ok: true, action: "moved", area: "notes", path: entry.originalPath } : { ok: false, area: "notes", error: "Note was not found." } });
+      respond({ command: "knowledgeTrashResult", data: entry ? { ok: true, action: "moved", area: "notes", path: entry.originalPath, entry } : { ok: false, area: "notes", error: "Note was not found." } });
       break;
     }
 
@@ -8757,7 +8856,7 @@ async function handleMessage(
       if (!("notes papers prompts scripts".split(" ") as string[]).includes(area)) throw new Error("Unsupported Trash area.");
       const entry = knowledgeMoveToTrash(area, String(msg.path || ""), msg.kind === "folder" ? "folder" : "item", String(msg.name || ""));
       if (entry) gitCommit(`trash(${area}): ${entry.originalPath}`);
-      respond({ command: "knowledgeTrashResult", data: entry ? { ok: true, action: "moved", area, path: entry.originalPath } : { ok: false, area, error: `${area} item was not found.` } });
+      respond({ command: "knowledgeTrashResult", data: entry ? { ok: true, action: "moved", area, path: entry.originalPath, entry } : { ok: false, area, error: `${area} item was not found.` } });
       break;
     }
 
@@ -8862,6 +8961,34 @@ async function handleMessage(
 
     case "skillRouterStatus": {
       respond({ command: "skillRouterStatus", data: await skillRouterStatusData(context) });
+      break;
+    }
+
+    case "runSkillRouterBenchmark": {
+      if (skillRouterBenchmarkRunning) break;
+      skillRouterBenchmarkRunning = true;
+      skillRouterBenchmarkError = "";
+      respond({ command: "skillRouterStatus", data: await skillRouterStatusData(context) });
+      const stateDirectory = retrievalStateDirectory(context);
+      fs.mkdirSync(stateDirectory, { recursive: true });
+      const temporary = path.join(stateDirectory, `router-benchmark-${randomUUID()}.json`);
+      try {
+        await new Promise<void>((resolve, reject) => {
+          execFile(process.execPath, [path.join(context.extensionPath, "scripts", "benchmark-retrieval.js"),
+            "--tiers=1000", "--repetitions=5", `--output=${temporary}`], {
+            env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", PKM_RETRIEVAL_TEST_PYTHON: resolveMcpPython() },
+            timeout: 180_000, maxBuffer: 1024 * 1024, windowsHide: true,
+          }, error => error ? reject(error) : resolve());
+        });
+        if (!readSkillRouterBenchmarkReport(temporary)) throw new Error("Benchmark produced no compatible 1K lexical measurements.");
+        fs.renameSync(temporary, path.join(stateDirectory, "router-benchmark.json"));
+      } catch (error) {
+        skillRouterBenchmarkError = error instanceof Error ? error.message : String(error);
+      } finally {
+        fs.rmSync(temporary, { force: true });
+        skillRouterBenchmarkRunning = false;
+        respond({ command: "skillRouterStatus", data: await skillRouterStatusData(context) });
+      }
       break;
     }
 

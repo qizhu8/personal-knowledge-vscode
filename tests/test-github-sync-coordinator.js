@@ -144,8 +144,9 @@ function waitFor(messages, predicate, label, timeoutMs = 5000) {
   const failureDeadline = Date.now() + 3000;
   while (failing.snapshot().primary?.status !== "error" && Date.now() < failureDeadline) await wait(20);
   const failedState = JSON.parse(fs.readFileSync(path.join(failureState, "coordinator.json"), "utf8"));
-  assert.strictEqual(failedState.claims.primary.reason, "configuration",
-    "ordinary failures retain their durable claim while the scheduler owns the persisted retry");
+  assert.strictEqual(failedState.claims.primary, undefined,
+    "settled failures release their durable claim instead of replaying immediately after takeover");
+  assert(failedState.targets.primary.lastFailure.attempts >= 1 && failedState.targets.primary.lastFailure.attempts <= 3);
   failing.dispose();
   let failedReplayReason;
   const failureRecovery = new GitHubSyncCoordinator({
@@ -156,12 +157,44 @@ function waitFor(messages, predicate, label, timeoutMs = 5000) {
     leaseMs: 200,
     execute: async (_targetId, reason) => { failedReplayReason = reason; },
   });
-  failureRecovery.configure([{ id: "primary", enabled: true, intervalMinutes: 60, syncOnChange: false, lastSuccessAt: new Date().toISOString() }]);
-  const failureReplayDeadline = Date.now() + 3000;
-  while (!failedReplayReason && Date.now() < failureReplayDeadline) await wait(20);
-  assert.strictEqual(failedReplayReason, "configuration",
-    "a successor requeues an ordinary-failure claim instead of losing its original reason");
+  failureRecovery.configure([{ id: "primary", enabled: true, intervalMinutes: 60, syncOnChange: false,
+    lastSuccessAt: new Date(Date.parse(failedState.targets.primary.lastFailure.at) - 60_000).toISOString(),
+    lastFailure: failedState.targets.primary.lastFailure }]);
+  await wait(150);
+  assert.strictEqual(failedReplayReason, undefined,
+    "a successor waits for the persisted retry interval instead of replaying a failed claim");
+  assert.strictEqual(failureRecovery.snapshot().primary.status, "error");
   failureRecovery.dispose();
+
+  const exhaustedState = path.join(runtimeRoot, "exhausted-state");
+  let automaticAttempts = 0;
+  const pausedTargets = [];
+  const exhausted = new GitHubSyncCoordinator({
+    stateDirectory: exhaustedState, knowledgeRoot, extensionVersion: "4.0.0",
+    pollMs: 20, leaseMs: 200,
+    onAutoPaused: targetId => pausedTargets.push(targetId),
+    execute: async targetId => {
+      assert.strictEqual(targetId, "primary");
+      automaticAttempts += 1;
+      throw new Error("network unavailable");
+    },
+  });
+  exhausted.configure([
+    { id: "primary", enabled: true, intervalMinutes: 0.001, syncOnChange: true },
+    { id: "other", enabled: true, intervalMinutes: 60, syncOnChange: true, lastSuccessAt: new Date().toISOString() },
+  ]);
+  const exhaustionDeadline = Date.now() + 3000;
+  while ((!pausedTargets.length || exhausted.snapshot().primary?.status !== "error") && Date.now() < exhaustionDeadline) await wait(20);
+  const exhaustedDisk = JSON.parse(fs.readFileSync(path.join(exhaustedState, "coordinator.json"), "utf8"));
+  assert.strictEqual(automaticAttempts, 3, "the coordinator must not double-count scheduler failures");
+  assert.deepStrictEqual(pausedTargets, ["primary"], "exhaustion persists one automatic-pause decision");
+  assert.strictEqual(exhaustedDisk.targets.primary.enabled, false, "auto-pause is durable across processes");
+  assert.strictEqual(exhaustedDisk.targets.primary.lastFailure.attempts, 3);
+  assert.strictEqual(exhaustedDisk.targets.other.enabled, true, "other targets remain automatic");
+  assert.strictEqual(exhausted.snapshot().primary.lastError, "network unavailable");
+  assert.strictEqual(exhausted.request("primary", "interval"), false);
+  assert.strictEqual(exhausted.request("primary", "manual"), true, "ordinary manual recovery is accepted after exhaustion");
+  exhausted.dispose();
 
   const rootA = path.join(runtimeRoot, "root-a");
   const rootB = path.join(runtimeRoot, "root-b");
@@ -212,8 +245,8 @@ function waitFor(messages, predicate, label, timeoutMs = 5000) {
   assert.match(extension, /withGitHubSyncTargetLock\(context, targetId, \(\) => withGitHubSyncApplyLock\(context,/);
   assert.match(extension, /githubSyncCoordinatorStatePath !== coordinatorStatePath[\s\S]*githubSyncScheduler\.dispose\(\)[\s\S]*new GitHubSyncCoordinator/,
     "extension configuration recreates the coordinator when the canonical Knowledge Root changes");
-  assert.match(sync, /const applied = applyLocalChanges\(storeRoot, localWrites, localDeletes\)/,
-    "the serialized target operation retains the conflict-safe local apply phase");
+  assert.match(sync, /return applyLocalChanges\(storeRoot, localWrites, localDeletes\.filter\(item => !finalRemote\.has\(item\.file\.path\)\)\)/,
+    "the serialized target operation applies local changes without deleting files retained in the final remote catalog");
   for (const os of ["ubuntu-latest", "windows-latest", "macos-latest"]) assert(workflow.includes(os));
   assert.doesNotMatch(workflow, /\b(?:vsce\s+publish|mode:\s*publish|marketplace)\b/i,
     "the coordinator matrix validates native platforms without mutating Marketplace state");

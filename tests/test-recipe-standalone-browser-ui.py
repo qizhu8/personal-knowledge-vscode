@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import base64
 import json
+import os
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -90,7 +91,7 @@ server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
 thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
 try:
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
+        browser = playwright.chromium.launch(executable_path=os.environ.get("PKM_CHROMIUM_EXECUTABLE"), headless=True)
         page = browser.new_page(viewport={"width": 1360, "height": 900})
         errors = []; page.on("pageerror", lambda error: errors.append(str(error)))
         page.goto(f"http://127.0.0.1:{server.server_port}", wait_until="networkidle")

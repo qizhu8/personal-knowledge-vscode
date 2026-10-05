@@ -783,7 +783,7 @@ window.addEventListener('message', e => {
     ['skills','notes','scripts'].forEach(invalidateKnowledgeTabView);
     if (['skills','notes','scripts'].includes(state.tab)) ask('list', { tab: state.tab, filter: state.filter, q: state.search, fresh: true }, null, true);
   }
-  else if (command === 'list')     { if (e.data.tab && e.data.tab !== state.tab) return; finishAction('list','deleteSkill','skillTrashFolder','skillTrashRestore','skillTrashDelete','skillTrashEmpty','knowledgeTrashMove','knowledgeTrashRestore','knowledgeTrashDelete','knowledgeTrashEmpty'); if (revealRefreshedTreeItems(state.tab, state.items, data, pendingTreeRefresh)) pendingTreeRefresh = null; state.items = data; state.folders = e.data.folders || []; state.knowledgeGroups = e.data.knowledgeGroups || null; state.subscriptionGroups = e.data.subscriptionGroups || []; state.knowledgeTrash = e.data.knowledgeTrash || []; state.brokerSharedFolders = e.data.brokerSharedFolders || {}; if (Array.isArray(e.data.privateTopLevels)) state.privateTopLevels = e.data.privateTopLevels; renderList(); highlightDetailMatches(document.getElementById('layout'), state.search); }
+  else if (command === 'list' || command === 'listPartial')     { if (e.data.tab && e.data.tab !== state.tab) return; if (state.tab === 'skills' && (e.data.q || '') !== state.search) return; if (command === 'list') { skillsListLoading = false; finishAction('list','deleteSkill','skillTrashFolder','skillTrashRestore','skillTrashDelete','skillTrashEmpty','knowledgeTrashMove','knowledgeTrashRestore','knowledgeTrashDelete','knowledgeTrashEmpty'); } if (command === 'list' && revealRefreshedTreeItems(state.tab, state.items, data, pendingTreeRefresh)) pendingTreeRefresh = null; state.items = data; state.folders = e.data.folders || []; state.knowledgeGroups = e.data.knowledgeGroups || null; state.subscriptionGroups = e.data.subscriptionGroups || []; state.knowledgeTrash = e.data.knowledgeTrash || []; state.brokerSharedFolders = e.data.brokerSharedFolders || {}; if (Array.isArray(e.data.privateTopLevels)) state.privateTopLevels = e.data.privateTopLevels; renderList(); highlightDetailMatches(document.getElementById('layout'), state.search); }
   else if (command === 'listSubscriptionGroups') {
     if (e.data.tab !== state.tab) {
       updateCachedKnowledgeTabSubscriptions(e.data.tab, data || []);
@@ -817,13 +817,15 @@ window.addEventListener('message', e => {
     ask('list', { tab:'skills', filter:'all', q:state.tab === 'skills' ? state.search : '', fresh:true });
   }
   else if (command === 'knowledgeTrashResult') {
+    finishAction('deleteNote','deletePaper','deleteScript','knowledgeTrashMove','knowledgeTrashRestore','knowledgeTrashDelete','knowledgeTrashEmpty','deleteAllPapers');
+    applyKnowledgeTrashResultToView(data);
     if (!data?.ok) pkModal({ title:'Trash', message:data?.error || 'Trash action failed.', okLabel:'OK' });
     else vscode.postMessage({ command:'toast', text:data.action === 'emptied'
       ? `Emptied ${Number(data.count)||0} Trash entries`
       : data.action === 'moved-all'
         ? `Moved ${Number(data.count)||0} Research Paper${Number(data.count) === 1 ? '' : 's'} to Trash`
         : `${data.action === 'restored' ? 'Restored' : data.action === 'deleted' ? 'Permanently deleted' : 'Moved to Trash'}: ${data.path || ''}` });
-    currentDetail = null; currentDetailRequest = null; renderEmptyDetail();
+    if (data?.ok) { currentDetail = null; currentDetailRequest = null; renderEmptyDetail(); }
     ask('list', { tab:data?.area || state.tab, filter:'all', q:data?.area === state.tab ? state.search : '', fresh:true });
   }
   else if (command === 'noteFolderPins') {
@@ -880,13 +882,14 @@ window.addEventListener('message', e => {
   }
   else if (command === 'githubSyncRunQueued') { finishAction('githubSyncRun'); githubSyncOnRunQueued(data); }
   else if (command === 'githubSyncRuntimeState') { githubSyncOnRuntimeState(data); }
+  else if (command === 'githubSyncRuntimeSnapshot') { for (const [targetId, runtime] of Object.entries(data || {})) githubSyncOnRuntimeState({ targetId, state:runtime }); }
   else if (command === 'backgroundTasks') { backgroundTasksOnSnapshot(data); finishLoadingProgress(); }
   else if (command === 'githubSyncRestored') { finishAction('githubSyncRestore'); vscode.postMessage({ command:'toast', text:`Restored ${data?.restored?.length || 0} file(s) from GitHub` }); }
   else if (command === 'githubSyncRestoreCancelled') { finishAction('githubSyncRestore'); }
   else if (command === 'githubSyncIdentityPicked') { finishAction('githubSyncPickIdentity'); githubSyncIdentityPicked(data?.identityFile || ''); }
   else if (command === 'githubSyncIdentityCreated') { finishAction('githubSyncCreateIdentity'); githubSyncIdentityPicked(data?.identityFile || ''); vscode.postMessage({ command:'toast', text:'SSH public key copied; add it to GitHub, then test the account' }); }
   else if (command === 'githubSyncAuthenticationResult') { finishAction('githubSyncTestAuthentication'); githubSyncOnAuthenticationResult(data); vscode.postMessage({ command:'toast', text:`Authenticated as ${data?.login || 'unknown'}` }); }
-  else if (command === 'githubSyncError') { githubSyncSaving = false; const action = String(data?.action || ''); const message = data?.error || 'GitHub Sync failed.'; if (action === 'githubSyncRun') githubSyncForcePending.clear(); if (action === 'githubSyncState') githubSyncStatusRequested = false; if (action === 'githubSyncState' && !githubSyncUpdatedAt && state.tab === 'githubSync') showInitialViewError('GitHub Sync could not load', message, 'githubSyncState'); else if (action && pendingActionButtons.has(action)) failAction(message, action); else showViewActionError(message); finishLoadingProgress(); }
+  else if (command === 'githubSyncError') { githubSyncSaving = false; const action = String(data?.action || ''); const message = data?.error || 'GitHub Sync failed.'; if (action === 'githubSyncRun') { githubSyncForcePending.clear(); if (state.tab === 'githubSync') renderGitHubSyncPane(); } if (action === 'githubSyncState' && !githubSyncUpdatedAt && state.tab === 'githubSync') { githubSyncStatusRequested = false; showInitialViewError('GitHub Sync could not load', message, 'githubSyncState'); } else if (action === 'githubSyncState') githubSyncOnRefreshError(message); else if (action && pendingActionButtons.has(action)) failAction(message, action); else showViewActionError(message); finishLoadingProgress(); }
   else if (command === 'subscriptionChanged') {
     invalidateSubscriptionKnowledgeViews();
     invalidateRecipeSubscriptionGroups();
@@ -978,6 +981,7 @@ window.addEventListener('message', e => {
   }
   else if (command === 'projectResult') { projectOnResult(data); }
   else if (command === 'agentSnapshotCreated') { finishAction('agentSnapshotCreate'); agentSnapshotOnCreated(data); }
+  else if (command === 'agentSnapshotContents') { finishAction('agentSnapshotContents'); agentSnapshotOnContents(data); }
   else if (command === 'recipeValidationResult') { recipeOnValidation(data); }
   else if (command === 'recipeIntentEdited') { recipeOnIntentEdited(data); }
   else if (command === 'projectError') { projectOnError(data); }

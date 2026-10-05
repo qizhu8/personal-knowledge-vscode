@@ -22,14 +22,41 @@ try {
     assert(entry, `${area} item must move to Trash`);
     assert.strictEqual(fs.existsSync(full), false);
     assert.strictEqual(store.knowledgeTrashList(area).length, 1);
+    if (area === "notes") {
+      assert(store.knowledgeSyncDeletionRecords(root).some(record => record.path === `notes/${relativePath}`),
+        "a successful deletion must be durable before a sync is triggered");
+      const reloaded = JSON.parse(fs.readFileSync(path.join(root, ".pkm", "state", "knowledge-deletions.json"), "utf8"));
+      assert(reloaded.records.some(record => record.path === `notes/${relativePath}`));
+    }
     assert.deepStrictEqual(store.knowledgeTrashRestore(area, entry.id), { ok: true, path: relativePath });
+    if (area === "notes") assert(!store.knowledgeSyncDeletionRecords(root).some(record => record.path === `notes/${relativePath}`),
+      "restore must cancel pending deletion intent");
     assert.strictEqual(fs.readFileSync(full, "utf8"), area);
     const second = store.knowledgeMoveToTrash(area, relativePath, "item", path.basename(relativePath));
     assert.deepStrictEqual(store.knowledgeTrashDelete(area, second.id), { ok: true, name: path.basename(relativePath), path: relativePath, kind: "item" });
     assert.deepStrictEqual(store.knowledgeTrashList(area), []);
+    if (area === "notes") assert(store.knowledgeSyncDeletionRecords(root).some(record => record.path === `notes/${relativePath}`),
+      "permanently deleting Trash must not discard an unsynchronized deletion");
   }
 
   const folder = path.join(root, "prompts", "Project", "Task");
+    store.noteUpsert({slug:"Project/Note",title:"Note",content:"new user content",type:"general",tags:[],category:"Project",pinned:true});
+    assert.strictEqual(store.noteGet("Project/Note").pinned, true, "journal-aware writes must preserve existing Note metadata behavior");
+    assert(!store.knowledgeSyncDeletionRecords(root).some(record => record.path === "notes/Project/Note.md"),
+      "explicitly recreating a Note must cancel an earlier deletion of the same path");
+    const failedNote = path.join(root, "notes", "Failed.md");
+    fs.writeFileSync(failedNote, "keep on failure");
+    const originalRename = fs.renameSync;
+    try {
+      fs.renameSync = (from, to) => {
+        if (path.basename(to) === "payload") throw new Error("simulated move failure");
+        return originalRename(from, to);
+      };
+      assert.strictEqual(store.knowledgeMoveToTrash("notes", "Failed.md", "item", "Failed"), undefined);
+    } finally { fs.renameSync = originalRename; }
+    assert.strictEqual(fs.readFileSync(failedNote, "utf8"), "keep on failure");
+    assert(!store.knowledgeSyncDeletionRecords(root).some(record => record.path === "notes/Failed.md"),
+      "a failed move must roll back deletion intent and preserve the original Note");
   fs.mkdirSync(path.join(folder, "v2"), { recursive: true });
   fs.writeFileSync(path.join(folder, "v2", "prompt.txt"), "prompt");
   const folderEntry = store.knowledgeMoveToTrash("prompts", "Project/Task", "folder", "Task");

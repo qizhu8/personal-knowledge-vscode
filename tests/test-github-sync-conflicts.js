@@ -112,6 +112,19 @@ try {
     "acceptance must not overwrite an edit made after conflict staging"
   );
 
+  const localImage = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 255]);
+  const remoteImage = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1, 254]);
+  const imagePath = "notes/Images/diagram.png";
+  const imageConflict = storeGitHubSyncConflict(root, "target-image", new GitHubSyncConflictError("d".repeat(40), [{
+    path: imagePath, type: "notes", itemId: "diagram", category: "Images", privacy: "public",
+    base: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), local: localImage, remote: remoteImage,
+  }]));
+  assert.strictEqual(imageConflict.files[0].candidateSource, "unresolved", "binary differences require a human choice");
+  selectGitHubSyncConflictCandidate(root, "target-image", imagePath, "remote");
+  assert(readGitHubSyncConflictCandidate(root, "target-image", imagePath).equals(remoteImage), "Use GitHub preserves the remote PNG bytes");
+  selectGitHubSyncConflictCandidate(root, "target-image", imagePath, "local");
+  assert(readGitHubSyncConflictCandidate(root, "target-image", imagePath).equals(localImage), "Use this machine preserves the local PNG bytes");
+
   const preview = storeGitHubSyncConflict(root, "target-preview", new GitHubSyncConflictError("c".repeat(40), [
     {
       path: "notes/Remote.md", type: "notes", itemId: "Remote", category: "", privacy: "public",

@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import pathlib
+import sys
 import tempfile
 
 from fastmcp import Client, FastMCP
@@ -138,9 +139,28 @@ async def main():
                 ], "outputs": {}, "completion": {"requiredNodes": ["recurse"]},
             }},
         }
+        automation_artifact = store / "automation.txt"
+        automation_recipe = {
+            **recipe, "recipeId": "recipe_automation_transport", "name": "Autonomous Transport Test",
+            "revision": 3, "executableDigest": "a" * 64, "nodeBindings": [],
+            "definition": {"schema": "pkm.workflow.definition/v1", "spec": {
+                "inputs": {}, "nodes": [
+                    {"nodeId": "prepare", "kind": "pkm.step.command/v1", "config": {
+                        "program": sys.executable, "args": ["-c",
+                            "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('prepared')",
+                            str(automation_artifact)], "timeoutSeconds": 10, "maxOutputBytes": 4096,
+                    }, "dependsOn": []},
+                    {"nodeId": "verify", "kind": "pkm.step.command/v1", "config": {
+                        "program": sys.executable, "args": ["-c",
+                            "import pathlib,sys; assert pathlib.Path(sys.argv[1]).read_text() == 'prepared'; print('transport-verified')",
+                            str(automation_artifact)], "timeoutSeconds": 10, "maxOutputBytes": 4096,
+                    }, "dependsOn": [{"from": "prepare"}]},
+                ], "outputs": {}, "completion": {"requiredNodes": ["verify"]},
+            }},
+        }
         payload = {"state": {"schema": 1, "rootId": "root_transport", "projects": [], "threads": [],
                              "recipes": [recipe, branch_recipe, loop_recipe, limit_recipe,
-                                         child_recipe, parent_recipe, recursive_recipe],
+                                         child_recipe, parent_recipe, recursive_recipe, automation_recipe],
                              "migrations": [], "audit": []}, "receipts": []}
         envelope = {"schema": 1, "storeVersion": 1, "payload": payload,
                     "digest": hashlib.sha256(canonical(payload).encode("utf-8")).hexdigest()}
@@ -149,11 +169,41 @@ async def main():
         server = FastMCP("recipe-transport-test")
         MODULE.register_recipe_tools(server, store)
         async with Client(server) as client:
-            tool_names = {tool.name for tool in await client.list_tools()}
+            descriptors = {tool.name: tool for tool in await client.list_tools()}
+            tool_names = set(descriptors)
             assert tool_names == {"recipe_capabilities", "recipe_search", "recipe_create_from_skill", "recipe_run_start",
                                   "recipe_run_start_adhoc", "recipe_run_get", "recipe_run_next",
                                   "recipe_run_progress", "recipe_run_report", "recipe_run_submit_input",
                                   "recipe_usage_summary"}
+
+            assert descriptors["recipe_run_start"].inputSchema["properties"]["autonomous"]["default"] is False
+            assert descriptors["recipe_run_start_adhoc"].inputSchema["properties"]["max_auto_nodes"]["default"] == 100
+            autonomous = response_json(await client.call_tool("recipe_run_start", {
+                "recipe_id": "recipe_automation_transport", "command_id": "transport-autonomous-start",
+                "expected_revision": 3, "expected_digest": "a" * 64, "autonomous": True,
+                "max_auto_nodes": 2, "max_auto_seconds": 30,
+            }))
+            assert autonomous["ok"] is True, autonomous
+            assert autonomous["recipe"]["revision"] == 3
+            assert autonomous["recipe"]["executable_digest"] == "a" * 64
+            autonomous_path = state_dir / "recipe-runs" / f"{autonomous['run_id']}.json"
+            for _ in range(500):
+                autonomous_state = json.loads(autonomous_path.read_text(encoding="utf-8"))
+                if autonomous_state["status"] != "running":
+                    break
+                await asyncio.sleep(0.02)
+            assert autonomous_state["status"] == "completed", autonomous_state
+            autonomous_result = response_json(await client.call_tool("recipe_run_get", {
+                "run_id": autonomous["run_id"], "detail": "full",
+            }))
+            assert autonomous_result["current_result"]["counts"]["succeeded"] == 2
+            assert autonomous_state["nodes"]["verify"]["result"]["stdout"] == "transport-verified\n"
+            rejected_loop = response_json(await client.call_tool("recipe_run_start", {
+                "recipe_id": "recipe_loop_example", "command_id": "transport-autonomous-loop",
+                "autonomous": True,
+            }))
+            assert rejected_loop["ok"] is False
+            assert "does not support loop edges" in rejected_loop["error"]["message"]
 
             started = response_json(await client.call_tool("recipe_run_start", {
                 "recipe_id": "recipe_transport", "command_id": "transport-start",
@@ -345,6 +395,56 @@ async def main():
             assert parent_completed["status"] == "completed"
             assert parent_completed["current_result"]["counts"]["succeeded"] == 3
 
+            autonomous_parent_definition = json.loads(json.dumps(parent_recipe["definition"]))
+            autonomous_parent_nodes = autonomous_parent_definition["spec"]["nodes"]
+            for index, command in ((0, automation_recipe["definition"]["spec"]["nodes"][0]),
+                                   (2, automation_recipe["definition"]["spec"]["nodes"][1])):
+                autonomous_parent_nodes[index].update({"kind": command["kind"], "config": command["config"]})
+            autonomous_parent = response_json(await client.call_tool("recipe_run_start_adhoc", {
+                "name": "Autonomous parent with explicit child boundary",
+                "definition_json": json.dumps(autonomous_parent_definition),
+                "command_id": "autonomous-parent-start", "autonomous": True,
+            }))
+            assert autonomous_parent["ok"] is True, autonomous_parent
+            autonomous_parent_path = state_dir / "recipe-runs" / f"{autonomous_parent['run_id']}.json"
+
+            async def wait_for_parent(predicate):
+                for _ in range(500):
+                    persisted = json.loads(autonomous_parent_path.read_text(encoding="utf-8"))
+                    if predicate(persisted):
+                        return persisted
+                    await asyncio.sleep(0.02)
+                raise AssertionError(f"Parent did not reach the expected boundary: {persisted}")
+
+            paused_parent = await wait_for_parent(lambda persisted: persisted["automation"]["status"] == "waiting")
+            assert paused_parent["nodes"]["validate_child"]["state"] == "pending"
+            assert "childRunId" not in paused_parent["nodes"]["validate_child"]
+            explicit_child = response_json(await client.call_tool("recipe_run_next", {
+                "run_id": autonomous_parent["run_id"], "command_id": "autonomous-parent-claim-child",
+            }))
+            assert explicit_child["next_action"]["kind"] == "run_subrecipe", explicit_child
+            explicit_child_id = explicit_child["next_action"]["child_run_id"]
+            child_state = json.loads((state_dir / "recipe-runs" / f"{explicit_child_id}.json").read_text())
+            assert "automation" not in child_state
+            assert child_state["nodes"]["child_validate"]["state"] == "pending"
+            await client.call_tool("recipe_run_next", {
+                "run_id": explicit_child_id, "command_id": "autonomous-parent-child-claim",
+            })
+            finished_child = response_json(await client.call_tool("recipe_run_report", {
+                "run_id": explicit_child_id, "node_id": "child_validate", "outcome": "succeeded",
+                "command_id": "autonomous-parent-child-report",
+            }))
+            assert finished_child["status"] == "completed", finished_child
+            assert json.loads(autonomous_parent_path.read_text())["nodes"]["deliver"]["state"] == "pending"
+            resumed_parent = response_json(await client.call_tool("recipe_run_next", {
+                "run_id": autonomous_parent["run_id"], "command_id": "autonomous-parent-resume",
+            }))
+            assert resumed_parent["ok"] is True, resumed_parent
+            terminal_parent = await wait_for_parent(lambda persisted: persisted["status"] != "running")
+            assert terminal_parent["status"] == "completed", terminal_parent
+            assert terminal_parent["nodeAttemptCounts"] == {"prepare": 1, "validate_child": 1, "deliver": 1}
+            assert terminal_parent["nodes"]["deliver"]["result"]["stdout"] == "transport-verified\n"
+
             recursive_started = response_json(await client.call_tool("recipe_run_start", {
                 "recipe_id": "recipe_recursive_example", "command_id": "recursive-start",
                 "expected_revision": 1, "expected_digest": recursive_digest,
@@ -355,7 +455,7 @@ async def main():
             assert recursive_claim["ok"] is False
             assert "Recursive Recipe subflow" in recursive_claim["error"]["message"]
 
-    print("Recipe MCP transport: linear, branch, bounded loops, pinned sub-Recipe, and recursion guard OK")
+    print("Recipe MCP transport: autonomous chains and explicit subflow resumption, lazy branches/loops and recursion guard OK")
 
 
 asyncio.run(main())

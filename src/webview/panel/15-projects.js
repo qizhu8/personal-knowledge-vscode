@@ -6,6 +6,7 @@ let projectRoute = { projectId:'', section:'', workflowView:'' };
 let selectedGanttTaskId = '';
 let selectedAgentSessionId = '';
 let selectedAgentSnapshotId = '';
+let agentSnapshotContentsState = null;
 let agentSessionArchiveExpanded = vscode.getState()?.agentSessionArchiveExpanded;
 let agentSessionTreeCollapsed = !!vscode.getState()?.agentSessionTreeCollapsed;
 let agentSessionFullscreenRunId = String(vscode.getState()?.agentSessionFullscreenRunId || '');
@@ -222,15 +223,22 @@ function agentSessionGraphRememberViewport(stage) {
 }
 
 function agentSessionNodeDragStart(event, node) {
-  if (!agentSessionFullscreenRunId || event.button !== 0 || event.target.closest('button')) return;
+  if (event.button !== 0 || event.target.closest('button')) return;
+  if (!agentSessionFullscreenRunId && !node.classList.contains('agent-session-unified-node')) return;
   event.stopPropagation();
-  const key = `${node.dataset.runId}:${node.dataset.nodeId}`;
+  const key = node.dataset.nodeKey || `${node.dataset.runId}:${node.dataset.nodeId}`;
+  const graph = node.closest('.agent-session-unified-graph');
+  const scale = graph?.offsetWidth ? graph.getBoundingClientRect().width / graph.offsetWidth : 1;
   const current = agentSessionNodePositions[key] || { x:0, y:0 };
   const start = { x:event.clientX, y:event.clientY, left:current.x, top:current.y };
   node.setPointerCapture?.(event.pointerId);
   node.classList.add('dragging');
   node.onpointermove = move => {
-    const position = { x:start.left + move.clientX - start.x, y:start.top + move.clientY - start.y };
+    const position = { x:start.left + (move.clientX - start.x) / scale, y:start.top + (move.clientY - start.y) / scale };
+    if (graph) {
+      position.x = Math.max(28 - node.offsetLeft, position.x);
+      position.y = Math.max(144 - node.offsetTop, position.y);
+    }
     agentSessionNodePositions[key] = position;
     node.style.transform = `translate(${position.x}px,${position.y}px)`;
     agentSessionLayoutLinks();
@@ -242,9 +250,10 @@ function agentSessionNodeDragStart(event, node) {
 }
 
 function agentSessionGraphReorganize() {
-  const session = (projectSnapshot?.agentSessions || []).find(candidate => candidate.sessionId === agentSessionFullscreenRunId);
+  const session = (projectSnapshot?.agentSessions || []).find(candidate => candidate.sessionId === (agentSessionFullscreenRunId || selectedAgentSessionId));
   const prefixes = new Set((session?.runs || []).map(run => `${run.runId}:`));
-  Object.keys(agentSessionNodePositions).filter(key => [...prefixes].some(prefix => key.startsWith(prefix)))
+  const todoKeys = new Set([...(session?.todos || []).map(todo => `todo:${todo.todoId}`), `todo:${session?.sessionId}:task`, `todo:${session?.sessionId}:unassigned`]);
+  Object.keys(agentSessionNodePositions).filter(key => todoKeys.has(key) || [...prefixes].some(prefix => key.startsWith(prefix)))
     .forEach(key => delete agentSessionNodePositions[key]);
   agentSessionPersistGraphView();
   renderAgentSessions();
@@ -253,6 +262,17 @@ function agentSessionGraphReorganize() {
 function agentSnapshotSelect(snapshotId) {
   selectedAgentSnapshotId = String(snapshotId || '');
   renderAgentSnapshots();
+}
+
+function agentSnapshotLoadContents(snapshotId, button) {
+  agentSnapshotContentsState = { snapshotId, loading:true };
+  ask('agentSnapshotContents', { snapshotId }, button);
+}
+
+function agentSnapshotOnContents(data) {
+  if (!data?.snapshotId || data.snapshotId !== agentSnapshotContentsState?.snapshotId) return;
+  agentSnapshotContentsState = { snapshotId:data.snapshotId, data:data.error ? null : data, error:String(data.error || ''), loading:false };
+  if (state.tab === 'agentSnapshots') renderAgentSnapshots();
 }
 
 function agentSnapshotCreate(button) {
@@ -282,12 +302,29 @@ function agentSnapshotCopy(text, button) {
   });
 }
 
+function agentSnapshotRename(snapshotId) {
+  const snapshot = (projectSnapshot?.agentSnapshots || []).find(candidate => candidate.snapshotId === snapshotId);
+  if (!snapshot) return;
+  const currentName = snapshot.name || snapshot.task;
+  pkModal({ title:'Rename Snapshot', input:true, defaultValue:currentName, okLabel:'Rename',
+    validate:name => {
+      const normalized = String(name || '').trim();
+      return !normalized || normalized.length > 200 || /[\r\n]/.test(normalized)
+        ? 'Enter a name between 1 and 200 characters on a single line.' : '';
+    }, onOk:name => {
+    const normalized = String(name || '').trim();
+    if (normalized && normalized !== currentName) ask('agentSnapshotRename', { snapshotId, name:normalized });
+  } });
+}
+
 function agentSnapshotContextMenu(event, snapshotId) {
   event.preventDefault(); event.stopPropagation();
   const snapshot = (projectSnapshot?.agentSnapshots || []).find(candidate => candidate.snapshotId === snapshotId);
+  if (!snapshot) return;
   showPaperMenu(event.clientX, event.clientY, [
-    { label:snapshot?.task || snapshotId, header:true },
-    recipeCopyPathMenu(snapshot?.magicCode || snapshotId, 'Copy Magic Code'),
+    { label:snapshot?.name || snapshot?.task || snapshotId, header:true },
+    { label:'Rename…', onClick:()=>agentSnapshotRename(snapshotId) },
+    recipeCopyPathMenu(agentSnapshotRecoveryPrompt(snapshot?.magicCode || ''), 'Copy Recovery Prompt'),
     { sep:true },
     { label:'Delete Snapshot…', danger:true, onClick:()=>pkModal({
       title:'Delete Agent Snapshot?',
@@ -300,9 +337,7 @@ function agentSnapshotContextMenu(event, snapshotId) {
 
 function agentSessionContextMenu(event, sessionId, status) {
   event.preventDefault(); event.stopPropagation();
-  const session = (projectSnapshot?.agentSessions || []).find(candidate => candidate.sessionId === sessionId);
   const items = [
-    { label:session?.task || sessionId, header:true },
     recipeCopyPathMenu(`pkm://agent-sessions/${encodeURIComponent(sessionId)}`),
     recipeCopyPathMenu(sessionId, 'Copy Session ID')
   ];
@@ -346,9 +381,7 @@ function agentSessionFolderMenu(event, folder) {
 
 function agentSessionTrashContextMenu(event, sessionId) {
   event.preventDefault(); event.stopPropagation();
-  const session = (projectSnapshot?.agentSessionTrash || []).find(candidate => candidate.sessionId === sessionId);
   showPaperMenu(event.clientX, event.clientY, [
-    { label:session?.task || 'Trashed Agent Session', header:true },
     { label:'Restore', onClick:()=>ask('agentSessionTrash',{action:'restore',sessionId}) },
     { label:'Delete Permanently…', danger:true, onClick:()=>pkModal({ title:'Permanently delete Agent Session?', message:`${sessionId}\n\nRecipe run evidence is retained. This Session record cannot be recovered.`, okLabel:'Delete Permanently', danger:true, onOk:()=>ask('agentSessionTrash',{action:'delete',sessionId}) }) }
   ], 'agent-session-context-menu');
@@ -375,8 +408,14 @@ function catTreeTrashToggle(row) {
   row.setAttribute('aria-expanded', String(open));
 }
 
-function catTreeTrashDock(label, count, itemsHtml) {
-  return `<div class="cattree-trash-dock"><div class="knowledge-trash-popover hidden">${itemsHtml || '<div class="empty">Trash is empty</div>'}</div><div class="knowledge-trash-dock-row" role="button" tabindex="0" aria-expanded="false" onclick="catTreeTrashToggle(this)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();catTreeTrashToggle(this)}"><span><span class="codicon codicon-trash"></span> ${esc(label)}</span><span class="pk-group-count">${count}</span><i><span class="codicon codicon-chevron-up"></span></i></div></div>`;
+function catTreeTrashDock(label, count, itemsHtml, emptyAction) {
+  return `<div class="cattree-trash-dock"><div class="knowledge-trash-popover hidden">${itemsHtml || '<div class="empty">Trash is empty</div>'}</div><div class="knowledge-trash-dock-row" role="button" tabindex="0" aria-expanded="false" onclick="catTreeTrashToggle(this)" onkeydown="if(event.target===this&&(event.key==='Enter'||event.key===' ')){event.preventDefault();catTreeTrashToggle(this)}"><span>${uiIcon('trash')} ${esc(label)}</span><span class="pk-group-count">${count}</span><button class="knowledge-trash-empty" onclick="event.stopPropagation();${esc(emptyAction)}" title="Permanently delete everything in Trash" ${count ? '' : 'disabled'}>Delete All</button><i>${uiIcon('chevron-up')}</i></div></div>`;
+}
+
+function emptyRecipeTrash() {
+  const count = (projectSnapshot?.recipeTrash || []).filter(recipe => recipe.scope === 'global').length;
+  if (!count) return;
+  pkModal({title:'Empty Recipes Trash?',message:`Permanently delete ${count} trashed Recipe${count === 1 ? '' : 's'}? Existing run evidence is retained. This cannot be undone.`,okLabel:'Delete All',danger:true,onOk:()=>ask('recipeTrash',{action:'empty'})});
 }
 
 function workspaceCatTreeToggle(area) {
@@ -499,7 +538,7 @@ function projectCollaborationActions(task) {
 function projectCollaborationBody(project, threads) {
   const tasks = (projectSnapshot?.collaborationTasks || []).filter(task => task.projectId === project.projectId);
   const ganttTasks = (projectSnapshot?.ganttTasks || []).filter(task => task.projectId === project.projectId);
-  const create = `<section class="project-band" aria-labelledby="collaboration-create-title"><h3 id="collaboration-create-title">Assign structured collaboration</h3>
+  const create = `<details class="project-band project-collaboration-create"><summary id="collaboration-create-title">Assign structured collaboration <span class="codicon codicon-chevron-down" aria-hidden="true"></span></summary><div class="project-collaboration-form">
     <div class="gantt-editor-grid">
       <label>Task title<input id="collaboration-title" aria-required="true" placeholder="Deliver reviewed result"></label>
       <label>Project Thread<select id="collaboration-thread" aria-required="true">${threads.map(thread => `<option value="${esc(thread.threadId)}">${esc(thread.name)}</option>`).join('')}</select></label>
@@ -515,7 +554,7 @@ function projectCollaborationBody(project, threads) {
       <label>Acceptance criteria<textarea id="collaboration-criteria" aria-required="true" placeholder="One deterministic criterion per line"></textarea></label>
       <label><input id="collaboration-decision-required" type="checkbox"> Decision/result required</label>
     </div><button type="button" class="pk-button primary" onclick="projectCreateCollaboration()">Assign</button>
-    <p>Roles and ownership are explicit. Agent Session and Recipe links are shown only when supplied by an actual run.</p></section>`;
+    <p>Roles and ownership are explicit. Agent Session and Recipe links are shown only when supplied by an actual run.</p></div></details>`;
   const list = tasks.length ? `<section class="project-band"><h3>Collaboration lifecycle</h3><div class="project-thread-list">${tasks.map(task => {
     const thread = threads.find(candidate => candidate.threadId === task.threadId);
     const last = task.history?.at(-1);
@@ -2034,7 +2073,7 @@ function globalRecipeTree(recipes) {
   const html = renderCatTree(tree, [], 0, (recipe, depth) => {
     const stepCount = recipe.definition?.spec?.nodes?.length || 0;
     const privateRecipe = privacyInherited(recipe.category || '');
-    return `<div class="li cattree-item project-recipe-row ${recipe.recipeId === selectedRecipeId ? 'active' : ''}" style="margin-left:${depth * 12}px" role="button" tabindex="0" onclick="recipeSelect(decodeURIComponent('${encodeURIComponent(recipe.recipeId)}'))" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();recipeSelect(decodeURIComponent('${encodeURIComponent(recipe.recipeId)}'))}" oncontextmenu="recipeItemMenu(event,decodeURIComponent('${encodeURIComponent(recipe.recipeId)}'))"><div><strong>${privacyLock(privateRecipe)}${esc(recipe.name)}${recipe.systemKind === 'built-in' ? '<span class="recipe-system-badge">System</span>' : ''}</strong><span>${recipe.scope === 'global' ? 'Global' : 'Project'} · Revision ${recipe.revision} · ${stepCount} ${stepCount === 1 ? 'step' : 'steps'} · <code title="Executable digest">${esc(String(recipe.executableDigest || '').slice(0,12))}</code></span></div><button class="cattree-item-menu" title="Recipe actions" aria-label="Actions for ${esc(recipe.name)}" onclick="event.stopPropagation();recipeItemMenu(event,decodeURIComponent('${encodeURIComponent(recipe.recipeId)}'))"><span class="codicon codicon-ellipsis"></span></button></div>`;
+    return `<div class="li cattree-item project-recipe-row ${recipe.recipeId === selectedRecipeId ? 'active' : ''}" style="margin-left:${depth * 12}px" role="button" tabindex="0" onclick="recipeSelect(decodeURIComponent('${encodeURIComponent(recipe.recipeId)}'))" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();recipeSelect(decodeURIComponent('${encodeURIComponent(recipe.recipeId)}'))}" oncontextmenu="recipeItemMenu(event,decodeURIComponent('${encodeURIComponent(recipe.recipeId)}'))"><div><strong>${privacyLock(privateRecipe)}${esc(recipe.name)}${recipe.systemKind === 'built-in' ? '<span class="recipe-system-badge">System</span>' : ''}${typeof githubSyncFileMarker === 'function' ? githubSyncFileMarker('recipes', recipe.recipeId) : ''}</strong><span>${recipe.scope === 'global' ? 'Global' : 'Project'} · Revision ${recipe.revision} · ${stepCount} ${stepCount === 1 ? 'step' : 'steps'} · <code title="Executable digest">${esc(String(recipe.executableDigest || '').slice(0,12))}</code></span></div><button class="cattree-item-menu" title="Recipe actions" aria-label="Actions for ${esc(recipe.name)}" onclick="event.stopPropagation();recipeItemMenu(event,decodeURIComponent('${encodeURIComponent(recipe.recipeId)}'))"><span class="codicon codicon-ellipsis"></span></button></div>`;
   }, '', (_child, name, fullPath) => name !== '(uncategorized)'
     ? ` oncontextmenu="recipeFolderMenu(event,decodeURIComponent('${encodeURIComponent(fullPath.join('/'))}'))"`
     : ` oncontextmenu="recipeRootMenu(event)"`, undefined, { baseIndent:0 });
@@ -2198,7 +2237,7 @@ function agentSessionRunGraph(run, allRuns, seen = new Set(), ownerTodo = null, 
     const todoSelected = ownerTodo?.todoId && selectedAgentSessionTodoId === ownerTodo.todoId;
     return `<div class="agent-runtime-node-shell"><article tabindex="0" class="agent-runtime-node ${stateName}${todoSelected ? ' todo-selected' : ''}" data-run-id="${esc(run.runId)}" data-node-id="${esc(node.nodeId)}" data-todo-id="${esc(ownerTodo?.todoId || '')}" style="transform:translate(${Number(position.x) || 0}px,${Number(position.y) || 0}px)" onpointerdown="agentSessionNodeDragStart(event,this)"><header><span class="codicon ${node.kind === 'pkm.subflow/v1' ? 'codicon-type-hierarchy-sub' : stateName === 'running' ? 'codicon-loading codicon-modifier-spin' : stateName === 'succeeded' ? 'codicon-pass-filled' : stateName === 'failed' ? 'codicon-error' : stateName === 'skipped' ? 'codicon-debug-step-over' : 'codicon-circle-outline'}"></span><strong>${esc(node.nodeId)}</strong><b>${esc(stateName)}</b></header><small>${dependencies ? `After ${esc(dependencies)}` : 'Start node'}${node.outcome && node.outcome !== stateName ? ` · ${esc(node.outcome)}` : ''}</small>${ownerTodo ? `<small class="agent-runtime-todo-owner"><span class="codicon codicon-checklist"></span>${esc(ownerTodo.title)} · ${esc(String(ownerTodo.todoId).slice(0, 12))}</small>` : ''}${node.instruction ? `<p>${esc(node.instruction)}</p>` : ''}${node.error ? `<p class="agent-runtime-error">${esc(node.error)}</p>` : ''}${agentSessionProgressDetails(node)}</article>${child ? `<div class="agent-runtime-child"><span>Nested Recipe</span>${agentSessionRunGraph(child, allRuns, seen, ownerTodo, forceOpen)}</div>` : ''}</div>`;
   }).join('')}</div>`).join('');
-  const runKind = run.origin?.kind === 'agent-session-adhoc' ? 'Ad hoc task' : 'Recipe run';
+  const runKind = run.origin?.kind === 'agent-session-adhoc' ? 'Ad hoc Recipe' : run.origin?.kind && run.origin.kind !== 'library' ? 'Recipe source unknown' : 'Recipe Library';
   const markerId = `agent-runtime-arrow-${String(run.runId || '').replace(/[^A-Za-z0-9_-]/g, '-')}`;
   const open = forceOpen || agentSessionOpenRunIds.has(run.runId);
   return `<details class="agent-runtime-run" data-run-id="${esc(run.runId)}"${open ? ' open' : ''} ontoggle="agentSessionRunToggle(this)"><summary><span class="agent-runtime-disclosure codicon codicon-add" aria-hidden="true"></span><div><span>${runKind}</span><strong>${esc(run.recipeName)}</strong><small>r${run.recipeRevision} · ${esc(String(run.executableDigest || '').slice(0,12))}</small></div><span class="agent-session-run-actions"><button title="Open full-screen Session graph" aria-label="Open full-screen Session graph" onclick="event.preventDefault();event.stopPropagation();agentSessionOpenGraph()"><span class="codicon codicon-screen-full"></span></button><b class="agent-runtime-run-status ${esc(run.status)}">${esc(run.status)}</b></span></summary><div class="agent-runtime-run-body">${loops ? `<div class="agent-runtime-loops">${loops}</div>` : ''}<div class="agent-runtime-graph" data-run-id="${esc(run.runId)}"><svg class="agent-runtime-graph-links" data-marker-id="${markerId}" aria-hidden="true"></svg>${nodes.length ? levelHtml : '<p class="agent-muted">No materialized tasks.</p>'}</div></div></details>`;
@@ -2299,6 +2338,23 @@ function agentSessionOwnedRuns(todo, runs) {
   return owned;
 }
 
+function agentSessionRecipeSource(run) {
+  const kind = run.origin?.kind || 'library';
+  const source = kind === 'agent-session-adhoc' ? 'Ad hoc Recipe' : kind === 'library' ? 'Recipe Library' : 'Recipe source unknown';
+  const name = run.recipeName || run.recipeId || 'Unnamed Recipe';
+  const revision = run.recipeRevision ? ` · r${run.recipeRevision}` : '';
+  const identity = `${source} · ${name}${revision}`;
+  const detail = `${identity}\nRecipe ID: ${run.recipeId || 'unavailable'}\nRun ID: ${run.runId || 'unavailable'}`;
+  return `<small class="agent-session-recipe-source" title="${recipeAttribute(detail)}">${esc(identity)}</small>`;
+}
+
+function agentSessionTodoModule(todo, position = { x:0, y:0 }) {
+  const status = agentSessionNodeState(todo.status);
+  const icon = status === 'running' ? 'codicon-loading codicon-modifier-spin' : status === 'succeeded' ? 'codicon-pass-filled' : status === 'failed' ? 'codicon-error' : 'codicon-circle-outline';
+  const offset = agentSessionNodePositions[`todo:${todo.todoId}`] || { x:0, y:0 };
+  return `<article tabindex="0" class="agent-runtime-node agent-session-unified-node agent-session-todo-module ${status}" data-module-kind="todo" data-node-key="todo:${esc(todo.todoId)}" data-todo-id="${esc(todo.todoId)}" data-tree-dependencies="%5B%5D" style="left:${Number(position.x) || 0}px;top:${Number(position.y) || 0}px;transform:translate(${Number(offset.x) || 0}px,${Number(offset.y) || 0}px)" onpointerdown="agentSessionNodeDragStart(event,this)"><header><span class="codicon ${icon}"></span><strong>${esc(todo.title)}</strong><b>${esc(todo.status)}</b></header><small class="agent-session-recipe-source">Ad hoc task · Todo module</small>${todo.details ? `<p>${esc(todo.details)}</p>` : ''}${todo.summary ? `<small>${esc(todo.summary)}</small>` : ''}</article>`;
+}
+
 function agentSessionUnifiedNode(run, node, todo, position = { x:0, y:0 }, treeDependencies = []) {
   const stateName = agentSessionNodeState(node.state);
   const offset = agentSessionNodePositions[`${run.runId}:${node.nodeId}`] || { x:0, y:0 };
@@ -2308,6 +2364,7 @@ function agentSessionUnifiedNode(run, node, todo, position = { x:0, y:0 }, treeD
     <header><span class="codicon ${node.kind === 'pkm.subflow/v1' ? 'codicon-type-hierarchy-sub' : stateName === 'running' ? 'codicon-loading codicon-modifier-spin' : stateName === 'succeeded' ? 'codicon-pass-filled' : stateName === 'failed' ? 'codicon-error' : stateName === 'skipped' ? 'codicon-debug-step-over' : 'codicon-circle-outline'}"></span><strong>${esc(node.nodeId)}</strong><b>${esc(stateName)}</b></header>
     <small>${dependencies ? `After ${esc(dependencies)}` : 'Start module'}${node.outcome && node.outcome !== stateName ? ` · ${esc(node.outcome)}` : ''}</small>
     <small class="agent-runtime-todo-owner"><span class="codicon codicon-checklist"></span>${esc(todo?.title || 'Session activity')} · ${esc(String(todo?.todoId || 'unassigned').slice(0, 12))}</small>
+    ${agentSessionRecipeSource(run)}
     ${node.instruction ? `<p>${esc(node.instruction)}</p>` : ''}${node.error ? `<p class="agent-runtime-error">${esc(node.error)}</p>` : ''}${agentSessionProgressDetails(node)}
   </article>`;
 }
@@ -2376,6 +2433,11 @@ function agentSessionUnifiedTree(session, todos) {
         dependencies.get(`${child.runId}:${root.nodeId}`)?.push(`${run.runId}:${node.nodeId}`);
       }
     }
+    if (!owned.length) {
+      const key = `todo:${todo.todoId}`;
+      entries.push({key, todo, run:null});
+      dependencies.set(key, []);
+    }
   }
   for (const edge of session.recipeTreeEdges || []) {
     const source = `${edge.fromRunId}:${edge.fromNodeId}`;
@@ -2386,26 +2448,60 @@ function agentSessionUnifiedTree(session, todos) {
     nodeId:entry.key,
     dependsOn:(dependencies.get(entry.key) || []).map(from => ({ from }))
   }));
-  const positions = RecipeGraph.organizedPositions(layoutNodes, { startX:28, startY:32, columnPitch:244, rowPitch:138 });
-  const width = Math.max(520, ...entries.map(entry => (positions[entry.key]?.x || 0) + 216 + 28));
-  const height = Math.max(180, ...entries.map(entry => (positions[entry.key]?.y || 0) + 104 + 34));
+  const positions = RecipeGraph.organizedPositions(layoutNodes, { startX:28, startY:144, columnPitch:244, rowPitch:158 });
+  if (entries.length) {
+    const groups = todos.map(todo => {
+      const owned = entries.filter(entry => entry.todo.todoId === todo.todoId);
+      const keys = new Set(owned.map(entry => entry.key));
+      const local = RecipeGraph.organizedPositions(layoutNodes.filter(node => keys.has(node.nodeId)).map(node => ({
+        ...node, dependsOn:node.dependsOn.filter(dependency => keys.has(dependency.from))
+      })), {startX:28,startY:144,columnPitch:244,rowPitch:158});
+      const columns = Object.fromEntries(owned.map(entry => {
+        const peers = owned.filter(candidate => positions[candidate.key].y === positions[entry.key].y)
+          .sort((left,right) => local[left.key].x - local[right.key].x || left.key.localeCompare(right.key));
+        return [entry.key, peers.indexOf(entry) * 244];
+      }));
+      return {todoId:todo.todoId, owned, columns,
+        top:Math.min(...owned.map(entry => positions[entry.key].y)) - 24,
+        bottom:Math.max(...owned.map(entry => positions[entry.key].y)) + 118,
+        width:Math.max(210,...Object.values(columns).map(column => column + 210))};
+    }).filter(group => group.owned.length).sort((left,right) => left.top - right.top || left.todoId.localeCompare(right.todoId));
+    const placed = [];
+    for (const group of groups) {
+      let left = 28;
+      let collision;
+      while ((collision = placed.find(other => group.top < other.bottom && group.bottom > other.top
+        && left < other.left + other.width + 48 && left + group.width + 48 > other.left))) {
+        left = collision.left + collision.width + 48;
+      }
+      for (const entry of group.owned) positions[entry.key].x = left + group.columns[entry.key];
+      placed.push({...group,left});
+    }
+  }
+  const width = Math.max(520, ...entries.map(entry => (positions[entry.key]?.x || 0) + 210 + 28));
+  const height = Math.max(320, ...entries.map(entry => (positions[entry.key]?.y || 0) + 104 + 126));
   const boundaries = todos.map(todo => {
     const ownedRuns = agentSessionOwnedRuns(todo, session.runs || []);
-    const statuses = ownedRuns.map(run => run.status || 'pending').join(' ');
+    const statuses = ownedRuns.map(run => run.status || 'pending').join(' ') || todo.status;
     return `<section class="agent-session-recipe-subtree${selectedAgentSessionTodoId === todo.todoId ? ' selected' : ''}" data-todo-id="${esc(todo.todoId)}" data-recipe-group="${esc(todo.todoId)}" data-recipe-statuses="${esc(statuses)}"><header><small>Todo subtree</small><strong>${esc(todo.title)}</strong></header></section>`;
   }).join('');
-  const nodes = entries.map(entry => agentSessionUnifiedNode(
+  const nodes = entries.map(entry => entry.run ? agentSessionUnifiedNode(
     entry.run,
     entry.node,
     entry.todo,
     positions[entry.key],
     dependencies.get(entry.key) || []
-  )).join('');
-  return `<section class="agent-session-recipe-tree"><header><small>Unified Recipe tree</small><strong>Parent → child dependencies; siblings share a level</strong></header><div class="agent-session-recipe-tree-canvas" style="width:${width}px;height:${height}px">${boundaries}${nodes}</div></section>`;
+  ) : agentSessionTodoModule(entry.todo, positions[entry.key])).join('');
+  const start = `<article class="agent-session-graph-terminal" data-module-boundary="start" style="left:${width / 2 - 105}px;top:16px"><strong>Start</strong></article>`;
+  const stop = `<article class="agent-session-graph-terminal" data-module-boundary="stop" style="left:${width / 2 - 105}px;top:${height - 62}px"><strong>Complete</strong><small>${esc(['completed','stopped'].includes(session.status) ? session.status : 'pending')}</small></article>`;
+  return `<section class="agent-session-recipe-tree"><header><small>Recipe prerequisites</small><strong>Logical dependency tree</strong><button class="recipe-icon-button" title="Reorganize Recipes" aria-label="Reorganize Recipes" onclick="agentSessionGraphReorganize()"><span class="codicon codicon-layout"></span></button></header><div class="agent-session-recipe-tree-canvas" style="width:${width}px;height:${height}px">${start}${boundaries}${nodes}${stop}</div></section>`;
 }
 
 function agentSessionUnifiedGraph(session) {
-  const todos = session.todos || [];
+  const todos = session.todos?.length ? session.todos : (session.runs || []).length ? [] : [{
+    todoId:`${session.sessionId}:task`, title:session.task || 'Agent Session task',
+    status:session.status === 'completed' ? 'succeeded' : session.status === 'stopped' ? 'skipped' : 'running',
+  }];
   const assigned = new Set(todos.flatMap(todo => agentSessionOwnedRuns(todo, session.runs).map(run => run.runId)));
   const unassignedRuns = (session.runs || []).filter(run => !assigned.has(run.runId) && (!run.parent || !session.runs.some(candidate => candidate.runId === run.parent.runId)));
   const synthetic = unassignedRuns.length ? [{
@@ -2419,18 +2515,21 @@ function agentSessionUnifiedGraph(session) {
     <svg class="agent-session-unified-links" aria-hidden="true"></svg>
     <div class="agent-session-unified-layout">
       <div class="agent-session-todo-lane">
-        <article class="agent-session-unified-session" data-session-node="${esc(session.sessionId)}"><small>Agent Session</small><strong>${esc(session.task)}</strong><code>${esc(session.sessionId)}</code><b>${esc(session.status)}</b></article>
-        <header class="agent-session-traversal-header"><small>Materialized Todo order</small><strong>${esc(traversalLabel)} traversal queue</strong></header>
+        <header class="agent-session-traversal-header"><small>Todo execution order</small><strong>${esc(traversalLabel)} execution queue</strong></header>
+        <article class="agent-session-unified-session" data-session-node="${esc(session.sessionId)}" data-queue-boundary="start"><small>Agent Session</small><strong>Start</strong><code title="${esc(session.sessionId)}">${esc(session.task)}</code><b>${esc(session.status)}</b></article>
         ${lanes.map((todo, index) => agentSessionUnifiedTodoNode(todo, index)).join('')}
+        <article class="agent-session-graph-terminal" data-queue-boundary="stop"><strong>Stop</strong><small>${esc(['completed','stopped'].includes(session.status) ? session.status : 'pending')}</small></article>
       </div>
       ${agentSessionUnifiedTree(session, lanes)}
     </div>
   </div>`;
 }
 
-function agentSessionLayoutUnifiedLinks() {
-  const graph = document.querySelector('.agent-session-unified-graph');
-  if (!graph) return;
+function agentSessionLayoutUnifiedLinks(graph) {
+  if (!graph || typeof graph.querySelector !== 'function') {
+    document.querySelectorAll('.agent-session-unified-graph').forEach(element => agentSessionLayoutUnifiedLinks(element));
+    return;
+  }
   const svg = graph.querySelector(':scope > .agent-session-unified-links');
   const graphRect = graph.getBoundingClientRect();
   const scaleX = graph.offsetWidth ? graphRect.width / graph.offsetWidth : 1;
@@ -2442,6 +2541,7 @@ function agentSessionLayoutUnifiedLinks() {
   const recipeGroups = new Map([...graph.querySelectorAll('.agent-session-recipe-subtree[data-recipe-group]')]
     .map(group => [group.dataset.recipeGroup, group]));
   const sessionCard = graph.querySelector('.agent-session-unified-session[data-session-node]');
+  const stopCard = graph.querySelector('[data-queue-boundary="stop"]');
   const sessions = projectSnapshot?.agentSessions || [];
   const session = sessions.find(candidate => candidate.sessionId === graph.dataset.sessionId);
   const paths = [];
@@ -2461,7 +2561,10 @@ function agentSessionLayoutUnifiedLinks() {
     const end = { x:targetTop.x, y:targetTop.y - 8 };
     const outerX = Math.max(point(sourceRect, 1, 0).x, point(targetRect, 1, 0).x) + 24;
     const edgeClass = className ? ` ${className}` : '';
-    paths.push(`<path class="agent-session-unified-edge${edgeClass}" data-edge-source="${esc(sourceKey)}" data-edge-target="${esc(targetKey)}" d="${recipeGraphEdgeRoute(start.x,start.y,end.x,end.y,outerX)}"></path>`);
+    const route = end.y > start.y + 16
+      ? `M ${start.x} ${start.y} V ${(start.y + end.y) / 2} H ${end.x} V ${end.y}`
+      : recipeGraphEdgeRoute(start.x,start.y,end.x,end.y,outerX);
+    paths.push(`<path class="agent-session-unified-edge${edgeClass}" data-edge-relation="prerequisite" data-edge-source="${esc(sourceKey)}" data-edge-target="${esc(targetKey)}" d="${route}"></path>`);
     arrows.push(`<i class="agent-graph-arrow${edgeClass}" data-edge-source="${esc(sourceKey)}" data-edge-target="${esc(targetKey)}" style="left:${end.x - 6}px;top:${end.y - 10}px"></i>`);
   };
   const addStructuralEdge = (source, target, sourceKey, targetKey) => {
@@ -2469,9 +2572,11 @@ function agentSessionLayoutUnifiedLinks() {
     const sourceRect = source.getBoundingClientRect();
     const targetRect = target.getBoundingClientRect();
     const start = point(sourceRect, .5, 1);
-    const end = point(targetRect, .5, 0);
-    const middleY = start.y + Math.max(12, (end.y - start.y) / 2);
-    paths.push(`<path class="agent-session-structure-edge" data-structure-source="${esc(sourceKey)}" data-structure-target="${esc(targetKey)}" d="M ${start.x} ${start.y} V ${middleY} H ${end.x} V ${end.y}"></path>`);
+    const targetTop = point(targetRect, .5, 0);
+    const end = {x:targetTop.x,y:targetTop.y - 8};
+    const middleY = (start.y + end.y) / 2;
+    paths.push(`<path class="agent-session-structure-edge" data-edge-relation="queue-order" data-structure-source="${esc(sourceKey)}" data-structure-target="${esc(targetKey)}" d="M ${start.x} ${start.y} V ${middleY} H ${end.x} V ${end.y}"></path>`);
+    arrows.push(`<i class="agent-graph-arrow agent-session-queue-arrow" style="left:${end.x - 6}px;top:${end.y - 10}px"></i>`);
   };
   const addOwnershipEdge = (todoId, todoCard, recipeGroup) => {
     if (!todoCard || !recipeGroup) return;
@@ -2479,10 +2584,28 @@ function agentSessionLayoutUnifiedLinks() {
     const groupRect = recipeGroup.getBoundingClientRect();
     const start = point(todoRect, 1, .5);
     const end = point(groupRect, 0, .5);
-    const middleX = start.x + Math.max(16, (end.x - start.x) / 2);
-    paths.push(`<path class="agent-session-ownership-edge" data-structure-source="${esc(todoId)}" data-structure-target="${esc(`${todoId}:recipes`)}" d="M ${start.x} ${start.y} H ${middleX} V ${end.y} H ${end.x}"></path>`);
+    const groupRects = [...recipeGroups.values()].filter(group => !group.hidden).map(group => group.getBoundingClientRect());
+    const middleX = (start.x + Math.min(...groupRects.map(rect => point(rect, 0, 0).x))) / 2;
+    const blockers = groupRects.filter(rect => point(rect, 0, 0).x < end.x - 1
+      && point(rect, 1, 0).x > start.x && point(rect, 0, 0).y < end.y + 12 && point(rect, 0, 1).y > end.y - 12);
+    const routeY = Math.max(start.y, end.y, ...blockers.map(rect => point(rect, 0, 1).y + 16));
+    const route = blockers.length
+      ? `M ${start.x} ${start.y} H ${middleX} V ${routeY} H ${end.x - 10} V ${end.y} H ${end.x}`
+      : `M ${start.x} ${start.y} H ${middleX} V ${end.y} H ${end.x}`;
+    paths.push(`<path class="agent-session-ownership-edge" data-edge-relation="ownership" data-structure-source="${esc(todoId)}" data-structure-target="${esc(`${todoId}:recipes`)}" d="${route}"></path>`);
   };
   const treeCanvas = graph.querySelector('.agent-session-recipe-tree-canvas');
+  if (treeCanvas) {
+    const canvasRect = treeCanvas.getBoundingClientRect();
+    treeCanvas.style.width = `${Math.max(520, ...[...cards.values()].map(card => (card.getBoundingClientRect().right - canvasRect.left) / scaleX + 28))}px`;
+    const height = Math.max(320, ...[...cards.values()].map(card => (card.getBoundingClientRect().bottom - canvasRect.top) / scaleY + 126));
+    treeCanvas.style.height = `${height}px`;
+    const moduleStart = treeCanvas.querySelector('[data-module-boundary="start"]');
+    const moduleStop = treeCanvas.querySelector('[data-module-boundary="stop"]');
+    moduleStart.style.left = moduleStop.style.left = `${parseFloat(treeCanvas.style.width) / 2 - moduleStart.offsetWidth / 2}px`;
+    moduleStop.style.top = `${height - 62}px`;
+    stopCard.style.marginTop = '0px';
+  }
   if (treeCanvas) for (const [todoId, boundary] of recipeGroups) {
     const ownedCards = [...cards.values()].filter(card => card.dataset.todoId === todoId);
     if (!ownedCards.length) {
@@ -2501,18 +2624,48 @@ function agentSessionLayoutUnifiedLinks() {
     boundary.style.width = `${(right - left) / scaleX + 28}px`;
     boundary.style.height = `${(bottom - top) / scaleY + 38}px`;
   }
-  let previousStructure = sessionCard;
+  let previousCard = sessionCard;
   let previousKey = session?.sessionId || 'session';
   for (const [todoId, todoCard] of todoCards) {
-    addStructuralEdge(previousStructure, todoCard, previousKey, todoId);
+    addStructuralEdge(previousCard, todoCard, previousKey, todoId);
     addOwnershipEdge(todoId, todoCard, recipeGroups.get(todoId));
-    previousStructure = todoCard;
+    previousCard = todoCard;
     previousKey = todoId;
   }
+  addStructuralEdge(previousCard, stopCard, previousKey, `${graph.dataset.sessionId}:stop`);
+  const moduleStart = graph.querySelector('[data-module-boundary="start"]');
+  const moduleStop = graph.querySelector('[data-module-boundary="stop"]');
+  const prerequisiteSources = new Set();
+  for (const card of cards.values()) {
+    for (const sourceKey of JSON.parse(decodeURIComponent(card.dataset.treeDependencies || '%5B%5D'))) {
+      if (cards.has(sourceKey)) prerequisiteSources.add(sourceKey);
+    }
+  }
+  const rootCards = [...cards.values()].filter(card => !JSON.parse(decodeURIComponent(card.dataset.treeDependencies || '%5B%5D')).some(key => cards.has(key)));
+  const sinkCards = [...cards].filter(([key]) => !prerequisiteSources.has(key)).map(([,card]) => card);
+  const entryY = (point(moduleStart.getBoundingClientRect(), .5, 1).y
+    + Math.min(...rootCards.map(card => point(card.getBoundingClientRect(), .5, 0).y)) - 8) / 2;
+  const exitY = (Math.max(...sinkCards.map(card => point(card.getBoundingClientRect(), .5, 1).y))
+    + point(moduleStop.getBoundingClientRect(), .5, 0).y - 8) / 2;
+  const addModuleBoundaryEdge = (source, target, relation) => {
+    if (!source || !target) return;
+    const start = point(source.getBoundingClientRect(), .5, 1);
+    const end = point(target.getBoundingClientRect(), .5, 0);
+    end.y -= 8;
+    const middleY = relation === 'module-exit' ? exitY : relation === 'module-entry' ? entryY : (start.y + end.y) / 2;
+    const route = `M ${start.x} ${start.y} V ${middleY} H ${end.x} V ${end.y}`;
+    paths.push(`<path class="agent-session-unified-edge agent-session-module-boundary-edge" data-edge-relation="${relation}" d="${route}"></path>`);
+    arrows.push(`<i class="agent-graph-arrow agent-session-module-boundary-arrow" style="left:${end.x - 6}px;top:${end.y - 10}px"></i>`);
+  };
   for (const [targetKey, card] of cards) {
     const sources = JSON.parse(decodeURIComponent(card.dataset.treeDependencies || '%5B%5D'));
-    sources.forEach(sourceKey => addEdge(sourceKey, targetKey));
+    sources.forEach(sourceKey => {
+      addEdge(sourceKey, targetKey);
+    });
+    if (!sources.some(sourceKey => cards.has(sourceKey))) addModuleBoundaryEdge(moduleStart, card, 'module-entry');
   }
+  for (const [key, card] of cards) if (!prerequisiteSources.has(key)) addModuleBoundaryEdge(card, moduleStop, 'module-exit');
+  if (!cards.size) addModuleBoundaryEdge(moduleStart, moduleStop, 'module-empty');
   svg.setAttribute('viewBox', `0 0 ${graph.offsetWidth} ${graph.offsetHeight}`);
   svg.innerHTML = paths.join('');
   graph.querySelectorAll(':scope > .agent-graph-arrow').forEach(arrow => arrow.remove());
@@ -2537,7 +2690,7 @@ function agentSessionTodoFlow(session, todos, runs) {
   const stopped = session.status === 'stopped';
   const readyToEnd = !complete && !stopped && todos.length > 0 && todos.every(todo => terminal.has(todo.status));
   const endLabel = complete ? 'Completed' : stopped ? 'Stopped' : readyToEnd ? 'Ready to end' : 'End pending';
-  return `<section class="agent-session-flow" aria-label="Session Todo flow"><header><div><span>Ordered task flow</span><strong>Session Todos</strong></div><b>${todos.filter(todo => terminal.has(todo.status)).length} / ${todos.length}</b></header><div class="agent-session-boundary start"><span class="codicon codicon-debug-start"></span><strong>Start</strong></div><div class="agent-session-flow-stem"></div><div class="agent-session-tasks">${taskHtml}${unassignedHtml}</div><div class="agent-session-flow-stem"></div><div class="agent-session-boundary end ${complete || stopped || readyToEnd ? 'ready' : ''}"><strong>${endLabel}</strong><span class="codicon codicon-debug-stop"></span></div>${readyToEnd ? '<p class="agent-session-end-guidance">All Todos are terminal. Validate the overall outcome, checkpoint if useful, then call <code>agent_session_end</code>.</p>' : ''}</section>`;
+  return `<section class="agent-session-flow" aria-label="Session Todo flow"><header><div><span>Task branches</span><strong>Session Todos</strong></div><button class="recipe-icon-button" title="Open full-screen Session graph" aria-label="Open full-screen Session graph" onclick="agentSessionOpenGraph()"><span class="codicon codicon-screen-full"></span></button><b>${todos.filter(todo => terminal.has(todo.status)).length} / ${todos.length}</b></header><div class="agent-session-overview-graph">${agentSessionUnifiedGraph({...session,todos,runs})}</div><div class="agent-session-boundary start"><span class="codicon codicon-debug-start"></span><strong>Start</strong></div><div class="agent-session-flow-stem"></div><div class="agent-session-tasks">${taskHtml}${unassignedHtml}</div><div class="agent-session-flow-stem"></div><div class="agent-session-boundary end ${complete || stopped || readyToEnd ? 'ready' : ''}"><strong>${endLabel}</strong><span class="codicon codicon-debug-stop"></span></div>${readyToEnd ? '<p class="agent-session-end-guidance">All Todos are terminal. Validate the overall outcome, checkpoint if useful, then call <code>agent_session_end</code>.</p>' : ''}</section>`;
 }
 
 function agentSessionRefresh() {
@@ -2552,7 +2705,9 @@ function agentSessionFullscreenGraph(session) {
     agentSessionPersistGraphView();
     return '';
   }
-  const moduleCount = (session.runs || []).reduce((total, run) => total + (run.nodes || []).length, 0);
+  const moduleCount = (session.runs || []).reduce((total, run) => total + (run.nodes || []).length, 0)
+    + (session.todos || []).filter(todo => !agentSessionOwnedRuns(todo, session.runs).some(run => run.nodes?.length)).length
+    + (!session.todos?.length && !session.runs?.length ? 1 : 0);
   return `<div class="agent-session-fullscreen" role="dialog" aria-modal="true" aria-label="Full-screen Agent Session Recipe graph">
     <header><div><span>Unified Agent Session graph</span><strong>${esc(session.task)}</strong><small>${(session.todos || []).length} Todos · ${moduleCount} modules · ${esc(session.sessionId)}</small></div><div class="agent-session-graph-toolbar"><button title="Zoom out" onclick="agentSessionGraphZoomSet(agentSessionGraphZoom-.1)"><span class="codicon codicon-zoom-out"></span></button><output data-agent-session-zoom>${Math.round(agentSessionGraphZoom * 100)}%</output><button title="Zoom in" onclick="agentSessionGraphZoomSet(agentSessionGraphZoom+.1)"><span class="codicon codicon-zoom-in"></span></button><button title="Reset zoom" onclick="agentSessionGraphZoomSet(1)"><span class="codicon codicon-discard"></span></button><button title="Re-organize graph" onclick="agentSessionGraphReorganize()"><span class="codicon codicon-layout"></span></button><button title="Close full-screen graph" onclick="agentSessionCloseGraph()"><span class="codicon codicon-close"></span></button></div></header>
     <div class="agent-session-graph-stage" onpointerdown="agentSessionGraphPanStart(event)" onscroll="agentSessionGraphRememberViewport(this)"><div class="agent-session-graph-canvas" style="--agent-session-graph-zoom:${agentSessionGraphZoom}">${agentSessionUnifiedGraph(session)}</div></div>
@@ -2585,12 +2740,10 @@ function renderAgentSessions() {
   const trash = projectSnapshot?.agentSessionTrash || [];
   const activeSessions = sessions.filter(session => session.status === 'running');
   const archivedSessions = sessions.filter(session => session.status !== 'running');
-  const archiveKeepLatestK = projectSnapshot?.agentSessionArchiveKeepLatestK || 50;
   if (!sessions.some(session => session.sessionId === selectedAgentSessionId)) selectedAgentSessionId = activeSessions[0]?.sessionId || archivedSessions[0]?.sessionId || '';
   const selected = sessions.find(session => session.sessionId === selectedAgentSessionId);
-  if (agentSessionArchiveExpanded === undefined) agentSessionArchiveExpanded = !activeSessions.length && archivedSessions.some(session => session.sessionId === selectedAgentSessionId);
-  const trashList = `${trash.length ? `<div class="agent-session-trash-actions"><button class="tbtn danger" onclick="emptyAgentSessionTrash()"><span class="codicon codicon-trash"></span>Empty Trash</button></div>` : ''}${trash.map(session => `<div class="li cattree-item agent-session-trash-row" oncontextmenu="agentSessionTrashContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'))"><div><strong>${esc(session.task)}</strong><small>${esc(session.agent?.name || 'Agent')}</small></div><button class="cattree-item-menu" title="Trash actions" aria-label="Trash actions for ${esc(session.task)}" onclick="event.stopPropagation();agentSessionTrashContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'))"><span class="codicon codicon-ellipsis"></span></button></div>`).join('')}`;
-  const list = `${agentSessionTree(activeSessions)}${archivedSessions.length ? `<details class="agent-session-archive"${agentSessionArchiveExpanded ? ' open' : ''} ontoggle="agentSessionGroupToggle('archive',this.open)"><summary title="The newest ${archiveKeepLatestK} completed or stopped Agent Sessions are retained; overflow moves to recoverable Trash."><span><i class="codicon codicon-archive"></i>History <small>Keep newest ${archiveKeepLatestK}</small></span><b>${archivedSessions.length}</b></summary>${agentSessionTree(archivedSessions, true)}</details>` : ''}`;
+  const trashList = trash.map(session => `<div class="li knowledge-trash-item cattree-item agent-session-trash-row" oncontextmenu="agentSessionTrashContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'))"><div><strong>${esc(session.task)}</strong><small>${esc(session.agent?.name || 'Agent')}</small></div><button class="cattree-item-menu" title="Trash actions" aria-label="Trash actions for ${esc(session.task)}" onclick="event.stopPropagation();agentSessionTrashContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'))"><span class="codicon codicon-ellipsis"></span></button></div>`).join('');
+  const list = agentSessionTree(sessions);
   const empty = `<div class="agent-session-empty"><span class="codicon codicon-run-all"></span><strong>No Agent Sessions</strong><p>An Agent appears here only after it explicitly accepts PKM management with agent_session_start.</p></div>`;
   let content = empty;
   if (selected) {
@@ -2611,7 +2764,7 @@ function renderAgentSessions() {
     const percent = progressTotal ? Math.round(progressDone * 100 / progressTotal) : 0;
     content = `<div class="agent-dashboard"><header class="agent-session-head"><div><span>PKM-managed Agent Session</span><h3>${esc(selected.task)}</h3><p>${esc(selected.sessionId)} · Updated ${esc(selected.updatedAt || 'unknown')}</p></div><div class="agent-session-head-actions"><button class="tbtn" title="Refresh without resetting graph focus" onclick="agentSessionRefresh()"><span class="codicon codicon-refresh"></span>Refresh</button><span class="agent-status ${selected.status === 'running' ? 'running' : ''}">${selected.status === 'running' ? '<i class="agent-live-dot"></i> ' : ''}${esc(selected.status)}</span>${agentSessionLivenessLabel(selected.liveness) ? `<span class="agent-session-liveness ${esc(selected.liveness.state)}" title="Heartbeat age: ${selected.liveness.heartbeatAgeSeconds === null ? 'unknown' : `${Math.round(selected.liveness.heartbeatAgeSeconds)}s`} · Lease: ${selected.liveness.leaseSeconds}s">${esc(agentSessionLivenessLabel(selected.liveness))}</span>` : ''}</div></header><div class="agent-session-summary"><div><span>Agent</span><strong>${esc(selected.agent?.name || 'Agent')}</strong><small>${esc(selected.agent?.product || '')}</small></div><div><span>Current task</span><strong>${esc(runningTodo?.title || running?.nodeId || (selected.runs.length ? 'No running node' : 'Awaiting task plan'))}</strong><small>${esc(selected.lastActivity?.tool || 'Registered')}</small></div><div><span>${sessionTodos.length ? 'Session todos' : 'Task runs'}</span><strong>${sessionTodos.length || selected.runs.length}</strong><small>${sessionTodos.length ? `${sessionTodos.filter(todo => todo.status === 'pending').length} queued` : `${nodes.length} graph tasks`}</small></div><div><span>Progress</span><strong>${progressDone} / ${progressTotal}</strong><small>${percent}% complete</small><div class="agent-progress" aria-label="${progressDone} of ${progressTotal} tasks terminal"><i style="width:${percent}%"></i></div></div></div>${selected.checkpoint ?  `<div class="agent-checkpoint-strip"><span class="codicon codicon-save"></span><div><strong>Checkpoint ${selected.checkpoint.sequence}</strong><small>${esc(selected.checkpoint.summary || selected.checkpoint.reason || 'Recovery state saved')} · ${selected.checkpoint.nextActionCount} next actions</small></div><code>${esc(selected.checkpoint.checkpointId)}</code></div>` : ''}${agentSessionTodoFlow(selected, sessionTodos, selected.runs)}</div>${agentSessionFullscreenGraph(selected)}`;
   }
-  detail.innerHTML = `<div class="agent-sessions-workspace ${agentSessionTreeCollapsed ? 'cattree-collapsed' : ''}"><aside class="agent-session-list"><div class="agent-session-list-head"><strong>Agent Sessions</strong><span>${sessions.length} ${sessions.length === 1 ? 'session' : 'sessions'}</span></div><div class="agent-session-tree-scroll" oncontextmenu="if(event.target===this)agentSessionRootMenu(event)">${list}</div>${catTreeTrashDock('Trash', trash.length, trashList)}</aside>${workspaceCatTreeDivider('agentSessions',agentSessionTreeCollapsed)}<main class="agent-session-content">${content}</main></div>`;
+  detail.innerHTML = `<div class="agent-sessions-workspace ${agentSessionTreeCollapsed ? 'cattree-collapsed' : ''}"><aside class="agent-session-list"><div class="agent-session-list-head"><strong>Agent Sessions</strong><span>${sessions.length} ${sessions.length === 1 ? 'session' : 'sessions'}</span></div><div class="agent-session-tree-scroll" oncontextmenu="if(event.target===this)agentSessionRootMenu(event)">${list}</div>${catTreeTrashDock('Trash', trash.length, trashList, 'emptyAgentSessionTrash()')}</aside>${workspaceCatTreeDivider('agentSessions',agentSessionTreeCollapsed)}<main class="agent-session-content">${content}</main></div>`;
   const nextTree = detail.querySelector?.('.agent-session-tree-scroll');
   const nextContent = detail.querySelector?.('.agent-session-content');
   if (nextTree) nextTree.scrollTop = previousTreeScroll;
@@ -2651,14 +2804,47 @@ function renderAgentSnapshots() {
     ? selectedAgentSessionId : sessions.find(session => session.status === 'running')?.sessionId || sessions[0]?.sessionId || '';
   const sourceOptions = sessions.map(session => `<option value="${esc(session.sessionId)}" ${session.sessionId === preferredSessionId ? 'selected' : ''}>${esc(session.task)} · ${esc(session.status)}</option>`).join('');
   const create = `<section class="agent-snapshot-create"><div><span>Capture current durable state</span><strong>Create Agent Snapshot</strong><p>Saves the Session, ordered todos, checkpoints, and linked Recipe runs. The source Session remains unchanged.</p></div><label>Source Agent Session<select id="agent-snapshot-source" ${sessions.length ? '' : 'disabled'}>${sourceOptions || '<option value="">No Agent Sessions available</option>'}</select></label><button class="pk-button primary" data-pending-label="Creating…" onclick="agentSnapshotCreate(this)" ${sessions.length ? '' : 'disabled'}><span class="codicon codicon-save"></span>Create Snapshot</button></section>`;
-  const list = snapshots.length ? snapshots.map(snapshot => `<button class="agent-snapshot-row ${snapshot.snapshotId === selectedAgentSnapshotId ? 'active' : ''}" onclick="agentSnapshotSelect(decodeURIComponent('${encodeURIComponent(snapshot.snapshotId)}'))" oncontextmenu="agentSnapshotContextMenu(event,decodeURIComponent('${encodeURIComponent(snapshot.snapshotId)}'))"><span class="codicon codicon-save"></span><span><strong>${esc(snapshot.task)}</strong><small>${esc(snapshot.magicCode)} · ${esc(snapshot.createdAt)}</small></span><b>${snapshot.recoveryCount || 0} recovered</b></button>`).join('') : `<div class="agent-snapshot-empty"><span class="codicon codicon-save"></span><strong>No Agent Snapshots</strong><p>Create one before closing a resource-heavy conversation.</p></div>`;
+  const list = snapshots.length ? agentSnapshotTree(snapshots) : `<div class="agent-snapshot-empty"><span class="codicon codicon-save"></span><strong>No Agent Snapshots</strong><p>Create one before closing a resource-heavy conversation.</p></div>`;
   let content = `<div class="agent-snapshot-empty detail"><span class="codicon codicon-key"></span><strong>Choose or create a Snapshot</strong><p>A Snapshot can be recovered repeatedly into independent Agent Sessions.</p></div>`;
   if (selected) {
     const encodedMagic = encodeURIComponent(selected.magicCode);
     const encodedPrompt = encodeURIComponent(agentSnapshotRecoveryPrompt(selected.magicCode));
-    content = `<article class="agent-snapshot-detail"><header><div><span>Immutable recovery point</span><h3>${esc(selected.task)}</h3><p>${esc(selected.snapshotId)}</p></div><b>${selected.recoveryCount || 0} recoveries</b></header><section class="agent-snapshot-identity"><div><span>Magic Code</span><code>${esc(selected.magicCode)}</code><button class="pk-button secondary" onclick="agentSnapshotCopy(decodeURIComponent('${encodedMagic}'),this)">Copy</button><button class="pk-button secondary" onclick="agentSnapshotCopy(decodeURIComponent('${encodedPrompt}'),this)">Copy Recovery Prompt</button></div><p>No recovery password is created or stored. The payload uses the fixed local <code>uone</code> obfuscation key only to avoid plaintext on disk; it is not credential protection. Keep the Snapshot in this Knowledge Root, or explicitly select it for GitHub Sync before recovering elsewhere.</p></section><div class="agent-snapshot-metrics"><div><span>Source Session</span><strong>${esc(selected.sourceSessionId)}</strong></div><div><span>Captured</span><strong>${esc(selected.createdAt)}</strong></div><div><span>Session Todos</span><strong>${selected.todoCount || 0}</strong></div><div><span>Recipe Runs</span><strong>${selected.recipeRunCount || 0}</strong></div></div><section class="agent-snapshot-recover"><span class="codicon codicon-debug-restart"></span><div><strong>Recover in a new conversation</strong><ol><li>Open a new Copilot session in this Knowledge Root, or restore the Snapshot through GitHub Sync first.</li><li>Paste the recovery prompt containing the Magic Code and explicit PKM recovery-tool instruction.</li><li>The Agent calls <code>agent_session_snapshot_recover</code> before starting any new Agent Session, then continues the captured todos and Recipe runs.</li></ol><p>Each recovery creates a new independent Session. Right-click this Snapshot to delete it when it is no longer needed.</p></div></section></article>`;
+    content = `<article class="agent-snapshot-detail"><header><div><span>Immutable recovery point</span><div class="agent-snapshot-title"><h3>${esc(selected.name || selected.task)}</h3><button class="ibtn" title="Rename Snapshot" aria-label="Rename Snapshot" onclick="agentSnapshotRename(decodeURIComponent('${encodeURIComponent(selected.snapshotId)}'))"><span class="codicon codicon-edit" aria-hidden="true"></span></button></div><p>${esc(selected.snapshotId)}</p></div><b>${selected.recoveryCount || 0} recoveries</b></header><section class="agent-snapshot-identity"><div><span>Magic Code</span><code>${esc(selected.magicCode)}</code><button class="pk-button secondary" onclick="agentSnapshotCopy(decodeURIComponent('${encodedMagic}'),this)">Copy</button><button class="pk-button secondary" onclick="agentSnapshotCopy(decodeURIComponent('${encodedPrompt}'),this)">Copy Recovery Prompt</button></div><p>No recovery password is created or stored. The payload uses the fixed local <code>uone</code> obfuscation key only to avoid plaintext on disk; it is not credential protection. Keep the Snapshot in this Knowledge Root, or explicitly select it for GitHub Sync before recovering elsewhere.</p></section><div class="agent-snapshot-metrics"><div><span>Source Session</span><strong>${esc(selected.sourceSessionId)}</strong></div><div><span>Captured</span><strong>${esc(selected.createdAt)}</strong></div><div><span>Session Todos</span><strong>${selected.todoCount || 0}</strong></div><div><span>Recipe Runs</span><strong>${selected.recipeRunCount || 0}</strong></div></div><section class="agent-snapshot-recover"><span class="codicon codicon-debug-restart"></span><div><strong>Recover in a new conversation</strong><ol><li>Open a new Copilot session in this Knowledge Root, or restore the Snapshot through GitHub Sync first.</li><li>Paste the recovery prompt containing the Magic Code and explicit PKM recovery-tool instruction.</li><li>The Agent calls <code>agent_session_snapshot_recover</code> before starting any new Agent Session, then continues the captured todos and Recipe runs.</li></ol><p>Each recovery creates a new independent Session. Right-click this Snapshot to delete it when it is no longer needed.</p></div></section></article>`;
   }
-  detail.innerHTML = `<div class="agent-snapshot-page">${create}<div class="agent-snapshot-workspace"><aside><header><strong>Agent Snapshots</strong><span>${snapshots.length}</span></header><div>${list}</div></aside><main>${content}</main></div></div>`;
+  const contents = selected ? agentSnapshotContentsView(selected.snapshotId) : '';
+  if (!selected) agentSnapshotContentsState = null;
+  detail.innerHTML = `<div class="agent-snapshot-page">${create}<div class="agent-snapshot-workspace"><aside><header><strong>Agent Snapshots</strong><span>${snapshots.length}</span></header><div>${list}</div></aside><main>${content}${contents}</main></div></div>`;
+}
+
+function agentSnapshotTree(snapshots) {
+  const tree = buildCatTree(snapshots, snapshot => [
+    snapshot.agent?.name || 'Agent',
+    snapshot.sourceHostSessionId ? `Copilot Session ${snapshot.sourceHostSessionId}` : 'Unlinked sessions'
+  ], 'Unlinked sessions');
+  return renderCatTree(tree, [], 0, (snapshot, depth) => {
+    const id = encodeURIComponent(snapshot.snapshotId);
+    const name = snapshot.name || snapshot.task;
+    return `<div class="li cattree-item agent-snapshot-tree-item ${snapshot.snapshotId === selectedAgentSnapshotId ? 'active' : ''}" style="padding-left:${8 + depth * 12}px" role="button" tabindex="0" onclick="agentSnapshotSelect(decodeURIComponent('${id}'))" onkeydown="if(event.target===this&&(event.key==='Enter'||event.key===' ')){event.preventDefault();agentSnapshotSelect(decodeURIComponent('${id}'))}" oncontextmenu="agentSnapshotContextMenu(event,decodeURIComponent('${id}'))"><div class="tt"><span class="codicon codicon-save"></span> ${esc(name)}</div><div class="mt">${esc(snapshot.createdAt)} · ${snapshot.recoveryCount || 0} recovered</div><button class="cattree-item-menu" title="Snapshot actions" aria-label="Actions for ${esc(name)}" onclick="event.stopPropagation();agentSnapshotContextMenu(event,decodeURIComponent('${id}'))"><span class="codicon codicon-ellipsis"></span></button></div>`;
+  }, '', null, null, {
+    area:'agentSnapshots', defaultOpen:true,
+    renderFolderLabel:(name, path) => path.length === 1
+      ? `<span class="codicon codicon-account"></span>${esc(name)}`
+      : `<span class="codicon codicon-comment-discussion"></span>${esc(name === 'Unlinked sessions' ? name : name.slice(0, 28))}`
+  });
+}
+
+function agentSnapshotContentsView(snapshotId) {
+  if (agentSnapshotContentsState?.snapshotId !== snapshotId) agentSnapshotLoadContents(snapshotId);
+  const capture = agentSnapshotContentsState;
+  const heading = '<h3>Snapshot Contents</h3>';
+  if (capture.loading) return `<section class="agent-snapshot-contents" aria-busy="true">${heading}<p role="status">Loading…</p></section>`;
+  if (capture.error) return `<section class="agent-snapshot-contents">${heading}<p role="alert">${esc(capture.error)}</p><button class="tbtn" onclick="agentSnapshotLoadContents(decodeURIComponent('${encodeURIComponent(snapshotId)}'),this)"><span class="codicon codicon-refresh"></span>Retry</button></section>`;
+  const session = capture.data?.session || {};
+  const todos = Array.isArray(session.todos) ? session.todos : [];
+  const checkpoints = Array.isArray(session.checkpoints) ? session.checkpoints : [];
+  const runs = Array.isArray(capture.data?.recipeRuns) ? capture.data.recipeRuns : [];
+  const record = (label, value, status = '') => `<details class="agent-snapshot-capture"><summary>${esc(label)}${status ? ` <small>${esc(status)}</small>` : ''}</summary><pre>${esc(JSON.stringify(value, null, 2))}</pre></details>`;
+  return `<section class="agent-snapshot-contents">${heading}<dl><dt>Task</dt><dd>${esc(session.task || '')}</dd><dt>Status</dt><dd>${esc(session.status || '')}</dd><dt>Agent</dt><dd>${esc(session.agent?.name || '')}</dd></dl>${record('Session Record', session)}<section><h4>Todos (${todos.length})</h4>${todos.length ? `<ol>${todos.map(todo => `<li>${record(todo.title || todo.todoId || 'Todo', todo, todo.status)}</li>`).join('')}</ol>` : '<p>No captured Todos</p>'}</section><section><h4>Checkpoints (${checkpoints.length})</h4>${checkpoints.length ? checkpoints.map(checkpoint => record(checkpoint.reason || checkpoint.checkpointId || 'Checkpoint', checkpoint)).join('') : '<p>No captured Checkpoints</p>'}</section><section><h4>Recipe Runs (${runs.length})</h4>${runs.length ? runs.map(run => record(run.name || run.recipeName || run.runId || 'Recipe Run', run, run.status)).join('') : '<p>No captured Recipe runs</p>'}</section></section>`;
 }
 
 function projectGanttBody(project, threads) {
@@ -2713,16 +2899,16 @@ function projectSectionBody(project, threads, recipes) {
       <div><strong>${threads.length}</strong><span>Threads</span></div><div><strong>${totals.completed}</strong><span>Todos complete</span></div><div><strong>${totals.remaining}</strong><span>Todos remaining</span></div><div><strong>${activeAgents}</strong><span>Active Agents</span></div>
     </div>
     <section class="project-band"><h3>Current Todos</h3>${executions.length ? executions.map(execution => { const summary = todoExecutionSummary(execution); return `<button class="project-current-todo" onclick="projectSection('Todos')"><span><strong>${esc(summary.current?.title || execution.task)}</strong><small>${esc(execution.agent.name)} · ${summary.completed} complete · ${summary.remaining} remaining</small></span><span class="codicon codicon-chevron-right"></span></button>`; }).join('') : projectZero('No active Todos','Todo executions associated with this Project will appear here.')}</section>
-    <section class="project-band"><h3>Threads</h3>${threads.length ? `<div class="project-thread-compact">${threads.map(thread => `<button onclick="projectOpenThread('${esc(thread.threadId)}')"><span>${esc(thread.name)}</span><small>${thread.systemKind ? 'System · General' : 'Thread'}</small></button>`).join('')}</div>` : projectZero('No Threads','Create a Thread to begin project work.')}</section>`;
+    <section class="project-band"><div class="project-band-heading"><h3>Threads</h3><button class="project-band-link" onclick="projectSection('Threads')">View all ${threads.length} <span class="codicon codicon-chevron-right" aria-hidden="true"></span></button></div>${threads.length ? `<div class="project-thread-compact">${threads.slice(0,5).map(thread => `<button onclick="projectOpenThread('${esc(thread.threadId)}')"><span class="project-thread-compact-main"><strong>${esc(thread.name)}</strong><small>${thread.systemKind === 'general-thread' ? 'System thread' : thread.archived ? 'Archived' : thread.chatroom ? 'Chatroom linked' : 'No chatroom linked'}</small></span><span class="codicon codicon-chevron-right" aria-hidden="true"></span></button>`).join('')}</div>` : projectZero('No Threads','Create a Thread to begin project work.')}</section>`;
   if (projectRoute.section === 'Todos') {
     const label = projectRoute.workflowView;
     return `<div class="project-subnav" role="tablist" aria-label="Todo views"><button class="${label === 'Todos' ? 'active' : ''}" onclick="projectWorkflowView('Todos')">Todos</button><button class="${label === 'Recipes' ? 'active' : ''}" onclick="projectWorkflowView('Recipes')">Recipes</button></div>${label === 'Recipes' ? projectRecipeBody(recipes,'Recipes owned by this Project will appear here.') : projectTodoBody(project)}`;
   }
   if (projectRoute.section === 'Threads') return (threads.length ? `<div class="project-thread-list">${threads.map(thread => `
-    <div class="project-thread-row"><div><strong>${esc(thread.name)}</strong><span>${thread.systemKind === 'general-thread' ? 'System · General Thread' : thread.archived ? 'Archived Thread' : 'Thread'}${thread.chatroom ? ` · Chatroom ${esc(thread.chatroom.roomId.slice(0,8))}` : ''}</span></div>
-      <select aria-label="Move ${esc(thread.name)} to Project" onchange="projectMoveThread('${esc(thread.threadId)}',this.value)" ${thread.systemKind === 'general-thread' ? 'disabled title="General Thread cannot move"' : ''}><option value="">Move to…</option>${projectSnapshot.projects.filter(candidate => candidate.projectId !== project.projectId).map(candidate => `<option value="${esc(candidate.projectId)}">${esc(candidate.name)}</option>`).join('')}</select>
-      ${thread.systemKind === 'general-thread' ? '' : `<button class="tbtn" onclick="projectRenameThread('${esc(thread.threadId)}')">Rename</button>`}
-      <button class="tbtn" onclick="projectOpenThread('${esc(thread.threadId)}')">${thread.chatroom ? 'Open Chatroom' : 'Open in Chatroom'}</button></div>`).join('')}</div>` : projectZero('No Threads','Create a Thread to open a focused collaboration surface.')) + projectCollaborationBody(project, threads);
+    <div class="project-thread-row"><div class="project-thread-summary"><strong>${esc(thread.name)}</strong><span>${thread.systemKind === 'general-thread' ? 'System thread' : thread.archived ? 'Archived' : thread.chatroom ? 'Chatroom linked' : 'No chatroom linked'}</span></div><div class="project-thread-actions"><button class="tbtn project-thread-open" onclick="projectOpenThread('${esc(thread.threadId)}')"><span class="codicon codicon-comment-discussion" aria-hidden="true"></span>Open chatroom</button>
+      ${thread.systemKind === 'general-thread' ? '' : `<button class="ibtn" title="Rename Thread" aria-label="Rename ${esc(thread.name)}" onclick="projectRenameThread('${esc(thread.threadId)}')"><span class="codicon codicon-edit" aria-hidden="true"></span></button>`}
+      ${thread.systemKind === 'general-thread' ? '' : `<select aria-label="Move ${esc(thread.name)} to Project" onchange="projectMoveThread('${esc(thread.threadId)}',this.value)"><option value="">Move to…</option>${projectSnapshot.projects.filter(candidate => candidate.projectId !== project.projectId).map(candidate => `<option value="${esc(candidate.projectId)}">${esc(candidate.name)}</option>`).join('')}</select>`}
+      </div></div>`).join('')}</div>` : projectZero('No Threads','Create a Thread to open a focused collaboration surface.')) + projectCollaborationBody(project, threads);
   if (projectRoute.section === 'Gantt') return projectGanttBody(project, threads);
   if (projectRoute.section === 'Agents') return executions.length ? `<div class="project-agent-list">${executions.map(execution => { const summary = todoExecutionSummary(execution); return `<div><span><i class="agent-live-dot"></i><strong>${esc(execution.agent.name)}</strong><small>${esc(execution.task)}</small></span><b>${summary.completed} complete · ${summary.remaining} remaining</b></div>`; }).join('')}</div>` : projectZero('No linked Agents','Agents appear here when they own Todos associated with this Project.');
   const zero = {
@@ -2764,7 +2950,7 @@ function renderGlobalRecipes() {
   if (!recipes.some(recipe => recipe.recipeId === selectedRecipeId)) selectedRecipeId = recipes[0]?.recipeId || '';
   const selected = recipes.find(recipe => recipe.recipeId === selectedRecipeId);
   const recipeTrashList = recipeTrash.map(recipe => `<div class="li cattree-item recipe-trash-row" oncontextmenu="recipeTrashItemMenu(event,decodeURIComponent('${encodeURIComponent(recipe.recipeId)}'))"><div><strong>${esc(recipe.name)}</strong><small>${esc(recipe.category || 'Uncategorized')}</small></div><button class="cattree-item-menu" title="Trash actions" aria-label="Trash actions for ${esc(recipe.name)}" onclick="event.stopPropagation();recipeTrashItemMenu(event,decodeURIComponent('${encodeURIComponent(recipe.recipeId)}'))"><span class="codicon codicon-ellipsis"></span></button></div>`).join('');
-  detail.innerHTML = `<div class="global-recipes-workspace"><header class="project-header"><div><span>Automation</span><h2>Recipe Library</h2><p>${recipes.length} reusable Recipes</p></div><div class="project-header-actions"><button class="recipe-icon-button" title="Refresh Recipe Library" aria-label="Refresh Recipe Library" onclick="recipeRefresh()"><span class="codicon codicon-refresh"></span></button><button class="tbtn" onclick="projectNewRecipe()">New Recipe</button></div></header><div class="recipe-library-workbench ${recipeTreeCollapsed ? 'cattree-collapsed' : ''}" style="--recipe-tree-width:${recipeTreeWidth}px"><aside class="recipe-library-tree"><div class="recipe-search pkm-search-field"><span class="codicon codicon-search pkm-search-icon"></span><input type="search" value="${esc(recipeSearchQuery)}" placeholder="Search Recipes and Steps" aria-label="Search Recipes" oninput="recipeSearch(this.value)"><button class="recipe-search-clear${recipeSearchQuery ? '' : ' hidden'}" title="Clear Recipe search" aria-label="Clear Recipe search" onclick="recipeSearchClear()"><span class="codicon codicon-close"></span></button></div><div class="recipe-library-tree-scroll" oncontextmenu="if(event.target===this)recipeRootMenu(event)">${globalRecipeTree(recipes)}</div>${catTreeTrashDock('Trash', recipeTrash.length, recipeTrashList)}</aside>${workspaceCatTreeDivider('recipes',recipeTreeCollapsed,true)}<main class="recipe-library-editor">${globalRecipeEditor(selected)}</main></div></div>`;
+  detail.innerHTML = `<div class="global-recipes-workspace"><header class="project-header"><div><span>Automation</span><h2>Recipe Library</h2><p>${recipes.length} reusable Recipes</p></div><div class="project-header-actions"><button class="recipe-icon-button" title="Refresh Recipe Library" aria-label="Refresh Recipe Library" onclick="recipeRefresh()"><span class="codicon codicon-refresh"></span></button><button class="tbtn" onclick="projectNewRecipe()">New Recipe</button></div></header><div class="recipe-library-workbench ${recipeTreeCollapsed ? 'cattree-collapsed' : ''}" style="--recipe-tree-width:${recipeTreeWidth}px"><aside class="recipe-library-tree"><div class="recipe-search pkm-search-field"><span class="codicon codicon-search pkm-search-icon"></span><input type="search" value="${esc(recipeSearchQuery)}" placeholder="Search Recipes and Steps" aria-label="Search Recipes" oninput="recipeSearch(this.value)"><button class="recipe-search-clear${recipeSearchQuery ? '' : ' hidden'}" title="Clear Recipe search" aria-label="Clear Recipe search" onclick="recipeSearchClear()"><span class="codicon codicon-close"></span></button></div><div class="recipe-library-tree-scroll" oncontextmenu="if(event.target===this)recipeRootMenu(event)">${globalRecipeTree(recipes)}</div>${catTreeTrashDock('Trash', recipeTrash.length, recipeTrashList, 'emptyRecipeTrash()')}</aside>${workspaceCatTreeDivider('recipes',recipeTreeCollapsed,true)}<main class="recipe-library-editor">${globalRecipeEditor(selected)}</main></div></div>`;
   renderSubscribedGroups(detail.querySelector('.recipe-library-tree-scroll'), recipeSubscriptionGroups, 'recipes');
   if (typeof detail.querySelector === 'function') detail.querySelector('.recipe-search input')?.setAttribute('placeholder', `Search ${RecipeGraph.terms.recipe}s and ${RecipeGraph.terms.modules}`);
   if (recipeGraphResizeObserver) recipeGraphResizeObserver.disconnect();

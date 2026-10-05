@@ -14,15 +14,15 @@ import { hasNewerMcpRuntime } from "./mcp-version-policy";
 import { builtInRecipePin } from "./workflows/project-model";
 
 // ── MCP server scaffold ────────────────────────────────────────────────────
-export const UNIFIED_MCP_VERSION = "2.13.6";
+export const UNIFIED_MCP_VERSION = "2.13.7";
 const PROMPT_MANAGER_WHEEL = "uone_prompt_manager-0.1.0-py3-none-any.whl";
 const PROMPT_MANAGER_WHEEL_SHA256 = "eb9fd76058134f9ab9711d8e7604c75f761db5762d93e67f65740dc07fdc1518";
 const RETRIEVAL_ENGINE_WHEEL = "adaptive_skill_retrieval-0.3.0.dev2026091601-py3-none-any.whl";
 const RETRIEVAL_ENGINE_WHEEL_SHA256 = "04560cf29966c8c267adf8ea8502819fd005222ca1e383af63cc115996afbf21";
 const KNOWLEDGE_MCP_VERSION = "1.5.1";
 const CHAT_MCP_VERSION = "2.3.6";
-const RECIPE_MCP_VERSION = "1.7.3";
-const AGENT_SESSION_MCP_VERSION = "1.7.6";
+const RECIPE_MCP_VERSION = "1.8.0";
+const AGENT_SESSION_MCP_VERSION = "1.7.8";
 
 interface McpServerStatus {
   installed: boolean;
@@ -570,7 +570,10 @@ def _feature_tool(*domains, read_only=False):
   def decorator(function):
     if any(domain in _FEATURE_DOMAINS for domain in domains):
       def wrapper(*args, **kwargs):
-        value = function(*args, **kwargs)
+        try:
+          value = function(*args, **kwargs)
+        except PermissionError as error:
+          return {"ok": False, "code": "read-only-content", "error": str(error)}
         if not isinstance(value, str):
           return value
         try:
@@ -1098,6 +1101,30 @@ def _safe_cat(cat):
 def _cat_of(key):
     return key.rsplit("/", 1)[0] if "/" in key else ""
 
+def _mcp_system_path(file_path):
+    for candidate, root in [(Path(file_path).absolute(), STORE.absolute()),
+                            (Path(file_path).resolve(), STORE.resolve())]:
+        try:
+            parts = candidate.relative_to(root).parts
+        except ValueError:
+            continue
+        if len(parts) > 1 and parts[0].casefold() in {"notes", "skills", "prompts", "recipes"} and parts[1].casefold() == "system":
+            return True
+    return False
+
+
+def _assert_mcp_writable(content_root, *file_paths):
+    for file_path in file_paths:
+        if file_path is None:
+            continue
+        if _mcp_system_path(file_path):
+            raise PermissionError("System files and folders are read-only for Agent MCP writes.")
+        try:
+            Path(file_path).resolve().relative_to(content_root.resolve())
+            Path(file_path).resolve().relative_to(STORE.resolve())
+        except ValueError:
+            raise PermissionError("MCP writes must remain inside their content directory.")
+
 
 def _name_of(key):
     return key.rsplit("/", 1)[-1]
@@ -1124,7 +1151,8 @@ def _note(p, key):
     fm, body = _parse(p.read_text(encoding="utf-8"))
     return {"slug": key, "title": fm.get("title") or _name_of(key),
             "type": fm.get("type") or "general", "tags": fm.get("tags") or [],
-            "category": _cat_of(key), "content": body, "updated_at": _mtime(p)}
+            "category": _cat_of(key), "content": body, "updated_at": _mtime(p),
+            "read_only": _mcp_system_path(p)}
 
 
 def _all_notes():
@@ -1142,6 +1170,7 @@ def _note_write(slug, title, content, type_, tags, category, created=None):
     rel = (cat + "/" + fname) if cat else fname
     full = NOTES / rel
     old = NOTES / (slug + ".md")
+    _assert_mcp_writable(NOTES, full, old)
     if old.exists() and rel[:-3] != slug:
         try: old.unlink()
         except Exception: pass
@@ -1170,7 +1199,7 @@ def _skill(p, key):
       "recipe_hint": str(fm.get("recipe_hint") or ""),
       "related_skills": _arr(fm.get("related_skills")),
       "priority": _skill_priority(fm.get("priority")),
-      "content": body, "updated_at": _mtime(p)}
+      "content": body, "updated_at": _mtime(p), "read_only": _mcp_system_path(p)}
 
 
 def _all_skills():
@@ -1217,6 +1246,7 @@ def _skill_write(name, content, description, category, tags, source_project=None
     rel = (cat + "/" + fname) if cat else fname
     full = SKILLS / rel
     oldp, _ = _find_skill(name)
+    _assert_mcp_writable(SKILLS, full, oldp)
     if oldp is not None and str(oldp) != str(full):
         try: oldp.unlink()
         except Exception: pass
@@ -1296,6 +1326,7 @@ def _paper_write(slug, title, content, authors, year, topic, publisher, tags, ur
     rel = (cat + "/" + fname) if cat else fname
     full = PAPERS / rel
     old = PAPERS / (slug + ".md")
+    _assert_mcp_writable(PAPERS, full, old)
     # Preserve user-set kind/group/pinned when the caller doesn't specify them.
     if (kind is None or group is None or pinned is None) and old.exists():
         prev, _ = _parse(old.read_text(encoding="utf-8"))
@@ -1609,7 +1640,7 @@ def propose_skill_update(skill_id: str, base_hash: str, reason: str,
   if not row:
     return json.dumps({"ok": False, "error": "Skill not found", "skill_id": skill_id})
   if row.get("read_only"):
-    return json.dumps({"ok": False, "error": "Subscribed Skills are read-only", "skill_id": skill_id})
+    return json.dumps({"ok": False, "error": "This Skill is read-only", "skill_id": skill_id})
   current_hash = _skill_hash(row)
   proposal_id = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
   directory = STORE / "_proposals" / "skills"
@@ -1740,6 +1771,7 @@ def get_note(slug: str) -> str:
         return f"Note '{slug}' not found. Use list_notes or search_notes to find it."
     return json.dumps({"slug": r["slug"], "content_hash": _note_hash(r), "title": r["title"], "content": r["content"],
                        "type": r["type"], "tags": r["tags"], "category": r["category"],
+                       "read_only": r.get("read_only", False),
                        "updated_at": r["updated_at"],
                        "linkage": {"related_recipes": related_recipes(STORE, r["slug"], "note")}})
 
@@ -1782,6 +1814,7 @@ def update_note(slug: str, title: Optional[str] = None, content: Optional[str] =
 def delete_note(slug: str) -> str:
     """Delete a note by slug (its relative path without .md)."""
     p = NOTES / (slug + ".md")
+    _assert_mcp_writable(NOTES, p)
     try: p.unlink(missing_ok=True)
     except Exception: pass
     return json.dumps({"ok": True, "slug": slug})
@@ -1830,6 +1863,7 @@ def delete_skill(name: str) -> str:
     """Delete a skill by name."""
     p, _ = _find_skill(name)
     if p is not None:
+        _assert_mcp_writable(SKILLS, p)
         try: p.unlink()
         except Exception: pass
     return json.dumps({"ok": True, "name": name})
@@ -1918,6 +1952,7 @@ def update_paper(slug: str, title: Optional[str] = None, authors: Optional[List[
 @_feature_tool("knowledge")
 def delete_paper(slug: str) -> str:
     """Delete a paper by slug."""
+    _assert_mcp_writable(PAPERS, PAPERS / (slug + ".md"))
     try: (PAPERS / (slug + ".md")).unlink(missing_ok=True)
     except Exception: pass
     return json.dumps({"ok": True, "slug": slug})

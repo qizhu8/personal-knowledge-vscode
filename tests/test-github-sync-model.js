@@ -13,6 +13,12 @@ const {
   githubSyncAuthenticationSessionOptions,
   githubSyncGitArguments,
   githubSyncFolderShields,
+  githubSyncEntryShields,
+  githubSyncIsSystemContent,
+  githubSyncIsSystemItem,
+  githubSyncTargetFingerprintState,
+  githubSyncManifestFileFingerprints,
+  manifestJson,
   githubSyncManagedContent,
   githubSyncRepositoryHttpsHost,
   githubSyncRepositorySshHost,
@@ -31,12 +37,70 @@ assert.deepStrictEqual(githubSyncAuthenticationSessionOptions(true), { createIfN
   "account selection must be cleared only after the preferred account does not match the target");
 
 const defaults = defaultGitHubSyncSelection();
+for (const type of ['notes','skills','prompts','recipes']) {
+  assert(githubSyncIsSystemContent(type, 'System/PKM'));
+  assert(githubSyncIsSystemContent(type, 'system\\PKM'));
+  assert(githubSyncIsSystemContent(type, 'Personal', 'id', `${type}/System/file.md`));
+  assert(!githubSyncIsSystemContent(type, 'Personal/System'));
+}
+assert(!githubSyncIsSystemContent('papers', 'System/PKM'));
+assert(githubSyncIsSystemItem('recipes', {id:'builtin',cat:'Other',destination:'recipes/Other/builtin.json',content:JSON.stringify({systemKind:'built-in'})}));
+const protectedCatalog = Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type => [type, []]));
+protectedCatalog.notes = [
+  {id:'system-note',cat:'System/PKM',destination:'notes/System/PKM/read-only.md',content:'protected',isPrivate:false},
+  {id:'user-note',cat:'Adhoc',destination:'notes/Adhoc/user.md',content:'editable',isPrivate:false},
+];
+const protectedTarget = normalizeGitHubSyncTarget({name:'Protected selection',repository:'https://github.com/example/knowledge.git'}, () => 'protected');
+protectedTarget.selection.public.notes.items.push('system-note');
+const protectedFiles = githubSyncTargetFingerprintState(protectedTarget, protectedCatalog).files.notes;
+assert.deepStrictEqual(Object.keys(protectedFiles), ['notes/Adhoc/user.md'], 'System is excluded even from explicit selections and root selection');
+const protectedBaseline = githubSyncManifestFileFingerprints(protectedTarget, manifestJson([
+  {path:'notes/System/PKM/read-only.md',type:'notes',itemId:'System/PKM/read-only',member:'',category:'System/PKM',privacy:'public',digest:'a'.repeat(64)}
+]));
+assert.deepStrictEqual(protectedBaseline.notes, {}, 'old System baselines do not produce pending-sync markers');
+const legacySkillTarget = normalizeGitHubSyncTarget({name:'Legacy Skills',repository:'repo'}, () => 'legacy-skills');
+const secondSkillTarget = normalizeGitHubSyncTarget({name:'Second Skills',repository:'repo'}, () => 'second-skills');
+const legacySkillCatalog = Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type => [type, []]));
+legacySkillCatalog.skills = [
+  {id:'user-skill',cat:'Work',destination:'skills/Work/User.md',content:'ordinary skill',isPrivate:false},
+  {id:'system-skill',cat:'Work',destination:'skills/System/Protected.md',content:'system skill',isPrivate:false},
+];
+const legacySkillCurrent = githubSyncTargetFingerprintState(legacySkillTarget, legacySkillCatalog);
+const legacySkillFiles = [
+  {path:'skills/Work/User.md',type:'skills',itemId:'user-skill',member:'',category:'Work',privacy:'public',digest:legacySkillCurrent.files.skills['skills/Work/User.md']},
+  ...Array.from({length:4}, (_, index) => ({path:`skills/System/Protected${index}.md`,type:'skills',itemId:`protected-${index}`,member:'',category:'Work',privacy:'public',digest:'a'.repeat(64)})),
+];
+const legacySkillManifest = manifestJson(legacySkillFiles);
+const legacySkillFingerprint = fingerprintGitHubSyncEntries(legacySkillFiles.map(file => ({path:file.path,digest:file.digest})));
+for (const syncTarget of [legacySkillTarget, secondSkillTarget]) {
+  syncTarget.lastSync = {at:'2026-01-01T00:00:00Z',commit:'abc',fingerprints:{skills:legacySkillFingerprint}};
+}
+const legacySkillTargets = [legacySkillTarget, secondSkillTarget];
+const legacyTargetSnapshot = JSON.stringify(legacySkillTargets);
+const legacySkillCurrents = Object.fromEntries(legacySkillTargets.map(syncTarget => [syncTarget.id, legacySkillCurrent.fingerprints]));
+const legacySkillBaselines = Object.fromEntries(legacySkillTargets.map(syncTarget => [syncTarget.id, githubSyncManifestFileFingerprints(syncTarget, legacySkillManifest)]));
+assert.strictEqual(githubSyncShield(legacySkillTargets, 'skills', legacySkillCurrents), 'yellow', 'legacy aggregate hashes still include four historical System files');
+assert.strictEqual(githubSyncShield(legacySkillTargets, 'skills', legacySkillCurrents, legacySkillBaselines), 'green', 'both targets use the current System-excluded scope without requiring another sync');
+assert.deepStrictEqual(Object.keys(legacySkillBaselines[legacySkillTarget.id].skills), ['skills/Work/User.md'], 'actual System paths are excluded even when old metadata says Work');
+assert.strictEqual(githubSyncShield(legacySkillTargets, 'skills', {
+  ...legacySkillCurrents,
+  [secondSkillTarget.id]: {skills:fingerprintGitHubSyncEntries([{path:'skills/Work/User.md',digest:'b'.repeat(64)}])},
+}, legacySkillBaselines), 'yellow', 'a real ordinary Skill difference on either target remains yellow');
+assert.strictEqual(githubSyncShield(legacySkillTargets, 'skills', legacySkillCurrents, {
+  [legacySkillTarget.id]: legacySkillBaselines[legacySkillTarget.id],
+}), 'yellow', 'an unavailable cached baseline falls back to its saved fingerprint rather than assuming a match');
+assert.strictEqual(githubSyncShield([legacySkillTarget], 'skills', {
+  [legacySkillTarget.id]: {skills:fingerprintGitHubSyncEntries([])},
+}, {[legacySkillTarget.id]: {skills:{}}}), 'green', 'an available empty filtered baseline is not mistaken for an unavailable baseline');
+assert.strictEqual(JSON.stringify(legacySkillTargets), legacyTargetSnapshot, 'status comparison never rewrites stored synchronization records');
 assert(GITHUB_SYNC_CONTENT_TYPES.includes("agentSnapshots"));
 for (const type of GITHUB_SYNC_CONTENT_TYPES) {
   assert.deepStrictEqual(defaults.public[type], { items: [], folders: ["packages", "servers", "agentSnapshots"].includes(type) ? [] : [""] });
   assert.deepStrictEqual(defaults.private[type], { items: [], folders: [] });
 }
 const extensionSource = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
+assert.match(extensionSource, /githubSyncShield\(targets, type, currentFingerprints, baseFileFingerprints\)/,
+  'top-level status receives the same filtered successful manifest baseline as file markers');
 const atomicRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-github-sync-atomic-"));
 try {
   const removed = path.join(atomicRoot, "removed.md");
@@ -208,6 +272,16 @@ assert.deepStrictEqual(
 );
 
 assert.strictEqual(githubSyncShield([], "skills", {}), "outline");
+const fileStates = githubSyncEntryShields([target], {}, {
+  [target.id]: { notes: { "notes/Adhoc/unchanged.md": "same", "notes/Adhoc/changed.md": "new", "notes/Adhoc/added.md": "added" } },
+}, {
+  [target.id]: { notes: { "notes/Adhoc/unchanged.md": "same", "notes/Adhoc/changed.md": "old" } },
+});
+assert.strictEqual(fileStates.notes["notes/Adhoc/unchanged.md"], "green");
+assert.strictEqual(fileStates.notes["notes/Adhoc/changed.md"], "yellow");
+assert.strictEqual(fileStates.notes["notes/Adhoc/added.md"], "yellow");
+assert.strictEqual(fileStates.notes["notes/System/PKM/Router.md"], undefined,
+  "files not covered by a target have no colored status");
 assert.strictEqual(githubSyncShield([target], "skills", { "target-1": { skills: fingerprint } }), "yellow");
 target.lastSync = { at: "2026-01-01T00:00:00Z", commit: "abc", fingerprints: { skills: fingerprint } };
 assert.strictEqual(githubSyncShield([target], "skills", { "target-1": { skills: fingerprint } }), "green");

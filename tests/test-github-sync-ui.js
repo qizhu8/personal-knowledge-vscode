@@ -6,6 +6,7 @@ const vm = require("vm");
 
 const source = fs.readFileSync(path.join(__dirname, "..", "src", "webview", "panel", "46-github-sync.js"), "utf8");
 const coreSource = fs.readFileSync(path.join(__dirname, "..", "src", "webview", "panel", "00-core.js"), "utf8");
+const styles = fs.readFileSync(path.join(__dirname, "..", "src", "webview", "panel.css"), "utf8");
 const extensionSource = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
 const requests = [];
 const context = vm.createContext({
@@ -14,6 +15,9 @@ const context = vm.createContext({
   uiIcon: (_name, label) => label,
   Map,
   Set,
+  document: { querySelector: () => null, querySelectorAll: () => [] },
+  state: { tab: 'other' },
+  vscode: { postMessage: () => {} },
   pendingActionButtons: new Map(),
 });
 vm.runInContext(source, context);
@@ -22,13 +26,27 @@ vm.runInContext("githubSyncForce('primary', {})", context);
 assert.strictEqual(requests.length, 1, "rapid Force Sync clicks must synchronously post at most one request before host state returns");
 assert.strictEqual(requests[0].command, "githubSyncRun");
 assert.strictEqual(requests[0].payload.targetId, "primary");
+vm.runInContext('githubSyncForcePending.clear()', context);
+const phaseNode = { outerHTML: '' };
+const detailNode = { textContent: '' };
+context.syncButton = { closest: () => ({ querySelector: selector => selector === '.github-sync-phase' ? phaseNode : selector === '.sub-broker-meta > small:last-of-type' ? detailNode : null }) };
+vm.runInContext("githubSyncForce('primary', syncButton)", context);
+assert.match(phaseNode.outerHTML, /data-phase="waiting-for-lock"/, "click updates the target phase before any host reply");
+assert.strictEqual(detailNode.textContent, 'Waiting for Git lock', "click updates the target detail before any host reply");
+assert.strictEqual(requests.length, 2);
+vm.runInContext('githubSyncForcePending.clear()', context);
 vm.runInContext("tabCacheIsFresh = () => false; ensureGitHubSyncStatus(); ensureGitHubSyncStatus()", context);
 assert.strictEqual(requests.filter(request => request.command === "githubSyncState").length, 1,
   "concurrent GitHub Sync status refreshes must post only one request");
 assert.match(source, /function showGitHubSyncTab\(\) \{[\s\S]*?ensureGitHubSyncStatus\(\);/,
   "opening GitHub Sync uses the same deduplicated status request");
-assert.match(coreSource, /action === 'githubSyncState'\) githubSyncStatusRequested = false/,
-  "a failed status request must release the refresh guard for the next retry");
+assert.match(source, /function showGitHubSyncTab\(\) \{[\s\S]*?ask\('githubSyncRuntimeSnapshot', \{\}, null, true\)/,
+  "reopening GitHub Sync gets the current runtime even while the content cache is fresh");
+assert.match(extensionSource, /case "githubSyncRuntimeSnapshot":[\s\S]*?githubSyncScheduler\?\.snapshot\(\)/,
+  "the runtime refresh avoids catalog and fingerprint scans");
+assert.match(coreSource, /action === 'githubSyncState'\) githubSyncOnRefreshError\(message\)/,
+  "a failed background status request must release the refresh guard for the next retry");
+assert.match(source, /function githubSyncOnRefreshError\(message\) \{\s*githubSyncStatusRequested = false/);
 
 assert.match(source, /Sync interval \(minutes\)[\s\S]*min="1" max="1440" step="1" required/,
   "the per-target interval is visible and constrained");
@@ -38,12 +56,24 @@ assert.match(source, /initialSyncCompleted[\s\S]*Run Initial Sync successfully[\
   "automatic synchronization cannot be enabled before a successful initial manual sync");
 assert.match(source, /github-sync-auto-toggle[\s\S]*role="switch"[\s\S]*githubSyncAutomationToggle/,
   "each Target card exposes a direct Auto Sync switch");
-assert.match(source, /'fetch':'Fetch \/ Pull'[\s\S]*'resolve-conflicts':'Resolve conflicts'[\s\S]*'commit':'Commit'[\s\S]*'push':'Push'/,
-  "target cards expose Git-native runtime phases instead of an opaque syncing state");
+assert.match(styles, /\.github-sync-dashboard \.sub-broker-row\{grid-template-columns:minmax\(0,1fr\)/,
+  "GitHub target details use the full card width rather than a compressed first grid column");
+assert.match(styles, /\.github-sync-flow\{[^}]*overflow-x:auto/,
+  "the phase diagram scrolls inside narrow target cards without splitting node labels");
+assert.match(styles, /\.github-sync-phase-current\.error\{color:#f85149\}/,
+  "a failed sync label is red");
+assert.match(styles, /\.github-sync-error\{[^}]*color:#f85149!important/,
+  "the error reason is visibly red");
+assert.match(styles, /\.github-sync-folder-status\{[^}]*width:5px;height:5px[^}]*font-size:5px/,
+  "tree Git status markers remain small and have stable dimensions");
+assert.match(source, /\['fetch', 'Fetch \/ Pull'\][\s\S]*\['resolve-conflicts', 'Resolve conflicts'\][\s\S]*\['commit', 'Commit'\][\s\S]*\['push', 'Push'\]/,
+  "the diagram follows Git-native runtime phases in order");
 assert.doesNotMatch(source, /'merge':'Merge'|'up-to-date':'Up to date'/,
   "target cards do not expose internal reconciliation or a terminal state instead of Scheduled");
 assert.match(extensionSource, /const report = \(phase:[\s\S]*githubSyncScheduler\?\.report\(targetId, phase, detail\)[\s\S]*report\(targetId, "authenticating"[\s\S]*syncGitHubTarget\([\s\S]*\n\s+report,[\s\S]*report\(targetId, "refresh-index"[\s\S]*report\(targetId, "scheduled"/,
   "the extension reports Git phases from the execution path through index refresh");
+assert.match(extensionSource, /const credentials = await readGitHubSyncCredentials\(context, target\);\s*report\("fetch", [^\n]+\);\s*const catalog = await githubSyncCatalog\(\);/,
+  "Authentication ends before catalog loading can fail; preparation errors belong to Fetch / Pull");
 assert.match(extensionSource, /report\(targetId, "refresh-index"[\s\S]*await refreshKnowledgeInventory\(context\)[\s\S]*await refreshRetrievalIndex\(context\)[\s\S]*report\(targetId, "scheduled"/,
   "Scheduled is reached only after materialization, inventory refresh, and retrieval refresh complete");
 assert.match(extensionSource, /case "githubSyncAutomationToggle"[\s\S]*initialSyncCompleted[\s\S]*target\.automation\.enabled = enabled/,
@@ -110,6 +140,8 @@ assert.doesNotMatch(extensionSource, /Agent-assisted merge currently supports Sk
   "the obsolete Skill-only Agent failure is removed");
 assert.match(extensionSource, /msg\.mode === "edit"[\s\S]*vscode\.open[\s\S]*Validate edited copy/,
   "manual conflict resolution opens an editable candidate with an explicit validation step");
+assert.match(extensionSource, /const comparisonVariant = selected\.hasRemote \? "remote" : selected\.hasBase \? "base" : "local";[\s\S]*const leftLabel = comparisonVariant === "remote" \? "GitHub"[\s\S]*const rightLabel = selected\.candidateSource === "unresolved" \? "Merge candidate \(unresolved\)"[\s\S]*`LEFT: \$\{leftLabel\} \| RIGHT: \$\{rightLabel\}/,
+  "the compare title identifies the actual left source and right merge candidate");
 
 const recoveredCard = vm.runInContext(`(() => {
   githubSyncData = {
@@ -127,7 +159,7 @@ const recoveredCard = vm.runInContext(`(() => {
   };
   return githubSyncCards();
 })()`, context);
-assert.match(recoveredCard, /github-sync-status scheduled/);
+assert.match(recoveredCard, /github-sync-flow-step current" data-phase="scheduled"/);
 assert.doesNotMatch(recoveredCard, /stale failure/, "scheduled targets must not render stale persisted failures");
 assert.match(recoveredCard, /githubSyncForce\('primary',this\)" disabled/, "Auto Sync disables manual Sync with Remote");
 assert.match(recoveredCard, /githubSyncForceUpdate\('primary',this\)" disabled/, "Auto Sync disables Force Update");
@@ -142,11 +174,87 @@ for (const handler of ["githubSyncRun", "githubSyncForceUpdate", "githubSyncRest
 }
 
 const failingCard = vm.runInContext(`(() => {
-  githubSyncData.runtime.primary = {status:'error',lastError:'current failure'};
+  githubSyncData.runtime.primary = {status:'error',phase:'fetch',lastError:'current failure'};
   return githubSyncCards();
 })()`, context);
-assert.match(failingCard, /github-sync-status error/);
+assert.match(failingCard, /github-sync-flow-step error" data-phase="fetch"/);
+assert.match(failingCard, /github-sync-phase-current error" aria-hidden="true">Fetch \/ Pull failed</,
+  "the current failure stays visible when its node is scrolled out of view");
 assert.match(failingCard, /github-sync-error[^>]*>current failure</, "error targets show their current failure");
+assert.match(failingCard, /github-sync-flow-step done" data-phase="authenticating"/,
+  "a Fetch / Pull failure keeps the completed Authentication stage successful");
+const retryButton = failingCard.match(/<button[^>]*githubSyncForce\('primary',this\)[\s\S]*?<\/button>/)?.[0] || '';
+assert.match(retryButton, /Pause Auto &amp; Retry|Pause Auto & Retry/);
+assert.doesNotMatch(retryButton, / disabled/, 'failed Auto targets expose an actionable ordinary retry');
+assert.match(failingCard, /githubSyncForceUpdate\('primary',this\)" disabled/, 'failure recovery never enables destructive Force Update while Auto is on');
+vm.runInContext("githubSyncForcePending.clear(); githubSyncForce('primary', {}); githubSyncForce('primary', {})", context);
+assert.strictEqual(requests.filter(request => request.command === 'githubSyncRun' && request.payload.pauseAutomation === true).length, 1,
+  'pause-and-retry is one explicit, duplicate-safe request rather than a race between toggle and sync');
+vm.runInContext('githubSyncForcePending.clear(); githubSyncPendingAfter.clear()', context);
+const retryHandler = extensionSource.match(/case "githubSyncRun":[\s\S]*?break;\s*}/)?.[0] || '';
+assert.match(retryHandler, /migration\.phase[\s\S]*msg\.pauseAutomation === true[\s\S]*selected\.automation\.enabled = false[\s\S]*configureGitHubSyncScheduler[\s\S]*requireGitHubSyncManualMode[\s\S]*request\(targetId, "manual"\)/,
+  'host validates migration before pausing only the selected target and queueing ordinary manual Sync');
+assert.doesNotMatch(failingCard, /github-sync-flow-step error" data-phase="authenticating"|Authentication failed/,
+  "a Fetch / Pull failure must never paint Authentication red");
+const authenticationFailure = vm.runInContext("githubSyncPhaseDiagram('authenticating', 'error')", context);
+assert.match(authenticationFailure, /github-sync-flow-step error" data-phase="authenticating"/,
+  "a real credential failure still marks Authentication red");
+assert.match(authenticationFailure, />Authentication failed</);
+const manualFailureCard = vm.runInContext(`(() => {
+  githubSyncData.targets[0].automation.enabled = false;
+  githubSyncData.runtime.primary = {status:'error',lastError:'authentication expired'};
+  return githubSyncCards();
+})()`, context);
+assert.match(manualFailureCard, /github-sync-phase-current error" aria-hidden="true">Sync failed</,
+  "manual failures without a reported phase use a red, non-duplicated failure label");
+assert.match(manualFailureCard, /github-sync-error[^>]*>authentication expired</,
+  "manual failures display the actual error even with Auto Sync off");
+const missingErrorCard = vm.runInContext(`(() => {
+  githubSyncData.runtime.primary = {status:'error'};
+  delete githubSyncData.targets[0].lastFailure;
+  return githubSyncCards();
+})()`, context);
+assert.match(missingErrorCard, /github-sync-error[^>]*>No error details were recorded\. Open Sync Diagnostic Log for this attempt\.</,
+  'a failed target without recorded details still displays an explicit diagnostic message');
+const persistedFailureCard = vm.runInContext(`(() => {
+  githubSyncData.runtime.primary = {status:'error'};
+  githubSyncData.targets[0].lastFailure = {error:'Local content changed during synchronization: notes/Images/diagram.png'};
+  return githubSyncCards();
+})()`, context);
+assert.match(persistedFailureCard, /<small>Local content changed during synchronization: notes\/Images\/diagram\.png<\/small>/,
+  "a persisted failure gives the actual cause directly on the target card");
+assert.match(persistedFailureCard, /githubSyncForce\('primary',this\)" >Sync with Remote<\/button>/,
+  "a persisted manual failure exposes an enabled retry action instead of an unusable instruction");
+const queuedCard = vm.runInContext(`(() => {
+  githubSyncData.runtime.primary = {status:'error',phase:'resolve-conflicts',lastError:'old failure',lastAttemptAt:'2026-09-30T20:00:00Z',activityAt:'2026-09-30T20:00:00Z'};
+  githubSyncForce('primary', {});
+  githubSyncOnRunQueued({targetId:'primary',queued:true});
+  return githubSyncCards();
+})()`, context);
+assert.match(queuedCard, /github-sync-flow-step current" data-phase="waiting-for-lock"/,
+  "a queued manual retry immediately shows Git lock instead of the previous failure");
+assert.doesNotMatch(queuedCard, /old failure|github-sync-error/, "the old error is hidden while a retry is pending");
+vm.runInContext(`githubSyncOnState({runtime:{primary:{status:'error',phase:'resolve-conflicts',lastError:'old failure',lastAttemptAt:'2026-09-30T20:00:00Z',activityAt:'2026-09-30T20:00:00Z'}}})`, context);
+assert.match(vm.runInContext('githubSyncCards()', context), /github-sync-flow-step current" data-phase="waiting-for-lock"/,
+  "an old failure snapshot must not cancel the newly queued sync");
+vm.runInContext(`githubSyncOnState({runtime:{primary:{status:'syncing',phase:'authenticating',lastAttemptAt:'2026-09-30T21:00:00Z',activityAt:'2026-09-30T21:00:01Z'}}})`, context);
+assert.match(vm.runInContext('githubSyncCards()', context), /github-sync-flow-step current" data-phase="authenticating"/,
+  "a new attempt moves from Git lock to Authentication");
+vm.runInContext(`githubSyncOnRuntimeState({targetId:'primary',state:{status:'syncing',phase:'fetch',detail:'Validating Remote',lastAttemptAt:'2026-09-30T21:00:00Z',activityAt:'2026-09-30T21:00:02Z'}})`, context);
+assert.match(vm.runInContext('githubSyncCards()', context), /github-sync-flow-step current" data-phase="fetch"/,
+  "the authoritative runtime phase replaces the optimistic Git lock phase");
+vm.runInContext(`githubSyncOnRuntimeState({targetId:'primary',state:{status:'syncing',phase:'waiting-for-lock',lastAttemptAt:'2026-09-30T21:00:00Z',activityAt:'2026-09-30T21:00:01Z'}})`, context);
+assert.match(vm.runInContext('githubSyncCards()', context), /github-sync-flow-step current" data-phase="fetch"/,
+  "an older runtime event cannot move Fetch back to Git lock");
+vm.runInContext(`githubSyncOnState({runtime:{primary:{status:'error',phase:'resolve-conflicts',lastError:'old failure',lastAttemptAt:'2026-09-30T20:00:00Z',activityAt:'2026-09-30T20:00:00Z'}}})`, context);
+assert.match(vm.runInContext('githubSyncCards()', context), /github-sync-flow-step current" data-phase="fetch"/,
+  "a late stale snapshot cannot roll Fetch back to the previous failure");
+vm.runInContext(`githubSyncForcePending.add('primary'); githubSyncPendingAfter.set('primary','2026-09-30T20:00:00Z'); githubSyncOnRuntimeState({targetId:'primary',state:{status:'error',phase:'fetch',lastError:'current failure',lastAttemptAt:'2026-09-30T21:00:00Z',activityAt:'2026-09-30T21:00:03Z'}})`, context);
+assert.match(vm.runInContext('githubSyncCards()', context), /github-sync-phase-current error" aria-hidden="true">Fetch \/ Pull failed</,
+  "a terminal runtime error replaces the optimistic Git lock even without a full state snapshot");
+vm.runInContext(`githubSyncForcePending.add('primary'); githubSyncOnRunQueued({targetId:'primary',queued:false})`, context);
+assert.doesNotMatch(vm.runInContext('githubSyncCards()', context), /github-sync-flow-step current" data-phase="waiting-for-lock"/,
+  "a rejected queue request clears the optimistic Git lock phase");
 
 const conflictCard = vm.runInContext(`(() => {
   githubSyncData = {
@@ -165,16 +273,32 @@ const conflictCard = vm.runInContext(`(() => {
   };
   return githubSyncCards();
 })()`, context);
-assert.match(conflictCard, /github-sync-status conflicts">Resolve conflicts</, "conflicts replace generic Syncing with a Git-native resolve state");
-assert.match(conflictCard, /Pull completed · resolve conflicts before commit and push/, "the target explains which Git phases are blocked");
-assert.match(source, /Resolution flow[\s\S]*Rules resolved[\s\S]*Agent prepared[\s\S]*Human Final Review/,
-  "complex reconciliation renders an algorithm-performance and review-flow diagram");
+assert.match(conflictCard, /github-sync-flow-step conflicts" data-phase="resolve-conflicts"/, "conflicts highlight the resolution node instead of a generic Syncing state");
+assert.match(conflictCard, /Choose a candidate for each file, then Apply resolutions & Sync/, "the target gives a next step even when the conflict occurs after a push");
+const skillConflictPanel = vm.runInContext(`githubSyncConflictPanel('shared', { files: [{
+  path: 'skills/Shared/One.md', type: 'skills', hasBase: true, hasLocal: true, hasRemote: true,
+  candidateSource: 'unresolved'
+}] })`, context);
+assert.match(skillConflictPanel, /Use this machine[\s\S]*Use GitHub[\s\S]*Merge manually[\s\S]*Merge with Agent/,
+  "a divergent Skill offers Local, Remote, human merge, and Agent merge");
+const imageConflictPanel = vm.runInContext(`githubSyncConflictPanel('shared', { files: [{
+  path: 'notes/Images/diagram.png', type: 'notes', hasBase: true, hasLocal: true, hasRemote: true,
+  candidateSource: 'unresolved'
+}] })`, context);
+assert.match(imageConflictPanel, /Use this machine[\s\S]*Use GitHub[\s\S]*Apply resolutions &amp; Sync/, "PNG conflicts provide a human resolution path");
+assert.doesNotMatch(imageConflictPanel, /Merge with Agent|Ask Agent for/, "binary PNG conflicts do not offer an unsupported Agent merge");
+const breakdown = vm.runInContext(`githubSyncResolutionDiagram({
+  localFiles:12,remoteFiles:11,totalFiles:13,rules:{unchanged:8,'remote-only':2,'local-only':1,'human-required':2},generatedAt:'2026-09-30T20:00:00Z'
+}, [{candidateSource:'unresolved'},{candidateSource:'agent'}])`, context);
+assert.match(breakdown, /<b>12<\/b><small>On this machine<\/small>[\s\S]*<b>11<\/b><small>On GitHub<\/small>[\s\S]*<b>13<\/b><small>Assessed<\/small>[\s\S]*<b>8<\/b><small>Unchanged<\/small>[\s\S]*<b>3<\/b><small>Rules resolved<\/small>[\s\S]*<b>2<\/b><small>Conflicts<\/small>/,
+  "resolution counts distinguish local, remote, unchanged, rule-resolved and true conflicts");
+assert.match(breakdown, /1 still need a choice · 1 Agent prepared for review/);
+assert.match(vm.runInContext('githubSyncResolutionDiagram(undefined)', context), /<b>—<\/b><small>On this machine<\/small>/,
+  "reports from before the count upgrade do not invent local or remote totals");
 assert.doesNotMatch(source, /github-sync-resolution-bar/,
   "the persistent resolution flow omits the percentage bar and rule legend");
 assert.match(extensionSource, /target\.lastResolutionReport = existing\?\.lastResolutionReport/,
   "saving an unchanged target preserves its persistent resolution report");
-assert.match(source, /authoritative-migration':'Migration authority'[\s\S]*deterministic-three-way':'Three-way merge'/,
-  "the resolution diagram names the deterministic rules that resolved files");
 assert.match(source, /Force Update GitHub from this machine\?[\s\S]*one more native confirmation/,
   "Force Update is available only through a local danger button with a first explicit confirmation");
 assert.match(extensionSource, /showInputBox\(\{[\s\S]*Explain why this destructive local-authority update is required[\s\S]*A reason is required/,
@@ -279,12 +403,23 @@ assert.match(extensionSource, /completeGitHubSyncTransaction[\s\S]*clearGitHubSy
   "a successful recheck explicitly retires the previous conflict workspace before post-processing");
 assert.match(extensionSource, /shouldExecute:[\s\S]*clearEquivalentGitHubSyncConflict\(context, targetId\)[\s\S]*conflict-awaiting-approval/,
   "the scheduler clears proven identity-only conflicts before applying the ordinary conflict gate");
-assert.match(extensionSource, /if \(waitForExpensive\)[\s\S]*githubSyncTargetFingerprintState[\s\S]*readGitHubCachedManifest/,
+assert.match(extensionSource, /if \(waitForExpensive\)[\s\S]*githubSyncFingerprintInWorker[\s\S]*readGitHubCachedManifest/,
   "the deferred state pass computes current type/folder fingerprints against the cached last-sync commit");
 assert.match(source, /fingerprintsDeferred && shield\.dataset\.status[\s\S]*continue/,
   "the lightweight state pass preserves a previously resolved tab status instead of forcing yellow");
 assert.match(source, /function githubSyncFolderMarker[\s\S]*folderShields/,
   "folder markers consume the deferred folder-level GitHub Sync status payload");
+const fileMarker = vm.runInContext(`(() => {
+  githubSyncData.catalog = {notes:[{id:'Adhoc/changed',syncPath:'notes/Adhoc/changed.md'}]};
+  githubSyncData.fileShields = {notes:{'notes/Adhoc/changed.md':'yellow','notes/Adhoc/same.md':'green'}};
+  return githubSyncFileMarker('notes','Adhoc/changed');
+})()`, context);
+assert.match(fileMarker, /github-sync-file-status/);
+assert.match(fileMarker, /data-status="yellow"/);
+assert.match(fileMarker, /File notes\/Adhoc\/changed\.md has local content different/);
+assert.match(vm.runInContext("githubSyncFileMarker('notes','same','notes/Adhoc/same.md')", context), /data-status="green"/);
+assert.match(source, /function githubSyncOnState[\s\S]*updateGitHubSyncFileShields\(\)/,
+  "file statuses patch existing leaf markers without rebuilding the active tree");
 assert.match(source, /function githubSyncOnState[\s\S]*updateGitHubSyncFolderShields\(\)/,
   "deferred folder status updates patch existing markers in place");
 assert.doesNotMatch(source.match(/function githubSyncOnState[\s\S]*?\n}/)?.[0] || "", /renderList|renderGlobalRecipes/,
@@ -292,4 +427,53 @@ assert.doesNotMatch(source.match(/function githubSyncOnState[\s\S]*?\n}/)?.[0] |
 assert.match(source, /githubSyncStatusRequested \|\| tabCacheIsFresh/,
   "knowledge navigation coalesces lazy GitHub Sync status requests");
 
-console.log("github-sync UI tests passed");
+async function verifyRetryHost() {
+  const targets = [
+    {id:'primary',automation:{enabled:true,initialSyncCompleted:true}},
+    {id:'other',automation:{enabled:true,initialSyncCompleted:true}},
+  ];
+  const queued = [];
+  const host = vm.createContext({
+    msg:{targetId:'primary'}, context:{},
+    githubSyncTargetById: (_context, id) => targets.find(target => target.id === id),
+    githubPublicationMigration: () => ({status:() => host.migration}),
+    mutateGitHubSyncTargets: async (_context, _reason, change) => change(targets),
+    configureGitHubSyncScheduler: () => {},
+    requireGitHubSyncManualMode: target => { if (target.automation.enabled) throw new Error('Turn off Auto Sync'); },
+    githubSyncScheduler:{request:(id, reason) => { queued.push({id,reason}); return true; }},
+    githubSyncStateData: async () => ({}), respond:() => {}, migration:undefined,
+  });
+  const execute = () => vm.runInContext(`(async () => { switch ('githubSyncRun') { ${retryHandler} } })()`, host);
+  await assert.rejects(execute(), /Turn off Auto Sync/, 'ordinary direct requests still honor the Auto/manual boundary');
+  assert.strictEqual(queued.length, 0);
+  host.msg.pauseAutomation = true;
+  host.migration = {phase:'staged'};
+  await assert.rejects(execute(), /Complete or roll back/, 'invalid migration is rejected before pausing Auto');
+  assert.strictEqual(targets[0].automation.enabled, true);
+  host.migration = undefined;
+  await execute();
+  assert.strictEqual(targets[0].automation.enabled, false, 'explicit retry pauses only the chosen target');
+  assert.strictEqual(targets[1].automation.enabled, true, 'other target automation is unchanged');
+  assert.deepStrictEqual(queued, [{id:'primary',reason:'manual'}], 'recovery queues ordinary Sync, never Force Update');
+  const autoPauseHandler = extensionSource.match(/onAutoPaused: targetId => \{([\s\S]*?)\n      \},\n      stateDirectory:/)?.[1];
+  assert(autoPauseHandler, 'the host persists automatic-pause decisions');
+  targets[0].automation.enabled = true;
+  targets[0].lastFailure = {error:'network unavailable', attempts:3};
+  const updates = [];
+  host.log = {warn:() => {},error:message => { throw new Error(message); }};
+  host.panel = {visible:true,webview:{postMessage:message => updates.push(message)}};
+  const autoPause = vm.runInContext(`targetId => { ${autoPauseHandler} }`, host);
+  autoPause('primary');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.strictEqual(targets[0].automation.enabled, false, 'automatic exhaustion persists Auto off in the host target store');
+  assert.strictEqual(targets[1].automation.enabled, true, 'automatic exhaustion never disables another target');
+  assert.strictEqual(targets[0].lastFailure.error, 'network unavailable', 'automatic exhaustion retains failure details');
+  assert.strictEqual(updates[0].command, 'githubSyncState', 'the persisted Auto off state is sent to the visible panel');
+  host.msg.pauseAutomation = false;
+  await execute();
+  assert.strictEqual(queued.length, 2, 'normal Sync with Remote passes the host guard after automatic exhaustion');
+}
+verifyRetryHost().then(() => console.log("github-sync UI tests passed")).catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});

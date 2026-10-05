@@ -1,5 +1,6 @@
 import { join, extname, resolve, sep } from "path";
 import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, mkdirSync, renameSync, rmSync, copyFileSync, cpSync } from "fs";
+import { createHash, randomBytes } from "crypto";
 
 let _storePath = "";
 
@@ -205,6 +206,74 @@ export function packageDelete(name: string): boolean {
 }
 
 // ── Scripts ───────────────────────────────────────────────────────────────
+interface ScriptIdentity {
+  schema: "pkm.script/v1";
+  knowledgeId: string;
+  aliases: string[];
+}
+
+function validScriptIdentity(identity: ScriptIdentity): boolean {
+  return identity?.schema === "pkm.script/v1" && /^script_[a-f0-9]{24}$/.test(identity.knowledgeId)
+    && Array.isArray(identity.aliases) && identity.aliases.every(alias => typeof alias === "string");
+}
+
+function scriptIdentityPath(fullPath: string): string {
+  return join(require("path").dirname(fullPath), `.${require("path").basename(fullPath)}.pkm.json`);
+}
+
+function scriptLegacyUris(relPath: string): string[] {
+  const normalized = relPath.replace(/\\/g, "/");
+  const encoded = normalized.split("/").map(encodeURIComponent).join("/");
+  const legacyId = `script_${createHash("sha256").update(normalized).digest("hex").slice(0, 24)}`;
+  return [`pkm://script/${legacyId}`, `pkm://scripts/${encoded}`];
+}
+
+function scriptReferenceOwnedElsewhere(relPath: string, references: string[]): boolean {
+  return scriptList().some(row => {
+    if (row.path === relPath || !existsSync(scriptIdentityFile(row.path))) return false;
+    const identity = scriptIdentity(join(_storePath, "scripts", row.path), row.path);
+    return references.includes(`pkm://script/${identity.knowledgeId}`)
+      || identity.aliases.some(alias => references.includes(alias));
+  });
+}
+
+function scriptIdentity(fullPath: string, relPath: string): ScriptIdentity {
+  const sidecar = scriptIdentityPath(fullPath);
+  if (existsSync(sidecar)) {
+    const identity = JSON.parse(readFileSync(sidecar, "utf8")) as ScriptIdentity;
+    if (!validScriptIdentity(identity)) {
+      throw new Error(`Invalid Script identity: ${sidecar}`);
+    }
+    return identity;
+  }
+  const legacyUris = scriptLegacyUris(relPath);
+  const reusedPath = scriptReferenceOwnedElsewhere(relPath, legacyUris);
+  const identity: ScriptIdentity = {
+    schema: "pkm.script/v1",
+    knowledgeId: reusedPath ? `script_${randomBytes(12).toString("hex")}` : legacyUris[0].slice("pkm://script/".length),
+    aliases: reusedPath ? [] : legacyUris,
+  };
+  writeFileSync(sidecar, `${JSON.stringify(identity, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+  return identity;
+}
+
+function resolveScriptReference(reference: string): string | null {
+  const isUri = reference.startsWith("pkm://script/") || reference.startsWith("pkm://scripts/");
+  const legacyUri = `pkm://scripts/${reference.replace(/\\/g, "/").split("/").map(encodeURIComponent).join("/")}`;
+  const matches = scriptList().filter(row => {
+    const sidecar = scriptIdentityFile(row.path);
+    if (!existsSync(sidecar)) return false;
+    const identity = scriptIdentity(join(_storePath, "scripts", row.path), row.path);
+    return (isUri && reference === `pkm://script/${identity.knowledgeId}`)
+      || identity.aliases.includes(isUri ? reference : legacyUri);
+  });
+  return matches.length === 1 ? matches[0].path : null;
+}
+
+export function scriptIdentityFile(relPath: string): string {
+  return scriptIdentityPath(join(_storePath, "scripts", relPath));
+}
+
 export function scriptList() {
   const base = join(_storePath, 'scripts');
   const out: { category: string; file: string; path: string; lang: string; langs: string[] }[] = [];
@@ -235,20 +304,29 @@ export function scriptSearch(q: string, options: { regex?: boolean; caseSensitiv
 
 export function scriptGet(relPath: string, _legacy?: string) {
   // Backward compatible: (category, file) OR (relPath)
-  const rel = _legacy ? `${relPath}/${_legacy}` : relPath;
+  let rel = _legacy ? `${relPath}/${_legacy}` : relPath;
+  if (rel.startsWith("pkm://") || !existsSync(join(_storePath, "scripts", rel))) {
+    rel = resolveScriptReference(rel) || rel;
+  }
   const full = join(_storePath, 'scripts', rel);
   if (!existsSync(full) || isDir(full)) return null;
   try {
     const name = rel.split('/').pop() ?? rel;
     const langs = detectScriptLangs(full, name);
+    const identity = scriptIdentity(full, rel);
     return {
       content: readFileSync(full, 'utf-8'),
       file: name,
       path: rel,
       lang: langs.join(" + "),
       langs,
+      knowledgeId: identity.knowledgeId,
+      aliases: identity.aliases,
     };
-  } catch { return null; }
+  } catch (error) {
+    if (existsSync(full)) throw error;
+    return null;
+  }
 }
 
 /** Detect the coding language(s) of a script — returns one tag per language. */
@@ -330,9 +408,21 @@ export function scriptMove(relPath: string, newCategory: string): boolean {
   const destDir = cat ? join(_storePath, 'scripts', ...cat.split('/')) : join(_storePath, 'scripts');
   const dest = join(destDir, name);
   if (dest === src) return false;
+  if (existsSync(dest) || existsSync(scriptIdentityPath(dest))) return false;
+  const identity = scriptIdentity(src, relPath);
+  const destinationPath = cat ? `${cat}/${name}` : name;
+  if (scriptReferenceOwnedElsewhere(relPath, scriptLegacyUris(destinationPath))) return false;
+  const aliases = [...new Set([...identity.aliases, ...scriptLegacyUris(relPath), ...scriptLegacyUris(destinationPath)])].sort();
   mkdirSync(destDir, { recursive: true });
-  try { renameSync(src, dest); }
-  catch { try { copyFileSync(src, dest); rmSync(src, { force: true }); } catch { return false; } }
+  try {
+    renameSync(src, dest);
+    renameSync(scriptIdentityPath(src), scriptIdentityPath(dest));
+    writeFileSync(scriptIdentityPath(dest), `${JSON.stringify({ ...identity, aliases }, null, 2)}\n`, "utf8");
+  } catch {
+    if (existsSync(dest) && !existsSync(src)) renameSync(dest, src);
+    if (existsSync(scriptIdentityPath(dest)) && !existsSync(scriptIdentityPath(src))) renameSync(scriptIdentityPath(dest), scriptIdentityPath(src));
+    return false;
+  }
   return true;
 }
 
@@ -352,9 +442,9 @@ export function scriptMoveFolder(oldPrefix: string, newPrefix: string): number {
   return n;
 }
 
-export function scriptExport(): { category: string; file: string; content: string }[] {
+export function scriptExport(): { category: string; file: string; content: string; identity: ScriptIdentity }[] {
   const base = join(_storePath, 'scripts');
-  const out: { category: string; file: string; content: string }[] = [];
+  const out: { category: string; file: string; content: string; identity: ScriptIdentity }[] = [];
   const walk = (dir: string, rel: string) => {
     for (const name of safeReadDir(dir)) {
       const full = join(dir, name);
@@ -363,7 +453,7 @@ export function scriptExport(): { category: string; file: string; content: strin
       const content = readTextSafe(full);
       if (content !== null) {
         const category = rel || "(root)";
-        out.push({ category, file: name, content });
+        out.push({ category, file: name, content, identity: scriptIdentity(full, childRel) });
       }
     }
   };
@@ -407,14 +497,39 @@ export function promptImport(items: { project: string; task: string; version: st
   return count;
 }
 
-export function scriptImport(items: { category: string; file: string; content: string }[]): number {
+export function scriptImport(items: { category: string; file: string; content: string; identity?: ScriptIdentity }[]): number {
   let count = 0;
   for (const item of items) {
     try {
       const dir = join(_storePath, 'scripts', item.category);
+      const full = join(dir, item.file);
+      const rel = item.category ? `${item.category}/${item.file}` : item.file;
+      const sidecar = scriptIdentityPath(full);
+      const incoming = item.identity;
+      const existing = incoming && existsSync(sidecar) ? scriptIdentity(full, rel) : undefined;
+      if (incoming && !validScriptIdentity(incoming)) continue;
+      if (incoming) {
+        if (existing && existing.knowledgeId !== incoming.knowledgeId) continue;
+        if (!existing && existsSync(full) && scriptLegacyUris(rel)[0] !== `pkm://script/${incoming.knowledgeId}`) continue;
+        if (scriptReferenceOwnedElsewhere(rel, [`pkm://script/${incoming.knowledgeId}`, ...incoming.aliases])) continue;
+      }
       if (!existsSync(dir)) { const { mkdirSync } = require('fs'); mkdirSync(dir, { recursive: true }); }
       const { writeFileSync } = require('fs');
-      writeFileSync(join(dir, item.file), item.content, 'utf-8');
+      if (incoming && !existsSync(sidecar)) {
+        const aliases = [...new Set([...incoming.aliases,
+          ...scriptLegacyUris(rel).filter(alias => !scriptReferenceOwnedElsewhere(rel, [alias]))])].sort();
+        writeFileSync(sidecar, `${JSON.stringify({ ...incoming, aliases }, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+        try { writeFileSync(full, item.content, 'utf-8'); }
+        catch (error) { rmSync(sidecar); throw error; }
+      } else {
+        writeFileSync(full, item.content, 'utf-8');
+        if (incoming && existing) {
+          const aliases = [...new Set([...existing.aliases, ...incoming.aliases])].sort();
+          if (aliases.length !== existing.aliases.length) {
+            writeFileSync(sidecar, `${JSON.stringify({ ...existing, aliases }, null, 2)}\n`, 'utf8');
+          }
+        }
+      }
       count++;
     } catch { /* skip */ }
   }

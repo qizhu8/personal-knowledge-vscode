@@ -6,6 +6,7 @@ const path = require("path");
 const { createHash } = require("crypto");
 const { execFileSync } = require("child_process");
 const { canonicalJson } = require("../dist/workflow-contracts.js");
+const filestore = require("../dist/filestore.js");
 const {
   GITHUB_SYNC_CONTENT_TYPES,
   GitHubSyncConflictError,
@@ -91,6 +92,65 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
     run(seed, ["remote", "add", "origin", remote]);
     run(seed, ["push", "-u", "origin", "main"]);
     run(root, ["--git-dir", remote, "symbolic-ref", "HEAD", "refs/heads/main"]);
+
+    const notesStore = path.join(root, "notes-deletion-store");
+    const obsoleteNote = path.join(notesStore, "notes", "Projects", "Nested", "Old.md");
+    const retainedNote = path.join(notesStore, "notes", "Project", "Nested", "Old.md");
+    fs.mkdirSync(path.dirname(obsoleteNote), { recursive: true });
+    fs.mkdirSync(path.dirname(retainedNote), { recursive: true });
+    fs.writeFileSync(obsoleteNote, "obsolete original\n");
+    fs.writeFileSync(retainedNote, "canonical Project content\n");
+    filestore.setStorePath(notesStore);
+    const notesCatalog = () => {
+      const catalog = emptyCatalog();
+      for (const [id, file] of [["Projects/Nested/Old", obsoleteNote], ["Project/Nested/Old", retainedNote]]) {
+        if (fs.existsSync(file)) catalog.notes.push({
+          id, label: "Old", cat: id.substring(0, id.lastIndexOf("/")), isPrivate: false,
+          source: file, destination: `notes/${id}.md`,
+        });
+      }
+      return catalog;
+    };
+    const notesTargets = ["notes-trash-a", "notes-trash-b"].map(branch => normalizeGitHubSyncTarget({
+      name: branch, repository: remote, branch,
+    }, () => branch));
+    for (const target of notesTargets) rememberSync(target,
+      await syncGitHubTarget(target, notesCatalog(), checkoutRoot, undefined, notesStore));
+    const notesTrash = filestore.knowledgeMoveToTrash("notes", "Projects", "folder", "Projects");
+    assert(notesTrash);
+    const reloadedDeletions = JSON.parse(execFileSync(process.execPath, ["-e",
+      "console.log(JSON.stringify(require(process.argv[1]).knowledgeSyncDeletionRecords(process.argv[2])))",
+      path.resolve(__dirname, "../dist/filestore.js"), notesStore], { encoding: "utf8" }));
+    assert(reloadedDeletions.some(record => record.path === "notes/Projects/Nested/Old.md"),
+      "deletion intent must survive restarting before any sync runs");
+    for (const target of notesTargets) {
+      const result = await syncGitHubTarget(target, notesCatalog(), checkoutRoot, undefined, notesStore);
+      rememberSync(target, result);
+      assert(!fs.existsSync(obsoleteNote), "a second target must not resurrect the trashed folder");
+      const manifest = JSON.parse(run(root, ["--git-dir", remote, "show", `${target.branch}:.pkm-github-sync.json`]));
+      assert(manifest.deletions.some(record => record.itemId === "Projects/Nested/Old"));
+      assert(manifest.files.some(file => file.path === "notes/Project/Nested/Old.md"));
+      assert(!manifest.files.some(file => file.path.startsWith("notes/Projects/")));
+      assert.strictEqual(fs.readFileSync(retainedNote, "utf8"), "canonical Project content\n");
+    }
+    assert.strictEqual(filestore.knowledgeTrashRestore("notes", notesTrash.id).ok, true);
+    assert.strictEqual(filestore.knowledgeSyncDeletionRecords(notesStore).length, 0);
+    for (const target of notesTargets) {
+      rememberSync(target, await syncGitHubTarget(target, notesCatalog(), checkoutRoot, undefined, notesStore));
+      const manifest = JSON.parse(run(root, ["--git-dir", remote, "show", `${target.branch}:.pkm-github-sync.json`]));
+      assert(manifest.files.some(file => file.path === "notes/Projects/Nested/Old.md"));
+      assert(!manifest.deletions.some(record => record.itemId === "Projects/Nested/Old"));
+    }
+    assert(filestore.knowledgeMoveToTrash("notes", "Projects", "folder", "Projects"));
+    assert.strictEqual(filestore.knowledgeTrashEmpty("notes").ok, true);
+    for (const target of notesTargets) {
+      rememberSync(target, await syncGitHubTarget(target, notesCatalog(), checkoutRoot, undefined, notesStore));
+      assert(!fs.existsSync(obsoleteNote), "emptying Trash before sync must retain the deletion intent");
+    }
+    if (process.argv.includes("--notes-trash-only")) {
+      console.log("Notes deletion sync: durable intent, restart, two targets, Project preservation, restore and empty Trash passed");
+      return;
+    }
 
     run(seed, ["checkout", "-b", "legacy"]);
     fs.mkdirSync(path.join(seed, "skills", "Legacy"), { recursive: true });
@@ -348,7 +408,7 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
       "--git-dir", remote, "show", "ordered-operations:.pkm-github-sync.json"
     ]));
     assert(orderedRemoteManifest.files.every(file => file.localModifiedAt === undefined),
-      "machine-local file timestamps must guide reconciliation without leaking into the shared manifest");
+      "machine-local file timestamps must not enter the shared manifest or decide reconciliation");
     await assert.rejects(
       () => syncGitHubTarget(orderedRemoteConsumer, emptyCatalog(), checkoutRoot, undefined,
         path.join(root, "ordered-remote-consumer-store")),
@@ -514,6 +574,53 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
       "a new synchronization branch must not inherit unselected files from the default branch"
     );
 
+    const eolStore = path.join(root, "eol-store");
+    fs.mkdirSync(path.join(eolStore, "scripts"), { recursive: true });
+    const eolSource = path.join(eolStore, "scripts", "run.sh");
+    fs.writeFileSync(eolSource, "echo first\r\necho second\r\n");
+    const eolCatalog = emptyCatalog();
+    eolCatalog.scripts = [{ id: "eol-script", label: "run.sh", cat: "", isPrivate: false, source: eolSource, destination: "scripts/run.sh" }];
+    const eolTarget = normalizeGitHubSyncTarget({ name: "Windows EOL", repository: remote, branch: "line-endings",
+      selection: { public: { scripts: { items: ["eol-script"], folders: [] } }, private: {} }
+    }, () => "target-line-endings-windows");
+    const previousConfig = ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"].map(key => process.env[key]);
+    try {
+      process.env.GIT_CONFIG_COUNT = "1";
+      process.env.GIT_CONFIG_KEY_0 = "core.autocrlf";
+      process.env.GIT_CONFIG_VALUE_0 = "true";
+      await syncGitHubTarget(eolTarget, eolCatalog, checkoutRoot, undefined, eolStore);
+    } finally {
+      ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"].forEach((key, index) => {
+        if (previousConfig[index] === undefined) delete process.env[key];
+        else process.env[key] = previousConfig[index];
+      });
+    }
+    const eolCheckout = path.join(checkoutRoot, eolTarget.id, "repository");
+    const eolManifest = JSON.parse(run(eolCheckout, ["show", "HEAD:.pkm-github-sync.json"]));
+    const eolBlob = execFileSync("git", ["show", "HEAD:scripts/run.sh"], { cwd: eolCheckout });
+    assert.strictEqual(eolManifest.files[0].digest, createHash("sha256").update(eolBlob).digest("hex"),
+      "the published digest must match the committed blob, not Windows checkout bytes");
+    assert.strictEqual(eolBlob.toString("utf8"), "echo first\necho second\n");
+    const eolLinuxTarget = normalizeGitHubSyncTarget({ name: "Linux EOL", repository: remote, branch: "line-endings",
+      selection: { public: { scripts: { items: ["eol-script"], folders: [] } }, private: {} }
+    }, () => "target-line-endings-linux");
+    const eolLinux = await syncGitHubTarget(eolLinuxTarget, eolCatalog, checkoutRoot, undefined, eolStore);
+    assert.strictEqual(eolLinux.changed, false, "line endings alone must not create a second Git commit");
+    assert.strictEqual(fs.readFileSync(eolSource, "utf8"), "echo first\r\necho second\r\n",
+      "equivalent text must not rewrite the local Script");
+    try {
+      process.env.GIT_CONFIG_COUNT = "1";
+      process.env.GIT_CONFIG_KEY_0 = "core.autocrlf";
+      process.env.GIT_CONFIG_VALUE_0 = "true";
+      const eolWindows = await syncGitHubTarget(eolTarget, eolCatalog, checkoutRoot, undefined, eolStore);
+      assert.strictEqual(eolWindows.changed, false, "Windows checkout conversion must not create a duplicate commit");
+    } finally {
+      ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"].forEach((key, index) => {
+        if (previousConfig[index] === undefined) delete process.env[key];
+        else process.env[key] = previousConfig[index];
+      });
+    }
+
     const metadataTarget = normalizeGitHubSyncTarget({
       name: "Metadata convergence",
       repository: remote,
@@ -564,22 +671,28 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
     run(builtInVerify, ["config", "user.name", "Test"]);
     run(builtInVerify, ["config", "user.email", "test@example.com"]);
     const builtInPath = path.join(builtInVerify, "recipes", "System", "Built-in.recipe_builtin.json");
-    fs.writeFileSync(builtInPath, builtInRecipe("remote stale definition"));
     const builtInManifestPath = path.join(builtInVerify, ".pkm-github-sync.json");
     const builtInManifest = JSON.parse(fs.readFileSync(builtInManifestPath, "utf8"));
-    builtInManifest.files = builtInManifest.files.map(file => file.path === "recipes/System/Built-in.recipe_builtin.json"
-      ? { ...file, digest: createHash("sha256").update(builtInRecipe("remote stale definition")).digest("hex") }
-      : file);
+    assert.strictEqual(fs.existsSync(builtInPath), false, "System Recipes must not be published to a new GitHub target");
+    assert(!builtInManifest.files.some(file => file.path.startsWith("recipes/System/")),
+      "a new target manifest must exclude System Recipes");
+    fs.mkdirSync(path.dirname(builtInPath), { recursive: true });
+    fs.writeFileSync(builtInPath, builtInRecipe("remote stale definition"));
+    builtInManifest.files.push({
+      path: "recipes/System/Built-in.recipe_builtin.json",
+      type: "recipes", itemId: "recipe_builtin", category: "System", privacy: "public",
+      digest: createHash("sha256").update(builtInRecipe("remote stale definition")).digest("hex")
+    });
     fs.writeFileSync(builtInManifestPath, `${JSON.stringify(builtInManifest, null, 2)}\n`);
     run(builtInVerify, ["add", "-A"]);
     run(builtInVerify, ["commit", "-m", "stale remote built-in"]);
     run(builtInVerify, ["push"]);
     const builtInResult = await syncGitHubTarget(builtInTarget, builtInCatalog, checkoutRoot, undefined, linux.store);
-    assert.strictEqual(builtInResult.changed, true, "the extension-owned built-in definition updates GitHub without a conflict");
+    assert.deepStrictEqual(builtInResult.recipePulls || [], [], "historical remote System Recipes must not be applied locally");
     assert.strictEqual(
       run(root, ["--git-dir", remote, "show", "built-in-authority:recipes/System/Built-in.recipe_builtin.json"]),
-      builtInRecipe("local extension definition").trim(),
-      "GitHub converges to the current extension-owned built-in Recipe"
+      builtInRecipe("remote stale definition").trim(),
+      "synchronization must leave excluded historical System content untouched"
     );
 
     const identityStore = path.join(root, "identity-store");
@@ -694,6 +807,17 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
 
     const windowsCatchUp = await syncGitHubTarget(windows.target, windows.catalog, checkoutRoot, undefined, windows.store);
     rememberSync(windows.target, windowsCatchUp);
+    const sharedEdit = skill("One", "both machines made the same edit");
+    fs.writeFileSync(path.join(windows.skills, "One.md"), sharedEdit);
+    const remoteSharedEdit = await syncGitHubTarget(windows.target, windows.catalog, checkoutRoot, undefined, windows.store);
+    rememberSync(windows.target, remoteSharedEdit);
+    fs.writeFileSync(path.join(linux.skills, "One.md"), sharedEdit);
+    const identicalConvergence = await syncGitHubTarget(linux.target, linux.catalog, checkoutRoot, undefined, linux.store);
+    rememberSync(linux.target, identicalConvergence);
+    assert.strictEqual(identicalConvergence.commit, remoteSharedEdit.commit,
+      "matching edits from both machines converge on the existing Remote commit");
+    assert.strictEqual(identicalConvergence.changed, false,
+      "matching normalized content needs neither a new commit nor human conflict resolution");
     fs.writeFileSync(path.join(windows.skills, "Two.md"), skill("Two", "windows remote update"));
     rememberSync(windows.target, await syncGitHubTarget(windows.target, windows.catalog, checkoutRoot, undefined, windows.store));
     fs.writeFileSync(path.join(linux.skills, "One.md"), skill("One", "linux rejected update"));

@@ -150,6 +150,11 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
   pausedManual.dispose();
 
   const failureTimers = new Map();
+  const autoPaused = [];
+  const failingTargets = [
+    { id: "paused", enabled: false, intervalMinutes: 5, syncOnChange: true },
+    { id: "retry", enabled: true, intervalMinutes: 9, syncOnChange: true }
+  ];
   const failing = new GitHubSyncScheduler({
     now: () => now,
     setTimeout: (callback, delay) => {
@@ -158,19 +163,60 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
       return timer;
     },
     clearTimeout: timer => failureTimers.delete(timer.id),
+    onAutoPaused: targetId => autoPaused.push(targetId),
     shouldExecute: async () => true,
     execute: async () => { throw new Error("authentication expired"); }
   });
-  failing.configure([
-    { id: "paused", enabled: false, intervalMinutes: 5, syncOnChange: true },
-    { id: "retry", enabled: true, intervalMinutes: 9, syncOnChange: true }
-  ]);
+  failing.configure(failingTargets);
   assert.strictEqual(failing.snapshot().paused.status, "paused");
+  assert.strictEqual(failing.request("paused", "manual"), true);
   await flush();
   await flush();
+  assert.strictEqual(failing.snapshot().paused.status, "error", "manual failures remain visible when Auto Sync is off");
+  assert.strictEqual(failing.snapshot().paused.lastError, "authentication expired");
   assert.strictEqual(failing.snapshot().retry.status, "error");
-  assert([...failureTimers.values()].some(timer => timer.delay === 9 * 60_000), "a failed backup retries after that target's configured interval");
+  assert([...failureTimers.values()].some(timer => timer.delay === 9 * 60_000), "a transient failure retries after the configured interval");
+  assert.strictEqual(failing.request("retry", "change"), false, "file changes cannot revive a failed backup");
+  for (let attempt = 2; attempt <= 3; attempt++) {
+    const [timerId, timer] = [...failureTimers.entries()][0];
+    failureTimers.delete(timerId);
+    now += 9 * 60_000;
+    timer.callback();
+    await flush();
+    await flush();
+  }
+  assert.strictEqual(failureTimers.size, 0, "automatic retries stop after three consecutive failures");
+  assert.strictEqual(failingTargets[1].enabled, false, "exhausting automatic retries turns Auto Sync off for the failing target");
+  assert.deepStrictEqual(autoPaused, ["retry"], "manual failures do not invoke automatic-pause persistence");
+  assert.strictEqual(failing.snapshot().retry.lastError, "authentication expired", "auto-pause retains the actual failure");
+  assert.strictEqual(failing.request("retry", "interval"), false, "the exhausted retry budget survives new automatic requests");
+  assert.strictEqual(failing.request("retry", "manual"), true, "ordinary manual Sync remains available after auto-pause");
+  await flush();
   failing.dispose();
+
+  const toggleTimers = new Map();
+  let failActiveSync;
+  const toggledOff = new GitHubSyncScheduler({
+    now: () => now,
+    setTimeout: (callback, delay) => {
+      const timer = { id: nextTimer++, unref() {} };
+      toggleTimers.set(timer.id, { callback, delay });
+      return timer;
+    },
+    clearTimeout: timer => toggleTimers.delete(timer.id),
+    shouldExecute: async () => true,
+    execute: () => new Promise((_resolve, reject) => { failActiveSync = reject; })
+  });
+  toggledOff.configure([{ id: "toggled-off", enabled: true, intervalMinutes: 5, syncOnChange: true }]);
+  await flush();
+  assert.strictEqual(toggledOff.snapshot()["toggled-off"].status, "syncing");
+  toggledOff.configure([{ id: "toggled-off", enabled: false, intervalMinutes: 5, syncOnChange: true }]);
+  failActiveSync(new Error("network unavailable"));
+  await flush();
+  assert.strictEqual(toggledOff.snapshot()["toggled-off"].status, "error");
+  assert.strictEqual(toggleTimers.size, 0, "turning off Auto during an active failure must not schedule another attempt");
+  assert.strictEqual(toggledOff.request("toggled-off", "interval"), false);
+  toggledOff.dispose();
 
   const persistedStateOptions = {
     now: () => Date.parse("2026-09-24T20:00:00.000Z"),
@@ -195,6 +241,20 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
   assert.strictEqual(recovered.snapshot().recovered.lastError, undefined, "a newer success suppresses a stale persisted failure");
   recovered.dispose();
 
+  const exhaustedPauses = [];
+  const exhaustedTargets = [
+    { id: "exhausted", enabled: true, intervalMinutes: 5, syncOnChange: true,
+      lastFailure: { at: "2026-09-24T19:59:00.000Z", error: "network unavailable", reason: "interval", attempts: 3 } },
+    { id: "healthy", enabled: true, intervalMinutes: 5, syncOnChange: true, lastSuccessAt: "2026-09-24T19:59:00.000Z" }
+  ];
+  const exhausted = new GitHubSyncScheduler({ ...persistedStateOptions, onAutoPaused: targetId => exhaustedPauses.push(targetId) });
+  exhausted.configure(exhaustedTargets);
+  assert.strictEqual(exhaustedTargets[0].enabled, false, "persisted exhausted failures reconcile Auto Sync on restart");
+  assert.strictEqual(exhaustedTargets[1].enabled, true, "other targets retain their automation setting");
+  assert.deepStrictEqual(exhaustedPauses, ["exhausted"]);
+  assert.strictEqual(exhausted.snapshot().exhausted.lastError, "network unavailable");
+  exhausted.dispose();
+
   const currentlyFailing = new GitHubSyncScheduler(persistedStateOptions);
   currentlyFailing.configure([{
     id: "currently-failing",
@@ -210,7 +270,22 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
   }]);
   assert.strictEqual(currentlyFailing.snapshot()["currently-failing"].status, "error");
   assert.strictEqual(currentlyFailing.snapshot()["currently-failing"].lastError, "current authentication failure");
+  assert.strictEqual(currentlyFailing.request("currently-failing", "change"), false);
   currentlyFailing.dispose();
+
+  const pausedFailure = new GitHubSyncScheduler(persistedStateOptions);
+  pausedFailure.configure([{
+    id: "paused-failure", enabled: false, intervalMinutes: 5, syncOnChange: false,
+    lastFailure: { at: "2026-09-24T19:59:00.000Z", error: "authentication expired", reason: "manual" }
+  }]);
+  assert.strictEqual(pausedFailure.snapshot()["paused-failure"].status, "error", "manual failures survive reloading the target");
+  assert.strictEqual(pausedFailure.snapshot()["paused-failure"].lastError, "authentication expired");
+  assert.strictEqual(pausedFailure.request("paused-failure", "manual"), true);
+  await flush();
+  await flush();
+  assert.strictEqual(pausedFailure.snapshot()["paused-failure"].status, "paused", "a successful manual retry clears the failure");
+  assert.strictEqual(pausedFailure.snapshot()["paused-failure"].lastError, undefined);
+  pausedFailure.dispose();
 
   const deletionTimers = new Map();
   let releaseDeleted;

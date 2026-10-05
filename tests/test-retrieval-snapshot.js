@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 const assert = require("assert");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { createRetrievalSnapshot } = require("../dist/retrieval-snapshot.js");
+const storage = require("../dist/storage.js");
 const extension = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
 
 const groups = ["Broker A", "Broker B", "Broker C"].map((alias, index) => ({
@@ -24,7 +26,7 @@ const sources = {
     { slug: "Papers/Parent", knowledgeId: "knowledge_cccccccccccccccccccccccc", revision: 5, title: "Parent Paper", description: "Prior art", content: "parent body", topic: "Retrieval", conclusions: ["bounded graph"] },
     { slug: "Papers/Child", knowledgeId: "knowledge_dddddddddddddddddddddddd", revision: 2, title: "Child Paper", description: "Follow-up", content: "child body", topic: "Retrieval", cites: [{ paper: "Parent Paper", note: "builds on" }] },
   ],
-  scripts: [{ path: "Scope/local.script", file: "local.script", category: "Scope", lang: "scope", extension: ".script", content: "script body" }],
+  scripts: [{ path: "Scope/local.script", knowledgeId: "script_0123456789abcdef01234567", file: "local.script", category: "Scope", lang: "scope", extension: ".script", content: "script body" }],
   recipes: [{ recipeId: "recipe_local", knowledgeId: "knowledge_bbbbbbbbbbbbbbbbbbbbbbbb", revision: 4,
     name: "Local Recipe", description: "Executable workflow", category: "Automation",
     executableDigest: "c".repeat(64), definition: { schema: "pkm.workflow.definition/v1", spec: { nodes: [] } } }],
@@ -48,7 +50,92 @@ assert(first.documents.some(item => item.skill_id === "note:Research/Local Note"
   && item.knowledge_id === "knowledge_aaaaaaaaaaaaaaaaaaaaaaaa"
   && item.source_uri === "pkm://knowledge/knowledge_aaaaaaaaaaaaaaaaaaaaaaaa"
   && item.content_type === "note"));
-assert(first.documents.some(item => item.skill_id === "script:Scope/local.script" && item.content_type === "script"));
+const script = first.documents.find(item => item.content_type === "script");
+assert(script && script.source_id === "pkm://script/script_0123456789abcdef01234567"
+  && script.source_uri === script.source_id && script.skill_id === script.source_id
+  && script.metadata.legacy_uri === "pkm://scripts/Scope/local.script");
+const movedScript = createRetrievalSnapshot({ ...sources, scripts: [{ ...sources.scripts[0], path: "Scope/moved.script", updatedAt: "tomorrow" }] }).documents.find(item => item.content_type === "script");
+assert.strictEqual(movedScript.source_id, script.source_id, "moving a script must preserve its identity");
+assert.strictEqual(movedScript.source_revision, script.source_revision, "path and timestamp cannot change the content revision");
+const editedScript = createRetrievalSnapshot({ ...sources, scripts: [{ ...sources.scripts[0], content: "new script body" }] }).documents.find(item => item.content_type === "script");
+assert.strictEqual(editedScript.source_id, script.source_id);
+assert.notStrictEqual(editedScript.source_revision, script.source_revision, "editing content must change its content revision");
+const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-script-identity-"));
+try {
+  storage.setStorePath(root);
+  fs.mkdirSync(path.join(root, "scripts", "Scope"), { recursive: true });
+  fs.writeFileSync(path.join(root, "scripts", "Scope", "local.script"), "script body");
+  const original = storage.scriptGet("Scope/local.script");
+  const canonicalUri = `pkm://script/${original.knowledgeId}`;
+  const legacyId = `script_${require("crypto").createHash("sha256").update("Scope/local.script").digest("hex").slice(0, 24)}`;
+  assert.strictEqual(original.knowledgeId, legacyId, "adopting a legacy Script must preserve its existing canonical URI");
+  assert(fs.existsSync(storage.scriptIdentityFile(original.path)), "identity must be persisted beside the source");
+  const secondRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-script-identity-peer-"));
+  try {
+    fs.mkdirSync(path.join(secondRoot, "scripts", "Scope"), { recursive: true });
+    fs.writeFileSync(path.join(secondRoot, "scripts", "Scope", "local.script"), "script body");
+    storage.setStorePath(secondRoot);
+    assert.strictEqual(storage.scriptGet("Scope/local.script").knowledgeId, original.knowledgeId,
+      "independent machines must adopt the same legacy Script identity before the first sync");
+  } finally {
+    storage.setStorePath(root);
+    fs.rmSync(secondRoot, { recursive: true, force: true });
+  }
+  assert.strictEqual(storage.scriptList().length, 1, "sidecar must not appear as a Script");
+  assert(storage.scriptMove("Scope/local.script", "Moved"));
+  const moved = storage.scriptGet(canonicalUri);
+  assert.strictEqual(moved.knowledgeId, original.knowledgeId);
+  assert.strictEqual(moved.path, "Moved/local.script");
+  assert.strictEqual(storage.scriptGet("pkm://scripts/Scope/local.script").knowledgeId, original.knowledgeId);
+  assert.strictEqual(storage.scriptGet(`pkm://script/${legacyId}`).knowledgeId, original.knowledgeId);
+  assert.strictEqual(storage.scriptGet("Scope/local.script").knowledgeId, original.knowledgeId);
+  fs.writeFileSync(path.join(root, "scripts", "Scope", "local.script"), "another script");
+  assert.strictEqual(storage.scriptMove("Moved/local.script", "Scope"), false, "moving cannot overwrite a different Script");
+  const replacement = storage.scriptGet("Scope/local.script");
+  assert.notStrictEqual(replacement.knowledgeId, original.knowledgeId, "a reused path cannot steal the moved Script's ID");
+  assert.strictEqual(storage.scriptGet("pkm://scripts/Scope/local.script").knowledgeId, original.knowledgeId,
+    "the old URI continues to identify the moved Script after path reuse");
+  const reusedExports = storage.scriptExport();
+  const reusedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-script-identity-reuse-"));
+  try {
+    storage.setStorePath(reusedRoot);
+    assert.strictEqual(storage.scriptImport(reusedExports), 2);
+    assert.strictEqual(storage.scriptGet("Scope/local.script").knowledgeId, replacement.knowledgeId);
+    assert.strictEqual(storage.scriptGet("pkm://scripts/Scope/local.script").knowledgeId, original.knowledgeId,
+      "export/import must not reassign a moved Script's old alias to its replacement");
+  } finally {
+    storage.setStorePath(root);
+    fs.rmSync(reusedRoot, { recursive: true, force: true });
+  }
+  fs.rmSync(path.join(root, "scripts", "Scope", "local.script"));
+  fs.writeFileSync(path.join(root, "scripts", moved.path), "edited body");
+  assert.strictEqual(storage.scriptGet(canonicalUri).knowledgeId, original.knowledgeId);
+  assert.strictEqual(storage.scriptList().length, 1);
+  const exported = storage.scriptExport();
+  assert.strictEqual(exported[0].identity.knowledgeId, original.knowledgeId);
+  const importedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-script-identity-import-"));
+  try {
+    storage.setStorePath(importedRoot);
+    assert.strictEqual(storage.scriptImport(exported), 1);
+    assert.strictEqual(storage.scriptGet("Moved/local.script").knowledgeId, original.knowledgeId,
+      "an unprefixed Script import preserves the source identity after a move");
+    const updatedIdentity = { ...exported[0].identity, aliases: [...exported[0].identity.aliases, "pkm://scripts/Before/local.script"] };
+    assert.strictEqual(storage.scriptImport([{ ...exported[0], identity: updatedIdentity }]), 1);
+    assert.strictEqual(storage.scriptGet("pkm://scripts/Before/local.script").knowledgeId, original.knowledgeId,
+      "subsequent imports merge newly learned legacy aliases for the same Script");
+    assert.strictEqual(storage.scriptImport([{ ...exported[0], category: "Copy", identity: undefined }]), 1);
+    assert.notStrictEqual(storage.scriptGet("Copy/local.script").knowledgeId, original.knowledgeId,
+      "a prefixed import creates an independent Script");
+    assert.strictEqual(storage.scriptImport([{ ...exported[0], category: "Other" }]), 0,
+      "the same identity cannot be imported under a second path");
+  } finally {
+    storage.setStorePath(root);
+    fs.rmSync(importedRoot, { recursive: true, force: true });
+  }
+} finally {
+  storage.setStorePath("");
+  fs.rmSync(root, { recursive: true, force: true });
+}
 const childPaper = first.documents.find(item => item.skill_id === "research:Papers/Child");
 assert(childPaper && childPaper.content_type === "research"
   && childPaper.source_id === "pkm://knowledge/knowledge_dddddddddddddddddddddddd"

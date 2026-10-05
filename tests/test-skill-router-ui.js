@@ -66,9 +66,24 @@ const routerData = {
 };
 context.renderSkillRouterPane(routerData);
 context.setStatusCache(routerData);
-for (const text of ['Copilot default search', 'Exact only', 'Exact + BM25', 'Hybrid', 'Success rate', 'NDCG@5', 'Recall@1', 'Recall@5', 'Tokens saved', 'Latency']) {
+for (const text of ['Copilot default search', 'Exact only', 'Exact + BM25', 'Hybrid', 'Success@5', 'Precision@5', 'NDCG@5', 'Latency p50 / p95', 'Run benchmark']) {
   assert(detail.innerHTML.includes(text), `missing Skill Router performance content: ${text}`);
 }
+for (const absent of ['Recall@1', 'Recall@5', 'Tokens saved']) assert(!detail.innerHTML.includes(absent), `${absent} has no measured signal`);
+assert.match(detail.innerHTML, /No measured run yet/);
+assert.doesNotMatch(detail.innerHTML, /<td>0%<\/td>/, 'missing metrics must not be shown as zero');
+context.renderSkillRouterPane({ ...routerData, benchmark: { running:true } });
+assert.match(detail.innerHTML, /Measuring…/);
+assert.match(detail.innerHTML, /ask\('runSkillRouterBenchmark',\{\}\)" disabled/);
+context.renderSkillRouterPane({ ...routerData, benchmark: { generatedAt:'2026-10-01T00:00:00Z', metrics: {
+  judgedQueries:5, samples:25, successRate:0.8, precisionAt5:0.16, ndcgAt5:0.6, latencyMs:{ p50:9.2, p95:24.1 },
+} } });
+assert.match(detail.innerHTML, /5 labeled queries · 25 runs/);
+assert.match(detail.innerHTML, /<td>80%<\/td><td>16%<\/td><td>60%<\/td>/);
+assert.match(detail.innerHTML, /9\.2 \/ 24\.1 ms/);
+context.renderSkillRouterPane({ ...routerData, benchmark: { error:'worker unavailable' } });
+assert.match(detail.innerHTML, /Benchmark failed: worker unavailable/);
+context.renderSkillRouterPane(routerData);
 for (const text of ['Embedding', 'Retrieval', 'Calibration', 'Ranker', 'Results']) {
   assert(detail.innerHTML.includes(text), `missing parameter component: ${text}`);
 }
@@ -78,7 +93,7 @@ assert.match(detail.innerHTML, /PKM Personal[\s\S]*Agent Native[\s\S]*Team Broke
 assert.match(detail.innerHTML, /draggable="true"/);
 assert.match(detail.innerHTML, /Agent Native is selected by the active Agent host/);
 assert.match(detail.innerHTML, /Hybrid[\s\S]*System disabled/);
-assert.match(detail.innerHTML, /No benchmark has been imported/);
+assert.match(detail.innerHTML, /No measured run yet/);
 assert.match(detail.innerHTML, /Copilot default search[\s\S]*Required fallback/);
 assert.match(detail.innerHTML, /Exact \+ BM25[\s\S]*Serving/);
 assert.match(detail.innerHTML, /Proposed Parameter Map/);

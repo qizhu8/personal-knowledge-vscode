@@ -1,13 +1,13 @@
 ---
 name: PKM Skills
-description: "Route substantial work into PKM guardrails without adding orchestration that does not change execution."
+description: "Use at the start of every multi-step agent task: coding, implementation, bug fixes, refactoring, research, analysis, diagnosis, or code review. Start and track a PKM Agent Session even for read-only work; skip quick answers, trivial commands, and casual conversation."
 tags:
   - pkm
   - copilot
   - skill-router
   - knowledge-management
 type: system
-router_version: 1.7.0
+router_version: 1.7.2
 created: 2026-08-12
 ---
 
@@ -49,18 +49,20 @@ origin Knowledge Root or an explicitly configured GitHub Sync backup.
 
 ## Managed Task Routing
 
-For a substantial mutating task, call `pkm.agent_session_start` before the first
-substantive edit or operational mutation. Call `agent_session_capabilities`
+For every multi-step task, call `pkm.agent_session_start` before the first
+substantive investigation, edit, or operational mutation. This includes coding,
+implementation, bug fixes, refactoring, research, analysis, diagnosis, and code
+review, even when the work is read-only. Call `agent_session_capabilities`
 only when the tool contract is not already available in the current
-conversation or its version changed. A substantial task is a user goal that
-needs multiple execution or validation steps and benefits from durable
-progress/recovery state. Use one Agent Session for the user goal.
+conversation or its version changed. A multi-step task is a user goal that
+needs multiple investigation, execution, or validation steps. Use one Agent
+Session for the user goal; do not wait for an explicit tracking request or
+the first code edit.
 
-Do not start an Agent Session for assessment, explanation, code review, or
-read-only diagnosis, even when several reads or tests are needed, unless the
-user asks for durable tracking or the work is likely to continue across turns.
-Also skip it for a quick answer, trivial command, or casual conversation. When
-the host chat/session ID is available, pass it as `host_session_id`.
+Skip an Agent Session for a quick answer, single trivial command, or casual
+conversation. A short explanation or assessment that needs no multi-step work
+also qualifies for this exception; read-only work alone does not. When the host
+chat/session ID is available, pass it as `host_session_id`.
 
 At the start of every later user turn while work may still be active, call
 `pkm.agent_session_status` before planning or using tools. Reconcile the new
@@ -80,7 +82,7 @@ evidence. Prefer one to three durable outcome Todos; do not create separate
 Todos for narration, status summaries, or steps already enforced by a Recipe.
 Keep report summaries concise and evidence-oriented. Session todos are the
 ordered user-goal backlog; Recipe runs may provide a more detailed executable
-graph only when they add control value.
+graph when they add a reusable solution, automation, or useful task structure.
 
 When a later user instruction arrives, classify it before changing the queue.
 If it replaces, contradicts, or cancels earlier work, treat it as a redirect and
@@ -94,8 +96,12 @@ with a new idempotent `command_id`; do not abandon, reorder, or preempt the
 running and pending todos. A valid payload is
 `[{"title":"Implement change","details":"Preserve existing behavior"},{"title":"Validate","details":"Run focused tests"}]`.
 
-Checkpoint only at useful recovery boundaries. End the Agent Session after the
-overall user outcome is validated. Omit the Session-end summary when Todo
+Checkpoint or save an Agent Snapshot only for an explicit
+preserve/recover/handoff request or a declared recovery operation. Routine
+success, failed attempts, and ordinary turn boundaries do not by themselves
+request scene preservation. Keep goals, todos, results, and evidence in their
+owning runtime records without copying the conversation into checkpoints.
+End the Agent Session after the overall user outcome is validated. Omit the Session-end summary when Todo
 outcomes already contain the evidence; do not restate the final answer in
 durable state.
 
@@ -117,20 +123,20 @@ Do not load the entire Skill catalog. Prefer the smallest relevant set.
 
 ## Recipe Discovery and Evolution
 
-Use a Recipe only when its executable graph adds a guardrail that ordinary Todo
-tracking does not provide: branching, bounded repetition, a mandatory human
-gate, a pinned reusable procedure, a background command, or an allowlisted
-native operation. Linear inspect → edit → validate work should stay in the
-Agent Session Todo and native tools.
+Use a Recipe when it provides a validated reusable solution, reliable Script automation,
+or useful task structure: dependencies, parallel exploration, bounded repetition,
+or necessary human decisions. A mature linear Recipe is a valid match; do not
+reject it merely because the task has no branches. Ordinary work without a
+matching solution or useful structure can stay in Session todos and native tools.
 
-For a Todo that needs those controls, call `pkm.recipe_search` once with the
+For a Todo that could reuse a solution or benefit from structure, call `pkm.recipe_search` once with the
 complete task contract. Call `recipe_capabilities` only when its contract is
 not already available or its version changed. Qualify candidates by purpose,
 inputs, outputs, constraints, and graph shape rather than name or score alone.
 
 Use a qualified Library Recipe with its pinned revision and executable digest.
-A no-match result is valid. Create an ad hoc Recipe only when the required
-control graph still exists; never create a one-node noop Recipe merely to
+A no-match result is valid. Create an ad hoc Recipe only when a task-specific
+solution or useful decomposition adds value; never create a one-node noop Recipe merely to
 represent work already tracked by a Todo. The Agent Session Todo remains the
 durable cross-turn commitment. Report it complete only after any attached
 Recipe is terminal and the outcome has independent validation evidence.
@@ -146,6 +152,15 @@ context unless the compact summary identifies a specific failure to inspect.
 Recipe action tools return compact state by default. Request full run detail
 only when historical node results, usage, or observability diagnostics are
 needed.
+
+A failed attempt is a valid result, not a requirement to retry until success.
+Distinguish insufficient model capability, an unclear Recipe, and an infeasible
+path only when evidence supports the diagnosis; otherwise retain uncertainty.
+Follow the applicable failure policy: retry within budget, use a stronger model,
+try a new or revised Recipe, or record the result and continue where dependencies
+permit. Preserve earlier attempt evidence; never treat a failed prerequisite as
+a successful output. Do not claim automatic Script execution, model escalation,
+or multi-agent scheduling unless the runtime actually supports that operation.
 
 After execution, record concrete friction and reusable evidence. When a Recipe
 should be corrected or expanded, use the advertised Recipe authoring/proposal
