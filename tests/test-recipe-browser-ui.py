@@ -58,6 +58,65 @@ def assert_single_toolbar_row(page):
     assert max(centers) - min(centers) <= 1, f"Definition Graph controls wrapped onto multiple rows: {centers}; styles={styles}"
 
 
+def assert_single_module_and_trash(browser):
+    usage = {"protocol":{"observed":True,"calls":3,"estimatedTokens":120},
+             "model":{"quality":"measured","measuredTokens":{"totalTokens":55}}}
+    for width, height in [(1280,900),(390,844)]:
+        page = browser.new_page(viewport={"width":width,"height":height})
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.goto(BASE_URL, wait_until="networkidle")
+        page.locator('[data-workspace="automation"]').click()
+        page.locator('.tab[data-tab="agentSessions"]').click()
+        page.wait_for_function("projectSnapshot !== null")
+        page.evaluate("""usage => {
+          projectSnapshot.agentSessionTrash = [{sessionId:'agent_session_historical', task:'Historical full content',
+            status:'completed', agent:{name:'Copilot'}, trashedAt:'2026-10-04T00:00:00Z',
+            checkpoint:{sequence:3,summary:'Historical checkpoint content'},
+            todos:[{todoId:'historical',title:'Historical Todo',status:'succeeded',summary:'Historical Todo summary',recipeRunIds:['historical_run'],usage}],
+            runs:[{runId:'historical_run',recipeName:'Historical Recipe',status:'completed',nodes:[
+              {nodeId:'archived-module',state:'succeeded',instruction:'Historical node content',dependsOn:[],usage}]}]}];
+          renderAgentSessions();
+        }""", usage)
+        dock = page.locator('.cattree-trash-dock')
+        dock.locator('.knowledge-trash-dock-row').press("Space")
+        dock.locator('.agent-session-trash-row').press("Enter")
+        assert page.locator('.agent-session-content h3').inner_text() == "Historical full content"
+        assert "Historical checkpoint content" in page.locator('.agent-session-content').inner_text()
+        assert "Historical Todo summary" in page.locator('.agent-session-content').inner_text()
+        page.locator('.agent-runtime-run summary').click()
+        historical_module = page.locator('.agent-runtime-run .agent-runtime-node[data-node-id="archived-module"]')
+        assert historical_module.locator('p').inner_text() == "Historical node content"
+        assert "55 measured" in historical_module.inner_text()
+        for kind in ["recipe","ad-hoc"]:
+            if kind == "ad-hoc":
+                page.evaluate("""usage => {
+                  projectSnapshot.agentSessions = [{sessionId:'agent_session_single',task:'Single ad hoc task',status:'completed',runs:[],
+                    todos:[{todoId:'single',title:'Single ad hoc module',status:'succeeded',usage}]}];
+                  agentSessionSelect('agent_session_single');
+                }""", usage)
+            page.locator('.agent-session-flow > header button[title="Open full-screen Session graph"]').click()
+            graph = page.locator('.agent-session-fullscreen')
+            assert graph.locator('.agent-session-unified-node').count() == 1
+            module = graph.locator('.agent-session-unified-node')
+            assert "3 calls" in module.inner_text() and "55 measured" in module.inner_text()
+            geometry = graph.evaluate("""graph => {
+              const card = graph.querySelector('.agent-session-unified-node');
+              const center = element => {const rect=element.getBoundingClientRect();return rect.left+rect.width/2;};
+              const middle = center(graph.querySelector('.agent-session-recipe-tree-canvas'));
+              return {deltas:[card,graph.querySelector('[data-module-boundary="start"]'),graph.querySelector('[data-module-boundary="stop"]')]
+                .map(element=>Math.abs(center(element)-middle)), overflow:card.scrollWidth>card.clientWidth,
+                overlapping:[...card.querySelectorAll('.agent-session-todo-usage>span')].some(element=>element.scrollWidth>element.clientWidth)};
+            }""")
+            assert max(geometry["deltas"]) <= 2, geometry
+            assert not geometry["overflow"] and not geometry["overlapping"], geometry
+            if SCREENSHOT_PATH:
+                graph.screenshot(path=str(Path(SCREENSHOT_PATH).with_name(f"agent-session-single-{kind}-{width}.png")))
+            graph.locator('button[title="Close full-screen graph"]').click()
+        assert not errors, errors
+        page.close()
+
+
 def assert_shared_trash_docks(browser):
     page = browser.new_page(viewport={"width": 1280, "height": 900})
     page.goto(BASE_URL, wait_until="networkidle")
@@ -517,6 +576,7 @@ with sync_playwright() as playwright:
     page.locator('.tab[data-tab="agentSessions"]').click()
     session_run = page.locator('.agent-session-task', has_text="Validate recovery").locator('.agent-runtime-run')
     session_run.locator('summary').click()
+    page.wait_for_function("agentSessionOpenRunIds.has('recipe_run_demo_observable')")
     running_module = session_run.locator('.agent-runtime-node[data-node-id="browser-validation"]')
     assert running_module.locator('.agent-runtime-todo-owner').inner_text().startswith("Validate recovery")
     assert running_module.locator('.agent-module-health').inner_text().lower().startswith("healthy running")
@@ -782,6 +842,7 @@ with sync_playwright() as playwright:
       mobile.screenshot(path=str(Path(SCREENSHOT_PATH).with_name("agent-session-mobile.png")))
     assert not errors, f"Desktop page errors: {errors}"
     assert not mobile_errors, f"Mobile page errors: {mobile_errors}"
+    assert_single_module_and_trash(browser)
     assert_shared_trash_docks(browser)
     browser.close()
 

@@ -5,6 +5,13 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.13] - 2026-10-05
+
+- Restored full Agent Session Trash inspection by mouse and keyboard, including Todo details, summaries, checkpoints, and real Recipe run nodes without restoring or modifying the Session.
+- Centered single modules and uneven dependency ranks with the Start and Complete boundaries while preserving actual dependencies, parallel modules, and the fixed Todo queue. Ad hoc Todos do not create synthetic Recipe runs.
+- Added per-module measured, estimated, partial, or unknown model-token usage and precisely attributed MCP call counts. Protocol-token estimates remain separate; missing historical usage is not zero and other host function calls are not inferred.
+- Updated unified MCP to 2.13.8 for bounded, validated Recipe run/node call attribution in the existing Todo usage ledger.
+
 ## [3.2.11] - 2026-10-04
 
 - Turned off Auto Sync for only the failing target after three consecutive automatic failures, preserved the actual error, and enabled ordinary Sync with Remote recovery. Fixed duplicate failure counting across the scheduler and coordinator and reconciled exhausted retries on restart.

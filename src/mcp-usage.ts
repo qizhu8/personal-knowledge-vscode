@@ -49,6 +49,8 @@ export interface TodoUsageSummary {
     };
     estimatedTokens: number;
     unknownModelCalls: number;
+    measuredReports: number;
+    estimatedReports: number;
     providers: string[];
     models: string[];
   };
@@ -56,6 +58,7 @@ export interface TodoUsageSummary {
     quality: "unknown";
     premiumRequests: null;
   };
+  modules?: Record<string, TodoUsageSummary["protocol"]>;
 }
 
 interface RecipeUsageSource {
@@ -156,6 +159,32 @@ export function todoUsageSummary(
       || aggregate?.todoId !== todoId) aggregate = {};
   } catch { aggregate = {}; }
 
+  const modules = aggregate.modules && typeof aggregate.modules === "object" && !Array.isArray(aggregate.modules)
+    ? Object.entries(aggregate.modules).slice(0, 128) : [];
+  return {
+    ...usageSummary(aggregate, recipeRuns),
+    modules: Object.fromEntries(modules.map(([key, bucket]) => [key, usageSummary(bucket || {}, []).protocol])),
+  };
+}
+
+export function recipeNodeUsageSummary(runId: string, nodeId: string, usage: any): TodoUsageSummary {
+  const records = (Array.isArray(usage?.records) ? usage.records : [])
+    .filter((record: any) => record?.recipeRunId === runId && record?.nodeId === nodeId);
+  const summary = usageSummary({}, records.map((record: any) => ({ usage: {
+    measuredTokens: record.measuredTokens,
+    measuredReports: Object.keys(record.measuredTokens || {}).length ? 1 : 0,
+    estimatedTokens: record.estimatedTokens,
+    estimatedReports: nonNegativeNumber(record.estimatedTokens) > 0 ? 1 : 0,
+    unknownModelCalls: record.unknownModelCalls,
+    providers: record.provider ? [record.provider] : [],
+    models: record.model ? [record.model] : [],
+  } })));
+  if (nonNegativeNumber(usage?.recordsTruncated) > 0 && summary.model.quality !== "unknown") summary.model.quality = "partial";
+  return summary;
+}
+
+function usageSummary(aggregate: any, recipeRuns: RecipeUsageSource[]): TodoUsageSummary {
+
   const measured = {
     inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, reasoningTokens: 0, totalTokens: 0,
   };
@@ -206,6 +235,8 @@ export function todoUsageSummary(
       measuredTokens: measured,
       estimatedTokens,
       unknownModelCalls,
+      measuredReports,
+      estimatedReports,
       providers: [...providers],
       models: [...models],
     },

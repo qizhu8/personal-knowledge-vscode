@@ -2,7 +2,7 @@ import { withCrossProcessLock } from "./cross-process-lock";
 import { stableUserPort } from "./user-service-ports";
 import { KnowledgeInventoryManager } from "./knowledge-inventory";
 import { performanceSummary, recordPerformanceMetric } from "./performance-telemetry";
-import { mcpUsageSummary, todoUsageSummary } from "./mcp-usage";
+import { mcpUsageSummary, recipeNodeUsageSummary, todoUsageSummary } from "./mcp-usage";
 import { agentSnapshotIsEncrypted, createAgentSnapshot, deleteAgentSnapshot, listAgentSnapshots, renameAgentSnapshot, readAgentSnapshotContents } from "./agent-snapshots";
 import { agentSessionArchiveKeepLatestK, agentSessionLiveness, emptyAgentSessionTrash, enforceAgentSessionArchiveRetention, moveAgentSessionToTrash, permanentlyDeleteTrashedAgentSession, projectedAgentSessionStatus, recipeNodeObservability, reconcileAgentSessionActiveMappings, restoreAgentSessionFromTrash, stopAgentSession } from "./agent-session-lifecycle";
 import { JsonFileCache } from "./json-file-cache";
@@ -179,9 +179,8 @@ function recipeReferenceCatalog(): Record<"skills" | "notes", any[]> {
 
 const agentSessionJsonCache = new JsonFileCache(512);
 
-function agentSessionSnapshots(recipes: any[]): any[] {
+function agentSessionSnapshots(recipes: any[], directory = path.join(getStorePath(), ".pkm", "state", "agent-sessions")): any[] {
   const storeRoot = getStorePath();
-  const directory = path.join(storeRoot, ".pkm", "state", "agent-sessions");
   const runsDirectory = path.join(storeRoot, ".pkm", "state", "recipe-runs");
   if (!fs.existsSync(directory)) return [];
   const recipeNames = new Map(recipes.map(recipe => [String(recipe.recipeId || ""), String(recipe.name || recipe.recipeId || "Recipe")]));
@@ -224,6 +223,7 @@ function agentSessionSnapshots(recipes: any[]): any[] {
             lastHeartbeatAt: String(record.lastHeartbeatAt || ""),
             lastProgressAt: String(record.lastProgressAt || ""),
             progress: record.progress && typeof record.progress === "object" ? record.progress : undefined,
+            usage: recipeNodeUsageSummary(runId, String(node.nodeId || ""), run.usage),
             observability: recipeNodeObservability(record),
             background: record.background && typeof record.background === "object" ? {
               state: String(record.background.state || ""),
@@ -252,9 +252,25 @@ function agentSessionSnapshots(recipes: any[]): any[] {
       const rawRuns: any[] = (Array.isArray(session.recipeRunIds) ? session.recipeRunIds : [])
         .map(String).map(readRun).filter(Boolean);
       const runsById = new Map<string, any>(rawRuns.map((run: any) => [run.runId, run]));
+      const todoUsages = new Map<string, ReturnType<typeof todoUsageSummary>>((Array.isArray(session.todos) ? session.todos : []).map((todo: any) => {
+        const runIds = [...new Set<string>((Array.isArray(todo.recipeRunIds) ? todo.recipeRunIds : [todo.recipeRunId]).filter(Boolean).map(String))];
+        return [String(todo.todoId || ""), todoUsageSummary(storeRoot, String(session.sessionId), String(todo.todoId || ""), runIds.map(runId => runsById.get(runId)).filter(Boolean))];
+      }));
+      const moduleProtocols = new Map<string, ReturnType<typeof todoUsageSummary>["protocol"]>();
+      for (const usage of todoUsages.values()) for (const [key, protocol] of Object.entries(usage.modules || {})) {
+        const previous = moduleProtocols.get(key);
+        if (!previous) moduleProtocols.set(key, { ...protocol });
+        else {
+          for (const field of ["calls", "successes", "failures", "inputBytes", "outputBytes", "durationMs", "estimatedTokens"] as const) previous[field] += protocol[field];
+          previous.observed ||= protocol.observed;
+          previous.quality = previous.observed ? "estimated" : "unknown";
+        }
+      }
       const runs = rawRuns.map((run: any) => {
         const { usage: _usage, ...projection } = run;
-        return projection;
+        return { ...projection, nodes: projection.nodes.map((node: any) => ({
+          ...node, usage: { ...node.usage, protocol: moduleProtocols.get(`${run.runId}:${node.nodeId}`) || node.usage.protocol },
+        })) };
       });
       const waiting = runs.some((run: any) => run.nodes.some((node: any) =>
         node.state === "running"
@@ -270,6 +286,7 @@ function agentSessionSnapshots(recipes: any[]): any[] {
         })).filter((edge: any) => edge.fromRunId && edge.fromNodeId && edge.toRunId && edge.toNodeId),
         agent: { name: String(session.agent?.name || "Agent"), product: String(session.agent?.product || "") },
         createdAt: String(session.createdAt || ""), updatedAt: String(session.updatedAt || ""),
+        trashedAt: session.trashedAt ? String(session.trashedAt) : undefined,
         liveness: agentSessionLiveness(session, waiting),
         lastActivity: session.lastActivity && typeof session.lastActivity === "object" ? {
           tool: String(session.lastActivity.tool || ""), ok: session.lastActivity.ok !== false, at: String(session.lastActivity.at || ""),
@@ -278,14 +295,14 @@ function agentSessionSnapshots(recipes: any[]): any[] {
           const recipeRunIds = [...new Set<string>((Array.isArray(todo.recipeRunIds) ? todo.recipeRunIds : [todo.recipeRunId])
             .filter(Boolean).map((value: unknown) => String(value)))];
           const todoId = String(todo.todoId || "");
+          const { modules: _modules, ...usage } = todoUsages.get(todoId)!;
           return {
             todoId, title: String(todo.title || ""), details: String(todo.details || ""),
             status: String(todo.status || "pending"), summary: String(todo.summary || ""),
             recipeRunId: String(todo.recipeRunId || ""), createdAt: String(todo.createdAt || ""),
             recipeRunIds,
             updatedAt: String(todo.updatedAt || ""),
-            usage: todoUsageSummary(storeRoot, String(session.sessionId), todoId,
-              recipeRunIds.map(runId => runsById.get(runId)).filter(Boolean)),
+            usage,
           };
         }),
         checkpoint: latest ? {
@@ -303,22 +320,7 @@ function agentSessionSnapshots(recipes: any[]): any[] {
 
 function agentSessionTrashSnapshots(): any[] {
   const directory = path.join(getStorePath(), ".pkm", "state", "agent-sessions-trash");
-  if (!fs.existsSync(directory)) return [];
-  const snapshots: any[] = [];
-  for (const name of fs.readdirSync(directory)) {
-    if (!name.endsWith(".json")) continue;
-    try {
-      const session = agentSessionJsonCache.read<any>(path.join(directory, name));
-      if (session?.schema !== "pkm.agent.session/v1" || !String(session.sessionId || "").startsWith("agent_session_")) continue;
-      snapshots.push({
-        sessionId: String(session.sessionId), status: String(session.status || "unknown"),
-        task: String(session.task || "Managed task"), hostSessionId: String(session.hostSessionId || ""),
-        agent: { name: String(session.agent?.name || "Agent"), product: String(session.agent?.product || "") },
-        updatedAt: String(session.updatedAt || ""), trashedAt: String(session.trashedAt || ""),
-      });
-    } catch { /* A corrupt Trash record must not hide healthy entries. */ }
-  }
-  return snapshots.sort((left, right) => right.trashedAt.localeCompare(left.trashedAt));
+  return agentSessionSnapshots([], directory).sort((left, right) => String(right.trashedAt || "").localeCompare(String(left.trashedAt || "")));
 }
 
 function configuredAgentSessionArchiveKeepLatestK(): number {

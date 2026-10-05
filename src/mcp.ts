@@ -14,7 +14,7 @@ import { hasNewerMcpRuntime } from "./mcp-version-policy";
 import { builtInRecipePin } from "./workflows/project-model";
 
 // ── MCP server scaffold ────────────────────────────────────────────────────
-export const UNIFIED_MCP_VERSION = "2.13.7";
+export const UNIFIED_MCP_VERSION = "2.13.8";
 const PROMPT_MANAGER_WHEEL = "uone_prompt_manager-0.1.0-py3-none-any.whl";
 const PROMPT_MANAGER_WHEEL_SHA256 = "eb9fd76058134f9ab9711d8e7604c75f761db5762d93e67f65740dc07fdc1518";
 const RETRIEVAL_ENGINE_WHEEL = "adaptive_skill_retrieval-0.3.0.dev2026091601-py3-none-any.whl";
@@ -908,7 +908,18 @@ def _active_todo_attribution(context, arguments):
     todo_id = str((todo or {}).get("todoId") or "")
     if not re.fullmatch(r"todo_[A-Za-z0-9_-]+", todo_id):
       return {}
-    return {"agentSessionId": agent_session_id, "todoId": todo_id}
+    attribution = {"agentSessionId": agent_session_id, "todoId": todo_id}
+    run_id = str(plain_arguments.get("run_id") or "") if isinstance(plain_arguments, dict) else ""
+    node_id = str(plain_arguments.get("node_id") or "") if isinstance(plain_arguments, dict) else ""
+    if (re.fullmatch(r"recipe_run_[A-Za-z0-9_-]+", run_id)
+        and node_id and run_id in (session.get("recipeRunIds") or [])):
+      try:
+        run = json.loads((STORE / ".pkm" / "state" / "recipe-runs" / (run_id + ".json")).read_text(encoding="utf-8"))
+        if run.get("schema") == "pkm.recipe.run/v1" and run.get("runId") == run_id and node_id in (run.get("nodes") or {}):
+          attribution.update({"recipeRunId": run_id, "nodeId": node_id})
+      except (OSError, ValueError):
+        pass
+    return attribution
   except Exception:
     return {}
 
@@ -980,6 +991,13 @@ def _record_todo_usage(attribution, event):
                             input_bytes, output_bytes, duration_ms, event["success"])
     _increment_usage_bucket(aggregate.setdefault("tools", {}), event["toolName"],
                             input_bytes, output_bytes, duration_ms, event["success"])
+    if attribution.get("recipeRunId") and attribution.get("nodeId"):
+      module_key = attribution["recipeRunId"] + ":" + attribution["nodeId"]
+      modules = aggregate.setdefault("modules", {})
+      _increment_usage_bucket(modules, module_key, input_bytes, output_bytes, duration_ms, event["success"])
+      if module_key in modules:
+        bucket = modules[module_key]
+        bucket["estimatedTokens"] = int(bucket.get("estimatedTokens") or 0) + int(event["estimatedTokenEquivalent"])
     temporary = directory / (todo_id + "." + str(os.getpid()) + "." + str(uuid.uuid4()) + ".tmp")
     with open(temporary, "x", encoding="utf-8") as handle:
       handle.write(json.dumps(aggregate, ensure_ascii=False, sort_keys=True))
@@ -1010,6 +1028,9 @@ def _record_tool_usage(tool_name, arguments, result, duration_ms, success, attri
     if attribution:
       event["agentSessionId"] = attribution["agentSessionId"]
       event["todoId"] = attribution["todoId"]
+      if attribution.get("recipeRunId") and attribution.get("nodeId"):
+        event["recipeRunId"] = attribution["recipeRunId"]
+        event["nodeId"] = attribution["nodeId"]
     directory = STORE / ".pkm" / "state" / "mcp-usage" / "events"
     directory.mkdir(parents=True, exist_ok=True)
     destination = directory / (event_id + ".json")

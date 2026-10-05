@@ -701,7 +701,10 @@ context.projectOnState({ ...snapshot, recipes: [
 }], agentSessionTrash: [{
   sessionId: "agent_session_archived", status: "completed", task: "Completed historical task",
   agent: { name: "Copilot Agent", product: "GitHub Copilot" }, createdAt: "2026-09-21T08:00:00Z", updatedAt: "2026-09-21T08:01:00Z", trashedAt: "2026-09-21T08:01:00Z",
-  lastActivity: { tool: "agent_session_end", ok: true, at: "2026-09-21T08:01:00Z" }, runs: []
+  lastActivity: { tool: "agent_session_end", ok: true, at: "2026-09-21T08:01:00Z" },
+  todos:[{todoId:"historical", title:"Historical Todo detail", status:"succeeded", summary:"Historical work summary", recipeRunIds:["historical_run"]}],
+  checkpoint:{sequence:3, summary:"Historical checkpoint content"},
+  runs:[{runId:"historical_run", recipeName:"Historical Recipe", nodes:[{nodeId:"archived-module", instruction:"Historical node content", state:"succeeded", dependsOn:[]}]}]
 }, {
   sessionId: "agent_session_stopped", status: "stopped", task: "Stopped unfinished task",
   agent: { name: "Copilot Agent", product: "GitHub Copilot" }, createdAt: "2026-09-21T07:00:00Z", updatedAt: "2026-09-21T07:01:00Z", trashedAt: "2026-09-21T07:01:00Z",
@@ -733,6 +736,48 @@ assert.match(detailHtml, /agentSessionContextMenu/, "Agent Sessions expose right
 assert.match(detailHtml, /cattree-item-menu/, "Agent Session leaves expose the shared explicit action menu");
 assert.match(detailHtml, /cattree-trash-dock[\s\S]*codicon-trash[\s\S]*Trash/, "Agent Session Trash uses the shared bottom CatTree dock");
 assert.match(detailHtml, /Discarded historical task/);
+context.agentSessionSelect("agent_session_archived");
+assert.match(detailHtml, /<h3>Completed historical task<\/h3>/, "completed Trash Sessions open their content");
+assert.match(detailHtml, /Historical Todo detail/);
+assert.match(detailHtml, /Historical work summary/);
+assert.match(detailHtml, /Historical checkpoint content/);
+assert.match(detailHtml, /Historical node content/, "Trash selection renders complete historical Recipe node content");
+assert.match(detailHtml, /agent-session-trash-row active[^>]*role="button"[^>]*tabindex="0"/, "selected Trash entries support keyboard access");
+context.agentSessionSelect("agent_session_stopped");
+assert.match(detailHtml, /<h3>Stopped unfinished task<\/h3>/, "stopped Trash Sessions open their content");
+context.agentSessionSelect("agent_session_trashed");
+assert.match(detailHtml, /<h3>Discarded historical task<\/h3>/, "older Trash records without runs remain readable");
+function sessionTreeGeometry(session) {
+  const tree = context.agentSessionUnifiedTree(session, session.todos);
+  const width = Number(tree.match(/recipe-tree-canvas" style="width:([\d.]+)px/)[1]);
+  const nodes = [...tree.matchAll(/data-node-key="([^"]+)"[^>]*style="left:([\d.]+)px;top:([\d.]+)px/g)]
+    .map(match => ({ key:match[1], center:Number(match[2]) + 105, top:Number(match[3]) }));
+  return { width, nodes };
+}
+const singleModuleGeometry = sessionTreeGeometry({
+  status:"completed", runs:[], todos:[{todoId:"single", title:"Single ad hoc task", status:"succeeded"}]
+});
+assert.strictEqual(singleModuleGeometry.nodes[0].center, singleModuleGeometry.width / 2,
+  "a single ad hoc module shares the Start/Complete center even on the minimum-width canvas");
+const diamondGeometry = sessionTreeGeometry({
+  status:"completed", todos:[{todoId:"diamond", title:"Diamond task", recipeRunIds:["diamond_run"]}],
+  runs:[{runId:"diamond_run", nodes:[
+    {nodeId:"start", dependsOn:[]},
+    {nodeId:"left", dependsOn:[{from:"start"}]},
+    {nodeId:"right", dependsOn:[{from:"start"}]},
+    {nodeId:"join", dependsOn:[{from:"left"},{from:"right"}]}
+  ]}]
+});
+assert.strictEqual(diamondGeometry.nodes[0].center, diamondGeometry.width / 2, "fork root is centered");
+assert.strictEqual(diamondGeometry.nodes[3].center, diamondGeometry.width / 2, "join module is centered");
+assert.strictEqual((diamondGeometry.nodes[1].center + diamondGeometry.nodes[2].center) / 2,
+  diamondGeometry.width / 2, "parallel dependency ranks are centered without becoming sequential");
+assert.strictEqual(diamondGeometry.nodes[1].top, diamondGeometry.nodes[2].top, "independent modules retain a parallel rank");
+assert.match(context.agentSessionModuleUsage(), /Model tokens unknown/, "missing module usage is never rendered as zero");
+assert.match(context.agentSessionModuleUsage({protocol:{observed:true,calls:3,estimatedTokens:120},model:{quality:'measured',measuredTokens:{totalTokens:35}}}), /3 calls[\s\S]*35 measured/);
+assert.match(context.agentSessionModuleUsage({protocol:{},model:{quality:'partial',measuredReports:0,estimatedReports:1,estimatedTokens:20,measuredTokens:{totalTokens:0}}}), /20 estimated · partial/);
+assert.doesNotMatch(context.agentSessionModuleUsage({protocol:{},model:{quality:'partial',measuredReports:0,estimatedReports:1,estimatedTokens:20,measuredTokens:{totalTokens:0}}}), /0 measured/, "partial estimates must not invent measured zero");
+context.agentSessionSelect("agent_session_managed");
 assert.match(projectsSource, /action:'restore'/);
 assert.match(projectsSource, /Delete Permanently/);
 assert.match(detailHtml, /Checkpoint 2/);

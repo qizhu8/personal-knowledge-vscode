@@ -21,7 +21,7 @@ const graphContext = {
 };
 vm.createContext(graphContext);
 const sourceStart = projectsSource.indexOf('function agentSessionRecipeSource(');
-const sourceEnd = projectsSource.indexOf('\nfunction agentSessionUsageNumber(', sourceStart);
+const sourceEnd = projectsSource.indexOf('\nfunction agentSessionUnifiedTodoNode(', sourceStart);
 assert(sourceStart >= 0 && sourceEnd > sourceStart);
 vm.runInContext(projectsSource.slice(sourceStart, sourceEnd), graphContext);
 const libraryRun = { runId:'run_library', recipeId:'recipe_review', recipeName:'Review <patch>', recipeRevision:3, origin:{kind:'library'} };

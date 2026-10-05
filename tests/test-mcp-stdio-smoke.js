@@ -59,15 +59,60 @@ try {
 
   const smokeTest = `
 import asyncio
+import ast
+import datetime
+import hashlib
+import json
+import os
 import pathlib
+import re
 import sys
+import time
+import types
+import uuid
 
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
 
 
+def verify_module_usage(module_directory):
+  store = module_directory.parent / "store"
+  helper_names = {"_now", "_tool_domain", "_plain_value", "_usage_metrics", "_active_todo_attribution",
+          "_increment_usage_bucket", "_record_todo_usage", "_record_tool_usage"}
+  server_ast = ast.parse((module_directory / "server.py").read_text(encoding="utf-8"))
+  helpers = ast.Module(body=[node for node in server_ast.body if isinstance(node, ast.FunctionDef) and node.name in helper_names], type_ignores=[])
+  namespace = {**globals(), "STORE":store, "_COLLECTOR_SESSION_ID":"usage-test", "_SKILL_ROUTER_TOOLS":set()}
+  exec(compile(helpers, "generated-usage-helpers", "exec"), namespace)
+  session_id, todo_id, run_id = "agent_session_usage", "todo_usage", "recipe_run_usage"
+  sessions = store / ".pkm" / "state" / "agent-sessions"
+  runs = store / ".pkm" / "state" / "recipe-runs"
+  (sessions / "active").mkdir(parents=True)
+  runs.mkdir(parents=True)
+  (sessions / (session_id + ".json")).write_text(json.dumps({"schema":"pkm.agent.session/v1", "sessionId":session_id,
+    "recipeRunIds":[run_id], "todos":[{"todoId":todo_id,"status":"running"}]}))
+  (runs / (run_id + ".json")).write_text(json.dumps({"schema":"pkm.recipe.run/v1", "runId":run_id,"nodes":{"first":{},"second":{}}}))
+  transport_key = hashlib.sha256(b"usage-transport").hexdigest()
+  (sessions / "active" / (transport_key + ".json")).write_text(json.dumps({"sessionId":session_id}))
+  context = types.SimpleNamespace(fastmcp_context=types.SimpleNamespace(session_id="usage-transport"))
+  attribution = namespace["_active_todo_attribution"](context, {"run_id":run_id,"node_id":"first"})
+  assert attribution.get("recipeRunId") == run_id and attribution.get("nodeId") == "first", attribution
+  for success in [True,False]:
+    namespace["_record_tool_usage"]("recipe_run_progress", {"run_id":run_id,"node_id":"first"}, {}, 4, success, attribution)
+  unassigned = namespace["_active_todo_attribution"](context, {"run_id":"recipe_run_foreign","node_id":"first"})
+  assert "recipeRunId" not in unassigned
+  assert "nodeId" not in namespace["_active_todo_attribution"](context, {"run_id":run_id,"node_id":"missing"})
+  namespace["_record_tool_usage"]("get_note", {}, {}, 2, True, unassigned)
+  aggregate = json.loads((store / ".pkm" / "state" / "mcp-usage" / "todos" / session_id / (todo_id + ".json")).read_text())
+  assert aggregate["calls"] == 3 and len(aggregate["modules"]) == 1, aggregate
+  module = aggregate["modules"][run_id + ":first"]
+  assert module["calls"] == 2 and module["successes"] == 1 and module["estimatedTokens"] > 0, module
+  events = [json.loads(filename.read_text()) for filename in (store / ".pkm" / "state" / "mcp-usage" / "events").glob("*.json")]
+  assert sum(event.get("nodeId") == "first" for event in events) == 2, events
+
+
 async def main():
     module_directory = pathlib.Path(sys.argv[1])
+    verify_module_usage(module_directory)
     with (module_directory / "server.stderr.log").open("w", encoding="utf-8") as log:
         transport = StdioTransport(
             sys.executable,

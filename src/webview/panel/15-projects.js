@@ -250,7 +250,7 @@ function agentSessionNodeDragStart(event, node) {
 }
 
 function agentSessionGraphReorganize() {
-  const session = (projectSnapshot?.agentSessions || []).find(candidate => candidate.sessionId === (agentSessionFullscreenRunId || selectedAgentSessionId));
+  const session = [...(projectSnapshot?.agentSessions || []), ...(projectSnapshot?.agentSessionTrash || [])].find(candidate => candidate.sessionId === (agentSessionFullscreenRunId || selectedAgentSessionId));
   const prefixes = new Set((session?.runs || []).map(run => `${run.runId}:`));
   const todoKeys = new Set([...(session?.todos || []).map(todo => `todo:${todo.todoId}`), `todo:${session?.sessionId}:task`, `todo:${session?.sessionId}:unassigned`]);
   Object.keys(agentSessionNodePositions).filter(key => todoKeys.has(key) || [...prefixes].some(prefix => key.startsWith(prefix)))
@@ -2235,7 +2235,7 @@ function agentSessionRunGraph(run, allRuns, seen = new Set(), ownerTodo = null, 
     const child = node.childRunId ? allRuns.find(candidate => candidate.runId === node.childRunId) : null;
     const position = agentSessionNodePositions[`${run.runId}:${node.nodeId}`] || { x:0, y:0 };
     const todoSelected = ownerTodo?.todoId && selectedAgentSessionTodoId === ownerTodo.todoId;
-    return `<div class="agent-runtime-node-shell"><article tabindex="0" class="agent-runtime-node ${stateName}${todoSelected ? ' todo-selected' : ''}" data-run-id="${esc(run.runId)}" data-node-id="${esc(node.nodeId)}" data-todo-id="${esc(ownerTodo?.todoId || '')}" style="transform:translate(${Number(position.x) || 0}px,${Number(position.y) || 0}px)" onpointerdown="agentSessionNodeDragStart(event,this)"><header><span class="codicon ${node.kind === 'pkm.subflow/v1' ? 'codicon-type-hierarchy-sub' : stateName === 'running' ? 'codicon-loading codicon-modifier-spin' : stateName === 'succeeded' ? 'codicon-pass-filled' : stateName === 'failed' ? 'codicon-error' : stateName === 'skipped' ? 'codicon-debug-step-over' : 'codicon-circle-outline'}"></span><strong>${esc(node.nodeId)}</strong><b>${esc(stateName)}</b></header><small>${dependencies ? `After ${esc(dependencies)}` : 'Start node'}${node.outcome && node.outcome !== stateName ? ` · ${esc(node.outcome)}` : ''}</small>${ownerTodo ? `<small class="agent-runtime-todo-owner"><span class="codicon codicon-checklist"></span>${esc(ownerTodo.title)} · ${esc(String(ownerTodo.todoId).slice(0, 12))}</small>` : ''}${node.instruction ? `<p>${esc(node.instruction)}</p>` : ''}${node.error ? `<p class="agent-runtime-error">${esc(node.error)}</p>` : ''}${agentSessionProgressDetails(node)}</article>${child ? `<div class="agent-runtime-child"><span>Nested Recipe</span>${agentSessionRunGraph(child, allRuns, seen, ownerTodo, forceOpen)}</div>` : ''}</div>`;
+    return `<div class="agent-runtime-node-shell"><article tabindex="0" class="agent-runtime-node ${stateName}${todoSelected ? ' todo-selected' : ''}" data-run-id="${esc(run.runId)}" data-node-id="${esc(node.nodeId)}" data-todo-id="${esc(ownerTodo?.todoId || '')}" style="transform:translate(${Number(position.x) || 0}px,${Number(position.y) || 0}px)" onpointerdown="agentSessionNodeDragStart(event,this)"><header><span class="codicon ${node.kind === 'pkm.subflow/v1' ? 'codicon-type-hierarchy-sub' : stateName === 'running' ? 'codicon-loading codicon-modifier-spin' : stateName === 'succeeded' ? 'codicon-pass-filled' : stateName === 'failed' ? 'codicon-error' : stateName === 'skipped' ? 'codicon-debug-step-over' : 'codicon-circle-outline'}"></span><strong>${esc(node.nodeId)}</strong><b>${esc(stateName)}</b></header><small>${dependencies ? `After ${esc(dependencies)}` : 'Start node'}${node.outcome && node.outcome !== stateName ? ` · ${esc(node.outcome)}` : ''}</small>${ownerTodo ? `<small class="agent-runtime-todo-owner"><span class="codicon codicon-checklist"></span>${esc(ownerTodo.title)} · ${esc(String(ownerTodo.todoId).slice(0, 12))}</small>` : ''}${agentSessionModuleUsage(node.usage)}${node.instruction ? `<p>${esc(node.instruction)}</p>` : ''}${node.error ? `<p class="agent-runtime-error">${esc(node.error)}</p>` : ''}${agentSessionProgressDetails(node)}</article>${child ? `<div class="agent-runtime-child"><span>Nested Recipe</span>${agentSessionRunGraph(child, allRuns, seen, ownerTodo, forceOpen)}</div>` : ''}</div>`;
   }).join('')}</div>`).join('');
   const runKind = run.origin?.kind === 'agent-session-adhoc' ? 'Ad hoc Recipe' : run.origin?.kind && run.origin.kind !== 'library' ? 'Recipe source unknown' : 'Recipe Library';
   const markerId = `agent-runtime-arrow-${String(run.runId || '').replace(/[^A-Za-z0-9_-]/g, '-')}`;
@@ -2352,7 +2352,7 @@ function agentSessionTodoModule(todo, position = { x:0, y:0 }) {
   const status = agentSessionNodeState(todo.status);
   const icon = status === 'running' ? 'codicon-loading codicon-modifier-spin' : status === 'succeeded' ? 'codicon-pass-filled' : status === 'failed' ? 'codicon-error' : 'codicon-circle-outline';
   const offset = agentSessionNodePositions[`todo:${todo.todoId}`] || { x:0, y:0 };
-  return `<article tabindex="0" class="agent-runtime-node agent-session-unified-node agent-session-todo-module ${status}" data-module-kind="todo" data-node-key="todo:${esc(todo.todoId)}" data-todo-id="${esc(todo.todoId)}" data-tree-dependencies="%5B%5D" style="left:${Number(position.x) || 0}px;top:${Number(position.y) || 0}px;transform:translate(${Number(offset.x) || 0}px,${Number(offset.y) || 0}px)" onpointerdown="agentSessionNodeDragStart(event,this)"><header><span class="codicon ${icon}"></span><strong>${esc(todo.title)}</strong><b>${esc(todo.status)}</b></header><small class="agent-session-recipe-source">Ad hoc task · Todo module</small>${todo.details ? `<p>${esc(todo.details)}</p>` : ''}${todo.summary ? `<small>${esc(todo.summary)}</small>` : ''}</article>`;
+  return `<article tabindex="0" class="agent-runtime-node agent-session-unified-node agent-session-todo-module ${status}" data-module-kind="todo" data-node-key="todo:${esc(todo.todoId)}" data-todo-id="${esc(todo.todoId)}" data-tree-dependencies="%5B%5D" style="left:${Number(position.x) || 0}px;top:${Number(position.y) || 0}px;transform:translate(${Number(offset.x) || 0}px,${Number(offset.y) || 0}px)" onpointerdown="agentSessionNodeDragStart(event,this)"><header><span class="codicon ${icon}"></span><strong>${esc(todo.title)}</strong><b>${esc(todo.status)}</b></header><small class="agent-session-recipe-source">Ad hoc task · Todo module</small>${agentSessionModuleUsage(todo.usage)}${todo.details ? `<p>${esc(todo.details)}</p>` : ''}${todo.summary ? `<small>${esc(todo.summary)}</small>` : ''}</article>`;
 }
 
 function agentSessionUnifiedNode(run, node, todo, position = { x:0, y:0 }, treeDependencies = []) {
@@ -2365,6 +2365,7 @@ function agentSessionUnifiedNode(run, node, todo, position = { x:0, y:0 }, treeD
     <small>${dependencies ? `After ${esc(dependencies)}` : 'Start module'}${node.outcome && node.outcome !== stateName ? ` · ${esc(node.outcome)}` : ''}</small>
     <small class="agent-runtime-todo-owner"><span class="codicon codicon-checklist"></span>${esc(todo?.title || 'Session activity')} · ${esc(String(todo?.todoId || 'unassigned').slice(0, 12))}</small>
     ${agentSessionRecipeSource(run)}
+    ${agentSessionModuleUsage(node.usage)}
     ${node.instruction ? `<p>${esc(node.instruction)}</p>` : ''}${node.error ? `<p class="agent-runtime-error">${esc(node.error)}</p>` : ''}${agentSessionProgressDetails(node)}
   </article>`;
 }
@@ -2374,6 +2375,10 @@ function agentSessionUsageNumber(value) {
   if (number >= 1000000) return `${(number / 1000000).toFixed(number >= 10000000 ? 0 : 1).replace(/\.0$/, '')}M`;
   if (number >= 1000) return `${(number / 1000).toFixed(number >= 10000 ? 0 : 1).replace(/\.0$/, '')}K`;
   return String(Math.round(number));
+}
+
+function agentSessionModuleUsage(usage) {
+  return agentSessionTodoUsage({usage:usage || {protocol:{},model:{quality:'unknown'}}, usageScope:'module'});
 }
 
 function agentSessionTodoUsage(todo) {
@@ -2389,14 +2394,16 @@ function agentSessionTodoUsage(todo) {
   else if (model.quality === 'estimated') modelText = `Model ~${agentSessionUsageNumber(model.estimatedTokens)} estimated`;
   else if (model.quality === 'partial') {
     const parts = [];
-    if (model.measuredTokens?.totalTokens || model.measuredTokens?.totalTokens === 0) parts.push(`${agentSessionUsageNumber(model.measuredTokens.totalTokens)} measured`);
-    if (model.estimatedTokens) parts.push(`~${agentSessionUsageNumber(model.estimatedTokens)} estimated`);
+    if (model.measuredReports > 0 || model.measuredTokens?.totalTokens > 0) parts.push(`${agentSessionUsageNumber(model.measuredTokens?.totalTokens)} measured`);
+    if (model.estimatedReports > 0 || model.estimatedTokens > 0) parts.push(`~${agentSessionUsageNumber(model.estimatedTokens)} estimated`);
     modelText = `Model ${parts.join(' + ') || 'partially reported'}`;
+    modelText += ' · partial';
   }
   const detail = [
     protocol.observed
       ? `MCP protocol estimate: ${protocol.estimatedTokens} tokens from ${(protocol.inputBytes || 0) + (protocol.outputBytes || 0)} bytes across ${protocol.calls} calls; ${protocol.failures || 0} failed; ${Math.round(protocol.durationMs || 0)} ms total.`
-      : 'MCP protocol usage was not observed for this Todo.',
+      : `MCP protocol usage was not observed for this ${todo.usageScope || 'Todo'}.`,
+    todo.usageScope === 'module' ? 'Only MCP calls attributed to this module are counted; other host function calls are unavailable.' : '',
     `Model token quality: ${model.quality || 'unknown'}.`,
     model.unknownModelCalls ? `${model.unknownModelCalls} model call(s) have unknown token usage.` : '',
     'Premium-request or credit usage is unavailable from the host.',
@@ -2456,10 +2463,11 @@ function agentSessionUnifiedTree(session, todos) {
       const local = RecipeGraph.organizedPositions(layoutNodes.filter(node => keys.has(node.nodeId)).map(node => ({
         ...node, dependsOn:node.dependsOn.filter(dependency => keys.has(dependency.from))
       })), {startX:28,startY:144,columnPitch:244,rowPitch:158});
+      const widestRow = Math.max(1, ...owned.map(entry => owned.filter(candidate => positions[candidate.key].y === positions[entry.key].y).length));
       const columns = Object.fromEntries(owned.map(entry => {
         const peers = owned.filter(candidate => positions[candidate.key].y === positions[entry.key].y)
           .sort((left,right) => local[left.key].x - local[right.key].x || left.key.localeCompare(right.key));
-        return [entry.key, peers.indexOf(entry) * 244];
+        return [entry.key, (widestRow - peers.length) * 244 / 2 + peers.indexOf(entry) * 244];
       }));
       return {todoId:todo.todoId, owned, columns,
         top:Math.min(...owned.map(entry => positions[entry.key].y)) - 24,
@@ -2479,6 +2487,12 @@ function agentSessionUnifiedTree(session, todos) {
     }
   }
   const width = Math.max(520, ...entries.map(entry => (positions[entry.key]?.x || 0) + 210 + 28));
+  if (entries.length) {
+    const left = Math.min(...entries.map(entry => positions[entry.key].x));
+    const right = Math.max(...entries.map(entry => positions[entry.key].x + 210));
+    const offset = width / 2 - (left + right) / 2;
+    for (const entry of entries) positions[entry.key].x += offset;
+  }
   const height = Math.max(320, ...entries.map(entry => (positions[entry.key]?.y || 0) + 104 + 126));
   const boundaries = todos.map(todo => {
     const ownedRuns = agentSessionOwnedRuns(todo, session.runs || []);
@@ -2542,7 +2556,7 @@ function agentSessionLayoutUnifiedLinks(graph) {
     .map(group => [group.dataset.recipeGroup, group]));
   const sessionCard = graph.querySelector('.agent-session-unified-session[data-session-node]');
   const stopCard = graph.querySelector('[data-queue-boundary="stop"]');
-  const sessions = projectSnapshot?.agentSessions || [];
+  const sessions = [...(projectSnapshot?.agentSessions || []), ...(projectSnapshot?.agentSessionTrash || [])];
   const session = sessions.find(candidate => candidate.sessionId === graph.dataset.sessionId);
   const paths = [];
   const arrows = [];
@@ -2740,9 +2754,11 @@ function renderAgentSessions() {
   const trash = projectSnapshot?.agentSessionTrash || [];
   const activeSessions = sessions.filter(session => session.status === 'running');
   const archivedSessions = sessions.filter(session => session.status !== 'running');
-  if (!sessions.some(session => session.sessionId === selectedAgentSessionId)) selectedAgentSessionId = activeSessions[0]?.sessionId || archivedSessions[0]?.sessionId || '';
-  const selected = sessions.find(session => session.sessionId === selectedAgentSessionId);
-  const trashList = trash.map(session => `<div class="li knowledge-trash-item cattree-item agent-session-trash-row" oncontextmenu="agentSessionTrashContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'))"><div><strong>${esc(session.task)}</strong><small>${esc(session.agent?.name || 'Agent')}</small></div><button class="cattree-item-menu" title="Trash actions" aria-label="Trash actions for ${esc(session.task)}" onclick="event.stopPropagation();agentSessionTrashContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'))"><span class="codicon codicon-ellipsis"></span></button></div>`).join('');
+  const selectableSessions = [...sessions, ...trash];
+  if (!selectableSessions.some(session => session.sessionId === selectedAgentSessionId)) selectedAgentSessionId = activeSessions[0]?.sessionId || archivedSessions[0]?.sessionId || trash[0]?.sessionId || '';
+  const selectedRecord = selectableSessions.find(session => session.sessionId === selectedAgentSessionId);
+  const selected = selectedRecord && {...selectedRecord, runs:selectedRecord.runs || []};
+  const trashList = trash.map(session => `<div class="li knowledge-trash-item cattree-item agent-session-trash-row ${session.sessionId === selectedAgentSessionId ? 'active' : ''}" role="button" tabindex="0" onclick="agentSessionSelect(decodeURIComponent('${encodeURIComponent(session.sessionId)}'))" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();agentSessionSelect(decodeURIComponent('${encodeURIComponent(session.sessionId)}'))}" oncontextmenu="agentSessionTrashContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'))"><div><strong>${esc(session.task)}</strong><small>${esc(session.agent?.name || 'Agent')}</small></div><button class="cattree-item-menu" title="Trash actions" aria-label="Trash actions for ${esc(session.task)}" onclick="event.stopPropagation();agentSessionTrashContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'))"><span class="codicon codicon-ellipsis"></span></button></div>`).join('');
   const list = agentSessionTree(sessions);
   const empty = `<div class="agent-session-empty"><span class="codicon codicon-run-all"></span><strong>No Agent Sessions</strong><p>An Agent appears here only after it explicitly accepts PKM management with agent_session_start.</p></div>`;
   let content = empty;
