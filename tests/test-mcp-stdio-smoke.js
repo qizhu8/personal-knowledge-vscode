@@ -10,7 +10,7 @@ const repositoryRoot = path.join(__dirname, "..");
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-mcp-stdio-smoke-"));
 
 try {
-  const source = fs.readFileSync(path.join(repositoryRoot, "src", "mcp.ts"), "utf8");
+  const source = fs.readFileSync(path.join(repositoryRoot, "src", "mcp/mcp.ts"), "utf8");
   const match = /fs\.writeFileSync\(serverPy, `([\s\S]*?)`\);\n\n  fs\.writeFileSync\(reqTxt/.exec(source);
   assert(match, "could not extract generated unified MCP server template");
 
@@ -53,7 +53,7 @@ try {
     fs.readFileSync(path.join(repositoryRoot, "resources", "chat_server.py.template"), "utf8")
       .replaceAll("%%CHAT_MCP_VERSION%%", "chat-test"),
   );
-  for (const name of ["recipe_runtime.py", "recipe_health.py", "agent_session_runtime.py", "mcp_call_guard.py"]) {
+  for (const name of ["recipe_runtime.py", "recipe_health.py", "agent_session_runtime.py", "api_chat_control.py", "mcp_call_guard.py", "diagnostic_log.py"]) {
     fs.copyFileSync(path.join(repositoryRoot, "resources", name), path.join(moduleDirectory, name));
   }
 
@@ -72,6 +72,7 @@ import types
 import uuid
 
 from fastmcp import Client
+from fastmcp.exceptions import ToolError
 from fastmcp.client.transports import StdioTransport
 
 
@@ -83,6 +84,7 @@ def verify_module_usage(module_directory):
   helpers = ast.Module(body=[node for node in server_ast.body if isinstance(node, ast.FunctionDef) and node.name in helper_names], type_ignores=[])
   namespace = {**globals(), "STORE":store, "_COLLECTOR_SESSION_ID":"usage-test", "_SKILL_ROUTER_TOOLS":set()}
   exec(compile(helpers, "generated-usage-helpers", "exec"), namespace)
+  assert namespace["_tool_domain"]("api_chat_send") == "automation"
   session_id, todo_id, run_id = "agent_session_usage", "todo_usage", "recipe_run_usage"
   sessions = store / ".pkm" / "state" / "agent-sessions"
   runs = store / ".pkm" / "state" / "recipe-runs"
@@ -124,6 +126,12 @@ async def main():
             async with Client(transport, timeout=3, init_timeout=3) as client:
                 tools = await asyncio.wait_for(client.list_tools(), 3)
                 by_name = {tool.name: tool for tool in tools}
+                programmable_chat_tools = {"api_chat_capabilities", "api_chat_models", "api_chat_list", "api_chat_create",
+                  "api_chat_send", "api_chat_get", "api_chat_cancel", "api_chat_request_get"}
+                assert programmable_chat_tools <= set(by_name)
+                chat_capabilities = await client.call_tool("api_chat_capabilities", {})
+                assert chat_capabilities.structured_content["hosts"] == []
+                assert chat_capabilities.structured_content["schema_version"] == "1.0.0"
                 version_result = await asyncio.wait_for(client.call_tool("check_version", {}), 3)
                 version = version_result.structured_content
                 assert version["components"] == {
@@ -132,6 +140,21 @@ async def main():
                     "recipes": "recipe-test",
                     "agent_sessions": "agent-session-test",
                 }, version
+
+                assert "diagnostics_latest" in by_name
+                assert by_name["diagnostics_latest"].annotations.readOnlyHint is True
+                diagnostics = await client.call_tool("diagnostics_latest", {"limit": 100})
+                records = diagnostics.structured_content["records"]
+                version_records = [entry for entry in records if entry.get("tool") == "check_version"]
+                assert [entry["event"] for entry in version_records] == ["mcp.call.started", "mcp.call.returned"], records
+                assert version_records[0]["callId"] == version_records[1]["callId"]
+                assert diagnostics.structured_content["max_rows"] == 100000
+                assert diagnostics.structured_content["dropped_records"] == 0
+                try:
+                  await client.call_tool("diagnostics_latest", {"limit": 100001})
+                  raise AssertionError("Unbounded diagnostic query was accepted")
+                except ToolError:
+                  pass
 
                 discovery_names = [
                     version["chat_discovery_tool"],
@@ -154,6 +177,11 @@ async def main():
                     "agent_session_status",
                     "agent_session_load",
                     "agent_session_snapshot_list",
+                    "api_chat_capabilities",
+                    "api_chat_models",
+                    "api_chat_list",
+                    "api_chat_get",
+                    "api_chat_request_get",
                 ]
                 missing = sorted(set(required_read_only) - set(by_name))
                 assert not missing, ("advertised tools missing from tools/list", missing)
@@ -168,7 +196,7 @@ async def main():
                     "check_chat_version": "chat-test",
                     "chat_capabilities": "chat-test",
                     "recipe_capabilities": "1.8.0",
-                    "agent_session_capabilities": "1.7.8",
+                    "agent_session_capabilities": "1.8.0",
                 }
                 for name in ["check_chat_version", *discovery_names]:
                     result = await asyncio.wait_for(client.call_tool(name, {}), 3)

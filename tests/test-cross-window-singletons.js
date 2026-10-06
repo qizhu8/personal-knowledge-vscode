@@ -3,7 +3,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { withCrossProcessLock } = require('../dist/cross-process-lock.js');
+const { withCrossProcessLock } = require("../dist/runtime/cross-process-lock.js");
 
 async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pkm-singleton-test-'));
@@ -28,11 +28,11 @@ async function main() {
     assert.strictEqual(await withCrossProcessLock(lockPath, 'recovery', 1000, async () => 'recovered'), 'recovered');
 
     const extension = fs.readFileSync(path.join(__dirname, '..', 'src', 'extension.ts'), 'utf8');
-    const servers = fs.readFileSync(path.join(__dirname, '..', 'src', 'servers.ts'), 'utf8');
-    const subscriptions = fs.readFileSync(path.join(__dirname, '..', 'src', 'subscriptions.ts'), 'utf8');
-    const retrieval = fs.readFileSync(path.join(__dirname, '..', 'src', 'retrieval-worker.ts'), 'utf8');
-    const chatHub = fs.readFileSync(path.join(__dirname, '..', 'src', 'chatroom-hub.ts'), 'utf8');
-    const sync = fs.readFileSync(path.join(__dirname, '..', 'src', 'sync-server.ts'), 'utf8');
+    const servers = fs.readFileSync(path.join(__dirname, '..', 'src', "servers/servers.ts"), 'utf8');
+    const subscriptions = fs.readFileSync(path.join(__dirname, '..', 'src', "subscriptions/subscriptions.ts"), 'utf8');
+    const retrieval = fs.readFileSync(path.join(__dirname, '..', 'src', "retrieval/retrieval-worker.ts"), 'utf8');
+    const chatHub = fs.readFileSync(path.join(__dirname, '..', 'src', "chatroom/chatroom-hub.ts"), 'utf8');
+    const sync = fs.readFileSync(path.join(__dirname, '..', 'src', "sync/sync-server.ts"), 'utf8');
 
     assert.match(servers, /\.well-known\/pkm-servers-proxy/);
     assert.match(servers, /servers proxy reused/);

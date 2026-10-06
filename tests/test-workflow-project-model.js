@@ -17,12 +17,17 @@ assert.strictEqual(state.threads.length, 1);
 assert.deepStrictEqual(state.recipes.map(recipe => recipe.name), [
   "Universal Unknown Task", "Conditional Closed-Loop Communication", "Configurable Validation and Testing",
   "Software Development", "Bug Fix", "UI Development", "Reflection", "Evolve Recipes from Evidence", "Use Recipe Library",
-  "Create Agent Snapshot", "Publish Personal Knowledge VSIX", "Executable Module Examples", "Branch and Repeat Module Examples",
+  "Create Agent Snapshot", "Publish Personal Knowledge VSIX", "Structured Test Result Gate", "PKM Chat E2E Acceptance", "Executable Module Examples", "Branch and Repeat Module Examples",
   "DLIS Offline Job Log Diagnosis Example", "PKM Tutorial"
 ]);
 const universalUnknownTask = state.recipes.find(recipe => recipe.name === "Universal Unknown Task");
 const closedLoopCommunication = state.recipes.find(recipe => recipe.name === "Conditional Closed-Loop Communication");
 const configurableTesting = state.recipes.find(recipe => recipe.name === "Configurable Validation and Testing");
+const testGate = state.recipes.find(recipe => recipe.name === "Structured Test Result Gate");
+assert.strictEqual(testGate.definition.spec.nodes[0].kind, "pkm.step.command/v1");
+assert.deepStrictEqual(testGate.definition.spec.nodes[0].config.args,
+  ["${inputs.gate_script}", "--config", "${inputs.config_file}"]);
+assert.strictEqual(testGate.definition.spec.inputs.config_file.required, true);
 assert.strictEqual(universalUnknownTask.methodology.schema, "pkm.recipe.methodology/v1");
 assert.strictEqual(universalUnknownTask.methodology.family, "universal-unknown-task");
 assert.match(universalUnknownTask.methodologyDigest, /^[a-f0-9]{64}$/);
@@ -114,6 +119,20 @@ assert.strictEqual(createAgentSnapshot.revision, 2);
 assert.strictEqual(createAgentSnapshot.definition.spec.nodes[0].kind, "pkm.step.native/v1");
 assert.strictEqual(createAgentSnapshot.definition.spec.nodes[0].config.operation, "agent_session_snapshot_create");
 const builtInInventory = builtInRecipeInventory();
+const chatE2e = state.recipes.find(recipe => recipe.name === "PKM Chat E2E Acceptance");
+assert.strictEqual(chatE2e.category, "System/PKM/Chat");
+assert.strictEqual(chatE2e.systemKind, "built-in");
+assert.match(chatE2e.executableDigest, /^[a-f0-9]{64}$/);
+assert.deepStrictEqual(chatE2e.definition.spec.nodes.map(node => node.nodeId), ["execute-real-acceptance", "prepare-isolated-session", "verify-and-report"]);
+const executeChatE2e = chatE2e.definition.spec.nodes.find(node => node.nodeId === "execute-real-acceptance");
+const verifyChatE2e = chatE2e.definition.spec.nodes.find(node => node.nodeId === "verify-and-report");
+assert(executeChatE2e.dependsOn.some(dependency => dependency.from === "prepare-isolated-session" && dependency.required));
+assert(verifyChatE2e.dependsOn.some(dependency => dependency.from === "execute-real-acceptance" && dependency.required));
+assert.match(executeChatE2e.generalInstruction, /personalKnowledge\.testApiChatE2E/);
+assert.match(executeChatE2e.generalInstruction, /do not claim automatic Session control/);
+assert.match(verifyChatE2e.generalInstruction, /unchanged test hash/);
+assert.match(verifyChatE2e.generalInstruction, /unknown is not zero/);
+assert.deepStrictEqual(chatE2e.metadata.expectedOutputs.map(output => output.name), ["sessionId", "acceptanceReport", "verdict"]);
 assert.strictEqual(builtInInventory.length, state.recipes.filter(recipe => recipe.systemKind === "built-in").length);
 assert(builtInInventory.every(recipe => recipe.systemKind === "built-in"));
 assert(builtInInventory.every(recipe => JSON.stringify(recipe.tags) === JSON.stringify(["System"])));
@@ -223,7 +242,7 @@ const randomRoot = initializeProjectModel(undefined);
 assert.match(randomRoot.rootId, /^root_[0-9a-f-]{36}$/);
 const restoredDefaults = initializeProjectModel({ schema: 1, rootId: "root_existing" });
 assert.strictEqual(restoredDefaults.projects.length, 1);
-assert.strictEqual(restoredDefaults.recipes.length, 15);
+assert.strictEqual(restoredDefaults.recipes.length, 17);
 const restoredComplete = initializeProjectModel(state);
 assert.deepStrictEqual(restoredComplete, state);
 errorCode(() => initializeProjectModel({ schema: 1, projects: [{ projectId: "p", name: "P", version: 1 }] }), "root-identity-missing");

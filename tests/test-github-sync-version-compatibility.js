@@ -1,6 +1,6 @@
 const assert = require("assert");
 const packageJson = require("../package.json");
-const { manifestJson, parseManagedManifest } = require("../dist/github-sync");
+const { manifestJson, parseManagedManifest } = require("../dist/sync/github-sync");
 
 const current = JSON.parse(manifestJson([]));
 assert.strictEqual(current.schema, 3);

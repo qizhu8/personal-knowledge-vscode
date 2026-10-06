@@ -1,23 +1,27 @@
-import { withCrossProcessLock } from "./cross-process-lock";
-import { stableUserPort } from "./user-service-ports";
-import { KnowledgeInventoryManager } from "./knowledge-inventory";
-import { performanceSummary, recordPerformanceMetric } from "./performance-telemetry";
-import { mcpUsageSummary, recipeNodeUsageSummary, todoUsageSummary } from "./mcp-usage";
-import { agentSnapshotIsEncrypted, createAgentSnapshot, deleteAgentSnapshot, listAgentSnapshots, renameAgentSnapshot, readAgentSnapshotContents } from "./agent-snapshots";
-import { agentSessionArchiveKeepLatestK, agentSessionLiveness, emptyAgentSessionTrash, enforceAgentSessionArchiveRetention, moveAgentSessionToTrash, permanentlyDeleteTrashedAgentSession, projectedAgentSessionStatus, recipeNodeObservability, reconcileAgentSessionActiveMappings, restoreAgentSessionFromTrash, stopAgentSession } from "./agent-session-lifecycle";
-import { JsonFileCache } from "./json-file-cache";
+import { withCrossProcessLock } from "./runtime/cross-process-lock";
+import { stableUserPort } from "./runtime/user-service-ports";
+import { KnowledgeInventoryManager } from "./knowledge/knowledge-inventory";
+import { performanceSummary, recordPerformanceMetric } from "./runtime/performance-telemetry";
+import { mcpUsageSummary, recipeNodeUsageSummary, todoUsageSummary } from "./mcp/mcp-usage";
+import { agentSnapshotIsEncrypted, createAgentSnapshot, deleteAgentSnapshot, listAgentSnapshots, renameAgentSnapshot, readAgentSnapshotContents } from "./agent-sessions/agent-snapshots";
+import { agentSessionArchiveKeepLatestK, agentSessionLiveness, emptyAgentSessionTrash, enforceAgentSessionArchiveRetention, moveAgentSessionToTrash, permanentlyDeleteTrashedAgentSession, projectedAgentSessionStatus, recipeNodeObservability, reconcileAgentSessionActiveMappings, restoreAgentSessionFromTrash, stopAgentSession } from "./agent-sessions/agent-session-lifecycle";
+import { JsonFileCache } from "./runtime/json-file-cache";
+import { agentSessionGroup } from "./agent-sessions/agent-session-lifecycle";
+import { deleteAgentSessionGroup } from "./agent-sessions/agent-session-lifecycle";
+import { DiagnosticLog } from "./runtime/diagnostic-log";
+import { ExtensionHostRegistry, loadedExtensionBuild, readInstalledExtensionBuild } from "./runtime/extension-host-runtime";
 import * as vscode from "vscode";
 import * as path from "path";
 import * as os from "os";
 import * as http from "http";
 import * as net from "net";
 import * as fs from "fs";
-import { syncServer } from "./sync-server";
-import { MAX_SUBSCRIPTION_CACHE_BYTES, SharedContentType, SharedMarketManager, SHARED_CONTENT_TYPES } from "./subscriptions";
-import { brokerShareMarkers, sharedContentIdentity } from "./broker-share-markers";
-import { isContentItemPrivate, isContentPathPrivate, isTopLevelPrivate, privateTopLevels, PrivacyContentType, renameTopLevelPrivacy, setPrivacyStoreRoot, setTopLevelPrivacy } from "./content-privacy";
-import { knowledgeGroupAssign, knowledgeGroupCreate, knowledgeGroupDelete, knowledgeGroupFolderRenamed, knowledgeGroupRename, knowledgeGroupSetColor, knowledgeGroupSnapshot, KnowledgeGroupArea, setKnowledgeGroupStoreRoot } from "./knowledge-groups";
-import { forkSubscriptionContent } from "./subscription-fork";
+import { syncServer } from "./sync/sync-server";
+import { MAX_SUBSCRIPTION_CACHE_BYTES, SharedContentType, SharedMarketManager, SHARED_CONTENT_TYPES } from "./subscriptions/subscriptions";
+import { brokerShareMarkers, sharedContentIdentity } from "./subscriptions/broker-share-markers";
+import { isContentItemPrivate, isContentPathPrivate, isTopLevelPrivate, privateTopLevels, PrivacyContentType, renameTopLevelPrivacy, setPrivacyStoreRoot, setTopLevelPrivacy } from "./knowledge/content-privacy";
+import { knowledgeGroupAssign, knowledgeGroupCreate, knowledgeGroupDelete, knowledgeGroupFolderRenamed, knowledgeGroupRename, knowledgeGroupSetColor, knowledgeGroupSnapshot, KnowledgeGroupArea, setKnowledgeGroupStoreRoot } from "./knowledge/knowledge-groups";
+import { forkSubscriptionContent } from "./subscriptions/subscription-fork";
 import {
   skillList, skillSearch, skillGet, skillUpsert, skillDelete, skillMoveCategory, skillMove, skillSetPinned,
   skillMoveToTrash, skillFolderMoveToTrash, skillTrashList, skillTrashRestore, skillTrashEmpty, skillTrashDelete,
@@ -31,90 +35,92 @@ import {
   setStorePath as fsSetStorePath, getStorePath,
   folderCreate, folderList, folderRename, folderDeletePromote, storeEntryMove, storeSafeName, knowledgeFilePath,
   SkillPriority,
-} from "./filestore";
-import { migrateDbToFiles } from "./migrate";
+} from "./knowledge/filestore";
+import { migrateDbToFiles } from "./knowledge/migrate";
 import {
   initServers, disposeServers, serverList, serverImport, serverCreate,
   serverUpdate, serverGroupList, serverCreateGroup, serverMoveGroup, serverPortOwner, serverNetworkAddresses, forceStopExternalServer, serverDelete, startServer, stopServer, restartServer, setServerPort, serverLog, serverDir,
-} from "./servers";
-import { ChatHub, ChatClient, ChatMessage, Member, FileMeta, AgentRuntimeState, ChatMode, ReplyPolicy, MAX_FILE_BYTES } from "./chatroom";
-import { MeetingStateStore, MeetingRoomSnapshot } from "./meeting-state";
-import { ChatMeetingLifecycle, isFinalLeadSummary } from "./chat-meeting-lifecycle";
-import { messageAddressesManagedAgent } from "./chat-managed-agent-routing";
-import { BOT_NAME } from "./chat-commands";
-import { StoredChatRoom } from "./chat-room-lifecycle";
-import { chatRoomIdentity, joinedRoomRecents } from "./chat-room-identity";
-import { probeChatRoomActive } from "./chat-hub-health";
+} from "./servers/servers";
+import { ChatHub, ChatClient, ChatMessage, Member, FileMeta, AgentRuntimeState, ChatMode, ReplyPolicy, MAX_FILE_BYTES } from "./chatroom/chatroom";
+import { MeetingStateStore, MeetingRoomSnapshot } from "./chatroom/meeting-state";
+import { ChatMeetingLifecycle, isFinalLeadSummary } from "./chatroom/chat-meeting-lifecycle";
+import { messageAddressesManagedAgent } from "./chatroom/chat-managed-agent-routing";
+import { BOT_NAME } from "./chatroom/chat-commands";
+import { StoredChatRoom } from "./chatroom/chat-room-lifecycle";
+import { chatRoomIdentity, joinedRoomRecents } from "./chatroom/chat-room-identity";
+import { probeChatRoomActive } from "./chatroom/chat-hub-health";
 import {
   initPyenvs, pyenvList, pyenvAdd, pyenvUpdate, pyenvDelete,
   condaEnvs, detectFolderEnv, pyenvPackages, pyenvCompare,
   pyenvSize, pyenvActivateScript, pyenvActivateCommands, pyenvCreate, pyenvSimilarity, pyenvPyVersion, pyenvMigrate, pyenvDeleteScript, pyenvMergeScript,
-} from "./pyenvs";
+} from "./servers/pyenvs";
 import {
   promptList, promptGetFile, promptGetAllVersionsOfFile, promptFilePath, promptSaveVersionNote,
   packageList, packageGet, packageFileGet, packageDelete,
   scriptList, scriptSearch, scriptGet, scriptMove, scriptMoveFolder,
   promptImport, scriptImport, packageImport,
   setStorePath as storageSetStorePath,
-} from "./storage";
+} from "./knowledge/storage";
 
 // ── Git helper ─────────────────────────────────────────────────────────────
 import { execFile, execSync } from "child_process";
 import { createHash, randomBytes, randomUUID } from "crypto";
-import { createSyncMagicCode, parseSyncMagicCode } from "./sync-magic-code";
-import { createChatMagicLink, chatInviteMessage } from "./chat-magic-link";
-import { startLiveMarkdownServer } from "./live-note-server";
-import { browserFaviconTag, browserIconBuffer, ensureBrowserFavicon } from "./browser-branding";
-import { managedEnvironmentsRoot } from "./environment-paths";
-import { defaultKnowledgeGitignore } from "./root-storage-policy";
-import { NavigationStatus, summarizeChatNavigation, summarizeServerNavigation } from "./navigation-status";
-import { navigationItemPath } from "./navigation-path";
-import { parsePkmLocator, PkmLocatorError, resolvePkmLocator, ResolvedPkmLocator } from "./knowledge-locator";
-import { subscriptionNavigationRoot, SubscriptionNavigationNode } from "./navigation-subscriptions";
-import { createRetrievalSnapshot } from "./retrieval-snapshot";
-import { RetrievalWorkerManager } from "./retrieval-worker";
-import { cloudSynchronizedPath, extensionHostDescription, isAbsoluteForPlatform, isForeignAbsolutePath, resolveMachineStorePath } from "./store-path";
-import { loadLocaleCatalogs, loadLocaleManifest, localizedText, normalizeUiLanguage, resolveUiLanguage, UiLanguageSetting, uiLanguageSetting } from "./localization";
-import { decideInitialExperience, FEATURE_TOUR_MODULES, minorRelease } from "./onboarding-experience";
-import { AiBackend, aiSummarizeScript, listAiBackends, runAiPrompt, scriptCacheDir } from "./ai";
+import { createSyncMagicCode, parseSyncMagicCode } from "./sync/sync-magic-code";
+import { createChatMagicLink, chatInviteMessage } from "./chatroom/chat-magic-link";
+import { startLiveMarkdownServer } from "./knowledge/live-note-server";
+import { browserFaviconTag, browserIconBuffer, ensureBrowserFavicon } from "./ui/browser-branding";
+import { managedEnvironmentsRoot } from "./runtime/environment-paths";
+import { defaultKnowledgeGitignore } from "./runtime/root-storage-policy";
+import { NavigationStatus, summarizeChatNavigation, summarizeServerNavigation } from "./ui/navigation-status";
+import { navigationItemPath } from "./ui/navigation-path";
+import { parsePkmLocator, PkmLocatorError, resolvePkmLocator, ResolvedPkmLocator } from "./knowledge/knowledge-locator";
+import { subscriptionNavigationRoot, SubscriptionNavigationNode } from "./ui/navigation-subscriptions";
+import { createRetrievalSnapshot } from "./retrieval/retrieval-snapshot";
+import { RetrievalWorkerManager } from "./retrieval/retrieval-worker";
+import { cloudSynchronizedPath, extensionHostDescription, isAbsoluteForPlatform, isForeignAbsolutePath, resolveMachineStorePath } from "./knowledge/store-path";
+import { loadLocaleCatalogs, loadLocaleManifest, localizedText, normalizeUiLanguage, resolveUiLanguage, UiLanguageSetting, uiLanguageSetting } from "./ui/localization";
+import { decideInitialExperience, FEATURE_TOUR_MODULES, minorRelease } from "./ui/onboarding-experience";
+import { AiBackend, aiSummarizeScript, listAiBackends, runAiPrompt, scriptCacheDir } from "./ai/ai";
+import { registerApiChat } from "./chat/api-chat-view";
+import { agentSessionOrigin, apiChatGroupSnapshots } from "./chat/api-chat-store";
 import {
   cancelMcpPythonScan, combinedMcpInstallInstruction, combinedMcpRegistry,
   configuredMcpFeatureDomains, detectMcpPython, ensureMcpRuntime, generateMcpServer, MCP_FEATURE_DOMAINS, McpFeatureDomain,
   managedMcpRuntimePath, managedMcpServerDirectory, mcpProcessStatus, mcpRuntimeManualCommands, mcpRuntimeStatus, mcpServerDefinitionData, mcpStatus, streamMcpPythonCandidates,
   resolveMcpPython, validateMcpPython, writeMcpFeatureDomainConfig,
-} from "./mcp";
-import { nativeMcpCwdUri } from "./mcp-native-location";
-import { scheduleRestoredWebviewRecovery } from "./webview-restoration";
+} from "./mcp/mcp";
+import { nativeMcpCwdUri } from "./mcp/mcp-native-location";
+import { scheduleRestoredWebviewRecovery } from "./ui/webview-restoration";
 import {
   addPkmSkillCustomTarget, connectPkmSkill, disconnectPkmSkill,
   pkmSkillProjectionStatus, reconcilePkmSkillProjections,
   removePkmSkillCustomTarget, resolvePkmSkillTargetPath,
-} from "./pkm-skill-projection";
-import { cachedPromptAnalysis, inspectPromptCached, renderPrompt } from "./prompt-manager";
-import { canonicalJson, compileWorkflowDefinitionV1, WorkflowDefinitionV1 } from "./workflow-contracts";
+} from "./skills/pkm-skill-projection";
+import { cachedPromptAnalysis, inspectPromptCached, renderPrompt } from "./ui/prompt-manager";
+import { canonicalJson, compileWorkflowDefinitionV1, WorkflowDefinitionV1 } from "./workflows/workflow-contracts";
 import { ProjectStore, ProjectStoreCommand } from "./workflows/project-store";
 import { GanttTaskInput, ProjectModelError, RecipeKnowledgeBinding, RecipeMetadata, RecipeRecord } from "./workflows/project-model";
-import { CollaborationMessageMetadata, CollaborationTransition } from "./collaboration-model";
+import { CollaborationMessageMetadata, CollaborationTransition } from "./chatroom/collaboration-model";
 import { BundledKnowledgeContent, exportProjectRecipeBundle } from "./workflows/project-recipe-bundle";
-import { recipeBrowserEditorDocument } from "./recipe-browser";
-import { availableSkillRouterSources, normalizeSkillRouterSourcePriority, SkillRouterSource } from "./skill-router-config";
+import { recipeBrowserEditorDocument } from "./ui/recipe-browser";
+import { availableSkillRouterSources, normalizeSkillRouterSourcePriority, SkillRouterSource } from "./skills/skill-router-config";
 import {
   GITHUB_SYNC_CONTENT_TYPES, GitHubPublicationMigration, GitHubPublicationMigrationSource, GitHubSyncCatalog, GitHubSyncConflictError, GitHubSyncContentType, GitHubSyncCredentials, GitHubSyncExtensionCompatibilityError, GitHubSyncFolderFingerprints, GitHubSyncRecipePull, GitHubSyncTarget, githubSyncMigrationCanonicalFiles,
   completeGitHubSyncTransaction, createGitHubSyncIdentity, discoverGitHubCredentialManagerAccounts, discoverGitHubSshIdentities, fetchGitHubRemoteSnapshot, githubSyncAuthenticationSessionOptions, githubSyncEntryShields, githubSyncFolderShields, githubSyncManagedContent, githubSyncManifestFileFingerprints, githubSyncManifestFolderFingerprints, githubSyncSafeRelativePath, githubSyncShield, normalizeGitHubSyncTarget, previewGitHubSyncTarget,
   probeGitHubSyncAuthentication, probeGitHubSyncHttpsAuthentication, probeGitHubSyncVscodeAuthentication, readGitHubCachedManifest, readGitHubRemoteFile, readGitHubRemoteFilesForSubscription, readGitHubRemoteManifest, replaceGitHubSyncFilesAtomically, restoreGitHubRemoteFiles, syncGitHubTarget, testGitHubSyncAuthentication,
-} from "./github-sync";
-import { githubSyncCatalogInWorker } from "./github-sync-catalog-worker";
-import { githubSyncFingerprintInWorker } from "./github-sync-fingerprint-worker";
+} from "./sync/github-sync";
+import { githubSyncCatalogInWorker } from "./sync/github-sync-catalog-worker";
+import { githubSyncFingerprintInWorker } from "./sync/github-sync-fingerprint-worker";
 import {
   clearGitHubSyncConflict, GitHubSyncAgentReview, gitHubSyncConflictVariantPath, listGitHubSyncConflicts, readGitHubSyncConflict,
   readGitHubSyncConflictCandidate, refreshGitHubSyncConflictLocalCandidate, selectAllGitHubSyncConflictCandidates, selectAllGitHubSyncConflictDeletions,
   selectAllGitHubSyncConflictLocalDeletions, selectGitHubSyncConflictCandidate, selectGitHubSyncConflictDeletion,
   selectGitHubSyncConflictLocalDeletion, storeGitHubSyncConflict, updateGitHubSyncAgentCandidate,
   validateGitHubSyncConflictLocalState, validateGitHubSyncManualCandidate,
-} from "./github-sync-conflicts";
-import { GitHubSyncRuntimeState } from "./github-sync-scheduler";
-import { githubSyncCoordinatorDirectory, GitHubSyncCoordinator } from "./github-sync-coordinator";
-import { BackgroundTaskProducer, BackgroundTaskRegistry } from "./background-task-registry";
+} from "./sync/github-sync-conflicts";
+import { GitHubSyncRuntimeState } from "./sync/github-sync-scheduler";
+import { githubSyncCoordinatorDirectory, GitHubSyncCoordinator } from "./sync/github-sync-coordinator";
+import { BackgroundTaskProducer, BackgroundTaskRegistry } from "./runtime/background-task-registry";
 
 let projectStoreBinding: { root: string; store: ProjectStore } | undefined;
 
@@ -278,7 +284,21 @@ function agentSessionSnapshots(recipes: any[], directory = path.join(getStorePat
       snapshots.push({
         sessionId: String(session.sessionId), status: projectedAgentSessionStatus(session),
         task: String(session.task || "Managed task"), projectId: String(session.projectId || ""),
-        hostSessionId: String(session.hostSessionId || ""),
+        ...agentSessionGroup(session),
+        ...agentSessionOrigin(session),
+        nativeAgent: session.origin === "pkm-native" && session.nativeChat ? {
+          requestStatus: session.nativeChat.progress?.status,
+          waitingForInput: session.nativeChat.progress?.status === "running" && session.nativeChat.progress?.steps?.slice(-1)[0]?.status === "waiting",
+          model: session.nativeChat.modelProvider === "vscode" ? session.nativeChat.vscodeModelLabel || session.nativeChat.vscodeModelId || "VS Code · not connected" : session.nativeChat.modelProfileId || vscode.workspace.getConfiguration("personalKnowledge").get("aiModel", "gpt-4o-mini"),
+          contextWindow: session.nativeChat.contextWindow, maxOutputTokens: session.nativeChat.maxOutputTokens,
+          includeHistory: session.nativeChat.includeHistory,
+          memory: (session.nativeChat.memoryTasks || []).map((item: any) => String(item.title)),
+          pkmSkills: ["Automatic"],
+          externalSkills: (session.nativeChat.agentContext?.externalSkills || []).map((item: any) => String(item.label)),
+          context: (session.nativeChat.context || []).map((item: any) => String(item.label)),
+          builtinTools: session.nativeChat.builtinTools, platform: process.platform,
+          mcpServers: (session.nativeChat.mcpServers || []).map((server: any) => ({ label: server.label, enabled: server.enabled, tools: server.tools })),
+        } : undefined,
         traversalStrategy: String(session.traversalStrategy || ""),
         recipeTreeEdges: (Array.isArray(session.recipeTreeEdges) ? session.recipeTreeEdges : []).map((edge: any) => ({
           fromRunId: String(edge.fromRunId || ""), fromNodeId: String(edge.fromNodeId || ""),
@@ -347,8 +367,19 @@ async function agentSessionProjectStateData(): Promise<any> {
   const mappingResult = reconcileAgentSessionActiveMappings(path.join(getStorePath(), ".pkm", "state"));
   for (const error of mappingResult.errors) log.warn(`Agent Session active mapping reconciliation: ${error}`);
   const snapshot = currentProjectStore().list();
+  const groupsDirectory = path.join(getStorePath(), ".pkm", "state", "agent-groups");
+  const storedGroups = (fs.existsSync(groupsDirectory) ? fs.readdirSync(groupsDirectory) : []).flatMap(name => {
+    if (!/^agent_group_[a-f0-9]{64}\.json$/.test(name)) return [];
+    try {
+      const group = agentSessionJsonCache.read<any>(path.join(groupsDirectory, name));
+      if (group?.schema !== "pkm.agent.group/v1" || `${group.groupId}.json` !== name || typeof group.hostSessionId !== "string") return [];
+      return [{ groupId: group.groupId, hostSessionId: group.hostSessionId, hostKind: String(group.hostKind || "unknown"), title: typeof group.title === "string" ? group.title : "", deletedAt: group.deletedAt }];
+    } catch { return []; }
+  });
+  const agentSessionGroups = [...new Map([...storedGroups, ...apiChatGroupSnapshots(path.join(getStorePath(), ".pkm", "state"))].map(group => [group.groupId, group])).values()];
   return {
     ...snapshot,
+    agentSessionGroups,
     agentSessions: agentSessionSnapshots(snapshot.recipes),
     agentSessionTrash: agentSessionTrashSnapshots(),
     agentSessionArchiveKeepLatestK: configuredAgentSessionArchiveKeepLatestK(),
@@ -609,7 +640,8 @@ const LEVEL_ORDER: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, erro
 
 class Logger {
   private channel: vscode.OutputChannel;
-  private logFile = "";
+  private fileLog: DiagnosticLog | undefined;
+  private heartbeat: NodeJS.Timeout | undefined;
   private minLevel: LogLevel = "info";
 
   constructor() {
@@ -618,11 +650,26 @@ class Logger {
 
   init(context: vscode.ExtensionContext): void {
     try {
-      const dir = context.globalStorageUri.fsPath;
-      fs.mkdirSync(dir, { recursive: true });
-      this.logFile = path.join(dir, "personal-knowledge.log");
+      const dir = path.join(context.globalStorageUri.fsPath, "diagnostics", "extension");
+      this.fileLog = new DiagnosticLog(dir);
+      this.fileLog.record("host.started", { parentPid: process.ppid, platform: process.platform, extensionVersion: context.extension?.packageJSON?.version ?? "unknown", buildId: loadedExtensionBuild?.buildId ?? "unknown", vscodeVersion: vscode.version ?? "unknown", nodeVersion: process.version });
+      this.channel.appendLine(`Diagnostic log: ${dir} writer=${this.fileLog.writerId} latest=100000`);
     } catch { /* file logging optional */ }
     this.refreshLevel();
+    if (this.heartbeat) clearInterval(this.heartbeat);
+    let previous = performance.now();
+    this.heartbeat = setInterval(() => {
+      const now = performance.now();
+      const delayMs = Math.max(0, Math.round(now - previous - 60_000));
+      previous = now;
+      this.fileLog?.record("host.heartbeat", { delayMs });
+      if (delayMs >= 5_000) this.warn(`extension host heartbeat delayed by ${delayMs}ms`);
+    }, 60_000);
+    this.heartbeat.unref();
+    context.subscriptions.push({ dispose: () => {
+      if (this.heartbeat) clearInterval(this.heartbeat);
+      this.fileLog?.record("host.stopped");
+    } });
   }
 
   refreshLevel(): void {
@@ -634,9 +681,7 @@ class Logger {
     if (LEVEL_ORDER[level] < LEVEL_ORDER[this.minLevel]) return;
     const line = `[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg}`;
     this.channel.appendLine(line);
-    if (this.logFile) {
-      try { fs.appendFileSync(this.logFile, line + "\n"); } catch { /* ignore */ }
-    }
+    this.fileLog?.record("extension.log", { level, message: msg });
   }
 
   debug(msg: string): void { this.write("debug", msg); }
@@ -772,7 +817,7 @@ class LoadProfiler {
 
 const loadProfiler = new LoadProfiler();
 let sharedMarket: SharedMarketManager | undefined;
-const RETRIEVAL_ENGINE_VERSION = "0.3.0.dev2026091601";
+const RETRIEVAL_ENGINE_VERSION = "0.3.0.dev2026100501";
 const RETRIEVAL_CONFIGURATION_HASH = createHash("sha256").update("retrieval-boundary-v2|exact-match-v1|bm25-academic-k1=0.9-b=0.4|typed-prior-v1|derived-link-graph-v1").digest("hex");
 let retrievalWorker: RetrievalWorkerManager | undefined;
 let retrievalRefreshTimer: NodeJS.Timeout | undefined;
@@ -2791,18 +2836,36 @@ function liveMarkdownNavigation(documentPath: string, includePrivate: boolean): 
   const groups = [
     { label:"Notes", type:"notes" as const, kind:"note" as const, items:(noteList(undefined, 100000, true) as any[]).map(note => ({key:String(note.slug || ""), title:String(note.title || note.slug || "")})) },
     { label:"Skills", type:"skills" as const, kind:"skill" as const, items:(skillList() as any[]).map(skill => ({key:[skill.category, skill.name].filter(Boolean).join("/"), title:String(skill.name || "")})) },
+    { label:"Research", type:"papers" as const, kind:"paper" as const, items:paperList().map(paper => ({key:paper.slug, title:paper.title || paper.slug})) },
   ];
   const sections = groups.map(group => {
     const items = group.items.filter(item => item.key && (includePrivate || !isContentPathPrivate(group.type, item.key)))
       .sort((left, right) => left.key.localeCompare(right.key));
-    const links = items.map(item => {
-      const active = documentPath === `${group.type}/${item.key}`;
-      const category = item.key.split("/").slice(0, -1).join("/");
-      return `<a class="reader-nav-item" href="${esc(markdownPreviewPath(group.kind, item.key))}" title="${esc(item.key)}"${active ? ' aria-current="page"' : ''}><span>${esc(item.title)}</span>${category ? `<small>${esc(category)}</small>` : ''}</a>`;
-    }).join("");
+    interface NavigationFolder { folders: Map<string, NavigationFolder>; items: typeof items; }
+    const root: NavigationFolder = { folders:new Map(), items:[] };
+    for (const item of items) {
+      let folder = root;
+      for (const name of item.key.split("/").slice(0, -1)) {
+        if (!folder.folders.has(name)) folder.folders.set(name, { folders:new Map(), items:[] });
+        folder = folder.folders.get(name)!;
+      }
+      folder.items.push(item);
+    }
+    const renderFolder = (folder: NavigationFolder, parent: string[]): string => {
+      const folders = [...folder.folders].map(([name, child]) => {
+        const segments = [...parent, name];
+        const active = documentPath.startsWith(`${group.type}/${segments.join("/")}/`);
+        return `<details class="reader-nav-folder"${active ? " open" : ""}><summary>${esc(name)}</summary><div class="reader-nav-children">${renderFolder(child, segments)}</div></details>`;
+      }).join("");
+      return folders + folder.items.map(item => {
+        const active = documentPath === `${group.type}/${item.key}`;
+        return `<a class="reader-nav-item" href="${esc(markdownPreviewPath(group.kind, item.key))}" title="${esc(item.key)}"${active ? ' aria-current="page"' : ''}><span>${esc(item.title)}</span></a>`;
+      }).join("");
+    };
+    const links = renderFolder(root, []);
     return `<section class="reader-nav-group"><h2>${group.label}</h2>${links || '<p class="reader-nav-empty">No content</p>'}</section>`;
   }).join("");
-  return `<aside class="reader-sidebar" aria-label="Knowledge navigation"><details open><summary>Library</summary><label class="reader-search"><input type="search" aria-label="Search Notes and Skills" placeholder="Search library" oninput="const query=this.value.toLocaleLowerCase();this.closest('aside').querySelectorAll('.reader-nav-item').forEach(item=>{item.hidden=!item.textContent.toLocaleLowerCase().includes(query)&&!item.title.toLocaleLowerCase().includes(query)});this.closest('aside').querySelectorAll('.reader-nav-group').forEach(group=>{group.hidden=!!query&&!group.querySelector('.reader-nav-item:not([hidden])')})"></label><nav>${sections}</nav></details></aside>`;
+  return `<aside class="reader-sidebar" aria-label="Knowledge navigation"><details open><summary>Library</summary><label class="reader-search"><input type="search" aria-label="Search Notes, Skills and Research" placeholder="Search library" oninput="const query=this.value.toLocaleLowerCase();const sidebar=this.closest('aside');sidebar.querySelectorAll('.reader-nav-item').forEach(item=>{item.hidden=!item.textContent.toLocaleLowerCase().includes(query)&&!item.title.toLocaleLowerCase().includes(query)});sidebar.querySelectorAll('.reader-nav-folder').forEach(folder=>{if(query){if(!('searchOpen' in folder.dataset))folder.dataset.searchOpen=String(folder.open);folder.hidden=!folder.querySelector('.reader-nav-item:not([hidden])');if(!folder.hidden)folder.open=true}else{folder.hidden=false;if('searchOpen' in folder.dataset){folder.open=folder.dataset.searchOpen==='true';delete folder.dataset.searchOpen}}});sidebar.querySelectorAll('.reader-nav-group').forEach(group=>{group.hidden=!!query&&!group.querySelector('.reader-nav-item:not([hidden])')})"></label><nav>${sections}</nav></details></aside>`;
 }
 
 function liveMarkdownHtml(documentPath: string, context: vscode.ExtensionContext, includePrivate = false): string | undefined {
@@ -3063,6 +3126,7 @@ h1.doc-title{font-size:28px;line-height:1.25;margin:0 0 12px;color:#0b1220}
 .reader-sidebar summary{padding:4px 8px;font-size:15px;font-weight:650;cursor:pointer}
 .reader-search{display:block;padding:12px 4px}.reader-search input{width:100%;padding:8px 10px;border:1px solid #cdd3da;border-radius:4px;background:#fff;font:inherit}
 .reader-nav-group h2{margin:12px 8px 6px;font-size:12px;color:#57606a}
+.reader-nav-folder summary{font-size:13px;font-weight:500;overflow-wrap:anywhere}.reader-nav-children{margin-left:12px;padding-left:6px;border-left:1px solid #d8dee4}.reader-nav-folder[hidden]{display:none}
 .reader-nav-item{display:block;margin:2px 0;padding:7px 8px;border-radius:4px;color:#24292f;text-decoration:none;overflow-wrap:anywhere;line-height:1.45}
 .reader-nav-item span,.reader-nav-item small{display:block}.reader-nav-item small{font-size:11px;color:#667085}
 .reader-nav-item:hover{background:#e9edf2}.reader-nav-item[aria-current=page]{background:#dcebed;color:#145b60;box-shadow:inset 3px 0 #287f85}
@@ -5833,11 +5897,22 @@ async function handleMessage(
       break;
     }
 
+    case "agentSessionGroupDelete": {
+      await deleteAgentSessionGroup(path.join(getStorePath(), ".pkm", "state"), String(msg.groupId || ""));
+      respond({ command: "projectState", data: await agentSessionProjectStateData() });
+      break;
+    }
+
     case "agentSessionStop": {
       await stopAgentSession(path.join(getStorePath(), ".pkm", "state"), String(msg.sessionId || ""), {
         reason: "user-requested",
         summary: String(msg.summary || "Stopped from the Agent Sessions UI."),
       });
+      respond({ command: "projectState", data: await agentSessionProjectStateData() });
+      break;
+    }
+    case "agentSessionConfigure": {
+      await vscode.commands.executeCommand("personalKnowledge.configureApiChatSession", String(msg.sessionId || ""), String(msg.section || "memory"));
       respond({ command: "projectState", data: await agentSessionProjectStateData() });
       break;
     }
@@ -7493,7 +7568,7 @@ async function handleMessage(
           (data as any).isPrivate = isContentItemPrivate(type === "package" ? "packages" : type === "prompt" ? "prompts" : `${type}s` as PrivacyContentType, data);
         }
       }
-      respond({ command: "detail", data });
+      respond({ command: "detail", data, detailRequestId: msg.detailRequestId, detailTab: msg.detailTab });
       break;
     }
 
@@ -9348,7 +9423,7 @@ async function handleMessage(
     log.error(`handleMessage(${msg.command}) failed: ${e?.stack ?? e?.message ?? e}`);
     if (msg.command === "list") {
       respond({ command: "list", tab: String(msg.tab || ""), data: [] });
-    } else if (["projectState", "projectCreate", "threadCreate", "threadRename", "threadMove", "threadOpenChatroom", "ganttTaskCreate", "ganttTaskUpdate", "ganttTaskDelete", "collaborationCreate", "collaborationTransition", "recipeCreate", "recipeFolderCreate", "recipeFolderDelete", "recipeUpdate", "recipeDelete", "recipeTrash", "recipeValidateDefinition", "recipeOpenBrowser", "projectRecipesExport", "agentSessionTrash", "agentSessionStop"].includes(String(msg.command || ""))) {
+    } else if (["projectState", "projectCreate", "threadCreate", "threadRename", "threadMove", "threadOpenChatroom", "ganttTaskCreate", "ganttTaskUpdate", "ganttTaskDelete", "collaborationCreate", "collaborationTransition", "recipeCreate", "recipeFolderCreate", "recipeFolderDelete", "recipeUpdate", "recipeDelete", "recipeTrash", "recipeValidateDefinition", "recipeOpenBrowser", "projectRecipesExport", "agentSessionTrash", "agentSessionStop", "agentSessionGroupDelete"].includes(String(msg.command || ""))) {
       respond({ command: "projectError", data: { action: String(msg.command || ""), code: String(e?.code || "project-error"), error: e?.message || String(e), ...(e?.details ? { details: e.details } : {}) } });
     } else if (String(msg.command || "").startsWith("subscription")) {
       respond({ command: "subscriptionError", data: { action: String(msg.command || ""), error: e?.message || String(e) } });
@@ -10585,11 +10660,77 @@ function safeMcpServerTarget(directory: string): boolean {
 }
 
 // ── Activation ─────────────────────────────────────────────────────────────
+function registerExtensionHostRuntime(context: vscode.ExtensionContext, isBusy: () => boolean): void {
+  const build = loadedExtensionBuild;
+  if (!build) { log.warn("Runtime build identity missing; coordinated reload is unavailable."); return; }
+  const scope = createHash("sha256").update(`${path.dirname(context.extensionPath)}\n${context.extension.id.toLowerCase()}`).digest("hex");
+  const installedBuild = () => readInstalledExtensionBuild(context.extensionPath, context.extension.id);
+  const slotId = createHash("sha256").update(context.storageUri?.toString() || vscode.env.sessionId).digest("hex");
+  const registry = new ExtensionHostRegistry(path.join(context.globalStorageUri.fsPath, "runtime", "extension-hosts", scope), {
+    ...build, hostId: randomUUID(), slotId, scope, pid: process.pid, vscodeVersion: vscode.version,
+  });
+  const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, -1000);
+  status.command = "personalKnowledge.hostStatus";
+  const tick = () => {
+    try {
+      const installed = installedBuild();
+      registry.heartbeat(isBusy());
+      status.text = `${installed?.buildId === build.buildId ? "$(versions)" : "$(warning)"} PKM ${build.buildId.slice(0, 8)}`;
+      status.tooltip = `Loaded: ${build.version} / ${build.buildId}\nInstalled: ${installed?.version ?? "unknown"} / ${installed?.buildId ?? "unknown"}\nVS Code: ${vscode.version}; Node: ${process.version}; PID: ${process.pid}\nRegistered online hosts: ${registry.hosts().length}\nClick for Host status and reload verification.`;
+      if (registry.poll(installed?.buildId, isBusy())) {
+        log.info(`coordinated reload requested pid=${process.pid} target=${installed?.buildId}`);
+        void vscode.commands.executeCommand("workbench.action.reloadWindow").then(undefined, error => {
+          registry.heartbeat(isBusy(), "failed");
+          log.error(`coordinated reload failed: ${String(error)}`);
+        });
+      }
+    } catch (error) { log.warn(`Host runtime registry unavailable: ${String(error)}`); }
+  };
+  tick(); status.show();
+  const timer = setInterval(tick, 2_000); timer.unref();
+  context.subscriptions.push(status, { dispose: () => { clearInterval(timer); try { registry.dispose(); } catch {} } },
+    vscode.commands.registerCommand("personalKnowledge.hostStatus", async () => {
+      const report = {
+        coverage: "Registered PKM hosts sharing this installation and profile storage only. Unregistered legacy hosts, other machines/profiles and external agent activity are not verified.",
+        current: registry.identity, installed: installedBuild(), online: registry.hosts(), reload: registry.progress() ?? null,
+      };
+      const document = await vscode.workspace.openTextDocument({ language: "json", content: JSON.stringify(report, null, 2) });
+      await vscode.window.showTextDocument(document, { preview: true });
+      return report;
+    }),
+    vscode.commands.registerCommand("personalKnowledge.reloadAllHosts", async () => {
+      const installed = installedBuild();
+      if (!installed) { await vscode.window.showErrorMessage("Installed PKM build identity is missing. Install a verified package first."); return; }
+      const hosts = registry.hosts();
+      const answer = await vscode.window.showWarningMessage(`Reload ${hosts.length} registered PKM windows to ${installed.version} / ${installed.buildId.slice(0, 12)}?`, {
+        modal: true, detail: "All extensions in these windows restart. Busy PKM Chat/background work will defer reload for up to five minutes. External agent activity is not tracked: stop it before continuing. Legacy unregistered hosts and other machines require separate reloads. Sending this request is not proof of completion; check Host Status for verified successor hosts.",
+      }, "Reload registered windows");
+      if (answer !== "Reload registered windows") return;
+      try {
+        const request = registry.requestReload(installed.buildId);
+        log.info(`coordinated reload broadcast id=${request.id} hosts=${request.targets.length} target=${installed.buildId}`);
+      } catch (error) { await vscode.window.showErrorMessage(String(error)); }
+    }));
+}
+
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   activationStartedAt = Date.now();
   firstContentRecorded = false;
   performanceStateDir = path.join(context.globalStorageUri.fsPath, "performance");
   log.init(context);
+  const apiChat = registerApiChat(context, async (query, signal) => {
+    if (!retrievalWorker) throw new Error("The unified retrieval worker is not ready.");
+    const result = await retrievalWorker.query({ schema: "pkm.retrieval.query/v1", requestId: `chat-${randomUUID()}`, text: query,
+      scope: { capabilityId: "pkm-chat-context" }, topK: 20, route: "lexical", generation: { mode: "latest-ready" }, diagnostics: "summary", deadlineMs: 5000 }, signal);
+    const snapshot = currentRetrievalSnapshot();
+    return result.hits.map(hit => {
+      const document = snapshot.documents.find(item => item.source_id === hit.sourceId && item.source_revision === hit.sourceRevision && item.visibility === "available");
+      return { id: hit.sourceId, kind: hit.contentType, label: hit.title, sourceUri: hit.sourceUri, score: hit.score,
+        scoreComponents: { ...hit.scoreComponents }, method: `${hit.route}:unified-retrieval`, selected: false,
+        reason: document ? "Ranked knowledge candidate" : "Source revision changed or unavailable",
+        ...(document ? { content: document.body.slice(0, 4000) } : {}) };
+    });
+  });
   githubSyncDiagnostics.init(context);
   loadProfiler.init(context);
   loadProfiler.record("host.activation.started");
@@ -11887,6 +12028,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   recordPerformanceMetric(performanceStateDir, "startup.activation_ms", activationDuration);
   loadProfiler.record("host.activation.completed", { durationMs: activationDuration });
   log.info(`activation complete durationMs=${activationDuration}`);
+  try {
+    registerExtensionHostRuntime(context, () => apiChat.isBusy || backgroundTaskRegistry.snapshot().tasks.some(task => task.status === "running"));
+  } catch (error) { log.warn(`Host coordination unavailable: ${String(error)}`); }
   setImmediate(() => {
     panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "servers", percent: 12, message: "Preparing the Muggle gateway…" } });
     try { initializeServers(); }
@@ -11941,10 +12085,32 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
   contentCheckTask.idle();
   _watcherSkillProjectionChanged = false;
   _knowledgeTreeSignature = knowledgeTreeSignature();
+  const projectScopes = new Set<string>();
+  const projectPaths = new Set<string>();
+  const knowledgePaths = new Set<string>();
+  const queueProjectRefresh = (scope: string, uri: vscode.Uri) => {
+    projectScopes.add(scope);
+    projectPaths.add(path.relative(getStorePath(), uri.fsPath).replace(/\\/g, "/"));
+    if (_projectStateRefreshTimer) clearTimeout(_projectStateRefreshTimer);
+    _projectStateRefreshTimer = setTimeout(() => {
+      _projectStateRefreshTimer = undefined;
+      const scopes = [...projectScopes].sort();
+      const changedPaths = [...projectPaths].sort();
+      projectScopes.clear();
+      projectPaths.clear();
+      if (!panel?.visible || !_panelReady) return;
+      void panel.webview.postMessage({ command: "projectStateChanged", data: {
+        scope: scopes.length === 1 ? scopes[0] : "all", scopes, changedPaths,
+        ...(changedPaths.length === 1 ? { changedPath: changedPaths[0] } : {}),
+      } });
+    }, 250);
+    _projectStateRefreshTimer.unref?.();
+  };
   const pattern = new vscode.RelativePattern(getStorePath(), "{notes,skills,papers,prompts,scripts,packages,servers}/**/*");
   _watcher = vscode.workspace.createFileSystemWatcher(pattern);
   const onChange = (uri: vscode.Uri) => {
     invalidateSharedContentCatalog();
+    knowledgePaths.add(path.relative(getStorePath(), uri.fsPath).replace(/\\/g, "/"));
     if (uri.fsPath === path.join(getStorePath(), "skills", "System", "PKM", "PKM Skills.md")) {
       _watcherSkillProjectionChanged = true;
     }
@@ -11953,8 +12119,11 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
       _watcherRefreshTimer = undefined;
       _knowledgeTreeSignature = knowledgeTreeSignature();
       _treeProvider?.refresh();
-      const changedPath = path.relative(getStorePath(), uri.fsPath).replace(/\\/g, "/");
-      panel?.webview.postMessage({ command: "reloaded", data: { changedPath } }); // re-fetch and reveal the changed item
+      const changedPaths = [...knowledgePaths].sort();
+      knowledgePaths.clear();
+      panel?.webview.postMessage({ command: "reloaded", data: {
+        changedPaths, ...(changedPaths.length === 1 ? { changedPath: changedPaths[0] } : {}),
+      } });
       schedulePublishedShareRefresh(context);
       scheduleRetrievalRefresh(context);
       void refreshKnowledgeInventory(context);
@@ -11985,13 +12154,7 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
       githubSyncScheduler?.notifyContentChanged();
       schedulePublishedShareRefresh(context);
     }
-    if (_projectStateRefreshTimer) clearTimeout(_projectStateRefreshTimer);
-    _projectStateRefreshTimer = setTimeout(() => {
-      _projectStateRefreshTimer = undefined;
-      if (!panel?.visible || !_panelReady) return;
-      void panel.webview.postMessage({ command: "projectStateChanged", data: { scope } });
-    }, 250);
-    _projectStateRefreshTimer.unref?.();
+    queueProjectRefresh(scope, uri);
   };
   _projectStateWatcher.onDidCreate(onProjectStateChange);
   _projectStateWatcher.onDidChange(onProjectStateChange);
@@ -12001,16 +12164,7 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
     invalidateSharedContentCatalog();
     githubSyncScheduler?.notifyContentChanged();
     schedulePublishedShareRefresh(context);
-    if (_projectStateRefreshTimer) clearTimeout(_projectStateRefreshTimer);
-    _projectStateRefreshTimer = setTimeout(() => {
-      _projectStateRefreshTimer = undefined;
-      if (!panel?.visible || !_panelReady) return;
-      void panel.webview.postMessage({
-        command: "projectStateChanged",
-        data: { scope: "projects", changedPath: path.relative(getStorePath(), uri.fsPath).replace(/\\/g, "/") },
-      });
-    }, 250);
-    _projectStateRefreshTimer.unref?.();
+    queueProjectRefresh("projects", uri);
   };
   _projectContentWatcher.onDidCreate(onProjectContentChange);
   _projectContentWatcher.onDidChange(onProjectContentChange);
@@ -12021,16 +12175,7 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
     githubSyncScheduler?.notifyContentChanged();
     schedulePublishedShareRefresh(context);
     scheduleRetrievalRefresh(context);
-    if (_projectStateRefreshTimer) clearTimeout(_projectStateRefreshTimer);
-    _projectStateRefreshTimer = setTimeout(() => {
-      _projectStateRefreshTimer = undefined;
-      if (!panel?.visible || !_panelReady) return;
-      void panel.webview.postMessage({
-        command: "projectStateChanged",
-        data: { scope: "recipes", changedPath: path.relative(getStorePath(), uri.fsPath).replace(/\\/g, "/") },
-      });
-    }, 250);
-    _projectStateRefreshTimer.unref?.();
+    queueProjectRefresh("recipes", uri);
   };
   _recipeContentWatcher.onDidCreate(onRecipeContentChange);
   _recipeContentWatcher.onDidChange(onRecipeContentChange);

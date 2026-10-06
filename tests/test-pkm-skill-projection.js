@@ -20,9 +20,9 @@ const context = {
 };
 
 try {
-  const filestore = require("../dist/filestore");
+  const filestore = require("../dist/knowledge/filestore");
   filestore.setStorePath(path.join(root, "store"));
-  const projection = require("../dist/pkm-skill-projection");
+  const projection = require("../dist/skills/pkm-skill-projection");
   const bundledSource = fs.readFileSync(path.join(__dirname, "..", "resources", "pkm-skills-router.md"), "utf8");
   assert.match(bundledSource, /^router_version:\s*1\.7\.2$/m);
   const routerDescription = bundledSource.match(/^description: "(.+)"$/m)[1];
@@ -55,7 +55,7 @@ try {
   assert.match(bundledSource, /do not wait for an explicit tracking request or\s+the first code edit/);
   assert.match(bundledSource, /read-only work alone does not/);
   assert.doesNotMatch(bundledSource, /Do not start an Agent Session for assessment/);
-  const projectionSource = fs.readFileSync(path.join(__dirname, "..", "src", "pkm-skill-projection.ts"), "utf8");
+  const projectionSource = fs.readFileSync(path.join(__dirname, "..", "src", "skills/pkm-skill-projection.ts"), "utf8");
   assert.match(projectionSource, /c60be52f524bae0d853ac98785a3be39f038c0d2c9d9629da6c6901211695c8b.*Router 1\.5\.0 canonical/);
   assert.match(projectionSource, /b6dbcf44509a2c4c240d99a2e6573b83b21b3bc6e546c2d0a1ef707657be1325.*Router 1\.5\.1 bundled canonical/);
   assert.match(projectionSource, /46d9c22107cfc09eaec54fdfbe98af4c2ad9ace5bb5c05fd8ec492de3f146d1a.*Router 1\.6\.0 bundled canonical/);

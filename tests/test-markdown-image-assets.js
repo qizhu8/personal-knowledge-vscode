@@ -4,10 +4,10 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const vm = require("vm");
-const { referencedMarkdownAssets } = require("../dist/markdown-assets");
-const { attachMarkdownAssetsToSyncBundle } = require("../dist/sync-server");
-const { setStorePath } = require("../dist/filestore");
-const { GITHUB_SYNC_CONTENT_TYPES, githubSyncMigrationCanonicalFiles } = require("../dist/github-sync");
+const { referencedMarkdownAssets } = require("../dist/knowledge/markdown-assets");
+const { attachMarkdownAssetsToSyncBundle } = require("../dist/sync/sync-server");
+const { setStorePath } = require("../dist/knowledge/filestore");
+const { GITHUB_SYNC_CONTENT_TYPES, githubSyncMigrationCanonicalFiles } = require("../dist/sync/github-sync");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-markdown-assets-"));
 try {

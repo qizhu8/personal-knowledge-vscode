@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 
 const root = path.join(__dirname, "..");
-const { decideInitialExperience, FEATURE_TOUR_MODULES, minorRelease } = require(path.join(root, "dist", "onboarding-experience.js"));
+const { decideInitialExperience, FEATURE_TOUR_MODULES, minorRelease } = require(path.join(root, "dist", "ui/onboarding-experience.js"));
 
 assert.deepStrictEqual(
   decideInitialExperience({ version: "3.2.0", previousVersion: "3.1.11", onboardingPending: false, onboardingCompleted: true, seenModuleIds: [] }),

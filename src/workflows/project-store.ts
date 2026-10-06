@@ -1,8 +1,8 @@
 import * as fs from "fs";
 import * as path from "path";
 import { createHash, randomUUID } from "crypto";
-import { withCrossProcessLockSync } from "../cross-process-lock";
-import { canonicalJson } from "../workflow-contracts";
+import { withCrossProcessLockSync } from "../runtime/cross-process-lock";
+import { canonicalJson } from "./workflow-contracts";
 import {
   ProjectModelError,
   ProjectModelState,
@@ -34,7 +34,7 @@ import {
   updateRecipe,
   updateGanttTask,
 } from "./project-model";
-import { CollaborationTransition } from "../collaboration-model";
+import { CollaborationTransition } from "../chatroom/collaboration-model";
 import {
   LegacyProjectMigrationSource,
   ProjectFilesystemStore,

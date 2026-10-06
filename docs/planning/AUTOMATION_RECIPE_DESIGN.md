@@ -1,6 +1,77 @@
 # Automation and Recipe Design
 
-Status: design target. Workflow Definition v1 remains the implemented, DAG-only format. The v2 structures below are proposals and must not be exposed as executable until their compiler and runtime exist.
+Status: reviewed design target with an implemented-capability baseline. The runtime accepts `pkm.workflow.definition/v1`, including outcome branches, bounded loop edges and pinned subflows. The open-world exploration graph and unified Todo execution model below remain proposals; they must not be exposed as executable before their compiler, reducer and safety tests exist.
+
+## Goals and operating principles
+
+The purpose is to preserve the user's goal and unfinished work while moving reliable execution and working material out of model context. Recovery is an optional operation, not the reason every Session exists.
+
+- **Session** owns the original goal, current constraints, ordered commitments and unresolved work. A compact turn reminder prevents a local subtask from replacing the overall goal. Read-only multi-step work is included; quick answers and trivial commands are not.
+- **Recipe** is a reusable, verified solution or useful task structure, not merely a guardrail. A mature linear Recipe is valid. A task may remain serial and use native tools when no qualified Recipe or useful decomposition exists.
+- **Runtime** owns deterministic progression, Script execution, bounds, validation and evidence. A reliable automated path should require no model-driven polling or per-node management.
+- **Agent** handles uncertainty and judgment using the smallest sufficient task context. A stronger model or multiple workers are options, not mandatory overhead for every task.
+- **PKM working material** separates mutable drafts from immutable attempt evidence. Prompts reference relevant artifacts and fetch selected content; they do not carry the entire conversation, graph or history.
+- **Scene preservation** through checkpoints or Snapshots happens only on an explicit preservation, recovery or handoff operation. Routine success, failure and turn boundaries do not trigger conversation copies. Durable goal, task and result records still persist normally.
+- **Failure** is an evidence-bearing outcome. Its cause and next decision are separate; neither uncertainty nor a failed attempt justifies silently discarding the user goal.
+
+## Implemented baseline and gaps
+
+The baseline is grounded in `resources/agent_session_runtime.py`, `resources/recipe_runtime.py` and their MCP runtime tests. This table describes executable behavior, not roadmap promises.
+
+| Area | Implemented | Remaining target |
+| --- | --- | --- |
+| Session | Persisted task, FIFO Todos, explicit redirects, compact responses, optional checkpoints and Snapshots | Versioned goal/constraint envelope and a smaller frontier reminder |
+| Recipe | Pinned identity, lazy claims, outcome dependencies, bounded loops, subflows, knowledge references | Open-world candidate admission and deterministic append-only replay |
+| Automation | Opt-in, bounded, serial command/Script progression driven by worker completion; native allowlist and human gates | Automatic native/subflow progression, loop support and terminal/blocker notifications |
+| Ownership | File-locked mutations, command receipts, one running node per Run | Multiple independently leased workers, fencing and conflict-aware parallel admission |
+| Failure | Node outcomes/results and run-health classification | Policy-driven retry, escalation, replacement Recipe and independent-branch continuation |
+| Cost | Compact projections; measured, estimated and unknown usage distinguished | Batched lifecycle transitions, bounded worker context and model capability routing |
+
+The capability flag `dynamic_v2` currently advertises the runtime's existing controls; it does not mean an open-world `pkm.workflow.definition/v2` exploration engine exists. Background processes are not a multi-Agent scheduler, and Session liveness is not a per-node worker lease.
+
+## Execution and context contracts
+
+These are infrastructure targets, not additional tools already available to Agents.
+
+### Goal continuity and low-roundtrip lifecycle
+
+Persist a versioned goal envelope: goal, constraints, acceptance criteria, user-directed changes, current commitment, unresolved frontier and artifact references. New instructions update this envelope explicitly without dropping earlier compatible commitments. Queue order is execution order, not proof of a logical dependency.
+
+The default turn response should contain only the goal/constraint revision, current task, unresolved counts, blocker or next action and selected references. Fetch full history only for a specific investigation. It must not echo historical receipts, drafts or conversation summaries on every call.
+
+A future atomic begin operation should validate and persist the initial plan and claim its first Todo in one transaction. A completion operation should validate the claimed attempt, commit its result and return the next eligible commitment, or finish the Session, in one transaction. Caller command IDs make retries safe; parameter mismatch must reject reuse. With one begin and one report per Todo, an uninterrupted N-Todo lifecycle targets N+1 calls rather than the current 3+2N. Turns, human decisions and explicit preservation add calls separately.
+
+### Autonomous automation
+
+Recipe runtime 1.8.0 implements the first slice. `recipe_run_start` and `recipe_run_start_adhoc` accept `autonomous=True`; the default remains lazy execution and preserves existing default command fingerprints. Each command/Script worker persists its result and, under the Run lock, launches the next eligible command/Script without Agent polling or per-node claims. The start response contains a Run reference; `recipe_run_get` is optional inspection, not the progression driver.
+
+`max_auto_nodes` defaults to 100 (range 1-1000) and `max_auto_seconds` to 300 (range 1-3600). Node timeouts are clamped to the remaining Run wall budget. Cancellation through `recipe_run_progress(..., progress_json='{"cancellationRequested":true}')` terminates the active command and prevents subsequent launches. Failure or exhausted budgets stop the chain. Human gates wait for `recipe_run_submit_input`; Agent, native and subflow nodes remain explicit adapter boundaries. Agent reporting, human submission and explicit native execution resume eligible automation. A subflow child stays lazy; after explicitly completing it, call `recipe_run_next` on the parent to reconcile and resume automation. Autonomous loop definitions are rejected; lazy bounded loops remain supported.
+
+Launch intent is persisted before process creation. Worker completion checks the attempt and result identity under the Run lock. If completion was interrupted, `recipe_run_next` reconciles an existing result; an uncertain launch remains `reconciliation-required` and is not automatically repeated. This prevents blind relaunches, but is not a general exactly-once guarantee for arbitrary external side effects. Acceptance commands/Scripts must verify their declared outputs. No general output-validation engine, persistent scheduler daemon, parallel Agent ownership or host push notification is added in this slice.
+
+The remaining target is broader automation:
+
+After input validation and authorization, a durable scheduler should drain ready command, Script and allowlisted native nodes, verify declared outputs and persist receipts. It stops at an Agent task, human gate, unsupported capability, terminal outcome or budget boundary. The Agent receives a job reference and a terminal/blocker notification, not an instruction to poll every Script node.
+
+Recovery reconciles existing process/attempt identities and output receipts before launching work again. Side effects require an idempotency contract or explicit reconciliation; a crash must never be treated as proof that an action did not run. Cancellation, timeout, privacy and environment pins remain enforced while no Agent is attached.
+
+### Optional heterogeneous workers
+
+Each work item has a bounded envelope: goal/constraint revision, input references, expected output schema, acceptance check, capability requirements, privacy boundary, cost/attempt/time budget and isolated write scope. Shared artifacts use content identity and explicit revision checks. Workers do not inherit the parent conversation or unrelated evidence by default.
+
+Independent ready work may be claimed by separate ad hoc Agent processes. A claim records worker identity, attempt identity, lease expiry and a fencing token. Result submission checks that ownership and the pinned contract still match; a stale worker cannot commit over a successor. Lease expiry alone does not authorize repeating unknown side effects. Overlapping writes serialize or use isolated workspaces with a verified merge.
+
+Choose a smaller model only when its capabilities satisfy the task contract and the output has an independent acceptance check. Escalate within an explicit budget after classified failure or unresolved uncertainty. Serial execution and a strong model remain valid for tightly coupled, poorly specified or non-decomposable work. The parent retains responsibility for integration and overall acceptance.
+
+## Failure outcomes and follow-up decisions
+
+Every attempt records its pinned Recipe/node identity, executor, input references, observed outcome, evidence references, acceptance result and remaining budget. Failed evidence is immutable; a retry or replacement creates a new attempt linked to its predecessor. Draft plans may change, but prior receipts do not.
+
+Classify the cause separately from the decision. Prefer the existing health categories (`environment-failure`, `input-failure`, `implementation-failure`, `recipe-friction`, `recipe-failure`); add an explicit unresolved/unknown classification when evidence is insufficient. These categories must not be treated as a proven causal diagnosis from a model's assertion alone.
+
+Permitted follow-up decisions are bounded retry, capability/model escalation, a new or revised pinned Recipe, user judgment, or record-and-continue. Record-and-continue only unlocks nodes whose declared predicates accept the observed outcome, or independent work with satisfied prerequisites. It does not manufacture a missing successful output. Overall completion still requires all required acceptance criteria; an acknowledged partial result is not full success.
+
+The runtime, not an Agent's repeated narration, enforces attempt/cost/time ceilings and records the decision, actor and reason. A failed attempt may remain terminal while the owning goal continues through a different strategy. Recipe evolution produces a reviewable new revision and never retroactively rewrites the failed Run.
 
 ## Product model
 
@@ -182,11 +253,11 @@ A Recipe is not selected from category alone. Whenever a Project root or Todo ne
 3. **Qualify** every candidate against hard constraints. Inputs must be satisfiable, outputs must cover the requested result, required capabilities must be available, privacy and scope must permit use, and the schema/runtime version must be supported. A category or text match alone is never sufficient.
 4. **Rank** qualified candidates by contract coverage, category specificity, Project-local preference, verified success evidence, recency of the pinned revision, and estimated execution cost. Ranking factors and rejection reasons are recorded; confidence never bypasses hard qualification.
 5. **Bind** the selected exact `recipeId`, revision, and digest to the owning root or Todo, then materialize its child Todos.
-6. If there is **no qualified match**, enter **Recipe Design** with the unresolved task contract and rejected candidates as evidence. Compile and validate a new draft, then pin that immutable draft before it can expand the current Todo. Publishing it to the reusable Library is a separate explicit action.
+6. If there is **no qualified match**, keep the Todo in native execution when no reusable solution or useful structure is needed. Otherwise enter **Recipe Design** with the unresolved contract and rejected candidates as evidence. Compile and validate an ad hoc draft, then pin it before expansion. Publishing a stable reusable solution to the Library is a separate explicit action; do not force a one-node noop Recipe just to track work.
 
 Recipe Design is a system bootstrap operation, not an endlessly recursive lookup. It may itself use a pinned built-in design Recipe, but failure to resolve that Recipe falls back to a fixed host protocol that gathers the contract, authors the graph, compiles it, runs validation, and requests approval where required.
 
-Every nested binding appends a `recipe.resolution.started` event followed by candidate/rejection evidence and exactly one terminal event: `recipe.bound`, `recipe.design.requested`, or `recipe.resolution.failed`. The Run Graph records the parent Todo, classification, query/index revision, chosen or rejected identities, binding depth, and pinned executable identity.
+Every resolution appends a `recipe.resolution.started` event followed by candidate/rejection evidence and exactly one terminal event: `recipe.bound`, `recipe.design.requested`, `recipe.native.selected`, or `recipe.resolution.failed`. The target Run Graph records the parent Todo, classification, query/index revision, chosen or rejected identities, binding depth, and pinned executable identity when a binding exists.
 
 Recursive expansion is allowed; recursive definition identity is bounded. Before binding, the runtime checks the active ancestor chain. The same executable digest may not appear again on that chain unless the parent definition declares a bounded recursive call with decreasing typed measure and maximum depth. Workspace depth and expansion budgets still apply. This prevents `A → B → A` and self-binding loops while allowing deliberate bounded recursion.
 
@@ -196,7 +267,7 @@ Search outcomes are `qualified-match`, `ambiguous`, or `no-qualified-match`. Amb
 
 Every Recipe node may bind zero or more Skills and Notes. A binding contains a stable `bindingId`, `kind` (`skill` or `note`), canonical PKM `knowledgeId`, pinned SHA-256 `contentHash`, and usage (`required`, `recommended`, or `reference`). The path gives identity and the hash gives reproducibility; names alone are never sufficient.
 
-Bindings are node-side metadata rather than v1 noop `config`, because the v1 compiler intentionally requires that config to be empty. Binding changes increment the Recipe revision. The definition `executableDigest` continues to identify the executable DAG, while the Recipe revision and portable bundle digest identify the complete DAG-plus-knowledge contract.
+Bindings are node-side metadata rather than executable node `config`. Noop config remains empty; command, Script, native, human-gate and subflow kinds have their own validated configuration. Binding changes increment the Recipe revision. The definition `executableDigest` identifies the executable graph, while the Recipe revision and portable bundle digest identify the complete graph-plus-knowledge contract.
 
 When `recipe_run_next` or `recipe_run_report` claims a node, its `execute_node` action includes `knowledge_bindings`. The Agent fetches selected content with `get_skill` or `get_note`, verifies the returned content hash, applies required bindings, and reports unresolved or changed bindings instead of silently using another revision. The action carries references, not duplicated bodies, keeping lazy state responses small.
 
@@ -210,18 +281,20 @@ JSON is authoritative. YAML has no practical shallow nesting limit, but parser b
 
 ### Agent MCP API
 
-The unified PKM MCP server exposes a lazy static-DAG execution slice for `pkm.workflow.definition/v1`:
+The unified PKM MCP server exposes a persisted control-state-machine slice for `pkm.workflow.definition/v1`, with lazy execution by default and opt-in command/Script automation:
 
-- `recipe_capabilities`: discover the supported definition schema, serial ready-node strategy, claim semantics, and explicit v2/design limitations.
-- `recipe_search`: search accessible Project/global Recipes by query and category. Candidate results require qualification; zero results return a structured `design_recipe` next action carrying the task contract.
-- `recipe_run_start`: idempotently create a Run pinned to `recipeId`, revision, and executable digest.
+- `recipe_capabilities`: discover the supported definition schema, controls, claim semantics and explicit limitations. Bounded serial command/Script automation is implemented; parallel Agent claims and automatic model escalation are not.
+- `recipe_search`: search accessible Project/global Recipes by query and category. Candidate results require qualification; zero results return a `design_recipe` suggestion, not a requirement to author or execute a Recipe.
+- `recipe_run_start`: idempotently create a Run pinned to `recipeId`, revision, and executable digest, optionally enabling bounded automation. `recipe_run_start_adhoc` offers the same automation parameters for instance-only definitions.
 - `recipe_run_get`: inspect status, accumulated node results, counts, and the next non-claiming action.
 - `recipe_run_next`: atomically claim exactly one ready node and return an `execute_node` action with its pinned Skill/Note bindings. Repeated calls cannot hand the same work to another Agent while it is running.
 - `recipe_run_report`: commit `succeeded` or `failed` plus a JSON result, reduce dependency state, and atomically return or claim the next action.
 
 Every response uses `pkm.recipe.api/v1` and contains `current_result` plus `next_action`. Mutations require a caller-generated `command_id`; replay with the same parameters is idempotent and reuse with different parameters fails. Run state is stored separately under `.pkm/state/recipe-runs/` and never mutates the pinned Recipe definition.
 
-This first slice is intentionally honest about its boundary: v1 nodes are `pkm.step.noop/v1`, so the executable instruction is the node identity plus its complete kind/config/dependency record. Typed instructions, dynamic branches, loops, recursive Recipe binding, contract qualification, and Recipe Design persistence require the v2 compiler/reducer and extension authoring bridge. `recipe_search` may request design, but it does not bypass ProjectStore to write a draft.
+The runtime accepts noop, command, Script, built-in native operation, human-gate and pinned subflow nodes. It supports outcome-selected branches and bounded loop edges, but permits only one running node per Run. In lazy mode, claiming a command or Script starts a background worker; inspection reconciles its result and adapter calls advance ready work. In autonomous mode, worker completion advances supported command/Script chains directly. Neither mode implements concurrent Agent ownership.
+
+Full contract qualification, open-world exploration, general failure-policy dispatch and heterogeneous worker scheduling remain targets. `recipe_create_from_skill` supports a declared Skill-gap authoring path; a search suggestion alone neither persists a draft nor bypasses validation and privacy rules.
 
 ## Recipe Library UX
 
@@ -302,14 +375,15 @@ Dynamic `explore` nodes grow candidate subtrees under their owning Todo. The UI 
 
 ## Compatibility and delivery
 
-- v1 stays supported and remains DAG-only.
-- A v1 Recipe can be lifted losslessly into v2 as static `step` nodes.
-- v2 must use a new schema identifier; the v1 compiler must continue rejecting v2 fields and cycles.
-- First implementation slice: v2 types, canonical compiler, and negative tests.
-- Second slice: append-only Run Graph reducer with deterministic DFS tests.
-- Third slice: Agent proposal adapter, budget enforcement, and handoff state machine.
-- Fourth slice: flowchart authoring and live Run overlay.
-- Enable v2 execution only after replay, crash recovery, privacy, cancellation, and takeover tests pass.
+- Preserve implemented v1 nodes, outcome dependencies, bounded loop edges and pinned subflows. Do not redefine them as noop-only or reject existing supported loops.
+- The proposed open-world definition uses a distinct schema identifier. An adapter must preserve existing execution semantics; do not assume loops and subflows can be lifted as ordinary static Steps without transformation.
+- Delivered: align Router/MCP policy and expose the implemented capability baseline.
+- Next: versioned goal/frontier projection and atomic begin/report transitions. Gate on idempotency, redirects, crash recovery and response-size tests; measure lifecycle roundtrips separately from provider tokens.
+- Delivered: opt-in autonomous command/Script progression, tested through runtime and actual MCP transport for multi-node completion without Agent polling, acceptance Script output checks, cancellation, time/node budgets, failed launch, interrupted callback reconciliation, concurrent claim suppression and legacy replay. General output validation, autonomous native/subflow/loop execution and host notifications remain follow-up work. Actual Windows cancellation remains unverified on the Linux test host.
+- Next: leased heterogeneous worker claims and failure-policy dispatch. Gate on concurrent-claim uniqueness, stale-write fencing, privacy, bounded escalation, workspace conflicts and independent-branch continuation tests.
+- Then: open-world compiler, append-only reducer, proposal adapter and Run overlay. Gate on deterministic replay, budgets, crash recovery, privacy, cancellation and accepted takeover tests.
+
+These slices can be delivered independently where contracts permit. Parallel exploration is not a prerequisite for a useful linear Recipe or reliable Script automation.
 
 ## Required invariants
 

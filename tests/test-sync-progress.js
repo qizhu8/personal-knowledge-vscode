@@ -5,7 +5,7 @@ const path = require("path");
 
 const root = path.join(__dirname, "..");
 const extension = fs.readFileSync(path.join(root, "src", "extension.ts"), "utf8");
-const server = fs.readFileSync(path.join(root, "src", "sync-server.ts"), "utf8");
+const server = fs.readFileSync(path.join(root, "src", "sync/sync-server.ts"), "utf8");
 const core = fs.readFileSync(path.join(root, "dist", "webview", "panel.js"), "utf8");
 const css = fs.readFileSync(path.join(root, "dist", "webview", "panel.css"), "utf8");
 

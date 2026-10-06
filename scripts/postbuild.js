@@ -4,6 +4,33 @@ const fs = require("fs");
 const vm = require("vm");
 const path = require("path");
 const esbuild = require("esbuild");
+const { runtimeRelative, writeCompatibilityBridges, verifyLayout } = require("./organize-source");
+
+const distPath = path.join(__dirname, "..", "dist");
+esbuild.buildSync({
+  entryPoints: [path.join(__dirname, "..", "src", "webview", "chat-retrieval-flow-entry.js")],
+  bundle: true, platform: "browser", format: "iife", minify: true,
+  outfile: path.join(distPath, "webview", "chat-retrieval-flow.js"),
+});
+for (const name of ["api-chat-client", "api-chat-mcp", "api-chat-tools"]) {
+  const entry = path.join(distPath, runtimeRelative(`${name}.js`));
+  esbuild.buildSync({
+    entryPoints: [entry],
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    external: ["vscode", `${distPath}/*`],
+    allowOverwrite: true,
+    outfile: entry,
+  });
+}
+writeCompatibilityBridges(path.join(__dirname, ".."));
+verifyLayout(path.join(__dirname, ".."), true);
+
+fs.copyFileSync(
+  path.join(path.dirname(require.resolve("dompurify")), "purify.min.js"),
+  path.join(__dirname, "..", "dist", "webview", "purify.min.js"),
+);
 
 const { builtInRecipeInventory } = require(path.join(__dirname, "..", "dist", "workflows", "project-model.js"));
 const systemRecipeInventory = {
@@ -16,23 +43,23 @@ fs.writeFileSync(
 );
 
 esbuild.buildSync({
-  entryPoints: [path.join(__dirname, "..", "src", "subscription-mqtt-client.ts")],
+  entryPoints: [path.join(__dirname, "..", "src", "subscriptions/subscription-mqtt-client.ts")],
   bundle: true,
   platform: "node",
   format: "cjs",
   define: { navigator: "undefined" },
-  outfile: path.join(__dirname, "..", "dist", "subscription-mqtt-client.js"),
+  outfile: path.join(__dirname, "..", "dist", "subscriptions/subscription-mqtt-client.js"),
 });
-if (/\bnavigator\b/.test(fs.readFileSync(path.join(__dirname, "..", "dist", "subscription-mqtt-client.js"), "utf8"))) {
+if (/\bnavigator\b/.test(fs.readFileSync(path.join(__dirname, "..", "dist", "subscriptions/subscription-mqtt-client.js"), "utf8"))) {
   throw new Error("subscription MQTT bundle must not access VS Code's migrated Node navigator global");
 }
 
 esbuild.buildSync({
-  entryPoints: [path.join(__dirname, "..", "src", "subscription-ip-policy.ts")],
+  entryPoints: [path.join(__dirname, "..", "src", "subscriptions/subscription-ip-policy.ts")],
   bundle: true,
   platform: "node",
   format: "cjs",
-  outfile: path.join(__dirname, "..", "dist", "subscription-ip-policy.js"),
+  outfile: path.join(__dirname, "..", "dist", "subscriptions/subscription-ip-policy.js"),
 });
 
 const htmlPath = path.join(__dirname, "..", "dist", "webview", "panel.html");
@@ -95,7 +122,7 @@ try {
   if (!extensionJs.includes("Regenerate Server Code") || !extensionJs.includes("offerMcpServerRegeneration")) {
     throw new Error("extension must offer direct MCP server-code regeneration");
   }
-  const browserSource = fs.readFileSync(path.join(__dirname, "..", "src", "chatroom-browser.ts"), "utf-8");
+  const browserSource = fs.readFileSync(path.join(__dirname, "..", "src", "chatroom/chatroom-browser.ts"), "utf-8");
   if (!browserSource.includes("selfMember&&selfMember.host") || !browserSource.includes('host?host.user:"all"') ||
       !browserSource.includes("selfMember&&selfMember.host?[{name:\"all\"")) {
     throw new Error("Browser Chatroom must reserve @all for Hosts and default guest replies to the Host");
@@ -114,7 +141,7 @@ try {
       !extensionTs.includes("await this.refreshStoredRooms()")) {
     throw new Error("Host Close must use durable Hub ownership and refresh Stored Rooms immediately");
   }
-  const roomIdentityTs = fs.readFileSync(path.join(__dirname, "..", "src", "chat-room-identity.ts"), "utf-8");
+  const roomIdentityTs = fs.readFileSync(path.join(__dirname, "..", "src", "chatroom/chat-room-identity.ts"), "utf-8");
   if (!roomIdentityTs.includes('if (roomId) return `room:${roomId}`') ||
       !roomIdentityTs.includes("new URL(url).hostname") ||
       !extensionTs.includes("return chatRoomIdentity(url, room, roomId)") ||
@@ -145,7 +172,7 @@ try {
 // 3. Syntax-check the chat browser-view HTML (generated at runtime in chatroom.ts,
 //    so it never reaches panel.html's check — a stray edit there kills the page).
 try {
-  const { browserViewHtml } = require(path.join(__dirname, "..", "dist", "chatroom.js"));
+  const { browserViewHtml } = require(path.join(__dirname, "..", "dist", "chatroom/chatroom.js"));
   const bv = browserViewHtml();
   const bvScripts = [...bv.matchAll(/<script>([\s\S]*?)<\/script>/g)];
   for (const s of bvScripts) new vm.Script(s[1], { filename: "browser-view:inline" });
@@ -158,3 +185,24 @@ try {
 const { validateUiArtifacts } = require("./verify-ui-artifacts");
 const uiArtifactCount = validateUiArtifacts(path.join(__dirname, ".."));
 console.log(`post-build: ${uiArtifactCount} required UI artifacts OK`);
+
+const { createHash } = require("crypto");
+const rootPath = path.join(__dirname, "..");
+const buildFiles = {};
+function fingerprintDirectory(directory) {
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
+    if (["__pycache__", ".pytest_cache", "screenshots", ".chat_cids.json", "build-info.json"].includes(entry.name) || entry.name.startsWith("_demo") || /\.(map|exe)$/.test(entry.name)) continue;
+    const filename = path.join(directory, entry.name);
+    if (entry.isDirectory()) fingerprintDirectory(filename);
+    else if (entry.isFile()) buildFiles[path.relative(rootPath, filename).split(path.sep).join("/")] = createHash("sha256").update(fs.readFileSync(filename)).digest("hex");
+  }
+}
+fingerprintDirectory(distPath);
+fingerprintDirectory(path.join(rootPath, "resources"));
+buildFiles["package.json"] = createHash("sha256").update(fs.readFileSync(path.join(rootPath, "package.json"))).digest("hex");
+const buildId = createHash("sha256").update(JSON.stringify(buildFiles)).digest("hex");
+fs.writeFileSync(path.join(distPath, "build-info.json"), JSON.stringify({
+  schema: "pkm.extension-build/v1", version: require("../package.json").version,
+  buildId, builtAt: new Date().toISOString(), files: buildFiles,
+}, null, 2));
+console.log(`post-build: runtime build ${buildId.slice(0, 12)}`);

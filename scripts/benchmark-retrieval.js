@@ -4,7 +4,7 @@ const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
 const { performance } = require("perf_hooks");
-const { RetrievalWorkerManager } = require("../dist/retrieval-worker.js");
+const { RetrievalWorkerManager } = require("../dist/retrieval/retrieval-worker.js");
 
 function argument(name, fallback) {
   const prefix = `--${name}=`;
@@ -99,6 +99,7 @@ async function runTier(size, python, script, repetitions) {
     const readyMs = performance.now() - readyStarted;
     endpoint = JSON.parse(fs.readFileSync(path.join(state, "worker.json"), "utf8"));
     const queryResults = {};
+    const routingSamples = [];
     for (const [label, target] of Object.entries(generated.labels)) {
       const latencies = [];
       let relevant = false;
@@ -117,8 +118,18 @@ async function runTier(size, python, script, repetitions) {
           deadlineMs: 10_000,
           diagnostics: "summary",
         });
-        latencies.push(performance.now() - started);
+        const durationMs = performance.now() - started;
+        latencies.push(durationMs);
         relevant ||= result.hits.some(hit => hit.sourceId === knowledgeUri(target.index));
+        if (label !== "relation") {
+          const rank = result.hits.slice(0, 5).findIndex(hit => hit.sourceId === knowledgeUri(target.index));
+          routingSamples.push({
+            success: Number(rank >= 0),
+            precisionAt5: Number(rank >= 0) / 5,
+            ndcgAt5: rank < 0 ? 0 : 1 / Math.log2(rank + 2),
+            durationMs,
+          });
+        }
       }
       queryResults[label] = {
         relevantAt10: relevant,
@@ -127,6 +138,8 @@ async function runTier(size, python, script, repetitions) {
         p99Ms: Number(percentile(latencies, 0.99).toFixed(3)),
       };
     }
+    const average = (field) => routingSamples.reduce((sum, sample) => sum + sample[field], 0) / routingSamples.length;
+    const routingLatencies = routingSamples.map(sample => sample.durationMs);
     const allLatencies = Object.values(queryResults).flatMap(result => [result.p50Ms, result.p95Ms, result.p99Ms]);
     const deltaSnapshot = {
       corpus_revision: `synthetic-${size}-v2`,
@@ -160,6 +173,14 @@ async function runTier(size, python, script, repetitions) {
         p50: Number(percentile(allLatencies, 0.50).toFixed(3)),
         p95: Number(percentile(allLatencies, 0.95).toFixed(3)),
         p99: Number(percentile(allLatencies, 0.99).toFixed(3)),
+      },
+      routingPath: {
+        profile: "l1_online", corpus: "synthetic", judgedQueries: routingSamples.length / repetitions,
+        samples: routingSamples.length,
+        successRate: Number(average("success").toFixed(4)),
+        precisionAt5: Number(average("precisionAt5").toFixed(4)),
+        ndcgAt5: Number(average("ndcgAt5").toFixed(4)),
+        latencyMs: { p50: Number(percentile(routingLatencies, 0.50).toFixed(3)), p95: Number(percentile(routingLatencies, 0.95).toFixed(3)) },
       },
       labels: queryResults,
       sync,
@@ -201,6 +222,7 @@ async function main() {
     for (const tier of tiers) measured.push(await runTier(tier, python, path.join(__dirname, "..", "resources", "retrieval_worker.py"), repetitions));
     const result = {
       schema: "pkm.retrieval.benchmark/v1",
+      engineVersion: "0.3.0.dev2026091601",
       generatedAt: new Date().toISOString(),
       platform: { os: process.platform, arch: process.arch, node: process.version },
       labels: ["english", "chinese", "mixed", "exact-id", "code-symbol", "relation"],

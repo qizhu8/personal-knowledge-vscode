@@ -10,7 +10,7 @@ const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-webview-restoration-"
 const compiled = path.join(fixture, "webview-restoration.js");
 childProcess.execFileSync("npx", [
   "esbuild",
-  path.join(root, "src", "webview-restoration.ts"),
+  path.join(root, "src", "ui/webview-restoration.ts"),
   "--bundle",
   "--platform=node",
   "--format=cjs",

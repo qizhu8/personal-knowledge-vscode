@@ -1,7 +1,10 @@
 """Uniform, actionable feedback for malformed PKM MCP tool calls."""
 
+import asyncio
 import hashlib
 import json
+import time
+import uuid
 from collections import OrderedDict
 
 from fastmcp.exceptions import ValidationError as FastMCPValidationError
@@ -10,6 +13,56 @@ from fastmcp.server.middleware import Middleware
 
 ERROR_SCHEMA = "pkm.mcp.tool-error/v1"
 MAX_INVALID_CALL_FINGERPRINTS = 256
+
+
+class McpDiagnosticsMiddleware(Middleware):
+    def __init__(self, log, wait_seconds=30):
+        self.log = log
+        self.wait_seconds = wait_seconds
+
+    async def on_call_tool(self, context, call_next):
+        started = time.perf_counter()
+        call_id = uuid.uuid4().hex
+        message = getattr(context, "message", None)
+        fastmcp_context = getattr(context, "fastmcp_context", None)
+        tool_name = str(getattr(message, "name", "") or "")
+        if not tool_name or len(tool_name) > 80 or not all(
+                character.isascii() and (character.isalnum() or character == "_")
+                for character in tool_name):
+            tool_name = "invalid-tool-name"
+        fields = {
+            "callId": call_id,
+            "tool": tool_name,
+            "transportId": hashlib.sha256(str(getattr(fastmcp_context, "session_id", "") or "").encode()).hexdigest()[:24],
+            "requestId": hashlib.sha256(str(getattr(fastmcp_context, "request_id", "") or "").encode()).hexdigest()[:24],
+        }
+        self.log.record("mcp.call.started", **fields)
+
+        async def record_waiting():
+            while True:
+                await asyncio.sleep(self.wait_seconds)
+                self.log.record("mcp.call.waiting", **fields,
+                                durationMs=round((time.perf_counter() - started) * 1000))
+
+        watchdog = asyncio.create_task(record_waiting())
+        try:
+            result = await call_next(context)
+        except BaseException as error:
+            self.log.record(
+                "mcp.call.cancelled" if isinstance(error, asyncio.CancelledError) else "mcp.call.failed",
+                **fields, durationMs=round((time.perf_counter() - started) * 1000),
+                errorType=type(error).__name__)
+            raise
+        else:
+            self.log.record("mcp.call.returned", **fields,
+                            durationMs=round((time.perf_counter() - started) * 1000))
+            return result
+        finally:
+            watchdog.cancel()
+            try:
+                await watchdog
+            except asyncio.CancelledError:
+                pass
 
 
 def _json(value):

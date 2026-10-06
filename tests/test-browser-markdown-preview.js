@@ -7,9 +7,9 @@ const ts = require("typescript");
 const { spawn } = require("child_process");
 
 const extension = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
-const branding = fs.readFileSync(path.join(__dirname, "..", "src", "browser-branding.ts"), "utf8");
+const branding = fs.readFileSync(path.join(__dirname, "..", "src", "ui/browser-branding.ts"), "utf8");
 const panel = fs.readFileSync(path.join(__dirname, "..", "dist", "webview", "panel.js"), "utf8");
-const chatBrowser = fs.readFileSync(path.join(__dirname, "..", "src", "chatroom-browser.ts"), "utf8");
+const chatBrowser = fs.readFileSync(path.join(__dirname, "..", "src", "chatroom/chatroom-browser.ts"), "utf8");
 const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
 const start = extension.indexOf("function buildStandaloneNoteHtml");
 const end = extension.indexOf("// Cache the self-contained KaTeX CSS", start);
@@ -70,8 +70,13 @@ const skillFixtures = [
   {category:"Secret", name:"Hidden skill", content:"Private skill body"},
 ];
 const readItems = [];
+const paperFixtures = [
+  {slug:"Public/Models/Dense", title:"Dense retrieval", content:"Research body"},
+  {slug:"Secret/Research/Private", title:"Private research", content:"Private research body"},
+];
 const readerContext = {
-  noteList:() => noteFixtures, skillList:() => skillFixtures,
+  noteList:() => noteFixtures, skillList:() => skillFixtures, paperList:() => paperFixtures,
+  paperGet:key => { readItems.push(key); return paperFixtures.find(paper => paper.slug === key); },
   noteGet:key => { readItems.push(key); return noteFixtures.find(note => note.slug === key); },
   skillGet:name => { readItems.push(name); return skillFixtures.find(skill => skill.name === name); },
   isContentPathPrivate:(_type, key) => key.startsWith("Secret/"),
@@ -98,7 +103,13 @@ assert.match(publicReader, /aria-label="Knowledge navigation"/);
 assert.match(publicReader, /href="\/skills\/Public\/Visible%20skill\.html"/);
 assert.match(publicReader, /Visible note &lt;safe&gt;/);
 assert.match(publicReader, /aria-current="page"/);
-assert.doesNotMatch(publicReader, /Secret|Hush|Hidden skill|Private note body|Private skill body/, "private titles, paths and bodies never enter a public page or navigation payload");
+assert.match(publicReader, /<h2>Research<\/h2>/);
+assert.match(publicReader, /href="\/papers\/Public\/Models\/Dense\.html"/);
+assert.match(publicReader, /class="reader-nav-folder" open><summary>Public<\/summary>/);
+assert.doesNotMatch(publicReader, /Secret|Hush|Hidden skill|Private note body|Private skill body|Private research/, "private titles, paths and bodies never enter a public page or navigation payload");
+const paperReader = readerContext.liveMarkdownHtml("papers/Public/Models/Dense", {});
+assert.match(paperReader, /class="reader-nav-folder" open><summary>Models<\/summary>/);
+assert.match(paperReader, /title="Public\/Models\/Dense" aria-current="page"/);
 assert.match(publicReader, /Cross-link/);
 const beforeDeniedRead = readItems.length;
 assert.strictEqual(readerContext.liveMarkdownHtml("notes/Secret/Hush", {}), undefined);
@@ -107,6 +118,7 @@ assert.strictEqual(readItems.length, beforeDeniedRead, "private paths are denied
 const privateReader = readerContext.liveMarkdownHtml("notes/Secret/Hush", {}, true);
 assert.match(privateReader, /Hush private note/);
 assert.match(privateReader, /Hidden skill/);
+assert.match(privateReader, /Private research/);
 assert.match(privateReader, /Visible note &lt;safe&gt;/);
 assert.match(readerContext.liveMarkdownHtml("notes/Public/Visible", {}, true), /href="\/notes\/Secret\/Hush\.html"/, "navigating to public content from a private preview preserves its all-content scope");
 const originalSkillGet = readerContext.skillGet;
@@ -115,7 +127,7 @@ assert.strictEqual(readerContext.liveMarkdownHtml("skills/Public/Visible skill",
 readerContext.skillGet = originalSkillGet;
 
 async function testReaderNavigationNetwork() {
-  const { startLiveMarkdownServer } = require("../dist/live-note-server");
+  const { startLiveMarkdownServer } = require("../dist/knowledge/live-note-server");
   const publicServer = await startLiveMarkdownServer([], key => readerContext.liveMarkdownHtml(key, {}), {}, {
     authorizePath:readerContext.publicContentRouteAllowed,
   });
@@ -149,19 +161,26 @@ with sync_playwright() as playwright:
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.goto(os.environ['PKM_READER_PUBLIC_URL'] + '/notes/Public/Visible.html')
         nav = page.locator('.reader-sidebar')
-        assert nav.locator('a').count() == 2
+        assert nav.locator('a').count() == 3
         assert nav.locator('[aria-current=page]').get_attribute('title') == 'Public/Visible'
         search = nav.get_by_role('searchbox')
+        research = nav.locator('.reader-nav-group').filter(has=page.get_by_role('heading', name='Research', exact=True))
+        assert not research.locator('a').is_visible()
+        search.fill('Dense')
+        assert research.locator('a').is_visible()
+        search.fill('')
+        assert not research.locator('a').is_visible(), 'Clearing search restores collapsed folders'
         search.fill('Hidden')
         assert nav.locator('a:visible').count() == 0
         search.fill('Visible skill')
         nav.locator('a:visible').click()
         assert page.locator('.doc-title').inner_text() == 'Visible skill'
-        assert page.locator('.reader-sidebar a').count() == 2
+        assert page.locator('.reader-sidebar a').count() == 3
         page.goto(os.environ['PKM_READER_PRIVATE_URL'] + '/notes/Secret/Hush.html?_pkm_token=' + os.environ['PKM_READER_TEST_TOKEN'])
-        assert page.locator('.reader-sidebar a').count() == 4
+        assert page.locator('.reader-sidebar a').count() == 6
+        page.get_by_role('searchbox').fill('Public/Visible')
         page.locator('.reader-sidebar a[title="Public/Visible"]').click()
-        assert page.locator('.reader-sidebar a').count() == 4
+        assert page.locator('.reader-sidebar a').count() == 6
         assert page.locator('.reader-sidebar a[title="Secret/Hush"]').count() == 1
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         assert not errors, errors
@@ -173,7 +192,7 @@ with sync_playwright() as playwright:
             sidebar_box = page.locator('.reader-sidebar').bounding_box()
             article_box = page.locator('.wrap').bounding_box()
             assert 0 <= article_box['y'] - sidebar_box['y'] - sidebar_box['height'] <= 24, 'Mobile article must follow navigation without overlap or an artificial gap'
-            page.locator('.reader-sidebar summary').click()
+            page.locator('.reader-sidebar > details > summary').click()
             assert not page.locator('.reader-sidebar nav').is_visible()
         page.close()
     browser.close()
@@ -191,7 +210,7 @@ print('Reader browser privacy/navigation tests passed')`;
 }
 
 async function testProtectedNetworkPreview() {
-  const { startLiveMarkdownServer } = require("../dist/live-note-server");
+  const { startLiveMarkdownServer } = require("../dist/knowledge/live-note-server");
   const token = "test-preview-token";
   const started = await startLiveMarkdownServer([], key => key === "sample" ? "<h1>Sample</h1>" : undefined, {}, {
     listenHost: "127.0.0.1",

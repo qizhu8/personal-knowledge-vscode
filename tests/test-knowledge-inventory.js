@@ -3,12 +3,12 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { KnowledgeInventoryManager } = require('../dist/knowledge-inventory.js');
+const { KnowledgeInventoryManager } = require("../dist/knowledge/knowledge-inventory.js");
 
 async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pkm-inventory-root-'));
   const state = fs.mkdtempSync(path.join(os.tmpdir(), 'pkm-inventory-state-'));
-  const worker = path.join(__dirname, '..', 'dist', 'knowledge-inventory-worker.js');
+  const worker = path.join(__dirname, '..', 'dist', "knowledge/knowledge-inventory-worker.js");
   try {
     const noteDir = path.join(root, 'notes', 'Project', 'Deep');
     const skillDir = path.join(root, 'skills', 'Coding');

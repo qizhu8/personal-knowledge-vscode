@@ -29,7 +29,7 @@ const {
   parseGitHubCredentialManagerAccounts,
   parseGitHubSshLogin,
   replaceGitHubSyncFilesAtomically
-} = require("../dist/github-sync.js");
+} = require("../dist/sync/github-sync.js");
 
 assert.deepStrictEqual(githubSyncAuthenticationSessionOptions(), { createIfNone: true },
   "normal GitHub reconnect must reuse the extension's global session preference across VS Code windows");

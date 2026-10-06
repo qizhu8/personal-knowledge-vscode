@@ -3,7 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const { WebSocket } = require("ws");
-const { ChatHub } = require("../../dist/chatroom-hub");
+const { ChatHub } = require("../../dist/chatroom/chatroom/chatroom-hub");
 
 class MemorySecretStorage {
   constructor(seed) { this.values = new Map(seed || []); }

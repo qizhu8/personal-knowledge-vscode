@@ -7,7 +7,7 @@ const root = path.join(__dirname, "..");
 const webview = path.join(root, "dist", "webview");
 const port = Number(process.env.PORT || 4178);
 const { initializeProjectModel } = require(path.join(root, "dist", "workflows", "project-model.js"));
-const { FEATURE_TOUR_MODULES } = require(path.join(root, "dist", "onboarding-experience.js"));
+const { FEATURE_TOUR_MODULES } = require(path.join(root, "dist", "ui/onboarding-experience.js"));
 const configurableTestingRecipe = initializeProjectModel(undefined, () => "release-preview")
   .recipes.find(recipe => recipe.name === "Configurable Validation and Testing");
 const { systemKind: _configurableSystemKind, ...editableConfigurableTestingRecipe } = configurableTestingRecipe;

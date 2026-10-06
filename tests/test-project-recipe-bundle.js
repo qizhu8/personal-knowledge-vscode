@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 const assert = require("assert");
 const crypto = require("crypto");
-const { canonicalJson } = require("../dist/workflow-contracts.js");
+const { canonicalJson } = require("../dist/workflows/workflow-contracts.js");
 const { initializeProjectModel } = require("../dist/workflows/project-model.js");
 const {
   PROJECT_RECIPE_BUNDLE_SCHEMA, ProjectRecipeBundleError, exportProjectRecipeBundle, parseProjectRecipeBundle

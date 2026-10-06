@@ -2,8 +2,8 @@
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
-const { subscriptionNavigationRoot } = require("../dist/navigation-subscriptions.js");
-const { SHARED_CONTENT_TYPES } = require("../dist/subscriptions.js");
+const { subscriptionNavigationRoot } = require("../dist/ui/navigation-subscriptions.js");
+const { SHARED_CONTENT_TYPES } = require("../dist/subscriptions/subscriptions.js");
 
 const root = path.join(__dirname, "..");
 const extension = fs.readFileSync(path.join(root, "src", "extension.ts"), "utf8");

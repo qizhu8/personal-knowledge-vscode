@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "crypto";
-import { canonicalJson } from "../workflow-contracts";
+import { canonicalJson } from "./workflow-contracts";
 import { WorkflowPortDescriptor, normalizePortDescriptor } from "./value-contracts";
 
 export type NodeKindSupportState = "active" | "deprecated" | "archived" | "revoked";

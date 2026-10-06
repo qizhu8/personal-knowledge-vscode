@@ -10,7 +10,7 @@ const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-native-mcp-location-"
 const compiled = path.join(fixture, "mcp-native-location.js");
 childProcess.execFileSync("npx", [
   "esbuild",
-  path.join(root, "src", "mcp-native-location.ts"),
+  path.join(root, "src", "mcp/mcp-native-location.ts"),
   "--bundle",
   "--platform=node",
   "--format=cjs",

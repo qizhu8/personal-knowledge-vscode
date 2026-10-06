@@ -7,7 +7,7 @@ const {
   GitHubSyncCoordinator,
   canonicalKnowledgeRoot,
   githubSyncCoordinatorDirectory,
-} = require("../dist/github-sync-coordinator.js");
+} = require("../dist/sync/github-sync-coordinator.js");
 
 const runtimeRoot = path.join(__dirname, ".runtime-github-sync-coordinator");
 const wait = delay => new Promise(resolve => setTimeout(resolve, delay));
@@ -240,7 +240,7 @@ function waitFor(messages, predicate, label, timeoutMs = 5000) {
   );
 
   const extension = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
-  const sync = fs.readFileSync(path.join(__dirname, "..", "src", "github-sync.ts"), "utf8");
+  const sync = fs.readFileSync(path.join(__dirname, "..", "src", "sync/github-sync.ts"), "utf8");
   const workflow = fs.readFileSync(path.join(__dirname, "..", ".github", "workflows", "github-sync-coordinator.yml"), "utf8");
   assert.match(extension, /withGitHubSyncTargetLock\(context, targetId, \(\) => withGitHubSyncApplyLock\(context,/);
   assert.match(extension, /githubSyncCoordinatorStatePath !== coordinatorStatePath[\s\S]*githubSyncScheduler\.dispose\(\)[\s\S]*new GitHubSyncCoordinator/,

@@ -2,7 +2,7 @@
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
-const { canonicalJson, compileWorkflowDefinitionV1 } = require("../dist/workflow-contracts.js");
+const { canonicalJson, compileWorkflowDefinitionV1 } = require("../dist/workflows/workflow-contracts.js");
 
 const root = path.resolve(__dirname, "..");
 const contracts = path.join(root, "resources", "workflow-contracts", "v1");

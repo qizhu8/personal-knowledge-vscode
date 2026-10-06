@@ -13,10 +13,15 @@ try {
   const extensionRoot = path.join(root, "extension");
   assert(!fs.existsSync(path.join(extensionRoot, "node_modules", "sql.js", "package.json")), "test must not rely on packaged sql.js node_modules resolution");
   assert(fs.existsSync(path.join(extensionRoot, "resources", "pkm-skills-router.md")), "VSIX must include the canonical PKM Skill Router seed");
-  assert(fs.existsSync(path.join(extensionRoot, "dist", "pkm-skill-projection.js")), "VSIX must include the compiled Skill projection manager");
+  assert(fs.existsSync(path.join(extensionRoot, "dist", "skills/pkm-skill-projection.js")), "VSIX must include the compiled Skill projection manager");
   assert(fs.existsSync(path.join(extensionRoot, "resources", "retrieval_worker.py")), "VSIX must include the persistent retrieval worker");
-  assert(fs.existsSync(path.join(extensionRoot, "resources", "vendor", "adaptive_skill_retrieval-0.3.0.dev2026091601-py3-none-any.whl")), "VSIX must include the verified adaptive retrieval wheel");
-  const { ChatPersistence } = require(path.join(extensionRoot, "dist", "chat-persistence.js"));
+  for (const module of ["retrieval_solution.py", "retrieval_solutions.py", "retrieval_serving.py", "retrieval_solution_index.py", "retrieval_solution_resources.py"]) {
+    assert(fs.existsSync(path.join(extensionRoot, "resources", module)), `VSIX must include ${module}`);
+  }
+  assert(!fs.existsSync(path.join(extensionRoot, "retrieval-solutions")), "Private offline packages must never ship");
+  assert(!fs.existsSync(path.join(extensionRoot, "next-step")), "Private planning must never ship");
+  assert(fs.existsSync(path.join(extensionRoot, "resources", "vendor", "adaptive_skill_retrieval-0.3.0.dev2026100504-py3-none-any.whl")), "VSIX must include the verified adaptive retrieval wheel");
+  const { ChatPersistence } = require(path.join(extensionRoot, "dist", "chatroom/chat-persistence.js"));
   const persistence = new ChatPersistence(path.join(root, "rooms"), 50);
   persistence.openRoom("packaged-room-001", "Packaged Room")
     .then(result => {

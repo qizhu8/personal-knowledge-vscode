@@ -178,6 +178,9 @@ function prepareServerFocusGroups() {
   }
 }
 function renderServerDashboard(servers) {
+  const detail = document.getElementById('detail');
+  const view = captureRefreshView(detail);
+  const outputs = [...detail.querySelectorAll('.srv-card-output[id]')].map(output => ({ output, view:captureRefreshView(output, ['.srv-log']) }));
   const searchInput = document.getElementById('server-search');
   const restoreSearchFocus = document.activeElement === searchInput;
   const restoreSearchCaret = searchInput?.selectionStart ?? serverSearchQuery.length;
@@ -271,6 +274,14 @@ function renderServerDashboard(servers) {
     }
   }
   filterServerDashboard(serverSearchQuery);
+  for (const { output, view:outputView } of outputs) {
+    const replacement = document.getElementById(output.id);
+    if (replacement) {
+      replacement.replaceWith(output);
+      restoreRefreshView(output, outputView);
+    }
+  }
+  restoreRefreshView(detail, view);
   if (serverFocusSlug) {
     const focused = document.querySelector(`.srv-card[data-server-slug="${CSS.escape(serverFocusSlug)}"]`);
     if (focused) {

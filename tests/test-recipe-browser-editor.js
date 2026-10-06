@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 const assert = require("assert");
-const { recipeBrowserEditorDocument } = require("../dist/recipe-browser.js");
+const { recipeBrowserEditorDocument } = require("../dist/ui/recipe-browser.js");
 
 const recipe = {
   recipeId: "recipe_browser_test",

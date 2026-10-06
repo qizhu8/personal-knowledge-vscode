@@ -6,7 +6,7 @@ const {
   PkmLocatorError,
   parsePkmLocator,
   resolvePkmLocator,
-} = require("../dist/knowledge-locator");
+} = require("../dist/knowledge/knowledge-locator");
 
 const inventory = [
   { area: "skills", relativePath: "Coding/Review.md", slug: "Coding/Review", title: "Review", knowledgeId: "knowledge_0123456789abcdef01234567" },

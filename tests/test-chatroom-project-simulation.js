@@ -9,10 +9,10 @@ const {
   projectedAgentSessionStatus,
   restoreAgentSessionFromTrash,
   terminalAgentSessionStatus,
-} = require("../dist/agent-session-lifecycle");
-const { ChatMeetingLifecycle, latestDiscussAfterCompletedMeeting } = require("../dist/chat-meeting-lifecycle");
-const { messageAddressesManagedAgent } = require("../dist/chat-managed-agent-routing");
-const { MeetingStateStore } = require("../dist/meeting-state");
+} = require("../dist/agent-sessions/agent-session-lifecycle");
+const { ChatMeetingLifecycle, latestDiscussAfterCompletedMeeting } = require("../dist/chatroom/chatroom/chat-meeting-lifecycle");
+const { messageAddressesManagedAgent } = require("../dist/chatroom/chatroom/chat-managed-agent-routing");
+const { MeetingStateStore } = require("../dist/chatroom/meeting-state");
 const { ProjectModelError } = require("../dist/workflows/project-model");
 const { ProjectStore, ProjectStoreError } = require("../dist/workflows/project-store");
 const {
@@ -21,7 +21,7 @@ const {
   normalizeCollaborationMessage,
   normalizeCollaborationTaskRecord,
   transitionCollaborationTask,
-} = require("../dist/collaboration-model");
+} = require("../dist/chatroom/collaboration-model");
 const { CHATROOM_PROJECT_SIMULATION_MANIFEST: manifest } = require("./simulation/chatroom-project-manifest");
 const { DeterministicSimulationHarness } = require("./simulation/deterministic-harness");
 

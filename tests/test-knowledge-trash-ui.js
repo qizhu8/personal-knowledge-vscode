@@ -24,7 +24,7 @@ assert.match(panel, /function confirmDeleteAllPapers\(\)/);
 assert.match(panel, /ask\('deleteAllPapers'\)/);
 assert.match(panel, /Move Note to Trash/);
 assert.match(extension, /case "knowledgeTrashMove"/);
-const filestore = fs.readFileSync(path.join(root, "src/filestore.ts"), "utf8");
+const filestore = fs.readFileSync(path.join(root, "src/knowledge/filestore.ts"), "utf8");
 assert.match(filestore, /area === "notes" \? recordKnowledgeTrashDeletion\(entry, source\.full, move\)/,
   "both panel and Navigation Trash workflows must persist Notes deletion intent at the file mutation boundary");
 assert.match(extension, /case "knowledgeTrashRestore"/);

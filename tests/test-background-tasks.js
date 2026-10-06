@@ -3,7 +3,7 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
-const { BackgroundTaskRegistry } = require("../dist/background-task-registry.js");
+const { BackgroundTaskRegistry } = require("../dist/runtime/background-task-registry.js");
 
 let now = new Date("2026-09-25T06:00:00.000Z");
 const registry = new BackgroundTaskRegistry(() => now);

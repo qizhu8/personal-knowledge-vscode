@@ -3,7 +3,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { recordPerformanceMetric, performanceSummary } = require('../dist/performance-telemetry.js');
+const { recordPerformanceMetric, performanceSummary } = require("../dist/runtime/performance-telemetry.js");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pkm-performance-'));
 try {

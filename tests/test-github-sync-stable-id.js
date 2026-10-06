@@ -4,13 +4,13 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
-const { canonicalJson } = require("../dist/workflow-contracts.js");
+const { canonicalJson } = require("../dist/workflows/workflow-contracts.js");
 const {
   GITHUB_SYNC_CONTENT_TYPES,
   GitHubSyncConflictError,
   normalizeGitHubSyncTarget,
   syncGitHubTarget,
-} = require("../dist/github-sync.js");
+} = require("../dist/sync/github-sync.js");
 
 const run = (cwd, args) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 const skill = (name, body) => `---\nname: ${JSON.stringify(name)}\ndescription: "test"\n---\n# ${name}\n\n${body}\n`;

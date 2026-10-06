@@ -4,7 +4,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
-const { RetrievalWorkerManager, retrievalWorkerStartupTimeoutMs } = require("../dist/retrieval-worker.js");
+const { RetrievalWorkerManager, retrievalWorkerStartupTimeoutMs } = require("../dist/retrieval/retrieval-worker.js");
 
 assert.strictEqual(retrievalWorkerStartupTimeoutMs(undefined, 0, "linux"), 10000);
 assert.strictEqual(retrievalWorkerStartupTimeoutMs(undefined, 701, "linux"), 14000,
@@ -21,7 +21,7 @@ assert.strictEqual(retrievalWorkerStartupTimeoutMs({
   schema: 1, successfulStartupMs: [90000], consecutiveTimeouts: 9,
 }, 100000, "win32"), 90000, "adaptive startup budgets must remain bounded");
 
-const source = fs.readFileSync(path.join(__dirname, "..", "src", "retrieval-worker.ts"), "utf8");
+const source = fs.readFileSync(path.join(__dirname, "..", "src", "retrieval/retrieval-worker.ts"), "utf8");
 assert.match(
   source,
   /const launch = mcpStdioCommand\(this\.python,[\s\S]{0,200}spawn\(launch\.command, launch\.args,[\s\S]{0,200}windowsHide:\s*true/,
@@ -47,13 +47,13 @@ async function main() {
     runtime = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-retrieval-runtime-"));
     execFileSync(process.env.PYTHON || "python3", ["-m", "venv", "--system-site-packages", runtime]);
     python = process.platform === "win32" ? path.join(runtime, "Scripts", "python.exe") : path.join(runtime, "bin", "python");
-    const wheel = path.join(__dirname, "..", "resources", "vendor", "adaptive_skill_retrieval-0.3.0.dev2026091601-py3-none-any.whl");
+    const wheel = path.join(__dirname, "..", "resources", "vendor", "adaptive_skill_retrieval-0.3.0.dev2026100504-py3-none-any.whl");
     execFileSync(python, ["-m", "pip", "install", "--no-deps", wheel], { stdio: "ignore" });
   }
   const state = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-retrieval-worker-"));
   const script = path.join(__dirname, "..", "resources", "retrieval_worker.py");
-  const manager = new RetrievalWorkerManager(state, script, python, "0.3.0.dev2026091601");
-  const second = new RetrievalWorkerManager(state, script, python, "0.3.0.dev2026091601");
+  const manager = new RetrievalWorkerManager(state, script, python, "0.3.0.dev2026100504");
+  const second = new RetrievalWorkerManager(state, script, python, "0.3.0.dev2026100504");
   let endpoint;
   try {
     const initialSnapshot = { corpus_revision: "revision-1", documents: [
@@ -204,7 +204,8 @@ async function main() {
     await fetch(`http://127.0.0.1:${endpoint.port}/shutdown`, { method: "POST", headers: { "X-PKM-Retrieval-Token": endpoint.token } });
     await waitUntil(async () => !fs.existsSync(path.join(state, "worker.json")) || undefined);
     fs.writeFileSync(path.join(state, "worker.json"), JSON.stringify(endpoint));
-    const restarted = new RetrievalWorkerManager(state, script, python, "0.3.0.dev2026091601");
+    fs.writeFileSync(path.join(state, "serving-release.json"), '{"release":{},"sha256":"invalid"}');
+    const restarted = new RetrievalWorkerManager(state, script, python, "0.3.0.dev2026100504");
     assert.deepStrictEqual(await restarted.sync(restoredSnapshot), { mode: "reused", upserts: 0, deletes: 0 },
       "an unchanged corpus must still recover a stale endpoint before reporting reuse");
     const recoveredEndpoint = JSON.parse(fs.readFileSync(path.join(state, "worker.json"), "utf8"));
@@ -212,6 +213,12 @@ async function main() {
     const restored = await waitUntil(async () => { const value = await restarted.status(); return value.ready ? value : undefined; });
     assert.strictEqual(restored.corpus_revision, "revision-3", "restart must restore the last successfully merged snapshot");
     assert.strictEqual(restored.document_count, 4);
+    const fallback = await waitUntil(async () => {
+      const value = await restarted.status();
+      return value.skill_serving.error ? value : undefined;
+    });
+    assert.strictEqual(fallback.skill_serving.ready, false, "invalid/missing serving dependencies must keep BM25 ready");
+    assert((await restarted.search("Data Preparation", 5, ["skill"])).hits.length > 0);
     endpoint = JSON.parse(fs.readFileSync(path.join(state, "worker.json"), "utf8"));
     await fetch(`http://127.0.0.1:${endpoint.port}/shutdown`, { method: "POST", headers: { "X-PKM-Retrieval-Token": endpoint.token } });
     console.log("retrieval worker test: persistent index, atomic ready revision, restart recovery, typed routing, and shared Subscriber PID OK");

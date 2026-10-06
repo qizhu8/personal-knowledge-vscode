@@ -5,9 +5,9 @@ const path = require("path");
 
 const root = path.join(__dirname, "..");
 const extension = fs.readFileSync(path.join(root, "src", "extension.ts"), "utf8");
-const worker = fs.readFileSync(path.join(root, "src", "chat-persistence-worker.ts"), "utf8");
-const hub = fs.readFileSync(path.join(root, "src", "chatroom-hub.ts"), "utf8");
-const credentials = fs.readFileSync(path.join(root, "src", "chat-room-credentials.ts"), "utf8");
+const worker = fs.readFileSync(path.join(root, "src", "chatroom/chat-persistence-worker.ts"), "utf8");
+const hub = fs.readFileSync(path.join(root, "src", "chatroom/chatroom-hub.ts"), "utf8");
+const credentials = fs.readFileSync(path.join(root, "src", "chatroom/chat-room-credentials.ts"), "utf8");
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 
 assert.match(extension, /configurePersistence\(path\.join\(store, "chatrooms"\)/, "Room persistence must live under Knowledge Root/chatrooms");

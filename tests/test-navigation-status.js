@@ -2,7 +2,7 @@
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
-const { summarizeServerNavigation, summarizeChatNavigation } = require("../dist/navigation-status.js");
+const { summarizeServerNavigation, summarizeChatNavigation } = require("../dist/ui/navigation-status.js");
 
 assert.deepStrictEqual(summarizeServerNavigation([]).kind, "offline");
 assert.deepStrictEqual(summarizeServerNavigation([{ status: "stopped", proxyRunning: true }]).description, "all stopped");

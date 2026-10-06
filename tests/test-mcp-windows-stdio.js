@@ -11,7 +11,7 @@ const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'pkm-windows-stdio-'));
 const compiled = path.join(fixture, 'mcp-stdio-command.js');
 childProcess.execFileSync('npx', [
   'esbuild',
-  path.join(root, 'src/mcp-stdio-command.ts'),
+  path.join(root, "src/mcp/mcp-stdio-command.ts"),
   '--bundle',
   '--platform=node',
   '--format=cjs',
@@ -74,7 +74,7 @@ assert.strictEqual(roundTrip.stdout, 'argument:payload', 'the proxy must preserv
 const exitCode = childProcess.spawnSync(process.execPath, [proxyPath, process.execPath, '-e', 'process.exit(7)']);
 assert.strictEqual(exitCode.status, 7, 'the proxy must preserve the target exit code');
 
-const mcpSource = fs.readFileSync(path.join(root, 'src/mcp.ts'), 'utf8');
+const mcpSource = fs.readFileSync(path.join(root, "src/mcp/mcp.ts"), 'utf8');
 assert.strictEqual((mcpSource.match(/mcpStdioCommand\(/g) || []).length, 5, 'every MCP registration and instruction surface must use the Windows-safe launcher');
 assert.match(mcpSource, /env:\s*launch\.env/,
   'native MCP definition data must carry the signed-host environment');
@@ -87,10 +87,10 @@ assert.doesNotMatch(mcpSource, /Get-CimInstance Win32_Process/,
   'passive MCP status must not launch a visible PowerShell process on Windows');
 assert.match(mcpSource, /Passive MCP process inspection is disabled on Windows/,
   'Windows MCP status must explain why passive process inspection is unavailable');
-const serversSource = fs.readFileSync(path.join(root, 'src/servers.ts'), 'utf8');
+const serversSource = fs.readFileSync(path.join(root, "src/servers/servers.ts"), 'utf8');
 assert.match(serversSource, /status === "external" && slug === inspectExternalSlug \? serverListenerProcesses\(m\.port\) : \[\]/,
   'passive Server status must defer Windows listener inspection until the user explicitly requests it');
-const retrievalSource = fs.readFileSync(path.join(root, 'src/retrieval-worker.ts'), 'utf8');
+const retrievalSource = fs.readFileSync(path.join(root, "src/retrieval/retrieval-worker.ts"), 'utf8');
 assert.match(retrievalSource, /const launch = mcpStdioCommand\(this\.python, \[this\.workerScript, this\.stateDir, this\.configurationHash\]\)/,
   'the long-lived Windows retrieval worker must use the signed-host JavaScript no-console proxy');
 assert.match(retrievalSource, /spawn\(launch\.command, launch\.args,/,

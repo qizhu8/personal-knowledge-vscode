@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 const fs = require("fs");
 const path = require("path");
-const { KnowledgeV1Migration } = require("../dist/knowledge-migration");
+const { KnowledgeV1Migration } = require("../dist/knowledge/knowledge-migration");
 
 const OPERATIONS = new Set([
   "inspect", "preview", "backup", "stage", "verify", "cutover",

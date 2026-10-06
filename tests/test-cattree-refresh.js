@@ -5,7 +5,7 @@ const path = require('path');
 const vm = require('vm');
 const os = require('os');
 const childProcess = require('child_process');
-const { SHARED_CONTENT_TYPES } = require('../dist/subscriptions.js');
+const { SHARED_CONTENT_TYPES } = require("../dist/subscriptions/subscriptions.js");
 
 const root = path.join(__dirname, '..');
 const knowledge = fs.readFileSync(path.join(root, 'src/webview/panel/20-knowledge.js'), 'utf8');
@@ -206,7 +206,10 @@ const core = fs.readFileSync(path.join(root, 'src/webview/panel/00-core.js'), 'u
 const genericSubscribedTabs = [...knowledge.match(/const cachedKnowledgeTabs = new Set\(\[([^\]]+)\]\)/)[1].matchAll(/'([^']+)'/g)].map(match => match[1]);
 assert.deepStrictEqual(genericSubscribedTabs.sort(), SHARED_CONTENT_TYPES.filter(type => type !== 'servers' && type !== 'recipes').sort(),
   'generic Knowledge CatTrees plus explicit Server and Recipe surfaces must cover every shared content type');
-assert.match(extension, /changedPath = path\.relative\(getStorePath\(\), uri\.fsPath\)/);
+assert.match(extension, /knowledgePaths\.add\(path\.relative\(getStorePath\(\), uri\.fsPath\)/,
+  'coalesced knowledge refresh must retain every changed path');
+assert.match(extension, /changedPaths\.length === 1 \? \{ changedPath: changedPaths\[0\] \}/,
+  'single-path refresh must preserve the CatTree compatibility field');
 assert.match(core, /pendingTreeRefresh = data \|\| \{\}/);
 assert.match(extension, /respond\(\{ command: "list", tab, q, filter, data: projectedData, folders/,
   'local CatTree response must use the privacy/share projection produced by the profiled list pipeline');
@@ -250,7 +253,7 @@ const notePath = path.join(noteDir, 'progress.md.md');
 fs.writeFileSync(notePath, '---\ntitle: "LPFeatureProcessor v1.1 Optimization Progress"\ntype: "general"\n---\nbody');
 const compiled = path.join(fixtureRoot, 'compiled');
 fs.mkdirSync(compiled, { recursive: true });
-childProcess.execFileSync('npx', ['esbuild', path.join(root, 'src/filestore.ts'), '--bundle', '--platform=node', '--format=cjs', `--outfile=${path.join(compiled, 'filestore.js')}`], { cwd: root, stdio: 'ignore' });
+childProcess.execFileSync('npx', ['esbuild', path.join(root, "src/knowledge/filestore.ts"), '--bundle', '--platform=node', '--format=cjs', `--outfile=${path.join(compiled, 'filestore.js')}`], { cwd: root, stdio: 'ignore' });
 const filestore = require(path.join(compiled, 'filestore.js'));
 filestore.setStorePath(fixtureRoot);
 filestore.skillUpsert({ name: 'Priority Skill', content: 'body', category: 'Coding', priority: 'high' });

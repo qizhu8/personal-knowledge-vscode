@@ -4,7 +4,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
-const { withCrossProcessLockSync } = require("../dist/cross-process-lock.js");
+const { withCrossProcessLockSync } = require("../dist/runtime/cross-process-lock.js");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-cross-process-lock-"));
 const lockPath = path.join(root, "projects.lock");

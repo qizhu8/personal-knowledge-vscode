@@ -2,7 +2,7 @@
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
-const { navigationItemPath } = require("../dist/navigation-path.js");
+const { navigationItemPath } = require("../dist/ui/navigation-path.js");
 
 const cases = [
   ["page-recipes", {}, "pkm://recipes/"],

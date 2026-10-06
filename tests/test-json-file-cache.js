@@ -2,7 +2,7 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { JsonFileCache } = require("../dist/json-file-cache");
+const { JsonFileCache } = require("../dist/runtime/json-file-cache");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-json-cache-"));
 try {

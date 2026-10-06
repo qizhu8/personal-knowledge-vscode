@@ -3,7 +3,7 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { cloudSynchronizedPath, isAbsoluteForPlatform, isForeignAbsolutePath, resolveMachineStorePath, extensionHostDescription } = require("../dist/store-path.js");
+const { cloudSynchronizedPath, isAbsoluteForPlatform, isForeignAbsolutePath, resolveMachineStorePath, extensionHostDescription } = require("../dist/knowledge/store-path.js");
 
 const existing = new Set(["/linux/store", "/linux/previous", "C:\\Users\\me\\knowledge"]);
 const isDirectory = value => existing.has(value);
@@ -42,7 +42,7 @@ assert.strictEqual(manifest.contributes.configuration.properties["personalKnowle
 assert.strictEqual(manifest.contributes.configuration.properties["personalKnowledge.mcpRuntimePath"].scope, "machine");
 assert.strictEqual(manifest.contributes.configuration.properties["personalKnowledge.mcpServerPath"].scope, "machine");
 assert.strictEqual(manifest.contributes.configuration.properties["personalKnowledge.chatInviteHost"].scope, "machine");
-for (const file of ["src/filestore.ts", "src/storage.ts"]) {
+for (const file of ["src/knowledge/filestore.ts", "src/knowledge/storage.ts"]) {
   const source = fs.readFileSync(path.join(root, file), "utf8");
   assert.doesNotMatch(source, /homedir\(\).*personal-knowledge/);
   assert.match(source, /let _store(?:Path)? = "";/);
@@ -67,7 +67,7 @@ assert.match(extension, /Existing environments will not be moved automatically/)
 assert.match(extension, /It can grow very large/);
 assert.match(extension, /Current disk usage:/);
 assert.match(extension, /localAbsolutePathError\(value\)/);
-const mcpSource = fs.readFileSync(path.join(root, "src", "mcp.ts"), "utf8");
+const mcpSource = fs.readFileSync(path.join(root, "src", "mcp/mcp.ts"), "utf8");
 assert.match(mcpSource, /export function managedMcpRuntimePath/);
 assert.match(mcpSource, /export function managedMcpServerDirectory/);
 assert.match(mcpSource, /isAbsoluteForPlatform\(configured\) && !isForeignAbsolutePath\(configured\)/);

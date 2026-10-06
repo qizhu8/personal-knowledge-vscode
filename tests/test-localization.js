@@ -2,6 +2,7 @@
 const assert = require("assert");
 const fs = require("fs");
 const Module = require("module");
+const os = require("os");
 const path = require("path");
 
 const root = path.join(__dirname, "..");
@@ -54,7 +55,7 @@ const previewSource = fs.readFileSync(path.join(root, "scripts", "release-previe
 assert.match(previewSource, /localeManifest\.locales\.map/);
 assert.match(previewSource, /locales: localeManifest\.locales/);
 assert.doesNotMatch(previewSource, /\["en",\s*"zh-cn",\s*"es"\]/);
-assert.match(fs.readFileSync(path.join(root, "src", "localization.ts"), "utf8"), /loadLocaleManifest/);
+assert.match(fs.readFileSync(path.join(root, "src", "ui/localization.ts"), "utf8"), /loadLocaleManifest/);
 assert.strictEqual(manifest.locales.find(locale => locale.id === "ar").direction, "rtl");
 for (const key of ["nav.runningPort", "nav.startingPort", "nav.stoppedPort", "config.outdatedVersion", "config.regenerateServerTransition", "config.updateSkill"]) {
   assert.match(catalogs.ar.strings[key], /\u2066.*\u2069/u, `Arabic ${key} must isolate its LTR fragment`);
@@ -66,7 +67,7 @@ Module.prototype.require = function (id) {
   if (id === "vscode") return { workspace: { getConfiguration: () => ({ get: () => configuredLanguage }) }, env: { language: "en" }, extensions: { getExtension: () => undefined } };
   return originalRequire.apply(this, arguments);
 };
-const localization = require(path.join(root, "dist", "localization.js"));
+const localization = require(path.join(root, "dist", "ui/localization.js"));
 Module.prototype.require = originalRequire;
 const expectedAutoMappings = {
   "zh-CN": "zh-hans", "zh-SG": "zh-hans", "zh-Hans": "zh-hans", "zh-HK": "en", "zh-Hant": "en", ja: "ja", ko: "ko", "fr-CA": "fr",
@@ -78,5 +79,22 @@ for (const [language, expected] of Object.entries(expectedAutoMappings)) {
 assert.strictEqual(localization.resolveUiLanguage("zh-cn", "en", root), "zh-hans", "Legacy zh-cn setting must migrate to zh-hans");
 configuredLanguage = "fr";
 assert.strictEqual(localization.localizedText(root, "tabs.servers"), catalogs.fr.strings["tabs.servers"], "localizedText must resolve settings against its supplied extension path");
+
+const alternateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-locales-"));
+try {
+  const directory = path.join(alternateRoot, "resources", "locales");
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, "manifest.json"), JSON.stringify(manifest));
+  for (const locale of locales) {
+    fs.writeFileSync(path.join(directory, `${locale}.json`), JSON.stringify({
+      ...catalogs[locale], strings: { ...catalogs[locale].strings, "tabs.servers": `${locale} fixture` },
+    }));
+  }
+  assert.strictEqual(localization.normalizeUiLanguage(alternateRoot, "fr"), "fr");
+  assert.strictEqual(localization.localizedText(alternateRoot, "tabs.servers"), "fr fixture",
+    "loading a new manifest before its catalogs must not reuse another root's translations");
+  assert.strictEqual(localization.localizedText(root, "tabs.servers"), catalogs.fr.strings["tabs.servers"],
+    "returning to the original root must restore its own translations");
+} finally { fs.rmSync(alternateRoot, { recursive: true, force: true }); }
 
 console.log(`localization test: ${englishKeys.length} keys aligned across ${locales.length} locales (${manifest.locales.map(locale => locale.label).join(", ")})`);

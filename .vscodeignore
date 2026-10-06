@@ -24,6 +24,9 @@ docs/**
 coverage/
 .nyc_output/
 artifacts/**
+chat-e2e-*/**
+next-step/**
+retrieval-solutions/**
 
 # Misc
 *.vsix

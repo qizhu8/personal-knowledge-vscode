@@ -5,12 +5,12 @@ const net = require("net");
 const os = require("os");
 const path = require("path");
 const { createHmac, randomBytes, scryptSync, sign } = require("crypto");
-const filestore = require("../dist/filestore");
-const storage = require("../dist/storage");
-const servers = require("../dist/servers");
-const privacy = require("../dist/content-privacy");
+const filestore = require("../dist/knowledge/filestore");
+const storage = require("../dist/knowledge/storage");
+const servers = require("../dist/servers/servers");
+const privacy = require("../dist/knowledge/content-privacy");
 const { ProjectStore } = require("../dist/workflows/project-store");
-const { SharedMarketManager, parseShareMagicLink, parseSubscribedContentPath, verifyShareSummary } = require("../dist/subscriptions");
+const { SharedMarketManager, parseShareMagicLink, parseSubscribedContentPath, verifyShareSummary } = require("../dist/subscriptions/subscriptions");
 
 class MemorySecretStorage {
   constructor() { this.values = new Map(); }

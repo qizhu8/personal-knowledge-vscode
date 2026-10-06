@@ -49,7 +49,7 @@ async def main():
         async with Client(mcp) as client:
             capabilities = response_json(await client.call_tool("agent_session_capabilities", {}))
             assert capabilities["proactive"] is True
-            assert capabilities["version"] == "1.7.8"
+            assert capabilities["version"] == "1.8.0"
             assert capabilities["next_tool"] == "agent_session_start"
             assert "multi-step research, analysis, diagnosis or review" in capabilities["use_when"]
             assert "read-only diagnosis or assessment" not in capabilities["do_not_use_when"]
@@ -78,6 +78,7 @@ async def main():
                 "traversalStrategy", "agent", "currentTodo", "todoCounts",
                 "recipeRunIds", "latestCheckpoint", "lastActivity", "liveness",
                 "createdAt", "updatedAt",
+                "hostKind", "groupId", "taskId",
             }
             assert live_status["session"]["currentTodo"] is None
             assert live_status["session"]["todoCounts"] == {
@@ -325,6 +326,9 @@ async def main():
             assert imported_run["agentSessionId"] == imported["session_id"]
             imported_session = json.loads(
                 (session_root / (imported["session_id"] + ".json")).read_text(encoding="utf-8"))
+            assert imported_session["hostSessionId"] == ""
+            assert imported_session["groupId"] == ""
+            assert imported_session["taskId"] == imported["session_id"]
             imported_linked_todo = next(
                 todo for todo in imported_session["todos"] if todo.get("recipeRunIds"))
             assert imported_linked_todo["recipeRunId"] == imported["recipe_run_ids"][0]
@@ -452,6 +456,9 @@ async def main():
                 (session_root / (second_recovery["session_id"] + ".json")).read_text(encoding="utf-8"))
             assert first_session["hostSessionId"] == "copilot-successor-one"
             assert second_session["hostSessionId"] == "copilot-successor-two"
+            assert first_session["groupId"] != second_session["groupId"]
+            assert first_recovery["group_id"] == first_session["groupId"]
+            assert first_session["taskId"] == first_recovery["session_id"]
             assert first_session["provenance"]["kind"] == "agent-snapshot"
             assert [(todo["title"], todo["status"]) for todo in first_session["todos"]] == [
                 (todo["title"], todo["status"]) for todo in second_session["todos"]]

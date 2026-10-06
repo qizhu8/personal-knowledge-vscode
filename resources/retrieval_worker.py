@@ -3,6 +3,7 @@ import json
 import os
 import secrets
 import signal
+import sqlite3
 import sys
 import threading
 import time
@@ -18,7 +19,7 @@ from adaptive_skill_retrieval import (
     exact_match_route,
 )
 
-ENGINE_VERSION = "0.3.0.dev2026091601"
+ENGINE_VERSION = "0.3.0.dev2026100504"
 CONFIGURATION_HASH = sys.argv[2] if len(sys.argv) > 2 else "exact-bm25-academic-v1"
 state_dir = Path(sys.argv[1]).resolve()
 state_dir.mkdir(parents=True, exist_ok=True)
@@ -45,6 +46,10 @@ work_detail = "Starting retrieval worker"
 work_current = 0
 work_total = 0
 work_updated_at = datetime.now(timezone.utc).isoformat()
+frozen_skill_path = None
+serving_attempted = False
+serving_error = ""
+serving_ready = False
 
 
 def update_work(state, detail, current=0, total=0):
@@ -120,9 +125,15 @@ def make_document(value):
     )
 
 
+from retrieval_solutions import SolutionManager, SolutionMetrics
+solutions = SolutionManager(state_dir, atomic_json)
+solution_metrics = SolutionMetrics(state_dir)
+
+
 def build_snapshot_unlocked(snapshot):
     global ready_engine, ready_documents, ready_source_values, ready_forward, ready_backlinks
     global ready_revision, building_revision, ready_generation, building_generation, last_error
+    global frozen_skill_path, serving_attempted, serving_error, serving_ready
     revision = str(snapshot.get("corpus_revision") or "")
     generation = int(snapshot.get("generation") or (ready_generation + 1))
     if revision and revision == ready_revision:
@@ -173,6 +184,7 @@ def build_snapshot_unlocked(snapshot):
         update_work("persisting", "Persisting the retrieval snapshot", total, total)
         atomic_json(snapshot_path, snapshot)
         with engine_lock:
+            solutions.invalidate()
             ready_engine = engine
             ready_documents = by_version
             ready_source_values = values_by_version
@@ -181,6 +193,25 @@ def build_snapshot_unlocked(snapshot):
             ready_revision = revision
             ready_generation = generation
             last_error = ""
+            serving_ready = frozen_skill_path is not None and frozen_skill_path.compatible(source_values)
+        release_path = state_dir / "serving-release.json"
+        if release_path.exists() and not serving_attempted and not solutions.managed:
+            serving_attempted = True
+            update_work("indexing", "Warming frozen Skill path; Exact/BM25 remains available", total, total)
+            try:
+                from retrieval_serving import FrozenSkillPath
+                candidate = FrozenSkillPath(release_path)
+                with engine_lock:
+                    frozen_skill_path = candidate
+                    serving_ready = candidate.compatible(source_values)
+            except Exception as error:
+                serving_error = f"Frozen Skill path unavailable: {type(error).__name__}: {error}"
+                print(serving_error, file=sys.stderr, flush=True)
+        if frozen_skill_path is not None:
+            serving_error = "" if serving_ready else "Skill corpus changed; frozen path is not admitted for this generation"
+        if solutions.managed:
+            update_work("indexing", "Building imported solution on local Skills; BM25 remains available", total, total)
+            solutions.build(documents, revision)
     except Exception as error:
         last_error = str(error)
     finally:
@@ -214,6 +245,8 @@ def apply_delta(delta):
 
 def status():
     edge_count = sum(len(edges) for edges in ready_forward.values())
+    _, selected_package, imported_path, imported_error = solutions.capture()
+    active_path = imported_path if solutions.managed else frozen_skill_path
     return {
         "ok": True,
         "engine_version": ENGINE_VERSION,
@@ -232,6 +265,16 @@ def status():
             "index_event": "pkm.retrieval.index-event/v1",
         },
         "engine": "adaptive_skill_retrieval",
+        "solution": solutions.status(),
+        "skill_serving": {
+            "enabled": bool(selected_package) if solutions.managed else serving_attempted,
+            "ready": imported_path is not None if solutions.managed else serving_ready,
+            "release_id": active_path.release_id if active_path else None,
+            "architecture_id": active_path.architecture_id if active_path else None,
+            "validation": active_path.validation if active_path else None,
+            "fallback": "exact-bm25", "error": imported_error if solutions.managed else serving_error,
+            "scope": "explicit skill-only fuzzy queries; other retrieval contracts remain lexical",
+        },
         "supported_routes": ["lexical", "graph", "hybrid"],
         "unsupported_routes": ["semantic"],
         "tokenizers": ["adaptive-skill-retrieval-academic-bm25"],
@@ -239,7 +282,7 @@ def status():
         "update_mode": "persistent-delta-events-with-full-in-memory-rebuild",
         "limitations": [
             "The current Python engine rebuilds all in-memory lexical state for each accepted delta.",
-            "Embeddings and semantic routing are not available.",
+            "General semantic routing is unavailable; an admitted frozen path may serve Skill-only fuzzy queries.",
             "Cancellation is cooperative at request/deadline boundaries; an in-flight lexical call cannot be interrupted.",
         ],
         "error": last_error,
@@ -252,6 +295,29 @@ def status():
 
 
 def search(payload):
+    started = time.perf_counter()
+    epoch, requested_package, _, _ = solutions.capture()
+    result = search_unmeasured(payload)
+    if solutions.capture()[0] != epoch:
+        result = {"ok": False, "code": "solution-changed", "error": "Solution changed during this request; retry against the active path."}
+    solution = result.get("solution", {})
+    reason = solution.get("reason") or ("error" if not result.get("ok") else "default")
+    try:
+        solution_metrics.record(
+            requested=requested_package,
+            served=(solution.get("package_id") or (result.get("skill_serving") or {}).get("release_id") or "exact-bm25") if result.get("ok") else "none",
+            corpus=result.get("corpus_revision", ready_revision),
+            entry=(payload.get("scope") or {}).get("capability_id"),
+            reason=reason, ok=bool(result.get("ok")), hits=len(result.get("hits", [])),
+            milliseconds=round((time.perf_counter() - started) * 1000, 3),
+        )
+    except sqlite3.Error as error:
+        print(f"Solution metrics persistence failed: {error}", file=sys.stderr, flush=True)
+        result["metrics_error"] = str(error)
+    return result
+
+
+def search_unmeasured(payload):
     search_started = time.perf_counter()
     with engine_lock:
         engine = ready_engine
@@ -261,6 +327,10 @@ def search(payload):
         backlinks = ready_backlinks
         revision = ready_revision
         generation = ready_generation
+        skill_path = frozen_skill_path if serving_ready else None
+        _, requested_package, imported_path, package_error = solutions.capture()
+        if solutions.managed:
+            skill_path = imported_path
     if engine is None:
         return {"ok": False, "error": "Retrieval index is not ready.", "corpus_revision": revision}
     route = str(payload.get("route") or "lexical")
@@ -287,10 +357,40 @@ def search(payload):
         except ValueError: engine_filter.append(ContentType("note"))
     content_filter = engine_filter if requested is not None else None
     result = engine.search(str(payload.get("query") or ""), limit=max(1, min(int(payload.get("limit") or 5), 100)), content_type_filter=content_filter)
+    selected_hits = result.hits
+    serving_used = False
+    fallback_error = package_error if solutions.managed else serving_error
+    if requested_package and skill_path is None and not fallback_error:
+        fallback_error = "Imported solution is building; using Exact/BM25"
+    allowed_source_ids = set(str(value) for value in ((payload.get("scope") or {}).get("source_ids") or []))
+    strict_types = set(str(value) for value in requested or [])
+    if skill_path is not None and (solutions.managed or requested == ["skill"]) and result.query_intent.value == "semantic":
+        try:
+            if solutions.managed:
+                allowed = {
+                    version for version, value in source_values.items()
+                    if (not strict_types or value.get("content_type") in strict_types)
+                    and (not allowed_source_ids or str(value.get("source_id") or version.skill_id) in allowed_source_ids)
+                    and str(value.get("visibility") or "available") == "available"
+                    and not ((payload.get("scope") or {}).get("include_read_only") is False and value.get("read_only"))
+                }
+                frozen_hits = skill_path.search(str(payload.get("query") or ""), len(skill_path.documents), allowed)
+            else:
+                frozen_hits = skill_path.search(str(payload.get("query") or ""), len(skill_path.documents))
+            versions_by_id = {version.skill_id: version for version in documents}
+            from dataclasses import replace
+            selected_hits = frozen_hits if solutions.managed else [
+                replace(hit, skill_version=versions_by_id["skill:" + hit.skill_version.skill_id])
+                for hit in frozen_hits
+            ]
+            serving_used = True
+        except Exception as error:
+            fallback_error = f"Imported text search failed: {type(error).__name__}: {error}"
+            print(fallback_error, file=sys.stderr, flush=True)
     allowed_source_ids = set(str(value) for value in ((payload.get("scope") or {}).get("source_ids") or []))
     strict_types = set(str(value) for value in requested or [])
     hits = []
-    for hit in result.hits:
+    for hit in selected_hits:
         document = documents[hit.skill_version]
         source_value = source_values[hit.skill_version]
         source_id = str(source_value.get("source_id") or hit.skill_version.skill_id)
@@ -318,10 +418,13 @@ def search(payload):
             "read_only": document.read_only,
             "contributing_routes": list(hit.contributing_routes),
             "score_components": {
-                "lexical": float(hit.score), "semantic": 0.0, "graph": 0.0, "priority": 1.0,
+                "lexical": 0.0 if serving_used else float(hit.score),
+                "semantic": float(hit.score) if serving_used else 0.0, "graph": 0.0, "priority": 1.0,
             },
         })
     diagnostics = []
+    if fallback_error:
+        diagnostics.append({"code": "skill-serving-fallback", "message": fallback_error})
     incomplete = False
     if route in {"graph", "hybrid"} and hits:
         graph = payload.get("graph") or {}
@@ -406,6 +509,15 @@ def search(payload):
         "corpus_revision": revision,
         "ready_generation": generation,
         "route": route,
+        "solution": {
+            "package_id": requested_package if serving_used and solutions.managed else None,
+            "reason": "served" if serving_used else "scope" if requested_package and result.query_intent.value != "semantic" else "unavailable" if requested_package and skill_path is None else "execution-error" if fallback_error else "default",
+        },
+        "skill_serving": {
+            "used": serving_used,
+            "release_id": skill_path.release_id if serving_used else None,
+            "fallback_reason": fallback_error or None,
+        },
         "query_intent": result.query_intent.value,
         "intent_signals": list(result.intent_signals),
         "exact_terms": list(result.exact_terms),
@@ -451,6 +563,13 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(403, {"ok": False, "error": "Forbidden"})
         elif self.path == "/status":
             self.reply(200, status())
+        elif self.path == "/solutions":
+            try:
+                with engine_lock:
+                    documents = list(ready_documents.values())
+                self.reply(200, {"ok": True, **solutions.catalog(documents), "metrics": solution_metrics.summary()})
+            except (ImportError, OSError, ValueError) as error:
+                self.reply(503, {"ok": False, "error": str(error)})
         else:
             self.reply(404, {"ok": False, "error": "Not found"})
 
@@ -477,6 +596,25 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/search":
                 result = search(payload)
                 self.reply(200 if result.get("ok") else 503, result)
+            elif self.path == "/solutions":
+                action = payload.get("action")
+                if action in {"enable", "rebuild"}:
+                    if payload.get("package_id") is None:
+                        raise ValueError("Enabling a solution requires a package ID")
+                    solutions.select(payload.get("package_id"), rebuild=action == "rebuild")
+                    def rebuild_solution():
+                        with build_lock:
+                            with engine_lock:
+                                documents, revision = list(ready_documents.values()), ready_revision
+                            solutions.build(documents, revision)
+                    threading.Thread(target=rebuild_solution, daemon=True).start()
+                elif action == "disable":
+                    solutions.select(None)
+                elif action == "delete":
+                    solutions.delete(payload.get("package_id"))
+                else:
+                    raise ValueError("Unknown solution action")
+                self.reply(200, {"ok": True, **solutions.status()})
             elif self.path == "/shutdown":
                 self.reply(200, {"ok": True})
                 threading.Thread(target=server.shutdown, daemon=True).start()

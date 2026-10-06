@@ -1,4 +1,4 @@
-const { GitHubSyncCoordinator } = require("../../dist/github-sync-coordinator.js");
+const { GitHubSyncCoordinator } = require("../../dist/sync/github-sync-coordinator.js");
 
 const [stateDirectory, knowledgeRoot, extensionVersion] = process.argv.slice(2);
 let release;

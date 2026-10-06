@@ -3,7 +3,7 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { mcpUsageSummary } = require("../dist/mcp-usage");
+const { mcpUsageSummary } = require("../dist/mcp/mcp-usage");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-mcp-domains-"));
 const events = path.join(root, ".pkm", "state", "mcp-usage", "events");
@@ -29,7 +29,7 @@ assert.strictEqual(summary.sessions[0].reportedInputTokens, 11);
 assert.strictEqual(summary.sessions[0].domains.skillRouter.resultCount, 2);
 assert(summary.measurementNote.includes("estimates unless"), "estimated and provider-reported tokens must be distinguished");
 
-const mcpSource = fs.readFileSync(path.join(__dirname, "../src/mcp.ts"), "utf8");
+const mcpSource = fs.readFileSync(path.join(__dirname, "../src/mcp/mcp.ts"), "utf8");
 const uiSource = fs.readFileSync(path.join(__dirname, "../src/webview/panel/50-mcp.js"), "utf8");
 assert(mcpSource.includes('if "automation" in _FEATURE_DOMAINS:'), "Automation registration must be conditional");
 assert(mcpSource.includes('@_feature_tool("skillRouter")'), "Skill Router tools must be gated at registration");

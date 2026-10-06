@@ -12,9 +12,20 @@ const bundle = fs.readFileSync(path.join(root, "dist", "webview", "panel.js"), "
 const recipeGraphSharedSource = fs.readFileSync(path.join(root, "src", "webview", "recipe-graph-shared.js"), "utf8");
 const projectsSource = fs.readFileSync(path.join(root, "src", "webview", "panel", "15-projects.js"), "utf8");
 const extensionSource = fs.readFileSync(path.join(root, "src", "extension.ts"), "utf8");
-const githubSyncSource = fs.readFileSync(path.join(root, "src", "github-sync.ts"), "utf8");
+const githubSyncSource = fs.readFileSync(path.join(root, "src", "sync/github-sync.ts"), "utf8");
 const previewSource = fs.readFileSync(path.join(root, "scripts", "release-preview-server.js"), "utf8");
 const knowledgeSource = fs.readFileSync(path.join(root, "src", "webview", "panel", "20-knowledge.js"), "utf8");
+
+const nativeArchitectureSource = projectsSource.slice(projectsSource.indexOf("function renderNativeAgentArchitecture("), projectsSource.indexOf("function renderAgentSessions()"));
+const nativeContext = vm.createContext({ esc: value => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;") });
+vm.runInContext(nativeArchitectureSource, nativeContext);
+assert.strictEqual(nativeContext.renderNativeAgentArchitecture({ origin: "external", nativeAgent: {} }), "", "External sessions must not claim native capabilities");
+const nativeDiagram = nativeContext.renderNativeAgentArchitecture({ origin: "pkm-native", sessionId: "agent_session_0123456789abcdef0123456789abcdef", nativeAgent: { platform: "linux", model: "fixture-model", includeHistory: true, contextWindow: 8192, maxOutputTokens: 1024, memory: ["<img src=invalid>"], pkmSkills: ["Test skill"], externalSkills: ["External skill"], context: ["file.txt"], builtinTools: ["read_file", "run_process"], mcpServers: [{ label: "Fixture server", enabled: true, tools: ["echo"] }] } });
+for (const section of ["memory", "pkmSkills", "externalSkills", "context", "model", "tools", "mcps"]) assert(nativeDiagram.includes(`section:'${section}'`), `Native configuration exposes ${section}`);
+assert(nativeDiagram.includes("connects per request"), "Configured MCP must not be shown as already connected");
+assert(nativeDiagram.includes("Automatic")); assert(nativeDiagram.includes("1 Tasks")); assert(nativeDiagram.includes("2 configured"));
+assert(!nativeDiagram.includes("<img")); assert(nativeDiagram.includes("&lt;img"));
+assert.match(extensionSource, /agentSessionConfigure[\s\S]*configureApiChatSession/, "Native diagram actions reach the configuration command");
 
 assert.match(css, /select,select option,select optgroup\{[^}]*--vscode-dropdown-background[^}]*--vscode-dropdown-foreground/,
   "every webview dropdown and option must inherit VS Code theme colors");
@@ -233,7 +244,7 @@ assert.match(projectsSource, /function recipeParameterSave\(\)/, "Parameters exp
 assert.match(projectsSource, /function recipeParameterCancel\(\)/, "Parameters expose an explicit Cancel action");
 assert.match(css, /\.pkm-search-field:focus-within/, "search fields share one focus treatment");
 assert.match(bundle, /state\.tab === 'recipes'\) renderGlobalRecipes\(\)/, "shared CatTree expansion rerenders the Recipe Library");
-assert.match(bundle, /command === 'projectStateChanged'[\s\S]{0,300}const relevant = state\.tab === 'recipes' \? scope === 'recipes' \|\| scope === 'all'/,
+assert.match(bundle, /command === 'projectStateChanged'[\s\S]{0,300}const relevant = scopes\.some\(scope => state\.tab === 'recipes' \? scope === 'recipes' \|\| scope === 'all'/,
   "managed-state invalidation reloads only the active surface whose data changed");
 assert.match(projectsSource, /function recipeRerenderPreservingView\(\)[\s\S]{0,180}recipeCaptureViewState\(\)[\s\S]{0,180}recipeRestoreViewState\(viewState\)/,
   "Recipe component edits rerender without losing the graph viewport");
@@ -388,6 +399,7 @@ const context = {
   finishAction() {}
 };
 vm.createContext(context);
+vm.runInContext(bundle.slice(bundle.indexOf("function captureRefreshView("), bundle.indexOf("function updateLoadingProgress(")), context, { filename: "refresh-view.js" });
 vm.runInContext(recipeGraphSharedSource, context, { filename: "recipe-graph-shared.js" });
 vm.runInContext(projectsSource, context, { filename: "15-projects.js" });
 assert.strictEqual(context.recipeGraphEdgeRoute(20, 30, 20, 90, 120), "M 20 30 L 20 90", "vertically aligned graph modules use a straight arrow");
@@ -648,7 +660,7 @@ context.agentTechToggle("implement");
 context.state.tab = "agentSessions";
 context.renderAgentSessions();
 assert.match(detailHtml, /No Agent Sessions/);
-assert.match(detailHtml, /0 sessions/);
+assert.match(detailHtml, /0 groups · 0 tasks/);
 assert.doesNotMatch(detailHtml, /Copilot Agent/);
 assert.doesNotMatch(detailHtml, /Sample preview|agt_7f31/);
 assert.doesNotMatch(projectsSource, /agt_7f31|agentSessionShowPreview|agentSessionClosePreview/,
@@ -692,7 +704,7 @@ context.projectOnState({ ...snapshot, recipes: [
 }, {
   sessionId: "agent_session_followup", status: "running", task: "Group related workflow",
   hostSessionId: "bad9a5a4-4dc6-4633-adef-a0858284b965",
-  projectId: "project_pkm", agent: { name: "Copilot Agent", product: "GitHub Copilot" },
+  projectId: "project_pkm", agent: { name: "Different Agent", product: "GitHub Copilot" },
   createdAt: "2026-09-22T08:02:00Z", updatedAt: "2026-09-22T08:03:00Z",
   lastActivity: { tool: "agent_session_start", ok: true, at: "2026-09-22T08:03:00Z" }, runs: []
 }], recipeTrash: [{
@@ -721,15 +733,17 @@ context.projectOnState({ ...snapshot, recipes: [
   checkpoint: { checkpointId: "checkpoint_portable", sequence: 2, createdAt: "2026-09-22T08:00:30Z", reason: "handoff" },
   recoveryCount: 2
 }] });
-assert.match(detailHtml, /2 sessions/);
+assert.match(detailHtml, /1 groups · 2 tasks/);
 assert.match(detailHtml, /Validate portable workflow/);
 assert.doesNotMatch(detailHtml, /agent-session-archive/, "terminal Sessions use Trash instead of a separate Archive");
 assert.match(detailHtml, /Completed historical task/);
 assert.match(detailHtml, /Stopped unfinished task/);
 assert.match(detailHtml, /agent-session-tree/, "Agent Sessions use the shared CatTree surface");
-assert.strictEqual((detailHtml.match(/class="tree-cat"/g) || []).length, 2, "active Sessions share one Agent and Copilot Session hierarchy");
+assert.strictEqual((detailHtml.match(/class="tree-cat"/g) || []).length, 1, "Tasks share one chat Group without an Agent-name tier");
 assert.doesNotMatch(detailHtml, /agent-session-agent-group|agent-session-host-group/, "Agent Sessions do not maintain a parallel tree schema");
-assert.strictEqual((detailHtml.match(/Copilot Session bad9a5a4/g) || []).length, 1, "Sessions sharing one Copilot ID render in one host group");
+assert.match(detailHtml, /copilot Chat bad9a5a4/, "Tasks sharing a host chat ID render in one chat Group");
+assert.notStrictEqual(context.agentSessionGroupKey({sessionId:'unlinked-a'}), context.agentSessionGroupKey({sessionId:'unlinked-b'}));
+assert.notStrictEqual(context.agentSessionGroupKey({hostKind:'copilot',hostSessionId:'same'}), context.agentSessionGroupKey({hostKind:'claude',hostSessionId:'same'}));
 assert.match(detailHtml, /Group related workflow/, "Every managed task remains visible within its Copilot Session group");
 assert.match(detailHtml, /managed/, "Session short identity remains visible within an Agent group");
 assert.match(detailHtml, /agentSessionContextMenu/, "Agent Sessions expose right-click actions");

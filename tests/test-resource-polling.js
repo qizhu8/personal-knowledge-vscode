@@ -8,10 +8,10 @@ const core = fs.readFileSync(path.join(root, "src/webview/panel/00-core.js"), "u
 const knowledge = fs.readFileSync(path.join(root, "src/webview/panel/20-knowledge.js"), "utf8");
 const servers = fs.readFileSync(path.join(root, "src/webview/panel/40-servers.js"), "utf8");
 const extension = fs.readFileSync(path.join(root, "src/extension.ts"), "utf8");
-const subscriptions = fs.readFileSync(path.join(root, "src/subscriptions.ts"), "utf8");
-const gateway = fs.readFileSync(path.join(root, "src/subscription-gateway-entry.ts"), "utf8");
-const sync = fs.readFileSync(path.join(root, "src/sync-server.ts"), "utf8");
-const hub = fs.readFileSync(path.join(root, "src/chatroom-hub.ts"), "utf8");
+const subscriptions = fs.readFileSync(path.join(root, "src/subscriptions/subscriptions.ts"), "utf8");
+const gateway = fs.readFileSync(path.join(root, "src/subscriptions/subscription-gateway-entry.ts"), "utf8");
+const sync = fs.readFileSync(path.join(root, "src/sync/sync-server.ts"), "utf8");
+const hub = fs.readFileSync(path.join(root, "src/chatroom/chatroom-hub.ts"), "utf8");
 
 assert.match(core, /document\.visibilityState === 'visible'.*120000/);
 assert.match(servers, /setTimeout\(\(\) => \{ if \(state\.tab === 'servers'\).*5000/);
@@ -30,8 +30,10 @@ assert.match(extension, /new vscode\.RelativePattern\(getStorePath\(\), "\.pkm\/
 	"out-of-process Project, Recipe Run, Agent Session, and Todo usage writes must be watched");
 assert.match(extension, /new vscode\.RelativePattern\(getStorePath\(\), "recipes\/\*\*\/\*"\)/,
 	"out-of-process canonical Recipe file writes must be watched");
-assert.match(extension, /const scope = relativeStatePath === "projects\.json"[\s\S]{0,1200}postMessage\(\{ command: "projectStateChanged", data: \{ scope \} \}\)/,
+assert.match(extension, /postMessage\(\{ command: "projectStateChanged", data: \{[\s\S]{0,300}scopes, changedPaths/,
 	"managed state changes must send a lightweight invalidation instead of eagerly rebuilding snapshots");
+assert.match(extension, /const scope = relativeStatePath === "projects\.json"[\s\S]{0,350}queueProjectRefresh\(scope, uri\)/,
+	"state watcher invalidations must feed the coalesced scope queue");
 assert.match(core, /state\.tab === 'recipes' \? scope === 'recipes'/,
 	"Recipe Library must ignore high-frequency Agent Session and Recipe run writes");
 assert.match(extension, /if \(!panel\?\.visible \|\| !_panelReady\) return/);

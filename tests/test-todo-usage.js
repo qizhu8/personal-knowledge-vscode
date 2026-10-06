@@ -5,7 +5,7 @@ const os = require("os");
 const path = require("path");
 const vm = require("vm");
 const ts = require("typescript");
-const { todoUsageSummary, recipeNodeUsageSummary } = require("../dist/mcp-usage.js");
+const { todoUsageSummary, recipeNodeUsageSummary } = require("../dist/mcp/mcp-usage.js");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-todo-usage-"));
 try {
@@ -112,7 +112,7 @@ try {
   ).join("\n");
   const projectionContext = {
     fs,path,getStorePath:()=>root,todoUsageSummary,recipeNodeUsageSummary,
-    ...require("../dist/agent-session-lifecycle.js"),
+    ...require("../dist/agent-sessions/agent-session-lifecycle.js"),
     agentSessionJsonCache:{read:filename=>JSON.parse(fs.readFileSync(filename,"utf8"))},
   };
   vm.runInNewContext(ts.transpileModule(projectionSource,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText, projectionContext);

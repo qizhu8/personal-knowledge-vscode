@@ -6,7 +6,7 @@ const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
 
-const { initServers, serverList, serverCreate, serverUpdate, serverGroupList, serverCreateGroup, serverMoveGroup, serverListenerProcesses, forceStopExternalServer, startServer, disposeServers, rewriteProxyHtml, serverNetworkAddresses } = require("../dist/servers.js");
+const { initServers, serverList, serverCreate, serverUpdate, serverGroupList, serverCreateGroup, serverMoveGroup, serverListenerProcesses, forceStopExternalServer, startServer, disposeServers, rewriteProxyHtml, serverNetworkAddresses } = require("../dist/servers/servers.js");
 
 async function listen(server) {
   await new Promise((resolve, reject) => {
@@ -32,7 +32,7 @@ async function testCrossProcessProxyReuse(root) {
   const serversDir = path.join(root, "cross-window-servers");
   const stateDir = path.join(root, "cross-window-state");
   fs.mkdirSync(serversDir, { recursive: true });
-  const modulePath = path.join(__dirname, "..", "dist", "servers.js");
+  const modulePath = path.join(__dirname, "..", "dist", "servers/servers.js");
   const childCode = `const s=require(${JSON.stringify(modulePath)});s.initServers(${JSON.stringify(serversDir)},${JSON.stringify(stateDir)},${proxyPort},m=>process.send?.(m));process.send?.('ready');setInterval(()=>{},1000);`;
   const first = spawn(process.execPath, ["-e", childCode], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
   const second = spawn(process.execPath, ["-e", childCode], { stdio: ["ignore", "ignore", "ignore", "ipc"] });

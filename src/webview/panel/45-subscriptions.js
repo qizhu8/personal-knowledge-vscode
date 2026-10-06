@@ -94,7 +94,7 @@ function subscriptionContentPicker(share) {
 function subscriptionShareEditor() {
   const share = (subscriptionData.shares || []).find(item => item.shareId === subscriptionEditingShare);
   if (!subscriptionEditingShare && subscriptionEditingShare !== 'new') return '<div class="sub-broker-placeholder"><strong>Broker Settings</strong><span>Select a Broker to configure its audience and shared content tree.</span></div>';
-  return `<div class="sub-editor sub-broker-settings">
+  return `<div class="sub-editor sub-broker-settings" data-sub-share-id="${esc(subscriptionEditingShare)}">
     <div class="sub-editor-head"><div><strong>Broker Settings</strong><small>${share ? esc(share.shareId) : 'New Share Broker'}</small></div><button class="icon-btn" onclick="subscriptionCancelShare()" title="Close" aria-label="Close">${uiIcon('close')}</button></div>
     <div class="sub-editor-tabs" role="tablist"><button class="${subscriptionEditorTab === 'general' ? 'active' : ''}" onclick="subscriptionSetEditorTab('general')">General</button><button class="${subscriptionEditorTab === 'acl' ? 'active' : ''}" onclick="subscriptionSetEditorTab('acl')">ACL</button><button class="${subscriptionEditorTab === 'content' ? 'active' : ''}" onclick="subscriptionSetEditorTab('content')">Shared Content</button><button class="${subscriptionEditorTab === 'subscribers' ? 'active' : ''}" onclick="subscriptionSetEditorTab('subscribers')">Subscribers</button></div>
     <div class="sub-editor-pane ${subscriptionEditorTab === 'general' ? 'active' : ''}">
@@ -118,7 +118,7 @@ function subscriptionAudienceView(share) {
   const subscribers = share.subscribers || [], events = share.securityEvents || [];
   const automaticBlocks = share.automaticBlocks || [];
   return `<div class="sub-audience"><div class="sub-tree-heading"><strong>Subscribers</strong><span>${subscribers.length} known nodes · signed identity</span></div>
-    <div class="sub-account-policy"><div><strong>Account access list</strong>${subscribers.map(account => `<label><input type="checkbox" data-sub-account="${esc(account.nodeId)}" ${(share.accountRules || []).includes(account.nodeId) ? 'checked' : ''}><span>${esc(account.name || account.nodeId)}</span><small>${esc(account.nodeId.slice(0,12))}</small></label>`).join('') || '<small>No authenticated Subscribers yet.</small>'}</div></div>
+    <div class="sub-account-policy"><div><strong>Account access list</strong>${subscribers.map(account => `<label><input id="sub-account-${esc(account.nodeId)}" type="checkbox" data-sub-account="${esc(account.nodeId)}" ${(share.accountRules || []).includes(account.nodeId) ? 'checked' : ''}><span>${esc(account.name || account.nodeId)}</span><small>${esc(account.nodeId.slice(0,12))}</small></label>`).join('') || '<small>No authenticated Subscribers yet.</small>'}</div></div>
     <div class="sub-audience-list">${subscribers.map(item => `<div class="sub-audience-row"><span><strong>${esc(item.name || item.nodeId)}</strong><small>${esc((item.names || []).join(' · '))}</small></span><span><b>${Number(item.syncCount)||0}</b> syncs<small>${esc(item.lastIp || '')} · ${item.lastSeenAt ? new Date(item.lastSeenAt).toLocaleString() : 'never'}</small></span>${(item.abnormal || []).length ? `<em>${esc(item.abnormal.join(', '))}</em>` : ''}</div>`).join('') || '<div class="sub-empty">No authenticated subscribers yet.</div>'}</div>
     ${automaticBlocks.length ? `<div class="sub-auto-blocks"><strong>Automatic blocks</strong>${automaticBlocks.map(block => `<div><code>${esc(block.ip)}</code><span>${esc(block.reason)} · ${Number(block.failedAttempts)||3} failures · ${new Date(block.blockedAt).toLocaleString()}</span><button class="tbtn" onclick="ask('subscriptionUnblockIp',{shareId:'${esc(share.shareId)}',ip:'${esc(block.ip)}'})">Unblock</button></div>`).join('')}</div>` : ''}
     ${events.length ? `<details class="sub-security-events"><summary>${events.length} recent access alerts</summary>${events.slice(0,20).map(event => `<div><time>${new Date(event.at).toLocaleString()}</time><code>${esc(event.ip)}</code><span>${esc(event.reason)}</span></div>`).join('')}</details>` : ''}
@@ -159,6 +159,11 @@ function subscriptionBrokerMenu(ev, payload) {
 
 function renderSubscriptionPane() {
   const d = subscriptionData;
+  const detail = document.getElementById('detail');
+  const view = captureRefreshView(detail, ['.sub-picker-items','.sub-github-tree']);
+  const drafts = captureRefreshInputs(detail, '#sub-display-name,#sub-host,#sub-port,#sub-alias,#sub-magic-link,#sub-broker-secret', true);
+  const shareDrafts = detail.querySelector?.('[data-sub-share-id]')?.dataset.subShareId === subscriptionEditingShare
+    ? captureRefreshInputs(detail, '.sub-editor input[id],.sub-editor textarea[id],.sub-editor select[id]', true) : [];
   document.getElementById('detail').innerHTML = `<div class="sub-dashboard">
     <header class="sub-head"><div><h2>Subscription</h2><p>PKM Shared Market · ${esc(d.displayName || 'This machine')}</p></div><span class="sub-node-state ${d.gatewayStatus === 'error' ? 'error' : d.gatewayStatus === 'running' ? 'running' : d.gatewayStatus === 'starting' ? 'starting' : 'stopped'}" title="${esc(d.gatewayStatus === 'error' ? d.gatewayError || '' : '')}"><i></i>${d.gatewayStatus === 'error' ? 'Gateway unavailable' : d.gatewayStatus === 'running' ? 'Broker online' : d.gatewayStatus === 'starting' ? 'Broker starting' : 'Broker stopped'}</span></header>
     ${d.gatewayStatus === 'error' ? `<div class="sub-warning">Common Communication Port ${Number(d.port)||19877} is unavailable · ${esc(d.gatewayError || 'Check the port and network listener.')}</div>` : ''}
@@ -177,6 +182,10 @@ function renderSubscriptionPane() {
     </section>
   </div>`;
   subscriptionSyncFolderStates();
+  restoreRefreshInputs(detail, drafts);
+  restoreRefreshInputs(detail, shareDrafts);
+  if (document.getElementById('sub-share-protection')) subscriptionProtectionChanged();
+  restoreRefreshView(detail, view);
 }
 
 function subscriptionGitHubMountEditor() {

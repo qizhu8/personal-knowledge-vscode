@@ -6,7 +6,7 @@ const vm = require("vm");
 
 const panelJs = fs.readFileSync(path.join(__dirname, "..", "dist", "webview", "panel.js"), "utf8");
 const panelCss = fs.readFileSync(path.join(__dirname, "..", "dist", "webview", "panel.css"), "utf8");
-const sourceTs = fs.readFileSync(path.join(__dirname, "..", "src", "mcp.ts"), "utf8");
+const sourceTs = fs.readFileSync(path.join(__dirname, "..", "src", "mcp/mcp.ts"), "utf8");
 const extensionTs = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
 const sourcePanelCss = fs.readFileSync(path.join(__dirname, "..", "src", "webview", "panel.css"), "utf8");
 assert.match(sourcePanelCss, /\.srv-global-controls select,\.srv-edit input,\.mcp-setup-step select,\.mcp-setup-step input\{[^}]*background:var\(--input\)[^}]*color:var\(--text\)[^}]*color-scheme:dark/,
@@ -28,7 +28,7 @@ assert.match(sourceTs, /Refusing to downgrade the installed PKM MCP runtime/,
   "the generated server write boundary must reject downgrades");
 assert.match(sourceTs, /The newer runtime was preserved[\s\S]*Upgrade Personal Knowledge Manager/,
   "downgrade protection must preserve the newer runtime and recommend an extension upgrade");
-assert.match(sourceTs, /UNIFIED_MCP_VERSION = "2\.13\.8"/,
+assert.match(sourceTs, /UNIFIED_MCP_VERSION = "2\.13\.9"/,
   "generated MCP changes must carry a new unified runtime patch version");
 assert.doesNotMatch(panelJs, /PKM MCP server is outdated/,
   "equal unified versions must not be mislabeled as an outdated server");
@@ -70,6 +70,8 @@ assert.match(sourceTs, /--no-deps", wheel/);
 assert.match(sourceTs, /PROMPT_MANAGER_WHEEL_SHA256/);
 assert.match(sourceTs, /RETRIEVAL_ENGINE_WHEEL_SHA256/);
 assert.match(sourceTs, /import fastmcp, prompt_manager, websockets, adaptive_skill_retrieval/);
+assert.match(sourceTs, /from adaptive_skill_retrieval\.solution_package import import_package/,
+  "runtime health must reject an old wheel without offline solution support");
 assert.match(sourceTs, /def search_knowledge\(/);
 assert.match(sourceTs, /def retrieval_status\(/);
 assert.match(sourceTs, /_collector_post\("search_invocation"/);

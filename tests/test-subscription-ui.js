@@ -11,10 +11,10 @@ const panelCss = fs.readFileSync(path.join(root, "dist", "webview", "panel.css")
 const subscriptionPanel = fs.readFileSync(path.join(root, "src", "webview", "panel", "45-subscriptions.js"), "utf8");
 const knowledgePanel = fs.readFileSync(path.join(root, "src", "webview", "panel", "20-knowledge.js"), "utf8");
 const extension = fs.readFileSync(path.join(root, "src", "extension.ts"), "utf8");
-const subscriptions = fs.readFileSync(path.join(root, "src", "subscriptions.ts"), "utf8");
-const materializer = fs.readFileSync(path.join(root, "src", "subscription-materialize-worker.ts"), "utf8");
-const gateway = fs.readFileSync(path.join(root, "src", "subscription-gateway-entry.ts"), "utf8");
-const mcp = fs.readFileSync(path.join(root, "src", "mcp.ts"), "utf8");
+const subscriptions = fs.readFileSync(path.join(root, "src", "subscriptions/subscriptions.ts"), "utf8");
+const materializer = fs.readFileSync(path.join(root, "src", "subscriptions/subscription-materialize-worker.ts"), "utf8");
+const gateway = fs.readFileSync(path.join(root, "src", "subscriptions/subscription-gateway-entry.ts"), "utf8");
+const mcp = fs.readFileSync(path.join(root, "src", "mcp/mcp.ts"), "utf8");
 
 assert.match(html, /data-workspace-group="settings"[\s\S]*data-tab="subscriptions">Network &amp; Sharing</);
 assert.doesNotMatch(html, /id="content-toolbar"[\s\S]{0,1800}onclick="openSyncModal\(\)"/,
@@ -172,7 +172,7 @@ assert.match(panel, /folder\.indeterminate = !folder\.checked && descendants\.so
 	"a folder with selected descendants must render as partially selected");
 assert.match(panel, /folder\.setAttribute\('aria-checked', folder\.indeterminate \? 'mixed'/,
 	"partial folder selection must be exposed to assistive technology");
-assert.match(panel, /function renderSubscriptionPane\(\)[\s\S]*?subscriptionSyncFolderStates\(\);\s*}/,
+assert.match(panel, /function renderSubscriptionPane\(\)[\s\S]*?subscriptionSyncFolderStates\(\);[\s\S]{0,350}restoreRefreshView\(detail, view\);\s*}/,
 	"initial Broker editor rendering must synchronize partial folder states");
 assert.match(panel, /targets\.forEach\(item => item\.checked=input\.checked\);\s*subscriptionSyncFolderStates\(type\);/,
 	"folder toggles must refresh ancestor partial states");
@@ -279,8 +279,8 @@ assert.match(extension, /function invalidateSharedContentCatalog\(\)/);
 assert.match(extension, /function gitCommit[\s\S]{0,100}invalidateSharedContentCatalog\(\)/);
 assert.match(extension, /const onChange = \(uri:[^)]*\) => \{\n    invalidateSharedContentCatalog\(\)/);
 assert.match(extension, /subscription catalog build revision=/);
-assert.match(fs.readFileSync(path.join(root, "src", "subscriptions.ts"), "utf8"), /MAX_CACHED_SEARCH_FILE_BYTES = 256 \* 1024/);
-assert.match(fs.readFileSync(path.join(root, "src", "subscriptions.ts"), "utf8"), /MAX_CACHED_SEARCH_RESULTS = 200/);
+assert.match(fs.readFileSync(path.join(root, "src", "subscriptions/subscriptions.ts"), "utf8"), /MAX_CACHED_SEARCH_FILE_BYTES = 256 \* 1024/);
+assert.match(fs.readFileSync(path.join(root, "src", "subscriptions/subscriptions.ts"), "utf8"), /MAX_CACHED_SEARCH_RESULTS = 200/);
 assert.doesNotMatch(subscriptions, /Buffer\.from\(await bundleResponse\.arrayBuffer\(\)\)/,
 	"subscription downloads must not allocate the complete HTTP body in the extension host");
 assert.match(subscriptions, /pipeline\(Readable\.fromWeb\(bundleResponse\.body/);

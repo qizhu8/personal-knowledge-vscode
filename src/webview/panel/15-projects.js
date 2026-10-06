@@ -337,11 +337,13 @@ function agentSnapshotContextMenu(event, snapshotId) {
 
 function agentSessionContextMenu(event, sessionId, status) {
   event.preventDefault(); event.stopPropagation();
+  const session = (projectSnapshot?.agentSessions || []).find(candidate => candidate.sessionId === sessionId);
+  const pausedNative = status === 'paused' && session?.origin === 'pkm-native' && session?.runtimeOwner === 'pkm';
   const items = [
     recipeCopyPathMenu(`pkm://agent-sessions/${encodeURIComponent(sessionId)}`),
     recipeCopyPathMenu(sessionId, 'Copy Session ID')
   ];
-  if (status === 'running') items.push(
+  if (status === 'running' || pausedNative) items.push(
     { sep:true },
     { label:'Stop Session…', danger:true, onClick:()=>pkModal({
       title:'Stop Agent Session?',
@@ -372,10 +374,16 @@ function agentSessionRootMenu(event) {
 
 function agentSessionFolderMenu(event, folder) {
   event.preventDefault(); event.stopPropagation();
-  const path = String(folder || '').split('/').filter(Boolean);
+  const storedGroup = (projectSnapshot?.agentSessionGroups || []).find(group => group.groupId === folder);
   showPaperMenu(event.clientX, event.clientY, [
-    { label:path.at(-1) || 'Agent Sessions', header:true },
-    recipeCopyPathMenu(`pkm://agent-sessions/${path.map(encodeURIComponent).join('/')}/`)
+    { label:'Chat Group', header:true },
+    recipeCopyPathMenu(String(folder || ''), 'Copy Group identity'),
+    ...(storedGroup && !storedGroup.recovered && /^agent_group_[a-f0-9]{64}$/.test(String(folder || '')) ? [{ label:'Delete Chat Group…', danger:true, onClick:()=>pkModal({
+      title:'Delete Chat Group?',
+      message:'Remove this Group from Agent Sessions. Task and Recipe history in Trash is retained. Move any remaining Tasks to Trash first; running Tasks must be stopped explicitly. This does not delete the Copilot conversation.',
+      okLabel:'Delete Group', danger:true,
+      onOk:()=>ask('agentSessionGroupDelete',{groupId:String(folder || '')})
+    }) }] : [])
   ], 'agent-session-context-menu');
 }
 
@@ -2171,6 +2179,23 @@ function agentSessionNodeHealth(node) {
   return 'healthy-running';
 }
 
+function agentSessionDisplayStatus(session) {
+  const status = String(session.status || 'unknown');
+  const todos = session.todos || [];
+  const nodes = (session.runs || []).flatMap(run => run.nodes || []);
+  if (status === 'stopped') return {state:'stopped',label:'Stopped'};
+  if (status === 'failed' || session.nativeAgent?.requestStatus === 'failed' || (status === 'completed' && (todos.some(todo => todo.status === 'failed') || nodes.some(node => node.state === 'failed')))) return {state:'failed',label:'Failed'};
+  if (status === 'running' && (session.nativeAgent?.waitingForInput || nodes.some(node => node.state === 'running' && node.kind === 'pkm.gate.human/v1'))) return {state:'waiting-input',label:'Waiting for Input'};
+  if (status === 'running' && (todos.some(todo => todo.status === 'running') || nodes.some(node => node.state === 'running') || (!todos.length && !nodes.length))) return {state:'running',label:'Running'};
+  return {state:'idle',label:'Idle'};
+}
+
+function agentSessionStatusIndicator(session, compact = false) {
+  const status = agentSessionDisplayStatus(session);
+  const title = `${status.label} · Lifecycle: ${session.status || 'unknown'}`;
+  return `<span class="agent-session-status-indicator" data-session-state="${status.state}" title="${esc(title)}"><i class="agent-session-status-dot" role="img" aria-label="${esc(title)}"></i>${compact ? '' : `<span>${status.label}</span>`}</span>`;
+}
+
 function agentSessionLivenessLabel(liveness) {
   const stateName = String(liveness?.state || '');
   if (stateName === 'suspected-stalled') return 'Suspected stalled';
@@ -2532,7 +2557,7 @@ function agentSessionUnifiedGraph(session) {
         <header class="agent-session-traversal-header"><small>Todo execution order</small><strong>${esc(traversalLabel)} execution queue</strong></header>
         <article class="agent-session-unified-session" data-session-node="${esc(session.sessionId)}" data-queue-boundary="start"><small>Agent Session</small><strong>Start</strong><code title="${esc(session.sessionId)}">${esc(session.task)}</code><b>${esc(session.status)}</b></article>
         ${lanes.map((todo, index) => agentSessionUnifiedTodoNode(todo, index)).join('')}
-        <article class="agent-session-graph-terminal" data-queue-boundary="stop"><strong>Stop</strong><small>${esc(['completed','stopped'].includes(session.status) ? session.status : 'pending')}</small></article>
+        <article class="agent-session-graph-terminal" data-queue-boundary="stop"><strong>Complete</strong><small>${esc(['completed','stopped'].includes(session.status) ? session.status : 'pending')}</small></article>
       </div>
       ${agentSessionUnifiedTree(session, lanes)}
     </div>
@@ -2728,24 +2753,63 @@ function agentSessionFullscreenGraph(session) {
   </div>`;
 }
 
+function agentSessionGroupKey(session) {
+  const hostSessionId = session.hostSessionId || session.liveness?.hostSessionId || session.liveness?.owner?.hostSessionId;
+  const storedGroup = hostSessionId && (projectSnapshot?.agentSessionGroups || []).find(group =>
+    group.hostSessionId === hostSessionId && group.hostKind === (session.hostKind || 'copilot'));
+  return session.groupId || storedGroup?.groupId || (hostSessionId
+    ? JSON.stringify([session.hostKind || 'copilot', hostSessionId])
+    : `recovered:${session.sessionId}`);
+}
+
 function agentSessionTree(sessions, archived = false) {
-  if (!sessions.length) return '';
-  const tree = buildCatTree(sessions, session => [
-    session.agent?.name || 'Agent',
-    session.hostSessionId ? `Copilot Session ${session.hostSessionId}` : 'Unlinked sessions'
-  ], 'Unlinked sessions');
-  return `<div class="agent-session-tree">${renderCatTree(tree, [], 0, (session, depth) => `<div class="li cattree-item agent-session-row ${session.sessionId === selectedAgentSessionId ? 'active' : ''}" style="padding-left:${8 + depth * 12}px" role="button" tabindex="0" onclick="agentSessionSelect(decodeURIComponent('${encodeURIComponent(session.sessionId)}'))" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();agentSessionSelect(decodeURIComponent('${encodeURIComponent(session.sessionId)}'))}" oncontextmenu="agentSessionContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'),'${esc(session.status)}')"><span><i class="${session.status === 'running' ? '' : 'idle'}"></i><strong>${esc(session.task)}</strong></span><b>${esc(session.sessionId.replace(/^agent_session_/, '').slice(0,12))}</b><small>${esc(session.lastActivity?.tool || (session.checkpoint ? 'Checkpoint ready' : 'Registered'))}${agentSessionLivenessLabel(session.liveness) ? ` · <em class="agent-session-liveness ${esc(session.liveness.state)}">${esc(agentSessionLivenessLabel(session.liveness))}</em>` : ''}</small>${archived ? `<button class="agent-session-quick-trash" title="Move archived Agent Session to Trash" aria-label="Move ${esc(session.task)} to Trash" onclick="event.stopPropagation();ask('agentSessionTrash',{action:'move',sessionId:decodeURIComponent('${encodeURIComponent(session.sessionId)}')},this)"><span class="codicon codicon-trash"></span></button>` : ''}<button class="cattree-item-menu" title="Agent Session actions" aria-label="Actions for ${esc(session.task)}" onclick="event.stopPropagation();agentSessionContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'),'${esc(session.status)}')"><span class="codicon codicon-ellipsis"></span></button></div>`, '', (_child, _name, fullPath) => ` oncontextmenu="agentSessionFolderMenu(event,decodeURIComponent('${encodeURIComponent(fullPath.join('/'))}'))"`, null, {
+  const hiddenGroups = new Set((projectSnapshot?.agentSessionGroups || []).filter(group => group.deletedAt).map(group => group.groupId));
+  if (!archived) sessions = sessions.filter(session => !hiddenGroups.has(agentSessionGroupKey(session)));
+  const groupRecords = archived ? [] : (projectSnapshot?.agentSessionGroups || []).filter(group => !group.deletedAt);
+  const emptyGroups = groupRecords.filter(group => !sessions.some(session => agentSessionGroupKey(session) === group.groupId));
+  if (!sessions.length && !emptyGroups.length) return '';
+  const groups = new Map(sessions.map(session => [agentSessionGroupKey(session), session]));
+  const titles = new Map((projectSnapshot?.agentSessionGroups || []).map(group => [group.groupId, group.title]));
+  const tree = buildCatTree(sessions, session => [agentSessionGroupKey(session)], 'Recovered Sessions');
+  return `<div class="agent-session-tree">${renderCatTree(tree, [], 0, (session, depth) => `<div class="li cattree-item agent-session-row ${session.sessionId === selectedAgentSessionId ? 'active' : ''}" style="padding-left:${8 + depth * 12}px" role="button" tabindex="0" onclick="agentSessionSelect(decodeURIComponent('${encodeURIComponent(session.sessionId)}'))" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();agentSessionSelect(decodeURIComponent('${encodeURIComponent(session.sessionId)}'))}" oncontextmenu="agentSessionContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'),'${esc(session.status)}')"><span>${agentSessionStatusIndicator(session, true)}<strong>${esc(session.task)}</strong></span><b>${esc(session.sessionId.replace(/^agent_session_/, '').slice(0,12))}</b><small>${esc(session.lastActivity?.tool || (session.checkpoint ? 'Checkpoint ready' : 'Registered'))}${agentSessionLivenessLabel(session.liveness) ? ` · <em class="agent-session-liveness ${esc(session.liveness.state)}">${esc(agentSessionLivenessLabel(session.liveness))}</em>` : ''}</small>${archived ? `<button class="agent-session-quick-trash" title="Move archived Agent Session to Trash" aria-label="Move ${esc(session.task)} to Trash" onclick="event.stopPropagation();ask('agentSessionTrash',{action:'move',sessionId:decodeURIComponent('${encodeURIComponent(session.sessionId)}')},this)"><span class="codicon codicon-trash"></span></button>` : ''}<button class="cattree-item-menu" title="Agent Session actions" aria-label="Actions for ${esc(session.task)}" onclick="event.stopPropagation();agentSessionContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'),'${esc(session.status)}')"><span class="codicon codicon-ellipsis"></span></button></div>`, '', (_child, _name, fullPath) => ` oncontextmenu="agentSessionFolderMenu(event,decodeURIComponent('${encodeURIComponent(fullPath.join('/'))}'))"`, null, {
     area:'agentSessions',
     defaultOpen:true,
-    renderFolderLabel:(name, path) => path.length === 1
-      ? `<span class="codicon codicon-account"></span>${esc(name)}`
-      : `<span class="codicon codicon-comment-discussion"></span>${name === 'Unlinked sessions' ? name : `Copilot Session ${esc(name.slice('Copilot Session '.length, 'Copilot Session '.length + 12))}`}`
-  })}</div>`;
+    renderFolderLabel:name => {
+      const group = groups.get(name);
+      const source = group?.origin === 'pkm-native' ? 'PKM native'
+        : group?.origin === 'unknown' ? 'Unknown host' : group?.hostKind || 'copilot';
+      const label = titles.get(name) || (group?.hostSessionId
+        ? `${source} Chat ${group.hostSessionId}${group.origin === 'external' ? ' (external)' : ''}`
+        : `Recovered Session: ${group?.task || group?.sessionId || 'Unknown origin'}`);
+      const icon = group?.hostKind === 'pkm' || group?.origin === 'pkm-native' ? '<span class="agent-session-pkm-icon" role="img" aria-label="PKM Chat" title="PKM Chat"></span>' : '<span class="codicon codicon-comment-discussion"></span>';
+      return `${icon}<span title="${esc(label)}">${esc(label)}</span>`;
+    }
+  })}${emptyGroups.map(group => `<div class="li cattree-folder" oncontextmenu="agentSessionFolderMenu(event,decodeURIComponent('${encodeURIComponent(group.groupId)}'))">${group.hostKind === 'pkm' ? '<span class="agent-session-pkm-icon" role="img" aria-label="PKM Chat" title="PKM Chat"></span>' : '<span class="codicon codicon-comment-discussion"></span>'}<span title="${esc(group.title || `${group.hostKind} Chat ${group.hostSessionId}`)}">${esc(group.title || `${group.hostKind} Chat ${group.hostSessionId}`)}</span><small>No Task</small><button class="cattree-item-menu" title="Chat Group actions" aria-label="Chat Group actions" onclick="event.stopPropagation();agentSessionFolderMenu(event,decodeURIComponent('${encodeURIComponent(group.groupId)}'))"><span class="codicon codicon-ellipsis"></span></button></div>`).join('')}</div>`;
+}
+
+function agentSessionGroupCount(sessions) {
+  const hiddenGroups = new Set((projectSnapshot?.agentSessionGroups || []).filter(group => group.deletedAt).map(group => group.groupId));
+  return new Set([
+    ...sessions.filter(session => !hiddenGroups.has(agentSessionGroupKey(session))).map(agentSessionGroupKey),
+    ...(projectSnapshot?.agentSessionGroups || []).filter(group => !group.deletedAt).map(group => group.groupId)
+  ]).size;
+}
+
+function renderNativeAgentArchitecture(session) {
+  if (session.origin !== 'pkm-native' || !session.nativeAgent) return '';
+  const config = session.nativeAgent;
+  const builtin = config.builtinTools;
+  const servers = config.mcpServers || [];
+  const enabledServers = servers.filter(server => server.enabled);
+  const node = (section, icon, title, labels, status) => `<button class="native-agent-node" title="${esc(labels.join(', ') || status)}" aria-label="Configure ${esc(title)}" onclick="ask('agentSessionConfigure',{sessionId:decodeURIComponent('${encodeURIComponent(session.sessionId)}'),section:'${section}'})"><span class="codicon codicon-${icon}" aria-hidden="true"></span><strong>${esc(title)}</strong><small>${esc(status)}</small>${labels.length ? `<span class="native-agent-items">${labels.map(esc).join(' · ')}</span>` : ''}</button>`;
+  return `<section class="native-agent-architecture" aria-label="Native Agent Configuration"><header><h4>Agent Configuration</h4><span>PKM native · ${esc(config.platform || 'host')}</span></header><div class="native-agent-inputs">${node('memory','database','Memory',config.memory || [],`${config.includeHistory ? 'History on' : 'History off'} · ${(config.memory || []).length} Tasks`)}${node('pkmSkills','book','PKM Skills',[], 'Automatic')}${node('externalSkills','extensions','External Skills',config.externalSkills || [],`${(config.externalSkills || []).length} attachments`)}${node('context','files','Context',config.context || [],`${(config.context || []).length} attachments`)}</div><div class="native-agent-connector"><span class="codicon codicon-arrow-down" aria-hidden="true"></span></div><div class="native-agent-model">${node('model','hubot',config.model || 'Model',[],config.contextWindow ? `${Number(config.contextWindow).toLocaleString()} context · ${Number(config.maxOutputTokens || 0).toLocaleString()} output` : 'Model budget')}</div><div class="native-agent-connector"><span class="codicon codicon-arrow-down" aria-hidden="true"></span></div><div class="native-agent-inputs">${node('tools','tools','Builtin Tools',builtin || [],builtin ? `${builtin.length} configured` : 'All configured tools')}${node('mcps','plug','MCP',servers.map(server => `${server.label}: ${server.enabled ? 'enabled' : 'disabled'} (${(server.tools || []).length} tools)`),enabledServers.length ? `${enabledServers.length} configured · connects per request` : 'Not connected')}</div></section>`;
 }
 
 function renderAgentSessions() {
   if (state.tab !== 'agentSessions') return;
   const detail = document.getElementById('detail');
+  const previousSessionId = detail.dataset?.agentSessionId;
+  const inlineView = captureRefreshView(detail, ['.agent-session-overview-graph','.agent-runtime-graph']);
   const previousTreeScroll = detail.querySelector?.('.agent-session-tree-scroll')?.scrollTop || 0;
   const previousContentScroll = detail.querySelector?.('.agent-session-content')?.scrollTop || 0;
   const focused = document.activeElement?.closest?.('[data-run-id][data-node-id]');
@@ -2780,11 +2844,18 @@ function renderAgentSessions() {
     const percent = progressTotal ? Math.round(progressDone * 100 / progressTotal) : 0;
     content = `<div class="agent-dashboard"><header class="agent-session-head"><div><span>PKM-managed Agent Session</span><h3>${esc(selected.task)}</h3><p>${esc(selected.sessionId)} · Updated ${esc(selected.updatedAt || 'unknown')}</p></div><div class="agent-session-head-actions"><button class="tbtn" title="Refresh without resetting graph focus" onclick="agentSessionRefresh()"><span class="codicon codicon-refresh"></span>Refresh</button><span class="agent-status ${selected.status === 'running' ? 'running' : ''}">${selected.status === 'running' ? '<i class="agent-live-dot"></i> ' : ''}${esc(selected.status)}</span>${agentSessionLivenessLabel(selected.liveness) ? `<span class="agent-session-liveness ${esc(selected.liveness.state)}" title="Heartbeat age: ${selected.liveness.heartbeatAgeSeconds === null ? 'unknown' : `${Math.round(selected.liveness.heartbeatAgeSeconds)}s`} · Lease: ${selected.liveness.leaseSeconds}s">${esc(agentSessionLivenessLabel(selected.liveness))}</span>` : ''}</div></header><div class="agent-session-summary"><div><span>Agent</span><strong>${esc(selected.agent?.name || 'Agent')}</strong><small>${esc(selected.agent?.product || '')}</small></div><div><span>Current task</span><strong>${esc(runningTodo?.title || running?.nodeId || (selected.runs.length ? 'No running node' : 'Awaiting task plan'))}</strong><small>${esc(selected.lastActivity?.tool || 'Registered')}</small></div><div><span>${sessionTodos.length ? 'Session todos' : 'Task runs'}</span><strong>${sessionTodos.length || selected.runs.length}</strong><small>${sessionTodos.length ? `${sessionTodos.filter(todo => todo.status === 'pending').length} queued` : `${nodes.length} graph tasks`}</small></div><div><span>Progress</span><strong>${progressDone} / ${progressTotal}</strong><small>${percent}% complete</small><div class="agent-progress" aria-label="${progressDone} of ${progressTotal} tasks terminal"><i style="width:${percent}%"></i></div></div></div>${selected.checkpoint ?  `<div class="agent-checkpoint-strip"><span class="codicon codicon-save"></span><div><strong>Checkpoint ${selected.checkpoint.sequence}</strong><small>${esc(selected.checkpoint.summary || selected.checkpoint.reason || 'Recovery state saved')} · ${selected.checkpoint.nextActionCount} next actions</small></div><code>${esc(selected.checkpoint.checkpointId)}</code></div>` : ''}${agentSessionTodoFlow(selected, sessionTodos, selected.runs)}</div>${agentSessionFullscreenGraph(selected)}`;
   }
-  detail.innerHTML = `<div class="agent-sessions-workspace ${agentSessionTreeCollapsed ? 'cattree-collapsed' : ''}"><aside class="agent-session-list"><div class="agent-session-list-head"><strong>Agent Sessions</strong><span>${sessions.length} ${sessions.length === 1 ? 'session' : 'sessions'}</span></div><div class="agent-session-tree-scroll" oncontextmenu="if(event.target===this)agentSessionRootMenu(event)">${list}</div>${catTreeTrashDock('Trash', trash.length, trashList, 'emptyAgentSessionTrash()')}</aside>${workspaceCatTreeDivider('agentSessions',agentSessionTreeCollapsed)}<main class="agent-session-content">${content}</main></div>`;
+  if (selected) content = renderNativeAgentArchitecture(selected) + content;
+  const groupCount = agentSessionGroupCount(sessions);
+  const binding = selected ? `<p class="agent-session-group-binding">${selected.hostSessionId || selected.liveness?.hostSessionId ? 'Group' : 'Recovered Group'}: ${esc(agentSessionGroupKey(selected))}<br>Task: ${esc(selected.taskId || selected.sessionId)}<br>Grouping preserves task history; host model context is not isolated.</p>` : '';
+  detail.innerHTML = `<div class="agent-sessions-workspace ${agentSessionTreeCollapsed ? 'cattree-collapsed' : ''}"><aside class="agent-session-list"><div class="agent-session-list-head"><strong>Chat Groups</strong><span>${groupCount} groups · ${sessions.length} tasks</span></div><div class="agent-session-tree-scroll" oncontextmenu="if(event.target===this)agentSessionRootMenu(event)">${list}</div>${catTreeTrashDock('Trash', trash.length, trashList, 'emptyAgentSessionTrash()')}</aside>${workspaceCatTreeDivider('agentSessions',agentSessionTreeCollapsed)}<main class="agent-session-content">${binding}${content}</main></div>`;
+  const statusElement = detail.querySelector?.('.agent-session-head .agent-status');
+  if (selected && statusElement) { statusElement.className = 'agent-status'; statusElement.innerHTML = agentSessionStatusIndicator(selected); }
   const nextTree = detail.querySelector?.('.agent-session-tree-scroll');
   const nextContent = detail.querySelector?.('.agent-session-content');
   if (nextTree) nextTree.scrollTop = previousTreeScroll;
   if (nextContent) nextContent.scrollTop = previousContentScroll;
+  if (previousSessionId === selectedAgentSessionId) restoreRefreshView(detail, inlineView);
+  if (detail.dataset) detail.dataset.agentSessionId = selectedAgentSessionId;
   const nextGraphStage = detail.querySelector?.('.agent-session-graph-stage');
   const graphViewport = agentSessionGraphViewport[agentSessionFullscreenRunId];
   if (nextGraphStage && graphViewport) {
@@ -2810,14 +2881,19 @@ function renderAgentSessions() {
 function renderAgentSnapshots() {
   if (state.tab !== 'agentSnapshots') return;
   const detail = document.getElementById('detail');
+  const view = captureRefreshView(detail);
+  const previousSnapshotId = detail.dataset?.agentSnapshotId;
+  const previousSource = document.getElementById('agent-snapshot-source')?.value;
+  const expandedRecords = [...(detail.querySelectorAll?.('.agent-snapshot-capture') || [])].map(record => record.open);
   const snapshots = projectSnapshot?.agentSnapshots || [];
   const sessions = projectSnapshot?.agentSessions || [];
   if (!snapshots.some(snapshot => snapshot.snapshotId === selectedAgentSnapshotId)) {
     selectedAgentSnapshotId = snapshots[0]?.snapshotId || '';
   }
   const selected = snapshots.find(snapshot => snapshot.snapshotId === selectedAgentSnapshotId);
-  const preferredSessionId = sessions.some(session => session.sessionId === selectedAgentSessionId)
-    ? selectedAgentSessionId : sessions.find(session => session.status === 'running')?.sessionId || sessions[0]?.sessionId || '';
+  const preferredSessionId = sessions.some(session => session.sessionId === previousSource) ? previousSource
+    : sessions.some(session => session.sessionId === selectedAgentSessionId)
+      ? selectedAgentSessionId : sessions.find(session => session.status === 'running')?.sessionId || sessions[0]?.sessionId || '';
   const sourceOptions = sessions.map(session => `<option value="${esc(session.sessionId)}" ${session.sessionId === preferredSessionId ? 'selected' : ''}>${esc(session.task)} · ${esc(session.status)}</option>`).join('');
   const create = `<section class="agent-snapshot-create"><div><span>Capture current durable state</span><strong>Create Agent Snapshot</strong><p>Saves the Session, ordered todos, checkpoints, and linked Recipe runs. The source Session remains unchanged.</p></div><label>Source Agent Session<select id="agent-snapshot-source" ${sessions.length ? '' : 'disabled'}>${sourceOptions || '<option value="">No Agent Sessions available</option>'}</select></label><button class="pk-button primary" data-pending-label="Creating…" onclick="agentSnapshotCreate(this)" ${sessions.length ? '' : 'disabled'}><span class="codicon codicon-save"></span>Create Snapshot</button></section>`;
   const list = snapshots.length ? agentSnapshotTree(snapshots) : `<div class="agent-snapshot-empty"><span class="codicon codicon-save"></span><strong>No Agent Snapshots</strong><p>Create one before closing a resource-heavy conversation.</p></div>`;
@@ -2830,6 +2906,11 @@ function renderAgentSnapshots() {
   const contents = selected ? agentSnapshotContentsView(selected.snapshotId) : '';
   if (!selected) agentSnapshotContentsState = null;
   detail.innerHTML = `<div class="agent-snapshot-page">${create}<div class="agent-snapshot-workspace"><aside><header><strong>Agent Snapshots</strong><span>${snapshots.length}</span></header><div>${list}</div></aside><main>${content}${contents}</main></div></div>`;
+  if (previousSnapshotId === selectedAgentSnapshotId) {
+    [...(detail.querySelectorAll?.('.agent-snapshot-capture') || [])].forEach((record, index) => { record.open = !!expandedRecords[index]; });
+    restoreRefreshView(detail, view);
+  }
+  if (detail.dataset) detail.dataset.agentSnapshotId = selectedAgentSnapshotId;
 }
 
 function agentSnapshotTree(snapshots) {
@@ -2984,13 +3065,13 @@ function renderGlobalRecipes() {
 function recipeSubscriptionGroupsOnResult(groups) {
   recipeSubscriptionGroups = Array.isArray(groups) ? groups : [];
   recipeSubscriptionGroupsRequested = true;
-  if (state.tab === 'recipes') renderGlobalRecipes();
+  if (state.tab === 'recipes') recipeRerenderPreservingView();
 }
 
 function invalidateRecipeSubscriptionGroups() {
   recipeSubscriptionGroups = [];
   recipeSubscriptionGroupsRequested = false;
-  if (state.tab === 'recipes') renderGlobalRecipes();
+  if (state.tab === 'recipes') recipeRerenderPreservingView();
 }
 
 function recipeRefresh() {
@@ -3010,6 +3091,7 @@ function recipeSnapshotSignature(snapshot) {
 function agentSessionSnapshotSignature(snapshot) {
   return JSON.stringify({
     agentSessions:snapshot?.agentSessions || [],
+    agentSessionGroups:snapshot?.agentSessionGroups || [],
     agentSessionTrash:snapshot?.agentSessionTrash || []
   });
 }
@@ -3084,8 +3166,9 @@ function projectOnError(data) {
     }
     return;
   }
-  const host = document.querySelector('.project-header') || document.getElementById('detail');
-  host?.querySelector('.project-error')?.remove();
-  const error = document.createElement('div'); error.className = 'project-error'; error.setAttribute('role','alert'); error.textContent = data?.error || 'Project action failed.';
-  host?.appendChild(error);
+  document.getElementById('project-action-error')?.remove();
+  const error = document.createElement('div'); error.id = 'project-action-error'; error.className = 'project-error project-action-error'; error.setAttribute('role','alert');
+  const message = document.createElement('div'); message.className = 'project-action-error-message'; message.textContent = data?.error || 'Project action failed.';
+  const dismiss = document.createElement('button'); dismiss.className = 'tbtn'; dismiss.title = 'Dismiss error'; dismiss.setAttribute('aria-label','Dismiss error'); dismiss.innerHTML = '<span class="codicon codicon-close" aria-hidden="true"></span>'; dismiss.onclick = () => error.remove();
+  error.appendChild(message); error.appendChild(dismiss); document.body.appendChild(error);
 }

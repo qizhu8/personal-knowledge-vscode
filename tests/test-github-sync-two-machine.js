@@ -5,8 +5,8 @@ const os = require("os");
 const path = require("path");
 const { createHash } = require("crypto");
 const { execFileSync } = require("child_process");
-const { canonicalJson } = require("../dist/workflow-contracts.js");
-const filestore = require("../dist/filestore.js");
+const { canonicalJson } = require("../dist/workflows/workflow-contracts.js");
+const filestore = require("../dist/knowledge/filestore.js");
 const {
   GITHUB_SYNC_CONTENT_TYPES,
   GitHubSyncConflictError,
@@ -14,7 +14,7 @@ const {
   normalizeGitHubSyncTarget,
   previewGitHubSyncTarget,
   syncGitHubTarget
-} = require("../dist/github-sync.js");
+} = require("../dist/sync/github-sync.js");
 
 const run = (cwd, args) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 const skill = (name, body) => `---\nname: ${JSON.stringify(name)}\ndescription: "test"\n---\n# ${name}\n\n${body}\n`;
@@ -120,7 +120,7 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
     assert(notesTrash);
     const reloadedDeletions = JSON.parse(execFileSync(process.execPath, ["-e",
       "console.log(JSON.stringify(require(process.argv[1]).knowledgeSyncDeletionRecords(process.argv[2])))",
-      path.resolve(__dirname, "../dist/filestore.js"), notesStore], { encoding: "utf8" }));
+      path.resolve(__dirname, "../dist/knowledge/filestore.js"), notesStore], { encoding: "utf8" }));
     assert(reloadedDeletions.some(record => record.path === "notes/Projects/Nested/Old.md"),
       "deletion intent must survive restarting before any sync runs");
     for (const target of notesTargets) {

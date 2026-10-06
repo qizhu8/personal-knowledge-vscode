@@ -1,0 +1,274 @@
+import * as vscode from "vscode";
+import * as fs from "fs";
+import * as path from "path";
+import { spawn, execFile } from "child_process";
+import { StringDecoder } from "string_decoder";
+import { createHash } from "crypto";
+import { diffLines } from "diff";
+import { ApiChatTool } from "./api-chat-client";
+
+export interface ApiChatEditChange {
+  path: string;
+  workspace: number;
+  appliedAt: string;
+  beforeHash: string;
+  afterHash: string;
+  added?: number;
+  removed?: number;
+  saved: false;
+  attribution: "exact" | "unknown";
+}
+
+export const builtinToolCatalog = [
+  { name: "read_file", label: "Read files", permission: "Workspace text files" },
+  { name: "find_files", label: "Find files", permission: "Workspace file names" },
+  { name: "search_text", label: "Search text", permission: "Workspace literal text search" },
+  { name: "session_info", label: "Session information", permission: "Current Session identity, model and advertised tools only" },
+  { name: "pkm_search", label: "Search PKM notes and skills", permission: "Read-only local knowledge titles" },
+  { name: "pkm_read", label: "Read PKM note, skill or recipe", permission: "Read-only bounded local knowledge content" },
+  { name: "replace_text", label: "Edit text", permission: "Shared non-destructive Chat permission; edits remain unsaved" },
+  { name: "save_file", label: "Save file", permission: "Shared non-destructive Chat permission; expected content hash required" },
+  { name: "run_process", label: "Run programs", permission: "Remembered program-tool permission or Allow All; non-interactive process" },
+  { name: "ask_user", label: "Ask a question", permission: "Native single/multiple choices; answers are sent to the model; never request secrets" },
+  { name: "ask_session", label: "Ask a native Session", permission: "Approval required; one idle target per turn; no recursive waking" },
+];
+
+export function relativeToolPath(value: unknown): string {
+  if (typeof value !== "string" || !value || value.length > 1024 || /[\0:]/.test(value)) throw new Error("Use a workspace-relative path.");
+  const normalized = value.replace(/\\/g, "/");
+  if (normalized.startsWith("/") || normalized.split("/").some(part => !part || part.startsWith(".") || part === "node_modules")) throw new Error("Hidden, excluded or outside-workspace paths are not allowed.");
+  if (/\.(pem|key)$/i.test(normalized) || /(^|\/)(credentials|id_rsa|id_ed25519)(\.|$)/i.test(normalized)) throw new Error("Attach sensitive files explicitly instead of using tools.");
+  return normalized;
+}
+
+function filesystemToolPath(value: unknown): string {
+  if (typeof value !== "string" || !value || value.length > 1024 || value.includes("\0")) throw new Error("Provide a bounded filesystem path.");
+  const normalized = value.replace(/\\/g, "/");
+  if (normalized.includes(":") && !(process.platform === "win32" && /^[a-z]:\//i.test(normalized))) throw new Error("Choose a filesystem path, not a URI.");
+  if (normalized.split("/").some(part => part.startsWith(".") && part !== "." && part !== ".." || part === "node_modules")) throw new Error("Hidden or excluded paths are not allowed.");
+  if (/\.(pem|key)$/i.test(normalized) || /(^|\/)(credentials|id_rsa|id_ed25519)(\.|$)/i.test(normalized)) throw new Error("Attach sensitive files explicitly instead of using tools.");
+  return normalized;
+}
+
+export function abortable<T>(promise: PromiseLike<T>, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const cancel = () => { signal.removeEventListener("abort", cancel); reject(new Error("Request cancelled.")); };
+    signal.addEventListener("abort", cancel, { once: true });
+    Promise.resolve(promise).then(value => { signal.removeEventListener("abort", cancel); resolve(value); }, error => { signal.removeEventListener("abort", cancel); reject(error); });
+    if (signal.aborted) cancel();
+  });
+}
+
+export function createBuiltinTools(enabled: string[], host: typeof vscode = vscode, onApproval?: (name: string, waiting: boolean) => void, onEdit?: (change: ApiChatEditChange) => void, requestApproval?: (name: string, prompt: string, detail: string, signal: AbortSignal, boundary?: "workspace" | "outside-workspace") => Promise<boolean>): ApiChatTool[] {
+  const roots = (host.workspace.workspaceFolders || []).map(folder => folder.uri);
+  const active = (signal: AbortSignal) => { if (signal.aborted) throw new Error("Request cancelled."); if (host.workspace.isTrusted === false) throw new Error("Tools require a trusted workspace."); };
+  const approve = async (name: string, prompt: string, detail: string, action: string, signal: AbortSignal, boundary: "workspace" | "outside-workspace" = "outside-workspace") => {
+    onApproval?.(name, true);
+    try { return requestApproval ? await requestApproval(name, prompt, detail, signal, boundary) ? action : undefined : await abortable(host.window.showWarningMessage(prompt, { modal: true, detail }, action), signal); }
+    finally { onApproval?.(name, false); }
+  };
+  const rootFor = (args: Record<string, unknown>) => {
+    const index = args.workspace ?? 0;
+    if (!Number.isSafeInteger(index) || Number(index) < 0 || !roots[Number(index)]) throw new Error("Choose an existing workspace index.");
+    if (!["file", "vscode-remote"].includes(roots[Number(index)].scheme)) throw new Error("Tools require a filesystem-backed workspace.");
+    return roots[Number(index)];
+  };
+  const physicalPath = async (args: Record<string, unknown>, value: unknown, signal: AbortSignal) => {
+    active(signal);
+    const root = rootFor(args);
+    const requested = filesystemToolPath(value);
+    const uri = host.Uri.file(path.resolve(root.fsPath, requested));
+    const [base, target] = await abortable(Promise.all([fs.promises.realpath(root.fsPath), fs.promises.realpath(uri.fsPath)]), signal);
+    const physicalRelative = path.relative(base, target);
+    const outside = physicalRelative.startsWith(".." + path.sep) || physicalRelative === ".." || path.isAbsolute(physicalRelative);
+    filesystemToolPath(outside ? target : physicalRelative || ".");
+    return { uri, target, outside };
+  };
+  const resolve = async (args: Record<string, unknown>, signal: AbortSignal, name: string) => {
+    const location = await physicalPath(args, args.path, signal);
+    if (location.outside && await approve(name, `Allow outside-workspace access to ${location.target}?`, `Resolved file: ${location.target}\nContent is sent to the model.`, "Allow access", signal) !== "Allow access") throw new Error("Outside-workspace access declined by the user.");
+    active(signal);
+    if (await abortable(fs.promises.realpath(location.uri.fsPath), signal) !== location.target) throw new Error("File path changed after approval.");
+    const uri = host.Uri.file(location.target);
+    if ((await abortable(host.workspace.fs.stat(uri), signal)).size > 160_000) throw new Error("Tool file exceeds 160 KB.");
+    return uri;
+  };
+  const documentFor = async (args: Record<string, unknown>, signal: AbortSignal, name: string) => {
+    const uri = await resolve(args, signal, name);
+    const document = await abortable(host.workspace.openTextDocument(uri), signal);
+    const text = document.getText();
+    if (text.includes("\0") || Buffer.byteLength(text, "utf8") > 160_000) throw new Error("Choose a text file smaller than 160 KB.");
+    return document;
+  };
+  const files = async (args: Record<string, unknown>, signal: AbortSignal) => {
+    const root = rootFor(args);
+    const glob = args.glob ?? "**/*";
+    if (typeof glob !== "string" || glob.length > 256 || glob.startsWith("/") || glob.includes("..") || glob.includes(":")) throw new Error("Use a bounded workspace-relative glob.");
+    const token = new host.CancellationTokenSource();
+    const cancel = () => token.cancel(); signal.addEventListener("abort", cancel, { once: true });
+    try {
+      active(signal);
+      const uris = await abortable(host.workspace.findFiles(new host.RelativePattern(root, glob), "**/{.*,node_modules}/**", 200, token.token), signal);
+      return { root, uris };
+    } finally { signal.removeEventListener("abort", cancel); token.dispose(); }
+  };
+  const shared = { workspace: { type: "integer", minimum: 0, description: `Workspace folder index; default 0. ${roots.map((root, index) => `${index}: ${path.basename(root.fsPath)}`).join(", ").slice(0, 1000)}` } };
+  const definition = (name: string, description: string, properties: Record<string, unknown>, required: string[], execute: ApiChatTool["execute"]): ApiChatTool => ({
+    name, description, parameters: { type: "object", properties: { ...shared, ...properties }, required, additionalProperties: false }, execute,
+  });
+  const tools = [
+    definition("ask_user", "Ask one non-sensitive question using native single/multiple choice UI and optional free text. Cancellation is not consent. Never ask for passwords, tokens or other secrets.", { question: { type: "string", maxLength: 300 }, options: { type: "array", maxItems: 12, items: { type: "string", maxLength: 120 } }, multiSelect: { type: "boolean" }, allowFreeText: { type: "boolean" } }, ["question", "options"], async (args, signal) => {
+      active(signal);
+      if (typeof args.question !== "string" || !args.question.trim() || args.question.length > 300 || !Array.isArray(args.options) || args.options.length > 12 || args.options.some(option => typeof option !== "string" || !option.trim() || option.length > 120) || new Set(args.options).size !== args.options.length || args.multiSelect !== undefined && typeof args.multiSelect !== "boolean" || args.allowFreeText !== undefined && typeof args.allowFreeText !== "boolean" || !args.options.length && args.allowFreeText === false) throw new Error("Provide a bounded question and up to 12 distinct options, or allow free text.");
+      const token = new host.CancellationTokenSource();
+      const cancel = () => token.cancel(); signal.addEventListener("abort", cancel, { once: true });
+      onApproval?.("ask_user", true);
+      try {
+        const items = (args.options as string[]).map((label, id) => ({ label, id }));
+        if (args.allowFreeText !== false) items.push({ label: "Other answer...", id: -1 });
+        const choice = args.options.length ? await abortable(host.window.showQuickPick(items, { title: "PKM question · response sent to model", placeHolder: args.question, canPickMany: args.multiSelect === true, ignoreFocusOut: false }, token.token), signal) : items;
+        active(signal);
+        if (!choice || Array.isArray(choice) && !choice.length) return JSON.stringify({ selected: [], freeText: null, cancelled: true });
+        const selected = Array.isArray(choice) ? choice : [choice];
+        if (selected.some(item => !items.includes(item))) throw new Error("Invalid question selection.");
+        let freeText: string | undefined;
+        if (selected.some(item => item.id === -1)) {
+          freeText = await abortable(host.window.showInputBox({ title: "PKM answer · sent to model", prompt: `${args.question} Do not enter secrets.`, ignoreFocusOut: false, validateInput: value => value.trim() && value.length <= 4000 ? undefined : "Enter a non-sensitive answer up to 4,000 characters." }, token.token), signal);
+          active(signal);
+          if (freeText === undefined) return JSON.stringify({ selected: [], freeText: null, cancelled: true });
+          if (!freeText.trim() || freeText.length > 4000) throw new Error("Invalid answer.");
+        }
+        return JSON.stringify({ selected: selected.filter(item => item.id >= 0).map(item => item.label), freeText: freeText?.trim() || null, cancelled: false });
+      } finally { signal.removeEventListener("abort", cancel); token.dispose(); onApproval?.("ask_user", false); }
+    }),
+    definition("run_process", "Run a non-interactive program with separate arguments on the extension host. No automatic shell; every launch requires approval. Windows batch files are unsupported: invoke the native executable directly. Output is bounded; timeout defaults to 30 seconds.", { program: { type: "string" }, arguments: { type: "array", items: { type: "string" }, maxItems: 32 }, cwd: { type: "string" }, timeoutSeconds: { type: "integer", minimum: 1, maximum: 120 } }, ["program", "arguments"], async (args, signal) => {
+      active(signal);
+      if (typeof args.program !== "string" || !args.program || args.program.length > 1024 || args.program.includes("\0") || !Array.isArray(args.arguments) || args.arguments.length > 32 || args.arguments.some(argument => typeof argument !== "string" || argument.includes("\0")) || JSON.stringify(args.arguments).length > 8000) throw new Error("Provide a program and up to 32 bounded string arguments.");
+      if (process.platform === "win32" && /\.(cmd|bat)$/i.test(args.program)) throw new Error("Use a native executable, such as node.exe, instead of a Windows batch wrapper.");
+      const seconds = Number(args.timeoutSeconds ?? 30);
+      if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > 120) throw new Error("Choose a process timeout of 1-120 seconds.");
+      const location = await physicalPath(args, args.cwd || ".", signal);
+      const cwdUri = location.uri; const cwd = location.target;
+      const approval = await approve("run_process", `Run program ${args.program}?`, `Working directory: ${cwd}\nArguments: ${JSON.stringify(args.arguments)}\nTimeout: ${seconds}s\n\nThis program can modify files outside this workspace and access the network. Output is sent to the model. Stdin is closed.`, "Run program", signal);
+      active(signal);
+      if (approval !== "Run program") throw new Error("Program launch declined by the user.");
+      if (await abortable(fs.promises.realpath(cwdUri.fsPath), signal) !== cwd) throw new Error("Working directory changed after approval.");
+      const environment: NodeJS.ProcessEnv = {};
+      for (const name of ["PATH", "Path", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "SystemRoot", "SYSTEMROOT", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "APPDATA", "LOCALAPPDATA"]) if (process.env[name]) environment[name] = process.env[name];
+      return new Promise<string>((resolve, reject) => {
+        const child = spawn(args.program as string, args.arguments as string[], { cwd, env: environment, shell: false, windowsHide: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+        let stdout = ""; let stderr = ""; let truncated = false; let settled = false;
+        const outputDecoder = new StringDecoder("utf8"); const errorDecoder = new StringDecoder("utf8");
+        let escalation: ReturnType<typeof setTimeout> | undefined;
+        const terminate = () => {
+          if (!child.pid) return;
+          if (process.platform === "win32") {
+            execFile(path.join(process.env.SystemRoot || "C:\\Windows", "System32", "taskkill.exe"), ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, timeout: 3000 }, () => { try { child.kill(); } catch {} });
+          } else {
+            const kill = (kind: NodeJS.Signals) => { try { process.kill(-child.pid!, kind); } catch { try { child.kill(kind); } catch {} } };
+            kill("SIGTERM"); escalation = setTimeout(() => kill("SIGKILL"), 1000); escalation.unref();
+          }
+        };
+        const finish = (error?: string, code?: number | null, exitSignal?: NodeJS.Signals | null) => {
+          if (settled) return; settled = true; clearTimeout(deadline); signal.removeEventListener("abort", cancel);
+          if (error) reject(new Error(error)); else resolve(JSON.stringify({ exitCode: code, signal: exitSignal, stdout, stderr, truncated, platform: process.platform }));
+        };
+        const cancel = () => { terminate(); finish("Process cancelled; process-tree termination requested."); };
+        const deadline = setTimeout(() => { terminate(); finish("Process timed out; process-tree termination requested."); }, seconds * 1000);
+        signal.addEventListener("abort", cancel, { once: true });
+        const append = (text: string, error: boolean) => {
+          const available = 6000 - stdout.length - stderr.length;
+          if (error) stderr += text.slice(0, Math.max(0, available)); else stdout += text.slice(0, Math.max(0, available));
+          if (text.length > available && !truncated) { truncated = true; terminate(); finish("Process output limit reached; process-tree termination requested."); }
+        };
+        child.stdout?.on("data", chunk => append(outputDecoder.write(chunk), false));
+        child.stderr?.on("data", chunk => append(errorDecoder.write(chunk), true));
+        child.on("error", () => finish("Cannot launch the program. Check its executable path and permissions."));
+        child.on("close", (code, exitSignal) => { if (escalation) clearTimeout(escalation); append(outputDecoder.end(), false); append(errorDecoder.end(), true); finish(undefined, code, exitSignal); });
+        if (signal.aborted) cancel();
+      });
+    }),
+    definition("read_file", "Read text, up to 200 lines and 12,000 characters. Workspace-relative or absolute paths; outside-workspace access requires permission. Hidden/sensitive paths excluded.", { path: { type: "string" }, startLine: { type: "integer", minimum: 1 }, endLine: { type: "integer", minimum: 1 } }, ["path"], async (args, signal) => {
+      const document = await documentFor(args, signal, "read_file");
+      const start = Number(args.startLine ?? 1); const end = Number(args.endLine ?? start + 199);
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start || end - start >= 200) throw new Error("Choose 1-200 lines with valid line numbers.");
+      const lines = document.getText().split(/\r?\n/);
+      const selected = lines.slice(start - 1, end).join("\n");
+      const result = { path: args.path, startLine: start, endLine: Math.min(end, lines.length), content: selected.slice(0, 12_000), truncated: end < lines.length || selected.length > 12_000 };
+      while (JSON.stringify(result).length > 16_000) { result.content = result.content.slice(0, Math.floor(result.content.length * 0.8)); result.truncated = true; }
+      return JSON.stringify(result);
+    }),
+    definition("find_files", "List up to 200 workspace-relative file names matching a glob.", { glob: { type: "string" } }, [], async (args, signal) => {
+      const { root, uris } = await files(args, signal);
+      const names = uris.map(uri => path.relative(root.fsPath, uri.fsPath).replace(/\\/g, "/")).filter(name => { try { relativeToolPath(name); return true; } catch { return false; } });
+      const chosen: string[] = [];
+      for (const name of names.slice(0, 100)) { if (JSON.stringify([...chosen, name]).length > 12_000) break; chosen.push(name); }
+      return JSON.stringify({ files: chosen, truncated: uris.length >= 200 || names.length > chosen.length });
+    }),
+    definition("search_text", "Literal text search in up to 40 workspace files, returning at most 50 matches; no regex or shell.", { query: { type: "string" }, glob: { type: "string" } }, ["query"], async (args, signal) => {
+      if (typeof args.query !== "string" || !args.query || args.query.length > 256) throw new Error("Enter a literal query up to 256 characters.");
+      const { root, uris } = await files(args, signal);
+      const matches: Array<{ path: string; line: number; text: string }> = [];
+      let skipped = 0;
+      let budgetReached = false;
+      for (const uri of uris.slice(0, 40)) {
+        active(signal);
+        const relative = path.relative(root.fsPath, uri.fsPath).replace(/\\/g, "/");
+        let document: vscode.TextDocument;
+        try { document = await documentFor({ ...args, path: relative }, signal, "search_text"); } catch (error) { active(signal); skipped++; continue; }
+        const lines = document.getText().split(/\r?\n/);
+        for (let index = 0; index < lines.length && matches.length < 50; index++) if (lines[index].includes(args.query)) {
+          const match = { path: relative, line: index + 1, text: lines[index].slice(0, 160) };
+          if (JSON.stringify([...matches, match]).length > 12_000) { budgetReached = true; break; }
+          matches.push(match);
+        }
+        if (matches.length === 50 || budgetReached) break;
+      }
+      return JSON.stringify({ matches, skipped, truncated: budgetReached || uris.length > 40 || matches.length === 50 });
+    }),
+    definition("replace_text", "Replace a unique exact text match in an existing workspace file. Each edit requires user approval; leaves an unsaved editor change.", { path: { type: "string" }, oldText: { type: "string" }, newText: { type: "string" } }, ["path", "oldText", "newText"], async (args, signal) => {
+      if (typeof args.oldText !== "string" || !args.oldText || typeof args.newText !== "string" || args.oldText.length + args.newText.length > 16_000) throw new Error("Provide a non-empty unique match and a bounded replacement.");
+      const document = await documentFor(args, signal, "replace_text"); const text = document.getText(); const version = document.version;
+      const offset = text.indexOf(args.oldText);
+      if (offset < 0 || text.indexOf(args.oldText, offset + 1) >= 0) throw new Error("The old text must match exactly once.");
+      const expected = text.slice(0, offset) + args.newText + text.slice(offset + args.oldText.length);
+      if (Buffer.byteLength(expected, "utf8") > 160_000) throw new Error("Edited file would exceed 160 KB.");
+      const location = await physicalPath(args, args.path, signal);
+      const approval = await approve("replace_text", `Apply Agent edit to ${String(args.path)}?`, `Replace:\n${args.oldText.slice(0, 2000)}\n\nWith:\n${args.newText.slice(0, 2000)}`, "Apply edit", signal, location.outside ? "outside-workspace" : "workspace");
+      active(signal);
+      if (approval !== "Apply edit") throw new Error("Edit declined by the user.");
+      if ((await resolve(args, signal, "replace_text")).fsPath !== document.uri.fsPath) throw new Error("File path changed after approval.");
+      if (document.version !== version || document.getText() !== text) throw new Error("File changed after the edit was proposed. Request a new edit.");
+      active(signal);
+      const edit = new host.WorkspaceEdit(); edit.replace(document.uri, new host.Range(document.positionAt(offset), document.positionAt(offset + args.oldText.length)), args.newText);
+      if (!await host.workspace.applyEdit(edit)) throw new Error("VS Code could not apply the edit.");
+      const observed = document.getText();
+      const difference = observed === expected ? diffLines(text, observed, { maxEditLength: 2048, timeout: 50 }) : undefined;
+      const change: ApiChatEditChange = { path: filesystemToolPath(args.path), workspace: Number(args.workspace ?? 0), appliedAt: new Date().toISOString(),
+        beforeHash: createHash("sha256").update(text).digest("hex"), afterHash: createHash("sha256").update(observed).digest("hex"), saved: false,
+        attribution: difference ? "exact" : "unknown",
+        ...(difference ? { added: difference.reduce((total, part) => total + (part.added ? part.count || 0 : 0), 0), removed: difference.reduce((total, part) => total + (part.removed ? part.count || 0 : 0), 0) } : {}) };
+      onEdit?.(change);
+      return JSON.stringify({ ...change, applied: true });
+    }),
+    definition("save_file", "Save one existing workspace text document after separate approval. expectedHash must be the SHA-256 afterHash returned by replace_text. Rejects changed content; saving may run editor save actions.", { path: { type: "string" }, expectedHash: { type: "string", pattern: "^[a-f0-9]{64}$" } }, ["path", "expectedHash"], async (args, signal) => {
+      if (typeof args.expectedHash !== "string" || !/^[a-f0-9]{64}$/.test(args.expectedHash)) throw new Error("Provide the exact SHA-256 of the edited document.");
+      const document = await documentFor(args, signal, "save_file");
+      const text = document.getText(); const version = document.version;
+      if (createHash("sha256").update(text).digest("hex") !== args.expectedHash) throw new Error("Document content changed; inspect it before requesting a new save.");
+      const location = await physicalPath(args, args.path, signal);
+      const approval = await approve("save_file", `Save Agent edit to ${String(args.path)}?`, `Expected SHA-256: ${args.expectedHash}\n\nWrites the current document to disk and may run configured save actions.`, "Save file", signal, location.outside ? "outside-workspace" : "workspace");
+      active(signal);
+      if (approval !== "Save file") throw new Error("Save declined by the user.");
+      if ((await resolve(args, signal, "save_file")).fsPath !== document.uri.fsPath) throw new Error("File path changed after approval.");
+      if (document.version !== version || document.getText() !== text) throw new Error("Document changed after the save was proposed. Request a new save.");
+      if (!await document.save()) throw new Error("VS Code could not save the document.");
+      active(signal);
+      const disk = await abortable(fs.promises.readFile(document.uri.fsPath), signal);
+      const hash = createHash("sha256").update(disk).digest("hex");
+      if (hash !== createHash("sha256").update(document.getText()).digest("hex")) throw new Error("Disk content differs from the document after saving. Inspect before continuing.");
+      return JSON.stringify({ path: filesystemToolPath(args.path), saved: true, afterHash: hash, saveActionsChangedContent: hash !== args.expectedHash });
+    }),
+  ];
+  return tools.filter(tool => enabled.includes(tool.name));
+}

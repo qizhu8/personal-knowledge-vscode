@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { canonicalJson, compileWorkflowDefinitionV1 } from "../workflow-contracts";
+import { canonicalJson, compileWorkflowDefinitionV1 } from "./workflow-contracts";
 import { ProjectRecord, RecipeKnowledgeBinding, RecipeRecord } from "./project-model";
 import { compileRecipeMethodologyV1 } from "./methodology-model";
 

@@ -1,5 +1,5 @@
 const assert = require("assert");
-const { hasNewerMcpRuntime, newerMcpRuntimeComponents } = require("../dist/mcp-version-policy");
+const { hasNewerMcpRuntime, newerMcpRuntimeComponents } = require("../dist/mcp/mcp-version-policy");
 
 const bundled = {
   unified: "2.13.0",

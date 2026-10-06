@@ -401,12 +401,14 @@ function githubSyncCards() {
 
 function renderGitHubSyncPane() {
   const detail = document.getElementById('detail');
+  const view = captureRefreshView(detail, ['.sub-picker-items','.github-sync-picker']);
   const previousScrollTop = detail?.scrollTop || 0;
   const status = githubSyncRefreshError ? `Content status unavailable: ${esc(githubSyncRefreshError)}` : !githubSyncUpdatedAt ? 'Reading local settings…' : githubSyncData.fingerprintsDeferred ? `${githubSyncData.targets.length} configured targets · Checking content status…` : `${githubSyncData.targets.length} configured targets`;
   detail.innerHTML = `<div class="sub-dashboard github-sync-dashboard"><header class="sub-head"><div><h2>GitHub Sync</h2><p role="${githubSyncRefreshError ? 'alert' : 'status'}">${status}</p></div><div class="project-header-actions"><button class="pk-button" onclick="ask('openGitHubSyncDiagnosticLog',{})">${uiIcon('file-text','Open Sync Diagnostic Log')}</button><button class="recipe-icon-button" title="Refresh GitHub Sync" aria-label="Refresh GitHub Sync" onclick="ask('githubSyncState',{})"><span class="codicon codicon-refresh"></span></button><button class="pk-button primary" onclick="githubSyncNew()">${uiIcon('add','Target')}</button></div></header><section class="sub-band"><div class="pk-list sub-broker-list">${githubSyncCards()}</div></section></div>`;
   detail.scrollTop = Math.min(previousScrollTop, Math.max(0, detail.scrollHeight - detail.clientHeight));
   githubSyncRenderAuthenticationMethod();
   githubSyncSyncFolderStates();
+  restoreRefreshView(detail, view);
 }
 
 function githubSyncNew() {
@@ -519,9 +521,9 @@ function githubSyncOnRuntimeState(data) {
     githubSyncForcePending.delete(data.targetId);
     githubSyncPendingAfter.delete(data.targetId);
   }
-  if (state.tab === 'githubSync') renderGitHubSyncPane();
+  if (state.tab === 'githubSync') { githubSyncCaptureDraft(); renderGitHubSyncPane(); }
 }
-function githubSyncOnRunQueued(data) { if (!data?.targetId) return; if (!data.queued) { githubSyncForcePending.delete(data.targetId); githubSyncPendingAfter.delete(data.targetId); } if (state.tab === 'githubSync') renderGitHubSyncPane(); vscode.postMessage({ command:'toast', text:data.queued ? 'GitHub sync queued' : 'GitHub sync is already queued or running' }); }
+function githubSyncOnRunQueued(data) { if (!data?.targetId) return; if (!data.queued) { githubSyncForcePending.delete(data.targetId); githubSyncPendingAfter.delete(data.targetId); } if (state.tab === 'githubSync') { githubSyncCaptureDraft(); renderGitHubSyncPane(); } vscode.postMessage({ command:'toast', text:data.queued ? 'GitHub sync queued' : 'GitHub sync is already queued or running' }); }
 function githubSyncDelete(targetId, button) { const target = githubSyncData.targets.find(item => item.id === targetId); pkModal({ title:'Delete GitHub Target?', message:`${target?.name || targetId}\n\nStops future pull/push operations and removes the local target configuration immediately. Local checkout cleanup continues in the background if Git still holds Windows file handles. The GitHub repository and Knowledge Root content are not deleted. An already-started push may still finish.`, okLabel:'Delete Target', danger:true, onOk:()=>ask('githubSyncDelete',{targetId},button) }); }
 function githubSyncForce(targetId, button) {
   if (githubSyncForcePending.has(targetId) || pendingActionButtons.has('githubSyncRun')) return;

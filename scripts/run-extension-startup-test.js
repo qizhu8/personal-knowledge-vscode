@@ -24,7 +24,7 @@ async function main() {
   const workspaceDir = path.join(testRoot, "workspace");
   const storeDir = path.join(testRoot, "knowledge");
   const settingsDir = path.join(userDataDir, "User");
-  const logPath = path.join(userDataDir, "User", "globalStorage", "uone.personal-knowledge", "personal-knowledge.log");
+  const logPath = path.join(userDataDir, "User", "globalStorage", "uone.personal-knowledge", "diagnostics", "extension");
 
   fs.mkdirSync(settingsDir, { recursive: true });
   fs.mkdirSync(workspaceDir, { recursive: true });
@@ -65,7 +65,7 @@ async function main() {
         "personalKnowledge.logLevel": "debug",
       }, null, 2));
       if (scenario.malformed) injectMalformedState(userDataDir);
-      fs.rmSync(logPath, { force: true });
+      fs.rmSync(logPath, { recursive: true, force: true });
       const resultPath = path.join(testRoot, `startup-result-${scenario.name}.json`);
       await runTests({
         version: "1.90.0",
@@ -109,6 +109,13 @@ async function main() {
       scenarios: scenarioTimings,
       durationMs: Date.now() - suiteStartedAt,
     })}`);
+  } catch (error) {
+    if (fs.existsSync(logPath)) {
+      const lines = fs.readdirSync(logPath).filter(name => name.endsWith(".jsonl")).sort()
+        .flatMap(name => fs.readFileSync(path.join(logPath, name), "utf8").split(/\r?\n/));
+      console.error("[extension-startup] failure log:\n" + lines.slice(-80).join("\n"));
+    }
+    throw error;
   } finally {
     clearInterval(heartbeat);
     virtualDisplay?.process.kill("SIGTERM");

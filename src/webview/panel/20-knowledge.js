@@ -1494,6 +1494,11 @@ function detailPathHtml(data) {
 }
 
 function renderDetail(data) {
+  if (data?.type === 'script' && currentDetail?.type === 'script'
+      && data.path === currentDetail.path && document.getElementById('se-script')) {
+    currentDetail = data;
+    return;
+  }
   const promptViewState = data?.type === 'prompt' && promptIdentityKey(data) === promptIdentityKey()
     ? promptCaptureWorkbenchState()
     : null;
@@ -1804,10 +1809,15 @@ function startEditScript() {
     ${detailPathHtml(d)}
     <textarea id="se-script" style="width:100%;height:calc(100vh - 200px);background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:10px;font-size:12px;font-family:var(--vscode-editor-font-family);resize:none;outline:none;line-height:1.5">${esc(d.content||'')}</textarea>
     <div class="form-actions" style="margin-top:8px">
-      <button class="tbtn" onclick="ask('detail',{type:'script',key:currentDetail.path})">Cancel</button>
+      <button class="tbtn" onclick="cancelScriptEdit()">Cancel</button>
       <button class="tbtn" style="border-color:var(--accent)" onclick="submitScriptEdit()">${uiIcon('save', 'Save')}</button>
     </div>`;
   document.getElementById('se-script').focus();
+}
+
+function cancelScriptEdit() {
+  document.getElementById('se-script')?.remove();
+  ask('detail', currentDetailRequest || { type:'script', key:currentDetail.path });
 }
 
 function submitScriptEdit() {

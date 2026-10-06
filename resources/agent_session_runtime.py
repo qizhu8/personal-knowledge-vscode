@@ -5,6 +5,7 @@ import base64
 import datetime
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -17,7 +18,7 @@ from fastmcp import Context
 from fastmcp.server.middleware import Middleware
 
 
-AGENT_SESSION_SCHEMA_VERSION = "1.7.8"
+AGENT_SESSION_SCHEMA_VERSION = "1.8.0"
 SESSION_SCHEMA = "pkm.agent.session/v1"
 SESSION_LEASE_SECONDS = 300
 SNAPSHOT_SCHEMA = "pkm.agent.snapshot/v1"
@@ -104,6 +105,59 @@ def _paths(store, session_id):
 
 def _active_path(store, transport_key):
     return store / ".pkm" / "state" / "agent-sessions" / "active" / (transport_key + ".json")
+
+
+def _host_identity(host_session_id, host_kind="copilot"):
+    chat = str(host_session_id or "").strip()
+    kind = str(host_kind or "copilot").strip().lower()
+    if len(chat) > 256:
+        raise ValueError("host_session_id must be at most 256 characters.")
+    if not re.fullmatch(r"[a-z][a-z0-9._-]{0,63}", kind):
+        raise ValueError("host_kind must be a lowercase host identifier of at most 64 characters.")
+    return chat, kind
+
+
+def _ensure_session_group(store, session):
+    """Keep Session IDs as Task IDs; group membership is derived, not a second task list."""
+    chat, kind = _host_identity(session.get("hostSessionId"), session.get("hostKind", "copilot"))
+    session["hostKind"] = kind
+    session["taskId"] = session["sessionId"]
+    if not chat:
+        session["groupId"] = ""
+        return
+    group_id = "agent_group_" + hashlib.sha256(_json([kind, chat]).encode("utf-8")).hexdigest()
+    group_path = store / ".pkm" / "state" / "agent-groups" / (group_id + ".json")
+    with _file_lock(group_path.with_suffix(".lock")):
+        if group_path.exists():
+            group = json.loads(group_path.read_text(encoding="utf-8"))
+            if (group.get("schema") != "pkm.agent.group/v1" or group.get("groupId") != group_id
+                    or group.get("hostKind") != kind or group.get("hostSessionId") != chat):
+                raise ValueError("Agent Group identity conflicts with its host chat binding.")
+        else:
+            _atomic_write(group_path, {
+                "schema": "pkm.agent.group/v1", "groupId": group_id,
+                "hostKind": kind, "hostSessionId": chat, "createdAt": _now(),
+            })
+    session["hostSessionId"] = chat
+    session["groupId"] = group_id
+
+
+def _migrate_session_groups(store):
+    for area in ("agent-sessions", "agent-sessions-trash"):
+        for path in (store / ".pkm" / "state" / area).glob("*.json"):
+            try:
+                with _file_lock(path.with_suffix(".lock")):
+                    if not path.exists():
+                        continue
+                    session = json.loads(path.read_text(encoding="utf-8"))
+                    if session.get("schema") != SESSION_SCHEMA or not session.get("sessionId"):
+                        continue
+                    previous = _json(session)
+                    _ensure_session_group(store, session)
+                    if _json(session) != previous:
+                        _atomic_write(path, session)
+            except (OSError, ValueError, RuntimeError) as error:
+                logging.getLogger(__name__).warning("Agent Group migration failed for %s: %s", path.name, error)
 
 
 def _projected_session_status(session):
@@ -194,6 +248,9 @@ def _compact_session(session):
         "task": str(session.get("task") or ""),
         "projectId": str(session.get("projectId") or ""),
         "hostSessionId": str(session.get("hostSessionId") or ""),
+        "hostKind": str(session.get("hostKind") or "copilot"),
+        "groupId": str(session.get("groupId") or ""),
+        "taskId": str(session.get("sessionId") or ""),
         "traversalStrategy": str(session.get("traversalStrategy") or ""),
         "agent": session.get("agent") or {},
         "currentTodo": _compact_todo(current),
@@ -585,6 +642,7 @@ class AgentSessionMiddleware(Middleware):
 
 def register_agent_session_tools(mcp, store):
     store = Path(store)
+    _migrate_session_groups(store)
 
     @mcp.tool(annotations={"readOnlyHint": True})
     def agent_session_capabilities() -> dict:
@@ -617,7 +675,9 @@ def register_agent_session_tools(mcp, store):
                       "agent_session_snapshot_recover", "agent_session_todo_append",
                       "agent_session_todo_replan", "agent_session_todo_next", "agent_session_todo_report",
                       "agent_session_stop", "agent_session_end"],
-            "host_session_grouping": "Pass the current host chat/session ID to agent_session_start when available so related managed tasks are grouped together.",
+            "host_session_grouping": "Pass the current host chat/session ID and host_kind to agent_session_start. One durable Group is reused per host/chat; each Session is a Task retaining its Todos and Recipes. Missing chat IDs remain explicitly unlinked, never merged.",
+            "group_schema": "pkm.agent.group/v1",
+            "context_isolation": "Grouping does not isolate or clear the host model context.",
             "recipe_progress": "Recipe runs started after registration are projected as a live task graph.",
             "todo_queue": {
                 "policy": "FIFO by default; explicit user redirects may atomically pause current work and insert an interrupt action before it.",
@@ -633,6 +693,7 @@ def register_agent_session_tools(mcp, store):
     def agent_session_start(task: str, command_id: str, project_id: str = "",
                             agent_name: str = "GitHub Copilot", host_session_id: str = "",
                             traversal_strategy: str = "",
+                            host_kind: str = "copilot",
                             ctx: Context = None) -> dict:
         """Start goal and Todo tracking before multi-step investigation or execution.
 
@@ -643,7 +704,7 @@ def register_agent_session_tools(mcp, store):
             raise ValueError("MCP request context is required.")
         task = str(task or "").strip()
         command_id = str(command_id or "").strip()
-        host_session_id = str(host_session_id or "").strip()
+        host_session_id, host_kind = _host_identity(host_session_id, host_kind)
         traversal_strategy = str(traversal_strategy or "").strip().lower()
         traversal_strategy = {"bfs": "breadth-first", "dfs": "depth-first"}.get(
             traversal_strategy, traversal_strategy)
@@ -671,6 +732,7 @@ def register_agent_session_tools(mcp, store):
                 if (session.get("task") != task
                     or session.get("projectId", "") != str(project_id or "")
                     or session.get("hostSessionId", "") != host_session_id
+                    or session.get("hostKind", "copilot") != host_kind
                     or session.get("traversalStrategy", "") != traversal_strategy):
                     raise ValueError("command_id was reused with different Agent Session parameters.")
             else:
@@ -682,6 +744,7 @@ def register_agent_session_tools(mcp, store):
                     "task": task,
                     "projectId": str(project_id or ""),
                     "hostSessionId": host_session_id,
+                    "hostKind": host_kind,
                     "traversalStrategy": traversal_strategy,
                     "agent": {"name": str(agent_name or "GitHub Copilot"), "product": "GitHub Copilot"},
                     "recipeRunIds": [],
@@ -692,6 +755,7 @@ def register_agent_session_tools(mcp, store):
                     "createdAt": now,
                     "updatedAt": now,
                 }
+            _ensure_session_group(store, session)
             _touch_liveness(session, transport_key)
             _atomic_write(path, session)
         _atomic_write(_active_path(store, transport_key), {
@@ -701,6 +765,8 @@ def register_agent_session_tools(mcp, store):
         return {"ok": True, "schema": SESSION_SCHEMA, "session_id": session_id,
             "status": session["status"], "task": session["task"],
             "host_session_id": session.get("hostSessionId", ""),
+            "host_kind": session["hostKind"], "group_id": session["groupId"],
+            "task_id": session_id, "group_binding": "linked" if session["groupId"] else "unlinked",
             "traversal_strategy": session.get("traversalStrategy", "")}
 
     @mcp.tool(annotations={"readOnlyHint": True})
@@ -794,7 +860,8 @@ def register_agent_session_tools(mcp, store):
                 "resume_instruction": "Call agent_session_resume, then recipe_run_get for each non-terminal Recipe run."}
 
     @mcp.tool()
-    def agent_session_resume(session_id: str, ctx: Context = None) -> dict:
+    def agent_session_resume(session_id: str, host_session_id: str = "",
+                             host_kind: str = "copilot", ctx: Context = None) -> dict:
         """Adopt a durable managed Agent Session from a new MCP transport and continue its existing Recipe runs."""
         if ctx is None:
             raise ValueError("MCP request context is required.")
@@ -807,6 +874,13 @@ def register_agent_session_tools(mcp, store):
             session = _load_session(store, session_id)
             if session.get("status") == "completed":
                 raise ValueError("Completed Agent Sessions are immutable and cannot be resumed.")
+            if host_session_id:
+                chat, kind = _host_identity(host_session_id, host_kind)
+                if session.get("hostSessionId") and (
+                        session["hostSessionId"] != chat or session.get("hostKind", "copilot") != kind):
+                    raise ValueError("Task belongs to another chat Group; recover a Snapshot for a new chat.")
+                session["hostSessionId"], session["hostKind"] = chat, kind
+            _ensure_session_group(store, session)
             session["status"] = "running"
             session.pop("stoppedAt", None)
             session.pop("stopReason", None)
@@ -821,6 +895,7 @@ def register_agent_session_tools(mcp, store):
         })
         checkpoints = session.get("checkpoints") or []
         return {"ok": True, "managed": True, "session_id": session_id,
+                "task_id": session_id, "group_id": session["groupId"],
                 "latest_checkpoint": checkpoints[-1] if checkpoints else None,
                 "recipe_run_ids": session.get("recipeRunIds") or []}
 
@@ -931,6 +1006,7 @@ def register_agent_session_tools(mcp, store):
 
     @mcp.tool()
     def agent_session_snapshot_recover(magic_code: str, host_session_id: str = "",
+                                       host_kind: str = "copilot",
                                        ctx: Context = None) -> dict:
         """Recover a pasted Agent Snapshot into a new independent managed Session.
 
@@ -940,6 +1016,7 @@ def register_agent_session_tools(mcp, store):
         magic_code = _normalize_snapshot_magic_code(magic_code)
         if ctx is None:
             raise ValueError("MCP request context is required.")
+        host_session_id, host_kind = _host_identity(host_session_id, host_kind)
         snapshot = _load_snapshot_by_magic(store, magic_code)
         transport_key = _transport_key(ctx)
         active_session_id = _active_session_id(store, transport_key)
@@ -994,6 +1071,7 @@ def register_agent_session_tools(mcp, store):
             "sessionId": session_id,
             "status": "running",
             "hostSessionId": str(host_session_id or ""),
+            "hostKind": host_kind,
             "recipeRunIds": [run_id_map[run_id] for run_id in source_session.get("recipeRunIds") or []
                              if run_id in run_id_map],
             "todoCommandReceipts": {},
@@ -1008,6 +1086,7 @@ def register_agent_session_tools(mcp, store):
             "updatedAt": now,
             "recoveredAt": now,
         })
+        _ensure_session_group(store, session)
         _touch_liveness(session, transport_key)
         for todo in session.get("todos") or []:
             if todo.get("status") in {"running", "paused"}:
@@ -1060,6 +1139,7 @@ def register_agent_session_tools(mcp, store):
             "managed": True,
             "session_id": session_id,
             "snapshot_id": snapshot["snapshotId"],
+            "task_id": session_id, "group_id": session["groupId"],
             "latest_checkpoint": checkpoints[-1] if checkpoints else None,
             "recipe_run_ids": session["recipeRunIds"],
             "recovery_todo_created": continuation_todo is not None,
@@ -1437,6 +1517,7 @@ def register_agent_session_tools(mcp, store):
             **source_session,
             "schema": SESSION_SCHEMA, "sessionId": session_id, "status": "checkpointed",
             "task": str(source_session.get("task") or "Imported Agent checkpoint"),
+            "hostSessionId": "", "hostKind": "copilot",
             "projectId": str(source_session.get("projectId") or ""),
             "agent": source_session.get("agent") or {"name": "Imported Agent", "product": "PKM Share"},
             "recipeRunIds": list(run_id_map.values()), "checkpoints": [checkpoint],
@@ -1452,6 +1533,7 @@ def register_agent_session_tools(mcp, store):
                 todo["recipeRunIds"] = [run_id_map[run_id] for run_id in todo["recipeRunIds"]
                                         if run_id in run_id_map]
         session_path, _ = _paths(store, session_id)
+        _ensure_session_group(store, session)
         _atomic_write(session_path, session)
         return {"ok": True, "session_id": session_id, "status": "checkpointed",
                 "recipe_run_ids": session["recipeRunIds"],

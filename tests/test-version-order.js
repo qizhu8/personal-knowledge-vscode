@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 const assert = require("assert");
-const { compareVersionOrder } = require("../dist/version-order.js");
+const { compareVersionOrder } = require("../dist/runtime/version-order.js");
 
 assert.strictEqual(compareVersionOrder("2.7.10", "2.7.9"), 1, "semantic versions must not be compared as decimals");
 assert.strictEqual(compareVersionOrder("2.7.9", "2.7.10"), -1);

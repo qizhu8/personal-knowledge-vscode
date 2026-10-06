@@ -11,7 +11,7 @@ const {
   normalizeGitHubSyncTarget,
   restoreGitHubRemoteFiles,
   syncGitHubTarget,
-} = require("../dist/github-sync.js");
+} = require("../dist/sync/github-sync.js");
 
 const run = (cwd, args) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 const skill = (name, body) => `---\nname: ${JSON.stringify(name)}\ndescription: "test"\n---\n# ${name}\n\n${body}\n`;

@@ -592,6 +592,7 @@ let ctxPinned = false; // pinned state of the note under right-click
 let notePinnedFolders = []; // note folder paths pinned to the top of their level
 let currentDetail = null; // current detail item for edit/delete actions
 let currentDetailRequest = null; // authoritative {type,key}, including packageFile/prompt variants
+let detailRequestSequence = 0;
 let catExpanded = {}; // expanded state per folder key (default: collapsed)
 let pendingTreeRefresh = null; // identifies disk changes whose category path should be revealed
 let pendingEditSlug = null; // note slug awaiting detail load for edit
@@ -793,6 +794,8 @@ window.addEventListener('message', e => {
     renderSubscribedGroups(document.getElementById('item-list'));
   }
   else if (command === 'detail') {
+    if (e.data.detailRequestId !== undefined
+      && (e.data.detailRequestId !== detailRequestSequence || e.data.detailTab !== state.tab || !currentDetailRequest)) return;
     if (pendingEditSlug && data?.type === 'note' && data.slug === pendingEditSlug) {
       pendingEditSlug = null; editNote(data);
     } else {
@@ -973,10 +976,10 @@ window.addEventListener('message', e => {
   else if (command === 'projectState') { projectOnState(data); }
   else if (command === 'projectStateChanged') {
     projectSnapshotDirty = true;
-    const scope = String(data?.scope || 'all');
-    const relevant = state.tab === 'recipes' ? scope === 'recipes' || scope === 'all'
+    const scopes = Array.isArray(data?.scopes) ? data.scopes : [String(data?.scope || 'all')];
+    const relevant = scopes.some(scope => state.tab === 'recipes' ? scope === 'recipes' || scope === 'all'
       : ['agentSessions','agentSnapshots'].includes(state.tab) ? ['agentSessions','recipeRuns','all'].includes(scope)
-      : state.tab === 'projects' && (scope === 'projects' || scope === 'all');
+      : state.tab === 'projects' && (scope === 'projects' || scope === 'all'));
     if (relevant) ask('projectState', {});
   }
   else if (command === 'projectResult') { projectOnResult(data); }
@@ -1122,7 +1125,10 @@ window.addEventListener('message', e => {
   else if (command === 'scriptSaved') {
     if (data.error) { alert('Save failed: ' + data.error); return; }
     if (data.cancelled) return; // user declined confirmation — stay in editor
-    if (data.ok && data.path) ask('detail', { type: 'script', key: data.path }); // reload saved script
+    if (data.ok && data.path && currentDetail?.type === 'script' && currentDetail.path === data.path) {
+      document.getElementById('se-script')?.remove();
+      ask('detail', currentDetailRequest || { type: 'script', key: data.path });
+    }
   }
   else if (command === 'metadataUpdateResult') {
     if (!data.ok) pkModal({ title: 'Duplicate name', message: data.error || 'Metadata could not be saved.', okLabel: 'OK' });
@@ -1176,6 +1182,10 @@ window.addEventListener('message', e => {
 
 function ask(command, payload, button, silent = false) {
   if (!beginAction(command, button || window.event?.currentTarget)) return;
+  if (command === 'detail') {
+    currentDetailRequest = { type:payload.type, key:payload.key };
+    payload = { ...payload, detailRequestId:++detailRequestSequence, detailTab:state.tab };
+  }
   const knowledgeLoadingLabels = {
     skills: 'Opening the spellbook…',
     notes: 'Opening the enchanted notebook…',
@@ -1191,6 +1201,52 @@ function ask(command, payload, button, silent = false) {
     command, ...payload, ...(silent ? { silent:true } : {}),
     profileRequestId, profileSurface:state.tab, profileWorkspace:state.workspace,
   });
+}
+
+function captureRefreshView(root, selectors = []) {
+  const scrolls = [{ selector:null, index:0, left:root?.scrollLeft || 0, top:root?.scrollTop || 0 }];
+  for (const selector of selectors) [...(root?.querySelectorAll?.(selector) || [])].forEach((element, index) => {
+    scrolls.push({ selector, index, left:element.scrollLeft, top:element.scrollTop });
+  });
+  const active = document.activeElement;
+  const focus = active?.id && root?.contains?.(active)
+    ? { id:active.id, start:active.selectionStart, end:active.selectionEnd, direction:active.selectionDirection } : null;
+  return { scrolls, focus };
+}
+
+function restoreRefreshView(root, view) {
+  if (!root || !view) return;
+  const focus = view.focus && document.getElementById(view.focus.id);
+  if (focus && root.contains?.(focus)) {
+    focus.focus({ preventScroll:true });
+    if (Number.isInteger(view.focus.start) && typeof focus.setSelectionRange === 'function') {
+      focus.setSelectionRange(view.focus.start, view.focus.end, view.focus.direction || 'none');
+    }
+  }
+  for (const saved of view.scrolls) {
+    const element = saved.selector ? root.querySelectorAll(saved.selector)[saved.index] : root;
+    if (element) { element.scrollLeft = saved.left; element.scrollTop = saved.top; }
+  }
+}
+
+function captureRefreshInputs(root, selector, dirtyOnly = false) {
+  return [...(root?.querySelectorAll?.(selector) || [])].filter(input => {
+    if (!dirtyOnly) return true;
+    if (input.type === 'checkbox' || input.type === 'radio') return input.checked !== input.defaultChecked;
+    const baseline = input.tagName === 'SELECT'
+      ? ([...input.options].find(option => option.defaultSelected) || input.options[0])?.value : input.defaultValue;
+    return input.value !== baseline;
+  }).map(input => ({ id:input.id, value:input.value, checked:input.checked }));
+}
+
+function restoreRefreshInputs(root, inputs) {
+  for (const saved of inputs) {
+    const input = document.getElementById(saved.id);
+    if (!input || !root.contains(input)) continue;
+    if (input.tagName === 'SELECT' && ![...input.options].some(option => option.value === saved.value)) continue;
+    input.value = saved.value;
+    if (typeof saved.checked === 'boolean') input.checked = saved.checked;
+  }
 }
 
 function updateLoadingProgress(progress = {}) {

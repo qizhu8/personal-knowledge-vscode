@@ -4,10 +4,10 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { createHash } = require("crypto");
-const githubSyncSource = fs.readFileSync(path.join(__dirname, "..", "src", "github-sync.ts"), "utf8");
+const githubSyncSource = fs.readFileSync(path.join(__dirname, "..", "src", "sync/github-sync.ts"), "utf8");
 const { execFileSync } = require("child_process");
-const { storeGitHubSyncConflict } = require("../dist/github-sync-conflicts.js");
-const scriptStorage = require("../dist/storage.js");
+const { storeGitHubSyncConflict } = require("../dist/sync/github-sync-conflicts.js");
+const scriptStorage = require("../dist/knowledge/storage.js");
 const {
   deterministicTextMerge,
   fetchGitHubRemoteSnapshot,
@@ -20,7 +20,7 @@ const {
   readGitHubRemoteFilesForSubscription,
   restoreGitHubRemoteFiles,
   syncGitHubTarget
-} = require("../dist/github-sync.js");
+} = require("../dist/sync/github-sync.js");
 
 const run = (cwd, args) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 const skill = (name, body) => `---\nname: ${JSON.stringify(name)}\ndescription: \"test\"\n---\n# ${name}\n\n${body}\n`;

@@ -2,7 +2,7 @@
 // Usage: node scripts/seed-papers.js [storePath]   (default: ~/uone-knowledge)
 const os = require("os");
 const path = require("path");
-const store = require(path.join(__dirname, "..", "dist", "filestore.js"));
+const store = require(path.join(__dirname, "..", "dist", "knowledge/filestore.js"));
 
 const STORE = process.argv[2] || path.join(os.homedir(), "uone-knowledge");
 store.setStorePath(STORE);

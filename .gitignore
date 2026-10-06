@@ -8,3 +8,5 @@ __pycache__/
 .vscode-test/
 coverage/
 .vscode/mcp.json
+/next-step/
+/retrieval-solutions/

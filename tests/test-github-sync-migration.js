@@ -7,7 +7,7 @@ const {
   GitHubPublicationMigration,
   githubSyncMigrationCanonicalFiles,
   normalizeGitHubSyncTarget,
-} = require("../dist/github-sync.js");
+} = require("../dist/sync/github-sync.js");
 
 const manifest2 = JSON.stringify({
   schema: 2,

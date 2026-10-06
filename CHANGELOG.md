@@ -5,6 +5,13 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Added native-sidebar PKM Chat with explicit model selection, per-Chat context and permissions, optional Tasks, document access, tool execution, and bounded diagnostics. Unavailable provider credits remain unknown rather than zero.
+- Added Chat folders, Ungroup, drag/drop, Trash, restoration and bulk permanent deletion. Empty initialization and deletion no longer create replacement Chats; desktop/mobile controller-backed E2E tests cover cancellation and reopening.
+- Added Chat-owned Memory and typed retrieval receipts with Top 10/20 Sankey inspection, selected-context links, and per-method ranking weights.
+- Preserved stopped Session Group membership and added honest recovery grouping for legacy Sessions without inventing historical Chats.
+- Organized 94 root TypeScript modules into domain directories, retained generated runtime compatibility entries, and added build ownership and runtime-path checks.
+- Added 50 core Chat UI translations across 11 languages, live language switching and Arabic RTL isolation. User content and English Token/Credit reporting are not translated; fixed locale cache invalidation across resource roots.
+
 ## [3.2.13] - 2026-10-05
 
 - Restored full Agent Session Trash inspection by mouse and keyboard, including Todo details, summaries, checkpoints, and real Recipe run nodes without restoring or modifying the Session.

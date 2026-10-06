@@ -1,0 +1,258 @@
+import { createServer, Server, IncomingMessage, ServerResponse } from "http";
+import { networkInterfaces } from "os";
+import * as path from "path";
+import { randomBytes } from "crypto";
+import { getStorePath, skillList, skillGet, noteExport, paperList, paperGet } from "../knowledge/filestore";
+import { promptExport, scriptExport, packageExport } from "../knowledge/storage";
+import { serverExport } from "../servers/servers";
+import { compileWorkflowDefinitionV1 } from "../workflows/workflow-contracts";
+import { RecipeRecord } from "../workflows/project-model";
+import { ProjectStore } from "../workflows/project-store";
+import { MarkdownAssetArea, referencedMarkdownAssets } from "../knowledge/markdown-assets";
+
+export interface SyncSelection {
+  [contentType: string]: string[];
+  skills: string[];
+  notes: string[];
+  papers: string[];
+  prompts: string[];
+  scripts: string[];
+  packages: string[];
+  servers: string[];
+  recipes: string[];
+}
+
+export interface SyncSession {
+  id:           string;
+  username:     string;
+  password:     string;
+  url:          string;
+  expires:      Date;
+  enabled:      boolean;
+  contentTypes: string[];
+  selected: SyncSelection;
+  created:      Date;
+}
+
+class SyncServer {
+  private server:   Server | null = null;
+  private sessions: Map<string, SyncSession> = new Map(); // keyed by username
+  private _port     = 0;
+  private sweepTimer: NodeJS.Timeout | undefined;
+
+  get port(): number { return this._port; }
+  get isRunning(): boolean { return !!this.server; }
+
+  activeSessions(): SyncSession[] {
+    const now = new Date();
+    return [...this.sessions.values()].filter(s => s.enabled && s.expires > now);
+  }
+
+  allSessions(): SyncSession[] {
+    return [...this.sessions.values()];
+  }
+
+  async ensureStarted(port: number): Promise<void> {
+    if (this.server) return;
+    const candidate = createServer((req, res) => this.handle(req, res));
+    await new Promise<void>((resolve, reject) => {
+      candidate.listen(port, "0.0.0.0", () => {
+        this.server = candidate;
+        this._port = (candidate.address() as any).port;
+        resolve();
+      });
+      candidate.once("error", error => { try { candidate.close(); } catch { /* not listening */ } reject(error); });
+    });
+    if (!this.sweepTimer) {
+      this.sweepTimer = setInterval(() => {
+        this.sweep();
+        if (!this.activeSessions().length && this.server) {
+          this.server.close();
+          this.server = null;
+          this._port = 0;
+          if (this.sweepTimer) clearInterval(this.sweepTimer);
+          this.sweepTimer = undefined;
+        }
+      }, 2 * 60_000);
+      this.sweepTimer.unref();
+    }
+  }
+
+  createSession(selected: SyncSession["selected"], contentTypes: string[], expiresMinutes: number): SyncSession {
+    const username = randomBytes(4).toString("hex");
+    const password = randomBytes(10).toString("hex");
+    const now      = new Date();
+    const expires  = new Date(Date.now() + expiresMinutes * 60_000);
+    const ip       = SyncServer.localIp();
+    const session: SyncSession = {
+      id: randomBytes(4).toString("hex"),
+      username, password,
+      url: `http://${ip}:${this._port}`,
+      expires, enabled: true,
+      contentTypes,
+      selected,
+      created: now,
+    };
+    this.sessions.set(username, session);
+    // Auto-disable on expiry
+    setTimeout(() => {
+      const s = this.sessions.get(username);
+      if (s) s.enabled = false;
+    }, expiresMinutes * 60_000).unref();
+    return session;
+  }
+
+  revokeSession(id: string): boolean {
+    for (const [, s] of this.sessions) {
+      if (s.id === id) { s.enabled = false; return true; }
+    }
+    return false;
+  }
+
+  private sweep(): void {
+    const now = new Date();
+    for (const [key, s] of this.sessions) {
+      if (!s.enabled || s.expires < now) this.sessions.delete(key);
+    }
+  }
+
+  private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+
+    if (req.method === "GET" && req.url === "/sync/ping") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, active: this.activeSessions().length }));
+      return;
+    }
+
+    // All other routes require Basic Auth
+    const auth = req.headers["authorization"] ?? "";
+    if (!auth.startsWith("Basic ")) {
+      res.writeHead(401, { "WWW-Authenticate": 'Basic realm="PKM Sync"' });
+      res.end("Authentication required"); return;
+    }
+
+    const decoded = Buffer.from(auth.slice(6), "base64").toString("utf-8");
+    const colon   = decoded.indexOf(":");
+    const user    = decoded.slice(0, colon);
+    const pass    = decoded.slice(colon + 1);
+    const session = this.sessions.get(user);
+
+    if (!session || !session.enabled || session.expires < new Date() || pass !== session.password) {
+      res.writeHead(401, { "WWW-Authenticate": 'Basic realm="PKM Sync"' });
+      res.end("Invalid or expired credentials"); return;
+    }
+
+    if (req.method === "GET" && (req.url === "/sync/skills" || req.url === "/sync/bundle")) {
+      const bundle = buildSyncBundle(session.selected, session.contentTypes);
+
+      const payload = JSON.stringify(bundle);
+      res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) });
+      res.end(payload);
+
+    } else if (req.method === "GET" && req.url === "/sync/session") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, expires: session.expires, skillCount: session.selected.skills.length || "all" }));
+    } else {
+      res.writeHead(404); res.end("Not found");
+    }
+  }
+
+  static localIp(): string {
+    for (const ifaces of Object.values(networkInterfaces())) {
+      for (const iface of ifaces ?? []) {
+        if (!iface.internal && iface.family === "IPv4") return iface.address;
+      }
+    }
+    return "127.0.0.1";
+  }
+}
+
+export const syncServer = new SyncServer();
+
+export function emptySyncSelection(): SyncSelection {
+  return { skills: [], notes: [], papers: [], prompts: [], scripts: [], packages: [], servers: [], recipes: [] };
+}
+
+export function recipeExport(selected: string[] = []): RecipeRecord[] {
+  const wanted = new Set(selected);
+  return new ProjectStore(path.join(getStorePath(), ".pkm", "state")).list().recipes
+    .filter(recipe => !wanted.size || wanted.has(recipe.recipeId))
+    .map(recipe => {
+      const compiled = compileWorkflowDefinitionV1(recipe.definition);
+      if (!compiled.ok || compiled.executableDigest !== recipe.executableDigest) {
+        throw new Error(`Recipe ${recipe.recipeId} has an invalid definition or executable digest.`);
+      }
+      return recipe;
+    });
+}
+
+export function buildSyncBundle(selection: SyncSelection, contentTypes: string[], from = process.env.USER ?? "uone"): any {
+  const types = contentTypes.length ? contentTypes : ["skills"];
+  const selected = { ...emptySyncSelection(), ...selection };
+  const bundle: any = { from, created_at: new Date().toISOString(), version: "3" };
+  if (types.includes("skills")) {
+    const rows = selected.skills.length
+      ? selected.skills.map(name => skillGet(name)).filter(Boolean)
+      : (skillList() as any[]).map((row: any) => skillGet(row.name)).filter(Boolean);
+    bundle.skills = (rows as any[]).map(row => ({
+      name: row.name, content: row.content,
+      metadata: { description: row.description, category: row.category, tags: JSON.parse(row.tags ?? "[]"), source_project: row.source_project, created_at: row.created_at },
+    }));
+  }
+  if (types.includes("notes")) {
+    const all = noteExport() as any[];
+    bundle.notes = selected.notes.length ? all.filter(note => selected.notes.includes(note.slug)) : all;
+  }
+  if (types.includes("papers")) {
+    bundle.papers = selected.papers.length
+      ? selected.papers.map(slug => paperGet(slug)).filter(Boolean)
+      : (paperList() as any[]).map((row: any) => paperGet(row.slug)).filter(Boolean);
+  }
+  if (types.includes("prompts")) {
+    const all = promptExport();
+    bundle.prompts = selected.prompts.length ? all.filter(prompt => selected.prompts.includes(`${prompt.project}/${prompt.task}`)) : all;
+  }
+  if (types.includes("scripts")) {
+    const all = scriptExport();
+    bundle.scripts = selected.scripts.length ? all.filter(script => selected.scripts.includes(`${script.category}/${script.file}`)) : all;
+  }
+  if (types.includes("packages")) {
+    const all = packageExport();
+    bundle.packages = selected.packages.length ? all.filter(pkg => selected.packages.includes(pkg.name)) : all;
+  }
+  if (types.includes("servers")) bundle.servers = serverExport(selected.servers);
+  if (types.includes("recipes")) bundle.recipes = recipeExport(selected.recipes);
+  return attachMarkdownAssetsToSyncBundle(bundle);
+}
+
+export function attachMarkdownAssetsToSyncBundle(bundle: any): any {
+  const root = getStorePath();
+  const assets = new Map<string, { type: MarkdownAssetArea; path: string; digest: string; data: string }>();
+  const documents: Array<{ type: MarkdownAssetArea; path: string; content: string }> = [
+    ...(bundle.skills || []).map((item: any) => ({
+      type: "skills" as const,
+      path: `${item.metadata?.category ? `${item.metadata.category}/` : ""}${item.name}.md`,
+      content: String(item.content || ""),
+    })),
+    ...(bundle.notes || []).map((item: any) => ({
+      type: "notes" as const,
+      path: `${item.slug || item.title || "note"}.md`,
+      content: String(item.content || ""),
+    })),
+    ...(bundle.papers || []).map((item: any) => ({
+      type: "papers" as const,
+      path: `${item.category ? `${item.category}/` : ""}${item.slug || item.title || "paper"}.md`,
+      content: String(item.content || ""),
+    })),
+  ];
+  for (const document of documents) {
+    for (const asset of referencedMarkdownAssets(root, document.type, document.path, document.content)) {
+      const key = `${asset.area}\0${asset.path}`;
+      assets.set(key, { type: asset.area, path: asset.path, digest: asset.digest, data: asset.content.toString("base64") });
+    }
+  }
+  if (assets.size) bundle.assets = [...assets.values()];
+  else delete bundle.assets;
+  return bundle;
+}

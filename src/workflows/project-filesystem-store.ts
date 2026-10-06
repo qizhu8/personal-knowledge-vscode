@@ -1,10 +1,10 @@
 import * as fs from "fs";
 import * as path from "path";
 import { createHash, randomUUID } from "crypto";
-import { canonicalJson } from "../workflow-contracts";
+import { canonicalJson } from "./workflow-contracts";
 import {
   CollaborationTaskRecord,
-} from "../collaboration-model";
+} from "../chatroom/collaboration-model";
 import {
   GanttTaskRecord,
   ProjectModelState,

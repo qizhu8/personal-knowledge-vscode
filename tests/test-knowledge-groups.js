@@ -3,8 +3,8 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const groups = require("../dist/knowledge-groups");
-const filestore = require("../dist/filestore");
+const groups = require("../dist/knowledge/knowledge-groups");
+const filestore = require("../dist/knowledge/filestore");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-knowledge-groups-"));
 groups.setKnowledgeGroupStoreRoot(root);

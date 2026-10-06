@@ -49,6 +49,27 @@
     ],
     "commands": [
       {
+        "command": "personalKnowledge.hostStatus",
+        "title": "Personal Knowledge Manager: Show Running Extension Hosts"
+      },
+      {
+        "command": "personalKnowledge.reloadAllHosts",
+        "title": "Personal Knowledge Manager: Reload All Registered Hosts to Installed Build"
+      },
+      {
+        "command": "personalKnowledge.openApiChat",
+        "title": "Personal Knowledge Manager: Open API Chat",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "personalKnowledge.testApiChatE2E",
+        "title": "Personal Knowledge Manager: Run Chat E2E Acceptance"
+      },
+      {
+        "command": "personalKnowledge.exportMcpToolSets",
+        "title": "Personal Knowledge Manager: Export PKM MCP Tool Sets"
+      },
+      {
         "command": "personalKnowledge.open",
         "title": "%command.open%",
         "icon": "$(book)"
@@ -673,6 +694,13 @@
       ]
     },
     "viewsContainers": {
+      "secondarySidebar": [
+        {
+          "id": "personalKnowledgeChat",
+          "title": "PKM Chat",
+          "icon": "resources/sidebar-icon.svg"
+        }
+      ],
       "activitybar": [
         {
           "id": "personalKnowledgeBar",
@@ -682,6 +710,13 @@
       ]
     },
     "views": {
+      "personalKnowledgeChat": [
+        {
+          "type": "webview",
+          "id": "personalKnowledge.apiChat",
+          "name": "PKM Chat"
+        }
+      ],
       "personalKnowledgeBar": [
         {
           "id": "personalKnowledge.sidebarView",
@@ -845,6 +880,102 @@
           "default": "copilot",
           "description": "Which AI backend to use for script summarization."
         },
+        "personalKnowledge.apiChatProvider": {
+          "type": "string",
+          "enum": [
+            "vscode",
+            "openai-compatible",
+            "azure-openai"
+          ],
+          "default": "openai-compatible",
+          "description": "Default native Chat model source. vscode uses the public Language Model API with user consent; HTTP providers use aiEndpoint, aiModel and SecretStorage. Each chat can choose its own source in Model connection."
+        },
+        "personalKnowledge.apiChatModels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Additional model IDs or Azure deployment names in the API Chat model picker."
+        },
+        "personalKnowledge.apiChatModelProfiles": {
+          "type": "array",
+          "default": [],
+          "description": "Verified API Chat model/deployment profiles, lifecycle status, context/output limits and optional prices. Profiles can share a model with different budgets/rates. Unlisted IDs use an unverified conservative 4096-token budget.",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "status",
+              "contextWindow"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "model": {
+                "type": "string",
+                "description": "API model or Azure deployment; defaults to id."
+              },
+              "label": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "deprecated"
+                ]
+              },
+              "deprecatedAt": {
+                "type": "string",
+                "description": "ISO date when this profile must stop being used."
+              },
+              "contextWindow": {
+                "type": "integer",
+                "minimum": 256
+              },
+              "maxOutputTokens": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "outputTokenParameter": {
+                "type": "string",
+                "enum": [
+                  "max_completion_tokens",
+                  "max_tokens"
+                ],
+                "default": "max_completion_tokens"
+              },
+              "includeUsage": {
+                "type": "boolean",
+                "default": false,
+                "description": "Request streaming usage only when the provider supports it."
+              },
+              "inputPricePerMillion": {
+                "type": "number",
+                "minimum": 0
+              },
+              "outputPricePerMillion": {
+                "type": "number",
+                "minimum": 0
+              },
+              "currency": {
+                "type": "string",
+                "default": "USD"
+              }
+            }
+          }
+        },
+        "personalKnowledge.apiChatTimeoutSeconds": {
+          "type": "number",
+          "default": 120,
+          "minimum": 10,
+          "maximum": 600,
+          "description": "Wall-clock timeout for each API Chat request, including streaming."
+        },
         "personalKnowledge.aiModel": {
           "type": "string",
           "default": "gpt-4o-mini",
@@ -928,8 +1059,9 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run build && node tests/test-ui-build-artifacts.js",
-    "build": "tsc -p tsconfig.json && npx esbuild src/subscription-gateway-entry.ts --bundle --platform=node --format=cjs --outfile=dist/subscription-gateway.js && cp -r src/webview dist/ && node scripts/build-panel.js && cp node_modules/sql.js/dist/sql-wasm.js dist/ && cp node_modules/sql.js/dist/sql-wasm.wasm dist/ && cp node_modules/marked/lib/marked.umd.js dist/webview/ && cp node_modules/@vscode/codicons/dist/codicon.css node_modules/@vscode/codicons/dist/codicon.ttf dist/webview/ && npx esbuild src/live-markdown-entry.js --bundle --platform=node --format=cjs --outfile=dist/live-markdown.js && npx esbuild src/webview/hljs-entry.js --bundle --minify --format=iife --outfile=dist/webview/hljs.js && cp node_modules/highlight.js/styles/github-dark.css dist/webview/hljs.css && cp node_modules/katex/dist/katex.min.js dist/webview/katex.js && cp node_modules/katex/dist/katex.min.css dist/webview/katex.css && mkdir -p dist/webview/fonts && cp node_modules/katex/dist/fonts/*.woff2 dist/webview/fonts/ && cp node_modules/cytoscape/dist/cytoscape.min.js dist/webview/cytoscape.js && cp node_modules/mermaid/dist/mermaid.min.js dist/webview/mermaid.js && cp node_modules/3d-force-graph/dist/3d-force-graph.min.js dist/webview/forcegraph3d.js && node scripts/postbuild.js",
+    "build": "tsc -p tsconfig.json && npx esbuild dist/chat/api-chat-tools.js dist/chat/api-chat-mcp.js --bundle --platform=node --format=cjs --external:vscode --external:./api-chat-tools --outdir=dist/chat --allow-overwrite && npx esbuild src/subscriptions/subscription-gateway-entry.ts --bundle --platform=node --format=cjs --outfile=dist/subscription-gateway.js && cp -r src/webview dist/ && node scripts/build-panel.js && cp node_modules/sql.js/dist/sql-wasm.js dist/ && cp node_modules/sql.js/dist/sql-wasm.wasm dist/ && cp node_modules/marked/lib/marked.umd.js dist/webview/ && cp node_modules/@vscode/codicons/dist/codicon.css node_modules/@vscode/codicons/dist/codicon.ttf dist/webview/ && npx esbuild src/live-markdown-entry.js --bundle --platform=node --format=cjs --outfile=dist/live-markdown.js && npx esbuild src/webview/hljs-entry.js --bundle --minify --format=iife --outfile=dist/webview/hljs.js && cp node_modules/highlight.js/styles/github-dark.css dist/webview/hljs.css && cp node_modules/katex/dist/katex.min.js dist/webview/katex.js && cp node_modules/katex/dist/katex.min.css dist/webview/katex.css && mkdir -p dist/webview/fonts && cp node_modules/katex/dist/fonts/*.woff2 dist/webview/fonts/ && cp node_modules/cytoscape/dist/cytoscape.min.js dist/webview/cytoscape.js && cp node_modules/mermaid/dist/mermaid.min.js dist/webview/mermaid.js && cp node_modules/3d-force-graph/dist/3d-force-graph.min.js dist/webview/forcegraph3d.js && node scripts/postbuild.js",
     "test:ui-build-artifacts": "npm run build && node tests/test-ui-build-artifacts.js",
+    "test:api-chat": "npm run build && node tests/test-api-chat.js",
     "test:sidebar-panel-opening": "npm run build && node tests/test-sidebar-panel-opening.js",
     "test:module-contracts": "npm run build && node tests/test-module-contracts.js",
     "test:knowledge-contracts": "npm run build && node tests/test-knowledge-contracts.js",
@@ -951,6 +1083,7 @@
     "test:tab-cache-ui": "npm run build && node tests/test-tab-cache-ui.js",
     "test:background-tasks": "npm run build && node tests/test-background-tasks.js",
     "test:agent-session-lifecycle": "npm run build && node tests/test-agent-session-lifecycle.js",
+    "test:agent-session-groups": "npm run build && node tests/test-agent-session-lifecycle.js && node tests/test-four-workspace-ui.js && python tests/test-agent-session-groups.py && python tests/test-agent-session-mcp-runtime.py",
     "test:chatroom-project-simulation": "npm run build && npm run test:chatroom-project-simulation:run",
     "test:workflow-runtime:coverage": "npm run build && c8 --all --include=dist/workflows/runtime-model.js --check-coverage --branches 100 --functions 100 --lines 100 --statements 100 node tests/test-workflow-runtime-model.js",
     "test:workflow-migration:coverage": "npm run build && c8 --all --include=dist/workflows/migration-model.js --check-coverage --branches 100 --functions 100 --lines 100 --statements 100 node tests/test-workflow-migration-model.js",
@@ -964,7 +1097,7 @@
     "test:workflow-operations:coverage": "npm run build && c8 --all --include=dist/workflows/operations-model.js --check-coverage --branches 100 --functions 100 --lines 100 --statements 100 node tests/test-workflow-operations-model.js",
     "test:workflow-api:coverage": "npm run build && c8 --all --include=dist/workflows/api-model.js --check-coverage --branches 100 --functions 100 --lines 100 --statements 100 node tests/test-workflow-api-model.js",
     "test:workflow-redesign:run": "node tests/test-workflow-contracts.js && node tests/test-workflow-value-contracts.js && node tests/test-workflow-project-model.js && node tests/test-workflow-project-store.js && node tests/test-project-recipe-bundle.js && node tests/test-workflow-runtime-model.js && node tests/test-workflow-durable-store.js && node tests/test-workflow-scheduler-model.js && node tests/test-workflow-evidence-model.js && node tests/test-workflow-catalog-model.js && node tests/test-workflow-executor-model.js && node tests/test-workflow-control-model.js && node tests/test-workflow-operations-model.js && node tests/test-workflow-api-model.js && node tests/test-workflow-migration-model.js && node tests/test-workflow-nl-compiler-model.js && node tests/test-four-workspace-ui.js",
-    "test:workflow-redesign:coverage": "npm run build && c8 --all --include=dist/workflow-contracts.js --include=dist/workflows/value-contracts.js --include=dist/workflows/project-model.js --include=dist/workflows/project-store.js --include=dist/workflows/runtime-model.js --include=dist/workflows/durable-store.js --include=dist/workflows/scheduler-model.js --include=dist/workflows/evidence-model.js --include=dist/workflows/catalog-model.js --include=dist/workflows/executor-model.js --include=dist/workflows/control-model.js --include=dist/workflows/operations-model.js --include=dist/workflows/api-model.js --include=dist/workflows/migration-model.js --include=dist/workflows/nl-compiler-model.js --check-coverage --branches 100 --functions 100 --lines 100 --statements 100 npm run test:workflow-redesign:run",
+    "test:workflow-redesign:coverage": "npm run build && c8 --all --include=dist/workflows/workflow-contracts.js --include=dist/workflows/value-contracts.js --include=dist/workflows/project-model.js --include=dist/workflows/project-store.js --include=dist/workflows/runtime-model.js --include=dist/workflows/durable-store.js --include=dist/workflows/scheduler-model.js --include=dist/workflows/evidence-model.js --include=dist/workflows/catalog-model.js --include=dist/workflows/executor-model.js --include=dist/workflows/control-model.js --include=dist/workflows/operations-model.js --include=dist/workflows/api-model.js --include=dist/workflows/migration-model.js --include=dist/workflows/nl-compiler-model.js --check-coverage --branches 100 --functions 100 --lines 100 --statements 100 npm run test:workflow-redesign:run",
     "screenshots": "python scripts/capture-release-screenshots.py",
     "screenshots:gif": "python scripts/capture-release-screenshots.py --gif",
     "test:chat-persistence": "npm run build && node tests/test-chat-persistence.js",
@@ -1000,7 +1133,7 @@
     "test:chat-layout-scroll-ui": "npm run build && node tests/test-chat-layout-scroll-ui.js",
     "test:chat-core": "node tests/test-meeting-state.js && node tests/test-chat-meeting-snapshot.js && node tests/test-chat-managed-agent-routing.js && node tests/test-chat-meeting-lifecycle.js",
     "test:chat-coverage": "npm run build && npm run test:chat-coverage:run",
-    "test:chat-coverage:run": "c8 --all --include=dist/meeting-state.js --include=dist/chat-meeting-lifecycle.js --check-coverage --branches 72 --functions 90 --lines 90 --statements 90 npm run test:chat-core",
+    "test:chat-coverage:run": "c8 --all --include=dist/chatroom/meeting-state.js --include=dist/chatroom/chatroom/chat-meeting-lifecycle.js --check-coverage --branches 72 --functions 90 --lines 90 --statements 90 npm run test:chat-core",
     "test:meeting-state": "npm run build && node tests/test-meeting-state.js",
     "test:chat-managed-agent-routing": "npm run build && node tests/test-chat-managed-agent-routing.js",
     "test:pkm-skill-projection": "npm run build && node tests/test-pkm-skill-projection.js",
@@ -1058,18 +1191,22 @@
     "test:chatroom-project-simulation:run": "node tests/test-workflow-project-model.js && node tests/test-workflow-project-store.js && node tests/test-chatroom-project-simulation.js && node tests/test-four-workspace-ui.js"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@vscode/codicons": "^0.0.36",
     "3d-force-graph": "^1.80.0",
     "aedes": "^1.1.2",
     "casbin": "^5.51.1",
     "cytoscape": "^3.34.0",
+    "diff": "^8.0.4",
     "dompurify": "^3.4.14",
     "highlight.js": "^11.11.1",
+    "image-size": "^2.0.4",
     "ipaddr.js": "^2.5.0",
     "katex": "^0.16.47",
     "marked": "^18.0.5",
     "mermaid": "^11.17.2",
     "mqtt": "^5.15.2",
+    "openai": "^7.28.0",
     "rate-limiter-flexible": "^11.2.0",
     "sql.js": "^1.12.0",
     "ws": "^8.21.1"
@@ -1083,6 +1220,7 @@
     "@types/ws": "^8.18.1",
     "@vscode/test-electron": "^3.1.0",
     "c8": "^12.0.0",
+    "d3-sankey": "^0.12.3",
     "esbuild": "^0.28.1",
     "typescript": "^6.0.3"
   }

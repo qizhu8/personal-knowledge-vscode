@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { canonicalJson } from "../workflow-contracts";
+import { canonicalJson } from "./workflow-contracts";
 
 export const WORKFLOW_VALUE_TYPES = ["object", "array", "string", "boolean", "int64", "decimal", "null", "artifact", "secret-handle"] as const;
 export type WorkflowValueType = typeof WORKFLOW_VALUE_TYPES[number];

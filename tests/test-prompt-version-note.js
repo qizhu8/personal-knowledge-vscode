@@ -3,7 +3,7 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const storage = require("../dist/storage");
+const storage = require("../dist/knowledge/storage");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-prompt-note-"));
 try {

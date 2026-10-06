@@ -3,8 +3,8 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { forkRootName, forkSubscriptionContent } = require("../dist/subscription-fork");
-const storage = require("../dist/storage");
+const { forkRootName, forkSubscriptionContent } = require("../dist/subscriptions/subscription-fork");
+const storage = require("../dist/knowledge/storage");
 
 const store = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-subscription-fork-"));
 try {

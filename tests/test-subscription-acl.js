@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 const assert = require("assert");
-const { BrokerAcl } = require("../dist/subscription-acl");
+const { BrokerAcl } = require("../dist/subscriptions/subscription-acl");
 
 async function allowed(policy, accountId, sourceIp, action = "request-sync") {
   const acl = await BrokerAcl.create({ shareId: "share-1", accountMode: "open", accountRules: [], networkMode: "block-list", ipRules: [], automaticBlocks: [], ...policy });

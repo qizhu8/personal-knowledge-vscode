@@ -6,7 +6,7 @@ const os = require("os");
 const path = require("path");
 const vm = require("vm");
 
-const { createAgentSnapshot, deleteAgentSnapshot, listAgentSnapshots, renameAgentSnapshot, readAgentSnapshotContents } = require("../dist/agent-snapshots");
+const { createAgentSnapshot, deleteAgentSnapshot, listAgentSnapshots, renameAgentSnapshot, readAgentSnapshotContents } = require("../dist/agent-sessions/agent-snapshots");
 
 function encryptPayload(payload, snapshotId, magicCode, keyText = "uone") {
   const iv = crypto.randomBytes(12);
@@ -102,6 +102,23 @@ try {
   assert.strictEqual(captured.recipeRuns[0].receipts, undefined);
   assert.strictEqual(captured.recipeRuns[0].nodes.work.state, "running");
   assert.strictEqual(fs.readFileSync(snapshotPath, "utf8"), snapshotText, "inspection must not rewrite the Snapshot");
+  const sessionPath = path.join(sessions, `${sessionId}.json`);
+  const trashDirectory = path.join(state, "agent-sessions-trash");
+  const trashedSessionPath = path.join(trashDirectory, `${sessionId}.json`);
+  fs.mkdirSync(trashDirectory, { recursive: true });
+  fs.renameSync(sessionPath, trashedSessionPath);
+  const trashedSessionText = fs.readFileSync(trashedSessionPath, "utf8");
+  const archived = createAgentSnapshot(store, sessionId, "blocked source chat");
+  assert.strictEqual(archived.snapshot.sourceSessionId, sessionId);
+  assert.strictEqual(archived.snapshot.sourceHostSessionId, "copilot-source");
+  const archivedContents = readAgentSnapshotContents(store, archived.snapshot.snapshotId);
+  assert.deepStrictEqual(archivedContents.session, captured.session);
+  assert.deepStrictEqual(archivedContents.recipeRuns, captured.recipeRuns);
+  assert.strictEqual(fs.existsSync(sessionPath), false, "capture must not restore a trashed Session");
+  assert.strictEqual(fs.readFileSync(trashedSessionPath, "utf8"), trashedSessionText,
+    "capture must not mutate the source Session or adopt its transport");
+  fs.unlinkSync(path.join(state, "agent-snapshots", `${archived.snapshot.snapshotId}.json`));
+  fs.renameSync(trashedSessionPath, sessionPath);
   fs.writeFileSync(path.join(sessions, `${sessionId}.json`), JSON.stringify({ task: "Changed live Session", todos: [] }));
   assert.deepStrictEqual(readAgentSnapshotContents(store, snapshot.snapshotId), captured, "inspection reads the capture, not live state");
   assert.throws(() => readAgentSnapshotContents(store, "../snapshot"), /identity is invalid/);

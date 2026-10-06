@@ -3,7 +3,7 @@ const assert = require('assert');
 const {
   availableSkillRouterSources,
   normalizeSkillRouterSourcePriority,
-} = require('../dist/skill-router-config.js');
+} = require("../dist/skills/skill-router-config.js");
 
 const sources = availableSkillRouterSources([
   { id: 'sub-z', alias: 'Zulu', publisher: 'Publisher Z' },

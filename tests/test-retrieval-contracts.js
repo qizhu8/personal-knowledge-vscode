@@ -8,8 +8,8 @@ const {
   compileRetrievalQueryV1,
   compileRetrievalResultV1,
   assertRetrievalIndexEventV1,
-} = require("../dist/retrieval-contracts.js");
-const { RetrievalIndexEventStore } = require("../dist/retrieval-index-events.js");
+} = require("../dist/retrieval/retrieval-contracts.js");
+const { RetrievalIndexEventStore } = require("../dist/retrieval/retrieval-index-events.js");
 
 const valid = {
   schema: RETRIEVAL_QUERY_SCHEMA_V1,

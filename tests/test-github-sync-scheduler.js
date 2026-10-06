@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 const assert = require("assert");
-const { GitHubSyncScheduler } = require("../dist/github-sync-scheduler.js");
+const { GitHubSyncScheduler } = require("../dist/sync/github-sync-scheduler.js");
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
 

@@ -4,9 +4,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const vm = require('vm');
-const { githubSyncCatalogInWorker } = require('../dist/github-sync-catalog-worker');
-const { GITHUB_SYNC_CONTENT_TYPES, githubSyncTargetFingerprintState, normalizeGitHubSyncTarget } = require('../dist/github-sync');
-const { githubSyncFingerprintInWorker } = require('../dist/github-sync-fingerprint-worker');
+const { githubSyncCatalogInWorker } = require("../dist/sync/github-sync-catalog-worker");
+const { GITHUB_SYNC_CONTENT_TYPES, githubSyncTargetFingerprintState, normalizeGitHubSyncTarget } = require("../dist/sync/github-sync");
+const { githubSyncFingerprintInWorker } = require("../dist/sync/github-sync-fingerprint-worker");
 
 const root = path.join(__dirname, '..');
 const core = fs.readFileSync(path.join(root, 'src/webview/panel/00-core.js'), 'utf8');

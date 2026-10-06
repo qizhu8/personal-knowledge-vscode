@@ -4,8 +4,8 @@ const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { canonicalJson } = require("../dist/workflow-contracts.js");
-const { GitHubSyncConflictError } = require("../dist/github-sync.js");
+const { canonicalJson } = require("../dist/workflows/workflow-contracts.js");
+const { GitHubSyncConflictError } = require("../dist/sync/github-sync.js");
 const {
   clearGitHubSyncConflict,
   listGitHubSyncConflicts,
@@ -22,7 +22,7 @@ const {
   updateGitHubSyncAgentCandidate,
   validateGitHubSyncConflictLocalState,
   validateGitHubSyncManualCandidate,
-} = require("../dist/github-sync-conflicts.js");
+} = require("../dist/sync/github-sync-conflicts.js");
 
 const skill = body => Buffer.from(`---\nname: "Shared"\ndescription: "test"\n---\n# Shared\n\n${body}\n`);
 const recipeDefinition = {
