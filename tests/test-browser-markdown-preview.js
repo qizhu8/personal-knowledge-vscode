@@ -128,7 +128,19 @@ readerContext.skillGet = originalSkillGet;
 
 async function testReaderNavigationNetwork() {
   const { startLiveMarkdownServer } = require("../dist/knowledge/live-note-server");
-  const publicServer = await startLiveMarkdownServer([], key => readerContext.liveMarkdownHtml(key, {}), {}, {
+  let browserNoteRevision = 0;
+  const publicServer = await startLiveMarkdownServer([], key => {
+    if (key === "notes/Public/__test_change") {
+      browserNoteRevision++;
+      noteFixtures[0].content = `Saved browser Note ${browserNoteRevision}\n\n` + Array(80).fill("A reading-position regression paragraph.").join("\n\n");
+      return "changed";
+    }
+    if (key === "skills/Public/__test_change") {
+      skillFixtures[0].content = "Saved browser Skill";
+      return "changed";
+    }
+    return readerContext.liveMarkdownHtml(key, {});
+  }, {}, {
     authorizePath:readerContext.publicContentRouteAllowed,
   });
   const token = "reader-navigation-test-token";
@@ -136,7 +148,19 @@ async function testReaderNavigationNetwork() {
   try {
     const publicResponse = await fetch(`${publicServer.localBaseUrl}/notes/Public/Visible.html`);
     assert.strictEqual(publicResponse.status, 200);
+    const initialVersion = publicResponse.headers.get("etag");
+    assert(initialVersion);
     assert.doesNotMatch(await publicResponse.text(), /Secret|Hush|Hidden skill/);
+    const unchanged = await fetch(`${publicServer.localBaseUrl}/notes/Public/Visible.html`, { method:"HEAD" });
+    assert.strictEqual(unchanged.headers.get("etag"), initialVersion);
+    assert.strictEqual(await unchanged.text(), "");
+    const originalBody = noteFixtures[0].content;
+    noteFixtures[0].content += "\nSaved local update\n";
+    const changed = await fetch(`${publicServer.localBaseUrl}/notes/Public/Visible.html`, { method:"HEAD" });
+    assert.notStrictEqual(changed.headers.get("etag"), initialVersion, "Saving a local Note changes the browser preview version");
+    noteFixtures[0].content = originalBody;
+    assert.strictEqual((await fetch(`${publicServer.localBaseUrl}/notes/Secret/Hush.html`, { method:"HEAD" })).status, 404);
+    assert.strictEqual((await fetch(`${privateServer.localBaseUrl}/notes/Secret/Hush.html`, { method:"HEAD" })).status, 403);
     assert.strictEqual((await fetch(`${publicServer.localBaseUrl}/notes/Secret/Hush.html`)).status, 404);
     assert.strictEqual((await fetch(`${publicServer.localBaseUrl}/skills/Secret/Hidden%20skill.html`)).status, 404);
     assert.strictEqual((await fetch(`${privateServer.localBaseUrl}/notes/Secret/Hush.html`)).status, 403);
@@ -164,20 +188,43 @@ with sync_playwright() as playwright:
         assert nav.locator('a').count() == 3
         assert nav.locator('[aria-current=page]').get_attribute('title') == 'Public/Visible'
         search = nav.get_by_role('searchbox')
+        assert not search.is_visible(), 'Find must start hidden'
+        page.keyboard.press('Control+f')
+        assert search.is_visible()
         research = nav.locator('.reader-nav-group').filter(has=page.get_by_role('heading', name='Research', exact=True))
         assert not research.locator('a').is_visible()
         search.fill('Dense')
         assert research.locator('a').is_visible()
         search.fill('')
         assert not research.locator('a').is_visible(), 'Clearing search restores collapsed folders'
+        page.keyboard.press('Escape')
+        assert not search.is_visible(), 'Escape closes the floating finder'
+        page.keyboard.press('Control+f')
         search.fill('Hidden')
         assert nav.locator('a:visible').count() == 0
         search.fill('Visible skill')
         nav.locator('a:visible').click()
         assert page.locator('.doc-title').inner_text() == 'Visible skill'
         assert page.locator('.reader-sidebar a').count() == 3
+        if width == 1440:
+          page.goto(os.environ['PKM_READER_PUBLIC_URL'] + '/notes/Public/Visible.html')
+          page.evaluate("fetch('/notes/Public/__test_change.html')")
+          page.wait_for_function("document.querySelector('.prose')?.textContent.includes('Saved browser Note 1')")
+          page.evaluate('scrollTo(0, 300)')
+          page.evaluate("fetch('/notes/Public/__test_change.html')")
+          page.wait_for_function("document.querySelector('.prose')?.textContent.includes('Saved browser Note 2')")
+          page.wait_for_function('scrollY >= 280')
+          page.goto(os.environ['PKM_READER_PUBLIC_URL'] + '/skills/Public/Visible%20skill.html')
+          page.evaluate("fetch('/skills/Public/__test_change.html')")
+          page.wait_for_function("document.querySelector('.prose')?.textContent.includes('Saved browser Skill')")
+          page.clock.install()
+          page.evaluate("const prose=document.querySelector('.prose');prose.contentEditable='true';prose.textContent='Unsaved browser draft';prose.dispatchEvent(new Event('input',{bubbles:true}))")
+          page.evaluate("fetch('/skills/Public/__test_change.html')")
+          page.clock.fast_forward(6000)
+          assert page.locator('.prose').inner_text() == 'Unsaved browser draft', 'Automatic refresh must preserve an unsaved browser edit'
         page.goto(os.environ['PKM_READER_PRIVATE_URL'] + '/notes/Secret/Hush.html?_pkm_token=' + os.environ['PKM_READER_TEST_TOKEN'])
         assert page.locator('.reader-sidebar a').count() == 6
+        page.keyboard.press('Control+f')
         page.get_by_role('searchbox').fill('Public/Visible')
         page.locator('.reader-sidebar a[title="Public/Visible"]').click()
         assert page.locator('.reader-sidebar a').count() == 6
@@ -191,9 +238,12 @@ with sync_playwright() as playwright:
         if width == 390:
             sidebar_box = page.locator('.reader-sidebar').bounding_box()
             article_box = page.locator('.wrap').bounding_box()
-            assert 0 <= article_box['y'] - sidebar_box['y'] - sidebar_box['height'] <= 24, 'Mobile article must follow navigation without overlap or an artificial gap'
+            assert abs(article_box['y'] - sidebar_box['y']) <= 1, 'Mobile reader stays side by side'
+            assert article_box['x'] >= sidebar_box['x'] + sidebar_box['width'] - 1, 'Article must not overlap navigation'
+            expanded_width = article_box['width']
             page.locator('.reader-sidebar > details > summary').click()
             assert not page.locator('.reader-sidebar nav').is_visible()
+            assert page.locator('.wrap').bounding_box()['width'] > expanded_width, 'Collapsing navigation returns its width to the article'
         page.close()
     browser.close()
 print('Reader browser privacy/navigation tests passed')`;

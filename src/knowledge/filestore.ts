@@ -108,7 +108,7 @@ function loadKnowledgeSyncDeletions(root: string): KnowledgeSyncDeletionRecord[]
   if (!existsSync(file)) return [];
   const value = JSON.parse(readFileSync(file, "utf8"));
   if (value.schema !== 1 || !Array.isArray(value.records) || value.records.some((record: any) =>
-    typeof record?.path !== "string" || !record.path.startsWith("notes/")
+    typeof record?.path !== "string" || !/^(notes|papers|prompts|scripts)\//.test(record.path)
     || record.path.split("/").some((part: string) => !part || part === "." || part === "..")
     || typeof record.deletedAt !== "string" || !Number.isFinite(Date.parse(record.deletedAt)))) {
     throw new Error("The local knowledge deletion journal is invalid. Sync cannot safely ignore deletion intent.");
@@ -153,14 +153,14 @@ function changeKnowledgeSyncDeletions<T>(
   });
 }
 
-function recordKnowledgeTrashDeletion<T>(entry: KnowledgeTrashEntry, source: string, action: () => T): T {
+function recordKnowledgeTrashDeletion<T>(area: KnowledgeTrashArea, entry: KnowledgeTrashEntry, source: string, action: () => T): T {
   const paths: string[] = [];
   const collect = (full: string, relative: string): void => {
     if (statSync(full).isDirectory()) {
       for (const item of readdirSync(full, { withFileTypes: true })) {
         if (!item.isSymbolicLink() && !item.name.startsWith(".")) collect(join(full, item.name), `${relative}/${item.name}`);
       }
-    } else if (relative.endsWith(".md")) paths.push(`notes/${relative}`);
+    } else paths.push(`${area}/${relative}`);
   };
   collect(source, entry.originalPath);
   return changeKnowledgeSyncDeletions(records => [
@@ -198,7 +198,7 @@ export function knowledgeMoveToTrash(area: KnowledgeTrashArea, relativePath: str
       return undefined;
     }
   };
-  return area === "notes" ? recordKnowledgeTrashDeletion(entry, source.full, move) : move();
+  return recordKnowledgeTrashDeletion(area, entry, source.full, move);
 }
 
 export function knowledgeTrashList(area: KnowledgeTrashArea): KnowledgeTrashEntry[] {
@@ -234,9 +234,9 @@ export function knowledgeTrashRestore(area: KnowledgeTrashArea, id: string): { o
       return { ok: true, path: entry.originalPath };
     } catch (error: any) { return { ok: false, error: error?.message || String(error) }; }
   };
-  const restoredPath = `notes/${entry.originalPath}`;
-  return area === "notes" ? changeKnowledgeSyncDeletions(records => records.filter(record =>
-    record.path !== restoredPath && !(entry.kind === "folder" && record.path.startsWith(restoredPath + "/"))), restore, result => result.ok) : restore();
+  const restoredPath = `${area}/${entry.originalPath}`;
+  return changeKnowledgeSyncDeletions(records => records.filter(record =>
+    record.path !== restoredPath && !(entry.kind === "folder" && record.path.startsWith(restoredPath + "/"))), restore, result => result.ok);
 }
 
 export function knowledgeTrashDelete(area: KnowledgeTrashArea, id: string, operations: RemoveOperations = {}): { ok: boolean; name?: string; path?: string; kind?: KnowledgeTrashEntry["kind"]; error?: string } {

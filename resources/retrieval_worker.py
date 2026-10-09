@@ -106,8 +106,22 @@ def atomic_json(path, value):
     except OSError: pass
 
 
-def make_document(value):
+def source_content_type(value):
     raw_type = str(value.get("content_type") or "skill")
+    if raw_type == "subscription":
+        upstream = str((value.get("metadata") or {}).get("upstream_type") or "")
+        return {"skills": "skill", "notes": "note", "papers": "research", "research": "research", "scripts": "script"}.get(upstream, raw_type)
+    return raw_type
+
+
+def matches_content_types(value, requested):
+    return (not requested or source_content_type(value) in requested
+            or ("subscription" in requested and ((value.get("provenance") or {}).get("provider") == "broker"
+                or str(value.get("source_uri") or "").startswith("pkm://subscriptions/"))))
+
+
+def make_document(value):
+    raw_type = source_content_type(value)
     try:
         content_type = ContentType(raw_type)
     except ValueError:
@@ -154,7 +168,7 @@ def build_snapshot_unlocked(snapshot):
         engine.index(documents)
         by_version = {document.version: document for document in documents}
         values_by_version = {
-            document.version: {**value, "content_hash": document.version.content_hash}
+            document.version: {**value, "content_type": source_content_type(value), "content_hash": document.version.content_hash}
             for document, value in zip(documents, source_values)
         }
         source_values = list(values_by_version.values())
@@ -294,6 +308,43 @@ def status():
     }
 
 
+def get_source(payload):
+    source_id = str(payload.get("source_id") or "").strip()
+    if not source_id:
+        return {"ok": False, "code": "invalid-id", "error": "source_id is required"}
+    requested = payload.get("content_type_filter")
+    if requested is not None and (not isinstance(requested, list) or not requested
+                                  or any(value not in {"skill", "note", "research", "script", "recipe", "subscription"} for value in requested)):
+        return {"ok": False, "code": "invalid-filter", "error": "Invalid content_type_filter"}
+    with engine_lock:
+        revision, generation = ready_revision, ready_generation
+        sources = list(ready_source_values.values())
+        building = building_revision
+    if not revision:
+        return {"ok": False, "code": "index-not-ready", "error": "Retrieval index is not ready"}
+    for value in sources:
+        canonical_id = str(value.get("source_id") or value.get("skill_id") or "")
+        if source_id not in {canonical_id, str(value.get("source_uri") or ""), str(value.get("knowledge_id") or "")}:
+            continue
+        if str(value.get("visibility") or "available") != "available":
+            break
+        if not matches_content_types(value, requested):
+            break
+        scope = payload.get("scope") or {}
+        if scope.get("source_ids") and canonical_id not in scope["source_ids"]:
+            break
+        if scope.get("include_read_only") is False and value.get("read_only"):
+            break
+        return {"schema": "pkm.knowledge.read/v1", "ok": True,
+                "corpus_revision": revision, "ready_generation": generation, "stale": bool(building and building != revision),
+                "source_id": canonical_id, "source_revision": str(value.get("source_revision") or value.get("content_hash") or ""),
+                "content_type": value.get("content_type"), "content_hash": value.get("content_hash"),
+                "source_uri": value.get("source_uri"), "title": value.get("title"), "description": value.get("description"),
+                "content": value.get("body") or "", "metadata": dict(value.get("metadata") or {}),
+                "provenance": dict(value.get("provenance") or {}), "read_only": bool(value.get("read_only"))}
+    return {"ok": False, "code": "not-found", "error": "Knowledge source not found"}
+
+
 def search(payload):
     started = time.perf_counter()
     epoch, requested_package, _, _ = solutions.capture()
@@ -351,8 +402,14 @@ def search_unmeasured(payload):
         return {"ok": False, "error": "Minimum retrieval generation is not ready.", "code": "generation-not-ready",
                 "ready_generation": generation}
     requested = payload.get("content_type_filter")
+    if requested is not None and (not isinstance(requested, list) or not requested
+                                  or any(str(value) not in {"skill", "note", "research", "script", "recipe", "subscription"} for value in requested)):
+        return {"ok": False, "code": "invalid-filter", "error": "Invalid content_type_filter"}
     engine_filter = []
-    for value in requested or []:
+    engine_types = set(requested or [])
+    if "subscription" in engine_types:
+        engine_types.update({"skill", "note", "research", "script"})
+    for value in engine_types:
         try: engine_filter.append(ContentType(str(value)))
         except ValueError: engine_filter.append(ContentType("note"))
     content_filter = engine_filter if requested is not None else None
@@ -369,7 +426,7 @@ def search_unmeasured(payload):
             if solutions.managed:
                 allowed = {
                     version for version, value in source_values.items()
-                    if (not strict_types or value.get("content_type") in strict_types)
+                    if matches_content_types(value, strict_types)
                     and (not allowed_source_ids or str(value.get("source_id") or version.skill_id) in allowed_source_ids)
                     and str(value.get("visibility") or "available") == "available"
                     and not ((payload.get("scope") or {}).get("include_read_only") is False and value.get("read_only"))
@@ -400,7 +457,7 @@ def search_unmeasured(payload):
             continue
         if (payload.get("scope") or {}).get("include_read_only") is False and bool(source_value.get("read_only")):
             continue
-        if strict_types and str(source_value.get("content_type") or "") not in strict_types:
+        if not matches_content_types(source_value, strict_types):
             continue
         hits.append({
             "rank": hit.rank,
@@ -469,6 +526,10 @@ def search_unmeasured(payload):
                     diagnostics.append({"code": "unavailable-target", "message": "A graph target is unavailable.",
                                         "source_id": current, "relation": edge["relation"]})
                     continue
+                if not matches_content_types(target, strict_types):
+                    continue
+                if (payload.get("scope") or {}).get("include_read_only") is False and target.get("read_only"):
+                    continue
                 if edge["mode"] == "pinned" and edge["target_revision"] != str(target.get("source_revision") or ""):
                     diagnostics.append({"code": "pinned-revision-mismatch", "message": "Pinned graph target revision is unavailable.",
                                         "source_id": current, "target_id": next_id, "relation": edge["relation"]})
@@ -501,6 +562,11 @@ def search_unmeasured(payload):
                 break
         if incomplete:
             diagnostics.append({"code": "truncated", "message": "Graph traversal stopped at the configured budget."})
+    result_limit = max(1, min(int(payload.get("limit") or 5), 100))
+    limit_reached = not serving_used and len(result.hits) >= result_limit
+    truncated = len(hits) > result_limit
+    if limit_reached:
+        diagnostics.append({"code": "candidate-limit-reached", "message": "Candidate limit reached; more matching sources may exist."})
     diagnostics_level = str(payload.get("diagnostics") or "summary")
     return {
         "ok": True,
@@ -524,13 +590,15 @@ def search_unmeasured(payload):
         "lexical_anchors": list(result.lexical_anchors),
         "fuzzy_terms": list(result.fuzzy_terms),
         "fuzzy_query": result.fuzzy_query,
-        "requested_content_types": [value.value for value in result.requested_content_types],
+        "requested_content_types": list(requested or []),
         "content_type_routing": result.content_type_routing,
         "route_index_versions": dict(result.route_index_versions),
-        "hits": hits[:max(1, min(int(payload.get("limit") or 5), 100))],
+        "hits": hits[:result_limit],
         "diagnostics": [] if diagnostics_level == "none" else diagnostics[:100],
         "stale": False,
-        "incomplete": incomplete,
+        "incomplete": incomplete or limit_reached or truncated,
+        "limit_reached": limit_reached,
+        "truncated": truncated,
         "timings_ms": {
             "wait": 0.0,
             "search": round((time.perf_counter() - search_started) * 1000, 3),
@@ -596,6 +664,9 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/search":
                 result = search(payload)
                 self.reply(200 if result.get("ok") else 503, result)
+            elif self.path == "/get":
+                result = get_source(payload)
+                self.reply(200 if result.get("ok") else 404, result)
             elif self.path == "/solutions":
                 action = payload.get("action")
                 if action in {"enable", "rebuild"}:

@@ -1,5 +1,5 @@
 // ── Shared Market subscriptions ────────────────────────────────────────────
-let subscriptionData = { enabled:false, gatewayStatus:'stopped', gatewayError:'', port:19877, advertisedHost:'', displayName:'', shares:[], subscriptions:[], catalog:{}, networkAddresses:[], githubConnections:[] };
+let subscriptionData = { enabled:false, gatewayStatus:'checking', gatewayError:'', port:19877, advertisedHost:'', displayName:'', shares:[], subscriptions:[], catalog:{}, networkAddresses:[], githubConnections:[] };
 let subscriptionEditingShare = '';
 let subscriptionEditorTab = 'general';
 let subscriptionExpandedId = '';
@@ -10,7 +10,7 @@ let subscriptionGitHubProgress = null;
 const subscriptionSelectionDrafts = new Map();
 
 function renderSubscriptionLoading() {
-  document.getElementById('detail').innerHTML = '<div class="empty">Loading subscriptions…</div>';
+  renderSubscriptionPane();
 }
 
 function subscriptionOnState(data) {
@@ -164,9 +164,10 @@ function renderSubscriptionPane() {
   const drafts = captureRefreshInputs(detail, '#sub-display-name,#sub-host,#sub-port,#sub-alias,#sub-magic-link,#sub-broker-secret', true);
   const shareDrafts = detail.querySelector?.('[data-sub-share-id]')?.dataset.subShareId === subscriptionEditingShare
     ? captureRefreshInputs(detail, '.sub-editor input[id],.sub-editor textarea[id],.sub-editor select[id]', true) : [];
-  document.getElementById('detail').innerHTML = `<div class="sub-dashboard">
+  document.getElementById('detail').innerHTML = `<div class="sub-dashboard" data-settings-owner="sharing">
     <header class="sub-head"><div><h2>Subscription</h2><p>PKM Shared Market · ${esc(d.displayName || 'This machine')}</p></div><span class="sub-node-state ${d.gatewayStatus === 'error' ? 'error' : d.gatewayStatus === 'running' ? 'running' : d.gatewayStatus === 'starting' ? 'starting' : 'stopped'}" title="${esc(d.gatewayStatus === 'error' ? d.gatewayError || '' : '')}"><i></i>${d.gatewayStatus === 'error' ? 'Gateway unavailable' : d.gatewayStatus === 'running' ? 'Broker online' : d.gatewayStatus === 'starting' ? 'Broker starting' : 'Broker stopped'}</span></header>
     ${d.gatewayStatus === 'error' ? `<div class="sub-warning">Common Communication Port ${Number(d.port)||19877} is unavailable · ${esc(d.gatewayError || 'Check the port and network listener.')}</div>` : ''}
+    ${settingsTabBar('sharing',[['direct','Direct sharing'],['subscribing','Subscribing']])}
     <section class="sub-band sub-direct-sync"><div class="sub-band-title"><div><h3>Direct Sync</h3><span>One-time encrypted sharing between invited devices</span></div><button class="pk-button primary" onclick="openSyncModal()">Open Direct Sync</button></div>
       <p class="sub-control-note">Use Direct Sync for a temporary host-and-join transfer. Use Share Brokers below for persistent, refreshable collections.</p>
     </section>
@@ -181,6 +182,17 @@ function renderSubscriptionPane() {
       <div class="pk-list sub-list">${subscriptionRows()}</div>
     </section>
   </div>`;
+  const pane = document.querySelector('[data-settings-owner="sharing"]');
+  if (d.gatewayStatus === 'checking') {
+    const status = pane.querySelector('.sub-node-state');
+    status.textContent = 'Checking gateway status';
+    pane.querySelector('.sub-service-status').textContent = 'Not yet checked';
+  }
+  pane.querySelector('.sub-direct-sync').dataset.settingsPanel = 'direct';
+  pane.querySelector('.sub-gateway-grid').closest('section').dataset.settingsPanel = 'direct';
+  pane.querySelector('.sub-broker-list').closest('section').dataset.settingsPanel = 'direct';
+  pane.querySelector('.sub-list').closest('section').dataset.settingsPanel = 'subscribing';
+  applySettingsSubtab('sharing');
   subscriptionSyncFolderStates();
   restoreRefreshInputs(detail, drafts);
   restoreRefreshInputs(detail, shareDrafts);

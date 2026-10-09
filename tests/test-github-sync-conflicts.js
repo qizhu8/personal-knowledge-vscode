@@ -175,6 +175,9 @@ try {
     base: Buffer.from("# Previous\n"),
     remote: Buffer.from("# Remote\n"),
   }]));
+  assert.strictEqual(missingLocal.files[0].hasLocal, false);
+  assert.strictEqual(missingLocal.files[0].candidateSource, "unresolved", "A baseline file missing locally requires an explicit decision, never automatic Remote restoration");
+  assert.strictEqual(readGitHubSyncConflict(root, "target-delete").files[0].candidateSource, "unresolved", "The no-resurrection decision survives conflict-store reload");
   selectGitHubSyncConflictDeletion(root, "target-delete", missingLocal.files[0].path);
   assert.strictEqual(readGitHubSyncConflict(root, "target-delete").files[0].candidateSource, "delete");
   assert.match(readGitHubSyncConflict(root, "target-delete").files[0].rationale, /remove this file from GitHub/);

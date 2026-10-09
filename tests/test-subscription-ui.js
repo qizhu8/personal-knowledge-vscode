@@ -16,7 +16,7 @@ const materializer = fs.readFileSync(path.join(root, "src", "subscriptions/subsc
 const gateway = fs.readFileSync(path.join(root, "src", "subscriptions/subscription-gateway-entry.ts"), "utf8");
 const mcp = fs.readFileSync(path.join(root, "src", "mcp/mcp.ts"), "utf8");
 
-assert.match(html, /data-workspace-group="settings"[\s\S]*data-tab="subscriptions">Network &amp; Sharing</);
+assert.match(html, /data-workspace-group="settings"[\s\S]*data-tab="subscriptions">Sharing &amp; Subscribe</);
 assert.doesNotMatch(html, /id="content-toolbar"[\s\S]{0,1800}onclick="openSyncModal\(\)"/,
 	"Knowledge actions must not retain the old Sync button");
 assert.ok(html.indexOf('id="loading-banner"') < html.indexOf('<script src="%%PANEL_JS%%"></script>'), "loading banner must exist before the panel script runs");
@@ -121,7 +121,8 @@ assert.match(extension, /brokerDeleteCancelled/);
 assert.doesNotMatch(panel, /if \(confirm\(`Delete Share/);
 assert.match(panel, /function beginAction\(command, button\)/);
 assert.match(panel, /button\.disabled \|\| pendingActionButtons\.has\(command\)/);
-assert.match(panel, /if \(!beginAction\(command, button \|\| window\.event\?\.currentTarget\)\) return/);
+assert.match(panel, /const actionButton = button \|\| \(silent \? null : window\.event\?\.currentTarget\)/);
+assert.match(panel, /if \(!beginAction\(command, actionButton\)\) return/);
 assert.match(panel, /function hasPendingActionPrefix\(prefix\)/);
 assert.match(panel, /state\.tab === 'subscriptions' && !hasPendingActionPrefix\('subscription'\)/);
 assert.match(panel, /const actionTimeouts =/);
@@ -284,7 +285,9 @@ assert.match(fs.readFileSync(path.join(root, "src", "subscriptions/subscriptions
 assert.doesNotMatch(subscriptions, /Buffer\.from\(await bundleResponse\.arrayBuffer\(\)\)/,
 	"subscription downloads must not allocate the complete HTTP body in the extension host");
 assert.match(subscriptions, /pipeline\(Readable\.fromWeb\(bundleResponse\.body/);
-assert.match(subscriptions, /fork\(path\.join\(__dirname, "subscription-materialize-worker\.js"\)/);
+assert.match(subscriptions, /fork\(path\.join\(require\("path"\)\.resolve\(__dirname, "\.\."\), "subscription-materialize-worker\.js"\)/);
+assert(fs.existsSync(path.join(root, "dist", "subscription-materialize-worker.js")),
+	"the migrated subscription materializer must retain its runtime worker entry");
 assert.match(subscriptions, /isolatedProcess: true/);
 assert.match(subscriptions, /Subscription materializer timed out/);
 assert.match(subscriptions, /private pruneStaleDownloads\(\)/);

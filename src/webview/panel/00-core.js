@@ -1,4 +1,4 @@
-const vscode = acquireVsCodeApi();
+const vscode = globalThis.PkmWebviewApi || acquireVsCodeApi();
 const panelStylesReady = getComputedStyle(document.documentElement).getPropertyValue('--pkm-panel-css-ready').trim() === '1';
 if (panelStylesReady) {
   for (const id of ['topbar', 'mcp-global-warning', 'workspace-shell', 'ctx-menu', 'sync-modal-bg']) {
@@ -846,6 +846,7 @@ window.addEventListener('message', e => {
   else if (command === 'envList') {
     envCache = data || [];
     if (state.tab === 'environments') renderEnvDashboard(envCache);
+    if (e.data.refreshErrors?.length) showViewActionError(`Environment refresh incomplete: ${e.data.refreshErrors.join('; ')}`);
     const refresh = document.querySelector('#content-toolbar .tbtn[onclick="doReload()"]');
     if (refresh) { refresh.disabled = false; refresh.innerHTML = uiIcon('refresh', 'Refresh'); }
   }
@@ -904,11 +905,12 @@ window.addEventListener('message', e => {
     }
     else if (cachedKnowledgeTabs.has(state.tab)) ask('list', { tab: state.tab, filter: state.filter, q: state.search, fresh: true });
   }
+  else if (command === 'actionToolchainsConfigured') { finishAction('actionToolchainsConfigure'); }
   else if (command === 'subscriptionError') {
     const action = String(data?.action || '');
     const message = data?.error || 'Subscription action failed.';
     if (action === 'subscriptionMountGitHub' || action === 'subscriptionTestGitHubBranch') subscriptionGitHubProgressUpdate(null);
-    if (action === 'subscriptionState' && state.tab === 'subscriptions') showInitialViewError('Network & Sharing could not load', message, 'subscriptionState');
+    if (action === 'subscriptionState' && state.tab === 'subscriptions') showInitialViewError('Sharing & Subscribe could not load', message, 'subscriptionState');
     else if (action && pendingActionButtons.has(action)) failAction(message, action);
     else showViewActionError(message);
     finishLoadingProgress();
@@ -1003,7 +1005,7 @@ window.addEventListener('message', e => {
     if (cachedKnowledgeTabs.has(changedArea)) invalidateKnowledgeTabView(changedArea);
     else cachedKnowledgeTabs.forEach(invalidateKnowledgeTabView);
     if (cachedKnowledgeTabs.has(state.tab) && (!changedArea || changedArea === state.tab)) {
-      ask('list', { tab: state.tab, filter: state.filter, q: state.search }, null, true);
+      ask('list', { tab: state.tab, filter: state.filter, q: state.search, fresh:!!data?.manual }, null, true);
     }
     githubSyncUpdatedAt = 0;
     if (['skills','notes','papers','recipes'].includes(state.tab)) ensureGitHubSyncStatus();
@@ -1181,7 +1183,8 @@ window.addEventListener('message', e => {
 });
 
 function ask(command, payload, button, silent = false) {
-  if (!beginAction(command, button || window.event?.currentTarget)) return;
+  const actionButton = button || (silent ? null : window.event?.currentTarget);
+  if (!beginAction(command, actionButton)) return;
   if (command === 'detail') {
     currentDetailRequest = { type:payload.type, key:payload.key };
     payload = { ...payload, detailRequestId:++detailRequestSequence, detailTab:state.tab };
@@ -1274,6 +1277,7 @@ function isInitialViewResponse(command, message = {}) {
 }
 
 function finishLoadingProgress() {
+  globalThis.PkmHostHealth?.ready();
   clearTimeout(loadingRevealTimer);
   loadingRevealTimer = null;
   latestLoadingProgress = { stage:'ready' };
@@ -1315,13 +1319,19 @@ function renderLoadingProgress(progress = {}) {
 }
 
 // ── Topbar overflow: sliding tabs + collapsing action buttons ───────────
-function scrollTabs(dir) { const t = document.getElementById('tabs'); if (t) t.scrollBy({ left: dir * 160, behavior: 'smooth' }); }
+function scrollTabs(dir, group = document.querySelector('.workspace-context-group.active')) {
+  group?.querySelector('.workspace-context-tabs,.settings-subtabs')?.scrollBy({ left:dir * 160, behavior:'smooth' });
+}
 function updateTabNav() {
-  const t = document.getElementById('tabs'); if (!t) return;
-  const over = t.scrollWidth > t.clientWidth + 2;
-  const l = document.getElementById('tab-left'), r = document.getElementById('tab-right');
-  if (l) l.style.display = over ? '' : 'none';
-  if (r) r.style.display = over ? '' : 'none';
+  document.querySelectorAll('.workspace-context-group,.settings-tabs-group').forEach(group => {
+    const tabs = group.querySelector('.workspace-context-tabs,.settings-subtabs');
+    if (!tabs) return;
+    const overflow = tabs.scrollWidth > tabs.clientWidth + 2;
+    group.querySelectorAll('.tab-scroll').forEach(button => {
+      button.hidden = !overflow;
+      button.disabled = button.dataset.direction === '-1' ? tabs.scrollLeft <= 1 : tabs.scrollLeft + tabs.clientWidth >= tabs.scrollWidth - 1;
+    });
+  });
 }
 function sortToolbar() {
   const tb = document.getElementById('toolbar'); if (!tb) return;
@@ -1359,11 +1369,56 @@ if (window.ResizeObserver) {
   const actionbar = document.getElementById('content-toolbar'); if (actionbar) ro.observe(actionbar);
 }
 (() => {
-  const t = document.getElementById('tabs'); if (!t) return;
-  t.addEventListener('scroll', updateTabNav, { passive: true });
-  t.addEventListener('wheel', e => { if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) { t.scrollLeft += e.deltaY; e.preventDefault(); } }, { passive: false });
+  document.querySelectorAll('.workspace-context-tabs').forEach(tabs => {
+    for (const direction of [-1,1]) {
+      const button = document.createElement('button');
+      button.className = 'tab-scroll'; button.type = 'button'; button.hidden = true;
+      button.dataset.direction = String(direction);
+      button.title = direction < 0 ? 'Previous tabs' : 'Next tabs';
+      button.setAttribute('aria-label',button.title);
+      button.innerHTML = uiIcon(direction < 0 ? 'chevron-left' : 'chevron-right');
+      button.onclick = () => scrollTabs(direction,tabs.parentElement);
+      direction < 0 ? tabs.before(button) : tabs.after(button);
+    }
+    tabs.addEventListener('scroll',updateTabNav,{passive:true});
+    tabs.addEventListener('wheel',event => { if(Math.abs(event.deltaY)>Math.abs(event.deltaX)){tabs.scrollLeft+=event.deltaY;event.preventDefault()} },{passive:false});
+    if(window.ResizeObserver)new ResizeObserver(updateTabNav).observe(tabs);
+  });
 })();
 relayoutTopbar();
+
+const settingsSubtabs = { ...(vscode.getState()?.settingsSubtabs || {}) };
+function settingsTabBar(owner, entries) {
+  if (!entries.some(([id]) => id === settingsSubtabs[owner])) settingsSubtabs[owner] = entries[0][0];
+  const arrow = direction => `<button class="tab-scroll" data-direction="${direction}" type="button" hidden onclick="scrollTabs(${direction},this.parentElement)" aria-label="${direction < 0 ? 'Previous' : 'Next'} settings tabs" title="${direction < 0 ? 'Previous' : 'Next'} settings tabs">${uiIcon(direction < 0 ? 'chevron-left' : 'chevron-right')}</button>`;
+  return `<div class="settings-tabs-group">${arrow(-1)}<nav class="settings-subtabs" role="tablist" aria-label="${esc(owner)} sections" onscroll="updateTabNav()">${entries.map(([id,label]) => `<button role="tab" type="button" data-settings-tab="${id}" aria-selected="${settingsSubtabs[owner] === id}" class="${settingsSubtabs[owner] === id ? 'active' : ''}" onclick="selectSettingsSubtab('${owner}','${id}')">${esc(label)}</button>`).join('')}</nav>${arrow(1)}</div>`;
+}
+function selectSettingsSubtab(owner, id) {
+  settingsSubtabs[owner] = id;
+  vscode.setState({ ...(vscode.getState() || {}), settingsSubtabs:{...settingsSubtabs} });
+  applySettingsSubtab(owner);
+}
+function applySettingsSubtab(owner) {
+  const root = document.querySelector(`[data-settings-owner="${owner}"]`);
+  if (!root) return;
+  root.querySelectorAll('[data-settings-panel]').forEach(panel => { panel.hidden = !panel.dataset.settingsPanel.split(' ').includes(settingsSubtabs[owner]); });
+  root.querySelectorAll('[data-settings-tab]').forEach(button => {
+    const active = button.dataset.settingsTab === settingsSubtabs[owner];
+    button.classList.toggle('active',active); button.setAttribute('aria-selected',String(active));
+    button.tabIndex = active ? 0 : -1;
+    button.onkeydown = event => {
+      const buttons = [...button.parentElement.querySelectorAll('[data-settings-tab]')];
+      let next = buttons.indexOf(button);
+      if (event.key === 'ArrowRight') next = (next + 1) % buttons.length;
+      else if (event.key === 'ArrowLeft') next = (next + buttons.length - 1) % buttons.length;
+      else if (event.key === 'Home') next = 0;
+      else if (event.key === 'End') next = buttons.length - 1;
+      else return;
+      event.preventDefault(); buttons[next].click(); buttons[next].focus();
+    };
+  });
+  requestAnimationFrame(updateTabNav);
+}
 
 function initColumnResizer(handleId, targetId, storageKey, minWidth, maxWidth, direction, useFlex) {
   const handle = document.getElementById(handleId);

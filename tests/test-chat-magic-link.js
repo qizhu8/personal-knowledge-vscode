@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 const assert = require("assert");
-const { createChatMagicLink, parseChatMagicLink } = require("../dist/chatroom/chatroom/chat-magic-link");
+const { createChatMagicLink, parseChatMagicLink } = require("../dist/chatroom/chat-magic-link");
 
 const url = "ws://127.0.0.1:7345/design";
 const current = createChatMagicLink(url, "secret-value", "room-uuid-123");

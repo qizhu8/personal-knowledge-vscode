@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { ApiChatMessage, ApiChatRequest, ApiChatToolEvent, ChatImage, decodeChatImage } from "./api-chat-client";
+import { ApiChatMessage, ApiChatRequest, ApiChatToolEvent, ChatImage, decodeChatImage, ChatToolLoopGuard, toolBudgetSummary } from "./api-chat-client";
 import { ChatModelProfile } from "./api-chat-models";
 import { abortable } from "./api-chat-tools";
 
@@ -40,12 +40,16 @@ export async function discoverVscodeModels(host = vscode, signal?: AbortSignal):
   }
 }
 
-type VscodeChatRequest = Pick<ApiChatRequest, "messages" | "signal" | "maxOutputTokens" | "contextWindow" | "onImage" | "tools" | "onTool" | "beforeRound" | "onStage" | "onUsage" | "onUsageMetadata">;
+type VscodeChatRequest = Pick<ApiChatRequest, "messages" | "signal" | "timeoutMs" | "maxOutputTokens" | "maxToolRounds" | "loopReviewAfterMs" | "loopReviewClock" | "loopExemptTools" | "onToolLoopNotice" | "contextWindow" | "onImage" | "tools" | "onTool" | "beforeRound" | "onStage" | "onUsage" | "onUsageMetadata">;
 type NativePart = { value?: string; callId?: string; name?: string; input?: unknown; data?: Uint8Array; mimeType?: string };
 
 export async function streamVscodeChat(model: VscodeChatModel, request: VscodeChatRequest,
   onText: (text: string) => void, host = vscode): Promise<void> {
+  const controller = new AbortController();
   const { signal } = request;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const loop = new ChatToolLoopGuard(request);
   const cancellation = new host.CancellationTokenSource();
   const native = host as typeof host & {
     LanguageModelTextPart?: new (value: string) => NativePart;
@@ -53,7 +57,7 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
     LanguageModelToolResultPart?: new (id: string, content: NativePart[]) => NativePart;
     LanguageModelDataPart?: new (data: Uint8Array, mimeType: string) => NativePart;
   };
-  const cancel = () => cancellation.cancel();
+  const cancel = () => { controller.abort(); cancellation.cancel(); };
   signal.addEventListener("abort", cancel, { once: true });
   if (signal.aborted) cancel();
   try {
@@ -66,14 +70,29 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
     const messages = [...request.messages];
     const callIds = new Set<string>();
     let characters = 0;
-    let outputUsed = 0;
     let imagesReturned = 0;
     let metadataParts = 0;
-    for (let round = 0; round < 8; round++) {
+    for (let round = 0; ; round++) {
+      await loop.beforeRound(round, signal);
+      if (loop.summarizing) messages.push({ role: "system", content: toolBudgetSummary });
       const hasImages = messages.some(message => message.images?.length);
       if (hasImages && (model.capabilities?.imageInput !== true || !native.LanguageModelDataPart || !native.LanguageModelTextPart || typeof model.countTokens !== "function")) throw new VscodeChatError("This model/host does not expose image input and image token counting. Select a vision-capable VS Code model.");
-      const remaining = (request.maxOutputTokens ?? 1024) - outputUsed;
+      const remaining = request.maxOutputTokens ?? vscodeModelProfile(model).maxOutputTokens;
       if (remaining < 1) throw new VscodeChatError("Local output budget exhausted. Partial output was preserved.");
+      let outputText = "";
+      let nextTokenCheck = remaining;
+      const checkOutputBudget = async (text: string, force = false) => {
+        const bytes = Buffer.byteLength(text, "utf8");
+        if (typeof model.countTokens !== "function") {
+          if (bytes > remaining) throw new VscodeChatError("Local output budget exhausted. Partial output was preserved; provider usage may be higher.");
+          return;
+        }
+        if (!force && bytes < nextTokenCheck) return;
+        const tokens = await abortable(model.countTokens(text, cancellation.token), controller.signal);
+        if (!Number.isSafeInteger(tokens) || tokens < 0) throw new VscodeChatError("Output token count is unavailable. Partial output was preserved; no pending tool was executed.");
+        if (tokens > remaining) throw new VscodeChatError("Local output budget exhausted. Partial output was preserved; provider usage may be higher.");
+        nextTokenCheck = bytes + Math.max(1, remaining - tokens);
+      };
       try { request.beforeRound?.(messages, remaining); }
       catch (error) { throw new VscodeChatError(error instanceof Error ? error.message : "Context budget exceeded."); }
       const prompt = messages.map(message => {
@@ -102,12 +121,13 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
         }
         if (!Number.isSafeInteger(request.contextWindow) || tokens + remaining > Math.min(request.contextWindow!, model.maxInputTokens)) throw new VscodeChatError("Image context budget exceeded. Remove images/history or increase Context.");
       }
+      if (request.loopReviewAfterMs !== undefined) timer = setTimeout(() => { timedOut = true; cancel(); }, request.timeoutMs ?? 120_000);
       request.onStage?.("connecting");
       const options: vscode.LanguageModelChatRequestOptions & { tools?: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> } = {
         justification: "Allow PKM native Chat to use the selected model with your selected context.",
-        ...(request.tools?.length ? { tools: request.tools.map(tool => ({ name: tool.name, description: tool.description, inputSchema: tool.parameters })) } : {}),
+        ...(request.tools?.length && !loop.summarizing ? { tools: request.tools.map(tool => ({ name: tool.name, description: tool.description, inputSchema: tool.parameters })) } : {}),
       };
-      const response = await abortable(model.sendRequest(prompt, options, cancellation.token), signal);
+      const response = await abortable(model.sendRequest(prompt, options, cancellation.token), controller.signal);
       request.onStage?.("waiting");
       const structured = (response as typeof response & { stream?: AsyncIterable<NativePart> }).stream;
       const iterator: AsyncIterator<NativePart | string> = (structured || response.text)[Symbol.asyncIterator]();
@@ -116,21 +136,23 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
       const responseImages: ChatImage[] = [];
       let usage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number } | undefined;
       while (true) {
-        const next = await abortable(iterator.next(), signal);
+        const next = await abortable(iterator.next(), controller.signal);
         if (next.done) break;
         const part = next.value;
         if (typeof part === "string" || (native.LanguageModelTextPart && part instanceof native.LanguageModelTextPart)) {
           const text = typeof part === "string" ? part : part.value || "";
-          outputUsed += Buffer.byteLength(text, "utf8"); characters += text.length;
-          if (outputUsed > (request.maxOutputTokens ?? 1024)) throw new VscodeChatError("Local output budget exhausted. Partial output was preserved; provider usage may be higher.");
+          characters += text.length;
           if (characters > 100_000) throw new VscodeChatError("Response exceeded the local size limit.");
+          const nextOutput = outputText + text;
+          await checkOutputBudget(nextOutput);
+          outputText = nextOutput;
           responseText += text; if (text) onText(text);
         } else if (native.LanguageModelToolCallPart && part instanceof native.LanguageModelToolCallPart) {
           if (!part.callId || !part.name || part.callId.length > 200 || part.name.length > 200 || callIds.has(part.callId) || calls.length >= 16) throw new VscodeChatError("Invalid or duplicate tool call. No pending tool was executed.");
           const arguments_ = JSON.stringify(part.input);
           if (!arguments_ || arguments_.length > 32_000 || !part.input || typeof part.input !== "object" || Array.isArray(part.input)) throw new VscodeChatError("Invalid tool arguments. No pending tool was executed.");
-          outputUsed += Buffer.byteLength(JSON.stringify({ id: part.callId, name: part.name, arguments: arguments_ }), "utf8");
-          if (outputUsed >= (request.maxOutputTokens ?? 1024)) throw new VscodeChatError("Local output budget exhausted. No pending tool was executed.");
+          outputText += JSON.stringify({ id: part.callId, name: part.name, arguments: arguments_ });
+          await checkOutputBudget(outputText, true);
           callIds.add(part.callId); calls.push({ id: part.callId, type: "function", function: { name: part.name, arguments: arguments_ } });
         } else if (native.LanguageModelDataPart && part instanceof native.LanguageModelDataPart) {
           if (["usage", "stateful_marker", "thinking", "context_management", "phase_data", "cache_control"].includes(part.mimeType || "")) {
@@ -157,18 +179,27 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
           responseImages.push(image); request.onImage(image);
         } else throw new VscodeChatError("The model returned an unsupported response part.");
       }
+      if (outputText) await checkOutputBudget(outputText, true);
+      clearTimeout(timer);
       if (usage) request.onUsage?.(usage);
       if (!calls.length) {
         if (!characters && !imagesReturned) throw new VscodeChatError("The model returned an empty response.");
         return;
       }
       if (!request.tools?.length) throw new VscodeChatError("Tool execution is not enabled. No pending tool was executed.");
-      if (round === 7) throw new VscodeChatError("Tool round limit reached. No pending tool was executed.");
+      if (loop.summarizing) throw new VscodeChatError("The model requested more tools during the final summary. Completed results were preserved; no additional tool was executed.");
       messages.push({ role: "assistant", content: responseText, tool_calls: calls, ...(responseImages.length ? { images: responseImages } : {}) });
       for (const call of calls) {
+        await loop.beforeRound(round, signal);
         if (signal.aborted) throw new VscodeChatError("Request cancelled.");
         const tool = request.tools.find(item => item.name === call.function.name);
         const event: ApiChatToolEvent = { id: call.id, name: tool?.label || call.function.name, arguments: call.function.arguments, status: "running" };
+        if (loop.summarizing) {
+          const result = JSON.stringify({ error: "Not executed: tool-loop continuation was not approved; use completed results." });
+          request.onTool?.({ ...event, status: "failed", result });
+          messages.push({ role: "tool", content: result, tool_call_id: call.id });
+          continue;
+        }
         request.onTool?.(event);
         let result: string;
         try {
@@ -184,14 +215,17 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
           result = JSON.stringify({ error: error instanceof Error ? error.message : "Tool failed." });
           request.onTool?.({ ...event, status: "failed", result });
         }
+        loop.record(tool, call.function.name, call.function.arguments, result);
         messages.push({ role: "tool", content: result, tool_call_id: call.id });
       }
     }
   } catch (error) {
+    if (timedOut) throw new VscodeChatError("The VS Code model call timed out. Partial output was preserved; no automatic retry was performed.");
     if (signal.aborted) throw new Error("Request cancelled.");
     if (error instanceof VscodeChatError) throw error;
     throw new Error("VS Code model request failed. Check extension permission, model availability and account quota. Partial output was preserved.");
   } finally {
+    clearTimeout(timer);
     signal.removeEventListener("abort", cancel);
     cancellation.cancel(); cancellation.dispose();
   }

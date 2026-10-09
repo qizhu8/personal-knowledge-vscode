@@ -179,6 +179,8 @@ const cacheElements = {
 };
 const cachedItems = Array.from({ length: 5000 }, (_, index) => ({ slug: `note-${index}` }));
 const tabCacheContext = {
+  currentDetail: null,
+  currentDetailRequest: null,
   state: { filter: 'all', search: '', items: cachedItems, folders: ['Large'], subscriptionGroups: [], knowledgeTrash: [], privateTopLevels: [], brokerSharedFolders: {} },
   document: { createDocumentFragment: () => new FakeContainer(), getElementById: id => cacheElements[id] },
   renderSubscribedGroups: () => {},
@@ -241,7 +243,8 @@ assert.match(core, /e\.data\.tab && e\.data\.tab !== state\.tab\) return/);
 assert.match(core, /inventoryReady[\s\S]{0,300}fresh: true/);
 assert.match(core, /skillTrashResult[\s\S]{0,700}fresh:true/);
 assert.match(extension, /const useInventory = !msg\.fresh/);
-assert.match(knowledge, /search\.value = ''[\s\S]{0,80}state\.search = ''/);
+assert.match(knowledge, /state\.search = '';[\s\S]{0,50}closePanelFind\(\)/);
+assert.match(knowledge, /document\.getElementById\('searchbox'\)\.value = ''/);
 assert.match(knowledge, /ask\('refreshKnowledgeFolder', \{ area: state\.tab, category \}\)/);
 assert.match(extension, /case "refreshKnowledgeFolder"[\s\S]{0,1200}Folder scan timed out after 3 seconds/);
 assert.match(extension, /target !== root && !target\.startsWith\(root \+ path\.sep\)/);

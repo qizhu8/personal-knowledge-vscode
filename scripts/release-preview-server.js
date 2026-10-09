@@ -326,7 +326,9 @@ function bootstrap(view) {
     postMessage: message => setTimeout(() => {
       window.__previewMessages.push(message);
       const send = (command, data) => window.dispatchEvent(new MessageEvent('message', { data: { command, data } }));
-      if (message.command === 'ready') {
+      if (message.command === 'hostHealth') {
+        window.dispatchEvent(new MessageEvent('message', { data: { command: 'hostHealth', id: message.id } }));
+      } else if (message.command === 'ready') {
         send('tourCatalog', { version:'3.2.0', modules:${JSON.stringify(FEATURE_TOUR_MODULES)} });
         send('subscriptionState', ${JSON.stringify(demoSubscriptions)});
         send('githubSyncState', ${JSON.stringify(demoGitHubSync)});
@@ -338,6 +340,7 @@ function bootstrap(view) {
         Object.entries(${JSON.stringify(sizes)}).forEach(([key, bytes]) => send('mcpPathSize', { key, bytes }));
       } else if (message.command === 'chatState') { send('chatState', __chat); send('chatRecents', { recents: ${JSON.stringify(demoChatRecents)} }); }
       else if (message.command === 'projectState') send('projectState', ${JSON.stringify(demoProjects)});
+      else if (message.command === 'skillRouterStatus') send('skillRouterStatus', {activeProfile:'l1_online', sources:[], sourcePriority:[], runtime:{ready:true,engineVersion:'isolated-preview'}, collector:{collectedTools:[]}, solutions:{l1_online:{externallyServed:true}}});
       else if (message.command === 'recipeOpenBrowser') window.dispatchEvent(new CustomEvent('releaseRecipeOpenBrowser', { detail:message }));
       else if (message.command === 'recipeUpdate') window.dispatchEvent(new CustomEvent('releaseRecipeUpdate', { detail:message }));
       else if (message.command === 'subscriptionState') send('subscriptionState', ${JSON.stringify(demoSubscriptions)});
@@ -434,6 +437,7 @@ function panelHtml(view) {
     "%%MARKED_SRC%%": "/marked.umd.js", "%%HLJS_SRC%%": "/hljs.js", "%%KATEX_SRC%%": "/katex.js",
     "%%CYTOSCAPE_SRC%%": "/cytoscape.js", "%%MERMAID_SRC%%": "/mermaid.js", "%%FORCEGRAPH3D_SRC%%": "/forcegraph3d.js",
     "%%PANEL_CSS%%": "/panel.css", "%%PANEL_JS%%": "/panel.js", "%%PKM_VERSION%%": "3.2.0",
+    "%%HOST_HEALTH_CSS%%": "/host-health.css", "%%HOST_HEALTH_JS%%": "/host-health.js",
     "%%I18N_PAYLOAD_B64%%": Buffer.from(JSON.stringify({ setting: "en", resolved: "en", locales: localeManifest.locales, catalogs }), "utf8").toString("base64"),
   };
   for (const [token, value] of Object.entries(replacements)) html = html.split(token).join(value);

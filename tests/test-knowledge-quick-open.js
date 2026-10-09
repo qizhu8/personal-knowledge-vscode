@@ -6,6 +6,8 @@ const {
   PkmLocatorError,
   parsePkmLocator,
   resolvePkmLocator,
+  chatPkmUrl,
+  chatIdFromPkmUrl,
 } = require("../dist/knowledge/knowledge-locator");
 
 const inventory = [
@@ -93,6 +95,22 @@ function rejects(locator, code) {
     locator,
   );
 }
+const namespace = "0123456789abcdef";
+const chatId = "816fcfcc-05f3-4506-9b10-eeb09efbafd2";
+const chatUrl = `pkm://chats/${namespace}/${chatId}`;
+assert.strictEqual(chatPkmUrl(namespace, chatId), chatUrl);
+assert.deepStrictEqual(parsePkmLocator(chatUrl), { kind: "chat", locator: chatUrl, namespace, chatId });
+assert.deepStrictEqual(resolvePkmLocator(chatUrl, []), { kind: "chat", locator: chatUrl, namespace, chatId, title: "PKM Chat" });
+assert.strictEqual(chatIdFromPkmUrl(chatUrl, namespace), chatId);
+assert.strictEqual(chatIdFromPkmUrl(chatId, namespace), chatId);
+assert.throws(() => chatIdFromPkmUrl(chatUrl, "aaaaaaaaaaaaaaaa"), /another workspace/);
+assert.throws(() => chatIdFromPkmUrl("pkm://notes/Team/Meeting.md", namespace), /Chat URL/);
+rejects(`pkm://chats/${namespace}/not-a-uuid`, "invalid");
+rejects(`pkm://chats/wrong/${chatId}`, "invalid");
+rejects(chatUrl + "/", "invalid");
+rejects(chatUrl + "/extra", "invalid");
+rejects(chatUrl + "?host=anything", "invalid");
+rejects(`pkm://chats/${namespace}/%2e%2e`, "invalid");
 rejects("", "invalid");
 rejects("https://example.com", "invalid");
 rejects("pkm://knowledge/not-an-id", "invalid");

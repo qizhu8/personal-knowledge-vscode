@@ -5,10 +5,10 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { fork } = require("child_process");
-const { ChatRoomLock } = require("../dist/chatroom/chatroom/chat-room-lock");
-const { ChatRoomCredentialStore } = require("../dist/chatroom/chatroom/chat-room-credentials");
-const { ChatRoomLifecycle } = require("../dist/chatroom/chatroom/chat-room-lifecycle");
-const { ChatHub } = require("../dist/chatroom/chatroom/chatroom-hub");
+const { ChatRoomLock } = require("../dist/chatroom/chat-room-lock");
+const { ChatRoomCredentialStore } = require("../dist/chatroom/chat-room-credentials");
+const { ChatRoomLifecycle } = require("../dist/chatroom/chat-room-lifecycle");
+const { ChatHub } = require("../dist/chatroom/chatroom-hub");
 
 class FileSecretStorage {
   constructor(filePath) { this.filePath = filePath; }

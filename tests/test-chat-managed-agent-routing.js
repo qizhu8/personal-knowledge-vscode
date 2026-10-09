@@ -3,7 +3,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 
-const { messageAddressesManagedAgent } = require("../dist/chatroom/chatroom/chat-managed-agent-routing");
+const { messageAddressesManagedAgent } = require("../dist/chatroom/chat-managed-agent-routing");
 const extensionSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'extension.ts'), 'utf8');
 const aiSource = fs.readFileSync(path.join(__dirname, '..', 'src', "ai/ai.ts"), 'utf8');
 

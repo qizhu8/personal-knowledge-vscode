@@ -2,7 +2,7 @@
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
-const { ChatHub } = require("../dist/chatroom/chatroom/chatroom-hub.js");
+const { ChatHub } = require("../dist/chatroom/chatroom-hub.js");
 
 const hub = new ChatHub();
 assert.ok(hub.publicHost);

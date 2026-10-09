@@ -1,6 +1,76 @@
 import { createServer, Server } from "http";
+import { createHash } from "crypto";
 import { existsSync, readFileSync, statSync } from "fs";
 import { extname, resolve, sep } from "path";
+
+function liveRefreshScript(version: string): string {
+  return `<script data-pkm-live-refresh>
+(() => {
+  const version = ${JSON.stringify(version)};
+  const key = 'pkm-reader-position:' + location.pathname;
+  let dirty = false;
+  const searchPanel = document.querySelector('.reader-search');
+  if (searchPanel) {
+    searchPanel.hidden = true;
+    let returnFocus;
+    document.addEventListener('keydown', event => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+        event.preventDefault();
+        returnFocus = document.activeElement;
+        document.querySelector('.reader-sidebar > details').open = true;
+        searchPanel.hidden = false;
+        searchPanel.querySelector('input').focus();
+      } else if (event.key === 'Escape' && !searchPanel.hidden) {
+        event.preventDefault();
+        const input = searchPanel.querySelector('input');
+        input.value = '';
+        input.dispatchEvent(new Event('input', { bubbles:true }));
+        searchPanel.hidden = true;
+        returnFocus?.focus();
+      }
+    });
+  }
+  document.addEventListener('input', event => {
+    if (event.target.closest('.reader-search')) return;
+    if (event.target.matches('input,textarea,select') || event.target.isContentEditable) dirty = true;
+  });
+  window.addEventListener('load', () => {
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(key) || 'null');
+      sessionStorage.removeItem(key);
+      if (!saved) return;
+      const search = document.querySelector('.reader-search input');
+      if (search && saved.search) { search.value = saved.search; search.dispatchEvent(new Event('input', { bubbles:true })); }
+      if (searchPanel) searchPanel.hidden = !saved.searchOpen;
+      const library = document.querySelector('.reader-sidebar > details');
+      if (library) library.open = saved.libraryOpen !== false;
+      const sidebar = document.querySelector('.reader-sidebar');
+      if (sidebar) sidebar.scrollTop = saved.sidebarY || 0;
+      scrollTo(saved.x, saved.y);
+    } catch {}
+  });
+  async function check() {
+    try {
+      if (document.visibilityState !== 'hidden' && !dirty && document.documentElement.dataset.pkmDirty !== 'true') {
+        const response = await fetch(location.href, { method:'HEAD', cache:'no-store', credentials:'same-origin' });
+        if (response.ok && response.headers.get('ETag') && response.headers.get('ETag') !== version) {
+          if (!dirty && document.documentElement.dataset.pkmDirty !== 'true') {
+            try { sessionStorage.setItem(key, JSON.stringify({ x:scrollX, y:scrollY, search:document.querySelector('.reader-search input')?.value || '', searchOpen:searchPanel && !searchPanel.hidden, libraryOpen:document.querySelector('.reader-sidebar > details')?.open, sidebarY:document.querySelector('.reader-sidebar')?.scrollTop || 0 })); } catch {}
+            location.reload();
+            return;
+          }
+        } else if (response.status === 403 || response.status === 404) {
+          location.reload();
+          return;
+        }
+      }
+    } catch {}
+    setTimeout(check, 2000);
+  }
+  setTimeout(check, 2000);
+})();
+</script>`;
+}
 
 export interface LiveMarkdownServer {
   server: Server;
@@ -47,8 +117,11 @@ export async function startLiveMarkdownServer(
         const documentPath = pathname.replace(/^\/+/, "").replace(/\.html$/i, "");
         const html = renderDocument(documentPath);
         if (!html) { res.writeHead(404); res.end("Markdown document not found"); return; }
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store, no-cache, must-revalidate" });
-        res.end(html); return;
+        const version = `"${createHash("sha256").update(html).digest("hex")}"`;
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store, no-cache, must-revalidate", ETag: version });
+        if (req.method === "HEAD") { res.end(); return; }
+        const script = liveRefreshScript(version);
+        res.end(html.includes("</body>") ? html.replace("</body>", `${script}</body>`) : html + script); return;
       }
       const requested = pathname.replace(/^\/+/, "");
       const mapping = roots.find(item => !item.prefix || requested === item.prefix || requested.startsWith(item.prefix + "/"));

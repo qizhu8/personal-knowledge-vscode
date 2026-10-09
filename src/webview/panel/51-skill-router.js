@@ -18,12 +18,13 @@ const skillRouterParameterDetails = {
 };
 
 function renderSkillRouterLoading() {
-  document.getElementById('detail').innerHTML = '<div class="empty">Loading Router…</div>';
+  document.getElementById('detail').innerHTML = `<div class="sr-dashboard" data-settings-owner="router"><h2>Router</h2>${settingsTabBar('router',[['sources','Skill sources'],['performance','Retrieval & performance'],['privacy','Collector & privacy']])}<p role="status">Retrieving available Router status...</p></div>`;
+  applySettingsSubtab('router');
 }
 
 function showSkillRouterTab() {
   if (skillRouterStatusCache) renderSkillRouterPane(skillRouterStatusCache); else renderSkillRouterLoading();
-  if (!tabCacheIsFresh(skillRouterStatusUpdatedAt)) ask('skillRouterStatus', {}, null, Boolean(skillRouterStatusCache));
+  if (!tabCacheIsFresh(skillRouterStatusUpdatedAt)) ask('skillRouterStatus', {}, null, true);
 }
 
 function skillRouterOnStatus(data) {
@@ -121,8 +122,9 @@ function renderSkillRouterPane(data) {
   }).join('');
   const metrics = benchmark.metrics;
   const measuredRow = metrics ? `<tr data-sr-profile="l1_online"><td><strong>Exact + BM25</strong><small> ${Number(metrics.judgedQueries)} labeled queries · ${Number(metrics.samples)} runs</small></td><td>${Math.round(Number(metrics.successRate) * 100)}%</td><td>${Math.round(Number(metrics.precisionAt5) * 100)}%</td><td>${Math.round(Number(metrics.ndcgAt5) * 100)}%</td><td title="p50 / p95">${Number(metrics.latencyMs.p50).toFixed(1)} / ${Number(metrics.latencyMs.p95).toFixed(1)} ms</td></tr>` : '<tr><td colspan="5">No measured run yet.</td></tr>';
-  document.getElementById('detail').innerHTML = `<div class="sr-dashboard">
+  document.getElementById('detail').innerHTML = `<div class="sr-dashboard" data-settings-owner="router">
     <header class="sr-head"><div><h2>Router</h2><p>Control Skill source priority and inspect the implemented retrieval engine.</p></div><button class="tbtn" onclick="ask('skillRouterStatus',{})">Refresh</button></header>
+    ${settingsTabBar('router',[['sources','Skill sources'],['performance','Retrieval & performance'],['privacy','Collector & privacy']])}
     <div class="sr-contract current"><strong>Automatic fallback: ${active === 'l1_online' ? 'Exact + BM25 → Copilot default' : 'Copilot default'}.</strong><span>Disable or enable any mature solution below. If every PKM solution is disabled or unavailable, the router falls back automatically. Model-based Hybrid remains system-disabled until its engine matures.</span></div>
     <section class="sr-section"><div class="sr-section-head"><div><h3>Skill source priority</h3><p>Drag sources into precedence order. Relevance admission still applies, and explicit or required Skills remain protected.</p></div>${skillRouterStatusBadge(skillRouterSourceSaving ? 'Saving…' : `${orderedSources.length} sources`, skillRouterSourceSaving ? 'warn' : 'good')}</div><div class="sr-source-list">${sourceRows || '<div class="empty">No Skill sources are available.</div>'}</div><p class="sr-source-note">PKM Personal and individual Subscribers are ranked here after relevance admission. Agent Native is selected by the active Agent host; its position is sent as a routing preference without inventing host candidates or scores.</p></section>
     <section class="sr-section"><div class="sr-section-head"><div><h3>Routing paths</h3><p>Only the active PKM route has a runnable local benchmark. Other paths retain their availability state.</p></div><div><span>Active: <strong>${esc(active)}</strong></span></div></div><div class="sr-table-wrap"><table class="sr-table"><thead><tr><th>Routing path</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div></section>
@@ -133,6 +135,17 @@ function renderSkillRouterPane(data) {
     <div class="sr-lower-grid"><section class="sr-section"><div class="sr-section-head"><div><h3>Runtime</h3><p>Current local retrieval worker and indexed corpus.</p></div>${skillRouterStatusBadge(runtime.ready ? 'Ready' : 'Unavailable', runtime.ready ? 'good' : 'warn')}</div><dl class="sr-facts"><div><dt>Documents</dt><dd>${Number(corpus.documentCount || runtime.documentCount || 0).toLocaleString()}</dd></div><div><dt>Corpus revision</dt><dd><code>${esc(String(corpus.revision || runtime.corpusRevision || 'Not ready').slice(0, 12))}</code></dd></div><div><dt>Engine</dt><dd>${esc(runtime.engineVersion || 'Not running')}</dd></div><div><dt>Configuration</dt><dd><code>${esc(String(runtime.configurationHash || '').slice(0, 12) || 'Not available')}</code></dd></div></dl>${runtime.error ? `<p class="sr-runtime-error">${esc(runtime.error)}</p>` : ''}</section>
       <section class="sr-section"><div class="sr-section-head"><div><h3>Privacy boundary</h3><p>Current retrieval behavior.</p></div>${skillRouterStatusBadge('Local index', 'good')}</div><ul class="sr-boundary"><li><b>Index</b><span>PKM builds a local Exact + BM25 index over configured knowledge.</span></li><li><b>Collector</b><span>Task identity is hashed; only aggregate retrieval and outcome fields are emitted.</span></li><li><b>Training</b><span>No parameter training or embedding-model modification is active.</span></li></ul></section></div>
   </div>`;
+  const root = document.querySelector('[data-settings-owner="router"]');
+  root.querySelector('.sr-source-list').closest('section').dataset.settingsPanel = 'sources';
+  root.querySelector('.sr-solution-state').closest('section').dataset.settingsPanel = 'sources performance';
+  for (const table of root.querySelectorAll('.sr-table')) if (table.querySelector('th')?.textContent === 'Measured path') table.closest('section').dataset.settingsPanel = 'performance';
+  root.querySelector('.sr-parameter-layout').closest('section').dataset.settingsPanel = 'performance';
+  root.querySelector('.sr-privacy-declaration').dataset.settingsPanel = 'privacy';
+  root.querySelector('.sr-boundary').closest('section').dataset.settingsPanel = 'privacy';
+  root.querySelector('.sr-lower-grid').dataset.settingsPanel = 'performance privacy';
+  root.querySelector('.sr-lower-grid .sr-section:first-child').dataset.settingsPanel = 'performance';
+  root.querySelector('.sr-lower-grid .sr-section:last-child').dataset.settingsPanel = 'privacy';
+  applySettingsSubtab('router');
 }
 
 function skillRouterInspectParameter(id, button) {

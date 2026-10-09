@@ -123,6 +123,30 @@ assert.deepStrictEqual(pythonScript.model.spec.nodes[0].config, {
   runtime: "python", script: "print('ready')", environmentId: "analysis-env",
   timeoutSeconds: 300, maxOutputBytes: 65536
 });
+const parameterizedScript = compileWorkflowDefinitionV1(definition({
+  inputs: { path: { type: "string", required: true, nullable: false, schema: {} } },
+  nodes: [{ nodeId: "transfer", kind: "pkm.step.script/v1", config: {
+    runtime: "python", environmentId: "analysis-env", script: "import sys; print(sys.argv[1:])",
+    args: ["${inputs.path}", "", "--overwrite=false"]
+  }, dependsOn: [] }],
+  completion: { requiredNodes: ["transfer"] }
+}));
+assert.strictEqual(parameterizedScript.ok, true, JSON.stringify(parameterizedScript.diagnostics));
+assert.deepStrictEqual(parameterizedScript.model.spec.nodes[0].config.args,
+  ["${inputs.path}", "", "--overwrite=false"]);
+const pipelineDefinition = JSON.parse(JSON.stringify(parameterizedScript.model));
+pipelineDefinition.spec.nodes[0].kind = "pkm.step.pipeline/v1";
+pipelineDefinition.spec.nodes[0].config.executor = "script";
+const pipeline = compileWorkflowDefinitionV1(pipelineDefinition);
+assert.strictEqual(pipeline.ok, true, JSON.stringify(pipeline.diagnostics));
+assert.strictEqual(pipeline.model.spec.nodes[0].kind, "pkm.step.pipeline/v1");
+assert.strictEqual(pipeline.model.spec.nodes[0].config.executor, "script");
+assert.deepStrictEqual(pipeline.model.spec.nodes[0].config.args,
+  ["${inputs.path}", "", "--overwrite=false"]);
+for (const args of ["one string", [null], ["embedded\0null"]]) {
+  assertDiagnostic(definition({ nodes: [{ nodeId: "run", kind: "pkm.step.script/v1",
+    config: { runtime: "bash", script: "echo ready", args }, dependsOn: [] }] }), "E3003", "/spec/nodes/0/config/args");
+}
 assertDiagnostic(definition({ nodes: [{ nodeId: "run", kind: "pkm.step.script/v1", config: { runtime: "python", script: "print('no fallback')" }, dependsOn: [] }] }), "E3005", "/spec/nodes/0/config/environmentId");
 
 const nativeOperation = compileWorkflowDefinitionV1(definition({

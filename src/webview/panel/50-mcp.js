@@ -26,14 +26,13 @@ function mcpI18nAttrs(key, params = {}) {
 }
 
 function renderMcpLoading() {
-  document.getElementById('detail').innerHTML = `<div style="padding:32px 36px;max-width:720px">
-    <div style="color:var(--muted);font-size:12px">Consulting the MCP server wards…</div>
-  </div>`;
+  document.getElementById('detail').innerHTML = `<div class="settings-pane" data-settings-owner="mcp"><h2>Personal Knowledge Manager</h2>${settingsTabBar('mcp',[['general','General Setting'],['mcp','MCP'],['access','Agent feature access'],['debug','Debug']])}<section data-settings-panel="general"><p>${esc(document.getElementById('pkm-version')?.textContent || '')}</p><p role="status">Checking component health and paths in the background...</p></section><section data-settings-panel="mcp access debug"><p role="status">Status has not been received yet.</p></section></div>`;
+  applySettingsSubtab('mcp');
 }
 
 function showMcpTab() {
   if (mcpStatusCache) renderMcpPane(mcpStatusCache); else renderMcpLoading();
-  if (!tabCacheIsFresh(mcpStatusUpdatedAt)) ask('checkMcp', {}, null, Boolean(mcpStatusCache));
+  if (!tabCacheIsFresh(mcpStatusUpdatedAt)) ask('checkMcp', {}, null, true);
 }
 
 function mcpOnStatus(data) {
@@ -360,13 +359,14 @@ function renderLoadProfiling(data) {
 function renderMcpPane(data) {
   const el = document.getElementById('detail');
   const previousScrollTop = el?.scrollTop || 0;
+  const drafts = captureRefreshInputs(el, 'input[id],textarea[id],select[id]', true);
   const installed = data?.installed;
   const serverPath = data?.serverPath ?? '';
   const python = data?.mcpPython || { path:'', version:'', valid:false, source:'none', error:'Python status unavailable.' };
   const runtime = data?.mcpRuntime || { path:'', python:'', exists:false, healthy:false, registered:false, error:'Managed runtime status unavailable.' };
   const regenerate = mcpRegeneratePresentation(data);
   el.innerHTML = `
-    <div style="padding:28px 36px;max-width:980px">
+    <div class="settings-pane" data-settings-owner="mcp" style="max-width:980px">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px">
         <span style="font-size:22px">${uiIcon('library')}</span>
         <span style="font-size:17px;font-weight:700">Personal Knowledge Manager</span>
@@ -374,12 +374,16 @@ function renderMcpPane(data) {
         <span style="flex:1"></span>
         <label class="pkm-language-control"><span data-i18n="language.label">Language</span><select id="pkm-language-select" onchange="changeUiLanguage(this.value)" data-i18n-title="language.choose" title="${esc(t('language.choose'))}">${languageOptionsHtml()}</select></label>
       </div>
+      ${settingsTabBar('mcp',[['general','General Setting'],['mcp','MCP'],['access','Agent feature access'],['debug','Debug']])}
       <p style="color:var(--muted);font-size:12px;margin-bottom:14px;line-height:1.6">
         Configure the external runtimes and Agent integrations used by Personal Knowledge Manager.
       </p>
       <div id="mcp-completion-slot">${mcpCompletionNotice ? `<div id="mcp-completion-notice" role="status" style="margin-bottom:14px;padding:9px 11px;border:1px solid #4ade8066;border-radius:6px;background:#4ade8012;color:#4ade80;font-size:11px">${uiIcon('check')} ${esc(mcpCompletionNotice)}</div>` : ''}</div>
-      ${renderMcpDashboard(data)}
-      ${renderMcpFeatureDomains(data)}
+      <section data-settings-panel="general">${renderMcpDashboard(data)}
+        <div class="mcp-paths-head"><h3>Optional Action toolchains</h3><button class="tbtn" onclick="ask('actionToolchainsConfigure',{},this)">${uiIcon('settings-gear', 'Configure toolchains')}</button></div>
+      </section>
+      <section data-settings-panel="access">${renderMcpFeatureDomains(data)}</section>
+      <section data-settings-panel="mcp">
       <div id="pkm-skill-router-section">${renderPkmSkillTargets(data)}</div>
       <div style="background:var(--panel);border:1px solid ${data?.nativeMcpProvider ? '#4ade8066' : '#f4b40066'};border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:11px;line-height:1.6;color:var(--muted)">
         ${data?.nativeMcpProvider
@@ -465,8 +469,12 @@ function renderMcpPane(data) {
       <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:8px" data-i18n="config.agencyDescription">The extension cannot reliably inspect an external Agency registry. If pkm is not registered there, copy these current-machine instructions into Copilot or Agency. The resolved paths let the agent register the single pkm entry and verify its unified tool surface.</div>
       <pre style="background:var(--vscode-textCodeBlock-background);border-radius:6px;padding:12px;font-size:11px;overflow:auto;max-height:340px"><code id="agency-install-code">${esc(data?.agencyInstallInstruction || '')}</code></pre>
       <button class="tbtn" style="margin-top:8px;border-color:var(--accent)" onclick="copyAgencyInstall()" data-i18n="config.copyAgencyInstructions">Copy Agency installation instructions</button>
-    </div>${renderIntegrationGuide(data)}${renderLoadProfiling(data)}`;
+      ${renderIntegrationGuide(data)}</section><section data-settings-panel="debug">${renderLoadProfiling(data)}</section>
+    </div>`;
 
+  applySettingsSubtab('mcp');
+
+  restoreRefreshInputs(el, drafts);
   requestAnimationFrame(() => {
     const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
     el.scrollTop = Math.min(previousScrollTop, maxScrollTop);

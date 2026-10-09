@@ -7,6 +7,7 @@ function backgroundTaskKindIcon(kind) {
     retrieval:'database',
     'github-sync':'github',
     'broker-refresh':'broadcast',
+    'action-validation':'beaker',
   })[kind] || 'gear';
 }
 

@@ -3,8 +3,8 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { ChatHub } = require("../dist/chatroom/chatroom/chatroom-hub");
-const { ChatMeetingLifecycle, isFinalLeadSummary, latestDiscussAfterCompletedMeeting } = require("../dist/chatroom/chatroom/chat-meeting-lifecycle");
+const { ChatHub } = require("../dist/chatroom/chatroom-hub");
+const { ChatMeetingLifecycle, isFinalLeadSummary, latestDiscussAfterCompletedMeeting } = require("../dist/chatroom/chat-meeting-lifecycle");
 const { MeetingStateStore } = require("../dist/chatroom/meeting-state");
 
 class MemorySecretStorage {

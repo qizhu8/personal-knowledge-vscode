@@ -29,17 +29,33 @@ export interface PkmLocatorSubscriptionGroup {
 
 export type ParsedPkmLocator =
   | { kind: "knowledge"; locator: string; knowledgeId: string }
+  | { kind: "chat"; locator: string; namespace: string; chatId: string }
   | { kind: "local-path"; locator: string; area: "skills" | "notes" | "papers"; path: string }
   | { kind: "subscription"; locator: string; nodeId: string; shareId: string; contentType: string; path: string };
 
 export type ResolvedPkmLocator =
+  | { kind: "chat"; locator: string; namespace: string; chatId: string; title: string }
   | { kind: "panel"; locator: string; type: "skill" | "note" | "paper" | "subscriptionItem"; key: string; tab?: string; title: string }
   | { kind: "recipe"; locator: string; recipeId: string; title: string }
   | { kind: "subscribed-server"; locator: string; key: string; title: string };
 
 const KNOWLEDGE_ID = /^knowledge_[a-f0-9]{24}$/;
+const CHAT_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const LOCAL_AREAS = new Set(["skills", "notes", "papers"]);
 const SUBSCRIPTION_TYPES = new Set(["skills", "notes", "papers", "prompts", "scripts", "packages", "servers", "recipes"]);
+
+export function chatPkmUrl(namespace: string, chatId: string): string {
+  if (!/^[a-f0-9]{16}$/.test(namespace) || !CHAT_ID.test(chatId)) throw new PkmLocatorError("invalid", "Choose a Chat with a valid workspace and identity.");
+  return `pkm://chats/${namespace}/${chatId}`;
+}
+
+export function chatIdFromPkmUrl(value: string, namespace: string): string {
+  if (CHAT_ID.test(value)) return value;
+  const parsed = parsePkmLocator(value);
+  if (parsed.kind !== "chat") throw new PkmLocatorError("invalid", "Choose a PKM Chat URL.");
+  if (parsed.namespace !== namespace) throw new PkmLocatorError("not-found", "This Chat belongs to another workspace. Open its original workspace.");
+  return parsed.chatId;
+}
 
 function normalizedInput(value: string): string {
   const trimmed = String(value || "").trim();
@@ -77,6 +93,12 @@ export function parsePkmLocator(value: string): ParsedPkmLocator {
   }
   const parts = decodedPathSegments(locator);
   const authority = url.hostname.toLowerCase();
+  if (authority === "chats") {
+    if (parts.length !== 2 || locator.endsWith("/")) throw new PkmLocatorError("invalid", "Chat paths must use pkm://chats/<workspace>/<Chat UUID>.");
+    const [namespace, chatId] = parts;
+    chatPkmUrl(namespace, chatId);
+    return { kind: "chat", locator, namespace, chatId };
+  }
   if (authority === "knowledge") {
     if (parts.length !== 1 || !KNOWLEDGE_ID.test(parts[0])) {
       throw new PkmLocatorError("invalid", "Knowledge paths must use pkm://knowledge/knowledge_<24 lowercase hex>.");
@@ -120,6 +142,7 @@ export function resolvePkmLocator(
   subscriptionGroups: readonly PkmLocatorSubscriptionGroup[] = [],
 ): ResolvedPkmLocator {
   const parsed = parsePkmLocator(value);
+  if (parsed.kind === "chat") return { ...parsed, title: "PKM Chat" };
   if (parsed.kind === "knowledge") {
     const matches = inventory.filter(entry => entry.knowledgeId === parsed.knowledgeId);
     if (!matches.length) throw new PkmLocatorError("not-found", `Knowledge item was not found: ${parsed.knowledgeId}`);

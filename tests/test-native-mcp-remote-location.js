@@ -72,5 +72,62 @@ assert.doesNotMatch(
   "the native MCP provider must not erase the remote extension-host authority",
 );
 
-fs.rmSync(fixture, { recursive: true, force: true });
-console.log("native MCP remote location tests passed");
+const vm = require("vm");
+const ts = require("typescript");
+const providerStart = extensionSource.indexOf("function registerNativeMcpProvider(");
+const providerEnd = extensionSource.indexOf("/** Open an item", providerStart);
+assert(providerStart >= 0 && providerEnd > providerStart);
+let provider;
+let knowledgeRoot = "";
+const registrationContext = { extensionUri: remoteExtension, subscriptions: [] };
+const api = {
+  lm: { registerMcpServerDefinitionProvider: (id, value) => { provider = value; return { dispose() {} }; } },
+  McpStdioServerDefinition: class { constructor(label, command, args, env, version) { Object.assign(this, { label, command, args, env, version }); } },
+  EventEmitter: class { event() {} dispose() {} },
+  Uri: { file: fileUri },
+  commands: { registerCommand: () => ({ dispose() {} }) },
+};
+vm.runInNewContext(ts.transpileModule(extensionSource.slice(providerStart, providerEnd), {
+  compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS },
+}).outputText + "\nregisterNativeMcpProvider(context);", {
+  vscode: api, context: registrationContext, _mcpDefinitionsChanged: undefined, _nativeMcpProvider: false,
+  getStorePath: () => knowledgeRoot,
+  mcpRuntimeStatus: () => { throw new Error("Discovery must not run a synchronous Python health check"); },
+  mcpServerDefinitionData: () => ({ label: "pkm", command: "/managed/python", args: ["/knowledge/mcp-server/server.py"], cwd: "/knowledge/mcp-server", version: "fixture" }),
+  nativeMcpCwdUri,
+});
+assert.strictEqual(provider.provideMcpServerDefinitions().length, 0);
+knowledgeRoot = "/knowledge";
+const definitions = provider.provideMcpServerDefinitions();
+assert.strictEqual(definitions.length, 1, "a configured machine root must remain discoverable without a workspace or a health probe");
+assert.strictEqual(definitions[0].cwd.authority, remoteExtension.authority);
+assert.match(extensionSource, /_storeReady = true;[\s\S]*?_treeProvider\?\.refresh\(\);\s*refreshMcpDefinitions\(\);/, "store initialization must notify existing MCP definition subscribers");
+
+const rememberStart = extensionSource.indexOf("async function rememberMachineStorePath(");
+const rememberEnd = extensionSource.indexOf("\nlet _panelReady", rememberStart);
+assert(rememberStart >= 0 && rememberEnd > rememberStart);
+let globalPath;
+const globalWrites = [];
+const globalState = new Map();
+const remember = vm.runInNewContext(ts.transpileModule(extensionSource.slice(rememberStart, rememberEnd), {
+  compilerOptions: { target: ts.ScriptTarget.ES2020 },
+}).outputText + "\nrememberMachineStorePath;", {
+  MACHINE_STORE_PATH_KEY: "machineRoot",
+  vscode: {
+    ConfigurationTarget: { Global: 1 },
+    workspace: { getConfiguration: () => ({
+      get: () => "/knowledge",
+      inspect: () => ({ workspaceValue: "/knowledge", globalValue: globalPath }),
+      update: async (key, value, target) => { globalWrites.push({ key, value, target }); globalPath = value; },
+    }) },
+  },
+});
+const rootContext = { globalState: { get: key => globalState.get(key), update: async (key, value) => { globalState.set(key, value); } } };
+(async () => {
+  await remember(rootContext, "/knowledge");
+  assert.deepStrictEqual(globalWrites, [{ key: "storePath", value: "/knowledge", target: 1 }], "a matching workspace value must not hide a missing global root");
+  await remember(rootContext, "/knowledge");
+  assert.strictEqual(globalWrites.length, 1, "an existing global root must not be rewritten");
+  fs.rmSync(fixture, { recursive: true, force: true });
+  console.log("native MCP remote location and global-root tests passed");
+})().catch(error => { fs.rmSync(fixture, { recursive: true, force: true }); console.error(error); process.exitCode = 1; });

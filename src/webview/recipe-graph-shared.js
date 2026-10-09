@@ -17,14 +17,13 @@ const RecipeGraph = Object.freeze({
     repeat:{ label:'Repeat', kind:'pkm.step.noop/v1', config:{}, ports:{ inputs:['items'], outputs:['result'] }, control:{ mode:'repeat', count:{ kind:'fixed', value:2 } } },
     if:{ label:'If / Else', kind:'pkm.step.noop/v1', config:{}, ports:{ inputs:['condition'], outputs:['yes','no'] }, control:{ mode:'branch', kind:'if', cases:['yes','no'] } },
     switch:{ label:'Switch', kind:'pkm.step.noop/v1', config:{}, ports:{ inputs:['value'], outputs:['case1','default'] }, control:{ mode:'branch', kind:'switch', cases:['case1','default'] } },
-    command:{ label:'Background command', kind:'pkm.step.command/v1', config:{ program:'python3', args:[], timeoutSeconds:300, maxOutputBytes:65536 }, ports:{ inputs:['parameters'], outputs:['result'] }, control:{ mode:'single' } },
-    script:{ label:'Executable script', kind:'pkm.step.script/v1', config:{ runtime:'bash', script:'set -e\n', timeoutSeconds:300, maxOutputBytes:65536 }, ports:{ inputs:['parameters'], outputs:['result'] }, control:{ mode:'single' } },
+    pipeline:{ label:'Pipeline', kind:'pkm.step.pipeline/v1', config:{ executor:'script', runtime:'bash', script:'set -e\n', timeoutSeconds:300, maxOutputBytes:65536 }, ports:{ inputs:['parameters'], outputs:['result'] }, control:{ mode:'single' } },
     human:{ label:'Required user input', kind:'pkm.gate.human/v1', config:{ prompt:'Do you approve continuing?', inputKind:'approval' }, ports:{ inputs:['request'], outputs:['approved','rejected'] }, control:{ mode:'single' } }
   }),
   presentation(node) {
     if (node?.control?.mode === 'branch') return { key:'branch', label:node.control.kind === 'switch' ? 'Switch' : 'If / Else', icon:'⇆' };
-    if (node?.kind === 'pkm.step.command/v1') return { key:'command', label:'Background command', icon:'›_' };
-    if (node?.kind === 'pkm.step.script/v1') return { key:'script', label:'Executable script', icon:'</>' };
+    if (node?.kind === 'pkm.step.command/v1' || (node?.kind === 'pkm.step.pipeline/v1' && node.config?.executor === 'command')) return { key:'command', label:'Pipeline', icon:'›_' };
+    if (node?.kind === 'pkm.step.script/v1' || node?.kind === 'pkm.step.pipeline/v1') return { key:'script', label:'Pipeline', icon:'</>' };
     if (node?.kind === 'pkm.gate.human/v1') return { key:'human', label:'Required user input', icon:'?' };
     return { key:'step', label:'Module', icon:'◆' };
   },

@@ -86,6 +86,13 @@ assert(entries.includes("extension/resources/windows/pkm-stdio-proxy.js"),
   "VSIX must include the Windows JavaScript stdio proxy");
 assert(entries.includes("extension/resources/api_chat_control.py"),
   "VSIX must include the Agent-driven Chat MCP transport resource");
+for (const artifact of ["resources/action_runtime.py", "resources/action_modules.py", "resources/action_components.py", "resources/action-workbench.html", "dist/ui/action-browser.js", "dist/runtime/action-background-tasks.js", "dist/runtime/action-workbench-server.js"]) {
+  assert(entries.includes(`extension/${artifact}`), `VSIX must include Action runtime and native UI: ${artifact}`);
+}
+assert(packageJson.contributes.chatParticipants.some(participant => participant.id === "personalKnowledge.actions"),
+  "VSIX must register the native Action chat participant");
+assert(packageJson.contributes.commands.some(command => command.command === "personalKnowledge.openActionsInBrowser"),
+  "VSIX must register the browser Action Workbench command");
 assert(entries.includes("extension/dist/chat/agent-control.js"),
   "VSIX must include the owning Extension Host Chat controller transport");
 assert.deepStrictEqual(
@@ -103,6 +110,11 @@ try {
     const path = require("path");
     const Module = require("module");
     const originalLoad = Module._load;
+    let navigatorReads = 0;
+    Object.defineProperty(globalThis, "navigator", { configurable: true, get() {
+      navigatorReads++;
+      throw new Error("PendingMigrationError: navigator is now a global in nodejs");
+    }});
     Module._load = function(name, ...args) {
       if (name === "vscode") return {};
       return originalLoad.call(this, name, ...args);
@@ -110,6 +122,7 @@ try {
     for (const name of ["api-chat-client", "api-chat-mcp", "api-chat-tools", "api-chat-view", "api-chat-acceptance"]) {
       assert(Object.keys(require(path.join(process.argv[1], "dist", name + ".js"))).length > 0, name + " must load its exports");
     }
+    assert.strictEqual(navigatorReads, 0, "Packaged Node modules must not read the host navigator global");
   `, isolatedExtension], {
     cwd: isolatedRoot,
     env: { ...process.env, NODE_PATH: "", NODE_OPTIONS: "" },

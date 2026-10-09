@@ -1,5 +1,31 @@
 const assert = require("assert");
-const { streamApiChat, decodeChatImage } = require("../dist/chat/api-chat-client");
+const hostLoad = require("child_process").spawnSync(process.execPath, ["-e", `
+  const assert = require("assert");
+  const Module = require("module");
+  const originalLoad = Module._load;
+  Module._load = function(name, ...args) {
+    if (name === "vscode") return {};
+    return originalLoad.call(this, name, ...args);
+  };
+  let navigatorReads = 0;
+  Object.defineProperty(globalThis, "navigator", { configurable: true, get() {
+    navigatorReads++;
+    throw new Error("PendingMigrationError: navigator is now a global in nodejs");
+  }});
+  require(${JSON.stringify(require.resolve("../dist/chat/api-chat-mcp"))});
+  assert.strictEqual(navigatorReads, 0);
+  const { ApiChatView } = require(${JSON.stringify(require.resolve("../dist/chat/api-chat-view"))});
+  let pong;
+  ApiChatView.prototype.handle.call({
+    disposed: false,
+    view: { webview: { postMessage: message => { pong = message; } } },
+    initialize() { throw new Error("Heartbeat must not initialize or access Chat storage"); },
+  }, { type: "hostHealth", id: "fixture-ping" }).then(() => {
+    assert.deepStrictEqual(pong, { type: "hostHealth", id: "fixture-ping" });
+  }).catch(error => { console.error(error); process.exitCode = 1; });
+`], { encoding: "utf8", timeout: 10_000 });
+assert.strictEqual(hostLoad.status, 0, hostLoad.stderr || String(hostLoad.error || "Chat module failed to load in the extension host"));
+const { streamApiChat, decodeChatImage, toolBudgetSummary } = require("../dist/chat/api-chat-client");
 const { ApiChatStore, agentSessionOrigin, apiChatStatus, apiChatDiagnostics, apiChatSessionDiagnostics } = require("../dist/chat/api-chat-store");
 const { modelProfiles, validateBudget, estimateInputTokens, estimateCost, assertModelAvailable } = require("../dist/chat/api-chat-models");
 const fs = require("fs");
@@ -180,6 +206,11 @@ else (async () => {
     assert.strictEqual(apiChatStatus(chat, true, true), "awaiting-input");
     chat.title = "Custom saved title"; chat.customTitle = true; chat.lastResultId = "unread-result";
     assert.strictEqual(apiChatStatus(chat), "new-result");
+    const completedChat = { ...chat, readResultId: chat.lastResultId, messages: [{ id: "complete", role: "assistant", content: "done", status: "complete" }] };
+    assert.strictEqual(apiChatStatus(completedChat), "completed", "reading a result must not erase successful completion");
+    assert.strictEqual(apiChatStatus({ ...completedChat, messages: [{ ...completedChat.messages[0], delegations: [{ status: "running" }] }] }), "awaiting-result");
+    assert.strictEqual(apiChatStatus({ ...completedChat, messages: [{ ...completedChat.messages[0], status: "cancelled" }] }), "stopped");
+    assert.strictEqual(apiChatStatus({ ...completedChat, progress: { status: "running", steps: [{ status: "waiting" }] } }), "awaiting-input");
     chat.messages.push({ id: "reply", role: "assistant", content: "partial", status: "streaming" });
     store.save(chat);
     const sourcePath = path.join(directory, "agent-sessions", chat.sessionId + ".json");
@@ -503,6 +534,22 @@ function testControlRegistration(directory) {
       if (["fs", "path", "crypto", "os"].includes(name)) return require(name);
       if (name.endsWith("/filestore")) return { getStorePath: () => root };
       if (name === "./agent-control") return require("../dist/chat/agent-control");
+      if (name === "./api-chat-shell") {
+        const shell = {};
+        vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../dist/chat/api-chat-shell.js"), "utf8"), {
+          exports: shell, console,
+          require: dependency => {
+            if (dependency === "vscode") return vscode;
+            if (["fs", "path", "crypto", "os"].includes(dependency)) return require(dependency);
+            if (dependency.endsWith("/filestore")) return { getStorePath: () => root };
+            if (dependency === "./agent-control") return require("../dist/chat/agent-control");
+            return {};
+          },
+          setInterval: callback => { timers.push(callback); return { unref() {} }; },
+          clearInterval() {},
+        });
+        return shell;
+      }
       return {};
     },
     setInterval: callback => { timers.push(callback); return { unref() {} }; },
@@ -555,6 +602,7 @@ async function testController() {
   const context = { globalState: { get: (key, fallback) => userState.has(key) ? userState.get(key) : fallback, update: async (key, value) => { userState.set(key, value); } }, workspaceState: { get: () => undefined, update: async () => {} }, secrets: { get: async () => "test-key" } };
   const posts = [];
   const requests = [];
+  const copiedChatIds = [];
   const picks = [];
   const inputs = [];
   let sessionApproval = "Ask Session";
@@ -572,6 +620,16 @@ async function testController() {
       if (name === "vscode") return { commands: { executeCommand: async () => {} }, QuickPickItemKind: { Separator: -1 }, FileSystemError: MockFileSystemError, Uri: { joinPath: (uri, ...parts) => ({ fsPath: path.join(uri.fsPath, ...parts), path: path.join(uri.fsPath, ...parts) }) }, LanguageModelTextPart: class {}, lm: { tools: registeredTools, invokeTool: async () => {} }, window: { showTextDocument: async () => {}, showInformationMessage: async () => {}, showWarningMessage: async () => sessionApproval, showQuickPick: async items => picks.length ? picks.shift()(items) : typeof items[0] === "string" ? items[0] : items.filter(item => ["read_file", "note", "Selected skill"].includes(item.id)), showInputBox: async options => { if (inputs.length) return inputs.shift()(options); throw new Error("VS Code connection must not request API credentials"); }, showOpenDialog: async () => selectedFiles, showSaveDialog: async () => saveDestination }, workspace: { workspaceFolders: [], fs: { stat: async uri => { try { return await fs.promises.stat(uri.fsPath); } catch (error) { if (error.code === "ENOENT" && uri.path?.endsWith(".toolsets.jsonc")) throw new MockFileSystemError("FileNotFound"); throw error; } }, readFile: uri => readImage(uri), writeFile: async (uri, bytes) => { imageWrites++; await fs.promises.writeFile(uri.fsPath, bytes); } }, openTextDocument: async uri => ({ getText: () => fs.readFileSync(uri.fsPath, "utf8") }), asRelativePath: uri => path.relative(directory, uri.fsPath), getConfiguration: () => ({ get: (key, fallback) => configuration[key] ?? fallback }) } };
       return originalLoad.call(this, name, parent, ...rest);
     };
+    const mockedLoad = Module._load;
+    const openedPkmPaths = [];
+    Module._load = function(name, ...args) {
+      const loaded = mockedLoad.call(this, name, ...args);
+      if (name === "vscode") {
+        loaded.env = { clipboard: { writeText: async value => { copiedChatIds.push(value); } } };
+        loaded.commands.executeCommand = async (command, value) => { if (command === "personalKnowledge.goToPkmPath") openedPkmPaths.push(value); };
+      }
+      return loaded;
+    };
     delete require.cache[require.resolve("../dist/chat/api-chat-view")];
     const { ApiChatView } = require("../dist/chat/api-chat-view");
     builtin = require("../dist/chat/api-chat-tools"); originalBuiltin = builtin.createBuiltinTools;
@@ -585,6 +643,14 @@ async function testController() {
     provider.view = { webview: { postMessage: value => { posts.push(value); if (automaticPermissionApproval) for (const approval of value.approvals || []) queueMicrotask(() => { if (provider.approvals.has(approval.id)) void provider.handle({ type: "approval", id: approval.id, value: sessionApproval ? "approve" : "deny" }); }); return Promise.resolve(true); } } };
     assert.deepStrictEqual(await provider.agentControl("list", {}), { chats: [], truncated: false });
     assert.strictEqual(provider.chat, undefined, "Read-only discovery must not create or adopt a Chat");
+    const toolStatus = await provider.agentControl("tools", {});
+    assert.strictEqual(toolStatus.toolsApiAvailable, true);
+    assert.strictEqual(toolStatus.registeredCount, registeredTools.length);
+    assert.deepStrictEqual(toolStatus.pkmTools, ["mcp_pkm_list_notes", "mcp_pkm_list_skills"]);
+    assert.strictEqual(toolStatus.pkmCount, 2);
+    assert.strictEqual(toolStatus.startupRequested, false);
+    assert.strictEqual(provider.chat, undefined, "Tool diagnostics must not create or adopt a Chat");
+    await assert.rejects(provider.agentControl("tools", { start: "true" }), /boolean/);
     await assert.rejects(provider.agentControl("get", { chatId: "invalid" }), /existing non-Trash/);
     assert.strictEqual(provider.store.list().length, 0);
     await provider.handle({ type: "ready" });
@@ -595,6 +661,19 @@ async function testController() {
     await provider.handle({ type: "new" });
     const deleteFixture = provider.chat.id;
     assert.strictEqual(provider.store.list().length, 1, "Explicit New must create exactly one Chat");
+    const deleteFixtureUrl = `pkm://chats/${provider.store.namespace}/${deleteFixture}`;
+    await provider.openPkmChat(deleteFixtureUrl);
+    assert.strictEqual(provider.chat.id, deleteFixture);
+    assert.strictEqual(provider.store.list().length, 1, "Opening a URL must not create a Chat");
+    assert.strictEqual((await provider.agentControl("get", { chatId: deleteFixtureUrl })).chatUrl, deleteFixtureUrl);
+    assert.strictEqual((await provider.agentControl("list", {})).chats[0].chatUrl, deleteFixtureUrl);
+    await provider.handle({ type: "openLink", value: deleteFixtureUrl });
+    assert.deepStrictEqual(openedPkmPaths, [deleteFixtureUrl]);
+    await assert.rejects(provider.handle({ type: "openLink", value: deleteFixtureUrl + "?secret=anything" }), /queries/);
+    await assert.rejects(provider.openPkmChat(`pkm://chats/aaaaaaaaaaaaaaaa/${deleteFixture}`), /another workspace/);
+    await assert.rejects(provider.agentControl("get", { chatId: `pkm://chats/aaaaaaaaaaaaaaaa/${deleteFixture}` }), /another workspace/);
+    await assert.rejects(provider.openPkmChat(`pkm://chats/${provider.store.namespace}/00000000-0000-0000-0000-000000000000`), /existing non-Trash/);
+    assert.strictEqual(requests.length, 0, "Opening and reading URLs must not invoke a model");
     const otherWindow = new ApiChatView(context);
     otherWindow.store = provider.store;
     const otherPosts = [];
@@ -672,6 +751,21 @@ async function testController() {
     await provider.handle({ type: "permissionMode", value: "allow-all" });
     assert.strictEqual(await permission(unknownScope), true); assert.strictEqual(provider.approvals.size, 0);
     assert.strictEqual(provider.store.load(first, false).permissionMode, "allow-all");
+    const batchScope = toolPermissionScope("builtin", "create_chats");
+    const batchPermission = provider.requestPermission(provider.chat, batchScope, "Create 2 Chats?", "Two named Chats in one group", permissionController.signal, false, true);
+    const batchApprovalId = [...provider.approvals.keys()][0]; assert(batchApprovalId);
+    assert.strictEqual(posts.at(-1).approvals[0].once, true);
+    assert.strictEqual(posts.at(-1).approvals[0].scope, "Only this batch");
+    await provider.handle({ type: "permissionMode", value: "allow-all" });
+    assert(provider.approvals.has(batchApprovalId), "Switching to Allow All must not approve a batch");
+    await assert.rejects(provider.handle({ type: "approval", id: batchApprovalId, value: "allow-all" }), /explicitly/);
+    await provider.handle({ type: "approval", id: batchApprovalId, value: "approve" });
+    assert.strictEqual(await batchPermission, true);
+    assert(!provider.store.load(first, false).permissionGrants.includes(batchScope), "Batch approval must not be remembered");
+    const nextBatchPermission = provider.requestPermission(provider.chat, batchScope, "Create 1 Chat?", "A different batch", permissionController.signal, false, true);
+    const nextBatchApprovalId = [...provider.approvals.keys()][0]; assert(nextBatchApprovalId);
+    await provider.handle({ type: "approval", id: nextBatchApprovalId, value: "deny" });
+    assert.strictEqual(await nextBatchPermission, false);
     await provider.handle({ type: "permissionMode", value: "ask" });
     const readonlyPending = permission(unknownScope);
     await provider.handle({ type: "permissionMode", value: "read-only" }); assert.strictEqual(await readonlyPending, false);
@@ -689,6 +783,102 @@ async function testController() {
     assert.strictEqual(provider.approvals.size, 0); assert.deepStrictEqual(provider.store.load(first, false).permissionGrants, []);
     await assert.rejects(provider.handle({ type: "approval", id: cancelledId, value: "approve" }), /no longer pending/);
     provider.running.delete(first); automaticPermissionApproval = true;
+    const ordinarySourceState = structuredClone(provider.chat);
+    const ordinaryRequestCount = requests.length;
+    const ordinaryApprovalCount = approvalCallbacks.length;
+    const ordinaryBuiltins = provider.chat.builtinTools;
+    const ordinaryVscodeTools = provider.chat.vscodeTools;
+    const ordinarySelection = provider.chat.toolSelection;
+    delete provider.chat.toolSelection;
+    provider.chat.builtinTools = ["list_chats", "ask_chat", "ask_session"];
+    provider.chat.vscodeTools = [];
+    protectiveOther.builtinTools = ["ask_chat", "ask_session", "list_chats"];
+    protectiveOther.permissionMode = "ask";
+    protectiveOther.includeHistory = false; protectiveOther.images = [testImage]; provider.persist(protectiveOther);
+    sessionApproval = "Ask Chat";
+    const ordinaryStarted = new Promise(resolve => { started = resolve; });
+    const ordinaryRun = provider.handle({ type: "send", text: "ordinary-source private history" });
+    await Promise.race([ordinaryStarted, ordinaryRun.then(() => { throw new Error("Ordinary Chat source finished before invoking the model: " + provider.chat.messages.at(-1)?.error); })]);
+    const ordinaryRequest = requests.at(-1);
+    const listChats = ordinaryRequest.request.tools.find(tool => tool.name === "list_chats");
+    const askChat = ordinaryRequest.request.tools.find(tool => tool.name === "ask_chat");
+    assert(listChats && askChat);
+    assert(!ordinaryRequest.request.tools.some(tool => tool.name === "ask_session"), "A Task-free Chat must not advertise Session delegation");
+    const chatMetadata = JSON.parse(await listChats.execute({}, ordinaryRequest.request.signal));
+    assert(chatMetadata.chats.some(item => item.chatId === first && item.current && item.status === "running"));
+    assert(chatMetadata.chats.some(item => item.chatId === protectiveOther.id && !item.current));
+    assert(chatMetadata.chats.every(item => Object.keys(item).every(key => ["chatId", "chatUrl", "title", "status", "current"].includes(key))), "Discovery returns metadata only; titles may derive from the first prompt");
+    assert(chatMetadata.chats.every(item => item.chatUrl === `pkm://chats/${provider.store.namespace}/${item.chatId}`));
+    assert(chatMetadata.chats.every(item => !Object.hasOwn(item, "messages")));
+    const chatPage = JSON.parse(await listChats.execute({ limit: 1 }, ordinaryRequest.request.signal));
+    assert.strictEqual(chatPage.chats.length, 1); assert.strictEqual(chatPage.nextOffset, 1);
+    await assert.rejects(listChats.execute({ offset: -1 }, ordinaryRequest.request.signal), /offset/);
+    await assert.rejects(listChats.execute({ limit: 51 }, ordinaryRequest.request.signal), /limit/);
+    await provider.handle({ type: "copyChatId" });
+    await provider.handle({ type: "copyChatId", id: protectiveOther.id });
+    assert.deepStrictEqual(copiedChatIds, [first, protectiveOther.id].map(id => `pkm://chats/${provider.store.namespace}/${id}`));
+    assert.strictEqual(provider.chat.id, first);
+    await assert.rejects(provider.handle({ type: "copyChatId", id: "not-a-chat" }), /existing Chat/);
+    const chatQuestion = { chatId: `pkm://chats/${provider.store.namespace}/${protectiveOther.id}`, question: "Inspect delegated evidence" };
+    await assert.rejects(askChat.execute({ ...chatQuestion, chatId: first }, ordinaryRequest.request.signal), /advertised/);
+    await assert.rejects(askChat.execute({ ...chatQuestion, chatId: "outside-workspace" }, ordinaryRequest.request.signal), /advertised/);
+    protectiveOther.paused = true; provider.persist(protectiveOther);
+    await assert.rejects(askChat.execute(chatQuestion, ordinaryRequest.request.signal), /paused/);
+    protectiveOther.paused = false; provider.persist(protectiveOther);
+    provider.running.set(protectiveOther.id, new AbortController());
+    await assert.rejects(askChat.execute(chatQuestion, ordinaryRequest.request.signal), /busy/); provider.running.delete(protectiveOther.id);
+    registeredTools.push({ name: "mcp_pkm_api_chat_send", description: "Nested cooperation fixture" });
+    const ordinaryTargetStarted = new Promise(resolve => { started = resolve; });
+    const ordinaryAnswer = askChat.execute(chatQuestion, ordinaryRequest.request.signal); await ordinaryTargetStarted;
+    const ordinaryTarget = requests.at(-1);
+    assert(!ordinaryTarget.request.tools.some(tool => ["ask_chat", "ask_session"].includes(tool.name)));
+    const ordinaryFinder = ordinaryTarget.request.tools.find(tool => tool.name === "find_vscode_tools");
+    if (ordinaryFinder) assert(!JSON.parse(await ordinaryFinder.execute({ query: "api_chat_send" }, ordinaryTarget.request.signal)).tools.some(tool => tool.name === "mcp_pkm_api_chat_send"));
+    assert(!ordinaryTarget.request.messages.some(message => message.content.includes("ordinary-source private history") || message.images?.length));
+    const persistedOrdinaryTarget = provider.store.load(protectiveOther.id, false);
+    assert.strictEqual(persistedOrdinaryTarget.messages.at(-2).fromChatId, first);
+    assert.strictEqual(persistedOrdinaryTarget.messages.at(-2).fromSessionId, undefined);
+    assert.deepStrictEqual(persistedOrdinaryTarget.images[0], testImage);
+    const ordinaryReceipt = JSON.parse(await ordinaryAnswer);
+    assert.strictEqual(ordinaryReceipt.status, "running", "delegation must return before the child completes");
+    const readOrdinaryResult = ordinaryRequest.request.tools.find(tool => tool.name === "read_chat_result");
+    assert.strictEqual(JSON.parse(await readOrdinaryResult.execute({ receiptId: ordinaryReceipt.receiptId }, ordinaryRequest.request.signal)).status, "running");
+    ordinaryTarget.onText("Verified ordinary Chat answer"); ordinaryTarget.resolve();
+    await new Promise(setImmediate);
+    const ordinaryResult = JSON.parse(await readOrdinaryResult.execute({ receiptId: ordinaryReceipt.receiptId }, ordinaryRequest.request.signal));
+    assert.strictEqual(ordinaryResult.answer, "Verified ordinary Chat answer"); assert.strictEqual(ordinaryResult.status, "complete");
+    registeredTools.pop();
+    assert.strictEqual(provider.store.load(first, false).sessionId, undefined);
+    assert.strictEqual(provider.store.load(protectiveOther.id, false).sessionId, undefined);
+    assert.strictEqual(provider.store.load(protectiveOther.id, false).messages.at(-2).fromChatId, first);
+    assert.strictEqual(provider.chat.id, first);
+    await assert.rejects(askChat.execute(chatQuestion, ordinaryRequest.request.signal), /One Chat/);
+    ordinaryRequest.resolve(); await ordinaryRun;
+    await provider.handle({ type: "resetPermissions" });
+    const ordinaryDeclineStarted = new Promise(resolve => { started = resolve; });
+    const ordinaryDeclineRun = provider.handle({ type: "send", text: "Decline ordinary Chat delegation" }); await ordinaryDeclineStarted;
+    const ordinaryDecline = requests.at(-1); sessionApproval = undefined;
+    const beforeOrdinaryDecline = requests.length;
+    await assert.rejects(ordinaryDecline.request.tools.find(tool => tool.name === "ask_chat").execute(chatQuestion, ordinaryDecline.request.signal), /declined/);
+    assert.strictEqual(requests.length, beforeOrdinaryDecline); ordinaryDecline.resolve(); await ordinaryDeclineRun;
+    sessionApproval = "Ask Chat";
+    const ordinaryCancelStarted = new Promise(resolve => { started = resolve; });
+    const ordinaryCancelRun = provider.handle({ type: "send", text: "Cancel ordinary Chat delegation" }); await ordinaryCancelStarted;
+    const ordinaryCancel = requests.at(-1);
+    const ordinaryCancelTargetStarted = new Promise(resolve => { started = resolve; });
+    const ordinaryCancelledAnswer = ordinaryCancel.request.tools.find(tool => tool.name === "ask_chat").execute(chatQuestion, ordinaryCancel.request.signal); await ordinaryCancelTargetStarted;
+    const ordinaryCancelledTarget = requests.at(-1);
+    assert.strictEqual(JSON.parse(await ordinaryCancelledAnswer).status, "running");
+    await provider.handle({ type: "pause" }); await ordinaryCancelRun;
+    assert.strictEqual(ordinaryCancelledTarget.request.signal.aborted, false, "an approved child must remain independent");
+    ordinaryCancelledTarget.onText("Independent result"); ordinaryCancelledTarget.resolve(); await new Promise(setImmediate);
+    await provider.handle({ type: "resume" }); await provider.handle({ type: "resetPermissions" });
+    provider.chat.builtinTools = ordinaryBuiltins; provider.chat.vscodeTools = ordinaryVscodeTools; provider.chat.toolSelection = ordinarySelection; sessionApproval = "Ask Session";
+    for (const key of Object.keys(provider.chat)) delete provider.chat[key];
+    Object.assign(provider.chat, ordinarySourceState, { revision: provider.store.load(first, false).revision });
+    provider.persist(provider.chat);
+    requests.splice(ordinaryRequestCount);
+    approvalCallbacks.splice(ordinaryApprovalCount);
     const { chatToolGroups, selectChatTools } = require("../dist/chat/tool-selection");
     const selectionFixture = { ...provider.chat, builtinTools: undefined, vscodeTools: undefined, toolSelection: undefined };
     const groupsFor = chat => chatToolGroups(chat, builtin.builtinToolCatalog, registeredTools);
@@ -743,6 +933,8 @@ async function testController() {
     await provider.handle({ type: "rename" });
     assert.strictEqual(provider.chat.title, "Named chat"); assert.strictEqual(provider.store.load(first).customTitle, true);
     inputs.push(() => undefined); await provider.handle({ type: "rename" }); assert.strictEqual(provider.chat.title, "Named chat");
+    inputs.push(() => "Named chat"); await provider.handle({ type: "rename", id: first });
+    assert.strictEqual(posts.filter(message => message.type === "state").at(-1).chat.title, "Named chat");
     picks.push(items => { assert(!items.some(item => item.id === "retired-alias")); return items.find(item => item.id === "test"); });
     await provider.handle({ type: "chooseModel" }); assert.strictEqual(provider.chat.modelProfileId, "test");
     assert.strictEqual(userState.get("apiChat.defaultModel").profile.id, "test");
@@ -785,12 +977,22 @@ async function testController() {
     await provider.handle({ type: "permissions" });
     assert.strictEqual(provider.chat.permissionMode, "ask");
     assert.deepStrictEqual(requests[0].request.tools, [], "Mid-run permission changes must not grant the existing request new tools");
+    assert.strictEqual(requests[0].request.maxToolRounds, 30);
+    sessionApproval = "Answer with current results";
+    assert.strictEqual(await requests[0].request.onToolLoopNotice({ reason: "round-limit", rounds: 30, limit: 30 }, requests[0].request.signal), "summarize", "Allow All must not bypass the independent loop decision");
+    sessionApproval = "Continue (30 more active minutes)";
+    assert.strictEqual(await requests[0].request.onToolLoopNotice({ reason: "round-limit", rounds: 30, limit: 30 }, requests[0].request.signal), "continue");
+    sessionApproval = "Ask Session";
     assert.strictEqual(provider.chat.modelProfileId, "next"); assert.deepStrictEqual(provider.chat.builtinTools, ["read_file"]);
     assert(!requests[0].request.messages.some(item => item.content.includes("memory snapshot")));
     requests[0].request.onUsage({ inputTokens: 100, outputTokens: 10 }); requests[0].request.onUsage({ inputTokens: 20, outputTokens: 5 });
     assert.strictEqual(provider.chat.messages[1].usage.inputTokens, 120); assert.strictEqual(provider.chat.messages[1].usage.outputTokens, 15);
     assert.strictEqual(provider.chat.messages[1].estimatedCost, estimateCost(modelProfiles(configuration.apiChatModelProfiles, [])[0], 120, 15));
-    await assert.rejects(provider.handle({ type: "send", text: "duplicate" }), /Stop/);
+    await provider.handle({ type: "send", text: "queued while running", mode: "task" });
+    assert.strictEqual(provider.chat.queuedInputs.length, 1);
+    assert.strictEqual(requests.length, 1, "busy input must not start a second concurrent stream");
+    await provider.handle({ type: "removeQueuedInput", id: provider.chat.queuedInputs[0].id });
+    assert.strictEqual(provider.chat.queuedInputs.length, 0);
     await provider.handle({ type: "new" });
     const second = provider.chat.id;
     assert.notStrictEqual(first, second);
@@ -802,6 +1004,12 @@ async function testController() {
     finishRename("Background renamed"); await renaming;
     assert.strictEqual(provider.chat.title, "Named chat");
     assert.strictEqual(provider.store.load(second).title, "Background renamed");
+    inputs.push(options => { assert.strictEqual(options.value, "Background renamed"); return "List renamed"; });
+    await provider.handle({ type: "rename", id: second });
+    assert.strictEqual(provider.chat.id, first, "List rename must not open or rename the selected Chat");
+    assert.strictEqual(provider.chat.title, "Named chat");
+    assert.strictEqual(provider.store.load(second).title, "List renamed");
+    assert.strictEqual(posts.filter(message => message.type === "state").at(-1).library.chats.find(item => item.id === second).title, "List renamed");
     await provider.handle({ type: "select", id: second });
     const secondStarted = new Promise(resolve => { started = resolve; });
     const secondRun = provider.handle({ type: "send", text: "second question" });
@@ -835,7 +1043,7 @@ async function testController() {
     provider.view.visible = true;
     await provider.handle({ type: "read", id: second, value: resultId }); assert.notStrictEqual(provider.chat.readResultId, resultId);
     await provider.handle({ type: "read", id: first, value: resultId });
-    assert.strictEqual(posts.at(-1).chats.find(item => item.id === first).status, "idle");
+    assert.strictEqual(posts.at(-1).chats.find(item => item.id === first).status, "completed");
     assert.strictEqual(provider.store.load(first).readResultId, resultId);
     const nextStarted = new Promise(resolve => { started = resolve; });
     const nextRun = provider.handle({ type: "send", text: "next request Selected skill" }); await nextStarted;
@@ -911,8 +1119,11 @@ async function testController() {
     assert(!targetRequest.request.messages.some(message => message.images?.length), "Session questions must not transmit unsent target images");
     assert.strictEqual(targetChat.images[0], testImage);
     assert.strictEqual(targetChat.messages.at(-2).fromSessionId, provider.chat.sessionId);
+    const sessionReceipt = JSON.parse(await sessionAnswer); assert.strictEqual(sessionReceipt.status, "running");
     targetRequest.onText("line\n\"\\".repeat(3000)); targetRequest.resolve();
-    const answered = await sessionAnswer; assert(answered.length <= 16_000); assert.strictEqual(JSON.parse(answered).truncated, true);
+    await new Promise(setImmediate);
+    const answered = await sourceRequest.request.tools.find(tool => tool.name === "read_chat_result").execute({ receiptId: sessionReceipt.receiptId }, sourceRequest.request.signal);
+    assert(answered.length <= 16_000); assert.strictEqual(JSON.parse(answered).truncated, true);
     assert.strictEqual(provider.store.load(first, false).permissionGrants.length, 1, "Approval must survive Chat reload");
     await assert.rejects(sessionTool.execute(sessionQuestion, sourceRequest.request.signal), /One Session/);
     sourceRequest.resolve(); await sourceRun;
@@ -922,8 +1133,10 @@ async function testController() {
     const cancelTargetReady = new Promise(resolve => { started = resolve; });
     const cancelAnswer = cancelTool.execute(sessionQuestion, cancelSource.request.signal); await cancelTargetReady;
     const cancelTarget = requests.at(-1);
-    await provider.handle({ type: "pause" }); await assert.rejects(cancelAnswer, /cancelled/); await cancelSourceRun;
-    assert.strictEqual(cancelTarget.request.signal.aborted, true, "Pausing the source must cancel the target request");
+    assert.strictEqual(JSON.parse(await cancelAnswer).status, "running");
+    await provider.handle({ type: "pause" }); await cancelSourceRun;
+    assert.strictEqual(cancelTarget.request.signal.aborted, false, "Pausing the source must not cancel an approved independent child");
+    cancelTarget.onText("Independent Session result"); cancelTarget.resolve(); await new Promise(setImmediate);
     await provider.handle({ type: "resume" });
     await provider.handle({ type: "resetPermissions" });
     const declineReady = new Promise(resolve => { started = resolve; });
@@ -941,7 +1154,43 @@ async function testController() {
     const busyIndex = receiptPosts.findIndex(item => item.type === "state" && item.busy);
     assert(acceptedIndex >= 0 && busyIndex > acceptedIndex, "Acceptance must precede the first running state");
     assert(receiptPosts[busyIndex].chat.messages.some(item => item.role === "user" && item.content === "accepted before busy"));
-    requests.at(-1).resolve(); await receiptRun;
+    const liveReceiptRequest = requests.at(-1);
+    const steerId = require("crypto").randomUUID();
+    await provider.handle({ type: "send", text: "Use the revised boundary", mode: "steer", submissionId: steerId });
+    await provider.handle({ type: "send", text: "Use the revised boundary", mode: "steer", submissionId: steerId });
+    assert.strictEqual(provider.chat.queuedInputs.length, 1, "duplicate delivery must not duplicate a queued steer");
+    assert.strictEqual(provider.store.load(first, false).queuedInputs[0].id, steerId, "steer must be saved before acknowledgement");
+    liveReceiptRequest.request.beforeRound(liveReceiptRequest.request.messages, liveReceiptRequest.request.maxOutputTokens);
+    assert(liveReceiptRequest.request.messages.some(message => message.content === "Use the revised boundary"));
+    assert.strictEqual(provider.chat.messages.filter(message => message.submissionId === steerId).length, 1);
+    assert.strictEqual(provider.chat.queuedInputs.length, 0);
+    const queuedRequestCount = requests.length;
+    for (const text of ["Queued task A", "Queued task B"]) await provider.handle({ type: "send", text, mode: "task", submissionId: require("crypto").randomUUID() });
+    assert.strictEqual(requests.length, queuedRequestCount, "new tasks must not overlap the active stream");
+    const queuedAReady = new Promise(resolve => { started = resolve; });
+    liveReceiptRequest.resolve(); await receiptRun; await queuedAReady;
+    const queuedA = requests.at(-1);
+    assert.strictEqual(queuedA.request.messages.at(-1).content, "Queued task A");
+    const queuedBReady = new Promise(resolve => { started = resolve; }); queuedA.resolve(); await queuedBReady;
+    const queuedB = requests.at(-1); assert.strictEqual(queuedB.request.messages.at(-1).content, "Queued task B");
+    queuedB.resolve(); await new Promise(setImmediate);
+    assert.strictEqual(provider.chat.queuedInputs.length, 0); assert.strictEqual(provider.running.size, 0);
+    const stoppedReady = new Promise(resolve => { started = resolve; });
+    const stoppedRun = provider.handle({ type: "send", text: "Stop before queued work" }); await stoppedReady;
+    const stoppedCount = requests.length;
+    const retainedInput = require("crypto").randomUUID();
+    await provider.handle({ type: "send", text: "Retain after stop", mode: "task", submissionId: retainedInput });
+    await provider.handle({ type: "cancel" }); await stoppedRun; await new Promise(setImmediate);
+    assert.strictEqual(requests.length, stoppedCount, "stop must not automatically launch queued work");
+    assert.strictEqual(provider.store.load(first, false).queuedInputs[0].id, retainedInput);
+    await provider.handle({ type: "select", id: first });
+    assert.strictEqual(requests.length, stoppedCount, "reopening must not replay saved inputs");
+    assert.strictEqual(provider.chat.queuedInputs[0].id, retainedInput);
+    const retainedReady = new Promise(resolve => { started = resolve; });
+    const retainedRun = provider.handle({ type: "runQueued" }); await retainedReady;
+    assert.strictEqual(requests.at(-1).request.messages.at(-1).content, "Retain after stop");
+    requests.at(-1).resolve(); await retainedRun;
+    assert.strictEqual(provider.chat.queuedInputs.length, 0);
     await assert.rejects(provider.handle({ type: "send", text: "wrong Chat", chatId: "another-chat", submissionId: require("crypto").randomUUID() }), /selected Chat changed/);
     await assert.rejects(provider.handle({ type: "model", value: "retired-api" }), /deprecated/);
     const profiles = configuration.apiChatModelProfiles; configuration.apiChatModelProfiles = [{ id: "invalid", status: "active", contextWindow: 0 }];
@@ -1020,12 +1269,12 @@ async function testController() {
     picks.push(items => items.find(item => item.id === "read-only"));
     await provider.configureAgent(provider.chat.sessionId || provider.chat.id, "permissions");
     assert.strictEqual(provider.store.load(provider.chat.id).permissionMode, "read-only");
-    provider.chat.builtinTools = ["session_info", "pkm_search", "pkm_read", "replace_text", "run_process", "ask_session"];
+    provider.chat.builtinTools = ["session_info", "pkm_search", "pkm_read", "list_chats", "replace_text", "run_process", "ask_session", "ask_chat"];
     provider.chat.mcpServers = [{ id: "disabled-by-permission", label: "No connection", url: "https://example.test/mcp", enabled: true, tools: ["echo"] }];
     nativeClient.discoverVscodeModels = async () => models;
     const readonlyStarted = new Promise(resolve => { nativeStarted = resolve; });
     const readonlyRun = provider.handle({ type: "send", text: "Check readonly tool permissions" }); await readonlyStarted;
-    assert.deepStrictEqual(nativeRequests.at(-1).request.tools.map(tool => tool.name).sort(), ["pkm_read", "pkm_search", "session_info"]);
+    assert.deepStrictEqual(nativeRequests.at(-1).request.tools.map(tool => tool.name).sort(), ["list_chats", "pkm_read", "pkm_search", "session_info"]);
     assert(!provider.chat.progress.steps.some(step => step.label.startsWith("Connecting MCP")));
     nativeRequests.at(-1).onText("Read-only tools verified"); nativeRequests.at(-1).resolve(); await readonlyRun;
     picks.push(items => { assert(items.some(item => item.value === "permissions")); return items.find(item => item.value === "permissions"); }, items => items.find(item => item.id === "ask"));
@@ -1086,6 +1335,7 @@ async function testController() {
     assert.strictEqual((await provider.agentControl("get", { chatId: createdControl.chatId })).status, "running");
     await assert.rejects(provider.agentControl("send", { chatId: createdControl.chatId, prompt: "No duplicate" }), /busy/);
     assert(!nativeRequests.at(-1).request.tools.some(tool => tool.name === "ask_session"), "Agent-driven turns cannot recursively wake Sessions");
+    assert(!nativeRequests.at(-1).request.tools.some(tool => tool.name === "ask_chat"), "Agent-driven turns cannot recursively delegate to Chats");
     const finder = nativeRequests.at(-1).request.tools.find(tool => tool.name === "find_vscode_tools");
     if (finder) assert(!JSON.parse(await finder.execute({ query: "api_chat_send" }, nativeRequests.at(-1).request.signal)).tools.some(tool => tool.name === "mcp_pkm_api_chat_send"), "Agent-driven turns cannot recursively create/send Chats");
     nativeRequests.at(-1).onText("Actual controller fixture answer"); nativeRequests.at(-1).resolve();
@@ -1101,6 +1351,36 @@ async function testController() {
     assert(!provider.chat.paused, "Response cancellation must not pause or stop the Chat");
     await provider.handle({ type: "pause" });
     await assert.rejects(provider.agentControl("send", { chatId: createdControl.chatId, prompt: "Do not auto-resume" }), /paused/);
+    const rememberedModel = context.workspaceState.get("apiChat.defaultModel");
+    await context.workspaceState.update("apiChat.defaultModel", undefined);
+    const restartedView = new ApiChatView(context);
+    try {
+      await restartedView.handle({ type: "new" });
+      restartedView.chat.modelProvider = "vscode";
+      restartedView.chat.vscodeModelId = nativeClient.vscodeModelProfile(models[0]).id;
+      restartedView.chat.permissionMode = "read-only";
+      restartedView.store.save(restartedView.chat);
+      assert.strictEqual(restartedView.vscodeModels.length, 0);
+      assert.strictEqual(restartedView.settings().needsModelConnection, true);
+      nativeClient.discoverVscodeModels = async () => models;
+      const startupStarted = new Promise(resolve => { nativeStarted = resolve; });
+      const startupRun = restartedView.handle({ type: "send", text: "Cold worker startup fixture" });
+      await Promise.race([startupStarted, startupRun.then(() => { throw new Error("Cold startup completed without using its saved model"); })]);
+      assert.strictEqual(nativeRequests.at(-1).model.id, models[0].id);
+      nativeRequests.at(-1).onText("Saved worker model discovered"); nativeRequests.at(-1).resolve(); await startupRun;
+      assert.strictEqual(restartedView.chat.messages.at(-1).status, "complete");
+      restartedView.chat.vscodeModelId = "vscode:copilot:missing-worker";
+      restartedView.store.save(restartedView.chat); restartedView.vscodeModels = [];
+      const beforeColdMissing = restartedView.chat.messages.length;
+      const beforeColdRequests = nativeRequests.length;
+      await assert.rejects(restartedView.handle({ type: "send", text: "Missing worker model fixture" }), /no longer available/);
+      assert.strictEqual(restartedView.chat.messages.length, beforeColdMissing);
+      assert.strictEqual(nativeRequests.length, beforeColdRequests);
+      assert.strictEqual(restartedView.running.size, 0);
+    } finally {
+      restartedView.dispose();
+      await context.workspaceState.update("apiChat.defaultModel", rememberedModel);
+    }
     console.log("API chat controller tests passed: rename persistence/ownership, run/approval/unread status, model picker, request ownership, memory privacy, budgets and cancellation.");
     console.log("VS Code controller tests passed: no API key, per-chat source, captured context/model, next-request switching, persistence and no silent fallback.");
   } finally {
@@ -1135,6 +1415,50 @@ async function testVscodeModels() {
   const events = []; const request = { messages: [{ role: "system", content: "Instructions" }, { role: "user", content: "question" }], signal: new AbortController().signal, maxOutputTokens: 1024, tools: [{ name: "read_file", description: "Read", parameters: { type: "object" }, execute: async () => { execution++; return "file contents"; } }], onTool: event => events.push(event) };
   await streamVscodeChat(model, request, text => { output += text; }, host);
   assert.strictEqual(output, "done"); assert.strictEqual(execution, 1); assert.strictEqual(events[1].status, "complete"); assert.strictEqual(prompts[0].options.tools[0].inputSchema.type, "object");
+  let outputBudgetRounds = 0;
+  let outputBudgetAnswer = "";
+  const roundBudgets = [];
+  const outputBudgetModel = { ...model, sendRequest: async () => ({ stream: (async function* () {
+    yield new TextPart("x".repeat(800));
+    if (++outputBudgetRounds === 1) yield new CallPart("budget-round-1", "read_file", { path: "file.txt" });
+  })() }) };
+  await streamVscodeChat(outputBudgetModel, { ...request, beforeRound: (_messages, budget) => roundBudgets.push(budget) }, text => { outputBudgetAnswer += text; }, host);
+  assert.strictEqual(outputBudgetAnswer.length, 1600, "Tool rounds must not consume the next response's output budget");
+  assert.deepStrictEqual(roundBudgets, [1024, 1024]);
+  let boundedRounds = 0;
+  const beforeBounded = execution;
+  let boundedAnswer = "";
+  const boundedModel = { ...model, sendRequest: async (messages, options) => {
+    boundedRounds++;
+    if (boundedRounds === 3) {
+      assert.strictEqual(options.tools, undefined);
+      assert(messages.some(message => message.content.some(part => part.value?.includes(toolBudgetSummary))));
+    }
+    const parts = options.tools ? [new CallPart(`bounded-${boundedRounds}`, "read_file", { path: "file.txt" })] : [new TextPart("Summary from completed results")];
+    return { stream: (async function* () { yield* parts; })() };
+  } };
+  await streamVscodeChat(boundedModel, { ...request, maxToolRounds: 2 }, text => { boundedAnswer += text; }, host);
+  assert.strictEqual(boundedRounds, 3); assert.strictEqual(execution - beforeBounded, 2);
+  assert.strictEqual(boundedAnswer, "Summary from completed results");
+  let continuationRounds = 0; const continuationNotices = []; const beforeContinuation = execution;
+  const continuationModel = { ...model, sendRequest: async (_messages, options) => ({ stream: (async function* () {
+    continuationRounds++;
+    if (continuationRounds <= 3) yield new CallPart(`continue-${continuationRounds}`, "read_file", { path: `file-${continuationRounds}` });
+    else yield new TextPart("Continued after confirmation");
+  })() }) };
+  await streamVscodeChat(continuationModel, { ...request, maxToolRounds: 2, onToolLoopNotice: async notice => { continuationNotices.push(notice); assert.strictEqual(execution - beforeContinuation, 2); return "continue"; } }, () => {}, host);
+  assert.strictEqual(execution - beforeContinuation, 3);
+  assert.deepStrictEqual(continuationNotices, [{ reason: "round-limit", rounds: 2, limit: 2 }]);
+  let nativeBatchRounds = 0; const beforeNativeBatch = execution; const nativeBatchNotices = [];
+  const batchModel = { ...model, sendRequest: async (_messages, options) => ({ stream: (async function* () {
+    nativeBatchRounds++;
+    if (nativeBatchRounds === 1) for (let index = 0; index < 5; index++) yield new CallPart(`batch-${index}`, "read_file", { path: "same.txt" });
+    else { assert.strictEqual(options.tools, undefined); yield new TextPart("Three results retained"); }
+  })() }) };
+  await streamVscodeChat(batchModel, { ...request, maxOutputTokens: 4096, onToolLoopNotice: async notice => { nativeBatchNotices.push(notice); assert.strictEqual(execution - beforeNativeBatch, 3); return "summarize"; } }, () => {}, host);
+  assert.strictEqual(execution - beforeNativeBatch, 3, "The fourth native call in the same batch must await approval");
+  assert.strictEqual(nativeBatchNotices.length, 1);
+  assert.strictEqual(nativeBatchNotices[0].reason, "stalled");
   const imageHost = { ...host, LanguageModelDataPart: DataPart };
   const metadataModel = parts => ({ ...model, sendRequest: async () => ({ stream: (async function* () { yield* parts; })() }) });
   const metadata = ["usage", "stateful_marker", "thinking", "context_management", "phase_data", "cache_control"].map(mime => new DataPart(new Uint8Array([1, 2]), mime));
@@ -1145,6 +1469,20 @@ async function testVscodeModels() {
   await assert.rejects(streamVscodeChat(metadataModel([new TextPart("partial"), new TextPart("x".repeat(1024))]), { ...request, tools: [], maxOutputTokens: 1024 }, text => { partialCodingOutput += text; }, imageHost), /Local output budget exhausted/);
   assert.strictEqual(partialCodingOutput, "partial");
   await assert.rejects(streamVscodeChat(metadataModel([new TextPart("\u4e2d".repeat(342))]), { ...request, tools: [], maxOutputTokens: 1024 }, () => {}, imageHost), /Local output budget exhausted/);
+  let chineseOutput = "";
+  const countedModel = { ...metadataModel([new TextPart("\u4e2d".repeat(900))]), countTokens: async text => Array.from(text).length };
+  await streamVscodeChat(countedModel, { ...request, tools: [], maxOutputTokens: 1024 }, text => { chineseOutput += text; }, imageHost);
+  assert.strictEqual(chineseOutput.length, 900, "The model tokenizer, not UTF-8 bytes, determines the native output budget");
+  await assert.rejects(streamVscodeChat({ ...countedModel, countTokens: async () => NaN }, { ...request, tools: [] }, () => {}, imageHost), /Output token count is unavailable/);
+  await assert.rejects(streamVscodeChat({ ...countedModel, countTokens: async () => 1025 }, { ...request, tools: [] }, () => {}, imageHost), /Local output budget exhausted/);
+  const outputCountingAbort = new AbortController();
+  const outputCountingFallback = setTimeout(() => outputCountingAbort.abort(), 250);
+  try {
+    await assert.rejects(streamVscodeChat({ ...metadataModel([new TextPart("short response")]), countTokens: () => new Promise(() => {}) }, { ...request, tools: [], timeoutMs: 25, loopReviewAfterMs: 0, signal: outputCountingAbort.signal }, () => {}, imageHost), /timed out/);
+  } finally { clearTimeout(outputCountingFallback); }
+  let countedTools = 0;
+  await assert.rejects(streamVscodeChat({ ...model, countTokens: async () => 1025, sendRequest: async () => ({ stream: (async function* () { yield new CallPart("over-budget", "read_file", { path: "file.txt" }); })() }) }, { ...request, tools: [{ ...request.tools[0], execute: async () => { countedTools++; return "contents"; } }] }, () => {}, host), /Local output budget exhausted/);
+  assert.strictEqual(countedTools, 0, "Over-budget output must never execute pending tools");
   const usagePart = usage => new DataPart(new TextEncoder().encode(JSON.stringify(usage)), "usage");
   const reportedUsage = [];
   const observedUsage = [];
@@ -1227,6 +1565,70 @@ function toolEvents(name = "read_file", arguments_ = '{"path":"sample.txt"}') {
 }
 
 async function testToolLoop() {
+  const { ChatToolLoopGuard, chatToolRoundLimit } = require("../dist/chat/api-chat-client");
+  assert.strictEqual(chatToolRoundLimit(), 30);
+  const signal = new AbortController().signal;
+  let reviewTime = 0;
+  const timedNotices = [];
+  const timedGuard = new ChatToolLoopGuard({ maxToolRounds: 1, loopReviewAfterMs: 1800000, loopReviewClock: () => reviewTime,
+    onToolLoopNotice: async notice => { timedNotices.push(notice); return "continue"; } });
+  for (let index = 0; index < 3; index++) timedGuard.record(undefined, "read_file", "{}", "same");
+  reviewTime = 1799999; await timedGuard.beforeRound(100, signal);
+  assert.strictEqual(timedNotices.length, 0, "Loop evidence alone and round count must not trigger time-based review");
+  reviewTime = 1800000; await timedGuard.beforeRound(101, signal);
+  assert.strictEqual(timedNotices.length, 1); assert.strictEqual(timedNotices[0].reason, "stalled");
+  for (let index = 0; index < 3; index++) timedGuard.record(undefined, "read_file", "{}", "same");
+  await timedGuard.beforeRound(102, signal);
+  assert.strictEqual(timedNotices.length, 1, "Continuation starts a fresh active-time window");
+  timedGuard.record(undefined, "read_file", "{}", "changed");
+  reviewTime = 3600000; await timedGuard.beforeRound(103, signal);
+  assert.strictEqual(timedNotices.length, 1, "Fresh results invalidate that tool's earlier loop evidence");
+  for (let index = 0; index < 3; index++) timedGuard.record(undefined, "read_file", "{}", "same again");
+  await timedGuard.beforeRound(104, signal); assert.strictEqual(timedNotices.length, 2);
+  const timedCancellation = new ChatToolLoopGuard({ loopReviewAfterMs: 0, onToolLoopNotice: async () => "cancel" });
+  for (let index = 0; index < 3; index++) timedCancellation.record(undefined, "read_file", "{}", "same");
+  await assert.rejects(timedCancellation.beforeRound(0, signal), /cancelled by the user/);
+  assert.throws(() => new ChatToolLoopGuard({ loopReviewAfterMs: NaN }), /non-negative/);
+  const guardNotices = [];
+  const guard = new ChatToolLoopGuard({ onToolLoopNotice: async notice => { guardNotices.push(notice); return "continue"; } });
+  for (let index = 0; index < 30; index++) {
+    guard.record(undefined, "read_file", JSON.stringify({ path: `file-${index}` }), "unchanged contents");
+    await guard.beforeRound(index, signal);
+  }
+  assert.strictEqual(guardNotices.length, 0, "Different arguments represent progress, not a loop");
+  await guard.beforeRound(30, signal);
+  assert.deepStrictEqual(guardNotices, [{ reason: "round-limit", rounds: 30, limit: 30 }]);
+  await guard.beforeRound(59, signal);
+  assert.strictEqual(guardNotices.length, 1);
+  await guard.beforeRound(60, signal);
+  assert.strictEqual(guardNotices.length, 2, "Continuation grants a bounded new block, not unlimited execution");
+  const progressNotices = [];
+  const progressGuard = new ChatToolLoopGuard({ onToolLoopNotice: async notice => { progressNotices.push(notice); return "continue"; } });
+  for (let index = 0; index < 6; index++) { progressGuard.record(undefined, "read_file", "{}", JSON.stringify({ progress: index })); await progressGuard.beforeRound(index, signal); }
+  assert.strictEqual(progressNotices.length, 0, "Changing results must reset repetition detection");
+  progressGuard.record(undefined, "read_file", '{"a":1,"b":2}', '{"content":"same","status":"ready"}');
+  progressGuard.record(undefined, "read_file", '{"b":2,"a":1}', '{"status":"ready","content":"same"}');
+  await progressGuard.beforeRound(7, signal);
+  assert.strictEqual(progressNotices.length, 0);
+  progressGuard.record(undefined, "read_file", '{"a":1,"b":2}', '{"content":"same","status":"ready"}');
+  await progressGuard.beforeRound(8, signal);
+  assert.strictEqual(progressNotices[0].reason, "stalled");
+  assert.strictEqual(progressNotices[0].repeats, 3, "Canonical argument/result equality detects three unchanged attempts");
+  const pollNotices = [];
+  const pollGuard = new ChatToolLoopGuard({ maxToolRounds: 4, loopExemptTools: ["poll_status"], onToolLoopNotice: async notice => { pollNotices.push(notice); return "summarize"; } });
+  for (let index = 0; index < 4; index++) { pollGuard.record(undefined, "poll_status", "{}", "waiting"); await pollGuard.beforeRound(index, signal); }
+  assert.strictEqual(pollNotices.length, 0);
+  await pollGuard.beforeRound(4, signal);
+  assert.strictEqual(pollNotices[0].reason, "round-limit", "Polling exemptions must not bypass the round limit");
+  assert.strictEqual(pollGuard.summarizing, true);
+  const cancelledGuard = new ChatToolLoopGuard({ maxToolRounds: 1, onToolLoopNotice: async () => "cancel" });
+  await assert.rejects(cancelledGuard.beforeRound(1, signal), /cancelled by the user/);
+  let enteredDecision;
+  const decisionEntered = new Promise(resolve => { enteredDecision = resolve; });
+  const waitingController = new AbortController();
+  const waitingGuard = new ChatToolLoopGuard({ maxToolRounds: 1, onToolLoopNotice: () => { enteredDecision(); return new Promise(() => {}); } });
+  const pendingDecision = waitingGuard.beforeRound(1, waitingController.signal);
+  await decisionEntered; waitingController.abort(); await assert.rejects(pendingDecision, /cancelled/);
   const calls = []; const stages = []; let round = 0; let output = "";
   const tools = [{ name: "read_file", description: "Read", parameters: { type: "object" }, execute: async args => { calls.push(args); return '{"content":"sample"}'; } }];
   await streamApiChat({ ...base, tools, maxOutputTokens: 100, onTool: event => stages.push(event), fetch: async (_, options) => {
@@ -1240,6 +1642,24 @@ async function testToolLoop() {
   } }, text => { output += text; });
   assert.deepStrictEqual(calls, [{ path: "sample.txt" }]); assert.strictEqual(output, "verified");
   assert.deepStrictEqual(stages.map(event => event.status), ["running", "complete"]);
+  let thirtyFetches = 0; let thirtyExecutions = 0; const thirtyNotices = [];
+  await streamApiChat({ ...base, maxOutputTokens: 1024, tools: [{ ...tools[0], execute: async () => { thirtyExecutions++; return "completed"; } }], onToolLoopNotice: async notice => {
+    thirtyNotices.push(notice); assert.strictEqual(thirtyExecutions, 30, "The 31st tool must not execute before confirmation"); return "continue";
+  }, fetch: async () => ++thirtyFetches <= 31 ? toolEvents("read_file", JSON.stringify({ path: `sample-${thirtyFetches}` })) : events([delta("done"), done]) }, () => {});
+  assert.strictEqual(thirtyExecutions, 31);
+  assert.deepStrictEqual(thirtyNotices, [{ reason: "round-limit", rounds: 30, limit: 30 }]);
+  let batchFetches = 0; let batchExecutions = 0; const batchNotices = [];
+  await streamApiChat({ ...base, maxOutputTokens: 4096, tools: [{ ...tools[0], execute: async () => { batchExecutions++; return "same result"; } }], onToolLoopNotice: async notice => {
+    batchNotices.push(notice); assert.strictEqual(batchExecutions, 3); return "summarize";
+  }, fetch: async (_url, options) => {
+    if (++batchFetches === 1) return events([`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: Array.from({ length: 5 }, (_, index) => ({ index, id: `batch-${index}`, type: "function", function: { name: "read_file", arguments: "{}" } })) }, finish_reason: "tool_calls" }] })}\n\n`, "data: [DONE]\n\n"]);
+    const payload = JSON.parse(options.body); assert.strictEqual(payload.tools, undefined);
+    assert.strictEqual(payload.messages.filter(message => message.role === "tool" && message.content.includes("Not executed")).length, 2);
+    return events([delta("Three results retained"), done]);
+  } }, () => {});
+  assert.strictEqual(batchExecutions, 3, "The fourth HTTP call in the same batch must await approval");
+  assert.strictEqual(batchNotices.length, 1);
+  assert.strictEqual(batchNotices[0].reason, "stalled");
   round = 0;
   await streamApiChat({ ...base, tools, fetch: async (_, options) => {
     if (round++ === 0) return toolEvents("disabled_tool");
@@ -1249,8 +1669,24 @@ async function testToolLoop() {
   assert.strictEqual(calls.length, 1);
   await assert.rejects(streamApiChat({ ...base, fetch: async () => toolEvents() }, () => {}), /not enabled/);
   const beforeRoundLimit = calls.length;
-  await assert.rejects(streamApiChat({ ...base, tools, fetch: async () => toolEvents(), maxOutputTokens: 100 }, () => {}), /round limit/);
-  assert.strictEqual(calls.length - beforeRoundLimit, 8, "Characterize HTTP final-round execution: the eighth tool batch runs before the limit is reported.");
+  await assert.rejects(streamApiChat({ ...base, tools, maxToolRounds: 2, fetch: async () => toolEvents(), maxOutputTokens: 100 }, () => {}), /final summary/);
+  assert.strictEqual(calls.length - beforeRoundLimit, 2, "A noncompliant final summary must never execute an extra tool");
+  let summaryRounds = 0;
+  let summaryAnswer = "";
+  const beforeSummary = calls.length;
+  const repeatedNotices = [];
+  await streamApiChat({ ...base, tools, maxToolRounds: 9, maxOutputTokens: 1024, onToolLoopNotice: async notice => { repeatedNotices.push(notice); return notice.reason === "stalled" ? "continue" : "summarize"; }, fetch: async (_, options) => {
+    const payload = JSON.parse(options.body);
+    summaryRounds++;
+    if (payload.tools) return toolEvents();
+    assert.strictEqual(summaryRounds, 10);
+    assert.match(payload.messages.at(-1).content, /tool-call round budget/);
+    return events([delta("Notes found in completed retrieval results"), done]);
+  } }, text => { summaryAnswer += text; });
+  assert.strictEqual(calls.length - beforeSummary, 9);
+  assert.strictEqual(summaryAnswer, "Notes found in completed retrieval results");
+  assert.deepStrictEqual(repeatedNotices.map(notice => notice.reason), ["stalled", "stalled", "round-limit"]);
+  for (const maxToolRounds of [0, -1, 1001, 1.5]) await assert.rejects(streamApiChat({ ...base, maxToolRounds }, () => {}), /tool round limit/);
   const beforeBudgetLimit = calls.length;
   await assert.rejects(streamApiChat({ ...base, tools, fetch: async () => toolEvents(), maxOutputTokens: 10 }, () => {}), /budget exhausted/);
   assert.strictEqual(calls.length - beforeBudgetLimit, 1, "Characterize exhausted HTTP budget: the tool executes but there is no remaining model round.");
@@ -1473,7 +1909,7 @@ async function testMcp() {
 }
 
 async function testVscodeTools() {
-  const { createVscodeTools, pkmToolGroup, groupVscodeTools, pkmToolSets } = require("../dist/chat/api-chat-mcp");
+  const { createVscodeTools, pkmToolGroup, groupVscodeTools, pkmToolSets, ensurePkmMcpTools } = require("../dist/chat/api-chat-mcp");
   const groupedNames = [
     ["mcp_pkm_list_skills", "skills"], ["mcp_pkm_skill_context", "skills"],
     ["mcp_pkm_list_notes", "notes"], ["mcp_pkm_paper_graph", "papers"],
@@ -1499,6 +1935,61 @@ async function testVscodeTools() {
   const host = { workspace: { isTrusted: true }, LanguageModelTextPart: TextPart,
     CancellationTokenSource: class { constructor() { this.token = {}; } cancel() { this.token.cancelled = true; } dispose() {} },
     lm: { tools: [{ name: "mcp_pkm_search_notes", description: "Search PKM notes", inputSchema: { type: "object", properties: { query: { type: "string" } } } }, { name: "disabled_tool", description: "Not selected" }], invokeTool: async (name, options, token) => { invoked.push({ name, options, token }); return { content: [new TextPart("PKM result")] }; } } };
+  const startupCalls = [];
+  const discoveryHost = { ...host, lm: { ...host.lm, tools: [] }, commands: { executeCommand: async command => {
+    startupCalls.push(command); discoveryHost.lm.tools = [...host.lm.tools];
+  } } };
+  await ensurePkmMcpTools(discoveryHost);
+  assert.deepStrictEqual(startupCalls, ["personalKnowledge.startPkmMcp"], "cold Chat discovery must start only the managed PKM server");
+  assert.strictEqual(invoked.length, 0, "discovery must not execute any tool");
+  await ensurePkmMcpTools(discoveryHost);
+  assert.strictEqual(startupCalls.length, 1, "registered PKM tools must not trigger redundant startup");
+  const delayedDiscoveryHost = { ...host, lm: { ...host.lm, tools: [] }, commands: { executeCommand: async command => {
+    startupCalls.push(command);
+    setTimeout(() => { delayedDiscoveryHost.lm.tools = [...host.lm.tools]; }, 20);
+  } } };
+  await ensurePkmMcpTools(delayedDiscoveryHost);
+  assert.strictEqual(startupCalls.length, 2, "a late catalog must use one startup, not restart the server");
+  assert.strictEqual(invoked.length, 0, "waiting for publication must not invoke a tool");
+  discoveryHost.lm.tools = [];
+  discoveryHost.workspace = { isTrusted: false };
+  await ensurePkmMcpTools(discoveryHost);
+  assert.strictEqual(startupCalls.length, 2, "untrusted workspaces must not launch MCP");
+  discoveryHost.workspace = { isTrusted: true };
+  discoveryHost.commands.executeCommand = async () => { startupCalls.push("failed-start"); throw new Error("fixture startup failed"); };
+  await assert.rejects(ensurePkmMcpTools(discoveryHost), /fixture startup failed/);
+  assert.strictEqual(startupCalls.length, 3, "a failed startup must not retry automatically");
+  discoveryHost.commands.executeCommand = async () => undefined;
+  await assert.rejects(ensurePkmMcpTools(discoveryHost), /unavailable after startup/);
+  await ensurePkmMcpTools({ workspace: { isTrusted: true } });
+  const ts = require("typescript");
+  const extensionSource = fs.readFileSync(path.join(__dirname, "../src/extension.ts"), "utf8");
+  const extensionAst = ts.createSourceFile("extension.ts", extensionSource, ts.ScriptTarget.Latest, true);
+  const registration = extensionAst.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === "registerNativeMcpProvider");
+  assert(registration);
+  const nativeStarts = [], nativeCommands = new Map(), startupOrder = [];
+  let healthy = true;
+  const nativeHost = { workspace: { isTrusted: true }, Uri: { file: value => value },
+    lm: { registerMcpServerDefinitionProvider: () => ({ dispose() {} }) },
+    McpStdioServerDefinition: class {}, EventEmitter: class { event() {} dispose() {} },
+    commands: { registerCommand: (name, handler) => { nativeCommands.set(name, handler); return { dispose() {} }; },
+      executeCommand: async (...args) => { startupOrder.push("start"); nativeStarts.push(args); } } };
+  const nativeContext = vm.createContext({ vscode: nativeHost, _nativeMcpProvider: false, _mcpDefinitionsChanged: undefined,
+    getStorePath: () => "/fixture-knowledge", mcpRuntimeStatus: () => ({ healthy }), mcpStatus: () => ({ installed: true }),
+    refreshMcpDefinitions: () => startupOrder.push("definitions"), setImmediate,
+    mcpServerDefinitionData: () => ({ label: "pkm", command: "python", args: ["server.py"], cwd: "/fixture-mcp", version: "fixture" }),
+    nativeMcpCwdUri: (_extension, cwd, file) => file(cwd) });
+  vm.runInContext(ts.transpileModule(registration.getText(extensionAst), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, nativeContext);
+  nativeContext.registerNativeMcpProvider({ subscriptions: [], extensionUri: {} });
+  assert.strictEqual(nativeStarts.length, 0, "core registration must not wait for or start MCP");
+  await nativeCommands.get("personalKnowledge.startPkmMcp")();
+  assert.deepStrictEqual(startupOrder, ["definitions", "start"], "the initialized root's definition must be published before native startup");
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(nativeStarts)), [["workbench.mcp.startServer", "uone.personal-knowledge/pkm", { waitForLiveTools: true }]], "native startup must preserve VS Code's default trust handling and wait for discovery");
+  nativeHost.workspace.isTrusted = false;
+  await assert.rejects(nativeCommands.get("personalKnowledge.startPkmMcp")(), /trusted/);
+  nativeHost.workspace.isTrusted = true; healthy = false;
+  await assert.rejects(nativeCommands.get("personalKnowledge.startPkmMcp")(), /repair/);
+  assert.strictEqual(nativeStarts.length, 1, "trust and runtime failures must not launch a server");
   const tools = createVscodeTools(["mcp_pkm_search_notes"], host, async () => { if (!approved) throw new Error("declined"); });
   const controller = new AbortController();
   const invoke = tools.find(tool => tool.name === "invoke_vscode_tool");
@@ -1528,6 +2019,8 @@ async function testVscodeTools() {
 
 function startPreview() {
   const http = require("http");
+  const port = Number(process.env.PKM_CHAT_PREVIEW_PORT || 0);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("Invalid Chat preview port.");
   const webview = path.join(__dirname, "..", "dist", "webview");
   const deletion = createDeletionPreview();
   const localeRoot = path.join(__dirname, "..", "resources", "locales");
@@ -1535,7 +2028,7 @@ function startPreview() {
   const locales = Object.fromEntries(localeManifest.locales.map(locale => [locale.id, { direction: locale.direction || "ltr", ...JSON.parse(fs.readFileSync(path.join(localeRoot, locale.id + ".json"), "utf8")) }]));
   const fixture = {
     type: "state", busy: false,
-    chat: { id: "preview", title: "Review parser boundaries", includeHistory: true,
+    chat: { id: "preview", title: "Review parser boundaries", includeHistory: true, permissionMode: "protective", permissionGrants: [],
       context: [{ id: "context", label: "src/parser.ts:24-58", characters: 1460 }],
       messages: [
         { id: "question", role: "user", status: "complete", content: "Review the selected parser. Which edge cases should we test?", contextLabels: ["src/parser.ts:24-58"] },
@@ -1544,9 +2037,50 @@ function startPreview() {
     settings: { model: "fixture-model", models: [], provider: "openai-compatible", endpoint: "https://example.test/v1", contextWindow: 16384, maxOutputTokens: 2048, inputBaseTokens: 1000, profiles: [{ id: "fixture-model", label: "Fixture model", status: "active", contextWindow: 16384, maxOutputTokens: 4096 }, { id: "fixture-retired", label: "Retired fixture", status: "deprecated", contextWindow: 8192, maxOutputTokens: 1024 }], selectedProfile: { id: "fixture-model", status: "active", contextWindow: 16384, maxOutputTokens: 4096, inputPricePerMillion: 1, outputPricePerMillion: 2, currency: "USD" } },
     chats: [{ id: "preview", title: "Review parser boundaries", status: "awaiting-input" }, { id: "running", title: "Parser checks", status: "running" }, { id: "unread", title: "New answer", status: "new-result" }, { id: "idle", title: "New chat", status: "idle" }],
   };
-  const bootstrap = `globalThis.__fixture=${JSON.stringify(fixture)};globalThis.__posts=[];globalThis.acquireVsCodeApi=()=>({getState:()=>globalThis.__saved,setState:s=>globalThis.__saved=s,postMessage:m=>{globalThis.__posts.push(m);if(m.type==='ready')globalThis.postMessage(globalThis.__fixture,'*');}});`;
-  const deletionBootstrap = `globalThis.acquireVsCodeApi=()=>({getState:()=>JSON.parse(sessionStorage.getItem('chatState')||'null'),setState:s=>sessionStorage.setItem('chatState',JSON.stringify(s)),postMessage:async message=>{const confirm=!['trashChat','deleteChat','emptyTrash'].includes(message.type)||window.confirm('Confirm '+message.type+'?');const response=await fetch('/delete-action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,confirm})});const result=await response.json();if(!response.ok)throw new Error(result.error);globalThis.__deletionSnapshot=result;window.dispatchEvent(new MessageEvent('message',{data:result.state}));}});`;
-  const assets = new Set(["api-chat.css", "api-chat.js", "api-chat-library.js", "chat-retrieval-flow.js", "codicon.css", "codicon.ttf", "marked.umd.js", "purify.min.js"]);
+  fixture.settings.maxToolRounds = 30;
+  fixture.settings.profiles.push({ id: "fixture-model-b", label: "Fixture model B", status: "active", contextWindow: 16384, maxOutputTokens: 4096 });
+  function previewBridge() {
+    globalThis.__posts = [];
+    const emit = value => globalThis.postMessage(value, location.origin);
+    globalThis.acquireVsCodeApi = () => ({
+      getState: () => globalThis.__saved,
+      setState: value => { globalThis.__saved = value; },
+      postMessage: message => {
+        globalThis.__posts.push(message);
+        const state = globalThis.__fixture;
+        if (message.type === "hostHealth") { emit({ type: "hostHealth", id: message.id }); return; }
+        if (message.type === "chooseModel") {
+          setTimeout(() => {
+            const profiles = state.settings.profiles.filter(profile => profile.status === "active");
+            const index = profiles.findIndex(profile => profile.id === state.settings.selectedProfile.id);
+            const profile = profiles[(index + 1) % profiles.length];
+            state.settings.selectedProfile = { ...state.settings.selectedProfile, ...profile };
+            state.settings.model = profile.id;
+            emit(state);
+            emit({ type: "modelPickerClosed" });
+          }, 300);
+          return;
+        }
+        if (message.type === "permissionMode" && ["allow-all", "protective", "ask", "read-only"].includes(message.value)) state.chat.permissionMode = message.value;
+        else if (message.type === "resetPermissions") state.chat.permissionGrants = [];
+        else if (message.type === "toolRounds" && Number.isInteger(message.maxToolRounds) && message.maxToolRounds >= 1 && message.maxToolRounds <= 1000) state.settings.maxToolRounds = message.maxToolRounds;
+        else if (message.type === "budget") {
+          for (const key of ["contextWindow", "maxOutputTokens"]) if (Number.isInteger(message[key]) && message[key] > 0) state.settings[key] = message[key];
+        } else if (message.type === "history") state.chat.includeHistory = message.value === true;
+        else if (message.type === "send") {
+          emit({ type: "error", message: "This isolated preview has no model connection. No model or tool request was executed.", chatId: message.chatId, submissionId: message.submissionId });
+          return;
+        } else if (!["ready", "read", "libraryRefresh"].includes(message.type)) {
+          emit({ type: "error", message: "This operation requires the installed extension; it is unavailable in the fixture preview." });
+          return;
+        }
+        emit(state);
+      },
+    });
+  }
+  const bootstrap = `globalThis.__fixture=${JSON.stringify(fixture)};(${previewBridge.toString()})();`;
+  const deletionBootstrap = `globalThis.acquireVsCodeApi=()=>({getState:()=>JSON.parse(sessionStorage.getItem('chatState')||'null'),setState:s=>sessionStorage.setItem('chatState',JSON.stringify(s)),postMessage:async message=>{if(message.type==='hostHealth'){window.dispatchEvent(new MessageEvent('message',{data:{type:'hostHealth',id:message.id}}));return;}const confirm=!['trashChat','deleteChat','emptyTrash'].includes(message.type)||window.confirm('Confirm '+message.type+'?');const response=await fetch('/delete-action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,confirm})});const result=await response.json();if(!response.ok)throw new Error(result.error);globalThis.__deletionSnapshot=result;window.dispatchEvent(new MessageEvent('message',{data:result.state}));}});`;
+  const assets = new Set(["api-chat.css", "api-chat.js", "api-chat-library.js", "chat-retrieval-flow.js", "host-health.js", "host-health.css", "codicon.css", "codicon.ttf", "marked.umd.js", "purify.min.js"]);
   const server = http.createServer((request, response) => {
     const name = new URL(request.url, "http://localhost").pathname.slice(1);
     if (name === "delete-state") { response.setHeader("Content-Type", "application/json"); response.end(JSON.stringify(deletion.snapshot())); return; }
@@ -1564,10 +2098,10 @@ function startPreview() {
     if (name === "delete-fixture.js") { response.setHeader("Content-Type", "text/javascript"); response.end(deletionBootstrap); return; }
     if (name === "fixture.js") { response.setHeader("Content-Type", "text/javascript"); response.end(bootstrap + "globalThis.__locales=" + JSON.stringify(locales) + ";"); return; }
     if (name === "" || name === "deletion") {
-      const values = { nonce: "preview-nonce", cspSource: "'self'", styles: "/api-chat.css", script: "/api-chat.js", libraryScript: "/api-chat-library.js", retrievalScript: "/chat-retrieval-flow.js", icons: "/codicon.css", marked: "/marked.umd.js", purify: "/purify.min.js" };
+      const values = { nonce: "preview-nonce", cspSource: "'self'", styles: "/api-chat.css", script: "/api-chat.js", libraryScript: "/api-chat-library.js", retrievalScript: "/chat-retrieval-flow.js", hostHealthScript: "/host-health.js", hostHealthStyles: "/host-health.css", icons: "/codicon.css", marked: "/marked.umd.js", purify: "/purify.min.js" };
       const html = fs.readFileSync(path.join(webview, "api-chat.html"), "utf8")
         .replace(/\{\{(\w+)\}\}/g, (_, key) => values[key])
-        .replace('<script nonce="preview-nonce" src="/marked.umd.js">', `<script nonce="preview-nonce" src="/${name === "deletion" ? "delete-fixture.js" : "fixture.js"}"></script><script nonce="preview-nonce" src="/marked.umd.js">`);
+        .replace('<script nonce="preview-nonce" src="/host-health.js">', `<script nonce="preview-nonce" src="/${name === "deletion" ? "delete-fixture.js" : "fixture.js"}"></script><script nonce="preview-nonce" src="/host-health.js">`);
       response.setHeader("Content-Type", "text/html"); response.end(name === "deletion" ? html.replace("default-src 'none';", "default-src 'none'; connect-src 'self';") : html); return;
     }
     if (!assets.has(name)) { response.writeHead(404); response.end(); return; }
@@ -1575,7 +2109,7 @@ function startPreview() {
     fs.createReadStream(path.join(webview, name)).pipe(response);
   });
   server.once("close", () => deletion.dispose());
-  server.listen(0, "127.0.0.1", () => {
+  server.listen(port, "127.0.0.1", () => {
     const url = `http://127.0.0.1:${server.address().port}`;
     console.log(`API chat preview: ${url}`);
     if (!process.argv.includes("--browser-check")) return;
@@ -1588,6 +2122,41 @@ with sync_playwright() as runtime:
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     page.goto(sys.argv[1], wait_until="networkidle")
+    page.locator("#permissions").click()
+    page.locator("#permission-mode").select_option("allow-all")
+    page.keyboard.press("Escape")
+    page.wait_for_function("() => globalThis.__fixture.chat.permissionMode === 'allow-all'")
+    page.locator("#permissions").click()
+    assert page.locator("#permission-mode").input_value() == "allow-all"
+    page.keyboard.press("Escape")
+    composer = page.locator("#composer").bounding_box()
+    for mode, label in [("protective", "Protective"), ("ask", "Ask before changes"), ("read-only", "Read only"), ("allow-all", "Allow All")]:
+      page.locator("#permissions").click()
+      page.locator("#permission-mode").select_option(mode)
+      page.wait_for_function("mode => document.getElementById('permissions').dataset.permissionMode === mode", arg=mode)
+      assert page.locator("#permission-label").count() == 0
+      assert page.locator("#permissions .codicon").get_attribute("class") == "codicon codicon-shield"
+      assert page.locator("#permissions").get_attribute("title") == "Permissions: " + label + " \u00b7 next request"
+      assert page.locator("#allow-all").count() == 0
+      assert page.locator("#composer").bounding_box() == composer
+      page.keyboard.press("Escape")
+      page.locator("#permissions").hover()
+      assert page.locator("#permissions").bounding_box()["width"] <= 32
+    page.locator("#options").click()
+    assert page.locator("#tool-rounds").input_value() == "30"
+    page.locator("#tool-rounds").fill("47")
+    page.locator("#tool-rounds").press("Tab")
+    page.wait_for_function("() => globalThis.__fixture.settings.maxToolRounds === 47")
+    page.keyboard.press("Escape")
+    page.locator("#model").click()
+    assert page.locator("#model").get_attribute("aria-busy") == "true"
+    page.wait_for_function("() => !document.getElementById('model').hasAttribute('aria-busy')")
+    assert page.evaluate("globalThis.__fixture.settings.selectedProfile.id") == "fixture-model-b"
+    page.locator("#prompt").fill("Do not call a model in preview.")
+    page.locator("#send").click()
+    page.wait_for_function("() => globalThis.__posts.some(message => message.type === 'send') && !document.getElementById('send').disabled")
+    assert page.locator("#prompt").input_value() == "Do not call a model in preview."
+    assert page.evaluate("globalThis.__fixture.chat.messages.length") == 2
     for width, height in [(1280, 900), (390, 844), (320, 568), (213, 378)]:
         page.set_viewport_size({"width": width, "height": height})
         for text in ["First line\nSecond line", "Long message " * 80 + "x" * 200]:

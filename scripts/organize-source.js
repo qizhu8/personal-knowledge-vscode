@@ -79,7 +79,8 @@ function migrate(root, domain) {
     if (!value.startsWith(".")) return value;
     const candidate = path.resolve(path.dirname(caller), value);
     const target = [candidate, candidate + ".ts", candidate.replace(/\.js$/, ".ts"), path.join(candidate, "index.ts")]
-      .find(filename => sourceSet.has(filename));
+      .find(filename => sourceSet.has(filename)
+        || filename.startsWith(root + path.sep) && filename.endsWith(".json") && fs.existsSync(filename));
     if (!target) return value;
     const updated = normalized(path.relative(path.dirname(moved.get(caller) || caller), moved.get(target) || target));
     const extension = value.endsWith(".js") ? ".js" : value.endsWith(".ts") ? ".ts" : "";
@@ -87,7 +88,7 @@ function migrate(root, domain) {
     return specifier.startsWith(".") ? specifier : "./" + specifier;
   };
   const rewritePaths = value => {
-    value = value.replace(/dist\/(subscriptions|mcp|servers|ai)\/\1\//g, "dist/$1/");
+    value = value.replace(/dist\/(subscriptions|mcp|servers|ai|chatroom)\/\1\//g, "dist/$1/");
     const paths = new Map([...moved].flatMap(([original, target]) => {
       const before = normalized(path.relative(sourceRoot, original));
       const after = normalized(path.relative(sourceRoot, target));
@@ -162,7 +163,7 @@ function migrate(root, domain) {
   console.log(`Source layout: moved ${moved.size} modules; updated ${edited} dependency/contract files.`);
 }
 
-module.exports = { layout, runtimeRelative, writeCompatibilityBridges, verifyLayout };
+module.exports = { layout, runtimeRelative, writeCompatibilityBridges, verifyLayout, migrate };
 if (require.main === module) {
   const root = path.join(__dirname, "..");
   if (process.argv.includes("--verify")) { verifyLayout(root, true); console.log("Source ownership layout verified."); }

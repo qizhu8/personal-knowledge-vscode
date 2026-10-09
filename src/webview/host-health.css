@@ -1,0 +1,12 @@
+.pkm-host-warning{position:fixed;top:8px;right:8px;z-index:30000;box-sizing:border-box;display:flex;align-items:flex-start;gap:8px;width:max-content;max-width:calc(100vw - 16px);padding:10px 12px;border:1px solid var(--vscode-editorWarning-foreground,#b45309);border-radius:4px;background:var(--vscode-editor-background,#fff);color:var(--vscode-editorWarning-foreground,#b45309);font-size:12px;line-height:1.5;box-shadow:0 2px 8px #0003}
+.pkm-host-warning[hidden]{display:none!important}
+.pkm-host-warning>span:not(.codicon){max-width:360px;overflow-wrap:anywhere;white-space:normal}
+.pkm-host-warning button{flex:none;display:flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:0;background:transparent;color:inherit;cursor:pointer}
+.pkm-host-unavailable .working-cauldron,.pkm-host-unavailable .academy-loading-sigil *{animation-play-state:paused!important}
+.pkm-host-unavailable #send{opacity:.45;pointer-events:none}
+.pkm-chat-loading{position:fixed;top:0;left:0;right:0;height:3px;z-index:29999;overflow:hidden;background:var(--vscode-progressBar-background,#087f8c)}
+.pkm-chat-loading:after{content:"";position:absolute;width:35%;height:100%;background:var(--vscode-editor-background,#fff);opacity:.65;animation:pkm-chat-loading 1.4s linear infinite}
+.pkm-chat-loading[hidden]{display:none!important}
+body:has(.pkm-chat-loading:not([hidden])) #send{opacity:.45;pointer-events:none}
+@keyframes pkm-chat-loading{from{transform:translateX(-100%)}to{transform:translateX(390%)}}
+@media(prefers-reduced-motion:reduce){.pkm-chat-loading:after{animation:none}}

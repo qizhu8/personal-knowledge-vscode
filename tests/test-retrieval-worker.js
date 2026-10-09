@@ -4,7 +4,8 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
-const { RetrievalWorkerManager, retrievalWorkerStartupTimeoutMs } = require("../dist/retrieval/retrieval-worker.js");
+const extensionRoot = path.resolve(process.env.PKM_TEST_EXTENSION_PATH || path.join(__dirname, ".."));
+const { RetrievalWorkerManager, retrievalWorkerStartupTimeoutMs } = require(path.join(extensionRoot, "dist/retrieval/retrieval-worker.js"));
 
 assert.strictEqual(retrievalWorkerStartupTimeoutMs(undefined, 0, "linux"), 10000);
 assert.strictEqual(retrievalWorkerStartupTimeoutMs(undefined, 701, "linux"), 14000,
@@ -47,11 +48,11 @@ async function main() {
     runtime = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-retrieval-runtime-"));
     execFileSync(process.env.PYTHON || "python3", ["-m", "venv", "--system-site-packages", runtime]);
     python = process.platform === "win32" ? path.join(runtime, "Scripts", "python.exe") : path.join(runtime, "bin", "python");
-    const wheel = path.join(__dirname, "..", "resources", "vendor", "adaptive_skill_retrieval-0.3.0.dev2026100504-py3-none-any.whl");
+    const wheel = path.join(extensionRoot, "resources", "vendor", "adaptive_skill_retrieval-0.3.0.dev2026100504-py3-none-any.whl");
     execFileSync(python, ["-m", "pip", "install", "--no-deps", wheel], { stdio: "ignore" });
   }
   const state = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-retrieval-worker-"));
-  const script = path.join(__dirname, "..", "resources", "retrieval_worker.py");
+  const script = path.join(extensionRoot, "resources", "retrieval_worker.py");
   const manager = new RetrievalWorkerManager(state, script, python, "0.3.0.dev2026100504");
   const second = new RetrievalWorkerManager(state, script, python, "0.3.0.dev2026100504");
   let endpoint;
@@ -75,6 +76,30 @@ async function main() {
     const reused = await second.status();
     assert.strictEqual(reused.pid, ready.pid, "all MCP clients on one Subscriber must reuse one worker PID");
     assert.strictEqual(reused.configuration_hash, "exact-bm25-academic-v1");
+    endpoint = JSON.parse(fs.readFileSync(path.join(state, "worker.json"), "utf8"));
+    const readSource = async (sourceId, extra = {}) => {
+      const response = await fetch(`http://127.0.0.1:${endpoint.port}/get`, {
+        method: "POST",
+        headers: { "X-PKM-Retrieval-Token": endpoint.token, "Content-Type": "application/json" },
+        body: JSON.stringify({ source_id: sourceId, ...extra }),
+      });
+      return response.json();
+    };
+    const readSkill = await readSource(dataSourceId, { content_type_filter: ["skill"] });
+    assert.strictEqual(readSkill.ok, true);
+    assert.strictEqual(readSkill.source_id, dataSourceId);
+    assert.match(readSkill.source_revision, /^1:[0-9a-f]{64}$/);
+    const skillHit = (await manager.search("Data Preparation", 5, ["skill"])).hits[0];
+    assert.strictEqual(readSkill.source_revision, skillHit.source_revision);
+    assert.strictEqual(readSkill.content_hash, skillHit.content_hash);
+    assert.strictEqual(readSkill.content, initialSnapshot.documents[0].body);
+    assert(readSkill.content_hash && readSkill.provenance.provider === "pkm");
+    assert.strictEqual((await readSource(dataSourceId, { content_type_filter: ["note"] })).code, "not-found");
+    assert.strictEqual((await readSource("pkm://notes/private")).code, "not-found");
+    assert.strictEqual((await readSource(dataSourceId, { scope: { source_ids: [languageSourceId] } })).code, "not-found");
+    assert.strictEqual((await readSource("pkm://subscriptions/read-only")).read_only, true);
+    assert.strictEqual((await readSource("pkm://subscriptions/read-only", { scope: { include_read_only: false } })).code, "not-found");
+    assert.strictEqual((await readSource(dataSourceId, { content_type_filter: ["invalid"] })).code, "invalid-filter");
     const older = new RetrievalWorkerManager(state, script, python, "0.2.0");
     assert.strictEqual((await older.status()).pid, ready.pid, "an older window must reuse, never replace, a newer compatible worker");
     const olderDifferentConfig = new RetrievalWorkerManager(state, script, python, "0.2.0", "legacy-config");
@@ -112,6 +137,13 @@ async function main() {
     });
     assert(graphResult.hits.some(hit => hit.sourceId === languageSourceId && hit.scoreComponents.graph === 1),
       "bounded graph route must add the canonical forward target");
+    const typedGraph = await manager.query({
+      schema: "pkm.retrieval.query/v1", requestId: "request-typed-graph", text: "AutoLabeling Data Preparation",
+      contentTypeFilter: ["skill"], scope: { capabilityId: "test" }, topK: 5, route: "hybrid",
+      generation: { mode: "latest-ready" }, graph: { maxDepth: 2, maxNodes: 10, maxEdges: 10, direction: "forward" },
+      diagnostics: "summary",
+    });
+    assert(typedGraph.hits.every(hit => hit.contentType === "skill"), "strict type filtering must also apply to graph targets");
     const privateResult = await manager.query({
       schema: "pkm.retrieval.query/v1",
       requestId: "request-private",
@@ -199,6 +231,24 @@ async function main() {
       documents: initialSnapshot.documents.map((document, index) => index === 0 ? { ...document, source_revision: "3" } : document),
     };
     assert.deepStrictEqual(await manager.sync(restoredSnapshot), { mode: "delta", upserts: 4, deletes: 0 });
+    await waitUntil(async () => (await manager.status()).corpus_revision === "revision-3");
+    const brokerSnapshot = { ...restoredSnapshot, corpus_revision: "revision-broker-types", documents: [
+      ...restoredSnapshot.documents,
+      { skill_id: "pkm://subscriptions/typed-skill", source_id: "pkm://subscriptions/typed-skill", source_revision: "1",
+        title: "Broker Typed Skill", description: "Broker typed search fixture", body: "BROKER-TYPED-TOKEN",
+        content_type: "subscription", source_uri: "pkm://subscriptions/typed-skill", metadata: { upstream_type: "skills" },
+        provenance: { provider: "broker", subscription_id: "typed-sub" }, read_only: true },
+    ] };
+    await manager.sync(brokerSnapshot);
+    await waitUntil(async () => (await manager.status()).corpus_revision === "revision-broker-types");
+    const brokerSkill = await manager.search("BROKER-TYPED-TOKEN", 10, ["skill"]);
+    assert.strictEqual(brokerSkill.hits[0].content_type, "skill");
+    assert.strictEqual(brokerSkill.hits[0].read_only, true);
+    assert.strictEqual((await manager.search("BROKER-TYPED-TOKEN", 10, ["note"])).hits.length, 0);
+    assert((await manager.search("BROKER-TYPED-TOKEN", 10, ["subscription"])).hits.some(hit => hit.skill_id === "pkm://subscriptions/typed-skill"));
+    assert.strictEqual((await readSource("pkm://subscriptions/typed-skill", { content_type_filter: ["skill"] })).read_only, true);
+    assert.strictEqual((await readSource("pkm://subscriptions/typed-skill", { content_type_filter: ["note"] })).code, "not-found");
+    await manager.sync(restoredSnapshot);
     await waitUntil(async () => (await manager.status()).corpus_revision === "revision-3");
     endpoint = JSON.parse(fs.readFileSync(path.join(state, "worker.json"), "utf8"));
     await fetch(`http://127.0.0.1:${endpoint.port}/shutdown`, { method: "POST", headers: { "X-PKM-Retrieval-Token": endpoint.token } });

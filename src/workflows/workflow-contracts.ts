@@ -5,6 +5,7 @@ export const WORKFLOW_DEFINITION_SCHEMA = "pkm.workflow.definition/v1" as const;
 export const NOOP_NODE_KIND = "pkm.step.noop/v1" as const;
 export const COMMAND_NODE_KIND = "pkm.step.command/v1" as const;
 export const SCRIPT_NODE_KIND = "pkm.step.script/v1" as const;
+export const PIPELINE_NODE_KIND = "pkm.step.pipeline/v1" as const;
 export const NATIVE_NODE_KIND = "pkm.step.native/v1" as const;
 export const HUMAN_GATE_NODE_KIND = "pkm.gate.human/v1" as const;
 export const SUBFLOW_NODE_KIND = "pkm.subflow/v1" as const;
@@ -63,11 +64,18 @@ export interface WorkflowScriptNodeV1 extends WorkflowNodeBaseV1 {
   config: {
     runtime: "bash" | "powershell" | "python";
     script: string;
+    args?: string[];
     environmentId?: string;
     timeoutSeconds: number;
     maxOutputBytes: number;
     cwd?: string;
   };
+}
+
+export interface WorkflowPipelineNodeV1 extends WorkflowNodeBaseV1 {
+  kind: typeof PIPELINE_NODE_KIND;
+  config: ({ executor: "command" } & WorkflowCommandNodeV1["config"])
+    | ({ executor: "script" } & WorkflowScriptNodeV1["config"]);
 }
 
 export interface WorkflowNativeNodeV1 extends WorkflowNodeBaseV1 {
@@ -92,7 +100,7 @@ export interface WorkflowSubflowNodeV1 extends WorkflowNodeBaseV1 {
   config: { recipeId: string; revision: number; executableDigest: string };
 }
 
-export type WorkflowNodeV1 = WorkflowNoopNodeV1 | WorkflowCommandNodeV1 | WorkflowScriptNodeV1 | WorkflowNativeNodeV1 | WorkflowHumanGateNodeV1 | WorkflowSubflowNodeV1;
+export type WorkflowNodeV1 = WorkflowNoopNodeV1 | WorkflowCommandNodeV1 | WorkflowScriptNodeV1 | WorkflowPipelineNodeV1 | WorkflowNativeNodeV1 | WorkflowHumanGateNodeV1 | WorkflowSubflowNodeV1;
 
 export interface WorkflowDefinitionV1 {
   schema: typeof WORKFLOW_DEFINITION_SCHEMA;
@@ -277,6 +285,23 @@ function normalizeNode(value: unknown, index: number, diagnostics: WorkflowDiagn
     diagnostics.push(diagnostic("E3003", pointer, { expected: "object" }, "workflow.schema.type", "author"));
     return undefined;
   }
+  if (value.kind === PIPELINE_NODE_KIND) {
+    if (!isRecord(value.config)) {
+      diagnostics.push(diagnostic("E3003", `${pointer}/config`, { expected: "object" }, "workflow.schema.type", "author"));
+      return undefined;
+    }
+    const { executor, ...executorConfig } = value.config;
+    if (executor !== "command" && executor !== "script") {
+      diagnostics.push(diagnostic("E3005", `${pointer}/config/executor`, { expected: "command or script" }, "workflow.schema.const", "author"));
+      return undefined;
+    }
+    const node = normalizeNode({ ...value, kind: executor === "command" ? COMMAND_NODE_KIND : SCRIPT_NODE_KIND,
+      config: executorConfig }, index, diagnostics);
+    if (!node) return undefined;
+    return { ...node, kind: PIPELINE_NODE_KIND, config: executor === "command"
+      ? { executor, ...node.config as WorkflowCommandNodeV1["config"] }
+      : { executor, ...node.config as WorkflowScriptNodeV1["config"] } };
+  }
   unexpectedKeys(value, ["nodeId", "kind", "config", "generalInstruction", "dependsOn", "ports", "control"], pointer, diagnostics);
   const nodeIdValid = validateIdentifier(value.nodeId, `${pointer}/nodeId`, diagnostics);
   if (value.kind !== NOOP_NODE_KIND && value.kind !== COMMAND_NODE_KIND && value.kind !== SCRIPT_NODE_KIND
@@ -316,9 +341,10 @@ function normalizeNode(value: unknown, index: number, diagnostics: WorkflowDiagn
     if (!isRecord(value.config)) {
       diagnostics.push(diagnostic("E3003", `${pointer}/config`, { expected: "object" }, "workflow.schema.type", "author"));
     } else {
-      unexpectedKeys(value.config, ["runtime", "script", "environmentId", "timeoutSeconds", "maxOutputBytes", "cwd"], `${pointer}/config`, diagnostics);
+      unexpectedKeys(value.config, ["runtime", "script", "args", "environmentId", "timeoutSeconds", "maxOutputBytes", "cwd"], `${pointer}/config`, diagnostics);
       const runtime = value.config.runtime;
       const script = typeof value.config.script === "string" ? value.config.script : "";
+      const args = value.config.args === undefined ? [] : value.config.args;
       const environmentId = typeof value.config.environmentId === "string" ? value.config.environmentId.trim() : "";
       const timeoutSeconds = value.config.timeoutSeconds === undefined ? 300 : value.config.timeoutSeconds;
       const maxOutputBytes = value.config.maxOutputBytes === undefined ? 65536 : value.config.maxOutputBytes;
@@ -326,18 +352,20 @@ function normalizeNode(value: unknown, index: number, diagnostics: WorkflowDiagn
         : typeof value.config.cwd === "string" ? value.config.cwd.trim() : "";
       if (!(runtime === "bash" || runtime === "powershell" || runtime === "python")) diagnostics.push(diagnostic("E3005", `${pointer}/config/runtime`, { expected: "bash, powershell, or python" }, "workflow.schema.const", "author"));
       if (!script.trim() || script.includes("\0")) diagnostics.push(diagnostic("E3005", `${pointer}/config/script`, { expected: "non-empty script without null characters" }, "workflow.schema.const", "author"));
+      if (!Array.isArray(args) || args.some(argument => typeof argument !== "string" || argument.includes("\0"))) diagnostics.push(diagnostic("E3003", `${pointer}/config/args`, { expected: "string array without null characters" }, "workflow.schema.type", "author"));
       if (runtime === "python" && !IDENTIFIER.test(environmentId)) diagnostics.push(diagnostic("E3005", `${pointer}/config/environmentId`, { expected: "PKM Environment ID required for Python" }, "workflow.schema.const", "author"));
       if (runtime !== "python" && value.config.environmentId !== undefined) diagnostics.push(diagnostic("E3005", `${pointer}/config/environmentId`, { expected: "environmentId only for Python" }, "workflow.schema.const", "author"));
       if (!Number.isSafeInteger(timeoutSeconds) || (timeoutSeconds as number) < 1 || (timeoutSeconds as number) > 3600) diagnostics.push(diagnostic("E3005", `${pointer}/config/timeoutSeconds`, { expected: "integer from 1 through 3600" }, "workflow.schema.const", "author"));
       if (!Number.isSafeInteger(maxOutputBytes) || (maxOutputBytes as number) < 1024 || (maxOutputBytes as number) > 1048576) diagnostics.push(diagnostic("E3005", `${pointer}/config/maxOutputBytes`, { expected: "integer from 1024 through 1048576" }, "workflow.schema.const", "author"));
       if (value.config.cwd !== undefined && (!cwd || /[\r\n\0]/.test(cwd))) diagnostics.push(diagnostic("E3005", `${pointer}/config/cwd`, { expected: "non-empty path without control characters" }, "workflow.schema.const", "author"));
       if ((runtime === "bash" || runtime === "powershell" || runtime === "python") && script.trim() && !script.includes("\0")
+          && Array.isArray(args) && args.every(argument => typeof argument === "string" && !argument.includes("\0"))
           && (runtime !== "python" || IDENTIFIER.test(environmentId))
           && (runtime === "python" || value.config.environmentId === undefined)
           && Number.isSafeInteger(timeoutSeconds) && (timeoutSeconds as number) >= 1 && (timeoutSeconds as number) <= 3600
           && Number.isSafeInteger(maxOutputBytes) && (maxOutputBytes as number) >= 1024 && (maxOutputBytes as number) <= 1048576
           && (value.config.cwd === undefined || Boolean(cwd))) {
-        config = { runtime, script, ...(runtime === "python" ? { environmentId } : {}),
+        config = { runtime, script, ...(value.config.args === undefined ? {} : { args: args as string[] }), ...(runtime === "python" ? { environmentId } : {}),
           timeoutSeconds: timeoutSeconds as number, maxOutputBytes: maxOutputBytes as number, ...(cwd ? { cwd } : {}) };
       }
     }

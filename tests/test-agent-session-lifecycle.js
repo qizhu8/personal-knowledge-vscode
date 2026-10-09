@@ -317,7 +317,7 @@ function writeSession(id, status, updatedAt) {
     assert.deepStrictEqual(deletedRecipes, ['global-trash'], 'Recipe Delete All never deletes project-scoped Trash');
     assert.strictEqual(responses[0].command, 'projectState', 'Delete All refreshes the complete durable UI snapshot');
 
-    assert.match(projectsSource, /class="agent-session-quick-trash"[^>]*title="Move archived Agent Session to Trash"/, "archived rows expose an obvious one-click Trash action");
+    assert.match(projectsSource, /label:'Move to Trash…'[\s\S]{0,400}ask\('agentSessionTrash',\{action:'move',sessionId\}\)/, "completed and stopped Sessions expose a confirmed context-menu Trash action");
     assert.match(projectsSource, /const list = agentSessionTree\(sessions\)/, "restored Sessions share the normal tree rather than an automatic History tier");
     assert.doesNotMatch(projectsSource, /Keep newest \$\{archiveKeepLatestK\}/, "the obsolete archive tier is no longer rendered");
     assert.match(projectsSource, /catTreeTrashDock\('Trash', trash.length, trashList, 'emptyAgentSessionTrash\(\)'\)/, "Agent Sessions has a fixed Delete All action");

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 const assert = require("assert");
 const vm = require("vm");
-const { browserViewHtml } = require("../dist/chatroom/chatroom/chatroom-browser");
+const { browserViewHtml } = require("../dist/chatroom/chatroom-browser");
 
 const html = browserViewHtml();
 const match = html.match(/function browserRecipientNames\(text\)\{[\s\S]*?\n  \}/);

@@ -14,14 +14,14 @@ import { hasNewerMcpRuntime } from "./mcp-version-policy";
 import { builtInRecipePin } from "../workflows/project-model";
 
 // ── MCP server scaffold ────────────────────────────────────────────────────
-export const UNIFIED_MCP_VERSION = "2.13.10";
+export const UNIFIED_MCP_VERSION = "2.13.11";
 const PROMPT_MANAGER_WHEEL = "uone_prompt_manager-0.1.0-py3-none-any.whl";
 const PROMPT_MANAGER_WHEEL_SHA256 = "eb9fd76058134f9ab9711d8e7604c75f761db5762d93e67f65740dc07fdc1518";
 const RETRIEVAL_ENGINE_WHEEL = "adaptive_skill_retrieval-0.3.0.dev2026091601-py3-none-any.whl";
 const RETRIEVAL_ENGINE_WHEEL_SHA256 = "04560cf29966c8c267adf8ea8502819fd005222ca1e383af63cc115996afbf21";
 const KNOWLEDGE_MCP_VERSION = "1.5.1";
 const CHAT_MCP_VERSION = "2.3.6";
-const RECIPE_MCP_VERSION = "1.8.0";
+const RECIPE_MCP_VERSION = "1.8.1";
 const AGENT_SESSION_MCP_VERSION = "1.8.0";
 
 interface McpServerStatus {
@@ -77,6 +77,20 @@ export function writeMcpFeatureDomainConfig(domains = configuredMcpFeatureDomain
   fs.writeFileSync(temporary, JSON.stringify({ schema: 1, enabled: domains }, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
   fs.renameSync(temporary, destination);
   return destination;
+}
+
+export function writeActionWorkspaceConfig(): void {
+  const store = getStorePath();
+  if (!store) return;
+  const roots = vscode.workspace.getConfiguration("personalKnowledge").get<Record<string, string>>("actions.workspaceRoots", {});
+  const toolchains = vscode.workspace.getConfiguration("personalKnowledge").get<Record<string, Record<string, string>>>("actions.toolchains", {});
+  const directory = path.join(store, ".pkm", "state", "actions");
+  const destination = path.join(directory, "settings.json");
+  const current = fs.existsSync(destination) ? JSON.parse(fs.readFileSync(destination, "utf8")) : { workspace_roots: {} };
+  fs.mkdirSync(directory, { recursive: true });
+  const temporary = `${destination}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify({ ...current, workspace_roots: { ...current.workspace_roots, ...roots }, toolchains }, null, 2) + "\n", { mode: 0o600 });
+  fs.renameSync(temporary, destination);
 }
 
 export function managedMcpServerDirectory(): string {
@@ -498,8 +512,12 @@ export function generateMcpServer(context: vscode.ExtensionContext): { serverPat
 
   fs.mkdirSync(mcpDir, { recursive: true });
   writeMcpFeatureDomainConfig();
+  writeActionWorkspaceConfig();
   generateChatMcpServer(context);
   fs.copyFileSync(path.join(context.extensionPath, "resources", "recipe_runtime.py"), recipeRuntimePy);
+  fs.copyFileSync(path.join(context.extensionPath, "resources", "action_runtime.py"), path.join(mcpDir, "action_runtime.py"));
+  fs.copyFileSync(path.join(context.extensionPath, "resources", "action_modules.py"), path.join(mcpDir, "action_modules.py"));
+  fs.copyFileSync(path.join(context.extensionPath, "resources", "action_components.py"), path.join(mcpDir, "action_components.py"));
   fs.copyFileSync(path.join(context.extensionPath, "resources", "recipe_health.py"), recipeHealthPy);
   fs.copyFileSync(path.join(context.extensionPath, "resources", "agent_session_runtime.py"), agentSessionRuntimePy);
   fs.copyFileSync(path.join(context.extensionPath, "resources", "api_chat_control.py"), path.join(mcpDir, "api_chat_control.py"));
@@ -615,7 +633,9 @@ if "automation" in _FEATURE_DOMAINS:
   _AGENT_SESSION_TOOLS = register_agent_session_tools(mcp, STORE)
   register_api_chat_tools(mcp, STORE)
 from recipe_runtime import register_recipe_tools, related_recipes
+from action_runtime import register_action_tools
 if "automation" in _FEATURE_DOMAINS:
+  register_action_tools(mcp, STORE)
   register_recipe_tools(mcp, STORE, SUBSCRIPTIONS, ENVIRONMENTS, {
     "agent_session_snapshot_create": {
       "handler": _AGENT_SESSION_TOOLS["agent_session_snapshot_create"],
@@ -697,6 +717,16 @@ def _retrieval_request(route, payload=None):
       timeout = max(0.1, min(timeout, (deadline_at_ms - int(time.time() * 1000)) / 1000))
     with urllib.request.urlopen(request, timeout=timeout) as response:
       return json.loads(response.read().decode("utf-8"))
+  except urllib.error.HTTPError as error:
+    try:
+      result = json.loads(error.read().decode("utf-8"))
+      if isinstance(result, dict) and result.get("ok") is False:
+        return result
+    except (ValueError, OSError):
+      pass
+    finally:
+      error.close()
+    return {"ok": False, "code": "worker-http-error", "error": str(error)}
   except Exception as error:
     return {"ok": False, "error": "Subscriber retrieval worker unavailable: " + str(error)}
 
@@ -728,7 +758,8 @@ def search_knowledge(query: str, limit: int = 5, content_type_filter: Optional[L
     _collect_search_invocation("pkm.search_knowledge", started_at, [], False, ["exact", "bm25"])
     return json.dumps({"ok": False, "error": "query is required"})
   allowed = {"skill", "note", "research", "script", "recipe", "subscription"}
-  if content_type_filter is not None and any(str(value) not in allowed for value in content_type_filter):
+  if content_type_filter is not None and (not isinstance(content_type_filter, list) or not content_type_filter
+                                         or any(str(value) not in allowed for value in content_type_filter)):
     _collect_search_invocation("pkm.search_knowledge", started_at, [], False, ["exact", "bm25"])
     return json.dumps({"ok": False, "error": "Invalid content_type_filter"})
   requested_limit = max(1, min(int(limit or 5), 100))
@@ -762,7 +793,9 @@ def search_knowledge(query: str, limit: int = 5, content_type_filter: Optional[L
       priority = _skill_priority(metadata.get("source_priority") or metadata.get("priority")
                                  or provenance.get("source_priority"))
       return {"normal": 1.0, "high": 1.12, "highest": 1.24}[priority]
-    ranked_hits = list(result.get("hits") or [])
+    result = dict(result)
+    ranked_hits = [dict(hit) for hit in (result.get("hits") or [])
+                   if _matches_retrieval_types(hit, content_type_filter)]
     ranked_hits.sort(key=lambda hit: (
       -(float(hit.get("score") or 0) * priority_multiplier(hit)),
       int(hit.get("rank") or 0),
@@ -770,7 +803,15 @@ def search_knowledge(query: str, limit: int = 5, content_type_filter: Optional[L
     ))
     for index, hit in enumerate(ranked_hits[:requested_limit], 1):
       hit["rank"] = index
+    result["truncated"] = bool(result.get("truncated")) or len(ranked_hits) > requested_limit
+    result["limit_reached"] = bool(result.get("limit_reached")) or len(ranked_hits) >= min(100, requested_limit * 5)
+    result["incomplete"] = bool(result.get("incomplete")) or result["truncated"] or result["limit_reached"]
     result["hits"] = ranked_hits[:requested_limit]
+    result["result_count"] = len(result["hits"])
+    result["groups"] = {}
+    for hit in result["hits"]:
+      result["groups"].setdefault(hit.get("content_type"), []).append(hit.get("source_id") or hit.get("skill_id"))
+    result["counts"] = {kind: len(source_ids) for kind, source_ids in result["groups"].items()}
   result_ids = [hit.get("content_hash") or hit.get("skill_id") for hit in (result.get("hits") or [])]
   _collect_search_invocation("pkm.search_knowledge", started_at, result_ids, bool(result.get("ok")), ["exact", "bm25"])
   if debug or not result.get("ok"):
@@ -795,9 +836,92 @@ def search_knowledge(query: str, limit: int = 5, content_type_filter: Optional[L
     hits.append(compact_hit)
   compact = {key: result.get(key) for key in [
     "schema", "ok", "request_id", "corpus_revision", "ready_generation", "route", "query_intent", "exact_terms",
-    "lexical_anchors", "requested_content_types", "content_type_routing", "stale", "incomplete", "diagnostics"]}
+    "lexical_anchors", "requested_content_types", "content_type_routing", "stale", "incomplete", "diagnostics",
+    "truncated", "limit_reached", "result_count", "groups", "counts"]}
   compact["hits"] = hits
   return json.dumps(compact, ensure_ascii=False)
+
+
+def _matches_retrieval_types(hit, requested):
+  return (not requested or hit.get("content_type") in requested
+          or ("subscription" in requested and ((hit.get("provenance") or {}).get("provider") == "broker"
+              or str(hit.get("source_uri") or "").startswith("pkm://subscriptions/"))))
+
+
+def _knowledge_read_key(identifier, legacy_key=None):
+  if identifier and legacy_key and identifier != legacy_key:
+    return "", json.dumps({"ok": False, "error": "id and legacy name/slug must identify the same item"})
+  key = str(identifier or legacy_key or "").strip()
+  if not key:
+    return "", json.dumps({"ok": False, "error": "id is required"})
+  return key, None
+
+
+def _canonical_knowledge_id(identifier):
+  return identifier.startswith(("pkm://knowledge/", "pkm://script/", "pkm://subscriptions/", "knowledge_", "script_"))
+
+
+@_feature_tool("knowledge", read_only=True)
+def get_knowledge(id: str, content_type_filter: Optional[List[str]] = None) -> str:
+  """Read the indexed revision by search result source_id, preserving its hash, type, provenance and read-only status."""
+  if not str(id or "").strip():
+    return json.dumps({"ok": False, "error": "id is required"})
+  allowed = {"skill", "note", "research", "script", "recipe", "subscription"}
+  if content_type_filter is not None and (not isinstance(content_type_filter, list) or not content_type_filter
+                                         or any(value not in allowed for value in content_type_filter)):
+    return json.dumps({"ok": False, "error": "Invalid content_type_filter"})
+  return json.dumps(_retrieval_request("/get", {"source_id": id.strip(), "content_type_filter": content_type_filter}), ensure_ascii=False)
+
+
+@_feature_tool("knowledge", read_only=True)
+def get_script(id: str) -> str:
+  """Read only a Script by stable source_id; this never executes the Script."""
+  return get_knowledge(id, content_type_filter=["script"])
+
+
+def _search_typed_knowledge(query, content_type, limit, detail, tool_name):
+  if detail not in {"legacy", "standard"}:
+    return json.dumps({"ok": False, "error": "detail must be legacy or standard"})
+  started_at = time.perf_counter()
+  result = json.loads(search_knowledge(query, limit=limit, content_type_filter=[content_type], debug=detail == "legacy"))
+  _collect_search_invocation(tool_name, started_at,
+      [hit.get("content_hash") or hit.get("source_id") for hit in result.get("hits") or []],
+      bool(result.get("ok")), ["unified-retrieval"])
+  if detail == "standard":
+    return json.dumps(result, ensure_ascii=False)
+  if not result.get("ok"):
+    return None
+  rows = []
+  for hit in result.get("hits") or []:
+    row = {key: hit.get(key) for key in ["rank", "score", "source_id", "source_revision", "content_hash",
+           "content_type", "source_uri", "title", "description", "read_only", "provenance"]}
+    key = str(hit.get("skill_id") or "").removeprefix(content_type + ":")
+    if content_type == "skill":
+      skill = _skill_by_id(key)
+      row.update({"skill_id": key, "name": hit.get("title"), "skill_serving": result.get("skill_serving")})
+      if skill:
+        priority = _router_source_priority()
+        row.update({"name": skill["name"], "category": skill["category"], "source": skill.get("source", "local"),
+                    "source_key": _skill_source_key(skill), "source_rank": _skill_source_rank(skill, priority) + 1,
+                    "priority": skill.get("priority", "normal"), "content_hash": _skill_hash(skill),
+                    "linkage": _skill_linkage(skill)})
+    elif content_type == "note":
+      note = next((value for value in _all_notes() if value["slug"] == key), None)
+      row.update({"slug": key, "type": note["type"] if note else (hit.get("metadata") or {}).get("type", "general")})
+    elif content_type == "research":
+      papers = _all_papers()
+      paper = next((value for value in papers if value["slug"] == key), None)
+      row.update({"slug": key, "year": paper.get("year") if paper else None,
+                  "topic": paper.get("topic", "") if paper else "", "citation_count": _citation_counts(papers).get(key, 0)})
+    rows.append(row)
+  return json.dumps(rows, ensure_ascii=False)
+
+
+@_feature_tool("knowledge", read_only=True)
+def search_scripts(query: str, limit: int = 20, detail: str = "legacy") -> str:
+  """Search only Scripts. detail=standard returns the shared ranked retrieval envelope; legacy returns an array."""
+  result = _search_typed_knowledge(query, "script", limit, detail, "pkm.search_scripts")
+  return result if result is not None else json.dumps({"ok": False, "error": "Subscriber retrieval worker unavailable"})
 
 
 _COLLECTOR_SESSION_ID = os.environ.get("PKM_COLLECTOR_SESSION_ID") or (
@@ -847,7 +971,7 @@ _SKILL_ROUTER_TOOLS = {
 
 
 def _tool_domain(tool_name):
-  if tool_name.startswith("agent_session_") or tool_name.startswith("recipe_") or tool_name.startswith("chat_") or tool_name.startswith("api_chat_") or tool_name == "check_chat_version":
+  if tool_name.startswith("agent_session_") or tool_name.startswith("recipe_") or tool_name.startswith("action_") or tool_name.startswith("chat_") or tool_name.startswith("api_chat_") or tool_name == "check_chat_version":
     return "automation"
   if tool_name in _SKILL_ROUTER_TOOLS:
     return "skillRouter"
@@ -1727,58 +1851,62 @@ def list_skills(category: Optional[str] = None) -> str:
 
 
 @_feature_tool("knowledge", "skillRouter", read_only=True)
-def search_skills(query: str) -> str:
-    """Ranked full-text search across skill names, content, and descriptions (CJK-friendly)."""
+def search_skills(query: str, limit: int = 20, detail: str = "legacy") -> str:
+    """Search only Skills. detail=standard uses the shared retrieval envelope; legacy preserves arrays and offline fallback."""
+    standard = _search_typed_knowledge(query, "skill", limit, detail, "pkm.search_skills")
+    if standard is not None:
+        return standard
+    limit = max(1, min(int(limit or 20), 100))
     skills = _all_skills(); started_at = time.perf_counter()
     hits = []
-    boundary = _retrieval_request("/search", {
-        "query": query, "limit": 20, "content_type_filter": ["skill"],
-        "request_id": str(uuid.uuid4()), "route": "lexical",
-        "generation": {"mode": "latest-ready"}, "scope": {"capability_id": "pkm.search_skills"},
-        "deadline_at_ms": int(time.time() * 1000) + 5000,
-    }) if "l1_online" in _enabled_router_solutions() else {}
-    frozen_serving = bool(boundary.get("ok") and boundary.get("skill_serving", {}).get("used"))
-    if frozen_serving:
-        by_id = {_skill_id(skill): skill for skill in skills}
-        hits = [by_id[key] for hit in boundary.get("hits", [])
-                if (key := str(hit.get("skill_id") or "").removeprefix("skill:")) in by_id]
-    idx = None if frozen_serving else _index(skills, [])
+    idx = _index(skills, [])
     if idx is not None:
         try:
             names = [x[0] for x in idx.execute(
-                "SELECT name FROM s WHERE s MATCH ? ORDER BY rank LIMIT 20", [query])]
+                "SELECT name FROM s WHERE s MATCH ? ORDER BY rank LIMIT ?", [query, limit])]
             by = {}
             for s in skills:
                 by.setdefault(s["name"], s)
             hits = [by[n] for n in names if n in by]
         except sqlite3.OperationalError:
             hits = []
-    if not hits and not frozen_serving:
+    if not hits:
         q = query.lower()
         hits = [s for s in skills if q in s["name"].lower()
-                or q in (s["content"] or "").lower() or q in (s["description"] or "").lower()][:20]
+                or q in (s["content"] or "").lower() or q in (s["description"] or "").lower()][:limit]
     source_priority = _router_source_priority()
     hits.sort(key=lambda skill: _skill_source_rank(skill, source_priority))
     _collect_search_invocation("pkm.search_skills", started_at,
             [_skill_hash(skill) for skill in hits], True,
-            ["frozen-skill-path"] if frozen_serving else ["fts5", "substring-fallback"])
+            ["legacy-fts5", "substring-fallback"])
     return json.dumps([{"skill_id": _skill_id(s), "name": s["name"], "description": s["description"],
               "category": s["category"], "source": s.get("source", "local"),
               "source_key": _skill_source_key(s), "source_rank": _skill_source_rank(s, source_priority) + 1,
               "priority": s.get("priority", "normal"),
               "content_hash": _skill_hash(s),
-              "skill_serving": boundary.get("skill_serving"),
+              "skill_serving": None,
               "read_only": s.get("read_only", False), "provenance": s.get("provenance"),
               "linkage": _skill_linkage(s)}
                for s in hits], ensure_ascii=False)
 
 
 @_feature_tool("knowledge", "skillRouter", read_only=True)
-def get_skill(name: str, interaction_id: str = "") -> str:
-  """Get the full content of a skill by stable skill_id or exact name."""
-  r = _skill_by_id(name)
+def get_skill(id: str = "", interaction_id: str = "", name: Optional[str] = None) -> str:
+  """Read a Skill by stable source_id, skill_id or exact name; the old name parameter remains accepted."""
+  key, error = _knowledge_read_key(id, name)
+  if error:
+    return error
+  if _canonical_knowledge_id(key):
+    result = json.loads(get_knowledge(key, content_type_filter=["skill"]))
+    if result.get("ok"):
+      _collector_post("skill_load", interaction_id or str(uuid.uuid4()), {"skill": {
+          "content_hash": result.get("content_hash"), "source": (result.get("provenance") or {}).get("provider"),
+          "read_only": bool(result.get("read_only"))}})
+    if result.get("ok") or not key.startswith("pkm://subscriptions/") or result.get("code") not in {None, "index-not-ready"}:
+      return json.dumps(result, ensure_ascii=False)
+  r = _skill_by_id(key)
   if not r:
-    return f"Skill '{name}' not found. Use list_skills or search_skills to find it."
+    return f"Skill '{key}' not found. Use list_skills or search_skills to find it."
   result = {"skill_id": _skill_id(r), "content_hash": _skill_hash(r),
              "name": r["name"], "content": r["content"], "description": r["description"],
              "category": r["category"], "tags": r["tags"], "updated_at": r["updated_at"],
@@ -1802,40 +1930,48 @@ def list_notes(type: Optional[str] = None) -> str:
                         "category": r["category"], "updated_at": r["updated_at"]} for r in rows[:50]])
 
 
-@_feature_tool("knowledge")
-def search_notes(query: str) -> str:
-    """Ranked full-text search across note titles and content (CJK-friendly)."""
+@_feature_tool("knowledge", read_only=True)
+def search_notes(query: str, limit: int = 20, detail: str = "legacy") -> str:
+    """Search only Notes. detail=standard uses the shared retrieval envelope; legacy preserves arrays and offline fallback."""
+    standard = _search_typed_knowledge(query, "note", limit, detail, "pkm.search_notes")
+    if standard is not None:
+        return standard
+    limit = max(1, min(int(limit or 20), 100))
     notes = _all_notes(); started_at = time.perf_counter()
     hits = []
     idx = _index([], notes)
     if idx is not None:
         try:
             slugs = [x[0] for x in idx.execute(
-                "SELECT slug FROM n WHERE n MATCH ? ORDER BY rank LIMIT 20", [query])]
+                "SELECT slug FROM n WHERE n MATCH ? ORDER BY rank LIMIT ?", [query, limit])]
             by = {r["slug"]: r for r in notes}
             hits = [by[s] for s in slugs if s in by]
         except sqlite3.OperationalError:
             hits = []
     if not hits:
         q = query.lower()
-        hits = [r for r in notes if q in r["title"].lower() or q in (r["content"] or "").lower()][:20]
+        hits = [r for r in notes if q in r["title"].lower() or q in (r["content"] or "").lower()][:limit]
     _collect_search_invocation("pkm.search_notes", started_at,
             [hashlib.sha256(r["slug"].encode("utf-8")).hexdigest() for r in hits],
-            True, ["fts5", "substring-fallback"])
+            True, ["legacy-fts5", "substring-fallback"])
     return json.dumps([{"slug": r["slug"], "title": r["title"], "type": r["type"]} for r in hits])
 
 
-@_feature_tool("knowledge")
-def get_note(slug: str) -> str:
-    """Get the full content of a note by slug (its relative path without .md)."""
-    r = _note_get(slug)
-    if not r:
-        return f"Note '{slug}' not found. Use list_notes or search_notes to find it."
-    return json.dumps({"slug": r["slug"], "content_hash": _note_hash(r), "title": r["title"], "content": r["content"],
-                       "type": r["type"], "tags": r["tags"], "category": r["category"],
-                       "read_only": r.get("read_only", False),
-                       "updated_at": r["updated_at"],
-                       "linkage": {"related_recipes": related_recipes(STORE, r["slug"], "note")}})
+@_feature_tool("knowledge", read_only=True)
+def get_note(id: str = "", slug: Optional[str] = None) -> str:
+  """Read a Note by stable source_id or relative slug; the old slug parameter remains accepted."""
+  key, error = _knowledge_read_key(id, slug)
+  if error:
+    return error
+  if _canonical_knowledge_id(key):
+    return get_knowledge(key, content_type_filter=["note"])
+  r = _note_get(key)
+  if not r:
+    return f"Note '{key}' not found. Use list_notes or search_notes to find it."
+  return json.dumps({"slug": r["slug"], "content_hash": _note_hash(r), "title": r["title"], "content": r["content"],
+                     "type": r["type"], "tags": r["tags"], "category": r["category"],
+                     "read_only": r.get("read_only", False), "updated_at": r["updated_at"],
+                     "linkage": {"related_recipes": related_recipes(STORE, r["slug"], "note")}})
 
 
 # ── Write tools ─────────────────────────────────────────────────────────────
@@ -1943,29 +2079,63 @@ def list_papers(topic: Optional[str] = None) -> str:
                         "tags": p["tags"], "citation_count": counts.get(p["slug"], 0)} for p in rows])
 
 
-@_feature_tool("knowledge")
-def search_papers(query: str) -> str:
-    """Search papers by title, authors, topic, publisher, tags, or year."""
+@_feature_tool("knowledge", read_only=True)
+def search_research(query: str, limit: int = 20, detail: str = "legacy") -> str:
+  """Search only Research. detail=standard uses the shared retrieval envelope; legacy preserves arrays and offline fallback."""
+  standard = _search_typed_knowledge(query, "research", limit, detail, "pkm.search_research")
+  if standard is not None:
+    return standard
+  return _search_papers_legacy(query, limit)
+
+
+@_feature_tool("knowledge", read_only=True)
+def search_papers(query: str, limit: int = 50, detail: str = "legacy") -> str:
+  """Compatibility alias for search_research; preserves the historical default limit of 50."""
+  started_at = time.perf_counter()
+  result = search_research(query, limit=limit, detail=detail)
+  _collect_search_invocation("pkm.search_papers", started_at, [], True, ["research-compatibility-alias"])
+  return result
+
+
+def _search_papers_legacy(query, limit):
+    limit = max(1, min(int(limit or 20), 100))
     q = query.lower(); started_at = time.perf_counter(); all_p = _all_papers(); counts = _citation_counts(all_p)
     hits = [p for p in all_p if q in p["title"].lower() or q in p["topic"].lower()
             or q in p["publisher"].lower() or q in " ".join(p["authors"]).lower()
             or q in " ".join(p["tags"]).lower() or q in str(p["year"] or "")]
-    limited = hits[:50]
+    limited = hits[:limit]
     _collect_search_invocation("pkm.search_papers", started_at,
             [hashlib.sha256(p["slug"].encode("utf-8")).hexdigest() for p in limited],
-            True, ["metadata-substring"])
+            True, ["legacy-metadata-substring"])
     return json.dumps([{"slug": p["slug"], "title": p["title"], "year": p["year"],
-                        "topic": p["topic"], "citation_count": counts.get(p["slug"], 0)} for p in hits[:50]])
+                        "topic": p["topic"], "citation_count": counts.get(p["slug"], 0)} for p in limited])
 
 
-@_feature_tool("knowledge")
-def get_paper(slug: str) -> str:
-    """Get a paper's full record (metadata, conclusions, cites with notes, body) by slug."""
-    p = _paper_get(slug)
-    if not p:
-        return f"Paper '{slug}' not found. Use list_papers or search_papers to find it."
-    p["citation_count"] = _citation_counts(_all_papers()).get(slug, 0)
-    return json.dumps(p)
+@_feature_tool("knowledge", read_only=True)
+def get_research(id: str = "", slug: Optional[str] = None) -> str:
+  """Read Research by stable source_id or relative slug; slug compatibility preserves the full paper record."""
+  key, error = _knowledge_read_key(id, slug)
+  if error:
+    return error
+  if _canonical_knowledge_id(key):
+    return get_knowledge(key, content_type_filter=["research"])
+  paper = _paper_get(key)
+  if not paper:
+    return f"Paper '{key}' not found. Use list_research or search_research to find it."
+  paper["citation_count"] = _citation_counts(_all_papers()).get(key, 0)
+  return json.dumps(paper)
+
+
+@_feature_tool("knowledge", read_only=True)
+def get_paper(slug: str = "", id: str = "") -> str:
+  """Compatibility alias for get_research accepting both the historical slug and stable id."""
+  return get_research(id=id, slug=slug or None)
+
+
+@_feature_tool("knowledge", read_only=True)
+def list_research(topic: Optional[str] = None) -> str:
+  """Canonical Research listing; preserves the existing Paper listing metadata and order."""
+  return list_papers(topic=topic)
 
 
 @_feature_tool("knowledge")
@@ -2180,6 +2350,11 @@ if __name__ == "__main__":
 
   fs.writeFileSync(reqTxt, "fastmcp>=2.0.0,<4.0.0\nuone-prompt-manager==0.1.0\nwebsockets>=12.0\nPyYAML>=6\ncryptography>=42.0.0\n");
   fs.rmSync(path.join(mcpDir, "chat_requirements.txt"), { force: true });
+
+  const requiredSkillTools = ["skill_capabilities", "skill_context", "skill_feedback", "propose_skill_update"];
+  const generatedServer = fs.readFileSync(serverPy, "utf8");
+  const missingSkillTools = requiredSkillTools.filter(tool => !generatedServer.includes(`def ${tool}(`));
+  if (missingSkillTools.length) throw new Error(`Unified MCP server is missing required Skill tools: ${missingSkillTools.join(", ")}`);
 
   const launch = mcpStdioCommand(resolveMcpPython(), [serverPy]);
   const configSnippet = JSON.stringify({
@@ -2597,9 +2772,6 @@ if __name__ == "__main__":
   const requiredChatTools = ["chat_capabilities", "chat_join", "chat_standby", "chat_post", "chat_status"];
   const missingChatTools = requiredChatTools.filter(tool => !template.includes(`def ${tool}(`));
   if (missingChatTools.length) throw new Error(`Chat MCP template is missing required tools: ${missingChatTools.join(", ")}`);
-  const requiredSkillTools = ["skill_capabilities", "skill_context", "skill_feedback", "propose_skill_update"];
-  const missingSkillTools = requiredSkillTools.filter(tool => !fs.readFileSync(path.join(require("path").resolve(__dirname, ".."), "mcp.js"), "utf8").includes(`def ${tool}(`));
-  if (missingSkillTools.length) throw new Error(`Unified MCP server is missing required Skill tools: ${missingSkillTools.join(", ")}`);
   fs.writeFileSync(serverPy, template);
 
   const launch = mcpStdioCommand(resolveMcpPython(), [path.join(mcpDir, "server.py")]);

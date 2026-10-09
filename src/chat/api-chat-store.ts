@@ -7,8 +7,19 @@ import { decodeChatImage } from "./api-chat-client";
 import { ChatLibrary } from "./chat-library";
 import { validChatRetrievalReceipt } from "./chat-retrieval";
 import { withCrossProcessLockSync } from "../runtime/cross-process-lock";
+import { chatPkmUrl } from "../knowledge/knowledge-locator";
 
 export interface ChatContext { id: string; label: string; content: string; }
+export interface QueuedChatInput { id: string; text: string; mode: "steer" | "task"; attemptId?: string; }
+export interface ChatDelegation {
+  id: string;
+  chatId: string;
+  chatUrl: string;
+  status: "running" | "complete" | "failed" | "cancelled";
+  answer?: string;
+  error?: string;
+  truncated?: boolean;
+}
 export interface ApiChatProgress {
   attemptId?: string;
   attempt?: number;
@@ -20,6 +31,8 @@ export interface ApiChatProgress {
   status: "running" | "complete" | "cancelled" | "failed";
   model: string;
   tools?: string[];
+  droppedSteps?: number;
+  completedDroppedSteps?: number;
   steps: Array<{ label: string; at: number; status?: "running" | "waiting" | "complete" | "cancelled" | "failed" }>;
 }
 export interface ChatMessage {
@@ -35,6 +48,11 @@ export interface ChatMessage {
   model?: string;
   contextLabels?: string[];
   fromSessionId?: string;
+  fromChatId?: string;
+  delegationId?: string;
+  delegations?: ChatDelegation[];
+  submissionId?: string;
+  inputKind?: "steer" | "task";
   unattributedFileChanges?: boolean;
   elapsedMs?: number;
   usage?: { inputTokens: number; outputTokens: number; cachedInputTokens?: number };
@@ -62,6 +80,7 @@ export interface ApiConversation {
   createdAt: string;
   updatedAt: string;
   messages: ChatMessage[];
+  queuedInputs?: QueuedChatInput[];
   memoryTasks?: Array<{ id: string; title: string; createdAt: string }>;
   context: ChatContext[];
   images?: import("./api-chat-client").ChatImage[];
@@ -80,7 +99,7 @@ export interface ApiConversation {
   mcpServers?: import("./api-chat-mcp").ApiChatMcpServer[];
 }
 
-export type ApiChatStatus = "running" | "idle" | "new-result" | "awaiting-input" | "paused" | "failed" | "stopped";
+export type ApiChatStatus = "running" | "idle" | "completed" | "new-result" | "awaiting-input" | "awaiting-result" | "paused" | "failed" | "stopped";
 
 export function apiChatDiagnostics(chat: ApiConversation) {
   const tokenUsage = (usage: ChatMessage["usage"]) => usage && [usage.inputTokens, usage.outputTokens].every(value => Number.isSafeInteger(value) && value >= 0) ? {
@@ -94,6 +113,7 @@ export function apiChatDiagnostics(chat: ApiConversation) {
     attemptId: run.attemptId, attempt: run.attempt, retryOf: run.retryOf,
     startedAt: run.startedAt, finishedAt: run.finishedAt, status: run.status, model: run.model,
     tools: run.tools?.slice(0, 80),
+    droppedSteps: run.droppedSteps, completedDroppedSteps: run.completedDroppedSteps,
     steps: run.steps.slice(0, 512).map(step => ({ at: step.at, status: step.status,
       label: /^(Running|Completed|Failed) tool:/.test(step.label) ? step.label.split(":")[0] : /^Waiting/.test(step.label) ? "Waiting" : ["Preparing context", "Checking VS Code model access", "Requesting VS Code model", "Connecting to model API", "Generating response", "Receiving image"].includes(step.label) ? step.label : "Other activity" })),
   });
@@ -122,12 +142,15 @@ export function apiChatSessionDiagnostics(record: Record<string, unknown>, sessi
   return { ...apiChatDiagnostics(chat), recordStatus: record.status, updatedAt: record.updatedAt };
 }
 
-export function apiChatStatus(chat: ApiConversation, running = chat.progress?.status === "running", awaitingInput = false): ApiChatStatus {
+export function apiChatStatus(chat: ApiConversation, running = chat.progress?.status === "running", awaitingInput = chat.progress?.steps[chat.progress.steps.length - 1]?.status === "waiting"): ApiChatStatus {
   if (chat.paused) return "paused";
   if (running) return awaitingInput ? "awaiting-input" : "running";
   const latest = chat.messages[chat.messages.length - 1];
   if (chat.progress?.status === "failed" || latest?.role === "assistant" && ["failed", "interrupted"].includes(latest.status)) return "failed";
+  if (chat.progress?.status === "cancelled" || latest?.role === "assistant" && latest.status === "cancelled") return "stopped";
+  if (chat.messages.some(message => message.delegations?.some(record => record.status === "running"))) return "awaiting-result";
   if (chat.lastResultId && chat.lastResultId !== chat.readResultId) return "new-result";
+  if (chat.progress?.status === "complete" || latest?.role === "assistant" && latest.status === "complete") return "completed";
   return "idle";
 }
 
@@ -272,6 +295,8 @@ export class ApiChatStore {
       && (run.ownerPid === undefined || Number.isSafeInteger(run.ownerPid) && run.ownerPid > 0 && run.ownerPid <= 2147483647) && (run.ownerHost === undefined || typeof run.ownerHost === "string" && run.ownerHost.length <= 256)
       && (run.attemptId === undefined || typeof run.attemptId === "string" && run.attemptId.length <= 80) && (run.retryOf === undefined || typeof run.retryOf === "string" && run.retryOf.length <= 80)
       && (run.attempt === undefined || Number.isSafeInteger(run.attempt) && run.attempt > 0) && (run.tools === undefined || Array.isArray(run.tools) && run.tools.every(name => typeof name === "string" && name.length <= 200))
+      && (run.droppedSteps === undefined || Number.isSafeInteger(run.droppedSteps) && run.droppedSteps >= 0)
+      && (run.completedDroppedSteps === undefined || Number.isSafeInteger(run.completedDroppedSteps) && run.completedDroppedSteps >= 0 && run.completedDroppedSteps <= (run.droppedSteps || 0))
       && Array.isArray(run.steps) && run.steps.length <= 512 && run.steps.every(step => step && typeof step.label === "string" && Number.isFinite(step.at) && (step.status === undefined || ["running", "waiting", "complete", "cancelled", "failed"].includes(step.status)));
     const changesValid = (items: NonNullable<ChatMessage["changes"]>) => Array.isArray(items) && items.length <= 4096 && items.every(item => item && typeof item.path === "string" && item.path.length <= 4096 && Number.isSafeInteger(item.workspace) && item.workspace >= 0 && typeof item.appliedAt === "string" && Number.isFinite(Date.parse(item.appliedAt)) && /^[a-f0-9]{64}$/.test(item.beforeHash) && /^[a-f0-9]{64}$/.test(item.afterHash) && item.saved === false && ["exact", "unknown"].includes(item.attribution) && (item.attribution !== "exact" || Number.isSafeInteger(item.added) && item.added! >= 0 && Number.isSafeInteger(item.removed) && item.removed! >= 0));
     if (!chat || chat.version !== 1 || chat.id !== id || chat.sessionId !== undefined && !/^agent_session_[a-f0-9]{32}$/.test(chat.sessionId) || typeof chat.title !== "string" || typeof chat.updatedAt !== "string" || !Number.isFinite(Date.parse(chat.updatedAt)) || typeof chat.createdAt !== "string" || !Number.isFinite(Date.parse(chat.createdAt)) || typeof chat.includeHistory !== "boolean" || !Array.isArray(chat.messages) || !contextsValid(chat.context)
@@ -281,6 +306,11 @@ export class ApiChatStore {
         || message.progress !== undefined && !progressValid(message.progress)
         || message.changes !== undefined && !changesValid(message.changes)
         || message.fromSessionId !== undefined && (typeof message.fromSessionId !== "string" || !/^agent_session_[a-f0-9]{32}$/.test(message.fromSessionId))
+        || message.fromChatId !== undefined && (typeof message.fromChatId !== "string" || !/^[a-f0-9-]{36}$/.test(message.fromChatId))
+        || message.delegationId !== undefined && (typeof message.delegationId !== "string" || !/^[a-f0-9-]{36}$/.test(message.delegationId))
+        || message.submissionId !== undefined && (typeof message.submissionId !== "string" || !/^[a-f0-9-]{36}$/.test(message.submissionId))
+        || message.inputKind !== undefined && !["steer", "task"].includes(message.inputKind)
+        || message.delegations !== undefined && (!Array.isArray(message.delegations) || message.delegations.length > 1 || message.delegations.some(record => !record || typeof record.id !== "string" || !/^[a-f0-9-]{36}$/.test(record.id) || typeof record.chatId !== "string" || !/^[a-f0-9-]{36}$/.test(record.chatId) || record.chatUrl !== chatPkmUrl(path.basename(path.dirname(file)), record.chatId) || !["running", "complete", "failed", "cancelled"].includes(record.status) || record.answer !== undefined && (typeof record.answer !== "string" || record.answer.length > 12_000) || record.error !== undefined && (typeof record.error !== "string" || record.error.length > 1000) || record.truncated !== undefined && typeof record.truncated !== "boolean"))
         || message.unattributedFileChanges !== undefined && typeof message.unattributedFileChanges !== "boolean"
         || message.toolCalls && (!Array.isArray(message.toolCalls) || message.toolCalls.some(tool => !tool || typeof tool.id !== "string" || typeof tool.name !== "string" || typeof tool.arguments !== "string" || !["running", "complete", "failed"].includes(tool.status) || tool.result !== undefined && typeof tool.result !== "string")))
       || chat.agentContext && Object.values(chat.agentContext).some(items => !contextsValid(items))
@@ -288,6 +318,7 @@ export class ApiChatStore {
       || chat.revision !== undefined && (!Number.isSafeInteger(chat.revision) || chat.revision < 0)
       || chat.workspaceNamespace !== undefined && chat.workspaceNamespace !== path.basename(path.dirname(file))
       || chat.customTitle !== undefined && typeof chat.customTitle !== "boolean"
+      || chat.queuedInputs !== undefined && (!Array.isArray(chat.queuedInputs) || chat.queuedInputs.length > 20 || chat.queuedInputs.some(input => !input || typeof input.id !== "string" || !/^[a-f0-9-]{36}$/.test(input.id) || typeof input.text !== "string" || !input.text.trim() || input.text.length > 16_000 || !["steer", "task"].includes(input.mode) || input.attemptId !== undefined && (typeof input.attemptId !== "string" || input.attemptId.length > 80)) || new Set(chat.queuedInputs.map(input => input.id)).size !== chat.queuedInputs.length)
       || chat.memoryTasks !== undefined && (!Array.isArray(chat.memoryTasks) || chat.memoryTasks.length > 4096 || chat.memoryTasks.some(task => !task || typeof task.id !== "string" || task.id.length > 128 || typeof task.title !== "string" || task.title.length > 512 || typeof task.createdAt !== "string" || !Number.isFinite(Date.parse(task.createdAt))))
       || chat.paused !== undefined && typeof chat.paused !== "boolean"
       || chat.permissionMode !== undefined && !["protective", "ask", "read-only", "allow-all"].includes(chat.permissionMode)

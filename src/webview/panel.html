@@ -65,13 +65,12 @@
           <button id="search-next" type="button" onclick="navigateFind('content',1)" title="Next match" aria-label="Next match"><span class="codicon codicon-arrow-down" aria-hidden="true"></span></button>
           <button id="search-case" type="button" onclick="toggleFindOption('content','case')" title="Match case">Aa</button>
           <button id="search-regex" type="button" onclick="toggleFindOption('content','regex')" title="Use regular expression">.*</button>
+          <button type="button" onclick="closePanelFind()" title="Close search" aria-label="Close search"><span class="codicon codicon-close" aria-hidden="true"></span></button>
         </div>
         <div id="toolbar">
           <button class="tbtn" data-ord="1" onclick="doReload()" title="Reload from disk (pick up external / MCP changes)"><span class="codicon codicon-refresh" aria-hidden="true"></span><span>Refresh</span></button>
           <button class="tbtn" data-ord="2" id="btn-add-knowledge" onclick="addCurrentKnowledge()" title="Create a new Skill"><span class="codicon codicon-add" aria-hidden="true"></span><span>Skill</span></button>
           <button class="tbtn" data-ord="3" id="btn-paper-graph" onclick="togglePaperGraph()" title="Open or close the paper graph" style="display:none"><span class="codicon codicon-type-hierarchy" aria-hidden="true"></span><span>Graph</span></button>
-          <button class="tbtn" data-ord="4" onclick="doExport()" title="Export Personal Knowledge content"><span class="codicon codicon-export" aria-hidden="true"></span><span>Export</span></button>
-          <button class="tbtn" data-ord="5" onclick="triggerImport()" title="Import Personal Knowledge content"><span class="codicon codicon-cloud-upload" aria-hidden="true"></span><span>Import</span></button>
         </div>
         <div id="more-wrap">
           <button id="more-btn" class="tbtn" onclick="toggleMoreMenu(event)" title="More content actions" style="display:none">⋯</button>
@@ -110,7 +109,7 @@
       <div class="workspace-context-tabs" role="tablist" aria-label="Setting views">
         <button class="tab" role="tab" aria-selected="false" data-tab="mcp">General &amp; MCP</button>
         <button class="tab" role="tab" aria-selected="false" data-tab="skillRouter">Router</button>
-        <button class="tab" role="tab" aria-selected="false" data-tab="subscriptions">Network &amp; Sharing</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="subscriptions">Sharing &amp; Subscribe</button>
         <button class="tab" role="tab" aria-selected="false" data-tab="githubSync">GitHub Sync</button>
         <button class="tab" role="tab" aria-selected="false" data-tab="backgroundTasks">Background Tasks</button>
       </div>
@@ -342,5 +341,7 @@
   <div class="loading-stage-count" hidden></div>
   <progress class="loading-bar" max="100" value="5" hidden></progress>
 </div>
+<link rel="stylesheet" href="%%HOST_HEALTH_CSS%%">
+<script src="%%HOST_HEALTH_JS%%"></script>
 <script src="%%PANEL_JS%%"></script>
 </body></html>

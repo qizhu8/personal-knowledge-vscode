@@ -79,4 +79,38 @@ assert.match(extension, /Choose an empty directory or an existing PKM-generated 
 assert.match(mcpSource, /insideInstalledExtension/,
   "legacy MCP server paths inside the read-only installed extension must fall back to the Knowledge Root");
 
-console.log("machine store path test: machine scope, cross-OS rejection, reinstall recovery, host-aware setup, no fallback, and Sync target confirmation OK");
+async function checkStartupPersistence() {
+  const vm = require("vm");
+  const ts = require("typescript");
+  const helper = extension.match(/async function rememberMachineStorePath\([\s\S]*?\n\}/);
+  assert(helper);
+  let stored = { machine: "/linux/store", lastStorePath: "/linux/store", setupComplete: true };
+  let configured = "/linux/store";
+  const writes = [];
+  const context = { globalState: {
+    get: key => stored[key],
+    update: async (key, value) => { writes.push(key); stored[key] = value; },
+  } };
+  const sandbox = vm.createContext({ MACHINE_STORE_PATH_KEY: "machine", vscode: {
+    workspace: { getConfiguration: () => ({
+      get: () => configured,
+      update: async (_key, value) => { writes.push("configuration"); configured = value; },
+    }) }, ConfigurationTarget: { Global: 1 },
+  } });
+  vm.runInContext(ts.transpileModule(helper[0], { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText, sandbox);
+  await sandbox.rememberMachineStorePath(context, "/linux/store");
+  assert.deepStrictEqual(writes, [], "unchanged setup must not await redundant persistent writes");
+  stored = {};
+  configured = "";
+  await sandbox.rememberMachineStorePath(context, "/linux/store");
+  assert.deepStrictEqual(writes, ["machine", "lastStorePath", "setupComplete", "configuration"]);
+  writes.length = 0;
+  await sandbox.rememberMachineStorePath(context, "/linux/store");
+  assert.deepStrictEqual(writes, []);
+  await sandbox.rememberMachineStorePath(context, "/linux/previous");
+  assert.deepStrictEqual(writes, ["machine", "lastStorePath", "configuration"], "root changes must still persist");
+}
+
+checkStartupPersistence().then(() => {
+  console.log("machine store path test: machine scope, cross-OS rejection, reinstall recovery, host-aware setup, no fallback, Sync target confirmation, and no-op startup persistence OK");
+}).catch(error => { console.error(error); process.exitCode = 1; });

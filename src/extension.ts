@@ -81,13 +81,14 @@ import { cloudSynchronizedPath, extensionHostDescription, isAbsoluteForPlatform,
 import { loadLocaleCatalogs, loadLocaleManifest, localizedText, normalizeUiLanguage, resolveUiLanguage, UiLanguageSetting, uiLanguageSetting } from "./ui/localization";
 import { decideInitialExperience, FEATURE_TOUR_MODULES, minorRelease } from "./ui/onboarding-experience";
 import { AiBackend, aiSummarizeScript, listAiBackends, runAiPrompt, scriptCacheDir } from "./ai/ai";
-import { registerApiChat } from "./chat/api-chat-view";
+import { registerApiChatShell } from "./chat/api-chat-shell";
+import { initializeActionChat, openActionWorkbench, openActionWorkbenchInBrowser } from "./ui/action-browser";
 import { agentSessionOrigin, apiChatGroupSnapshots } from "./chat/api-chat-store";
 import {
   cancelMcpPythonScan, combinedMcpInstallInstruction, combinedMcpRegistry,
   configuredMcpFeatureDomains, detectMcpPython, ensureMcpRuntime, generateMcpServer, MCP_FEATURE_DOMAINS, McpFeatureDomain,
   managedMcpRuntimePath, managedMcpServerDirectory, mcpProcessStatus, mcpRuntimeManualCommands, mcpRuntimeStatus, mcpServerDefinitionData, mcpStatus, streamMcpPythonCandidates,
-  resolveMcpPython, validateMcpPython, writeMcpFeatureDomainConfig,
+  resolveMcpPython, validateMcpPython, writeMcpFeatureDomainConfig, writeActionWorkspaceConfig,
 } from "./mcp/mcp";
 import { nativeMcpCwdUri } from "./mcp/mcp-native-location";
 import { scheduleRestoredWebviewRecovery } from "./ui/webview-restoration";
@@ -106,7 +107,7 @@ import { recipeBrowserEditorDocument } from "./ui/recipe-browser";
 import { availableSkillRouterSources, normalizeSkillRouterSourcePriority, SkillRouterSource } from "./skills/skill-router-config";
 import {
   GITHUB_SYNC_CONTENT_TYPES, GitHubPublicationMigration, GitHubPublicationMigrationSource, GitHubSyncCatalog, GitHubSyncConflictError, GitHubSyncContentType, GitHubSyncCredentials, GitHubSyncExtensionCompatibilityError, GitHubSyncFolderFingerprints, GitHubSyncRecipePull, GitHubSyncTarget, githubSyncMigrationCanonicalFiles,
-  completeGitHubSyncTransaction, createGitHubSyncIdentity, discoverGitHubCredentialManagerAccounts, discoverGitHubSshIdentities, fetchGitHubRemoteSnapshot, githubSyncAuthenticationSessionOptions, githubSyncEntryShields, githubSyncFolderShields, githubSyncManagedContent, githubSyncManifestFileFingerprints, githubSyncManifestFolderFingerprints, githubSyncSafeRelativePath, githubSyncShield, normalizeGitHubSyncTarget, previewGitHubSyncTarget,
+  completeGitHubSyncTransaction, createGitHubSyncIdentity, discoverGitHubCredentialManagerAccounts, discoverGitHubSshIdentities, fetchGitHubRemoteSnapshot, githubSyncAuthenticationSessionOptions, githubSyncEntryShields, githubSyncFolderShields, githubSyncIgnoredPath, githubSyncManagedContent, githubSyncManifestFileFingerprints, githubSyncManifestFolderFingerprints, githubSyncSafeRelativePath, githubSyncShield, normalizeGitHubSyncTarget, previewGitHubSyncTarget,
   probeGitHubSyncAuthentication, probeGitHubSyncHttpsAuthentication, probeGitHubSyncVscodeAuthentication, readGitHubCachedManifest, readGitHubRemoteFile, readGitHubRemoteFilesForSubscription, readGitHubRemoteManifest, replaceGitHubSyncFilesAtomically, restoreGitHubRemoteFiles, syncGitHubTarget, testGitHubSyncAuthentication,
 } from "./sync/github-sync";
 import { githubSyncCatalogInWorker } from "./sync/github-sync-catalog-worker";
@@ -121,6 +122,7 @@ import {
 import { GitHubSyncRuntimeState } from "./sync/github-sync-scheduler";
 import { githubSyncCoordinatorDirectory, GitHubSyncCoordinator } from "./sync/github-sync-coordinator";
 import { BackgroundTaskProducer, BackgroundTaskRegistry } from "./runtime/background-task-registry";
+import { ActionBackgroundTasks } from "./runtime/action-background-tasks";
 
 let projectStoreBinding: { root: string; store: ProjectStore } | undefined;
 
@@ -1782,6 +1784,7 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
             githubSyncDiagnostics.record("github_sync.phase", { traceId, targetId, reason, phase: diagnosticPhase });
             const credentials = await readGitHubSyncCredentials(context, target);
             report("fetch", "Preparing Local files for Fetch / Pull");
+            invalidateSharedContentCatalog();
             const catalog = await githubSyncCatalog();
             githubSyncDiagnostics.record("github_sync.catalog", {
               traceId,
@@ -3124,7 +3127,10 @@ h1.doc-title{font-size:28px;line-height:1.25;margin:0 0 12px;color:#0b1220}
 .reader-layout .wrap{width:100%;min-width:0;margin:0;border:0;border-radius:0;box-shadow:none;overflow-wrap:anywhere}
 .reader-sidebar{position:sticky;top:0;align-self:start;height:100vh;overflow-y:auto;background:#f6f7f9;border-right:1px solid #e2e5e9;padding:16px 12px;font-size:13px}
 .reader-sidebar summary{padding:4px 8px;font-size:15px;font-weight:650;cursor:pointer}
-.reader-search{display:block;padding:12px 4px}.reader-search input{width:100%;padding:8px 10px;border:1px solid #cdd3da;border-radius:4px;background:#fff;font:inherit}
+.reader-search{position:fixed;top:12px;right:16px;z-index:1000;width:min(320px,calc(100vw - 32px));padding:8px;background:#fff;border:1px solid #cdd3da;border-radius:4px;box-shadow:0 3px 12px #0002}.reader-search[hidden]{display:none}.reader-search input{width:100%;padding:8px 10px;border:1px solid #cdd3da;border-radius:4px;background:#fff;font:inherit}
+.reader-layout:has(.reader-sidebar > details:not([open])){grid-template-columns:40px minmax(0,1fr)}
+.reader-sidebar:has(> details:not([open])){padding:12px 4px}
+.reader-sidebar > details:not([open]) > summary{writing-mode:vertical-rl;white-space:nowrap}
 .reader-nav-group h2{margin:12px 8px 6px;font-size:12px;color:#57606a}
 .reader-nav-folder summary{font-size:13px;font-weight:500;overflow-wrap:anywhere}.reader-nav-children{margin-left:12px;padding-left:6px;border-left:1px solid #d8dee4}.reader-nav-folder[hidden]{display:none}
 .reader-nav-item{display:block;margin:2px 0;padding:7px 8px;border-radius:4px;color:#24292f;text-decoration:none;overflow-wrap:anywhere;line-height:1.45}
@@ -3132,7 +3138,7 @@ h1.doc-title{font-size:28px;line-height:1.25;margin:0 0 12px;color:#0b1220}
 .reader-nav-item:hover{background:#e9edf2}.reader-nav-item[aria-current=page]{background:#dcebed;color:#145b60;box-shadow:inset 3px 0 #287f85}
 .reader-nav-item:focus-visible,.reader-sidebar summary:focus-visible{outline:2px solid #287f85;outline-offset:2px}.reader-nav-item[hidden],.reader-nav-group[hidden]{display:none}
 .reader-nav-empty{margin:8px;color:#667085}
-@media(max-width:700px){.reader-layout{display:block}.reader-sidebar{position:relative;height:auto;max-height:38vh;border-right:0;border-bottom:1px solid #e2e5e9;padding:8px 12px}.reader-layout .wrap{padding:20px 16px}.reader-search{padding:8px 4px}}
+@media(max-width:700px){.reader-layout{grid-template-columns:140px minmax(0,1fr)}.reader-sidebar{padding:8px 6px}.reader-layout .wrap{padding:20px 12px}}
 @media print{.reader-sidebar{display:none}.reader-layout{display:block}}
 ${katexCss}
 </style>
@@ -3208,11 +3214,11 @@ function resolvedStorePath(context: vscode.ExtensionContext): ReturnType<typeof 
 }
 
 async function rememberMachineStorePath(context: vscode.ExtensionContext, storePath: string): Promise<void> {
-  await context.globalState.update(MACHINE_STORE_PATH_KEY, storePath);
-  await context.globalState.update("lastStorePath", storePath);
-  await context.globalState.update("setupComplete", true);
+  if (context.globalState.get<string>(MACHINE_STORE_PATH_KEY) !== storePath) await context.globalState.update(MACHINE_STORE_PATH_KEY, storePath);
+  if (context.globalState.get<string>("lastStorePath") !== storePath) await context.globalState.update("lastStorePath", storePath);
+  if (context.globalState.get<boolean>("setupComplete") !== true) await context.globalState.update("setupComplete", true);
   const configuration = vscode.workspace.getConfiguration("personalKnowledge");
-  if (configuration.get<string>("storePath", "").trim() !== storePath) {
+  if (configuration.inspect<string>("storePath")?.globalValue?.trim() !== storePath) {
     await configuration.update("storePath", storePath, vscode.ConfigurationTarget.Global);
   }
 }
@@ -3249,10 +3255,18 @@ function registerNativeMcpProvider(context: vscode.ExtensionContext): void {
   };
   const provider = {
     onDidChangeMcpServerDefinitions: changed.event,
-    provideMcpServerDefinitions: () => getStorePath() && mcpRuntimeStatus().healthy ? [createDefinition()] : [],
+    provideMcpServerDefinitions: () => getStorePath() ? [createDefinition()] : [],
     resolveMcpServerDefinition: () => createDefinition(),
   };
   context.subscriptions.push(changed, api.lm.registerMcpServerDefinitionProvider("personalKnowledge.pkm", provider));
+  context.subscriptions.push(vscode.commands.registerCommand("personalKnowledge.startPkmMcp", async () => {
+    if (vscode.workspace.isTrusted === false) throw new Error("PKM MCP requires a trusted workspace.");
+    const runtime = mcpRuntimeStatus();
+    if (!getStorePath() || !runtime.healthy || !mcpStatus().installed) throw new Error("PKM MCP is not ready. Check or repair its runtime in Config.");
+    refreshMcpDefinitions();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    await vscode.commands.executeCommand("workbench.mcp.startServer", "uone.personal-knowledge/pkm", { waitForLiveTools: true });
+  }));
   _nativeMcpProvider = true;
 }
 
@@ -3273,7 +3287,9 @@ function quickOpenSubscriptionGroups() {
 }
 
 async function openResolvedPkmLocator(context: vscode.ExtensionContext, target: ResolvedPkmLocator): Promise<void> {
-  if (target.kind === "panel") {
+  if (target.kind === "chat") {
+    await vscode.commands.executeCommand("personalKnowledge.openApiChat", target.locator);
+  } else if (target.kind === "panel") {
     openInPanel(context, target.type, target.key, false, target.tab);
   } else if (target.kind === "recipe") {
     if (!(await openRecipeEditorInBrowser(target.recipeId))) {
@@ -4915,6 +4931,7 @@ async function initStore(context: vscode.ExtensionContext, storePath: string): P
   _storeReady = true;
   void ensurePublicContentGateway(context).catch(error => log.warn(`public content gateway: ${(error as Error).message}`));
   _treeProvider?.refresh();
+  refreshMcpDefinitions();
 }
 
 // ── First-run example content ────────────────────────────────────────────────
@@ -5204,6 +5221,8 @@ function getWebviewHtml(webview: vscode.Webview, context: vscode.ExtensionContex
   const panelCss = webview.asWebviewUri(vscode.Uri.joinPath(webviewResourceDir, "panel.css"));
   const codiconCss = webview.asWebviewUri(vscode.Uri.joinPath(webviewResourceDir, "codicon.css"));
   html = html.replace(/%%PANEL_JS%%/g, panelJs.toString());
+  html = html.replace(/%%HOST_HEALTH_JS%%/g, webview.asWebviewUri(vscode.Uri.joinPath(webviewResourceDir, "host-health.js")).toString());
+  html = html.replace(/%%HOST_HEALTH_CSS%%/g, webview.asWebviewUri(vscode.Uri.joinPath(webviewResourceDir, "host-health.css")).toString());
   html = html.replace(/%%PANEL_CSS%%/g, panelCss.toString());
   html = html.replace(/%%CODICON_CSS%%/g, codiconCss.toString());
 
@@ -5440,6 +5459,10 @@ async function handleMessage(
     log.debug(`handleMessage: ${msg.command}`);
   }
   switch (msg.command) {
+    case "hostHealth": {
+      if (typeof msg.id === "string" && msg.id.length <= 64) respond({ command: "hostHealth", id: msg.id });
+      break;
+    }
     case "setPanelTitle": {
       const title = String(msg.title || "").replace(/[\r\n\t]+/g, " ").trim().slice(0, 120);
       if (panel && title) panel.title = title;
@@ -8104,11 +8127,14 @@ async function handleMessage(
     // ── Python Environments ──────────────────────────────────────────────────
     case "envList": {
       if (msg.refresh) {
+        const refreshErrors: string[] = [];
         for (const environment of pyenvList()) {
-          try { await pyenvPyVersion(environment.id, true); } catch { /* keep refreshing other environments */ }
-          try { await pyenvSize(environment.id, true); } catch { /* keep refreshing other environments */ }
+          try { await pyenvPyVersion(environment.id, true); }
+          catch (error) { refreshErrors.push(`${environment.name || environment.id}: Python version probe failed: ${error instanceof Error ? error.message : String(error)}`); }
+          try { await pyenvSize(environment.id, true); }
+          catch (error) { refreshErrors.push(`${environment.name || environment.id}: disk size probe failed: ${error instanceof Error ? error.message : String(error)}`); }
         }
-        respond({ command: "envList", data: envListForUi() });
+        respond({ command: "envList", data: envListForUi(), refreshErrors });
         break;
       }
       respond({ command: "envList", data: envListForUi() });
@@ -9013,6 +9039,12 @@ async function handleMessage(
           ? mcpUsageSummary(activeStorePath)
           : { sessions: [], measurementNote: "Configure a Knowledge Root to observe MCP usage." },
       });
+      break;
+    }
+
+    case "actionToolchainsConfigure": {
+      await vscode.commands.executeCommand("workbench.action.openSettings", "personalKnowledge.actions.toolchains");
+      respond({ command: "actionToolchainsConfigured", data: { ok: true } });
       break;
     }
 
@@ -10718,7 +10750,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   firstContentRecorded = false;
   performanceStateDir = path.join(context.globalStorageUri.fsPath, "performance");
   log.init(context);
-  const apiChat = registerApiChat(context, async (query, signal) => {
+  let apiChat: { readonly isBusy: boolean } | undefined;
+  try {
+    apiChat = registerApiChatShell(context, async () => {
+      const { registerApiChat } = await import("./chat/api-chat-view");
+      return registerApiChat(context, async (query, signal) => {
     if (!retrievalWorker) throw new Error("The unified retrieval worker is not ready.");
     const result = await retrievalWorker.query({ schema: "pkm.retrieval.query/v1", requestId: `chat-${randomUUID()}`, text: query,
       scope: { capabilityId: "pkm-chat-context" }, topK: 20, route: "lexical", generation: { mode: "latest-ready" }, diagnostics: "summary", deadlineMs: 5000 }, signal);
@@ -10729,15 +10765,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         scoreComponents: { ...hit.scoreComponents }, method: `${hit.route}:unified-retrieval`, selected: false,
         reason: document ? "Ranked knowledge candidate" : "Source revision changed or unavailable",
         ...(document ? { content: document.body.slice(0, 4000) } : {}) };
+      });
+    }, false);
     });
-  });
+  } catch (error) {
+    log.error(`PKM Chat initialization failed: ${error instanceof Error ? error.stack || error.message : String(error)}`);
+    void vscode.window.showErrorMessage("PKM Chat could not initialize. Other PKM features remain available. See the Personal Knowledge Manager log for details.");
+  }
   githubSyncDiagnostics.init(context);
   loadProfiler.init(context);
   loadProfiler.record("host.activation.started");
+  let activationPhaseStartedAt = activationStartedAt;
+  const recordActivationPhase = (stage: string) => {
+    const now = Date.now();
+    loadProfiler.record("host.activation.phase", { stage, durationMs: now - activationPhaseStartedAt, elapsedMs: now - activationStartedAt });
+    activationPhaseStartedAt = now;
+  };
+  recordActivationPhase("shell");
   log.info(`activating extension v${context.extension?.packageJSON?.version ?? "?"}`);
   context.subscriptions.push(backgroundTaskRegistry.subscribe(snapshot => {
     if (panel && _panelReady) void panel.webview.postMessage({ command: "backgroundTasks", data: snapshot });
   }));
+  context.subscriptions.push(new ActionBackgroundTasks(backgroundTaskRegistry, getStorePath));
+  initializeActionChat(context);
   const userPortConfiguration = vscode.workspace.getConfiguration("personalKnowledge");
   for (const setting of ["serversProxyPort", "contentGatewayPort", "chatHubPort"] as const) {
     const inspected = userPortConfiguration.inspect<number>(setting);
@@ -10745,8 +10795,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await userPortConfiguration.update(setting, stableUserPort(setting), vscode.ConfigurationTarget.Global);
     }
   }
+  recordActivationPhase("ports");
   chatCtx = context;
   await migrateChatRecents(context);
+  recordActivationPhase("chat-recents");
   const applyChatArchiveCfg = () => {
     const c = vscode.workspace.getConfiguration("personalKnowledge");
     const mb = Math.max(0, c.get<number>("chatHistoryLimitMB") ?? 10);
@@ -10758,10 +10810,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   applyChatArchiveCfg();
   recipeDraftFileSystem = new RecipeDraftFileSystem();
   context.subscriptions.push(
+    vscode.commands.registerCommand("personalKnowledge.openActions", () => openActionWorkbench(context)),
+    vscode.commands.registerCommand("personalKnowledge.openActionsInBrowser", () => openActionWorkbenchInBrowser(context)),
+    vscode.commands.registerCommand("personalKnowledge.configureActionWorkspace", async () => {
+      const platformKey = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux";
+      const configuration = vscode.workspace.getConfiguration("personalKnowledge");
+      const roots = configuration.get<Record<string, string>>("actions.workspaceRoots", {});
+      const selected = await vscode.window.showOpenDialog({ canSelectFiles: false, canSelectFolders: true, canSelectMany: false,
+        title: "Select Action Working Directory", defaultUri: roots[platformKey] ? vscode.Uri.file(roots[platformKey]) : undefined });
+      if (!selected?.[0]) return;
+      await configuration.update("actions.workspaceRoots", { ...roots, [platformKey]: selected[0].fsPath }, vscode.ConfigurationTarget.Global);
+      writeActionWorkspaceConfig();
+      return selected[0].fsPath;
+    }),
     vscode.workspace.registerFileSystemProvider("pkm-content", new KnowledgeContentFileSystem(), { isCaseSensitive: true }),
     vscode.workspace.registerFileSystemProvider("pkm-recipe-draft", recipeDraftFileSystem, { isCaseSensitive: true }),
     vscode.languages.registerCodeLensProvider([{ language: "markdown", scheme: "file" }, { language: "markdown", scheme: "pkm-content" }], new KnowledgeMetadataCodeLensProvider()),
     vscode.workspace.onDidChangeConfiguration(e => {
+      if (e.affectsConfiguration("personalKnowledge.actions.workspaceRoots") || e.affectsConfiguration("personalKnowledge.actions.toolchains")) writeActionWorkspaceConfig();
       if (e.affectsConfiguration("personalKnowledge.logLevel")) log.refreshLevel();
       if (e.affectsConfiguration("personalKnowledge.loadProfilingEnabled")) loadProfiler.refresh();
       if (e.affectsConfiguration("personalKnowledge.chatHistoryLimitMB")) applyChatArchiveCfg();
@@ -10809,6 +10875,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   let firstConfiguration = false;
   log.debug(`machineStorePath="${configuredPath}" source=${initialResolution?.source || "none"}`);
   if (initialResolution) await rememberMachineStorePath(context, initialResolution.path);
+  recordActivationPhase("store-path");
 
   // First-time setup: ask user where to store their knowledge base
   if (!configuredPath) {
@@ -11995,12 +12062,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   // Initialize the file store (runs the one-time DB→files migration) if configured
+  recordActivationPhase("registration");
   if (configuredPath) {
     try {
       await initStore(context, configuredPath);
       applyChatArchiveCfg();
       log.info(`file store ready at ${getStorePath()}`);
+      recordActivationPhase("store");
       startFileWatcher(context);
+      recordActivationPhase("watchers");
       if (githubSyncStartupTimer) clearTimeout(githubSyncStartupTimer);
       githubSyncStartupTimer = setTimeout(() => {
         githubSyncStartupTimer = undefined;
@@ -12029,7 +12099,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   loadProfiler.record("host.activation.completed", { durationMs: activationDuration });
   log.info(`activation complete durationMs=${activationDuration}`);
   try {
-    registerExtensionHostRuntime(context, () => apiChat.isBusy || backgroundTaskRegistry.snapshot().tasks.some(task => task.status === "running"));
+    registerExtensionHostRuntime(context, () => apiChat?.isBusy === true || backgroundTaskRegistry.snapshot().tasks.some(task => task.status === "running"));
   } catch (error) { log.warn(`Host coordination unavailable: ${String(error)}`); }
   setImmediate(() => {
     panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "servers", percent: 12, message: "Preparing the Muggle gateway…" } });
@@ -12048,25 +12118,40 @@ let _recipeContentWatcher: vscode.FileSystemWatcher | undefined;
 let _watcherRefreshTimer: NodeJS.Timeout | undefined;
 let _projectStateRefreshTimer: NodeJS.Timeout | undefined;
 let _watcherFallbackTimer: NodeJS.Timeout | undefined;
+let _watcherSignatureController: AbortController | undefined;
 let _knowledgeTreeSignature = "";
 let _watcherSkillProjectionChanged = false;
 
-function knowledgeTreeSignature(): string {
+async function knowledgeTreeSignature(root = getStorePath(), signal?: AbortSignal): Promise<string> {
   const entries: string[] = [];
-  const visit = (root: string, relative = "") => {
+  let visited = 0;
+  const checkCancelled = () => { if (signal?.aborted) throw new Error("Knowledge signature scan cancelled."); };
+  const visit = async (relative: string): Promise<void> => {
+    checkCancelled();
     let names: string[];
-    try { names = fs.readdirSync(path.join(root, relative)); } catch { return; }
+    try { names = await fs.promises.readdir(path.join(root, relative)); } catch { return; }
     for (const name of names) {
+      checkCancelled();
       if (name.startsWith(".") || name === "_assets") continue;
       const child = relative ? path.join(relative, name) : name;
+      if (githubSyncIgnoredPath(child)) continue;
       try {
-        const stat = fs.statSync(path.join(root, child));
-        if (stat.isDirectory()) visit(root, child);
-        else entries.push(`${path.relative(getStorePath(), path.join(root, child)).replace(/\\/g, "/")}:${stat.mtimeMs}:${stat.size}`);
+        const stat = await fs.promises.stat(path.join(root, child));
+        if (stat.isDirectory()) await visit(child);
+        else entries.push(`${child.replace(/\\/g, "/")}:${stat.mtimeMs}:${stat.size}`);
       } catch { /* file changed while scanning; the next pass will observe it */ }
+      if (++visited % 64 === 0) await new Promise<void>(resolve => setImmediate(resolve));
     }
   };
-  for (const area of ["notes", "skills", "papers", "prompts", "scripts", "packages", "servers", "recipes"]) visit(path.join(getStorePath(), area));
+  for (const area of ["notes", "skills", "papers", "prompts", "scripts", "packages", "servers", "recipes"]) {
+    checkCancelled();
+    const startedAt = Date.now();
+    const previousCount = entries.length;
+    await visit(area);
+    loadProfiler.record("knowledge.signature.area", { area, durationMs: Date.now() - startedAt, files: entries.length - previousCount });
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+  checkCancelled();
   return entries.sort().join("\n");
 }
 
@@ -12079,12 +12164,52 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
   if (_watcherRefreshTimer) clearTimeout(_watcherRefreshTimer);
   if (_projectStateRefreshTimer) clearTimeout(_projectStateRefreshTimer);
   if (_watcherFallbackTimer) clearInterval(_watcherFallbackTimer);
+  _watcherSignatureController?.abort();
+  const signatureController = new AbortController();
+  _watcherSignatureController = signatureController;
   _watcherRefreshTimer = undefined;
   _projectStateRefreshTimer = undefined;
   _watcherFallbackTimer = undefined;
   contentCheckTask.idle();
   _watcherSkillProjectionChanged = false;
-  _knowledgeTreeSignature = knowledgeTreeSignature();
+  _knowledgeTreeSignature = "";
+  let signatureInitialized = false;
+  let signatureCheck: Promise<void> | undefined;
+  let signatureDirty = false;
+  let fallbackRequested = false;
+  const signatureRoot = getStorePath();
+  const checkContents = (fallback = false): void => {
+    if (signatureController.signal.aborted) return;
+    signatureDirty = true;
+    fallbackRequested ||= fallback;
+    if (signatureCheck) return;
+    signatureCheck = (async () => {
+      contentCheckTask.running({ detail: "Checking local content in background" });
+      do {
+        signatureDirty = false;
+        const compare = fallbackRequested;
+        fallbackRequested = false;
+        const signature = await knowledgeTreeSignature(signatureRoot, signatureController.signal);
+        if (signatureController.signal.aborted) return;
+        const changed = !signatureInitialized || signature !== _knowledgeTreeSignature;
+        _knowledgeTreeSignature = signature;
+        signatureInitialized = true;
+        if (compare && changed) {
+          invalidateSharedContentCatalog();
+          _treeProvider?.refresh();
+          if (panel?.visible && _panelReady) void panel.webview.postMessage({ command: "reloaded", data: { fallback: true } });
+          scheduleRetrievalRefresh(context);
+          githubSyncScheduler?.notifyContentChanged();
+          log.info("file watcher fallback detected a knowledge tree change");
+        }
+      } while (signatureDirty && !signatureController.signal.aborted);
+    })().catch(error => {
+      if (!signatureController.signal.aborted) log.warn(`knowledge signature check failed: ${String(error)}`);
+    }).finally(() => {
+      signatureCheck = undefined;
+      if (!signatureController.signal.aborted) queueNextContentCheck();
+    });
+  };
   const projectScopes = new Set<string>();
   const projectPaths = new Set<string>();
   const knowledgePaths = new Set<string>();
@@ -12109,15 +12234,17 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
   const pattern = new vscode.RelativePattern(getStorePath(), "{notes,skills,papers,prompts,scripts,packages,servers}/**/*");
   _watcher = vscode.workspace.createFileSystemWatcher(pattern);
   const onChange = (uri: vscode.Uri) => {
+    const relativePath = path.relative(getStorePath(), uri.fsPath).replace(/\\/g, "/");
+    if (githubSyncIgnoredPath(relativePath)) return;
     invalidateSharedContentCatalog();
-    knowledgePaths.add(path.relative(getStorePath(), uri.fsPath).replace(/\\/g, "/"));
+    knowledgePaths.add(relativePath);
     if (uri.fsPath === path.join(getStorePath(), "skills", "System", "PKM", "PKM Skills.md")) {
       _watcherSkillProjectionChanged = true;
     }
     if (_watcherRefreshTimer) clearTimeout(_watcherRefreshTimer);
     _watcherRefreshTimer = setTimeout(() => {
       _watcherRefreshTimer = undefined;
-      _knowledgeTreeSignature = knowledgeTreeSignature();
+      checkContents();
       _treeProvider?.refresh();
       const changedPaths = [...knowledgePaths].sort();
       knowledgePaths.clear();
@@ -12186,27 +12313,15 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
     nextRunAt: new Date(Date.now() + fallbackIntervalMs).toISOString(),
   });
   queueNextContentCheck();
-  _watcherFallbackTimer = setInterval(() => {
-    contentCheckTask.running({ detail: "Comparing Knowledge Root contents" });
-    try {
-      const signature = knowledgeTreeSignature();
-      if (signature === _knowledgeTreeSignature) return;
-      _knowledgeTreeSignature = signature;
-      invalidateSharedContentCatalog();
-      _treeProvider?.refresh();
-      if (panel?.visible && _panelReady) panel.webview.postMessage({ command: "reloaded", data: { fallback: true } });
-      scheduleRetrievalRefresh(context);
-      githubSyncScheduler?.notifyContentChanged();
-      log.info("file watcher fallback detected a knowledge tree change");
-    } finally {
-      queueNextContentCheck();
-    }
-  }, fallbackIntervalMs);
+  setImmediate(() => checkContents());
+  _watcherFallbackTimer = setInterval(() => checkContents(true), fallbackIntervalMs);
   _watcherFallbackTimer.unref?.();
   context.subscriptions.push(_watcher, _privacyWatcher, _projectStateWatcher, _projectContentWatcher, _recipeContentWatcher);
 }
 
 export async function deactivate(): Promise<void> {
+  _watcherSignatureController?.abort();
+  _watcherSignatureController = undefined;
   githubSyncScheduler?.dispose();
   githubSyncScheduler = undefined;
   githubSyncCoordinatorStatePath = undefined;

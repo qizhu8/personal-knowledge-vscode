@@ -32,7 +32,7 @@ export class ApiChatAgentControl {
     if (Date.now() - this.heartbeatAt < 3000) return;
     this.write(path.join(this.root, "hosts", this.hostId + ".json"), {
       ...this.metadata, schema: "pkm.api-chat.host/v1", hostId: this.hostId,
-      pid: process.pid, updatedAt: Date.now(), operations: ["models", "list", "create", "get", "send", "cancel"],
+      pid: process.pid, updatedAt: Date.now(), operations: ["models", "tools", "list", "create", "get", "send", "cancel"],
     });
     this.heartbeatAt = Date.now();
   }

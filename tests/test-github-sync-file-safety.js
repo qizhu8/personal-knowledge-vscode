@@ -98,6 +98,17 @@ function commitRemoteFile(checkout, relative, content, updateManifest = true) {
   run(checkout, ["push"]);
 }
 
+async function requireAbsenceReview(fixture, paths) {
+  await assert.rejects(
+    () => syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store),
+    error => {
+      assert(error instanceof GitHubSyncConflictError);
+      assert.deepStrictEqual(error.conflicts.map(conflict => conflict.path).sort(), paths.slice().sort());
+      return true;
+    },
+  );
+}
+
 const failures = [];
 async function scenario(name, action) {
   try {
@@ -110,14 +121,15 @@ async function scenario(name, action) {
 }
 
 (async () => {
-  await scenario("local absence without a tombstone restores from remote", async () => {
+  await scenario("local absence without a tombstone requires review before explicit restore", async () => {
     const fixture = createFixture("local-delete");
     try {
       await initialize(fixture);
       fs.rmSync(path.join(fixture.skills, "One.md"));
       fixture.catalog.skills = fixture.catalog.skills.filter(item => item.id !== "Shared/One");
-      const result = await syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store);
-      assert(result.pulled.includes("skills/Shared/One.md"));
+      await requireAbsenceReview(fixture, ["skills/Shared/One.md"]);
+      assert.strictEqual(fs.existsSync(path.join(fixture.skills, "One.md")), false);
+      await restoreGitHubRemoteFiles(fixture.target, fixture.checkoutRoot, fixture.store, fixture.target.lastSync.commit, ["skills/Shared/One.md"], true);
       assert.strictEqual(fs.readFileSync(path.join(fixture.skills, "One.md"), "utf8"), skill("One", "one v1"));
       const verify = cloneRemote(fixture);
       assert.strictEqual(fs.readFileSync(path.join(verify, "skills", "Shared", "One.md"), "utf8"), skill("One", "one v1"));
@@ -262,21 +274,19 @@ async function scenario(name, action) {
     }
   });
 
-  await scenario("sparse local state restores all selected remote files", async () => {
+  await scenario("sparse local state requires review before selected remote files are restored", async () => {
     const fixture = createFixture("sparse-restore");
     try {
       await initialize(fixture);
       fs.rmSync(path.join(fixture.skills, "One.md"));
       fs.rmSync(path.join(fixture.skills, "Two.md"));
       fixture.catalog.skills = [];
-      const result = await syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store);
-      assert.deepStrictEqual(
-        result.pulled.sort(),
-        ["skills/Shared/One.md", "skills/Shared/Two.md"],
-      );
+      await requireAbsenceReview(fixture, ["skills/Shared/One.md", "skills/Shared/Two.md"]);
+      assert.strictEqual(fs.existsSync(path.join(fixture.skills, "One.md")), false);
+      assert.strictEqual(fs.existsSync(path.join(fixture.skills, "Two.md")), false);
+      await restoreGitHubRemoteFiles(fixture.target, fixture.checkoutRoot, fixture.store, fixture.target.lastSync.commit, ["skills/Shared/One.md", "skills/Shared/Two.md"], true);
       assert.strictEqual(fs.readFileSync(path.join(fixture.skills, "One.md"), "utf8"), skill("One", "one v1"));
       assert.strictEqual(fs.readFileSync(path.join(fixture.skills, "Two.md"), "utf8"), skill("Two", "two v1"));
-      assert.strictEqual(result.resolutionReport.rules["remote-only"], 2);
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -311,13 +321,15 @@ async function scenario(name, action) {
         { type: "skills", itemId: "Shared/One", deletedAt: new Date().toISOString() },
         { type: "skills", itemId: "Shared/Two", deletedAt: new Date().toISOString() },
       ];
-      const result = await syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store);
-      assert.deepStrictEqual(result.pulled.sort(), ["skills/Shared/One.md", "skills/Shared/Two.md"]);
+      await requireAbsenceReview(fixture, ["skills/Shared/One.md", "skills/Shared/Two.md"]);
+      assert.strictEqual(fs.existsSync(path.join(fixture.skills, "One.md")), false);
+      assert.strictEqual(fs.existsSync(path.join(fixture.skills, "Two.md")), false);
       assert.deepStrictEqual(
-        result.acknowledgedDeletions.map(item => item.itemId).sort(),
+        fixture.target.pendingDeletions.map(item => item.itemId).sort(),
         ["Shared/One", "Shared/Two"],
-        "deletion evidence from the incompatible local schema must not cross the migration boundary",
+        "a blocked migration must not acknowledge deletion evidence or silently restore content",
       );
+      await restoreGitHubRemoteFiles(fixture.target, fixture.checkoutRoot, fixture.store, run(verify, ["rev-parse", "HEAD"]), ["skills/Shared/One.md", "skills/Shared/Two.md"], true);
       assert.strictEqual(fs.readFileSync(path.join(fixture.skills, "One.md"), "utf8"), skill("One", "one v1"));
       assert.strictEqual(fs.readFileSync(path.join(fixture.skills, "Two.md"), "utf8"), skill("Two", "two v1"));
     } finally {
@@ -342,7 +354,7 @@ async function scenario(name, action) {
     }
   });
 
-  await scenario("remote absence without a tombstone republishes local content", async () => {
+  await scenario("remote absence without a tombstone requires review and preserves local content", async () => {
     const fixture = createFixture("remote-delete");
     try {
       await initialize(fixture);
@@ -355,11 +367,12 @@ async function scenario(name, action) {
       run(verify, ["add", "-A"]);
       run(verify, ["commit", "-m", "remote deletion"]);
       run(verify, ["push"]);
-      const result = await syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store);
-      assert.strictEqual(result.changed, true);
+      const remoteCommit = run(verify, ["rev-parse", "HEAD"]);
+      await requireAbsenceReview(fixture, ["skills/Shared/One.md"]);
       assert.strictEqual(fs.readFileSync(path.join(fixture.skills, "One.md"), "utf8"), skill("One", "one v1"));
       run(verify, ["pull", "--ff-only"]);
-      assert.strictEqual(fs.readFileSync(path.join(verify, "skills", "Shared", "One.md"), "utf8"), skill("One", "one v1"));
+      assert.strictEqual(run(verify, ["rev-parse", "HEAD"]), remoteCommit);
+      assert.strictEqual(fs.existsSync(path.join(verify, "skills", "Shared", "One.md")), false);
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }

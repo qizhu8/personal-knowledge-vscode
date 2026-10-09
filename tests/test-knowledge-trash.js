@@ -22,20 +22,20 @@ try {
     assert(entry, `${area} item must move to Trash`);
     assert.strictEqual(fs.existsSync(full), false);
     assert.strictEqual(store.knowledgeTrashList(area).length, 1);
-    if (area === "notes") {
-      assert(store.knowledgeSyncDeletionRecords(root).some(record => record.path === `notes/${relativePath}`),
+    {
+      assert(store.knowledgeSyncDeletionRecords(root).some(record => record.path === `${area}/${relativePath}`),
         "a successful deletion must be durable before a sync is triggered");
       const reloaded = JSON.parse(fs.readFileSync(path.join(root, ".pkm", "state", "knowledge-deletions.json"), "utf8"));
-      assert(reloaded.records.some(record => record.path === `notes/${relativePath}`));
+      assert(reloaded.records.some(record => record.path === `${area}/${relativePath}`));
     }
     assert.deepStrictEqual(store.knowledgeTrashRestore(area, entry.id), { ok: true, path: relativePath });
-    if (area === "notes") assert(!store.knowledgeSyncDeletionRecords(root).some(record => record.path === `notes/${relativePath}`),
+    assert(!store.knowledgeSyncDeletionRecords(root).some(record => record.path === `${area}/${relativePath}`),
       "restore must cancel pending deletion intent");
     assert.strictEqual(fs.readFileSync(full, "utf8"), area);
     const second = store.knowledgeMoveToTrash(area, relativePath, "item", path.basename(relativePath));
     assert.deepStrictEqual(store.knowledgeTrashDelete(area, second.id), { ok: true, name: path.basename(relativePath), path: relativePath, kind: "item" });
     assert.deepStrictEqual(store.knowledgeTrashList(area), []);
-    if (area === "notes") assert(store.knowledgeSyncDeletionRecords(root).some(record => record.path === `notes/${relativePath}`),
+    assert(store.knowledgeSyncDeletionRecords(root).some(record => record.path === `${area}/${relativePath}`),
       "permanently deleting Trash must not discard an unsynchronized deletion");
   }
 
@@ -61,7 +61,11 @@ try {
   fs.writeFileSync(path.join(folder, "v2", "prompt.txt"), "prompt");
   const folderEntry = store.knowledgeMoveToTrash("prompts", "Project/Task", "folder", "Task");
   assert(folderEntry);
-  assert.deepStrictEqual(store.knowledgeTrashDelete("prompts", folderEntry.id), { ok: true, name: "Task", path: "Project/Task", kind: "folder" });
+  assert(store.knowledgeSyncDeletionRecords(root).some(record => record.path === "prompts/Project/Task/v2/prompt.txt"), "Deleting a Prompt folder journals its nested members");
+  assert.strictEqual(store.knowledgeTrashRestore("prompts", folderEntry.id).ok, true);
+  assert(!store.knowledgeSyncDeletionRecords(root).some(record => record.path.startsWith("prompts/Project/Task/")), "Restoring a folder cancels all descendant deletion records");
+  const deletedFolderEntry = store.knowledgeMoveToTrash("prompts", "Project/Task", "folder", "Task");
+  assert.deepStrictEqual(store.knowledgeTrashDelete("prompts", deletedFolderEntry.id), { ok: true, name: "Task", path: "Project/Task", kind: "folder" });
   assert.deepStrictEqual(store.knowledgeTrashEmpty("prompts"), { ok: true, count: 0 });
 
   const paperFixtures = [

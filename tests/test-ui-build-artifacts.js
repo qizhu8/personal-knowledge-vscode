@@ -6,7 +6,7 @@ const path = require("path");
 const { execFileSync } = require("child_process");
 
 const root = path.join(__dirname, "..");
-const { verifyLayout } = require(path.join(root, "scripts", "organize-source.js"));
+const { verifyLayout, migrate } = require(path.join(root, "scripts", "organize-source.js"));
 verifyLayout(root, true);
 const runtime = require(path.join(root, "dist", "runtime", "extension-host-runtime.js"));
 const build = JSON.parse(fs.readFileSync(path.join(root, "dist", "build-info.json"), "utf8"));
@@ -15,6 +15,29 @@ assert.strictEqual(runtime.loadedExtensionBuild?.buildId, build.buildId,
 assert.strictEqual(require(path.join(root, "dist", "extension-host-runtime.js")), runtime,
   "legacy runtime entries must share the domain module instance");
 const { REQUIRED_UI_ARTIFACTS, validateUiArtifacts } = require(path.join(root, "scripts", "verify-ui-artifacts.js"));
+
+const migrationFixture = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-source-migration-"));
+try {
+  fs.mkdirSync(path.join(migrationFixture, "src"));
+  fs.writeFileSync(path.join(migrationFixture, "package.json"), JSON.stringify({
+    version: "1.0.0", scripts: { coverage: "c8 --include=" + ["dist", "chatroom", "chatroom", "chat-meeting-lifecycle.js"].join("/") }
+  }));
+  fs.writeFileSync(path.join(migrationFixture, "tsconfig.json"), "{}");
+  fs.writeFileSync(path.join(migrationFixture, "src", "github-sync.ts"),
+    'export const version = require("../package.json").version;\n');
+  migrate(migrationFixture, "sync");
+  const relocated = path.join(migrationFixture, "src", "sync", "github-sync.ts");
+  assert(fs.readFileSync(relocated, "utf8").includes('require("../../package.json")'),
+    "domain migration must preserve relative JSON resource imports");
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(migrationFixture, "package.json"), "utf8")).scripts.coverage,
+    "c8 --include=dist/chatroom/chat-meeting-lifecycle.js",
+    "migration must normalize repeated Chatroom domain prefixes in runtime and coverage paths");
+  const compiledSync = fs.readFileSync(path.join(root, "dist", "sync", "github-sync.js"), "utf8");
+  assert(compiledSync.includes('require("../../package.json")'),
+    "the compiled Sync module must load the extension manifest outside its domain directory");
+} finally {
+  fs.rmSync(migrationFixture, { recursive: true, force: true });
+}
 
 assert.strictEqual(validateUiArtifacts(root), REQUIRED_UI_ARTIFACTS.length + 1,
   "the current build must contain every required UI artifact");

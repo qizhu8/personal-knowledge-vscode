@@ -5,6 +5,7 @@ import json
 import re
 import time
 import uuid
+from urllib.parse import urlsplit
 
 from agent_session_runtime import _atomic_write, _file_lock
 
@@ -16,6 +17,20 @@ def _host_id(value):
     if not isinstance(value, str) or str(uuid.UUID(value)) != value:
         raise ValueError("Use an exact host_id returned by api_chat_capabilities.")
     return value
+
+
+def _chat_locator(value):
+    if isinstance(value, str) and value.startswith("pkm://"):
+        parsed = urlsplit(value)
+        match = re.fullmatch(r"/[a-f0-9]{16}/([a-f0-9-]{36})", parsed.path)
+        if parsed.netloc != "chats" or parsed.query or parsed.fragment or not match:
+            raise ValueError("Use a PKM Chat URL returned by api_chat_list: pkm://chats/<workspace>/<Chat UUID>.")
+        _host_id(match.group(1))
+        return value
+    try:
+        return _host_id(value)
+    except (ValueError, TypeError, AttributeError) as error:
+        raise ValueError("Use a PKM Chat URL returned by api_chat_list; legacy Chat UUIDs are also accepted.") from error
 
 
 def _read(path):
@@ -107,7 +122,7 @@ def register_api_chat_tools(mcp, store):
 
     @mcp.tool(annotations={"readOnlyHint": True})
     def api_chat_list(host_id: str, command_id: str) -> dict:
-        """List up to 100 non-Trash Chats in the selected Host's workspace, without conversation bodies."""
+        """List up to 100 non-Trash Chats with chatUrl PKM URLs in the selected Host's workspace, without conversation bodies."""
         return _submit(root, host_id, "list", {}, command_id)
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True})
@@ -121,22 +136,22 @@ def register_api_chat_tools(mcp, store):
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     def api_chat_send(host_id: str, chat_id: str, prompt: str, command_id: str) -> dict:
-        """Send an explicit prompt through the real owning PKM Chat Host; can incur model/tool charges. Returns a pollable request_id, never auto-retries, resumes or changes permissions."""
-        _host_id(chat_id)
+        """Send an explicit prompt to a chatUrl from api_chat_list (legacy UUID accepted) through its owning Host; can incur model/tool charges. Returns a request_id, never auto-retries, resumes or changes permissions."""
+        chat_id = _chat_locator(chat_id)
         if not prompt.strip() or len(prompt) > 16000:
             raise ValueError("prompt must contain 1-16000 characters.")
         return _submit(root, host_id, "send", {"chatId": chat_id, "prompt": prompt}, command_id)
 
     @mcp.tool(annotations={"readOnlyHint": True})
     def api_chat_get(host_id: str, chat_id: str, command_id: str) -> dict:
-        """Read Chat status and the latest bounded assistant answer, actual tool statuses and usage. No hidden reasoning; missing public API credits remain null."""
-        _host_id(chat_id)
+        """Read a chatUrl from api_chat_list (legacy UUID accepted): status, bounded assistant answer, actual tool statuses and usage. No hidden reasoning; missing public API credits remain null."""
+        chat_id = _chat_locator(chat_id)
         return _submit(root, host_id, "get", {"chatId": chat_id}, command_id)
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True})
     def api_chat_cancel(host_id: str, chat_id: str, command_id: str) -> dict:
-        """Explicitly cancel this Host's current Chat response, preserving partial output; does not pause, stop a Task or delete history."""
-        _host_id(chat_id)
+        """Explicitly cancel this Host's response for a chatUrl from api_chat_list (legacy UUID accepted), preserving partial output; does not pause, stop a Task or delete history."""
+        chat_id = _chat_locator(chat_id)
         return _submit(root, host_id, "cancel", {"chatId": chat_id}, command_id)
 
     @mcp.tool(annotations={"readOnlyHint": True})

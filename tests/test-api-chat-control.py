@@ -103,24 +103,29 @@ async def main():
                 assert created["result"]["createCalls"] == 1
                 assert created["result"]["sessionId"] is None
                 chat_id = created["result"]["chatId"]
+                chat_url = f"pkm://chats/0123456789abcdef/{chat_id}"
                 create_file = requests / (created["request_id"] + ".json")
                 original_bytes = create_file.read_bytes()
                 assert await call(client, "api_chat_create", create_args) == created
                 assert create_file.read_bytes() == original_bytes
                 await rejected(client, "api_chat_create", {**create_args, "title": "Conflicting input"}, "different request")
                 await rejected(client, "api_chat_create", {**create_args, "command_id": "bad-title", "title": ""}, "title must")
-                send_args = {"host_id": host_id, "chat_id": chat_id, "prompt": "Explicit QA prompt", "command_id": "send-once"}
+                send_args = {"host_id": host_id, "chat_id": chat_url, "prompt": "Explicit QA prompt", "command_id": "send-once"}
                 sending = await call(client, "api_chat_send", send_args)
                 await receipt(client, sending, "running")
                 assert (await call(client, "api_chat_send", send_args))["request_id"] == sending["request_id"]
-                query = await call(client, "api_chat_get", {"host_id": host_id, "chat_id": chat_id, "command_id": "get-while-running"})
+                query = await call(client, "api_chat_get", {"host_id": host_id, "chat_id": chat_url, "command_id": "get-while-running"})
                 observed = await receipt(client, query, "succeeded")
                 assert observed["result"] == {"running": True, "createCalls": 1, "sendCalls": 1}
-                cancel = await call(client, "api_chat_cancel", {"host_id": host_id, "chat_id": chat_id, "command_id": "explicit-cancel"})
+                cancel = await call(client, "api_chat_cancel", {"host_id": host_id, "chat_id": chat_url, "command_id": "explicit-cancel"})
                 await receipt(client, cancel, "succeeded")
                 cancelled = await receipt(client, sending, "succeeded")
                 assert cancelled["result"]["reply"]["status"] == "cancelled"
                 assert cancelled["result"]["reply"]["credits"] is None
+                legacy_query = await call(client, "api_chat_get", {"host_id": host_id, "chat_id": chat_id, "command_id": "legacy-id-query"})
+                assert (await receipt(client, legacy_query, "succeeded"))["result"]["running"] is False
+                for invalid_url in [chat_url + "?host=other", chat_url + "/extra", f"pkm://chats/wrong/{chat_id}", f"pkm://notes/0123456789abcdef/{chat_id}"]:
+                    await rejected(client, "api_chat_get", {"host_id": host_id, "chat_id": invalid_url, "command_id": "invalid-url"}, "PKM Chat URL")
                 interrupted_args = {**send_args, "command_id": "interrupted-send"}
                 interrupted = await call(client, "api_chat_send", interrupted_args)
                 await receipt(client, interrupted, "running")

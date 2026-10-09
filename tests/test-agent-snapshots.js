@@ -224,12 +224,13 @@ try {
 const projectsSource = fs.readFileSync(path.join(__dirname, "../src/webview/panel/15-projects.js"), "utf8");
 const extensionSource = fs.readFileSync(path.join(__dirname, "../src/extension.ts"), "utf8");
 const knowledgeSource = fs.readFileSync(path.join(__dirname, "../src/webview/panel/20-knowledge.js"), "utf8");
+const coreSource = fs.readFileSync(path.join(__dirname, "../src/webview/panel/00-core.js"), "utf8");
 const snapshotFixture = { snapshotId: "agent_snapshot_ui_test", magicCode: "PKM-SNAP-1111-2222-3333-4444", task: "Original captured task", name: "Short <name>" };
 let modal;
 let menu;
 const requests = [];
 const clipboardMessages = [];
-const detail = { innerHTML: "" };
+const detail = { innerHTML: "", dataset: {}, scrollTop: 80, scrollLeft: 12, querySelectorAll: () => [] };
 const ui = {
   projectSnapshot: { agentSnapshots: [snapshotFixture], agentSessions: [] },
   selectedAgentSnapshotId: snapshotFixture.snapshotId, selectedAgentSessionId: "",
@@ -247,6 +248,8 @@ const ui = {
   showPaperMenu: (left, top, items) => { menu = items; },
 };
 vm.createContext(ui);
+vm.runInContext(coreSource.slice(coreSource.indexOf("function captureRefreshView("),
+  coreSource.indexOf("function captureRefreshInputs(")), ui);
 vm.runInContext(knowledgeSource.slice(knowledgeSource.indexOf("function buildCatTree("),
   knowledgeSource.indexOf("function openCatFolderAddMenu(")), ui);
 vm.runInContext(projectsSource.slice(projectsSource.indexOf("function recipeCopyPathMenu("),
@@ -288,6 +291,8 @@ assert.match(detail.innerHTML, /aria-busy="true"/);
 const requestsAfterLoad = requests.length;
 ui.renderAgentSnapshots();
 assert.strictEqual(requests.length, requestsAfterLoad, "rerendering does not duplicate contents requests");
+assert.strictEqual(detail.scrollTop, 80, "rerendering the same Snapshot preserves vertical scroll");
+assert.strictEqual(detail.scrollLeft, 12, "rerendering the same Snapshot preserves horizontal scroll");
 ui.agentSnapshotOnContents({ snapshotId: "agent_snapshot_stale", session: { task: "Wrong capture" }, recipeRuns: [] });
 assert.match(detail.innerHTML, /aria-busy="true"/, "stale response cannot replace the selected capture");
 ui.agentSnapshotOnContents({ snapshotId: snapshotFixture.snapshotId, session: {

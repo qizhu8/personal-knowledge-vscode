@@ -30,13 +30,14 @@ except ModuleNotFoundError:
     _HEALTH_SPEC.loader.exec_module(_HEALTH_MODULE)
     finalize_run_health = _HEALTH_MODULE.finalize_run_health
 
-RECIPE_SCHEMA_VERSION = "1.8.0"
+RECIPE_SCHEMA_VERSION = "1.8.1"
 API_SCHEMA = "pkm.recipe.api/v1"
 RUN_SCHEMA = "pkm.recipe.run/v1"
 DEFINITION_SCHEMA = "pkm.workflow.definition/v1"
 TERMINAL_NODE_STATES = {"succeeded", "failed", "skipped"}
 COMMAND_NODE_KIND = "pkm.step.command/v1"
 SCRIPT_NODE_KIND = "pkm.step.script/v1"
+PIPELINE_NODE_KIND = "pkm.step.pipeline/v1"
 NATIVE_NODE_KIND = "pkm.step.native/v1"
 HUMAN_GATE_NODE_KIND = "pkm.gate.human/v1"
 TEMPLATE = re.compile(r"\$\{inputs\.([A-Za-z][A-Za-z0-9._-]{0,127})\}")
@@ -275,6 +276,8 @@ def _hidden_process_options():
 
 
 def _command_cancelled(spec):
+    if spec.get("cancelPath") and Path(spec["cancelPath"]).is_file():
+        return True
     owner = spec.get("recipeOwner")
     if not owner:
         return False
@@ -311,10 +314,13 @@ def _execute_command_worker(spec_path, result_path):
             result["cancelled"] = True
             raise RuntimeError("Recipe cancellation requested before command launch.")
         with open(stdout_path, "wb") as stdout_handle, open(stderr_path, "wb") as stderr_handle:
-            process = subprocess.Popen(
-                [spec["program"], *spec["args"]], cwd=spec.get("cwd") or None,
-                stdin=subprocess.DEVNULL, stdout=stdout_handle, stderr=stderr_handle,
-                shell=False, **_background_process_options())
+            with contextlib.ExitStack() as stack:
+                stdin_handle = stack.enter_context(open(spec["inputPath"], "rb")) if spec.get("inputPath") else subprocess.DEVNULL
+                process = subprocess.Popen(
+                    [spec["program"], *spec["args"]], cwd=spec.get("cwd") or None,
+                    stdin=stdin_handle, stdout=stdout_handle, stderr=stderr_handle,
+                    env={**os.environ, **spec.get("environment", {})},
+                    shell=False, **_background_process_options())
             deadline = time.monotonic() + spec["timeoutSeconds"]
             timed_out = False
             cancelled = False
@@ -947,6 +953,16 @@ def _search(store, query, category, project_id, limit, task_contract, subscripti
                                   "reason": "No accessible metadata candidate matched. Recipe persistence requires the extension authoring bridge."})
 
 
+def _execution_kind(node):
+    if node.get("kind") != PIPELINE_NODE_KIND:
+        return node.get("kind")
+    config = node.get("config")
+    executor = config.get("executor") if isinstance(config, dict) else None
+    if not isinstance(executor, str) or executor not in {"command", "script"}:
+        raise ValueError("Recipe Pipeline executor must be command or script.")
+    return COMMAND_NODE_KIND if executor == "command" else SCRIPT_NODE_KIND
+
+
 def _validate_definition(recipe):
     definition = recipe.get("definition") or {}
     if definition.get("schema") != DEFINITION_SCHEMA:
@@ -959,7 +975,7 @@ def _validate_definition(recipe):
     if len(node_ids) != len(nodes) or None in node_ids:
         raise ValueError("Recipe node identities are invalid.")
     for node in nodes:
-        if node.get("kind") not in {"pkm.step.noop/v1", COMMAND_NODE_KIND, SCRIPT_NODE_KIND, NATIVE_NODE_KIND, HUMAN_GATE_NODE_KIND,
+        if _execution_kind(node) not in {"pkm.step.noop/v1", COMMAND_NODE_KIND, SCRIPT_NODE_KIND, NATIVE_NODE_KIND, HUMAN_GATE_NODE_KIND,
                                     "pkm.subflow/v1"} or not isinstance(node.get("dependsOn"), list):
             raise ValueError("Recipe contains an unsupported v1 node.")
         if any(not isinstance(dependency, dict) for dependency in node["dependsOn"]):
@@ -975,7 +991,7 @@ def _validate_definition(recipe):
                     or not isinstance(digest, str) or len(digest) != 64
                     or any(character not in "0123456789abcdef" for character in digest)):
                 raise ValueError("Recipe subflow must pin an exact Recipe revision and SHA-256 digest.")
-        if node.get("kind") == COMMAND_NODE_KIND:
+        if _execution_kind(node) == COMMAND_NODE_KIND:
             config = node.get("config") or {}
             if (not isinstance(config.get("program"), str) or not config["program"].strip()
                     or any(character in config["program"] for character in "\r\n\0")
@@ -992,7 +1008,7 @@ def _validate_definition(recipe):
                                                    or not config["cwd"].strip()
                                                    or any(character in config["cwd"] for character in "\r\n\0")):
                 raise ValueError("Recipe command cwd is invalid.")
-        if node.get("kind") == SCRIPT_NODE_KIND:
+        if _execution_kind(node) == SCRIPT_NODE_KIND:
             config = node.get("config") or {}
             runtime = config.get("runtime")
             script = config.get("script")
@@ -1001,6 +1017,10 @@ def _validate_definition(recipe):
                 raise ValueError("Recipe script runtime is invalid.")
             if not isinstance(script, str) or not script.strip() or "\0" in script:
                 raise ValueError("Recipe script content is required and cannot contain null characters.")
+            arguments = config.get("args", [])
+            if not isinstance(arguments, list) or any(
+                    not isinstance(argument, str) or "\0" in argument for argument in arguments):
+                raise ValueError("Recipe script args must be an argv string list.")
             if runtime == "python" and (not isinstance(environment_id, str) or not environment_id.strip()):
                 raise ValueError("Recipe Python script requires a PKM environmentId.")
             if runtime != "python" and environment_id is not None:
@@ -1308,6 +1328,7 @@ def _script_command_spec(config, inputs, registry_path, script_path):
     else:
         program, preflight_error = _load_python_environment(registry_path, config["environmentId"])
         arguments = [str(script_path)]
+    arguments.extend(_render_template(argument, inputs) for argument in config.get("args", []))
     return {
         "program": program or "",
         "args": arguments,
@@ -1326,7 +1347,7 @@ def _start_command(store, run, node, environments_registry=None):
     config = node["config"]
     attempt = int(record.get("attempt", 1))
     spec_path, result_path = _command_task_paths(store, run["runId"], node["nodeId"], attempt)
-    if node.get("kind") == SCRIPT_NODE_KIND:
+    if _execution_kind(node) == SCRIPT_NODE_KIND:
         extension = {"bash": ".sh", "powershell": ".ps1", "python": ".py"}[config["runtime"]]
         script_path = spec_path.with_name(spec_path.name + extension)
         script_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1380,7 +1401,7 @@ def _start_command(store, run, node, environments_registry=None):
 def _sync_commands(run):
     changed = False
     for node in run["definition"]["spec"]["nodes"]:
-        if node.get("kind") not in {COMMAND_NODE_KIND, SCRIPT_NODE_KIND}:
+        if _execution_kind(node) not in {COMMAND_NODE_KIND, SCRIPT_NODE_KIND}:
             continue
         record = run["nodes"][node["nodeId"]]
         background = record.get("background") or {}
@@ -1452,7 +1473,7 @@ def _materialize_subflow_action(store, run, action):
 def _materialize_runtime_action(store, run, action, environments_registry=None):
     if action.get("kind") == "execute_node":
         node = action["node"]
-        if node.get("kind") in {COMMAND_NODE_KIND, SCRIPT_NODE_KIND}:
+        if _execution_kind(node) in {COMMAND_NODE_KIND, SCRIPT_NODE_KIND}:
             changed = _start_command(store, run, node, environments_registry)
             return _command_action(run, node), changed
         if node.get("kind") == HUMAN_GATE_NODE_KIND:
@@ -1462,7 +1483,7 @@ def _materialize_runtime_action(store, run, action, environments_registry=None):
     if action.get("kind") == "report_node":
         node = next(item for item in run["definition"]["spec"]["nodes"]
                     if item["nodeId"] == action["node_id"])
-        if node.get("kind") in {COMMAND_NODE_KIND, SCRIPT_NODE_KIND}:
+        if _execution_kind(node) in {COMMAND_NODE_KIND, SCRIPT_NODE_KIND}:
             return _command_action(run, node), False
         if node.get("kind") == HUMAN_GATE_NODE_KIND:
             before = run["nodes"][node["nodeId"]].get("challengeId")
@@ -1699,7 +1720,7 @@ def _advance(run, claim):
     running = next((node for node in run["definition"]["spec"]["nodes"]
                     if run["nodes"][node["nodeId"]]["state"] == "running"), None)
     if running:
-        if running.get("kind") == COMMAND_NODE_KIND:
+        if _execution_kind(running) in {COMMAND_NODE_KIND, SCRIPT_NODE_KIND}:
             return _command_action(run, running), False
         if running.get("kind") == NATIVE_NODE_KIND:
             return _native_action(run, running), False
@@ -1781,7 +1802,7 @@ def _advance_automation(store, run, environments_registry=None):
     before = _json(automation)
     cancellation = automation.get("cancellationRequested", False)
     failed_command = any(
-        node["kind"] in {COMMAND_NODE_KIND, SCRIPT_NODE_KIND}
+        _execution_kind(node) in {COMMAND_NODE_KIND, SCRIPT_NODE_KIND}
         and run["nodes"][node["nodeId"]]["state"] == "failed"
         for node in run["definition"]["spec"]["nodes"])
     if failed_command or (cancellation and not any(
@@ -1797,7 +1818,7 @@ def _advance_automation(store, run, environments_registry=None):
             automation["status"] = run["status"]
     elif action["kind"] == "call_recipe_run_next" and not cancellation:
         node = _ready_nodes(run)[0]
-        if node["kind"] in {COMMAND_NODE_KIND, SCRIPT_NODE_KIND}:
+        if _execution_kind(node) in {COMMAND_NODE_KIND, SCRIPT_NODE_KIND}:
             if (automation["startedNodes"] >= automation["maxNodes"]
                     or datetime.datetime.now(datetime.timezone.utc)
                     >= datetime.datetime.fromisoformat(automation["deadlineAt"])):
@@ -2070,7 +2091,7 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
                 "autonomous_run_scheduler": True,
                 "autonomous_execution": {
                     "opt_in_parameter": "autonomous",
-                    "node_kinds": [COMMAND_NODE_KIND, SCRIPT_NODE_KIND],
+                    "node_kinds": [PIPELINE_NODE_KIND, COMMAND_NODE_KIND, SCRIPT_NODE_KIND],
                     "strategy": "serial-worker-completion-driven",
                     "bounds": ["max_auto_nodes", "max_auto_seconds", "node-timeout"],
                     "loop_edges": False,
@@ -2437,7 +2458,7 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
                 if not record or record["state"] != "running":
                     raise ValueError("Only the currently claimed running node can report an outcome.")
                 node = next(item for item in run["definition"]["spec"]["nodes"] if item["nodeId"] == node_id)
-                if node.get("kind") in {"pkm.subflow/v1", COMMAND_NODE_KIND, SCRIPT_NODE_KIND,
+                if _execution_kind(node) in {"pkm.subflow/v1", COMMAND_NODE_KIND, SCRIPT_NODE_KIND,
                                        NATIVE_NODE_KIND, HUMAN_GATE_NODE_KIND}:
                     raise ValueError("This node kind has a dedicated runtime adapter and cannot be reported manually.")
                 accepted = set(_accepted_outcomes(node))

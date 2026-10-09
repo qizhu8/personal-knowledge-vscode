@@ -28,17 +28,27 @@ const start = panelJs.indexOf('const skillRouterBenchmarks');
 const end = panelJs.indexOf('// ── Init', start);
 assert(start >= 0 && end > start, 'Skill Router renderer must be included before panel initialization');
 const detail = { innerHTML: '' };
+const routerSection = { dataset:{}, closest() { return this; }, setAttribute() {} };
+const routerRoot = { querySelector:() => routerSection, querySelectorAll:() => [] };
 const calls = [];
 const context = {
   console,
   esc: value => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
   ask: (command, data) => calls.push({ command, data }),
+  settingsSubtabs: {},
+  uiIcon: () => '',
+  applySettingsSubtab: () => {},
   document: {
     getElementById: id => id === 'detail' ? detail : null,
+    querySelector: () => routerRoot,
     querySelectorAll: () => [],
   },
 };
 vm.createContext(context);
+const tabsStart = panelJs.indexOf('function settingsTabBar(');
+const tabsEnd = panelJs.indexOf('function selectSettingsSubtab(', tabsStart);
+assert(tabsStart >= 0 && tabsEnd > tabsStart);
+new vm.Script(panelJs.slice(tabsStart, tabsEnd)).runInContext(context);
 new vm.Script(`${panelJs.slice(start, end)}; this.renderSkillRouterPane = renderSkillRouterPane; this.toggleSolution = skillRouterToggleSolution; this.moveSource = skillRouterMoveSource; this.setStatusCache = data => { skillRouterStatusCache = data; };`).runInContext(context);
 const routerData = {
   activeProfile: 'l1_online',
@@ -65,6 +75,9 @@ const routerData = {
   runtime: { ready: true, documentCount: 523, corpusRevision: 'abcdef1234567890', engineVersion: '0.3.0', configurationHash: '1234567890abcdef' },
 };
 context.renderSkillRouterPane(routerData);
+assert.match(detail.innerHTML, /data-settings-tab="sources"/);
+assert.match(detail.innerHTML, /data-settings-tab="performance"/);
+assert.match(detail.innerHTML, /data-settings-tab="privacy"/);
 context.setStatusCache(routerData);
 for (const text of ['Copilot default search', 'Exact only', 'Exact + BM25', 'Hybrid', 'Success@5', 'Precision@5', 'NDCG@5', 'Latency p50 / p95', 'Run benchmark']) {
   assert(detail.innerHTML.includes(text), `missing Skill Router performance content: ${text}`);

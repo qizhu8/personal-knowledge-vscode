@@ -1,10 +1,12 @@
 (() => {
   const t = text => globalThis.PkmChatText?.(text) || text;
   window.PkmChatStatusIndicator = value => {
-    const labels = { running: 'Running', stopped: 'Stopped', failed: 'Failed', 'awaiting-input': 'Waiting for Input', 'new-result': 'Idle: new result', paused: 'Idle: paused', idle: 'Idle' };
-    const state = value === 'awaiting-input' ? 'waiting-input' : ['running', 'stopped', 'failed'].includes(value) ? value : 'idle';
-    const node = document.createElement('span'); node.className = 'chat-status-indicator'; node.dataset.state = state;
-    node.title = t(labels[value] || 'Idle'); node.setAttribute('role', 'img'); node.setAttribute('aria-label', node.title);
+    const labels = { running: 'Running', stopped: 'Stopped', failed: 'Failed', completed: 'Completed', 'awaiting-input': 'Waiting for Input', 'awaiting-result': 'Waiting for delegated result', 'new-result': 'Completed: unread result', paused: 'Paused', idle: 'Idle' };
+    const state = value === 'awaiting-input' ? 'waiting-input' : value === 'awaiting-result' ? 'waiting-result' : value === 'new-result' ? 'completed' : value === 'paused' ? 'stopped' : ['running', 'stopped', 'failed', 'completed'].includes(value) ? value : 'idle';
+    const node = state === 'running' ? document.getElementById('working-cauldron-template').content.firstElementChild.cloneNode(true) : document.createElement('span');
+    node.classList.add('chat-status-indicator'); node.removeAttribute('aria-hidden'); node.dataset.state = state;
+    const label = t(labels[value] || 'Idle'); node.setAttribute('title', label); node.setAttribute('role', 'img'); node.setAttribute('aria-label', label);
+    if (state === 'running') { const title = document.createElementNS('http://www.w3.org/2000/svg', 'title'); title.textContent = label; node.append(title); }
     return node;
   };
   window.PkmChatLibrary = ({ post, showChat, save, saved }) => {
@@ -91,7 +93,8 @@
             row.draggable = !trash;
             row.ondragstart = event => { event.dataTransfer.setData("application/x-pkm-chat-id", chat.id); event.dataTransfer.effectAllowed = "move"; };
             const actions = trash ? [["Restore Chat", () => post("restoreChat", { id: chat.id })], ["Delete permanently", () => post("deleteChat", { id: chat.id })]]
-              : [["Open Chat", () => open.click()], ["Move to group...", () => post("moveChat", { id: chat.id })], ["Move to Trash", () => post("trashChat", { id: chat.id })]];
+              : [["Open Chat", () => open.click()], ["Rename chat", () => post("rename", { id: chat.id })], ["Move to group...", () => post("moveChat", { id: chat.id })], ["Move to Trash", () => post("trashChat", { id: chat.id })]];
+            actions.push(["Copy PKM URL", () => post("copyChatId", { id: chat.id })]);
             row.oncontextmenu = event => openMenu(event, actions);
             row.append(open, button("ellipsis", "Chat actions", event => openMenu(event, actions))); section.append(row);
           }

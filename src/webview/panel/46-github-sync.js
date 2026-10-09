@@ -90,7 +90,7 @@ function githubSyncStatusTitle(status, folder = '') {
   return status === 'green'
     ? `${subject} matches the last successful GitHub Sync`
     : status === 'yellow'
-      ? `${subject} has local content different from the last successful GitHub Sync`
+      ? `${subject} differs from at least one selected target's last successful snapshot, or its baseline is unavailable. Names alone do not prove matching bytes. Yellow is pending or unverified, not a sync failure; Refresh is read-only and does not sync.`
       : `${subject} is not included in GitHub Sync`;
 }
 
@@ -345,6 +345,19 @@ function githubSyncPhaseDiagram(phase, status) {
   return `<span class="github-sync-phase"><span class="github-sync-phase-current ${status === 'error' ? 'error' : status === 'conflicts' ? 'conflicts' : ''}" aria-hidden="true">${esc(label)}</span><span class="github-sync-flow" role="img" aria-label="GitHub Sync: ${esc(label)}">${nodes}</span></span>`;
 }
 
+function githubSyncEffectiveStatus(target, runtime, conflict, forcePending) {
+  if (forcePending || runtime.status === 'syncing') return 'syncing';
+  if (conflict) return 'conflicts';
+  const failure = target.lastFailure;
+  if (failure && (!target.lastSync?.at || !Number.isFinite(Date.parse(failure.at)) || Date.parse(failure.at) >= Date.parse(target.lastSync.at))) return 'error';
+  return runtime.status || (target.automation?.enabled && target.automation?.initialSyncCompleted ? 'scheduled' : 'paused');
+}
+
+function githubSyncEffectiveError(target, runtime) {
+  return (runtime.status === 'error' ? runtime.lastError || target.lastFailure?.error : target.lastFailure?.error || runtime.lastError)
+    || 'No error details were recorded. Open Sync Diagnostic Log for this attempt.';
+}
+
 function githubSyncCards() {
   const cards = githubSyncData.targets.map(target => {
     const expanded = githubSyncEditing === target.id;
@@ -355,11 +368,11 @@ function githubSyncCards() {
     const migration = githubSyncData.migrations?.[target.id];
     const initialPreview = conflict?.purpose === 'initial-preview';
     const forcePending = githubSyncForcePending.has(target.id);
-    const phase = forcePending ? 'waiting-for-lock' : initialPreview ? 'initial-preview' : conflict ? 'resolve-conflicts' : runtime.phase || (runtime.status === 'scheduled' ? 'scheduled' : '');
-    const status = forcePending ? 'syncing' : conflict ? 'conflicts' : runtime.status || (target.lastFailure ? 'error' : target.automation?.enabled && automaticReady ? 'scheduled' : 'paused');
+    const status = githubSyncEffectiveStatus(target, runtime, conflict, forcePending);
+    const phase = forcePending ? 'waiting-for-lock' : initialPreview ? 'initial-preview' : conflict ? 'resolve-conflicts' : status === 'error' && ['scheduled', 'paused'].includes(runtime.phase) ? '' : runtime.phase || (runtime.status === 'scheduled' && status !== 'error' ? 'scheduled' : '');
     const retryWithPause = status === 'error' && !!target.automation?.enabled && automaticReady;
     const phaseDiagram = githubSyncPhaseDiagram(phase, status);
-    const error = status === 'error' ? runtime.lastError || target.lastFailure?.error || 'No error details were recorded. Open Sync Diagnostic Log for this attempt.' : '';
+    const error = status === 'error' ? githubSyncEffectiveError(target, runtime) : '';
     const next = forcePending ? 'Waiting for Git lock' : initialPreview ? 'Remote fetched read-only · review the file tree before applying' : conflict ? 'Choose a candidate for each file, then Apply resolutions & Sync' : status === 'error' ? error || 'Sync failed without an error message' : runtime.detail || (!automaticReady ? 'Initial manual sync required before automation can be enabled' : runtime.nextSyncAt ? `Next fetch after ${new Date(runtime.nextSyncAt).toLocaleString()}` : target.automation?.enabled ? 'Scheduled to fetch remote changes' : 'Automatic pull/push is off');
     const conflictActions = conflict ? githubSyncConflictPanel(target.id, conflict) : '';
     const resolutionDiagram = !conflict ? githubSyncResolutionDiagram(target.lastResolutionReport) : '';
@@ -404,7 +417,7 @@ function renderGitHubSyncPane() {
   const view = captureRefreshView(detail, ['.sub-picker-items','.github-sync-picker']);
   const previousScrollTop = detail?.scrollTop || 0;
   const status = githubSyncRefreshError ? `Content status unavailable: ${esc(githubSyncRefreshError)}` : !githubSyncUpdatedAt ? 'Reading local settings…' : githubSyncData.fingerprintsDeferred ? `${githubSyncData.targets.length} configured targets · Checking content status…` : `${githubSyncData.targets.length} configured targets`;
-  detail.innerHTML = `<div class="sub-dashboard github-sync-dashboard"><header class="sub-head"><div><h2>GitHub Sync</h2><p role="${githubSyncRefreshError ? 'alert' : 'status'}">${status}</p></div><div class="project-header-actions"><button class="pk-button" onclick="ask('openGitHubSyncDiagnosticLog',{})">${uiIcon('file-text','Open Sync Diagnostic Log')}</button><button class="recipe-icon-button" title="Refresh GitHub Sync" aria-label="Refresh GitHub Sync" onclick="ask('githubSyncState',{})"><span class="codicon codicon-refresh"></span></button><button class="pk-button primary" onclick="githubSyncNew()">${uiIcon('add','Target')}</button></div></header><section class="sub-band"><div class="pk-list sub-broker-list">${githubSyncCards()}</div></section></div>`;
+  detail.innerHTML = `<div class="sub-dashboard github-sync-dashboard"><header class="sub-head"><div><h2>GitHub Sync</h2><p role="${githubSyncRefreshError ? 'alert' : 'status'}">${status}</p></div><div class="project-header-actions github-sync-header-actions"><button class="recipe-icon-button" title="Open Sync Diagnostic Log" aria-label="Open Sync Diagnostic Log" onclick="ask('openGitHubSyncDiagnosticLog',{})">${uiIcon('file-text')}</button><button class="recipe-icon-button" title="Refresh GitHub Sync" aria-label="Refresh GitHub Sync" onclick="ask('githubSyncState',{})"><span class="codicon codicon-refresh"></span></button><button class="pk-button primary" onclick="githubSyncNew()">${uiIcon('add','Target')}</button></div></header><section class="sub-band github-sync-transfer"><strong>Local transfer</strong><div><button class="recipe-icon-button" title="Export Knowledge" aria-label="Export Knowledge" onclick="doExport()">${uiIcon('export')}</button><button class="recipe-icon-button" title="Import Knowledge" aria-label="Import Knowledge" onclick="triggerImport()">${uiIcon('arrow-down')}</button></div></section><section class="sub-band"><div class="pk-list sub-broker-list">${githubSyncCards()}</div></section></div>`;
   detail.scrollTop = Math.min(previousScrollTop, Math.max(0, detail.scrollHeight - detail.clientHeight));
   githubSyncRenderAuthenticationMethod();
   githubSyncSyncFolderStates();

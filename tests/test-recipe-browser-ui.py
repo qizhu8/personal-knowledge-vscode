@@ -30,6 +30,7 @@ def open_recipe(page):
     page.goto(BASE_URL, wait_until="networkidle")
     page.locator('[data-workspace="automation"]').click()
     page.locator('.tab[data-tab="recipes"]').click()
+    page.keyboard.press("Control+f")
     page.get_by_role("searchbox", name="Search Recipes").fill("PKM Tutorial (Editable Demo)")
     page.locator('.tree-cat-hdr[title="Examples"]').click()
     page.locator('.tree-cat-hdr[title="PKM"]').click()
@@ -78,6 +79,7 @@ def assert_project_errors_in_viewport(browser):
 
 
 def open_configurable_testing_recipe(page):
+    page.keyboard.press("Control+f")
     page.get_by_role("searchbox", name="Search Recipes").fill("Configurable Validation and Testing (Editable Demo)")
     for category in ["System", "PKM", "Fundamental"]:
         header = page.locator(f'.tree-cat-hdr[title="{category}"]')
@@ -174,19 +176,29 @@ def assert_shared_trash_docks(browser):
         ("automation", "recipes", "recipeTrash"),
         ("automation", "agentSessions", "agentSessionTrash"),
       ]:
+        list_requests = page.evaluate("window.__previewMessages.filter(message => message.command === 'list' && message.tab === 'skills').length")
         page.locator(f'[data-workspace="{workspace}"]').click()
-        page.locator(f'.tab[data-tab="{area}"]').click()
+        tab = page.locator(f'.tab[data-tab="{area}"]')
+        if tab.get_attribute("aria-selected") != "true":
+          tab.click()
         if area == "skills":
+          page.wait_for_function("count => !skillsListLoading && window.__previewMessages.filter(message => message.command === 'list' && message.tab === 'skills').length > count", arg=list_requests)
           page.evaluate("""() => {
             state.knowledgeTrash = [{id:'trash_ui', name:'Trashed Skill', kind:'file', originalPath:'Testing/Skill'}];
             renderKnowledgeTrashDock('skills');
           }""")
         else:
+          page.evaluate("""() => {
+            projectSnapshot.agentSessionTrash = [{sessionId:'agent_session_trash_ui', task:'Trashed Session',
+              status:'completed', agent:{name:'Copilot'}, trashedAt:'2026-10-04T00:00:00Z'}];
+            projectSnapshot.recipeTrash = [{...projectSnapshot.recipes[0], scope:'global',
+              recipeId:'recipe_trash_ui', name:'Trashed Recipe'}];
+          }""")
           page.evaluate("renderGlobalRecipes()" if area == "recipes" else "renderAgentSessions()")
         dock = page.locator('.cattree-trash-dock:visible')
         row = dock.locator('.knowledge-trash-dock-row')
         button = row.get_by_role("button", name="Delete All", exact=True)
-        assert button.is_visible() and button.is_enabled()
+        assert button.is_visible() and button.is_enabled(), f"{area} Trash Delete All unavailable at {width}px"
         assert row.get_attribute("aria-expanded") == "false"
         assert page.locator('.agent-session-archive').count() == 0
         styles = row.evaluate("""element => {
@@ -445,7 +457,9 @@ with sync_playwright() as playwright:
     page.locator("#coachmark-next").click()
     page.locator("#coachmark-next").click()
     page.locator("#coachmark-title").filter(has_text="Create your first reusable item").wait_for()
-    assert page.locator("#more-btn").evaluate("element => element.classList.contains('coachmark-target')")
+    target = page.locator(".coachmark-target")
+    assert target.count() == 1 and target.is_visible()
+    assert target.evaluate("element => { const rect = element.getBoundingClientRect(); return rect.width > 0 && rect.left >= 0 && rect.right <= window.innerWidth; }")
     page.locator("#coachmark-close").click()
     page.set_viewport_size({"width": 1440, "height": 1000})
     open_recipe(page)

@@ -364,8 +364,40 @@ try:
         page.locator('.graph-node[data-node-id="finish"] .port-handle.output').click()
         page.locator('.graph-node[data-node-id="browser-module"] .port-handle.input').click()
         assert page.locator('.graph-node[data-node-id="browser-module"].invalid').count() == 0
+        page.locator("#add-node").click()
+        assert page.locator('#create-module-type option[value="pipeline"]').inner_text() == "Pipeline"
+        assert page.locator('#create-module-type option[value="script"]').count() == 0
+        page.locator("#create-module-type").select_option("pipeline")
+        page.locator("#create-module-id").fill("pipeline-module")
+        page.locator("#create-module-confirm").click()
+        page.locator("#node-instruction").fill("Execute a parameterized Pipeline")
+        page.locator("#script-source").fill("printf 'pipeline-script\\n'")
+        page.locator("#editor-done").click()
+        page.locator('[data-edit="pipeline-module"]').click()
+        assert page.locator("#script-source").input_value() == "printf 'pipeline-script\\n'"
+        page.locator("#pipeline-executor").select_option("command")
+        page.locator("#pipeline-program").fill("python3")
+        page.locator('[data-editor-tab="parameters"]').click()
+        page.locator("#pipeline-args").fill('[null]')
+        page.locator("#editor-done").click()
+        assert page.locator("#pipeline-args").is_visible(), "Invalid argv must not silently close the editor"
+        pipeline_args = [" folder with spaces ", "", "quote'$(printf injected);file.txt"]
+        page.locator("#pipeline-args").fill(json.dumps(pipeline_args))
+        page.locator("#editor-done").click()
+        page.locator('.graph-node[data-node-id="browser-module"] .port-handle.output').click()
+        page.locator('.graph-node[data-node-id="pipeline-module"] .port-handle.input').click()
+        assert page.locator('.graph-node[data-node-id="pipeline-module"] small').inner_text() == "Pipeline"
         page.locator("#save").click()
         page.get_by_text("Saved", exact=True).wait_for()
+        page.locator('[data-edit="pipeline-module"]').click()
+        assert page.locator("#pipeline-executor").input_value() == "command"
+        assert page.locator("#pipeline-program").input_value() == "python3"
+        page.locator('[data-editor-tab="parameters"]').click()
+        assert json.loads(page.locator("#pipeline-args").input_value()) == pipeline_args
+        for width in [1360, 390]:
+            page.set_viewport_size({"width": width, "height": 900})
+            bounds = page.locator("#pipeline-args").bounding_box()
+            assert bounds["x"] >= 0 and bounds["x"] + bounds["width"] <= width, bounds
         assert not errors, errors
         browser.close()
 finally:
@@ -377,4 +409,14 @@ assert finish["generalInstruction"] == "Finish with verified evidence"
 assert finish["control"]["mode"] == "branch"
 assert saved[0]["nodeBindings"] == [{"nodeId": "finish", "bindings": [{"kind": "skill", "knowledgeId": "Coding/Testing", "usage": "required"}]}]
 assert any(node["generalInstruction"] == "New browser-created module" for node in saved[0]["definition"]["spec"]["nodes"])
+pipeline_node = next(node for node in saved[0]["definition"]["spec"]["nodes"] if node["nodeId"] == "pipeline-module")
+assert pipeline_node["kind"] == "pkm.step.pipeline/v1"
+assert pipeline_node["config"]["executor"] == "command"
+assert pipeline_node["config"]["args"] == [" folder with spaces ", "", "quote'$(printf injected);file.txt"]
+pipeline_definition = {"schema": "pkm.workflow.definition/v1", "spec": {
+    "inputs": {}, "outputs": {}, "completion": {"requiredNodes": ["pipeline-module"]},
+    "nodes": [{**pipeline_node, "dependsOn": []}],
+}}
+subprocess.run(["node", "-e", "const fs=require('fs');const {compileWorkflowDefinitionV1}=require('./dist/workflows/workflow-contracts');const result=compileWorkflowDefinitionV1(JSON.parse(fs.readFileSync(0,'utf8')));if(!result.ok)throw new Error(JSON.stringify(result.diagnostics));"],
+    input=json.dumps(pipeline_definition), text=True, check=True)
 print("Standalone Recipe browser UI tests passed")

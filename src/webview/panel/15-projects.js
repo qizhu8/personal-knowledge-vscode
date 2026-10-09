@@ -401,7 +401,7 @@ function emptyAgentSessionTrash() {
   pkModal({
     title:'Empty Agent Sessions Trash?',
     message:`Permanently delete ${count} trashed Agent Session${count === 1 ? '' : 's'}?\n\nRecipe run evidence is retained, but these Session records cannot be recovered.`,
-    okLabel:'Empty Trash',
+    okLabel:'Delete All',
     danger:true,
     onOk:()=>ask('agentSessionTrash',{action:'empty'})
   });
@@ -1139,6 +1139,8 @@ function recipeParameterRestoreSnapshot() {
   recipeDraft.definition.spec.completion.requiredNodes = [...required];
 }
 function recipeParameterSave() {
+  const invalid = [...document.querySelectorAll('.recipe-adapter-config textarea')].find(input => !input.checkValidity());
+  if (invalid) { invalid.reportValidity(); return; }
   const viewState = recipeCaptureViewState();
   recipeParameterSnapshot = null;
   recipeReferencePickerNodeId = '';
@@ -1157,8 +1159,15 @@ function recipeParameterCancel() {
   renderGlobalRecipes();
   recipeRestoreViewState(viewState);
 }
-function recipeGraphAdapterConfigHtml(node) {
-  if (node.kind === 'pkm.step.command/v1') return `<div class="recipe-adapter-config"><label><span>Program</span><input value="${esc(node.config.program || '')}" placeholder="python3" onblur="recipeGraphCommandField(decodeURIComponent('${encodeURIComponent(node.nodeId)}'),'program',this.value)"></label><label><span>Arguments · one per line</span><textarea rows="4" placeholder="script.py&#10;\${inputs.runId}" onblur="recipeGraphCommandField(decodeURIComponent('${encodeURIComponent(node.nodeId)}'),'args',this.value)">${esc((node.config.args || []).join('\n'))}</textarea></label><label><span>Working directory</span><input value="${esc(node.config.cwd || '')}" placeholder="\${inputs.workspace}" onblur="recipeGraphCommandField(decodeURIComponent('${encodeURIComponent(node.nodeId)}'),'cwd',this.value)"></label><div><label><span>Timeout seconds</span><input type="number" min="1" max="3600" value="${node.config.timeoutSeconds || 300}" onblur="recipeGraphCommandField(decodeURIComponent('${encodeURIComponent(node.nodeId)}'),'timeoutSeconds',this.value)"></label><label><span>Output limit bytes</span><input type="number" min="1024" max="1048576" value="${node.config.maxOutputBytes || 65536}" onblur="recipeGraphCommandField(decodeURIComponent('${encodeURIComponent(node.nodeId)}'),'maxOutputBytes',this.value)"></label></div><small>Arguments are passed directly without a shell. Use \${inputs.name} for Recipe instance parameters.</small></div>`;
+function recipeGraphAdapterConfigHtml(node, executorView = false) {
+  if (!executorView && (node.kind === 'pkm.step.pipeline/v1' || node.kind === 'pkm.step.script/v1')) {
+    const executor = node.kind === 'pkm.step.pipeline/v1' ? node.config.executor : 'script';
+    const id = encodeURIComponent(node.nodeId);
+    const selector = node.kind === 'pkm.step.pipeline/v1' ? `<div class="recipe-adapter-config"><label><span>Executor</span><select onchange="recipeGraphPipelineExecutor(decodeURIComponent('${id}'),this.value)"><option value="script" ${executor === 'script' ? 'selected' : ''}>Script</option><option value="command" ${executor === 'command' ? 'selected' : ''}>Command</option></select></label></div>` : '';
+    const args = executor === 'script' ? `<div class="recipe-adapter-config"><label><span>Arguments (JSON)</span><textarea rows="4" spellcheck="false" oninput="recipeGraphPipelineArguments(decodeURIComponent('${id}'),this)">${esc(JSON.stringify(node.config.args || [], null, 2))}</textarea></label></div>` : '';
+    return selector + recipeGraphAdapterConfigHtml({ ...node, kind:executor === 'command' ? 'pkm.step.command/v1' : 'pkm.step.script/v1' }, true) + args;
+  }
+  if (node.kind === 'pkm.step.command/v1') return `<div class="recipe-adapter-config"><label><span>Program</span><input value="${esc(node.config.program || '')}" placeholder="python3" onblur="recipeGraphCommandField(decodeURIComponent('${encodeURIComponent(node.nodeId)}'),'program',this.value)"></label><label><span>Arguments (JSON)</span><textarea rows="4" spellcheck="false" oninput="recipeGraphPipelineArguments(decodeURIComponent('${encodeURIComponent(node.nodeId)}'),this)">${esc(JSON.stringify(node.config.args || [], null, 2))}</textarea></label><label><span>Working directory</span><input value="${esc(node.config.cwd || '')}" placeholder="\${inputs.workspace}" onblur="recipeGraphCommandField(decodeURIComponent('${encodeURIComponent(node.nodeId)}'),'cwd',this.value)"></label><div><label><span>Timeout seconds</span><input type="number" min="1" max="3600" value="${node.config.timeoutSeconds || 300}" onblur="recipeGraphCommandField(decodeURIComponent('${encodeURIComponent(node.nodeId)}'),'timeoutSeconds',this.value)"></label><label><span>Output limit bytes</span><input type="number" min="1024" max="1048576" value="${node.config.maxOutputBytes || 65536}" onblur="recipeGraphCommandField(decodeURIComponent('${encodeURIComponent(node.nodeId)}'),'maxOutputBytes',this.value)"></label></div><small>Arguments are passed directly without a shell. Use \${inputs.name} for Recipe instance parameters.</small></div>`;
   if (node.kind === 'pkm.step.script/v1') {
     const runtime = node.config.runtime || 'bash';
     const environments = typeof envCache === 'undefined' ? [] : envCache;
@@ -1556,9 +1565,31 @@ function recipeGraphGeneralInstruction(nodeId, value) {
   if (instruction) node.generalInstruction = instruction;
   else delete node.generalInstruction;
 }
+function recipeGraphPipelineExecutor(nodeId, executor) {
+  const node = recipeDraft.definition.spec.nodes.find(candidate => candidate.nodeId === nodeId);
+  if (node?.kind !== 'pkm.step.pipeline/v1' || !['command','script'].includes(executor)) return;
+  if (node.config.executor === executor) return;
+  node.config = executor === 'command'
+    ? { executor, program:'python3', args:[], timeoutSeconds:300, maxOutputBytes:65536 }
+    : recipeClone(RecipeGraph.moduleTemplates.pipeline.config);
+  recipeRerenderPreservingView();
+}
+function recipeGraphPipelineArguments(nodeId, input) {
+  const node = recipeDraft.definition.spec.nodes.find(candidate => candidate.nodeId === nodeId);
+  if (!node || !['pkm.step.pipeline/v1','pkm.step.command/v1','pkm.step.script/v1'].includes(node.kind)) return;
+  try {
+    const args = JSON.parse(input.value);
+    if (!Array.isArray(args) || args.some(argument => typeof argument !== 'string' || argument.includes('\0'))) throw new Error();
+    input.setCustomValidity('');
+    if (node.config.args !== undefined || args.length) node.config.args = args;
+  } catch {
+    input.setCustomValidity('Enter a JSON array of strings without null characters.');
+    input.reportValidity();
+  }
+}
 function recipeGraphCommandField(nodeId, field, value) {
   const node = recipeDraft.definition.spec.nodes.find(candidate => candidate.nodeId === nodeId);
-  if (node?.kind !== 'pkm.step.command/v1') return;
+  if (node?.kind !== 'pkm.step.command/v1' && !(node?.kind === 'pkm.step.pipeline/v1' && node.config.executor === 'command')) return;
   if (field === 'args') node.config.args = String(value || '').split('\n').map(argument => argument.trim()).filter(Boolean);
   else if (field === 'timeoutSeconds') node.config.timeoutSeconds = Math.min(3600, Math.max(1, Number.parseInt(value, 10) || 300));
   else if (field === 'maxOutputBytes') node.config.maxOutputBytes = Math.min(1048576, Math.max(1024, Number.parseInt(value, 10) || 65536));
@@ -1569,7 +1600,7 @@ function recipeGraphCommandField(nodeId, field, value) {
 }
 function recipeGraphScriptField(nodeId, field, value) {
   const node = recipeDraft.definition.spec.nodes.find(candidate => candidate.nodeId === nodeId);
-  if (node?.kind !== 'pkm.step.script/v1') return;
+  if (node?.kind !== 'pkm.step.script/v1' && !(node?.kind === 'pkm.step.pipeline/v1' && node.config.executor === 'script')) return;
   if (field === 'runtime') {
     node.config.runtime = ['bash','powershell','python'].includes(value) ? value : 'bash';
     const environments = typeof envCache === 'undefined' ? [] : envCache;
@@ -2771,7 +2802,7 @@ function agentSessionTree(sessions, archived = false) {
   const groups = new Map(sessions.map(session => [agentSessionGroupKey(session), session]));
   const titles = new Map((projectSnapshot?.agentSessionGroups || []).map(group => [group.groupId, group.title]));
   const tree = buildCatTree(sessions, session => [agentSessionGroupKey(session)], 'Recovered Sessions');
-  return `<div class="agent-session-tree">${renderCatTree(tree, [], 0, (session, depth) => `<div class="li cattree-item agent-session-row ${session.sessionId === selectedAgentSessionId ? 'active' : ''}" style="padding-left:${8 + depth * 12}px" role="button" tabindex="0" onclick="agentSessionSelect(decodeURIComponent('${encodeURIComponent(session.sessionId)}'))" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();agentSessionSelect(decodeURIComponent('${encodeURIComponent(session.sessionId)}'))}" oncontextmenu="agentSessionContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'),'${esc(session.status)}')"><span>${agentSessionStatusIndicator(session, true)}<strong>${esc(session.task)}</strong></span><b>${esc(session.sessionId.replace(/^agent_session_/, '').slice(0,12))}</b><small>${esc(session.lastActivity?.tool || (session.checkpoint ? 'Checkpoint ready' : 'Registered'))}${agentSessionLivenessLabel(session.liveness) ? ` · <em class="agent-session-liveness ${esc(session.liveness.state)}">${esc(agentSessionLivenessLabel(session.liveness))}</em>` : ''}</small>${archived ? `<button class="agent-session-quick-trash" title="Move archived Agent Session to Trash" aria-label="Move ${esc(session.task)} to Trash" onclick="event.stopPropagation();ask('agentSessionTrash',{action:'move',sessionId:decodeURIComponent('${encodeURIComponent(session.sessionId)}')},this)"><span class="codicon codicon-trash"></span></button>` : ''}<button class="cattree-item-menu" title="Agent Session actions" aria-label="Actions for ${esc(session.task)}" onclick="event.stopPropagation();agentSessionContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'),'${esc(session.status)}')"><span class="codicon codicon-ellipsis"></span></button></div>`, '', (_child, _name, fullPath) => ` oncontextmenu="agentSessionFolderMenu(event,decodeURIComponent('${encodeURIComponent(fullPath.join('/'))}'))"`, null, {
+  return `<div class="agent-session-tree">${renderCatTree(tree, [], 0, (session, depth) => `<div class="li cattree-item agent-session-row ${session.sessionId === selectedAgentSessionId ? 'active' : ''}" style="padding-left:${8 + depth * 12}px" role="button" tabindex="0" onclick="agentSessionSelect(decodeURIComponent('${encodeURIComponent(session.sessionId)}'))" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();agentSessionSelect(decodeURIComponent('${encodeURIComponent(session.sessionId)}'))}" oncontextmenu="agentSessionContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'),'${esc(session.status)}')"><span>${agentSessionStatusIndicator(session, true)}<strong>${esc(session.task)}</strong></span><b>${esc(session.sessionId.replace(/^agent_session_/, '').slice(0,12))}</b><small>${esc(session.lastActivity?.tool || (session.checkpoint ? 'Checkpoint ready' : 'Registered'))}${agentSessionLivenessLabel(session.liveness) ? ` · <em class="agent-session-liveness ${esc(session.liveness.state)}">${esc(agentSessionLivenessLabel(session.liveness))}</em>` : ''}</small><button class="cattree-item-menu" title="Agent Session actions" aria-label="Actions for ${esc(session.task)}" onclick="event.stopPropagation();agentSessionContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'),'${esc(session.status)}')"><span class="codicon codicon-ellipsis"></span></button></div>`, '', (_child, _name, fullPath) => ` oncontextmenu="agentSessionFolderMenu(event,decodeURIComponent('${encodeURIComponent(fullPath.join('/'))}'))"`, null, {
     area:'agentSessions',
     defaultOpen:true,
     renderFolderLabel:name => {

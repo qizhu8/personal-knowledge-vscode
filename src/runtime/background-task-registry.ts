@@ -1,5 +1,5 @@
 export type BackgroundTaskStatus = "queued" | "running";
-export type BackgroundTaskKind = "content-check" | "inventory" | "retrieval" | "github-sync" | "broker-refresh" | "other";
+export type BackgroundTaskKind = "content-check" | "inventory" | "retrieval" | "github-sync" | "broker-refresh" | "action-validation" | "other";
 
 export interface BackgroundTaskProgress {
   current: number;

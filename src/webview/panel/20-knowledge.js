@@ -1,6 +1,7 @@
 // ── Tabs ──────────────────────────────────────────────────────────────────
 const cachedKnowledgeTabs = new Set(['skills','notes','papers','prompts','packages','scripts']);
 const knowledgeTabViewCache = new Map();
+const knowledgeDetailViewCache = new Map();
 let skillsListLoading = false;
 
 function detachChildren(element) {
@@ -11,6 +12,10 @@ function detachChildren(element) {
 
 function stashKnowledgeTabView(tab) {
   if (!cachedKnowledgeTabs.has(tab)) return;
+  if (currentDetail) {
+    const detail = document.getElementById('detail');
+    knowledgeDetailViewCache.set(tab, { content:detachChildren(detail), currentDetail, currentDetailRequest, scrollTop:detail?.scrollTop || 0 });
+  }
   if (state.filter !== 'all' || state.search) {
     knowledgeTabViewCache.delete(tab);
     return;
@@ -34,6 +39,15 @@ function stashKnowledgeTabView(tab) {
 }
 
 function restoreKnowledgeTabView(tab) {
+  const savedDetail = knowledgeDetailViewCache.get(tab);
+  if (savedDetail) {
+    knowledgeDetailViewCache.delete(tab);
+    const detail = document.getElementById('detail');
+    detail?.replaceChildren(savedDetail.content);
+    if (detail) detail.scrollTop = savedDetail.scrollTop;
+    currentDetail = savedDetail.currentDetail;
+    currentDetailRequest = savedDetail.currentDetailRequest;
+  }
   const cached = knowledgeTabViewCache.get(tab);
   if (!cached) return false;
   knowledgeTabViewCache.delete(tab);
@@ -103,6 +117,7 @@ document.querySelectorAll('.tab').forEach(t =>
     if (state.tab === 'chatroom' && t.dataset.tab !== 'chatroom') chatCaptureDraft();
     if (state.tab === 'servers' && t.dataset.tab !== 'servers') stopSubscribedServerMonitoring();
     state.tab = t.dataset.tab; state.filter = 'all'; state.search = '';
+    closePanelFind();
     currentDetail = null;
     currentDetailRequest = null;
     state.workspace = workspaceForTab(state.tab);
@@ -156,19 +171,19 @@ document.querySelectorAll('.tab').forEach(t =>
     } else if (state.tab === 'environments') {
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
-      document.getElementById('detail').innerHTML = '<div class="empty">Loading environments…</div>';
-      ask('envList', {});
+      renderEnvDashboard(envCache, true);
+      ask('envList', {}, null, true);
     } else if (state.tab === 'servers') {
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
-      document.getElementById('detail').innerHTML = '<div class="empty">Loading servers…</div>';
-      ask('serverList', {});
-      ask('serverGroupList', {});
+      renderServerDashboard(serverCache);
+      ask('serverList', {}, null, true);
+      ask('serverGroupList', {}, null, true);
     } else if (state.tab === 'subscriptions') {
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
       renderSubscriptionLoading();
-      ask('subscriptionState', {});
+      ask('subscriptionState', {}, null, true);
     } else if (state.tab === 'githubSync') {
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
@@ -188,13 +203,14 @@ document.querySelectorAll('.tab').forEach(t =>
       applyMainSidebarState();
       if (state.tab === 'papers') { ask('paperFacets', {}); ask('paperGroups', {}); }
       if (state.tab === 'notes') { ask('noteFolderPins', {}); }
-      if (!restoreKnowledgeTabView(state.tab)) {
+      const restoredKnowledge = restoreKnowledgeTabView(state.tab);
+      if (!restoredKnowledge) {
         if (state.tab === 'skills') {
           skillsListLoading = true;
           setKnowledgeListMarkup(document.getElementById('item-list'), 'skills', '<div class="skill-list-progress" role="status" aria-live="polite"><span>Finding skills...</span><progress aria-label="Finding skills"></progress></div>');
         }
         ask('list', { tab: state.tab, filter: 'all', q: '' });
-      }
+      } else ask('list', { tab: state.tab, filter: 'all', q: '' }, null, true);
     }
   })
 );
@@ -249,6 +265,23 @@ function contentSearchChanged(requestList = true) {
 }
 document.getElementById('searchbox').addEventListener('input', e => {
   contentSearchChanged(true);
+});
+
+function closePanelFind() {
+  document.querySelectorAll('.panel-find-open').forEach(control => control.classList.remove('panel-find-open'));
+}
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape') { closePanelFind(); return; }
+  if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'f') return;
+  const controls = [...document.querySelectorAll('#detail .pkm-search-field,#detail .recipe-search,#detail .find-control')];
+  const control = controls.find(element => !element.closest('.hidden') && element.querySelector('input'))
+    || (cachedKnowledgeTabs.has(state.tab) ? document.getElementById('content-find-control') : null);
+  if (!control) return;
+  event.preventDefault();
+  closePanelFind();
+  control.classList.add('panel-find-open');
+  const input = control.querySelector('input');
+  input?.focus(); input?.select();
 });
 
 function folkDisplayName(value) {
@@ -647,7 +680,7 @@ function restoreKnowledgeTrash(area, id, button) {
 }
 
 function emptyKnowledgeTrash(area) {
-  pkModal({ title:`Empty ${area} Trash?`, message:`Permanently delete every item and folder in ${area} Trash? This cannot be undone.`, okLabel:'Empty Trash', danger:true, onOk:()=>ask(area === 'skills' ? 'skillTrashEmpty' : 'knowledgeTrashEmpty', area === 'skills' ? {} : {area}) });
+  pkModal({ title:`Empty ${area} Trash?`, message:`Permanently delete every item and folder in ${area} Trash? This cannot be undone.`, okLabel:'Delete All', danger:true, onOk:()=>ask(area === 'skills' ? 'skillTrashEmpty' : 'knowledgeTrashEmpty', area === 'skills' ? {} : {area}) });
 }
 
 function deleteKnowledgeTrashEntry(area, id, name, kind) {
@@ -1545,7 +1578,6 @@ function renderDetail(data) {
         <span>Updated ${(data.updated_at||'').slice(0,10)}</span>
         <span style="flex:1"></span>
         ${markdownToolbar(data)}
-        <button class="tbtn" style="font-size:11px" onclick="confirmDeleteSkill(this)">${uiIcon('trash', 'Move to Trash')}</button>
       </div>
       <div class="meta-grid">
         <span class="ml">Source</span><span class="mv meta-value"><span>${esc(data.source_project||'—')}</span><button class="meta-edit" onclick="editCurrentMetadata('source_project')" title="Edit source">✎</button></span>
@@ -2041,10 +2073,7 @@ function doExport() { ask('export', {}); }
 function doReload() {
   const btn = document.querySelector('#content-toolbar .tbtn[onclick="doReload()"]');
   if (btn) { btn.disabled = true; btn.innerHTML = uiIcon('loading', 'Refreshing…'); }
-  if (state.tab === 'environments') { ask('envList', {}); return; }
-  const search = document.getElementById('searchbox');
-  if (search) search.value = '';
-  state.search = '';
+  if (state.tab === 'environments') { ask('envList', { refresh:true }); return; }
   ask('reload', {});
 }
 function triggerImport() { document.getElementById('import-file').click(); }
@@ -2837,8 +2866,7 @@ function confirmDeletePackage(name) {
 function renderPaperFilters(fEl) {
   const opts = ['<option value="">All topics</option>'].concat(
     paperFacetsData.topics.map(t => `<option value="${esc(t.name)}"${t.name === paperTopicFilter ? ' selected' : ''}>${esc(t.name)} (${t.count})</option>`)).join('');
-  fEl.innerHTML = `<div style="padding:6px 8px"><select id="paper-topic-filter" style="width:100%" onchange="setPaperTopic(this.value)">${opts}</select></div>
-    <button class="knowledge-group-create paper-delete-all" type="button" onclick="confirmDeleteAllPapers()">${uiIcon('trash')} Move All to Trash</button>`;
+  fEl.innerHTML = `<div style="padding:6px 8px"><select id="paper-topic-filter" style="width:100%" onchange="setPaperTopic(this.value)">${opts}</select></div>`;
 }
 function setPaperTopic(v) { paperTopicFilter = v; renderList(); }
 function confirmDeleteAllPapers() {
@@ -2896,7 +2924,6 @@ function paperDetailHtml(d) {
       ${d.file ? `<button class="tbtn" style="font-size:11px" onclick="openPaperLink('','${esc(d.file)}','${esc(d.category)}')">${uiIcon('file', 'File')}</button>` : ''}
       <button class="tbtn" style="font-size:11px" onclick="openPaperForm(currentDetail)">✎ Edit Fields</button>
       ${markdownToolbar(d)}
-      <button class="tbtn" style="font-size:11px" onclick="confirmDeletePaper()">${uiIcon('trash', 'Move to Trash')}</button>
     </div>
     <div class="meta-grid">
       <span class="ml">Description</span><span class="mv meta-value"><span>${esc(d.description || '—')}</span><button class="meta-edit" onclick="editCurrentMetadata('description')" title="Edit description">✎</button></span>

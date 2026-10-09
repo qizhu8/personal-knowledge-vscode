@@ -63,7 +63,9 @@ the existing AI API key. Changing them also affects HTTP script summarization.
 Copilot for summaries does not select a chat provider. For direct HTTP models,
 add IDs to `personalKnowledge.apiChatModels` or choose **Enter API model ID...**.
 `personalKnowledge.apiChatTimeoutSeconds` defaults to 120 (range 10-600), covering
-the complete request and stream. Requests are not automatically retried.
+each model call and its stream, not the complete Chat activity. Waiting for user
+input or tools does not consume that model-call timeout. Requests are not
+automatically retried.
 
 Model display names are not API IDs. For a name such as **GPT-6.1 Sol**, use its
 entry only if the public VS Code model catalog actually exposes it. A model
@@ -74,6 +76,14 @@ configure an API provider that supports it and use that provider's exact model
 ID or Azure deployment name; PKM does not guess an ID or certify availability.
 
 ## Extension Host Builds
+
+The exact-Host control queue also supports `tools` for native MCP diagnostics.
+With empty arguments it returns bounded registered tool names, counts, and native
+tool API availability without creating a Chat, starting a server, or calling a
+model/tool. Explicit `{ "start": true }` requests managed PKM startup through
+VS Code's existing trust checks before reading the catalog; it does not restart
+other servers or change tool selection. A registered catalog is not proof that
+Copilot enabled those tools for a particular agent request.
 
 Installation updates files on disk; it does not replace code already loaded in
 other windows. The status bar shows the running PKM build fingerprint. Click it
@@ -99,6 +109,16 @@ machines/installations/profiles are separate cohorts. Missing or expired registr
 are not evidence that every VS Code host has upgraded; no process is force-killed.
 
 ## Chat Names and Status
+
+Internal resource links use `pkm://` URLs. **Copy PKM URL** in the Chat header
+or library menu copies `pkm://chats/<workspace-namespace>/<Chat UUID>`, not a
+bare UUID. The namespace is stable across reloads. Paste it into **Go to PKM
+Path**, or click a PKM link in a Chat response, to open the existing Chat.
+An address from another workspace is rejected with guidance to open its original
+workspace; opening a link does not create a Chat, start a model, or change permissions.
+The native control API and `list_chats` return `chatUrl`; use that URL as the
+`chat_id`/`chatId` input to get, send, cancel, or `ask_chat`. Legacy UUID inputs
+remain accepted for compatibility, but are not resource links.
 
 User messages align right and assistant messages align left. Every message has a
 small bottom-right token footer: pending messages show `Awaiting token usage`,
@@ -193,8 +213,8 @@ Sending and incoming native Session questions remain blocked after reload until
 Resume preserves the draft without replaying a request or submitting a message;
 send the message explicitly after resuming. The running composer's **Stop response**
 button only cancels the current response and leaves the Chat available for new messages.
-Pausing a source Session also
-cancels its currently delegated native question; it does not pause unrelated chats.
+Pausing or stopping a source does not cancel an already approved independent
+delegation. Stop the target Chat to cancel its work; its own permissions still apply.
 Session stop/Trash/removal is detected within one
 second and aborts generation without recreating the Session. Partial chat text
 is preserved. After a process interruption, persisted streaming replies appear
@@ -309,6 +329,14 @@ through `find_vscode_tools` (bounded schema discovery) and `invoke_vscode_tool`
 with `toolInvocationToken: undefined` outside a Chat Participant, preserving
 VS Code's tool confirmations as well as PKM's saved permission policy. There is no
 fabricated token, copied credential or separately launched stdio process.
+Opening PKM Chat in a trusted workspace starts background discovery of the
+extension-managed `pkm` server when its tools are not registered yet. The
+targeted native startup publishes the current Knowledge Root's definition and
+waits for live tools before refreshing the Tools tree. Core extension activation
+and the initial Chat page do not wait for this discovery. Read-only Chats skip
+it; saved exclusions and native confirmations remain unchanged. Startup errors
+are reported separately, with no automatic tool-call retry or replay. A broken
+or missing managed runtime still requires repair in Config.
 Servers must already be configured, trusted and registered by VS Code; this
 does not imply access to every Copilot-internal tool. Missing registrations
 fail explicitly. The bridge currently returns text results only, not MCP
@@ -426,8 +454,12 @@ not a provider option that purchases a different physical context window.
 
 VS Code models use discovered `maxInputTokens` as a conservative local total
 budget, with reserved output deducted from it; this is not a claim about the
-provider's full context window. Their **Output** setting is a local UTF-8 byte
-guard across streamed text and tool calls, not a provider-enforced output-token
+provider's full context window. Their **Output** setting is a local per-response
+token guard for visible text and serialized tool calls, using the model tokenizer
+when available and conservative UTF-8 bytes otherwise. Each tool round receives
+a fresh response budget; independent size and tool-loop limits still apply.
+The default follows discovered model output metadata (4096 when unavailable),
+not a fixed 1024-token agent total. This is not a provider-enforced output-token
 or billing cap. Generation and hidden reasoning may consume additional quota
 before cancellation. Verified provider-specific usage data parts can supply
 actual token counts; providers omitting them show unavailable usage. The public
@@ -527,15 +559,64 @@ remain meaningful:
   Dismissal returns a cancelled answer, not consent. Answers are model-visible;
   this is not a secret/password collection tool.
 - `ask_session`: one explicitly approved question to an advertised idle,
-  unpaused PKM-native Session. See the cooperation limits below.
+  unpaused PKM-native Session. Returns an immediate delegation receipt.
+- `ask_chat`: the same independent delegation for an ordinary Chat, using its
+  canonical PKM URL from `list_chats`.
+- `read_chat_result`: read an approved receipt's status and bounded saved answer
+  immediately, without starting a model, blocking, retrying or polling.
 
-The shield button in **Options** chooses a persistent per-Session permission
-mode. **Protective** asks for the Chat's outside-workspace boundary grant.
+The permission control and **Allow All** sit beside **Options** in the composer
+toolbar. Permission, tool, settings and memory choices open separate popovers
+without moving the composer. Model selection acknowledges the click immediately
+while the host loads its available models. Permissions choose a persistent
+per-Session mode. **Protective** asks for the Chat's outside-workspace boundary grant.
 **Read only** permits enabled workspace reads and user questions, but
 withholds edits, programs, MCP and Session questions. **Ask before changes**
 uses remembered scopes for PKM approval. **Allow All** skips PKM approvals but
 does not bypass native VS Code confirmations or trust. Changes apply to the next request, not a running
 tool catalog; read-only is not a general sandbox for providers or attachments.
+
+### Tool-loop continuation
+
+`personalKnowledge.apiChatLoopReviewMinutes` defaults to **30** and accepts
+integers from **1 through 1440**. An activity is one submitted Chat turn, including
+its model/tool rounds, not each UI Activity entry. Settings apply to the next
+request. Chat asks whether to **Continue**, **Answer with current results**, or
+**Cancel** only when both the active-time window has elapsed and a repeated tool
+loop is detected. Time or round count alone does not fail a productive turn.
+Continue grants a fresh active-time window, retaining completed results without
+replaying tools. Allow All does not approve this independent decision; dismissing
+it cancels. `apiChatMaxToolRounds` remains a legacy SDK round-review limit, not
+the native Chat policy.
+
+Chat also suspects a loop after the same function returns the same result for
+the same canonical arguments three times without observable progress. Object
+key order does not count as progress; changed arguments or results reset that
+function's repetition count. This detects repeated observable behavior, not
+semantic task completion. Interleaved functions are tracked independently.
+Exact wait/poll exceptions are `wait`, `sleep`, `poll`, `core.sleep`,
+`mcp_pkm_chat_standby`, `mcp_pkm_api_chat_request_get`, and
+`mcp_pkm_recipe_run_progress`. Legacy SDK round allowances still count these calls.
+
+Summarize performs a final tool-free model turn, explicitly records any pending
+calls as not executed, and keeps call/result IDs paired. Cancel aborts the run.
+The review clock pauses for PKM user input, approvals and continuation decisions.
+Output, context, individual model/tool deadlines and cancellation remain separate
+boundaries. Checks run between calls, not inside a stalled in-flight tool. Native
+provider confirmations are not tracked as PKM waiting states. The library's
+non-interactive fallback summarizes instead of inventing user consent.
+
+The visible Activity header combines completed/recorded steps, the current step
+and its elapsed time. The recorded count is not a prediction of future task
+size. Expand Activity for detailed steps, tool results and debug information.
+
+For the historical Note follow-up error, the former small round allowance was
+a concrete termination path, not evidence that no relevant Notes existed.
+Use `pkm_search` and `pkm_read` for verified local reads. Native MCP tools are
+invoked through `vscode.lm.invokeTool`; VS Code owns their confirmation. PKM's
+Allow All skips its own prompts but cannot disable that independent host
+confirmation. This distinction must be checked on the installed host rather
+than inferred from an isolated model test.
 
 Successful editor replacements record relative path, workspace index, timestamp,
 SHA-256 before/after hashes and bounded `+added/-removed` counts. The response's
@@ -586,6 +667,25 @@ not supported. Ordinary model requests do not require MCP. Automatic Recipe
 execution/retrieval remains out of scope. Markdown is sanitized, remote images are
 not loaded, and tool results are rendered as text, never executable HTML.
 
+## Running Input
+
+While a response runs, **Steer** supplies text at the next model-round boundary;
+completed tools are retained and the runtime does not restart the active request.
+**New task** saves a separate text request in a per-Chat FIFO queue. Both actions
+confirm receipt before clearing the draft and deduplicate submission IDs. Up to
+20 inputs are retained. Running-time input is text-only; images stay with idle drafts.
+
+If the current response finishes before a steer reaches a boundary, that input
+remains queued for the next serialized turn. Successful completion drains the queue.
+Stop, failure and reopening do not replay pending work: **Run queued inputs** or
+explicitly sending another request resumes FIFO processing. Queued inputs can be
+removed individually. Other Chats can run independently. A Chat owned by another
+window remains read-only, and changing settings affects the next request.
+
+Status distinguishes an animated running cauldron, green completion (including
+read results), red failure, yellow user-input/result waiting, and blue stop/pause.
+Only a never-run or otherwise idle Chat uses the empty indicator.
+
 ## Native Session Questions
 
 Enable `ask_session` through Agent configuration. Up to eight other native chats
@@ -596,15 +696,20 @@ approval identifies the target, question and possible additional model charges.
 
 The target retains its own model, selected context, complete history and tool
 permissions. The source conversation and the target's unsent image draft are
-not forwarded. A provenance-tagged user turn is persisted in the target. Only
-its completed text answer returns to the source, at most 12,000 characters and
+not forwarded. A provenance-tagged user turn and stable delegation identity are
+persisted in the target. Approval returns a receipt immediately; the source is
+not blocked waiting for the answer. Saved results appear beside the source turn
+and can be read with `read_chat_result`, at most 12,000 answer characters and
 16,000 serialized JSON characters; truncation is indicated. Binary outputs stay
-in the target chat. A delegated target cannot recursively ask another Session.
-Source cancellation propagates to the target request.
+in the target Chat. A delegated target cannot recursively delegate. Source
+cancellation does not cancel the child. Denied approval starts no child request.
+Reopening reconciles saved receipts with their exact target turns, without
+restarting a model. New results become unread; waiting does not lock the composer.
 
 This is single-hop cooperation between native chats in the active extension
 host, not Copilot/Claude Agent Host control, automatic wake scheduling, parallel
-workers or a durable background inbox. Charges across both Sessions cannot be
+workers or a cross-Host background scheduler. Native VS Code confirmations remain
+independent of inline PKM approvals. Charges across both Sessions cannot be
 capped in credits through the public API.
 
 ## Images

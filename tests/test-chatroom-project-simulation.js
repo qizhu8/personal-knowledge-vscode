@@ -10,8 +10,8 @@ const {
   restoreAgentSessionFromTrash,
   terminalAgentSessionStatus,
 } = require("../dist/agent-sessions/agent-session-lifecycle");
-const { ChatMeetingLifecycle, latestDiscussAfterCompletedMeeting } = require("../dist/chatroom/chatroom/chat-meeting-lifecycle");
-const { messageAddressesManagedAgent } = require("../dist/chatroom/chatroom/chat-managed-agent-routing");
+const { ChatMeetingLifecycle, latestDiscussAfterCompletedMeeting } = require("../dist/chatroom/chat-meeting-lifecycle");
+const { messageAddressesManagedAgent } = require("../dist/chatroom/chat-managed-agent-routing");
 const { MeetingStateStore } = require("../dist/chatroom/meeting-state");
 const { ProjectModelError } = require("../dist/workflows/project-model");
 const { ProjectStore, ProjectStoreError } = require("../dist/workflows/project-store");

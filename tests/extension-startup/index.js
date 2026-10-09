@@ -36,6 +36,15 @@ async function run() {
   assert.ok(commands.includes("personalKnowledge.setupMcp"), "config command was not registered");
   assert.ok(commands.includes("personalKnowledge.hostStatus"), "Host status command was not registered");
   assert.ok(commands.includes("personalKnowledge.reloadAllHosts"), "Coordinated reload command was not registered");
+  assert.ok(commands.includes("personalKnowledge.openActions"), "Action Workbench command was not registered");
+  assert.ok(commands.includes("personalKnowledge.openActionsInBrowser"), "Browser Action Workbench command was not registered");
+  assert.ok(commands.includes("personalKnowledge.answerActionChoice"), "Action Chat answer command was not registered");
+  assert(extension.packageJSON.contributes.chatParticipants.some(participant => participant.id === "personalKnowledge.actions"),
+    "Packaged extension did not declare the Action Chat participant");
+  for (const resource of ["action_modules.py", "action_components.py", "action-workbench.html"]) {
+    assert(fs.existsSync(path.join(extension.extensionPath, "resources", resource)), `Missing packaged Action resource: ${resource}`);
+  }
+  assert(fs.existsSync(path.join(extension.extensionPath, "dist", "runtime", "action-workbench-server.js")), "Missing packaged browser Action server");
   const navigation = await vscode.commands.executeCommand(
     "_personalKnowledge.testNavigationPath",
     "notes",

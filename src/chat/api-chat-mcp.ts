@@ -58,6 +58,20 @@ export function vscodeToolCatalog(host: typeof import("vscode")) {
   return [...native.lm.tools];
 }
 
+export async function ensurePkmMcpTools(host: typeof import("vscode")): Promise<void> {
+  if (host.workspace.isTrusted === false) return;
+  let catalog: ReturnType<typeof vscodeToolCatalog>;
+  try { catalog = vscodeToolCatalog(host); } catch { return; }
+  const hasPkmTools = (tools: typeof catalog) => tools.some(tool => /^(?:mcp_)?pkm[_/.]/i.test(tool.name));
+  if (hasPkmTools(catalog)) return;
+  await host.commands.executeCommand("personalKnowledge.startPkmMcp");
+  const deadline = Date.now() + 5_000;
+  while (!hasPkmTools(vscodeToolCatalog(host)) && Date.now() < deadline) {
+    await new Promise<void>(resolve => setTimeout(resolve, 50));
+  }
+  if (!hasPkmTools(vscodeToolCatalog(host))) throw new Error("PKM MCP tools are unavailable after startup. Check MCP: List Servers and the pkm server log; no tool call was retried.");
+}
+
 export function createVscodeTools(names: string[], host: typeof import("vscode"),
   approve: (name: string, arguments_: Record<string, unknown>, signal: AbortSignal, hints?: ToolSafetyHints) => Promise<void>): ApiChatTool[] {
   if (!names.length) return [];

@@ -17,6 +17,34 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-skill-mcp-"));
 try {
   const source = fs.readFileSync(path.join(__dirname, "..", "src", "mcp/mcp.ts"), "utf8");
   assert(source.includes("fastmcp>=2.0.0,<4.0.0"), "generated MCP requirements must exclude incompatible FastMCP major versions");
+  const generatedDirectory = path.join(root, "generated");
+  const compiledDirectory = path.join(root, "compiled");
+  fs.mkdirSync(compiledDirectory, { recursive: true });
+  fs.writeFileSync(path.join(compiledDirectory, "mcp.js"), 'module.exports = require("./mcp/mcp");');
+  const generationScript = require("typescript").transpileModule(source.slice(source.indexOf("export function generateMcpServer(")), {
+    compilerOptions: { target: require("typescript").ScriptTarget.ES2020, module: require("typescript").ModuleKind.CommonJS },
+  }).outputText;
+  const generation = {
+    exports: {}, fs, path, require, __dirname: path.join(compiledDirectory, "mcp"),
+    createHash: crypto.createHash,
+    getStorePath: () => path.join(root, "generation-store"),
+    managedMcpServerDirectory: () => generatedDirectory,
+    mcpStatus: () => ({ newerThanExpected: false }),
+    writeMcpFeatureDomainConfig() {}, writeActionWorkspaceConfig() {},
+    builtInRecipePin, resolveMcpPython: () => "python",
+    mcpStdioCommand: (command, args) => ({ command, args }),
+    UNIFIED_MCP_VERSION: "test", KNOWLEDGE_MCP_VERSION: "test", CHAT_MCP_VERSION: "test",
+    RECIPE_MCP_VERSION: "test", AGENT_SESSION_MCP_VERSION: "test",
+  };
+  require("vm").runInNewContext(generationScript, generation);
+  const generated = generation.exports.generateMcpServer({
+    extensionPath: path.join(__dirname, ".."), globalStorageUri: { fsPath: path.join(root, "global-storage") },
+  });
+  assert.strictEqual(generated.serverPath, path.join(generatedDirectory, "server.py"));
+  const generatedPython = fs.readFileSync(generated.serverPath, "utf8");
+  for (const tool of ["skill_capabilities", "skill_context", "skill_feedback", "propose_skill_update"]) {
+    assert(generatedPython.includes(`def ${tool}(`), `actual generation must retain ${tool}`);
+  }
   const match = /fs\.writeFileSync\(serverPy, `([\s\S]*?)`\);\n\n  fs\.writeFileSync\(reqTxt/.exec(source);
   assert(match, "could not extract generated unified MCP server template");
   const store = path.join(root, "store");
@@ -83,8 +111,13 @@ Build deterministic training datasets and validate every exported split.`);
   fs.copyFileSync(path.join(__dirname, "..", "resources", "agent_session_runtime.py"), path.join(moduleDir, "agent_session_runtime.py"));
   fs.copyFileSync(path.join(__dirname, "..", "resources", "mcp_call_guard.py"), path.join(moduleDir, "mcp_call_guard.py"));
   fs.copyFileSync(path.join(__dirname, "..", "resources", "diagnostic_log.py"), path.join(moduleDir, "diagnostic_log.py"));
+  fs.copyFileSync(path.join(__dirname, "..", "resources", "api_chat_control.py"), path.join(moduleDir, "api_chat_control.py"));
+  for (const resource of ["action_runtime.py", "action_modules.py", "action_components.py"]) {
+    fs.copyFileSync(path.join(__dirname, "..", "resources", resource), path.join(moduleDir, resource));
+  }
   fs.writeFileSync(path.join(moduleDir, "chat_server.py"), "from fastmcp import FastMCP\nmcp = FastMCP('chat-stub')\n");
   fs.writeFileSync(path.join(moduleDir, "exercise.py"), `import asyncio, hashlib, json, pathlib\nfrom fastmcp import Client\nimport server\nversion = server.check_version()\nassert version['components']['recipes'] == 'test' and 'pkm-recipes' in version['capabilities'], version\nassert version['recipe_discovery_tool'] == 'recipe_capabilities'\ntool_names = {tool.name for tool in asyncio.run(server.mcp.list_tools())}\nassert {'skill_context','list_notes','recipe_capabilities','agent_session_capabilities'} <= tool_names, tool_names\ncap = json.loads(server.skill_capabilities())\nassert cap['capability'] == 'pkm-skills'\nassert pathlib.Path(server.STORE) == pathlib.Path(r'${store.replaceAll('\\', '\\\\')}'), server.STORE\nassert server._all_skills(), (server.STORE, server.SKILLS, list(server.SKILLS.rglob('*')))\ncontext = json.loads(server.skill_context('debug pytest Python import errors'))\nfull_context = json.loads(server.skill_context('debug pytest Python import errors', detail='full'))\nassert len(json.dumps(context, ensure_ascii=False)) < len(json.dumps(full_context, ensure_ascii=False)), (context, full_context)\nassert 'task' not in context and full_context['task'] == 'debug pytest Python import errors'\nassert context['count'] == 1, context\nassert context['no_match'] is False and context['retrieval'] == 'summary', context\nskill = context['skills'][0]\nassert skill['skill_id'] == 'Coding/Python Testing'\nassert skill['content_hash']\nassert 'content' not in skill, skill\nfull_skill = json.loads(server.get_skill(skill['skill_id']))\nassert full_skill['skill_id'] == skill['skill_id']\nassert full_skill['content_hash'] == skill['content_hash']\nassert 'Run pytest' in full_skill['content']\nasync def assert_typed_skill_transport():\n    async with Client(server.mcp) as client:\n        result = await client.call_tool('skill_context', {'task':'debug pytest Python import errors'})\n        assert result.structured_content == json.loads(result.content[0].text), result.structured_content\nasyncio.run(assert_typed_skill_transport())\nnote = json.loads(server.get_note('Projects/Release Constraints'))\nnote_document = {key: note[key] for key in ['title', 'type', 'category', 'tags', 'content']}\nexpected_note_hash = hashlib.sha256(json.dumps(note_document, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()\nassert note['content_hash'] == expected_note_hash, note\nno_match = json.loads(server.skill_context('organize a birthday picnic menu'))\nassert no_match['no_match'] is True and no_match['count'] == 0, no_match\nfeedback = json.loads(server.skill_feedback('debug tests', [skill['skill_id']], 'success', ['PYTHONPATH was required'], ['pytest passed']))\nassert feedback['feedback_id']\nproposal = json.loads(server.propose_skill_update(skill['skill_id'], skill['content_hash'], 'Document PYTHONPATH', ['pytest passed'], 'Add the verified command.', 0.9))\nassert proposal['ok'] and proposal['conflict'] is False\nconflict = json.loads(server.propose_skill_update(skill['skill_id'], 'stale-hash', 'Stale proposal'))\nassert conflict['conflict'] is True\nassert pathlib.Path(proposal['proposal_path']).exists()\nassert (pathlib.Path(r'${store.replaceAll('\\', '\\\\')}') / '_feedback' / 'skill-usage.jsonl').exists()\nprint('PKM Skill MCP: thresholded summaries, full fetch, feedback, proposal, and conflict detection OK')\n`);
+  fs.appendFileSync(path.join(moduleDir, "exercise.py"), "\nhttp_retrieval_request = server._retrieval_request\n");
   fs.appendFileSync(path.join(moduleDir, "exercise.py"), "\ntools = {tool.name: tool for tool in asyncio.run(server.mcp.list_tools())}\nfor read_tool in ['check_version','retrieval_status','search_knowledge','skill_capabilities','skill_context','list_skills','search_skills','get_skill','agent_session_capabilities']:\n    assert tools[read_tool].annotations.readOnlyHint is True, (read_tool, tools[read_tool].annotations)\nassert tools['skill_feedback'].annotations.readOnlyHint is not True, tools['skill_feedback'].annotations\n");
   fs.appendFileSync(path.join(moduleDir, "exercise.py"), "server.RETRIEVAL_STATE.mkdir(parents=True, exist_ok=True)\n(server.RETRIEVAL_STATE / 'worker.json').write_text(json.dumps({'token':'test','port':9}), encoding='utf-8')\ntimeouts = []\noriginal_urlopen = server.urllib.request.urlopen\ndef capture_timeout(request, timeout):\n    timeouts.append(timeout)\n    raise TimeoutError('bounded test timeout')\nserver.urllib.request.urlopen = capture_timeout\ntry:\n    bounded = server._retrieval_request('/search', {'deadline_at_ms': int(server.time.time() * 1000) + 250})\nfinally:\n    server.urllib.request.urlopen = original_urlopen\nassert bounded['ok'] is False and 0.1 <= timeouts[0] <= 0.5, (bounded, timeouts)\n");
   fs.appendFileSync(path.join(moduleDir, "exercise.py"), "async def assert_todo_usage_attribution():\n    async with Client(server.mcp) as client:\n        started = (await client.call_tool('agent_session_start', {'task':'PRIVATE TODO USAGE TASK','command_id':'usage-session-start'})).structured_content\n        session_id = started['session_id']\n        appended = (await client.call_tool('agent_session_todo_append', {'todos_json':json.dumps([{'title':'PRIVATE TODO CONTENT','details':'PRIVATE TODO DETAILS'}]),'command_id':'usage-todo-append'})).structured_content\n        todo_id = appended['added_todo_ids'][0]\n        claimed = (await client.call_tool('agent_session_todo_next', {'command_id':'usage-todo-next'})).structured_content\n        assert claimed['todo']['todoId'] == todo_id, claimed\n        await client.call_tool('skill_context', {'task':'debug pytest Python import errors'})\n        await client.call_tool('agent_session_todo_report', {'todo_id':todo_id,'status':'succeeded','command_id':'usage-todo-report','summary':'PRIVATE TODO SUMMARY'})\n        await client.call_tool('agent_session_end', {'summary':'PRIVATE SESSION SUMMARY'})\n        return session_id, todo_id\nusage_session_id, usage_todo_id = asyncio.run(assert_todo_usage_attribution())\nusage_path = pathlib.Path(server.STORE) / '.pkm' / 'state' / 'mcp-usage' / 'todos' / usage_session_id / (usage_todo_id + '.json')\nusage_aggregate = json.loads(usage_path.read_text(encoding='utf-8'))\nassert usage_aggregate['schema'] == 'pkm.mcp.todo-usage/v1', usage_aggregate\nassert usage_aggregate['calls'] >= 3 and usage_aggregate['estimatedTokens'] > 0, usage_aggregate\nassert {'agent_session_todo_next','skill_context','agent_session_todo_report'} <= set(usage_aggregate['tools']), usage_aggregate\nusage_text = json.dumps(usage_aggregate)\nfor private_value in ['PRIVATE TODO USAGE TASK','PRIVATE TODO CONTENT','PRIVATE TODO DETAILS','PRIVATE TODO SUMMARY','PRIVATE SESSION SUMMARY']:\n    assert private_value not in usage_text, usage_text\n");
@@ -166,7 +199,7 @@ assert 'Python pytest import errors' not in json.dumps(linked_events), linked_ev
 server._collector_post = original_collector
 server._retrieval_request = lambda route, payload=None: {
     'ok': True, 'skill_serving': {'used': True, 'release_id': 'verified-fixture'},
-    'hits': [{'skill_id': 'skill:Coding/Python Testing'}]}
+    'hits': [{'skill_id': 'skill:Coding/Python Testing', 'content_type': 'skill'}]}
 served = json.loads(server.search_skills('no lexical match required'))
 assert len(served) == 1 and served[0]['skill_id'] == 'Coding/Python Testing', served
 assert served[0]['skill_serving']['release_id'] == 'verified-fixture' and served[0]['content_hash'], served
@@ -176,6 +209,95 @@ assert json.loads(server.search_skills('Python')) == [], 'A valid empty serving 
 server._retrieval_request = lambda route, payload=None: {'ok': False, 'error': 'unavailable'}
 assert json.loads(server.search_skills('Python')), 'Explicit serving failure must preserve the existing lexical fallback'
 server._retrieval_request = original_request
+`);
+  fs.appendFileSync(path.join(moduleDir, "exercise.py"), `
+contract_request = server._retrieval_request
+contract_calls = []
+contract_hits = [{'rank': index, 'score': 1.0 / index, 'source_id': 'pkm://knowledge/item-' + kind,
+                 'source_revision': '1', 'content_hash': kind, 'content_type': kind,
+                 'skill_id': kind + ':fixture', 'source_uri': 'pkm://knowledge/item-' + kind,
+                 'title': kind, 'description': 'Relevant fixture', 'metadata': {},
+                 'provenance': {'provider': 'pkm'}, 'read_only': kind == 'script'}
+                for index, kind in enumerate(['skill', 'note', 'research', 'script'], 1)]
+def contract_retrieval(route, payload=None):
+    contract_calls.append((route, payload))
+    if route == '/get':
+        selected = next((hit for hit in contract_hits if hit['source_id'] == payload['source_id']
+                         and (not payload.get('content_type_filter') or hit['content_type'] in payload['content_type_filter'])), None)
+        return {**selected, 'ok': True, 'content': 'Indexed fixture body'} if selected else {'ok': False, 'code': 'not-found'}
+    selected = [hit for hit in contract_hits if not payload.get('content_type_filter')
+                or hit['content_type'] in payload['content_type_filter']]
+    return {'ok': True, 'hits': selected, 'incomplete': False, 'diagnostics': [],
+            'schema': 'pkm.retrieval.result/v1', 'requested_content_types': payload.get('content_type_filter') or []}
+server._retrieval_request = contract_retrieval
+try:
+    mixed = json.loads(server.search_knowledge('fixture', limit=10))
+    assert {hit['content_type'] for hit in mixed['hits']} == {'skill', 'note', 'research', 'script'}, mixed
+    assert mixed['groups']['skill'] == ['pkm://knowledge/item-skill'], mixed
+    assert mixed['counts'] == {'skill': 1, 'note': 1, 'research': 1, 'script': 1}, mixed
+    assert mixed['truncated'] is False and mixed['result_count'] == 4, mixed
+    bounded = json.loads(server.search_knowledge('fixture', limit=2))
+    assert bounded['truncated'] is True and bounded['incomplete'] is True, bounded
+    assert sum(bounded['counts'].values()) == len(bounded['hits']) == 2, bounded
+    filtered = json.loads(server.search_knowledge('fixture', limit=10, content_type_filter=['skill']))
+    assert {hit['content_type'] for hit in filtered['hits']} == {'skill'}, filtered
+    multi = json.loads(server.search_knowledge('fixture', limit=10, content_type_filter=['note', 'research']))
+    assert {hit['content_type'] for hit in multi['hits']} == {'note', 'research'}, multi
+    for invalid_filter in [['typo'], [], 'skill']:
+      invalid = json.loads(server.search_knowledge('fixture', content_type_filter=invalid_filter))
+      assert invalid['ok'] is False, invalid
+    empty = json.loads(server.search_knowledge('fixture', content_type_filter=['recipe']))
+    assert empty['ok'] is True and empty['hits'] == [] and empty['groups'] == {} and empty['counts'] == {}, empty
+    for kind, search_name, read_name in [('skill', 'search_skills', 'get_skill'), ('note', 'search_notes', 'get_note'),
+                       ('research', 'search_research', 'get_research'), ('script', 'search_scripts', 'get_script')]:
+      typed = json.loads(getattr(server, search_name)('fixture', limit=10, detail='standard'))
+      assert len(typed['hits']) == 1 and typed['hits'][0]['content_type'] == kind, typed
+      assert typed['groups'][kind] == ['pkm://knowledge/item-' + kind], typed
+      assert contract_calls[-1][1]['content_type_filter'] == [kind], contract_calls[-1]
+      loaded = json.loads(getattr(server, read_name)(id=typed['hits'][0]['source_id']))
+      assert loaded['content_type'] == kind and loaded['content_hash'] == typed['hits'][0]['content_hash'], loaded
+      assert loaded['read_only'] is (kind == 'script'), loaded
+    assert json.loads(server.get_note(id='pkm://knowledge/item-skill'))['ok'] is False
+    assert json.loads(server.get_note(id='different', slug='Projects/Release Constraints'))['ok'] is False
+    assert json.loads(server.get_skill(name='Python Testing'))['name'] == 'Python Testing'
+    assert json.loads(server.get_note(slug='Projects/Release Constraints'))['slug'] == 'Projects/Release Constraints'
+    assert json.loads(server.search_papers('fixture', limit=10, detail='standard')) == json.loads(server.search_research('fixture', limit=10, detail='standard'))
+    created_paper = json.loads(server.add_paper('Contract Research Fixture', category='Adhoc', content='Fixture body'))
+    assert json.loads(server.get_paper(slug=created_paper['slug'])) == json.loads(server.get_research(slug=created_paper['slug']))
+    assert json.loads(server.list_research()) == json.loads(server.list_papers())
+    async def standard_transport():
+      async with Client(server.mcp) as client:
+        definitions = {tool.name: tool for tool in await client.list_tools()}
+        for tool_name in ['search_skills', 'search_notes', 'search_research', 'search_scripts']:
+          definition = definitions[tool_name]
+          assert {'query', 'limit', 'detail'} <= set(definition.inputSchema['properties']), definition
+          assert definition.inputSchema['properties']['limit']['default'] == 20, definition
+          assert definition.annotations.readOnlyHint is True, definition
+          called = (await client.call_tool(tool_name, {'query': 'fixture', 'limit': 10, 'detail': 'standard'})).structured_content
+          assert called['ok'] is True and len(called['hits']) == 1 and called['result_count'] == 1, called
+        loaded = (await client.call_tool('get_script', {'id': 'pkm://knowledge/item-script'})).structured_content
+        assert loaded['content_type'] == 'script' and loaded['read_only'] is True, loaded
+    asyncio.run(standard_transport())
+finally:
+    server._retrieval_request = contract_request
+`);
+  fs.appendFileSync(path.join(moduleDir, "exercise.py"), `
+import io
+saved_request = server._retrieval_request
+saved_urlopen = server.urllib.request.urlopen
+server._retrieval_request = http_retrieval_request
+def canonical_denial(request, timeout):
+    assert request.full_url.endswith('/get'), request.full_url
+    raise server.urllib.error.HTTPError(request.full_url, 404, 'Not found', {},
+        io.BytesIO(json.dumps({'ok': False, 'code': 'not-found', 'error': 'Knowledge source not found'}).encode()))
+server.urllib.request.urlopen = canonical_denial
+try:
+    denied = json.loads(server.get_skill(id='pkm://subscriptions/node-1/share-1/skills/Team/Remote%20Skill.md'))
+    assert denied['ok'] is False and denied['code'] == 'not-found' and 'content' not in denied, denied
+finally:
+    server._retrieval_request = saved_request
+    server.urllib.request.urlopen = saved_urlopen
+print('Knowledge MCP contracts: mixed/strict retrieval, classification, limits, standard transport, stable reads, aliases and denial handling passed')
 `);
   execFileSync("python", [path.join(moduleDir, "exercise.py")], { cwd: moduleDir, stdio: "inherit" });
   fs.writeFileSync(path.join(moduleDir, "feature-domains.json"), JSON.stringify({ schema: 1, enabled: ["skillRouter"] }));

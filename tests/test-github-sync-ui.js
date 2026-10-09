@@ -21,6 +21,14 @@ const context = vm.createContext({
   pendingActionButtons: new Map(),
 });
 vm.runInContext(source, context);
+context.failedTarget = { lastFailure: { at: '2026-07-19T10:00:00Z', error: 'snapshot failed' }, lastSync: { at: '2026-07-18T10:00:00Z' }, automation: { enabled: true, initialSyncCompleted: true } };
+assert.strictEqual(vm.runInContext("githubSyncEffectiveStatus(failedTarget, {status:'scheduled'}, null, false)", context), 'error', 'a scheduled timer must not hide a newer persisted synchronization failure');
+assert.strictEqual(vm.runInContext("githubSyncEffectiveStatus(failedTarget, {status:'syncing'}, null, false)", context), 'syncing');
+assert.strictEqual(vm.runInContext("githubSyncEffectiveError(failedTarget, {status:'scheduled',lastError:'stale earlier error'})", context), 'snapshot failed', 'a newer persisted failure must not display a stale scheduler error');
+assert.strictEqual(vm.runInContext("githubSyncEffectiveError(failedTarget, {status:'error',lastError:'current attempt failed'})", context), 'current attempt failed');
+context.failedTarget.lastSync.at = '2026-07-20T10:00:00Z';
+assert.strictEqual(vm.runInContext("githubSyncEffectiveStatus(failedTarget, {status:'scheduled'}, null, false)", context), 'scheduled', 'a later successful sync clears the effective failure status');
+assert.match(vm.runInContext("githubSyncStatusTitle('yellow')", context), /Names alone.*pending or unverified.*Refresh is read-only/);
 vm.runInContext("githubSyncForce('primary', {})", context);
 vm.runInContext("githubSyncForce('primary', {})", context);
 assert.strictEqual(requests.length, 1, "rapid Force Sync clicks must synchronously post at most one request before host state returns");
@@ -72,8 +80,8 @@ assert.doesNotMatch(source, /'merge':'Merge'|'up-to-date':'Up to date'/,
   "target cards do not expose internal reconciliation or a terminal state instead of Scheduled");
 assert.match(extensionSource, /const report = \(phase:[\s\S]*githubSyncScheduler\?\.report\(targetId, phase, detail\)[\s\S]*report\(targetId, "authenticating"[\s\S]*syncGitHubTarget\([\s\S]*\n\s+report,[\s\S]*report\(targetId, "refresh-index"[\s\S]*report\(targetId, "scheduled"/,
   "the extension reports Git phases from the execution path through index refresh");
-assert.match(extensionSource, /const credentials = await readGitHubSyncCredentials\(context, target\);\s*report\("fetch", [^\n]+\);\s*const catalog = await githubSyncCatalog\(\);/,
-  "Authentication ends before catalog loading can fail; preparation errors belong to Fetch / Pull");
+assert.match(extensionSource, /const credentials = await readGitHubSyncCredentials\(context, target\);\s*report\("fetch", [^\n]+\);\s*invalidateSharedContentCatalog\(\);\s*const catalog = await githubSyncCatalog\(\);/,
+  "Authentication ends before catalog loading; each Sync attempt refreshes stale source paths even when a watcher missed a rename");
 assert.match(extensionSource, /report\(targetId, "refresh-index"[\s\S]*await refreshKnowledgeInventory\(context\)[\s\S]*await refreshRetrievalIndex\(context\)[\s\S]*report\(targetId, "scheduled"/,
   "Scheduled is reached only after materialization, inventory refresh, and retrieval refresh complete");
 assert.match(extensionSource, /case "githubSyncAutomationToggle"[\s\S]*initialSyncCompleted[\s\S]*target\.automation\.enabled = enabled/,
@@ -353,7 +361,7 @@ assert.match(extensionSource, /filter\(candidate => !candidate\.deleteRemote && 
   "accepted machine-local deletions are applied through the atomic file mutation path");
 assert.match(extensionSource, /candidate\.deleteLocal && candidate\.file\.type === "recipes"[\s\S]*applyGitHubSyncRecipeDeletes/,
   "accepted machine-local Recipe deletions use Project Store trash semantics");
-assert.match(source, /openGitHubSyncDiagnosticLog[\s\S]*Open Sync Diagnostic Log/,
+assert.match(source, /aria-label="Open Sync Diagnostic Log"[^>]*openGitHubSyncDiagnosticLog/,
   "GitHub Sync exposes its persistent diagnostic log directly in the pane");
 assert.match(extensionSource, /github_sync\.started[\s\S]*github_sync\.phase[\s\S]*github_sync\.catalog[\s\S]*github_sync\.completed/,
   "successful GitHub Sync runs emit structured lifecycle diagnostics");
@@ -416,7 +424,7 @@ const fileMarker = vm.runInContext(`(() => {
 })()`, context);
 assert.match(fileMarker, /github-sync-file-status/);
 assert.match(fileMarker, /data-status="yellow"/);
-assert.match(fileMarker, /File notes\/Adhoc\/changed\.md has local content different/);
+assert.match(fileMarker, /File notes\/Adhoc\/changed\.md differs from at least one selected target/);
 assert.match(vm.runInContext("githubSyncFileMarker('notes','same','notes/Adhoc/same.md')", context), /data-status="green"/);
 assert.match(source, /function githubSyncOnState[\s\S]*updateGitHubSyncFileShields\(\)/,
   "file statuses patch existing leaf markers without rebuilding the active tree");

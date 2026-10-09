@@ -5,6 +5,14 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.14] - 2026-10-08
+
+- Kept the Chat tab available through a lightweight loading shell independent of backend readiness, with explicit initialization errors and page-preserving recovery. Corrected Skill tool validation to inspect the generated unified Python server instead of a split JavaScript entry point.
+- Added independent Chat and panel loading/Extension Host timeout warnings with error details, draft preservation, and explicit reconnection without replaying requests. Isolated Chat initialization failures from core activation and removed Node-only MCP browser-global probing.
+- Kept model settings directly beside the Chat model selector and displayed complete model names with wrapping instead of ellipses.
+- Added the compact animated Activity cauldron for running requests, with static terminal states and reduced-motion support.
+- Updated panel navigation, refresh, Trash, Settings and Sync presentation, preserving drafts and explicit deletion evidence.
+- Added standalone Action Workbench testing with inline User Choice, Core Logic grouping and a bounded, multi-input Math Expression component with function provenance. Removed the legacy integer-add component; Actions navigation integration remains deferred.
 - Added native-sidebar PKM Chat with explicit model selection, per-Chat context and permissions, optional Tasks, document access, tool execution, and bounded diagnostics. Unavailable provider credits remain unknown rather than zero.
 - Added Chat folders, Ungroup, drag/drop, Trash, restoration and bulk permanent deletion. Empty initialization and deletion no longer create replacement Chats; desktop/mobile controller-backed E2E tests cover cancellation and reopening.
 - Added Chat-owned Memory and typed retrieval receipts with Top 10/20 Sankey inspection, selected-context links, and per-method ranking weights.

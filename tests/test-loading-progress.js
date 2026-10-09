@@ -76,7 +76,8 @@ assert(!init.includes('Database is initializing'), 'the retry fallback must not 
 for (const message of ['Revealing the Projects map…', 'Opening the Recipes grimoire…']) {
   assert(projects.includes(message), `Wizard loading copy must preserve its technical term: ${message}`);
 }
-assert(mcp.includes('Consulting the MCP server wards…'));
+assert(mcp.includes('Checking component health and paths in the background...'));
+assert(mcp.includes('Status has not been received yet.'));
 assert.match(core, /command === 'inventoryBatch'[^\n]+progress only/,
   'incremental inventory batches must not repeatedly rebuild the visible tree');
 assert.match(knowledge, /skill-list-progress[^\n]+Finding skills/,
@@ -138,8 +139,8 @@ for (const command of ['subscriptionState', 'subscriptionError', 'subscriptionSe
 assert.match(core, /function showInitialViewError\(title, message, retryCommand\)/);
 assert.match(core, /GitHub Sync could not load[\s\S]{0,180}'githubSyncState'/,
   'GitHub Sync state failures must replace the indefinite loading view with a retryable error');
-assert.match(core, /Network & Sharing could not load[\s\S]{0,180}'subscriptionState'/,
-  'Network & Sharing state failures must replace the indefinite loading view with a retryable error');
+assert.match(core, /Sharing & Subscribe could not load[\s\S]{0,180}'subscriptionState'/,
+  'Sharing & Subscribe state failures must replace the indefinite loading view with a retryable error');
 const profilingSetting = manifest.contributes.configuration.properties['personalKnowledge.loadProfilingEnabled'];
 assert.deepStrictEqual(profilingSetting && { type:profilingSetting.type, default:profilingSetting.default, scope:profilingSetting.scope },
   { type:'boolean', default:false, scope:'machine' },
@@ -159,8 +160,8 @@ assert.match(mcp, /Profile first-open and view loading/);
 assert.match(mcp, /showLoadProfilingOutput/);
 assert.match(mcp, /openLoadProfilingLog/);
 assert.match(mcp, /clearLoadProfilingLog/);
-assert(mcp.indexOf('${renderIntegrationGuide(data)}${renderLoadProfiling(data)}') > mcp.indexOf('function renderMcpPane'),
-  'low-frequency Load profiling controls must render after the General & MCP integration guide at the bottom');
+assert.match(mcp, /renderIntegrationGuide\(data\)[\s\S]{0,100}<section data-settings-panel="debug">\$\{renderLoadProfiling\(data\)\}/,
+  'low-frequency Load profiling controls must render in the Debug Settings subtab');
 assert.match(extension, /type LoadProfileFields = Record<string, string \| number \| boolean \| undefined>/,
   'profiling fields must remain constrained to privacy-safe scalar metadata');
 assert.strictEqual((init.match(/ask\('githubSyncState'/g) || []).length, 1,

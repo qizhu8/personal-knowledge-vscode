@@ -1,5 +1,5 @@
 (() => {
-  const vscode = acquireVsCodeApi();
+  const vscode = globalThis.PkmWebviewApi || acquireVsCodeApi();
   const element = id => document.getElementById(id);
   let uiStrings = {};
   globalThis.PkmChatText = (text, params = {}) => {
@@ -25,7 +25,9 @@
     for (const { node, name, text } of staticAttributes) if (node.isConnected) node.setAttribute(name, t(text));
   }
   const saved = vscode.getState() || {};
-  let screen = saved.screen || "chat";
+  let screen = "library";
+  let renderedChatId;
+  let jumpToLatest = false;
   let library;
   const drafts = saved.drafts || {};
   const workflowSelection = new Map();
@@ -33,6 +35,7 @@
   const messageExpanded = new Set(saved.expandedMessageDetails || []);
   let state;
   let pending;
+  let inputMode = saved.inputMode === "task" ? "task" : "steer";
   let frame;
   let clock;
   let budgetOwner;
@@ -74,7 +77,7 @@
   }
   const saveDraft = () => {
     if (state) drafts[state.chat.id] = element("prompt").value;
-    vscode.setState({ drafts, advancedBudget, screen, expandedMessageDetails: Array.from(messageExpanded).slice(-500), collapsedChatGroups: library ? Array.from(library.collapsed) : saved.collapsedChatGroups || [] });
+    vscode.setState({ drafts, inputMode, advancedBudget, screen, expandedMessageDetails: Array.from(messageExpanded).slice(-500), collapsedChatGroups: library ? Array.from(library.collapsed) : saved.collapsedChatGroups || [] });
     tokenEstimate();
   };
   function tokenEstimate() {
@@ -87,7 +90,7 @@
     element("tokens").title = "Conservative UTF-8 text estimate including context/skills, builtin schemas and history. Image messages require provider token counting before each call. This estimate is not billed usage.";
     const profile = state.settings.selectedProfile;
     const retired = profile?.status === "deprecated" || (profile?.deprecatedAt && Date.parse(profile.deprecatedAt) <= Date.now());
-    element("send").disabled = !!pending || !state.chat.paused && (!element("prompt").value.trim() || !element("window").checkValidity() || !element("output").checkValidity() || input + output > window || retired || state.settings.needsModelConnection || (state.settings.provider !== "vscode" && !state.settings.endpoint));
+    element("send").disabled = !!pending || !!state.remoteBusy || (state.busy ? !element("prompt").value.trim() || !!state.chat.images?.length : !state.chat.paused && (!element("prompt").value.trim() || !element("window").checkValidity() || !element("output").checkValidity() || input + output > window || retired || state.settings.needsModelConnection || (state.settings.provider !== "vscode" && !state.settings.endpoint)));
     if (profile?.inputPricePerMillion !== undefined && profile?.outputPricePerMillion !== undefined) {
       const price = (input * profile.inputPricePerMillion + output * profile.outputPricePerMillion) / 1e6;
       element("cost").textContent = `First-call estimate: ${profile.currency} ${price.toFixed(6)}`;
@@ -108,40 +111,28 @@
     if (!usage || ![usage.inputTokens, usage.outputTokens].every(value => Number.isSafeInteger(value) && value >= 0)) return "Token usage not reported";
     return `${usage.inputTokens.toLocaleString()} in / ${usage.outputTokens.toLocaleString()} out tokens`;
   }
-  function activity(run = state.chat.progress, messageId = "") {
+  function activity(run = state.chat.progress, messageId = "", debug) {
     if (!run) return null;
     const key = run.attemptId || messageId || String(run.startedAt);
     const active = state.busy && (run.attemptId ? state.chat.progress?.attemptId === run.attemptId : run === state.chat.progress);
     const statusOf = (step, index) => step.status || (index < run.steps.length - 1 ? "complete" : active ? "running" : run.status === "running" ? "failed" : run.status);
-    const section = document.createElement("section"); section.className = "workflow"; section.dataset.attempt = key;
-    const summary = document.createElement("div"); summary.className = "workflow-summary"; summary.setAttribute("role", "status");
+    const section = document.createElement("details"); section.className = "workflow activity"; section.dataset.attempt = key; section.open = workflowExpanded.has(key);
+    const summary = document.createElement("summary"); summary.className = "workflow-summary";
     summary.dataset.status = active && run.steps.length ? statusOf(run.steps[run.steps.length - 1], run.steps.length - 1) : run.status;
-    const icon = document.createElement("span");
-    icon.className = "workflow-dot"; icon.setAttribute("aria-hidden", "true");
+    const icon = active ? element("working-cauldron-template").content.firstElementChild.cloneNode(true) : document.createElement("span");
+    if (!active) { icon.className = "workflow-dot"; icon.setAttribute("aria-hidden", "true"); }
     const label = document.createElement("span"); label.className = "activity-label";
-    label.textContent = `${run.attempt ? `Attempt ${run.attempt} · ` : ""}${active ? run.steps[run.steps.length - 1]?.label || "Preparing request" : { complete: "Completed", cancelled: "Cancelled", failed: "Failed or interrupted" }[run.status] || run.status}`;
-    label.title = run.model;
-    const timer = document.createElement("span"); timer.className = "elapsed"; timer.dataset.started = run.startedAt;
-    if (run.finishedAt) timer.dataset.finished = run.finishedAt;
-    timer.setAttribute("aria-hidden", "true"); timer.title = "Elapsed request time";
+    const completed = (run.completedDroppedSteps || 0) + run.steps.filter((step, index) => statusOf(step, index) === "complete").length;
+    label.textContent = `Activity [${completed} / ${(run.droppedSteps || 0) + run.steps.length}] ${active ? run.steps[run.steps.length - 1]?.label || "Preparing request" : { complete: "Completed", cancelled: "Cancelled", failed: "Failed or interrupted" }[run.status] || run.status}`;
+    label.title = `${run.model || ""} · Completed / recorded steps; future steps are not yet known`;
+    const currentStep = run.steps[run.steps.length - 1];
+    const timer = document.createElement("span"); timer.className = "elapsed"; timer.dataset.started = currentStep?.at ?? run.startedAt;
+    if (!active) timer.dataset.finished = run.finishedAt ?? currentStep?.at ?? run.startedAt;
+    timer.setAttribute("aria-hidden", "true"); timer.title = "Elapsed current step time";
     summary.append(icon, label, timer); section.append(summary);
-    const rail = document.createElement("ol"); rail.className = "workflow-rail"; rail.setAttribute("aria-label", "Request workflow");
-    const details = document.createElement("details"); details.className = "workflow-log"; details.open = workflowExpanded.has(key);
-    const logTitle = document.createElement("summary"); logTitle.textContent = "Activity"; details.append(logTitle);
-    const selected = document.createElement("div"); selected.className = "workflow-selected";
-    const select = index => {
-      workflowSelection.set(key, index);
-      const step = run.steps[index];
-      selected.textContent = step ? `${step.label} · ${statusOf(step, index)} · ${elapsed(step.at - run.startedAt)}` : "";
-      for (const [position, button] of Array.from(rail.querySelectorAll("button")).entries()) button.setAttribute("aria-pressed", String(position === index));
-    };
     const list = document.createElement("ol"); list.className = "workflow-events";
     run.steps.forEach((step, index) => {
       const status = statusOf(step, index);
-      const node = document.createElement("li"); node.dataset.status = status;
-      const button = iconButton("circle-filled", `${step.label}: ${status}`, () => { select(index); details.open = true; workflowExpanded.add(key); });
-      button.firstElementChild.className = "workflow-dot"; button.firstElementChild.setAttribute("aria-hidden", "true");
-      button.dataset.status = status; button.setAttribute("aria-pressed", "false"); node.append(button); rail.append(node);
       const row = document.createElement("li"); const glyph = document.createElement("span");
       row.dataset.status = status;
       glyph.className = "workflow-dot"; glyph.setAttribute("aria-hidden", "true");
@@ -149,11 +140,12 @@
       const at = document.createElement("span"); at.className = "elapsed"; at.textContent = elapsed(step.at - run.startedAt);
       row.append(glyph, text, at); list.append(row);
     });
-    select(Math.min(workflowSelection.get(key) ?? Math.max(0, run.steps.length - 1), run.steps.length - 1));
-    details.append(list);
-    if (run.tools) { const tools = document.createElement("div"); tools.className = "workflow-tools"; tools.textContent = run.tools.length ? `Advertised tools: ${run.tools.join(", ")}` : "Advertised tools: none"; details.append(tools); }
-    details.ontoggle = () => { if (details.isConnected) { if (details.open) workflowExpanded.add(key); else workflowExpanded.delete(key); } };
-    section.append(rail, selected, details); return section;
+    section.append(list);
+    if (run.droppedSteps) { const omitted = document.createElement("div"); omitted.className = "workflow-tools"; omitted.textContent = `${run.droppedSteps} earlier activity events omitted; tool results retained below.`; section.append(omitted); }
+    if (run.tools) { const tools = document.createElement("div"); tools.className = "workflow-tools"; tools.textContent = run.tools.length ? `Advertised tools: ${run.tools.join(", ")}` : "Advertised tools: none"; section.append(tools); }
+    if (debug) section.append(debug);
+    section.ontoggle = () => { if (section.isConnected) { if (section.open) workflowExpanded.add(key); else workflowExpanded.delete(key); } };
+    return section;
   }
   function error(text) { element("error").textContent = text; element("error").hidden = !text; }
   function iconButton(icon, label, action) {
@@ -188,10 +180,13 @@
     panel.append(details);
   }
   function renderMessages() {
+    if (!state || screen !== "chat" || document.visibilityState !== "visible") return;
     const target = element("messages");
     renderAppliedEdits();
     const previousScrollTop = target.scrollTop;
-    const follow = target.scrollHeight - target.scrollTop - target.clientHeight < 90;
+    const follow = jumpToLatest || renderedChatId !== state.chat.id || target.scrollHeight - target.scrollTop - target.clientHeight < 90;
+    renderedChatId = state.chat.id;
+    jumpToLatest = false;
     target.replaceChildren();
     const latestUser = [...state.chat.messages].reverse().find(message => message.role === "user");
     const pendingUserId = state.busy && state.chat.messages.at(-1)?.status === "streaming" ? latestUser?.id : undefined;
@@ -210,15 +205,27 @@
       else content.innerHTML = DOMPurify.sanitize(marked.parse(message.content || ""), {
         ALLOWED_TAGS: ["p", "br", "strong", "em", "del", "code", "pre", "blockquote", "ul", "ol", "li", "h1", "h2", "h3", "h4", "hr", "table", "thead", "tbody", "tr", "th", "td", "a"],
         ALLOWED_ATTR: ["href", "title", "start", "colspan", "rowspan"], ALLOW_DATA_ATTR: false,
+        ALLOWED_URI_REGEXP: /^(?:https?|pkm):\/\//i,
       });
       for (const link of content.querySelectorAll("a")) {
         const href = link.getAttribute("href") || "";
-        if (!/^https?:\/\//i.test(href)) link.removeAttribute("href");
+        if (!/^(?:https?|pkm):\/\//i.test(href)) link.removeAttribute("href");
         else link.addEventListener("click", event => { event.preventDefault(); post("openLink", { value: href }); });
       }
       article.append(header, content);
+      for (const record of message.delegations || []) {
+        const result = document.createElement("section"); result.className = "delegation-result";
+        const heading = document.createElement("div"); heading.className = "message-header";
+        heading.append(window.PkmChatStatusIndicator(record.status === "complete" ? "completed" : record.status === "cancelled" ? "stopped" : record.status));
+        const link = document.createElement("a"); link.href = record.chatUrl; link.textContent = t("Delegated Chat");
+        link.addEventListener("click", event => { event.preventDefault(); post("openLink", { value: record.chatUrl }); });
+        heading.append(link); result.append(heading);
+        if (record.answer) { const answer = document.createElement("div"); answer.className = "content delegation-answer"; answer.textContent = record.answer; result.append(answer); }
+        if (record.error) { const failure = document.createElement("div"); failure.className = "message-error"; failure.textContent = record.error; result.append(failure); }
+        article.append(result);
+      }
       if (message.images?.length) article.append(imagePreviews(message.images, (index) => post("saveImage", { id: message.id, value: index }), "save", "Save image"));
-      const debug = messageDisclosure(message.id, "debug", "Debug information", "activity debug-information");
+      const debug = document.createElement("div"); debug.className = "debug-information";
       if (message.unattributedFileChanges) {
         const warning = document.createElement("div"); warning.className = "message-status"; warning.textContent = "Program/MCP file changes are not attributed."; debug.append(warning);
       }
@@ -231,9 +238,9 @@
         const result = document.createElement("pre"); result.textContent = `${tool.arguments}\n\n${tool.result || ""}`;
         detail.firstElementChild.replaceWith(summary); detail.append(result); debug.append(detail);
       }
-      if (message.unattributedFileChanges || message.toolCalls?.length) article.append(debug);
       const run = message.progress || (message.role === "assistant" && message.id === state.chat.messages[state.chat.messages.length - 1]?.id ? state.chat.progress : undefined);
-      if (run) article.insertBefore(activity(run, message.id), content);
+      if (run) article.insertBefore(activity(run, message.id, debug), content);
+      else if (message.unattributedFileChanges || message.toolCalls?.length) { const log = messageDisclosure(message.id, "activity", "Activity", "activity"); log.append(debug); article.insertBefore(log, content); }
       if (message.elapsedMs !== undefined || message.estimatedCost !== undefined) {
         const metadata = document.createElement("div"); metadata.className = "message-status";
         metadata.textContent = [message.elapsedMs !== undefined ? elapsed(message.elapsedMs) : "", message.estimatedCost !== undefined ? `Estimated ${message.currency} ${message.estimatedCost.toFixed(6)}` : ""].filter(Boolean).join(" · ");
@@ -342,16 +349,16 @@
     tree.append(root);
   }
   function render() {
+    element("copy-chat-id").disabled = !state.chat?.id;
+    document.body.classList.toggle("chat-backgrounded", document.visibilityState === "hidden");
     renderMessages();
     renderTools();
     renderMemory();
-    element("allow-all").checked = state.chat.permissionMode === "allow-all";
     element("permission-mode").value = state.chat.permissionMode || "protective";
     element("permission-mode").disabled = !!state.remoteBusy;
     const grants = state.chat.permissionGrants?.length || 0;
     element("permission-grants").textContent = t("{count} remembered approvals", { count: grants });
     element("reset-permissions").disabled = !grants || !!state.remoteBusy;
-    element("allow-all").disabled = !!state.remoteBusy;
     library?.render(state.library);
     const chats = element("chats"); chats.replaceChildren();
     for (const item of state.chats) {
@@ -380,8 +387,9 @@
     window.title = state.settings.selectedProfile?.status === "unknown" ? "Unverified model: conservative 4K-token local budget. Configure the provider's verified maximum." : "Total input + output token budget; applies to the next request.";
     if (!editing || document.activeElement !== element("output")) element("output").value = state.settings.maxOutputTokens || 1024;
     element("output").max = Math.min(state.settings.selectedProfile?.maxOutputTokens || 1024, Number(window.value) - 1);
-    element("output").title = native ? "Local conservative UTF-8 output guard; not a provider-enforced billing or reasoning-token limit. Applies to the next request." : "Maximum output tokens sent to the API; applies to the next request.";
-    element("advanced-budget").open = advancedBudget;
+    if (document.activeElement !== element("tool-rounds")) element("tool-rounds").value = state.settings.maxToolRounds || 30;
+    element("tool-rounds").title = "Tool rounds before asking to continue; applies to the next request";
+    element("output").title = native ? "Local per-response token guard using the model tokenizer when available (otherwise conservative UTF-8 bytes); not a provider-enforced billing or reasoning-token limit. Applies to the next request." : "Maximum output tokens sent to the API; applies to the next request.";
     budgetOwner = state.chat.id;
     element("contexts").replaceChildren();
     element("images").replaceChildren(imagePreviews(state.chat.images || [], index => post("removeImage", { value: index }), "close", "Remove image"));
@@ -396,12 +404,29 @@
     }
     element("history").checked = state.chat.includeHistory;
     element("context").title = `Add context${state.chat.context.length ? ` (${state.chat.context.length} attached)` : ""}`;
-    element("advanced-budget").querySelector("summary").textContent = state.chat.context.length ? `Options (${state.chat.context.length} attached)` : "Options";
-    element("send").hidden = state.busy; element("stop").hidden = !state.busy;
-    const sendLabel = state.chat.paused ? "Resume Chat" : "Send";
+    element("options").title = state.chat.context.length ? `Model settings (${state.chat.context.length} attached)` : "Model settings";
+    element("send").hidden = false; element("stop").hidden = !state.busy;
+    element("input-mode").hidden = !state.busy || !!state.remoteBusy;
+    element("steer-mode").setAttribute("aria-checked", String(inputMode === "steer"));
+    element("task-mode").setAttribute("aria-checked", String(inputMode === "task"));
+    const sendLabel = state.chat.paused ? "Resume Chat" : state.busy ? inputMode === "steer" ? "Steer" : "Queue new task" : "Send";
     element("send").title = t(sendLabel); element("send").setAttribute("aria-label", t(sendLabel));
     element("send").firstElementChild.className = `codicon codicon-${state.chat.paused ? "debug-start" : "send"}`;
     element("stop").disabled = !!state.remoteBusy;
+    const queued = state.chat.queuedInputs || [];
+    element("queued-inputs").hidden = !queued.length; element("queued-inputs").replaceChildren();
+    if (queued.length) {
+      const heading = document.createElement("div"); heading.className = "queued-input-row";
+      const count = document.createElement("strong"); count.textContent = t("{count} queued", { count: queued.length }); heading.append(count);
+      const run = iconButton("play", "Run queued inputs", () => post("runQueued")); run.disabled = state.busy || state.chat.paused; heading.append(run);
+      element("queued-inputs").append(heading);
+      for (const input of queued) {
+        const row = document.createElement("div"); row.className = "queued-input-row";
+        const label = document.createElement("span"); label.textContent = `${t(input.mode === "steer" ? "Steer" : "New task")}: ${input.text}`; label.title = input.text; row.append(label);
+        const remove = iconButton("close", "Remove queued input", () => post("removeQueuedInput", { id: input.id })); remove.disabled = !!state.remoteBusy; row.append(remove);
+        element("queued-inputs").append(row);
+      }
+    }
     const taskLabel = state.chat.sessionId ? "Complete Task" : "Start Task";
     element("task").title = t(taskLabel); element("task").setAttribute("aria-label", t(taskLabel));
     element("task").disabled = state.busy;
@@ -409,10 +434,14 @@
     const pauseLabel = state.chat.paused ? "Resume Chat" : "Pause Chat";
     element("pause").title = t(pauseLabel); element("pause").setAttribute("aria-label", t(pauseLabel));
     element("pause").firstElementChild.className = `codicon codicon-${state.chat.paused ? "debug-start" : "debug-pause"}`;
-    element("permissions").title = `Permissions: ${state.chat.permissionMode === "allow-all" ? "Allow All" : state.chat.permissionMode === "read-only" ? "Read only" : state.chat.permissionMode === "ask" ? "Ask before changes" : "Protective"} · next request`;
+    const permissionModes = { protective: "Protective", ask: "Ask before changes", "read-only": "Read only", "allow-all": "Allow All" };
+    const permissionMode = Object.hasOwn(permissionModes, state.chat.permissionMode) ? state.chat.permissionMode : "protective";
+    const permissionLabel = permissionModes[permissionMode];
+    element("permissions").dataset.permissionMode = permissionMode;
+    element("permissions").title = `${t("Permissions")}: ${t(permissionLabel)} · next request`;
     element("permissions").setAttribute("aria-label", element("permissions").title);
     const selected = (state.toolGroups || []).flatMap(group => group.tools.filter(tool => tool.enabled));
-    const builtinCount = selected.filter(tool => tool.id.startsWith("builtin:") && (state.chat.permissionMode !== "read-only" || ["read_file", "find_files", "search_text", "ask_user", "pkm_search", "pkm_read", "session_info"].includes(tool.name))).length;
+    const builtinCount = selected.filter(tool => tool.id.startsWith("builtin:") && (state.chat.permissionMode !== "read-only" || ["read_file", "find_files", "search_text", "ask_user", "pkm_search", "pkm_read", "session_info", "list_chats"].includes(tool.name))).length;
     const mcpCount = state.chat.permissionMode === "read-only" ? 0 : selected.filter(tool => tool.id.startsWith("mcp:")).length;
     const hostCount = state.chat.permissionMode === "read-only" ? 0 : selected.filter(tool => tool.id.startsWith("vscode:")).length;
     element("tools-label").textContent = t("{count} tools", { count: builtinCount + mcpCount + hostCount });
@@ -432,8 +461,10 @@
       if (drafts[pending.id] === pending.text) drafts[pending.id] = "";
       pending = undefined; saveDraft(); error(""); return;
     }
-    if (message.type === "showTools") { element("tools-panel").hidden = false; element("tools").setAttribute("aria-expanded", "true"); element("tool-search").focus(); return; }
-    if (message.type === "showMemory") { element("memory-panel").hidden = false; element("memory").setAttribute("aria-expanded", "true"); renderMemory(); return; }
+    if (message.type === "modelPickerClosed") { element("model").removeAttribute("aria-busy"); return; }
+    if (message.type === "showChat") { showScreen("chat"); return; }
+    if (message.type === "showTools") { togglePopover("tools", true); element("tool-search").focus(); return; }
+    if (message.type === "showMemory") { togglePopover("memory", true); return; }
     if (message.type === "memorySegment" && message.chatId === state?.chat.id) { element("memory-preview").textContent = message.segment.content; element("memory-preview").hidden = false; return; }
     if (message.type === "error") {
       if (message.submissionId ? pending?.submissionId === message.submissionId : !message.chatId || pending?.id === message.chatId) pending = undefined;
@@ -441,6 +472,7 @@
       tokenEstimate(); return;
     }
     if (message.type === "state") {
+      globalThis.PkmHostHealth?.ready();
       applyLocale(message.localization);
       const previous = state?.chat.id;
       if (state) drafts[state.chat.id] = element("prompt").value;
@@ -469,25 +501,32 @@
   element("new").onclick = () => { saveDraft(); error(""); post("new"); };
   element("messages").addEventListener("scroll", markResultRead);
   element("rename").onclick = () => post("rename");
+  element("copy-chat-id").onclick = () => { if (state?.chat?.id) post("copyChatId", { id: state.chat.id }); };
   const showScreen = next => {
+    if (next === "chat" && screen !== "chat") jumpToLatest = true;
     screen = next; document.body.classList.toggle("chat-library-visible", screen === "library");
     element("library-view").hidden = screen !== "library"; saveDraft();
+    if (next === "chat" && state) { renderMessages(); markResultRead(); }
   };
   library = window.PkmChatLibrary({ post, showChat: () => showScreen("chat"), save: saveDraft, saved });
   element("back").onclick = () => { showScreen("library"); post("libraryRefresh"); };
   showScreen(screen);
   element("task").onclick = () => post(state.chat.sessionId ? "completeTask" : "startTask");
   element("pause").onclick = () => post(state.chat.paused ? "resume" : "pause");
-  element("permissions").onclick = () => { const panel = element("permissions-panel"); panel.hidden = !panel.hidden; element("permissions").setAttribute("aria-expanded", String(!panel.hidden)); };
-  element("allow-all").onchange = () => post("permissionMode", { value: element("allow-all").checked ? "allow-all" : "protective" });
+  const popovers = { permissions: "permissions-panel", tools: "tools-panel", memory: "memory-panel", options: "advanced-budget", "agent-config": "agent-config-panel" };
+  function closePopovers() { for (const [button, panel] of Object.entries(popovers)) { element(panel).hidden = true; element(button).setAttribute("aria-expanded", "false"); } }
+  function positionPopover(panel) { const top = element("composer").getBoundingClientRect().top; panel.style.bottom = `${Math.max(8, Math.min(innerHeight - 90, innerHeight - top + 6))}px`; panel.style.maxHeight = `${Math.max(72, top - 16)}px`; }
+  function togglePopover(button, forceOpen = false) { const panel = element(popovers[button]); const open = forceOpen || panel.hidden; closePopovers(); if (open) { panel.hidden = false; positionPopover(panel); element(button).setAttribute("aria-expanded", "true"); if (button === "memory") renderMemory(); } }
+  for (const button of Object.keys(popovers)) element(button).onclick = () => togglePopover(button);
+  document.addEventListener("pointerdown", event => { if (!event.target.closest(".chat-settings") && !event.target.closest("[aria-controls]")) closePopovers(); });
+  document.addEventListener("keydown", event => { if (event.key === "Escape") { const button = Object.keys(popovers).find(id => element(id).getAttribute("aria-expanded") === "true"); closePopovers(); if (button) { element(button).focus(); event.preventDefault(); } } });
+  window.addEventListener("resize", () => { for (const panel of Object.values(popovers)) if (!element(panel).hidden) positionPopover(element(panel)); });
   element("permission-mode").onchange = () => post("permissionMode", { value: element("permission-mode").value });
   element("reset-permissions").onclick = () => post("resetPermissions");
   element("diagnostics").onclick = () => post("diagnostics");
   element("settings").onclick = () => post("settings");
-  element("agent-config").onclick = () => post("agentConfig", { value: "choose" });
-  element("tools").onclick = () => { const panel = element("tools-panel"); panel.hidden = !panel.hidden; element("tools").setAttribute("aria-expanded", String(!panel.hidden)); };
-  element("memory").onclick = () => { const panel = element("memory-panel"); panel.hidden = !panel.hidden; element("memory").setAttribute("aria-expanded", String(!panel.hidden)); if (!panel.hidden) renderMemory(); };
-  element("memory-close").onclick = () => { element("memory-panel").hidden = true; element("memory").setAttribute("aria-expanded", "false"); };
+  for (const button of document.querySelectorAll("[data-agent-config]")) button.onclick = () => { closePopovers(); post("agentConfig", { value: button.dataset.agentConfig }); };
+  element("memory-close").onclick = closePopovers;
   element("retrieval-top").onchange = renderMemory;
   element("retrieval-kind").onchange = renderMemory;
   let retrievalWidth = 0;
@@ -503,8 +542,13 @@
   element("image").onclick = () => post("image");
   element("stop").onclick = () => post("cancel");
   element("chats").onchange = event => { saveDraft(); error(""); post("select", { id: event.target.value }); };
-  element("model").onclick = () => post("chooseModel");
-  document.addEventListener("visibilitychange", markResultRead);
+  element("model").onclick = () => { if (element("model").getAttribute("aria-busy") === "true") return; element("model").setAttribute("aria-busy", "true"); post("chooseModel"); };
+  document.addEventListener("visibilitychange", () => {
+    const visible = document.visibilityState === "visible";
+    document.body.classList.toggle("chat-backgrounded", !visible);
+    if (visible) renderMessages();
+    markResultRead();
+  });
   window.addEventListener("focus", markResultRead);
   element("window-slider").oninput = event => { element("window").value = presets[Number(event.target.value)]; syncContextSlider(); tokenEstimate(); };
   element("window-slider").onchange = commitContext;
@@ -512,16 +556,25 @@
   element("window").onchange = commitContext;
   element("output").oninput = tokenEstimate;
   element("output").onchange = event => { if (event.target.checkValidity()) post("budget", { maxOutputTokens: Number(event.target.value) }); else event.target.reportValidity(); tokenEstimate(); };
-  element("advanced-budget").ontoggle = event => { advancedBudget = event.target.open; saveDraft(); };
+  element("tool-rounds").onchange = event => { if (event.target.checkValidity()) post("toolRounds", { maxToolRounds: Number(event.target.value) }); else event.target.reportValidity(); };
   element("history").onchange = event => post("history", { value: event.target.checked });
   element("prompt").oninput = saveDraft;
+  for (const mode of ["steer", "task"]) element(`${mode}-mode`).onclick = () => {
+    inputMode = mode; saveDraft(); render();
+  };
+  element("input-mode").onkeydown = event => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const mode = event.key === "Home" || event.key === "ArrowLeft" ? "steer" : "task";
+    element(`${mode}-mode`).click(); element(`${mode}-mode`).focus();
+  };
   element("composer").onsubmit = event => {
-    event.preventDefault(); if (!state || state.busy || pending || element("send").disabled) return;
+    event.preventDefault(); if (globalThis.PkmHostHealth?.unavailable || !state || state.remoteBusy || pending || element("send").disabled) return;
     if (state.chat.paused) { post("resume"); return; }
     if (!element("prompt").value.trim()) return;
     const text = element("prompt").value; error("");
     pending = { id: state.chat.id, submissionId: crypto.randomUUID(), text, messages: state.chat.messages.map(item => item.id) };
-    tokenEstimate(); post("send", { text, chatId: pending.id, submissionId: pending.submissionId });
+    tokenEstimate(); post("send", { text, chatId: pending.id, submissionId: pending.submissionId, ...(state.busy ? { mode: inputMode } : {}) });
   };
   element("prompt").onkeydown = event => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); element("composer").requestSubmit(); }

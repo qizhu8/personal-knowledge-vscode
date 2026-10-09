@@ -40,7 +40,7 @@ try {
   assert.deepStrictEqual(initial.recipes.map(recipe => recipe.name), [
     "Universal Unknown Task", "Conditional Closed-Loop Communication", "Configurable Validation and Testing",
     "Software Development", "Bug Fix", "UI Development", "Reflection", "Evolve Recipes from Evidence", "Use Recipe Library",
-    "Create Agent Snapshot", "Publish Personal Knowledge VSIX", "Structured Test Result Gate", "Executable Module Examples", "Branch and Repeat Module Examples",
+    "Create Agent Snapshot", "Publish Personal Knowledge VSIX", "Structured Test Result Gate", "PKM Chat E2E Acceptance", "Executable Module Examples", "Branch and Repeat Module Examples",
     "DLIS Offline Job Log Diagnosis Example", "PKM Tutorial"
   ]);
   assert(initial.recipes.every(recipe => recipe.scope === "global" && recipe.systemKind === "built-in"));
@@ -174,7 +174,7 @@ try {
   assert.deepStrictEqual(migratedRecipes.map(recipe => recipe.name), [
     "Universal Unknown Task", "Conditional Closed-Loop Communication", "Configurable Validation and Testing",
     "Software Development", "Bug Fix", "UI Development", "Reflection", "Evolve Recipes from Evidence", "Use Recipe Library",
-    "Create Agent Snapshot", "Publish Personal Knowledge VSIX", "Structured Test Result Gate", "Executable Module Examples", "Branch and Repeat Module Examples",
+    "Create Agent Snapshot", "Publish Personal Knowledge VSIX", "Structured Test Result Gate", "PKM Chat E2E Acceptance", "Executable Module Examples", "Branch and Repeat Module Examples",
     "DLIS Offline Job Log Diagnosis Example", "PKM Tutorial"
   ]);
   assert.strictEqual(migratedRecipes.find(recipe => recipe.name === "Evolve Recipes from Evidence").systemKind, "built-in");

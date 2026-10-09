@@ -24,6 +24,8 @@ export const builtinToolCatalog = [
   { name: "find_files", label: "Find files", permission: "Workspace file names" },
   { name: "search_text", label: "Search text", permission: "Workspace literal text search" },
   { name: "session_info", label: "Session information", permission: "Current Session identity, model and advertised tools only" },
+  { name: "list_chats", label: "List Chats", permission: "Read-only workspace Chat IDs, titles and status; no conversation bodies" },
+  { name: "ask_chat", label: "Ask another Chat", permission: "Approval required; one idle target per turn; no recursive delegation or automatic Tasks" },
   { name: "pkm_search", label: "Search PKM notes and skills", permission: "Read-only local knowledge titles" },
   { name: "pkm_read", label: "Read PKM note, skill or recipe", permission: "Read-only bounded local knowledge content" },
   { name: "replace_text", label: "Edit text", permission: "Shared non-destructive Chat permission; edits remain unsaved" },

@@ -7,6 +7,8 @@ const REQUIRED_UI_ARTIFACTS = Object.freeze([
   "dist/webview/panel.html",
   "dist/webview/panel.js",
   "dist/webview/panel.css",
+  "dist/webview/host-health.js",
+  "dist/webview/host-health.css",
   "dist/webview/api-chat.html",
   "dist/webview/api-chat.css",
   "dist/webview/api-chat.js",

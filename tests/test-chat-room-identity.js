@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 const assert = require("assert");
-const { chatRoomIdentity, joinedRoomRecents } = require("../dist/chatroom/chatroom/chat-room-identity");
+const { chatRoomIdentity, joinedRoomRecents } = require("../dist/chatroom/chat-room-identity");
 
 assert.strictEqual(
   chatRoomIdentity("ws://10.0.0.8:7345", "Design Review"),

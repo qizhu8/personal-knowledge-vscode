@@ -113,7 +113,12 @@ assert.deepStrictEqual(graph.terms, {
 });
 assert.equal(graph.repeatBadge({ mode:"repeat", count:{ kind:"fixed", value:1000 } }), "x1000");
 assert.equal(graph.repeatBadge({ mode:"repeat", count:{ kind:"dynamic" } }), "xK");
-assert.equal(graph.moduleTemplates.script.kind, "pkm.step.script/v1");
+assert.equal(graph.moduleTemplates.pipeline.kind, "pkm.step.pipeline/v1");
+assert.equal(graph.moduleTemplates.pipeline.config.executor, "script");
+assert.equal(graph.moduleTemplates.command, undefined);
+assert.equal(graph.moduleTemplates.script, undefined);
+for (const kind of ["pkm.step.command/v1", "pkm.step.script/v1", "pkm.step.pipeline/v1"])
+  assert.equal(graph.presentation({ kind, config:{ executor:"script" } }).label, "Pipeline");
 assert.deepStrictEqual(graph.organizedPositions([
   { nodeId:"prepare", dependsOn:[] },
   { nodeId:"finish", dependsOn:[{ from:"prepare" }] }

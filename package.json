@@ -2,7 +2,7 @@
   "name": "personal-knowledge",
   "displayName": "Personal Knowledge Manager",
   "description": "%extension.description%",
-  "version": "3.2.13",
+  "version": "3.2.14",
   "publisher": "Uone",
   "author": {
     "name": "Yu Wang"
@@ -41,6 +41,15 @@
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "chatParticipants": [
+      {
+        "id": "personalKnowledge.actions",
+        "name": "pkm-actions",
+        "fullName": "PKM Actions",
+        "description": "Answer pending Action choices in chat",
+        "isSticky": false
+      }
+    ],
     "mcpServerDefinitionProviders": [
       {
         "id": "personalKnowledge.pkm",
@@ -48,6 +57,18 @@
       }
     ],
     "commands": [
+      {
+        "command": "personalKnowledge.openActions",
+        "title": "PKM: Open Action Workbench"
+      },
+      {
+        "command": "personalKnowledge.openActionsInBrowser",
+        "title": "PKM: Open Action Workbench in Browser"
+      },
+      {
+        "command": "personalKnowledge.configureActionWorkspace",
+        "title": "PKM: Select Action Working Directory"
+      },
       {
         "command": "personalKnowledge.hostStatus",
         "title": "Personal Knowledge Manager: Show Running Extension Hosts"
@@ -727,6 +748,30 @@
     "configuration": {
       "title": "%configuration.title%",
       "properties": {
+        "personalKnowledge.actions.workspaceRoots": {
+          "type": "object",
+          "scope": "machine",
+          "default": {},
+          "additionalProperties": false,
+          "properties": {
+            "linux": { "type": "string" },
+            "windows": { "type": "string" },
+            "macos": { "type": "string" }
+          },
+          "description": "Machine-local Action staging roots for Linux, Windows and macOS. Missing or unavailable roots block execution; use PKM: Select Action Working Directory. Nested Actions inherit the selected root. User originals and exported outputs are never garbage-collected."
+        },
+        "personalKnowledge.actions.toolchains": {
+          "type": "object",
+          "scope": "machine",
+          "default": {},
+          "additionalProperties": false,
+          "properties": {
+            "linux": { "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } },
+            "windows": { "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } },
+            "macos": { "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } }
+          },
+          "description": "Optional machine-local bindings from Action program/compiler names (for example dotnet, rustc, cargo or python) to absolute executable paths. Install and maintain SDKs yourself on the extension execution host; PKM neither bundles nor installs them. Unconfigured tools use the host PATH (python defaults to the PKM interpreter). Changed executables or paths require Action qualification again. These bindings are excluded from Settings Sync."
+        },
         "personalKnowledge.storePath": {
           "type": "string",
           "default": "",
@@ -974,7 +1019,29 @@
           "default": 120,
           "minimum": 10,
           "maximum": 600,
-          "description": "Wall-clock timeout for each API Chat request, including streaming."
+          "description": "Timeout for each model API call including streaming, not the whole Chat activity. Human input and tool execution do not consume this model-call timeout."
+        },
+        "personalKnowledge.apiChatLoopReviewMinutes": {
+          "type": "integer",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 1440,
+          "description": "Active minutes before asking to continue when a repeated tool-call/result loop is detected. Both elapsed time and loop evidence are required. Human input and approval waits are excluded; continuing starts a new review window. Applies to new Chat requests."
+        },
+        "personalKnowledge.apiChatMaxToolRounds": {
+          "type": "integer",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 1000,
+          "description": "Legacy SDK tool-round review limit. Native Chat uses the time-and-loop policy configured by apiChatLoopReviewMinutes instead."
+        },
+        "personalKnowledge.apiChatLoopExemptTools": {
+          "type": "array",
+          "default": ["wait", "sleep", "poll", "core.sleep", "mcp_pkm_chat_standby", "mcp_pkm_api_chat_request_get", "mcp_pkm_recipe_run_progress"],
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "description": "Exact tool names or registered labels excluded from identical-call/result loop detection, for example waiting and polling tools. No substring matching; legacy SDK round limits still apply."
         },
         "personalKnowledge.aiModel": {
           "type": "string",
@@ -1059,7 +1126,7 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run build && node tests/test-ui-build-artifacts.js",
-    "build": "tsc -p tsconfig.json && npx esbuild dist/chat/api-chat-tools.js dist/chat/api-chat-mcp.js --bundle --platform=node --format=cjs --external:vscode --external:./api-chat-tools --outdir=dist/chat --allow-overwrite && npx esbuild src/subscriptions/subscription-gateway-entry.ts --bundle --platform=node --format=cjs --outfile=dist/subscription-gateway.js && cp -r src/webview dist/ && node scripts/build-panel.js && cp node_modules/sql.js/dist/sql-wasm.js dist/ && cp node_modules/sql.js/dist/sql-wasm.wasm dist/ && cp node_modules/marked/lib/marked.umd.js dist/webview/ && cp node_modules/@vscode/codicons/dist/codicon.css node_modules/@vscode/codicons/dist/codicon.ttf dist/webview/ && npx esbuild src/live-markdown-entry.js --bundle --platform=node --format=cjs --outfile=dist/live-markdown.js && npx esbuild src/webview/hljs-entry.js --bundle --minify --format=iife --outfile=dist/webview/hljs.js && cp node_modules/highlight.js/styles/github-dark.css dist/webview/hljs.css && cp node_modules/katex/dist/katex.min.js dist/webview/katex.js && cp node_modules/katex/dist/katex.min.css dist/webview/katex.css && mkdir -p dist/webview/fonts && cp node_modules/katex/dist/fonts/*.woff2 dist/webview/fonts/ && cp node_modules/cytoscape/dist/cytoscape.min.js dist/webview/cytoscape.js && cp node_modules/mermaid/dist/mermaid.min.js dist/webview/mermaid.js && cp node_modules/3d-force-graph/dist/3d-force-graph.min.js dist/webview/forcegraph3d.js && node scripts/postbuild.js",
+    "build": "tsc -p tsconfig.json && npx esbuild dist/chat/api-chat-tools.js dist/chat/api-chat-mcp.js --bundle --platform=node --format=cjs --define:navigator=undefined --external:vscode --external:./api-chat-tools --outdir=dist/chat --allow-overwrite && npx esbuild src/subscriptions/subscription-gateway-entry.ts --bundle --platform=node --format=cjs --outfile=dist/subscription-gateway.js && cp -r src/webview dist/ && node scripts/build-panel.js && cp node_modules/sql.js/dist/sql-wasm.js dist/ && cp node_modules/sql.js/dist/sql-wasm.wasm dist/ && cp node_modules/marked/lib/marked.umd.js dist/webview/ && cp node_modules/@vscode/codicons/dist/codicon.css node_modules/@vscode/codicons/dist/codicon.ttf dist/webview/ && npx esbuild src/live-markdown-entry.js --bundle --platform=node --format=cjs --outfile=dist/live-markdown.js && npx esbuild src/webview/hljs-entry.js --bundle --minify --format=iife --outfile=dist/webview/hljs.js && cp node_modules/highlight.js/styles/github-dark.css dist/webview/hljs.css && cp node_modules/katex/dist/katex.min.js dist/webview/katex.js && cp node_modules/katex/dist/katex.min.css dist/webview/katex.css && mkdir -p dist/webview/fonts && cp node_modules/katex/dist/fonts/*.woff2 dist/webview/fonts/ && cp node_modules/cytoscape/dist/cytoscape.min.js dist/webview/cytoscape.js && cp node_modules/mermaid/dist/mermaid.min.js dist/webview/mermaid.js && cp node_modules/3d-force-graph/dist/3d-force-graph.min.js dist/webview/forcegraph3d.js && node scripts/postbuild.js",
     "test:ui-build-artifacts": "npm run build && node tests/test-ui-build-artifacts.js",
     "test:api-chat": "npm run build && node tests/test-api-chat.js",
     "test:sidebar-panel-opening": "npm run build && node tests/test-sidebar-panel-opening.js",
@@ -1133,7 +1200,7 @@
     "test:chat-layout-scroll-ui": "npm run build && node tests/test-chat-layout-scroll-ui.js",
     "test:chat-core": "node tests/test-meeting-state.js && node tests/test-chat-meeting-snapshot.js && node tests/test-chat-managed-agent-routing.js && node tests/test-chat-meeting-lifecycle.js",
     "test:chat-coverage": "npm run build && npm run test:chat-coverage:run",
-    "test:chat-coverage:run": "c8 --all --include=dist/chatroom/meeting-state.js --include=dist/chatroom/chatroom/chat-meeting-lifecycle.js --check-coverage --branches 72 --functions 90 --lines 90 --statements 90 npm run test:chat-core",
+    "test:chat-coverage:run": "c8 --all --include=dist/chatroom/meeting-state.js --include=dist/chatroom/chat-meeting-lifecycle.js --check-coverage --branches 72 --functions 90 --lines 90 --statements 90 npm run test:chat-core",
     "test:meeting-state": "npm run build && node tests/test-meeting-state.js",
     "test:chat-managed-agent-routing": "npm run build && node tests/test-chat-managed-agent-routing.js",
     "test:pkm-skill-projection": "npm run build && node tests/test-pkm-skill-projection.js",

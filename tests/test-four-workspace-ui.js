@@ -15,6 +15,28 @@ const extensionSource = fs.readFileSync(path.join(root, "src", "extension.ts"), 
 const githubSyncSource = fs.readFileSync(path.join(root, "src", "sync/github-sync.ts"), "utf8");
 const previewSource = fs.readFileSync(path.join(root, "scripts", "release-preview-server.js"), "utf8");
 const knowledgeSource = fs.readFileSync(path.join(root, "src", "webview", "panel", "20-knowledge.js"), "utf8");
+const syncPaneSource = fs.readFileSync(path.join(root, "src", "webview", "panel", "46-github-sync.js"), "utf8");
+assert.match(syncPaneSource, /github-sync-transfer[\s\S]*onclick="doExport\(\)"[\s\S]*onclick="triggerImport\(\)"/, "Local export/import remain available in Settings Sync after header cleanup");
+assert.match(syncPaneSource, /aria-label="Open Sync Diagnostic Log"/, "The compact diagnostic icon retains its accessible name");
+assert.match(css, /\.github-sync-header-actions\{[^}]*display:flex[^}]*flex-wrap:nowrap/, "Sync diagnostics, Refresh and Target stay in one toolbar row");
+
+const backgroundButtons = [];
+const backgroundRequests = [];
+const navigationButton = { id: "settings-tab" };
+const refreshButton = { id: "explicit-refresh" };
+const requestContext = vm.createContext({
+  window: { event: { currentTarget: navigationButton } },
+  state: { tab: "mcp", workspace: "settings" },
+  beginAction: (command, button) => { backgroundButtons.push(button); return true; },
+  updateLoadingProgress: () => assert.fail("Silent requests must not show global loading"),
+  loadProfileRequest: () => "preview-request",
+  vscode: { postMessage: message => backgroundRequests.push(message) },
+});
+vm.runInContext(bundle.slice(bundle.indexOf("function ask("), bundle.indexOf("function captureRefreshView(")), requestContext);
+requestContext.ask("checkMcp", {}, null, true);
+requestContext.ask("checkMcp", {}, refreshButton, true);
+assert.deepStrictEqual(backgroundButtons, [null, refreshButton], "Background requests must not disable the navigation event target; explicit refresh buttons retain feedback");
+assert(backgroundRequests.every(message => message.silent === true));
 
 const nativeArchitectureSource = projectsSource.slice(projectsSource.indexOf("function renderNativeAgentArchitecture("), projectsSource.indexOf("function renderAgentSessions()"));
 const nativeContext = vm.createContext({ esc: value => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;") });
@@ -146,6 +168,12 @@ assert.match(css, /\.agent-tech-tree\.vertical \.agent-tech-canvas>\.agent-tech-
 assert.match(css, /\.agent-tech-tree\.vertical \.agent-tech-expansion>\.agent-tech-stem\{display:none\}/, "legacy detached expansion stem is hidden");
 assert.match(css, /\.recipe-library-workbench\{[^}]*grid-template-columns:280px minmax\(0,1fr\)/, "Recipe Library uses a split CatTree workbench");
 assert.match(css, /@media\(max-width:620px\)\{\.recipe-library-workbench\{grid-template-columns:minmax\(0,1fr\)/, "Recipe workbench stacks on narrow screens");
+assert.match(css, /@media \(max-width: 620px\)[\s\S]*grid-template-columns: 145px 6px minmax\(0, 1fr\)/, "CatTree final responsive layout remains side by side with its collapse divider");
+assert.match(bundle, /document\.querySelectorAll\('\.workspace-context-tabs'\)/, "overflow navigation targets current tab lists rather than the removed tabs ID");
+assert.match(bundle, /event\.key\.toLowerCase\(\) !== 'f'/, "Ctrl+F opens the compact floating search");
+assert.match(css, /#content-find-control\{display:none\}|#content-find-control,[^\n]*\{display:none\}/, "collection search is hidden until requested");
+assert.doesNotMatch(html, /onclick="doExport\(\)"|onclick="triggerImport\(\)"/, "functional page headers do not carry sync/export commands");
+assert.doesNotMatch(knowledgeSource.slice(knowledgeSource.indexOf('function renderPaperFilters('), knowledgeSource.indexOf('function setPaperTopic(')), /confirmDeleteAllPapers/, "Research does not expose a bulk move-to-trash button");
 assert.match(css, /\.recipe-node-details\{display:none;/, "Recipe module details are collapsed by default");
 assert.match(css, /\.recipe-design-overlay\{position:fixed;inset:0;z-index:2100/, "detailed module design renders on the top layer");
 assert.match(css, /\.recipe-design-body>\.recipe-node-details\{display:block/, "the top-layer surface reveals detailed controls");
@@ -356,6 +384,7 @@ const context = {
   document: {
     getElementById: id => id === "detail" ? detail : formElements[id] || null,
     querySelector: selector => selector.includes('data-tab="chatroom"') ? { dispatchEvent: () => { chatOpened = true; } } : null,
+    querySelectorAll: () => [],
     createElement: () => ({ setAttribute() {}, appendChild() {}, remove() {} })
   },
   MouseEvent: function MouseEvent(type) { this.type = type; },
@@ -502,7 +531,7 @@ context.recipeGraphAddStep();
 assert.deepStrictEqual(JSON.parse(JSON.stringify(modal.options)), [
   { value:"single", label:"Module" }, { value:"repeat", label:"Repeat" },
   { value:"if", label:"If / Else" }, { value:"switch", label:"Switch" },
-  { value:"command", label:"Background command" }, { value:"script", label:"Executable script" },
+  { value:"pipeline", label:"Pipeline" },
   { value:"human", label:"Required user input" }
 ]);
 vm.runInContext("recipeDraft.definition.spec.nodes.push({ nodeId:'download', kind:'pkm.step.command/v1', config:{ program:'python3', args:[], timeoutSeconds:300, maxOutputBytes:65536 }, dependsOn:[], ports:{ inputs:[], outputs:['result'] }, control:{ mode:'single' } })", context);
@@ -520,6 +549,27 @@ vm.runInContext("recipeDraft.definition.spec.nodes.pop()", context);
 assert.match(context.recipeGraphAdapterConfigHtml({ nodeId:"permission", kind:"pkm.gate.human/v1", config:{ prompt:"Proceed?", inputKind:"approval" } }), /cannot be completed by an Agent report/);
 vm.runInContext("recipeDraft.definition.spec.nodes.pop()", context);
 modal.onOk("finish", "", false, "repeat");
+vm.runInContext("recipeDraft.definition.spec.nodes.push({nodeId:'pipeline',kind:'pkm.step.pipeline/v1',config:{executor:'script',runtime:'bash',script:'printf ready',timeoutSeconds:300,maxOutputBytes:65536},dependsOn:[]})", context);
+assert.match(context.recipeGraphAdapterConfigHtml({ nodeId:"pipeline", kind:"pkm.step.pipeline/v1", config:{ executor:"script", runtime:"bash", script:"printf ready", args:["", " ${inputs.path} "] } }), /Executor/);
+assert.match(context.recipeGraphAdapterConfigHtml({ nodeId:"pipeline", kind:"pkm.step.pipeline/v1", config:{ executor:"command", program:"python3", args:[] } }), /Arguments \(JSON\)/);
+let argumentValidity = "";
+const argumentInput = {
+  value:JSON.stringify([" ${inputs.path} ", "", "quote'$(printf injected);file.txt"]),
+  setCustomValidity(value) { argumentValidity = value; }, reportValidity() {}
+};
+context.recipeGraphPipelineArguments("pipeline", argumentInput);
+assert.deepStrictEqual(JSON.parse(vm.runInContext("JSON.stringify(recipeDraft.definition.spec.nodes.at(-1).config.args)", context)),
+  [" ${inputs.path} ", "", "quote'$(printf injected);file.txt"]);
+argumentInput.value = '[null]';
+context.recipeGraphPipelineArguments("pipeline", argumentInput);
+assert.match(argumentValidity, /JSON array of strings/);
+context.recipeGraphPipelineExecutor("pipeline", "command");
+context.recipeGraphCommandField("pipeline", "program", "python3");
+assert.equal(vm.runInContext("recipeDraft.definition.spec.nodes.at(-1).config.executor", context), "command");
+context.recipeGraphPipelineExecutor("pipeline", "script");
+context.recipeGraphScriptField("pipeline", "script", "printf pipeline");
+assert.equal(vm.runInContext("recipeDraft.definition.spec.nodes.at(-1).config.script", context), "printf pipeline");
+vm.runInContext("recipeDraft.definition.spec.nodes.pop()", context);
 assert.match(detailHtml, /<strong>finish<\/strong>/);
 assert.match(detailHtml, /recipe-repeat-badge"[^>]*>x2/);
 const dragTarget = { classList: { add() {}, remove() {} } };

@@ -4,15 +4,21 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
-const { builtInRecipePin } = require("../dist/workflows/project-model.js");
 
-const repositoryRoot = path.join(__dirname, "..");
+const repositoryRoot = path.resolve(process.env.PKM_TEST_EXTENSION_PATH || path.join(__dirname, ".."));
+const { builtInRecipePin } = require(path.join(repositoryRoot, "dist/workflows/project-model.js"));
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-mcp-stdio-smoke-"));
 
 try {
-  const source = fs.readFileSync(path.join(repositoryRoot, "src", "mcp/mcp.ts"), "utf8");
-  const match = /fs\.writeFileSync\(serverPy, `([\s\S]*?)`\);\n\n  fs\.writeFileSync\(reqTxt/.exec(source);
+  const source = fs.readFileSync(path.join(repositoryRoot,
+    process.env.PKM_TEST_EXTENSION_PATH ? "dist/mcp/mcp.js" : "src/mcp/mcp.ts"), "utf8");
+  const match = /fs\.writeFileSync\(serverPy, `([\s\S]*?)`\);\s+fs\.writeFileSync\(reqTxt/.exec(source);
   assert(match, "could not extract generated unified MCP server template");
+  const componentVersions = Object.fromEntries(["RECIPE_MCP_VERSION", "AGENT_SESSION_MCP_VERSION"].map(name => {
+    const version = new RegExp(`${name}\\s*=\\s*["']([^"']+)["']`).exec(source);
+    assert(version, `could not extract ${name}`);
+    return [name, version[1]];
+  }));
 
   const moduleDirectory = path.join(root, "module");
   const store = path.join(root, "store");
@@ -23,6 +29,7 @@ try {
   fs.mkdirSync(store, { recursive: true });
 
   const render = new Function(
+    "exports",
     "UNIFIED_MCP_VERSION",
     "KNOWLEDGE_MCP_VERSION",
     "CHAT_MCP_VERSION",
@@ -36,6 +43,7 @@ try {
     `return \`${match[1]}\`;`,
   );
   const server = render(
+    { UNIFIED_MCP_VERSION: "stdio-test" },
     "stdio-test",
     "knowledge-test",
     "chat-test",
@@ -53,7 +61,7 @@ try {
     fs.readFileSync(path.join(repositoryRoot, "resources", "chat_server.py.template"), "utf8")
       .replaceAll("%%CHAT_MCP_VERSION%%", "chat-test"),
   );
-  for (const name of ["recipe_runtime.py", "recipe_health.py", "agent_session_runtime.py", "api_chat_control.py", "mcp_call_guard.py", "diagnostic_log.py"]) {
+  for (const name of ["recipe_runtime.py", "action_runtime.py", "action_modules.py", "action_components.py", "recipe_health.py", "agent_session_runtime.py", "api_chat_control.py", "mcp_call_guard.py", "diagnostic_log.py"]) {
     fs.copyFileSync(path.join(repositoryRoot, "resources", name), path.join(moduleDirectory, name));
   }
 
@@ -85,6 +93,7 @@ def verify_module_usage(module_directory):
   namespace = {**globals(), "STORE":store, "_COLLECTOR_SESSION_ID":"usage-test", "_SKILL_ROUTER_TOOLS":set()}
   exec(compile(helpers, "generated-usage-helpers", "exec"), namespace)
   assert namespace["_tool_domain"]("api_chat_send") == "automation"
+  assert namespace["_tool_domain"]("action_call") == "automation"
   session_id, todo_id, run_id = "agent_session_usage", "todo_usage", "recipe_run_usage"
   sessions = store / ".pkm" / "state" / "agent-sessions"
   runs = store / ".pkm" / "state" / "recipe-runs"
@@ -115,6 +124,13 @@ def verify_module_usage(module_directory):
 async def main():
     module_directory = pathlib.Path(sys.argv[1])
     verify_module_usage(module_directory)
+    sys.path.insert(0, str(module_directory))
+    from action_modules import ModuleRuntime
+    fixture = ModuleRuntime(module_directory.parent / "store")
+    workspace = module_directory.parent / "action-workspace"
+    workspace.mkdir()
+    fixture.configure_workspace(str(workspace))
+    assert fixture.validate("core.date.parse", fixture.definition("core.date.parse")["content_hash"])["ok"]
     with (module_directory / "server.stderr.log").open("w", encoding="utf-8") as log:
         transport = StdioTransport(
             sys.executable,
@@ -129,6 +145,28 @@ async def main():
                 programmable_chat_tools = {"api_chat_capabilities", "api_chat_models", "api_chat_list", "api_chat_create",
                   "api_chat_send", "api_chat_get", "api_chat_cancel", "api_chat_request_get"}
                 assert programmable_chat_tools <= set(by_name)
+                assert {"action_retrieve", "action_call", "action_run_get", "action_run_cancel"} <= set(by_name)
+                assert {"action_validation_enqueue", "action_validation_status", "action_validation_cancel", "action_validation_resume",
+                    "action_module_sets", "action_module_set_load", "action_module_set_import", "action_module_set_export",
+                    "action_module_set_remove", "action_implementation_select", "action_graph_check", "action_graph_save"} <= set(by_name)
+                assert by_name["action_retrieve"].annotations.readOnlyHint is True
+                assert by_name["action_call"].annotations.readOnlyHint is False
+                assert by_name["action_module_sets"].annotations.readOnlyHint is True
+                assert by_name["action_graph_check"].annotations.readOnlyHint is True
+                assert (await client.call_tool("action_module_sets", {})).structured_content["module_sets"] == []
+                assert (await client.call_tool("action_validation_status", {})).structured_content["jobs"] == []
+                block = (await client.call_tool("action_get", {"action_id": "core.date.parse"})).structured_content
+                graph = {"action_id": "stdio.graph.add", "name": "Stdio graph", "nodes": [
+                  {"id": "date", "action_id": block["action_id"], "content_hash": block["content_hash"], "parameters": {"value": "2026-10-08"}}], "edges": []}
+                assert (await client.call_tool("action_graph_check", {"graph": graph})).structured_content["implementations"][0]["kind"] == "pipeline"
+                assert (await client.call_tool("action_graph_save", {"graph": graph})).structured_content["display_name"] == "Stdio graph"
+                actions = (await client.call_tool("action_retrieve", {"task": "cosmos directory list"})).structured_content
+                assert not any(candidate["action_id"].startswith("cosmos.") for candidate in actions["candidates"])
+                assert actions["selected_action_id"] is None
+                action_capabilities = (await client.call_tool("action_capabilities", {})).structured_content
+                assert action_capabilities["enabled_platform_actions"] == []
+                assert not any(name.startswith("cosmos.") for name in action_capabilities["builtins"])
+                assert {"core.constant", "core.lookup", "core.file-path", "core.if-else", "core.switch", "core.for", "core.while", "core.user-action"} <= {item["action_id"] for item in action_capabilities["basic_components"]}
                 chat_capabilities = await client.call_tool("api_chat_capabilities", {})
                 assert chat_capabilities.structured_content["hosts"] == []
                 assert chat_capabilities.structured_content["schema_version"] == "1.0.0"
@@ -143,6 +181,17 @@ async def main():
 
                 assert "diagnostics_latest" in by_name
                 assert by_name["diagnostics_latest"].annotations.readOnlyHint is True
+                for name in ["search_skills", "search_notes", "search_research", "search_scripts"]:
+                  assert name in by_name, ("knowledge search missing", name)
+                  properties = by_name[name].inputSchema["properties"]
+                  assert {"query", "limit", "detail"} <= set(properties), (name, properties)
+                  assert properties["limit"]["default"] == 20, (name, properties)
+                  assert properties["detail"]["default"] == "legacy", (name, properties)
+                  assert by_name[name].annotations.readOnlyHint is True, name
+                for name in ["get_knowledge", "get_skill", "get_note", "get_research", "get_script"]:
+                  assert name in by_name, ("knowledge read missing", name)
+                  assert "id" in by_name[name].inputSchema["properties"], name
+                  assert by_name[name].annotations.readOnlyHint is True, name
                 diagnostics = await client.call_tool("diagnostics_latest", {"limit": 100})
                 records = diagnostics.structured_content["records"]
                 version_records = [entry for entry in records if entry.get("tool") == "check_version"]
@@ -195,8 +244,8 @@ async def main():
                 expected_component_versions = {
                     "check_chat_version": "chat-test",
                     "chat_capabilities": "chat-test",
-                    "recipe_capabilities": "1.8.0",
-                    "agent_session_capabilities": "1.8.0",
+                    "recipe_capabilities": ${JSON.stringify(componentVersions.RECIPE_MCP_VERSION)},
+                    "agent_session_capabilities": ${JSON.stringify(componentVersions.AGENT_SESSION_MCP_VERSION)},
                 }
                 for name in ["check_chat_version", *discovery_names]:
                     result = await asyncio.wait_for(client.call_tool(name, {}), 3)

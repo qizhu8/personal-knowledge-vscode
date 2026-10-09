@@ -61,7 +61,7 @@ function verifyCachedTab(source, functionName, cacheName, updatedAtName, renderN
   context[cacheName] = null;
   context[updatedAtName] = 0;
   context.show();
-  assert.deepStrictEqual(plain(calls), [["loading"], ["ask", command, {}, null, false]],
+  assert.deepStrictEqual(plain(calls), [["loading"], ["ask", command, {}, null, true]],
     `${functionName} must show loading only when no cached data exists`);
 }
 

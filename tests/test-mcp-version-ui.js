@@ -3,10 +3,12 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
+const ts = require("typescript");
 
 const panelJs = fs.readFileSync(path.join(__dirname, "..", "dist", "webview", "panel.js"), "utf8");
 const panelCss = fs.readFileSync(path.join(__dirname, "..", "dist", "webview", "panel.css"), "utf8");
 const sourceTs = fs.readFileSync(path.join(__dirname, "..", "src", "mcp/mcp.ts"), "utf8");
+const solutionSource = fs.readFileSync(path.join(__dirname, "..", "resources", "retrieval_solution.py"), "utf8");
 const extensionTs = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
 const sourcePanelCss = fs.readFileSync(path.join(__dirname, "..", "src", "webview", "panel.css"), "utf8");
 assert.match(sourcePanelCss, /\.srv-global-controls select,\.srv-edit input,\.mcp-setup-step select,\.mcp-setup-step input\{[^}]*background:var\(--input\)[^}]*color:var\(--text\)[^}]*color-scheme:dark/,
@@ -22,14 +24,26 @@ assert.match(extensionTs, /case "reconfigureMcpServerPath":[\s\S]{0,500}command:
   "server directory reconfiguration must send a dedicated terminal result");
 assert.match(extensionTs, /server\.newerThanExpected \|\| newerRouters\.length[\s\S]{0,900}This window will not downgrade shared PKM files/,
   "an older window must stop maintenance and recommend a manual Reload Window");
-assert.doesNotMatch(extensionTs, /executeCommand\([^\n]*(reloadWindow|reload)/i,
-  "PKM must never reload the user's window automatically");
+const extensionAst = ts.createSourceFile("extension.ts", extensionTs, ts.ScriptTarget.Latest, true);
+const hostRuntime = extensionAst.statements.find(statement => ts.isFunctionDeclaration(statement)
+  && statement.name?.text === "registerExtensionHostRuntime");
+assert(hostRuntime, "explicit coordinated Host reload registration must exist");
+assert.doesNotMatch(extensionTs.slice(0, hostRuntime.pos) + extensionTs.slice(hostRuntime.end),
+  /executeCommand\([^\n]*(reloadWindow|reload)/i,
+  "MCP maintenance and other automatic paths must never reload the user's window");
+const hostRuntimeText = hostRuntime.getText(extensionAst);
+assert.match(hostRuntimeText, /if \(registry\.poll\(installed\?\.buildId, isBusy\(\)\)\) \{[\s\S]{0,350}executeCommand\("workbench\.action\.reloadWindow"\)/,
+  "coordinated reload must require the registry's validated request and busy-state gate");
+assert.match(hostRuntimeText, /registerCommand\("personalKnowledge\.reloadAllHosts"[\s\S]*showWarningMessage[\s\S]*modal: true[\s\S]*if \(answer !== "Reload registered windows"\) return;[\s\S]*registry\.requestReload/,
+  "a coordinated reload request must require explicit modal confirmation");
 assert.match(sourceTs, /Refusing to downgrade the installed PKM MCP runtime/,
   "the generated server write boundary must reject downgrades");
 assert.match(sourceTs, /The newer runtime was preserved[\s\S]*Upgrade Personal Knowledge Manager/,
   "downgrade protection must preserve the newer runtime and recommend an extension upgrade");
-assert.match(sourceTs, /UNIFIED_MCP_VERSION = "2\.13\.9"/,
-  "generated MCP changes must carry a new unified runtime patch version");
+assert.match(sourceTs, /export const UNIFIED_MCP_VERSION = "\d+\.\d+\.\d+";/,
+  "unified runtime version must be declared as numeric SemVer");
+assert.match(sourceTs, /SERVER_VERSION = "\$\{UNIFIED_MCP_VERSION\}"/,
+  "generated MCP must use the authoritative unified runtime version");
 assert.doesNotMatch(panelJs, /PKM MCP server is outdated/,
   "equal unified versions must not be mislabeled as an outdated server");
 assert.match(panelJs, /server v\$\{installed\} is current, but runtime components need update/,
@@ -70,8 +84,10 @@ assert.match(sourceTs, /--no-deps", wheel/);
 assert.match(sourceTs, /PROMPT_MANAGER_WHEEL_SHA256/);
 assert.match(sourceTs, /RETRIEVAL_ENGINE_WHEEL_SHA256/);
 assert.match(sourceTs, /import fastmcp, prompt_manager, websockets, adaptive_skill_retrieval/);
-assert.match(sourceTs, /from adaptive_skill_retrieval\.solution_package import import_package/,
-  "runtime health must reject an old wheel without offline solution support");
+assert.match(solutionSource, /from adaptive_skill_retrieval\.solution_package import import_package/,
+  "offline Solution import must require the retrieval wheel's solution_package API");
+assert.match(solutionSource, /except \(ImportError,[\s\S]{0,350}return 1/,
+  "offline Solution import must reject a wheel missing the required API");
 assert.match(sourceTs, /def search_knowledge\(/);
 assert.match(sourceTs, /def retrieval_status\(/);
 assert.match(sourceTs, /_collector_post\("search_invocation"/);
