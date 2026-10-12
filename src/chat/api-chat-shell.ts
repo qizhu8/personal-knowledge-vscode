@@ -45,6 +45,7 @@ export function renderApiChat(view: vscode.WebviewView, context: vscode.Extensio
     cspSource: view.webview.cspSource, nonce: randomBytes(18).toString("base64"),
     styles: resource("api-chat.css"), script: resource("api-chat.js"), icons: resource("codicon.css"),
     marked: resource("marked.umd.js"), purify: resource("purify.min.js"),
+    katex: resource("katex.js"), katexStyles: resource("katex.css"), mermaid: resource("mermaid.js"),
     libraryScript: resource("api-chat-library.js"), retrievalScript: resource("chat-retrieval-flow.js"),
     hostHealthScript: resource("host-health.js"), hostHealthStyles: resource("host-health.css"),
   };

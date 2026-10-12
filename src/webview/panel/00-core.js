@@ -1085,7 +1085,6 @@ window.addEventListener('message', e => {
     else failAction(data?.error || 'MCP configuration failed.', action);
   }
   else if (command === 'skillRouterStatus') { skillRouterOnStatus(data); }
-  else if (command === 'pkmSkillUpdateComplete') { finishPkmSkillUpdates(); if (!data?.ok) ask('checkMcp', {}); }
   else if (command === 'uiLanguage')   { applyUiLanguage(data); }
   else if (command === 'tourCatalog') { updateFeatureTourCatalog(data); }
   else if (command === 'initialExperience') { queueInitialExperience(data); }

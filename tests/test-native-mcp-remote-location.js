@@ -79,6 +79,7 @@ const providerEnd = extensionSource.indexOf("/** Open an item", providerStart);
 assert(providerStart >= 0 && providerEnd > providerStart);
 let provider;
 let knowledgeRoot = "";
+let providerBinding;
 const registrationContext = { extensionUri: remoteExtension, subscriptions: [] };
 const api = {
   lm: { registerMcpServerDefinitionProvider: (id, value) => { provider = value; return { dispose() {} }; } },
@@ -92,6 +93,7 @@ vm.runInNewContext(ts.transpileModule(extensionSource.slice(providerStart, provi
 }).outputText + "\nregisterNativeMcpProvider(context);", {
   vscode: api, context: registrationContext, _mcpDefinitionsChanged: undefined, _nativeMcpProvider: false,
   getStorePath: () => knowledgeRoot,
+  readAccountMcpBinding: () => providerBinding,
   mcpRuntimeStatus: () => { throw new Error("Discovery must not run a synchronous Python health check"); },
   mcpServerDefinitionData: () => ({ label: "pkm", command: "/managed/python", args: ["/knowledge/mcp-server/server.py"], cwd: "/knowledge/mcp-server", version: "fixture" }),
   nativeMcpCwdUri,
@@ -101,6 +103,10 @@ knowledgeRoot = "/knowledge";
 const definitions = provider.provideMcpServerDefinitions();
 assert.strictEqual(definitions.length, 1, "a configured machine root must remain discoverable without a workspace or a health probe");
 assert.strictEqual(definitions[0].cwd.authority, remoteExtension.authority);
+providerBinding = { registrationOwner: "manual-user", knowledgeRoot: "/knowledge" };
+assert.strictEqual(provider.provideMcpServerDefinitions().length, 0, "an account's manual adapter must suppress the duplicate native definition");
+assert.throws(() => provider.resolveMcpServerDefinition(), /manual adapter/);
+providerBinding = undefined;
 assert.match(extensionSource, /_storeReady = true;[\s\S]*?_treeProvider\?\.refresh\(\);\s*refreshMcpDefinitions\(\);/, "store initialization must notify existing MCP definition subscribers");
 
 const rememberStart = extensionSource.indexOf("async function rememberMachineStorePath(");
@@ -113,6 +119,9 @@ const remember = vm.runInNewContext(ts.transpileModule(extensionSource.slice(rem
   compilerOptions: { target: ts.ScriptTarget.ES2020 },
 }).outputText + "\nrememberMachineStorePath;", {
   MACHINE_STORE_PATH_KEY: "machineRoot",
+  _nativeMcpProvider: true,
+  readAccountMcpBinding: () => undefined,
+  writeAccountMcpBinding: async () => {},
   vscode: {
     ConfigurationTarget: { Global: 1 },
     workspace: { getConfiguration: () => ({
@@ -124,6 +133,29 @@ const remember = vm.runInNewContext(ts.transpileModule(extensionSource.slice(rem
 });
 const rootContext = { globalState: { get: key => globalState.get(key), update: async (key, value) => { globalState.set(key, value); } } };
 (async () => {
+  const accountCompiled = path.join(fixture, "mcp-account-binding.js");
+  childProcess.execFileSync("npx", ["esbuild", path.join(root, "src/mcp/mcp-account-binding.ts"), "--bundle", "--platform=node", "--format=cjs", `--outfile=${accountCompiled}`], { cwd: root, stdio: "ignore" });
+  const account = require(accountCompiled);
+  const accountDirectory = path.join(fixture, "account");
+  const rootA = path.join(fixture, "knowledge-a");
+  const rootB = path.join(fixture, "knowledge-b");
+  fs.mkdirSync(rootA, { mode: 0o700 });
+  fs.mkdirSync(rootB, { mode: 0o700 });
+  const binding = await account.writeAccountMcpBinding(rootA, "native-provider", false, accountDirectory);
+  assert.deepStrictEqual(account.readAccountMcpBinding(accountDirectory), binding);
+  assert.strictEqual(binding.knowledgeRoot, fs.realpathSync(rootA));
+  await assert.rejects(account.writeAccountMcpBinding(rootB, "native-provider", false, accountDirectory), /cannot redirect/);
+  await assert.rejects(account.writeAccountMcpBinding(rootA, "manual-user", false, accountDirectory), /registration owner/);
+  const changed = await account.writeAccountMcpBinding(rootB, "native-provider", true, accountDirectory);
+  assert.strictEqual(changed.accountId, binding.accountId, "explicit root changes must preserve account identity");
+  if (process.platform !== "win32") {
+    assert.strictEqual(fs.statSync(accountDirectory).mode & 0o777, 0o700);
+    assert.strictEqual(fs.statSync(path.join(accountDirectory, "mcp-binding.json")).mode & 0o777, 0o600);
+    assert.strictEqual(account.accountKnowledgeSecurity(rootB).private, true);
+    fs.chmodSync(path.join(accountDirectory, "mcp-binding.json"), 0o644);
+    assert.throws(() => account.readAccountMcpBinding(accountDirectory), /owner-only permissions/);
+    fs.chmodSync(path.join(accountDirectory, "mcp-binding.json"), 0o600);
+  }
   await remember(rootContext, "/knowledge");
   assert.deepStrictEqual(globalWrites, [{ key: "storePath", value: "/knowledge", target: 1 }], "a matching workspace value must not hide a missing global root");
   await remember(rootContext, "/knowledge");

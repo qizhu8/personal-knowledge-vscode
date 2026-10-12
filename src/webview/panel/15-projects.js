@@ -374,6 +374,14 @@ function agentSessionRootMenu(event) {
 
 function agentSessionFolderMenu(event, folder) {
   event.preventDefault(); event.stopPropagation();
+  folder = String(folder || '').split('/').pop();
+  if (folder.startsWith('chat-library:')) {
+    showPaperMenu(event.clientX, event.clientY, [
+      { label:'Chat Group', header:true },
+      recipeCopyPathMenu(folder.slice('chat-library:'.length), 'Copy Group identity')
+    ], 'agent-session-context-menu');
+    return;
+  }
   const storedGroup = (projectSnapshot?.agentSessionGroups || []).find(group => group.groupId === folder);
   showPaperMenu(event.clientX, event.clientY, [
     { label:'Chat Group', header:true },
@@ -2801,21 +2809,49 @@ function agentSessionTree(sessions, archived = false) {
   if (!sessions.length && !emptyGroups.length) return '';
   const groups = new Map(sessions.map(session => [agentSessionGroupKey(session), session]));
   const titles = new Map((projectSnapshot?.agentSessionGroups || []).map(group => [group.groupId, group.title]));
-  const tree = buildCatTree(sessions, session => [agentSessionGroupKey(session)], 'Recovered Sessions');
+  const records = new Map((projectSnapshot?.agentSessionGroups || []).map(group => [group.groupId, group]));
+  const byChat = new Map([...records.values()].filter(group => group.hostKind === 'pkm').map(group => [group.hostSessionId, group]));
+  const paths = new Map();
+  const groupPath = groupId => {
+    if (paths.has(groupId)) return paths.get(groupId);
+    const record = records.get(groupId);
+    if (record?.hostKind !== 'pkm') return [groupId];
+    const lineage = [record];
+    const seen = new Set([groupId]);
+    let parent = byChat.get(record.workerParentChatId);
+    while (parent && !parent.deletedAt && parent.workerTreeId === lineage[0].workerTreeId && !seen.has(parent.groupId)) {
+      seen.add(parent.groupId); lineage.unshift(parent); parent = byChat.get(parent.workerParentChatId);
+    }
+    const owner = lineage[0];
+    const category = `chat-library:${owner.libraryGroupId || 'ungroup'}`;
+    const result = [category, ...lineage.map(group => group.groupId)];
+    paths.set(groupId, result);
+    return result;
+  };
+  const tree = buildCatTree(sessions, session => groupPath(agentSessionGroupKey(session)), 'Recovered Sessions');
+  for (const group of emptyGroups) {
+    let node = tree;
+    for (const segment of groupPath(group.groupId)) node = node.folders[segment] ||= { folders: {}, items: [] };
+  }
   return `<div class="agent-session-tree">${renderCatTree(tree, [], 0, (session, depth) => `<div class="li cattree-item agent-session-row ${session.sessionId === selectedAgentSessionId ? 'active' : ''}" style="padding-left:${8 + depth * 12}px" role="button" tabindex="0" onclick="agentSessionSelect(decodeURIComponent('${encodeURIComponent(session.sessionId)}'))" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();agentSessionSelect(decodeURIComponent('${encodeURIComponent(session.sessionId)}'))}" oncontextmenu="agentSessionContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'),'${esc(session.status)}')"><span>${agentSessionStatusIndicator(session, true)}<strong>${esc(session.task)}</strong></span><b>${esc(session.sessionId.replace(/^agent_session_/, '').slice(0,12))}</b><small>${esc(session.lastActivity?.tool || (session.checkpoint ? 'Checkpoint ready' : 'Registered'))}${agentSessionLivenessLabel(session.liveness) ? ` · <em class="agent-session-liveness ${esc(session.liveness.state)}">${esc(agentSessionLivenessLabel(session.liveness))}</em>` : ''}</small><button class="cattree-item-menu" title="Agent Session actions" aria-label="Actions for ${esc(session.task)}" onclick="event.stopPropagation();agentSessionContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'),'${esc(session.status)}')"><span class="codicon codicon-ellipsis"></span></button></div>`, '', (_child, _name, fullPath) => ` oncontextmenu="agentSessionFolderMenu(event,decodeURIComponent('${encodeURIComponent(fullPath.join('/'))}'))"`, null, {
     area:'agentSessions',
     defaultOpen:true,
     renderFolderLabel:name => {
-      const group = groups.get(name);
+      if (name.startsWith('chat-library:')) {
+        const id = name.slice('chat-library:'.length);
+        const record = [...records.values()].find(group => (group.libraryGroupId || 'ungroup') === id && group.hostKind === 'pkm');
+        return `<span class="codicon codicon-folder"></span><span>${esc(record?.libraryGroupTitle || 'Ungroup')}</span>`;
+      }
+      const group = groups.get(name) || records.get(name);
       const source = group?.origin === 'pkm-native' ? 'PKM native'
         : group?.origin === 'unknown' ? 'Unknown host' : group?.hostKind || 'copilot';
       const label = titles.get(name) || (group?.hostSessionId
         ? `${source} Chat ${group.hostSessionId}${group.origin === 'external' ? ' (external)' : ''}`
         : `Recovered Session: ${group?.task || group?.sessionId || 'Unknown origin'}`);
       const icon = group?.hostKind === 'pkm' || group?.origin === 'pkm-native' ? '<span class="agent-session-pkm-icon" role="img" aria-label="PKM Chat" title="PKM Chat"></span>' : '<span class="codicon codicon-comment-discussion"></span>';
-      return `${icon}<span title="${esc(label)}">${esc(label)}</span>`;
+      return `${icon}<span title="${esc(label)}">${esc(label)}</span>${emptyGroups.some(group => group.groupId === name) ? '<small>No Task</small>' : ''}<button class="cattree-item-menu" title="Chat Group actions" aria-label="Chat Group actions" onclick="event.stopPropagation();agentSessionFolderMenu(event,decodeURIComponent('${encodeURIComponent(name)}'))"><span class="codicon codicon-ellipsis"></span></button>`;
     }
-  })}${emptyGroups.map(group => `<div class="li cattree-folder" oncontextmenu="agentSessionFolderMenu(event,decodeURIComponent('${encodeURIComponent(group.groupId)}'))">${group.hostKind === 'pkm' ? '<span class="agent-session-pkm-icon" role="img" aria-label="PKM Chat" title="PKM Chat"></span>' : '<span class="codicon codicon-comment-discussion"></span>'}<span title="${esc(group.title || `${group.hostKind} Chat ${group.hostSessionId}`)}">${esc(group.title || `${group.hostKind} Chat ${group.hostSessionId}`)}</span><small>No Task</small><button class="cattree-item-menu" title="Chat Group actions" aria-label="Chat Group actions" onclick="event.stopPropagation();agentSessionFolderMenu(event,decodeURIComponent('${encodeURIComponent(group.groupId)}'))"><span class="codicon codicon-ellipsis"></span></button></div>`).join('')}</div>`;
+  })}</div>`;
 }
 
 function agentSessionGroupCount(sessions) {

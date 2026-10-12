@@ -257,7 +257,7 @@ def capture_installation_gif(page) -> None:
         ("3 — Follow Setup guideline", "Complete each row from top to bottom. Green checks are already done.", ".mcp-setup-guide"),
         ("4 — Select Python 3.10+", "Validate a machine-local Python, then create or repair the isolated pkm-mcp runtime.", "#mcp-python-path"),
         ("5 — Generate server code", "Generate server.py, chat_server.py, and requirements.txt. Current code needs no highlighted action.", "#mcp-regenerate-server-code"),
-        ("6 — Register external Agency", "VS Code registers pkm automatically when supported. External Agencies use the copyable instructions.", "#mcp-agency-registration"),
+        ("6 — Verify account registration", "Use the native provider and verify a real check_version call. Do not add a duplicate registration.", "#mcp-account-registration"),
         ("7 — Verify Running", "Start pkm from MCP: List Servers. The dashboard process light turns green when server.py is detected.", ".mcp-running"),
     ]
     rail_steps = [[title.split('—',1)[-1].strip(), description] for title, description, _ in steps]

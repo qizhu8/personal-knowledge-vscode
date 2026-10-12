@@ -21,6 +21,7 @@ body { margin: 0; height: 100vh; display: flex; flex-direction: column; font-fam
 button, select, textarea, input { font: inherit; color: inherit; }
 button { display: inline-grid; place-items: center; width: 28px; height: 28px; flex-shrink: 0; border: 0; border-radius: 4px; background: transparent; cursor: pointer; }
 button:hover { background: var(--vscode-toolbar-hoverBackground, #ffffff12); }
+button, select, .chat-list-row { transition: background-color 140ms ease, border-color 140ms ease, opacity 140ms ease; }
 button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-visible, summary:focus-visible { outline: 1px solid var(--vscode-focusBorder, #3794ff); outline-offset: -1px; }
 button:disabled { opacity: .45; cursor: default; }
 [hidden] { display: none !important; }
@@ -50,7 +51,7 @@ select { min-width: 0; max-width: 100%; padding: 4px; border: 1px solid transpar
 @media (prefers-reduced-motion: reduce) { .working-cauldron { animation: none; } }
 #chat-status { display: flex; align-items: center; flex: 0 0 16px; }
 .chat-trash-delete-all { display: inline-flex; width: auto; padding: 0 4px; gap: 4px; white-space: nowrap; font-size: 11px; }
-.chat-library-visible > .toolbar, .chat-library-visible > #messages, .chat-library-visible > #applied-edits, .chat-library-visible > #composer { display: none; }
+.chat-library-visible > .toolbar, .chat-library-visible > #messages, .chat-library-visible > #workers, .chat-library-visible > #applied-edits, .chat-library-visible > #composer { display: none; }
 #library-view { display: flex; flex: 1; flex-direction: column; min-height: 0; }
 .chat-list-heading { flex: 1; font-size: 13px; font-weight: 600; }
 #chat-list { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow-y: auto; padding: 4px 8px; }
@@ -81,7 +82,42 @@ select { min-width: 0; max-width: 100%; padding: 4px; border: 1px solid transpar
 .content { overflow-wrap: anywhere; line-height: 1.55; }
 .user .content { white-space: pre-wrap; }
 .delegation-result { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--vscode-panel-border, #ffffff18); }
-.delegation-answer { white-space: pre-wrap; }
+.delegation-result { padding: 10px; border: 1px solid var(--vscode-panel-border, #ffffff18); border-radius: 8px; background: var(--vscode-editorWidget-background, #292929); }
+.retrieval-timeline { display: flex; gap: 8px; padding: 6px 0; }
+.retrieval-timeline select { min-width: 0; }
+.chat-settings:not([hidden]) { animation: chat-popover-in 140ms ease-out; }
+@keyframes chat-popover-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) {
+  button, select, .chat-list-row { transition: none; }
+  .chat-settings:not([hidden]) { animation: none; }
+}
+.delegation-answer { white-space: normal; }
+.mermaid-diagram { overflow-x: auto; padding: 8px 0; }
+.mermaid-diagram svg { display: block; max-width: 100%; height: auto; }
+.katex-display { overflow-x: auto; overflow-y: hidden; padding: 4px 0; }
+.rich-render-error { color: var(--vscode-errorForeground); white-space: pre-wrap; }
+.optimistic-message .message-status { opacity: .75; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+#workers { flex: 0 0 auto; border-bottom: 1px solid var(--vscode-panel-border, #ffffff18); }
+#workers-toggle { display: flex; width: 100%; height: auto; min-height: 34px; gap: 6px; padding: 6px 10px; text-align: start; }
+#workers-count { font-variant-numeric: tabular-nums; border-radius: 4px; padding: 1px 5px; background: var(--vscode-badge-background, #444); color: var(--vscode-badge-foreground, #fff); }
+#workers-summary { flex: 1; min-width: 0; font-size: 11px; color: var(--vscode-descriptionForeground, #aaa); overflow-wrap: anywhere; }
+#workers-toggle[aria-expanded="true"] > .codicon-chevron-down { transform: rotate(180deg); }
+#workers-panel { max-height: 36vh; overflow-y: auto; padding: 4px 10px 8px; }
+#workers-note { font-size: 10px; color: var(--vscode-descriptionForeground, #aaa); margin: 0 0 6px; }
+#workers-notice { font-size: 12px; overflow-wrap: anywhere; }
+.worker-node { position: relative; min-width: 0; padding: 6px 8px; margin-bottom: 6px; border: 1px solid var(--vscode-panel-border, #ffffff25); border-radius: 6px; background: var(--vscode-editorWidget-background, #292929); }
+.worker-node-heading { display: flex; align-items: center; gap: 6px; cursor: pointer; list-style: none; }
+.worker-node-heading strong { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+.worker-node-title { flex: 1; min-width: 0; }
+.worker-phase { flex: 0 1 auto; max-width: 42%; font-size: 10px; color: var(--vscode-descriptionForeground, #aaa); overflow-wrap: anywhere; }
+.worker-node-meta, .worker-dispatch-stamp, .worker-recent { font-size: 10px; margin-top: 4px; overflow-wrap: anywhere; color: var(--vscode-descriptionForeground, #aaa); }
+.worker-node-detail p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0; font-size: 12px; }
+.worker-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.worker-actions button { display: inline-flex; gap: 4px; width: auto; height: auto; min-height: 28px; padding: 4px; text-align: start; font-size: 11px; }
+.dispatch-highlight { outline: 1px solid var(--vscode-focusBorder, #3794ff); outline-offset: 3px; }
+.chat-list-children { padding-inline-start: 12px; border-inline-start: 1px solid var(--vscode-panel-border, #ffffff25); margin-inline-start: 18px; }
+.chat-list-workers-toggle { width: auto; gap: 3px; display: inline-flex; font-size: 10px; }
 .message-status { color: var(--vscode-descriptionForeground, #aaa); font-size: 12px; padding-top: 8px; }
 .content p { margin: 8px 0; }
 .content h1, .content h2, .content h3 { font-size: 15px; margin: 12px 0 6px; }
@@ -199,3 +235,7 @@ footer { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding:
 footer label { display: inline-flex; align-items: center; gap: 4px; }
 #provider { margin-left: auto; }
 @media (max-width: 300px) { #messages { padding: 4px 8px; } footer { gap: 4px; } }
+.worker-archive { max-width: min(900px, 90vw); max-height: 85vh; overflow: auto; color: var(--vscode-foreground); background: var(--vscode-editor-background); border: 1px solid var(--vscode-panel-border); }
+.worker-archive::backdrop { background: #0008; }
+.approval textarea { width: 100%; box-sizing: border-box; margin-top: 8px; }
+.worker-provenance { overflow-wrap: anywhere; font-size: 11px; opacity: .85; }

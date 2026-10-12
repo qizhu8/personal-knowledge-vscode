@@ -426,7 +426,12 @@ function writeSession(id, status, updatedAt) {
     await lifecycle.deleteAgentSessionGroup(groupState, group.groupId); assert.strictEqual(fs.readFileSync(groupPath, "utf8"), tombstone);
     await assert.rejects(lifecycle.deleteAgentSessionGroup(groupState, "../outside"), /identity is invalid/);
     const groupUi = { projectSnapshot: { agentSessionGroups: [group, { ...group, groupId: "hidden-fixture", deletedAt: "deleted" }] }, esc: escapeHtml,
-      buildCatTree: () => ({}), renderCatTree: () => "", recipeCopyPathMenu: () => ({ label: "Copy Group identity" }),
+      buildCatTree: () => ({ folders: {}, items: [] }),
+      renderCatTree: (tree, _path, _depth, _leaf, _q, folderAttr, _order, options) => {
+        const render = (node, ancestors = []) => Object.entries(node.folders).map(([name, child]) =>
+          `<div${folderAttr(child, name, [...ancestors, name])}>${options.renderFolderLabel(name)}${render(child, [...ancestors, name])}</div>`).join("");
+        return render(tree);
+      }, recipeCopyPathMenu: () => ({ label: "Copy Group identity" }),
       showPaperMenu: (_x, _y, items) => { groupUi.items = items; }, pkModal: options => { groupUi.confirmation = options; }, ask: (command, args) => { groupUi.request = { command, args }; } };
     vm.createContext(groupUi);
     const wantedGroupFunctions = new Set(["agentSessionGroupKey", "agentSessionTree", "agentSessionGroupCount", "agentSessionFolderMenu", "agentSessionSnapshotSignature", "agentSessionDisplayStatus", "agentSessionStatusIndicator"]);

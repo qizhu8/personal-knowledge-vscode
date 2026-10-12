@@ -1,0 +1,159 @@
+# Account-Level MCP Integration
+
+Status: account binding and native-provider implementation are present; live cross-workspace acceptance remains pending.
+
+## Decision
+
+PKM setup belongs to one target machine and one OS account, not to a workspace.
+One explicit setup must make the configured server discoverable from other
+workspaces using that same account and target. Native client trust, enablement,
+and per-chat tool selection remain separate decisions.
+
+Use the standard VS Code MCP definition provider as the primary VS Code entry
+point. Its definitions must derive from account-level configuration. Do not also
+install an equivalent workspace or user JSON entry. Prefer stdio: formal MCP
+integration does not require opening a network port or running a public service.
+
+This decision does not promise one MCP process. Several Remote Extension Hosts
+can launch separate stdio transports. Shared-state concurrency must work across
+those processes; a centralized Remote Server is not a singleton Extension Host.
+
+## Existing Implementation
+
+- [registerNativeMcpProvider](../../src/extension.ts) registers
+  `personalKnowledge.pkm`, creates remote-aware stdio definitions, and checks
+  trust and runtime readiness on explicit startup.
+- `rememberMachineStorePath` in the same module persists a machine root and
+  compares the global configuration value before updating it.
+- Config uses native startup guidance rather than a copyable Agent installation
+  prompt. It no longer directs an agent to register a duplicate through Agency.
+- The former Settings **Inject / Update All** path is retired. The
+  [legacy projection module](../../src/skills/pkm-skill-projection.ts) provides
+  backed-up removal; automatic integration maintenance no longer recreates
+  generated Router adapters.
+
+Do not infer cross-workspace discovery solely from provider registration or its
+internal storage scope. Definition visibility, server startup, client enablement,
+and tools actually available to an agent require separate live checks.
+
+## Identity and Configuration
+
+The account binding records a schema version, logical server identity, target
+machine identity, OS account identity, canonical Knowledge Root, managed runtime
+location, protocol version, and registration owner. Workspace folders are not
+part of server identity. Paths and account names are configuration, not secrets.
+
+Use stable identity across extension upgrades and runtime repairs. A label,
+process ID, workspace hash, or rotating build hash must not create another
+logical server. Multiple Knowledge Roots, if later supported, require explicit
+separate bindings; never silently select a root from the active editor.
+
+Store the binding locally for the execution target, without Settings Sync moving
+machine-specific executable paths to a different machine. Diagnose conflicting
+workspace overrides instead of allowing them to silently redirect this binding.
+The exact native settings representation must be verified on the supported VS
+Code version before replacing the current persistence mechanism.
+
+## Formal Setup
+
+1. Show the target machine/account, Knowledge Root, runtime, transport, and
+   registration owner before the user confirms setup.
+2. Verify ownership and private access to runtime, configuration, control state,
+   and Knowledge Root. Report unsafe inherited permissions; do not recursively
+   chmod user content without approval.
+3. Install or repair the managed runtime and regenerate the server using existing
+   extension-owned facilities. Never manually patch generated server output.
+4. Publish exactly one stable provider definition for this binding. Keep
+   discovery lightweight; runtime installation and health probes are explicit
+   asynchronous operations, not synchronous discovery work.
+5. Use native MCP trust/start controls. Verify protocol initialization, tool
+   listing, and `check_version` through the actual agent tool surface.
+6. Open another workspace on the same target/account and repeat discovery with
+   no project setup. Record any native client consent separately from PKM setup.
+
+For a client without provider support, offer an explicit user-level registration
+adapter. In Remote SSH this must be a remote-user registration, not a Windows
+local launch of Linux executables. Provider and manual adapters are mutually
+exclusive registration owners within the same client, never automatic duplicates.
+Copilot CLI / SDK sessions that do not inherit VS Code provider definitions need
+their own explicit user-level registration in `~/.copilot/mcp-config.json`.
+General & MCP shows a separate `mcpServers` / `type: "local"` snippet derived
+from the same managed stdio launch definition, including Windows environment
+variables. PKM does not write this external configuration automatically.
+Registration enabled, transport connected, and tools callable remain separate
+checks.
+
+## Security Boundary
+
+Other ordinary OS accounts must not read PKM state or invoke account-private
+control endpoints. On Linux, account-private directories use mode `0700` and
+sensitive state/config files use `0600`, with ownership and ancestor access
+checks. Executable assets retain the permissions needed to run. On Windows,
+validate the account DACL and inherited access; POSIX mode bits are insufficient.
+
+Stdio is carried over the client-launched process pipes and exposes no listening
+port. It does not protect group-readable Knowledge Roots or unsafe executable
+paths. Same-account extensions and processes share this trust boundary; root,
+administrators, and a compromised owning account are outside the isolation
+promise.
+
+If a shared broker is needed, justify it independently. Prefer an account-private
+Unix socket with peer-UID validation, or a Windows named pipe with a restricted
+DACL and peer validation. A localhost HTTP listener alone is not Linux-account
+isolation. Any HTTP adapter needs authenticated access and an explicit security
+design; it is not the default deployment.
+
+An authenticated Windows Remote SSH connection can intentionally use the Linux
+account's PKM deployment. An unrelated Windows-local workspace cannot implicitly
+use it and needs its own deployment or an explicitly authorized remote adapter.
+
+MCP discovery never grants tool approval. Preserve Workspace Trust, native tool
+consent, and PKM-specific approval boundaries. Diagnostics omit credentials,
+private content, and environment dumps.
+
+## Skill Integration
+
+MCP registration exposes capabilities without injecting workflow policy into
+Agent Skill directories. Canonical PKM Skills remain knowledge content and can
+still be retrieved explicitly.
+
+An explicit **PKM: Remove Legacy Agent Injection** command archives matching
+PKM-managed Router files before removing them and clears connected-target state.
+Unowned files, symlinks and canonical Skills are preserved. No automatic
+startup deletion or reinjection is performed.
+
+## Migration and Rollback
+
+1. Inventory provider, Agency, user/remote-user, and workspace registrations.
+   Identify managed entries by ownership and target binding, not just `pkm` label.
+2. Preview the new binding and conflicting entries. Back up only the relevant
+   configuration before any authorized mutation; preserve unrelated servers.
+3. Verify the native provider path in a clean second workspace before retiring
+   managed legacy entries. User-authored entries require an explicit choice.
+4. Update onboarding and diagnostics to name the registration owner. Report
+   configured, discovered, trusted, started, tools-listed, and agent-visible as
+   distinct states; do not collapse them into a misleading green indicator.
+5. Retain a reversible migration record. Rollback restores the selected previous
+   owner/configuration without starting duplicate servers or rewriting history.
+
+An extension upgrade must not silently change target/account, reset trust, replay
+requests, or restart all hosts. Do not publish until local acceptance is complete.
+
+## Acceptance Gates
+
+| Gate | Required evidence |
+| --- | --- |
+| One setup | Fresh workspace A configures the target once; workspace B has no project MCP file and discovers the same binding. |
+| Real tools | An agent in each window lists and invokes `check_version`; provider/catalog presence alone is insufficient. |
+| No duplicate | Exactly one registration owner per binding, including upgrade and migration from Agency/workspace entries. |
+| Remote routing | Windows SSH launches the Linux runtime on the intended target; Windows-local does not run Linux paths. |
+| Account isolation | A second ordinary account cannot read private state or connect to any control socket/pipe. |
+| Native consent | Untrusted or disabled configurations do not run privileged tools; PKM setup does not bypass native approval. |
+| Parallel transports | Two stdio clients can read/write shared runtime state without lost updates or duplicate operations. |
+| Recovery | Repair/upgrade preserves identity; rollback preserves unrelated registrations and existing Knowledge Roots. |
+| Responsiveness | Discovery is bounded and nonblocking; failures distinguish transport, runtime, trust, and tool visibility. |
+
+These are release gates, not completed test results. Implement the binding and
+registration lifecycle first, then migrate onboarding, run isolated security and
+multi-window tests, package, and locally install. Publication remains a separate
+user decision.

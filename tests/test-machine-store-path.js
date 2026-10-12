@@ -94,9 +94,10 @@ async function checkStartupPersistence() {
   const sandbox = vm.createContext({ MACHINE_STORE_PATH_KEY: "machine", vscode: {
     workspace: { getConfiguration: () => ({
       get: () => configured,
+      inspect: () => ({ globalValue: configured }),
       update: async (_key, value) => { writes.push("configuration"); configured = value; },
     }) }, ConfigurationTarget: { Global: 1 },
-  } });
+  }, _nativeMcpProvider: true, readAccountMcpBinding: () => undefined, writeAccountMcpBinding: async () => {} });
   vm.runInContext(ts.transpileModule(helper[0], { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText, sandbox);
   await sandbox.rememberMachineStorePath(context, "/linux/store");
   assert.deepStrictEqual(writes, [], "unchanged setup must not await redundant persistent writes");

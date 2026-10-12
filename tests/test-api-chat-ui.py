@@ -53,6 +53,27 @@ class ChatUiTests(unittest.TestCase):
                     expect(warning).to_contain_text('Extension Host is not responding')
                     page.evaluate("window.dispatchEvent(new MessageEvent('message',{data:window.__posts.filter(message=>message.command==='hostHealth').at(-1)}))")
                     expect(warning).to_be_hidden()
+                    page.evaluate("""() => {
+                        projectSnapshot = {agentSessionGroups:[
+                            {groupId:'manager',hostKind:'pkm',hostSessionId:'Manager',title:'Manager',libraryGroupId:'research',libraryGroupTitle:'Research / Group',workerTreeId:'tree'},
+                            {groupId:'worker',hostKind:'pkm',hostSessionId:'Worker',title:'Worker',libraryGroupId:'ungroup',libraryGroupTitle:'Ungroup',workerTreeId:'tree',workerParentChatId:'Manager'},
+                            {groupId:'empty',hostKind:'pkm',hostSessionId:'Empty',title:'Empty Chat',libraryGroupId:'research',libraryGroupTitle:'Research / Group'}
+                        ]};
+                        const fixture=document.createElement('section');fixture.id='session-group-fixture';
+                        fixture.innerHTML=agentSessionTree([
+                            {sessionId:'task_manager',groupId:'manager',task:'Parent Task',status:'running'},
+                            {sessionId:'task_worker',groupId:'worker',task:'Worker Task',status:'paused'}
+                        ]);
+                        document.body.append(fixture);
+                    }""")
+                    groups = page.locator('#session-group-fixture .agent-session-tree > .tree-cat')
+                    expect(groups).to_have_count(1)
+                    expect(groups.locator(':scope > .tree-cat-hdr .tree-cat-label')).to_contain_text('Research / Group')
+                    expect(groups.locator(':scope > .tree-cat-body > .tree-cat')).to_have_count(2)
+                    expect(page.locator('#session-group-fixture .agent-session-row')).to_have_count(2)
+                    expect(page.locator('#session-group-fixture')).to_contain_text('No Task')
+                    expect(page.locator('#session-group-fixture .tree-cat .tree-cat .tree-cat')).to_have_count(1)
+                    page.locator('#session-group-fixture').evaluate('node=>node.remove()')
                     page.close()
             finally:
                 browser.close()
@@ -64,6 +85,7 @@ class ChatUiTests(unittest.TestCase):
             "nonce": "isolated-chat-ui", "cspSource": "https://chat.test",
             "styles": "api-chat.css", "script": "api-chat.js", "icons": "codicon.css",
             "marked": "marked.umd.js", "purify": "purify.min.js",
+            "katex": "katex.js", "katexStyles": "katex.css", "mermaid": "mermaid.js",
             "libraryScript": "api-chat-library.js", "retrievalScript": "chat-retrieval-flow.js",
             "hostHealthScript": "host-health.js", "hostHealthStyles": "host-health.css",
         }
@@ -86,7 +108,7 @@ class ChatUiTests(unittest.TestCase):
                 "selectedProfile": {"id": "fixture", "model": "fixture", "label": "Fixture", "status": "active", "contextWindow": 8192, "maxOutputTokens": 1024}}}
 
         def serve(route):
-            name = Path(urlsplit(route.request.url).path).name
+            name = urlsplit(route.request.url).path.lstrip("/")
             if not name:
                 route.fulfill(content_type="text/html", body=page_html)
             elif (assets / name).is_file():
@@ -106,7 +128,7 @@ class ChatUiTests(unittest.TestCase):
                         page.on("pageerror", lambda error: errors.append(str(error)))
                         page.clock.install()
                         page.route("https://chat.test/**", serve)
-                        page.add_init_script("window.__posts=[];window.acquireVsCodeApi=()=>({getState:()=>({screen:'chat'}),setState:()=>{},postMessage:value=>window.__posts.push(value)});")
+                        page.add_init_script("window.__posts=[];window.__sendSnapshots=[];window.acquireVsCodeApi=()=>({getState:()=>({screen:'chat'}),setState:()=>{},postMessage:value=>{if(value.type==='send')window.__sendSnapshots.push(document.querySelector('.optimistic-message')?.textContent);window.__posts.push(value)}});")
                         page.goto("https://chat.test/")
                         page.wait_for_function("window.__posts.some(message=>message.type==='ready')")
                         expect(page.get_by_role('progressbar', name='Loading PKM Chat')).to_be_visible()
@@ -138,8 +160,62 @@ class ChatUiTests(unittest.TestCase):
                         page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", waiting)
                         expect(page.locator('#chat-list .chat-status-indicator')).to_have_attribute('aria-label', 'Waiting for Input')
                         expect(page.locator('#messages .message')).to_have_count(0)
+                        tree_fixture = {**fixture, "library": {"groups": [{"id": "specialists", "name": "Specialists"}], "chats": [
+                            {**fixture["library"]["chats"][0], "status": "idle", "workerTreeId": "tree"},
+                            {"id": "idle_a", "title": "Idle A", "status": "idle", "groupId": "ungroup"},
+                            {"id": "idle_b", "title": "Idle B", "status": "idle", "groupId": "ungroup"},
+                            {"id": "child", "title": "Temporary worker", "status": "idle", "groupId": "ungroup", "workerParentChatId": "chat_fixture", "workerTreeId": "tree"},
+                            {"id": "existing", "title": "Existing specialist", "status": "idle", "groupId": "specialists"},
+                        ]}}
+                        page.evaluate("""data => {
+                            window.__treeFixture = data;
+                            window.dispatchEvent(new MessageEvent('message', {data}));
+                            const selector = '.chat-list-group[data-group-id="ungroup"] > .chat-list-node > .chat-list-row > .chat-list-open';
+                            window.__stableRows = [...document.querySelectorAll(selector)];
+                            window.__stableOrder = window.__stableRows.map(node => node.dataset.chatId);
+                        }""", tree_fixture)
+                        expect(page.locator('[data-node-chat-id="chat_fixture"] .chat-list-children [data-node-chat-id="child"]')).to_have_count(1)
+                        expect(page.locator('[data-group-id="specialists"] [data-node-chat-id="existing"]')).to_have_count(1)
+                        self.assertTrue(page.evaluate("""() => {
+                            for (let i = 0; i < 50; i++) {
+                                for (const chat of window.__treeFixture.library.chats) chat.updatedAt = i;
+                                window.dispatchEvent(new MessageEvent('message', {data: window.__treeFixture}));
+                            }
+                            const rows = [...document.querySelectorAll('.chat-list-group[data-group-id="ungroup"] > .chat-list-node > .chat-list-row > .chat-list-open')];
+                            return rows.every((node, index) => node === window.__stableRows[index]);
+                        }"""), "Fifty progress refreshes preserve button identity and order")
+                        self.assertTrue(page.evaluate("""() => {
+                            window.__treeFixture.library.chats.find(chat => chat.id === 'idle_b').status = 'running';
+                            window.dispatchEvent(new MessageEvent('message', {data: window.__treeFixture}));
+                            const ids = [...document.querySelectorAll('.chat-list-group[data-group-id="ungroup"] > .chat-list-node > .chat-list-row > .chat-list-open')].map(node => node.dataset.chatId);
+                            return JSON.stringify(ids) === JSON.stringify(['idle_b', ...window.__stableOrder.filter(id => id !== 'idle_b')]);
+                        }"""), "Only active-state partition changes ordering")
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", waiting)
                         page.evaluate("window.dispatchEvent(new MessageEvent('message',{data:{type:'showChat'}}))")
                         expect(page.locator('#messages .message')).to_have_count(1)
+                        worker_ui = {**fixture, "workerOverview": {"rootChatId": "chat_fixture", "activeWorkers": 0, "quota": 6, "maximum": 10, "nodes": [
+                            {"chatId": "chat_fixture", "title": "Manager", "status": "completed"},
+                            {"chatId": "archived", "parentChatId": "chat_fixture", "title": "Archived worker", "status": "completed", "archived": True, "receiptId": "receipt_fixture", "dispatchedAt": started},
+                        ]}, "approvals": [{"id": "quota_fixture", "title": "Increase capacity", "detail": "3 to 6", "scope": "Worker quota", "once": True, "quota": True, "questions": []}]}
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", worker_ui)
+                        expect(page.locator('#workers-summary')).to_contain_text('Capacity: 0/6')
+                        if page.locator('#workers-toggle').get_attribute('aria-expanded') == 'false':
+                            page.locator('#workers-toggle').click()
+                        expect(page.locator('#workers-tree .worker-node')).to_have_count(2)
+                        expect(page.locator('.approval').get_by_role('button', name='Yes', exact=True)).to_be_enabled()
+                        expect(page.locator('.approval').get_by_role('button', name='No', exact=True)).to_be_enabled()
+                        page.locator('.approval textarea').fill('Is capacity reusable?')
+                        page.locator('.approval').get_by_role('button', name='Let me ask a question', exact=True).click()
+                        self.assertTrue(page.evaluate("window.__posts.some(message=>message.type==='approvalQuestion'&&message.text==='Is capacity reusable?')"))
+                        self.assertFalse(page.evaluate("window.__posts.some(message=>message.type==='approval'&&message.id==='quota_fixture')"))
+                        page.locator('[data-chat-id="archived"] > summary').click()
+                        page.locator('[data-chat-id="archived"]').get_by_role('button', name='Archived result', exact=True).click()
+                        self.assertTrue(page.evaluate("window.__posts.some(message=>message.type==='workerArchive'&&message.id==='receipt_fixture')"))
+                        page.evaluate("window.dispatchEvent(new MessageEvent('message',{data:{type:'workerArchive',chatId:'chat_fixture',receiptId:'receipt_fixture',title:'Archived worker',answer:'**Durable answer**',tools:[{name:'read_file',status:'complete'}]}}))")
+                        expect(page.locator('.worker-archive strong')).to_have_text('Durable answer')
+                        expect(page.locator('.worker-archive')).to_contain_text('read_file: complete')
+                        page.locator('.worker-archive').get_by_role('button', name='Close', exact=True).click()
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", fixture)
                         expect(page.locator('#pkm-host-warning')).to_be_hidden()
                         expect(page.locator('#pkm-chat-loading')).to_be_hidden()
                         expect(page.locator('#send')).to_be_visible()
@@ -148,12 +224,39 @@ class ChatUiTests(unittest.TestCase):
                             page.locator(f'#{mode}-mode').click()
                             page.locator('#prompt').fill(text)
                             page.locator('#send').click()
+                            page.clock.run_for(32)
+                            page.wait_for_function("() => window.__posts.some(message=>message.type==='send'&&message.text===document.getElementById('prompt').value)")
                             sent = page.evaluate("window.__posts.filter(message=>message.type==='send').at(-1)")
                             self.assertIsNotNone(sent, {'errors': errors, 'form': page.locator('#composer').evaluate("node=>({valid:node.checkValidity(),invalid:Array.from(node.querySelectorAll(':invalid')).map(item=>({id:item.id,message:item.validationMessage}))})"), 'hostUnavailable': page.evaluate('window.PkmHostHealth.unavailable')})
                             self.assertEqual(sent['text'], text)
                             self.assertEqual(sent['mode'], mode)
+                            expect(page.locator('.optimistic-message').filter(has_text=text)).to_contain_text('Sending')
+                            self.assertIn(text, page.evaluate("window.__sendSnapshots.at(-1)"))
+                            page.locator('#prompt').press('Enter')
+                            self.assertEqual(page.evaluate("window.__posts.filter(message=>message.type==='send'&&message.submissionId==='%s').length" % sent['submissionId']), 1)
                             page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", {'type': 'sendAccepted', 'chatId': sent['chatId'], 'submissionId': sent['submissionId']})
                             expect(page.locator('#prompt')).to_have_value('')
+                            expect(page.locator('.optimistic-message').filter(has_text=text)).to_contain_text('Accepted')
+                            synced = {**fixture, 'chat': {**fixture['chat'], 'queuedInputs': [{'id': sent['submissionId'], 'mode': mode, 'text': text}]}}
+                            page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", synced)
+                            expect(page.locator('.optimistic-message')).to_have_count(0)
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", {**fixture, 'remoteBusy': True})
+                        expect(page.locator('#steer-mode')).to_be_disabled()
+                        expect(page.locator('#stop')).to_be_disabled()
+                        expect(page.locator('#permission-mode')).to_be_disabled()
+                        page.locator('#prompt').fill('Task from this sending window')
+                        expect(page.locator('#send')).to_be_enabled()
+                        page.locator('#send').click()
+                        page.clock.run_for(32)
+                        page.wait_for_function("() => window.__posts.some(message=>message.type==='send'&&message.text==='Task from this sending window')")
+                        foreign_sent = page.evaluate("window.__posts.filter(message=>message.type==='send').at(-1)")
+                        self.assertEqual(foreign_sent['mode'], 'task')
+                        self.assertEqual(foreign_sent['text'], 'Task from this sending window')
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", {'type': 'sendAccepted', 'chatId': foreign_sent['chatId'], 'submissionId': foreign_sent['submissionId']})
+                        expect(page.locator('#prompt')).to_have_value('')
+                        foreign_synced = {**fixture, 'chat': {**fixture['chat'], 'messages': [*fixture['chat']['messages'], {'id': 'foreign_user', 'role': 'user', 'content': foreign_sent['text'], 'status': 'complete', 'submissionId': foreign_sent['submissionId']}]}}
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", foreign_synced)
+                        expect(page.locator('.optimistic-message')).to_have_count(0)
                         queued_fixture = {**fixture, 'chat': {**fixture['chat'], 'queuedInputs': [{'id': 'queued_fixture', 'mode': 'task', 'text': 'Queued evidence check'}]}}
                         page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", queued_fixture)
                         expect(page.locator('#queued-inputs')).to_contain_text('Queued evidence check')
@@ -168,6 +271,31 @@ class ChatUiTests(unittest.TestCase):
                         expect(page.locator('.delegation-answer')).to_contain_text('<img src=x onerror=alert(1)>')
                         expect(page.locator('.delegation-result img')).to_have_count(0)
                         expect(page.locator('.delegation-result .chat-status-indicator')).to_have_attribute('data-state', 'completed')
+                        rich_text = "# Rich result\n\n**Evidence** $x^2$ and \\(y+1\\).\n\n$$\\frac{a}{b}$$\n\n```mermaid\nflowchart LR\n A[Input] --> B[Result]\n```\n\n`$not_math$`\n\n[Unsafe](javascript:alert(1))"
+                        rich = {**fixture, 'chat': {**fixture['chat'], 'messages': [{**fixture['chat']['messages'][0], 'content': rich_text, 'delegations': [{'id': 'rich_receipt', 'chatUrl': chat_url, 'status': 'complete', 'answer': rich_text}]}]}}
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", rich)
+                        expect(page.locator('.delegation-answer h1')).to_have_text('Rich result')
+                        expect(page.locator('.delegation-answer .katex')).to_have_count(3)
+                        expect(page.locator('.delegation-answer .mermaid-diagram svg')).to_have_count(1)
+                        expect(page.locator('.message > .content .mermaid-diagram svg')).to_have_count(1)
+                        expect(page.locator('.delegation-answer code')).to_have_text('$not_math$')
+                        self.assertIsNone(page.locator('.delegation-answer a').get_attribute('href'))
+                        page.evaluate("window.__diagram=document.querySelector('.delegation-answer .mermaid-diagram svg')")
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", rich)
+                        self.assertTrue(page.evaluate("window.__diagram===document.querySelector('.delegation-answer .mermaid-diagram svg')"))
+                        invalid = {**rich, 'chat': {**rich['chat'], 'messages': [{**rich['chat']['messages'][0], 'content': '$\\invalidcommand{x}$\n\n```mermaid\nnot a diagram\n```'}]}}
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", invalid)
+                        expect(page.locator('.message > .content .rich-render-error')).to_have_count(2)
+                        page.locator('#prompt').fill('Failure draft')
+                        page.locator('#send').click()
+                        page.clock.run_for(32)
+                        page.wait_for_function("() => window.__posts.some(message=>message.type==='send'&&message.text==='Failure draft')")
+                        failed_send = page.evaluate("window.__posts.filter(message=>message.type==='send').at(-1)")
+                        page.locator('#prompt').fill('New draft typed while sending')
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", {'type': 'error', 'message': 'Explicit fixture rejection', 'chatId': failed_send['chatId'], 'submissionId': failed_send['submissionId']})
+                        expect(page.locator('.optimistic-message')).to_have_count(0)
+                        expect(page.locator('#prompt')).to_have_value('New draft typed while sending')
+                        expect(page.locator('#send')).to_be_enabled()
                         page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", fixture)
                         self.assertLessEqual(page.evaluate('document.documentElement.scrollWidth'), width)
                         expect(page.get_by_role('link', name='Chat link', exact=True)).to_have_attribute('href', chat_url)

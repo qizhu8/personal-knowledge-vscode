@@ -3,7 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src {{cspSource}}; font-src {{cspSource}}; script-src 'nonce-{{nonce}}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src {{cspSource}} 'unsafe-inline'; font-src {{cspSource}}; script-src 'nonce-{{nonce}}';">
+  <meta name="pkm-katex-src" content="{{katex}}">
+  <meta name="pkm-katex-styles" content="{{katexStyles}}">
+  <meta name="pkm-mermaid-src" content="{{mermaid}}">
   <link rel="stylesheet" href="{{icons}}">
   <link rel="stylesheet" href="{{styles}}">
   <link rel="stylesheet" href="{{hostHealthStyles}}">
@@ -27,6 +30,20 @@
     <button id="settings" title="Model connection" aria-label="Model connection"><span class="codicon codicon-gear"></span></button>
   </header>
   <div id="error" class="error" role="alert" hidden></div>
+  <section id="workers" aria-label="Workers">
+    <button id="workers-toggle" type="button" aria-expanded="false" aria-controls="workers-panel">
+      <span class="codicon codicon-type-hierarchy" aria-hidden="true"></span>
+      <strong>Workers</strong><span id="workers-count">0</span>
+      <span id="workers-summary"></span>
+      <span class="codicon codicon-chevron-down" aria-hidden="true"></span>
+    </button>
+    <div id="workers-announcement" class="visually-hidden" role="status" aria-live="polite"></div>
+    <section id="workers-panel" aria-label="Worker task tree" hidden>
+      <p id="workers-note">Read-only overview · viewing does not call models</p>
+      <div id="workers-notice"></div>
+      <div id="workers-tree" role="list"></div>
+    </section>
+  </section>
   <main id="messages" aria-label="Messages" aria-busy="false"></main>
   <section id="applied-edits" aria-label="Applied edits" hidden></section>
   <form id="composer">

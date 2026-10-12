@@ -9,6 +9,7 @@ import { JsonFileCache } from "./runtime/json-file-cache";
 import { agentSessionGroup } from "./agent-sessions/agent-session-lifecycle";
 import { deleteAgentSessionGroup } from "./agent-sessions/agent-session-lifecycle";
 import { DiagnosticLog } from "./runtime/diagnostic-log";
+import { sanitizeRetrievalCandidatesV1 } from "./retrieval/retrieval-contracts";
 import { ExtensionHostRegistry, loadedExtensionBuild, readInstalledExtensionBuild } from "./runtime/extension-host-runtime";
 import * as vscode from "vscode";
 import * as path from "path";
@@ -85,17 +86,16 @@ import { registerApiChatShell } from "./chat/api-chat-shell";
 import { initializeActionChat, openActionWorkbench, openActionWorkbenchInBrowser } from "./ui/action-browser";
 import { agentSessionOrigin, apiChatGroupSnapshots } from "./chat/api-chat-store";
 import {
-  cancelMcpPythonScan, combinedMcpInstallInstruction, combinedMcpRegistry,
+  cancelMcpPythonScan, combinedMcpRegistry,
   configuredMcpFeatureDomains, detectMcpPython, ensureMcpRuntime, generateMcpServer, MCP_FEATURE_DOMAINS, McpFeatureDomain,
   managedMcpRuntimePath, managedMcpServerDirectory, mcpProcessStatus, mcpRuntimeManualCommands, mcpRuntimeStatus, mcpServerDefinitionData, mcpStatus, streamMcpPythonCandidates,
   resolveMcpPython, validateMcpPython, writeMcpFeatureDomainConfig, writeActionWorkspaceConfig,
 } from "./mcp/mcp";
 import { nativeMcpCwdUri } from "./mcp/mcp-native-location";
+import { readAccountMcpBinding, writeAccountMcpBinding, accountKnowledgeSecurity } from "./mcp/mcp-account-binding";
 import { scheduleRestoredWebviewRecovery } from "./ui/webview-restoration";
 import {
-  addPkmSkillCustomTarget, connectPkmSkill, disconnectPkmSkill,
-  pkmSkillProjectionStatus, reconcilePkmSkillProjections,
-  removePkmSkillCustomTarget, resolvePkmSkillTargetPath,
+  disconnectPkmSkill, retirePkmSkillProjections,
 } from "./skills/pkm-skill-projection";
 import { cachedPromptAnalysis, inspectPromptCached, renderPrompt } from "./ui/prompt-manager";
 import { canonicalJson, compileWorkflowDefinitionV1, WorkflowDefinitionV1 } from "./workflows/workflow-contracts";
@@ -516,22 +516,18 @@ function mcpPanelStatusData(traceId = "", includeUsage = true): object {
   const storePathValid = !!activeStorePath && directoryExists(activeStorePath);
   const cloudStore = activeStorePath ? cloudSynchronizedPath(activeStorePath) : undefined;
   const storeHost = extensionHostDescription(process.platform, os.hostname(), vscode.env.remoteName || "");
-  const proposalDir = getStorePath() ? path.join(getStorePath(), "_proposals", "skills") : "";
-  const skillProposals = loadProfiler.measure("host.mcp.skill_proposals", trace, () => proposalDir && fs.existsSync(proposalDir)
-    ? fs.readdirSync(proposalDir).filter(name => name.endsWith(".md")).sort().reverse().map(name => ({ name, path: path.join(proposalDir, name) }))
-    : []);
-  const pkmSkill = loadProfiler.measure("host.mcp.skill_projection", trace,
-    () => chatCtx && getStorePath() ? pkmSkillProjectionStatus(chatCtx) : null);
+  const accountBinding = readAccountMcpBinding();
+  const accountSecurity = activeStorePath ? accountKnowledgeSecurity(activeStorePath) : { private: false, detail: "No account Knowledge Root is configured." };
   const guideDismissed = !!chatCtx?.globalState.get<boolean>("pkm.integrationGuideDismissed.v1", false);
   const guideStep = !guideDismissed && !python.valid ? "python"
-    : !guideDismissed && pkmSkill?.targets.some(target => target.state === "missing") ? "skill"
     : "";
   return {
     ...info,
     extensionVersion: String(chatCtx?.extension?.packageJSON?.version || "unknown"),
     combinedRegistry: runtime.healthy ? combinedMcpRegistry() : "",
-    agencyInstallInstruction: combinedMcpInstallInstruction(),
     nativeMcpProvider: _nativeMcpProvider,
+    accountBinding: accountBinding || null,
+    accountSecurity,
     mcpProcess: mcpProcessStatus(),
     store: {
       path: activeStorePath,
@@ -558,14 +554,11 @@ function mcpPanelStatusData(traceId = "", includeUsage = true): object {
       { id: "exact", name: "Exact", kind: "Deterministic", version: "1", status: "active", description: "Hard exact constraints and identifier matches." },
       { id: "bm25", name: "BM25", kind: "Lexical", version: "academic-k1=0.9-b=0.4", status: "active", description: "Frozen relevance ranking across the typed Subscriber index." },
     ],
-    pkmSkill,
     firstRunGuide: { visible: !!guideStep, step: guideStep },
     automaticSetup: { state: integrationMaintenanceState, error: integrationMaintenanceError },
     performance: performanceStateDir ? performanceSummary(performanceStateDir) : {},
     loadProfiling: { enabled: loadProfiler.enabled(), logFile: loadProfiler.logPath() },
     externalLink: { ...externalLinkHostOptions(), contentPort: publicContentActivePort || publicContentPort() },
-    skillProposals,
-    skillProposalDir: proposalDir,
   };
 }
 
@@ -3206,14 +3199,18 @@ function localAbsolutePathError(candidate: string): string | undefined {
 }
 
 function resolvedStorePath(context: vscode.ExtensionContext): ReturnType<typeof resolveMachineStorePath> {
+  const binding = readAccountMcpBinding();
+  if (binding) return resolveMachineStorePath({ machinePath: binding.knowledgeRoot }, directoryExists);
   return resolveMachineStorePath({
     machinePath: context.globalState.get<string>(MACHINE_STORE_PATH_KEY, ""),
-    configuredPath: vscode.workspace.getConfiguration("personalKnowledge").get<string>("storePath", ""),
+    configuredPath: vscode.workspace.getConfiguration("personalKnowledge").inspect<string>("storePath")?.globalValue || "",
     previousPath: context.globalState.get<string>("lastStorePath", ""),
   }, directoryExists);
 }
 
-async function rememberMachineStorePath(context: vscode.ExtensionContext, storePath: string): Promise<void> {
+async function rememberMachineStorePath(context: vscode.ExtensionContext, storePath: string, allowReconfigure = false): Promise<void> {
+  const owner = !allowReconfigure ? readAccountMcpBinding()?.registrationOwner : undefined;
+  await writeAccountMcpBinding(storePath, owner || (_nativeMcpProvider ? "native-provider" : "manual-user"), allowReconfigure);
   if (context.globalState.get<string>(MACHINE_STORE_PATH_KEY) !== storePath) await context.globalState.update(MACHINE_STORE_PATH_KEY, storePath);
   if (context.globalState.get<string>("lastStorePath") !== storePath) await context.globalState.update("lastStorePath", storePath);
   if (context.globalState.get<boolean>("setupComplete") !== true) await context.globalState.update("setupComplete", true);
@@ -3255,8 +3252,14 @@ function registerNativeMcpProvider(context: vscode.ExtensionContext): void {
   };
   const provider = {
     onDidChangeMcpServerDefinitions: changed.event,
-    provideMcpServerDefinitions: () => getStorePath() ? [createDefinition()] : [],
-    resolveMcpServerDefinition: () => createDefinition(),
+    provideMcpServerDefinitions: () => getStorePath() && readAccountMcpBinding()?.registrationOwner !== "manual-user" ? [createDefinition()] : [],
+    resolveMcpServerDefinition: () => {
+      const binding = readAccountMcpBinding();
+      if (binding && (binding.registrationOwner !== "native-provider" || binding.knowledgeRoot !== fs.realpathSync(getStorePath()))) {
+        throw new Error("PKM MCP binding changed or belongs to a manual adapter. Use explicit account setup; this window cannot adopt another binding.");
+      }
+      return createDefinition();
+    },
   };
   context.subscriptions.push(changed, api.lm.registerMcpServerDefinitionProvider("personalKnowledge.pkm", provider));
   context.subscriptions.push(vscode.commands.registerCommand("personalKnowledge.startPkmMcp", async () => {
@@ -5379,7 +5382,7 @@ function initializePanel(target: vscode.WebviewPanel, context: vscode.ExtensionC
     if (panel === target) panel = undefined;
     _panelReady = false;
     loadProfiler.record("host.panel.disposed", { heartbeatAgeMs: Date.now() - _panelLastHeartbeat });
-    log.info(`panel disposed visible=${target.visible} active=${target.active} heartbeatAgeMs=${Date.now() - _panelLastHeartbeat}${_panelLastDiagnostic ? ` lastDiagnostic=${_panelLastDiagnostic}` : ""}`);
+    log.info(`panel disposed heartbeatAgeMs=${Date.now() - _panelLastHeartbeat}${_panelLastDiagnostic ? ` lastDiagnostic=${_panelLastDiagnostic}` : ""}`);
   }, undefined, context.subscriptions);
 }
 
@@ -9166,37 +9169,12 @@ async function handleMessage(
       break;
     }
 
-    case "pkmSkillInject": {
-      let ok = false;
-      try {
-        const target = await connectPkmSkill(context, String(msg.id || ""));
-        log.action("pkmSkill.inject", { target: target.id, path: target.skillPath, state: target.state });
-        ok = true;
-        respond({ command: "mcpStatus", data: mcpPanelStatusData() });
-        vscode.window.setStatusBarMessage("$(check) PKM Skill injected", 4000);
-      } catch (error: any) {
-        respond({ command: "mcpError", data: { error: error?.message || String(error) } });
-      } finally {
-        respond({ command: "pkmSkillUpdateComplete", data: { ok } });
-      }
-      break;
-    }
-
-    case "pkmSkillInjectAll": {
-      const ids = [...new Set<string>((Array.isArray(msg.ids) ? msg.ids : []).map((id: unknown) => String(id || "")).filter(Boolean))];
-      const errors: string[] = [];
-      for (const id of ids) {
-        try {
-          const target = await connectPkmSkill(context, id);
-          log.action("pkmSkill.inject", { target: target.id, path: target.skillPath, state: target.state, bulk: true });
-        } catch (error: any) { errors.push(`${id}: ${error?.message || String(error)}`); }
-      }
-      respond({ command: "mcpStatus", data: mcpPanelStatusData() });
-      if (errors.length) respond({ command: "mcpError", data: { error: `Updated ${ids.length - errors.length}/${ids.length} targets. ${errors.join("; ")}` } });
-      else vscode.window.setStatusBarMessage(`$(check) Updated ${ids.length} PKM Skill targets`, 4000);
-      respond({ command: "pkmSkillUpdateComplete", data: { ok: errors.length === 0 } });
-      break;
-    }
+    case "pkmSkillInject":
+    case "pkmSkillInjectAll":
+    case "pkmSkillBrowseCustomTarget":
+    case "pkmSkillEnterCustomTarget":
+    case "pkmSkillRemoveCustomTarget":
+      throw new Error("Legacy Agent Skill injection is retired. Use the account-level PKM MCP registration instead.");
 
     case "pkmSkillRemove": {
       try {
@@ -9234,50 +9212,6 @@ async function handleMessage(
       const result = await vscode.commands.executeCommand<{ ok?: boolean; cancelled?: boolean; message?: string; error?: string }>("personalKnowledge.reconfigureMcpServerPath");
       respond({ command: "mcpStatus", data: mcpPanelStatusData() });
       respond({ command: "mcpActionResult", data: { action: "reconfigureMcpServerPath", ...(result || { cancelled: true }) } });
-      break;
-    }
-
-    case "pkmSkillBrowseCustomTarget": {
-      const picked = await vscode.window.showOpenDialog({ canSelectFiles: false, canSelectFolders: true, canSelectMany: false, title: "Select an Agent Skills root folder" });
-      if (!picked?.[0]) break;
-      const label = await vscode.window.showInputBox({ title: "Custom Agent Target", prompt: "Name shown in PKM Config.", value: path.basename(picked[0].fsPath) || "Custom Agent" });
-      if (label === undefined) break;
-      await addPkmSkillCustomTarget(context, picked[0].fsPath, label);
-      log.action("pkmSkill.customTarget.add", { path: picked[0].fsPath });
-      respond({ command: "mcpStatus", data: mcpPanelStatusData() });
-      break;
-    }
-
-    case "pkmSkillEnterCustomTarget": {
-      const windows = process.platform === "win32";
-      const entered = await vscode.window.showInputBox({
-        title: "Enter Agent Skills Root",
-        prompt: "PKM will create pkm-skills/SKILL.md inside this directory. Environment variables and ~ are supported.",
-        placeHolder: windows ? "%USERPROFILE%\\.copilot\\skills or C:\\AgentSkills" : "~/.copilot/skills or /home/me/agent-skills",
-        validateInput: value => {
-          try { resolvePkmSkillTargetPath(value); return undefined; }
-          catch (error) { return (error as Error).message; }
-        },
-      });
-      if (entered === undefined) break;
-      const resolved = resolvePkmSkillTargetPath(entered);
-      const label = await vscode.window.showInputBox({
-        title: "Custom Agent Target",
-        prompt: `Resolved root: ${resolved}`,
-        value: path.basename(resolved) || "Custom Agent",
-      });
-      if (label === undefined) break;
-      await addPkmSkillCustomTarget(context, resolved, label);
-      log.action("pkmSkill.customTarget.add", { path: resolved, source: "manual" });
-      respond({ command: "mcpStatus", data: mcpPanelStatusData() });
-      break;
-    }
-
-    case "pkmSkillRemoveCustomTarget": {
-      try { await disconnectPkmSkill(context, String(msg.id || "")); } catch { /* an absent projection is fine */ }
-      await removePkmSkillCustomTarget(context, String(msg.id || ""));
-      log.action("pkmSkill.customTarget.remove", { target: String(msg.id || "") });
-      respond({ command: "mcpStatus", data: mcpPanelStatusData() });
       break;
     }
 
@@ -9589,14 +9523,14 @@ function maintainPkmIntegration(context: vscode.ExtensionContext): Promise<void>
   if (integrationMaintenance) return integrationMaintenance;
   integrationMaintenanceState = "running";
   integrationMaintenanceError = "";
-  integrationMaintenance = (async () => {
+  const producer = backgroundTaskRegistry.producer({ id: "pkm-integration-upgrade", kind: "other", label: "Preparing PKM integration" });
+  producer.queued({ detail: "Waiting for shared runtime maintenance" });
+  integrationMaintenance = withCrossProcessLock(path.join(managedMcpServerDirectory(), "integration-upgrade.lock"), "PKM integration upgrade", 600_000, async () => {
+    producer.running({ detail: "Checking managed runtime and server compatibility" });
     panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "integration", percent: 10, message: "Checking PKM integration…" } });
     const server = mcpStatus();
-    const skillBeforeMaintenance = pkmSkillProjectionStatus(context);
-    const newerRouters = skillBeforeMaintenance.targets.filter(target => target.state === "newer");
-    if (server.newerThanExpected || newerRouters.length) {
-      const detected = [server.newerThanExpected ? `MCP server v${server.installedVersion}` : "",
-        ...newerRouters.map(target => `Skill Router v${target.installedVersion}`)].filter(Boolean).join(", ");
+    if (server.newerThanExpected) {
+      const detected = `MCP server v${server.installedVersion}`;
       integrationMaintenanceState = "action-required";
       integrationMaintenanceError = `Newer PKM components detected: ${detected}. Reload this VS Code window to use the updated extension. No files were changed.`;
       panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
@@ -9609,17 +9543,11 @@ function maintainPkmIntegration(context: vscode.ExtensionContext): Promise<void>
       }
       return;
     }
-    panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "routers", percent: 18, message: "Reconciling Agent Skill Routers…" } });
-    const reconciledSkills = await reconcilePkmSkillProjections(context);
-    if (reconciledSkills.updated.length) {
-      log.info(`automatically reconciled ${reconciledSkills.updated.length} connected PKM Skill target(s)`);
-    }
-    if (reconciledSkills.actionRequired.length) {
-      throw new Error(`Agent Skill Router needs attention for ${reconciledSkills.actionRequired.map(target => target.label).join(", ")}.`);
-    }
     const python = detectMcpPython();
     if (!python.valid) {
       integrationMaintenanceState = "action-required";
+      integrationMaintenanceError = python.error || "Python 3.10+ is required for PKM MCP.";
+      log.warn(`automatic PKM integration setup requires action: ${integrationMaintenanceError}`);
       panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
       return;
     }
@@ -9634,6 +9562,9 @@ function maintainPkmIntegration(context: vscode.ExtensionContext): Promise<void>
       generateMcpServer(context);
     }
     refreshMcpDefinitions();
+    if (!mcpRuntimeStatus().healthy || !mcpStatus().current) {
+      throw new Error("PKM integration upgrade did not produce a healthy runtime and current MCP server.");
+    }
     panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "retrieval", percent: 68, message: "Refreshing knowledge retrieval index…" } });
     scheduleRetrievalRefresh(context, 0);
 
@@ -9641,7 +9572,7 @@ function maintainPkmIntegration(context: vscode.ExtensionContext): Promise<void>
     integrationMaintenanceState = "ready";
     panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "ready", percent: 100, message: "PKM integration ready" } });
     panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
-  })().catch(error => {
+  }, 1_800_000).catch(error => {
     const message = (error as Error).message;
     integrationMaintenanceState = "error";
     integrationMaintenanceError = message;
@@ -9654,7 +9585,7 @@ function maintainPkmIntegration(context: vscode.ExtensionContext): Promise<void>
         "Open Config",
       ).then(choice => { if (choice === "Open Config") openMcpSetup(context); });
     }
-  }).finally(() => { integrationMaintenance = undefined; });
+  }).finally(() => { producer.idle(); integrationMaintenance = undefined; });
   return integrationMaintenance;
 }
 
@@ -10599,7 +10530,7 @@ async function firstTimeSetup(context: vscode.ExtensionContext, reconfigure = fa
     if (confirmed !== "Use This Root") return undefined;
   }
 
-  await rememberMachineStorePath(context, chosenPath);
+  await rememberMachineStorePath(context, chosenPath, true);
   return chosenPath;
 }
 
@@ -10706,9 +10637,12 @@ function registerExtensionHostRuntime(context: vscode.ExtensionContext, isBusy: 
   const tick = () => {
     try {
       const installed = installedBuild();
-      registry.heartbeat(isBusy());
+      const migration = !getStorePath() || integrationMaintenanceState === "ready" ? "ready"
+        : integrationMaintenanceState === "error" ? "failed"
+        : integrationMaintenanceState === "action-required" ? "action-required" : "pending";
+      registry.heartbeat(isBusy(), "ready", migration);
       status.text = `${installed?.buildId === build.buildId ? "$(versions)" : "$(warning)"} PKM ${build.buildId.slice(0, 8)}`;
-      status.tooltip = `Loaded: ${build.version} / ${build.buildId}\nInstalled: ${installed?.version ?? "unknown"} / ${installed?.buildId ?? "unknown"}\nVS Code: ${vscode.version}; Node: ${process.version}; PID: ${process.pid}\nRegistered online hosts: ${registry.hosts().length}\nClick for Host status and reload verification.`;
+      status.tooltip = `Loaded: ${build.version} / ${build.buildId}\nInstalled: ${installed?.version ?? "unknown"} / ${installed?.buildId ?? "unknown"}\nVS Code: ${vscode.version}; Node: ${process.version}; PID: ${process.pid}\nIntegration: ${migration}\nRegistered online hosts: ${registry.hosts().length}\nClick for Host status and reload verification.`;
       if (registry.poll(installed?.buildId, isBusy())) {
         log.info(`coordinated reload requested pid=${process.pid} target=${installed?.buildId}`);
         void vscode.commands.executeCommand("workbench.action.reloadWindow").then(undefined, error => {
@@ -10725,6 +10659,7 @@ function registerExtensionHostRuntime(context: vscode.ExtensionContext, isBusy: 
       const report = {
         coverage: "Registered PKM hosts sharing this installation and profile storage only. Unregistered legacy hosts, other machines/profiles and external agent activity are not verified.",
         current: registry.identity, installed: installedBuild(), online: registry.hosts(), reload: registry.progress() ?? null,
+        integration: { state: integrationMaintenanceState, error: integrationMaintenanceError },
       };
       const document = await vscode.workspace.openTextDocument({ language: "json", content: JSON.stringify(report, null, 2) });
       await vscode.window.showTextDocument(document, { preview: true });
@@ -10757,15 +10692,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return registerApiChat(context, async (query, signal) => {
     if (!retrievalWorker) throw new Error("The unified retrieval worker is not ready.");
     const result = await retrievalWorker.query({ schema: "pkm.retrieval.query/v1", requestId: `chat-${randomUUID()}`, text: query,
-      scope: { capabilityId: "pkm-chat-context" }, topK: 20, route: "lexical", generation: { mode: "latest-ready" }, diagnostics: "summary", deadlineMs: 5000 }, signal);
+      level: "l1-source", scope: { capabilityId: "pkm-chat-context" }, topK: 20, route: "lexical", generation: { mode: "latest-ready" }, diagnostics: "summary", deadlineMs: 5000 }, signal);
     const snapshot = currentRetrievalSnapshot();
-    return result.hits.map(hit => {
+    const candidates = result.hits.map(hit => {
       const document = snapshot.documents.find(item => item.source_id === hit.sourceId && item.source_revision === hit.sourceRevision && item.visibility === "available");
-      return { id: hit.sourceId, kind: hit.contentType, label: hit.title, sourceUri: hit.sourceUri, score: hit.score,
-        scoreComponents: { ...hit.scoreComponents }, method: `${hit.route}:unified-retrieval`, selected: false,
+      return { id: hit.sourceId, level: "l1-source" as const, kind: hit.contentType, label: hit.title, sourceUri: hit.sourceUri, score: hit.score,
+        scoreSemantics: "engine-defined" as const, scoreComponents: { ...hit.scoreComponents }, method: `${hit.route}:unified-retrieval`, selected: false,
+        sourceId: hit.sourceId, sourceRevision: hit.sourceRevision, contentHash: hit.contentHash, rank: hit.rank,
         reason: document ? "Ranked knowledge candidate" : "Source revision changed or unavailable",
         ...(document ? { content: document.body.slice(0, 4000) } : {}) };
       });
+    return sanitizeRetrievalCandidatesV1(candidates, {
+      maxCandidates: 20,
+      sourceIsCurrent: candidate => snapshot.documents.some(document =>
+        document.source_id === candidate.sourceId && document.source_revision === candidate.sourceRevision
+        && document.visibility === "available"),
+    }).candidates;
     }, false);
     });
   } catch (error) {
@@ -11582,6 +11524,28 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       p.reveal(vscode.ViewColumn.One);
       if (_panelReady) p.webview.postMessage({ command: "openTab", tab: "mcp" });
       else _pendingTab = "mcp";
+    }),
+
+    vscode.commands.registerCommand("personalKnowledge.removeLegacyAgentInjection", async () => {
+      const answer = await vscode.window.showWarningMessage(
+        "Remove legacy PKM-generated Agent Router files? Private backups will be saved. Canonical Skills and user-authored files will not be removed.",
+        { modal: true }, "Back Up and Remove",
+      );
+      if (answer !== "Back Up and Remove") return;
+      try {
+        const backupDirectory = path.join(context.globalStorageUri.fsPath, "retired-agent-injection");
+        const result = await retirePkmSkillProjections(context, backupDirectory);
+        log.action("pkmSkill.retire", { removed: result.removed, preserved: result.preserved, backupDirectory });
+        panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+        await vscode.window.showInformationMessage(
+          `Removed ${result.removed.length} generated Router file(s); preserved ${result.preserved.length} unowned or unsafe file(s). Backups: ${backupDirectory}`,
+        );
+        return result;
+      } catch (error) {
+        log.warn(`legacy Agent injection removal failed: ${(error as Error).message}`);
+        await vscode.window.showErrorMessage(`Legacy Agent injection removal failed: ${(error as Error).message}`);
+        throw error;
+      }
       await closeNavigationSidebar();
     }),
 
@@ -11620,7 +11584,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return { ok: true, message: `Knowledge Root changed to ${chosen}.` };
       } catch (error: any) {
         if (previousRoot && directoryExists(previousRoot)) {
-          await rememberMachineStorePath(context, previousRoot);
+          await rememberMachineStorePath(context, previousRoot, true);
           _storeReady = false;
           await initStore(context, previousRoot);
           applyChatArchiveCfg();

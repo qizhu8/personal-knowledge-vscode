@@ -59,6 +59,7 @@ export interface ApiChatRequest {
   onToolLoopNotice?: (notice: ChatToolLoopNotice, signal: AbortSignal) => Promise<ChatToolLoopDecision>;
   onTool?: (event: ApiChatToolEvent) => void;
   beforeRound?: (messages: ApiChatMessage[], outputTokens: number) => void;
+  afterTools?: () => boolean;
 }
 
 export function chatToolRoundLimit(value = 30): number {
@@ -275,6 +276,7 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
       loop.record(request.tools.find(item => item.name === call.function.name), call.function.name, call.function.arguments, result);
       messages.push({ role: "tool", content: result, tool_call_id: call.id });
     }
+    if (request.afterTools?.()) return;
     }
   } catch (error) {
     if (timedOut) throw new Error("The API request timed out. You can retry or choose another model.");

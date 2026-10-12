@@ -1,18 +1,8 @@
 import type { ApiConversation } from "./api-chat-store";
-import { chatMemorySegments, memoryMatchScore, memoryTerms, retrieveChatMemory } from "./chat-memory";
+import { chatMemorySegments, memoryMatchScore, memoryTerms, retrieveChatMemory, recentChatDialogue } from "./chat-memory";
+import type { RetrievalCandidateV1 } from "../retrieval/retrieval-contracts";
 
-export interface ChatRetrievalCandidate {
-  id: string;
-  kind: string;
-  label: string;
-  sourceUri: string;
-  method: string;
-  score: number;
-  scoreComponents?: Record<string, number>;
-  selected: boolean;
-  reason: string;
-  content?: string;
-}
+export interface ChatRetrievalCandidate extends RetrievalCandidateV1 {}
 
 export interface ChatRetrievalReceipt {
   schema: "pkm.chat.retrieval/v1";
@@ -27,27 +17,52 @@ export interface ChatRetrievalReceipt {
 
 export type ChatKnowledgeRetriever = (query: string, signal: AbortSignal) => Promise<ChatRetrievalCandidate[]>;
 
-export function chatRetrievalReceipt(chat: ApiConversation, query: string, model: string, knowledge: ChatRetrievalCandidate[] = []): ChatRetrievalReceipt {
-  const recalled = new Set(retrieveChatMemory(chat, query).map(segment => segment.id));
-  const recent = new Set(chat.includeHistory ? chat.messages.slice(-20).filter(message => message.status === "complete").map(message => message.id) : []);
+export interface ChatRetrievalActivity {
+  schema: "pkm.chat.retrieval-activity/v1";
+  id: string;
+  attempts: Array<{ id: string; kind: "memory" | "knowledge"; at: number; durationMs: number; receipt: ChatRetrievalReceipt }>;
+  rounds: Array<{ index: number; at: number; inputTokens: number; inputBudget: number; countingMethod: "utf8-byte-estimate"; receipt: ChatRetrievalReceipt }>;
+  droppedRounds: number;
+}
+
+export function validChatRetrievalActivity(value: unknown, chatId: string): value is ChatRetrievalActivity {
+  if (!value || typeof value !== "object") return false;
+  const activity = value as ChatRetrievalActivity;
+  const count = (value: unknown) => Number.isSafeInteger(value) && Number(value) >= 0;
+  return activity.schema === "pkm.chat.retrieval-activity/v1" && typeof activity.id === "string" && /^[a-f0-9-]{36}$/.test(activity.id)
+    && count(activity.droppedRounds) && Array.isArray(activity.attempts) && activity.attempts.length <= 32
+    && activity.attempts.every(attempt => attempt && typeof attempt.id === "string" && attempt.id.length <= 80 && ["memory", "knowledge"].includes(attempt.kind)
+      && Number.isFinite(attempt.at) && Number.isFinite(attempt.durationMs) && attempt.durationMs >= 0 && validChatRetrievalReceipt(attempt.receipt, chatId))
+    && Array.isArray(activity.rounds) && activity.rounds.length <= 32 && activity.rounds.every(round => round && count(round.index)
+      && Number.isFinite(round.at) && count(round.inputTokens) && count(round.inputBudget) && round.countingMethod === "utf8-byte-estimate"
+      && validChatRetrievalReceipt(round.receipt, chatId));
+}
+
+export function chatRetrievalReceipt(chat: ApiConversation, query: string, model: string, knowledge: ChatRetrievalCandidate[] = [], selectedIds?: Set<string>): ChatRetrievalReceipt {
+  const recalled = selectedIds || new Set(retrieveChatMemory(chat, query).map(segment => segment.id));
+  const recent = new Set(recentChatDialogue(chat).map(message => message.id));
   const terms = memoryTerms(query);
   const memory: ChatRetrievalCandidate[] = chatMemorySegments(chat).map(segment => {
     const score = memoryMatchScore(segment.content, terms);
-    const history = recent.has(segment.messageId);
+    const history = segment.sourceKind === "dialogue" && recent.has(segment.messageId);
+    const selected = selectedIds ? selectedIds.has(segment.id) : history || recalled.has(segment.id);
     return { id: segment.id, kind: "memory", label: `${segment.taskId} · ${segment.role} · ${segment.id}`,
       sourceUri: `pkm://chats/${chat.id}/memory/${encodeURIComponent(segment.id)}`,
+      sourceRevision: segment.sourceRevision, range: { start: segment.start, end: segment.end, unit: "characters" as const },
       score: history ? 1 : score, method: history ? "rule:recent-history" : "rule:lexical-overlap",
-      selected: history || recalled.has(segment.id), reason: history ? "Included in recent conversation history" : recalled.has(segment.id) ? "Top matching older Chat segment" : chat.includeHistory ? "Outside selected memory budget" : "History disabled" };
+      selected, reason: selected ? history ? "Included in bounded recent dialogue" : "Included matching Chat evidence" : chat.includeHistory ? "Outside selected memory budget" : "History disabled" };
   }).filter(candidate => candidate.score > 0).sort((first, second) => Number(second.selected) - Number(first.selected) || second.score - first.score);
   const combined: ChatRetrievalCandidate[] = [];
   for (let index = 0; index < Math.max(memory.length, knowledge.length) && combined.length < 20; index++) {
     if (memory[index]) combined.push(memory[index]);
     if (knowledge[index] && combined.length < 20) combined.push(knowledge[index]);
   }
-  return { schema: "pkm.chat.retrieval/v1", chatId: chat.id, sessionId: chat.sessionId, model: model.slice(0, 512), query: query.slice(0, 8192),
+  return { schema: "pkm.chat.retrieval/v1", chatId: chat.id, ...(chat.sessionId ? { sessionId: chat.sessionId } : {}), model: model.slice(0, 512), query: query.slice(0, 8192),
     selectedCount: [...memory, ...knowledge].filter(candidate => candidate.selected).length,
     candidates: combined.map(candidate => ({ id: candidate.id.slice(0, 1024), kind: candidate.kind.slice(0, 64), label: candidate.label.slice(0, 512),
       sourceUri: candidate.sourceUri.slice(0, 2048), method: candidate.method.slice(0, 128), score: Number.isFinite(candidate.score) ? candidate.score : 0,
+      ...(typeof candidate.sourceRevision === "string" ? { sourceRevision: candidate.sourceRevision.slice(0, 512) } : {}),
+      ...(candidate.range ? { range: { ...candidate.range } } : {}),
       ...(candidate.scoreComponents ? { scoreComponents: Object.fromEntries(Object.entries(candidate.scoreComponents).filter(([, score]) => Number.isFinite(score)).slice(0, 8)) } : {}),
       selected: candidate.selected, reason: candidate.reason.slice(0, 1024) })) };
 }
@@ -61,6 +76,9 @@ export function validChatRetrievalReceipt(value: unknown, chatId: string): value
     && Array.isArray(receipt.candidates) && receipt.candidates.length <= 20 && receipt.candidates.every(candidate => candidate && typeof candidate === "object" && !Array.isArray(candidate) && !("content" in candidate)
       && bounded(candidate.id, 1024) && bounded(candidate.kind, 64) && bounded(candidate.label, 512) && bounded(candidate.sourceUri, 2048)
       && bounded(candidate.method, 128) && bounded(candidate.reason, 1024) && Number.isFinite(candidate.score) && typeof candidate.selected === "boolean"
+      && (candidate.sourceRevision === undefined || bounded(candidate.sourceRevision, 512))
+      && (candidate.range === undefined || !!candidate.range && Number.isSafeInteger(candidate.range.start) && Number.isSafeInteger(candidate.range.end)
+        && candidate.range.start >= 0 && candidate.range.end > candidate.range.start && ["characters", "bytes", "lines"].includes(candidate.range.unit))
       && (candidate.scoreComponents === undefined || !!candidate.scoreComponents && typeof candidate.scoreComponents === "object" && !Array.isArray(candidate.scoreComponents)
         && Object.keys(candidate.scoreComponents).length <= 8 && Object.values(candidate.scoreComponents).every(score => Number.isFinite(score))));
 }

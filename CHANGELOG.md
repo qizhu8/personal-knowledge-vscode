@@ -5,6 +5,43 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.19] - 2026-10-10
+
+- Agent Sessions now projects PKM Chats and Tasks beneath their Chat List user groups, including empty Chats and nested spawned workers, without changing Session or host-group identities.
+- Replaced lifetime worker counts with persistent reusable concurrent quota, approving only capacity increases and offering Yes/No/tools-disabled follow-up questions.
+- Added PKM-owned activity/attempt/decision events for completion, blockers, interruption, failure, long execution and evidence-backed suspected loops; ordinary progress no longer wakes managers.
+- Added exact scoped manager stop/respond/resolve controls, persisted cross-Host controls, temporary-worker evidence archives and existing-Chat batch assignment with source provenance.
+- Added an expandable worker overview, local archived-result inspection and stable active-first Chat List ordering without permanent reparenting of existing Chats.
+
+## [3.2.18] - 2026-10-10
+
+- Shared safe Markdown, lazy local KaTeX and Mermaid rendering between assistant replies and worker result cards, with explicit parse errors.
+- Instructed managers to batch all ready independent sibling tasks before dispatch-triggered sleep.
+- Added immediate, submission-keyed send bubbles before backend dispatch, preserving acknowledgment/queue reconciliation and drafts on failure.
+- Clarified that local worker-result display uses no model tokens, while manager wakeups and summaries do.
+
+## [3.2.17] - 2026-10-10
+
+- Added parallel worker task trees with a persistent global spawn budget (default automatic 3, hard 10), explicit expansion approval, and recursive sharing of the same budget.
+- Managers now sleep after batch dispatch without model polling and wake on worker lifecycle changes. Explicit peer messages use addressed persistent inboxes, not hidden shared Memory; Stop/Pause prevent auto-wakes.
+- Added per-answer retrieval timelines separating recall attempts from actual model-round context selections, with source inspection and conservative budget reporting.
+- Reused unchanged message DOM during refresh, polished worker cards/popover transitions, and honored reduced-motion preferences.
+- Added controller/store/HTTP worker orchestration acceptance and browser checks for retrieval timelines and stable refresh.
+
+## [3.2.16] - 2026-10-09
+
+- Replaced historical tool replay in PKM Chat with revisioned, independently retrievable terminal tool outcomes and bounded recent dialogue. Failed or interrupted replies no longer erase completed tool evidence.
+- Budgeted optional Memory and knowledge against required input and actual tool schemas before each model round; receipts now reflect admitted context. Removed the unrelated 100,000-character request ceiling while preserving required context and response limits.
+- Wired bounded provider validation, timeout and cancellation into Chat retrieval; unavailable or malformed retrieval degrades context with an explicit warning instead of blocking the answer.
+- Added retrieval-first controller/store/HTTP acceptance coverage and retained explicit TODOs for automatic L2 refinement and other future mechanisms.
+
+## [3.2.15] - 2026-10-09
+
+- Serialized automatic MCP integration upgrades across windows and exposed preparation in Background Tasks without blocking activation or opening a setup dialog on success.
+- Coordinated reload verification now waits for background integration readiness in the successor Host, not just the new build fingerprint. Failures remain visible and retryable.
+- Added the PKM L1/L2 retrieval standard, candidate validation, learned-model fallback containment, and unit/worker/Chat failure-isolation tests.
+- Updated the unified MCP runtime to 2.13.12 so installed server definitions refresh after upgrade.
+
 ## [3.2.14] - 2026-10-08
 
 - Kept the Chat tab available through a lightweight loading shell independent of backend readiness, with explicit initialization errors and page-preserving recovery. Corrected Skill tool validation to inspect the generated unified Python server instead of a split JavaScript entry point.

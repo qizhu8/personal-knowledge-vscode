@@ -7,6 +7,7 @@ import { mcpStdioCommand } from "../mcp/mcp-stdio-command";
 import {
   RETRIEVAL_QUERY_SCHEMA_V1,
   compileRetrievalQueryV1,
+  compileRetrievalResultV1,
   type RetrievalQueryV1,
   type RetrievalResultV1,
   type RetrievalIndexEventV1,
@@ -624,7 +625,7 @@ export class RetrievalWorkerManager {
       deadline_at_ms: deadlineAt,
     }, { signal, timeoutMs: Math.max(1, deadlineAt - Date.now()) });
     const completedAt = Date.now();
-    return {
+    const normalized = {
       ...result,
       schema: "pkm.retrieval.result/v1",
       requestId: result.request_id,
@@ -651,5 +652,8 @@ export class RetrievalWorkerManager {
       stale: !!result.stale,
       incomplete: !!result.incomplete,
     };
+    const validated = compileRetrievalResultV1(normalized);
+    if (!validated.ok) throw new Error(`Retrieval worker returned an invalid result: ${validated.diagnostics.map(item => `${item.pointer} ${item.message}`).join("; ")}`);
+    return normalized;
   }
 }

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import math
 import os
 import secrets
 import signal
@@ -435,6 +436,12 @@ def search_unmeasured(payload):
             else:
                 frozen_hits = skill_path.search(str(payload.get("query") or ""), len(skill_path.documents))
             versions_by_id = {version.skill_id: version for version in documents}
+            if any(not isinstance(hit.rank, int) or hit.rank < 1
+                   or not isinstance(hit.score, (int, float)) or not math.isfinite(float(hit.score))
+                   or (hit.skill_version not in source_values if solutions.managed
+                       else "skill:" + hit.skill_version.skill_id not in versions_by_id)
+                   for hit in frozen_hits):
+                raise ValueError("retrieval model returned invalid hit identity, rank, or score")
             from dataclasses import replace
             selected_hits = frozen_hits if solutions.managed else [
                 replace(hit, skill_version=versions_by_id["skill:" + hit.skill_version.skill_id])

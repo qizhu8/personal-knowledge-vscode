@@ -26,6 +26,7 @@ export const builtinToolCatalog = [
   { name: "session_info", label: "Session information", permission: "Current Session identity, model and advertised tools only" },
   { name: "list_chats", label: "List Chats", permission: "Read-only workspace Chat IDs, titles and status; no conversation bodies" },
   { name: "ask_chat", label: "Ask another Chat", permission: "Approval required; one idle target per turn; no recursive delegation or automatic Tasks" },
+  { name: "spawn_workers", label: "Spawn parallel workers", permission: "Shared task-tree budget; automatic small batches, explicit approval above threshold; child tools retain permissions" },
   { name: "pkm_search", label: "Search PKM notes and skills", permission: "Read-only local knowledge titles" },
   { name: "pkm_read", label: "Read PKM note, skill or recipe", permission: "Read-only bounded local knowledge content" },
   { name: "replace_text", label: "Edit text", permission: "Shared non-destructive Chat permission; edits remain unsaved" },
@@ -61,8 +62,8 @@ export function abortable<T>(promise: PromiseLike<T>, signal: AbortSignal): Prom
   });
 }
 
-export function createBuiltinTools(enabled: string[], host: typeof vscode = vscode, onApproval?: (name: string, waiting: boolean) => void, onEdit?: (change: ApiChatEditChange) => void, requestApproval?: (name: string, prompt: string, detail: string, signal: AbortSignal, boundary?: "workspace" | "outside-workspace") => Promise<boolean>): ApiChatTool[] {
-  const roots = (host.workspace.workspaceFolders || []).map(folder => folder.uri);
+export function createBuiltinTools(enabled: string[], host: typeof vscode = vscode, onApproval?: (name: string, waiting: boolean) => void, onEdit?: (change: ApiChatEditChange) => void, requestApproval?: (name: string, prompt: string, detail: string, signal: AbortSignal, boundary?: "workspace" | "outside-workspace") => Promise<boolean>, executionRoots?: readonly vscode.Uri[]): ApiChatTool[] {
+  const roots = executionRoots ? [...executionRoots] : (host.workspace.workspaceFolders || []).map(folder => folder.uri);
   const active = (signal: AbortSignal) => { if (signal.aborted) throw new Error("Request cancelled."); if (host.workspace.isTrusted === false) throw new Error("Tools require a trusted workspace."); };
   const approve = async (name: string, prompt: string, detail: string, action: string, signal: AbortSignal, boundary: "workspace" | "outside-workspace" = "outside-workspace") => {
     onApproval?.(name, true);

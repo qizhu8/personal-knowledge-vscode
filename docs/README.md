@@ -11,6 +11,8 @@
 ## Planning
 
 - [Chat architecture](design/chat-architecture.md)
+- [Account-level MCP integration proposal](design/account-mcp-integration.md)
+- [Shared Chat and sending-window execution proposal](design/shared-chat-viewers.md)
 - [Action contracts and qualification](design/actions.md)
 - [Retrieval click evaluation and privacy](design/retrieval-click-evaluation.md)
 

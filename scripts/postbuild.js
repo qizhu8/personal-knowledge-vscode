@@ -97,11 +97,9 @@ try {
   if (!html.includes('data-tab="servers">Servers</button>') || html.includes('data-tab="servers">🖥')) {
     throw new Error("Servers menu tab must use text only, without a leading icon");
   }
-  if (!html.includes('data-tab="mcp">General &amp; MCP</button>') || !panelJs.includes("renderPkmSkillTargets") ||
-      !panelJs.includes("pkmSkillInject") || !panelJs.includes("pkmSkillOpenProposals") ||
-      !panelJs.includes("pkmSkillBrowseCustomTarget") || !panelJs.includes("pkmSkillEnterCustomTarget") ||
-      !panelCss.includes("pkm-skill-target")) {
-    throw new Error("MCP settings route must expose PKM Skill Router target controls");
+  if (!html.includes('data-tab="mcp">General &amp; MCP</button>') || !panelJs.includes("mcp-account-registration") ||
+      /pkmSkillInject|copyAgencyInstall|copyMcpInstructions|mcp-install-code/.test(panelJs)) {
+    throw new Error("MCP settings must use account registration without legacy injection or installation prompts");
   }
   if (!panelJs.includes('id="chat-composer"') || !panelJs.includes('id="chat-recipient-chips"') ||
       !panelJs.includes("function chatComposerRecipientNames") || !panelJs.includes("chatDefaultRecipientNames") ||
@@ -154,8 +152,24 @@ try {
     throw new Error("Stored Room deletion must use two click confirmations without typed-name matching");
   }
   const previewOnlyBranches = extensionTs.match(/\? \{ serverPath: mcpStatus\(\)\.serverPath, configSnippet: combinedMcpRegistry\(\) \}/g) || [];
+  const tsCompiler = require("typescript");
+  const extensionSyntax = tsCompiler.createSourceFile("extension.ts", extensionTs, tsCompiler.ScriptTarget.Latest, true);
+  const providerResolvers = [];
+  const findProviderResolver = node => {
+    if (tsCompiler.isPropertyAssignment(node) && node.name.getText(extensionSyntax) === "resolveMcpServerDefinition") providerResolvers.push(node.initializer);
+    tsCompiler.forEachChild(node, findProviderResolver);
+  };
+  findProviderResolver(extensionSyntax);
+  const resolutionCalls = [];
+  const collectResolutionCalls = node => {
+    if (tsCompiler.isCallExpression(node)) resolutionCalls.push(node.expression.getText(extensionSyntax));
+    tsCompiler.forEachChild(node, collectResolutionCalls);
+  };
+  if (providerResolvers.length === 1) collectResolutionCalls(providerResolvers[0]);
+  const allowedResolutionCalls = new Set(["createDefinition", "readAccountMcpBinding", "fs.realpathSync", "getStorePath"]);
   if (previewOnlyBranches.length !== 2 ||
-      !/resolveMcpServerDefinition:\s*\(\)\s*=>\s*createDefinition\(\)/.test(extensionTs)) {
+      providerResolvers.length !== 1 || !resolutionCalls.includes("createDefinition") ||
+      resolutionCalls.some(name => !allowedResolutionCalls.has(name))) {
     throw new Error("MCP preview/provider resolution must not regenerate server code implicitly");
   }
   if (!extensionTs.includes('new PkTreeItem("General & MCP", "root-mcp"')

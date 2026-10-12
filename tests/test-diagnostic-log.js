@@ -102,7 +102,14 @@ try {
   firstHost.dispose();
   const successor = new ExtensionHostRegistry(runtimeDirectory, identity("window-1", targetBuild), () => clock);
   successor.heartbeat(false);
+  assert.strictEqual(successor.progress().verified.length, 0, "Loading a new build is not proof that background migrations finished");
+  successor.heartbeat(false, "ready", "failed");
+  assert.strictEqual(successor.progress().verified.length, 0, "Failed migrations must never acknowledge a successful upgrade");
+  successor.heartbeat(false, "ready", "ready");
   assert.strictEqual(successor.progress().verified.length, 1);
+  successor.heartbeat(false, "ready", "pending");
+  assert.strictEqual(successor.progress().verified.length, 0, "An old ack cannot verify a successor whose readiness regressed");
+  successor.heartbeat(false, "ready", "ready");
   assert.strictEqual(successor.poll(targetBuild, false), false, "New hosts must not enter a reload loop");
   assert.strictEqual(secondHost.poll(targetBuild, false), true, "Busy hosts can reload once idle");
   clock += 301_000;

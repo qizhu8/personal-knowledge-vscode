@@ -25,6 +25,13 @@
     for (const { node, name, text } of staticAttributes) if (node.isConnected) node.setAttribute(name, t(text));
   }
   const saved = vscode.getState() || {};
+  const workerPanelChats = new Set(saved.workerPanelChats || []);
+  const workerNodes = new Map();
+  const workerCounts = new Map();
+  const approvalDrafts = new Map();
+  const approvalNodes = new Map();
+  let workerNodesChatId;
+  let revealDispatch;
   let screen = "library";
   let renderedChatId;
   let jumpToLatest = false;
@@ -35,6 +42,7 @@
   const messageExpanded = new Set(saved.expandedMessageDetails || []);
   let state;
   let pending;
+  const submissions = new Map();
   let inputMode = saved.inputMode === "task" ? "task" : "steer";
   let frame;
   let clock;
@@ -77,7 +85,7 @@
   }
   const saveDraft = () => {
     if (state) drafts[state.chat.id] = element("prompt").value;
-    vscode.setState({ drafts, inputMode, advancedBudget, screen, expandedMessageDetails: Array.from(messageExpanded).slice(-500), collapsedChatGroups: library ? Array.from(library.collapsed) : saved.collapsedChatGroups || [] });
+    vscode.setState({ drafts, inputMode, advancedBudget, screen, workerPanelChats: [...workerPanelChats].slice(-500), chatListOrder: library?.order || saved.chatListOrder || [], expandedWorkerChats: library ? [...library.expandedWorkers].slice(-500) : saved.expandedWorkerChats || [], expandedMessageDetails: Array.from(messageExpanded).slice(-500), collapsedChatGroups: library ? Array.from(library.collapsed) : saved.collapsedChatGroups || [] });
     tokenEstimate();
   };
   function tokenEstimate() {
@@ -90,7 +98,7 @@
     element("tokens").title = "Conservative UTF-8 text estimate including context/skills, builtin schemas and history. Image messages require provider token counting before each call. This estimate is not billed usage.";
     const profile = state.settings.selectedProfile;
     const retired = profile?.status === "deprecated" || (profile?.deprecatedAt && Date.parse(profile.deprecatedAt) <= Date.now());
-    element("send").disabled = !!pending || !!state.remoteBusy || (state.busy ? !element("prompt").value.trim() || !!state.chat.images?.length : !state.chat.paused && (!element("prompt").value.trim() || !element("window").checkValidity() || !element("output").checkValidity() || input + output > window || retired || state.settings.needsModelConnection || (state.settings.provider !== "vscode" && !state.settings.endpoint)));
+    element("send").disabled = !!pending || !!state.remoteBusy && !!state.chat.paused || (state.busy ? !element("prompt").value.trim() || !!state.chat.images?.length : !state.chat.paused && (!element("prompt").value.trim() || !element("window").checkValidity() || !element("output").checkValidity() || input + output > window || retired || state.settings.needsModelConnection || (state.settings.provider !== "vscode" && !state.settings.endpoint)));
     if (profile?.inputPricePerMillion !== undefined && profile?.outputPricePerMillion !== undefined) {
       const price = (input * profile.inputPricePerMillion + output * profile.outputPricePerMillion) / 1e6;
       element("cost").textContent = `First-call estimate: ${profile.currency} ${price.toFixed(6)}`;
@@ -179,6 +187,105 @@
     }
     panel.append(details);
   }
+  const messageNodes = new Map();
+  let messageNodesChatId;
+  const richLibraries = new Map();
+  let diagramSequence = 0;
+  function richLibrary(name) {
+    if (!richLibraries.has(name)) {
+      richLibraries.set(name, new Promise((resolve, reject) => {
+        if (name === "katex") {
+          const style = document.createElement("link"); style.rel = "stylesheet";
+          style.href = document.querySelector('meta[name="pkm-katex-styles"]').content;
+          style.onerror = () => reject(new Error("KaTeX stylesheet could not be loaded."));
+          document.head.append(style);
+        }
+        const script = document.createElement("script");
+        script.src = document.querySelector(`meta[name="pkm-${name}-src"]`).content;
+        script.nonce = document.querySelector("script[nonce]").nonce;
+        script.onload = () => {
+          if (!globalThis[name]) { reject(new Error(`${name} library is unavailable.`)); return; }
+          try {
+            if (name === "mermaid") globalThis.mermaid.initialize({
+              startOnLoad: false, suppressErrorRendering: true, securityLevel: "strict",
+              theme: /vscode-light|vscode-high-contrast-light/.test(document.body.className) ? "default" : "dark",
+              flowchart: { htmlLabels: false }, maxTextSize: 50000,
+            });
+            resolve(globalThis[name]);
+          } catch (error) { reject(error); }
+        };
+        script.onerror = () => reject(new Error(`${name} library could not be loaded.`));
+        document.head.append(script);
+      }));
+    }
+    return richLibraries.get(name);
+  }
+  function renderRichContent(root, text) {
+    const math = [];
+    const escape = value => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const parser = new marked.Marked({
+      renderer: { html: token => escape(token.text) },
+      extensions: [
+        { name: "blockMath", level: "block",
+          start: source => { const index = source.search(/\$\$|\\\[/); return index < 0 ? undefined : index; },
+          tokenizer: source => {
+            const match = /^(?:\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\])/.exec(source);
+            if (match) return { type: "blockMath", raw: match[0], text: (match[1] || match[2]).trim() };
+          },
+          renderer: token => { math.push({ text: token.text, display: true }); return '<span class="chat-math"></span>'; } },
+        { name: "inlineMath", level: "inline",
+          start: source => { const index = source.search(/\$|\\\(/); return index < 0 ? undefined : index; },
+          tokenizer: source => {
+            const match = /^(?:\$(?!\$)((?:\\.|[^$\\\n])+?)\$(?!\d)|\\\(([\s\S]+?)\\\))/.exec(source);
+            if (match && (match[1] || match[2]).trim()) return { type: "inlineMath", raw: match[0], text: match[1] || match[2] };
+          },
+          renderer: token => { math.push({ text: token.text, display: false }); return '<span class="chat-math"></span>'; } },
+      ],
+    });
+    root.innerHTML = DOMPurify.sanitize(parser.parse(text || ""), {
+      ALLOWED_TAGS: ["p", "br", "strong", "em", "del", "code", "pre", "blockquote", "ul", "ol", "li", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "table", "thead", "tbody", "tr", "th", "td", "a", "span"],
+      ALLOWED_ATTR: ["href", "title", "start", "colspan", "rowspan", "class"],
+      ALLOW_DATA_ATTR: false, ALLOWED_URI_REGEXP: /^(?:https?|pkm):\/\//i,
+    });
+    for (const link of root.querySelectorAll("a")) {
+      const href = link.getAttribute("href") || "";
+      if (!/^(?:https?|pkm):\/\//i.test(href)) link.removeAttribute("href");
+      else link.addEventListener("click", event => { event.preventDefault(); post("openLink", { value: href }); });
+    }
+    const failed = (holder, error) => {
+      holder.className = "rich-render-error";
+      holder.textContent = `Render error: ${String(error.message || error).slice(0, 500)}`;
+    };
+    for (const [index, holder] of [...root.querySelectorAll(".chat-math")].entries()) {
+      const token = math[index];
+      holder.textContent = token.text;
+      void richLibrary("katex").then(library => {
+        if (!holder.isConnected) return;
+        holder.innerHTML = DOMPurify.sanitize(library.renderToString(token.text, {
+          displayMode: token.display, throwOnError: true, trust: false, strict: "warn",
+          maxExpand: 1000, maxSize: 20,
+        }), { USE_PROFILES: { html: true, mathMl: true } });
+      }).catch(error => failed(holder, error));
+    }
+    for (const code of root.querySelectorAll("code.language-mermaid")) {
+      const source = code.textContent;
+      const holder = document.createElement("div"); holder.className = "mermaid-diagram";
+      holder.textContent = source; code.closest("pre").replaceWith(holder);
+      void richLibrary("mermaid").then(async library => {
+        if (!holder.isConnected) return;
+        const id = `chat-diagram-${++diagramSequence}`;
+        try {
+          const result = await library.render(id, source);
+          if (!holder.isConnected) return;
+          holder.innerHTML = DOMPurify.sanitize(result.svg, {
+            USE_PROFILES: { svg: true, svgFilters: true }, FORBID_TAGS: ["foreignObject", "a", "image"],
+          });
+        } finally {
+          document.getElementById(`d${id}`)?.remove();
+        }
+      }).catch(error => failed(holder, error));
+    }
+  }
   function renderMessages() {
     if (!state || screen !== "chat" || document.visibilityState !== "visible") return;
     const target = element("messages");
@@ -187,40 +294,64 @@
     const follow = jumpToLatest || renderedChatId !== state.chat.id || target.scrollHeight - target.scrollTop - target.clientHeight < 90;
     renderedChatId = state.chat.id;
     jumpToLatest = false;
-    target.replaceChildren();
+    if (messageNodesChatId !== state.chat.id) { messageNodes.clear(); messageNodesChatId = state.chat.id; }
+    const children = [];
+    const retained = new Set();
     const latestUser = [...state.chat.messages].reverse().find(message => message.role === "user");
     const pendingUserId = state.busy && state.chat.messages.at(-1)?.status === "streaming" ? latestUser?.id : undefined;
     for (const message of state.chat.messages) {
+      const sleeping = message.id === state.chat.messages.at(-1)?.id && state.chat.workerState?.sleeping;
+      const fingerprint = JSON.stringify([message, state.busy, state.chat.paused, pendingUserId, sleeping, document.documentElement.lang]);
+      retained.add(message.id);
+      const cached = messageNodes.get(message.id);
+      if (cached?.fingerprint === fingerprint) { children.push(cached.article); continue; }
       const article = document.createElement("article"); article.className = `message ${message.role}`;
+      article.dataset.messageId = message.id;
       const header = document.createElement("div"); header.className = "message-header";
       const role = document.createElement("strong"); role.textContent = message.role === "user" ? t("You") : "PKM";
       const model = document.createElement("span"); model.className = "model-name"; model.textContent = message.model || (message.contextLabels || []).join(", "); model.title = model.textContent;
       header.append(role, model, iconButton("copy", "Copy message", () => post("copy", { id: message.id })));
+      if (message.retrievalActivity || message.retrieval) {
+        header.append(iconButton("references", "Memory", () => {
+          memoryActivityId = message.id; memoryStepId = "latest"; togglePopover("memory", true);
+        }));
+      }
       if (message.role === "assistant" && message.id === state.chat.messages[state.chat.messages.length - 1]?.id && ["failed", "cancelled", "interrupted"].includes(message.status)) {
         const retry = iconButton("refresh", "Retry response (new request; earlier tools may have run)", () => post("retry", { id: message.id }));
         retry.disabled = state.busy || state.chat.paused; header.append(retry);
       }
       const content = document.createElement("div"); content.className = "content";
       if (message.role === "user") content.textContent = message.content;
-      else content.innerHTML = DOMPurify.sanitize(marked.parse(message.content || ""), {
-        ALLOWED_TAGS: ["p", "br", "strong", "em", "del", "code", "pre", "blockquote", "ul", "ol", "li", "h1", "h2", "h3", "h4", "hr", "table", "thead", "tbody", "tr", "th", "td", "a"],
-        ALLOWED_ATTR: ["href", "title", "start", "colspan", "rowspan"], ALLOW_DATA_ATTR: false,
-        ALLOWED_URI_REGEXP: /^(?:https?|pkm):\/\//i,
-      });
-      for (const link of content.querySelectorAll("a")) {
-        const href = link.getAttribute("href") || "";
-        if (!/^(?:https?|pkm):\/\//i.test(href)) link.removeAttribute("href");
-        else link.addEventListener("click", event => { event.preventDefault(); post("openLink", { value: href }); });
-      }
+      else renderRichContent(content, message.content);
       article.append(header, content);
+      if (message.fromChatId) {
+        const source = document.createElement("div"); source.className = "worker-provenance";
+        const manager = iconButton("history", "Source manager", () => { saveDraft(); post("select", { id: message.fromChatId }); });
+        manager.append(document.createTextNode(`${t("Source manager")}: ${message.fromChatId}`));
+        source.append(manager);
+        if (message.delegationId) source.append(document.createTextNode(` · ${t("Activity receipt")}: ${message.delegationId}`));
+        const dispatchedAt = state.chat.messages[state.chat.messages.indexOf(message) + 1]?.progress?.startedAt;
+        if (dispatchedAt !== undefined) source.append(document.createTextNode(` · ${t("Dispatched")}: ${workerTime(dispatchedAt)}`));
+        article.append(source);
+      }
+      if (sleeping) {
+        const sleep = document.createElement("div"); sleep.className = "message-status manager-sleep";
+        sleep.textContent = t("Manager sleeping · wakes on worker events · no model polling");
+        article.append(sleep);
+      }
       for (const record of message.delegations || []) {
         const result = document.createElement("section"); result.className = "delegation-result";
         const heading = document.createElement("div"); heading.className = "message-header";
-        heading.append(window.PkmChatStatusIndicator(record.status === "complete" ? "completed" : record.status === "cancelled" ? "stopped" : record.status));
-        const link = document.createElement("a"); link.href = record.chatUrl; link.textContent = t("Delegated Chat");
-        link.addEventListener("click", event => { event.preventDefault(); post("openLink", { value: record.chatUrl }); });
+        heading.append(window.PkmChatStatusIndicator(record.phase === "sleeping" ? "awaiting-result" : record.phase === "awaiting-input" ? "awaiting-input" : record.status === "complete" ? "completed" : record.status === "cancelled" ? "stopped" : record.status));
+        const link = document.createElement("a"); link.href = record.archived ? "#" : record.chatUrl; link.textContent = t(record.archived ? "Archived result" : "Delegated Chat");
+        link.addEventListener("click", event => { event.preventDefault(); record.archived ? post("workerArchive", { id: record.id }) : post("openLink", { value: record.chatUrl }); });
         heading.append(link); result.append(heading);
-        if (record.answer) { const answer = document.createElement("div"); answer.className = "content delegation-answer"; answer.textContent = record.answer; result.append(answer); }
+        if (record.title || record.dispatchedAt !== undefined) {
+          const dispatch = document.createElement("div"); dispatch.className = "worker-dispatch-stamp";
+          dispatch.textContent = [record.title, record.dispatchedAt !== undefined ? `${t("Dispatched")}: ${workerTime(record.dispatchedAt)}` : ""].filter(Boolean).join(" · ");
+          result.append(dispatch);
+        }
+        if (record.answer) { const answer = document.createElement("div"); answer.className = "content delegation-answer"; renderRichContent(answer, record.answer); result.append(answer); }
         if (record.error) { const failure = document.createElement("div"); failure.className = "message-error"; failure.textContent = record.error; result.append(failure); }
         article.append(result);
       }
@@ -257,22 +388,59 @@
       tokens.textContent = messageTokenLabel(message, state.busy && (message.status === "streaming" || message.id === pendingUserId));
       tokens.title = message.role === "user" ? "Independent user-message token usage is unavailable unless the provider reports it; request input includes history/context/tools." : "Provider-reported tokens for reported rounds only; other rounds may omit usage. Input includes history/context/tools, not just the latest user message.";
       article.append(tokens);
-      target.append(article);
+      messageNodes.set(message.id, { fingerprint, article });
+      children.push(article);
+    }
+    for (const id of messageNodes.keys()) if (!retained.has(id)) messageNodes.delete(id);
+    for (const submission of submissions.values()) {
+      if (submission.id !== state.chat.id) continue;
+      if (!submission.article) {
+        const article = document.createElement("article"); article.className = "message user optimistic-message";
+        article.dataset.submissionId = submission.submissionId;
+        const role = document.createElement("strong"); role.textContent = t("You");
+        const content = document.createElement("div"); content.className = "content"; content.textContent = submission.text;
+        const status = document.createElement("div"); status.className = "message-status"; status.setAttribute("role", "status");
+        article.append(role, content, status); submission.article = article;
+      }
+      submission.article.lastElementChild.textContent = t(submission.accepted ? "Accepted · awaiting sync" : "Sending");
+      children.push(submission.article);
     }
     const latest = state.chat.messages[state.chat.messages.length - 1];
-    if (state.chat.progress && (latest?.role !== "assistant" || latest.progress && latest.progress.attemptId !== state.chat.progress.attemptId)) target.append(activity());
+    if (state.chat.progress && (latest?.role !== "assistant" || latest.progress && latest.progress.attemptId !== state.chat.progress.attemptId)) children.push(activity());
     for (const approval of state.approvals || []) {
-      const section = document.createElement("section"); section.className = "approval"; section.setAttribute("aria-label", "Tool approval");
+      const fingerprint = JSON.stringify([approval, document.documentElement.lang]);
+      const cached = approvalNodes.get(approval.id);
+      if (cached?.fingerprint === fingerprint) { children.push(cached.section); continue; }
+      const section = document.createElement("section"); section.className = "approval"; section.setAttribute("aria-label", t("Tool approval"));
       const title = document.createElement("strong"); title.textContent = approval.title;
       const details = document.createElement("details"); const summary = document.createElement("summary"); summary.textContent = approval.scope;
       const input = document.createElement("pre"); input.textContent = approval.detail; details.append(summary, input);
       const actions = document.createElement("div"); actions.className = "approval-actions";
-      for (const [value, icon, label] of [["approve", "check", "Approve & remember"], ["deny", "close", "Deny"], ["allow-all", "shield", "Allow All"]]) {
+      for (const [value, icon, label] of [["approve", "check", approval.quota ? "Yes" : approval.once ? "Approve" : "Approve & remember"], ["deny", "close", approval.quota ? "No" : "Deny"], ...(!approval.once ? [["allow-all", "shield", "Allow All"]] : [])]) {
         const button = iconButton(icon, label, () => { for (const action of actions.children) action.disabled = true; post("approval", { id: approval.id, value }); });
-        const text = document.createElement("span"); text.textContent = label; button.append(text); actions.append(button);
+        const text = document.createElement("span"); text.textContent = t(label); button.disabled = !!approval.questioning; button.append(text); actions.append(button);
       }
-      section.append(title, details, actions); target.append(section);
+      section.append(title, details, actions);
+      if (approval.quota) {
+        const question = document.createElement("textarea"); question.maxLength = 2000; question.rows = 2; question.placeholder = t("Question about this quota"); question.value = approvalDrafts.get(approval.id) || ""; question.disabled = !!approval.questioning;
+        question.oninput = () => approvalDrafts.set(approval.id, question.value);
+        const ask = iconButton("question", "Let me ask a question", () => { if (!question.value.trim()) { question.focus(); return; } ask.disabled = true; post("approvalQuestion", { id: approval.id, text: question.value }); });
+        ask.append(document.createTextNode(t("Let me ask a question"))); ask.disabled = !!approval.questioning; actions.append(ask);
+        const billing = document.createElement("p"); billing.textContent = t("Questions do not approve or change quota. Model clarification may incur charges.");
+        section.append(question, billing);
+        for (const item of approval.questions || []) {
+          const entry = document.createElement("div"); const prompt = document.createElement("strong"); prompt.textContent = item.question;
+          const answer = document.createElement("div"); answer.className = "content"; renderRichContent(answer, item.answer);
+          entry.append(prompt, answer);
+          if (item.error) { const error = document.createElement("p"); error.className = "message-error"; error.textContent = item.error; entry.append(error); }
+          section.append(entry);
+        }
+      }
+      approvalNodes.set(approval.id, { fingerprint, section }); children.push(section);
     }
+    for (const id of approvalNodes.keys()) if (!state.approvals?.some(approval => approval.id === id)) { approvalNodes.delete(id); approvalDrafts.delete(id); }
+    for (const [index, child] of children.entries()) if (target.children[index] !== child) target.insertBefore(child, target.children[index] || null);
+    while (target.children.length > children.length) target.lastElementChild.remove();
     updateClock();
     target.setAttribute("aria-busy", String(state.busy));
     target.scrollTop = follow ? target.scrollHeight : previousScrollTop;
@@ -321,13 +489,43 @@
       tree.append(details);
     }
   }
+  let memoryActivityId;
+  let memoryStepId = "latest";
+  let memoryFingerprint;
   function renderMemory() {
-    const receipt = [...state.chat.messages].reverse().find(message => message.role === "assistant" && message.retrieval)?.retrieval;
+    if (!element("retrieval-activity")) {
+      const row = document.createElement("div"); row.className = "settings-row retrieval-timeline";
+      for (const [id, label] of [["retrieval-activity", "Activity"], ["retrieval-step", "Memory"]]) {
+        const select = document.createElement("select"); select.id = id; select.setAttribute("aria-label", t(label)); row.append(select);
+        select.onchange = () => { if (id === "retrieval-activity") { memoryActivityId = select.value; memoryStepId = "latest"; } else memoryStepId = select.value; memoryFingerprint = undefined; renderMemory(); };
+      }
+      element("retrieval-status").before(row);
+    }
+    const activities = state.chat.messages.filter(message => message.role === "assistant" && message.retrieval);
+    const activity = activities.find(message => message.id === memoryActivityId) || activities.at(-1);
+    const selector = element("retrieval-activity");
+    selector.replaceChildren(...activities.map((message, index) => new Option(`${t("Activity")} ${index + 1} · ${(state.chat.messages[state.chat.messages.indexOf(message) - 1]?.content || "").slice(0, 60)}`, message.id)));
+    selector.value = activity?.id || ""; selector.disabled = !activities.length;
+    const timeline = activity?.retrievalActivity;
+    const steps = [
+      { id: "latest", label: t("Memory"), receipt: activity?.retrieval },
+      ...(timeline?.attempts || []).map((attempt, index) => ({ id: `attempt-${index}`, label: `${t("Memory")} ${index + 1} · ${attempt.kind} · ${attempt.durationMs} ms`, receipt: attempt.receipt })),
+      ...(timeline?.rounds || []).map((round, index) => ({ id: `round-${index}`, label: `${t("Send")} ${round.index + 1} · ${round.inputTokens}/${round.inputBudget}`, receipt: round.receipt })),
+    ];
+    const step = steps.find(item => item.id === memoryStepId) || steps[0];
+    element("retrieval-step").replaceChildren(...steps.map(item => new Option(item.label, item.id)));
+    element("retrieval-step").value = step.id;
+    const receipt = step.receipt;
+    const fingerprint = JSON.stringify([state.chat.id, activity?.id, step.id, receipt, state.memoryTree, element("retrieval-kind").value, element("retrieval-top").value, element("retrieval-flow").clientWidth]);
+    if (fingerprint === memoryFingerprint) return;
+    memoryFingerprint = fingerprint;
     const type = element("retrieval-kind"); const previousType = type.value;
     type.replaceChildren(new Option(t("All types"), "all"));
     for (const kind of [...new Set((receipt?.candidates || []).map(candidate => candidate.kind))].sort()) type.add(new Option(kind, kind));
     type.value = [...type.options].some(option => option.value === previousType) ? previousType : "all";
-    element("retrieval-status").textContent = receipt ? receipt.warning || t("{selected} selected overall · {count} candidates · per-method ranking", { selected: receipt.selectedCount, count: receipt.candidates.length }) : t("No retrieval receipt");
+    element("retrieval-status").textContent = receipt ? (receipt.warning || t("{selected} selected overall · {count} candidates · per-method ranking", { selected: receipt.selectedCount, count: receipt.candidates.length }))
+      + " · " + t(step.id.startsWith("attempt-") ? "Recall shortlist, not sent context" : step.id.startsWith("round-") ? "Sent context; UTF-8 budget estimate" : "Latest budget selection")
+      + (timeline?.droppedRounds ? " · " + t("{count} earlier sends omitted", { count: timeline.droppedRounds }) : "") : t("No retrieval receipt");
     globalThis.PkmRetrievalFlow(element("retrieval-flow"), receipt, Number(element("retrieval-top").value), type.value, candidate => {
       element("memory-preview").textContent = JSON.stringify(candidate, null, 2); element("memory-preview").hidden = false;
       if (candidate.kind === "memory") post("memorySegment", { id: candidate.id });
@@ -352,6 +550,8 @@
     element("copy-chat-id").disabled = !state.chat?.id;
     document.body.classList.toggle("chat-backgrounded", document.visibilityState === "hidden");
     renderMessages();
+    renderWorkers();
+    revealWorkerDispatch();
     renderTools();
     renderMemory();
     element("permission-mode").value = state.chat.permissionMode || "protective";
@@ -361,7 +561,9 @@
     element("reset-permissions").disabled = !grants || !!state.remoteBusy;
     library?.render(state.library);
     const chats = element("chats"); chats.replaceChildren();
-    for (const item of state.chats) {
+    const rank = new Map((library?.order || []).map((id, index) => [id, index]));
+    const active = item => ["running", "awaiting-input", "awaiting-result"].includes(item.status);
+    for (const item of [...state.chats].sort((left, right) => Number(active(right)) - Number(active(left)) || (rank.get(left.id) ?? 0) - (rank.get(right.id) ?? 0))) {
       const status = globalThis.PkmChatStatusIndicator(item.status);
       const option = new Option(item.title, item.id); option.title = `${status.title}: ${item.title}`;
       option.selected = item.id === state.chat.id; chats.add(option);
@@ -405,8 +607,10 @@
     element("history").checked = state.chat.includeHistory;
     element("context").title = `Add context${state.chat.context.length ? ` (${state.chat.context.length} attached)` : ""}`;
     element("options").title = state.chat.context.length ? `Model settings (${state.chat.context.length} attached)` : "Model settings";
-    element("send").hidden = false; element("stop").hidden = !state.busy;
-    element("input-mode").hidden = !state.busy || !!state.remoteBusy;
+    element("send").hidden = false; element("stop").hidden = !state.busy && !state.chat.workerState?.sleeping;
+    if (state.remoteBusy) inputMode = "task";
+    element("input-mode").hidden = !state.busy;
+    element("steer-mode").disabled = !!state.remoteBusy;
     element("steer-mode").setAttribute("aria-checked", String(inputMode === "steer"));
     element("task-mode").setAttribute("aria-checked", String(inputMode === "task"));
     const sendLabel = state.chat.paused ? "Resume Chat" : state.busy ? inputMode === "steer" ? "Steer" : "Queue new task" : "Send";
@@ -456,20 +660,41 @@
   window.addEventListener("message", event => {
     const message = event.data;
     if (message.type === "sendAccepted") {
-      if (pending?.id !== message.chatId || pending?.submissionId !== message.submissionId) return;
-      if (state?.chat.id === pending.id && element("prompt").value === pending.text) element("prompt").value = "";
-      if (drafts[pending.id] === pending.text) drafts[pending.id] = "";
-      pending = undefined; saveDraft(); error(""); return;
+      const submission = submissions.get(message.submissionId);
+      if (submission?.id !== message.chatId) return;
+      submission.accepted = true;
+      if (state?.chat.id === submission.id && element("prompt").value === submission.text) element("prompt").value = "";
+      if (drafts[submission.id] === submission.text) drafts[submission.id] = "";
+      if (pending === submission) pending = undefined;
+      saveDraft(); renderMessages(); error(""); return;
     }
     if (message.type === "modelPickerClosed") { element("model").removeAttribute("aria-busy"); return; }
     if (message.type === "showChat") { showScreen("chat"); return; }
     if (message.type === "showTools") { togglePopover("tools", true); element("tool-search").focus(); return; }
     if (message.type === "showMemory") { togglePopover("memory", true); return; }
+    if (message.type === "workerArchive" && message.chatId === state?.chat.id) {
+      const dialog = document.createElement("dialog"); dialog.className = "worker-archive";
+      const heading = document.createElement("h2"); heading.textContent = message.title;
+      const content = document.createElement("div"); content.className = "content"; renderRichContent(content, message.answer);
+      const close = iconButton("close", "Close", () => dialog.close()); dialog.append(close, heading, content);
+      if (message.error) { const failure = document.createElement("p"); failure.className = "message-error"; failure.textContent = message.error; dialog.append(failure); }
+      if (message.truncated) { const more = document.createElement("p"); more.textContent = t("Preview limited to 12,000 characters; read_chat_result supports paging."); dialog.append(more); }
+      const evidence = document.createElement("pre"); evidence.textContent = message.tools.map(tool => `${tool.name}: ${tool.status}`).join("\n"); dialog.append(evidence);
+      dialog.onclose = () => dialog.remove(); document.body.append(dialog); dialog.showModal(); return;
+    }
     if (message.type === "memorySegment" && message.chatId === state?.chat.id) { element("memory-preview").textContent = message.segment.content; element("memory-preview").hidden = false; return; }
     if (message.type === "error") {
-      if (message.submissionId ? pending?.submissionId === message.submissionId : !message.chatId || pending?.id === message.chatId) pending = undefined;
+      if (message.submissionId) {
+        const submission = submissions.get(message.submissionId);
+        if (submission && (!message.chatId || submission.id === message.chatId)) {
+          submissions.delete(message.submissionId);
+          if (pending === submission) pending = undefined;
+        }
+      } else if (pending && (!message.chatId || pending.id === message.chatId)) {
+        submissions.delete(pending.submissionId); pending = undefined;
+      }
       if (!message.chatId || message.chatId === state?.chat.id) error(message.message);
-      tokenEstimate(); return;
+      tokenEstimate(); renderMessages(); return;
     }
     if (message.type === "state") {
       globalThis.PkmHostHealth?.ready();
@@ -479,16 +704,18 @@
       const retained = new Set((message.library?.chats || message.chats || []).map(chat => chat.id));
       for (const id of Object.keys(drafts)) if (!retained.has(id)) delete drafts[id];
       if (!message.chat) {
-        state = undefined; pending = undefined; budgetOwner = undefined;
+        state = undefined; pending = undefined; submissions.clear(); budgetOwner = undefined;
         clearInterval(clock); element("messages").replaceChildren(); element("chats").replaceChildren();
         element("prompt").value = ""; element("applied-edits").hidden = true;
         library?.render(message.library); showScreen("library"); return;
       }
       state = message;
       if (previous !== state.chat.id) { element("prompt").value = drafts[state.chat.id] || ""; element("memory-preview").textContent = ""; element("memory-preview").hidden = true; }
-      if (pending?.id === state.chat.id && state.chat.messages.some(item => item.role === "user" && item.content === pending.text && !pending.messages.includes(item.id))) {
-        if (element("prompt").value === pending.text) element("prompt").value = "";
-        pending = undefined; error("");
+      for (const [id, submission] of submissions) {
+        if (!retained.has(submission.id)) { submissions.delete(id); if (pending === submission) pending = undefined; continue; }
+        if (submission.id !== state.chat.id || !state.chat.messages.some(item => item.role === "user" && item.submissionId === id) && !state.chat.queuedInputs?.some(item => item.id === id)) continue;
+        if (element("prompt").value === submission.text) element("prompt").value = "";
+        submissions.delete(id); if (pending === submission) pending = undefined; error("");
       }
       saveDraft(); render(); markResultRead(); return;
     }
@@ -507,6 +734,107 @@
     screen = next; document.body.classList.toggle("chat-library-visible", screen === "library");
     element("library-view").hidden = screen !== "library"; saveDraft();
     if (next === "chat" && state) { renderMessages(); markResultRead(); }
+  };
+  function workerTime(at) {
+    return new Intl.DateTimeFormat(document.documentElement.lang || "en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(at));
+  }
+  function revealWorkerDispatch() {
+    if (!revealDispatch || revealDispatch.chatId !== state?.chat.id) return;
+    const article = [...element("messages").querySelectorAll("[data-message-id]")].find(node => node.dataset.messageId === revealDispatch.messageId);
+    if (!article) { error(t("Dispatch message is unavailable")); revealDispatch = undefined; return; }
+    article.scrollIntoView({ block: "center", behavior: "instant" }); article.classList.add("dispatch-highlight");
+    setTimeout(() => article.classList.remove("dispatch-highlight"), 2000); revealDispatch = undefined;
+  }
+  function renderWorkers() {
+    if (!state) return;
+    const overview = state.workerOverview || { rootChatId: state.chat.id, nodes: [] };
+    const children = overview.nodes.filter(node => node.chatId !== overview.rootChatId);
+    const counts = new Map();
+    const labels = { running: "Running", starting: "Starting", "awaiting-input": "Waiting for Input", "awaiting-result": "Sleeping", completed: "Completed", "new-result": "Completed", failed: "Failed", stopped: "Stopped", paused: "Paused", idle: "Idle", unavailable: "Unavailable" };
+    for (const node of children) {
+      const key = node.status === "new-result" ? "completed" : node.status;
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    const summary = [...counts].map(([status, count]) => `${count} ${t(labels[status] || "Unavailable")}`).join(" · ");
+    element("workers-count").textContent = String(children.length);
+    element("workers-summary").textContent = [overview.quota === undefined ? "" : `${t("Capacity")}: ${overview.activeWorkers}/${overview.quota} (${t("Maximum")}: ${overview.maximum})`, summary || t("No workers dispatched")].filter(Boolean).join(" · ");
+    const live = element("workers-announcement");
+    const announcement = `${t("Workers")}: ${children.length}. ${summary}`;
+    if (live.textContent !== announcement) live.textContent = announcement;
+    if (workerCounts.get(state.chat.id) === 0 && children.length) workerPanelChats.add(state.chat.id);
+    workerCounts.set(state.chat.id, children.length);
+    const opened = workerPanelChats.has(state.chat.id);
+    element("workers-toggle").setAttribute("aria-expanded", String(opened));
+    element("workers-panel").hidden = !opened;
+    if (!opened) return;
+    const dispatching = state.chat.messages.at(-1)?.toolCalls?.some(tool => tool.name === "spawn_workers" && tool.status === "running");
+    const batchApproval = state.approvals?.some(approval => approval.once);
+    element("workers-notice").textContent = overview.warning || (batchApproval ? t("Worker batch awaiting approval") : dispatching ? t("Dispatching workers") : !children.length ? t("No workers dispatched") : "");
+    if (workerNodesChatId !== state.chat.id) { workerNodes.clear(); workerNodesChatId = state.chat.id; }
+    const ordered = [];
+    const pendingNodes = [...overview.nodes];
+    const visited = new Set();
+    const append = (id, depth) => {
+      if (visited.has(id)) return;
+      visited.add(id);
+      const node = pendingNodes.find(node => node.chatId === id);
+      if (!node) return;
+      ordered.push({ node, depth });
+      for (const child of pendingNodes.filter(node => node.parentChatId === id)) append(child.chatId, depth + 1);
+    };
+    append(overview.rootChatId, 0);
+    for (const node of pendingNodes) if (!visited.has(node.chatId)) append(node.chatId, 0);
+    const rendered = [];
+    for (const { node, depth } of ordered) {
+      const fingerprint = JSON.stringify([node, depth, document.documentElement.lang]);
+      const cached = workerNodes.get(node.chatId);
+      if (cached?.fingerprint === fingerprint) { rendered.push(cached.article); continue; }
+      const article = document.createElement("details"); article.className = "worker-node"; article.dataset.chatId = node.chatId; article.setAttribute("role", "listitem");
+      article.style.marginInlineStart = `${Math.min(depth, 4) * 10}px`;
+      article.open = cached ? cached.article.open : node.status === "failed" || node.status === "unavailable";
+      const heading = document.createElement("summary"); heading.className = "worker-node-heading";
+      const indicator = window.PkmChatStatusIndicator(node.status === "starting" ? "running" : node.status === "unavailable" ? "failed" : node.status);
+      const title = document.createElement("strong"); title.textContent = node.title || t("Unavailable");
+      const phase = document.createElement("span"); phase.className = "worker-phase"; phase.textContent = `${t(labels[node.status] || "Unavailable")}${node.archived ? ` · ${t("Archived result")}` : ""}`;
+      const titleBox = document.createElement("div"); titleBox.className = "worker-node-title";
+      titleBox.append(title); heading.append(indicator, titleBox, phase); article.append(heading);
+      const meta = document.createElement("div"); meta.className = "worker-node-meta";
+      const role = node.chatId === overview.rootChatId ? t("Manager") : node.manager ? t("Worker / Manager") : `${t("Worker")} · ${t("Level")} ${depth}`;
+      meta.textContent = `${role}${node.chatId === state.chat.id ? ` · ${t("Current Chat")}` : ""}`;
+      const dispatched = document.createElement("div"); dispatched.className = "worker-dispatch-stamp";
+      dispatched.textContent = node.chatId === overview.rootChatId ? "" : `${t("Dispatched")}: ${node.dispatchedAt === undefined ? t("Time not recorded") : workerTime(node.dispatchedAt)}`;
+      const recent = document.createElement("div"); recent.className = "worker-recent";
+      recent.textContent = node.activity ? `${t(node.activity.label)} · ${workerTime(node.activity.at)}` : "";
+      if (node.status === "awaiting-result") recent.textContent = t("Sleeping · wakes on worker events · no model polling");
+      if (node.reason) recent.textContent = `${t("Needs decision")}: ${t({ clarification: "Clarification", suggestion: "Suggestion", permission: "Permission", "runtime-limit": "Runtime limit", "suspected-loop": "Suspected loop" }[node.reason])}`;
+      titleBox.append(meta, dispatched, recent);
+      const detail = document.createElement("div"); detail.className = "worker-node-detail";
+      if (node.question) { const question = document.createElement("p"); question.textContent = node.question; detail.append(question); }
+      if (node.error) { const failure = document.createElement("p"); failure.className = "message-error"; failure.textContent = node.error; detail.append(failure); }
+      const actions = document.createElement("div"); actions.className = "worker-actions";
+      const open = iconButton("go-to-file", node.archived ? "Archived result" : "Open Chat", () => { saveDraft(); node.archived ? post("workerArchive", { id: node.receiptId }) : post("select", { id: node.chatId }); });
+      open.append(document.createTextNode(t(node.archived ? "Archived result" : "Open Chat"))); open.disabled = node.status === "unavailable" || node.chatId === state.chat.id; actions.append(open);
+      if (node.parentChatId && node.sourceMessageId) {
+        const source = iconButton("history", "Show dispatch message", () => {
+          revealDispatch = { chatId: node.parentChatId, messageId: node.sourceMessageId };
+          if (node.parentChatId === state.chat.id) revealWorkerDispatch();
+          else { saveDraft(); post("select", { id: node.parentChatId }); }
+        });
+        source.append(document.createTextNode(t("Show dispatch message"))); actions.append(source);
+      }
+      detail.append(actions); article.append(detail);
+      workerNodes.set(node.chatId, { fingerprint, article }); rendered.push(article);
+    }
+    for (const id of workerNodes.keys()) if (!visited.has(id)) workerNodes.delete(id);
+    const tree = element("workers-tree");
+    for (const [index, child] of rendered.entries()) if (tree.children[index] !== child) tree.insertBefore(child, tree.children[index] || null);
+    while (tree.children.length > rendered.length) tree.lastElementChild.remove();
+    revealWorkerDispatch();
+  }
+  element("workers-toggle").onclick = () => {
+    if (!state) return;
+    workerPanelChats.has(state.chat.id) ? workerPanelChats.delete(state.chat.id) : workerPanelChats.add(state.chat.id);
+    renderWorkers(); saveDraft();
   };
   library = window.PkmChatLibrary({ post, showChat: () => showScreen("chat"), save: saveDraft, saved });
   element("back").onclick = () => { showScreen("library"); post("libraryRefresh"); };
@@ -569,12 +897,15 @@
     element(`${mode}-mode`).click(); element(`${mode}-mode`).focus();
   };
   element("composer").onsubmit = event => {
-    event.preventDefault(); if (globalThis.PkmHostHealth?.unavailable || !state || state.remoteBusy || pending || element("send").disabled) return;
+    event.preventDefault(); if (globalThis.PkmHostHealth?.unavailable || !state || pending || element("send").disabled) return;
     if (state.chat.paused) { post("resume"); return; }
     if (!element("prompt").value.trim()) return;
     const text = element("prompt").value; error("");
-    pending = { id: state.chat.id, submissionId: crypto.randomUUID(), text, messages: state.chat.messages.map(item => item.id) };
-    tokenEstimate(); post("send", { text, chatId: pending.id, submissionId: pending.submissionId, ...(state.busy ? { mode: inputMode } : {}) });
+    pending = { id: state.chat.id, submissionId: crypto.randomUUID(), text };
+    submissions.set(pending.submissionId, pending); jumpToLatest = true;
+    tokenEstimate(); renderMessages();
+    const request = { text, chatId: pending.id, submissionId: pending.submissionId, ...(state.busy ? { mode: state.remoteBusy ? "task" : inputMode } : {}) };
+    requestAnimationFrame(() => setTimeout(() => post("send", request), 0));
   };
   element("prompt").onkeydown = event => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); element("composer").requestSubmit(); }

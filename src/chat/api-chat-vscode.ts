@@ -40,7 +40,7 @@ export async function discoverVscodeModels(host = vscode, signal?: AbortSignal):
   }
 }
 
-type VscodeChatRequest = Pick<ApiChatRequest, "messages" | "signal" | "timeoutMs" | "maxOutputTokens" | "maxToolRounds" | "loopReviewAfterMs" | "loopReviewClock" | "loopExemptTools" | "onToolLoopNotice" | "contextWindow" | "onImage" | "tools" | "onTool" | "beforeRound" | "onStage" | "onUsage" | "onUsageMetadata">;
+type VscodeChatRequest = Pick<ApiChatRequest, "messages" | "signal" | "timeoutMs" | "maxOutputTokens" | "maxToolRounds" | "loopReviewAfterMs" | "loopReviewClock" | "loopExemptTools" | "onToolLoopNotice" | "contextWindow" | "onImage" | "tools" | "onTool" | "beforeRound" | "afterTools" | "onStage" | "onUsage" | "onUsageMetadata">;
 type NativePart = { value?: string; callId?: string; name?: string; input?: unknown; data?: Uint8Array; mimeType?: string };
 
 export async function streamVscodeChat(model: VscodeChatModel, request: VscodeChatRequest,
@@ -218,6 +218,7 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
         loop.record(tool, call.function.name, call.function.arguments, result);
         messages.push({ role: "tool", content: result, tool_call_id: call.id });
       }
+      if (request.afterTools?.()) return;
     }
   } catch (error) {
     if (timedOut) throw new VscodeChatError("The VS Code model call timed out. Partial output was preserved; no automatic retry was performed.");

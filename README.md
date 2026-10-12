@@ -60,7 +60,7 @@ Use **Model connection** in the header: **Use VS Code models** discovers real mo
 
 ![Chatroom Agent workflow feature demo](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/chatroom.gif)
 
-**Config dashboard** — separate Server, Knowledge schema, Chat schema, and Skill Router versions; process/runtime status, setup guidance, resolved paths, and manually refreshed disk usage.
+**Config dashboard** — separate Server and component schema versions; account registration, process/runtime status, setup guidance, resolved paths, and manually refreshed disk usage.
 
 ![Config dashboard](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/config-dashboard.png)
 
@@ -187,10 +187,10 @@ Treat Magic Links like temporary passwords. **🔄 Refresh key** copies a replac
   - **Slash commands** — type `/help` for the list; host-only `/stop @agent`, `/list_audiences`, `/whois <name>`, `/mute_all` · `/unmute_all`, `/rotate_secret`, and `/share_link`
   - **CJK & Unicode** throughout; transcripts can be exported to Markdown/JSON
 - **Unified MCP server** — one extension-provided `pkm` server exposes both knowledge read/write tools and Chatroom `chat_*` tools. VS Code discovers it in every workspace without a project `.vscode/mcp.json`; `server.py` remains the entry point and imports the separate `chat_server.py` module
-- **One-time MCP setup** — install the extension and create the managed runtime once per VS Code profile/machine. Remove legacy workspace `pkm`, `pkm-chat`, and `pkm-chat-live` entries to prevent duplicate servers. Remote SSH uses the provider and runtime installed on the remote extension host
+- **Account-level MCP setup** — install the extension and create the managed runtime once per target machine and OS account. The account binding selects one registration owner and Knowledge Root. Review and back up matching legacy registrations before removing them; preserve unrelated servers. Remote SSH uses the provider and runtime installed on the remote extension host
 - **MCP schema versions** — `pkm.check_version()` reports the unified version plus Knowledge and Chatroom component versions; legacy `pkm-chat` registrations are replaced by the single `pkm` definition
 - **Machine-specific MCP Python** — the Config tab detects Python 3.10+, validates the executable and version, and also lets users browse or enter an absolute interpreter path. The selection is machine-scoped, so Windows and Remote SSH Linux hosts configure their own runtime independently; PKM itself remains usable when Python is unavailable
-- **Python runtime picker** — progressively lists usable interpreters from configured settings, PKM Envs, active conda/venv, conda/miniconda base installs and named environments, VS Code Python settings, the Windows Python Launcher, and PATH. A live progress bar shows candidates as they are found and supports cancellation. Selecting a newer base Python recreates the isolated `pkm-mcp` environment; the extension's MCP provider preserves that managed interpreter path. User Profile config remains a fallback for older VS Code versions, while Agency instructions contain resolved current-machine paths
+- **Python runtime picker** — progressively lists usable interpreters from configured settings, PKM Envs, active conda/venv, conda/miniconda base installs and named environments, VS Code Python settings, the Windows Python Launcher, and PATH. A live progress bar shows candidates as they are found and supports cancellation. Selecting a newer base Python recreates the isolated `pkm-mcp` environment; the extension's MCP provider preserves that managed interpreter path. An explicit account-level user configuration adapter remains a fallback for clients without provider support, not a second registration
 - **Selectable AI backend** — Copilot (built-in), Azure OpenAI, or any OpenAI-compatible endpoint; keys stored in SecretStorage
 - **Cross-platform** — no native binaries
 
@@ -221,7 +221,7 @@ Open **Personal Knowledge Manager → Config**. The dashboard separates these in
 - Unified MCP Server
 - Knowledge schema
 - Chat schema
-- PKM Skill Router
+- Recipe runtime and Agent Session runtime
 
 Green means current. Orange actions appear only when user action is needed.
 
@@ -245,9 +245,13 @@ Regeneration does not modify external Agency registries or workspace `.vscode/mc
 
 ### 5. Register and Start `pkm`
 
-On supported VS Code versions, the extension publishes the `pkm` definition automatically. Run **MCP: List Servers**, select `pkm`, and start or restart it.
+On supported VS Code versions, the extension publishes the `pkm` definition through its native provider for the configured target machine and OS account. Run **MCP: List Servers**, select `pkm`, and start it, or run **PKM: Start PKM MCP**.
 
-For an external MCP Agency, copy **Agency installation instructions** from Config into Copilot or the Agency. The instructions contain resolved current-machine paths and preserve unrelated registrations.
+Config shows the account's registration owner and native start guidance. The old **Inject / Update All** controls and copyable MCP installation prompt are retired; runtime maintenance no longer writes Agent Router adapters. To undo earlier injection, run **PKM: Remove Legacy Agent Injection** and confirm the backed-up removal. Only matching PKM-managed Router files are archived and removed; canonical Skills and user-authored files remain unchanged.
+
+Do not add duplicate user/workspace registrations to a VS Code client that already receives this server from its native provider. Copilot CLI / SDK sessions that do not inherit VS Code MCP definitions require separate user-level registration: open **General & MCP > MCP > Copilot CLI / SDK**, copy the machine-specific snippet, and merge its `pkm` entry into `~/.copilot/mcp-config.json` under `mcpServers`, preserving other servers. Then run `copilot mcp list` and `copilot mcp get pkm`, start a new chat, and verify an actual `check_version` call. Enabled confirms registration, not working tool access. See the [Copilot CLI / SDK registration steps](docs/guides/INSTALLATION.md#copilot-cli--sdk-registration) for Remote SSH and Windows guidance. Back up and review matching legacy entries before removing them; do not alter unrelated servers or patch VS Code/Copilot installation files.
+
+Verify a real `check_version` tool call in this window and in a second workspace on the same target/account without adding project configuration. Discovery, native trust, startup, tool listing, and agent-visible calls are separate acceptance steps.
 
 ### 6. Verify
 
@@ -312,7 +316,7 @@ In short: the extension gives *you* a home for your knowledge; the MCP server gi
 
 ## MCP integration
 
-Follow the [Installation Guide](#installation-guide), then open **Config** to manage the single unified server named `pkm`. Supported VS Code versions receive the definition from the extension automatically; external Agencies use the copyable, machine-specific installation instructions. The server exposes:
+Follow the [Installation Guide](#installation-guide), then open **General & MCP > MCP** to manage the single unified server named `pkm`. Supported VS Code versions receive the definition from the extension automatically; Copilot CLI / SDK sessions without inherited definitions use the separate, copyable user-level configuration shown there. The server exposes:
 
 | Tool | Description |
 |------|-------------|

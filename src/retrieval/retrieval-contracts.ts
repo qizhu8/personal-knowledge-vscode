@@ -3,10 +3,14 @@ import { compileKnowledgeLinksV1, type KnowledgeLinkV1 } from "../knowledge/know
 export const RETRIEVAL_QUERY_SCHEMA_V1 = "pkm.retrieval.query/v1" as const;
 export const RETRIEVAL_RESULT_SCHEMA_V1 = "pkm.retrieval.result/v1" as const;
 export const RETRIEVAL_INDEX_EVENT_SCHEMA_V1 = "pkm.retrieval.index-event/v1" as const;
+export const RETRIEVAL_CAPABILITIES_SCHEMA_V1 = "pkm.retrieval.capabilities/v1" as const;
+export const RETRIEVAL_SELECTION_RECEIPT_SCHEMA_V1 = "pkm.retrieval.selection-receipt/v1" as const;
 
-export type RetrievalContentType = "skill" | "note" | "research" | "script" | "recipe" | "subscription";
+export type RetrievalContentType = "skill" | "note" | "research" | "script" | "recipe" | "action" | "subscription";
 export type RetrievalRoute = "lexical" | "semantic" | "graph" | "hybrid";
 export type RetrievalDiagnosticsLevel = "none" | "summary" | "debug";
+export type RetrievalScoreSemantics = "rank-only" | "similarity" | "distance" | "probability" | "rrf" | "engine-defined";
+export type RetrievalLevel = "l1-source" | "l2-passage";
 export type RetrievalGenerationPolicy =
   | { mode: "latest-ready" }
   | { mode: "exact"; generation: number }
@@ -30,6 +34,7 @@ export interface RetrievalQueryV1 {
   schema: typeof RETRIEVAL_QUERY_SCHEMA_V1;
   requestId: string;
   text: string;
+  level?: RetrievalLevel;
   contentTypeFilter?: RetrievalContentType[];
   scope: RetrievalCapabilityScope;
   topK: number;
@@ -38,6 +43,94 @@ export interface RetrievalQueryV1 {
   graph?: RetrievalGraphBudget;
   deadlineMs?: number;
   diagnostics: RetrievalDiagnosticsLevel;
+}
+
+export interface RetrievalServingIdentityV1 {
+  providerId: string;
+  providerVersion: string;
+  route: string;
+  scoreSemantics: RetrievalScoreSemantics;
+  architectureId?: string;
+  modelId?: string;
+  modelVersion?: string;
+  packageId?: string;
+  fallback?: string;
+}
+
+export interface RetrievalProviderCapabilitiesV1 {
+  schema: typeof RETRIEVAL_CAPABILITIES_SCHEMA_V1;
+  provider: RetrievalServingIdentityV1;
+  querySchemas: string[];
+  resultSchemas: string[];
+  levels: RetrievalLevel[];
+  sourceKinds: string[];
+  routes: string[];
+  scoreSemantics: RetrievalScoreSemantics[];
+  features: {
+    filters: boolean;
+    generations: boolean;
+    graph: boolean;
+    contentRanges: boolean;
+    refinement: boolean;
+    streaming: boolean;
+  };
+  limits: {
+    maxTopK: number;
+    maxQueryCharacters: number;
+    maxDeadlineMs: number;
+  };
+}
+
+export interface RetrievalCandidateV1 {
+  id: string;
+  level?: RetrievalLevel;
+  kind: string;
+  label: string;
+  sourceUri: string;
+  method: string;
+  score: number;
+  scoreSemantics?: RetrievalScoreSemantics;
+  scoreComponents?: Record<string, number>;
+  selected: boolean;
+  reason: string;
+  sourceId?: string;
+  sourceRevision?: string;
+  contentHash?: string;
+  rank?: number;
+  parentId?: string;
+  parentRevision?: string;
+  parentContentHash?: string;
+  range?: { start: number; end: number; unit: "characters" | "bytes" | "lines" };
+  serving?: RetrievalServingIdentityV1;
+  content?: string;
+}
+
+export interface RetrievalSelectionReceiptV1 {
+  schema: typeof RETRIEVAL_SELECTION_RECEIPT_SCHEMA_V1;
+  requestId: string;
+  consumerId: string;
+  targetId: string;
+  selectedCount: number;
+  candidates: Omit<RetrievalCandidateV1, "content">[];
+  serving: RetrievalServingIdentityV1[];
+  budget?: {
+    unit: "tokens" | "bytes" | "characters";
+    available: number;
+    selected: number;
+  };
+  incomplete: boolean;
+  warning?: string;
+}
+
+export interface RetrievalProviderV1<TQuery = RetrievalQueryV1, TResult = RetrievalResultV1> {
+  capabilities(): Promise<RetrievalProviderCapabilitiesV1>;
+  retrieve(query: TQuery, signal: AbortSignal): Promise<TResult>;
+}
+
+export interface RetrievalCandidateSanitization {
+  candidates: RetrievalCandidateV1[];
+  diagnostics: RetrievalContractDiagnostic[];
+  incomplete: boolean;
 }
 
 export type RetrievalDiagnosticCode =
@@ -144,13 +237,94 @@ export type RetrievalCompileResult<T> =
   | { ok: true; value: T; diagnostics: [] }
   | { ok: false; diagnostics: RetrievalContractDiagnostic[] };
 
-const CONTENT_TYPES = new Set<RetrievalContentType>(["skill", "note", "research", "script", "recipe", "subscription"]);
+const CONTENT_TYPES = new Set<RetrievalContentType>(["skill", "note", "research", "script", "recipe", "action", "subscription"]);
 const ROUTES = new Set<RetrievalRoute>(["lexical", "semantic", "graph", "hybrid"]);
 const DIAGNOSTICS = new Set<RetrievalDiagnosticsLevel>(["none", "summary", "debug"]);
-const QUERY_FIELDS = new Set(["schema", "requestId", "text", "contentTypeFilter", "scope", "topK", "route", "generation", "graph", "deadlineMs", "diagnostics"]);
+const SCORE_SEMANTICS = new Set<RetrievalScoreSemantics>(["rank-only", "similarity", "distance", "probability", "rrf", "engine-defined"]);
+const RETRIEVAL_LEVELS = new Set<RetrievalLevel>(["l1-source", "l2-passage"]);
+const QUERY_FIELDS = new Set(["schema", "requestId", "text", "level", "contentTypeFilter", "scope", "topK", "route", "generation", "graph", "deadlineMs", "diagnostics"]);
 
 function positiveInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) > 0;
+}
+
+export function compileRetrievalCapabilitiesV1(input: unknown): RetrievalCompileResult<RetrievalProviderCapabilitiesV1> {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { ok: false, diagnostics: [{ code: "object", pointer: "", message: "Expected a retrieval capabilities object." }] };
+  }
+  const value = input as Record<string, unknown>;
+  const diagnostics: RetrievalContractDiagnostic[] = [];
+  if (value.schema !== RETRIEVAL_CAPABILITIES_SCHEMA_V1) diagnostics.push({ code: "schema", pointer: "/schema", message: `Expected ${RETRIEVAL_CAPABILITIES_SCHEMA_V1}.` });
+  const provider = value.provider as Record<string, unknown> | undefined;
+  if (!provider || typeof provider !== "object" || Array.isArray(provider)
+    || !String(provider.providerId || "").trim() || !String(provider.providerVersion || "").trim()
+    || !String(provider.route || "").trim() || !SCORE_SEMANTICS.has(provider.scoreSemantics as RetrievalScoreSemantics)) {
+    diagnostics.push({ code: "field", pointer: "/provider", message: "provider requires stable identity, version, route, and score semantics." });
+  }
+  for (const field of ["querySchemas", "resultSchemas", "levels", "sourceKinds", "routes", "scoreSemantics"] as const) {
+    const entries = value[field];
+    if (!Array.isArray(entries) || !entries.length || entries.some(entry => typeof entry !== "string" || !entry.trim())
+      || new Set(entries).size !== entries.length
+      || (field === "scoreSemantics" && entries.some(entry => !SCORE_SEMANTICS.has(entry as RetrievalScoreSemantics)))
+      || (field === "levels" && entries.some(entry => !RETRIEVAL_LEVELS.has(entry as RetrievalLevel)))) {
+      diagnostics.push({ code: "field", pointer: `/${field}`, message: `${field} must be a non-empty unique supported string list.` });
+    }
+  }
+  const features = value.features as Record<string, unknown> | undefined;
+  const featureNames = ["filters", "generations", "graph", "contentRanges", "refinement", "streaming"];
+  if (!features || typeof features !== "object" || Array.isArray(features) || featureNames.some(name => typeof features[name] !== "boolean")) {
+    diagnostics.push({ code: "field", pointer: "/features", message: "features must explicitly declare every standard feature." });
+  }
+  const limits = value.limits as Record<string, unknown> | undefined;
+  if (!limits || typeof limits !== "object" || Array.isArray(limits)
+    || !positiveInteger(limits.maxTopK) || !positiveInteger(limits.maxQueryCharacters) || !positiveInteger(limits.maxDeadlineMs)) {
+    diagnostics.push({ code: "field", pointer: "/limits", message: "limits must contain positive maxTopK, maxQueryCharacters, and maxDeadlineMs values." });
+  }
+  return diagnostics.length ? { ok: false, diagnostics } : { ok: true, value: input as RetrievalProviderCapabilitiesV1, diagnostics: [] };
+}
+
+export function sanitizeRetrievalCandidatesV1(
+  input: unknown,
+  options: { maxCandidates?: number; sourceIsCurrent?: (candidate: RetrievalCandidateV1) => boolean } = {},
+): RetrievalCandidateSanitization {
+  if (!Array.isArray(input)) {
+    return { candidates: [], diagnostics: [{ code: "field", pointer: "", message: "Candidates must be an array." }], incomplete: true };
+  }
+  const limit = Math.max(1, Math.min(options.maxCandidates ?? 100, 100));
+  const candidates: RetrievalCandidateV1[] = [];
+  const diagnostics: RetrievalContractDiagnostic[] = [];
+  const ids = new Set<string>();
+  const bounded = (value: unknown, max: number): value is string => typeof value === "string" && value.length > 0 && value.length <= max;
+  for (let index = 0; index < Math.min(input.length, 100) && candidates.length < limit; index++) {
+    const value = input[index] as RetrievalCandidateV1;
+    const pointer = `/${index}`;
+    let message = "";
+    if (!value || typeof value !== "object" || Array.isArray(value)) message = "Candidate must be an object.";
+    else if (!bounded(value.id, 1024) || ids.has(value.id)) message = "Candidate ID must be bounded and unique.";
+    else if (value.level !== undefined && !RETRIEVAL_LEVELS.has(value.level)) message = "Candidate retrieval level is unsupported.";
+    else if (!bounded(value.kind, 64) || !bounded(value.label, 512) || !bounded(value.sourceUri, 2048)
+      || !bounded(value.method, 128) || !bounded(value.reason, 1024)) message = "Candidate display and source fields must be bounded.";
+    else if (!Number.isFinite(value.score) || value.rank !== undefined && !positiveInteger(value.rank)) message = "Candidate score must be finite and rank must be positive.";
+    else if (value.scoreSemantics !== undefined && !SCORE_SEMANTICS.has(value.scoreSemantics)) message = "Candidate score semantics are unsupported.";
+    else if (value.scoreComponents !== undefined && (!value.scoreComponents || typeof value.scoreComponents !== "object" || Array.isArray(value.scoreComponents)
+      || Object.keys(value.scoreComponents).length > 16 || Object.values(value.scoreComponents).some(score => !Number.isFinite(score)))) {
+      message = "Candidate score components must be bounded finite numbers.";
+    } else if (value.content !== undefined && (typeof value.content !== "string" || value.content.length > 160_000)) message = "Candidate content exceeds the transport boundary.";
+    else if (value.range !== undefined && (!value.range || !Number.isSafeInteger(value.range.start) || !Number.isSafeInteger(value.range.end)
+      || value.range.start < 0 || value.range.end <= value.range.start || !["characters", "bytes", "lines"].includes(value.range.unit))) {
+      message = "Candidate range must be a positive half-open range with an explicit unit.";
+    } else if (value.level === "l2-passage" && (!bounded(value.parentId, 1024) || !bounded(value.parentRevision, 512)
+      || !bounded(value.parentContentHash, 128) || !value.range)) message = "L2 candidates require immutable parent identity and a range.";
+    else if (options.sourceIsCurrent && !options.sourceIsCurrent(value)) message = "Candidate source revision is stale or unavailable.";
+    if (message) {
+      diagnostics.push({ code: "field", pointer, message });
+      continue;
+    }
+    ids.add(value.id);
+    candidates.push(value);
+  }
+  if (input.length > limit) diagnostics.push({ code: "field", pointer: "", message: `Candidate list exceeded the ${limit}-item boundary.` });
+  return { candidates, diagnostics, incomplete: diagnostics.length > 0 };
 }
 
 export function compileRetrievalQueryV1(input: unknown): RetrievalCompileResult<RetrievalQueryV1> {
@@ -165,6 +339,7 @@ export function compileRetrievalQueryV1(input: unknown): RetrievalCompileResult<
   if (value.schema !== RETRIEVAL_QUERY_SCHEMA_V1) diagnostics.push({ code: "schema", pointer: "/schema", message: `Expected ${RETRIEVAL_QUERY_SCHEMA_V1}.` });
   if (!String(value.requestId || "").trim()) diagnostics.push({ code: "field", pointer: "/requestId", message: "requestId is required." });
   if (!String(value.text || "").trim()) diagnostics.push({ code: "field", pointer: "/text", message: "text is required." });
+  if (value.level !== undefined && !RETRIEVAL_LEVELS.has(value.level as RetrievalLevel)) diagnostics.push({ code: "field", pointer: "/level", message: "level must be l1-source or l2-passage." });
   if (!positiveInteger(value.topK) || Number(value.topK) > 100) diagnostics.push({ code: "field", pointer: "/topK", message: "topK must be between 1 and 100." });
   if (!ROUTES.has(value.route as RetrievalRoute)) diagnostics.push({ code: "field", pointer: "/route", message: "Unsupported retrieval route." });
   if (!DIAGNOSTICS.has(value.diagnostics as RetrievalDiagnosticsLevel)) diagnostics.push({ code: "field", pointer: "/diagnostics", message: "Unsupported diagnostics level." });
@@ -209,7 +384,7 @@ export function compileRetrievalResultV1(input: unknown): RetrievalCompileResult
   if (!positiveInteger(value.readyGeneration)) diagnostics.push({ code: "field", pointer: "/readyGeneration", message: "readyGeneration must be positive." });
   if (!String(value.corpusRevision || "").trim()) diagnostics.push({ code: "field", pointer: "/corpusRevision", message: "corpusRevision is required." });
   if (!ROUTES.has(value.route as RetrievalRoute)) diagnostics.push({ code: "field", pointer: "/route", message: "Unsupported retrieval route." });
-  if (!Array.isArray(value.hits)) diagnostics.push({ code: "field", pointer: "/hits", message: "hits must be an array." });
+  if (!Array.isArray(value.hits) || value.hits.length > 100) diagnostics.push({ code: "field", pointer: "/hits", message: "hits must be an array of at most 100 items." });
   else value.hits.forEach((hit, index) => {
     if (!hit || typeof hit !== "object" || Array.isArray(hit)) {
       diagnostics.push({ code: "field", pointer: `/hits/${index}`, message: "Hit must be an object." });
@@ -217,10 +392,11 @@ export function compileRetrievalResultV1(input: unknown): RetrievalCompileResult
     }
     const record = hit as Record<string, unknown>;
     const scores = record.scoreComponents as Record<string, unknown> | undefined;
-    if (!positiveInteger(record.rank) || typeof record.score !== "number"
+    if (!positiveInteger(record.rank) || !Number.isFinite(record.score)
       || !String(record.sourceId || "") || !String(record.sourceRevision || "")
+      || !String(record.contentHash || "") || !String(record.sourceUri || "")
       || !CONTENT_TYPES.has(record.contentType as RetrievalContentType)
-      || !scores || ["lexical", "semantic", "graph", "priority"].some(key => typeof scores[key] !== "number")) {
+      || !scores || ["lexical", "semantic", "graph", "priority"].some(key => !Number.isFinite(scores[key]))) {
       diagnostics.push({ code: "field", pointer: `/hits/${index}`, message: "Hit identity, type, rank, or score components are invalid." });
     }
   });

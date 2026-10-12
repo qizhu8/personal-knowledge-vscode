@@ -6,8 +6,10 @@ export interface ExtensionBuild { version: string; buildId: string; builtAt: str
 export interface ExtensionHostIdentity extends ExtensionBuild {
   hostId: string; slotId: string; scope: string; pid: number; vscodeVersion: string;
 }
+export type HostMigrationState = "pending" | "ready" | "failed" | "action-required";
 interface HostRecord extends ExtensionHostIdentity {
   updatedAt: number; busy: boolean; phase: "ready" | "blocked" | "reloading" | "failed";
+  migration?: HostMigrationState;
 }
 interface ReloadRequest { id: string; buildId: string; createdAt: number; targets: Array<{ hostId: string; slotId: string }>; }
 
@@ -46,10 +48,10 @@ export class ExtensionHostRegistry {
   private handledRequest?: string;
   constructor(readonly directory: string, readonly identity: ExtensionHostIdentity, private readonly now = Date.now) {}
 
-  heartbeat(busy: boolean, phase: HostRecord["phase"] = "ready"): void {
-    this.write(`${this.identity.hostId}.json`, { ...this.identity, updatedAt: this.now(), busy, phase });
+  heartbeat(busy: boolean, phase: HostRecord["phase"] = "ready", migration: HostMigrationState = "pending"): void {
+    this.write(`${this.identity.hostId}.json`, { ...this.identity, updatedAt: this.now(), busy, phase, migration });
     const request = this.request();
-    if (request?.buildId === this.identity.buildId && !request.targets.some(target => target.hostId === this.identity.hostId)) {
+    if (migration === "ready" && phase === "ready" && request?.buildId === this.identity.buildId && !request.targets.some(target => target.hostId === this.identity.hostId)) {
       for (const target of request.targets.filter(target => target.slotId === this.identity.slotId && target.hostId !== this.identity.hostId)) {
         this.write(`ack-${target.hostId}.json`, { requestId: request.id, hostId: this.identity.hostId, buildId: this.identity.buildId });
       }
@@ -94,7 +96,8 @@ export class ExtensionHostRegistry {
     const verified = request.targets.filter(target => {
       const ack = this.read(`ack-${target.hostId}.json`);
       return ack?.requestId === request.id && ack.buildId === request.buildId
-        && this.hosts().some(host => host.hostId === ack.hostId && host.slotId === target.slotId && host.buildId === request.buildId);
+        && this.hosts().some(host => host.hostId === ack.hostId && host.slotId === target.slotId && host.buildId === request.buildId
+          && host.phase === "ready" && host.migration === "ready");
     }).map(target => target.hostId);
     return { requestId: request.id, buildId: request.buildId, verified, pending: request.targets.map(target => target.hostId).filter(hostId => !verified.includes(hostId)) };
   }

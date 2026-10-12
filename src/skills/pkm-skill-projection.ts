@@ -357,6 +357,49 @@ export async function disconnectPkmSkill(context: vscode.ExtensionContext, id: s
   await updateConnectedTargets(context, connected);
 }
 
+export function retirePkmSkillFiles(
+  targets: PkmSkillTarget[],
+  backupDirectory: string,
+): { removed: string[]; preserved: string[] } {
+  const removed: string[] = [];
+  const preserved: string[] = [];
+  for (const target of targets) {
+    const file = skillPath(target);
+    if (!fs.existsSync(file)) continue;
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink()
+      || (process.platform !== "win32" && stat.uid !== process.getuid?.())) {
+      preserved.push(file);
+      continue;
+    }
+    const current = fs.readFileSync(file, "utf8");
+    const marker = parseMarker(current);
+    if (!marker || marker.source !== PKM_SKILL_SOURCE_RELATIVE.replace(/\\/g, "/")
+      || marker.target !== target.kind || !/^name:\s*pkm-skills\s*$/m.test(current)) {
+      preserved.push(file);
+      continue;
+    }
+    fs.mkdirSync(backupDirectory, { recursive: true, mode: 0o700 });
+    const backup = path.join(backupDirectory, `${sha256(file).slice(0, 16)}-${randomBytes(8).toString("hex")}.md`);
+    fs.writeFileSync(backup, current, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    if (fs.readFileSync(file, "utf8") !== current) {
+      throw new Error(`PKM Skill changed during retirement; the current file was preserved: ${file}`);
+    }
+    fs.unlinkSync(file);
+    removed.push(file);
+  }
+  return { removed, preserved };
+}
+
+export async function retirePkmSkillProjections(
+  context: vscode.ExtensionContext,
+  backupDirectory: string,
+): Promise<{ removed: string[]; preserved: string[] }> {
+  const result = retirePkmSkillFiles(pkmSkillTargets(context), backupDirectory);
+  await updateConnectedTargets(context, []);
+  return result;
+}
+
 export async function reconcilePkmSkillProjections(
   context: vscode.ExtensionContext,
 ): Promise<{ updated: PkmSkillTargetStatus[]; actionRequired: PkmSkillTargetStatus[] }> {

@@ -22,6 +22,36 @@ assert.match(extensionSource, /vscode\.Uri\.joinPath\(context\.extensionUri, "di
 assert.doesNotMatch(extensionSource, /asWebviewUri\(vscode\.Uri\.file\(path\.join\(webviewDir/,
   "extension-owned Webview resources must not be reduced to local file URIs");
 
+const panelDisposeStart = extensionSource.indexOf("target.onDidDispose(() => {");
+const panelDisposeClosing = "}, undefined, context.subscriptions);";
+const panelDisposeEnd = extensionSource.indexOf(panelDisposeClosing, panelDisposeStart);
+assert(panelDisposeStart >= 0 && panelDisposeEnd > panelDisposeStart);
+const disposedPanelMessages = [];
+const clearedPanelTimers = [];
+let panelDisposeCallback;
+const disposedPanel = {
+  get visible() { throw new Error("Webview is disposed"); },
+  get active() { throw new Error("Webview is disposed"); },
+  onDidDispose(callback) { panelDisposeCallback = callback; },
+};
+const panelTimer = {};
+const panelDisposeSandbox = {
+  target: disposedPanel, panel: disposedPanel, context: { subscriptions: [] },
+  _panelReady: true, _panelRestoredRecoveryTimer: panelTimer,
+  _panelLastHeartbeat: Date.now(), _panelLastDiagnostic: "fixture diagnostic",
+  clearTimeout: timer => clearedPanelTimers.push(timer),
+  loadProfiler: { record() {} },
+  log: { info: message => disposedPanelMessages.push(message) },
+};
+require("vm").runInNewContext(extensionSource.slice(panelDisposeStart, panelDisposeEnd + panelDisposeClosing.length), panelDisposeSandbox);
+assert.strictEqual(typeof panelDisposeCallback, "function");
+assert.doesNotThrow(() => panelDisposeCallback(), "panel disposal must not read invalidated Webview getters");
+assert.strictEqual(panelDisposeSandbox.panel, undefined);
+assert.strictEqual(panelDisposeSandbox._panelReady, false);
+assert.strictEqual(panelDisposeSandbox._panelRestoredRecoveryTimer, undefined);
+assert.deepStrictEqual(clearedPanelTimers, [panelTimer]);
+assert.match(disposedPanelMessages[0], /panel disposed heartbeatAgeMs=\d+ lastDiagnostic=fixture diagnostic/);
+
 const compiled = fs.readFileSync(path.join(root, "dist", "extension.js"), "utf8");
 const activation = compiled.indexOf("async function activate(context)");
 const chatStart = compiled.indexOf("let apiChat;", activation);

@@ -1,5 +1,29 @@
 # Independent API Chat
 
+Agent Sessions uses the same user groups as Chat List: user group → Chat →
+Task Session. Spawned worker Chats are nested under their parent Chat; existing
+Chats receiving a delegation retain their own user group. Empty/no-Task Chats
+also appear inside their user group rather than as loose top-level entries.
+This is a display projection; Task and host-group identities are unchanged.
+
+Assistant replies and delegated worker result cards share sanitized Markdown,
+KaTeX math (`$...$`, `$$...$$`, `\(...\)`, `\[...\]`) and Mermaid rendering.
+Math and diagram libraries load locally only when needed. Raw HTML is displayed
+as text; unsafe links and interactive Mermaid bindings are disabled. Invalid
+math or diagrams show explicit rendering errors.
+
+Sending immediately shows a local user bubble before dispatching the request.
+It remains marked as sending/awaiting sync until its exact submission identity
+appears in saved messages or the input queue. Rejections retain the current draft
+and display an error; local bubbles are not written to conversation history.
+
+For independent work, the manager is instructed to put all ready sibling tasks
+in one `spawn_workers.tasks` batch before sleeping. This is model guidance, not
+a guarantee that every model follows it; dependent tasks should still wait.
+Displaying a worker's saved original answer is local UI work and uses no model
+tokens. Event-driven manager wakeups, summaries and decisions do call the model
+and incur input/output tokens, including worker results admitted as context.
+
 Run **Personal Knowledge Manager: Open API Chat** from the command palette.
 The Webview opens in the secondary (right) sidebar on VS Code versions supporting
 `viewsContainers.secondarySidebar`; the current development host is 1.140.
@@ -100,8 +124,15 @@ resolved from the installer's extension registration, including version-director
 changes; malformed or ambiguous registration blocks reload instead of guessing.
 Busy PKM Chat/background work
 defers reload; the request expires after five minutes. Completion requires a new
-online host in the same storage slot reporting the requested build, not merely
-accepting the request. This restarts other extensions in those windows too;
+online host in the same storage slot reporting the requested build and completed
+background integration preparation, not merely accepting the request.
+On activation, PKM automatically checks and upgrades its managed MCP runtime and
+generated server in the background. Concurrent windows serialize this work;
+successful upgrades require no setup dialog or manual regeneration. Existing
+account bindings and manual registration ownership are preserved. Missing Python,
+conflicting/newer runtimes and migration failures remain explicit in Host Status
+and Config; failed or incomplete preparation cannot acknowledge upgrade success.
+This restarts other extensions in those windows too;
 external agent activity is not tracked and must be stopped first.
 
 Legacy hosts without this coordinator require an initial manual reload. Other
@@ -155,16 +186,20 @@ The add-file button attaches the editor selection, current file, or chosen text
 files, including knowledge files. Attachments are snapshots, not live watches;
 remove/re-add them after edits. Nothing scans or uploads the whole workspace.
 Sending transmits the current message, selected context, and, when **History**
-is enabled, up to 20 recent complete messages to the selected model provider.
+is enabled, budget-selected recent dialogue and matching Chat evidence to the
+selected model provider. Historical tool calls are never replayed wholesale.
 Files may contain secrets: inspect the selection before attaching it.
 The displayed input estimate conservatively counts UTF-8 bytes, including system
-text, attachments, selected Memory/Skills, complete history and builtin schemas.
+text, attachments, selected Memory/Skills, bounded dialogue and builtin schemas.
 MCP schemas are discovered and checked at connection time. This is not provider
 tokenization; every model round is checked against the configured window.
 
 Limits: 160 KB per chosen file, 60,000 attached characters, 16,000 message
-characters, 100,000 request characters, and 100,000 response characters.
-Use a new chat or disable history when a request exceeds the limit.
+characters and 100,000 response characters. Requests use the configured model
+context/output budget, not an unrelated 100,000-character ceiling. Required input,
+explicit context and active tool results are never silently shortened; if these
+alone exceed the budget, the request fails before model dispatch. Optional
+retrieved references and recent dialogue are admitted only when they fit.
 
 ## Native Session Ownership
 
@@ -530,19 +565,62 @@ include Chat Memory segments, Skills, Notes, Scripts, Recipes, Research and
 indexed subscriptions. API/function kinds are extensible visualization contracts;
 no API/function source adapter or automatic execution is implemented.
 The current knowledge route is lexical unified retrieval, not a learned ranking
-model. Raw scores/components and source URIs are inspectable. Memory uses recent
-history and a lexical-overlap rule; pools are interleaved rather than falsely
+model. Raw scores/components and source URIs are inspectable. Memory uses bounded
+dialogue and a lexical-overlap rule; pools are interleaved rather than falsely
 globally ranked across incomparable scoring methods. Flow thickness is normalized
 within the scoring method and is not a probability.
 
 Memory belongs to one Chat, with optional Task branches and 1,200-character
-segments. Up to four older matching segments supplement the last 20 messages;
-History off disables memory injection. Up to three knowledge bodies, each bounded
-to 4,000 characters, are references only: Scripts and Recipes are not executed.
+source slices. Content-hashed IDs change when the source or tool outcome changes.
+Each terminal tool outcome is indexed separately, even when its containing reply
+failed, was cancelled or was interrupted. Outcome status and arguments accompany
+each tool slice; failed tool outcomes are not presented as successful facts.
+Recent tool evidence is eligible for retrieval. Up to four matching segments
+with at least 60% of the best lexical score are considered, alongside at most six
+short complete dialogue messages (no historical images or tool serialization).
+Matching evidence takes budget priority over recent dialogue. History off disables
+both. Up to three knowledge bodies of at most 4,000 characters are considered;
+larger bodies are omitted with an explicit L2-required reason, not cut mid-source.
+All automatic context is optional and checked with actual tool schemas before
+every model round. Persisted selection flags/counts describe the admitted context,
+not the pre-budget shortlist. Scripts and Recipes are not executed.
 Unavailable/revision-changed bodies are not selected. Persisted receipts contain
 bounded metadata, not duplicate bodies or hidden reasoning. Knowledge retrieval
-honors workspace trust and the Protective outside-workspace grant. Compression
-and learned segment retrieval remain future work.
+honors workspace trust and the Protective outside-workspace grant. Provider
+invocation has a five-second deadline and validates a bounded candidate batch.
+Malformed results, provider exceptions and timeouts produce a visible retrieval
+warning, not a failed primary Chat request. Cancellation remains cancellation.
+Compression, automatic L2 refinement and learned segment retrieval remain future work.
+
+### Activity retrieval timeline
+
+Every assistant activity records separate Memory and knowledge retrieval attempts,
+their duration, and the actual selected context before each model round. Click the
+Memory icon on an answer, or choose an activity in the Retrieval panel. The second
+selector switches between recall attempts and sends. A recall shortlist is not
+evidence of transmission: only a send snapshot describes the admitted context.
+Each send exposes the conservative UTF-8 budget estimate and selected/excluded
+candidates; clicking a Memory source resolves its content-sensitive source ID.
+Raw scores remain per-method values, not probabilities or a measured precision
+score. Relevance annotation and learned feedback ingestion are not implemented.
+
+The last receipt remains available for older Chats. Activity history retains up
+to 32 attempts and the latest 32 send snapshots; omitted sends are counted
+explicitly. These records contain metadata, not duplicate source bodies. Missing
+or revised source content is reported unavailable rather than substituted.
+Retries, manager wakeups and peer-message responses are separate activities with
+their own timeline. No extra model call is used to render or summarize it.
+
+### Retrieval-first acceptance
+
+Run `npm run test:chat-context` for source immutability, the eight original
+regressions, and real controller/disk-store/local-HTTP acceptance. Run
+`npm run test:api-chat` for existing permissions, native-model, tools, transport
+and browser regressions. The context suite explicitly labels future mechanisms
+as TODO; passing implemented cases is not a claim that those TODOs are complete.
+An 8K-window request over the synthetic >100K-character tool history must reach
+HTTP with the exact relevant evidence, without unrelated tool output, without
+turning History off, and without rewriting persisted evidence.
 
 Tools require a trusted workspace. Available tools start enabled; saved exclusions
 remain meaningful:
@@ -564,6 +642,101 @@ remain meaningful:
   canonical PKM URL from `list_chats`.
 - `read_chat_result`: read an approved receipt's status and bounded saved answer
   immediately, without starting a model, blocking, retrying or polling.
+- `spawn_workers`: create a batch of independent worker Chats and dispatch them
+  concurrently. Recursive workers share reusable tree-wide concurrent capacity.
+- `assign_workers`: batch activities to existing idle Chats without reparenting
+  them or changing their models, histories, permissions or user groups.
+- `request_manager_input`: hold a worker activity for clarification or a suggestion.
+- `stop_worker`, `respond_worker`, `resolve_worker`: control an exact owned
+  receipt/activity/attempt (and decision episode for responses), never another
+  unrelated activity. Manager responses cannot grant human permissions.
+- `list_workers`: inspect tree membership and parent/child URLs without history.
+- `send_worker_message`: explicit, persistent, addressed messaging within one
+  task tree. It does not read another Chat's Memory or conversation.
+
+### Worker task trees, sleep and explicit messaging
+
+`spawn_workers` accepts focused `{title, question}` tasks. It creates visible
+ordinary Chats, not automatic Tasks. Workers inherit the manager's selected
+model, budgets, tool selection, MCP configuration and permission mode, but not
+its messages, attachments, draft images or remembered grants. Their tool calls
+continue to obey those inherited selections and their own approvals. A worker
+may become a manager by calling `spawn_workers` itself; no separate recursion
+budget is reset at that boundary.
+
+Defaults are **3 automatically approved concurrent workers** and **10 maximum** across
+the entire tree, configured by `personalKnowledge.apiChatAutomaticWorkers` and
+`personalKnowledge.apiChatMaximumWorkers`. The automatic threshold must not
+exceed the hard maximum. Only increasing the approved capacity needs explicit
+approval, even under Allow All. An approved quota of six can be reused after
+resolution without asking again. Reservations and releases are persisted under
+a cross-process lock. Completed/cancelled temporary workers archive full results
+and tool evidence before their Chat is removed and capacity is released. Existing
+Chats retain their history/group and release their activity binding. Failed or
+interrupted activities retain evidence and capacity until `resolve_worker`;
+blockers are not terminal resolution. An uncertain dispatch is never replayed
+automatically. The capacity belongs to this tree, not to a model turn or each manager. A new
+independent task tree starts in a new Chat.
+
+After the dispatch round the manager stops model requests and releases its
+stream/connections/timers. **Sleep is a scheduler state, not a repeated wait tool
+or model poll.** PKM reports actionable outcomes and blockers: completed,
+failed/interrupted, cancelled, clarification, suggestion, real human permission,
+active-time limit, or a suspected loop with repeated-tool evidence. Ordinary
+running/progress/resume updates affect UI only. Events are bound to activity and
+attempt and deduplicated per decision episode; stale reports cannot control
+replacement work. A busy manager processes events after its current activity.
+Explicit peer messages are not coalesced. Wake
+requests contain bounded events and result references; larger answers can be
+read through the existing receipt tool. If work remains, the manager sleeps again.
+Token deltas and elapsed-clock refreshes do not wake the manager. A runtime-limit
+notice does not imply execution has stopped. It reuses `apiChatLoopReviewMinutes`,
+excludes approval/input waits, and permits a manager to continue or terminate the
+exact activity. Stop never rolls back tool effects already performed.
+
+Quota approval offers **Yes / No / Let me ask a question**. Follow-up answers
+use a separate tools-disabled model request with bounded context/output; they
+may incur model charges, are accounted on the active reply, and never constitute
+consent or create workers. The original decision remains pending.
+
+The worker status strip shows active/approved/maximum capacity and an expandable
+task tree. Archived results open locally with rich rendering and tool-status
+evidence; `read_chat_result` supports character-offset paging. Existing Chat
+inputs identify their source manager, receipt and dispatch time. Chat List nests
+new workers beneath their manager, preserves existing Chat groups, and sorts
+only active above inactive with stable order inside each partition. Agent
+Sessions follows **user group → Chat → Task**, including empty Chats.
+
+Peers send text to a specific task-tree Chat URL and receive a delivery ID once
+the inbox is saved. Only that message, sender identity and delivery metadata are
+shared; there is no hidden common Memory. A busy recipient queues the message,
+and a sleeping/idle recipient is woken. Delivery means queued, not that a model
+has already processed it. Tree members and parent links are discoverable through
+`list_workers`, with pagination. Explicit messaging and wake tools are available
+only when the task-tree tool remains enabled.
+
+Stop also works while a manager sleeps and disables its automatic wakeups; it
+does not cancel independent children. Pause, failed/cancelled manager requests,
+Trash and changed sending-window context likewise prevent auto-wakes. Queued
+events remain visible in saved state. Host reload does not silently replay child
+jobs or resume model work in another window: send/resume explicitly in the owner
+context. This implementation is not a durable distributed scheduler or a claim
+that running workers survive Host shutdown. PKM's five-second supervisor detects
+dead local owner processes and durably reports interruption without asking the
+worker to report its own crash. PID reuse, hung processes and remote-host leases
+are not inferred as crashes; long-running live activities use the review events.
+
+`npm run test:chat-workers` verifies real controller/store/HTTP dispatch overlap,
+no-poll sleep, individual completion wakeups, shared recursive limits, mandatory
+expansion approval and explicit peer inbox delivery.
+
+### Refresh and motion
+
+Chat refresh reuses unchanged message DOM instead of rebuilding every bubble,
+preserving open disclosures and avoiding unnecessary animation restarts. New
+popover openings use a short opacity/position transition; hover/focus surfaces
+use restrained color transitions. Reduced-motion preferences disable the new
+transitions. Draft, scroll-follow and permission behavior are unchanged.
 
 The permission control and **Allow All** sit beside **Options** in the composer
 toolbar. Permission, tool, settings and memory choices open separate popovers

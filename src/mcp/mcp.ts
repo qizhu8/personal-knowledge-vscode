@@ -14,7 +14,7 @@ import { hasNewerMcpRuntime } from "./mcp-version-policy";
 import { builtInRecipePin } from "../workflows/project-model";
 
 // ── MCP server scaffold ────────────────────────────────────────────────────
-export const UNIFIED_MCP_VERSION = "2.13.11";
+export const UNIFIED_MCP_VERSION = "2.13.12";
 const PROMPT_MANAGER_WHEEL = "uone_prompt_manager-0.1.0-py3-none-any.whl";
 const PROMPT_MANAGER_WHEEL_SHA256 = "eb9fd76058134f9ab9711d8e7604c75f761db5762d93e67f65740dc07fdc1518";
 const RETRIEVAL_ENGINE_WHEEL = "adaptive_skill_retrieval-0.3.0.dev2026091601-py3-none-any.whl";
@@ -398,7 +398,7 @@ export function combinedMcpRegistry(): string {
   }, null, 2);
 }
 
-export function combinedMcpInstallInstruction(): string {
+export function combinedMcpInstallInstruction(nativeProvider = true): string {
   const storePath = getStorePath();
   const mcpDir = managedMcpServerDirectory();
   const runtimePython = mcpRuntimePythonPath();
@@ -407,10 +407,30 @@ export function combinedMcpInstallInstruction(): string {
   const requirementsPath = path.join(mcpDir, "requirements.txt");
   const chatServerPath = path.join(mcpDir, "chat_server.py");
   const quote = (value: string) => `"${value.replace(/"/g, '\\"')}"`;
+  if (nativeProvider) return [
+    "Verify the unified pkm server supplied by the Personal Knowledge Manager extension's native MCP provider.",
+    "This registration belongs to the target machine and OS account, not this workspace.",
+    "Do not add duplicate registrations to MCP Agency, workspace .vscode/mcp.json, or user MCP configuration.",
+    "Do not delete or modify existing registrations without the user's explicit approval.",
+    "On Remote SSH, use the remote account's runtime; do not launch its paths on the Windows client.",
+    "",
+    `Knowledge Root: ${storePath}`,
+    `Managed runtime Python: ${runtimePython}`,
+    `pkm server: ${serverPath}`,
+    "",
+    "1. Use PKM Config to check or repair the managed runtime and generated server if necessary.",
+    "2. With user approval, start the provider's pkm entry using PKM: Start PKM MCP or MCP: List Servers. Preserve native trust and tool consent.",
+    `3. Discover and call pkm.check_version through the actual agent tool surface; expected unified version ${UNIFIED_MCP_VERSION}.`,
+    "4. Call pkm.chat_capabilities and verify chat_join, chat_standby, and chat_post.",
+    "5. Verify the same provider is discoverable in a second workspace on this target/account without a project MCP file.",
+    "Report configured, discovered, trusted, started, tools-listed, and agent-visible separately. Provider presence alone is not successful tool access.",
+  ].join("\n");
   return [
-    "Please register the unified local stdio MCP server named pkm in MCP Agency.",
-    "Do the installation yourself; do not ask me to manually edit the registry unless Agency blocks you.",
+    "Use a manual account-level adapter only when it is the explicitly selected registration owner or this client lacks native provider support.",
+    "A manual adapter requires explicit user approval; native provider registration remains the preferred VS Code path.",
+    "Select exactly one registration owner. Do not register the same server through both an extension provider and a manual adapter.",
     "IMPORTANT: these paths were generated for this machine. Preserve all unrelated MCP server registrations.",
+    "On Remote SSH, configure the remote user's MCP settings; never launch Linux paths on the Windows client.",
     "",
     `Store: ${storePath}`,
     `Managed runtime Python: ${runtimePython}`,
@@ -419,8 +439,8 @@ export function combinedMcpInstallInstruction(): string {
     "",
     `1. Verify the managed runtime exists and can import fastmcp, prompt_manager, and websockets: ${quote(runtimePython)} -c "import fastmcp, prompt_manager, websockets"`,
     `2. Verify the generated entry and chat module exist at ${serverPath} and ${chatServerPath}. If missing or outdated, regenerate them from the extension Config tab.`,
-    "3. Remove obsolete pkm-chat and pkm-chat-live registrations; their chat tools are now exposed by pkm.",
-    "4. In MCP Agency, add/import this Local/stdio server. Preserve all unrelated servers:",
+    "3. Inventory any existing pkm, pkm-chat, and pkm-chat-live registrations. Do not remove user-authored entries automatically.",
+    "4. After approval, import this Local/stdio server into this target account's user-level MCP configuration. Do not create a workspace MCP file:",
     "",
     "```json",
     JSON.stringify({
@@ -432,8 +452,8 @@ export function combinedMcpInstallInstruction(): string {
     "",
     "5. The Config tab normally installs dependencies automatically. If Repair reported an install failure, run:",
     `   ${quote(runtimePython)} -m pip install -r ${quote(requirementsPath)}`,
-    "6. Start or restart pkm in Agency. In VS Code, merge the same entry into .vscode/mcp.json, then click Start or run MCP: List Servers.",
-    "7. Start a new agent chat session so tool discovery is refreshed.",
+    "6. With user approval, start the selected manual pkm registration using the client's native MCP controls.",
+    "7. Refresh tool discovery without automatically restarting or reloading other windows.",
     `8. Discover pkm.check_version and verify unified version ${UNIFIED_MCP_VERSION}.`,
     "9. Call pkm.chat_capabilities and verify its chat_tools includes chat_join, chat_standby, and chat_post.",
     "Report any missing file, dependency error, start failure, or version mismatch with the exact error text.",

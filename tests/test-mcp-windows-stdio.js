@@ -75,12 +75,52 @@ const exitCode = childProcess.spawnSync(process.execPath, [proxyPath, process.ex
 assert.strictEqual(exitCode.status, 7, 'the proxy must preserve the target exit code');
 
 const mcpSource = fs.readFileSync(path.join(root, "src/mcp/mcp.ts"), 'utf8');
+const mcpSourceFile = ts.createSourceFile('mcp.ts', mcpSource, ts.ScriptTarget.Latest, true);
+const instructionFunction = mcpSourceFile.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'combinedMcpInstallInstruction');
+assert(instructionFunction, 'MCP onboarding must have one explicit registration-owner instruction');
+const instructionSandbox = {
+  exports: {}, getStorePath: () => '/account/knowledge',
+  managedMcpServerDirectory: () => '/account/knowledge/mcp-server',
+  mcpRuntimePythonPath: () => '/account/runtime/bin/python',
+  mcpStdioCommand, path, UNIFIED_MCP_VERSION: 'fixture',
+};
+require('vm').runInNewContext(ts.transpileModule(instructionFunction.getText(mcpSourceFile), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+}).outputText, instructionSandbox);
+const nativeInstruction = instructionSandbox.exports.combinedMcpInstallInstruction();
+assert.match(nativeInstruction, /native MCP provider/);
+assert.match(nativeInstruction, /Do not add duplicate registrations/);
+assert.doesNotMatch(nativeInstruction, /"servers"|Please register|merge the same entry/);
+assert.match(nativeInstruction, /second workspace/);
+const manualInstruction = instructionSandbox.exports.combinedMcpInstallInstruction(false);
+assert.match(manualInstruction, /explicit user approval/);
+assert.match(manualInstruction, /remote user's MCP settings/);
+assert.match(manualInstruction, /user-level MCP configuration/);
+assert.doesNotMatch(manualInstruction, /merge the same entry|Please register.*Agency/);
+assert.match(manualInstruction, /explicitly selected registration owner/);
+assert.doesNotMatch(manualInstruction, /This client does not expose/,
+  'a selected manual owner must not be misreported as missing provider support');
 assert.strictEqual((mcpSource.match(/mcpStdioCommand\(/g) || []).length, 5, 'every MCP registration and instruction surface must use the Windows-safe launcher');
 assert.match(mcpSource, /env:\s*launch\.env/,
   'native MCP definition data must carry the signed-host environment');
 assert.strictEqual((mcpSource.match(/\.\.\.\(launch\.env \? \{ env: launch\.env \} : \{\}\)/g) || []).length, 4,
   'every JSON registry and instruction surface must carry ELECTRON_RUN_AS_NODE');
 const extensionSource = fs.readFileSync(path.join(root, 'src/extension.ts'), 'utf8');
+assert.doesNotMatch(extensionSource, /mcpInstallInstruction:|agencyInstallInstruction:/,
+  'Config must not publish an Agent installation prompt');
+const panelSource = fs.readFileSync(path.join(root, 'src/webview/panel/50-mcp.js'), 'utf8');
+assert.doesNotMatch(panelSource, /mcp-agency-registration|agency-install-code|copyAgencyInstall|agencyInstallInstruction|config\.agencyDescription/,
+  'Config must not expose the old Agency registration route');
+assert.match(panelSource, /id="mcp-account-registration"/);
+assert.doesNotMatch(panelSource, /mcpInstallInstruction|copyMcpInstructions|mcp-install-code|pkmSkillInject/,
+  'the retired Inject and installation prompt controls must not remain reachable');
+assert.match(panelSource, /accountBinding\?\.registrationOwner === 'manual-user' \? '<button[^]*?onclick="copyCfg\(\)"/,
+  'native account registration must not offer a duplicate manual configuration action');
+const packageManifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+assert(packageManifest.contributes.commands.some(command => command.command === 'personalKnowledge.startPkmMcp'),
+  'the native start command must be discoverable in the command palette');
+assert(packageManifest.contributes.commands.some(command => command.command === 'personalKnowledge.removeLegacyAgentInjection'),
+  'existing generated adapters need an explicit backed-up cleanup command');
 assert.match(extensionSource, /new api\.McpStdioServerDefinition\(data\.label, data\.command, data\.args, data\.env \|\| \{\}, data\.version\)/,
   'the native VS Code MCP provider must pass the signed-host environment');
 assert.doesNotMatch(mcpSource, /Get-CimInstance Win32_Process/,

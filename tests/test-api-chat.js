@@ -184,6 +184,92 @@ else (async () => {
     control.dispose(); assert(!fs.existsSync(path.join(directory, "api-chat-control", "hosts", control.hostId + ".json")));
     const store = new ApiChatStore(directory, "0123456789abcdef");
     const chat = store.create();
+    const secondWorkspace = new ApiChatStore(directory, "fedcba9876543210");
+    const sharedUrl = `pkm://chats/${store.namespace}/${chat.id}`;
+    assert.strictEqual(secondWorkspace.resolveChat(sharedUrl).id, chat.id, "a stored Chat URL must resolve from another workspace without copying history");
+    assert.strictEqual(secondWorkspace.list().find(item => item.id === chat.id).workspaceNamespace, store.namespace);
+    assert.throws(() => secondWorkspace.resolveChat(`pkm://chats/${secondWorkspace.namespace}/${chat.id}`), /stored identity/);
+    assert.throws(() => secondWorkspace.resolveChat(`pkm://chats/${store.namespace}/../${chat.id}`), /traversal/);
+    const { captureExecutionContext, validExecutionContext } = require("../dist/chat/execution-context");
+    const contextRoot = path.join(directory, "execution-context-fixture");
+    const contextStore = new ApiChatStore(path.join(contextRoot, ".pkm", "state"), store.namespace);
+    const contextViewer = new ApiChatStore(contextStore.stateDirectory, secondWorkspace.namespace);
+    const contextChat = contextStore.create();
+    const executionContext = captureExecutionContext(require("crypto").randomUUID(), [{ uri: { scheme: "file", fsPath: directory, toString: () => require("url").pathToFileURL(directory).toString() } }], contextRoot, true, "protective");
+    assert(validExecutionContext(executionContext));
+    assert(Object.isFrozen(executionContext) && Object.isFrozen(executionContext.workspacePaths));
+    assert(!validExecutionContext({ ...executionContext, trusted: false }));
+    assert.strictEqual(executionContext.cwd, fs.realpathSync(directory));
+    contextChat.messages.push({ id: "context-user", role: "user", content: "origin", status: "complete", executionContext });
+    contextChat.progress = { startedAt: Date.now(), status: "complete", model: "fixture", steps: [], executionContext };
+    contextChat.queuedInputs = [{ id: require("crypto").randomUUID(), text: "queued origin", mode: "task", executionContext }];
+    contextStore.save(contextChat);
+    const contextBytes = fs.readFileSync(contextStore.file(contextChat.id));
+    const contextRestored = contextViewer.load(contextChat.id, false);
+    assert.deepStrictEqual(contextRestored.messages[0].executionContext, executionContext);
+    assert.deepStrictEqual(contextRestored.progress.executionContext, executionContext);
+    assert.deepStrictEqual(contextRestored.queuedInputs[0].executionContext, executionContext);
+    assert.throws(() => contextViewer.assertRunnable(contextRestored), /another workspace/);
+    assert.doesNotThrow(() => contextViewer.assertRunnable(contextRestored, undefined, executionContext));
+    assert.throws(() => contextViewer.assertRunnable(contextRestored, undefined, { ...executionContext, accountId: "0".repeat(64) }), /Knowledge Root/);
+    const otherContextRoot = path.join(directory, "other-execution-root");
+    fs.mkdirSync(path.join(otherContextRoot, ".pkm", "state"), { recursive: true });
+    const otherExecutionContext = captureExecutionContext(require("crypto").randomUUID(), [], otherContextRoot, true, "protective");
+    assert.throws(() => contextViewer.assertRunnable(contextRestored, undefined, otherExecutionContext), /Knowledge Root/);
+    const queuedChat = contextStore.create();
+    queuedChat.progress = { attemptId: require("crypto").randomUUID(), executionContext, attempt: 1, ownerPid: process.pid, ownerHost: require("os").hostname(), startedAt: Date.now(), status: "running", model: "fixture", steps: [] };
+    queuedChat.messages.push({ id: "queue-reply", role: "assistant", content: "partial", status: "streaming" });
+    contextStore.save(queuedChat);
+    const foreignQueueContext = captureExecutionContext(require("crypto").randomUUID(), [], contextRoot, true, "protective");
+    const foreignQueuedInput = { id: require("crypto").randomUUID(), text: "From another window", mode: "task", executionContext: foreignQueueContext };
+    const staleViewerChat = contextViewer.load(queuedChat.id, false);
+    contextViewer.enqueueInput(staleViewerChat, foreignQueuedInput);
+    contextViewer.enqueueInput(staleViewerChat, foreignQueuedInput);
+    assert.strictEqual(contextViewer.load(queuedChat.id, false).queuedInputs.length, 1, "duplicate foreign delivery must be idempotent");
+    assert.throws(() => contextViewer.enqueueInput(staleViewerChat, { ...foreignQueuedInput, text: "Retargeted text" }), /different text or execution context/);
+    assert.throws(() => contextViewer.enqueueInput(staleViewerChat, { ...foreignQueuedInput, id: require("crypto").randomUUID(), mode: "steer" }), /different execution context/);
+    queuedChat.messages[0].content += " output";
+    contextStore.save(queuedChat);
+    assert.strictEqual(contextViewer.load(queuedChat.id, false).messages[0].content, "partial output");
+    assert.deepStrictEqual(queuedChat.queuedInputs, [foreignQueuedInput], "active output must preserve concurrently submitted work");
+    const secondForeignInput = { ...foreignQueuedInput, id: require("crypto").randomUUID(), text: "Second foreign task" };
+    contextViewer.enqueueInput(staleViewerChat, secondForeignInput);
+    contextStore.assertRunnable(queuedChat, queuedChat.progress.attemptId, executionContext);
+    assert.deepStrictEqual(queuedChat.queuedInputs.map(input => input.id), [foreignQueuedInput.id, secondForeignInput.id]);
+    const queueWriter = require("child_process").spawnSync(process.execPath, ["-e", `
+      const { ApiChatStore } = require(${JSON.stringify(path.join(__dirname, "../dist/chat/api-chat-store"))});
+      const { captureExecutionContext } = require(${JSON.stringify(path.join(__dirname, "../dist/chat/execution-context"))});
+      const root = process.argv[1];
+      const store = new ApiChatStore(require("path").join(root, ".pkm", "state"), process.argv[2]);
+      const input = { id: require("crypto").randomUUID(), text: "Independent process input", mode: "task", executionContext: captureExecutionContext(require("crypto").randomUUID(), [], root, true, "protective") };
+      store.enqueueInput(store.load(process.argv[3], false), input);
+      process.stdout.write(JSON.stringify(input));
+    `, contextRoot, contextViewer.namespace, queuedChat.id], { encoding: "utf8" });
+    assert.strictEqual(queueWriter.status, 0, queueWriter.stderr);
+    const crossProcessInput = JSON.parse(queueWriter.stdout);
+    queuedChat.progress.status = "complete";
+    queuedChat.messages[0].status = "complete";
+    contextStore.save(queuedChat);
+    assert.deepStrictEqual(contextViewer.load(queuedChat.id, false).queuedInputs.map(input => input.id), [foreignQueuedInput.id, secondForeignInput.id, crossProcessInput.id], "finishing the owner request must preserve independently submitted work");
+    const concurrentChange = contextViewer.load(queuedChat.id, false);
+    concurrentChange.title = "Changed elsewhere";
+    contextViewer.save(concurrentChange);
+    queuedChat.title = "Stale overwrite";
+    assert.throws(() => contextStore.save(queuedChat), /changed in another window/, "queue reconciliation must not merge unrelated changes");
+    for (const location of ["message", "progress", "queue"]) {
+      const damaged = JSON.parse(contextBytes);
+      const holder = location === "message" ? damaged.messages[0] : location === "progress" ? damaged.progress : damaged.queuedInputs[0];
+      holder.executionContext.cwd = path.join(directory, "different-root");
+      fs.writeFileSync(contextStore.file(contextChat.id), JSON.stringify(damaged));
+      assert.throws(() => contextViewer.load(contextChat.id, false), /Unsupported chat history/);
+    }
+    fs.writeFileSync(contextStore.file(contextChat.id), contextBytes);
+    const delegationParent = contextStore.create();
+    const delegationTarget = contextViewer.create();
+    const delegation = { id: require("crypto").randomUUID(), chatId: delegationTarget.id, chatUrl: `pkm://chats/${contextViewer.namespace}/${delegationTarget.id}`, status: "complete", answer: "Across workspace aliases" };
+    delegationParent.messages.push({ id: "cross-namespace-reply", role: "assistant", content: "Delegated result", status: "complete", delegations: [delegation] });
+    contextStore.save(delegationParent);
+    assert.deepStrictEqual(contextViewer.load(delegationParent.id, false).messages[0].delegations[0], delegation, "target aliases must not be rewritten to the parent's namespace");
     assert.strictEqual(chat.sessionId, undefined);
     assert(!fs.existsSync(path.join(directory, "agent-sessions")));
     store.assertRunnable(chat); assert.strictEqual(store.load(chat.id).sessionId, undefined);
@@ -670,15 +756,19 @@ async function testController() {
     await provider.handle({ type: "openLink", value: deleteFixtureUrl });
     assert.deepStrictEqual(openedPkmPaths, [deleteFixtureUrl]);
     await assert.rejects(provider.handle({ type: "openLink", value: deleteFixtureUrl + "?secret=anything" }), /queries/);
-    await assert.rejects(provider.openPkmChat(`pkm://chats/aaaaaaaaaaaaaaaa/${deleteFixture}`), /another workspace/);
-    await assert.rejects(provider.agentControl("get", { chatId: `pkm://chats/aaaaaaaaaaaaaaaa/${deleteFixture}` }), /another workspace/);
+    await assert.rejects(provider.openPkmChat(`pkm://chats/aaaaaaaaaaaaaaaa/${deleteFixture}`), /stored identity/);
+    await assert.rejects(provider.agentControl("get", { chatId: `pkm://chats/aaaaaaaaaaaaaaaa/${deleteFixture}` }), /stored identity/);
     await assert.rejects(provider.openPkmChat(`pkm://chats/${provider.store.namespace}/00000000-0000-0000-0000-000000000000`), /existing non-Trash/);
     assert.strictEqual(requests.length, 0, "Opening and reading URLs must not invoke a model");
     const otherWindow = new ApiChatView(context);
-    otherWindow.store = provider.store;
+    otherWindow.store = new ApiChatStore(provider.store.stateDirectory, "fedcba9876543210");
     const otherPosts = [];
     otherWindow.view = { webview: { postMessage: value => { otherPosts.push(value); return Promise.resolve(true); } } };
     await otherWindow.handle({ type: "ready" });
+    await otherWindow.openPkmChat(deleteFixtureUrl);
+    assert.strictEqual(otherWindow.chat.id, deleteFixture);
+    assert.strictEqual((await otherWindow.agentControl("list", {})).chats[0].chatUrl, deleteFixtureUrl);
+    assert.strictEqual(requests.length, 0, "Cross-workspace viewers must not dispatch or replay requests");
     sessionApproval = undefined;
     await provider.handle({ type: "trashChat", id: deleteFixture });
     assert.strictEqual(provider.store.list().length, 1, "Cancelled deletion must retain the Chat");
@@ -724,7 +814,7 @@ async function testController() {
     assert.strictEqual(provider.approvals.size, 0);
     const outsideRead = permission("read-only", "External MCP read");
     const outsideReadId = [...provider.approvals.keys()][0]; assert(outsideReadId);
-    assert.match(posts.at(-1).approvals[0].detail, /Chat-level grant/);
+    assert.match(posts.at(-1).approvals[0].detail, /only in this Chat and sending-window context/);
     await provider.handle({ type: "approval", id: outsideReadId, value: "approve" });
     assert.strictEqual(await outsideRead, true);
     assert.strictEqual(await permission(toolPermissionScope("builtin", "run_process")), true);
@@ -958,12 +1048,20 @@ async function testController() {
     provider.chat.builtinTools = ["replace_text", "run_process"];
     provider.chat.context = [{ id: "explicit", label: "selection.ts:1", content: "chosen context" }];
     const firstStarted = new Promise(resolve => { started = resolve; });
+    provider.chat.permissionContextId = "0".repeat(64);
+    provider.chat.permissionGrants = [toolPermissionScope("builtin", "run_process")];
     const firstRun = provider.handle({ type: "send", text: "first question" });
     await firstStarted;
+    const firstExecution = provider.chat.progress.executionContext;
+    assert(require("../dist/chat/execution-context").validExecutionContext(firstExecution));
+    assert.strictEqual(firstExecution.knowledgeRoot, fs.realpathSync(directory));
+    assert.deepStrictEqual(provider.chat.messages.at(-2).executionContext, firstExecution);
+    assert.strictEqual(provider.chat.permissionContextId, firstExecution.contextId);
+    assert.deepStrictEqual(provider.chat.permissionGrants, [], "permissions from a previous sender must not transfer");
     assert.strictEqual(provider.chat.title, "Named chat", "First prompt must not overwrite a manual title");
     assert.strictEqual(posts.at(-1).chats.find(item => item.id === first).status, "running");
     approvalCallbacks[0]("run_process", true);
-    assert.strictEqual(posts.at(-1).chats.find(item => item.id === first).status, "awaiting-input");
+    assert.strictEqual(posts.at(-1).chats.find(item => item.id === first).status, "running", "Pre-policy builtin callbacks do not indicate a real approval wait");
     approvalCallbacks[0]("run_process", false);
     assert.strictEqual(posts.at(-1).chats.find(item => item.id === first).status, "running");
     assert.strictEqual(requests[0].request.messages[1].content, "Context: selection.ts:1\nchosen context");
@@ -1144,6 +1242,8 @@ async function testController() {
     const declineRequest = requests.at(-1); const beforeDecline = requests.length; sessionApproval = undefined;
     await assert.rejects(declineRequest.request.tools.find(tool => tool.name === "ask_session").execute(sessionQuestion, declineRequest.request.signal), /declined/);
     assert.strictEqual(requests.length, beforeDecline); declineRequest.resolve(); await declineRun; sessionApproval = "Ask Session";
+    provider.chat.workerState.events = [];
+    provider.persist(provider.chat);
     provider.chat.builtinTools = ["read_file"];
     const receiptId = require("crypto").randomUUID();
     const receiptStart = posts.length;
@@ -1160,6 +1260,7 @@ async function testController() {
     await provider.handle({ type: "send", text: "Use the revised boundary", mode: "steer", submissionId: steerId });
     assert.strictEqual(provider.chat.queuedInputs.length, 1, "duplicate delivery must not duplicate a queued steer");
     assert.strictEqual(provider.store.load(first, false).queuedInputs[0].id, steerId, "steer must be saved before acknowledgement");
+    assert.deepStrictEqual(provider.chat.queuedInputs[0].executionContext, provider.chat.progress.executionContext);
     liveReceiptRequest.request.beforeRound(liveReceiptRequest.request.messages, liveReceiptRequest.request.maxOutputTokens);
     assert(liveReceiptRequest.request.messages.some(message => message.content === "Use the revised boundary"));
     assert.strictEqual(provider.chat.messages.filter(message => message.submissionId === steerId).length, 1);
@@ -1175,6 +1276,48 @@ async function testController() {
     const queuedB = requests.at(-1); assert.strictEqual(queuedB.request.messages.at(-1).content, "Queued task B");
     queuedB.resolve(); await new Promise(setImmediate);
     assert.strictEqual(provider.chat.queuedInputs.length, 0); assert.strictEqual(provider.running.size, 0);
+    const senderViewer = new ApiChatView(context);
+    senderViewer.store = provider.store;
+    senderViewer.chat = provider.store.load(first, false);
+    senderViewer.chats.set(first, senderViewer.chat);
+    const senderPosts = [];
+    senderViewer.view = { webview: { postMessage: value => { senderPosts.push(value); return Promise.resolve(true); } } };
+    try {
+      assert.notStrictEqual(senderViewer.captureExecution(senderViewer.chat).hostId, provider.captureExecution(provider.chat).hostId);
+      const ownerReady = new Promise(resolve => { started = resolve; });
+      const ownerRun = provider.handle({ type: "send", text: "A owns this request" }); await ownerReady;
+      const ownerRequest = requests.at(-1);
+      senderViewer.publish();
+      const senderSubmission = require("crypto").randomUUID();
+      const activeCount = requests.length;
+      await senderViewer.handle({ type: "send", text: "B owns the queued task", mode: "task", submissionId: senderSubmission });
+      assert.strictEqual(requests.length, activeCount, "foreign submission must not overlap the active stream");
+      assert(senderPosts.some(post => post.type === "sendAccepted" && post.submissionId === senderSubmission));
+      await assert.rejects(senderViewer.handle({ type: "send", text: "Foreign steer", mode: "steer", submissionId: require("crypto").randomUUID() }), /different execution context/);
+      ownerRequest.onText("A output after B submitted");
+      const senderReady = new Promise(resolve => { started = resolve; });
+      ownerRequest.resolve(); await ownerRun;
+      senderViewer.publish(); await senderReady;
+      assert.strictEqual(provider.running.size, 0);
+      assert.strictEqual(senderViewer.running.size, 1, "only the sending viewer may own the queued request");
+      assert.strictEqual(requests.at(-1).request.messages.at(-1).content, "B owns the queued task");
+      assert.strictEqual(senderViewer.chat.progress.executionContext.hostId, senderViewer.captureExecution(senderViewer.chat).hostId);
+      requests.at(-1).resolve(); await new Promise(setImmediate);
+      provider.publish();
+      const cancelOwnerReady = new Promise(resolve => { started = resolve; });
+      const cancelOwnerRun = provider.handle({ type: "send", text: "Stop A before B" }); await cancelOwnerReady;
+      senderViewer.publish();
+      const cancelledForeignId = require("crypto").randomUUID();
+      await senderViewer.handle({ type: "send", text: "Do not replay after stop", mode: "task", submissionId: cancelledForeignId });
+      const beforeForeignCancel = requests.length;
+      await provider.handle({ type: "cancel" }); await cancelOwnerRun;
+      senderViewer.publish(); await new Promise(setImmediate);
+      assert.strictEqual(requests.length, beforeForeignCancel);
+      assert.strictEqual(senderViewer.chat.queuedInputs[0].id, cancelledForeignId);
+      assert.strictEqual(senderViewer.pendingForeignInputs.size, 0, "a stopped predecessor must disarm automatic dispatch");
+      await senderViewer.handle({ type: "removeQueuedInput", id: cancelledForeignId });
+      provider.publish();
+    } finally { senderViewer.dispose(); }
     const stoppedReady = new Promise(resolve => { started = resolve; });
     const stoppedRun = provider.handle({ type: "send", text: "Stop before queued work" }); await stoppedReady;
     const stoppedCount = requests.length;
@@ -1191,6 +1334,25 @@ async function testController() {
     assert.strictEqual(requests.at(-1).request.messages.at(-1).content, "Retain after stop");
     requests.at(-1).resolve(); await retainedRun;
     assert.strictEqual(provider.chat.queuedInputs.length, 0);
+    const originalQueuedCount = requests.length;
+    const legacyId = require("crypto").randomUUID();
+    provider.chat.queuedInputs = [{ id: legacyId, text: "Legacy input", mode: "task" }];
+    provider.persist(provider.chat);
+    await assert.rejects(provider.handle({ type: "runQueued" }), /legacy queued input/);
+    assert.strictEqual(requests.length, originalQueuedCount);
+    assert.strictEqual(provider.chat.queuedInputs[0].id, legacyId);
+    const foreignContext = require("../dist/chat/execution-context").captureExecutionContext(require("crypto").randomUUID(), [], directory, true, provider.chat.permissionMode || "ask");
+    provider.chat.queuedInputs[0].executionContext = foreignContext;
+    provider.persist(provider.chat);
+    await assert.rejects(provider.handle({ type: "runQueued" }), /execution context changed/);
+    assert.strictEqual(requests.length, originalQueuedCount, "another window must not take over a queued input");
+    await provider.handle({ type: "removeQueuedInput", id: legacyId });
+    const localContext = provider.captureExecution(provider.chat);
+    assert.throws(() => provider.assertExecution(provider.chat, foreignContext), /execution context changed/);
+    const savedPermissionMode = provider.chat.permissionMode;
+    provider.chat.permissionMode = savedPermissionMode === "read-only" ? "ask" : "read-only";
+    assert.throws(() => provider.assertExecution(provider.chat, localContext), /execution context changed/);
+    provider.chat.permissionMode = savedPermissionMode;
     await assert.rejects(provider.handle({ type: "send", text: "wrong Chat", chatId: "another-chat", submissionId: require("crypto").randomUUID() }), /selected Chat changed/);
     await assert.rejects(provider.handle({ type: "model", value: "retired-api" }), /deprecated/);
     const profiles = configuration.apiChatModelProfiles; configuration.apiChatModelProfiles = [{ id: "invalid", status: "active", contextWindow: 0 }];
@@ -2080,7 +2242,7 @@ function startPreview() {
   }
   const bootstrap = `globalThis.__fixture=${JSON.stringify(fixture)};(${previewBridge.toString()})();`;
   const deletionBootstrap = `globalThis.acquireVsCodeApi=()=>({getState:()=>JSON.parse(sessionStorage.getItem('chatState')||'null'),setState:s=>sessionStorage.setItem('chatState',JSON.stringify(s)),postMessage:async message=>{if(message.type==='hostHealth'){window.dispatchEvent(new MessageEvent('message',{data:{type:'hostHealth',id:message.id}}));return;}const confirm=!['trashChat','deleteChat','emptyTrash'].includes(message.type)||window.confirm('Confirm '+message.type+'?');const response=await fetch('/delete-action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,confirm})});const result=await response.json();if(!response.ok)throw new Error(result.error);globalThis.__deletionSnapshot=result;window.dispatchEvent(new MessageEvent('message',{data:result.state}));}});`;
-  const assets = new Set(["api-chat.css", "api-chat.js", "api-chat-library.js", "chat-retrieval-flow.js", "host-health.js", "host-health.css", "codicon.css", "codicon.ttf", "marked.umd.js", "purify.min.js"]);
+  const assets = new Set(["api-chat.css", "api-chat.js", "api-chat-library.js", "chat-retrieval-flow.js", "host-health.js", "host-health.css", "codicon.css", "codicon.ttf", "marked.umd.js", "purify.min.js", "katex.js", "katex.css", "mermaid.js", ...fs.readdirSync(path.join(webview, "fonts")).filter(name => name.endsWith(".woff2")).map(name => `fonts/${name}`)]);
   const server = http.createServer((request, response) => {
     const name = new URL(request.url, "http://localhost").pathname.slice(1);
     if (name === "delete-state") { response.setHeader("Content-Type", "application/json"); response.end(JSON.stringify(deletion.snapshot())); return; }
@@ -2098,7 +2260,7 @@ function startPreview() {
     if (name === "delete-fixture.js") { response.setHeader("Content-Type", "text/javascript"); response.end(deletionBootstrap); return; }
     if (name === "fixture.js") { response.setHeader("Content-Type", "text/javascript"); response.end(bootstrap + "globalThis.__locales=" + JSON.stringify(locales) + ";"); return; }
     if (name === "" || name === "deletion") {
-      const values = { nonce: "preview-nonce", cspSource: "'self'", styles: "/api-chat.css", script: "/api-chat.js", libraryScript: "/api-chat-library.js", retrievalScript: "/chat-retrieval-flow.js", hostHealthScript: "/host-health.js", hostHealthStyles: "/host-health.css", icons: "/codicon.css", marked: "/marked.umd.js", purify: "/purify.min.js" };
+      const values = { nonce: "preview-nonce", cspSource: "'self'", styles: "/api-chat.css", script: "/api-chat.js", libraryScript: "/api-chat-library.js", retrievalScript: "/chat-retrieval-flow.js", hostHealthScript: "/host-health.js", hostHealthStyles: "/host-health.css", icons: "/codicon.css", marked: "/marked.umd.js", purify: "/purify.min.js", katex: "/katex.js", katexStyles: "/katex.css", mermaid: "/mermaid.js" };
       const html = fs.readFileSync(path.join(webview, "api-chat.html"), "utf8")
         .replace(/\{\{(\w+)\}\}/g, (_, key) => values[key])
         .replace('<script nonce="preview-nonce" src="/host-health.js">', `<script nonce="preview-nonce" src="/${name === "deletion" ? "delete-fixture.js" : "fixture.js"}"></script><script nonce="preview-nonce" src="/host-health.js">`);
@@ -2122,6 +2284,7 @@ with sync_playwright() as runtime:
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     page.goto(sys.argv[1], wait_until="networkidle")
+    page.evaluate("() => window.postMessage({type: 'showChat'}, location.origin)")
     page.locator("#permissions").click()
     page.locator("#permission-mode").select_option("allow-all")
     page.keyboard.press("Escape")
@@ -2196,12 +2359,27 @@ with sync_playwright() as runtime:
         candidates: Array.from({length: 20}, (_, index) => ({id: "source-" + index, kind: ["memory", "skill", "note", "script", "recipe", "research", "api", "function"][index % 8],
           label: "Cache candidate " + index, sourceUri: "pkm://fixture/" + index, score: 20 - index, method: index % 2 ? "lexical:unified-retrieval" : "rule:lexical-overlap",
           selected: index < 7, reason: index < 7 ? "Included in request context" : "Outside selected budget"}))};
+      const receipt = fixture.chat.messages[1].retrieval;
+      fixture.chat.messages[1].retrievalActivity = {schema: "pkm.chat.retrieval-activity/v1", id: "fixture-activity", droppedRounds: 0,
+        attempts: [{id: "memory", kind: "memory", at: 1, durationMs: 2, receipt}, {id: "knowledge", kind: "knowledge", at: 2, durationMs: 3, receipt}],
+        rounds: [{index: 0, at: 3, inputTokens: 4000, inputBudget: 8192, countingMethod: "utf8-byte-estimate", receipt},
+          {index: 1, at: 4, inputTokens: 7000, inputBudget: 8192, countingMethod: "utf8-byte-estimate", receipt: {...receipt, selectedCount: 2, candidates: receipt.candidates.map((candidate,index) => ({...candidate,selected:index < 2}))}}]};
       window.dispatchEvent(new MessageEvent("message", {data: fixture}));
     }""")
     page.locator("#memory").click()
     page.wait_for_selector("#retrieval-flow svg")
     assert page.locator("[data-retrieval-node]").count() == 11
     assert page.locator("[data-retrieval-link]").count() == 7
+    assert page.locator("#retrieval-step option").count() == 5
+    page.select_option("#retrieval-step", "attempt-0")
+    assert "shortlist" in page.locator("#retrieval-status").inner_text()
+    page.select_option("#retrieval-step", "round-1")
+    assert page.locator("[data-retrieval-link]").count() == 2
+    assert "Sent context" in page.locator("#retrieval-status").inner_text()
+    assert "7000/8192" in page.locator("#retrieval-step option:checked").inner_text()
+    page.select_option("#retrieval-step", "latest")
+    page.evaluate("() => {globalThis.__stableArticle=document.querySelector('.message.assistant'); window.dispatchEvent(new MessageEvent('message',{data:globalThis.__fixture}));}")
+    assert page.evaluate("globalThis.__stableArticle === document.querySelector('.message.assistant')"), "Refresh must retain unchanged message DOM"
     page.select_option("#retrieval-top", "20")
     assert page.locator("[data-retrieval-node]").count() == 21
     page.select_option("#retrieval-kind", "note")
@@ -2222,6 +2400,9 @@ with sync_playwright() as runtime:
         assert geometry["model"]["right"] <= geometry["flow"]["right"] + 1, geometry
     assert not errors, errors
     assert page.evaluate("globalThis.__unsafe !== true")
+    page.emulate_media(reduced_motion="reduce")
+    assert page.locator("#memory-panel").evaluate("node => getComputedStyle(node).animationName") == "none"
+    page.emulate_media(reduced_motion="no-preference")
     for width, height in [(1280, 900), (390, 844)]:
       page.set_viewport_size({"width": width, "height": height})
       for locale in ["zh-hans", "es", "ja", "ko", "fr", "de", "pt-br", "it", "ru", "ar", "en"]:

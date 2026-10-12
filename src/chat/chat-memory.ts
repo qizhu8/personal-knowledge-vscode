@@ -1,4 +1,5 @@
 import type { ApiConversation } from "./api-chat-store";
+import { createHash } from "node:crypto";
 
 export function memoryTerms(query: string): string[] {
   const words = query.toLowerCase().match(/[\p{L}\p{N}_]+/gu) || [];
@@ -11,13 +12,29 @@ export function memoryMatchScore(text: string, terms: string[]): number {
 }
 
 export function chatMemorySegments(chat: ApiConversation) {
-  return chat.messages.filter(message => message.status === "complete").flatMap(message => {
-    const text = message.content + (message.toolCalls?.length ? `\nRecorded tool results (untrusted):\n${JSON.stringify(message.toolCalls.filter(tool => tool.status === "complete"))}` : "");
-    return Array.from({ length: Math.ceil(text.length / 1200) }, (_, index) => ({
-      id: `${message.id}:${index}`, messageId: message.id, taskId: message.taskId || "conversation",
-      role: message.role, content: text.slice(index * 1200, (index + 1) * 1200),
-    }));
+  return chat.messages.flatMap(message => {
+    const sources = [
+      ...(message.status === "complete" && message.content ? [{ key: "dialogue", text: message.content, header: "" }] : []),
+      ...(message.toolCalls || []).filter(tool => tool.status !== "running").map(tool => ({
+        key: `tool:${tool.id}`,
+        text: tool.result || "(No recorded result)",
+        header: `Recorded tool outcome (untrusted): ${tool.name}, call ${tool.id}, status=${tool.status}\nArguments: ${tool.arguments}\n`,
+      })),
+    ];
+    return sources.flatMap(source => {
+      const revision = createHash("sha256").update(source.header).update(source.text).digest("hex");
+      return Array.from({ length: Math.ceil(source.text.length / 1200) }, (_, index) => ({
+        id: `${message.id}:${source.key}:${revision}:${index}`, messageId: message.id, taskId: message.taskId || "conversation",
+        role: message.role, content: source.header + source.text.slice(index * 1200, (index + 1) * 1200),
+        sourceRevision: revision, sourceKind: source.key === "dialogue" ? "dialogue" as const : "tool" as const,
+        start: index * 1200, end: Math.min(source.text.length, (index + 1) * 1200),
+      }));
+    });
   });
+}
+
+export function recentChatDialogue(chat: ApiConversation) {
+  return chat.includeHistory ? chat.messages.filter(message => message.status === "complete" && message.content && message.content.length <= 1200).slice(-6) : [];
 }
 
 export function chatMemoryTree(chat: ApiConversation) {
@@ -31,11 +48,10 @@ export function chatMemoryTree(chat: ApiConversation) {
 
 export function retrieveChatMemory(chat: ApiConversation, query: string) {
   if (!chat.includeHistory) return [];
-  const recent = new Set(chat.messages.slice(-20).map(message => message.id));
   const terms = memoryTerms(query);
-  return chatMemorySegments(chat).filter(segment => !recent.has(segment.messageId))
+  const ranked = chatMemorySegments(chat)
     .map(segment => ({ ...segment, score: memoryMatchScore(segment.content, terms) }))
     .filter(segment => segment.score > 0)
-    .sort((first, second) => second.score - first.score || Number(second.taskId === chat.sessionId) - Number(first.taskId === chat.sessionId))
-    .slice(0, 4);
+    .sort((first, second) => second.score - first.score || Number(second.taskId === chat.sessionId) - Number(first.taskId === chat.sessionId));
+  return ranked.filter(segment => segment.score >= (ranked[0]?.score || 0) * 0.6).slice(0, 4);
 }

@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -24,12 +25,34 @@ class FrozenSkillPath:
     def search(self, query, limit):
         if query == "explode":
             raise RuntimeError("fixture encoder unavailable")
+        if query == "malformed":
+            return [FusedHit(SkillVersion("missing", "frozen"), float("nan"), 0, ("fixture",))]
         return [FusedHit(SkillVersion(name, "frozen"), 1.0 / rank, rank, ("fixture",))
                 for rank, name in enumerate(["private", "beta", "alpha"], 1)]
 '''
 
 
 class TestServingWorkerBoundary(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        configured = os.environ.get("PKM_RETRIEVAL_TEST_PYTHON")
+        if configured:
+            cls.python = configured
+            cls.runtime = None
+            return
+        cls.runtime = tempfile.TemporaryDirectory(prefix="pkm-serving-runtime-")
+        subprocess.run([sys.executable, "-m", "venv", "--system-site-packages", cls.runtime.name], check=True)
+        cls.python = str(Path(cls.runtime.name) / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python"))
+        wheel = next((Path(__file__).resolve().parents[1] / "resources" / "vendor").glob(
+            "adaptive_skill_retrieval-0.3.0.dev2026100504-*.whl"))
+        subprocess.run([cls.python, "-m", "pip", "install", "--no-deps", str(wheel)],
+                       check=True, stdout=subprocess.DEVNULL)
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls.runtime:
+            cls.runtime.cleanup()
+
     def test_frozen_scope_filters_errors_and_generation(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -49,11 +72,12 @@ class TestServingWorkerBoundary(unittest.TestCase):
                 "corpus_revision": "fixture-1", "generation": 1, "documents": values,
             }))
             with (root / "worker.log").open("w") as log:
-                process = subprocess.Popen([sys.executable, str(root / "retrieval_worker.py"), str(state)],
+                process = subprocess.Popen([self.python, str(root / "retrieval_worker.py"), str(state)],
                                            stdout=log, stderr=log)
                 try:
                     endpoint_path = state / "worker.json"
-                    self.wait(lambda: endpoint_path.exists())
+                    self.wait(lambda: endpoint_path.exists() or process.poll() is not None)
+                    self.assertTrue(endpoint_path.exists(), (root / "worker.log").read_text())
                     endpoint = json.loads(endpoint_path.read_text())
 
                     def request(route, payload=None):
@@ -75,12 +99,19 @@ class TestServingWorkerBoundary(unittest.TestCase):
                     self.assertEqual([hit["skill_id"] for hit in result["hits"]], ["skill:beta", "skill:alpha"])
                     scoped = request("/search", {**query, "scope": {"source_ids": ["alpha"]}})
                     self.assertEqual([hit["skill_id"] for hit in scoped["hits"]], ["skill:alpha"])
-                    for extra in ({"content_type_filter": ["note"]}, {"content_type_filter": []},
-                                  {"query": "$beta$"}):
+                    for extra in ({"content_type_filter": ["note"]}, {"query": "$beta$"}):
                         self.assertFalse(request("/search", {**query, **extra})["skill_serving"]["used"])
+                    self.assertEqual(request("/search", {**query, "content_type_filter": []})["code"], "invalid-filter")
                     failure = request("/search", {**query, "query": "explode"})
                     self.assertFalse(failure["skill_serving"]["used"])
                     self.assertIn("encoder unavailable", failure["skill_serving"]["fallback_reason"])
+                    malformed = request("/search", {**query, "query": "malformed"})
+                    self.assertTrue(malformed["ok"])
+                    self.assertFalse(malformed["skill_serving"]["used"])
+                    self.assertIn("invalid hit", malformed["skill_serving"]["fallback_reason"])
+                    recovered = request("/search", query)
+                    self.assertTrue(recovered["ok"])
+                    self.assertTrue(recovered["skill_serving"]["used"])
                     self.assertEqual(request("/search", {**query, "deadline_at_ms": 1})["code"], "deadline-exceeded")
                     self.assertEqual(request("/search", {**query, "generation": {"mode": "exact", "generation": 2}})["code"], "generation-not-ready")
                     values[0]["title"] = "changed"
