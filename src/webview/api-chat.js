@@ -414,17 +414,22 @@
     }
     const latest = state.chat.messages[state.chat.messages.length - 1];
     if (state.chat.progress && (latest?.role !== "assistant" || latest.progress && latest.progress.attemptId !== state.chat.progress.attemptId)) children.push(activity());
-    for (const approval of state.approvals || []) {
+    const confirmations = [...(state.approvals || []), ...(state.decisions || []).map(decision => ({ ...decision, decision: true, scope: "Chat decision" }))];
+    for (const approval of confirmations) {
       const fingerprint = JSON.stringify([approval, document.documentElement.lang]);
       const cached = approvalNodes.get(approval.id);
       if (cached?.fingerprint === fingerprint) { children.push(cached.section); continue; }
-      const section = document.createElement("section"); section.className = "approval"; section.setAttribute("aria-label", t("Tool approval"));
+      const section = document.createElement("section"); section.className = "approval"; section.setAttribute("aria-label", t(approval.decision ? "Chat decision" : "Tool approval"));
+      section.dataset.confirmationId = approval.id;
       const title = document.createElement("strong"); title.textContent = approval.title;
-      const details = document.createElement("details"); const summary = document.createElement("summary"); summary.textContent = approval.scope;
+      const details = document.createElement("details"); details.open = !!approval.decision;
+      const summary = document.createElement("summary"); summary.textContent = t(approval.scope);
       const input = document.createElement("pre"); input.textContent = approval.detail; details.append(summary, input);
       const actions = document.createElement("div"); actions.className = "approval-actions";
-      for (const [value, icon, label] of [["approve", "check", approval.quota ? "Yes" : approval.once ? "Approve" : "Approve & remember"], ["deny", "close", approval.quota ? "No" : "Deny"], ...(!approval.once ? [["allow-all", "shield", "Allow All"]] : [])]) {
-        const button = iconButton(icon, label, () => { for (const action of actions.children) action.disabled = true; post("approval", { id: approval.id, value }); });
+      const choices = approval.decision ? approval.choices.map(choice => [choice.value, choice.value === "cancel" ? "close" : "check", choice.label])
+        : [["approve", "check", approval.quota ? "Yes" : approval.once ? "Approve" : "Approve & remember"], ["deny", "close", approval.quota ? "No" : "Deny"], ...(!approval.once ? [["allow-all", "shield", "Allow All"]] : [])];
+      for (const [value, icon, label] of choices) {
+        const button = iconButton(icon, label, () => { for (const action of actions.children) action.disabled = true; post(approval.decision ? "decision" : "approval", { id: approval.id, value }); });
         const text = document.createElement("span"); text.textContent = t(label); button.disabled = !!approval.questioning; button.append(text); actions.append(button);
       }
       section.append(title, details, actions);
@@ -445,7 +450,7 @@
       }
       approvalNodes.set(approval.id, { fingerprint, section }); children.push(section);
     }
-    for (const id of approvalNodes.keys()) if (!state.approvals?.some(approval => approval.id === id)) { approvalNodes.delete(id); approvalDrafts.delete(id); }
+    for (const id of approvalNodes.keys()) if (!confirmations.some(approval => approval.id === id)) { approvalNodes.delete(id); approvalDrafts.delete(id); }
     for (const [index, child] of children.entries()) if (target.children[index] !== child) target.insertBefore(child, target.children[index] || null);
     while (target.children.length > children.length) target.lastElementChild.remove();
     updateClock();
@@ -698,7 +703,7 @@
     const pauseLabel = state.chat.paused ? "Resume Chat" : "Pause Chat";
     element("pause").title = t(pauseLabel); element("pause").setAttribute("aria-label", t(pauseLabel));
     element("pause").firstElementChild.className = `codicon codicon-${state.chat.paused ? "debug-start" : "debug-pause"}`;
-    const permissionModes = { protective: "Protective", ask: "Ask before changes", "read-only": "Read only", "allow-all": "Allow All" };
+    const permissionModes = { protective: "Protective", ask: "Ask before changes", "read-only": "Read only", "allow-all": "Allow All (PKM)" };
     const permissionMode = Object.hasOwn(permissionModes, state.chat.permissionMode) ? state.chat.permissionMode : "protective";
     const permissionLabel = permissionModes[permissionMode];
     element("permissions").dataset.permissionMode = permissionMode;

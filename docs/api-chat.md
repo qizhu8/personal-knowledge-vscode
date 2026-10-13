@@ -318,7 +318,7 @@ timers stop. Reload recovers interrupted nodes without replaying the request.
 Historical attempts retain their own graph when the next request starts.
 
 Only the latest failed/cancelled/interrupted response offers Retry. It requires
-native confirmation and replaces that failed assistant response in place with
+an explicit inline Chat decision and replaces that failed assistant response in place with
 a new attempt using current settings and the original user message/images.
 The original user message ID, content and position stay unchanged; no duplicate
 user message is appended or sent as extra history. The failed response and its
@@ -348,6 +348,12 @@ registrations do not expose verified safety annotations, so PKM does not infer
 read-only safety from their names. **Allow All** enables all configured tools,
 clears prior selection exclusions, and skips PKM approval prompts but
 does not bypass VS Code confirmations, workspace trust or ownership checks.
+The permission picker labels this **Allow All (PKM)** and explains this boundary:
+PKM-controlled loop, Retry and Complete Task decisions appear as inline Chat
+cards, not VS Code-level modal dialogs. These decisions cannot be approved by
+changing tool permissions. Pending cards are scoped to their Chat, attempt and
+sending-window context; stopping/disposal removes active cards, and changed
+idle conversations invalidate Retry/Task confirmations without executing them.
 Reset approvals clears remembered grants; cancelled settings leave the previous
 mode unchanged. These controls are not an OS-level
 filesystem/network sandbox for approved processes.
@@ -367,6 +373,10 @@ through `find_vscode_tools` (bounded schema discovery) and `invoke_vscode_tool`
 with `toolInvocationToken: undefined` outside a Chat Participant, preserving
 VS Code's tool confirmations as well as PKM's saved permission policy. There is no
 fabricated token, copied credential or separately launched stdio process.
+The [public invocation API](https://code.visualstudio.com/api/references/vscode-api#LanguageModelToolInvocationOptions)
+only supplies an inline native confirmation token through a real Chat Participant
+request. A custom PKM webview cannot manufacture that token, relocate VS Code's
+confirmation into its own DOM, or override it with Allow All.
 Opening PKM Chat in a trusted workspace starts background discovery of the
 extension-managed `pkm` server when its tools are not registered yet. The
 targeted native startup publishes the current Knowledge Root's definition and
@@ -792,8 +802,10 @@ request. Chat asks whether to **Continue**, **Answer with current results**, or
 **Cancel** only when both the active-time window has elapsed and a repeated tool
 loop is detected. Time or round count alone does not fail a productive turn.
 Continue grants a fresh active-time window, retaining completed results without
-replaying tools. Allow All does not approve this independent decision; dismissing
-it cancels. `apiChatMaxToolRounds` remains a legacy SDK round-review limit, not
+replaying tools. Allow All does not approve this independent decision.
+The inline Chat card offers all three actions; choose Cancel or Stop to abort.
+Switching Chats hides the card without approving, retargeting or cancelling it.
+`apiChatMaxToolRounds` remains a legacy SDK round-review limit, not
 the native Chat policy.
 
 Chat also suspects a loop after the same function returns the same result for

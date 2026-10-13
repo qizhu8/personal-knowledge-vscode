@@ -4,6 +4,9 @@
     "label": "Deutsch"
   },
   "strings": {
+    "apiChat.chatDecision": "Chat-Entscheidung",
+    "apiChat.allowAllPkm": "Alles erlauben (PKM)",
+    "apiChat.permissionBoundary": "Alles erlauben überspringt nur PKM-Tool-Genehmigungen. VS Code-Tools können weiterhin eine separate native Bestätigung verlangen. Schleifen-, Wiederholungs- und Task-Entscheidungen bleiben in diesem Chat.",
     "apiChat.workers": "Worker",
     "apiChat.worker": "Worker",
     "apiChat.manager": "Manager",

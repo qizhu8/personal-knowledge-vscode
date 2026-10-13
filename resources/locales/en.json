@@ -4,6 +4,9 @@
     "label": "English"
   },
   "strings": {
+    "apiChat.chatDecision": "Chat decision",
+    "apiChat.allowAllPkm": "Allow All (PKM)",
+    "apiChat.permissionBoundary": "Allow All skips PKM tool approvals only. VS Code tools may still require a separate native confirmation. Loop, retry and Task decisions remain in this Chat.",
     "apiChat.workers": "Workers",
     "apiChat.worker": "Worker",
     "apiChat.manager": "Manager",

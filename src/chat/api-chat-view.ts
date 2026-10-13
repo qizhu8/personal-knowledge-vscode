@@ -79,6 +79,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
   private readonly reviewClocks = new Map<string, { now: () => number; wait: (waiting: boolean) => void }>();
   private readonly agentControlledRequests = new Set<string>();
   private readonly approvals = new Map<string, { chat: ApiConversation; scope: string; title: string; detail: string; once: boolean; signal: AbortSignal; resolve: (approved: boolean) => void; questions?: Array<{ question: string; answer: string; error?: string }>; questioning?: boolean; }>();
+  private readonly decisions = new Map<string, { chat: ApiConversation; title: string; detail: string; choices: Array<{ value: string; label: string }>; executionContext: ChatExecutionContext; revision?: number; signal?: AbortSignal; attemptId?: string; resolve: (value: string | undefined) => void }>();
   private readonly workerQuestions = new Map<string, { chatId: string; resolve: (answer: string) => void }>();
   private readonly workerLoopDecisions = new Map<string, { chatId: string; resolve: (answer: ChatToolLoopDecision) => void }>();
   private supervisor?: ReturnType<typeof setInterval>;
@@ -94,7 +95,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
 
   constructor(private readonly extension: vscode.ExtensionContext, private readonly retrieval?: ChatKnowledgeRetriever) {}
 
-  get isBusy(): boolean { return this.running.size > 0 || this.queueDrains.size > 0 || this.workerWakes.size > 0 || this.discoveries.size > 0 || this.acceptanceRunning; }
+  get isBusy(): boolean { return this.running.size > 0 || this.queueDrains.size > 0 || this.workerWakes.size > 0 || this.discoveries.size > 0 || this.decisions.size > 0 || this.acceptanceRunning; }
 
   async openPkmChat(locator: string): Promise<void> {
     const parsed = parsePkmLocator(locator);
@@ -361,6 +362,8 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     this.disposed = true;
     for (const controller of this.running.values()) controller.abort();
     for (const controller of this.discoveries) controller.abort();
+    for (const decision of this.decisions.values()) decision.resolve(undefined);
+    this.decisions.clear();
     if (this.persistenceTimer) clearTimeout(this.persistenceTimer);
     this.libraryWatcher?.dispose();
     if (this.libraryRefreshTimer) clearTimeout(this.libraryRefreshTimer);
@@ -468,6 +471,29 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
       this.approvals.delete(id);
       if (!signal.aborted) this.clearWorkerDecision(chat);
       if (![...this.approvals.values()].some(item => item.chat.id === chat.id)) this.setAwaitingInput(chat.id, false);
+      if (!this.disposed) this.publish();
+    }
+  }
+
+  private async requestDecision(chat: ApiConversation, title: string, detail: string, choices: Array<{ value: string; label: string }>, signal?: AbortSignal): Promise<string | undefined> {
+    if (this.disposed || signal?.aborted) throw new Error("Request cancelled.");
+    if ([...this.decisions.values()].some(item => item.chat.id === chat.id)) throw new Error("Answer the pending decision in this Chat first.");
+    const executionContext = signal && chat.progress?.executionContext || this.captureExecution(chat);
+    this.assertExecution(chat, executionContext);
+    this.store!.assertAvailable(chat);
+    if (signal ? this.running.get(chat.id)?.signal !== signal : this.running.has(chat.id) || chat.progress?.status === "running") throw new Error("The Chat execution changed before confirmation.");
+    const id = randomUUID();
+    try {
+      const pending = new Promise<string | undefined>(resolve => {
+        this.decisions.set(id, { chat, title, detail, choices, executionContext, ...(signal ? { signal, attemptId: chat.progress?.attemptId } : { revision: chat.revision }), resolve });
+        if (signal) this.setAwaitingInput(chat.id, true);
+        this.publish();
+      });
+      return await (signal ? abortable(pending, signal) : pending);
+    } finally {
+      this.decisions.delete(id);
+      if (signal && ![...this.approvals.values()].some(item => item.chat.id === chat.id)
+        && ![...this.decisions.values()].some(item => item.chat.id === chat.id && item.signal)) this.setAwaitingInput(chat.id, false);
       if (!this.disposed) this.publish();
     }
   }
@@ -606,7 +632,9 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     const settings = this.settings();
     const toolGroups = this.toolGroups(this.chat);
     const builtinNames = toolGroups[0].tools.filter(tool => tool.enabled).map(tool => tool.name);
-    void this.view?.webview.postMessage({ type: "state", localization, toolGroups, workerOverview: this.workerOverview(this.chat, all), memoryTree: chatMemoryTree(this.chat), approvals: [...this.approvals.entries()].filter(([, item]) => item.chat.id === this.chat!.id).map(([id, item]) => ({ id, title: item.title, detail: item.detail, once: item.once, quota: item.scope === "worker-expansion", questioning: item.questioning, questions: item.questions,     scope: item.once ? item.scope === "worker-expansion" ? "Worker quota" : "Only this batch" : item.scope === "non-destructive" ? "Non-destructive operations" : item.scope === toolPermissionScope("boundary", "outside-workspace") ? "Outside workspace" : "This tool" })), chat: {
+    void this.view?.webview.postMessage({ type: "state", localization, toolGroups, workerOverview: this.workerOverview(this.chat, all), memoryTree: chatMemoryTree(this.chat),
+      decisions: [...this.decisions.entries()].filter(([, item]) => item.chat.id === this.chat!.id).map(([id, item]) => ({ id, title: item.title, detail: item.detail, choices: item.choices })),
+      approvals: [...this.approvals.entries()].filter(([, item]) => item.chat.id === this.chat!.id).map(([id, item]) => ({ id, title: item.title, detail: item.detail, once: item.once, quota: item.scope === "worker-expansion", questioning: item.questioning, questions: item.questions,     scope: item.once ? item.scope === "worker-expansion" ? "Worker quota" : "Only this batch" : item.scope === "non-destructive" ? "Non-destructive operations" : item.scope === toolPermissionScope("boundary", "outside-workspace") ? "Outside workspace" : "This tool" })), chat: {
       ...this.chat, context: this.chat.context.map(item => ({ id: item.id, label: item.label, characters: item.content.length })),
       agentContext: Object.fromEntries(Object.entries(this.chat.agentContext || {}).map(([kind, entries]) => [kind, entries.map(({ id, label, content }) => ({ id, label, characters: content.length }))])),
     }, settings: { ...settings, inputBaseTokens: estimateInputTokens([...this.requestMessages(this.chat, ""), ...(builtinNames.length ? [{ role: "system" as const, content: JSON.stringify(createBuiltinTools(builtinNames).map(({ execute, ...definition }) => definition)) }] : [])]) }, chats: available,
@@ -754,6 +782,25 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         }
         void this.view?.webview.postMessage({ type: "memorySegment", chatId: chat.id, segment }); break;
       }
+      case "decision": {
+        const decision = this.decisions.get(message.id || "");
+        if (!decision || decision.chat.id !== chat.id || decision.signal?.aborted) throw new Error("This decision is no longer pending in this Chat.");
+        if (typeof message.value !== "string" || !decision.choices.some(choice => choice.value === message.value)) throw new Error("Choose an available decision action.");
+        try {
+          this.assertExecution(chat, decision.executionContext);
+          this.store!.assertAvailable(chat);
+          if (decision.signal) {
+            if (this.running.get(chat.id)?.signal !== decision.signal || chat.progress?.attemptId !== decision.attemptId) throw new Error("This decision belongs to a different Chat attempt.");
+            this.assertRunnable(chat, decision.attemptId, decision.executionContext);
+          } else if (this.running.has(chat.id) || chat.progress?.status === "running" || this.store!.load(chat.id, false).revision !== decision.revision) {
+            throw new Error("This Chat changed while awaiting confirmation. Review it and submit the action again.");
+          }
+        } catch (error) {
+          this.decisions.delete(message.id!); decision.resolve(undefined); this.publish();
+          throw error;
+        }
+        this.decisions.delete(message.id!); decision.resolve(message.value); this.publish(); break;
+      }
       case "approval": {
         const approval = this.approvals.get(message.id || "");
         if (!approval || approval.chat.id !== chat.id || approval.signal.aborted || this.running.get(chat.id)?.signal !== approval.signal) throw new Error("This approval is no longer pending in this Chat.");
@@ -852,8 +899,8 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
       }
       case "completeTask": {
         if (this.running.has(chat.id)) throw new Error("Wait for the current request before completing a Task.");
-        const choice = await vscode.window.showWarningMessage("Complete the current Task?", { modal: true }, "Complete Task");
-        if (choice !== "Complete Task") return;
+        const choice = await this.requestDecision(chat, "Complete the current Task?", "Complete this Task and archive its current conversation.", [{ value: "confirm", label: "Complete Task" }, { value: "cancel", label: "Cancel" }]);
+        if (choice !== "confirm") return;
         this.store!.completeTask(chat); this.publish(); break;
       }
       case "pause":
@@ -1005,8 +1052,8 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         const input = chat.messages[chat.messages.length - 2];
         if (this.running.has(chat.id) || reply?.id !== message.id || reply.role !== "assistant" || !["failed", "cancelled", "interrupted"].includes(reply.status) || input?.role !== "user") throw new Error("Only the latest failed or interrupted response can be retried while idle.");
         this.assertRunnable(chat);
-        const choice = await vscode.window.showWarningMessage("Retry this response?", { modal: true, detail: "This replaces the failed response in place using the original user message/images and current model and tool settings, and may incur charges. Earlier tool operations may already have occurred; review their results before repeating them. The failed response is removed when the new attempt starts." }, "Retry");
-        if (choice === "Retry" && !this.disposed) await this.send(input.content, chat, undefined, { replyId: reply.id, inputId: input.id, images: input.images });
+        const choice = await this.requestDecision(chat, "Retry this response?", "This replaces the failed response in place using the original user message/images and current model and tool settings, and may incur charges. Earlier tool operations may already have occurred; review their results before repeating them. The failed response is removed when the new attempt starts.", [{ value: "confirm", label: "Retry" }, { value: "cancel", label: "Cancel" }]);
+        if (choice === "confirm" && !this.disposed) await this.send(input.content, chat, undefined, { replyId: reply.id, inputId: input.id, images: input.images });
         break;
       }
       case "copy": {
@@ -1986,9 +2033,9 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
                 }), signal);
               } finally { this.workerLoopDecisions.delete(episodeId); }
             }
-            const choice = await abortable(vscode.window.showWarningMessage(title, { modal: true, detail: `The activity exceeded its ${settings.loopReviewAfterMs / 60_000}-minute active review interval and may be looping. Completed tool results are retained. Continuing may run more tools and incur model costs. Allow All does not approve this decision. Context and output budgets still apply. Closing this dialog cancels the request.` }, continuation, "Answer with current results", "Cancel request"), signal);
-            if (choice !== continuation && choice !== "Answer with current results") controller.abort();
-            return choice === continuation ? "continue" : choice === "Answer with current results" ? "summarize" : "cancel";
+            const choice = await this.requestDecision(chat, title, `The activity may be looping after ${notice.rounds} tool rounds. Active review interval: ${settings.loopReviewAfterMs / 60_000} minutes. Completed tool results are retained. Continuing may run more tools and incur model costs. Allow All only grants PKM tool permissions; it does not approve this loop decision. Context and output budgets still apply. Stop the response or choose Cancel request to cancel.`, [{ value: "continue", label: continuation }, { value: "summarize", label: "Answer with current results" }, { value: "cancel", label: "Cancel request" }], signal);
+            if (choice !== "continue" && choice !== "summarize") controller.abort();
+            return choice === "continue" ? "continue" : choice === "summarize" ? "summarize" : "cancel";
           } finally {
             if (!signal.aborted) { this.clearWorkerDecision(chat); if (chat.workerActivity) chat.workerActivity.reviewedAtMs = chat.workerActivity.activeMs || 0; stage("Resuming after tool-loop decision"); }
           }

@@ -4,6 +4,9 @@
     "label": "العربية"
   },
   "strings": {
+    "apiChat.chatDecision": "قرار Chat",
+    "apiChat.allowAllPkm": "السماح بالكل (PKM)",
+    "apiChat.permissionBoundary": "السماح بالكل يتجاوز موافقات أدوات PKM فقط. قد تتطلب أدوات VS Code تأكيدًا أصليًا منفصلًا. تبقى قرارات الحلقات وإعادة المحاولة وTask داخل هذا Chat.",
     "apiChat.workers": "Workers",
     "apiChat.worker": "Worker",
     "apiChat.manager": "Manager",

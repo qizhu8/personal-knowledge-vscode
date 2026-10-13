@@ -4,6 +4,9 @@
     "label": "简体中文"
   },
   "strings": {
+    "apiChat.chatDecision": "Chat 决策",
+    "apiChat.allowAllPkm": "允许全部（PKM）",
+    "apiChat.permissionBoundary": "允许全部仅跳过 PKM 工具审批。VS Code 工具仍可能要求独立的原生确认。循环、重试和 Task 决策保留在此 Chat 内。",
     "apiChat.workers": "Workers",
     "apiChat.worker": "Worker",
     "apiChat.manager": "Manager",

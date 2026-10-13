@@ -85,7 +85,8 @@
       <div id="cost" class="cost"></div>
     </section>
     <section id="permissions-panel" class="chat-settings" aria-label="Chat permissions" hidden>
-      <div class="settings-row"><label for="permission-mode">Permissions</label><select id="permission-mode" aria-label="Permission mode"><option value="protective">Protective</option><option value="ask">Ask before changes</option><option value="read-only">Read only</option><option value="allow-all">Allow All</option></select></div>
+      <div class="settings-row"><label for="permission-mode">Permissions</label><select id="permission-mode" aria-label="Permission mode"><option value="protective">Protective</option><option value="ask">Ask before changes</option><option value="read-only">Read only</option><option value="allow-all">Allow All (PKM)</option></select></div>
+      <p id="permission-boundary">Allow All skips PKM tool approvals only. VS Code tools may still require a separate native confirmation. Loop, retry and Task decisions remain in this Chat.</p>
       <div class="settings-row"><span id="permission-grants"></span><button id="reset-permissions" type="button" title="Reset remembered approvals" aria-label="Reset remembered approvals"><span class="codicon codicon-discard"></span></button></div>
     </section>
     <section id="tools-panel" class="chat-settings" aria-label="Tool selection" hidden>

@@ -429,7 +429,7 @@ class ChatUiTests(unittest.TestCase):
                             self.assertLessEqual(page.evaluate("document.documentElement.scrollWidth"), width)
                         page.locator("#model-label").evaluate("(node,label)=>node.textContent=label", original_label)
                         before = page.locator("#composer").bounding_box()
-                        for mode, label in [("protective", "Protective"), ("ask", "Ask before changes"), ("read-only", "Read only"), ("allow-all", "Allow All")]:
+                        for mode, label in [("protective", "Protective"), ("ask", "Ask before changes"), ("read-only", "Read only"), ("allow-all", "Allow All (PKM)")]:
                             page.locator("#permissions").click()
                             page.locator("#permission-mode").select_option(mode)
                             self.assertTrue(page.evaluate("mode=>window.__posts.some(message=>message.type==='permissionMode'&&message.value===mode)", mode))
@@ -440,6 +440,7 @@ class ChatUiTests(unittest.TestCase):
                             expect(page.locator("#permission-label")).to_have_count(0)
                             expect(page.locator("#permissions")).to_have_attribute("title", "Permissions: " + label + " \u00b7 next request")
                             expect(page.locator("#permission-mode")).to_have_value(mode)
+                            expect(page.locator("#permission-boundary")).to_contain_text("VS Code tools may still require a separate native confirmation")
                             self.assertEqual(page.locator("#composer").bounding_box(), before)
                             page.keyboard.press("Escape")
                             page.locator("#permissions").hover()
@@ -617,6 +618,20 @@ class ChatUiTests(unittest.TestCase):
                                          ["retry_user", "retry_replacement"])
                         expect(page.locator('#messages')).not_to_contain_text('Failed output to replace')
                         expect(page.locator('#messages')).to_contain_text('New inference in place')
+                        retry_fixture["decisions"] = [{"id": "loop-inline", "title": "Possible tool loop", "detail": "Existing tool results remain. Allow All does not approve this decision.",
+                            "choices": [{"value": "continue", "label": "Continue"}, {"value": "summarize", "label": "Answer with current results"}, {"value": "cancel", "label": "Cancel request"}]}]
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", retry_fixture)
+                        decision_card = page.get_by_role('region', name='Chat decision', exact=True)
+                        expect(decision_card).to_be_visible()
+                        expect(decision_card.locator('details')).to_have_attribute('open', '')
+                        expect(decision_card.get_by_role('button')).to_have_count(3)
+                        expect(decision_card).not_to_contain_text('Approve & remember')
+                        decision_card.get_by_role('button', name='Continue', exact=True).click()
+                        self.assertEqual(page.evaluate("window.__posts.at(-1)"), {"type": "decision", "id": "loop-inline", "value": "continue"})
+                        expect(decision_card.get_by_role('button', name='Cancel request')).to_be_disabled()
+                        retry_fixture["decisions"] = []
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", retry_fixture)
+                        expect(decision_card).to_have_count(0)
                         page.locator('#prompt').fill('Draft must survive host disconnection')
                         page.clock.fast_forward(20_000)
                         expect(page.locator('#pkm-host-warning')).to_contain_text('Extension Host is not responding')

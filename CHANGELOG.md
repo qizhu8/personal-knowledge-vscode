@@ -5,6 +5,11 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.36] - 2026-10-13
+
+- Move PKM Chat's loop continuation, Retry and Complete Task confirmations into inline Chat decision cards instead of VS Code modal dialogs. Preserve explicit three-way loop decisions, cancellation, Chat/attempt/context ownership and stale idle-conversation guards.
+- Label the permission mode Allow All (PKM) and explain its boundary in every supported locale: PKM tool approvals are skipped, while registered VS Code tools retain their independent native confirmations. Do not fabricate Chat Participant tokens or bypass host approval.
+
 ## [3.2.35] - 2026-10-13
 
 - Retry the latest failed/cancelled/interrupted Chat response in place: retain the original user message/images and provenance, replace only the failed assistant response, and exclude the failed attempt from inference history and retrieved memory. Preserve unsent image drafts, guard stale async preparation, and keep repeated retry attempt numbers increasing.

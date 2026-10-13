@@ -4,6 +4,9 @@
     "label": "日本語"
   },
   "strings": {
+    "apiChat.chatDecision": "Chat の判断",
+    "apiChat.allowAllPkm": "すべて許可 (PKM)",
+    "apiChat.permissionBoundary": "すべて許可は PKM ツールの承認のみを省略します。VS Code ツールは別途ネイティブの確認を求める場合があります。ループ、再試行、Task の判断はこの Chat 内に表示されます。",
     "apiChat.workers": "Workers",
     "apiChat.worker": "Worker",
     "apiChat.manager": "Manager",

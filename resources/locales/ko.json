@@ -4,6 +4,9 @@
     "label": "한국어"
   },
   "strings": {
+    "apiChat.chatDecision": "Chat 결정",
+    "apiChat.allowAllPkm": "모두 허용 (PKM)",
+    "apiChat.permissionBoundary": "모두 허용은 PKM 도구 승인만 생략합니다. VS Code 도구는 별도의 기본 확인을 요구할 수 있습니다. 루프, 재시도 및 Task 결정은 이 Chat 안에 표시됩니다.",
     "apiChat.workers": "Workers",
     "apiChat.worker": "Worker",
     "apiChat.manager": "Manager",

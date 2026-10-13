@@ -4,6 +4,9 @@
     "label": "Русский"
   },
   "strings": {
+    "apiChat.chatDecision": "Решение в Chat",
+    "apiChat.allowAllPkm": "Разрешить всё (PKM)",
+    "apiChat.permissionBoundary": "Разрешить всё пропускает только подтверждения инструментов PKM. Инструменты VS Code могут требовать отдельного встроенного подтверждения. Решения о циклах, повторных попытках и Task остаются в этом Chat.",
     "apiChat.workers": "Workers",
     "apiChat.worker": "Worker",
     "apiChat.manager": "Manager",
