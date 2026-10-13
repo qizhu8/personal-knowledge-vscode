@@ -269,6 +269,17 @@ function waitFor(messages, predicate, label, timeoutMs = 5000) {
     canonicalKnowledgeRoot("/ignored", "win32", () => "C:\\Users\\ME\\Knowledge\\"),
     "c:/users/me/knowledge",
   );
+  const { sameKnowledgeRoot } = require("../dist/sync/github-sync-coordinator");
+  assert(sameKnowledgeRoot("C:\\Users\\ME\\Knowledge\\", "c:/users/me/knowledge", "win32", value => value));
+  assert(!sameKnowledgeRoot("C:\\Users\\ME\\Knowledge", "c:/users/me/other", "win32", value => value));
+  assert(!sameKnowledgeRoot("/knowledge/Notes", "/knowledge/notes", "linux", value => value));
+  assert(sameKnowledgeRoot("/alias", "/actual", "linux", () => "/actual"));
+  assert(sameKnowledgeRoot("C:\\Knowledge", "c:/knowledge/", "win32", () => {
+    throw Object.assign(new Error("Missing historical root"), { code: "ENOENT" });
+  }));
+  assert.throws(() => sameKnowledgeRoot("/a", "/b", "linux", () => {
+    throw Object.assign(new Error("Permission denied"), { code: "EACCES" });
+  }), /Permission denied/);
   assert.strictEqual(
     canonicalKnowledgeRoot("/ignored", "darwin", () => "/Users/ME/Knowle\u0301dge/"),
     "/Users/ME/Knowl\u00e9dge",

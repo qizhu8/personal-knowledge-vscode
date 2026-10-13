@@ -107,7 +107,7 @@ import { recipeBrowserEditorDocument } from "./ui/recipe-browser";
 import { availableSkillRouterSources, normalizeSkillRouterSourcePriority, SkillRouterSource } from "./skills/skill-router-config";
 import {
   GITHUB_SYNC_CONTENT_TYPES, GitHubPublicationMigration, GitHubPublicationMigrationSource, GitHubSyncCatalog, GitHubSyncConflictError, GitHubSyncContentType, GitHubSyncCredentials, GitHubSyncExtensionCompatibilityError, GitHubSyncFolderFingerprints, GitHubSyncRecipePull, GitHubSyncTarget, githubSyncMigrationCanonicalFiles,
-  completeGitHubSyncTransaction, createGitHubSyncIdentity, discoverGitHubCredentialManagerAccounts, discoverGitHubSshIdentities, fetchGitHubRemoteSnapshot, githubSyncAuthenticationSessionOptions, githubSyncEntryShields, githubSyncExcludedPaths, githubSyncFolderShields, githubSyncIgnoredPath, githubSyncIsTextContent, githubSyncManagedContent, githubSyncManifestFileFingerprints, githubSyncManifestFolderFingerprints, githubSyncSafeRelativePath, githubSyncShield, normalizeGitHubSyncTarget, previewGitHubSyncTarget,
+  completeGitHubSyncTransaction, createGitHubSyncIdentity, discoverGitHubCredentialManagerAccounts, discoverGitHubSshIdentities, fetchGitHubRemoteSnapshot, githubSyncAuthenticationSessionOptions, githubSyncEntryShields, githubSyncExcludedPaths, githubSyncFolderShields, githubSyncIgnoredPath, githubSyncIsTextContent, githubSyncManagedContent, githubSyncManifestFileFingerprints, githubSyncManifestFolderFingerprints, githubSyncResultIsNoChange, githubSyncSafeRelativePath, githubSyncShield, normalizeGitHubSyncTarget, previewGitHubSyncTarget,
   probeGitHubSyncAuthentication, probeGitHubSyncHttpsAuthentication, probeGitHubSyncVscodeAuthentication, readGitHubCachedManifest, readGitHubRemoteFile, readGitHubRemoteFilesForSubscription, readGitHubRemoteManifest, replaceGitHubSyncFilesAtomically, restoreGitHubRemoteFiles, testGitHubSyncAuthentication,
 } from "./sync/github-sync";
 import { githubSyncCatalogInWorker } from "./sync/github-sync-catalog-worker";
@@ -123,7 +123,7 @@ import {
 import { GitHubSyncWorkbenchRequest, GitHubSyncWorkbenchState, openGitHubSyncConflictWorkbench } from "./sync/github-sync-workbench";
 import { GitHubSyncReason, GitHubSyncRuntimeState } from "./sync/github-sync-scheduler";
 import type { GitHubSyncResult } from "./sync/github-sync";
-import { githubSyncCoordinatorDirectory } from "./sync/github-sync-coordinator";
+import { githubSyncCoordinatorDirectory, sameKnowledgeRoot } from "./sync/github-sync-coordinator";
 import { PkmServiceClient, PkmServiceRecoveryPersistenceError } from "./runtime/pkm-service";
 import { BackgroundTaskProducer, BackgroundTaskRegistry } from "./runtime/background-task-registry";
 import { ActionBackgroundTasks } from "./runtime/action-background-tasks";
@@ -1903,13 +1903,15 @@ async function finalizeGitHubSyncServiceResult(
   if (!updated) return;
   completeGitHubSyncTransaction(path.join(githubSyncStateDirectory(context), "checkouts"), targetId, result.transactionId);
   clearGitHubSyncConflict(githubSyncStateDirectory(context), targetId);
-  reportRefresh?.();
-  try {
-    await refreshKnowledgeInventory(context);
-    await refreshRetrievalIndex(context);
-  } catch (error) {
-    log.warn(`GitHub Sync target=${target.name} committed=${result.commit}; inventory/retrieval post-processing will retry: ${error instanceof Error ? error.message : String(error)}`);
-    scheduleRetrievalRefresh(context, 0);
+  if (!githubSyncResultIsNoChange(result)) {
+    reportRefresh?.();
+    try {
+      await refreshKnowledgeInventory(context);
+      await refreshRetrievalIndex(context);
+    } catch (error) {
+      log.warn(`GitHub Sync target=${target.name} committed=${result.commit}; inventory/retrieval post-processing will retry: ${error instanceof Error ? error.message : String(error)}`);
+      scheduleRetrievalRefresh(context, 0);
+    }
   }
   if (changedLocalContent) githubSyncScheduler?.notifyContentChanged(targetId);
 }
@@ -2029,7 +2031,8 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
         if (reason === "change") {
           const target = githubSyncTargetById(context, targetId);
           if (target.lastSync?.localChangeFingerprint && target.lastSync.repository === target.repository
-            && target.lastSync.branch === target.branch && target.lastSync.storeRoot === path.resolve(getStorePath())) {
+            && target.lastSync.branch === target.branch && target.lastSync.storeRoot
+            && sameKnowledgeRoot(target.lastSync.storeRoot, getStorePath())) {
             invalidateSharedContentCatalog();
             const current = await githubSyncFingerprintInWorker(target, await githubSyncCatalog(), getStorePath());
             if (githubSyncLocalChangeFingerprint(target, current.localChangeFingerprint) === target.lastSync.localChangeFingerprint) {
@@ -2100,7 +2103,8 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
             );
             await finalizeGitHubSyncServiceResult(context, targetId, reason, result, () =>
               githubSyncScheduler?.report(targetId, "refresh-index", "Refreshing the PKM inventory and retrieval index"), localState.localChangeFingerprint);
-            githubSyncScheduler?.report(targetId, "scheduled", "Next fetch scheduled");
+            githubSyncScheduler?.report(targetId, githubSyncResultIsNoChange(result) ? "no-change" : "scheduled",
+              githubSyncResultIsNoChange(result) ? "No changes on this machine or GitHub" : "Next fetch scheduled");
             githubSyncDiagnostics.record("github_sync.completed", {
               traceId,
               targetId,
@@ -12459,30 +12463,43 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
   const onChange = (uri: vscode.Uri) => {
     const relativePath = path.relative(getStorePath(), uri.fsPath).replace(/\\/g, "/");
     if (githubSyncIgnoredPath(relativePath)) return;
-    invalidateSharedContentCatalog();
     knowledgePaths.add(relativePath);
     if (uri.fsPath === path.join(getStorePath(), "skills", "System", "PKM", "PKM Skills.md")) {
       _watcherSkillProjectionChanged = true;
     }
-    if (_watcherRefreshTimer) clearTimeout(_watcherRefreshTimer);
+    if (_watcherRefreshTimer) return;
     _watcherRefreshTimer = setTimeout(() => {
       _watcherRefreshTimer = undefined;
-      checkContents();
-      _treeProvider?.refresh();
       const changedPaths = [...knowledgePaths].sort();
       knowledgePaths.clear();
-      panel?.webview.postMessage({ command: "reloaded", data: {
-        changedPaths, ...(changedPaths.length === 1 ? { changedPath: changedPaths[0] } : {}),
-      } });
-      schedulePublishedShareRefresh(context);
-      scheduleRetrievalRefresh(context);
-      void refreshKnowledgeInventory(context);
-      githubSyncScheduler?.notifyContentChanged();
-      if (_watcherSkillProjectionChanged) {
-        _watcherSkillProjectionChanged = false;
-        panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
-        void maintainPkmIntegration(context);
-      }
+      void (async () => {
+        const ignored = await githubSyncExcludedPaths(signatureRoot,
+          changedPaths.filter(relative => relative !== ".pkm/content-privacy.json"));
+        const relevantPaths = changedPaths.filter(relative => !ignored.has(relative));
+        if (signatureController.signal.aborted || !relevantPaths.length) return;
+        invalidateSharedContentCatalog();
+        checkContents();
+        _treeProvider?.refresh();
+        panel?.webview.postMessage({ command: "reloaded", data: {
+          changedPaths: relevantPaths, ...(relevantPaths.length === 1 ? { changedPath: relevantPaths[0] } : {}),
+        } });
+        schedulePublishedShareRefresh(context);
+        scheduleRetrievalRefresh(context);
+        void refreshKnowledgeInventory(context);
+        const targets = readGitHubSyncTargets(context);
+        if (targets.some(target => target.automation.enabled && target.automation.syncOnChange
+          && relevantPaths.some(relative => {
+            const type = GITHUB_SYNC_CONTENT_TYPES.find(area => area === relative.split("/")[0]);
+            if (!type) return true;
+            return [target.selection.public[type], target.selection.private[type]]
+              .some(selection => selection.items.length > 0 || selection.folders.length > 0);
+          }))) githubSyncScheduler?.notifyContentChanged();
+        if (_watcherSkillProjectionChanged) {
+          _watcherSkillProjectionChanged = false;
+          panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+          void maintainPkmIntegration(context);
+        }
+      })().catch(error => log.warn(`knowledge watcher refresh failed: ${String(error)}`));
     }, 250);
     _watcherRefreshTimer.unref?.();
   };

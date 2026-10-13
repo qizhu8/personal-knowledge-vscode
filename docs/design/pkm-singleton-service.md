@@ -17,6 +17,10 @@ local IPC and are never written into the service registry or queue.
 
 The service identity does not include a workspace, window, or Extension Host
 PID. Symlink aliases of the same Knowledge Root resolve to the same identity.
+Persisted Sync bindings and the change-trigger baseline use that same canonical
+comparison: Windows case, separators, and trailing separators do not change the
+root identity; POSIX case and genuinely different physical roots remain distinct.
+Native/display paths are retained for filesystem operations and saved settings.
 Closing a window disconnects its client; it does not dispose the service.
 Without a compatible client, operations requiring host authorization cannot
 proceed and must report that condition rather than silently succeeding.
@@ -105,6 +109,26 @@ Capturing input before Git execution keeps edits made during synchronization
 eligible for a follow-up. Existing targets bootstrap this local baseline on
 their next successful sync. Skipped change events do not delay periodic fetch.
 
+The content watcher batches paths and checks Git ignore before invalidating the
+catalog or scheduling library/retrieval refresh. Ignored runtime artifacts
+(including SQLite journals and transcript cursors) must not repeatedly rebuild
+the catalog. Privacy metadata bypasses this ignore check. Changes to unselected
+content types still refresh the library without notifying Sync; the selected
+byte snapshot remains the final safety gate. Results from disposed watchers are
+discarded. Filter errors are explicitly logged.
+
+Every scheduler transition carries an activity timestamp. UI snapshots compare
+activity, attempt, and success times, including older messages without activity
+timestamps. A queued or skipped retry does not erase a failure, and a late
+failure snapshot cannot override a newer successful outcome.
+
+The phase diagram retains its full main line and branches down from Fetch / Pull
+to No Change. This outcome requires no new remote commit, local file writes or
+deletions, Recipe updates, or privacy updates. A remote-only pull still follows
+the materialization/index-refresh path, even when it creates no remote commit.
+Unchanged checks retain Git validation and durable receipt/baseline finalization,
+but do not display Commit/Push or rebuild inventory/retrieval indexes.
+
 ## Validation commands
 
 ```sh
@@ -115,6 +139,7 @@ node tests/test-github-sync-coordinator.js
 node tests/test-github-sync-resolution.js
 node tests/test-github-sync-file-safety.js
 node tests/test-github-sync-ui.js
+node tests/test-github-sync-watcher.js
 ```
 
 The actual VSIX must also start the service outside repository `node_modules`.

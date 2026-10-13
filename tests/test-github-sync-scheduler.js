@@ -325,6 +325,38 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
   assert.strictEqual(pausedFailure.snapshot()["paused-failure"].lastError, undefined);
   pausedFailure.dispose();
 
+  const skippedFailure = new GitHubSyncScheduler({ ...persistedStateOptions, shouldExecute: async () => false });
+  skippedFailure.configure([{
+    id: "skip-failure", enabled: false, intervalMinutes: 5, syncOnChange: false,
+    lastFailure: { at: "2026-09-24T19:59:00.000Z", error: "failed before skip", reason: "manual" },
+  }]);
+  assert(skippedFailure.request("skip-failure", "manual"));
+  await flush();
+  await flush();
+  assert.strictEqual(skippedFailure.snapshot()["skip-failure"].status, "error");
+  assert.strictEqual(skippedFailure.snapshot()["skip-failure"].lastError, "failed before skip");
+  assert(skippedFailure.snapshot()["skip-failure"].activityAt, "all visible scheduler transitions have a freshness timestamp");
+  skippedFailure.dispose();
+
+  let unchanged;
+  unchanged = new GitHubSyncScheduler({
+    ...persistedStateOptions,
+    execute: async () => unchanged.report("no-change", "no-change", "No changes on this machine or GitHub"),
+  });
+  unchanged.configure([{ id: "no-change", enabled: false, intervalMinutes: 5, syncOnChange: false }]);
+  assert(unchanged.request("no-change", "manual"));
+  await flush();
+  await flush();
+  assert.strictEqual(unchanged.snapshot()["no-change"].phase, "no-change",
+    "settling a successful execution must retain the actual No Change branch");
+  unchanged.configure([{
+    id: "no-change", enabled: false, intervalMinutes: 5, syncOnChange: false,
+    lastSuccessAt: unchanged.snapshot()["no-change"].lastSuccessAt,
+  }]);
+  assert.strictEqual(unchanged.snapshot()["no-change"].phase, "no-change",
+    "reconfiguring the same completed outcome must not erase its branch");
+  unchanged.dispose();
+
   const deletionTimers = new Map();
   let releaseDeleted;
   const deleted = new GitHubSyncScheduler({

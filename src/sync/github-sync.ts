@@ -7,6 +7,7 @@ import { promisify } from "util";
 import { canonicalJson, compileWorkflowDefinitionV1 } from "../workflows/workflow-contracts";
 import { compareVersionOrder } from "../runtime/version-order";
 import { knowledgeSyncDeletionRecords } from "../knowledge/filestore";
+import { sameKnowledgeRoot } from "./github-sync-coordinator";
 
 const execFileAsync = promisify(execFile);
 
@@ -163,6 +164,12 @@ export interface GitHubSyncResult {
   recipeDeletes: string[];
   acknowledgedDeletions: GitHubSyncDeletionEvidence[];
   resolutionReport: GitHubSyncResolutionReport;
+}
+
+export function githubSyncResultIsNoChange(result: GitHubSyncResult): boolean {
+  return !result.changed && result.pulled.length === 0 && result.deletedLocal.length === 0
+    && result.recipePulls.length === 0 && result.recipeDeletes.length === 0
+    && !Object.values(result.privateTopLevels).some(topLevels => topLevels.length > 0);
 }
 
 export interface GitHubSyncTransactionReceipt {
@@ -2442,7 +2449,7 @@ async function syncGitHubTargetAttempt(
   if (normalized.lastSync?.branch && normalized.lastSync.branch !== normalized.branch) {
     throw new Error("GitHub Sync branch changed after the last synchronization. Save the target again to start from a new reconciliation base.");
   }
-  if (storeRoot && normalized.lastSync?.storeRoot && path.resolve(normalized.lastSync.storeRoot) !== path.resolve(storeRoot)) {
+  if (storeRoot && normalized.lastSync?.storeRoot && !sameKnowledgeRoot(normalized.lastSync.storeRoot, storeRoot)) {
     throw new Error("Knowledge Root changed after the last synchronization. Re-save the target to reconcile this root as a new machine.");
   }
   const checkout = path.join(checkoutRoot, normalized.id, "repository");
@@ -2928,12 +2935,12 @@ async function syncGitHubTargetAttempt(
       if (!finalRemote.has(relative)) fs.rmSync(managedPath(checkout, relative), { force: true });
     }
     const stagingStartedAt = Date.now();
-    onProgress?.("commit", `Staging ${managedFiles.length} managed files with git add`);
+    onProgress?.("fetch", `Checking ${managedFiles.length} reconciled files against the Git index`);
     await git(checkout, ["-c", "core.autocrlf=input", "add", "-A", "--", "."]);
     const verificationStartedAt = Date.now();
-    onProgress?.("commit", `Staging completed in ${Date.now() - stagingStartedAt} ms; verifying ${managedFiles.length} staged blobs before manifest creation`);
+    onProgress?.("fetch", `Index preparation completed in ${Date.now() - stagingStartedAt} ms; verifying ${managedFiles.length} staged blobs before manifest creation`);
     await verifyGitHubStagedFiles(normalized, checkoutRoot, managedFiles, verified => {
-      onProgress?.("commit", `Verified ${verified}/${managedFiles.length} staged blobs in ${Date.now() - verificationStartedAt} ms; this is batched index validation, not git commit`);
+      onProgress?.("fetch", `Verified ${verified}/${managedFiles.length} staged blobs in ${Date.now() - verificationStartedAt} ms`);
     });
     fs.writeFileSync(path.join(checkout, MANIFEST_PATH), manifestJson(managedFiles, [...finalDeletions.values()]));
     await git(checkout, ["add", "--", MANIFEST_PATH]);
@@ -2970,7 +2977,10 @@ async function syncGitHubTargetAttempt(
         throw new Error("Local Git deletion evidence changed during synchronization. Retry Sync; no push was performed.");
       }
     }
-    onProgress?.("push", `Compare-and-swap HEAD onto origin/${normalized.branch}`);
+    const needsUpdates = changed || localWrites.length > 0 || localDeletes.some(item => !finalRemote.has(item.file.path));
+    onProgress?.(needsUpdates ? "push" : "fetch", needsUpdates
+      ? `Compare-and-swap HEAD onto origin/${normalized.branch}`
+      : `Verifying origin/${normalized.branch} still matches the fetched commit`);
     await git(checkout, [
       "push",
       `--force-with-lease=refs/heads/${normalized.branch}:${remoteCommit}`,

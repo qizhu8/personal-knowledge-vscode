@@ -5,6 +5,13 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.30] - 2026-10-13
+
+- Compare persisted and service Knowledge Root bindings using the same canonical identity, accepting Windows case/slash variants and physical aliases while retaining different-root safety checks.
+- Filter Git-ignored watcher paths before catalog invalidation and background refresh. Unselected content types still update the library but no longer schedule Sync change scans.
+- Timestamp scheduler transitions, reject older runtime snapshots even when they lack activity timestamps, and keep failed outcomes visible while a retry is merely scheduled. Late snapshots cannot restore a failure superseded by success.
+- Add a downward No Change branch after Fetch / Pull. Keep unchanged checks out of the visible Commit/Push path, persist the completed branch, and skip inventory/retrieval rebuilding only when neither remote nor local content needs updating.
+
 ## [3.2.29] - 2026-10-13
 
 - Flush singleton recovery records with the exclusive writable creation descriptor for Windows compatibility.

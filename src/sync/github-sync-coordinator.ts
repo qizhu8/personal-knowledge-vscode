@@ -157,7 +157,7 @@ export function canonicalKnowledgeRoot(
   platform: NodeJS.Platform = process.platform,
   realpath: (value: string) => string = value => fs.realpathSync.native(value),
 ): string {
-  let canonical = realpath(path.resolve(knowledgeRoot)).normalize("NFC").replace(/\\/g, "/");
+  let canonical = realpath((platform === "win32" ? path.win32 : path).resolve(knowledgeRoot)).normalize("NFC").replace(/\\/g, "/");
   canonical = canonical.replace(/\/+$/, "") || "/";
   if (platform === "win32") canonical = canonical.toLocaleLowerCase("en-US");
   return canonical;
@@ -172,6 +172,20 @@ export function githubSyncCoordinatorDirectory(
   const identity = canonicalKnowledgeRoot(knowledgeRoot, platform, realpath);
   const digest = createHash("sha256").update(identity).digest("hex");
   return path.join(globalStoragePath, "github-sync", "coordinators", digest);
+}
+
+export function sameKnowledgeRoot(
+  left: string, right: string, platform: NodeJS.Platform = process.platform,
+  realpath: (value: string) => string = value => fs.realpathSync.native(value),
+): boolean {
+  const normalize = (value: string): string => canonicalKnowledgeRoot(value, platform, resolved => {
+    try { return realpath(resolved); }
+    catch (error) {
+      if (!(error instanceof Error) || !("code" in error) || !["ENOENT", "ENOTDIR"].includes(String(error.code))) throw error;
+      return resolved;
+    }
+  });
+  return normalize(left) === normalize(right);
 }
 
 export class GitHubSyncCoordinator {

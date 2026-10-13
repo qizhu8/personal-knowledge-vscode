@@ -850,6 +850,25 @@ async function scenario(name, action) {
     }
   });
 
+  await scenario("equivalent Knowledge Root aliases retain their binding", async () => {
+    const fixture = createFixture("root-alias");
+    try {
+      await initialize(fixture);
+      const alias = path.join(fixture.root, "store-alias");
+      fs.symlinkSync(fixture.store, alias, process.platform === "win32" ? "junction" : "dir");
+      fixture.target.lastSync.storeRoot = alias;
+      const result = await syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store);
+      assert.strictEqual(result.changed, false, "a physical alias must not require reinitializing the target");
+      if (process.platform === "win32") {
+        fixture.target.lastSync.storeRoot = fixture.store.toUpperCase().replace(/\\/g, "/") + "/";
+        const windowsResult = await syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store);
+        assert.strictEqual(windowsResult.changed, false, "native Windows case/slash variants preserve the existing baseline");
+      }
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   await scenario("a Knowledge Root binding mismatch fails closed", async () => {
     const fixture = createFixture("root-binding");
     try {

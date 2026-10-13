@@ -6,8 +6,9 @@ const os = require("node:os");
 const vm = require("node:vm");
 const ts = require("typescript");
 const { randomUUID, createHash } = require("node:crypto");
-const { GitHubSyncConflictError, GitHubSyncExtensionCompatibilityError } = require("../dist/sync/github-sync.js");
+const { GitHubSyncConflictError, GitHubSyncExtensionCompatibilityError, githubSyncResultIsNoChange } = require("../dist/sync/github-sync.js");
 const { PkmServiceRecoveryPersistenceError } = require("../dist/runtime/pkm-service.js");
+const { sameKnowledgeRoot } = require("../dist/sync/github-sync-coordinator.js");
 
 const extension = fs.readFileSync(path.join(__dirname, "../src/extension.ts"), "utf8");
 const start = extension.indexOf("async function finalizeGitHubSyncServiceResult(");
@@ -22,7 +23,7 @@ const target = {
   automation: { enabled: false, initialSyncCompleted: true, intervalMinutes: 60, syncOnChange: false },
 };
 const result = {
-  transactionId: "transaction", commit: "a".repeat(40), changed: false, fingerprints: {},
+  transactionId: "transaction", commit: "a".repeat(40), changed: true, fingerprints: {},
   pulled: [], deletedLocal: [], privateTopLevels: {}, recipePulls: [], recipeDeletes: [],
   acknowledgedDeletions: [], resolutionReport: { totalFiles: 0, rules: {}, generatedAt: new Date().toISOString() },
 };
@@ -44,7 +45,7 @@ const context = vm.createContext({
   PkmServiceClient: FakeClient,
   githubSyncScheduler: undefined, githubSyncCoordinatorStatePath: undefined,
   githubSyncTasks: new Map(), githubSyncForceUpdateAudit: new Map(),
-  path, os, randomUUID, createHash, GitHubSyncConflictError, GitHubSyncExtensionCompatibilityError, PkmServiceRecoveryPersistenceError,
+  path, os, randomUUID, createHash, sameKnowledgeRoot, githubSyncResultIsNoChange, GitHubSyncConflictError, GitHubSyncExtensionCompatibilityError, PkmServiceRecoveryPersistenceError,
   Promise, Set, Map, Error,
   fs: { readFileSync: () => JSON.stringify({
     transactionId: result.transactionId, repository: target.repository, branch: target.branch,
@@ -113,6 +114,17 @@ context.extensionContext = {
   assert(calls.some(call => call[0] === "clear-conflict"));
   assert(calls.some(call => call[0] === "refresh-inventory"));
   assert(calls.some(call => call[0] === "refresh-retrieval"));
+  calls.length = 0;
+  result.changed = false;
+  await client.options.execute("primary", "manual", 1);
+  assert(calls.some(call => call[0] === "complete-receipt"), "No Change still completes its durable transaction");
+  assert(calls.some(call => call[0] === "report" && call[2] === "no-change"), "No Change is reported after durable finalization");
+  assert(!calls.some(call => call[0] === "refresh-inventory" || call[0] === "refresh-retrieval"),
+    "No Change skips expensive index postprocessing");
+  assert(!githubSyncResultIsNoChange({ ...result, pulled: ["notes/pulled.md"] }), "a remote-only pull is not No Change");
+  assert(!githubSyncResultIsNoChange({ ...result, recipePulls: [{}] }));
+  assert(!githubSyncResultIsNoChange({ ...result, privateTopLevels: { notes: ["Private"] } }));
+  result.changed = true;
   assert.equal(target.lastSync.commit, result.commit);
   assert(target.lastSync.localChangeFingerprint, "successful sync persists the local input snapshot, not the remote manifest fingerprint");
   assert.equal(await client.options.shouldExecute("primary", "change"), false,

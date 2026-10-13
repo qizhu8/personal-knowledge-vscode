@@ -35,6 +35,13 @@ function githubSyncDefaultSelection() {
   return { public:publicScope, private:privateScope };
 }
 
+function githubSyncRuntimeIsOlder(previous, current) {
+  if (!previous) return false;
+  const version = runtime => Math.max(...['activityAt', 'lastAttemptAt', 'lastSuccessAt']
+    .map(key => Date.parse(runtime[key] || '') || 0));
+  return version(previous) > version(current);
+}
+
 function githubSyncOnState(data) {
   githubSyncStatusRequested = !!data?.fingerprintsDeferred;
   githubSyncRefreshError = '';
@@ -44,7 +51,7 @@ function githubSyncOnState(data) {
   githubSyncData.runtime = { ...previousRuntime, ...(data?.runtime || {}) };
   for (const [targetId, runtime] of Object.entries(githubSyncData.runtime || {})) {
     const previous = previousRuntime[targetId];
-    if (previous?.activityAt && runtime.activityAt && previous.activityAt > runtime.activityAt) {
+    if (githubSyncRuntimeIsOlder(previous, runtime)) {
       githubSyncData.runtime[targetId] = previous;
       continue;
     }
@@ -337,22 +344,29 @@ function githubSyncPhaseDiagram(phase, status) {
     ['commit', 'Commit'], ['push', 'Push'], ['refresh-index', 'Refresh index'],
   ];
   if (phase === 'initial-preview') steps.splice(4, 0, ['initial-preview', 'Compare files']);
-  const currentIndex = status === 'paused' || status === 'blocked' ? -1 : steps.findIndex(([key]) => key === phase);
-  const currentLabel = currentIndex < 0 ? status === 'paused' ? 'Auto sync off' : status === 'blocked' ? 'Blocked' : 'Sync failed' : steps[currentIndex][1];
+  const noChange = phase === 'no-change';
+  const currentIndex = noChange ? 3 : status === 'paused' || status === 'blocked' ? -1 : steps.findIndex(([key]) => key === phase);
+  const currentLabel = noChange ? 'No Change' : currentIndex < 0 ? status === 'paused' ? 'Auto sync off' : status === 'blocked' ? 'Blocked' : 'Sync failed' : steps[currentIndex][1];
   const label = status === 'error' ? currentIndex < 0 ? 'Sync failed' : `${currentLabel} failed` : status === 'conflicts' ? `${currentLabel}: action required` : currentLabel;
   const nodes = steps.map(([key, text], index) => {
-    const state = index === currentIndex ? status === 'error' ? 'error' : status === 'conflicts' ? 'conflicts' : 'current'
+    const state = noChange ? index <= currentIndex ? 'done' : 'upcoming'
+      : index === currentIndex ? status === 'error' ? 'error' : status === 'conflicts' ? 'conflicts' : 'current'
       : index < currentIndex && status !== 'scheduled' ? 'done' : 'upcoming';
     return `<span class="github-sync-flow-step ${state}" data-phase="${key}"><i aria-hidden="true"></i>${text}</span>`;
   }).join('');
-  return `<span class="github-sync-phase"><span class="github-sync-phase-current ${status === 'error' ? 'error' : status === 'conflicts' ? 'conflicts' : ''}" aria-hidden="true">${esc(label)}</span><span class="github-sync-flow" role="img" aria-label="GitHub Sync: ${esc(label)}">${nodes}</span></span>`;
+  const branch = `<span class="github-sync-flow-step github-sync-no-change ${noChange ? 'current' : 'upcoming'}" data-phase="no-change"><i aria-hidden="true"></i>No Change</span>`;
+  return `<span class="github-sync-phase"><span class="github-sync-phase-current ${status === 'error' ? 'error' : status === 'conflicts' ? 'conflicts' : ''}" aria-hidden="true">${esc(label)}</span><span class="github-sync-flow" role="img" aria-label="GitHub Sync: ${esc(label)}"><span class="github-sync-flow-main">${nodes}</span>${branch}</span></span>`;
 }
 
 function githubSyncEffectiveStatus(target, runtime, conflict, forcePending) {
   if (forcePending || runtime.status === 'syncing' || runtime.status === 'queued') return 'syncing';
   if (conflict) return 'conflicts';
   const failure = target.lastFailure;
-  if (failure && (!target.lastSync?.at || !Number.isFinite(Date.parse(failure.at)) || Date.parse(failure.at) >= Date.parse(target.lastSync.at))) return 'error';
+  const successAt = Math.max(Date.parse(target.lastSync?.at || '') || 0, Date.parse(runtime.lastSuccessAt || '') || 0);
+  if (failure && (!successAt || !Number.isFinite(Date.parse(failure.at)) || Date.parse(failure.at) >= successAt)) return 'error';
+  const attemptedAt = Date.parse(runtime.lastAttemptAt || '');
+  if (runtime.lastError && (!successAt || !Number.isFinite(attemptedAt) || attemptedAt >= successAt)) return 'error';
+  if (runtime.status === 'error' && successAt && attemptedAt < successAt) return 'scheduled';
   return runtime.status || (target.automation?.enabled && target.automation?.initialSyncCompleted ? 'scheduled' : 'paused');
 }
 
@@ -539,7 +553,7 @@ function githubSyncOnRuntimeState(data) {
   if (!data?.targetId) return;
   const previous = githubSyncData.runtime?.[data.targetId];
   const runtime = data.state || {};
-  if (previous?.activityAt && runtime.activityAt && previous.activityAt > runtime.activityAt) return;
+  if (githubSyncRuntimeIsOlder(previous, runtime)) return;
   githubSyncData.runtime = { ...(githubSyncData.runtime || {}), [data.targetId]:runtime };
   if (githubSyncForcePending.has(data.targetId) && runtime.lastAttemptAt
     && runtime.lastAttemptAt !== githubSyncPendingAfter.get(data.targetId)) {

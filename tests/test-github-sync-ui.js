@@ -30,6 +30,19 @@ assert.strictEqual(vm.runInContext("githubSyncEffectiveError(failedTarget, {stat
 assert.strictEqual(vm.runInContext("githubSyncEffectiveError(failedTarget, {status:'error',lastError:'current attempt failed'})", context), 'current attempt failed');
 context.failedTarget.lastSync.at = '2026-07-20T10:00:00Z';
 assert.strictEqual(vm.runInContext("githubSyncEffectiveStatus(failedTarget, {status:'scheduled'}, null, false)", context), 'scheduled', 'a later successful sync clears the effective failure status');
+assert.strictEqual(vm.runInContext("githubSyncEffectiveStatus(failedTarget, {status:'error',lastError:'old error',lastAttemptAt:'2026-07-19T10:00:00Z'}, null, false)", context), 'scheduled',
+  'a stale runtime failure cannot replace a newer persisted success');
+assert.strictEqual(vm.runInContext("githubSyncEffectiveStatus({}, {status:'scheduled',lastError:'failed',lastAttemptAt:'2026-07-20T11:00:00Z'}, null, false)", context), 'error',
+  'a queued retry must not erase the failed outcome while awaiting execution');
+context.failedTarget.lastSync.at = '2026-07-18T10:00:00Z';
+assert.strictEqual(vm.runInContext("githubSyncEffectiveStatus(failedTarget, {status:'scheduled',lastSuccessAt:'2026-07-20T10:00:00Z'}, null, false)", context), 'scheduled',
+  'a late full target snapshot cannot resurrect a failure older than the runtime success');
+vm.runInContext(`
+  githubSyncOnRuntimeState({targetId:'freshness',state:{status:'error',activityAt:'2026-07-20T11:00:00Z',lastError:'failed'}});
+  githubSyncOnRuntimeState({targetId:'freshness',state:{status:'scheduled',lastAttemptAt:'2026-07-20T10:00:00Z'}});
+`, context);
+assert.strictEqual(vm.runInContext("githubSyncData.runtime.freshness.status", context), 'error',
+  'a runtime lacking activityAt cannot replace a newer failed state');
 assert.match(vm.runInContext("githubSyncStatusTitle('yellow')", context), /Names alone.*pending or unverified.*Refresh is read-only/);
 vm.runInContext("githubSyncForce('primary', {})", context);
 vm.runInContext("githubSyncForce('primary', {})", context);
@@ -83,14 +96,21 @@ assert.match(source, /\['fetch', 'Fetch \/ Pull'\][\s\S]*\['resolve-conflicts', 
   "the diagram follows Git-native runtime phases in order");
 assert.doesNotMatch(source, /'merge':'Merge'|'up-to-date':'Up to date'/,
   "target cards do not expose internal reconciliation or a terminal state instead of Scheduled");
-assert.match(extensionSource, /const report = \(phase:[\s\S]*githubSyncScheduler\?\.report\(targetId, phase, detail\)[\s\S]*report\(targetId, "authenticating"[\s\S]*syncGitHubTarget\([\s\S]*\n\s+report,[\s\S]*report\(targetId, "refresh-index"[\s\S]*report\(targetId, "scheduled"/,
+assert.match(extensionSource, /const report = \(phase:[\s\S]*githubSyncScheduler\?\.report\(targetId, phase, detail\)[\s\S]*report\(targetId, "authenticating"[\s\S]*syncGitHubTarget\([\s\S]*\n\s+report,[\s\S]*report\(targetId, "refresh-index"[\s\S]*report\(targetId, githubSyncResultIsNoChange\(result\) \? "no-change" : "scheduled"/,
   "the extension reports Git phases from the execution path through index refresh");
 assert.match(extensionSource, /const credentials = await readGitHubSyncCredentials\(context, target\);\s*report\("fetch", [^\n]+\);\s*invalidateSharedContentCatalog\(\);\s*const catalog = await githubSyncCatalog\(\);/,
   "Authentication ends before catalog loading; each Sync attempt refreshes stale source paths even when a watcher missed a rename");
-assert.match(extensionSource, /await finalizeGitHubSyncServiceResult\(context, targetId, reason, result,[\s\S]*report\(targetId, "refresh-index"[\s\S]*report\(targetId, "scheduled"/,
+assert.match(extensionSource, /await finalizeGitHubSyncServiceResult\(context, targetId, reason, result,[\s\S]*report\(targetId, "refresh-index"[\s\S]*report\(targetId, githubSyncResultIsNoChange\(result\) \? "no-change" : "scheduled"/,
   "Scheduled is reached only after materialization, inventory refresh, and retrieval refresh complete");
 assert.match(extensionSource, /async function finalizeGitHubSyncServiceResult[\s\S]*reportRefresh\?\.\(\)[\s\S]*await refreshKnowledgeInventory\(context\)[\s\S]*await refreshRetrievalIndex\(context\)/,
   "normal and recovered completion share guarded inventory/retrieval postprocessing");
+const noChangeDiagram = vm.runInContext("githubSyncPhaseDiagram('no-change','scheduled')", context);
+assert.match(noChangeDiagram, /github-sync-no-change current" data-phase="no-change"/);
+assert.match(noChangeDiagram, /done" data-phase="fetch"/);
+assert.match(noChangeDiagram, /upcoming" data-phase="commit"/);
+assert.match(noChangeDiagram, /upcoming" data-phase="refresh-index"/);
+assert.match(styles, /github-sync-no-change[^}]*grid-column:4\/6;grid-row:2/,
+  "No Change branches downward from Fetch rather than appearing as the ninth main-line step");
 assert.match(extensionSource, /case "githubSyncAutomationToggle"[\s\S]*initialSyncCompleted[\s\S]*target\.automation\.enabled = enabled/,
   "the host owns the Auto Sync readiness gate and persists explicit user toggles");
 assert.match(extensionSource, /case "githubSyncAutomationToggle":[\s\S]*respond\(\{ command: "githubSyncAutomationResult"[\s\S]*await githubSyncStateData/,

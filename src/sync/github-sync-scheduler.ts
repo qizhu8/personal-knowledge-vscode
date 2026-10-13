@@ -1,5 +1,5 @@
 export type GitHubSyncReason = "startup" | "interval" | "change" | "configuration" | "manual" | "force-local-authority";
-export type GitHubSyncPhase = "scheduled" | "waiting-for-lock" | "authenticating" | "fetch" | "resolve-conflicts" | "commit" | "push" | "refresh-index";
+export type GitHubSyncPhase = "scheduled" | "waiting-for-lock" | "authenticating" | "fetch" | "resolve-conflicts" | "commit" | "push" | "refresh-index" | "no-change";
 
 export class GitHubSyncBlockedError extends Error {
   constructor(
@@ -81,6 +81,9 @@ export class GitHubSyncScheduler {
         && (!target.lastSuccessAt || target.lastFailure.at > target.lastSuccessAt)
         ? target.lastFailure
         : undefined;
+      const previous = this.states.get(target.id);
+      const completedNoChange = !activeFailure && previous?.phase === "no-change" && previous.lastSuccessAt
+        && (!target.lastSuccessAt || target.lastSuccessAt <= previous.lastSuccessAt);
       if (target.enabled && activeFailure && (activeFailure.attempts || 1) >= MAX_GITHUB_SYNC_FAILURE_ATTEMPTS) {
         target.enabled = false;
         this.options.onAutoPaused?.(target.id);
@@ -91,15 +94,16 @@ export class GitHubSyncScheduler {
           lastAttemptAt: activeFailure?.at || target.lastSuccessAt,
           lastSuccessAt: target.lastSuccessAt,
           lastError: activeFailure?.error,
+          ...(completedNoChange ? { phase: "no-change" as const, detail: previous.detail } : {}),
         });
         continue;
       }
-      const previous = this.states.get(target.id);
-      this.states.set(target.id, {
+      this.updateState(target.id, {
         status: activeFailure ? "error" : "scheduled",
         lastAttemptAt: previous?.lastAttemptAt || activeFailure?.at || target.lastSuccessAt,
         lastSuccessAt: target.lastSuccessAt,
         lastError: activeFailure?.error,
+        ...(completedNoChange ? { phase: "no-change" as const, detail: previous.detail } : {}),
       });
       if (!activeFailure || (activeFailure.attempts || 1) < MAX_GITHUB_SYNC_FAILURE_ATTEMPTS) this.enqueue(target.id, "startup");
     }
@@ -219,10 +223,11 @@ export class GitHubSyncScheduler {
         try {
           if (this.options.shouldExecute && !(await this.options.shouldExecute(targetId, reason))) {
             this.updateState(targetId, {
-              status: "scheduled",
+              status: currentState?.lastError ? "error" : "scheduled",
               reason,
               lastAttemptAt: reason === "change" ? currentState?.lastAttemptAt : attemptedAt,
               lastSuccessAt: target.lastSuccessAt,
+              lastError: currentState?.lastError,
             });
             this.scheduleNextInterval(target);
             this.options.onSettled?.(targetId, reason, "skipped");
@@ -243,6 +248,7 @@ export class GitHubSyncScheduler {
           }
           current.lastSuccessAt = succeededAt;
           current.lastFailure = undefined;
+          const noChange = this.states.get(targetId)?.phase === "no-change";
           this.updateState(targetId, {
             status: current.enabled ? "scheduled" : "paused",
             phase: current.enabled ? "scheduled" : undefined,
@@ -251,6 +257,7 @@ export class GitHubSyncScheduler {
             reason,
             lastAttemptAt: attemptedAt,
             lastSuccessAt: succeededAt,
+            ...(noChange ? { phase: "no-change", detail: "No changes on this machine or GitHub" } : {}),
           });
           this.scheduleNextInterval(current);
         } catch (error) {
@@ -311,6 +318,7 @@ export class GitHubSyncScheduler {
   }
 
   private updateState(targetId: string, state: GitHubSyncRuntimeState): void {
+    state = { ...state, activityAt: new Date(this.now()).toISOString() };
     this.states.set(targetId, state);
     this.options.onState?.(targetId, { ...state });
   }
