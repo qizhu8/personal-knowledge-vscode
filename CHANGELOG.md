@@ -5,6 +5,10 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.33] - 2026-10-13
+
+- Render phase-less initial Sync cards from their actual status instead of defaulting to Sync failed. Healthy scheduled targets, queued/running snapshots and unavailable runtime metadata no longer imply failure; genuine errors remain visible.
+
 ## [3.2.32] - 2026-10-13
 
 - Route selected Local files containing residual merge markers into a typed, durable content-repair workflow before Remote fetch. List all affected paths and marker lines without inventing Base/Remote versions.

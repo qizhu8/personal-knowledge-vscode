@@ -23,6 +23,27 @@ const context = vm.createContext({
   clearTimeout: () => {},
 });
 vm.runInContext(source, context);
+assert.match(vm.runInContext("githubSyncPhaseDiagram('', 'scheduled')", context), /github-sync-phase-current " aria-hidden="true">Scheduled</,
+  "a scheduled snapshot without a phase must not claim that Sync failed");
+assert.doesNotMatch(vm.runInContext("githubSyncPhaseDiagram('', 'scheduled')", context), /Sync failed/);
+assert.match(vm.runInContext("githubSyncPhaseDiagram('', 'syncing')", context), /Synchronizing/);
+assert.match(vm.runInContext("githubSyncPhaseDiagram('', 'queued')", context), /Queued/);
+assert.match(vm.runInContext("githubSyncPhaseDiagram('', 'paused')", context), /Auto sync off/);
+assert.match(vm.runInContext("githubSyncPhaseDiagram('', 'error')", context), />Sync failed</,
+  "genuine failures without phase metadata must remain visible");
+const initialCards = vm.runInContext(`(() => {
+  const previous = githubSyncData;
+  githubSyncData = {targets:[
+    {id:'primary',name:'Primary Backup',automation:{enabled:true,initialSyncCompleted:true}},
+    {id:'share',name:'CreativeGen Share',automation:{enabled:true,initialSyncCompleted:true}},
+  ],runtime:{}};
+  const cards = githubSyncCards();
+  githubSyncData = previous;
+  return cards;
+})()`, context);
+assert.equal((initialCards.match(/github-sync-phase-current " aria-hidden="true">Scheduled</g) || []).length, 2,
+  "both healthy cards show Scheduled on the initial target-only snapshot");
+assert.doesNotMatch(initialCards, /Sync failed/);
 context.failedTarget = { lastFailure: { at: '2026-07-19T10:00:00Z', error: 'snapshot failed' }, lastSync: { at: '2026-07-18T10:00:00Z' }, automation: { enabled: true, initialSyncCompleted: true } };
 assert.strictEqual(vm.runInContext("githubSyncEffectiveStatus(failedTarget, {status:'scheduled'}, null, false)", context), 'error', 'a scheduled timer must not hide a newer persisted synchronization failure');
 assert.strictEqual(vm.runInContext("githubSyncEffectiveStatus(failedTarget, {status:'syncing'}, null, false)", context), 'syncing');

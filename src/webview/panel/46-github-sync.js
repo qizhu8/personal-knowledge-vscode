@@ -338,6 +338,7 @@ function githubSyncConflictPanel(targetId, conflict) {
 }
 
 function githubSyncPhaseDiagram(phase, status) {
+  if (!phase && status === 'scheduled') phase = 'scheduled';
   const steps = [
     ['scheduled', 'Scheduled'], ['waiting-for-lock', 'Git lock'], ['authenticating', 'Authentication'],
     ['fetch', 'Fetch / Pull'], ['resolve-conflicts', 'Resolve conflicts'],
@@ -346,7 +347,13 @@ function githubSyncPhaseDiagram(phase, status) {
   if (phase === 'initial-preview') steps.splice(4, 0, ['initial-preview', 'Compare files']);
   const noChange = phase === 'no-change';
   const currentIndex = noChange ? 3 : ['paused', 'blocked', 'needs-attention'].includes(status) ? -1 : steps.findIndex(([key]) => key === phase);
-  const currentLabel = status === 'needs-attention' ? 'Needs attention: local content repair' : noChange ? 'No Change' : currentIndex < 0 ? status === 'paused' ? 'Auto sync off' : status === 'blocked' ? 'Blocked' : 'Sync failed' : steps[currentIndex][1];
+  const statusLabel = {
+    scheduled:'Scheduled', syncing:'Synchronizing', queued:'Queued', paused:'Auto sync off',
+    blocked:'Blocked', 'needs-attention':'Needs attention: local content repair',
+    conflicts:'Resolve conflicts', error:'Sync failed',
+  }[status] || 'Reading sync status…';
+  const currentLabel = ['paused', 'blocked', 'needs-attention'].includes(status) ? statusLabel
+    : noChange ? 'No Change' : currentIndex < 0 ? statusLabel : steps[currentIndex][1];
   const label = status === 'error' ? currentIndex < 0 ? 'Sync failed' : `${currentLabel} failed` : status === 'conflicts' ? `${currentLabel}: action required` : currentLabel;
   const nodes = steps.map(([key, text], index) => {
     const state = noChange ? index <= currentIndex ? 'done' : 'upcoming'
