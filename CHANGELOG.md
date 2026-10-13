@@ -5,6 +5,10 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.31] - 2026-10-13
+
+- Align No Change below Resolve conflicts in the same stage column, connecting Fetch / Pull's right edge to the No Change dot's left edge.
+
 ## [3.2.30] - 2026-10-13
 
 - Compare persisted and service Knowledge Root bindings using the same canonical identity, accepting Windows case/slash variants and physical aliases while retaining different-root safety checks.

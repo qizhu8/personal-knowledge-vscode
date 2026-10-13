@@ -123,7 +123,9 @@ timestamps. A queued or skipped retry does not erase a failure, and a late
 failure snapshot cannot override a newer successful outcome.
 
 The phase diagram retains its full main line and branches down from Fetch / Pull
-to No Change. This outcome requires no new remote commit, local file writes or
+to No Change, aligned below Resolve conflicts in the same stage column. The
+branch connects Fetch / Pull's right edge to the No Change dot's left edge.
+This outcome requires no new remote commit, local file writes or
 deletions, Recipe updates, or privacy updates. A remote-only pull still follows
 the materialization/index-refresh path, even when it creates no remote commit.
 Unchanged checks retain Git validation and durable receipt/baseline finalization,

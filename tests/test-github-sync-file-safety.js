@@ -166,8 +166,12 @@ async function scenario(name, action) {
       assert(modified.changed);
       assert.strictEqual(run(checkout, ["config", "--local", "core.longpaths"]), "true", "existing checkouts are configured before status");
       rememberSync(fixture.target, modified);
-      const repeated = await syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store);
+      const repeatedPhases = [];
+      const repeated = await syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store,
+        phase => repeatedPhases.push(phase));
       assert.strictEqual(repeated.changed, false);
+      assert(repeatedPhases.length > 0 && repeatedPhases.every(phase => phase === "fetch"),
+        "an unchanged check must not report Resolve conflicts, Commit, or Push");
       assert.strictEqual(repeated.commit, modified.commit);
       assert.strictEqual(run(checkout, ["status", "--porcelain"]), "");
     } finally {

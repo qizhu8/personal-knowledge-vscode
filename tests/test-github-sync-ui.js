@@ -109,8 +109,10 @@ assert.match(noChangeDiagram, /github-sync-no-change current" data-phase="no-cha
 assert.match(noChangeDiagram, /done" data-phase="fetch"/);
 assert.match(noChangeDiagram, /upcoming" data-phase="commit"/);
 assert.match(noChangeDiagram, /upcoming" data-phase="refresh-index"/);
-assert.match(styles, /github-sync-no-change[^}]*grid-column:4\/6;grid-row:2/,
-  "No Change branches downward from Fetch rather than appearing as the ninth main-line step");
+assert.match(styles, /github-sync-no-change[^}]*grid-column:5;grid-row:2;justify-self:start/,
+  "No Change shares Resolve conflicts' stage column on the lower branch");
+assert.match(styles, /github-sync-no-change:before\{left:-12px;top:auto;bottom:50%;width:12px;height:calc\(100% \+ 12px\)/,
+  "the connector spans from Fetch's right edge to the left edge of the No Change dot");
 assert.match(extensionSource, /case "githubSyncAutomationToggle"[\s\S]*initialSyncCompleted[\s\S]*target\.automation\.enabled = enabled/,
   "the host owns the Auto Sync readiness gate and persists explicit user toggles");
 assert.match(extensionSource, /case "githubSyncAutomationToggle":[\s\S]*respond\(\{ command: "githubSyncAutomationResult"[\s\S]*await githubSyncStateData/,
