@@ -1005,8 +1005,8 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         const input = chat.messages[chat.messages.length - 2];
         if (this.running.has(chat.id) || reply?.id !== message.id || reply.role !== "assistant" || !["failed", "cancelled", "interrupted"].includes(reply.status) || input?.role !== "user") throw new Error("Only the latest failed or interrupted response can be retried while idle.");
         this.assertRunnable(chat);
-        const choice = await vscode.window.showWarningMessage("Retry this response?", { modal: true, detail: "This starts a new model request with the current model and tool settings, and may incur charges. Earlier tool operations may already have occurred; review their results before repeating them. The previous attempt is preserved." }, "Retry");
-        if (choice === "Retry" && !this.disposed) await this.send(input.content, chat, undefined, { replyId: reply.id, images: input.images });
+        const choice = await vscode.window.showWarningMessage("Retry this response?", { modal: true, detail: "This replaces the failed response in place using the original user message/images and current model and tool settings, and may incur charges. Earlier tool operations may already have occurred; review their results before repeating them. The failed response is removed when the new attempt starts." }, "Retry");
+        if (choice === "Retry" && !this.disposed) await this.send(input.content, chat, undefined, { replyId: reply.id, inputId: input.id, images: input.images });
         break;
       }
       case "copy": {
@@ -1428,7 +1428,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     } finally { this.queueDrains.delete(chat.id); this.queueCancelled.delete(chat.id); }
   }
 
-  private async send(text: string, chat = this.chat!, parent?: { signal: AbortSignal; sessionId?: string; chatId?: string; delegationId?: string }, retry?: { replyId: string; images?: import("./api-chat-client").ChatImage[] }, submissionId?: string, workerEvents?: string[]): Promise<void> {
+  private async send(text: string, chat = this.chat!, parent?: { signal: AbortSignal; sessionId?: string; chatId?: string; delegationId?: string }, retry?: { replyId: string; inputId: string; images?: import("./api-chat-client").ChatImage[] }, submissionId?: string, workerEvents?: string[]): Promise<void> {
     const triggeringEvents = workerEvents?.map(id => chat.workerState?.events.find(event => event.id === id)).filter((event): event is WorkerEvent => !!event) || [];
     if (this.running.has(chat.id) || this.queueDrains.has(chat.id) && submissionId !== chat.queuedInputs?.[0]?.id) throw new Error("Stop the current response before sending another message.");
     if (!text.trim() || text.length > 16_000) throw new Error("Enter a message up to 16,000 characters.");
@@ -1442,7 +1442,17 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     }
     const executionRoots = (vscode.workspace.workspaceFolders || []).map(folder => folder.uri);
     this.assertRunnable(chat, undefined, executionContext);
-    if (retry && chat.messages[chat.messages.length - 1]?.id !== retry.replyId) throw new Error("The conversation changed while confirming retry. Review its latest response.");
+    const assertRetryUnchanged = (): void => {
+      if (!retry) return;
+      const previousReply = chat.messages[chat.messages.length - 1];
+      const previousInput = chat.messages[chat.messages.length - 2];
+      if (previousReply?.id !== retry.replyId || previousReply.role !== "assistant"
+        || !["failed", "cancelled", "interrupted"].includes(previousReply.status)
+        || previousInput?.id !== retry.inputId || previousInput.role !== "user" || previousInput.content !== text) {
+        throw new Error("The conversation changed while confirming retry. Review its latest response.");
+      }
+    };
+    assertRetryUnchanged();
     let settings = this.settings(chat);
     if (settings.provider === "vscode" && chat.vscodeModelId?.startsWith("vscode:copilotcli:")) assertVscodeModelCallable("copilotcli");
     if (settings.provider === "vscode" && chat.vscodeModelId && settings.needsModelConnection) {
@@ -1466,12 +1476,12 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     if (settings.provider === "vscode" && settings.needsModelConnection) throw new Error("Choose a VS Code model using Model connection or the model picker.");
     if (settings.provider !== "vscode" && !settings.endpoint) throw new Error("Configure an API endpoint using the settings button.");
     const draftImages = chat.images;
-    const sourceChat = { ...chat, messages: [...chat.messages] };
+    const sourceChat = { ...chat, messages: retry ? chat.messages.slice(0, -2) : [...chat.messages] };
     const automatic = new Map<ApiChatMessage, AutomaticChatContext>();
     let knowledge: ChatRetrievalCandidate[] = [];
     const retrievalReceipt = chatRetrievalReceipt(sourceChat, text, settings.model, [], new Set());
     const memoryStarted = Date.now();
-    const messages = this.requestMessages(retry ? { ...chat, images: retry.images || [] } : parent || queuedInput ? { ...chat, images: [] } : chat, text, automatic);
+    const messages = this.requestMessages(retry ? { ...sourceChat, images: retry.images || [] } : parent || queuedInput ? { ...chat, images: [] } : chat, text, automatic);
     const memoryDuration = Date.now() - memoryStarted;
     const inputImages = messages[messages.length - 1].images;
     const contextLabels = chat.context.map(item => item.label);
@@ -1489,6 +1499,10 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     const mcpServers = readOnly ? [] : (chat.mcpServers || []).map(server => ({ ...server, tools: groups.find(group => group.id === `mcp:${server.id}`)!.tools.filter(tool => tool.enabled).map(tool => tool.name).filter(name => !(parent || agentControlled) || !cooperationTool(name)) })).filter(server => server.enabled && server.tools.length);
     const registeredTools = readOnly ? [] : groups.filter(group => group.id.startsWith("vscode:")).flatMap(group => group.tools.filter(tool => tool.enabled).map(tool => tool.name)).filter(name => !(parent || agentControlled) || !cooperationTool(name));
     if (this.disposed || this.queueCancelled.has(chat.id)) throw new Error("Queued execution was cancelled before dispatch. The input remains queued.");
+    if (retry) {
+      this.assertRunnable(chat, undefined, executionContext);
+      assertRetryUnchanged();
+    }
     const connections: Array<Awaited<ReturnType<typeof connectApiChatMcp>>> = [];
     const controller = new AbortController(); this.running.set(chat.id, controller); this.chats.set(chat.id, chat);
     const cancelFromParent = () => controller.abort();
@@ -1512,7 +1526,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
       chat.permissionGrants = [];
       chat.permissionContextId = executionContext.contextId;
     }
-    chat.progress = { attemptId: randomUUID(), executionContext, attempt: chat.messages.filter(message => message.role === "assistant").length + 1, ownerPid: process.pid, ownerHost: hostname(), ...(retry ? { retryOf: retry.replyId } : {}), startedAt, status: "running", model: settings.model, steps: [] };
+    chat.progress = { attemptId: randomUUID(), executionContext, attempt: Math.max(chat.messages.filter(message => message.role === "assistant").length, chat.progress?.attempt || 0) + 1, ownerPid: process.pid, ownerHost: hostname(), ...(retry ? { retryOf: retry.replyId } : {}), startedAt, status: "running", model: settings.model, steps: [] };
     if (chat.workerActivity && !parent && !workerEvents && ["completed", "failed", "cancelled", "interrupted"].includes(chat.workerActivity.state)) delete chat.workerActivity;
     if (chat.workerActivity) {
       chat.workerActivity.state = "running"; chat.workerActivity.attemptId = chat.progress.attemptId;
@@ -1566,7 +1580,8 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     try {
       if (controller.signal.aborted) throw new Error("Request cancelled.");
       if (!chat.messages.length && !chat.customTitle) chat.title = text.trim().slice(0, 65);
-      chat.messages.push({ id: randomUUID(), executionContext, taskId: chat.sessionId, role: "user", content: text, status: "complete", contextLabels, ...(workerEvents ? { workerEventIds: workerEvents } : {}), ...(submissionId ? { submissionId } : {}), ...(queuedInput ? { inputKind: queuedInput.mode } : {}), ...(parent ? { fromSessionId: parent.sessionId, fromChatId: parent.chatId, delegationId: parent.delegationId } : workerEvents && chat.workerState?.receiptId ? { delegationId: chat.workerState.receiptId, fromChatId: chat.workerState.parentChatId } : {}), ...(inputImages?.length ? { images: inputImages } : {}) });
+      if (retry) chat.messages.pop();
+      else chat.messages.push({ id: randomUUID(), executionContext, taskId: chat.sessionId, role: "user", content: text, status: "complete", contextLabels, ...(workerEvents ? { workerEventIds: workerEvents } : {}), ...(submissionId ? { submissionId } : {}), ...(queuedInput ? { inputKind: queuedInput.mode } : {}), ...(parent ? { fromSessionId: parent.sessionId, fromChatId: parent.chatId, delegationId: parent.delegationId } : workerEvents && chat.workerState?.receiptId ? { delegationId: chat.workerState.receiptId, fromChatId: chat.workerState.parentChatId } : {}), ...(inputImages?.length ? { images: inputImages } : {}) });
       if (workerEvents && chat.workerState) chat.workerState.events = chat.workerState.events.filter(event => !workerEvents.includes(event.id));
       if (queuedInput) chat.queuedInputs = chat.queuedInputs!.filter(input => input.id !== queuedInput.id);
       if (!parent && !retry && !queuedInput) { const submitted = new Set(draftImages || []); chat.images = (chat.images || []).filter(image => !submitted.has(image)); }

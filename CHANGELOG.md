@@ -5,6 +5,10 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.35] - 2026-10-13
+
+- Retry the latest failed/cancelled/interrupted Chat response in place: retain the original user message/images and provenance, replace only the failed assistant response, and exclude the failed attempt from inference history and retrieved memory. Preserve unsent image drafts, guard stale async preparation, and keep repeated retry attempt numbers increasing.
+
 ## [3.2.34] - 2026-10-13
 
 - Allow explicit permission-only changes, including Allow All approvals, to resume the locally owned active Chat request without falsely reporting a changed sending window. Keep the captured tool catalog fixed, preserve queued-input and environment guards, and identify changed context fields in genuine rejection messages.

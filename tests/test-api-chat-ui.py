@@ -592,6 +592,31 @@ class ChatUiTests(unittest.TestCase):
                         self.assertTrue(previous_message.evaluate("node=>node===document.querySelector('#messages .message')"))
                         page.locator('.chat-list-open').click()
                         expect(page.locator('#messages')).to_contain_text('Buffered while hidden.')
+                        original_user = {"id": "retry_user", "role": "user", "content": "Keep this original user message", "status": "complete"}
+                        failed_response = {"id": "retry_failed", "role": "assistant", "content": "Failed output to replace", "status": "failed", "error": "Fixture failure"}
+                        retry_fixture = {**fixture, "busy": False, "chat": {**fixture["chat"], "progress": None,
+                            "messages": [original_user, failed_response]}}
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", retry_fixture)
+                        expect(page.locator('#messages .message')).to_have_count(2)
+                        retry_button = page.get_by_role('button', name='Retry response in place (new request; earlier tools may have run)', exact=True)
+                        expect(retry_button).to_be_enabled()
+                        failed_node = page.locator('[data-message-id="retry_failed"]').element_handle()
+                        sends_before_retry = page.evaluate("window.__posts.filter(message=>message.type==='send').length")
+                        retry_button.click()
+                        self.assertEqual(page.evaluate("window.__posts.at(-1)"), {"type": "retry", "id": "retry_failed"})
+                        self.assertEqual(page.evaluate("window.__posts.filter(message=>message.type==='send').length"), sends_before_retry)
+                        expect(page.locator('#messages .optimistic-message')).to_have_count(0)
+                        retry_fixture["busy"] = True
+                        retry_fixture["chat"]["messages"] = [original_user, {"id": "retry_replacement", "role": "assistant", "content": "New inference in place", "status": "streaming"}]
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", retry_fixture)
+                        expect(page.locator('#messages .message')).to_have_count(2)
+                        expect(page.locator('#messages .message.user')).to_have_count(1)
+                        expect(page.locator('[data-message-id="retry_failed"]')).to_have_count(0)
+                        self.assertFalse(failed_node.evaluate("node=>node.isConnected"))
+                        self.assertEqual(page.locator('#messages .message').evaluate_all("nodes=>nodes.map(node=>node.dataset.messageId)"),
+                                         ["retry_user", "retry_replacement"])
+                        expect(page.locator('#messages')).not_to_contain_text('Failed output to replace')
+                        expect(page.locator('#messages')).to_contain_text('New inference in place')
                         page.locator('#prompt').fill('Draft must survive host disconnection')
                         page.clock.fast_forward(20_000)
                         expect(page.locator('#pkm-host-warning')).to_contain_text('Extension Host is not responding')

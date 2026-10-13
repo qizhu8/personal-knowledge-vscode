@@ -323,7 +323,7 @@
         }));
       }
       if (message.role === "assistant" && message.id === state.chat.messages[state.chat.messages.length - 1]?.id && ["failed", "cancelled", "interrupted"].includes(message.status)) {
-        const retry = iconButton("refresh", "Retry response (new request; earlier tools may have run)", () => post("retry", { id: message.id }));
+        const retry = iconButton("refresh", "Retry response in place (new request; earlier tools may have run)", () => post("retry", { id: message.id }));
         retry.disabled = state.busy || state.chat.paused; header.append(retry);
       }
       const content = document.createElement("div"); content.className = "content";

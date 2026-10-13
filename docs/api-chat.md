@@ -318,9 +318,12 @@ timers stop. Reload recovers interrupted nodes without replaying the request.
 Historical attempts retain their own graph when the next request starts.
 
 Only the latest failed/cancelled/interrupted response offers Retry. It requires
-native confirmation and creates a new attempt using current settings and the
-previously submitted message/images; an unsent image draft remains untouched.
-Earlier output and errors are preserved. Retrying can repeat charges and tool
+native confirmation and replaces that failed assistant response in place with
+a new attempt using current settings and the original user message/images.
+The original user message ID, content and position stay unchanged; no duplicate
+user message is appended or sent as extra history. The failed response and its
+tool-result memory are excluded from the new inference. An unsent image draft
+remains untouched. Earlier conversation turns are preserved. Retrying can repeat charges and tool
 side effects. Busy, paused and superseded responses cannot be retried, and no
 automatic retries are enabled.
 
