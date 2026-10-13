@@ -124,6 +124,10 @@ import { GitHubSyncWorkbenchRequest, GitHubSyncWorkbenchState, openGitHubSyncCon
 import { GitHubSyncReason, GitHubSyncRuntimeState } from "./sync/github-sync-scheduler";
 import type { GitHubSyncResult } from "./sync/github-sync";
 import { githubSyncCoordinatorDirectory, sameKnowledgeRoot } from "./sync/github-sync-coordinator";
+import {
+  GitHubSyncContentRepairError, applyGitHubSyncEmptyMarkerCandidate, clearGitHubSyncContentRepair,
+  contentRepairDigest, contentRepairSource, inspectConflictMarkers, readGitHubSyncContentRepair, storeGitHubSyncContentRepair,
+} from "./sync/github-sync-content-repair";
 import { PkmServiceClient, PkmServiceRecoveryPersistenceError } from "./runtime/pkm-service";
 import { BackgroundTaskProducer, BackgroundTaskRegistry } from "./runtime/background-task-registry";
 import { ActionBackgroundTasks } from "./runtime/action-background-tasks";
@@ -1836,7 +1840,7 @@ function updateGitHubSyncBackgroundTask(context: vscode.ExtensionContext, target
   const label = `GitHub sync · ${target.name}`;
   if (state.status === "syncing") {
     producer.running({ label, detail: state.detail || state.phase || "Waiting for Git" });
-  } else if (state.status === "blocked") {
+  } else if (state.status === "blocked" || state.status === "needs-attention") {
     producer.queued({ label, detail: state.detail || "Waiting for extension upgrade" });
   } else if (state.status === "queued" || state.status === "scheduled" || state.nextSyncAt) {
     producer.queued({
@@ -1902,6 +1906,7 @@ async function finalizeGitHubSyncServiceResult(
   });
   if (!updated) return;
   completeGitHubSyncTransaction(path.join(githubSyncStateDirectory(context), "checkouts"), targetId, result.transactionId);
+  clearGitHubSyncContentRepair(githubSyncStateDirectory(context), targetId);
   clearGitHubSyncConflict(githubSyncStateDirectory(context), targetId);
   if (!githubSyncResultIsNoChange(result)) {
     reportRefresh?.();
@@ -1940,6 +1945,12 @@ async function recoverGitHubSyncServiceResults(context: vscode.ExtensionContext,
       try {
         result = await service.recoverSyncResult(receipt.operationId);
       } catch (error) {
+        if (error instanceof GitHubSyncContentRepairError) {
+          storeGitHubSyncContentRepair(githubSyncStateDirectory(context), error);
+          await service.acknowledgeRecoveredResult(receipt.operationId);
+          log.warn(`Recovered local content repair target=${receipt.targetId}; no Remote/Base was fetched.`);
+          return;
+        }
         if (error instanceof Error && /^GitHub Sync content still contains merge conflict markers: /.test(error.message)) {
           await mutateGitHubSyncTargets(context, `failure ${receipt.targetId}`, targets => {
             const target = targets.find(target => target.id === receipt.targetId);
@@ -1995,7 +2006,7 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
     githubSyncCoordinatorStatePath = coordinatorStatePath;
     githubSyncScheduler = new PkmServiceClient({
       globalStoragePath: context.globalStorageUri.fsPath,
-      shouldRetryFailure: error => !(error instanceof GitHubSyncConflictError) && !(error instanceof PkmServiceRecoveryPersistenceError),
+      shouldRetryFailure: error => !(error instanceof GitHubSyncConflictError) && !(error instanceof GitHubSyncContentRepairError) && !(error instanceof PkmServiceRecoveryPersistenceError),
       onAutoPaused: targetId => {
         void mutateGitHubSyncTargets(context, `automatic failure pause ${targetId}`, currentTargets => {
           const current = currentTargets.find(candidate => candidate.id === targetId);
@@ -2119,6 +2130,17 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
             log.info(`automatic GitHub Sync target=${target.name} reason=${reason} changed=${result.changed} commit=${result.commit}`);
           } catch (error) {
             let message = error instanceof Error ? error.message : String(error);
+            if (error instanceof GitHubSyncContentRepairError) {
+              const previous = readGitHubSyncContentRepair(githubSyncStateDirectory(context), targetId);
+              storeGitHubSyncContentRepair(githubSyncStateDirectory(context), error);
+              if (!previous || JSON.stringify(previous.issues.map(issue => [issue.path, issue.digest]))
+                !== JSON.stringify(error.issues.map(issue => [issue.path, issue.digest]))) {
+                void vscode.window.showWarningMessage(`GitHub Sync "${target.name}" needs local content repair. Remote has not been fetched.`,
+                  "Review local repairs").then(choice => {
+                    if (choice === "Review local repairs") openPanelTab(context, "githubSync");
+                  });
+              }
+            }
             if (error instanceof GitHubSyncExtensionCompatibilityError) {
               message = localizedText(context.extensionPath, "githubSync.extensionUpgradeRequired", {
                 required: error.requiredVersion,
@@ -2157,7 +2179,7 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
                 if (choice === "Review conflicts") openPanelTab(context, "githubSync");
               });
             }
-            if (!(error instanceof GitHubSyncExtensionCompatibilityError)) {
+            if (!(error instanceof GitHubSyncExtensionCompatibilityError) && !(error instanceof GitHubSyncContentRepairError)) {
               await mutateGitHubSyncTargets(context, `failure ${targetId}`, currentTargets => {
                 const current = currentTargets.find(candidate => candidate.id === targetId);
                 if (current) current.lastFailure = {
@@ -2169,7 +2191,7 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
             }
             const diagnostic = error instanceof Error ? error.stack || error.message : String(error);
             if (githubSyncScheduler) await githubSyncScheduler.acknowledgeExecutionErrors(targetId);
-            githubSyncDiagnostics.record(error instanceof GitHubSyncExtensionCompatibilityError ? "github_sync.blocked" : "github_sync.failed", {
+            githubSyncDiagnostics.record(error instanceof GitHubSyncContentRepairError ? "github_sync.content_attention" : error instanceof GitHubSyncExtensionCompatibilityError ? "github_sync.blocked" : "github_sync.failed", {
               traceId,
               targetId,
               reason,
@@ -2177,6 +2199,11 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
               errorName: error instanceof Error ? error.name : typeof error,
               error: message,
               stack: diagnostic,
+              ...(error instanceof GitHubSyncContentRepairError ? {
+                attemptId: error.attemptId, issues: JSON.stringify(error.issues.map(issue => ({
+                  path: issue.path, source: issue.source, reason: issue.reason, lines: issue.lines, digest: issue.digest,
+                }))),
+              } : {}),
               ...(error instanceof PkmServiceRecoveryPersistenceError ? {
                 operationId: error.operationId, recoveryAvailable: error.recoveryAvailable,
                 persistenceStage: error.persistenceStage, transactionId: error.transactionId,
@@ -2221,6 +2248,7 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
     syncOnChange: target.automation.syncOnChange,
     lastSuccessAt: target.lastSync?.at,
     lastFailure: target.lastFailure,
+    needsAttention: !!readGitHubSyncContentRepair(githubSyncStateDirectory(context), target.id),
     })));
     if (createdCoordinator) {
       for (const record of listGitHubSyncConflicts(githubSyncStateDirectory(context))) {
@@ -2578,6 +2606,12 @@ async function githubSyncStateData(context: vscode.ExtensionContext, waitForExpe
   }));
   return {
     targets,
+    contentRepairs: Object.fromEntries(targets.flatMap(target => {
+      const repair = readGitHubSyncContentRepair(githubSyncStateDirectory(context), target.id);
+      return repair ? [[target.id, { ...repair, issues: repair.issues.map(({ content, candidate, sourcePath, ...issue }) => ({
+        ...issue, hasCandidate: candidate !== undefined && sourcePath !== undefined, canOpen: sourcePath !== undefined,
+      })) }]] : [];
+    })),
     catalog: uiCatalog,
     ...(shields ? { shields } : {}),
     ...(folderShields ? { folderShields } : {}),
@@ -7078,6 +7112,72 @@ async function handleMessage(
       break;
     }
 
+    case "githubSyncRepairOpen":
+    case "githubSyncRepairPreview":
+    case "githubSyncRepairApply":
+    case "githubSyncRepairRevalidate": {
+      const targetId = String(msg.targetId || "");
+      githubSyncTargetById(context, targetId);
+      await withGitHubSyncTargetLock(context, targetId, async () => {
+        const record = readGitHubSyncContentRepair(githubSyncStateDirectory(context), targetId);
+        if (!record || record.id !== msg.repairId) throw new Error("The repair list changed. Refresh GitHub Sync before continuing.");
+        if (msg.command !== "githubSyncRepairRevalidate") {
+          const issue = record.issues.find(issue => issue.path === msg.path);
+          if (!issue) throw new Error("The requested repair file is no longer in the pending list.");
+          const source = contentRepairSource(getStorePath(), issue);
+          if (msg.command === "githubSyncRepairOpen") {
+            const document = await vscode.workspace.openTextDocument(vscode.Uri.file(source));
+            const line = Math.max(0, (issue.lines[0] || 1) - 1);
+            await vscode.window.showTextDocument(document, { selection: new vscode.Range(line, 0, line, 0) });
+          } else {
+            const content = fs.readFileSync(source, "utf8");
+            if (contentRepairDigest(content) !== issue.digest) throw new Error("The source changed. Revalidate to refresh its markers and candidate.");
+            const candidate = inspectConflictMarkers(content).candidate;
+            if (candidate === undefined) throw new Error("No safe empty-block candidate exists. Edit the file manually, then revalidate.");
+            if (msg.command === "githubSyncRepairPreview") {
+              const directory = path.join(githubSyncStateDirectory(context), "content-repairs", record.targetId);
+              fs.mkdirSync(directory, { recursive: true });
+              const before = path.join(directory, "original.txt");
+              const after = path.join(directory, "candidate.txt");
+              fs.writeFileSync(before, content, { mode: 0o600 });
+              fs.writeFileSync(after, candidate, { mode: 0o600 });
+              await vscode.commands.executeCommand("vscode.diff", vscode.Uri.file(before), vscode.Uri.file(after),
+                `${issue.path}: empty conflict block cleanup (not applied)`);
+            } else {
+              const assertSavedSource = (): void => {
+                if (vscode.workspace.textDocuments.some(document => document.isDirty && document.uri.scheme === "file"
+                  && sameKnowledgeRoot(document.uri.fsPath, source))) {
+                  throw new Error("This file has unsaved editor changes. Save or discard them, then revalidate before applying a candidate.");
+                }
+              };
+              assertSavedSource();
+              const approval = await vscode.window.showWarningMessage(
+                `Remove only complete empty conflict blocks from ${issue.path}? All non-conflict bytes are preserved. No GitHub version is being selected.`,
+                { modal: true }, "Apply empty-block cleanup");
+              if (approval === "Apply empty-block cleanup") {
+                await withGitHubSyncApplyLock(context, async () => {
+                  assertSavedSource();
+                  applyGitHubSyncEmptyMarkerCandidate(getStorePath(), issue);
+                  invalidateSharedContentCatalog();
+                  githubSyncDiagnostics.record("github_sync.content_repaired", {
+                    targetId, attemptId: record.id, path: issue.path, originalDigest: issue.digest,
+                  });
+                });
+              }
+            }
+          }
+        }
+      });
+      if (msg.command === "githubSyncRepairRevalidate") {
+        invalidateSharedContentCatalog();
+        if (!githubSyncScheduler) throw new Error("PKM service is disconnected. Reopen GitHub Sync before revalidating.");
+        const queued = await githubSyncScheduler.request(targetId, "manual");
+        respond({ command: "githubSyncRunQueued", data: { targetId, queued } });
+      }
+      respond({ command: "githubSyncState", data: await githubSyncStateData(context, false) });
+      break;
+    }
+
     case "githubSyncPickIdentity": {
       const sshDirectory = path.join(os.homedir(), ".ssh");
       const picked = await vscode.window.showOpenDialog({
@@ -7227,6 +7327,7 @@ async function handleMessage(
       configureGitHubSyncScheduler(context);
       try {
         clearGitHubSyncConflict(githubSyncStateDirectory(context), targetId);
+        clearGitHubSyncContentRepair(githubSyncStateDirectory(context), targetId);
       } catch (error) {
         log.warn(`GitHub Sync target ${targetId} conflict cleanup is deferred: ${error instanceof Error ? error.message : String(error)}`);
       }

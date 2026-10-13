@@ -131,6 +131,33 @@ the materialization/index-refresh path, even when it creates no remote commit.
 Unchanged checks retain Git validation and durable receipt/baseline finalization,
 but do not display Commit/Push or rebuild inventory/retrieval indexes.
 
+## Local content repair
+
+Residual markers in selected Local files are a preflight content blocker, not a
+three-way conflict. `GitHubSyncContentRepairError` carries the target, attempt ID,
+source identity/digest, marker line numbers, and all affected files over typed
+RPC. The Host persists a separate repair record before acknowledging the service
+receipt. Base and Remote are explicitly unavailable: preflight has not fetched
+Remote. Existing remote-marker reconciliation continues to use its real version
+snapshots and human-conflict workspace.
+
+GitHub Sync shows Needs attention, a file list and Open at marker. Complete,
+non-nested blocks with whitespace-only sides may offer a read-only diff and an
+explicitly approved cleanup. Malformed/nonempty/diff3 blocks and generated
+content do not offer unsafe replacement choices. A source must be a regular file
+inside the Knowledge Root. Cleanup checks its original content digest, rejects
+unsaved editor changes, regenerates the candidate from actual bytes, preserves
+line endings and unrelated bytes, and checks again before replacing the file.
+It does not silently start Sync.
+
+Revalidate & Sync invalidates catalog caches and submits a new normal manual
+attempt. Remaining markers update the pending list; success clears it. Local
+repairs do not pretend that Git has unmerged index entries and do not offer
+Choose GitHub when no remote version is available. The service retains an
+actionable needs-attention state across reconfiguration/restart, keeps Auto
+settings intact, and does not schedule interval/change retries or consume the
+network failure budget. Repeated unchanged blockers do not repeat notifications.
+
 ## Validation commands
 
 ```sh
@@ -142,6 +169,8 @@ node tests/test-github-sync-resolution.js
 node tests/test-github-sync-file-safety.js
 node tests/test-github-sync-ui.js
 node tests/test-github-sync-watcher.js
+node tests/test-github-sync-content-repair.js
+node tests/test-github-sync-content-repair-host.js
 ```
 
 The actual VSIX must also start the service outside repository `node_modules`.

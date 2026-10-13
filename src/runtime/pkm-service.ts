@@ -18,6 +18,7 @@ import {
   GitHubSyncTarget, syncGitHubTarget,
 } from "../sync/github-sync";
 import { compareVersionOrder } from "./version-order";
+import { GitHubSyncContentRepairError } from "../sync/github-sync-content-repair";
 
 export const PKM_SERVICE_PROTOCOL = "pkm-github-sync/1";
 export const PKM_SERVICE_MAX_MESSAGE_BYTES = 64 * 1024 * 1024;
@@ -218,6 +219,8 @@ function redactError(error: unknown, credentials?: GitHubSyncCredentials): any {
 function reviveError(data: any): Error {
   let error: Error;
   switch (data?.name) {
+    case "GitHubSyncContentRepairError":
+      error = new GitHubSyncContentRepairError(data.targetId, data.issues, data.attemptId); break;
     case "GitHubSyncConflictError":
       error = new GitHubSyncConflictError(data.remoteCommit, data.conflicts, data.pulled, data.deletedLocal, data.privateTopLevels, data.recipePulls, data.recipeDeletes, data.resolutionReport); break;
     case "GitHubSyncExtensionCompatibilityError":

@@ -224,7 +224,7 @@ export class GitHubSyncCoordinator {
       for (const targetId of Object.keys(state.intents)) if (!activeIds.has(targetId)) delete state.intents[targetId];
       for (const targetId of Object.keys(state.claims)) if (!activeIds.has(targetId)) delete state.claims[targetId];
       for (const target of targets) {
-        if (target.enabled && (!target.lastFailure || (target.lastFailure.attempts || 1) < MAX_GITHUB_SYNC_FAILURE_ATTEMPTS)) continue;
+        if (target.enabled && !target.needsAttention && (!target.lastFailure || (target.lastFailure.attempts || 1) < MAX_GITHUB_SYNC_FAILURE_ATTEMPTS)) continue;
         if (state.intents[target.id]?.reason !== "manual" && state.intents[target.id]?.reason !== "force-local-authority") delete state.intents[target.id];
       }
       for (const targetId of Object.keys(state.blocked)) if (!activeIds.has(targetId)) delete state.blocked[targetId];
@@ -237,6 +237,7 @@ export class GitHubSyncCoordinator {
   request(targetId: string, reason: GitHubSyncReason): boolean {
     const target = this.targets.get(targetId);
     if (this.disposed || !target || (!target.enabled && reason !== "manual" && reason !== "force-local-authority")) return false;
+    if (target.needsAttention && reason !== "manual" && reason !== "force-local-authority") return false;
     if (reason !== "manual" && reason !== "force-local-authority" && target.lastFailure
       && (reason === "change" || reason === "configuration" || (target.lastFailure.attempts || 1) >= MAX_GITHUB_SYNC_FAILURE_ATTEMPTS)) return false;
     return this.mutateSync(state => {
@@ -254,7 +255,7 @@ export class GitHubSyncCoordinator {
 
   notifyContentChanged(excludedTargetId?: string): void {
     for (const target of this.targets.values()) {
-      if (target.id === excludedTargetId || !target.enabled || !target.syncOnChange || target.lastFailure) continue;
+      if (target.id === excludedTargetId || !target.enabled || !target.syncOnChange || target.lastFailure || target.needsAttention) continue;
       const existing = this.changeTimers.get(target.id);
       if (existing) clearTimeout(existing);
       const timer = setTimeout(() => {
@@ -413,6 +414,18 @@ export class GitHubSyncCoordinator {
           });
         },
         onSettled: (targetId, reason, outcome) => {
+          if (outcome === "succeeded") {
+            const target = this.targets.get(targetId);
+            if (target) target.needsAttention = false;
+            this.mutateSync(state => { if (state.targets[targetId]) state.targets[targetId].needsAttention = false; });
+          }
+          if (outcome === "attention") {
+            const target = this.targets.get(targetId);
+            if (target) target.needsAttention = true;
+            this.mutateSync(state => { if (state.targets[targetId]) state.targets[targetId].needsAttention = true; });
+            this.resolveOwnedClaim(targetId, reason);
+            this.resolvePendingIntent(targetId, reason);
+          }
           if (outcome === "skipped") this.resolvePendingIntent(targetId, reason);
           if (outcome === "failed") {
             const runtime = this.scheduler?.snapshot()[targetId];

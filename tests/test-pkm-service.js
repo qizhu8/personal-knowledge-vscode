@@ -14,6 +14,7 @@ const buildRoot = process.env.PKM_SERVICE_BUILD_DIR
 process.env.PKM_SERVICE_BUILD_DIR = buildRoot;
 const api = require(path.join(buildRoot, "runtime", "pkm-service.js"));
 const syncApi = require(path.join(buildRoot, "sync", "github-sync.js"));
+const repairApi = require(path.join(buildRoot, "sync", "github-sync-content-repair.js"));
 const version = require(path.join(extensionRoot, "package.json")).version;
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const fixtureBytes = Buffer.from(Array.from({ length: 256 }, (_, index) => index));
@@ -103,6 +104,10 @@ async function fixtureDaemon(options) {
       }], [], [], {}, syntheticResult().recipePulls);
     }
     if (target.name === "compatibility") throw new syncApi.GitHubSyncExtensionCompatibilityError("99.0.0", options.extensionVersion);
+    if (target.name === "content-repair") throw new repairApi.GitHubSyncContentRepairError(target.id, [{
+      path: "scripts/Test.script", type: "scripts", itemId: "Test", source: "local", reason: "merge-conflict-markers",
+      lines: [1, 2, 3], digest: "digest", content: "<<<<<<< local\n=======\n>>>>>>> remote\n", candidate: "",
+    }], "repair-attempt");
     if (target.name === "secret-error") throw new Error(`Failure ${credentials.accessToken}`);
     if (target.name === "hold-raw") {
       fs.writeFileSync(path.join(options.globalStoragePath, "raw-started"), String(process.pid));
@@ -329,6 +334,16 @@ async function main() {
     await until(() => fixtureClient.snapshot().fixture?.status !== "syncing", "handled error settlement");
     assert.deepStrictEqual(await fixtureClient.listRecoverableResults(), [],
       "a durably handled raw Sync failure is not misreported as unfinished postprocessing");
+    await submit({ name: "content-repair", acknowledgeError: true });
+    assert(failed instanceof repairApi.GitHubSyncContentRepairError, "typed content issues survive daemon-to-Host RPC");
+    assert.equal(failed.attemptId, "repair-attempt");
+    assert.equal(failed.issues[0].candidate, "");
+    await until(() => fixtureClient.snapshot().fixture?.status === "needs-attention", "content repair attention state");
+    assert.equal(await fixtureClient.request("fixture", "change"), false);
+    assert.deepEqual(await fixtureClient.listRecoverableResults(), []);
+    await submit({ name: "binary" });
+    await until(() => fixtureClient.snapshot().fixture?.status !== "syncing", "explicit repair retry settles");
+    assert.notEqual(fixtureClient.snapshot().fixture.status, "needs-attention", "an explicit successful retry resumes the scheduler");
     const faultSecret = "pkm-persistence-fault-secret-never-log";
     for (const outcome of ["error", "success"]) {
       for (const stage of ["write", "fsync", "rename"]) {

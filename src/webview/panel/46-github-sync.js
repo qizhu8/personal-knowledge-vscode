@@ -57,7 +57,7 @@ function githubSyncOnState(data) {
     }
     if (githubSyncForcePending.has(targetId) && githubSyncPendingAfter.has(targetId)
       && runtime.lastAttemptAt && runtime.lastAttemptAt !== githubSyncPendingAfter.get(targetId)
-      && ['syncing', 'queued', 'error', 'conflicts'].includes(runtime.status)) {
+      && ['syncing', 'queued', 'error', 'conflicts', 'needs-attention'].includes(runtime.status)) {
       githubSyncForcePending.delete(targetId);
       githubSyncPendingAfter.delete(targetId);
     }
@@ -345,8 +345,8 @@ function githubSyncPhaseDiagram(phase, status) {
   ];
   if (phase === 'initial-preview') steps.splice(4, 0, ['initial-preview', 'Compare files']);
   const noChange = phase === 'no-change';
-  const currentIndex = noChange ? 3 : status === 'paused' || status === 'blocked' ? -1 : steps.findIndex(([key]) => key === phase);
-  const currentLabel = noChange ? 'No Change' : currentIndex < 0 ? status === 'paused' ? 'Auto sync off' : status === 'blocked' ? 'Blocked' : 'Sync failed' : steps[currentIndex][1];
+  const currentIndex = noChange ? 3 : ['paused', 'blocked', 'needs-attention'].includes(status) ? -1 : steps.findIndex(([key]) => key === phase);
+  const currentLabel = status === 'needs-attention' ? 'Needs attention: local content repair' : noChange ? 'No Change' : currentIndex < 0 ? status === 'paused' ? 'Auto sync off' : status === 'blocked' ? 'Blocked' : 'Sync failed' : steps[currentIndex][1];
   const label = status === 'error' ? currentIndex < 0 ? 'Sync failed' : `${currentLabel} failed` : status === 'conflicts' ? `${currentLabel}: action required` : currentLabel;
   const nodes = steps.map(([key, text], index) => {
     const state = noChange ? index <= currentIndex ? 'done' : 'upcoming'
@@ -355,11 +355,12 @@ function githubSyncPhaseDiagram(phase, status) {
     return `<span class="github-sync-flow-step ${state}" data-phase="${key}"><i aria-hidden="true"></i>${text}</span>`;
   }).join('');
   const branch = `<span class="github-sync-flow-step github-sync-no-change ${noChange ? 'current' : 'upcoming'}" data-phase="no-change"><i aria-hidden="true"></i>No Change</span>`;
-  return `<span class="github-sync-phase"><span class="github-sync-phase-current ${status === 'error' ? 'error' : status === 'conflicts' ? 'conflicts' : ''}" aria-hidden="true">${esc(label)}</span><span class="github-sync-flow" role="img" aria-label="GitHub Sync: ${esc(label)}"><span class="github-sync-flow-main">${nodes}</span>${branch}</span></span>`;
+  return `<span class="github-sync-phase"><span class="github-sync-phase-current ${status === 'error' ? 'error' : ['conflicts', 'needs-attention'].includes(status) ? 'conflicts' : ''}" aria-hidden="true">${esc(label)}</span><span class="github-sync-flow" role="img" aria-label="GitHub Sync: ${esc(label)}"><span class="github-sync-flow-main">${nodes}</span>${branch}</span></span>`;
 }
 
-function githubSyncEffectiveStatus(target, runtime, conflict, forcePending) {
+function githubSyncEffectiveStatus(target, runtime, conflict, forcePending, repair) {
   if (forcePending || runtime.status === 'syncing' || runtime.status === 'queued') return 'syncing';
+  if (repair) return 'needs-attention';
   if (conflict) return 'conflicts';
   const failure = target.lastFailure;
   const successAt = Math.max(Date.parse(target.lastSync?.at || '') || 0, Date.parse(runtime.lastSuccessAt || '') || 0);
@@ -368,6 +369,15 @@ function githubSyncEffectiveStatus(target, runtime, conflict, forcePending) {
   if (runtime.lastError && (!successAt || !Number.isFinite(attemptedAt) || attemptedAt >= successAt)) return 'error';
   if (runtime.status === 'error' && successAt && attemptedAt < successAt) return 'scheduled';
   return runtime.status || (target.automation?.enabled && target.automation?.initialSyncCompleted ? 'scheduled' : 'paused');
+}
+
+function githubSyncContentRepairPanel(targetId, repair) {
+  if (!repair) return '';
+  const actions = (command, issuePath, label) => {
+    const handler = `ask(${JSON.stringify(command)},${JSON.stringify({ targetId, repairId:repair.id, path:issuePath })},this)`;
+    return `<button class="pk-button" onclick="${esc(handler).replace(/"/g, '&quot;')}">${label}</button>`;
+  };
+  return `<div class="github-sync-conflict-actions"><strong>Needs attention: ${repair.issues.length} local file(s) contain conflict markers</strong><p>Sync is waiting for your repair. Remote has not been fetched for this attempt; Base and GitHub versions are unavailable. No source file is changed without approval. Agent merge does not repair Scripts here; manual editing is always available.</p>${repair.issues.map(issue => `<div><strong>${esc(issue.path)}</strong><small>Local · merge-conflict-markers · lines ${issue.lines.map(line => esc(line)).join(', ')}</small>${issue.canOpen ? actions('githubSyncRepairOpen', issue.path, 'Open at marker') : '<p>Edit the generated content in its library editor.</p>'}${issue.hasCandidate ? actions('githubSyncRepairPreview', issue.path, 'Preview empty-block cleanup') + actions('githubSyncRepairApply', issue.path, 'Apply cleanup…') : '<p>No safe automatic candidate. Edit and save the file manually.</p>'}</div>`).join('')}<footer>${actions('githubSyncRepairRevalidate', undefined, 'Revalidate &amp; Sync')}</footer></div>`;
 }
 
 function githubSyncEffectiveError(target, runtime) {
@@ -389,23 +399,24 @@ function githubSyncCards() {
     const migration = githubSyncData.migrations?.[target.id];
     const forcePending = githubSyncForcePending.has(target.id);
     const rechecking = forcePending || runtime.status === 'syncing' || runtime.status === 'queued';
-    const conflict = rechecking ? null : storedConflict;
+    const repair = rechecking ? null : githubSyncData.contentRepairs?.[target.id];
+    const conflict = rechecking || repair ? null : storedConflict;
     const initialPreview = conflict?.purpose === 'initial-preview';
-    const status = githubSyncEffectiveStatus(target, runtime, conflict, forcePending);
+    const status = githubSyncEffectiveStatus(target, runtime, conflict, forcePending, repair);
     const phase = forcePending ? 'waiting-for-lock' : initialPreview ? 'initial-preview' : conflict ? 'resolve-conflicts' : status === 'error' && ['scheduled', 'paused'].includes(runtime.phase) ? '' : runtime.phase || (runtime.status === 'scheduled' && status !== 'error' ? 'scheduled' : '');
     const retryWithPause = status === 'error' && !!target.automation?.enabled && automaticReady;
     const phaseDiagram = githubSyncPhaseDiagram(phase, status)
       + (runtime.service ? `<small class="github-sync-service">PKM service ${esc(runtime.service.version)} · PID ${esc(runtime.service.pid)}</small>` : '');
     const error = status === 'error' ? githubSyncEffectiveError(target, runtime) : '';
-    const next = forcePending ? 'Waiting for Git lock' : initialPreview ? 'Remote fetched read-only · review the file tree before applying' : conflict ? 'Choose a candidate for each file, then Apply resolutions & Sync' : status === 'error' ? error || 'Sync failed without an error message' : runtime.detail || (!automaticReady ? 'Initial manual sync required before automation can be enabled' : runtime.nextSyncAt ? `Next fetch after ${new Date(runtime.nextSyncAt).toLocaleString()}` : target.automation?.enabled ? 'Scheduled to fetch remote changes' : 'Automatic pull/push is off');
-    const conflictActions = conflict ? githubSyncConflictPanel(target.id, conflict) : '';
+    const next = forcePending ? 'Waiting for Git lock' : repair ? 'Waiting for local content repair · Remote has not been fetched' : initialPreview ? 'Remote fetched read-only · review the file tree before applying' : conflict ? 'Choose a candidate for each file, then Apply resolutions & Sync' : status === 'error' ? error || 'Sync failed without an error message' : runtime.detail || (!automaticReady ? 'Initial manual sync required before automation can be enabled' : runtime.nextSyncAt ? `Next fetch after ${new Date(runtime.nextSyncAt).toLocaleString()}` : target.automation?.enabled ? 'Scheduled to fetch remote changes' : 'Automatic pull/push is off');
+    const conflictActions = repair ? githubSyncContentRepairPanel(target.id, repair) : conflict ? githubSyncConflictPanel(target.id, conflict) : '';
     const resolutionDiagram = !conflict ? githubSyncResolutionDiagram(target.lastResolutionReport) : '';
-    const syncLabel = conflict ? 'Recheck with Remote' : forcePending ? 'Sync queued' : retryWithPause ? 'Pause Auto & Retry' : 'Sync with Remote';
+    const syncLabel = repair ? 'Revalidate & Sync' : conflict ? 'Recheck with Remote' : forcePending ? 'Sync queued' : retryWithPause ? 'Pause Auto & Retry' : 'Sync with Remote';
     const scheduleLabel = target.automation?.enabled && automaticReady
       ? `every ${target.automation?.intervalMinutes || 5} min${target.automation?.syncOnChange ? ' + selected changes' : ''}` : 'manual only';
     const autoEnabled = !!target.automation?.enabled && automaticReady;
     const migrationReady = !target.publication || !!target.publication.manualVerificationCompleted;
-    const autoDisabled = !!automationPending || (!autoEnabled && (!automaticReady || !migrationReady || status === 'syncing' || !!conflict));
+    const autoDisabled = !!automationPending || (!autoEnabled && (!automaticReady || !migrationReady || status === 'syncing' || !!conflict || !!repair));
     const autoTitle = automationPending ? 'Saving Auto Sync setting'
       : autoEnabled ? 'Turn off automatic synchronization; an active sync will finish'
       : !automaticReady ? 'Run Initial Sync successfully before enabling Auto Sync'

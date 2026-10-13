@@ -5,6 +5,12 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.32] - 2026-10-13
+
+- Route selected Local files containing residual merge markers into a typed, durable content-repair workflow before Remote fetch. List all affected paths and marker lines without inventing Base/Remote versions.
+- Provide direct file navigation, read-only empty-block cleanup previews, explicit approval with source-digest/unsaved-editor guards, and fresh Revalidate & Sync. Nonempty, malformed, nested, and diff3 blocks remain manual; final marker safety checks remain enforced.
+- Persist a needs-attention state across RPC, disconnect recovery, and restart. Content blockers wait for explicit repair/revalidation without consuming network retries or repeatedly notifying unchanged issues.
+
 ## [3.2.31] - 2026-10-13
 
 - Align No Change below Resolve conflicts in the same stage column, connecting Fetch / Pull's right edge to the No Change dot's left edge.

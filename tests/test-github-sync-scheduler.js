@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 const assert = require("assert");
 const { GitHubSyncScheduler } = require("../dist/sync/github-sync-scheduler.js");
+const { GitHubSyncContentRepairError } = require("../dist/sync/github-sync-content-repair.js");
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
@@ -356,6 +357,47 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
   assert.strictEqual(unchanged.snapshot()["no-change"].phase, "no-change",
     "reconfiguring the same completed outcome must not erase its branch");
   unchanged.dispose();
+
+  let repairRuns = 0;
+  const repairPauses = [];
+  const repairTimers = new Map();
+  let attention;
+  const attentionTarget = { id: "attention", enabled: true, intervalMinutes: 5, syncOnChange: true };
+  attention = new GitHubSyncScheduler({
+    ...persistedStateOptions,
+    setTimeout: callback => { const timer = { unref() {} }; repairTimers.set(timer, callback); return timer; },
+    clearTimeout: timer => repairTimers.delete(timer),
+    onAutoPaused: targetId => repairPauses.push(targetId),
+    execute: async () => { if (++repairRuns === 1) throw new GitHubSyncContentRepairError("attention", []); },
+  });
+  attention.configure([attentionTarget]);
+  await flush();
+  await flush();
+  assert.equal(attention.snapshot().attention.status, "needs-attention");
+  assert.equal(attentionTarget.enabled, true, "content blockers do not turn Auto off or consume network retries");
+  assert.equal(attentionTarget.lastFailure, undefined);
+  assert.equal(repairTimers.size, 0);
+  assert.deepEqual(repairPauses, []);
+  attention.notifyContentChanged();
+  assert.equal(repairTimers.size, 0, "waiting for repair must not schedule change retries");
+  assert.equal(attention.request("attention", "interval"), false);
+  attention.configure([attentionTarget]);
+  assert.equal(repairRuns, 1, "reconfiguration preserves waiting-for-user state");
+  assert.equal(attention.request("attention", "manual"), true);
+  await flush();
+  await flush();
+  assert.equal(repairRuns, 2);
+  assert.equal(attentionTarget.needsAttention, false);
+  assert.equal(attention.snapshot().attention.status, "scheduled");
+  attention.dispose();
+  const restartedAttention = new GitHubSyncScheduler({
+    ...persistedStateOptions,
+    execute: async () => { throw new Error("A restored content blocker must not automatically execute"); },
+  });
+  restartedAttention.configure([{ id: "attention", enabled: true, intervalMinutes: 5, syncOnChange: true, needsAttention: true }]);
+  assert.equal(restartedAttention.snapshot().attention.status, "needs-attention");
+  assert.equal(restartedAttention.request("attention", "startup"), false);
+  restartedAttention.dispose();
 
   const deletionTimers = new Map();
   let releaseDeleted;

@@ -1,3 +1,5 @@
+import { GitHubSyncContentRepairError } from "./github-sync-content-repair";
+
 export type GitHubSyncReason = "startup" | "interval" | "change" | "configuration" | "manual" | "force-local-authority";
 export type GitHubSyncPhase = "scheduled" | "waiting-for-lock" | "authenticating" | "fetch" | "resolve-conflicts" | "commit" | "push" | "refresh-index" | "no-change";
 
@@ -19,12 +21,13 @@ export interface AutomaticGitHubSyncTarget {
   syncOnChange: boolean;
   lastSuccessAt?: string;
   lastFailure?: { at: string; error: string; reason: string; attempts?: number };
+  needsAttention?: boolean;
 }
 
 export const MAX_GITHUB_SYNC_FAILURE_ATTEMPTS = 3;
 
 export interface GitHubSyncRuntimeState {
-  status: "paused" | "scheduled" | "queued" | "syncing" | "blocked" | "error";
+  status: "paused" | "scheduled" | "queued" | "syncing" | "blocked" | "error" | "needs-attention";
   phase?: GitHubSyncPhase;
   detail?: string;
   activityAt?: string;
@@ -43,7 +46,7 @@ export interface GitHubSyncSchedulerOptions {
   shouldRetryFailure?: (error: unknown) => boolean;
   onAutoPaused?: (targetId: string) => void;
   beforeExecute?: (targetId: string, reason: GitHubSyncReason) => Promise<void>;
-  onSettled?: (targetId: string, reason: GitHubSyncReason, outcome: "skipped" | "succeeded" | "blocked" | "failed") => void;
+  onSettled?: (targetId: string, reason: GitHubSyncReason, outcome: "skipped" | "succeeded" | "blocked" | "failed" | "attention") => void;
   onState?: (targetId: string, state: GitHubSyncRuntimeState) => void;
   now?: () => number;
   setTimeout?: (callback: () => void, delay: number) => NodeJS.Timeout;
@@ -77,6 +80,11 @@ export class GitHubSyncScheduler {
       this.targets.set(target.id, target);
       if (!target.enabled && !["manual", "force-local-authority"].includes(this.pending.get(target.id) || "")) this.pending.delete(target.id);
       if (this.activeTargets.has(target.id)) continue;
+      if (target.needsAttention) {
+        this.pending.delete(target.id);
+        this.updateState(target.id, { status: "needs-attention", detail: "Local content needs repair. Remote has not been fetched." });
+        continue;
+      }
       const activeFailure = target.lastFailure
         && (!target.lastSuccessAt || target.lastFailure.at > target.lastSuccessAt)
         ? target.lastFailure
@@ -112,6 +120,7 @@ export class GitHubSyncScheduler {
   request(targetId: string, reason: GitHubSyncReason): boolean {
     const target = this.targets.get(targetId);
     if (this.disposed || !target || (!target.enabled && reason !== "manual" && reason !== "force-local-authority")) return false;
+    if (target.needsAttention && reason !== "manual" && reason !== "force-local-authority") return false;
     if (target.lastFailure && reason !== "manual" && reason !== "force-local-authority"
       && (reason !== "startup" && reason !== "interval" || (target.lastFailure.attempts || 1) >= MAX_GITHUB_SYNC_FAILURE_ATTEMPTS)) return false;
     if ((reason === "manual" || reason === "force-local-authority") && (this.activeTargets.has(targetId) || ["manual", "force-local-authority"].includes(this.pending.get(targetId) || ""))) return false;
@@ -153,7 +162,7 @@ export class GitHubSyncScheduler {
       this.changeTimers.delete(excludedTargetId);
     }
     for (const target of this.targets.values()) {
-      if (target.id === excludedTargetId || !target.enabled || !target.syncOnChange || target.lastFailure) continue;
+      if (target.id === excludedTargetId || !target.enabled || !target.syncOnChange || target.lastFailure || target.needsAttention) continue;
       const existing = this.changeTimers.get(target.id);
       if (existing) this.clearTimer(existing);
       const timer = this.setTimer(() => {
@@ -248,6 +257,7 @@ export class GitHubSyncScheduler {
           }
           current.lastSuccessAt = succeededAt;
           current.lastFailure = undefined;
+          current.needsAttention = false;
           const noChange = this.states.get(targetId)?.phase === "no-change";
           this.updateState(targetId, {
             status: current.enabled ? "scheduled" : "paused",
@@ -267,6 +277,20 @@ export class GitHubSyncScheduler {
             continue;
           }
           const message = error instanceof Error ? error.message : String(error);
+          if (error instanceof GitHubSyncContentRepairError) {
+            target.needsAttention = true;
+            this.targets.get(targetId)!.needsAttention = true;
+            this.pending.delete(targetId);
+            const changeTimer = this.changeTimers.get(targetId);
+            if (changeTimer) this.clearTimer(changeTimer);
+            this.changeTimers.delete(targetId);
+            this.updateState(targetId, {
+              status: "needs-attention", reason, lastAttemptAt: attemptedAt,
+              lastSuccessAt: target.lastSuccessAt, detail: message,
+            });
+            this.options.onSettled?.(targetId, reason, "attention");
+            continue;
+          }
           if (error instanceof GitHubSyncBlockedError) {
             this.updateState(targetId, {
               ...this.states.get(targetId),

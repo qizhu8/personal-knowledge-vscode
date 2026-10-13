@@ -8,6 +8,7 @@ import { canonicalJson, compileWorkflowDefinitionV1 } from "../workflows/workflo
 import { compareVersionOrder } from "../runtime/version-order";
 import { knowledgeSyncDeletionRecords } from "../knowledge/filestore";
 import { sameKnowledgeRoot } from "./github-sync-coordinator";
+import { GitHubSyncContentIssue, GitHubSyncContentRepairError, inspectConflictMarkers } from "./github-sync-content-repair";
 
 const execFileAsync = promisify(execFile);
 
@@ -2456,7 +2457,29 @@ async function syncGitHubTargetAttempt(
   const localMaterialized = selectedFiles(normalized, catalog);
   const localExcluded = await githubSyncExcludedPaths(storeRoot, localMaterialized.files.map(file => file.path));
   localMaterialized.files = localMaterialized.files.filter(file => !localExcluded.has(file.path));
-  for (const file of localMaterialized.files) validateManagedContent(file, file.content!);
+  const issues: GitHubSyncContentIssue[] = [];
+  for (const file of localMaterialized.files) {
+    const content = file.content!;
+    const inspection = githubSyncIsTextContent(file.path, content) ? inspectConflictMarkers(content.toString("utf8")) : { lines: [] };
+    if (inspection.lines.length) {
+      // Validate every other contract without allowing marked bytes into reconciliation.
+      validateManagedContent(file, content, true);
+      const item = catalog[file.type].find(candidate => candidate.id === file.itemId);
+      const sourcePath = item?.content === undefined && item?.source
+        ? file.member
+          ? item.dependencies?.find(dependency => dependency.destination === file.path)?.source
+            || path.join(item.source, ...file.member.split("/"))
+          : item.source
+        : undefined;
+      issues.push({
+        path: file.path, type: file.type, itemId: file.itemId, source: "local", reason: "merge-conflict-markers",
+        lines: inspection.lines, digest: file.digest, content: content.toString("utf8"),
+        ...(inspection.candidate !== undefined ? { candidate: inspection.candidate } : {}),
+        ...(sourcePath ? { sourcePath } : {}),
+      });
+    } else validateManagedContent(file, content);
+  }
+  if (issues.length) throw new GitHubSyncContentRepairError(normalized.id, issues);
   const localFiles = new Map(localMaterialized.files.map(file => [file.path, file]));
   reportFetch(`Loaded ${localFiles.size} Local files; fetching origin/${normalized.branch}`);
   await prepareCheckout(normalized, checkout, credentials);

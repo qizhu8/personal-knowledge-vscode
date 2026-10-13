@@ -190,6 +190,7 @@ async function main() {
     readGitHubSyncTargets: () => targets,
     githubSyncStateDirectory: () => state,
     listGitHubSyncConflicts: conflicts.listGitHubSyncConflicts,
+    readGitHubSyncContentRepair: () => undefined,
     log: { info() {} },
   });
   loadFunction("configureGitHubSyncScheduler", "subscriptionStateData", recoveryContext);

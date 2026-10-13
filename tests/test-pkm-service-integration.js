@@ -9,6 +9,7 @@ const { randomUUID, createHash } = require("node:crypto");
 const { GitHubSyncConflictError, GitHubSyncExtensionCompatibilityError, githubSyncResultIsNoChange } = require("../dist/sync/github-sync.js");
 const { PkmServiceRecoveryPersistenceError } = require("../dist/runtime/pkm-service.js");
 const { sameKnowledgeRoot } = require("../dist/sync/github-sync-coordinator.js");
+const { GitHubSyncContentRepairError } = require("../dist/sync/github-sync-content-repair.js");
 
 const extension = fs.readFileSync(path.join(__dirname, "../src/extension.ts"), "utf8");
 const start = extension.indexOf("async function finalizeGitHubSyncServiceResult(");
@@ -16,6 +17,7 @@ const end = extension.indexOf("async function subscriptionStateData(", start);
 assert(start >= 0 && end > start);
 const calls = [];
 const clients = [];
+const repairRecords = new Map();
 let root = "/synthetic/knowledge";
 let localFingerprint = "local-content";
 const target = {
@@ -31,7 +33,7 @@ class FakeClient {
   constructor(options) { this.options = options; this.receipts = []; clients.push(this); }
   async configure(targets) { calls.push(["configure", targets]); }
   async request(id, reason) { calls.push(["request", id, reason]); return true; }
-  async sync(...args) { calls.push(["service-sync", ...args]); return result; }
+  async sync(...args) { calls.push(["service-sync", ...args]); if (this.syncError) throw this.syncError; return result; }
   report(...args) { calls.push(["report", ...args]); }
   notifyContentChanged() {}
   snapshot() { return {}; }
@@ -46,12 +48,19 @@ const context = vm.createContext({
   githubSyncScheduler: undefined, githubSyncCoordinatorStatePath: undefined,
   githubSyncTasks: new Map(), githubSyncForceUpdateAudit: new Map(),
   path, os, randomUUID, createHash, sameKnowledgeRoot, githubSyncResultIsNoChange, GitHubSyncConflictError, GitHubSyncExtensionCompatibilityError, PkmServiceRecoveryPersistenceError,
+  GitHubSyncContentRepairError,
+  readGitHubSyncContentRepair: (_directory, targetId) => repairRecords.get(targetId),
+  clearGitHubSyncContentRepair: (_directory, targetId) => { calls.push(["clear-repair"]); repairRecords.delete(targetId); },
+  storeGitHubSyncContentRepair: (_directory, error) => {
+    calls.push(["store-repair", error]);
+    repairRecords.set(error.targetId, { id: error.attemptId, issues: error.issues });
+  },
   Promise, Set, Map, Error,
   fs: { readFileSync: () => JSON.stringify({
     transactionId: result.transactionId, repository: target.repository, branch: target.branch,
   }) },
   log: { info() {}, warn() {}, error() {} },
-  vscode: { window: { showErrorMessage() {}, showWarningMessage: () => Promise.resolve() } },
+  vscode: { window: { showErrorMessage() {}, showWarningMessage: (...args) => { calls.push(["warning", ...args]); return Promise.resolve(); } } },
   panel: undefined, _treeProvider: undefined,
   githubSyncDiagnostics: { record: (...args) => calls.push(["diagnostic", ...args]) },
   githubSyncCoordinatorStateDirectory: () => `${root}/coordinator`,
@@ -125,6 +134,24 @@ context.extensionContext = {
   assert(!githubSyncResultIsNoChange({ ...result, recipePulls: [{}] }));
   assert(!githubSyncResultIsNoChange({ ...result, privateTopLevels: { notes: ["Private"] } }));
   result.changed = true;
+  const warningCount = calls.filter(call => call[0] === "warning").length;
+  client.syncError = new GitHubSyncContentRepairError("primary", [{
+    path: "scripts/Fixture.script", type: "scripts", itemId: "Fixture", source: "local",
+    reason: "merge-conflict-markers", lines: [1], digest: "digest", content: "<<<<<<< incomplete\n",
+  }]);
+  await assert.rejects(() => client.options.execute("primary", "manual", 1), error => error === client.syncError);
+  await assert.rejects(() => client.options.execute("primary", "manual", 1), error => error === client.syncError);
+  assert(repairRecords.has("primary"), "raw marker errors create actionable durable repairs");
+  assert.equal(target.lastFailure, undefined, "marker blockers do not consume the persisted network failure budget");
+  assert.equal(calls.filter(call => call[0] === "warning").length, warningCount + 1, "unchanged blockers are notified only once");
+  assert(calls.some(call => call[0] === "acknowledge-error"), "persisted content blockers acknowledge actual recovery receipts");
+  vm.runInContext("configureGitHubSyncScheduler(extensionContext)", context);
+  await Promise.resolve();
+  assert.equal(calls.findLast(call => call[0] === "configure")[1][0].needsAttention, true,
+    "Host configuration restores the durable repair gate instead of scheduling another automatic retry");
+  delete client.syncError;
+  await client.options.execute("primary", "manual", 1);
+  assert(!repairRecords.has("primary"), "successful revalidation clears pending local repairs");
   assert.equal(target.lastSync.commit, result.commit);
   assert(target.lastSync.localChangeFingerprint, "successful sync persists the local input snapshot, not the remote manifest fingerprint");
   assert.equal(await client.options.shouldExecute("primary", "change"), false,
@@ -156,6 +183,17 @@ context.extensionContext = {
   const storedIndex = calls.findIndex(call => call[0] === "store-conflict");
   const ackIndex = calls.findIndex(call => call[0] === "acknowledge" && call[1] === "disconnected-conflict");
   assert(storedIndex >= 0 && ackIndex > storedIndex, "recovered conflicts are durably staged before their service receipt is acknowledged");
+  delete client.recoveryError;
+  client.receipts = [{ operationId: "content-repair-recovery", targetId: "primary", outcome: "error",
+    reason: "manual", repository: target.repository, branch: target.branch }];
+  client.recoveryError = new GitHubSyncContentRepairError("primary", [{
+    path: "scripts/Fixture.script", type: "scripts", itemId: "Fixture", source: "local",
+    reason: "merge-conflict-markers", lines: [1], digest: "digest", content: "<<<<<<< incomplete\n",
+  }], "interrupted-attempt");
+  await context.recoverGitHubSyncServiceResults(context.extensionContext, client);
+  const repairIndex = calls.findIndex(call => call[0] === "store-repair");
+  const repairAckIndex = calls.findIndex(call => call[0] === "acknowledge" && call[1] === "content-repair-recovery");
+  assert(repairIndex >= 0 && repairAckIndex > repairIndex, "pending local repairs survive disconnect and are persisted before acknowledgment");
   delete client.recoveryError;
   client.receipts = [{ operationId: "preflight-error", targetId: "primary", outcome: "error",
     reason: "manual", repository: target.repository, branch: target.branch }];
