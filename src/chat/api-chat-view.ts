@@ -25,7 +25,7 @@ import { ApiChatAgentControl } from "./agent-control";
 import { loadLocaleCatalogs, loadLocaleManifest, resolveUiLanguage } from "../ui/localization";
 import { renderApiChat, registerApiChatHost } from "./api-chat-shell";
 import { chatPkmUrl, parsePkmLocator } from "../knowledge/knowledge-locator";
-import { captureExecutionContext, ChatExecutionContext } from "./execution-context";
+import { captureExecutionContext, ChatExecutionContext, validExecutionContext } from "./execution-context";
 
 interface WorkerOverviewNode {
   chatId: string;
@@ -1376,7 +1376,16 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
   }
 
   private assertExecution(chat: ApiConversation, executionContext: ChatExecutionContext): void {
-    if (this.captureExecution(chat).digest !== executionContext.digest) throw new Error("The sending window's execution context changed. Submit a new request explicitly; this input was not retargeted.");
+    const current = this.captureExecution(chat);
+    const valid = validExecutionContext(executionContext);
+    if (valid && current.digest === executionContext.digest) return;
+    // Active approvals may change policy, not the immutable request environment or tool catalog.
+    if (valid && current.contextId === executionContext.contextId
+      && this.running.has(chat.id) && chat.progress?.status === "running"
+      && chat.progress.executionContext?.digest === executionContext.digest) return;
+    const changed = ["hostId", "targetId", "accountId", "knowledgeRoot", "workspaceUris", "workspacePaths", "cwd", "trusted", "permissionMode"]
+      .filter(key => JSON.stringify(current[key as keyof ChatExecutionContext]) !== JSON.stringify(executionContext[key as keyof ChatExecutionContext]));
+    throw new Error(`The sending window's execution context changed (${changed.join(", ") || "invalid context"}). Submit a new request explicitly; this input was not retargeted.`);
   }
 
   private assertRunnable(chat: ApiConversation, ownedAttemptId?: string, executionContext = ownedAttemptId && chat.progress?.executionContext || this.captureExecution(chat)): void {

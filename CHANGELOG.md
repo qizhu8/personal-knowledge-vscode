@@ -5,6 +5,10 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.34] - 2026-10-13
+
+- Allow explicit permission-only changes, including Allow All approvals, to resume the locally owned active Chat request without falsely reporting a changed sending window. Keep the captured tool catalog fixed, preserve queued-input and environment guards, and identify changed context fields in genuine rejection messages.
+
 ## [3.2.33] - 2026-10-13
 
 - Render phase-less initial Sync cards from their actual status instead of defaulting to Sync failed. Healthy scheduled targets, queued/running snapshots and unavailable runtime metadata no longer imply failure; genuine errors remain visible.

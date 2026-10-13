@@ -1094,6 +1094,35 @@ async function testController() {
     await provider.handle({ type: "permissions" });
     assert.strictEqual(provider.chat.permissionMode, "ask");
     assert.deepStrictEqual(requests[0].request.tools, [], "Mid-run permission changes must not grant the existing request new tools");
+    assert.doesNotThrow(() => provider.assertExecution(provider.chat, firstExecution),
+      "an explicit permission-only change must not look like retargeting an owned active request");
+    const activePermission = provider.requestPermission(provider.chat, "destructive", "Fixture permission", "", requests[0].request.signal);
+    const activeApprovalId = [...provider.approvals.keys()][0];
+    assert(activeApprovalId);
+    const priorBuiltinTools = provider.chat.builtinTools;
+    const priorVscodeTools = provider.chat.vscodeTools;
+    const priorToolSelection = provider.chat.toolSelection;
+    await provider.handle({ type: "approval", id: activeApprovalId, value: "allow-all" });
+    assert.strictEqual(await activePermission, true,
+      "Allow All from an active approval must resume that request instead of raising execution-context changed");
+    assert.doesNotThrow(() => provider.assertExecution(provider.chat, firstExecution));
+    assert.deepStrictEqual(requests[0].request.tools, [], "Allow All cannot add tools to the captured request");
+    const capture = provider.captureExecution;
+    const factory = require("../dist/chat/execution-context").captureExecutionContext;
+    provider.captureExecution = chat => factory(provider.executionHostId, [], directory, false, chat.permissionMode || "ask");
+    assert.throws(() => provider.assertExecution(provider.chat, firstExecution), /execution context changed.*trusted/,
+      "an active permission change must not bypass a changed workspace trust boundary");
+    provider.captureExecution = chat => factory(require("crypto").randomUUID(), [], directory, true, chat.permissionMode || "ask");
+    assert.throws(() => provider.assertExecution(provider.chat, firstExecution), /execution context changed.*hostId/,
+      "an owned active request must still reject another sending window");
+    provider.captureExecution = capture;
+    assert.throws(() => provider.assertExecution(provider.chat, { ...firstExecution, permissionMode: "allow-all" }), /execution context changed/,
+      "a forged context with stale hashes must not pass the active permission exception");
+    await provider.handle({ type: "permissionMode", value: "ask" });
+    provider.chat.builtinTools = priorBuiltinTools;
+    provider.chat.vscodeTools = priorVscodeTools;
+    provider.chat.toolSelection = priorToolSelection;
+    provider.persist(provider.chat);
     assert.strictEqual(requests[0].request.maxToolRounds, 30);
     sessionApproval = "Answer with current results";
     assert.strictEqual(await requests[0].request.onToolLoopNotice({ reason: "round-limit", rounds: 30, limit: 30 }, requests[0].request.signal), "summarize", "Allow All must not bypass the independent loop decision");

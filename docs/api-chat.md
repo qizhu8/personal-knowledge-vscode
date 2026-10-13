@@ -771,6 +771,15 @@ uses remembered scopes for PKM approval. **Allow All** skips PKM approvals but
 does not bypass native VS Code confirmations or trust. Changes apply to the next request, not a running
 tool catalog; read-only is not a general sandbox for providers or attachments.
 
+An explicit permission change (including **Allow All** in a pending approval)
+does not retarget an already-running request owned by this window. Its captured
+tool catalog and execution environment remain fixed; live approval/read-only
+checks still apply. Different sending windows, workspace/root/account changes,
+or changed trust still reject execution. Queued inputs retain their original
+permission/context digest and require explicit resubmission if it no longer
+matches. Genuine context-change errors name the changed fields without exposing
+their filesystem or account values.
+
 ### Tool-loop continuation
 
 `personalKnowledge.apiChatLoopReviewMinutes` defaults to **30** and accepts
