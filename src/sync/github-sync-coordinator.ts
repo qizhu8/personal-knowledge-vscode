@@ -18,6 +18,8 @@ interface CoordinatorLeader {
   heartbeatAt: number;
   leaseUntil: number;
   fencingToken: number;
+  independentService?: boolean;
+  extensionVersion?: string;
 }
 
 interface CoordinatorIntent {
@@ -61,6 +63,7 @@ export interface GitHubSyncCoordinatorOptions {
   stateDirectory: string;
   knowledgeRoot: string;
   extensionVersion: string;
+  independentService?: boolean;
   shouldExecute?: (targetId: string, reason: GitHubSyncReason) => Promise<boolean>;
   execute: (targetId: string, reason: GitHubSyncReason, fencingToken: number) => Promise<void>;
   shouldRetryFailure?: (error: unknown) => boolean;
@@ -209,7 +212,6 @@ export class GitHubSyncCoordinator {
       for (const target of targets) {
         if (target.enabled && (!target.lastFailure || (target.lastFailure.attempts || 1) < MAX_GITHUB_SYNC_FAILURE_ATTEMPTS)) continue;
         if (state.intents[target.id]?.reason !== "manual" && state.intents[target.id]?.reason !== "force-local-authority") delete state.intents[target.id];
-        if (state.claims[target.id] && !this.scheduler?.snapshot()[target.id]?.nextSyncAt) delete state.claims[target.id];
       }
       for (const targetId of Object.keys(state.blocked)) if (!activeIds.has(targetId)) delete state.blocked[targetId];
       for (const targetId of Object.keys(state.runtime)) if (!activeIds.has(targetId)) delete state.runtime[targetId];
@@ -254,6 +256,13 @@ export class GitHubSyncCoordinator {
     return Object.fromEntries(Object.entries(this.cachedRuntime).map(([id, state]) => [id, { ...state }]));
   }
 
+  isLeader(): boolean {
+    if (this.disposed || !this.leaderToken) return false;
+    const leader = readState(this.statePath).leader;
+    return leader?.nonce === this.instanceNonce && leader.pid === process.pid
+      && leader.fencingToken === this.leaderToken && leader.leaseUntil > this.now();
+  }
+
   dispose(): void {
     this.disposed = true;
     if (this.timer) clearInterval(this.timer);
@@ -288,7 +297,11 @@ export class GitHubSyncCoordinator {
         const leader = state.leader;
         const ownsLease = leader?.nonce === this.instanceNonce && leader.pid === process.pid;
         const stale = !leader || leader.leaseUntil <= now || !processAlive(leader.pid);
-        if (ownsLease || stale) {
+        const legacyDrained = !!this.options.independentService && !!leader && !leader.independentService
+          && !Object.values(state.claims).some(claim => claim.leaderNonce === leader.nonce)
+          && !Object.values(state.runtime).some(runtime => runtime.status === "syncing")
+          && !fs.existsSync(path.join(this.options.stateDirectory, "apply.lock"));
+        if (ownsLease || stale || legacyDrained) {
           if (!ownsLease) {
             for (const [targetId, claim] of Object.entries(state.claims)) {
               if (leader && (claim.leaderNonce !== leader.nonce || claim.fencingToken !== leader.fencingToken)) continue;
@@ -313,6 +326,7 @@ export class GitHubSyncCoordinator {
               heartbeatAt: now,
               leaseUntil: now + leaseMs,
               fencingToken: state.nextFencingToken,
+              ...(this.options.independentService ? { independentService: true, extensionVersion: this.options.extensionVersion } : {}),
             };
           } else {
             leader.heartbeatAt = now;
@@ -468,7 +482,7 @@ export class GitHubSyncCoordinator {
         ? {
           ...runtime,
           status: "queued",
-          detail: `Running in the shared leader window${runtime.detail ? ` · ${runtime.detail}` : ""}`,
+          detail: `Running in the ${state.leader?.independentService ? `PKM singleton service ${state.leader.extensionVersion || ""}` : "shared leader window"}${runtime.detail ? ` · ${runtime.detail}` : ""}`,
         }
         : { ...runtime },
     ]));

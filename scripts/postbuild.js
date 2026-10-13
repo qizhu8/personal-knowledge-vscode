@@ -8,11 +8,18 @@ const { runtimeRelative, writeCompatibilityBridges, verifyLayout } = require("./
 
 const distPath = path.join(__dirname, "..", "dist");
 esbuild.buildSync({
+  entryPoints: [path.join(__dirname, "..", "src", "runtime", "pkm-service-entry.ts")],
+  bundle: true,
+  platform: "node",
+  format: "cjs",
+  outfile: path.join(distPath, "runtime", "pkm-service-entry.js"),
+});
+esbuild.buildSync({
   entryPoints: [path.join(__dirname, "..", "src", "webview", "chat-retrieval-flow-entry.js")],
   bundle: true, platform: "browser", format: "iife", minify: true,
   outfile: path.join(distPath, "webview", "chat-retrieval-flow.js"),
 });
-for (const name of ["api-chat-client", "api-chat-mcp", "api-chat-tools"]) {
+for (const name of ["api-chat-client", "api-chat-mcp", "api-chat-tools", "sync/github-sync-workbench"]) {
   const entry = path.join(distPath, runtimeRelative(`${name}.js`));
   esbuild.buildSync({
     entryPoints: [entry],

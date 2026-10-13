@@ -95,6 +95,9 @@ assert(packageJson.contributes.commands.some(command => command.command === "per
   "VSIX must register the browser Action Workbench command");
 assert(entries.includes("extension/dist/chat/agent-control.js"),
   "VSIX must include the owning Extension Host Chat controller transport");
+for (const artifact of ["dist/runtime/pkm-service.js", "dist/runtime/pkm-service-entry.js"]) {
+  assert(entries.includes(`extension/${artifact}`), `VSIX must include the independent PKM service runtime: ${artifact}`);
+}
 assert.deepStrictEqual(
   entries.filter(entry => /^extension\/resources\/windows\/.*\.exe$/i.test(entry)),
   [],
@@ -122,6 +125,13 @@ try {
     for (const name of ["api-chat-client", "api-chat-mcp", "api-chat-tools", "api-chat-view", "api-chat-acceptance"]) {
       assert(Object.keys(require(path.join(process.argv[1], "dist", name + ".js"))).length > 0, name + " must load its exports");
     }
+    const workbench = require(path.join(process.argv[1], "dist", "sync", "github-sync-workbench.js"));
+    assert.strictEqual(typeof workbench.openGitHubSyncConflictWorkbench, "function");
+    const comparison = workbench.githubSyncWorkbenchComparison("a\\nleft\\n", "a\\nright\\n", "a\\nleft\\n");
+    assert.strictEqual(comparison.blocks.length, 1);
+    assert.strictEqual(comparison.blocks[0].remote, "right\\n");
+    const service = require(path.join(process.argv[1], "dist", "runtime", "pkm-service.js"));
+    assert.strictEqual(typeof service.PkmServiceClient, "function");
     assert.strictEqual(navigatorReads, 0, "Packaged Node modules must not read the host navigator global");
   `, isolatedExtension], {
     cwd: isolatedRoot,
@@ -130,8 +140,18 @@ try {
     timeout: 30_000,
   });
   assert.strictEqual(result.status, 0,
-    `Packaged Chat modules must load without repository node_modules: ${result.stderr || result.error || result.stdout}`);
-  console.log("VSIX package test: isolated Chat module dependency loading OK");
+    `Packaged Chat and Sync workbench modules must load without repository node_modules: ${result.stderr || result.error || result.stdout}`);
+  console.log("VSIX package test: isolated Chat and Sync workbench dependency loading OK");
+  const serviceTest = spawnSync(process.execPath, [path.join(__dirname, "..", "tests", "test-pkm-service.js")], {
+    cwd: isolatedRoot,
+    env: { ...process.env, NODE_PATH: "", NODE_OPTIONS: "", PKM_SERVICE_TEST_EXTENSION_ROOT: isolatedExtension },
+    encoding: "utf8",
+    timeout: 120_000,
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  assert.strictEqual(serviceTest.status, 0,
+    `Packaged singleton service must run independently without repository node_modules: ${serviceTest.stderr || serviceTest.error || serviceTest.stdout}`);
+  console.log(`VSIX package test: independent PKM service lifecycle OK\n${serviceTest.stdout.trim()}`);
 } finally {
   fs.rmSync(isolatedRoot, { recursive: true, force: true });
 }

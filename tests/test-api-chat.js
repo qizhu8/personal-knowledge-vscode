@@ -137,7 +137,22 @@ else (async () => {
     const memoryTree = chatMemoryTree(memoryChat);
     assert.strictEqual(memoryTree.chatId, groupChat.id);
     assert(memoryTree.tasks.find(task => task.id === "task-cache").segments.length > 1);
-    assert(!JSON.stringify(memoryTree).includes("immutable manifests"), "Tree metadata does not expose message bodies");
+    assert(!JSON.stringify(memoryTree).includes("immutable manifests"), "Tree previews do not expose full message bodies");
+    assert(memoryTree.tasks.flatMap(task => task.segments).every(segment => Array.from(segment.preview).length <= 30));
+    assert.strictEqual(memoryTree.tasks.find(task => task.id === "task-cache").segments[0].preview,
+      Array.from(memoryChat.messages[0].content).slice(0, 30).join(""));
+    const unicodeResult = "\u{1f642}".repeat(35) + "tool result";
+    const previewTree = chatMemoryTree({ ...groupChat, messages: [
+      { id: "preview-message", role: "assistant", status: "complete", content: unicodeResult, toolCalls: [
+        { id: "call", name: "run_process", arguments: "{}", result: "First result", status: "complete" },
+        { id: "call:other", name: "run_process", arguments: "{}", result: unicodeResult, status: "complete" },
+      ] },
+    ] });
+    const previewSegments = previewTree.tasks.flatMap(task => task.segments);
+    assert.strictEqual(previewSegments[0].preview, "\u{1f642}".repeat(30), "Dialogue previews count Unicode code points");
+    assert.strictEqual(previewSegments[1].preview, "First result", "Tool previews show results, not provenance headers");
+    assert.strictEqual(previewSegments[2].preview, "\u{1f642}".repeat(30), "Tool IDs with common prefixes resolve exact source revisions");
+    assert.strictEqual(previewSegments[2].sourceKind, "tool");
     const memoryMatches = retrieveChatMemory(memoryChat, "AAGL cache design");
     assert(memoryMatches.length > 0 && memoryMatches.length <= 4);
     assert(memoryMatches.every(segment => segment.messageId === "old-memory"));
@@ -269,6 +284,10 @@ else (async () => {
     const delegation = { id: require("crypto").randomUUID(), chatId: delegationTarget.id, chatUrl: `pkm://chats/${contextViewer.namespace}/${delegationTarget.id}`, status: "complete", answer: "Across workspace aliases" };
     delegationParent.messages.push({ id: "cross-namespace-reply", role: "assistant", content: "Delegated result", status: "complete", delegations: [delegation] });
     contextStore.save(delegationParent);
+    assert.strictEqual(contextViewer.list().find(item => item.id === delegationParent.id).workerManager, true,
+      "Dispatch receipts expose durable manager identity in every window's library");
+    assert.strictEqual(contextViewer.list().find(item => item.id === delegationTarget.id).workerManager, undefined,
+      "Ordinary Chats are not promoted to manager by being listed");
     assert.deepStrictEqual(contextViewer.load(delegationParent.id, false).messages[0].delegations[0], delegation, "target aliases must not be rewritten to the parent's namespace");
     assert.strictEqual(chat.sessionId, undefined);
     assert(!fs.existsSync(path.join(directory, "agent-sessions")));

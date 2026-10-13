@@ -323,6 +323,84 @@ class ChatUiTests(unittest.TestCase):
                         page.evaluate("document.body.classList.add('chat-backgrounded')")
                         self.assertEqual(cauldron.evaluate("node=>getComputedStyle(node).animationPlayState"), "paused")
                         page.evaluate("document.body.classList.remove('chat-backgrounded')")
+                        role_chats = [
+                            {**fixture["library"]["chats"][0], "workerManager": True, "workerTreeId": "pixel_tree"},
+                            {"id": "pixel_worker", "title": "Pixel worker", "status": "running", "groupId": "ungroup",
+                             "workerParentChatId": "chat_fixture", "workerTreeId": "pixel_tree"},
+                            {"id": "pixel_nested", "title": "Nested manager", "status": "running", "groupId": "ungroup",
+                             "workerParentChatId": "pixel_worker", "workerTreeId": "pixel_tree", "workerManager": True},
+                        ]
+                        role_nodes = [
+                            {"chatId": "chat_fixture", "title": "Pixel manager", "status": "running", "manager": True},
+                            {"chatId": "pixel_worker", "parentChatId": "chat_fixture", "title": "Pixel worker", "status": "running", "manager": False},
+                            {"chatId": "pixel_nested", "parentChatId": "pixel_worker", "title": "Nested manager", "status": "running", "manager": True},
+                        ]
+                        pixel_fixture = {**fixture, "chats": role_chats, "library": {"groups": [], "chats": role_chats},
+                                         "chat": {**fixture["chat"], "workerManager": True, "messages": [
+                                             {**fixture["chat"]["messages"][0], "delegations": [
+                                                 {"id": "pixel_receipt", "chatId": "pixel_nested", "chatUrl": chat_url, "status": "running"}]}]},
+                                         "workerOverview": {"rootChatId": "chat_fixture", "nodes": role_nodes, "activeWorkers": 2, "quota": 3, "maximum": 10}}
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", pixel_fixture)
+                        if page.locator("#workers-toggle").get_attribute("aria-expanded") == "false":
+                            page.locator("#workers-toggle").click()
+                        manager_icon = page.locator('#chat-list [data-chat-id="chat_fixture"] > .chat-status-indicator')
+                        worker_icon = page.locator('#chat-list [data-chat-id="pixel_worker"] > .chat-status-indicator')
+                        nested_icon = page.locator('#chat-list [data-chat-id="pixel_nested"] > .chat-status-indicator')
+                        expect(manager_icon).to_have_attribute("data-chat-role", "manager")
+                        expect(worker_icon).to_have_attribute("data-chat-role", "manager")
+                        expect(nested_icon).to_have_attribute("data-chat-role", "manager")
+                        expect(page.locator('#workers-tree [data-chat-id="pixel_worker"] > summary > .chat-status-indicator')).to_have_attribute("data-chat-role", "worker")
+                        expect(page.locator('#workers-tree [data-chat-id="pixel_nested"] > summary > .chat-status-indicator')).to_have_attribute("data-chat-role", "manager")
+                        expect(page.locator("#chat-status > .chat-status-indicator")).to_have_attribute("aria-label", "Manager \u00b7 Running")
+                        expect(page.locator(".workflow-summary > .chat-role-icon")).to_have_attribute("data-chat-role", "manager")
+                        expect(page.locator(".delegation-result .chat-status-indicator")).to_have_attribute("data-chat-role", "manager")
+                        expect(manager_icon.locator("svg")).to_have_attribute("viewBox", "0 0 16 16")
+                        self.assertEqual(manager_icon.locator("svg").evaluate("node=>[getComputedStyle(node).width,getComputedStyle(node).height,getComputedStyle(node).shapeRendering]"),
+                                         ["16px", "16px", "crispedges"])
+                        self.assertTrue(page.evaluate("""() => {
+                            const icon=PkmChatStatusIndicator('running','worker');document.body.append(icon);
+                            const frames=[...icon.querySelectorAll('.pixel-wizard-frame')];
+                            const animations=icon.getAnimations({subtree:true});
+                            const visible=[];
+                            for(let index=0;index<4;index++){
+                                for(const animation of animations){animation.pause();animation.currentTime=index*260+10;}
+                                visible.push(frames.map(frame=>getComputedStyle(frame).opacity).filter(opacity=>opacity==='1').length);
+                            }
+                            const stillPot=icon.querySelectorAll('svg > rect[fill="#435366"]').length===2;
+                            icon.remove();return visible.every(count=>count===1)&&stillPot;
+                        }"""), "Four discrete pixel frames animate the stirrer, never the cauldron")
+                        page.emulate_media(reduced_motion="reduce")
+                        pixel_frames = page.locator(".workflow-summary .pixel-wizard-frame")
+                        self.assertEqual(pixel_frames.nth(0).evaluate("node=>[getComputedStyle(node).animationName,getComputedStyle(node).opacity]"), ["none", "1"])
+                        self.assertEqual(pixel_frames.nth(1).evaluate("node=>getComputedStyle(node).opacity"), "0")
+                        page.emulate_media(reduced_motion="no-preference")
+                        for paused_class in ["chat-backgrounded", "pkm-host-unavailable"]:
+                            page.evaluate("name=>document.body.classList.add(name)", paused_class)
+                            self.assertEqual(pixel_frames.nth(0).evaluate("node=>getComputedStyle(node).animationPlayState"), "paused")
+                            page.evaluate("name=>document.body.classList.remove(name)", paused_class)
+                        role_chats[0]["status"] = "awaiting-result"
+                        role_chats[1]["status"] = "failed"
+                        pixel_fixture["chat"]["workerState"] = {"sleeping": True}
+                        pixel_fixture["busy"] = False
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", pixel_fixture)
+                        expect(manager_icon).to_have_attribute("aria-label", "Manager \u00b7 Waiting for delegated result")
+                        expect(manager_icon).to_have_class("chat-role-icon chat-status-indicator chat-role-still")
+                        self.assertEqual(manager_icon.evaluate("node=>getComputedStyle(node,'::before').backgroundColor"), "rgb(227, 179, 65)")
+                        self.assertEqual(worker_icon.evaluate("node=>getComputedStyle(node,'::before').backgroundColor"), "rgb(239, 108, 108)")
+                        self.assertEqual(manager_icon.locator(".pixel-wizard-frame").first.evaluate("node=>getComputedStyle(node).animationName"), "none")
+                        role_chats.pop()
+                        pixel_fixture["workerOverview"]["nodes"] = role_nodes[:2]
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", pixel_fixture)
+                        expect(worker_icon).to_have_attribute("data-chat-role", "worker")
+                        role_chats[:] = role_chats[:1]
+                        pixel_fixture["workerOverview"]["nodes"] = []
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", pixel_fixture)
+                        expect(manager_icon).to_have_attribute("data-chat-role", "manager")
+                        pixel_fixture["chat"] = {**fixture["chat"], "workerState": {"parentChatId": "chat_fixture"}}
+                        pixel_fixture["busy"] = True
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", pixel_fixture)
+                        expect(page.locator(".workflow-summary > .chat-role-icon")).to_have_attribute("data-chat-role", "worker")
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", fixture)
                         expect(page.locator(".debug-information")).to_have_count(1)
                         expect(page.locator("#allow-all")).to_have_count(0)
                         expect(page.locator(".model-controls > #model + #options")).to_have_count(1)
@@ -377,6 +455,82 @@ class ChatUiTests(unittest.TestCase):
                             self.assertGreaterEqual(rectangle["y"], 0)
                             page.keyboard.press("Escape")
                             expect(page.locator("#" + panel)).to_be_hidden()
+                        full_memory = "Readable memory \U0001f642 includes <tag> and exact source content. " * 8
+                        memory_candidates = [
+                            {"id": "memory-piece-uuid", "kind": "memory", "label": "unhelpful memory uuid", "selected": True},
+                            {"id": "tool-piece-uuid", "kind": "memory", "label": "unhelpful tool uuid", "selected": False},
+                            *[{"id": f"note-{index}", "kind": "note", "label": f"Reference note {index}", "selected": False} for index in range(10)],
+                        ]
+                        for candidate in memory_candidates:
+                            candidate.update({"sourceUri": f"pkm://fixture/{candidate['id']}", "method": "lexical",
+                                              "score": 1, "scoreComponents": {"lexical": 1, "semantic": 0},
+                                              "reason": "Included in context" if candidate["selected"] else "Outside budget"})
+                        receipt = {"chatId": "chat_fixture", "model": "fixture", "query": "source content",
+                                   "selectedCount": 1, "candidates": memory_candidates}
+                        memory_fixture = {**fixture, "chat": {**fixture["chat"], "messages": [
+                            {**fixture["chat"]["messages"][0], "retrieval": receipt}]},
+                            "memoryTree": {"chatId": "chat_fixture", "title": "Chat UI", "tasks": [
+                                {"id": "conversation", "title": "Conversation", "segments": [
+                                    {"id": "memory-piece-uuid", "preview": full_memory[:30], "sourceKind": "dialogue", "role": "assistant", "characters": len(full_memory)},
+                                    {"id": "tool-piece-uuid", "preview": "Actual tool output, not header", "sourceKind": "tool", "role": "assistant", "characters": 40},
+                                ]}]}}
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", memory_fixture)
+                        page.locator("#memory").click()
+                        entries = page.locator("#retrieval-candidates .memory-segment")
+                        expect(entries).to_have_count(10)
+                        expect(entries.nth(0).locator("summary")).to_have_text(full_memory[:30])
+                        expect(page.locator("#retrieval-candidates")).to_contain_text("Chat history")
+                        expect(page.locator("#retrieval-candidates")).to_contain_text("Tool receipts")
+                        expect(entries.nth(0).locator("pre")).to_be_hidden()
+                        entries.nth(0).locator("summary").click()
+                        page.clock.run_for(32)
+                        page.wait_for_function("() => window.__posts.some(message=>message.type==='memorySegment'&&message.id==='memory-piece-uuid')")
+                        self.assertEqual(page.evaluate("window.__posts.filter(message=>message.type==='memorySegment'&&message.id==='memory-piece-uuid').length"), 1,
+                                         {"errors": errors, "open": entries.nth(0).get_attribute("open"),
+                                          "content": entries.nth(0).locator("pre").text_content(),
+                                          "posts": page.evaluate("window.__posts.slice(-4)")})
+                        expect(entries.nth(0).locator(".memory-metadata")).to_contain_text("Selected")
+                        expect(entries.nth(0).locator(".memory-metadata")).to_contain_text("memory-piece-uuid")
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))",
+                                      {"type": "memorySegment", "chatId": "chat_fixture", "segment": {"id": "memory-piece-uuid", "content": full_memory}})
+                        expect(entries.nth(0).locator("pre")).to_have_text(full_memory)
+                        memory_fixture["memoryTree"]["title"] = "Refreshed Chat UI"
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", memory_fixture)
+                        expect(entries.nth(0)).to_have_attribute("open", "")
+                        expect(entries.nth(0).locator("pre")).to_have_text(full_memory)
+                        page.clock.run_for(32)
+                        self.assertEqual(page.evaluate("window.__posts.filter(message=>message.type==='memorySegment'&&message.id==='memory-piece-uuid').length"), 1)
+                        page.locator("#retrieval-flow").locator("..").locator("summary").click()
+                        expect(page.locator("#retrieval-flow svg")).to_be_visible()
+                        expect(page.locator("#retrieval-flow")).to_contain_text("Readable memory")
+                        page.locator("#retrieval-flow").locator("..").locator("summary").click()
+                        entries.nth(1).locator("summary").click()
+                        page.clock.run_for(32)
+                        page.wait_for_function("() => window.__posts.some(message=>message.type==='memorySegment'&&message.id==='tool-piece-uuid')")
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))",
+                                      {"type": "memorySegmentUnavailable", "chatId": "chat_fixture", "id": "tool-piece-uuid", "error": "This memory revision is unavailable."})
+                        expect(entries.nth(1).locator("pre")).to_contain_text("unavailable")
+                        page.locator("#retrieval-kind").select_option("note")
+                        expect(entries).to_have_count(10)
+                        expect(entries.nth(0)).to_contain_text("not the full resource")
+                        page.locator("#retrieval-kind").select_option("all")
+                        page.locator("#retrieval-top").select_option("20")
+                        expect(entries).to_have_count(12)
+                        expect(entries.nth(1).locator("pre")).to_contain_text("unavailable")
+                        page.clock.run_for(32)
+                        self.assertEqual(page.evaluate("window.__posts.filter(message=>message.type==='memorySegment'&&message.id==='tool-piece-uuid').length"), 1)
+                        foreign_memory = {**fixture, "chat": {**fixture["chat"], "id": "different_chat", "messages": []},
+                                          "memoryTree": {"chatId": "different_chat", "title": "Different Chat", "tasks": []}}
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", foreign_memory)
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))",
+                                      {"type": "memorySegment", "chatId": "chat_fixture", "segment": {"id": "memory-piece-uuid", "content": "Must not leak"}})
+                        expect(page.locator("#memory-preview")).to_be_hidden()
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", memory_fixture)
+                        self.assertIsNone(entries.nth(0).get_attribute("open"))
+                        expect(entries.nth(0).locator("pre")).to_have_text("Expand to read this memory")
+                        page.locator("#retrieval-top").select_option("10")
+                        page.keyboard.press("Escape")
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", fixture)
                         page.locator("#model").click()
                         expect(page.locator("#model")).to_have_attribute("aria-busy", "true")
                         self.assertEqual(page.evaluate("window.__posts.filter(message=>message.type==='chooseModel').length"), 1)

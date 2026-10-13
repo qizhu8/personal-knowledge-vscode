@@ -75,6 +75,7 @@ console.log("UI build artifact tests passed");
 const chatFixture = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-chat-bundle-"));
 try {
   for (const name of ["api-chat-tools.js", "api-chat-mcp.js"]) fs.copyFileSync(path.join(root, "dist", name), path.join(chatFixture, name));
+  fs.copyFileSync(path.join(root, "dist", "sync", "github-sync-workbench.js"), path.join(chatFixture, "github-sync-workbench.js"));
   execFileSync(process.execPath, ["-e", `
     const assert = require("node:assert/strict");
     const Module = require("node:module");
@@ -83,6 +84,9 @@ try {
     const directory = process.argv[1];
     assert.equal(typeof require(directory + "/api-chat-tools.js").createBuiltinTools, "function");
     assert.equal(typeof require(directory + "/api-chat-mcp.js").createVscodeTools, "function");
+    const workbench = require(directory + "/github-sync-workbench.js");
+    assert.equal(typeof workbench.openGitHubSyncConflictWorkbench, "function");
+    assert.equal(workbench.githubSyncWorkbenchComparison("left\\n", "right\\n", "left\\n").blocks[0].remote, "right\\n");
   `, chatFixture], { cwd: chatFixture, env: {}, stdio: "pipe" });
 } finally { fs.rmSync(chatFixture, { recursive: true, force: true }); }
-console.log("Chat bundled dependencies load without workspace node_modules");
+console.log("Chat and Sync workbench bundled dependencies load without workspace node_modules");

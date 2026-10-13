@@ -7,9 +7,13 @@ on:
       - "package.json"
       - "src/cross-process-lock.ts"
       - "src/github-sync*.ts"
+      - "src/sync/github-sync*.ts"
+      - "src/runtime/pkm-service*.ts"
+      - "src/runtime/cross-process-lock.ts"
       - "src/extension.ts"
       - "tests/test-cross-process-lock.js"
       - "tests/test-github-sync-*.js"
+      - "tests/test-pkm-service*.js"
       - "tests/fixtures/github-sync-coordinator-child.js"
   workflow_dispatch:
 
@@ -32,3 +36,4 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:github-sync-coordinator
+      - run: node tests/test-pkm-service.js && node tests/test-pkm-service-integration.js

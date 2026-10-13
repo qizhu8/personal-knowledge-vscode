@@ -34,6 +34,7 @@ export interface GitHubSyncRuntimeState {
   lastError?: string;
   nextSyncAt?: string;
   blocked?: { requiredVersion: string; installedVersion: string };
+  service?: { pid: number; version: string; protocol: string };
 }
 
 export interface GitHubSyncSchedulerOptions {
@@ -74,6 +75,8 @@ export class GitHubSyncScheduler {
     for (const id of this.pending.keys()) if (!activeIds.has(id)) this.pending.delete(id);
     for (const target of targets) {
       this.targets.set(target.id, target);
+      if (!target.enabled && !["manual", "force-local-authority"].includes(this.pending.get(target.id) || "")) this.pending.delete(target.id);
+      if (this.activeTargets.has(target.id)) continue;
       const activeFailure = target.lastFailure
         && (!target.lastSuccessAt || target.lastFailure.at > target.lastSuccessAt)
         ? target.lastFailure
@@ -218,7 +221,7 @@ export class GitHubSyncScheduler {
             this.updateState(targetId, {
               status: "scheduled",
               reason,
-              lastAttemptAt: attemptedAt,
+              lastAttemptAt: reason === "change" ? currentState?.lastAttemptAt : attemptedAt,
               lastSuccessAt: target.lastSuccessAt,
             });
             this.scheduleNextInterval(target);
@@ -241,15 +244,15 @@ export class GitHubSyncScheduler {
           current.lastSuccessAt = succeededAt;
           current.lastFailure = undefined;
           this.updateState(targetId, {
-            status: target.enabled ? "scheduled" : "paused",
-            phase: target.enabled ? "scheduled" : undefined,
-            detail: target.enabled ? "Next fetch scheduled" : "Automatic pull/push is off",
+            status: current.enabled ? "scheduled" : "paused",
+            phase: current.enabled ? "scheduled" : undefined,
+            detail: current.enabled ? "Next fetch scheduled" : "Automatic pull/push is off",
             activityAt: succeededAt,
             reason,
             lastAttemptAt: attemptedAt,
             lastSuccessAt: succeededAt,
           });
-          this.scheduleNextInterval(target);
+          this.scheduleNextInterval(current);
         } catch (error) {
           if (!this.targets.has(targetId)) {
             this.states.delete(targetId);

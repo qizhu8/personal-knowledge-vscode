@@ -600,7 +600,17 @@ Memory icon on an answer, or choose an activity in the Retrieval panel. The seco
 selector switches between recall attempts and sends. A recall shortlist is not
 evidence of transmission: only a send snapshot describes the admitted context.
 Each send exposes the conservative UTF-8 budget estimate and selected/excluded
-candidates; clicking a Memory source resolves its content-sensitive source ID.
+candidates. Retrieved references appear in a collapsible list, grouped by the
+sources actually present. Chat dialogue and tool receipts are distinguished;
+type filtering and Top 10/20 only change the inspection view. Memory summaries
+show the first 30 Unicode characters of the source slice, with UUIDs relegated
+to expanded metadata. Tool summaries use the actual result, not the repeated
+provenance header. Expanding a Memory entry lazily resolves its exact
+content-sensitive ID and displays the complete segment; changed or missing
+revisions explicitly report unavailable. Expansion and loaded content survive
+streaming refreshes and are cleared when switching Chats. The retrieval flow
+remains available in a separate collapsible section. Non-Memory receipts expose
+their retained source metadata, not an invented historical resource body.
 Raw scores remain per-method values, not probabilities or a measured precision
 score. Relevance annotation and learned feedback ingestion are not implemented.
 
@@ -737,6 +747,18 @@ preserving open disclosures and avoiding unnecessary animation restarts. New
 popover openings use a short opacity/position transition; hover/focus surfaces
 use restrained color transitions. Reduced-motion preferences disable the new
 transitions. Draft, scroll-follow and permission behavior are unchanged.
+
+Delegating Chats use an original 16-by-16 pixel-art magic teacher holding a
+book and wand. Workers use a matching wizard stirring a stationary cauldron;
+a worker that delegates to its own workers becomes a teacher as well.
+Manager identity comes from retained dispatch receipts, so it survives worker
+archival and removal. The same roles appear in the library, selected Chat,
+worker tree, delegation results and active Activity indicators.
+Only running roles animate. Other states keep a static character with the
+existing state color/shape as a corner badge and an explicit role/status
+accessible label. Ordinary Chats keep the existing cauldron loading icon.
+Backgrounded or disconnected views pause motion; reduced-motion preferences
+show a single stationary pixel frame. No Minecraft or third-party art is used.
 
 The permission control and **Allow All** sit beside **Options** in the composer
 toolbar. Permission, tool, settings and memory choices open separate popovers
@@ -929,7 +951,7 @@ suite was reviewed; the whole Copilot suite was not ported or executed.
 | Capability | PKM native Chat status |
 | --- | --- |
 | Model picker, context/output controls, rename/status/timer | Implemented; actual catalog, no guessed model identities |
-| Chat Memory and typed knowledge retrieval | Automatic lexical/rule baseline; Top 10/20 request Sankey, Task segments, bounded injection; no learned-model claim |
+| Chat Memory and typed knowledge retrieval | Automatic lexical/rule baseline; Top 10/20 collapsible source previews and retrieval flow, Task segments, bounded injection; no learned-model claim |
 | External Markdown Skills and explicit attachments | User-authorized snapshots, separate from Chat Memory |
 | Workspace/outside read/edit/save and program execution | Bounded builtins, physical-path checks and Protective/Ask/All policy |
 | User question UI | Sixth builtin; choices/free text, dismissal/cancellation tested |

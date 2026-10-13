@@ -119,6 +119,11 @@
     if (!usage || ![usage.inputTokens, usage.outputTokens].every(value => Number.isSafeInteger(value) && value >= 0)) return "Token usage not reported";
     return `${usage.inputTokens.toLocaleString()} in / ${usage.outputTokens.toLocaleString()} out tokens`;
   }
+  function chatRole(chat = state.chat) {
+    const role = globalThis.PkmChatRole(chat);
+    const overviewRole = globalThis.PkmChatRole(state.workerOverview?.nodes.find(node => node.chatId === chat.id));
+    return role === "manager" || overviewRole === "manager" ? "manager" : role || overviewRole;
+  }
   function activity(run = state.chat.progress, messageId = "", debug) {
     if (!run) return null;
     const key = run.attemptId || messageId || String(run.startedAt);
@@ -127,7 +132,8 @@
     const section = document.createElement("details"); section.className = "workflow activity"; section.dataset.attempt = key; section.open = workflowExpanded.has(key);
     const summary = document.createElement("summary"); summary.className = "workflow-summary";
     summary.dataset.status = active && run.steps.length ? statusOf(run.steps[run.steps.length - 1], run.steps.length - 1) : run.status;
-    const icon = active ? element("working-cauldron-template").content.firstElementChild.cloneNode(true) : document.createElement("span");
+    const icon = active ? globalThis.PkmChatWorkingIcon(chatRole()) : document.createElement("span");
+    if (active) icon.setAttribute("aria-hidden", "true");
     if (!active) { icon.className = "workflow-dot"; icon.setAttribute("aria-hidden", "true"); }
     const label = document.createElement("span"); label.className = "activity-label";
     const completed = (run.completedDroppedSteps || 0) + run.steps.filter((step, index) => statusOf(step, index) === "complete").length;
@@ -301,7 +307,7 @@
     const pendingUserId = state.busy && state.chat.messages.at(-1)?.status === "streaming" ? latestUser?.id : undefined;
     for (const message of state.chat.messages) {
       const sleeping = message.id === state.chat.messages.at(-1)?.id && state.chat.workerState?.sleeping;
-      const fingerprint = JSON.stringify([message, state.busy, state.chat.paused, pendingUserId, sleeping, document.documentElement.lang]);
+      const fingerprint = JSON.stringify([message, state.busy, state.chat.paused, pendingUserId, sleeping, chatRole(), document.documentElement.lang]);
       retained.add(message.id);
       const cached = messageNodes.get(message.id);
       if (cached?.fingerprint === fingerprint) { children.push(cached.article); continue; }
@@ -342,7 +348,8 @@
       for (const record of message.delegations || []) {
         const result = document.createElement("section"); result.className = "delegation-result";
         const heading = document.createElement("div"); heading.className = "message-header";
-        heading.append(window.PkmChatStatusIndicator(record.phase === "sleeping" ? "awaiting-result" : record.phase === "awaiting-input" ? "awaiting-input" : record.status === "complete" ? "completed" : record.status === "cancelled" ? "stopped" : record.status));
+        const role = globalThis.PkmChatRole(state.workerOverview?.nodes.find(node => node.chatId === record.chatId)) || "worker";
+        heading.append(window.PkmChatStatusIndicator(record.phase === "sleeping" ? "awaiting-result" : record.phase === "awaiting-input" ? "awaiting-input" : record.status === "complete" ? "completed" : record.status === "cancelled" ? "stopped" : record.status, role));
         const link = document.createElement("a"); link.href = record.archived ? "#" : record.chatUrl; link.textContent = t(record.archived ? "Archived result" : "Delegated Chat");
         link.addEventListener("click", event => { event.preventDefault(); record.archived ? post("workerArchive", { id: record.id }) : post("openLink", { value: record.chatUrl }); });
         heading.append(link); result.append(heading);
@@ -492,6 +499,34 @@
   let memoryActivityId;
   let memoryStepId = "latest";
   let memoryFingerprint;
+  const memorySegments = new Map();
+  const expandedMemorySegments = new Set();
+  const requestedMemorySegments = new Set();
+  const memoryGroupOpen = new Map();
+  function memoryEntry(segment, metadata = "") {
+    const details = document.createElement("details"); details.className = "memory-segment";
+    details.dataset.memoryId = segment.id;
+    const summary = document.createElement("summary");
+    summary.textContent = Array.from(segment.preview || memorySegments.get(segment.id)?.content || t("Preview unavailable")).slice(0, 30).join("");
+    const info = document.createElement("div"); info.className = "memory-metadata";
+    info.textContent = `${metadata}\n${segment.id}`;
+    const content = document.createElement("pre");
+    content.textContent = memorySegments.get(segment.id)?.content || t("Expand to read this memory");
+    details.append(summary, info, content);
+    details.open = expandedMemorySegments.has(segment.id);
+    details.ontoggle = () => {
+      if (!details.isConnected) return;
+      if (details.open) {
+        expandedMemorySegments.add(segment.id);
+        if (!memorySegments.has(segment.id) && !requestedMemorySegments.has(segment.id)) {
+          requestedMemorySegments.add(segment.id);
+          content.textContent = t("Loading...");
+          post("memorySegment", { id: segment.id });
+        }
+      } else expandedMemorySegments.delete(segment.id);
+    };
+    return details;
+  }
   function renderMemory() {
     if (!element("retrieval-activity")) {
       const row = document.createElement("div"); row.className = "settings-row retrieval-timeline";
@@ -516,6 +551,11 @@
     element("retrieval-step").replaceChildren(...steps.map(item => new Option(item.label, item.id)));
     element("retrieval-step").value = step.id;
     const receipt = step.receipt;
+    const segmentMetadata = new Map((state.memoryTree?.tasks || []).flatMap(task => task.segments).map(segment => [segment.id, segment]));
+    const displayReceipt = receipt && { ...receipt, candidates: receipt.candidates.map(candidate => {
+      const preview = segmentMetadata.get(candidate.id)?.preview;
+      return preview ? { ...candidate, label: preview } : candidate;
+    }) };
     const fingerprint = JSON.stringify([state.chat.id, activity?.id, step.id, receipt, state.memoryTree, element("retrieval-kind").value, element("retrieval-top").value, element("retrieval-flow").clientWidth]);
     if (fingerprint === memoryFingerprint) return;
     memoryFingerprint = fingerprint;
@@ -526,10 +566,32 @@
     element("retrieval-status").textContent = receipt ? (receipt.warning || t("{selected} selected overall · {count} candidates · per-method ranking", { selected: receipt.selectedCount, count: receipt.candidates.length }))
       + " · " + t(step.id.startsWith("attempt-") ? "Recall shortlist, not sent context" : step.id.startsWith("round-") ? "Sent context; UTF-8 budget estimate" : "Latest budget selection")
       + (timeline?.droppedRounds ? " · " + t("{count} earlier sends omitted", { count: timeline.droppedRounds }) : "") : t("No retrieval receipt");
-    globalThis.PkmRetrievalFlow(element("retrieval-flow"), receipt, Number(element("retrieval-top").value), type.value, candidate => {
+    globalThis.PkmRetrievalFlow(element("retrieval-flow"), displayReceipt, Number(element("retrieval-top").value), type.value, candidate => {
       element("memory-preview").textContent = JSON.stringify(candidate, null, 2); element("memory-preview").hidden = false;
-      if (candidate.kind === "memory") post("memorySegment", { id: candidate.id });
+      const entry = [...element("retrieval-candidates").querySelectorAll(".memory-segment")].find(entry => entry.dataset.memoryId === candidate.id);
+      if (entry) { entry.open = true; entry.scrollIntoView({ block: "nearest" }); }
     });
+    const candidates = element("retrieval-candidates"); candidates.replaceChildren();
+    const groups = new Map();
+    for (const candidate of (receipt?.candidates || []).filter(candidate => type.value === "all" || candidate.kind === type.value).slice(0, Number(element("retrieval-top").value))) {
+      const segment = segmentMetadata.get(candidate.id);
+      const kind = candidate.kind === "memory" ? segment?.sourceKind === "tool" || candidate.id.includes(":tool:") ? "Tool receipts" : "Chat history" : candidate.kind;
+      if (!groups.has(kind)) {
+        const group = document.createElement("details"); group.className = "memory-source-group"; group.open = memoryGroupOpen.get(kind) ?? true;
+        group.ontoggle = () => { if (group.isConnected) memoryGroupOpen.set(kind, group.open); };
+        const heading = document.createElement("summary"); heading.textContent = t(kind);
+        group.append(heading); candidates.append(group); groups.set(kind, group);
+      }
+      const metadata = `${t(candidate.selected ? "Selected" : "Not selected")} · ${candidate.method}\n${candidate.reason}\n${candidate.sourceUri}`;
+      if (candidate.kind === "memory") groups.get(kind).append(memoryEntry(segment || { id: candidate.id }, metadata));
+      else {
+        const entry = document.createElement("details"); entry.className = "memory-segment";
+        const title = document.createElement("summary"); title.textContent = Array.from(candidate.label).slice(0, 30).join("");
+        const detail = document.createElement("pre"); detail.className = "memory-metadata";
+        detail.textContent = `${metadata}\n${candidate.id}\n${t("This receipt contains source metadata, not the full resource.")}`;
+        entry.append(title, detail); groups.get(kind).append(entry);
+      }
+    }
     const tree = element("memory-tree"); tree.replaceChildren();
     if (!state.memoryTree) return;
     const root = document.createElement("details"); root.open = true;
@@ -538,9 +600,7 @@
       const branch = document.createElement("details"); branch.open = task.id === state.chat.sessionId;
       const title = document.createElement("summary"); title.textContent = `${task.title} · ${task.segments.length} segments`; branch.append(title);
       for (const [index, segment] of task.segments.entries()) {
-        const leaf = document.createElement("button"); leaf.type = "button";
-        leaf.textContent = `${segment.role === "user" ? "User" : "Assistant"} · ${index + 1} · ${segment.characters} chars`;
-        leaf.title = segment.id; leaf.onclick = () => post("memorySegment", { id: segment.id }); branch.append(leaf);
+        branch.append(memoryEntry(segment, `${segment.role === "user" ? "User" : "Assistant"} · ${index + 1} · ${segment.characters} chars`));
       }
       root.append(branch);
     }
@@ -564,7 +624,7 @@
     const rank = new Map((library?.order || []).map((id, index) => [id, index]));
     const active = item => ["running", "awaiting-input", "awaiting-result"].includes(item.status);
     for (const item of [...state.chats].sort((left, right) => Number(active(right)) - Number(active(left)) || (rank.get(left.id) ?? 0) - (rank.get(right.id) ?? 0))) {
-      const status = globalThis.PkmChatStatusIndicator(item.status);
+      const status = globalThis.PkmChatStatusIndicator(item.status, chatRole(item));
       const option = new Option(item.title, item.id); option.title = `${status.title}: ${item.title}`;
       option.selected = item.id === state.chat.id; chats.add(option);
       if (option.selected) { chats.title = option.title; element("chat-status").replaceChildren(status); }
@@ -682,7 +742,21 @@
       const evidence = document.createElement("pre"); evidence.textContent = message.tools.map(tool => `${tool.name}: ${tool.status}`).join("\n"); dialog.append(evidence);
       dialog.onclose = () => dialog.remove(); document.body.append(dialog); dialog.showModal(); return;
     }
-    if (message.type === "memorySegment" && message.chatId === state?.chat.id) { element("memory-preview").textContent = message.segment.content; element("memory-preview").hidden = false; return; }
+    if (message.type === "memorySegment" && message.chatId === state?.chat.id) {
+      requestedMemorySegments.delete(message.segment.id); memorySegments.set(message.segment.id, message.segment);
+      for (const entry of document.querySelectorAll(".memory-segment")) {
+        if (entry.dataset.memoryId === message.segment.id) entry.querySelector("pre").textContent = message.segment.content;
+      }
+      element("memory-preview").textContent = message.segment.content; element("memory-preview").hidden = false; return;
+    }
+    if (message.type === "memorySegmentUnavailable" && message.chatId === state?.chat.id) {
+      requestedMemorySegments.delete(message.id);
+      memorySegments.set(message.id, { id: message.id, content: message.error, unavailable: true });
+      for (const entry of document.querySelectorAll(".memory-segment")) {
+        if (entry.dataset.memoryId === message.id) entry.querySelector("pre").textContent = message.error;
+      }
+      return;
+    }
     if (message.type === "error") {
       if (message.submissionId) {
         const submission = submissions.get(message.submissionId);
@@ -710,7 +784,10 @@
         library?.render(message.library); showScreen("library"); return;
       }
       state = message;
-      if (previous !== state.chat.id) { element("prompt").value = drafts[state.chat.id] || ""; element("memory-preview").textContent = ""; element("memory-preview").hidden = true; }
+      if (previous !== state.chat.id) {
+        memorySegments.clear(); expandedMemorySegments.clear(); requestedMemorySegments.clear(); memoryGroupOpen.clear(); memoryFingerprint = undefined;
+        element("prompt").value = drafts[state.chat.id] || ""; element("memory-preview").textContent = ""; element("memory-preview").hidden = true;
+      }
       for (const [id, submission] of submissions) {
         if (!retained.has(submission.id)) { submissions.delete(id); if (pending === submission) pending = undefined; continue; }
         if (submission.id !== state.chat.id || !state.chat.messages.some(item => item.role === "user" && item.submissionId === id) && !state.chat.queuedInputs?.some(item => item.id === id)) continue;
@@ -793,7 +870,8 @@
       article.style.marginInlineStart = `${Math.min(depth, 4) * 10}px`;
       article.open = cached ? cached.article.open : node.status === "failed" || node.status === "unavailable";
       const heading = document.createElement("summary"); heading.className = "worker-node-heading";
-      const indicator = window.PkmChatStatusIndicator(node.status === "starting" ? "running" : node.status === "unavailable" ? "failed" : node.status);
+      const indicatorRole = node.chatId === overview.rootChatId || node.manager ? "manager" : "worker";
+      const indicator = window.PkmChatStatusIndicator(node.status === "starting" ? "running" : node.status === "unavailable" ? "failed" : node.status, indicatorRole);
       const title = document.createElement("strong"); title.textContent = node.title || t("Unavailable");
       const phase = document.createElement("span"); phase.className = "worker-phase"; phase.textContent = `${t(labels[node.status] || "Unavailable")}${node.archived ? ` · ${t("Archived result")}` : ""}`;
       const titleBox = document.createElement("div"); titleBox.className = "worker-node-title";
@@ -844,6 +922,7 @@
   const popovers = { permissions: "permissions-panel", tools: "tools-panel", memory: "memory-panel", options: "advanced-budget", "agent-config": "agent-config-panel" };
   function closePopovers() { for (const [button, panel] of Object.entries(popovers)) { element(panel).hidden = true; element(button).setAttribute("aria-expanded", "false"); } }
   function positionPopover(panel) { const top = element("composer").getBoundingClientRect().top; panel.style.bottom = `${Math.max(8, Math.min(innerHeight - 90, innerHeight - top + 6))}px`; panel.style.maxHeight = `${Math.max(72, top - 16)}px`; }
+  element("retrieval-flow").parentElement.addEventListener("toggle", () => { memoryFingerprint = undefined; renderMemory(); });
   function togglePopover(button, forceOpen = false) { const panel = element(popovers[button]); const open = forceOpen || panel.hidden; closePopovers(); if (open) { panel.hidden = false; positionPopover(panel); element(button).setAttribute("aria-expanded", "true"); if (button === "memory") renderMemory(); } }
   for (const button of Object.keys(popovers)) element(button).onclick = () => togglePopover(button);
   document.addEventListener("pointerdown", event => { if (!event.target.closest(".chat-settings") && !event.target.closest("[aria-controls]")) closePopovers(); });

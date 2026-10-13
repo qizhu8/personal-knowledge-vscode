@@ -1,12 +1,63 @@
 (() => {
   const t = text => globalThis.PkmChatText?.(text) || text;
-  window.PkmChatStatusIndicator = value => {
+  window.PkmChatRole = chat => chat?.workerManager || chat?.manager || chat?.messages?.some(message => message.delegations?.length)
+    ? "manager" : chat?.workerParentChatId || chat?.workerState?.parentChatId || chat?.parentChatId ? "worker" : undefined;
+  const wizardTemplates = new Map();
+  window.PkmChatWorkingIcon = role => {
+    if (!["manager", "worker"].includes(role)) return document.getElementById("working-cauldron-template").content.firstElementChild.cloneNode(true);
+    if (!wizardTemplates.has(role)) {
+      const icon = document.createElement("span"); icon.className = "chat-role-icon"; icon.dataset.chatRole = role;
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("viewBox", "0 0 16 16"); svg.setAttribute("aria-hidden", "true"); svg.setAttribute("focusable", "false"); svg.classList.add("pixel-wizard");
+      const palette = { outline: "#30273f", hat: "#9983ce", edge: "#c8b4ef", skin: "#f6ceaa", hair: "#795440",
+        eye: "#3a3040", book: "#e4ce8c", paper: "#fff0c8", pot: "#435366", rim: "#d2dfeb", potion: "#54cc8a", wand: "#c89355" };
+      const rect = (parent, x, y, width, height, color) => {
+        const node = document.createElementNS(svg.namespaceURI, "rect");
+        for (const [key, value] of Object.entries({ x, y, width, height, fill: palette[color] })) node.setAttribute(key, String(value));
+        parent.append(node);
+      };
+      const worker = role === "worker"; const x = worker ? 1 : 4;
+      for (const [dx, y, width, height, color] of [
+        [1, 1, 2, 1, "edge"], [0, 2, 4, 1, "hat"], [-1, 3, 6, 1, "hat"], [-2, 4, 8, 1, "edge"],
+        [0, 5, 4, 4, "skin"], [-1, 5, 1, 3, "hair"], [4, 5, 1, 2, "hair"], [1, 6, 1, 1, "eye"],
+        [3, 6, 1, 1, "eye"], [2, 8, 1, 1, "hair"], [0, 9, 4, 4, "hat"], [-1, 11, 6, 3, "hat"],
+        [0, 14, 2, 1, "outline"], [3, 14, 2, 1, "outline"], [1, 10, 1, 3, "edge"],
+      ]) rect(svg, x + dx, y, width, height, color);
+      for (const [left, top, width, height, color] of worker ? [
+        [7, 11, 8, 1, "rim"], [8, 12, 6, 1, "potion"], [8, 13, 6, 2, "pot"], [9, 15, 4, 1, "pot"],
+        [6, 12, 1, 1, "rim"], [15, 12, 1, 1, "rim"],
+      ] : [
+        [1, 10, 3, 4, "book"], [4, 11, 1, 3, "outline"], [5, 10, 3, 4, "book"],
+        [2, 11, 1, 2, "paper"], [6, 11, 1, 2, "paper"], [8, 10, 2, 1, "hat"],
+      ]) rect(svg, left, top, width, height, color);
+      for (let frame = 0; frame < 4; frame++) {
+        const group = document.createElementNS(svg.namespaceURI, "g"); group.classList.add("pixel-wizard-frame"); group.dataset.frame = String(frame);
+        if (worker) {
+          const offset = [0, 1, 2, 1][frame];
+          rect(group, 8 + offset, 8, 1, 5, "wand"); rect(group, 5, 9, 3 + offset, 1, "hat");
+          rect(group, 7 + offset, 9, 1, 1, "skin"); rect(group, 10 + frame % 2, 12, 1, 1, "paper");
+          if (frame === 1 || frame === 2) rect(group, 13, 9 - frame % 2, 1, 1, "potion");
+        } else {
+          const up = frame === 1 || frame === 2;
+          rect(group, 10, up ? 8 : 9, 1, 2, "skin"); rect(group, 11, up ? 6 : 7, 1, 3, "wand");
+          rect(group, 12, up ? 5 : 6, 1, 1, "book");
+          if (frame === 2) { rect(group, 13, 4, 1, 1, "paper"); rect(group, 14, 5, 1, 1, "book"); }
+        }
+        svg.append(group);
+      }
+      icon.append(svg); wizardTemplates.set(role, icon);
+    }
+    return wizardTemplates.get(role).cloneNode(true);
+  };
+  window.PkmChatStatusIndicator = (value, role) => {
     const labels = { running: 'Running', stopped: 'Stopped', failed: 'Failed', completed: 'Completed', 'awaiting-input': 'Waiting for Input', 'awaiting-result': 'Waiting for delegated result', 'new-result': 'Completed: unread result', paused: 'Paused', idle: 'Idle' };
     const state = value === 'awaiting-input' ? 'waiting-input' : value === 'awaiting-result' ? 'waiting-result' : value === 'new-result' ? 'completed' : value === 'paused' ? 'stopped' : ['running', 'stopped', 'failed', 'completed'].includes(value) ? value : 'idle';
-    const node = state === 'running' ? document.getElementById('working-cauldron-template').content.firstElementChild.cloneNode(true) : document.createElement('span');
+    const node = role || state === 'running' ? window.PkmChatWorkingIcon(role) : document.createElement('span');
     node.classList.add('chat-status-indicator'); node.removeAttribute('aria-hidden'); node.dataset.state = state;
-    const label = t(labels[value] || 'Idle'); node.setAttribute('title', label); node.setAttribute('role', 'img'); node.setAttribute('aria-label', label);
-    if (state === 'running') { const title = document.createElementNS('http://www.w3.org/2000/svg', 'title'); title.textContent = label; node.append(title); }
+    if (role && state !== 'running') node.classList.add("chat-role-still");
+    const label = `${role ? `${t(role === "manager" ? "Manager" : "Worker")} · ` : ""}${t(labels[value] || 'Idle')}`;
+    node.setAttribute('title', label); node.setAttribute('role', 'img'); node.setAttribute('aria-label', label);
+    if (node.namespaceURI === 'http://www.w3.org/2000/svg') { const title = document.createElementNS(node.namespaceURI, 'title'); title.textContent = label; node.append(title); }
     return node;
   };
   window.PkmChatLibrary = ({ post, showChat, save, saved }) => {
@@ -117,9 +168,10 @@
             cached = { node, row, open, name, toggle, count, children: childList, menuActions }; rows.set(chat.id, cached);
           }
           const indicator = cached.open.querySelector(".chat-status-indicator");
-          const key = `${chat.status}:${trash}:${document.documentElement.lang}`;
+          const role = children.has(chat.id) ? "manager" : window.PkmChatRole(chat);
+          const key = `${chat.status}:${role}:${trash}:${document.documentElement.lang}`;
           if (cached.statusKey !== key) {
-            const status = window.PkmChatStatusIndicator(chat.status);
+            const status = window.PkmChatStatusIndicator(chat.status, role);
             if (trash) { status.title = t("In Trash"); status.setAttribute("aria-label", t("In Trash")); }
             if (indicator) indicator.replaceWith(status); else cached.open.prepend(status);
             cached.statusKey = key;

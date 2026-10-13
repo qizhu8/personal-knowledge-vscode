@@ -22,6 +22,9 @@ const {
   updateGitHubSyncAgentCandidate,
   validateGitHubSyncConflictLocalState,
   validateGitHubSyncManualCandidate,
+  saveGitHubSyncManualCandidate,
+  validateGitHubSyncConflictVersion,
+  markGitHubSyncConflictApplied,
 } = require("../dist/sync/github-sync-conflicts.js");
 
 const skill = body => Buffer.from(`---\nname: "Shared"\ndescription: "test"\n---\n# Shared\n\n${body}\n`);
@@ -70,7 +73,9 @@ try {
   assert.strictEqual(readGitHubSyncConflict(root, "target-1").files[0].candidateSource, "remote");
   selectGitHubSyncConflictCandidate(root, "target-1", stored.files[0].path, "local");
   const batchRemote = selectAllGitHubSyncConflictCandidates(root, "target-1", "remote");
-  assert.deepStrictEqual(batchRemote, { selected: 1, unavailable: [] });
+  assert.deepStrictEqual(batchRemote, { selected: 0, unavailable: [] }, "bulk choices preserve previously selected candidates");
+  assert.strictEqual(readGitHubSyncConflict(root, "target-1").files[0].candidateSource, "local");
+  selectGitHubSyncConflictCandidate(root, "target-1", stored.files[0].path, "remote");
   assert.strictEqual(readGitHubSyncConflict(root, "target-1").files[0].candidateSource, "remote");
   assert.throws(
     () => updateGitHubSyncAgentCandidate(root, "target-1", stored.files[0].path, skill("<<<<<<< local").toString("utf8"), "bad"),

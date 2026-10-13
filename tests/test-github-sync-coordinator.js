@@ -225,6 +225,46 @@ function waitFor(messages, predicate, label, timeoutMs = 5000) {
   ], "separate roots elect independent leaders and cannot consume each other's intents");
   for (const coordinator of coordinators) coordinator.dispose();
 
+  const migrationDirectory = path.join(runtimeRoot, "singleton-migration");
+  const legacyRuns = [];
+  let releaseLegacy;
+  const legacy = new GitHubSyncCoordinator({
+    stateDirectory: migrationDirectory, knowledgeRoot, extensionVersion: "3.2.19",
+    pollMs: 20, leaseMs: 500,
+    execute: async (_id, reason) => {
+      legacyRuns.push(reason);
+      await new Promise(resolve => { releaseLegacy = resolve; });
+    },
+  });
+  const migrationTargets = [{ id: "primary", enabled: false, intervalMinutes: 60, syncOnChange: false }];
+  legacy.configure(migrationTargets);
+  legacy.request("primary", "manual");
+  const migrationDeadline = Date.now() + 5000;
+  while (!releaseLegacy && Date.now() < migrationDeadline) await wait(20);
+  assert(releaseLegacy, "legacy execution starts before migration");
+  const serviceRuns = [];
+  const service = new GitHubSyncCoordinator({
+    stateDirectory: migrationDirectory, knowledgeRoot, extensionVersion: "3.2.25",
+    independentService: true, pollMs: 20, leaseMs: 500,
+    execute: async (_id, reason) => { serviceRuns.push(reason); },
+  });
+  service.configure(migrationTargets);
+  await wait(100);
+  assert.strictEqual(service.isLeader(), false, "service must not fence a live in-flight legacy operation halfway through");
+  releaseLegacy();
+  while (!service.isLeader() && Date.now() < migrationDeadline) await wait(20);
+  assert(service.isLeader(), "independent service takes ownership after legacy work drains");
+  const migrationState = JSON.parse(fs.readFileSync(path.join(migrationDirectory, "coordinator.json"), "utf8"));
+  assert.strictEqual(migrationState.leader.independentService, true);
+  assert.strictEqual(migrationState.leader.extensionVersion, "3.2.25");
+  legacy.request("primary", "manual");
+  while (!serviceRuns.length && Date.now() < migrationDeadline) await wait(20);
+  assert.deepStrictEqual(serviceRuns, ["manual"], "even a legacy request is consumed by the independent service once migrated");
+  assert.deepStrictEqual(legacyRuns, ["manual"], "the old Extension Host does not resume execution after service takeover");
+  legacy.dispose();
+  assert(service.isLeader(), "disposing a follower cannot release the service's lease");
+  service.dispose();
+
   assert.strictEqual(
     canonicalKnowledgeRoot("/ignored", "win32", () => "C:\\Users\\ME\\Knowledge\\"),
     "c:/users/me/knowledge",
@@ -243,8 +283,8 @@ function waitFor(messages, predicate, label, timeoutMs = 5000) {
   const sync = fs.readFileSync(path.join(__dirname, "..", "src", "sync/github-sync.ts"), "utf8");
   const workflow = fs.readFileSync(path.join(__dirname, "..", ".github", "workflows", "github-sync-coordinator.yml"), "utf8");
   assert.match(extension, /withGitHubSyncTargetLock\(context, targetId, \(\) => withGitHubSyncApplyLock\(context,/);
-  assert.match(extension, /githubSyncCoordinatorStatePath !== coordinatorStatePath[\s\S]*githubSyncScheduler\.dispose\(\)[\s\S]*new GitHubSyncCoordinator/,
-    "extension configuration recreates the coordinator when the canonical Knowledge Root changes");
+  assert.match(extension, /githubSyncCoordinatorStatePath !== coordinatorStatePath[\s\S]*githubSyncScheduler\.dispose\(\)[\s\S]*new PkmServiceClient/,
+    "extension configuration reconnects the singleton client when the canonical Knowledge Root changes");
   assert.match(sync, /return applyLocalChanges\(storeRoot, localWrites, localDeletes\.filter\(item => !finalRemote\.has\(item\.file\.path\)\)\)/,
     "the serialized target operation applies local changes without deleting files retained in the final remote catalog");
   for (const os of ["ubuntu-latest", "windows-latest", "macos-latest"]) assert(workflow.includes(os));

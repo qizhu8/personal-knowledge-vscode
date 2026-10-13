@@ -5,6 +5,62 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.29] - 2026-10-13
+
+- Flush singleton recovery records with the exclusive writable creation descriptor for Windows compatibility.
+- Preserve original Sync and recovery-persistence errors independently across RPC, with redacted stacks/codes and explicit operation/transaction diagnostics. Missing recovery records no longer generate misleading recovery notices, and persistence failures stop automatic retries.
+- Persist long-path support in managed Git checkouts before worktree checks, without changing global Git configuration. Add exact-length clone/edit/idempotence tests and write/fsync/rename fault-injection coverage.
+
+## [3.2.28] - 2026-10-13
+
+- Update the Auto Sync switch immediately, show pending persistence, and roll back explicitly on errors. Auto can be disabled during an active transaction without interrupting Git.
+- Gate file-change triggers on the selected local content snapshot, privacy, and deletion evidence instead of entering Git for every watcher event. Keep periodic fetch independent and prevent skipped events from postponing its deadline.
+
+## [3.2.27] - 2026-10-13
+
+- Allow an unchanged legacy remote file containing merge markers to be repaired by a clean local edit instead of blocking before reconciliation; newly changed remote marker content is staged for review and cannot be pulled or republished as a valid candidate.
+
+## [3.2.26] - 2026-10-13
+
+- Preserve assigned execution context when service progress events call back into the host, preventing spurious authorization errors.
+- Acknowledge raw Sync errors after the host durably handles them instead of misreporting normal validation failures as unfinished postprocessing.
+- Recover retained merge-marker preflight failures into the target's actual error state without repeating Git operations.
+
+## [3.2.25] - 2026-10-13
+
+- Introduced an account/Knowledge Root scoped independent PKM background service and moved GitHub Sync queue ownership, scheduling and Git execution out of Extension Hosts.
+- Added private local IPC, version-gated clients and drained service upgrades; migrated legacy Sync leadership only after in-flight work completes.
+- Kept window-specific authorization, conflict review and inventory/retrieval refresh as service client callbacks rather than separate competing coordinators.
+
+## [3.2.24] - 2026-10-13
+
+- Hide the previous conflict prompt immediately when manually rechecking with Remote and display the fresh attempt's actual queued/running phase instead of jumping back to Resolve conflicts.
+- Preserve saved conflict choices during rechecks and show the resolution prompt again only after the attempt finishes with remaining conflicts.
+
+## [3.2.23] - 2026-10-13
+
+- Recognize baseline-verified local Git deletions, including unstaged, staged and committed deletions, so unchanged remote files are deleted instead of resurrected or unnecessarily sent to conflict review.
+- Apply local Git ignore rules consistently to uploads, downloads, previews, restores and fingerprint indicators, including tracked paths and nested rules; existing ignored remote copies remain untouched.
+- Recheck Git deletion evidence and ignore scope before push, retain delete-versus-edit and sparse-checkout safety guards, and serialize deletion tombstones consistently across repeated syncs.
+
+## [3.2.22] - 2026-10-13
+
+- Fixed extension activation after installing the 3.2.21 VSIX by bundling the Sync workbench's diff dependency rather than relying on development node_modules.
+- Added isolated build and actual-VSIX loading checks for the Sync workbench and its difference calculation.
+
+## [3.2.21] - 2026-10-13
+
+- Expanded the GitHub Sync workbench into a two-column Local/GitHub comparison with a collapsible file tree, hideable navigation and folded common base.
+- Highlighted text differences and added per-block left/right picking alongside whole-file choices, preserving unrelated candidate edits and allowing manual modifications before explicit save/validation and apply.
+
+## [3.2.20] - 2026-10-13
+
+- Added original 16-pixel magic teacher and cauldron-stirring wizard indicators for managers and workers, including nested managers, retained manager identity after worker archival, static state badges and reduced-motion/background/disconnection guards.
+- Made Memory inspection a collapsible source list with 30-character Unicode previews, lazy exact-segment expansion, dialogue/tool-result grouping, retained streaming expansion state and cross-Chat isolation.
+- Reconciled every member of multi-file GitHub Sync entities, safely merged independent JSON fields and Recipe nodes, and retained all unapplied changes when a local edit interrupts synchronization.
+- Preserved conflict decisions across unchanged rechecks, guarded approval against stale revisions, dirty editors and modified candidates, and retained accepted workspaces until synchronization succeeds.
+- Added an integrated GitHub Sync resolution workbench with explicit local/remote/manual/Agent choices, validation, per-file navigation, apply and retry; bulk choices and Agent preparation now leave resolved files alone and accurately report failures.
+
 ## [3.2.19] - 2026-10-10
 
 - Agent Sessions now projects PKM Chats and Tasks beneath their Chat List user groups, including empty Chats and nested spawned workers, without changing Session or host-group identities.

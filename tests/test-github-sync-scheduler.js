@@ -53,6 +53,19 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
   assert.strictEqual([...timers.values()][0].delay, 7 * 60_000, "an unchanged check schedules the next configured interval");
   assert.strictEqual(scheduler.snapshot().primary.nextSyncAt, "2026-09-24T20:12:00.000Z");
 
+  for (let event = 0; event < 3; event++) {
+    now += 1_000;
+    scheduler.notifyContentChanged();
+    const [id, timer] = [...timers.entries()].find(([, timer]) => timer.delay === 25);
+    timers.delete(id);
+    timer.callback();
+    await flush();
+    await flush();
+    assert.strictEqual(calls.length, 0, "unchanged watcher events never enter Git");
+    assert.strictEqual(scheduler.snapshot().primary.nextSyncAt, "2026-09-24T20:12:00.000Z",
+      "skipped change events must not postpone the periodic remote fetch");
+  }
+
   dirty = true;
   scheduler.notifyContentChanged();
   scheduler.notifyContentChanged();
@@ -217,6 +230,31 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
   assert.strictEqual(toggleTimers.size, 0, "turning off Auto during an active failure must not schedule another attempt");
   assert.strictEqual(toggledOff.request("toggled-off", "interval"), false);
   toggledOff.dispose();
+
+  const offSuccessTimers = new Map();
+  let completeActive;
+  let offSuccessCalls = 0;
+  const offSuccess = new GitHubSyncScheduler({
+    now: () => now,
+    setTimeout: (callback, delay) => {
+      const timer = { id: nextTimer++, unref() {} };
+      offSuccessTimers.set(timer.id, { callback, delay });
+      return timer;
+    },
+    clearTimeout: timer => offSuccessTimers.delete(timer.id),
+    execute: async () => { offSuccessCalls++; await new Promise(resolve => { completeActive = resolve; }); },
+  });
+  offSuccess.configure([{ id: "off-success", enabled: true, intervalMinutes: 5, syncOnChange: true }]);
+  await flush();
+  offSuccess.request("off-success", "change");
+  offSuccess.configure([{ id: "off-success", enabled: false, intervalMinutes: 5, syncOnChange: true }]);
+  completeActive();
+  await flush();
+  await flush();
+  assert.strictEqual(offSuccessCalls, 1, "disabling Auto cancels queued changes without aborting the active operation");
+  assert.strictEqual(offSuccess.snapshot()["off-success"].status, "paused");
+  assert.strictEqual(offSuccessTimers.size, 0, "finishing an active success after Auto is disabled cannot restart scheduling");
+  offSuccess.dispose();
 
   const persistedStateOptions = {
     now: () => Date.parse("2026-09-24T20:00:00.000Z"),

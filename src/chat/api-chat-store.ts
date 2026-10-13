@@ -599,7 +599,7 @@ export class ApiChatStore {
     if (chat.paused || session.nativeChat?.paused === true) throw new Error("This Session is paused. Resume it before sending another request.");
   }
 
-  list(includeTrash = false): Array<{ id: string; workspaceNamespace: string; title: string; updatedAt: string; status: ApiChatStatus; groupId: string; trashedAt?: string; workerParentChatId?: string; workerTreeId?: string }> {
+  list(includeTrash = false): Array<{ id: string; workspaceNamespace: string; title: string; updatedAt: string; status: ApiChatStatus; groupId: string; trashedAt?: string; workerParentChatId?: string; workerTreeId?: string; workerManager?: boolean }> {
     const placements = this.library.read().placements;
     const chats: ReturnType<ApiChatStore["list"]> = [];
     for (const directory of this.directories()) for (const name of fs.readdirSync(directory)) {
@@ -611,6 +611,7 @@ export class ApiChatStore {
         const session = sessionFile && fs.existsSync(sessionFile) ? JSON.parse(fs.readFileSync(sessionFile, "utf8")) : undefined;
         const stopped = session?.status === "stopped" && session.hostKind === "pkm" && session.hostSessionId === chat.id;
         if (includeTrash || !placement.trashedAt) chats.push({ id: chat.id, workspaceNamespace: chat.workspaceNamespace!, title: chat.title, updatedAt: chat.updatedAt, status: stopped ? "stopped" : apiChatStatus(chat), ...placement,
+          ...(chat.messages.some(message => message.delegations?.length) ? { workerManager: true } : {}),
           ...(chat.workerState ? { workerTreeId: chat.workerState.treeId, ...(chat.workerState.parentChatId ? { workerParentChatId: chat.workerState.parentChatId } : {}) } : {}) });
       } catch {}
     }

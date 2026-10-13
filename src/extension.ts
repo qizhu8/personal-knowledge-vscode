@@ -107,8 +107,8 @@ import { recipeBrowserEditorDocument } from "./ui/recipe-browser";
 import { availableSkillRouterSources, normalizeSkillRouterSourcePriority, SkillRouterSource } from "./skills/skill-router-config";
 import {
   GITHUB_SYNC_CONTENT_TYPES, GitHubPublicationMigration, GitHubPublicationMigrationSource, GitHubSyncCatalog, GitHubSyncConflictError, GitHubSyncContentType, GitHubSyncCredentials, GitHubSyncExtensionCompatibilityError, GitHubSyncFolderFingerprints, GitHubSyncRecipePull, GitHubSyncTarget, githubSyncMigrationCanonicalFiles,
-  completeGitHubSyncTransaction, createGitHubSyncIdentity, discoverGitHubCredentialManagerAccounts, discoverGitHubSshIdentities, fetchGitHubRemoteSnapshot, githubSyncAuthenticationSessionOptions, githubSyncEntryShields, githubSyncFolderShields, githubSyncIgnoredPath, githubSyncManagedContent, githubSyncManifestFileFingerprints, githubSyncManifestFolderFingerprints, githubSyncSafeRelativePath, githubSyncShield, normalizeGitHubSyncTarget, previewGitHubSyncTarget,
-  probeGitHubSyncAuthentication, probeGitHubSyncHttpsAuthentication, probeGitHubSyncVscodeAuthentication, readGitHubCachedManifest, readGitHubRemoteFile, readGitHubRemoteFilesForSubscription, readGitHubRemoteManifest, replaceGitHubSyncFilesAtomically, restoreGitHubRemoteFiles, syncGitHubTarget, testGitHubSyncAuthentication,
+  completeGitHubSyncTransaction, createGitHubSyncIdentity, discoverGitHubCredentialManagerAccounts, discoverGitHubSshIdentities, fetchGitHubRemoteSnapshot, githubSyncAuthenticationSessionOptions, githubSyncEntryShields, githubSyncExcludedPaths, githubSyncFolderShields, githubSyncIgnoredPath, githubSyncIsTextContent, githubSyncManagedContent, githubSyncManifestFileFingerprints, githubSyncManifestFolderFingerprints, githubSyncSafeRelativePath, githubSyncShield, normalizeGitHubSyncTarget, previewGitHubSyncTarget,
+  probeGitHubSyncAuthentication, probeGitHubSyncHttpsAuthentication, probeGitHubSyncVscodeAuthentication, readGitHubCachedManifest, readGitHubRemoteFile, readGitHubRemoteFilesForSubscription, readGitHubRemoteManifest, replaceGitHubSyncFilesAtomically, restoreGitHubRemoteFiles, testGitHubSyncAuthentication,
 } from "./sync/github-sync";
 import { githubSyncCatalogInWorker } from "./sync/github-sync-catalog-worker";
 import { githubSyncFingerprintInWorker } from "./sync/github-sync-fingerprint-worker";
@@ -117,10 +117,14 @@ import {
   readGitHubSyncConflictCandidate, refreshGitHubSyncConflictLocalCandidate, selectAllGitHubSyncConflictCandidates, selectAllGitHubSyncConflictDeletions,
   selectAllGitHubSyncConflictLocalDeletions, selectGitHubSyncConflictCandidate, selectGitHubSyncConflictDeletion,
   selectGitHubSyncConflictLocalDeletion, storeGitHubSyncConflict, updateGitHubSyncAgentCandidate,
-  validateGitHubSyncConflictLocalState, validateGitHubSyncManualCandidate,
+  validateGitHubSyncConflictLocalState, validateGitHubSyncManualCandidate, validateGitHubSyncConflictVersion,
+  saveGitHubSyncManualCandidate, markGitHubSyncConflictApplied,
 } from "./sync/github-sync-conflicts";
-import { GitHubSyncRuntimeState } from "./sync/github-sync-scheduler";
-import { githubSyncCoordinatorDirectory, GitHubSyncCoordinator } from "./sync/github-sync-coordinator";
+import { GitHubSyncWorkbenchRequest, GitHubSyncWorkbenchState, openGitHubSyncConflictWorkbench } from "./sync/github-sync-workbench";
+import { GitHubSyncReason, GitHubSyncRuntimeState } from "./sync/github-sync-scheduler";
+import type { GitHubSyncResult } from "./sync/github-sync";
+import { githubSyncCoordinatorDirectory } from "./sync/github-sync-coordinator";
+import { PkmServiceClient, PkmServiceRecoveryPersistenceError } from "./runtime/pkm-service";
 import { BackgroundTaskProducer, BackgroundTaskRegistry } from "./runtime/background-task-registry";
 import { ActionBackgroundTasks } from "./runtime/action-background-tasks";
 
@@ -1190,7 +1194,7 @@ async function sharedContentCatalog(): Promise<Record<string, any[]>> {
 
 const GITHUB_SYNC_TARGETS_SCHEMA = 1;
 const GITHUB_SYNC_SECRET_PREFIX = "personalKnowledge.githubSync.vscode.";
-let githubSyncScheduler: GitHubSyncCoordinator | undefined;
+let githubSyncScheduler: PkmServiceClient | undefined;
 let githubSyncCoordinatorStatePath: string | undefined;
 const githubSyncForceUpdateAudit = new Map<string, { actor: string; comment: string }>();
 
@@ -1330,6 +1334,8 @@ function parseAgentMergeResponse(raw: string, type: GitHubSyncContentType): {
   const introducedContent = Array.isArray(parsed?.introducedContent) ? parsed.introducedContent : [];
   const choices = new Set(["base", "local", "remote", "combined", "removed"]);
   if (typeof mergedContent !== "string" || typeof parsed?.rationale !== "string" || typeof parsed?.safeToApply !== "boolean"
+    || !Array.isArray(parsed?.decisions) || !Array.isArray(parsed?.evidence)
+    || !Array.isArray(parsed?.unresolvedConflicts) || !Array.isArray(parsed?.introducedContent)
     || typeof parsed?.confidence !== "number" || parsed.confidence < 0 || parsed.confidence > 1
     || !decisions.every((decision: any) => decision && typeof decision.subject === "string"
       && choices.has(decision.choice) && typeof decision.reason === "string")
@@ -1375,8 +1381,8 @@ async function prepareGitHubSyncAgentCandidates(
   const backends = await listAiBackends(context);
   const backend = backends.find(candidate => candidate.kind === "copilot") || backends[0];
   if (!backend || backend.id.endsWith(":needkey")) throw new Error("No available Agent model can prepare this conflict. Keep manual review or configure an AI backend.");
-  const files = relative ? record.files.filter(file => file.path === relative) : record.files;
-  if (!files.length) throw new Error("GitHub Sync conflict file was not found.");
+  const files = record.files.filter(file => file.candidateSource === "unresolved" && (!relative || file.path === relative));
+  if (!files.length) throw new Error("No unresolved GitHub Sync conflict files are available for Agent merging.");
   const result: GitHubSyncAgentBatchResult = { prepared: 0, unsupported: 0, failed: [] };
   for (const file of files) {
     if (file.type !== "skills" && file.type !== "recipes") {
@@ -1416,6 +1422,13 @@ async function prepareGitHubSyncAgentCandidates(
         `REMOTE:\n${variants.remote}`,
       ].join("\n\n")), file.type);
       if (!response.safeToApply) throw new Error(`The Agent declined to produce a safe merge for ${file.path}: ${response.rationale}`);
+      if (recipe) {
+        const mergedRecipe = JSON.parse(response.mergedContent) as Record<string, unknown>;
+        const compiled = compileWorkflowDefinitionV1(mergedRecipe.definition);
+        if (!compiled.ok) throw new Error(`The Agent produced an invalid Recipe definition: ${file.path}`);
+        mergedRecipe.executableDigest = compiled.executableDigest;
+        response.mergedContent = `${JSON.stringify(mergedRecipe, null, 2)}\n`;
+      }
       updateGitHubSyncAgentCandidate(stateDirectory, targetId, file.path, response.mergedContent, response.rationale, response.review);
       result.prepared += 1;
     } catch (error: any) {
@@ -1438,6 +1451,111 @@ function githubSyncCandidateDestination(root: string, relative: string): string 
   return current;
 }
 
+function requireSavedGitHubSyncConflictDocuments(context: vscode.ExtensionContext, targetId: string): void {
+  const stateDirectory = githubSyncStateDirectory(context);
+  const record = readGitHubSyncConflict(stateDirectory, targetId);
+  if (!record) throw new Error("GitHub Sync conflict was not found.");
+  const paths = new Set<string>();
+  for (const file of record.files) {
+    paths.add(path.resolve(gitHubSyncConflictVariantPath(stateDirectory, targetId, "merged", file.path)));
+    for (const relative of [file.path, file.localPath, file.resultPath]) {
+      if (!relative) continue;
+      paths.add(path.resolve(relative.startsWith("agentSnapshots/")
+        ? githubSyncCandidateDestination(path.join(getStorePath(), ".pkm", "state"), `agent-snapshots/${relative.slice("agentSnapshots/".length)}`)
+        : githubSyncCandidateDestination(getStorePath(), relative)));
+    }
+  }
+  const dirty = vscode.workspace.textDocuments.filter(document =>
+    document.isDirty && document.uri.scheme === "file" && paths.has(path.resolve(document.uri.fsPath)));
+  if (dirty.length) {
+    throw new Error(`Save or discard unsaved editor changes before changing conflict choices or applying: ${dirty.map(document => path.basename(document.uri.fsPath)).join(", ")}`);
+  }
+}
+
+async function withGitHubSyncConflictEdit<T>(
+  context: vscode.ExtensionContext,
+  message: { targetId: string; conflictId?: string; revision?: number },
+  action: () => Promise<T>,
+  allowApplied = false,
+): Promise<T> {
+  return withGitHubSyncTargetLock(context, message.targetId, async () => {
+    const record = validateGitHubSyncConflictVersion(githubSyncStateDirectory(context), message.targetId, {
+      conflictId: message.conflictId || "",
+      revision: message.revision ?? -1,
+    });
+    requireSavedGitHubSyncConflictDocuments(context, message.targetId);
+    if (record.appliedAt && !allowApplied) {
+      throw new Error("These resolutions have already been applied locally. Retry Sync or refresh its status before editing them.");
+    }
+    return action();
+  });
+}
+
+async function openGitHubSyncResolutionWorkbench(context: vscode.ExtensionContext, targetId: string, initialPath?: string): Promise<void> {
+  const stateDirectory = githubSyncStateDirectory(context);
+  await openGitHubSyncConflictWorkbench(context, targetId, {
+    initialPath,
+    getState: () => withGitHubSyncTargetLock(context, targetId, async (): Promise<GitHubSyncWorkbenchState | undefined> => {
+      const record = readGitHubSyncConflict(stateDirectory, targetId);
+      if (!record) return undefined;
+      return {
+        record,
+        files: record.files.map(file => {
+          const variants: Partial<Record<"base" | "local" | "remote" | "merged", string>> = {};
+          const previews: Partial<Record<"base" | "local" | "remote" | "merged", string>> = {};
+          const extension = path.extname(file.path).toLowerCase();
+          const mime = ({ ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp" } as Record<string, string>)[extension];
+          let binary = false;
+          for (const variant of ["base", "local", "remote", "merged"] as const) {
+            if (variant === "base" && !file.hasBase || variant === "local" && !file.hasLocal || variant === "remote" && !file.hasRemote) continue;
+            const content = fs.readFileSync(gitHubSyncConflictVariantPath(stateDirectory, targetId, variant, file.path));
+            const text = content.toString("utf8");
+            if (!githubSyncIsTextContent(file.path, content)) binary = true;
+            variants[variant] = text;
+            if (mime) previews[variant] = `data:${mime};base64,${content.toString("base64")}`;
+          }
+          return { path: file.path, binary, mime, previews, ...(binary ? {} : variants) };
+        }),
+      };
+    }),
+    perform: (request: GitHubSyncWorkbenchRequest) => withGitHubSyncConflictEdit(context, { targetId, ...request }, async () => {
+      const relative = request.path || "";
+      switch (request.command) {
+        case "choose":
+          if (!request.source) throw new Error("Choose a source version.");
+          selectGitHubSyncConflictCandidate(stateDirectory, targetId, relative, request.source);
+          break;
+        case "delete-remote": selectGitHubSyncConflictDeletion(stateDirectory, targetId, relative); break;
+        case "delete-local": selectGitHubSyncConflictLocalDeletion(stateDirectory, targetId, relative); break;
+        case "save":
+          if (typeof request.content === "string") saveGitHubSyncManualCandidate(stateDirectory, targetId, relative, request.content);
+          else validateGitHubSyncManualCandidate(stateDirectory, targetId, relative);
+          break;
+        case "agent":
+          await prepareGitHubSyncAgentCandidates(context, targetId, relative);
+          break;
+        case "apply": {
+          const result = await withGitHubSyncApplyLock(context, () => acceptGitHubSyncConflict(context, targetId));
+          if (result.refreshed.length) throw new Error("Local files changed. Review the refreshed choices before applying again.");
+          break;
+        }
+        case "compare": {
+          const file = readGitHubSyncConflict(stateDirectory, targetId)?.files.find(file => file.path === relative);
+          if (!file) throw new Error("GitHub Sync conflict file was not found.");
+          const variant = file.hasRemote ? "remote" : file.hasBase ? "base" : "local";
+          await vscode.commands.executeCommand("vscode.diff",
+            vscode.Uri.file(gitHubSyncConflictVariantPath(stateDirectory, targetId, variant, relative)),
+            vscode.Uri.file(gitHubSyncConflictVariantPath(stateDirectory, targetId, "merged", relative)),
+            `GitHub Sync source | Result: ${relative}`);
+          break;
+        }
+        case "refresh": break;
+        default: throw new Error("Unsupported conflict workbench action.");
+      }
+    }, request.command === "apply" || request.command === "refresh" || request.command === "compare"),
+  });
+}
+
 async function acceptGitHubSyncConflict(
   context: vscode.ExtensionContext,
   targetId: string,
@@ -1446,6 +1564,13 @@ async function acceptGitHubSyncConflict(
   const stateDirectory = githubSyncStateDirectory(context);
   const record = readGitHubSyncConflict(stateDirectory, targetId);
   if (!record) throw new Error("GitHub Sync conflict was not found.");
+  if (!githubSyncScheduler) throw new Error("GitHub Sync coordinator is not ready. Refresh GitHub Sync before applying resolutions.");
+  requireSavedGitHubSyncConflictDocuments(context, targetId);
+  if (record.appliedAt) {
+    reportProgress?.("Retrying synchronization of the already-applied local resolutions…");
+    await githubSyncScheduler.request(targetId, "manual");
+    return { accepted: record.files.length, refreshed: [] };
+  }
   if (record.purpose === "initial-preview" && record.remoteSchema !== 3) {
     throw new Error(`Complete the GitHub publication migration from schema ${record.remoteSchema || "unknown"} to schema 3 before applying the initial comparison.`);
   }
@@ -1463,7 +1588,9 @@ async function acceptGitHubSyncConflict(
   const candidates = record.files.map(file => {
     const deleteRemote = file.candidateSource === "delete";
     const deleteLocal = file.candidateSource === "delete-local";
-    const content = deleteRemote || deleteLocal ? undefined : readGitHubSyncConflictCandidate(stateDirectory, targetId, file.path);
+    const content = deleteRemote || deleteLocal ? undefined : readGitHubSyncConflictCandidate(stateDirectory, targetId, file.path, true);
+    const sourcePath = file.localPath || file.path;
+    const resultPath = file.resultPath || file.path;
     return {
       file,
       content,
@@ -1478,18 +1605,26 @@ async function acceptGitHubSyncConflict(
           return recipe ? githubSyncRecipeContent(recipe) : undefined;
         })()
         : undefined,
+      source: file.type === "recipes" ? undefined
+        : sourcePath.startsWith("agentSnapshots/")
+          ? githubSyncCandidateDestination(path.join(getStorePath(), ".pkm", "state"), `agent-snapshots/${sourcePath.slice("agentSnapshots/".length)}`)
+          : githubSyncCandidateDestination(getStorePath(), sourcePath),
       destination: file.type === "recipes"
         ? undefined
-        : file.path.startsWith("agentSnapshots/")
-          ? githubSyncCandidateDestination(path.join(getStorePath(), ".pkm", "state"), `agent-snapshots/${file.path.slice("agentSnapshots/".length)}`)
-          : githubSyncCandidateDestination(getStorePath(), file.path),
+        : resultPath.startsWith("agentSnapshots/")
+          ? githubSyncCandidateDestination(path.join(getStorePath(), ".pkm", "state"), `agent-snapshots/${resultPath.slice("agentSnapshots/".length)}`)
+          : githubSyncCandidateDestination(getStorePath(), resultPath),
     };
   });
   const refreshed: string[] = [];
-  for (const { file, content, deleteRemote, deleteLocal, originalLocal, currentLocal, destination } of candidates) {
+  for (const { file, content, deleteRemote, deleteLocal, originalLocal, currentLocal, source, destination } of candidates) {
     const current = file.type === "recipes"
       ? currentLocal
-      : destination && fs.existsSync(destination) ? fs.readFileSync(destination) : undefined;
+      : source && fs.existsSync(source) ? fs.readFileSync(source) : undefined;
+    if (!deleteRemote && !deleteLocal && destination && source !== destination && fs.existsSync(destination)
+      && !fs.readFileSync(destination).equals(content!)) {
+      throw new Error(`The selected destination already contains different local content: ${file.resultPath || file.path}`);
+    }
     if (deleteRemote) {
       if (current) refreshed.push(file.path);
     } else if (deleteLocal) {
@@ -1517,7 +1652,10 @@ async function acceptGitHubSyncConflict(
   replaceGitHubSyncFilesAtomically(
     candidates
       .filter(candidate => !candidate.deleteRemote && !!candidate.destination)
-      .map(({ destination, content }) => ({ destination: destination!, content })),
+      .flatMap(({ source, destination, content }) => [
+        { destination: destination!, content },
+        ...(source && source !== destination ? [{ destination: source, content: undefined }] : []),
+      ]),
     "GitHub Sync conflict acceptance",
   );
   if (recipeCandidates.length) {
@@ -1533,7 +1671,7 @@ async function acceptGitHubSyncConflict(
     .map(candidate => candidate.file.itemId));
   for (const { file } of candidates) {
     if (file.privacy === "private" && file.type !== "agentSnapshots") {
-      const topLevel = file.category.split("/").filter(Boolean)[0];
+      const topLevel = (file.resultPath || file.path).split("/").slice(1, -1)[0];
       if (topLevel) setTopLevelPrivacy(file.type as PrivacyContentType, topLevel, true);
     }
   }
@@ -1549,7 +1687,11 @@ async function acceptGitHubSyncConflict(
       storeRoot: path.resolve(getStorePath()),
     };
     current.lastResolutionReport = record.resolutionReport;
-    const deletions = candidates.filter(candidate => candidate.deleteRemote).map(({ file }) => ({
+    current.automation.enabled = false;
+    const deletions = candidates.filter(candidate => candidate.deleteRemote
+      && candidate.file.entityDeletion !== false
+      && candidates.filter(other => other.file.type === candidate.file.type && other.file.itemId === candidate.file.itemId)
+        .every(other => other.deleteRemote)).map(({ file }) => ({
       type: file.type,
       itemId: file.itemId,
       deletedAt: new Date().toISOString(),
@@ -1566,13 +1708,13 @@ async function acceptGitHubSyncConflict(
     delete current.lastFailure;
     return { targets, result: undefined };
   });
-  clearGitHubSyncConflict(stateDirectory, targetId);
+  markGitHubSyncConflictApplied(stateDirectory, targetId);
   invalidateSharedContentCatalog();
+  reportProgress?.("Queueing Fetch, Commit, and Push…");
+  await githubSyncScheduler.request(targetId, "manual");
   reportProgress?.("Refreshing the Knowledge inventory…");
   await refreshKnowledgeInventory(context);
   _treeProvider?.refresh();
-  reportProgress?.("Queueing Fetch, Commit, and Push…");
-  githubSyncScheduler?.request(targetId, "manual");
   return { accepted: record.files.length, refreshed: [] };
 }
 
@@ -1709,7 +1851,137 @@ function updateGitHubSyncBackgroundTask(context: vscode.ExtensionContext, target
   }
 }
 
+async function finalizeGitHubSyncServiceResult(
+  context: vscode.ExtensionContext, targetId: string, reason: GitHubSyncReason,
+  result: GitHubSyncResult, reportRefresh?: () => void, localChangeFingerprint?: string,
+): Promise<void> {
+  const target = githubSyncTargetById(context, targetId);
+  applyGitHubSyncRecipePulls(result.recipePulls);
+  applyGitHubSyncRecipeDeletes(result.recipeDeletes);
+  const changedLocalContent = result.pulled.length > 0 || result.deletedLocal.length > 0
+    || result.recipePulls.length > 0 || result.recipeDeletes.length > 0;
+  for (const [type, topLevels] of Object.entries(result.privateTopLevels)) {
+    for (const topLevel of topLevels || []) setTopLevelPrivacy(type as PrivacyContentType, topLevel, true);
+  }
+  if (result.pulled.length || result.deletedLocal.length || result.recipeDeletes.length) {
+    invalidateSharedContentCatalog();
+    _treeProvider?.refresh();
+  }
+  const updated = await mutateGitHubSyncTargets(context, `sync ${targetId}`, currentTargets => {
+    const current = currentTargets.find(candidate => candidate.id === targetId);
+    if (!current) return { targets: currentTargets, result: false };
+    const wasInitialSyncCompleted = current.automation.initialSyncCompleted;
+    const migration = githubPublicationMigration(context, targetId).status();
+    current.lastSync = {
+      at: new Date().toISOString(), commit: result.commit, fingerprints: result.fingerprints,
+      repository: current.repository, branch: current.branch, storeRoot: path.resolve(getStorePath()),
+    };
+    current.lastResolutionReport = result.resolutionReport;
+    const acknowledged = new Set(result.acknowledgedDeletions.map(item => `${item.type}\0${item.itemId}`));
+    current.pendingDeletions = (current.pendingDeletions || []).filter(item => !acknowledged.has(`${item.type}\0${item.itemId}`));
+    if (localChangeFingerprint) {
+      current.lastSync.localChangeFingerprint = githubSyncLocalChangeFingerprint(current, localChangeFingerprint);
+    }
+    if (reason === "manual" || reason === "force-local-authority") {
+      current.automation.initialSyncCompleted = true;
+      if (migration?.phase === "cutover") {
+        current.publication = {
+          requiredCapability: "stable-entity-identity", sourceCommit: migration.remoteCommit,
+          sourceDigest: migration.sourceDigest, manualVerificationCompleted: true,
+        };
+      } else if (!wasInitialSyncCompleted && !current.publication) {
+        current.publication = {
+          requiredCapability: "stable-entity-identity", sourceCommit: result.commit,
+          sourceDigest: createHash("sha256").update(JSON.stringify(result.fingerprints)).digest("hex"),
+          manualVerificationCompleted: true,
+        };
+      } else if (current.publication) current.publication.manualVerificationCompleted = true;
+    }
+    delete current.lastFailure;
+    return { targets: currentTargets, result: true };
+  });
+  if (!updated) return;
+  completeGitHubSyncTransaction(path.join(githubSyncStateDirectory(context), "checkouts"), targetId, result.transactionId);
+  clearGitHubSyncConflict(githubSyncStateDirectory(context), targetId);
+  reportRefresh?.();
+  try {
+    await refreshKnowledgeInventory(context);
+    await refreshRetrievalIndex(context);
+  } catch (error) {
+    log.warn(`GitHub Sync target=${target.name} committed=${result.commit}; inventory/retrieval post-processing will retry: ${error instanceof Error ? error.message : String(error)}`);
+    scheduleRetrievalRefresh(context, 0);
+  }
+  if (changedLocalContent) githubSyncScheduler?.notifyContentChanged(targetId);
+}
+
+function githubSyncLocalChangeFingerprint(target: GitHubSyncTarget, contentFingerprint: string): string {
+  const deletions = (target.pendingDeletions || []).map(item => `${item.type}\0${item.itemId}`).sort();
+  return createHash("sha256").update(JSON.stringify([contentFingerprint, deletions])).digest("hex");
+}
+
+async function recoverGitHubSyncServiceResults(context: vscode.ExtensionContext, service: PkmServiceClient): Promise<void> {
+  for (const receipt of await service.listRecoverableResults()) {
+    await withGitHubSyncTargetLock(context, receipt.targetId, () => withGitHubSyncApplyLock(context, async () => {
+      if (!(await service.listRecoverableResults()).some(current => current.operationId === receipt.operationId)) {
+        log.info(`PKM service receipt ${receipt.operationId} was already recovered by another window.`);
+        return;
+      }
+      if (!readGitHubSyncTargets(context).some(target => target.id === receipt.targetId)) {
+        throw new Error(`PKM service has an unapplied result for deleted target ${receipt.targetId}. Preserve receipt ${receipt.operationId} for review.`);
+      }
+      const currentTarget = githubSyncTargetById(context, receipt.targetId);
+      const reason = receipt.reason;
+      if (!reason || receipt.repository !== currentTarget.repository || receipt.branch !== currentTarget.branch) {
+        throw new Error(`PKM service result ${receipt.operationId} has missing or mismatched target metadata. Preserve it for review; no recovery was applied.`);
+      }
+      let result: GitHubSyncResult;
+      try {
+        result = await service.recoverSyncResult(receipt.operationId);
+      } catch (error) {
+        if (error instanceof Error && /^GitHub Sync content still contains merge conflict markers: /.test(error.message)) {
+          await mutateGitHubSyncTargets(context, `failure ${receipt.targetId}`, targets => {
+            const target = targets.find(target => target.id === receipt.targetId);
+            if (target) target.lastFailure = { at: new Date().toISOString(), error: error.message, reason, attempts: 1 };
+            return { targets, result: undefined };
+          });
+          await service.acknowledgeRecoveredResult(receipt.operationId);
+          log.warn(`Recovered preflight validation failure target=${receipt.targetId}: ${error.message}`);
+          return;
+        }
+        if (!(error instanceof GitHubSyncConflictError)) throw error;
+        applyGitHubSyncRecipePulls(error.recipePulls);
+        applyGitHubSyncRecipeDeletes(error.recipeDeletes);
+        for (const [type, topLevels] of Object.entries(error.privateTopLevels)) {
+          for (const topLevel of topLevels || []) setTopLevelPrivacy(type as PrivacyContentType, topLevel, true);
+        }
+        storeGitHubSyncConflict(githubSyncStateDirectory(context), receipt.targetId, error);
+        await mutateGitHubSyncTargets(context, `failure ${receipt.targetId}`, targets => {
+          const target = targets.find(target => target.id === receipt.targetId);
+          if (target) target.lastFailure = { at: new Date().toISOString(), error: error.message, reason, attempts: 3 };
+          return { targets, result: undefined };
+        });
+        invalidateSharedContentCatalog();
+        await refreshKnowledgeInventory(context);
+        scheduleRetrievalRefresh(context, 0);
+        await service.acknowledgeRecoveredResult(receipt.operationId);
+        log.warn(`Recovered GitHub Sync conflict from PKM service target=${receipt.targetId}; review the stored choices.`);
+        return;
+      }
+      const transaction = JSON.parse(fs.readFileSync(path.join(githubSyncStateDirectory(context), "checkouts",
+        receipt.targetId, "transactions", "latest.json"), "utf8"));
+      const target = githubSyncTargetById(context, receipt.targetId);
+      if (transaction.transactionId !== result.transactionId || transaction.repository !== target.repository || transaction.branch !== target.branch) {
+        throw new Error(`PKM service result ${receipt.operationId} no longer matches the target's transaction/repository/branch. Preserve it for review; no recovery was applied.`);
+      }
+      await finalizeGitHubSyncServiceResult(context, receipt.targetId, reason, result);
+      await service.acknowledgeRecoveredResult(receipt.operationId);
+      log.info(`Recovered completed GitHub Sync from PKM service target=${receipt.targetId} commit=${result.commit}; no Git operation was repeated.`);
+    }));
+  }
+}
+
 function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
+  let createdCoordinator = false;
   const coordinatorStatePath = githubSyncCoordinatorStateDirectory(context);
   if (githubSyncScheduler && githubSyncCoordinatorStatePath !== coordinatorStatePath) {
     githubSyncScheduler.dispose();
@@ -1717,9 +1989,11 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
     githubSyncCoordinatorStatePath = undefined;
   }
   if (!githubSyncScheduler) {
+    createdCoordinator = true;
     githubSyncCoordinatorStatePath = coordinatorStatePath;
-    githubSyncScheduler = new GitHubSyncCoordinator({
-      shouldRetryFailure: error => !(error instanceof GitHubSyncConflictError),
+    githubSyncScheduler = new PkmServiceClient({
+      globalStoragePath: context.globalStorageUri.fsPath,
+      shouldRetryFailure: error => !(error instanceof GitHubSyncConflictError) && !(error instanceof PkmServiceRecoveryPersistenceError),
       onAutoPaused: targetId => {
         void mutateGitHubSyncTargets(context, `automatic failure pause ${targetId}`, currentTargets => {
           const current = currentTargets.find(candidate => candidate.id === targetId);
@@ -1733,10 +2007,15 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
       stateDirectory: coordinatorStatePath,
       knowledgeRoot: getStorePath(),
       extensionVersion: String(context.extension.packageJSON.version),
+      serviceEntryPath: path.join(context.extensionPath, "dist", "runtime", "pkm-service-entry.js"),
+      onError: error => {
+        log.error(`PKM singleton service: ${error instanceof Error ? error.stack || error.message : String(error)}`);
+        void vscode.window.showErrorMessage(`PKM background service: ${error instanceof Error ? error.message : String(error)}`);
+      },
       compatibilityBlock: error => error instanceof GitHubSyncExtensionCompatibilityError
         ? { requiredVersion: error.requiredVersion, installedVersion: error.installedVersion }
         : undefined,
-      shouldExecute: async (targetId, reason) => {
+      shouldExecute: (targetId, reason) => withGitHubSyncTargetLock(context, targetId, async () => {
         if (reason !== "force-local-authority" && reason !== "manual" && readGitHubSyncConflict(githubSyncStateDirectory(context), targetId)
           && !clearEquivalentGitHubSyncConflict(context, targetId)) {
           log.info(`automatic GitHub Sync target=${targetId} reason=${reason} skipped=conflict-awaiting-approval`);
@@ -1747,8 +2026,20 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
           log.info(`automatic GitHub Sync target=${targetId} reason=${reason} skipped=migration-${migration.phase}`);
           return false;
         }
+        if (reason === "change") {
+          const target = githubSyncTargetById(context, targetId);
+          if (target.lastSync?.localChangeFingerprint && target.lastSync.repository === target.repository
+            && target.lastSync.branch === target.branch && target.lastSync.storeRoot === path.resolve(getStorePath())) {
+            invalidateSharedContentCatalog();
+            const current = await githubSyncFingerprintInWorker(target, await githubSyncCatalog(), getStorePath());
+            if (githubSyncLocalChangeFingerprint(target, current.localChangeFingerprint) === target.lastSync.localChangeFingerprint) {
+              githubSyncDiagnostics.record("github_sync.change_skipped", { targetId, reason: "selected-content-unchanged" });
+              return false;
+            }
+          }
+        }
         return true;
-      },
+      }),
       execute: (targetId, reason) => {
         githubSyncScheduler?.report(targetId, "waiting-for-lock", "Waiting for Git lock");
         return withGitHubSyncTargetLock(context, targetId, () => withGitHubSyncApplyLock(context, async () => {
@@ -1770,6 +2061,8 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
             hasBase: !!target.lastSync?.commit,
             baseCommit: target.lastSync?.commit || "",
             pendingDeletions: target.pendingDeletions?.length || 0,
+            servicePid: githubSyncScheduler?.snapshot()[targetId]?.service?.pid,
+            serviceVersion: githubSyncScheduler?.snapshot()[targetId]?.service?.version,
           });
           try {
             githubSyncScheduler?.report(targetId, "authenticating", "Authenticating GitHub credentials");
@@ -1779,12 +2072,15 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
             report("fetch", "Preparing Local files for Fetch / Pull");
             invalidateSharedContentCatalog();
             const catalog = await githubSyncCatalog();
+            const localState = await githubSyncFingerprintInWorker(target, catalog, getStorePath());
             githubSyncDiagnostics.record("github_sync.catalog", {
               traceId,
               targetId,
               counts: GITHUB_SYNC_CONTENT_TYPES.map(type => `${type}:${catalog[type].length}`).join(","),
               total: GITHUB_SYNC_CONTENT_TYPES.reduce((sum, type) => sum + catalog[type].length, 0),
             });
+            if (!githubSyncScheduler) throw new Error("PKM singleton service disconnected before synchronization.");
+            const syncGitHubTarget = githubSyncScheduler.sync.bind(githubSyncScheduler);
             const result = await syncGitHubTarget(
               target,
               catalog,
@@ -1802,72 +2098,8 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
                   : {}),
               },
             );
-            applyGitHubSyncRecipePulls(result.recipePulls);
-            applyGitHubSyncRecipeDeletes(result.recipeDeletes);
-            const changedLocalContent = result.pulled.length > 0
-              || result.deletedLocal.length > 0
-              || result.recipePulls.length > 0
-              || result.recipeDeletes.length > 0;
-            for (const [type, topLevels] of Object.entries(result.privateTopLevels)) {
-              for (const topLevel of topLevels || []) setTopLevelPrivacy(type as PrivacyContentType, topLevel, true);
-            }
-            if (result.pulled.length || result.deletedLocal.length || result.recipeDeletes.length) {
-              invalidateSharedContentCatalog();
-              _treeProvider?.refresh();
-            }
-            const updated = await mutateGitHubSyncTargets(context, `sync ${targetId}`, currentTargets => {
-              const current = currentTargets.find(candidate => candidate.id === targetId);
-              if (!current) return { targets: currentTargets, result: false };
-              const wasInitialSyncCompleted = current.automation.initialSyncCompleted;
-              const migration = githubPublicationMigration(context, targetId).status();
-              current.lastSync = {
-                at: new Date().toISOString(),
-                commit: result.commit,
-                fingerprints: result.fingerprints,
-                repository: current.repository,
-                branch: current.branch,
-                storeRoot: path.resolve(getStorePath()),
-              };
-              current.lastResolutionReport = result.resolutionReport;
-              const acknowledged = new Set(result.acknowledgedDeletions.map(item => `${item.type}\0${item.itemId}`));
-              current.pendingDeletions = (current.pendingDeletions || [])
-                .filter(item => !acknowledged.has(`${item.type}\0${item.itemId}`));
-              if (reason === "manual" || reason === "force-local-authority") {
-                current.automation.initialSyncCompleted = true;
-                if (migration?.phase === "cutover") {
-                  current.publication = {
-                    requiredCapability: "stable-entity-identity",
-                    sourceCommit: migration.remoteCommit,
-                    sourceDigest: migration.sourceDigest,
-                    manualVerificationCompleted: true,
-                  };
-                } else if (!wasInitialSyncCompleted && !current.publication) {
-                  current.publication = {
-                    requiredCapability: "stable-entity-identity",
-                    sourceCommit: result.commit,
-                    sourceDigest: createHash("sha256").update(JSON.stringify(result.fingerprints)).digest("hex"),
-                    manualVerificationCompleted: true,
-                  };
-                } else if (current.publication) {
-                  current.publication.manualVerificationCompleted = true;
-                }
-              }
-              delete current.lastFailure;
-              return { targets: currentTargets, result: true };
-            });
-            if (!updated) return;
-            completeGitHubSyncTransaction(path.join(githubSyncStateDirectory(context), "checkouts"), targetId, result.transactionId);
-            clearGitHubSyncConflict(githubSyncStateDirectory(context), targetId);
-            githubSyncScheduler?.report(targetId, "refresh-index", "Refreshing the PKM inventory and retrieval index");
-            try {
-              await refreshKnowledgeInventory(context);
-              await refreshRetrievalIndex(context);
-            } catch (postProcessingError) {
-              const detail = postProcessingError instanceof Error ? postProcessingError.message : String(postProcessingError);
-              log.warn(`GitHub Sync target=${target.name} committed=${result.commit}; inventory/retrieval post-processing will retry: ${detail}`);
-              scheduleRetrievalRefresh(context, 0);
-            }
-            if (changedLocalContent) githubSyncScheduler?.notifyContentChanged(targetId);
+            await finalizeGitHubSyncServiceResult(context, targetId, reason, result, () =>
+              githubSyncScheduler?.report(targetId, "refresh-index", "Refreshing the PKM inventory and retrieval index"), localState.localChangeFingerprint);
             githubSyncScheduler?.report(targetId, "scheduled", "Next fetch scheduled");
             githubSyncDiagnostics.record("github_sync.completed", {
               traceId,
@@ -1905,8 +2137,9 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
               githubSyncScheduler?.report(targetId, "resolve-conflicts", `${error.conflicts.length} conflicting file${error.conflicts.length === 1 ? "" : "s"} require resolution`);
               if (target.conflictResolution === "agent" && error.conflicts.some(conflict => conflict.type === "skills" || conflict.type === "recipes")) {
                 try {
-                  await prepareGitHubSyncAgentCandidates(context, target.id);
-                  message += " Agent merge candidates are ready in GitHub Sync. Review and apply resolutions there; unsupported files require a human choice.";
+                  const batch = await prepareGitHubSyncAgentCandidates(context, target.id);
+                  message += ` Agent prepared ${batch.prepared} candidates; ${batch.unsupported} unsupported and ${batch.failed.length} failed. Review the remaining choices in GitHub Sync.`;
+                  for (const failure of batch.failed) log.warn(`GitHub Sync Agent merge ${failure.path}: ${failure.error}`);
                 } catch (agentError) {
                   message += ` Agent preparation stopped: ${agentError instanceof Error ? agentError.message : String(agentError)}. Review the conflicts manually in GitHub Sync.`;
                 }
@@ -1925,12 +2158,13 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
                 const current = currentTargets.find(candidate => candidate.id === targetId);
                 if (current) current.lastFailure = {
                   at: attemptedAt, error: message, reason,
-                  attempts: error instanceof GitHubSyncConflictError ? 3 : Math.min(3, (current.lastFailure?.attempts || 0) + 1),
+                  attempts: error instanceof GitHubSyncConflictError || error instanceof PkmServiceRecoveryPersistenceError ? 3 : Math.min(3, (current.lastFailure?.attempts || 0) + 1),
                 };
                 return { targets: currentTargets, result: undefined };
               });
             }
             const diagnostic = error instanceof Error ? error.stack || error.message : String(error);
+            if (githubSyncScheduler) await githubSyncScheduler.acknowledgeExecutionErrors(targetId);
             githubSyncDiagnostics.record(error instanceof GitHubSyncExtensionCompatibilityError ? "github_sync.blocked" : "github_sync.failed", {
               traceId,
               targetId,
@@ -1939,6 +2173,14 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
               errorName: error instanceof Error ? error.name : typeof error,
               error: message,
               stack: diagnostic,
+              ...(error instanceof PkmServiceRecoveryPersistenceError ? {
+                operationId: error.operationId, recoveryAvailable: error.recoveryAvailable,
+                persistenceStage: error.persistenceStage, transactionId: error.transactionId,
+                primaryError: error.primaryError?.message, primaryStack: error.primaryError?.stack,
+                primaryCode: error.primaryError && "code" in error.primaryError && typeof error.primaryError.code === "string" ? error.primaryError.code : undefined,
+                persistenceError: error.persistenceError.message, persistenceStack: error.persistenceError.stack,
+                persistenceCode: "code" in error.persistenceError && typeof error.persistenceError.code === "string" ? error.persistenceError.code : undefined,
+              } : {}),
             });
             if (error instanceof GitHubSyncExtensionCompatibilityError) {
               log.info(`automatic GitHub Sync target=${target.name} reason=${reason} blocked=extension-upgrade required=${error.requiredVersion} installed=${error.installedVersion}`);
@@ -1965,14 +2207,30 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
     producer.idle();
     githubSyncTasks.delete(targetId);
   }
-  githubSyncScheduler.configure(targets.map(target => ({
+  const service = githubSyncScheduler;
+  void (async () => {
+    if (createdCoordinator) await recoverGitHubSyncServiceResults(context, service);
+    await service.configure(readGitHubSyncTargets(context).map(target => ({
     id: target.id,
     enabled: target.automation.enabled && target.automation.initialSyncCompleted,
     intervalMinutes: target.automation.intervalMinutes,
     syncOnChange: target.automation.syncOnChange,
     lastSuccessAt: target.lastSync?.at,
     lastFailure: target.lastFailure,
-  })));
+    })));
+    if (createdCoordinator) {
+      for (const record of listGitHubSyncConflicts(githubSyncStateDirectory(context))) {
+        const target = targets.find(target => target.id === record.targetId);
+        if (record.appliedAt && target && !target.lastFailure) {
+          await service.request(target.id, "manual");
+          log.info(`recovered applied GitHub Sync resolutions target=${target.id}; queued manual synchronization`);
+        }
+      }
+    }
+  })().catch(error => {
+    log.error(`PKM singleton service configuration failed: ${error instanceof Error ? error.message : String(error)}`);
+    void vscode.window.showErrorMessage(`PKM background service: ${error instanceof Error ? error.message : String(error)}`);
+  });
 }
 
 async function subscriptionStateData(context: vscode.ExtensionContext): Promise<object> {
@@ -2177,19 +2435,24 @@ async function githubSyncCatalog(): Promise<GitHubSyncCatalog> {
   }
 }
 
-function refreshStaleGitHubSyncConflicts(context: vscode.ExtensionContext): number {
+function refreshStaleGitHubSyncConflicts(context: vscode.ExtensionContext, targetId?: string): number {
   const stateDirectory = githubSyncStateDirectory(context);
   const recipeContent = new Map(currentProjectStore().recipeSyncEntries()
     .map(entry => [entry.recipe.recipeId, githubSyncManagedContent("recipes", Buffer.from(entry.content, "utf8"))]));
   let refreshed = 0;
   for (const record of listGitHubSyncConflicts(stateDirectory)) {
+    if (targetId && record.targetId !== targetId || record.appliedAt) continue;
     for (const file of record.files) {
+      const mergedPath = gitHubSyncConflictVariantPath(stateDirectory, record.targetId, "merged", file.path);
+      if (vscode.workspace.textDocuments.some(document => document.isDirty && document.uri.scheme === "file"
+        && path.resolve(document.uri.fsPath) === path.resolve(mergedPath))) continue;
       const current = file.type === "recipes"
         ? recipeContent.get(file.itemId)
         : (() => {
-          const destination = file.path.startsWith("agentSnapshots/")
-            ? githubSyncCandidateDestination(path.join(getStorePath(), ".pkm", "state"), `agent-snapshots/${file.path.slice("agentSnapshots/".length)}`)
-            : githubSyncCandidateDestination(getStorePath(), file.path);
+          const relative = file.localPath || file.path;
+          const destination = relative.startsWith("agentSnapshots/")
+            ? githubSyncCandidateDestination(path.join(getStorePath(), ".pkm", "state"), `agent-snapshots/${relative.slice("agentSnapshots/".length)}`)
+            : githubSyncCandidateDestination(getStorePath(), relative);
           return fs.existsSync(destination) ? fs.readFileSync(destination) : undefined;
         })();
       const selected = file.candidateSource !== "unresolved"
@@ -2213,7 +2476,8 @@ function refreshStaleGitHubSyncConflicts(context: vscode.ExtensionContext): numb
 function clearEquivalentGitHubSyncConflict(context: vscode.ExtensionContext, targetId: string): boolean {
   const stateDirectory = githubSyncStateDirectory(context);
   const record = readGitHubSyncConflict(stateDirectory, targetId);
-  if (!record?.files.length || record.files.some(file => !file.hasRemote)) return false;
+  if (!record?.files.length || record.appliedAt || record.files.some(file => !file.hasRemote
+    || file.candidateSource !== "unresolved" || (file.localPath || file.path) !== (file.remotePath || file.path))) return false;
   const recipeContent = new Map(currentProjectStore().recipeSyncEntries()
     .map(entry => [entry.recipe.recipeId, githubSyncManagedContent("recipes", Buffer.from(entry.content, "utf8"))]));
   const equivalent = record.files.every(file => {
@@ -2261,10 +2525,13 @@ async function githubSyncStateData(context: vscode.ExtensionContext, waitForExpe
     for (const identity of discoveredIdentities) identities.add(identity);
     githubAuthenticationOptionsCache = { accounts: [...accounts], identities: [...identities] };
   }
+  let refreshedConflicts = 0;
   for (const record of listGitHubSyncConflicts(githubSyncStateDirectory(context))) {
-    clearEquivalentGitHubSyncConflict(context, record.targetId);
+    refreshedConflicts += await withGitHubSyncTargetLock(context, record.targetId, async () => {
+      clearEquivalentGitHubSyncConflict(context, record.targetId);
+      return refreshStaleGitHubSyncConflicts(context, record.targetId);
+    });
   }
-  const refreshedConflicts = refreshStaleGitHubSyncConflicts(context);
   if (refreshedConflicts) log.info(`refreshed ${refreshedConflicts} stale GitHub Sync conflict candidate${refreshedConflicts === 1 ? "" : "s"}`);
   const currentFingerprints: Record<string, Partial<Record<GitHubSyncContentType, string>>> = {};
   const currentFolderFingerprints: Record<string, Partial<GitHubSyncFolderFingerprints>> = {};
@@ -2273,7 +2540,7 @@ async function githubSyncStateData(context: vscode.ExtensionContext, waitForExpe
   const baseFileFingerprints: Record<string, Partial<GitHubSyncFolderFingerprints>> = {};
   if (waitForExpensive) {
     await Promise.all(targets.map(async target => {
-      const current = await githubSyncFingerprintInWorker(target, catalog);
+      const current = await githubSyncFingerprintInWorker(target, catalog, getStorePath());
       currentFingerprints[target.id] = current.fingerprints;
       currentFolderFingerprints[target.id] = current.folders;
       currentFileFingerprints[target.id] = current.files;
@@ -2284,8 +2551,10 @@ async function githubSyncStateData(context: vscode.ExtensionContext, waitForExpe
         target.lastSync.commit,
       );
       if (rawManifest) {
-        baseFolderFingerprints[target.id] = githubSyncManifestFolderFingerprints(target, rawManifest);
-        baseFileFingerprints[target.id] = githubSyncManifestFileFingerprints(target, rawManifest);
+        const baseFiles = githubSyncManifestFileFingerprints(target, rawManifest);
+        const excluded = await githubSyncExcludedPaths(getStorePath(), Object.values(baseFiles).flatMap(files => Object.keys(files)));
+        baseFolderFingerprints[target.id] = githubSyncManifestFolderFingerprints(target, rawManifest, excluded);
+        baseFileFingerprints[target.id] = githubSyncManifestFileFingerprints(target, rawManifest, excluded);
       }
     }));
   }
@@ -6895,6 +7164,7 @@ async function handleMessage(
           catalog,
           path.join(githubSyncStateDirectory(context), "checkouts"),
           credentials,
+          getStorePath(),
         ));
         clearGitHubSyncConflict(githubSyncStateDirectory(context), target.id);
         if (preview.differences.length) {
@@ -6980,6 +7250,7 @@ async function handleMessage(
         return { targets, result: undefined };
       });
       configureGitHubSyncScheduler(context);
+      respond({ command: "githubSyncAutomationResult", data: { targetId, enabled } });
       respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
       break;
     }
@@ -7032,7 +7303,7 @@ async function handleMessage(
       if (target.publication && !target.publication.manualVerificationCompleted) {
         target.automation.enabled = false;
       }
-      const queued = githubSyncScheduler?.request(targetId, "manual") === true;
+      const queued = await githubSyncScheduler?.request(targetId, "manual") === true;
       respond({ command: "githubSyncRunQueued", data: { targetId, queued } });
       respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
       break;
@@ -7073,7 +7344,7 @@ async function handleMessage(
       requireGitHubSyncManualMode(githubSyncTargetById(context, targetId), "using Force Update");
       clearGitHubSyncConflict(githubSyncStateDirectory(context), targetId);
       githubSyncForceUpdateAudit.set(targetId, { actor, comment: comment.trim() });
-      const queued = githubSyncScheduler?.request(targetId, "force-local-authority") === true;
+      const queued = await githubSyncScheduler?.request(targetId, "force-local-authority") === true;
       if (!queued) githubSyncForceUpdateAudit.delete(targetId);
       respond({ command: "githubSyncRunQueued", data: { targetId, queued } });
       respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
@@ -7084,28 +7355,7 @@ async function handleMessage(
       const targetId = String(msg.targetId || "");
       const record = readGitHubSyncConflict(githubSyncStateDirectory(context), targetId);
       if (!record) throw new Error("GitHub Sync conflict was not found.");
-      const requestedPath = String(msg.path || "");
-      const selected = requestedPath
-        ? record.files.find(file => file.path === requestedPath)
-        : record.files.length === 1
-        ? record.files[0]
-        : await vscode.window.showQuickPick(record.files.map(file => ({ label: path.basename(file.path), description: file.path, file })), {
-            title: "Review GitHub Sync conflict",
-            placeHolder: "Choose a conflicting file",
-          }).then(item => item?.file);
-      if (!selected) break;
-      const stateDirectory = githubSyncStateDirectory(context);
-      const merged = gitHubSyncConflictVariantPath(stateDirectory, targetId, "merged", selected.path);
-      if (msg.mode === "edit") {
-        await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(merged));
-        vscode.window.showInformationMessage("Edit and save the merge candidate, then choose Validate edited copy in GitHub Sync.");
-      } else {
-        const comparisonVariant = selected.hasRemote ? "remote" : selected.hasBase ? "base" : "local";
-        const comparison = gitHubSyncConflictVariantPath(stateDirectory, targetId, comparisonVariant, selected.path);
-        const leftLabel = comparisonVariant === "remote" ? "GitHub" : comparisonVariant === "base" ? "Common base" : "This machine";
-        const rightLabel = selected.candidateSource === "unresolved" ? "Merge candidate (unresolved)" : `Merge candidate (${selected.candidateSource === "local" ? "This machine" : selected.candidateSource === "remote" ? "GitHub" : selected.candidateSource === "base" ? "Common base" : selected.candidateSource === "manual" ? "Manual merge" : selected.candidateSource === "agent" ? "Agent merge" : selected.candidateSource})`;
-        await vscode.commands.executeCommand("vscode.diff", vscode.Uri.file(comparison), vscode.Uri.file(merged), `LEFT: ${leftLabel} | RIGHT: ${rightLabel} · ${selected.path}`);
-      }
+      await openGitHubSyncResolutionWorkbench(context, targetId, String(msg.path || "") || undefined);
       break;
     }
 
@@ -7114,7 +7364,8 @@ async function handleMessage(
       const relative = String(msg.path || "");
       const source = String(msg.source || "");
       if (source !== "local" && source !== "remote" && source !== "base") throw new Error("Choose this machine, GitHub, or the common base.");
-      selectGitHubSyncConflictCandidate(githubSyncStateDirectory(context), targetId, relative, source);
+      await withGitHubSyncConflictEdit(context, { ...msg, targetId }, async () =>
+        selectGitHubSyncConflictCandidate(githubSyncStateDirectory(context), targetId, relative, source));
       respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
       break;
     }
@@ -7123,7 +7374,8 @@ async function handleMessage(
       const targetId = String(msg.targetId || "");
       const source = String(msg.source || "");
       if (source !== "local" && source !== "remote") throw new Error("Choose this machine or GitHub for bulk conflict resolution.");
-      const result = selectAllGitHubSyncConflictCandidates(githubSyncStateDirectory(context), targetId, source);
+      const result = await withGitHubSyncConflictEdit(context, { ...msg, targetId }, async () =>
+        selectAllGitHubSyncConflictCandidates(githubSyncStateDirectory(context), targetId, source));
       const unavailable = result.unavailable.length
         ? ` ${result.unavailable.length} file${result.unavailable.length === 1 ? "" : "s"} do not have a ${source === "remote" ? "GitHub" : "machine-local"} version and remain unchanged.`
         : "";
@@ -7135,14 +7387,16 @@ async function handleMessage(
     case "githubSyncConflictDelete": {
       const targetId = String(msg.targetId || "");
       const relative = String(msg.path || "");
-      selectGitHubSyncConflictDeletion(githubSyncStateDirectory(context), targetId, relative);
+      await withGitHubSyncConflictEdit(context, { ...msg, targetId }, async () =>
+        selectGitHubSyncConflictDeletion(githubSyncStateDirectory(context), targetId, relative));
       respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
       break;
     }
 
     case "githubSyncConflictDeleteAll": {
       const targetId = String(msg.targetId || "");
-      const result = selectAllGitHubSyncConflictDeletions(githubSyncStateDirectory(context), targetId);
+      const result = await withGitHubSyncConflictEdit(context, { ...msg, targetId }, async () =>
+        selectAllGitHubSyncConflictDeletions(githubSyncStateDirectory(context), targetId));
       vscode.window.showWarningMessage(`Prepared ${result.selected} deletion${result.selected === 1 ? "" : "s"} for GitHub. Nothing is deleted until Apply resolutions & Sync succeeds.`);
       respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
       break;
@@ -7151,14 +7405,16 @@ async function handleMessage(
     case "githubSyncConflictDeleteLocal": {
       const targetId = String(msg.targetId || "");
       const relative = String(msg.path || "");
-      selectGitHubSyncConflictLocalDeletion(githubSyncStateDirectory(context), targetId, relative);
+      await withGitHubSyncConflictEdit(context, { ...msg, targetId }, async () =>
+        selectGitHubSyncConflictLocalDeletion(githubSyncStateDirectory(context), targetId, relative));
       respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
       break;
     }
 
     case "githubSyncConflictDeleteLocalAll": {
       const targetId = String(msg.targetId || "");
-      const result = selectAllGitHubSyncConflictLocalDeletions(githubSyncStateDirectory(context), targetId);
+      const result = await withGitHubSyncConflictEdit(context, { ...msg, targetId }, async () =>
+        selectAllGitHubSyncConflictLocalDeletions(githubSyncStateDirectory(context), targetId));
       vscode.window.showWarningMessage(`Prepared ${result.selected} machine-local deletion${result.selected === 1 ? "" : "s"}. Nothing is deleted until Apply resolutions & Sync succeeds.`);
       respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
       break;
@@ -7167,7 +7423,8 @@ async function handleMessage(
     case "githubSyncConflictValidate": {
       const targetId = String(msg.targetId || "");
       const relative = String(msg.path || "");
-      validateGitHubSyncManualCandidate(githubSyncStateDirectory(context), targetId, relative);
+      await withGitHubSyncConflictEdit(context, { ...msg, targetId }, async () =>
+        validateGitHubSyncManualCandidate(githubSyncStateDirectory(context), targetId, relative));
       vscode.window.showInformationMessage(`Validated edited merge candidate: ${relative}`);
       respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
       break;
@@ -7176,7 +7433,8 @@ async function handleMessage(
     case "githubSyncConflictAgent": {
       const targetId = String(msg.targetId || "");
       const relative = String(msg.path || "");
-      await prepareGitHubSyncAgentCandidates(context, targetId, relative);
+      await withGitHubSyncConflictEdit(context, { ...msg, targetId }, () =>
+        prepareGitHubSyncAgentCandidates(context, targetId, relative));
       vscode.window.showInformationMessage("Agent merge candidates are ready. Review them before Accept & Push.");
       respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
       break;
@@ -7184,12 +7442,12 @@ async function handleMessage(
 
     case "githubSyncConflictAgentAll": {
       const targetId = String(msg.targetId || "");
-      const result = await vscode.window.withProgress({
+      const result = await withGitHubSyncConflictEdit(context, { ...msg, targetId }, async () => await vscode.window.withProgress({
         location: vscode.ProgressLocation.Notification,
         title: "Preparing GitHub Sync Agent merges",
       }, async progress => prepareGitHubSyncAgentCandidates(context, targetId, "", (message, increment) => {
         progress.report({ message, increment });
-      }));
+      })));
       const remaining = result.unsupported + result.failed.length;
       vscode.window.showInformationMessage(
         `Agent prepared ${result.prepared} merge candidate${result.prepared === 1 ? "" : "s"}.`
@@ -7202,9 +7460,9 @@ async function handleMessage(
     case "githubSyncConflictAccept": {
       const targetId = String(msg.targetId || "");
       const progress = (text: string) => respond({ command: "githubSyncConflictAcceptProgress", data: { targetId, text } });
-      progress("Preparing Initial Sync choices…");
-      const result = await withGitHubSyncTargetLock(context, targetId, () =>
-        withGitHubSyncApplyLock(context, () => acceptGitHubSyncConflict(context, targetId, progress)));
+      progress("Preparing conflict resolutions…");
+      const result = await withGitHubSyncConflictEdit(context, { ...msg, targetId }, () =>
+        withGitHubSyncApplyLock(context, () => acceptGitHubSyncConflict(context, targetId, progress)), true);
       if (result.refreshed.length) {
         vscode.window.showWarningMessage(
           `${result.refreshed.length} machine-local file${result.refreshed.length === 1 ? "" : "s"} changed after the conflict was prepared. The conflict choices were refreshed; review them again before applying.`
@@ -7219,7 +7477,8 @@ async function handleMessage(
 
     case "githubSyncConflictDiscard": {
       const targetId = String(msg.targetId || "");
-      clearGitHubSyncConflict(githubSyncStateDirectory(context), targetId);
+      await withGitHubSyncConflictEdit(context, { ...msg, targetId }, async () =>
+        clearGitHubSyncConflict(githubSyncStateDirectory(context), targetId));
       respond({ command: "githubSyncState", data: await githubSyncStateData(context) });
       break;
     }
@@ -9394,7 +9653,7 @@ async function handleMessage(
     } else if (String(msg.command || "").startsWith("subscription")) {
       respond({ command: "subscriptionError", data: { action: String(msg.command || ""), error: e?.message || String(e) } });
     } else if (String(msg.command || "").startsWith("githubSync")) {
-      respond({ command: "githubSyncError", data: { action: String(msg.command || ""), error: e?.message || String(e) } });
+      respond({ command: "githubSyncError", data: { action: String(msg.command || ""), targetId: msg.targetId, error: e?.message || String(e) } });
     }
   }
 }

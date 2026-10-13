@@ -579,7 +579,8 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     const localization = { locale, direction: loadLocaleManifest(extensionRoot).locales.find(item => item.id === locale)?.direction || "ltr", strings: catalogs[locale].strings, english: catalogs.en.strings };
     const all = this.store.list(true).map(item => {
       const live = this.chats.get(item.id);
-      return live && this.running.has(item.id) ? { ...item, title: live.title, status: apiChatStatus(live, true, this.awaitingInput.has(item.id)) } : item;
+      return live && this.running.has(item.id) ? { ...item, title: live.title, status: apiChatStatus(live, true, this.awaitingInput.has(item.id)),
+        workerManager: live.messages.some(message => message.delegations?.length) } : item;
     });
     const available = all.filter(item => !item.trashedAt);
     if (!this.chat || !this.running.has(this.chat.id)) {
@@ -747,7 +748,10 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         break;
       case "memorySegment": {
         const segment = chatMemorySegments(chat).find(item => item.id === message.id);
-        if (!segment) throw new Error("This memory segment is unavailable.");
+        if (!segment) {
+          void this.view?.webview.postMessage({ type: "memorySegmentUnavailable", chatId: chat.id, id: message.id, error: "This memory segment is unavailable." });
+          throw new Error("This memory segment is unavailable.");
+        }
         void this.view?.webview.postMessage({ type: "memorySegment", chatId: chat.id, segment }); break;
       }
       case "approval": {

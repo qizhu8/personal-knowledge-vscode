@@ -113,6 +113,8 @@ test("three workers overlap; manager sleeps without polling and wakes after each
   const root = () => fixture.provider.store.load(fixture.root.id, false);
   assert.equal(root().workerState.sleeping, true);
   assert.equal(apiChatStatus(root()), "awaiting-result");
+  assert.equal(fixture.provider.store.list().find(chat => chat.id === fixture.root.id).workerManager, true, "Sleeping managers retain teacher identity");
+  assert(fixture.provider.store.list().filter(chat => chat.workerParentChatId === fixture.root.id).every(chat => !chat.workerManager), "Workers without their own dispatch receipts remain workers");
   assert.equal(fixture.requests.length, 4, "No extra manager request after dispatch");
   await new Promise(resolve => setTimeout(resolve, 80));
   assert.equal(fixture.requests.length, 4, "Sleep must not poll");
@@ -129,6 +131,7 @@ test("three workers overlap; manager sleeps without polling and wakes after each
   assert(records.every(record => record.archived));
   assert(records.every(record => fixture.provider.store.workerResult(record.id).chat.messages.some(message => message.content.startsWith("RESULT_"))));
   assert(records.every(record => !fixture.provider.store.list().some(chat => chat.id === record.chatId)), "Temporary Chats are destroyed after evidence is durable");
+  assert.equal(fixture.provider.store.list().find(chat => chat.id === fixture.root.id).workerManager, true, "Teacher identity survives removal of temporary worker Chats");
   assert.deepEqual(fixture.errors, []);
   for (const request of fixture.requests.filter(request => /^WORKER_/.test(request.messages.at(-1).content))) {
     assert(!JSON.stringify(request.messages).includes("ROOT_TASK"), "Workers have no hidden shared parent Memory");

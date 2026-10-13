@@ -886,6 +886,7 @@ window.addEventListener('message', e => {
   }
   else if (command === 'githubSyncRunQueued') { finishAction('githubSyncRun'); githubSyncOnRunQueued(data); }
   else if (command === 'githubSyncRuntimeState') { githubSyncOnRuntimeState(data); }
+  else if (command === 'githubSyncAutomationResult') { githubSyncOnAutomationResult(data); }
   else if (command === 'githubSyncRuntimeSnapshot') { for (const [targetId, runtime] of Object.entries(data || {})) githubSyncOnRuntimeState({ targetId, state:runtime }); }
   else if (command === 'backgroundTasks') { backgroundTasksOnSnapshot(data); finishLoadingProgress(); }
   else if (command === 'githubSyncRestored') { finishAction('githubSyncRestore'); vscode.postMessage({ command:'toast', text:`Restored ${data?.restored?.length || 0} file(s) from GitHub` }); }
@@ -893,7 +894,7 @@ window.addEventListener('message', e => {
   else if (command === 'githubSyncIdentityPicked') { finishAction('githubSyncPickIdentity'); githubSyncIdentityPicked(data?.identityFile || ''); }
   else if (command === 'githubSyncIdentityCreated') { finishAction('githubSyncCreateIdentity'); githubSyncIdentityPicked(data?.identityFile || ''); vscode.postMessage({ command:'toast', text:'SSH public key copied; add it to GitHub, then test the account' }); }
   else if (command === 'githubSyncAuthenticationResult') { finishAction('githubSyncTestAuthentication'); githubSyncOnAuthenticationResult(data); vscode.postMessage({ command:'toast', text:`Authenticated as ${data?.login || 'unknown'}` }); }
-  else if (command === 'githubSyncError') { githubSyncSaving = false; const action = String(data?.action || ''); const message = data?.error || 'GitHub Sync failed.'; if (action === 'githubSyncRun') { githubSyncForcePending.clear(); if (state.tab === 'githubSync') renderGitHubSyncPane(); } if (action === 'githubSyncState' && !githubSyncUpdatedAt && state.tab === 'githubSync') { githubSyncStatusRequested = false; showInitialViewError('GitHub Sync could not load', message, 'githubSyncState'); } else if (action === 'githubSyncState') githubSyncOnRefreshError(message); else if (action && pendingActionButtons.has(action)) failAction(message, action); else showViewActionError(message); finishLoadingProgress(); }
+  else if (command === 'githubSyncError') { githubSyncSaving = false; const action = String(data?.action || ''); const message = data?.error || 'GitHub Sync failed.'; if (action === 'githubSyncAutomationToggle') githubSyncOnAutomationResult(data); if (action === 'githubSyncRun') { githubSyncForcePending.clear(); if (state.tab === 'githubSync') renderGitHubSyncPane(); } if (action === 'githubSyncState' && !githubSyncUpdatedAt && state.tab === 'githubSync') { githubSyncStatusRequested = false; showInitialViewError('GitHub Sync could not load', message, 'githubSyncState'); } else if (action === 'githubSyncState') githubSyncOnRefreshError(message); else if (action && pendingActionButtons.has(action)) failAction(message, action); else showViewActionError(message); finishLoadingProgress(); }
   else if (command === 'subscriptionChanged') {
     invalidateSubscriptionKnowledgeViews();
     invalidateRecipeSubscriptionGroups();

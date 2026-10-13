@@ -103,7 +103,8 @@
     <section id="memory-panel" class="chat-settings" aria-label="Chat memory" hidden>
       <div class="settings-row"><strong>Retrieval</strong><select id="retrieval-top" aria-label="Candidate count"><option value="10">Top 10</option><option value="20">Top 20</option></select><select id="retrieval-kind" aria-label="Candidate type"><option value="all">All types</option></select><button id="memory-close" type="button" title="Close retrieval" aria-label="Close retrieval"><span class="codicon codicon-close"></span></button></div>
       <div id="retrieval-status" role="status"></div>
-      <div id="retrieval-flow" class="retrieval-flow"></div>
+      <div id="retrieval-candidates" aria-label="Retrieved references"></div>
+      <details><summary>Retrieval flow</summary><div id="retrieval-flow" class="retrieval-flow"></div></details>
       <details><summary>Task branches</summary><div id="memory-tree" aria-label="Chat memory tree"></div></details>
       <pre id="memory-preview" hidden></pre>
     </section>

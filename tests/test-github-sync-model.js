@@ -83,6 +83,29 @@ try {
   const transientTarget = normalizeGitHubSyncTarget({ name: "Cache exclusion", repository: "fixture" }, () => "cache-exclusion");
   transientTarget.selection.public.servers.folders.push("");
   const beforeRemoval = githubSyncTargetFingerprintState(transientTarget, transientCatalog);
+  fs.utimesSync(path.join(transientRoot, "module.py"), new Date(), new Date());
+  assert.strictEqual(githubSyncTargetFingerprintState(transientTarget, transientCatalog).localChangeFingerprint,
+    beforeRemoval.localChangeFingerprint, "mtime-only rewrites cannot trigger content-change synchronization");
+  fs.writeFileSync(path.join(transientRoot, "__pycache__", "module.pyc"), "new ephemeral bytes");
+  assert.strictEqual(githubSyncTargetFingerprintState(transientTarget, transientCatalog).localChangeFingerprint,
+    beforeRemoval.localChangeFingerprint, "ignored content cannot trigger synchronization");
+  transientTarget.selection.private.servers.folders.push("");
+  transientCatalog.servers[0].isPrivate = true;
+  assert.notStrictEqual(githubSyncTargetFingerprintState(transientTarget, transientCatalog).localChangeFingerprint,
+    beforeRemoval.localChangeFingerprint, "privacy changes trigger synchronization even when file bytes are unchanged");
+  transientCatalog.servers[0].isPrivate = false;
+  transientCatalog.notes = [{ id: "outside", cat: "Excluded", source: path.join(transientRoot, "module.py"),
+    destination: "notes/Excluded/outside.md", isPrivate: false }];
+  const savedNoteSelection = transientTarget.selection.public.notes;
+  transientTarget.selection.public.notes = { items: [], folders: [] };
+  assert.strictEqual(githubSyncTargetFingerprintState(transientTarget, transientCatalog).localChangeFingerprint,
+    beforeRemoval.localChangeFingerprint, "unselected catalog entries cannot trigger synchronization");
+  transientCatalog.notes = [];
+  transientTarget.selection.public.notes = savedNoteSelection;
+  transientTarget.lastSync = { at: new Date().toISOString(), commit: "a".repeat(40), fingerprints: {},
+    localChangeFingerprint: beforeRemoval.localChangeFingerprint };
+  assert.strictEqual(normalizeGitHubSyncTarget(transientTarget).lastSync.localChangeFingerprint,
+    beforeRemoval.localChangeFingerprint, "local change baseline survives target state normalization and reload");
   assert.deepStrictEqual(Object.keys(beforeRemoval.files.servers), ["servers/fixture/module.py"]);
   const legacyCacheManifest = manifestJson([
     { path: "servers/fixture/module.py", type: "servers", itemId: "fixture", member: "module.py", category: "", privacy: "public", digest: beforeRemoval.files.servers["servers/fixture/module.py"] },

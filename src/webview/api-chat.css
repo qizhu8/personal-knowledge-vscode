@@ -9,6 +9,11 @@ html[dir="rtl"] pre, html[dir="rtl"] code, html[dir="rtl"] .retrieval-flow {
 #memory-tree summary { overflow-wrap: anywhere; cursor: pointer; padding: 4px 0; }
 #memory-tree button { display: block; text-align: left; width: 100%; height: auto; min-height: 28px; overflow-wrap: anywhere; }
 #memory-preview { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 18vh; overflow-y: auto; }
+.memory-segment { padding: 4px 0; min-width: 0; }
+.memory-segment > summary { cursor: pointer; overflow-wrap: anywhere; white-space: pre-wrap; }
+.memory-segment pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24vh; overflow-y: auto; }
+.memory-segment .memory-metadata { font-size: 11px; opacity: .75; overflow-wrap: anywhere; white-space: pre-wrap; }
+.memory-source-group > summary { cursor: pointer; font-weight: 600; padding: 5px 0; }
 .retrieval-flow { min-width: 0; width: 100%; overflow-x: auto; }
 .retrieval-flow svg { display: block; }
 .retrieval-flow g[role="button"] { cursor: pointer; }
@@ -36,6 +41,21 @@ select { min-width: 0; max-width: 100%; padding: 4px; border: 1px solid transpar
 .chat-status-indicator[data-state="waiting-input"]::before { border: 2px solid #e3b341; }
 .chat-status-indicator[data-state="waiting-result"]::before { border-color: #e3b341; background: #e3b341; }
 .chat-status-indicator[data-state="failed"]::before { border-color: #ef6c6c; background: #ef6c6c; border-radius: 1px; transform: rotate(45deg); }
+.chat-role-icon { position: relative; display: inline-flex; width: 16px; height: 16px; flex: 0 0 16px; }
+.pixel-wizard { display: block; width: 16px; height: 16px; shape-rendering: crispEdges; image-rendering: pixelated; }
+.pixel-wizard-frame { opacity: 0; animation: pixel-wizard-frame 1.04s steps(1, end) infinite; }
+.pixel-wizard-frame[data-frame="1"] { animation-delay: -.78s; }
+.pixel-wizard-frame[data-frame="2"] { animation-delay: -.52s; }
+.pixel-wizard-frame[data-frame="3"] { animation-delay: -.26s; }
+.chat-role-icon.chat-status-indicator::before { position: absolute; z-index: 1; top: 0; right: 0; width: 4px; height: 4px; }
+.chat-role-still .pixel-wizard-frame { animation: none; }
+.chat-role-still .pixel-wizard-frame[data-frame="0"] { opacity: 1; }
+@keyframes pixel-wizard-frame { 0% { opacity: 1; } 25%, 100% { opacity: 0; } }
+.chat-backgrounded .pixel-wizard-frame { animation-play-state: paused; }
+@media (prefers-reduced-motion: reduce) {
+  .pixel-wizard-frame { animation: none; }
+  .pixel-wizard-frame[data-frame="0"] { opacity: 1; }
+}
 .working-cauldron { display: block; width: 16px; height: 16px; flex: 0 0 16px; fill: none; stroke-linecap: round; stroke-linejoin: round; transform-origin: center 75%; animation: working-cauldron-rock 1.2s ease-in-out infinite; }
 .working-steam { stroke: #d8c28f; stroke-width: 1.6; }
 .working-wand path:first-child { stroke: #352417; stroke-width: 8; }

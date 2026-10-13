@@ -39,10 +39,19 @@ export function recentChatDialogue(chat: ApiConversation) {
 
 export function chatMemoryTree(chat: ApiConversation) {
   const segments = chatMemorySegments(chat);
+  const messages = new Map(chat.messages.map(message => [message.id, message]));
   const tasks = [{ id: "conversation", title: "Conversation", createdAt: chat.createdAt }, ...(chat.memoryTasks || [])];
   for (const segment of segments) if (!tasks.some(task => task.id === segment.taskId)) tasks.push({ id: segment.taskId, title: segment.taskId, createdAt: chat.createdAt });
   return { chatId: chat.id, title: chat.title, tasks: tasks.map(task => ({ ...task,
-    segments: segments.filter(segment => segment.taskId === task.id).map(segment => ({ id: segment.id, messageId: segment.messageId, role: segment.role, characters: segment.content.length })),
+    segments: segments.filter(segment => segment.taskId === task.id).map(segment => {
+      const message = messages.get(segment.messageId);
+      const tool = segment.sourceKind === "tool"
+        ? message?.toolCalls?.find(tool => segment.id.startsWith(`${segment.messageId}:tool:${tool.id}:${segment.sourceRevision}:`))
+        : undefined;
+      const text = tool ? (tool.result || "(No recorded result)").slice(segment.start, segment.end) : segment.content;
+      return { id: segment.id, messageId: segment.messageId, role: segment.role, sourceKind: segment.sourceKind,
+        characters: segment.content.length, preview: Array.from(text).slice(0, 30).join("") };
+    }),
   })) };
 }
 
