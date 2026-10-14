@@ -4,6 +4,8 @@
     "label": "Español"
   },
   "strings": {
+    "apiChat.loadOlderMessages": "Cargar mensajes anteriores",
+    "apiChat.loadingOlderMessages": "Cargando mensajes anteriores...",
     "apiChat.resumeWorker": "Reanudar worker",
     "apiChat.resumeWorkerNotice": "Reanudar conserva la evidencia de ejecución e inicia una continuación. Puede generar cargos; verifique los efectos inciertos de las herramientas antes de repetirlas.",
     "apiChat.outputPerInference": "Salida por inferencia",

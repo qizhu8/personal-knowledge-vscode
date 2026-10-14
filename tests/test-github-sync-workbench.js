@@ -159,7 +159,7 @@ function browserTests() {
   const first = s.files[0].path;
   assert.equal(b.messages[0].command, "ready");
   b.state(s);
-  assert.match(b.nodes.get("count").textContent, /3 unresolved/);
+  assert.match(b.nodes.get("count").textContent, /3 choice required/);
   assert.match(b.nodes.get("detail").innerHTML, /Local \(this machine\).*GitHub \(remote\).*Common base.*Editable result/s);
   assert.ok(!b.nodes.get("detail").innerHTML.includes('<script>alert("x")</script>'));
   assert.ok(b.nodes.get("files").innerHTML.includes("&lt;script&gt;&quot;&amp;"));
@@ -278,20 +278,24 @@ function browserTests() {
 function chromiumAcceptance(html) {
   const python = process.env.WORKBENCH_TEST_PYTHON;
   const vsix = process.env.WORKBENCH_TEST_VSIX;
-  assert.ok(python && vsix, "--chromium requires WORKBENCH_TEST_PYTHON and WORKBENCH_TEST_VSIX");
+  const sourceOnly = process.argv.includes("--chromium-source");
+  assert.ok(python && (sourceOnly || vsix), "--chromium requires WORKBENCH_TEST_PYTHON and WORKBENCH_TEST_VSIX; --chromium-source tests the source asset without packaging");
   const script = String.raw`
 import json, os, sys, zipfile
 from playwright.sync_api import sync_playwright, expect
 fixture = json.load(sys.stdin)
-with zipfile.ZipFile(os.environ["WORKBENCH_TEST_VSIX"]) as package:
-    asset = package.read("extension/resources/github-sync-workbench.js").decode()
+if os.environ.get("WORKBENCH_TEST_VSIX"):
+    with zipfile.ZipFile(os.environ["WORKBENCH_TEST_VSIX"]) as package:
+        asset = package.read("extension/resources/github-sync-workbench.js").decode()
+else:
+    asset = fixture["asset"]
 assert asset == fixture["asset"], "Packaged asset differs from the tested implementation"
 with sync_playwright() as driver:
     args = {"headless": True}
     if os.environ.get("WORKBENCH_TEST_CHROMIUM"):
         args["executable_path"] = os.environ["WORKBENCH_TEST_CHROMIUM"]
     browser = driver.chromium.launch(**args)
-    print("Actual headless Chromium " + browser.version + "; packaged VSIX asset")
+    print("Actual headless Chromium " + browser.version + ("; packaged VSIX asset" if os.environ.get("WORKBENCH_TEST_VSIX") else "; source asset (no package/install)"))
     for width, height in [(1440, 1000), (390, 844)]:
         page = browser.new_page(viewport={"width": width, "height": height})
         failures, requests, dialogs, answers = [], [], [], []
@@ -315,7 +319,7 @@ with sync_playwright() as driver:
                 request.abort()
         page.route("**/*", route)
         page.goto("https://workbench.invalid/")
-        expect(page.locator("#count")).to_have_text("3 unresolved · 0/3 saved & validated")
+        expect(page.locator("#count")).to_have_text("3 choice required · 0 candidates awaiting approval · 0/3 saved & validated")
         first = page.evaluate("acceptance.state.files[0].path")
         def last():
             return page.evaluate("acceptance.requests[acceptance.requests.length - 1]")
@@ -326,7 +330,7 @@ with sync_playwright() as driver:
             expect(page.locator("#refresh")).to_be_enabled()
         for label in ["Local (this machine)", "GitHub (remote)", "Editable result"]:
             expect(page.get_by_role("heading", name=label, exact=True)).to_be_visible()
-        expect(page.locator(".base-preview > summary")).to_have_text("Common base (last shared snapshot)")
+        expect(page.locator(".base-preview > summary")).to_have_text("Common base (actual ancestor)")
         page.locator(".base-preview > summary").click()
         expect(page.get_by_title(first, exact=True)).to_be_visible()
         assert page.locator("#detail script").count() == 0
@@ -553,7 +557,7 @@ async function hostTests() {
   const { openGitHubSyncConflictWorkbench: open, renderGitHubSyncWorkbenchHtml: render, githubSyncWorkbenchComparison } = loadedModule.exports;
   compare = githubSyncWorkbenchComparison;
   differenceTests();
-  if (process.argv.includes("--browser-fixture") || process.argv.includes("--chromium")) {
+  if (process.argv.includes("--browser-fixture") || process.argv.includes("--chromium") || process.argv.includes("--chromium-source")) {
     const nonce = "browserAcceptanceNonce";
     const html = render({ cspSource: "'self'" }, { toString: () => "resources/github-sync-workbench.js" }, nonce);
     const pickState = sample();
@@ -588,7 +592,7 @@ window.acquireVsCodeApi = function() { return {postMessage: function(message) {
       fs.writeFileSync(path.join(root, ".github-sync-workbench-browser.html"), fixtureHtml);
       console.log("Synthetic browser fixture written to .github-sync-workbench-browser.html");
     }
-    if (process.argv.includes("--chromium")) chromiumAcceptance(fixtureHtml);
+    if (process.argv.includes("--chromium") || process.argv.includes("--chromium-source")) chromiumAcceptance(fixtureHtml);
   }
   const context = { extensionUri: { toString: () => "file:///extension" }, subscriptions: [] };
   let state = sample();

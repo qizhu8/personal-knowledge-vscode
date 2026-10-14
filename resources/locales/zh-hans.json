@@ -4,6 +4,8 @@
     "label": "简体中文"
   },
   "strings": {
+    "apiChat.loadOlderMessages": "加载更早的消息",
+    "apiChat.loadingOlderMessages": "正在加载更早的消息...",
     "apiChat.resumeWorker": "继续 worker",
     "apiChat.resumeWorkerNotice": "继续执行会保留执行证据并开始续跑，可能产生费用；重复操作前请核实不确定的工具副作用。",
     "apiChat.outputPerInference": "每次推理输出",

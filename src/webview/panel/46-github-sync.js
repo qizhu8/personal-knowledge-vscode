@@ -261,7 +261,7 @@ function githubSyncResolutionDiagram(report, files = []) {
     sum + (rule === 'unchanged' || rule === 'human-required' ? 0 : count), 0);
   const humanRequired = report ? report.rules?.['human-required'] || 0 : undefined;
   const detail = report?.generatedAt
-    ? `${report.totalFiles} files assessed · last reconciliation ${new Date(report.generatedAt).toLocaleString()}`
+    ? `${report.totalFiles} ${report.assessedEntities !== undefined ? `unique paths assessed · ${report.assessedEntities} entities` : 'legacy rule assignments (not unique paths)'}${report.pendingApplyMembers ? ` · ${report.pendingApplyMembers} pending apply` : ''} · last reconciliation ${new Date(report.generatedAt).toLocaleString()}`
     : 'No reconciliation recorded yet';
   const count = value => value === undefined ? '—' : value;
   return `<section class="github-sync-resolution-diagram" onclick="event.stopPropagation()"><header><span><strong>Resolution flow</strong><small>${esc(detail)}</small></span></header><div class="github-sync-resolution-flow"><span><b>${count(report?.localFiles)}</b><small>On this machine</small></span><span><b>${count(report?.remoteFiles)}</b><small>On GitHub</small></span><span><b>${count(report?.totalFiles)}</b><small>Assessed</small></span><span><b>${count(report && unchanged)}</b><small>Unchanged</small></span><span class="automatic"><b>${count(report && automatic)}</b><small>Rules resolved</small></span><span class="human"><b>${count(humanRequired)}</b><small>Conflicts</small></span></div>${files.length ? `<small class="github-sync-resolution-pending">${files.filter(file => file.candidateSource === 'unresolved').length} still need a choice${agent ? ` · ${agent} Agent prepared for review` : ''}</small>` : ''}</section>`;
@@ -304,7 +304,7 @@ function githubSyncDifferenceTree(targetId, entries) {
 }
 
 function githubSyncConflictPanel(targetId, conflict) {
-  const sourceLabels = { unresolved:'Choice required', local:'This machine', remote:'GitHub', delete:'Delete GitHub', 'delete-local':'Delete this machine', base:'Common base', manual:'Manual merge', agent:'Agent merge' };
+  const sourceLabels = { unresolved:'Choice required', local:'This machine', remote:'GitHub', plan:'Prepared plan · approval required', delete:'Delete GitHub', 'delete-local':'Delete this machine', base:'Common base', manual:'Manual merge', agent:'Agent merge' };
   const conflictFiles = conflict.files || [];
   const entries = conflictFiles.map(file => {
     const encodedPath = encodeURIComponent(file.path);
@@ -324,16 +324,32 @@ function githubSyncConflictPanel(targetId, conflict) {
   const localOnly = conflictFiles.filter(file => file.hasLocal && !file.hasRemote).length;
   const missingLocal = conflictFiles.filter(file => file.hasBase && !file.hasLocal && file.hasRemote).length;
   const missingRemote = conflictFiles.filter(file => file.hasBase && file.hasLocal && !file.hasRemote).length;
-  const changedBoth = conflictFiles.length - missingLocal - missingRemote;
+  const contentConflicts = conflictFiles.filter(file => file.reason === 'content-conflict').length;
+  const concurrent = conflictFiles.filter(file => file.reason === 'concurrent-local-change').length;
+  const pending = conflictFiles.filter(file => file.reason === 'pending-apply').length;
+  const missingEntities = new Map();
+  for (const file of conflictFiles.filter(file => file.reason === 'unrecorded-local-absence')) {
+    const key = `${file.type}:${file.itemId}`;
+    if (!missingEntities.has(key)) missingEntities.set(key, []);
+    missingEntities.get(key).push(file);
+  }
+  const entityReviews = [...missingEntities.entries()].map(([identity, members]) => {
+    const primary = members.find(file => file.hasBase && !file.hasLocal && file.hasRemote) || members[0];
+    const encoded = encodeURIComponent(primary.path);
+    return `<details class="github-sync-entity-review"><summary>${esc(identity)} · ${members.length} members · missing locally, no deletion evidence</summary><p>Restore the GitHub entity or explicitly confirm deletion of the whole entity. Absence, ignore rules, an unselected path, or a move are not proof of deletion. Review historical paths and selection before deciding.</p><ul>${members.map(file => `<li>${esc(file.member || 'body')}: ${esc(file.path)} · Base ${esc(file.basePath || 'absent')} · Local ${esc(file.localPath || 'absent')} · GitHub ${esc(file.remotePath || 'absent')} · ${file.deletionEvidence ? esc(JSON.stringify(file.deletionEvidence)) : 'no tombstone'}</li>`).join('')}</ul><button class="pk-button" onclick="githubSyncConflictChoose('${esc(targetId)}',decodeURIComponent('${encoded}'),'remote',this)">Restore GitHub entity</button><button class="pk-button danger" onclick="githubSyncConflictDelete('${esc(targetId)}',decodeURIComponent('${encoded}'),this)">Confirm entity deletion</button></details>`;
+  }).join('') + [...missingEntities.entries()].map(([identity, members]) =>
+    `<p>${esc(identity)} · Selection / exclusion / history evidence: ${esc(JSON.stringify(members[0].absenceEvidence || {}))}</p>`).join('');
+  // Entity intent controls precede member-level comparison tools.
+  if (entityReviews) entries.unshift({ path:'Entity intent reviews', resolved:false, html:entityReviews });
   const supportedByAgent = conflictFiles.filter(file => file.candidateSource === 'unresolved' && (file.type === 'skills' || file.type === 'recipes')).length;
   const initialPreview = conflict.purpose === 'initial-preview';
   const schemaReady = !initialPreview || conflict.remoteSchema === 3;
-  const heading = initialPreview ? `${conflictFiles.length} differences found` : `${conflictFiles.length} conflicting file${conflictFiles.length === 1 ? '' : 's'}`;
+  const heading = initialPreview ? `${conflictFiles.length} differences found` : `${conflictFiles.length} workspace members · ${unresolved} choice required · ${conflictFiles.length - unresolved} candidates awaiting approval`;
   const guidance = conflict.appliedAt
     ? 'Resolutions are applied locally. GitHub sync is still pending or needs a retry; this is not confirmation of a successful push. The workspace is retained until Sync succeeds.'
     : initialPreview
     ? `Remote was fetched read-only. One-sided files are preserved automatically, but files found only on this machine can also be deleted if GitHub's absence is intentional. Nothing is written or pushed before approval.${schemaReady ? '' : ` Repository schema ${conflict.remoteSchema} must be migrated to schema 3 first.`}`
-    : `${missingLocal} missing on this machine · ${missingRemote} missing on GitHub · ${changedBoth} changed on both sides or during sync. A missing-file conflict is a deletion safeguard, not necessarily a text merge. A file may have changed during sync, including after the latest push. No further changes are pushed until every file has an explicit resolution.${missingLocal ? ' Delete GitHub confirms the local deletion and stages remote removal.' : ''}${missingRemote ? ' Delete this machine accepts GitHub’s absence and removes the local copy.' : ''}`;
+    : `${missingEntities.size} missing entities requiring intent review · ${missingLocal} missing-local members · ${missingRemote} missing-GitHub members · ${contentConflicts} content-review members · ${concurrent} concurrent-change blockers · ${pending} prepared pending members. Candidate readiness is not approval. Missing content is a deletion safeguard, not proof of deletion or a two-sided edit.${conflict.applyState === 'applying' ? ' A previous apply may be partial; retry revalidates snapshots and resumes idempotently before Sync.' : ''}`;
   return `<div class="github-sync-conflict-actions" onclick="event.stopPropagation()"><strong>${esc(heading)}</strong><p>${esc(guidance)}</p>${githubSyncResolutionDiagram(conflict.resolutionReport, conflictFiles)}<div class="github-sync-conflict-bulk">${unresolvedWithRemote ? `<button class="pk-button" data-pending-label="Selecting…" onclick="githubSyncConflictChooseAll('${esc(targetId)}','remote',${unresolvedWithRemote},this)">All Use GitHub</button>` : ''}${!initialPreview && unresolvedDeletions ? `<button class="pk-button danger" data-pending-label="Selecting…" onclick="githubSyncConflictDeleteAll('${esc(targetId)}',${unresolvedDeletions},this)">Delete GitHub</button>` : ''}${unresolvedWithLocal ? `<button class="pk-button" data-pending-label="Selecting…" onclick="githubSyncConflictChooseAll('${esc(targetId)}','local',${unresolvedWithLocal},this)">All Use This Machine</button>` : ''}${localOnly ? `<button class="pk-button danger" data-pending-label="Selecting…" onclick="githubSyncConflictDeleteLocalAll('${esc(targetId)}',${localOnly},this)">Delete This Machine (${localOnly})</button>` : ''}${supportedByAgent ? `<button class="pk-button" data-pending-label="Merging…" onclick="githubSyncConflictAgentAll('${esc(targetId)}',${supportedByAgent},this)">Ask Agent for ${supportedByAgent} unresolved</button>` : ''}</div>${githubSyncDifferenceTree(targetId, entries)}<footer><span>${!schemaReady ? 'Complete schema migration before applying' : unresolved ? `${unresolved} still need a choice` : 'All files have a candidate ready for approval'}</span><button class="pk-button primary" data-pending-label="${initialPreview ? 'Preparing Initial Sync…' : 'Applying resolutions…'}" onclick="githubSyncConflictAccept('${esc(targetId)}',this)" ${unresolved || !schemaReady ? 'disabled' : ''}>${initialPreview ? 'Apply choices &amp; Initial Sync' : 'Apply resolutions &amp; Sync'}</button><button class="pk-button" onclick="githubSyncConflictDiscard('${esc(targetId)}')">Cancel resolution workspace</button></footer></div>`;
 }
 

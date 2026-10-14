@@ -231,7 +231,7 @@ assert.match(source, /All Use GitHub[\s\S]*All Use This Machine[\s\S]*Ask Agent 
   "large conflict sets expose host-backed bulk resolution actions");
 assert.match(source, /Delete GitHub[\s\S]*githubSyncConflictDeleteAll/,
   "missing-local conflict sets expose an explicit destructive GitHub deletion choice");
-assert.match(source, /missing on this machine[\s\S]*missing on GitHub[\s\S]*deletion safeguard/,
+assert.match(source, /missing-local members[\s\S]*missing-GitHub members[\s\S]*deletion safeguard/,
   "conflict summaries distinguish missing-file safeguards from content merges");
 assert.match(extensionSource, /case "githubSyncConflictChooseAll"[\s\S]*selectAllGitHubSyncConflictCandidates/,
   "bulk source selection is validated and applied by the extension host");
@@ -465,7 +465,8 @@ const expandedResolvedCard = vm.runInContext(`(() => {
 assert.match(expandedResolvedCard, /skills\/System\/PKM\/PKM Skills\.md[\s\S]*Agent merge/,
   "completed files remain available only after the user explicitly expands them");
 vm.runInContext("githubSyncResolvedExpanded.delete('shared')", context);
-assert.match(conflictCard, /2 changed on both sides/, "the conflict workspace summarizes conflict shape");
+assert.match(conflictCard, /workspace members.*choice required.*candidates awaiting approval/, "workspace counts distinguish choice and approval");
+assert.doesNotMatch(conflictCard, /changed on both sides/, "presence flags do not prove two-sided changes");
 assert.match(conflictCard, /All Use GitHub/, "the conflict workspace offers one-click GitHub staging for unresolved files");
 assert.match(conflictCard, /Ask Agent for 1 unresolved/, "the Agent bulk action counts only unresolved compatible files");
 assert.match(conflictCard, /Apply resolutions &amp; Sync<\/button>/);
@@ -485,8 +486,8 @@ assert.match(source, /Delete this machine[\s\S]*githubSyncConflictDeleteLocal/,
   "local-only files can explicitly accept GitHub absence");
 assert.match(source, /Delete This Machine \(\$\{localOnly\}\)[\s\S]*githubSyncConflictDeleteLocalAll/,
   "local-only files support a visible bulk deletion action");
-assert.match(extensionSource, /filter\(candidate => !candidate\.deleteRemote && !!candidate\.destination\)[\s\S]*flatMap\(\(\{ source, destination, content \}\)[\s\S]*destination: destination!, content/,
-  "accepted machine-local deletions are applied through the atomic file mutation path");
+assert.match(extensionSource, /filter\(candidate => !candidate\.deleteRemote && !!candidate\.destination\)[\s\S]*flatMap\(\(\{ source, destination, content, originalLocal \}\)[\s\S]*destination: destination!, content, guard/,
+  "accepted machine-local deletions use the atomic mutation path with a source snapshot guard");
 assert.match(extensionSource, /candidate\.deleteLocal && candidate\.file\.type === "recipes"[\s\S]*applyGitHubSyncRecipeDeletes/,
   "accepted machine-local Recipe deletions use Project Store trash semantics");
 assert.match(source, /aria-label="Open Sync Diagnostic Log"[^>]*openGitHubSyncDiagnosticLog/,
@@ -505,8 +506,8 @@ const missingLocalCard = vm.runInContext(`(() => {
 assert.match(missingLocalCard, /All Use GitHub/, "a missing-local conflict offers the available restore candidate");
 assert.doesNotMatch(missingLocalCard, /All Use This Machine/, "a missing-local conflict must not offer a no-op machine candidate");
 assert.match(missingLocalCard, /Delete GitHub/, "a missing-local conflict offers an explicit remote deletion choice");
-assert.match(missingLocalCard, /confirms the local deletion[\s\S]*Apply resolutions &amp; Sync/,
-  "deletion safeguards explain that remote deletion is staged before approval");
+assert.match(missingLocalCard, /deletion safeguard, not proof of deletion[\s\S]*Apply resolutions &amp; Sync/,
+  "absence is not deletion evidence and still requires approval");
 
 const initialResolvedCard = vm.runInContext(`(() => {
   githubSyncData.conflicts.shared = {purpose:'initial-preview',remoteSchema:3,files:[

@@ -4,6 +4,8 @@
     "label": "Français"
   },
   "strings": {
+    "apiChat.loadOlderMessages": "Charger les messages plus anciens",
+    "apiChat.loadingOlderMessages": "Chargement des messages plus anciens...",
     "apiChat.resumeWorker": "Reprendre le worker",
     "apiChat.resumeWorkerNotice": "La reprise conserve les preuves d'exécution et lance une continuation. Des frais peuvent s'appliquer ; vérifiez les effets incertains des outils avant de les répéter.",
     "apiChat.outputPerInference": "Sortie par inférence",

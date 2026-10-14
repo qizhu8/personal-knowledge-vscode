@@ -159,7 +159,7 @@ async function main() {
     requireSavedGitHubSyncConflictDocuments: () => {},
     readGitHubSyncCredentials: async () => undefined,
     fetchGitHubRemoteSnapshot: async () => ({ commit: failure.remoteCommit }),
-    currentProjectStore: () => ({ list: () => ({ recipes: [] }) }),
+    currentProjectStore: () => ({ list: () => ({ recipes: [] }), recipeSyncEntries: () => [] }),
     mutateGitHubSyncTargets: async (_context, _reason, action) => action(targets).result,
     setTopLevelPrivacy: () => {},
     applyGitHubSyncRecipeDeletes: ids => assert.equal(ids.length, 0),

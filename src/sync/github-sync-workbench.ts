@@ -150,7 +150,7 @@ img{max-width:100%;max-height:220px;object-fit:contain}a{color:var(--vscode-text
 @media(max-width:600px){.difference-sides{grid-template-columns:1fr}}
 </style></head><body>
 <header><h1>GitHub Sync conflict workbench</h1><span id="count" aria-live="polite"></span></header>
-<p class="muted">Review common base, this machine (local), GitHub (remote), and the result. Save &amp; validate stores a candidate only; it does not change your knowledge.</p>
+<p class="muted">Base is the actual ancestor (when available), Local is the captured source snapshot, and GitHub is the upstream version. A prepared result is a separate pending operation, not a fabricated ancestor. Review missing entities and all their members together. Save &amp; validate stores a candidate only; it does not change your knowledge or approve a push. Interrupted local application is revalidated on retry.</p>
 <div class="toolbar"><button id="toggle-files" aria-expanded="true" aria-controls="files">Hide file tree</button><button id="previous">Previous</button><button id="next">Next</button><button id="refresh">Refresh</button><button id="apply">Review &amp; apply all…</button></div>
 <p id="status" role="status" aria-live="polite">Loading conflict…</p><p id="error" class="error" role="alert"></p>
 <div id="layout" class="layout"><nav id="files" aria-label="Conflict files"></nav><main id="detail"></main></div>

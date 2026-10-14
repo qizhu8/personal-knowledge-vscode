@@ -4,6 +4,8 @@
     "label": "Русский"
   },
   "strings": {
+    "apiChat.loadOlderMessages": "Загрузить предыдущие сообщения",
+    "apiChat.loadingOlderMessages": "Загрузка предыдущих сообщений...",
     "apiChat.resumeWorker": "Продолжить worker",
     "apiChat.resumeWorkerNotice": "Продолжение сохраняет свидетельства выполнения и запускает новый этап. Возможны расходы; проверьте неопределённые эффекты инструментов перед повторением.",
     "apiChat.outputPerInference": "Вывод на один inference",

@@ -705,6 +705,164 @@ async function scenario(name, action) {
     }
   });
 
+  for (const fallback of [false, true]) await scenario(`CRLF remote update uses raw guards (${fallback ? "fallback" : "selected"} ingest)`, async () => {
+    const fixture = createFixture(`crlf-${fallback}`);
+    try {
+      await initialize(fixture);
+      const destination = path.join(fixture.skills, "Two.md");
+      fs.writeFileSync(destination, skill("Two", "two v1").replace(/\n/g, "\r\n"));
+      if (fallback) fixture.catalog.skills = fixture.catalog.skills.filter(item => item.id !== "Shared/Two");
+      const verify = cloneRemote(fixture);
+      commitRemoteFile(verify, "skills/Shared/Two.md", skill("Two", "remote-only update"));
+      const result = await syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store);
+      assert.equal(fs.readFileSync(destination, "utf8"), skill("Two", "remote-only update"));
+      assert.equal(result.resolutionReport.rules["human-required"] || 0, 0);
+      assert.equal(result.commit, run(verify, ["rev-parse", "origin/main"]));
+      assert.equal(run(fixture.root, ["--git-dir", fixture.remote, "show", `${result.commit}:skills/Shared/Two.md`]),
+        skill("Two", "remote-only update").trim(), "synthetic fetch/reconcile/apply/commit/push succeeds");
+    } finally { fs.rmSync(fixture.root, { recursive: true, force: true }); }
+  });
+
+  for (const type of ["notes", "packages"]) for (const fallback of [false, true]) {
+    await scenario(`CRLF ${type} members retain raw bytes through ${fallback ? "fallback" : "selected"} ingest`, async () => {
+      const fixture = createFixture(`crlf-members-${type}-${fallback}`);
+      try {
+        fixture.target.selection.public[type].folders = [""];
+        const directory = path.join(fixture.store, type, "Review");
+        fs.mkdirSync(directory, { recursive: true });
+        const body = path.join(directory, "Body.md"), sidecar = path.join(directory, "Body.metadata.json");
+        const dependency = path.join(directory, "asset.txt");
+        fs.writeFileSync(body, "body\r\n");
+        fs.writeFileSync(sidecar, '{"synthetic":true}\r\n');
+        fs.writeFileSync(dependency, "asset before\r\n");
+        fixture.catalog[type] = [{
+          id: "Review/Body", label: "Body", cat: "Review", isPrivate: false,
+          source: type === "packages" ? directory : body,
+          destination: type === "packages" ? `${type}/Review` : `${type}/Review/Body.md`,
+          ...(type === "notes" ? { dependencies: [
+            { source: sidecar, destination: `${type}/Review/Body.metadata.json` },
+            { source: dependency, destination: `${type}/Review/asset.txt` },
+          ] } : {}),
+        }];
+        await initialize(fixture);
+        if (fallback) fixture.catalog[type] = [];
+        const verify = cloneRemote(fixture);
+        commitRemoteFile(verify, `${type}/Review/asset.txt`, "asset remote\n");
+        await syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store);
+        assert.equal(fs.readFileSync(dependency, "utf8"), "asset remote\n");
+        assert.equal(fs.readFileSync(body, "utf8").replace(/\r\n/g, "\n"), "body\n");
+        assert.equal(JSON.parse(fs.readFileSync(sidecar, "utf8")).synthetic, true);
+      } finally { fs.rmSync(fixture.root, { recursive: true, force: true }); }
+    });
+  }
+
+  await scenario("CRLF non-overlapping edits merge without a false guarded-apply conflict", async () => {
+    const fixture = createFixture("crlf-three-way");
+    try {
+      const destination = path.join(fixture.skills, "Two.md");
+      const baseline = skill("Two", "line one\nline two\nline three\nline four\nline five");
+      fs.writeFileSync(destination, baseline);
+      await initialize(fixture);
+      fs.writeFileSync(destination, baseline.replace("line one", "local one").replace(/\n/g, "\r\n"));
+      const verify = cloneRemote(fixture);
+      commitRemoteFile(verify, "skills/Shared/Two.md", baseline.replace("line five", "remote five"));
+      const result = await syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store);
+      const actual = fs.readFileSync(destination, "utf8");
+      assert.match(actual, /local one/);
+      assert.match(actual, /remote five/);
+      assert.equal(result.resolutionReport.rules["human-required"] || 0, 0);
+      assert.equal(result.resolutionReport.rules["deterministic-three-way"], 1);
+    } finally { fs.rmSync(fixture.root, { recursive: true, force: true }); }
+  });
+
+  await scenario("one real stale member retains all 101 pending operations with actual Base", async () => {
+    const fixture = createFixture("pending-101");
+    try {
+      fixture.catalog.notes = Array.from({ length: 100 }, (_, index) => {
+        const relative = `notes/Review/Member-${index}.md`;
+        const source = path.join(fixture.store, relative);
+        fs.mkdirSync(path.dirname(source), { recursive: true });
+        fs.writeFileSync(source, `original ${index}\r\n`);
+        return { id: `Review/Member-${index}`, label: `Member-${index}`, cat: "Review", isPrivate: false, source, destination: relative };
+      });
+      await initialize(fixture);
+      const baselineCommit = fixture.target.lastSync.commit;
+      const verify = cloneRemote(fixture);
+      const manifestPath = path.join(verify, ".pkm-github-sync.json");
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      const replacements = [
+        { relative: "skills/Shared/Two.md", content: skill("Two", "upstream two") },
+        ...fixture.catalog.notes.map((item, index) => ({ relative: item.destination, content: `upstream ${index}\n` })),
+      ];
+      for (const { relative, content } of replacements) {
+        fs.writeFileSync(path.join(verify, relative), content);
+        manifest.files.find(file => file.path === relative).digest = digest(content);
+      }
+      fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+      run(verify, ["add", "-A"]); run(verify, ["commit", "-m", "synthetic remote batch"]); run(verify, ["push"]);
+      fs.writeFileSync(path.join(fixture.skills, "One.md"), skill("One", "outgoing"));
+      const checkout = path.join(fixture.checkoutRoot, fixture.target.id, "repository");
+      const pushStarted = path.join(fixture.root, "push-started"), releasePush = path.join(fixture.root, "release-push");
+      fs.writeFileSync(path.join(checkout, ".git", "hooks", "pre-push"),
+        `#!/bin/sh\n: > "${pushStarted}"\nwhile [ ! -f "${releasePush}" ]; do sleep 0.02; done\n`, { mode: 0o755 });
+      const pending = syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store);
+      await waitForFile(pushStarted);
+      fs.writeFileSync(path.join(fixture.skills, "Two.md"), skill("Two", "real concurrent edit"));
+      fs.writeFileSync(releasePush, "continue\n");
+      await assert.rejects(pending, error => {
+        assert(error instanceof GitHubSyncConflictError);
+        assert.equal(error.conflicts.length, 101);
+        assert.equal(error.conflicts.filter(file => file.reason === "concurrent-local-change").length, 1);
+        assert.equal(error.conflicts.filter(file => file.reason === "pending-apply").length, 100);
+        assert.equal(error.resolutionReport.pendingApplyMembers, 101);
+        assert.equal(error.resolutionReport.totalFiles, 102);
+        assert.equal(error.resolutionReport.rules["human-required"] || 0, 0);
+        const note = error.conflicts.find(file => file.type === "notes");
+        assert.equal(note.baseCommit, baselineCommit);
+        assert.equal(note.base.toString(), "original 0\n");
+        assert.equal(note.expectedLocal.toString(), "original 0\r\n");
+        assert.equal(note.plannedContent.toString(), "upstream 0\n");
+        assert.equal(note.remote.toString(), "upstream 0\n");
+        return true;
+      });
+      assert.equal(fs.readFileSync(fixture.catalog.notes[0].source, "utf8"), "original 0\r\n", "nothing in the aborted batch was lost");
+    } finally { fs.rmSync(fixture.root, { recursive: true, force: true }); }
+  });
+
+  await scenario("accepted push with receipt-write failure is not reset or reported as an unpushed transaction", async () => {
+    const fixture = createFixture("receipt-failure");
+    try {
+      await initialize(fixture);
+      const previous = fixture.target.lastSync.commit;
+      const verify = cloneRemote(fixture);
+      commitRemoteFile(verify, "skills/Shared/Two.md", skill("Two", "upstream receipt fixture"));
+      fs.writeFileSync(path.join(fixture.skills, "One.md"), skill("One", "outgoing receipt fixture"));
+      const originalRename = fs.renameSync;
+      fs.renameSync = (source, destination) => {
+        if (destination === path.join(fixture.checkoutRoot, fixture.target.id, "transactions", "latest.json")) {
+          throw new Error("injected receipt persistence failure");
+        }
+        return originalRename(source, destination);
+      };
+      try {
+        await assert.rejects(
+          () => syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store),
+          /GitHub accepted the push, but local transaction recording failed: injected receipt persistence failure/,
+        );
+      } finally { fs.renameSync = originalRename; }
+      const pushed = run(fixture.root, ["--git-dir", fixture.remote, "rev-parse", "main"]);
+      const checkout = path.join(fixture.checkoutRoot, fixture.target.id, "repository");
+      assert.notEqual(pushed, previous);
+      assert.equal(run(checkout, ["rev-parse", "HEAD"]), pushed, "accepted checkout must not be reset to the old Remote");
+      assert.equal(fs.readFileSync(path.join(fixture.skills, "Two.md"), "utf8"), skill("Two", "two v1"), "local pull still awaits reconcile");
+      const receipt = JSON.parse(fs.readFileSync(path.join(fixture.checkoutRoot, fixture.target.id, "transactions", "latest.json"), "utf8"));
+      assert.equal(receipt.pushedCommit, previous, "no new durable receipt is fabricated");
+      const recovered = await syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store);
+      assert.equal(recovered.commit, pushed);
+      assert.equal(fs.readFileSync(path.join(fixture.skills, "Two.md"), "utf8"), skill("Two", "upstream receipt fixture"));
+    } finally { fs.rmSync(fixture.root, { recursive: true, force: true }); }
+  });
+
   await scenario("an edit made during sync is never overwritten by a pull", async () => {
     const fixture = createFixture("mid-sync-edit");
     try {

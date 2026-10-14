@@ -148,7 +148,7 @@
   function render() {
     const unresolved = state?.record.files.filter(file => file.candidateSource === "unresolved").length ?? 0;
     node("count").textContent = applied() ? "Applied locally · sync pending" : state ?
-      `${unresolved} unresolved · ${validated.size}/${state.record.files.length} saved & validated` : "No active conflict";
+      `${unresolved} choice required · ${state.record.files.length - unresolved} candidates awaiting approval · ${validated.size}/${state.record.files.length} saved & validated${state.record.applyState === "applying" ? " · interrupted apply: retry will revalidate" : ""}` : "No active conflict";
     renderFileTree();
     const file = current();
     const meta = metadata();
@@ -157,6 +157,9 @@
     differenceBlocks = (file.comparison?.blocks || []).map(block => ({ ...block }));
     pickMappingValid = true;
     node("detail").innerHTML = `<h2>${esc(file.path)}</h2><p>Candidate: ${esc(meta.candidateSource)} · ${file.binary ? "Binary / image — never editable" : "Text"}${file.mime ? ` · ${esc(file.mime)}` : ""}</p>
+      ${meta.reason ? `<p>Review reason: ${esc(meta.reason)}${meta.plannedOperation ? ` · retained operation: ${esc(meta.plannedOperation)}` : ""}</p>` : ""}
+      ${meta.reason === "unrecorded-local-absence" ? `<p>Entity ${esc(meta.type)} / ${esc(meta.itemId)} is missing locally without deletion evidence. Restore GitHub or confirm deletion as one entity decision, including sidecars and dependencies.</p><pre>${esc(JSON.stringify(meta.absenceEvidence || {}, null, 2))}</pre>` : ""}
+      ${meta.deletionEvidence ? `<p>Deletion evidence</p><pre>${esc(JSON.stringify(meta.deletionEvidence, null, 2))}</pre>` : ""}
       ${!file.binary && file.comparison ? `<section class="differences"><div class="difference-headings">
         <section><h2>Local (this machine)</h2><button data-command="choose" data-source="local">Pick all left (local)</button>
           <button data-command="compare" data-source="local">Native compare local / result</button>
@@ -171,7 +174,7 @@
           file.binary ? binaryPreview(file, source) : `<pre>${esc(file[source] ?? "")}</pre>`}
         <button data-command="choose" data-source="${source}" data-unavailable="${!present(source)}">${source === "local" ? "Pick all left (local)" : "Pick all right (GitHub)"}</button>
         <button data-command="compare" data-source="${source}" data-unavailable="${!present(source)}">Native compare ${source} / result</button></section>`).join("")}</div>`}
-      <details class="base-preview"><summary>Common base (last shared snapshot)</summary>
+      <details class="base-preview"><summary>Common base (actual ancestor${meta.baseCommit ? ` · ${esc(meta.baseCommit)}` : ""})</summary>
         ${meta.basePath ? `<p class="muted">${esc(meta.basePath)}</p>` : ""}
         ${!present("base") ? "<p>Absent — no file</p>" : file.binary ? binaryPreview(file, "base") : `<pre>${esc(file.base ?? "")}</pre>`}
         <button data-command="choose" data-source="base" data-unavailable="${!present("base")}">Choose base</button>

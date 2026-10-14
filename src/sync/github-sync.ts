@@ -39,6 +39,9 @@ export type GitHubSyncResolutionRule =
 
 export interface GitHubSyncResolutionReport {
   totalFiles: number;
+  assessedEntities?: number;
+  pendingApplyMembers?: number;
+  concurrentChangeBlockers?: number;
   localFiles?: number;
   remoteFiles?: number;
   rules: Partial<Record<GitHubSyncResolutionRule, number>>;
@@ -138,9 +141,26 @@ export function githubSyncManagedContent(type: GitHubSyncContentType, content: B
   if (content.includes(0) || !Buffer.from(content.toString("utf8"), "utf8").equals(content)) {
     throw new Error("Recipe content is not valid UTF-8 text.");
   }
+
   const recipe = JSON.parse(content.toString("utf8")) as Record<string, unknown>;
   delete recipe.editorLayout;
   return Buffer.from(`${JSON.stringify(recipe, null, 2)}\n`, "utf8");
+}
+
+/** Logical comparison only. Never use this representation as a disk write guard. */
+export function githubSyncComparisonContent(type: GitHubSyncContentType, raw: Buffer): Buffer {
+  const managed = githubSyncManagedContent(type, raw);
+  const text = managed.toString("utf8");
+  // BOM-bearing content, NUL and invalid UTF-8 retain their exact representation.
+  if (managed.includes(0) || text.startsWith("\uFEFF") || !Buffer.from(text, "utf8").equals(managed)) return managed;
+  return Buffer.from(text.replace(/\r\n/g, "\n"), "utf8");
+}
+
+export function githubSyncLocalSnapshotMatches(
+  original: Buffer | undefined, planned: Buffer | undefined, current: Buffer | undefined,
+): boolean {
+  return current === undefined ? original === undefined || planned === undefined
+    : !!(planned?.equals(current) || original?.equals(current));
 }
 
 export interface GitHubSyncCatalogItem {
@@ -215,6 +235,13 @@ export interface GitHubSyncConflict {
   base?: Buffer;
   local?: Buffer;
   remote?: Buffer;
+  reason?: "unrecorded-local-absence" | "concurrent-local-change" | "pending-apply" | "content-conflict" | "move-conflict" | "remote-deletion";
+  expectedLocal?: Buffer;
+  plannedContent?: Buffer;
+  plannedOperation?: "write" | "delete";
+  baseCommit?: string;
+  deletionEvidence?: GitHubSyncDeletionEvidence;
+  absenceEvidence?: { selected: boolean; excludedPaths: string[]; historicalPaths: string[]; localDeletionRecorded: boolean };
 }
 
 export class GitHubSyncConflictError extends Error {
@@ -229,7 +256,7 @@ export class GitHubSyncConflictError extends Error {
     public readonly resolutionReport: GitHubSyncResolutionReport = { totalFiles: conflicts.length, rules: { "human-required": conflicts.length }, generatedAt: new Date().toISOString() },
   ) {
     const paths = conflicts.map(conflict => conflict.path);
-    super(`GitHub Sync found ${paths.length} conflicting file${paths.length === 1 ? "" : "s"}: ${paths.slice(0, 5).join(", ")}${paths.length > 5 ? `, and ${paths.length - 5} more` : ""}. Resolve and approve them before syncing again.`);
+    super(`GitHub Sync has ${paths.length} workspace member${paths.length === 1 ? "" : "s"} awaiting review or approval: ${paths.slice(0, 5).join(", ")}${paths.length > 5 ? `, and ${paths.length - 5} more` : ""}. Resolve and approve them before syncing again.`);
     this.name = "GitHubSyncConflictError";
   }
 }
@@ -407,6 +434,11 @@ export function normalizeGitHubSyncTarget(value: any, createId: () => string = r
       rules,
       generatedAt: String(value.lastResolutionReport.generatedAt || ""),
     };
+    for (const key of ["assessedEntities", "pendingApplyMembers", "concurrentChangeBlockers"] as const) {
+      if (Number.isInteger(value.lastResolutionReport[key]) && value.lastResolutionReport[key] >= 0) {
+        target.lastResolutionReport[key] = value.lastResolutionReport[key];
+      }
+    }
   }
   if (value?.lastFailure?.at && value?.lastFailure?.error) {
     target.lastFailure = {
@@ -790,7 +822,7 @@ export function githubSyncIgnoredPath(relative: string): boolean {
 }
 
 function collectItemFiles(item: GitHubSyncCatalogItem,
-  onError?: (error: unknown, destination: string, source: string) => void): Array<{ destination: string; member: string; content: Buffer }> {
+  onError?: (error: unknown, destination: string, source: string) => void): Array<{ destination: string; member: string; content: Buffer; sourcePath?: string }> {
   const destination = githubSyncSafeRelativePath(item.destination);
   if (githubSyncIgnoredPath(destination)) return [];
   if (item.content !== undefined) return [{ destination, member: "", content: Buffer.from(item.content, "utf8") }];
@@ -799,7 +831,7 @@ function collectItemFiles(item: GitHubSyncCatalogItem,
   const stat = fs.lstatSync(source);
   if (stat.isSymbolicLink()) throw new Error(`Symbolic links cannot be synchronized: ${item.source}`);
   if (stat.isFile()) {
-    const files = [{ destination, member: "", content: fs.readFileSync(source) }];
+    const files = [{ destination, member: "", content: fs.readFileSync(source), sourcePath: source }];
     for (const dependency of item.dependencies || []) {
       if (githubSyncIgnoredPath(dependency.destination)) continue;
       try {
@@ -810,6 +842,7 @@ function collectItemFiles(item: GitHubSyncCatalogItem,
           destination: githubSyncSafeRelativePath(dependency.destination),
           member: githubSyncSafeRelativePath(dependency.destination),
           content: fs.readFileSync(dependencySource),
+          sourcePath: dependencySource,
         });
       } catch (error) {
         if (!onError) throw error;
@@ -819,7 +852,7 @@ function collectItemFiles(item: GitHubSyncCatalogItem,
     return files;
   }
   if (!stat.isDirectory()) throw new Error(`Unsupported catalog source: ${item.source}`);
-  const files: Array<{ destination: string; member: string; content: Buffer }> = [];
+  const files: Array<{ destination: string; member: string; content: Buffer; sourcePath?: string }> = [];
   const walk = (directory: string, relative: string): void => {
     let names: string[];
     try { names = fs.readdirSync(directory).sort((left, right) => left.localeCompare(right)); }
@@ -836,7 +869,7 @@ function collectItemFiles(item: GitHubSyncCatalogItem,
         const childStat = fs.lstatSync(child);
         if (childStat.isSymbolicLink()) throw new Error(`Symbolic links cannot be synchronized: ${child}`);
         if (childStat.isDirectory()) walk(child, childRelative);
-        else if (childStat.isFile()) files.push({ destination: `${destination}/${childRelative}`, member: childRelative, content: fs.readFileSync(child) });
+        else if (childStat.isFile()) files.push({ destination: `${destination}/${childRelative}`, member: childRelative, content: fs.readFileSync(child), sourcePath: child });
       } catch (error) {
         if (!onError) throw error;
         onError(error, `${destination}/${childRelative}`, child);
@@ -858,6 +891,8 @@ interface GitHubSyncManagedFile {
   content?: Buffer;
   baseIntegrityEvidence?: GitHubSyncBaseEvidence;
   sourceDigest?: string;
+  rawSnapshot?: Buffer;
+  sourceLocator?: GitHubSyncContentIssue["sourceLocator"];
 }
 
 interface GitHubSyncManifest {
@@ -942,9 +977,7 @@ function selectedFiles(target: GitHubSyncTarget, catalog: GitHubSyncCatalog, exc
           // Preserve invalid JSON for the validator's source-specific diagnostics.
           managed = file.content;
         }
-        const text = managed.toString("utf8");
-        const content = managed.includes(0) || !Buffer.from(text, "utf8").equals(managed)
-          ? managed : Buffer.from(text.replace(/\r\n/g, "\n"), "utf8");
+        const content = githubSyncComparisonContent(type === "recipes" ? "notes" : type, managed);
         const digest = createHash("sha256").update(content).digest("hex");
         if (destinations.has(file.destination)) {
           const existing = files.find(candidate => candidate.path === file.destination);
@@ -977,6 +1010,8 @@ function selectedFiles(target: GitHubSyncTarget, catalog: GitHubSyncCatalog, exc
           digest,
           content,
           sourceDigest: fileDigest(file.content),
+          rawSnapshot: type === "recipes" ? managed : file.content,
+          sourceLocator: file.sourcePath ? { kind: "file", path: file.sourcePath } : item.sourceLocator,
         });
         entries.push({ path: file.destination, digest });
         for (const folder of folders) folderEntries.get(folder)!.push({ path: file.destination, digest });
@@ -1015,7 +1050,7 @@ export function manifestJson(files: GitHubSyncManagedFile[], deletions: GitHubSy
       storage: "pkm.github.publication/v1",
     },
     // Review-only evidence is machine-local, never publication metadata.
-    files: ordered.map(({ content, sourceDigest, baseIntegrityEvidence, ...file }) => file),
+    files: ordered.map(({ content, sourceDigest, rawSnapshot, sourceLocator, baseIntegrityEvidence, ...file }) => file),
     deletions: [...deletions].sort((left, right) =>
       `${left.type}\0${left.itemId}`.localeCompare(`${right.type}\0${right.itemId}`))
       .map(({ type, itemId, deletedAt, category, privacy }) => ({ type, itemId, deletedAt, category, privacy })),
@@ -1878,8 +1913,8 @@ async function manifestAtCommit(target: GitHubSyncTarget, checkoutRoot: string, 
 }
 
 function managedComparisonDigest(file: GitHubSyncManagedFile): string {
-  if (file.type !== "recipes" || !file.content) return file.digest;
-  return fileDigest(githubSyncManagedContent("recipes", file.content));
+  if (!file.content) return file.digest;
+  return fileDigest(githubSyncComparisonContent(file.type, file.content));
 }
 
 function managedContentsEquivalent(local: GitHubSyncManagedFile, remote: GitHubSyncManagedFile): boolean {
@@ -2002,11 +2037,23 @@ export function collectGitHubSyncLocalContentIssues(files: GitHubSyncManagedFile
   return issues;
 }
 
-function writeAtomic(destination: string, content: Buffer): void {
+export function cleanupGitHubSyncTemporary(temporary: string, primary?: unknown): void {
+  try { fs.rmSync(temporary, { force: true, maxRetries: 4, retryDelay: 20 }); }
+  catch (cleanupError) {
+    const detail = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+    if (primary) throw new Error(`${primary instanceof Error ? primary.message : String(primary)}. Temporary cleanup also failed: ${detail}`);
+    throw cleanupError;
+  }
+}
+
+function writeAtomic(destination: string, content: Buffer, mode?: number): void {
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   const temporary = `${destination}.pkm-sync-${process.pid}-${randomUUID()}.tmp`;
+  let primary: unknown;
   try {
-    fs.writeFileSync(temporary, content, { flag: "wx" });
+    fs.writeFileSync(temporary, content, { flag: "wx", mode });
+    const descriptor = fs.openSync(temporary, "r+");
+    try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
     const waitArray = new Int32Array(new SharedArrayBuffer(4));
     for (let attempt = 0; ; attempt++) {
       try {
@@ -2017,13 +2064,16 @@ function writeAtomic(destination: string, content: Buffer): void {
         Atomics.wait(waitArray, 0, 0, 15 * (attempt + 1));
       }
     }
+  } catch (error) {
+    primary = error;
+    throw error;
   } finally {
-    fs.rmSync(temporary, { force: true, maxRetries: 4, retryDelay: 20 });
+    cleanupGitHubSyncTemporary(temporary, primary);
   }
 }
 
 export function replaceGitHubSyncFilesAtomically(
-  replacements: Array<{ destination: string; content: Buffer | undefined }>,
+  replacements: Array<{ destination: string; content: Buffer | undefined; guard?: { original: Buffer | undefined } }>,
   operation = "GitHub Sync"
 ): void {
   const originals = replacements.map(item => ({
@@ -2034,6 +2084,12 @@ export function replaceGitHubSyncFilesAtomically(
   try {
     for (let index = 0; index < replacements.length; index++) {
       const replacement = replacements[index];
+      if (replacement.guard) {
+        const current = fs.existsSync(replacement.destination) ? fs.readFileSync(replacement.destination) : undefined;
+        if (!githubSyncLocalSnapshotMatches(replacement.guard.original, replacement.content, current)) {
+          throw new Error(`Local content changed at the mutation boundary: ${replacement.destination}`);
+        }
+      }
       if (replacement.content) writeAtomic(replacement.destination, replacement.content);
       else fs.rmSync(replacement.destination, { force: true });
       completed.push(index);
@@ -2096,7 +2152,7 @@ function applyLocalChanges(
   }));
   for (const { item, destination } of replacements) {
     const current = fs.existsSync(destination) ? fs.readFileSync(destination) : undefined;
-    if (!current?.equals(item.content) && !(item.expectedLocal ? current?.equals(item.expectedLocal) : current === undefined)) {
+    if (!githubSyncLocalSnapshotMatches(item.expectedLocal, item.content, current)) {
       throw new GitHubSyncLocalChangeError(item.file, item.expectedLocal, current, item.content);
     }
   }
@@ -2111,8 +2167,8 @@ function applyLocalChanges(
     }
   }
   const mutations = [
-    ...replacements.map(({ item, destination }) => ({ destination, content: item.content })),
-    ...deletions.map(({ destination }) => ({ destination, content: undefined })),
+    ...replacements.map(({ item, destination }) => ({ destination, content: item.content, expected: item.expectedLocal, file: item.file })),
+    ...deletions.map(({ item, destination }) => ({ destination, content: undefined, expected: item.expectedLocal, file: item.file })),
   ];
   const originals = mutations.map(item => ({
     destination: item.destination,
@@ -2122,6 +2178,10 @@ function applyLocalChanges(
   try {
     for (let index = 0; index < mutations.length; index++) {
       const mutation = mutations[index];
+      const current = fs.existsSync(mutation.destination) ? fs.readFileSync(mutation.destination) : undefined;
+      if (!githubSyncLocalSnapshotMatches(mutation.expected, mutation.content, current)) {
+        throw new GitHubSyncLocalChangeError(mutation.file, mutation.expected, current, mutation.content);
+      }
       if (mutation.content) writeAtomic(mutation.destination, mutation.content);
       else fs.rmSync(mutation.destination, { force: true });
       completed.push(index);
@@ -2516,10 +2576,7 @@ function transactionReceiptPath(checkoutRoot: string, targetId: string): string 
 
 function writeTransactionReceipt(checkoutRoot: string, receipt: GitHubSyncTransactionReceipt): void {
   const destination = transactionReceiptPath(checkoutRoot, receipt.targetId);
-  fs.mkdirSync(path.dirname(destination), { recursive: true });
-  const temporary = `${destination}.${process.pid}.tmp`;
-  fs.writeFileSync(temporary, `${JSON.stringify(receipt, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-  fs.renameSync(temporary, destination);
+  writeAtomic(destination, Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`, "utf8"), 0o600);
 }
 
 export function completeGitHubSyncTransaction(checkoutRoot: string, targetId: string, transactionId: string): void {
@@ -2663,11 +2720,15 @@ async function syncGitHubTargetAttempt(
       if (managed.type === "recipes" || localFiles.has(managed.path)) continue;
       const source = syncLocalPath(storeRoot, managed.path);
       if (!fs.existsSync(source) || !fs.lstatSync(source).isFile()) continue;
-      const content = fs.readFileSync(source);
+      const rawSnapshot = fs.readFileSync(source);
+      const content = githubSyncComparisonContent(managed.type, rawSnapshot);
       localFiles.set(managed.path, {
         ...managed,
         digest: fileDigest(content),
         content,
+        rawSnapshot,
+        sourceDigest: fileDigest(rawSnapshot),
+        sourceLocator: { kind: "file", path: source },
       });
     }
   }
@@ -2684,7 +2745,8 @@ async function syncGitHubTargetAttempt(
       || local.type !== remote.type || local.itemId === remote.itemId
       || (remoteOwnerCounts.get(entityKey(remote.type, remote.itemId)) || 0) < 2
       || !selectionMatches(normalized, remote.type, remote.privacy, remote.itemId, remote.category)) continue;
-    localFiles.set(relative, { ...remote, content: local.content, digest: local.digest });
+    localFiles.set(relative, { ...remote, content: local.content, digest: local.digest,
+      rawSnapshot: local.rawSnapshot, sourceDigest: local.sourceDigest, sourceLocator: local.sourceLocator });
   }
 
   const localEntities = groupManagedFiles(localFiles.values());
@@ -2736,7 +2798,8 @@ async function syncGitHubTargetAttempt(
     resolutionRules[rule] = (resolutionRules[rule] || 0) + Math.max(1, paths.size);
   };
   const resolutionReport = (): GitHubSyncResolutionReport => ({
-    totalFiles: Object.values(resolutionRules).reduce((sum, count) => sum + (count || 0), 0),
+    totalFiles: new Set([...localFiles.keys(), ...remoteFiles.keys(), ...baseFiles.keys()]).size,
+    assessedEntities: identities.size,
     localFiles: localFiles.size,
     remoteFiles: remoteFiles.size,
     rules: { ...resolutionRules },
@@ -2753,6 +2816,7 @@ async function syncGitHubTargetAttempt(
     base: GitHubSyncManagedFile[] | undefined,
     local: GitHubSyncManagedFile[] | undefined,
     remote: GitHubSyncManagedFile[] | undefined,
+    reason: GitHubSyncConflict["reason"] = "content-conflict",
   ): Promise<void> => {
     const members = new Set([...(base || []), ...(local || []), ...(remote || [])].map(file => file.member));
     for (const member of [...members].sort()) {
@@ -2772,10 +2836,21 @@ async function syncGitHubTargetAttempt(
       localPath: localFile?.path,
       remotePath: remoteFile?.path,
       entityDeletion: !local || !remote,
+      reason: reason === "content-conflict" && localFile && remoteFile && localFile.path !== remoteFile.path
+        ? "move-conflict" : reason,
+      baseCommit: normalized.lastSync?.commit,
+      deletionEvidence: remoteDeletionMap.get(entityKey(metadata.type, metadata.itemId))
+        || localDeletionMap.get(entityKey(metadata.type, metadata.itemId)),
+      absenceEvidence: reason === "unrecorded-local-absence" ? {
+        selected: selectionMatches(normalized, metadata.type, metadata.privacy, metadata.itemId, metadata.category),
+        excludedPaths: [...excluded].filter(relative => [...(base || []), ...(remote || [])].some(file => file.path === relative)),
+        historicalPaths: (base || []).map(file => file.path),
+        localDeletionRecorded: localDeletionMap.has(entityKey(metadata.type, metadata.itemId)),
+      } : undefined,
       base: baseFile && normalized.lastSync?.commit
         ? await gitBuffer(checkout, ["cat-file", "blob", `${normalized.lastSync.commit}:${baseFile.path}`], undefined, 64 * 1024 * 1024)
         : undefined,
-      local: localFile?.content,
+      local: localFile?.rawSnapshot || localFile?.content,
       remote: remoteFile ? fs.readFileSync(managedPath(checkout, remoteFile.path)) : undefined,
       });
     }
@@ -2787,12 +2862,15 @@ async function syncGitHubTargetAttempt(
     for (const file of remote || []) {
       const content = file.content || fs.readFileSync(managedPath(checkout, file.path));
       validateManagedContent(file, content);
-      const localFile = entityFileByMember(local, file.member);
-      localWrites.push({ file, content, expectedLocal: localFiles.get(file.path)?.content });
+      const destinationLocal = localFiles.get(file.path);
+      localWrites.push({ file, content, expectedLocal: destinationLocal?.rawSnapshot || destinationLocal?.content });
     }
     for (const file of local || base || []) {
       if (file.type === "recipes" && remote?.length) continue;
-      if (!remotePaths.has(file.path)) localDeletes.push({ file, expectedLocal: file.content });
+      if (!remotePaths.has(file.path)) {
+        const captured = localFiles.get(file.path);
+        localDeletes.push({ file, expectedLocal: captured?.rawSnapshot || captured?.content });
+      }
     }
   };
 
@@ -2866,7 +2944,7 @@ async function syncGitHubTargetAttempt(
 
     if (githubSyncUnrecordedAbsenceNeedsReview(!!base, !!local, !!remote, localDeletionMap.has(key), remoteDeletionMap.has(key))) {
       recordResolution("human-required", local, base, remote);
-      await conflictEntity(base, local, remote);
+      await conflictEntity(base, local, remote, !local ? "unrecorded-local-absence" : "remote-deletion");
       continue;
     }
 
@@ -2985,7 +3063,7 @@ async function syncGitHubTargetAttempt(
     }
   }
 
-  const applyChanges = (conflictCommit: string): ReturnType<typeof applyLocalChanges> => {
+  const applyChanges = async (conflictCommit: string): Promise<ReturnType<typeof applyLocalChanges>> => {
     try {
       return applyLocalChanges(storeRoot, localWrites, localDeletes.filter(item => !finalRemote.has(item.file.path)));
     } catch (error) {
@@ -2993,32 +3071,43 @@ async function syncGitHubTargetAttempt(
       onProgress?.("resolve-conflicts", `Local content changed during synchronization: ${error.file.path}`);
       // A guarded apply aborts the whole batch, so every unapplied member must
       // accompany the changed file before acceptance can advance the base.
-      const pending = new Map([...localDeletes.map(item => ({ ...item, content: undefined })), ...localWrites]
+      const pending = new Map([...localDeletes.filter(item => !finalRemote.has(item.file.path)).map(item => ({ ...item, content: undefined })), ...localWrites]
         .map(item => [item.file.path, item]));
-      const pendingConflicts: GitHubSyncConflict[] = [...pending.values()].map(item => {
+      const pendingConflicts: GitHubSyncConflict[] = await Promise.all([...pending.values()].map(async (item): Promise<GitHubSyncConflict> => {
         const destination = syncLocalPath(storeRoot!, item.file.path);
         const current = item.file.type === "recipes" ? localFiles.get(item.file.path)?.content
           : fs.existsSync(destination) ? fs.readFileSync(destination) : undefined;
+        const baseFile = entityFileByMember(baseEntities.get(entityKey(item.file.type, item.file.itemId)), item.file.member);
+        const upstream = entityFileByMember(remoteEntities.get(entityKey(item.file.type, item.file.itemId)), item.file.member);
         return {
           path: item.file.path, type: item.file.type, itemId: item.file.itemId,
           category: item.file.category, privacy: item.file.privacy, member: item.file.member,
-          basePath: item.expectedLocal ? item.file.path : undefined,
+          basePath: baseFile?.path,
           localPath: current ? item.file.path : undefined,
-          remotePath: item.content ? item.file.path : undefined,
+          remotePath: upstream?.path,
           entityDeletion: ![...finalRemote.values()].some(file => entityKey(file.type, file.itemId) === entityKey(item.file.type, item.file.itemId)),
-          base: item.expectedLocal, local: current, remote: item.content,
+          base: baseFile && normalized.lastSync?.commit
+            ? await gitBuffer(checkout, ["cat-file", "blob", `${normalized.lastSync.commit}:${baseFile.path}`], undefined, 64 * 1024 * 1024) : undefined,
+          baseCommit: normalized.lastSync?.commit,
+          local: current,
+          remote: upstream?.content,
+          expectedLocal: item.expectedLocal,
+          plannedContent: item.content,
+          plannedOperation: item.content === undefined ? "delete" : "write",
+          reason: item.file.path === error.file.path ? "concurrent-local-change" : "pending-apply",
+          deletionEvidence: remoteDeletionMap.get(entityKey(item.file.type, item.file.itemId)),
         };
-      });
+      }));
       const report = resolutionReport();
-      report.totalFiles += pendingConflicts.length;
-      report.rules["human-required"] = (report.rules["human-required"] || 0) + pendingConflicts.length;
+      report.pendingApplyMembers = pendingConflicts.length;
+      report.concurrentChangeBlockers = 1;
       throw new GitHubSyncConflictError(conflictCommit, [...conflicts, ...pendingConflicts], [], [], {}, [], [], report);
     }
   };
 
   if (conflicts.length) {
     onProgress?.("resolve-conflicts", `${conflicts.length} conflicting file${conflicts.length === 1 ? "" : "s"} require resolution`);
-    const applied = applyChanges(remoteCommit);
+    const applied = await applyChanges(remoteCommit);
     throw new GitHubSyncConflictError(remoteCommit, conflicts, applied.pulled, applied.deletedLocal,
       applied.privateTopLevels, applied.recipePulls, applied.recipeDeletes, resolutionReport());
   }
@@ -3029,6 +3118,7 @@ async function syncGitHubTargetAttempt(
   }
   let changed = false;
   let commit = remoteCommit;
+  let pushed = false;
   const transactionId = randomUUID();
   try {
     for (const file of finalRemote.values()) {
@@ -3093,6 +3183,7 @@ async function syncGitHubTargetAttempt(
       "origin",
       `HEAD:refs/heads/${normalized.branch}`,
     ], normalized, false, credentials);
+    pushed = true;
     commit = await git(checkout, ["rev-parse", "HEAD"]);
     writeTransactionReceipt(checkoutRoot, {
       schema: 1,
@@ -3109,6 +3200,11 @@ async function syncGitHubTargetAttempt(
       state: "pushed",
     });
   } catch (error) {
+    if (pushed) {
+      // A receipt failure is not a failed push. Do not reset the checkout or
+      // claim recovery evidence exists when its durable write failed.
+      throw new Error(`GitHub accepted the push, but local transaction recording failed: ${error instanceof Error ? error.message : String(error)}. Re-fetch and reconcile before retrying; local apply may still be pending.`);
+    }
     try {
       await recoverManagedCheckout(checkout, remoteCommit);
     } catch (recoveryError) {
@@ -3118,7 +3214,7 @@ async function syncGitHubTargetAttempt(
     }
     throw error;
   }
-  const applied = applyChanges(commit);
+  const applied = await applyChanges(commit);
   return {
     transactionId,
     commit,

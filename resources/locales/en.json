@@ -4,6 +4,8 @@
     "label": "English"
   },
   "strings": {
+    "apiChat.loadOlderMessages": "Load older messages",
+    "apiChat.loadingOlderMessages": "Loading older messages...",
     "apiChat.resumeWorker": "Resume worker",
     "apiChat.resumeWorkerNotice": "Resume retains execution evidence and starts a continuation. It may incur charges; verify uncertain tool effects before repeating them.",
     "apiChat.outputPerInference": "Output per inference",

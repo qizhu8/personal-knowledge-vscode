@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
+import { ChatHistoryStorage } from "../chat/chat-history-storage";
 
 const SNAPSHOT_SCHEMA = "pkm.agent.snapshot/v1";
 const SNAPSHOT_PAYLOAD_ALGORITHM = "A256GCM-PKM-LOCAL-OBFUSCATION/v1";
@@ -242,6 +243,9 @@ export function createAgentSnapshot(store: string, sessionId: string, reason = "
     return [run];
   });
   const sessionCopy = JSON.parse(JSON.stringify(session));
+  if (sessionCopy.origin === "pkm-native" && sessionCopy.nativeChat?.messageHistory) {
+    sessionCopy.nativeChat = new ChatHistoryStorage(path.join(store, ".pkm", "state")).unpack(sessionCopy.nativeChat);
+  }
   delete sessionCopy.todoCommandReceipts;
   const magicCode = `PKM-SNAP-${groupedHex(8)}`;
   const createdAt = new Date().toISOString();

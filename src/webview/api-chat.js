@@ -41,6 +41,10 @@
   const workflowExpanded = new Set();
   const messageExpanded = new Set(saved.expandedMessageDetails || []);
   let state;
+  let historyStart = 0;
+  let historyPending;
+  let historyLoaded = false;
+  let historyPrepend = false;
   let pending;
   const submissions = new Map();
   let inputMode = saved.inputMode === "task" ? "task" : "steer";
@@ -297,11 +301,25 @@
     const target = element("messages");
     renderAppliedEdits();
     const previousScrollTop = target.scrollTop;
+    const previousScrollHeight = target.scrollHeight;
     const follow = jumpToLatest || renderedChatId !== state.chat.id || target.scrollHeight - target.scrollTop - target.clientHeight < 90;
     renderedChatId = state.chat.id;
     jumpToLatest = false;
     if (messageNodesChatId !== state.chat.id) { messageNodes.clear(); messageNodesChatId = state.chat.id; }
     const children = [];
+    if (historyStart > 0) {
+      const older = document.createElement("button");
+      older.type = "button"; older.className = "load-chat-history";
+      older.textContent = t(historyPending ? "Loading older messages..." : "Load older messages");
+      older.disabled = !!historyPending;
+      older.onclick = () => {
+        const beforeId = state.chat.messages[0]?.id;
+        if (!beforeId || historyPending) return;
+        historyPending = beforeId;
+        post("historyPage", { chatId: state.chat.id, id: beforeId }); renderMessages();
+      };
+      children.push(older);
+    }
     const retained = new Set();
     const latestUser = [...state.chat.messages].reverse().find(message => message.role === "user");
     const pendingUserId = state.busy && state.chat.messages.at(-1)?.status === "streaming" ? latestUser?.id : undefined;
@@ -458,7 +476,8 @@
     while (target.children.length > children.length) target.lastElementChild.remove();
     updateClock();
     target.setAttribute("aria-busy", String(state.busy));
-    target.scrollTop = follow ? target.scrollHeight : previousScrollTop;
+    target.scrollTop = historyPrepend ? previousScrollTop + target.scrollHeight - previousScrollHeight : follow ? target.scrollHeight : previousScrollTop;
+    historyPrepend = false;
   }
   function imagePreviews(images, action, icon, label) {
     const list = document.createElement("div"); list.className = "chat-images";
@@ -727,6 +746,15 @@
   }
   window.addEventListener("message", event => {
     const message = event.data;
+    if (message.type === "historyPage") {
+      if (message.chatId !== state?.chat.id || message.beforeId !== historyPending) return;
+      historyPending = undefined;
+      const current = new Set(state.chat.messages.map(item => item.id));
+      const older = message.messages.filter(item => !current.has(item.id));
+      state.chat.messages = [...older, ...state.chat.messages];
+      historyStart = message.start; historyLoaded = true; historyPrepend = older.length > 0;
+      render(); return;
+    }
     if (message.type === "sendAccepted") {
       const submission = submissions.get(message.submissionId);
       if (submission?.id !== message.chatId) return;
@@ -766,6 +794,7 @@
       return;
     }
     if (message.type === "error") {
+      if (!message.chatId || message.chatId === state?.chat.id) historyPending = undefined;
       if (message.submissionId) {
         const submission = submissions.get(message.submissionId);
         if (submission && (!message.chatId || submission.id === message.chatId)) {
@@ -787,9 +816,21 @@
       for (const id of Object.keys(drafts)) if (!retained.has(id)) delete drafts[id];
       if (!message.chat) {
         state = undefined; pending = undefined; submissions.clear(); budgetOwner = undefined;
+        historyStart = 0; historyPending = undefined; historyLoaded = false;
         clearInterval(clock); element("messages").replaceChildren(); element("chats").replaceChildren();
         element("prompt").value = ""; element("applied-edits").hidden = true;
         library?.render(message.library); showScreen("library"); return;
+      }
+      if (previous === message.chat.id && historyLoaded) {
+        const latest = new Set(message.chat.messages.map(item => item.id));
+        const boundary = state.chat.messages.findIndex(item => latest.has(item.id));
+        if (boundary >= 0) {
+          message.chat.messages = [...state.chat.messages.slice(0, boundary), ...message.chat.messages];
+        } else {
+          historyStart = message.history?.start || 0; historyPending = undefined; historyLoaded = false;
+        }
+      } else {
+        historyStart = message.history?.start || 0; historyPending = undefined; historyLoaded = false;
       }
       state = message;
       if (previous !== state.chat.id) {

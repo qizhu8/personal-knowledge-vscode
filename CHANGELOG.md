@@ -5,6 +5,14 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.38] - 2026-10-14
+
+- Replace Chat's cumulative 5 MB history cutoff with versioned, immutable segmented storage. Preserve dialogue, tools and retrieval evidence, migrate legacy histories on save, share Task/worker evidence, and keep explicit Session Snapshots self-contained.
+- Load recent Chat messages first and retrieve older pages on demand without model calls. Preserve Retry/Resume identities and reject stale or cross-Chat page requests; retain per-message image safeguards without a cumulative image-history cutoff.
+- Keep Windows raw source snapshots separate from normalized Sync comparisons across ingest, guarded writes, conflict preparation and approval. Continue detecting real concurrent edits, including newline-only changes after capture.
+- Preserve actual Base/upstream provenance and distinct pending write/delete plans. Group missing-content review by entity, keep body/sidecar decisions consistent, and report unresolved choices separately from prepared candidates and pending applies.
+- Persist applying markers and support guarded, idempotent approval recovery. Distinguish a completed push from a failed local receipt update without replaying uncertain writes or bypassing deletion safeguards.
+
 ## [3.2.37] - 2026-10-14
 
 - Reset output-token budgets for every model inference on both Chat transports. Keep cumulative usage for diagnostics rather than subtracting it from subsequent rounds, separate tokens from the 100,000-byte per-inference size limit, and disclose unavailable native token counters.

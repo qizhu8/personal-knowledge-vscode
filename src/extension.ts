@@ -118,7 +118,7 @@ import {
   selectAllGitHubSyncConflictLocalDeletions, selectGitHubSyncConflictCandidate, selectGitHubSyncConflictDeletion,
   selectGitHubSyncConflictLocalDeletion, storeGitHubSyncConflict, updateGitHubSyncAgentCandidate,
   validateGitHubSyncConflictLocalState, validateGitHubSyncManualCandidate, validateGitHubSyncConflictVersion,
-  saveGitHubSyncManualCandidate, markGitHubSyncConflictApplied,
+  saveGitHubSyncManualCandidate, markGitHubSyncConflictApplied, markGitHubSyncConflictApplying,
 } from "./sync/github-sync-conflicts";
 import { GitHubSyncWorkbenchRequest, GitHubSyncWorkbenchState, openGitHubSyncConflictWorkbench } from "./sync/github-sync-workbench";
 import { GitHubSyncReason, GitHubSyncRuntimeState } from "./sync/github-sync-scheduler";
@@ -1582,6 +1582,13 @@ async function acceptGitHubSyncConflict(
   if (unresolved.length) {
     throw new Error(`Choose a resolution for every conflicting file before syncing: ${unresolved.map(file => file.path).join(", ")}`);
   }
+  for (const file of record.files.filter(member => member.reason === "unrecorded-local-absence")) {
+    const members = record.files.filter(member => member.type === file.type && member.itemId === file.itemId);
+    if (members.some(member => member.candidateSource === "delete")
+      && !members.every(member => member.candidateSource === "delete")) {
+      throw new Error(`Review the whole missing entity before applying: ${file.type}/${file.itemId}. Body, sidecars and dependencies cannot mix deletion and restoration.`);
+    }
+  }
   reportProgress?.("Verifying the Remote commit…");
   const target = githubSyncTargetById(context, targetId);
   const credentials = await readGitHubSyncCredentials(context, target);
@@ -1589,6 +1596,8 @@ async function acceptGitHubSyncConflict(
   if (snapshot.commit !== record.remoteCommit) throw new Error("The remote branch changed after this conflict was prepared. Sync again before accepting a merge.");
   reportProgress?.("Checking machine-local files…");
   const recipeSnapshot = currentProjectStore().list();
+  const recipeSyncContent = new Map(currentProjectStore().recipeSyncEntries()
+    .map(entry => [entry.recipe.recipeId, githubSyncManagedContent("recipes", Buffer.from(entry.content, "utf8"))]));
   const candidates = record.files.map(file => {
     const deleteRemote = file.candidateSource === "delete";
     const deleteLocal = file.candidateSource === "delete-local";
@@ -1606,7 +1615,7 @@ async function acceptGitHubSyncConflict(
       currentLocal: file.type === "recipes"
         ? (() => {
           const recipe = recipeSnapshot.recipes.find(candidate => candidate.recipeId === file.itemId);
-          return recipe ? githubSyncRecipeContent(recipe) : undefined;
+          return recipe ? recipeSyncContent.get(recipe.recipeId) || githubSyncRecipeContent(recipe) : undefined;
         })()
         : undefined,
       source: file.type === "recipes" ? undefined
@@ -1633,8 +1642,9 @@ async function acceptGitHubSyncConflict(
       if (current) refreshed.push(file.path);
     } else if (deleteLocal) {
       if (current && (!originalLocal || !current.equals(originalLocal))) refreshed.push(file.path);
-    } else if (!current?.equals(content!) && !(originalLocal ? current?.equals(originalLocal) : current === undefined)) {
-      refreshed.push(file.path);
+    } else {
+      try { validateGitHubSyncConflictLocalState(file.path, originalLocal, content!, current); }
+      catch { refreshed.push(file.path); }
     }
     if (refreshed.includes(file.path)) {
       refreshGitHubSyncConflictLocalCandidate(stateDirectory, targetId, file.path, current);
@@ -1653,12 +1663,15 @@ async function acceptGitHubSyncConflict(
     }
     return recipe;
   });
+  // Write durable intent first. If a later Recipe/target/marker write fails,
+  // retry rechecks Remote, digests and raw snapshots; already-written bytes are idempotent.
+  markGitHubSyncConflictApplying(stateDirectory, targetId);
   replaceGitHubSyncFilesAtomically(
     candidates
       .filter(candidate => !candidate.deleteRemote && !!candidate.destination)
-      .flatMap(({ source, destination, content }) => [
-        { destination: destination!, content },
-        ...(source && source !== destination ? [{ destination: source, content: undefined }] : []),
+      .flatMap(({ source, destination, content, originalLocal }) => [
+        { destination: destination!, content, guard: { original: source === destination ? originalLocal : undefined } },
+        ...(source && source !== destination ? [{ destination: source, content: undefined, guard: { original: originalLocal } }] : []),
       ]),
     "GitHub Sync conflict acceptance",
   );
@@ -2159,8 +2172,9 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
                 scheduleRetrievalRefresh(context, 0);
                 _treeProvider?.refresh();
               }
-              storeGitHubSyncConflict(githubSyncStateDirectory(context), target.id, error);
-              githubSyncScheduler?.report(targetId, "resolve-conflicts", `${error.conflicts.length} conflicting file${error.conflicts.length === 1 ? "" : "s"} require resolution`);
+              const workspace = storeGitHubSyncConflict(githubSyncStateDirectory(context), target.id, error);
+              const choiceRequired = workspace.files.filter(file => file.candidateSource === "unresolved").length;
+              githubSyncScheduler?.report(targetId, "resolve-conflicts", `${workspace.files.length} workspace members: ${choiceRequired} choice required; ${workspace.files.length - choiceRequired} candidates awaiting approval`);
               if (target.conflictResolution === "agent" && error.conflicts.some(conflict => conflict.type === "skills" || conflict.type === "recipes")) {
                 try {
                   const batch = await prepareGitHubSyncAgentCandidates(context, target.id);
@@ -2173,21 +2187,26 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
                 message += " Open GitHub Sync, choose This Machine or GitHub for each file, then Apply resolutions & Sync.";
               }
               void vscode.window.showWarningMessage(
-                `GitHub Sync "${target.name}" needs a decision for ${error.conflicts.length} file${error.conflicts.length === 1 ? "" : "s"}. ${error.conflicts.some(conflict => conflict.type !== "skills" && conflict.type !== "recipes") ? "Images and other unsupported files need a human choice." : "Review the Agent or manual candidates."}`,
+                `GitHub Sync "${target.name}": ${choiceRequired} members need a choice; ${workspace.files.length - choiceRequired} candidates await approval. Missing entities require intent review; prepared plans are not additional content conflicts.`,
                 "Review conflicts",
               ).then(choice => {
                 if (choice === "Review conflicts") openPanelTab(context, "githubSync");
               });
             }
             if (!(error instanceof GitHubSyncExtensionCompatibilityError) && !(error instanceof GitHubSyncContentRepairError)) {
-              await mutateGitHubSyncTargets(context, `failure ${targetId}`, currentTargets => {
-                const current = currentTargets.find(candidate => candidate.id === targetId);
-                if (current) current.lastFailure = {
-                  at: attemptedAt, error: message, reason,
-                  attempts: error instanceof GitHubSyncConflictError || error instanceof PkmServiceRecoveryPersistenceError ? 3 : Math.min(3, (current.lastFailure?.attempts || 0) + 1),
-                };
-                return { targets: currentTargets, result: undefined };
-              });
+              try {
+                await mutateGitHubSyncTargets(context, `failure ${targetId}`, currentTargets => {
+                  const current = currentTargets.find(candidate => candidate.id === targetId);
+                  if (current) current.lastFailure = {
+                    at: attemptedAt, error: message, reason,
+                    attempts: error instanceof GitHubSyncConflictError || error instanceof PkmServiceRecoveryPersistenceError ? 3 : Math.min(3, (current.lastFailure?.attempts || 0) + 1),
+                  };
+                  return { targets: currentTargets, result: undefined };
+                });
+              } catch (persistenceError) {
+                message += ` Failure status could not be persisted: ${persistenceError instanceof Error ? persistenceError.message : String(persistenceError)}.`;
+                log.error(message);
+              }
             }
             const diagnostic = error instanceof Error ? error.stack || error.message : String(error);
             if (githubSyncScheduler) await githubSyncScheduler.acknowledgeExecutionErrors(targetId);
@@ -2510,7 +2529,7 @@ function refreshStaleGitHubSyncConflicts(context: vscode.ExtensionContext, targe
 function clearEquivalentGitHubSyncConflict(context: vscode.ExtensionContext, targetId: string): boolean {
   const stateDirectory = githubSyncStateDirectory(context);
   const record = readGitHubSyncConflict(stateDirectory, targetId);
-  if (!record?.files.length || record.appliedAt || record.files.some(file => !file.hasRemote
+  if (!record?.files.length || record.appliedAt || record.files.some(file => file.plannedOperation || !file.hasRemote
     || file.candidateSource !== "unresolved" || (file.localPath || file.path) !== (file.remotePath || file.path))) return false;
   const recipeContent = new Map(currentProjectStore().recipeSyncEntries()
     .map(entry => [entry.recipe.recipeId, githubSyncManagedContent("recipes", Buffer.from(entry.content, "utf8"))]));
@@ -2631,9 +2650,20 @@ async function githubSyncStateData(context: vscode.ExtensionContext, waitForExpe
       purpose: record.purpose,
       remoteSchema: record.remoteSchema,
       resolutionReport: record.resolutionReport,
+      appliedAt: record.appliedAt,
+      applyState: record.applyState,
       files: record.files.map(file => ({
         path: file.path,
         type: file.type,
+        itemId: file.itemId,
+        member: file.member,
+        basePath: file.basePath,
+        localPath: file.localPath,
+        remotePath: file.remotePath,
+        reason: file.reason,
+        plannedOperation: file.plannedOperation,
+        deletionEvidence: file.deletionEvidence,
+        absenceEvidence: file.absenceEvidence,
         hasBase: file.hasBase,
         hasLocal: file.hasLocal,
         hasRemote: file.hasRemote,

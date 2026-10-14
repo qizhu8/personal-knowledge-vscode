@@ -4,6 +4,8 @@
     "label": "Deutsch"
   },
   "strings": {
+    "apiChat.loadOlderMessages": "Ältere Nachrichten laden",
+    "apiChat.loadingOlderMessages": "Ältere Nachrichten werden geladen...",
     "apiChat.resumeWorker": "Worker fortsetzen",
     "apiChat.resumeWorkerNotice": "Fortsetzen behält Ausführungsnachweise und startet eine Fortsetzung. Es können Kosten entstehen; prüfen Sie ungewisse Tool-Auswirkungen vor einer Wiederholung.",
     "apiChat.outputPerInference": "Ausgabe pro Inferenz",

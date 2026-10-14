@@ -4,6 +4,8 @@
     "label": "العربية"
   },
   "strings": {
+    "apiChat.loadOlderMessages": "تحميل الرسائل الأقدم",
+    "apiChat.loadingOlderMessages": "جارٍ تحميل الرسائل الأقدم...",
     "apiChat.resumeWorker": "استئناف worker",
     "apiChat.resumeWorkerNotice": "يحفظ الاستئناف أدلة التنفيذ ويبدأ متابعة جديدة. قد تترتب رسوم؛ تحقق من الآثار غير المؤكدة للأدوات قبل تكرارها.",
     "apiChat.outputPerInference": "المخرجات لكل استدلال",

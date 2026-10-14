@@ -4,6 +4,8 @@
     "label": "한국어"
   },
   "strings": {
+    "apiChat.loadOlderMessages": "이전 메시지 불러오기",
+    "apiChat.loadingOlderMessages": "이전 메시지를 불러오는 중...",
     "apiChat.resumeWorker": "Worker 재개",
     "apiChat.resumeWorkerNotice": "재개는 실행 증거를 보존하고 이어서 진행합니다. 비용이 발생할 수 있으며 불확실한 도구 효과는 반복 전에 확인하세요.",
     "apiChat.outputPerInference": "추론별 출력",

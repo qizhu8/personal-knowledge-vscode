@@ -630,6 +630,34 @@ class ChatUiTests(unittest.TestCase):
                                          ["retry_user", "retry_replacement"])
                         expect(page.locator('#messages')).not_to_contain_text('Failed output to replace')
                         expect(page.locator('#messages')).to_contain_text('New inference in place')
+                        paging_fixture = {**retry_fixture, "busy": False, "history": {"start": 2, "total": 4},
+                            "chat": {**retry_fixture["chat"], "id": "history_fixture", "messages": [original_user, failed_response]}}
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", paging_fixture)
+                        older_button = page.get_by_role('button', name='Load older messages', exact=True)
+                        expect(older_button).to_be_enabled()
+                        older_button.click()
+                        self.assertEqual(page.evaluate("window.__posts.at(-1)"),
+                                         {"type": "historyPage", "chatId": "history_fixture", "id": "retry_user"})
+                        expect(page.get_by_role('button', name='Loading older messages...', exact=True)).to_be_disabled()
+                        older_messages = [
+                            {"id": "older_user", "role": "user", "content": "Older preserved assignment", "status": "complete"},
+                            {"id": "older_reply", "role": "assistant", "content": "Older preserved evidence", "status": "complete"}]
+                        history_page = {"type": "historyPage", "chatId": "history_fixture", "beforeId": "retry_user",
+                                        "start": 0, "total": 4, "messages": older_messages}
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", history_page)
+                        expect(page.locator('#messages .message')).to_have_count(4)
+                        expect(page.get_by_role('button', name='Load older messages', exact=True)).to_have_count(0)
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", paging_fixture)
+                        expect(page.locator('#messages .message')).to_have_count(4)
+                        paging_fixture["chat"]["messages"] = [original_user, retry_fixture["chat"]["messages"][-1]]
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", paging_fixture)
+                        expect(page.locator('#messages .message')).to_have_count(4)
+                        expect(page.locator('[data-message-id="retry_failed"]')).to_have_count(0)
+                        expect(page.locator('#messages')).to_contain_text('Older preserved evidence')
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", retry_fixture)
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", history_page)
+                        expect(page.locator('#messages .message')).to_have_count(2)
+                        expect(page.locator('#messages')).not_to_contain_text('Older preserved evidence')
                         retry_fixture["decisions"] = [{"id": "loop-inline", "title": "Possible tool loop", "detail": "Existing tool results remain. Allow All does not approve this decision.",
                             "choices": [{"value": "continue", "label": "Continue"}, {"value": "summarize", "label": "Answer with current results"}, {"value": "cancel", "label": "Cancel request"}]}]
                         page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", retry_fixture)

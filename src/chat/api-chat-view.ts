@@ -4,7 +4,7 @@ import * as path from "path";
 import { randomBytes, randomUUID, createHash } from "crypto";
 import { getStorePath } from "../knowledge/filestore";
 import { ApiChatMessage, streamApiChat, chatToolRoundLimit, defaultLoopExemptTools, ChatToolLoopNotice, ChatToolLoopDecision } from "./api-chat-client";
-import { ApiChatStore, ApiConversation, ApiChatStatus, ChatMessage, ChatDelegation, apiChatStatus, apiChatDiagnostics } from "./api-chat-store";
+import { ApiChatStore, ApiConversation, ApiChatStatus, ChatMessage, ChatDelegation, apiChatStatus, apiChatDiagnostics, chatHistoryPage } from "./api-chat-store";
 import { modelProfiles, assertModelAvailable, estimateInputTokens, validateBudget, estimateCost, ChatModelProfile } from "./api-chat-models";
 import { abortable, builtinToolCatalog, createBuiltinTools } from "./api-chat-tools";
 import { connectApiChatMcp, mcpUrl, ApiChatMcpServer, vscodeToolCatalog, createVscodeTools, groupVscodeTools, pkmToolSets, ensurePkmMcpTools } from "./api-chat-mcp";
@@ -635,10 +635,11 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     const settings = this.settings();
     const toolGroups = this.toolGroups(this.chat);
     const builtinNames = toolGroups[0].tools.filter(tool => tool.enabled).map(tool => tool.name);
-    void this.view?.webview.postMessage({ type: "state", localization, toolGroups, workerOverview: this.workerOverview(this.chat, all), memoryTree: chatMemoryTree(this.chat),
+    const history = chatHistoryPage(this.chat);
+    void this.view?.webview.postMessage({ type: "state", localization, toolGroups, history: { start: history.start, total: history.total }, workerOverview: this.workerOverview(this.chat, all), memoryTree: chatMemoryTree(this.chat),
       decisions: [...this.decisions.entries()].filter(([, item]) => item.chat.id === this.chat!.id).map(([id, item]) => ({ id, title: item.title, detail: item.detail, choices: item.choices })),
       approvals: [...this.approvals.entries()].filter(([, item]) => item.chat.id === this.chat!.id).map(([id, item]) => ({ id, title: item.title, detail: item.detail, once: item.once, quota: item.scope === "worker-expansion", questioning: item.questioning, questions: item.questions,     scope: item.once ? item.scope === "worker-expansion" ? "Worker quota" : "Only this batch" : item.scope === "non-destructive" ? "Non-destructive operations" : item.scope === toolPermissionScope("boundary", "outside-workspace") ? "Outside workspace" : "This tool" })), chat: {
-      ...this.chat, context: this.chat.context.map(item => ({ id: item.id, label: item.label, characters: item.content.length })),
+      ...this.chat, messages: history.messages, context: this.chat.context.map(item => ({ id: item.id, label: item.label, characters: item.content.length })),
       agentContext: Object.fromEntries(Object.entries(this.chat.agentContext || {}).map(([kind, entries]) => [kind, entries.map(({ id, label, content }) => ({ id, label, characters: content.length }))])),
     }, settings: { ...settings, inputBaseTokens: estimateInputTokens([...this.requestMessages(this.chat, ""), ...(builtinNames.length ? [{ role: "system" as const, content: JSON.stringify(createBuiltinTools(builtinNames).map(({ execute, ...definition }) => definition)) }] : [])]) }, chats: available,
     library: { groups: this.store.library.read().groups, chats: all }, busy: this.running.has(this.chat.id) || this.chat.progress?.status === "running", remoteBusy: !this.running.has(this.chat.id) && this.chat.progress?.status === "running" });
@@ -784,6 +785,12 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         this.publish();
         if (chat?.permissionMode !== "read-only") void this.discoverPkmMcp().catch(error => { if (!this.disposed) this.notify(error); });
         break;
+      case "historyPage": {
+        if (message.chatId !== chat.id || typeof message.id !== "string") throw new Error("The selected Chat changed; its older history was not loaded.");
+        const history = chatHistoryPage(chat, message.id);
+        void this.view?.webview.postMessage({ type: "historyPage", chatId: chat.id, beforeId: message.id, ...history });
+        break;
+      }
       case "memorySegment": {
         const segment = chatMemorySegments(chat).find(item => item.id === message.id);
         if (!segment) {

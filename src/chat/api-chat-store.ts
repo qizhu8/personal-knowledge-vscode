@@ -11,6 +11,7 @@ import { chatPkmUrl, parsePkmLocator } from "../knowledge/knowledge-locator";
 import { ChatExecutionContext, validExecutionContext } from "./execution-context";
 import { accountMcpIdentity } from "../mcp/mcp-account-binding";
 import { WorkerTreeStore, ChatWorkerState, WorkerPhase, WorkerActivity, validWorkerActivity } from "./worker-tree";
+import { ChatHistoryStorage, StoredChat } from "./chat-history-storage";
 
 export interface ChatContext { id: string; label: string; content: string; }
 export interface QueuedChatInput { id: string; text: string; mode: "steer" | "task"; attemptId?: string; executionContext?: ChatExecutionContext; }
@@ -120,6 +121,19 @@ export interface ApiConversation {
   workerActivity?: WorkerActivity;
 }
 
+export function chatHistoryPage(chat: ApiConversation, beforeId?: string) {
+  const end = beforeId === undefined ? chat.messages.length : chat.messages.findIndex(message => message.id === beforeId);
+  if (end < 0) throw new Error("The Chat history cursor is stale. Refresh the conversation before loading older messages.");
+  let start = end;
+  let bytes = 0;
+  while (start > 0 && end - start < 20) {
+    const next = Buffer.byteLength(JSON.stringify(chat.messages[start - 1]), "utf8");
+    if (start < end && bytes + next > 512 * 1024) break;
+    bytes += next; start--;
+  }
+  return { messages: chat.messages.slice(start, end), start, total: chat.messages.length };
+}
+
 export type ApiChatStatus = "running" | "idle" | "completed" | "new-result" | "awaiting-input" | "awaiting-result" | "paused" | "failed" | "stopped";
 
 export function apiChatDiagnostics(chat: ApiConversation) {
@@ -158,8 +172,10 @@ export function apiChatDiagnostics(chat: ApiConversation) {
   };
 }
 
-export function apiChatSessionDiagnostics(record: Record<string, unknown>, sessionId: string) {
-  const chat = record.nativeChat as ApiConversation | undefined;
+export function apiChatSessionDiagnostics(record: Record<string, unknown>, sessionId: string, stateDirectory?: string) {
+  const stored = record.nativeChat as StoredChat | undefined;
+  if (stored?.messageHistory && !stateDirectory) throw new Error("Segmented Session diagnostics require the owning state directory.");
+  const chat = stored ? new ChatHistoryStorage(stateDirectory || "").unpack(stored) : undefined;
   if (!/^agent_session_[a-f0-9]{32}$/.test(sessionId) || record.schema !== "pkm.agent.session/v1" || record.sessionId !== sessionId || agentSessionOrigin(record).origin !== "pkm-native" || record.hostKind !== "pkm" || chat?.version !== 1 || chat.sessionId !== sessionId || !Array.isArray(chat.messages)) throw new Error("A matching PKM-native Session record is required.");
   return { ...apiChatDiagnostics(chat), recordStatus: record.status, updatedAt: record.updatedAt };
 }
@@ -191,6 +207,7 @@ export class ApiChatStore {
   private readonly directory: string;
   readonly library: ChatLibrary;
   readonly workerTrees: WorkerTreeStore;
+  private readonly history: ChatHistoryStorage;
   private readonly queueSnapshots = new WeakMap<ApiConversation, { fingerprint: string; inputs: QueuedChatInput[] }>();
 
   private rememberQueue(chat: ApiConversation): void {
@@ -222,6 +239,7 @@ export class ApiChatStore {
     this.directory = path.join(stateDirectory, "api-chats", namespace);
     this.library = new ChatLibrary(path.join(stateDirectory, "api-chats"));
     this.workerTrees = new WorkerTreeStore(path.join(stateDirectory, "api-chat-worker-trees"));
+    this.history = new ChatHistoryStorage(stateDirectory);
   }
 
   create(): ApiConversation {
@@ -309,7 +327,6 @@ export class ApiChatStore {
   private saveUnlocked(chat: ApiConversation, initializeSession: boolean, taskTitle?: string): void {
     if (this.library.read().placements[chat.id]?.trashedAt) throw new Error("Restore this Chat from Trash before changing it.");
     this.validateImages(chat);
-    if (Buffer.byteLength(JSON.stringify(chat), "utf8") > 5_000_000) throw new Error("Chat history exceeds 5 MB. Start a new chat; nothing was overwritten.");
     const file = this.file(chat.id);
     if (!fs.existsSync(file) && chat.revision !== undefined) throw new Error("This Chat was deleted in another window. Choose another Chat.");
     if (fs.existsSync(file)) this.reconcileQueue(chat, this.load(chat.id, false));
@@ -324,7 +341,8 @@ export class ApiChatStore {
     const previous = fs.existsSync(sessionPath) ? JSON.parse(fs.readFileSync(sessionPath, "utf8")) : {};
     if (fs.existsSync(sessionPath) && agentSessionOrigin(previous).origin !== "pkm-native") throw new Error("This Session is not owned by the PKM native runtime.");
     const revision = storedRevision + 1;
-    this.write(file, { ...chat, revision }); chat.revision = revision;
+    const snapshot = this.history.pack({ ...chat, revision }, { status: apiChatStatus(chat), workerManager: chat.messages.some(message => !!message.delegations?.length) });
+    this.write(file, snapshot); chat.revision = revision;
     this.rememberQueue(chat);
     this.write(groupPath, { ...previousGroup, schema: "pkm.agent.group/v1", groupId: group.groupId,
       hostKind: "pkm", hostSessionId: chat.id, title: chat.title, deletedAt: undefined, createdAt: previousGroup.createdAt || chat.createdAt, updatedAt: chat.updatedAt });
@@ -339,7 +357,7 @@ export class ApiChatStore {
       agent: { name: "PKM API Chat", product: "PKM" },
       todos: previous.todos || [], recipeRunIds: previous.recipeRunIds || [],
       checkpoints: previous.checkpoints || [], createdAt: previous.createdAt || new Date().toISOString(), updatedAt: chat.updatedAt,
-      nativeChat: chat,
+      nativeChat: snapshot,
       liveness: { heartbeatAt: new Date().toISOString(), leaseSeconds: 300, owner: { hostSessionId: chat.id } },
     });
   }
@@ -373,8 +391,7 @@ export class ApiChatStore {
 
   load(id: string, recoverInterrupted = true): ApiConversation {
     const file = this.file(id);
-    if (fs.statSync(file).size > 5_000_000) throw new Error("Chat history exceeds the local size limit.");
-    const chat = JSON.parse(fs.readFileSync(file, "utf8")) as ApiConversation;
+    const chat = this.history.unpack(JSON.parse(fs.readFileSync(file, "utf8")) as StoredChat);
     const contextsValid = (items: ChatContext[]) => Array.isArray(items) && items.every(item => item && typeof item.id === "string" && typeof item.label === "string" && typeof item.content === "string");
     const progressValid = (run: ApiChatProgress) => run && Number.isFinite(run.startedAt) && (run.finishedAt === undefined || Number.isFinite(run.finishedAt)) && ["running", "complete", "cancelled", "failed"].includes(run.status) && typeof run.model === "string"
       && (run.executionContext === undefined || validExecutionContext(run.executionContext))
@@ -471,13 +488,12 @@ export class ApiChatStore {
   }
 
   private validateImages(chat: ApiConversation): void {
-    let bytes = 0;
     for (const images of [chat.images, ...chat.messages.map(message => message.images)]) {
       if (images === undefined) continue;
       if (!Array.isArray(images) || images.length > 2) throw new Error("At most two images per message or draft are supported.");
-      for (const image of images) bytes += decodeChatImage(image).length;
+      const bytes = images.reduce((total, image) => total + decodeChatImage(image).length, 0);
+      if (bytes > 2 * 1024 * 1024) throw new Error("Images in one message or draft exceed 2 MB.");
     }
-    if (bytes > 2 * 1024 * 1024) throw new Error("Stored images exceed 2 MB. Start a new chat.");
   }
 
     archiveWorker(chat: ApiConversation, record: ChatDelegation): void {
@@ -495,7 +511,7 @@ export class ApiChatStore {
         const directory = path.join(this.stateDirectory, "api-chat-worker-results");
         const file = path.join(directory, `${record.id}.json`);
         const snapshot = { schema: "pkm.chat.worker-result/v1", receiptId: record.id, managerChatId: current.workerActivity.managerChatId,
-          archivedAt: new Date().toISOString(), chat: current };
+          archivedAt: new Date().toISOString(), chat: this.history.pack(current, { status: apiChatStatus(current), workerManager: current.messages.some(message => !!message.delegations?.length) }) };
         if (!fs.existsSync(file)) this.write(file, snapshot);
         else {
           const prior = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -517,10 +533,9 @@ export class ApiChatStore {
     workerResult(receiptId: string): { chat: ApiConversation; archivedAt: string } {
       if (!/^[a-f0-9-]{36}$/.test(receiptId)) throw new Error("Invalid worker receipt identity.");
       const file = path.join(this.stateDirectory, "api-chat-worker-results", `${receiptId}.json`);
-      if (fs.statSync(file).size > 6_000_000) throw new Error("Worker archive exceeds its storage boundary.");
       const record = JSON.parse(fs.readFileSync(file, "utf8"));
-      if (record.schema !== "pkm.chat.worker-result/v1" || record.receiptId !== receiptId || record.chat?.version !== 1) throw new Error("Invalid worker result archive.");
-      return record;
+      if (record.schema !== "pkm.chat.worker-result/v1" || record.receiptId !== receiptId || ![1, 2].includes(record.chat?.version)) throw new Error("Invalid worker result archive.");
+      return { ...record, chat: this.history.unpack(record.chat) };
     }
 
     requestWorkerStop(chatId: string, managerChatId: string, activityId: string, reason: string, attemptId: string): void {
@@ -608,13 +623,17 @@ export class ApiChatStore {
     for (const directory of this.directories()) for (const name of fs.readdirSync(directory)) {
       if (!/^[a-f0-9-]{36}\.json$/.test(name)) continue;
       try {
-        const chat = this.load(name.slice(0, -5), false);
+        const stored = JSON.parse(fs.readFileSync(path.join(directory, name), "utf8")) as StoredChat;
+        const summary = this.history.summary(stored);
+        const chat = summary ? stored : this.load(name.slice(0, -5), false);
+        if (chat.id !== name.slice(0, -5) || typeof chat.title !== "string" || typeof chat.updatedAt !== "string"
+          || !Number.isFinite(Date.parse(chat.updatedAt))) throw new Error("Unsupported Chat listing metadata.");
         const placement = placements[chat.id] || { groupId: "ungroup" };
         const sessionFile = chat.sessionId && path.join(this.stateDirectory, "agent-sessions", `${chat.sessionId}.json`);
         const session = sessionFile && fs.existsSync(sessionFile) ? JSON.parse(fs.readFileSync(sessionFile, "utf8")) : undefined;
         const stopped = session?.status === "stopped" && session.hostKind === "pkm" && session.hostSessionId === chat.id;
-        if (includeTrash || !placement.trashedAt) chats.push({ id: chat.id, workspaceNamespace: chat.workspaceNamespace!, title: chat.title, updatedAt: chat.updatedAt, status: stopped ? "stopped" : apiChatStatus(chat), ...placement,
-          ...(chat.messages.some(message => message.delegations?.length) ? { workerManager: true } : {}),
+        if (includeTrash || !placement.trashedAt) chats.push({ id: chat.id, workspaceNamespace: chat.workspaceNamespace || path.basename(directory), title: chat.title, updatedAt: chat.updatedAt, status: stopped ? "stopped" : summary?.status || apiChatStatus({ ...chat, version: 1 }), ...placement,
+          ...((summary?.workerManager ?? chat.messages.some(message => message.delegations?.length)) ? { workerManager: true } : {}),
           ...(chat.workerState ? { workerTreeId: chat.workerState.treeId, ...(chat.workerState.parentChatId ? { workerParentChatId: chat.workerState.parentChatId } : {}) } : {}) });
       } catch {}
     }
@@ -639,6 +658,10 @@ export class ApiChatStore {
       this.write(groupPath, { ...previous, schema: "pkm.agent.group/v1", groupId: group.groupId, hostKind: "pkm", hostSessionId: id,
         title: chat.title, deletedAt: new Date().toISOString() });
       fs.unlinkSync(this.file(id)); this.library.forget(id);
+      const retainedTask = (chat.memoryTasks || []).some(task => /^agent_session_[a-f0-9]{32}$/.test(task.id) &&
+        ["agent-sessions", "agent-sessions-trash"].some(directory => fs.existsSync(path.join(this.stateDirectory, directory, `${task.id}.json`))));
+      const retainedWorker = chat.workerActivity?.receiptId && this.hasWorkerResult(chat.workerActivity.receiptId);
+      if (!retainedTask && !retainedWorker) this.history.remove(id);
     });
   }
 

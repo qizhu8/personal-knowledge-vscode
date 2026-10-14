@@ -218,6 +218,33 @@ ambiguous legacy records remain unknown, without a bulk migration.
 
 Conversation JSON lives under `.pkm/state/api-chats/<workspace-hash>` in the
 configured Knowledge Root, with atomic replacement and private file permissions.
+Small histories retain their existing inline format. Larger histories use a
+versioned index and immutable, SHA-256-verified segments under
+`.pkm/state/api-chat-history/<chat-id>`. Each segment is at most 1 MiB, and
+individual large messages can span segments without truncation. There is no
+5 MB cumulative history cutoff: model context limits remain independent of
+stored dialogue, tool evidence and retrieval audit records.
+
+Existing inline histories, including ones larger than 5 MB, can be read and
+convert on the next normal save; merely opening a Chat does not migrate it.
+Revision checks still prevent stale overwrites. Segmented records use storage
+version 2 so older builds reject them rather than interpreting an empty inline
+message array as the complete history. Use the updated build in participating
+windows before continuing shared work; installing does not force a reload.
+Task mirrors and worker archives reference the same immutable evidence.
+Explicit Session Snapshots expand their history into a self-contained payload.
+Immutable revisions can retain extra segment data; they are not deleted during
+an active operation. Permanent Chat deletion removes its segments unless a
+retained Task or worker archive still owns that evidence.
+
+The Chat UI initially receives up to 20 recent messages, with an approximately
+512 KiB page budget (one larger message is still displayed in full).
+**Load older messages** retrieves preceding pages without model inference or
+adding those pages to model context. UI paging does not delete stored evidence
+or affect in-place Retry and worker Resume. Retrieval and execution still use
+the owning conversation's evidence; this is not a promise of constant-memory
+execution or unlimited disk space. Disk, I/O and validation failures remain
+explicit errors instead of silently dropping history.
 The shared Chat List enumerates existing workspace partitions in that root,
 without moving histories. Windows using different Knowledge Roots do not share
 the list. File/process tools remain bound to the originating workspace, including
@@ -962,7 +989,7 @@ capped in credits through the public API.
 
 Select an actual VS Code model that advertises `imageInput`, then use the image
 button to choose PNG/JPEG files. There are at most two images per draft/message,
-512 KB per image, 4096 pixels per side, 16 megapixels and 2 MB total stored image
+512 KB per image, 4096 pixels per side, 16 megapixels and 2 MB of image data per message or draft
 bytes per conversation. MIME/type, dimensions and canonical Base64 are checked;
 files are not automatically resized. SVG, GIF and WebP are not supported.
 

@@ -9,6 +9,9 @@ import {
   GitHubSyncResolutionReport,
   githubSyncSafeRelativePath,
   githubSyncIsTextContent,
+  githubSyncLocalSnapshotMatches,
+  githubSyncComparisonContent,
+  cleanupGitHubSyncTemporary,
   validateGitHubSyncCandidate,
 } from "./github-sync";
 
@@ -24,10 +27,17 @@ export interface GitHubSyncStoredConflictFile {
   remotePath?: string;
   resultPath?: string;
   entityDeletion?: boolean;
+  reason?: GitHubSyncConflict["reason"];
+  baseCommit?: string;
+  plannedOperation?: "write" | "delete";
+  hasPlanned?: boolean;
+  hasExpectedLocal?: boolean;
+  deletionEvidence?: GitHubSyncConflict["deletionEvidence"];
+  absenceEvidence?: GitHubSyncConflict["absenceEvidence"];
   hasBase: boolean;
   hasLocal: boolean;
   hasRemote: boolean;
-  candidateSource: "unresolved" | "base" | "local" | "remote" | "delete" | "delete-local" | "manual" | "agent";
+  candidateSource: "unresolved" | "base" | "local" | "remote" | "plan" | "delete" | "delete-local" | "manual" | "agent";
   rationale?: string;
   agentReview?: GitHubSyncAgentReview;
   candidateDigest?: string;
@@ -60,6 +70,7 @@ export interface GitHubSyncStoredConflict {
   files: GitHubSyncStoredConflictFile[];
   revision?: number;
   appliedAt?: string;
+  applyState?: "applying" | "applied" | "sync-pending";
 }
 
 function conflictRoot(stateDirectory: string): string {
@@ -74,19 +85,25 @@ function metadataPath(stateDirectory: string, targetId: string): string {
   return path.join(recordDirectory(stateDirectory, targetId), "conflict.json");
 }
 
-function variantPath(stateDirectory: string, targetId: string, variant: "base" | "local" | "remote" | "merged", relative: string): string {
+function variantPath(stateDirectory: string, targetId: string, variant: "base" | "local" | "remote" | "merged" | "planned" | "expected", relative: string): string {
   return path.join(recordDirectory(stateDirectory, targetId), variant, ...githubSyncSafeRelativePath(relative).split("/"));
 }
 
-function writeVariant(stateDirectory: string, targetId: string, variant: "base" | "local" | "remote" | "merged", relative: string, content: Buffer): void {
+function writeVariant(stateDirectory: string, targetId: string, variant: "base" | "local" | "remote" | "merged" | "planned" | "expected", relative: string, content: Buffer): void {
   const destination = variantPath(stateDirectory, targetId, variant, relative);
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   const temporary = `${destination}.${randomUUID()}.tmp`;
+  let primary: unknown;
   try {
     fs.writeFileSync(temporary, content, { mode: 0o600 });
+    const descriptor = fs.openSync(temporary, "r+");
+    try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
     fs.renameSync(temporary, destination);
+  } catch (error) {
+    primary = error;
+    throw error;
   } finally {
-    fs.rmSync(temporary, { force: true });
+    cleanupGitHubSyncTemporary(temporary, primary);
   }
 }
 
@@ -95,8 +112,18 @@ function writeMetadata(stateDirectory: string, record: GitHubSyncStoredConflict)
   const destination = metadataPath(stateDirectory, record.targetId);
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   const temporary = `${destination}.${process.pid}.tmp`;
-  fs.writeFileSync(temporary, JSON.stringify(record, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
-  fs.renameSync(temporary, destination);
+  let primary: unknown;
+  try {
+    fs.writeFileSync(temporary, JSON.stringify(record, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+    const descriptor = fs.openSync(temporary, "r+");
+    try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
+    fs.renameSync(temporary, destination);
+  } catch (error) {
+    primary = error;
+    throw error;
+  } finally {
+    cleanupGitHubSyncTemporary(temporary, primary);
+  }
 }
 
 export function storeGitHubSyncConflict(
@@ -114,6 +141,8 @@ export function storeGitHubSyncConflict(
   for (const conflict of error.conflicts) {
     const old = previous?.files.find(file => file.path === conflict.path && file.type === conflict.type && file.itemId === conflict.itemId);
     if (!old || old.category !== conflict.category || old.privacy !== conflict.privacy
+      || old.reason !== conflict.reason || old.plannedOperation !== conflict.plannedOperation
+      || old.baseCommit !== conflict.baseCommit
       || old.member !== conflict.member || old.entityDeletion !== conflict.entityDeletion
       || old.basePath !== conflict.basePath || old.localPath !== conflict.localPath || old.remotePath !== conflict.remotePath) continue;
     const unchanged = (["base", "local", "remote"] as const).every(variant => {
@@ -121,7 +150,11 @@ export function storeGitHubSyncConflict(
       return sameBuffer(conflict[variant], available
         ? fs.readFileSync(variantPath(stateDirectory, targetId, variant, conflict.path)) : undefined);
     });
-    if (unchanged) kept.set(conflict.path, {
+    const planUnchanged = sameBuffer(conflict.plannedContent, old.hasPlanned
+      ? fs.readFileSync(variantPath(stateDirectory, targetId, "planned", conflict.path)) : undefined)
+      && sameBuffer(conflict.expectedLocal, old.hasExpectedLocal
+        ? fs.readFileSync(variantPath(stateDirectory, targetId, "expected", conflict.path)) : undefined);
+    if (unchanged && planUnchanged) kept.set(conflict.path, {
       file: old,
       content: fs.readFileSync(variantPath(stateDirectory, targetId, "merged", conflict.path)),
     });
@@ -130,23 +163,35 @@ export function storeGitHubSyncConflict(
   const stagingRoot = fs.mkdtempSync(path.join(stateDirectory, "conflict-stage-"));
   try {
   const files = error.conflicts.map((conflict: GitHubSyncConflict): GitHubSyncStoredConflictFile => {
+    const logicalEqual = (left: Buffer, right: Buffer): boolean => {
+      try { return githubSyncComparisonContent(conflict.type, left).equals(githubSyncComparisonContent(conflict.type, right)); }
+      catch { return left.equals(right); }
+    };
     if (conflict.base) writeVariant(stagingRoot, targetId, "base", conflict.path, conflict.base);
     if (conflict.local) writeVariant(stagingRoot, targetId, "local", conflict.path, conflict.local);
     if (conflict.remote) writeVariant(stagingRoot, targetId, "remote", conflict.path, conflict.remote);
+    if (conflict.plannedContent) writeVariant(stagingRoot, targetId, "planned", conflict.path, conflict.plannedContent);
+    if (conflict.expectedLocal) writeVariant(stagingRoot, targetId, "expected", conflict.path, conflict.expectedLocal);
     const preserved = kept.get(conflict.path);
     if (preserved) {
       writeVariant(stagingRoot, targetId, "merged", conflict.path, preserved.content);
+      if (previous?.remoteCommit !== error.remoteCommit) {
+        return { ...preserved.file, candidateSource: "unresolved", candidateDigest: undefined,
+          rationale: "The Remote commit changed. The previous draft is retained for review, but its approval is invalid; revalidate against the new snapshot." };
+      }
       return { ...preserved.file };
     }
-    const candidate = conflict.local || conflict.remote || conflict.base;
+    const candidate = conflict.plannedContent || conflict.local || conflict.remote || conflict.base;
     if (!candidate) throw new Error(`Conflict has no recoverable candidate: ${conflict.path}`);
-    const candidateSource = conflict.local && conflict.remote && conflict.local.equals(conflict.remote)
+    const candidateSource = conflict.reason === "concurrent-local-change" ? "unresolved"
+      : conflict.reason === "pending-apply" ? conflict.plannedOperation === "delete" ? "delete-local" : "plan"
+      : conflict.local && conflict.remote && logicalEqual(conflict.local, conflict.remote)
       && (conflict.localPath || conflict.path) === (conflict.remotePath || conflict.path)
       ? "local"
-      : conflict.base && conflict.local && conflict.remote && conflict.local.equals(conflict.base)
+      : conflict.base && conflict.local && conflict.remote && logicalEqual(conflict.local, conflict.base)
         && (conflict.localPath || conflict.path) === (conflict.basePath || conflict.path)
         ? "remote"
-        : conflict.base && conflict.local && conflict.remote && conflict.remote.equals(conflict.base)
+        : conflict.base && conflict.local && conflict.remote && logicalEqual(conflict.remote, conflict.base)
           && (conflict.remotePath || conflict.path) === (conflict.basePath || conflict.path)
           ? "local"
           : purpose === "initial-preview" || !conflict.base
@@ -156,7 +201,7 @@ export function storeGitHubSyncConflict(
           ? "remote"
           : "unresolved"
       : "unresolved";
-    const result = candidateSource === "remote" ? conflict.remote! : candidate;
+    const result = candidateSource === "plan" ? conflict.plannedContent! : candidateSource === "remote" ? conflict.remote! : candidate;
     writeVariant(stagingRoot, targetId, "merged", conflict.path, result);
     return {
       path: conflict.path,
@@ -170,13 +215,21 @@ export function storeGitHubSyncConflict(
       remotePath: conflict.remotePath,
       resultPath: candidateSource === "remote" ? conflict.remotePath || conflict.path : conflict.localPath || conflict.path,
       entityDeletion: conflict.entityDeletion,
+      reason: conflict.reason,
+      baseCommit: conflict.baseCommit,
+      plannedOperation: conflict.plannedOperation,
+      hasPlanned: conflict.plannedContent !== undefined,
+      hasExpectedLocal: conflict.expectedLocal !== undefined,
+      deletionEvidence: conflict.deletionEvidence,
+      absenceEvidence: conflict.absenceEvidence,
       hasBase: !!conflict.base,
       hasLocal: !!conflict.local,
       hasRemote: !!conflict.remote,
       candidateSource,
+      ...(conflict.reason === "pending-apply" ? { rationale: "The prepared operation was not applied because another member changed. Review the retained plan; Base and GitHub remain the actual source versions." } : {}),
       ...(candidateSource !== "unresolved" ? { candidateDigest: createHash("sha256").update(result).digest("hex") } : {}),
       ...(candidateSource === "local" ? { rationale: conflict.remote
-        ? conflict.local?.equals(conflict.remote)
+        ? conflict.local && logicalEqual(conflict.local, conflict.remote)
           ? "Both versions agree; preserve this file."
           : "Only this machine changed from the common base; preserve its compatible change."
         : "Only this machine has this file; keep it in the merged result." } : {}),
@@ -246,6 +299,15 @@ export function markGitHubSyncConflictApplied(stateDirectory: string, targetId: 
   const record = readGitHubSyncConflict(stateDirectory, targetId);
   if (!record) throw new Error("GitHub Sync conflict was not found.");
   record.appliedAt = new Date().toISOString();
+  record.applyState = "sync-pending";
+  writeMetadata(stateDirectory, record);
+}
+
+/** Durable intent before mutation; retries revalidate candidates and source snapshots. */
+export function markGitHubSyncConflictApplying(stateDirectory: string, targetId: string): void {
+  const record = readGitHubSyncConflict(stateDirectory, targetId);
+  if (!record) throw new Error("GitHub Sync conflict was not found.");
+  record.applyState = "applying";
   writeMetadata(stateDirectory, record);
 }
 
@@ -261,7 +323,7 @@ export function listGitHubSyncConflicts(stateDirectory: string): GitHubSyncStore
 export function gitHubSyncConflictVariantPath(
   stateDirectory: string,
   targetId: string,
-  variant: "base" | "local" | "remote" | "merged",
+  variant: "base" | "local" | "remote" | "merged" | "planned" | "expected",
   relative: string
 ): string {
   const record = readGitHubSyncConflict(stateDirectory, targetId);
@@ -305,6 +367,26 @@ export function selectGitHubSyncConflictCandidate(
   const record = readGitHubSyncConflict(stateDirectory, targetId);
   const file = record?.files.find(candidate => candidate.path === relative);
   if (!record || !file) throw new Error("GitHub Sync conflict file was not found.");
+  // Missing entities are reviewed as a unit; never restore the body without its members.
+  if (source === "remote" && file.reason === "unrecorded-local-absence") {
+    const members = record.files.filter(member => member.type === file.type && member.itemId === file.itemId);
+    const prepared = members.map(member => {
+      if (!member.hasRemote) throw new Error(`GitHub member is unavailable; review the move or deletion: ${member.path}`);
+      const content = fs.readFileSync(variantPath(stateDirectory, targetId, "remote", member.path));
+      validateGitHubSyncCandidate(member.remotePath || member.path, content);
+      return { member, content };
+    });
+    for (const { member, content } of prepared) {
+      writeVariant(stateDirectory, targetId, "merged", member.path, content);
+      member.candidateSource = "remote";
+      member.resultPath = member.remotePath || member.path;
+      member.candidateDigest = createHash("sha256").update(content).digest("hex");
+      member.rationale = "Explicitly restore the GitHub entity, including its sidecars and dependencies.";
+      delete member.agentReview;
+    }
+    writeMetadata(stateDirectory, record);
+    return;
+  }
   const candidate = fs.readFileSync(gitHubSyncConflictVariantPath(stateDirectory, targetId, source, relative));
   const resultPath = source === "base" ? file.basePath || relative : source === "local" ? file.localPath || relative : file.remotePath || relative;
   validateGitHubSyncCandidate(resultPath, candidate);
@@ -330,14 +412,20 @@ export function selectAllGitHubSyncConflictCandidates(
   if (!record) throw new Error("GitHub Sync conflict was not found.");
   const unavailable: string[] = [];
   const candidates: Array<{ file: GitHubSyncStoredConflictFile; content: Buffer }> = [];
+  const restoreEntities = new Set(source === "remote" ? record.files.filter(file =>
+    file.candidateSource === "unresolved" && file.reason === "unrecorded-local-absence")
+    .map(file => `${file.type}\0${file.itemId}`) : []);
   for (const file of record.files) {
-    if (file.candidateSource !== "unresolved") continue;
+    if (file.candidateSource !== "unresolved" && !restoreEntities.has(`${file.type}\0${file.itemId}`)) continue;
     if (source === "local" ? !file.hasLocal : !file.hasRemote) {
+      if (restoreEntities.has(`${file.type}\0${file.itemId}`)) {
+        throw new Error(`GitHub entity member is unavailable; review the move or deletion: ${file.path}`);
+      }
       unavailable.push(file.path);
       continue;
     }
     const content = fs.readFileSync(variantPath(stateDirectory, targetId, source, file.path));
-    validateGitHubSyncCandidate(file.path, content);
+    validateGitHubSyncCandidate(source === "remote" ? file.remotePath || file.path : file.localPath || file.path, content);
     candidates.push({ file, content });
   }
   for (const { file, content } of candidates) {
@@ -365,6 +453,18 @@ export function selectGitHubSyncConflictDeletion(
   if (!file.hasBase || file.hasLocal || !file.hasRemote) {
     throw new Error("Delete GitHub is available only when a previously synchronized file is missing on this machine but still exists on GitHub.");
   }
+  if (file.reason === "unrecorded-local-absence") {
+    const members = record.files.filter(member => member.type === file.type && member.itemId === file.itemId);
+    if (members.some(member => member.hasLocal)) throw new Error("The entity has local members. Review its move or partial absence before confirming deletion.");
+    for (const member of members) {
+      member.candidateSource = "delete";
+      delete member.candidateDigest;
+      delete member.agentReview;
+      member.rationale = "Explicitly confirm deletion of this missing entity and all its members; absence alone was not deletion evidence.";
+    }
+    writeMetadata(stateDirectory, record);
+    return;
+  }
   file.candidateSource = "delete";
   delete file.agentReview;
   file.rationale = "Confirm the machine-local deletion and remove this file from GitHub.";
@@ -384,6 +484,15 @@ export function selectAllGitHubSyncConflictDeletions(
     delete file.agentReview;
     file.rationale = "Confirm the machine-local deletion and remove this file from GitHub.";
     selected++;
+  }
+  const deletedEntities = new Set(record.files.filter(file => file.candidateSource === "delete"
+    && file.reason === "unrecorded-local-absence").map(file => `${file.type}\0${file.itemId}`));
+  for (const file of record.files) {
+    if (!deletedEntities.has(`${file.type}\0${file.itemId}`)) continue;
+    if (file.hasLocal) throw new Error("A missing entity still has local members; review its move or partial absence.");
+    file.candidateSource = "delete";
+    delete file.candidateDigest;
+    delete file.agentReview;
   }
   if (!selected) throw new Error("No missing-local conflicts are available to delete from GitHub.");
   writeMetadata(stateDirectory, record);
@@ -491,6 +600,7 @@ export function refreshGitHubSyncConflictLocalCandidate(
     file.hasLocal = false;
   }
   file.candidateSource = "unresolved";
+  file.reason = "concurrent-local-change";
   delete file.candidateDigest;
   delete file.agentReview;
   file.rationale = "The machine-local file changed after this conflict was prepared. Review the refreshed candidates.";
@@ -503,8 +613,7 @@ export function validateGitHubSyncConflictLocalState(
   candidate: Buffer,
   currentLocal: Buffer | undefined
 ): void {
-  if (currentLocal?.equals(candidate)) return;
-  if (originalLocal ? currentLocal?.equals(originalLocal) : currentLocal === undefined) return;
+  if (githubSyncLocalSnapshotMatches(originalLocal, candidate, currentLocal)) return;
   throw new Error(`Local content changed after the conflict was prepared: ${githubSyncSafeRelativePath(relative)}`);
 }
 
