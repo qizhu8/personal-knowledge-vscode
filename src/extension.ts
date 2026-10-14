@@ -2202,6 +2202,7 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
               ...(error instanceof GitHubSyncContentRepairError ? {
                 attemptId: error.attemptId, issues: JSON.stringify(error.issues.map(issue => ({
                   path: issue.path, source: issue.source, reason: issue.reason, lines: issue.lines, digest: issue.digest,
+                  error: issue.error, diagnostics: issue.diagnostics, sourceLocator: issue.sourceLocator,
                 }))),
               } : {}),
               ...(error instanceof PkmServiceRecoveryPersistenceError ? {
@@ -2434,7 +2435,7 @@ function applyGitHubSyncRecipeDeletes(recipeIds: string[]): void {
 
 async function buildGitHubSyncCatalog(): Promise<GitHubSyncCatalog> {
   const root = path.resolve(getStorePath());
-  const recipes = currentProjectStore().recipeSyncEntries().map(({ recipe, destination, content }) => ({
+  const recipes = currentProjectStore().recipeSyncEntries().map(({ recipe, destination, content, sourceLocator }) => ({
     id: recipe.recipeId,
     label: recipe.name,
     cat: recipe.category || "",
@@ -2442,6 +2443,7 @@ async function buildGitHubSyncCatalog(): Promise<GitHubSyncCatalog> {
     isPrivate: isContentItemPrivate("recipes", recipe),
     destination,
     content,
+    sourceLocator,
   }));
   const servers = (await serverList()).map(({ slug, name, category, tags }) => ({ slug, name, category, tags }));
   return githubSyncCatalogInWorker({ root, servers, recipes });
@@ -2609,7 +2611,7 @@ async function githubSyncStateData(context: vscode.ExtensionContext, waitForExpe
     contentRepairs: Object.fromEntries(targets.flatMap(target => {
       const repair = readGitHubSyncContentRepair(githubSyncStateDirectory(context), target.id);
       return repair ? [[target.id, { ...repair, issues: repair.issues.map(({ content, candidate, sourcePath, ...issue }) => ({
-        ...issue, hasCandidate: candidate !== undefined && sourcePath !== undefined, canOpen: sourcePath !== undefined,
+        ...issue, hasCandidate: candidate !== undefined && sourcePath !== undefined, canOpen: sourcePath !== undefined || !!issue.recipeId,
       })) }]] : [];
     })),
     catalog: uiCatalog,
@@ -7115,6 +7117,8 @@ async function handleMessage(
     case "githubSyncRepairOpen":
     case "githubSyncRepairPreview":
     case "githubSyncRepairApply":
+    case "githubSyncRecipeRecompilePreview":
+    case "githubSyncRecipeRecompileApply":
     case "githubSyncRepairRevalidate": {
       const targetId = String(msg.targetId || "");
       githubSyncTargetById(context, targetId);
@@ -7122,8 +7126,54 @@ async function handleMessage(
         const record = readGitHubSyncContentRepair(githubSyncStateDirectory(context), targetId);
         if (!record || record.id !== msg.repairId) throw new Error("The repair list changed. Refresh GitHub Sync before continuing.");
         if (msg.command !== "githubSyncRepairRevalidate") {
-          const issue = record.issues.find(issue => issue.path === msg.path);
+          const issue = record.issues.find(issue => issue.path === msg.path && (!msg.reason || issue.reason === msg.reason));
           if (!issue) throw new Error("The requested repair file is no longer in the pending list.");
+          if (issue.recipeId && (msg.command === "githubSyncRepairOpen" || msg.command.startsWith("githubSyncRecipeRecompile"))) {
+            if (msg.command === "githubSyncRepairOpen") {
+              if (!(await openRecipeEditorInBrowser(issue.recipeId))) throw new Error("Recipe editor could not open. Review Recipe library diagnostics.");
+            } else {
+              if (issue.reason !== "recipe-digest") throw new Error("Only verified legacy Recipe digest issues support recompile.");
+              const store = currentProjectStore();
+              const directory = path.join(githubSyncStateDirectory(context), "content-repairs", record.targetId);
+              fs.mkdirSync(directory, { recursive: true });
+              const previewPath = path.join(directory, "recipe-preview.json");
+              if (msg.command === "githubSyncRecipeRecompilePreview") {
+                const preview = store.previewRecipeRecompile(issue.recipeId);
+                const exported = JSON.parse(issue.content);
+                const original = { ...preview.original };
+                delete original.editorLayout;
+                if (canonicalJson(exported) !== canonicalJson(original)) throw new Error("Recipe changed since preflight. Revalidate before preview.");
+                fs.writeFileSync(previewPath, JSON.stringify({ repairId: record.id, preview }), { mode: 0o600 });
+                const before = path.join(directory, "recipe-original.json");
+                const after = path.join(directory, "recipe-candidate.json");
+                fs.writeFileSync(before, JSON.stringify(preview.original, null, 2), { mode: 0o600 });
+                fs.writeFileSync(after, JSON.stringify(preview.compiled, null, 2), { mode: 0o600 });
+                await vscode.commands.executeCommand("vscode.diff", vscode.Uri.file(before), vscode.Uri.file(after),
+                  `${issue.recipeId}: recompile preview, revision ${preview.original.revision} → ${preview.compiled.revision} (not applied)`);
+                if (preview.pinnedConsumers.length) {
+                  await vscode.window.showWarningMessage(`Recompile is blocked by pinned consumers: ${preview.pinnedConsumers.join(", ")}. Update their references explicitly; no pins are rewritten.`);
+                }
+              } else {
+                if (!fs.existsSync(previewPath)) throw new Error("Preview the Recipe recompile before applying.");
+                const saved = JSON.parse(fs.readFileSync(previewPath, "utf8"));
+                if (saved.repairId !== record.id || saved.preview.recipeId !== issue.recipeId) throw new Error("Recompile preview is stale. Preview again.");
+                const approval = await vscode.window.showWarningMessage(
+                  `Recompile ${issue.recipeId} as revision ${saved.preview.compiled.revision}? Frozen runs are unchanged. Pinned consumers must be updated explicitly and block this repair. No sync or push is performed.`,
+                  { modal: true }, "Apply Recipe recompile");
+                if (approval === "Apply Recipe recompile") {
+                  await withGitHubSyncApplyLock(context, async () => {
+                    store.applyRecipeRecompile({
+                      commandId: randomUUID(), fingerprint: createHash("sha256").update(canonicalJson(saved)).digest("hex"),
+                      expectedStoreVersion: saved.preview.storeVersion,
+                    }, saved.preview);
+                    invalidateSharedContentCatalog();
+                    fs.rmSync(previewPath, { force: true });
+                    githubSyncDiagnostics.record("github_sync.recipe_recompiled", { targetId, recipeId: issue.recipeId, attemptId: record.id });
+                  });
+                }
+              }
+            }
+          } else {
           const source = contentRepairSource(getStorePath(), issue);
           if (msg.command === "githubSyncRepairOpen") {
             const document = await vscode.workspace.openTextDocument(vscode.Uri.file(source));
@@ -7131,7 +7181,10 @@ async function handleMessage(
             await vscode.window.showTextDocument(document, { selection: new vscode.Range(line, 0, line, 0) });
           } else {
             const content = fs.readFileSync(source, "utf8");
-            if (contentRepairDigest(content) !== issue.digest) throw new Error("The source changed. Revalidate to refresh its markers and candidate.");
+            if (contentRepairDigest(content) !== issue.digest
+              || issue.sourceDigest && createHash("sha256").update(Buffer.from(content, "utf8")).digest("hex") !== issue.sourceDigest) {
+              throw new Error("The source changed. Revalidate to refresh its markers and candidate.");
+            }
             const candidate = inspectConflictMarkers(content).candidate;
             if (candidate === undefined) throw new Error("No safe empty-block candidate exists. Edit the file manually, then revalidate.");
             if (msg.command === "githubSyncRepairPreview") {
@@ -7163,6 +7216,7 @@ async function handleMessage(
                     targetId, attemptId: record.id, path: issue.path, originalDigest: issue.digest,
                   });
                 });
+              }
               }
             }
           }

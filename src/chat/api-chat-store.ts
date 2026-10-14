@@ -78,6 +78,7 @@ export interface ChatMessage {
   currency?: string;
   contextWindow?: number;
   maxOutputTokens?: number;
+  outputBudgetWarning?: string;
   changes?: import("./api-chat-tools").ApiChatEditChange[];
   toolCalls?: Array<{ id: string; name: string; arguments: string; status: "running" | "complete" | "failed"; result?: string }>;
 }
@@ -147,6 +148,7 @@ export function apiChatDiagnostics(chat: ApiConversation) {
     attempts: chat.messages.filter(message => message.role === "assistant").slice(-20).map(message => ({
       id: message.id, status: message.status, errorKind: errorKind(message.error), model: message.model,
       contextWindow: message.contextWindow, maxOutputTokens: message.maxOutputTokens, elapsedMs: message.elapsedMs,
+      outputBudgetWarning: message.outputBudgetWarning,
       outputCharacters: message.content.length, imageCount: message.images?.length || 0,
       reportedTokenUsage: tokenUsage(message.usage), usageMetadata: usageMetadata(message.usageMetadata),
       tools: (message.toolCalls || []).slice(0, 128).map(tool => ({ name: tool.name, status: tool.status })),
@@ -407,6 +409,7 @@ export class ApiChatStore {
           || record.attemptId !== undefined && !/^[a-f0-9-]{36}$/.test(record.attemptId)
           || record.temporary !== undefined && typeof record.temporary !== "boolean"
           || record.archived !== undefined && typeof record.archived !== "boolean"))
+        || message.outputBudgetWarning !== undefined && (typeof message.outputBudgetWarning !== "string" || message.outputBudgetWarning.length > 1024)
         || message.unattributedFileChanges !== undefined && typeof message.unattributedFileChanges !== "boolean"
         || message.toolCalls && (!Array.isArray(message.toolCalls) || message.toolCalls.some(tool => !tool || typeof tool.id !== "string" || typeof tool.name !== "string" || typeof tool.arguments !== "string" || !["running", "complete", "failed"].includes(tool.status) || tool.result !== undefined && typeof tool.result !== "string")))
       || chat.agentContext && Object.values(chat.agentContext).some(items => !contextsValid(items))

@@ -391,6 +391,9 @@
         if (message.status === "streaming") status.className = "message-status";
         article.append(status);
       }
+      if (message.outputBudgetWarning) {
+        const warning = document.createElement("p"); warning.className = "message-status"; warning.textContent = message.outputBudgetWarning; article.append(warning);
+      }
       const tokens = document.createElement("div"); tokens.className = "message-tokens";
       tokens.textContent = messageTokenLabel(message, state.busy && (message.status === "streaming" || message.id === pendingUserId));
       tokens.title = message.role === "user" ? "Independent user-message token usage is unavailable unless the provider reports it; request input includes history/context/tools." : "Provider-reported tokens for reported rounds only; other rounds may omit usage. Input includes history/context/tools, not just the latest user message.";
@@ -891,10 +894,16 @@
       if (node.status === "awaiting-result") recent.textContent = t("Sleeping · wakes on worker events · no model polling");
       if (node.reason) recent.textContent = `${t("Needs decision")}: ${t({ clarification: "Clarification", suggestion: "Suggestion", permission: "Permission", "runtime-limit": "Runtime limit", "suspected-loop": "Suspected loop" }[node.reason])}`;
       titleBox.append(meta, dispatched, recent);
+      if (node.error) { const failure = document.createElement("p"); failure.className = "message-error worker-failure"; failure.textContent = node.error; titleBox.append(failure); }
       const detail = document.createElement("div"); detail.className = "worker-node-detail";
       if (node.question) { const question = document.createElement("p"); question.textContent = node.question; detail.append(question); }
-      if (node.error) { const failure = document.createElement("p"); failure.className = "message-error"; failure.textContent = node.error; detail.append(failure); }
+      if (node.outputBudgetWarning) { const warning = document.createElement("p"); warning.className = "message-status"; warning.textContent = node.outputBudgetWarning; detail.append(warning); }
       const actions = document.createElement("div"); actions.className = "worker-actions";
+      if (node.canResume) {
+        const resume = iconButton("debug-continue", "Resume worker", () => { resume.disabled = true; post("workerResume", { id: node.receiptId, value: node.attemptId, chatId: state.chat.id }); });
+        resume.append(document.createTextNode(t("Resume worker"))); actions.append(resume);
+        const notice = document.createElement("p"); notice.textContent = t("Resume retains execution evidence and starts a continuation. It may incur charges; verify uncertain tool effects before repeating them."); detail.append(notice);
+      }
       const open = iconButton("go-to-file", node.archived ? "Archived result" : "Open Chat", () => { saveDraft(); node.archived ? post("workerArchive", { id: node.receiptId }) : post("select", { id: node.chatId }); });
       open.append(document.createTextNode(t(node.archived ? "Archived result" : "Open Chat"))); open.disabled = node.status === "unavailable" || node.chatId === state.chat.id; actions.append(open);
       if (node.parentChatId && node.sourceMessageId) {

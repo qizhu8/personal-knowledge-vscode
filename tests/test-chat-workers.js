@@ -6,7 +6,7 @@ const path = require("node:path");
 const http = require("node:http");
 const Module = require("node:module");
 const { randomUUID } = require("node:crypto");
-const { WorkerTreeStore, workerLimits } = require("../dist/chat/worker-tree");
+const { WorkerTreeStore, workerLimits, workerIsDescendant } = require("../dist/chat/worker-tree");
 const fixtures = require("./fixtures/chat-context");
 const originalLoad = Module._load;
 let maximum = 10;
@@ -85,6 +85,10 @@ test("tree capacity: recursive reservations share a persistent quota and resolve
   assert.equal(store.count(id), 3);
   assert.throws(() => store.reserve(id, workers[0].chatId, ["Grandchild"], workerLimits(3, 10)), /approval/);
   store.reserve(id, workers[0].chatId, ["Grandchild"], workerLimits(3, 10), 4);
+  const grandchild = store.members(id).at(-1);
+  assert(workerIsDescendant(store.members(id), root, grandchild.chatId));
+  assert(workerIsDescendant(store.members(id), workers[0].chatId, grandchild.chatId));
+  assert(!workerIsDescendant(store.members(id), workers[1].chatId, grandchild.chatId), "Sibling managers do not own one another's subtree");
   assert.equal(new WorkerTreeStore(directory).count(id), 4);
   assert.throws(() => store.reserve(id, workers[1].chatId, ["Next"], workerLimits(3, 10)), /approval/);
   store.reserve(id, workers[1].chatId, Array(6).fill("Expansion"), workerLimits(3, 10), 10);
@@ -97,6 +101,70 @@ test("tree capacity: recursive reservations share a persistent quota and resolve
   const reused = store.reserve(id, root, Array(10).fill("Reused"), workerLimits(3, 10));
   assert.equal(reused.length, 10, "Previously approved capacity requires no new approval");
   assert.equal(store.count(id), 10);
+});
+
+test("manager resumes a failed worker from recorded progress without replacing history, replaying tools or expanding quota", async t => {
+  let resumedResponse;
+  const fixture = await harness(t, (payload, res) => {
+    const prompt = payload.messages.at(-1).content;
+    if (prompt === "RESUME_ROOT") tool(res, "spawn_workers", { tasks: [{ title: "Recover existing progress", question: "FAIL_WORKER" }] });
+    else if (prompt === "FAIL_WORKER") tool(res, "list_chats", {});
+    else if (prompt.startsWith("Resume the existing worker assignment:")) resumedResponse = res;
+    else if (payload.messages.at(-1).role === "tool") {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.end(`data: ${JSON.stringify({ choices: [{ delta: { content: "Partial checkpoint" }, finish_reason: "stop" }], usage: { prompt_tokens: 200, completion_tokens: 1025 } })}\n\ndata: [DONE]\n\n`);
+    } else answer(res, "Manager event");
+  });
+  const { provider } = fixture;
+  await provider.send("RESUME_ROOT", fixture.root);
+  await provider.handle({ type: "pause" });
+  const record = () => provider.store.load(fixture.root.id, false).messages.flatMap(message => message.delegations || [])[0];
+  await until(() => record()?.status === "failed", "worker output failure reported");
+  const failedRecord = record();
+  const failedWorker = provider.store.load(failedRecord.chatId, false);
+  const failedMessage = failedWorker.messages.at(-1);
+  const originalHistory = failedWorker.messages.map(message => message.id);
+  const treeId = failedWorker.workerActivity.treeId;
+  const count = provider.store.workerTrees.count(treeId);
+  assert.equal(failedMessage.toolCalls.length, 1);
+  assert.equal(failedMessage.toolCalls[0].status, "complete");
+  assert.match(failedMessage.error, /per-inference token budget/);
+  const overview = provider.workerOverview(provider.chat, provider.store.list(true));
+  const node = overview.nodes.find(node => node.chatId === failedWorker.id);
+  assert.equal(node.canResume, true); assert.match(node.error, /per-inference token budget/);
+  await assert.rejects(provider.handle({ type: "workerResume", id: failedRecord.id, value: randomUUID() }), /activity changed/);
+  const unrelated = fixtures.conversation({ workerState: { ...provider.chat.workerState } });
+  provider.store.save(unrelated);
+  await assert.rejects(provider.resumeWorker(unrelated, failedRecord.id, failedRecord.attemptId), /no active worker tree/);
+  provider.queueDrains.add(failedWorker.id);
+  try {
+    await assert.rejects(provider.resumeWorker(provider.chat, failedRecord.id, failedRecord.attemptId), /Only an idle/);
+  } finally { provider.queueDrains.delete(failedWorker.id); }
+  const resume = provider.handle({ type: "workerResume", id: failedRecord.id, value: failedRecord.attemptId, chatId: fixture.root.id });
+  await until(() => resumedResponse, "worker continuation dispatched");
+  const current = provider.store.load(failedWorker.id, false);
+  assert.deepEqual(current.messages.slice(0, originalHistory.length).map(message => message.id), originalHistory);
+  assert.equal(current.messages[originalHistory.length - 1].error, failedMessage.error);
+  assert.equal(current.workerActivity.id, failedWorker.workerActivity.id);
+  assert.notEqual(current.workerActivity.attemptId, failedRecord.attemptId);
+  assert.equal(current.workerActivity.receiptId, failedRecord.id);
+  assert.equal(provider.chat.id, fixture.root.id, "manager view must not be retargeted to the worker");
+  assert.equal(provider.store.workerTrees.count(treeId), count);
+  assert.equal(fixture.approvals.length, 0, "Resume reuses the existing occupied worker slot");
+  const request = fixture.requests.at(-1);
+  assert(request.messages.some(message => message.content.includes("Original assignment:\nFAIL_WORKER")));
+  assert(request.messages.some(message => message.content.includes("Partial checkpoint") && message.content.includes("list_chats: complete")));
+  assert(request.messages.at(-1).content.includes("do not replay completed operations automatically"));
+  await assert.rejects(provider.handle({ type: "workerResume", id: failedRecord.id, value: failedRecord.attemptId }), /activity changed/);
+  answer(resumedResponse, "Continued from saved evidence"); await resume;
+  assert.equal(provider.store.workerTrees.count(treeId), 0);
+  const archive = provider.store.workerResult(failedRecord.id).chat;
+  assert.deepEqual(archive.messages.slice(0, originalHistory.length).map(message => message.id), originalHistory);
+  assert.equal(archive.messages.at(-1).content, "Continued from saved evidence");
+  assert.equal(archive.messages.flatMap(message => message.toolCalls || []).length, 1, "Resume never replays previously recorded tool calls itself");
+  assert.equal(record().archived, true);
+  await assert.rejects(provider.handle({ type: "workerResume", id: failedRecord.id, value: archive.workerActivity.attemptId }), /does not own/);
+  assert.deepEqual(fixture.errors, []);
 });
 
 test("three workers overlap; manager sleeps without polling and wakes after each completion", async t => {

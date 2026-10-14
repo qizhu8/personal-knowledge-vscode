@@ -196,12 +196,24 @@ class ChatUiTests(unittest.TestCase):
                         worker_ui = {**fixture, "workerOverview": {"rootChatId": "chat_fixture", "activeWorkers": 0, "quota": 6, "maximum": 10, "nodes": [
                             {"chatId": "chat_fixture", "title": "Manager", "status": "completed"},
                             {"chatId": "archived", "parentChatId": "chat_fixture", "title": "Archived worker", "status": "completed", "archived": True, "receiptId": "receipt_fixture", "dispatchedAt": started},
+                            {"chatId": "failed-worker", "parentChatId": "chat_fixture", "title": "Budget failure", "status": "failed", "canResume": True,
+                             "receiptId": "failed-receipt", "attemptId": "failed-attempt", "error": "Local output budget exhausted. Partial evidence preserved."},
                         ]}, "approvals": [{"id": "quota_fixture", "title": "Increase capacity", "detail": "3 to 6", "scope": "Worker quota", "once": True, "quota": True, "questions": []}]}
                         page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", worker_ui)
                         expect(page.locator('#workers-summary')).to_contain_text('Capacity: 0/6')
                         if page.locator('#workers-toggle').get_attribute('aria-expanded') == 'false':
                             page.locator('#workers-toggle').click()
-                        expect(page.locator('#workers-tree .worker-node')).to_have_count(2)
+                        expect(page.locator('#workers-tree .worker-node')).to_have_count(3)
+                        failed_worker = page.locator('#workers-tree [data-chat-id="failed-worker"]')
+                        failed_worker.locator(':scope > summary').click()
+                        expect(failed_worker.locator('.worker-failure')).to_be_visible()
+                        expect(failed_worker.locator('.worker-failure')).to_contain_text('output budget exhausted')
+                        failed_worker.locator(':scope > summary').click()
+                        expect(failed_worker).to_contain_text('Resume retains execution evidence')
+                        failed_worker.get_by_role('button', name='Resume worker', exact=True).click()
+                        self.assertEqual(page.evaluate("window.__posts.at(-1)"), {"type": "workerResume", "id": "failed-receipt", "value": "failed-attempt", "chatId": "chat_fixture"})
+                        expect(failed_worker.get_by_role('button', name='Resume worker', exact=True)).to_be_disabled()
+                        expect(page.locator('[data-chat-id="archived"]').get_by_role('button', name='Resume worker', exact=True)).to_have_count(0)
                         expect(page.locator('.approval').get_by_role('button', name='Yes', exact=True)).to_be_enabled()
                         expect(page.locator('.approval').get_by_role('button', name='No', exact=True)).to_be_enabled()
                         page.locator('.approval textarea').fill('Is capacity reusable?')

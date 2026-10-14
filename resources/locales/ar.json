@@ -4,6 +4,10 @@
     "label": "العربية"
   },
   "strings": {
+    "apiChat.resumeWorker": "استئناف worker",
+    "apiChat.resumeWorkerNotice": "يحفظ الاستئناف أدلة التنفيذ ويبدأ متابعة جديدة. قد تترتب رسوم؛ تحقق من الآثار غير المؤكدة للأدوات قبل تكرارها.",
+    "apiChat.outputPerInference": "المخرجات لكل استدلال",
+    "apiChat.maximumOutputPerInference": "الحد الأقصى لرموز المخرجات لكل استدلال",
     "apiChat.chatDecision": "قرار Chat",
     "apiChat.allowAllPkm": "السماح بالكل (PKM)",
     "apiChat.permissionBoundary": "السماح بالكل يتجاوز موافقات أدوات PKM فقط. قد تتطلب أدوات VS Code تأكيدًا أصليًا منفصلًا. تبقى قرارات الحلقات وإعادة المحاولة وTask داخل هذا Chat.",

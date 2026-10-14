@@ -107,6 +107,12 @@ async function fixtureDaemon(options) {
     if (target.name === "content-repair") throw new repairApi.GitHubSyncContentRepairError(target.id, [{
       path: "scripts/Test.script", type: "scripts", itemId: "Test", source: "local", reason: "merge-conflict-markers",
       lines: [1, 2, 3], digest: "digest", content: "<<<<<<< local\n=======\n>>>>>>> remote\n", candidate: "",
+    }, {
+      path: "recipes/Examples/Legacy.recipe_legacy.json", type: "recipes", itemId: "recipe_legacy",
+      source: "local", reason: "recipe-digest", lines: [], digest: "recipe-content", content: "{}",
+      recipeId: "recipe_legacy", error: "Recipe executable digest is invalid",
+      diagnostics: [{ storedDigest: "raw", compiledDigest: "compiled" }],
+      sourceLocator: { kind: "recipe-store", path: "projects.json", jsonPointer: "/payload/state/recipes", recipeId: "recipe_legacy" },
     }], "repair-attempt");
     if (target.name === "secret-error") throw new Error(`Failure ${credentials.accessToken}`);
     if (target.name === "hold-raw") {
@@ -338,6 +344,12 @@ async function main() {
     assert(failed instanceof repairApi.GitHubSyncContentRepairError, "typed content issues survive daemon-to-Host RPC");
     assert.equal(failed.attemptId, "repair-attempt");
     assert.equal(failed.issues[0].candidate, "");
+    assert.equal(failed.issues.length, 2);
+    assert.equal(failed.issues[1].reason, "recipe-digest");
+    assert.equal(failed.issues[1].error, "Recipe executable digest is invalid");
+    assert.deepEqual(failed.issues[1].diagnostics, [{ storedDigest: "raw", compiledDigest: "compiled" }]);
+    assert.equal(failed.issues[1].sourceLocator.jsonPointer, "/payload/state/recipes");
+    assert.equal(failed.serviceShouldRetry, false);
     await until(() => fixtureClient.snapshot().fixture?.status === "needs-attention", "content repair attention state");
     assert.equal(await fixtureClient.request("fixture", "change"), false);
     assert.deepEqual(await fixtureClient.listRecoverableResults(), []);

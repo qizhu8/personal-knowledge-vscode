@@ -32,6 +32,7 @@ export interface ApiChatTool {
 export interface ApiChatToolEvent { id: string; name: string; arguments: string; status: "running" | "complete" | "failed"; result?: string; }
 export interface ChatToolLoopNotice { reason: "round-limit" | "stalled"; rounds: number; limit: number; tool?: string; repeats?: number; }
 export type ChatToolLoopDecision = "continue" | "summarize" | "cancel";
+export const chatInferenceOutputByteLimit = 100_000;
 
 export interface ApiChatRequest {
   provider: "openai-compatible" | "azure-openai";
@@ -49,6 +50,7 @@ export interface ApiChatRequest {
   includeUsage?: boolean;
   onUsage?: (usage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number }) => void;
   onUsageMetadata?: (valid: boolean) => void;
+  onOutputBudgetWarning?: (warning: string) => void;
   onStage?: (stage: "connecting" | "waiting") => void;
   fetch?: typeof fetch;
   tools?: ApiChatTool[];
@@ -165,8 +167,6 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
   try {
     if (controller.signal.aborted) throw new Error("Cancelled");
     const messages = [...request.messages];
-    let characters = 0;
-    let outputUsed = 0;
     const checkLoop = async (round: number) => {
       if (request.loopReviewAfterMs !== undefined) {
         clearTimeout(timer);
@@ -182,8 +182,8 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
     await checkLoop(round);
     if (loop.summarizing) messages.push({ role: "system", content: toolBudgetSummary });
     if (controller.signal.aborted) throw new Error("Request cancelled.");
-    const outputTokens = request.maxOutputTokens === undefined ? undefined : request.maxOutputTokens - outputUsed;
-    if (outputTokens !== undefined && outputTokens < 1) throw new Error("Request output budget exhausted.");
+    const outputTokens = request.maxOutputTokens;
+    if (outputTokens !== undefined && (!Number.isSafeInteger(outputTokens) || outputTokens < 1)) throw new Error("Choose a positive per-inference output token budget.");
     request.beforeRound?.(messages, outputTokens || 0);
     request.onStage?.("connecting");
     if (request.loopReviewAfterMs !== undefined) timer = setTimeout(() => { timedOut = true; controller.abort(); }, request.timeoutMs ?? 120_000);
@@ -206,33 +206,35 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
     const calls = new Map<number, { id: string; type: "function"; function: { name: string; arguments: string } }>();
     for await (const chunk of stream) {
       if (chunk.usage) {
+        if (![chunk.usage.prompt_tokens, chunk.usage.completion_tokens].every(value => Number.isSafeInteger(value) && value >= 0)) throw new Error("The provider returned invalid token usage; no pending tool was executed.");
         measuredOutput = chunk.usage.completion_tokens;
         request.onUsage?.({ inputTokens: chunk.usage.prompt_tokens, outputTokens: chunk.usage.completion_tokens, cachedInputTokens: chunk.usage.prompt_tokens_details?.cached_tokens });
       }
       const choice = chunk.choices[0];
       const text = choice?.delta.content || choice?.delta.refusal || "";
       responseText += text;
-      characters += text.length;
-      if (characters > 100_000) {
-        controller.abort();
-        throw new Error("Response exceeded the local size limit.");
-      }
-      if (text) onText(text);
       for (const fragment of choice?.delta.tool_calls || []) {
         if (!calls.has(fragment.index)) calls.set(fragment.index, { id: "", type: "function", function: { name: "", arguments: "" } });
         const call = calls.get(fragment.index)!;
         call.id += fragment.id || ""; call.function.name += fragment.function?.name || ""; call.function.arguments += fragment.function?.arguments || "";
         if (calls.size > 16 || call.function.arguments.length > 32_000) throw new Error("Tool call exceeded the local limit.");
       }
+      const outputBytes = Buffer.byteLength(responseText, "utf8") + [...calls.values()].reduce((bytes, call) =>
+        bytes + Buffer.byteLength(JSON.stringify({ id: call.id, name: call.function.name, arguments: call.function.arguments }), "utf8"), 0);
+      if (outputBytes > chatInferenceOutputByteLimit) {
+        controller.abort();
+        throw new Error("Inference output exceeded the 100,000-byte local size limit. Partial output was preserved; no pending tool was executed.");
+      }
+      if (text) onText(text);
       if (choice?.finish_reason) finishReason = choice.finish_reason;
     }
     if (request.loopReviewAfterMs !== undefined) clearTimeout(timer);
     if (!finishReason) throw new Error("The response ended before completion.");
     const toolCalls = [...calls.values()];
-    outputUsed += measuredOutput ?? Buffer.byteLength(responseText + JSON.stringify(toolCalls), "utf8");
+    if (outputTokens !== undefined && measuredOutput !== undefined && measuredOutput > outputTokens) throw new Error("Model output exceeded the per-inference token budget. Partial output was preserved; no pending tool was executed.");
     if (finishReason === "stop") {
       if (calls.size) throw new Error("Invalid tool completion. No pending tool was executed.");
-      if (!characters) throw new Error("The model returned an empty response.");
+      if (!responseText) throw new Error("The model returned an empty response.");
       return;
     }
     if (finishReason !== "tool_calls" || !toolCalls.length) throw new Error(`Response stopped with ${finishReason}. Partial output was preserved.`);

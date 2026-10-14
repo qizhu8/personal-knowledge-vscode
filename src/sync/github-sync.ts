@@ -9,6 +9,7 @@ import { compareVersionOrder } from "../runtime/version-order";
 import { knowledgeSyncDeletionRecords } from "../knowledge/filestore";
 import { sameKnowledgeRoot } from "./github-sync-coordinator";
 import { GitHubSyncContentIssue, GitHubSyncContentRepairError, inspectConflictMarkers } from "./github-sync-content-repair";
+import { GitHubSyncBaseEvidence, verifyGitHubSyncBaseDigest } from "./github-sync-base-integrity";
 
 const execFileAsync = promisify(execFile);
 
@@ -134,6 +135,9 @@ export interface GitHubSyncFingerprintEntry {
 
 export function githubSyncManagedContent(type: GitHubSyncContentType, content: Buffer): Buffer {
   if (type !== "recipes") return content;
+  if (content.includes(0) || !Buffer.from(content.toString("utf8"), "utf8").equals(content)) {
+    throw new Error("Recipe content is not valid UTF-8 text.");
+  }
   const recipe = JSON.parse(content.toString("utf8")) as Record<string, unknown>;
   delete recipe.editorLayout;
   return Buffer.from(`${JSON.stringify(recipe, null, 2)}\n`, "utf8");
@@ -149,6 +153,7 @@ export interface GitHubSyncCatalogItem {
   destination: string;
   content?: string;
   dependencies?: Array<{ source: string; destination: string }>;
+  sourceLocator?: GitHubSyncContentIssue["sourceLocator"];
 }
 
 export type GitHubSyncCatalog = Record<GitHubSyncContentType, GitHubSyncCatalogItem[]>;
@@ -784,7 +789,8 @@ export function githubSyncIgnoredPath(relative: string): boolean {
   return parts.some(part => directories.has(part)) || /(?:\.py[co]|\.DS_Store|Thumbs\.db)$/i.test(parts[parts.length - 1]);
 }
 
-function collectItemFiles(item: GitHubSyncCatalogItem): Array<{ destination: string; member: string; content: Buffer }> {
+function collectItemFiles(item: GitHubSyncCatalogItem,
+  onError?: (error: unknown, destination: string, source: string) => void): Array<{ destination: string; member: string; content: Buffer }> {
   const destination = githubSyncSafeRelativePath(item.destination);
   if (githubSyncIgnoredPath(destination)) return [];
   if (item.content !== undefined) return [{ destination, member: "", content: Buffer.from(item.content, "utf8") }];
@@ -796,28 +802,45 @@ function collectItemFiles(item: GitHubSyncCatalogItem): Array<{ destination: str
     const files = [{ destination, member: "", content: fs.readFileSync(source) }];
     for (const dependency of item.dependencies || []) {
       if (githubSyncIgnoredPath(dependency.destination)) continue;
-      const dependencySource = path.resolve(dependency.source);
-      const dependencyStat = fs.lstatSync(dependencySource);
-      if (dependencyStat.isSymbolicLink() || !dependencyStat.isFile()) throw new Error(`Markdown asset dependency is invalid: ${dependency.source}`);
-      files.push({
-        destination: githubSyncSafeRelativePath(dependency.destination),
-        member: githubSyncSafeRelativePath(dependency.destination),
-        content: fs.readFileSync(dependencySource),
-      });
+      try {
+        const dependencySource = path.resolve(dependency.source);
+        const dependencyStat = fs.lstatSync(dependencySource);
+        if (dependencyStat.isSymbolicLink() || !dependencyStat.isFile()) throw new Error(`Markdown asset dependency is invalid: ${dependency.source}`);
+        files.push({
+          destination: githubSyncSafeRelativePath(dependency.destination),
+          member: githubSyncSafeRelativePath(dependency.destination),
+          content: fs.readFileSync(dependencySource),
+        });
+      } catch (error) {
+        if (!onError) throw error;
+        onError(error, dependency.destination, dependency.source);
+      }
     }
     return files;
   }
   if (!stat.isDirectory()) throw new Error(`Unsupported catalog source: ${item.source}`);
   const files: Array<{ destination: string; member: string; content: Buffer }> = [];
   const walk = (directory: string, relative: string): void => {
-    for (const name of fs.readdirSync(directory).sort((left, right) => left.localeCompare(right))) {
+    let names: string[];
+    try { names = fs.readdirSync(directory).sort((left, right) => left.localeCompare(right)); }
+    catch (error) {
+      if (!onError) throw error;
+      onError(error, relative ? `${destination}/${relative}` : destination, directory);
+      return;
+    }
+    for (const name of names) {
       const child = path.join(directory, name);
       const childRelative = relative ? `${relative}/${name}` : name;
       if (githubSyncIgnoredPath(childRelative)) continue;
-      const childStat = fs.lstatSync(child);
-      if (childStat.isSymbolicLink()) throw new Error(`Symbolic links cannot be synchronized: ${child}`);
-      if (childStat.isDirectory()) walk(child, childRelative);
-      else if (childStat.isFile()) files.push({ destination: `${destination}/${childRelative}`, member: childRelative, content: fs.readFileSync(child) });
+      try {
+        const childStat = fs.lstatSync(child);
+        if (childStat.isSymbolicLink()) throw new Error(`Symbolic links cannot be synchronized: ${child}`);
+        if (childStat.isDirectory()) walk(child, childRelative);
+        else if (childStat.isFile()) files.push({ destination: `${destination}/${childRelative}`, member: childRelative, content: fs.readFileSync(child) });
+      } catch (error) {
+        if (!onError) throw error;
+        onError(error, `${destination}/${childRelative}`, child);
+      }
     }
   };
   walk(source, "");
@@ -833,6 +856,8 @@ interface GitHubSyncManagedFile {
   privacy: GitHubSyncPrivacy;
   digest: string;
   content?: Buffer;
+  baseIntegrityEvidence?: GitHubSyncBaseEvidence;
+  sourceDigest?: string;
 }
 
 interface GitHubSyncManifest {
@@ -881,7 +906,8 @@ function legacyManifestMetadata(filePath: string, type: GitHubSyncContentType): 
   return { itemId, category, privacy: "public" };
 }
 
-function selectedFiles(target: GitHubSyncTarget, catalog: GitHubSyncCatalog, excluded: ReadonlySet<string> = new Set()): {
+function selectedFiles(target: GitHubSyncTarget, catalog: GitHubSyncCatalog, excluded: ReadonlySet<string> = new Set(),
+  issues?: GitHubSyncContentIssue[]): {
   files: GitHubSyncManagedFile[];
   fingerprints: Record<GitHubSyncContentType, string>;
   folderFingerprints: GitHubSyncFolderFingerprints;
@@ -895,19 +921,37 @@ function selectedFiles(target: GitHubSyncTarget, catalog: GitHubSyncCatalog, exc
     const entries: GitHubSyncFingerprintEntry[] = [];
     const folderEntries = new Map<string, GitHubSyncFingerprintEntry[]>();
     for (const item of catalog[type].filter(candidate => selectedItem(target, type, candidate))) {
+      const blocked = (error: unknown, destination = item.destination, source = item.source): void => {
+        if (!issues) throw error;
+        issues.push({ path: destination, type, itemId: item.id, source: "local", reason: "materialization",
+          lines: [], digest: "", content: "", error: error instanceof Error ? error.message : String(error),
+          ...(source ? { sourcePath: source, sourceLocator: { kind: "file", path: source } } : {}) });
+      };
       const folders = githubSyncCategoryFolders(item.cat);
       for (const folder of folders) if (!folderEntries.has(folder)) folderEntries.set(folder, []);
-      for (const file of collectItemFiles(item)) {
+      let collected: ReturnType<typeof collectItemFiles>;
+      try { collected = collectItemFiles(item, issues ? blocked : undefined); }
+      catch (error) { blocked(error); continue; }
+      for (const file of collected) {
         if (excluded.has(file.destination)) continue;
         if (githubSyncIsSystemContent(type, item.cat, item.id, file.destination)) continue;
-        const managed = githubSyncManagedContent(type, file.content);
+        let managed: Buffer;
+        try { managed = githubSyncManagedContent(type, file.content); }
+        catch (error) {
+          if (!issues) throw error;
+          // Preserve invalid JSON for the validator's source-specific diagnostics.
+          managed = file.content;
+        }
         const text = managed.toString("utf8");
         const content = managed.includes(0) || !Buffer.from(text, "utf8").equals(managed)
           ? managed : Buffer.from(text.replace(/\r\n/g, "\n"), "utf8");
         const digest = createHash("sha256").update(content).digest("hex");
         if (destinations.has(file.destination)) {
           const existing = files.find(candidate => candidate.path === file.destination);
-          if (!existing || existing.digest !== digest) throw new Error(`Multiple items map different content to ${file.destination}.`);
+          if (!existing || existing.digest !== digest) {
+            blocked(new Error(`Multiple items map different content to ${file.destination}.`), file.destination);
+            continue;
+          }
           if (existing.privacy === "private" && !item.isPrivate) {
             existing.itemId = item.id;
             existing.member = file.member;
@@ -917,7 +961,10 @@ function selectedFiles(target: GitHubSyncTarget, catalog: GitHubSyncCatalog, exc
           continue;
         }
         const portableDestination = file.destination.toLocaleLowerCase("en-US");
-        if (portableDestinations.has(portableDestination)) throw new Error(`Managed destinations differ only by case: ${file.destination}.`);
+        if (portableDestinations.has(portableDestination)) {
+          blocked(new Error(`Managed destinations differ only by case: ${file.destination}.`), file.destination);
+          continue;
+        }
         destinations.add(file.destination);
         portableDestinations.add(portableDestination);
         files.push({
@@ -929,6 +976,7 @@ function selectedFiles(target: GitHubSyncTarget, catalog: GitHubSyncCatalog, exc
           privacy: item.isPrivate ? "private" : "public",
           digest,
           content,
+          sourceDigest: fileDigest(file.content),
         });
         entries.push({ path: file.destination, digest });
         for (const folder of folders) folderEntries.get(folder)!.push({ path: file.destination, digest });
@@ -966,7 +1014,8 @@ export function manifestJson(files: GitHubSyncManagedFile[], deletions: GitHubSy
       required: [...GITHUB_SYNC_REQUIRED_CAPABILITIES],
       storage: "pkm.github.publication/v1",
     },
-    files: ordered.map(({ content, ...file }) => file),
+    // Review-only evidence is machine-local, never publication metadata.
+    files: ordered.map(({ content, sourceDigest, baseIntegrityEvidence, ...file }) => file),
     deletions: [...deletions].sort((left, right) =>
       `${left.type}\0${left.itemId}`.localeCompare(`${right.type}\0${right.itemId}`))
       .map(({ type, itemId, deletedAt, category, privacy }) => ({ type, itemId, deletedAt, category, privacy })),
@@ -1802,7 +1851,9 @@ async function manifestAtCommit(target: GitHubSyncTarget, checkoutRoot: string, 
     const contents = await readGitHubRemoteFilesForSubscription(target, checkoutRoot, commit, batch, 64 * 1024 * 1024);
     for (const file of manifest.files.filter(file => contents.has(file.path))) {
       file.content = contents.get(file.path)!;
-      if (!file.digest) file.digest = fileDigest(file.content);
+      const verified = verifyGitHubSyncBaseDigest(commit, file.path, file.digest, file.content);
+      file.digest = verified.digest;
+      if (verified.evidence) file.baseIntegrityEvidence = verified.evidence;
     }
     batch = [];
     batchBytes = 0;
@@ -1815,6 +1866,14 @@ async function manifestAtCommit(target: GitHubSyncTarget, checkoutRoot: string, 
     batchBytes += size;
   }
   await loadBatch();
+  const evidence = manifest.files.flatMap(file => file.baseIntegrityEvidence ? [{ path: file.path, ...file.baseIntegrityEvidence }] : []);
+  if (evidence.length) {
+    // Keep the original manifest/blob hashes and commit identity outside managed content.
+    const directory = path.join(checkoutRoot, target.id, "base-integrity");
+    fs.mkdirSync(directory, { recursive: true });
+    writeAtomic(path.join(directory, `${createHash("sha256").update(commit).digest("hex")}.json`),
+      Buffer.from(JSON.stringify({ schema: 1, commit, files: evidence }, null, 2), "utf8"));
+  }
   return manifest;
 }
 
@@ -1863,8 +1922,12 @@ function validateManagedContent(file: GitHubSyncManagedFile, content: Buffer, ex
       throw new Error(`Recipe is missing recipeId, name, or definition: ${file.path}`);
     }
     const compiled = compileWorkflowDefinitionV1(parsed.definition);
-    if (!compiled.ok) throw new Error(`Recipe definition is invalid: ${file.path}`);
-    if (compiled.executableDigest !== parsed.executableDigest) throw new Error(`Recipe executable digest is invalid: ${file.path}`);
+    if (!compiled.ok) throw Object.assign(new Error(`Recipe definition is invalid: ${file.path}`),
+      { reason: "recipe-definition", diagnostics: compiled.diagnostics, recipeId: parsed.recipeId });
+    if (compiled.executableDigest !== parsed.executableDigest) throw Object.assign(new Error(`Recipe executable digest is invalid: ${file.path}`),
+      { reason: "recipe-digest", recipeId: parsed.recipeId, diagnostics: [
+        { storedDigest: parsed.executableDigest, compiledDigest: compiled.executableDigest },
+      ] });
     const segments = file.path.split("/");
     const filename = segments.pop() || "";
     const category = segments.slice(1).join("/") === "Uncategorized" ? "" : segments.slice(1).join("/");
@@ -1898,6 +1961,45 @@ export function validateGitHubSyncCandidate(relative: string, content: Buffer): 
     privacy: "public",
     digest: fileDigest(content),
   }, content);
+}
+
+/** Collect blockers without treating any failed validation as successful content. */
+export function collectGitHubSyncLocalContentIssues(files: GitHubSyncManagedFile[], catalog: GitHubSyncCatalog): GitHubSyncContentIssue[] {
+  const issues: GitHubSyncContentIssue[] = [];
+  for (const file of files) {
+    const content = file.content!;
+    const inspection = githubSyncIsTextContent(file.path, content) ? inspectConflictMarkers(content.toString("utf8")) : { lines: [] };
+    const item = catalog[file.type].find(candidate => candidate.id === file.itemId);
+    const sourcePath = item?.content === undefined && item?.source
+      ? file.member
+        ? item.dependencies?.find(dependency => dependency.destination === file.path)?.source
+          || path.join(item.source, ...file.member.split("/"))
+        : item.source
+      : undefined;
+    const common = {
+      path: file.path, type: file.type, itemId: file.itemId, source: "local" as const,
+      digest: file.digest, content: content.toString("utf8"),
+      ...(sourcePath && file.sourceDigest ? { sourceDigest: file.sourceDigest } : {}),
+      ...(sourcePath ? { sourcePath, sourceLocator: { kind: "file" as const, path: sourcePath } } : {}),
+      ...(file.type === "recipes" ? { recipeId: file.itemId,
+        sourceLocator: item?.sourceLocator || { kind: "recipe-store" as const, recipeId: file.itemId } } : {}),
+    };
+    if (inspection.lines.length) {
+      issues.push({ ...common, reason: "merge-conflict-markers", lines: inspection.lines,
+        ...(inspection.candidate !== undefined ? { candidate: inspection.candidate } : {}) });
+    }
+    try {
+      // Markers are separately blocked above; still inspect the other contracts.
+      validateManagedContent(file, content, inspection.lines.length > 0);
+    } catch (error) {
+      const detail = error as Error & { reason?: GitHubSyncContentIssue["reason"]; diagnostics?: unknown[]; recipeId?: string };
+      issues.push({ ...common, reason: detail.reason || "content-validation", lines: [],
+        error: detail.message || String(error), ...(detail.diagnostics ? { diagnostics: detail.diagnostics } : {}),
+        ...(detail.recipeId ? { recipeId: detail.recipeId,
+          sourceLocator: item?.sourceLocator || { kind: "recipe-store", recipeId: detail.recipeId } } : {}) });
+    }
+  }
+  return issues;
 }
 
 function writeAtomic(destination: string, content: Buffer): void {
@@ -2443,7 +2545,7 @@ async function syncGitHubTargetAttempt(
   const normalized = normalizeGitHubSyncTarget(target, () => target.id);
   const fetchStartedAt = Date.now();
   const reportFetch = (detail: string): void => onProgress?.("fetch", `${detail} (${Math.round((Date.now() - fetchStartedAt) / 1000)}s elapsed)`);
-  reportFetch("Preparing Local files for Fetch / Pull");
+  reportFetch("Local content preflight; Remote has not been fetched");
   if (normalized.lastSync?.repository && normalized.lastSync.repository !== normalized.repository) {
     throw new Error("GitHub Sync repository changed after the last synchronization. Save the target again to start from a new reconciliation base.");
   }
@@ -2454,31 +2556,12 @@ async function syncGitHubTargetAttempt(
     throw new Error("Knowledge Root changed after the last synchronization. Re-save the target to reconcile this root as a new machine.");
   }
   const checkout = path.join(checkoutRoot, normalized.id, "repository");
-  const localMaterialized = selectedFiles(normalized, catalog);
-  const localExcluded = await githubSyncExcludedPaths(storeRoot, localMaterialized.files.map(file => file.path));
-  localMaterialized.files = localMaterialized.files.filter(file => !localExcluded.has(file.path));
   const issues: GitHubSyncContentIssue[] = [];
-  for (const file of localMaterialized.files) {
-    const content = file.content!;
-    const inspection = githubSyncIsTextContent(file.path, content) ? inspectConflictMarkers(content.toString("utf8")) : { lines: [] };
-    if (inspection.lines.length) {
-      // Validate every other contract without allowing marked bytes into reconciliation.
-      validateManagedContent(file, content, true);
-      const item = catalog[file.type].find(candidate => candidate.id === file.itemId);
-      const sourcePath = item?.content === undefined && item?.source
-        ? file.member
-          ? item.dependencies?.find(dependency => dependency.destination === file.path)?.source
-            || path.join(item.source, ...file.member.split("/"))
-          : item.source
-        : undefined;
-      issues.push({
-        path: file.path, type: file.type, itemId: file.itemId, source: "local", reason: "merge-conflict-markers",
-        lines: inspection.lines, digest: file.digest, content: content.toString("utf8"),
-        ...(inspection.candidate !== undefined ? { candidate: inspection.candidate } : {}),
-        ...(sourcePath ? { sourcePath } : {}),
-      });
-    } else validateManagedContent(file, content);
-  }
+  const localMaterialized = selectedFiles(normalized, catalog, new Set(), issues);
+  const localExcluded = await githubSyncExcludedPaths(storeRoot, [...localMaterialized.files.map(file => file.path), ...issues.map(issue => issue.path)]);
+  localMaterialized.files = localMaterialized.files.filter(file => !localExcluded.has(file.path));
+  for (let index = issues.length - 1; index >= 0; index--) if (localExcluded.has(issues[index].path)) issues.splice(index, 1);
+  issues.push(...collectGitHubSyncLocalContentIssues(localMaterialized.files, catalog));
   if (issues.length) throw new GitHubSyncContentRepairError(normalized.id, issues);
   const localFiles = new Map(localMaterialized.files.map(file => [file.path, file]));
   reportFetch(`Loaded ${localFiles.size} Local files; fetching origin/${normalized.branch}`);

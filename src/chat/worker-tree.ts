@@ -35,6 +35,19 @@ export interface WorkerSlot { receiptId: string; chatId: string; parentChatId: s
 interface WorkerTree { schema: "pkm.chat.worker-tree/v1"; id: string; rootChatId: string; slots: WorkerSlot[]; approvedQuota?: number; }
 export interface WorkerLimits { automatic: number; maximum: number; }
 
+export function workerIsDescendant(slots: readonly WorkerSlot[], ancestorChatId: string, workerChatId: string): boolean {
+  const parents = new Map(slots.filter(slot => !slot.released).map(slot => [slot.chatId, slot.parentChatId]));
+  const visited = new Set<string>();
+  let current = parents.get(workerChatId);
+  while (current) {
+    if (current === ancestorChatId) return true;
+    if (visited.has(current)) throw new Error("Worker tree ancestry contains a cycle.");
+    visited.add(current);
+    current = parents.get(current);
+  }
+  return false;
+}
+
 export function workerLimits(automatic: number, maximum: number): WorkerLimits {
   if (!Number.isSafeInteger(automatic) || !Number.isSafeInteger(maximum) || automatic < 0 || maximum < 1 || maximum > 1000 || automatic > maximum) {
     throw new Error("Worker limits require 0 <= automatic <= maximum <= 1000.");

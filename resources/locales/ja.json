@@ -4,6 +4,10 @@
     "label": "日本語"
   },
   "strings": {
+    "apiChat.resumeWorker": "Worker を再開",
+    "apiChat.resumeWorkerNotice": "再開は実行証拠を保持して続行します。料金が発生する場合があります。不確実なツールの影響は繰り返す前に確認してください。",
+    "apiChat.outputPerInference": "推論ごとの出力",
+    "apiChat.maximumOutputPerInference": "推論ごとの最大出力トークン数",
     "apiChat.chatDecision": "Chat の判断",
     "apiChat.allowAllPkm": "すべて許可 (PKM)",
     "apiChat.permissionBoundary": "すべて許可は PKM ツールの承認のみを省略します。VS Code ツールは別途ネイティブの確認を求める場合があります。ループ、再試行、Task の判断はこの Chat 内に表示されます。",

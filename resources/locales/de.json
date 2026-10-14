@@ -4,6 +4,10 @@
     "label": "Deutsch"
   },
   "strings": {
+    "apiChat.resumeWorker": "Worker fortsetzen",
+    "apiChat.resumeWorkerNotice": "Fortsetzen behält Ausführungsnachweise und startet eine Fortsetzung. Es können Kosten entstehen; prüfen Sie ungewisse Tool-Auswirkungen vor einer Wiederholung.",
+    "apiChat.outputPerInference": "Ausgabe pro Inferenz",
+    "apiChat.maximumOutputPerInference": "Maximale Ausgabetokens pro Inferenz",
     "apiChat.chatDecision": "Chat-Entscheidung",
     "apiChat.allowAllPkm": "Alles erlauben (PKM)",
     "apiChat.permissionBoundary": "Alles erlauben überspringt nur PKM-Tool-Genehmigungen. VS Code-Tools können weiterhin eine separate native Bestätigung verlangen. Schleifen-, Wiederholungs- und Task-Entscheidungen bleiben in diesem Chat.",

@@ -368,7 +368,11 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
     setTimeout: callback => { const timer = { unref() {} }; repairTimers.set(timer, callback); return timer; },
     clearTimeout: timer => repairTimers.delete(timer),
     onAutoPaused: targetId => repairPauses.push(targetId),
-    execute: async () => { if (++repairRuns === 1) throw new GitHubSyncContentRepairError("attention", []); },
+    execute: async () => { if (++repairRuns === 1) throw new GitHubSyncContentRepairError("attention", [
+      { path: "recipes/Examples/Legacy.recipe_legacy.json", type: "recipes", itemId: "recipe_legacy", source: "local",
+        reason: "recipe-digest", lines: [], digest: "content-digest", content: "{}",
+        error: "Recipe executable digest is invalid", recipeId: "recipe_legacy" },
+    ]); },
   });
   attention.configure([attentionTarget]);
   await flush();

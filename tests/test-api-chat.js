@@ -316,7 +316,7 @@ else (async () => {
     assert.strictEqual(apiChatStatus({ ...completedChat, messages: [{ ...completedChat.messages[0], delegations: [{ status: "running" }] }] }), "awaiting-result");
     assert.strictEqual(apiChatStatus({ ...completedChat, messages: [{ ...completedChat.messages[0], status: "cancelled" }] }), "stopped");
     assert.strictEqual(apiChatStatus({ ...completedChat, progress: { status: "running", steps: [{ status: "waiting" }] } }), "awaiting-input");
-    chat.messages.push({ id: "reply", role: "assistant", content: "partial", status: "streaming" });
+    chat.messages.push({ id: "reply", role: "assistant", content: "partial", status: "streaming", outputBudgetWarning: "Output token counting is unavailable; bytes are not tokens." });
     store.save(chat);
     const sourcePath = path.join(directory, "agent-sessions", chat.sessionId + ".json");
     const session = JSON.parse(fs.readFileSync(sourcePath, "utf8"));
@@ -335,9 +335,11 @@ else (async () => {
     restored.readResultId = restored.lastResultId;
     assert.strictEqual(apiChatStatus(restored), "failed");
     assert.strictEqual(restored.messages[0].status, "interrupted");
+    assert.strictEqual(restored.messages[0].outputBudgetWarning, chat.messages[0].outputBudgetWarning);
     const diagnostic = apiChatDiagnostics({ ...restored, context: [{ id: "private", label: "private", content: "context-secret" }], images: [testImage], mcpServers: [{ url: "https://endpoint-secret", label: "label-secret", enabled: true, tools: ["lookup"] }], messages: [{ ...restored.messages[0], content: "prompt-secret", error: "server-secret", toolCalls: [{ name: "lookup", status: "failed", arguments: "argument-secret", result: "result-secret" }] }] });
     for (const secret of ["context-secret", "endpoint-secret", "label-secret", "prompt-secret", "server-secret", "argument-secret", "result-secret", testImage.dataBase64]) assert(!JSON.stringify(diagnostic).includes(secret));
     assert.strictEqual(diagnostic.attempts[0].errorKind, "other");
+    assert.strictEqual(diagnostic.attempts[0].outputBudgetWarning, restored.messages[0].outputBudgetWarning);
     const usageDiagnostic = apiChatDiagnostics({ ...restored, messages: [{ ...restored.messages[0], usage: { inputTokens: 12, outputTokens: 3, private: "usage-secret" }, usageMetadata: { frames: 2, validFrames: 1, invalidFrames: 1, private: "metadata-secret" } }] });
     assert.deepStrictEqual(usageDiagnostic.attempts[0].reportedTokenUsage, { inputTokens: 12, outputTokens: 3 });
     assert.deepStrictEqual(usageDiagnostic.attempts[0].usageMetadata, { frames: 2, validFrames: 1, invalidFrames: 1 });
@@ -1771,11 +1773,11 @@ async function testVscodeModels() {
   let outputBudgetAnswer = "";
   const roundBudgets = [];
   const outputBudgetModel = { ...model, sendRequest: async () => ({ stream: (async function* () {
-    yield new TextPart("x".repeat(800));
+    yield new TextPart("x".repeat(60_000));
     if (++outputBudgetRounds === 1) yield new CallPart("budget-round-1", "read_file", { path: "file.txt" });
   })() }) };
   await streamVscodeChat(outputBudgetModel, { ...request, beforeRound: (_messages, budget) => roundBudgets.push(budget) }, text => { outputBudgetAnswer += text; }, host);
-  assert.strictEqual(outputBudgetAnswer.length, 1600, "Tool rounds must not consume the next response's output budget");
+  assert.strictEqual(outputBudgetAnswer.length, 120_000, "Inference byte limits and output budgets must not become cumulative task limits");
   assert.deepStrictEqual(roundBudgets, [1024, 1024]);
   let boundedRounds = 0;
   const beforeBounded = execution;
@@ -1818,9 +1820,18 @@ async function testVscodeModels() {
   await streamVscodeChat(metadataModel([new TextPart("hello"), ...metadata]), { ...request, tools: [] }, text => { metadataOutput += text; }, imageHost);
   assert.strictEqual(metadataOutput, "hello");
   let partialCodingOutput = "";
-  await assert.rejects(streamVscodeChat(metadataModel([new TextPart("partial"), new TextPart("x".repeat(1024))]), { ...request, tools: [], maxOutputTokens: 1024 }, text => { partialCodingOutput += text; }, imageHost), /Local output budget exhausted/);
+  const outputWarnings = [];
+  await streamVscodeChat(metadataModel([new TextPart("partial"), new TextPart("x".repeat(1024))]), { ...request, tools: [], maxOutputTokens: 1024, onOutputBudgetWarning: warning => outputWarnings.push(warning) }, text => { partialCodingOutput += text; }, imageHost);
+  assert.strictEqual(partialCodingOutput.length, 1031, "Unavailable tokenizers must not turn a token budget into a byte budget");
+  assert.strictEqual(outputWarnings.length, 1); assert.match(outputWarnings[0], /Bytes are not tokens/);
+  let exactNativeBytes = "";
+  await streamVscodeChat(metadataModel([new TextPart("\u00e9".repeat(50_000))]), { ...request, tools: [], maxOutputTokens: 65536 }, text => { exactNativeBytes += text; }, imageHost);
+  assert.strictEqual(Buffer.byteLength(exactNativeBytes, "utf8"), 100_000);
+  partialCodingOutput = "";
+  await assert.rejects(streamVscodeChat(metadataModel([new TextPart("partial"), new TextPart("x".repeat(100_000))]), { ...request, tools: [], maxOutputTokens: 1024 }, text => { partialCodingOutput += text; }, imageHost), /100,000-byte/);
   assert.strictEqual(partialCodingOutput, "partial");
-  await assert.rejects(streamVscodeChat(metadataModel([new TextPart("\u4e2d".repeat(342))]), { ...request, tools: [], maxOutputTokens: 1024 }, () => {}, imageHost), /Local output budget exhausted/);
+  await streamVscodeChat(metadataModel([new TextPart("\u4e2d".repeat(342))]), { ...request, tools: [], maxOutputTokens: 1024 }, () => {}, imageHost);
+  await assert.rejects(streamVscodeChat(metadataModel([new TextPart("\u4e2d".repeat(33_334))]), { ...request, tools: [], maxOutputTokens: 1024 }, () => {}, imageHost), /100,000-byte/);
   let chineseOutput = "";
   const countedModel = { ...metadataModel([new TextPart("\u4e2d".repeat(900))]), countTokens: async text => Array.from(text).length };
   await streamVscodeChat(countedModel, { ...request, tools: [], maxOutputTokens: 1024 }, text => { chineseOutput += text; }, imageHost);
@@ -1836,6 +1847,8 @@ async function testVscodeModels() {
   await assert.rejects(streamVscodeChat({ ...model, countTokens: async () => 1025, sendRequest: async () => ({ stream: (async function* () { yield new CallPart("over-budget", "read_file", { path: "file.txt" }); })() }) }, { ...request, tools: [{ ...request.tools[0], execute: async () => { countedTools++; return "contents"; } }] }, () => {}, host), /Local output budget exhausted/);
   assert.strictEqual(countedTools, 0, "Over-budget output must never execute pending tools");
   const usagePart = usage => new DataPart(new TextEncoder().encode(JSON.stringify(usage)), "usage");
+  await assert.rejects(streamVscodeChat(metadataModel([new TextPart("kept"), usagePart({ prompt_tokens: 10, completion_tokens: 1025 })]), { ...request, tools: [] }, () => {}, imageHost), /per-inference token budget/);
+  await assert.rejects(streamVscodeChat({ ...metadataModel([new TextPart("kept"), usagePart({ prompt_tokens: 10, completion_tokens: 1025 })]), countTokens: async () => 1 }, { ...request, tools: [] }, () => {}, imageHost), /per-inference token budget/);
   const reportedUsage = [];
   const observedUsage = [];
   const nativeUsageRequest = { ...request, tools: [], onUsage: usage => reportedUsage.push(usage), onUsageMetadata: valid => observedUsage.push(valid) };
@@ -1898,7 +1911,7 @@ async function testVscodeModels() {
   await assert.rejects(streamVscodeChat({ ...model, capabilities: { toolCalling: 1 } }, { ...request, tools: [...request.tools, { ...request.tools[0], name: "second" }] }, () => {}, host), /tool calling/);
   await assert.rejects(streamVscodeChat(model, { ...request, beforeRound: () => { throw new Error("Context budget exceeded"); } }, () => {}, host), /Context budget/);
   await assert.rejects(streamVscodeChat({ ...model, sendRequest: async () => { throw new Error("secret-token"); } }, request, () => {}, host), error => !error.message.includes("secret-token") && /quota/.test(error.message));
-  await assert.rejects(streamVscodeChat({ ...model, sendRequest: async () => ({ text: (async function* () { yield "too long"; })() }) }, { ...request, tools: [], maxOutputTokens: 2 }, () => {}, host), /budget/);
+  await assert.rejects(streamVscodeChat({ ...model, countTokens: async text => text.length, sendRequest: async () => ({ text: (async function* () { yield "too long"; })() }) }, { ...request, tools: [], maxOutputTokens: 2 }, () => {}, host), /budget/);
   const controller = new AbortController(); let entered;
   const waiting = new Promise(resolve => { entered = resolve; });
   const run = streamVscodeChat({ ...model, sendRequest: async () => ({ text: { [Symbol.asyncIterator]: () => ({ next: () => { entered(); return new Promise(() => {}); } }) } }) }, { ...request, tools: [], signal: controller.signal }, () => {}, host);
@@ -1908,8 +1921,9 @@ async function testVscodeModels() {
   console.log("VS Code model adapter tests passed: discovery/access errors, native tool results, unavailable capabilities, budget and hung-stream cancellation.");
 }
 
-function toolEvents(name = "read_file", arguments_ = '{"path":"sample.txt"}') {
+function toolEvents(name = "read_file", arguments_ = '{"path":"sample.txt"}', text = "") {
   return events([
+    ...(text ? [delta(text)] : []),
     `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_", type: "function", function: { name: name.slice(0, 3), arguments: arguments_.slice(0, 8) } }] }, finish_reason: null }] })}\n\n`,
     `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "1", function: { name: name.slice(3), arguments: arguments_.slice(8) } }] }, finish_reason: "tool_calls" }] })}\n\n`,
     'data: {"choices":[],"usage":{"prompt_tokens":64,"completion_tokens":10,"total_tokens":74}}\n\ndata: [DONE]\n\n',
@@ -1989,11 +2003,36 @@ async function testToolLoop() {
     assert.strictEqual(payload.messages[1].tool_calls[0].id, "call_1");
     assert.strictEqual(payload.messages[2].role, "tool");
     assert.strictEqual(payload.messages[2].content, '{"content":"sample"}');
-    assert.strictEqual(payload.max_completion_tokens, 90);
+    assert.strictEqual(payload.max_completion_tokens, 100, "Every inference gets the full configured output budget");
     return events([delta("verified"), done]);
   } }, text => { output += text; });
   assert.deepStrictEqual(calls, [{ path: "sample.txt" }]); assert.strictEqual(output, "verified");
   assert.deepStrictEqual(stages.map(event => event.status), ["running", "complete"]);
+  const budgetTools = tools.map(tool => ({ ...tool, execute: async () => "Independent budget test result" }));
+  let perInferenceRounds = 0; const inferenceBudgets = [];
+  await streamApiChat({ ...base, tools: budgetTools, maxOutputTokens: 32, beforeRound: (_messages, budget) => inferenceBudgets.push(budget), fetch: async (_url, options) => {
+    assert.strictEqual(JSON.parse(options.body).max_completion_tokens, 32);
+    return ++perInferenceRounds <= 6 ? toolEvents("read_file", JSON.stringify({ path: `piece-${perInferenceRounds}` })) : events([delta("finished"), done]);
+  } }, () => {});
+  assert.deepStrictEqual(inferenceBudgets, Array(7).fill(32), "Measured tool-round usage must not accumulate against the task's next inference budget");
+  let exceededTools = 0;
+  await assert.rejects(streamApiChat({ ...base, tools: [{ ...tools[0], execute: async () => { exceededTools++; return "must not run"; } }], maxOutputTokens: 5,
+    fetch: async () => toolEvents() }, () => {}), /per-inference token budget/);
+  assert.strictEqual(exceededTools, 0, "Provider-reported over-budget output must not execute pending tools");
+  await assert.rejects(streamApiChat({ ...base, fetch: async () => events([
+    `data: ${JSON.stringify({ choices: [{ delta: { content: "Invalid usage" }, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: -1 } })}\n\n`, done,
+  ]) }, () => {}), /invalid token usage/);
+  let byteRounds = 0; let byteAnswer = "";
+  await streamApiChat({ ...base, tools: budgetTools, maxOutputTokens: 65536, fetch: async () => {
+    if (++byteRounds < 3) return toolEvents("read_file", JSON.stringify({ path: `long-${byteRounds}` }), "x".repeat(60_000));
+    return events([delta("done"), done]);
+  } }, text => { byteAnswer += text; });
+  assert(byteAnswer.length > 100_000, "Inference storage limits must not become cumulative task limits");
+  const exactByteLimit = "\u00e9".repeat(50_000);
+  let exactByteOutput = "";
+  await streamApiChat({ ...base, maxOutputTokens: 65536, fetch: async () => events([delta(exactByteLimit), done]) }, text => { exactByteOutput += text; });
+  assert.strictEqual(Buffer.byteLength(exactByteOutput, "utf8"), 100_000, "A text-only inference may use the exact byte ceiling");
+  await assert.rejects(streamApiChat({ ...base, maxOutputTokens: 65536, fetch: async () => events([delta(exactByteLimit + "x"), done]) }, () => {}), /100,000-byte/);
   let thirtyFetches = 0; let thirtyExecutions = 0; const thirtyNotices = [];
   await streamApiChat({ ...base, maxOutputTokens: 1024, tools: [{ ...tools[0], execute: async () => { thirtyExecutions++; return "completed"; } }], onToolLoopNotice: async notice => {
     thirtyNotices.push(notice); assert.strictEqual(thirtyExecutions, 30, "The 31st tool must not execute before confirmation"); return "continue";
@@ -2040,8 +2079,12 @@ async function testToolLoop() {
   assert.deepStrictEqual(repeatedNotices.map(notice => notice.reason), ["stalled", "stalled", "round-limit"]);
   for (const maxToolRounds of [0, -1, 1001, 1.5]) await assert.rejects(streamApiChat({ ...base, maxToolRounds }, () => {}), /tool round limit/);
   const beforeBudgetLimit = calls.length;
-  await assert.rejects(streamApiChat({ ...base, tools, fetch: async () => toolEvents(), maxOutputTokens: 10 }, () => {}), /budget exhausted/);
-  assert.strictEqual(calls.length - beforeBudgetLimit, 1, "Characterize exhausted HTTP budget: the tool executes but there is no remaining model round.");
+  let smallBudgetRounds = 0;
+  await streamApiChat({ ...base, tools, fetch: async (_, options) => {
+    assert.strictEqual(JSON.parse(options.body).max_completion_tokens, 10);
+    return ++smallBudgetRounds <= 2 ? toolEvents() : events([delta("done"), done]);
+  }, maxOutputTokens: 10 }, () => {});
+  assert.strictEqual(calls.length - beforeBudgetLimit, 2, "Two valid inferences may together exceed one inference's configured output budget.");
   let partialWritingOutput = "";
   await assert.rejects(streamApiChat({ ...base, maxOutputTokens: 1024, fetch: async (_, options) => {
     assert.strictEqual(JSON.parse(options.body).max_completion_tokens, 1024);

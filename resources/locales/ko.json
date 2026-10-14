@@ -4,6 +4,10 @@
     "label": "한국어"
   },
   "strings": {
+    "apiChat.resumeWorker": "Worker 재개",
+    "apiChat.resumeWorkerNotice": "재개는 실행 증거를 보존하고 이어서 진행합니다. 비용이 발생할 수 있으며 불확실한 도구 효과는 반복 전에 확인하세요.",
+    "apiChat.outputPerInference": "추론별 출력",
+    "apiChat.maximumOutputPerInference": "추론별 최대 출력 토큰 수",
     "apiChat.chatDecision": "Chat 결정",
     "apiChat.allowAllPkm": "모두 허용 (PKM)",
     "apiChat.permissionBoundary": "모두 허용은 PKM 도구 승인만 생략합니다. VS Code 도구는 별도의 기본 확인을 요구할 수 있습니다. 루프, 재시도 및 Task 결정은 이 Chat 안에 표시됩니다.",

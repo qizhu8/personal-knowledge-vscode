@@ -144,6 +144,20 @@ for (const action of ["githubSyncRepairOpen", "githubSyncRepairPreview", "github
   assert(coreSource.includes(`'${action}'`), `${action} must release its pending UI action`);
 }
 assert(!localRepairPanel.includes("githubSyncConflictChoose"), "local preflight repairs must not offer an unavailable GitHub version");
+context.localRepair.issues.push({ path: "recipes/Examples/Legacy.recipe_legacy.json", recipeId: "recipe_legacy",
+  reason: "recipe-digest", error: "Recipe executable digest is invalid", diagnostics: [{ storedDigest: "old", compiledDigest: "new" }],
+  lines: [], canOpen: true, hasCandidate: false });
+const mixedRepairPanel = vm.runInContext("githubSyncContentRepairPanel('primary',localRepair)", context);
+assert.match(mixedRepairPanel, /local content validation/);
+assert.match(mixedRepairPanel, /Open Recipe editor/);
+assert.match(mixedRepairPanel, /export path, not necessarily a local source file/);
+assert.match(mixedRepairPanel, /Recipe executable digest is invalid/);
+assert.match(mixedRepairPanel, /compiledDigest/, "the UI retains compiler diagnostics as well as the original error");
+for (const action of ["githubSyncRecipeRecompilePreview", "githubSyncRecipeRecompileApply"]) {
+  assert(mixedRepairPanel.includes(action));
+  assert(coreSource.includes(`'${action}'`), `${action} must release pending actions`);
+}
+assert(!mixedRepairPanel.includes("Fetch / Pull failed"));
 assert.equal(vm.runInContext("githubSyncEffectiveStatus(failedTarget,{status:'scheduled'},null,false,localRepair)", context), "needs-attention");
 assert.match(extensionSource, /case "githubSyncAutomationToggle"[\s\S]*initialSyncCompleted[\s\S]*target\.automation\.enabled = enabled/,
   "the host owns the Auto Sync readiness gate and persists explicit user toggles");

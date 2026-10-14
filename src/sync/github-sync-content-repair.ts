@@ -8,12 +8,17 @@ export interface GitHubSyncContentIssue {
   type: GitHubSyncContentType;
   itemId: string;
   source: "local";
-  reason: "merge-conflict-markers";
+  reason: "merge-conflict-markers" | "content-validation" | "recipe-definition" | "recipe-digest" | "materialization";
+  diagnostics?: unknown[];
+  error?: string;
+  recipeId?: string;
+  sourceLocator?: { kind: "recipe-store"; recipeId: string; path?: string; jsonPointer?: string } | { kind: "file"; path: string };
   lines: number[];
   digest: string;
   content: string;
   candidate?: string;
   sourcePath?: string;
+  sourceDigest?: string;
 }
 
 export interface GitHubSyncContentRepair {
@@ -29,7 +34,7 @@ export interface GitHubSyncContentRepair {
 export class GitHubSyncContentRepairError extends Error {
   readonly serviceShouldRetry = false;
   constructor(readonly targetId: string, readonly issues: GitHubSyncContentIssue[], readonly attemptId = randomUUID()) {
-    super(`Local content needs repair: ${issues.length} file(s) contain merge conflict markers. Remote has not been fetched. Open GitHub Sync to repair and revalidate.`);
+    super(`Local content needs repair: ${issues.length} validation issue(s). Remote has not been fetched. Open GitHub Sync to repair and revalidate.`);
     this.name = "GitHubSyncContentRepairError";
   }
 }
@@ -88,7 +93,15 @@ export function readGitHubSyncContentRepair(directory: string, targetId: string)
     }
     for (const issue of record.issues) {
       if (!issue || typeof issue.path !== "string" || typeof issue.digest !== "string" || typeof issue.content !== "string"
-        || issue.source !== "local" || issue.reason !== "merge-conflict-markers"
+        || issue.source !== "local" || !["merge-conflict-markers", "content-validation", "recipe-definition", "recipe-digest", "materialization"].includes(issue.reason)
+        || (issue.error !== undefined && typeof issue.error !== "string")
+        || (issue.diagnostics !== undefined && !Array.isArray(issue.diagnostics))
+        || (issue.recipeId !== undefined && typeof issue.recipeId !== "string")
+        || (issue.sourceDigest !== undefined && !/^[a-f0-9]{64}$/.test(issue.sourceDigest))
+        || (issue.sourceLocator !== undefined && (!issue.sourceLocator
+          || !["file", "recipe-store"].includes(issue.sourceLocator.kind)
+          || (issue.sourceLocator.kind === "file" && typeof issue.sourceLocator.path !== "string")
+          || (issue.sourceLocator.kind === "recipe-store" && typeof issue.sourceLocator.recipeId !== "string")))
         || !Array.isArray(issue.lines) || !issue.lines.every(line => Number.isInteger(line) && line > 0)) {
         throw new Error(`Invalid content repair issue: ${file}`);
       }
@@ -122,6 +135,9 @@ export function clearGitHubSyncContentRepair(directory: string, targetId: string
     const preview = path.join(directory, "content-repairs", targetId);
     fs.rmSync(path.join(preview, "original.txt"), { force: true });
     fs.rmSync(path.join(preview, "candidate.txt"), { force: true });
+    fs.rmSync(path.join(preview, "recipe-preview.json"), { force: true });
+    fs.rmSync(path.join(preview, "recipe-original.json"), { force: true });
+    fs.rmSync(path.join(preview, "recipe-candidate.json"), { force: true });
     if (fs.existsSync(preview)) fs.rmdirSync(preview);
   }
   fs.rmSync(recordPath(directory, targetId), { force: true });
@@ -139,11 +155,15 @@ export function contentRepairSource(root: string, issue: GitHubSyncContentIssue)
 }
 
 export function applyGitHubSyncEmptyMarkerCandidate(root: string, issue: GitHubSyncContentIssue): void {
+  if (issue.reason !== "merge-conflict-markers") throw new Error("This issue is not a marker repair.");
   const source = contentRepairSource(root, issue);
   const original = fs.readFileSync(source);
   const text = original.toString("utf8");
   if (!Buffer.from(text).equals(original) || contentRepairDigest(text) !== issue.digest) {
     throw new Error("The source changed since review. Revalidate to refresh the repair candidate; nothing was overwritten.");
+  }
+  if (issue.sourceDigest && createHash("sha256").update(original).digest("hex") !== issue.sourceDigest) {
+    throw new Error("The source bytes changed since review. Revalidate; nothing was overwritten.");
   }
   const inspection = inspectConflictMarkers(text);
   if (inspection.candidate === undefined) throw new Error("No safe empty-block candidate is available. Edit the file manually.");

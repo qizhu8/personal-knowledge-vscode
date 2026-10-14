@@ -138,10 +138,17 @@ context.extensionContext = {
   client.syncError = new GitHubSyncContentRepairError("primary", [{
     path: "scripts/Fixture.script", type: "scripts", itemId: "Fixture", source: "local",
     reason: "merge-conflict-markers", lines: [1], digest: "digest", content: "<<<<<<< incomplete\n",
+  }, {
+    path: "recipes/Examples/Legacy.recipe_legacy.json", type: "recipes", itemId: "recipe_legacy", source: "local",
+    reason: "recipe-digest", lines: [], digest: "recipe-digest", content: "{}", recipeId: "recipe_legacy",
+    error: "Recipe executable digest is invalid", diagnostics: [{ storedDigest: "raw", compiledDigest: "compiled" }],
+    sourceLocator: { kind: "recipe-store", recipeId: "recipe_legacy", path: "projects.json" },
   }]);
   await assert.rejects(() => client.options.execute("primary", "manual", 1), error => error === client.syncError);
   await assert.rejects(() => client.options.execute("primary", "manual", 1), error => error === client.syncError);
   assert(repairRecords.has("primary"), "raw marker errors create actionable durable repairs");
+  assert.equal(repairRecords.get("primary").issues[1].error, "Recipe executable digest is invalid");
+  assert.equal(repairRecords.get("primary").issues[1].sourceLocator.path, "projects.json");
   assert.equal(target.lastFailure, undefined, "marker blockers do not consume the persisted network failure budget");
   assert.equal(calls.filter(call => call[0] === "warning").length, warningCount + 1, "unchanged blockers are notified only once");
   assert(calls.some(call => call[0] === "acknowledge-error"), "persisted content blockers acknowledge actual recovery receipts");

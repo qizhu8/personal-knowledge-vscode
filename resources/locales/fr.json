@@ -4,6 +4,10 @@
     "label": "Français"
   },
   "strings": {
+    "apiChat.resumeWorker": "Reprendre le worker",
+    "apiChat.resumeWorkerNotice": "La reprise conserve les preuves d'exécution et lance une continuation. Des frais peuvent s'appliquer ; vérifiez les effets incertains des outils avant de les répéter.",
+    "apiChat.outputPerInference": "Sortie par inférence",
+    "apiChat.maximumOutputPerInference": "Nombre maximal de tokens de sortie par inférence",
     "apiChat.chatDecision": "Décision du Chat",
     "apiChat.allowAllPkm": "Tout autoriser (PKM)",
     "apiChat.permissionBoundary": "Tout autoriser ignore uniquement les approbations des outils PKM. Les outils VS Code peuvent encore demander une confirmation native distincte. Les décisions de boucle, de nouvelle tentative et de Task restent dans ce Chat.",

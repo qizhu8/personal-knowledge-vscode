@@ -195,7 +195,9 @@ MCP schemas are discovered and checked at connection time. This is not provider
 tokenization; every model round is checked against the configured window.
 
 Limits: 160 KB per chosen file, 60,000 attached characters, 16,000 message
-characters and 100,000 response characters. Requests use the configured model
+characters and 100,000 UTF-8 output bytes per model inference, including serialized
+tool calls. The output byte limit resets for each tool round; it is not a
+cumulative task limit or a token estimate. Requests use the configured model
 context/output budget, not an unrelated 100,000-character ceiling. Required input,
 explicit context and active tool results are never silently shortened; if these
 alone exceed the budget, the request fails before model dispatch. Optional
@@ -502,10 +504,16 @@ not a provider option that purchases a different physical context window.
 
 VS Code models use discovered `maxInputTokens` as a conservative local total
 budget, with reserved output deducted from it; this is not a claim about the
-provider's full context window. Their **Output** setting is a local per-response
+provider's full context window. Their **Output per inference** setting is a local
 token guard for visible text and serialized tool calls, using the model tokenizer
-when available and conservative UTF-8 bytes otherwise. Each tool round receives
-a fresh response budget; independent size and tool-loop limits still apply.
+when available. Without a tokenizer, PKM displays and saves an explicit warning:
+valid provider usage can enforce the token limit at the end of that inference,
+before pending tools execute; without either counter local token enforcement is
+unavailable. UTF-8 bytes are never substituted for output tokens.
+Each tool round receives the full configured output-token budget on both native
+and HTTP transports. Previous rounds' usage remains in cost/diagnostic totals but
+does not consume the next round's budget. The separate 100,000-byte per-inference
+limit and tool-loop controls still apply.
 The default follows discovered model output metadata (4096 when unavailable),
 not a fixed 1024-token agent total. This is not a provider-enforced output-token
 or billing cap. Generation and hidden reasoning may consume additional quota
@@ -729,6 +737,25 @@ inputs identify their source manager, receipt and dispatch time. Chat List nests
 new workers beneath their manager, preserves existing Chat groups, and sorts
 only active above inactive with stable order inside each partition. Agent
 Sessions follows **user group → Chat → Task**, including empty Chats.
+
+Failed worker details are visible even when the task-tree node is collapsed.
+The owning manager or an ancestor manager can explicitly **Resume worker** for
+an idle, unarchived failed/interrupted/cancelled activity still occupying its
+tree slot. Busy, stale, unrelated or archived activities cannot be resumed.
+Resume preserves the worker Chat, activity, receipt, quota reservation, failed
+response and recorded tool evidence, then creates a new continuation turn and
+attempt using that worker's saved model, tools and permissions. The manager view
+is not switched to the worker.
+
+Unlike in-place Retry, Resume does not delete the failed response or replay the
+original assignment. A bounded checkpoint supplies the assignment, failure,
+partial answer and recent tool evidence; the complete history remains stored.
+The model is instructed to inspect existing artifacts and uncertain effects
+before continuing, and to split oversized changes into smaller operations.
+This is evidence-based continuation, not a complete runtime checkpoint or an
+exactly-once guarantee: previously failed tools may already have changed external
+state. Clicking Resume authorizes another model attempt and its possible charges;
+normal tool approval rules still apply. No worker is resumed automatically.
 
 Peers send text to a specific task-tree Chat URL and receive a delivery ID once
 the inbox is saved. Only that message, sender identity and delivery metadata are

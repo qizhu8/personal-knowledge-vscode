@@ -4,6 +4,10 @@
     "label": "Русский"
   },
   "strings": {
+    "apiChat.resumeWorker": "Продолжить worker",
+    "apiChat.resumeWorkerNotice": "Продолжение сохраняет свидетельства выполнения и запускает новый этап. Возможны расходы; проверьте неопределённые эффекты инструментов перед повторением.",
+    "apiChat.outputPerInference": "Вывод на один inference",
+    "apiChat.maximumOutputPerInference": "Максимум токенов вывода на один inference",
     "apiChat.chatDecision": "Решение в Chat",
     "apiChat.allowAllPkm": "Разрешить всё (PKM)",
     "apiChat.permissionBoundary": "Разрешить всё пропускает только подтверждения инструментов PKM. Инструменты VS Code могут требовать отдельного встроенного подтверждения. Решения о циклах, повторных попытках и Task остаются в этом Chat.",

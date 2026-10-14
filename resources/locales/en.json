@@ -4,6 +4,10 @@
     "label": "English"
   },
   "strings": {
+    "apiChat.resumeWorker": "Resume worker",
+    "apiChat.resumeWorkerNotice": "Resume retains execution evidence and starts a continuation. It may incur charges; verify uncertain tool effects before repeating them.",
+    "apiChat.outputPerInference": "Output per inference",
+    "apiChat.maximumOutputPerInference": "Maximum output tokens per inference",
     "apiChat.chatDecision": "Chat decision",
     "apiChat.allowAllPkm": "Allow All (PKM)",
     "apiChat.permissionBoundary": "Allow All skips PKM tool approvals only. VS Code tools may still require a separate native confirmation. Loop, retry and Task decisions remain in this Chat.",

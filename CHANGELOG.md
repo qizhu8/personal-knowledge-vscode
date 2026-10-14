@@ -5,6 +5,14 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.37] - 2026-10-14
+
+- Reset output-token budgets for every model inference on both Chat transports. Keep cumulative usage for diagnostics rather than subtracting it from subsequent rounds, separate tokens from the 100,000-byte per-inference size limit, and disclose unavailable native token counters.
+- Show worker failures in collapsed manager nodes and provide explicit Resume worker continuation. Preserve the original worker, receipt, quota and execution evidence; reject stale, busy, archived and unrelated activities without automatically replaying tools.
+- Reuse the TypeScript Recipe compiler from Python authoring, preserving source-skill bindings through normalization. Provide approved legacy Recipe recompile previews with revision, digest, consumer-pin and frozen-run safeguards.
+- Aggregate local Sync content blockers into durable needs-attention issues with source navigation and actionable repair controls instead of losing earlier marker issues or reporting a remote Fetch / Pull failure.
+- Accept historical Base newline differences only when LF/CRLF equivalence is proven against the original manifest hash. Preserve original commit/hash evidence and keep current Remote validation byte-strict.
+
 ## [3.2.36] - 2026-10-13
 
 - Move PKM Chat's loop continuation, Retry and Complete Task confirmations into inline Chat decision cards instead of VS Code modal dialogs. Preserve explicit three-way loop decisions, cancellation, Chat/attempt/context ownership and stale idle-conversation guards.

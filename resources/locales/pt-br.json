@@ -4,6 +4,10 @@
     "label": "Português (Brasil)"
   },
   "strings": {
+    "apiChat.resumeWorker": "Retomar worker",
+    "apiChat.resumeWorkerNotice": "Retomar preserva as evidências de execução e inicia uma continuação. Pode gerar custos; verifique efeitos incertos das ferramentas antes de repeti-las.",
+    "apiChat.outputPerInference": "Saída por inferência",
+    "apiChat.maximumOutputPerInference": "Máximo de tokens de saída por inferência",
     "apiChat.chatDecision": "Decisão do Chat",
     "apiChat.allowAllPkm": "Permitir tudo (PKM)",
     "apiChat.permissionBoundary": "Permitir tudo ignora apenas as aprovações de ferramentas PKM. As ferramentas do VS Code ainda podem exigir uma confirmação nativa separada. As decisões de loop, nova tentativa e Task permanecem neste Chat.",

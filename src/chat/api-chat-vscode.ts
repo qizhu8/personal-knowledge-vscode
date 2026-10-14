@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { ApiChatMessage, ApiChatRequest, ApiChatToolEvent, ChatImage, decodeChatImage, ChatToolLoopGuard, toolBudgetSummary } from "./api-chat-client";
+import { ApiChatMessage, ApiChatRequest, ApiChatToolEvent, ChatImage, decodeChatImage, ChatToolLoopGuard, toolBudgetSummary, chatInferenceOutputByteLimit } from "./api-chat-client";
 import { ChatModelProfile } from "./api-chat-models";
 import { abortable } from "./api-chat-tools";
 
@@ -40,7 +40,7 @@ export async function discoverVscodeModels(host = vscode, signal?: AbortSignal):
   }
 }
 
-type VscodeChatRequest = Pick<ApiChatRequest, "messages" | "signal" | "timeoutMs" | "maxOutputTokens" | "maxToolRounds" | "loopReviewAfterMs" | "loopReviewClock" | "loopExemptTools" | "onToolLoopNotice" | "contextWindow" | "onImage" | "tools" | "onTool" | "beforeRound" | "afterTools" | "onStage" | "onUsage" | "onUsageMetadata">;
+type VscodeChatRequest = Pick<ApiChatRequest, "messages" | "signal" | "timeoutMs" | "maxOutputTokens" | "maxToolRounds" | "loopReviewAfterMs" | "loopReviewClock" | "loopExemptTools" | "onToolLoopNotice" | "contextWindow" | "onImage" | "tools" | "onTool" | "beforeRound" | "afterTools" | "onStage" | "onUsage" | "onUsageMetadata" | "onOutputBudgetWarning">;
 type NativePart = { value?: string; callId?: string; name?: string; input?: unknown; data?: Uint8Array; mimeType?: string };
 
 export async function streamVscodeChat(model: VscodeChatModel, request: VscodeChatRequest,
@@ -69,7 +69,8 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
     }
     const messages = [...request.messages];
     const callIds = new Set<string>();
-    let characters = 0;
+    const hasOutputTokenizer = typeof model.countTokens === "function";
+    if (!hasOutputTokenizer) request.onOutputBudgetWarning?.("Output token counting is unavailable. The per-inference token limit can only be checked from valid provider usage; the separate 100,000-byte inference output limit remains active. Bytes are not tokens.");
     let imagesReturned = 0;
     let metadataParts = 0;
     for (let round = 0; ; round++) {
@@ -78,15 +79,13 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
       const hasImages = messages.some(message => message.images?.length);
       if (hasImages && (model.capabilities?.imageInput !== true || !native.LanguageModelDataPart || !native.LanguageModelTextPart || typeof model.countTokens !== "function")) throw new VscodeChatError("This model/host does not expose image input and image token counting. Select a vision-capable VS Code model.");
       const remaining = request.maxOutputTokens ?? vscodeModelProfile(model).maxOutputTokens;
-      if (remaining < 1) throw new VscodeChatError("Local output budget exhausted. Partial output was preserved.");
+      if (!Number.isSafeInteger(remaining) || remaining < 1) throw new VscodeChatError("Choose a positive per-inference output token budget.");
       let outputText = "";
       let nextTokenCheck = remaining;
       const checkOutputBudget = async (text: string, force = false) => {
         const bytes = Buffer.byteLength(text, "utf8");
-        if (typeof model.countTokens !== "function") {
-          if (bytes > remaining) throw new VscodeChatError("Local output budget exhausted. Partial output was preserved; provider usage may be higher.");
-          return;
-        }
+        if (bytes > chatInferenceOutputByteLimit) throw new VscodeChatError("Inference output exceeded the 100,000-byte local size limit. Partial output was preserved; no pending tool was executed.");
+        if (!hasOutputTokenizer) return;
         if (!force && bytes < nextTokenCheck) return;
         const tokens = await abortable(model.countTokens(text, cancellation.token), controller.signal);
         if (!Number.isSafeInteger(tokens) || tokens < 0) throw new VscodeChatError("Output token count is unavailable. Partial output was preserved; no pending tool was executed.");
@@ -141,8 +140,6 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
         const part = next.value;
         if (typeof part === "string" || (native.LanguageModelTextPart && part instanceof native.LanguageModelTextPart)) {
           const text = typeof part === "string" ? part : part.value || "";
-          characters += text.length;
-          if (characters > 100_000) throw new VscodeChatError("Response exceeded the local size limit.");
           const nextOutput = outputText + text;
           await checkOutputBudget(nextOutput);
           outputText = nextOutput;
@@ -182,8 +179,9 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
       if (outputText) await checkOutputBudget(outputText, true);
       clearTimeout(timer);
       if (usage) request.onUsage?.(usage);
+      if (usage && usage.outputTokens > remaining) throw new VscodeChatError("Model output exceeded the per-inference token budget. Partial output was preserved; no pending tool was executed.");
       if (!calls.length) {
-        if (!characters && !imagesReturned) throw new VscodeChatError("The model returned an empty response.");
+        if (!responseText && !responseImages.length) throw new VscodeChatError("The model returned an empty response.");
         return;
       }
       if (!request.tools?.length) throw new VscodeChatError("Tool execution is not enabled. No pending tool was executed.");

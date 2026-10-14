@@ -30,7 +30,7 @@ except ModuleNotFoundError:
     _HEALTH_SPEC.loader.exec_module(_HEALTH_MODULE)
     finalize_run_health = _HEALTH_MODULE.finalize_run_health
 
-RECIPE_SCHEMA_VERSION = "1.8.1"
+RECIPE_SCHEMA_VERSION = "1.8.2"
 API_SCHEMA = "pkm.recipe.api/v1"
 RUN_SCHEMA = "pkm.recipe.run/v1"
 DEFINITION_SCHEMA = "pkm.workflow.definition/v1"
@@ -80,6 +80,39 @@ def _register_typed_tool(mcp, function, read_only=False):
 
 def _fingerprint(value):
     return hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
+
+
+def _compile_definition(definition):
+    """Invoke the shipped compiler; never approximate its normalization in Python."""
+    resources = Path(__file__).resolve().parent
+    config_path = resources / "recipe_compiler_config.json"
+    if config_path.exists():
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        executable = config["executable"]
+        contracts = config["contracts"]
+    else:
+        # Development/test checkout. Installed MCP servers receive explicit paths.
+        executable = shutil.which("node")
+        contracts = str(resources.parent / "dist" / "workflows" / "workflow-contracts.js")
+    if not executable or not Path(contracts).is_file():
+        raise RuntimeError("Recipe compiler is unavailable. Regenerate the MCP server with the current extension.")
+    environment = dict(os.environ, ELECTRON_RUN_AS_NODE="1")
+    try:
+        result = subprocess.run(
+            [executable, str(resources / "recipe_compiler_bridge.js"), contracts],
+            input=_json(definition), capture_output=True, text=True, encoding="utf-8",
+            timeout=30, env=environment, **_hidden_process_options())
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError("Recipe compiler could not run: " + str(error)) from error
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or "Recipe compiler bridge failed.")
+    compiled = json.loads(result.stdout)
+    if not compiled.get("ok"):
+        raise ValueError("Recipe definition is invalid: " + _json(compiled.get("diagnostics") or []))
+    if not isinstance(compiled.get("model"), dict) or not re.fullmatch(
+            r"[a-f0-9]{64}", str(compiled.get("executableDigest") or "")):
+        raise RuntimeError("Recipe compiler returned an invalid contract.")
+    return compiled
 
 
 def _protocol_payload_estimate(*values):
@@ -527,7 +560,7 @@ def _project_recipes(store):
                         or recipe.get("schema") != "pkm.knowledge/v1"
                         or not isinstance(recipe.get("revision"), int) or recipe.get("revision") < 1
                         or not isinstance(recipe.get("aliases"), list)
-                        or recipe.get("executableDigest") != _fingerprint(recipe.get("definition") or {})
+                        or recipe.get("executableDigest") != _compile_definition(recipe.get("definition"))["executableDigest"]
                         or str(recipe.get("category") or "") != category
                         or not path.name.endswith("." + recipe_id + ".json")):
                     continue
@@ -571,18 +604,23 @@ def _load_project_envelope(store):
 
 
 def _author_recipe_from_skill(store, name, description, category, definition, command_id,
-                              source_skill_id, source_skill_hash, scope="global", project_id=""):
+                              source_skill_id, source_skill_hash, scope="global", project_id="",
+                              source_skill_node_id=""):
     if not all(str(value or "").strip() for value in [name, command_id, source_skill_id]):
         raise ValueError("name, command_id, and source_skill_id are required.")
-    if not isinstance(source_skill_hash, str) or len(source_skill_hash) != 64:
+    if not isinstance(source_skill_hash, str) or not re.fullmatch(r"[a-f0-9]{64}", source_skill_hash):
         raise ValueError("source_skill_hash must be a SHA-256 content hash.")
     if scope not in {"global", "project"}:
         raise ValueError("scope must be global or project.")
     portable_category = _portable_recipe_category(category)
     if scope == "global" and portable_category.split("/")[0].casefold() == "system":
         raise PermissionError("System files and folders are read-only for Agent MCP writes.")
-    executable_digest = _fingerprint(definition)
-    first_node = (((definition or {}).get("spec") or {}).get("nodes") or [{}])[0].get("nodeId")
+    first_node = source_skill_node_id or (((definition or {}).get("spec") or {}).get("nodes") or [{}])[0].get("nodeId")
+    compiled = _compile_definition(definition)
+    definition = compiled["model"]
+    if first_node not in {node["nodeId"] for node in definition["spec"]["nodes"]}:
+        raise ValueError("source_skill_node_id must identify a node in the definition.")
+    executable_digest = compiled["executableDigest"]
     recipe_id = "recipe_" + hashlib.sha256(("skill-recipe\0" + command_id).encode("utf-8")).hexdigest()[:32]
     binding = {"bindingId": "source-skill", "kind": "skill", "knowledgeId": source_skill_id,
                "contentHash": source_skill_hash, "usage": "required"}
@@ -596,7 +634,8 @@ def _author_recipe_from_skill(store, name, description, category, definition, co
     fingerprint = _fingerprint({"name": recipe["name"], "description": recipe["description"],
                                 "category": recipe["category"], "definition": definition,
                                 "scope": scope, "project_id": project_id,
-                                "source_skill_id": source_skill_id, "source_skill_hash": source_skill_hash})
+                                "source_skill_id": source_skill_id, "source_skill_hash": source_skill_hash,
+                                "source_skill_node_id": first_node})
     _validate_definition(recipe)
     canonical_store = ((store / "recipes").exists()
                        and (store / ".pkm" / "state" / "recipe-store.json").exists())
@@ -2164,18 +2203,20 @@ def register_recipe_tools(mcp, store, subscription_cache=None, environments_regi
     def recipe_create_from_skill(name: str, definition_json: str, command_id: str,
                                  source_skill_id: str, source_skill_hash: str,
                                  description: str = "", category: str = "",
-                                 scope: str = "global", project_id: str = "") -> str:
+                                 scope: str = "global", project_id: str = "",
+                                 source_skill_node_id: str = "") -> str:
         """Create an idempotent Library Recipe when a retrieved Skill explicitly requires one and recipe_search found no qualified match.
 
         Design the complete reusable workflow first. This tool binds the source Skill as required
-        knowledge on the first node. Do not use it for one-off work or when the Skill did not declare
+        knowledge on source_skill_node_id (default: the first original input node, before compilation).
+        Do not use it for one-off work or when the Skill did not declare
         a Recipe gap; use recipe_run_start_adhoc for concrete one-off execution instead.
         """
         try:
             definition = _parse_json(definition_json, "definition_json")
             recipe, replayed = _author_recipe_from_skill(
                 store, name, description, category, definition, command_id,
-                source_skill_id, source_skill_hash, scope, project_id)
+                source_skill_id, source_skill_hash, scope, project_id, source_skill_node_id)
             return _response(ok=True, outcome="recipe-created", recipe=_recipe_summary(recipe), replayed=replayed,
                              next_action={"kind": "qualify_recipe", "candidate_recipe_ids": [recipe["recipeId"]]})
         except Exception as error:

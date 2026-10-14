@@ -349,7 +349,7 @@ function githubSyncPhaseDiagram(phase, status) {
   const currentIndex = noChange ? 3 : ['paused', 'blocked', 'needs-attention'].includes(status) ? -1 : steps.findIndex(([key]) => key === phase);
   const statusLabel = {
     scheduled:'Scheduled', syncing:'Synchronizing', queued:'Queued', paused:'Auto sync off',
-    blocked:'Blocked', 'needs-attention':'Needs attention: local content repair',
+    blocked:'Blocked', 'needs-attention':'Needs attention: local content validation',
     conflicts:'Resolve conflicts', error:'Sync failed',
   }[status] || 'Reading sync status…';
   const currentLabel = ['paused', 'blocked', 'needs-attention'].includes(status) ? statusLabel
@@ -380,11 +380,24 @@ function githubSyncEffectiveStatus(target, runtime, conflict, forcePending, repa
 
 function githubSyncContentRepairPanel(targetId, repair) {
   if (!repair) return '';
-  const actions = (command, issuePath, label) => {
-    const handler = `ask(${JSON.stringify(command)},${JSON.stringify({ targetId, repairId:repair.id, path:issuePath })},this)`;
+  const actions = (command, issuePath, label, reason) => {
+    const handler = `ask(${JSON.stringify(command)},${JSON.stringify({ targetId, repairId:repair.id, path:issuePath, reason })},this)`;
     return `<button class="pk-button" onclick="${esc(handler).replace(/"/g, '&quot;')}">${label}</button>`;
   };
-  return `<div class="github-sync-conflict-actions"><strong>Needs attention: ${repair.issues.length} local file(s) contain conflict markers</strong><p>Sync is waiting for your repair. Remote has not been fetched for this attempt; Base and GitHub versions are unavailable. No source file is changed without approval. Agent merge does not repair Scripts here; manual editing is always available.</p>${repair.issues.map(issue => `<div><strong>${esc(issue.path)}</strong><small>Local · merge-conflict-markers · lines ${issue.lines.map(line => esc(line)).join(', ')}</small>${issue.canOpen ? actions('githubSyncRepairOpen', issue.path, 'Open at marker') : '<p>Edit the generated content in its library editor.</p>'}${issue.hasCandidate ? actions('githubSyncRepairPreview', issue.path, 'Preview empty-block cleanup') + actions('githubSyncRepairApply', issue.path, 'Apply cleanup…') : '<p>No safe automatic candidate. Edit and save the file manually.</p>'}</div>`).join('')}<footer>${actions('githubSyncRepairRevalidate', undefined, 'Revalidate &amp; Sync')}</footer></div>`;
+  const entries = repair.issues.map(issue => {
+    const recipe = !!issue.recipeId;
+    const reason = issue.reason || 'merge-conflict-markers';
+    const action = (command, label) => actions(command, issue.path, label, reason);
+    const diagnostics = [issue.error, issue.diagnostics ? JSON.stringify(issue.diagnostics) : ''].filter(Boolean).join('\n');
+    const open = issue.canOpen ? action('githubSyncRepairOpen', recipe ? 'Open Recipe editor' : 'Open source')
+      : '<p>Edit the generated content in its library editor.</p>';
+    const repairActions = recipe && reason === 'recipe-digest'
+      ? action('githubSyncRecipeRecompilePreview', 'Preview Recipe recompile') + action('githubSyncRecipeRecompileApply', 'Approve recompile…')
+      : issue.hasCandidate ? action('githubSyncRepairPreview', 'Preview empty-block cleanup') + action('githubSyncRepairApply', 'Apply cleanup…')
+      : '<p>No safe automatic candidate. Review the source and revalidate.</p>';
+    return `<div><strong>${esc(issue.path)}</strong><small>Local · ${esc(reason)}${issue.lines?.length ? ` · lines ${issue.lines.map(line => esc(line)).join(', ')}` : ''}</small>${recipe ? `<p>Recipe store identity: ${esc(issue.recipeId)}. This is an export path, not necessarily a local source file.</p>` : ''}${issue.sourceLocator?.path ? `<p>Source: ${esc(issue.sourceLocator.path)}${issue.sourceLocator.jsonPointer ? ` · ${esc(issue.sourceLocator.jsonPointer)}` : ''}</p>` : ''}${diagnostics ? `<pre>${esc(diagnostics)}</pre>` : ''}${open}${repairActions}</div>`;
+  }).join('');
+  return `<div class="github-sync-conflict-actions"><strong>Needs attention: local content validation · ${repair.issues.length} issue(s)</strong><p>Sync is waiting for your repair. Remote has not been fetched for this attempt; Base and GitHub versions are unavailable. No source is changed without approval.</p>${entries}<footer>${actions('githubSyncRepairRevalidate', undefined, 'Revalidate &amp; Sync')}</footer></div>`;
 }
 
 function githubSyncEffectiveError(target, runtime) {

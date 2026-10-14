@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { createHash, randomUUID } from "crypto";
 import { withCrossProcessLockSync } from "../runtime/cross-process-lock";
-import { canonicalJson } from "./workflow-contracts";
+import { canonicalJson, compileWorkflowDefinitionV1 } from "./workflow-contracts";
 import {
   ProjectModelError,
   ProjectModelState,
@@ -76,6 +76,15 @@ export interface ProjectStoreResult {
   snapshot: ProjectSnapshot;
   entityId: string;
   replayed: boolean;
+}
+
+export interface RecipeRecompilePreview {
+  recipeId: string;
+  storeVersion: number;
+  recordDigest: string;
+  original: RecipeRecord;
+  compiled: RecipeRecord;
+  pinnedConsumers: string[];
 }
 
 export interface ProjectStoreOptions {
@@ -205,7 +214,8 @@ export class ProjectStore {
     return this.recipeFilesystem.hasCanonicalStore() ? this.recipeFilesystem.list().diagnostics : [];
   }
 
-  recipeSyncEntries(): Array<{ recipe: RecipeRecord; destination: string; content: string }> {
+  recipeSyncEntries(): Array<{ recipe: RecipeRecord; destination: string; content: string;
+    sourceLocator: { kind: "recipe-store"; recipeId: string; path: string; jsonPointer: string } | { kind: "file"; path: string } }> {
     const snapshot = this.list();
     if (!this.recipeFilesystem.hasCanonicalStore()) {
       return snapshot.recipes.map(recipe => ({
@@ -213,6 +223,7 @@ export class ProjectStore {
         destination: ["recipes", ...(recipe.category || "").split("/").filter(Boolean),
           `${safeLegacyRecipeName(recipe.name)}.${recipe.recipeId}.json`].join("/"),
         content: `${canonicalJson(recipe)}\n`,
+        sourceLocator: { kind: "recipe-store", recipeId: recipe.recipeId, path: this.filePath, jsonPointer: "/payload/state/recipes" },
       }));
     }
     const byId = new Map(snapshot.recipes.map(recipe => [recipe.recipeId, recipe]));
@@ -224,6 +235,7 @@ export class ProjectStore {
         recipe,
         destination,
         content: fs.readFileSync(path.join(this.recipeFilesystem.knowledgeRoot, destination), "utf8"),
+        sourceLocator: { kind: "file", path: path.join(this.recipeFilesystem.knowledgeRoot, destination) },
       }];
     });
   }
@@ -306,6 +318,68 @@ export class ProjectStore {
       state: updateRecipe(state, recipeId, update),
       entityId: recipeId
     }));
+  }
+
+  previewRecipeRecompile(recipeId: string): RecipeRecompilePreview {
+    return withCrossProcessLockSync(this.lockPath, "Project store", () => {
+      // Unlike list/loadOrInitialize, review must not write safe migrations or initialize stores.
+      if (!fs.existsSync(this.filePath)) fail("recipe-not-found", "Project store does not exist.");
+      const snapshot = this.snapshot(verifyEnvelope(JSON.parse(fs.readFileSync(this.filePath, "utf8")),
+        this.recipeFilesystem.hasCanonicalStore()));
+      return this.recipeRecompilePreview(snapshot, recipeId);
+    });
+  }
+
+  applyRecipeRecompile(command: ProjectStoreCommand, preview: RecipeRecompilePreview): ProjectStoreResult {
+    if (command.expectedStoreVersion !== preview.storeVersion) fail("store-version-conflict", "Recompile preview version changed.");
+    return this.mutate(command, "recipe-recompile", state => {
+      const current = this.recipeRecompilePreview({ ...state, storeVersion: preview.storeVersion }, preview.recipeId);
+      if (current.recordDigest !== preview.recordDigest) fail("recipe-review-stale", "Recipe changed since preview; review it again.");
+      if (current.pinnedConsumers.length) fail("recipe-pinned-consumers", `Recompile blocked by pinned references: ${current.pinnedConsumers.join(", ")}. Review and update consumers explicitly first.`);
+      const recipe = current.original;
+      return { state: updateRecipe(state, recipe.recipeId, {
+        name: recipe.name, category: recipe.category || "", description: recipe.description,
+        definition: recipe.definition,
+      }), entityId: recipe.recipeId };
+    });
+  }
+
+  private recipeRecompilePreview(snapshot: ProjectSnapshot | (ProjectModelState & { storeVersion: number }), recipeId: string): RecipeRecompilePreview {
+    const recipe = snapshot.recipes?.find(candidate => candidate.recipeId === recipeId);
+    if (!recipe) fail("recipe-not-found", "Recipe is unavailable in the supported store. Open Recipe diagnostics; do not edit an export path.");
+    if (recipe.systemKind === "built-in" || /^System(?:\/|$)/i.test(recipe.category || "")) {
+      fail("system-recipe-update", "System Recipes cannot be recompiled through content repair.");
+    }
+    const compiled = compileWorkflowDefinitionV1(recipe.definition);
+    if (!compiled.ok) fail("recipe-definition-invalid", `Recipe compiler diagnostics: ${canonicalJson(compiled.diagnostics)}`);
+    const hash = (value: unknown): string => createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
+    // Repair only the proven historical raw-definition hash bug, not arbitrary corruption.
+    if (recipe.executableDigest !== hash(recipe.definition) || recipe.executableDigest === compiled.executableDigest) {
+      fail("recipe-recompile-unsupported", "This is not a verified legacy raw-definition digest. Use the Recipe editor and review the validation diagnostics.");
+    }
+    const pinnedConsumers: string[] = [];
+    const references = (value: unknown): boolean => {
+      if (!value || typeof value !== "object") return false;
+      const object = value as Record<string, unknown>;
+      if (object.recipeId === recipeId && (object.revision !== undefined || object.executableDigest !== undefined)) return true;
+      return Object.values(object).some(references);
+    };
+    for (const consumer of [...(snapshot.recipes || []), ...(snapshot.recipeTrash || [])]) {
+      if (references(consumer.definition) || references(consumer.methodology)) pinnedConsumers.push(`Recipe ${consumer.recipeId}`);
+    }
+    const runs = path.join(this.directory, "recipe-runs");
+    if (fs.existsSync(runs)) for (const file of fs.readdirSync(runs).filter(file => file.endsWith(".json"))) {
+      const run = JSON.parse(fs.readFileSync(path.join(runs, file), "utf8"));
+      // Frozen runs themselves are retained byte-for-byte; their child pins may still resolve through the library.
+      if (references(run.definition)) pinnedConsumers.push(`Run ${file}`);
+    }
+    // Preview the exact supported update, including binding/layout/metadata normalization.
+    const updated = updateRecipe({ ...snapshot, migrations: [], audit: [] }, recipeId, {
+      name: recipe.name, category: recipe.category || "", description: recipe.description, definition: recipe.definition,
+    });
+    return { recipeId, storeVersion: snapshot.storeVersion, recordDigest: hash(recipe), original: clone(recipe),
+      compiled: clone(updated.recipes!.find(candidate => candidate.recipeId === recipeId)!),
+      pinnedConsumers };
   }
 
   importRecipe(command: ProjectStoreCommand, recipe: RecipeRecord, options: RecipeImportOptions): ProjectStoreResult {

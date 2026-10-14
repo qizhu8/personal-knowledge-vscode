@@ -4,6 +4,10 @@
     "label": "Italiano"
   },
   "strings": {
+    "apiChat.resumeWorker": "Riprendi worker",
+    "apiChat.resumeWorkerNotice": "La ripresa conserva le prove di esecuzione e avvia una continuazione. Può comportare costi; verifica gli effetti incerti degli strumenti prima di ripeterli.",
+    "apiChat.outputPerInference": "Output per inferenza",
+    "apiChat.maximumOutputPerInference": "Token massimi di output per inferenza",
     "apiChat.chatDecision": "Decisione del Chat",
     "apiChat.allowAllPkm": "Consenti tutto (PKM)",
     "apiChat.permissionBoundary": "Consenti tutto ignora solo le approvazioni degli strumenti PKM. Gli strumenti VS Code possono ancora richiedere una conferma nativa separata. Le decisioni su cicli, nuovi tentativi e Task restano in questo Chat.",

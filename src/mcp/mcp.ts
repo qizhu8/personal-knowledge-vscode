@@ -21,7 +21,7 @@ const RETRIEVAL_ENGINE_WHEEL = "adaptive_skill_retrieval-0.3.0.dev2026091601-py3
 const RETRIEVAL_ENGINE_WHEEL_SHA256 = "04560cf29966c8c267adf8ea8502819fd005222ca1e383af63cc115996afbf21";
 const KNOWLEDGE_MCP_VERSION = "1.5.1";
 const CHAT_MCP_VERSION = "2.3.6";
-const RECIPE_MCP_VERSION = "1.8.1";
+const RECIPE_MCP_VERSION = "1.8.2";
 const AGENT_SESSION_MCP_VERSION = "1.8.0";
 
 interface McpServerStatus {
@@ -535,6 +535,11 @@ export function generateMcpServer(context: vscode.ExtensionContext): { serverPat
   writeActionWorkspaceConfig();
   generateChatMcpServer(context);
   fs.copyFileSync(path.join(context.extensionPath, "resources", "recipe_runtime.py"), recipeRuntimePy);
+  fs.copyFileSync(path.join(context.extensionPath, "resources", "recipe_compiler_bridge.js"), path.join(mcpDir, "recipe_compiler_bridge.js"));
+  fs.writeFileSync(path.join(mcpDir, "recipe_compiler_config.json"), JSON.stringify({
+    executable: process.execPath,
+    contracts: path.join(context.extensionPath, "dist", "workflows", "workflow-contracts.js"),
+  }), { mode: 0o600 });
   fs.copyFileSync(path.join(context.extensionPath, "resources", "action_runtime.py"), path.join(mcpDir, "action_runtime.py"));
   fs.copyFileSync(path.join(context.extensionPath, "resources", "action_modules.py"), path.join(mcpDir, "action_modules.py"));
   fs.copyFileSync(path.join(context.extensionPath, "resources", "action_components.py"), path.join(mcpDir, "action_components.py"));
