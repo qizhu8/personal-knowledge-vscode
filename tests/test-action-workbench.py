@@ -19,6 +19,55 @@ from action_components import component_definitions
 
 
 class WorkbenchTests(unittest.TestCase):
+    def test_durable_launch_key_survives_transport_failure_and_reload(self):
+        html = (ROOT / "resources" / "action-workbench.html").read_text()
+        bootstrap = """
+const action={action_id:'fixture',content_hash:'pinned',name:'Fixture',effects:['pure'],
+  availability:{state:'ready'},input_schema:{type:'object',properties:{}},
+  output_schema:{type:'object',properties:{}}};
+const seed={graph:{action_id:'fixture',name:'Fixture',nodes:[],edges:[]},saved:action};
+window.acquireVsCodeApi=()=>({
+  getState:()=>JSON.parse(sessionStorage.getItem('fixture-state')||JSON.stringify(seed)),
+  setState:state=>sessionStorage.setItem('fixture-state',JSON.stringify(state)),
+  postMessage:message=>{
+    let result={ok:true};
+    if(message.method==='catalog')result={actions:[action],groups:['Actions'],module_sets:[],queue:{jobs:[]}};
+    if(message.method==='runs')result={ok:true,runs:[]};
+    if(message.method==='call'){
+      const keys=JSON.parse(sessionStorage.getItem('fixture-keys')||'[]');keys.push(message.params.key);
+      sessionStorage.setItem('fixture-keys',JSON.stringify(keys));
+      result=keys.length===1?{ok:false,error:'response lost'}:{ok:true,execution_ok:false,
+        run_id:'action_run_'+ 'a'.repeat(32),state:'outcome_unknown',userState:'Reconciling'};
+    }
+    if(message.method==='run')result={ok:true,execution_ok:false,run_id:message.params.run_id,
+      state:'outcome_unknown',userState:'Reconciling',nextOwner:'user',reasonCode:'worker-unavailable',
+      error:'Reconcile external effects before retry.'};
+    queueMicrotask(()=>window.dispatchEvent(new MessageEvent('message',{data:{requestId:message.requestId,result}})));
+  }
+});
+"""
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.route("http://127.0.0.1/", lambda route: route.fulfill(content_type="text/html", body=html))
+                page.add_init_script(bootstrap)
+                page.goto("http://127.0.0.1/")
+                expect(page.locator("#run")).to_be_enabled()
+                page.locator("#run").click()
+                expect(page.locator("#status")).to_contain_text("original launch key is retained")
+                first = page.evaluate("JSON.parse(sessionStorage.getItem('fixture-state')).pendingLaunch.key")
+                page.reload()
+                expect(page.locator("#run")).to_be_enabled()
+                page.locator("#run").click()
+                expect(page.locator("#result")).to_contain_text("Reconciling")
+                expect(page.locator("#result")).to_contain_text("action_run_" + "a" * 32)
+                expect(page.locator("#run")).to_be_disabled()
+                self.assertEqual(page.evaluate("JSON.parse(sessionStorage.getItem('fixture-keys'))"), [first, first])
+                self.assertIsNone(page.evaluate("JSON.parse(sessionStorage.getItem('fixture-state')).pendingLaunch"))
+            finally:
+                browser.close()
+
     def test_math_expression_ports_highlights_and_example(self):
         html = (ROOT / "resources" / "action-workbench.html").read_text()
         catalog = {"actions": [{**value, "availability": {"state": "ready"}, "content_hash": "fixture", "read_only": True}
@@ -216,7 +265,7 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     expect(page.locator("#run")).to_be_enabled(timeout=30000)
                     page.locator("#run").click()
                     expect(page.locator("#result")).to_contain_text('"value": 7', timeout=30000)
-                    self.assertEqual(json.loads(page.locator("#result").inner_text()), {"value": 7})
+                    self.assertEqual(json.loads(page.locator("#result").inner_text())["output"], {"value": 7})
                     page.locator('[data-field="value"]').fill("17")
                     page.locator('[data-field="value"]').blur()
                     page.reload()
@@ -239,7 +288,7 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     page.locator('.chat-options input[type="radio"]').first.check()
                     page.locator('.chat-message button[type="submit"]').click()
                     expect(page.locator("#result")).to_contain_text('"value": "continue"', timeout=30000)
-                    self.assertEqual(json.loads(page.locator("#result").inner_text()), {"value": "continue"})
+                    self.assertEqual(json.loads(page.locator("#result").inner_text())["output"], {"value": "continue"})
                     page.locator("#background-tasks").click()
                     page.set_viewport_size({"width": 390, "height": 844})
                     self.assertTrue(page.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth"))
@@ -395,8 +444,7 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                 "implementations": [{"kind": "pipeline", "platforms": [platform.system()], "steps": [{
                     "id": "sum", "component": "core.math-expression", "inputs": {"expression": "{0} + {1}",
                         "input_0": {"$input": "left"}, "input_1": {"$input": "right"}}}], "output": {"sum": {"$step": "sum.value"}}}]}
-            for store in stores:
-                ModuleRuntime(store).register(fixture)
+            ModuleRuntime(stores[0]).register(fixture)
             active_store = [stores[0]]
             package = workspace / "selected.pkm-actions"
 
@@ -514,7 +562,7 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     page.wait_for_function("!document.querySelector('#run').disabled", timeout=30000)
                     page.locator("#run").click()
                     page.wait_for_function("document.querySelector('#result').textContent.includes('9')", timeout=30000)
-                    self.assertEqual(json.loads(page.locator("#result").inner_text()), {"sum": 9})
+                    self.assertEqual(json.loads(page.locator("#result").inner_text())["output"], {"sum": 9})
                     page.locator('#toggle-parameters').click()
                     self.assertFalse(page.locator('#run').is_disabled())
                     page.locator('#toggle-parameters').click()
@@ -543,6 +591,9 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     self.assertIn("blocked", page.locator('[data-add^="local.graph."]').locator("..").inner_text())
                     page.locator("[data-set]").uncheck()
                     page.wait_for_function("document.querySelectorAll('[data-add^=\"local.graph.\"]').length === 0")
+                    ModuleRuntime(stores[1]).register(fixture)
+                    page.evaluate("document.activeElement.blur();refreshing?refreshQueued=true:refresh()")
+                    page.wait_for_selector('[data-input="left"]')
                     page.set_viewport_size({"width": 390, "height": 844})
                     page.screenshot(path=str(acceptance / "action-workbench-mobile.png"), full_page=True)
                     self.assertTrue(page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
@@ -596,19 +647,20 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     self.assertEqual(page.locator('[data-choice]').count(), 0)
                     page.locator('#run').click()
                     page.wait_for_selector('[data-choice]', timeout=30000)
-                    self.assertEqual(json.loads(page.locator('#result').inner_text())['state'], 'running')
+                    self.assertEqual(json.loads(page.locator('#result').inner_text())['state'], 'Waiting')
                     page.locator('.chat-options input[type="radio"]').first.check()
                     page.locator('.chat-message button[type="submit"]').click()
                     page.wait_for_function("document.querySelector('#result').textContent.includes('continue')", timeout=30000)
-                    self.assertEqual(json.loads(page.locator('#result').inner_text()), {'value': 'continue'})
+                    self.assertEqual(json.loads(page.locator('#result').inner_text())["output"], {'value': 'continue'})
                     self.assertEqual(page.locator('.chat-answer').inner_text(), 'Continue')
                     page.wait_for_function('currentRun === null')
                     before_cancel = page.evaluate('JSON.stringify(graph)')
                     page.locator('#run').click()
-                    page.wait_for_selector('.chat-options button:not([disabled])', timeout=30000)
+                    page.wait_for_selector('.chat-options input:not([disabled])', timeout=30000)
                     run_id = page.evaluate('currentRun')
                     page.locator('#cancel-run').click()
-                    page.wait_for_function('currentRun === null', timeout=30000)
+                    expect(page.locator('#result')).to_contain_text('Reconciling', timeout=30000)
+                    self.assertEqual(page.evaluate('currentRun'), run_id)
                     self.assertTrue(ModuleRuntime(active_store[0]).cancelled(ModuleRuntime(active_store[0]).get(run_id)))
                     self.assertEqual(page.evaluate('JSON.stringify(graph)'), before_cancel)
                     self.assertTrue(page.locator('#cancel-run').is_disabled())

@@ -1,7 +1,7 @@
 # Actions: contracts, execution and qualification
 
-Status: source implementation with a graphical Workbench and executable acceptance
-tests; not yet an installed or released capability.
+Status: implemented with a graphical Workbench, durable Action Runs and executable
+acceptance tests. Native Windows and human-persona acceptance remain outstanding.
 Audience: PKM maintainers and Action authors. The requirements below capture the
 agreed direction; record layouts, SDK transport and default limits are proposals.
 
@@ -36,6 +36,72 @@ selected separately.
 | Environment binding | Selected implementation, execution host, runtime/config references | Portable acceptance evidence |
 | Qualification | Controlled checks and bounded evidence for one binding | Permission to exceed operator scope |
 | Run | Pinned contract, inputs, parent, budgets, state, output, artifacts | Definition identity or remote job lifetime |
+
+### Implemented durable launch boundary
+
+Module and platform Actions use their existing Run store, mutation lock, workers,
+qualification, grants and artifacts. No second executor or Run identity namespace
+is introduced. The OS-owned mutation lease serializes launch/recovery after a
+process crash; the existing mutation marker remains a diagnostic and compatibility
+guard. Native Windows uses `msvcrt` and Linux uses `flock`.
+
+Before worker dispatch, a launch journal commits the original Run and invocation-key
+receipt. Partial commits restore the same Run, never submit a replacement. Reusing
+the key with different inputs is rejected. Each worker must claim a monotonically
+fenced execution checkpoint; duplicate claims and completion after reconciliation
+are rejected.
+
+`pkm.action.execution-contract/v1` is a conservative projection of existing
+definitions, exposed by the catalog and `action_get`, and frozen in
+`pkm.action.execution/v1` Run metadata. It includes definition revision, schemas,
+effects, capabilities, invocation-workspace claim, deadline/retry policies and
+receipt contract. The Run additionally pins its environment fingerprint; platform
+Runs pin the command specification. Legacy effects map to read/write/send/delete/
+spend, with missing or unsupported metadata treated as unknown/high-risk. This
+adapter grants no new capability. Automatic retry is disabled; launch deduplication
+does **not** guarantee external-effect idempotency.
+
+Worker loss, cancellation/timeout and errors after potentially mutating execution
+enter `Reconciling`, not a false ordinary failure. Platform command-result evidence
+alone is not a committed completion receipt. Uncertain module workspaces/artifacts
+are retained rather than automatically collected. Recovery fences the original Run
+and lists required review; it does not replay effects or imply a remote rollback.
+Adapter-specific reconciliation and automatic wakeup belong to the subsequent P3
+phase.
+
+Workbench persists the original submission key before sending, including browser
+reload/VS Code webview state. Transport retry uses that key even if the draft has
+changed. Native and authenticated-browser surfaces show recent root Runs, identity,
+canonical state, owner/reason, checkpoint, elapsed time, pinned capabilities,
+receipts/output/artifacts and cancellation. Inline human choices persist a Waiting
+checkpoint tied to the original Run and request. Qualification must match the exact
+saved definition hash, not an older ready version. There is no Project Cockpit or
+"open in Project" route until P2.
+
+Workbench API envelopes separate request success (`ok`) from execution success
+(`execution_ok`), so Failed/Reconciling Runs remain inspectable instead of being
+rejected as transport failures. MCP Run records retain their existing execution
+`ok` field.
+
+Validation uses isolated fixture stores and mock programs only:
+
+```sh
+.venv/bin/python tests/test-action-durable-runs.py
+.venv/bin/python tests/test-action-modules.py
+.venv/bin/python tests/test-action-runtime.py
+.venv/bin/python tests/test-action-workbench.py
+npm run build
+node tests/test-action-browser.js
+node tests/test-pkm-p0.js
+```
+
+Fault tests cover journal interruptions, concurrent duplicate submission after
+host loss, stale worker fences, invalid dispatch capabilities, waiting receipts,
+uncertain local effects, remote-response evidence before completion, conservative
+metadata and browser transport loss/reload. Process-loss durability is tested;
+native Windows and filesystem/power-loss acceptance are not inferred from Linux.
+See [execution baseline](./pkm-execution-baseline.md) for opt-in measurements and
+the five explicitly pending human-persona baselines.
 
 Publish only portable definitions and implementations through normal PKM privacy
 and sync rules. Bindings, qualifications, grants, logs and run workspaces are local

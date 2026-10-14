@@ -5,6 +5,14 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.39] - 2026-10-14
+
+- Unify Action, Recipe, Run, Project and Collaboration terminology and user-facing execution projections without replacing underlying lifecycle or permission models. Show canonical states and the next-step owner across Chat, workers, background tasks and Projects.
+- Add an opt-in, local, content-free execution baseline with structured counts/timings, explicit storage diagnostics and unavailable measurements. Preserve five synthetic persona scenarios as tests, not fabricated human baseline results.
+- Commit existing module/platform Action Runs and invocation-key receipts before dispatch. Recover partial launch journals, serialize crash recovery with OS-owned leases, and fence duplicate workers and stale completions.
+- Freeze Action contract/environment metadata, validate pinned command specifications, retain uncertain-effect evidence and prohibit automatic replay. Expose Reconciling/Waiting checkpoints and preserve existing qualification, grants, nested execution and artifacts.
+- Persist original Workbench launch keys across transport failure/reload, separate request success from execution outcome, and show recent Runs with identity, ownership, elapsed time, capabilities and receipts. Keep cancellation and inline choices tied to the original Run.
+
 ## [3.2.38] - 2026-10-14
 
 - Replace Chat's cumulative 5 MB history cutoff with versioned, immutable segmented storage. Preserve dialogue, tools and retrieval evidence, migrate legacy histories on save, share Task/worker evidence, and keep explicit Session Snapshots self-contained.

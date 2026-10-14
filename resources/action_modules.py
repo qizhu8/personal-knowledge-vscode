@@ -22,6 +22,7 @@ from pathlib import Path
 from jsonschema import Draft202012Validator, FormatChecker
 from recipe_runtime import _atomic_write, _background_process_options, _execute_command_worker
 from action_components import VALUE_TYPES, component_definitions, execute_steps, validate_steps, referenced_actions, pending_choices, answer_choice
+from action_run_store import ActionRunStore, action_contract
 
 
 LAUNCHERS = {}
@@ -97,6 +98,7 @@ class ModuleRuntime:
         self.root = self.store / ".pkm" / "state" / "actions"
         self.registry = self.store / "actions"
         self.module_sets = self.store / "action-module-sets"
+        self.runs = ActionRunStore(self.root)
 
     def module_set_path(self, module_set_id, version):
         if not isinstance(module_set_id, str) or not re.fullmatch(r"[a-z][a-z0-9_.-]{2,100}", module_set_id) or type(version) is not int or version < 1:
@@ -292,7 +294,47 @@ class ModuleRuntime:
         return {"ok": True, "manifest": manifest, "enabled": False, "qualified": False}
 
     @contextlib.contextmanager
-    def lock(self):
+    def lock(self, recover=False):
+        self.root.mkdir(parents=True, exist_ok=True)
+        with open(self.root / "mutation-lease", "a+b") as lease:
+            if os.name == "nt":
+                import msvcrt
+
+                def acquire():
+                    lease.seek(0)
+                    msvcrt.locking(lease.fileno(), msvcrt.LK_NBLCK, 1)
+
+                def release():
+                    lease.seek(0)
+                    msvcrt.locking(lease.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                def acquire():
+                    fcntl.flock(lease.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+                def release():
+                    fcntl.flock(lease.fileno(), fcntl.LOCK_UN)
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    acquire()
+                    break
+                except OSError as error:
+                    import errno
+                    if error.errno not in {errno.EACCES, errno.EAGAIN}:
+                        raise
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("Action state is busy; retry the original launch key.") from error
+                    time.sleep(0.01)
+            try:
+                with self._mutation_marker(recover):
+                    yield
+            finally:
+                release()
+
+    @contextlib.contextmanager
+    def _mutation_marker(self, recover=False):
         self.root.mkdir(parents=True, exist_ok=True)
         lock_path = self.root / "mutation.lock"
         deadline = time.monotonic() + 5
@@ -301,11 +343,25 @@ class ModuleRuntime:
                 descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
                 break
             except FileExistsError:
+                try:
+                    owner = json.loads(lock_path.read_text(encoding="utf-8"))
+                except (FileNotFoundError, json.JSONDecodeError):
+                    if time.monotonic() >= deadline:
+                        if recover:
+                            lock_path.unlink(missing_ok=True)
+                            continue
+                        raise RuntimeError("Action mutation lock is incomplete; explicit recovery is required.")
+                    time.sleep(0.01)
+                    continue
+                if not process_alive(owner["pid"]):
+                    lock_path.unlink(missing_ok=True)
+                    continue
                 if time.monotonic() >= deadline:
                     raise RuntimeError("Action state is busy or requires lock recovery; retry the same key, not a new invocation.")
                 time.sleep(0.01)
         try:
             os.write(descriptor, json.dumps({"pid": os.getpid(), "started_at": now().isoformat()}).encode())
+            os.fsync(descriptor)
             yield
         finally:
             os.close(descriptor)
@@ -506,7 +562,7 @@ class ModuleRuntime:
     def catalog(self):
         layout = self.catalog_layout()
         packages = self.module_set_list()["module_sets"]
-        actions = [{**value, "read_only": True, "editable": False, "language": "Python", "languages": ["Python"]}
+        actions = [{**value, "execution_contract": action_contract(value), "read_only": True, "editable": False, "language": "Python", "languages": ["Python"]}
                    for value in self.components()]
         for definition in self.list():
             identifier = definition["action_id"]
@@ -520,7 +576,7 @@ class ModuleRuntime:
             metadata = layout["actions"].get(identifier, {}) if not system else {}
             category = "core" if system else metadata.get("category") or next(
                 (package["name"] for package in packages if package["enabled"] and identifier in package["actions"]), "Actions")
-            actions.append({**definition, **metadata, "category": category, "read_only": system,
+            actions.append({**definition, **metadata, "execution_contract": action_contract(definition), "category": category, "read_only": system,
                             "palette_hidden": identifier.startswith("core.cast."),
                             "editable": not system and (self.registry / (identifier + ".json")).is_file(),
                             "languages": languages, "language": language,
@@ -563,6 +619,7 @@ class ModuleRuntime:
         value = {**value, "knowledgeId": value.get("knowledgeId", "action_" + digest(action_id)[:24])}
         value["source_id"] = "pkm://knowledge/" + value["knowledgeId"]
         value["implementation_hash"] = digest({"module": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                                             "run_store": hashlib.sha256(Path(__file__).with_name("action_run_store.py").read_bytes()).hexdigest(),
                                              "components": hashlib.sha256(Path(__file__).with_name("action_components.py").read_bytes()).hexdigest(),
                                              "worker": hashlib.sha256(Path(__file__).with_name("recipe_runtime.py").read_bytes()).hexdigest()})
         value["content_hash"] = digest(value)
@@ -948,10 +1005,22 @@ class ModuleRuntime:
         process = LAUNCHERS.get(run_id)
         if process and process.poll() is not None:
             LAUNCHERS.pop(run_id, None)
-        if record["state"] == "running" and record.get("launcher_pid"):
-            if not process_alive(record["launcher_pid"]):
+        pid = record.get("execution", {}).get("workerPid") or record.get("launcher_pid")
+        if record["state"] == "running" and (pid or record.get("execution")):
+            if not pid or not process_alive(pid):
                 record.update({"ok": False, "state": "outcome_unknown", "error": "Worker disappeared; reconcile before retry."})
-        return {key: value for key, value in record.items() if key != "capability_hash"}
+                if record.get("execution"):
+                    record["execution"].update({"reasonCode": "worker-unavailable",
+                                                "resumeCondition": "Recover this Run and inspect its receipts; do not resubmit."})
+        result = self.runs.public({key: value for key, value in record.items() if key != "capability_hash"})
+        if record["state"] == "running":
+            for child_path in (self.root / "runs").glob("*/run.json"):
+                child = json.loads(child_path.read_text(encoding="utf-8"))
+                if child.get("root_run_id") == record.get("root_run_id") and child.get("state") == "running" and child.get("execution", {}).get("phase") == "waiting":
+                    result.update({"userState": "Waiting", "nextOwner": "user", "reasonCode": "user-choice",
+                                   "resumeCondition": "Answer the pending choice in this Run."})
+                    break
+        return result
 
     def call(self, action_id, inputs, key, content_hash, parent_context=None, validation=False):
         definition = self.definition(action_id)
@@ -980,6 +1049,7 @@ class ModuleRuntime:
         fingerprint = digest({"action_id": action_id, "inputs": inputs, "hash": content_hash,
                               "parent": parent["run_id"] if parent else None})
         with self.lock():
+            self.runs.recover_launches()
             for artifact_id in self.artifact_ids(inputs):
                 artifact = self.artifact(artifact_id)
                 if artifact.get("owner_root") is not None and not parent and not artifact.get("published"):
@@ -991,7 +1061,7 @@ class ModuleRuntime:
                 previous = json.loads(key_path.read_text(encoding="utf-8"))
                 if previous["fingerprint"] != fingerprint:
                     raise ValueError("Invocation key reused with different inputs.")
-                return self.get(previous["run_id"])
+                return {**self.get(previous["run_id"]), "launch_reused": True}
             run_id = "action_run_" + uuid.uuid4().hex
             directory = (Path(parent["workspace"]) / run_id) if parent else self.workspace() / run_id
             directory.mkdir(mode=0o700)
@@ -1006,12 +1076,13 @@ class ModuleRuntime:
                       "depth": parent["depth"] + 1 if parent else 0,
                       "ancestry": parent["ancestry"] + [action_id] if parent else [action_id],
                       "deadline": min(parent["deadline"], time.time() + 300) if parent else time.time() + 300,
+                      "environment_fingerprint": self.fingerprint(definition),
                       "started_at": now().isoformat(), "capability_hash": digest(token), "gc_state": "pending"}
             record["validation"] = validation or bool(parent and parent.get("validation"))
-            _atomic_write(self.path(run_id), record)
+            self.runs.prepare(record, key_path, fingerprint, definition)
             self.retain_inputs(inputs, record["root_run_id"])
-            _atomic_write(key_path, {"run_id": run_id, "fingerprint": fingerprint})
             try:
+                self.runs.transition(record, "dispatched", "worker-launch")
                 process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--worker", str(self.store), run_id],
                                            env={**os.environ, "PKM_ACTION_TOKEN": token}, stdin=subprocess.DEVNULL,
                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -1020,8 +1091,25 @@ class ModuleRuntime:
                 record["launcher_pid"] = process.pid
             except OSError as error:
                 record.update({"ok": False, "state": "failed", "error": type(error).__name__, "completed_at": now().isoformat()})
-            _atomic_write(self.path(run_id), record)
-        return self.get(run_id)
+            if record["state"] == "failed":
+                self.runs.transition(record, "completed", "dispatch-failed", "none")
+            else:
+                _atomic_write(self.path(run_id), record)
+        return {**self.get(run_id), "launch_reused": False}
+
+    def list_runs(self, limit=50):
+        if type(limit) is not int or not 1 <= limit <= 200:
+            raise ValueError("Run history limit must be between 1 and 200.")
+        records = []
+        for path in (self.root / "runs").glob("*/run.json"):
+            record = json.loads(path.read_text(encoding="utf-8"))
+            if record.get("engine") != "module" or record.get("parent_run_id") or record.get("validation"):
+                continue
+            records.append(record)
+        records.sort(key=lambda record: record.get("started_at", ""), reverse=True)
+        fields = ("run_id", "action_id", "state", "userState", "nextOwner", "reasonCode", "started_at", "completed_at", "error")
+        return {"ok": True, "runs": [{key: value for key, value in self.get(record["run_id"]).items() if key in fields}
+                                    for record in records[:limit]], "total": len(records)}
 
     def cancelled(self, record):
         current = record
@@ -1313,6 +1401,8 @@ class ModuleRuntime:
         record = self.get(run_id)
         if record.get("engine") != "module" or record.get("parent_run_id"):
             return {"ok": False, "gc_state": "deferred", "reason": "Only the top-level owner can collect artifacts."}
+        if record["state"] == "outcome_unknown":
+            return {"ok": False, "gc_state": "deferred", "reason": "Reconcile uncertain effects before collecting their evidence."}
         runs = [self.get(path.parent.name) for path in (self.root / "runs").glob("*/run.json")]
         if any(item.get("root_run_id") == run_id and item["state"] == "running" for item in runs):
             return {"ok": False, "gc_state": "deferred", "reason": "An owning run is still active."}
@@ -1355,24 +1445,25 @@ class ModuleRuntime:
         return {"ok": True, "gc_state": record["gc_state"], "deleted": deleted}
 
     def recover(self):
-        lock = self.root / "mutation.lock"
-        if lock.exists():
-            owner = json.loads(lock.read_text(encoding="utf-8"))
-            if process_alive(owner["pid"]):
-                raise RuntimeError("An active state mutation owns the lease.")
-            lock.unlink()
         reconciled = []
+        with self.lock(recover=True):
+            self.runs.recover_launches()
+            for path in (self.root / "runs").glob("*/run.json"):
+                record = json.loads(path.read_text(encoding="utf-8"))
+                if record.get("engine") != "module":
+                    continue
+                pid = record.get("execution", {}).get("workerPid") or record.get("launcher_pid")
+                if record["state"] == "running" and (not pid or not process_alive(pid)):
+                    _atomic_write(path.with_name("cancel.json"), {"requested": True})
+                    record.update({"state": "outcome_unknown", "ok": False, "completed_at": now().isoformat(),
+                                   "error": "Worker unavailable after restart; backend reconciliation required, not resubmission."})
+                    self.runs.transition(record, "reconciling", "worker-unavailable", "user")
+                    if not record.get("execution"):
+                        _atomic_write(path, record)
+                    reconciled.append(record["run_id"])
         for path in (self.root / "runs").glob("*/run.json"):
             record = json.loads(path.read_text(encoding="utf-8"))
-            if record.get("engine") != "module":
-                continue
-            if record["state"] == "running" and (not record.get("launcher_pid") or not process_alive(record["launcher_pid"])):
-                self.cancel(record["run_id"])
-                record.update({"state": "outcome_unknown", "ok": False, "completed_at": now().isoformat(),
-                               "error": "Worker unavailable after restart; backend reconciliation required, not resubmission."})
-                _atomic_write(path, record)
-                reconciled.append(record["run_id"])
-            if not record.get("parent_run_id") and record["state"] in TERMINAL:
+            if record.get("engine") == "module" and record.get("state") in {"succeeded", "failed", "cancelled"} and record.get("root_run_id") == record["run_id"]:
                 self.gc(record["run_id"])
         return {"ok": True, "reconciled": reconciled}
 
@@ -1380,6 +1471,8 @@ class ModuleRuntime:
         definition = record["definition"]
         if self.definition(record["action_id"])["content_hash"] != record["content_hash"]:
             raise ValueError("Action implementation changed before launch.")
+        if self.fingerprint(definition) != record["environment_fingerprint"]:
+            raise ValueError("Action execution environment changed before launch.")
         implementation = self.implementation(definition)
         inputs = record["inputs"]
         if self.cancelled(record):
@@ -1467,7 +1560,11 @@ class ModuleRuntime:
         deadline = time.monotonic() + 10
         while (self.root / "mutation.lock").exists() and time.monotonic() < deadline:
             time.sleep(0.01)
-        record = json.loads(self.path(run_id).read_text(encoding="utf-8"))
+        with self.lock():
+            record = json.loads(self.path(run_id).read_text(encoding="utf-8"))
+            if digest(os.environ.get("PKM_ACTION_TOKEN")) != record["capability_hash"]:
+                raise PermissionError("Action worker capability does not match its dispatch.")
+            record = self.runs.claim(run_id)
         context = {"store": str(self.store), "run_id": run_id, "capability": os.environ["PKM_ACTION_TOKEN"]}
         os.environ.pop("PKM_ACTION_TOKEN", None)
         try:
@@ -1480,10 +1577,12 @@ class ModuleRuntime:
                 raise TimeoutError("Invocation cancelled or deadline exceeded.")
             record.update({"state": "succeeded", "output": output, "ok": True})
         except Exception as error:
-            record.update({"state": "outcome_unknown" if isinstance(error, TimeoutError) else "failed", "ok": False, "error": str(error)})
+            effects = action_contract(record["definition"])["effects"]
+            record.update({"state": "outcome_unknown" if isinstance(error, TimeoutError) or effects != ["read"] else "failed", "ok": False, "error": str(error)})
         record["completed_at"] = now().isoformat()
-        _atomic_write(self.path(run_id), record)
-        if not record.get("parent_run_id"):
+        with self.lock():
+            self.runs.finish(record)
+        if not record.get("parent_run_id") and record["state"] != "outcome_unknown":
             try:
                 self.gc(run_id)
             except Exception as error:
@@ -1522,6 +1621,8 @@ if __name__ == "__main__":
                    "queue": runtime.queue_status, "cancel_validation": runtime.queue_cancel, "resume_validation": runtime.queue_start,
                    "select_implementation": runtime.implementation_select, "save_graph": runtime.graph_save,
                    "check_graph": runtime.graph_definition, "call": runtime.call, "run": runtime.get, "cancel_run": runtime.cancel,
+                   "runs": runtime.list_runs,
+                   "recover_runs": runtime.recover,
                    "group_create": runtime.group_create, "action_rename": runtime.action_rename,
                    "action_move": runtime.action_move, "action_delete": runtime.action_delete,
                    "definition_read": runtime.definition_read, "definition_save": runtime.definition_save,
@@ -1533,6 +1634,8 @@ if __name__ == "__main__":
                 result = runtime.catalog()
             else:
                 result = methods[request["method"]](**request.get("params", {}))
+                if request["method"] in {"call", "run", "cancel_run"}:
+                    result = {**result, "execution_ok": result.get("ok"), "ok": True}
             print(json.dumps(result, allow_nan=False))
         except Exception as error:
             print(json.dumps({"ok": False, "error": str(error)}))

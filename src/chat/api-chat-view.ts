@@ -4,7 +4,8 @@ import * as path from "path";
 import { randomBytes, randomUUID, createHash } from "crypto";
 import { getStorePath } from "../knowledge/filestore";
 import { ApiChatMessage, streamApiChat, chatToolRoundLimit, defaultLoopExemptTools, ChatToolLoopNotice, ChatToolLoopDecision } from "./api-chat-client";
-import { ApiChatStore, ApiConversation, ApiChatStatus, ChatMessage, ChatDelegation, apiChatStatus, apiChatDiagnostics, chatHistoryPage } from "./api-chat-store";
+import { ApiChatStore, ApiConversation, ApiChatStatus, ChatMessage, ChatDelegation, apiChatStatus, apiChatProjection, apiChatDiagnostics, chatHistoryPage } from "./api-chat-store";
+import { BaselineEventKind, recordBaselineEvent } from "../runtime/pkm-baseline";
 import { modelProfiles, assertModelAvailable, estimateInputTokens, validateBudget, estimateCost, ChatModelProfile } from "./api-chat-models";
 import { abortable, builtinToolCatalog, createBuiltinTools } from "./api-chat-tools";
 import { connectApiChatMcp, mcpUrl, ApiChatMcpServer, vscodeToolCatalog, createVscodeTools, groupVscodeTools, pkmToolSets, ensurePkmMcpTools } from "./api-chat-mcp";
@@ -79,6 +80,8 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
   private readonly workerWakes = new Set<string>();
   private readonly queueCancelled = new Set<string>();
   private readonly awaitingInput = new Set<string>();
+  private readonly baselineWaits = new Set<string>();
+  private readonly baselineApprovalScopes = new WeakMap<ApiConversation, { attemptId?: string; scopes: Set<string> }>();
   private readonly reviewClocks = new Map<string, { now: () => number; wait: (waiting: boolean) => void }>();
   private readonly agentControlledRequests = new Set<string>();
   private readonly approvals = new Map<string, { chat: ApiConversation; scope: string; title: string; detail: string; once: boolean; signal: AbortSignal; resolve: (approved: boolean) => void; questions?: Array<{ question: string; answer: string; error?: string }>; questioning?: boolean; }>();
@@ -418,7 +421,19 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     this.persist(chat); this.publish();
   }
 
+  private measureBaseline(kind: BaselineEventKind): void {
+    const directory = this.extension.globalStorageUri?.fsPath;
+    if (!directory) return;
+    recordBaselineEvent(path.join(directory, "performance"),
+      vscode.workspace.getConfiguration("personalKnowledge").get<boolean>("loadProfilingEnabled", false),
+      { kind, source: "chat-worker", evidence: "observed" });
+  }
+
   private setAwaitingInput(id: string, waiting: boolean): void {
+    if (waiting && !this.awaitingInput.has(id)) {
+      this.baselineWaits.add(id);
+      this.measureBaseline("wait");
+    }
     this.reviewClocks.get(id)?.wait(waiting);
     if (waiting) this.awaitingInput.add(id); else this.awaitingInput.delete(id);
   }
@@ -461,6 +476,14 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     try {
       const approved = await abortable(new Promise<boolean>(resolve => {
         this.approvals.set(id, { chat, scope, title, detail: detail.slice(0, 8000), once, signal, resolve });
+        this.measureBaseline("approval");
+        let observed = this.baselineApprovalScopes.get(chat);
+        if (!observed || observed.attemptId !== chat.progress?.attemptId) {
+          observed = { attemptId: chat.progress?.attemptId, scopes: new Set<string>() };
+          this.baselineApprovalScopes.set(chat, observed);
+        }
+        if (observed.scopes.has(scope)) this.measureBaseline("approval-repeat");
+        observed.scopes.add(scope);
         this.setAwaitingInput(chat.id, true);
         this.workerDecision(chat, "permission", `${title}\n${detail}`, true);
         this.publish();
@@ -521,7 +544,9 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     if (this.store) return this.store;
     const workspace = vscode.workspace.workspaceFolders?.map(folder => folder.uri.toString()).join("|") || "empty";
     const namespace = createHash("sha256").update(workspace).digest("hex").slice(0, 16);
-    const store = new ApiChatStore(path.join(getStorePath(), ".pkm", "state"), namespace);
+    const store = new ApiChatStore(path.join(getStorePath(), ".pkm", "state"), namespace,
+      () => vscode.workspace.getConfiguration("personalKnowledge").get<boolean>("loadProfilingEnabled", false),
+      path.join(this.extension.globalStorageUri.fsPath, "performance"));
     this.store = store;
     if (vscode.workspace.createFileSystemWatcher) {
       this.libraryWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(path.join(getStorePath(), ".pkm", "state", "api-chats"), "**/*.json"));
@@ -640,6 +665,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
       decisions: [...this.decisions.entries()].filter(([, item]) => item.chat.id === this.chat!.id).map(([id, item]) => ({ id, title: item.title, detail: item.detail, choices: item.choices })),
       approvals: [...this.approvals.entries()].filter(([, item]) => item.chat.id === this.chat!.id).map(([id, item]) => ({ id, title: item.title, detail: item.detail, once: item.once, quota: item.scope === "worker-expansion", questioning: item.questioning, questions: item.questions,     scope: item.once ? item.scope === "worker-expansion" ? "Worker quota" : "Only this batch" : item.scope === "non-destructive" ? "Non-destructive operations" : item.scope === toolPermissionScope("boundary", "outside-workspace") ? "Outside workspace" : "This tool" })), chat: {
       ...this.chat, messages: history.messages, context: this.chat.context.map(item => ({ id: item.id, label: item.label, characters: item.content.length })),
+      projection: apiChatProjection(this.chat, [...this.approvals.values()].some(item => item.chat.id === this.chat!.id)),
       agentContext: Object.fromEntries(Object.entries(this.chat.agentContext || {}).map(([kind, entries]) => [kind, entries.map(({ id, label, content }) => ({ id, label, characters: content.length }))])),
     }, settings: { ...settings, inputBaseTokens: estimateInputTokens([...this.requestMessages(this.chat, ""), ...(builtinNames.length ? [{ role: "system" as const, content: JSON.stringify(createBuiltinTools(builtinNames).map(({ execute, ...definition }) => definition)) }] : [])]) }, chats: available,
     library: { groups: this.store.library.read().groups, chats: all }, busy: this.running.has(this.chat.id) || this.chat.progress?.status === "running", remoteBusy: !this.running.has(this.chat.id) && this.chat.progress?.status === "running" });
@@ -730,6 +756,9 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
   private persist(chat: ApiConversation): void {
     if (chat.progress?.status === "running" && !this.running.has(chat.id)) throw new Error("This Chat is running in another window; it is read-only here.");
     chat.updatedAt = new Date().toISOString(); this.store!.save(chat);
+    if (chat.progress && chat.progress.status !== "running" && this.baselineWaits.delete(chat.id) && chat.progress.status === "complete") {
+      this.measureBaseline("resume");
+    }
   }
 
   private requestMessages(chat: ApiConversation, text: string, automatic = new Map<ApiChatMessage, AutomaticChatContext>()): ApiChatMessage[] {

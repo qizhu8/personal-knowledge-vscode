@@ -6,12 +6,48 @@ import { randomBytes, randomUUID } from "crypto";
 import { getStorePath } from "../knowledge/filestore";
 import { configuredMcpFeatureDomains, mcpRuntimeStatus, writeActionWorkspaceConfig } from "../mcp/mcp";
 import { ActionWorkbenchServer, createActionWorkbenchServer } from "../runtime/action-workbench-server";
+import { BaselineEventKind, recordBaselineEvent } from "../runtime/pkm-baseline";
 
 const actionMethods = new Set(["catalog", "module_sets", "load", "remove", "import", "export", "validate", "queue", "cancel_validation",
-  "resume_validation", "select_implementation", "save_graph", "check_graph", "call", "run", "cancel_run", "choices", "answer_choice",
+  "resume_validation", "select_implementation", "save_graph", "check_graph", "call", "run", "runs", "recover_runs", "cancel_run", "choices", "answer_choice",
   "group_create", "action_rename", "action_move", "action_delete", "definition_read", "definition_save", "source_read", "source_save"]);
 let actionChatAvailable = false;
 let browserServer: { store: string; promise: Promise<ActionWorkbenchServer> } | undefined;
+const observedRuns = new Map<string, string>();
+
+function measureAction(context: vscode.ExtensionContext, kind: BaselineEventKind, durationMs?: number): void {
+  const directory = context.globalStorageUri?.fsPath;
+  if (!directory) return;
+  recordBaselineEvent(path.join(directory, "performance"),
+    vscode.workspace.getConfiguration("personalKnowledge").get<boolean>("loadProfilingEnabled", false),
+    { kind, source: "action-runtime", evidence: "observed", ...(durationMs === undefined ? {} : { durationMs }) });
+}
+
+function observeAction(context: vscode.ExtensionContext, method: string, result: Record<string, unknown>, durationMs: number): void {
+  if (!["call", "run", "cancel_run"].includes(method) || typeof result.run_id !== "string" || typeof result.state !== "string") return;
+  if (method === "call" && result.launch_reused === false) {
+    measureAction(context, "start-request");
+    measureAction(context, result.reasonCode === "dispatch-failed" ? "start-failed" : "start-success", durationMs);
+  }
+  const identity = `${getStorePath()}:${result.run_id}`;
+  const state = typeof result.userState === "string" ? result.userState : result.state;
+  const previous = observedRuns.get(identity);
+  if (state !== previous) {
+    if (state === "Waiting") measureAction(context, "wait");
+    if (previous === "Waiting" && ["Running", "Completed"].includes(state)) measureAction(context, "resume");
+    if (state === "Reconciling") measureAction(context, "unknown-effect");
+    if (previous || method === "call" && result.launch_reused === false) {
+      if (state === "Completed") measureAction(context, "completed");
+      if (state === "Failed") measureAction(context, "failed");
+      if (state === "Cancelled") measureAction(context, "cancel");
+    }
+  }
+  observedRuns.set(identity, state);
+  if (observedRuns.size > 512) {
+    const oldest = observedRuns.keys().next().value;
+    if (oldest !== undefined) observedRuns.delete(oldest);
+  }
+}
 
 function checkActionAccess(): void {
   if (!configuredMcpFeatureDomains().includes("automation")) throw new Error("Enable the PKM automation domain before using Actions.");
@@ -23,6 +59,7 @@ async function actionRequest(context: vscode.ExtensionContext, method: string, p
   if (!actionMethods.has(method)) throw new Error("Unsupported Action operation.");
   const runtime = mcpRuntimeStatus();
   if (!runtime.healthy) throw new Error(runtime.error || "Configure the PKM Python runtime first.");
+  const started = Date.now();
   return new Promise((resolve, reject) => {
     const child = execFile(runtime.python, [path.join(context.extensionPath, "resources", "action_modules.py"), "--api", getStorePath()],
       { timeout: 30000, maxBuffer: 2 * 1024 * 1024, windowsHide: true }, (error, stdout) => {
@@ -30,7 +67,10 @@ async function actionRequest(context: vscode.ExtensionContext, method: string, p
         try {
           const result = JSON.parse(stdout);
           if (result.ok === false) reject(new Error(result.error || "Action request failed."));
-          else resolve(result);
+          else {
+            observeAction(context, method, result, Date.now() - started);
+            resolve(result);
+          }
         } catch { reject(new Error("Action service returned invalid JSON.")); }
       });
     child.stdin?.end(JSON.stringify({ method, params }));

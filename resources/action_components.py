@@ -416,11 +416,16 @@ def execute_steps(runtime, record, context, implementation):
                         request_id = "choice_" + uuid.uuid4().hex
                         path = runtime.path(record["run_id"]).parent / "choices" / (request_id + ".json")
                         _atomic_write(path, {"request_id": request_id, "run_id": record["run_id"], "step": key, "prompt": values["prompt"], "options": values["options"]})
+                        record["current_step"] = key
+                        with runtime.lock():
+                            runtime.runs.checkpoint(record, "waiting", "user-choice", "user")
                         while not path.with_suffix(".answer").exists():
                             if runtime.cancelled(record):
                                 raise TimeoutError("User choice cancelled or expired.")
                             time.sleep(0.05)
                         index = json.loads(path.with_suffix(".answer").read_text())["index"]
+                        with runtime.lock():
+                            runtime.runs.checkpoint(record, "started", "choice-answered")
                     output = {"value": values["options"][index]["value"]}
                 else:
                     raise ValueError("Unknown basic component handler.")

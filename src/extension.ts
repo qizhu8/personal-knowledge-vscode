@@ -2,6 +2,8 @@ import { withCrossProcessLock } from "./runtime/cross-process-lock";
 import { stableUserPort } from "./runtime/user-service-ports";
 import { KnowledgeInventoryManager } from "./knowledge/knowledge-inventory";
 import { performanceSummary, recordPerformanceMetric } from "./runtime/performance-telemetry";
+import { PKM_ENTRY_POINTS, projectExecution } from "./runtime/pkm-projection";
+import { baselineReport, recordBaselineEvent } from "./runtime/pkm-baseline";
 import { mcpUsageSummary, recipeNodeUsageSummary, todoUsageSummary } from "./mcp/mcp-usage";
 import { agentSnapshotIsEncrypted, createAgentSnapshot, deleteAgentSnapshot, listAgentSnapshots, renameAgentSnapshot, readAgentSnapshotContents } from "./agent-sessions/agent-snapshots";
 import { agentSessionArchiveKeepLatestK, agentSessionLiveness, emptyAgentSessionTrash, enforceAgentSessionArchiveRetention, moveAgentSessionToTrash, permanentlyDeleteTrashedAgentSession, projectedAgentSessionStatus, recipeNodeObservability, reconcileAgentSessionActiveMappings, restoreAgentSessionFromTrash, stopAgentSession } from "./agent-sessions/agent-session-lifecycle";
@@ -213,6 +215,9 @@ function agentSessionSnapshots(recipes: any[], directory = path.join(getStorePat
         recipeRevision: Number(run.recipeRevision || 0),
         executableDigest: String(run.executableDigest || ""),
         status: String(run.status || "unknown"),
+        projection: projectExecution("recipe-runtime", String(run.status || "unknown"), {
+          waiting: Object.values(run.nodes || {}).some((record: any) => !!record.progress?.waitingOn),
+        }),
         traversalStrategy: String(run.definition?.spec?.traversalStrategy || ""),
         parent: run.parent && typeof run.parent === "object"
           ? { runId: String(run.parent.runId || ""), nodeId: String(run.parent.nodeId || "") } : undefined,
@@ -232,6 +237,11 @@ function agentSessionSnapshots(recipes: any[], directory = path.join(getStorePat
             })),
             control: node.control && typeof node.control === "object" ? node.control : { mode: "single" },
             state: String(record.state || "pending"),
+            projection: projectExecution("recipe-runtime", String(record.state || "pending"), {
+              waiting: node.kind === "pkm.gate.human/v1" && record.state === "running" || !!record.progress?.waitingOn,
+              interrupted: recipeNodeObservability(record).state === "intervention-required" && record.state === "running",
+              ...(node.kind === "pkm.gate.human/v1" ? { nextOwner: "user" as const } : {}),
+            }),
             outcome: String(record.outcome || ""),
             error: String(record.error || ""),
             childRunId: String(record.childRunId || ""),
@@ -288,11 +298,17 @@ function agentSessionSnapshots(recipes: any[], directory = path.join(getStorePat
           ...node, usage: { ...node.usage, protocol: moduleProtocols.get(`${run.runId}:${node.nodeId}`) || node.usage.protocol },
         })) };
       });
-      const waiting = runs.some((run: any) => run.nodes.some((node: any) =>
+      const waiting = session.nativeChat?.progress?.status === "running" && session.nativeChat?.progress?.steps?.slice(-1)[0]?.status === "waiting"
+        || runs.some((run: any) => run.nodes.some((node: any) =>
         node.state === "running"
         && (node.kind === "pkm.gate.human/v1" || node.observability?.state === "waiting")));
       snapshots.push({
         sessionId: String(session.sessionId), status: projectedAgentSessionStatus(session),
+        projection: projectExecution("agent-session", session.nativeChat?.progress?.status === "failed"
+          || projectedAgentSessionStatus(session) === "completed" && (session.todos || []).some((todo: any) => todo.status === "failed")
+          ? "failed" : projectedAgentSessionStatus(session), {
+          waiting, interrupted: agentSessionLiveness(session, waiting).state === "suspected-interrupted",
+        }),
         task: String(session.task || "Managed task"), projectId: String(session.projectId || ""),
         ...agentSessionGroup(session),
         ...agentSessionOrigin(session),
@@ -389,6 +405,11 @@ async function agentSessionProjectStateData(): Promise<any> {
   const agentSessionGroups = [...new Map([...storedGroups, ...apiChatGroupSnapshots(path.join(getStorePath(), ".pkm", "state"))].map(group => [group.groupId, group])).values()];
   return {
     ...snapshot,
+    projects: snapshot.projects.map(project => ({ ...project, objectKind: "Project" })),
+    threads: snapshot.threads.map(thread => ({ ...thread, objectKind: "Project" })),
+    recipes: snapshot.recipes.map(recipe => ({ ...recipe, objectKind: "Recipe" })),
+    ganttTasks: snapshot.ganttTasks.map(task => ({ ...task, projection: projectExecution("project", task.status) })),
+    collaborationTasks: snapshot.collaborationTasks.map(task => ({ ...task, projection: projectExecution("collaboration", task.convergenceState || task.status) })),
     agentSessionGroups,
     agentSessions: agentSessionSnapshots(snapshot.recipes),
     agentSessionTrash: agentSessionTrashSnapshots(),
@@ -565,6 +586,8 @@ function mcpPanelStatusData(traceId = "", includeUsage = true): object {
     firstRunGuide: { visible: !!guideStep, step: guideStep },
     automaticSetup: { state: integrationMaintenanceState, error: integrationMaintenanceError },
     performance: performanceStateDir ? performanceSummary(performanceStateDir) : {},
+    baseline: baselineReport(performanceStateDir, loadProfiler.enabled()),
+    objectTaxonomy: PKM_ENTRY_POINTS,
     loadProfiling: { enabled: loadProfiler.enabled(), logFile: loadProfiler.logPath() },
     externalLink: { ...externalLinkHostOptions(), contentPort: publicContentActivePort || publicContentPort() },
   };
@@ -831,7 +854,12 @@ let publishedShareRefreshTimer: NodeJS.Timeout | undefined;
 let publishedShareRefreshRunning: Promise<void> | undefined;
 let githubSyncStartupTimer: NodeJS.Timeout | undefined;
 let knowledgeInventory: KnowledgeInventoryManager | undefined;
-const backgroundTaskRegistry = new BackgroundTaskRegistry();
+const backgroundTaskRegistry = new BackgroundTaskRegistry(() => new Date(), (task, previous) => {
+  if (task.kind !== "action-validation") return;
+  const enabled = vscode.workspace.getConfiguration("personalKnowledge").get<boolean>("loadProfilingEnabled", false);
+  if (!previous) recordBaselineEvent(performanceStateDir, enabled, { kind: "start-request", source: "action-validation", evidence: "observed" });
+  if (task.status === "running") recordBaselineEvent(performanceStateDir, enabled, { kind: "start-success", source: "action-validation", evidence: "observed" });
+});
 const inventoryTask = backgroundTaskRegistry.producer({ id: "inventory:refresh", kind: "inventory", label: "Refresh knowledge inventory" });
 const retrievalQueuedTask = backgroundTaskRegistry.producer({ id: "retrieval:queued", kind: "retrieval", label: "Refresh search index" });
 const retrievalRunningTask = backgroundTaskRegistry.producer({ id: "retrieval:running", kind: "retrieval", label: "Refresh search index" });

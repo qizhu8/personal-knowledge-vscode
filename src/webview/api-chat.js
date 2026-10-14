@@ -656,6 +656,13 @@
       option.selected = item.id === state.chat.id; chats.add(option);
       if (option.selected) { chats.title = option.title; element("chat-status").replaceChildren(status); }
     }
+    if (state.chat.projection) {
+      const projection = state.chat.projection;
+      const status = element("chat-status");
+      status.append(document.createTextNode(` ${projection.objectKind} · ${projection.state}`));
+      status.title = `${projection.state} · Next: ${projection.nextOwner} · ${projection.reason} ${projection.resume}`;
+      status.setAttribute("aria-label", status.title);
+    }
     const native = state.settings.provider === "vscode";
     const disconnected = state.settings.needsModelConnection || (!native && !state.settings.endpoint);
     const modelLabel = disconnected ? t("Choose model") : state.settings.selectedProfile?.label || state.settings.model;

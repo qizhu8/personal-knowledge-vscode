@@ -8,6 +8,8 @@ let domains = ["automation"], nextResult = { ok: true, requests: [] };
 let storePath = "/isolated/test/store";
 let workspaceRoots = { linux: root };
 const commands = new Map(), executions = [], serviceCalls = [], replies = [];
+const baselineEvents = [];
+let profiling = false;
 const disposable = { dispose() {} };
 const authoringRequests = {
   group_create: { name: "Tools", parent: "" },
@@ -25,7 +27,7 @@ const webview = { cspSource: "vscode-webview:", html: "", asWebviewUri: uri => S
 const vscode = {
   version: "1.100.0",
   env: { async asExternalUri(uri) { return uri; }, async openExternal(uri) { executions.push(["external", String(uri)]); return true; } },
-  workspace: { get isTrusted() { return trusted; }, getConfiguration: () => ({ get: () => workspaceRoots,
+  workspace: { get isTrusted() { return trusted; }, getConfiguration: () => ({ get: key => key === "loadProfilingEnabled" ? profiling : workspaceRoots,
     async update(key, value, target) { assert.strictEqual(key, "actions.workspaceRoots"); assert.strictEqual(target, 1); workspaceRoots = value; } }) },
   chat: { createChatParticipant(id, callback) { assert.strictEqual(id, "personalKnowledge.actions"); handler = callback; return disposable; } },
   commands: { registerCommand(id, callback) { commands.set(id, callback); return disposable; },
@@ -46,6 +48,9 @@ vm.runInNewContext(fs.readFileSync(path.join(root, "dist", "ui", "action-browser
     if (name === "vscode") return vscode;
     if (name === "../knowledge/filestore") return { getStorePath: () => storePath };
     if (name === "../runtime/action-workbench-server") return require("../dist/runtime/action-workbench-server");
+    if (name === "../runtime/pkm-baseline") return { recordBaselineEvent(directory, enabled, event) {
+      if (enabled) baselineEvents.push(event);
+    } };
     if (name === "../mcp/mcp") return { configuredMcpFeatureDomains: () => domains,
       mcpRuntimeStatus: () => ({ healthy, python: "/managed/python", error: "Runtime unavailable" }), writeActionWorkspaceConfig() {} };
     if (name === "child_process") return { execFile(program, args, options, callback) {
@@ -59,7 +64,7 @@ vm.runInNewContext(fs.readFileSync(path.join(root, "dist", "ui", "action-browser
 });
 
 (async () => {
-  const context = { extensionUri: root, extensionPath: root, subscriptions: [] };
+  const context = { extensionUri: root, extensionPath: root, globalStorageUri: { fsPath: "/isolated/global" }, subscriptions: [] };
   moduleExports.initializeActionChat(context);
   const runId = "action_run_" + "a".repeat(32), requestId = "choice_" + "b".repeat(32);
   const stream = { messages: [], buttons: [], markdown(value) { this.messages.push(value); }, button(value) { this.buttons.push(value); } };
@@ -80,6 +85,22 @@ vm.runInNewContext(fs.readFileSync(path.join(root, "dist", "ui", "action-browser
   assert.match(webview.html, /script-src 'nonce-[a-f0-9]+'/);
   assert.match(webview.html, /<script nonce="[a-f0-9]+">/);
   assert.match(webview.html, /codicon\.css/);
+  profiling = true;
+  nextResult = { ok: true, execution_ok: true, run_id: runId, state: "running", userState: "Running", launch_reused: false };
+  await listener({ requestId: "durable-call", method: "call", params: { key: "same-key" } });
+  assert.deepStrictEqual(baselineEvents.map(event => event.kind), ["start-request", "start-success"]);
+  nextResult = { ...nextResult, launch_reused: true };
+  await listener({ requestId: "durable-duplicate", method: "call", params: { key: "same-key" } });
+  assert.strictEqual(baselineEvents.length, 2);
+  nextResult = { ok: true, execution_ok: false, run_id: runId, state: "outcome_unknown", userState: "Reconciling" };
+  for (const method of ["run", "run", "runs", "recover_runs"]) {
+    await listener({ requestId: "durable-" + method, method, params: { run_id: runId } });
+    assert.strictEqual(replies.at(-1).result.ok, true);
+  }
+  assert.deepStrictEqual(baselineEvents.map(event => event.kind), ["start-request", "start-success", "unknown-effect"]);
+  assert.ok(baselineEvents.every(event => !JSON.stringify(event).includes(runId)));
+  profiling = false;
+  nextResult = { ok: true };
   for (const [method, params] of Object.entries(authoringRequests)) {
     await listener({ requestId: "native-" + method, method, params });
     assert.strictEqual(replies.at(-1).result.ok, true);

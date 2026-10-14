@@ -1,3 +1,5 @@
+import { ExecutionProjection, projectExecution } from "./pkm-projection";
+
 export type BackgroundTaskStatus = "queued" | "running";
 export type BackgroundTaskKind = "content-check" | "inventory" | "retrieval" | "github-sync" | "broker-refresh" | "action-validation" | "other";
 
@@ -17,6 +19,7 @@ export interface BackgroundTask {
   startedAt?: string;
   nextRunAt?: string;
   progress?: BackgroundTaskProgress;
+  projection?: ExecutionProjection;
 }
 
 export interface BackgroundTaskSnapshot {
@@ -41,7 +44,8 @@ export interface BackgroundTaskProducer {
 }
 
 function copyTask(task: BackgroundTask): BackgroundTask {
-  return { ...task, progress: task.progress ? { ...task.progress } : undefined };
+  return { ...task, progress: task.progress ? { ...task.progress } : undefined,
+    ...(task.kind === "action-validation" ? { projection: projectExecution("action-validation", task.status) } : {}) };
 }
 
 export class BackgroundTaskRegistry {
@@ -50,7 +54,8 @@ export class BackgroundTaskRegistry {
   private revision = 0;
   private updatedAt = "";
 
-  constructor(private readonly now: () => Date = () => new Date()) {}
+  constructor(private readonly now: () => Date = () => new Date(),
+    private readonly onTransition?: (task: BackgroundTask, previous?: BackgroundTask) => void) {}
 
   producer(identity: Pick<BackgroundTask, "id" | "kind" | "label">): BackgroundTaskProducer {
     const update = (status: BackgroundTaskStatus, patch: BackgroundTaskUpdate = {}): void => {
@@ -80,6 +85,7 @@ export class BackgroundTaskRegistry {
     const previous = this.tasks.get(task.id);
     if (previous && JSON.stringify(previous) === JSON.stringify(normalized)) return;
     this.tasks.set(task.id, normalized);
+    if (previous?.status !== task.status) this.onTransition?.(copyTask(normalized), previous && copyTask(previous));
     this.changed();
   }
 

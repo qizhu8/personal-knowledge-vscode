@@ -251,6 +251,8 @@ function renderMcpDashboard(data) {
 
 function renderLoadProfiling(data) {
   const loadProfiling = data?.loadProfiling || {};
+  const baseline = data?.baseline;
+  const metric = value => value?.available ? String(Math.round(value.value * 100)) + '%' : 'Unavailable';
   return `<section class="mcp-paths mcp-load-profiling"><div class="mcp-paths-head"><h3>Load profiling</h3><div class="pkm-config-actions">
     <button class="tbtn" onclick="ask('showLoadProfilingOutput',{})">${uiIcon('output', 'Show output')}</button>
     <button class="tbtn" onclick="ask('openLoadProfilingLog',{})">${uiIcon('file-text', 'Open log')}</button>
@@ -262,6 +264,12 @@ function renderLoadProfiling(data) {
       <span class="mcp-row-action"><label class="pkm-inline-toggle"><input type="checkbox" ${loadProfiling.enabled ? 'checked' : ''} onchange="ask('setLoadProfiling',{enabled:this.checked})"> Debug profiling</label></span>
     </div>
     <div class="pkm-skill-detail"><code>${esc(loadProfiling.logFile || 'Profiling log is created after the extension initializes.')}</code></div>
+    ${baseline ? `<div class="pkm-skill-detail"><strong>P0 local baseline · ${baseline.enabled ? 'Opt-in enabled' : 'Disabled'}</strong>
+      <p>Structured counts and timings only; no prompts, inputs, outputs, bodies, identifiers, or remote telemetry. Synthetic fixtures are not human UX evidence.</p>
+      <p>Storage: ${esc(baseline.storage?.status || 'Unavailable')}${baseline.storage?.reasonCode ? ' · ' + esc(baseline.storage.reasonCode) : ''} · Collection: ${esc(baseline.collection?.status || 'Unavailable')}${baseline.collection?.reasonCode ? ' · ' + esc(baseline.collection.reasonCode) : ''}</p>
+      <p>Start success: ${esc(metric(baseline.observed.startSuccess))} · Cancellation: ${esc(metric(baseline.observed.cancellation))} · Restart loss: ${esc(metric(baseline.observed.restartLoss))} · Waiting recovery: ${esc(metric(baseline.observed.waitingRecovery))} · Repeated approval: ${esc(metric(baseline.observed.repeatedApproval))} · Unknown effects: ${esc(baseline.observed.unknownEffects ?? 'Unavailable')}</p>
+      <p>Find next step: ${esc(baseline.observed.nextStepMs.available ? baseline.observed.nextStepMs.mean + ' ms' : 'Unavailable')} · Human UX: ${baseline.personas.map(row => `${esc(row.persona)}: ${esc(row.humanUxEvidence)}`).join(' · ')}</p>
+    </div>` : ''}
   </section>`;
 }
 

@@ -69,14 +69,17 @@ window.addEventListener('hashchange',()=>{if(new URLSearchParams(location.hash.s
 let browserToken=launchParams.get('token')||'',initialView=vscode?.getState()||null;
 if(!vscode){try{const previous=sessionStorage.getItem('pkm-action-token'),launch=launchParams.get('launch');if(browserToken){if(previous!==browserToken||(launch&&launch!==sessionStorage.getItem('pkm-action-launch')))sessionStorage.removeItem('pkm-action-state');sessionStorage.setItem('pkm-action-token',browserToken);if(launch)sessionStorage.setItem('pkm-action-launch',launch)}else browserToken=previous||'';initialView=JSON.parse(sessionStorage.getItem('pkm-action-state')||'null')}catch{}if(location.hash)window.history.replaceState(null,'',location.pathname+location.search)}
 const chat=document.createElement('section');chat.id='action-chat';chat.hidden=true;chat.innerHTML='<header><h2>Action Chat</h2></header><div id="chat-messages" role="log" aria-live="polite"></div>';byId('result').before(chat);const seenChoices=new Set(),catExpanded=Object.create(null);
-byId('open-browser').hidden=!vscode;byId('open-browser').onclick=()=>perform('open_browser',{draft:{graph,saved,currentRun,editorState}});
+byId('open-browser').hidden=!vscode;byId('open-browser').onclick=()=>perform('open_browser',{draft:{graph,saved,currentRun,pendingLaunch,lastRun,editorState}});
 byId('background-tasks').hidden=!vscode&&!browserToken;byId('background-tasks').onclick=async()=>{const result=await perform('background_tasks');if(!vscode&&result){queue=result;renderQueue();byId('queue').scrollIntoView({block:'nearest'})}};
 function request(method,params={}){if(!vscode)return fetch('api',{method:'POST',headers:{'Content-Type':'application/json',...(browserToken?{Authorization:'Bearer '+browserToken}:{})},body:JSON.stringify({method,params}),signal:AbortSignal.timeout(35000)}).then(response=>response.json()).then(result=>{if(result.ok===false)throw Error(result.error);return result}).catch(error=>{if(['AbortError','TimeoutError'].includes(error.name))throw Error('Request timed out; reconcile before retrying.');throw error});return new Promise((resolve,reject)=>{const requestId=String(++requestSequence),timer=setTimeout(()=>{pending.delete(requestId);reject(Error('Request timed out; reconcile before retrying.'))},35000);pending.set(requestId,{resolve,reject,timer});vscode.postMessage({requestId,method,params})})}
 window.addEventListener('message',event=>{const item=pending.get(event.data.requestId);if(!item)return;clearTimeout(item.timer);pending.delete(event.data.requestId);event.data.result?.ok===false?item.reject(Error(event.data.result.error)):item.resolve(event.data.result)});
 let actions=[],groups=[],moduleSets=[],queue={jobs:[]},graph=initialView?.graph||{action_id:'local.graph.'+crypto.randomUUID().replaceAll('-',''),name:'New composition',nodes:[],edges:[]},saved=initialView?.saved||null,source=null,pendingInput=null,selectedEdge=null,wireGesture=null,history=[],selectedExports=new Set(),refreshing=false,currentRun=initialView?.currentRun||null,previewWorkspace='',hostWorkspace='',editorState=initialView?.editorState||null,catalogOperation=null;
-let startingRun=false,cancellingRun=null;
+let startingRun=false,cancellingRun=null,pendingLaunch=initialView?.pendingLaunch||null,lastRun=initialView?.lastRun||null,refreshQueued=false;
+const runHistory=document.createElement('section');runHistory.id='run-history';runHistory.innerHTML='<h2>Durable Runs</h2><label>Recent Runs <select id="recent-runs"><option value="">Select a Run</option></select></label> <button id="recover-runs">Recover interrupted Runs</button><p>Recovery inspects the original Run. It never automatically replays effects.</p>';byId('result').before(runHistory);
+byId('recent-runs').onchange=()=>{lastRun=byId('recent-runs').value||lastRun;saveView();refresh()};
+byId('recover-runs').onclick=()=>perform('recover_runs');
 const cancelRunButton=document.createElement('button');cancelRunButton.id='cancel-run';cancelRunButton.className='icon';cancelRunButton.title='Cancel local run; completed effects are not undone';cancelRunButton.setAttribute('aria-label','Cancel Run');cancelRunButton.disabled=true;cancelRunButton.innerHTML='<i class="codicon codicon-debug-stop" aria-hidden="true"></i>';byId('run').after(cancelRunButton);
-function updateRunControls(){byId('run').disabled=startingRun||!!currentRun||!saved||actions.find(item=>item.action_id===saved.action_id)?.availability.state!=='ready';cancelRunButton.disabled=!currentRun||cancellingRun===currentRun;cancelRunButton.title=cancellingRun===currentRun?'Cancellation requested; waiting for execution to stop':'Cancel local run; completed effects are not undone'}
+function updateRunControls(){const qualified=saved&&actions.find(item=>item.action_id===saved.action_id&&item.content_hash===saved.content_hash);byId('run').disabled=startingRun||!!currentRun||(!pendingLaunch&&qualified?.availability.state!=='ready');byId('run').title=pendingLaunch?'Retry the original submission with the same launch key':'Start a new durable Run';cancelRunButton.disabled=!currentRun||cancellingRun===currentRun;cancelRunButton.title=cancellingRun===currentRun?'Cancellation requested; waiting for execution to stop':'Cancel local run; completed effects are not undone'}
 cancelRunButton.onclick=async()=>{const runId=currentRun;if(!runId||cancellingRun===runId)return;cancellingRun=runId;updateRunControls();try{const result=await request('cancel_run',{run_id:runId});if(result.cancel_requested)status('Cancellation requested for '+runId);else cancellingRun=null;await refresh()}catch(error){cancellingRun=null;status(error.message,true)}finally{updateRunControls()}};
 function status(text,bad=false){byId('status').textContent=text;byId('status').className=bad?'bad':''}function persist(){saved=null;saveView();byId('run').disabled=true}function remember(){history.push(structuredClone(graph));if(history.length>50)history.shift()}
 function properties(definition,direction){return definition[direction+'_schema']?.properties||{}}
@@ -213,7 +216,7 @@ function compatible(outputNode,outputField,inputNode,inputField){const target=pr
 function pin(node,field,schema,direction,optional=false,compact=false){return '<button class="pin '+direction+(optional?' optional':'')+'" data-'+direction+'="'+esc(field)+'" data-block-id="'+node.id+'" '+(compact?'data-compact-pin="'+direction+'"':'')+' title="'+esc(field)+' / '+esc(schema.format||schema.type)+(direction==='input'?(optional?' / optional':' / required'):'')+'" aria-label="'+(direction==='input'?'Input ':'Output ')+node.id+'.'+esc(field)+'"></button>'}
 function compactPorts(node,action,direction){const fields=Object.entries(properties(action,direction));if(!fields.length)return '';const field=fields.some(([name])=>name===node['compact_'+direction])?node['compact_'+direction]:fields[0][0],schema=properties(action,direction)[field],optional=direction==='input'&&!(action.input_schema.required||[]).includes(field);return '<div class="compact-port '+direction+'">'+pin(node,field,schema,direction,optional,true)+'<select class="compact-port-select" data-compact="'+direction+'" data-node="'+node.id+'" aria-label="'+direction+' port for '+node.id+'">'+fields.map(([name,type])=>'<option value="'+esc(name)+'" '+(name===field?'selected':'')+'>'+esc(name)+' / '+esc(type.format||type.type)+(direction==='input'&&!(action.input_schema.required||[]).includes(name)?' / optional':'')+'</option>').join('')+'</select></div>'}
 function parameterRow(node,action,field,schema){if(node.action_id==='core.cast'&&field==='target_type')return '';const optional=!(action.input_schema.required||[]).includes(field),wired=graph.edges.some(edge=>edge.target===node.id&&edge.input===field),enabled=Object.hasOwn(node.parameters,field);return '<div class="port-row '+(optional?'optional':'required')+'" data-parameter="'+esc(field)+'">'+pin(node,field,schema,'input',optional)+'<label class="field-label">'+(optional?'<input type="checkbox" data-enable-field="'+esc(field)+'" data-node="'+node.id+'" aria-label="Set '+esc(field)+' for '+node.id+'" '+(enabled||wired?'checked':'')+' '+(wired?'disabled':'')+'>':'')+esc(field)+' <small>'+esc(schema.format||schema.type)+' / '+(optional?'optional':'required')+'</small></label>'+(wired?'<small>Connected</small>':optional&&!enabled?'<small>'+(Object.hasOwn(schema,'default')?'Default: '+esc(JSON.stringify(schema.default)):'Not supplied')+'</small>':control(node,field,schema))+'</div>'}
-function saveView(){const state={graph,saved,currentRun,editorState};if(vscode)vscode.setState(state);else{try{sessionStorage.setItem('pkm-action-state',JSON.stringify(state))}catch{}}}
+function saveView(){const state={graph,saved,currentRun,pendingLaunch,lastRun,editorState};if(vscode)vscode.setState(state);else sessionStorage.setItem('pkm-action-state',JSON.stringify(state))}
 function renderGraph(){
 	byId('name').value=graph.name;
 	byId('blocks').innerHTML=graph.nodes.map(node=>{const action=definition(node)||{},collapsed=!!node.collapsed;return '<article class="block '+(collapsed?'collapsed':'')+'" data-block="'+node.id+'" style="left:'+node.x+'px;top:'+node.y+'px"><header><button class="icon" data-fold="'+node.id+'" title="'+(collapsed?'Expand parameters':'Collapse parameters')+'" aria-label="'+(collapsed?'Expand':'Collapse')+' parameters for '+node.id+'" aria-expanded="'+!collapsed+'">'+(collapsed?'&#9656;':'&#9662;')+'</button><h3>'+esc(action.display_name||node.action_id)+'</h3><button class="icon" data-delete="'+node.id+'" title="Delete block" aria-label="Delete '+node.id+'">&times;</button></header><div class="state">'+esc(action.availability?.state||'module_not_loaded')+(collapsed?' / '+Object.keys(properties(action,'input')).length+' inputs / '+Object.keys(properties(action,'output')).length+' outputs':'')+'</div><div class="ports">'+(collapsed?compactPorts(node,action,'input')+compactPorts(node,action,'output'):Object.entries(properties(action,'input')).map(([field,schema])=>parameterRow(node,action,field,schema)).join('')+Object.entries(properties(action,'output')).map(([field,schema])=>'<div class="port-row output-row">'+pin(node,field,schema,'output')+esc(field)+' <small>'+esc(schema.format||schema.type)+'</small></div>').join(''))+'</div></article>'}).join('');
@@ -238,7 +241,7 @@ function renderGraph(){
 		if(input.hasAttribute('data-raw-string')){input.oninput=change;input.onscroll=()=>{input.previousElementSibling.scrollTop=input.scrollTop;input.previousElementSibling.scrollLeft=input.scrollLeft}};
 	});
 	document.querySelectorAll('.block header').forEach(header=>header.onpointerdown=event=>{if(event.target.closest('button,select,input'))return;remember();const node=graph.nodes.find(item=>item.id===header.parentElement.dataset.block),start={x:event.clientX,y:event.clientY,left:node.x,top:node.y};header.setPointerCapture(event.pointerId);header.onpointermove=move=>{node.x=Math.max(20,start.left+move.clientX-start.x);node.y=Math.max(20,start.top+move.clientY-start.y);header.parentElement.style.left=node.x+'px';header.parentElement.style.top=node.y+'px';draw()};header.onpointerup=()=>{header.onpointermove=null;saveView()}});
-	updatePortState();byId('toggle-parameters').innerHTML='<i class="codicon codicon-'+(graph.nodes.length&&graph.nodes.every(node=>node.collapsed)?'expand-all':'collapse-all')+'" aria-hidden="true"></i>';draw();
+	updatePortState();byId('toggle-parameters').innerHTML='<i class="codicon codicon-'+(graph.nodes.length&&graph.nodes.every(node=>node.collapsed)?'expand-all':'collapse-all')+'" aria-hidden="true"></i>';draw();updateRunControls();
 }
 function clearSelection(){source=null;pendingInput=null;selectedEdge=null;wireGesture=null}
 function pickOutput(node,field){source={node,field};selectedEdge=null;if(pendingInput)return connect(pendingInput.node,pendingInput.field);updatePortState();draw()}
@@ -294,8 +297,46 @@ async function renderChoices(runId){
   message.append(options,submit,cancel,reply);byId('chat-messages').append(message);
  }
 }
-async function refresh(){if(refreshing)return;refreshing=true;try{const data=await request('catalog');actions=data.actions;groups=data.groups||[...new Set(['Actions','core',...actions.map(action=>action.category||'Actions')])];moduleSets=data.module_sets;queue=data.queue;previewWorkspace=data.preview_workspace||'';if(previewWorkspace){byId('workspace').disabled=true;byId('workspace').title=previewWorkspace}renderPalette();renderSets();if(!byId('blocks').contains(document.activeElement)&&document.activeElement!==byId('name')&&!wireGesture)renderGraph();renderQueue();if(currentRun){const result=await request('run',{run_id:currentRun});byId('result').textContent=JSON.stringify(result.output||{state:result.state,error:result.error},null,2);if(result.state==='running')await renderChoices(currentRun);else{if(cancellingRun===currentRun)status('Cancelled '+currentRun);currentRun=null;cancellingRun=null;saveView();document.querySelectorAll('[data-choice]').forEach(control=>control.disabled=true)}}updateRunControls();if(byId('status').textContent==='Connecting')status('Loaded '+actions.length+' blocks')}catch(error){status(error.message,true)}finally{refreshing=false}}
-async function perform(method,params={}){try{const result=await request(method,params);await refresh();return result}catch(error){status(error.message,true)}}
+async function refresh(){
+ if(refreshing)return;
+ refreshing=true;
+ try{
+  const data=await request('catalog');
+  actions=data.actions;groups=data.groups||[...new Set(['Actions','core',...actions.map(action=>action.category||'Actions')])];
+  moduleSets=data.module_sets;queue=data.queue;previewWorkspace=data.preview_workspace||'';
+  if(previewWorkspace){byId('workspace').disabled=true;byId('workspace').title=previewWorkspace}
+  renderPalette();renderSets();
+  if(!byId('blocks').contains(document.activeElement)&&document.activeElement!==byId('name')&&!wireGesture)renderGraph();
+  renderQueue();updateRunControls();
+  const history=await request('runs');
+  byId('recent-runs').innerHTML='<option value="">Select a Run</option>'+(history.runs||[]).map(run=>'<option value="'+esc(run.run_id)+'">'+esc(run.action_id+' · '+(run.userState||run.state)+' · '+run.run_id)+'</option>').join('');
+  byId('recent-runs').value=lastRun||currentRun||'';
+  const selected=lastRun||currentRun;
+  if(selected){
+   const result=await request('run',{run_id:selected});
+   const started=Date.parse(result.started_at),finished=result.completed_at?Date.parse(result.completed_at):Date.now();
+   byId('result').textContent=JSON.stringify({
+    run_id:result.run_id,state:result.userState||result.state,owner:result.nextOwner,reason:result.reasonCode,
+    current_step:result.current_step||result.execution?.phase,resume_condition:result.resumeCondition||result.execution?.resumeCondition,
+    elapsed_seconds:Number.isFinite(started)&&Number.isFinite(finished)?Math.max(0,Math.round((finished-started)/1000)):undefined,
+    started_at:result.started_at,completed_at:result.completed_at,definition_revision:result.content_hash,
+    permissions:result.execution?.contract?.requiredCapabilities,checkpoint:result.lastCheckpoint,
+    receipts:result.execution?.receipts,output:result.output,error:result.error,gc_state:result.gc_state
+   },null,2);
+   if(result.state==='running')await renderChoices(selected);
+   const active=currentRun&&currentRun!==selected?await request('run',{run_id:currentRun}):result;
+   if(currentRun&&!['running','outcome_unknown'].includes(active.state)){
+    currentRun=null;cancellingRun=null;saveView();
+    document.querySelectorAll('[data-choice]').forEach(control=>control.disabled=true);
+   }
+   if(result.state==='outcome_unknown')status('Needs reconciliation: '+selected+'. Inspect the original Run; effects will not be replayed.',true);
+  }
+  updateRunControls();
+  if(byId('status').textContent==='Connecting')status('Loaded '+actions.length+' blocks');
+ }catch(error){status(error.message,true)}
+ finally{refreshing=false;if(refreshQueued){refreshQueued=false;queueMicrotask(refresh)}}
+}
+async function perform(method,params={}){try{const result=await request(method,params);if(refreshing)refreshQueued=true;else await refresh();return result}catch(error){status(error.message,true)}}
 byId('search').oninput=renderPalette;
 let findReturnFocus=null;
 function closeFind(){byId('action-find').hidden=true;byId('search').value='';renderPalette();findReturnFocus?.focus();findReturnFocus=null}
@@ -317,11 +358,11 @@ byId('output').onchange=()=>{graph.output_node=byId('output').value;persist()};
 byId('check').onclick=async()=>{const result=await perform('check_graph',{graph});if(result)status('Graph contract is valid')};
 byId('save').onclick=async()=>{const result=await perform('save_graph',{graph:{...graph,version:(actions.find(action=>action.action_id===graph.action_id)?.version||0)+1}});if(result){saved=result;graph.version=result.version;saveView();status('Saved v'+result.version)}};
 byId('validate').onclick=async()=>{if(!saved)return status('Save the current graph first.',true);const effects=saved.effects.some(effect=>effect!=='pure');if(effects&&!confirm('Run the declared tests with these effects: '+saved.effects.join(', ')+'?'))return;await perform('validate',{action_id:saved.action_id,content_hash:saved.content_hash,priority:'graph',allow_effects:effects})};
-byId('run').onclick=async()=>{if(!saved||currentRun||startingRun)return;startingRun=true;updateRunControls();try{const result=await perform('call',{action_id:saved.action_id,inputs:{},key:crypto.randomUUID(),content_hash:saved.content_hash});if(result){currentRun=result.run_id;saveView();status('Running '+currentRun)}}finally{startingRun=false;updateRunControls()}};
+byId('run').onclick=async()=>{if((!saved&&!pendingLaunch)||currentRun||startingRun)return;startingRun=true;updateRunControls();try{if(!pendingLaunch)pendingLaunch={action_id:saved.action_id,inputs:{},key:crypto.randomUUID(),content_hash:saved.content_hash};saveView();const result=await request('call',pendingLaunch);currentRun=lastRun=result.run_id;pendingLaunch=null;saveView();status((result.userState||result.state)+' '+currentRun);await refresh()}catch(error){status(error.message+' The original launch key is retained; retry reconciles the same submission.',true)}finally{startingRun=false;updateRunControls()}};
 byId('destination-label').hidden=!!vscode;
 byId('export').onclick=()=>{if(!selectedExports.size)return status('Select Actions to export.',true);if(!byId('package-path').value&&previewWorkspace)byId('package-path').value=previewWorkspace+'/'+byId('package-id').value+'.pkm-actions';byId('package-dialog').showModal()};
 byId('close-package').onclick=()=>byId('package-dialog').close();
 byId('package-form').onsubmit=async event=>{event.preventDefault();const params={module_set_id:byId('package-id').value,version:+byId('package-version').value,action_ids:[...selectedExports]};if(!vscode&&byId('package-path').value)params.destination=byId('package-path').value;const result=await perform('export',params);if(result)byId('package-dialog').close()};
-async function initialize(){if(browserToken){try{const session=await request('session');if(!initialView&&session.draft){graph=session.draft.graph||graph;saved=session.draft.saved||null;currentRun=session.draft.currentRun||null;editorState=session.draft.editorState||null;saveView()}}catch(error){return status(error.message,true)}}if(editorState)showDefinitionEditor();await refresh()}
-window.addEventListener('resize',draw);initialize();setInterval(()=>{if(currentRun||(queue.jobs||[]).some(job=>['queued','running'].includes(job.state)))refresh()},2000);
+async function initialize(){if(browserToken){try{const session=await request('session');if(!initialView&&session.draft){graph=session.draft.graph||graph;saved=session.draft.saved||null;currentRun=session.draft.currentRun||null;pendingLaunch=session.draft.pendingLaunch||null;lastRun=session.draft.lastRun||null;editorState=session.draft.editorState||null;saveView()}}catch(error){return status(error.message,true)}}if(editorState)showDefinitionEditor();await refresh()}
+window.addEventListener('resize',draw);updateRunControls();initialize();setInterval(()=>{if(refreshQueued&&!refreshing){refreshQueued=false;refresh()}else if(currentRun||(queue.jobs||[]).some(job=>['queued','running'].includes(job.state)))refresh()},2000);
 </script></body></html>

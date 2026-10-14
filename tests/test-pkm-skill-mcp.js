@@ -25,7 +25,7 @@ try {
     compilerOptions: { target: require("typescript").ScriptTarget.ES2020, module: require("typescript").ModuleKind.CommonJS },
   }).outputText;
   const generation = {
-    exports: {}, fs, path, require, __dirname: path.join(compiledDirectory, "mcp"),
+    exports: {}, fs, path, require, process, __dirname: path.join(compiledDirectory, "mcp"),
     createHash: crypto.createHash,
     getStorePath: () => path.join(root, "generation-store"),
     managedMcpServerDirectory: () => generatedDirectory,
@@ -112,7 +112,7 @@ Build deterministic training datasets and validate every exported split.`);
   fs.copyFileSync(path.join(__dirname, "..", "resources", "mcp_call_guard.py"), path.join(moduleDir, "mcp_call_guard.py"));
   fs.copyFileSync(path.join(__dirname, "..", "resources", "diagnostic_log.py"), path.join(moduleDir, "diagnostic_log.py"));
   fs.copyFileSync(path.join(__dirname, "..", "resources", "api_chat_control.py"), path.join(moduleDir, "api_chat_control.py"));
-  for (const resource of ["action_runtime.py", "action_modules.py", "action_components.py"]) {
+  for (const resource of ["action_runtime.py", "action_modules.py", "action_run_store.py", "action_components.py"]) {
     fs.copyFileSync(path.join(__dirname, "..", "resources", resource), path.join(moduleDir, resource));
   }
   fs.writeFileSync(path.join(moduleDir, "chat_server.py"), "from fastmcp import FastMCP\nmcp = FastMCP('chat-stub')\n");

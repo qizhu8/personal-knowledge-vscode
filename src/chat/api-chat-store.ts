@@ -12,6 +12,8 @@ import { ChatExecutionContext, validExecutionContext } from "./execution-context
 import { accountMcpIdentity } from "../mcp/mcp-account-binding";
 import { WorkerTreeStore, ChatWorkerState, WorkerPhase, WorkerActivity, validWorkerActivity } from "./worker-tree";
 import { ChatHistoryStorage, StoredChat } from "./chat-history-storage";
+import { ExecutionProjection, projectExecution } from "../runtime/pkm-projection";
+import { recordBaselineEvent, BaselineEventKind } from "../runtime/pkm-baseline";
 
 export interface ChatContext { id: string; label: string; content: string; }
 export interface QueuedChatInput { id: string; text: string; mode: "steer" | "task"; attemptId?: string; executionContext?: ChatExecutionContext; }
@@ -193,6 +195,15 @@ export function apiChatStatus(chat: ApiConversation, running = chat.progress?.st
   return "idle";
 }
 
+export function apiChatProjection(chat: ApiConversation, approvalRequired = false): ExecutionProjection {
+  return projectExecution("chat-worker", chat.workerActivity?.state || apiChatStatus(chat), {
+    approvalRequired, interrupted: chat.workerActivity?.state === "interrupted"
+      || chat.progress?.status !== "running" && chat.messages[chat.messages.length - 1]?.status === "interrupted",
+    waiting: chat.workerState?.sleeping || undefined,
+    ...(apiChatStatus(chat) === "awaiting-input" ? { nextOwner: "user" as const } : {}),
+  });
+}
+
 export function agentSessionOrigin(record: Record<string, unknown>): {
   origin: "pkm-native" | "external" | "unknown"; runtimeOwner: "pkm" | "external" | "unknown";
 } {
@@ -234,7 +245,8 @@ export class ApiChatStore {
     this.queueSnapshots.set(chat, { fingerprint: JSON.stringify(state), inputs: JSON.parse(JSON.stringify(queuedInputs || [])) });
   }
 
-  constructor(private readonly stateDirectory: string, readonly namespace: string) {
+  constructor(private readonly stateDirectory: string, readonly namespace: string, private readonly baselineEnabled: () => boolean = () => false,
+    private readonly baselineDirectory = stateDirectory) {
     if (!/^[a-f0-9]{16}$/.test(namespace)) throw new Error("Invalid workspace namespace.");
     this.directory = path.join(stateDirectory, "api-chats", namespace);
     this.library = new ChatLibrary(path.join(stateDirectory, "api-chats"));
@@ -329,7 +341,8 @@ export class ApiChatStore {
     this.validateImages(chat);
     const file = this.file(chat.id);
     if (!fs.existsSync(file) && chat.revision !== undefined) throw new Error("This Chat was deleted in another window. Choose another Chat.");
-    if (fs.existsSync(file)) this.reconcileQueue(chat, this.load(chat.id, false));
+    const previousChat = fs.existsSync(file) ? this.load(chat.id, false) : undefined;
+    if (previousChat) this.reconcileQueue(chat, previousChat);
     const storedRevision = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")).revision || 0 : 0;
     if ((chat.revision || 0) !== storedRevision) throw new Error("This Chat changed in another window. Reopen it before making changes.");
     if (chat.sessionId !== undefined && !/^agent_session_[a-f0-9]{32}$/.test(chat.sessionId)) throw new Error("Invalid native Session identity.");
@@ -343,6 +356,7 @@ export class ApiChatStore {
     const revision = storedRevision + 1;
     const snapshot = this.history.pack({ ...chat, revision }, { status: apiChatStatus(chat), workerManager: chat.messages.some(message => !!message.delegations?.length) });
     this.write(file, snapshot); chat.revision = revision;
+    this.measureTransition(previousChat, chat);
     this.rememberQueue(chat);
     this.write(groupPath, { ...previousGroup, schema: "pkm.agent.group/v1", groupId: group.groupId,
       hostKind: "pkm", hostSessionId: chat.id, title: chat.title, deletedAt: undefined, createdAt: previousGroup.createdAt || chat.createdAt, updatedAt: chat.updatedAt });
@@ -360,6 +374,23 @@ export class ApiChatStore {
       nativeChat: snapshot,
       liveness: { heartbeatAt: new Date().toISOString(), leaseSeconds: 300, owner: { hostSessionId: chat.id } },
     });
+  }
+
+  private measureTransition(previous: ApiConversation | undefined, chat: ApiConversation): void {
+    const record = (kind: BaselineEventKind, durationMs?: number) => recordBaselineEvent(this.baselineDirectory, this.baselineEnabled(), {
+      kind, source: "chat-worker", evidence: "observed", ...(durationMs !== undefined ? { durationMs } : {}),
+    });
+    if (!previous) record("chat-created");
+    const current = chat.progress, old = previous?.progress;
+    if (current?.status === "running" && (old?.status !== "running" || old.startedAt !== current.startedAt)) {
+      record("start-request"); record("start-success");
+    }
+    if (current && current.status !== "running" && old?.status === "running") {
+      const duration = current.finishedAt === undefined ? undefined : Math.max(0, current.finishedAt - current.startedAt);
+      if (current.status === "cancelled") record("cancel", duration);
+      else if (current.status === "complete") record("completed", duration);
+      else if (current.status === "failed") record("failed", duration);
+    }
   }
 
   assertAvailable(chat: ApiConversation): void {
@@ -384,6 +415,7 @@ export class ApiChatStore {
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") return false; }
       const recovered = this.load(chat.id, true);
       this.saveUnlocked(recovered, false);
+      recordBaselineEvent(this.baselineDirectory, this.baselineEnabled(), { kind: "restart-observed", source: "chat-worker", evidence: "observed" });
       Object.assign(chat, recovered);
       return true;
     });

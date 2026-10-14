@@ -18,6 +18,7 @@ from urllib.parse import unquote, urlsplit
 
 from recipe_runtime import _atomic_write, _background_process_options
 from action_modules import ModuleRuntime, process_alive
+from action_run_store import action_contract
 
 
 COSMOS_ACCOUNTS = {
@@ -98,9 +99,10 @@ def _contained(path, root):
 
 class ActionRuntime:
     def __init__(self, store, program=None):
-        self.root = Path(store) / ".pkm" / "state" / "actions"
         self.program = program or shutil.which("az")
         self.modules = ModuleRuntime(store)
+        self.root = self.modules.root
+        self.runs = self.modules.runs
 
     def definition(self, action_id):
         if action_id not in DEFINITIONS:
@@ -118,6 +120,7 @@ class ActionRuntime:
                                   "required": definition["required"], "additionalProperties": False},
                  "backend": "az-dls-fs", "implementation_hash": _digest({
                      "action_runtime": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                     "run_store": hashlib.sha256(Path(__file__).with_name("action_run_store.py").read_bytes()).hexdigest(),
                      "recipe_runtime": hashlib.sha256(Path(__file__).with_name("recipe_runtime.py").read_bytes()).hexdigest(),
                  })}
         value["content_hash"] = _digest(value)
@@ -317,35 +320,33 @@ class ActionRuntime:
         keys.mkdir(exist_ok=True)
         key_path = keys / (_digest(idempotency_key) + ".json")
         run_id = "action_run_" + uuid.uuid4().hex
-        try:
-            with key_path.open("x", encoding="utf-8") as handle:
-                json.dump({"run_id": run_id, "fingerprint": fingerprint}, handle)
-        except FileExistsError:
-            try:
+        with self.modules.lock():
+            self.runs.recover_launches()
+            if key_path.exists():
                 existing = json.loads(key_path.read_text(encoding="utf-8"))
-            except (ValueError, OSError):
-                return {"ok": False, "state": "outcome_unknown", "error": "Concurrent call reservation requires reconciliation; do not retry with a new key."}
-            if existing["fingerprint"] != fingerprint:
-                raise ValueError("Idempotency key was already used for different inputs.")
-            return self.get(existing["run_id"])
-        directory = self.root / "runs" / run_id
-        directory.mkdir(parents=True)
-        spec = {**command, "program": self.program, "timeoutSeconds": inputs.get("timeout_seconds", 300), "maxOutputBytes": 65536}
-        spec_path = directory / "spec.json"
-        _atomic_write(spec_path, spec)
-        record = {"schema": "pkm.action.run/v1", "ok": True, "run_id": run_id, "action_id": action_id,
-                  "content_hash": content_hash, "inputs": inputs, "state": "running",
-                  "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
-        _atomic_write(directory / "run.json", record)
-        try:
-            process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--worker", str(directory)],
-                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                       close_fds=True, **_background_process_options())
-            record["launcher_pid"] = process.pid
-            _atomic_write(directory / "run.json", record)
-        except OSError as error:
-            record.update({"ok": False, "state": "failed", "error": str(error)})
-            _atomic_write(directory / "run.json", record)
+                if existing["fingerprint"] != fingerprint:
+                    raise ValueError("Idempotency key was already used for different inputs.")
+                return self.get(existing["run_id"])
+            directory = self.root / "runs" / run_id
+            directory.mkdir(parents=True)
+            spec = {**command, "program": self.program, "timeoutSeconds": inputs.get("timeout_seconds", 300), "maxOutputBytes": 65536}
+            _atomic_write(directory / "spec.json", spec)
+            record = {"schema": "pkm.action.run/v1", "ok": True, "run_id": run_id, "action_id": action_id,
+                      "content_hash": content_hash, "inputs": inputs, "state": "running", "engine": "platform",
+                      "workspace": str(directory), "environment_fingerprint": self.environment_fingerprint(),
+                      "command_fingerprint": _digest(spec),
+                      "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+            self.runs.prepare(record, key_path, fingerprint, definition)
+            try:
+                self.runs.transition(record, "dispatched", "worker-launch")
+                process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--worker", str(directory)],
+                                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                           close_fds=True, **_background_process_options())
+                record["launcher_pid"] = process.pid
+                _atomic_write(directory / "run.json", record)
+            except OSError as error:
+                record.update({"ok": False, "state": "failed", "error": str(error)})
+                self.runs.transition(record, "completed", "dispatch-failed", "none")
         return self.get(run_id)
 
     def wait(self, run_id):
@@ -369,9 +370,9 @@ class ActionRuntime:
         if record.get("engine") == "module":
             return self.modules.get(run_id)
         result_path = directory / "result.json"
-        if result_path.exists():
+        if result_path.exists() and not record.get("execution"):
             result = json.loads(result_path.read_text(encoding="utf-8"))
-            uncertain = result.get("timed_out") or result.get("cancelled")
+            uncertain = result.get("timed_out") or result.get("cancelled") or not result.get("ok") and record.get("action_id") != "cosmos.directory.list"
             record.update({"ok": bool(result.get("ok")), "state": "outcome_unknown" if uncertain else "succeeded" if result.get("ok") else "failed",
                            "completed_at": result.get("completed_at"), "exit_code": result.get("exit_code"),
                            "diagnostics": {key: result.get(key) for key in ["error", "stderr", "stdout_truncated", "stderr_truncated"]}})
@@ -379,16 +380,33 @@ class ActionRuntime:
                 try:
                     output = json.loads(result.get("stdout") or "null")
                 except ValueError:
-                    record.update({"ok": False, "state": "failed", "error": "CLI did not return valid JSON."})
+                    record.update({"ok": False, "state": "failed" if record["action_id"] == "cosmos.directory.list" else "outcome_unknown", "error": "CLI did not return valid JSON."})
                 else:
                     record["output"] = output
             elif result.get("ok"):
-                record.update({"ok": False, "state": "failed", "incomplete": True, "error": "CLI output exceeded its bound; completeness cannot be claimed."})
+                record.update({"ok": False, "state": "failed" if record["action_id"] == "cosmos.directory.list" else "outcome_unknown", "incomplete": True, "error": "CLI output exceeded its bound; completeness cannot be claimed."})
             _atomic_write(directory / "run.json", record)
-        elif record["state"] == "running" and record.get("launcher_pid"):
-            if not process_alive(record["launcher_pid"]):
+        elif record["state"] == "running" and (record.get("execution") or record.get("launcher_pid")):
+            pid = record.get("execution", {}).get("workerPid") or record.get("launcher_pid")
+            if not pid or not process_alive(pid):
                 record.update({"ok": False, "state": "outcome_unknown", "error": "Worker exited without a result; reconciliation required."})
-        return record
+        return self.runs.public(record)
+
+    def recover(self):
+        result = self.modules.recover()
+        with self.modules.lock():
+            for path in (self.root / "runs").glob("*/run.json"):
+                record = json.loads(path.read_text(encoding="utf-8"))
+                if record.get("engine") == "module" or record.get("state") != "running":
+                    continue
+                pid = record.get("execution", {}).get("workerPid") or record.get("launcher_pid")
+                if not pid or not process_alive(pid):
+                    record.update({"ok": False, "state": "outcome_unknown", "error": "Worker unavailable; reconcile the original Run before retry."})
+                    self.runs.transition(record, "reconciling", "worker-unavailable", "user")
+                    if not record.get("execution"):
+                        _atomic_write(path, record)
+                    result["reconciled"].append(record["run_id"])
+        return result
 
     def cancel(self, run_id):
         record = self.get(run_id)
@@ -433,7 +451,8 @@ def register_action_tools(mcp, store, runtime=None):
 
     def action_get(action_id: str):
         """Read a stable Action definition and its current target-environment readiness."""
-        return {**runtime.definition(action_id), "availability": runtime.availability(action_id)
+        definition = runtime.definition(action_id)
+        return {**definition, "execution_contract": action_contract(definition), "availability": runtime.availability(action_id)
                 if action_id in DEFINITIONS else runtime.modules.availability(action_id)}
 
     def action_validate(action_id: str, content_hash: str, inputs: dict | None = None):
@@ -454,7 +473,7 @@ def register_action_tools(mcp, store, runtime=None):
 
     def action_run_recover():
         """Reconcile abandoned local workers and pending cleanup; never replay unknown remote mutations."""
-        return runtime.modules.recover()
+        return runtime.recover()
 
     def action_validation_enqueue(action_id: str, content_hash: str, priority: str = "demand", allow_effects: bool = False):
         """Queue controlled target-host qualification. Effect consent never grants operator permissions."""
@@ -523,6 +542,29 @@ if __name__ == "__main__":
     directory = Path(sys.argv[2])
     spec_path = directory / "spec.json"
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    runtime = ActionRuntime(directory.parents[4], spec["program"])
+    with runtime.modules.lock():
+        record = runtime.runs.claim(directory.name)
+        if _digest(spec) != record["command_fingerprint"] or runtime.environment_fingerprint() != record["environment_fingerprint"]:
+            record.update({"state": "failed", "ok": False, "error": "Pinned Action command or environment changed before dispatch."})
+            runtime.runs.finish(record)
+            raise ValueError(record["error"])
     spec["cancelPath"] = str(directory / "cancel.json")
     _atomic_write(spec_path, spec)
     _execute_command_worker(spec_path, directory / "result.json")
+    result = json.loads((directory / "result.json").read_text(encoding="utf-8"))
+    effects = record["execution"]["contract"]["effects"]
+    uncertain = result.get("timed_out") or result.get("cancelled") or not result.get("ok") and effects != ["read"]
+    record.update({"ok": bool(result.get("ok")) and not uncertain,
+                   "state": "outcome_unknown" if uncertain else "succeeded" if result.get("ok") else "failed",
+                   "completed_at": result.get("completed_at"), "exit_code": result.get("exit_code"),
+                   "diagnostics": {key: result.get(key) for key in ["error", "stderr", "stdout_truncated", "stderr_truncated"]}})
+    if result.get("ok") and not result.get("stdout_truncated"):
+        try:
+            record["output"] = json.loads(result.get("stdout") or "null")
+        except ValueError:
+            record.update({"ok": False, "state": "outcome_unknown" if effects != ["read"] else "failed", "error": "CLI did not return valid JSON."})
+    elif result.get("ok"):
+        record.update({"ok": False, "state": "outcome_unknown" if effects != ["read"] else "failed", "incomplete": True, "error": "CLI output exceeded its bound; completeness cannot be claimed."})
+    with runtime.modules.lock():
+        runtime.runs.finish(record)

@@ -52,8 +52,9 @@ function renderBackgroundTasks() {
       return `<article class="background-task-row ${running ? 'running' : 'queued'}" role="listitem">
         <span class="background-task-icon codicon codicon-${backgroundTaskKindIcon(task.kind)}" aria-hidden="true"></span>
         <div class="background-task-copy">
-          <div class="background-task-title"><strong>${esc(task.label || 'Background task')}</strong><span class="background-task-status"><i></i>${running ? 'Running' : 'Queued'}</span></div>
+          <div class="background-task-title"><strong>${esc(task.label || 'Background task')}</strong><span class="background-task-status"><i></i>${esc(task.projection?.state || (running ? 'Running' : 'Queued'))}</span></div>
           <div class="background-task-detail">${esc(task.detail || (running ? 'In progress' : 'Waiting to run'))}</div>
+          ${task.projection ? `<div class="background-task-detail">${esc(task.projection.objectKind)} · Next: ${esc(task.projection.nextOwner)} · ${esc(task.projection.reason)} ${esc(task.projection.resume)}</div>` : ''}
           ${backgroundTaskProgressHtml(task.progress)}
         </div>
         <time class="background-task-time" datetime="${esc(task.nextRunAt || task.startedAt || '')}">${esc(schedule)}</time>

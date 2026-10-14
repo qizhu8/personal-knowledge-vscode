@@ -76,6 +76,10 @@ function todoExecutionSummary(execution) {
   return { total, completed, remaining:total - completed, current, percent:total ? Math.round(completed * 100 / total) : 0 };
 }
 
+function pkmExecutionDetails(projection) {
+  return projection ? `<small class="agent-muted">${esc(projection.objectKind)} · ${esc(projection.state)} · Next: ${esc(projection.nextOwner)} · ${esc(projection.reason)} ${esc(projection.resume)}</small>` : '';
+}
+
 function projectTodoExecutions(project) {
   return todoExecutionPreview.filter(execution => execution.projectId ? execution.projectId === project.projectId : execution.projectName === project.name);
 }
@@ -576,7 +580,7 @@ function projectCollaborationBody(project, threads) {
     const last = task.history?.at(-1);
     const links = [task.ganttTaskId && `Gantt ${task.ganttTaskId}`, task.agentSessionId && `Session ${task.agentSessionId}`, task.recipeRunId && `Recipe ${task.recipeRunId}`].filter(Boolean);
     return `<article class="project-thread-card" aria-label="${esc(task.title)} collaboration, ${esc(task.status)}">
-      <div><span class="gantt-status ${esc(task.status === 'timed-out' ? 'blocked' : task.status)}">${esc(task.status)}</span><strong>${esc(task.title)}</strong><small>${esc(thread?.name || task.threadId)} · v${task.version} · ${esc(task.phase)}</small></div>
+      <div><span class="gantt-status ${esc(task.status === 'timed-out' ? 'blocked' : task.status)}">${esc(task.projection?.state || task.status)}</span><strong>${esc(task.title)}</strong><small>${esc(thread?.name || task.threadId)} · v${task.version} · ${esc(task.phase)}</small>${pkmExecutionDetails(task.projection)}</div>
       <p><b>Lead:</b> ${esc(task.lead)} · <b>Primary owner:</b> ${esc(task.primaryOwner || task.owners.join(', '))} · <b>Reviewers:</b> ${esc(task.reviewers.join(', '))}</p>
       <p><b>Objective:</b> ${esc(task.objective || 'missing')} · <b>Context/version:</b> ${esc(task.context || 'missing')}</p>
       <p><b>Expected output:</b> ${esc(task.expectedOutput || 'missing')} · <b>Artifact type:</b> ${esc(task.artifactType || 'missing')}</p>
@@ -2219,6 +2223,10 @@ function agentSessionNodeHealth(node) {
 }
 
 function agentSessionDisplayStatus(session) {
+  if (session.projection) {
+    const states = { Running:'running', Waiting:'waiting-input', 'Needs review':'waiting-input', Reconciling:'waiting-input', Failed:'failed', Cancelled:'stopped' };
+    return {state:states[session.projection.state] || 'idle', label:session.projection.state};
+  }
   const status = String(session.status || 'unknown');
   const todos = session.todos || [];
   const nodes = (session.runs || []).flatMap(run => run.nodes || []);
@@ -2231,7 +2239,8 @@ function agentSessionDisplayStatus(session) {
 
 function agentSessionStatusIndicator(session, compact = false) {
   const status = agentSessionDisplayStatus(session);
-  const title = `${status.label} · Lifecycle: ${session.status || 'unknown'}`;
+  const projection = session.projection;
+  const title = `${status.label} · Lifecycle: ${session.status || 'unknown'}${projection ? ` · ${projection.objectKind} · Next: ${projection.nextOwner} · ${projection.reason} ${projection.resume}` : ''}`;
   return `<span class="agent-session-status-indicator" data-session-state="${status.state}" title="${esc(title)}"><i class="agent-session-status-dot" role="img" aria-label="${esc(title)}"></i>${compact ? '' : `<span>${status.label}</span>`}</span>`;
 }
 
@@ -2245,7 +2254,8 @@ function agentSessionLivenessLabel(liveness) {
 }
 
 function agentSessionProgressDetails(node) {
-  if (node.state !== 'running') return '';
+  const projection = pkmExecutionDetails(node.projection);
+  if (node.state !== 'running') return projection;
   const progress = node.progress || {};
   const health = agentSessionNodeHealth(node);
   const completed = Number(progress.completed);
@@ -2254,7 +2264,7 @@ function agentSessionProgressDetails(node) {
     ? Number(progress.percent)
     : (Number.isFinite(completed) && total > 0 ? Math.round(completed * 100 / total) : null);
   const events = Array.isArray(progress.events) ? progress.events.slice(-4) : [];
-  return `<div class="agent-module-progress">
+  return `${projection}<div class="agent-module-progress">
     <div class="agent-module-health ${health}"><i></i><strong>${esc(health.replaceAll('-', ' '))}</strong><span>${esc(progress.phase || 'running')}</span></div>
     ${progress.message ? `<p>${esc(progress.message)}</p>` : ''}
     ${percent !== null ? `<div class="agent-module-meter"><i style="width:${Math.max(0, Math.min(100, percent))}%"></i></div>` : ''}
@@ -2304,7 +2314,7 @@ function agentSessionRunGraph(run, allRuns, seen = new Set(), ownerTodo = null, 
   const runKind = run.origin?.kind === 'agent-session-adhoc' ? 'Ad hoc Recipe' : run.origin?.kind && run.origin.kind !== 'library' ? 'Recipe source unknown' : 'Recipe Library';
   const markerId = `agent-runtime-arrow-${String(run.runId || '').replace(/[^A-Za-z0-9_-]/g, '-')}`;
   const open = forceOpen || agentSessionOpenRunIds.has(run.runId);
-  return `<details class="agent-runtime-run" data-run-id="${esc(run.runId)}"${open ? ' open' : ''} ontoggle="agentSessionRunToggle(this)"><summary><span class="agent-runtime-disclosure codicon codicon-add" aria-hidden="true"></span><div><span>${runKind}</span><strong>${esc(run.recipeName)}</strong><small>r${run.recipeRevision} · ${esc(String(run.executableDigest || '').slice(0,12))}</small></div><span class="agent-session-run-actions"><button title="Open full-screen Session graph" aria-label="Open full-screen Session graph" onclick="event.preventDefault();event.stopPropagation();agentSessionOpenGraph()"><span class="codicon codicon-screen-full"></span></button><b class="agent-runtime-run-status ${esc(run.status)}">${esc(run.status)}</b></span></summary><div class="agent-runtime-run-body">${loops ? `<div class="agent-runtime-loops">${loops}</div>` : ''}<div class="agent-runtime-graph" data-run-id="${esc(run.runId)}"><svg class="agent-runtime-graph-links" data-marker-id="${markerId}" aria-hidden="true"></svg>${nodes.length ? levelHtml : '<p class="agent-muted">No materialized tasks.</p>'}</div></div></details>`;
+  return `<details class="agent-runtime-run" data-run-id="${esc(run.runId)}"${open ? ' open' : ''} ontoggle="agentSessionRunToggle(this)"><summary><span class="agent-runtime-disclosure codicon codicon-add" aria-hidden="true"></span><div><span>${runKind}</span><strong>${esc(run.recipeName)}</strong><small>r${run.recipeRevision} · ${esc(String(run.executableDigest || '').slice(0,12))}</small></div><span class="agent-session-run-actions"><button title="Open full-screen Session graph" aria-label="Open full-screen Session graph" onclick="event.preventDefault();event.stopPropagation();agentSessionOpenGraph()"><span class="codicon codicon-screen-full"></span></button><b class="agent-runtime-run-status ${esc(run.status)}">${esc(run.projection?.state || run.status)}</b></span></summary><div class="agent-runtime-run-body">${pkmExecutionDetails(run.projection)}${loops ? `<div class="agent-runtime-loops">${loops}</div>` : ''}<div class="agent-runtime-graph" data-run-id="${esc(run.runId)}"><svg class="agent-runtime-graph-links" data-marker-id="${markerId}" aria-hidden="true"></svg>${nodes.length ? levelHtml : '<p class="agent-muted">No materialized tasks.</p>'}</div></div></details>`;
 }
 
 function agentSessionLayoutLinks() {
@@ -3033,7 +3043,7 @@ function projectGanttBody(project, threads) {
   const rows = tasks.map(task => {
     const thread = threads.find(candidate => candidate.threadId === task.threadId);
     const dependencies = task.dependencyIds.map(id => tasks.find(candidate => candidate.taskId === id)?.title || id);
-    return `<tr><th scope="row"><button class="gantt-title-button" onclick="projectGanttEdit('${esc(task.taskId)}')">${esc(task.title)}</button><small>${esc(task.taskId)}</small></th><td>${esc(thread?.name || 'Project')}</td><td>${esc(task.startDate)} → ${esc(task.endDate)}</td><td><span class="gantt-status ${esc(task.status)}">${esc(task.status)}</span> ${task.progress}%</td><td>${esc(task.owners.map(owner => `${owner.name} (${owner.role})`).join(', ') || '—')}</td><td>${esc(dependencies.join(', ') || '—')}</td><td><button class="tbtn" onclick="projectGanttEdit('${esc(task.taskId)}')">Edit</button><button class="tbtn danger" onclick="projectGanttDelete('${esc(task.taskId)}')">Delete</button></td></tr>`;
+    return `<tr><th scope="row"><button class="gantt-title-button" onclick="projectGanttEdit('${esc(task.taskId)}')">${esc(task.title)}</button><small>${esc(task.taskId)}</small></th><td>${esc(thread?.name || 'Project')}</td><td>${esc(task.startDate)} → ${esc(task.endDate)}</td><td><span class="gantt-status ${esc(task.status)}">${esc(task.projection?.state || task.status)}</span> ${task.progress}% ${pkmExecutionDetails(task.projection)}</td><td>${esc(task.owners.map(owner => `${owner.name} (${owner.role})`).join(', ') || '—')}</td><td>${esc(dependencies.join(', ') || '—')}</td><td><button class="tbtn" onclick="projectGanttEdit('${esc(task.taskId)}')">Edit</button><button class="tbtn danger" onclick="projectGanttDelete('${esc(task.taskId)}')">Delete</button></td></tr>`;
   }).join('');
   const form = `<form class="gantt-editor" onsubmit="event.preventDefault();projectGanttSave(this.querySelector('[type=submit]'))">
     <header><div><span>${selected ? 'Update scheduled work' : 'Add scheduled work'}</span><strong>${selected ? esc(selected.title) : 'New Gantt task'}</strong></div>${selected ? `<button type="button" class="tbtn" onclick="projectGanttCancel()">Cancel</button>` : ''}</header>
