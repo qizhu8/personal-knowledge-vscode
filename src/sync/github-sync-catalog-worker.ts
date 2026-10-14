@@ -71,8 +71,12 @@ function buildCatalog({ root, servers, recipes }: CatalogInput): GitHubSyncCatal
   });
   const prompts = promptList().map(row => githubSyncItem(row, "prompts", path.join(root, "prompts", row.project, row.task)));
   const scripts = (scriptList() as any[]).map(row => {
-    scriptGet(row.path);
+    const script = scriptGet(row.path);
     const item = githubSyncItem(row, "scripts", path.join(root, "scripts", row.path));
+    if (!script) throw new Error(`Script disappeared while building the Sync catalog: ${row.path}`);
+    item.id = script.knowledgeId;
+    item.identityAliases = script.aliases;
+    item.legacyIds = [row.path];
     const sidecar = scriptIdentityFile(row.path);
     item.dependencies = [{ source: sidecar, destination: githubSyncDestination(sidecar) }];
     return item;

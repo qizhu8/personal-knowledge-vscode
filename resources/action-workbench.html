@@ -76,6 +76,45 @@ window.addEventListener('message',event=>{const item=pending.get(event.data.requ
 let actions=[],groups=[],moduleSets=[],queue={jobs:[]},graph=initialView?.graph||{action_id:'local.graph.'+crypto.randomUUID().replaceAll('-',''),name:'New composition',nodes:[],edges:[]},saved=initialView?.saved||null,source=null,pendingInput=null,selectedEdge=null,wireGesture=null,history=[],selectedExports=new Set(),refreshing=false,currentRun=initialView?.currentRun||null,previewWorkspace='',hostWorkspace='',editorState=initialView?.editorState||null,catalogOperation=null;
 let startingRun=false,cancellingRun=null,pendingLaunch=initialView?.pendingLaunch||null,lastRun=initialView?.lastRun||null,refreshQueued=false;
 const runHistory=document.createElement('section');runHistory.id='run-history';runHistory.innerHTML='<h2>Durable Runs</h2><label>Recent Runs <select id="recent-runs"><option value="">Select a Run</option></select></label> <button id="recover-runs">Recover interrupted Runs</button><p>Recovery inspects the original Run. It never automatically replays effects.</p>';byId('result').before(runHistory);
+const runSummary=document.createElement('section');runSummary.id='run-summary';runSummary.setAttribute('aria-live','polite');byId('result').before(runSummary);
+const checkpointInbox=document.createElement('section');checkpointInbox.id='checkpoint-inbox';byId('result').before(checkpointInbox);
+const recoveryStyle=document.createElement('style');recoveryStyle.textContent='#run-summary,#checkpoint-inbox article{padding:14px;margin:12px 0;border:1px solid var(--vscode-panel-border,#555);border-radius:8px;overflow-wrap:anywhere}#run-summary[data-state="Waiting"]{border-left:4px solid var(--vscode-editorWarning-foreground,#cca700)}#run-summary[data-state="Reconciling"],#run-summary[data-state="Failed"]{border-left:4px solid var(--vscode-errorForeground,#f48771)}#run-summary[data-state="Completed"]{border-left:4px solid var(--vscode-testing-iconPassed,#73c991)}#checkpoint-inbox pre{white-space:pre-wrap;max-height:220px;overflow:auto}#checkpoint-inbox textarea{display:block;box-sizing:border-box;width:100%;min-height:88px;margin:8px 0}#checkpoint-inbox button{margin:4px 8px 4px 0}#run-summary h3{margin:0 0 8px}#recent-runs{max-width:100%}';document.head.append(recoveryStyle);
+let checkpointRenderKey='';
+async function renderRunStatus(result){
+ const userState=result.userState||result.state,checkpoint=result.checkpoint;
+ runSummary.dataset.state=userState;
+ runSummary.innerHTML='<h3>'+esc(userState)+' · '+esc(result.run_id)+'</h3><p>Next: <strong>'+esc(result.nextOwner||'none')+'</strong> · '+esc(result.reasonCode||'')+'</p><p>'+esc(result.resumeCondition||result.execution?.resumeCondition||'')+'</p><button id="run-open-project">Open in Project</button>';
+ byId('run-open-project').onclick=()=>perform('open_project',{run_id:result.run_id});
+ let requests=[];
+ if(['running','waiting'].includes(result.state))requests=(await request('checkpoints',{run_id:result.run_id})).checkpoints||[];
+ const human=requests.filter(item=>item.state==='waiting'&&item.trigger?.kind==='human'&&item.presentation!=='choice');
+ const renderKey=JSON.stringify({run:result.run_id,state:result.state,version:result.state==='outcome_unknown'?result.execution?.version:undefined,checkpoints:human.map(item=>item.checkpoint_id)});
+ if(renderKey===checkpointRenderKey)return;
+ checkpointRenderKey=renderKey;checkpointInbox.replaceChildren();
+ for(const item of human){
+  const article=document.createElement('article');article.dataset.checkpoint=item.checkpoint_id;
+  article.innerHTML='<h3>'+esc(item.kind)+' · Your response is needed</h3><p>Owner: '+esc(item.owner)+(item.deadline?' · Deadline: '+esc(new Date(item.deadline*1000).toLocaleString()):' · No deadline')+'</p><pre>'+esc(JSON.stringify(item.proposal,null,2))+'</pre><details><summary>Evidence, expected response and exact proposal revision</summary><pre>'+esc(JSON.stringify({answer_schema:item.answer_schema,evidence:item.evidence,proposal_digest:item.proposal_digest},null,2))+'</pre></details><label>Response (JSON)<textarea aria-label="Checkpoint response" spellcheck="false">{}</textarea></label><button data-respond>Submit response for this proposal</button><button data-cancel>Cancel waiting Run</button><p role="status"></p>';
+  const submit=article.querySelector('[data-respond]'),notice=article.querySelector('[role="status"]');
+  submit.onclick=async()=>{submit.disabled=true;try{const answer=JSON.parse(article.querySelector('textarea').value);await request('respond_checkpoint',{run_id:item.run_id,checkpoint_id:item.checkpoint_id,resume_token:item.resume_token,proposal_digest:item.proposal_digest,answer,event_key:'workbench:'+item.checkpoint_id});notice.textContent='Response saved. Continuing the original Run.';await refresh()}catch(error){notice.textContent=error.message;status(error.message,true);submit.disabled=false}};
+  article.querySelector('[data-cancel]').onclick=()=>perform('cancel_run',{run_id:item.run_id});
+  checkpointInbox.append(article);
+ }
+ if(result.state==='waiting'&&checkpoint?.trigger?.kind!=='human'){
+  const article=document.createElement('article');
+  const trigger=checkpoint.trigger||{};
+  article.innerHTML='<h3>Waiting without an active worker</h3><p>'+esc(trigger.kind==='timer'?'Scheduled for '+new Date(trigger.at*1000).toLocaleString():trigger.kind==='dependency'?'Awaiting dependency '+trigger.run_id:'Awaiting event '+(trigger.name||''))+'</p><p>The safety scan resumes this Run once its trigger is satisfied. No effect is automatically retried.</p>';
+  checkpointInbox.append(article);
+ }
+ if(result.state==='outcome_unknown'){
+  const article=document.createElement('article');article.dataset.reconciliation=result.run_id;
+  article.innerHTML='<h3>Reconcile before continuing</h3><p>Inspect the existing effect and receipts. This records an outcome; it does not rerun the Action or undo remote changes.</p><label>Verified outcome <select aria-label="Reconciliation outcome"><option value="review">Keep under review</option><option value="succeeded">Verified completed</option><option value="failed">Verified failed</option><option value="cancelled">Verified cancelled</option></select></label><label>Evidence and reason<textarea aria-label="Reconciliation reason"></textarea></label><label>Validated output if completed (JSON)<textarea aria-label="Reconciliation output">{}</textarea></label><button data-reconcile>Record verified outcome</button><p role="status"></p>';
+  const button=article.querySelector('[data-reconcile]'),notice=article.querySelector('[role="status"]');
+  button.onclick=async()=>{button.disabled=true;try{const reason=article.querySelector('[aria-label="Reconciliation reason"]').value.trim();if(!reason)throw Error('Describe the evidence used to verify this outcome.');const outcome=article.querySelector('select').value,evidence={reason};if(outcome==='succeeded')evidence.output=JSON.parse(article.querySelector('[aria-label="Reconciliation output"]').value);await request('reconcile_run',{run_id:result.run_id,expected_version:result.execution.version,kind:'manual',outcome,evidence});await refresh()}catch(error){notice.textContent=error.message;status(error.message,true);button.disabled=false}};
+  const kind=result.execution?.contract?.reconciler?.kind;
+  if(kind&&kind!=='manual'){const verify=document.createElement('button');verify.textContent='Verify with pinned '+kind+' reconciler';verify.onclick=async()=>{verify.disabled=true;try{await request('reconcile_run',{run_id:result.run_id,expected_version:result.execution.version,kind});await refresh()}catch(error){notice.textContent=error.message;verify.disabled=false}};article.append(verify)}
+  checkpointInbox.append(article);
+ }
+}
 byId('recent-runs').onchange=()=>{lastRun=byId('recent-runs').value||lastRun;saveView();refresh()};
 byId('recover-runs').onclick=()=>perform('recover_runs');
 const cancelRunButton=document.createElement('button');cancelRunButton.id='cancel-run';cancelRunButton.className='icon';cancelRunButton.title='Cancel local run; completed effects are not undone';cancelRunButton.setAttribute('aria-label','Cancel Run');cancelRunButton.disabled=true;cancelRunButton.innerHTML='<i class="codicon codicon-debug-stop" aria-hidden="true"></i>';byId('run').after(cancelRunButton);
@@ -313,6 +352,7 @@ async function refresh(){
   byId('recent-runs').value=lastRun||currentRun||'';
   const selected=lastRun||currentRun;
   if(selected){
+   if(currentRun)await request('safety_scan',{limit:8});
    const result=await request('run',{run_id:selected});
    const started=Date.parse(result.started_at),finished=result.completed_at?Date.parse(result.completed_at):Date.now();
    byId('result').textContent=JSON.stringify({
@@ -323,9 +363,10 @@ async function refresh(){
     permissions:result.execution?.contract?.requiredCapabilities,checkpoint:result.lastCheckpoint,
     receipts:result.execution?.receipts,output:result.output,error:result.error,gc_state:result.gc_state
    },null,2);
-   if(result.state==='running')await renderChoices(selected);
+   if(['running','waiting'].includes(result.state))await renderChoices(selected);
+   await renderRunStatus(result);
    const active=currentRun&&currentRun!==selected?await request('run',{run_id:currentRun}):result;
-   if(currentRun&&!['running','outcome_unknown'].includes(active.state)){
+   if(currentRun&&!['running','waiting','outcome_unknown'].includes(active.state)){
     currentRun=null;cancellingRun=null;saveView();
     document.querySelectorAll('[data-choice]').forEach(control=>control.disabled=true);
    }

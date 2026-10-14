@@ -23,6 +23,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 from recipe_runtime import _atomic_write, _background_process_options, _execute_command_worker
 from action_components import VALUE_TYPES, component_definitions, execute_steps, validate_steps, referenced_actions, pending_choices, answer_choice
 from action_run_store import ActionRunStore, action_contract
+from action_recovery import ActionRecovery, ActionSuspended, validate_reconciler
 
 
 LAUNCHERS = {}
@@ -99,6 +100,7 @@ class ModuleRuntime:
         self.registry = self.store / "actions"
         self.module_sets = self.store / "action-module-sets"
         self.runs = ActionRunStore(self.root)
+        self.recovery = ActionRecovery(self)
 
     def module_set_path(self, module_set_id, version):
         if not isinstance(module_set_id, str) or not re.fullmatch(r"[a-z][a-z0-9_.-]{2,100}", module_set_id) or type(version) is not int or version < 1:
@@ -139,8 +141,10 @@ class ModuleRuntime:
                 old_actions = json.loads((self.module_set_path(module_set_id, old_version) / "manifest.json").read_text())["actions"] if old_version else []
                 for path in (self.root / "runs").glob("*/run.json"):
                     run = json.loads(path.read_text(encoding="utf-8"))
-                    if run.get("state") == "running" and run.get("action_id") in old_actions:
-                        raise PermissionError("ModuleSet has running calls; wait or cancel before unloading/replacing.")
+                    if run.get("state") in {"running", "waiting", "outcome_unknown"} and (
+                            run.get("action_id") in old_actions or
+                            set(run.get("definition", {}).get("dependencies", {})).intersection(old_actions)):
+                        raise PermissionError("ModuleSet has running calls or unresolved continuations; resolve them before unloading/replacing.")
                 for job in self.queue_read()["jobs"].values():
                     if job["state"] in {"queued", "running"} and job["action_id"] in old_actions:
                         raise PermissionError("ModuleSet has queued/running validation; cancel it before unloading.")
@@ -445,9 +449,9 @@ class ModuleRuntime:
     def authoring_idle(self, action_id):
         for path in (self.root / "runs").glob("*/run.json"):
             record = json.loads(path.read_text(encoding="utf-8"))
-            if record["state"] == "running" and (record["action_id"] == action_id
+            if record["state"] in {"running", "waiting", "outcome_unknown"} and (record["action_id"] == action_id
                     or action_id in record["definition"].get("dependencies", {})):
-                raise PermissionError("The Action has an unresolved running call; wait or cancel before changing it.")
+                raise PermissionError("The Action has an unresolved running call, waiting continuation or reconciliation; resolve it before changing it.")
         for job in self.queue_read()["jobs"].values():
             if job["state"] in {"queued", "running"} and job["action_id"] == action_id:
                 raise PermissionError("Cancel queued/running validation before changing the Action.")
@@ -620,6 +624,7 @@ class ModuleRuntime:
         value["source_id"] = "pkm://knowledge/" + value["knowledgeId"]
         value["implementation_hash"] = digest({"module": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                                              "run_store": hashlib.sha256(Path(__file__).with_name("action_run_store.py").read_bytes()).hexdigest(),
+                                             "recovery": hashlib.sha256(Path(__file__).with_name("action_recovery.py").read_bytes()).hexdigest(),
                                              "components": hashlib.sha256(Path(__file__).with_name("action_components.py").read_bytes()).hexdigest(),
                                              "worker": hashlib.sha256(Path(__file__).with_name("recipe_runtime.py").read_bytes()).hexdigest()})
         value["content_hash"] = digest(value)
@@ -675,9 +680,11 @@ class ModuleRuntime:
 
     def register(self, definition, expected_content_hash=None):
         allowed = {"schema", "action_id", "version", "description", "input_schema", "output_schema",
-                   "effects", "implementations", "dependencies", "casts", "examples", "display_name", "graph", "provenance"}
+                   "effects", "implementations", "dependencies", "casts", "examples", "display_name", "graph", "provenance", "reconciler"}
         if not isinstance(definition, dict) or set(definition) - allowed:
             raise ValueError("Unsupported Action definition fields.")
+        if "reconciler" in definition:
+            validate_reconciler(definition["reconciler"])
         name = definition.get("action_id")
         if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_.-]{2,100}", name) or name in builtin_definitions() or name in component_definitions():
             raise ValueError("Invalid or reserved Action ID.")
@@ -1013,16 +1020,16 @@ class ModuleRuntime:
                     record["execution"].update({"reasonCode": "worker-unavailable",
                                                 "resumeCondition": "Recover this Run and inspect its receipts; do not resubmit."})
         result = self.runs.public({key: value for key, value in record.items() if key != "capability_hash"})
-        if record["state"] == "running":
+        if record["state"] in {"running", "waiting"}:
             for child_path in (self.root / "runs").glob("*/run.json"):
                 child = json.loads(child_path.read_text(encoding="utf-8"))
-                if child.get("root_run_id") == record.get("root_run_id") and child.get("state") == "running" and child.get("execution", {}).get("phase") == "waiting":
+                if child.get("root_run_id") == record.get("root_run_id") and child.get("state") in {"running", "waiting"} and child.get("execution", {}).get("phase") == "waiting":
                     result.update({"userState": "Waiting", "nextOwner": "user", "reasonCode": "user-choice",
                                    "resumeCondition": "Answer the pending choice in this Run."})
                     break
         return result
 
-    def call(self, action_id, inputs, key, content_hash, parent_context=None, validation=False):
+    def call(self, action_id, inputs, key, content_hash, parent_context=None, validation=False, trigger=None, project_id=None):
         definition = self.definition(action_id)
         if definition["content_hash"] != content_hash:
             raise ValueError("Action content hash changed.")
@@ -1032,6 +1039,10 @@ class ModuleRuntime:
             raise PermissionError("Action is not ready for this environment.")
         if not isinstance(key, str) or not 1 <= len(key) <= 200:
             raise ValueError("An invocation key of 1-200 characters is required.")
+        if trigger is not None:
+            trigger = self.recovery.validate_trigger(trigger)
+        if project_id is not None and (not isinstance(project_id, str) or not 1 <= len(project_id) <= 200):
+            raise ValueError("Project identity must be a bounded string.")
         parent = None
         if parent_context:
             parent = json.loads(self.path(parent_context["run_id"]).read_text(encoding="utf-8"))
@@ -1047,7 +1058,8 @@ class ModuleRuntime:
                 raise PermissionError("Parent was cancelled.")
             key = digest([parent["run_id"], key])
         fingerprint = digest({"action_id": action_id, "inputs": inputs, "hash": content_hash,
-                              "parent": parent["run_id"] if parent else None})
+                              "parent": parent["run_id"] if parent else None,
+                              **({"trigger": trigger} if trigger is not None else {})})
         with self.lock():
             self.runs.recover_launches()
             for artifact_id in self.artifact_ids(inputs):
@@ -1077,10 +1089,15 @@ class ModuleRuntime:
                       "ancestry": parent["ancestry"] + [action_id] if parent else [action_id],
                       "deadline": min(parent["deadline"], time.time() + 300) if parent else time.time() + 300,
                       "environment_fingerprint": self.fingerprint(definition),
+                      "project_id": project_id or (parent.get("project_id") if parent else None),
+                      "planned_trigger": trigger,
                       "started_at": now().isoformat(), "capability_hash": digest(token), "gc_state": "pending"}
             record["validation"] = validation or bool(parent and parent.get("validation"))
             self.runs.prepare(record, key_path, fingerprint, definition)
             self.retain_inputs(inputs, record["root_run_id"])
+            if trigger is not None:
+                self.recovery.prepare_schedule(record, trigger, key)
+                return {**self.get(run_id), "launch_reused": False}
             try:
                 self.runs.transition(record, "dispatched", "worker-launch")
                 process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--worker", str(self.store), run_id],
@@ -1117,28 +1134,49 @@ class ModuleRuntime:
             if self.path(current["run_id"]).with_name("cancel.json").exists():
                 return True
             current = json.loads(self.path(current["parent_run_id"]).read_text(encoding="utf-8")) if current.get("parent_run_id") else None
-        return time.time() >= record["deadline"]
+        return record.get("state") != "waiting" and time.time() >= record["deadline"]
 
     def cancel(self, run_id):
         record = self.get(run_id)
-        if record.get("state") == "running":
-            descendants = {run_id}
-            runs = [json.loads(path.read_text(encoding="utf-8")) for path in (self.root / "runs").glob("*/run.json")]
-            while True:
-                expanded = descendants | {item["run_id"] for item in runs if item.get("parent_run_id") in descendants}
-                if expanded == descendants:
-                    break
-                descendants = expanded
-            for child in descendants:
-                _atomic_write(self.path(child).with_name("cancel.json"), {"requested": True})
-        return {**record, "cancel_requested": record.get("state") == "running", "remote_rollback": False}
+        if record.get("state") in {"running", "waiting"}:
+            with self.lock():
+                descendants = {run_id}
+                runs = [json.loads(path.read_text(encoding="utf-8")) for path in (self.root / "runs").glob("*/run.json")]
+                while True:
+                    expanded = descendants | {item["run_id"] for item in runs if item.get("parent_run_id") in descendants}
+                    if expanded == descendants:
+                        break
+                    descendants = expanded
+                for child in descendants:
+                    _atomic_write(self.path(child).with_name("cancel.json"), {"requested": True})
+                current_runs = {child: json.loads(self.path(child).read_text(encoding="utf-8")) for child in descendants}
+                needs_review = set()
+                for item in current_runs.values():
+                    if item["state"] in {"running", "outcome_unknown"}:
+                        parent_id = item.get("parent_run_id")
+                        while parent_id in current_runs:
+                            needs_review.add(parent_id)
+                            parent_id = current_runs[parent_id].get("parent_run_id")
+                for child in descendants:
+                    current = current_runs[child]
+                    if current["state"] == "waiting":
+                        if child in needs_review:
+                            self.recovery._review(current, "cancelled-with-unresolved-child")
+                            continue
+                        current.update({"state": "cancelled", "ok": False, "completed_at": now().isoformat()})
+                        current["execution"]["fence"] += 1
+                        self.runs.transition(current, "completed", "waiting-cancelled", "none")
+        return {**record, "cancel_requested": record.get("state") in {"running", "waiting"}, "remote_rollback": False}
 
-    def wait(self, run_id):
+    def wait(self, run_id, stop_on_wait=False):
         while True:
             record = self.get(run_id)
-            if record["state"] != "running":
+            if record["state"] not in {"running", "waiting"}:
                 return record
-            if time.time() > record["deadline"] + 5:
+            if stop_on_wait and record["state"] == "waiting":
+                return record
+            self.recovery.safety_scan()
+            if record["state"] == "running" and time.time() > record["deadline"] + 5:
                 self.cancel(run_id)
                 raise TimeoutError("Action deadline exceeded; reconcile the existing run.")
             time.sleep(0.05)
@@ -1162,10 +1200,11 @@ class ModuleRuntime:
             if cancel_path and Path(cancel_path).exists():
                 raise TimeoutError("Validation cancelled.")
             result = self.call(action_id, example["inputs"], "validation-" + uuid.uuid4().hex, content_hash, validation=True)
-            while result["state"] == "running":
+            while result["state"] in {"running", "waiting"}:
+                self.recovery.safety_scan()
                 if cancel_path and Path(cancel_path).exists():
                     self.cancel(result["run_id"])
-                if time.time() > result["deadline"] + 5:
+                if result["state"] == "running" and time.time() > result["deadline"] + 5:
                     self.cancel(result["run_id"])
                     raise TimeoutError("Validation worker deadline exceeded; reconcile before retry.")
                 time.sleep(0.05)
@@ -1404,7 +1443,7 @@ class ModuleRuntime:
         if record["state"] == "outcome_unknown":
             return {"ok": False, "gc_state": "deferred", "reason": "Reconcile uncertain effects before collecting their evidence."}
         runs = [self.get(path.parent.name) for path in (self.root / "runs").glob("*/run.json")]
-        if any(item.get("root_run_id") == run_id and item["state"] == "running" for item in runs):
+        if any(item.get("root_run_id") == run_id and item["state"] in {"running", "waiting"} for item in runs):
             return {"ok": False, "gc_state": "deferred", "reason": "An owning run is still active."}
         if record["state"] != "succeeded" and not release_outputs and now() - datetime.datetime.fromisoformat(record["completed_at"]) < datetime.timedelta(hours=1):
             return {"ok": True, "gc_state": "retained", "reason": "Failure diagnostics retained for one hour."}
@@ -1445,6 +1484,7 @@ class ModuleRuntime:
         return {"ok": True, "gc_state": record["gc_state"], "deleted": deleted}
 
     def recover(self):
+        scan = self.recovery.safety_scan()
         reconciled = []
         with self.lock(recover=True):
             self.runs.recover_launches()
@@ -1453,7 +1493,7 @@ class ModuleRuntime:
                 if record.get("engine") != "module":
                     continue
                 pid = record.get("execution", {}).get("workerPid") or record.get("launcher_pid")
-                if record["state"] == "running" and (not pid or not process_alive(pid)):
+                if not record.get("execution") and record["state"] == "running" and (not pid or not process_alive(pid)):
                     _atomic_write(path.with_name("cancel.json"), {"requested": True})
                     record.update({"state": "outcome_unknown", "ok": False, "completed_at": now().isoformat(),
                                    "error": "Worker unavailable after restart; backend reconciliation required, not resubmission."})
@@ -1465,7 +1505,7 @@ class ModuleRuntime:
             record = json.loads(path.read_text(encoding="utf-8"))
             if record.get("engine") == "module" and record.get("state") in {"succeeded", "failed", "cancelled"} and record.get("root_run_id") == record["run_id"]:
                 self.gc(record["run_id"])
-        return {"ok": True, "reconciled": reconciled}
+        return {"ok": True, "reconciled": reconciled + scan["reviewed"], "dispatched": scan["dispatched"]}
 
     def execute(self, record, context):
         definition = record["definition"]
@@ -1568,7 +1608,8 @@ class ModuleRuntime:
         context = {"store": str(self.store), "run_id": run_id, "capability": os.environ["PKM_ACTION_TOKEN"]}
         os.environ.pop("PKM_ACTION_TOKEN", None)
         try:
-            output = self.execute(record, context)
+            with self.recovery.lease(record):
+                output = self.execute(record, context)
             if self.artifact_ids(output):
                 with self.lock():
                     self.retain_inputs(output, record["root_run_id"])
@@ -1576,6 +1617,8 @@ class ModuleRuntime:
             if self.cancelled(record):
                 raise TimeoutError("Invocation cancelled or deadline exceeded.")
             record.update({"state": "succeeded", "output": output, "ok": True})
+        except ActionSuspended:
+            return
         except Exception as error:
             effects = action_contract(record["definition"])["effects"]
             record.update({"state": "outcome_unknown" if isinstance(error, TimeoutError) or effects != ["read"] else "failed", "ok": False, "error": str(error)})
@@ -1598,9 +1641,10 @@ def invoke_from_environment(action_id, inputs, key):
     pin = parent["definition"]["dependencies"].get(action_id)
     if not pin:
         raise PermissionError("Undeclared child Action.")
-    result = runtime.wait(runtime.call(action_id, inputs, key, pin, context)["run_id"])
+    result = runtime.wait(runtime.call(action_id, inputs, key, pin, context)["run_id"], stop_on_wait=True)
     if result["state"] != "succeeded":
-        raise RuntimeError("Child Action did not succeed: " + result["run_id"])
+        raise RuntimeError("Child Action requires durable continuation or review: " + result["run_id"] +
+                           ". Program stacks cannot be replayed; use a pipeline checkpoint for resumable waiting.")
     return result["output"]
 
 
@@ -1623,6 +1667,10 @@ if __name__ == "__main__":
                    "check_graph": runtime.graph_definition, "call": runtime.call, "run": runtime.get, "cancel_run": runtime.cancel,
                    "runs": runtime.list_runs,
                    "recover_runs": runtime.recover,
+                   "checkpoints": runtime.recovery.checkpoints, "respond_checkpoint": runtime.recovery.respond_checkpoint,
+                   "schedule_run": runtime.recovery.schedule_run, "wake_run": runtime.recovery.wake_run,
+                   "reconcile_run": runtime.recovery.reconcile_run, "safety_scan": runtime.recovery.safety_scan,
+                   "associate_project": runtime.recovery.associate_project,
                    "group_create": runtime.group_create, "action_rename": runtime.action_rename,
                    "action_move": runtime.action_move, "action_delete": runtime.action_delete,
                    "definition_read": runtime.definition_read, "definition_save": runtime.definition_save,
@@ -1634,7 +1682,7 @@ if __name__ == "__main__":
                 result = runtime.catalog()
             else:
                 result = methods[request["method"]](**request.get("params", {}))
-                if request["method"] in {"call", "run", "cancel_run"}:
+                if request["method"] in {"call", "run", "cancel_run", "reconcile_run", "schedule_run"}:
                     result = {**result, "execution_ok": result.get("ok"), "ok": True}
             print(json.dumps(result, allow_nan=False))
         except Exception as error:

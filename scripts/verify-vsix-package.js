@@ -86,7 +86,7 @@ assert(entries.includes("extension/resources/windows/pkm-stdio-proxy.js"),
   "VSIX must include the Windows JavaScript stdio proxy");
 assert(entries.includes("extension/resources/api_chat_control.py"),
   "VSIX must include the Agent-driven Chat MCP transport resource");
-for (const artifact of ["resources/action_runtime.py", "resources/action_modules.py", "resources/action_run_store.py", "resources/action_components.py", "resources/action-workbench.html", "dist/ui/action-browser.js", "dist/runtime/action-background-tasks.js", "dist/runtime/action-workbench-server.js"]) {
+for (const artifact of ["resources/action_runtime.py", "resources/action_modules.py", "resources/action_run_store.py", "resources/action_recovery.py", "resources/action_components.py", "resources/action-workbench.html", "dist/ui/action-browser.js", "dist/runtime/action-background-tasks.js", "dist/runtime/action-workbench-server.js"]) {
   assert(entries.includes(`extension/${artifact}`), `VSIX must include Action runtime and native UI: ${artifact}`);
 }
 assert(packageJson.contributes.chatParticipants.some(participant => participant.id === "personalKnowledge.actions"),

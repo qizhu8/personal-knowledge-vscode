@@ -10,7 +10,8 @@ import { BaselineEventKind, recordBaselineEvent } from "../runtime/pkm-baseline"
 
 const actionMethods = new Set(["catalog", "module_sets", "load", "remove", "import", "export", "validate", "queue", "cancel_validation",
   "resume_validation", "select_implementation", "save_graph", "check_graph", "call", "run", "runs", "recover_runs", "cancel_run", "choices", "answer_choice",
-  "group_create", "action_rename", "action_move", "action_delete", "definition_read", "definition_save", "source_read", "source_save"]);
+  "group_create", "action_rename", "action_move", "action_delete", "definition_read", "definition_save", "source_read", "source_save",
+  "checkpoints", "respond_checkpoint", "schedule_run", "wake_run", "reconcile_run", "safety_scan", "associate_project"]);
 let actionChatAvailable = false;
 let browserServer: { store: string; promise: Promise<ActionWorkbenchServer> } | undefined;
 const observedRuns = new Map<string, string>();
@@ -54,7 +55,7 @@ function checkActionAccess(): void {
   if (!vscode.workspace.isTrusted) throw new Error("Actions require a trusted VS Code workspace.");
 }
 
-async function actionRequest(context: vscode.ExtensionContext, method: string, params: Record<string, unknown>): Promise<any> {
+export async function actionRequest(context: vscode.ExtensionContext, method: string, params: Record<string, unknown>): Promise<any> {
   checkActionAccess();
   if (!actionMethods.has(method)) throw new Error("Unsupported Action operation.");
   const runtime = mcpRuntimeStatus();
@@ -114,12 +115,16 @@ export function initializeActionChat(context: vscode.ExtensionContext): void {
   context.subscriptions.push(participant);
 }
 
-export function openActionWorkbench(context: vscode.ExtensionContext): void {
+export function openActionWorkbench(context: vscode.ExtensionContext, runId?: string): void {
+  checkActionAccess();
+  if (runId && !/^action_run_[0-9a-f]{32}$/.test(runId)) throw new Error("Invalid Action Run.");
   const panel = vscode.window.createWebviewPanel("personalKnowledge.actions", "Action Workbench", vscode.ViewColumn.One,
     { enableScripts: true, retainContextWhenHidden: true });
   const nonce = randomBytes(24).toString("hex");
   const icons = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "dist", "webview", "codicon.css"));
-  const document = fs.readFileSync(path.join(context.extensionPath, "resources", "action-workbench.html"), "utf8");
+  let document = fs.readFileSync(path.join(context.extensionPath, "resources", "action-workbench.html"), "utf8");
+  if (runId) document = document.replace("initialView=vscode?.getState()||null",
+    `initialView={...(vscode?.getState()||{}),currentRun:${JSON.stringify(runId)}}`);
   panel.webview.html = document.replace("<head>", `<head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; font-src ${panel.webview.cspSource}; style-src ${panel.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';"><link rel="stylesheet" href="${icons}">`)
     .replace("<script>", `<script nonce="${nonce}">`);
   const listener = panel.webview.onDidReceiveMessage(async message => {
@@ -145,6 +150,11 @@ export function openActionWorkbench(context: vscode.ExtensionContext): void {
 
 async function workbenchRequest(context: vscode.ExtensionContext, method: string, params: Record<string, unknown>, browser = false): Promise<any> {
   checkActionAccess();
+  if (method === "open_project") {
+    if (typeof params.run_id !== "string" || !/^action_run_[0-9a-f]{32}$/.test(params.run_id)) throw new Error("Invalid Action Run.");
+    const projectId = await vscode.commands.executeCommand<string>("personalKnowledge.openActionRunProject", params.run_id);
+    return { ok: true, project_id: projectId };
+  }
   const platform = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux";
   const configuration = vscode.workspace.getConfiguration("personalKnowledge");
   const workspaceRoot = () => configuration.get<Record<string, string>>("actions.workspaceRoots", {})[platform];

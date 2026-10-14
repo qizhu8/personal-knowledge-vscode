@@ -23,6 +23,7 @@ const context = {
   projectRoute:{ section:'Overview' },
   projectSnapshot:{ projects:[project, { projectId:'other', name:'Other Project' }] },
   projectTodoExecutions:() => [],
+  projectCockpitOverview:() => '',
   projectCollaborationBody:() => '',
   projectZero:() => '',
   esc:value => String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'),

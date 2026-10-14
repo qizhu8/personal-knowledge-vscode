@@ -6,14 +6,37 @@ export class ActionBackgroundTasks {
   private readonly ids = new Set<string>();
   private fingerprint = "";
   private readonly timer: ReturnType<typeof setInterval>;
+  private readonly safetyTimer?: ReturnType<typeof setInterval>;
+  private scanning = false;
+  private disposed = false;
+  private initialScanStarted = false;
 
-  constructor(private readonly registry: BackgroundTaskRegistry, private readonly store: () => string) {
+  constructor(private readonly registry: BackgroundTaskRegistry, private readonly store: () => string,
+    private readonly safety?: { enabled: () => boolean; scan: () => Promise<unknown>; report: (error: unknown) => void }) {
     this.refresh();
     this.timer = setInterval(() => this.refresh(), 2000);
     this.timer.unref();
+    if (safety) {
+      void this.scan();
+      this.safetyTimer = setInterval(() => { void this.scan(); }, 30_000);
+      this.safetyTimer.unref();
+    }
+  }
+
+  async scan(): Promise<void> {
+    if (this.disposed || this.scanning || !this.safety) return;
+    this.scanning = true;
+    try {
+      if (!this.store() || !this.safety.enabled()) return;
+      this.initialScanStarted = true;
+      await this.safety.scan();
+    }
+    catch (error) { this.safety.report(error); }
+    finally { this.scanning = false; }
   }
 
   refresh(): void {
+    if (!this.initialScanStarted) void this.scan();
     try {
       const store = this.store();
       if (!store) {
@@ -61,7 +84,9 @@ export class ActionBackgroundTasks {
   }
 
   dispose(): void {
+    this.disposed = true;
     clearInterval(this.timer);
+    if (this.safetyTimer) clearInterval(this.safetyTimer);
     this.clear();
   }
 }

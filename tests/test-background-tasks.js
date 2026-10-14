@@ -131,8 +131,10 @@ assert.match(core, /settings:\[[^\]]*'backgroundTasks'/);
 assert.match(core, /command === 'backgroundTasks'[\s\S]{0,100}backgroundTasksOnSnapshot/);
 assert.match(knowledge, /state\.tab === 'backgroundTasks'[\s\S]{0,180}showBackgroundTasksTab/);
 assert.match(extensionSource, /respond\(\{ command: "backgroundTasks", data: backgroundTaskRegistry\.snapshot\(\) \}\)/);
-for (const producer of ["inventoryTask", "retrievalQueuedTask", "brokerRefreshQueuedTask", "contentCheckTask", "updateGitHubSyncBackgroundTask", "new ActionBackgroundTasks(backgroundTaskRegistry, getStorePath)"]) {
+for (const producer of ["inventoryTask", "retrievalQueuedTask", "brokerRefreshQueuedTask", "contentCheckTask", "updateGitHubSyncBackgroundTask"]) {
   assert(extensionSource.includes(producer), `missing background task producer adapter: ${producer}`);
 }
+assert.match(extensionSource, /new ActionBackgroundTasks\(backgroundTaskRegistry, getStorePath(?:,|\))/,
+  "Action background producer must retain the shared registry and knowledge-store binding");
 
 console.log("background task registry and Settings UI tests passed");

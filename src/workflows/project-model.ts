@@ -61,6 +61,39 @@ export interface ProjectRecord {
   name: string;
   systemKind?: ProjectSystemKind;
   version: number;
+  goal?: string;
+  successCriteria?: string[];
+  status?: "planned" | "active" | "completed";
+  currentMilestone?: string;
+  owner?: string;
+  deadline?: string;
+  autonomyPolicyReference?: string;
+  archivedAt?: string;
+  deletedAt?: string;
+  links?: ProjectSourceLink[];
+  decisions?: ProjectDecision[];
+  timeline?: ProjectTimelineEvent[];
+}
+
+export interface ProjectSourceLink {
+  kind: "action-run" | "recipe-run" | "agent-session" | "chat";
+  id: string;
+  linkedAt: string;
+}
+
+export interface ProjectDecision {
+  decisionId: string;
+  at: string;
+  reason: string;
+  changes: { field: string; before: unknown; after: unknown }[];
+}
+
+export interface ProjectTimelineEvent {
+  eventId: string;
+  at: string;
+  kind: string;
+  summary: string;
+  sourceId?: string;
 }
 
 export interface ThreadRecord {

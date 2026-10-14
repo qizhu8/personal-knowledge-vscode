@@ -19,6 +19,123 @@ from action_components import component_definitions
 
 
 class WorkbenchTests(unittest.TestCase):
+    def test_typed_checkpoint_inbox_polling_errors_keyboard_and_project_link(self):
+        html = (ROOT / "resources" / "action-workbench.html").read_text()
+        bootstrap = """
+window.__posts=[];window.__reject=true;window.__complete=false;
+window.__checkpoint={run_id:'action_run_'+'a'.repeat(32),checkpoint_id:'checkpoint_exact',
+  resume_token:'token_exact',proposal_digest:'digest_exact',kind:'approval',state:'waiting',
+  trigger:{kind:'human'},proposal:{change:'Review isolated fixture',revision:2,options:['draft','final']},
+  evidence:[{source:'fixture'}],owner:'user',deadline:null};
+window.acquireVsCodeApi=()=>({
+ getState:()=>({graph:{action_id:'fixture',name:'Fixture',nodes:[],edges:[]},currentRun:__checkpoint.run_id}),
+ setState:()=>{},postMessage:message=>{
+  __posts.push(message);let result={ok:true};
+  if(message.method==='catalog')result={actions:[],groups:[],module_sets:[],queue:{jobs:[]}};
+  if(message.method==='runs')result={runs:[]};
+  if(message.method==='choices')result={requests:[]};
+  if(message.method==='checkpoints')result={checkpoints:__complete?[]:[__checkpoint]};
+  if(message.method==='respond_checkpoint'){
+    if(__reject)result={ok:false,error:'Proposal changed; inspect the exact current revision.'};
+    else __complete=true;
+  }
+  if(message.method==='run')result={run_id:__checkpoint.run_id,
+    state:__complete?'succeeded':'waiting',userState:__complete?'Completed':'Waiting',
+    nextOwner:__complete?'none':'user',reasonCode:'human-checkpoint',checkpoint:__checkpoint,
+    output:__complete?{approved:true}:undefined};
+  queueMicrotask(()=>window.dispatchEvent(new MessageEvent('message',{data:{requestId:message.requestId,result}})));
+ }});
+"""
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                for width in [1280, 390]:
+                    for kind in ["input", "approval", "artifact-review", "decision", "exception"]:
+                        with self.subTest(width=width, kind=kind):
+                            page = browser.new_page(viewport={"width": width, "height": 900})
+                            errors = []
+                            page.on("pageerror", lambda error: errors.append(str(error)))
+                            page.route("http://127.0.0.1/", lambda route: route.fulfill(content_type="text/html", body=html))
+                            page.add_init_script(bootstrap + "\nwindow.__checkpoint.kind=" + json.dumps(kind) + ";")
+                            page.goto("http://127.0.0.1/")
+                            inbox = page.locator("#checkpoint-inbox")
+                            expect(inbox).to_contain_text(kind)
+                            expect(page.locator("#run-summary")).to_contain_text("Waiting")
+                            answer = inbox.get_by_role("textbox", name="Checkpoint response")
+                            answer.fill('{"approved":')
+                            page.evaluate("refresh()")
+                            page.wait_for_function("!refreshing")
+                            expect(answer).to_have_value('{"approved":')
+                            self.assertTrue(answer.evaluate("element => element === document.activeElement"))
+                            submit = inbox.get_by_role("button", name="Submit response for this proposal")
+                            submit.click()
+                            expect(inbox.locator('[role="status"]')).not_to_be_empty()
+                            self.assertFalse(page.evaluate("__posts.some(item=>item.method==='respond_checkpoint')"))
+                            answer.fill('{"approved":true}')
+                            answer.press("Tab")
+                            page.keyboard.press("Enter")
+                            expect(inbox).to_contain_text("Proposal changed")
+                            expect(submit).to_be_enabled()
+                            expect(answer).to_have_value('{"approved":true}')
+                            page.locator("#run-open-project").click()
+                            self.assertEqual(page.evaluate("__posts.find(item=>item.method==='open_project').params.run_id"),
+                                             "action_run_" + "a" * 32)
+                            page.evaluate("__reject=false")
+                            submit.click()
+                            expect(page.locator("#run-summary")).to_contain_text("Completed")
+                            expect(inbox.locator("article")).to_have_count(0)
+                            sent = page.evaluate("__posts.filter(item=>item.method==='respond_checkpoint').at(-1).params")
+                            self.assertEqual(sent["resume_token"], "token_exact")
+                            self.assertEqual(sent["proposal_digest"], "digest_exact")
+                            self.assertEqual(sent["answer"], {"approved": True})
+                            self.assertEqual(errors, [])
+                            page.close()
+            finally:
+                browser.close()
+
+    def test_reconciliation_requires_evidence_and_preserves_stale_cas_form(self):
+        html = (ROOT / "resources" / "action-workbench.html").read_text()
+        bootstrap = """
+window.__posts=[];
+window.acquireVsCodeApi=()=>({
+ getState:()=>({graph:{nodes:[],edges:[]},lastRun:'action_run_'+'b'.repeat(32)}),setState:()=>{},
+ postMessage:message=>{
+  __posts.push(message);let result={ok:true};
+  if(message.method==='catalog')result={actions:[],groups:[],module_sets:[],queue:{jobs:[]}};
+  if(message.method==='runs')result={runs:[]};
+  if(message.method==='run')result={run_id:message.params.run_id,state:'outcome_unknown',userState:'Reconciling',
+    execution:{version:7,contract:{reconciler:{kind:'manual'}}}};
+  if(message.method==='reconcile_run')result={ok:false,error:'Execution version changed; refresh evidence.'};
+  queueMicrotask(()=>window.dispatchEvent(new MessageEvent('message',{data:{requestId:message.requestId,result}})));
+ }});
+"""
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.route("http://127.0.0.1/", lambda route: route.fulfill(content_type="text/html", body=html))
+                page.add_init_script(bootstrap)
+                page.goto("http://127.0.0.1/")
+                inbox = page.locator("#checkpoint-inbox")
+                button = inbox.get_by_role("button", name="Record verified outcome")
+                button.click()
+                expect(inbox).to_contain_text("Describe the evidence")
+                self.assertFalse(page.evaluate("__posts.some(item=>item.method==='reconcile_run')"))
+                inbox.get_by_label("Reconciliation outcome").select_option("succeeded")
+                inbox.get_by_label("Reconciliation reason").fill("Verified exact external resource revision")
+                inbox.get_by_label("Reconciliation output").fill('{"value":42}')
+                page.evaluate("refresh()")
+                page.wait_for_function("!refreshing")
+                expect(inbox.get_by_label("Reconciliation output")).to_have_value('{"value":42}')
+                button.click()
+                expect(inbox).to_contain_text("Execution version changed")
+                expect(button).to_be_enabled()
+                sent = page.evaluate("__posts.find(item=>item.method==='reconcile_run').params")
+                self.assertEqual(sent["expected_version"], 7)
+                self.assertEqual(sent["evidence"]["output"], {"value": 42})
+            finally:
+                browser.close()
+
     def test_durable_launch_key_survives_transport_failure_and_reload(self):
         html = (ROOT / "resources" / "action-workbench.html").read_text()
         bootstrap = """
@@ -561,7 +678,7 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     page.locator("#validate").click()
                     page.wait_for_function("!document.querySelector('#run').disabled", timeout=30000)
                     page.locator("#run").click()
-                    page.wait_for_function("document.querySelector('#result').textContent.includes('9')", timeout=30000)
+                    page.wait_for_function("JSON.parse(document.querySelector('#result').textContent||'{}').state === 'Completed'", timeout=30000)
                     self.assertEqual(json.loads(page.locator("#result").inner_text())["output"], {"sum": 9})
                     page.locator('#toggle-parameters').click()
                     self.assertFalse(page.locator('#run').is_disabled())
@@ -659,8 +776,8 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     page.wait_for_selector('.chat-options input:not([disabled])', timeout=30000)
                     run_id = page.evaluate('currentRun')
                     page.locator('#cancel-run').click()
-                    expect(page.locator('#result')).to_contain_text('Reconciling', timeout=30000)
-                    self.assertEqual(page.evaluate('currentRun'), run_id)
+                    expect(page.locator('#result')).to_contain_text('Cancelled', timeout=30000)
+                    page.wait_for_function('currentRun === null')
                     self.assertTrue(ModuleRuntime(active_store[0]).cancelled(ModuleRuntime(active_store[0]).get(run_id)))
                     self.assertEqual(page.evaluate('JSON.stringify(graph)'), before_cancel)
                     self.assertTrue(page.locator('#cancel-run').is_disabled())

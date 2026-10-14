@@ -214,7 +214,9 @@ const rememberSync = (target, result) => {
     assert.strictEqual(manifest.schema, 3, "new syncs publish stable identity, capability, privacy, and digest metadata");
     assert.deepStrictEqual(manifest.capabilities.required, ["explicit-deletions", "stable-entity-identity"]);
     assert(manifest.files.some(file => file.path === "skills/Private/Two.md" && file.privacy === "private" && file.itemId === "Private/Two"));
-    assert(manifest.files.some(file => file.path === "scripts/.run.sh.pkm.json" && file.itemId === "run.sh"));
+    assert(manifest.files.some(file => file.path === "scripts/.run.sh.pkm.json"
+      && file.itemId === scriptIdentity && file.member === "identity-sidecar"));
+    assert(manifest.files.some(file => file.path === "scripts/run.sh" && file.itemId === scriptIdentity && file.member === ""));
 
     const second = await syncGitHubTarget(target, catalog, checkoutRoot);
     assert.strictEqual(second.changed, false);

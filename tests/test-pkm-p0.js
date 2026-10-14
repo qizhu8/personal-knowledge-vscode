@@ -160,7 +160,8 @@ try {
 } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 
 const source = fs.readFileSync(path.join(__dirname, "../src/webview/panel/15-projects.js"), "utf8");
-const context = { vscode: { getState: () => ({}) }, RecipeGraph: { moduleTemplates: [] }, esc: String, setInterval: () => 0 };
+const context = { vscode: { getState: () => ({}) }, RecipeGraph: { moduleTemplates: [] }, esc: String, setInterval: () => 0,
+  window: { addEventListener: () => {} } };
 vm.createContext(context); vm.runInContext(source, context);
 const projection = projectExecution("agent-session", "running", { interrupted: true });
 assert.strictEqual(context.agentSessionDisplayStatus({ status: "running", projection }).label, "Reconciling");

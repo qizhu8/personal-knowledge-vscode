@@ -61,7 +61,7 @@ try {
     fs.readFileSync(path.join(repositoryRoot, "resources", "chat_server.py.template"), "utf8")
       .replaceAll("%%CHAT_MCP_VERSION%%", "chat-test"),
   );
-  for (const name of ["recipe_runtime.py", "action_runtime.py", "action_modules.py", "action_run_store.py", "action_components.py", "recipe_health.py", "agent_session_runtime.py", "api_chat_control.py", "mcp_call_guard.py", "diagnostic_log.py"]) {
+  for (const name of ["recipe_runtime.py", "action_runtime.py", "action_modules.py", "action_run_store.py", "action_recovery.py", "action_components.py", "recipe_health.py", "agent_session_runtime.py", "api_chat_control.py", "mcp_call_guard.py", "diagnostic_log.py"]) {
     fs.copyFileSync(path.join(repositoryRoot, "resources", name), path.join(moduleDirectory, name));
   }
 

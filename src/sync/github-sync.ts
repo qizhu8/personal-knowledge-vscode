@@ -7,6 +7,7 @@ import { promisify } from "util";
 import { canonicalJson, compileWorkflowDefinitionV1 } from "../workflows/workflow-contracts";
 import { compareVersionOrder } from "../runtime/version-order";
 import { knowledgeSyncDeletionRecords } from "../knowledge/filestore";
+import { alignSyncScriptIdentities, mergeSyncScriptIdentities, readSyncScriptIdentity, syncHistoricalScriptTrash, syncScriptAliasPath, syncScriptSidecarPath, SyncHistoricalTrashEvidence } from "./github-sync-script-identity";
 import { sameKnowledgeRoot } from "./github-sync-coordinator";
 import { GitHubSyncContentIssue, GitHubSyncContentRepairError, inspectConflictMarkers } from "./github-sync-content-repair";
 import { GitHubSyncBaseEvidence, verifyGitHubSyncBaseDigest } from "./github-sync-base-integrity";
@@ -174,6 +175,8 @@ export interface GitHubSyncCatalogItem {
   content?: string;
   dependencies?: Array<{ source: string; destination: string }>;
   sourceLocator?: GitHubSyncContentIssue["sourceLocator"];
+  identityAliases?: string[];
+  legacyIds?: string[];
 }
 
 export type GitHubSyncCatalog = Record<GitHubSyncContentType, GitHubSyncCatalogItem[]>;
@@ -241,7 +244,10 @@ export interface GitHubSyncConflict {
   plannedOperation?: "write" | "delete";
   baseCommit?: string;
   deletionEvidence?: GitHubSyncDeletionEvidence;
-  absenceEvidence?: { selected: boolean; excludedPaths: string[]; historicalPaths: string[]; localDeletionRecorded: boolean };
+  absenceEvidence?: {
+    selected: boolean; excludedPaths: string[]; historicalPaths: string[]; localDeletionRecorded: boolean;
+    historicalTrash?: SyncHistoricalTrashEvidence[];
+  };
 }
 
 export class GitHubSyncConflictError extends Error {
@@ -787,7 +793,9 @@ function selectionMatches(
 
 function selectedItem(target: GitHubSyncTarget, type: GitHubSyncContentType, item: GitHubSyncCatalogItem): boolean {
   return !githubSyncIsSystemItem(type, item)
-    && selectionMatches(target, type, item.isPrivate ? "private" : "public", item.id, item.cat, item.destination);
+    && [item.id, ...(item.legacyIds || []), ...(type === "scripts" ? (item.identityAliases || [])
+      .map(syncScriptAliasPath).filter((value): value is string => !!value).map(value => value.slice("scripts/".length)) : [])]
+      .some(id => selectionMatches(target, type, item.isPrivate ? "private" : "public", id, item.cat, item.destination));
 }
 
 export function githubSyncSafeRelativePath(value: string): string {
@@ -840,7 +848,8 @@ function collectItemFiles(item: GitHubSyncCatalogItem,
         if (dependencyStat.isSymbolicLink() || !dependencyStat.isFile()) throw new Error(`Markdown asset dependency is invalid: ${dependency.source}`);
         files.push({
           destination: githubSyncSafeRelativePath(dependency.destination),
-          member: githubSyncSafeRelativePath(dependency.destination),
+          member: item.destination.startsWith("scripts/") && dependency.destination === syncScriptSidecarPath(item.destination)
+            ? "identity-sidecar" : githubSyncSafeRelativePath(dependency.destination),
           content: fs.readFileSync(dependencySource),
           sourcePath: dependencySource,
         });
@@ -1022,6 +1031,7 @@ function selectedFiles(target: GitHubSyncTarget, catalog: GitHubSyncCatalog, exc
       [...folderEntries].map(([folder, folderFiles]) => [folder, fingerprintGitHubSyncEntries(folderFiles)]),
     );
   }
+  alignSyncScriptIdentities([files]);
   return { files, fingerprints, folderFingerprints };
 }
 
@@ -1150,6 +1160,14 @@ export function parseManagedManifest(raw: string): GitHubSyncManifest {
     const identityMember = `${file.type}\0${file.itemId}\0${file.member}`;
     if (identityMembers.has(identityMember)) throw new Error(`Remote manifest repeats stable member identity for ${file.itemId}.`);
     identityMembers.add(identityMember);
+  }
+  const deletionKeys = new Set<string>();
+  for (const deletion of deletions) {
+    const key = entityKey(deletion.type, deletion.itemId);
+    if (deletionKeys.has(key) || files.some((file: GitHubSyncManagedFile) => entityKey(file.type, file.itemId) === key)) {
+      throw new Error("Remote PKM manifest has duplicate deletion evidence or a live entity with a tombstone.");
+    }
+    deletionKeys.add(key);
   }
   return {
     schema: manifest.schema,
@@ -1686,6 +1704,10 @@ export async function verifyGitHubStagedFiles(
       batch.map(file => ({ path:file.path, size:sizes.get(file.path)! })), 64 * 1024 * 1024);
     for (const file of batch) {
       const content = contents.get(file.path)!;
+      if (file.content && !githubSyncComparisonContent(file.type, content).equals(githubSyncComparisonContent(file.type, file.content))) {
+        throw new Error(`Staged content differs from the validated Sync plan: ${file.path}`);
+      }
+      validateManagedContent({ ...file, digest: fileDigest(content) }, content, true);
       file.digest = fileDigest(content);
       file.content = content;
     }
@@ -2004,13 +2026,14 @@ export function collectGitHubSyncLocalContentIssues(files: GitHubSyncManagedFile
   for (const file of files) {
     const content = file.content!;
     const inspection = githubSyncIsTextContent(file.path, content) ? inspectConflictMarkers(content.toString("utf8")) : { lines: [] };
-    const item = catalog[file.type].find(candidate => candidate.id === file.itemId);
+    const item = catalog[file.type].find(candidate => candidate.id === file.itemId
+      || file.type === "scripts" && (candidate.destination === file.path || candidate.dependencies?.some(dependency => dependency.destination === file.path)));
     const sourcePath = item?.content === undefined && item?.source
       ? file.member
         ? item.dependencies?.find(dependency => dependency.destination === file.path)?.source
           || path.join(item.source, ...file.member.split("/"))
         : item.source
-      : undefined;
+      : file.sourceLocator?.kind === "file" ? file.sourceLocator.path : undefined;
     const common = {
       path: file.path, type: file.type, itemId: file.itemId, source: "local" as const,
       digest: file.digest, content: content.toString("utf8"),
@@ -2265,6 +2288,8 @@ function migrateBaseManifestToCanonicalSchema(
     schema: GITHUB_SYNC_MANIFEST_SCHEMA,
     minimumExtensionVersion: remote.minimumExtensionVersion,
     files: base.files.map(file => {
+      // Script ancestry needs validated identity/path lineage, not a unique content hash.
+      if (file.type === "scripts") return file;
       const exact = remoteByPath.get(file.path);
       const contentMatches = remoteByContent.get(`${file.type}\0${managedComparisonDigest(file)}`) || [];
       const canonical = exact || (contentMatches.length === 1 ? contentMatches[0] : undefined);
@@ -2313,6 +2338,17 @@ function entityState(files: GitHubSyncManagedFile[] | undefined): string | undef
   })));
 }
 
+function scriptDeletionMetadataEquivalent(base: GitHubSyncManagedFile[] | undefined, remote: GitHubSyncManagedFile[] | undefined): boolean {
+  if (base?.length !== 1 || remote?.length !== 2 || base[0].type !== "scripts" || !isScriptSidecarEntity(remote)) return false;
+  const body = remote.find(file => file.member === "")!;
+  const sidecar = remote.find(file => file.member === "identity-sidecar");
+  if (!sidecar?.content || base[0].member !== "" || base[0].path !== body.path
+    || base[0].privacy !== body.privacy || base[0].category !== body.category
+    || managedComparisonDigest(base[0]) !== managedComparisonDigest(body)) return false;
+  return readSyncScriptIdentity(sidecar.content).knowledgeId === body.itemId
+    && sidecar.itemId === body.itemId && sidecar.privacy === body.privacy && sidecar.category === body.category;
+}
+
 function entityContentState(files: GitHubSyncManagedFile[] | undefined): string | undefined {
   if (!files) return undefined;
   return JSON.stringify(files.map(file => ({ member: file.member, digest: managedComparisonDigest(file) })));
@@ -2320,7 +2356,8 @@ function entityContentState(files: GitHubSyncManagedFile[] | undefined): string 
 
 function entityPathState(files: GitHubSyncManagedFile[] | undefined): string | undefined {
   if (!files) return undefined;
-  return JSON.stringify(files.map(file => ({ member: file.member, path: file.path })));
+  return JSON.stringify(files.filter(file => file.type !== "scripts" || file.member === "")
+    .map(file => ({ member: file.member, path: file.path })));
 }
 
 function entityPathContentState(files: GitHubSyncManagedFile[] | undefined): string | undefined {
@@ -2362,10 +2399,12 @@ function reconcileMigratedEntityIdentities(
   let reconciled = 0;
   for (const [legacyKey, files] of [...entities]) {
     if (authorityEntities.has(legacyKey)) continue;
+    if (files[0]?.type === "scripts" && files.some(file => /^script_[a-f0-9]{24}$/.test(file.itemId) || file.member === "identity-sidecar")) continue;
     let matches = authorityByPathContent.get(entityPathContentState(files)!) || [];
     if (matches.length !== 1) matches = authorityByPathLayout.get(entityPathLayoutState(files)!) || [];
     if (matches.length !== 1 || entities.has(matches[0].key)) continue;
     const canonical = matches[0];
+    if (files[0]?.type === "scripts" && canonical.files.some(file => /^script_[a-f0-9]{24}$/.test(file.itemId) || file.member === "identity-sidecar")) continue;
     const authorityByMember = new Map(canonical.files.map(file => [file.member || "", file]));
     const canonicalized = files.map(file => {
       const authority = authorityByMember.get(file.member || "")
@@ -2615,6 +2654,7 @@ async function syncGitHubTargetAttempt(
   const checkout = path.join(checkoutRoot, normalized.id, "repository");
   const issues: GitHubSyncContentIssue[] = [];
   const localMaterialized = selectedFiles(normalized, catalog, new Set(), issues);
+  const localScopeSnapshot = [...localMaterialized.files];
   const localExcluded = await githubSyncExcludedPaths(storeRoot, [...localMaterialized.files.map(file => file.path), ...issues.map(issue => issue.path)]);
   localMaterialized.files = localMaterialized.files.filter(file => !localExcluded.has(file.path));
   for (let index = issues.length - 1; index >= 0; index--) if (localExcluded.has(issues[index].path)) issues.splice(index, 1);
@@ -2706,8 +2746,41 @@ async function syncGitHubTargetAttempt(
   }
   reportFetch(`Loaded Base manifest: ${baseManifest.files.length} files, ${baseManifest.deletions.length} deletions`);
   const baseFiles = new Map(baseManifest.files.map(file => [file.path, file]));
+  const scriptLocators = alignSyncScriptIdentities([
+    localScopeSnapshot, [...localFiles.values()], [...remoteFiles.values()], [...baseFiles.values()],
+  ]);
+  // Old item selections are locators, not a new grant of access to a privacy scope.
+  for (const privacy of ["public", "private"] as const) {
+    const items = normalized.selection[privacy].scripts.items;
+    normalized.selection[privacy].scripts.items = [...new Set([...items, ...items.flatMap(id => {
+      const canonical = scriptLocators.get(id);
+      return canonical ? [canonical] : [];
+    })])];
+  }
+  const canonicalDeletion = (deletion: GitHubSyncDeletionEvidence): GitHubSyncDeletionEvidence =>
+    deletion.type === "scripts" && scriptLocators.has(deletion.itemId)
+      ? { ...deletion, itemId: scriptLocators.get(deletion.itemId)! } : deletion;
+  remoteManifest.deletions = remoteManifest.deletions.map(canonicalDeletion);
+  baseManifest.deletions = baseManifest.deletions.map(canonicalDeletion);
+  for (const deletion of remoteManifest.deletions) {
+    if ([...remoteFiles.values()].some(file => file.type === deletion.type && file.itemId === deletion.itemId)) {
+      throw new Error("Remote tombstone conflicts with a validated live Script identity.");
+    }
+  }
+  const scopeProtected = new Set<string>();
+  for (const file of localScopeSnapshot) if (file.type === "scripts" && localExcluded.has(file.path)) scopeProtected.add(entityKey(file.type, file.itemId));
+  for (const item of catalog.scripts) {
+    const source = item.dependencies?.find(dependency => dependency.destination === syncScriptSidecarPath(item.destination))?.source;
+    if (source && fs.existsSync(source) && fs.lstatSync(source).isSymbolicLink()) throw new Error("Script identity sidecar is a symbolic link; review required.");
+    const identity = source && fs.existsSync(source) ? readSyncScriptIdentity(fs.readFileSync(source)).knowledgeId
+      : /^script_[a-f0-9]{24}$/.test(item.id) ? item.id : scriptLocators.get(item.destination);
+    if (identity && !selectedItem(normalized, "scripts", item)) scopeProtected.add(entityKey("scripts", identity));
+  }
   const scopePaths = [...localFiles.keys(), ...remoteFiles.keys(), ...baseFiles.keys()];
   const excluded = await githubSyncExcludedPaths(storeRoot, scopePaths);
+  for (const file of [...localFiles.values(), ...remoteFiles.values(), ...baseFiles.values()]) {
+    if (file.type === "scripts" && excluded.has(file.path)) scopeProtected.add(entityKey(file.type, file.itemId));
+  }
   for (const relative of excluded) {
     localFiles.delete(relative);
     baseFiles.delete(relative);
@@ -2718,6 +2791,7 @@ async function syncGitHubTargetAttempt(
   if (storeRoot) {
     for (const managed of [...remoteFiles.values(), ...baseFiles.values()]) {
       if (managed.type === "recipes" || localFiles.has(managed.path)) continue;
+      if (scopeProtected.has(entityKey(managed.type, managed.itemId))) continue;
       const source = syncLocalPath(storeRoot, managed.path);
       if (!fs.existsSync(source) || !fs.lstatSync(source).isFile()) continue;
       const rawSnapshot = fs.readFileSync(source);
@@ -2741,7 +2815,7 @@ async function syncGitHubTargetAttempt(
   for (const [relative, local] of localFiles) {
     const base = baseFiles.get(relative);
     const remote = remoteFiles.get(relative);
-    if (!base || !remote || remote.type === "recipes" || base.type !== remote.type || base.itemId !== remote.itemId
+    if (!base || !remote || remote.type === "recipes" || remote.type === "scripts" || base.type !== remote.type || base.itemId !== remote.itemId
       || local.type !== remote.type || local.itemId === remote.itemId
       || (remoteOwnerCounts.get(entityKey(remote.type, remote.itemId)) || 0) < 2
       || !selectionMatches(normalized, remote.type, remote.privacy, remote.itemId, remote.category)) continue;
@@ -2765,7 +2839,8 @@ async function syncGitHubTargetAttempt(
     reconcileMigratedEntityIdentities(localEntities, remoteEntities, finalRemote);
   }
   const localDeletionMap = new Map((migratedLocalSyncSchema ? [] : normalized.pendingDeletions || [])
-    .map(deletion => [entityKey(deletion.type, deletion.itemId), deletion]));
+    .map(canonicalDeletion).map(deletion => [entityKey(deletion.type, deletion.itemId), deletion]));
+  const historicalTrash = storeRoot ? syncHistoricalScriptTrash(storeRoot) : [];
   const durableDeletions = new Map((storeRoot ? knowledgeSyncDeletionRecords(storeRoot) : [])
     .map(record => [record.path, record]));
   const gitDeletions = await githubSyncGitDeletionRecords(storeRoot, baseFiles.values());
@@ -2846,6 +2921,10 @@ async function syncGitHubTargetAttempt(
         excludedPaths: [...excluded].filter(relative => [...(base || []), ...(remote || [])].some(file => file.path === relative)),
         historicalPaths: (base || []).map(file => file.path),
         localDeletionRecorded: localDeletionMap.has(entityKey(metadata.type, metadata.itemId)),
+        historicalTrash: metadata.type === "scripts" && !local ? historicalTrash.filter(evidence =>
+          evidence.knowledgeId === metadata.itemId
+          && (base || []).some(file => file.member === "" && file.path === evidence.originalPath)
+          && (!normalized.lastSync?.at || Date.parse(evidence.deletedAt) >= Date.parse(normalized.lastSync.at))) : undefined,
       } : undefined,
       base: baseFile && normalized.lastSync?.commit
         ? await gitBuffer(checkout, ["cat-file", "blob", `${normalized.lastSync.commit}:${baseFile.path}`], undefined, 64 * 1024 * 1024)
@@ -2919,6 +2998,15 @@ async function syncGitHubTargetAttempt(
     const privacy = metadata?.privacy || deletion?.privacy || "public";
     if (!selectionMatches(normalized, type, privacy, itemId, category)
       || [...(base || []), ...(local || []), ...(remote || [])].some(isSystemManagedFile)) continue;
+    if (scopeProtected.has(key)) {
+      recordResolution("unchanged", remote, base);
+      continue;
+    }
+    if (localDeletionMap.has(key) && localEntities.has(key)) {
+      recordResolution("human-required", localEntities.get(key), base, remote);
+      await conflictEntity(base, localEntities.get(key), remote);
+      continue;
+    }
     if (!base && !local && !remote && [...retainedRemote.values(), ...baseManifest.files].some(file =>
       excluded.has(file.path) && entityKey(file.type, file.itemId) === key)) continue;
     if (!local && remote && [...retainedRemote.values()].some(file =>
@@ -2949,8 +3037,9 @@ async function syncGitHubTargetAttempt(
     }
 
     const baseState = baseDeletionMap.has(key) ? "deleted" : entityState(base);
-    const localState = localDeletionMap.has(key) || (baseState === "deleted" && !local) ? "deleted" : entityState(local);
-    const remoteState = remoteDeletionMap.has(key) ? "deleted" : entityState(remote);
+    const localState = localDeletionMap.has(key) || (!local && (baseState === "deleted" || remoteDeletionMap.has(key))) ? "deleted" : entityState(local);
+    const metadataMigration = localDeletionMap.has(key) && scriptDeletionMetadataEquivalent(base, remote);
+    const remoteState = remoteDeletionMap.has(key) ? "deleted" : metadataMigration ? baseState : entityState(remote);
     const localChanged = localState !== baseState;
     const remoteChanged = remoteState !== baseState;
 
@@ -2994,15 +3083,26 @@ async function syncGitHubTargetAttempt(
             compatible = false;
             break;
           }
+          const baseBody = base.find(file => file.member === "");
+          const localBody = local.find(file => file.member === "");
+          const remoteBody = remote.find(file => file.member === "");
+          const migratedSidecar = member === "identity-sidecar" && !baseFile && !!baseBody;
           const chosenMetadata = localFile.path === remoteFile.path
             ? remoteFile
+            : migratedSidecar && localBody?.path !== baseBody!.path && remoteBody?.path === baseBody!.path
+              ? localFile
+              : migratedSidecar && remoteBody?.path !== baseBody!.path && localBody?.path === baseBody!.path
+                ? remoteFile
             : baseFile && localFile.path !== baseFile.path && remoteFile.path === baseFile.path
               ? localFile
               : baseFile && remoteFile.path !== baseFile.path && localFile.path === baseFile.path
                 ? remoteFile : undefined;
           if (!chosenMetadata) { compatible = false; break; }
           let mergedContent: Buffer | undefined;
-          if (managedComparisonDigest(localFile) === managedComparisonDigest(remoteFile)) mergedContent = remoteFile.content;
+          if (member === "identity-sidecar" && localFile.type === "scripts") {
+            mergedContent = mergeSyncScriptIdentities(localFile.content!, remoteFile.content!, itemId);
+          }
+          else if (managedComparisonDigest(localFile) === managedComparisonDigest(remoteFile)) mergedContent = remoteFile.content;
           else if (baseFile && managedComparisonDigest(localFile) === managedComparisonDigest(baseFile)) mergedContent = remoteFile.content;
           else if (baseFile && managedComparisonDigest(remoteFile) === managedComparisonDigest(baseFile)) mergedContent = localFile.content;
           else if (baseFile) mergedContent = await mergeManagedContent(
@@ -3063,6 +3163,14 @@ async function syncGitHubTargetAttempt(
     }
   }
 
+  for (const pending of normalized.pendingDeletions || []) {
+    const canonical = canonicalDeletion(pending);
+    const key = entityKey(canonical.type, canonical.itemId);
+    if (finalDeletions.has(key) && ![...finalRemote.values()].some(file => entityKey(file.type, file.itemId) === key)
+      && !acknowledgedDeletions.some(item => item.type === pending.type && item.itemId === pending.itemId)) {
+      acknowledgedDeletions.push(pending);
+    }
+  }
   const applyChanges = async (conflictCommit: string): Promise<ReturnType<typeof applyLocalChanges>> => {
     try {
       return applyLocalChanges(storeRoot, localWrites, localDeletes.filter(item => !finalRemote.has(item.file.path)));

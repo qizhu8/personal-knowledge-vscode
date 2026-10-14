@@ -34,6 +34,9 @@ async function scenario(boundary) {
   const relative = "notes/Review/One.md", destination = path.join(store, relative);
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   fs.writeFileSync(destination, "original\r\n");
+  fs.mkdirSync(path.join(store, "scripts"), { recursive: true });
+  fs.writeFileSync(path.join(store, "scripts/Unrelated.script"), "unrelated\n");
+  fs.writeFileSync(path.join(store, "scripts/.Unrelated.script.pkm.json"), '{"schema":"invalid"}\n');
   const oldRecipe = recipe("original"), newRecipe = recipe("remote");
   const remoteCommit = "a".repeat(40);
   const target = { id: "target", repository: "synthetic", branch: "main",
@@ -104,9 +107,96 @@ async function scenario(boundary) {
   scenarios++;
   console.log(`acceptance recovery scenario passed: ${boundary}`);
 }
+async function scriptIdentityScenario(mode) {
+  const store = path.join(root, mode, "store"), state = path.join(root, mode, "state");
+  const id = `script_${"1".repeat(24)}`, wrongId = `script_${"2".repeat(24)}`;
+  const resultPath = "scripts/Review/After.script", resultSidecar = "scripts/Review/.After.script.pkm.json";
+  const localPath = mode === "selected-plan" ? resultPath : "scripts/Review/Before.script";
+  const localSidecar = mode === "selected-plan" ? resultSidecar : "scripts/Review/.Before.script.pkm.json";
+  const identity = knowledgeId => Buffer.from(JSON.stringify({
+    schema: "pkm.script/v1", knowledgeId, aliases: ["pkm://scripts/Review/Before.script"],
+  }));
+  const original = Buffer.from("original\r\n"), planned = Buffer.from("selected plan\n");
+  const originalIdentity = identity(id), plannedIdentity = identity(mode === "invalid-primary" ? wrongId : id);
+  fs.mkdirSync(path.dirname(path.join(store, localPath)), { recursive: true });
+  fs.writeFileSync(path.join(store, localPath), original);
+  fs.writeFileSync(path.join(store, localSidecar), originalIdentity);
+  if (mode === "duplicate-active") {
+    fs.writeFileSync(path.join(store, "scripts/Review/Copied.script"), original);
+    fs.writeFileSync(path.join(store, "scripts/Review/.Copied.script.pkm.json"), originalIdentity);
+  }
+  const remoteCommit = "a".repeat(40);
+  const target = { id: "target", repository: "synthetic", branch: "main",
+    automation: { enabled: false }, lastSync: { commit: "b".repeat(40), fingerprints: {} } };
+  const metadata = { type: "scripts", itemId: id, category: "Review", privacy: "public",
+    reason: "pending-apply", plannedOperation: "write", baseCommit: "b".repeat(40) };
+  conflicts.storeGitHubSyncConflict(state, "target", new sync.GitHubSyncConflictError(remoteCommit, [
+    { ...metadata, path: resultPath, localPath, resultPath, member: "",
+      base: original, local: original, remote: planned, expectedLocal: original, plannedContent: planned },
+    { ...metadata, path: resultSidecar, localPath: localSidecar, resultPath: resultSidecar, member: "identity-sidecar",
+      base: originalIdentity, local: originalIdentity, remote: plannedIdentity,
+      expectedLocal: originalIdentity, plannedContent: plannedIdentity },
+  ]));
+  if (mode === "selected-remote-move") {
+    conflicts.selectGitHubSyncConflictCandidate(state, "target", resultPath, "remote");
+    conflicts.selectGitHubSyncConflictCandidate(state, "target", resultSidecar, "remote");
+  }
+  assert(conflicts.readGitHubSyncConflict(state, "target").files.every(file =>
+    file.candidateSource === (mode === "selected-remote-move" ? "remote" : "plan")));
+  let intents = 0, writes = 0, requests = 0, refreshes = 0;
+  const context = vm.createContext({
+    fs, path, Buffer, ...sync, ...conflicts,
+    githubSyncStateDirectory: () => state, requireSavedGitHubSyncConflictDocuments: () => {},
+    githubSyncTargetById: () => target, readGitHubSyncCredentials: async () => undefined,
+    fetchGitHubRemoteSnapshot: async () => ({ commit: remoteCommit }),
+    currentProjectStore: () => ({ list: () => ({ recipes: [] }), recipeSyncEntries: () => [] }),
+    getStorePath: () => store, githubSyncCandidateDestination: (base, rel) => path.join(base, rel),
+    applyGitHubSyncRecipeDeletes: () => {}, setTopLevelPrivacy: () => {},
+    markGitHubSyncConflictApplying: (...args) => { intents++; return conflicts.markGitHubSyncConflictApplying(...args); },
+    replaceGitHubSyncFilesAtomically: (...args) => { writes++; return sync.replaceGitHubSyncFilesAtomically(...args); },
+    mutateGitHubSyncTargets: async (_ctx, _reason, action) => action([target]),
+    githubSyncScheduler: { request: async () => { requests++; } },
+    invalidateSharedContentCatalog: () => {}, refreshKnowledgeInventory: async () => { refreshes++; },
+    _treeProvider: undefined,
+  });
+  vm.runInContext(handler, context);
+  if (mode === "invalid-primary" || mode === "duplicate-active") {
+    await assert.rejects(() => context.acceptGitHubSyncConflict({}, "target"),
+      mode === "invalid-primary" ? /changes Script identity/ : /rebuild identity-aware review/);
+    assert.equal(intents, 0, "identity rejection precedes durable apply intent");
+    assert.equal(writes, 0, "identity rejection precedes the atomic mutation boundary");
+    assert.equal(requests, 0);
+    assert.equal(refreshes, 0);
+    assert(fs.readFileSync(path.join(store, localPath)).equals(original));
+    assert(fs.readFileSync(path.join(store, localSidecar)).equals(originalIdentity));
+    assert(!fs.existsSync(path.join(store, resultPath)));
+    assert(!fs.existsSync(path.join(store, resultSidecar)));
+    assert.equal(target.lastSync.commit, "b".repeat(40));
+    assert.equal(conflicts.readGitHubSyncConflict(state, "target").applyState, undefined);
+  } else {
+    const result = await context.acceptGitHubSyncConflict({}, "target");
+    assert.equal(result.accepted, 2);
+    assert.deepEqual(Array.from(result.refreshed), []);
+    assert(fs.readFileSync(path.join(store, resultPath)).equals(planned));
+    assert(fs.readFileSync(path.join(store, resultSidecar)).equals(plannedIdentity));
+    if (mode === "selected-remote-move") {
+      assert(!fs.existsSync(path.join(store, localPath)));
+      assert(!fs.existsSync(path.join(store, localSidecar)));
+    }
+    assert.equal(intents, 1);
+    assert.equal(writes, 1);
+    assert.equal(requests, 1);
+    assert.equal(refreshes, 1);
+    assert.equal(target.lastSync.commit, remoteCommit);
+    assert.equal(conflicts.readGitHubSyncConflict(state, "target").applyState, "sync-pending");
+  }
+  scenarios++;
+  console.log(`acceptance recovery scenario passed: Script identity ${mode}`);
+}
 (async () => {
   try {
     for (const boundary of ["intent", "recipe", "baseline", "marker", "push", "remote-change"]) await scenario(boundary);
+    for (const mode of ["invalid-primary", "duplicate-active", "selected-plan", "selected-remote-move"]) await scriptIdentityScenario(mode);
     const state = path.join(root, "mixed-entity");
     const body = "scripts/Review/Missing.script", sidecar = "scripts/Review/Missing.metadata.json";
     conflicts.storeGitHubSyncConflict(state, "target", new sync.GitHubSyncConflictError("a".repeat(40), [

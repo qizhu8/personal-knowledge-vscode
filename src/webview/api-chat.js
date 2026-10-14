@@ -635,6 +635,7 @@
   }
   function render() {
     element("copy-chat-id").disabled = !state.chat?.id;
+    element("promote-project").disabled = !state.chat?.id;
     document.body.classList.toggle("chat-backgrounded", document.visibilityState === "hidden");
     renderMessages();
     renderWorkers();
@@ -862,6 +863,7 @@
   element("messages").addEventListener("scroll", markResultRead);
   element("rename").onclick = () => post("rename");
   element("copy-chat-id").onclick = () => { if (state?.chat?.id) post("copyChatId", { id: state.chat.id }); };
+  element("promote-project").onclick = () => { if (state?.chat?.id) post("promoteProject"); };
   const showScreen = next => {
     if (next === "chat" && screen !== "chat") jumpToLatest = true;
     screen = next; document.body.classList.toggle("chat-library-visible", screen === "library");

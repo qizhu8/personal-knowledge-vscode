@@ -307,25 +307,19 @@ class ModuleTests(unittest.TestCase):
     def test_sleep_component_waits_and_obeys_cancellation(self):
         component = self.runtime.component("core.sleep")
         self.assertEqual(component["input_schema"]["properties"]["seconds"]["default"], 1)
-        implementation = {"steps": [{"id": "pause", "component": "core.sleep", "inputs": {"seconds": 0.03}}],
-                          "output": {"seconds": {"$step": "pause.seconds"}}}
-        record = {"run_id": "action_run_" + "a" * 32, "inputs": {}, "deadline": time.time() + 5}
+        definition = self.component_action("test.sleep.durable",
+            [{"id": "pause", "component": "core.sleep", "inputs": {"seconds": 0.03}}], {"$step": "pause.seconds"})
+        self.assertTrue(self.runtime.validate(definition["action_id"], definition["content_hash"])["ok"])
         started = time.monotonic()
-        self.assertEqual(execute_steps(self.runtime, record, None, implementation), {"seconds": 0.03})
+        self.assertEqual(self.call(definition["action_id"], {}, "sleep-durable")["output"], {"value": 0.03})
         self.assertGreaterEqual(time.monotonic() - started, 0.03)
-        implementation["steps"][0]["inputs"]["seconds"] = 0
-        self.assertEqual(execute_steps(self.runtime, record, None, implementation), {"seconds": 0})
-        implementation["steps"][0]["inputs"]["seconds"] = 10
-        with patch.object(self.runtime, "cancelled", side_effect=[False, False, True]), \
-                patch("action_components.time.monotonic", return_value=0), patch("action_components.time.sleep") as sleeper:
-            with self.assertRaisesRegex(TimeoutError, "Sleep cancelled"):
-                execute_steps(self.runtime, record, None, implementation)
-            sleeper.assert_called_once_with(0.05)
-        record["deadline"] = time.time() - 1
-        with patch("action_components.time.sleep") as sleeper:
-            with self.assertRaises(TimeoutError):
-                execute_steps(self.runtime, record, None, implementation)
-            sleeper.assert_not_called()
+        run = self.runtime.call(definition["action_id"], {}, "cancel-wait", definition["content_hash"])
+        deadline = time.time() + 10
+        while self.runtime.get(run["run_id"])["state"] != "waiting":
+            self.assertLess(time.time(), deadline)
+            time.sleep(0.01)
+        self.runtime.cancel(run["run_id"])
+        self.assertEqual(self.runtime.get(run["run_id"])["state"], "cancelled")
         for seconds in [-1, 301, True, "1", float("nan"), float("inf")]:
             graph = {"action_id": "test.sleep.invalid", "nodes": [{"id": "pause", "action_id": "core.sleep",
                      "content_hash": component["content_hash"], "parameters": {"seconds": seconds}}],
@@ -393,7 +387,7 @@ class ModuleTests(unittest.TestCase):
             self.assertLess(time.time(), deadline)
             time.sleep(0.05)
         request = pending_choices(self.runtime, run["run_id"])["requests"][0]
-        self.assertEqual(self.runtime.get(run["run_id"])["state"], "running")
+        self.assertEqual(self.runtime.get(run["run_id"])["state"], "waiting")
         with self.assertRaises(ValueError):
             answer_choice(self.runtime, run["run_id"], request["request_id"], True)
         answer_choice(self.runtime, run["run_id"], request["request_id"], 1)

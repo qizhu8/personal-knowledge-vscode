@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
+import { readSyncScriptIdentity, syncScriptAliasPath, syncScriptSidecarPath } from "./github-sync-script-identity";
 import {
   GitHubSyncConflict,
   GitHubSyncConflictError,
@@ -71,6 +72,68 @@ export interface GitHubSyncStoredConflict {
   revision?: number;
   appliedAt?: string;
   applyState?: "applying" | "applied" | "sync-pending";
+}
+
+/** Acceptance must recheck the current store, not trust a path-keyed old workspace. */
+export function validateGitHubSyncConflictScriptIdentity(
+  storeRoot: string, record: GitHubSyncStoredConflict, candidates: Array<{ file: GitHubSyncStoredConflictFile; content?: Buffer }>,
+): void {
+  const active = new Map<string, string[]>();
+  const locators = new Map<string, Set<string>>();
+  const claim = (locator: string, id: string): void => {
+    const ids = locators.get(locator) || new Set<string>();
+    ids.add(id); locators.set(locator, ids);
+  };
+  const scriptsRoot = path.resolve(storeRoot, "scripts");
+  const walk = (directory: string): void => {
+    if (!fs.existsSync(directory)) return;
+    if (fs.lstatSync(directory).isSymbolicLink()) throw new Error("Script identity directory is a symbolic link.");
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      if (entry.name.startsWith(".") || entry.isSymbolicLink()) continue;
+      const full = path.join(directory, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile()) {
+        const relative = `scripts/${path.relative(scriptsRoot, full).replace(/\\/g, "/")}`;
+        const sidecar = path.resolve(storeRoot, ...syncScriptSidecarPath(relative).split("/"));
+        if (!fs.existsSync(sidecar)) continue;
+        if (fs.lstatSync(sidecar).isSymbolicLink()) throw new Error("Script identity sidecar is a symbolic link.");
+        const identity = readSyncScriptIdentity(fs.readFileSync(sidecar));
+        active.set(identity.knowledgeId, [...(active.get(identity.knowledgeId) || []), relative]);
+        claim(relative, identity.knowledgeId);
+        for (const alias of identity.aliases) {
+          const locator = syncScriptAliasPath(alias);
+          if (locator) claim(locator, identity.knowledgeId);
+        }
+      }
+    }
+  };
+  walk(scriptsRoot);
+  for (const { file, content } of candidates) {
+    if (file.type !== "scripts") continue;
+    let id = /^script_[a-f0-9]{24}$/.test(file.itemId) ? file.itemId : undefined;
+    if (content && (file.member === "identity-sidecar" || /\.pkm\.json$/.test(file.path))) {
+      const identity = readSyncScriptIdentity(content);
+      if (id && id !== identity.knowledgeId) throw new Error("Conflict candidate changes Script identity.");
+      id = identity.knowledgeId;
+    }
+    if (!id) {
+      const sidecar = record.files.find(member => member.type === file.type && member.itemId === file.itemId && /\.pkm\.json$/.test(member.path));
+      const candidate = candidates.find(candidate => candidate.file.path === sidecar?.path);
+      if (candidate?.content) id = readSyncScriptIdentity(candidate.content).knowledgeId;
+    }
+    if (!id) {
+      const matches = locators.get(file.remotePath || file.resultPath || file.path);
+      if (matches && matches.size > 1) throw new Error("Conflict locator has ambiguous active Script identities; rebuild review.");
+      if (matches?.size === 1) id = [...matches][0];
+    }
+    if (!id) continue;
+    const current = active.get(id) || [];
+    const body = record.files.find(member => member.type === "scripts" && member.itemId === file.itemId && !member.member);
+    const allowed = new Set([body?.localPath, body?.resultPath || body?.remotePath || body?.path].filter(Boolean));
+    if (current.length > 1 || current.some(relative => !allowed.has(relative)) || (!content && current.length && !body?.hasLocal)) {
+      throw new Error(`Script ${id} is active at ${current.join(", ")}; rebuild identity-aware review before restoring or deleting it.`);
+    }
+  }
 }
 
 function conflictRoot(stateDirectory: string): string {

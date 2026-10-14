@@ -1266,3 +1266,30 @@ body.chat-resizing{cursor:col-resize;user-select:none}
 .github-sync-resolution-bar{display:flex;overflow:hidden;height:8px;border-radius:5px;background:var(--bg)}.github-sync-resolution-bar span{min-width:2px}.github-sync-resolution-bar .automatic{background:#3fb950}.github-sync-resolution-bar .agent{background:#58a6ff}.github-sync-resolution-bar .human{background:#d29922}
 .github-sync-resolution-diagram>ul{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:4px 10px;margin:8px 0 0;padding:0;list-style:none}.github-sync-resolution-diagram>ul li{display:grid;grid-template-columns:7px 1fr auto auto;align-items:center;gap:5px;color:var(--muted);font-size:8px}.github-sync-resolution-diagram>ul i{width:7px;height:7px;border-radius:50%;background:#3fb950}.github-sync-resolution-diagram>ul li.agent i{background:#58a6ff}.github-sync-resolution-diagram>ul li.human i{background:#d29922}.github-sync-resolution-diagram>ul b{color:var(--text)}.github-sync-resolution-diagram>ul small{min-width:34px;text-align:right}
 .agent-session-group-binding{margin:8px 14px;color:var(--muted);font-size:11px;overflow-wrap:anywhere}
+.cockpit-form fieldset {
+  border: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 12px;
+}
+.cockpit-form label { display: flex; flex-direction: column; gap: 5px; }
+.cockpit-form .wide { grid-column: 1 / -1; }
+.cockpit-form textarea { min-height: 72px; resize: vertical; }
+.cockpit-form input, .cockpit-form textarea, .cockpit-form select, .cockpit-link-form input, .cockpit-link-form select {
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+  padding: 7px;
+  box-sizing: border-box;
+  width: 100%;
+}
+.cockpit-summary, .cockpit-link-form { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+.cockpit-items, .cockpit-evidence { padding-left: 20px; }
+.cockpit-items li, .cockpit-evidence li { border-bottom: 1px solid var(--vscode-panel-border); padding: 12px 0; overflow-wrap: anywhere; }
+.cockpit-items strong, .cockpit-items span, .cockpit-items small, .cockpit-evidence small { display: block; margin-bottom: 6px; }
+.cockpit-evidence pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow: auto; }
+.cockpit-checkpoint-form { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin: 12px 0; }
+.cockpit-checkpoint-form label { max-width: 100%; }
+.cockpit-checkpoint-form textarea { box-sizing: border-box; width: 100%; min-height: 72px; resize: vertical; }
+.cockpit-items li, .cockpit-items small { overflow-wrap: anywhere; min-width: 0; }

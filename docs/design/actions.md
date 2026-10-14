@@ -66,8 +66,8 @@ enter `Reconciling`, not a false ordinary failure. Platform command-result evide
 alone is not a committed completion receipt. Uncertain module workspaces/artifacts
 are retained rather than automatically collected. Recovery fences the original Run
 and lists required review; it does not replay effects or imply a remote rollback.
-Adapter-specific reconciliation and automatic wakeup belong to the subsequent P3
-phase.
+P3 adds typed continuations, wakeups and pinned read-only reconciliation on this
+same Run store; see [durable recovery](./action-durable-recovery.md).
 
 Workbench persists the original submission key before sending, including browser
 reload/VS Code webview state. Transport retry uses that key even if the draft has
@@ -75,8 +75,8 @@ changed. Native and authenticated-browser surfaces show recent root Runs, identi
 canonical state, owner/reason, checkpoint, elapsed time, pinned capabilities,
 receipts/output/artifacts and cancellation. Inline human choices persist a Waiting
 checkpoint tied to the original Run and request. Qualification must match the exact
-saved definition hash, not an older ready version. There is no Project Cockpit or
-"open in Project" route until P2.
+saved definition hash, not an older ready version. P2 adds a Project Cockpit and
+an "Open in Project" route without duplicating Run lifecycle authority.
 
 Workbench API envelopes separate request success (`ok`) from execution success
 (`execution_ok`), so Failed/Reconciling Runs remain inspectable instead of being
@@ -90,7 +90,9 @@ Validation uses isolated fixture stores and mock programs only:
 .venv/bin/python tests/test-action-modules.py
 .venv/bin/python tests/test-action-runtime.py
 .venv/bin/python tests/test-action-workbench.py
+.venv/bin/python tests/test-action-recovery-e2e.py
 npm run build
+node tests/test-chat-action-recovery-e2e.js
 node tests/test-action-browser.js
 node tests/test-pkm-p0.js
 ```

@@ -1,5 +1,5 @@
 // ── Projects workspace ─────────────────────────────────────────────────────
-const projectSections = ['Overview','Todos','Threads','Gantt','Agents','Artifacts','Decisions'];
+const projectSections = ['Overview','Now','Artifacts','Decisions','Timeline','Todos','Threads','Gantt','Agents'];
 let projectSnapshot = null;
 let projectSnapshotDirty = false;
 let projectRoute = { projectId:'', section:'', workflowView:'' };
@@ -55,20 +55,6 @@ const recipeGraphRowPitch = 114;
 const recipeGraphExpandedNodes = new Set();
 const recipeModuleTemplates = RecipeGraph.moduleTemplates;
 
-const todoExecutionPreview = [{
-  executionId:'todoexec_dashboard', projectName:'Personal Knowledge Manager', task:'Implement Automation workspace',
-  recipe:'Build Agent Session Dashboard', recipeRevision:3,
-  agent:{ id:'agent_copilot', name:'Copilot Agent', product:'GitHub Copilot', state:'Running', elapsed:'6m 14s' },
-  todos:[
-    { id:'understand', title:'Understand request', status:'succeeded' },
-    { id:'plan', title:'Plan changes', status:'succeeded' },
-    { id:'implement', title:'Implement dashboard', status:'running' },
-    { id:'validate', title:'Validate behavior', status:'available' },
-    { id:'report', title:'Report outcome', status:'locked' },
-    { id:'release', title:'Release change', status:'locked' }
-  ]
-}];
-
 function todoExecutionSummary(execution) {
   const total = execution.todos.length;
   const completed = execution.todos.filter(todo => todo.status === 'succeeded').length;
@@ -81,7 +67,13 @@ function pkmExecutionDetails(projection) {
 }
 
 function projectTodoExecutions(project) {
-  return todoExecutionPreview.filter(execution => execution.projectId ? execution.projectId === project.projectId : execution.projectName === project.name);
+  return (projectSnapshot?.agentSessions || []).filter(session => session.projectId === project.projectId
+    || (project.links || []).some(link => link.kind === 'agent-session' && link.id === session.sessionId)).map(session => ({
+    executionId:session.sessionId, projectId:project.projectId, task:session.task,
+    recipe:session.runs?.[0]?.recipeName || 'Existing task', recipeRevision:session.runs?.[0]?.recipeRevision || '',
+    agent:{ id:session.sessionId, name:session.task || 'Agent Session', state:session.projection?.state || 'Needs review', elapsed:'' },
+    todos:(session.todos || []).map(todo => ({ id:todo.todoId, title:todo.title || todo.task || todo.todoId, status:todo.status }))
+  }));
 }
 
 function projectDefault(snapshot) {
@@ -136,7 +128,7 @@ function agentSessionSetActive(enabled) {
 }
 
 setInterval(() => {
-  if (document.visibilityState !== 'visible' || state.tab !== 'agentSessions') return;
+  if (document.visibilityState !== 'visible' || !['agentSessions','projects'].includes(state.tab)) return;
   const now = Date.now();
   if (agentSessionRefreshRequestedAt && now - agentSessionRefreshRequestedAt < 10_000) return;
   agentSessionRefreshRequestedAt = now;
@@ -484,11 +476,133 @@ function agentTechExpansionMode(mode) {
   renderTodoExecutionScope();
 }
 
-function projectNew() {
+function projectNew(template = '') {
   pkModal({ title:'New Project', message:'Create a Project with its required General Thread.', input:true, okLabel:'Create', onOk:name => {
-    if (name.trim()) ask('projectCreate', { name:name.trim() });
+    if (name.trim()) projectCockpitAsk('projectCreate', { name:name.trim(), template });
   }});
 }
+
+function projectCockpitAsk(command, payload) {
+  ask(command, { expectedStoreVersion:projectSnapshot?.storeVersion, ...payload });
+}
+
+function projectCockpitData(project) {
+  return projectSnapshot?.cockpits?.[project.projectId] || { items:[], now:{ running:[], waiting:[], review:[], blocked:[] }, reviewInbox:[], artifacts:[], decisions:project.decisions || [], timeline:project.timeline || [], diagnostics:[], hasActiveRuns:false };
+}
+
+function projectSaveOverview(event) {
+  event.preventDefault();
+  const value = id => document.getElementById(id)?.value || '';
+  projectCockpitAsk('projectOverview', { projectId:projectRoute.projectId, overview:{
+    goal:value('cockpit-goal'), successCriteria:value('cockpit-success').split('\n').map(line => line.trim()).filter(Boolean),
+    status:value('cockpit-status'), currentMilestone:value('cockpit-milestone'), owner:value('cockpit-owner'),
+    deadline:value('cockpit-deadline'), autonomyPolicyReference:value('cockpit-policy')
+  }, reason:value('cockpit-reason'), expectedStoreVersion:Number(event.currentTarget.dataset.version) });
+}
+
+function projectLifecycleAction(action) {
+  const message = action === 'delete' ? 'Remove this archived Project from the active map? All linked Runs, decisions, files and evidence are retained. Restore remains available; this is not a purge.'
+    : action === 'archive' ? 'Archive this Project? Active, waiting or uncertain Runs prevent archival. All evidence is retained.' : 'Restore this Project and its preserved links?';
+  pkModal({ title:`${action[0].toUpperCase() + action.slice(1)} Project`, message, okLabel:action, onOk:() => projectCockpitAsk('projectLifecycle', { projectId:projectRoute.projectId, action, confirmed:true }) });
+}
+
+function projectAttachSource(event) {
+  event.preventDefault();
+  projectCockpitAsk('projectLink', { projectId:projectRoute.projectId, kind:document.getElementById('cockpit-link-kind').value, id:document.getElementById('cockpit-link-id').value.trim() });
+}
+
+function projectSourceOpen(id) {
+  ask('projectOpenSource', { projectId:projectRoute.projectId, id });
+}
+
+function projectCheckpointDeadline(deadline) {
+  const date = new Date(Number(deadline) * 1000);
+  return deadline !== undefined && Number.isFinite(date.getTime()) ? ` · deadline ${esc(date.toISOString())}` : '';
+}
+
+function projectCheckpointSubmit(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const action = event.submitter?.value || 'answer';
+  if (action === 'cancel' && !form.querySelector('[name="confirm"]').checked) return projectOnError({action:'projectCheckpoint',error:'Confirm cancellation of the entire Run first.'});
+  if (action === 'answer') {
+    try { JSON.parse(form.querySelector('textarea').value); } catch { return projectOnError({action:'projectCheckpoint',error:'Answer must be valid JSON.'}); }
+  }
+  ask('projectCheckpoint', { projectId:projectRoute.projectId, id:form.dataset.runId,
+    checkpointId:form.dataset.checkpointId, proposalDigest:form.dataset.digest,
+    eventKey:form.dataset.checkpointId, action, answer:form.querySelector('textarea').value,
+    confirmed:form.querySelector('[name="confirm"]').checked });
+}
+
+function projectCheckpointControls(item) {
+  const cp = item.checkpoint;
+  if (!cp || cp.state !== 'waiting' || !cp.proposal_digest || !/^action_run_[0-9a-f]{32}$/.test(item.sourceId)
+    || cp.trigger?.kind && cp.trigger.kind !== 'human') return '';
+  return `<form class="cockpit-checkpoint-form" data-run-id="${esc(item.sourceId)}" data-checkpoint-id="${esc(cp.checkpoint_id)}" data-digest="${esc(cp.proposal_digest)}" onsubmit="projectCheckpointSubmit(event)">
+    <label>Answer JSON${cp.presentation === 'choice' ? ' (choice schema)' : ''}<textarea name="answer" aria-label="Checkpoint answer JSON" maxlength="65536" placeholder="Enter JSON matching the displayed answer_schema"></textarea></label>
+    <button class="tbtn" type="submit" value="answer">Submit exact answer</button>
+    <label><input type="checkbox" name="confirm">I intend to cancel the entire Run, not answer this checkpoint.</label>
+    <button class="tbtn" type="submit" value="cancel">Cancel Run</button>
+  </form>`;
+}
+
+function projectCockpitOverview(project) {
+  const cockpit = projectCockpitData(project);
+  const inactive = !!(project.archivedAt || project.deletedAt);
+  return `<section class="project-band cockpit-overview"><h3>Overview</h3><p>Project intent is separate from execution state. Goal and success changes require a decision reason.</p>
+    <form class="cockpit-form" data-version="${Number(projectSnapshot?.storeVersion || 0)}" onsubmit="projectSaveOverview(event)"><fieldset ${inactive ? 'disabled' : ''}>
+    <label class="wide">Goal<textarea id="cockpit-goal" maxlength="8000" placeholder="Optional — what are we trying to achieve?">${esc(project.goal || '')}</textarea></label>
+    <label class="wide">Success criteria<textarea id="cockpit-success" placeholder="Optional — one criterion per line">${esc((project.successCriteria || []).join('\n'))}</textarea></label>
+    <label>Status<select id="cockpit-status">${['planned','active','completed'].map(status => `<option ${status === (project.status || 'planned') ? 'selected' : ''}>${status}</option>`).join('')}</select></label>
+    <label>Current milestone<input id="cockpit-milestone" value="${esc(project.currentMilestone || '')}" maxlength="8000"></label>
+    <label>Owner<input id="cockpit-owner" value="${esc(project.owner || '')}" maxlength="8000"></label>
+    <label>Deadline (optional)<input id="cockpit-deadline" type="date" value="${esc(project.deadline || '')}"></label>
+    <label class="wide">Autonomy policy reference<input id="cockpit-policy" value="${esc(project.autonomyPolicyReference || '')}" placeholder="Reference only — does not grant permissions" maxlength="8000"></label>
+    <label class="wide">Decision reason<input id="cockpit-reason" placeholder="Required when changing goal or success criteria" maxlength="8000"></label>
+    <button type="submit" class="tbtn">Save Overview</button></fieldset></form>
+    <div class="cockpit-summary">${['running','waiting','review','blocked'].map(group => `<button class="tbtn" onclick="projectSection('Now')">${group === 'review' ? 'Needs review' : group} · ${cockpit.now[group].length}</button>`).join('')}</div>
+    <p>${inactive ? project.deletedAt ? 'Removed from active map; evidence preserved.' : 'Archived; execution evidence preserved.' : 'Links and execution projections remain read-only.'}</p>
+    ${project.systemKind ? '' : `<div class="project-header-actions">${inactive ? '<button class="tbtn" onclick="projectLifecycleAction(\'restore\')">Restore</button>' : `<button class="tbtn" ${cockpit.hasActiveRuns ? 'disabled title="Resolve active or unverified Runs first"' : ''} onclick="projectLifecycleAction('archive')">Archive</button>`}
+    ${project.archivedAt && !project.deletedAt ? `<button class="tbtn" ${cockpit.hasActiveRuns ? 'disabled' : ''} onclick="projectLifecycleAction('delete')">Remove from active map</button>` : ''}</div>`}
+    <details><summary>Link existing work</summary><form class="cockpit-link-form" onsubmit="projectAttachSource(event)"><select id="cockpit-link-kind" aria-label="Source kind"><option value="action-run">Action Run</option><option value="recipe-run">Recipe Run</option><option value="agent-session">Agent Session</option></select><input id="cockpit-link-id" aria-label="Source ID" placeholder="Existing Run or Session ID" required maxlength="128" ${inactive ? 'disabled' : ''}><button class="tbtn" ${inactive ? 'disabled' : ''}>Link</button></form><p>Links preserve provenance, not a second execution state.</p></details>
+    ${(project.links || []).length ? `<ul>${project.links.map(link => `<li>${esc(link.kind)} · ${esc(link.id)}</li>`).join('')}</ul>` : ''}
+    </section>`;
+}
+
+function projectCockpitItems(items) {
+  return items.length ? `<ul class="cockpit-items">${items.map(item => `<li><strong>${esc(item.title)}</strong><span>${esc(item.projection.state)} · Next owner: ${esc(item.owner)}</span><p>${esc(item.reason)}</p><small>${esc(item.kind)} · ${esc(item.id)}</small>${item.checkpoint ? `<details><summary>Exact proposal and evidence${projectCheckpointDeadline(item.checkpoint.deadline)}</summary><pre>${esc(JSON.stringify(item.checkpoint, null, 2))}</pre></details>${projectCheckpointControls(item)}` : ''}<button class="tbtn" onclick="projectSourceOpen(decodeURIComponent('${encodeURIComponent(item.sourceId).replace(/'/g, '%27')}'))">Inspect original source</button></li>`).join('')}</ul>` : '<p class="agent-muted">None</p>';
+}
+
+function projectCockpitNow(project) {
+  const cockpit = projectCockpitData(project);
+  return `<p>Live projection of existing execution records with one review inbox. Explicit answers target the original checkpoint and its pinned proposal; there is no blind resume.</p>
+    ${cockpit.diagnostics.length ? `<div role="alert">${cockpit.diagnostics.map(esc).join('<br>')}</div>` : ''}
+    <section class="project-band"><h3>Review inbox</h3>${projectCockpitItems(cockpit.reviewInbox)}</section>
+    ${[['running','Running / Ready'],['waiting','Waiting'],['blocked','Blocked']].map(([group,label]) => `<section class="project-band"><h3>${label}</h3>${projectCockpitItems(cockpit.now[group])}</section>`).join('')}`;
+}
+
+function projectCockpitEvidence(project, section) {
+  const cockpit = projectCockpitData(project);
+  const entries = section === 'Artifacts' ? cockpit.artifacts : section === 'Decisions' ? cockpit.decisions : cockpit.timeline;
+  return `<p>${section === 'Artifacts' ? 'Proposal, draft, final and evidence retain their source IDs. No output is silently promoted to final.' : section === 'Decisions' ? 'Explicit goal and success changes, resolved checkpoints and their reasons.' : 'Durable Project events and execution receipts, not debug logs.'}</p>${entries.length ? `<ol class="cockpit-evidence">${entries.map(entry => `<li><strong>${esc(entry.kind || (section === 'Decisions' ? 'Decision' : 'Event'))}</strong>${entry.sourceId ? `<small>Source: ${esc(entry.sourceId)}</small>` : ''}<pre>${esc(JSON.stringify(entry, null, 2))}</pre></li>`).join('')}</ol>` : projectZero(`No ${section}`, 'Evidence will appear when linked work produces durable records.')}`;
+}
+
+window.addEventListener('message', event => {
+  if (event.data?.command === 'projectCheckpointResult') {
+    finishAction('projectCheckpoint');
+    renderProjects();
+    document.getElementById('project-action-error')?.remove();
+    const notice = document.createElement('div');
+    notice.className = 'project-action-error'; notice.setAttribute('role','status');
+    notice.textContent = event.data.data?.action === 'cancel' ? 'Run cancellation recorded.' : 'Checkpoint answer recorded.';
+    document.body.appendChild(notice); setTimeout(() => notice.remove(), 4000);
+    return;
+  }
+  if (event.data?.command !== 'openProject') return;
+  projectRoute = { projectId:String(event.data.projectId || ''), section:'Now', workflowView:'Todos' };
+  vscode.setState({ ...(vscode.getState() || {}), projectRoute });
+  ask('projectState', {});
+});
 
 function projectNewThread() {
   pkModal({ title:'New Thread', message:'Create a Thread in the selected Project.', input:true, okLabel:'Create', onOk:name => {
@@ -3068,11 +3182,9 @@ function projectSectionBody(project, threads, recipes) {
     result.completed += summary.completed; result.remaining += summary.remaining; result.total += summary.total;
     return result;
   }, { completed:0, remaining:0, total:0 });
-  if (projectRoute.section === 'Overview') return `
-    <div class="project-metrics" aria-label="Project counts">
-      <div><strong>${threads.length}</strong><span>Threads</span></div><div><strong>${totals.completed}</strong><span>Todos complete</span></div><div><strong>${totals.remaining}</strong><span>Todos remaining</span></div><div><strong>${activeAgents}</strong><span>Active Agents</span></div>
-    </div>
-    <section class="project-band"><h3>Current Todos</h3>${executions.length ? executions.map(execution => { const summary = todoExecutionSummary(execution); return `<button class="project-current-todo" onclick="projectSection('Todos')"><span><strong>${esc(summary.current?.title || execution.task)}</strong><small>${esc(execution.agent.name)} · ${summary.completed} complete · ${summary.remaining} remaining</small></span><span class="codicon codicon-chevron-right"></span></button>`; }).join('') : projectZero('No active Todos','Todo executions associated with this Project will appear here.')}</section>
+  if (projectRoute.section === 'Now') return projectCockpitNow(project);
+  if (['Artifacts','Decisions','Timeline'].includes(projectRoute.section)) return projectCockpitEvidence(project, projectRoute.section);
+  if (projectRoute.section === 'Overview') return `${projectCockpitOverview(project)}
     <section class="project-band"><div class="project-band-heading"><h3>Threads</h3><button class="project-band-link" onclick="projectSection('Threads')">View all ${threads.length} <span class="codicon codicon-chevron-right" aria-hidden="true"></span></button></div>${threads.length ? `<div class="project-thread-compact">${threads.slice(0,5).map(thread => `<button onclick="projectOpenThread('${esc(thread.threadId)}')"><span class="project-thread-compact-main"><strong>${esc(thread.name)}</strong><small>${thread.systemKind === 'general-thread' ? 'System thread' : thread.archived ? 'Archived' : thread.chatroom ? 'Chatroom linked' : 'No chatroom linked'}</small></span><span class="codicon codicon-chevron-right" aria-hidden="true"></span></button>`).join('')}</div>` : projectZero('No Threads','Create a Thread to begin project work.')}</section>`;
   if (projectRoute.section === 'Todos') {
     const label = projectRoute.workflowView;
@@ -3104,9 +3216,10 @@ function renderProjects() {
   const executions = projectTodoExecutions(project);
   const activeAgents = new Set(executions.filter(execution => execution.agent.state === 'Running').map(execution => execution.agent.id)).size;
   detail.innerHTML = `<div class="projects-workspace ${projectTreeCollapsed ? 'cattree-collapsed' : ''}">
-    <aside class="project-tree" aria-label="Projects"><div class="project-tree-head"><strong>Projects</strong><button class="tbtn" onclick="projectNew()">New Project</button></div>
-      ${projectSnapshot.projects.map(candidate => `<button class="project-tree-item ${candidate.projectId === project.projectId ? 'active' : ''}" onclick="projectSelect('${esc(candidate.projectId)}')"><span>${esc(candidate.name)}</span><small>${candidate.systemKind === 'default-project' ? 'System · Default' : `${projectSnapshot.threads.filter(thread => thread.projectId === candidate.projectId).length} Threads`}</small></button>`).join('')}</aside>${workspaceCatTreeDivider('projects',projectTreeCollapsed)}
-    <div class="project-content"><header class="project-header"><div><span>${project.systemKind === 'default-project' ? 'System Project' : 'Project'}</span><h2>${esc(project.name)}</h2><p>${threads.length} Threads · ${executions.length} Todo Executions · ${activeAgents} Active Agents</p></div><button class="tbtn" onclick="projectNewThread()">New Thread</button></header>
+    <aside class="project-tree" aria-label="Projects"><div class="project-tree-head"><strong>Projects</strong><button class="tbtn" onclick="projectNew()">New Project</button><select aria-label="Create from Project template" onchange="if(this.value)projectNew(this.value);this.value=''"><option value="">Template…</option><option value="research">Research</option><option value="delivery">Delivery</option></select></div>
+      ${projectSnapshot.projects.filter(candidate => !candidate.deletedAt && !candidate.archivedAt).map(candidate => `<button class="project-tree-item ${candidate.projectId === project.projectId ? 'active' : ''}" onclick="projectSelect('${esc(candidate.projectId)}')"><span>${esc(candidate.name)}</span><small>${candidate.systemKind === 'default-project' ? 'System · Default' : `${projectSnapshot.threads.filter(thread => thread.projectId === candidate.projectId).length} Threads`}</small></button>`).join('')}
+      <details><summary>Archived / removed (evidence retained)</summary>${projectSnapshot.projects.filter(candidate => candidate.deletedAt || candidate.archivedAt).map(candidate => `<button class="project-tree-item" onclick="projectSelect('${esc(candidate.projectId)}')">${esc(candidate.name)} · ${candidate.deletedAt ? 'Removed' : 'Archived'}</button>`).join('')}</details></aside>${workspaceCatTreeDivider('projects',projectTreeCollapsed)}
+    <div class="project-content"><header class="project-header"><div><span>${project.systemKind === 'default-project' ? 'System Project' : 'Project Cockpit'}</span><h2>${esc(project.name)}</h2><p>${threads.length} Threads · ${projectCockpitData(project).items.length} execution items · Intent: ${esc(project.status || 'planned')}</p></div><div class="project-header-actions"><button class="tbtn" onclick="ask('projectState',{})">Refresh</button><button class="tbtn" onclick="projectNewThread()">New Thread</button></div></header>
       <nav class="project-sections" aria-label="Project sections">${projectSections.map(section => `<button class="${section === projectRoute.section ? 'active' : ''}" onclick="projectSection('${section}')">${section}</button>`).join('')}</nav>
       <div class="project-section-body">${projectSectionBody(project, threads, recipes)}</div>
     </div></div>`;
@@ -3180,6 +3293,7 @@ function projectOnState(snapshot) {
   const recipeViewState = state.tab === 'recipes' ? recipeCaptureViewState() : null;
   const recipeStateChanged = state.tab !== 'recipes' || !projectSnapshot
     || recipeSnapshotSignature(snapshot) !== recipeSnapshotSignature(projectSnapshot);
+  const preserveProjectForm = state.tab === 'projects' && document.activeElement?.closest?.('.cockpit-form,.cockpit-checkpoint-form');
   projectSnapshot = snapshot;
   projectSnapshotDirty = false;
   finishAction('agentSnapshotDelete','agentSessionTrash','agentSessionStop');
@@ -3193,13 +3307,14 @@ function projectOnState(snapshot) {
     if (!recipeStateChanged) return;
     renderGlobalRecipes();
     recipeRestoreViewState(recipeViewState);
-  } else renderProjects();
+  } else if (!preserveProjectForm) renderProjects();
 }
 
 function projectOnResult(data) {
+  document.getElementById('project-action-error')?.remove();
   projectSnapshotDirty = false;
-  projectSnapshot = data.snapshot;
-  finishAction('projectCreate','threadCreate','threadRename','threadMove','threadOpenChatroom','ganttTaskCreate','ganttTaskUpdate','ganttTaskDelete','collaborationCreate','collaborationTransition','recipeCreate','recipeFolderCreate','recipeFolderDelete','recipeUpdate','recipeDelete','recipeTrash','recipeOpenBrowser');
+  projectSnapshot = { ...data.snapshot, cockpits:projectSnapshot?.cockpits };
+  finishAction('projectCheckpoint','projectOverview','projectLink','projectLifecycle','projectOpenSource','projectCreate','threadCreate','threadRename','threadMove','threadOpenChatroom','ganttTaskCreate','ganttTaskUpdate','ganttTaskDelete','collaborationCreate','collaborationTransition','recipeCreate','recipeFolderCreate','recipeFolderDelete','recipeUpdate','recipeDelete','recipeTrash','recipeOpenBrowser');
   const recipeViewState = data.action === 'recipeUpdate' ? recipePendingViewState || recipeCaptureViewState() : null;
   if (data.action === 'recipeUpdate') { recipeDraft = null; recipeDraftRecipeId = ''; recipeDraftBaseline = ''; recipeDraftBaselinePending = false; recipePendingViewState = null; recipeGraphPendingNodeIds.clear(); }
   if (data.action === 'recipeDelete' && selectedRecipeId === data.entityId) { selectedRecipeId = ''; recipeDraft = null; recipeDraftRecipeId = ''; recipeDraftBaseline = ''; recipeDraftBaselinePending = false; }
@@ -3221,7 +3336,7 @@ function projectOnError(data) {
   if (data?.action === 'recipeOpenBrowser') failAction(data?.error || 'The Recipe workbench could not be opened.', 'recipeOpenBrowser');
   else if (data?.action === 'agentSessionTrash') failAction(data?.error || 'The Agent Session Trash action failed.', 'agentSessionTrash');
   else if (data?.action === 'agentSessionStop') failAction(data?.error || 'The Agent Session could not be stopped.', 'agentSessionStop');
-  else finishAction('projectCreate','threadCreate','threadRename','threadMove','threadOpenChatroom','ganttTaskCreate','ganttTaskUpdate','ganttTaskDelete','collaborationCreate','collaborationTransition','recipeCreate','recipeFolderCreate','recipeFolderDelete','recipeUpdate','recipeValidateDefinition');
+  else finishAction('projectCheckpoint','projectOverview','projectLink','projectLifecycle','projectOpenSource','projectCreate','threadCreate','threadRename','threadMove','threadOpenChatroom','ganttTaskCreate','ganttTaskUpdate','ganttTaskDelete','collaborationCreate','collaborationTransition','recipeCreate','recipeFolderCreate','recipeFolderDelete','recipeUpdate','recipeValidateDefinition');
   const editorError = state.tab === 'recipes' ? document.getElementById('recipe-edit-error') : null;
   if (editorError) {
     const diagnostics = Array.isArray(data?.details?.diagnostics) ? data.details.diagnostics : [];

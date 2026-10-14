@@ -1118,6 +1118,12 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         void vscode.window.showInformationMessage("Chat PKM URL copied.");
         break;
       }
+      case "promoteProject": {
+        await vscode.commands.executeCommand("personalKnowledge.promoteChatToProject", {
+          chatId: chat.id, sessionId: chat.sessionId, title: chat.title,
+        });
+        break;
+      }
       case "diagnostics": {
         const packet = apiChatDiagnostics(chat);
         const destination = await vscode.window.showSaveDialog({ saveLabel: "Export Chat diagnostics", filters: { JSON: ["json"] } });

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 from recipe_runtime import _atomic_write
+from action_recovery import ActionSuspended
 
 
 VALUE_TYPES = ["string", "integer", "number", "boolean", "object", "array", "null"]
@@ -147,6 +148,19 @@ def component_definitions():
         ("user-action", "User Choice", {"prompt": {"type": "string", "minLength": 1, "maxLength": 500},
             "options": {"type": "array", "minItems": 1, "maxItems": 24, "items": {"type": "object", "properties": {"label": {"type": "string", "minLength": 1, "maxLength": 120}, "value": {}}, "required": ["label", "value"], "additionalProperties": False}},
             "test_choice": {"type": "integer", "minimum": 0, "maximum": 23, "default": 0}}, ["prompt", "options", "test_choice"], {"value": {}}, ["human-input"]),
+        ("checkpoint", "Human Checkpoint", {
+            "kind": {"type": "string", "enum": ["input", "approval", "artifact-review", "decision", "exception"], "default": "approval"},
+            "proposal": {}, "evidence": {"type": "array", "default": []},
+            "owner": {"type": "string", "minLength": 1, "default": "user"},
+            "deadline": {"type": ["number", "null"], "default": None},
+            "timeout_behavior": {"type": "string", "enum": ["review", "cancel"], "default": "review"},
+            "answer_schema": {"type": "object", "default": {"type": "object"}},
+            "test_answer": {"type": "object", "default": {}}},
+            ["kind", "proposal"], {"value": {}}, ["human-input"]),
+        ("wait", "Durable Wait", {"trigger": {"type": "object"},
+            "deadline": {"type": ["number", "null"], "default": None},
+            "timeout_behavior": {"type": "string", "enum": ["review", "cancel"], "default": "review"}},
+            ["trigger"], {"value": {}}, ["pure"]),
     ]
     return {"core." + name: {"action_id": "core." + name, "display_name": label, "description": label,
             "category": "core/logic" if name in {"if-else", "switch", "for", "while", "user-action"} else "core", "component": True, "version": 1, "effects": effects,
@@ -241,12 +255,17 @@ def validate_steps(steps, dependencies, depth=0, budget=None):
 def pending_choices(runtime, run_id):
     root = runtime.get(run_id)
     requests = []
-    if root.get("state") != "running" or runtime.cancelled(root):
+    if root.get("state") not in {"running", "waiting"} or runtime.cancelled(root):
         return {"ok": True, "requests": requests}
     for run_path in (runtime.root / "runs").glob("*/run.json"):
         child = json.loads(run_path.read_text(encoding="utf-8"))
-        if child.get("engine") != "module" or child.get("root_run_id") != root["root_run_id"] or child.get("state") != "running" or runtime.cancelled(child):
+        if child.get("engine") != "module" or child.get("root_run_id") != root["root_run_id"] or child.get("state") not in {"running", "waiting"} or runtime.cancelled(child):
             continue
+        checkpoint = child.get("checkpoint", {})
+        if checkpoint.get("state") == "waiting" and checkpoint.get("presentation") == "choice":
+            requests.append({"request_id": checkpoint["checkpoint_id"].replace("checkpoint_", "choice_", 1),
+                             "run_id": child["run_id"], **checkpoint["proposal"],
+                             "resume_token": checkpoint["resume_token"], "proposal_digest": checkpoint["proposal_digest"]})
         for path in sorted(run_path.parent.glob("choices/choice_*.json")):
             if not path.with_suffix(".answer").exists():
                 requests.append(json.loads(path.read_text(encoding="utf-8")))
@@ -256,6 +275,13 @@ def pending_choices(runtime, run_id):
 def answer_choice(runtime, run_id, request_id, index):
     if not isinstance(request_id, str) or not re.fullmatch(r"choice_[0-9a-f]{32}", request_id):
         raise ValueError("Invalid user choice identity.")
+    if type(index) is not int:
+        raise ValueError("Choose one declared integer option.")
+    record = runtime.recovery.read(run_id)
+    checkpoint = record.get("checkpoint", {})
+    if checkpoint.get("checkpoint_id", "").replace("checkpoint_", "choice_", 1) == request_id:
+        return runtime.recovery.respond_checkpoint(run_id, checkpoint["checkpoint_id"],
+            checkpoint["resume_token"], checkpoint["proposal_digest"], {"index": index}, "choice:" + request_id)
     with runtime.lock():
         record = runtime.get(run_id)
         if record.get("state") != "running" or runtime.cancelled(record):
@@ -323,12 +349,23 @@ def execute_steps(runtime, record, context, implementation):
                 raise TimeoutError("Component execution budget, cancellation or deadline reached.")
             identifier = step["id"]
             key = prefix + identifier
+            receipt = runtime.recovery.step_result(record, key, step)
+            if receipt:
+                outputs.update(receipt.get("scope_outputs", {}))
+                outputs[identifier] = receipt["output"]
+                continue
             if "action_id" in step:
                 child = step["action_id"]
-                result = runtime.wait(runtime.call(child, resolve(step["inputs"]), key, record["definition"]["dependencies"][child], context)["run_id"])
+                result = runtime.call(child, resolve(step["inputs"]), key, record["definition"]["dependencies"][child], context)
+                if result["state"] in {"running", "waiting"}:
+                    runtime.recovery.suspend(record, key, "decision",
+                        {"dependency_run_id": result["run_id"]}, owner="scheduler",
+                        trigger={"kind": "dependency", "run_id": result["run_id"],
+                                 "expected_version": result["execution"]["version"]})
                 if result["state"] != "succeeded":
                     raise RuntimeError("Required child did not succeed: " + result["run_id"])
                 outputs[identifier] = result["output"]
+                runtime.recovery.step_commit(record, key, step, result["output"], outputs)
                 continue
             name = step["component"]
             spec = component_definitions()[name]
@@ -398,14 +435,9 @@ def execute_steps(runtime, record, context, implementation):
                     seconds = values["seconds"]
                     if type(seconds) not in {int, float} or not 0 <= seconds <= 300:
                         raise ValueError("Sleep seconds must be a finite number between 0 and 300.")
-                    finish = time.monotonic() + seconds
-                    while True:
-                        if runtime.cancelled(record):
-                            raise TimeoutError("Sleep cancelled or deadline reached.")
-                        remaining = finish - time.monotonic()
-                        if remaining <= 0:
-                            break
-                        time.sleep(min(0.05, remaining))
+                    if seconds and not runtime.recovery.resolved(record, key):
+                        runtime.recovery.suspend(record, key, "decision", {"seconds": seconds},
+                                                 owner="scheduler", trigger={"kind": "timer", "at": time.time() + seconds})
                     output = {"seconds": seconds}
                 elif name == "core.user-action":
                     if record.get("validation"):
@@ -413,20 +445,35 @@ def execute_steps(runtime, record, context, implementation):
                         if index >= len(values["options"]):
                             raise ValueError("Validation choice is outside the declared options.")
                     else:
-                        request_id = "choice_" + uuid.uuid4().hex
-                        path = runtime.path(record["run_id"]).parent / "choices" / (request_id + ".json")
-                        _atomic_write(path, {"request_id": request_id, "run_id": record["run_id"], "step": key, "prompt": values["prompt"], "options": values["options"]})
-                        record["current_step"] = key
-                        with runtime.lock():
-                            runtime.runs.checkpoint(record, "waiting", "user-choice", "user")
-                        while not path.with_suffix(".answer").exists():
-                            if runtime.cancelled(record):
-                                raise TimeoutError("User choice cancelled or expired.")
-                            time.sleep(0.05)
-                        index = json.loads(path.with_suffix(".answer").read_text())["index"]
-                        with runtime.lock():
-                            runtime.runs.checkpoint(record, "started", "choice-answered")
+                        checkpoint = runtime.recovery.resolved(record, key)
+                        if not checkpoint:
+                            runtime.recovery.suspend(record, key, "input", {"prompt": values["prompt"], "options": values["options"]},
+                                answer_schema={"type": "object", "properties": {"index": {"type": "integer", "minimum": 0,
+                                    "maximum": len(values["options"]) - 1}}, "required": ["index"], "additionalProperties": False},
+                                presentation="choice")
+                        index = checkpoint["answer"]["index"]
                     output = {"value": values["options"][index]["value"]}
+                elif name == "core.checkpoint":
+                    schema = values["answer_schema"]
+                    if record.get("validation"):
+                        Draft202012Validator.check_schema(schema)
+                        Draft202012Validator(schema).validate(values["test_answer"])
+                        answer = values["test_answer"]
+                    else:
+                        checkpoint = runtime.recovery.resolved(record, key)
+                        if not checkpoint:
+                            runtime.recovery.suspend(record, key, values["kind"], values["proposal"],
+                                values["evidence"], values["owner"], values["deadline"],
+                                values["timeout_behavior"], answer_schema=schema)
+                        answer = checkpoint["answer"]
+                    output = {"value": answer}
+                elif name == "core.wait":
+                    trigger = runtime.recovery.validate_trigger(values["trigger"])
+                    checkpoint = runtime.recovery.resolved(record, key)
+                    if not record.get("validation") and not checkpoint:
+                        runtime.recovery.suspend(record, key, "decision", {"trigger": trigger}, owner="scheduler",
+                            deadline=values["deadline"], timeout_behavior=values["timeout_behavior"], trigger=trigger)
+                    output = {"value": checkpoint["answer"] if checkpoint else {}}
                 else:
                     raise ValueError("Unknown basic component handler.")
             if len(json.dumps(output, allow_nan=False).encode()) > 65536:
@@ -434,6 +481,7 @@ def execute_steps(runtime, record, context, implementation):
             if "output_schema" in step:
                 Draft202012Validator(step["output_schema"]).validate(output)
             outputs[identifier] = output
+            runtime.recovery.step_commit(record, key, step, output, outputs)
 
     run(implementation["steps"])
     return resolve(implementation["output"])

@@ -85,7 +85,9 @@ import { loadLocaleCatalogs, loadLocaleManifest, localizedText, normalizeUiLangu
 import { decideInitialExperience, FEATURE_TOUR_MODULES, minorRelease } from "./ui/onboarding-experience";
 import { AiBackend, aiSummarizeScript, listAiBackends, runAiPrompt, scriptCacheDir } from "./ai/ai";
 import { registerApiChatShell } from "./chat/api-chat-shell";
-import { initializeActionChat, openActionWorkbench, openActionWorkbenchInBrowser } from "./ui/action-browser";
+import { actionRequest, initializeActionChat, openActionWorkbench, openActionWorkbenchInBrowser } from "./ui/action-browser";
+import { projectCockpits } from "./workflows/project-cockpit";
+import { handleProjectCockpitRequest, promoteChatProject, actionRunProject } from "./workflows/project-cockpit-host";
 import { agentSessionOrigin, apiChatGroupSnapshots } from "./chat/api-chat-store";
 import {
   cancelMcpPythonScan, combinedMcpRegistry,
@@ -119,7 +121,7 @@ import {
   readGitHubSyncConflictCandidate, refreshGitHubSyncConflictLocalCandidate, selectAllGitHubSyncConflictCandidates, selectAllGitHubSyncConflictDeletions,
   selectAllGitHubSyncConflictLocalDeletions, selectGitHubSyncConflictCandidate, selectGitHubSyncConflictDeletion,
   selectGitHubSyncConflictLocalDeletion, storeGitHubSyncConflict, updateGitHubSyncAgentCandidate,
-  validateGitHubSyncConflictLocalState, validateGitHubSyncManualCandidate, validateGitHubSyncConflictVersion,
+  validateGitHubSyncConflictLocalState, validateGitHubSyncManualCandidate, validateGitHubSyncConflictVersion, validateGitHubSyncConflictScriptIdentity,
   saveGitHubSyncManualCandidate, markGitHubSyncConflictApplied, markGitHubSyncConflictApplying,
 } from "./sync/github-sync-conflicts";
 import { GitHubSyncWorkbenchRequest, GitHubSyncWorkbenchState, openGitHubSyncConflictWorkbench } from "./sync/github-sync-workbench";
@@ -406,6 +408,7 @@ async function agentSessionProjectStateData(): Promise<any> {
   return {
     ...snapshot,
     projects: snapshot.projects.map(project => ({ ...project, objectKind: "Project" })),
+    cockpits: projectCockpits(getStorePath(), snapshot.projects, snapshot.collaborationTasks),
     threads: snapshot.threads.map(thread => ({ ...thread, objectKind: "Project" })),
     recipes: snapshot.recipes.map(recipe => ({ ...recipe, objectKind: "Recipe" })),
     ganttTasks: snapshot.ganttTasks.map(task => ({ ...task, projection: projectExecution("project", task.status) })),
@@ -1657,6 +1660,9 @@ async function acceptGitHubSyncConflict(
           : githubSyncCandidateDestination(getStorePath(), resultPath),
     };
   });
+  if (candidates.some(candidate => candidate.file.type === "scripts")) {
+    validateGitHubSyncConflictScriptIdentity(getStorePath(), record, candidates);
+  }
   const refreshed: string[] = [];
   for (const { file, content, deleteRemote, deleteLocal, originalLocal, currentLocal, source, destination } of candidates) {
     const current = file.type === "recipes"
@@ -3592,6 +3598,7 @@ let _panelLastDiagnostic = "";
 let _storeReady = false;                       // file store configured & migrated
 let _pendingOpen: { type: string; key: string; edit?: boolean; tab?: string } | undefined; // item to open once ready
 let _pendingTab: string | undefined;           // tab to switch to once the webview is ready
+let _pendingProjectId: string | undefined;
 let _pendingSubscriptionShare: string | undefined;
 let _pendingServerSlug: string | undefined;
 let _pendingEnvironmentId: string | undefined;
@@ -3753,6 +3760,12 @@ function openPanelTab(context: vscode.ExtensionContext, tab: string): void {
   target.reveal(vscode.ViewColumn.One);
   if (_panelReady) target.webview.postMessage({ command: "openTab", tab });
   else _pendingTab = tab;
+}
+
+function openProjectCockpit(context: vscode.ExtensionContext, projectId: string): void {
+  openPanelTab(context, "projects");
+  if (_panelReady) void panel?.webview.postMessage({ command: "openProject", projectId });
+  else _pendingProjectId = projectId;
 }
 
 function openServerPanel(context: vscode.ExtensionContext, slug = ""): void {
@@ -5945,6 +5958,10 @@ async function handleMessage(
         _pendingTab = undefined;
         respond({ command: "openTab", tab });
       }
+      if (_pendingProjectId) {
+        respond({ command: "openProject", projectId: _pendingProjectId });
+        _pendingProjectId = undefined;
+      }
       if (_pendingSubscriptionShare !== undefined) {
         const shareId = _pendingSubscriptionShare;
         _pendingSubscriptionShare = undefined;
@@ -6346,11 +6363,24 @@ async function handleMessage(
       break;
     }
 
-    case "projectCreate": {
+    case "projectCreate":
+    case "projectOverview":
+    case "projectLink":
+    case "projectLifecycle":
+    case "projectCheckpoint":
+    case "projectOpenSource": {
       const store = currentProjectStore();
-      const input = { name: String(msg.name || "") };
-      const result = store.createProject(projectCommand(store, "project-create", input), input.name);
-      respond({ command: "projectResult", data: { action: "projectCreate", ...result } });
+      try {
+        await handleProjectCockpitRequest({
+          store, root: getStorePath(), command: (operation, input) => projectCommand(store, operation, input),
+          snapshot: agentSessionProjectStateData, respond,
+          action: (method, params) => actionRequest(context, method, params),
+          openSource: id => /^action_run_[0-9a-f]{32}$/.test(id) ? openActionWorkbench(context, id) : openPanelTab(context, "agentSessions"),
+        }, msg);
+      } catch (error) {
+        respond({ command: "projectState", data: await agentSessionProjectStateData() });
+        throw error;
+      }
       break;
     }
 
@@ -9865,7 +9895,7 @@ async function handleMessage(
     log.error(`handleMessage(${msg.command}) failed: ${e?.stack ?? e?.message ?? e}`);
     if (msg.command === "list") {
       respond({ command: "list", tab: String(msg.tab || ""), data: [] });
-    } else if (["projectState", "projectCreate", "threadCreate", "threadRename", "threadMove", "threadOpenChatroom", "ganttTaskCreate", "ganttTaskUpdate", "ganttTaskDelete", "collaborationCreate", "collaborationTransition", "recipeCreate", "recipeFolderCreate", "recipeFolderDelete", "recipeUpdate", "recipeDelete", "recipeTrash", "recipeValidateDefinition", "recipeOpenBrowser", "projectRecipesExport", "agentSessionTrash", "agentSessionStop", "agentSessionGroupDelete"].includes(String(msg.command || ""))) {
+    } else if (["projectState", "projectCreate", "projectOverview", "projectLink", "projectLifecycle", "projectCheckpoint", "projectOpenSource", "threadCreate", "threadRename", "threadMove", "threadOpenChatroom", "ganttTaskCreate", "ganttTaskUpdate", "ganttTaskDelete", "collaborationCreate", "collaborationTransition", "recipeCreate", "recipeFolderCreate", "recipeFolderDelete", "recipeUpdate", "recipeDelete", "recipeTrash", "recipeValidateDefinition", "recipeOpenBrowser", "projectRecipesExport", "agentSessionTrash", "agentSessionStop", "agentSessionGroupDelete"].includes(String(msg.command || ""))) {
       respond({ command: "projectError", data: { action: String(msg.command || ""), code: String(e?.code || "project-error"), error: e?.message || String(e), ...(e?.details ? { details: e.details } : {}) } });
     } else if (String(msg.command || "").startsWith("subscription")) {
       respond({ command: "subscriptionError", data: { action: String(msg.command || ""), error: e?.message || String(e) } });
@@ -11204,7 +11234,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(backgroundTaskRegistry.subscribe(snapshot => {
     if (panel && _panelReady) void panel.webview.postMessage({ command: "backgroundTasks", data: snapshot });
   }));
-  context.subscriptions.push(new ActionBackgroundTasks(backgroundTaskRegistry, getStorePath));
+  context.subscriptions.push(new ActionBackgroundTasks(backgroundTaskRegistry, getStorePath, {
+    enabled: () => _storeReady && vscode.workspace.isTrusted && configuredMcpFeatureDomains().includes("automation") && mcpRuntimeStatus().healthy,
+    scan: () => actionRequest(context, "safety_scan", {}),
+    report: error => log.warn(`Action safety scan failed: ${(error as Error).message || String(error)}`),
+  }));
   initializeActionChat(context);
   const userPortConfiguration = vscode.workspace.getConfiguration("personalKnowledge");
   for (const setting of ["serversProxyPort", "contentGatewayPort", "chatHubPort"] as const) {
@@ -11228,6 +11262,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   applyChatArchiveCfg();
   recipeDraftFileSystem = new RecipeDraftFileSystem();
   context.subscriptions.push(
+    vscode.commands.registerCommand("personalKnowledge.openActionRunProject", async (runId: string) => {
+      if (!_storeReady || !vscode.workspace.isTrusted || !configuredMcpFeatureDomains().includes("automation")) throw new Error("Opening Action Run Projects requires a configured, trusted automation workspace.");
+      const store = currentProjectStore();
+      const projectId = await actionRunProject(store, getStorePath(), runId,
+        async options => vscode.window.showQuickPick(options, { title: "Open Action Run in Project", placeHolder: "Choose its Project; execution state is not changed." }),
+        (operation, input) => projectCommand(store, operation, input));
+      if (projectId) openProjectCockpit(context, projectId);
+      return projectId;
+    }),
+    vscode.commands.registerCommand("personalKnowledge.promoteChatToProject", async (source: { chatId: string; sessionId?: string; title?: string }) => {
+      if (!_storeReady) throw new Error("Configure a Knowledge Root before promoting Chat.");
+      const store = currentProjectStore();
+      const projectId = await promoteChatProject(store, source,
+        async () => vscode.window.showInputBox({ title: "Promote Chat to Project", prompt: "Create a Project linked to this Chat. Ordinary Chat remains unchanged; all other fields are optional.", value: source.title || "Chat Project", validateInput: value => value.trim() ? undefined : "Enter a Project name." }),
+        (operation, input) => projectCommand(store, operation, input));
+      if (projectId) openProjectCockpit(context, projectId);
+      return projectId;
+    }),
     vscode.commands.registerCommand("personalKnowledge.openActions", () => openActionWorkbench(context)),
     vscode.commands.registerCommand("personalKnowledge.openActionsInBrowser", () => openActionWorkbenchInBrowser(context)),
     vscode.commands.registerCommand("personalKnowledge.configureActionWorkspace", async () => {
@@ -12723,7 +12775,7 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
   _privacyWatcher.onDidCreate(onChange);
   _privacyWatcher.onDidChange(onChange);
   _privacyWatcher.onDidDelete(onChange);
-  _projectStateWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(getStorePath(), ".pkm/state/{projects.json,project-store.json,agent-sessions/**/*.json,agent-sessions-trash/**/*.json,recipe-runs/**/*.json,mcp-usage/todos/**/*.json}"));
+  _projectStateWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(getStorePath(), ".pkm/state/{projects.json,project-store.json,agent-sessions/**/*.json,agent-sessions-trash/**/*.json,recipe-runs/**/*.json,actions/runs/**/run.json,mcp-usage/todos/**/*.json}"));
   const onProjectStateChange = (uri: vscode.Uri) => {
     agentSessionJsonCache.invalidate(uri.fsPath);
     const relativeStatePath = path.relative(path.join(getStorePath(), ".pkm", "state"), uri.fsPath).replace(/\\/g, "/");

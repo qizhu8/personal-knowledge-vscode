@@ -25,7 +25,8 @@ def action_contract(definition):
             "timeoutPolicy": {"kind": "deadline", "onTimeout": "reconcile"},
             "retryPolicy": {"automatic": False, "reason": "Reconcile the original Run before any new attempt."},
             "idempotency": {"kind": "launch-key", "externalEffectGuaranteed": False},
-            "receiptContract": "pkm.action.execution/v1"}
+            "receiptContract": "pkm.action.execution/v1",
+            "reconciler": definition.get("reconciler", {"kind": "manual"})}
 
 
 class ActionRunStore:
@@ -102,7 +103,8 @@ class ActionRunStore:
         execution = record.get("execution")
         if not execution or execution["phase"] not in {"created", "dispatched"} or record["state"] != "running":
             raise PermissionError("Action worker dispatch is stale or already claimed.")
-        execution.update({"fence": execution["fence"] + 1, "workerPid": os.getpid()})
+        execution.update({"fence": execution["fence"] + 1, "workerPid": os.getpid(),
+                          "heartbeat_at": time.time(), "lease_expires_at": time.time() + 20})
         return self.transition(record, "started", "executing")
 
     def finish(self, record):
@@ -132,9 +134,9 @@ class ActionRunStore:
         execution = record.get("execution", {})
         state = record.get("state")
         uncertain = state == "outcome_unknown"
-        waiting = state == "running" and execution.get("phase") == "waiting"
+        waiting = state == "waiting" or state == "running" and execution.get("phase") == "waiting"
         return {**record, "productObject": "Run", "userState": "Reconciling" if uncertain else "Waiting" if waiting else
                 {"running": "Running", "succeeded": "Completed", "failed": "Failed", "cancelled": "Cancelled"}.get(state, "Blocked"),
-                "nextOwner": "user" if uncertain or waiting else "execution-host" if state == "running" else "none",
+                "nextOwner": "user" if uncertain else record.get("checkpoint", {}).get("owner", "user") if waiting else "execution-host" if state == "running" else "none",
                 "reasonCode": execution.get("reasonCode", "legacy-run"),
                 "lastCheckpoint": execution.get("receipts", [])[-1:] or None}

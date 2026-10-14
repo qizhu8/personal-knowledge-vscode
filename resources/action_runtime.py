@@ -121,6 +121,7 @@ class ActionRuntime:
                  "backend": "az-dls-fs", "implementation_hash": _digest({
                      "action_runtime": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                      "run_store": hashlib.sha256(Path(__file__).with_name("action_run_store.py").read_bytes()).hexdigest(),
+                     "recovery": hashlib.sha256(Path(__file__).with_name("action_recovery.py").read_bytes()).hexdigest(),
                      "recipe_runtime": hashlib.sha256(Path(__file__).with_name("recipe_runtime.py").read_bytes()).hexdigest(),
                  })}
         value["content_hash"] = _digest(value)
@@ -300,9 +301,11 @@ class ActionRuntime:
             return definition, inputs
         raise PermissionError("Action paths are outside the operator-authorized scope.")
 
-    def call(self, action_id, inputs, idempotency_key, content_hash):
+    def call(self, action_id, inputs, idempotency_key, content_hash, trigger=None, project_id=None):
         if action_id not in DEFINITIONS:
-            return self.modules.call(action_id, inputs, idempotency_key, content_hash)
+            return self.modules.call(action_id, inputs, idempotency_key, content_hash, trigger=trigger, project_id=project_id)
+        if trigger is not None:
+            raise ValueError("Scheduled platform Actions require a declared pipeline wrapper; direct platform replay is not supported.")
         if self.availability(action_id)["state"] != "ready":
             raise PermissionError("Action is not validated for this implementation and execution environment.")
         return self._call(action_id, inputs, idempotency_key, content_hash)
@@ -425,9 +428,29 @@ def register_action_tools(mcp, store, runtime=None):
         """Find callable Actions with typed inputs; never select an ambiguous match automatically."""
         return runtime.retrieve(task, limit)
 
-    def action_call(action_id: str, inputs: dict, idempotency_key: str, content_hash: str):
+    def action_call(action_id: str, inputs: dict, idempotency_key: str, content_hash: str, trigger: dict | None = None, project_id: str | None = None):
         """Invoke a pinned Action inside operator-managed path grants; return a durable run ID."""
-        return runtime.call(action_id, inputs, idempotency_key, content_hash)
+        return runtime.call(action_id, inputs, idempotency_key, content_hash, trigger, project_id)
+
+    def action_run_checkpoints(run_id: str, include_history: bool = False):
+        """Inspect typed proposals, evidence, owners, deadlines and exact resume tokens on the original Run."""
+        return runtime.modules.recovery.checkpoints(run_id, include_history)
+
+    def action_checkpoint_respond(run_id: str, checkpoint_id: str, resume_token: str, proposal_digest: str, answer: dict, event_key: str):
+        """Resolve an exact checkpoint once; a response never grants new effect permissions."""
+        return runtime.modules.recovery.respond_checkpoint(run_id, checkpoint_id, resume_token, proposal_digest, answer, event_key)
+
+    def action_run_wake(run_id: str, event_key: str, event_name: str):
+        """Deliver one deduplicated event to its original waiting Run, not a replacement invocation."""
+        return runtime.modules.recovery.wake_run(run_id, event_key, event_name)
+
+    def action_run_safety_scan(limit: int = 8):
+        """Recover missed timers/dependencies fairly and fence orphans without replaying unknown effects."""
+        return runtime.modules.recovery.safety_scan(limit)
+
+    def action_run_reconcile(run_id: str, expected_version: int, kind: str = "manual", evidence: dict | None = None, outcome: str | None = None):
+        """Reconcile effect evidence at an exact Run revision; unsupported remote lookup requires manual review."""
+        return runtime.modules.recovery.reconcile_run(run_id, expected_version, kind, evidence, outcome)
 
     def action_run_get(run_id: str):
         """Read a durable Action run; submission is not transfer verification."""
@@ -527,11 +550,12 @@ def register_action_tools(mcp, store, runtime=None):
              action_get, action_validate, action_artifact_import, action_artifact_export, action_run_gc, action_run_recover,
              action_validation_enqueue, action_validation_status, action_validation_cancel, action_validation_resume,
              action_module_sets, action_module_set_load, action_module_set_import, action_module_set_export, action_module_set_remove,
-             action_implementation_select, action_graph_check, action_graph_save]
+             action_implementation_select, action_graph_check, action_graph_save, action_run_checkpoints,
+             action_checkpoint_respond, action_run_wake, action_run_safety_scan, action_run_reconcile]
     for function in tools:
         function.__annotations__["return"] = dict
         mcp.tool(annotations={"readOnlyHint": function in [action_retrieve, action_run_get, action_get, action_capabilities,
-                                 action_module_sets, action_graph_check]})(function)
+                                 action_module_sets, action_graph_check, action_run_checkpoints]})(function)
 
 
 if __name__ == "__main__":
@@ -551,7 +575,8 @@ if __name__ == "__main__":
             raise ValueError(record["error"])
     spec["cancelPath"] = str(directory / "cancel.json")
     _atomic_write(spec_path, spec)
-    _execute_command_worker(spec_path, directory / "result.json")
+    with runtime.modules.recovery.lease(record):
+        _execute_command_worker(spec_path, directory / "result.json")
     result = json.loads((directory / "result.json").read_text(encoding="utf-8"))
     effects = record["execution"]["contract"]["effects"]
     uncertain = result.get("timed_out") or result.get("cancelled") or not result.get("ok") and effects != ["read"]

@@ -28,6 +28,7 @@ class DurableRunTests(unittest.TestCase):
                            "output_schema": {"type": "object"}}
         self.record = {"run_id": self.run_id, "state": "running", "engine": "module",
                        "action_id": "fixture.effect", "definition": self.definition,
+                       "content_hash": self.definition["content_hash"],
                        "capability_hash": digest("secret"), "workspace": self.temporary.name,
                        "environment_fingerprint": "4" * 64}
 
@@ -126,8 +127,8 @@ class DurableRunTests(unittest.TestCase):
         with patch("action_modules.subprocess.Popen") as spawn:
             result = runtime.recover()
             spawn.assert_not_called()
-        self.assertEqual(result["reconciled"], [self.run_id])
-        self.assertEqual(runtime.get(self.run_id)["state"], "outcome_unknown")
+        self.assertEqual(result["reconciled"], [])
+        self.assertEqual(runtime.get(self.run_id)["state"], "waiting")
         self.assertEqual(json.loads(self.key.read_text())["run_id"], self.run_id)
 
     def test_contract_missing_metadata_is_high_risk_and_not_retryable(self):
@@ -194,7 +195,8 @@ class DurableRunTests(unittest.TestCase):
         runtime = ModuleRuntime(Path(self.temporary.name) / "store")
         self.prepare()
         (runtime.root / "mutation.lock").write_text("")
-        self.assertEqual(runtime.recover()["reconciled"], [self.run_id])
+        self.assertEqual(runtime.recover()["reconciled"], [])
+        self.assertEqual(runtime.get(self.run_id)["state"], "waiting")
         self.assertFalse((runtime.root / "mutation.lock").exists())
 
 

@@ -112,7 +112,7 @@ Build deterministic training datasets and validate every exported split.`);
   fs.copyFileSync(path.join(__dirname, "..", "resources", "mcp_call_guard.py"), path.join(moduleDir, "mcp_call_guard.py"));
   fs.copyFileSync(path.join(__dirname, "..", "resources", "diagnostic_log.py"), path.join(moduleDir, "diagnostic_log.py"));
   fs.copyFileSync(path.join(__dirname, "..", "resources", "api_chat_control.py"), path.join(moduleDir, "api_chat_control.py"));
-  for (const resource of ["action_runtime.py", "action_modules.py", "action_run_store.py", "action_components.py"]) {
+  for (const resource of ["action_runtime.py", "action_modules.py", "action_run_store.py", "action_recovery.py", "action_components.py"]) {
     fs.copyFileSync(path.join(__dirname, "..", "resources", resource), path.join(moduleDir, resource));
   }
   fs.writeFileSync(path.join(moduleDir, "chat_server.py"), "from fastmcp import FastMCP\nmcp = FastMCP('chat-stub')\n");

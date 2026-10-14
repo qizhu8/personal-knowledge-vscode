@@ -35,6 +35,8 @@ import {
   updateGanttTask,
 } from "./project-model";
 import { CollaborationTransition } from "../chatroom/collaboration-model";
+import { ProjectOverviewInput, PROJECT_TEMPLATES, updateProjectOverview, projectEvent, linkProjectSource, projectLifecycle, projectCockpit } from "./project-cockpit";
+import { ProjectSourceLink } from "./project-model";
 import {
   LegacyProjectMigrationSource,
   ProjectFilesystemStore,
@@ -240,11 +242,47 @@ export class ProjectStore {
     });
   }
 
-  createProject(command: ProjectStoreCommand, name: string): ProjectStoreResult {
+  createProject(command: ProjectStoreCommand, name: string, overview: ProjectOverviewInput = {}, template = "", source?: { kind: ProjectSourceLink["kind"]; id: string } | { kind: ProjectSourceLink["kind"]; id: string }[]): ProjectStoreResult {
     return this.mutate(command, "project-create", state => {
-      const next = createProject(state, name, this.createId);
+      if (template && !PROJECT_TEMPLATES[template]) throw new ProjectModelError("project-template-invalid", "Unknown Project template.");
+      const sources = source ? Array.isArray(source) ? source : [source] : [];
+      const chat = sources.find(link => link.kind === "chat");
+      const promoted = chat && state.projects.find(project => project.links?.some(link => link.kind === "chat" && link.id === chat.id));
+      if (promoted) return { state, entityId: promoted.projectId };
+      let next = createProject(state, name, this.createId);
+      let project = next.projects[next.projects.length - 1];
+      project = projectEvent(project, "project-created", template ? `Created from ${template} template` : "Created blank Project");
+      project = updateProjectOverview(project, { ...PROJECT_TEMPLATES[template], ...overview }, "Initial Project intent");
+      for (const link of sources) project = linkProjectSource(project, link.kind, link.id);
+      next = { ...next, projects: next.projects.map(value => value.projectId === project.projectId ? project : value) };
       return { state: next, entityId: next.projects[next.projects.length - 1].projectId };
     });
+  }
+
+  updateProject(command: ProjectStoreCommand, projectId: string, overview: ProjectOverviewInput, reason: string): ProjectStoreResult {
+    return this.mutate(command, "project-overview", state => ({ state: { ...state, projects: state.projects.map(project => {
+      if (project.projectId !== projectId) return project;
+      return updateProjectOverview(project, overview, reason);
+    }) }, entityId: this.requireProject(state, projectId) }));
+  }
+
+  linkProject(command: ProjectStoreCommand, projectId: string, kind: ProjectSourceLink["kind"], id: string): ProjectStoreResult {
+    return this.mutate(command, "project-source-link", state => ({ state: { ...state, projects: state.projects.map(project =>
+      project.projectId === projectId ? linkProjectSource(project, kind, id) : project) }, entityId: this.requireProject(state, projectId) }));
+  }
+
+  lifecycleProject(command: ProjectStoreCommand, projectId: string, action: "archive" | "restore" | "delete", confirmed = false): ProjectStoreResult {
+    return this.mutate(command, `project-${action}`, state => {
+      this.requireProject(state, projectId);
+      return { state: { ...state, projects: state.projects.map(project => project.projectId === projectId
+        ? projectLifecycle(project, action, projectCockpit(this.filesystem.knowledgeRoot, project, state.collaborationTasks).hasActiveRuns, confirmed)
+        : project) }, entityId: projectId };
+    });
+  }
+
+  private requireProject(state: ProjectModelState, projectId: string): string {
+    if (!state.projects.some(project => project.projectId === projectId)) throw new ProjectModelError("project-not-found", "Project was not found.");
+    return projectId;
   }
 
   createThread(command: ProjectStoreCommand, projectId: string, name: string): ProjectStoreResult {

@@ -14,7 +14,7 @@ import { hasNewerMcpRuntime } from "./mcp-version-policy";
 import { builtInRecipePin } from "../workflows/project-model";
 
 // ── MCP server scaffold ────────────────────────────────────────────────────
-export const UNIFIED_MCP_VERSION = "2.13.13";
+export const UNIFIED_MCP_VERSION = "2.13.14";
 const PROMPT_MANAGER_WHEEL = "uone_prompt_manager-0.1.0-py3-none-any.whl";
 const PROMPT_MANAGER_WHEEL_SHA256 = "eb9fd76058134f9ab9711d8e7604c75f761db5762d93e67f65740dc07fdc1518";
 const RETRIEVAL_ENGINE_WHEEL = "adaptive_skill_retrieval-0.3.0.dev2026091601-py3-none-any.whl";
@@ -543,6 +543,7 @@ export function generateMcpServer(context: vscode.ExtensionContext): { serverPat
   fs.copyFileSync(path.join(context.extensionPath, "resources", "action_runtime.py"), path.join(mcpDir, "action_runtime.py"));
   fs.copyFileSync(path.join(context.extensionPath, "resources", "action_modules.py"), path.join(mcpDir, "action_modules.py"));
   fs.copyFileSync(path.join(context.extensionPath, "resources", "action_run_store.py"), path.join(mcpDir, "action_run_store.py"));
+  fs.copyFileSync(path.join(context.extensionPath, "resources", "action_recovery.py"), path.join(mcpDir, "action_recovery.py"));
   fs.copyFileSync(path.join(context.extensionPath, "resources", "action_components.py"), path.join(mcpDir, "action_components.py"));
   fs.copyFileSync(path.join(context.extensionPath, "resources", "recipe_health.py"), recipeHealthPy);
   fs.copyFileSync(path.join(context.extensionPath, "resources", "agent_session_runtime.py"), agentSessionRuntimePy);

@@ -85,6 +85,8 @@ vm.runInNewContext(fs.readFileSync(path.join(root, "dist", "ui", "action-browser
   assert.match(webview.html, /script-src 'nonce-[a-f0-9]+'/);
   assert.match(webview.html, /<script nonce="[a-f0-9]+">/);
   assert.match(webview.html, /codicon\.css/);
+  moduleExports.openActionWorkbench(context, runId);
+  assert(webview.html.includes(`currentRun:"${runId}"`), "Project source link preselects the exact Action Run in the real Workbench");
   profiling = true;
   nextResult = { ok: true, execution_ok: true, run_id: runId, state: "running", userState: "Running", launch_reused: false };
   await listener({ requestId: "durable-call", method: "call", params: { key: "same-key" } });
@@ -106,11 +108,26 @@ vm.runInNewContext(fs.readFileSync(path.join(root, "dist", "ui", "action-browser
     assert.strictEqual(replies.at(-1).result.ok, true);
     assert.deepStrictEqual(serviceCalls.at(-1), { method, params });
   }
+  for (const method of ["checkpoints", "respond_checkpoint", "schedule_run", "wake_run", "reconcile_run", "safety_scan", "associate_project"]) {
+    const params = method === "safety_scan" ? {} : { run_id: runId };
+    await listener({ requestId: "p3-" + method, method, params });
+    assert.strictEqual(replies.at(-1).result.ok, true);
+    assert.deepStrictEqual(serviceCalls.at(-1), { method, params });
+  }
+  const beforeOpenProject = serviceCalls.length;
+  await listener({ requestId: "p2-open", method: "open_project", params: { run_id: runId } });
+  assert.strictEqual(replies.at(-1).result.ok, true);
+  assert.deepStrictEqual(executions.at(-1), ["personalKnowledge.openActionRunProject", runId]);
+  assert.strictEqual(serviceCalls.length, beforeOpenProject, "Project route does not call the Python executor");
+  await listener({ requestId: "p2-invalid", method: "open_project", params: { run_id: "../wrong" } });
+  assert.match(replies.at(-1).result.error, /Invalid Action Run/);
   trusted = false;
   const beforeAuthoring = serviceCalls.length;
   await listener({ requestId: "native-untrusted-source", method: "source_save", params: authoringRequests.source_save });
   assert.match(replies.at(-1).result.error, /trusted/);
   assert.strictEqual(serviceCalls.length, beforeAuthoring);
+  await listener({ requestId: "p2-untrusted", method: "open_project", params: { run_id: runId } });
+  assert.match(replies.at(-1).result.error, /trusted/);
   trusted = true;
   await listener({ requestId: "1", method: "show_choices", params: { run_id: runId } });
   assert.match(executions.at(-1)[1].query, /^@pkm-actions action_run_/);

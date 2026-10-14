@@ -2,7 +2,7 @@
   "name": "personal-knowledge",
   "displayName": "Personal Knowledge Manager",
   "description": "%extension.description%",
-  "version": "3.2.39",
+  "version": "3.2.40",
   "publisher": "Uone",
   "author": {
     "name": "Yu Wang"
@@ -1212,6 +1212,7 @@
     "test:tab-cache-ui": "npm run build && node tests/test-tab-cache-ui.js",
     "test:background-tasks": "npm run build && node tests/test-background-tasks.js",
     "test:execution-baseline": "npm run build && node tests/test-pkm-p0.js && node tests/test-action-browser.js",
+    "test:durable-execution": "npm run build && node tests/test-project-cockpit.js && node tests/test-project-cockpit-browser.js && node tests/test-project-cockpit-python.js && node tests/test-action-safety-scan.js && python tests/test-action-durable-runs.py && python tests/test-action-modules.py && python tests/test-action-runtime.py && python tests/test-action-recovery-e2e.py && python tests/test-action-workbench.py && node tests/test-chat-action-recovery-e2e.js",
     "test:agent-session-lifecycle": "npm run build && node tests/test-agent-session-lifecycle.js",
     "test:agent-session-groups": "npm run build && node tests/test-agent-session-lifecycle.js && node tests/test-four-workspace-ui.js && python tests/test-agent-session-groups.py && python tests/test-agent-session-mcp-runtime.py",
     "test:chatroom-project-simulation": "npm run build && npm run test:chatroom-project-simulation:run",

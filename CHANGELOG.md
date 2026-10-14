@@ -5,6 +5,14 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.40] - 2026-10-14
+
+- Add the P2 Project Cockpit: overview, actionable execution inbox, artifacts, decisions and durable timeline. Support explicit Chat promotion and Run association without creating a second execution state machine; guard archive/delete while work is unresolved.
+- Add P3 typed durable checkpoints and timer/event/dependency wakeups on original Action Runs. Release waiting workers, preserve active budgets and completed-step receipts, retain exact approval history, fence abandoned workers and admit wakeups fairly by Project.
+- Provide pinned read-only reconciliation adapters and explicit evidence/version checks instead of retrying uncertain effects. Keep checkpoint decisions and reconciliation inline in Workbench, preserve form drafts during polling and expose Project navigation.
+- Extend Script Sync identity reconciliation across entity/body/sidecar moves, including guarded legacy Trash evidence recovery. Preserve raw source guards, byte-strict current Remote validation and explicit deletion authority rather than inferring deletion from absence.
+- Add real worker/API/MCP recovery E2E, Chat tool-loop-to-HTTP-MCP-to-Action integration, Project host/browser cooperation and Windows-report local-repository acceptance. Cover stale proposals, duplicate events, polling drafts, narrow layouts and keyboard flows; native Windows and human dogfood remain separate acceptance.
+
 ## [3.2.39] - 2026-10-14
 
 - Unify Action, Recipe, Run, Project and Collaboration terminology and user-facing execution projections without replacing underlying lifecycle or permission models. Show canonical states and the next-step owner across Chat, workers, background tasks and Projects.
