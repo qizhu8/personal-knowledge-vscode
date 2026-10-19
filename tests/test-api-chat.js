@@ -740,6 +740,7 @@ async function testController() {
   const context = { globalState: { get: (key, fallback) => userState.has(key) ? userState.get(key) : fallback, update: async (key, value) => { userState.set(key, value); } }, workspaceState: { get: () => undefined, update: async () => {} }, secrets: { get: async () => "test-key" } };
   const posts = [];
   const requests = [];
+  const memoryRequests = [];
   const copiedChatIds = [];
   const picks = [];
   const inputs = [];
@@ -781,7 +782,10 @@ async function testController() {
     const { ApiChatView } = require("../dist/chat/api-chat-view");
     builtin = require("../dist/chat/api-chat-tools"); originalBuiltin = builtin.createBuiltinTools;
     Module._load = originalLoad;
-    client.streamApiChat = (request, onText) => new Promise((resolve, reject) => {
+    client.streamApiChat = (request, onText) => request.purpose === "memory"
+      // Memory Engine steps are out of scope for this scripted transport; an unusable answer exercises the visible fallback.
+      ? (memoryRequests.push(request.messages[0].content.slice(0, 40)), Promise.resolve())
+      : new Promise((resolve, reject) => {
       request.signal.addEventListener("abort", () => reject(new Error("Request cancelled.")), { once: true });
       requests.push({ request, onText, resolve, reject }); started();
     });

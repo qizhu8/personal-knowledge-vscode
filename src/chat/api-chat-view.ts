@@ -6,7 +6,7 @@ import { randomBytes, randomUUID, createHash } from "crypto";
 import { getStorePath } from "../knowledge/filestore";
 import { detectMcpPython } from "../mcp/mcp";
 import { ApiChatMessage, streamApiChat, chatToolRoundLimit, defaultLoopExemptTools, ChatToolLoopNotice, ChatToolLoopDecision } from "./api-chat-client";
-import { ApiChatStore, ApiConversation, ApiChatStatus, ChatMessage, ChatMemoryRecord, ChatDelegation, apiChatStatus, apiChatProjection, apiChatDiagnostics, chatHistoryPage, apiChatHarnessSnapshot } from "./api-chat-store";
+import { ApiChatStore, ApiConversation, ApiChatStatus, ChatMessage, ChatDelegation, apiChatStatus, apiChatProjection, apiChatDiagnostics, chatHistoryPage, apiChatHarnessSnapshot } from "./api-chat-store";
 import { BaselineEventKind, recordBaselineEvent } from "../runtime/pkm-baseline";
 import { modelProfiles, assertModelAvailable, estimateInputTokens, validateBudget, estimateCost, ChatModelProfile } from "./api-chat-models";
 import { abortable, builtinToolCatalog, createBuiltinTools } from "./api-chat-tools";
@@ -121,6 +121,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
   private memory?: { root: string; service: ChatMemoryService };
   private memoryUnavailable?: { message: string; at: number };
   private readonly memoryCommits = new Set<AbortController>();
+  private readonly memoryCommitResults = new Map<string, Record<string, unknown>>();
 
   constructor(private readonly extension: vscode.ExtensionContext, private readonly retrieval?: ChatKnowledgeRetriever) {}
 
@@ -445,7 +446,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
       text += chunk;
       if (text.length > 64_000) throw new Error("Memory model output exceeded 64,000 characters.");
     };
-    const base = { messages: request.messages as ApiChatMessage[], signal, tools: [], maxOutputTokens: request.max_tokens,
+    const base = { purpose: "memory" as const, messages: request.messages as ApiChatMessage[], signal, tools: [], maxOutputTokens: request.max_tokens,
       timeoutMs: Math.min(settings.timeoutMs, 120_000), maxToolRounds: 1, loopReviewAfterMs: settings.loopReviewAfterMs, loopExemptTools: settings.loopExemptTools,
       onUsage: (value: { inputTokens: number; outputTokens: number }) => {
         usage = { inputTokens: (usage?.inputTokens || 0) + value.inputTokens, outputTokens: (usage?.outputTokens || 0) + value.outputTokens };
@@ -470,7 +471,11 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     return { text, ...(usage ? { usage } : {}) };
   }
 
-  /** Post-reply organization: ingest the exchange, extract statements, then enforce the disk budget. Never blocks the Chat. */
+  /**
+   * Post-reply organization: ingest the exchange, extract statements, then enforce the disk budget. Never blocks the Chat.
+   * The result is never written back into the Chat file: the Chat may already belong to a newer request or another window,
+   * and a background revision bump would make those owners stale. The engine keeps the durable receipt under `reply.memory.turn`.
+   */
   private commitMemory(chat: ApiConversation, turn: string, input: ChatMessage, reply: ChatMessage): void {
     if (!chat.includeHistory || !reply.content.trim()) return;
     const controller = new AbortController();
@@ -478,20 +483,18 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     const used: { model?: string } = {};
     const started = Date.now();
     const capacity = Math.max(64, vscode.workspace.getConfiguration("personalKnowledge").get<number>("chatMemoryCapacityMB", 1024)) * 1024 * 1024;
-    const record = (update: Partial<ChatMemoryRecord>) => {
-      if (this.disposed) return;
-      reply.memory = { ...(reply.memory || { schema: "pkm.chat.memory/v1", turn }), ...update };
-      try { this.persist(chat); this.publish(); } catch { /* Chat was deleted while memory was organizing. */ }
-    };
+    const user = { id: input.id, text: input.content }, assistant = { id: reply.id, text: reply.content };
+    const scope = this.memoryScope(chat);
     (async () => {
-      const service = this.chatMemory();
-      const receipt = await service.commit(this.memoryScope(chat), turn,
-        { id: input.id, text: input.content }, { id: reply.id, text: reply.content },
+      const receipt = await this.chatMemory().commit(scope, turn, user, assistant,
         (request, signal) => this.runMemoryModel(chat, request, signal, used), controller.signal, capacity);
-      record({ commit: { ...receipt, model: used.model, durationMs: Date.now() - started } });
+      this.memoryCommitResults.set(turn, { ...receipt, model: used.model, durationMs: Date.now() - started });
     })().catch(error => {
-      if (!controller.signal.aborted) record({ commit: { status: "failed", error: error instanceof Error ? error.message : String(error), durationMs: Date.now() - started } });
-    }).finally(() => this.memoryCommits.delete(controller));
+      if (!controller.signal.aborted) this.memoryCommitResults.set(turn, { status: "failed", error: error instanceof Error ? error.message : String(error), durationMs: Date.now() - started });
+    }).finally(() => {
+      this.memoryCommits.delete(controller);
+      while (this.memoryCommitResults.size > 200) this.memoryCommitResults.delete(this.memoryCommitResults.keys().next().value!);
+    });
   }
 
   private defaultModel(): { provider: "vscode" | "openai-compatible" | "azure-openai"; profile: ChatModelProfile } | undefined {

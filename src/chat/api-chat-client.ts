@@ -81,6 +81,8 @@ export interface ApiChatRequest {
   onTransportPrepared?: (receipt: ChatTransportReceipt) => void;
   onTransportSent?: (receipt: ChatTransportReceipt) => void;
   afterTools?: () => boolean;
+  /** Local caller label (never sent to the provider); "memory" marks Memory Engine model steps. */
+  purpose?: "memory";
 }
 
 export function chatToolRoundLimit(value = 30): number {

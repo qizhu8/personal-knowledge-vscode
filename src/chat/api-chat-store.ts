@@ -72,7 +72,7 @@ export interface ChatPlanningReceipt {
   recipeStageId?: string;
   possibilities: ChatPlanningPossibility[];
 }
-/** Memory Engine receipts for one reply: context preparation and post-reply organization. */
+/** Memory Engine context-preparation receipt for one reply; the post-reply commit receipt lives in the engine under `turn`. */
 export interface ChatMemoryRecord {
   schema: "pkm.chat.memory/v1";
   turn: string;
@@ -80,7 +80,6 @@ export interface ChatMemoryRecord {
   durationMs?: number;
   blocks?: Array<{ kind: string; piece: string; characters: number }>;
   prepare?: Record<string, unknown>;
-  commit?: Record<string, unknown>;
   error?: string;
 }
 export interface ChatMessage {
