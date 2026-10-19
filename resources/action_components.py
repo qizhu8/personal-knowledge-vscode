@@ -139,6 +139,11 @@ def component_definitions():
         ("lookup", "Dictionary Lookup", {"dictionary": {"type": "object", "default": {}}, "key": {"type": "string"}, "default": {}}, ["dictionary", "key"], {"value": {}}, ["pure"]),
         ("file-path", "File Path", {"path": {"type": "string"}, "must_exist": {"type": "boolean", "default": False}}, ["path"], {"path": {"type": "string"}}, ["local-read"]),
         ("sleep", "Sleep", {"seconds": {"type": "number", "minimum": 0, "maximum": 300, "default": 1}}, ["seconds"], {"seconds": {"type": "number"}}, ["pure"]),
+        ("poll", "Poll until / timeout", {"body": steps, "condition": {}, "value": {},
+            "interval_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 300},
+            "timeout_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 604800},
+            "max_iterations": limit}, ["body", "condition", "value", "interval_seconds", "timeout_seconds", "max_iterations"],
+            {"status": {"enum": ["completed", "timed_out"]}, "attempts": {"type": "integer"}, "value": {}}, ["pure"]),
         ("if-else", "If / Else", {"condition": {}, "then_steps": steps, "else_steps": steps, "then_value": {}, "else_value": {}}, ["condition", "then_value", "else_value"], {"value": {}}, ["pure"]),
         ("switch", "Switch", {"selector": {}, "cases": {"type": "array", "items": {"type": "object"}, "default": [], "maxItems": 100}, "default_steps": steps, "default_value": {}}, ["selector", "cases", "default_value"], {"value": {}}, ["pure"]),
         ("math-expression", "Math Expression", {"expression": {"type": "string", "minLength": 1, "maxLength": 1024, "default": MATH_EXAMPLE},
@@ -163,7 +168,11 @@ def component_definitions():
             ["trigger"], {"value": {}}, ["pure"]),
     ]
     return {"core." + name: {"action_id": "core." + name, "display_name": label, "description": label,
-            "category": "core/logic" if name in {"if-else", "switch", "for", "while", "user-action"} else "core", "component": True, "version": 1, "effects": effects,
+            "category": "core/" + ("logic" if name in {"if-else", "switch", "for", "while"} else
+                "interaction" if name in {"user-action", "checkpoint"} else
+                "timing" if name in {"sleep", "wait", "poll"} else
+                "filesystem" if name == "file-path" else "values"),
+            "component": True, "version": 1, "effects": effects,
             **({"math_functions": MATH_SOURCES, "examples": [{"inputs": {"expression": MATH_EXAMPLE, "input_0": 2, "input_1": 3, "input_2": 4, "input_3": math.e}, "output": {"value": 10.0}}]} if name == "math-expression" else {}),
             "input_schema": {"type": "object", "properties": properties, "required": required, "additionalProperties": False},
             "output_schema": {"type": "object", "properties": outputs, "required": list(outputs), "additionalProperties": False}}
@@ -229,7 +238,7 @@ def validate_steps(steps, dependencies, depth=0, budget=None):
             seconds = inputs["seconds"]
             if type(seconds) not in {int, float} or not 0 <= seconds <= 300:
                 raise ValueError("Sleep seconds must be a finite number between 0 and 300.")
-        if step["component"] in {"core.for", "core.while"}:
+        if step["component"] in {"core.for", "core.while", "core.poll"}:
             limit = inputs["max_iterations"]
             if type(limit) is not int or not 1 <= limit <= 1000:
                 raise ValueError("Loops require an explicit integer max_iterations between 1 and 1000.")
@@ -302,6 +311,10 @@ def answer_choice(runtime, run_id, request_id, index):
 def execute_steps(runtime, record, context, implementation):
     outputs, variables = {}, {}
     budget = [10000]
+    poll_deadlines = []
+
+    class PollDeadline(Exception):
+        pass
 
     def resolve(value, depth=0):
         if depth > 32:
@@ -342,7 +355,33 @@ def execute_steps(runtime, record, context, implementation):
             return {key: resolve(item, depth + 1) for key, item in value.items()}
         return value
 
+    def ignored(steps, prefix, reason):
+        for step in steps:
+            key = prefix + step["id"]
+            runtime.recovery.step_event(record, key, step, "ignored", reason)
+            inputs = step.get("inputs", {})
+            for field in ["then_steps", "else_steps", "body", "default_steps"]:
+                if isinstance(inputs.get(field), list):
+                    ignored(inputs[field], key + "/" + field + "/", reason)
+            for index, case in enumerate(inputs.get("cases", [])):
+                ignored(case.get("steps", []), key + "/case-" + str(index) + "/", reason)
+
     def run(steps, prefix=""):
+        for step in steps:
+            key = prefix + step["id"]
+            if runtime.recovery.step_result(record, key, step):
+                run_unobserved([step], prefix)
+                continue
+            runtime.recovery.step_event(record, key, step, "running")
+            try:
+                run_unobserved([step], prefix)
+            except ActionSuspended:
+                raise
+            except Exception as error:
+                runtime.recovery.step_event(record, key, step, "failed", type(error).__name__ + ": " + str(error))
+                raise
+
+    def run_unobserved(steps, prefix=""):
         for step in steps:
             budget[0] -= 1
             if budget[0] < 0 or runtime.cancelled(record):
@@ -356,14 +395,26 @@ def execute_steps(runtime, record, context, implementation):
                 continue
             if "action_id" in step:
                 child = step["action_id"]
+                if poll_deadlines and time.time() >= min(poll_deadlines):
+                    checkpoint = record.get("checkpoint", {})
+                    dependency = checkpoint.get("proposal", {}).get("dependency_run_id")
+                    if checkpoint.get("step") == key and dependency:
+                        runtime.cancel(dependency)
+                    raise PollDeadline()
                 result = runtime.call(child, resolve(step["inputs"]), key, record["definition"]["dependencies"][child], context)
                 if result["state"] in {"running", "waiting"}:
+                    if poll_deadlines:
+                        runtime.recovery.suspend(record, key, "decision",
+                            {"dependency_run_id": result["run_id"]}, owner="scheduler",
+                            trigger={"kind": "timer", "at": min(min(poll_deadlines), time.time() + 0.25)})
                     runtime.recovery.suspend(record, key, "decision",
                         {"dependency_run_id": result["run_id"]}, owner="scheduler",
                         trigger={"kind": "dependency", "run_id": result["run_id"],
                                  "expected_version": result["execution"]["version"]})
                 if result["state"] != "succeeded":
                     raise RuntimeError("Required child did not succeed: " + result["run_id"])
+                if poll_deadlines and time.time() >= min(poll_deadlines):
+                    raise PollDeadline()
                 outputs[identifier] = result["output"]
                 runtime.recovery.step_commit(record, key, step, result["output"], outputs)
                 continue
@@ -376,11 +427,21 @@ def execute_steps(runtime, record, context, implementation):
                 if type(condition) is not bool:
                     raise ValueError("If condition must evaluate to a boolean.")
                 branch = "then" if condition else "else"
+                skipped = "else" if condition else "then"
+                ignored(values[skipped + "_steps"], key + "/" + skipped + "/",
+                        "Recorded branch condition selected " + branch + "; this branch was not executed.")
                 run(values[branch + "_steps"], key + "/" + branch + "/")
                 output = {"value": resolve(values[branch + "_value"])}
             elif name == "core.switch":
                 selector = resolve(values["selector"])
                 matched = next((case for case in values["cases"] if type(case["match"]) is type(selector) and case["match"] == selector), None)
+                for index, case in enumerate(values["cases"]):
+                    if case is not matched:
+                        ignored(case.get("steps", []), key + "/ignored-case-" + str(index) + "/",
+                                "Recorded switch selector did not choose this case.")
+                if matched:
+                    ignored(values["default_steps"], key + "/default/",
+                            "Recorded switch selector chose a case; default was not executed.")
                 run(matched.get("steps", []) if matched else values["default_steps"], key + "/case/")
                 output = {"value": resolve(matched["value"] if matched else values["default_value"])}
             elif name in {"core.for", "core.while"}:
@@ -393,6 +454,8 @@ def execute_steps(runtime, record, context, implementation):
                     items = resolve(values["items"]) if name == "core.for" else None
                     if name == "core.for" and (not isinstance(items, list) or len(items) > limit):
                         raise ValueError("For items exceed the declared iteration limit.")
+                    if items == []:
+                        ignored(values["body"], key + "/not-entered/", "For loop input was empty; body was not executed.")
                     for index in range(len(items) if items is not None else limit):
                         if runtime.cancelled(record):
                             raise TimeoutError("Loop cancelled or deadline reached.")
@@ -401,6 +464,8 @@ def execute_steps(runtime, record, context, implementation):
                             if type(condition) is not bool:
                                 raise ValueError("While condition must evaluate to a boolean.")
                             if not condition:
+                                if index == 0:
+                                    ignored(values["body"], key + "/not-entered/", "While condition was false before entry; body was not executed.")
                                 break
                         variables.update({"index": index, "item": items[index] if items is not None else None})
                         run(values["body"], key + "/" + str(index) + "/")
@@ -411,6 +476,66 @@ def execute_steps(runtime, record, context, implementation):
                 finally:
                     variables.clear()
                     variables.update(previous)
+            elif name == "core.poll":
+                settings = {field: resolve(values[field]) for field in
+                            ["interval_seconds", "timeout_seconds", "max_iterations"]}
+                Draft202012Validator(spec["input_schema"]).validate({
+                    **settings, "body": [], "condition": False, "value": None})
+                body_effects = validate_steps(values["body"], record["definition"]["dependencies"])
+                for child in referenced_actions(values["body"]):
+                    body_effects.update(runtime.definition(child)["effects"])
+                if not body_effects.issubset({"pure", "read", "local-read", "remote-read"}):
+                    raise PermissionError("Polling may repeat only read-only Actions; mutations and human input are forbidden.")
+                clock_key, clock_definition = key + "/clock", {"component": "core.poll", "role": "clock"}
+                clock = runtime.recovery.step_result(record, clock_key, clock_definition)
+                if not clock:
+                    runtime.recovery.step_commit(record, clock_key, clock_definition, {"at": time.time()})
+                    clock = runtime.recovery.step_result(record, clock_key, clock_definition)
+                deadline = clock["output"]["at"] + settings["timeout_seconds"]
+                output = {"status": "timed_out", "attempts": 0, "value": None}
+                for index in range(settings["max_iterations"]):
+                    iteration_key = key + "/iteration-" + str(index)
+                    iteration_definition = {"component": "core.poll", "role": "iteration", "index": index}
+                    receipt = runtime.recovery.step_result(record, iteration_key, iteration_definition)
+                    if receipt:
+                        observation = receipt["output"]
+                    else:
+                        started_key = iteration_key + "/started"
+                        started_definition = {"component": "core.poll", "role": "attempt"}
+                        started = runtime.recovery.step_result(record, started_key, started_definition)
+                        if not started and time.time() >= deadline:
+                            break
+                        if not started:
+                            runtime.recovery.step_commit(record, started_key, started_definition, {})
+                        output["attempts"] = index + 1
+                        poll_deadlines.append(deadline)
+                        try:
+                            run(values["body"], iteration_key + "/")
+                        except PollDeadline:
+                            break
+                        finally:
+                            poll_deadlines.pop()
+                        if time.time() >= deadline:
+                            break
+                        condition = resolve(values["condition"])
+                        if type(condition) is not bool:
+                            raise ValueError("Poll condition must evaluate to a boolean.")
+                        observation = {"condition": condition, "value": resolve(values["value"])}
+                        runtime.recovery.step_commit(record, iteration_key, iteration_definition, observation)
+                    output.update({"attempts": index + 1, "value": observation["value"]})
+                    if observation["condition"]:
+                        output["status"] = "completed"
+                        break
+                    if index + 1 == settings["max_iterations"] or time.time() >= deadline:
+                        break
+                    timer_key = iteration_key + "/interval"
+                    timer_definition = {"component": "core.poll", "role": "interval"}
+                    if not runtime.recovery.step_result(record, timer_key, timer_definition):
+                        if not runtime.recovery.resolved(record, timer_key):
+                            runtime.recovery.suspend(record, timer_key, "decision",
+                                {"poll_step": key, "attempts": index + 1}, owner="scheduler",
+                                trigger={"kind": "timer", "at": min(deadline, time.time() + settings["interval_seconds"])})
+                        runtime.recovery.step_commit(record, timer_key, timer_definition, {})
             else:
                 values = resolve(values)
                 Draft202012Validator(spec["input_schema"]).validate(values)
@@ -426,7 +551,9 @@ def execute_steps(runtime, record, context, implementation):
                         raise KeyError("Dictionary key is missing: " + field)
                     output = {"value": dictionary[field] if field in dictionary else values["default"]}
                 elif name == "core.file-path":
-                    path = Path(values["path"]).expanduser()
+                    reference = values["path"]
+                    path = (runtime.resource_path(record["definition"], reference, "steps." + key + ".path")
+                            if reference.startswith(("pkm://", "${module_assets}/")) else Path(reference).expanduser())
                     path = (runtime.workspace() / path).resolve() if not path.is_absolute() else path.resolve()
                     if not path.is_relative_to(runtime.workspace()) or values["must_exist"] and not path.exists():
                         raise PermissionError("File path is outside the Action workspace or does not exist.")

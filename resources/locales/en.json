@@ -4,6 +4,12 @@
     "label": "English"
   },
   "strings": {
+    "apiChat.openHarness": "Open execution subgraphs",
+    "apiChat.reportedGoal": "Agent-reported goal: {goal}",
+    "apiChat.noTaskReport": "No explicit task-state report yet",
+    "apiChat.recordedValidation": "Recorded validation: {status}",
+    "apiChat.noValidation": "Task validation not recorded",
+    "apiChat.responseStatus": "Response: {status}",
     "apiChat.loadOlderMessages": "Load older messages",
     "apiChat.loadingOlderMessages": "Loading older messages...",
     "apiChat.resumeWorker": "Resume worker",

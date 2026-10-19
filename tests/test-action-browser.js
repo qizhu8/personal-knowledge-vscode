@@ -47,6 +47,7 @@ vm.runInNewContext(fs.readFileSync(path.join(root, "dist", "ui", "action-browser
   exports: moduleExports, require(name) {
     if (name === "vscode") return vscode;
     if (name === "../knowledge/filestore") return { getStorePath: () => storePath };
+    if (name === "../knowledge/knowledge-locator") return require("../dist/knowledge/knowledge-locator");
     if (name === "../runtime/action-workbench-server") return require("../dist/runtime/action-workbench-server");
     if (name === "../runtime/pkm-baseline") return { recordBaselineEvent(directory, enabled, event) {
       if (enabled) baselineEvents.push(event);

@@ -1,4 +1,5 @@
 import { createHash } from "crypto";
+import { convertTextNewlines, textNewlinePolicy } from "../knowledge/text-format";
 
 const digest = (content: Buffer): string => createHash("sha256").update(content).digest("hex");
 
@@ -16,9 +17,9 @@ export function verifyGitHubSyncBaseDigest(commit: string, relative: string, exp
   const actual = digest(content);
   if (!expected || expected === actual) return { digest: actual };
   const text = content.toString("utf8");
-  if (!content.includes(0) && Buffer.from(text, "utf8").equals(content)) {
-    const lf = Buffer.from(text.replace(/\r\n/g, "\n"), "utf8");
-    const crlf = Buffer.from(lf.toString("utf8").replace(/\n/g, "\r\n"), "utf8");
+  if (textNewlinePolicy(relative) === "lf" && !content.includes(0) && Buffer.from(text, "utf8").equals(content)) {
+    const lf = convertTextNewlines(content, "lf");
+    const crlf = convertTextNewlines(lf, "crlf");
     // Only a proven hash of the same text with uniform LF/CRLF is compatible.
     if (expected === digest(lf) || expected === digest(crlf)) {
       const comparisonDigest = digest(lf);

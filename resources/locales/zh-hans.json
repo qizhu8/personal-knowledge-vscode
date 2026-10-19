@@ -4,6 +4,12 @@
     "label": "简体中文"
   },
   "strings": {
+    "apiChat.openHarness": "打开执行子图",
+    "apiChat.reportedGoal": "Agent 报告的目标：{goal}",
+    "apiChat.noTaskReport": "尚未记录明确的任务状态",
+    "apiChat.recordedValidation": "已记录的验证：{status}",
+    "apiChat.noValidation": "尚未记录任务验证",
+    "apiChat.responseStatus": "回复状态：{status}",
     "apiChat.loadOlderMessages": "加载更早的消息",
     "apiChat.loadingOlderMessages": "正在加载更早的消息...",
     "apiChat.resumeWorker": "继续 worker",

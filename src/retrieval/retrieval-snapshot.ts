@@ -1,7 +1,8 @@
 import { createHash } from "crypto";
 import type { CachedSubscriptionGroup, SharedContentType } from "../subscriptions/subscriptions";
 import { compileKnowledgeLinksV1, type KnowledgeLinkV1 } from "../knowledge/knowledge-contracts";
-import type { RetrievalContentType } from "./retrieval-contracts";
+import type { RetrievalCandidateV1, RetrievalContentType } from "./retrieval-contracts";
+import { refineRuleCandidates } from "./retrieval-passages";
 
 export interface RetrievalDocument {
   skill_id: string;
@@ -24,6 +25,95 @@ export interface RetrievalSnapshot {
   corpus_revision: string;
   generation?: number;
   documents: RetrievalDocument[];
+}
+
+export function indexedRetrievalDocument(document: RetrievalDocument): RetrievalDocument {
+  const hash = documentHash(document);
+  return { ...document, source_id:document.source_id || document.source_uri || document.skill_id,
+    source_revision:`${document.source_revision || "content"}:${hash}`,
+    visibility:document.visibility || "available", links:document.links || [] };
+}
+
+export function retrievalDocumentContentHash(document: RetrievalDocument): string {
+  const orderedKeys = Object.keys(document.metadata).sort((first, second) => {
+    const a = Array.from(first, value => value.codePointAt(0)!);
+    const b = Array.from(second, value => value.codePointAt(0)!);
+    for (let index = 0; index < Math.min(a.length, b.length); index++) if (a[index] !== b[index]) return a[index] - b[index];
+    return a.length - b.length;
+  });
+  const metadata = `{${orderedKeys.map(key => `${JSON.stringify(key)}:${JSON.stringify(document.metadata[key])}`).join(",")}}`;
+  // Match the pinned worker's SkillDocument canonical JSON, not its index-event hash.
+  const type = document.content_type === "action" ? "note" : document.content_type;
+  const canonical = `{"body":${JSON.stringify(document.body)},"content_type":${JSON.stringify(type)},"description":${JSON.stringify(document.description)},"metadata":${metadata},"title":${JSON.stringify(document.title)}}`;
+  return createHash("sha256").update(canonical).digest("hex");
+}
+
+export function retrievalDocumentForSource(snapshot: RetrievalSnapshot, sourceId: string, revision: string,
+  contentHash?: string): RetrievalDocument | undefined {
+  for (const document of snapshot.documents) {
+    if ((document.source_id || document.source_uri || document.skill_id) !== sourceId) continue;
+    const indexed = document.source_revision === revision ? document : indexedRetrievalDocument(document);
+    if (indexed.source_revision === revision && indexed.visibility === "available"
+      && (contentHash === undefined || retrievalDocumentContentHash(indexed) === contentHash)) return indexed;
+  }
+  return undefined;
+}
+
+export function materializeRetrievalCandidates(parents: RetrievalCandidateV1[], snapshot: RetrievalSnapshot,
+  query: string): RetrievalCandidateV1[] {
+  if (parents.length > 20) throw new Error("Source materialization accepts at most 20 ranked parents.");
+  const candidates = [...parents];
+  for (let index = 0; index < parents.length; index++) {
+    const parent = parents[index];
+    const document = parent.sourceId && parent.sourceRevision
+      ? retrievalDocumentForSource(snapshot, parent.sourceId, parent.sourceRevision, parent.contentHash) : undefined;
+    if (!document) {
+      const { content, ...metadata } = parent;
+      candidates[index] = { ...metadata, reason:"Source revision or content hash changed, is private, or is unavailable; no content was materialized." };
+      continue;
+    }
+    candidates[index] = { ...parent, ...materializeRetrievalSource(document) };
+    if (document.body.length <= 160_000) continue;
+    const refined = refineRuleCandidates([{ ...parent, content:document.body }], query);
+    const [metadata, ...passages] = refined.candidates;
+    if (candidates.length + passages.length > 100) {
+      candidates[index].reason = "The 100-candidate materialization boundary was reached; this source's dependent passage group was not injected.";
+      continue;
+    }
+    candidates[index] = { ...metadata, reason:[metadata.reason, ...refined.warnings].join(" ").slice(0, 1024) };
+    candidates.push(...passages);
+  }
+  return candidates;
+}
+
+export function materializeRetrievalSource(document: RetrievalDocument | undefined): { content?: string; reason: string } {
+  if (!document || document.visibility !== "available") return { reason:"Source revision changed or unavailable" };
+  if (document.body.length > 160_000) return { reason:"Complete source exceeds the 160,000-character materialization boundary; source-range retrieval is required. No prefix was substituted." };
+  return { content:document.body, reason:"Ranked knowledge candidate; complete source materialized" };
+}
+
+export function retrievalSourceValidation(readSnapshot: () => RetrievalSnapshot) {
+  const admitted = new Map<string, string>(), currentHashes = new Map<string, string>();
+  let snapshot: RetrievalSnapshot | undefined;
+  const key = (candidate:RetrievalCandidateV1) => JSON.stringify([
+    candidate.sourceId, candidate.parentRevision || candidate.sourceRevision, candidate.parentContentHash || candidate.contentHash,
+  ]);
+  return {
+    admit(candidate:RetrievalCandidateV1, document:RetrievalDocument): void {
+      if (document.visibility !== "available" || document.source_id !== candidate.sourceId || document.source_revision !== candidate.sourceRevision) throw new Error("Cannot admit unavailable or mismatched retrieval evidence.");
+      admitted.set(key(candidate), documentHash(document));
+      if (admitted.size > 1000) admitted.delete(admitted.keys().next().value!);
+    },
+    refreshSourceValidation(): void { snapshot = readSnapshot(); currentHashes.clear(); },
+    sourceIsCurrent(candidate:RetrievalCandidateV1): boolean {
+      const identity = key(candidate), expected = admitted.get(identity);
+      const document = snapshot && retrievalDocumentForSource(snapshot, candidate.sourceId!,
+        (candidate.parentRevision || candidate.sourceRevision)!);
+      if (!expected || !document) return false;
+      if (!currentHashes.has(identity)) currentHashes.set(identity, documentHash(document));
+      return currentHashes.get(identity) === expected;
+    },
+  };
 }
 
 export interface RetrievalSnapshotSources {
@@ -73,6 +163,13 @@ function canonicalRecipeBody(recipe: any): string {
     definition: recipe.definition || {},
     nodeBindings: recipe.nodeBindings || [],
   });
+}
+
+export function researchRetrievalBody(paper: {
+  content?: string; conclusions?: string[]; implementation?: string[]; assumptions?: string[];
+}): string {
+  return [paper.content || "", ...paper.conclusions || [], ...paper.implementation || [],
+    ...paper.assumptions || []].join("\n");
 }
 
 export function createRetrievalSnapshot(sources: RetrievalSnapshotSources): RetrievalSnapshot {
@@ -158,12 +255,7 @@ export function createRetrievalSnapshot(sources: RetrievalSnapshotSources): Retr
       knowledge_id: knowledgeId,
       title: String(paper.title || key.split("/").pop() || key),
       description: String(paper.description || paper.topic || ""),
-      body: [
-        String(paper.content || ""),
-        ...(paper.conclusions || []),
-        ...(paper.implementation || []),
-        ...(paper.assumptions || []),
-      ].join("\n"),
+      body: researchRetrievalBody(paper),
       content_type: "research",
       source_uri: sourceId,
       metadata: {

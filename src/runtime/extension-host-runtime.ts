@@ -70,11 +70,15 @@ export class ExtensionHostRegistry {
     });
   }
 
-  requestReload(buildId: string): ReloadRequest {
+  requestReload(buildId: string, hostIds?: string[]): ReloadRequest {
     if (!/^[a-f0-9]{64}$/.test(buildId)) throw new Error("Installed build identity is unavailable.");
+    const hosts = this.hosts();
+    if (hostIds && (!hostIds.length || new Set(hostIds).size !== hostIds.length
+      || hostIds.some(id => !hosts.some(host => host.hostId === id)))) throw new Error("Choose distinct currently online Host identities for scoped reload.");
     const previous = this.progress();
     if (previous && previous.pending.length) throw new Error("A coordinated reload is already pending. View Host status or wait for it to expire.");
-    const request = { id: randomUUID(), buildId, createdAt: this.now(), targets: this.hosts().map(({ hostId, slotId }) => ({ hostId, slotId })) };
+    const request = { id: randomUUID(), buildId, createdAt: this.now(),
+      targets: hosts.filter(host => !hostIds || hostIds.includes(host.hostId)).map(({ hostId, slotId }) => ({ hostId, slotId })) };
     if (!request.targets.length) throw new Error("No registered PKM hosts are online.");
     this.write("reload-request.json", request);
     return request;

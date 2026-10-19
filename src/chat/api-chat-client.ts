@@ -34,6 +34,23 @@ export interface ChatToolLoopNotice { reason: "round-limit" | "stalled"; rounds:
 export type ChatToolLoopDecision = "continue" | "summarize" | "cancel";
 export const chatInferenceOutputByteLimit = 100_000;
 
+export interface ChatTransportReceipt {
+  schema: "pkm.chat.transport/v1";
+  provider: "http" | "vscode";
+  messageHashes: string[];
+  toolSchemaHash: string;
+  countingMethod: "utf8-byte-estimate" | "vscode-countTokens-plus-overhead";
+  inputTokens: number;
+}
+
+export function chatTransportReceipt(provider: ChatTransportReceipt["provider"], messages: unknown[], tools: unknown[],
+  countedInput?: number): ChatTransportReceipt {
+  const hash = (value:unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+  return { schema:"pkm.chat.transport/v1", provider, messageHashes:messages.map(hash), toolSchemaHash:hash(tools),
+    countingMethod:countedInput === undefined ? "utf8-byte-estimate" : "vscode-countTokens-plus-overhead",
+    inputTokens:countedInput ?? 32 + Buffer.byteLength(JSON.stringify([messages, tools]), "utf8") };
+}
+
 export interface ApiChatRequest {
   provider: "openai-compatible" | "azure-openai";
   endpoint: string;
@@ -61,6 +78,8 @@ export interface ApiChatRequest {
   onToolLoopNotice?: (notice: ChatToolLoopNotice, signal: AbortSignal) => Promise<ChatToolLoopDecision>;
   onTool?: (event: ApiChatToolEvent) => void;
   beforeRound?: (messages: ApiChatMessage[], outputTokens: number) => void;
+  onTransportPrepared?: (receipt: ChatTransportReceipt) => void;
+  onTransportSent?: (receipt: ChatTransportReceipt) => void;
   afterTools?: () => boolean;
 }
 
@@ -81,6 +100,7 @@ function stableToolValue(value: unknown): string {
 export class ChatToolLoopGuard {
   private boundary: number;
   private readonly observed = new Map<string, { signature: string; repeats: number }>();
+  private readonly recent: Array<{ key: string; name: string }> = [];
   private stalled?: { tool: string; repeats: number };
   summarizing = false;
   readonly limit: number;
@@ -100,21 +120,30 @@ export class ChatToolLoopGuard {
     let parsedResult: unknown = result;
     try { parsedArguments = JSON.parse(arguments_); } catch {}
     try { parsedResult = JSON.parse(result); } catch {}
-    const signature = createHash("sha256").update(stableToolValue([parsedArguments, parsedResult])).digest("hex");
-    const previous = this.observed.get(name);
-    const repeats = previous?.signature === signature ? previous.repeats + 1 : 1;
-    this.observed.set(name, { signature, repeats });
-    if (this.stalled?.tool === name && repeats < 3) this.stalled = undefined;
-    if (repeats >= 3) this.stalled = { tool: name, repeats };
+    const key = createHash("sha256").update(stableToolValue([name, parsedArguments])).digest("hex");
+    const signature = createHash("sha256").update(stableToolValue(parsedResult)).digest("hex");
+    const previous = this.observed.get(key);
+    if (previous && previous.signature !== signature) {
+      for (let index = this.recent.length - 1; index >= 0; index--) if (this.recent[index].key === key) this.recent.splice(index, 1);
+    }
+    this.recent.push({ key, name });
+    if (this.recent.length > 24) {
+      const removed = this.recent.shift()!;
+      if (!this.recent.some(item => item.key === removed.key)) this.observed.delete(removed.key);
+      else this.observed.get(removed.key)!.repeats = this.recent.filter(item => item.key === removed.key).length;
+    }
+    const repeats = this.recent.filter(item => item.key === key).length;
+    this.observed.set(key, { signature, repeats });
+    const stalled = this.recent.find(item => (this.observed.get(item.key)?.repeats || 0) >= 3);
+    this.stalled = stalled ? { tool:stalled.name, repeats:this.observed.get(stalled.key)!.repeats } : undefined;
   }
 
   async beforeRound(rounds: number, signal: AbortSignal): Promise<void> {
     if (signal.aborted) throw new Error("Request cancelled.");
     if (this.summarizing) return;
-    const notice: ChatToolLoopNotice | undefined = this.request.loopReviewAfterMs !== undefined
-      ? this.stalled && this.now() - this.reviewStartedAt >= this.request.loopReviewAfterMs ? { reason: "stalled", rounds, limit: this.limit, ...this.stalled } : undefined
-      : rounds >= this.boundary ? { reason: "round-limit", rounds, limit: this.limit }
-      : this.stalled ? { reason: "stalled", rounds, limit: this.limit, ...this.stalled } : undefined;
+    const notice: ChatToolLoopNotice | undefined = this.request.loopReviewAfterMs === undefined && rounds >= this.boundary
+      ? { reason:"round-limit", rounds, limit:this.limit }
+      : this.stalled ? { reason:"stalled", rounds, limit:this.limit, ...this.stalled } : undefined;
     if (!notice) return;
     let cancel: () => void = () => {};
     const aborted = new Promise<never>((_, reject) => { cancel = () => reject(new Error("Request cancelled.")); signal.addEventListener("abort", cancel, { once: true }); });
@@ -127,7 +156,7 @@ export class ChatToolLoopGuard {
     if (decision === "summarize") this.summarizing = true;
     else if (decision === "continue") {
       if (rounds >= this.boundary) this.boundary = rounds + this.limit;
-      this.observed.clear(); this.stalled = undefined;
+      this.observed.clear(); this.recent.length = 0; this.stalled = undefined;
       this.reviewStartedAt = this.now();
     } else throw new Error("Invalid tool-loop decision; no further tool was executed.");
   }
@@ -167,6 +196,7 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
   try {
     if (controller.signal.aborted) throw new Error("Cancelled");
     const messages = [...request.messages];
+    const callIds = new Set(messages.flatMap(message => message.tool_calls?.map(call => call.id) || []));
     const checkLoop = async (round: number) => {
       if (request.loopReviewAfterMs !== undefined) {
         clearTimeout(timer);
@@ -187,18 +217,22 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
     request.beforeRound?.(messages, outputTokens || 0);
     request.onStage?.("connecting");
     if (request.loopReviewAfterMs !== undefined) timer = setTimeout(() => { timedOut = true; controller.abort(); }, request.timeoutMs ?? 120_000);
-    const stream = await client.chat.completions.create({
+    const payload = {
       model: request.model,
       messages: messages.map(message => {
         if (message.role === "tool") return { role: "tool" as const, content: message.content, tool_call_id: message.tool_call_id! };
         if (message.role === "assistant") return { role: "assistant" as const, content: message.content, tool_calls: message.tool_calls };
         return { role: message.role, content: message.content };
       }),
-      stream: true,
+      stream: true as const,
       ...(outputTokens ? { [request.outputTokenParameter || "max_completion_tokens"]: outputTokens } : {}),
       ...(request.includeUsage ? { stream_options: { include_usage: true } } : {}),
       ...(request.tools?.length && !loop.summarizing ? { tools: request.tools.map(tool => ({ type: "function" as const, function: { name: tool.name, description: tool.description, parameters: tool.parameters } })) } : {}),
-    }, { signal: controller.signal });
+    };
+    const transport = chatTransportReceipt("http", payload.messages, payload.tools || []);
+    request.onTransportPrepared?.(transport);
+    const stream = await client.chat.completions.create(payload, { signal: controller.signal });
+    request.onTransportSent?.(transport);
     request.onStage?.("waiting");
     let finishReason = "";
     let responseText = "";
@@ -240,6 +274,12 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
     if (finishReason !== "tool_calls" || !toolCalls.length) throw new Error(`Response stopped with ${finishReason}. Partial output was preserved.`);
     if (!request.tools?.length) throw new Error("Tool execution is not enabled.");
     if (loop.summarizing) throw new Error("The model requested more tools during the final summary. Completed results were preserved; no additional tool was executed.");
+    for (const call of toolCalls) {
+      if (!call.id || !call.function.name || call.id.length > 200 || call.function.name.length > 200 || callIds.has(call.id)) {
+        throw new Error("Invalid or duplicate tool call identity. No pending tool was executed; completed evidence was preserved.");
+      }
+      callIds.add(call.id);
+    }
     messages.push({ role: "assistant", content: responseText, tool_calls: toolCalls });
     for (const call of toolCalls) {
       await checkLoop(round);

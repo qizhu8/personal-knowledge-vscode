@@ -4,6 +4,12 @@
     "label": "العربية"
   },
   "strings": {
+    "apiChat.openHarness": "فتح الرسوم الفرعية للتنفيذ",
+    "apiChat.reportedGoal": "الهدف الذي أبلغ عنه الوكيل: {goal}",
+    "apiChat.noTaskReport": "لم تُسجَّل حالة صريحة للمهمة بعد",
+    "apiChat.recordedValidation": "التحقق المسجل: {status}",
+    "apiChat.noValidation": "لم يُسجَّل التحقق من المهمة",
+    "apiChat.responseStatus": "الرد: {status}",
     "apiChat.loadOlderMessages": "تحميل الرسائل الأقدم",
     "apiChat.loadingOlderMessages": "جارٍ تحميل الرسائل الأقدم...",
     "apiChat.resumeWorker": "استئناف worker",

@@ -2,6 +2,8 @@ import * as fs from "fs";
 import * as path from "path";
 import { randomUUID } from "crypto";
 
+export const API_CHAT_CONTROL_OPERATIONS = ["models", "tools", "list", "create", "get", "send", "cancel", "fixture-e2e"] as const;
+
 export class ApiChatAgentControl {
   readonly hostId = randomUUID();
   private readonly root: string;
@@ -32,7 +34,7 @@ export class ApiChatAgentControl {
     if (Date.now() - this.heartbeatAt < 3000) return;
     this.write(path.join(this.root, "hosts", this.hostId + ".json"), {
       ...this.metadata, schema: "pkm.api-chat.host/v1", hostId: this.hostId,
-      pid: process.pid, updatedAt: Date.now(), operations: ["models", "tools", "list", "create", "get", "send", "cancel"],
+      pid: process.pid, updatedAt: Date.now(), operations: API_CHAT_CONTROL_OPERATIONS,
     });
     this.heartbeatAt = Date.now();
   }

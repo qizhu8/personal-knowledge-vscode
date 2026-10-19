@@ -26,13 +26,14 @@ globalThis.integration = () => ({ state: integrationMaintenanceState, error: int
 async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-integration-upgrade-"));
   const model = { serverCurrent: false, healthy: true, newer: false, pythonValid: true, fail: false };
-  const calls = { generate: 0, repair: 0, refresh: 0, retrieval: 0, dialogs: 0 };
+  const calls = { generate: 0, repair: 0, refresh: 0, retrieval: 0, dialogs: 0, compiler: 0 };
   const registries = [];
   const host = () => {
     const backgroundTaskRegistry = new BackgroundTaskRegistry();
     registries.push(backgroundTaskRegistry);
     const sandbox = vm.createContext({
-      path, withCrossProcessLock, backgroundTaskRegistry,
+      path, process, withCrossProcessLock, backgroundTaskRegistry,
+      ensureRecipeCompiler: () => { calls.compiler++; },
       managedMcpServerDirectory: () => root,
       mcpStatus: () => ({ newerThanExpected: model.newer, current: model.serverCurrent,
         installedVersion: "fixture", expectedVersion: "target" }),
@@ -76,6 +77,7 @@ async function main() {
     assert.equal(registries[0].snapshot().tasks.length, 0);
     await first.maintain({});
     assert.equal(calls.generate, 1, "Repeated healthy checks do not rewrite server code");
+    assert.equal(calls.compiler, 2, "Even a current MCP version must recheck compiler paths on maintenance");
 
     model.healthy = false;
     model.serverCurrent = false;

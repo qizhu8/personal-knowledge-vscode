@@ -4,14 +4,16 @@ import * as path from "path";
 import { execFile } from "child_process";
 import { randomBytes, randomUUID } from "crypto";
 import { getStorePath } from "../knowledge/filestore";
+import { parsePkmLocator } from "../knowledge/knowledge-locator";
 import { configuredMcpFeatureDomains, mcpRuntimeStatus, writeActionWorkspaceConfig } from "../mcp/mcp";
 import { ActionWorkbenchServer, createActionWorkbenchServer } from "../runtime/action-workbench-server";
 import { BaselineEventKind, recordBaselineEvent } from "../runtime/pkm-baseline";
 
 const actionMethods = new Set(["catalog", "module_sets", "load", "remove", "import", "export", "validate", "queue", "cancel_validation",
   "resume_validation", "select_implementation", "save_graph", "check_graph", "call", "run", "runs", "recover_runs", "cancel_run", "choices", "answer_choice",
-  "group_create", "action_rename", "action_move", "action_delete", "definition_read", "definition_save", "source_read", "source_save",
-  "checkpoints", "respond_checkpoint", "schedule_run", "wake_run", "reconcile_run", "safety_scan", "associate_project"]);
+  "group_create", "action_rename", "action_move", "action_delete", "definition_read", "definition_save", "source_read", "source_save", "migration_preview", "locator_read",
+  "checkpoints", "respond_checkpoint", "schedule_run", "wake_run", "reconcile_run", "safety_scan", "associate_project",
+  "platform_call", "retrieve", "definition_get", "templates", "template_create", "check_checkpoint_answer"]);
 let actionChatAvailable = false;
 let browserServer: { store: string; promise: Promise<ActionWorkbenchServer> } | undefined;
 const observedRuns = new Map<string, string>();
@@ -115,9 +117,10 @@ export function initializeActionChat(context: vscode.ExtensionContext): void {
   context.subscriptions.push(participant);
 }
 
-export function openActionWorkbench(context: vscode.ExtensionContext, runId?: string): void {
+export function openActionWorkbench(context: vscode.ExtensionContext, runId?: string, actionId?: string): void {
   checkActionAccess();
   if (runId && !/^action_run_[0-9a-f]{32}$/.test(runId)) throw new Error("Invalid Action Run.");
+  if (actionId && !/^[a-z][a-z0-9_.-]{2,100}$/.test(actionId)) throw new Error("Invalid Action identity.");
   const panel = vscode.window.createWebviewPanel("personalKnowledge.actions", "Action Workbench", vscode.ViewColumn.One,
     { enableScripts: true, retainContextWhenHidden: true });
   const nonce = randomBytes(24).toString("hex");
@@ -125,6 +128,8 @@ export function openActionWorkbench(context: vscode.ExtensionContext, runId?: st
   let document = fs.readFileSync(path.join(context.extensionPath, "resources", "action-workbench.html"), "utf8");
   if (runId) document = document.replace("initialView=vscode?.getState()||null",
     `initialView={...(vscode?.getState()||{}),currentRun:${JSON.stringify(runId)}}`);
+  else if (actionId) document = document.replace("initialView=vscode?.getState()||null",
+    `initialView={targetAction:${JSON.stringify(actionId)}}`);
   panel.webview.html = document.replace("<head>", `<head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; font-src ${panel.webview.cspSource}; style-src ${panel.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';"><link rel="stylesheet" href="${icons}">`)
     .replace("<script>", `<script nonce="${nonce}">`);
   const listener = panel.webview.onDidReceiveMessage(async message => {
@@ -150,6 +155,15 @@ export function openActionWorkbench(context: vscode.ExtensionContext, runId?: st
 
 async function workbenchRequest(context: vscode.ExtensionContext, method: string, params: Record<string, unknown>, browser = false): Promise<any> {
   checkActionAccess();
+  if (method === "copy_path" && !browser) {
+    const reference = typeof params.reference === "string" ? params.reference : "";
+    const parsed = parsePkmLocator(reference);
+    if (parsed.kind !== "knowledge" && !(parsed.kind === "entity" && ["actions", "components"].includes(parsed.area))) {
+      throw new Error("Choose an Action or Component PKM identity.");
+    }
+    await vscode.env.clipboard.writeText(parsed.locator);
+    return { ok: true };
+  }
   if (method === "open_project") {
     if (typeof params.run_id !== "string" || !/^action_run_[0-9a-f]{32}$/.test(params.run_id)) throw new Error("Invalid Action Run.");
     const projectId = await vscode.commands.executeCommand<string>("personalKnowledge.openActionRunProject", params.run_id);

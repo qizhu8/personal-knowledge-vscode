@@ -27,7 +27,7 @@ export interface AutomaticGitHubSyncTarget {
 export const MAX_GITHUB_SYNC_FAILURE_ATTEMPTS = 3;
 
 export interface GitHubSyncRuntimeState {
-  status: "paused" | "scheduled" | "queued" | "syncing" | "blocked" | "error" | "needs-attention";
+  status: "paused" | "scheduled" | "queued" | "syncing" | "blocked" | "error" | "needs-attention" | "partial";
   phase?: GitHubSyncPhase;
   detail?: string;
   activityAt?: string;
@@ -206,7 +206,8 @@ export class GitHubSyncScheduler {
       return;
     }
     const nextSyncAt = new Date(dueAt).toISOString();
-    this.updateState(target.id, { ...this.states.get(target.id), status: this.states.get(target.id)?.status === "error" ? "error" : "scheduled", nextSyncAt });
+    const status = this.states.get(target.id)?.status;
+    this.updateState(target.id, { ...this.states.get(target.id), status: status === "error" || status === "partial" ? status : "scheduled", nextSyncAt });
     const timer = this.setTimer(() => {
       this.scheduledTimers.delete(target.id);
       void this.drain();
@@ -277,6 +278,20 @@ export class GitHubSyncScheduler {
             continue;
           }
           const message = error instanceof Error ? error.message : String(error);
+          if (error instanceof Error && error.name === "GitHubSyncConflictError"
+            && "partialResult" in error && error.partialResult) {
+            const current = this.targets.get(targetId)!;
+            const succeededAt = new Date(this.now()).toISOString();
+            target.lastFailure = current.lastFailure = undefined;
+            target.lastSuccessAt = current.lastSuccessAt = succeededAt;
+            this.updateState(targetId, {
+              status: "partial", phase: "resolve-conflicts", reason, lastAttemptAt: attemptedAt,
+              lastSuccessAt: succeededAt, detail: message,
+            });
+            this.options.onSettled?.(targetId, reason, "succeeded");
+            this.scheduleNextInterval(current);
+            continue;
+          }
           if (error instanceof GitHubSyncContentRepairError) {
             target.needsAttention = true;
             this.targets.get(targetId)!.needsAttention = true;

@@ -34,19 +34,21 @@ async function testCrossProcessProxyReuse(root) {
   fs.mkdirSync(serversDir, { recursive: true });
   const modulePath = path.join(__dirname, "..", "dist", "servers/servers.js");
   const childCode = `const s=require(${JSON.stringify(modulePath)});s.initServers(${JSON.stringify(serversDir)},${JSON.stringify(stateDir)},${proxyPort},m=>process.send?.(m));process.send?.('ready');setInterval(()=>{},1000);`;
-  const first = spawn(process.execPath, ["-e", childCode], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
-  const second = spawn(process.execPath, ["-e", childCode], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
   const messages = [];
-  first.on("message", message => messages.push(String(message)));
-  second.on("message", message => messages.push(String(message)));
+  const children = Array.from({ length: 4 }, () => {
+    const child = spawn(process.execPath, ["-e", childCode], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+    child.on("message", message => messages.push(String(message)));
+    return child;
+  });
   try {
     await waitFor(async () => {
       try { return (await fetch(`http://127.0.0.1:${proxyPort}/.well-known/pkm-servers-proxy`)).ok; } catch { return false; }
     });
-    await waitFor(() => messages.some(message => message.includes("servers proxy reused")));
+    await waitFor(() => messages.filter(message => message.includes("servers proxy reused")).length === 3);
     assert(!messages.some(message => message.includes("EADDRINUSE")), messages.join("\n"));
     const firstIdentity = await (await fetch(`http://127.0.0.1:${proxyPort}/.well-known/pkm-servers-proxy`)).json();
-    const owner = first.pid === firstIdentity.pid ? first : second;
+    const owner = children.find(child => child.pid === firstIdentity.pid);
+    assert(owner, "one of the four fixture Hosts owns the shared proxy");
     owner.kill("SIGTERM");
     await waitFor(async () => {
       try {
@@ -55,7 +57,7 @@ async function testCrossProcessProxyReuse(root) {
       } catch { return false; }
     }, 20_000);
   } finally {
-    first.kill("SIGTERM"); second.kill("SIGTERM");
+    for (const child of children) child.kill("SIGTERM");
   }
 }
 
@@ -73,6 +75,18 @@ async function main() {
   ]);
   assert.deepStrictEqual(serverNetworkAddresses({}, "bad host name"), [], "invalid hostnames must not create malformed URLs");
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-server-proxy-"));
+  const foreign = http.createServer((_request, response) => { response.end("unrelated application"); });
+  const occupied = await listen(foreign);
+  const foreignMessages = [];
+  try {
+    initServers(path.join(root, "foreign-servers"), path.join(root, "foreign-state"), occupied,
+      message => foreignMessages.push(message));
+    await waitFor(() => foreignMessages.some(message => message.includes("owned by an unrelated service")));
+    assert.equal(await (await fetch(`http://127.0.0.1:${occupied}`)).text(), "unrelated application");
+    disposeServers();
+    assert.equal(await (await fetch(`http://127.0.0.1:${occupied}`)).text(), "unrelated application",
+      "disposing a losing window must not close the unrelated listener");
+  } finally { disposeServers(); await new Promise(resolve => foreign.close(resolve)); }
   await testCrossProcessProxyReuse(root);
   const serversDir = path.join(root, "servers");
   const stateDir = path.join(root, "state");

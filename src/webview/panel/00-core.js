@@ -364,6 +364,10 @@ function changeUiLanguage(setting) {
   if (uiI18n.catalogs?.[setting]) applyUiLanguage({ setting, resolved: setting });
   ask('setUiLanguage', { language: setting });
 }
+function openActionLibrary(event) {
+  event?.preventDefault();
+  vscode.postMessage({ command:'openActionLibrary' });
+}
 function languageOptionsHtml() {
   const options = [`<option value="auto" data-i18n="language.auto" ${uiI18n.setting === 'auto' ? 'selected' : ''}>${esc(t('language.auto'))}</option>`];
   for (const locale of uiI18n.locales || []) options.push(`<option value="${esc(locale.id)}" ${uiI18n.setting === locale.id ? 'selected' : ''}>${esc(locale.label)}</option>`);
@@ -451,11 +455,19 @@ const actionTimeouts = {
   agentSnapshotCreate:30000, agentSnapshotDelete:15000,
   recipeOpenBrowser:30000,
   githubSyncSave:30000, githubSyncDelete:120000, githubSyncRun:120000, githubSyncCreateIdentity:30000, githubSyncTestAuthentication:30000,
+  githubSyncForceUpdate:900000, githubSyncForceRemote:900000,
   githubSyncMigration:180000,
+  githubSyncState:120000, githubSyncRestore:180000, githubSyncPickIdentity:30000,
+  githubSyncConflictChoose:120000, githubSyncConflictValidate:120000,
+  githubSyncRepairOpen:30000, githubSyncRepairPreview:30000, githubSyncRepairApply:180000,
+  githubSyncRecipeRecompilePreview:60000, githubSyncRecipeRecompileApply:180000,
+  githubSyncRepairRevalidate:180000, githubSyncRepairRevalidateOnly:180000,
+  githubSyncRepairPause:180000, githubSyncRepairResume:180000, githubSyncRepairTrash:180000,
   githubSyncConflictOpen:30000, githubSyncConflictChooseAll:120000, githubSyncConflictDelete:120000, githubSyncConflictDeleteAll:120000, githubSyncConflictDeleteLocal:120000, githubSyncConflictDeleteLocalAll:120000, githubSyncConflictAgent:120000, githubSyncConflictAgentAll:1800000, githubSyncConflictAccept:900000, githubSyncConflictDiscard:30000,
   mcpRepairRuntime:600000, mcpSetPython:600000, mcpBrowsePython:600000, generateMcp:90000,
   reconfigureKnowledgeRoot:600000, reconfigureEnvironmentsRoot:600000, reconfigureMcpRuntimePath:600000, reconfigureMcpServerPath:600000,
   checkMcp:600000, mcpDetectPython:60000, refreshMcpPathSizes:30000,
+  configureNativeMcpDiscovery:600000, registerCopilotMcp:600000,
 };
 
 function restoreActionButton(entry) {
@@ -531,7 +543,14 @@ function timeoutAction(command, entry) {
   const remaining = (pendingActionButtons.get(command) || []).filter(candidate => candidate !== entry);
   if (remaining.length) pendingActionButtons.set(command, remaining); else pendingActionButtons.delete(command);
   restoreActionButton(entry);
-  showActionError(entry.button, `${entry.label} timed out. The background operation may still be running; check PKM logs before retrying.`);
+  const message = `${entry.label} timed out. The background operation may still be running; check PKM logs before retrying.`;
+  if (typeof githubSyncRepairCommands !== 'undefined' && githubSyncRepairCommands.has(command)) {
+    for (const [targetId, pending] of githubSyncRepairPending) {
+      if (pending.command === command) githubSyncOnRepairResult({ targetId, action:command, error:message });
+    }
+  }
+  if (entry.button.isConnected) showActionError(entry.button, message);
+  else showViewActionError(message);
 }
 
 function beginAction(command, button) {
@@ -582,7 +601,8 @@ function failAction(message, ...commands) {
   for (const command of commands) {
     for (const entry of pendingActionButtons.get(command) || []) {
       restoreActionButton(entry);
-      showActionError(entry.button, message);
+      if (entry.button.isConnected) showActionError(entry.button, message);
+      else showViewActionError(message);
     }
     pendingActionButtons.delete(command);
   }
@@ -878,13 +898,15 @@ window.addEventListener('message', e => {
   else if (command === 'serverLog') { onServerLog(e.data.slug, e.data.text); }
   else if (command === 'serverPickFolder') { onServerPickFolder(e.data.dir); }
   else if (command === 'subscriptionState') { finishAction('subscriptionState','subscriptionConfigure','subscriptionSetOnline','subscriptionUpsertShare','subscriptionDeleteShare','subscriptionAdd','subscriptionMountGitHub','subscriptionRename','subscriptionSetPriority','subscriptionRefresh','subscriptionRemove','subscriptionUnblockIp','subscriptionRotateSecret'); subscriptionOnState(data); finishLoadingProgress(); }
-  else if (command === 'githubSyncState') { finishAction('githubSyncState','githubSyncSave','githubSyncDelete','githubSyncRun','githubSyncAutomationToggle','githubSyncMigration','githubSyncConflictChoose','githubSyncConflictChooseAll','githubSyncConflictDelete','githubSyncConflictDeleteAll','githubSyncConflictDeleteLocal','githubSyncConflictDeleteLocalAll','githubSyncConflictValidate','githubSyncConflictAgent','githubSyncConflictAgentAll','githubSyncConflictDiscard','githubSyncRepairOpen','githubSyncRepairPreview','githubSyncRepairApply','githubSyncRecipeRecompilePreview','githubSyncRecipeRecompileApply','githubSyncRepairRevalidate'); githubSyncOnState(data); finishLoadingProgress(); }
+  else if (command === 'githubSyncState') { if (githubSyncOnState(data) !== false) { finishAction('githubSyncState','githubSyncSave','githubSyncDelete','githubSyncRun','githubSyncAutomationToggle','githubSyncMigration','githubSyncConflictChoose','githubSyncConflictChooseAll','githubSyncConflictDelete','githubSyncConflictDeleteAll','githubSyncConflictDeleteLocal','githubSyncConflictDeleteLocalAll','githubSyncConflictValidate','githubSyncConflictAgent','githubSyncConflictAgentAll','githubSyncConflictDiscard'); finishLoadingProgress(); } }
+  else if (command === 'githubSyncRepairResult') { githubSyncOnRepairResult(data); }
   else if (command === 'githubSyncConflictAcceptProgress') { updateActionProgress('githubSyncConflictAccept', data?.text || 'Applying choices…'); }
   else if (command === 'githubSyncConflictAccepted') {
     finishAction('githubSyncConflictAccept');
     vscode.postMessage({ command:'toast', text:data?.refreshed?.length ? `${data.refreshed.length} changed files need review` : `Applied ${data?.accepted || 0} choices; Initial Sync is queued` });
   }
-  else if (command === 'githubSyncRunQueued') { finishAction('githubSyncRun'); githubSyncOnRunQueued(data); }
+  else if (command === 'githubSyncRunQueued') { finishAction('githubSyncRun'); finishAction('githubSyncForceUpdate'); githubSyncOnRunQueued(data); }
+  else if (command === 'githubSyncForceRemoteResult') { finishAction('githubSyncForceRemote'); githubSyncOnForceRemoteResult(data); }
   else if (command === 'githubSyncRuntimeState') { githubSyncOnRuntimeState(data); }
   else if (command === 'githubSyncAutomationResult') { githubSyncOnAutomationResult(data); }
   else if (command === 'githubSyncRuntimeSnapshot') { for (const [targetId, runtime] of Object.entries(data || {})) githubSyncOnRuntimeState({ targetId, state:runtime }); }
@@ -894,7 +916,7 @@ window.addEventListener('message', e => {
   else if (command === 'githubSyncIdentityPicked') { finishAction('githubSyncPickIdentity'); githubSyncIdentityPicked(data?.identityFile || ''); }
   else if (command === 'githubSyncIdentityCreated') { finishAction('githubSyncCreateIdentity'); githubSyncIdentityPicked(data?.identityFile || ''); vscode.postMessage({ command:'toast', text:'SSH public key copied; add it to GitHub, then test the account' }); }
   else if (command === 'githubSyncAuthenticationResult') { finishAction('githubSyncTestAuthentication'); githubSyncOnAuthenticationResult(data); vscode.postMessage({ command:'toast', text:`Authenticated as ${data?.login || 'unknown'}` }); }
-  else if (command === 'githubSyncError') { githubSyncSaving = false; const action = String(data?.action || ''); const message = data?.error || 'GitHub Sync failed.'; if (action === 'githubSyncAutomationToggle') githubSyncOnAutomationResult(data); if (action === 'githubSyncRun') { githubSyncForcePending.clear(); if (state.tab === 'githubSync') renderGitHubSyncPane(); } if (action === 'githubSyncState' && !githubSyncUpdatedAt && state.tab === 'githubSync') { githubSyncStatusRequested = false; showInitialViewError('GitHub Sync could not load', message, 'githubSyncState'); } else if (action === 'githubSyncState') githubSyncOnRefreshError(message); else if (action && pendingActionButtons.has(action)) failAction(message, action); else showViewActionError(message); finishLoadingProgress(); }
+  else if (command === 'githubSyncError') { githubSyncSaving = false; const action = String(data?.action || ''); const message = data?.error || 'GitHub Sync failed.'; if (githubSyncRepairCommands.has(action)) githubSyncOnRepairResult({ ...data, error:message }); if (action === 'githubSyncAutomationToggle') githubSyncOnAutomationResult(data); if (action === 'githubSyncForceRemote') githubSyncOnForceRemoteResult({ targetId:data?.targetId, cancelled:true }); if (action === 'githubSyncRun' || action === 'githubSyncForceUpdate') { githubSyncForcePending.delete(data?.targetId); if (state.tab === 'githubSync') renderGitHubSyncPane(); } if (action === 'githubSyncState' && !githubSyncUpdatedAt && state.tab === 'githubSync') { githubSyncStatusRequested = false; showInitialViewError('GitHub Sync could not load', message, 'githubSyncState'); } else if (action === 'githubSyncState') githubSyncOnRefreshError(message); else if (!githubSyncRepairCommands.has(action) && action && pendingActionButtons.has(action)) failAction(message, action); else if (!githubSyncRepairCommands.has(action)) showViewActionError(message); finishLoadingProgress(); }
   else if (command === 'subscriptionChanged') {
     invalidateSubscriptionKnowledgeViews();
     invalidateRecipeSubscriptionGroups();
@@ -983,7 +1005,10 @@ window.addEventListener('message', e => {
     const relevant = scopes.some(scope => state.tab === 'recipes' ? scope === 'recipes' || scope === 'all'
       : ['agentSessions','agentSnapshots'].includes(state.tab) ? ['agentSessions','recipeRuns','all'].includes(scope)
       : state.tab === 'projects' && (scope === 'projects' || scope === 'all'));
-    if (relevant) ask('projectState', {});
+    if (relevant) {
+      nativeHarnessStateChanged();
+      ask('projectState', {});
+    }
   }
   else if (command === 'projectResult') { projectOnResult(data); }
   else if (command === 'agentSnapshotCreated') { finishAction('agentSnapshotCreate'); agentSnapshotOnCreated(data); }
@@ -1150,6 +1175,12 @@ window.addEventListener('message', e => {
     const btn = document.querySelector(`.tab[data-tab="${e.data.tab}"]`);
     if (btn) btn.dispatchEvent(new MouseEvent('click'));
   }
+  else if (command === 'openNativeHarness') {
+    selectedAgentSessionId = String(e.data.sessionId || '');
+    const btn = document.querySelector('.tab[data-tab="agentSessions"]');
+    if (btn) btn.dispatchEvent(new MouseEvent('click'));
+    ask('projectState', {});
+  }
   else if (command === 'focusServer') { focusServerDashboard(String(e.data.slug || '')); }
   else if (command === 'focusEnvironment') { focusEnvironmentDashboard(String(e.data.environmentId || '')); }
   else if (command === 'openSubscription') { subscriptionOpen(String(e.data.shareId || '')); }
@@ -1183,8 +1214,11 @@ window.addEventListener('message', e => {
 });
 
 function ask(command, payload, button, silent = false) {
+  if (typeof githubSyncRepairCommands !== 'undefined' && githubSyncRepairCommands.has(command)
+    && githubSyncRepairPending.has(payload.targetId)) return;
   const actionButton = button || (silent ? null : window.event?.currentTarget);
   if (!beginAction(command, actionButton)) return;
+  if (typeof githubSyncBeginRepairAction === 'function') githubSyncBeginRepairAction(command, payload);
   if (command === 'detail') {
     currentDetailRequest = { type:payload.type, key:payload.key };
     payload = { ...payload, detailRequestId:++detailRequestSequence, detailTab:state.tab };

@@ -14,6 +14,25 @@ Missing completion evidence after a claimed worker dies requires reconciliation.
 Definition/source replacement and ModuleSet unload remain blocked while affected
 Runs are running, waiting or reconciling.
 
+### Observational execution events
+
+In addition to authoritative completion receipts in `steps/`, execution records
+observational `pkm.action.component-events/v1` files in `step-events/`. These
+retain started, failed, ignored and waiting history with the current Run fence.
+Unselected branch Components and empty loop bodies have explicit ignored
+reasons. Suspension marks running ancestors waiting before releasing their
+worker ownership.
+
+The Module runtime records the actual script-owned implementation as
+`__implementation__` (builtin, pipeline, program or MCP). These events are
+projected into the native Session subgraphs and trigger refresh. They do not
+automatically instrument arbitrary functions inside a program.
+
+Events never grant replay or stand in for `pkm.action.step-receipt/v1`.
+Completed effects still restore from their authoritative receipts. Observation
+failures surface, and execution failures are recorded and rethrown; ignored
+Components do not acquire successful completion receipts.
+
 Only pipeline continuations are resumable. An arbitrary Python/C#/other program
 stack cannot be restored. A program invoking a waiting child must surface an
 explicit failure/reconciliation rather than pretend its caller's stack resumed.

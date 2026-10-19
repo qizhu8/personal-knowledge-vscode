@@ -3,9 +3,10 @@ import * as fs from "fs";
 import * as path from "path";
 import { spawn, execFile } from "child_process";
 import { StringDecoder } from "string_decoder";
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { diffLines } from "diff";
 import { ApiChatTool } from "./api-chat-client";
+import { QuestionSchema, questionSchema, validateQuestionAnswer } from "./chat-questions";
 
 export interface ApiChatEditChange {
   path: string;
@@ -24,15 +25,19 @@ export const builtinToolCatalog = [
   { name: "find_files", label: "Find files", permission: "Workspace file names" },
   { name: "search_text", label: "Search text", permission: "Workspace literal text search" },
   { name: "session_info", label: "Session information", permission: "Current Session identity, model and advertised tools only" },
+  { name: "record_harness", label: "Record task / planning / validation", permission: "Explicit current-task observations only; does not execute or complete the managed Task" },
   { name: "list_chats", label: "List Chats", permission: "Read-only workspace Chat IDs, titles and status; no conversation bodies" },
   { name: "ask_chat", label: "Ask another Chat", permission: "Approval required; one idle target per turn; no recursive delegation or automatic Tasks" },
   { name: "spawn_workers", label: "Spawn parallel workers", permission: "Shared task-tree budget; automatic small batches, explicit approval above threshold; child tools retain permissions" },
-  { name: "pkm_search", label: "Search PKM notes and skills", permission: "Read-only local knowledge titles" },
-  { name: "pkm_read", label: "Read PKM note, skill or recipe", permission: "Read-only bounded local knowledge content" },
+  { name: "pkm_search", label: "Search PKM knowledge", permission: "Read-only local knowledge and cached subscription titles" },
+  { name: "pkm_read", label: "Read PKM knowledge", permission: "Read-only bounded local knowledge and cached subscription content" },
+  { name: "memory_read", label: "Read Chat memory", permission: "Read-only memory topics and earlier messages of this Chat only" },
   { name: "replace_text", label: "Edit text", permission: "Shared non-destructive Chat permission; edits remain unsaved" },
   { name: "save_file", label: "Save file", permission: "Shared non-destructive Chat permission; expected content hash required" },
   { name: "run_process", label: "Run programs", permission: "Remembered program-tool permission or Allow All; non-interactive process" },
-  { name: "ask_user", label: "Ask a question", permission: "Native single/multiple choices; answers are sent to the model; never request secrets" },
+  { name: "ask_user", label: "Ask a question", permission: "Inline Chat form / single / multiple choices; never request secrets" },
+  { name: "find_actions", label: "Find Actions and templates", permission: "Local Action contracts, templates and readiness only" },
+  { name: "run_action", label: "Run or resume an Action", permission: "Approved pinned durable invocation; original Run returns its result to this Chat" },
   { name: "ask_session", label: "Ask a native Session", permission: "Approval required; one idle target per turn; no recursive waking" },
 ];
 
@@ -62,7 +67,7 @@ export function abortable<T>(promise: PromiseLike<T>, signal: AbortSignal): Prom
   });
 }
 
-export function createBuiltinTools(enabled: string[], host: typeof vscode = vscode, onApproval?: (name: string, waiting: boolean) => void, onEdit?: (change: ApiChatEditChange) => void, requestApproval?: (name: string, prompt: string, detail: string, signal: AbortSignal, boundary?: "workspace" | "outside-workspace") => Promise<boolean>, executionRoots?: readonly vscode.Uri[]): ApiChatTool[] {
+export function createBuiltinTools(enabled: string[], host: typeof vscode = vscode, onApproval?: (name: string, waiting: boolean) => void, onEdit?: (change: ApiChatEditChange) => void, requestApproval?: (name: string, prompt: string, detail: string, signal: AbortSignal, boundary?: "workspace" | "outside-workspace") => Promise<boolean>, executionRoots?: readonly vscode.Uri[], processEvidenceDirectory?: string, requestQuestion?: (prompt: string, schema: QuestionSchema, signal: AbortSignal, verify?: (answer: Record<string, unknown>) => Promise<void>) => Promise<Record<string, unknown> | undefined>): ApiChatTool[] {
   const roots = executionRoots ? [...executionRoots] : (host.workspace.workspaceFolders || []).map(folder => folder.uri);
   const active = (signal: AbortSignal) => { if (signal.aborted) throw new Error("Request cancelled."); if (host.workspace.isTrusted === false) throw new Error("Tools require a trusted workspace."); };
   const approve = async (name: string, prompt: string, detail: string, action: string, signal: AbortSignal, boundary: "workspace" | "outside-workspace" = "outside-workspace") => {
@@ -120,8 +125,35 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
     name, description, parameters: { type: "object", properties: { ...shared, ...properties }, required, additionalProperties: false }, execute,
   });
   const tools = [
-    definition("ask_user", "Ask one non-sensitive question using native single/multiple choice UI and optional free text. Cancellation is not consent. Never ask for passwords, tokens or other secrets.", { question: { type: "string", maxLength: 300 }, options: { type: "array", maxItems: 12, items: { type: "string", maxLength: 120 } }, multiSelect: { type: "boolean" }, allowFreeText: { type: "boolean" } }, ["question", "options"], async (args, signal) => {
+    definition("ask_user", "Ask non-sensitive questions in the Chat message area. Supply answer_schema for a multi-field form, or options for single/multiple choice. Cancellation is not consent. Never ask for secrets.", { question: { type: "string", maxLength: 300 }, answer_schema: { type: "object" }, options: { type: "array", maxItems: 12, items: { type: "string", maxLength: 120 } }, multiSelect: { type: "boolean" }, allowFreeText: { type: "boolean" } }, ["question"], async (args, signal) => {
       active(signal);
+      if (typeof args.question !== "string" || !args.question.trim() || args.question.length > 300) throw new Error("Provide a bounded nonempty question.");
+      if (requestQuestion) {
+        const options = args.options ?? [];
+        if (!Array.isArray(options) || options.length > 12 || options.some(option => typeof option !== "string" || !option.trim() || option.length > 120) || new Set(options).size !== options.length
+          || args.multiSelect !== undefined && typeof args.multiSelect !== "boolean" || args.allowFreeText !== undefined && typeof args.allowFreeText !== "boolean") throw new Error("Provide distinct bounded options and boolean choice settings.");
+        const schema = args.answer_schema ? questionSchema(args.answer_schema) : questionSchema({
+          type: "object", properties: {
+            ...(options.length ? { selected: args.multiSelect === true ? { type: "array", items: { type: "string", enum: options } }
+              : { type: "string", enum: options } } : {}),
+            ...(args.allowFreeText !== false ? { freeText: { type: "string", title: "Other answer", maxLength: 4000 } } : {}),
+          }, required: args.allowFreeText === false ? ["selected"] : [],
+        });
+        onApproval?.("ask_user", true);
+        try {
+          const verify = async (answer: Record<string, unknown>) => {
+            validateQuestionAnswer(schema, answer);
+            if (!args.answer_schema && (!answer.selected && !String(answer.freeText || "").trim() || Array.isArray(answer.selected) && !answer.selected.length && !String(answer.freeText || "").trim())) throw new Error("Choose an option or enter an answer.");
+          };
+          const answer = await requestQuestion(args.question, schema, signal, verify);
+          active(signal);
+          if (!answer) return JSON.stringify({ selected: [], freeText: null, cancelled: true });
+          validateQuestionAnswer(schema, answer);
+          if (args.answer_schema) return JSON.stringify({ answer, cancelled: false });
+          await verify(answer);
+          return JSON.stringify({ selected: Array.isArray(answer.selected) ? answer.selected : answer.selected ? [answer.selected] : [], freeText: String(answer.freeText || "").trim() || null, cancelled: false });
+        } finally { onApproval?.("ask_user", false); }
+      }
       if (typeof args.question !== "string" || !args.question.trim() || args.question.length > 300 || !Array.isArray(args.options) || args.options.length > 12 || args.options.some(option => typeof option !== "string" || !option.trim() || option.length > 120) || new Set(args.options).size !== args.options.length || args.multiSelect !== undefined && typeof args.multiSelect !== "boolean" || args.allowFreeText !== undefined && typeof args.allowFreeText !== "boolean" || !args.options.length && args.allowFreeText === false) throw new Error("Provide a bounded question and up to 12 distinct options, or allow free text.");
       const token = new host.CancellationTokenSource();
       const cancel = () => token.cancel(); signal.addEventListener("abort", cancel, { once: true });
@@ -158,11 +190,34 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
       if (await abortable(fs.promises.realpath(cwdUri.fsPath), signal) !== cwd) throw new Error("Working directory changed after approval.");
       const environment: NodeJS.ProcessEnv = {};
       for (const name of ["PATH", "Path", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "SystemRoot", "SYSTEMROOT", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "APPDATA", "LOCALAPPDATA"]) if (process.env[name]) environment[name] = process.env[name];
+      let stdoutLog: string | undefined; let stderrLog: string | undefined;
+      let stdoutDescriptor: number | undefined; let stderrDescriptor: number | undefined;
+      if (processEvidenceDirectory) {
+        fs.mkdirSync(processEvidenceDirectory, { recursive: true, mode: 0o700 });
+        const identity = `${Date.now()}-${randomUUID()}`;
+        stdoutLog = path.join(processEvidenceDirectory, `${identity}.stdout.log`);
+        stderrLog = path.join(processEvidenceDirectory, `${identity}.stderr.log`);
+        stdoutDescriptor = fs.openSync(stdoutLog, "wx", 0o600);
+        try { stderrDescriptor = fs.openSync(stderrLog, "wx", 0o600); }
+        catch (error) { fs.closeSync(stdoutDescriptor); throw error; }
+      }
       return new Promise<string>((resolve, reject) => {
         const child = spawn(args.program as string, args.arguments as string[], { cwd, env: environment, shell: false, windowsHide: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
-        let stdout = ""; let stderr = ""; let truncated = false; let settled = false;
+        let stdoutHead = ""; let stdoutTail = ""; let stderrHead = ""; let stderrTail = "";
+        let stdoutCharacters = 0; let stderrCharacters = 0; let outputBytes = 0; let truncated = false; let settled = false;
         const outputDecoder = new StringDecoder("utf8"); const errorDecoder = new StringDecoder("utf8");
         let escalation: ReturnType<typeof setTimeout> | undefined;
+        const preview = (head: string, tail: string, text: string) => {
+          const headRoom = Math.max(0, 1500 - head.length);
+          head += text.slice(0, headRoom);
+          const remainder = text.slice(headRoom);
+          tail = (tail + remainder).slice(-1500);
+          return { head, tail };
+        };
+        const closeLogs = () => {
+          if (stdoutDescriptor !== undefined) { fs.closeSync(stdoutDescriptor); stdoutDescriptor = undefined; }
+          if (stderrDescriptor !== undefined) { fs.closeSync(stderrDescriptor); stderrDescriptor = undefined; }
+        };
         const terminate = () => {
           if (!child.pid) return;
           if (process.platform === "win32") {
@@ -174,20 +229,40 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
         };
         const finish = (error?: string, code?: number | null, exitSignal?: NodeJS.Signals | null) => {
           if (settled) return; settled = true; clearTimeout(deadline); signal.removeEventListener("abort", cancel);
-          if (error) reject(new Error(error)); else resolve(JSON.stringify({ exitCode: code, signal: exitSignal, stdout, stderr, truncated, platform: process.platform }));
+          closeLogs();
+          const stdout = stdoutCharacters <= 3000 ? stdoutHead + stdoutTail : `${stdoutHead}\n...[${stdoutCharacters - stdoutHead.length - stdoutTail.length} characters omitted; full output saved locally]...\n${stdoutTail}`;
+          const stderr = stderrCharacters <= 3000 ? stderrHead + stderrTail : `${stderrHead}\n...[${stderrCharacters - stderrHead.length - stderrTail.length} characters omitted; full output saved locally]...\n${stderrTail}`;
+          if (error) reject(new Error(`${error}${stdoutLog ? ` stdout: ${stdoutLog}; stderr: ${stderrLog}` : ""}`));
+          else resolve(JSON.stringify({ exitCode: code, signal: exitSignal, stdout, stderr, truncated, outputBytes, ...(stdoutLog ? { stdoutLog, stderrLog } : {}), platform: process.platform }));
         };
         const cancel = () => { terminate(); finish("Process cancelled; process-tree termination requested."); };
         const deadline = setTimeout(() => { terminate(); finish("Process timed out; process-tree termination requested."); }, seconds * 1000);
         signal.addEventListener("abort", cancel, { once: true });
-        const append = (text: string, error: boolean) => {
-          const available = 6000 - stdout.length - stderr.length;
-          if (error) stderr += text.slice(0, Math.max(0, available)); else stdout += text.slice(0, Math.max(0, available));
-          if (text.length > available && !truncated) { truncated = true; terminate(); finish("Process output limit reached; process-tree termination requested."); }
+        const append = (chunk: Buffer, error: boolean) => {
+          outputBytes += chunk.length;
+          const available = Math.max(0, 64 * 1024 * 1024 - (outputBytes - chunk.length));
+          if (available && (error ? stderrDescriptor : stdoutDescriptor) !== undefined) fs.writeSync((error ? stderrDescriptor : stdoutDescriptor)!, chunk.subarray(0, available));
+          const text = (error ? errorDecoder : outputDecoder).write(chunk);
+          if (error) {
+            stderrCharacters += text.length;
+            const next = preview(stderrHead, stderrTail, text); stderrHead = next.head; stderrTail = next.tail;
+          } else {
+            stdoutCharacters += text.length;
+            const next = preview(stdoutHead, stdoutTail, text); stdoutHead = next.head; stdoutTail = next.tail;
+          }
+          if (stdoutCharacters + stderrCharacters > 6000) truncated = true;
+          if (outputBytes > 64 * 1024 * 1024) { terminate(); finish("Process output storage limit (64 MiB) reached; process-tree termination requested."); }
         };
-        child.stdout?.on("data", chunk => append(outputDecoder.write(chunk), false));
-        child.stderr?.on("data", chunk => append(errorDecoder.write(chunk), true));
+        child.stdout?.on("data", chunk => append(chunk, false));
+        child.stderr?.on("data", chunk => append(chunk, true));
         child.on("error", () => finish("Cannot launch the program. Check its executable path and permissions."));
-        child.on("close", (code, exitSignal) => { if (escalation) clearTimeout(escalation); append(outputDecoder.end(), false); append(errorDecoder.end(), true); finish(undefined, code, exitSignal); });
+        child.on("close", (code, exitSignal) => {
+          if (escalation) clearTimeout(escalation);
+          const stdoutEnd = outputDecoder.end(); const stderrEnd = errorDecoder.end();
+          if (stdoutEnd) { stdoutCharacters += stdoutEnd.length; const next = preview(stdoutHead, stdoutTail, stdoutEnd); stdoutHead = next.head; stdoutTail = next.tail; }
+          if (stderrEnd) { stderrCharacters += stderrEnd.length; const next = preview(stderrHead, stderrTail, stderrEnd); stderrHead = next.head; stderrTail = next.tail; }
+          finish(undefined, code, exitSignal);
+        });
         if (signal.aborted) cancel();
       });
     }),

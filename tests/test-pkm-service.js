@@ -44,7 +44,7 @@ function syntheticResult() {
     transactionId: "transaction", commit: `daemon-${process.pid}`, changed: true,
     fingerprints: {}, pulled: [], deletedLocal: [], privateTopLevels: {},
     recipePulls: [{ path: "recipes/example.json", itemId: "example", content: fixtureBytes, expectedLocal: Buffer.alloc(0) }],
-    recipeDeletes: [], acknowledgedDeletions: [],
+    recipeDeletes: [{ path: "recipes/deleted.json", itemId: "deleted", expectedLocal: fixtureBytes }], acknowledgedDeletions: [],
     resolutionReport: { totalFiles: 1, rules: {}, generatedAt: new Date().toISOString() },
   };
 }
@@ -97,11 +97,16 @@ async function fixtureDaemon(options) {
       result.daemonPid = process.pid;
       return result;
     }
-    if (target.name === "conflict") {
-      throw new syncApi.GitHubSyncConflictError("remote", [{
+    if (target.name === "conflict" || target.name === "partial-conflict") {
+      const error = new syncApi.GitHubSyncConflictError("remote", [{
         path: "skills/Test/Example.md", type: "skills", itemId: "example", category: "Test", privacy: "public",
         base: fixtureBytes, local: Buffer.from([0, 255, 1]), remote: Buffer.alloc(0),
-      }], [], [], {}, syntheticResult().recipePulls);
+      }], [], [], {}, syntheticResult().recipePulls, syntheticResult().recipeDeletes);
+      if (target.name === "partial-conflict") error.partialResult = {
+        ...syntheticResult(), entityBases: { ["skills\0example"]: "a".repeat(40) },
+        deferredEntities: ["scripts\0unstable"],
+      };
+      throw error;
     }
     if (target.name === "compatibility") throw new syncApi.GitHubSyncExtensionCompatibilityError("99.0.0", options.extensionVersion);
     if (target.name === "content-repair") throw new repairApi.GitHubSyncContentRepairError(target.id, [{
@@ -292,6 +297,10 @@ async function main() {
           if (job.holdPostprocess) await new Promise(resolve => { releasePostprocess = resolve; });
           completed = result;
         } catch (error) {
+          if (error.partialResult && job.holdPostprocess) await new Promise(resolve => { releasePostprocess = resolve; });
+          if (error.partialResult && job.failPostprocess) {
+            failed = new Error("TEST_PARTIAL_FINALIZER_FAILURE"); throw failed;
+          }
           if (job.acknowledgeError) await fixtureClient.acknowledgeExecutionErrors(targetId);
           failed = error; throw error;
         }
@@ -318,6 +327,7 @@ async function main() {
     assert(Buffer.isBuffer(binary.recipePulls[0].content));
     assert.deepStrictEqual(binary.recipePulls[0].content, fixtureBytes);
     assert.deepStrictEqual(binary.recipePulls[0].expectedLocal, Buffer.alloc(0));
+    assert.deepStrictEqual(binary.recipeDeletes[0].expectedLocal, fixtureBytes);
     assert.strictEqual(binary.commit, `daemon-${readMetadata(fixtureOptions).pid}`, "raw Sync executes in the daemon process");
     assert(progress.some(item => item.detail === "daemon progress"));
     const errorsBefore = errors.length;
@@ -405,6 +415,26 @@ async function main() {
     assert(failed instanceof syncApi.GitHubSyncConflictError, "client reconstructs the actual conflict constructor");
     assert.deepStrictEqual(failed.conflicts[0].base, fixtureBytes);
     assert(Buffer.isBuffer(failed.recipePulls[0].expectedLocal));
+    await submit({ name: "partial-conflict", holdPostprocess: true });
+    assert(fs.readdirSync(resultDirectory).some(name => fs.readFileSync(path.join(resultDirectory, name), "utf8").includes("partialResult")),
+      "partial progress remains recoverable until host finalization completes");
+    releasePostprocess();
+    await until(() => fixtureClient.snapshot().fixture?.status !== "syncing", "partial finalization");
+    assert(failed instanceof syncApi.GitHubSyncConflictError);
+    assert.deepStrictEqual(failed.partialResult.entityBases, { ["skills\0example"]: "a".repeat(40) });
+    assert(Buffer.isBuffer(failed.partialResult.recipePulls[0].content));
+    assert.strictEqual(fixtureClient.snapshot().fixture.status, "partial");
+    assert(!fs.readdirSync(resultDirectory).some(name => fs.readFileSync(path.join(resultDirectory, name), "utf8").includes("partialResult")),
+      "acknowledged partial progress does not replay after host restart");
+    await submit({ name: "partial-conflict", failPostprocess: true });
+    await until(() => fixtureClient.snapshot().fixture?.status !== "syncing", "failed partial finalization");
+    const partialReceipt = (await fixtureClient.listRecoverableResults()).find(item =>
+      fs.readFileSync(item.receiptPath, "utf8").includes("partialResult"));
+    assert(partialReceipt, "a failed host finalizer must retain the raw partial result");
+    await assert.rejects(() => fixtureClient.recoverSyncResult(partialReceipt.operationId), error =>
+      error instanceof syncApi.GitHubSyncConflictError
+      && error.partialResult.entityBases["skills\0example"] === "a".repeat(40)
+      && Buffer.isBuffer(error.partialResult.recipePulls[0].content));
     await submit({ name: "compatibility" });
     assert(failed instanceof syncApi.GitHubSyncExtensionCompatibilityError);
     assert.strictEqual(failed.requiredVersion, "99.0.0");
@@ -428,7 +458,8 @@ async function main() {
     );
     await assert.rejects(
       () => fixtureClient.recoverSyncResult(conflictReceipt.operationId),
-      error => error instanceof syncApi.GitHubSyncConflictError && Buffer.isBuffer(error.conflicts[0].base),
+      error => error instanceof syncApi.GitHubSyncConflictError && Buffer.isBuffer(error.conflicts[0].base)
+        && error.recipeDeletes[0].expectedLocal.equals(fixtureBytes),
     );
     const legacyReceipt = JSON.parse(fs.readFileSync(secretReceipt.receiptPath, "utf8"));
     legacyReceipt.entries = legacyReceipt.entries.filter(([key]) => !["reason", "repository", "branch"].includes(key));
@@ -478,6 +509,7 @@ async function main() {
     );
     const recoveredResult = await recoveryClient.recoverSyncResult(success.operationId);
     assert(Buffer.isBuffer(recoveredResult.recipePulls[0].content));
+    assert.deepStrictEqual(recoveredResult.recipeDeletes[0].expectedLocal, fixtureBytes);
     assert.strictEqual(recoveredResult.commit, `daemon-${fixturePid}`);
     await until(() => recoveryClient.snapshot().fixture?.status !== "syncing", "disconnect settlement");
     await recoveryClient.acknowledgeRecoveredResult(success.operationId);

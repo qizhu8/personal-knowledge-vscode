@@ -62,7 +62,8 @@ function html(name) {
   let value = fs.readFileSync(path.join(assets, name), "utf8").replace(/<meta http-equiv="Content-Security-Policy"[^>]*>/, "");
   const panelTokens = { PANEL_JS: "panel.js", PANEL_CSS: "panel.css", CODICON_CSS: "codicon.css", HOST_HEALTH_JS: "host-health.js", HOST_HEALTH_CSS: "host-health.css" };
   const chatTokens = { styles: "api-chat.css", script: "api-chat.js", icons: "codicon.css", marked: "marked.umd.js", purify: "purify.min.js",
-    libraryScript: "api-chat-library.js", retrievalScript: "chat-retrieval-flow.js", hostHealthScript: "host-health.js", hostHealthStyles: "host-health.css" };
+    libraryScript: "api-chat-library.js", retrievalScript: "chat-retrieval-flow.js", hostHealthScript: "host-health.js", hostHealthStyles: "host-health.css",
+    harnessScript: "agent-harness.js", harnessStyles: "agent-harness.css", visualizationScript: "chat-visualization.js" };
   for (const [token, file] of Object.entries(panelTokens)) value = value.split(`%%${token}%%`).join(file);
   for (const [token, file] of Object.entries(chatTokens)) value = value.split(`{{${token}}}`).join(file);
   return value.replace(/%%[A-Z_]+%%/g, "").replaceAll("{{nonce}}", "acceptance");

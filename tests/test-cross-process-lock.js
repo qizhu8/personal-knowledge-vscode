@@ -20,15 +20,15 @@ function waitForFile(file, timeoutMs = 3000) {
 
 try {
   fs.writeFileSync(lockPath, JSON.stringify({
-    pid: process.pid,
-    nonce: "stale-same-process",
+    pid: 2147483647,
+    nonce: "dead-process",
     acquiredAt: Date.now() - 60_000,
     owner: "Project store",
   }));
   assert.strictEqual(
     withCrossProcessLockSync(lockPath, "Project store", () => "recovered"),
     "recovered",
-    "an expired lock whose Extension Host PID is still alive must be recoverable",
+    "a dead legacy lock owner must be recoverable",
   );
 
   const child = spawn(process.execPath, ["-e", `

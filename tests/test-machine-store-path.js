@@ -3,7 +3,13 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { cloudSynchronizedPath, isAbsoluteForPlatform, isForeignAbsolutePath, resolveMachineStorePath, extensionHostDescription } = require("../dist/knowledge/store-path.js");
+const fixture = fs.mkdtempSync(path.join(__dirname, ".pkm-machine-store-path-"));
+const compiled = path.join(fixture, "store-path.js");
+require("child_process").execFileSync("npx", [
+  "esbuild", path.join(__dirname, "../src/knowledge/store-path.ts"),
+  "--bundle", "--platform=node", "--format=cjs", `--outfile=${compiled}`,
+], { cwd: path.join(__dirname, ".."), stdio: "ignore" });
+const { cloudSynchronizedPath, isAbsoluteForPlatform, isForeignAbsolutePath, resolveMachineStorePath, extensionHostDescription } = require(compiled);
 
 const existing = new Set(["/linux/store", "/linux/previous", "C:\\Users\\me\\knowledge"]);
 const isDirectory = value => existing.has(value);
@@ -114,4 +120,5 @@ async function checkStartupPersistence() {
 
 checkStartupPersistence().then(() => {
   console.log("machine store path test: machine scope, cross-OS rejection, reinstall recovery, host-aware setup, no fallback, Sync target confirmation, and no-op startup persistence OK");
-}).catch(error => { console.error(error); process.exitCode = 1; });
+}).catch(error => { console.error(error); process.exitCode = 1; })
+  .finally(() => fs.rmSync(fixture, { recursive: true, force: true }));

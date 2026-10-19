@@ -16,9 +16,132 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "resources"))
 from action_modules import ModuleRuntime, INTEGER, object_schema
 from action_components import component_definitions
+from action_runtime import ActionRuntime
+
+
+def expand_palette(page):
+    page.wait_for_function("actions.length > 0")
+    page.evaluate("""() => {
+      setTreeCollapsed(false);
+      for(const action of actions) {
+        const parts=(action.category||'Actions').split('/');
+        for(let index=1;index<=parts.length;index++)catExpanded[JSON.stringify(parts.slice(0,index))]=true;
+      }
+      saveView();renderPalette();
+    }""")
 
 
 class WorkbenchTests(unittest.TestCase):
+    def test_private_cosmos_catalog_grouping_collapsed_defaults_and_guarded_launch(self):
+        with tempfile.TemporaryDirectory(prefix="pkm-private-palette-") as directory:
+            runtime = ActionRuntime(directory)
+            self.assertFalse(any(item.get("visibility") == "private" for item in runtime.modules.catalog()["actions"]))
+            runtime.configure_cosmos([{"host": "storage.example.invalid", "vc": "fixture.vc", "account": "fixture-account"}])
+            catalog = runtime.modules.catalog()
+            private = [item for item in catalog["actions"] if item.get("visibility") == "private"]
+            self.assertEqual({item["action_id"] for item in private},
+                             {"cosmos.artifact.upload", "cosmos.artifact.download", "cosmos.directory.list"})
+            self.assertTrue(all(item["category"] == "Private/Cosmos" and item["availability"]["state"] == "blocked"
+                                and item["exportable"] is False for item in private))
+            self.assertFalse(any(item["category"] == "core" for item in catalog["actions"]))
+            self.assertTrue(all(item["category"].startswith("core/") for item in catalog["actions"]
+                                if item["action_id"].startswith("core.")))
+            self.assertFalse(any(item["action_id"].startswith("cosmos.") for item in runtime.modules.list()))
+            html = (ROOT / "resources/action-workbench.html").read_text()
+            bootstrap = "window.__catalog=" + json.dumps(catalog) + """;
+window.__posts=[];window.acquireVsCodeApi=()=>({
+ getState:()=>JSON.parse(sessionStorage.getItem('fixture-state')||'null'),
+ setState:value=>sessionStorage.setItem('fixture-state',JSON.stringify(value)),
+ postMessage:message=>{
+  __posts.push(message);let result={ok:true};
+  if(message.method==='catalog')result=__catalog;
+  if(message.method==='runs')result={runs:[]};
+  if(message.method==='platform_call')result={ok:false,error:'Fixture submission uncertain; inspect original launch key.'};
+  queueMicrotask(()=>window.dispatchEvent(new MessageEvent('message',{data:{requestId:message.requestId,result}})));
+ }});
+"""
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(headless=True)
+                try:
+                    for width in [1280, 390]:
+                        page = browser.new_page(viewport={"width": width, "height": 900})
+                        errors = []
+                        page.on("pageerror", lambda error: errors.append(str(error)))
+                        page.route("http://127.0.0.1/", lambda route: route.fulfill(content_type="text/html", body=html))
+                        page.add_init_script(bootstrap)
+                        page.goto("http://127.0.0.1/")
+                        expect(page.locator("#action-tree")).to_be_hidden()
+                        expect(page.locator("#toggle-tree")).to_have_attribute("aria-expanded", "false")
+                        toggle = page.locator("#toggle-tree")
+                        self.assertEqual(toggle.evaluate("button => button.parentElement.className"), "workspace-cattree-divider")
+                        self.assertEqual(page.locator("header.top #toggle-tree").count(), 0)
+                        box = toggle.bounding_box()
+                        self.assertEqual((round(box["width"]), round(box["height"])), (14, 72))
+                        self.assertIn("panel-collapse-toggle", toggle.get_attribute("class"))
+                        self.assertEqual(toggle.get_attribute("title"), "Restore category tree")
+                        page.locator("#toggle-tree").click()
+                        self.assertEqual(toggle.get_attribute("title"), "Minimize category tree")
+                        divider = page.locator(".workspace-cattree-divider").bounding_box()
+                        self.assertAlmostEqual(divider["x"], page.locator("#action-tree").bounding_box()["x"]
+                                               + page.locator("#action-tree").bounding_box()["width"], delta=1)
+                        core = page.locator('[data-category=\'["core"]\']')
+                        expect(core).to_have_attribute("aria-expanded", "false")
+                        core.click()
+                        root_group = core.locator("xpath=following-sibling::div")
+                        expect(root_group.locator(":scope > .cattree-item")).to_have_count(0)
+                        page.locator('[data-category=\'["Private"]\']').click()
+                        page.locator('[data-category=\'["Private","Cosmos"]\']').click()
+                        for identifier in ["cosmos.artifact.upload", "cosmos.artifact.download", "cosmos.directory.list"]:
+                            expect(page.locator('[data-private="' + identifier + '"]')).to_be_visible()
+                            expect(page.locator('[data-export="' + identifier + '"]')).to_have_count(0)
+                            expect(page.locator('[data-add="' + identifier + '"]')).to_have_count(0)
+                        self.assertFalse(page.evaluate("__posts.some(item=>['platform_call','validate'].includes(item.method))"))
+                        page.locator('[data-private="cosmos.artifact.download"]').click()
+                        dialog = page.locator("#private-action-dialog")
+                        expect(dialog).to_be_visible()
+                        expect(dialog.locator("#private-action-state")).to_contain_text("no operator path grant")
+                        expect(dialog.locator("#private-action-run")).to_be_disabled()
+                        dialog.get_by_role("button", name="Close", exact=True).click()
+                        page.reload()
+                        expect(page.locator("#action-tree")).to_be_visible()
+                        expect(page.locator('[data-category=\'["Private","Cosmos"]\']')).to_have_attribute("aria-expanded", "true")
+                        page.keyboard.press("Control+f")
+                        page.locator("#search").fill("cosmos.artifact.upload")
+                        expect(page.locator('[data-private="cosmos.artifact.upload"]')).to_be_visible()
+                        page.keyboard.press("Escape")
+                        page.evaluate("""() => {const action=actions.find(item=>item.action_id==='cosmos.artifact.upload');
+                          action.availability={state:'ready'};renderPalette();}""")
+                        page.locator('[data-private="cosmos.artifact.upload"]').click()
+                        expect(dialog.locator("#private-action-advanced")).not_to_have_attribute("open", "")
+                        dialog.locator('[data-private-field="uri"]').fill("fixture-only")
+                        dialog.locator('[data-private-field="local_path"]').fill("fixture-only")
+                        dialog.locator("#private-action-run").click()
+                        self.assertFalse(page.evaluate("__posts.some(item=>item.method==='platform_call')"))
+                        dialog.locator("#private-action-approve").check()
+                        dialog.locator("#private-action-run").click()
+                        expect(dialog.get_by_role("alert")).to_contain_text("Original launch key retained")
+                        first_key = page.evaluate("__posts.find(item=>item.method==='platform_call').params.idempotency_key")
+                        dialog.locator("#private-action-run").click()
+                        page.wait_for_function("__posts.filter(item=>item.method==='platform_call').length===2")
+                        self.assertEqual(page.evaluate("__posts.filter(item=>item.method==='platform_call')[1].params.idempotency_key"), first_key)
+                        page.reload()
+                        expect(page.locator('[data-private="cosmos.artifact.upload"]')).to_be_visible()
+                        self.assertFalse(page.evaluate("__posts.some(item=>item.method==='platform_call')"))
+                        page.evaluate("""() => {const action=actions.find(item=>item.action_id==='cosmos.artifact.upload');
+                          action.availability={state:'ready'};renderPalette();}""")
+                        page.locator('[data-private="cosmos.artifact.upload"]').click()
+                        self.assertEqual(json.loads(dialog.locator("#private-action-inputs").input_value()),
+                                         {"uri": "fixture-only", "local_path": "fixture-only"})
+                        expect(dialog.locator("#private-action-approve")).not_to_be_checked()
+                        dialog.locator("#private-action-approve").check()
+                        dialog.locator("#private-action-run").click()
+                        expect(dialog.get_by_role("alert")).to_contain_text("Original launch key retained")
+                        self.assertEqual(page.evaluate("__posts.find(item=>item.method==='platform_call').params.idempotency_key"), first_key)
+                        self.assertEqual(errors, [])
+                        page.close()
+                finally:
+                    browser.close()
+
     def test_typed_checkpoint_inbox_polling_errors_keyboard_and_project_link(self):
         html = (ROOT / "resources" / "action-workbench.html").read_text()
         bootstrap = """
@@ -205,6 +328,7 @@ window.acquireVsCodeApi=()=>({getState:()=>null,setState:()=>{},postMessage:mess
                         page.route("http://127.0.0.1/", lambda route: route.fulfill(content_type="text/html", body=html))
                         page.add_init_script(bootstrap)
                         page.goto("http://127.0.0.1/")
+                        expand_palette(page)
                         expect(page.locator('[data-category=\'["core","logic"]\']')).to_be_visible()
                         page.locator('[data-add="core.math-expression"]').click()
                         block = page.locator(".block").first
@@ -308,7 +432,8 @@ window.acquireVsCodeApi=()=>({getState:()=>null,setState:()=>{},postMessage:mess
             draft = {"graph": {"action_id": "browser.handoff", "name": "Browser handoff", "nodes": [{
                 "id": "constant", "action_id": "core.constant", "content_hash": constant["content_hash"],
                 "value_type": "integer", "parameters": {"value": 7}, "x": 40, "y": 40}],
-                "edges": [], "output_node": "constant"}}
+                "edges": [], "output_node": "constant"},
+                "treeCollapsed": False, "catExpanded": {'["core"]': True}}
             fixture = """
 const path = require("path"), { execFile } = require("child_process");
 const [root, python, store, workspace, draft] = process.argv.slice(1);
@@ -348,6 +473,8 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     self.assertEqual(urlsplit(page.url).fragment, "")
                     self.assertEqual(page.locator("#name").input_value(), "Browser handoff")
                     self.assertEqual(page.locator('[data-field="value"]').input_value(), "7")
+                    expect(page.locator("#action-tree")).to_be_visible()
+                    expect(page.locator('[data-category=\'["core"]\']')).to_have_attribute("aria-expanded", "true")
                     self.assertTrue(page.locator("#open-browser").is_hidden())
                     self.assertTrue(page.locator("#background-tasks").is_visible())
                     expect(page.locator("#search")).to_be_hidden()
@@ -390,6 +517,7 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     self.assertEqual(page.locator('[data-field="value"]').input_value(), "17")
                     self.assertTrue(page.locator("#run").is_disabled())
                     page.screenshot(path=str(acceptance / "action-workbench-authenticated-desktop.png"), full_page=True)
+                    expand_palette(page)
                     page.locator('[data-add="core.user-action"]').click()
                     page.locator('[data-field="prompt"]').fill("Continue with this Action?")
                     page.locator('[data-field="prompt"]').blur()
@@ -412,6 +540,7 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     page.screenshot(path=str(acceptance / "action-workbench-authenticated-mobile.png"), full_page=True)
                     page.goto(url + "&launch=second")
                     expect(page.locator('[data-field="value"]')).to_have_value("7", timeout=30000)
+                    expand_palette(page)
                     self.assertEqual(page.locator(".block").count(), 1)
                     self.assertTrue(page.locator("#run").is_disabled())
                     page.set_viewport_size({"width": 1920, "height": 1080})
@@ -610,6 +739,7 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     page.on("pageerror", lambda error: errors.append(str(error)))
                     page.goto("http://127.0.0.1:" + str(server.server_port))
                     page.wait_for_load_state("networkidle")
+                    expand_palette(page)
                     page.evaluate("document.fonts.ready")
                     self.assertTrue(page.evaluate("document.fonts.check('16px codicon')"))
                     self.assertEqual(page.locator('.tree-cat-label').filter(has_text='core').count(), 1)
@@ -704,6 +834,8 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     self.assertFalse(page.locator("[data-set]").is_checked())
                     self.assertEqual(page.locator('[data-add^="local.graph."]').count(), 0)
                     page.locator("[data-set]").check()
+                    page.wait_for_selector('[data-add^="local.graph."]', state="attached")
+                    expand_palette(page)
                     page.wait_for_selector('[data-add^="local.graph."]')
                     self.assertIn("blocked", page.locator('[data-add^="local.graph."]').locator("..").inner_text())
                     page.locator("[data-set]").uncheck()
@@ -757,7 +889,9 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     page.locator('[data-field="prompt"]').fill('Choose an outcome')
                     page.locator('[data-field="prompt"]').blur()
                     page.locator('#save').click()
-                    page.wait_for_function("document.querySelector('#status').textContent.startsWith('Saved v')")
+                    page.wait_for_function("saved?.action_id==='local.choice.fixture'")
+                    self.assertEqual(page.evaluate("saved?.action_id"), "local.choice.fixture",
+                                     page.locator("#status").inner_text())
                     page.on('dialog', lambda dialog: dialog.accept())
                     page.locator('#validate').click()
                     page.wait_for_function("!document.querySelector('#run').disabled", timeout=30000)

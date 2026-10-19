@@ -135,8 +135,23 @@ assert(sourceTs.includes("mcp.add_middleware(McpCallGuardMiddleware(mcp))"));
 assert(sourceTs.includes('"resources", "mcp_call_guard.py"'));
 assert(panelJs.includes("Knowledge: installed v"));
 assert(panelJs.includes("Chat: installed v"));
-for (const text of ["PKM Integration Status", "Unified MCP Server", "Knowledge schema", "Chat schema", "Recipe runtime", "Agent Session runtime", "Setup progress", "Ready · starts on demand", "Automatic integration", "Account MCP registration"]) {
+for (const text of ["PKM Integration Status", "Unified MCP Server", "Knowledge schema", "Chat schema", "Recipe runtime", "Agent Session runtime", "Setup progress", "Ready · starts on demand", "Automatic integration", "Account binding (not client discovery)"]) {
   assert(panelJs.includes(text), `missing dashboard text: ${text}`);
+}
+assert.doesNotMatch(panelJs, /Account MCP registration/,
+  "an account binding must not be presented as an actual client registration");
+assert(panelJs.includes("~/.pkm/mcp-binding.json is not a client registration. Verify each client separately."),
+  "the binding dashboard must explicitly distinguish binding from client discovery");
+assert.match(panelJs, /clientRegistration\?\.vscode\?\.definitionAvailable \? 'available on this host \(client discovery not verified\)'/,
+  "a native definition must not be presented as verified client discovery");
+assert.match(panelJs, /Default CLI user configuration: \$\{esc\(data\?\.clientRegistration\?\.copilot\?\.state/,
+  "CLI configuration state must be shown independently from native discovery");
+for (const [id, command, label] of [
+  ["mcp-configure-native", "configureNativeMcpDiscovery", "Configure VS Code MCP discovery"],
+  ["mcp-register-copilot-user", "registerCopilotMcp", "Register Copilot CLI MCP (User)"],
+]) {
+  assert.match(panelJs, new RegExp(`id="${id}"[^>]*beginMcpUiAction\\('${command}'[^>]*>${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}<\\/button>`),
+    `${label} must remain an explicit client-specific setup action`);
 }
 assert.doesNotMatch(panelJs, />Update with Server<\/button>|>Update Code<\/button>|>Repair Runtime<\/button>/,
   "normal Config state must not ask new users to maintain internal components manually");
@@ -167,7 +182,7 @@ assert.match(panelJs, /requestAnimationFrame\(\(\) => \{[\s\S]{0,180}Math\.min\(
 assert.match(panelJs, /\['Unified MCP Server',[\s\S]{0,300}<span class="mcp-no-action">Automatic<\/span>/);
 assert.doesNotMatch(panelJs, />Update with Server<\/button>|>Update Code<\/button>|>Repair Runtime<\/button>/,
   "routine internal updates must not be presented as user actions");
-for (const text of ["Paths", "Knowledge root", "Environments root", "Managed MCP runtime", "MCP Base Python", "MCP server directory", "Automatic", "Account MCP registration"]) {
+for (const text of ["Paths", "Knowledge root", "Environments root", "Managed MCP runtime", "MCP Base Python", "MCP server directory", "Automatic", "Account binding (not client discovery)"]) {
   assert(panelJs.includes(text), `missing path/status text: ${text}`);
 }
 for (const key of ["store", "environments", "runtime", "python", "serverDirectory"]) {
@@ -290,4 +305,4 @@ const pipInstallIndex = sourceTs.indexOf('execFile(validation.path, ["-m", "pip"
 const markerWriteIndex = sourceTs.lastIndexOf("fs.writeFileSync(mcpRuntimeBaseMarker()");
 assert(pipInstallIndex >= 0 && markerWriteIndex > pipInstallIndex, "runtime ownership marker must be written after pip succeeds");
 assert.doesNotMatch(extensionTs, /case "configureStorePath"|case "configureEnvironmentsPath"/);
-console.log("MCP version UI test: version transitions, account registration, and retired injection UI OK");
+console.log("MCP version UI test: version transitions, account binding versus client discovery, explicit client setup, and retired injection UI OK");

@@ -20,6 +20,12 @@ html[dir="rtl"] pre, html[dir="rtl"] code, html[dir="rtl"] .retrieval-flow {
 .retrieval-flow g[role="button"]:focus { outline: 1px solid var(--vscode-focusBorder, #3794ff); }
 #retrieval-status { font-size: 11px; overflow-wrap: anywhere; padding: 6px 0; }
 #memory-panel select { flex: 1; min-width: 70px; }
+.chat-visualization { flex: 0 1 48vh; min-height: 0; overflow: auto; border-top: 1px solid var(--vscode-panel-border, #ffffff18); }
+.chat-visualization > .toolbar > strong { flex: 1; }
+.chat-visualization .pkm-harness { min-width: 0; padding: 8px; }
+.chat-visualization .pkm-harness button { display: inline-block; width: auto; height: auto; min-height: 28px; }
+.chat-visualization .pkm-harness-viewport { height: 30vh; min-height: 180px; }
+.chat-visualization .pkm-harness-inspector pre { max-height: 24vh; overflow: auto; }
 :root { color-scheme: light dark; }
 * { box-sizing: border-box; }
 body { margin: 0; height: 100vh; display: flex; flex-direction: column; font-family: var(--vscode-font-family, sans-serif); font-size: var(--vscode-font-size, 13px); color: var(--vscode-foreground, #ddd); background: var(--vscode-sideBar-background, #202020); letter-spacing: 0; }
@@ -259,3 +265,11 @@ footer label { display: inline-flex; align-items: center; gap: 4px; }
 .worker-archive::backdrop { background: #0008; }
 .approval textarea { width: 100%; box-sizing: border-box; margin-top: 8px; }
 .worker-provenance { overflow-wrap: anywhere; font-size: 11px; opacity: .85; }
+#harness-summary { padding:8px 12px; border-bottom:1px solid var(--vscode-panel-border); font-size:12px; }
+#harness-summary button { margin:4px 0; }
+.chat-question-form { display: grid; gap: 10px; margin: 10px 0; }
+.chat-question-field { display: grid; gap: 4px; }
+.chat-question-field input, .chat-question-field select, .chat-question-field textarea { width: 100%; box-sizing: border-box; padding: 6px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); }
+.chat-question-field input[type="checkbox"] { width: auto; justify-self: start; }
+.chat-question-field select[multiple] { min-height: 90px; }
+.chat-question-field small { color: var(--vscode-descriptionForeground); }

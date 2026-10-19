@@ -18,7 +18,7 @@ upload_runner = importlib.util.module_from_spec(runner_spec)
 runner_spec.loader.exec_module(upload_runner)
 
 
-URI = "https://www.cosmos08.osdinfra.net/cosmos/bingads.algo.prod.adsplus/shares/bingads.algo.prod.adsplus/ProdAdsPlusShare/users/uone/AdHoc/temp"
+URI = "https://cosmos.example.invalid/cosmos/fixture.vc/shares/fixture.vc/fixtures"
 
 
 class ActionTests(unittest.TestCase):
@@ -31,6 +31,7 @@ class ActionTests(unittest.TestCase):
         program.chmod(0o700)
         self.runtime = ActionRuntime(self.directory, str(program))
         self.runtime.root.mkdir(parents=True)
+        self.runtime.configure_cosmos([{"host": "cosmos.example.invalid", "vc": "fixture.vc", "account": "fixture-adl"}])
         (self.runtime.root / "policy.json").write_text(json.dumps({
             "schema": "pkm.action.policy/v1",
             "grants": [{"action_id": action_id, "remote_root": URI, "local_root": str(self.directory)}
@@ -64,7 +65,7 @@ class ActionTests(unittest.TestCase):
         self.assertTrue(self.runtime.retrieve("cosmos")["ambiguous"])
         self.assertIsNone(self.runtime.retrieve("cosmos")["selected_action_id"])
         self.assertTrue(self.runtime.retrieve("unmatchedzzzz")["no_match"])
-        self.assertEqual(cosmos_location(URI)["account"], "bingads-algo-prod-adsplus-c08")
+        self.assertEqual(cosmos_location(URI, self.runtime.cosmos_accounts())["account"], "fixture-adl")
 
     def test_call_and_idempotency(self):
         source = self.directory / "file with spaces.txt"
@@ -73,6 +74,8 @@ class ActionTests(unittest.TestCase):
         first = self.call("cosmos.artifact.upload", inputs, "upload-once")
         result = self.wait(first["run_id"])
         self.assertEqual(result["state"], "succeeded")
+        self.assertEqual(self.runtime.list_runs()["runs"][0]["run_id"], first["run_id"])
+        self.assertEqual(self.runtime.list_runs()["runs"][0]["state"], "succeeded")
         self.assertEqual(result["output"]["argv"][0:3], ["dls", "fs", "upload"])
         self.assertIn(str(source), result["output"]["argv"])
         self.assertNotIn("--overwrite", result["output"]["argv"])
@@ -185,6 +188,70 @@ class ActionTests(unittest.TestCase):
         self.assertEqual(clean.enabled_platform_actions(), [])
         self.assertEqual(clean.retrieve("cosmos upload", 10)["candidates"], [])
         self.assertIn("cosmos.artifact.upload", self.runtime.enabled_platform_actions())
+        definition = self.runtime.definition("cosmos.artifact.upload")
+        self.assertEqual(definition["visibility"], "private")
+        self.assertFalse(definition["exportable"])
+        with self.assertRaises(FileNotFoundError):
+            self.runtime.modules.definition("cosmos.artifact.upload")
+
+    def test_private_bindings_are_explicit_and_do_not_retarget_existing_grants(self):
+        self.assertEqual((self.runtime.root / "cosmos-bindings.json").stat().st_mode & 0o777, 0o600)
+        with self.assertRaises(ValueError):
+            cosmos_location(URI)
+        with self.assertRaises(PermissionError):
+            self.runtime.configure_cosmos([{"host": "cosmos.example.invalid", "vc": "fixture.vc", "account": "different-account"}])
+        self.assertEqual(self.runtime.cosmos_accounts()[("cosmos.example.invalid", "fixture.vc")], "fixture-adl")
+
+    def test_file_and_folder_roundtrip_with_real_cli_adapter_and_separate_download_qualification(self):
+        remote = self.directory / "fake-cloud"
+        remote.mkdir()
+        program = self.directory / "roundtrip-az"
+        program.write_text("#!" + sys.executable + "\n" + """
+import json, shutil, sys
+from pathlib import Path
+args=sys.argv[1:]
+def option(key): return args[args.index(key)+1]
+remote=Path(""" + repr(str(remote)) + """)
+operation=args[2]
+if operation=='list':
+    print('[]'); raise SystemExit(0)
+source=Path(option('--source-path'))
+destination=Path(option('--destination-path'))
+if operation=='upload': destination=remote/str(destination).lstrip('/')
+else: source=remote/str(source).lstrip('/')
+destination.parent.mkdir(parents=True, exist_ok=True)
+if destination.exists() and '--overwrite' not in args: raise SystemExit(2)
+if source.is_dir(): shutil.copytree(source,destination,dirs_exist_ok='--overwrite' in args)
+else: shutil.copyfile(source,destination)
+print('null')
+""", encoding="utf-8")
+        program.chmod(0o700)
+        self.runtime.program = str(program)
+        self.runtime.modules.configure_workspace(str(self.directory))
+        source = self.directory / "approved-fixture.bin"
+        source.write_bytes(b"\x00fixture\xff")
+        uploaded_uri = URI + "/qualification.bin"
+        result = self.runtime.validate("cosmos.artifact.upload", self.runtime.definition("cosmos.artifact.upload")["content_hash"],
+            {"uri": uploaded_uri, "local_path": str(source)})
+        self.assertTrue(result["ok"])
+        downloaded_fixture = self.directory / "qualified-download.bin"
+        result = self.runtime.validate("cosmos.artifact.download", self.runtime.definition("cosmos.artifact.download")["content_hash"],
+            {"uri": uploaded_uri, "local_path": str(downloaded_fixture)})
+        self.assertTrue(result["ok"])
+        self.assertEqual(downloaded_fixture.read_bytes(), source.read_bytes())
+        directory = self.directory / "folder"
+        (directory / "nested").mkdir(parents=True)
+        (directory / "alpha.txt").write_text("alpha")
+        (directory / "nested" / "beta.bin").write_bytes(b"\x00\x01\xff")
+        uploaded = self.wait(self.call("cosmos.artifact.upload", {"uri": URI + "/folder", "local_path": str(directory)}, "directory-upload")["run_id"])
+        self.assertEqual(uploaded["state"], "succeeded", uploaded)
+        destination = self.directory / "downloaded-folder"
+        downloaded = self.wait(self.call("cosmos.artifact.download", {"uri": URI + "/folder", "local_path": str(destination)}, "directory-download")["run_id"])
+        self.assertEqual(downloaded["state"], "succeeded", downloaded)
+        self.assertEqual((destination / "alpha.txt").read_text(), "alpha")
+        self.assertEqual((destination / "nested" / "beta.bin").read_bytes(), b"\x00\x01\xff")
+        with self.assertRaises(FileExistsError):
+            self.call("cosmos.artifact.download", {"uri": URI + "/folder", "local_path": str(destination)}, "no-overwrite")
 
     def test_file_scoped_batch_verifies_manifest(self):
         source = self.directory / "batch-source"

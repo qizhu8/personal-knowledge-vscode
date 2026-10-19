@@ -571,6 +571,13 @@ var output=process.StandardOutput.ReadToEnd(); process.WaitForExit(); if(process
         from fastmcp.client.transports import StdioTransport
         script = self.directory / "fixture_server.py"
         script.write_text('from fastmcp import FastMCP\nm=FastMCP("fixture")\n@m.tool(annotations={"readOnlyHint":True})\ndef add(left:int,right:int)->dict:\n return {"sum":left+right}\nm.run()\n')
+        managed = self.runtime.store / "scripts" / script.name
+        managed.parent.mkdir(parents=True)
+        shutil.copyfile(script, managed)
+        script_id = "script_" + "e" * 24
+        managed.with_name("." + managed.name + ".pkm.json").write_text(
+            json.dumps({"schema": "pkm.script/v1", "knowledgeId": script_id, "aliases": []}))
+        reference = "pkm://script/" + script_id
 
         async def contracts():
             async with Client(StdioTransport(sys.executable, [str(script)])) as client:
@@ -580,8 +587,8 @@ var output=process.StandardOutput.ReadToEnd(); process.WaitForExit(); if(process
         child = self.runtime.definition("test.fixture.add")
         definition = self.runtime.register({"schema": "pkm.action.definition/v1", "action_id": "test.mcp.add", "version": 1,
             "description": "Pinned MCP backed Action", "effects": ["pure"], "input_schema": child["input_schema"], "output_schema": child["output_schema"],
-            "implementations": [{"kind": "mcp", "platforms": [platform.system()], "files": [str(script)],
-                "server": {"program": "python", "args": [str(script)]}, "tool": "add", "read_only": True,
+            "implementations": [{"kind": "mcp", "platforms": [platform.system()], "files": [reference],
+                "server": {"program": "python", "args": [reference]}, "tool": "add", "read_only": True,
                 "input_schema_hash": digest(tool.inputSchema), "output_schema_hash": digest(tool.outputSchema)}],
             "examples": [{"inputs": {"left": 3, "right": 4}, "output": {"sum": 7}}]})
         self.grant(definition)
@@ -628,6 +635,224 @@ class ValidationQueueTests(unittest.TestCase):
         self.assertEqual(self.finish()["counts"], {"cancelled": 1})
         with self.assertRaises(PermissionError):
             self.enqueue("core.artifact.write", "idle")
+
+
+class ResourceReferenceTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
+        self.runtime = ModuleRuntime(self.directory / "publisher")
+        self.runtime.configure_workspace(str(self.directory / "workspace"))
+        self.script = self.runtime.store / "scripts" / "nested" / "source.py"
+        self.script.parent.mkdir(parents=True)
+        self.script.write_text("import json\nprint(json.dumps({'value': 42}))\n")
+        self.identity = {"schema": "pkm.script/v1", "knowledgeId": "script_" + "a" * 24,
+                         "aliases": ["pkm://scripts/old/source.py"]}
+        self.sidecar = self.script.with_name("." + self.script.name + ".pkm.json")
+        self.sidecar.write_text(json.dumps(self.identity))
+        self.uri = "pkm://script/" + self.identity["knowledgeId"]
+        self.definition = self.runtime.register({
+            "schema": "pkm.action.definition/v1", "action_id": "test.resource.reference", "version": 1,
+            "display_name": "Portable source", "effects": ["pure"],
+            "input_schema": object_schema({}), "output_schema": object_schema({"value": INTEGER}),
+            "implementations": [{"kind": "program", "platforms": [platform.system()],
+                                 "program": "python", "args": [self.uri], "files": [self.uri]}],
+            "examples": [{"inputs": {}, "output": {"value": 42}}]})
+
+    def grant(self, runtime, definition):
+        (runtime.root / "policy.json").write_text(json.dumps({"grants": [{
+            "action_id": definition["action_id"], "content_hash": definition["content_hash"],
+            "trusted_host_execution": True}]}))
+
+    def test_source_editor_and_fingerprint_share_stable_reference(self):
+        self.assertEqual(self.runtime.definition_read(self.definition["action_id"])["files"], [self.uri])
+        original_hash = self.definition["content_hash"]
+        before = self.runtime.fingerprint(self.definition)
+        source = self.runtime.source_read(self.definition["action_id"], self.uri)
+        self.runtime.source_save(self.definition["action_id"], self.uri,
+                                 source["content"].replace("42", "43"), source["source_hash"])
+        self.assertNotEqual(before, self.runtime.fingerprint(self.definition))
+        self.assertEqual(original_hash, self.runtime.definition(self.definition["action_id"])["content_hash"])
+        self.assertEqual(self.runtime.implementation(self.definition)["args"], [str(self.script)])
+        self.assertEqual(self.runtime.definition(self.definition["action_id"])["implementations"][0]["args"], [self.uri])
+
+    def test_move_and_root_relocation_without_publisher(self):
+        moved = self.script.with_name("renamed.py")
+        self.script.rename(moved)
+        self.sidecar.rename(moved.with_name("." + moved.name + ".pkm.json"))
+        receiver = ModuleRuntime(self.directory / "receiver")
+        shutil.copytree(self.runtime.store, receiver.store)
+        receiver.configure_workspace(str(self.directory / "receiver-workspace"))
+        shutil.rmtree(self.runtime.store)
+        definition = receiver.definition(self.definition["action_id"])
+        expected = receiver.store / "scripts" / "nested" / "renamed.py"
+        self.assertEqual(receiver.resource_path(definition, self.uri), expected)
+        self.assertEqual(receiver.resource_path(definition, self.identity["aliases"][0]), expected)
+        self.grant(receiver, definition)
+        self.assertTrue(receiver.validate(definition["action_id"], definition["content_hash"])["ok"])
+        run = receiver.call(definition["action_id"], {}, "relocated", definition["content_hash"])
+        self.assertEqual(receiver.wait(run["run_id"])["output"], {"value": 42})
+
+    def test_missing_duplicate_invalid_and_symlink_references_fail_closed(self):
+        for uri in ["pkm://script/" + "script_" + "b" * 24,
+                    "pkm://scripts/../outside.py", "pkm://scripts/%2Fetc/passwd",
+                    "pkm://scripts/%252e%252e/source.py", self.uri + "?ignored=1",
+                    "pkm://scripts/%ff.py", "pkm://scripts/%ZZ.py",
+                    "pkm://script@host/" + self.identity["knowledgeId"], "pkm://unknown/value"]:
+            with self.subTest(uri=uri), self.assertRaises((ValueError, FileNotFoundError)):
+                self.runtime.resource_path(self.definition, uri)
+        with self.assertRaisesRegex(FileNotFoundError, "Portable source.*files"):
+            self.script.unlink()
+            self.runtime.fingerprint(self.definition)
+        self.script.write_text("print('{}')\n")
+        duplicate = self.script.with_name("duplicate.py")
+        duplicate.write_text("print('{}')\n")
+        duplicate.with_name("." + duplicate.name + ".pkm.json").write_text(json.dumps(self.identity))
+        with self.assertRaisesRegex(ValueError, "multiple"):
+            self.runtime.resource_path(self.definition, self.uri)
+        duplicate.unlink()
+        duplicate.with_name("." + duplicate.name + ".pkm.json").unlink()
+        self.script.unlink()
+        self.script.symlink_to(Path(__file__))
+        with self.assertRaises(PermissionError):
+            self.runtime.resource_path(self.definition, self.uri)
+        self.sidecar.write_text("{broken JSON")
+        with self.assertRaisesRegex(ValueError, "Portable source"):
+            self.runtime.resource_path(self.definition, self.uri)
+
+    def test_knowledge_resource_and_workspace_relative_legacy_path(self):
+        note = self.runtime.store / "notes" / "resource.md"
+        note.parent.mkdir()
+        knowledge_id = "knowledge_" + "c" * 24
+        note.write_text("---\nknowledgeId: " + knowledge_id + "\n---\nreference\n")
+        self.assertEqual(self.runtime.resource_path(self.definition, "pkm://knowledge/" + knowledge_id), note)
+        legacy = self.runtime.workspace() / "local.py"
+        legacy.write_text("print('{}')")
+        self.assertEqual(self.runtime.resource_path(self.definition, "local.py"), legacy)
+
+    def test_argv_resolution_is_declared_and_structural_not_text_replacement(self):
+        definition = json.loads(json.dumps(self.definition))
+        implementation = definition["implementations"][0]
+        implementation["args"] = ["--source=" + self.uri, "literal " + self.uri,
+                                  "pkm://knowledge/" + "knowledge_" + "d" * 24]
+        implementation["description"] = self.uri
+        resolved = self.runtime.implementation(definition)
+        self.assertEqual(resolved["args"], ["--source=" + str(self.script), "literal " + self.uri,
+                                          "pkm://knowledge/" + "knowledge_" + "d" * 24])
+        self.assertEqual(resolved["description"], self.uri)
+
+    def test_module_set_preserves_url_and_runs_without_original_store(self):
+        package = self.runtime.workspace() / "portable.pkm-actions"
+        self.runtime.module_set_export("test.resources", 1, [self.definition["action_id"]], str(package))
+        with zipfile.ZipFile(package) as archive:
+            value = json.loads(archive.read("definitions/" + self.definition["action_id"] + ".json"))
+            self.assertEqual(value["implementations"][0]["args"], [self.uri])
+            self.assertNotIn(str(self.runtime.store), json.dumps(value))
+        receiver = ModuleRuntime(self.directory / "receiver")
+        receiver.configure_workspace(str(self.runtime.workspace()))
+        receiver.module_set_import(str(package))
+        shutil.rmtree(self.runtime.store)
+        receiver.module_set_load("test.resources", 1)
+        definition = receiver.definition(self.definition["action_id"])
+        self.grant(receiver, definition)
+        self.assertTrue(receiver.validate(definition["action_id"], definition["content_hash"])["ok"])
+        run = receiver.call(definition["action_id"], {}, "package", definition["content_hash"])
+        self.assertEqual(receiver.wait(run["run_id"])["output"], {"value": 42})
+        with self.assertRaises(ValueError):
+            receiver.resource_path(definition, "${module_assets}/../definitions/test.json")
+
+    def test_package_hash_and_missing_binding_do_not_fall_back_to_host(self):
+        package = self.runtime.workspace() / "bound.pkm-actions"
+        self.runtime.module_set_export("test.resources", 1, [self.definition["action_id"]], str(package))
+        receiver = ModuleRuntime(self.directory / "receiver")
+        receiver.configure_workspace(str(self.runtime.workspace()))
+        receiver.module_set_import(str(package))
+        receiver.module_set_load("test.resources", 1)
+        definition = receiver.definition(self.definition["action_id"])
+        source = receiver.resource_path(definition, self.uri)
+        source.write_text("print('{}')")
+        with self.assertRaisesRegex(ValueError, "hash mismatch"):
+            receiver.fingerprint(definition)
+        # Even an identically named local Script cannot fill a missing package binding.
+        shutil.copytree(self.runtime.store / "scripts", receiver.store / "scripts")
+        manifest_path = receiver.module_set_path("test.resources", 1) / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["resources"] = {}
+        manifest_path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(FileNotFoundError, "not included"):
+            receiver.implementation(definition)
+
+    def test_package_binding_validation_and_component_workspace_permission(self):
+        for resources in [[], {"other.action": {}}, {self.definition["action_id"]: {self.uri: "../source.py"}},
+                          {self.definition["action_id"]: {"pkm://unknown/resource": "assets/source.py"}}]:
+            manifest = {"actions": [self.definition["action_id"]], "files": {"assets/source.py": "hash"},
+                        "resources": resources}
+            with self.subTest(resources=resources), self.assertRaises(ValueError):
+                self.runtime.validate_package_resources(manifest)
+        path_step = {"id": "source", "component": "core.file-path",
+                     "inputs": {"path": self.uri, "must_exist": True}}
+        definition = self.runtime.register({
+            "schema": "pkm.action.definition/v1", "action_id": "test.resource.component", "version": 1,
+            "effects": ["local-read"], "input_schema": object_schema({}),
+            "output_schema": object_schema({"path": {"type": "string"}}),
+            "implementations": [{"kind": "pipeline", "platforms": [platform.system()],
+                                 "steps": [path_step], "output": {"path": {"$step": "source.path"}}}]})
+        result = self.runtime.call(definition["action_id"], {}, "outside-workspace",
+                                   definition["content_hash"], validation=True)
+        failed = self.runtime.wait(result["run_id"])
+        self.assertNotEqual(failed["state"], "succeeded")
+        self.assertIn("workspace", failed["error"])
+        self.runtime.configure_workspace(str(self.runtime.store))
+        result = self.runtime.call(definition["action_id"], {}, "inside-workspace",
+                                   definition["content_hash"], validation=True)
+        self.assertEqual(self.runtime.wait(result["run_id"])["output"], {"path": str(self.script)})
+
+    def test_reference_does_not_grant_execution(self):
+        self.assertEqual(self.runtime.availability(self.definition["action_id"])["state"], "blocked")
+        with self.assertRaisesRegex(PermissionError, "grant"):
+            self.runtime.call(self.definition["action_id"], {}, "unapproved", self.definition["content_hash"])
+
+    def test_legacy_package_rewrites_only_typed_fields(self):
+        value = self.runtime.definition_read(self.definition["action_id"])["definition"]
+        value["version"] = 2
+        implementation = value["implementations"][0]
+        implementation["files"] = [str(self.script)]
+        implementation["args"] = ["--source=" + str(self.script)]
+        implementation["description"] = str(self.script)
+        definition = self.runtime.register(value)
+        package = self.runtime.workspace() / "legacy.pkm-actions"
+        self.runtime.module_set_export("test.legacy", 1, [definition["action_id"]], str(package))
+        with zipfile.ZipFile(package) as archive:
+            exported = json.loads(archive.read("definitions/" + definition["action_id"] + ".json"))
+        implementation = exported["implementations"][0]
+        self.assertTrue(implementation["files"][0].startswith("${module_assets}/"))
+        self.assertEqual(implementation["args"], ["--source=" + implementation["files"][0]])
+        self.assertEqual(implementation["description"], str(self.script))
+        receiver = ModuleRuntime(self.directory / "receiver")
+        receiver.configure_workspace(str(self.runtime.workspace()))
+        receiver.module_set_import(str(package))
+        receiver.module_set_load("test.legacy", 1)
+        resolved = receiver.implementation(receiver.definition(definition["action_id"]))
+        self.assertEqual(resolved["args"], ["--source=" + resolved["files"][0]])
+
+    def test_real_build_and_execution_use_same_resolved_sources(self):
+        self.script.write_text(
+            "import pathlib,sys\n"
+            "pathlib.Path(sys.argv[1], 'result.py').write_text(\"print('{\\\"value\\\": 42}')\\n\")\n")
+        editable = self.runtime.definition_read(self.definition["action_id"])["definition"]
+        editable["version"] = 2
+        implementation = editable["implementations"][0]
+        implementation["args"] = ["${build_dir}/result.py"]
+        implementation["build"] = {"program": "python", "args": [self.uri, "${build_dir}"],
+                                   "source_files": [self.uri], "outputs": ["result.py"]}
+        definition = self.runtime.register(editable)
+        self.grant(self.runtime, definition)
+        self.assertTrue(self.runtime.validate(definition["action_id"], definition["content_hash"])["ok"])
+        run = self.runtime.call(definition["action_id"], {}, "built", definition["content_hash"])
+        self.assertEqual(self.runtime.wait(run["run_id"])["output"], {"value": 42})
+        self.script.write_text(self.script.read_text() + "# invalidate build\n")
+        self.assertEqual(self.runtime.build_state(definition)["state"], "missing")
 
 
 if __name__ == "__main__":

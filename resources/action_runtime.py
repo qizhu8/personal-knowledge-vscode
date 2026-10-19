@@ -13,6 +13,9 @@ import sys
 import tempfile
 import time
 import uuid
+import asyncio
+import logging
+import threading
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -21,12 +24,7 @@ from action_modules import ModuleRuntime, process_alive
 from action_run_store import action_contract
 
 
-COSMOS_ACCOUNTS = {
-    ("www.cosmos08.osdinfra.net", "bingads.algo.prod.adsplus"): "bingads-algo-prod-adsplus-c08",
-}
-
-
-def cosmos_location(uri):
+def cosmos_location(uri, accounts=None):
     if not isinstance(uri, str):
         raise ValueError("Cosmos URI must be a string.")
     parsed = urlsplit(uri)
@@ -37,7 +35,7 @@ def cosmos_location(uri):
     parts = unquote(parsed.path).split("/")
     if len(parts) < 5 or parts[1] != "cosmos" or any(part in {".", ".."} for part in parts):
         raise ValueError("Expected /cosmos/<vc>/shares/<vc>/... without traversal.")
-    account = COSMOS_ACCOUNTS.get((parsed.hostname, parts[2].lower()))
+    account = (accounts or {}).get((parsed.hostname, parts[2].lower()))
     if not account:
         raise ValueError("Cosmos VC has no verified ADL account mapping.")
     remote = "/" + "/".join(parts[3:])
@@ -46,8 +44,8 @@ def cosmos_location(uri):
     return {"account": account, "path": posixpath.normpath(remote)}
 
 
-def cosmos_command(action_id, inputs):
-    location = cosmos_location(inputs["uri"])
+def cosmos_command(action_id, inputs, accounts=None):
+    location = cosmos_location(inputs["uri"], accounts)
     arguments = ["dls", "fs"]
     if action_id == "cosmos.directory.list":
         arguments += ["list", "--account", location["account"], "--path", location["path"]]
@@ -103,6 +101,71 @@ class ActionRuntime:
         self.modules = ModuleRuntime(store)
         self.root = self.modules.root
         self.runs = self.modules.runs
+        self.scheduler_error = None
+        self._scheduler = None
+        self._scheduler_lock = threading.Lock()
+
+    def start_scheduler(self):
+        with self._scheduler_lock:
+            if self._scheduler is not None and self._scheduler.is_alive():
+                return
+            self.scheduler_error = None
+
+            def service():
+                try:
+                    while True:
+                        self.modules.recovery.safety_scan()
+                        with self._scheduler_lock:
+                            active = [json.loads(path.read_text(encoding="utf-8"))
+                                      for path in (self.root / "runs").glob("*/run.json")]
+                            if not any(item.get("engine") == "module" and item["state"] in {"running", "waiting"} for item in active):
+                                self._scheduler = None
+                                return
+                        time.sleep(0.5)
+                except (OSError, ValueError, RuntimeError) as error:
+                    self.scheduler_error = str(error)
+                    logging.getLogger(__name__).exception("Action scheduler stopped; original Runs require a safety scan.")
+
+            self._scheduler = threading.Thread(target=service, daemon=True, name="pkm-action-scheduler")
+            self._scheduler.start()
+
+    def cosmos_accounts(self):
+        file = self.root / "cosmos-bindings.json"
+        if not file.exists():
+            return {}
+        if file.is_symlink():
+            raise PermissionError("Private Cosmos bindings must not be a symlink.")
+        config = json.loads(file.read_text(encoding="utf-8"))
+        if config.get("schema") != "pkm.action.cosmos-bindings/v1":
+            raise ValueError("Invalid private Cosmos binding configuration.")
+        return {(item["host"], item["vc"]): item["account"] for item in config["bindings"]}
+
+    def configure_cosmos(self, bindings):
+        if not isinstance(bindings, list) or not 1 <= len(bindings) <= 100:
+            raise ValueError("Provide 1-100 explicit private Cosmos bindings.")
+        normalized = []
+        identities = set()
+        for item in bindings:
+            if not isinstance(item, dict) or set(item) != {"host", "vc", "account"}:
+                raise ValueError("A binding requires host, vc and account.")
+            if any(not isinstance(item[key], str) or not re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,252}", item[key])
+                   for key in ["host", "vc", "account"]):
+                raise ValueError("Use lowercase host, VC and account names without URLs or credentials.")
+            identity = (item["host"], item["vc"])
+            if identity in identities:
+                raise ValueError("Duplicate private Cosmos binding.")
+            identities.add(identity)
+            normalized.append(dict(item))
+        with self.modules.lock():
+            path = self.root / "cosmos-bindings.json"
+            if path.is_symlink():
+                raise PermissionError("Private Cosmos bindings must not be a symlink.")
+            if (path.exists() and self.cosmos_accounts() != {(item["host"], item["vc"]): item["account"] for item in normalized}
+                    and (self.root / "policy.json").exists()):
+                raise PermissionError("Revoke existing operator path grants before changing private Cosmos bindings.")
+            _atomic_write(path, {"schema": "pkm.action.cosmos-bindings/v1", "bindings": normalized})
+            path.chmod(0o600)
+        return {"ok": True, "private": True, "bindings_count": len(normalized)}
 
     def definition(self, action_id):
         if action_id not in DEFINITIONS:
@@ -114,6 +177,7 @@ class ActionRuntime:
             properties.update({"timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 86400, "default": 300},
                                "thread_count": {"type": "integer", "minimum": 1, "maximum": 32}})
         value = {"schema": "pkm.action.definition/v1", "action_id": action_id,
+                 "visibility": "private", "exportable": False,
                  "source_id": "pkm://actions/" + action_id, "version": 1,
                  "description": definition["description"], "effect": definition["effect"],
                  "input_schema": {"type": "object", "properties": properties,
@@ -130,7 +194,8 @@ class ActionRuntime:
     def environment_fingerprint(self):
         executable = Path(self.program).resolve() if self.program else None
         return _digest({"platform": platform.system(), "architecture": platform.machine(),
-                        "python": sys.version, "program": str(executable),
+                        "python": sys.version, "program": str(executable), "private_bindings": _digest(
+                            sorted([list(key) + [value] for key, value in self.cosmos_accounts().items()])),
                         "program_hash": hashlib.sha256(executable.read_bytes()).hexdigest()
                         if executable and executable.is_file() else None})
 
@@ -145,6 +210,27 @@ class ActionRuntime:
         except (OSError, ValueError, TypeError):
             return []
 
+    def private_catalog(self):
+        if not self.cosmos_accounts():
+            return []
+        enabled = set(self.enabled_platform_actions())
+        return [{**self.definition(action_id), "category": "Private/Cosmos", "read_only": True,
+                 "editable": False, "direct_only": True, "language": "Azure CLI", "languages": ["Azure CLI"],
+                 "execution_contract": action_contract(self.definition(action_id)),
+                 "availability": self.availability(action_id) if action_id in enabled else {
+                     "state": "blocked", "reason": "Private account binding is configured, but this Action has no operator path grant. Configure explicit local/remote roots before qualification or execution."}}
+                for action_id in sorted(DEFINITIONS)]
+
+    def list_runs(self, limit=50):
+        if type(limit) is not int or not 1 <= limit <= 200:
+            raise ValueError("Run history limit must be between 1 and 200.")
+        records = [json.loads(path.read_text(encoding="utf-8")) for path in (self.root / "runs").glob("*/run.json")]
+        records = [record for record in records if not record.get("parent_run_id") and not record.get("validation")]
+        records.sort(key=lambda record: record.get("started_at", ""), reverse=True)
+        fields = ("run_id", "action_id", "state", "userState", "nextOwner", "reasonCode", "started_at", "completed_at", "error")
+        return {"ok": True, "runs": [{key: value for key, value in self.get(record["run_id"]).items() if key in fields}
+                                   for record in records[:limit]], "total": len(records)}
+
     def configure_policy(self, grants):
         if not isinstance(grants, list) or not grants:
             raise ValueError("Provide explicit operator path grants.")
@@ -156,7 +242,7 @@ class ActionRuntime:
         for grant in grants:
             if not isinstance(grant, dict) or grant.get("action_id") not in DEFINITIONS or set(grant) - {"action_id", "remote_root", "local_root", "allow_overwrite"}:
                 raise ValueError("Invalid operator grant.")
-            cosmos_location(grant["remote_root"])
+            cosmos_location(grant["remote_root"], self.cosmos_accounts())
             if "allow_overwrite" in grant and type(grant["allow_overwrite"]) is not bool:
                 raise ValueError("allow_overwrite must be a boolean.")
             normalized = dict(grant)
@@ -180,8 +266,15 @@ class ActionRuntime:
             raise ValueError("Action definition changed before qualification.")
         definition, inputs = self._authorize(action_id, inputs)
         before = self.environment_fingerprint()
+        upload_proof = None
         if action_id == "cosmos.artifact.download":
-            raise ValueError("Download qualification requires a separately approved round-trip fixture.")
+            upload_validation = self.root / "validations" / "cosmos.artifact.upload.json"
+            if not upload_validation.exists() or self.availability("cosmos.artifact.upload")["state"] != "ready":
+                raise ValueError("Download qualification requires a current separately approved upload/read-back fixture.")
+            upload_proof = json.loads(upload_validation.read_text(encoding="utf-8")).get("proof", {})
+            if (inputs.get("overwrite", False) or upload_proof.get("inputs", {}).get("uri") != inputs["uri"]
+                    or not re.fullmatch(r"[0-9a-f]{64}", upload_proof.get("sha256", ""))):
+                raise ValueError("Download qualification must use the exact previously verified fixture and a new local destination.")
         source_digest = None
         if action_id == "cosmos.artifact.upload":
             source = Path(inputs["local_path"])
@@ -194,7 +287,7 @@ class ActionRuntime:
             raise RuntimeError("Qualification invocation did not succeed; reconcile run " + run["run_id"])
         proof = {"run_id": run["run_id"], "inputs": inputs}
         if action_id == "cosmos.artifact.upload":
-            location = cosmos_location(inputs["uri"])
+            location = cosmos_location(inputs["uri"], self.cosmos_accounts())
             with tempfile.TemporaryDirectory(prefix="cosmos-qualification-", dir=str(self.modules.workspace())) as temporary:
                 destination = Path(temporary) / "verified-file"
                 command = [self.program, "dls", "fs", "download", "--account", location["account"],
@@ -206,6 +299,12 @@ class ActionRuntime:
             if hashlib.sha256(source.read_bytes()).hexdigest() != source_digest:
                 raise RuntimeError("Qualification source changed during transfer.")
             proof["sha256"] = source_digest
+        elif action_id == "cosmos.artifact.download":
+            destination = Path(inputs["local_path"])
+            if (not destination.is_file() or destination.is_symlink() or destination.stat().st_size > 1024 * 1024
+                    or hashlib.sha256(destination.read_bytes()).hexdigest() != upload_proof["sha256"]):
+                raise RuntimeError("Downloaded fixture does not match the approved round-trip SHA-256.")
+            proof["sha256"] = upload_proof["sha256"]
         elif not isinstance(result.get("output"), list):
             raise ValueError("Directory-list qualification did not return a complete list.")
         if before != self.environment_fingerprint():
@@ -272,8 +371,11 @@ class ActionRuntime:
             raise ValueError("thread_count must be an integer between 1 and 32.")
         if "local_path" in inputs and (not isinstance(inputs["local_path"], str) or not inputs["local_path"]):
             raise ValueError("local_path must be a non-empty string.")
-        remote = cosmos_location(inputs["uri"])
-        local = Path(inputs["local_path"]).expanduser().resolve() if "local_path" in inputs else None
+        remote = cosmos_location(inputs["uri"], self.cosmos_accounts())
+        local_input = Path(inputs["local_path"]).expanduser() if "local_path" in inputs else None
+        if local_input is not None and local_input.is_symlink():
+            raise PermissionError("Transfer paths must not be symlinks.")
+        local = local_input.resolve() if local_input is not None else None
         policy_path = self.root / "policy.json"
         policy = json.loads(policy_path.read_text(encoding="utf-8")) if policy_path.exists() else {}
         if policy.get("schema") != "pkm.action.policy/v1":
@@ -281,7 +383,7 @@ class ActionRuntime:
         for grant in policy.get("grants", []):
             if grant.get("action_id") != action_id:
                 continue
-            approved = cosmos_location(grant["remote_root"])
+            approved = cosmos_location(grant["remote_root"], self.cosmos_accounts())
             if remote["account"] != approved["account"] or not _contained(remote["path"], approved["path"]):
                 continue
             if local is not None:
@@ -290,8 +392,8 @@ class ActionRuntime:
                 if inputs.get("overwrite", False) and not grant.get("allow_overwrite", False):
                     continue
                 if action_id.endswith("upload"):
-                    if not local.exists():
-                        raise ValueError("Upload source does not exist.")
+                    if not local.is_file() and not local.is_dir():
+                        raise ValueError("Upload source must be an existing regular file or directory.")
                     files = [local] if local.is_file() else list(local.rglob("*"))
                     if any(item.is_symlink() for item in files):
                         raise PermissionError("Upload folders must not contain symlinks.")
@@ -316,7 +418,7 @@ class ActionRuntime:
             raise ValueError("Action definition changed; retrieve and pin its current content_hash.")
         if not self.program or not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 200:
             raise ValueError("Azure CLI and an idempotency_key of 1-200 characters are required.")
-        command = cosmos_command(action_id, inputs)
+        command = cosmos_command(action_id, inputs, self.cosmos_accounts())
         fingerprint = _digest({"action_id": action_id, "inputs": inputs, "content_hash": content_hash})
         self.root.mkdir(parents=True, exist_ok=True)
         keys = self.root / "keys"
@@ -423,14 +525,43 @@ class ActionRuntime:
 
 def register_action_tools(mcp, store, runtime=None):
     runtime = runtime or ActionRuntime(store)
+    runtime.start_scheduler()
 
     def action_retrieve(task: str, limit: int = 1):
         """Find callable Actions with typed inputs; never select an ambiguous match automatically."""
         return runtime.retrieve(task, limit)
 
+    def action_templates():
+        """List public preinstalled wait/input/alias Actions and the pinned read-only polling template."""
+        return runtime.modules.templates()
+
+    def action_template_create(action_id: str, parameters: dict):
+        """Create a private local polling definition with an exact read-only query revision. This grants no readiness or execution rights."""
+        return runtime.modules.template_create(action_id, parameters)
+
+    def action_cosmos_configure(bindings: list[dict]):
+        """Set explicit PRIVATE local Cosmos host/VC/account bindings; never exported or provided by default. Operator approval required."""
+        return runtime.configure_cosmos(bindings)
+
+    async def action_run_wait(run_id: str, wait_seconds: float = 30):
+        """Wait without model polling for the ORIGINAL Run. A wait_expired result is not completion or cancellation; attach to that Run again."""
+        if type(wait_seconds) not in {int, float} or not 0 <= wait_seconds <= 300:
+            raise ValueError("wait_seconds must be finite and between 0 and 300.")
+        until = time.monotonic() + wait_seconds
+        while True:
+            runtime.modules.recovery.safety_scan()
+            record = runtime.get(run_id)
+            if record["state"] not in {"running", "waiting"}:
+                return record
+            if time.monotonic() >= until:
+                return {**record, "wait_expired": True, "completed": False}
+            await asyncio.sleep(min(0.25, max(0, until - time.monotonic())))
+
     def action_call(action_id: str, inputs: dict, idempotency_key: str, content_hash: str, trigger: dict | None = None, project_id: str | None = None):
         """Invoke a pinned Action inside operator-managed path grants; return a durable run ID."""
-        return runtime.call(action_id, inputs, idempotency_key, content_hash, trigger, project_id)
+        result = runtime.call(action_id, inputs, idempotency_key, content_hash, trigger, project_id)
+        runtime.start_scheduler()
+        return result
 
     def action_run_checkpoints(run_id: str, include_history: bool = False):
         """Inspect typed proposals, evidence, owners, deadlines and exact resume tokens on the original Run."""
@@ -463,6 +594,7 @@ def register_action_tools(mcp, store, runtime=None):
     def action_capabilities():
         """Discover Action registration, qualification, nesting and artifact lifecycle; workspace selection is a machine setting."""
         return {"schema": "pkm.action.capabilities/v1", "version": "1.0.0", "registry": str(runtime.modules.registry),
+                "scheduler_error": runtime.scheduler_error,
                 "workspace_setting": "personalKnowledge.actions.workspaceRoots", "settings": runtime.modules.settings(),
                 "platform": platform.system(), "trusted_host_execution_is_sandboxed": False,
                 "tools": [function.__name__ for function in tools], "builtins": [item["action_id"] for item in runtime.modules.list()],
@@ -547,6 +679,7 @@ def register_action_tools(mcp, store, runtime=None):
         return runtime.modules.graph_save(graph)
 
     tools = [action_retrieve, action_call, action_run_get, action_run_cancel, action_capabilities, action_register,
+             action_templates, action_template_create, action_cosmos_configure, action_run_wait,
              action_get, action_validate, action_artifact_import, action_artifact_export, action_run_gc, action_run_recover,
              action_validation_enqueue, action_validation_status, action_validation_cancel, action_validation_resume,
              action_module_sets, action_module_set_load, action_module_set_import, action_module_set_export, action_module_set_remove,
@@ -555,7 +688,7 @@ def register_action_tools(mcp, store, runtime=None):
     for function in tools:
         function.__annotations__["return"] = dict
         mcp.tool(annotations={"readOnlyHint": function in [action_retrieve, action_run_get, action_get, action_capabilities,
-                                 action_module_sets, action_graph_check, action_run_checkpoints]})(function)
+                                 action_module_sets, action_graph_check, action_run_checkpoints, action_templates]})(function)
 
 
 if __name__ == "__main__":

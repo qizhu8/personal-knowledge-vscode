@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
+import { normalizeTextNewlines } from "../knowledge/text-format";
 import { readSyncScriptIdentity, syncScriptAliasPath, syncScriptSidecarPath } from "./github-sync-script-identity";
 import {
   GitHubSyncConflict,
@@ -205,6 +206,8 @@ export function storeGitHubSyncConflict(
     const old = previous?.files.find(file => file.path === conflict.path && file.type === conflict.type && file.itemId === conflict.itemId);
     if (!old || old.category !== conflict.category || old.privacy !== conflict.privacy
       || old.reason !== conflict.reason || old.plannedOperation !== conflict.plannedOperation
+      || JSON.stringify(old.deletionEvidence) !== JSON.stringify(conflict.deletionEvidence)
+      || JSON.stringify(old.absenceEvidence) !== JSON.stringify(conflict.absenceEvidence)
       || old.baseCommit !== conflict.baseCommit
       || old.member !== conflict.member || old.entityDeletion !== conflict.entityDeletion
       || old.basePath !== conflict.basePath || old.localPath !== conflict.localPath || old.remotePath !== conflict.remotePath) continue;
@@ -227,7 +230,7 @@ export function storeGitHubSyncConflict(
   try {
   const files = error.conflicts.map((conflict: GitHubSyncConflict): GitHubSyncStoredConflictFile => {
     const logicalEqual = (left: Buffer, right: Buffer): boolean => {
-      try { return githubSyncComparisonContent(conflict.type, left).equals(githubSyncComparisonContent(conflict.type, right)); }
+      try { return githubSyncComparisonContent(conflict.type, left, conflict.path).equals(githubSyncComparisonContent(conflict.type, right, conflict.path)); }
       catch { return left.equals(right); }
     };
     if (conflict.base) writeVariant(stagingRoot, targetId, "base", conflict.path, conflict.base);
@@ -238,7 +241,7 @@ export function storeGitHubSyncConflict(
     const preserved = kept.get(conflict.path);
     if (preserved) {
       writeVariant(stagingRoot, targetId, "merged", conflict.path, preserved.content);
-      if (previous?.remoteCommit !== error.remoteCommit) {
+      if (previous?.remoteCommit !== error.remoteCommit && !error.partialResult) {
         return { ...preserved.file, candidateSource: "unresolved", candidateDigest: undefined,
           rationale: "The Remote commit changed. The previous draft is retained for review, but its approval is invalid; revalidate against the new snapshot." };
       }
@@ -303,7 +306,8 @@ export function storeGitHubSyncConflict(
   });
   const record: GitHubSyncStoredConflict = {
     schema: 1,
-    id: randomUUID(),
+    id: error.partialResult && previous && kept.size === error.conflicts.length && previous.files.length === files.length
+      ? previous.id : randomUUID(),
     targetId,
     remoteCommit: error.remoteCommit,
     createdAt: new Date().toISOString(),
@@ -640,7 +644,7 @@ export function readGitHubSyncConflictCandidate(stateDirectory: string, targetId
   if (requireApproved && (!file?.candidateDigest || file.candidateDigest !== createHash("sha256").update(candidate).digest("hex"))) {
     throw new Error(`The merge candidate changed after validation. Save and validate it again: ${relative}`);
   }
-  return candidate;
+  return requireApproved ? normalizeTextNewlines(file?.resultPath || relative, candidate) : candidate;
 }
 
 export function refreshGitHubSyncConflictLocalCandidate(

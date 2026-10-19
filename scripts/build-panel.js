@@ -13,6 +13,7 @@ const parts = [
   "05-onboarding.js",
   "10-chatroom.js",
   path.join(root, "src", "webview", "recipe-graph-shared.js"),
+  path.join(root, "src", "webview", "agent-harness.js"),
   "15-projects.js",
   "20-knowledge.js",
   "30-environments.js",

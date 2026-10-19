@@ -1502,11 +1502,10 @@ function markdownToolbar(data) {
   const area = type + 's';
   const key = type === 'skill' ? data.name : data.slug;
   const category = type === 'skill' ? data.category || '' : '';
-  const stableKey = type === 'skill' ? [category, key].filter(Boolean).join('/') : key;
   return `
     <button class="tbtn" style="font-size:11px" onclick="${pin}" title="${data.pinned ? 'Unpin' : 'Pin to top'}">${uiIcon(data.pinned ? 'pinned' : 'pin', data.pinned ? 'Pinned' : 'Pin')}</button>
     <button class="tbtn" style="font-size:11px" onclick="exportMarkdown('browser')" title="Open the browser preview">${uiIcon('globe', 'Browser')}</button>
-    <button class="tbtn" style="font-size:11px" onclick="ask('copyPublicContentLink',{kind:'${type}',key:'${esc(stableKey)}'})" title="Copy the stable public browser link">${uiIcon('link', 'Copy Link')}</button>
+    <button class="tbtn" style="font-size:11px" onclick="copyDetailUrl()" title="Copy PKM URL">${uiIcon('link', 'Copy PKM URL')}</button>
     ${type === 'note' ? `<button class="tbtn" style="font-size:11px" onclick="exportMarkdown('linkedSave')" title="Save this Note and its linked Notes as a shareable site">${uiIcon('package', 'Site')}</button>` : ''}
     <button class="tbtn" style="font-size:11px" onclick="exportMarkdown('file')" title="Download as a self-contained HTML file">${uiIcon('cloud-download', 'Download')}</button>
     <button class="tbtn" style="font-size:11px" onclick="openMarkdownItem('${area}', '${esc(category)}', '${esc(key)}')">${uiIcon('edit', 'Edit Content')}</button>
@@ -1524,6 +1523,11 @@ function detailContentPath(data) {
 function detailPathHtml(data) {
   const value = detailContentPath(data);
   return value ? `<div class="d-path" title="PKM URI">${esc(value)}</div>` : '';
+}
+
+function copyDetailUrl() {
+  const locator = currentDetail && detailContentPath(currentDetail);
+  if (locator) copyContextPath(locator);
 }
 
 function renderDetail(data) {
@@ -1789,7 +1793,7 @@ function renderDetail(data) {
         <span>${wordCount(data.content||'')}</span>
         <span style="flex:1"></span>
         <button class="tbtn" style="font-size:11px" onclick="ask('openMarkdownPreview',{kind:'script',key:'${esc(data.path || data.file)}'})" title="Open the browser preview">${uiIcon('globe', 'Browser')}</button>
-        <button class="tbtn" style="font-size:11px" onclick="ask('copyPublicContentLink',{kind:'script',key:'${esc(data.path || data.file)}'})" title="Copy the stable public browser link">${uiIcon('link', 'Copy Link')}</button>
+        <button class="tbtn" style="font-size:11px" onclick="copyDetailUrl()" title="Copy PKM URL">${uiIcon('link', 'Copy PKM URL')}</button>
         <button class="tbtn" style="font-size:11px" onclick="startEditScript()">${uiIcon('edit', 'Edit')}</button>
         <select id="ai-backend-select" title="AI backend for summarization"
           style="font-size:11px;background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:3px 6px;outline:none;max-width:200px">

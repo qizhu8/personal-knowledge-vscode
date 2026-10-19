@@ -18,7 +18,7 @@ const member = (name, overrides = {}) => ({
   category: "Review", privacy: "public", member: "", ...overrides,
 });
 try {
-  check(() => assert(sync.githubSyncComparisonContent("scripts", crlf).equals(lf)));
+  check(() => assert(sync.githubSyncComparisonContent("scripts", crlf, "scripts/Test.script").equals(lf)));
   check(() => assert(sync.githubSyncLocalSnapshotMatches(crlf, planned, crlf)));
   check(() => assert(sync.githubSyncLocalSnapshotMatches(crlf, planned, planned)));
   check(() => assert(!sync.githubSyncLocalSnapshotMatches(crlf, planned, lf),
@@ -29,9 +29,11 @@ try {
   check(() => assert(sync.githubSyncLocalSnapshotMatches(crlf, undefined, undefined),
     "a previously completed deletion is idempotent"));
   for (const bytes of [
-    Buffer.from([0xff, 13, 10]), Buffer.from("NUL\0\r\n"), Buffer.from("\uFEFFfirst\r\n"),
+    Buffer.from([0xff, 13, 10]), Buffer.from("NUL\0\r\n"),
     Buffer.from([137, 80, 78, 71, 0, 13, 10]),
-  ]) check(() => assert(sync.githubSyncComparisonContent("scripts", bytes).equals(bytes)));
+  ]) check(() => assert(sync.githubSyncComparisonContent("scripts", bytes, "scripts/Test.script").equals(bytes)));
+  check(() => assert(sync.githubSyncComparisonContent("scripts", Buffer.from("\uFEFFfirst\r\n"), "scripts/Test.script")
+    .equals(Buffer.from("\uFEFFfirst\n"))));
 
   const rawConflict = member("Raw", { base: lf, local: crlf, remote: planned });
   const raw = conflicts.storeGitHubSyncConflict(root, "raw", new sync.GitHubSyncConflictError("a".repeat(40), [rawConflict]));

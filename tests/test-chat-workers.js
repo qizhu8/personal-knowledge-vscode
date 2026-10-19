@@ -5,7 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const http = require("node:http");
 const Module = require("node:module");
-const { randomUUID } = require("node:crypto");
+const { randomUUID, createHash } = require("node:crypto");
 const { WorkerTreeStore, workerLimits, workerIsDescendant } = require("../dist/chat/worker-tree");
 const fixtures = require("./fixtures/chat-context");
 const originalLoad = Module._load;
@@ -164,6 +164,53 @@ test("manager resumes a failed worker from recorded progress without replacing h
   assert.equal(archive.messages.flatMap(message => message.toolCalls || []).length, 1, "Resume never replays previously recorded tool calls itself");
   assert.equal(record().archived, true);
   await assert.rejects(provider.handle({ type: "workerResume", id: failedRecord.id, value: archive.workerActivity.attemptId }), /does not own/);
+  assert.deepEqual(fixture.errors, []);
+});
+
+test("CTX-M13: delegated HTTP rounds use the shared planner and cannot read parent or foreign Chat evidence", async t => {
+  let childRounds = 0;
+  const fixture = await harness(t, (payload, res) => {
+    const prompt = payload.messages.at(-1).content;
+    if (prompt === "CTX_ROOT") {
+      tool(res, "spawn_workers", { tasks:[{ title:"Context isolation", question:"CTX_CHILD" }] });
+    } else if (payload.messages.some(message => message.role === "user" && message.content === "CTX_CHILD")) {
+      if (++childRounds === 1) tool(res, "session_info", { evidenceCallId:"parent-private-call" });
+      else answer(res, "Foreign evidence was unavailable; task complete.");
+    } else answer(res, "Manager received child observation.");
+  });
+  fixture.root.builtinTools = ["spawn_workers", "session_info"];
+  fixture.root.messages.push({ id:randomUUID(), role:"assistant", status:"failed", content:"PARENT_PRIVATE_RESPONSE",
+    toolCalls:[{ id:"parent-private-call", name:"private_operation", arguments:'{"value":"PARENT_PRIVATE_ARGUMENT"}',
+      status:"complete", result:"PARENT_PRIVATE_RESULT" }] });
+  fixture.provider.store.save(fixture.root);
+  await fixture.provider.send("CTX_ROOT", fixture.root);
+  await until(() => {
+    const manager = fixture.provider.store.load(fixture.root.id, false);
+    const records = manager.messages.flatMap(message => message.delegations || []);
+    return records.length === 1 && records[0].archived && !fixture.provider.running.has(fixture.root.id);
+  }, "delegated context isolation completes");
+  const manager = fixture.provider.store.load(fixture.root.id, false);
+  const record = manager.messages.flatMap(message => message.delegations || [])[0];
+  const worker = fixture.provider.store.workerResult(record.id).chat;
+  const reply = worker.messages.at(-1);
+  assert.equal(reply.status, "complete", reply.error);
+  assert.equal(reply.toolCalls.length, 1);
+  assert.equal(reply.toolCalls[0].status, "failed");
+  assert.match(reply.toolCalls[0].result, /missing|outside|excluded/);
+  const childRequests = fixture.requests.filter(payload =>
+    payload.messages.some(message => message.role === "user" && message.content === "CTX_CHILD"));
+  assert.equal(childRequests.length, 2);
+  assert.equal(reply.budgetReceipts.length, childRequests.length);
+  for (const [round, payload] of childRequests.entries()) {
+    assert(!JSON.stringify(payload.messages).includes("PARENT_PRIVATE"));
+    const plan = reply.budgetReceipts[round].contextPlan;
+    assert(plan);
+    assert.equal(plan.manifest.length, payload.messages.length);
+    assert.deepEqual(plan.manifest.map(entry => entry.hash), payload.messages.map(message =>
+      createHash("sha256").update(JSON.stringify(message)).digest("hex")));
+  }
+  assert.equal(worker.messages[0].fromChatId, fixture.root.id, "Only explicit assignment provenance links the worker to its manager");
+  assert.equal(manager.messages[0].toolCalls[0].result, "PARENT_PRIVATE_RESULT");
   assert.deepEqual(fixture.errors, []);
 });
 
@@ -452,7 +499,7 @@ test("ordinary lifecycle updates never wake; real permission episodes wake once 
     provider.store.save(root);
     const controller = new AbortController(); provider.running.set(root.id, controller);
     const id = randomUUID(); let approved = false;
-    provider.approvals.set(id, { chat: root, scope: "worker-expansion", title: "Increase capacity", detail: "3 to 6", once: true, signal: controller.signal, resolve: () => { approved = true; } });
+    provider.approvals.set(id, { chat: root, scope: "worker-expansion", title: "Increase capacity", detail: "3 to 6", once: true, signal: controller.signal, ownerSignal: controller.signal, resolve: () => { approved = true; } });
     await provider.handle({ type: "approvalQuestion", id, text: "Will completed work free the capacity?" });
     assert.equal(approved, false);
     assert(provider.approvals.has(id));

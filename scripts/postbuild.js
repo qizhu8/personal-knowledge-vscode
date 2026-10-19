@@ -220,6 +220,7 @@ function fingerprintDirectory(directory) {
 }
 fingerprintDirectory(distPath);
 fingerprintDirectory(path.join(rootPath, "resources"));
+fingerprintDirectory(path.join(rootPath, "modules", "pkm-memory-engine", "src"));
 buildFiles["package.json"] = createHash("sha256").update(fs.readFileSync(path.join(rootPath, "package.json"))).digest("hex");
 const buildId = createHash("sha256").update(JSON.stringify(buildFiles)).digest("hex");
 fs.writeFileSync(path.join(distPath, "build-info.json"), JSON.stringify({

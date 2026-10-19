@@ -8,6 +8,52 @@ the conflict record supplies them.
 
 ## Review workflow
 
+### Local validation blockers
+
+A target status refresh carries a monotonic snapshot sequence; older overlapping
+responses cannot replace a newer target, conflict, repair or paused-item state.
+Target metadata is reread after asynchronous fingerprint/authentication work.
+Reopening the Sync page waits for current metadata instead of briefly painting
+cached failures. A newer successful runtime event suppresses superseded issue
+cards while the full refresh arrives; genuine partial outcomes and newer
+issues remain visible.
+
+Repair buttons show pending text/spinners and disable duplicate actions for the
+target. Pending state and inline status survive background rerenders. Only the
+matching request's explicit success/cancellation/error completes the operation;
+an unrelated state refresh or a late previous response cannot reset it.
+Timeouts report that background work may still be running. Validation, pause,
+Trash and resume return explicit outcomes; Sync queuing and successful completion
+are also reported on the target card.
+
+A local preflight failure (for example, a Skill with frontmatter but no body)
+is not a three-way conflict: GitHub has not yet been fetched. Each issue offers
+**Edit content**, **Pause sync for this item...**, and, for file-backed knowledge,
+**Move to Trash...**. Do not fabricate an empty-body merge or treat an empty
+file as permission to delete it.
+
+- Edit and save the source, then **Revalidate only**. This uses the same local
+  admission checks as Sync, without fetching, pushing, or queueing Sync.
+  **Revalidate & Sync** remains a separate explicit action.
+- Pausing requires confirmation and affects only this target. `pausedItems`
+  overrides both explicit item and folder selections across privacy scopes.
+  Local files, existing Remote bytes/tombstones, and the item's common Base
+  are retained while unrelated entities can synchronize. Paused items remain
+  visible with **Resume & revalidate**; resuming does not start Sync.
+- Moving to Trash requires confirmation, a saved/unchanged source, and an
+  exact-path MCP `knowledge_file_trash` request with the reviewed SHA-256.
+  The shared Trash payload and deletion journal are preserved. A changed file
+  is rejected rather than deleted; an unsaved editor blocks the action.
+  No Sync runs automatically, but a later explicit Sync may propose deletion
+  of the GitHub copy using the recorded evidence.
+
+Pausing/resuming require this target's Auto Sync to be off. Trash removes a
+shared local file, so Auto Sync must be off for every target; confirmation
+explicitly describes the shared effect. Normal target-settings saves preserve
+paused items; cancelling an approval changes nothing.
+
+### Three-way decisions
+
 1. Navigate the file list or use Previous/Next. The header counts unresolved
    decisions separately from explicitly saved and validated results.
 2. Choose an existing side or edit the text result. Absent sides cannot be
@@ -47,7 +93,93 @@ the UI directs the user to GitHub Sync status for actual completion.
 
 ## Conflict entities and conservative merge
 
+### Partial publication and independent Bases
+
+Conflicts no longer stop the whole target. A pure admission planner separates
+ready entities from conflicted or unstable entities and their required Recipe
+dependency groups. Case-insensitive destination collisions isolate all affected
+entities. The blocked group's existing Remote bytes and tombstones remain
+unchanged; only ready uploads, downloads and explicitly evidenced deletions
+advance. Selection, privacy, System-content and ignore boundaries still apply.
+Already-published ignored bundle members remain in the publication, not just in
+the local checkout.
+
+The target's `lastSync.commit` advances after successful host finalization.
+`lastSync.entityBases` retains each blocked entity's older common Base under
+`<content type>\0<stable identity>`; an empty commit denotes no prior Base.
+The next attempt reconstructs these entities from their own historical manifests,
+with the existing blob/digest validation. A successful unrelated push must not
+become a conflicted entity's new Base, including after JSON persistence/restart.
+Each target owns its acknowledgements; another target sharing the Knowledge Root
+does not consume them.
+
+Before push, the prepared tree is committed and pinned at the managed checkout's
+`refs/pkm/outbox`. The `prepared` transaction receipt records that immutable
+`preparedCommit`, per-entity snapshot descriptors and pending Base pins. The
+`pushed` receipt is written only after CAS succeeds; `recorded` follows durable
+host-only finalization. An unpublished prepared receipt cannot be acknowledged.
+The ref retains the latest outbox through checkout reset/GC; it is a recovery
+snapshot, **not** permission to blindly replay it. Retries fetch Remote again,
+re-read Local and revalidate ignore/deletion/approval guards before preparing a
+replacement. A post-push receipt failure reports that Git accepted the push and
+does not reset the accepted checkout.
+
+`GitHubSyncConflictError.partialResult` carries the successfully applied result
+through service IPC, including binary Recipe guards and Base pins. The host
+finalizes that result once, then persists the unresolved workspace. A failed
+finalizer retains the raw recovery receipt. An acknowledged partial outcome
+settles the owned queue claim, clears the ordinary failure budget and schedules
+another interval; it does not disable Auto Sync. CAS contention uses eight
+bounded attempts with exponential full jitter. Initial publication migration
+retains its stricter admission boundary.
+
+The dashboard labels this state **Partially synchronized: other content
+continues syncing**. Saved candidates survive unrelated Remote commit changes
+only when their complete entity snapshots, evidence and plan are unchanged.
+Initial comparison previews still block background execution pending approval.
+Normal conflict workspaces do not block unrelated progress. New publications
+require `entity-partial-progress` and extension version 3.2.43 or newer; older
+clients reject unsupported publications rather than silently discarding state.
+Older schema-3 publications remain readable.
+
+Stable reads compare file identity, size and timestamps before and after reading,
+and check directory membership during traversal. ENOENT or a changing snapshot
+defers the entire entity, without importing a partial bundle or inventing a
+tombstone. Existing stable content errors still require explicit repair.
+Filtering includes Hypothesis/Jupyter caches and precise PKM/editor staging
+patterns, not arbitrary `*.tmp`, source, lock, native-library or data files.
+
+Run `npm run test:github-sync-partial` for real bare-Git isolation, independent
+Bases, immutable outbox/recovery, two targets, actual remote unavailability and
+15 simultaneous replicas, plus scheduler/service/journal regressions. These are
+isolated local Git tests, not production or Windows acceptance.
+
 ### Local deletion evidence and ignore scope
+
+Normal filesystem-backed operations persist path-level intent in the Knowledge
+Root's `.pkm/state/knowledge-deletions.json` before changing content. This covers
+Skill, Note and Research direct deletion; Skill and general Knowledge Trash;
+Markdown move/rename; folder rename, drag moves and container promotion.
+Skill Trash empty/permanent deletion retains that intent. Restore/recreation
+clears the destination's records, while a failed operation rolls back its
+journal change. A partially rolled-back container promotion retains evidence
+for the members that actually remained moved, rather than resetting the whole
+operation's intent. Moving a Markdown item writes its destination before
+removing the source; destination collisions and write/delete failures are
+explicit and preserve the original source.
+
+Intent is shared across sync targets, not consumed by the first successful
+target. A present entity still uses stable identity and three-way reconciliation;
+an old path record is not permission to delete that entity at its new path.
+Both directions remain supported: a former receiver can edit and publish,
+and delete-versus-concurrent-edit still requires review. Run
+`npm run test:sync-operation-journal` for lifecycle and real local bare-Git
+two-target/client convergence regressions.
+
+This does not retroactively invent intent for historical missing files. External
+filesystem deletions without a journal or matching Git evidence remain ambiguous;
+they are not automatically restored or propagated as deletions. A file unchanged
+on GitHub does not by itself prove why it disappeared locally.
 
 An existing GitHub file is not an instruction to restore a missing local file.
 For filesystem-backed entities, Sync also checks the Knowledge Root's local
@@ -90,8 +222,9 @@ discarding either side's work.
 Legacy remote text containing Git merge markers is admitted for comparison,
 not accepted as a valid result. If it is unchanged from the synchronized base,
 a clean local-only edit can repair it. Changed remote marker content is staged
-as a conflict rather than imported. Final managed candidates still require
-marker-free validation before commit/push.
+as a conflict rather than imported. New managed candidates still require
+marker-free validation before commit/push; unchanged isolated Remote bytes are
+retained without pretending that they are a validated resolution.
 
 Within a JSON member, the three-way merge combines independent object-field
 changes relative to the common base. Recipe nodes are matched by `nodeId`, so
@@ -115,6 +248,40 @@ retained; a completed attempt that still has conflicts displays the prompt
 again, while successful synchronization removes the stored conflict.
 
 ## Integration boundary
+
+### Concurrent edits and interrupted operations
+
+Target/apply/state locks publish a fully initialized, nonce-owned nonempty
+directory atomically. Reclamation removes only a dead owner's observed member,
+not a successor's directory contents. A live owner is never revoked solely
+because a lease duration elapsed. Existing live legacy file locks are respected;
+incomplete legacy records fail closed with an explicit timeout instead of being
+treated as permission to enter. Upgrade all participating hosts/services to use
+the corrected protocol; an older binary retains its old lock implementation.
+
+Both regular-file apply paths verify the currently applied bytes before
+rolling a member back. If an external writer has changed that member, rollback
+leaves it untouched, reports the partial rollback, and preserves the original
+and applied bytes plus a receipt in a private `pkm-sync-rollback-*` directory
+under the OS temporary directory. The error gives its exact location. This
+evidence is not an automatic restore instruction; compare it with the current
+file before recovery. Unchanged applied members still roll back normally.
+
+Recipe deletion carries the expected machine-local sync content alongside its
+ID and managed path, including through service errors and durable recovery
+records. The host validates the complete deletion batch against current Recipes
+before moving any of them to Trash. Concurrent changes block deletion. Already
+absent Recipes are an idempotent no-op; a legacy ID-only recovery record cannot
+authorize deletion of an existing Recipe and reports missing version evidence.
+
+Coordinator settlement binds pending-intent cleanup to the sequence observed
+for that attempt. A new manual request accepted while an older request executes
+survives that older request's failure or content-attention result; equal reasons
+do not make distinct requests interchangeable.
+
+`tests/test-github-sync-concurrency.js` exercises both rollback paths, a real
+local-Git Recipe delete plus the host handler, failed/skipped/attention intent
+settlement, and two-process lock publication. No production target is involved.
 
 GitHub Sync scheduling and Git execution belong to the independent
 [PKM singleton service](./pkm-singleton-service.md). Extension Hosts are IPC

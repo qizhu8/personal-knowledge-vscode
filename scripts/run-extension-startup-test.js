@@ -187,7 +187,9 @@ function assertStartupResult(resultPath, scenario) {
   console.log(`Extension startup soak [${scenario}]: activation ${result.activationDurationMs}ms${webview}, commands, state, and panel expectation OK`);
 }
 
-main().catch(error => {
+module.exports = { packageExtension, startVirtualDisplay };
+
+if (require.main === module) main().catch(error => {
   console.error(`[extension-startup] failed after ${Math.round(process.uptime())}s`);
   console.error("Extension startup test failed:", error);
   process.exitCode = 1;

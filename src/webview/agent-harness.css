@@ -1,0 +1,35 @@
+.pkm-harness { color:var(--vscode-foreground,#dce5ee); background:var(--vscode-editor-background,#17212b); font:14px system-ui,sans-serif; padding:16px; min-width:300px; }
+.pkm-harness * { box-sizing:border-box; }
+.pkm-harness header,.pkm-harness nav,.pkm-harness-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
+.pkm-harness h2 { flex:1 1 100%; font-size:19px; margin:0 0 8px; }
+.pkm-harness button { background:var(--vscode-button-secondaryBackground,#303e4e); color:inherit; border:1px solid var(--vscode-panel-border,#556779); border-radius:5px; padding:6px 10px; cursor:pointer; font:inherit; }
+.pkm-harness button:focus-visible,.pkm-harness input:focus-visible { outline:2px solid var(--vscode-focusBorder,#70c2ff); outline-offset:2px; }
+.pkm-harness button[aria-current=true] { border-color:var(--vscode-focusBorder,#70c2ff); }
+.pkm-harness button:disabled { opacity:.5; cursor:default; }
+.pkm-harness-error { color:var(--vscode-errorForeground,#ff9292); white-space:pre-wrap; }
+.pkm-harness-warning { color:var(--vscode-editorWarning-foreground,#ecc56e); white-space:pre-wrap; }
+.pkm-harness-viewport { height:60vh; min-height:360px; overflow:auto; border:1px solid var(--vscode-panel-border,#556779); border-radius:8px; position:relative; }
+.pkm-harness-frame,.pkm-harness-canvas { position:relative; transform-origin:0 0; }
+.pkm-harness-canvas svg { position:absolute; inset:0; pointer-events:none; }
+.pkm-harness-canvas path { fill:none; stroke:var(--vscode-focusBorder,#70c2ff); stroke-width:2; }
+.pkm-harness-canvas path.retry { stroke:#e3b969; stroke-dasharray:5 4; }
+.pkm-harness-node { position:absolute; width:288px; height:180px; display:flex; flex-direction:column; gap:5px; border:1px solid var(--vscode-panel-border,#556779); border-radius:9px; padding:19px 28px 20px 12px; background:var(--vscode-editorWidget-background,#223241); }
+.pkm-harness-node > button:not(.pkm-harness-expand) { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:left; }
+.pkm-harness-node > strong { font-size:12px; }
+.pkm-harness-node.complete { border-color:#62b88e; }
+.pkm-harness-node.failed { border-color:#ed8181; }
+.pkm-harness-node.selected { outline:2px solid var(--vscode-focusBorder,#70c2ff); outline-offset:3px; }
+.pkm-harness-node[data-status="running"] { border-color:var(--vscode-progressBar-background,#3794ff); }
+.pkm-harness-node[data-status="waiting"],.pkm-harness-node[data-status="awaiting-input"],.pkm-harness-node[data-status="awaiting-result"] { border-color:var(--vscode-editorWarning-foreground,#ecc56e); }
+.pkm-harness-node[data-status="running"] > strong::before { content:""; display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--vscode-progressBar-background,#3794ff); margin-right:6px; animation:pkm-harness-active 1.4s ease-in-out infinite; }
+.chat-backgrounded .pkm-harness-node > strong::before { animation-play-state:paused; }
+@keyframes pkm-harness-active { 50% { opacity:.3; } }
+@media (prefers-reduced-motion:reduce) { .pkm-harness-node > strong::before { animation:none !important; } }
+.pkm-harness-node.ignored { border:2px dashed #d5b266; background:repeating-linear-gradient(135deg,#7d663522 0 7px,transparent 7px 14px),var(--vscode-editorWidget-background,#223241); }
+.pkm-harness-port { position:absolute; top:0; left:50%; transform:translate(-50%,-50%); background:var(--vscode-editor-background,#17212b); padding:0 6px; white-space:nowrap; font-size:11px; }
+.pkm-harness-port.output { top:auto; bottom:0; transform:translate(-50%,50%); }
+.pkm-harness .pkm-harness-expand { position:absolute; top:8px; right:7px; padding:1px 6px; font-size:19px; }
+.pkm-harness pre { white-space:pre-wrap; overflow-wrap:anywhere; font:12px/1.5 var(--vscode-editor-font-family,monospace); }
+.pkm-harness-inspector { border-top:1px solid var(--vscode-panel-border,#556779); margin-top:16px; }
+.pkm-harness dialog { color:inherit; background:var(--vscode-editor-background,#17212b); border:1px solid #70889e; width:min(850px,90vw); max-height:85vh; }
+.pkm-harness dialog::backdrop { background:#0009; }

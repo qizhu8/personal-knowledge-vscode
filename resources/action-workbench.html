@@ -31,14 +31,21 @@
 .math-expression .raw-string-body textarea{min-height:64px}.math-expression mark{color:var(--vscode-symbolIcon-functionForeground,#dcdcaa);background:transparent;border-bottom:1px dotted currentColor}.math-expression .math-input-token{color:var(--vscode-symbolIcon-numberForeground,#b5cea8)}.math-provenance,.math-functions div{display:flex;gap:8px;flex-wrap:wrap;overflow-wrap:anywhere}.math-provenance{padding-top:4px;color:var(--muted);font-size:11px}.math-functions{margin:6px 0}.math-functions summary{cursor:pointer}.math-functions div{justify-content:space-between;padding:2px 0}.math-functions small{color:var(--muted)}.math-example{display:flex;align-items:center;gap:6px;padding:6px 9px}.math-example code{min-width:0;overflow-wrap:anywhere;font-size:11px}.math-example button{flex-shrink:0}
 body{display:flex;flex-direction:column;height:100vh;height:100dvh;overflow:hidden}
 header.top{flex-shrink:0}
-.layout{flex:1;min-height:0;height:auto;grid-template-columns:270px minmax(0,1fr)}
+.layout{flex:1;min-height:0;height:auto;grid-template-columns:270px 6px minmax(0,1fr)}
 .layout>aside{max-height:none;border-right:1px solid var(--line);border-bottom:0;min-width:0}
-.layout.tree-collapsed{grid-template-columns:0 minmax(0,1fr)}
+.layout.tree-collapsed{grid-template-columns:0 6px minmax(0,1fr)}
 .layout.tree-collapsed>aside{visibility:hidden}
+.workspace-cattree-divider{position:relative;z-index:4;width:6px;min-width:6px;background:transparent;transition:background .12s}
+.workspace-cattree-divider:hover{background:var(--accent)}
+.panel-collapse-toggle{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:14px;height:72px;border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--muted);cursor:pointer;padding:0;font-size:8px;box-shadow:0 2px 7px rgba(0,0,0,.2);z-index:7}
+.panel-collapse-toggle:hover,.panel-collapse-toggle:focus-visible{color:var(--accent);background:var(--vscode-list-hoverBackground,#333);border-color:var(--accent);outline:none}
+.panel-collapse-toggle .codicon{font-size:12px}
+.tree-collapsed>.workspace-cattree-divider .panel-collapse-toggle{left:7px;color:var(--accent);background:var(--vscode-list-activeSelectionBackground,#04395e)}
+.layout>aside>section:first-child{padding:0 10px 10px}
 .module-set-tools{margin:0 10px 8px}
 #action-find{position:fixed;z-index:110;top:8px;right:8px;width:min(320px,calc(100vw - 16px));display:flex;gap:5px;padding:6px;background:var(--panel);border:1px solid var(--line);border-radius:4px;box-shadow:0 4px 16px #0006}
 #action-find .search{flex:1;width:auto;margin:0}
-@media(max-width:760px){.layout{grid-template-columns:145px minmax(0,1fr);height:auto}.layout>aside{max-height:none}.workspace{min-width:0}.graph-toolbar{gap:4px}}
+@media(max-width:760px){.layout{grid-template-columns:145px 6px minmax(0,1fr);height:auto}.layout.tree-collapsed{grid-template-columns:0 6px minmax(0,1fr)}.layout>aside{max-height:none}.workspace{min-width:0}.graph-toolbar{gap:4px}}
 @media(max-width:760px){
 	.tree-cat-hdr,.cattree-item{padding-left:8px!important}
 	.tree-cat .tree-cat-hdr,.tree-cat .cattree-item{padding-left:14px!important}
@@ -51,11 +58,24 @@ header.top{flex-shrink:0}
 	.palette-row>[data-add]{grid-column:4;grid-row:2}
 }
 </style></head><body>
-<header class="top"><button id="toggle-tree" class="icon" aria-expanded="true" aria-controls="action-tree" title="Collapse category tree" aria-label="Collapse category tree"><span class="codicon codicon-chevron-left"></span></button><h1>Action Workbench</h1><div class="toolbar"><button id="workspace" title="Select working directory" class="icon" aria-label="Select working directory"><span class="codicon codicon-folder-opened" aria-hidden="true"></span></button><button id="open-browser" title="Open in browser" class="icon" aria-label="Open in browser"><span class="codicon codicon-link-external" aria-hidden="true"></span></button><button id="refresh" title="Refresh catalog and validation queue" class="icon" aria-label="Refresh catalog and validation queue"><span class="codicon codicon-refresh"></span></button></div></header>
+<header class="top"><h1>Action Workbench</h1><div class="toolbar"><button id="workspace" title="Select working directory" class="icon" aria-label="Select working directory"><span class="codicon codicon-folder-opened" aria-hidden="true"></span></button><button id="open-browser" title="Open in browser" class="icon" aria-label="Open in browser"><span class="codicon codicon-link-external" aria-hidden="true"></span></button><button id="refresh" title="Refresh catalog and validation queue" class="icon" aria-label="Refresh catalog and validation queue"><span class="codicon codicon-refresh"></span></button></div></header>
 <div id="action-find" role="search" hidden><input id="search" class="search" aria-label="Search Actions and Basic Components" placeholder="Search Actions"><button id="close-find" class="icon" title="Close search" aria-label="Close search"><span class="codicon codicon-close"></span></button></div>
-<main class="layout"><aside id="action-tree"><section><div class="palette-heading"><h2>Components</h2><button id="add-group" class="icon" title="Add group" aria-label="Add group"><i class="codicon codicon-new-folder"></i></button></div><div id="palette" role="tree" aria-label="Actions and Basic Components"></div></section><section><h2>ModuleSets</h2><div class="tools module-set-tools"><button id="import" class="icon" title="Import ModuleSet" aria-label="Import ModuleSet"><span class="codicon codicon-cloud-download"></span></button><button id="export" class="icon" title="Export selected ModuleSet" aria-label="Export selected ModuleSet"><span class="codicon codicon-cloud-upload"></span></button></div><div id="sets"></div></section></aside>
+<dialog id="poll-template-dialog"><form id="poll-template-form"><h2>Read-only polling Action</h2>
+<p>A pinned query repeats until its output matches or a limit expires. Creation does not execute the query.</p>
+<label>New Action ID<input id="poll-template-id" required pattern="[a-z][a-z0-9_.-]{2,100}" value="local.poll"></label>
+<label>Ready read-only query<select id="poll-template-query" required></select></label>
+<label>Query inputs (JSON object)<textarea id="poll-template-inputs" required>{}</textarea></label>
+<label>Output field<select id="poll-template-field" required></select></label>
+<label>Expected value (JSON)<input id="poll-template-expected" required value="&quot;succeeded&quot;"></label>
+<label>Interval (seconds)<input id="poll-template-interval" type="number" min="0.01" max="300" step="any" required value="30"></label>
+<label>Total timeout (seconds)<input id="poll-template-timeout" type="number" min="0.01" max="604800" step="any" required value="3600"></label>
+<label>Maximum attempts<input id="poll-template-limit" type="number" min="1" max="1000" required value="120"></label>
+<p id="poll-template-error" role="alert"></p><div class="tools"><button type="button" id="close-poll-template">Cancel</button><button>Create without running</button></div></form></dialog>
+<main class="layout"><aside id="action-tree"><section aria-label="Preinstalled Action templates"><small>Preinstalled: core.delay (30s / 300s), core.ask-user, core.chatroom-alias</small><button id="create-poll-template">Create polling Action</button></section><section><div class="palette-heading"><h2>Components</h2><button id="add-group" class="icon" title="Add group" aria-label="Add group"><i class="codicon codicon-new-folder"></i></button></div><div id="palette" role="tree" aria-label="Actions and Basic Components"></div></section><section><h2>ModuleSets</h2><div class="tools module-set-tools"><button id="import" class="icon" title="Import ModuleSet" aria-label="Import ModuleSet"><span class="codicon codicon-cloud-download"></span></button><button id="export" class="icon" title="Export selected ModuleSet" aria-label="Export selected ModuleSet"><span class="codicon codicon-cloud-upload"></span></button></div><div id="sets"></div></section></aside>
+<div class="workspace-cattree-divider"><button id="toggle-tree" class="panel-collapse-toggle" aria-expanded="true" aria-controls="action-tree" title="Minimize category tree" aria-label="Minimize category tree"><span class="codicon codicon-chevron-left" aria-hidden="true"></span></button></div>
 <section class="workspace"><div class="graph-toolbar"><input id="name" aria-label="Graph name" placeholder="Composition name" value="New composition"><button id="undo" title="Undo" class="icon" aria-label="Undo">&#8630;</button><button id="toggle-parameters" title="Collapse all parameter lists" class="icon" aria-label="Collapse all parameter lists">&#9662;</button><button id="arrange">Arrange</button><button id="check">Check</button><button id="save">Save</button><button id="validate">Validate</button><button id="run" title="Run" class="icon" aria-label="Run">&#9654;</button><label>Output <select id="output" aria-label="Output block"></select></label><div class="connection-tools"><span id="wire-state" class="connection-label" role="status"></span><button id="cancel-wire" class="icon" title="Cancel connection" aria-label="Cancel connection" hidden>&times;</button><button id="delete-wire" class="icon" title="Remove selected connection" aria-label="Remove selected connection" disabled>&times;</button></div></div><div id="status" role="status">Connecting</div><div class="viewport"><div id="canvas" class="canvas"><svg id="connections" class="connections"></svg><div id="blocks"></div></div></div><section class="bottom"><header><h2>Action Validation</h2><div class="tools"><button id="background-tasks">Background Tasks</button><button id="resume">Resume queued</button></div></header><table class="queue"><thead><tr><th>Action</th><th>Stage / State</th><th>Priority</th><th></th></tr></thead><tbody id="queue"></tbody></table><pre id="result"></pre></section></section></main>
 <dialog id="package-dialog"><form id="package-form"><h2>Export ModuleSet</h2><label>Package ID<input id="package-id" required pattern="[a-z][a-z0-9_.-]{2,100}" value="local.selected"></label><label>Version<input id="package-version" type="number" min="1" value="1" required></label><label id="destination-label">Destination<input id="package-path" placeholder="New .pkm-actions file path"></label><div class="tools"><button type="button" id="close-package">Cancel</button><button>Export</button></div></form></dialog>
+<dialog id="private-action-dialog"><form id="private-action-form"><h2 id="private-action-title"></h2><p>Private local adapter. Not exportable. Execution still requires operator path grants and current qualification. No operation runs when opening this dialog.</p><p id="private-action-state" role="status"></p><p>Use action_validate through MCP with an explicitly approved fixture to qualify this adapter. Account bindings alone do not authorize transfers.</p><details><summary>Contract and input schema</summary><pre id="private-action-contract"></pre></details><fieldset id="private-action-parameters"><legend>Parameters</legend></fieldset><details id="private-action-advanced"><summary>Advanced: inputs JSON</summary><label>Inputs (JSON object)<textarea id="private-action-inputs" required spellcheck="false" rows="8"></textarea></label></details><label><input id="private-action-approve" type="checkbox" required> I approve this exact operation. Remote effects may not be rolled back.</label><p id="private-action-error" role="alert"></p><div class="tools"><button type="button" id="close-private-action">Close</button><button id="private-action-run">Run private Action</button></div></form></dialog>
 <dialog id="import-dialog"><form id="import-form"><h2>Import ModuleSet</h2><label>Package file<input id="import-path" required placeholder=".pkm-actions file path"></label><div class="tools"><button type="button" id="close-import">Cancel</button><button>Import</button></div></form></dialog>
 <dialog id="workspace-dialog"><form id="workspace-form"><h2>Action Working Directory</h2><label>Execution host directory<input id="workspace-path" required placeholder="Absolute directory path"></label><div class="tools"><button type="button" id="close-workspace">Cancel</button><button>Apply</button></div></form></dialog>
 <div id="catalog-menu" role="menu" tabindex="-1" hidden></div>
@@ -68,8 +88,8 @@ const launchParams=new URLSearchParams(location.hash.slice(1));
 window.addEventListener('hashchange',()=>{if(new URLSearchParams(location.hash.slice(1)).has('token'))location.reload()});
 let browserToken=launchParams.get('token')||'',initialView=vscode?.getState()||null;
 if(!vscode){try{const previous=sessionStorage.getItem('pkm-action-token'),launch=launchParams.get('launch');if(browserToken){if(previous!==browserToken||(launch&&launch!==sessionStorage.getItem('pkm-action-launch')))sessionStorage.removeItem('pkm-action-state');sessionStorage.setItem('pkm-action-token',browserToken);if(launch)sessionStorage.setItem('pkm-action-launch',launch)}else browserToken=previous||'';initialView=JSON.parse(sessionStorage.getItem('pkm-action-state')||'null')}catch{}if(location.hash)window.history.replaceState(null,'',location.pathname+location.search)}
-const chat=document.createElement('section');chat.id='action-chat';chat.hidden=true;chat.innerHTML='<header><h2>Action Chat</h2></header><div id="chat-messages" role="log" aria-live="polite"></div>';byId('result').before(chat);const seenChoices=new Set(),catExpanded=Object.create(null);
-byId('open-browser').hidden=!vscode;byId('open-browser').onclick=()=>perform('open_browser',{draft:{graph,saved,currentRun,pendingLaunch,lastRun,editorState}});
+const chat=document.createElement('section');chat.id='action-chat';chat.hidden=true;chat.innerHTML='<header><h2>Action Chat</h2></header><div id="chat-messages" role="log" aria-live="polite"></div>';byId('result').before(chat);const seenChoices=new Set(),catExpanded=Object.assign(Object.create(null),initialView?.catExpanded||{});
+byId('open-browser').hidden=!vscode;byId('open-browser').onclick=()=>perform('open_browser',{draft:{graph,saved,currentRun,pendingLaunch,lastRun,editorState,privateLaunch,treeCollapsed:document.querySelector('.layout').classList.contains('tree-collapsed'),catExpanded}});
 byId('background-tasks').hidden=!vscode&&!browserToken;byId('background-tasks').onclick=async()=>{const result=await perform('background_tasks');if(!vscode&&result){queue=result;renderQueue();byId('queue').scrollIntoView({block:'nearest'})}};
 function request(method,params={}){if(!vscode)return fetch('api',{method:'POST',headers:{'Content-Type':'application/json',...(browserToken?{Authorization:'Bearer '+browserToken}:{})},body:JSON.stringify({method,params}),signal:AbortSignal.timeout(35000)}).then(response=>response.json()).then(result=>{if(result.ok===false)throw Error(result.error);return result}).catch(error=>{if(['AbortError','TimeoutError'].includes(error.name))throw Error('Request timed out; reconcile before retrying.');throw error});return new Promise((resolve,reject)=>{const requestId=String(++requestSequence),timer=setTimeout(()=>{pending.delete(requestId);reject(Error('Request timed out; reconcile before retrying.'))},35000);pending.set(requestId,{resolve,reject,timer});vscode.postMessage({requestId,method,params})})}
 window.addEventListener('message',event=>{const item=pending.get(event.data.requestId);if(!item)return;clearTimeout(item.timer);pending.delete(event.data.requestId);event.data.result?.ok===false?item.reject(Error(event.data.result.error)):item.resolve(event.data.result)});
@@ -121,6 +141,61 @@ const cancelRunButton=document.createElement('button');cancelRunButton.id='cance
 function updateRunControls(){const qualified=saved&&actions.find(item=>item.action_id===saved.action_id&&item.content_hash===saved.content_hash);byId('run').disabled=startingRun||!!currentRun||(!pendingLaunch&&qualified?.availability.state!=='ready');byId('run').title=pendingLaunch?'Retry the original submission with the same launch key':'Start a new durable Run';cancelRunButton.disabled=!currentRun||cancellingRun===currentRun;cancelRunButton.title=cancellingRun===currentRun?'Cancellation requested; waiting for execution to stop':'Cancel local run; completed effects are not undone'}
 cancelRunButton.onclick=async()=>{const runId=currentRun;if(!runId||cancellingRun===runId)return;cancellingRun=runId;updateRunControls();try{const result=await request('cancel_run',{run_id:runId});if(result.cancel_requested)status('Cancellation requested for '+runId);else cancellingRun=null;await refresh()}catch(error){cancellingRun=null;status(error.message,true)}finally{updateRunControls()}};
 function status(text,bad=false){byId('status').textContent=text;byId('status').className=bad?'bad':''}function persist(){saved=null;saveView();byId('run').disabled=true}function remember(){history.push(structuredClone(graph));if(history.length>50)history.shift()}
+let privateAction=null,privateLaunch=initialView?.privateLaunch||null,privateSubmitting=false;
+function renderPrivateParameters(values){
+ const panel=byId('private-action-parameters');panel.querySelectorAll('label').forEach(label=>label.remove());
+ for(const [field,schema]of Object.entries(privateAction.input_schema.properties||{})){
+  const label=document.createElement('label');label.append(document.createTextNode((schema.title||field)+((privateAction.input_schema.required||[]).includes(field)?' *':'')));
+  const input=document.createElement(schema.enum?'select':'input');input.dataset.privateField=field;input.setAttribute('aria-label',schema.title||field);
+  if(schema.enum){if(!(privateAction.input_schema.required||[]).includes(field))input.add(new Option('Not specified',''));for(const value of schema.enum)input.add(new Option(String(value),String(value)));input.value=String(values[field]??schema.default??'')}
+  else if(schema.type==='boolean'){input.type='checkbox';input.checked=values[field]??schema.default??false}
+  else{input.type=['integer','number'].includes(schema.type)?'number':'text';input.value=values[field]??schema.default??'';if(schema.minimum!==undefined)input.min=schema.minimum;if(schema.maximum!==undefined)input.max=schema.maximum;if(schema.type==='integer')input.step='1';if((privateAction.input_schema.required||[]).includes(field))input.required=true}
+  if(schema.description)input.title=schema.description;
+  input.oninput=()=>{
+   try{
+    const next=JSON.parse(byId('private-action-inputs').value);
+    if(schema.type==='boolean')next[field]=input.checked;
+    else if(input.value==='')delete next[field];
+    else next[field]=['integer','number'].includes(schema.type)?Number(input.value):input.value;
+    byId('private-action-inputs').value=JSON.stringify(next,null,2);byId('private-action-approve').checked=false;byId('private-action-error').textContent='';
+   }catch(error){byId('private-action-error').textContent='Correct the advanced JSON before editing parameters: '+error.message}
+  };
+  label.append(input);panel.append(label);
+ }
+}
+byId('private-action-inputs').oninput=()=>{
+ byId('private-action-approve').checked=false;
+ try{const values=JSON.parse(byId('private-action-inputs').value);if(!values||typeof values!=='object'||Array.isArray(values))throw Error('Expected an object.');renderPrivateParameters(values);byId('private-action-error').textContent=''}
+ catch(error){byId('private-action-error').textContent='Invalid inputs JSON: '+error.message}
+};
+function openPrivateAction(action){
+ privateAction=action;
+ byId('private-action-title').textContent=action.action_id;
+ byId('private-action-state').textContent=action.availability.state+' · '+(action.availability.reason||'Current grants and qualification are required and checked again at submission.');
+ byId('private-action-contract').textContent=JSON.stringify({input_schema:action.input_schema,effect:action.effect,revision:action.content_hash},null,2);
+ byId('private-action-inputs').value=JSON.stringify(privateLaunch?.action_id===action.action_id?privateLaunch.inputs:Object.fromEntries((action.input_schema.required||[]).map(field=>[field,''])),null,2);
+ renderPrivateParameters(JSON.parse(byId('private-action-inputs').value));byId('private-action-advanced').open=false;
+ byId('private-action-approve').checked=false;byId('private-action-error').textContent='';
+ byId('private-action-run').disabled=action.availability.state!=='ready'||privateSubmitting||!!currentRun||!!privateLaunch&&privateLaunch.action_id!==action.action_id;
+ byId('private-action-dialog').showModal();
+}
+byId('close-private-action').onclick=()=>byId('private-action-dialog').close();
+byId('private-action-form').onsubmit=async event=>{
+ event.preventDefault();if(!privateAction||privateSubmitting||currentRun||privateAction.availability.state!=='ready')return;
+ privateSubmitting=true;byId('private-action-run').disabled=true;
+ try{
+  const inputs=JSON.parse(byId('private-action-inputs').value);
+  if(!inputs||typeof inputs!=='object'||Array.isArray(inputs))throw new Error('Provide a JSON object matching the input schema.');
+  if(!byId('private-action-approve').checked)throw new Error('Approve this exact operation first.');
+  if(privateLaunch&&(privateLaunch.action_id!==privateAction.action_id||JSON.stringify(privateLaunch.inputs)!==JSON.stringify(inputs)))throw new Error('The original submission is unresolved. Inspect its launch key before changing inputs: '+privateLaunch.idempotency_key);
+  if(!privateLaunch)privateLaunch={action_id:privateAction.action_id,content_hash:privateAction.content_hash,inputs,idempotency_key:'workbench-private:'+crypto.randomUUID()};
+  saveView();
+  const result=await request('platform_call',privateLaunch);
+  if(!/^action_run_[0-9a-f]{32}$/.test(result.run_id||''))throw new Error('No durable Run identity was returned. Reconcile the original launch key.');
+  currentRun=lastRun=result.run_id;privateLaunch=null;saveView();byId('private-action-dialog').close();await refresh();
+ }catch(error){byId('private-action-error').textContent=error.message+(privateLaunch?' Original launch key retained: '+privateLaunch.idempotency_key:'')}
+ finally{privateSubmitting=false;byId('private-action-run').disabled=privateAction.availability.state!=='ready'||!!currentRun}
+};
 function properties(definition,direction){return definition[direction+'_schema']?.properties||{}}
 function mathInputs(expression){return [...new Set([...String(expression||'').matchAll(/\{([0-9]+)\}/g)].map(match=>Number(match[1])).filter(index=>index<32))].sort((left,right)=>left-right)}
 function definition(node){
@@ -138,7 +213,7 @@ function definition(node){
 }
 function buildCatTree(items,getCat,fallback,emptyGroups=[]){const root={folders:Object.create(null),items:[]};const folder=category=>{let node=root;for(const segment of String(category||fallback).split('/').map(value=>value.trim()).filter(Boolean)){node.folders[segment]??={folders:Object.create(null),items:[]};node=node.folders[segment]}return node};for(const category of emptyGroups)folder(category);for(const item of items)folder(getCat(item)).items.push(item);return root}
 function countTreeLeaves(node){return node.items.length+Object.values(node.folders).reduce((count,child)=>count+countTreeLeaves(child),0)}
-function renderCatTree(node,path,depth,renderLeaf,query){let html='';for(const name of Object.keys(node.folders).sort((left,right)=>left==='core'?-1:right==='core'?1:left.localeCompare(right))){const child=node.folders[name],key=JSON.stringify([...path,name]),open=!!query||catExpanded[key]!==false;html+='<div class="tree-cat"><div class="tree-cat-hdr" role="treeitem" tabindex="0" data-category="'+esc(key)+'" aria-expanded="'+open+'" style="padding-left:'+(8+depth*12)+'px"><span class="tree-cat-arrow"><i class="codicon codicon-chevron-'+(open?'down':'right')+'"></i></span><i class="codicon codicon-folder"></i><span class="tree-cat-label">'+esc(name)+'</span><span class="tree-cat-count">'+countTreeLeaves(child)+'</span></div><div class="tree-cat-body" role="group" '+(open?'':'hidden')+'>'+renderCatTree(child,[...path,name],depth+1,renderLeaf,query)+'</div></div>'}for(const item of node.items)html+=renderLeaf(item,depth);return html}
+function renderCatTree(node,path,depth,renderLeaf,query){let html='';for(const name of Object.keys(node.folders).sort((left,right)=>left==='core'?-1:right==='core'?1:left.localeCompare(right))){const child=node.folders[name],key=JSON.stringify([...path,name]),open=!!query||catExpanded[key]===true;html+='<div class="tree-cat"><div class="tree-cat-hdr" role="treeitem" tabindex="0" data-category="'+esc(key)+'" aria-expanded="'+open+'" style="padding-left:'+(8+depth*12)+'px"><span class="tree-cat-arrow"><i class="codicon codicon-chevron-'+(open?'down':'right')+'"></i></span><i class="codicon codicon-folder"></i><span class="tree-cat-label">'+esc(name)+'</span><span class="tree-cat-count">'+countTreeLeaves(child)+'</span></div><div class="tree-cat-body" role="group" '+(open?'':'hidden')+'>'+renderCatTree(child,[...path,name],depth+1,renderLeaf,query)+'</div></div>'}for(const item of node.items)html+=renderLeaf(item,depth);return html}
 function renderPalette(){
 	const filter=byId('search').value.toLowerCase();
 	const category=action=>action.category||'Actions';
@@ -147,20 +222,22 @@ function renderPalette(){
 	const tree=buildCatTree(rows,category,'Actions',visibleGroups);
 	byId('palette').innerHTML=renderCatTree(tree,[],0,(action,depth)=>{
 		const ready=action.availability.state==='ready',editable=!action.read_only&&action.editable!==false;
+        if(action.visibility==='private')return '<div class="li cattree-item" role="treeitem" tabindex="0" data-action="'+esc(action.action_id)+'" draggable="false" style="padding-left:'+(8+depth*12)+'px"><div class="palette-title"><strong>'+esc(action.action_id)+'</strong><span class="language">Private</span></div><small>'+esc(action.availability.state)+' · '+esc(action.availability.reason||'Operator grants and qualification verified')+'</small><button data-private="'+esc(action.action_id)+'">Inspect / Run</button></div>';
 		return '<div class="li cattree-item" role="treeitem" tabindex="0" data-action="'+esc(action.action_id)+'" draggable="'+ready+'" style="padding-left:'+(8+depth*12)+'px"><div class="palette-row">'+(action.component?'<i class="codicon codicon-symbol-misc" title="System Basic Component"></i>':'<input type="checkbox" aria-label="Select '+esc(action.action_id)+' for export" data-export="'+esc(action.action_id)+'" '+(selectedExports.has(action.action_id)?'checked':'')+'>')+'<div><div class="palette-title"><strong>'+esc(action.display_name||action.action_id)+'</strong><span class="language" title="'+esc((action.languages||[action.language||'Unknown']).join(' + '))+'">'+esc(action.language||'Unknown')+'</span></div><small>'+esc((action.read_only?'System / ':'')+(action.component?'Basic Component':action.availability.state))+'</small></div>'+(editable?'<button class="icon" data-edit="'+esc(action.action_id)+'" aria-label="Edit '+esc(action.action_id)+'" title="Edit Action definition"><i class="codicon codicon-edit"></i></button>':'<span></span>')+(action.component?'<span></span>':'<button class="icon" data-qualify="'+esc(action.action_id)+'" aria-label="Validate '+esc(action.action_id)+'" title="Validate Action"><i class="codicon codicon-beaker"></i></button>')+'<button class="icon" data-add="'+esc(action.action_id)+'" aria-label="Add '+esc(action.action_id)+'" title="'+(ready?'Add block':'Complete validation before nesting')+'" '+(ready?'':'disabled')+'><i class="codicon codicon-add"></i></button></div></div>';
 	},filter);
 	document.querySelectorAll('[data-category]').forEach(row=>{
 		const group=JSON.parse(row.dataset.category).join('/');
-		const toggle=()=>{catExpanded[row.dataset.category]=row.getAttribute('aria-expanded')!=='true';renderPalette()};
+		const toggle=()=>{catExpanded[row.dataset.category]=row.getAttribute('aria-expanded')!=='true';saveView();renderPalette()};
 		row.onclick=toggle;
 		row.oncontextmenu=event=>{event.preventDefault();event.stopPropagation();showCatalogMenu(event,[{label:'Add subgroup',icon:'new-folder',disabled:group.split('/')[0].toLowerCase()==='core',run:()=>openCatalogDialog('group',null,group)}])};
 		row.onkeydown=event=>{if(event.key==='ContextMenu'||(event.shiftKey&&event.key==='F10')){event.preventDefault();row.oncontextmenu(keyboardMenuEvent(row))}else if(['Enter',' '].includes(event.key)){event.preventDefault();toggle()}};
 	});
 	document.querySelectorAll('[data-action]').forEach(row=>{
 		const action=actions.find(item=>item.action_id===row.dataset.action);
-		row.ondblclick=event=>{if(!event.target.closest('button,input'))editAction(action)};
-		row.ondragstart=event=>{if(action.availability.state!=='ready'){event.preventDefault();return}event.dataTransfer.setData('application/x-pkm-action',action.action_id);event.dataTransfer.effectAllowed='copy'};
+		row.ondblclick=event=>{if(!event.target.closest('button,input')){if(action.visibility==='private')openPrivateAction(action);else editAction(action)}};
+		row.ondragstart=event=>{if(action.direct_only||action.availability.state!=='ready'){event.preventDefault();return}event.dataTransfer.setData('application/x-pkm-action',action.action_id);event.dataTransfer.effectAllowed='copy'};
 		row.oncontextmenu=event=>{event.preventDefault();event.stopPropagation();const protectedAction=!!action.read_only;showCatalogMenu(event,[
+			{label:'Copy Path',icon:'copy',run:()=>copyActionPath(action)},
 			{label:'Rename',icon:'edit',disabled:protectedAction,run:()=>openCatalogDialog('rename',action)},
 			{label:'Edit',icon:'go-to-file',disabled:protectedAction||action.editable===false,run:()=>editAction(action)},
 			{label:'Delete',icon:'trash',disabled:protectedAction||action.editable===false,run:()=>openCatalogDialog('delete',action)},
@@ -168,10 +245,12 @@ function renderPalette(){
 		row.onkeydown=event=>{if(event.key==='ContextMenu'||(event.shiftKey&&event.key==='F10')){event.preventDefault();row.oncontextmenu(keyboardMenuEvent(row))}else if(event.key==='Enter'&&event.target===row)editAction(action)};
 	});
 	document.querySelectorAll('[data-qualify]').forEach(button=>button.onclick=()=>{const action=actions.find(item=>item.action_id===button.dataset.qualify),effects=action.effects.some(effect=>effect!=='pure');if(effects&&!confirm('Run declared validation with effects: '+action.effects.join(', ')+'?'))return;perform('validate',{action_id:action.action_id,content_hash:action.content_hash,priority:'demand',allow_effects:effects})});
+    document.querySelectorAll('[data-private]').forEach(button=>button.onclick=()=>openPrivateAction(actions.find(action=>action.action_id===button.dataset.private)));
 	document.querySelectorAll('[data-add]').forEach(button=>button.onclick=()=>addBlock(button.dataset.add));
 	document.querySelectorAll('[data-export]').forEach(input=>input.onchange=()=>input.checked?selectedExports.add(input.dataset.export):selectedExports.delete(input.dataset.export));
 	document.querySelectorAll('[data-edit]').forEach(button=>button.onclick=()=>editAction(actions.find(item=>item.action_id===button.dataset.edit)));
 }
+async function copyActionPath(action){const reference=action.source_id||(action.component?'pkm://components/':'pkm://actions/')+action.action_id;try{if(vscode)await request('copy_path',{reference});else await navigator.clipboard.writeText(reference);status('Copied '+reference)}catch(error){status(error.message,true)}}
 function keyboardMenuEvent(row){const bounds=row.getBoundingClientRect();return {clientX:bounds.left+20,clientY:bounds.top+20,preventDefault(){},stopPropagation(){}}}
 function showCatalogMenu(event,items){
 	const menu=byId('catalog-menu');menu.replaceChildren();
@@ -192,13 +271,19 @@ byId('catalog-form').onsubmit=async event=>{
 	event.preventDefault();const operation=catalogOperation,action=operation.action;let result;
 	if(operation.kind==='open'){byId('catalog-dialog').close();await openActionEditor(action);return}
 	if(operation.kind==='close'){byId('catalog-dialog').close();closeDefinitionEditor();return}
-	if(operation.kind==='group')result=await perform('group_create',{name:byId('catalog-name').value.trim(),parent:operation.parent});
+	if(operation.kind==='group'){result=await perform('group_create',{name:byId('catalog-name').value.trim(),parent:operation.parent});if(result){const path=[...(operation.parent?operation.parent.split('/'):[]),byId('catalog-name').value.trim()];for(let index=1;index<=path.length;index++)catExpanded[JSON.stringify(path.slice(0,index))]=true;saveView();renderPalette()}}
 	if(operation.kind==='rename')result=await perform('action_rename',{action_id:action.action_id,name:byId('catalog-name').value.trim()});
 	if(operation.kind==='move')result=await perform('action_move',{action_id:action.action_id,category:byId('catalog-group').value});
 	if(operation.kind==='delete')result=await perform('action_delete',{action_id:action.action_id,content_hash:action.content_hash});
 	if(!result)return;if(operation.kind==='delete'){selectedExports.delete(action.action_id);if(saved?.action_id===action.action_id){saved=null;saveView();byId('run').disabled=true}}if(operation.kind==='rename'&&graph.action_id===action.action_id){graph.name=result.display_name;saveView();renderGraph()}byId('catalog-dialog').close();
 };
 document.querySelector('.workspace .viewport').after(byId('definition-editor-template').content.cloneNode(true));
+const migrationButton=document.createElement('button');migrationButton.id='preview-path-migration';migrationButton.textContent='Preview path migration';migrationButton.title='Verify typed resource references without saving';byId('save-definition').before(migrationButton);
+const migrationDialog=document.createElement('dialog');migrationDialog.innerHTML='<h2>Verified path migration preview</h2><p>No files have been saved. Review field evidence and local-binding diagnostics before using the candidate.</p><pre id="migration-evidence" style="white-space:pre-wrap;max-height:60vh;overflow:auto"></pre><button id="use-migration">Use candidate in editor</button><button id="close-migration">Close</button>';document.body.append(migrationDialog);
+let migrationPreview=null;
+migrationButton.onclick=async()=>{try{if(!editorState||editorState.filename||editorState.read_only)return;const result=await request('migration_preview',{document:JSON.parse(editorState.content),kind:'action'});migrationPreview=result;byId('migration-evidence').textContent=JSON.stringify({name:result.name,id:result.id,original_sha256:result.original_sha256,changes:result.changes,diagnostics:result.diagnostics},null,2);byId('use-migration').disabled=!result.changes.length;migrationDialog.showModal()}catch(error){status(error.message,true)}};
+byId('close-migration').onclick=()=>migrationDialog.close();
+byId('use-migration').onclick=()=>{if(!editorState||!migrationPreview)return;editorState.migrationEvidence=migrationPreview;editorState.content=JSON.stringify(migrationPreview.candidate,null,2);editorState.dirty=true;showDefinitionEditor();saveView();migrationDialog.close();status('Candidate is only in the editor; review and explicitly Save to persist. Original document and field evidence are retained in local editor state.')};
 async function editAction(action){
 	if(!action||action.read_only||action.editable===false)return status('This component definition is read-only.',true);
 	if(editorState?.dirty||(!saved&&graph.nodes.length))return openCatalogDialog('open',action);
@@ -210,6 +295,7 @@ async function openActionEditor(action){
 }
 function showDefinitionEditor(){
 	if(!editorState)return;byId('definition-editor').hidden=false;document.querySelector('.graph-toolbar').hidden=true;document.querySelector('.workspace .viewport').hidden=true;byId('editor-title').textContent=editorState.name;byId('editor-language').textContent=editorState.language;byId('editor-file').innerHTML='<option value="">Action definition</option>'+editorState.files.map(file=>'<option value="'+esc(file)+'">'+esc(file.split(/[\\/]/).at(-1))+'</option>').join('');byId('editor-file').value=editorState.filename;byId('editor-content').value=editorState.content;
+	byId('editor-content').readOnly=!!editorState.read_only;byId('save-definition').disabled=!!editorState.read_only;migrationButton.disabled=!!editorState.read_only||!!editorState.filename;
 }
 function closeDefinitionEditor(){editorState=null;byId('definition-editor').hidden=true;document.querySelector('.graph-toolbar').hidden=false;document.querySelector('.workspace .viewport').hidden=false;saveView()}
 byId('close-definition').onclick=()=>editorState?.dirty?openCatalogDialog('close'):closeDefinitionEditor();
@@ -219,15 +305,42 @@ byId('editor-file').onchange=async()=>{
 	try{if(filename){const result=await request('source_read',{action_id:editorState.action_id,filename});editorState.content=result.content;editorState.source_hash=result.source_hash}else editorState.content=JSON.stringify(editorState.definition,null,2);editorState.filename=filename;showDefinitionEditor();saveView()}catch(error){byId('editor-file').value=editorState.filename;status(error.message,true)}
 };
 byId('save-definition').onclick=async()=>{
+	if(editorState?.read_only)return status('This contract is read-only.',true);
 	try{if(editorState.filename){const result=await request('source_save',{action_id:editorState.action_id,filename:editorState.filename,content:editorState.content,source_hash:editorState.source_hash});editorState.source_hash=result.source_hash}else{const definition=JSON.parse(editorState.content);const result=await request('definition_save',{action_id:editorState.action_id,definition,content_hash:editorState.content_hash});editorState.content_hash=result.definition.content_hash;editorState.definition={...definition,version:result.definition.version+1};editorState.content=JSON.stringify(editorState.definition,null,2)}editorState.dirty=false;showDefinitionEditor();saveView();await refresh();status('Saved; validation is required before running.')}catch(error){status(error.message,true)}
 };
 byId('canvas').ondragover=event=>{if([...event.dataTransfer.types].includes('application/x-pkm-action')){event.preventDefault();event.dataTransfer.dropEffect='copy'}};
 byId('canvas').ondrop=event=>{event.preventDefault();const identifier=event.dataTransfer.getData('application/x-pkm-action');if(!identifier)return;const origin=byId('canvas').getBoundingClientRect();addBlock(identifier,{x:Math.max(20,event.clientX-origin.left),y:Math.max(20,event.clientY-origin.top)})};
 function renderSets(){byId('sets').innerHTML=moduleSets.length?moduleSets.map(set=>'<div class="set"><label><input type="checkbox" data-set="'+esc(set.module_set_id)+'" data-version="'+set.version+'" '+(set.enabled?'checked':'')+'>'+esc(set.name)+'</label><small>v'+set.version+' / '+set.actions.length+' Actions</small><div class="tools"><button data-remove="'+esc(set.module_set_id)+'" data-version="'+set.version+'" '+(set.enabled?'disabled':'')+'>Remove</button></div></div>').join(''):'<small>No optional sets installed.</small>';document.querySelectorAll('[data-set]').forEach(input=>input.onchange=()=>perform('load',{module_set_id:input.dataset.set,version:+input.dataset.version,enabled:input.checked}));document.querySelectorAll('[data-remove]').forEach(button=>button.onclick=()=>{if(confirm('Remove this installed package version?'))perform('remove',{module_set_id:button.dataset.remove,version:+button.dataset.version})})}
 function initialValue(schema){if('default'in schema)return structuredClone(schema.default);if(schema.enum)return schema.enum[0];if(schema.type==='integer'||schema.type==='number')return 0;if(schema.type==='boolean')return false;if(schema.type==='array')return [];if(schema.type==='object')return {};if(!schema.type||schema.type==='null')return null;return ''}
+byId('create-poll-template').onclick=()=>{
+ const queries=actions.filter(action=>!action.component&&action.availability.state==='ready'&&(action.effects||[]).every(effect=>['pure','read','local-read','remote-read'].includes(effect)));
+ byId('poll-template-query').innerHTML=queries.map(action=>'<option value="'+esc(action.action_id)+'">'+esc(action.display_name||action.action_id)+'</option>').join('');
+ byId('poll-template-error').textContent=queries.length?'':'First register and validate a read-only query Action.';
+ byId('poll-template-query').onchange=()=>{
+  const query=actions.find(action=>action.action_id===byId('poll-template-query').value);
+  byId('poll-template-field').innerHTML=Object.keys(query?.output_schema?.properties||{}).map(field=>'<option>'+esc(field)+'</option>').join('');
+  byId('poll-template-inputs').value=JSON.stringify(query?.examples?.[0]?.inputs||{},null,2);
+ };
+ byId('poll-template-query').onchange();byId('poll-template-dialog').showModal();
+};
+byId('close-poll-template').onclick=()=>byId('poll-template-dialog').close();
+byId('poll-template-form').onsubmit=async event=>{
+ event.preventDefault();const button=event.submitter;button.disabled=true;
+ try{
+  const query=actions.find(action=>action.action_id===byId('poll-template-query').value);
+  if(!query)throw new Error('Choose a ready read-only query.');
+  await request('template_create',{action_id:byId('poll-template-id').value,parameters:{
+   query_action_id:query.action_id,query_revision:query.content_hash,query_inputs:JSON.parse(byId('poll-template-inputs').value),
+   field:byId('poll-template-field').value,expected:JSON.parse(byId('poll-template-expected').value),
+   interval_seconds:Number(byId('poll-template-interval').value),timeout_seconds:Number(byId('poll-template-timeout').value),
+   max_iterations:Number(byId('poll-template-limit').value)}});
+  byId('poll-template-dialog').close();await refresh();status('Polling Action created. Validate explicitly before running.');
+ }catch(error){byId('poll-template-error').textContent=error.message}
+ finally{button.disabled=false}
+};
 function addBlock(actionId,position=null){
 	const action=actions.find(item=>item.action_id===actionId);
-	if(!action||action.availability.state!=='ready')return status('Complete validation before nesting this Action.',true);
+	if(!action||action.direct_only||action.availability.state!=='ready')return status('Only qualified composable Actions can be nested. Private platform adapters run through Inspect / Run.',true);
 	remember();const node={id:'block_'+crypto.randomUUID().replaceAll('-','').slice(0,12),action_id:actionId,content_hash:action.content_hash,parameters:{},x:position?.x??(40+(graph.nodes.length%3)*340),y:position?.y??(graph.nodes.length<3?40:Math.max(...graph.nodes.map(item=>item.y+(document.querySelector('[data-block="'+item.id+'"]')?.offsetHeight||300)))+40)};
 	 if(action.component&&actionId!=='core.math-expression'&&(action.output_schema.properties.value||action.output_schema.properties.values))node.value_type='string';
 	for(const field of action.input_schema.required||[])node.parameters[field]=initialValue(properties(definition(node),'input')[field]);
@@ -255,7 +368,7 @@ function compatible(outputNode,outputField,inputNode,inputField){const target=pr
 function pin(node,field,schema,direction,optional=false,compact=false){return '<button class="pin '+direction+(optional?' optional':'')+'" data-'+direction+'="'+esc(field)+'" data-block-id="'+node.id+'" '+(compact?'data-compact-pin="'+direction+'"':'')+' title="'+esc(field)+' / '+esc(schema.format||schema.type)+(direction==='input'?(optional?' / optional':' / required'):'')+'" aria-label="'+(direction==='input'?'Input ':'Output ')+node.id+'.'+esc(field)+'"></button>'}
 function compactPorts(node,action,direction){const fields=Object.entries(properties(action,direction));if(!fields.length)return '';const field=fields.some(([name])=>name===node['compact_'+direction])?node['compact_'+direction]:fields[0][0],schema=properties(action,direction)[field],optional=direction==='input'&&!(action.input_schema.required||[]).includes(field);return '<div class="compact-port '+direction+'">'+pin(node,field,schema,direction,optional,true)+'<select class="compact-port-select" data-compact="'+direction+'" data-node="'+node.id+'" aria-label="'+direction+' port for '+node.id+'">'+fields.map(([name,type])=>'<option value="'+esc(name)+'" '+(name===field?'selected':'')+'>'+esc(name)+' / '+esc(type.format||type.type)+(direction==='input'&&!(action.input_schema.required||[]).includes(name)?' / optional':'')+'</option>').join('')+'</select></div>'}
 function parameterRow(node,action,field,schema){if(node.action_id==='core.cast'&&field==='target_type')return '';const optional=!(action.input_schema.required||[]).includes(field),wired=graph.edges.some(edge=>edge.target===node.id&&edge.input===field),enabled=Object.hasOwn(node.parameters,field);return '<div class="port-row '+(optional?'optional':'required')+'" data-parameter="'+esc(field)+'">'+pin(node,field,schema,'input',optional)+'<label class="field-label">'+(optional?'<input type="checkbox" data-enable-field="'+esc(field)+'" data-node="'+node.id+'" aria-label="Set '+esc(field)+' for '+node.id+'" '+(enabled||wired?'checked':'')+' '+(wired?'disabled':'')+'>':'')+esc(field)+' <small>'+esc(schema.format||schema.type)+' / '+(optional?'optional':'required')+'</small></label>'+(wired?'<small>Connected</small>':optional&&!enabled?'<small>'+(Object.hasOwn(schema,'default')?'Default: '+esc(JSON.stringify(schema.default)):'Not supplied')+'</small>':control(node,field,schema))+'</div>'}
-function saveView(){const state={graph,saved,currentRun,pendingLaunch,lastRun,editorState};if(vscode)vscode.setState(state);else sessionStorage.setItem('pkm-action-state',JSON.stringify(state))}
+function saveView(){const state={graph,saved,currentRun,pendingLaunch,lastRun,editorState,privateLaunch,treeCollapsed:document.querySelector('.layout').classList.contains('tree-collapsed'),catExpanded};if(vscode)vscode.setState(state);else sessionStorage.setItem('pkm-action-state',JSON.stringify(state))}
 function renderGraph(){
 	byId('name').value=graph.name;
 	byId('blocks').innerHTML=graph.nodes.map(node=>{const action=definition(node)||{},collapsed=!!node.collapsed;return '<article class="block '+(collapsed?'collapsed':'')+'" data-block="'+node.id+'" style="left:'+node.x+'px;top:'+node.y+'px"><header><button class="icon" data-fold="'+node.id+'" title="'+(collapsed?'Expand parameters':'Collapse parameters')+'" aria-label="'+(collapsed?'Expand':'Collapse')+' parameters for '+node.id+'" aria-expanded="'+!collapsed+'">'+(collapsed?'&#9656;':'&#9662;')+'</button><h3>'+esc(action.display_name||node.action_id)+'</h3><button class="icon" data-delete="'+node.id+'" title="Delete block" aria-label="Delete '+node.id+'">&times;</button></header><div class="state">'+esc(action.availability?.state||'module_not_loaded')+(collapsed?' / '+Object.keys(properties(action,'input')).length+' inputs / '+Object.keys(properties(action,'output')).length+' outputs':'')+'</div><div class="ports">'+(collapsed?compactPorts(node,action,'input')+compactPorts(node,action,'output'):Object.entries(properties(action,'input')).map(([field,schema])=>parameterRow(node,action,field,schema)).join('')+Object.entries(properties(action,'output')).map(([field,schema])=>'<div class="port-row output-row">'+pin(node,field,schema,'output')+esc(field)+' <small>'+esc(schema.format||schema.type)+'</small></div>').join(''))+'</div></article>'}).join('');
@@ -382,8 +495,10 @@ byId('search').oninput=renderPalette;
 let findReturnFocus=null;
 function closeFind(){byId('action-find').hidden=true;byId('search').value='';renderPalette();findReturnFocus?.focus();findReturnFocus=null}
 byId('close-find').onclick=closeFind;
-window.addEventListener('keydown',event=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='f'){event.preventDefault();if(byId('action-find').hidden)findReturnFocus=document.activeElement;byId('action-find').hidden=false;byId('search').focus();byId('search').select()}else if(event.key==='Escape'&&!byId('action-find').hidden){event.preventDefault();closeFind()}});
-byId('toggle-tree').onclick=()=>{const collapsed=document.querySelector('.layout').classList.toggle('tree-collapsed');const button=byId('toggle-tree');button.setAttribute('aria-expanded',String(!collapsed));button.title=button.ariaLabel=collapsed?'Expand category tree':'Collapse category tree';button.firstElementChild.className='codicon codicon-chevron-'+(collapsed?'right':'left')};
+window.addEventListener('keydown',event=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='f'){event.preventDefault();setTreeCollapsed(false);if(byId('action-find').hidden)findReturnFocus=document.activeElement;byId('action-find').hidden=false;byId('search').focus();byId('search').select()}else if(event.key==='Escape'&&!byId('action-find').hidden){event.preventDefault();closeFind()}});
+function setTreeCollapsed(collapsed){document.querySelector('.layout').classList.toggle('tree-collapsed',collapsed);const button=byId('toggle-tree');button.setAttribute('aria-expanded',String(!collapsed));button.title=button.ariaLabel=collapsed?'Restore category tree':'Minimize category tree';button.firstElementChild.className='codicon codicon-chevron-'+(collapsed?'right':'left');saveView();requestAnimationFrame(draw)}
+byId('toggle-tree').onclick=()=>setTreeCollapsed(!document.querySelector('.layout').classList.contains('tree-collapsed'));
+setTreeCollapsed(initialView?.treeCollapsed!==false);
 byId('refresh').onclick=refresh;
 byId('workspace').onclick=async()=>{if(vscode)return perform('workspace');const data=await perform('catalog');if(data){hostWorkspace=data.workspace_root||'';byId('workspace-path').value=hostWorkspace;byId('workspace-dialog').showModal()}};
 byId('close-workspace').onclick=()=>byId('workspace-dialog').close();
@@ -404,6 +519,26 @@ byId('destination-label').hidden=!!vscode;
 byId('export').onclick=()=>{if(!selectedExports.size)return status('Select Actions to export.',true);if(!byId('package-path').value&&previewWorkspace)byId('package-path').value=previewWorkspace+'/'+byId('package-id').value+'.pkm-actions';byId('package-dialog').showModal()};
 byId('close-package').onclick=()=>byId('package-dialog').close();
 byId('package-form').onsubmit=async event=>{event.preventDefault();const params={module_set_id:byId('package-id').value,version:+byId('package-version').value,action_ids:[...selectedExports]};if(!vscode&&byId('package-path').value)params.destination=byId('package-path').value;const result=await perform('export',params);if(result)byId('package-dialog').close()};
-async function initialize(){if(browserToken){try{const session=await request('session');if(!initialView&&session.draft){graph=session.draft.graph||graph;saved=session.draft.saved||null;currentRun=session.draft.currentRun||null;pendingLaunch=session.draft.pendingLaunch||null;lastRun=session.draft.lastRun||null;editorState=session.draft.editorState||null;saveView()}}catch(error){return status(error.message,true)}}if(editorState)showDefinitionEditor();await refresh()}
+async function initialize(){
+ if(browserToken){
+  try{
+   const session=await request('session');
+   if(!initialView&&session.draft){
+    graph=session.draft.graph||graph;saved=session.draft.saved||null;currentRun=session.draft.currentRun||null;
+    pendingLaunch=session.draft.pendingLaunch||null;lastRun=session.draft.lastRun||null;editorState=session.draft.editorState||null;
+    privateLaunch=session.draft.privateLaunch||null;Object.assign(catExpanded,session.draft.catExpanded||{});
+    setTreeCollapsed(session.draft.treeCollapsed!==false);saveView();
+   }
+  }catch(error){return status(error.message,true)}
+ }
+ if(editorState)showDefinitionEditor();await refresh();
+ if(initialView?.targetAction){
+  const action=actions.find(item=>item.action_id===initialView.targetAction);
+  if(!action)return status('Action not found: '+initialView.targetAction,true);
+  if(action.visibility==='private')return openPrivateAction(action);
+  if(!action.read_only&&action.editable!==false)await openActionEditor(action);
+  else{editorState={action_id:action.action_id,name:(action.display_name||action.action_id)+' ('+action.action_id+')',language:action.language||'Contract',definition:action,files:[],filename:'',content:JSON.stringify(action,null,2),dirty:false,read_only:true};showDefinitionEditor();saveView()}
+ }
+}
 window.addEventListener('resize',draw);updateRunControls();initialize();setInterval(()=>{if(refreshQueued&&!refreshing){refreshQueued=false;refresh()}else if(currentRun||(queue.jobs||[]).some(job=>['queued','running'].includes(job.state)))refresh()},2000);
 </script></body></html>

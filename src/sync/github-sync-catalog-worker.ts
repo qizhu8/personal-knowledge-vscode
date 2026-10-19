@@ -4,7 +4,8 @@ import { isMainThread, parentPort, Worker, workerData } from "worker_threads";
 import { agentSnapshotIsEncrypted, listAgentSnapshots } from "../agent-sessions/agent-snapshots";
 import { isContentItemPrivate, PrivacyContentType, setPrivacyStoreRoot } from "../knowledge/content-privacy";
 import { getStorePath, knowledgeFilePath, noteList, paperList, setStorePath as setFileStorePath, skillList } from "../knowledge/filestore";
-import { GitHubSyncCatalog, GitHubSyncCatalogItem, githubSyncIsSystemItem } from "./github-sync";
+import { GitHubSyncCatalog, GitHubSyncCatalogItem, githubSyncIsSystemItem, githubSyncIgnoredPath } from "./github-sync";
+import { readSyncScriptIdentity } from "./github-sync-script-identity";
 import { referencedMarkdownAssets } from "../knowledge/markdown-assets";
 import { packageList, promptList, scriptGet, scriptIdentityFile, scriptList, setStorePath as setStoragePath } from "../knowledge/storage";
 
@@ -70,14 +71,19 @@ function buildCatalog({ root, servers, recipes }: CatalogInput): GitHubSyncCatal
     return source ? [githubSyncItem(row, "papers", source)] : [];
   });
   const prompts = promptList().map(row => githubSyncItem(row, "prompts", path.join(root, "prompts", row.project, row.task)));
-  const scripts = (scriptList() as any[]).map(row => {
-    const script = scriptGet(row.path);
+  const scripts = (scriptList() as any[]).filter(row => !githubSyncIgnoredPath(`scripts/${row.path}`)).map(row => {
+    let script: ReturnType<typeof scriptGet>;
+    try { script = scriptGet(row.path); }
+    catch (error) {
+      if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+      script = null;
+    }
     const item = githubSyncItem(row, "scripts", path.join(root, "scripts", row.path));
-    if (!script) throw new Error(`Script disappeared while building the Sync catalog: ${row.path}`);
-    item.id = script.knowledgeId;
-    item.identityAliases = script.aliases;
-    item.legacyIds = [row.path];
     const sidecar = scriptIdentityFile(row.path);
+    const identity = script || (fs.existsSync(sidecar) ? readSyncScriptIdentity(fs.readFileSync(sidecar)) : undefined);
+    item.id = identity?.knowledgeId || row.path;
+    item.identityAliases = identity?.aliases;
+    item.legacyIds = [row.path];
     item.dependencies = [{ source: sidecar, destination: githubSyncDestination(sidecar) }];
     return item;
   });

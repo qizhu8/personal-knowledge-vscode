@@ -158,7 +158,9 @@ assert.match(css, /\[data-workspace="tools"\],\[data-workspace-group="tools"\]\{
 assert.match(css, /\[data-workspace="automation"\],\[data-workspace-group="automation"\]\{--workspace-color:#e25555\}/, "Automation uses a distinct red identity color");
 assert.strictEqual((html.match(/class="workspace-context-title"/g) || []).length, 5, "five non-interactive workspace titles");
 assert.strictEqual((html.match(/class="workspace-context-tabs" role="tablist"/g) || []).length, 5, "each workspace exposes a distinct tab list");
-assert.match(html, /<span class="workspace-context-title">Automation<\/span>[\s\S]*?data-tab="agentSessions">Agent Sessions<\/button>[\s\S]*?data-tab="recipes">Recipe Library<\/button>/, "Automation owns Agent Sessions and the Recipe Library");
+assert.match(html, /<span class="workspace-context-title">Automation<\/span>[\s\S]*?openActionLibrary\(event\)[^>]*>Action Library<\/button>[\s\S]*?data-tab="agentSessions">Agent Sessions<\/button>[\s\S]*?data-tab="recipes">Recipe Library<\/button>/, "Automation exposes the Action Library alongside Agent Sessions and the Recipe Library");
+assert.match(bundle, /function openActionLibrary\(event\)[\s\S]*?command:'openActionLibrary'/, "Action Library entry opens the existing durable Action workbench");
+assert.match(extensionSource, /case "openActionLibrary":[\s\S]*?openActionWorkbench\(context\)/, "extension host handles the main-navigation Action Library entry");
 assert.match(html, /<span class="workspace-context-title">Projects<\/span>[\s\S]*?data-tab="projects">Overview<\/button>[\s\S]*?data-tab="chatroom">Threads<\/button>/, "Projects owns Project Overview and Chatroom Threads navigation");
 assert.match(css, /\.workspace-context-title\{[^}]*font-family:[^}]*font-size:16px/, "workspace headings use distinct display typography");
 assert.match(css, /\.tab\.active::after\{[^}]*background:var\(--accent\)/, "active tabs have a dedicated selection indicator");

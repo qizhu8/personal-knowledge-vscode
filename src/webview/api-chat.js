@@ -29,6 +29,7 @@
   const workerNodes = new Map();
   const workerCounts = new Map();
   const approvalDrafts = new Map();
+  const formDrafts = new Map();
   const approvalNodes = new Map();
   let workerNodesChatId;
   let revealDispatch;
@@ -57,6 +58,10 @@
   let renderedToolGroups;
   const expandedToolGroups = new Set();
   const post = (type, extra = {}) => vscode.postMessage({ type, ...extra });
+  const visualization = globalThis.PkmChatVisualization({ post, steer: () => {
+    inputMode = "steer"; saveDraft(); render(); element("prompt").focus();
+  } });
+  window.addEventListener("pagehide", () => visualization.dispose());
   function markResultRead() {
     if (!state || screen === "library" || document.visibilityState !== "visible" || !state.chat.lastResultId || state.chat.lastResultId === state.chat.readResultId) return;
     const messages = element("messages");
@@ -447,13 +452,72 @@
       const summary = document.createElement("summary"); summary.textContent = t(approval.scope);
       const input = document.createElement("pre"); input.textContent = approval.detail; details.append(summary, input);
       const actions = document.createElement("div"); actions.className = "approval-actions";
+      section.append(title, details);
+      let readForm;
+      if (approval.form) {
+        const form = document.createElement("form"); form.className = "chat-question-form";
+        const draft = formDrafts.get(approval.id) || Object.create(null);
+        const fields = [];
+        for (const [name, field] of Object.entries(approval.form.properties)) {
+          const label = document.createElement("label"); label.className = "chat-question-field";
+          const title = document.createElement("span"); title.textContent = field.title || name;
+          const required = approval.form.required?.includes(name);
+          if (required) title.textContent += " *";
+          let control;
+          const choices = field.enum || field.items?.enum;
+          if (choices) {
+            control = document.createElement("select"); control.multiple = field.type === "array";
+            if (!control.multiple) { const empty = document.createElement("option"); empty.value = ""; empty.textContent = t("Choose an answer"); control.append(empty); }
+            choices.forEach((choice, index) => { const option = document.createElement("option"); option.value = String(index); option.textContent = String(choice); control.append(option); });
+            const previous = draft[name] ?? field.default;
+            for (const option of control.options) if (option.value !== "") option.selected = control.multiple
+              ? Array.isArray(previous) && previous.includes(choices[Number(option.value)])
+              : previous === choices[Number(option.value)];
+          } else {
+            control = document.createElement(field.type === "array" ? "textarea" : "input");
+            if (field.type !== "array") control.type = field.type === "boolean" ? "checkbox" : ["integer", "number"].includes(field.type) ? "number" : "text";
+            if (field.type === "boolean") control.checked = draft[name] ?? field.default ?? false;
+            else { const previous = draft[name] ?? field.default ?? ""; control.value = Array.isArray(previous) ? previous.join("\n") : String(previous); }
+            if (field.type === "integer") control.step = "1";
+            else if (field.type === "number") control.step = "any";
+            if (field.minimum !== undefined) control.min = String(field.minimum);
+            if (field.maximum !== undefined) control.max = String(field.maximum);
+            if (field.minLength !== undefined) control.minLength = field.minLength;
+            control.maxLength = Math.min(field.maxLength ?? 4000, 4000);
+          }
+          control.name = name; control.required = !!required && field.type !== "boolean";
+          const read = () => choices ? control.multiple ? [...control.selectedOptions].map(option => choices[Number(option.value)])
+            : control.value === "" ? undefined : choices[Number(control.value)]
+            : field.type === "boolean" ? control.checked : control.value === "" ? undefined
+            : ["integer", "number"].includes(field.type) ? Number(control.value)
+            : field.type === "array" ? control.value.split("\n").filter(Boolean) : control.value;
+          control.oninput = control.onchange = () => { draft[name] = read(); formDrafts.set(approval.id, draft); };
+          label.append(title, control);
+          if (field.description) { const description = document.createElement("small"); description.textContent = field.description; label.append(description); }
+          form.append(label); fields.push({ name, control, read });
+        }
+        const feedback = document.createElement("p"); feedback.className = "message-error"; feedback.setAttribute("role", "alert"); form.append(feedback);
+        readForm = () => {
+          if (!form.reportValidity()) return undefined;
+          const answer = Object.create(null);
+          for (const field of fields) { const value = field.read(); if (value !== undefined) answer[field.name] = value; }
+          return answer;
+        };
+        form.onsubmit = event => { event.preventDefault(); actions.querySelector("button")?.click(); };
+        section.append(form);
+      }
       const choices = approval.decision ? approval.choices.map(choice => [choice.value, choice.value === "cancel" ? "close" : "check", choice.label])
         : [["approve", "check", approval.quota ? "Yes" : approval.once ? "Approve" : "Approve & remember"], ["deny", "close", approval.quota ? "No" : "Deny"], ...(!approval.once ? [["allow-all", "shield", "Allow All"]] : [])];
       for (const [value, icon, label] of choices) {
-        const button = iconButton(icon, label, () => { for (const action of actions.children) action.disabled = true; post(approval.decision ? "decision" : "approval", { id: approval.id, value }); });
+        const button = iconButton(icon, label, () => {
+          const answer = value === "submit" && readForm ? readForm() : undefined;
+          if (value === "submit" && readForm && answer === undefined) return;
+          for (const action of actions.children) action.disabled = true;
+          post(approval.decision ? "decision" : "approval", { id: approval.id, value, ...(answer ? { answer } : {}) });
+        });
         const text = document.createElement("span"); text.textContent = t(label); button.disabled = !!approval.questioning; button.append(text); actions.append(button);
       }
-      section.append(title, details, actions);
+      section.append(actions);
       if (approval.quota) {
         const question = document.createElement("textarea"); question.maxLength = 2000; question.rows = 2; question.placeholder = t("Question about this quota"); question.value = approvalDrafts.get(approval.id) || ""; question.disabled = !!approval.questioning;
         question.oninput = () => approvalDrafts.set(approval.id, question.value);
@@ -471,7 +535,7 @@
       }
       approvalNodes.set(approval.id, { fingerprint, section }); children.push(section);
     }
-    for (const id of approvalNodes.keys()) if (!confirmations.some(approval => approval.id === id)) { approvalNodes.delete(id); approvalDrafts.delete(id); }
+    for (const id of approvalNodes.keys()) if (!confirmations.some(approval => approval.id === id)) { approvalNodes.delete(id); approvalDrafts.delete(id); formDrafts.delete(id); }
     for (const [index, child] of children.entries()) if (target.children[index] !== child) target.insertBefore(child, target.children[index] || null);
     while (target.children.length > children.length) target.lastElementChild.remove();
     updateClock();
@@ -555,6 +619,9 @@
     return details;
   }
   function renderMemory() {
+    if (!state || document.visibilityState !== "visible" || element("memory-panel").hidden) return;
+    const policy = state.chat.memoryPolicy || { recallDays:30, includeWorkers:true, grants:[] };
+    element("memory-policy-status").textContent = `${policy.recallDays === null ? "All time" : `Last ${policy.recallDays} days`} · Current Chat${policy.includeWorkers ? " + descendant workers" : ""} · ${policy.grants.length} explicit grants`;
     if (!element("retrieval-activity")) {
       const row = document.createElement("div"); row.className = "settings-row retrieval-timeline";
       for (const [id, label] of [["retrieval-activity", "Activity"], ["retrieval-step", "Memory"]]) {
@@ -572,7 +639,7 @@
     const steps = [
       { id: "latest", label: t("Memory"), receipt: activity?.retrieval },
       ...(timeline?.attempts || []).map((attempt, index) => ({ id: `attempt-${index}`, label: `${t("Memory")} ${index + 1} · ${attempt.kind} · ${attempt.durationMs} ms`, receipt: attempt.receipt })),
-      ...(timeline?.rounds || []).map((round, index) => ({ id: `round-${index}`, label: `${t("Send")} ${round.index + 1} · ${round.inputTokens}/${round.inputBudget}`, receipt: round.receipt })),
+      ...(timeline?.rounds || []).map((round, index) => ({ id: `round-${index}`, label: `${t(round.receipt.phase === "sent" ? "Sent" : "Prepared")} ${round.index + 1} · ${round.inputTokens}/${round.inputBudget}`, receipt: round.receipt })),
     ];
     const step = steps.find(item => item.id === memoryStepId) || steps[0];
     element("retrieval-step").replaceChildren(...steps.map(item => new Option(item.label, item.id)));
@@ -583,7 +650,7 @@
       const preview = segmentMetadata.get(candidate.id)?.preview;
       return preview ? { ...candidate, label: preview } : candidate;
     }) };
-    const fingerprint = JSON.stringify([state.chat.id, activity?.id, step.id, receipt, state.memoryTree, element("retrieval-kind").value, element("retrieval-top").value, element("retrieval-flow").clientWidth]);
+    const fingerprint = JSON.stringify([state.chat.id, activity?.id, step.id, receipt, state.memoryTree, policy, element("retrieval-kind").value, element("retrieval-top").value, element("retrieval-flow").clientWidth]);
     if (fingerprint === memoryFingerprint) return;
     memoryFingerprint = fingerprint;
     const type = element("retrieval-kind"); const previousType = type.value;
@@ -634,6 +701,7 @@
     tree.append(root);
   }
   function render() {
+    if (document.visibilityState !== "visible") return;
     element("copy-chat-id").disabled = !state.chat?.id;
     element("promote-project").disabled = !state.chat?.id;
     document.body.classList.toggle("chat-backgrounded", document.visibilityState === "hidden");
@@ -644,6 +712,7 @@
     renderMemory();
     element("permission-mode").value = state.chat.permissionMode || "protective";
     element("permission-mode").disabled = !!state.remoteBusy;
+    element("visualization-steer").disabled = !!state.remoteBusy;
     const grants = state.chat.permissionGrants?.length || 0;
     element("permission-grants").textContent = t("{count} remembered approvals", { count: grants });
     element("reset-permissions").disabled = !grants || !!state.remoteBusy;
@@ -730,6 +799,19 @@
     element("task").title = t(taskLabel); element("task").setAttribute("aria-label", t(taskLabel));
     element("task").disabled = state.busy;
     element("task").firstElementChild.className = `codicon codicon-${state.chat.sessionId ? "check" : "checklist"}`;
+    const harnessSummary = element("harness-summary");
+    harnessSummary.hidden = !state.chat.sessionId;
+    if (!harnessSummary.hidden) {
+      const reports = state.chat.messages.filter(message => message.taskId === state.chat.sessionId)
+        .flatMap(message => (message.harnessReports || []).filter(report => report.taskId === state.chat.sessionId));
+      const task = [...reports].reverse().find(report => report.kind === "task");
+      const validation = [...reports].reverse().find(report => report.kind === "validation");
+      element("harness-summary-text").textContent = [
+        task ? t("Agent-reported goal: {goal}", { goal:task.goal }) : t("No explicit task-state report yet"),
+        validation ? t("Recorded validation: {status}", { status:validation.status }) : t("Task validation not recorded"),
+        state.chat.progress?.status ? t("Response: {status}", { status:state.chat.progress.status }) : ""
+      ].filter(Boolean).join(" · ");
+    }
     const pauseLabel = state.chat.paused ? "Resume Chat" : "Pause Chat";
     element("pause").title = t(pauseLabel); element("pause").setAttribute("aria-label", t(pauseLabel));
     element("pause").firstElementChild.className = `codicon codicon-${state.chat.paused ? "debug-start" : "debug-pause"}`;
@@ -740,7 +822,7 @@
     element("permissions").title = `${t("Permissions")}: ${t(permissionLabel)} · next request`;
     element("permissions").setAttribute("aria-label", element("permissions").title);
     const selected = (state.toolGroups || []).flatMap(group => group.tools.filter(tool => tool.enabled));
-    const builtinCount = selected.filter(tool => tool.id.startsWith("builtin:") && (state.chat.permissionMode !== "read-only" || ["read_file", "find_files", "search_text", "ask_user", "pkm_search", "pkm_read", "session_info", "list_chats"].includes(tool.name))).length;
+    const builtinCount = selected.filter(tool => tool.id.startsWith("builtin:") && (tool.name !== "record_harness" || state.chat.sessionId) && (state.chat.permissionMode !== "read-only" || ["read_file", "find_files", "search_text", "ask_user", "pkm_search", "pkm_read", "session_info", "list_chats", "record_harness"].includes(tool.name))).length;
     const mcpCount = state.chat.permissionMode === "read-only" ? 0 : selected.filter(tool => tool.id.startsWith("mcp:")).length;
     const hostCount = state.chat.permissionMode === "read-only" ? 0 : selected.filter(tool => tool.id.startsWith("vscode:")).length;
     element("tools-label").textContent = t("{count} tools", { count: builtinCount + mcpCount + hostCount });
@@ -802,6 +884,14 @@
       return;
     }
     if (message.type === "error") {
+      if (message.confirmationId) {
+        const card = approvalNodes.get(message.confirmationId)?.section;
+        if (card) {
+          for (const button of card.querySelectorAll(".approval-actions button")) button.disabled = false;
+          const feedback = card.querySelector(".chat-question-form .message-error");
+          if (feedback) feedback.textContent = message.message;
+        }
+      }
       if (!message.chatId || message.chatId === state?.chat.id) historyPending = undefined;
       if (message.submissionId) {
         const submission = submissions.get(message.submissionId);
@@ -823,6 +913,7 @@
       const retained = new Set((message.library?.chats || message.chats || []).map(chat => chat.id));
       for (const id of Object.keys(drafts)) if (!retained.has(id)) delete drafts[id];
       if (!message.chat) {
+        visualization.setChat(undefined);
         state = undefined; pending = undefined; submissions.clear(); budgetOwner = undefined;
         historyStart = 0; historyPending = undefined; historyLoaded = false;
         clearInterval(clock); element("messages").replaceChildren(); element("chats").replaceChildren();
@@ -841,6 +932,8 @@
         historyStart = message.history?.start || 0; historyPending = undefined; historyLoaded = false;
       }
       state = message;
+      visualization.setChat(state.chat.id);
+      visualization.notify();
       if (previous !== state.chat.id) {
         memorySegments.clear(); expandedMemorySegments.clear(); requestedMemorySegments.clear(); memoryGroupOpen.clear(); memoryFingerprint = undefined;
         element("prompt").value = drafts[state.chat.id] || ""; element("memory-preview").textContent = ""; element("memory-preview").hidden = true;
@@ -854,6 +947,7 @@
       saveDraft(); render(); markResultRead(); return;
     }
     if (message.type === "delta" && message.chatId === state?.chat.id) {
+      visualization.notify();
       const reply = state.chat.messages.find(item => item.id === message.id);
       if (reply) reply.content += message.text;
       if (!frame) frame = requestAnimationFrame(() => { frame = undefined; renderMessages(); });
@@ -865,6 +959,7 @@
   element("copy-chat-id").onclick = () => { if (state?.chat?.id) post("copyChatId", { id: state.chat.id }); };
   element("promote-project").onclick = () => { if (state?.chat?.id) post("promoteProject"); };
   const showScreen = next => {
+    if (next !== "chat") visualization.close();
     if (next === "chat" && screen !== "chat") jumpToLatest = true;
     screen = next; document.body.classList.toggle("chat-library-visible", screen === "library");
     element("library-view").hidden = screen !== "library"; saveDraft();
@@ -982,6 +1077,7 @@
   element("back").onclick = () => { showScreen("library"); post("libraryRefresh"); };
   showScreen(screen);
   element("task").onclick = () => post(state.chat.sessionId ? "completeTask" : "startTask");
+  element("open-harness").onclick = () => post("openHarness");
   element("pause").onclick = () => post(state.chat.paused ? "resume" : "pause");
   const popovers = { permissions: "permissions-panel", tools: "tools-panel", memory: "memory-panel", options: "advanced-budget", "agent-config": "agent-config-panel" };
   function closePopovers() { for (const [button, panel] of Object.entries(popovers)) { element(panel).hidden = true; element(button).setAttribute("aria-expanded", "false"); } }
@@ -998,6 +1094,7 @@
   element("settings").onclick = () => post("settings");
   for (const button of document.querySelectorAll("[data-agent-config]")) button.onclick = () => { closePopovers(); post("agentConfig", { value: button.dataset.agentConfig }); };
   element("memory-close").onclick = closePopovers;
+  element("memory-policy").onclick = () => post("memoryPolicy");
   element("retrieval-top").onchange = renderMemory;
   element("retrieval-kind").onchange = renderMemory;
   let retrievalWidth = 0;
@@ -1017,7 +1114,8 @@
   document.addEventListener("visibilitychange", () => {
     const visible = document.visibilityState === "visible";
     document.body.classList.toggle("chat-backgrounded", !visible);
-    if (visible) renderMessages();
+    if (visible && state) render();
+    else if (!visible) { clearInterval(clock); clock = undefined; }
     markResultRead();
   });
   window.addEventListener("focus", markResultRead);

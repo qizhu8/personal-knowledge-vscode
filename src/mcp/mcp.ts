@@ -9,17 +9,53 @@ import { condaEnvs, pyenvAdd, pyenvCreate, pyenvDelete, pyenvList, pyenvUpdate }
 import { managedEnvironmentsRoot } from "../runtime/environment-paths";
 import { isAbsoluteForPlatform, isForeignAbsolutePath } from "../knowledge/store-path";
 import { compareVersionOrder } from "../runtime/version-order";
+import { ensureRecipeCompiler } from "./recipe-compiler";
 import { mcpStdioCommand } from "./mcp-stdio-command";
 import { hasNewerMcpRuntime } from "./mcp-version-policy";
 import { builtInRecipePin } from "../workflows/project-model";
 
+export async function trashKnowledgeFileViaMcp(
+  extensionRoot: string, storeRoot: string, area: string, relative: string, expectedSha256: string,
+): Promise<void> {
+  const script = `
+import asyncio, json, sys
+from fastmcp import Client
+from fastmcp.client.transports import StdioTransport
+async def main():
+    helper, root, node, extension, area, relative, digest = sys.argv[1:]
+    transport = StdioTransport(command=sys.executable, args=[helper, "--root", root, "--node", node, "--extension-root", extension])
+    async with Client(transport, timeout=60) as client:
+        result = await client.call_tool("knowledge_file_trash", {"area": area, "path": relative, "expected_sha256": digest})
+        value = result.structured_content or json.loads(result.content[0].text)
+        if value.get("ok") is not True or not value.get("trash"):
+            raise RuntimeError("MCP did not confirm the file was moved to Trash.")
+        print(json.dumps(value))
+asyncio.run(main())
+`;
+  await new Promise<void>((resolve, reject) => {
+    execFile(resolveMcpPython(), ["-c", script, path.join(extensionRoot, "resources", "knowledge_mutations.py"),
+      storeRoot, process.execPath, extensionRoot, area, relative, expectedSha256],
+    { timeout: 90_000, maxBuffer: 1024 * 1024, windowsHide: true, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } },
+    (error, stdout, stderr) => {
+      if (error) { reject(new Error(`MCP Trash failed: ${stderr.trim() || error.message}`)); return; }
+      try {
+        const result: unknown = JSON.parse(stdout);
+        if (!result || typeof result !== "object" || !("ok" in result) || result.ok !== true || !("trash" in result) || !result.trash) {
+          throw new Error("MCP did not confirm the Trash result.");
+        }
+        resolve();
+      } catch (failure) { reject(failure); }
+    });
+  });
+}
+
 // ── MCP server scaffold ────────────────────────────────────────────────────
-export const UNIFIED_MCP_VERSION = "2.13.14";
+export const UNIFIED_MCP_VERSION = "2.13.21";
 const PROMPT_MANAGER_WHEEL = "uone_prompt_manager-0.1.0-py3-none-any.whl";
 const PROMPT_MANAGER_WHEEL_SHA256 = "eb9fd76058134f9ab9711d8e7604c75f761db5762d93e67f65740dc07fdc1518";
-const RETRIEVAL_ENGINE_WHEEL = "adaptive_skill_retrieval-0.3.0.dev2026091601-py3-none-any.whl";
-const RETRIEVAL_ENGINE_WHEEL_SHA256 = "04560cf29966c8c267adf8ea8502819fd005222ca1e383af63cc115996afbf21";
-const KNOWLEDGE_MCP_VERSION = "1.5.1";
+const RETRIEVAL_ENGINE_WHEEL = "adaptive_skill_retrieval-0.3.0.dev2026100504-py3-none-any.whl";
+const RETRIEVAL_ENGINE_WHEEL_SHA256 = "332e434272a3cc88410eb50c7e4bfc3e3f69c5bf1e13f7f9a799087c37124f89";
+const KNOWLEDGE_MCP_VERSION = "1.5.5";
 const CHAT_MCP_VERSION = "2.3.6";
 const RECIPE_MCP_VERSION = "1.8.2";
 const AGENT_SESSION_MCP_VERSION = "1.8.0";
@@ -291,7 +327,12 @@ export function resolveMcpPython(): string {
 
 export function mcpServerDefinitionData(): { label: string; command: string; args: string[]; env?: Record<string, string>; cwd: string; version: string } {
   const cwd = managedMcpServerDirectory();
-  const launch = mcpStdioCommand(resolveMcpPython(), [path.join(cwd, "server.py")]);
+  const python = mcpRuntimePythonPath();
+  if (!fs.existsSync(python) || !fs.existsSync(path.join(cwd, "server.py"))) {
+    throw new Error("Managed PKM MCP runtime or generated server is missing. Finish setup in Config.");
+  }
+  // Discovery must not synchronously spawn Python; runtime health is checked on explicit startup.
+  const launch = mcpStdioCommand(python, [path.join(cwd, "server.py")]);
   return {
     label: "pkm",
     command: launch.command,
@@ -309,7 +350,7 @@ export function mcpRuntimeStatus(): McpRuntimeStatus {
   const registered = pyenvList().some(env => env.path && path.resolve(env.path) === path.resolve(runtimePath));
   if (validation.error) return { path: runtimePath, python, exists, healthy: false, version: validation.version, error: exists ? validation.error : "Managed MCP runtime has not been created.", registered };
   try {
-    execFileSync(validation.path, ["-c", "import fastmcp, prompt_manager, websockets, adaptive_skill_retrieval, cryptography"], { timeout: 10000, stdio: ["ignore", "pipe", "pipe"], windowsHide: process.platform === "win32" });
+    execFileSync(validation.path, ["-c", "import fastmcp, prompt_manager, websockets, adaptive_skill_retrieval, cryptography; from adaptive_skill_retrieval import ContentType, RetrievalEngine, SkillDocument, academic_bm25_benchmark_route, exact_match_route"], { timeout: 10000, stdio: ["ignore", "pipe", "pipe"], windowsHide: process.platform === "win32" });
     return { path: runtimePath, python: validation.path, exists: true, healthy: true, version: validation.version, error: "", registered };
   } catch (error: any) {
     return { path: runtimePath, python: validation.path, exists: true, healthy: false, version: validation.version, error: `MCP dependencies are missing or broken: ${error?.message || String(error)}`, registered };
@@ -536,10 +577,7 @@ export function generateMcpServer(context: vscode.ExtensionContext): { serverPat
   generateChatMcpServer(context);
   fs.copyFileSync(path.join(context.extensionPath, "resources", "recipe_runtime.py"), recipeRuntimePy);
   fs.copyFileSync(path.join(context.extensionPath, "resources", "recipe_compiler_bridge.js"), path.join(mcpDir, "recipe_compiler_bridge.js"));
-  fs.writeFileSync(path.join(mcpDir, "recipe_compiler_config.json"), JSON.stringify({
-    executable: process.execPath,
-    contracts: path.join(context.extensionPath, "dist", "workflows", "workflow-contracts.js"),
-  }), { mode: 0o600 });
+  ensureRecipeCompiler(context.extensionPath, mcpDir, process.execPath);
   fs.copyFileSync(path.join(context.extensionPath, "resources", "action_runtime.py"), path.join(mcpDir, "action_runtime.py"));
   fs.copyFileSync(path.join(context.extensionPath, "resources", "action_modules.py"), path.join(mcpDir, "action_modules.py"));
   fs.copyFileSync(path.join(context.extensionPath, "resources", "action_run_store.py"), path.join(mcpDir, "action_run_store.py"));
@@ -548,6 +586,10 @@ export function generateMcpServer(context: vscode.ExtensionContext): { serverPat
   fs.copyFileSync(path.join(context.extensionPath, "resources", "recipe_health.py"), recipeHealthPy);
   fs.copyFileSync(path.join(context.extensionPath, "resources", "agent_session_runtime.py"), agentSessionRuntimePy);
   fs.copyFileSync(path.join(context.extensionPath, "resources", "api_chat_control.py"), path.join(mcpDir, "api_chat_control.py"));
+  fs.copyFileSync(path.join(context.extensionPath, "resources", "knowledge_recovery.py"), path.join(mcpDir, "knowledge_recovery.py"));
+  for (const resource of ["knowledge_mutations.py", "knowledge_mutations.js", "knowledge_snapshots.py"]) {
+    fs.copyFileSync(path.join(context.extensionPath, "resources", resource), path.join(mcpDir, resource));
+  }
   fs.copyFileSync(path.join(context.extensionPath, "resources", "mcp_call_guard.py"), callGuardPy);
   fs.copyFileSync(path.join(context.extensionPath, "resources", "diagnostic_log.py"), path.join(mcpDir, "diagnostic_log.py"));
 
@@ -638,6 +680,11 @@ def _feature_tool(*domains, read_only=False):
 
 from agent_session_runtime import register_agent_session_tools
 from api_chat_control import register_api_chat_tools
+from knowledge_recovery import register_knowledge_recovery_tools
+from knowledge_mutations import trash_file, register_knowledge_mutation_tools
+from knowledge_snapshots import register_knowledge_snapshot_tools
+_KNOWLEDGE_NODE = ${JSON.stringify(process.execPath)}
+_KNOWLEDGE_EXTENSION = ${JSON.stringify(context.extensionPath.replace(/\\/g, "/"))}
 from mcp_call_guard import McpCallGuardMiddleware, McpDiagnosticsMiddleware
 from diagnostic_log import DiagnosticLog
 _MCP_DIAGNOSTICS = DiagnosticLog(STORE / ".pkm" / "state" / "diagnostics" / "mcp")
@@ -656,6 +703,10 @@ def diagnostics_latest(limit: int = 100) -> dict:
 
 
 _AGENT_SESSION_TOOLS = {}
+if "knowledge" in _FEATURE_DOMAINS:
+  register_knowledge_recovery_tools(mcp, STORE)
+  register_knowledge_mutation_tools(mcp, STORE, _KNOWLEDGE_NODE, _KNOWLEDGE_EXTENSION)
+  register_knowledge_snapshot_tools(mcp, STORE, _KNOWLEDGE_NODE, _KNOWLEDGE_EXTENSION)
 if "automation" in _FEATURE_DOMAINS:
   _AGENT_SESSION_TOOLS = register_agent_session_tools(mcp, STORE)
   register_api_chat_tools(mcp, STORE)
@@ -2037,12 +2088,10 @@ def update_note(slug: str, title: Optional[str] = None, content: Optional[str] =
 
 @_feature_tool("knowledge")
 def delete_note(slug: str) -> str:
-    """Delete a note by slug (its relative path without .md)."""
+    """Move a note to PKM Trash and record durable deletion intent; never permanently unlink it."""
     p = NOTES / (slug + ".md")
     _assert_mcp_writable(NOTES, p)
-    try: p.unlink(missing_ok=True)
-    except Exception: pass
-    return json.dumps({"ok": True, "slug": slug})
+    return json.dumps(trash_file(STORE, "notes", p.relative_to(NOTES).as_posix(), _KNOWLEDGE_NODE, _KNOWLEDGE_EXTENSION))
 
 
 @_feature_tool("knowledge")
@@ -2085,13 +2134,12 @@ def update_skill(name: str, content: Optional[str] = None, description: Optional
 
 @_feature_tool("knowledge")
 def delete_skill(name: str) -> str:
-    """Delete a skill by name."""
+    """Move a Skill to PKM Trash and record durable deletion intent; never permanently unlink it."""
     p, _ = _find_skill(name)
     if p is not None:
         _assert_mcp_writable(SKILLS, p)
-        try: p.unlink()
-        except Exception: pass
-    return json.dumps({"ok": True, "name": name})
+        return json.dumps(trash_file(STORE, "skills", p.relative_to(SKILLS).as_posix(), _KNOWLEDGE_NODE, _KNOWLEDGE_EXTENSION))
+    return json.dumps({"ok": True, "name": name, "absent": True})
 
 
 # ── Paper tools ──────────────────────────────────────────────────────────────
@@ -2210,11 +2258,9 @@ def update_paper(slug: str, title: Optional[str] = None, authors: Optional[List[
 
 @_feature_tool("knowledge")
 def delete_paper(slug: str) -> str:
-    """Delete a paper by slug."""
+    """Move a Research paper to PKM Trash and record durable deletion intent."""
     _assert_mcp_writable(PAPERS, PAPERS / (slug + ".md"))
-    try: (PAPERS / (slug + ".md")).unlink(missing_ok=True)
-    except Exception: pass
-    return json.dumps({"ok": True, "slug": slug})
+    return json.dumps(trash_file(STORE, "papers", slug + ".md", _KNOWLEDGE_NODE, _KNOWLEDGE_EXTENSION))
 
 
 @_feature_tool("knowledge")
@@ -2671,6 +2717,9 @@ async def chat_join(magic_link: str, name: str) -> str:
   Preferred call: chat_join(magic_link="pkchat:v1:...", name="assigned alias").
   The Magic Link contains the room URL and key. The alias must be unique in the
   room.
+  Ask the user for this agent's alias before joining; never invent a name.
+  core.chatroom-alias is the preinstalled durable input Action. In PKM Chat the
+  transport collects its inline form automatically before dispatching this tool.
   """
   try:
     url, token = _parse_magic_link(magic_link)

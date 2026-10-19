@@ -1,6 +1,7 @@
-import { join, extname, resolve, sep } from "path";
-import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, mkdirSync, renameSync, rmSync, copyFileSync, cpSync } from "fs";
+import { join, extname, resolve, relative, sep } from "path";
+import { existsSync, readdirSync, statSync, realpathSync, readFileSync, writeFileSync, mkdirSync, renameSync, rmSync, copyFileSync, cpSync } from "fs";
 import { createHash, randomBytes } from "crypto";
+import { parsePkmLocator, PkmLocatorError } from "./knowledge-locator";
 
 let _storePath = "";
 
@@ -188,9 +189,18 @@ export function packageGet(name: string) {
 }
 
 export function packageFileGet(name: string, relPath: string) {
-  const full = join(_storePath, 'packages', name, relPath);
+  if (!name || /[/\\:\0]/.test(name) || name === "." || name === ".."
+    || !relPath || relPath.split(/[/\\]/).some(part => !part || part === "." || part === "..") || /[:\0]/.test(relPath)) return null;
+  const root = resolve(_storePath, "packages");
+  const packageRoot = resolve(root, name);
+  const full = resolve(packageRoot, relPath);
+  if (!full.startsWith(packageRoot + sep)) return null;
   if (!existsSync(full) || isDir(full)) return null;
-  try { return { content: readFileSync(full, 'utf-8'), file: relPath }; }
+  try {
+    if (realpathSync(root) !== root || realpathSync(packageRoot) !== packageRoot
+      || !realpathSync(full).startsWith(packageRoot + sep)) return null;
+    return { content: readFileSync(full, 'utf-8'), file: relPath };
+  }
   catch { return null; }
 }
 
@@ -258,6 +268,12 @@ function scriptIdentity(fullPath: string, relPath: string): ScriptIdentity {
 }
 
 function resolveScriptReference(reference: string): string | null {
+  if (reference.startsWith("pkm://")) {
+    const parsed = parsePkmLocator(reference);
+    if (parsed.kind !== "script" && parsed.kind !== "script-path") {
+      throw new PkmLocatorError("invalid", "Choose a PKM Script reference.");
+    }
+  }
   const isUri = reference.startsWith("pkm://script/") || reference.startsWith("pkm://scripts/");
   const legacyUri = `pkm://scripts/${reference.replace(/\\/g, "/").split("/").map(encodeURIComponent).join("/")}`;
   const matches = scriptList().filter(row => {
@@ -267,6 +283,7 @@ function resolveScriptReference(reference: string): string | null {
     return (isUri && reference === `pkm://script/${identity.knowledgeId}`)
       || identity.aliases.includes(isUri ? reference : legacyUri);
   });
+  if (matches.length > 1) throw new PkmLocatorError("duplicate", `Script reference resolves to multiple files: ${reference}`);
   return matches.length === 1 ? matches[0].path : null;
 }
 
@@ -277,11 +294,16 @@ export function scriptIdentityFile(relPath: string): string {
 export function scriptList() {
   const base = join(_storePath, 'scripts');
   const out: { category: string; file: string; path: string; lang: string; langs: string[] }[] = [];
+  if (!existsSync(base)) return out;
+  if (relative(join(realpathSync(_storePath), "scripts"), realpathSync(base))) throw new Error("Script root resolves outside the Knowledge Root scripts directory.");
   const walk = (dir: string, rel: string) => {
-    for (const name of safeReadDir(dir)) {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const name = entry.name;
+      if (name.startsWith(".") || entry.isSymbolicLink()) continue;
       const full = join(dir, name);
       const childRel = rel ? `${rel}/${name}` : name;
-      if (isDir(full)) { walk(full, childRel); continue; }
+      if (entry.isDirectory()) { walk(full, childRel); continue; }
+      if (!entry.isFile()) continue;
       const category = rel || "(root)";
       const langs = detectScriptLangs(full, name);
       out.push({ category, file: name, path: childRel, lang: langs.join(" + "), langs });

@@ -26,7 +26,7 @@ const hostLoad = require("child_process").spawnSync(process.execPath, ["-e", `
 `], { encoding: "utf8", timeout: 10_000 });
 assert.strictEqual(hostLoad.status, 0, hostLoad.stderr || String(hostLoad.error || "Chat module failed to load in the extension host"));
 const { streamApiChat, decodeChatImage, toolBudgetSummary } = require("../dist/chat/api-chat-client");
-const { ApiChatStore, agentSessionOrigin, apiChatStatus, apiChatDiagnostics, apiChatSessionDiagnostics } = require("../dist/chat/api-chat-store");
+const { ApiChatStore, agentSessionOrigin, apiChatStatus, apiChatDiagnostics, apiChatHarnessSnapshot, apiChatSessionDiagnostics } = require("../dist/chat/api-chat-store");
 const { modelProfiles, validateBudget, estimateInputTokens, estimateCost, assertModelAvailable } = require("../dist/chat/api-chat-models");
 const fs = require("fs");
 const os = require("os");
@@ -166,7 +166,7 @@ else (async () => {
       scoreComponents: { lexical: 30 - index, semantic: 0 }, selected: index < 3, reason: index < 3 ? "Included in bounded context" : "Outside budget", content: "reference-body-must-not-be-copied" }));
     const receipt = chatRetrievalReceipt(memoryChat, "AAGL cache design", "actual-model", knowledge);
     assert.strictEqual(receipt.model, "actual-model"); assert.strictEqual(receipt.sessionId, groupChat.sessionId);
-    assert.strictEqual(receipt.candidates.length, 20); assert(validChatRetrievalReceipt(receipt, memoryChat.id));
+    assert.strictEqual(receipt.candidates.length, 39); assert(validChatRetrievalReceipt(receipt, memoryChat.id));
     assert(!JSON.stringify(receipt).includes("reference-body-must-not-be-copied"));
     assert(receipt.candidates.some(candidate => candidate.kind === "api") && receipt.candidates.some(candidate => candidate.kind === "function"), "Candidate contract accepts future source types without executing them");
     assert(receipt.candidates.some(candidate => candidate.kind === "memory" && candidate.method === "rule:recent-history" && candidate.selected));
@@ -316,6 +316,37 @@ else (async () => {
     assert.strictEqual(apiChatStatus({ ...completedChat, messages: [{ ...completedChat.messages[0], delegations: [{ status: "running" }] }] }), "awaiting-result");
     assert.strictEqual(apiChatStatus({ ...completedChat, messages: [{ ...completedChat.messages[0], status: "cancelled" }] }), "stopped");
     assert.strictEqual(apiChatStatus({ ...completedChat, progress: { status: "running", steps: [{ status: "waiting" }] } }), "awaiting-input");
+    const harness = apiChatHarnessSnapshot({
+      ...completedChat,
+      id: "harness-chat",
+      sessionId: "agent_session_0123456789abcdef0123456789abcdef",
+      messages: [
+        { id: "input", role: "user", content: "Validate the selected approach", inputKind: "user" },
+        { id: "worker", role: "user", content: "Worker receipt", workerEventIds: ["worker-1"] },
+        { id: "attempt", role: "assistant", content: "Checking evidence", status: "streaming", model: "fixture-model",
+          planning: { schema: "pkm.chat.planning/v1", at: 2, recipeRunId: "recipe-run-1", recipeStageId: "validate",
+            possibilities: [
+              { id: "branch-safe", label: "Safe branch", status: "selected", recipeStageId: "validate", reason: "Best evidence", evidenceRefs: ["pkm://memory/1"] },
+              { id: "branch-fast", label: "Fast branch", status: "rejected", recipeStageId: "validate", reason: "Insufficient validation" },
+            ] },
+          progress: { status: "running", startedAt: 1, steps: [{ at: 2, label: "Running tool: validate", status: "running" }] },
+          retrieval: { schema: "pkm.chat.retrieval-receipt/v1", query: "selected approach", selectedCount: 1,
+            candidates: [{ id: "memory-1", kind: "memory", sourceUri: "pkm://memory/1", score: 0.9, method: "lexical", selected: true, reason: "Supports validation" }] },
+          toolCalls: [{ id: "call-1", name: "validate", status: "running", arguments: "{\"target\":\"fixture\"}", result: "partial evidence" }] },
+      ],
+      progress: { status: "running", startedAt: 1, steps: [{ at: 2, label: "Waiting for dependency", status: "waiting" }] },
+      queuedInputs: [{ id: "queued-1", mode: "steer", text: "Prefer the safer branch", at: 3 }],
+    });
+    assert.strictEqual(harness.schema, "pkm.agent.harness/v1");
+    assert.strictEqual(harness.currentProblem, "Validate the selected approach", "worker receipts must not replace the authoritative problem");
+    assert.strictEqual(harness.currentPhase.kind, "waiting");
+    assert.strictEqual(harness.waiting.kind, "dependency");
+    assert.strictEqual(harness.attempts[0].planning.recipeStageId, "validate");
+    assert.deepStrictEqual(harness.attempts[0].planning.possibilities.map(item => item.status), ["selected", "rejected"]);
+    assert.strictEqual(harness.attempts[0].retrieval[0].receipt.candidates[0].sourceUri, "pkm://memory/1");
+    assert.strictEqual(harness.attempts[0].toolCalls[0].purposeEvidence, "associated-input");
+    assert.strictEqual(harness.attempts[0].toolCalls[0].associatedProblem, "Worker receipt",
+      "attempt-level association reports the actual preceding input without inventing a rationale");
     chat.messages.push({ id: "reply", role: "assistant", content: "partial", status: "streaming", outputBudgetWarning: "Output token counting is unavailable; bytes are not tokens." });
     store.save(chat);
     const sourcePath = path.join(directory, "agent-sessions", chat.sessionId + ".json");
@@ -725,7 +756,13 @@ async function testController() {
   let provider;
   try {
     Module._load = function(name, parent, ...rest) {
-      if (parent?.filename.endsWith("api-chat-view.js") && name === "../knowledge/filestore" || parent?.filename.endsWith("knowledge-reader.js") && name === "../knowledge/filestore") return { getStorePath: () => directory, noteList: () => [{ title: "Selected memory", slug: "note", content: "memory" }], noteGet: () => ({ content: "memory snapshot" }), skillList: () => [{ name: "Selected skill" }], skillGet: () => ({ content: "pkm skill snapshot" }) };
+      if (parent?.filename.endsWith("api-chat-view.js") && name === "../knowledge/filestore" || parent?.filename.endsWith("knowledge-reader.js") && name === "../knowledge/filestore") return { getStorePath: () => directory, noteList: () => [{ title: "Selected memory", slug: "note", content: "memory" }], noteGet: () => ({ content: "memory snapshot" }), skillList: () => [{ name: "Selected skill" }], skillGet: () => ({ content: "pkm skill snapshot" }),
+        paperList: () => [{ title:"Selected research", slug:"research" }],
+        paperGet: () => ({ content:"research snapshot", conclusions:["No production writes."], assumptions:["Fixture only."] }) };
+      if (parent?.filename.endsWith("knowledge-reader.js") && name === "../knowledge/storage") return {
+        scriptList: () => [{ path:"nested/selected.py", file:"selected.py", category:"nested" }],
+        scriptGet: () => ({ content:"print('fixture, never executed')", knowledgeId:"script_fixture" }),
+      };
       if (parent?.filename.endsWith("knowledge-reader.js") && name === "../workflows/recipe-filesystem-store") return { RecipeFilesystemStore: class { list() { return { recipes: [{ recipeId: "recipe_fixture", name: "Selected Recipe", revision: 3, executableDigest: "a".repeat(64), definition: { spec: { nodes: [{ nodeId: "inspect", instructions: "Read actual evidence" }] } } }] }; } } };
       if (name === "vscode") return { commands: { executeCommand: async () => {} }, QuickPickItemKind: { Separator: -1 }, FileSystemError: MockFileSystemError, Uri: { joinPath: (uri, ...parts) => ({ fsPath: path.join(uri.fsPath, ...parts), path: path.join(uri.fsPath, ...parts) }) }, LanguageModelTextPart: class {}, CancellationTokenSource: class { constructor() { this.token = {}; } cancel() { this.token.cancelled = true; } dispose() {} }, lm: { tools: registeredTools, invokeTool: async (name, options) => { nativeInvocations.push({ name, options }); return { content: [] }; } }, window: { showTextDocument: async () => {}, showInformationMessage: async () => {}, showWarningMessage: async title => { nativeConfirmations.push(title); return sessionApproval; }, showQuickPick: async items => picks.length ? picks.shift()(items) : typeof items[0] === "string" ? items[0] : items.filter(item => ["read_file", "note", "Selected skill"].includes(item.id)), showInputBox: async options => { if (inputs.length) return inputs.shift()(options); throw new Error("VS Code connection must not request API credentials"); }, showOpenDialog: async () => selectedFiles, showSaveDialog: async () => saveDestination }, workspace: { workspaceFolders: [], fs: { stat: async uri => { try { return await fs.promises.stat(uri.fsPath); } catch (error) { if (error.code === "ENOENT" && uri.path?.endsWith(".toolsets.jsonc")) throw new MockFileSystemError("FileNotFound"); throw error; } }, readFile: uri => readImage(uri), writeFile: async (uri, bytes) => { imageWrites++; await fs.promises.writeFile(uri.fsPath, bytes); } }, openTextDocument: async uri => ({ getText: () => fs.readFileSync(uri.fsPath, "utf8") }), asRelativePath: uri => path.relative(directory, uri.fsPath), getConfiguration: () => ({ get: (key, fallback) => configuration[key] ?? fallback }) } };
       return originalLoad.call(this, name, parent, ...rest);
@@ -782,6 +819,7 @@ async function testController() {
     assert.strictEqual(provider.store.list().length, 1, "Explicit New must create exactly one Chat");
     const deleteFixtureUrl = `pkm://chats/${provider.store.namespace}/${deleteFixture}`;
     await provider.openPkmChat(deleteFixtureUrl);
+    assert.strictEqual(provider.pendingOpenChatId, undefined, "an attached view consumes URL selection exactly once");
     assert.strictEqual(provider.chat.id, deleteFixture);
     assert.strictEqual(provider.store.list().length, 1, "Opening a URL must not create a Chat");
     assert.strictEqual((await provider.agentControl("get", { chatId: deleteFixtureUrl })).chatUrl, deleteFixtureUrl);
@@ -796,8 +834,12 @@ async function testController() {
     const otherWindow = new ApiChatView(context);
     otherWindow.store = new ApiChatStore(provider.store.stateDirectory, "fedcba9876543210");
     const otherPosts = [];
+    await otherWindow.openPkmChat(deleteFixtureUrl);
+    assert.strictEqual(otherWindow.pendingOpenChatId, deleteFixture, "cold URL navigation waits for the actual Webview");
     otherWindow.view = { webview: { postMessage: value => { otherPosts.push(value); return Promise.resolve(true); } } };
     await otherWindow.handle({ type: "ready" });
+    assert.strictEqual(otherWindow.pendingOpenChatId, undefined);
+    assert(otherPosts.some(message => message.type === "showChat"));
     await otherWindow.openPkmChat(deleteFixtureUrl);
     assert.strictEqual(otherWindow.chat.id, deleteFixture);
     assert.strictEqual((await otherWindow.agentControl("list", {})).chats[0].chatUrl, deleteFixtureUrl);
@@ -859,6 +901,20 @@ async function testController() {
     protectiveOtherController.abort(); await assert.rejects(otherOutsideRead, /cancelled/); provider.running.delete(protectiveOther.id);
     await provider.handle({ type: "resetPermissions" }); await provider.handle({ type: "permissionMode", value: "ask" });
     assert.strictEqual(await permission("read-only"), true); assert.strictEqual(provider.approvals.size, 0);
+    const transportChild = new AbortController();
+    const childPermission = provider.requestPermission(provider.chat, "non-destructive", "Transport-child approval",
+      "One bounded action", transportChild.signal, true, true, permissionController.signal);
+    const childApprovalId = [...provider.approvals.keys()][0];
+    await provider.handle({ type:"approval", id:childApprovalId, value:"approve" });
+    assert.strictEqual(await childPermission, true, "UI approvals must validate the owning request, not require child-signal identity");
+    const staleChild = new AbortController();
+    const stalePermission = provider.requestPermission(provider.chat, "non-destructive", "Stale transport-child approval",
+      "Must not transfer to a new owner", staleChild.signal, true, true, permissionController.signal);
+    const staleApprovalId = [...provider.approvals.keys()][0];
+    provider.running.set(first, new AbortController());
+    await assert.rejects(provider.handle({ type:"approval", id:staleApprovalId, value:"approve" }), /no longer pending/);
+    staleChild.abort(); await assert.rejects(stalePermission, /cancelled/);
+    provider.running.set(first, permissionController);
     const firstPermission = permission("non-destructive");
     const firstApproval = [...provider.approvals.keys()][0]; assert(firstApproval);
     assert.strictEqual(posts.at(-1).approvals[0].scope, "Non-destructive operations");
@@ -1237,15 +1293,44 @@ async function testController() {
     assert(nextRequest.request.messages.some(item => item.content.includes("external skill snapshot")));
     assert(!posts.filter(item => item.type === "state").some(item => JSON.stringify(item.chat?.agentContext || {}).includes("memory snapshot")));
     nextRequest.resolve(); await nextRun;
-    provider.chat.builtinTools = ["session_info", "pkm_search", "pkm_read"];
+    provider.chat.builtinTools = ["session_info", "pkm_search", "pkm_read", "record_harness"];
     provider.chat.images = [testImage];
     const pkmStarted = new Promise(resolve => { started = resolve; });
     const pkmRun = provider.handle({ type: "send", text: "Inspect own Session and selected knowledge" }); await pkmStarted;
     const pkmRequest = requests.at(-1);
-    assert.deepStrictEqual(pkmRequest.request.tools.map(tool => tool.name).sort(), ["pkm_read", "pkm_search", "session_info"]);
+    assert.deepStrictEqual(pkmRequest.request.tools.map(tool => tool.name).sort(), ["pkm_read", "pkm_search", "record_harness", "session_info"]);
     assert(pkmRequest.request.messages[0].content.includes(provider.chat.sessionId));
     const info = JSON.parse(await pkmRequest.request.tools.find(tool => tool.name === "session_info").execute({}, pkmRequest.request.signal));
-    assert.strictEqual(info.sessionId, provider.chat.sessionId); assert.strictEqual(info.tools.length, 3); assert(!JSON.stringify(info).includes("test-key"));
+    assert.strictEqual(info.sessionId, provider.chat.sessionId); assert.strictEqual(info.tools.length, 4); assert(!JSON.stringify(info).includes("test-key"));
+    const reporter = pkmRequest.request.tools.find(tool => tool.name === "record_harness");
+    const reportResult = JSON.parse(await reporter.execute({ kind:"task", goal:"Inspect selected knowledge without deployment", sourceInputIds:[info.inputId],
+      constraints:["No deployment"], acceptance:["Read actual source evidence"] }, pkmRequest.request.signal));
+    assert.strictEqual(reportResult.source, "agent-report");
+    await reporter.execute({ kind:"planning", possibilities:[{ id:"inspect", label:"Inspect selected references", status:"selected" }] }, pkmRequest.request.signal);
+    await reporter.execute({ kind:"step", stepId:"inspect", status:"start", summary:"Inspect selected references" }, pkmRequest.request.signal);
+    pkmRequest.request.onTool({ id:"bound-evidence", name:"pkm_read", arguments:'{"id":"note"}', status:"running" });
+    pkmRequest.request.onTool({ id:"bound-evidence", name:"pkm_read", arguments:'{"id":"note"}', status:"complete", result:"Read recorded fixture" });
+    await reporter.execute({ kind:"step", stepId:"inspect", status:"complete", summary:"Read source", evidenceCallIds:["bound-evidence"] }, pkmRequest.request.signal);
+    const boundCall = provider.chat.messages.at(-1).toolCalls.find(call => call.id === "bound-evidence");
+    assert.strictEqual(boundCall.harnessBinding.stepId, "inspect");
+    assert(boundCall.startedAt && boundCall.finishedAt);
+    const sessionInfo = pkmRequest.request.tools.find(tool => tool.name === "session_info");
+    const evidence = JSON.parse(await sessionInfo.execute({ evidenceCallId:"bound-evidence", evidenceMessageId:info.responseId }, pkmRequest.request.signal));
+    assert.strictEqual(evidence.content, boundCall.result);
+    assert.strictEqual(evidence.status, "complete");
+    assert.strictEqual(provider.chat.messages.at(-1).toolCalls.length, 1, "Reading stored evidence never dispatches its tool again");
+    await assert.rejects(sessionInfo.execute({ evidenceCallId:"foreign-call" }, pkmRequest.request.signal), /missing|outside/);
+    await assert.rejects(sessionInfo.execute({ evidenceStart:0 }, pkmRequest.request.signal), /require evidenceCallId/);
+    assert.strictEqual(provider.store.load(first, false).messages.at(-1).harnessReports.length, 4);
+    const reportsBeforeWriteFailure = JSON.stringify(provider.chat.messages.at(-1).harnessReports);
+    const planningBeforeWriteFailure = provider.chat.messages.at(-1).planning;
+    const persistBeforeWriteFailure = provider.persist;
+    provider.persist = () => { throw new Error("Fixture report persistence failure"); };
+    try {
+      await assert.rejects(reporter.execute({ kind:"planning", possibilities:[] }, pkmRequest.request.signal), /persistence failure/);
+      assert.strictEqual(JSON.stringify(provider.chat.messages.at(-1).harnessReports), reportsBeforeWriteFailure);
+      assert.strictEqual(provider.chat.messages.at(-1).planning, planningBeforeWriteFailure);
+    } finally { provider.persist = persistBeforeWriteFailure; }
     const search = pkmRequest.request.tools.find(tool => tool.name === "pkm_search");
     sessionApproval = undefined;
     assert((await search.execute({ kind: "note", query: "Selected" }, pkmRequest.request.signal)).includes("Selected memory"), "Read-only PKM search must not request approval");
@@ -1253,11 +1338,30 @@ async function testController() {
     const found = JSON.parse(await search.execute({ kind: "note", query: "Selected" }, pkmRequest.request.signal));
     assert.strictEqual(found.items[0].id, "note"); assert(!JSON.stringify(found).includes("memory snapshot"));
     const read = pkmRequest.request.tools.find(tool => tool.name === "pkm_read");
+    assert.deepStrictEqual(read.parameters.properties.kind.enum, ["note", "skill", "research", "script", "recipe", "subscription"]);
     assert.strictEqual(JSON.parse(await read.execute({ kind: "note", id: "note" }, pkmRequest.request.signal)).content, "memory snapshot");
     const skills = JSON.parse(await search.execute({ kind: "skill", query: "Selected" }, pkmRequest.request.signal));
     assert.strictEqual(skills.items[0].id, "Selected skill");
     assert(!JSON.stringify(skills).includes("pkm skill snapshot"));
     assert.strictEqual(JSON.parse(await read.execute({ kind: "skill", id: skills.items[0].id }, pkmRequest.request.signal)).content, "pkm skill snapshot");
+    const research = JSON.parse(await search.execute({ kind:"research", query:"Selected" }, pkmRequest.request.signal));
+    assert.strictEqual(JSON.parse(await read.execute({ kind:"research", id:research.items[0].id }, pkmRequest.request.signal)).content,
+      "research snapshot\nNo production writes.\nFixture only.");
+    const scripts = JSON.parse(await search.execute({ kind:"script", query:"selected" }, pkmRequest.request.signal));
+    assert.strictEqual(JSON.parse(await read.execute({ kind:"script", id:scripts.items[0].id }, pkmRequest.request.signal)).content,
+      "print('fixture, never executed')");
+    await assert.rejects(read.execute({ kind:"subscription", id:"pkm://subscriptions/missing" }, pkmRequest.request.signal), /unavailable in this Chat host/);
+    provider.retrieval = Object.assign(async () => [], { readSnapshot:() => ({ corpus_revision:"fixture", documents:[
+      { source_id:"pkm://subscriptions/node/share/notes/fixture.md", source_revision:"7", content_type:"subscription",
+        visibility:"available", title:"Cached fixture", body:"Untrusted subscribed evidence.", metadata:{ category:"fixture" }, provenance:{} },
+    ] }) });
+    try {
+      const cached = JSON.parse(await search.execute({ kind:"subscription", query:"Cached" }, pkmRequest.request.signal));
+      const subscribed = JSON.parse(await read.execute({ kind:"subscription", id:cached.items[0].id }, pkmRequest.request.signal));
+      assert.strictEqual(subscribed.content, "Untrusted subscribed evidence.");
+      assert.strictEqual(subscribed.readOnly, true);
+      assert.strictEqual(subscribed.sourceId, cached.items[0].id);
+    } finally { provider.retrieval = undefined; }
     const recipes = JSON.parse(await search.execute({ kind: "recipe", query: "Selected Recipe" }, pkmRequest.request.signal));
     assert.strictEqual(recipes.items[0].id, "recipe_fixture");
     const recipe = JSON.parse(await read.execute({ kind: "recipe", id: recipes.items[0].id }, pkmRequest.request.signal));
@@ -1308,34 +1412,37 @@ async function testController() {
     provider.persist(provider.chat);
     const retryStarted = new Promise(resolve => { started = resolve; });
     const retryRun = provider.handle({ type: "retry", id: failedReply.id }); await retryStarted;
-    assert.strictEqual(provider.chat.messages.length, beforeRetryHistory.length, "Retry replaces the failed response in place");
-    assert.deepStrictEqual(provider.chat.messages.slice(0, -1).map(message => message.id), beforeRetryHistory.slice(0, -1),
+    assert.strictEqual(provider.chat.messages.length, beforeRetryHistory.length + 1, "Retry appends without discarding failed evidence");
+    assert.deepStrictEqual(provider.chat.messages.slice(0, -1).map(message => message.id), beforeRetryHistory,
       "Retry must preserve every earlier message, including the original user ID");
-    assert.strictEqual(provider.chat.messages.at(-2).id, retryInput.id);
-    assert.strictEqual(provider.chat.messages.at(-2), retryInput, "Retry preserves the original user message object");
+    assert.strictEqual(provider.chat.messages.at(-3).id, retryInput.id);
+    assert.strictEqual(provider.chat.messages.at(-3), retryInput, "Retry preserves the original user message object");
     assert.strictEqual(JSON.stringify(retryInput), originalInput, "images and provenance remain unchanged");
     assert.deepStrictEqual(provider.chat.images, [imageDraft], "Retry does not consume the unsent image draft");
-    assert(!provider.chat.messages.some(message => message.id === failedReply.id), "the failed inference response is removed");
+    assert(provider.chat.messages.some(message => message.id === failedReply.id), "the failed inference response is retained");
     assert.strictEqual(requests.at(-1).request.messages.filter(message => message.role === "user" && message.content === retryInput.content).length, 1,
       "the model receives the retried user message exactly once");
     assert.deepStrictEqual(requests.at(-1).request.messages.at(-1).images, [testImage]);
     assert(!requests.at(-1).request.messages.some(message => message.content.includes("Failed inference output must not enter retry memory.")),
       "failed output must not enter dialogue or retrieved memory");
+    assert(requests.at(-1).request.messages.some(message => message.content.includes(reportResult.reportId) && message.content.includes("No deployment")),
+      "Retry preserves the latest task-state report even when it was recorded by the failed attempt");
     assert.deepStrictEqual(provider.store.load(first, false).messages.map(message => message.id), provider.chat.messages.map(message => message.id),
-      "persisted history must not resurrect the deleted response");
+      "persisted history retains both the failed and retry response");
     assert.notStrictEqual(provider.chat.progress.attemptId, failedReply.progress.attemptId);
-    assert.strictEqual(provider.chat.progress.retryOf, failedReply.id); assert.strictEqual(JSON.stringify(failedReply.progress), originalProgress);
+    assert.strictEqual(provider.chat.progress.retryOf, failedReply.progress.attemptId); assert.strictEqual(JSON.stringify(failedReply.progress), originalProgress);
     assert(provider.chat.progress.steps.some(step => step.status === "running"));
     await assert.rejects(provider.handle({ type: "retry", id: failedReply.id }), /latest failed/);
     requests.at(-1).reject(new Error("Repeated retry failure")); await retryRun;
     const repeatedFailure = provider.chat.messages.at(-1);
     const repeatedStarted = new Promise(resolve => { started = resolve; });
     const repeatedRun = provider.handle({ type: "retry", id: repeatedFailure.id }); await repeatedStarted;
-    assert.strictEqual(provider.chat.messages.length, beforeRetryHistory.length, "repeated retries do not grow the conversation");
-    assert.strictEqual(provider.chat.messages.at(-2), retryInput);
-    assert.strictEqual(provider.chat.progress.retryOf, repeatedFailure.id);
+    assert.strictEqual(provider.chat.messages.length, beforeRetryHistory.length + 2, "repeated retries retain append-only history");
+    assert.strictEqual(provider.chat.messages.at(-4), retryInput);
+    assert.strictEqual(provider.chat.progress.retryOf, repeatedFailure.progress.attemptId);
     assert.strictEqual(provider.chat.progress.attempt, repeatedFailure.progress.attempt + 1);
-    assert(!provider.chat.messages.some(message => message.id === failedReply.id || message.id === repeatedFailure.id));
+    assert(provider.chat.messages.some(message => message.id === failedReply.id));
+    assert(provider.chat.messages.some(message => message.id === repeatedFailure.id));
     requests.at(-1).resolve(); await repeatedRun;
     assert.deepStrictEqual(provider.store.load(first, false).messages.map(message => message.id), provider.chat.messages.map(message => message.id));
     assert.strictEqual(provider.chat.messages.at(-1).progress.status, "complete");
@@ -1431,10 +1538,23 @@ async function testController() {
     assert.strictEqual(provider.chat.queuedInputs.length, 1, "duplicate delivery must not duplicate a queued steer");
     assert.strictEqual(provider.store.load(first, false).queuedInputs[0].id, steerId, "steer must be saved before acknowledgement");
     assert.deepStrictEqual(provider.chat.queuedInputs[0].executionContext, provider.chat.progress.executionContext);
+    const queuedBeforePlanFailure = JSON.stringify(provider.chat.queuedInputs);
+    assert.throws(() => liveReceiptRequest.request.beforeRound(liveReceiptRequest.request.messages, liveReceiptRequest.request.contextWindow), /required input/);
+    assert.strictEqual(JSON.stringify(provider.chat.queuedInputs), queuedBeforePlanFailure, "failed context planning never consumes steering");
+    const originalSteeringPersist = provider.persist;
+    provider.persist = () => { throw new Error("Fixture steering persistence failure"); };
+    try {
+      assert.throws(() => liveReceiptRequest.request.beforeRound(liveReceiptRequest.request.messages, liveReceiptRequest.request.maxOutputTokens), /steering persistence failure/);
+      assert.strictEqual(JSON.stringify(provider.chat.queuedInputs), queuedBeforePlanFailure);
+      assert.strictEqual(provider.chat.messages.filter(message => message.submissionId === steerId).length, 0);
+    } finally { provider.persist = originalSteeringPersist; }
     liveReceiptRequest.request.beforeRound(liveReceiptRequest.request.messages, liveReceiptRequest.request.maxOutputTokens);
     assert(liveReceiptRequest.request.messages.some(message => message.content === "Use the revised boundary"));
     assert.strictEqual(provider.chat.messages.filter(message => message.submissionId === steerId).length, 1);
     assert.strictEqual(provider.chat.queuedInputs.length, 0);
+    liveReceiptRequest.request.beforeRound(liveReceiptRequest.request.messages, liveReceiptRequest.request.maxOutputTokens);
+    assert.strictEqual(liveReceiptRequest.request.messages.filter(message => message.content === "Use the revised boundary").length, 1,
+      "accepted steering remains mandatory and is not duplicated on later rounds");
     const queuedRequestCount = requests.length;
     for (const text of ["Queued task A", "Queued task B"]) await provider.handle({ type: "send", text, mode: "task", submissionId: require("crypto").randomUUID() });
     assert.strictEqual(requests.length, queuedRequestCount, "new tasks must not overlap the active stream");
@@ -1772,7 +1892,7 @@ async function testVscodeModels() {
   let outputBudgetRounds = 0;
   let outputBudgetAnswer = "";
   const roundBudgets = [];
-  const outputBudgetModel = { ...model, sendRequest: async () => ({ stream: (async function* () {
+  const outputBudgetModel = { ...model, maxInputTokens:262144, sendRequest: async () => ({ stream: (async function* () {
     yield new TextPart("x".repeat(60_000));
     if (++outputBudgetRounds === 1) yield new CallPart("budget-round-1", "read_file", { path: "file.txt" });
   })() }) };
@@ -1836,7 +1956,7 @@ async function testVscodeModels() {
   const countedModel = { ...metadataModel([new TextPart("\u4e2d".repeat(900))]), countTokens: async text => Array.from(text).length };
   await streamVscodeChat(countedModel, { ...request, tools: [], maxOutputTokens: 1024 }, text => { chineseOutput += text; }, imageHost);
   assert.strictEqual(chineseOutput.length, 900, "The model tokenizer, not UTF-8 bytes, determines the native output budget");
-  await assert.rejects(streamVscodeChat({ ...countedModel, countTokens: async () => NaN }, { ...request, tools: [] }, () => {}, imageHost), /Output token count is unavailable/);
+  await assert.rejects(streamVscodeChat({ ...countedModel, countTokens: async () => NaN }, { ...request, tools: [] }, () => {}, imageHost), /Input token count is unavailable/);
   await assert.rejects(streamVscodeChat({ ...countedModel, countTokens: async () => 1025 }, { ...request, tools: [] }, () => {}, imageHost), /Local output budget exhausted/);
   const outputCountingAbort = new AbortController();
   const outputCountingFallback = setTimeout(() => outputCountingAbort.abort(), 250);
@@ -1911,7 +2031,7 @@ async function testVscodeModels() {
   await assert.rejects(streamVscodeChat({ ...model, capabilities: { toolCalling: 1 } }, { ...request, tools: [...request.tools, { ...request.tools[0], name: "second" }] }, () => {}, host), /tool calling/);
   await assert.rejects(streamVscodeChat(model, { ...request, beforeRound: () => { throw new Error("Context budget exceeded"); } }, () => {}, host), /Context budget/);
   await assert.rejects(streamVscodeChat({ ...model, sendRequest: async () => { throw new Error("secret-token"); } }, request, () => {}, host), error => !error.message.includes("secret-token") && /quota/.test(error.message));
-  await assert.rejects(streamVscodeChat({ ...model, countTokens: async text => text.length, sendRequest: async () => ({ text: (async function* () { yield "too long"; })() }) }, { ...request, tools: [], maxOutputTokens: 2 }, () => {}, host), /budget/);
+  await assert.rejects(streamVscodeChat({ ...model, countTokens: async text => typeof text === "string" ? text.length : 1, sendRequest: async () => ({ text: (async function* () { yield "too long"; })() }) }, { ...request, tools: [], maxOutputTokens: 2 }, () => {}, host), /budget/);
   const controller = new AbortController(); let entered;
   const waiting = new Promise(resolve => { entered = resolve; });
   const run = streamVscodeChat({ ...model, sendRequest: async () => ({ text: { [Symbol.asyncIterator]: () => ({ next: () => { entered(); return new Promise(() => {}); } }) } }) }, { ...request, tools: [], signal: controller.signal }, () => {}, host);
@@ -1921,11 +2041,12 @@ async function testVscodeModels() {
   console.log("VS Code model adapter tests passed: discovery/access errors, native tool results, unavailable capabilities, budget and hung-stream cancellation.");
 }
 
-function toolEvents(name = "read_file", arguments_ = '{"path":"sample.txt"}', text = "") {
+let toolEventSequence = 0;
+function toolEvents(name = "read_file", arguments_ = '{"path":"sample.txt"}', text = "", suffix = String(++toolEventSequence)) {
   return events([
     ...(text ? [delta(text)] : []),
     `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_", type: "function", function: { name: name.slice(0, 3), arguments: arguments_.slice(0, 8) } }] }, finish_reason: null }] })}\n\n`,
-    `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "1", function: { name: name.slice(3), arguments: arguments_.slice(8) } }] }, finish_reason: "tool_calls" }] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: suffix, function: { name: name.slice(3), arguments: arguments_.slice(8) } }] }, finish_reason: "tool_calls" }] })}\n\n`,
     'data: {"choices":[],"usage":{"prompt_tokens":64,"completion_tokens":10,"total_tokens":74}}\n\ndata: [DONE]\n\n',
   ]);
 }
@@ -1940,17 +2061,17 @@ async function testToolLoop() {
     onToolLoopNotice: async notice => { timedNotices.push(notice); return "continue"; } });
   for (let index = 0; index < 3; index++) timedGuard.record(undefined, "read_file", "{}", "same");
   reviewTime = 1799999; await timedGuard.beforeRound(100, signal);
-  assert.strictEqual(timedNotices.length, 0, "Loop evidence alone and round count must not trigger time-based review");
+  assert.strictEqual(timedNotices.length, 1, "Proven repeated calls pause immediately, independently of the active-time review interval");
   reviewTime = 1800000; await timedGuard.beforeRound(101, signal);
   assert.strictEqual(timedNotices.length, 1); assert.strictEqual(timedNotices[0].reason, "stalled");
   for (let index = 0; index < 3; index++) timedGuard.record(undefined, "read_file", "{}", "same");
   await timedGuard.beforeRound(102, signal);
-  assert.strictEqual(timedNotices.length, 1, "Continuation starts a fresh active-time window");
+  assert.strictEqual(timedNotices.length, 2, "Continuation cannot suppress fresh repeated-call evidence");
   timedGuard.record(undefined, "read_file", "{}", "changed");
   reviewTime = 3600000; await timedGuard.beforeRound(103, signal);
-  assert.strictEqual(timedNotices.length, 1, "Fresh results invalidate that tool's earlier loop evidence");
+  assert.strictEqual(timedNotices.length, 2, "Fresh results invalidate that tool's earlier loop evidence");
   for (let index = 0; index < 3; index++) timedGuard.record(undefined, "read_file", "{}", "same again");
-  await timedGuard.beforeRound(104, signal); assert.strictEqual(timedNotices.length, 2);
+  await timedGuard.beforeRound(104, signal); assert.strictEqual(timedNotices.length, 3);
   const timedCancellation = new ChatToolLoopGuard({ loopReviewAfterMs: 0, onToolLoopNotice: async () => "cancel" });
   for (let index = 0; index < 3; index++) timedCancellation.record(undefined, "read_file", "{}", "same");
   await assert.rejects(timedCancellation.beforeRound(0, signal), /cancelled by the user/);
@@ -2239,6 +2360,16 @@ async function testNativeTools() {
       approval = "Run program";
       const outsideProcess = JSON.parse(await run("run_process", { ...program, cwd: outside }));
       assert.strictEqual(JSON.parse(outsideProcess.stdout).cwd, fs.realpathSync(outside));
+      const verboseTools = createBuiltinTools(["run_process"], host, undefined, undefined, async () => true, undefined, path.join(directory, "process-evidence"));
+      const verbose = JSON.parse(await verboseTools[0].execute({
+        ...program, arguments: ["-e", "process.stdout.write('A'.repeat(7000));process.stderr.write('B'.repeat(7000));console.log('STDOUT_END');console.error('STDERR_END')"],
+      }, new AbortController().signal));
+      assert.strictEqual(verbose.exitCode, 0);
+      assert.strictEqual(verbose.truncated, true);
+      assert.match(verbose.stdout, /STDOUT_END/);
+      assert.match(verbose.stderr, /STDERR_END/);
+      assert(fs.statSync(verbose.stdoutLog).size > 7000);
+      assert(fs.statSync(verbose.stderrLog).size > 7000);
       await assert.rejects(run("run_process", { ...program, arguments: ["-e", "setInterval(()=>{},1000)"], timeoutSeconds: 1 }), /timed out/);
       const controller = new AbortController(); const marker = path.join(directory, "started");
       const started = new Promise(resolve => { fs.watchFile(marker, { interval: 50, persistent: false }, current => { if (current.size) resolve(); }); });
@@ -2475,7 +2606,7 @@ function startPreview() {
   }
   const bootstrap = `globalThis.__fixture=${JSON.stringify(fixture)};(${previewBridge.toString()})();`;
   const deletionBootstrap = `globalThis.acquireVsCodeApi=()=>({getState:()=>JSON.parse(sessionStorage.getItem('chatState')||'null'),setState:s=>sessionStorage.setItem('chatState',JSON.stringify(s)),postMessage:async message=>{if(message.type==='hostHealth'){window.dispatchEvent(new MessageEvent('message',{data:{type:'hostHealth',id:message.id}}));return;}const confirm=!['trashChat','deleteChat','emptyTrash'].includes(message.type)||window.confirm('Confirm '+message.type+'?');const response=await fetch('/delete-action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,confirm})});const result=await response.json();if(!response.ok)throw new Error(result.error);globalThis.__deletionSnapshot=result;window.dispatchEvent(new MessageEvent('message',{data:result.state}));}});`;
-  const assets = new Set(["api-chat.css", "api-chat.js", "api-chat-library.js", "chat-retrieval-flow.js", "host-health.js", "host-health.css", "codicon.css", "codicon.ttf", "marked.umd.js", "purify.min.js", "katex.js", "katex.css", "mermaid.js", ...fs.readdirSync(path.join(webview, "fonts")).filter(name => name.endsWith(".woff2")).map(name => `fonts/${name}`)]);
+  const assets = new Set(["agent-harness.js", "agent-harness.css", "chat-visualization.js", "api-chat.css", "api-chat.js", "api-chat-library.js", "chat-retrieval-flow.js", "host-health.js", "host-health.css", "codicon.css", "codicon.ttf", "marked.umd.js", "purify.min.js", "katex.js", "katex.css", "mermaid.js", ...fs.readdirSync(path.join(webview, "fonts")).filter(name => name.endsWith(".woff2")).map(name => `fonts/${name}`)]);
   const server = http.createServer((request, response) => {
     const name = new URL(request.url, "http://localhost").pathname.slice(1);
     if (name === "delete-state") { response.setHeader("Content-Type", "application/json"); response.end(JSON.stringify(deletion.snapshot())); return; }
@@ -2493,7 +2624,8 @@ function startPreview() {
     if (name === "delete-fixture.js") { response.setHeader("Content-Type", "text/javascript"); response.end(deletionBootstrap); return; }
     if (name === "fixture.js") { response.setHeader("Content-Type", "text/javascript"); response.end(bootstrap + "globalThis.__locales=" + JSON.stringify(locales) + ";"); return; }
     if (name === "" || name === "deletion") {
-      const values = { nonce: "preview-nonce", cspSource: "'self'", styles: "/api-chat.css", script: "/api-chat.js", libraryScript: "/api-chat-library.js", retrievalScript: "/chat-retrieval-flow.js", hostHealthScript: "/host-health.js", hostHealthStyles: "/host-health.css", icons: "/codicon.css", marked: "/marked.umd.js", purify: "/purify.min.js", katex: "/katex.js", katexStyles: "/katex.css", mermaid: "/mermaid.js" };
+      const values = { nonce: "preview-nonce", cspSource: "'self'", styles: "/api-chat.css", script: "/api-chat.js", libraryScript: "/api-chat-library.js", retrievalScript: "/chat-retrieval-flow.js", hostHealthScript: "/host-health.js", hostHealthStyles: "/host-health.css", icons: "/codicon.css", marked: "/marked.umd.js", purify: "/purify.min.js", katex: "/katex.js", katexStyles: "/katex.css", mermaid: "/mermaid.js",
+        harnessScript:"/agent-harness.js", harnessStyles:"/agent-harness.css", visualizationScript:"/chat-visualization.js" };
       const html = fs.readFileSync(path.join(webview, "api-chat.html"), "utf8")
         .replace(/\{\{(\w+)\}\}/g, (_, key) => values[key])
         .replace('<script nonce="preview-nonce" src="/host-health.js">', `<script nonce="preview-nonce" src="/${name === "deletion" ? "delete-fixture.js" : "fixture.js"}"></script><script nonce="preview-nonce" src="/host-health.js">`);

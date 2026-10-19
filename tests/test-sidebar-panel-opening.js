@@ -245,6 +245,8 @@ require("vm").runInNewContext(`(async () => { ${compiled.slice(chatStart, chatEn
       } };
       await require("vm").runInNewContext(`(async () => { ${activationCode} return apiChat; })()`, {
         ...sandbox, context: integrationContext, api_chat_shell_1: integrationShell,
+        retrieval_snapshot_1: require("../dist/retrieval/retrieval-snapshot"),
+        currentRetrievalSnapshot: () => ({ documents: [], corpus_revision: "fixture" }),
         require: name => { assert.strictEqual(name, "./chat/api-chat-view"); return backendModule; },
       });
       try {
@@ -280,8 +282,8 @@ require("vm").runInNewContext(`(async () => { ${compiled.slice(chatStart, chatEn
     }
     const activationCode = compiled.slice(chatStart, chatEnd);
     await activationRegistrationTest(activationCode);
-    const duplicateRegistration = activationCode.replace(/\}\);(\s*)\}, false\);(?=\s*\}\);)/, "}, false);$1});");
-    assert.notStrictEqual(duplicateRegistration, activationCode, "The regression mutation must move the backend registration guard back to Array.map");
+    const duplicateRegistration = activationCode.replace(/\), false\);(?=\s*\}\);)/, "));");
+    assert.notStrictEqual(duplicateRegistration, activationCode, "The regression mutation must remove the backend's duplicate-registration guard");
     await assert.rejects(activationRegistrationTest(duplicateRegistration), /View provider for 'personalKnowledge\.apiChat' already registered/);
     console.log("Sidebar opening, lazy Chat loading, initialization recovery and duplicate-provider registration regression tests passed");
   }).catch(error => { console.error(error); process.exitCode = 1; });

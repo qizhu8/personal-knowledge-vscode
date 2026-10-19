@@ -203,6 +203,7 @@ export class GitHubSyncCoordinator {
   private schedulerRevision = -1;
   private cachedRuntime: Record<string, GitHubSyncRuntimeState> = {};
   private readonly publishedRuntime = new Map<string, string>();
+  private readonly executingIntentSequences = new Map<string, number>();
 
   constructor(private readonly options: GitHubSyncCoordinatorOptions) {
     this.statePath = path.join(options.stateDirectory, "coordinator.json");
@@ -377,7 +378,12 @@ export class GitHubSyncCoordinator {
   private ensureScheduler(): void {
     if (!this.scheduler) {
       this.scheduler = new GitHubSyncScheduler({
-        shouldExecute: this.options.shouldExecute,
+        shouldExecute: async (targetId, reason) => {
+          const intent = readState(this.statePath).intents[targetId];
+          this.executingIntentSequences.delete(targetId);
+          if (intent?.reason === reason) this.executingIntentSequences.set(targetId, intent.sequence);
+          return this.options.shouldExecute ? this.options.shouldExecute(targetId, reason) : true;
+        },
         shouldRetryFailure: this.options.shouldRetryFailure,
         onAutoPaused: targetId => {
           const target = this.targets.get(targetId);
@@ -401,7 +407,8 @@ export class GitHubSyncCoordinator {
             const existing = state.claims[targetId];
             if (existing?.reason === reason && existing.leaderNonce === this.instanceNonce && existing.fencingToken === this.leaderToken) return;
             if (!intent && (reason === "startup" || reason === "interval")) return;
-            if (!intent || intent.reason !== reason || leader?.nonce !== this.instanceNonce || leader.fencingToken !== this.leaderToken) {
+            if (!intent || intent.reason !== reason || intent.sequence !== this.executingIntentSequences.get(targetId)
+              || leader?.nonce !== this.instanceNonce || leader.fencingToken !== this.leaderToken) {
               throw new Error("GitHub Sync durable intent was not available to claim before execution.");
             }
             state.claims[targetId] = {
@@ -418,6 +425,8 @@ export class GitHubSyncCoordinator {
             const target = this.targets.get(targetId);
             if (target) target.needsAttention = false;
             this.mutateSync(state => { if (state.targets[targetId]) state.targets[targetId].needsAttention = false; });
+            this.resolveOwnedClaim(targetId, reason);
+            this.resolvePendingIntent(targetId, reason);
           }
           if (outcome === "attention") {
             const target = this.targets.get(targetId);
@@ -489,7 +498,8 @@ export class GitHubSyncCoordinator {
   private resolveOwnedClaim(targetId: string, reason: GitHubSyncReason): void {
     this.mutateSync(state => {
       const claim = state.claims[targetId];
-      if (claim?.reason === reason && claim.leaderNonce === this.instanceNonce && claim.fencingToken === this.leaderToken) {
+      if (claim?.reason === reason && claim.sequence === this.executingIntentSequences.get(targetId)
+        && claim.leaderNonce === this.instanceNonce && claim.fencingToken === this.leaderToken) {
         delete state.claims[targetId];
       }
     });
@@ -497,7 +507,8 @@ export class GitHubSyncCoordinator {
 
   private resolvePendingIntent(targetId: string, reason: GitHubSyncReason): void {
     this.mutateSync(state => {
-      if (state.intents[targetId]?.reason === reason) delete state.intents[targetId];
+      const intent = state.intents[targetId];
+      if (intent?.reason === reason && intent.sequence === this.executingIntentSequences.get(targetId)) delete state.intents[targetId];
     });
   }
 

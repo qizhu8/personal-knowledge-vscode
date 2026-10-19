@@ -13,6 +13,7 @@ export interface PkmLocatorInventoryEntry {
   slug: string;
   title: string;
   knowledgeId?: string;
+  aliases?: string[];
 }
 
 export interface PkmLocatorSubscriptionGroup {
@@ -29,17 +30,26 @@ export interface PkmLocatorSubscriptionGroup {
 
 export type ParsedPkmLocator =
   | { kind: "knowledge"; locator: string; knowledgeId: string }
+  | { kind: "script"; locator: string; scriptId: string }
+  | { kind: "script-path"; locator: string; path: string }
+  | { kind: "recipe"; locator: string; recipeId: string }
+  | { kind: "recipe-path"; locator: string; path: string }
+  | { kind: "entity"; locator: string; area: "projects" | "actions" | "components"; id: string }
+  | { kind: "package-file"; locator: string; path: string }
   | { kind: "chat"; locator: string; namespace: string; chatId: string }
   | { kind: "local-path"; locator: string; area: "skills" | "notes" | "papers"; path: string }
   | { kind: "subscription"; locator: string; nodeId: string; shareId: string; contentType: string; path: string };
 
 export type ResolvedPkmLocator =
   | { kind: "chat"; locator: string; namespace: string; chatId: string; title: string }
-  | { kind: "panel"; locator: string; type: "skill" | "note" | "paper" | "subscriptionItem"; key: string; tab?: string; title: string }
+  | { kind: "panel"; locator: string; type: "skill" | "note" | "paper" | "script" | "packageFile" | "subscriptionItem"; key: string; tab?: string; title: string }
   | { kind: "recipe"; locator: string; recipeId: string; title: string }
+  | { kind: "entity"; locator: string; area: "projects" | "actions" | "components"; id: string; title: string }
   | { kind: "subscribed-server"; locator: string; key: string; title: string };
 
-const KNOWLEDGE_ID = /^knowledge_[a-f0-9]{24}$/;
+const KNOWLEDGE_ID = /^(?:knowledge_[a-f0-9]{24}|action_(?:[a-f0-9]{24}|[a-f0-9]{32}))$/;
+const SCRIPT_ID = /^script_[A-Za-z0-9._-]+$/;
+const RECIPE_ID = /^recipe_[A-Za-z0-9_-]+$/;
 const CHAT_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const LOCAL_AREAS = new Set(["skills", "notes", "papers"]);
 const SUBSCRIPTION_TYPES = new Set(["skills", "notes", "papers", "prompts", "scripts", "packages", "servers", "recipes"]);
@@ -68,6 +78,7 @@ function decodedPathSegments(locator: string): string[] {
   const slash = raw.indexOf("/");
   const rawPath = slash >= 0 ? raw.slice(slash + 1) : "";
   try {
+    if (rawPath.includes("//")) throw new PkmLocatorError("invalid", "PKM paths cannot contain empty segments.");
     const parts = rawPath.split("/").filter(Boolean).map(decodeURIComponent);
     if (parts.some(part => part === "." || part === ".." || part.includes("\0"))) {
       throw new PkmLocatorError("invalid", "PKM paths cannot contain traversal segments.");
@@ -93,6 +104,18 @@ export function parsePkmLocator(value: string): ParsedPkmLocator {
   }
   const parts = decodedPathSegments(locator);
   const authority = url.hostname.toLowerCase();
+  if (authority === "projects" || authority === "actions" || authority === "components") {
+    if (parts.length !== 1 || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(parts[0]) || locator.endsWith("/")) {
+      throw new PkmLocatorError("invalid", `pkm://${authority}/ requires one entity identity.`);
+    }
+    return { kind: "entity", locator, area: authority, id: parts[0] };
+  }
+  if (authority === "packages") {
+    if (parts.length < 2 || locator.endsWith("/") || parts.some(part => /[/\\:\u0000-\u001f]/.test(part))) {
+      throw new PkmLocatorError("invalid", "Package paths must identify a package-relative file.");
+    }
+    return { kind: "package-file", locator, path: parts.join("/") };
+  }
   if (authority === "chats") {
     if (parts.length !== 2 || locator.endsWith("/")) throw new PkmLocatorError("invalid", "Chat paths must use pkm://chats/<workspace>/<Chat UUID>.");
     const [namespace, chatId] = parts;
@@ -101,9 +124,29 @@ export function parsePkmLocator(value: string): ParsedPkmLocator {
   }
   if (authority === "knowledge") {
     if (parts.length !== 1 || !KNOWLEDGE_ID.test(parts[0])) {
-      throw new PkmLocatorError("invalid", "Knowledge paths must use pkm://knowledge/knowledge_<24 lowercase hex>.");
+      throw new PkmLocatorError("invalid", "Knowledge paths require knowledge_<24 lowercase hex> or an Action identity action_<24 or 32 lowercase hex>.");
     }
     return { kind: "knowledge", locator, knowledgeId: parts[0] };
+  }
+  if (authority === "script") {
+    if (parts.length !== 1 || !SCRIPT_ID.test(parts[0]) || locator.endsWith("/")) {
+      throw new PkmLocatorError("invalid", "Script paths must use pkm://script/script_<identity>.");
+    }
+    return { kind: "script", locator, scriptId: parts[0] };
+  }
+  if (authority === "scripts") {
+    if (!parts.length || locator.endsWith("/") || parts.some(part => /[/\\:\u0000-\u001f]/.test(part))) {
+      throw new PkmLocatorError("invalid", "Legacy Script paths must identify a store-relative file.");
+    }
+    return { kind: "script-path", locator, path: parts.join("/") };
+  }
+  if (authority === "recipes") {
+    if (!parts.length || locator.endsWith("/") || parts.some(part => /[/\\:\u0000-\u001f]/.test(part))) {
+      throw new PkmLocatorError("invalid", "Recipe paths must identify a Recipe, not a folder.");
+    }
+    return parts.length === 1 && RECIPE_ID.test(parts[0])
+      ? { kind: "recipe", locator, recipeId: parts[0] }
+      : { kind: "recipe-path", locator, path: parts.join("/") };
   }
   if (LOCAL_AREAS.has(authority)) {
     if (!parts.length || locator.endsWith("/") || !parts[parts.length - 1].toLowerCase().endsWith(".md")) {
@@ -133,6 +176,13 @@ function localTarget(entry: PkmLocatorInventoryEntry, locator: string): Resolved
     if (!recipeId) throw new PkmLocatorError("not-found", `Recipe identity is incomplete: ${locator}`);
     return { kind: "recipe", locator, recipeId, title: entry.title };
   }
+  if (entry.area === "actions" || entry.area === "components" || entry.area === "projects") {
+    return { kind: "entity", locator, area: entry.area, id: entry.slug, title: entry.title };
+  }
+  if (entry.area === "packages") {
+    const slash = entry.relativePath.indexOf("/");
+    return { kind: "panel", locator, type: "packageFile", key: entry.relativePath.slice(0, slash) + "|" + entry.relativePath.slice(slash + 1), tab: "packages", title: entry.title };
+  }
   throw new PkmLocatorError("unsupported", `Knowledge item belongs to an unsupported area: ${entry.area}.`);
 }
 
@@ -143,11 +193,36 @@ export function resolvePkmLocator(
 ): ResolvedPkmLocator {
   const parsed = parsePkmLocator(value);
   if (parsed.kind === "chat") return { ...parsed, title: "PKM Chat" };
+  if (parsed.kind === "entity" || parsed.kind === "package-file") {
+    const matches = inventory.filter(entry => parsed.kind === "entity"
+      ? entry.area === parsed.area && entry.slug === parsed.id
+      : entry.area === "packages" && entry.relativePath === parsed.path);
+    if (!matches.length) throw new PkmLocatorError("not-found", `PKM item was not found: ${parsed.locator}`);
+    if (matches.length > 1) throw new PkmLocatorError("duplicate", `PKM item identity is duplicated: ${parsed.locator}`);
+    return localTarget(matches[0], parsed.locator);
+  }
   if (parsed.kind === "knowledge") {
     const matches = inventory.filter(entry => entry.knowledgeId === parsed.knowledgeId);
     if (!matches.length) throw new PkmLocatorError("not-found", `Knowledge item was not found: ${parsed.knowledgeId}`);
     if (matches.length > 1) throw new PkmLocatorError("duplicate", `Knowledge ID is duplicated across ${matches.length} items: ${parsed.knowledgeId}`);
     return localTarget(matches[0], parsed.locator);
+  }
+  if (parsed.kind === "script" || parsed.kind === "script-path" || parsed.kind === "recipe" || parsed.kind === "recipe-path") {
+    const matches = inventory.filter(entry => {
+      if (parsed.kind === "recipe") return entry.area === "recipes"
+        && entry.slug.slice(entry.slug.lastIndexOf(".") + 1) === parsed.recipeId;
+      if (parsed.kind === "recipe-path") return entry.area === "recipes"
+        && entry.slug.replace(/\.recipe_[A-Za-z0-9_-]+$/, "") === parsed.path;
+      if (entry.area !== "scripts") return false;
+      if (parsed.kind === "script") return entry.knowledgeId === parsed.scriptId || entry.aliases?.includes(parsed.locator);
+      return entry.relativePath === parsed.path || entry.aliases?.includes(parsed.locator);
+    });
+    if (!matches.length) throw new PkmLocatorError("not-found", `PKM item was not found: ${parsed.locator}`);
+    if (matches.length > 1) throw new PkmLocatorError("duplicate", `PKM reference resolves to multiple items: ${parsed.locator}`);
+    const entry = matches[0];
+    if (parsed.kind === "recipe") return { kind: "recipe", locator: parsed.locator, recipeId: parsed.recipeId, title: entry.title };
+    if (parsed.kind === "recipe-path") return localTarget(entry, parsed.locator);
+    return { kind: "panel", locator: parsed.locator, type: "script", key: entry.relativePath, tab: "scripts", title: entry.title };
   }
   if (parsed.kind === "local-path") {
     const matches = inventory.filter(entry => entry.area === parsed.area && entry.relativePath === parsed.path);

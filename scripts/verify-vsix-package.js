@@ -46,6 +46,20 @@ for (const [filename, digest] of Object.entries(buildInfo.files)) {
 for (const artifact of REQUIRED_UI_ARTIFACTS) {
   assert(entries.includes(`extension/${artifact}`), `VSIX must include required UI artifact: ${artifact}`);
 }
+for (const artifact of [
+  "dist/memory/memory-engine-client.js",
+  "dist/memory/chat-memory-service.js",
+  "modules/pkm-memory-engine/pyproject.toml",
+  "modules/pkm-memory-engine/src/pkm_memory_engine/__init__.py",
+  "modules/pkm-memory-engine/src/pkm_memory_engine/__main__.py",
+  "modules/pkm-memory-engine/src/pkm_memory_engine/engine.py",
+  "modules/pkm-memory-engine/src/pkm_memory_engine/memory.py",
+]) {
+  assert(entries.includes(`extension/${artifact}`), `VSIX must include Memory Engine runtime: ${artifact}`);
+}
+assert.deepStrictEqual(entries.filter(entry =>
+  /^extension\/modules\/pkm-memory-engine\/(?:(?:tests|tools|build|dist)\/|.*\/__pycache__\/)/.test(entry)), [],
+  "VSIX must exclude Memory Engine development fixtures");
 assert(entries.some(entry => /^extension\/dist\/webview\/fonts\/[^/]+\.woff2$/.test(entry)),
   "VSIX must include the KaTeX fonts used by the UI");
 
@@ -82,11 +96,21 @@ for (const recipe of systemRecipeInventory.recipes) {
 assert(systemRecipeInventory.recipes.some(recipe => recipe.key === "create-agent-snapshot"),
   "System Recipe inventory must include Create Agent Snapshot");
 assert(entries.includes("extension/node_modules/ws/index.js"), "VSIX must include the ws runtime dependency used by Chatroom");
+for (const file of ["package.json", "lib/umd/main.js", "lib/umd/impl/parser.js", "lib/umd/impl/scanner.js", "lib/umd/impl/format.js", "lib/umd/impl/edit.js", "lib/umd/impl/string-intern.js"]) {
+  assert(entries.includes(`extension/node_modules/jsonc-parser/${file}`), `VSIX must include the JSONC runtime dependency for MCP discovery: ${file}`);
+}
 assert(entries.includes("extension/resources/windows/pkm-stdio-proxy.js"),
   "VSIX must include the Windows JavaScript stdio proxy");
 assert(entries.includes("extension/resources/api_chat_control.py"),
   "VSIX must include the Agent-driven Chat MCP transport resource");
-for (const artifact of ["resources/action_runtime.py", "resources/action_modules.py", "resources/action_run_store.py", "resources/action_recovery.py", "resources/action_components.py", "resources/action-workbench.html", "dist/ui/action-browser.js", "dist/runtime/action-background-tasks.js", "dist/runtime/action-workbench-server.js"]) {
+assert(entries.includes("extension/resources/knowledge_recovery.py"),
+  "VSIX must include byte-preserving MCP knowledge recovery");
+for (const artifact of ["knowledge_mutations.py", "knowledge_mutations.js", "knowledge_snapshots.py"]) {
+  assert(entries.includes(`extension/resources/${artifact}`), `VSIX must include safe knowledge maintenance: ${artifact}`);
+}
+assert(entries.includes("extension/scripts/protected-agent.py"),
+  "VSIX must include the opt-in protected Agent launcher");
+for (const artifact of ["resources/action_runtime.py", "resources/action_modules.py", "resources/action_resource_migration.py", "resources/action_run_store.py", "resources/action_recovery.py", "resources/action_components.py", "resources/action-workbench.html", "dist/ui/action-browser.js", "dist/runtime/action-background-tasks.js", "dist/runtime/action-workbench-server.js"]) {
   assert(entries.includes(`extension/${artifact}`), `VSIX must include Action runtime and native UI: ${artifact}`);
 }
 assert(packageJson.contributes.chatParticipants.some(participant => participant.id === "personalKnowledge.actions"),

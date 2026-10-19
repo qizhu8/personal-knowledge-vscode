@@ -68,7 +68,7 @@ def execute(runtime, source, destination, *, transfer_timeout=7200, parallel_fil
     local_files, local_directories = inventory(source)
     source = source.resolve()
     destination = destination.rstrip("/")
-    cosmos_location(destination)
+    cosmos_location(destination, runtime.cosmos_accounts())
     for action in ["cosmos.artifact.upload", "cosmos.directory.list"]:
         if runtime.availability(action)["state"] != "ready":
             raise PermissionError("Action is not qualified: " + action)

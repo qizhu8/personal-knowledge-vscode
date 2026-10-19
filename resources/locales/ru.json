@@ -4,6 +4,12 @@
     "label": "Русский"
   },
   "strings": {
+    "apiChat.openHarness": "Открыть подграфы выполнения",
+    "apiChat.reportedGoal": "Цель, указанная агентом: {goal}",
+    "apiChat.noTaskReport": "Явное состояние задачи ещё не записано",
+    "apiChat.recordedValidation": "Записанная проверка: {status}",
+    "apiChat.noValidation": "Проверка задачи не записана",
+    "apiChat.responseStatus": "Ответ: {status}",
     "apiChat.loadOlderMessages": "Загрузить предыдущие сообщения",
     "apiChat.loadingOlderMessages": "Загрузка предыдущих сообщений...",
     "apiChat.resumeWorker": "Продолжить worker",

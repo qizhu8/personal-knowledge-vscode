@@ -40,6 +40,7 @@ try {
     "retrievalStateFwd",
     "environmentsRegistryFwd",
     "snapshotRecipePin",
+    "context",
     `return \`${match[1]}\`;`,
   );
   const server = render(
@@ -54,6 +55,7 @@ try {
     retrievalState.replaceAll("\\", "/"),
     environmentsRegistry.replaceAll("\\", "/"),
     builtInRecipePin("create-agent-snapshot"),
+    { extensionPath: repositoryRoot },
   );
   fs.writeFileSync(path.join(moduleDirectory, "server.py"), server);
   fs.writeFileSync(
@@ -62,6 +64,9 @@ try {
       .replaceAll("%%CHAT_MCP_VERSION%%", "chat-test"),
   );
   for (const name of ["recipe_runtime.py", "action_runtime.py", "action_modules.py", "action_run_store.py", "action_recovery.py", "action_components.py", "recipe_health.py", "agent_session_runtime.py", "api_chat_control.py", "mcp_call_guard.py", "diagnostic_log.py"]) {
+    fs.copyFileSync(path.join(repositoryRoot, "resources", name), path.join(moduleDirectory, name));
+  }
+  for (const name of ["knowledge_recovery.py", "knowledge_mutations.py", "knowledge_mutations.js", "knowledge_snapshots.py"]) {
     fs.copyFileSync(path.join(repositoryRoot, "resources", name), path.join(moduleDirectory, name));
   }
 
@@ -142,10 +147,48 @@ async def main():
             async with Client(transport, timeout=3, init_timeout=3) as client:
                 tools = await asyncio.wait_for(client.list_tools(), 3)
                 by_name = {tool.name: tool for tool in tools}
+                assert {"knowledge_recovery_preview", "knowledge_recovery_apply", "knowledge_snapshot_create",
+                    "knowledge_snapshot_status", "knowledge_snapshot_configure",
+                    "knowledge_snapshot_restore_preview", "knowledge_snapshot_restore_apply",
+                    "knowledge_file_trash"} <= set(by_name)
+                cas_note = (await client.call_tool("add_note", {"title": "CAS Trash", "content": "Reviewed original"})).structured_content
+                store = module_directory.parent / "store"
+                note_file = store / "notes" / (cas_note["slug"] + ".md")
+                reviewed_bytes = note_file.read_bytes()
+                reviewed_digest = hashlib.sha256(reviewed_bytes).hexdigest()
+                note_file.write_bytes(reviewed_bytes + b"changed during approval")
+                try:
+                    await client.call_tool("knowledge_file_trash",
+                        {"area": "notes", "path": note_file.relative_to(store / "notes").as_posix(), "expected_sha256": reviewed_digest})
+                    raise AssertionError("Changed source was moved to Trash")
+                except ToolError:
+                    pass
+                assert note_file.read_bytes() == reviewed_bytes + b"changed during approval"
+                note_file.write_bytes(reviewed_bytes)
+                cas_result = (await client.call_tool("knowledge_file_trash", {"area": "notes",
+                    "path": note_file.relative_to(store / "notes").as_posix(), "expected_sha256": reviewed_digest})).structured_content
+                assert cas_result["ok"] and not note_file.exists(), cas_result
+                assert (store / "notes" / ".trash" / cas_result["trash"]["id"] / "payload").read_bytes() == reviewed_bytes
+                for area, name, create, remove, identity in [
+                    ("notes", "MCP Trash Note", "add_note", "delete_note", "slug"),
+                    ("skills", "MCP Trash Skill", "add_skill", "delete_skill", "name"),
+                    ("papers", "MCP Trash Paper", "add_paper", "delete_paper", "slug")]:
+                    payload = {"title" if area != "skills" else "name": name, "content": "Keep original bytes"}
+                    created = (await client.call_tool(create, payload)).structured_content
+                    key = created.get(identity, name)
+                    result = (await client.call_tool(remove, {identity: key})).structured_content
+                    assert result["ok"] and result.get("trash"), result
+                    trash = module_directory.parent / "store" / area / ".trash" / result["trash"]["id"]
+                    assert (trash / "payload").exists() and (trash / "metadata.json").exists()
+                journal = json.loads((module_directory.parent / "store" / ".pkm" / "state" / "knowledge-deletions.json").read_text())
+                assert len(journal["records"]) >= 3
                 programmable_chat_tools = {"api_chat_capabilities", "api_chat_models", "api_chat_list", "api_chat_create",
                   "api_chat_send", "api_chat_get", "api_chat_cancel", "api_chat_request_get"}
                 assert programmable_chat_tools <= set(by_name)
                 assert {"action_retrieve", "action_call", "action_run_get", "action_run_cancel"} <= set(by_name)
+                assert {"action_templates", "action_template_create", "action_run_wait", "action_cosmos_configure"} <= set(by_name)
+                templates = (await client.call_tool("action_templates", {})).structured_content
+                assert {"wait", "wait-five-minutes", "user-input", "chatroom-alias", "poll"} == {item["template_id"] for item in templates["templates"]}
                 assert {"action_validation_enqueue", "action_validation_status", "action_validation_cancel", "action_validation_resume",
                     "action_module_sets", "action_module_set_load", "action_module_set_import", "action_module_set_export",
                     "action_module_set_remove", "action_implementation_select", "action_graph_check", "action_graph_save"} <= set(by_name)
@@ -166,7 +209,7 @@ async def main():
                 action_capabilities = (await client.call_tool("action_capabilities", {})).structured_content
                 assert action_capabilities["enabled_platform_actions"] == []
                 assert not any(name.startswith("cosmos.") for name in action_capabilities["builtins"])
-                assert {"core.constant", "core.lookup", "core.file-path", "core.if-else", "core.switch", "core.for", "core.while", "core.user-action"} <= {item["action_id"] for item in action_capabilities["basic_components"]}
+                assert {"core.constant", "core.lookup", "core.file-path", "core.if-else", "core.switch", "core.for", "core.while", "core.user-action", "core.poll"} <= {item["action_id"] for item in action_capabilities["basic_components"]}
                 chat_capabilities = await client.call_tool("api_chat_capabilities", {})
                 assert chat_capabilities.structured_content["hosts"] == []
                 assert chat_capabilities.structured_content["schema_version"] == "1.0.0"

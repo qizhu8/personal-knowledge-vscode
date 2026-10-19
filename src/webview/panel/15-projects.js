@@ -129,6 +129,7 @@ function agentSessionSetActive(enabled) {
 
 setInterval(() => {
   if (document.visibilityState !== 'visible' || !['agentSessions','projects'].includes(state.tab)) return;
+  if (state.tab === 'agentSessions' && nativeHarnessView?.root.isConnected) return;
   const now = Date.now();
   if (agentSessionRefreshRequestedAt && now - agentSessionRefreshRequestedAt < 10_000) return;
   agentSessionRefreshRequestedAt = now;
@@ -2182,7 +2183,7 @@ function recipeItemMenu(event, recipeId) {
       { label:'Rename…', onClick:() => pkModal({ title:'Rename Recipe', message:'Enter a new Recipe name.', input:true, inputValue:recipe.name, okLabel:'Rename', onOk:name => { if (name.trim() && name.trim() !== recipe.name) recipePersistUpdate(recipe, { name:name.trim() }); } }) },
       { label:'Move to Folder…', onClick:() => pkModal({ title:'Move Recipe', message:'Enter a folder path. Leave empty for uncategorized.', input:true, inputValue:recipe.category || '', okLabel:'Move', onOk:category => recipePersistUpdate(recipe, { category:String(category || '').trim() }) }) }
     ]),
-    recipeCopyPathMenu(`pkm://recipes/${[recipe.category, recipe.name].filter(Boolean).flatMap(value => String(value).split('/').filter(Boolean)).map(encodeURIComponent).join('/')}`),
+    recipeCopyPathMenu(`pkm://recipes/${encodeURIComponent(recipe.recipeId)}`),
     recipeCopyPathMenu(recipe.recipeId, 'Copy Recipe ID')
   ];
   if (recipe.systemKind !== 'built-in') items.push(
@@ -2996,9 +2997,82 @@ function renderNativeAgentArchitecture(session) {
   return `<section class="native-agent-architecture" aria-label="Native Agent Configuration"><header><h4>Agent Configuration</h4><span>PKM native · ${esc(config.platform || 'host')}</span></header><div class="native-agent-inputs">${node('memory','database','Memory',config.memory || [],`${config.includeHistory ? 'History on' : 'History off'} · ${(config.memory || []).length} Tasks`)}${node('pkmSkills','book','PKM Skills',[], 'Automatic')}${node('externalSkills','extensions','External Skills',config.externalSkills || [],`${(config.externalSkills || []).length} attachments`)}${node('context','files','Context',config.context || [],`${(config.context || []).length} attachments`)}</div><div class="native-agent-connector"><span class="codicon codicon-arrow-down" aria-hidden="true"></span></div><div class="native-agent-model">${node('model','hubot',config.model || 'Model',[],config.contextWindow ? `${Number(config.contextWindow).toLocaleString()} context · ${Number(config.maxOutputTokens || 0).toLocaleString()} output` : 'Model budget')}</div><div class="native-agent-connector"><span class="codicon codicon-arrow-down" aria-hidden="true"></span></div><div class="native-agent-inputs">${node('tools','tools','Builtin Tools',builtin || [],builtin ? `${builtin.length} configured` : 'All configured tools')}${node('mcps','plug','MCP',servers.map(server => `${server.label}: ${server.enabled ? 'enabled' : 'disabled'} (${(server.tools || []).length} tools)`),enabledServers.length ? `${enabledServers.length} configured · connects per request` : 'Not connected')}</div></section>`;
 }
 
+function agentHarnessJson(value) {
+  try { return JSON.stringify(typeof value === 'string' ? JSON.parse(value) : value, null, 2); }
+  catch { return String(value || ''); }
+}
+
+function renderAgentHarness(session) {
+  const harness = session.harness;
+  if (!harness) return '';
+  const attempts = harness.attempts || [];
+  const latest = attempts.at(-1) || {};
+  const retrieval = latest.retrieval || [];
+  const actions = latest.toolCalls || [];
+  const recipes = session.runs || [];
+  const possibilities = latest.planning?.possibilities || harness.planning?.possibilities || [];
+  const phase = harness.currentPhase?.kind || harness.state || 'idle';
+  const state = kind => phase === kind ? 'active' : 'idle';
+  const node = (kind, icon, title, detail) => `<div class="agent-harness-node ${state(kind)}" data-harness-phase="${kind}"><span class="codicon codicon-${icon}" aria-hidden="true"></span><strong>${esc(title)}</strong><small>${esc(detail)}</small></div>`;
+  const recipeSpine = recipes.length ? recipes.map(run => {
+    const stages = run.nodes || [];
+    return `<div class="agent-recipe-spine"><header><span class="codicon codicon-library"></span><strong>${esc(run.recipeName || run.recipeId || 'Recipe')}</strong><small>r${Number(run.recipeRevision || 0)} · ${esc(run.status || 'unknown')}</small></header><div class="agent-recipe-stages">${stages.length ? stages.map((stage, index) => `<div class="agent-recipe-stage ${esc(stage.state || 'pending')}"><span>${index + 1}</span><strong>${esc(stage.title || stage.nodeId || stage.kind || `Stage ${index + 1}`)}</strong><small>${esc(stage.instruction || '')}</small></div>`).join('<i class="codicon codicon-arrow-right"></i>') : '<p>No persisted Recipe stages.</p>'}</div></div>`;
+  }).join('') : '<div class="agent-harness-empty">No Recipe framework is attached. Planning is not constrained by a reusable sequential spine.</div>';
+  const possibilityIds = new Set(possibilities.map(item => item.id));
+  const renderPossibilityNodes = (parentId, ancestors = new Set()) => {
+    const children = possibilities.filter(item => (item.parentId && possibilityIds.has(item.parentId) ? item.parentId : '') === parentId);
+    if (!children.length) return '';
+    return `<ul>${children.map(item => {
+      if (ancestors.has(item.id)) return `<li><article class="blocked"><strong>${esc(item.label || item.id)}</strong><small>Invalid planning cycle detected at ${esc(item.id)}.</small></article></li>`;
+      const nextAncestors = new Set(ancestors); nextAncestors.add(item.id);
+      return `<li><article class="${esc(item.status || 'candidate')}" data-parent-id="${esc(item.parentId || '')}"><header><strong>${esc(item.label || item.id || 'Possibility')}</strong><span>${esc(item.status || 'candidate')}${item.recipeStageId ? ` · Recipe: ${esc(item.recipeStageId)}` : ''}</span></header><p>${esc(item.summary || item.description || '')}</p><small>${esc(item.reason || 'No selection evidence recorded')}</small>${item.evidenceRefs?.length ? `<ol>${item.evidenceRefs.map(reference => `<li><code>${esc(reference)}</code></li>`).join('')}</ol>` : ''}</article>${renderPossibilityNodes(item.id, nextAncestors)}</li>`;
+    }).join('')}</ul>`;
+  };
+  const possibilityTree = possibilities.length
+    ? `<div class="agent-possibility-tree"><div class="agent-possibility-root"><strong>${esc(harness.currentProblem || 'Current problem')}</strong></div><div class="agent-possibility-branches">${renderPossibilityNodes('')}</div></div>`
+    : `<div class="agent-harness-empty"><strong>No explicit possibility tree persisted.</strong><span>The planner must record hypotheses/options, selected branch, rejected branches and evidence before this UI can display them. Retrieval candidates are not treated as solution possibilities.</span></div>`;
+  const recipeDetails = recipes.length ? recipes.map(run => `<details><summary><strong>${esc(run.recipeName || run.recipeId || 'Recipe')}</strong><span>r${Number(run.recipeRevision || 0)} · ${esc(run.status || 'unknown')}</span></summary><p>${esc((run.nodes || []).map(item => item.instruction).filter(Boolean).slice(0,3).join(' · ') || 'No persisted planning guidance')}</p><code>${esc(run.recipeId || run.runId || '')}</code></details>`).join('') : '<p>No Recipe framework is attached to this Session.</p>';
+  const retrievalDetails = retrieval.length ? retrieval.map((step, index) => {
+    const receipt = step.receipt || {};
+    const candidates = receipt.candidates || [];
+    return `<details><summary><strong>${esc(step.kind || `Retrieval ${index + 1}`)}</strong><span>${Number(receipt.selectedCount || 0)} selected / ${candidates.length} shown${step.durationMs !== undefined ? ` · ${Number(step.durationMs)} ms` : ''}</span></summary><p class="agent-harness-query"><b>Query</b> ${esc(receipt.query || '')}</p>${receipt.warning ? `<p role="alert">${esc(receipt.warning)}</p>` : ''}<ol class="agent-harness-candidates">${candidates.map(candidate => `<li class="${candidate.selected ? 'selected' : 'excluded'}"><header><strong>${esc(candidate.label || candidate.id)}</strong><span>${candidate.selected ? 'selected' : 'excluded'} · ${Number(candidate.score || 0).toFixed(4)}</span></header><p>${esc(candidate.reason || '')}</p><code>${esc(candidate.method || '')} · ${esc(candidate.sourceUri || '')}${candidate.range ? ` · ${candidate.range.start}-${candidate.range.end} ${candidate.range.unit}` : ''}</code></li>`).join('')}</ol></details>`;
+  }).join('') : '<p>No persisted retrieval receipt for the latest attempt.</p>';
+  const actionDetails = actions.length ? actions.map(call => `<details><summary><strong>${esc(call.name)}</strong><span>${esc(call.status)} · solves current ${esc(call.problemSource || 'input')}</span></summary><p><b>Associated problem</b> ${esc(call.associatedProblem || latest.associatedProblem || '')}</p><h5>Arguments</h5><pre>${esc(agentHarnessJson(call.arguments))}</pre><h5>Result preview</h5><pre>${esc(call.resultPreview || '(No recorded result)')}</pre>${call.resultCharacters > (call.resultPreview || '').length ? `<small>${Number(call.resultCharacters).toLocaleString()} result characters; preview is bounded.</small>` : ''}</details>`).join('') : '<p>No function or Action call in the latest attempt.</p>';
+  const transitions = latest.progress?.transitions || [];
+  const transitionDetails = transitions.length ? `<ol class="agent-harness-transitions">${transitions.map(item => `<li data-status="${esc(item.status)}"><span></span><strong>${esc(item.label)}</strong><time>${esc(new Date(item.at).toISOString())}</time></li>`).join('')}</ol>` : '<p>No state transitions recorded.</p>';
+  const queued = harness.queuedInputs || [];
+  return `<section class="agent-harness" aria-label="Observable Agent Harness"><header><div><span>Observable Harness</span><h4>${esc(harness.currentPhase?.label || harness.state)}</h4></div><p>Recipe supplies the validated sequential framework; planning expands a task-specific possibility tree and prunes it with evidence. This does not claim to expose hidden model chain-of-thought.</p></header><section class="agent-harness-recipe" aria-label="Recipe sequential framework"><h5>Sequential framework · Recipe</h5>${recipeSpine}</section><section class="agent-harness-possibilities" aria-label="Planning possibility tree"><h5>Possibility tree · task-specific planning</h5>${possibilityTree}</section><div class="agent-harness-flow">${node('planning','request-changes','Input / Planning', harness.currentProblemSource || 'user input')}<i class="codicon codicon-arrow-right"></i>${node('retrieval','references','Retrieve Evidence', retrieval.length ? `${retrieval.length} receipts` : 'no receipt')}<i class="codicon codicon-arrow-right"></i>${node('model','hubot','Select / Replan', latest.model || session.nativeAgent?.model || 'model')}<i class="codicon codicon-arrow-right"></i>${node('action','tools','Act / Observe', actions.length ? `${actions.length} calls` : 'no call')}<i class="codicon codicon-arrow-right"></i>${node('waiting','clock','Validate / Wait', harness.waiting?.detail || latest.validation?.responseStatus || harness.state)}</div><div class="agent-harness-grid"><details open><summary>Current input and problem</summary><pre>${esc(harness.currentProblem || '(No persisted input)')}</pre>${queued.length ? `<h5>Queued steering / tasks</h5><ol>${queued.map(input => `<li><strong>${esc(input.mode)}</strong> ${esc(input.text)}</li>`).join('')}</ol>` : ''}</details><details><summary>Recipe planning frameworks <span>${recipes.length}</span></summary>${recipeDetails}</details><details><summary>Retrieval and memory receipts <span>${retrieval.length}</span></summary>${retrievalDetails}</details><details><summary>Actions and function calls <span>${actions.length}</span></summary>${actionDetails}</details><details><summary>Harness state transitions <span>${transitions.length}</span></summary>${transitionDetails}</details><details><summary>Validation and summary</summary><pre>${esc(agentHarnessJson(latest.validation || { state:harness.state }))}</pre></details></div></section>`;
+}
+
+let nativeHarnessView = null;
+let nativeHarnessSessionId = '';
+let nativeHarnessRequestSequence = 0;
+const nativeHarnessRequests = new Map();
+function requestNativeHarness(method, params) {
+  return new Promise((resolve, reject) => {
+    const requestId = `native-harness-${++nativeHarnessRequestSequence}`;
+    const timer = setTimeout(() => { nativeHarnessRequests.delete(requestId); reject(new Error('The native Harness request timed out. Refresh to retry.')); }, 30000);
+    nativeHarnessRequests.set(requestId, { resolve, reject, timer });
+    vscode.postMessage({ command:'nativeHarness', requestId, method, params });
+  });
+}
+window.addEventListener('message', event => {
+  if (event.data?.command !== 'nativeHarnessResult') return;
+  const pending = nativeHarnessRequests.get(event.data.requestId);
+  if (!pending) return;
+  nativeHarnessRequests.delete(event.data.requestId); clearTimeout(pending.timer);
+  if (event.data.error) pending.reject(new Error(event.data.error)); else pending.resolve(event.data.data);
+});
+function nativeHarnessStateChanged() {
+  if (state.tab !== 'agentSessions' || !nativeHarnessView?.root.isConnected) return false;
+  nativeHarnessView.notify();
+  return true;
+}
+
 function renderAgentSessions() {
   if (state.tab !== 'agentSessions') return;
   const detail = document.getElementById('detail');
+  const nativeFocus = nativeHarnessView?.root.contains(document.activeElement) ? document.activeElement : null;
   const previousSessionId = detail.dataset?.agentSessionId;
   const inlineView = captureRefreshView(detail, ['.agent-session-overview-graph','.agent-runtime-graph']);
   const previousTreeScroll = detail.querySelector?.('.agent-session-tree-scroll')?.scrollTop || 0;
@@ -3017,7 +3091,9 @@ function renderAgentSessions() {
   const list = agentSessionTree(sessions);
   const empty = `<div class="agent-session-empty"><span class="codicon codicon-run-all"></span><strong>No Agent Sessions</strong><p>An Agent appears here only after it explicitly accepts PKM management with agent_session_start.</p></div>`;
   let content = empty;
-  if (selected) {
+  const native = selected?.origin === 'pkm-native' && !selected.trashedAt;
+  if (native) content = '<div id="native-agent-harness"></div>';
+  else if (selected) {
     const nodes = selected.runs.flatMap(run => run.nodes || []);
     const terminal = nodes.filter(node => ['succeeded','failed','skipped'].includes(node.state)).length;
     const running = nodes.find(node => node.state === 'running');
@@ -3033,12 +3109,25 @@ function renderAgentSessions() {
     const progressDone = sessionTodos.length ? todoTerminal : terminal;
     const progressTotal = sessionTodos.length || nodes.length;
     const percent = progressTotal ? Math.round(progressDone * 100 / progressTotal) : 0;
-    content = `<div class="agent-dashboard"><header class="agent-session-head"><div><span>PKM-managed Agent Session</span><h3>${esc(selected.task)}</h3><p>${esc(selected.sessionId)} · Updated ${esc(selected.updatedAt || 'unknown')}</p></div><div class="agent-session-head-actions"><button class="tbtn" title="Refresh without resetting graph focus" onclick="agentSessionRefresh()"><span class="codicon codicon-refresh"></span>Refresh</button><span class="agent-status ${selected.status === 'running' ? 'running' : ''}">${selected.status === 'running' ? '<i class="agent-live-dot"></i> ' : ''}${esc(selected.status)}</span>${agentSessionLivenessLabel(selected.liveness) ? `<span class="agent-session-liveness ${esc(selected.liveness.state)}" title="Heartbeat age: ${selected.liveness.heartbeatAgeSeconds === null ? 'unknown' : `${Math.round(selected.liveness.heartbeatAgeSeconds)}s`} · Lease: ${selected.liveness.leaseSeconds}s">${esc(agentSessionLivenessLabel(selected.liveness))}</span>` : ''}</div></header><div class="agent-session-summary"><div><span>Agent</span><strong>${esc(selected.agent?.name || 'Agent')}</strong><small>${esc(selected.agent?.product || '')}</small></div><div><span>Current task</span><strong>${esc(runningTodo?.title || running?.nodeId || (selected.runs.length ? 'No running node' : 'Awaiting task plan'))}</strong><small>${esc(selected.lastActivity?.tool || 'Registered')}</small></div><div><span>${sessionTodos.length ? 'Session todos' : 'Task runs'}</span><strong>${sessionTodos.length || selected.runs.length}</strong><small>${sessionTodos.length ? `${sessionTodos.filter(todo => todo.status === 'pending').length} queued` : `${nodes.length} graph tasks`}</small></div><div><span>Progress</span><strong>${progressDone} / ${progressTotal}</strong><small>${percent}% complete</small><div class="agent-progress" aria-label="${progressDone} of ${progressTotal} tasks terminal"><i style="width:${percent}%"></i></div></div></div>${selected.checkpoint ?  `<div class="agent-checkpoint-strip"><span class="codicon codicon-save"></span><div><strong>Checkpoint ${selected.checkpoint.sequence}</strong><small>${esc(selected.checkpoint.summary || selected.checkpoint.reason || 'Recovery state saved')} · ${selected.checkpoint.nextActionCount} next actions</small></div><code>${esc(selected.checkpoint.checkpointId)}</code></div>` : ''}${agentSessionTodoFlow(selected, sessionTodos, selected.runs)}</div>${agentSessionFullscreenGraph(selected)}`;
+    content = `<div class="agent-dashboard"><header class="agent-session-head"><div><span>PKM-managed Agent Session</span><h3>${esc(selected.task)}</h3><p>${esc(selected.sessionId)} · Updated ${esc(selected.updatedAt || 'unknown')}</p></div><div class="agent-session-head-actions"><button class="tbtn" title="Refresh without resetting graph focus" onclick="agentSessionRefresh()"><span class="codicon codicon-refresh"></span>Refresh</button><span class="agent-status ${selected.status === 'running' ? 'running' : ''}">${selected.status === 'running' ? '<i class="agent-live-dot"></i> ' : ''}${esc(selected.status)}</span>${agentSessionLivenessLabel(selected.liveness) ? `<span class="agent-session-liveness ${esc(selected.liveness.state)}" title="Heartbeat age: ${selected.liveness.heartbeatAgeSeconds === null ? 'unknown' : `${Math.round(selected.liveness.heartbeatAgeSeconds)}s`} · Lease: ${selected.liveness.leaseSeconds}s">${esc(agentSessionLivenessLabel(selected.liveness))}</span>` : ''}</div></header>${renderAgentHarness(selected)}<div class="agent-session-summary"><div><span>Agent</span><strong>${esc(selected.agent?.name || 'Agent')}</strong><small>${esc(selected.agent?.product || '')}</small></div><div><span>Current task</span><strong>${esc(runningTodo?.title || running?.nodeId || (selected.runs.length ? 'No running node' : 'Awaiting task plan'))}</strong><small>${esc(selected.lastActivity?.tool || 'Registered')}</small></div><div><span>${sessionTodos.length ? 'Session todos' : 'Task runs'}</span><strong>${sessionTodos.length || selected.runs.length}</strong><small>${sessionTodos.length ? `${sessionTodos.filter(todo => todo.status === 'pending').length} queued` : `${nodes.length} graph tasks`}</small></div><div><span>Progress</span><strong>${progressDone} / ${progressTotal}</strong><small>${percent}% complete</small><div class="agent-progress" aria-label="${progressDone} of ${progressTotal} tasks terminal"><i style="width:${percent}%"></i></div></div></div>${selected.checkpoint ?  `<div class="agent-checkpoint-strip"><span class="codicon codicon-save"></span><div><strong>Checkpoint ${selected.checkpoint.sequence}</strong><small>${esc(selected.checkpoint.summary || selected.checkpoint.reason || 'Recovery state saved')} · ${selected.checkpoint.nextActionCount} next actions</small></div><code>${esc(selected.checkpoint.checkpointId)}</code></div>` : ''}${agentSessionTodoFlow(selected, sessionTodos, selected.runs)}</div>${agentSessionFullscreenGraph(selected)}`;
   }
-  if (selected) content = renderNativeAgentArchitecture(selected) + content;
+  if (selected && !native) content = renderNativeAgentArchitecture(selected) + content;
   const groupCount = agentSessionGroupCount(sessions);
   const binding = selected ? `<p class="agent-session-group-binding">${selected.hostSessionId || selected.liveness?.hostSessionId ? 'Group' : 'Recovered Group'}: ${esc(agentSessionGroupKey(selected))}<br>Task: ${esc(selected.taskId || selected.sessionId)}<br>Grouping preserves task history; host model context is not isolated.</p>` : '';
   detail.innerHTML = `<div class="agent-sessions-workspace ${agentSessionTreeCollapsed ? 'cattree-collapsed' : ''}"><aside class="agent-session-list"><div class="agent-session-list-head"><strong>Chat Groups</strong><span>${groupCount} groups · ${sessions.length} tasks</span></div><div class="agent-session-tree-scroll" oncontextmenu="if(event.target===this)agentSessionRootMenu(event)">${list}</div>${catTreeTrashDock('Trash', trash.length, trashList, 'emptyAgentSessionTrash()')}</aside>${workspaceCatTreeDivider('agentSessions',agentSessionTreeCollapsed)}<main class="agent-session-content">${binding}${content}</main></div>`;
+  if (native) {
+    const host = detail.querySelector('#native-agent-harness');
+    if (!nativeHarnessView || nativeHarnessSessionId !== selected.sessionId) {
+      nativeHarnessView?.dispose();
+      nativeHarnessSessionId = selected.sessionId;
+      nativeHarnessView = PkmAgentHarness.mount(host, { initial:selected, request:requestNativeHarness,
+        openBrowser:sessionId => requestNativeHarness('openBrowser', { sessionId }) });
+      void nativeHarnessView.refresh(true);
+    } else nativeHarnessView.attach(host);
+    if (nativeFocus?.isConnected) nativeFocus.focus({ preventScroll:true });
+  } else {
+    nativeHarnessView?.dispose(); nativeHarnessView = null; nativeHarnessSessionId = '';
+  }
   const statusElement = detail.querySelector?.('.agent-session-head .agent-status');
   if (selected && statusElement) { statusElement.className = 'agent-status'; statusElement.innerHTML = agentSessionStatusIndicator(selected); }
   const nextTree = detail.querySelector?.('.agent-session-tree-scroll');
@@ -3219,10 +3308,14 @@ function renderProjects() {
     <aside class="project-tree" aria-label="Projects"><div class="project-tree-head"><strong>Projects</strong><button class="tbtn" onclick="projectNew()">New Project</button><select aria-label="Create from Project template" onchange="if(this.value)projectNew(this.value);this.value=''"><option value="">Template…</option><option value="research">Research</option><option value="delivery">Delivery</option></select></div>
       ${projectSnapshot.projects.filter(candidate => !candidate.deletedAt && !candidate.archivedAt).map(candidate => `<button class="project-tree-item ${candidate.projectId === project.projectId ? 'active' : ''}" onclick="projectSelect('${esc(candidate.projectId)}')"><span>${esc(candidate.name)}</span><small>${candidate.systemKind === 'default-project' ? 'System · Default' : `${projectSnapshot.threads.filter(thread => thread.projectId === candidate.projectId).length} Threads`}</small></button>`).join('')}
       <details><summary>Archived / removed (evidence retained)</summary>${projectSnapshot.projects.filter(candidate => candidate.deletedAt || candidate.archivedAt).map(candidate => `<button class="project-tree-item" onclick="projectSelect('${esc(candidate.projectId)}')">${esc(candidate.name)} · ${candidate.deletedAt ? 'Removed' : 'Archived'}</button>`).join('')}</details></aside>${workspaceCatTreeDivider('projects',projectTreeCollapsed)}
-    <div class="project-content"><header class="project-header"><div><span>${project.systemKind === 'default-project' ? 'System Project' : 'Project Cockpit'}</span><h2>${esc(project.name)}</h2><p>${threads.length} Threads · ${projectCockpitData(project).items.length} execution items · Intent: ${esc(project.status || 'planned')}</p></div><div class="project-header-actions"><button class="tbtn" onclick="ask('projectState',{})">Refresh</button><button class="tbtn" onclick="projectNewThread()">New Thread</button></div></header>
+    <div class="project-content"><header class="project-header"><div><span>${project.systemKind === 'default-project' ? 'System Project' : 'Project Cockpit'}</span><h2>${esc(project.name)}</h2><p>${threads.length} Threads · ${projectCockpitData(project).items.length} execution items · Intent: ${esc(project.status || 'planned')}</p></div><div class="project-header-actions"><button class="tbtn" onclick="projectCopyPath('${esc(project.projectId)}')">Copy Path</button><button class="tbtn" onclick="ask('projectState',{})">Refresh</button><button class="tbtn" onclick="projectNewThread()">New Thread</button></div></header>
       <nav class="project-sections" aria-label="Project sections">${projectSections.map(section => `<button class="${section === projectRoute.section ? 'active' : ''}" onclick="projectSection('${section}')">${section}</button>`).join('')}</nav>
       <div class="project-section-body">${projectSectionBody(project, threads, recipes)}</div>
     </div></div>`;
+}
+
+function projectCopyPath(projectId) {
+  if (/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(projectId)) copyContextPath(`pkm://projects/${encodeURIComponent(projectId)}`);
 }
 
 function renderGlobalRecipes() {

@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="{{icons}}">
   <link rel="stylesheet" href="{{styles}}">
   <link rel="stylesheet" href="{{hostHealthStyles}}">
+  <link rel="stylesheet" href="{{harnessStyles}}">
   <title>PKM Chat</title>
 </head>
 <body>
@@ -31,6 +32,10 @@
     <button id="settings" title="Model connection" aria-label="Model connection"><span class="codicon codicon-gear"></span></button>
   </header>
   <div id="error" class="error" role="alert" hidden></div>
+  <section id="harness-summary" aria-label="Native Harness summary" hidden>
+    <span id="harness-summary-text"></span>
+    <button id="open-harness" type="button">Open execution subgraphs</button>
+  </section>
   <section id="workers" aria-label="Workers">
     <button id="workers-toggle" type="button" aria-expanded="false" aria-controls="workers-panel">
       <span class="codicon codicon-type-hierarchy" aria-hidden="true"></span>
@@ -46,6 +51,14 @@
     </section>
   </section>
   <main id="messages" aria-label="Messages" aria-busy="false"></main>
+  <section id="visualization-panel" class="chat-visualization" aria-label="Harness visualization" hidden>
+    <header class="toolbar">
+      <strong>Visualization</strong>
+      <button id="visualization-steer" type="button" title="Steer current task" aria-label="Steer current task"><span class="codicon codicon-debug-step-over"></span></button>
+      <button id="visualization-close" type="button" title="Close visualization" aria-label="Close visualization"><span class="codicon codicon-close"></span></button>
+    </header>
+    <div id="visualization-content"></div>
+  </section>
   <section id="applied-edits" aria-label="Applied edits" hidden></section>
   <form id="composer">
     <section id="queued-inputs" aria-label="Queued inputs" hidden></section>
@@ -62,6 +75,7 @@
       <button id="tools" type="button" title="Tools" aria-label="Tools" aria-expanded="false" aria-controls="tools-panel"><span class="codicon codicon-tools"></span></button>
       <button id="agent-config" type="button" title="Agent configuration" aria-label="Agent configuration" aria-expanded="false" aria-controls="agent-config-panel"><span class="codicon codicon-settings-gear"></span></button>
       <button id="memory" type="button" title="Retrieval and Chat memory" aria-label="Retrieval and Chat memory" aria-expanded="false" aria-controls="memory-panel"><span class="codicon codicon-database"></span></button>
+      <button id="visualization" type="button" title="Visualization" aria-label="Visualization" aria-expanded="false" aria-controls="visualization-panel"><span class="codicon codicon-type-hierarchy"></span></button>
       <div class="model-controls">
         <button id="model" type="button" title="Choose model" aria-label="Choose model"><span class="codicon codicon-hubot"></span><span id="model-label">Choose model</span><span class="codicon codicon-chevron-down"></span></button>
         <button id="options" type="button" title="Model settings" aria-label="Model settings" aria-expanded="false" aria-controls="advanced-budget"><span class="codicon codicon-settings"></span></button>
@@ -104,6 +118,7 @@
     </section>
     <section id="memory-panel" class="chat-settings" aria-label="Chat memory" hidden>
       <div class="settings-row"><strong>Retrieval</strong><select id="retrieval-top" aria-label="Candidate count"><option value="10">Top 10</option><option value="20">Top 20</option></select><select id="retrieval-kind" aria-label="Candidate type"><option value="all">All types</option></select><button id="memory-close" type="button" title="Close retrieval" aria-label="Close retrieval"><span class="codicon codicon-close"></span></button></div>
+      <div class="settings-row"><span id="memory-policy-status"></span><button id="memory-policy" type="button">Memory settings</button></div>
       <div id="retrieval-status" role="status"></div>
       <div id="retrieval-candidates" aria-label="Retrieved references"></div>
       <details><summary>Retrieval flow</summary><div id="retrieval-flow" class="retrieval-flow"></div></details>
@@ -128,6 +143,8 @@
   <script nonce="{{nonce}}" src="{{purify}}"></script>
   <script nonce="{{nonce}}" src="{{retrievalScript}}"></script>
   <script nonce="{{nonce}}" src="{{libraryScript}}"></script>
+  <script nonce="{{nonce}}" src="{{harnessScript}}"></script>
+  <script nonce="{{nonce}}" src="{{visualizationScript}}"></script>
   <script nonce="{{nonce}}" src="{{script}}"></script>
 </body>
 </html>

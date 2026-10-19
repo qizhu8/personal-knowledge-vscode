@@ -12,12 +12,13 @@ export interface ActionWorkbenchServer {
 
 export async function createActionWorkbenchServer(options: {
   extensionPath: string;
+  assets?: ReadonlyArray<readonly [string, readonly [string, string]]>;
   request(method: string, params: Record<string, unknown>): Promise<unknown>;
 }): Promise<ActionWorkbenchServer> {
   const token = randomBytes(32).toString("hex");
   const origins = new Set<string>();
   let draft: unknown = null;
-  const assets = new Map([
+  const assets = new Map(options.assets || [
     ["/", ["resources/action-workbench.html", "text/html; charset=utf-8"]],
     ["/codicon.css", ["dist/webview/codicon.css", "text/css; charset=utf-8"]],
     ["/codicon.ttf", ["dist/webview/codicon.ttf", "font/ttf"]],
@@ -44,7 +45,7 @@ export async function createActionWorkbenchServer(options: {
         const nonce = randomBytes(24).toString("hex");
         if (pathname === "/") content = Buffer.from(content.toString("utf8")
           .replace("<head>", '<head><link rel="stylesheet" href="codicon.css">')
-          .replace("<script>", `<script nonce="${nonce}">`));
+          .replace(/<script\b/g, `<script nonce="${nonce}"`));
         response.writeHead(200, { "Content-Type": asset[1], "Cache-Control": "no-store",
           "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
           "Content-Security-Policy": `default-src 'none'; connect-src 'self'; font-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'nonce-${nonce}'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'` });

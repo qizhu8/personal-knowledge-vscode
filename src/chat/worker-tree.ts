@@ -35,8 +35,8 @@ export interface WorkerSlot { receiptId: string; chatId: string; parentChatId: s
 interface WorkerTree { schema: "pkm.chat.worker-tree/v1"; id: string; rootChatId: string; slots: WorkerSlot[]; approvedQuota?: number; }
 export interface WorkerLimits { automatic: number; maximum: number; }
 
-export function workerIsDescendant(slots: readonly WorkerSlot[], ancestorChatId: string, workerChatId: string): boolean {
-  const parents = new Map(slots.filter(slot => !slot.released).map(slot => [slot.chatId, slot.parentChatId]));
+export function workerIsDescendant(slots: readonly WorkerSlot[], ancestorChatId: string, workerChatId: string, includeReleased = false): boolean {
+  const parents = new Map(slots.filter(slot => includeReleased || !slot.released).map(slot => [slot.chatId, slot.parentChatId]));
   const visited = new Set<string>();
   let current = parents.get(workerChatId);
   while (current) {

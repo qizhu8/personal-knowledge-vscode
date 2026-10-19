@@ -88,6 +88,8 @@ class ChatUiTests(unittest.TestCase):
             "katex": "katex.js", "katexStyles": "katex.css", "mermaid": "mermaid.js",
             "libraryScript": "api-chat-library.js", "retrievalScript": "chat-retrieval-flow.js",
             "hostHealthScript": "host-health.js", "hostHealthStyles": "host-health.css",
+            "harnessScript": "agent-harness.js", "harnessStyles": "agent-harness.css",
+            "visualizationScript": "chat-visualization.js",
         }
         for key, value in replacements.items():
             page_html = page_html.replace("{{" + key + "}}", value)
@@ -489,6 +491,10 @@ class ChatUiTests(unittest.TestCase):
                                 ]}]}}
                         page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", memory_fixture)
                         page.locator("#memory").click()
+                        expect(page.locator("#memory-policy-status")).to_contain_text("Last 30 days")
+                        expect(page.locator("#memory-policy-status")).to_contain_text("descendant workers")
+                        page.locator("#memory-policy").click()
+                        self.assertEqual(page.evaluate("window.__posts.at(-1).type"), "memoryPolicy")
                         entries = page.locator("#retrieval-candidates .memory-segment")
                         expect(entries).to_have_count(10)
                         expect(entries.nth(0).locator("summary")).to_have_text(full_memory[:30])
@@ -591,9 +597,18 @@ class ChatUiTests(unittest.TestCase):
                             document.dispatchEvent(new Event('visibilitychange'));
                         }""")
                         buffered = {**refreshed, 'chat': {**refreshed['chat'], 'messages': [{**refreshed['chat']['messages'][0], 'content': long_text + '\n\nBuffered while hidden.'}]}}
-                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", buffered)
+                        page.evaluate("""() => {
+                            window.__hiddenMutations=0;
+                            window.__hiddenObserver=new MutationObserver(records=>__hiddenMutations+=records.length);
+                            __hiddenObserver.observe(document.getElementById('window-presets'),{childList:true,subtree:true});
+                        }""")
+                        for _ in range(20):
+                            page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", buffered)
                         page.evaluate("window.dispatchEvent(new MessageEvent('message',{data:{type:'delta',chatId:'chat_fixture',id:'long_reply',text:' Streamed while hidden.'}}))")
                         page.clock.run_for(32)
+                        self.assertEqual(page.evaluate("__hiddenMutations"), 0,
+                                         "Hidden Chat must not repeatedly rebuild controls while native Chat is open")
+                        page.evaluate("__hiddenObserver.disconnect()")
                         self.assertTrue(page.evaluate("window.__previousMessage===document.querySelector('#messages .message')"))
                         expect(page.locator('#messages')).not_to_contain_text('Buffered while hidden.')
                         page.evaluate("() => {delete document.visibilityState;document.dispatchEvent(new Event('visibilitychange'));}")

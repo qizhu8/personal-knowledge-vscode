@@ -95,7 +95,11 @@ def _compile_definition(definition):
         executable = shutil.which("node")
         contracts = str(resources.parent / "dist" / "workflows" / "workflow-contracts.js")
     if not executable or not Path(contracts).is_file():
-        raise RuntimeError("Recipe compiler is unavailable. Regenerate the MCP server with the current extension.")
+        raise RuntimeError(
+            "Recipe compiler is unavailable: config={}, contracts={}, executable={}. "
+            "The contracts file is missing or no executable is configured. "
+            "Repair the MCP compiler configuration from the current extension.".format(
+                config_path, contracts, executable))
     environment = dict(os.environ, ELECTRON_RUN_AS_NODE="1")
     try:
         result = subprocess.run(
@@ -1037,6 +1041,12 @@ def _validate_definition(recipe):
                     or not isinstance(config.get("args"), list)
                     or any(not isinstance(argument, str) or "\0" in argument for argument in config["args"])):
                 raise ValueError("Recipe command must use a program and an argv string list.")
+        if _execution_kind(node) in {COMMAND_NODE_KIND, SCRIPT_NODE_KIND}:
+            files = (node.get("config") or {}).get("files", [])
+            if not isinstance(files, list) or any(not isinstance(value, str) or not value or "\0" in value for value in files):
+                raise ValueError("Recipe resource files must be a list of nonempty references.")
+        if _execution_kind(node) == COMMAND_NODE_KIND:
+            config = node.get("config") or {}
             timeout = config.get("timeoutSeconds", 300)
             maximum = config.get("maxOutputBytes", 65536)
             if (not isinstance(timeout, int) or isinstance(timeout, bool) or timeout < 1 or timeout > 3600
@@ -1400,6 +1410,20 @@ def _start_command(store, run, node, environments_registry=None):
             "maxOutputBytes": config.get("maxOutputBytes", 65536),
             **({"cwd": _render_template(config["cwd"], run["inputs"])} if config.get("cwd") else {}),
         }
+    # Use the Action resolver at the existing launch boundary, not another
+    # executor. Only explicitly declared resources are substituted in argv.
+    if config.get("files") or spec["program"].startswith("pkm://"):
+        from action_modules import ModuleRuntime
+        runtime = ModuleRuntime(store)
+        context = {"action_id": run.get("recipeId", "recipe"),
+                   "display_name": run.get("recipeName") or run.get("name") or run.get("recipeId", "Recipe")}
+        replacements = {reference: str(runtime.resource_path(context, reference,
+                        "nodes." + node["nodeId"] + ".config.files"))
+                        for reference in config.get("files", [])}
+        if spec["program"].startswith("pkm://"):
+            spec["program"] = str(runtime.resource_path(context, spec["program"],
+                                 "nodes." + node["nodeId"] + ".config.program"))
+        spec["args"] = runtime.resource_arguments(spec["args"], replacements)
     automation = run.get("automation")
     if automation:
         remaining = (datetime.datetime.fromisoformat(automation["deadlineAt"])

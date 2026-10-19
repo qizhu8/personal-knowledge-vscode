@@ -746,6 +746,11 @@ async function startPkmServiceRuntime(options: PkmServiceBootOptions): Promise<{
       try {
         await reverse(connection, "execute", { executionId: execution.executionId, targetId, reason, fencingToken });
         succeeded = true;
+      } catch (error) {
+        if (error instanceof Error && error.name === "GitHubSyncConflictError" && "partialResult" in error && error.partialResult) {
+          succeeded = true;
+        }
+        throw error;
       } finally {
         execution.accepting = false;
         // A push cannot be cancelled safely on host disconnect. Keep the lease

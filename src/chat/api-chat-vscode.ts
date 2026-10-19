@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { ApiChatMessage, ApiChatRequest, ApiChatToolEvent, ChatImage, decodeChatImage, ChatToolLoopGuard, toolBudgetSummary, chatInferenceOutputByteLimit } from "./api-chat-client";
+import { ApiChatMessage, ApiChatRequest, ApiChatToolEvent, ChatImage, decodeChatImage, ChatToolLoopGuard, toolBudgetSummary, chatInferenceOutputByteLimit, chatTransportReceipt } from "./api-chat-client";
 import { ChatModelProfile } from "./api-chat-models";
 import { abortable } from "./api-chat-tools";
 
@@ -40,7 +40,7 @@ export async function discoverVscodeModels(host = vscode, signal?: AbortSignal):
   }
 }
 
-type VscodeChatRequest = Pick<ApiChatRequest, "messages" | "signal" | "timeoutMs" | "maxOutputTokens" | "maxToolRounds" | "loopReviewAfterMs" | "loopReviewClock" | "loopExemptTools" | "onToolLoopNotice" | "contextWindow" | "onImage" | "tools" | "onTool" | "beforeRound" | "afterTools" | "onStage" | "onUsage" | "onUsageMetadata" | "onOutputBudgetWarning">;
+type VscodeChatRequest = Pick<ApiChatRequest, "messages" | "signal" | "timeoutMs" | "maxOutputTokens" | "maxToolRounds" | "loopReviewAfterMs" | "loopReviewClock" | "loopExemptTools" | "onToolLoopNotice" | "contextWindow" | "onImage" | "tools" | "onTool" | "beforeRound" | "onTransportPrepared" | "onTransportSent" | "afterTools" | "onStage" | "onUsage" | "onUsageMetadata" | "onOutputBudgetWarning">;
 type NativePart = { value?: string; callId?: string; name?: string; input?: unknown; data?: Uint8Array; mimeType?: string };
 
 export async function streamVscodeChat(model: VscodeChatModel, request: VscodeChatRequest,
@@ -94,6 +94,7 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
       };
       try { request.beforeRound?.(messages, remaining); }
       catch (error) { throw new VscodeChatError(error instanceof Error ? error.message : "Context budget exceeded."); }
+      timer = setTimeout(() => { timedOut = true; cancel(); }, request.timeoutMs ?? 120_000);
       const prompt = messages.map(message => {
         const content = message.role === "system" ? `[PKM instructions and reference context]\n${message.content}` : message.content;
         const entry = message.role === "assistant" ? host.LanguageModelChatMessage.Assistant(content) : host.LanguageModelChatMessage.User(content);
@@ -106,27 +107,32 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
         }
         return entry;
       });
-      if (hasImages) {
-        let tokens = 32;
-        for (const entry of prompt) {
-          const count = await abortable(model.countTokens(entry, cancellation.token), signal);
-          if (!Number.isSafeInteger(count) || count < 0) throw new VscodeChatError("Image token count is unavailable.");
-          tokens += count + 32;
-        }
-        if (request.tools?.length) {
-          const count = await abortable(model.countTokens(JSON.stringify(request.tools.map(({ execute, ...tool }) => tool)), cancellation.token), signal);
-          if (!Number.isSafeInteger(count) || count < 0) throw new VscodeChatError("Tool schema token count is unavailable.");
-          tokens += count + 32;
-        }
-        if (!Number.isSafeInteger(request.contextWindow) || tokens + remaining > Math.min(request.contextWindow!, model.maxInputTokens)) throw new VscodeChatError("Image context budget exceeded. Remove images/history or increase Context.");
-      }
-      if (request.loopReviewAfterMs !== undefined) timer = setTimeout(() => { timedOut = true; cancel(); }, request.timeoutMs ?? 120_000);
-      request.onStage?.("connecting");
       const options: vscode.LanguageModelChatRequestOptions & { tools?: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> } = {
         justification: "Allow PKM native Chat to use the selected model with your selected context.",
         ...(request.tools?.length && !loop.summarizing ? { tools: request.tools.map(tool => ({ name: tool.name, description: tool.description, inputSchema: tool.parameters })) } : {}),
       };
+      let tokens: number | undefined;
+      if (hasOutputTokenizer) {
+        tokens = 32;
+        for (const entry of prompt) {
+          const count = await abortable(model.countTokens(entry, cancellation.token), controller.signal);
+          if (!Number.isSafeInteger(count) || count < 0) throw new VscodeChatError("Input token count is unavailable.");
+          tokens += count + 32;
+        }
+        if (options.tools?.length) {
+          const count = await abortable(model.countTokens(JSON.stringify(options.tools), cancellation.token), controller.signal);
+          if (!Number.isSafeInteger(count) || count < 0) throw new VscodeChatError("Tool schema token count is unavailable.");
+          tokens += count + 32;
+        }
+      }
+      const transport = chatTransportReceipt("vscode", prompt, options.tools || [], tokens);
+      const inputBudget = request.contextWindow === undefined ? model.maxInputTokens : Math.min(request.contextWindow, model.maxInputTokens) - remaining;
+      if (!Number.isSafeInteger(inputBudget) || transport.inputTokens > inputBudget) throw new VscodeChatError(`${hasImages ? "Image context" : "Native context"} budget exceeded. Remove optional context or increase Context.`);
+      try { request.onTransportPrepared?.(transport); }
+      catch (error) { throw new VscodeChatError(error instanceof Error ? error.message : "Transport receipt persistence failed."); }
+      request.onStage?.("connecting");
       const response = await abortable(model.sendRequest(prompt, options, cancellation.token), controller.signal);
+      request.onTransportSent?.(transport);
       request.onStage?.("waiting");
       const structured = (response as typeof response & { stream?: AsyncIterable<NativePart> }).stream;
       const iterator: AsyncIterator<NativePart | string> = (structured || response.text)[Symbol.asyncIterator]();

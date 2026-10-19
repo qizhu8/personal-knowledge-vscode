@@ -48,6 +48,8 @@ export function renderApiChat(view: vscode.WebviewView, context: vscode.Extensio
     katex: resource("katex.js"), katexStyles: resource("katex.css"), mermaid: resource("mermaid.js"),
     libraryScript: resource("api-chat-library.js"), retrievalScript: resource("chat-retrieval-flow.js"),
     hostHealthScript: resource("host-health.js"), hostHealthStyles: resource("host-health.css"),
+    harnessScript: resource("agent-harness.js"), harnessStyles: resource("agent-harness.css"),
+    visualizationScript: resource("chat-visualization.js"),
   };
   view.webview.html = fs.readFileSync(path.join(resources.fsPath, "api-chat.html"), "utf8")
     .replace(/\{\{(\w+)\}\}/g, (match, key: string) => assets[key] || match);

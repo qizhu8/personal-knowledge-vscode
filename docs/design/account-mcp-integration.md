@@ -1,6 +1,6 @@
 # Account-Level MCP Integration
 
-Status: account binding and native-provider implementation are present; live cross-workspace acceptance remains pending.
+Status: account binding, native-provider discovery and explicit Copilot CLI user registration are implemented; live Windows-local and cross-workspace acceptance remain pending.
 
 ## Decision
 
@@ -24,7 +24,22 @@ those processes; a centralized Remote Server is not a singleton Extension Host.
   `personalKnowledge.pkm`, creates remote-aware stdio definitions, and checks
   trust and runtime readiness on explicit startup.
 - `rememberMachineStorePath` in the same module persists a machine root and
-  compares the global configuration value before updating it.
+  compares the global configuration value before updating it. It determines
+  provider support from the API, not registration timing: startup must not
+  accidentally persist `manual-user` before the native provider is registered.
+- **PKM: Configure VS Code MCP Discovery** explicitly selects native ownership
+  after user/profile/workspace conflict checks and confirmation. Manual
+  ownership is not silently taken over at startup; changed bindings are backed
+  up. The native definition builder checks paths without spawning Python.
+- **PKM: Register Copilot CLI MCP (User)** previews the current host/account and
+  launch, then adds only `mcpServers.pkm` to the default user
+  `~/.copilot/mcp-config.json` after confirmation. The helper rejects conflicting
+  entries/aliases, malformed or ambiguous JSON, unsafe paths and stale review
+  revisions; preserves unrelated configuration; privately backs up existing
+  bytes; and replaces the config through a same-directory atomic rename under a
+  cooperative cross-process lock. Identical registrations are a no-op. The
+  final revision check detects intervening external edits, but cannot lock out
+  noncooperating external writers after that check.
 - Config uses native startup guidance rather than a copyable Agent installation
   prompt. It no longer directs an agent to register a duplicate through Agency.
 - The former Settings **Inject / Update All** path is retired. The
@@ -39,8 +54,9 @@ and tools actually available to an agent require separate live checks.
 ## Identity and Configuration
 
 The account binding records a schema version, logical server identity, target
-machine identity, OS account identity, canonical Knowledge Root, managed runtime
-location, protocol version, and registration owner. Workspace folders are not
+machine identity, OS account identity, canonical Knowledge Root and VS Code
+registration owner. Runtime location and protocol version are derived from the
+managed launch definition, not stored in the binding. Workspace folders are not
 part of server identity. Paths and account names are configuration, not secrets.
 
 Use stable identity across extension upgrades and runtime repairs. A label,
@@ -75,11 +91,27 @@ For a client without provider support, offer an explicit user-level registration
 adapter. In Remote SSH this must be a remote-user registration, not a Windows
 local launch of Linux executables. Provider and manual adapters are mutually
 exclusive registration owners within the same client, never automatic duplicates.
+
+Recipe compilation must not depend on a versioned extension installation path.
+Generation copies the compiler and its value-contract dependency into an immutable,
+content-addressed directory under the managed MCP directory. Configuration is
+replaced atomically only after these files are present. Integration maintenance
+checks this configuration even when MCP protocol/component versions are unchanged;
+an older extension host cannot replace a newer compiler configuration. Python reads
+the configuration on each compilation, so path repair does not require restarting a
+running server. Loading updated Python code still requires the normal MCP restart.
+Missing compiler errors include the config path, contracts path and executable.
 Copilot CLI / SDK sessions that do not inherit VS Code provider definitions need
 their own explicit user-level registration in `~/.copilot/mcp-config.json`.
-General & MCP shows a separate `mcpServers` / `type: "local"` snippet derived
-from the same managed stdio launch definition, including Windows environment
-variables. PKM does not write this external configuration automatically.
+General & MCP shows a separate `mcpServers` / `type: "local"` snippet and explicit
+user registration action derived from the same managed stdio launch definition,
+including Windows environment variables. PKM writes this external configuration
+only after explicit review/confirmation, never during activation, runtime
+maintenance or discovery. CLI registration does not change the VS Code owner.
+The default user path is inspected; custom CLI config directories and inherited
+SDK definitions require separate review. Native migration checks the current
+profile and open workspace folders; unknown profiles/adapters remain a user
+review boundary.
 Registration enabled, transport connected, and tools callable remain separate
 checks.
 

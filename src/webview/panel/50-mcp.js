@@ -222,7 +222,7 @@ function renderMcpDashboard(data) {
     [status.store.valid, 'Knowledge location', status.store.valid ? status.store.path : 'Choose where this machine stores PKM Markdown files.', '<span class="mcp-no-action">Chosen at startup</span>'],
     [!!data?.mcpPython?.valid, 'Python 3.10+', data?.mcpPython?.valid ? `${data.mcpPython.path} · ${data.mcpPython.version}` : 'Select and validate a Python executable.', '<button class="tbtn" onclick="document.getElementById(\'mcp-python-path\')?.scrollIntoView({behavior:\'smooth\'})">Choose Python</button>'],
     [automaticReady, 'Automatic integration', automaticDetail, automatic.state === 'error' ? '<button class="tbtn" data-pending-label="Retrying…" onclick="beginMcpUiAction(\'checkMcp\',{},this)">Retry</button>' : `<span class="mcp-no-action">${automatic.state === 'running' ? 'Working…' : automaticReady ? 'Ready' : 'Automatic'}</span>`],
-    [!!data?.accountBinding, 'Account MCP registration', data?.accountBinding ? `Registration owner: ${data.accountBinding.registrationOwner}. Native client trust and actual tool calls must be verified separately.` : 'Complete account-level PKM setup.', '<span class="mcp-no-action">MCP: List Servers</span>'],
+    [!!data?.accountBinding, 'Account binding (not client discovery)', data?.accountBinding ? `VS Code owner: ${data.accountBinding.registrationOwner}. ~/.pkm/mcp-binding.json is not a client registration. Verify each client separately.` : 'Complete account-level PKM setup.', '<button class="tbtn" onclick="beginMcpUiAction(\'configureNativeMcpDiscovery\',{},this)">Configure VS Code discovery</button>'],
   ];
   return `<section class="mcp-dashboard">
     <div class="mcp-dashboard-head"><div><h2>PKM Integration Status</h2><p>Server runtime and generated schemas are versioned independently.</p></div><div class="mcp-running">${mcpStatusLight(processKind, processLabel, processLabelKey, { pid: status.process.pid || '' })}<button class="tbtn" data-pending-label="Refreshing…" onclick="beginMcpUiAction('checkMcp',{},this)" title="Refresh process and version status" aria-label="Refresh process and version status">${uiIcon('refresh')}</button></div></div>
@@ -304,6 +304,9 @@ function renderMcpPane(data) {
       <div style="background:var(--panel);border:1px solid ${data?.nativeMcpProvider ? '#4ade8066' : '#f4b40066'};border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:11px;line-height:1.6;color:var(--muted)">
         <strong data-i18n="config.definitionTitle">VS Code MCP definition</strong>
         <div><span data-i18n="config.source">Source</span>: <code>${data?.accountBinding?.registrationOwner ? esc(data.accountBinding.registrationOwner) : '<span data-i18n="config.stateMissing">Missing</span>'}</code></div>
+        <div>Native definition: ${data?.clientRegistration?.vscode?.definitionAvailable ? 'available on this host (client discovery not verified)' : 'unavailable or not selected'}</div>
+        <div>${esc(data?.clientRegistration?.vscode?.detail || '')}</div>
+        <button class="tbtn" id="mcp-configure-native" onclick="beginMcpUiAction('configureNativeMcpDiscovery',{},this)">Configure VS Code MCP discovery</button>
         <span data-i18n="config.restartServer">Run MCP: List Servers, select pkm, then Start/Restart. Remote SSH windows use the provider and paths from the remote extension host.</span>
       </div>
       <div style="background:var(--panel);border:1px solid ${python.valid ? '#4ade8066' : '#f4b40066'};border-radius:8px;padding:12px 14px;margin-bottom:16px">
@@ -386,8 +389,11 @@ function renderMcpPane(data) {
       <div id="mcp-account-registration" style="font-size:14px;font-weight:700;margin-bottom:6px" data-i18n="config.registration">Account-level MCP registration</div>
       <div style="font-size:12px;color:var(--muted);line-height:1.6" data-i18n="config.restartServer">Run MCP: List Servers, select pkm, then Start/Restart. Remote SSH windows use the provider and paths from the remote extension host.</div>
       <div id="mcp-copilot-registration" style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-top:16px;font-size:12px;line-height:1.7">
-        <strong data-i18n="config.copilotRegistrationTitle">Copilot CLI / SDK: one-time manual registration</strong>
+        <strong>Copilot CLI / SDK: explicit user-level registration</strong>
         <p data-i18n="config.copilotRegistrationDescription">Installing PKM supplies a VS Code MCP definition, but does not write Copilot CLI configuration. CLI / SDK sessions that do not inherit VS Code MCP definitions need a separate registration. If your session already exposes pkm tools, skip this step; do not duplicate registrations within the same client.</p>
+        <div id="mcp-copilot-registration-status"><strong>Default CLI user configuration: ${esc(data?.clientRegistration?.copilot?.state || 'not inspected')}</strong><br><code>${esc(data?.clientRegistration?.copilot?.path || '')}</code><br>${esc(data?.clientRegistration?.copilot?.detail || '')}</div>
+        <button class="tbtn" id="mcp-register-copilot-user" onclick="beginMcpUiAction('registerCopilotMcp',{},this)" ${runtime.healthy && installed ? '' : 'disabled'}>Register Copilot CLI MCP (User)</button>
+        <p>Review and confirm the host, account path and launch command before writing. The command backs up an existing file, preserves unrelated entries and rejects conflicts or edits made after review. It never writes project configuration or starts a server. Registration does not prove client discovery, trust or callable tools. Alternatively, use the manual steps below. Custom CLI --config-dir locations are not modified.</p>
         <ol style="padding-left:20px">
           <li data-i18n="config.copilotRegistrationPrepare">First select Python and finish managed runtime setup and server generation above. Install Copilot CLI if the copilot command is unavailable.</li>
           <li><span data-i18n="config.copilotRegistrationMerge">Back up ~/.copilot/mcp-config.json, then merge the pkm entry below into its mcpServers object. Create the file if it is missing. Preserve other servers; review an existing pkm entry instead of adding a duplicate. This is user-level configuration for this machine and OS account, not workspace configuration.</span>

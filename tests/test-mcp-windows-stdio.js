@@ -7,7 +7,7 @@ const path = require('path');
 const ts = require('typescript');
 
 const root = path.join(__dirname, '..');
-const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'pkm-windows-stdio-'));
+const fixture = fs.mkdtempSync(path.join(__dirname, '.pkm-windows-stdio-'));
 const compiled = path.join(fixture, 'mcp-stdio-command.js');
 childProcess.execFileSync('npx', [
   'esbuild',

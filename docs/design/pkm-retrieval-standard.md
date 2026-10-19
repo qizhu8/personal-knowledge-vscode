@@ -27,6 +27,31 @@ Retrieval itself has two standardized levels:
 
 L1 and L2 can be implemented, released and upgraded independently.
 
+### Indexed source materialization
+
+Worker index submission appends a physical-document fingerprint to the source
+revision. Chat resolves that indexed revision using the same normalization; it
+must not compare it directly to the unqualified filesystem revision.
+
+The pinned lexical engine's `SkillDocument` content hash is canonical JSON over
+body, physical content type, description, metadata and title. It is distinct from
+the host's index-event fingerprint. Host materialization validates both indexed
+revision and that engine hash. Metadata key ordering follows Unicode codepoints,
+including numeric-looking keys; it does not use JavaScript object enumeration.
+
+Sources at most 160,000 UTF-16 code units retain the complete-source path.
+Larger sources use the existing structural rule refiner against the original
+body before transport. Parent metadata, exact passage ranges and all required
+heading/shared-condition contexts remain separate. The 100-candidate boundary
+admits or excludes whole dependency groups, never orphaned passages or prefixes.
+Private, trashed, removed or changed revisions cannot materialize; send-time
+validation checks the current physical source again.
+
+This closes the lexical worker-to-Chat identity mismatch and large-source
+transport gap. It does not establish general provider admission, model-generated
+spans, RST/code/history structural coverage, cross-Chat authorization or a
+production task-quality SLA.
+
 ## Retrieval Levels
 
 ### L1 Source Retrieval
@@ -137,6 +162,74 @@ Ranges are half-open: `start` is inclusive and `end` is exclusive. Their unit is
 explicitly characters, bytes or lines. L2 child projections retain their parent
 ID, revision and content hash.
 
+### Native Chat rule-passage implementation
+
+The current native Chat path uses
+[rule passages](../../src/retrieval/retrieval-passages.ts) for long, fully
+materialized L1 sources. It does not relabel document ranking as model L2.
+Markdown/Setext sections, paragraph boundaries and fenced examples remain
+original text. Oversized pipe tables split only at complete rows, with the
+original header and its units as dependencies. Ancestor introductory prose,
+same-scope Conditions/Configuration/Environment/Units/Setup sections, explicitly
+labelled condition blocks, and prose accompanying split tables remain required
+original contexts. Oversized required contexts refuse dependent evidence rather
+than inject an unqualified metric. Valid JSON root arrays preserve whole entities;
+root objects with one records array also retain other root properties as shared
+conditions, including conditions appearing after that array. Invalid JSON is
+explicitly unavailable. RST sources identified by `.rst` source URI/label or a
+recognized overlined title use a conservative section path: adornment styles
+define hierarchy, ancestor introductions, document preambles and same-scope
+shared-condition sections remain required context. Original literal/directive
+bodies and grid tables stay inside their whole section, including blank lines;
+indented adornments are not headings. Oversized RST sections or required context
+are refused, not paragraph-sliced. Includes, raw directives, substitutions and
+cross-document roles explicitly refuse refinement rather than execute or omit
+unresolved dependencies. This is a bounded RST subset, not a general RST renderer.
+Unsupported multi-array structures, Scripts, Recipes and
+unknown kinds remain atomic; oversized units are refused instead of slicing
+their prefix. This is not a general code parser or proof that all
+cross-section shared test conditions are complete.
+
+Children carry their immutable L1 parent identity, half-open original range,
+exact text hash and `offsetEncoding: "utf16"` for JavaScript character offsets.
+No BOM/CRLF/Unicode normalization occurs. `contextIds` identifies separately
+recorded original heading/shared-condition ranges. Context and its passage are admitted
+or omitted together by the model input planner. L1 ordering and local L2
+lexical ordering remain separate; raw scores are not compared across levels.
+The actual rule provider identity and parent/range fields survive persisted
+selection and sent-round receipts.
+
+Complete L1 materialization has a 160,000-character transport boundary. Above
+it the adapter refuses full materialization, without substituting a prefix.
+For local Notes, Skills, Research, Scripts and available cached Subscriptions,
+`pkm_search` discovers identities and `pkm_read` exposes a source URI and a body revision/hash handle:
+`start`, `end`, `sourceRevision` and `contentHash` request an exact original
+range of up to 4,000 UTF-16 code units. Stale handles, invalid ranges, split
+surrogate pairs and oversized serialized responses fail explicitly. Default
+preview reads still report `truncated`; a preview is not a complete source or
+a successful L2 result. The body hash in this read handle is distinct from an
+index provider's document hash and must be obtained from the read response.
+Previews expose their exact range and `nextStart` without splitting a surrogate
+pair, including when JSON escaping reduces the available preview length.
+Research text uses the same original body/conclusions/implementation/assumptions
+order as its retrieval snapshot; changing any of them invalidates the handle.
+Script discovery excludes symlink entries and refuses a scripts root linked
+outside its Knowledge Root. Reading scripts never executes them.
+Subscription reads resolve only available entries in a fresh local retrieval
+snapshot, retain their upstream source URI and read-only marker, and never
+refresh/fetch the remote subscription. Removed/private entries or changed bytes
+cannot satisfy an earlier handle. Read identities support up to 2,048 characters;
+search queries remain limited to 512, and identities are never silently shortened.
+Recipe reads remain complete bounded structured definitions, not text ranges.
+
+Verification uses [passage tests](../../tests/test-retrieval-passages.js),
+[real local source-range tests](../../tests/test-knowledge-source-ranges.js)
+and the real controller/HTTP tail-evidence case in
+[context contracts](../../tests/test-chat-context-contracts.js).
+Model-passage admission, Action source-range contracts,
+general semantic shared-condition coverage remain separate from these
+deterministic structural guarantees.
+
 ## Scores And Ranking
 
 Raw scores are meaningful only inside the declared method and score semantics.
@@ -151,6 +244,17 @@ probability unless the provider declares `probability`.
 Provider upgrades change `providerVersion`, and model/package upgrades also
 change their corresponding serving identity fields. Evaluation and feedback use
 the served identity, never only the requested route.
+
+The native worker adapter records its observed engine version, per-hit
+`contributing_routes`, and, only when imported serving was actually used, the
+served `packageId` and `releaseId`. A release identity is not guessed to be an
+encoder checkpoint/model version. Fallback records the worker's error or
+scope/unavailable reason without labeling an unserved package as active.
+The result's legacy `route` remains the requested route; candidate `serving.route`
+records actual contributing routes. A hit with no contributing routes is
+explicitly `unreported`. Invalid serving metadata fails rather than borrowing
+the requested model identity. Rule L2 has its own provider identity; its L1
+parent's served identity remains in the same receipt.
 
 ## Context Selection
 
@@ -170,6 +274,37 @@ Candidate bodies are not duplicated in durable receipts.
 Deterministic projection is preferred. LLM rewriting is a separate capability
 and approval boundary, never an implicit fallback.
 
+Native Chat keeps its original source pool available across tool rounds.
+Refinement is lazy and receives the current steering/task query. Derived
+projections are round-local: they neither accumulate in the source pool nor
+duplicate a whole source when that source later fits. Older complete tool
+call/result groups are optional atomic evidence; the newest group is required.
+A bounded safety ledger reminds the consumer that omitting evidence never
+undoes execution and must not trigger mutation replay. Failed persistence rolls
+back the planner pool as well as queued steering and prepared receipts.
+
+The same bounded execution reminder is used for explicit response retry.
+History-on retry includes the previous response/call identities and outcome
+statuses, not a replay of arguments or results, so the enabled evidence reader
+can recover originals after restart. History-off retry includes only a generic
+side-effect warning, with no earlier response identities or results. Retrying
+a response is not permission to repeat an operation. Delegated workers use the
+same planner on their own Chat; parent evidence is not implicitly shared.
+
+Refinement deduplicates message/reference identities both against existing
+evidence and inside a single returned batch before counting or injection.
+Unsupported deterministic formats and invalid JSON remain unavailable with
+unresolved identities; no model rewrite/fallback request is dispatched.
+
+Each prepared budget record includes `pkm.chat.context-plan/v1`: input estimates,
+fit/refinement/limit/stale-source outcome, unresolved/omitted identities, schema
+hash and per-message role/hash/reference/call manifest. The controller tests
+compare these persisted manifests with real HTTP payloads on every inference,
+including refined ranges and revoked sources. These are preparation records,
+not proof of provider acceptance. Native VS Code transforms the canonical
+messages into its own structured prompt; the canonical hash is not claimed to
+hash that transformed envelope.
+
 ## PKM Source Adapters
 
 Skills, Notes, Research, Scripts, Recipes and Subscriptions already enter the
@@ -181,6 +316,73 @@ on the containing assistant response being complete. Successful and failed
 outcomes must remain distinguishable. Recent and old evidence use the same
 retrieval interface; recency can affect ranking but cannot force full tool-result
 replay.
+
+When the already-enabled `session_info` tool receives `evidenceCallId`, it reads
+original stored arguments/results without executing the source tool. Optional
+`evidenceMessageId` disambiguates call IDs reused across assistant responses.
+History on permits only this Chat's current Task; History off permits only the
+current response. Failed assistant responses do not erase independent complete
+or failed tool outcomes. Running, missing, ambiguous or out-of-scope evidence
+fails explicitly.
+
+Default evidence reads return an explicitly truncated, transport-bounded preview
+with the full content hash and next offset. `evidenceStart`/`evidenceEnd` plus
+`evidenceHash` request exact half-open UTF-16 ranges of at most 4,000 code units.
+Exact ranges reject stale hashes, split surrogate pairs and oversized serialized
+results; they are never shortened. HTTP tool IDs are checked across the request
+before dispatch so a provider cannot overwrite earlier outcomes by reusing a
+call ID.
+
+Validation: `npm run test:chat-context` covers bounded mechanisms, real
+controller/HTTP, production source fingerprint revalidation, transactional
+steering, stored-evidence restart/privacy/ranges, structural passages, native
+adapter envelopes, serving identities and delegated-worker isolation.
+Duplicate-only operations, eight refinements, 100 cumulative candidates and a
+one-second default deadline are checked before further refinement; elapsed
+synchronous operations are checked again before accepting their output.
+Synchronous parsers are not forcibly preempted. Candidate exhaustion reports
+`candidate-limit` and unresolved identities instead of failing the primary Chat.
+No automatic rewrite/summary LLM fallback is introduced.
+
+The canonical plan retains per-message hashes/reference IDs. Each prepared
+budget also records `pkm.chat.transport/v1`: hashes of the actual transformed
+HTTP/native messages and actual active tool schema, not the canonical schema
+stand-in. Native input counting uses `countTokens` on final native messages and
+schemas plus explicit overhead; invalid counts, native input overflow and
+receipt-persistence failures prevent dispatch. Without native token counting,
+the transformed envelope uses a labelled conservative UTF-8 estimate.
+Neither counting method claims hidden provider-envelope/tokenizer accuracy;
+prepared is not proof of provider acceptance. HTTP canonical and serialized
+envelope estimates are recorded separately.
+
+All M01-M18 placeholders have executable acceptance in the core suite plus
+the following environment-dependent gates, not silent skips:
+
+- `npm run test:chat-context:feedback`: the real offline imported encoder serves
+  queries at all diagnostics levels, its actual package/release/engine/route
+  are checked, and every package file hash remains unchanged across queries
+  and worker restart. All persisted state files and real SQLite tables are
+  audited for query/capability sentinels and training-event collection.
+- `npm run test:chat-context:host`: installs the built VSIX into temporary
+  extension/user/HOME directories and starts two distinct real Extension Hosts.
+  Real HTTP context/evidence persists, the actual installed Webview and browser
+  render refinement/transport receipts, and native message serialization is
+  checked with the real host API classes and a controlled local model.
+  This is not a live paid model, real SSH forwarding or cross-platform claim.
+- `npm run test:chat-context:acceptance`: core, default real Python worker,
+  imported feedback audit, production Chromium renderer and installed-host
+  restart gates together.
+
+The feedback gate requires `PKM_RETRIEVAL_TEST_PYTHON` and
+`PKM_RETRIEVAL_TEST_MODEL` pointing to the existing offline runtime/local encoder.
+Browser gates use installed Playwright or `PKM_PLAYWRIGHT_PATH`; the host gate
+requires VS Code test-electron, packaging tools and DISPLAY/Xvfb. It isolates
+HOME as well as user data, because the account MCP binding otherwise overrides
+the configured Knowledge Root. It does not replace the user's installed build.
+The default-worker audit independently verifies unchanged corpus generation
+and query-free metrics under all diagnostics levels.
+Local Chat history and its explicit retrieval audit receipts are not a training
+feedback collection pipeline.
 
 Specialized policy tools may filter or reorder common retrieval results, but
 must not reinterpret source identity, serving identity or score semantics.

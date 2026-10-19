@@ -52,7 +52,8 @@ assert.match(html, /id="loading-banner"(?![^>]*class="hidden")/, 'the first-pain
 assert.match(css, /\.view-loading-progress/);
 assert.match(css, /\.loading-bar\{[^}]*accent-color/);
 for (const stage of ['preparing', 'scanning', 'building-tree', 'ready']) assert(extension.includes(`stage: "${stage}"`), `Extension must report ${stage}`);
-for (const stage of ['integration', 'runtime', 'mcp', 'retrieval', 'routers']) assert(extension.includes(`stage: "${stage}"`), `MCP maintenance must report ${stage}`);
+for (const stage of ['integration', 'runtime', 'mcp', 'retrieval']) assert(extension.includes(`stage: "${stage}"`), `MCP maintenance must report ${stage}`);
+assert(!extension.includes('stage: "routers"'), "maintenance must not report the retired Agent Router setup");
 assert.match(extension, /current: itemCount, total: itemCount/);
 assert.match(extension, /detail: `\$\{folderCount\} folders`/);
 assert.match(extension, /const activationDuration = Date\.now\(\) - activationStartedAt[\s\S]{0,180}recordPerformanceMetric[\s\S]{0,180}activation complete durationMs=\$\{activationDuration\}/);
@@ -148,8 +149,7 @@ assert.deepStrictEqual(profilingSetting && { type:profilingSetting.type, default
 for (const event of [
   'host.request.received', 'host.request.completed', 'host.list.source', 'host.list.sharing',
   'host.list.folders', 'host.list.groups', 'host.list.trash', 'host.list.privacy', 'host.list.respond',
-  'host.mcp.status', 'host.mcp.python', 'host.mcp.runtime', 'host.mcp.skill_proposals',
-  'host.mcp.skill_projection', 'host.mcp.usage'
+  'host.mcp.status', 'host.mcp.python', 'host.mcp.runtime', 'host.mcp.usage'
 ]) assert(extension.includes(`"${event}"`), `load profiling must record ${event}`);
 const knowledgePanel = fs.readFileSync(path.join(root, 'src/webview/panel/20-knowledge.js'), 'utf8');
 for (const event of ['webview.workspace.clicked', 'webview.tab.clicked', 'webview.response.received', 'webview.response.rendered']) {
@@ -174,7 +174,7 @@ assert.doesNotMatch(readyHandler, /mcpPanelStatusData|sendMcpPathSizes/,
 const githubState = extension.slice(extension.indexOf('async function githubSyncStateData'), extension.indexOf('\nasync function gitHubSyncConflictData'));
 assert.match(githubState, /if \(waitForExpensive\)[\s\S]*await githubSyncFingerprintInWorker/,
   'selected content fingerprints must only be computed during the deferred GitHub state pass');
-assert.match(githubState, /fingerprintsDeferred: !waitForExpensive/,
+assert.match(githubState, /fingerprintsDeferred: !fingerprintsCurrent/,
   'deferred GitHub fingerprints must be explicit until the expensive pass completes');
 const subscriptionState = extension.slice(extension.indexOf('async function subscriptionStateData'), extension.indexOf('\ninterface GitHubSubscriptionRequest'));
 assert.doesNotMatch(subscriptionState, /refreshGatewayStatus/,

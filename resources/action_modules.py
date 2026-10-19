@@ -16,8 +16,10 @@ import subprocess
 import sys
 import time
 import uuid
+import unicodedata
 import zipfile
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 from jsonschema import Draft202012Validator, FormatChecker
 from recipe_runtime import _atomic_write, _background_process_options, _execute_command_worker
@@ -90,6 +92,37 @@ def builtin_definitions():
         result[name] = {**common, "action_id": name, "description": description,
                         "input_schema": inputs, "output_schema": outputs, "examples": examples,
                         "effects": ["local-read", "local-write"] if "artifact" in name else ["pure"]}
+    for name, description, properties, required, component, component_inputs, example in [
+        ("core.delay", "Wait for a duration (30 seconds, 5 minutes); durable timer, no busy worker.",
+         {"seconds": {"type": "number", "minimum": 0, "maximum": 300}}, ["seconds"],
+         "core.sleep", {"seconds": {"$input": "seconds"}}, {"seconds": 0}),
+        ("core.ask-user", "Ask the user inside Chat using an explicit answer schema. Never request secrets.",
+         {"prompt": {"type": "string", "minLength": 1, "maxLength": 500},
+          "answer_schema": {"type": "object"}, "test_answer": {"type": "object"}},
+         ["prompt", "answer_schema", "test_answer"], "core.checkpoint",
+         {"kind": "input", "proposal": {"prompt": {"$input": "prompt"}},
+          "answer_schema": {"$input": "answer_schema"}, "test_answer": {"$input": "test_answer"}},
+         {"prompt": "Choose a fixture label", "answer_schema": object_schema({"label": {"type": "string"}}),
+          "test_answer": {"label": "fixture"}}),
+        ("core.chatroom-alias", "Before joining a Chatroom, ask the user for the agent alias; never invent one.",
+         {"room": {"type": "string", "minLength": 1, "maxLength": 300}}, ["room"],
+         "core.checkpoint", {"kind": "input",
+          "proposal": {"prompt": "Choose the alias for this agent before joining the Chatroom.",
+                       "room": {"$input": "room"}},
+          "answer_schema": object_schema({"alias": {"type": "string", "minLength": 1, "maxLength": 80,
+              "pattern": r"^\S(?:[^\x00-\x1f\x7f]*\S)?$"}}),
+          "test_answer": {"alias": "fixture-agent"}}, {"room": "fixture-room"}),
+    ]:
+        result[name] = {**common, "action_id": name, "description": description,
+            "input_schema": object_schema(properties, required),
+            "output_schema": component_definitions()[component]["output_schema"],
+            "effects": ["pure"] if component == "core.sleep" else ["human-input"],
+            "implementations": [{"id": "native", "kind": "pipeline",
+                "platforms": ["Linux", "Windows", "Darwin"],
+                "steps": [{"id": "request", "component": component, "inputs": component_inputs}],
+                "output": {field: {"$step": "request." + field} for field in
+                           component_definitions()[component]["output_schema"]["properties"]}}],
+            "examples": [{"inputs": example}]}
     return result
 
 
@@ -105,7 +138,50 @@ class ModuleRuntime:
     def module_set_path(self, module_set_id, version):
         if not isinstance(module_set_id, str) or not re.fullmatch(r"[a-z][a-z0-9_.-]{2,100}", module_set_id) or type(version) is not int or version < 1:
             raise ValueError("Invalid ModuleSet identity/version.")
-        return self.module_sets / module_set_id / str(version)
+        directory = self.module_sets / module_set_id / str(version)
+        if (self.module_sets.is_symlink() or directory.is_symlink() or directory.parent.is_symlink()
+                or not directory.resolve().is_relative_to(self.module_sets.resolve())):
+            raise PermissionError("ModuleSet directory escapes its installation root.")
+        return directory
+
+    def templates(self):
+        return {"ok": True, "templates": [
+            {"template_id": "wait", "action_id": "core.delay", "inputs": {"seconds": 30}},
+            {"template_id": "wait-five-minutes", "action_id": "core.delay", "inputs": {"seconds": 300}},
+            {"template_id": "user-input", "action_id": "core.ask-user"},
+            {"template_id": "chatroom-alias", "action_id": "core.chatroom-alias"},
+            {"template_id": "poll", "description": "Pin a read-only query Action, observe one output field until an exact value or timeout.",
+             "parameters": ["query_action_id", "query_revision", "query_inputs", "field", "expected",
+                            "interval_seconds", "timeout_seconds", "max_iterations"]}]}
+
+    def template_create(self, action_id, parameters):
+        fields = {"query_action_id", "query_revision", "query_inputs", "field", "expected",
+                  "interval_seconds", "timeout_seconds", "max_iterations"}
+        if not isinstance(parameters, dict) or set(parameters) != fields:
+            raise ValueError("Poll template requires exactly the declared parameters.")
+        query = self.definition(parameters["query_action_id"])
+        if (query["content_hash"] != parameters["query_revision"]
+                or not set(query["effects"]).issubset({"pure", "read", "local-read", "remote-read"})):
+            raise PermissionError("Poll query must be pinned and read-only.")
+        field = parameters["field"]
+        if not isinstance(field, str) or not field or field not in query["output_schema"].get("properties", {}):
+            raise ValueError("Choose a declared top-level query output field.")
+        check(query["input_schema"], parameters["query_inputs"])
+        settings = {name: parameters[name] for name in ["interval_seconds", "timeout_seconds", "max_iterations"]}
+        Draft202012Validator(component_definitions()["core.poll"]["input_schema"]).validate(
+            {**settings, "body": [], "condition": False, "value": None})
+        steps = [{"id": "poll", "component": "core.poll", "inputs": {
+            **settings, "body": [{"id": "query", "action_id": query["action_id"],
+                "inputs": {"$literal": parameters["query_inputs"]}}],
+            "condition": {"$op": "eq", "args": [{"$step": "query." + field}, {"$literal": parameters["expected"]}]},
+            "value": {"$step": "query." + field}}}]
+        return self.register({"schema": "pkm.action.definition/v1", "action_id": action_id, "version": 1,
+            "description": "Read-only polling template; timed_out is not a successful condition.",
+            "input_schema": object_schema({}), "output_schema": component_definitions()["core.poll"]["output_schema"],
+            "dependencies": {query["action_id"]: query["content_hash"]}, "effects": sorted(set(query["effects"]) | {"pure"}),
+            "implementations": [{"id": "native", "kind": "pipeline", "platforms": ["Linux", "Windows", "Darwin"],
+                "steps": steps, "output": {name: {"$step": "poll." + name} for name in ["status", "attempts", "value"]}}],
+            "examples": [{"inputs": {}}]})
 
     def module_set_list(self):
         enabled = self.settings().get("enabled_module_sets", {})
@@ -192,7 +268,9 @@ class ModuleRuntime:
         if not isinstance(action_ids, list) or not action_ids or len(action_ids) > 100:
             raise ValueError("Select 1-100 Actions; export is never the entire catalog by default.")
         assets = {}
+        executables = set()
         exported = {}
+        resources = {}
 
         def collect(action_id, ancestry):
             if action_id in ancestry:
@@ -203,29 +281,56 @@ class ModuleRuntime:
             for child in definition["dependencies"]:
                 collect(child, ancestry | {action_id})
             value = {key: item for key, item in definition.items() if key not in {"content_hash", "implementation_hash", "source_id"}}
-            implementations = []
+            declared = [owner[key] for owner, key, _ in self.typed_path_slots(value)]
             for implementation in value["implementations"]:
+                declared += self.declared_resources(implementation)
+            tree = {file: self.resource_path(definition, file, "implementations.resources")
+                    for file in dict.fromkeys(declared)}
+            anchor = Path(os.path.commonpath([str(path.parent) for path in tree.values()])) if tree else None
+            implementations = []
+            for index, implementation in enumerate(value["implementations"]):
                 replacements = {}
-                for file in implementation.get("files", []) + implementation.get("build", {}).get("source_files", []):
-                    source = Path(file.replace("${module_assets}", str(self.loaded_module_definitions()[action_id].parent.parent / "assets"))) if "${module_assets}" in file else Path(file)
+                files = self.declared_resources(implementation)
+                files += [owner[key] for owner, key, _ in self.typed_path_slots(value)]
+                sources = {file: tree[file] for file in dict.fromkeys(files)}
+                # Explicit declarations, not a recursive directory scan, define the tree.
+                # A common parent preserves imports/includes/data without renaming leaves.
+                for file, source in sources.items():
                     if source.is_symlink() or not source.is_file() or source.stat().st_size > 16 * 1024 * 1024:
                         raise PermissionError("Only declared bounded regular implementation files can be exported.")
                     content = source.read_bytes()
-                    asset_name = hashlib.sha256(content).hexdigest() + "_" + source.name
-                    assets["assets/" + asset_name] = content
-                    replacements[file] = "${module_assets}/" + asset_name
+                    member = f"assets/{action_id}/" + source.relative_to(anchor).as_posix()
+                    self.resource_member(member)
+                    if member in assets and assets[member] != content:
+                        raise ValueError("Conflicting declared source asset: " + member)
+                    assets[member] = content
+                    if source.stat().st_mode & 0o111:
+                        executables.add(member)
+                    if file.startswith("pkm://"):
+                        resources.setdefault(action_id, {})[file] = member
+                    else:
+                        replacements[file] = "${module_assets}/" + member.removeprefix("assets/")
 
-                def relocate(item):
-                    if isinstance(item, str):
-                        return replacements.get(item, item)
-                    if isinstance(item, list):
-                        return [relocate(part) for part in item]
-                    if isinstance(item, dict):
-                        return {key: relocate(part) for key, part in item.items()}
-                    return item
-
-                implementations.append(relocate(implementation))
+                relocated = json.loads(json.dumps(implementation))
+                for owner in [relocated, relocated.get("build", {}), relocated.get("server", {})]:
+                    if "program" in owner:
+                        owner["program"] = replacements.get(owner["program"], owner["program"])
+                    for field in ["files", "source_files"]:
+                        if field in owner:
+                            owner[field] = [replacements.get(reference, reference) for reference in owner[field]]
+                    if "args" in owner:
+                        owner["args"] = self.resource_arguments(owner["args"], replacements)
+                for owner, key, _ in self.typed_path_slots(relocated):
+                    owner[key] = replacements.get(owner[key], owner[key])
+                implementations.append(relocated)
             value["implementations"] = implementations
+            graph_replacements = {}
+            for reference, source in tree.items():
+                member = f"assets/{action_id}/" + source.relative_to(anchor).as_posix()
+                graph_replacements[reference] = "${module_assets}/" + member.removeprefix("assets/")
+            for owner, key, _ in self.typed_path_slots(value):
+                if not owner[key].startswith("pkm://"):
+                    owner[key] = graph_replacements[owner[key]]
             value["dependencies"] = {child: self.definition_value(exported[child])["content_hash"] if child in exported else pin for child, pin in value["dependencies"].items()}
             exported[action_id] = value
 
@@ -233,11 +338,18 @@ class ModuleRuntime:
             collect(action_id, set())
         entries = {"definitions/" + action_id + ".json": json.dumps(value, sort_keys=True, allow_nan=False).encode() for action_id, value in exported.items()}
         entries.update(assets)
+        self.validate_member_layout(entries)
+        if len(entries) > 499:
+            raise ValueError("Package exceeds 500 entries including its manifest; split the ModuleSet.")
         if sum(len(content) for content in entries.values()) > 32 * 1024 * 1024:
             raise ValueError("Package exceeds 32 MiB; split the ModuleSet.")
         manifest = {"schema": "pkm.action.module-set/v1", "module_set_id": module_set_id, "version": version,
                     "name": name or module_set_id, "actions": sorted(exported), "provenance": provenance or {},
                     "files": {entry: hashlib.sha256(content).hexdigest() for entry, content in entries.items()}}
+        if resources:
+            manifest["resources"] = resources
+        if executables:
+            manifest["executables"] = sorted(executables)
         manifest["package_hash"] = digest(manifest)
         with target.open("xb") as stream:
             with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -255,8 +367,9 @@ class ModuleRuntime:
             if len(infos) > 500 or len({info.filename for info in infos}) != len(infos) or sum(info.file_size for info in infos) > 32 * 1024 * 1024:
                 raise ValueError("Duplicate, oversized or excessive package entries.")
             for info in infos:
-                if Path(info.filename).is_absolute() or ".." in Path(info.filename).parts or "\\" in info.filename or ":" in info.filename or (info.external_attr >> 16) & 0o170000 == 0o120000:
+                if (info.external_attr >> 16) & 0o170000 == 0o120000:
                     raise ValueError("Unsafe package path or symlink.")
+            self.validate_member_layout(info.filename for info in infos)
             manifest = json.loads(archive.read("manifest.json"))
             if manifest.get("schema") != "pkm.action.module-set/v1" or manifest.get("package_hash") != digest({key: value for key, value in manifest.items() if key != "package_hash"}):
                 raise ValueError("Invalid package manifest/hash.")
@@ -277,6 +390,13 @@ class ModuleRuntime:
                     raise ValueError("Invalid packaged Action identity.")
                 for key in ["input_schema", "output_schema"]:
                     Draft202012Validator.check_schema(value[key])
+            self.validate_package_resources(manifest)
+            executables = manifest.get("executables", [])
+            if (not isinstance(executables, list)
+                    or any(not isinstance(member, str) or not member.startswith("assets/")
+                           or member not in contents for member in executables)
+                    or len(set(executables)) != len(executables)):
+                raise ValueError("Invalid executable package assets.")
             with self.lock():
                 if directory.exists():
                     existing = json.loads((directory / "manifest.json").read_text())
@@ -290,6 +410,8 @@ class ModuleRuntime:
                         path = temporary / entry
                         path.parent.mkdir(parents=True, exist_ok=True)
                         path.write_bytes(content)
+                        if entry in executables:
+                            path.chmod(0o700)
                     _atomic_write(temporary / "manifest.json", manifest)
                     temporary.rename(directory)
                 except Exception:
@@ -491,8 +613,17 @@ class ModuleRuntime:
         extensions = {".py", ".cs", ".rs", ".go", ".java", ".js", ".cjs", ".mjs", ".ts", ".sh"}
         candidates = set()
         for implementation in definition["implementations"]:
-            for filename in implementation.get("files", []) + implementation.get("args", []) + implementation.get("build", {}).get("source_files", []):
-                if Path(filename).suffix.lower() in extensions and "${" not in filename and Path(filename).is_absolute():
+            declared = []
+            for owner in (implementation, implementation.get("build", {}), implementation.get("server", {})):
+                declared += owner.get("files", []) + owner.get("source_files", [])
+            for filename in declared + implementation.get("args", []):
+                if filename in declared:
+                    path = self.resource_path(definition, filename, "implementations.files/build.source_files")
+                elif "${" not in filename and Path(filename).is_absolute():
+                    path = Path(filename)
+                else:
+                    continue
+                if path.suffix.lower() in extensions:
                     candidates.add(filename)
         return sorted(candidates)
 
@@ -500,7 +631,7 @@ class ModuleRuntime:
         definition = self.editable_definition(action_id)
         if filename not in self.source_files(definition):
             raise PermissionError("Choose a declared implementation source file.")
-        path = Path(filename)
+        path = self.resource_path(definition, filename, "source")
         if path.is_symlink() or not path.is_file() or path.stat().st_size > 512 * 1024:
             raise PermissionError("Only bounded regular implementation source files can be edited.")
         return path
@@ -538,7 +669,7 @@ class ModuleRuntime:
         languages = set()
         try:
             implementations = [self.implementation(definition)]
-        except (PermissionError, OSError):
+        except (ValueError, OSError):
             implementations = definition["implementations"]
         for implementation in implementations:
             kind = implementation["kind"]
@@ -578,14 +709,22 @@ class ModuleRuntime:
             except (PermissionError, OSError):
                 language = " / ".join(languages)
             metadata = layout["actions"].get(identifier, {}) if not system else {}
-            category = "core" if system else metadata.get("category") or next(
+            category = ("core/interaction" if identifier in {"core.ask-user", "core.chatroom-alias"} else
+                        "core/timing" if identifier == "core.delay" else
+                        "core/filesystem" if identifier.startswith("core.artifact.") else "core/values") if system else metadata.get("category") or next(
                 (package["name"] for package in packages if package["enabled"] and identifier in package["actions"]), "Actions")
             actions.append({**definition, **metadata, "execution_contract": action_contract(definition), "category": category, "read_only": system,
                             "palette_hidden": identifier.startswith("core.cast."),
                             "editable": not system and (self.registry / (identifier + ".json")).is_file(),
                             "languages": languages, "language": language,
                             "availability": self.availability(identifier)})
-        return {"ok": True, "actions": actions, "groups": self.catalog_groups(layout),
+        from action_runtime import ActionRuntime
+        actions.extend(ActionRuntime(self.store).private_catalog())
+        groups = set(self.catalog_groups(layout))
+        for action in actions:
+            parts = action["category"].split("/")
+            groups.update("/".join(parts[:index]) for index in range(1, len(parts) + 1))
+        return {"ok": True, "actions": actions, "groups": sorted(groups),
                 "module_sets": packages, "queue": self.queue_status()}
 
     def workspace(self):
@@ -738,22 +877,286 @@ class ModuleRuntime:
         if len(matches) != 1:
             raise PermissionError("unsupported: exactly one implementation must match the execution OS.")
         implementation = json.loads(json.dumps(matches[0]))
-        if "${module_assets}" in json.dumps(implementation):
-            path = self.loaded_module_definitions().get(definition["action_id"])
-            if not path:
-                raise PermissionError("Packaged implementation assets require an enabled ModuleSet.")
-
-            def resolve(value):
-                if isinstance(value, str):
-                    return value.replace("${module_assets}", str(path.parent.parent / "assets"))
-                if isinstance(value, list):
-                    return [resolve(item) for item in value]
-                if isinstance(value, dict):
-                    return {key: resolve(item) for key, item in value.items()}
-                return value
-
-            implementation = resolve(implementation)
+        replacements = {}
+        for owner in [implementation, implementation.get("build", {}), implementation.get("server", {})]:
+            for field in ("files", "source_files"):
+                for reference in owner.get(field, []):
+                    replacements[reference] = str(self.resource_path(definition, reference, "implementations." + field))
+                if field in owner:
+                    owner[field] = [replacements[reference] for reference in owner[field]]
+        for field, owner in [("program", implementation), ("build", implementation.get("build", {})),
+                             ("server", implementation.get("server", {}))]:
+            program = owner.get("program")
+            if program and (program.startswith("pkm://") or "${module_assets}" in program):
+                replacements[program] = str(self.resource_path(definition, program, "implementations." + field))
+                owner["program"] = replacements[program]
+            if "args" in owner:
+                owner["args"] = self.resource_arguments(owner["args"], replacements)
+                owner["args"] = [
+                    str(self.resource_path(definition, argument, "implementations.args"))
+                    if argument.startswith("${module_assets}/") else argument for argument in owner["args"]]
         return implementation
+
+    def migration_preview(self, document, kind="action"):
+        from action_resource_migration import migration_preview
+        return migration_preview(self, document, kind)
+
+    def locator_read(self, reference):
+        """Read existing providers' logical contracts without executing them."""
+        match = re.fullmatch(r"pkm://(actions|components)/([a-z][a-z0-9_.-]{2,100})", reference)
+        if not match:
+            raise ValueError("Choose an Action or Component identity URL.")
+        if match[1] == "components":
+            definition = self.component(match[2])
+        else:
+            from action_runtime import ActionRuntime
+            definition = ActionRuntime(self.store).definition(match[2])
+        return {"ok": True, "definition": definition, "reference": reference}
+
+    @staticmethod
+    def resource_arguments(arguments, replacements):
+        result = []
+        for argument in arguments:
+            flag, separator, value = argument.partition("=")
+            if argument in replacements:
+                argument = replacements[argument]
+            elif flag.startswith("-") and separator and value in replacements:
+                argument = flag + separator + replacements[value]
+            result.append(argument)
+        return result
+
+    def validate_package_resources(self, manifest):
+        resources = manifest.get("resources", {})
+        if not isinstance(resources, dict):
+            raise ValueError("Invalid packaged resource bindings.")
+        for action_id, bindings in resources.items():
+            if action_id not in manifest["actions"] or not isinstance(bindings, dict):
+                raise ValueError("Invalid packaged resource Action.")
+            for reference, member in bindings.items():
+                self.resource_locator(reference)
+                if not isinstance(member, str) or not member.startswith("assets/") or member not in manifest["files"]:
+                    raise ValueError("Packaged resource must name a declared asset.")
+                self.resource_member(member)
+
+    @staticmethod
+    def resource_member(value):
+        if (not isinstance(value, str) or not value or "\\" in value or ":" in value
+                or any(part in {"", ".", ".."} or re.search(r"[\x00-\x1f\x7f]", part) for part in value.split("/"))):
+            raise ValueError("Unsafe relative Action resource member.")
+        return Path(value)
+
+    @classmethod
+    def validate_member_layout(cls, members):
+        """Reject layouts that alias or become unsafe on another supported host."""
+        seen = set()
+        paths = []
+        for member in members:
+            cls.resource_member(member)
+            parts = member.split("/")
+            for part in parts:
+                if (part.endswith((" ", ".")) or re.search(r'[<>\"|?*]', part)
+                        or re.fullmatch(r"(?i:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\..*)?", part)):
+                    raise ValueError("Nonportable package member: " + member)
+            folded = unicodedata.normalize("NFC", member).casefold()
+            if folded in seen:
+                raise ValueError("Case-insensitive package member collision: " + member)
+            seen.add(folded)
+            paths.append(folded)
+        for member in paths:
+            if any("/".join(member.split("/")[:i]) in seen for i in range(1, len(member.split("/")))):
+                raise ValueError("Package file/directory collision: " + member)
+
+    @staticmethod
+    def declared_resources(implementation):
+        result = [owner[key] for owner, key, _ in ModuleRuntime.typed_path_slots(implementation)]
+        for owner in (implementation, implementation.get("build", {}), implementation.get("server", {})):
+            result += list(owner.get("files", [])) + list(owner.get("source_files", []))
+            if owner.get("program", "").startswith(("pkm://", "${module_assets}/")):
+                result.append(owner["program"])
+        return result
+
+    @staticmethod
+    def typed_path_slots(value):
+        """Only schema-owned literal path slots; never inspect arbitrary strings."""
+        def visit(component, owner, prefix, depth):
+            if depth > 12:
+                raise ValueError("Resource step nesting exceeds 12 levels.")
+            if component == "core.file-path" and isinstance(owner.get("path"), str):
+                yield owner, "path", prefix + ".path"
+            fields = {"core.if-else": ["then_steps", "else_steps"],
+                      "core.switch": ["default_steps"], "core.for": ["body"],
+                      "core.while": ["body"]}.get(component, [])
+            for field in fields:
+                yield from steps(owner.get(field, []), prefix + "." + field, depth + 1)
+            if component == "core.switch":
+                for index, case in enumerate(owner.get("cases", [])):
+                    yield from steps(case.get("steps", []), prefix + f".cases[{index}].steps", depth + 1)
+
+        def steps(items, prefix, depth):
+            for index, step in enumerate(items):
+                yield from visit(step.get("component") or step.get("action_id"), step.get("inputs", {}),
+                                 f"{prefix}[{index}].inputs", depth)
+
+        yield from steps(value.get("steps", []), "steps", 0)
+        graph = value.get("graph", {})
+        for index, node in enumerate(graph.get("nodes", [])):
+            yield from visit(node.get("action_id"), node.get("parameters", {}),
+                             f"graph.nodes[{index}].parameters", 0)
+
+    @staticmethod
+    def resource_locator(reference):
+        if not isinstance(reference, str):
+            raise ValueError("Action resource reference must be a string.")
+        if re.fullmatch(r"pkm://script/script_[a-f0-9]{24}", reference):
+            return "scripts", None
+        if re.fullmatch(r"pkm://knowledge/(?:knowledge_[a-f0-9]{24}|action_(?:[a-f0-9]{24}|[a-f0-9]{32}))", reference):
+            return "knowledge", None
+        if re.fullmatch(r"pkm://actions/[a-z][a-z0-9_.-]{2,100}", reference):
+            return "actions", None
+        if re.fullmatch(r"pkm://recipes/recipe_[A-Za-z0-9_-]+", reference):
+            return "recipes", None
+        if reference.startswith("pkm://recipes/"):
+            raw = reference.removeprefix("pkm://recipes/")
+            if re.search(r"%(?![a-fA-F0-9]{2})", raw) or "?" in raw or "#" in raw:
+                raise ValueError("Invalid legacy Recipe URL.")
+            parts = [unquote(part, errors="strict") for part in raw.split("/")]
+            if any("/" in part for part in parts):
+                raise ValueError("Encoded Recipe path separators are not allowed.")
+            return "recipes", ModuleRuntime.resource_member("/".join(parts))
+        if reference.startswith("pkm://packages/"):
+            if re.search(r"%(?![a-fA-F0-9]{2})", reference):
+                raise ValueError("Invalid package URL encoding.")
+            raw = reference.removeprefix("pkm://packages/")
+            parts = [unquote(part, errors="strict") for part in raw.split("/")]
+            if len(parts) < 2 or any("/" in part for part in parts) or "?" in raw or "#" in raw:
+                raise ValueError("Package resource must identify a package file.")
+            return "packages", ModuleRuntime.resource_member("/".join(parts))
+        if reference.startswith("pkm://scripts/"):
+            if re.search(r"%(?![a-fA-F0-9]{2})", reference):
+                raise ValueError("Invalid percent encoding in Script resource URL.")
+            parsed = urlsplit(reference)
+            if parsed.netloc != "scripts" or parsed.query or parsed.fragment or "?" in reference or "#" in reference:
+                raise ValueError("Invalid Script resource URL.")
+            parts = [unquote(part, errors="strict") for part in parsed.path[1:].split("/")]
+            if any("/" in part for part in parts):
+                raise ValueError("Encoded path separators are not allowed.")
+            return "scripts", ModuleRuntime.resource_member("/".join(parts))
+        raise ValueError("Unsupported or invalid PKM resource URL: " + reference)
+
+    def resource_path(self, definition, reference, field="resource"):
+        label = definition.get("display_name") or definition.get("description") or definition["action_id"]
+        try:
+            return self._resource_path(definition, reference)
+        except (ValueError, FileNotFoundError, PermissionError) as error:
+            error_type = PermissionError if isinstance(error, PermissionError) else FileNotFoundError if isinstance(error, FileNotFoundError) else ValueError
+            raise error_type(f"{label} ({definition['action_id']}) {field}: {error}") from error
+
+    def _resource_path(self, definition, reference):
+        if not isinstance(reference, str) or not reference:
+            raise ValueError("Action resource reference must be a nonempty string.")
+        if reference.startswith("pkm://") or reference.startswith("${module_assets}/"):
+            kind, legacy = self.resource_locator(reference) if reference.startswith("pkm://") else ("assets", None)
+            provider = self.loaded_module_definitions().get(definition["action_id"])
+            if provider:
+                directory = provider.parent.parent
+                manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+                self.validate_package_resources(manifest)
+                member = (manifest.get("resources", {}).get(definition["action_id"], {}).get(reference)
+                          if kind != "assets" else "assets/" + reference.removeprefix("${module_assets}/"))
+                if member is not None:
+                    path = directory / self.resource_member(member)
+                    assets = directory / "assets"
+                    if (assets.is_symlink() or not assets.resolve().is_relative_to(directory.resolve())
+                            or path.is_symlink() or not path.resolve().is_relative_to(assets.resolve())
+                            or any(parent.is_symlink() for parent in path.parents if parent.is_relative_to(directory))):
+                        raise PermissionError("Packaged resource escapes its asset directory.")
+                    expected = manifest["files"].get(member)
+                    if not expected or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+                        raise ValueError("Packaged resource hash mismatch: " + reference)
+                    return path
+                # An enabled package must never borrow the publisher's or host's resource.
+                raise FileNotFoundError("PKM resource is not included in this ModuleSet: " + reference)
+            if kind == "assets":
+                raise PermissionError("Packaged implementation assets require an enabled ModuleSet.")
+            if kind == "packages":
+                path = self.store / "packages" / legacy
+                if not path.resolve().is_relative_to((self.store / "packages").resolve()):
+                    raise PermissionError("Package file escapes its store root.")
+                if any(parent.is_symlink() for parent in [path, *path.parents]):
+                    raise PermissionError("Package resource cannot traverse symlinks.")
+                if not path.is_file():
+                    raise FileNotFoundError("Package resource was not found: " + reference)
+                return path.resolve()
+            matches = []
+            areas = [kind] if kind in {"scripts", "recipes", "actions"} else ["notes", "skills", "papers", "recipes", "actions"]
+            for area in areas:
+                root = self.store / area
+                if root.is_symlink():
+                    raise PermissionError("Action resource root cannot be a symlink: " + area)
+                if not root.exists():
+                    continue
+                def unreadable(error):
+                    raise error
+                for directory, directories, files in os.walk(root, onerror=unreadable, followlinks=False):
+                    directories[:] = [name for name in directories if not name.startswith(".")
+                                      and name not in {"__pycache__", "node_modules", "dist", "artifacts", "_assets"}
+                                      and not (Path(directory) / name).is_symlink()]
+                    for name in files:
+                        metadata = Path(directory) / name
+                        script = area == "scripts"
+                        if script:
+                            if not name.startswith(".") or not name.endswith(".pkm.json"):
+                                continue
+                        elif name.startswith(".") or metadata.suffix != (".json" if area in {"recipes", "actions"} else ".md"):
+                            continue
+                        if metadata.is_symlink():
+                            raise PermissionError("Resource identity metadata cannot be a symlink.")
+                        if script or metadata.suffix == ".json":
+                            identity = json.loads(metadata.read_text(encoding="utf-8"))
+                        else:
+                            with metadata.open(encoding="utf-8") as stream:
+                                header = stream.read(65536)
+                            frontmatter = re.match(r"^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)", header)
+                            match = re.search(r"^knowledgeId:\s*[\"']?([A-Za-z0-9_]+)[\"']?\s*$",
+                                              frontmatter[1], re.MULTILINE) if frontmatter else None
+                            identity = {"knowledgeId": match[1]} if match else {}
+                        if not isinstance(identity, dict):
+                            raise ValueError("Invalid resource identity metadata: " + str(metadata))
+                        if script and (identity.get("schema") != "pkm.script/v1"
+                                       or not re.fullmatch(r"script_[a-f0-9]{24}", str(identity.get("knowledgeId", "")))):
+                            raise ValueError("Invalid Script identity: " + str(metadata))
+                        aliases = identity.get("aliases", [])
+                        if not isinstance(aliases, list) or any(not isinstance(alias, str) for alias in aliases):
+                            raise ValueError("Invalid resource identity aliases: " + str(metadata))
+                        canonical = ("pkm://script/" if script else "pkm://knowledge/") + str(identity.get("knowledgeId", ""))
+                        alias_identity = ((kind == "recipes" and identity.get("recipeId") == reference.rsplit("/", 1)[1])
+                                          or (kind == "actions" and identity.get("action_id") == reference.rsplit("/", 1)[1]))
+                        if kind == "recipes" and legacy is not None:
+                            produced = "/".join(str(identity.get(key, "")).strip("/") for key in ("category", "name")
+                                                if identity.get(key))
+                            alias_identity = produced == legacy.as_posix()
+                        if reference == canonical or script and reference in aliases or alias_identity:
+                            matches.append(metadata.with_name(name[1:-len(".pkm.json")]) if script else metadata)
+            if len(matches) > 1:
+                raise ValueError("PKM resource resolves to multiple files: " + reference)
+            path = matches[0] if matches else self.store / "scripts" / legacy if kind == "scripts" and legacy is not None else None
+            if path is None:
+                raise FileNotFoundError("PKM resource was not found: " + reference)
+            root = self.store / "scripts" if kind == "scripts" else self.store
+            if path.is_symlink() or not path.resolve().is_relative_to(root):
+                raise PermissionError("PKM resource escapes its knowledge root.")
+        else:
+            if "${" in reference or "://" in reference:
+                raise ValueError("Unsupported Action resource reference: " + reference)
+            path = Path(reference).expanduser()
+            path = path if path.is_absolute() else self.workspace() / path
+        if not path.is_file():
+            raise FileNotFoundError("Action resource is not a regular file: " + reference)
+        if path.is_symlink():
+            raise PermissionError("Action resource cannot be a symlink: " + reference)
+        if any(parent.is_symlink() for parent in path.parents):
+            raise PermissionError("Action resource cannot traverse symlink directories: " + reference)
+        return path.resolve()
 
     def implementation_select(self, action_id, implementation_id):
         definition = self.definition(action_id)
@@ -859,18 +1262,31 @@ class ModuleRuntime:
             raise PermissionError("Missing Action toolchain: " + name + ". Install it on the execution host and configure personalKnowledge.actions.toolchains; PKM does not install SDKs.")
         return executable
 
+    def execution_program(self, definition, program, build=None):
+        if program and program.startswith("${build_dir}/"):
+            member = self.resource_member(program.removeprefix("${build_dir}/")).as_posix()
+            build = self.build_state(definition) if build is None else build
+            if build["state"] != "built" or member not in build["outputs"]:
+                raise PermissionError("Executable must be a verified declared build output.")
+            path = Path(build["directory"]) / member
+            if path.is_symlink() or not path.resolve().is_relative_to(Path(build["directory"]).resolve()):
+                raise PermissionError("Executable escapes its verified build directory.")
+            program = str(path)
+        return self.resolve_program(program)
+
     def fingerprint(self, definition):
         implementation = self.implementation(definition)
-        program = implementation.get("program") or implementation.get("server", {}).get("program")
-        executable = self.resolve_program(program)
-        if program and not executable:
-            raise PermissionError("Missing runtime: " + program)
-        files = [Path(executable)] if executable else []
-        for file in implementation.get("files", []):
-            files.append(Path(file).resolve())
         build = self.build_state(definition)
         if build["state"] not in {"not_required", "built"}:
             raise PermissionError("needs_build: " + build["state"])
+        program = implementation.get("program") or implementation.get("server", {}).get("program")
+        executable = self.execution_program(definition, program, build)
+        if program and not executable:
+            raise PermissionError("Missing runtime: " + program)
+        files = [Path(executable)] if executable else []
+        for owner in (implementation, implementation.get("build", {}), implementation.get("server", {})):
+            for file in owner.get("files", []) + owner.get("source_files", []):
+                files.append(Path(file).resolve())
         return digest({"platform": platform.system(), "architecture": platform.machine(), "python": sys.version,
                        "workspace": str(self.workspace()), "implementation": implementation,
                        "packages": {name: importlib.metadata.version(name) for name in ["jsonschema", "fastmcp"]},
@@ -1035,6 +1451,9 @@ class ModuleRuntime:
             raise ValueError("Action content hash changed.")
         self.authorize(definition)
         inputs = self.cast(definition, inputs)
+        if (not validation and action_id in {"core.delay", "core.ask-user", "core.chatroom-alias"}
+                and self.availability(action_id)["state"] != "ready"):
+            self.validate(action_id, content_hash)
         if not validation and self.availability(action_id)["state"] != "ready":
             raise PermissionError("Action is not ready for this environment.")
         if not isinstance(key, str) or not 1 <= len(key) <= 200:
@@ -1508,6 +1927,20 @@ class ModuleRuntime:
         return {"ok": True, "reconciled": reconciled + scan["reviewed"], "dispatched": scan["dispatched"]}
 
     def execute(self, record, context):
+        implementation = self.implementation(record["definition"])
+        self.recovery.step_event(record, "__implementation__", implementation, "running")
+        try:
+            result = self._execute(record, context)
+        except ActionSuspended:
+            raise
+        except Exception as error:
+            self.recovery.step_event(record, "__implementation__", implementation, "failed",
+                                     type(error).__name__ + ": " + str(error))
+            raise
+        self.recovery.step_event(record, "__implementation__", implementation, "completed")
+        return result
+
+    def _execute(self, record, context):
         definition = record["definition"]
         if self.definition(record["action_id"])["content_hash"] != record["content_hash"]:
             raise ValueError("Action implementation changed before launch.")
@@ -1547,7 +1980,7 @@ class ModuleRuntime:
         if implementation["kind"] == "pipeline":
             return execute_steps(self, record, context, implementation)
         if implementation["kind"] == "program":
-            program = self.resolve_program(implementation["program"])
+            program = self.execution_program(definition, implementation["program"])
             directory = self.path(record["run_id"]).parent
             _atomic_write(directory / "input.json", inputs)
             build = self.build_state(definition)
@@ -1574,8 +2007,10 @@ class ModuleRuntime:
                 from fastmcp import Client
                 from fastmcp.client.transports import StdioTransport
                 server = implementation["server"]
-                program = self.resolve_program(server["program"])
-                transport = StdioTransport(program, server.get("args", []), cwd=record["workspace"])
+                build = self.build_state(definition)
+                program = self.execution_program(definition, server["program"], build)
+                args = [arg.replace("${build_dir}", build.get("directory", "")) for arg in server.get("args", [])]
+                transport = StdioTransport(program, args, cwd=record["workspace"])
                 async with asyncio.timeout(max(0.01, record["deadline"] - time.time())):
                     async with Client(transport) as client:
                         tools = {tool.name: tool for tool in await client.list_tools()}
@@ -1659,15 +2094,23 @@ if __name__ == "__main__":
         ModuleRuntime(sys.argv[2]).queue_worker()
     elif len(sys.argv) == 3 and sys.argv[1] == "--api":
         runtime = ModuleRuntime(sys.argv[2])
+        from action_runtime import ActionRuntime
+        platform_runtime = ActionRuntime(sys.argv[2])
         request = json.load(sys.stdin)
         methods = {"module_sets": runtime.module_set_list, "load": runtime.module_set_load, "remove": runtime.module_set_remove,
                    "import": runtime.module_set_import, "export": runtime.module_set_export, "validate": runtime.queue_enqueue,
                    "queue": runtime.queue_status, "cancel_validation": runtime.queue_cancel, "resume_validation": runtime.queue_start,
                    "select_implementation": runtime.implementation_select, "save_graph": runtime.graph_save,
-                   "check_graph": runtime.graph_definition, "call": runtime.call, "run": runtime.get, "cancel_run": runtime.cancel,
-                   "runs": runtime.list_runs,
+                   "check_graph": runtime.graph_definition, "call": runtime.call, "run": platform_runtime.get, "cancel_run": platform_runtime.cancel,
+                   "platform_call": platform_runtime.call, "retrieve": platform_runtime.retrieve,
+                   "definition_get": lambda action_id: {**platform_runtime.definition(action_id),
+                       "availability": platform_runtime.availability(action_id) if action_id.startswith("cosmos.")
+                           else runtime.availability(action_id)},
+                   "templates": runtime.templates, "template_create": runtime.template_create,
+                   "runs": platform_runtime.list_runs,
                    "recover_runs": runtime.recover,
                    "checkpoints": runtime.recovery.checkpoints, "respond_checkpoint": runtime.recovery.respond_checkpoint,
+                   "check_checkpoint_answer": runtime.recovery.check_checkpoint_answer,
                    "schedule_run": runtime.recovery.schedule_run, "wake_run": runtime.recovery.wake_run,
                    "reconcile_run": runtime.recovery.reconcile_run, "safety_scan": runtime.recovery.safety_scan,
                    "associate_project": runtime.recovery.associate_project,
@@ -1675,6 +2118,8 @@ if __name__ == "__main__":
                    "action_move": runtime.action_move, "action_delete": runtime.action_delete,
                    "definition_read": runtime.definition_read, "definition_save": runtime.definition_save,
                    "source_read": runtime.source_read, "source_save": runtime.source_save,
+                   "migration_preview": runtime.migration_preview,
+                   "locator_read": runtime.locator_read,
                    "choices": lambda run_id: pending_choices(runtime, run_id),
                    "answer_choice": lambda run_id, request_id, index: answer_choice(runtime, run_id, request_id, index)}
         try:
@@ -1682,7 +2127,7 @@ if __name__ == "__main__":
                 result = runtime.catalog()
             else:
                 result = methods[request["method"]](**request.get("params", {}))
-                if request["method"] in {"call", "run", "cancel_run", "reconcile_run", "schedule_run"}:
+                if request["method"] in {"call", "platform_call", "run", "cancel_run", "reconcile_run", "schedule_run"}:
                     result = {**result, "execution_ok": result.get("ok"), "ok": True}
             print(json.dumps(result, allow_nan=False))
         except Exception as error:

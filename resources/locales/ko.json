@@ -4,6 +4,12 @@
     "label": "한국어"
   },
   "strings": {
+    "apiChat.openHarness": "실행 하위 그래프 열기",
+    "apiChat.reportedGoal": "에이전트가 보고한 목표: {goal}",
+    "apiChat.noTaskReport": "명시적인 작업 상태가 아직 기록되지 않았습니다",
+    "apiChat.recordedValidation": "기록된 검증: {status}",
+    "apiChat.noValidation": "작업 검증이 기록되지 않았습니다",
+    "apiChat.responseStatus": "응답: {status}",
     "apiChat.loadOlderMessages": "이전 메시지 불러오기",
     "apiChat.loadingOlderMessages": "이전 메시지를 불러오는 중...",
     "apiChat.resumeWorker": "Worker 재개",

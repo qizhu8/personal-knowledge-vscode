@@ -865,6 +865,9 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
         assert(error instanceof GitHubSyncConflictError);
         assert.strictEqual(error.resolutionReport.rules["human-required"], 1);
         assert(error.conflicts.some(conflict => conflict.path === "skills/Shared/Two.md"));
+        assert(error.partialResult, "independent content publishes even when this deletion needs review");
+        assert.strictEqual(run(root, ["--git-dir", remote, "show", "main:skills/Shared/One.md"]),
+          skill("One", "windows modifies while linux deletes").trim());
         windows.target.lastSync.commit = error.remoteCommit;
         return true;
       },
@@ -872,8 +875,8 @@ const emptyCatalog = () => Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type
     );
     const laterWindowsDeletion = await syncGitHubTarget(windows.target, windows.catalog, checkoutRoot, undefined, windows.store);
     rememberSync(windows.target, laterWindowsDeletion);
-    assert.strictEqual(laterWindowsDeletion.resolutionReport.rules["local-only"], 2,
-      "after explicit Local choice, sync applies the deletion against the reviewed Remote base");
+    assert.strictEqual(laterWindowsDeletion.resolutionReport.rules["local-only"], 1,
+      "after explicit Local choice, only the deletion remains; the independent edit was already published");
     assert.throws(
       () => run(root, ["--git-dir", remote, "show", "main:skills/Shared/Two.md"]),
       /does not exist in|exists on disk, but not in/i,

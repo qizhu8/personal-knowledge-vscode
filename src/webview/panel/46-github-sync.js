@@ -7,11 +7,19 @@ let githubSyncAuthenticationResult = null;
 let githubSyncUpdatedAt = 0;
 let githubSyncStatusRequested = false;
 let githubSyncRefreshError = '';
+let githubSyncAwaitingState = false;
 const githubSyncDrafts = new Map();
 const githubSyncForcePending = new Set();
+const githubSyncRemotePending = new Set();
 const githubSyncAutomationPending = new Map();
 const githubSyncPendingAfter = new Map();
 const githubSyncResolvedExpanded = new Set();
+const githubSyncRepairPending = new Map();
+const githubSyncActionFeedback = new Map();
+let githubSyncRepairRequestSequence = 0;
+const githubSyncRepairCommands = new Set(['githubSyncRepairOpen','githubSyncRepairPreview','githubSyncRepairApply',
+  'githubSyncRecipeRecompilePreview','githubSyncRecipeRecompileApply','githubSyncRepairRevalidate',
+  'githubSyncRepairRevalidateOnly','githubSyncRepairPause','githubSyncRepairResume','githubSyncRepairTrash']);
 const githubSyncTypes = ['skills','notes','papers','prompts','scripts','packages','servers','recipes','agentSnapshots'];
 const githubSyncLabels = { skills:'Skills', notes:'Notes', papers:'Research', prompts:'Prompts', scripts:'Scripts', packages:'Packages', servers:'Servers', recipes:'Recipes', agentSnapshots:'Agent Snapshots' };
 
@@ -20,9 +28,11 @@ function renderGitHubSyncLoading() {
 }
 
 function showGitHubSyncTab() {
+  githubSyncAwaitingState = true;
+  githubSyncStatusRequested = true;
   if (githubSyncUpdatedAt) renderGitHubSyncPane(); else renderGitHubSyncLoading();
   ask('githubSyncRuntimeSnapshot', {}, null, true);
-  ensureGitHubSyncStatus();
+  ask('githubSyncState', {}, null, true);
 }
 
 function githubSyncDefaultSelection() {
@@ -43,6 +53,8 @@ function githubSyncRuntimeIsOlder(previous, current) {
 }
 
 function githubSyncOnState(data) {
+  if (data?.snapshotSequence && data.snapshotSequence < (githubSyncData.snapshotSequence || 0)) return false;
+  githubSyncAwaitingState = false;
   githubSyncStatusRequested = !!data?.fingerprintsDeferred;
   githubSyncRefreshError = '';
   if (githubSyncEditing) githubSyncCaptureDraft();
@@ -73,6 +85,41 @@ function githubSyncOnState(data) {
   updateGitHubSyncFolderShields();
   updateGitHubSyncFileShields();
   if (state.tab === 'githubSync') renderGitHubSyncPane();
+  return true;
+}
+
+function githubSyncBeginRepairAction(command, payload) {
+  if (!githubSyncRepairCommands.has(command)) return true;
+  if (githubSyncRepairPending.has(payload.targetId)) return false;
+  const labels = {
+    githubSyncRepairOpen:'Opening editor…', githubSyncRepairPreview:'Preparing preview…',
+    githubSyncRepairApply:'Waiting for cleanup approval…', githubSyncRecipeRecompilePreview:'Preparing recompile preview…',
+    githubSyncRecipeRecompileApply:'Waiting for recompile approval…', githubSyncRepairRevalidate:'Revalidating & queuing Sync…',
+    githubSyncRepairRevalidateOnly:'Revalidating local content…', githubSyncRepairPause:'Waiting for pause approval…',
+    githubSyncRepairResume:'Resuming & revalidating…', githubSyncRepairTrash:'Waiting for Trash approval…',
+  };
+  payload.repairRequestId = ++githubSyncRepairRequestSequence;
+  githubSyncRepairPending.set(payload.targetId, { command, path:payload.path, label:labels[command],
+    requestId:payload.repairRequestId });
+  githubSyncActionFeedback.set(payload.targetId, { pending:true, message:labels[command] });
+  if (state.tab === 'githubSync') { githubSyncCaptureDraft(); renderGitHubSyncPane(); }
+  return true;
+}
+
+function githubSyncOnRepairResult(data) {
+  const pending = githubSyncRepairPending.get(data?.targetId);
+  if (!pending || pending.command !== data.action || data.repairRequestId && pending.requestId !== data.repairRequestId) return;
+  githubSyncRepairPending.delete(data.targetId);
+  finishAction(data.action);
+  githubSyncActionFeedback.set(data.targetId, { error:!!data.error,
+    message:data.error || data.message || (data.cancelled ? 'Cancelled. No changes were made.' : 'Action completed.') });
+  if (state.tab === 'githubSync') renderGitHubSyncPane();
+}
+
+function githubSyncActionFeedbackPanel(targetId) {
+  const feedback = githubSyncActionFeedback.get(targetId);
+  if (!feedback) return '';
+  return `<div class="github-sync-action-feedback ${feedback.error ? 'github-sync-error' : ''}" onclick="event.stopPropagation()" role="${feedback.error ? 'alert' : 'status'}" aria-live="polite" aria-busy="${!!feedback.pending}">${feedback.pending ? '<span class="codicon codicon-loading codicon-modifier-spin" aria-hidden="true"></span> ' : ''}${esc(feedback.message)}</div>`;
 }
 
 function updateGitHubSyncShields() {
@@ -155,6 +202,7 @@ function ensureGitHubSyncStatus() {
 
 function githubSyncOnRefreshError(message) {
   githubSyncStatusRequested = false;
+  githubSyncAwaitingState = false;
   githubSyncRefreshError = message;
   if (state.tab === 'githubSync') renderGitHubSyncPane();
 }
@@ -366,25 +414,32 @@ function githubSyncPhaseDiagram(phase, status) {
   const statusLabel = {
     scheduled:'Scheduled', syncing:'Synchronizing', queued:'Queued', paused:'Auto sync off',
     blocked:'Blocked', 'needs-attention':'Needs attention: local content validation',
-    conflicts:'Resolve conflicts', error:'Sync failed',
+    conflicts:'Resolve conflicts', partial:'Partially synchronized: other content continues syncing', error:'Sync failed',
   }[status] || 'Reading sync status…';
-  const currentLabel = ['paused', 'blocked', 'needs-attention'].includes(status) ? statusLabel
+  const currentLabel = ['paused', 'blocked', 'needs-attention', 'partial'].includes(status) ? statusLabel
     : noChange ? 'No Change' : currentIndex < 0 ? statusLabel : steps[currentIndex][1];
   const label = status === 'error' ? currentIndex < 0 ? 'Sync failed' : `${currentLabel} failed` : status === 'conflicts' ? `${currentLabel}: action required` : currentLabel;
   const nodes = steps.map(([key, text], index) => {
     const state = noChange ? index <= currentIndex ? 'done' : 'upcoming'
-      : index === currentIndex ? status === 'error' ? 'error' : status === 'conflicts' ? 'conflicts' : 'current'
+      : index === currentIndex ? status === 'error' ? 'error' : ['conflicts', 'partial'].includes(status) ? 'conflicts' : 'current'
       : index < currentIndex && status !== 'scheduled' ? 'done' : 'upcoming';
     return `<span class="github-sync-flow-step ${state}" data-phase="${key}"><i aria-hidden="true"></i>${text}</span>`;
   }).join('');
   const branch = `<span class="github-sync-flow-step github-sync-no-change ${noChange ? 'current' : 'upcoming'}" data-phase="no-change"><i aria-hidden="true"></i>No Change</span>`;
-  return `<span class="github-sync-phase"><span class="github-sync-phase-current ${status === 'error' ? 'error' : ['conflicts', 'needs-attention'].includes(status) ? 'conflicts' : ''}" aria-hidden="true">${esc(label)}</span><span class="github-sync-flow" role="img" aria-label="GitHub Sync: ${esc(label)}"><span class="github-sync-flow-main">${nodes}</span>${branch}</span></span>`;
+  return `<span class="github-sync-phase"><span class="github-sync-phase-current ${status === 'error' ? 'error' : ['conflicts', 'partial', 'needs-attention'].includes(status) ? 'conflicts' : ''}" aria-hidden="true">${esc(label)}</span><span class="github-sync-flow" role="img" aria-label="GitHub Sync: ${esc(label)}"><span class="github-sync-flow-main">${nodes}</span>${branch}</span></span>`;
+}
+
+function githubSyncHasUnresolvedBase(target, runtime) {
+  const succeededAfterTarget = (Date.parse(runtime.lastSuccessAt || '') || 0) > (Date.parse(target.lastSync?.at || '') || 0);
+  return runtime.status === 'partial' || Object.keys(target.lastSync?.entityBases || {}).length > 0
+    && !(succeededAfterTarget && ['paused','scheduled'].includes(runtime.status));
 }
 
 function githubSyncEffectiveStatus(target, runtime, conflict, forcePending, repair) {
   if (forcePending || runtime.status === 'syncing' || runtime.status === 'queued') return 'syncing';
   if (repair) return 'needs-attention';
-  if (conflict) return 'conflicts';
+  if (conflict) return githubSyncHasUnresolvedBase(target, runtime) ? 'partial' : 'conflicts';
+  if (githubSyncHasUnresolvedBase(target, runtime)) return 'partial';
   const failure = target.lastFailure;
   const successAt = Math.max(Date.parse(target.lastSync?.at || '') || 0, Date.parse(runtime.lastSuccessAt || '') || 0);
   if (failure && (!successAt || !Number.isFinite(Date.parse(failure.at)) || Date.parse(failure.at) >= successAt)) return 'error';
@@ -398,22 +453,36 @@ function githubSyncContentRepairPanel(targetId, repair) {
   if (!repair) return '';
   const actions = (command, issuePath, label, reason) => {
     const handler = `ask(${JSON.stringify(command)},${JSON.stringify({ targetId, repairId:repair.id, path:issuePath, reason })},this)`;
-    return `<button class="pk-button" onclick="${esc(handler).replace(/"/g, '&quot;')}">${label}</button>`;
+    const pending = githubSyncRepairPending.get(targetId);
+    const active = pending?.command === command && pending.path === issuePath;
+    return `<button class="pk-button${active ? ' action-pending' : ''}" ${pending ? 'disabled' : ''} aria-busy="${!!active}" onclick="${esc(handler).replace(/"/g, '&quot;')}">${active ? esc(pending.label) : label}</button>`;
   };
   const entries = repair.issues.map(issue => {
     const recipe = !!issue.recipeId;
     const reason = issue.reason || 'merge-conflict-markers';
     const action = (command, label) => actions(command, issue.path, label, reason);
     const diagnostics = [issue.error, issue.diagnostics ? JSON.stringify(issue.diagnostics) : ''].filter(Boolean).join('\n');
-    const open = issue.canOpen ? action('githubSyncRepairOpen', recipe ? 'Open Recipe editor' : 'Open source')
+    const open = issue.canOpen ? action('githubSyncRepairOpen', recipe ? 'Open Recipe editor' : 'Edit content')
       : '<p>Edit the generated content in its library editor.</p>';
     const repairActions = recipe && reason === 'recipe-digest'
       ? action('githubSyncRecipeRecompilePreview', 'Preview Recipe recompile') + action('githubSyncRecipeRecompileApply', 'Approve recompile…')
       : issue.hasCandidate ? action('githubSyncRepairPreview', 'Preview empty-block cleanup') + action('githubSyncRepairApply', 'Apply cleanup…')
-      : '<p>No safe automatic candidate. Review the source and revalidate.</p>';
-    return `<div><strong>${esc(issue.path)}</strong><small>Local · ${esc(reason)}${issue.lines?.length ? ` · lines ${issue.lines.map(line => esc(line)).join(', ')}` : ''}</small>${recipe ? `<p>Recipe store identity: ${esc(issue.recipeId)}. This is an export path, not necessarily a local source file.</p>` : ''}${issue.sourceLocator?.path ? `<p>Source: ${esc(issue.sourceLocator.path)}${issue.sourceLocator.jsonPointer ? ` · ${esc(issue.sourceLocator.jsonPointer)}` : ''}</p>` : ''}${diagnostics ? `<pre>${esc(diagnostics)}</pre>` : ''}${open}${repairActions}</div>`;
+      : '<p>No safe automatic candidate. Edit and save the content, then revalidate; or pause this item without deleting either copy.</p>';
+    const choices = action('githubSyncRepairPause', 'Pause sync for this item…')
+      + (issue.canTrash ? action('githubSyncRepairTrash', 'Move to Trash…') : '');
+    return `<div><strong>${esc(issue.path)}</strong><small>Local · ${esc(reason)}${issue.lines?.length ? ` · lines ${issue.lines.map(line => esc(line)).join(', ')}` : ''}</small>${recipe ? `<p>Recipe store identity: ${esc(issue.recipeId)}. This is an export path, not necessarily a local source file.</p>` : ''}${issue.sourceLocator?.path ? `<p>Source: ${esc(issue.sourceLocator.path)}${issue.sourceLocator.jsonPointer ? ` · ${esc(issue.sourceLocator.jsonPointer)}` : ''}</p>` : ''}${diagnostics ? `<pre>${esc(diagnostics)}</pre>` : ''}${open}${repairActions}${choices}</div>`;
   }).join('');
-  return `<div class="github-sync-conflict-actions"><strong>Needs attention: local content validation · ${repair.issues.length} issue(s)</strong><p>Sync is waiting for your repair. Remote has not been fetched for this attempt; Base and GitHub versions are unavailable. No source is changed without approval.</p>${entries}<footer>${actions('githubSyncRepairRevalidate', undefined, 'Revalidate &amp; Sync')}</footer></div>`;
+  return `<div class="github-sync-conflict-actions" onclick="event.stopPropagation()" onkeydown="event.stopPropagation()"><strong>Needs attention: local content validation · ${repair.issues.length} issue(s)</strong><p>Sync is waiting for your repair. Remote has not been fetched for this attempt; Base and GitHub versions are unavailable. No source is changed without approval. Pausing and Trash actions do not start Sync.</p>${entries}<footer>${actions('githubSyncRepairRevalidateOnly', undefined, 'Revalidate only')}${actions('githubSyncRepairRevalidate', undefined, 'Revalidate &amp; Sync')}</footer></div>`;
+}
+
+function githubSyncPausedItemsPanel(target) {
+  if (!target.pausedItems?.length) return '';
+  const items = target.pausedItems.map(item => {
+    const handler = `ask('githubSyncRepairResume',${JSON.stringify({ targetId:target.id, type:item.type, itemId:item.itemId })},this)`;
+    const pending = githubSyncRepairPending.get(target.id);
+    return `<div><strong>${esc(item.type)} · ${esc(item.itemId)}</strong><button class="pk-button" aria-busy="${pending?.command === 'githubSyncRepairResume'}" onclick="${esc(handler).replace(/"/g, '&quot;')}" ${target.automation?.enabled || pending ? 'disabled title="An action is pending or Auto Sync is enabled"' : ''}>${pending?.command === 'githubSyncRepairResume' ? esc(pending.label) : 'Resume &amp; revalidate'}</button></div>`;
+  }).join('');
+  return `<div class="github-sync-conflict-actions" onclick="event.stopPropagation()" onkeydown="event.stopPropagation()"><strong>Paused items · ${target.pausedItems.length}</strong><p>Only this target skips these items, even inside selected folders. Local and existing GitHub copies are preserved. Resume revalidates locally; it does not start Sync.</p>${items}</div>`;
 }
 
 function githubSyncEffectiveError(target, runtime) {
@@ -422,6 +491,7 @@ function githubSyncEffectiveError(target, runtime) {
 }
 
 function githubSyncCards() {
+  if (githubSyncAwaitingState) return '<div class="sub-empty" role="status" aria-live="polite"><span class="codicon codicon-loading codicon-modifier-spin" aria-hidden="true"></span> Refreshing current Sync status…</div>';
   const cards = githubSyncData.targets.map(storedTarget => {
     const automationPending = githubSyncAutomationPending.get(storedTarget.id);
     const target = automationPending
@@ -431,11 +501,15 @@ function githubSyncCards() {
     const last = target.lastSync?.at ? new Date(target.lastSync.at).toLocaleString() : 'Never synchronized';
     const runtime = githubSyncData.runtime?.[target.id] || {};
     const automaticReady = !!target.automation?.initialSyncCompleted;
-    const storedConflict = githubSyncData.conflicts?.[target.id];
+    const successAt = Math.max(Date.parse(target.lastSync?.at || '') || 0, Date.parse(runtime.lastSuccessAt || '') || 0);
+    const currentIssue = issue => !successAt || !Date.parse(issue?.createdAt || '')
+      || Date.parse(issue.createdAt) > successAt || githubSyncHasUnresolvedBase(target, runtime);
+    const storedConflict = currentIssue(githubSyncData.conflicts?.[target.id]) ? githubSyncData.conflicts?.[target.id] : null;
     const migration = githubSyncData.migrations?.[target.id];
-    const forcePending = githubSyncForcePending.has(target.id);
+    const remotePending = githubSyncRemotePending.has(target.id);
+    const forcePending = githubSyncForcePending.has(target.id) || remotePending;
     const rechecking = forcePending || runtime.status === 'syncing' || runtime.status === 'queued';
-    const repair = rechecking ? null : githubSyncData.contentRepairs?.[target.id];
+    const repair = rechecking || !currentIssue(githubSyncData.contentRepairs?.[target.id]) ? null : githubSyncData.contentRepairs?.[target.id];
     const conflict = rechecking || repair ? null : storedConflict;
     const initialPreview = conflict?.purpose === 'initial-preview';
     const status = githubSyncEffectiveStatus(target, runtime, conflict, forcePending, repair);
@@ -444,15 +518,16 @@ function githubSyncCards() {
     const phaseDiagram = githubSyncPhaseDiagram(phase, status)
       + (runtime.service ? `<small class="github-sync-service">PKM service ${esc(runtime.service.version)} · PID ${esc(runtime.service.pid)}</small>` : '');
     const error = status === 'error' ? githubSyncEffectiveError(target, runtime) : '';
-    const next = forcePending ? 'Waiting for Git lock' : repair ? 'Waiting for local content repair · Remote has not been fetched' : initialPreview ? 'Remote fetched read-only · review the file tree before applying' : conflict ? 'Choose a candidate for each file, then Apply resolutions & Sync' : status === 'error' ? error || 'Sync failed without an error message' : runtime.detail || (!automaticReady ? 'Initial manual sync required before automation can be enabled' : runtime.nextSyncAt ? `Next fetch after ${new Date(runtime.nextSyncAt).toLocaleString()}` : target.automation?.enabled ? 'Scheduled to fetch remote changes' : 'Automatic pull/push is off');
-    const conflictActions = repair ? githubSyncContentRepairPanel(target.id, repair) : conflict ? githubSyncConflictPanel(target.id, conflict) : '';
+    const next = remotePending ? 'Reviewing / applying Remote replacement · GitHub will not be pushed' : forcePending ? 'Waiting for Git lock' : repair ? 'Waiting for local content repair · Remote has not been fetched' : initialPreview ? 'Remote fetched read-only · review the file tree before applying' : conflict ? 'Choose a candidate for each file, then Apply resolutions & Sync' : status === 'error' ? error || 'Sync failed without an error message' : runtime.detail || (!automaticReady ? 'Initial manual sync required before automation can be enabled' : runtime.nextSyncAt ? `Next fetch after ${new Date(runtime.nextSyncAt).toLocaleString()}` : target.automation?.enabled ? 'Scheduled to fetch remote changes' : 'Automatic pull/push is off');
+    const conflictActions = (repair ? githubSyncContentRepairPanel(target.id, repair) : conflict ? githubSyncConflictPanel(target.id, conflict) : '')
+      + githubSyncPausedItemsPanel(target) + githubSyncActionFeedbackPanel(target.id);
     const resolutionDiagram = !conflict ? githubSyncResolutionDiagram(target.lastResolutionReport) : '';
     const syncLabel = repair ? 'Revalidate & Sync' : conflict ? 'Recheck with Remote' : forcePending ? 'Sync queued' : retryWithPause ? 'Pause Auto & Retry' : 'Sync with Remote';
     const scheduleLabel = target.automation?.enabled && automaticReady
       ? `every ${target.automation?.intervalMinutes || 5} min${target.automation?.syncOnChange ? ' + selected changes' : ''}` : 'manual only';
     const autoEnabled = !!target.automation?.enabled && automaticReady;
     const migrationReady = !target.publication || !!target.publication.manualVerificationCompleted;
-    const autoDisabled = !!automationPending || (!autoEnabled && (!automaticReady || !migrationReady || status === 'syncing' || !!conflict || !!repair));
+    const autoDisabled = !!automationPending || remotePending || (!autoEnabled && (!automaticReady || !migrationReady || status === 'syncing' || !!conflict || !!repair));
     const autoTitle = automationPending ? 'Saving Auto Sync setting'
       : autoEnabled ? 'Turn off automatic synchronization; an active sync will finish'
       : !automaticReady ? 'Run Initial Sync successfully before enabling Auto Sync'
@@ -478,8 +553,10 @@ function githubSyncCards() {
     const manualTitle = autoEnabled && !retryWithPause ? 'Turn off Auto Sync before using manual synchronization actions' : '';
     const syncDisabled = !!automationPending || (autoEnabled && !retryWithPause) || status === 'syncing' || forcePending || migrationBusy;
     const forceDisabled = !!automationPending || autoEnabled || status === 'syncing' || forcePending || !!conflict || migrationBusy;
+    const remoteDisabled = !!automationPending || autoEnabled || status === 'syncing' || status === 'queued' || forcePending || migrationBusy;
     const restoreDisabled = !!automationPending || autoEnabled || status === 'syncing' || forcePending || migrationBusy || !!conflict;
-    return `<article class="pk-card sub-broker-card ${expanded ? 'active' : ''}"><div class="sub-broker-row" role="button" tabindex="0" aria-expanded="${expanded}" onclick="githubSyncEdit('${esc(target.id)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();githubSyncEdit('${esc(target.id)}')}"><span><span class="sub-broker-title"><strong>${esc(target.name)}</strong><span class="sub-broker-actions"><button class="pk-button" title="${esc(manualTitle)}" data-pending-label="Pulling…" onclick="event.stopPropagation();githubSyncForce('${esc(target.id)}',this)" ${syncDisabled ? 'disabled' : ''}>${uiIcon('refresh',syncLabel)}</button><button class="pk-button danger" title="${esc(manualTitle)}" data-pending-label="Forcing…" onclick="event.stopPropagation();githubSyncForceUpdate('${esc(target.id)}',this)" ${forceDisabled ? 'disabled' : ''}>Force Update</button><button class="pk-button" title="${esc(manualTitle || (conflict ? 'Resolve or discard the current comparison before restoring a snapshot' : ''))}" data-pending-label="Loading…" onclick="event.stopPropagation();githubSyncRestore('${esc(target.id)}',this)" ${restoreDisabled ? 'disabled' : ''}>${uiIcon('history','Restore snapshot…')}</button><button class="pk-button danger" data-pending-label="Deleting…" onclick="event.stopPropagation();githubSyncDelete('${esc(target.id)}',this)" title="Delete target">${uiIcon('trash')}</button></span></span>${phaseDiagram}<small>${esc(target.repository)}</small>${error ? `<small class="github-sync-error" onclick="event.stopPropagation()" onpointerdown="event.stopPropagation()" title="Select and copy this error">${esc(error)}</small>` : ''}${conflictActions}${resolutionDiagram}${migrationPanel}</span><span class="sub-broker-meta"><span class="github-sync-meta-head"><b>${esc(target.branch)} · ${esc(scheduleLabel)}</b>${autoToggle}</span><small>Last ${esc(last)}</small><small>${esc(next)}</small><i>›</i></span></div>${expanded ? `<div class="sub-broker-expanded">${githubSyncEditor()}</div>` : ''}</article>`;
+    const dangerZone = `<details class="github-sync-danger-zone" onclick="event.stopPropagation()" onkeydown="event.stopPropagation();if(event.key==='Escape'){this.open=false;this.querySelector('summary').focus()}"><summary class="pk-button danger">Danger Zone</summary><div class="github-sync-danger-menu"><button class="pk-button danger" title="${esc(manualTitle || 'Local → GitHub: replace selected Remote content')}" data-pending-label="Forcing…" onclick="this.closest('details').open=false;githubSyncForceUpdate('${esc(target.id)}',this)" ${forceDisabled ? 'disabled' : ''}>Force use Local</button><button class="pk-button danger" title="${esc(manualTitle || 'GitHub → Local: replace selected Local content, including local-only deletions')}" data-pending-label="Reviewing…" onclick="this.closest('details').open=false;githubSyncForceRemote('${esc(target.id)}',this)" ${remoteDisabled ? 'disabled' : ''}>Force use Remote</button><button class="pk-button" title="${esc(manualTitle || (conflict ? 'Resolve or discard the current comparison before restoring a snapshot' : ''))}" data-pending-label="Loading…" onclick="this.closest('details').open=false;githubSyncRestore('${esc(target.id)}',this)" ${restoreDisabled ? 'disabled' : ''}>${uiIcon('history','Restore snapshot…')}</button></div></details>`;
+    return `<article class="pk-card sub-broker-card ${expanded ? 'active' : ''}"><div class="sub-broker-row" role="button" tabindex="0" aria-expanded="${expanded}" onclick="githubSyncEdit('${esc(target.id)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();githubSyncEdit('${esc(target.id)}')}"><span><span class="sub-broker-title"><strong>${esc(target.name)}</strong><span class="sub-broker-actions"><button class="pk-button" title="${esc(manualTitle)}" data-pending-label="Pulling…" onclick="event.stopPropagation();githubSyncForce('${esc(target.id)}',this)" ${syncDisabled ? 'disabled' : ''}>${uiIcon('refresh',syncLabel)}</button>${dangerZone}<button class="pk-button danger" data-pending-label="Deleting…" onclick="event.stopPropagation();githubSyncDelete('${esc(target.id)}',this)" title="Delete target">${uiIcon('trash')}</button></span></span>${phaseDiagram}<small>${esc(target.repository)}</small>${error ? `<small class="github-sync-error" onclick="event.stopPropagation()" onpointerdown="event.stopPropagation()" title="Select and copy this error">${esc(error)}</small>` : ''}${conflictActions}${resolutionDiagram}${migrationPanel}</span><span class="sub-broker-meta"><span class="github-sync-meta-head"><b>${esc(target.branch)} · ${esc(scheduleLabel)}</b>${autoToggle}</span><small>Last ${esc(last)}</small><small>${esc(next)}</small><i>›</i></span></div>${expanded ? `<div class="sub-broker-expanded">${githubSyncEditor()}</div>` : ''}</article>`;
   }).join('');
   const create = githubSyncEditing === 'new' ? `<article class="pk-card sub-broker-card active"><div class="sub-broker-expanded">${githubSyncEditor()}</div></article>` : '';
   return cards + create || (githubSyncUpdatedAt ? '<div class="sub-empty">No GitHub targets.</div>' : '<div class="sub-empty" role="status">Reading local GitHub Sync settings…</div>');
@@ -602,6 +679,16 @@ function githubSyncOnRuntimeState(data) {
   const runtime = data.state || {};
   if (githubSyncRuntimeIsOlder(previous, runtime)) return;
   githubSyncData.runtime = { ...(githubSyncData.runtime || {}), [data.targetId]:runtime };
+  if (!githubSyncRepairPending.has(data.targetId) && githubSyncActionFeedback.get(data.targetId)?.pending
+    && ['error','needs-attention','partial','conflicts'].includes(runtime.status)) {
+    githubSyncActionFeedback.set(data.targetId, { error:runtime.status === 'error',
+      message:runtime.lastError || runtime.detail || 'Sync needs review. See the current issues below.' });
+  }
+  if (runtime.lastSuccessAt && runtime.lastSuccessAt !== previous?.lastSuccessAt
+    && ['scheduled','paused'].includes(runtime.status)) {
+    if (!githubSyncRepairPending.has(data.targetId)) githubSyncActionFeedback.set(data.targetId, { message:'Sync completed successfully.' });
+    ask('githubSyncState', {}, null, true);
+  }
   if (githubSyncForcePending.has(data.targetId) && runtime.lastAttemptAt
     && runtime.lastAttemptAt !== githubSyncPendingAfter.get(data.targetId)) {
     githubSyncForcePending.delete(data.targetId);
@@ -609,7 +696,7 @@ function githubSyncOnRuntimeState(data) {
   }
   if (state.tab === 'githubSync') { githubSyncCaptureDraft(); renderGitHubSyncPane(); }
 }
-function githubSyncOnRunQueued(data) { if (!data?.targetId) return; if (!data.queued) { githubSyncForcePending.delete(data.targetId); githubSyncPendingAfter.delete(data.targetId); } if (state.tab === 'githubSync') { githubSyncCaptureDraft(); renderGitHubSyncPane(); } vscode.postMessage({ command:'toast', text:data.queued ? 'GitHub sync queued' : 'GitHub sync is already queued or running' }); }
+function githubSyncOnRunQueued(data) { if (!data?.targetId) return; if (!data.queued) { githubSyncForcePending.delete(data.targetId); githubSyncPendingAfter.delete(data.targetId); } githubSyncActionFeedback.set(data.targetId, { pending:true, message:data.queued ? 'Sync queued. Waiting for the worker…' : 'Sync is already queued or running.' }); if (state.tab === 'githubSync') { githubSyncCaptureDraft(); renderGitHubSyncPane(); } vscode.postMessage({ command:'toast', text:data.queued ? 'GitHub sync queued' : 'GitHub sync is already queued or running' }); }
 function githubSyncDelete(targetId, button) { const target = githubSyncData.targets.find(item => item.id === targetId); pkModal({ title:'Delete GitHub Target?', message:`${target?.name || targetId}\n\nStops future pull/push operations and removes the local target configuration immediately. Local checkout cleanup continues in the background if Git still holds Windows file handles. The GitHub repository and Knowledge Root content are not deleted. An already-started push may still finish.`, okLabel:'Delete Target', danger:true, onOk:()=>ask('githubSyncDelete',{targetId},button) }); }
 function githubSyncForce(targetId, button) {
   if (githubSyncForcePending.has(targetId) || pendingActionButtons.has('githubSyncRun')) return;
@@ -632,8 +719,8 @@ function githubSyncForceUpdate(targetId, button) {
   if (githubSyncForcePending.has(targetId)) return;
   const target = githubSyncData.targets.find(item => item.id === targetId);
   pkModal({
-    title:'Force Update GitHub from this machine?',
-    message:`${target?.name || targetId}\n\nDanger: the current machine-local selected projection becomes authoritative. Selected GitHub files missing locally will be deleted, and conflicting GitHub edits will be overwritten. Unselected GitHub content is preserved.\n\nThis disables Auto Sync, creates an attributed audit commit, and requires one more native confirmation.`,
+    title:'Force use Local · replace GitHub?',
+    message:`${target?.name || targetId}\n\nDanger: the current machine-local selected projection becomes authoritative. Selected GitHub files missing locally will be deleted, and conflicting GitHub edits will be overwritten. Unselected GitHub content is preserved.\n\nAuto Sync must be off. This creates an attributed audit commit and requires one more native confirmation.`,
     okLabel:'Continue to final confirmation',
     danger:true,
     onOk:()=>{
@@ -663,6 +750,26 @@ function githubSyncOnAutomationResult(data) {
 }
 function githubSyncMigration(targetId, action, button) { ask('githubSyncMigration', { targetId, action }, button); }
 function githubSyncRestore(targetId, button) { ask('githubSyncRestore', { targetId }, button); }
+function githubSyncForceRemote(targetId, button) {
+  if (button?.disabled || githubSyncRemotePending.has(targetId) || pendingActionButtons.has('githubSyncForceRemote')) return;
+  const target = githubSyncData.targets.find(item => item.id === targetId);
+  pkModal({
+    title:'Force use Remote · replace this machine?',
+    message:`${target?.name || targetId}\n\nDiscard the selected Local projection and rebuild it from GitHub. Local-only selected files will be deleted. Unselected, ignored and System content are preserved.\n\nAuto Sync must be off. Review the complete write/delete list, provide an audit reason and confirm before any Local content changes. Originals are backed up; GitHub is not pushed.`,
+    okLabel:'Preview Remote replacement', danger:true,
+    onOk:()=>{
+      githubSyncRemotePending.add(targetId);
+      ask('githubSyncForceRemote', { targetId }, button);
+      if (state.tab === 'githubSync') renderGitHubSyncPane();
+    }
+  });
+}
+function githubSyncOnForceRemoteResult(data) {
+  githubSyncRemotePending.delete(data?.targetId);
+  if (state.tab === 'githubSync') renderGitHubSyncPane();
+  if (!data?.cancelled) vscode.postMessage({ command:'toast',
+    text:`Remote replacement complete: ${data?.restored?.length || 0} writes, ${data?.deleted?.length || 0} deletions. Recovery backup: ${data?.backupDirectory || ''}` });
+}
 function githubSyncConflictRequest(targetId, values = {}) {
   const conflict = githubSyncData.conflicts?.[targetId];
   return { targetId, conflictId:conflict?.id, revision:conflict?.revision || 0, ...values };

@@ -1,0 +1,9 @@
+{
+  "budget_chars": 24000,
+  "turns": [
+    {"user": "Review the trigger rules and validation steps of my three PKM Skills.", "assistant": "Review: (1) trigger rules overlap between the note and research Skills; (2) none of them has a validation step that checks saved output; (3) descriptions are too long to route reliably."},
+    {"user": "Unrelated: what is a good weekend hiking route near Seattle?", "assistant": "Consider Rattlesnake Ledge or Mailbox Peak depending on difficulty."},
+    {"user": "没错。我希望有一个好的设计，解决你上面说的Skill这个问题。"}
+  ],
+  "expect": [{"turn": 3, "context_contains": "validation"}]
+}

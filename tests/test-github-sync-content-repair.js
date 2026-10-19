@@ -78,8 +78,9 @@ const candidate = "#CS\r\nvoid Run() {}\r\n#ENDCS\r\n";
   catch (error) { mixedFailure = error; }
   assert(mixedFailure instanceof repair.GitHubSyncContentRepairError);
   assert.equal(mixedFailure.serviceShouldRetry, false);
-  assert.equal(mixedFailure.issues.length, 7, "markers, Recipe, frontmatter and every unreadable dependency survive one scan");
-  assert(mixedFailure.issues.some(issue => issue.reason === "materialization" && issue.error.includes("missing.md")));
+  assert.equal(mixedFailure.issues.length, 3, "stable invalid entities retain diagnostics; disappearing entities defer atomically");
+  assert(!mixedFailure.issues.some(issue => issue.reason === "materialization"),
+    "ENOENT while snapshotting is not fabricated deletion or permanent content damage");
   assert(!fs.existsSync(checkouts));
   catalog.recipes = []; catalog.skills = []; catalog.notes = [];
   catalog.scripts[0].dependencies = [];
@@ -91,6 +92,18 @@ const candidate = "#CS\r\nvoid Run() {}\r\n#ENDCS\r\n";
   assert(!failure.issues.some(issue => issue.itemId === "Ignored"), "Git-ignored markers do not block an unrelated target");
   assert(!fs.existsSync(checkouts), "no checkout, remote fetch or push precedes local content repair");
   assert(!("remoteCommit" in failure), "unknown remote state must not be invented");
+  const checkOnly = await sync.inspectGitHubSyncLocalContent(target, catalog, root);
+  assert.equal(checkOnly.issues.length, 2);
+  assert(!fs.existsSync(checkouts), "revalidate-only never creates a checkout or fetches a remote");
+  target.pausedItems = [{ type: "scripts", itemId: "Nonempty" }];
+  const skipped = await sync.inspectGitHubSyncLocalContent(target, catalog, root);
+  assert.equal(skipped.issues.length, 1, "pause overrides an all-folder selection");
+  assert.equal(skipped.issues[0].itemId, "Empty");
+  assert.equal(fs.readFileSync(path.join(root, "scripts/Nonempty.script"), "utf8"),
+    "<<<<<<< local\nx\n=======\ny\n>>>>>>> remote\n", "pause does not edit source bytes");
+  target.pausedItems = [];
+  assert.throws(() => sync.normalizeGitHubSyncTarget({ ...target, pausedItems: [{ type: "unknown", itemId: "bad" }] }), /paused Sync/);
+  assert.throws(() => sync.normalizeGitHubSyncTarget({ ...target, pausedItems: [{ type: "skills", itemId: "\0" }] }), /paused Sync/);
   const record = repair.storeGitHubSyncContentRepair(path.join(root, "state"), failure);
   assert.deepEqual(repair.readGitHubSyncContentRepair(path.join(root, "state"), target.id), record);
   const issue = failure.issues.find(issue => issue.itemId === "Empty");

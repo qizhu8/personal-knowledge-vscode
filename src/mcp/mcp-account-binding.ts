@@ -68,6 +68,10 @@ export async function writeAccountMcpBinding(
     const temporary = path.join(directory, `mcp-binding.${randomUUID()}.tmp`);
     try {
       fs.writeFileSync(temporary, JSON.stringify(binding, null, 2) + "\n", { mode: 0o600, flag: "wx" });
+      if (current && allowReconfigure) {
+        fs.writeFileSync(path.join(directory, `mcp-binding.json.pkm-backup-${randomUUID()}`),
+          fs.readFileSync(path.join(directory, "mcp-binding.json")), { mode: 0o600, flag: "wx" });
+      }
       fs.renameSync(temporary, path.join(directory, "mcp-binding.json"));
     } finally { fs.rmSync(temporary, { force: true }); }
     return binding;

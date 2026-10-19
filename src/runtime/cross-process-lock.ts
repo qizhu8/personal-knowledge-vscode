@@ -9,11 +9,6 @@ function processAlive(pid: number): boolean {
   catch (error: any) { return error?.code === "EPERM"; }
 }
 
-function readLock(lockPath: string): LockRecord | undefined {
-  try { return JSON.parse(fs.readFileSync(lockPath, "utf8")) as LockRecord; }
-  catch { return undefined; }
-}
-
 function retryableFileError(error: any): boolean {
   return error?.code === "EPERM" || error?.code === "EBUSY" || error?.code === "EACCES";
 }
@@ -32,61 +27,105 @@ function unlinkWithRetry(lockPath: string): void {
   }
 }
 
-export async function withCrossProcessLock<T>(lockPath: string, owner: string, timeoutMs: number, action: () => Promise<T>, leaseMs = Math.max(timeoutMs * 2, 30_000)): Promise<T> {
+function lockAttempt(lockPath: string, owner: string): { acquire: () => boolean; release: () => void; cleanup: () => void } {
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-  const deadline = Date.now() + timeoutMs;
   const record: LockRecord = { pid: process.pid, nonce: randomUUID(), acquiredAt: Date.now(), owner };
-  while (true) {
-    try {
-      const fd = fs.openSync(lockPath, "wx", 0o600);
-      try { fs.writeFileSync(fd, JSON.stringify(record)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-      break;
-    } catch (error: any) {
-      if (error?.code !== "EEXIST") throw error;
-      const existing = readLock(lockPath);
-      const expired = !!existing && Date.now() - Number(existing.acquiredAt || 0) > leaseMs;
-      if (!existing || !processAlive(existing.pid) || expired) {
-        try { unlinkWithRetry(lockPath); } catch { /* another contender recovered it */ }
-      } else if (Date.now() >= deadline) {
-        throw new Error(`${owner} lock timed out; owned by ${existing.owner || "another PKM window"} (PID ${existing.pid}).`);
+  const staging = `${lockPath}.${record.nonce}.pending`;
+  const member = `${record.nonce}.json`;
+  const removeMember = (directory: string, filename: string): void => {
+    try { unlinkWithRetry(path.join(directory, filename)); }
+    catch (error: any) { if (error?.code !== "ENOENT") throw error; }
+    try { fs.rmdirSync(directory); }
+    catch (error: any) { if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes(error?.code)) throw error; }
+  };
+  fs.mkdirSync(staging, { mode: 0o700 });
+  let initialized = false;
+  try {
+    const fd = fs.openSync(path.join(staging, member), "wx", 0o600);
+    try { fs.writeFileSync(fd, JSON.stringify(record)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    initialized = true;
+  } finally {
+    if (!initialized) removeMember(staging, member);
+  }
+  return {
+    acquire: () => {
+      // Publishing a nonempty directory is exclusive on Windows and POSIX.
+      // Reapers remove only the observed nonce member, never a successor's lock.
+      try { fs.renameSync(staging, lockPath); return true; }
+      catch (error: any) {
+        if (!["EEXIST", "ENOTEMPTY", "EPERM", "EACCES", "ENOTDIR", "EISDIR"].includes(error?.code)) throw error;
       }
+      let stat: fs.Stats;
+      try { stat = fs.lstatSync(lockPath); }
+      catch (error: any) { if (["ENOENT", "ENOTDIR"].includes(error?.code)) return false; throw error; }
+      if (stat.isSymbolicLink()) throw new Error(`${owner}: refusing a symbolic-link lock at ${lockPath}.`);
+      let filename = lockPath;
+      if (stat.isDirectory()) {
+        let entries: string[];
+        try { entries = fs.readdirSync(lockPath); }
+        catch (error: any) { if (error?.code === "ENOENT") return false; throw error; }
+        if (!entries.length) {
+          try { fs.rmdirSync(lockPath); }
+          catch (error: any) { if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes(error?.code)) throw error; }
+          return false;
+        }
+        if (entries.length !== 1 || !/^[a-f0-9-]{36}\.json$/.test(entries[0])) {
+          throw new Error(`${owner}: invalid lock directory at ${lockPath}; preserve it for recovery.`);
+        }
+        filename = path.join(lockPath, entries[0]);
+      }
+      let existing: LockRecord;
+      try { existing = JSON.parse(fs.readFileSync(filename, "utf8")) as LockRecord; }
+      catch (error: any) {
+        if (["ENOENT", "EISDIR", "ENOTDIR"].includes(error?.code) || error instanceof SyntaxError) return false;
+        throw error;
+      }
+      if (!Number.isSafeInteger(existing.pid) || existing.pid <= 0 || typeof existing.nonce !== "string") {
+        throw new Error(`${owner}: invalid lock owner at ${lockPath}; preserve it for recovery.`);
+      }
+      // Elapsed time alone cannot revoke a live operation's ownership.
+      if (!processAlive(existing.pid)) {
+        if (stat.isDirectory()) removeMember(lockPath, path.basename(filename));
+        else {
+          try { unlinkWithRetry(lockPath); }
+          catch (error: any) { if (!["ENOENT", "EISDIR", "EPERM"].includes(error?.code)) throw error; }
+        }
+      }
+      return false;
+    },
+    release: () => removeMember(lockPath, member),
+    cleanup: () => removeMember(staging, member),
+  };
+}
+
+export async function withCrossProcessLock<T>(lockPath: string, owner: string, timeoutMs: number, action: () => Promise<T>, _leaseMs = Math.max(timeoutMs * 2, 30_000)): Promise<T> {
+  const attempt = lockAttempt(lockPath, owner);
+  const deadline = Date.now() + timeoutMs;
+  let acquired = false;
+  try {
+    while (!(acquired = attempt.acquire())) {
+      if (Date.now() >= deadline) throw new Error(`${owner} lock timed out; another live operation or an incomplete legacy lock owns ${lockPath}.`);
       await new Promise(resolve => setTimeout(resolve, 50));
     }
-  }
-  try { return await action(); }
-  finally {
-    const current = readLock(lockPath);
-    if (current?.nonce === record.nonce) { try { unlinkWithRetry(lockPath); } catch { /* already released */ } }
+    return await action();
+  } finally {
+    if (acquired) attempt.release();
+    attempt.cleanup();
   }
 }
 
 export function withCrossProcessLockSync<T>(lockPath: string, owner: string, action: () => T): T {
-  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-  const record: LockRecord = { pid: process.pid, nonce: randomUUID(), acquiredAt: Date.now(), owner };
+  const attempt = lockAttempt(lockPath, owner);
   const deadline = Date.now() + 2_000;
-  const leaseMs = 30_000;
-  const waitArray = new Int32Array(new SharedArrayBuffer(4));
-  while (true) {
-    try {
-      const fd = fs.openSync(lockPath, "wx", 0o600);
-      try { fs.writeFileSync(fd, JSON.stringify(record)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-      try { return action(); }
-      finally {
-        const current = readLock(lockPath);
-        if (current?.nonce === record.nonce) { try { unlinkWithRetry(lockPath); } catch { /* already released */ } }
-      }
-    } catch (error: any) {
-      if (error?.code !== "EEXIST") throw error;
-      const existing = readLock(lockPath);
-      const expired = !!existing && Date.now() - Number(existing.acquiredAt || 0) > leaseMs;
-      if (!existing || !processAlive(existing.pid) || expired) {
-        try { unlinkWithRetry(lockPath); } catch { /* another contender recovered it */ }
-        continue;
-      }
-      if (Date.now() >= deadline) {
-        throw new Error(`${owner} is busy in another PKM window (PID ${existing.pid}). Try again.`);
-      }
-      Atomics.wait(waitArray, 0, 0, 50);
+  let acquired = false;
+  try {
+    while (!(acquired = attempt.acquire())) {
+      if (Date.now() >= deadline) throw new Error(`${owner} is busy in another PKM window or has an incomplete legacy lock at ${lockPath}. Try again.`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
     }
+    return action();
+  } finally {
+    if (acquired) attempt.release();
+    attempt.cleanup();
   }
 }

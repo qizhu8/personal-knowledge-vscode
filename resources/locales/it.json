@@ -4,6 +4,12 @@
     "label": "Italiano"
   },
   "strings": {
+    "apiChat.openHarness": "Apri i sottografi di esecuzione",
+    "apiChat.reportedGoal": "Obiettivo riportato dall’agente: {goal}",
+    "apiChat.noTaskReport": "Nessuno stato esplicito dell’attività registrato",
+    "apiChat.recordedValidation": "Validazione registrata: {status}",
+    "apiChat.noValidation": "Validazione dell’attività non registrata",
+    "apiChat.responseStatus": "Risposta: {status}",
     "apiChat.loadOlderMessages": "Carica messaggi precedenti",
     "apiChat.loadingOlderMessages": "Caricamento dei messaggi precedenti...",
     "apiChat.resumeWorker": "Riprendi worker",

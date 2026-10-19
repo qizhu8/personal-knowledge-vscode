@@ -123,4 +123,44 @@ with tempfile.TemporaryDirectory(prefix="pkm-installed-compiler-") as directory:
         raise AssertionError("unavailable compiler must never fall back to raw hashing")
     except RuntimeError as error:
         assert "could not run" in str(error)
+
+    # Upgrade the compiler without reloading this already-imported Python runtime.
+    extension = installed / "extension-3.2.48"
+    for version in ("3.2.48", "3.2.49"):
+        extension = installed / ("extension-" + version)
+        (extension / "dist/workflows").mkdir(parents=True)
+        (extension / "package.json").write_text(json.dumps({"version": version}))
+        for name in ("workflow-contracts.js", "value-contracts.js"):
+            shutil.copyfile(ROOT / "dist/workflows" / name, extension / "dist/workflows" / name)
+        if version == "3.2.48":
+            (installed / "recipe_compiler_config.json").write_text(json.dumps({
+                "executable": shutil.which("node"),
+                "contracts": str(extension / "dist/workflows/workflow-contracts.js"),
+            }))
+            assert installed_runtime._compile_definition(definition) == compiled
+        subprocess.run(["node", "-e", """
+const {ensureRecipeCompiler}=require(process.argv[1]);
+ensureRecipeCompiler(process.argv[2],process.argv[3],process.execPath);
+""", str(ROOT / "dist/mcp/recipe-compiler.js"), str(extension), str(installed)], check=True)
+        shutil.rmtree(extension)
+        assert installed_runtime._compile_definition(definition) == compiled
+        config = json.loads((installed / "recipe_compiler_config.json").read_text())
+        assert config["extensionVersion"] == version
+        assert str(installed / "recipe-compiler") in config["contracts"]
+    older = installed / "older-host"
+    older.mkdir()
+    (older / "package.json").write_text('{"version":"3.2.48"}')
+    result = subprocess.run(["node", "-e", """
+require(process.argv[1]).ensureRecipeCompiler(process.argv[2],process.argv[3],process.execPath);
+""", str(ROOT / "dist/mcp/recipe-compiler.js"), str(older), str(installed)], capture_output=True, text=True)
+    assert result.returncode != 0 and "newer extension 3.2.49" in result.stderr
+    assert json.loads((installed / "recipe_compiler_config.json").read_text()) == config
+    config["contracts"] = str(installed / "missing-contracts.js")
+    (installed / "recipe_compiler_config.json").write_text(json.dumps(config))
+    try:
+        installed_runtime._compile_definition(definition)
+        raise AssertionError("missing contracts must be actionable")
+    except RuntimeError as error:
+        assert str(installed / "recipe_compiler_config.json") in str(error)
+        assert config["contracts"] in str(error)
 print("Recipe Python/TypeScript compiler contract tests passed")

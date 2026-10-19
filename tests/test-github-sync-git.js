@@ -212,7 +212,7 @@ const rememberSync = (target, result) => {
     assert.match(fs.readFileSync(path.join(verify, "agentSnapshots", "agent_snapshot_test.json"), "utf8"), /A256GCM-PKM-LOCAL-OBFUSCATION/);
     const manifest = JSON.parse(fs.readFileSync(path.join(verify, ".pkm-github-sync.json"), "utf8"));
     assert.strictEqual(manifest.schema, 3, "new syncs publish stable identity, capability, privacy, and digest metadata");
-    assert.deepStrictEqual(manifest.capabilities.required, ["explicit-deletions", "stable-entity-identity"]);
+    assert.deepStrictEqual(manifest.capabilities.required, ["explicit-deletions", "stable-entity-identity", "entity-partial-progress"]);
     assert(manifest.files.some(file => file.path === "skills/Private/Two.md" && file.privacy === "private" && file.itemId === "Private/Two"));
     assert(manifest.files.some(file => file.path === "scripts/.run.sh.pkm.json"
       && file.itemId === scriptIdentity && file.member === "identity-sidecar"));
@@ -383,7 +383,7 @@ const rememberSync = (target, result) => {
         twoConflictError = error;
         return error instanceof GitHubSyncConflictError
           && error.conflicts.some(conflict => conflict.path === "skills/Design/Three.md")
-          && /Resolve and approve/.test(error.message);
+          && /approval.*isolated/i.test(error.message);
       },
       "two same-file conflict hunks must reach the human-required workflow instead of aborting merge-file"
     );

@@ -106,6 +106,24 @@ class ActionRecovery:
     def step_path(self, record, key):
         return self.runtime.path(record["run_id"]).parent / "steps" / (fingerprint(key) + ".json")
 
+    def step_event(self, record, key, definition, state, reason=None):
+        if state not in {"running", "completed", "failed", "ignored", "waiting"}:
+            raise ValueError("Invalid Component observation state.")
+        with self.runtime.lock():
+            self._authoritative(record)
+            path = self.runtime.path(record["run_id"]).parent / "step-events" / (fingerprint(key) + ".json")
+            value = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {
+                "schema": "pkm.action.component-events/v1", "key": key,
+                "definition_digest": fingerprint(definition), "component": definition.get("component"),
+                "action_id": definition.get("action_id"), "implementation_kind": definition.get("kind"),
+                "program": definition.get("program"), "tool": definition.get("tool"), "events": []}
+            if value["key"] != key or value["definition_digest"] != fingerprint(definition):
+                raise ValueError("Component observation does not match its pinned definition.")
+            value["state"] = state
+            value["events"].append({"state": state, "at": time.time(),
+                                    "fence": record["execution"]["fence"], "reason": reason})
+            _atomic_write(path, value)
+
     def step_result(self, record, key, definition):
         path = self.step_path(record, key)
         if not path.exists():
@@ -124,6 +142,7 @@ class ActionRecovery:
                 "schema": "pkm.action.step-receipt/v1", "key": key, "state": "completed",
                 "definition_digest": fingerprint(definition), "output": output, "scope_outputs": scope_outputs or {},
                 "fence": record["execution"]["fence"], "at": time.time()})
+        self.step_event(record, key, definition, "completed")
 
     def suspend(self, record, key, kind, proposal, evidence=None, owner="user", deadline=None,
                 timeout_behavior="review", trigger=None, answer_schema=None, presentation="json"):
@@ -155,6 +174,17 @@ class ActionRecovery:
                 "presentation": presentation,
                 "remaining_seconds": max(0.0, record["deadline"] - time.time()),
             }
+            event_directory = self.runtime.path(record["run_id"]).parent / "step-events"
+            for component_path in event_directory.glob("*.json"):
+                component = json.loads(component_path.read_text(encoding="utf-8"))
+                if component.get("state") != "running" or not (
+                        component["key"] == "__implementation__" or component["key"] == key
+                        or key.startswith(component["key"] + "/")):
+                    continue
+                component["state"] = "waiting"
+                component["events"].append({"state": "waiting", "at": time.time(),
+                                            "fence": record["execution"]["fence"], "reason": "checkpoint-" + kind})
+                _atomic_write(component_path, component)
             record.update({"state": "waiting", "checkpoint": checkpoint, "current_step": key})
             record["execution"].update({"fence": record["execution"]["fence"] + 1, "workerPid": None})
             self.runtime.runs.transition(record, "waiting", "checkpoint-" + kind, owner)
@@ -228,6 +258,18 @@ class ActionRecovery:
                            "answer_digest": fingerprint(answer), "event_key": event_key})
         record["execution"].update({"fence": record["execution"]["fence"] + 1, "workerPid": None})
         self.runtime.runs.transition(record, "ready", "checkpoint-resolved", "execution-host")
+
+    def check_checkpoint_answer(self, run_id, checkpoint_id, answer):
+        with self.runtime.lock():
+            record = self.read(run_id)
+            checkpoint = record.get("checkpoint")
+            if (record["state"] != "waiting" or not checkpoint or checkpoint["checkpoint_id"] != checkpoint_id
+                    or checkpoint["state"] != "waiting" or checkpoint["trigger"]["kind"] != "human"):
+                raise ValueError("This human checkpoint is no longer waiting.")
+            if checkpoint.get("deadline") is not None and time.time() >= checkpoint["deadline"]:
+                raise ValueError("Checkpoint deadline expired.")
+            Draft202012Validator(checkpoint["answer_schema"]).validate(answer)
+        return {"ok": True}
 
     def respond_checkpoint(self, run_id, checkpoint_id, resume_token, proposal_digest, answer, event_key):
         if not isinstance(event_key, str) or not 1 <= len(event_key) <= 200:

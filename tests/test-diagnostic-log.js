@@ -115,6 +115,14 @@ try {
   clock += 301_000;
   assert.strictEqual(successor.progress(), undefined);
   assert.strictEqual(successor.hosts().length, 0, "Stale heartbeats are not online hosts");
+  successor.heartbeat(false, "ready", "ready"); secondHost.heartbeat(false, "ready", "ready");
+  assert.throws(() => successor.requestReload(targetBuild, []), /distinct currently online/);
+  assert.throws(() => successor.requestReload(targetBuild, [randomUUID()]), /distinct currently online/);
+  assert.throws(() => successor.requestReload(targetBuild, [successor.identity.hostId, successor.identity.hostId]), /distinct currently online/);
+  const scoped = successor.requestReload(targetBuild, [successor.identity.hostId]);
+  assert.deepStrictEqual(scoped.targets.map(target => target.hostId), [successor.identity.hostId]);
+  assert.strictEqual(secondHost.poll(targetBuild, false), false, "A scoped reload must never reload the other workspace.");
+  assert.strictEqual(successor.poll(targetBuild, false), true);
   console.log("Diagnostic logs: bounded tail, writer isolation, validation and disk failure OK");
   console.log("Host coordination: installation isolation, busy deferral, build verification, successor acknowledgement and expiry OK");
 } finally {

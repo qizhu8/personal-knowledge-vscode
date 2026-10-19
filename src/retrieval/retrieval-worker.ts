@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { spawn } from "child_process";
 import { createHash } from "crypto";
-import type { RetrievalSnapshot } from "./retrieval-snapshot";
+import { indexedRetrievalDocument, type RetrievalSnapshot } from "./retrieval-snapshot";
 import { mcpStdioCommand } from "../mcp/mcp-stdio-command";
 import {
   RETRIEVAL_QUERY_SCHEMA_V1,
@@ -11,8 +11,11 @@ import {
   type RetrievalQueryV1,
   type RetrievalResultV1,
   type RetrievalIndexEventV1,
+  type RetrievalServingIdentityV1,
+  validRetrievalServingIdentity,
 } from "./retrieval-contracts";
 import { RetrievalIndexEventStore } from "./retrieval-index-events";
+import { withCrossProcessLock } from "../runtime/cross-process-lock";
 
 interface RetrievalEndpoint {
   pid: number;
@@ -20,6 +23,29 @@ interface RetrievalEndpoint {
   token: string;
   engine_version: string;
   configuration_hash: string;
+}
+
+function workerHitServingIdentity(engineVersion:string, raw:unknown, contributingRoutes:unknown): RetrievalServingIdentityV1 {
+  const object = (value:unknown): Record<string, unknown> =>
+    value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const result = object(raw), solution = object(result.solution), serving = object(result.skill_serving);
+  if (typeof serving.used !== "boolean") throw new Error("Retrieval worker did not report whether imported model serving was used.");
+  if (!Array.isArray(contributingRoutes) || contributingRoutes.some(route => typeof route !== "string" || !route)) throw new Error("Retrieval worker returned invalid contributing routes.");
+  const identity:RetrievalServingIdentityV1 = {
+    providerId:"pkm.unified-retrieval", providerVersion:engineVersion,
+    route:[...new Set(contributingRoutes)].join("+") || "unreported", scoreSemantics:"engine-defined",
+  };
+  if (serving.used) {
+    if (typeof solution.package_id === "string" && solution.package_id) identity.packageId = solution.package_id;
+    if (typeof serving.release_id === "string" && serving.release_id) identity.releaseId = serving.release_id;
+  }
+  const fallback = serving.fallback_reason || (!serving.used && solution.reason !== "default" ? solution.reason : undefined);
+  if (fallback !== undefined && fallback !== null) {
+    if (typeof fallback !== "string") throw new Error("Retrieval worker returned an invalid serving fallback reason.");
+    identity.fallback = fallback;
+  }
+  if (!validRetrievalServingIdentity(identity)) throw new Error("Retrieval worker returned an invalid actual serving identity.");
+  return identity;
 }
 
 export interface RetrievalWorkerStartupProfile {
@@ -434,28 +460,9 @@ export class RetrievalWorkerManager {
     }
   }
 
-  private async withTransitionLock<T>(action: () => Promise<T>, timeoutMs = 30_000): Promise<T> {
-    const lockPath = path.join(this.stateDir, "worker-transition.lock");
-    const deadline = Date.now() + timeoutMs;
-    let owned = false;
-    while (!owned) {
-      try {
-        const fd = fs.openSync(lockPath, "wx", 0o600);
-        try { fs.writeFileSync(fd, String(process.pid)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-        owned = true;
-      } catch (error: any) {
-        if (error?.code !== "EEXIST") throw error;
-        let pid = 0;
-        try { pid = Number(fs.readFileSync(lockPath, "utf8")); } catch { /* recover below */ }
-        let alive = false;
-        try { if (pid > 1) { process.kill(pid, 0); alive = true; } } catch (processError: any) { alive = processError?.code === "EPERM"; }
-        if (!alive) { try { fs.unlinkSync(lockPath); } catch { /* another waiter recovered it */ } }
-        else if (Date.now() >= deadline) throw new Error("Retrieval worker transition lock timed out.");
-        await new Promise(resolve => setTimeout(resolve, 50));
-      }
-    }
-    try { return await action(); }
-    finally { try { fs.unlinkSync(lockPath); } catch { /* ownership already recovered */ } }
+  private withTransitionLock<T>(action: () => Promise<T>, timeoutMs = 30_000): Promise<T> {
+    return withCrossProcessLock(path.join(this.stateDir, "worker-transition.lock"),
+      "Retrieval worker transition", timeoutMs, action);
   }
 
   async index(snapshot: RetrievalSnapshot): Promise<void> {
@@ -465,16 +472,7 @@ export class RetrievalWorkerManager {
 
   async sync(snapshot: RetrievalSnapshot): Promise<{ mode: "full" | "delta" | "reused"; upserts: number; deletes: number }> {
     const manifestPath = path.join(this.stateDir, "client-index.json");
-    const normalizedDocuments = snapshot.documents.map(document => {
-      const hash = createHash("sha256").update(JSON.stringify(document)).digest("hex");
-      return {
-        ...document,
-        source_id: document.source_id || document.source_uri || document.skill_id,
-        source_revision: `${document.source_revision || "content"}:${hash}`,
-        visibility: document.visibility || "available" as const,
-        links: document.links || [],
-      };
-    });
+    const normalizedDocuments = snapshot.documents.map(indexedRetrievalDocument);
     const normalizedSnapshot = { ...snapshot, documents: normalizedDocuments };
     const hashes = Object.fromEntries(normalizedDocuments.map(document => [document.skill_id,
       createHash("sha256").update(JSON.stringify(document)).digest("hex")]));
@@ -647,6 +645,7 @@ export class RetrievalWorkerManager {
         sourceUri: hit.source_uri,
         readOnly: !!hit.read_only,
         route: input.route,
+        serving:workerHitServingIdentity(status.engine_version, result, hit.contributing_routes),
       })),
       diagnostics: result.diagnostics || [],
       stale: !!result.stale,

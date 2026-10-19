@@ -4,6 +4,12 @@
     "label": "Deutsch"
   },
   "strings": {
+    "apiChat.openHarness": "Ausführungs-Untergraphen öffnen",
+    "apiChat.reportedGoal": "Vom Agenten gemeldetes Ziel: {goal}",
+    "apiChat.noTaskReport": "Noch kein expliziter Aufgabenstatus erfasst",
+    "apiChat.recordedValidation": "Erfasste Validierung: {status}",
+    "apiChat.noValidation": "Aufgabenvalidierung nicht erfasst",
+    "apiChat.responseStatus": "Antwort: {status}",
     "apiChat.loadOlderMessages": "Ältere Nachrichten laden",
     "apiChat.loadingOlderMessages": "Ältere Nachrichten werden geladen...",
     "apiChat.resumeWorker": "Worker fortsetzen",

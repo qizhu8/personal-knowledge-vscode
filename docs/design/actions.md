@@ -13,6 +13,14 @@ program or MCP tool adapter can implement an Action. A Recipe orchestrates Actio
 it is not required for an atomic invocation. Existing Script identity and Recipe
 semantics must remain intact.
 
+Action execution is program-controlled automation: its implementation (for example,
+a Script) owns the internal control flow, not an LLM choosing each next operation.
+An agent may select an Action and supply its inputs without becoming its executor.
+Harness views must distinguish Action Runs from individual model-issued function
+or MCP calls. Calls made by an Action implementation belong beneath that Run only
+when execution evidence records that ownership; a tool call is not automatically
+an Action.
+
 Registration does not grant execution permission. Dependency discovery does not
 prove readiness. Linux acceptance does not qualify Windows. Exit code zero does
 not prove a remote transfer completed or an output contract was satisfied.
@@ -26,6 +34,14 @@ require Azure CLI authentication and an explicit local operator policy granting
 the Action and remote scope. A clean store advertises no Cosmos adapter; enabling
 one does not grant credentials or qualification. General-purpose examples will be
 selected separately.
+
+Private adapter Inspect / Run opens schema-generated parameter fields by
+default (text, numbers, booleans and enums). Advanced JSON remains available
+and stays synchronized with the fields. Editing either representation clears
+the exact-operation approval checkbox; it does not authorize or start a transfer.
+An uncertain submission retains its original inputs and launch key, including
+after reopening. This form does not by itself complete explicit file/folder
+destination and overwrite-conflict UX or live qualification acceptance.
 
 ## Separate the records
 
@@ -109,6 +125,213 @@ Publish only portable definitions and implementations through normal PKM privacy
 and sync rules. Bindings, qualifications, grants, logs and run workspaces are local
 state by default. Credential references resolve at execution time; secrets are not
 stored in definitions, command histories, qualification evidence or chat replies.
+
+### Portable reference lifecycle
+
+The agreed boundary is broader than replacing absolute strings during Sync:
+shared content references use stable PKM URLs; interpreters, execution roots,
+credentials and external machine-specific inputs remain local bindings. A PKM
+URL is an identity reference, not a filesystem path and not execution permission.
+Resolve only at the local read/edit/build/execute boundary, preserving the
+existing access, qualification and approval checks.
+
+Keep three concepts separate:
+
+| Concept | Representation | Lifetime |
+| --- | --- | --- |
+| Shared entity reference | `pkm://knowledge/<id>` or `pkm://script/<id>` | Stable across machine roots and moves |
+| Package carrier | Validated ZIP entry / `${module_assets}` relative member | Anchored to the installed package |
+| Machine binding | Local workspace, toolchain or external resource binding | Never implicitly published as a portable default |
+
+#### Current sharing route: ModuleSet delivery, not direct GitHub Sync
+
+The current `GITHUB_SYNC_CONTENT_TYPES` contains Skills, Notes, Papers, Prompts,
+Scripts, packages, Servers, Recipes and Agent Snapshots. It does **not** contain
+`actions` or `action-module-sets`. Neither Action registry definitions nor installed
+ModuleSet directories are automatically carried by that content-type pipeline.
+The publication/privacy principle above is not a claim that direct Action Sync
+has been implemented.
+
+The working Action delivery route is selective **ModuleSet export → separate
+transfer of the `.pkm-actions` ZIP → import → explicit enable → local grants and
+qualification**. Export/import is available in the Workbench and through
+`action_module_set_export` / `action_module_set_import`; carrier transfer is not
+automated by this path work. A referenced Script or Note may independently travel
+through its existing Sync content type, but that does not deliver the Action
+definition. An imported ModuleSet uses its own validated resource bindings,
+not host resources borrowed from an independently synced tree.
+
+Do not assume that placing this binary ZIP in an existing text-content/package
+Sync route provides a supported transport. Adding direct Action/ModuleSet Sync
+or an explicit binary carrier transport is a separate, parent-owned scope
+decision. Any such route must preserve identities and package integrity without
+syncing `.pkm/state/actions`, execution grants, enablement, credentials or local
+qualification as portable authority.
+
+Script navigation now accepts canonical Script URLs and existing
+`pkm://scripts/<relative-path>` aliases, with duplicate identities reported rather
+than guessed. Legacy `pkm://recipes/<recipe-id>` URLs resolve to the named Recipe.
+`npm run test:knowledge-quick-open` and
+`node --test tests/test-script-url-lifecycle.js` cover navigation and Script
+relocation after removing the publisher root.
+
+Action resource consumers now share `ModuleRuntime.resource_path`. It resolves
+canonical Script identities, legacy Script path/identity aliases, and
+`pkm://knowledge/...` identities in Notes, Skills, Papers, Recipes and Action
+definitions. Resolution is read-only: it does not invent missing identities or
+write Script sidecars. Duplicate identities, invalid URLs, unreadable metadata,
+missing files, symlinks escaping the resource root and unavailable package
+bindings fail explicitly. Diagnostics include the Action display name, ID and
+consumer field.
+
+The following fields use that resolver:
+
+- `implementations[].files` and `build.source_files`, including editor reads and
+  optimistic-hash saves, environment fingerprints and build keys;
+- resource-valued `program` fields in program, build and MCP server declarations;
+- declared resource arguments in program/build/MCP `args`: an entire argument or
+  an explicit `--option=<declared-reference>` value, never arbitrary substrings;
+- `core.file-path` inputs at runtime, with the original workspace containment
+  check still enforced. A locator does not grant access outside that workspace.
+
+Definitions retain their URLs. The selected implementation is a temporary local
+view; source changes invalidate qualification/build fingerprints without changing
+the definition's stable identity. Toolchain names such as `python` still use local
+bindings. Legacy relative declared files are anchored to the configured Action
+workspace, not the Python process cwd. Existing absolute declared files remain
+explicit legacy local references.
+
+ModuleSet manifests may contain `resources: {action_id: {pkm_url: asset_member}}`.
+These bindings participate in `package_hash`; import validates URL/member shapes
+and declared asset membership. Export preserves declared PKM URLs and packages
+their bytes. On the receiver, the enabled ModuleSet binding and asset hash are
+authoritative: missing/corrupt package resources never borrow a same-ID file from
+the host or publisher. Existing `${module_assets}/...` carriers remain supported
+with containment and hash checks. Legacy declared file paths are relocated only
+in typed file/program/argv fields, not descriptions or inline source. Undeclared
+URI arguments may be logical application data and are not guessed to be paths.
+Older runtimes do not implement URL resource bindings; these packages require an
+updated runtime and must not be treated as compatible merely because their
+container schema is still v1.
+
+Acceptance: `python tests/test-action-modules.py` includes actual source
+read/save, move/root relocation, original-store removal, single-file
+export/import/execution, real build and MCP execution, invalid/duplicate/missing
+references, package tampering, and unchanged execution/workspace grants.
+
+#### Declared source trees
+
+Export now preserves source-relative names under `assets/<action_id>/`, rather
+than independently hash-prefixing leaves. The anchor is the common parent of
+that Action's explicitly declared resources across its implementations. Declare
+**every** source, sibling import/include and relative data file in `files`,
+`build.source_files`, or nested build/server `files`; no recursive discovery,
+source-code parsing, directory copying or implicit dependency harvesting occurs.
+Two different subdirectories can contain the same basename. Shared URLs across
+implementations map to the same carrier. Re-export computes the same tree from
+the installed resources, not from publisher locations.
+
+Relative source operations anchored by `__file__`, sibling imports, and compiler
+quoted includes therefore retain their relationships. Process-relative data
+operations still use the configured **local execution workspace**, not the source
+tree; packaging does not silently change `cwd`. An Action requiring another
+execution root needs an explicit local binding. Script sidecars are identity
+metadata, not automatically bundled dependencies. PKM URLs retain their identity
+through `manifest.resources`; legacy typed paths become `${module_assets}/...`.
+Literal `core.file-path` paths in pipeline steps and saved graph parameters use
+the same carrier mechanism, without rewriting constants or prose. File-path
+execution still cannot escape the selected workspace; importing a package does
+not grant access to its installation directory.
+
+The manifest hashes every member. Executable assets are listed in
+`manifest.executables` and restored with owner-execute permissions, never setuid
+or publisher ownership. ZIP/member validation rejects traversal, absolute paths,
+backslashes, drive syntax, symlinks, duplicate/case-insensitive names,
+file/directory collisions, Windows reserved names and trailing dots/spaces.
+Limits are 16 MiB per exported source, 32 MiB expanded package content and
+500 entries including the manifest. Only declared bytes are portable; runtime
+grants, machine settings, credentials, build outputs, run evidence and workspace
+state are not implicitly included.
+
+#### Explicit legacy migration
+
+`ModuleRuntime.migration_preview(document, kind="action" | "graph" | "recipe")`,
+also available as Workbench/API method `migration_preview`, produces a candidate,
+per-field before/after/SHA-256 evidence, the original document and its digest,
+and named diagnostics. It **never writes** the registry, Recipe store, Script
+sidecars or production files. Keep this rollback evidence locally: its original
+document and diagnostics can contain machine paths and private binding values.
+Review and explicitly save/version the candidate through the existing authoring
+flow; normal optimistic concurrency, approvals and qualification still apply.
+The definition editor exposes **Preview path migration** and an evidence dialog.
+**Use candidate in editor** changes only the editor buffer and preserves the
+original/evidence in local editor state; persistence still requires the separate
+**Save** action. Source-file editing and read-only system contracts cannot invoke
+this operation. The API form is
+`{"method":"migration_preview","params":{"document":<selected-document>,"kind":"action"}}`;
+use `graph` or `recipe` for a graph document or canonical Recipe record/workflow
+definition. Canonical Recipe `definition.spec.nodes`, raw workflow `spec.nodes`
+and legacy node-list documents have explicit schema-owned adapters.
+
+Migration considers declared file/source-file slots, resource programs, exact
+argv values or `--flag=<value>`, literal `core.file-path` inputs and corresponding
+saved graph parameters. A legacy argv path is migrated only when its absolute
+path has an existing identity inside the current knowledge store and the shared
+resolver proves that identity resolves uniquely to the same file. Such argv
+references gain an explicit `files` declaration for later consumers. Missing,
+duplicate, foreign-Windows-host and external local paths remain unchanged with
+name, ID, field and binding diagnostics. No new identity is invented.
+
+Descriptions, arbitrary constant values, inline Recipe `script`, shell command
+text, `cwd`, toolchain/environment selections and credentials are never searched
+or replaced. A string merely containing a path/URL is not a resource argument.
+Recipe command/script/Pipeline-executor configs can declare `files`; their
+existing command launcher resolves those references using `ModuleRuntime`, not
+a second executor. Recipe validation checks the declaration shape. Templates and
+inline code retain the existing Recipe execution semantics.
+
+#### Namespace/navigation contract
+
+| URL | Local consumer |
+| --- | --- |
+| `pkm://script/<script_id>` | Script metadata identity/aliases; source editor and Action/Recipe resource resolver |
+| `pkm://scripts/<relative-file>` | Existing legacy Script path/alias, with containment checks |
+| `pkm://knowledge/<knowledge_id-or-action_knowledgeId>` | Local knowledge inventory; Action resource identity scan |
+| `pkm://recipes/<recipe_id>` | Current Recipe store, independent of category/name; canonical Copy Path producer |
+| `pkm://recipes/<category>/<name>` | Previous descriptive producer, supported only when uniquely present; not a move-stable identity |
+| `pkm://actions/<action_id>` | Action catalog / existing Action authoring consumer; legacy platform-provider contracts open read-only via `locator_read`, without a new executor; file resources require a stored definition |
+| `pkm://components/<component_id>` | Existing read-only Component contract in the Action Workbench; not an invented source file |
+| `pkm://projects/<project_id>` | Current Project store and Project cockpit, not a guessed inventory filename |
+| `pkm://packages/<package>/<relative-file>` | Current package-file store and panel; contained package-relative path, not a new stable file identity |
+
+Queries/fragments, invalid encodings, missing identities and duplicate matches
+fail explicitly. Navigation does not execute an Action. Folder/root URLs are
+not file references. Existing Script aliases are preserved; runtime resource
+resolution does not write identity metadata.
+Project cockpit **Copy Path** emits the Project identity. Action/Component
+catalog **Copy Path** uses the provider's stable `source_id` (or its established
+Action/Component namespace), through the existing clipboard bridge in VS Code
+and the browser clipboard for the standalone Workbench.
+
+Development acceptance: `tests/test-action-portable-paths.py` exercises real
+multi-file Python import/data execution after deleting the publisher store **and
+workspace**, re-export to a third root after deleting the receiver, C sibling
+include/build execution, executable resources, graph resource delivery,
+verified/diagnostic migration, existing Recipe worker execution, containment
+and cross-platform filename collision rules. `tests/test-path-namespace-contracts.js`
+checks namespace parsing/resolution and receiver package reads by transpiling
+only the touched TypeScript sources **in memory**, without racing the full
+extension build.
+`tests/test-action-path-ui.py` exercises preview/use without any save call and
+read-only Component-identity navigation. Native `${build_dir}/<output>` program
+and MCP server entrypoints resolve only verified, declared build outputs; compiler
+and workspace grants remain unchanged.
+
+These are isolated development tests on Linux, not production mutation,
+installed-extension validation or user cross-platform acceptance. Actual Windows,
+macOS and Remote permissions/toolchains, installed-host source navigation,
+multi-target Sync delivery and final VSIX installation remain separate gates.
+Cross-platform and installed-host checks remain separate from Linux fixtures.
 
 A definition digest must be environment-neutral. An implementation digest includes
 executable content, dependent adapters and locked runtime dependencies. A moved
@@ -451,13 +674,106 @@ does not authorize a replacement compiler. No SDK is included in ModuleSets.
 
 `core.sleep` is a read-only Python Basic Component with a required numeric `seconds`
 input, default 1, allowing finite values from 0 through 300 and fractional seconds.
-Its output is `{ "seconds": requestedSeconds }`. It uses a monotonic wait and checks
-cancellation and the existing shared invocation deadline at intervals of at most
-50 milliseconds. The current Action budget is 300 seconds, so the remaining parent
-budget can interrupt a longer requested wait. Qualification runs the actual wait;
-it does not skip Sleep or fabricate completion evidence.
+Its output is `{ "seconds": requestedSeconds }`. A nonzero Sleep commits a timer
+checkpoint and releases its worker. The scheduler resumes the original Run, with
+the recorded remaining active-execution budget, rather than keeping a Python
+stack asleep. Waiting time is not charged to the 300-second active worker budget.
+Cancellation fences the existing continuation; it does not start a replacement.
+
+### Preinstalled Actions and polling templates
+
+- `core.delay`: callable duration wait, including `{ "seconds": 30 }` and
+  `{ "seconds": 300 }`. Zero is valid and immediately completes.
+- `core.ask-user`: `prompt`, an object `answer_schema`, and a non-sensitive
+  `test_answer`. Qualification uses only the shipped fixture; live executions
+  always create a human checkpoint, never use `test_answer` as consent.
+- `core.chatroom-alias`: accepts a room label, asks the user for a bounded alias,
+  and returns `{ "value": { "alias": "..." } }`. The PKM Chat transport runs this
+  before dispatching a Chatroom join, replacing any model-guessed name with the
+  actual user response. Cancelling does not join.
+
+These three system Actions qualify their controlled local examples on first
+invocation. Remote/program Actions still require explicit host qualification and
+operator grants. No installation, discovery or form answer grants remote effects.
+
+The Workbench's **Create polling Action** form and MCP
+`action_template_create(action_id, parameters)` pin a ready read-only query.
+Parameters are `query_action_id`, `query_revision`, `query_inputs`, a declared
+top-level output `field`, exact JSON `expected`, `interval_seconds` (0 < n <= 300),
+`timeout_seconds` (0 < n <= 604800), and `max_iterations` (1–1000).
+Creation does not execute the query. Validate explicitly before running.
+The underlying `core.poll` component also accepts a compositional `body`,
+boolean `condition`, and `value`. Only pure/local-read/remote-read/read operations
+may repeat: human input and mutations are rejected. Errors are errors, not a
+successful predicate. A persisted wall-clock deadline includes query execution;
+the runtime cancels an outstanding read query when that deadline expires.
+Results are `{ "status": "completed" | "timed_out", "attempts": n, "value": ... }`.
+`timed_out` also covers the explicit attempt limit and never means the predicate
+matched. Queries, observations and intervals use per-iteration receipts, so
+restarting or reattaching does not submit replacement invocations.
+
+PKM Chat has **find_actions** and **run_action** tools. The latter requires a pinned
+contract and approval, services typed human checkpoints inside the message area,
+and returns the original Run's final result as the original tool result. It does
+not ask the model to poll. Forms support text, enum choices, string-array
+multi-select, booleans and numbers; unsupported nested schemas fail explicitly,
+leaving the Run available in the Workbench. Invalid answers stay editable;
+backend schema validation happens before the form closes. Chat, attempt and
+execution ownership are checked again after asynchronous validation. Answers are
+not secrets or permission grants. The UI preserves drafts across state refreshes.
+
+External MCP callers can use `action_templates`, `action_call`, and
+`action_run_wait(run_id, wait_seconds=30)` (0–300 seconds per wait). A bounded wait
+may return `wait_expired: true, completed: false`; it does not cancel or resubmit.
+The MCP scheduler services due timers/dependencies while the server is running
+and scans existing continuations on startup. Scheduler failures are logged and
+reported in capabilities. Closing a Chat request does not preserve its JavaScript
+stack: after host restart, explicitly attach with `run_action({ "run_id": ... })`
+or inspect the original Run. PKM does not silently replay the Chat's tool calls
+or wake a stopped external model session.
+
+### Private storage adapters
+
+Cosmos upload/download/list adapters are optional, local/private capabilities, not
+public preset definitions or ModuleSet examples. No personal account mapping,
+local/remote root, credential, grant or validation evidence is shipped.
+`action_cosmos_configure` records explicit operator-provided mappings in
+`.pkm/state/actions/cosmos-bindings.json` with mode 0600. This local state is
+outside portable Action definitions and exports. Existing grants must be revoked
+before changing their account mappings; mapping changes invalidate qualification.
+Discovery lists Cosmos Actions only when explicit local path grants enable them.
+Definitions report `visibility: "private", exportable: false`.
+
+The Workbench catalog also lists these locally configured adapters under
+**Private / Cosmos**, including unqualified or missing-grant entries with their
+actual status/reason. They are absent on machines without private Cosmos bindings.
+Visibility is independent of qualification: **Inspect / Run** opens a contract,
+inputs and readiness dialog without performing a transfer. Run remains disabled
+until ready, requires explicit approval of the inputs, and rechecks backend grants
+and revision at dispatch. Platform adapters are direct-run only (not graph blocks),
+have no export checkbox, and their durable Runs appear in the common history.
+An uncertain submission retains its original launch key across retry/reload.
+
+Both files and directories use the installed Azure CLI's structured `az dls fs`
+upload/download interface; no shell expansion or credentials are embedded.
+Transfers default to no overwrite, require contained local/remote roots, and
+reject symlink sources. Cancellation/timeout of a remote mutation remains
+`outcome_unknown` until reconciled, not a successful rollback or automatic retry.
+Upload qualification performs a small separately approved file/read-back SHA-256
+check. Download qualification must use that exact current approved fixture and a
+new local destination, and independently match its SHA-256. This is not permission
+to run production transfers, and CLI success alone is not a full remote checksum
+manifest. Tests use isolated fake-cloud files/directories, never production data.
 
 ### Browser Workbench
+
+The left Components sidebar and category folders start collapsed; the shared
+category-tree pill on the tree/canvas divider (same control as other PKM workspaces)
+restores the sidebar, and explicit folder expansion is retained per editor/tab.
+Search (Ctrl/Cmd+F) reveals the sidebar and matching folder paths without changing
+the saved folder expansion state. System entries live only within `core/logic`,
+`core/values`, `core/timing`, `core/interaction`, or `core/filesystem`; no components
+are loose beside these subfolders.
 
 Run `PKM: Open Action Workbench in Browser`, or use the native Workbench's
 external-link button to open its current graph, saved pin and active run in a
@@ -511,6 +827,15 @@ directory. The preview uses the actual Python supervisor and qualification queue
 not simulated success responses. It never writes the user's primary Action catalog.
 It binds only localhost and rejects cross-origin mutation requests. The VS Code
 Workbench uses native package file pickers; the preview uses host-file path forms.
+
+### Main navigation
+
+Automation now exposes an `Action Library` entry next to Agent Sessions,
+Snapshots and Recipes. It opens the existing native Action Workbench directly,
+so users do not need to remember a command-palette command. The entry does not
+create another catalog, scheduler or executor: definition search/edit/run,
+qualification, durable Run history, browser handoff and Project navigation keep
+using the same guarded Workbench and Action backend.
 
 ## Core Basic Components
 
@@ -736,14 +1061,12 @@ can resume explicitly. Production writes remain behind verified readiness.
    on Windows and Linux. Test built package and current live MCP/worker contracts,
    not just source or installed bytes. Unsupported/unverified stays visible.
 
-The authorized Cosmos test scope is the supplied `cosmos08` browser directory,
-whose verified account is `bingads-algo-prod-adsplus-c08` and remote path is
-`/shares/bingads.algo.prod.adsplus/ProdAdsPlusShare/users/uone/AdHoc/temp/`.
-Use a unique child directory and no pre-existing remote data. The user approved
-`/tmp/pkm-action-acceptance` on Linux. Read-only directory listing succeeded;
-real upload/download acceptance is still outstanding. Windows/macOS roots must
-be explicitly selected in `personalKnowledge.actions.workspaceRoots`. If
-authentication requires a secret, the user enters it directly in the terminal.
+Personal Cosmos test scopes, account bindings and local roots belong only in
+private operator configuration, not this design or a published example. Real
+upload/download acceptance remains a separate explicitly authorized operation.
+Windows/macOS roots must be explicitly selected in
+`personalKnowledge.actions.workspaceRoots`. If authentication requires a secret,
+the user enters it directly in the terminal.
 
 The current native MCP connection still has earlier knowledge/worker activation
 gaps; installing matching extension bytes alone did not repair them. Treat Action

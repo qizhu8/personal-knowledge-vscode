@@ -54,6 +54,7 @@ export interface RetrievalServingIdentityV1 {
   modelId?: string;
   modelVersion?: string;
   packageId?: string;
+  releaseId?: string;
   fallback?: string;
 }
 
@@ -101,6 +102,8 @@ export interface RetrievalCandidateV1 {
   parentRevision?: string;
   parentContentHash?: string;
   range?: { start: number; end: number; unit: "characters" | "bytes" | "lines" };
+  offsetEncoding?: "utf16";
+  contextIds?: string[];
   serving?: RetrievalServingIdentityV1;
   content?: string;
 }
@@ -174,6 +177,7 @@ export interface RetrievalResultHitV1 {
   description: string;
   readOnly: boolean;
   route: RetrievalRoute;
+  serving?: RetrievalServingIdentityV1;
   metadata: Record<string, string>;
   provenance: Record<string, unknown>;
 }
@@ -242,6 +246,17 @@ const ROUTES = new Set<RetrievalRoute>(["lexical", "semantic", "graph", "hybrid"
 const DIAGNOSTICS = new Set<RetrievalDiagnosticsLevel>(["none", "summary", "debug"]);
 const SCORE_SEMANTICS = new Set<RetrievalScoreSemantics>(["rank-only", "similarity", "distance", "probability", "rrf", "engine-defined"]);
 const RETRIEVAL_LEVELS = new Set<RetrievalLevel>(["l1-source", "l2-passage"]);
+
+export function validRetrievalServingIdentity(value: unknown): value is RetrievalServingIdentityV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const identity = value as Record<string, unknown>;
+  const fields = ["providerId", "providerVersion", "route", "scoreSemantics", "architectureId", "modelId", "modelVersion", "packageId", "releaseId", "fallback"];
+  const bounded = (item: unknown) => typeof item === "string" && item.length > 0 && item.length <= 512;
+  return Object.keys(identity).every(key => fields.includes(key))
+    && ["providerId", "providerVersion", "route"].every(key => bounded(identity[key]))
+    && SCORE_SEMANTICS.has(identity.scoreSemantics as RetrievalScoreSemantics)
+    && fields.slice(4).every(key => identity[key] === undefined || bounded(identity[key]));
+}
 const QUERY_FIELDS = new Set(["schema", "requestId", "text", "level", "contentTypeFilter", "scope", "topK", "route", "generation", "graph", "deadlineMs", "diagnostics"]);
 
 function positiveInteger(value: unknown): value is number {
@@ -306,6 +321,10 @@ export function sanitizeRetrievalCandidatesV1(
       || !bounded(value.method, 128) || !bounded(value.reason, 1024)) message = "Candidate display and source fields must be bounded.";
     else if (!Number.isFinite(value.score) || value.rank !== undefined && !positiveInteger(value.rank)) message = "Candidate score must be finite and rank must be positive.";
     else if (value.scoreSemantics !== undefined && !SCORE_SEMANTICS.has(value.scoreSemantics)) message = "Candidate score semantics are unsupported.";
+    else if (value.serving !== undefined && !validRetrievalServingIdentity(value.serving)) message = "Candidate serving identity is invalid.";
+    else if (value.sourceId !== undefined && !bounded(value.sourceId, 1024)
+      || value.sourceRevision !== undefined && !bounded(value.sourceRevision, 512)
+      || value.contentHash !== undefined && !bounded(value.contentHash, 128)) message = "Candidate source provenance must be bounded.";
     else if (value.scoreComponents !== undefined && (!value.scoreComponents || typeof value.scoreComponents !== "object" || Array.isArray(value.scoreComponents)
       || Object.keys(value.scoreComponents).length > 16 || Object.values(value.scoreComponents).some(score => !Number.isFinite(score)))) {
       message = "Candidate score components must be bounded finite numbers.";
@@ -313,7 +332,10 @@ export function sanitizeRetrievalCandidatesV1(
     else if (value.range !== undefined && (!value.range || !Number.isSafeInteger(value.range.start) || !Number.isSafeInteger(value.range.end)
       || value.range.start < 0 || value.range.end <= value.range.start || !["characters", "bytes", "lines"].includes(value.range.unit))) {
       message = "Candidate range must be a positive half-open range with an explicit unit.";
-    } else if (value.level === "l2-passage" && (!bounded(value.parentId, 1024) || !bounded(value.parentRevision, 512)
+    } else if (value.offsetEncoding !== undefined && (value.offsetEncoding !== "utf16" || value.range?.unit !== "characters")) message = "UTF-16 offsets require a character range.";
+    else if (value.contextIds !== undefined && (!Array.isArray(value.contextIds) || value.contextIds.length > 16
+      || value.contextIds.some(id => !bounded(id, 1024) || id === value.id) || new Set(value.contextIds).size !== value.contextIds.length)) message = "Passage context IDs must be bounded and unique.";
+    else if (value.level === "l2-passage" && (!bounded(value.parentId, 1024) || !bounded(value.parentRevision, 512)
       || !bounded(value.parentContentHash, 128) || !value.range)) message = "L2 candidates require immutable parent identity and a range.";
     else if (options.sourceIsCurrent && !options.sourceIsCurrent(value)) message = "Candidate source revision is stale or unavailable.";
     if (message) {
@@ -392,6 +414,9 @@ export function compileRetrievalResultV1(input: unknown): RetrievalCompileResult
     }
     const record = hit as Record<string, unknown>;
     const scores = record.scoreComponents as Record<string, unknown> | undefined;
+    if (record.serving !== undefined && !validRetrievalServingIdentity(record.serving)) {
+      diagnostics.push({ code:"field", pointer:`/hits/${index}/serving`, message:"Hit serving identity is invalid." });
+    }
     if (!positiveInteger(record.rank) || !Number.isFinite(record.score)
       || !String(record.sourceId || "") || !String(record.sourceRevision || "")
       || !String(record.contentHash || "") || !String(record.sourceUri || "")

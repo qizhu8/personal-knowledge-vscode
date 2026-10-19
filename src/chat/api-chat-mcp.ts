@@ -73,7 +73,8 @@ export async function ensurePkmMcpTools(host: typeof import("vscode")): Promise<
 }
 
 export function createVscodeTools(names: string[], host: typeof import("vscode"),
-  approve: (name: string, arguments_: Record<string, unknown>, signal: AbortSignal, hints?: ToolSafetyHints) => Promise<void>): ApiChatTool[] {
+  approve: (name: string, arguments_: Record<string, unknown>, signal: AbortSignal, hints?: ToolSafetyHints) => Promise<void>,
+  prepare?: (name: string, input: Record<string, unknown>, signal: AbortSignal) => Promise<Record<string, unknown>>): ApiChatTool[] {
   if (!names.length) return [];
   const native = host as VscodeToolHost;
   const catalog = vscodeToolCatalog(host).filter(tool => names.includes(tool.name));
@@ -107,9 +108,10 @@ export function createVscodeTools(names: string[], host: typeof import("vscode")
       if (host.workspace.isTrusted === false) throw new Error("VS Code/MCP tools require a trusted workspace.");
       if (typeof args.name !== "string" || !catalog.some(tool => tool.name === args.name) || !discovered.has(args.name)) throw new Error("Find an enabled tool and its schema before invoking it.");
       if (!args.input || typeof args.input !== "object" || Array.isArray(args.input) || JSON.stringify(args.input).length > 32_000) throw new Error("Provide bounded object input matching the discovered schema.");
-      const input = args.input as Record<string, unknown>;
+      let input = args.input as Record<string, unknown>;
       const attempt = `${args.name}:${JSON.stringify(input)}`;
       if (attempted.has(attempt)) throw new Error("Duplicate VS Code/MCP execution blocked. Retry explicitly in a new request.");
+      if (prepare) input = await prepare(args.name, input, signal);
       await approve(args.name, input, signal);
       if (signal.aborted) throw new Error("Request cancelled.");
       attempted.add(attempt);
@@ -142,7 +144,8 @@ export function mcpUrl(value: string): URL {
 }
 
 export async function connectApiChatMcp(server: ApiChatMcpServer, index: number, token: string | undefined, signal: AbortSignal,
-  approve: (name: string, arguments_: Record<string, unknown>, signal: AbortSignal, hints?: ToolSafetyHints) => Promise<void>) {
+  approve: (name: string, arguments_: Record<string, unknown>, signal: AbortSignal, hints?: ToolSafetyHints) => Promise<void>,
+  prepare?: (name: string, input: Record<string, unknown>, signal: AbortSignal) => Promise<Record<string, unknown>>) {
   if (signal.aborted) throw new Error("Request cancelled.");
   const client = new Client({ name: "pkm-native-api-chat", version: "1.0.0" });
   const transport = new StreamableHTTPClientTransport(mcpUrl(server.url), {
@@ -173,6 +176,7 @@ export async function connectApiChatMcp(server: ApiChatMcpServer, index: number,
         execute: async (arguments_, requestSignal) => {
           const attempt = `${tool.name}:${JSON.stringify(arguments_)}`;
           if (attempted.has(attempt)) throw new Error("Duplicate MCP execution blocked. Start a new request to retry explicitly.");
+          if (prepare) arguments_ = await prepare(tool.name, arguments_, requestSignal);
           await approve(`${server.label}: ${tool.name}`, arguments_, requestSignal, tool.annotations);
           if (requestSignal.aborted) throw new Error("Request cancelled.");
           attempted.add(attempt);

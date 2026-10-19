@@ -4,8 +4,10 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
+const { randomUUID } = require("crypto");
 const extensionRoot = path.resolve(process.env.PKM_TEST_EXTENSION_PATH || path.join(__dirname, ".."));
 const { RetrievalWorkerManager, retrievalWorkerStartupTimeoutMs } = require(path.join(extensionRoot, "dist/retrieval/retrieval-worker.js"));
+const { retrievalDocumentForSource, retrievalSourceValidation } = require(path.join(extensionRoot, "dist/retrieval/retrieval-snapshot.js"));
 
 assert.strictEqual(retrievalWorkerStartupTimeoutMs(undefined, 0, "linux"), 10000);
 assert.strictEqual(retrievalWorkerStartupTimeoutMs(undefined, 701, "linux"), 14000,
@@ -58,7 +60,7 @@ async function main() {
   let endpoint;
   try {
     const initialSnapshot = { corpus_revision: "revision-1", documents: [
-      { skill_id: "skill:data-prep", source_id: dataSourceId, source_revision: "1", title: "AutoLabeling V2 Data Preparation", description: "Prepare grammar and accuracy datasets", body: "S2S S2C normalization splitting", content_type: "skill", source_uri: "pkm://skills/data-prep", metadata: {}, provenance: { provider: "pkm" }, read_only: false, visibility: "available", links: [{ relation: "supports", target: languageSourceId, mode: "floating", required: true }] },
+      { skill_id: "skill:data-prep", source_id: dataSourceId, source_revision: "1", title: "AutoLabeling V2 Data Preparation", description: "Prepare grammar and accuracy datasets", body: "S2S S2C normalization splitting", content_type: "skill", source_uri: "pkm://skills/data-prep", metadata: { "10":"ten", "2":"two", "\ud83d\udc26":"bird", "\uffff":"last", "\u6761\u4ef6":"\u4e0d\u5141\u8bb8" }, provenance: { provider: "pkm" }, read_only: false, visibility: "available", links: [{ relation: "supports", target: languageSourceId, mode: "floating", required: true }] },
       { skill_id: "script:language", source_id: languageSourceId, source_revision: "1", title: "Language Detection", description: "Scope script", body: "LanguageDetector loads HumpBack", content_type: "script", source_uri: "pkm://scripts/language.script", metadata: {}, provenance: { provider: "pkm" }, read_only: false, visibility: "available", links: [] },
       { skill_id: "note:private", title: "Private Retrieval Secret", description: "must not leak", body: "PRIVATE-RETRIEVAL-TOKEN", content_type: "note", source_uri: "pkm://notes/private", metadata: {}, provenance: { provider: "pkm" }, read_only: false, visibility: "private" },
       { skill_id: "subscription:readonly", title: "Read Only Retrieval", description: "capability filtered", body: "READONLY-RETRIEVAL-TOKEN", content_type: "subscription", source_uri: "pkm://subscriptions/read-only", metadata: {}, provenance: { provider: "broker" }, read_only: true },
@@ -90,6 +92,17 @@ async function main() {
     assert.strictEqual(readSkill.source_id, dataSourceId);
     assert.match(readSkill.source_revision, /^1:[0-9a-f]{64}$/);
     const skillHit = (await manager.search("Data Preparation", 5, ["skill"])).hits[0];
+    const materializedSource = retrievalDocumentForSource(initialSnapshot, skillHit.source_id, skillHit.source_revision, skillHit.content_hash);
+    assert(materializedSource, "Actual worker revisions must resolve to physical Chat evidence, not silently become unavailable.");
+    assert.strictEqual(materializedSource.body, readSkill.content);
+    const validation = retrievalSourceValidation(() => initialSnapshot);
+    const evidence = { sourceId:skillHit.source_id, sourceRevision:skillHit.source_revision, contentHash:skillHit.content_hash };
+    validation.admit(evidence, materializedSource);
+    validation.refreshSourceValidation();
+    assert(validation.sourceIsCurrent(evidence), "The actual worker identity must survive send-time revalidation.");
+    assert.strictEqual(skillHit.serving.providerVersion, ready.engine_version);
+    assert.strictEqual(skillHit.serving.route, [...new Set(skillHit.contributing_routes)].join("+") || "unreported");
+    assert.strictEqual(skillHit.serving.packageId, undefined, "The default worker must not invent an imported package identity");
     assert.strictEqual(readSkill.source_revision, skillHit.source_revision);
     assert.strictEqual(readSkill.content_hash, skillHit.content_hash);
     assert.strictEqual(readSkill.content, initialSnapshot.documents[0].body);
@@ -167,6 +180,43 @@ async function main() {
     });
     assert.deepStrictEqual(readOnlyResult.hits, [], "read-only sources must honor capability scope");
     assert.deepStrictEqual(readOnlyResult.diagnostics, []);
+    const privateQuery = `PRIVATE_QUERY_${randomUUID()}`;
+    const beforeFeedback = await manager.status();
+    const snapshotBeforeFeedback = fs.readFileSync(path.join(state, "snapshot.json"));
+    const solutionBeforeFeedback = await manager.solutions();
+    for (const diagnostics of ["none", "summary", "debug"]) {
+      await manager.query({
+        schema:"pkm.retrieval.query/v1", requestId:`privacy-${diagnostics}`, text:privateQuery,
+        scope:{ capabilityId:privateQuery }, topK:5, route:"lexical",
+        generation:{ mode:"latest-ready" }, diagnostics,
+      });
+    }
+    const afterFeedback = await manager.solutions();
+    assert.strictEqual(afterFeedback.metrics.query_text_collected, false);
+    assert(!JSON.stringify(afterFeedback.metrics).includes(privateQuery));
+    assert.strictEqual(afterFeedback.requested_package_id, solutionBeforeFeedback.requested_package_id);
+    assert.strictEqual(afterFeedback.active_package_id, solutionBeforeFeedback.active_package_id);
+    assert.deepStrictEqual(fs.readFileSync(path.join(state, "snapshot.json")), snapshotBeforeFeedback,
+      "Query/diagnostic activity cannot modify corpus or serving configuration");
+    assert.strictEqual((await manager.status()).ready_generation, beforeFeedback.ready_generation);
+    const SQL = await require("sql.js")();
+    const metricsBytes = fs.readFileSync(path.join(state, "solution-metrics.sqlite3"));
+    const metrics = new SQL.Database(metricsBytes);
+    try {
+      assert.deepStrictEqual(metrics.exec("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")[0].values,
+        [["buckets"], ["latencies"]], "Local operational metrics must not grow training or feedback-event tables");
+      const rows = metrics.exec("SELECT entry,reason,requests FROM buckets WHERE entry='other'");
+      assert(rows[0].values.some(row => row[2] >= 3), "The audit exercised actual persistence, not an unused telemetry path");
+    } finally { metrics.close(); }
+    const auditFiles = directory => {
+      for (const entry of fs.readdirSync(directory, { withFileTypes:true })) {
+        const filename = path.join(directory, entry.name);
+        if (entry.isDirectory()) auditFiles(filename);
+        else if (entry.isFile()) assert(!fs.readFileSync(filename).includes(Buffer.from(privateQuery)),
+          `Feedback-off raw query/capability must not persist in ${path.relative(state, filename)}`);
+      }
+    };
+    auditFiles(state);
     await assert.rejects(() => manager.query({
       schema: "pkm.retrieval.query/v1",
       requestId: "request-semantic",
@@ -268,7 +318,11 @@ async function main() {
       return value.skill_serving.error ? value : undefined;
     });
     assert.strictEqual(fallback.skill_serving.ready, false, "invalid/missing serving dependencies must keep BM25 ready");
-    assert((await restarted.search("Data Preparation", 5, ["skill"])).hits.length > 0);
+    const fallbackResult = await restarted.search("Data Preparation", 5, ["skill"]);
+    assert(fallbackResult.hits.length > 0);
+    assert(fallbackResult.hits[0].serving.fallback, "Actual worker fallback reason must survive normalization");
+    assert.strictEqual(fallbackResult.hits[0].serving.packageId, undefined);
+    assert.strictEqual(fallbackResult.hits[0].serving.releaseId, undefined);
     endpoint = JSON.parse(fs.readFileSync(path.join(state, "worker.json"), "utf8"));
     await fetch(`http://127.0.0.1:${endpoint.port}/shutdown`, { method: "POST", headers: { "X-PKM-Retrieval-Token": endpoint.token } });
     console.log("retrieval worker test: persistent index, atomic ready revision, restart recovery, typed routing, and shared Subscriber PID OK");

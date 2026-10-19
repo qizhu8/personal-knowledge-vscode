@@ -49,10 +49,9 @@ assert.doesNotMatch(extension, /Use \$\{fallback\} and save it as the new machin
 assert.match(extension, /owned by an unrelated service\. Choose another port in Config/,
   "a proven non-PKM owner must leave the stable port unchanged and direct explicit recovery");
 assert.match(extension, /case "copyPublicContentLink"/);
-assert.match(extension, /Private content has no public stable link/);
-assert.match(panel, /const stableKey = type === 'skill' \? \[category, key\]\.filter\(Boolean\)\.join\('\/'\) : key/,
-  "Skill links must retain their category for routing and privacy checks");
-assert.match(panel, /copyPublicContentLink/);
+assert.match(panel, /function copyDetailUrl\(\)/);
+assert.match(panel, /onclick="copyDetailUrl\(\)" title="Copy PKM URL"/);
+assert.doesNotMatch(panel, /ask\('copyPublicContentLink'/, "Content identity copying must not copy a browser gateway URL");
 assert.match(panel, /setExternalLinkHost/);
 assert.match(panel, /setContentGatewayPort/);
 assert.match(chatBrowser, /browserFaviconTag\("\/favicon\.ico"\)/, "Chatroom browser pages must use the routed extension icon");

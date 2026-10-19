@@ -20,6 +20,7 @@
 <meta name="pkm-katex-css" content="%%KATEX_CSS%%">
 <link rel="stylesheet" href="%%CODICON_CSS%%">
 <link rel="stylesheet" href="%%PANEL_CSS%%">
+<link rel="stylesheet" href="%%AGENT_HARNESS_CSS%%">
 </head>
 <body>
 <div id="topbar" hidden>
@@ -92,6 +93,7 @@
     <div class="workspace-context-group" data-workspace-group="automation">
       <span class="workspace-context-title">Automation</span>
       <div class="workspace-context-tabs" role="tablist" aria-label="Automation views">
+        <button class="tab" type="button" onclick="openActionLibrary(event)" title="Open the Action Library and durable Run workbench">Action Library</button>
         <button class="tab" role="tab" aria-selected="false" data-tab="agentSessions">Agent Sessions</button>
         <button class="tab" role="tab" aria-selected="false" data-tab="agentSnapshots">Agent Snapshot</button>
         <button class="tab" role="tab" aria-selected="false" data-tab="recipes">Recipe Library</button>

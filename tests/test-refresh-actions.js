@@ -55,17 +55,17 @@ const ast = ts.createSourceFile("extension.ts", extension, ts.ScriptTarget.Lates
 const watcherFunction = ast.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === "startFileWatcher");
 assert(watcherFunction);
 const { githubSyncIgnoredPath } = require("../dist/sync/github-sync.js");
+const { isPkmWatchDirectory } = require("../dist/runtime/bounded-file-watcher.js");
 const watchers = [], timers = new Set(), notifications = [];
 const signatureStarts = [], signatureScans = [];
 const noop = () => {};
 const watcherContext = vm.createContext({
   path, githubSyncIgnoredPath, AbortController, getStorePath: () => "/refresh-test-root", knowledgeTreeSignature: async () => { signatureScans.push(true); return ""; },
-  vscode: { RelativePattern: class { constructor(base, pattern) { this.base = base; this.pattern = pattern; } }, workspace: {
-    createFileSystemWatcher: () => {
-      const watcher = { dispose: noop, onDidCreate(callback) { this.create = callback; }, onDidChange(callback) { this.change = callback; }, onDidDelete(callback) { this.delete = callback; } };
+  githubSyncExcludedPaths: async () => new Set(), readGitHubSyncTargets: () => [],
+  createKnowledgeFileWatcher: (roots, accept, descend) => {
+      const watcher = { roots, accept, descend, dispose: noop, onDidCreate(callback) { this.create = callback; }, onDidChange(callback) { this.change = callback; }, onDidDelete(callback) { this.delete = callback; } };
       watchers.push(watcher); return watcher;
-    },
-  } },
+  },
   setTimeout: callback => { const timer = { callback, unref: noop }; timers.add(timer); return timer; },
   setImmediate: callback => signatureStarts.push(callback),
   clearTimeout: timer => timers.delete(timer), setInterval: callback => ({ callback, unref: noop }), clearInterval: noop,
@@ -74,17 +74,30 @@ const watcherContext = vm.createContext({
   _watcherSignatureController: undefined,
   _watcherSkillProjectionChanged: false, _knowledgeTreeSignature: "", _panelReady: true, _treeProvider: { refresh: noop },
   panel: { visible: true, webview: { postMessage: message => notifications.push(JSON.parse(JSON.stringify(message))) } },
+  nativeHarnessServers: new Map(),
   contentCheckTask: { idle: noop, queued: noop, running: noop }, agentSessionJsonCache: { invalidate: noop },
   log: { info: noop, warn: noop },
   invalidateSharedContentCatalog: noop, schedulePublishedShareRefresh: noop, scheduleRetrievalRefresh: noop,
   refreshKnowledgeInventory: noop, githubSyncScheduler: { notifyContentChanged: noop },
 });
 vm.runInContext(ts.transpileModule(watcherFunction.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, watcherContext);
+const changed = (watcher, relative) => watcher.change({ fsPath: path.join("/refresh-test-root", relative) });
+const flushTimers = async () => {
+  const pending = [...timers]; timers.clear(); pending.forEach(timer => timer.callback());
+  await new Promise(resolve => setImmediate(resolve));
+};
+async function checkWatcherRefresh() {
 watcherContext.startFileWatcher({ subscriptions: [] });
 assert.strictEqual(signatureScans.length, 0, "registering core watchers must not scan the knowledge library synchronously");
 assert.strictEqual(signatureStarts.length, 1, "the initial baseline starts after core registration yields");
-const changed = (watcher, relative) => watcher.change({ fsPath: path.join("/refresh-test-root", relative) });
-const flushTimers = () => { const pending = [...timers]; timers.clear(); pending.forEach(timer => timer.callback()); };
+const stateWatcher = watchers[2];
+const actionRun = ".pkm/state/actions/runs/action_run_" + "a".repeat(32);
+for (const relative of [".pkm/state/agent-sessions", actionRun, `${actionRun}/steps`, `${actionRun}/step-events`]) {
+  assert(stateWatcher.descend(path.join("/refresh-test-root", relative)), `state metadata must remain watched: ${relative}`);
+}
+for (const relative of [`${actionRun}/artifacts`, `${actionRun}/workspace`, `${actionRun}/steps/nested`]) {
+  assert(!stateWatcher.descend(path.join("/refresh-test-root", relative)), `execution payloads must not be scanned: ${relative}`);
+}
 for (const relative of ["packages/demo/node_modules/dependency/index.js", "scripts/__pycache__/review.pyc", "scripts/review.pyc"]) {
   changed(watchers[0], relative);
 }
@@ -92,23 +105,25 @@ assert.strictEqual(timers.size, 0, "dependency/cache writes must not queue full-
 changed(watchers[4], "recipes/review.json");
 changed(watchers[2], ".pkm/state/agent-sessions/review.json");
 changed(watchers[3], "project/review.md");
-flushTimers();
+await flushTimers();
 assert.strictEqual(notifications.length, 1);
 assert.deepStrictEqual(notifications[0].data.scopes, ["agentSessions", "projects", "recipes"]);
 assert.strictEqual(notifications[0].data.changedPaths.length, 3);
 changed(watchers[4], "recipes/next.json");
-flushTimers();
+await flushTimers();
 assert.deepStrictEqual(notifications.at(-1).data.scopes, ["recipes"]);
 changed(watchers[0], "notes/review.md");
 changed(watchers[0], "scripts/review.py");
-flushTimers();
+const scansBeforeBatch = signatureScans.length;
+await flushTimers();
 assert.deepStrictEqual(notifications.at(-1).data.changedPaths, ["notes/review.md", "scripts/review.py"]);
+assert.strictEqual(signatureScans.length, scansBeforeBatch + 1, "concurrent watcher events must share one signature scan");
 changed(watchers[0], "notes/review/_assets/diagram.png");
 changed(watchers[1], ".pkm/content-privacy.json");
-flushTimers();
+await flushTimers();
 assert.deepStrictEqual(notifications.at(-1).data.changedPaths, [".pkm/content-privacy.json", "notes/review/_assets/diagram.png"],
   "real attachments and privacy changes must still invalidate content");
-assert.strictEqual(signatureScans.length, 1, "concurrent watcher events must share one in-flight signature scan");
+}
 
 async function checkStagedSignatures() {
   const signatureFunction = ast.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === "knowledgeTreeSignature");
@@ -123,7 +138,7 @@ async function checkStagedSignatures() {
   const revisions = new Map();
   let blockedDirectory;
   const scanContext = vm.createContext({
-    path, githubSyncIgnoredPath, getStorePath: () => scanRoot,
+    path, githubSyncIgnoredPath, isPkmWatchDirectory, assertPkmWatchRootAllowed: async () => {}, getStorePath: () => scanRoot,
     fs: { promises: {
       readdir: async directory => {
         const relative = path.relative(scanRoot, directory);
@@ -131,10 +146,10 @@ async function checkStagedSignatures() {
         if (blockedDirectory) await blockedDirectory;
         return directories[relative] || [];
       },
-      stat: async filename => {
+      lstat: async filename => {
         const relative = path.relative(scanRoot, filename);
         stats.push(relative);
-        return { isDirectory: () => false, mtimeMs: revisions.get(relative) || 1, size: 10 };
+        return { isSymbolicLink: () => false, isDirectory: () => false, mtimeMs: revisions.get(relative) || 1, size: 10 };
       },
     }, readdirSync: () => { throw new Error("synchronous directory read"); }, statSync: () => { throw new Error("synchronous stat"); } },
     loadProfiler: { record: (event, fields) => phases.push({ event, fields }) },
@@ -176,7 +191,7 @@ async function checkStagedSignatures() {
   assert(oldController.signal.aborted, "switching roots or restarting watchers cancels the old scan");
   signatureStarts.pop()();
   currentSignature = "watcher-change";
-  changed(watchers.at(-5), "notes/during-scan.md"); flushTimers();
+  changed(watchers.at(-5), "notes/during-scan.md"); await flushTimers();
   assert.strictEqual(passes, 1, "a watcher event must not start a concurrent pass");
   assert.deepStrictEqual(notifications.at(-1).data.changedPaths, ["notes/during-scan.md"], "watcher refresh must not wait for the background baseline");
   blockedPass = undefined; releasePass();
@@ -280,4 +295,4 @@ assert.strictEqual(manualContext.state.search, 'keep filter', 'Refresh must not 
 manualContext.state.tab = 'environments';
 manualContext.doReload();
 assert.strictEqual(manualRequests.at(-1).payload.refresh, true, 'Environment refresh must force the probes rather than only return cached cards');
-checkStagedSignatures().then(checkEnvironmentRefreshErrors).then(() => console.log("refresh actions test: staged/cancellable signature scans, detail/draft, Server, MCP, disk-backed knowledge and truthful partial environment failures OK"), error => { console.error(error); process.exitCode = 1; });
+checkWatcherRefresh().then(checkStagedSignatures).then(checkEnvironmentRefreshErrors).then(() => console.log("refresh actions test: staged/cancellable signature scans, detail/draft, Server, MCP, disk-backed knowledge and truthful partial environment failures OK"), error => { console.error(error); process.exitCode = 1; });

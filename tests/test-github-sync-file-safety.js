@@ -839,7 +839,8 @@ async function scenario(name, action) {
       fs.writeFileSync(path.join(fixture.skills, "One.md"), skill("One", "outgoing receipt fixture"));
       const originalRename = fs.renameSync;
       fs.renameSync = (source, destination) => {
-        if (destination === path.join(fixture.checkoutRoot, fixture.target.id, "transactions", "latest.json")) {
+        if (destination === path.join(fixture.checkoutRoot, fixture.target.id, "transactions", "latest.json")
+          && JSON.parse(fs.readFileSync(source, "utf8")).state === "pushed") {
           throw new Error("injected receipt persistence failure");
         }
         return originalRename(source, destination);
@@ -856,7 +857,9 @@ async function scenario(name, action) {
       assert.equal(run(checkout, ["rev-parse", "HEAD"]), pushed, "accepted checkout must not be reset to the old Remote");
       assert.equal(fs.readFileSync(path.join(fixture.skills, "Two.md"), "utf8"), skill("Two", "two v1"), "local pull still awaits reconcile");
       const receipt = JSON.parse(fs.readFileSync(path.join(fixture.checkoutRoot, fixture.target.id, "transactions", "latest.json"), "utf8"));
-      assert.equal(receipt.pushedCommit, previous, "no new durable receipt is fabricated");
+      assert.equal(receipt.state, "prepared", "prepared outbox survives without fabricating a successful push receipt");
+      assert.equal(receipt.pushedCommit, "");
+      assert(receipt.outbox.length > 0);
       const recovered = await syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store);
       assert.equal(recovered.commit, pushed);
       assert.equal(fs.readFileSync(path.join(fixture.skills, "Two.md"), "utf8"), skill("Two", "upstream receipt fixture"));

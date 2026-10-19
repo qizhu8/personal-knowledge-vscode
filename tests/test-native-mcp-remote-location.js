@@ -6,7 +6,7 @@ const os = require("os");
 const path = require("path");
 
 const root = path.join(__dirname, "..");
-const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-native-mcp-location-"));
+const fixture = fs.mkdtempSync(path.join(__dirname, ".pkm-native-mcp-location-"));
 const compiled = path.join(fixture, "mcp-native-location.js");
 childProcess.execFileSync("npx", [
   "esbuild",
@@ -148,6 +148,9 @@ const rootContext = { globalState: { get: key => globalState.get(key), update: a
   await assert.rejects(account.writeAccountMcpBinding(rootA, "manual-user", false, accountDirectory), /registration owner/);
   const changed = await account.writeAccountMcpBinding(rootB, "native-provider", true, accountDirectory);
   assert.strictEqual(changed.accountId, binding.accountId, "explicit root changes must preserve account identity");
+  const bindingBackups = fs.readdirSync(accountDirectory).filter(name => name.startsWith("mcp-binding.json.pkm-backup-"));
+  assert.strictEqual(bindingBackups.length, 1, "explicit binding reconfiguration must preserve a rollback backup");
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(accountDirectory, bindingBackups[0]), "utf8")), binding);
   if (process.platform !== "win32") {
     assert.strictEqual(fs.statSync(accountDirectory).mode & 0o777, 0o700);
     assert.strictEqual(fs.statSync(path.join(accountDirectory, "mcp-binding.json")).mode & 0o777, 0o600);

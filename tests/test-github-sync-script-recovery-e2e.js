@@ -147,7 +147,8 @@ async function scenario(name, action) {
     check(value.deletions.filter(file => file.type === "scripts").length === 8, "eight approved Trash tombstones");
     check(value.deletions.filter(file => file.type === "notes").length === 7, "seven valid remote tombstones converge");
     check(new Set(value.files.filter(file => file.type === "scripts" && !file.member).map(file => file.itemId)).size === 114, "no duplicate primary identities");
-    check(result.resolutionReport.rules["move-edit"] > 0, "actual identity-aware merge rules executed");
+    check(review.partialResult.resolutionReport.rules["move-edit"] > 0,
+      "identity-aware moves published during partial progress, before deletion approval");
     for (let n = 1; n <= 7; n++) check(fs.readFileSync(path.join(machine.store, `scripts/New/空 格 [${n}]/item-${n}.script`), "utf8").startsWith(`edited-${n}`), "moved edits retained");
     machine.target.pendingDeletions = [];
     const repeated = await execute(f, machine);

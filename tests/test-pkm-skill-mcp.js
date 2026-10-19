@@ -27,6 +27,7 @@ try {
   const generation = {
     exports: {}, fs, path, require, process, __dirname: path.join(compiledDirectory, "mcp"),
     createHash: crypto.createHash,
+    ensureRecipeCompiler: require("../dist/mcp/recipe-compiler").ensureRecipeCompiler,
     getStorePath: () => path.join(root, "generation-store"),
     managedMcpServerDirectory: () => generatedDirectory,
     mcpStatus: () => ({ newerThanExpected: false }),
@@ -101,8 +102,8 @@ Build deterministic training datasets and validate every exported split.`);
   }
   const retrievalState = path.join(root, "retrieval-state");
   const environmentsRegistry = path.join(root, "environments", "registry.json");
-  const render = new Function("UNIFIED_MCP_VERSION", "KNOWLEDGE_MCP_VERSION", "CHAT_MCP_VERSION", "RECIPE_MCP_VERSION", "AGENT_SESSION_MCP_VERSION", "storeFwd", "subscriptionCacheFwd", "retrievalStateFwd", "environmentsRegistryFwd", "snapshotRecipePin", `return \`${match[1]}\`;`);
-  const server = render("test", "test", "test", "test", "test", store.replaceAll('\\', '/'), subscriptionCache.replaceAll('\\', '/'), retrievalState.replaceAll('\\', '/'), environmentsRegistry.replaceAll('\\', '/'), builtInRecipePin("create-agent-snapshot"));
+  const render = new Function("UNIFIED_MCP_VERSION", "KNOWLEDGE_MCP_VERSION", "CHAT_MCP_VERSION", "RECIPE_MCP_VERSION", "AGENT_SESSION_MCP_VERSION", "storeFwd", "subscriptionCacheFwd", "retrievalStateFwd", "environmentsRegistryFwd", "snapshotRecipePin", "context", `return \`${match[1]}\`;`);
+  const server = render("test", "test", "test", "test", "test", store.replaceAll('\\', '/'), subscriptionCache.replaceAll('\\', '/'), retrievalState.replaceAll('\\', '/'), environmentsRegistry.replaceAll('\\', '/'), builtInRecipePin("create-agent-snapshot"), { extensionPath: path.resolve(__dirname, "..") });
   const moduleDir = path.join(root, "module");
   fs.mkdirSync(moduleDir, { recursive: true });
   fs.writeFileSync(path.join(moduleDir, "server.py"), server);
@@ -112,6 +113,9 @@ Build deterministic training datasets and validate every exported split.`);
   fs.copyFileSync(path.join(__dirname, "..", "resources", "mcp_call_guard.py"), path.join(moduleDir, "mcp_call_guard.py"));
   fs.copyFileSync(path.join(__dirname, "..", "resources", "diagnostic_log.py"), path.join(moduleDir, "diagnostic_log.py"));
   fs.copyFileSync(path.join(__dirname, "..", "resources", "api_chat_control.py"), path.join(moduleDir, "api_chat_control.py"));
+  for (const resource of ["knowledge_recovery.py", "knowledge_mutations.py", "knowledge_mutations.js", "knowledge_snapshots.py"]) {
+    fs.copyFileSync(path.join(__dirname, "..", "resources", resource), path.join(moduleDir, resource));
+  }
   for (const resource of ["action_runtime.py", "action_modules.py", "action_run_store.py", "action_recovery.py", "action_components.py"]) {
     fs.copyFileSync(path.join(__dirname, "..", "resources", resource), path.join(moduleDir, resource));
   }

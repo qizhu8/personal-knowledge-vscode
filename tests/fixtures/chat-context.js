@@ -11,7 +11,7 @@ function message(role, content, extra = {}) {
 }
 
 function conversation(extra = {}) {
-  const now = "2026-01-01T00:00:00.000Z";
+  const now = new Date().toISOString();
   return {
     version: 1, id: randomUUID(), workspaceNamespace: namespace,
     title: "Synthetic context fixture", createdAt: now, updatedAt: now,

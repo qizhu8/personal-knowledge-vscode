@@ -10,10 +10,12 @@ import { withCrossProcessLockSync } from "../runtime/cross-process-lock";
 import { chatPkmUrl, parsePkmLocator } from "../knowledge/knowledge-locator";
 import { ChatExecutionContext, validExecutionContext } from "./execution-context";
 import { accountMcpIdentity } from "../mcp/mcp-account-binding";
-import { WorkerTreeStore, ChatWorkerState, WorkerPhase, WorkerActivity, validWorkerActivity } from "./worker-tree";
+import { WorkerTreeStore, ChatWorkerState, WorkerPhase, WorkerActivity, validWorkerActivity, workerIsDescendant } from "./worker-tree";
+import { memoryPolicy, validMemoryPolicy, type ChatMemoryGrant } from "./chat-memory-policy";
 import { ChatHistoryStorage, StoredChat } from "./chat-history-storage";
 import { ExecutionProjection, projectExecution } from "../runtime/pkm-projection";
 import { recordBaselineEvent, BaselineEventKind } from "../runtime/pkm-baseline";
+import { recordedActionReferences } from "../runtime/native-harness-actions";
 
 export interface ChatContext { id: string; label: string; content: string; }
 export interface QueuedChatInput { id: string; text: string; mode: "steer" | "task"; attemptId?: string; executionContext?: ChatExecutionContext; }
@@ -41,6 +43,7 @@ export interface ApiChatProgress {
   executionContext?: ChatExecutionContext;
   attempt?: number;
   retryOf?: string;
+  retryReason?: string;
   ownerPid?: number;
   ownerHost?: string;
   startedAt: number;
@@ -52,12 +55,47 @@ export interface ApiChatProgress {
   completedDroppedSteps?: number;
   steps: Array<{ label: string; at: number; status?: "running" | "waiting" | "complete" | "cancelled" | "failed" }>;
 }
+export interface ChatPlanningPossibility {
+  id: string;
+  parentId?: string;
+  label: string;
+  summary?: string;
+  status: "candidate" | "selected" | "rejected" | "blocked" | "validated";
+  recipeStageId?: string;
+  reason?: string;
+  evidenceRefs?: string[];
+}
+export interface ChatPlanningReceipt {
+  schema: "pkm.chat.planning/v1";
+  at: number;
+  recipeRunId?: string;
+  recipeStageId?: string;
+  possibilities: ChatPlanningPossibility[];
+}
+/** Memory Engine receipts for one reply: context preparation and post-reply organization. */
+export interface ChatMemoryRecord {
+  schema: "pkm.chat.memory/v1";
+  turn: string;
+  model?: string;
+  durationMs?: number;
+  blocks?: Array<{ kind: string; piece: string; characters: number }>;
+  prepare?: Record<string, unknown>;
+  commit?: Record<string, unknown>;
+  error?: string;
+}
 export interface ChatMessage {
   id: string;
+  recordedAt?: string;
   executionContext?: ChatExecutionContext;
   taskId?: string;
   retrieval?: import("./chat-retrieval").ChatRetrievalReceipt;
   retrievalActivity?: import("./chat-retrieval").ChatRetrievalActivity;
+  memory?: ChatMemoryRecord;
+  planning?: ChatPlanningReceipt;
+  harnessReports?: import("./chat-harness-records").HarnessReport[];
+  budgetReceipts?: import("./chat-harness-records").HarnessBudgetReceipt[];
+  publicOutputSegments?: Array<{ round:number; start:number; end:number; hasToolCalls?:boolean }>;
+  inputId?: string;
   role: "user" | "assistant";
   content: string;
   images?: import("./api-chat-client").ChatImage[];
@@ -83,7 +121,8 @@ export interface ChatMessage {
   maxOutputTokens?: number;
   outputBudgetWarning?: string;
   changes?: import("./api-chat-tools").ApiChatEditChange[];
-  toolCalls?: Array<{ id: string; name: string; arguments: string; status: "running" | "complete" | "failed"; result?: string }>;
+  toolCalls?: Array<{ id: string; name: string; arguments: string; status: "running" | "complete" | "failed"; result?: string;
+    harnessBinding?: import("./chat-harness-records").HarnessBinding; startedAt?: number; finishedAt?: number }>;
 }
 export interface ApiConversation {
   version: 1;
@@ -107,6 +146,7 @@ export interface ApiConversation {
   context: ChatContext[];
   images?: import("./api-chat-client").ChatImage[];
   includeHistory: boolean;
+  memoryPolicy?: import("./chat-memory-policy").ChatMemoryPolicy;
   modelProvider?: "vscode" | "openai-compatible" | "azure-openai";
   vscodeModelId?: string;
   vscodeModelLabel?: string;
@@ -180,6 +220,112 @@ export function apiChatSessionDiagnostics(record: Record<string, unknown>, sessi
   const chat = stored ? new ChatHistoryStorage(stateDirectory || "").unpack(stored) : undefined;
   if (!/^agent_session_[a-f0-9]{32}$/.test(sessionId) || record.schema !== "pkm.agent.session/v1" || record.sessionId !== sessionId || agentSessionOrigin(record).origin !== "pkm-native" || record.hostKind !== "pkm" || chat?.version !== 1 || chat.sessionId !== sessionId || !Array.isArray(chat.messages)) throw new Error("A matching PKM-native Session record is required.");
   return { ...apiChatDiagnostics(chat), recordStatus: record.status, updatedAt: record.updatedAt };
+}
+
+export function apiChatHarnessSnapshot(chat: ApiConversation, fullResults = false) {
+  const phase = (run?: ApiChatProgress) => {
+    const current = run?.steps[run.steps.length - 1];
+    const label = current?.label || "";
+    const kind = !run || run.status !== "running" ? run?.status || "idle"
+      : current?.status === "waiting" ? "waiting"
+      : /retriev|context/i.test(label) ? "retrieval"
+      : /tool/i.test(label) ? "tool"
+      : /model|output|response|generat|connecting/i.test(label) ? "model"
+      : "planning";
+    return { kind, label: label || (run?.status === "running" ? "Preparing request" : run?.status || "Idle"), status: current?.status || run?.status || "idle" };
+  };
+  let input: ChatMessage | undefined;
+  const attempts = chat.messages.flatMap(message => {
+    if (message.role === "user") input = message;
+    if (message.role !== "assistant") return [];
+    const retrievalSteps = [
+      ...(message.retrieval ? [{ kind: "selection", receipt: message.retrieval }] : []),
+      ...(message.retrievalActivity?.attempts || []).map(attempt => ({ kind: `${attempt.kind}-recall`, durationMs: attempt.durationMs, receipt: attempt.receipt })),
+      ...(message.retrievalActivity?.rounds || []).map(round => ({ kind: "sent-round", inputTokens: round.inputTokens, inputBudget: round.inputBudget, receipt: round.receipt })),
+    ];
+    return [{
+      messageId: message.id, status: message.status, model: message.model || "",
+      taskId: message.taskId, inputId: message.inputId || input?.id,
+      attemptId: message.progress?.attemptId || message.id,
+      attempt: message.progress?.attempt, retryOf: message.progress?.retryOf, retryReason:message.progress?.retryReason,
+      harnessReports:message.harnessReports,
+      budgetReceipts:message.budgetReceipts,
+      response: message.content,
+      publicOutputs:message.publicOutputSegments?.map(segment => ({
+        ...segment, text:message.content.slice(segment.start, segment.end),
+      })),
+      associatedProblem: input?.content || "",
+      problemSource: input?.workerEventIds?.length ? "worker-event" : input?.inputKind || "user-input",
+      planning: message.planning ? {
+        schema: message.planning.schema,
+        at: message.planning.at,
+        recipeRunId: message.planning.recipeRunId,
+        recipeStageId: message.planning.recipeStageId,
+        possibilities: message.planning.possibilities.map(possibility => ({
+          id: possibility.id,
+          parentId: possibility.parentId,
+          label: possibility.label,
+          summary: possibility.summary,
+          status: possibility.status,
+          recipeStageId: possibility.recipeStageId,
+          reason: possibility.reason,
+          evidenceRefs: possibility.evidenceRefs,
+        })),
+      } : undefined,
+      progress: message.progress ? {
+        status: message.progress.status, startedAt: message.progress.startedAt, finishedAt: message.progress.finishedAt,
+        phase: phase(message.progress),
+        droppedSteps: message.progress.droppedSteps || 0,
+        transitions: message.progress.steps.map(step => ({ label: step.label, at: step.at, status: step.status || "recorded" })),
+      } : undefined,
+      retrieval: retrievalSteps.map(step => ({
+        ...step,
+        receipt: {
+          schema: step.receipt.schema, query: step.receipt.query, selectedCount: step.receipt.selectedCount,
+          warning: step.receipt.warning,
+          candidates: step.receipt.candidates.map(candidate => ({ ...candidate })),
+        },
+      })),
+      toolCalls: (message.toolCalls || []).map(call => ({
+        id: call.id, name: call.name, status: call.status,
+        harnessBinding:call.harnessBinding, startedAt:call.startedAt, finishedAt:call.finishedAt,
+        arguments: call.arguments,
+        resultPreview: fullResults ? call.result || "" : (call.result || "").slice(0, 2_000),
+        resultCharacters: (call.result || "").length,
+        resultTruncated: !fullResults && (call.result || "").length > 2_000,
+        actionRunIds: recordedActionReferences(call.result),
+        associatedProblem: (input?.content || "").slice(0, 2_000),
+        purposeEvidence: "associated-input",
+      })),
+      validation: {
+        responseStatus: message.status,
+        error: (message.error || "").slice(0, 2_000),
+        outputBudgetWarning: (message.outputBudgetWarning || "").slice(0, 1_000),
+        reportedUsage: message.usage,
+      },
+    }];
+  });
+  const latestUser = [...chat.messages].reverse().find(message => message.role === "user" && !message.workerEventIds?.length)
+    || [...chat.messages].reverse().find(message => message.role === "user");
+  const current = phase(chat.progress);
+  return {
+    schema: "pkm.agent.harness/v1" as const,
+    chatId: chat.id, sessionId: chat.sessionId, state: apiChatStatus(chat),
+    currentPhase: current,
+    currentProblem: latestUser?.content || "",
+    currentProblemSource: latestUser?.workerEventIds?.length ? "worker-event" : latestUser?.inputKind || "user-input",
+    waiting: current.kind === "waiting" ? { kind: /answer|approval|input/i.test(current.label) ? "user" : "dependency", detail: current.label } : undefined,
+    queuedInputs: (chat.queuedInputs || []).map(input => ({ id: input.id, mode: input.mode, text: input.text })),
+    attempts,
+  };
+}
+
+export function apiChatSessionHarnessSnapshot(record: Record<string, unknown>, sessionId: string, stateDirectory?: string, fullResults = false) {
+  const stored = record.nativeChat as StoredChat | undefined;
+  if (stored?.messageHistory && !stateDirectory) throw new Error("Segmented Session harness snapshots require the owning state directory.");
+  const chat = stored ? new ChatHistoryStorage(stateDirectory || "").unpack(stored) : undefined;
+  if (!/^agent_session_[a-f0-9]{32}$/.test(sessionId) || record.schema !== "pkm.agent.session/v1" || record.sessionId !== sessionId || agentSessionOrigin(record).origin !== "pkm-native" || record.hostKind !== "pkm" || chat?.version !== 1 || chat.sessionId !== sessionId || !Array.isArray(chat.messages)) throw new Error("A matching PKM-native Session record is required.");
+  return apiChatHarnessSnapshot(chat, fullResults);
 }
 
 export function apiChatStatus(chat: ApiConversation, running = chat.progress?.status === "running", awaitingInput = chat.progress?.steps[chat.progress.steps.length - 1]?.status === "waiting"): ApiChatStatus {
@@ -281,6 +427,70 @@ export class ApiChatStore {
     };
     this.save(chat);
     return chat;
+  }
+
+  memorySourceIds(chat: ApiConversation): string[] {
+    if (!chat.includeHistory) return [];
+    const policy = memoryPolicy(chat);
+    const sources = new Set(policy.grants.flatMap(grant => grant.chatIds));
+    if (policy.includeWorkers) for (const slot of this.memoryWorkerSlots(chat)) sources.add(slot.chatId);
+    sources.delete(chat.id);
+    for (const id of policy.excludedChatIds) sources.delete(id);
+    return [...sources];
+  }
+
+  private memoryWorkerSlots(chat: ApiConversation) {
+    const ids = new Set([chat.workerActivity?.treeId, chat.workerState?.treeId].filter((id): id is string => !!id));
+    return [...ids].flatMap(treeId => {
+      const slots = this.workerTrees.members(treeId);
+      if (this.workerTrees.rootChatId(treeId) !== chat.id && !slots.some(slot => slot.chatId === chat.id)) throw new Error("The Chat does not own its recorded worker lineage.");
+      const spawned = slots.filter(slot => slot.temporary !== false);
+      return spawned.filter(slot => workerIsDescendant(spawned, chat.id, slot.chatId, true)).map(slot => ({ ...slot, treeId }));
+    });
+  }
+
+  loadMemorySource(owner: ApiConversation, id: string): ApiConversation | undefined {
+    if (this.library.read().placements[id]?.trashedAt) return undefined;
+    let source:ApiConversation | undefined;
+    try { source = this.load(id, false); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    const policy = memoryPolicy(owner);
+    const explicit = policy.grants.some(grant => grant.chatIds.includes(id));
+    const slot = policy.includeWorkers ? this.memoryWorkerSlots(owner).find(slot => slot.chatId === id) : undefined;
+    if (!source && slot && this.hasWorkerResult(slot.receiptId)) source = this.workerResult(slot.receiptId).chat;
+    if (source && id !== owner.id && !explicit) {
+      const activity = source.workerActivity, state = source.workerState;
+      if (!slot || source.id !== id || !(activity?.temporary && activity.receiptId === slot.receiptId
+        && activity.treeId === slot.treeId && activity.managerChatId === slot.parentChatId)
+        && !(state?.receiptId === slot.receiptId && state.treeId === slot.treeId && state.parentChatId === slot.parentChatId)) {
+        throw new Error("The memory source does not match its spawned-worker receipt and lineage.");
+      }
+    }
+    return source;
+  }
+
+  memoryScopeChoices(): Array<ChatMemoryGrant & { label:string }> {
+    const choices = new Map<string, ChatMemoryGrant & { label:string }>();
+    const add = (kind:ChatMemoryGrant["kind"], id:string, label:string, chatId:string) => {
+      const key = `${kind}:${id}`;
+      const entry = choices.get(key) || { kind, id, label, chatIds:[] };
+      entry.chatIds.push(chatId); choices.set(key, entry);
+    };
+    for (const item of this.list()) {
+      add("chat", item.id, item.title, item.id);
+      add("workspace", item.workspaceNamespace, `Workspace ${item.workspaceNamespace}`, item.id);
+      const groupId = agentSessionGroup({ sessionId:"", hostKind:"pkm", hostSessionId:item.id }).groupId;
+      add("group", groupId, `Runtime Group: ${item.title}`, item.id);
+      const chat = this.load(item.id, false);
+      if (!chat.sessionId) continue;
+      const file = path.join(this.stateDirectory, "agent-sessions", `${chat.sessionId}.json`);
+      if (!fs.existsSync(file)) continue;
+      const session = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (session.schema !== "pkm.agent.session/v1" || session.sessionId !== chat.sessionId
+        || session.hostKind !== "pkm" || session.hostSessionId !== chat.id) throw new Error("Memory scope Session ownership is invalid.");
+      if (typeof session.projectId === "string" && session.projectId) add("project", session.projectId, `Project ${session.projectId}`, item.id);
+    }
+    return [...choices.values()];
   }
 
   resolveChat(identity: string): ApiConversation {
@@ -435,11 +645,14 @@ export class ApiChatStore {
       && Array.isArray(run.steps) && run.steps.length <= 512 && run.steps.every(step => step && typeof step.label === "string" && Number.isFinite(step.at) && (step.status === undefined || ["running", "waiting", "complete", "cancelled", "failed"].includes(step.status)));
     const changesValid = (items: NonNullable<ChatMessage["changes"]>) => Array.isArray(items) && items.length <= 4096 && items.every(item => item && typeof item.path === "string" && item.path.length <= 4096 && Number.isSafeInteger(item.workspace) && item.workspace >= 0 && typeof item.appliedAt === "string" && Number.isFinite(Date.parse(item.appliedAt)) && /^[a-f0-9]{64}$/.test(item.beforeHash) && /^[a-f0-9]{64}$/.test(item.afterHash) && item.saved === false && ["exact", "unknown"].includes(item.attribution) && (item.attribution !== "exact" || Number.isSafeInteger(item.added) && item.added! >= 0 && Number.isSafeInteger(item.removed) && item.removed! >= 0));
     if (!chat || chat.version !== 1 || chat.id !== id || chat.sessionId !== undefined && !/^agent_session_[a-f0-9]{32}$/.test(chat.sessionId) || typeof chat.title !== "string" || typeof chat.updatedAt !== "string" || !Number.isFinite(Date.parse(chat.updatedAt)) || typeof chat.createdAt !== "string" || !Number.isFinite(Date.parse(chat.createdAt)) || typeof chat.includeHistory !== "boolean" || !Array.isArray(chat.messages) || !contextsValid(chat.context)
+      || chat.memoryPolicy !== undefined && !validMemoryPolicy(chat.memoryPolicy)
       || chat.messages.some(message => !message || typeof message.id !== "string" || typeof message.content !== "string" || !["user", "assistant"].includes(message.role) || !["complete", "streaming", "cancelled", "failed", "interrupted"].includes(message.status)
+        || message.recordedAt !== undefined && (typeof message.recordedAt !== "string" || !Number.isFinite(Date.parse(message.recordedAt)))
         || message.executionContext !== undefined && !validExecutionContext(message.executionContext)
         || message.taskId !== undefined && (typeof message.taskId !== "string" || message.taskId.length > 128)
         || message.retrieval !== undefined && !validChatRetrievalReceipt(message.retrieval, chat.id)
         || message.retrievalActivity !== undefined && !validChatRetrievalActivity(message.retrievalActivity, chat.id)
+        || message.memory !== undefined && (typeof message.memory !== "object" || message.memory === null || message.memory.schema !== "pkm.chat.memory/v1" || typeof message.memory.turn !== "string")
         || message.progress !== undefined && !progressValid(message.progress)
         || message.changes !== undefined && !changesValid(message.changes)
         || message.fromSessionId !== undefined && (typeof message.fromSessionId !== "string" || !/^agent_session_[a-f0-9]{32}$/.test(message.fromSessionId))

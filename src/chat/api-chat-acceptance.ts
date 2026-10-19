@@ -5,6 +5,86 @@ import { createHash } from "crypto";
 import { ApiConversation } from "./api-chat-store";
 import { discoverVscodeModels, vscodeModelProfile } from "./api-chat-vscode";
 import { vscodeToolCatalog } from "./api-chat-mcp";
+import { createChatE2eFixture } from "./chat-e2e-fixture";
+import type { ChatKnowledgeRetriever } from "./chat-retrieval";
+
+export async function runFixtureChatAcceptance(create: () => ApiConversation,
+  send: (chat:ApiConversation, prompt:string, retrieval:ChatKnowledgeRetriever) => Promise<void>,
+  save: (chat:ApiConversation) => void): Promise<{ reportPath:string; status:string; chatId:string } | undefined> {
+  const workspace = vscode.workspace.workspaceFolders?.[0];
+  if (!workspace || vscode.workspace.isTrusted === false || !["file", "vscode-remote"].includes(workspace.uri.scheme)) throw new Error("Fixture E2E requires a trusted filesystem workspace.");
+  const consent = await vscode.window.showWarningMessage("Run real Copilot fixture E2E?", { modal:true,
+    detail:"Uses account credits for two synthetic fixture probes. Does not read private Notes, Skills, Research, subscriptions or other Chats. Creates a retained coding fixture; only read/edit/save/process tools are exposed for that probe. Native permissions remain in force. No automatic retries, Cosmos transfer or AML jobs. Credits may not be reported by the public API." }, "Run fixture E2E");
+  if (consent !== "Run fixture E2E") return;
+  const models = (await discoverVscodeModels()).filter(model => model.vendor === "copilot");
+  if (!models.length) throw new Error("No callable Copilot model is available in this Host. Sign in or enable its model provider; no fallback was used.");
+  const choice = await vscode.window.showQuickPick(models.map(model => ({ label:model.name, description:model.vendor, model })),
+    { title:"Copilot fixture E2E model (no fallback)", ignoreFocusOut:true });
+  if (!choice) return;
+  const profile = vscodeModelProfile(choice.model);
+  const directory = fs.mkdtempSync(path.join(workspace.uri.fsPath, "chat-e2e-")), relative = path.basename(directory);
+  const reportPath = path.join(directory, "acceptance.json");
+  const fixture = createChatE2eFixture(), chat = create();
+  chat.title = `Synthetic E2E ${new Date().toISOString()}`; chat.customTitle = true;
+  chat.modelProvider = "vscode"; chat.vscodeModelId = profile.id; chat.vscodeModelLabel = profile.label;
+  chat.contextWindow = Math.min(profile.contextWindow, 64_000);
+  chat.maxOutputTokens = Math.min(profile.maxOutputTokens, 4096, Math.floor(chat.contextWindow / 4));
+  chat.permissionMode = "ask"; chat.permissionGrants = [];
+  chat.includeHistory = false; chat.context = []; chat.images = [];
+  chat.agentContext = { memory:[], pkmSkills:[], externalSkills:[] };
+  chat.builtinTools = []; chat.vscodeTools = []; chat.mcpServers = [];
+  chat.toolSelection = undefined; chat.memoryPolicy = undefined;
+  const report = { schema:"pkm.chat.fixture-e2e/v1", chatId:chat.id, model:profile.id,
+    status:"running", credits:null, creditsStatus:"not-reported-by-public-api",
+    privateKnowledge:false, steps:[] as Array<Record<string, unknown>> };
+  const write = () => {
+    const temporary = reportPath + ".tmp";
+    fs.writeFileSync(temporary, JSON.stringify(report, null, 2), { mode:0o600 }); fs.renameSync(temporary, reportPath);
+  };
+  const probe = async (name:string, prompt:string, check:(reply:import("./api-chat-store").ChatMessage) => void) => {
+    try {
+      save(chat); await send(chat, prompt, fixture.retrieve);
+      const reply = chat.messages[chat.messages.length - 1];
+      if (!reply || reply.role !== "assistant" || reply.status !== "complete") throw new Error(reply?.error || "Model probe did not complete.");
+      check(reply);
+      report.steps.push({ name, verdict:"succeeded", usage:reply.usage || null,
+        retrieval:reply.retrieval, budgets:reply.budgetReceipts, tools:reply.toolCalls?.map(tool => ({ name:tool.name, status:tool.status })) || [] });
+    } catch (error) {
+      report.steps.push({ name, verdict:"failed", error:error instanceof Error ? error.message : String(error) });
+    }
+    write();
+  };
+  try {
+    save(chat); write();
+    await probe("tail-evidence", "Use the automatically supplied synthetic fixture-beta evidence. Return exactly one JSON object with keys latencyMs, concurrency, hardware, approval. hardware must be CPU-only. Preserve the original units and negative approval; approval must be NOT_APPROVED. Do not use tools.", reply => {
+      const result = JSON.parse(reply.content.replace(/^```(?:json)?\s*|\s*```$/g, "").trim());
+      if (result.latencyMs !== 125 || result.concurrency !== 32 || result.hardware !== "CPU-only" || result.approval !== "NOT_APPROVED") throw new Error("Synthetic tail evidence or shared conditions were not preserved.");
+      if (reply.retrieval?.phase !== "sent" || !reply.retrieval.candidates.some(candidate => candidate.selected && candidate.range && candidate.range.start > 160_000)) throw new Error("No confirmed-sent original tail passage receipt.");
+      if (!reply.budgetReceipts?.some(receipt => receipt.status === "sent")) throw new Error("No confirmed-sent budget receipt.");
+    });
+    const source = "exports.add = (left, right) => left - right;\n";
+    const test = "const assert = require('node:assert/strict');\nassert.equal(require('./module.cjs').add(2,3),5);\nconsole.log('PKM_E2E_TEST_OK');\n";
+    fs.writeFileSync(path.join(directory, "module.cjs"), source, { mode:0o600 });
+    fs.writeFileSync(path.join(directory, "test.cjs"), test, { mode:0o600 });
+    const codingTools = ["read_file", "replace_text", "save_file", "run_process"];
+    chat.builtinTools = [...codingTools];
+    await probe("coding", `Read ${relative}/module.cjs and ${relative}/test.cjs. Fix only the subtraction bug with replace_text, then save_file with its returned afterHash. Run program ${JSON.stringify(process.execPath)} with arguments ["${relative}/test.cjs"], cwd ".". Do not change the test or run any other program. Claim success only with exitCode 0 and PKM_E2E_TEST_OK stdout.`, reply => {
+      for (const name of codingTools) if (!reply.toolCalls?.some(tool => tool.name === name && tool.status === "complete")) throw new Error(`Missing successful ${name}.`);
+      const call = reply.toolCalls!.find(tool => tool.name === "run_process" && tool.status === "complete")!;
+      const input = JSON.parse(call.arguments), output = JSON.parse(call.result!);
+      if (input.program !== process.execPath || JSON.stringify(input.arguments) !== JSON.stringify([`${relative}/test.cjs`])
+        || input.cwd && input.cwd !== "." || output.exitCode !== 0 || !output.stdout?.includes("PKM_E2E_TEST_OK")) throw new Error("Exact fixture process did not pass.");
+      if (fs.readFileSync(path.join(directory, "test.cjs"), "utf8") !== test
+        || fs.readFileSync(path.join(directory, "module.cjs"), "utf8") === source) throw new Error("Fixture test changed or module was not saved.");
+    });
+    report.status = report.steps.every(step => step.verdict === "succeeded") ? "succeeded" : "failed";
+  } finally {
+    if (report.status === "running") report.status = "failed";
+    write();
+    void vscode.window.showInformationMessage(`Fixture E2E ${report.status}. Evidence: ${reportPath}`);
+  }
+  return { reportPath, status:report.status, chatId:chat.id };
+}
 
 export async function runApiChatAcceptance(create: () => ApiConversation,
   send: (chat: ApiConversation, prompt: string) => Promise<void>,
