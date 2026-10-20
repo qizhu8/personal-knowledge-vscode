@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { imageSize } from "image-size";
 import { createHash } from "crypto";
+import { ChatTokenUsage, ThinkingBudget, checkReportedOutput, reportedReasoningTokens } from "./api-chat-models";
 
 export interface ChatImage { label: string; mimeType: "image/png" | "image/jpeg"; dataBase64: string; }
 
@@ -59,13 +60,16 @@ export interface ApiChatRequest {
   apiVersion?: string;
   messages: ApiChatMessage[];
   signal: AbortSignal;
+  /** Maximum model inactivity, not total task or stream duration. */
   timeoutMs?: number;
   maxOutputTokens?: number;
+  /** Hidden-reasoning allowance on top of maxOutputTokens; omitted means reasoning counts against maxOutputTokens. */
+  thinkingBudget?: ThinkingBudget;
   contextWindow?: number;
   onImage?: (image: ChatImage) => void;
   outputTokenParameter?: "max_tokens" | "max_completion_tokens";
   includeUsage?: boolean;
-  onUsage?: (usage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number }) => void;
+  onUsage?: (usage: ChatTokenUsage) => void;
   onUsageMetadata?: (valid: boolean) => void;
   onOutputBudgetWarning?: (warning: string) => void;
   onStage?: (stage: "connecting" | "waiting") => void;
@@ -182,9 +186,13 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
   request.signal.addEventListener("abort", cancel, { once: true });
   if (request.signal.aborted) cancel();
   let timedOut = false;
-  let remainingMs = request.timeoutMs ?? 120_000;
-  let deadlineAt = Date.now() + remainingMs;
-  let timer = setTimeout(() => { timedOut = true; controller.abort(); }, remainingMs);
+  const idleMs = request.timeoutMs ?? 1_800_000;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const activity = () => {
+    if (controller.signal.aborted) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => { timedOut = true; controller.abort(); }, idleMs);
+  };
   const baseURL = request.endpoint.replace(/\/+$/, "");
   const azure = request.provider === "azure-openai";
   const client = new OpenAI({
@@ -193,22 +201,27 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
     defaultHeaders: azure ? { "api-key": request.apiKey } : undefined,
     defaultQuery: azure ? { "api-version": request.apiVersion || "2024-06-01" } : undefined,
     maxRetries: 0,
-    fetch: request.fetch,
+    timeout: idleMs,
+    fetch: async (input, init) => {
+      const response = await (request.fetch || fetch)(input, init);
+      activity();
+      if (!response.body) return response;
+      const body = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, stream) {
+          if (chunk.byteLength) activity();
+          stream.enqueue(chunk);
+        },
+      }));
+      return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+    },
   });
   try {
     if (controller.signal.aborted) throw new Error("Cancelled");
     const messages = [...request.messages];
     const callIds = new Set(messages.flatMap(message => message.tool_calls?.map(call => call.id) || []));
     const checkLoop = async (round: number) => {
-      if (request.loopReviewAfterMs !== undefined) {
-        clearTimeout(timer);
-        await loop.beforeRound(round, controller.signal);
-        return;
-      }
-      remainingMs = Math.max(1, deadlineAt - Date.now());
       clearTimeout(timer);
-      try { await loop.beforeRound(round, controller.signal); }
-      finally { deadlineAt = Date.now() + remainingMs; timer = setTimeout(() => { timedOut = true; controller.abort(); }, remainingMs); }
+      await loop.beforeRound(round, controller.signal);
     };
     for (let round = 0; ; round++) {
     await checkLoop(round);
@@ -218,7 +231,7 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
     if (outputTokens !== undefined && (!Number.isSafeInteger(outputTokens) || outputTokens < 1)) throw new Error("Choose a positive per-inference output token budget.");
     request.beforeRound?.(messages, outputTokens || 0);
     request.onStage?.("connecting");
-    if (request.loopReviewAfterMs !== undefined) timer = setTimeout(() => { timedOut = true; controller.abort(); }, request.timeoutMs ?? 120_000);
+    activity();
     const payload = {
       model: request.model,
       messages: messages.map(message => {
@@ -227,24 +240,26 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
         return { role: message.role, content: message.content };
       }),
       stream: true as const,
-      ...(outputTokens ? { [request.outputTokenParameter || "max_completion_tokens"]: outputTokens } : {}),
+      ...(outputTokens && request.thinkingBudget !== "unlimited" ? { [request.outputTokenParameter || "max_completion_tokens"]: outputTokens + (request.thinkingBudget || 0) } : {}),
       ...(request.includeUsage ? { stream_options: { include_usage: true } } : {}),
       ...(request.tools?.length && !loop.summarizing ? { tools: request.tools.map(tool => ({ type: "function" as const, function: { name: tool.name, description: tool.description, parameters: tool.parameters } })) } : {}),
     };
     const transport = chatTransportReceipt("http", payload.messages, payload.tools || []);
     request.onTransportPrepared?.(transport);
     const stream = await client.chat.completions.create(payload, { signal: controller.signal });
+    activity();
     request.onTransportSent?.(transport);
     request.onStage?.("waiting");
     let finishReason = "";
     let responseText = "";
-    let measuredOutput: number | undefined;
+    let measuredUsage: ChatTokenUsage | undefined;
     const calls = new Map<number, { id: string; type: "function"; function: { name: string; arguments: string } }>();
     for await (const chunk of stream) {
+      activity();
       if (chunk.usage) {
         if (![chunk.usage.prompt_tokens, chunk.usage.completion_tokens].every(value => Number.isSafeInteger(value) && value >= 0)) throw new Error("The provider returned invalid token usage; no pending tool was executed.");
-        measuredOutput = chunk.usage.completion_tokens;
-        request.onUsage?.({ inputTokens: chunk.usage.prompt_tokens, outputTokens: chunk.usage.completion_tokens, cachedInputTokens: chunk.usage.prompt_tokens_details?.cached_tokens });
+        measuredUsage = { inputTokens: chunk.usage.prompt_tokens, outputTokens: chunk.usage.completion_tokens, cachedInputTokens: chunk.usage.prompt_tokens_details?.cached_tokens, ...reportedReasoningTokens(chunk.usage) };
+        request.onUsage?.(measuredUsage);
       }
       const choice = chunk.choices[0];
       const text = choice?.delta.content || choice?.delta.refusal || "";
@@ -264,10 +279,10 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
       if (text) onText(text);
       if (choice?.finish_reason) finishReason = choice.finish_reason;
     }
-    if (request.loopReviewAfterMs !== undefined) clearTimeout(timer);
+    clearTimeout(timer);
     if (!finishReason) throw new Error("The response ended before completion.");
     const toolCalls = [...calls.values()];
-    if (outputTokens !== undefined && measuredOutput !== undefined && measuredOutput > outputTokens) throw new Error("Model output exceeded the per-inference token budget. Partial output was preserved; no pending tool was executed.");
+    if (outputTokens !== undefined && measuredUsage) checkReportedOutput(measuredUsage, outputTokens, request.thinkingBudget);
     if (finishReason === "stop") {
       if (calls.size) throw new Error("Invalid tool completion. No pending tool was executed.");
       if (!responseText) throw new Error("The model returned an empty response.");
@@ -323,7 +338,7 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
     if (request.afterTools?.()) return;
     }
   } catch (error) {
-    if (timedOut) throw new Error("The API request timed out. You can retry or choose another model.");
+    if (timedOut) throw new Error("The model API timed out due to inactivity. Partial output was preserved; no automatic retry was performed.");
     if (request.signal.aborted) throw new Error("Request cancelled.");
     if (error instanceof OpenAI.APIConnectionError) throw new Error("Cannot connect to the model API.");
     if (error instanceof OpenAI.APIError) {

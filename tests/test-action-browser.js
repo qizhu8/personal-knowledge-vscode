@@ -85,6 +85,9 @@ vm.runInNewContext(fs.readFileSync(path.join(root, "dist", "ui", "action-browser
   moduleExports.openActionWorkbench(context);
   assert.match(webview.html, /script-src 'nonce-[a-f0-9]+'/);
   assert.match(webview.html, /<script nonce="[a-f0-9]+">/);
+  assert.strictEqual((webview.html.match(/<script>/g)||[]).length, 0, "every Workbench script must be nonce bound");
+  moduleExports.openActionWorkbench(context, undefined, undefined, true);
+  assert(webview.html.includes("libraryOpen:true"), "main Library entry opens the searchable catalog, not an empty graph");
   assert.match(webview.html, /codicon\.css/);
   moduleExports.openActionWorkbench(context, runId);
   assert(webview.html.includes(`currentRun:"${runId}"`), "Project source link preselects the exact Action Run in the real Workbench");
@@ -109,7 +112,7 @@ vm.runInNewContext(fs.readFileSync(path.join(root, "dist", "ui", "action-browser
     assert.strictEqual(replies.at(-1).result.ok, true);
     assert.deepStrictEqual(serviceCalls.at(-1), { method, params });
   }
-  for (const method of ["checkpoints", "respond_checkpoint", "schedule_run", "wake_run", "reconcile_run", "safety_scan", "associate_project"]) {
+  for (const method of ["library_get", "checkpoints", "respond_checkpoint", "schedule_run", "wake_run", "reconcile_run", "safety_scan", "associate_project"]) {
     const params = method === "safety_scan" ? {} : { run_id: runId };
     await listener({ requestId: "p3-" + method, method, params });
     assert.strictEqual(replies.at(-1).result.ok, true);

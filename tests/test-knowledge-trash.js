@@ -52,7 +52,7 @@ try {
         if (path.basename(to) === "payload") throw new Error("simulated move failure");
         return originalRename(from, to);
       };
-      assert.strictEqual(store.knowledgeMoveToTrash("notes", "Failed.md", "item", "Failed"), undefined);
+      assert.throws(() => store.knowledgeMoveToTrash("notes", "Failed.md", "item", "Failed"), /simulated move failure/);
     } finally { fs.renameSync = originalRename; }
     assert.strictEqual(fs.readFileSync(failedNote, "utf8"), "keep on failure");
     assert(!store.knowledgeSyncDeletionRecords(root).some(record => record.path === "notes/Failed.md"),
@@ -63,7 +63,9 @@ try {
   assert(folderEntry);
   assert(store.knowledgeSyncDeletionRecords(root).some(record => record.path === "prompts/Project/Task/v2/prompt.txt"), "Deleting a Prompt folder journals its nested members");
   assert.strictEqual(store.knowledgeTrashRestore("prompts", folderEntry.id).ok, true);
-  assert(!store.knowledgeSyncDeletionRecords(root).some(record => record.path.startsWith("prompts/Project/Task/")), "Restoring a folder cancels all descendant deletion records");
+  assert(!store.knowledgeSyncDeletionRecords(root).some(record => record.path === "prompts/Project/Task/v2/prompt.txt"), "Restoring a folder cancels deletion records for its restored payload");
+  assert(store.knowledgeSyncDeletionRecords(root).some(record => record.path === "prompts/Project/Task/v1/prompt.txt"),
+    "Restoring a folder must not revive members permanently deleted before it entered Trash");
   const deletedFolderEntry = store.knowledgeMoveToTrash("prompts", "Project/Task", "folder", "Task");
   assert.deepStrictEqual(store.knowledgeTrashDelete("prompts", deletedFolderEntry.id), { ok: true, name: "Task", path: "Project/Task", kind: "folder" });
   assert.deepStrictEqual(store.knowledgeTrashEmpty("prompts"), { ok: true, count: 0 });

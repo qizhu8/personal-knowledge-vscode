@@ -169,6 +169,36 @@ export function terminalAgentSessionStatus(record: SessionRecord): boolean {
   return ["completed", "stopped"].includes(projectedAgentSessionStatus(record));
 }
 
+/** Agent Sessions are owned by PKM Chat only; external host Sessions are retired. */
+export function pkmOwnedAgentSession(record: SessionRecord): boolean {
+  return record.origin === "pkm-native" && record.runtimeOwner === "pkm" && record.hostKind === "pkm";
+}
+
+/**
+ * Moves every non-PKM Chat Session record to Agent Sessions Trash (any status) and removes all external
+ * transport mappings. Records are kept, not deleted; normal Trash retention applies afterwards.
+ */
+export async function retireNonPkmAgentSessions(stateDirectory: string, now: () => string = () => new Date().toISOString()): Promise<{ moved: string[]; errors: string[] }> {
+  const result = { moved: [] as string[], errors: [] as string[] };
+  const mappings = activeMappingsDirectory(stateDirectory);
+  if (fs.existsSync(mappings)) for (const name of fs.readdirSync(mappings).filter(candidate => candidate.endsWith(".json"))) {
+    try { fs.unlinkSync(path.join(mappings, name)); }
+    catch (error: any) { result.errors.push(`External Session mapping ${name} could not be removed: ${error?.message || error}`); }
+  }
+  const directory = path.join(stateDirectory, "agent-sessions");
+  if (!fs.existsSync(directory)) return result;
+  for (const name of fs.readdirSync(directory).filter(candidate => /^agent_session_[a-zA-Z0-9_-]+\.json$/.test(candidate))) {
+    const sessionId = name.slice(0, -5);
+    try {
+      const record = JSON.parse(fs.readFileSync(path.join(directory, name), "utf8")) as SessionRecord;
+      if (!validSession(record, sessionId) || pkmOwnedAgentSession(record)) continue;
+      await moveAgentSessionToTrash(stateDirectory, sessionId, { requireCompleted: false, now });
+      result.moved.push(sessionId);
+    } catch (error: any) { result.errors.push(`External Session ${sessionId} was not retired: ${error?.message || error}`); }
+  }
+  return result;
+}
+
 function activeMappingsDirectory(stateDirectory: string): string {
   return path.join(stateDirectory, "agent-sessions", "active");
 }
@@ -321,6 +351,7 @@ export function restoreAgentSessionFromTrash(
   try { session = JSON.parse(fs.readFileSync(trashPath, "utf8")); }
   catch (error: any) { throw new Error(`Agent Session could not be read before restoring: ${error?.message || error}`); }
   if (!validSession(session, sessionId)) throw new Error("Agent Session Trash record is invalid and was not restored.");
+  if (!pkmOwnedAgentSession(session)) throw new Error("Only PKM Chat Sessions can be restored. External agent Sessions are no longer supported; delete it, or read it through an Agent Snapshot.");
   delete session.trashedAt;
   session.updatedAt = now();
   session.restoredAt = session.updatedAt;
@@ -395,7 +426,7 @@ export async function enforceAgentSessionArchiveRetention(
   const result: AgentSessionRetentionResult = { retained: [], moved: [], deleted: [], errors: [] };
   const trashDirectory = path.join(stateDirectory, "agent-sessions-trash");
   if (!fs.existsSync(trashDirectory)) return result;
-  const trashed: Array<{ sessionId: string; timestamp: string; updatedAt: string }> = [];
+  const trashed: Array<{ sessionId: string; timestamp: string; updatedAt: string; restorable: boolean }> = [];
   let trashNames: string[];
   try { trashNames = fs.readdirSync(trashDirectory).filter(name => name.endsWith(".json")); }
   catch (error: any) {
@@ -408,10 +439,12 @@ export async function enforceAgentSessionArchiveRetention(
       const record = JSON.parse(fs.readFileSync(path.join(trashDirectory, name), "utf8")) as SessionRecord;
       if (!/^agent_session_[a-zA-Z0-9_-]+$/.test(sessionId) || !validSession(record, sessionId)
         || typeof record.trashedAt !== "string" || !record.trashedAt) throw new Error("Invalid Trash record; left untouched.");
-      trashed.push({sessionId, timestamp:record.trashedAt, updatedAt:archiveTimestamp(record)});
+      trashed.push({sessionId, timestamp:record.trashedAt, updatedAt:archiveTimestamp(record), restorable:pkmOwnedAgentSession(record)});
     } catch (error: any) { result.errors.push(`${name}: ${error?.message || error}`); }
   }
-  trashed.sort((left, right) => right.timestamp.localeCompare(left.timestamp)
+  // Retired external records cannot be restored, so they never displace restorable PKM Chat Sessions.
+  trashed.sort((left, right) => Number(right.restorable) - Number(left.restorable)
+    || right.timestamp.localeCompare(left.timestamp)
     || right.updatedAt.localeCompare(left.updatedAt) || right.sessionId.localeCompare(left.sessionId));
   result.retained = trashed.slice(0, limit).map(item => item.sessionId);
   for (const item of trashed.slice(limit)) {

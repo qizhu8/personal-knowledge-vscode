@@ -8,7 +8,7 @@ import { PKM_ENTRY_POINTS, projectExecution } from "./runtime/pkm-projection";
 import { baselineReport, recordBaselineEvent } from "./runtime/pkm-baseline";
 import { mcpUsageSummary, recipeNodeUsageSummary, todoUsageSummary } from "./mcp/mcp-usage";
 import { agentSnapshotIsEncrypted, createAgentSnapshot, deleteAgentSnapshot, listAgentSnapshots, renameAgentSnapshot, readAgentSnapshotContents } from "./agent-sessions/agent-snapshots";
-import { agentSessionArchiveKeepLatestK, agentSessionLiveness, emptyAgentSessionTrash, enforceAgentSessionArchiveRetention, moveAgentSessionToTrash, permanentlyDeleteTrashedAgentSession, projectedAgentSessionStatus, recipeNodeObservability, reconcileAgentSessionActiveMappings, restoreAgentSessionFromTrash, stopAgentSession } from "./agent-sessions/agent-session-lifecycle";
+import { agentSessionArchiveKeepLatestK, agentSessionLiveness, pkmOwnedAgentSession, retireNonPkmAgentSessions, emptyAgentSessionTrash, enforceAgentSessionArchiveRetention, moveAgentSessionToTrash, permanentlyDeleteTrashedAgentSession, projectedAgentSessionStatus, recipeNodeObservability, reconcileAgentSessionActiveMappings, restoreAgentSessionFromTrash, stopAgentSession } from "./agent-sessions/agent-session-lifecycle";
 import { JsonFileCache } from "./runtime/json-file-cache";
 import { agentSessionGroup } from "./agent-sessions/agent-session-lifecycle";
 import { deleteAgentSessionGroup } from "./agent-sessions/agent-session-lifecycle";
@@ -21,7 +21,7 @@ import * as os from "os";
 import * as http from "http";
 import * as net from "net";
 import * as fs from "fs";
-import { syncServer } from "./sync/sync-server";
+import { syncServer, attachMarkdownAssetsToSyncBundle } from "./sync/sync-server";
 import { MAX_SUBSCRIPTION_CACHE_BYTES, SharedContentType, SharedMarketManager, SHARED_CONTENT_TYPES } from "./subscriptions/subscriptions";
 import { brokerShareMarkers, sharedContentIdentity } from "./subscriptions/broker-share-markers";
 import { isContentItemPrivate, isContentPathPrivate, isTopLevelPrivate, privateTopLevels, PrivacyContentType, renameTopLevelPrivacy, setPrivacyStoreRoot, setTopLevelPrivacy } from "./knowledge/content-privacy";
@@ -41,6 +41,8 @@ import {
   folderCreate, folderList, folderRename, folderDeletePromote, storeEntryMove, storeSafeName, knowledgeFilePath,
   SkillPriority,
 } from "./knowledge/filestore";
+import { checkedMarkdownPath, importMarkdownAssetBundle, isMarkdownAssetDirectory, MarkdownAssetArea, markdownAssetDirectory, markdownBundleDocuments, listedMarkdownAssets } from "./knowledge/markdown-assets";
+import { manageMarkdownAssets } from "./ui/markdown-assets";
 import { migrateDbToFiles } from "./knowledge/migrate";
 import {
   initServers, disposeServers, serverList, serverImport, serverCreate,
@@ -206,7 +208,7 @@ function recipeReferenceCatalog(): Record<"skills" | "notes", any[]> {
 
 const agentSessionJsonCache = new JsonFileCache(512);
 
-function agentSessionSnapshots(recipes: any[], directory = path.join(getStorePath(), ".pkm", "state", "agent-sessions"), selectedSessionId?: string): any[] {
+function agentSessionSnapshots(recipes: any[], directory = path.join(getStorePath(), ".pkm", "state", "agent-sessions"), selectedSessionId?: string, includeExternal = false): any[] {
   const storeRoot = getStorePath();
   const runsDirectory = path.join(storeRoot, ".pkm", "state", "recipe-runs");
   if (!fs.existsSync(directory)) return [];
@@ -289,6 +291,7 @@ function agentSessionSnapshots(recipes: any[], directory = path.join(getStorePat
     try {
       const session = agentSessionJsonCache.read<any>(path.join(directory, name));
       if (session?.schema !== "pkm.agent.session/v1" || !String(session.sessionId || "").startsWith("agent_session_")) continue;
+      if (!includeExternal && !pkmOwnedAgentSession(session)) continue;
       const checkpoints = Array.isArray(session.checkpoints) ? session.checkpoints : [];
       const latest = checkpoints.at(-1);
       const state = latest?.state && typeof latest.state === "object" ? latest.state : {};
@@ -410,7 +413,7 @@ function agentSessionSnapshots(recipes: any[], directory = path.join(getStorePat
 
 function agentSessionTrashSnapshots(): any[] {
   const directory = path.join(getStorePath(), ".pkm", "state", "agent-sessions-trash");
-  return agentSessionSnapshots([], directory).sort((left, right) => String(right.trashedAt || "").localeCompare(String(left.trashedAt || "")));
+  return agentSessionSnapshots([], directory, undefined, true).map(session => ({ ...session, restorable: session.origin === "pkm-native" && session.hostKind === "pkm" })).sort((left, right) => String(right.trashedAt || "").localeCompare(String(left.trashedAt || "")));
 }
 
 function configuredAgentSessionArchiveKeepLatestK(): number {
@@ -499,7 +502,22 @@ async function openNativeHarnessBrowser(context: vscode.ExtensionContext, sessio
   if (!await vscode.env.openExternal(vscode.Uri.parse(external.toString()))) throw new Error("The browser could not open the native Session.");
 }
 
+let nonPkmAgentSessionsRetired: Promise<void> | undefined;
+let nonPkmAgentSessionsRoot = "";
+function retireExternalAgentSessions(): Promise<void> {
+  const root = getStorePath();
+  if (!nonPkmAgentSessionsRetired || nonPkmAgentSessionsRoot !== root) {
+    nonPkmAgentSessionsRoot = root;
+    nonPkmAgentSessionsRetired = retireNonPkmAgentSessions(path.join(root, ".pkm", "state")).then(result => {
+      if (result.moved.length) log.info(`Agent Sessions are PKM Chat only: moved ${result.moved.length} external Session(s) to Trash.`);
+      for (const error of result.errors) log.warn(`Agent Session retirement: ${error}`);
+    }, error => { nonPkmAgentSessionsRetired = undefined; log.warn(`Agent Session retirement: ${String(error)}`); });
+  }
+  return nonPkmAgentSessionsRetired;
+}
+
 async function agentSessionProjectStateData(): Promise<any> {
+  await retireExternalAgentSessions();
   await applyAgentSessionArchiveRetention();
   const mappingResult = reconcileAgentSessionActiveMappings(path.join(getStorePath(), ".pkm", "state"));
   for (const error of mappingResult.errors) log.warn(`Agent Session active mapping reconciliation: ${error}`);
@@ -509,7 +527,7 @@ async function agentSessionProjectStateData(): Promise<any> {
     if (!/^agent_group_[a-f0-9]{64}\.json$/.test(name)) return [];
     try {
       const group = agentSessionJsonCache.read<any>(path.join(groupsDirectory, name));
-      if (group?.schema !== "pkm.agent.group/v1" || `${group.groupId}.json` !== name || typeof group.hostSessionId !== "string") return [];
+      if (group?.schema !== "pkm.agent.group/v1" || `${group.groupId}.json` !== name || typeof group.hostSessionId !== "string" || group.hostKind !== "pkm") return [];
       return [{ groupId: group.groupId, hostSessionId: group.hostSessionId, hostKind: String(group.hostKind || "unknown"), title: typeof group.title === "string" ? group.title : "", deletedAt: group.deletedAt }];
     } catch { return []; }
   });
@@ -3124,7 +3142,7 @@ const MIME_BY_EXT: Record<string, string> = {
   webp: "image/webp", svg: "image/svg+xml", bmp: "image/bmp", avif: "image/avif",
 };
 
-/** Inline safe relative `_assets` image references as data URIs for a portable file. */
+/** Inline safe managed Markdown image references for a portable export. */
 function inlineMarkdownAssets(html: string, area = "notes", category = ""): string {
   const safeArea = ["notes", "skills", "papers"].includes(area) ? area : "notes";
   const areaRoot = path.resolve(getStorePath(), safeArea);
@@ -3136,7 +3154,7 @@ function inlineMarkdownAssets(html: string, area = "notes", category = ""): stri
       const full = path.resolve(documentDirectory, decodeURIComponent(value));
       const relative = path.relative(areaRoot, full).replace(/\\/g, "/");
       if (!relative || relative.startsWith("../") || path.isAbsolute(relative)
-        || !relative.split("/").includes("_assets") || !fs.existsSync(full) || !fs.statSync(full).isFile()) return m;
+        || !relative.split("/").some(isMarkdownAssetDirectory) || !fs.existsSync(full) || !fs.statSync(full).isFile()) return m;
       const realRoot = fs.realpathSync(areaRoot);
       const realFile = fs.realpathSync(full);
       if (realFile !== realRoot && !realFile.startsWith(`${realRoot}${path.sep}`)) return m;
@@ -3715,6 +3733,7 @@ function katexCssForExport(context: vscode.ExtensionContext): string {
 
 // ── Panel management ───────────────────────────────────────────────────────
 let panel: vscode.WebviewPanel | undefined;
+let panelMarkdownDraftOpen = false;
 let _treeProvider: PkTreeProvider | undefined;
 const MACHINE_STORE_PATH_KEY = "machineStorePath.v1";
 const ONBOARDING_PENDING_KEY = "pkm.onboarding.pending.v2";
@@ -6063,7 +6082,7 @@ function initializePanel(target: vscode.WebviewPanel, context: vscode.ExtensionC
   target.onDidDispose(() => {
     if (_panelRestoredRecoveryTimer) clearTimeout(_panelRestoredRecoveryTimer);
     _panelRestoredRecoveryTimer = undefined;
-    if (panel === target) panel = undefined;
+    if (panel === target) { panel = undefined; panelMarkdownDraftOpen = false; }
     _panelReady = false;
     loadProfiler.record("host.panel.disposed", { heartbeatAgeMs: Date.now() - _panelLastHeartbeat });
     log.info(`panel disposed heartbeatAgeMs=${Date.now() - _panelLastHeartbeat}${_panelLastDiagnostic ? ` lastDiagnostic=${_panelLastDiagnostic}` : ""}`);
@@ -6146,6 +6165,10 @@ async function handleMessage(
     log.debug(`handleMessage: ${msg.command}`);
   }
   switch (msg.command) {
+    case "markdownDraftState": {
+      panelMarkdownDraftOpen = msg.busy === true;
+      break;
+    }
     case "hostHealth": {
       if (typeof msg.id === "string" && msg.id.length <= 64) respond({ command: "hostHealth", id: msg.id });
       break;
@@ -6669,6 +6692,13 @@ async function handleMessage(
       } catch (error) {
         respond({ command: "agentSnapshotContents", data: { snapshotId, error: (error as Error).message } });
       }
+      break;
+    }
+
+    case "agentSnapshotRecover": {
+      const recovered = await vscode.commands.executeCommand<{ chatId: string; sessionId: string }>("personalKnowledge.recoverAgentSnapshot", String(msg.snapshotId || ""));
+      respond({ command: "agentSnapshotRecovered", data: { snapshotId: String(msg.snapshotId || ""), ...recovered } });
+      respond({ command: "projectState", data: await agentSessionProjectStateData() });
       break;
     }
 
@@ -8789,14 +8819,44 @@ async function handleMessage(
     }
 
     case "saveAsset": {
-      // Pasted image from the note editor: persist to notes/<category>/_assets/<hash>.<ext>
-      const { data, ext, reqId, category } = msg;
+      const { data, ext, reqId } = msg;
       try {
-        const rel = saveNoteAsset(String(data || ""), String(ext || "png"), String(category || ""));
+        const existing = noteGet(String(msg.slug || ""));
+        if (!existing) throw new Error("Save the Note before attaching images.");
+        const rel = saveNoteAsset(String(data || ""), String(ext || "png"), existing.category, String(existing.slug).split("/").pop());
         respond({ command: "assetSaved", reqId, markdown: `![](${rel})` });
       } catch (e) {
         log.error(`saveAsset failed: ${String(e)}`);
         respond({ command: "assetSaved", reqId, error: String(e) });
+      }
+      break;
+    }
+
+    case "markdownAssetList": {
+      const area = String(msg.area || "");
+      if (!["skills", "notes", "papers"].includes(area)) throw new Error("Invalid Markdown content area.");
+      const documentPath = String(msg.documentPath || "");
+      const full = checkedMarkdownPath(path.join(getStorePath(), area), documentPath);
+      const assets = listedMarkdownAssets(getStorePath(), area as MarkdownAssetArea, documentPath, fs.readFileSync(full, "utf8"));
+      respond({ command: "markdownAssetList", data: { area, documentPath, assets: assets.map(asset => ({ path: asset.path })) } });
+      break;
+    }
+
+    case "manageMarkdownAssets":
+    case "previewMarkdownAsset": {
+      const area = String(msg.area || "");
+      if (!["skills", "notes", "papers"].includes(area)) throw new Error("Invalid Markdown content area.");
+      const documentPath = String(msg.documentPath || "");
+      if (msg.command === "previewMarkdownAsset") {
+        const full = checkedMarkdownPath(path.join(getStorePath(), area), documentPath);
+        const asset = listedMarkdownAssets(getStorePath(), area as MarkdownAssetArea, documentPath, fs.readFileSync(full, "utf8")).find(asset => asset.path === msg.assetPath);
+        if (!asset) throw new Error("The Markdown resource is no longer available.");
+        await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(asset.fullPath));
+      } else if (panelMarkdownDraftOpen) {
+        throw new Error("Save or close inline Markdown editors before managing resources.");
+      } else if (await manageMarkdownAssets(area as MarkdownAssetArea, documentPath)) {
+        _treeProvider?.refresh();
+        respond({ command: "reloaded", data: { changedPath: `${area}/${documentPath}` } });
       }
       break;
     }
@@ -9553,12 +9613,11 @@ async function handleMessage(
         const destinationExists = destinationKey !== key && fs.existsSync(path.join(getStorePath(), "skills", `${destinationKey}.md`));
         if ((name !== current.name && skillGet(name)) || destinationExists) { rejectMetadataUpdate(`A skill file already exists at "${destinationKey}.md". No files were changed.`); break; }
         skillUpsert({
-          name, content: current.content, category: current.category,
+          name, previousName: current.name, content: current.content, category: current.category,
           description: field === "description" ? value : current.description,
           tags: field === "tags" ? tags : JSON.parse(current.tags || "[]"),
           source_project: field === "source_project" ? value : current.source_project,
         });
-        if (name !== current.name) skillDelete(current.name);
         newKey = destinationKey;
         refreshed = { type: "skill", ...skillGet(name) };
       } else if (area === "notes") {
@@ -9708,10 +9767,11 @@ async function handleMessage(
     }
 
     case "savePaperFile": {
-      // Uploaded local paper file (e.g. a PDF) -> papers/<category>/_assets/<hash>.<ext>
-      const { data, ext, category, reqId } = msg;
+      const { data, ext, reqId } = msg;
       try {
-        const rel = savePaperFile(String(data || ""), String(ext || "pdf"), String(category || ""));
+        const existing = paperGet(String(msg.slug || ""));
+        if (!existing) throw new Error("Save the Paper or Idea before attaching a file.");
+        const rel = savePaperFile(String(data || ""), String(ext || "pdf"), existing.category, String(existing.slug).split("/").pop());
         respond({ command: "paperFileSaved", reqId, file: rel });
       } catch (e) {
         log.error(`savePaperFile failed: ${String(e)}`);
@@ -9750,7 +9810,7 @@ async function handleMessage(
                       tags: JSON.parse(r.tags ?? "[]"), source_project: r.source_project }
         }))
       };
-      respond({ command: "exported", data: bundle });
+      respond({ command: "exported", data: attachMarkdownAssetsToSyncBundle(bundle) });
       break;
     }
 
@@ -9842,7 +9902,17 @@ async function handleMessage(
         const label = mode === "group" ? (seg(msg.groupLabel) || `${seg(from)}-${stamp()}`) : "";
         const prefix = label ? `_incoming/${label}` : "";
         const pcat = (c?: string) => prefix ? (c ? `${prefix}/${c}` : prefix) : (c || "");
-        const slugPfx = prefix ? prefix.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "") : "";
+        const importedDocuments = markdownBundleDocuments(bundle);
+        if (prefix) {
+          for (const document of importedDocuments) {
+            const destination = checkedMarkdownPath(path.join(getStorePath(), document.area), `${prefix}/${document.path}`);
+            if (fs.existsSync(destination)) throw new Error(`Incoming document already exists: ${document.path}. Choose a new subgroup.`);
+          }
+          for (const skill of bundle.skills || []) {
+            if (skillGet(skill.name)) throw new Error(`Skill name "${skill.name}" already exists. Group import cannot silently move or overwrite it; use distinct Skill names.`);
+          }
+        }
+        importMarkdownAssetBundle(getStorePath(), bundle.assets, importedDocuments, prefix);
         const counts: Record<string, number> = {};
         const totalItems = ["skills", "notes", "papers", "prompts", "scripts", "packages", "recipes"]
           .reduce((count, type) => count + (Array.isArray(bundle?.[type]) ? bundle[type].length : 0), 0);
@@ -9862,17 +9932,18 @@ async function handleMessage(
           await reportImported("skills");
         }
         if (bundle?.notes?.length) {
-          const notes = prefix ? bundle.notes.map((n: any) => ({ ...n, category: pcat(n.category) })) : bundle.notes;
+          const notes = prefix ? bundle.notes.map((n: any) => ({ ...n, slug: `${prefix}/${n.slug}`, category: pcat(n.category) })) : bundle.notes;
           for (const note of notes) {
-            counts.notes = (counts.notes ?? 0) + noteImport([note]);
+            noteUpsert({ ...note, type: note.type || "general", tags: Array.isArray(note.tags) ? note.tags : JSON.parse(note.tags || "[]") });
+            counts.notes = (counts.notes ?? 0) + 1;
             await reportImported("notes");
           }
         }
         const importedSlugs = new Set((bundle?.papers ?? []).map((p: any) => p.slug));
-        const remap = (s: string) => (prefix && importedSlugs.has(s)) ? `${slugPfx}-${s}` : s;
+        const remap = (s: string) => (prefix && importedSlugs.has(s)) ? `${prefix}/${s}` : s;
         for (const p of bundle?.papers ?? []) {
           paperUpsert({
-            slug: prefix ? `${slugPfx}-${p.slug}` : p.slug, title: p.title, content: p.content ?? "",
+            slug: prefix ? `${prefix}/${p.slug}` : p.slug, title: p.title, content: p.content ?? "",
             authors: p.authors, year: p.year, topic: p.topic, publisher: p.publisher,
             tags: p.tags, url: p.url, file: p.file, conclusions: p.conclusions,
             implementation: p.implementation, assumptions: p.assumptions, cites: [],
@@ -9882,7 +9953,7 @@ async function handleMessage(
           await reportImported("papers");
         }
         for (const p of bundle?.papers ?? []) {
-          const slug = prefix ? `${slugPfx}-${p.slug}` : p.slug;
+          const slug = prefix ? `${prefix}/${p.slug}` : p.slug;
           const current = paperGet(slug);
           if (!current) continue;
           const cites = Array.isArray(p.cites) ? p.cites.map((cite: any) => {
@@ -10061,6 +10132,7 @@ async function handleMessage(
 
     case "import": {
       const { bundle } = msg;
+      importMarkdownAssetBundle(getStorePath(), bundle?.assets, markdownBundleDocuments(bundle || {}));
       let count = 0;
       for (const s of bundle?.skills ?? []) {
         const m = s.metadata ?? {};
@@ -10069,9 +10141,14 @@ async function handleMessage(
           tags: m.tags, source_project: m.source_project });
         count++;
       }
-      gitCommit(`import(skills): ${count} from ${bundle?.from ?? "unknown"}`);
+      for (const note of bundle?.notes || []) {
+        noteUpsert({ ...note, type: note.type || "general", tags: Array.isArray(note.tags) ? note.tags : JSON.parse(note.tags || "[]") });
+        count++;
+      }
+      for (const paper of bundle?.papers || []) { paperUpsert(paper); count++; }
+      gitCommit(`import(knowledge): ${count} from ${bundle?.from ?? "unknown"}`);
       respond({ command: "saved" });
-      vscode.window.setStatusBarMessage(`$(check) Imported ${count} skill(s)`, 4000);
+      vscode.window.setStatusBarMessage(`$(check) Imported ${count} knowledge item(s)`, 4000);
       break;
     }
 
@@ -10126,7 +10203,7 @@ async function handleMessage(
     }
 
     case "openActionLibrary": {
-      openActionWorkbench(context);
+      openActionWorkbench(context, undefined, undefined, true);
       break;
     }
 
@@ -10682,7 +10759,7 @@ type PkNodeType =
   | 'subscription-brokers-group' | 'subscription-subscribers-group' | 'subscription-broker' | 'subscription-subscriber'
   | 'subscribed-content-root' | 'subscribed-content-broker' | 'subscribed-content-folder' | 'subscribed-content-item'
   | 'skill-folder' | 'skill' | 'skill-trash' | 'skill-trash-item' | 'note-folder' | 'note' | 'paper-folder' | 'paper'
-  | 'knowledge-trash' | 'knowledge-trash-item'
+  | 'knowledge-trash' | 'knowledge-trash-item' | 'markdown-assets-folder' | 'markdown-asset' | 'markdown-assets-manage'
   | 'prompt-project' | 'prompt-task' | 'prompt-version' | 'prompt-file'
   | 'package' | 'script-folder' | 'script-file';
 
@@ -10717,6 +10794,7 @@ class PkTreeItem extends vscode.TreeItem {
       "subscribed-content-root": "cloud", "subscribed-content-broker": "remote", "subscribed-content-folder": "folder", "subscribed-content-item": "file",
       "skill-folder": "folder", "skill-trash": "trash", "skill-trash-item": "trash", "knowledge-trash": "trash", "knowledge-trash-item": "trash", "note-folder": "folder", "paper-folder": "folder",
       "skill": "symbol-snippet", "note": "file-text", "paper": "file-pdf",
+      "markdown-assets-folder": "folder", "markdown-asset": "file-media", "markdown-assets-manage": "tools",
       "prompt-project": "folder", "prompt-task": "symbol-file",
       "prompt-version": "versions", "prompt-file": "file-code",
       "package": "package", "script-folder": "folder", "script-file": "file-code", "server-group": "folder", "server-ungrouped-group": "folder", "server-subscriber-group": "cloud", "server-subscriber-item": "link-external",
@@ -10881,6 +10959,14 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
         case 'note-folder':    return this._noteFolder(element.nodeData.path);
         case 'root-papers':    return this._withSubscribedContent("papers", this._withKnowledgeTrash("papers", this._paperFolder([])));
         case 'paper-folder':   return this._paperFolder(element.nodeData.path);
+        case 'skill':
+        case 'note':
+        case 'paper': {
+          const area = element.nodeType === "skill" ? "skills" : element.nodeType === "note" ? "notes" : "papers";
+          return [new PkTreeItem(path.posix.basename(markdownAssetDirectory(element.nodeData.relPath)), "markdown-assets-folder",
+            vscode.TreeItemCollapsibleState.Collapsed, { area, documentPath: element.nodeData.relPath })];
+        }
+        case 'markdown-assets-folder': return this._markdownAssets(element.nodeData.area, element.nodeData.documentPath);
         case 'root-prompts':   return this._withSubscribedContent("prompts", this._withKnowledgeTrash("prompts", this._promptProjects()));
         case 'prompt-project': return this._promptTasks(element.nodeData.project);
         case 'prompt-task':    return this._promptVersions(element.nodeData.project, element.nodeData.task);
@@ -10913,6 +10999,26 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
     const item = new PkTreeItem(label, nodeType, vscode.TreeItemCollapsibleState.None);
     item.command = { command: "personalKnowledge.openPanelTab", title: `Open ${label}`, arguments: [tab] };
     return item;
+  }
+
+  private _markdownAssets(area: MarkdownAssetArea, documentPath: string): PkTreeItem[] {
+    const data = { area, documentPath };
+    const manage = new PkTreeItem("Manage resources...", "markdown-assets-manage", vscode.TreeItemCollapsibleState.None, data);
+    manage.command = { command: "personalKnowledge.manageMarkdownAssets", title: "Manage Markdown resources", arguments: [manage] };
+    try {
+      const full = checkedMarkdownPath(path.join(getStorePath(), area), documentPath);
+      return [manage, ...listedMarkdownAssets(getStorePath(), area, documentPath, fs.readFileSync(full, "utf8")).map(asset => {
+        const item = new PkTreeItem(asset.path.startsWith(markdownAssetDirectory(documentPath) + "/")
+          ? asset.path.slice(markdownAssetDirectory(documentPath).length + 1) : asset.path + " (legacy reference)",
+        "markdown-asset", vscode.TreeItemCollapsibleState.None, { ...data, assetPath: asset.path });
+        item.command = { command: "vscode.open", title: "Preview resource", arguments: [vscode.Uri.file(asset.fullPath)] };
+        return item;
+      })];
+    } catch (error) {
+      log.error(`Markdown resource tree failed: ${String(error)}`);
+      vscode.window.showErrorMessage(`Could not list Markdown resources: ${String(error)}`);
+      return [manage];
+    }
   }
 
   private _subscriptionGroups(): PkTreeItem[] {
@@ -11234,7 +11340,7 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
       out.push(item);
     }
     for (const s of node.items.sort((a: any, b: any) => a.name.localeCompare(b.name))) {
-      const item = new PkTreeItem(s.name, 'skill', vscode.TreeItemCollapsibleState.None,
+      const item = new PkTreeItem(s.name, 'skill', vscode.TreeItemCollapsibleState.Collapsed,
         { key: s.category ? `${s.category}/${s.name}` : s.name, relPath: `${s.category ? `${s.category}/` : ""}${s.name}.md`, description: s.description });
       item.command = { command: 'personalKnowledge.openSkill', title: 'Open', arguments: [s.name] };
       if (s.description) item.description = s.description;
@@ -11306,7 +11412,7 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
     }
     for (const n of node.items.sort((a: any, b: any) => (b.updated_at || "").localeCompare(a.updated_at || ""))) {
       const relativePath = `${n.slug}.md`;
-      const item = new PkTreeItem(n.title, 'note', vscode.TreeItemCollapsibleState.None, { key: n.slug, relPath: relativePath });
+      const item = new PkTreeItem(n.title, 'note', vscode.TreeItemCollapsibleState.Collapsed, { key: n.slug, relPath: relativePath });
       item.description = relativePath.split("/").pop() || relativePath;
       item.tooltip = `${n.title}\nnotes/${relativePath}`;
       item.command = { command: 'personalKnowledge.openNote', title: 'Open', arguments: [n.slug] };
@@ -11341,7 +11447,7 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
     }
     // Sort papers by citation count (popularity), then year desc
     for (const p of node.items.sort((a: any, b: any) => (b.citationCount - a.citationCount) || ((b.year || 0) - (a.year || 0)))) {
-      const item = new PkTreeItem(p.title, 'paper', vscode.TreeItemCollapsibleState.None, { key: p.slug, relPath: `${p.slug}.md` });
+      const item = new PkTreeItem(p.title, 'paper', vscode.TreeItemCollapsibleState.Collapsed, { key: p.slug, relPath: `${p.slug}.md` });
       item.description = `${p.year || ""}${p.citationCount ? "  ·  " + p.citationCount + "★" : ""}`.trim();
       item.command = { command: 'personalKnowledge.openPaper', title: 'Open', arguments: [p.slug] };
       out.push(item);
@@ -11859,7 +11965,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (projectId) openProjectCockpit(context, projectId);
       return projectId;
     }),
-    vscode.commands.registerCommand("personalKnowledge.openActions", () => openActionWorkbench(context)),
+    vscode.commands.registerCommand("personalKnowledge.openActions", () => openActionWorkbench(context, undefined, undefined, true)),
     vscode.commands.registerCommand("personalKnowledge.openActionsInBrowser", () => openActionWorkbenchInBrowser(context)),
     vscode.commands.registerCommand("personalKnowledge.configureActionWorkspace", async () => {
       const platformKey = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux";
@@ -12174,6 +12280,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
 
     vscode.commands.registerCommand("personalKnowledge.editMarkdownMetadata", editMarkdownMetadata),
+    vscode.commands.registerCommand("personalKnowledge.manageMarkdownAssets", async (item?: PkTreeItem) => {
+      const area = item?.nodeData?.area || (item?.nodeType === "skill" ? "skills" : item?.nodeType === "note" ? "notes" : item?.nodeType === "paper" ? "papers" : "");
+      const documentPath = item?.nodeData?.documentPath || item?.nodeData?.relPath;
+      if (!["skills", "notes", "papers"].includes(area) || !documentPath) return;
+      try {
+        if (panelMarkdownDraftOpen) throw new Error("Save or close inline Markdown editors before managing resources.");
+        if (await manageMarkdownAssets(area, documentPath)) {
+          treeProvider.refresh();
+          panel?.webview.postMessage({ command: "reloaded", data: { changedPath: `${area}/${documentPath}` } });
+        }
+      } catch (error) {
+        log.error(`Markdown resource operation failed: ${String(error)}`);
+        vscode.window.showErrorMessage(`Markdown resource operation failed: ${String(error)}`);
+      }
+    }),
     vscode.commands.registerCommand("personalKnowledge.editMarkdownContent", async (area: KnowledgeMarkdownArea, key: string) => {
       await openStoreMarkdown(area, key);
     }),

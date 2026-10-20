@@ -15,6 +15,8 @@ export interface AgentSnapshotSummary {
   magicCode: string;
   sourceSessionId: string;
   sourceHostSessionId: string;
+  /** "pkm" for PKM Chat Snapshots (conversation + Recipes); other values are retired external agents. */
+  sourceHostKind: string;
   task: string;
   projectId: string;
   agent: { name: string; product: string };
@@ -140,8 +142,8 @@ function groupedHex(bytes: number): string {
   return randomBytes(bytes).toString("hex").toUpperCase().match(/.{1,4}/g)!.join("-");
 }
 
-function snapshotRecoveryPrompt(magicCode: string): string {
-  return `Call the PKM MCP function agent_session_snapshot_recover with {"magic_code":"${magicCode}"}.`;
+export function snapshotRecoveryPrompt(magicCode: string): string {
+  return `Read the PKM Agent Snapshot state first: call the PKM MCP function agent_session_snapshot_read with {"magic_code":"${magicCode}"}. It is read-only and does not create an Agent Session; continue from its task, todos, checkpoints and Recipe run states.`;
 }
 
 function snapshotSummary(snapshot: any, recoveryCount = 0): AgentSnapshotSummary {
@@ -152,6 +154,7 @@ function snapshotSummary(snapshot: any, recoveryCount = 0): AgentSnapshotSummary
     magicCode: String(snapshot.magicCode || ""),
     sourceSessionId: String(snapshot.sourceSessionId || ""),
     sourceHostSessionId: String(snapshot.sourceHostSessionId || ""),
+    sourceHostKind: String(snapshot.sourceHostKind || snapshot.agent?.product === "PKM" && "pkm" || ""),
     task: String(snapshot.task || "Agent Session snapshot"),
     projectId: String(snapshot.projectId || ""),
     agent: {
@@ -235,13 +238,22 @@ export function createAgentSnapshot(store: string, sessionId: string, reason = "
   if (session?.schema !== "pkm.agent.session/v1" || session?.sessionId !== sessionId) {
     throw new Error("Agent Session schema is unsupported.");
   }
-  const recipeRuns = (Array.isArray(session.recipeRunIds) ? session.recipeRunIds : []).flatMap((runId: string) => {
-    const runPath = path.join(store, ".pkm", "state", "recipe-runs", `${runId}.json`);
-    if (!fs.existsSync(runPath)) return [];
+  const recipeRuns: any[] = [];
+  const visited = new Set<string>();
+  const capture = (runId: unknown) => {
+    const id = String(runId || "");
+    if (!/^recipe_run_[A-Za-z0-9_-]+$/.test(id) || visited.has(id)) return;
+    visited.add(id);
+    const runPath = path.join(store, ".pkm", "state", "recipe-runs", `${id}.json`);
+    if (!fs.existsSync(runPath)) return;
     const run = readJson(runPath);
     delete run.receipts;
-    return [run];
-  });
+    recipeRuns.push(run);
+  };
+  (Array.isArray(session.recipeRunIds) ? session.recipeRunIds : []).forEach(capture);
+  // PKM Chat Sessions own nested Recipe trees; capture child runs so recovery keeps the whole tree.
+  for (const edge of Array.isArray(session.recipeTreeEdges) ? session.recipeTreeEdges : []) capture(edge?.toRunId);
+  for (let index = 0; index < recipeRuns.length; index++) for (const node of Object.values<any>(recipeRuns[index].nodes || {})) capture(node?.childRunId);
   const sessionCopy = JSON.parse(JSON.stringify(session));
   if (sessionCopy.origin === "pkm-native" && sessionCopy.nativeChat?.messageHistory) {
     sessionCopy.nativeChat = new ChatHistoryStorage(path.join(store, ".pkm", "state")).unpack(sessionCopy.nativeChat);
@@ -258,6 +270,7 @@ export function createAgentSnapshot(store: string, sessionId: string, reason = "
     magicCode,
     sourceSessionId: sessionId,
     sourceHostSessionId: String(session.hostSessionId || ""),
+    sourceHostKind: String(session.hostKind || ""),
     task: String(session.task || "Managed task"),
     projectId: String(session.projectId || ""),
     agent: session.agent || { name: "Agent", product: "" },
@@ -323,4 +336,83 @@ export function deleteAgentSnapshot(store: string, snapshotId: string): void {
     throw new Error("Agent Snapshot schema is unsupported.");
   }
   fs.unlinkSync(snapshotPath);
+}
+
+export interface AgentSnapshotRecovery {
+  /** Fields merged into the new PKM Chat Session record. */
+  session: Record<string, unknown>;
+  /** Cloned Recipe runs with fresh ids; empty for Snapshots without Recipes. */
+  recipeRuns: Array<Record<string, any>>;
+  continuationTodoCreated: boolean;
+}
+
+function continuationTodo(session: any, sessionId: string, now: string): Record<string, unknown> | undefined {
+  const todos = Array.isArray(session.todos) ? session.todos : [];
+  if (todos.some((todo: any) => todo && ["pending", "running", "paused"].includes(String(todo.status || "")))) return undefined;
+  const checkpoints = Array.isArray(session.checkpoints) ? session.checkpoints : [];
+  const latest = checkpoints.at(-1) && typeof checkpoints.at(-1) === "object" ? checkpoints.at(-1) : {};
+  const state = latest.state && typeof latest.state === "object" ? latest.state : {};
+  const summary = String(state.summary || session.summary || "Continue from the recovered Agent Snapshot.").trim();
+  const next = Array.isArray(state.next_actions) ? state.next_actions : Array.isArray(state.nextActions) ? state.nextActions : [];
+  const actions = next.map((value: unknown) => String(value).trim()).filter(Boolean).slice(0, 12);
+  const details = actions.length ? `${summary}\n\nNext actions:\n${actions.map((action: string) => `- ${action}`).join("\n")}` : summary;
+  return {
+    todoId: `todo_${createHash("sha256").update(`${sessionId}:resume-snapshot`, "utf8").digest("hex").slice(0, 20)}`,
+    title: "Continuing recovered Agent Snapshot", details: details.slice(0, 12000),
+    actionType: "resume_snapshot", status: "pending", createdAt: now, updatedAt: now,
+  };
+}
+
+/**
+ * Computes the durable state a new PKM Chat Session inherits from a Snapshot: Recipe runs are cloned with
+ * fresh ids (running nodes restart as pending, receipts cleared), unfinished todos become pending, and a
+ * continuation todo is added when nothing is left to do. The Snapshot itself is never modified.
+ */
+export function agentSnapshotRecovery(contents: AgentSnapshotContents, snapshot: Pick<AgentSnapshotSummary, "snapshotId" | "magicCode" | "sourceSessionId">,
+  sessionId: string, now = new Date().toISOString(), recoveryKey = randomBytes(16).toString("hex")): AgentSnapshotRecovery {
+  const source = contents.session as any;
+  const runIdMap = new Map<string, string>();
+  for (const run of contents.recipeRuns as any[]) {
+    const runId = String(run?.runId || "");
+    if (runId) runIdMap.set(runId, `recipe_run_${createHash("sha256").update(`${runId}:${recoveryKey}`, "utf8").digest("hex").slice(0, 24)}`);
+  }
+  const mapRun = (id: unknown) => runIdMap.get(String(id || "")) || "";
+  const recipeRuns = (contents.recipeRuns as any[]).filter(run => runIdMap.has(String(run?.runId || ""))).map(original => {
+    const run = JSON.parse(JSON.stringify(original));
+    run.runId = mapRun(original.runId);
+    run.agentSessionId = sessionId;
+    run.receipts = {};
+    if (run.parent && typeof run.parent === "object") run.parent.runId = mapRun(run.parent.runId);
+    for (const [nodeId, record] of Object.entries<any>(run.nodes || {})) {
+      if (record?.state === "running") {
+        run.nodes[nodeId] = { state: "pending", ...(record.childRunId ? { childRunId: mapRun(record.childRunId) } : {}), ...(record.childRecipeId ? { childRecipeId: record.childRecipeId } : {}) };
+      } else if (record?.childRunId) record.childRunId = mapRun(record.childRunId);
+    }
+    return run;
+  });
+  const todos = (Array.isArray(source.todos) ? source.todos : []).filter((todo: any) => todo && typeof todo === "object").map((original: any) => {
+    const todo = JSON.parse(JSON.stringify(original));
+    if (["running", "paused"].includes(todo.status)) {
+      todo.status = "pending";
+      for (const field of ["startedAt", "pausedAt", "pauseReason", "resumedAt"]) delete todo[field];
+      todo.updatedAt = now;
+    }
+    if (todo.recipeRunId) todo.recipeRunId = mapRun(todo.recipeRunId);
+    if (Array.isArray(todo.recipeRunIds)) todo.recipeRunIds = todo.recipeRunIds.map(String).filter((id: string) => runIdMap.has(id)).map(mapRun);
+    return todo;
+  });
+  const continuation = continuationTodo({ ...source, todos }, sessionId, now);
+  if (continuation) todos.push(continuation);
+  return {
+    session: {
+      todos, checkpoints: Array.isArray(source.checkpoints) ? JSON.parse(JSON.stringify(source.checkpoints)) : [],
+      recipeRunIds: (Array.isArray(source.recipeRunIds) ? source.recipeRunIds : []).map(String).filter((id: string) => runIdMap.has(id)).map(mapRun),
+      ...(Array.isArray(source.recipeTreeEdges) ? { recipeTreeEdges: source.recipeTreeEdges.filter((edge: any) => runIdMap.has(String(edge?.fromRunId || "")) && runIdMap.has(String(edge?.toRunId || "")))
+        .map((edge: any) => ({ ...edge, fromRunId: mapRun(edge.fromRunId), toRunId: mapRun(edge.toRunId) })) } : {}),
+      ...(source.projectId ? { projectId: String(source.projectId) } : {}),
+      provenance: { kind: "agent-snapshot", snapshotId: snapshot.snapshotId, magicCode: snapshot.magicCode, sourceSessionId: snapshot.sourceSessionId },
+      recoveredAt: now,
+    },
+    recipeRuns, continuationTodoCreated: !!continuation,
+  };
 }

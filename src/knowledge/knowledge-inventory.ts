@@ -79,7 +79,7 @@ export class KnowledgeInventoryManager {
       let children: fs.Dirent[];
       try { children = fs.readdirSync(directory, { withFileTypes: true }); } catch { return; }
       for (const child of children) {
-        if (!child.isDirectory() || child.name.startsWith(".") || child.name === "_assets") continue;
+        if (!child.isDirectory() || child.name.startsWith(".") || child.name === "_assets" || child.name.toLowerCase().endsWith(".assets")) continue;
         const childRelative = relative ? `${relative}/${child.name}` : child.name;
         folders.add(childRelative);
         walk(path.join(directory, child.name), childRelative);

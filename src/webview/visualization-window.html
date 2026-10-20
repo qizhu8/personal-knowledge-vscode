@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src {{cspSource}} 'unsafe-inline'; font-src {{cspSource}}; script-src 'nonce-{{nonce}}';">
+  <title>PKM Visualization</title>
+  <link rel="stylesheet" href="{{icons}}">
+  <link rel="stylesheet" href="{{harnessStyles}}">
+  <link rel="stylesheet" href="{{styles}}">
+</head>
+<body>
+  <div class="pkm-vis-shell">
+    <aside class="pkm-vis-tree-pane" aria-label="PKM Chats">
+      <header><strong>PKM Chats</strong></header>
+      <p id="pkm-vis-library-error" class="pkm-vis-error" role="alert" hidden></p>
+      <div id="pkm-vis-tree" role="tree" aria-label="Chats by group"></div>
+    </aside>
+    <main id="pkm-vis-dashboard" class="pkm-vis-dashboard" aria-label="Harness dashboard">
+      <p class="pkm-vis-empty">Select a PKM Chat to view its recorded execution.</p>
+    </main>
+  </div>
+  <script nonce="{{nonce}}" src="{{harnessScript}}"></script>
+  <script nonce="{{nonce}}" src="{{retrievalScript}}"></script>
+  <script nonce="{{nonce}}" src="{{script}}"></script>
+</body>
+</html>

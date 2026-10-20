@@ -411,7 +411,7 @@ export class SharedMarketManager {
         for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
           if (remaining <= 0) return;
           if (entry.name.endsWith(".pkm-source.json")) continue;
-          if (entry.isDirectory() && entry.name === "_assets") continue;
+          if (entry.isDirectory() && (entry.name === "_assets" || entry.name.toLowerCase().endsWith(".assets"))) continue;
           const rel = relative ? `${relative}/${entry.name}` : entry.name;
           const full = path.join(directory, entry.name);
           if (entry.isDirectory()) { walk(full, rel); continue; }

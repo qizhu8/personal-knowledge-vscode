@@ -1,5 +1,14 @@
 // ── Init ───────────────────────────────────────────────────────────────────
 ask('ready', {});                              // tell the extension the webview is loaded
+let lastMarkdownDraftOpen;
+const markdownDraftObserver = new MutationObserver(() => {
+  const busy = markdownAssetDraftOpen();
+  if (busy !== lastMarkdownDraftOpen) {
+    lastMarkdownDraftOpen = busy;
+    ask('markdownDraftState', { busy }, null, true);
+  }
+});
+markdownDraftObserver.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] });
 void loadMarkdownLibraries();                  // markdown assets are not on the first-paint critical path
 const restoredUiState = vscode.getState() || {};
 const restoredWorkspace = workspaceSurfaces[restoredUiState.workspace] ? restoredUiState.workspace : workspaceForTab(restoredUiState.tab);

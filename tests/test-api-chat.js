@@ -27,7 +27,7 @@ const hostLoad = require("child_process").spawnSync(process.execPath, ["-e", `
 assert.strictEqual(hostLoad.status, 0, hostLoad.stderr || String(hostLoad.error || "Chat module failed to load in the extension host"));
 const { streamApiChat, decodeChatImage, toolBudgetSummary } = require("../dist/chat/api-chat-client");
 const { ApiChatStore, agentSessionOrigin, apiChatStatus, apiChatDiagnostics, apiChatHarnessSnapshot, apiChatSessionDiagnostics } = require("../dist/chat/api-chat-store");
-const { modelProfiles, validateBudget, estimateInputTokens, estimateCost, assertModelAvailable } = require("../dist/chat/api-chat-models");
+const { modelProfiles, validateBudget, estimateInputTokens, estimateCost, assertModelAvailable, checkReportedOutput, parseThinkingBudget } = require("../dist/chat/api-chat-models");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -502,6 +502,26 @@ else (async () => {
   assert.strictEqual(usage.inputTokens, 100);
   assert.strictEqual(usage.outputTokens, 20);
 
+  assert.deepStrictEqual(["900", "1500", "2048", "unlimited", "4096", undefined, 900].map(parseThinkingBudget), [900, 1500, 2048, "unlimited", 2048, 2048, 2048]);
+  assert.doesNotThrow(() => checkReportedOutput({ inputTokens: 1, outputTokens: 900 }, 900));
+  assert.throws(() => checkReportedOutput({ inputTokens: 1, outputTokens: 1059, reasoningTokens: 840 }, 900), /per-inference token budget/, "Without a thinking budget hidden thinking still counts against output");
+  assert.doesNotThrow(() => checkReportedOutput({ inputTokens: 1, outputTokens: 1059, reasoningTokens: 840 }, 900, 900));
+  assert.throws(() => checkReportedOutput({ inputTokens: 1, outputTokens: 1183, reasoningTokens: 980 }, 900, 900), /thinking used 980 tokens, over the 900-token thinking budget/);
+  assert.doesNotThrow(() => checkReportedOutput({ inputTokens: 1, outputTokens: 1183, reasoningTokens: 980 }, 900, 1500));
+  assert.throws(() => checkReportedOutput({ inputTokens: 1, outputTokens: 1000, reasoningTokens: 50 }, 900, 2048), /visible output used 950 tokens, over the 900-token output budget/, "Thinking budget never widens visible output");
+  assert.doesNotThrow(() => checkReportedOutput({ inputTokens: 1, outputTokens: 60_000, reasoningTokens: 59_500 }, 900, "unlimited"));
+  assert.throws(() => checkReportedOutput({ inputTokens: 1, outputTokens: 60_000, reasoningTokens: 58_000 }, 900, "unlimited"), /visible output/);
+  assert.doesNotThrow(() => checkReportedOutput({ inputTokens: 1, outputTokens: 2948 }, 900, 2048));
+  assert.throws(() => checkReportedOutput({ inputTokens: 1, outputTokens: 2949 }, 900, 2048), /not reported separately/);
+  for (const [thinkingBudget, expected] of [[1500, 2400], ["unlimited", undefined]]) {
+    await streamApiChat({ ...base, maxOutputTokens: 900, thinkingBudget, outputTokenParameter: "max_completion_tokens", includeUsage: true, fetch: async (_, options) => {
+      assert.strictEqual(JSON.parse(options.body).max_completion_tokens, expected, "API models receive output plus thinking as the provider limit");
+      return events([delta("ok"), 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n', 'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":1300,"completion_tokens_details":{"reasoning_tokens":1250}}}\n\ndata: [DONE]\n\n']);
+    } }, () => {});
+  }
+  await assert.rejects(streamApiChat({ ...base, maxOutputTokens: 900, thinkingBudget: 900, outputTokenParameter: "max_completion_tokens", includeUsage: true, fetch: async () =>
+    events([delta("ok"), 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n', 'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":1300,"completion_tokens_details":{"reasoning_tokens":1250}}}\n\ndata: [DONE]\n\n']) }, () => {}), /thinking used 1250 tokens/);
+
   await streamApiChat({ ...base, provider: "azure-openai", model: "deployment name", fetch: async (url, options) => {
     const parsed = new URL(url);
     assert.strictEqual(parsed.pathname, "/v1/openai/deployments/deployment%20name/chat/completions");
@@ -524,6 +544,36 @@ else (async () => {
     if (options.signal.aborted) abort();
   });
   await assert.rejects(streamApiChat({ ...base, fetch: hang, timeoutMs: 10 }, () => {}), /timed out/);
+  for (const loopReviewAfterMs of [undefined, 0]) {
+    let received = "";
+    let toolRounds = 0;
+    await streamApiChat({ ...base, timeoutMs: 120, loopReviewAfterMs,
+      tools: [{ name: "slow_tool", description: "Healthy slow tool", parameters: { type: "object" }, execute: async (_args, signal) => {
+        await new Promise(resolve => setTimeout(resolve, 180));
+        assert.strictEqual(signal.aborted, false, "Model idle timeout must not cancel a healthy tool");
+        return "complete";
+      } }],
+      fetch: async () => ++toolRounds === 1 ? events([
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"slow-1","function":{"name":"slow_tool","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}\n\n',
+        'data: [DONE]\n\n',
+      ]) : events([delta("tool finished"), done]),
+    }, () => {});
+    assert.strictEqual(toolRounds, 2, "A fresh model idle budget starts after slow tools in both loop modes");
+    const start = Date.now();
+    await streamApiChat({ ...base, timeoutMs: 120, loopReviewAfterMs,
+      fetch: async () => new Response(new ReadableStream({
+        async start(controller) {
+          for (let index = 0; index < 6; index++) {
+            await new Promise(resolve => setTimeout(resolve, 40));
+            controller.enqueue(new TextEncoder().encode(index < 5 ? ": heartbeat\n\n" : delta("still working") + done));
+          }
+          controller.close();
+        },
+      }), { headers: { "content-type": "text/event-stream" } }),
+    }, text => { received += text; });
+    assert.strictEqual(received, "still working");
+    assert(Date.now() - start > 120, "HTTP heartbeat activity permits calls longer than the idle timeout");
+  }
   const cancelled = new AbortController();
   const waiting = streamApiChat({ ...base, signal: cancelled.signal, fetch: hang }, () => {});
   cancelled.abort();
@@ -579,6 +629,23 @@ async function testCrossProcessStore() {
     assert(!store.list(true).some(item => item.id === libraryChat.id));
     assert(fs.existsSync(sessionFile), "Chat deletion must preserve Task evidence");
     assert(forgotten.includes(libraryChat.id));
+    const cleanupChat = store.create();
+    store.trashChat(cleanupChat.id);
+    approval = "Delete permanently";
+    let releaseCleanup, cleanupStarted;
+    const cleanupReady = new Promise(resolve => { cleanupStarted = resolve; });
+    const cleanupGate = new Promise(resolve => { releaseCleanup = resolve; });
+    let deletionFinished = false;
+    const deleting = handleChatLibraryAction({ type: "deleteChat", id: cleanupChat.id }, store, host, () => false, () => {},
+      async id => { assert.strictEqual(id, cleanupChat.id); cleanupStarted(); await cleanupGate; }).then(() => { deletionFinished = true; });
+    await cleanupReady;
+    assert.strictEqual(deletionFinished, false, "Permanent deletion must await memory cleanup");
+    releaseCleanup(); await deleting;
+    const failedCleanupChat = store.create();
+    store.trashChat(failedCleanupChat.id);
+    approval = "Empty Trash";
+    await assert.rejects(handleChatLibraryAction({ type: "emptyTrash" }, store, host, () => false, () => {},
+      async () => { throw new Error("Memory cleanup unavailable"); }), /Memory cleanup unavailable/);
     const chat = store.create();
     const source = `const { ApiChatStore } = require(${JSON.stringify(path.resolve(__dirname, "../dist/chat/api-chat-store"))});
       const store = new ApiChatStore(${JSON.stringify(directory)}, "0123456789abcdef");
@@ -640,7 +707,7 @@ async function testAcceptanceIsolation() {
     const fixture = fs.readdirSync(directory).find(name => name.startsWith("chat-e2e-"));
     const report = JSON.parse(fs.readFileSync(path.join(directory, fixture, "acceptance.json")));
     assert.strictEqual(report.status, "failed");
-    assert.deepStrictEqual(report.steps.map(step => step.name), ["usage", "pkm-mcp", "pkm-documents", "recipe-document", "session-status", "coding"]);
+    assert.deepStrictEqual(report.steps.map(step => step.name), ["usage", "pkm-mcp", "pkm-documents", "recipe-document", "snapshot-list", "coding"]);
     assert.strictEqual(report.steps.find(step => step.name === "pkm-mcp").verdict, "failed");
     assert.strictEqual(report.steps.find(step => step.name === "coding").verdict, "succeeded");
     assert.strictEqual(report.steps.find(step => step.name === "coding").testUnchanged, true);
@@ -748,6 +815,8 @@ async function testController() {
   let automaticPermissionApproval = true;
   let automaticDecisionApproval = true;
   const nativeConfirmations = [];
+  const chatNotifications = [];
+  const showChatNotification = (kind, title, actions) => new Promise(resolve => chatNotifications.push({ kind, title, actions, resolve }));
   const nativeInvocations = [];
   const registeredTools = [{ name: "mcp_pkm_list_notes", description: "List notes" }, { name: "mcp_pkm_list_skills", description: "List skills" }, { name: "foreign_list_notes", description: "Foreign tool" }];
   class MockFileSystemError extends Error { constructor(code) { super(code); this.code = code; } }
@@ -765,7 +834,22 @@ async function testController() {
         scriptGet: () => ({ content:"print('fixture, never executed')", knowledgeId:"script_fixture" }),
       };
       if (parent?.filename.endsWith("knowledge-reader.js") && name === "../workflows/recipe-filesystem-store") return { RecipeFilesystemStore: class { list() { return { recipes: [{ recipeId: "recipe_fixture", name: "Selected Recipe", revision: 3, executableDigest: "a".repeat(64), definition: { spec: { nodes: [{ nodeId: "inspect", instructions: "Read actual evidence" }] } } }] }; } } };
-      if (name === "vscode") return { commands: { executeCommand: async () => {} }, QuickPickItemKind: { Separator: -1 }, FileSystemError: MockFileSystemError, Uri: { joinPath: (uri, ...parts) => ({ fsPath: path.join(uri.fsPath, ...parts), path: path.join(uri.fsPath, ...parts) }) }, LanguageModelTextPart: class {}, CancellationTokenSource: class { constructor() { this.token = {}; } cancel() { this.token.cancelled = true; } dispose() {} }, lm: { tools: registeredTools, invokeTool: async (name, options) => { nativeInvocations.push({ name, options }); return { content: [] }; } }, window: { showTextDocument: async () => {}, showInformationMessage: async () => {}, showWarningMessage: async title => { nativeConfirmations.push(title); return sessionApproval; }, showQuickPick: async items => picks.length ? picks.shift()(items) : typeof items[0] === "string" ? items[0] : items.filter(item => ["read_file", "note", "Selected skill"].includes(item.id)), showInputBox: async options => { if (inputs.length) return inputs.shift()(options); throw new Error("VS Code connection must not request API credentials"); }, showOpenDialog: async () => selectedFiles, showSaveDialog: async () => saveDestination }, workspace: { workspaceFolders: [], fs: { stat: async uri => { try { return await fs.promises.stat(uri.fsPath); } catch (error) { if (error.code === "ENOENT" && uri.path?.endsWith(".toolsets.jsonc")) throw new MockFileSystemError("FileNotFound"); throw error; } }, readFile: uri => readImage(uri), writeFile: async (uri, bytes) => { imageWrites++; await fs.promises.writeFile(uri.fsPath, bytes); } }, openTextDocument: async uri => ({ getText: () => fs.readFileSync(uri.fsPath, "utf8") }), asRelativePath: uri => path.relative(directory, uri.fsPath), getConfiguration: () => ({ get: (key, fallback) => configuration[key] ?? fallback }) } };
+      if (name === "vscode") return {
+        commands: { executeCommand: async () => {} }, QuickPickItemKind: { Separator: -1 }, FileSystemError: MockFileSystemError,
+        Uri: { joinPath: (uri, ...parts) => ({ fsPath: path.join(uri.fsPath, ...parts), path: path.join(uri.fsPath, ...parts) }) },
+        LanguageModelTextPart: class {}, CancellationTokenSource: class { constructor() { this.token = {}; } cancel() { this.token.cancelled = true; } dispose() {} },
+        lm: { tools: registeredTools, invokeTool: async (name, options) => { nativeInvocations.push({ name, options }); return { content: [] }; } },
+        window: {
+          showTextDocument: async () => {},
+          showInformationMessage: async (title, ...actions) => title.startsWith("PKM Chat [") ? showChatNotification("info", title, actions) : undefined,
+          showErrorMessage: (title, ...actions) => showChatNotification("error", title, actions),
+          showWarningMessage: async (title, ...actions) => { if (title.startsWith("PKM Chat [")) return showChatNotification("warning", title, actions); nativeConfirmations.push(title); return sessionApproval; },
+          showQuickPick: async items => picks.length ? picks.shift()(items) : typeof items[0] === "string" ? items[0] : items.filter(item => ["read_file", "note", "Selected skill"].includes(item.id)),
+          showInputBox: async options => { if (inputs.length) return inputs.shift()(options); throw new Error("VS Code connection must not request API credentials"); },
+          showOpenDialog: async () => selectedFiles, showSaveDialog: async () => saveDestination,
+        },
+        workspace: { workspaceFolders: [], fs: { stat: async uri => { try { return await fs.promises.stat(uri.fsPath); } catch (error) { if (error.code === "ENOENT" && uri.path?.endsWith(".toolsets.jsonc")) throw new MockFileSystemError("FileNotFound"); throw error; } }, readFile: uri => readImage(uri), writeFile: async (uri, bytes) => { imageWrites++; await fs.promises.writeFile(uri.fsPath, bytes); } }, openTextDocument: async uri => ({ getText: () => fs.readFileSync(uri.fsPath, "utf8") }), asRelativePath: uri => path.relative(directory, uri.fsPath), getConfiguration: () => ({ get: (key, fallback) => configuration[key] ?? fallback }) },
+      };
       return originalLoad.call(this, name, parent, ...rest);
     };
     const mockedLoad = Module._load;
@@ -868,7 +952,11 @@ async function testController() {
     await provider.handle({ type: "deleteChat", id: deleteFixture });
     assert.strictEqual(provider.store.list(true).length, 1, "Cancelled permanent deletion must retain Trash");
     sessionApproval = "Delete permanently";
+    context.extensionPath = path.resolve(__dirname, "..");
     await provider.handle({ type: "deleteChat", id: deleteFixture });
+    await provider.memory.service.close();
+    provider.memory = undefined;
+    delete context.extensionPath;
     await otherWindow.handle({ type: "ready" });
     assert.strictEqual(provider.store.list(true).length, 0, "Permanent deletion and reopen must not leave replacement Chats");
     otherWindow.dispose(); sessionApproval = "Ask Session";
@@ -954,6 +1042,11 @@ async function testController() {
     await provider.handle({ type: "permissionMode", value: "read-only" }); assert.strictEqual(await readonlyPending, false);
     await assert.rejects(permission(unknownScope), /read-only/);
     await provider.handle({ type: "permissionMode", value: "ask" }); await provider.handle({ type: "resetPermissions" });
+    automaticDecisionApproval = false;
+    await require("./test-chat-notifications").testPermissions(provider, chatNotifications, permissionController);
+    automaticDecisionApproval = true;
+    await require("./test-chat-notifications").testTerminal(provider, chatNotifications);
+    require("./test-chat-notifications").testCatalogs();
     const isolatedChat = provider.store.create(); const isolatedController = new AbortController(); provider.running.set(isolatedChat.id, isolatedController);
     isolatedChat.permissionMode = "ask"; provider.store.save(isolatedChat);
     const isolatedPermission = provider.requestPermission(isolatedChat, "non-destructive", "Other Chat", "", isolatedController.signal);
@@ -1037,6 +1130,7 @@ async function testController() {
     assert.strictEqual(provider.chat.id, first);
     await assert.rejects(askChat.execute(chatQuestion, ordinaryRequest.request.signal), /One Chat/);
     ordinaryRequest.resolve(); await ordinaryRun;
+    assert(chatNotifications.some(notice => notice.kind === "info" && notice.title.includes("response completed")));
     await provider.handle({ type: "resetPermissions" });
     const ordinaryDeclineStarted = new Promise(resolve => { started = resolve; });
     const ordinaryDeclineRun = provider.handle({ type: "send", text: "Decline ordinary Chat delegation" }); await ordinaryDeclineStarted;
@@ -1052,7 +1146,9 @@ async function testController() {
     const ordinaryCancelledAnswer = ordinaryCancel.request.tools.find(tool => tool.name === "ask_chat").execute(chatQuestion, ordinaryCancel.request.signal); await ordinaryCancelTargetStarted;
     const ordinaryCancelledTarget = requests.at(-1);
     assert.strictEqual(JSON.parse(await ordinaryCancelledAnswer).status, "running");
+    const notificationsBeforeCancel = chatNotifications.length;
     await provider.handle({ type: "pause" }); await ordinaryCancelRun;
+    assert.strictEqual(chatNotifications.length, notificationsBeforeCancel, "A cancelled request must not emit success or failure notifications");
     assert.strictEqual(ordinaryCancelledTarget.request.signal.aborted, false, "an approved child must remain independent");
     ordinaryCancelledTarget.onText("Independent result"); ordinaryCancelledTarget.resolve(); await new Promise(setImmediate);
     await provider.handle({ type: "resume" }); await provider.handle({ type: "resetPermissions" });
@@ -1228,7 +1324,20 @@ async function testController() {
     sessionApproval = "Ask Session";
     assert.strictEqual(provider.chat.modelProfileId, "next"); assert.deepStrictEqual(provider.chat.builtinTools, ["read_file"]);
     assert(!requests[0].request.messages.some(item => item.content.includes("memory snapshot")));
-    requests[0].request.onUsage({ inputTokens: 100, outputTokens: 10 }); requests[0].request.onUsage({ inputTokens: 20, outputTokens: 5 });
+    const prepareUsageRound = () => {
+      const request = requests[0].request;
+      request.beforeRound(request.messages, request.maxOutputTokens);
+      const transport = client.chatTransportReceipt("http", request.messages, []);
+      request.onTransportPrepared(transport); request.onTransportSent(transport);
+    };
+    assert.throws(() => requests[0].request.onUsage({ inputTokens: 1, outputTokens: 1 }), /matching sent budget/);
+    prepareUsageRound();
+    assert.strictEqual(requests[0].request.thinkingBudget, undefined, "Main Chat preserves Provider-default thinking");
+    requests[0].request.onUsage({ inputTokens: 100, outputTokens: 10 });
+    requests[0].request.onUsage({ inputTokens: 100, outputTokens: 10 });
+    assert.strictEqual(provider.chat.messages[1].usage.inputTokens, 100, "Repeated cumulative frames from one inference are not double charged");
+    prepareUsageRound();
+    requests[0].request.onUsage({ inputTokens: 20, outputTokens: 5 });
     assert.strictEqual(provider.chat.messages[1].usage.inputTokens, 120); assert.strictEqual(provider.chat.messages[1].usage.outputTokens, 15);
     assert.strictEqual(provider.chat.messages[1].estimatedCost, estimateCost(modelProfiles(configuration.apiChatModelProfiles, [])[0], 120, 15));
     await provider.handle({ type: "send", text: "queued while running", mode: "task" });
@@ -1277,6 +1386,11 @@ async function testController() {
     assert.strictEqual(provider.chat.messages[1].content, "first partial");
     requests[0].resolve(); await firstRun;
     assert.strictEqual(provider.chat.messages[1].status, "complete");
+    const lastBudget = provider.chat.messages[1].budgetReceipts.at(-1);
+    assert.strictEqual(lastBudget.ledger.outcome.status, "complete");
+    assert(lastBudget.ledger.entries.find(entry => entry.id === "user-wait").consumed.value > 0,
+      "The actual controller excludes tracked question/approval/continuation waits from active execution");
+    assert.strictEqual(provider.store.load(first).messages[1].budgetReceipts.at(-1).ledger.outcome.status, "complete");
     assert.strictEqual(provider.running.size, 0);
     assert.strictEqual(posts.at(-1).chats.find(item => item.id === first).status, "new-result");
     const resultId = provider.chat.lastResultId;
@@ -1375,6 +1489,8 @@ async function testController() {
     await assert.rejects(read.execute({ kind: "note", id: "../../outside" }, pkmRequest.request.signal), /existing local knowledge/);
     pkmRequest.onText("Failed inference output must not enter retry memory.");
     pkmRequest.reject(new Error("Fixture failure")); await pkmRun;
+    assert.strictEqual(chatNotifications.filter(notice => notice.kind === "error" && notice.title.endsWith("failed: Fixture failure")).length, 1,
+      "A failed model request must emit exactly one native failure notification");
     const failedReply = provider.chat.messages.at(-1); const originalProgress = JSON.stringify(failedReply.progress);
     const retryInput = provider.chat.messages.at(-2);
     const originalInput = JSON.stringify(retryInput);
@@ -1673,7 +1789,8 @@ async function testController() {
     picks.push(items => { assert.deepStrictEqual(items.map(item => item.label), models.map(model => model.name)); return items[0]; });
     await provider.handle({ type: "chooseModel" }); assert.strictEqual(credentialReads, 0);
     const nativeRequests = []; let nativeStarted;
-    nativeClient.streamVscodeChat = (model, request, onText) => new Promise((resolve, reject) => { nativeRequests.push({ model, request, onText, resolve }); request.signal.addEventListener("abort", () => reject(new Error("Request cancelled.")), { once: true }); nativeStarted(); });
+    nativeClient.streamVscodeChat = (model, request, onText) => request.purpose === "memory" ? Promise.resolve()
+      : new Promise((resolve, reject) => { nativeRequests.push({ model, request, onText, resolve }); request.signal.addEventListener("abort", () => reject(new Error("Request cancelled.")), { once: true }); nativeStarted(); });
     let resolveModels; let discoveryStarted;
     const checking = new Promise(resolve => { discoveryStarted = resolve; });
     nativeClient.discoverVscodeModels = () => new Promise(resolve => { resolveModels = resolve; discoveryStarted(); });
@@ -1753,6 +1870,7 @@ async function testController() {
     sessionApproval = "Complete Task";
     await provider.handle({ type: "completeTask" });
     assert.strictEqual(provider.chat.sessionId, undefined);
+    assert(chatNotifications.some(notice => notice.kind === "info" && notice.title.endsWith("Task completed.")));
     assert.strictEqual(nativeConfirmations.length, taskModalCount, "Task completion must not invoke a VS Code modal");
     sessionApproval = "Ask Session";
     picks.push(items => { assert(items.some(item => item.value === "permissions")); return items.find(item => item.value === "permissions"); }, items => items.find(item => item.id === "ask"));
@@ -1859,11 +1977,15 @@ async function testController() {
       restartedView.dispose();
       await context.workspaceState.update("apiChat.defaultModel", rememberedModel);
     }
+    await require("./test-chat-memory-controller")(ApiChatView, context, nativeClient, models);
+    assert(chatNotifications.some(notice => notice.kind === "error" && notice.title.includes("Fixture extraction failure")),
+      "A failed extraction receipt must notify without marking the saved reply failed");
     console.log("API chat controller tests passed: rename persistence/ownership, run/approval/unread status, model picker, request ownership, memory privacy, budgets and cancellation.");
     console.log("VS Code controller tests passed: no API key, per-chat source, captured context/model, next-request switching, persistence and no silent fallback.");
   } finally {
     if (nativeClient) { nativeClient.discoverVscodeModels = originalNativeDiscovery; nativeClient.streamVscodeChat = originalNativeStream; }
     provider?.dispose(); client.streamApiChat = originalStream; if (builtin) builtin.createBuiltinTools = originalBuiltin; Module._load = originalLoad;
+    await provider?.memory?.service.close();
     fs.rmSync(directory, { recursive: true, force: true });
   }
 }
@@ -1893,6 +2015,33 @@ async function testVscodeModels() {
   const events = []; const request = { messages: [{ role: "system", content: "Instructions" }, { role: "user", content: "question" }], signal: new AbortController().signal, maxOutputTokens: 1024, tools: [{ name: "read_file", description: "Read", parameters: { type: "object" }, execute: async () => { execution++; return "file contents"; } }], onTool: event => events.push(event) };
   await streamVscodeChat(model, request, text => { output += text; }, host);
   assert.strictEqual(output, "done"); assert.strictEqual(execution, 1); assert.strictEqual(events[1].status, "complete"); assert.strictEqual(prompts[0].options.tools[0].inputSchema.type, "object");
+  for (const loopReviewAfterMs of [undefined, 0]) {
+    let idleRounds = 0;
+    let idleText = "";
+    const start = Date.now();
+    const activeModel = { ...model, sendRequest: async () => ({ stream: (async function* () {
+      for (let index = 0; index < 6; index++) {
+        await new Promise(resolve => setTimeout(resolve, 40));
+        yield new DataPart(new Uint8Array(), "thinking");
+      }
+      if (++idleRounds === 1) yield new CallPart("idle-tool", "read_file", {});
+      else yield new TextPart("active throughout");
+    })() }) };
+    await streamVscodeChat(activeModel, { ...request, timeoutMs: 120, loopReviewAfterMs,
+      tools: [{ ...request.tools[0], execute: async () => {
+        await new Promise(resolve => setTimeout(resolve, 180));
+        return "slow healthy tool";
+      } }],
+    }, text => { idleText += text; }, { ...host, LanguageModelDataPart: DataPart });
+    assert.strictEqual(idleText, "active throughout");
+    assert.strictEqual(idleRounds, 2);
+    assert(Date.now() - start > 120, "Native thinking, tool time and multiple rounds are not a task deadline");
+  }
+  await assert.rejects(streamVscodeChat({ ...model, sendRequest: async () => ({ stream: (async function* () {
+    yield new TextPart("partial");
+    await new Promise(resolve => setTimeout(resolve, 180));
+    yield new TextPart("too late");
+  })() }) }, { ...request, tools: [], timeoutMs: 60 }, () => {}, host), /timed out due to inactivity/);
   let outputBudgetRounds = 0;
   let outputBudgetAnswer = "";
   const roundBudgets = [];
@@ -1986,6 +2135,15 @@ async function testVscodeModels() {
   assert.deepStrictEqual(observedUsage, [true, true, false, false, false, false, false, false, false]);
   await streamVscodeChat(metadataModel([new TextPart("hello"), usagePart({ prompt_tokens: 0, completion_tokens: 0 })]), nativeUsageRequest, () => {}, imageHost);
   assert.deepStrictEqual(reportedUsage.at(-1), { inputTokens: 0, outputTokens: 0 });
+  await streamVscodeChat(metadataModel([new TextPart("hello"), usagePart({ prompt_tokens: 9, completion_tokens: 576, completion_tokens_details: { reasoning_tokens: 540 } })]), nativeUsageRequest, () => {}, imageHost);
+  assert.deepStrictEqual(reportedUsage.at(-1), { inputTokens: 9, outputTokens: 576, reasoningTokens: 540 }, "Hidden reasoning must stay visible in usage evidence");
+  await streamVscodeChat(metadataModel([new TextPart("hello"), usagePart({ prompt_tokens: 9, completion_tokens: 1059, completion_tokens_details: { reasoning_tokens: 840 } })]), { ...nativeUsageRequest, maxOutputTokens: 900, thinkingBudget: 2048 }, () => {}, imageHost);
+  await assert.rejects(streamVscodeChat(metadataModel([new TextPart("hello"), usagePart({ prompt_tokens: 9, completion_tokens: 1059, completion_tokens_details: { reasoning_tokens: 840 } })]), { ...nativeUsageRequest, maxOutputTokens: 900 }, () => {}, imageHost), /per-inference token budget/);
+  await assert.rejects(streamVscodeChat(metadataModel([new TextPart("hello"), usagePart({ prompt_tokens: 9, completion_tokens: 1059, completion_tokens_details: { reasoning_tokens: 840 } })]), { ...nativeUsageRequest, maxOutputTokens: 900, thinkingBudget: 800 }, () => {}, imageHost), /thinking used 840 tokens, over the 800-token/);
+  for (const reasoning of [577, -1, 1.5, "540"]) {
+    await streamVscodeChat(metadataModel([new TextPart("hello"), usagePart({ prompt_tokens: 9, completion_tokens: 576, completion_tokens_details: { reasoning_tokens: reasoning } })]), nativeUsageRequest, () => {}, imageHost);
+    assert.deepStrictEqual(reportedUsage.at(-1), { inputTokens: 9, outputTokens: 576 }, "Invalid reasoning counts are omitted");
+  }
   await assert.rejects(streamVscodeChat(metadataModel([usagePart({ prompt_tokens: 10, completion_tokens: 0 })]), nativeUsageRequest, () => {}, imageHost), /empty response/);
   assert.deepStrictEqual(reportedUsage.at(-1), { inputTokens: 10, outputTokens: 0 });
   await assert.rejects(streamVscodeChat(metadataModel(metadata), { ...request, tools: [] }, () => {}, imageHost), /empty response/);
@@ -2444,7 +2602,7 @@ async function testVscodeTools() {
     ["mcp_pkm_list_skills", "skills"], ["mcp_pkm_skill_context", "skills"],
     ["mcp_pkm_list_notes", "notes"], ["mcp_pkm_paper_graph", "papers"],
     ["mcp_pkm_chat_post", "chatroom"], ["mcp_pkm_check_chat_version", "chatroom"],
-    ["mcp_pkm_recipe_create_from_skill", "recipe"], ["mcp_pkm_agent_session_stop", "sessions"],
+    ["mcp_pkm_recipe_create_from_skill", "recipe"], ["mcp_pkm_agent_session_snapshot_read", "sessions"],
     ["mcp_pkm_search_subscribed_content", "subscriptions"], ["mcp_pkm_retrieval_status", "retrieval"],
     ["mcp_pkm_check_version", "runtime"], ["other_list_skills", "other"],
   ];

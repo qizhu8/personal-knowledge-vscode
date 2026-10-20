@@ -696,7 +696,7 @@ function skillLi(r, displayName, q, indent) {
   return `<div class="li${r.pinned ? ' nt-pinned' : ''}" data-skill-name="${esc(r.name)}" onclick="openItem('skill','${esc(r.name)}')" oncontextmenu="skillItemMenu(event,'${esc(r.name)}',${JSON.stringify(r.category || '').replace(/"/g, '&quot;')})" style="padding-left:${indent}px">
     <div class="li-name"><span class="pc-star${r.pinned ? ' on' : ''}" onclick="event.stopPropagation();toggleSkillPin('${esc(r.name)}',${r.pinned ? 'false' : 'true'})" title="${r.pinned ? 'Unpin' : 'Pin to top of folder'}">${uiIcon(r.pinned ? 'pinned' : 'pin')}</span> ${privacyLock(r.isPrivate)}${hl(displayName||r.name, q)}${brokerShareMarker(r.brokerShares)}${typeof githubSyncFileMarker === 'function' ? githubSyncFileMarker('skills', r.name) : ''}</div>
     <div class="li-meta">${r.description ? hl(r.description.slice(0,50), q) : ''}${priority}</div>
-  </div>`;
+  </div>${markdownAssetFolder('skills', [r.category, r.name].filter(Boolean).join('/') + '.md', indent)}`;
 }
 
 function toggleSkillPin(name, pinned) {
@@ -716,7 +716,44 @@ function noteLi(r, q, indent) {
   return `<div class="li nt-${r.type}${r.pinned ? ' nt-pinned' : ''}" data-note-slug="${esc(r.slug)}" data-note-pinned="${r.pinned ? '1' : ''}" style="padding-left:${indent}px" onclick="openItem('note','${esc(r.slug)}')" title="notes/${esc(r.slug)}.md">
     <div class="li-name"><span class="pc-star${r.pinned ? ' on' : ''}" onclick="event.stopPropagation();toggleNotePin('${esc(r.slug)}',${r.pinned ? 'false' : 'true'})" title="${r.pinned ? 'Unpin' : 'Pin to top of folder'}">${uiIcon(r.pinned ? 'pinned' : 'pin')}</span> ${ICON[r.type]||uiIcon('note')} ${privacyLock(r.isPrivate)}${hl(r.title, q)}${brokerShareMarker(r.brokerShares)}${typeof githubSyncFileMarker === 'function' ? githubSyncFileMarker('notes', r.slug) : ''}</div>
     <div class="li-meta">${hl(filename, q)} · ${(r.updated_at||'').slice(0,10)}</div>
-  </div>`;
+  </div>${markdownAssetFolder('notes', r.slug + '.md', indent)}`;
+}
+function markdownAssetFolder(area, documentPath, indent) {
+  return `<details class="markdown-assets" data-asset-area="${esc(area)}" data-asset-document="${esc(documentPath)}" style="margin-left:${indent + 12}px"><summary onclick="loadMarkdownAssetFolder(event,this)">${uiIcon('folder')} ${esc(documentPath.split('/').pop().replace(/\.md$/i, '.assets'))}</summary><button class="tbtn" onclick="manageMarkdownResourceFolder(this)">Manage resources...</button><div data-markdown-asset-items></div></details>`;
+}
+function loadMarkdownAssetFolder(event, summary) {
+  event.stopPropagation();
+  const folder = summary.parentElement;
+  if (!folder.open) {
+    folder.querySelector('[data-markdown-asset-items]').textContent = 'Loading resources...';
+    ask('markdownAssetList', { area: folder.dataset.assetArea, documentPath: folder.dataset.assetDocument });
+  }
+}
+function manageMarkdownResourceFolder(button) {
+  if (markdownAssetDraftOpen()) { ask('toast', { text: 'Save or close inline Markdown editors before managing resources.' }); return; }
+  const folder = button.closest('.markdown-assets');
+  ask('manageMarkdownAssets', { area: folder.dataset.assetArea, documentPath: folder.dataset.assetDocument });
+}
+function markdownAssetDraftOpen() {
+  return !!document.getElementById('se-content') || ['note-form', 'paper-form'].some(id => {
+    const form = document.getElementById(id);
+    return form && !form.classList.contains('hidden');
+  });
+}
+function showMarkdownAssetList(data) {
+  for (const folder of document.querySelectorAll('.markdown-assets')) {
+    if (folder.dataset.assetArea !== data.area || folder.dataset.assetDocument !== data.documentPath) continue;
+    const container = folder.querySelector('[data-markdown-asset-items]');
+    container.replaceChildren();
+    for (const asset of data.assets || []) {
+      const button = document.createElement('button');
+      button.className = 'tbtn'; button.style.display = 'block'; button.style.maxWidth = '100%';
+      button.style.overflowWrap = 'anywhere'; button.style.whiteSpace = 'normal'; button.textContent = asset.path;
+      button.onclick = () => ask('previewMarkdownAsset', { area: data.area, documentPath: data.documentPath, assetPath: asset.path });
+      container.append(button);
+    }
+    if (!data.assets?.length) container.textContent = 'No resources attached.';
+  }
 }
 function toggleNotePin(slug, pinned) {
   ask('noteSetPinned', { slug, pinned });
@@ -2439,10 +2476,10 @@ function insertAtCursor(ta, text) {
           updateNotePreview();
           pendingAssets[reqId] = (markdown, error) => {
             ta.value = ta.value.replace(placeholder, error ? '![paste failed]()' : markdown);
+            if (error) ask('toast', { text: error });
             updateNotePreview();
           };
-          const catEl = document.getElementById('note-category');
-          ask('saveAsset', { data: b64, ext, reqId, category: catEl ? catEl.value : '' });
+          ask('saveAsset', { data: b64, ext, reqId, slug: document.getElementById('note-edit-slug').value });
         };
         reader.readAsDataURL(file);
       }
@@ -2896,7 +2933,7 @@ function paperCard(p, q, pad) {
       ${p.publisher ? `<span>${esc(p.publisher)}</span>` : ''}
       ${tags}
     </div>
-  </div>`;
+  </div>${markdownAssetFolder('papers', p.slug + '.md', pad)}`;
 }
 function togglePin(slug, pinned) {
   ask('paperSetPinned', { slug, pinned });
@@ -3044,8 +3081,9 @@ function uploadPaperFile(input) {
     const b64 = String(reader.result || '').split(',')[1] || '';
     pendingPaperFile = (rel, err) => {
       if (!err && rel) { document.getElementById('pf-file').value = rel; document.getElementById('pf-file-label').textContent = file.name; }
+      if (err) ask('toast', { text: err });
     };
-    ask('savePaperFile', { data: b64, ext, category: document.getElementById('pf-category').value, reqId: 'pf' + Date.now() });
+    ask('savePaperFile', { data: b64, ext, slug: document.getElementById('pf-slug').value, reqId: 'pf' + Date.now() });
   };
   reader.readAsDataURL(file);
 }

@@ -189,6 +189,44 @@ class MemoryPolicyTest(unittest.TestCase):
         self.assertEqual(self.engine.pieces(SCOPE, "topic"), [])
         self.assertTrue(self.memory.memory_read(SCOPE, topic)["evicted"])
 
+    def test_forget_scope_removes_empty_topics_and_pending_turns(self):
+        model = Script(intent=[{"focus": ["new:1"], "new": [{"key": "new:1", "label": "Private empty topic"}]}],
+                       extract=[{"statements": []}])
+        self.turn(1, "Private question", "Private reply", model)
+        topic = self.topic("Private empty topic")["id"]
+        pending = self.memory.turn_begin(SCOPE, "pending", {"id": "u2", "text": "Private pending input"})
+        self.memory.forget_scope(SCOPE)
+        self.assertEqual(self.engine.pieces(SCOPE, "topic"), [])
+        self.assertEqual(self.engine.usage(SCOPE), {"bytes": 0, "pieces": 0})
+        self.assertIsNone(self.engine.turn_get("turn-1"))
+        self.assertIsNone(self.engine.turn_get("pending"))
+        self.assertEqual(self.memory.memory_read(SCOPE, topic)["label"], "")
+        with self.assertRaisesRegex(MemoryError, "No pending model step"):
+            self.memory.turn_continue(pending["turn"], output=json.dumps(
+                {"focus": ["new:1"], "new": [{"key": "new:1", "label": "Late private topic"}]}))
+        with self.assertRaisesRegex(MemoryError, "deleted"):
+            self.memory.turn_begin(SCOPE, "late", {"id": "late", "text": "Must not resurrect"})
+        with self.assertRaisesRegex(MemoryError, "deleted"):
+            self.memory.turn_commit("late-commit", {"id": "u3", "text": "late user"},
+                                    {"id": "a3", "text": "late assistant"}, scope=SCOPE)
+        self.assertEqual(self.engine.pieces(SCOPE, "topic"), [])
+
+    def test_memory_read_pages_preserve_the_entire_long_message(self):
+        body = "α" * 12000 + "MIDDLE_SENTINEL" + "中" * 80000 + "TAIL_SENTINEL"
+        model = Script(intent=[{"focus": ["new:1"], "new": [{"key": "new:1", "label": "Long output"}]}],
+                       extract=[{"statements": []}])
+        _, done = self.turn(1, "Keep the full result", body, model)
+        piece = done["receipt"]["messages"]["assistant"]
+        after, parts = 0, []
+        while True:
+            page = self.memory.memory_read(SCOPE, piece, after)
+            parts += [item["text"] for item in page["statements"]]
+            if page["next"] is None:
+                break
+            self.assertGreater(page["next"], after)
+            after = page["next"]
+        self.assertEqual("".join(parts), body)
+
     def test_stdio_protocol_runs_policy_steps(self):
         self.engine.close()
         process = subprocess.Popen([sys.executable, "-m", "pkm_memory_engine", "--database", str(self.path), "--identity", "root|account"],

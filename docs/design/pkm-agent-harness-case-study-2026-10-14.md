@@ -271,6 +271,54 @@ evidence. They are now excluded only from the generic recent-dialogue window.
 | Knowledge retrieval | Retrieval worker; milliseconds and candidates | L1 lexical, topK 20, 5,000 ms | Selected counts exist, but materialized/sent provenance is incomplete. |
 | Workers | Task tree; concurrent workers | 3 automatic, 10 maximum by default | No task-level token/cost/CPU ledger yet. |
 
+### Per-round ledger follow-up, 2026-10-20
+
+The historical table above describes the reviewed case, not the current timeout
+default. Current Chat uses an inactivity timeout of 1,800 seconds, configurable
+from 10 to 86,400 seconds. Tool execution and tracked user waits do not count as
+model inactivity. The user explicitly chose **Provider-default main Chat
+thinking**; no thinking override or new budget enforcement is introduced.
+
+New `pkm.chat.budget/v1` receipts optionally contain
+`pkm.chat.budget-ledger/v1`. Native and HTTP controller paths record:
+
+- per-round planned input estimates, transport counting and provider usage as
+  distinct observations, each with its source, unit, owner and scope;
+- configured output/inactivity limits versus active-time/tool-round review
+  triggers, without presenting continuation review as a hard task deadline;
+- reported input/output/cache/reasoning usage and derived visible output only
+  when the provider exposes the corresponding quantities;
+- cumulative attempt active time, tracked question/approval/continuation waits,
+  recorded tool-call identities, context refinement counts and terminal outcome;
+- configured-price cost estimates only when both prices and provider usage are
+  available, not a bill or an estimate covering unreported inference rounds.
+
+Usage frames are snapshots of the current inference: repeated/cumulative frames
+replace that round's usage. Only distinct rounds accumulate. Missing reasoning,
+cache or pricing is not zero. Attempt counters are cumulative observations and
+must not be summed across round snapshots. An approved continuation can reset
+the review window without resetting cumulative accounting. Native provider
+confirmations remain outside PKM's tracked wait states.
+
+The ledger survives normal persistence and read-only Session Snapshots. Restart
+marks the last observation interrupted without inventing active time or provider
+usage during downtime. The existing Harness graph exposes each row as read-only
+accounting; legacy receipts without a ledger retain their original view.
+
+This first layer does **not** close BUD-01: per-tool timeout/output/log-storage
+receipts, retrieval deadlines, separate Memory-model aggregation, task-wide
+worker/resource allocation, CPU/RSS, model first-token/idle measurements and
+provider invoices still need their own actual sources and lifecycle wiring.
+They cannot be inferred from elapsed wall time, UI event counts or local bytes.
+
+Repeatable validation: `npm run test:chat-budget-ledger` covers accounting,
+real HTTP/native controller paths, duplicate usage frames, persistence/recovery
+and production-renderer desktop/narrow browser navigation without model calls.
+The browser portion uses an existing Playwright/Chromium installation; set
+`PKM_PLAYWRIGHT_PATH` when it is outside the package, as documented in the
+[native UI acceptance](pkm-native-harness-ui.md). It does not install or download
+browsers automatically.
+
 ## Open evidence
 
 - Provide the exact Copilot product/mode/version and its trace for the same

@@ -4,6 +4,14 @@
     "label": "简体中文"
   },
   "strings": {
+    "apiChat.allowOnce": "允许本次",
+    "apiChat.refuse": "拒绝",
+    "apiChat.notification.permission": "PKM Chat [{chat}] 需要授权：{detail}",
+    "apiChat.notification.input": "PKM Chat [{chat}] 正在等待你的输入：{detail}",
+    "apiChat.notification.responseComplete": "PKM Chat [{chat}]：本轮回复已完成。",
+    "apiChat.notification.taskComplete": "PKM Chat [{chat}]：Task 已完成。",
+    "apiChat.notification.failed": "PKM Chat [{chat}] 失败：{detail}",
+    "apiChat.notification.memoryFailed": "PKM Chat [{chat}]：回复已保存，但记忆整理失败：{detail}",
     "apiChat.openHarness": "打开执行子图",
     "apiChat.reportedGoal": "Agent 报告的目标：{goal}",
     "apiChat.noTaskReport": "尚未记录明确的任务状态",

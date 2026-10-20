@@ -93,8 +93,8 @@ for (const recipe of systemRecipeInventory.recipes) {
   assert(Number.isInteger(recipe.revision) && recipe.revision > 0, `packaged Recipe revision must be positive: ${recipe.key || "(missing key)"}`);
   assert(/^[0-9a-f]{64}$/.test(recipe.executableDigest || ""), `packaged Recipe digest must be pinned: ${recipe.key || "(missing key)"}`);
 }
-assert(systemRecipeInventory.recipes.some(recipe => recipe.key === "create-agent-snapshot"),
-  "System Recipe inventory must include Create Agent Snapshot");
+assert(!systemRecipeInventory.recipes.some(recipe => recipe.key === "create-agent-snapshot"),
+  "System Recipe inventory must not include the retired Create Agent Snapshot Recipe");
 assert(entries.includes("extension/node_modules/ws/index.js"), "VSIX must include the ws runtime dependency used by Chatroom");
 for (const file of ["package.json", "lib/umd/main.js", "lib/umd/impl/parser.js", "lib/umd/impl/scanner.js", "lib/umd/impl/format.js", "lib/umd/impl/edit.js", "lib/umd/impl/string-intern.js"]) {
   assert(entries.includes(`extension/node_modules/jsonc-parser/${file}`), `VSIX must include the JSONC runtime dependency for MCP discovery: ${file}`);

@@ -208,9 +208,9 @@ const core = fs.readFileSync(path.join(root, 'src/webview/panel/00-core.js'), 'u
 const genericSubscribedTabs = [...knowledge.match(/const cachedKnowledgeTabs = new Set\(\[([^\]]+)\]\)/)[1].matchAll(/'([^']+)'/g)].map(match => match[1]);
 assert.deepStrictEqual(genericSubscribedTabs.sort(), SHARED_CONTENT_TYPES.filter(type => type !== 'servers' && type !== 'recipes').sort(),
   'generic Knowledge CatTrees plus explicit Server and Recipe surfaces must cover every shared content type');
-assert.match(extension, /knowledgePaths\.add\(path\.relative\(getStorePath\(\), uri\.fsPath\)/,
+assert.match(extension, /const relativePath = path\.relative\(getStorePath\(\), uri\.fsPath\)[\s\S]{0,150}knowledgePaths\.add\(relativePath\)/,
   'coalesced knowledge refresh must retain every changed path');
-assert.match(extension, /changedPaths\.length === 1 \? \{ changedPath: changedPaths\[0\] \}/,
+assert.match(extension, /relevantPaths\.length === 1 \? \{ changedPath: relevantPaths\[0\] \}/,
   'single-path refresh must preserve the CatTree compatibility field');
 assert.match(core, /pendingTreeRefresh = data \|\| \{\}/);
 assert.match(extension, /respond\(\{ command: "list", tab, q, filter, data: projectedData, folders/,

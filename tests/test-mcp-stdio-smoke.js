@@ -6,7 +6,6 @@ const path = require("path");
 const { execFileSync } = require("child_process");
 
 const repositoryRoot = path.resolve(process.env.PKM_TEST_EXTENSION_PATH || path.join(__dirname, ".."));
-const { builtInRecipePin } = require(path.join(repositoryRoot, "dist/workflows/project-model.js"));
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-mcp-stdio-smoke-"));
 
 try {
@@ -39,7 +38,6 @@ try {
     "subscriptionCacheFwd",
     "retrievalStateFwd",
     "environmentsRegistryFwd",
-    "snapshotRecipePin",
     "context",
     `return \`${match[1]}\`;`,
   );
@@ -54,7 +52,6 @@ try {
     subscriptionCache.replaceAll("\\", "/"),
     retrievalState.replaceAll("\\", "/"),
     environmentsRegistry.replaceAll("\\", "/"),
-    builtInRecipePin("create-agent-snapshot"),
     { extensionPath: repositoryRoot },
   );
   fs.writeFileSync(path.join(moduleDirectory, "server.py"), server);
@@ -266,9 +263,8 @@ async def main():
                     "recipe_usage_summary",
                     "recipe_search",
                     "recipe_run_get",
-                    "agent_session_status",
-                    "agent_session_load",
                     "agent_session_snapshot_list",
+                    "agent_session_snapshot_read",
                     "api_chat_capabilities",
                     "api_chat_models",
                     "api_chat_list",

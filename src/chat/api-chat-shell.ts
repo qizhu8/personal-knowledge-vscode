@@ -7,6 +7,7 @@ import { getStorePath } from "../knowledge/filestore";
 import { loadedExtensionBuild } from "../runtime/extension-host-runtime";
 import { hostname } from "os";
 import { ApiChatAgentControl } from "./agent-control";
+import { registerVisualizationWindow } from "./visualization-window";
 
 export function registerApiChatHost(context: vscode.ExtensionContext, handle: (operation: string, args: Record<string, unknown>) => Promise<unknown>, busy: () => boolean): void {
   let control: ApiChatAgentControl | undefined;
@@ -97,9 +98,11 @@ export function registerApiChatShell(context: vscode.ExtensionContext, load: () 
     vscode.window.registerWebviewViewProvider("personalKnowledge.apiChat", shell),
     vscode.commands.registerCommand("personalKnowledge.openApiChat", async (locator?: string) => typeof locator === "string" ? (await getBackend()).openPkmChat(locator) : vscode.commands.executeCommand("personalKnowledge.apiChat.focus")),
     vscode.commands.registerCommand("personalKnowledge.configureApiChatSession", async (sessionId: string, section: string) => (await getBackend()).configureAgent(sessionId, section)),
+    vscode.commands.registerCommand("personalKnowledge.recoverAgentSnapshot", async (snapshotId: string) => (await getBackend()).recoverAgentSnapshot(snapshotId)),
     vscode.commands.registerCommand("personalKnowledge.testApiChatE2E", async () => (await getBackend()).runAcceptance()),
     vscode.commands.registerCommand("personalKnowledge.exportMcpToolSets", async () => (await getBackend()).exportMcpToolSets()),
   );
+  registerVisualizationWindow(context, getBackend);
   registerApiChatHost(context, async (operation, args) => (await getBackend()).agentControl(operation, args), busy);
   return { get isBusy() { return busy(); } };
 }

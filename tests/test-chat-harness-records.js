@@ -2,7 +2,11 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { activeHarnessBinding, assertHarnessRecipeBinding, validateHarnessReport, createHarnessReportTool, currentHarnessTask } = require("../dist/chat/chat-harness-records");
 const { build } = require("../src/webview/agent-harness");
-const { apiChatHarnessSnapshot } = require("../dist/chat/api-chat-store");
+const { ApiChatStore, apiChatHarnessSnapshot } = require("../dist/chat/api-chat-store");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { createHash } = require("node:crypto");
 const { materializeRetrievalSource } = require("../dist/retrieval/retrieval-snapshot");
 
 function fixture() {
@@ -164,4 +168,83 @@ test("Recipe binding verifies pinned Stage and actual Session/parent ownership, 
   assert.throws(() => assertHarnessRecipeBinding({ recipeRunId:"recipe_run_root", recipeStageId:"step" }, { recipeRunIds:[] }, read), /not owned/);
   delete runs.recipe_run_root.nodes.step.childRunId;
   assert.throws(() => assertHarnessRecipeBinding({ recipeRunId:"recipe_run_child", recipeStageId:"child-step" }, session, read), /parent/);
+});
+
+test("native Chat binds only an original locally recorded Recipe creation in its current Task", t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-recipe-binding-"));
+  t.after(() => fs.rmSync(root, { recursive:true, force:true }));
+  const store = new ApiChatStore(root, "0123456789abcdef");
+  const chat = store.create();
+  store.startTask(chat, "Original Recipe ownership");
+  const command = "original-create";
+  const id = `recipe_run_${createHash("sha256").update(command).digest("hex").slice(0, 24)}`;
+  const childId = "recipe_run_nested";
+  const filename = path.join(root, "recipe-runs", `${id}.json`);
+  fs.mkdirSync(path.dirname(filename), { recursive:true });
+  const run = { schema:"pkm.recipe.run/v1", runId:id, definition:{ spec:{ nodes:[{ nodeId:"nested" }] } },
+    nodes:{ nested:{ childRunId:childId } }, receipts:{ [command]:{ response:JSON.stringify({ ok:true, run_id:id }) } } };
+  fs.writeFileSync(filename, JSON.stringify(run));
+  fs.writeFileSync(path.join(root, "recipe-runs", `${childId}.json`), JSON.stringify({
+    schema:"pkm.recipe.run/v1", runId:childId, parent:{ runId:id, nodeId:"nested" },
+    definition:{ spec:{ nodes:[{ nodeId:"execute" }] } },
+  }));
+  const binding = { recipeRunId:childId, recipeStageId:"execute" };
+  const sessionPath = path.join(root, "agent-sessions", `${chat.sessionId}.json`);
+  const before = fs.readFileSync(sessionPath, "utf8");
+  const call = { id:"create", name:"name-is-not-authority", status:"complete", arguments:JSON.stringify({ command_id:command }),
+    result:JSON.stringify({ structuredContent:{ ok:true, run_id:id } }) };
+  const reply = { id:"reply", role:"assistant", content:"", status:"streaming", taskId:chat.sessionId, toolCalls:[call] };
+  chat.messages.push(reply);
+  const reject = () => {
+    assert.throws(() => store.bindRecordedRecipe(chat, binding), /original creation receipt|parent/);
+    assert.equal(fs.readFileSync(sessionPath, "utf8"), before, "rejected attachment cannot change ownership");
+  };
+  call.status = "running"; reject(); call.status = "complete";
+  reply.taskId = "another-task"; reject(); reply.taskId = chat.sessionId;
+  for (const result of ["null", "{malformed", JSON.stringify({ content:[null, { type:"text", text:"null" }] })]) {
+    call.result = result; reject();
+  }
+  call.result = JSON.stringify({ ok:true, run_id:id, replayed:true }); reject();
+  call.result = JSON.stringify({ content:[{ type:"text", text:JSON.stringify({ ok:true, run_id:id }) }] });
+  delete run.receipts[command]; fs.writeFileSync(filename, JSON.stringify(run)); reject();
+  run.receipts[command] = { response:JSON.stringify({ ok:true, run_id:id }) };
+  delete run.nodes.nested.childRunId; fs.writeFileSync(filename, JSON.stringify(run)); reject();
+  run.nodes.nested.childRunId = childId; fs.writeFileSync(filename, JSON.stringify(run));
+  assert.throws(() => store.bindRecordedRecipe(chat, { ...binding, recipeStageId:"foreign-stage" }), /pinned Run/);
+  assert.equal(fs.readFileSync(sessionPath, "utf8"), before);
+  const session = JSON.parse(before);
+  for (const field of ["schema", "sessionId", "hostSessionId"]) {
+    const invalid = JSON.stringify({ ...session, [field]:"foreign" });
+    fs.writeFileSync(sessionPath, invalid);
+    assert.throws(() => store.bindRecordedRecipe(chat, binding), /authority is unavailable/);
+    assert.equal(fs.readFileSync(sessionPath, "utf8"), invalid);
+  }
+  for (const result of [{ ok:true, run_id:id }, { structuredContent:{ ok:true, run_id:id } },
+    { content:[{ type:"text", text:JSON.stringify({ ok:true, run_id:id }) }] }]) {
+    fs.writeFileSync(sessionPath, before);
+    call.result = JSON.stringify(result);
+    store.bindRecordedRecipe(chat, binding);
+    store.bindRecordedRecipe(chat, binding);
+    assert.deepEqual(JSON.parse(fs.readFileSync(sessionPath, "utf8")).recipeRunIds, [id]);
+  }
+  store.save(chat);
+  assert.deepEqual(JSON.parse(fs.readFileSync(sessionPath, "utf8")).recipeRunIds, [id], "normal Chat persistence preserves proven ownership");
+});
+
+test("snapshot exposes the recalled-memory receipt and retrieval timing for the Visualization window, not internal prepare state", () => {
+  const { chat, reply } = fixture();
+  reply.memory = { schema:"pkm.chat.memory/v1", turn:"turn-1", model:"memory-model", durationMs:42,
+    blocks:[{ kind:"focus-topic", piece:"topic:aml", characters:12 }], prepare:{ internal:true } };
+  const receipt = { schema:"pkm.chat.retrieval/v1", query:"aml", selectedCount:1, model:"m", phase:"sent", candidates:[{ id:"n", label:"Note", selected:true }] };
+  reply.retrievalActivity = { attempts:[{ kind:"lexical", at:5, durationMs:3, receipt }], rounds:[{ index:2, at:9, inputTokens:10, inputBudget:20, receipt }] };
+  const [attempt] = apiChatHarnessSnapshot({ ...chat, id:"fixture" }).attempts;
+  assert.deepEqual(attempt.memory, { turn:"turn-1", model:"memory-model", durationMs:42, error:undefined,
+    blocks:[{ kind:"focus-topic", piece:"topic:aml", characters:12 }] });
+  assert.deepEqual(attempt.retrieval.map(step => [step.kind, step.at, step.receipt.model, step.receipt.phase]),
+    [["lexical-recall", 5, "m", "sent"], ["sent-round", 9, "m", "sent"]]);
+  assert.equal(attempt.retrieval[1].round, 2, "the sent receipt names the model round it was transmitted in");
+  attempt.memory.blocks[0].kind = "mutated";
+  assert.equal(reply.memory.blocks[0].kind, "focus-topic", "snapshot copies, never aliases, the stored receipt");
+  delete reply.memory;
+  assert.equal(apiChatHarnessSnapshot({ ...chat, id:"fixture" }).attempts[0].memory, undefined);
 });

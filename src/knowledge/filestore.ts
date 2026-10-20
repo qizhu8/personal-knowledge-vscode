@@ -11,11 +11,16 @@
  */
 import { basename, join, resolve, sep } from "path";
 import {
-  existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, rmSync, renameSync,
+  existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, rmSync, renameSync, cpSync,
 } from "fs";
 import { createHash, randomBytes } from "crypto";
 import { compileKnowledgeLinksV1, nextKnowledgeIdentity, readKnowledgeIdentity } from "./knowledge-contracts";
-import { withCrossProcessLockSync } from "../runtime/cross-process-lock";
+import { KnowledgeSyncDeletionRecord, knowledgeDeletionFile, readKnowledgeSyncDeletions, withKnowledgeDeletionJournal } from "./knowledge-deletion-journal";
+export type { KnowledgeSyncDeletionRecord } from "./knowledge-deletion-journal";
+import {
+  assertMarkdownAssetsUnshared, assertMarkdownResourceTreeUnshared, checkedMarkdownPath, isMarkdownAssetDirectory, markdownAssetDirectory,
+  rebaseMarkdownAssets, referencedMarkdownAssets, saveMarkdownAsset, MarkdownAssetArea, withMarkdownAssetMutation, ownedMarkdownAssetPaths,
+} from "./markdown-assets";
 
 let _store = "";
 
@@ -87,6 +92,7 @@ export interface KnowledgeTrashEntry {
   name: string;
   originalPath: string;
   deletedAt: string;
+  assetsPath?: string;
 }
 
 interface RemoveOperations {
@@ -94,43 +100,8 @@ interface RemoveOperations {
   sleep?: (milliseconds: number) => void;
 }
 
-export interface KnowledgeSyncDeletionRecord {
-  path: string;
-  deletedAt: string;
-}
-
-function knowledgeDeletionFile(root: string): string {
-  return join(root, ".pkm", "state", "knowledge-deletions.json");
-}
-
-function loadKnowledgeSyncDeletions(root: string): KnowledgeSyncDeletionRecord[] {
-  const file = knowledgeDeletionFile(root);
-  if (!existsSync(file)) return [];
-  const value = JSON.parse(readFileSync(file, "utf8"));
-  if (value.schema !== 1 || !Array.isArray(value.records) || value.records.some((record: any) =>
-    typeof record?.path !== "string" || !/^(skills|notes|papers|prompts|scripts)\//.test(record.path)
-    || record.path.split("/").some((part: string) => !part || part === "." || part === "..")
-    || typeof record.deletedAt !== "string" || !Number.isFinite(Date.parse(record.deletedAt)))) {
-    throw new Error("The local knowledge deletion journal is invalid. Sync cannot safely ignore deletion intent.");
-  }
-  return value.records;
-}
-
 export function knowledgeSyncDeletionRecords(root = getStorePath()): KnowledgeSyncDeletionRecord[] {
-  if (!existsSync(knowledgeDeletionFile(root))) return [];
-  return withCrossProcessLockSync(knowledgeDeletionFile(root) + ".lock", "read knowledge deletions", () => loadKnowledgeSyncDeletions(root));
-}
-
-function writeKnowledgeSyncDeletions(root: string, records: KnowledgeSyncDeletionRecord[]): void {
-  const file = knowledgeDeletionFile(root);
-  const temporary = `${file}.${process.pid}.${randomBytes(5).toString("hex")}.tmp`;
-  mkdirSync(resolve(file, ".."), { recursive: true });
-  try {
-    writeFileSync(temporary, JSON.stringify({ schema: 1, records }, null, 2) + "\n");
-    renameSync(temporary, file);
-  } finally {
-    rmSync(temporary, { force: true });
-  }
+  return readKnowledgeSyncDeletions(root);
 }
 
 function changeKnowledgeSyncDeletions<T>(
@@ -138,19 +109,7 @@ function changeKnowledgeSyncDeletions<T>(
   action: () => T,
   succeeded: (result: T) => boolean,
 ): T {
-  const root = getStorePath();
-  return withCrossProcessLockSync(knowledgeDeletionFile(root) + ".lock", "change knowledge deletions", () => {
-    const before = loadKnowledgeSyncDeletions(root);
-    writeKnowledgeSyncDeletions(root, change(before));
-    try {
-      const result = action();
-      if (!succeeded(result)) writeKnowledgeSyncDeletions(root, before);
-      return result;
-    } catch (error) {
-      writeKnowledgeSyncDeletions(root, before);
-      throw error;
-    }
-  });
+  return withKnowledgeDeletionJournal(getStorePath(), change, action, succeeded);
 }
 
 function knowledgeDeletionPaths(area: KnowledgeTrashArea | "skills", source: string, relativePath: string): string[] {
@@ -163,7 +122,26 @@ function knowledgeDeletionPaths(area: KnowledgeTrashArea | "skills", source: str
     } else paths.push(`${area}/${relative}`);
   };
   collect(source, relativePath);
+  if (/\.md$/i.test(relativePath) && /\.md$/i.test(source) && statSync(source).isFile()) {
+    const assets = source.replace(/\.md$/i, ".assets");
+    if (existsSync(assets)) collect(assets, markdownAssetDirectory(relativePath));
+  }
   return paths;
+}
+
+function moveMarkdownPair(source: string, destination: string, assetsSource: string, assetsDestination: string): void {
+  const hasAssets = existsSync(assetsSource);
+  if (existsSync(destination) || hasAssets && existsSync(assetsDestination)) throw new Error("The document or its resource destination already exists.");
+  mkdirSync(resolve(destination, ".."), { recursive: true });
+  if (hasAssets) renameSync(assetsSource, assetsDestination);
+  try { renameSync(source, destination); }
+  catch (error) {
+    if (hasAssets) {
+      try { renameSync(assetsDestination, assetsSource); }
+      catch (rollback) { throw new Error(`Document move failed: ${String(error)}. Resource rollback failed: ${String(rollback)}. Resources remain at ${assetsDestination}.`); }
+    }
+    throw error;
+  }
 }
 
 function recordKnowledgeTrashDeletion<T>(
@@ -176,58 +154,124 @@ function recordKnowledgeTrashDeletion<T>(
   ], action, result => !!result);
 }
 
-function writeKnowledgeMarkdown(area: "notes" | "skills" | "papers", relativePath: string, previousPath: string | undefined, content: string): void {
-  const full = join(getStorePath(), area, relativePath);
+export function writeKnowledgeMarkdown(area: "notes" | "skills" | "papers", relativePath: string, previousPath: string | undefined, content: string): void {
+  return withMarkdownAssetMutation(getStorePath(), () => writeKnowledgeMarkdownUnlocked(area, relativePath, previousPath, content));
+}
+
+function writeKnowledgeMarkdownUnlocked(area: "notes" | "skills" | "papers", relativePath: string, previousPath: string | undefined, content: string): void {
+  const root = join(getStorePath(), area);
+  const full = checkedMarkdownPath(root, relativePath);
   const moved = previousPath !== undefined && previousPath !== relativePath;
-  const oldFull = moved ? join(getStorePath(), area, previousPath) : undefined;
+  const oldFull = moved ? checkedMarkdownPath(root, previousPath) : undefined;
   if (moved && existsSync(full)) throw new Error(`Move target already exists: ${area}/${relativePath}`);
+  const oldAssets = oldFull?.replace(/\.md$/i, ".assets");
+  const newAssets = full.replace(/\.md$/i, ".assets");
+  const movingAssets = !!oldAssets && existsSync(oldAssets);
+  if (moved) {
+    assertMarkdownAssetsUnshared(root, previousPath);
+    content = rebaseMarkdownAssets(root, previousPath, relativePath, content);
+    if (movingAssets && existsSync(newAssets)) throw new Error(`Resource destination already exists: ${newAssets}`);
+  }
+  const removedPaths = oldFull && existsSync(oldFull) ? knowledgeDeletionPaths(area, oldFull, previousPath!) : [];
   const write = (): void => {
     mkdirSync(resolve(full, ".."), { recursive: true });
+    if (movingAssets) renameSync(oldAssets!, newAssets);
     try {
       writeFileSync(full, content);
       if (oldFull) rmSync(oldFull);
     } catch (error) {
       if (moved) rmSync(full, { force: true });
+      if (movingAssets) {
+        try { renameSync(newAssets, oldAssets!); }
+        catch (rollback) { throw new Error(`Write failed: ${String(error)}. Resource rollback failed: ${String(rollback)}. Resources remain at ${newAssets}.`); }
+      }
       throw error;
     }
   };
   if (!moved && !existsSync(knowledgeDeletionFile(getStorePath()))) return write();
   const restoredPath = `${area}/${relativePath}`;
-  const removedPath = moved ? `${area}/${previousPath}` : undefined;
+  const restoredPaths = new Set([restoredPath, ...(movingAssets
+    ? removedPaths.filter(path => path !== `${area}/${previousPath}`).map(path => `${area}/${markdownAssetDirectory(relativePath)}/` + path.slice(`${area}/${markdownAssetDirectory(previousPath!)}/`.length))
+    : ownedMarkdownAssetPaths(root, relativePath).map(path => `${area}/${path}`))]);
   changeKnowledgeSyncDeletions(records => [
-    ...records.filter(record => record.path !== restoredPath && record.path !== removedPath),
-    ...(removedPath ? [{ path: removedPath, deletedAt: now() }] : []),
+    ...records.filter(record => !restoredPaths.has(record.path) && !removedPaths.includes(record.path)),
+    ...removedPaths.map(path => ({ path, deletedAt: now() })),
   ], write, () => true);
 }
 
 function moveKnowledgePath(
   area: FolderArea, sourcePath: string, destinationPath: string,
   move: (source: string, destination: string) => void = renameSync,
+  container?: { from: string; to: string },
+): void {
+  return withMarkdownAssetMutation(getStorePath(), () => moveKnowledgePathUnlocked(area, sourcePath, destinationPath, move, container));
+}
+
+function moveKnowledgePathUnlocked(
+  area: FolderArea, sourcePath: string, destinationPath: string,
+  move: (source: string, destination: string) => void,
+  container?: { from: string; to: string },
 ): void {
   const source = join(getStorePath(), area, sourcePath);
   const destination = join(getStorePath(), area, destinationPath);
+  const markdown = /\.md$/i.test(sourcePath) && ["skills", "notes", "papers"].includes(area) && statSync(source).isFile();
+  const sourceAssets = markdown ? source.replace(/\.md$/i, ".assets") : undefined;
+  const destinationAssets = markdown ? destination.replace(/\.md$/i, ".assets") : undefined;
+  const original = markdown ? readFileSync(source, "utf8") : undefined;
+  const documents: Array<{ source: string; destination: string; original: string; content: string }> = [];
+  if (["skills", "notes", "papers"].includes(area) && statSync(source).isDirectory()) {
+    const files: MdFile[] = [];
+    walkMd(source, sourcePath, files);
+    assertMarkdownResourceTreeUnshared(join(getStorePath(), area), sourcePath, "", container?.from || sourcePath);
+    for (const file of files) {
+      const nextPath = destinationPath + file.rel.slice(sourcePath.length);
+      const content = readFileSync(file.full, "utf8");
+      documents.push({ source: file.full, destination: join(getStorePath(), area, nextPath), original: content,
+        content: rebaseMarkdownAssets(join(getStorePath(), area), file.rel, nextPath, content, container || { from: sourcePath, to: destinationPath }) });
+    }
+  }
+  if (markdown) {
+    assertMarkdownAssetsUnshared(join(getStorePath(), area), sourcePath, container?.from);
+    if (sourceAssets && existsSync(sourceAssets) && existsSync(destinationAssets!)) throw new Error("Resource move target already exists.");
+  }
   const removedPaths = knowledgeDeletionPaths(area, source, sourcePath);
-  const destinationPaths = new Set(removedPaths.map(relative =>
-    `${area}/${destinationPath}` + relative.slice(`${area}/${sourcePath}`.length)));
+  const destinationPaths = new Set(removedPaths.map(relative => markdown && relative.startsWith(`${area}/${markdownAssetDirectory(sourcePath)}/`)
+    ? `${area}/${markdownAssetDirectory(destinationPath)}/` + relative.slice(`${area}/${markdownAssetDirectory(sourcePath)}/`.length)
+    : `${area}/${destinationPath}` + relative.slice(`${area}/${sourcePath}`.length)));
   changeKnowledgeSyncDeletions(records => [
     ...records.filter(record => !removedPaths.includes(record.path) && !destinationPaths.has(record.path)),
     ...removedPaths.map(path => ({ path, deletedAt: now() })),
   ], () => {
     mkdirSync(resolve(destination, ".."), { recursive: true });
     move(source, destination);
+    if (markdown) {
+      let movedAssets = false;
+      try {
+        if (sourceAssets && existsSync(sourceAssets)) { move(sourceAssets, destinationAssets!); movedAssets = true; }
+        writeFileSync(destination, rebaseMarkdownAssets(join(getStorePath(), area), sourcePath, destinationPath, original!, container));
+      } catch (error) {
+        try {
+          if (movedAssets) move(destinationAssets!, sourceAssets!);
+          move(destination, source);
+          writeFileSync(source, original!);
+        } catch (rollback) { throw new Error(`Move failed: ${String(error)}. Rollback was incomplete: ${String(rollback)}.`); }
+        throw error;
+      }
+    } else if (documents.length) {
+      try { for (const document of documents) writeFileSync(document.destination, document.content); }
+      catch (error) {
+        try {
+          move(destination, source);
+          for (const document of documents) writeFileSync(document.source, document.original);
+        } catch (rollback) { throw new Error(`Folder move failed: ${String(error)}. Rollback was incomplete: ${String(rollback)}.`); }
+        throw error;
+      }
+    }
   }, () => true);
 }
 
 function deleteKnowledgeFile(area: "notes" | "skills" | "papers", relativePath: string): boolean {
-  const full = join(getStorePath(), area, relativePath);
-  if (!existsSync(full)) return false;
-  return changeKnowledgeSyncDeletions(records => [
-    ...records.filter(record => record.path !== `${area}/${relativePath}`),
-    { path: `${area}/${relativePath}`, deletedAt: now() },
-  ], () => {
-    rmSync(full);
-    return true;
-  }, result => result);
+  return !!knowledgePathMoveToTrash(area, relativePath);
 }
 
 function knowledgeTrashRoot(area: KnowledgeTrashArea): string { return join(areaRoot(area), ".trash"); }
@@ -240,23 +284,32 @@ function knowledgeTrashPath(area: KnowledgeTrashArea | "skills", relativePath: s
 }
 
 export function knowledgeMoveToTrash(area: KnowledgeTrashArea, relativePath: string, kind: KnowledgeTrashEntry["kind"], name: string): KnowledgeTrashEntry | undefined {
+  return withMarkdownAssetMutation(getStorePath(), () => knowledgeMoveToTrashUnlocked(area, relativePath, kind, name));
+}
+
+function knowledgeMoveToTrashUnlocked(area: KnowledgeTrashArea, relativePath: string, kind: KnowledgeTrashEntry["kind"], name: string): KnowledgeTrashEntry | undefined {
   const source = knowledgeTrashPath(area, relativePath);
   if (!source || !existsSync(source.full)) return undefined;
   const stat = statSync(source.full);
   if (kind === "folder" ? !stat.isDirectory() : !stat.isFile()) return undefined;
+  if (kind === "folder" && ["notes", "papers"].includes(area)) assertMarkdownResourceTreeUnshared(areaRoot(area), source.rel, "", source.rel);
   const id = `${Date.now()}-${randomBytes(5).toString("hex")}`;
   const entryDir = join(knowledgeTrashRoot(area), id);
   const entry: KnowledgeTrashEntry = { id, kind, name, originalPath: source.rel, deletedAt: now() };
+  if (kind === "item" && /\.md$/i.test(source.rel)) {
+    assertMarkdownAssetsUnshared(areaRoot(area), source.rel);
+    if (existsSync(source.full.replace(/\.md$/i, ".assets"))) entry.assetsPath = markdownAssetDirectory(source.rel);
+  }
   const move = (): KnowledgeTrashEntry | undefined => {
     try {
       mkdirSync(entryDir, { recursive: true });
       writeFileSync(join(entryDir, "metadata.json"), JSON.stringify(entry, null, 2) + "\n");
-      renameSync(source.full, join(entryDir, "payload"));
+      moveMarkdownPair(source.full, join(entryDir, "payload"), entry.assetsPath ? join(areaRoot(area), entry.assetsPath) : join(entryDir, "absent-assets"), join(entryDir, "assets"));
           try { pruneEmptyAncestors(resolve(source.full, ".."), resolve(areaRoot(area))); } catch {}
       return entry;
-    } catch {
-      rmSync(entryDir, { recursive: true, force: true });
-      return undefined;
+    } catch (error) {
+      if (!existsSync(join(entryDir, "payload")) && !existsSync(join(entryDir, "assets"))) rmSync(entryDir, { recursive: true, force: true });
+      throw error;
     }
   };
   return recordKnowledgeTrashDeletion(area, entry, source.full, move);
@@ -278,16 +331,25 @@ export function knowledgeTrashList(area: KnowledgeTrashArea): KnowledgeTrashEntr
 }
 
 export function knowledgeTrashRestore(area: KnowledgeTrashArea, id: string): { ok: boolean; path?: string; error?: string } {
+  return withMarkdownAssetMutation(getStorePath(), () => knowledgeTrashRestoreUnlocked(area, id));
+}
+
+function knowledgeTrashRestoreUnlocked(area: KnowledgeTrashArea, id: string): { ok: boolean; path?: string; error?: string } {
   const entry = knowledgeTrashList(area).find(item => item.id === id);
   if (!entry) return { ok: false, error: "Trash item was not found." };
   const destination = knowledgeTrashPath(area, entry.originalPath);
   if (!destination) return { ok: false, error: "Trash restore path is invalid." };
   if (existsSync(destination.full)) return { ok: false, error: `Restore target already exists: ${entry.originalPath}` };
   const entryDir = join(knowledgeTrashRoot(area), id);
+  if (entry.assetsPath && (entry.kind !== "item" || entry.assetsPath !== markdownAssetDirectory(entry.originalPath))
+    || !!entry.assetsPath !== existsSync(join(entryDir, "assets"))) {
+    return { ok: false, error: "Trash resource metadata is missing or inconsistent. Preserve the entry for recovery." };
+  }
   const restore = (): { ok: boolean; path?: string; error?: string } => {
     try {
       mkdirSync(resolve(destination.full, ".."), { recursive: true });
-      renameSync(join(entryDir, "payload"), destination.full);
+      const assetsDestination = entry.assetsPath ? checkedMarkdownPath(areaRoot(area), entry.assetsPath) : destination.full + ".assets";
+      moveMarkdownPair(join(entryDir, "payload"), destination.full, join(entryDir, "assets"), assetsDestination);
       try {
         rmSync(entryDir, { recursive: true, force: true });
         if (existsSync(knowledgeTrashRoot(area)) && readdirSync(knowledgeTrashRoot(area)).length === 0) rmSync(knowledgeTrashRoot(area), { recursive: true, force: true });
@@ -295,9 +357,11 @@ export function knowledgeTrashRestore(area: KnowledgeTrashArea, id: string): { o
       return { ok: true, path: entry.originalPath };
     } catch (error: any) { return { ok: false, error: error?.message || String(error) }; }
   };
-  const restoredPath = `${area}/${entry.originalPath}`;
-  return changeKnowledgeSyncDeletions(records => records.filter(record =>
-    record.path !== restoredPath && !(entry.kind === "folder" && record.path.startsWith(restoredPath + "/"))), restore, result => result.ok);
+  const restoredPaths = new Set([
+    ...knowledgeDeletionPaths(area, join(entryDir, "payload"), entry.originalPath),
+    ...(entry.assetsPath ? knowledgeDeletionPaths(area, join(entryDir, "assets"), entry.assetsPath) : []),
+  ]);
+  return changeKnowledgeSyncDeletions(records => records.filter(record => !restoredPaths.has(record.path)), restore, result => result.ok);
 }
 
 export function knowledgeTrashDelete(area: KnowledgeTrashArea, id: string, operations: RemoveOperations = {}): { ok: boolean; name?: string; path?: string; kind?: KnowledgeTrashEntry["kind"]; error?: string } {
@@ -323,7 +387,7 @@ export function knowledgeTrashEmpty(area: KnowledgeTrashArea, operations: Remove
 function walkMd(dir: string, rel: string, out: MdFile[]): void {
   if (!existsSync(dir)) return;
   for (const name of readdirSync(dir)) {
-    if (name.startsWith(".") || name === "_assets") continue;
+    if (name.startsWith(".") || isMarkdownAssetDirectory(name)) continue;
     const full = join(dir, name);
     let st;
     try { st = statSync(full); } catch { continue; }
@@ -477,7 +541,7 @@ export function folderCreate(area: string, relPath: string): boolean {
   } catch { return false; }
 }
 
-/** All subdirectory paths under an area root (relative; skips dotfiles/_assets). */
+/** All content subdirectories, excluding resource folders. */
 export function folderList(area: string): string[] {
   if (!["skills", "notes", "papers", "prompts", "scripts"].includes(area)) return [];
   const out: string[] = [];
@@ -487,7 +551,7 @@ export function folderList(area: string): string[] {
       try { ents = readdirSync(dir, { withFileTypes: true }); } catch { return false; }
       let meaningful = ents.some(entry => entry.isFile() && (entry.name === ".gitkeep" || (!entry.name.startsWith(".") && entry.name.toLowerCase().endsWith(".md"))));
       for (const entry of ents) {
-        if (!entry.isDirectory() || entry.name.startsWith(".") || entry.name === "_assets") continue;
+        if (!entry.isDirectory() || entry.name.startsWith(".") || isMarkdownAssetDirectory(entry.name)) continue;
         const childRel = rel ? `${rel}/${entry.name}` : entry.name;
         if (walkMeaningful(join(dir, entry.name), childRel)) meaningful = true;
       }
@@ -501,7 +565,7 @@ export function folderList(area: string): string[] {
     let ents: any[];
     try { ents = readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const e of ents) {
-      if (!e.isDirectory() || e.name.startsWith(".") || e.name === "_assets") continue;
+      if (!e.isDirectory() || e.name.startsWith(".") || isMarkdownAssetDirectory(e.name)) continue;
       const r = rel ? `${rel}/${e.name}` : e.name;
       out.push(r);
       walk(join(dir, e.name), r);
@@ -595,7 +659,8 @@ export function folderDeletePromote(
   const parentRel = source.rel.includes("/") ? source.rel.slice(0, source.rel.lastIndexOf("/")) : "";
   const destinationRel = [parentRel, fallbackGroup].filter(Boolean).join("/");
   const destinationFull = destinationRel ? resolve(source.root, ...destinationRel.split("/")) : source.root;
-  const entries = readdirSync(source.full).filter(name => name !== ".gitkeep");
+  const entries = readdirSync(source.full).filter(name => name !== ".gitkeep"
+    && !(name.toLowerCase().endsWith(".assets") && existsSync(join(source.full, name.slice(0, -7) + ".md"))));
   const collision = entries.find(name => existsSync(join(destinationFull, name)));
   if (collision) return { ok: false, moved: 0, error: `Cannot delete group: "${collision}" already exists in ${destinationRel || "Root"}.` };
   const rename = operations.rename || renameSync;
@@ -604,7 +669,7 @@ export function folderDeletePromote(
   try {
     if (entries.length) mkdirSync(destinationFull, { recursive: true });
     for (const name of entries) {
-      moveKnowledgePath(area, `${source.rel}/${name}`, [destinationRel, name].filter(Boolean).join("/"), rename);
+      moveKnowledgePath(area, `${source.rel}/${name}`, [destinationRel, name].filter(Boolean).join("/"), rename, { from: source.rel, to: destinationRel });
       moved.push(name);
     }
     removingContainer = true;
@@ -619,7 +684,7 @@ export function folderDeletePromote(
     const rollbackFailures: string[] = [];
     for (const name of moved.slice().reverse()) {
       try {
-        moveKnowledgePath(area, [destinationRel, name].filter(Boolean).join("/"), `${source.rel}/${name}`, rename);
+        moveKnowledgePath(area, [destinationRel, name].filter(Boolean).join("/"), `${source.rel}/${name}`, rename, { from: destinationRel, to: source.rel });
       } catch {
         rollbackFailures.push(name);
       }
@@ -672,6 +737,35 @@ export function storeEntryMove(
     return { ok: true, newPath };
   } catch (error: any) {
     return { ok: false, error: error?.message || String(error) };
+  }
+}
+
+export function knowledgeMarkdownCopy(area: MarkdownAssetArea, sourcePath: string, destinationPath: string): void {
+  return withMarkdownAssetMutation(getStorePath(), () => knowledgeMarkdownCopyUnlocked(area, sourcePath, destinationPath));
+}
+
+function knowledgeMarkdownCopyUnlocked(area: MarkdownAssetArea, sourcePath: string, destinationPath: string): void {
+  const root = join(getStorePath(), area);
+  const source = checkedMarkdownPath(root, sourcePath);
+  const destination = checkedMarkdownPath(root, destinationPath);
+  const sourceAssets = checkedMarkdownPath(root, markdownAssetDirectory(sourcePath));
+  const destinationAssets = checkedMarkdownPath(root, markdownAssetDirectory(destinationPath));
+  if (existsSync(destination) || existsSync(destinationAssets)) throw new Error("The document copy target or its resources already exist.");
+  const original = readFileSync(source, "utf8");
+  referencedMarkdownAssets(getStorePath(), area, sourcePath, original);
+  const { fm, body } = parseFrontmatter(rebaseMarkdownAssets(root, sourcePath, destinationPath, original));
+  const type = area === "skills" ? "skill" : area === "notes" ? "note" : "research";
+  const identity = nextKnowledgeIdentity(undefined, type, relNoExt(destinationPath), relNoExt(destinationPath));
+  Object.assign(fm, { schema: identity.schema, knowledgeId: identity.knowledgeId, revision: identity.revision, aliases: identity.aliases });
+  fm[area === "skills" ? "name" : "title"] = basename(destinationPath, ".md");
+  let copiedAssets = false;
+  try {
+    mkdirSync(resolve(destination, ".."), { recursive: true });
+    if (existsSync(sourceAssets)) { copiedAssets = true; cpSync(sourceAssets, destinationAssets, { recursive: true, force: false, errorOnExist: true }); }
+    writeKnowledgeMarkdownUnlocked(area, destinationPath, undefined, serializeFrontmatter(fm, body));
+  } catch (error) {
+    if (copiedAssets) rmSync(destinationAssets, { recursive: true, force: true });
+    throw error;
   }
 }
 
@@ -753,15 +847,12 @@ export function noteImport(rows: any[]): number {
 }
 
 // ── Assets (pasted images) ───────────────────────────────────────────────────
-// Images live in the NOTE'S OWN folder: notes/<category>/_assets/<sha1>.<ext>,
-// referenced from markdown as `_assets/<sha1>.<ext>` (relative to the note file).
-// Content-hash naming de-dupes identical pastes. The webview rewrites those refs
-// to webview URIs at render time. `category` is the note's folder path (may be "").
-export function saveNoteAsset(base64: string, ext: string, category = ""): string {
+export function saveNoteAsset(base64: string, ext: string, category = "", title?: string): string {
   const buf = Buffer.from(base64, "base64");
   const hash = createHash("sha1").update(buf).digest("hex").slice(0, 16);
   const safeExt = (ext || "png").replace(/[^a-zA-Z0-9]/g, "").toLowerCase() || "png";
   const cat = safeCategory(category);
+  if (title?.trim()) return saveMarkdownAsset(_store, "notes", `${cat ? cat + "/" : ""}${safeName(title)}.md`, `${hash}.${safeExt}`, buf);
   const dir = cat ? join(_store, "notes", ...cat.split("/"), "_assets") : join(_store, "notes", "_assets");
   mkdirSync(dir, { recursive: true });
   const rel = `_assets/${hash}.${safeExt}`;
@@ -780,22 +871,32 @@ export interface SkillTrashEntry {
   name: string;
   originalPath: string;
   deletedAt: string;
+  assetsPath?: string;
 }
 
 function moveSkillPathToTrash(full: string, originalPath: string, kind: SkillTrashEntry["kind"], name: string): SkillTrashEntry | undefined {
+  return withMarkdownAssetMutation(getStorePath(), () => moveSkillPathToTrashUnlocked(full, originalPath, kind, name));
+}
+
+function moveSkillPathToTrashUnlocked(full: string, originalPath: string, kind: SkillTrashEntry["kind"], name: SkillTrashEntry["name"]): SkillTrashEntry | undefined {
   if (!existsSync(full)) return undefined;
   const id = `${Date.now()}-${randomBytes(5).toString("hex")}`;
   const entryDir = join(skillTrashRoot(), id);
   const entry: SkillTrashEntry = { id, kind, name, originalPath, deletedAt: now() };
+  if (kind === "folder") assertMarkdownResourceTreeUnshared(skillsRoot(), originalPath, "", originalPath);
+  if (kind === "skill") {
+    assertMarkdownAssetsUnshared(skillsRoot(), originalPath);
+    if (existsSync(full.replace(/\.md$/i, ".assets"))) entry.assetsPath = markdownAssetDirectory(originalPath);
+  }
   return recordKnowledgeTrashDeletion("skills", entry, full, () => {
     try {
       mkdirSync(entryDir, { recursive: true });
       writeFileSync(join(entryDir, "metadata.json"), JSON.stringify(entry, null, 2) + "\n");
-      renameSync(full, join(entryDir, "payload"));
+      moveMarkdownPair(full, join(entryDir, "payload"), entry.assetsPath ? join(skillsRoot(), entry.assetsPath) : join(entryDir, "absent-assets"), join(entryDir, "assets"));
       return entry;
-    } catch {
-      rmSync(entryDir, { recursive: true, force: true });
-      return undefined;
+    } catch (error) {
+      if (!existsSync(join(entryDir, "payload")) && !existsSync(join(entryDir, "assets"))) rmSync(entryDir, { recursive: true, force: true });
+      throw error;
     }
   });
 }
@@ -833,6 +934,10 @@ export function skillTrashList(): SkillTrashEntry[] {
 }
 
 export function skillTrashRestore(id: string): { ok: boolean; path?: string; error?: string } {
+  return withMarkdownAssetMutation(getStorePath(), () => skillTrashRestoreUnlocked(id));
+}
+
+function skillTrashRestoreUnlocked(id: string): { ok: boolean; path?: string; error?: string } {
   const entry = skillTrashList().find(item => item.id === id);
   if (!entry) return { ok: false, error: "Trash item was not found." };
   const destination = resolve(skillsRoot(), ...entry.originalPath.split("/"));
@@ -840,12 +945,19 @@ export function skillTrashRestore(id: string): { ok: boolean; path?: string; err
   if (!destination.startsWith(root + sep)) return { ok: false, error: "Trash restore path is invalid." };
   if (existsSync(destination)) return { ok: false, error: `Restore target already exists: ${entry.originalPath}` };
   const entryDir = join(skillTrashRoot(), id);
-  const restoredPath = `skills/${entry.originalPath}`;
-  const result = changeKnowledgeSyncDeletions(records => records.filter(record =>
-    record.path !== restoredPath && !(entry.kind === "folder" && record.path.startsWith(restoredPath + "/"))), () => {
+  if (entry.assetsPath && (entry.kind !== "skill" || entry.assetsPath !== markdownAssetDirectory(entry.originalPath))
+    || !!entry.assetsPath !== existsSync(join(entryDir, "assets"))) {
+    return { ok: false, error: "Trash resource metadata is missing or inconsistent. Preserve the entry for recovery." };
+  }
+  const restoredPaths = new Set([
+    ...knowledgeDeletionPaths("skills", join(entryDir, "payload"), entry.originalPath),
+    ...(entry.assetsPath ? knowledgeDeletionPaths("skills", join(entryDir, "assets"), entry.assetsPath) : []),
+  ]);
+  const result = changeKnowledgeSyncDeletions(records => records.filter(record => !restoredPaths.has(record.path)), () => {
     try {
       mkdirSync(resolve(destination, ".."), { recursive: true });
-      renameSync(join(entryDir, "payload"), destination);
+      moveMarkdownPair(join(entryDir, "payload"), destination, join(entryDir, "assets"),
+        entry.assetsPath ? checkedMarkdownPath(skillsRoot(), entry.assetsPath) : destination + ".assets");
     } catch (error: any) { return { ok: false, error: error?.message || String(error) }; }
     return { ok: true, path: entry.originalPath };
   }, result => result.ok);
@@ -940,10 +1052,10 @@ export function skillGet(name: string): any {
 }
 
 export function skillUpsert(row: {
-  name: string; content: string; description?: string; category?: string; tags?: string[]; source_project?: string; pinned?: boolean;
+  name: string; previousName?: string; content: string; description?: string; category?: string; tags?: string[]; source_project?: string; pinned?: boolean;
   recipe_required?: boolean; recipe_hint?: string; related_skills?: string[]; priority?: SkillPriority; links?: unknown[];
 }): boolean {
-  const existingFile = findSkillFile(row.name);
+  const existingFile = findSkillFile(row.previousName || row.name);
   const existing = existingFile ? skillFromFile(existingFile) : null;
   const category = safeCategory(row.category ?? existing?.category ?? "");
   const filename = safeName(row.name) + ".md";
@@ -1406,11 +1518,12 @@ export function paperGraph(opts: {
 }
 
 /** Store an uploaded paper file (e.g. a PDF) under the paper's own _assets/ folder. */
-export function savePaperFile(base64: string, ext: string, category = ""): string {
+export function savePaperFile(base64: string, ext: string, category = "", title?: string): string {
   const buf = Buffer.from(base64, "base64");
   const hash = createHash("sha1").update(buf).digest("hex").slice(0, 16);
   const safeExt = (ext || "pdf").replace(/[^a-zA-Z0-9]/g, "").toLowerCase() || "pdf";
   const cat = safeCategory(category);
+  if (title?.trim()) return saveMarkdownAsset(_store, "papers", `${cat ? cat + "/" : ""}${safeName(title)}.md`, `${hash}.${safeExt}`, buf);
   const dir = cat ? join(_store, "papers", ...cat.split("/"), "_assets") : join(_store, "papers", "_assets");
   mkdirSync(dir, { recursive: true });
   const rel = `_assets/${hash}.${safeExt}`;

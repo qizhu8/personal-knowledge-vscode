@@ -279,3 +279,60 @@ test("browser transport is authenticated, Session-scoped, read-only and rechecks
   assert.match((await (await waitingForRevocation).json()).error, /Root changed/);
   assert.match((await (await api("snapshot")).json()).error, /Root changed/);
 });
+
+test("live overview follows the deepest recorded active node and only explicit bindings", () => {
+  const data = fixture(), model = build(data), overview = model.overview;
+  assert.equal(overview.attempt.id, "a2");
+  assert.equal(overview.attempt.retryOf, "a1");
+  assert.deepEqual(overview.path.map(item => item.title), ["Implement and validate", "Development", "Debug", "Inspect evidence"]);
+  for (const item of overview.path) assert(model.graphs.get(item.graphId).nodes.some(node => node.id === item.nodeId));
+  assert.deepEqual(overview.recipes.map(item => [item.runId, item.source, item.available]), [[runId, "managed-task", true]]);
+  assert.deepEqual(overview.actions.map(item => [item.runId, item.available, item.state]), [[actionId, true, "succeeded"]]);
+
+  const plain = fixture();
+  plain.todos = []; plain.runs = []; plain.actionRuns = [];
+  plain.harness.state = "awaiting-input";
+  plain.harness.currentPhase = { kind:"waiting", label:"Waiting for approval", status:"waiting" };
+  plain.harness.waiting = { kind:"user", detail:"Waiting for approval" };
+  plain.harness.attempts = [{ ...plain.harness.attempts[1], planning:undefined, status:"streaming",
+    budgetReceipts:[{ round:0 }, { round:1 }], publicOutputs:[{ round:0, text:"a" }, { round:1, text:"b" }, { round:1, text:"c" }],
+    toolCalls:[{ id:"wait", name:"ask_user", status:"running", arguments:"{}", resultPreview:"", resultCharacters:0, actionRunIds:["action_run_missing"] }] }];
+  const live = build(plain).overview;
+  assert.equal(live.waiting.kind, "user");
+  assert.equal(live.attempt.preparedRounds, 2);
+  assert.equal(live.attempt.publicRounds, 2);
+  assert.equal(live.attempt.runningToolCalls, 1);
+  assert.deepEqual(live.recipes, [], "no Recipe link is invented for a plain Chat");
+  assert.deepEqual(live.actions.map(item => [item.available, item.graphId]), [[false, undefined]]);
+  assert.deepEqual(live.path.slice(-2).map(item => item.title), ["ask_user", "Result pending"], "a streaming attempt resolves to its running tool call");
+});
+
+test("lifecycle ring highlights only the stage supported by recorded evidence", () => {
+  const variant = (attempt, harness = {}, extra = {}) => {
+    const data = fixture();
+    Object.assign(data, { todos:[], runs:[], actionRuns:[], status:"running" }, extra);
+    data.harness = { state:"running", currentProblem:"Goal", attempts:[{ messageId:"m", attemptId:"a", status:"streaming", toolCalls:[], ...attempt }], ...harness };
+    return build(data).lifecycle;
+  };
+  const stage = (lifecycle, id) => lifecycle.stages.find(item => item.id === id).status;
+  let l = variant({ toolCalls:[{ id:"c", name:"read", status:"running", actionRunIds:[] }] }, { currentPhase:{ kind:"tool", label:"Calling read" } });
+  assert.deepEqual([l.current, l.outcome, stage(l, "configure")], ["run", "running", "visited"]);
+  l = variant({}, { currentPhase:{ kind:"planning", label:"Preparing request" } });
+  assert.equal(l.current, "configure");
+  l = variant({}, { state:"awaiting-result", waiting:{ kind:"dependency", detail:"Polling AML job" } });
+  assert.deepEqual([l.current, l.outcome, l.reason], ["monitor", "waiting", "Polling AML job"]);
+  l = variant({ harnessReports:[{ id:"v", kind:"validation", status:"start", summary:"Running tests", binding:{} }] });
+  assert.equal(l.current, "evaluate");
+  l = variant({ status:"running" }, { state:"awaiting-input", waiting:{ kind:"user", detail:"Approve write" } });
+  assert.deepEqual([l.current, l.outcome, l.waitingUser], ["run", "waiting", true]);
+  assert.match(l.reason, /Waiting for you: Approve write/);
+  l = variant({ status:"complete" }, { state:"completed" });
+  assert.deepEqual([l.current, l.check, stage(l, "end"), stage(l, "evaluate"), stage(l, "monitor")], ["check", "unverified", "pending", "skipped", "skipped"]);
+  l = variant({ status:"complete", harnessReports:[{ id:"v", kind:"validation", status:"complete", summary:"Tests pass", evidenceCallIds:["c"], binding:{} }] }, { state:"completed" });
+  assert.deepEqual([l.current, l.check, stage(l, "evaluate")], ["end", "passed", "visited"]);
+  l = variant({ status:"complete", harnessReports:[{ id:"v", kind:"validation", status:"failed", summary:"2 tests fail", evidenceCallIds:["c"], binding:{} }] }, { state:"completed" });
+  assert.deepEqual([l.current, l.outcome, l.check], ["check", "failed", "failed"]);
+  l = variant({ status:"failed", validation:{ error:"Model timed out" } }, { state:"failed" });
+  assert.deepEqual([l.current, l.outcome, l.reason], ["run", "failed", "Model timed out"]);
+  assert.equal(variant({}, {}, {}).stages.length, 6);
+});

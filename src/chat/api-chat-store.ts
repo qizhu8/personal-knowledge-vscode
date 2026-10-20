@@ -1,6 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { hostname } from "os";
 import { agentSessionGroup } from "../agent-sessions/agent-session-lifecycle";
 import { decodeChatImage } from "./api-chat-client";
@@ -16,6 +16,8 @@ import { ChatHistoryStorage, StoredChat } from "./chat-history-storage";
 import { ExecutionProjection, projectExecution } from "../runtime/pkm-projection";
 import { recordBaselineEvent, BaselineEventKind } from "../runtime/pkm-baseline";
 import { recordedActionReferences } from "../runtime/native-harness-actions";
+import { agentSnapshotRecovery, AgentSnapshotContents, AgentSnapshotSummary } from "../agent-sessions/agent-snapshots";
+import { assertHarnessRecipeBinding, HarnessBinding } from "./chat-harness-records";
 
 export interface ChatContext { id: string; label: string; content: string; }
 export interface QueuedChatInput { id: string; text: string; mode: "steer" | "task"; attemptId?: string; executionContext?: ChatExecutionContext; }
@@ -112,7 +114,7 @@ export interface ChatMessage {
   workerEventIds?: string[];
   unattributedFileChanges?: boolean;
   elapsedMs?: number;
-  usage?: { inputTokens: number; outputTokens: number; cachedInputTokens?: number };
+  usage?: import("./api-chat-models").ChatTokenUsage;
   usageMetadata?: { frames: number; validFrames: number; invalidFrames: number };
   estimatedCost?: number;
   currency?: string;
@@ -181,6 +183,7 @@ export function apiChatDiagnostics(chat: ApiConversation) {
   const tokenUsage = (usage: ChatMessage["usage"]) => usage && [usage.inputTokens, usage.outputTokens].every(value => Number.isSafeInteger(value) && value >= 0) ? {
     inputTokens: usage.inputTokens, outputTokens: usage.outputTokens,
     ...(Number.isSafeInteger(usage.cachedInputTokens) && usage.cachedInputTokens! >= 0 && usage.cachedInputTokens! <= usage.inputTokens ? { cachedInputTokens: usage.cachedInputTokens } : {}),
+    ...(Number.isSafeInteger(usage.reasoningTokens) && usage.reasoningTokens! >= 0 && usage.reasoningTokens! <= usage.outputTokens ? { reasoningTokens: usage.reasoningTokens } : {}),
   } : undefined;
   const usageMetadata = (metadata: ChatMessage["usageMetadata"]) => metadata && [metadata.frames, metadata.validFrames, metadata.invalidFrames].every(value => Number.isSafeInteger(value) && value >= 0 && value <= 128) && metadata.validFrames + metadata.invalidFrames === metadata.frames
     ? { frames: metadata.frames, validFrames: metadata.validFrames, invalidFrames: metadata.invalidFrames } : undefined;
@@ -239,8 +242,8 @@ export function apiChatHarnessSnapshot(chat: ApiConversation, fullResults = fals
     if (message.role !== "assistant") return [];
     const retrievalSteps = [
       ...(message.retrieval ? [{ kind: "selection", receipt: message.retrieval }] : []),
-      ...(message.retrievalActivity?.attempts || []).map(attempt => ({ kind: `${attempt.kind}-recall`, durationMs: attempt.durationMs, receipt: attempt.receipt })),
-      ...(message.retrievalActivity?.rounds || []).map(round => ({ kind: "sent-round", inputTokens: round.inputTokens, inputBudget: round.inputBudget, receipt: round.receipt })),
+      ...(message.retrievalActivity?.attempts || []).map(attempt => ({ kind: `${attempt.kind}-recall`, at: attempt.at, durationMs: attempt.durationMs, receipt: attempt.receipt })),
+      ...(message.retrievalActivity?.rounds || []).map(round => ({ kind: "sent-round", round: round.index, at: round.at, inputTokens: round.inputTokens, inputBudget: round.inputBudget, receipt: round.receipt })),
     ];
     return [{
       messageId: message.id, status: message.status, model: message.model || "",
@@ -281,10 +284,14 @@ export function apiChatHarnessSnapshot(chat: ApiConversation, fullResults = fals
         ...step,
         receipt: {
           schema: step.receipt.schema, query: step.receipt.query, selectedCount: step.receipt.selectedCount,
-          warning: step.receipt.warning,
+          model: step.receipt.model, phase: step.receipt.phase, warning: step.receipt.warning,
           candidates: step.receipt.candidates.map(candidate => ({ ...candidate })),
         },
       })),
+      memory: message.memory ? {
+        turn: message.memory.turn, model: message.memory.model, durationMs: message.memory.durationMs, error: message.memory.error,
+        blocks: (message.memory.blocks || []).map(block => ({ ...block })),
+      } : undefined,
       toolCalls: (message.toolCalls || []).map(call => ({
         id: call.id, name: call.name, status: call.status,
         harnessBinding:call.harnessBinding, startedAt:call.startedAt, finishedAt:call.finishedAt,
@@ -517,6 +524,65 @@ export class ApiChatStore {
     try { this.save(chat, true, title); } catch (error) { delete chat.sessionId; chat.memoryTasks = previousMemoryTasks; throw error; }
   }
 
+  /**
+   * Recovers an Agent Snapshot into a new PKM Chat with its own Task. PKM Snapshots restore the conversation
+   * and clone Recipe runs; Snapshots from retired external agents restore task, todos and checkpoints only.
+   */
+  recoverAgentSnapshot(snapshot: Pick<AgentSnapshotSummary, "snapshotId" | "magicCode" | "sourceSessionId" | "name" | "task">, contents: AgentSnapshotContents): ApiConversation {
+    const source = contents.session as any;
+    const native = source.origin === "pkm-native" && source.nativeChat && typeof source.nativeChat === "object" ? source.nativeChat : undefined;
+    const title = String(snapshot.name || snapshot.task || source.task || "Recovered Snapshot").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 100) || "Recovered Snapshot";
+    const chat = this.create();
+    const created: string[] = [];
+    let sessionPath = "";
+    try {
+      chat.title = `${title} (recovered)`.slice(0, 120); chat.customTitle = true;
+      if (native) {
+        for (const field of ["modelProvider", "vscodeModelId", "vscodeModelLabel", "modelProfileId", "contextWindow", "maxOutputTokens", "includeHistory"] as const) {
+          if (native[field] !== undefined) (chat as any)[field] = native[field];
+        }
+        chat.messages = (Array.isArray(native.messages) ? native.messages : []).filter((message: any) => message && typeof message.id === "string" && ["user", "assistant"].includes(message.role)).map((original: any) => {
+          const { delegations: _delegations, workerEventIds: _events, delegationId: _delegation, ...message } = JSON.parse(JSON.stringify(original));
+          if (message.status === "streaming") message.status = "interrupted";
+          if (Array.isArray(message.toolCalls)) message.toolCalls = message.toolCalls.map((call: any) => call.status === "running" ? { ...call, status: "failed", result: call.result || "Interrupted before the Snapshot was recovered." } : call);
+          return message as ChatMessage;
+        });
+      }
+      this.save(chat);
+      this.startTask(chat, title);
+      const sessionId = chat.sessionId!;
+      sessionPath = path.join(this.stateDirectory, "agent-sessions", `${sessionId}.json`);
+      const recovery = agentSnapshotRecovery(contents, snapshot, sessionId);
+      recovery.recipeRuns.forEach(run => {
+        const file = path.join(this.stateDirectory, "recipe-runs", `${run.runId}.json`);
+        fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+        fs.writeFileSync(file, JSON.stringify(run), { encoding: "utf8", mode: 0o600, flag: "wx" });
+        created.push(file);
+      });
+      this.write(sessionPath, { ...JSON.parse(fs.readFileSync(sessionPath, "utf8")), ...recovery.session });
+      const todos = recovery.session.todos as Array<{ title?: string; status?: string }>;
+      const open = todos.filter(todo => !["succeeded", "skipped", "failed"].includes(String(todo.status)));
+      const checkpoint = (recovery.session.checkpoints as any[]).slice(-1)[0];
+      const summary = String(checkpoint?.state?.summary || "").trim();
+      for (const message of chat.messages) if (message.taskId) message.taskId = sessionId;
+      chat.messages.push({ id: randomUUID(), role: "assistant", status: "complete", taskId: sessionId, recordedAt: new Date().toISOString(),
+        content: [`Recovered Agent Snapshot \`${snapshot.magicCode}\` into this new PKM Chat Task.`,
+          native ? `Restored ${chat.messages.length} earlier message(s) and ${recovery.recipeRuns.length} Recipe run(s).` : "The Snapshot came from an external agent, so only its task, todos and checkpoints were restored (it has no conversation or Recipes).",
+          summary ? `Latest checkpoint: ${summary.slice(0, 2000)}` : "",
+          open.length ? `Unfinished todos:\n${open.slice(0, 20).map(todo => `- ${todo.title || "Untitled"}`).join("\n")}` : "",
+          "Send a message to continue from here."].filter(Boolean).join("\n\n") });
+      chat.updatedAt = new Date().toISOString();
+      this.save(chat);
+    } catch (error) {
+      // Recovery is all-or-nothing: remove everything this attempt wrote so a retry leaves no orphaned Chat or Task.
+      for (const file of created) fs.rmSync(file, { force: true });
+      if (sessionPath) fs.rmSync(sessionPath, { force: true });
+      try { this.library.trash(chat.id); this.deleteChat(chat.id); } catch { /* The original error is more useful than a cleanup failure. */ }
+      throw error;
+    }
+    return chat;
+  }
+
   completeTask(chat: ApiConversation): void {
     withCrossProcessLockSync(path.join(this.stateDirectory, "api-chats", "chats.lock"), "Chat history", () => this.completeTaskUnlocked(chat));
   }
@@ -543,6 +609,60 @@ export class ApiChatStore {
 
   save(chat: ApiConversation, initializeSession = false, taskTitle?: string): void {
     withCrossProcessLockSync(path.join(this.stateDirectory, "api-chats", "chats.lock"), "Chat history", () => this.saveUnlocked(chat, initializeSession, taskTitle));
+  }
+
+  bindRecordedRecipe(chat: ApiConversation, binding: HarnessBinding): void {
+    const runId = binding.recipeRunId;
+    if (!runId) return;
+    if (!/^agent_session_[a-f0-9]{32}$/.test(chat.sessionId || "")) throw new Error("A managed Task is required for Recipe binding.");
+    withCrossProcessLockSync(path.join(this.stateDirectory, "api-chats", "chats.lock"), "Chat history", () => {
+      this.assertAvailable(chat);
+      const filename = path.join(this.stateDirectory, "agent-sessions", `${chat.sessionId}.json`);
+      const session = JSON.parse(fs.readFileSync(filename, "utf8"));
+      if (session.schema !== "pkm.agent.session/v1" || session.sessionId !== chat.sessionId
+        || session.origin !== "pkm-native" || session.runtimeOwner !== "pkm" || session.hostSessionId !== chat.id) throw new Error("The native Task's Recipe authority is unavailable.");
+      const read = (id: string): Record<string, unknown> => {
+        if (!/^recipe_run_[A-Za-z0-9_-]+$/.test(id)) throw new Error("Invalid Recipe Run identity.");
+        return JSON.parse(fs.readFileSync(path.join(this.stateDirectory, "recipe-runs", `${id}.json`), "utf8"));
+      };
+      const owned: string[] = session.recipeRunIds || [];
+      let id = runId;
+      const seen = new Set<string>();
+      while (!owned.includes(id)) {
+        if (seen.has(id)) throw new Error("Cyclic Recipe ownership.");
+        seen.add(id);
+        const run = read(id);
+        const parent = run.parent as { runId?: string; nodeId?: string } | undefined;
+        if (!parent?.runId) break;
+        id = parent.runId;
+      }
+      if (!owned.includes(id)) {
+        const run = read(id);
+        const receipts = run.receipts as Record<string, { response?: string | { run_id?: string } }> | undefined;
+        const createdHere = chat.messages.filter(message => message.taskId === chat.sessionId && message.role === "assistant")
+          .some(message => (message.toolCalls || []).some(call => {
+            if (call.status !== "complete" || !call.result) return false;
+            let args: Record<string, unknown>, result: Record<string, unknown>;
+            try {
+              args = JSON.parse(call.arguments);
+              const envelope = JSON.parse(call.result);
+              if (!envelope || typeof envelope !== "object") return false;
+              const text = Array.isArray(envelope.content) ? envelope.content.find((part: { type?: string } | null) => part?.type === "text")?.text : undefined;
+              result = envelope.structuredContent || (text ? JSON.parse(text) : envelope);
+            } catch (error) { if (error instanceof SyntaxError) return false; throw error; }
+            const command = args?.command_id;
+            const receipt = typeof command === "string" ? receipts?.[command]?.response : undefined;
+            const recorded = typeof receipt === "string" ? JSON.parse(receipt) : receipt;
+            return typeof command === "string" && result?.ok === true && result.run_id === id && result.replayed !== true
+              && id === `recipe_run_${createHash("sha256").update(command).digest("hex").slice(0, 24)}`
+              && recorded?.run_id === id;
+          }));
+        if (!createdHere) throw new Error("Recipe Run is not owned by this Task and has no original creation receipt in this Task.");
+      }
+      const roots = [...new Set([...owned, id])];
+      assertHarnessRecipeBinding(binding, { ...session, recipeRunIds: roots }, read);
+      if (!owned.includes(id)) this.write(filename, { ...session, recipeRunIds: roots });
+    });
   }
 
   private saveUnlocked(chat: ApiConversation, initializeSession: boolean, taskTitle?: string): void {
@@ -710,6 +830,8 @@ export class ApiChatStore {
     for (const message of chat.messages) if (recoverInterrupted && message.status === "streaming") {
       message.status = "interrupted";
       message.error = "The previous request was interrupted. Partial output was preserved.";
+      const ledger = message.budgetReceipts?.[message.budgetReceipts.length - 1]?.ledger;
+      if (ledger) ledger.outcome = { status: "interrupted", detail: message.error };
       for (const tool of message.toolCalls || []) if (tool.status === "running") { tool.status = "failed"; tool.result = "The request was interrupted. Execution may already have occurred."; }
     }
     if (recoverInterrupted && chat.progress?.status === "running") {

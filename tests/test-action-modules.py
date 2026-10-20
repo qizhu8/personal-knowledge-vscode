@@ -32,7 +32,7 @@ class MathExpressionTests(unittest.TestCase):
                 math_expression(expression, inputs)
         definitions = component_definitions()
         self.assertEqual(definitions["core.switch"]["category"], "core/logic")
-        self.assertEqual(definitions["core.user-action"]["category"], "core/logic")
+        self.assertEqual(definitions["core.user-action"]["category"], "core/interaction")
         self.assertEqual(definitions["core.math-expression"]["math_functions"]["log"], "math.log")
 
     def test_numbered_math_ports_in_executable_graph(self):

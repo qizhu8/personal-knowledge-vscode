@@ -1,55 +1,62 @@
 # Chat Groups and Tasks
 
-Agent Session MCP capability version 1.8.0 adds one durable Group per
-`(host_kind, host_session_id)` within a Knowledge Root.
+Agent Sessions are owned by **PKM Chat only** (Agent Session MCP capability
+version 2.0.0). External agents (Copilot, Claude, and other MCP clients) can no
+longer start, resume, checkpoint, stop, end, or manage Todos of an Agent Session.
+Support for them was retired because the external lifecycle could not be
+controlled reliably and gave no clear benefit over the agent's own planning.
 
-- `agent_session_start` starts a Task and reuses the chat's Group. Supply the
-  stable chat ID, not the MCP connection ID. `host_kind` defaults to `copilot`;
-  other adapters must supply their own identifier.
-- The compatible Task record remains `pkm.agent.session/v1`. `taskId` equals
-  `sessionId`; existing Todo, Recipe, checkpoint, usage, and Trash references
-  remain unchanged. Ending a Task does not delete its Group.
-- Group bindings live under `.pkm/state/agent-groups/` with schema
-  `pkm.agent.group/v1`. Atomic writes and per-Group cross-process locks prevent
-  duplicate creation. Membership is derived from Task records, not a duplicated
-  list of IDs in the Group.
-- Runtime registration idempotently adds binding metadata to existing active
-  and trashed Session records without changing their progress, timestamps,
-  snapshots, or IDs. Migration failures are logged per record. The UI can
-  project compatible group identities before the MCP runtime is regenerated.
-- Missing chat IDs produce explicitly **unlinked** Tasks, never one shared
-  unknown-chat Group. `agent_session_resume` accepts `host_session_id` and
-  `host_kind` to bind an unlinked resumable Task. It rejects moving an already
-  bound Task to another chat; use Snapshot recovery for an independent copy.
-- Snapshot recovery uses the destination chat binding, not the source Group.
-  Checkpoint Package imports are initially unlinked; resume with the destination
-  chat ID to bind them. Resuming without a destination keeps the existing binding.
-- Empty Groups offer **Delete Chat Group** in their context menu and row action
-  button. Populated Groups offer the same confirmed command, but the backend
-  requires moving their Tasks to Trash first. Running Tasks must be stopped
-  explicitly; deleting a Group never stops work or deletes a Copilot conversation.
-- Deletion atomically retains a `deletedAt` marker under the per-Group lock.
-  Deleted metadata is excluded from the tree and Group count. Runtime migration
-  and restart preserve this marker, so retained Trash history cannot recreate
-  an empty Group. Task, Todo, Recipe and checkpoint evidence remain unchanged.
-  Explicitly starting or restoring a Task can display its original Group binding
-  again; migration alone cannot. Visible counts include empty retained Groups
-  and deduplicate Groups already represented by Tasks.
+- A PKM Chat Task is a native `pkm.agent.session/v1` record with
+  `origin: pkm-native`, `runtimeOwner: pkm`, and `hostKind: pkm`. `taskId`
+  equals `sessionId`. Tasks are optional and explicit; casual Chat turns do not
+  create Tasks or Todos.
+- Automation > Agent Sessions shows **Chat Groups > Tasks** for PKM Chat only.
+  Each PKM Chat is one Group; Library categories label it without changing its
+  identity.
+- When the panel first loads a Knowledge Root, every existing external
+  (non-PKM) Session record of any status moves to Agent Sessions Trash. All
+  external MCP transport mappings (`agent-sessions/active/*.json`) are removed.
+  The records are kept (not deleted), so their history stays readable. Normal
+  Trash retention and permanent deletion still apply. External Sessions cannot
+  be restored from Trash. Retired external Group bindings are no longer shown.
+- Empty Groups offer **Delete Chat Group**. Populated Groups need their Tasks
+  moved to Trash first. Deleting a Group never deletes the PKM Chat conversation.
 
-Automation > Agent Sessions displays **Chat Groups > Tasks**, independent of
-Agent names. Task details retain the existing Session controls and graph, with
-Group and Task identities shown explicitly.
+## Agent Snapshots
 
-The [independent API Chat](api-chat.md) owns native `hostKind: pkm` Sessions with
-explicit `origin: pkm-native` and `runtimeOwner: pkm`. Tasks are optional and
-explicit; casual Chat turns do not automatically create Tasks or Todos.
-Existing external host records are projected without rewriting
-them; ambiguous legacy origins remain unknown. Source labels do not imply that
-external host runtimes are controlled by PKM.
+Snapshots are created from **Automation > Agent Snapshot**. They are immutable,
+locally obfuscated captures (fixed local `uone` key, not encryption against
+another user of this machine).
 
-This release does **not** add Group Memory editing, Task context retrieval,
-context budgets, host AIU ingestion, or true model-context isolation. Those need
-separate storage/retrieval/execution integration and quality/cost validation.
+- A **PKM Chat Snapshot** captures the Session (task, todos, checkpoints), its
+  conversation, and the whole Recipe tree: top-level runs, runs referenced by
+  `recipeTreeEdges`, and nested child runs. Execution receipts are never
+  captured.
+- An **external Snapshot** (created before external Sessions were retired)
+  contains only task, todos, and checkpoints. It has no Recipes and no
+  conversation.
+- **Any agent can read a Snapshot.** The MCP tools `agent_session_snapshot_list`
+  and `agent_session_snapshot_read(magic_code, recent_messages=12)` are
+  read-only. Reading creates no Agent Session and changes no state. A read
+  returns task, todos, checkpoints, and the latest checkpoint state. For PKM
+  Chat Snapshots it also returns Recipe run node states and up to 50 recent
+  messages. **Copy Read Prompt** puts a prompt for this call on the clipboard.
+- **Recover into New PKM Chat** creates a new PKM Chat with its own Task:
+  - For PKM Snapshots, the conversation is restored. Streaming replies become
+    interrupted and running tool calls become failed.
+  - Recipe runs are cloned with fresh IDs. Running nodes restart as pending,
+    receipts are cleared, and parent/child links are remapped.
+  - Running or paused todos become pending.
+  - A continuation todo is added when nothing is left unfinished.
+  - The Session records `provenance.snapshotId`, and the Snapshot's recovery
+    count increases.
+  - The source Snapshot and its source runs are never modified.
+
+The retired "Create Agent Snapshot" built-in Recipe is removed from installed
+Recipe Libraries.
+
+Group Memory editing, Task context retrieval, context budgets, and true
+model-context isolation are not part of this feature.
 
 ## Validation
 
@@ -57,14 +64,17 @@ separate storage/retrieval/execution integration and quality/cost validation.
 npm run build
 node tests/test-agent-session-lifecycle.js
 node tests/test-four-workspace-ui.js
-python tests/test-agent-session-groups.py
+node tests/test-agent-snapshots.js
+node tests/test-agent-session-pkm-only.js
 python tests/test-agent-session-mcp-runtime.py
 ```
 
-Alternatively run `npm run test:agent-session-groups` with that Python on `PATH`.
+Alternatively, run `npm run test:agent-session-groups` with the MCP Python
+environment (FastMCP and cryptography) on `PATH`. `test-agent-session-pkm-only.js`
+covers:
 
-Use the existing MCP Python environment (with FastMCP and cryptography) for the
-Python scripts. Group tests cover process concurrency, migration and restart,
-Agent-independent grouping, separate host namespaces, unlinked binding and
-rejection of conflicting or corrupt bindings. Runtime tests cover Snapshot and
-checkpoint compatibility.
+- external Session retirement and its idempotence
+- the Trash restore guard
+- Recipe-tree capture
+- Python reads of TypeScript-created Snapshots
+- recovery into a PKM Chat

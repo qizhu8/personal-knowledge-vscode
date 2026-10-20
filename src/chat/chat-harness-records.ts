@@ -9,13 +9,14 @@ export interface HarnessBudgetReceipt {
   round: number;
   modelId: string;
   countingMethod: "utf8-byte-estimate";
-  requested: { contextWindow: number; outputTokens: number; modelTimeoutMs: number; activeReviewMs: number; toolRoundReview: number };
+  requested: { contextWindow: number; outputTokens: number; modelTimeoutMs: number; activeReviewMs?: number; toolRoundReview: number };
   effective: { inputBudget: number; outputTokens: number };
   consumed: { estimatedInputTokens: number; activeMs: number };
   selectedReferenceIds: string[];
   contextPlan?: import("./chat-context").ContextPlanReceipt;
   transport?: import("./api-chat-client").ChatTransportReceipt;
   status: "prepared" | "sent";
+  ledger?: import("./chat-budget-ledger").ChatBudgetLedger;
 }
 export interface HarnessReport {
   schema: "pkm.chat.harness-report/v1";
@@ -219,7 +220,7 @@ export function createHarnessReportTool(chat: ApiConversation, reply: ChatMessag
       const report = validateHarnessReport(chat, reply, args);
       commit(report);
       return JSON.stringify({ ok:true, reportId:report.id, source:report.source, binding:report.binding,
-        effect:"Recorded observation only; managed Task/Recipe authority unchanged." });
+        effect:"Recorded observation only; original creation receipts may attach Recipe ownership. Managed Task/Recipe execution and completion authority unchanged." });
     },
   };
 }

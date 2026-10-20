@@ -45,6 +45,58 @@ destination and overwrite-conflict UX or live qualification acceptance.
 
 ## Separate the records
 
+### Action Library and nested authoring
+
+Automation's **Action Library** and `personalKnowledge.openActions` open the
+searchable Library in the existing Workbench. Search by identity, name,
+description or capability, inspect the original definition/I/O schemas/effects
+and implementations, select an implementation, qualify declared examples, or
+explicitly approve a typed invocation. Opening, searching and inspecting do not
+qualify or execute an Action. Package enable/disable is separate from permission.
+
+The inspector separates installation, enabled state, grant, qualification,
+environment and authoritative readiness. Ordinary qualification is checked against
+the definition hash, environment and expiry. Components need no operator grant;
+private platform grant status is explicitly **runtime-checked**, not a claim that
+the inspector has independently certified every private binding. The durable
+executor rechecks permission/readiness at launch. Its original Run history,
+inspection, checkpoints, cancellation/recovery and **Open in Project** routes
+remain the lifecycle authority.
+
+Input fields and advanced JSON stay synchronized. Editing clears approval.
+The original launch key and exact inputs are saved before submission; an unknown
+response retains them across reload. Explicitly retrying that same submission
+reuses the original key rather than launching a replacement. Draft restoration
+and history inspection do not retry automatically.
+
+Loop bodies and branch `then_steps`, `else_steps`, `default_steps` and switch
+`cases` have an **Open ... subgraph** editor. Ordered nodes, stable IDs, typed
+JSON literals/expressions, ancestor navigation, reordering, deletion and Undo edit
+the existing pipeline AST; they introduce no alternate execution language.
+Exact JSON can replace the current subtree without clearing invalid fields in
+another subtree. Invalid fields and pending raw JSON block Check/Apply and retain
+their text across reload. Closing retains the draft; **Resume nested draft**
+reopens it, including a draft whose parent was removed. Discard requires explicit
+confirmation. Undo history is in-memory; the draft, not that history, survives
+reload/browser handoff.
+
+Check uses the existing whole-graph contract checker. Apply updates only the
+composition draft; saving, qualification and execution are separate. If the parent
+field changed while the nested draft was open, Apply refuses to overwrite it.
+
+Repeatable focused acceptance:
+
+```sh
+npm run test:action-library
+```
+
+The browser test calls the production runtime API in isolated stores at 1280,
+390 and 320 pixels, executes the authored nested for/if composition to `[0, 2]`,
+checks raw JSON/reload/keyboard/stale-parent behavior and loses a real launch
+response before retrying the same key. Native dispatcher tests separately check
+the Library entry, API allowlist and CSP nonce on every inline script. This is
+not Windows, live private-cloud qualification or an installed Webview visual claim.
+
 | Record | Owns | Does not own |
 | --- | --- | --- |
 | Definition | Stable identity, version, schemas, effects, documentation | Local credentials or readiness |

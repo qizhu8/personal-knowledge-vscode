@@ -68,7 +68,7 @@ function walk(area: string, directory: string, relative = ""): void {
   let children: fs.Dirent[];
   try { children = fs.readdirSync(directory, { withFileTypes: true }); } catch { return; }
   for (const child of children) {
-    if (child.name.startsWith(".") || ignoredDirectories.has(child.name)) continue;
+    if (child.name.startsWith(".") || ignoredDirectories.has(child.name) || child.name.toLowerCase().endsWith(".assets")) continue;
     const childRelative = relative ? `${relative}/${child.name}` : child.name;
     const fullPath = path.join(directory, child.name);
     if (child.isDirectory()) { walk(area, fullPath, childRelative); continue; }

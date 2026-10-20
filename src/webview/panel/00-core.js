@@ -859,6 +859,7 @@ window.addEventListener('message', e => {
     const cb = pendingAssets[e.data.reqId];
     if (cb) { delete pendingAssets[e.data.reqId]; cb(e.data.markdown, e.data.error); }
   }
+  else if (command === 'markdownAssetList') { showMarkdownAssetList(data); }
   else if (command === 'noteLinkMissing') {
     vscode.postMessage({ command: 'toast', text: 'No note found for “' + (e.data.target || '') + '”' });
   }
@@ -1012,6 +1013,7 @@ window.addEventListener('message', e => {
   }
   else if (command === 'projectResult') { projectOnResult(data); }
   else if (command === 'agentSnapshotCreated') { finishAction('agentSnapshotCreate'); agentSnapshotOnCreated(data); }
+  else if (command === 'agentSnapshotRecovered') finishAction('agentSnapshotRecover');
   else if (command === 'agentSnapshotContents') { finishAction('agentSnapshotContents'); agentSnapshotOnContents(data); }
   else if (command === 'recipeValidationResult') { recipeOnValidation(data); }
   else if (command === 'recipeIntentEdited') { recipeOnIntentEdited(data); }

@@ -733,6 +733,44 @@ class ModuleRuntime:
             raise PermissionError("needs_workspace: configure personalKnowledge.actions.workspaceRoots for this OS.")
         return Path(value).resolve()
 
+    def library_get(self, action_id):
+        catalog = self.catalog()
+        action = next((item for item in catalog["actions"] if item["action_id"] == action_id), None)
+        if action is None:
+            raise ValueError("Action is not enabled in the current library.")
+        if action.get("component") or action.get("visibility") == "private":
+            return {"ok": True, "action": action, "installation": "installed", "enabled": True,
+                    "grant": {"state": "runtime-checked" if action.get("visibility") == "private" else "not-required"},
+                    "qualification": {"state": action["availability"]["state"]},
+                    "environment": {"platform": platform.system(), "architecture": platform.machine()}}
+        definition = self.definition(action_id)
+        grant = {"state": "granted"}
+        environment = {"platform": platform.system(), "architecture": platform.machine()}
+        try:
+            implementation = self.implementation(definition)
+            environment["implementation_id"] = implementation.get("id")
+            environment["kind"] = implementation["kind"]
+            if implementation["kind"] in {"builtin", "pipeline"}:
+                grant["state"] = "not-required"
+            self.authorize(definition)
+        except (PermissionError, OSError, ValueError) as error:
+            grant = {"state": "blocked", "reason": str(error)}
+        qualification = {"state": "unverified"}
+        filename = self.root / "validations" / (action_id + ".json")
+        if filename.exists():
+            record = json.loads(filename.read_text(encoding="utf-8"))
+            qualification = {"state": "stale", "content_hash": record.get("content_hash"),
+                             "expires_at": record.get("expires_at")}
+            try:
+                if (record["content_hash"] == definition["content_hash"]
+                        and record["environment_fingerprint"] == self.fingerprint(definition)
+                        and datetime.datetime.fromisoformat(record["expires_at"]) > now()):
+                    qualification["state"] = record["status"]
+            except (PermissionError, OSError, ValueError, TypeError, KeyError) as error:
+                qualification["reason"] = str(error)
+        return {"ok": True, "action": action, "installation": "installed", "enabled": True,
+                "grant": grant, "qualification": qualification, "environment": environment}
+
     def configure_workspace(self, directory):
         if not isinstance(directory, str) or not directory or not Path(directory).is_absolute():
             raise ValueError("An explicit absolute workspace directory is required.")
@@ -2103,6 +2141,7 @@ if __name__ == "__main__":
                    "select_implementation": runtime.implementation_select, "save_graph": runtime.graph_save,
                    "check_graph": runtime.graph_definition, "call": runtime.call, "run": platform_runtime.get, "cancel_run": platform_runtime.cancel,
                    "platform_call": platform_runtime.call, "retrieve": platform_runtime.retrieve,
+                   "library_get": runtime.library_get,
                    "definition_get": lambda action_id: {**platform_runtime.definition(action_id),
                        "availability": platform_runtime.availability(action_id) if action_id.startswith("cosmos.")
                            else runtime.availability(action_id)},

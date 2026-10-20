@@ -5,6 +5,48 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.74] - 2026-10-20
+
+- Add a persisted per-round budget ledger to native Chat/Harness: owners, units, configured limits, review triggers, local estimates/counts, provider input/output/reasoning/cache usage and configured-price cost estimates remain distinct. Main Chat keeps Provider-default thinking; this adds no override or new execution limit. Unknown metrics are explicitly unavailable, not zero or unlimited.
+- Replace repeated cumulative provider usage frames within one inference rather than charging each frame again; distinct inference rounds still accumulate. Preserve valid reasoning usage in diagnostics. Track terminal outcome and actual user/approval/continuation waiting separately from active execution, and retain interrupted checkpoint accounting on restart rather than inventing downtime usage.
+- Expose individual ledger entries as read-only Harness subgraphs while retaining legacy budget receipts. Size the Harness root including padding so 320px navigation does not overflow. Task-wide worker/resource allocation, actual model-idle/first-token timing, Memory-model accounting and provider invoices remain outside this first ledger layer.
+
+## [3.2.73] - 2026-10-20
+
+- Open Automation's searchable Action Library in the existing Workbench. Inspect definitions, schemas, implementations, environment, grants, qualification and authoritative readiness separately; explicitly qualify/select/run, inspect original Run history or open it in Project. Typed fields and JSON retain drafts and clear approval on change. Unknown launch responses retain the original persisted key and exact inputs, including across reload; no observation or retry creates a replacement Run.
+- Add nested loop/branch/case authoring over the existing pipeline AST, with stable IDs, ordered nodes, ancestor navigation, JSON round-trip, Undo, retained drafts, explicit discard and whole-graph checking. Invalid field text and pending raw JSON survive reload and block Apply; a changed parent field cannot be overwritten. Runtime-backed Chromium acceptance covers desktop, 390/320px, keyboard Apply, actual nested execution and lost-response same-key recovery.
+- Give Skills, Notes and Research document-owned `Name.assets/` resource folders, native/panel tree expansion, preview and management. Share the move/copy/rename and Trash lifecycle with MCP, include resources in bundle/subscription/GitHub transport and refuse shared-reference destruction or conflicting destinations. Legacy `_assets/` migration is hash-bound, preview-first and explicitly approved; original files are retained. New attachments require a saved document, and open inline/dirty native editors block resource management.
+- Preserve per-resource Sync deletion intent across parent edits and Trash restore. Rename/deletion journals the old resource path; restoring a document/folder cancels deletion only for actual restored payloads, not resources or earlier members that had already been deleted.
+- Fill the ten missing Copilot MCP-registration translations in all nine affected locales; the complete 386-key, 11-language localization gate now passes.
+
+## [3.2.72] - 2026-10-20
+
+- Allow a PKM Chat's explicit Harness binding to attach a Recipe created in that same managed Task, but only with its original completed tool result, deterministic command identity and matching local runtime creation receipt. Foreign Tasks, replayed creation results, invalid pinned stages and broken nested-parent links cannot establish ownership. Binding remains observational and does not execute or complete a Recipe or Task.
+- Fix standalone Visualization headers collapsing into a one-character column. Dashboard panels now stack according to the available dashboard width, including medium-sized VS Code windows with an open Chat tree.
+- Complete installed-VSIX Visualization acceptance with actual workspace search, nested pinned Recipes, parent/child Actions, event wait, bounded wait/poll and original Component receipts. Synchronized screenshots capture live graph nodes, approvals, failure recovery and lifecycle state; same-host reopen and a second Extension Host preserve execution hashes with no model/tool replay. Chromium fixtures separately cover responsive layouts, navigation retention, hidden refresh and reduced motion. This does not certify Windows, cloud execution, Memory quality or paid-model performance.
+
+## [3.2.71] - 2026-10-20
+
+- Record actual permission waits in the Harness timeline. Visualization now shows waiting for approval instead of continuing to label a suspended builtin, MCP or VS Code tool as running. Automatic permission grants do not add a false wait; answering resumes the prior phase.
+- Expand installed-VSIX acceptance to the standalone six-view Visualization window, record-change refresh and reopening across two Extension Hosts. A controlled local model executes a denied command, an approved failing process and a recovery process while the real Webview observes retrieval/model/tool/approval/completion states. Persisted execution evidence and a once-only local side effect are checked again after reopening and restart. Full nested Recipe/Action visual acceptance remains separate.
+
+## [3.2.70] - 2026-10-20
+
+- Visualization Recipe / Action now lists all explicit current-attempt bindings instead of opening only the first one. Open a specific Recipe stage or Action Run, drill into nested Recipe/Component receipts, and distinguish missing execution records from absent bindings. Initial navigation prefers active bindings; submission completion is not labeled as remote-job completion.
+- Switching Visualization dashboard panels and returning preserves the inspected subgraph, selection, zoom and scroll. Refresh does not hijack inspection; switching Chat clears navigation state. Chromium regression covers desktop and narrow layouts, waiting remote jobs, nested receipts, missing records and cross-Chat isolation.
+- Constrain dashboard tiles so long binding summaries cannot widen the page or cause navigation to scroll the main graph out of view.
+
+## [3.2.69] - 2026-10-20
+
+- Agent Sessions are PKM Chat only. External agents (Copilot, Claude, other MCP clients) can no longer start or manage Sessions. The Agent Session MCP capability 2.0.0 exposes only `agent_session_capabilities`, `agent_session_snapshot_list`, and the new read-only `agent_session_snapshot_read`. Existing external Session records move to Agent Sessions Trash with their transport mappings removed, and they cannot be restored. The "Create Agent Snapshot" System Recipe is retired.
+- Any agent can read an Agent Snapshot by Magic Code without creating a Session. PKM Chat Snapshots now capture the whole nested Recipe tree and the conversation. External Snapshots carry no Recipes or conversation. **Recover into New PKM Chat** restores the conversation and remapped Recipe runs into a new PKM Chat Task. **Copy Read Prompt** replaces the old recovery prompt. PKM Skill Router 2.0.0 routes accordingly.
+- Visualization window Retrieval / Search panel:
+  - a live retrieval banner
+  - shortlist / prepared / sent stage explanations
+  - candidate filters
+  - `pkm://` source navigation
+  - search tool cards with on-demand full results
+
 ## [3.2.59] - 2026-10-19
 
 - Add Visualization beside Memory in Chat. It opens an inline, read-only Harness graph with current-execution navigation, nested Recipe / Action drilldown, recorded function arguments/results and public agent explanations.

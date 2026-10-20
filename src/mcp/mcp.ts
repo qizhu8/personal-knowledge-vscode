@@ -12,7 +12,6 @@ import { compareVersionOrder } from "../runtime/version-order";
 import { ensureRecipeCompiler } from "./recipe-compiler";
 import { mcpStdioCommand } from "./mcp-stdio-command";
 import { hasNewerMcpRuntime } from "./mcp-version-policy";
-import { builtInRecipePin } from "../workflows/project-model";
 
 export async function trashKnowledgeFileViaMcp(
   extensionRoot: string, storeRoot: string, area: string, relative: string, expectedSha256: string,
@@ -50,7 +49,7 @@ asyncio.run(main())
 }
 
 // ── MCP server scaffold ────────────────────────────────────────────────────
-export const UNIFIED_MCP_VERSION = "2.13.21";
+export const UNIFIED_MCP_VERSION = "2.14.0";
 const PROMPT_MANAGER_WHEEL = "uone_prompt_manager-0.1.0-py3-none-any.whl";
 const PROMPT_MANAGER_WHEEL_SHA256 = "eb9fd76058134f9ab9711d8e7604c75f761db5762d93e67f65740dc07fdc1518";
 const RETRIEVAL_ENGINE_WHEEL = "adaptive_skill_retrieval-0.3.0.dev2026100504-py3-none-any.whl";
@@ -58,7 +57,7 @@ const RETRIEVAL_ENGINE_WHEEL_SHA256 = "332e434272a3cc88410eb50c7e4bfc3e3f69c5bf1
 const KNOWLEDGE_MCP_VERSION = "1.5.5";
 const CHAT_MCP_VERSION = "2.3.6";
 const RECIPE_MCP_VERSION = "1.8.2";
-const AGENT_SESSION_MCP_VERSION = "1.8.0";
+const AGENT_SESSION_MCP_VERSION = "2.0.0";
 
 interface McpServerStatus {
   installed: boolean;
@@ -556,7 +555,6 @@ export function generateMcpServer(context: vscode.ExtensionContext): { serverPat
   const environmentsRegistryFwd = path.join(context.globalStorageUri.fsPath, "environments", "registry.json").replace(/\\/g, "/");
   const retrievalIdentity = createHash("sha256").update(path.resolve(storePath)).digest("hex").slice(0, 16);
   const retrievalStateFwd = path.join(context.globalStorageUri.fsPath, "retrieval", retrievalIdentity).replace(/\\/g, "/");
-  const snapshotRecipePin = builtInRecipePin("create-agent-snapshot");
 
   const existingStatus = mcpStatus();
   if (existingStatus.newerThanExpected) {
@@ -681,7 +679,7 @@ def _feature_tool(*domains, read_only=False):
 from agent_session_runtime import register_agent_session_tools
 from api_chat_control import register_api_chat_tools
 from knowledge_recovery import register_knowledge_recovery_tools
-from knowledge_mutations import trash_file, register_knowledge_mutation_tools
+from knowledge_mutations import trash_file, write_markdown, register_knowledge_mutation_tools
 from knowledge_snapshots import register_knowledge_snapshot_tools
 _KNOWLEDGE_NODE = ${JSON.stringify(process.execPath)}
 _KNOWLEDGE_EXTENSION = ${JSON.stringify(context.extensionPath.replace(/\\/g, "/"))}
@@ -714,15 +712,7 @@ from recipe_runtime import register_recipe_tools, related_recipes
 from action_runtime import register_action_tools
 if "automation" in _FEATURE_DOMAINS:
   register_action_tools(mcp, STORE)
-  register_recipe_tools(mcp, STORE, SUBSCRIPTIONS, ENVIRONMENTS, {
-    "agent_session_snapshot_create": {
-      "handler": _AGENT_SESSION_TOOLS["agent_session_snapshot_create"],
-      "ephemeral_fields": [],
-      "recipe_id": ${JSON.stringify(snapshotRecipePin.recipeId)},
-      "revision": ${snapshotRecipePin.revision},
-      "executable_digest": ${JSON.stringify(snapshotRecipePin.executableDigest)},
-    },
-  })
+  register_recipe_tools(mcp, STORE, SUBSCRIPTIONS, ENVIRONMENTS)
 
 
 def _router_config():
@@ -762,7 +752,7 @@ def check_version() -> dict:
   if "skillRouter" in _FEATURE_DOMAINS:
     capabilities.append("pkm-skills")
   if "automation" in _FEATURE_DOMAINS:
-    capabilities.extend(["pkm-chatroom", "pkm-recipes", "agent-session-management"])
+    capabilities.extend(["pkm-chatroom", "pkm-recipes", "agent-snapshot-read"])
   result = {"name": "pkm", "version": SERVER_VERSION,
        "components": {"knowledge": KNOWLEDGE_SCHEMA_VERSION, "chat": CHAT_SCHEMA_VERSION, "recipes": RECIPE_SCHEMA_VERSION,
                 "agent_sessions": AGENT_SESSION_SCHEMA_VERSION},
@@ -1380,7 +1370,7 @@ def _walk(root):
         return out
     for p in root.rglob("*.md"):
         rel = p.relative_to(root)
-        if any(part.startswith(".") or part == "_assets" for part in rel.parts):
+        if any(part.startswith(".") or part == "_assets" or part.lower().endswith(".assets") for part in rel.parts):
             continue
         out.append((p, rel.as_posix()[:-3]))
     return out
@@ -1415,13 +1405,10 @@ def _note_write(slug, title, content, type_, tags, category, created=None):
     full = NOTES / rel
     old = NOTES / (slug + ".md")
     _assert_mcp_writable(NOTES, full, old)
-    if old.exists() and rel[:-3] != slug:
-        try: old.unlink()
-        except Exception: pass
-    full.parent.mkdir(parents=True, exist_ok=True)
     fm = {"title": title, "type": type_ or "general", "tags": tags or [],
           "created": created or _now()}
-    full.write_text(_serialize(fm, content or ""), encoding="utf-8")
+    write_markdown(STORE, "notes", rel, old.relative_to(NOTES).as_posix() if old.exists() else None,
+                   _serialize(fm, content or ""), _KNOWLEDGE_NODE, _KNOWLEDGE_EXTENSION)
     return rel[:-3]
 
 
@@ -1491,17 +1478,14 @@ def _skill_write(name, content, description, category, tags, source_project=None
     full = SKILLS / rel
     oldp, _ = _find_skill(name)
     _assert_mcp_writable(SKILLS, full, oldp)
-    if oldp is not None and str(oldp) != str(full):
-        try: oldp.unlink()
-        except Exception: pass
-    full.parent.mkdir(parents=True, exist_ok=True)
     normalized_priority = _skill_priority(priority, strict=True)
     fm = {"name": name, "description": description or "", "tags": tags or [],
           "source_project": source_project, "recipe_required": True if recipe_required else None,
           "recipe_hint": recipe_hint or None, "related_skills": related_skills or None,
           "priority": normalized_priority if normalized_priority != "normal" else None,
           "created": created or _now()}
-    full.write_text(_serialize(fm, content or ""), encoding="utf-8")
+    write_markdown(STORE, "skills", rel, oldp.relative_to(SKILLS).as_posix() if oldp else None,
+                   _serialize(fm, content or ""), _KNOWLEDGE_NODE, _KNOWLEDGE_EXTENSION)
     return name
 
 
@@ -1577,10 +1561,6 @@ def _paper_write(slug, title, content, authors, year, topic, publisher, tags, ur
         if kind is None: kind = prev.get("kind")
         if group is None: group = prev.get("group")
         if pinned is None: pinned = prev.get("pinned")
-    if old.exists() and rel[:-3] != slug:
-        try: old.unlink()
-        except Exception: pass
-    full.parent.mkdir(parents=True, exist_ok=True)
     fm = {"title": title,
           "kind": "idea" if kind == "idea" else None,
           "group": (str(group).strip() if group and str(group).strip() != "Papers" else None),
@@ -1588,7 +1568,8 @@ def _paper_write(slug, title, content, authors, year, topic, publisher, tags, ur
           "authors": authors or [], "year": _year(year), "topic": topic or "",
           "publisher": publisher or "", "tags": tags or [], "url": url or "", "file": file or "",
           "conclusions": conclusions or [], "cites": _norm_cites(cites or []), "created": created or _now()}
-    full.write_text(_serialize(fm, content or ""), encoding="utf-8")
+    write_markdown(STORE, "papers", rel, old.relative_to(PAPERS).as_posix() if old.exists() else None,
+                   _serialize(fm, content or ""), _KNOWLEDGE_NODE, _KNOWLEDGE_EXTENSION)
     return rel[:-3]
 
 

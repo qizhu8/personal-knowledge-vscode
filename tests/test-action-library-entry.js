@@ -14,7 +14,7 @@ assert.match(core,
   /function openActionLibrary\(event\)[\s\S]*?vscode\.postMessage\(\{ command:'openActionLibrary' \}\)/,
   "the navigation entry sends a dedicated extension-host request");
 assert.match(extension,
-  /case "openActionLibrary":[\s\S]*?openActionWorkbench\(context\)[\s\S]*?break/,
+  /case "openActionLibrary":[\s\S]*?openActionWorkbench\(context, undefined, undefined, true\)[\s\S]*?break/,
   "the extension host reuses the existing native Action Workbench");
 
 console.log("action library entry test: main Automation navigation reuses the durable Action Workbench");

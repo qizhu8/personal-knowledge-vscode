@@ -195,6 +195,14 @@ class ChatUiTests(unittest.TestCase):
                         page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", waiting)
                         page.evaluate("window.dispatchEvent(new MessageEvent('message',{data:{type:'showChat'}}))")
                         expect(page.locator('#messages .message')).to_have_count(1)
+                        simple_approval = {**fixture, "approvals": [{"id": "simple_fixture", "title": "Permit one action",
+                            "detail": "One bounded action", "scope": "Non-destructive operations", "once": False}]}
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", simple_approval)
+                        expect(page.locator('.approval').get_by_role('button', name='Approve & remember', exact=True)).to_be_visible()
+                        expect(page.locator('.approval').get_by_role('button', name='Allow All', exact=True)).to_be_visible()
+                        page.locator('.approval').get_by_role('button', name='Allow once', exact=True).click()
+                        self.assertEqual(page.evaluate("window.__posts.at(-1)"),
+                                         {"type": "approval", "id": "simple_fixture", "value": "approve-once"})
                         worker_ui = {**fixture, "workerOverview": {"rootChatId": "chat_fixture", "activeWorkers": 0, "quota": 6, "maximum": 10, "nodes": [
                             {"chatId": "chat_fixture", "title": "Manager", "status": "completed"},
                             {"chatId": "archived", "parentChatId": "chat_fixture", "title": "Archived worker", "status": "completed", "archived": True, "receiptId": "receipt_fixture", "dispatchedAt": started},
@@ -650,10 +658,13 @@ class ChatUiTests(unittest.TestCase):
                         page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", paging_fixture)
                         older_button = page.get_by_role('button', name='Load older messages', exact=True)
                         expect(older_button).to_be_enabled()
-                        older_button.click()
+                        page.evaluate("()=>{const m=document.getElementById('messages');m.scrollTop=0;m.dispatchEvent(new Event('scroll'))}")
+                        self.assertEqual(page.evaluate("window.__posts.filter(message=>message.type==='historyPage').length"), 1)
                         self.assertEqual(page.evaluate("window.__posts.at(-1)"),
                                          {"type": "historyPage", "chatId": "history_fixture", "id": "retry_user"})
                         expect(page.get_by_role('button', name='Loading older messages...', exact=True)).to_be_disabled()
+                        page.evaluate("()=>document.getElementById('messages').dispatchEvent(new Event('scroll'))")
+                        self.assertEqual(page.evaluate("window.__posts.filter(message=>message.type==='historyPage').length"), 1)
                         older_messages = [
                             {"id": "older_user", "role": "user", "content": "Older preserved assignment", "status": "complete"},
                             {"id": "older_reply", "role": "assistant", "content": "Older preserved evidence", "status": "complete"}]

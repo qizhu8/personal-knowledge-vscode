@@ -766,53 +766,6 @@ const BUILT_IN_RECIPES: ReadonlyArray<{
     }
   },
   {
-    key: "create-agent-snapshot",
-    name: "Create Agent Snapshot",
-    category: "System/PKM/Agent Sessions",
-    revision: 2,
-    description: "Create and persist an immutable PKM Agent Snapshot for the active managed Session, then return its one-time recovery credentials without storing them in Recipe state.",
-    applicableFunctions: [
-      "Create Agent Snapshot",
-      "Generate Agent Snapshot",
-      "Save conversation recovery point",
-      "Prepare Agent Session recovery",
-    ],
-    requiredInputs: [
-      { name: "reason", description: "Optional reason recorded with the Snapshot." },
-      { name: "stateJson", description: "Optional JSON object to checkpoint immediately before capture." },
-    ],
-    expectedOutputs: [
-      { name: "snapshot", description: "Persisted immutable Snapshot metadata." },
-      { name: "recoveryPrompt", description: "Reusable Magic Code recovery prompt with no user-managed password." },
-    ],
-    definition: {
-      schema: WORKFLOW_DEFINITION_SCHEMA,
-      spec: {
-        inputs: {
-          reason: { type: "string", required: false, nullable: false, schema: {}, default: "manual" },
-          stateJson: { type: "string", required: false, nullable: false, schema: {}, default: "" },
-        },
-        nodes: [{
-          nodeId: "create-snapshot",
-          kind: NATIVE_NODE_KIND,
-          config: {
-            operation: "agent_session_snapshot_create",
-            arguments: {
-              reason: "${inputs.reason}",
-              state_json: "${inputs.stateJson}",
-            },
-          },
-          generalInstruction: "PKM executes this allowlisted operation in-process. Return the ephemeral recovery credentials to the user immediately; they cannot be replayed from Recipe state.",
-          dependsOn: [],
-          ports: { inputs: ["reason", "stateJson"], outputs: ["snapshot", "ephemeralOutput"] },
-          control: { mode: "single" },
-        }],
-        outputs: {},
-        completion: { requiredNodes: ["create-snapshot"] },
-      },
-    },
-  },
-  {
     key: "publish-personal-knowledge-vsix",
     name: "Publish Personal Knowledge VSIX",
     category: "Release/VS Code",
@@ -1141,7 +1094,9 @@ export function builtInRecipeInventory(): ReadonlyArray<{
   });
 }
 
-const RETIRED_BUILT_IN_RECIPE_KEYS: ReadonlyArray<string> = [];
+// "create-agent-snapshot" needed an external MCP Agent Session; Agent Sessions are now PKM Chat only and
+// Snapshots are created from the Agent Snapshots panel.
+const RETIRED_BUILT_IN_RECIPE_KEYS: ReadonlyArray<string> = ["create-agent-snapshot"];
 
 function linearRecipeDefinition(steps: ReadonlyArray<readonly [nodeId: string, generalInstruction: string]>): unknown {
   return {

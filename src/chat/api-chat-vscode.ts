@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { ApiChatMessage, ApiChatRequest, ApiChatToolEvent, ChatImage, decodeChatImage, ChatToolLoopGuard, toolBudgetSummary, chatInferenceOutputByteLimit, chatTransportReceipt } from "./api-chat-client";
-import { ChatModelProfile } from "./api-chat-models";
+import { ChatModelProfile, ChatTokenUsage, checkReportedOutput, reportedReasoningTokens } from "./api-chat-models";
 import { abortable } from "./api-chat-tools";
 
 export interface VscodeChatModel extends vscode.LanguageModelChat {
@@ -40,7 +40,7 @@ export async function discoverVscodeModels(host = vscode, signal?: AbortSignal):
   }
 }
 
-type VscodeChatRequest = Pick<ApiChatRequest, "messages" | "purpose" | "signal" | "timeoutMs" | "maxOutputTokens" | "maxToolRounds" | "loopReviewAfterMs" | "loopReviewClock" | "loopExemptTools" | "onToolLoopNotice" | "contextWindow" | "onImage" | "tools" | "onTool" | "beforeRound" | "onTransportPrepared" | "onTransportSent" | "afterTools" | "onStage" | "onUsage" | "onUsageMetadata" | "onOutputBudgetWarning">;
+type VscodeChatRequest = Pick<ApiChatRequest, "messages" | "purpose" | "signal" | "timeoutMs" | "maxOutputTokens" | "thinkingBudget" | "maxToolRounds" | "loopReviewAfterMs" | "loopReviewClock" | "loopExemptTools" | "onToolLoopNotice" | "contextWindow" | "onImage" | "tools" | "onTool" | "beforeRound" | "onTransportPrepared" | "onTransportSent" | "afterTools" | "onStage" | "onUsage" | "onUsageMetadata" | "onOutputBudgetWarning">;
 type NativePart = { value?: string; callId?: string; name?: string; input?: unknown; data?: Uint8Array; mimeType?: string };
 
 export async function streamVscodeChat(model: VscodeChatModel, request: VscodeChatRequest,
@@ -58,6 +58,11 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
     LanguageModelDataPart?: new (data: Uint8Array, mimeType: string) => NativePart;
   };
   const cancel = () => { controller.abort(); cancellation.cancel(); };
+  const activity = () => {
+    if (controller.signal.aborted) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => { timedOut = true; cancel(); }, request.timeoutMs ?? 1_800_000);
+  };
   signal.addEventListener("abort", cancel, { once: true });
   if (signal.aborted) cancel();
   try {
@@ -94,7 +99,7 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
       };
       try { request.beforeRound?.(messages, remaining); }
       catch (error) { throw new VscodeChatError(error instanceof Error ? error.message : "Context budget exceeded."); }
-      timer = setTimeout(() => { timedOut = true; cancel(); }, request.timeoutMs ?? 120_000);
+      activity();
       const prompt = messages.map(message => {
         const content = message.role === "system" ? `[PKM instructions and reference context]\n${message.content}` : message.content;
         const entry = message.role === "assistant" ? host.LanguageModelChatMessage.Assistant(content) : host.LanguageModelChatMessage.User(content);
@@ -132,6 +137,7 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
       catch (error) { throw new VscodeChatError(error instanceof Error ? error.message : "Transport receipt persistence failed."); }
       request.onStage?.("connecting");
       const response = await abortable(model.sendRequest(prompt, options, cancellation.token), controller.signal);
+      activity();
       request.onTransportSent?.(transport);
       request.onStage?.("waiting");
       const structured = (response as typeof response & { stream?: AsyncIterable<NativePart> }).stream;
@@ -139,10 +145,11 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
       const calls: NonNullable<ApiChatMessage["tool_calls"]> = [];
       let responseText = "";
       const responseImages: ChatImage[] = [];
-      let usage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number } | undefined;
+      let usage: ChatTokenUsage | undefined;
       while (true) {
         const next = await abortable(iterator.next(), controller.signal);
         if (next.done) break;
+        activity();
         const part = next.value;
         if (typeof part === "string" || (native.LanguageModelTextPart && part instanceof native.LanguageModelTextPart)) {
           const text = typeof part === "string" ? part : part.value || "";
@@ -167,7 +174,8 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
                 if (reported && !Array.isArray(reported) && [reported.prompt_tokens, reported.completion_tokens].every(value => Number.isSafeInteger(value) && value >= 0)) {
                   const cached = reported.prompt_tokens_details?.cached_tokens;
                   usage = { inputTokens: reported.prompt_tokens, outputTokens: reported.completion_tokens,
-                    ...(Number.isSafeInteger(cached) && cached >= 0 && cached <= reported.prompt_tokens ? { cachedInputTokens: cached } : {}) };
+                    ...(Number.isSafeInteger(cached) && cached >= 0 && cached <= reported.prompt_tokens ? { cachedInputTokens: cached } : {}),
+                    ...reportedReasoningTokens(reported) };
                   valid = true;
                 }
               } catch {}
@@ -185,7 +193,10 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
       if (outputText) await checkOutputBudget(outputText, true);
       clearTimeout(timer);
       if (usage) request.onUsage?.(usage);
-      if (usage && usage.outputTokens > remaining) throw new VscodeChatError("Model output exceeded the per-inference token budget. Partial output was preserved; no pending tool was executed.");
+      if (usage) {
+        try { checkReportedOutput(usage, remaining, request.thinkingBudget); }
+        catch (error) { throw new VscodeChatError((error as Error).message); }
+      }
       if (!calls.length) {
         if (!responseText && !responseImages.length) throw new VscodeChatError("The model returned an empty response.");
         return;
@@ -225,7 +236,7 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
       if (request.afterTools?.()) return;
     }
   } catch (error) {
-    if (timedOut) throw new VscodeChatError("The VS Code model call timed out. Partial output was preserved; no automatic retry was performed.");
+    if (timedOut) throw new VscodeChatError("The VS Code model call timed out due to inactivity. Partial output was preserved; no automatic retry was performed.");
     if (signal.aborted) throw new Error("Request cancelled.");
     if (error instanceof VscodeChatError) throw error;
     throw new Error("VS Code model request failed. Check extension permission, model availability and account quota. Partial output was preserved.");

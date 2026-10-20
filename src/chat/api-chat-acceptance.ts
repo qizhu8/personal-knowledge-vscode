@@ -183,12 +183,12 @@ export async function runApiChatAcceptance(create: () => ApiConversation,
       const result = read?.result ? JSON.parse(read.result) : undefined;
       if (!result?.definition?.spec?.nodes?.length || result.truncated !== false) throw new Error("Recipe definition body was not returned completely.");
     });
-    await phase("session-status", async () => {
-      const status = pkmTool("agent_session_status");
-      if (!status) throw new Error("PKM agent_session_status is not registered in this Host.");
-      chat.builtinTools = []; chat.vscodeTools = [status.name];
-      const reply = await request("session-status", `Inspect the schema and call ${status.name} once, read-only. Do not start, resume, report, stop or end another Task. Report the returned status briefly without claiming that the active MCP Session belongs to this Chat.`);
-      nativeResult(reply, status.name);
+    await phase("snapshot-list", async () => {
+      const snapshots = pkmTool("agent_session_snapshot_list");
+      if (!snapshots) throw new Error("PKM agent_session_snapshot_list is not registered in this Host.");
+      chat.builtinTools = []; chat.vscodeTools = [snapshots.name];
+      const reply = await request("snapshot-list", `Inspect the schema and call ${snapshots.name} once, read-only. Do not read, recover, or modify any Snapshot. Report only how many Snapshots were returned.`);
+      nativeResult(reply, snapshots.name);
     });
     await phase("coding", async () => {
     const source = "exports.add = (left, right) => left - right;\n";

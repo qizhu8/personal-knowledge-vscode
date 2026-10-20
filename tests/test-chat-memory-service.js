@@ -4,6 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
 const { ChatMemoryService, chatMemoryScope } = require("../dist/memory/chat-memory-service");
+const { MemoryEngineClient } = require("../dist/memory/memory-engine-client");
 
 // Scripted memory model with the same contract as modules/pkm-memory-engine/tests/fake_model.py.
 function scriptedModel(log, fail = new Set()) {
@@ -25,6 +26,100 @@ function scriptedModel(log, fail = new Set()) {
     return { text: user.slice(0, 400) };
   };
 }
+
+test("Concurrent reads share one worker, including after a crash", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-memory-startup-"));
+  const service = new ChatMemoryService({
+    extensionRoot: path.resolve(__dirname, ".."), python: process.env.PYTHON || "python3",
+    database: path.join(directory, "memory.sqlite3"), identity: "concurrent-startup",
+  });
+  const originalOpen = MemoryEngineClient.open;
+  const clients = [];
+  MemoryEngineClient.open = async options => {
+    const client = await originalOpen.call(MemoryEngineClient, options);
+    clients.push(client);
+    return client;
+  };
+  try {
+    const results = await Promise.all(Array.from({ length: 8 }, () => service.overview("scope")));
+    assert.equal(results.length, 8);
+    assert.equal(clients.length, 1, "simultaneous first callers must not launch orphan Python workers");
+    clients[0].child.kill("SIGKILL");
+    await clients[0].exit;
+    await Promise.all(Array.from({ length: 8 }, () => service.overview("scope")));
+    assert.equal(clients.length, 2, "simultaneous recovery must launch exactly one replacement worker");
+    await service.close();
+    assert(clients.every(client => !client.healthy));
+    await assert.rejects(service.overview("scope"), /closed/);
+  } finally {
+    MemoryEngineClient.open = originalOpen;
+    await service.close();
+    await Promise.all(clients.map(client => client.close()));
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("Closing while the worker opens rejects the waiting operation", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-memory-close-"));
+  const service = new ChatMemoryService({
+    extensionRoot: path.resolve(__dirname, ".."), python: process.env.PYTHON || "python3",
+    database: path.join(directory, "memory.sqlite3"), identity: "close-during-startup",
+  });
+  const originalOpen = MemoryEngineClient.open;
+  let release, opened;
+  const gate = new Promise(resolve => { release = resolve; });
+  const ready = new Promise(resolve => { opened = resolve; });
+  MemoryEngineClient.open = async options => {
+    const client = await originalOpen.call(MemoryEngineClient, options);
+    opened();
+    await gate;
+    return client;
+  };
+  try {
+    const reading = service.overview("scope");
+    const rejected = assert.rejects(reading, /closed/);
+    await ready;
+    const closing = service.close();
+    release();
+    await Promise.all([rejected, closing]);
+  } finally {
+    release();
+    MemoryEngineClient.open = originalOpen;
+    await service.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("Cancellation never publishes late model output or starts an already-cancelled turn", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-memory-cancel-"));
+  const service = new ChatMemoryService({
+    extensionRoot: path.resolve(__dirname, ".."), python: process.env.PYTHON || "python3",
+    database: path.join(directory, "memory.sqlite3"), identity: "cancel-late-output",
+  });
+  const controller = new AbortController();
+  let release, started;
+  const ready = new Promise(resolve => { started = resolve; });
+  const model = async () => {
+    started();
+    return new Promise(resolve => { release = resolve; });
+  };
+  try {
+    const preparing = service.prepare("scope", "pending", { id: "u1", text: "Question" }, [], 5000, model, controller.signal);
+    const rejected = assert.rejects(preparing, /cancelled/);
+    await ready;
+    controller.abort();
+    release({ text: JSON.stringify({ focus: ["new:1"], new: [{ key: "new:1", label: "Late topic" }] }) });
+    await rejected;
+    assert.equal((await service.overview("scope")).topics.length, 0);
+    await assert.rejects(service.prepare("scope", "never-started", { id: "u2", text: "Question" }, [], 5000, model, controller.signal), /cancelled/);
+    await assert.rejects(service.receipt("never-started"), /Unknown turn/);
+    await assert.rejects(service.commit("scope", "never-committed", { id: "u2", text: "User" }, { id: "a2", text: "Assistant" }, model, controller.signal), /cancelled/);
+    await assert.rejects(service.receipt("never-committed"), /Unknown turn/);
+  } finally {
+    await service.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("Chat memory service restores an earlier long answer for a later reference and survives a worker restart", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-chat-memory-"));

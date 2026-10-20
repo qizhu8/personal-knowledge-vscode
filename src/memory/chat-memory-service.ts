@@ -6,7 +6,13 @@ export interface MemoryModelRequest {
   max_tokens: number;
   messages: Array<{ role: "system" | "user"; content: string }>;
 }
-export interface MemoryModelResult { text: string; usage?: { inputTokens: number; outputTokens: number } }
+export interface MemoryModelResult { text: string; usage?: { inputTokens: number; outputTokens: number; reasoningTokens?: number } }
+export class MemoryModelError extends Error {
+  constructor(message: string, readonly result: MemoryModelResult) {
+    super(message);
+    this.name = "MemoryModelError";
+  }
+}
 export type MemoryModelRunner = (request: MemoryModelRequest, signal: AbortSignal) => Promise<MemoryModelResult>;
 
 export interface MemoryContextBlock {
@@ -61,10 +67,28 @@ export class ChatMemoryService {
 
   private async engine(): Promise<MemoryEngineClient> {
     if (this.closed) throw new Error("Chat memory service is closed.");
-    const current = this.client && await this.client.catch(() => undefined);
-    if (current?.healthy) return current;
-    this.client = MemoryEngineClient.open({ timeoutMs: 30_000, ...this.options });
-    return this.client;
+    const pending = this.client;
+    if (pending) {
+      const current = await pending;
+      if (this.closed) throw new Error("Chat memory service is closed.");
+      if (current.healthy) return current;
+      if (this.client === pending) this.client = undefined;
+      await current.close();
+      return this.engine();
+    }
+    const opening = MemoryEngineClient.open({ timeoutMs: 30_000, ...this.options });
+    this.client = opening;
+    try {
+      const current = await opening;
+      if (this.closed) {
+        await current.close();
+        throw new Error("Chat memory service is closed.");
+      }
+      return current;
+    } catch (error) {
+      if (this.client === opening) this.client = undefined;
+      throw error;
+    }
   }
 
   private async drive(initial: unknown, run: MemoryModelRunner, signal: AbortSignal, onStep?: (purpose: string) => void): Promise<Step> {
@@ -77,10 +101,13 @@ export class ChatMemoryService {
       try {
         if (signal.aborted) throw new Error("Request cancelled.");
         const result = await run(request, signal);
+        if (signal.aborted) throw new Error("Request cancelled.");
         params = { turn: current.turn, output: result.text, ...(result.usage ? { usage: { ...result.usage } } : {}) };
       } catch (error) {
         if (signal.aborted) throw error;
-        params = { turn: current.turn, error: error instanceof Error ? error.message : String(error) };
+        const partial = error instanceof MemoryModelError ? error.result : undefined;
+        params = { turn: current.turn, error: error instanceof Error ? error.message : String(error),
+          ...(partial ? { output: partial.text, ...(partial.usage ? { usage: { ...partial.usage } } : {}) } : {}) };
       }
       current = step(await (await this.engine()).request({ method: "turn_continue", params }));
     }
@@ -89,7 +116,9 @@ export class ChatMemoryService {
 
   async prepare(scope: string, turn: string, input: { id: string; text: string }, recent: MemoryDialogueMessage[], budgetChars: number,
     run: MemoryModelRunner, signal: AbortSignal, onStep?: (purpose: string) => void): Promise<PreparedChatMemory> {
+    if (signal.aborted) throw new Error("Request cancelled.");
     const engine = await this.engine();
+    if (signal.aborted) throw new Error("Request cancelled.");
     const ready = await this.drive(await engine.request({ method: "turn_begin", params: {
       scope, turn, input, recent: recent.map(message => ({ ...message, text: message.text.slice(0, 20_000) })),
       budget_chars: Math.max(2000, Math.min(400_000, Math.floor(budgetChars))),
@@ -100,7 +129,9 @@ export class ChatMemoryService {
 
   async commit(scope: string, turn: string, user: MemoryMessage, assistant: MemoryMessage, run: MemoryModelRunner, signal: AbortSignal,
     maxBytes?: number): Promise<Record<string, unknown>> {
+    if (signal.aborted) throw new Error("Request cancelled.");
     const engine = await this.engine();
+    if (signal.aborted) throw new Error("Request cancelled.");
     // Raw Chat files stay authoritative; memory keeps a bounded copy of very large messages.
     const bounded = (message: MemoryMessage) => ({ ...message, revision: message.revision || messageRevision(message.text),
       text: message.text.length > 2_000_000 ? `${message.text.slice(0, 2_000_000)}\n…[truncated in memory; see the Chat message]` : message.text });

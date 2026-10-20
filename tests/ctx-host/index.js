@@ -36,13 +36,14 @@ async function checkWebview(extension, snapshot, chat, store) {
       <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' ${panel.webview.cspSource}; style-src ${panel.webview.cspSource} 'unsafe-inline';">
       <link rel="stylesheet" href="${asset("agent-harness.css")}"></head><body><div id="root"></div>
       <button id="visualization">Visualization</button>
-      <section id="visualization-panel" hidden><button id="visualization-steer">Steer</button><button id="visualization-close">Close</button><div id="visualization-content"></div></section>
+      <section id="visualization-panel" hidden><button id="visualization-steer">Steer</button><button id="visualization-window">Window</button><button id="visualization-close">Close</button><div id="visualization-content"></div></section>
       <script nonce="${nonce}" src="${asset("agent-harness.js")}"></script>
       <script nonce="${nonce}" src="${asset("chat-visualization.js")}"></script><script nonce="${nonce}">
       const api = acquireVsCodeApi();
       (async () => { try {
         const data = ${JSON.stringify(snapshot).replace(/</g, "\\u003c")};
         const view = PkmAgentHarness.mount(document.getElementById('root'), { initial:data, request:async () => data });
+        [...document.querySelectorAll('#root button')].find(node => node.textContent === 'Full execution graph').click();
         const model = PkmAgentHarness.build(data);
         const budget = [...model.graphs.values()].find(graph => graph.nodes.some(node => node.kind === 'Budget receipt'));
         const route = [];
@@ -87,6 +88,7 @@ async function checkBrowser(extension, snapshot) {
     const page = await browser.newPage();
     await page.goto(server.url);
     await page.getByRole("heading", { name:snapshot.task, exact:true }).waitFor();
+    await page.getByRole("button", { name:"Full execution graph", exact:true }).click();
     await page.getByRole("button", { name:`Open subgraph: ${snapshot.harness.attempts[0].associatedProblem || "Direct execution"}`, exact:true }).click();
     await page.getByRole("button", { name:"Open subgraph: Attempt 1", exact:true }).click();
     await page.getByRole("button", { name:"Open subgraph: 2 prepared rounds", exact:true }).click();
@@ -135,6 +137,7 @@ async function run() {
   assert.equal(path.resolve(vscode.workspace.getConfiguration("personalKnowledge").get("storePath") || ""),
     path.join(root, "knowledge"), "Refuse activation when the effective Knowledge Root is not the isolated fixture");
   await extension.activate();
+  await vscode.commands.executeCommand("workbench.action.closeSidebar");
   assert.equal(path.resolve(require(path.join(extension.extensionPath, "dist/knowledge/filestore")).getStorePath()),
     path.join(root, "knowledge"), "Installed-host test must never use the real account's Knowledge Root");
   const moduleAt = name => require(path.join(extension.extensionPath, "dist", name));
@@ -161,7 +164,7 @@ async function run() {
       content:"# Experiment\n\n" + "Background.\n\n".repeat(1000) + "latency must not exceed 125 ms; never deploy.\n" };
     const provider = new ApiChatView({ secrets:{ get:async () => "local-fixture" } }, async () => [candidate]);
     try {
-      chat = store.create(); chat.permissionMode = "read-only"; chat.includeHistory = true;
+      chat = store.create(); chat.permissionMode = "read-only"; chat.includeHistory = false;
       chat.builtinTools = ["session_info"]; chat.vscodeTools = [];
       store.startTask(chat, "Installed CTX acceptance");
       provider.store = store; provider.chat = chat; provider.chats.set(chat.id, chat); provider.publish = () => {};
@@ -189,8 +192,14 @@ async function run() {
   await checkWebview(extension, snapshot, loaded, store);
   await checkBrowser(extension, snapshot);
   await checkNativeEnvelope(extension);
+  const standaloneVisualization = await require("./visualization").checkVisualizationWindow(extension, loaded, store);
+  const liveVisualization = phase === "initial"
+    ? await require("./visualization-live").checkLiveVisualization(extension, store, root)
+    : await require("./visualization-live").checkLiveVisualizationRecord(extension, store, root);
+  const visualizationChain = await require("./visualization-chain").checkVisualizationChain(extension, store, root, phase === "restart");
   fs.writeFileSync(path.join(root, `${phase}.json`), JSON.stringify({ pid:process.pid, installed:true, webview:true, browser:true,
-    nativeEnvelope:true, inlineVisualization:true, refinements:reply.budgetReceipts[0].contextPlan.refinements, evidenceHash:digest([reply.toolCalls, reply.budgetReceipts]) }));
+    nativeEnvelope:true, inlineVisualization:true, standaloneVisualization, liveVisualization, visualizationChain,
+    refinements:reply.budgetReceipts[0].contextPlan.refinements, evidenceHash:digest([reply.toolCalls, reply.budgetReceipts]) }));
 }
 
 module.exports = { run };

@@ -4,6 +4,46 @@ const path = require("node:path");
 const { chromium } = require(process.env.PKM_PLAYWRIGHT_PATH || "playwright");
 const { createNativeHarnessServer } = require("../dist/runtime/native-harness-server");
 const { fixture, sessionId } = require("./native-harness-fixture");
+const { createChatBudgetLedger, recordChatBudgetUsage, recordChatBudgetRuntime } = require("../dist/chat/chat-budget-ledger");
+
+test("production browser: round ledger distinguishes provider usage, estimates and unknown thinking without model requests", { timeout:60000 }, async t => {
+  const data = fixture(), methods = [];
+  const receipt = {
+    schema:"pkm.chat.budget/v1", at:1, round:0, modelId:"fixture", countingMethod:"utf8-byte-estimate",
+    requested:{ contextWindow:4096, outputTokens:512, modelTimeoutMs:1800000, activeReviewMs:1800000, toolRoundReview:30 },
+    effective:{ inputBudget:3584, outputTokens:512 }, consumed:{ estimatedInputTokens:1000, activeMs:50 },
+    selectedReferenceIds:[], status:"sent"
+  };
+  receipt.ledger = createChatBudgetLedger(receipt, { currency:"USD" });
+  recordChatBudgetUsage(receipt.ledger, { inputTokens:100, outputTokens:10 });
+  recordChatBudgetRuntime(receipt.ledger, 50, 45050, 1);
+  data.harness.attempts[1].budgetReceipts = [receipt];
+  const server = await createNativeHarnessServer({ extensionPath:path.join(__dirname, ".."), sessionId,
+    access() {}, async request(method) { methods.push(method); assert.equal(method, "snapshot"); return data; } });
+  t.after(() => server.dispose());
+  const browser = await chromium.launch({ headless:true });
+  t.after(() => browser.close());
+  for (const width of [1280, 390, 320]) {
+    const page = await browser.newPage({ viewport:{ width, height:900 } });
+    await page.goto(server.url);
+    await page.getByRole("button", { name:"Full execution graph", exact:true }).click();
+    const expand = title => page.getByRole("button", { name:`Open subgraph: ${title}`, exact:true }).click();
+    await expand("Implement and validate"); await expand("Fix the failing test"); await expand("Attempt 2");
+    await expand("1 prepared rounds"); await expand("Round 0");
+    await page.getByRole("button", { name:"Provider input (tokens)", exact:true }).click();
+    assert.match(await page.locator(".pkm-harness-inspector").innerText(), /provider-reported/);
+    await page.getByRole("button", { name:"Planned input (tokens)", exact:true }).click();
+    assert.match(await page.locator(".pkm-harness-inspector").innerText(), /estimated/);
+    await page.getByRole("button", { name:"Thinking (Provider default) (tokens)", exact:true }).click();
+    assert.match(await page.locator(".pkm-harness-inspector").innerText(), /not report this quantity separately/);
+    await page.getByRole("button", { name:"User/approval/continuation wait (milliseconds)", exact:true }).click();
+    assert.match(await page.locator(".pkm-harness-inspector").innerText(), /45000/);
+    assert.equal(await page.locator(".pkm-harness-node .pkm-harness-port").count(), 0, "Accounting is not executable");
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `No page overflow at ${width}px`);
+    await page.close();
+  }
+  assert(methods.length > 0 && methods.every(method => method === "snapshot"));
+});
 
 test("production browser: public progress and conclusion are original output, safely rendered and refreshed without summary calls", { timeout:30000 }, async t => {
   const data = fixture(), methods = [];
@@ -20,6 +60,7 @@ test("production browser: public progress and conclusion are original output, sa
   t.after(() => browser.close());
   const page = await browser.newPage();
   await page.goto(server.url);
+  await page.getByRole("button", { name:"Full execution graph", exact:true }).click();
   const expand = title => page.getByRole("button", { name:`Open subgraph: ${title}`, exact:true }).click();
   await expand("Implement and validate");
   await expand("Fix the failing test");
@@ -57,6 +98,7 @@ test("production browser: nested tabs, Recipe previews, retries, refresh and dua
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.goto(server.url);
+  await page.getByRole("button", { name:"Full execution graph", exact:true }).click();
   await page.getByRole("heading", { name:data.task }).waitFor();
   const expand = title => page.getByRole("button", { name:`Open subgraph: ${title}`, exact:true }).click();
   const parent = () => page.getByRole("button", { name:"Back to parent", exact:true }).click();
@@ -213,6 +255,7 @@ test("production browser: explicit Step ownership, ignored reasons and prepared 
   t.after(() => browser.close());
   const page = await browser.newPage();
   await page.goto(server.url);
+  await page.getByRole("button", { name:"Full execution graph", exact:true }).click();
   const expand = title => page.getByRole("button", { name:`Open subgraph: ${title}`, exact:true }).click();
   await expand("Implement and validate"); await expand("Fix the failing test"); await expand("Attempt 2");
   await page.getByRole("button", { name:"Do not deploy", exact:true }).click();
@@ -230,4 +273,71 @@ test("production browser: explicit Step ownership, ignored reasons and prepared 
   assert.match(await page.locator(".pkm-harness-inspector").innerText(), /utf8-byte-estimate/);
   assert.equal(await page.locator(".pkm-harness-node .pkm-harness-port").count(), 0,
     "Prepared budget observations never acquire execution ports");
+});
+
+test("shared renderer: live overview locates the current path, bindings and blocked state", { timeout:30000 }, async t => {
+  const browser = await chromium.launch({ headless:true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ reducedMotion:"reduce" });
+  await page.setContent('<main id="host"></main>');
+  await page.addStyleTag({ path:path.join(__dirname, "../src/webview/agent-harness.css") });
+  await page.addScriptTag({ path:path.join(__dirname, "../src/webview/agent-harness.js") });
+  await page.evaluate(initial => {
+    window.controller = PkmAgentHarness.mount(document.getElementById("host"), { initial, request:() => new Promise(() => {}) });
+  }, fixture());
+  const overview = page.getByRole("region", { name:"Live execution overview" });
+  await overview.getByRole("button", { name:"Locate Step Inspect evidence (running)" }).click();
+  await page.getByRole("navigation", { name:"Graph ancestors" }).getByRole("button", { name:"Nested debug", exact:true }).waitFor();
+  assert.equal(await page.locator(".pkm-harness-node.selected").getAttribute("data-node-id"), "inspect");
+  await overview.getByRole("button", { name:/Open Action Run/ }).click();
+  assert.equal(await page.locator(".pkm-harness-node", { hasText:"Durable Action receipts" }).count(), 1);
+  assert.equal(await overview.locator(".pkm-harness-phase").evaluate(node => getComputedStyle(node.firstChild).animationName), "none");
+
+  const waiting = fixture();
+  Object.assign(waiting, { todos:[], runs:[], actionRuns:[] });
+  waiting.harness = { ...waiting.harness, state:"awaiting-input", currentPhase:{ kind:"waiting", label:"Waiting for approval" },
+    waiting:{ kind:"user", detail:"Waiting for approval" }, attempts:[{ ...waiting.harness.attempts[1], planning:undefined, toolCalls:[] }] };
+  await page.evaluate(data => window.controller.update(data, true), waiting);
+  await overview.getByText("Waiting for you: Waiting for approval").waitFor();
+  assert.equal(await overview.locator(".pkm-harness-phase").getAttribute("data-phase"), "waiting");
+  await overview.getByText("no explicit binding recorded").waitFor();
+  await overview.getByText("no Action Run referenced").waitFor();
+  await page.evaluate(() => window.controller.dispose());
+});
+
+test("shared renderer: lifecycle ring highlights the recorded stage and drills into evidence", { timeout:30000 }, async t => {
+  const browser = await chromium.launch({ headless:true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport:{ width:1100, height:900 } });
+  await page.setContent('<main id="host"></main>');
+  await page.addStyleTag({ path:path.join(__dirname, "../src/webview/agent-harness.css") });
+  await page.addScriptTag({ path:path.join(__dirname, "../src/webview/agent-harness.js") });
+  const data = fixture();
+  data.harness.waiting = { kind:"dependency", detail:"Polling AML job" };
+  data.harness.state = "awaiting-result";
+  await page.evaluate(initial => {
+    window.controller = PkmAgentHarness.mount(document.getElementById("host"), { initial, request:() => new Promise(() => {}) });
+    window.controller.showLifecycle();
+  }, data);
+  const ring = page.getByRole("group", { name:"Harness lifecycle" });
+  const current = ring.locator('[aria-current="step"]');
+  assert.equal(await current.count(), 1);
+  assert.equal(await current.getAttribute("data-stage"), "monitor");
+  assert.equal(await current.getAttribute("data-status"), "waiting");
+  assert.equal(await page.evaluate(() => document.activeElement.dataset.stage), "monitor");
+  await page.getByText("Polling AML job", { exact:false }).first().waitFor();
+  if (process.env.PKM_RING_SCREENSHOT) await page.screenshot({ path:`${process.env.PKM_RING_SCREENSHOT}-desktop.png`, fullPage:true });
+  await ring.getByRole("button", { name:/^Configure:/ }).click();
+  assert.match(await page.locator(".pkm-harness-inspector").innerText(), /Task \/ goal[\s\S]*Debug without deployment/);
+  await page.getByRole("button", { name:"Open recorded evidence for Configure" }).click();
+  await page.getByRole("navigation", { name:"Graph ancestors" }).getByRole("button", { name:"Lifecycle", exact:true }).click();
+  await ring.waitFor();
+  await page.getByRole("button", { name:"Full execution graph", exact:true }).click();
+  await page.getByRole("button", { name:"Back to parent", exact:true }).click();
+  await ring.waitFor();
+  await page.setViewportSize({ width:390, height:900 });
+  await page.emulateMedia({ reducedMotion:"reduce" });
+  assert.equal(await current.evaluate(node => getComputedStyle(node).position), "static");
+  if (process.env.PKM_RING_SCREENSHOT) await page.screenshot({ path:`${process.env.PKM_RING_SCREENSHOT}-narrow.png`, fullPage:true });
+  await page.evaluate(() => window.controller.dispose());
 });

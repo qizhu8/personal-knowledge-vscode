@@ -160,7 +160,7 @@ class Memory:
     def _request(self, state: dict, purpose: str, system: str, user: str, max_tokens: int, model: str = "") -> dict:
         state["pending"] = {"purpose": purpose}
         state["calls"].append({"purpose": purpose, "status": "requested",
-                               "input_chars": len(system) + len(user)})
+                               "input_chars": len(system) + len(user), "max_tokens": max_tokens})
         self._save(state)
         return {"turn": state["turn"], "status": "model", "receipt": self._receipt(state),
                 "request": {"purpose": purpose, "max_tokens": max_tokens,
@@ -452,12 +452,13 @@ class Memory:
             return {"piece": piece, "label": info["label"], "evicted": True,
                     "note": "Content was evicted from memory; the original Chat history may still hold it."}
         page = self.engine.read(piece, after=after, limit=40)
+        more = self.engine.read(piece, after=page["next"], limit=1)["statements"]
         children = self.engine.children(piece, limit=30)["children"]
         self._mutate(f"read:{piece}:{info['revision']}:{after}", "touch", {"piece": piece, "reason": "expand"})
         return {"piece": piece, "label": info["label"], "kind": info["kind"], "level": info["level"],
                 "summary": page["summary"]["body"] if page["summary"] else None, "summary_current": page["summary_current"],
-                "statements": [{"n": s["sequence"], "status": s["status"], "text": _clip(s["body"] or "", 6000)} for s in page["statements"] if s["body"]],
-                "next": page["next"] if len(page["statements"]) == 40 else None,
+                "statements": [{"n": s["sequence"], "status": s["status"], "text": s["body"]} for s in page["statements"] if s["body"]],
+                "next": page["next"] if more else None,
                 "children": [{"piece": c["id"], "label": c["label"], "kind": c["kind"], "evicted": bool(c["evicted"])} for c in children],
                 "parents": [{"piece": p["id"], "label": p["label"]} for p in self.engine.parents(piece)]}
 
@@ -490,7 +491,7 @@ class Memory:
         return {"evicted": evicted, "usage": self.engine.usage()}
 
     def forget_scope(self, scope: str) -> dict:
-        return self._mutate(f"forget:{scope}", "purge_chat", {"chat": scope})
+        return self._mutate(f"forget-scope:v2:{scope}", "purge_chat", {"chat": scope})
 
     def _receipt(self, state: dict) -> dict:
         return {"schema": "pkm.memory.turn-receipt/v1", "policy": state.get("policy"), "turn": state["turn"],

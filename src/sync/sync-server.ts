@@ -8,7 +8,7 @@ import { serverExport } from "../servers/servers";
 import { compileWorkflowDefinitionV1 } from "../workflows/workflow-contracts";
 import { RecipeRecord } from "../workflows/project-model";
 import { ProjectStore } from "../workflows/project-store";
-import { MarkdownAssetArea, referencedMarkdownAssets } from "../knowledge/markdown-assets";
+import { MarkdownAssetArea, markdownBundleDocuments, referencedMarkdownAssets } from "../knowledge/markdown-assets";
 
 export interface SyncSelection {
   [contentType: string]: string[];
@@ -229,25 +229,9 @@ export function buildSyncBundle(selection: SyncSelection, contentTypes: string[]
 export function attachMarkdownAssetsToSyncBundle(bundle: any): any {
   const root = getStorePath();
   const assets = new Map<string, { type: MarkdownAssetArea; path: string; digest: string; data: string }>();
-  const documents: Array<{ type: MarkdownAssetArea; path: string; content: string }> = [
-    ...(bundle.skills || []).map((item: any) => ({
-      type: "skills" as const,
-      path: `${item.metadata?.category ? `${item.metadata.category}/` : ""}${item.name}.md`,
-      content: String(item.content || ""),
-    })),
-    ...(bundle.notes || []).map((item: any) => ({
-      type: "notes" as const,
-      path: `${item.slug || item.title || "note"}.md`,
-      content: String(item.content || ""),
-    })),
-    ...(bundle.papers || []).map((item: any) => ({
-      type: "papers" as const,
-      path: `${item.category ? `${item.category}/` : ""}${item.slug || item.title || "paper"}.md`,
-      content: String(item.content || ""),
-    })),
-  ];
+  const documents = markdownBundleDocuments(bundle);
   for (const document of documents) {
-    for (const asset of referencedMarkdownAssets(root, document.type, document.path, document.content)) {
+    for (const asset of referencedMarkdownAssets(root, document.area, document.path, document.content)) {
       const key = `${asset.area}\0${asset.path}`;
       assets.set(key, { type: asset.area, path: asset.path, digest: asset.digest, data: asset.content.toString("base64") });
     }

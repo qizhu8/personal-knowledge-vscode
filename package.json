@@ -2,7 +2,7 @@
   "name": "personal-knowledge",
   "displayName": "Personal Knowledge Manager",
   "description": "%extension.description%",
-  "version": "3.2.59",
+  "version": "3.2.74",
   "publisher": "Uone",
   "author": {
     "name": "Yu Wang"
@@ -58,6 +58,10 @@
     ],
     "commands": [
       {
+        "command": "personalKnowledge.manageMarkdownAssets",
+        "title": "PKM: Manage Markdown Resources"
+      },
+      {
         "command": "personalKnowledge.openActions",
         "title": "PKM: Open Action Workbench"
       },
@@ -85,6 +89,10 @@
       {
         "command": "personalKnowledge.testApiChatE2E",
         "title": "Personal Knowledge Manager: Run Chat E2E Acceptance"
+      },
+      {
+        "command": "personalKnowledge.openVisualizationWindow",
+        "title": "Personal Knowledge Manager: Open Visualization Window"
       },
       {
         "command": "personalKnowledge.exportMcpToolSets",
@@ -463,6 +471,11 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "personalKnowledge.manageMarkdownAssets",
+          "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-(skill|note|paper)-item/",
+          "group": "3_edit"
+        },
         {
           "command": "personalKnowledge.openRecipe",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-recipe-item",
@@ -1056,15 +1069,32 @@
         },
         "personalKnowledge.apiChatTimeoutSeconds": {
           "type": "number",
-          "default": 120,
+          "default": 1800,
           "minimum": 10,
-          "maximum": 600,
-          "description": "Timeout for each model API call including streaming, not the whole Chat activity. Human input and tool execution do not consume this model-call timeout."
+          "maximum": 86400,
+          "description": "Model inactivity timeout in seconds (default 30 minutes), not a task duration limit. Model response activity resets the timer, including hidden-thinking/metadata parts exposed by VS Code. Tool execution and waiting for user input do not consume it. Internal work without any provider activity signal cannot reset it. Applies to Chat, workers and background Memory. Existing explicit values are preserved."
         },
         "personalKnowledge.chatMemoryModel": {
           "type": "string",
           "default": "vscode:copilot:claude-haiku-5.5",
           "description": "Lightweight model the PKM Chat Memory Engine uses to understand each question, summarize topics on demand and record notes after replies. Use a VS Code model ID (vscode:<vendor>:<model>) or an API model name; empty uses the Chat's own model. When the configured VS Code model is unavailable, the Chat's model is used and the reply's memory receipt shows which model ran."
+        },
+        "personalKnowledge.chatMemoryThinkingBudget": {
+          "type": "string",
+          "enum": [
+            "900",
+            "1500",
+            "2048",
+            "unlimited"
+          ],
+          "enumDescriptions": [
+            "Light: up to 900 hidden thinking tokens per memory step.",
+            "Medium: up to 1,500 hidden thinking tokens per memory step.",
+            "Thorough: up to 2,048 hidden thinking tokens per memory step.",
+            "Unlimited: accept as much thinking as the model performs, within the model's own output limit."
+          ],
+          "default": "2048",
+          "description": "How much hidden thinking (reasoning tokens) the Memory Engine model may use per background step. This is the model's work intensity and is budgeted separately from the visible memory output, which stays limited. A step whose reported thinking exceeds this budget is rejected and reported; the Chat reply is kept. VS Code models cannot be stopped mid-thought, so the check uses the provider's reported usage after the step; API models also receive the combined limit as their output token limit."
         },
         "personalKnowledge.chatMemoryCapacityMB": {
           "type": "integer",
@@ -1207,21 +1237,24 @@
     "build": "tsc -p tsconfig.json && npx esbuild dist/chat/api-chat-tools.js dist/chat/api-chat-mcp.js --bundle --platform=node --format=cjs --define:navigator=undefined --external:vscode --external:./api-chat-tools --outdir=dist/chat --allow-overwrite && npx esbuild src/subscriptions/subscription-gateway-entry.ts --bundle --platform=node --format=cjs --outfile=dist/subscription-gateway.js && cp -r src/webview dist/ && node scripts/build-panel.js && cp node_modules/sql.js/dist/sql-wasm.js dist/ && cp node_modules/sql.js/dist/sql-wasm.wasm dist/ && cp node_modules/marked/lib/marked.umd.js dist/webview/ && cp node_modules/@vscode/codicons/dist/codicon.css node_modules/@vscode/codicons/dist/codicon.ttf dist/webview/ && npx esbuild src/live-markdown-entry.js --bundle --platform=node --format=cjs --outfile=dist/live-markdown.js && npx esbuild src/webview/hljs-entry.js --bundle --minify --format=iife --outfile=dist/webview/hljs.js && cp node_modules/highlight.js/styles/github-dark.css dist/webview/hljs.css && cp node_modules/katex/dist/katex.min.js dist/webview/katex.js && cp node_modules/katex/dist/katex.min.css dist/webview/katex.css && mkdir -p dist/webview/fonts && cp node_modules/katex/dist/fonts/*.woff2 dist/webview/fonts/ && cp node_modules/cytoscape/dist/cytoscape.min.js dist/webview/cytoscape.js && cp node_modules/mermaid/dist/mermaid.min.js dist/webview/mermaid.js && cp node_modules/3d-force-graph/dist/3d-force-graph.min.js dist/webview/forcegraph3d.js && node scripts/postbuild.js",
     "test:ui-build-artifacts": "npm run build && node tests/test-ui-build-artifacts.js",
     "test:api-chat": "npm run build && node tests/test-api-chat.js",
+    "test:chat-budget-ledger": "npm run build && node --test tests/test-chat-budget-ledger.js tests/test-api-chat.js tests/test-native-harness-browser.js",
     "test:chat-multi-window": "npm run build && node --test tests/test-chat-multi-window.js && node tests/test-server-proxy.js && node scripts/run-chat-multi-window-test.js",
     "test:portable-references": "npm run build && python tests/test-action-portable-paths.py && python tests/test-action-path-ui.py && node --test tests/test-path-namespace-contracts.js tests/test-knowledge-quick-open.js",
     "test:github-sync-partial": "npm run build && node --test tests/test-github-sync-partial.js tests/test-github-sync-two-machine.js tests/test-github-sync-file-safety.js tests/test-github-sync-scheduler.js tests/test-github-sync-coordinator.js tests/test-pkm-service.js tests/test-sync-operation-journal.js",
-    "test:native-harness": "npm run build && node --test tests/test-native-harness.js tests/test-chat-harness-records.js tests/test-chat-context-mechanisms.js tests/test-ui-build-artifacts.js",
+    "test:native-harness": "npm run build && node --test tests/test-native-harness.js tests/test-chat-harness-records.js tests/test-chat-budget-ledger.js tests/test-chat-context-mechanisms.js tests/test-visualization-window.js tests/test-ui-build-artifacts.js",
     "test:chat-context": "npm run build && node --test tests/test-chat-context-contracts.js tests/test-chat-context-mechanisms.js tests/test-chat-fixture-acceptance.js tests/test-chat-memory-recall.js tests/test-chat-memory-scope.js tests/test-chat-transport-receipts.js tests/test-chat-evidence-reader.js tests/test-chat-workers.js tests/test-retrieval-serving-identity.js tests/test-retrieval-passages.js tests/test-retrieval-materialization.js tests/test-knowledge-source-ranges.js tests/test-api-chat.js tests/test-chat-history-storage.js tests/test-chat-harness-records.js tests/test-retrieval-contracts.js tests/test-retrieval-snapshot.js",
     "test:memory-engine": "tsc -p tsconfig.json && node scripts/run-memory-engine-tests.js",
     "test:chat-context:feedback": "npm run build && node --test tests/test-retrieval-feedback.js",
     "test:chat-context:host": "node scripts/run-ctx-host-test.js",
-    "test:chat-context:acceptance": "npm run test:chat-context && node tests/test-retrieval-worker.js && node --test tests/test-retrieval-feedback.js tests/test-native-harness-browser.js && node scripts/run-ctx-host-test.js",
+    "test:chat-context:acceptance": "npm run test:chat-context && node tests/test-retrieval-worker.js && node --test tests/test-retrieval-feedback.js tests/test-native-harness-browser.js tests/test-visualization-window-browser.js && node scripts/run-ctx-host-test.js",
     "test:chat-workers": "npm run build && node --test tests/test-chat-workers.js",
     "test:chat-history-storage": "npm run build && node --test tests/test-chat-history-storage.js",
     "test:sidebar-panel-opening": "npm run build && node tests/test-sidebar-panel-opening.js",
     "test:module-contracts": "npm run build && node tests/test-module-contracts.js",
     "test:knowledge-contracts": "npm run build && node tests/test-knowledge-contracts.js",
     "test:markdown-images": "npm run build && node tests/test-markdown-image-assets.js && node tests/test-subscriptions.js && node tests/test-subscription-fork.js && node tests/test-github-sync-git.js",
+    "test:markdown-assets": "npm run build && node tests/test-markdown-owned-assets.js && node tests/test-markdown-owned-assets-ui.js && python tests/test-markdown-owned-assets-ui.py && node tests/test-markdown-image-assets.js && node tests/test-knowledge-trash.js && node tests/test-navigation-groups.js && node tests/test-cattree-refresh.js && node tests/test-subscriptions.js && node tests/test-subscription-fork.js && node tests/test-github-sync-git.js",
+    "test:action-library": "npm run build && python tests/test-action-library.py && node tests/test-action-browser.js && node tests/test-action-library-entry.js",
     "test:knowledge-migration": "npm run build && node tests/test-knowledge-migration-command.js",
     "test:retrieval-boundary": "npm run build && node tests/test-retrieval-contracts.js && node --test tests/test-retrieval-passages.js tests/test-knowledge-source-ranges.js tests/test-retrieval-serving-identity.js && node tests/test-link-graph.js && node tests/test-retrieval-snapshot.js && node tests/test-retrieval-worker.js && python tests/test-retrieval-serving-worker.py",
     "test:integration-upgrade": "npm run build && node tests/test-integration-upgrade.js && node tests/test-diagnostic-log.js && node tests/test-mcp-version-ui.js",
@@ -1245,7 +1278,7 @@
     "test:github-sync-authority": "npm run build && node tests/test-github-sync-remote-authority.js && node tests/test-github-sync-ui.js && node tests/test-github-sync-git.js && node tests/test-github-sync-file-safety.js && node tests/test-github-sync-base-integrity.js && node tests/test-github-sync-acceptance-recovery.js && node tests/test-github-sync-newlines.js && node tests/test-github-sync-windows-review.js",
     "test:durable-execution": "npm run build && node tests/test-project-cockpit.js && node tests/test-project-cockpit-browser.js && node tests/test-project-cockpit-python.js && node tests/test-action-safety-scan.js && python tests/test-action-durable-runs.py && python tests/test-action-modules.py && python tests/test-action-runtime.py && python tests/test-action-recovery-e2e.py && python tests/test-action-workbench.py && node tests/test-chat-action-recovery-e2e.js",
     "test:agent-session-lifecycle": "npm run build && node tests/test-agent-session-lifecycle.js",
-    "test:agent-session-groups": "npm run build && node tests/test-agent-session-lifecycle.js && node tests/test-four-workspace-ui.js && python tests/test-agent-session-groups.py && python tests/test-agent-session-mcp-runtime.py",
+    "test:agent-session-groups": "npm run build && node tests/test-agent-session-lifecycle.js && node tests/test-four-workspace-ui.js && node tests/test-agent-snapshots.js && node tests/test-agent-session-pkm-only.js && python tests/test-agent-session-mcp-runtime.py",
     "test:chatroom-project-simulation": "npm run build && npm run test:chatroom-project-simulation:run",
     "test:workflow-runtime:coverage": "npm run build && c8 --all --include=dist/workflows/runtime-model.js --check-coverage --branches 100 --functions 100 --lines 100 --statements 100 node tests/test-workflow-runtime-model.js",
     "test:workflow-migration:coverage": "npm run build && c8 --all --include=dist/workflows/migration-model.js --check-coverage --branches 100 --functions 100 --lines 100 --statements 100 node tests/test-workflow-migration-model.js",

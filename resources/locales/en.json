@@ -4,6 +4,14 @@
     "label": "English"
   },
   "strings": {
+    "apiChat.allowOnce": "Allow once",
+    "apiChat.refuse": "Refuse",
+    "apiChat.notification.permission": "PKM Chat [{chat}] needs authorization: {detail}",
+    "apiChat.notification.input": "PKM Chat [{chat}] is waiting for your input: {detail}",
+    "apiChat.notification.responseComplete": "PKM Chat [{chat}]: response completed.",
+    "apiChat.notification.taskComplete": "PKM Chat [{chat}]: Task completed.",
+    "apiChat.notification.failed": "PKM Chat [{chat}] failed: {detail}",
+    "apiChat.notification.memoryFailed": "PKM Chat [{chat}]: response saved, but memory organization failed: {detail}",
     "apiChat.openHarness": "Open execution subgraphs",
     "apiChat.reportedGoal": "Agent-reported goal: {goal}",
     "apiChat.noTaskReport": "No explicit task-state report yet",

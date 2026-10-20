@@ -11,6 +11,8 @@ const fixtures = require("./fixtures/chat-context");
 const originalLoad = Module._load;
 let maximum = 10;
 const host = {
+  env: { language: "en" },
+  window: { showInformationMessage: async () => undefined, showWarningMessage: async () => undefined, showErrorMessage: async () => undefined },
   workspace: { isTrusted: true, workspaceFolders: [], getConfiguration: () => ({ get: (key, fallback) => key === "apiChatMaximumWorkers" ? maximum : fallback }) },
   lm: { tools: [] },
 };

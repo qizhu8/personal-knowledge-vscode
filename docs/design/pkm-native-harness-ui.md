@@ -38,6 +38,36 @@ Public model explanations and per-round responses remain original text, not
 extra generated summaries or access to hidden reasoning. Running nodes have a
 status animation, respecting reduced-motion and background pause.
 
+A **Live overview** stays above the graph. It shows the recorded state and phase
+(model, retrieval, tool and planning animate; waiting, failed and complete have
+static marks), the user-wait or dependency block reason, and the current
+attempt's prepared model rounds, public output rounds and tool calls. The
+current execution path runs from the root to the deepest running or waiting
+node; each segment locates and selects that node. Recipe Runs appear only through
+explicit managed-Task, planning, step-report or tool-call bindings. Action Runs
+appear only through recorded call references. Missing bindings read "no explicit
+binding recorded", and referenced but unloaded records are marked unavailable.
+
+The root view is a **lifecycle ring**: Configure → Run → Monitor → Evaluate →
+Meets goals? → End, with a dashed Iterate loop counting retries. Exactly one
+stage is current, chosen only from recorded evidence:
+
+- Live attempt with a started validation report → Evaluate.
+- Dependency wait, awaiting result, or non-terminal referenced Action Run →
+  Monitor.
+- Task/planning report started, or planning without calls/outputs → Configure.
+- Any other live attempt → Run. A user wait keeps the stage and adds
+  "Waiting for you".
+- Finished: completed managed Task or passed validation → End; failed
+  validation → Meets goals? (failed); failed/interrupted/cancelled attempt →
+  Run (failed); a reply that finished without validation stops at Meets goals?
+  marked "done, not validated" and End stays dark.
+
+Earlier stages are visited; Monitor/Evaluate passed without evidence are
+skipped. Selecting a circle lists its recorded items and opens their records.
+**Current execution** and **Full execution graph** lead to the detailed graph.
+Below 560 px the ring becomes a vertical list.
+
 **Steer current task** focuses the existing composer in Steer mode without
 sending or replacing a draft. The existing Stop control stays available; remote
 execution retains its existing intervention restrictions. Merely opening or
@@ -54,6 +84,68 @@ external engine's unreported internal search stages are observable. Closing,
 returning to the library, switching Chat or disposing the view releases pending
 requests, timers and renderer listeners. Late responses cannot populate another
 Chat. Trust/access failures are shown as errors.
+
+## Visualization window
+
+**Personal Knowledge Manager: Open Visualization Window** (also the
+link-external button in the inline panel toolbar) opens one editor-area window.
+Opening it again reveals the same window and selects the requesting Chat. The
+inline panel stays available.
+
+- **Left: Chat tree.** Mirrors the Chat List: Ungroup, then user folders;
+  workers nest under their manager; Trash is excluded. Active Chats sort first.
+  Arrow keys, Home/End, Enter/Space and Left/Right navigate and expand.
+- **Right: dashboard.** The lifecycle ring is the main view. Six tiles
+  summarize the Chat; selecting a tile enlarges it into the main area:
+  - **Lifecycle** and **Execution graph** use the shared renderer (current
+    stage / current execution).
+  - **Recipe / Action** lists every explicit Recipe Run/stage and Action Run
+    binding for the current Harness attempt. Buttons open the exact recorded
+    graph (and stage, when specified); unavailable records remain disabled and
+    explicitly labeled rather than replaced with current library definitions.
+    The initial target prefers a running/waiting binding over completed work.
+    Nested Recipe and Component receipts use the shared renderer, including
+    branch, retry, ignored, failed and waiting evidence. Tool/submission
+    completion is explicitly not remote-job completion.
+    Each graph panel remembers its last subgraph while switching dashboard
+    panels; returning restores its selection, zoom and scroll. Record refreshes
+    preserve inspection, and selecting another Chat clears this navigation.
+  - **Retrieval / Search** shows each recorded receipt (query, model, phase,
+    selected/candidate counts, candidates and reasons, candidate → model flow)
+    plus search-type tool calls. Internal stages of external engines are not
+    observable and are not drawn.
+    - A live banner appears only while the latest attempt's recorded phase is
+      retrieval.
+    - Stage tabs (shortlist, prepared, sent / model round N) explain what each
+      stage means. Shortlist and prepared are PKM selections, and their token
+      counts are PKM estimates. Only "sent" means the provider accepted the
+      request.
+    - The facts list compares the input-token estimate with the budget.
+    - Candidates can be filtered by selected, excluded, or evidence state.
+    - A `pkm://` source shows its range and an **Open** button. The button opens
+      the Chat, a memory locator's owning Chat, or the Knowledge item.
+    - Search tool cards show the parsed arguments. A hit count appears only when
+      the result is JSON. **Load full result** fetches the recorded result
+      through the same read-only gate.
+  - **Memory** shows the Memory Engine blocks recalled for the reply (kind,
+    piece, characters, model, duration, error). Memory organization writes are
+    not part of this receipt.
+  - **Timeline** draws recorded stage transitions and timed tool calls with
+    budget markers, then lists waits/blockers and the longest stages.
+
+Any non-Trash Chat in the current Knowledge Root can be inspected, including
+Chats not open in the sidebar. A Chat running in this window is read from its
+live record; otherwise the stored record is read without creating anything.
+Every read passes the same trust, Trash and read-only (`snapshot`/`result`)
+gate as the inline panel. Record writes, including other VS Code windows' writes
+seen by the library watcher, push at most one tree update per 400 ms and only
+while the window is visible. Switching Chat cancels pending requests; late
+results are ignored. Removing the selected Chat clears the dashboard.
+
+Implementation: [host](../../src/chat/visualization-window.ts),
+[page](../../src/webview/visualization-window.html),
+[script](../../src/webview/visualization-window.js) and
+[styles](../../src/webview/visualization-window.css).
 
 ## Entry points and scope
 
@@ -214,12 +306,31 @@ therefore supported without treating tool dispatch success as acceptance success
 These checks validate report consistency, not arbitrary result semantics; the
 report remains an agent observation and cannot complete a managed Task/Recipe.
 
+An explicit Recipe binding can attach a newly created root to the current PKM
+Task only when its original completed creation result is in that same Task.
+The command ID must produce the exact deterministic Run ID, the result must not
+be a replay, and the local runtime creation receipt must confirm that identity.
+Direct JSON and MCP structured/text results are supported. The pinned Stage,
+Run identities and reciprocal nested-parent links are checked before writing
+ownership. Existing ownership remains valid without replaying creation. Foreign
+Tasks, incomplete calls, missing receipts and invalid links fail explicitly.
+This attaches observation metadata, not execution or completion authority.
+
 ```sh
 npm run test:native-harness
 node --test tests/test-api-chat.js tests/test-action-browser.js \
   tests/test-chat-history-storage.js tests/test-chat-context-contracts.js
 python tests/test-chat-visualization-ui.py
 ```
+
+`test:native-harness` includes the Visualization window host test
+([test-visualization-window.js](../../tests/test-visualization-window.js)).
+[test-visualization-window-browser.js](../../tests/test-visualization-window-browser.js)
+runs the window page in Chromium with the same `PKM_PLAYWRIGHT_PATH`. It covers
+tree grouping, keyboard navigation, all six enlarged views, late results after
+switching Chat and removal of the selected Chat. Set
+`PKM_VIS_WINDOW_SCREENSHOT=/tmp/vis` to save desktop, timeline and narrow
+screenshots.
 
 The real Chromium acceptance test is
 [test-native-harness-browser.js](../../tests/test-native-harness-browser.js).
@@ -255,3 +366,67 @@ and reads the actual persisted native Session through the registered read-only
 command before and after restart; the Chromium Chat test separately covers the
 production Chat layout on desktop/mobile, Recipe/Action drilldown, intervention
 drafts, explicit errors and stale-response isolation.
+
+The same installed-host gate now opens the production standalone
+`VisualizationWindow` with its shipped HTML, CSP, scripts and message handlers.
+A nonce-bound test probe observes the actual DOM; it does not replace runtime
+snapshots. It checks all six panels, persisted-record change notifications and
+closing/reopening in both hosts.
+
+A second managed PKM Chat runs against a controlled local HTTP model with actual
+`run_process` tools in the isolated workspace: one denied launch, an approved
+process exiting with code 1, then an approved recovery process. The probe must
+observe retrieval, model, tool, approval-wait and completion phases before
+passing. Approval answers are released only after the waiting state is visible.
+It drills into the denied tool's original failure receipt. Permission waits are
+recorded in the Harness timeline only when a decision is actually pending, and
+answering resumes the prior phase; automatic grants do not fabricate a wait.
+
+Both hosts reopen that Chat and compare the original execution-message hash.
+A local append-only marker must contain exactly one recovery entry, and the
+denied command's marker must not exist. This checks that reopening and restart
+do not replay those process effects.
+
+A third managed Chat runs the complete nested chain with installed runtime
+resources through a loopback MCP fixture:
+
+1. Actual workspace `search_text`, with its query, one hit and original result
+   visible in Retrieval / Search.
+2. Start a parent ad-hoc Recipe, claim its pinned nested Recipe and Stage, then
+   record the explicit Harness Step binding through the production controller.
+3. Invoke a parent Action that invokes a child pipeline containing
+   `core.constant`, `core.wait` and another `core.constant`.
+4. Inspect the original child Action's persisted waiting state in the graph.
+   Only after the Webview shows that state and `action_run_wait` is running does
+   the test release the original event. No model polling loop is used.
+5. Inspect the completed original Component and its `VIS_COMPONENT_COMPLETE`
+   receipt; report the nested Recipe and read the parent's actual completion.
+6. Close/reopen in the same Host, then restart in another Host. Combined
+   messages/Recipe/Action evidence hashes must be unchanged, with exactly the
+   original parent and child Action Runs and zero restart model requests.
+
+See [visualization-chain.js](../../tests/ctx-host/visualization-chain.js) and
+[visualization-runtime.py](../../tests/ctx-host/visualization-runtime.py).
+The fixture registers and validates definitions using the installed production
+libraries; execution records and receipts are created by those actual runtimes,
+not fabricated by the test. The controller uses 12 deterministic local HTTP model
+requests. History is explicitly off in these execution/Visualization scenarios;
+they do not certify Memory quality.
+
+Set `PKM_VIS_ACCEPTANCE_OUTPUT=/absolute/output/directory` to retain screenshots
+from the actual VS Code Electron renderer. The nonce-bound probe waits for a
+capture acknowledgement before navigating to the next state, so captures cannot
+race ahead to a later graph. Images include search, the live nested Recipe,
+Action wait, Component completion, lifecycle state, held approvals and the
+original denied-process receipt after recovery. `live` and `recorded` filenames
+distinguish active execution from same-host reopening/restart inspection. Long
+receipts and their graph nodes have separate captures. The installed window's
+Chat tree/header/graph layout is also visually checked; Chromium regressions
+measure title wrapping, overflow and dashboard-width-based stacking at
+1280/700/390 px.
+
+Together these installed scenarios close VIS-01/03/05 for the controlled Linux
+execution scope. Browser-only fixtures separately cover missing/ignored
+records, reduced motion and hidden-window refresh. Windows/native desktop
+notification interaction, paid-model quality/performance, real AML or Cosmos
+execution and general roadmap acceptance remain separate.

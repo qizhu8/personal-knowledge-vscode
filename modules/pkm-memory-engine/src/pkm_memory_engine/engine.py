@@ -213,8 +213,10 @@ class Engine:
         kind = p.get("kind", "piece")
         if kind not in KINDS:
             raise MemoryError("Unknown Piece kind.")
+        scope = scope_text(p.get("scope", ""))
+        self._assert_scope_live(scope)
         self.db.execute("INSERT INTO pieces(id,label,kind,scope) VALUES(?,?,?,?)",
-                        (piece, text(p["label"], "label", 1024), kind, scope_text(p.get("scope", ""))))
+                        (piece, text(p["label"], "label", 1024), kind, scope))
         self._change("created", piece)
         return {"piece": piece, "revision": 0}
 
@@ -474,6 +476,18 @@ class Engine:
             if not self.db.execute("SELECT 1 FROM statements WHERE piece=?", (row["piece"],)).fetchone():
                 self.db.execute("UPDATE pieces SET label='',evicted=1,bytes=0 WHERE id=?", (row["piece"],))
         self.db.execute("UPDATE sources SET deleted=1,locator='' WHERE chat=?", (chat,))
+        # Topics with no extracted statements still carry private labels and turn inputs.
+        owned = self.db.execute("SELECT id FROM pieces WHERE scope=?", (chat,)).fetchall()
+        for piece in owned:
+            piece_id = piece["id"]
+            self._invalidate(piece_id, destructive=True)
+            self.db.execute("DELETE FROM statements WHERE piece=?", (piece_id,))
+            self.db.execute("DELETE FROM piece_embeddings WHERE piece=?", (piece_id,))
+            self.db.execute("DELETE FROM leases WHERE piece=?", (piece_id,))
+            self.db.execute("UPDATE pieces SET label='',evicted=1,bytes=0 WHERE id=?", (piece_id,))
+        self.db.execute("DELETE FROM edges WHERE parent IN (SELECT id FROM pieces WHERE scope=?) "
+                        "OR child IN (SELECT id FROM pieces WHERE scope=?)", (chat, chat))
+        self.db.execute("DELETE FROM turns WHERE scope=?", (chat,))
         self._change("purged", None)
         return {"removed_statements": len(rows)}
 
@@ -532,9 +546,14 @@ class Engine:
 
     def turn_put(self, turn_id: str, scope: str, state: dict) -> None:
         with self._transaction():
+            self._assert_scope_live(scope)
             self.db.execute("INSERT OR REPLACE INTO turns VALUES(?,?,?,?)",
                             (text(turn_id, "turn", 256), scope, json.dumps(state, ensure_ascii=False), time.time()))
             self.db.execute("DELETE FROM turns WHERE updated<?", (time.time() - 7 * 86400,))
+
+    def _assert_scope_live(self, scope: str) -> None:
+        if self.db.execute("SELECT 1 FROM deleted_chats WHERE chat=?", (scope,)).fetchone():
+            raise MemoryError("Memory scope was permanently deleted.")
 
     def changes(self, after: int = 0, limit: int = 50) -> list[dict]:
         integer(after, "after")

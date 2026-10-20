@@ -17,6 +17,26 @@ It remains marked as sending/awaiting sync until its exact submission identity
 appears in saved messages or the input queue. Rejections retain the current draft
 and display an error; local bubbles are not written to conversation history.
 
+Native VS Code notifications announce permission requests, questions/decisions
+waiting for input, completed replies, explicitly completed Tasks, and failures.
+Each notification belongs to its originating Chat, even after switching Chats.
+Completion of a reply does not mean the managed Task is complete. Cancelling a
+request is not reported as a failure. Background memory-organization failures
+are reported separately and do not change a successfully saved reply to failed.
+`personalKnowledge.chatMemoryThinkingBudget` (900 / 1500 / 2048 / unlimited)
+sets how much hidden model thinking each background memory step may use,
+separately from its limited visible output.
+
+Simple permission notifications offer **Allow once**, **Allow All**, **Refuse**,
+and **Open Chat** (localized with the UI). Allow once grants only the pending
+action; it does not remember permission. Allow All uses the existing current-Chat
+permission mode, not a permanent/global grant, and does not bypass native VS Code
+confirmations. The inline Chat prompt also retains **Approve & remember**.
+Batch/quota confirmations and complex questions open the Chat for explicit
+review instead of bypassing their safeguards. Dismissing a notification or
+choosing Open Chat leaves its decision pending. Cancelled, replaced or disposed
+requests cannot be authorized through an old notification.
+
 For independent work, the manager is instructed to put all ready sibling tasks
 in one `spawn_workers.tasks` batch before sleeping. This is model guidance, not
 a guarantee that every model follows it; dependent tasks should still wait.
@@ -86,10 +106,17 @@ the existing AI API key. Changing them also affects HTTP script summarization.
 `personalKnowledge.apiChatProvider` is independent of `aiBackend`: selecting
 Copilot for summaries does not select a chat provider. For direct HTTP models,
 add IDs to `personalKnowledge.apiChatModels` or choose **Enter API model ID...**.
-`personalKnowledge.apiChatTimeoutSeconds` defaults to 120 (range 10-600), covering
-each model call and its stream, not the complete Chat activity. Waiting for user
-input or tools does not consume that model-call timeout. Requests are not
-automatically retried.
+`personalKnowledge.apiChatTimeoutSeconds` is a model **inactivity** timeout:
+default 1800 seconds (30 minutes), range 10-86400. It is not a maximum task,
+model-call or stream duration. Responses and stream activity renew the timer;
+native hidden-thinking/metadata parts and HTTP stream bytes (including SSE
+heartbeats) count even without visible text. Tool
+execution and user/approval waits do not consume it. Chat, workers and Memory
+use the same setting, without a separate two-minute Memory cap. Existing explicit
+settings are preserved. Providers may impose their own limits; internal work
+without an exposed activity signal cannot be distinguished from a stalled call.
+Loop review remains separate; activity alone does not prove useful progress.
+Requests are not automatically retried.
 
 Model display names are not API IDs. For a name such as **GPT-6.1 Sol**, use its
 entry only if the public VS Code model catalog actually exposes it. A model
@@ -239,8 +266,10 @@ retained Task or worker archive still owns that evidence.
 
 The Chat UI initially receives up to 20 recent messages, with an approximately
 512 KiB page budget (one larger message is still displayed in full).
-**Load older messages** retrieves preceding pages without model inference or
-adding those pages to model context. UI paging does not delete stored evidence
+Scrolling near the top (or the **Load older messages** button, kept for keyboard
+use) retrieves preceding pages from the shared store without model inference or
+adding those pages to model context. This is rendering pagination, not a
+multi-window fallback: every window reads and writes the same Chat history. UI paging does not delete stored evidence
 or affect in-place Retry and worker Resume. Retrieval and execution still use
 the owning conversation's evidence; this is not a promise of constant-memory
 execution or unlimited disk space. Disk, I/O and validation failures remain

@@ -74,9 +74,15 @@ try {
     const saved = fs.readFileSync(path.join(faultDirectory, "p0-baseline.json"), "utf8");
     const original = failure === "lock-failed" ? fs.openSync : fs.writeFileSync;
     const method = failure === "lock-failed" ? "openSync" : "writeFileSync";
+    let injected = 0;
     try {
       fs[method] = function(file, ...args) {
-        if (typeof file === "string" && file.endsWith(failure === "lock-failed" ? "p0-baseline.lock" : ".tmp")) {
+        const staging = typeof file === "string" ? path.dirname(file) : "";
+        const lockMember = path.dirname(staging) === faultDirectory
+          && path.basename(staging).startsWith("p0-baseline.lock.")
+          && staging.endsWith(".pending") && /^[a-f0-9-]{36}\.json$/.test(path.basename(file));
+        if (typeof file === "string" && (failure === "lock-failed" ? lockMember : file.endsWith(".tmp"))) {
+          injected++;
           throw Object.assign(new Error("PRIVATE-PATH-AND-IDENTITY"), { code: "EIO" });
         }
         return original.call(fs, file, ...args);
@@ -84,6 +90,8 @@ try {
       assert.deepStrictEqual(recordBaselineEvent(faultDirectory, true, { kind: "completed", source: "action-runtime", evidence: "observed" }),
         { status: "unavailable", reasonCode: failure }, "Measurement failure returns a bounded outcome without throwing");
     } finally { fs[method] = original; }
+    assert.strictEqual(injected, 1, "Fault injection must reach the current lock member or temporary file");
+    assert.deepStrictEqual(fs.readdirSync(faultDirectory), ["p0-baseline.json"], "Failed recording must clean up its temporary lock/files");
     assert.strictEqual(fs.readFileSync(path.join(faultDirectory, "p0-baseline.json"), "utf8"), saved);
     const faultReport = baselineReport(faultDirectory, true);
     assert.strictEqual(faultReport.available, false);

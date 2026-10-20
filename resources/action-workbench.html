@@ -89,7 +89,7 @@ window.addEventListener('hashchange',()=>{if(new URLSearchParams(location.hash.s
 let browserToken=launchParams.get('token')||'',initialView=vscode?.getState()||null;
 if(!vscode){try{const previous=sessionStorage.getItem('pkm-action-token'),launch=launchParams.get('launch');if(browserToken){if(previous!==browserToken||(launch&&launch!==sessionStorage.getItem('pkm-action-launch')))sessionStorage.removeItem('pkm-action-state');sessionStorage.setItem('pkm-action-token',browserToken);if(launch)sessionStorage.setItem('pkm-action-launch',launch)}else browserToken=previous||'';initialView=JSON.parse(sessionStorage.getItem('pkm-action-state')||'null')}catch{}if(location.hash)window.history.replaceState(null,'',location.pathname+location.search)}
 const chat=document.createElement('section');chat.id='action-chat';chat.hidden=true;chat.innerHTML='<header><h2>Action Chat</h2></header><div id="chat-messages" role="log" aria-live="polite"></div>';byId('result').before(chat);const seenChoices=new Set(),catExpanded=Object.assign(Object.create(null),initialView?.catExpanded||{});
-byId('open-browser').hidden=!vscode;byId('open-browser').onclick=()=>perform('open_browser',{draft:{graph,saved,currentRun,pendingLaunch,lastRun,editorState,privateLaunch,treeCollapsed:document.querySelector('.layout').classList.contains('tree-collapsed'),catExpanded}});
+byId('open-browser').hidden=!vscode;byId('open-browser').onclick=()=>perform('open_browser',{draft:{graph,saved,currentRun,pendingLaunch,lastRun,editorState,privateLaunch,libraryDraft:initialView?.libraryDraft,nestedDraft:initialView?.nestedDraft,treeCollapsed:document.querySelector('.layout').classList.contains('tree-collapsed'),catExpanded}});
 byId('background-tasks').hidden=!vscode&&!browserToken;byId('background-tasks').onclick=async()=>{const result=await perform('background_tasks');if(!vscode&&result){queue=result;renderQueue();byId('queue').scrollIntoView({block:'nearest'})}};
 function request(method,params={}){if(!vscode)return fetch('api',{method:'POST',headers:{'Content-Type':'application/json',...(browserToken?{Authorization:'Bearer '+browserToken}:{})},body:JSON.stringify({method,params}),signal:AbortSignal.timeout(35000)}).then(response=>response.json()).then(result=>{if(result.ok===false)throw Error(result.error);return result}).catch(error=>{if(['AbortError','TimeoutError'].includes(error.name))throw Error('Request timed out; reconcile before retrying.');throw error});return new Promise((resolve,reject)=>{const requestId=String(++requestSequence),timer=setTimeout(()=>{pending.delete(requestId);reject(Error('Request timed out; reconcile before retrying.'))},35000);pending.set(requestId,{resolve,reject,timer});vscode.postMessage({requestId,method,params})})}
 window.addEventListener('message',event=>{const item=pending.get(event.data.requestId);if(!item)return;clearTimeout(item.timer);pending.delete(event.data.requestId);event.data.result?.ok===false?item.reject(Error(event.data.result.error)):item.resolve(event.data.result)});
@@ -359,7 +359,7 @@ function control(node,field,schema){
 	if(schema.enum)return '<select '+attributes+'>'+schema.enum.map(item=>'<option value="'+esc(JSON.stringify(item))+'" '+(item===value?'selected':'')+'>'+esc(item)+'</option>').join('')+'</select>';
 	if(schema.type==='boolean')return '<input type="checkbox" '+attributes+' '+(value?'checked':'')+'>';
 	 if(node.action_id==='core.math-expression'&&field==='expression'){const sources=definition(node).math_functions;return '<div class="math-expression"><div class="raw-string-body"><pre aria-hidden="true">'+mathHighlights(value,sources)+'</pre><textarea '+attributes+' data-math-expression spellcheck="false">'+esc(value)+'</textarea></div><div class="math-provenance">'+mathProvenance(value,sources)+'</div><details class="math-functions"><summary>Functions</summary>'+Object.entries(sources).map(([name,source])=>'<div><code>'+esc(name)+'</code><small>'+esc(source)+'</small></div>').join('')+'<div><code>pi / e / tau</code><small>math.pi / math.e / math.tau</small></div></details></div>'}
-	if(!schema.type||['object','array','null'].includes(schema.type))return '<textarea '+attributes+' spellcheck="false">'+esc(JSON.stringify(value??null,null,2))+'</textarea>';
+	if(!schema.type||['object','array','null'].includes(schema.type))return (schema.type==='array'&&['body','then_steps','else_steps','default_steps','cases'].includes(field)?'<button type="button" data-edit-body="'+esc(field)+'" data-node="'+node.id+'">Open '+esc(field)+' subgraph</button>':'')+'<textarea '+attributes+' spellcheck="false">'+esc(JSON.stringify(value??null,null,2))+'</textarea>';
 	if(node.action_id==='core.constant'&&schema.type==='string')return '<div class="raw-string"><span class="literal-delimiter" aria-hidden="true">r"""</span><div class="raw-string-body"><pre aria-hidden="true">'+literalHighlights(value??'')+'</pre><textarea '+attributes+' data-raw-string spellcheck="false" wrap="soft">'+esc(value??'')+'</textarea></div><span class="literal-delimiter" aria-hidden="true">"""</span></div>';
 	return '<input '+attributes+' type="'+(schema.format==='date'?'date':'text')+'" value="'+esc(value??'')+'" '+(['integer','number'].includes(schema.type)?'inputmode="decimal"':'')+'>';
 }
@@ -368,7 +368,7 @@ function compatible(outputNode,outputField,inputNode,inputField){const target=pr
 function pin(node,field,schema,direction,optional=false,compact=false){return '<button class="pin '+direction+(optional?' optional':'')+'" data-'+direction+'="'+esc(field)+'" data-block-id="'+node.id+'" '+(compact?'data-compact-pin="'+direction+'"':'')+' title="'+esc(field)+' / '+esc(schema.format||schema.type)+(direction==='input'?(optional?' / optional':' / required'):'')+'" aria-label="'+(direction==='input'?'Input ':'Output ')+node.id+'.'+esc(field)+'"></button>'}
 function compactPorts(node,action,direction){const fields=Object.entries(properties(action,direction));if(!fields.length)return '';const field=fields.some(([name])=>name===node['compact_'+direction])?node['compact_'+direction]:fields[0][0],schema=properties(action,direction)[field],optional=direction==='input'&&!(action.input_schema.required||[]).includes(field);return '<div class="compact-port '+direction+'">'+pin(node,field,schema,direction,optional,true)+'<select class="compact-port-select" data-compact="'+direction+'" data-node="'+node.id+'" aria-label="'+direction+' port for '+node.id+'">'+fields.map(([name,type])=>'<option value="'+esc(name)+'" '+(name===field?'selected':'')+'>'+esc(name)+' / '+esc(type.format||type.type)+(direction==='input'&&!(action.input_schema.required||[]).includes(name)?' / optional':'')+'</option>').join('')+'</select></div>'}
 function parameterRow(node,action,field,schema){if(node.action_id==='core.cast'&&field==='target_type')return '';const optional=!(action.input_schema.required||[]).includes(field),wired=graph.edges.some(edge=>edge.target===node.id&&edge.input===field),enabled=Object.hasOwn(node.parameters,field);return '<div class="port-row '+(optional?'optional':'required')+'" data-parameter="'+esc(field)+'">'+pin(node,field,schema,'input',optional)+'<label class="field-label">'+(optional?'<input type="checkbox" data-enable-field="'+esc(field)+'" data-node="'+node.id+'" aria-label="Set '+esc(field)+' for '+node.id+'" '+(enabled||wired?'checked':'')+' '+(wired?'disabled':'')+'>':'')+esc(field)+' <small>'+esc(schema.format||schema.type)+' / '+(optional?'optional':'required')+'</small></label>'+(wired?'<small>Connected</small>':optional&&!enabled?'<small>'+(Object.hasOwn(schema,'default')?'Default: '+esc(JSON.stringify(schema.default)):'Not supplied')+'</small>':control(node,field,schema))+'</div>'}
-function saveView(){const state={graph,saved,currentRun,pendingLaunch,lastRun,editorState,privateLaunch,treeCollapsed:document.querySelector('.layout').classList.contains('tree-collapsed'),catExpanded};if(vscode)vscode.setState(state);else sessionStorage.setItem('pkm-action-state',JSON.stringify(state))}
+function saveView(){const state={graph,saved,currentRun,pendingLaunch,lastRun,editorState,privateLaunch,libraryDraft:initialView?.libraryDraft,nestedDraft:initialView?.nestedDraft,treeCollapsed:document.querySelector('.layout').classList.contains('tree-collapsed'),catExpanded};if(vscode)vscode.setState(state);else sessionStorage.setItem('pkm-action-state',JSON.stringify(state))}
 function renderGraph(){
 	byId('name').value=graph.name;
 	byId('blocks').innerHTML=graph.nodes.map(node=>{const action=definition(node)||{},collapsed=!!node.collapsed;return '<article class="block '+(collapsed?'collapsed':'')+'" data-block="'+node.id+'" style="left:'+node.x+'px;top:'+node.y+'px"><header><button class="icon" data-fold="'+node.id+'" title="'+(collapsed?'Expand parameters':'Collapse parameters')+'" aria-label="'+(collapsed?'Expand':'Collapse')+' parameters for '+node.id+'" aria-expanded="'+!collapsed+'">'+(collapsed?'&#9656;':'&#9662;')+'</button><h3>'+esc(action.display_name||node.action_id)+'</h3><button class="icon" data-delete="'+node.id+'" title="Delete block" aria-label="Delete '+node.id+'">&times;</button></header><div class="state">'+esc(action.availability?.state||'module_not_loaded')+(collapsed?' / '+Object.keys(properties(action,'input')).length+' inputs / '+Object.keys(properties(action,'output')).length+' outputs':'')+'</div><div class="ports">'+(collapsed?compactPorts(node,action,'input')+compactPorts(node,action,'output'):Object.entries(properties(action,'input')).map(([field,schema])=>parameterRow(node,action,field,schema)).join('')+Object.entries(properties(action,'output')).map(([field,schema])=>'<div class="port-row output-row">'+pin(node,field,schema,'output')+esc(field)+' <small>'+esc(schema.format||schema.type)+'</small></div>').join(''))+'</div></article>'}).join('');
@@ -385,6 +385,7 @@ function renderGraph(){
 	document.querySelectorAll('[data-delete]').forEach(button=>button.onclick=()=>{remember();graph.nodes=graph.nodes.filter(node=>node.id!==button.dataset.delete);graph.edges=graph.edges.filter(edge=>edge.source!==button.dataset.delete&&edge.target!==button.dataset.delete);clearSelection();if(graph.output_node===button.dataset.delete)graph.output_node=graph.nodes.at(-1)?.id;persist();renderGraph()});
 	document.querySelectorAll('[data-output]').forEach(button=>{button.onclick=()=>pickOutput(button.dataset.blockId,button.dataset.output);button.onpointerdown=event=>{if(event.button!==0)return;wireGesture={node:button.dataset.blockId,field:button.dataset.output,x:event.clientX,y:event.clientY,moved:false};source={node:wireGesture.node,field:wireGesture.field};selectedEdge=null;updatePortState()}});
 	document.querySelectorAll('[data-input]').forEach(button=>button.onclick=()=>pickInput(button.dataset.blockId,button.dataset.input));
+	document.querySelectorAll('[data-edit-body]').forEach(button=>button.onclick=()=>openNestedEditor(button.dataset.node,button.dataset.editBody));
 	document.querySelectorAll('[data-enable-field]').forEach(input=>input.onchange=()=>{remember();const node=graph.nodes.find(item=>item.id===input.dataset.node);if(input.checked)node.parameters[input.dataset.enableField]=initialValue(properties(definition(node),'input')[input.dataset.enableField]);else delete node.parameters[input.dataset.enableField];persist();renderGraph()});
 	document.querySelectorAll('[data-field]').forEach(input=>{
 		const change=()=>{const node=graph.nodes.find(item=>item.id===input.dataset.node),schema=properties(definition(node),'input')[input.dataset.field];let value=input.value;try{if(schema.enum||(input.tagName==='TEXTAREA'&&schema.type!=='string'))value=JSON.parse(value);else if(schema.type==='boolean')value=input.checked;else if(schema.type==='integer'||schema.type==='number'){value=Number(value);if(input.value.trim()===''||!Number.isFinite(value)||(schema.type==='integer'&&!Number.isSafeInteger(value)))throw Error('Use a finite, exactly representable value.')}}catch(error){input.setCustomValidity(error.message);input.reportValidity();return}remember();node.parameters[input.dataset.field]=value;input.setCustomValidity('');if(input.hasAttribute('data-raw-string'))input.previousElementSibling.innerHTML=literalHighlights(value);persist();draw()};
@@ -457,7 +458,7 @@ async function refresh(){
   actions=data.actions;groups=data.groups||[...new Set(['Actions','core',...actions.map(action=>action.category||'Actions')])];
   moduleSets=data.module_sets;queue=data.queue;previewWorkspace=data.preview_workspace||'';
   if(previewWorkspace){byId('workspace').disabled=true;byId('workspace').title=previewWorkspace}
-  renderPalette();renderSets();
+  renderPalette();renderSets();if(document.getElementById('action-library')?.open)libraryRows();
   if(!byId('blocks').contains(document.activeElement)&&document.activeElement!==byId('name')&&!wireGesture)renderGraph();
   renderQueue();updateRunControls();
   const history=await request('runs');
@@ -527,6 +528,7 @@ async function initialize(){
     graph=session.draft.graph||graph;saved=session.draft.saved||null;currentRun=session.draft.currentRun||null;
     pendingLaunch=session.draft.pendingLaunch||null;lastRun=session.draft.lastRun||null;editorState=session.draft.editorState||null;
     privateLaunch=session.draft.privateLaunch||null;Object.assign(catExpanded,session.draft.catExpanded||{});
+    initialView??={};initialView.libraryDraft=session.draft.libraryDraft;initialView.nestedDraft=session.draft.nestedDraft;nestedDraft=session.draft.nestedDraft||null;
     setTreeCollapsed(session.draft.treeCollapsed!==false);saveView();
    }
   }catch(error){return status(error.message,true)}
@@ -541,4 +543,266 @@ async function initialize(){
  }
 }
 window.addEventListener('resize',draw);updateRunControls();initialize();setInterval(()=>{if(refreshQueued&&!refreshing){refreshQueued=false;refresh()}else if(currentRun||(queue.jobs||[]).some(job=>['queued','running'].includes(job.state)))refresh()},2000);
+</script>
+<script>
+const libraryStyle=document.createElement('style');
+libraryStyle.textContent='#action-library{width:min(1100px,calc(100vw - 24px));max-height:calc(100dvh - 24px);box-sizing:border-box;overflow:auto}#action-library header,#library-results article,#library-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}#action-library h2,#library-results article strong{flex:1;min-width:100px;overflow-wrap:anywhere}#library-search{width:100%;box-sizing:border-box}#library-results article{border-bottom:1px solid var(--line);padding:10px 0}#library-results article small{flex-basis:100%;overflow-wrap:anywhere}#library-detail pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:280px;overflow:auto}#library-detail label{display:block;margin:8px 0}#library-detail input:not([type=checkbox]),#library-detail select,#library-detail textarea{box-sizing:border-box;width:100%;max-width:100%}#library-detail dl{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr);gap:8px}#library-detail dd{margin:0;overflow-wrap:anywhere}#library-error{color:var(--bad);white-space:pre-wrap}#library-runs button{max-width:100%;overflow-wrap:anywhere;white-space:normal;margin:4px}';
+document.head.append(libraryStyle);
+const library=document.createElement('dialog');library.id='action-library';
+library.innerHTML='<header><h2>Action Library</h2><button id="library-new">New composition</button><button id="library-close">Close library</button></header><p>Inspecting and searching never runs or qualifies an Action. Readiness is checked again by the durable executor.</p><label>Search by name, identity, description or capability<input id="library-search" type="search"></label><p id="library-error" role="alert"></p><section id="library-results" aria-label="Available Actions"></section><section id="library-detail" aria-live="polite"></section><details><summary>Installed ModuleSets: installed is not enabled or qualified</summary><div id="library-packages"></div></details>';
+document.body.append(library);
+const libraryButton=document.createElement('button');libraryButton.id='open-library';libraryButton.textContent='Action Library';
+document.querySelector('header.top .toolbar').prepend(libraryButton);
+let librarySequence=0,librarySelection,librarySubmitting=false;
+library.addEventListener('close',()=>{librarySequence++;librarySelection=undefined});
+function libraryError(error){byId('library-error').textContent=error.message||String(error)}
+function libraryDraft(value){initialView??={};initialView.libraryDraft=value;saveView()}
+function libraryRows(){
+ const query=byId('library-search').value.trim().toLowerCase();
+ const rows=actions.filter(action=>!action.palette_hidden&&JSON.stringify([action.action_id,action.display_name,action.description,action.effects,action.execution_contract?.requiredCapabilities]).toLowerCase().includes(query));
+ byId('library-results').innerHTML=rows.map(action=>'<article><strong>'+esc(action.display_name||action.action_id)+'</strong><span>'+esc(action.availability.state)+'</span><button data-inspect-library="'+esc(action.action_id)+'">Inspect / Run</button><small>'+esc(action.action_id)+' · v'+esc(action.version||'system')+' · '+esc(action.description||action.availability.reason||'')+'</small></article>').join('')||'<p>No enabled Actions match. Disabled packages remain listed below.</p>';
+ byId('library-results').querySelectorAll('[data-inspect-library]').forEach(button=>button.onclick=()=>inspectLibrary(button.dataset.inspectLibrary));
+ byId('library-packages').innerHTML=moduleSets.map((item,index)=>'<p>'+esc(item.name)+' v'+esc(item.version)+' · installed · '+(item.enabled?'enabled':'disabled')+' <button data-library-package="'+index+'">'+(item.enabled?'Disable':'Enable')+' package</button></p>').join('')||'<p>No optional packages installed.</p>';
+ byId('library-packages').querySelectorAll('[data-library-package]').forEach(button=>button.onclick=async()=>{
+  const item=moduleSets[Number(button.dataset.libraryPackage)];button.disabled=true;
+  try{await request('load',{module_set_id:item.module_set_id,version:item.version,enabled:!item.enabled});await openLibrary()}catch(error){libraryError(error)}finally{button.disabled=false}
+ });
+}
+async function openLibrary(){
+ byId('library-error').textContent='';
+ if(!library.open)library.showModal();
+ try{const data=await request('catalog');actions=data.actions;moduleSets=data.module_sets;libraryRows();byId('library-search').focus()}catch(error){libraryError(error)}
+}
+libraryButton.onclick=openLibrary;
+byId('library-search').oninput=libraryRows;
+byId('library-close').onclick=()=>library.close();
+byId('library-new').onclick=()=>{
+ if(editorState?.dirty||(!saved&&graph.nodes.length))return libraryError(Error('Save or close the current draft before creating another composition.'));
+ closeDefinitionEditor();graph={action_id:'local.graph.'+crypto.randomUUID().replaceAll('-',''),name:'New composition',nodes:[],edges:[]};history=[];saved=null;clearSelection();persist();renderGraph();library.close();byId('name').focus();
+};
+function libraryInputs(action,values){
+ const panel=byId('library-fields');panel.replaceChildren();
+ for(const [field,schema]of Object.entries(action.input_schema?.properties||{})){
+  const required=(action.input_schema.required||[]).includes(field),label=document.createElement('label');
+  label.append(document.createTextNode((schema.title||field)+(required?' *':'')));
+  const complex=['object','array'].includes(schema.type)||!schema.type;
+  const input=document.createElement(schema.enum?'select':complex?'textarea':'input');
+  input.setAttribute('aria-label',schema.title||field);
+  if(schema.enum){input.add(new Option('Not specified',''));schema.enum.forEach((item,index)=>input.add(new Option(String(item),String(index))));input.value=field in values?String(schema.enum.findIndex(item=>JSON.stringify(item)===JSON.stringify(values[field]))):''}
+  else if(schema.type==='boolean'){input.type='checkbox';input.checked=values[field]===true}
+  else if(complex)input.value=field in values?JSON.stringify(values[field]):'';
+  else{input.type=['integer','number'].includes(schema.type)?'number':'text';input.value=values[field]??'';if(schema.minimum!==undefined)input.min=schema.minimum;if(schema.maximum!==undefined)input.max=schema.maximum;input.step=schema.type==='integer'?'1':'any'}
+  if(required&&schema.type!=='boolean')input.required=true;
+  if(schema.description)input.title=schema.description;
+  input.oninput=()=>{
+   byId('library-approve').checked=false;
+   try{
+    const next=JSON.parse(byId('library-input-json').value);
+    if(schema.enum){if(input.value==='')delete next[field];else next[field]=schema.enum[Number(input.value)]}
+    else if(schema.type==='boolean')next[field]=input.checked;
+    else if(input.value==='')delete next[field];
+    else next[field]=complex?JSON.parse(input.value):['integer','number'].includes(schema.type)?Number(input.value):input.value;
+    byId('library-input-json').value=JSON.stringify(next,null,2);libraryDraft({action_id:action.action_id,inputs:next});
+    byId('library-error').textContent='';
+   }catch(error){libraryError(error)}
+  };
+  label.append(input);panel.append(label);
+ }
+}
+async function inspectLibrary(id){
+ if(librarySubmitting)return libraryError(Error('Wait for the original submission to return before changing the inspected Action.'));
+ const sequence=++librarySequence;byId('library-error').textContent='';
+ try{
+  const result=await request('library_get',{action_id:id});
+  if(sequence!==librarySequence||!library.open)return;
+  const action=result.action;librarySelection=action;
+  const prior=initialView?.libraryDraft;
+  const values=pendingLaunch?.action_id===id?pendingLaunch.inputs:prior?.action_id===id?prior.inputs:
+   Object.fromEntries(Object.entries(action.input_schema?.properties||{}).filter(([,schema])=>'default'in schema).map(([key,schema])=>[key,schema.default]));
+  byId('library-detail').innerHTML='<h3>'+esc(action.display_name||id)+'</h3><dl>'+Object.entries({Identity:id,Version:action.version||'system',Revision:action.content_hash||'system',Installation:result.installation,Enabled:String(result.enabled),Grant:result.grant.state,Qualification:result.qualification.state,Readiness:action.availability.state,Reason:action.availability.reason||result.grant.reason||result.qualification.reason||'None',Environment:JSON.stringify(result.environment)}).map(([key,value])=>'<dt>'+esc(key)+'</dt><dd>'+esc(value)+'</dd>').join('')+'</dl><div id="library-tools"><button id="library-edit">Open definition / graph</button><button id="library-validate">Validate declared examples</button></div><details><summary>Definition, schemas, implementations and effects</summary><pre>'+esc(JSON.stringify(action,null,2))+'</pre></details><form id="library-run-form"><fieldset id="library-fields"><legend>Run inputs</legend></fieldset><details><summary>Advanced inputs JSON</summary><label>Run inputs JSON<textarea id="library-input-json" spellcheck="false"></textarea></label></details><label><input id="library-approve" type="checkbox" required> I approve this exact invocation and its declared effects.</label><button id="library-run">Run selected Action</button></form><section id="library-runs"><h4>Recent Runs of this Action</h4></section>';
+  byId('library-input-json').value=JSON.stringify(values,null,2);libraryInputs(action,values);
+  const implementations=(action.implementations||[]).filter(item=>item.id);
+  if(implementations.length){
+   const select=document.createElement('select');select.setAttribute('aria-label','Execution implementation');
+   implementations.forEach(item=>select.add(new Option(item.id+' · '+item.kind+' · '+item.platforms.join('/'),item.id)));
+   select.value=result.environment.implementation_id||'';
+   const label=document.createElement('label');label.textContent='Execution implementation';label.append(select);
+   const apply=document.createElement('button');apply.textContent='Select implementation';
+   apply.onclick=async()=>{try{await request('select_implementation',{action_id:id,implementation_id:select.value});await inspectLibrary(id)}catch(error){libraryError(error)}};
+   byId('library-tools').append(label,apply);
+  }
+  byId('library-input-json').oninput=()=>{byId('library-approve').checked=false;try{const inputs=JSON.parse(byId('library-input-json').value);if(!inputs||typeof inputs!=='object'||Array.isArray(inputs))throw Error('Run inputs must be an object.');libraryInputs(action,inputs);libraryDraft({action_id:id,inputs});byId('library-error').textContent=''}catch(error){libraryError(error)}};
+  byId('library-edit').onclick=async()=>{
+   if(action.visibility==='private'){library.close();return openPrivateAction(action)}
+   if(action.read_only||action.editable===false){library.close();editorState={action_id:id,name:id,language:action.language||'Contract',definition:action,files:[],filename:'',content:JSON.stringify(action,null,2),dirty:false,read_only:true};showDefinitionEditor();saveView();return}
+   library.close();await editAction(action);
+  };
+  byId('library-validate').disabled=!!action.component||action.visibility==='private';
+  byId('library-validate').onclick=async()=>{
+   if(!confirm('Run declared validation with effects: '+(action.effects||[]).join(', ')+'?'))return;
+   try{await request('validate',{action_id:id,content_hash:action.content_hash,priority:'demand',allow_effects:(action.effects||[]).some(effect=>effect!=='pure')});await refresh();libraryRows();await inspectLibrary(id)}catch(error){libraryError(error)}
+  };
+  byId('library-run').disabled=action.availability.state!=='ready'||!!action.component||!!currentRun||librarySubmitting||!!pendingLaunch&&pendingLaunch.action_id!==id;
+  byId('library-run-form').onsubmit=async event=>{
+   event.preventDefault();if(librarySubmitting||currentRun||action.component||action.availability.state!=='ready')return;
+   librarySubmitting=true;byId('library-run').disabled=true;
+   try{
+    const inputs=JSON.parse(byId('library-input-json').value);
+    if(!inputs||typeof inputs!=='object'||Array.isArray(inputs))throw Error('Run inputs must be an object.');
+    if(!byId('library-approve').checked)throw Error('Approve this exact invocation first.');
+    if(action.visibility==='private'){library.close();return openPrivateAction(action)}
+    if(pendingLaunch&&(pendingLaunch.action_id!==id||JSON.stringify(pendingLaunch.inputs)!==JSON.stringify(inputs)))throw Error('The original submission is unresolved. Inspect it before changing inputs: '+pendingLaunch.key);
+    pendingLaunch??={action_id:id,content_hash:action.content_hash,inputs,key:crypto.randomUUID()};saveView();
+    const run=await request('call',pendingLaunch);
+    if(!/^action_run_[0-9a-f]{32}$/.test(run.run_id||''))throw Error('No durable Run identity returned; original launch key retained.');
+    currentRun=lastRun=run.run_id;pendingLaunch=null;saveView();library.close();await refresh();byId('run-history').scrollIntoView({block:'start'});
+   }catch(error){libraryError(Error(error.message+(pendingLaunch?' Original launch key retained: '+pendingLaunch.key:'')))}
+   finally{librarySubmitting=false;if(byId('library-run'))byId('library-run').disabled=action.availability.state!=='ready'||!!action.component||!!currentRun}
+  };
+  const runs=await request('runs');
+  if(sequence!==librarySequence||!library.open)return;
+  for(const run of (runs.runs||[]).filter(run=>run.action_id===id)){
+   const button=document.createElement('button');button.textContent=(run.userState||run.state)+' · '+run.run_id;
+   button.onclick=async()=>{lastRun=run.run_id;saveView();library.close();await refresh();byId('run-history').scrollIntoView({block:'start'})};
+   byId('library-runs').append(button);
+  }
+  byId('library-detail').scrollIntoView({block:'start'});
+ }catch(error){if(sequence===librarySequence)libraryError(error)}
+}
+if(initialView?.libraryOpen)openLibrary();
+</script>
+<script>
+const nestedStyle=document.createElement('style');
+nestedStyle.textContent='#nested-editor{width:min(1000px,calc(100vw - 24px));max-height:calc(100dvh - 24px);box-sizing:border-box;overflow:auto}#nested-editor header,#nested-route,#nested-editor .nested-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap}#nested-editor h2{flex:1;min-width:0;overflow-wrap:anywhere}#nested-editor input,#nested-editor select,#nested-editor textarea{box-sizing:border-box;max-width:100%}#nested-editor textarea{width:100%}#nested-editor article{padding:12px;border:1px solid var(--line);border-radius:8px;margin:10px 0;overflow-wrap:anywhere}#nested-editor article+article:before{content:"↓";display:block;color:var(--accent)}#nested-editor label{display:block;margin:8px 0}#nested-editor [data-step-id]{width:100%}#nested-editor [role=alert]{color:var(--bad);white-space:pre-wrap}#nested-json{min-height:200px}';
+nestedStyle.textContent+='#nested-editor h2{flex:1 1 220px}#nested-success{color:var(--good);white-space:pre-wrap}';
+document.head.append(nestedStyle);
+const nestedDialog=document.createElement('dialog');nestedDialog.id='nested-editor';
+nestedDialog.innerHTML='<header><h2>Nested Action editor</h2><button id="nested-close">Close draft</button></header><p>Ordered nodes use the existing pipeline executor. References such as {"$step":"node.value"} and {"$var":"item"} stay exact JSON; opening or editing never executes a node.</p><nav id="nested-route" aria-label="Nested graph ancestors"></nav><p id="nested-error" role="alert"></p><p id="nested-success" role="status"></p><div class="nested-tools"><label>Component or ready Action<select id="nested-kind"></select></label><button id="nested-add">Add node</button><button id="nested-undo">Undo nested edit</button><button id="nested-check">Check whole draft</button><button id="nested-apply">Apply to composition</button></div><section id="nested-nodes" aria-label="Ordered nested graph"></section><details><summary>Exact subgraph JSON</summary><label>Subgraph JSON<textarea id="nested-json" spellcheck="false"></textarea></label><button id="nested-use-json">Use JSON in draft</button></details>';
+document.body.append(nestedDialog);
+let nestedDraft=initialView?.nestedDraft||null,nestedUndo=[],nestedReturnFocus;
+const bodyFields=['then_steps','else_steps','default_steps','body','cases'];
+function nestedAt(path=nestedDraft.path){return path.reduce((value,key)=>value[key],nestedDraft.value)}
+function persistNested(){initialView??={};initialView.nestedDraft=structuredClone(nestedDraft);saveView();if(document.getElementById('resume-nested'))byId('resume-nested').hidden=!nestedDraft}
+function nestedError(error){byId('nested-success').textContent='';byId('nested-error').textContent=(nestedDraft?`${nestedDraft.nodeId}.${nestedDraft.field}/${nestedDraft.path.join('/')}: `:'')+(error.message||String(error))}
+function invalidNested(key,value,error){nestedDraft.invalid??={};nestedDraft.invalid[key]=value;persistNested();nestedError(error)}
+function editNested(change,repair=false){
+ if(!repair&&nestedDraft.rawJson)return nestedError(Error('Use the pending Exact subgraph JSON or Undo before editing nodes.'));
+ if(!repair&&Object.keys(nestedDraft.invalid||{}).length)return nestedError(Error('Correct invalid fields or Undo before changing the graph structure.'));
+ nestedUndo.push(structuredClone(nestedDraft));if(nestedUndo.length>50)nestedUndo.shift();
+ change();persistNested();renderNested();
+}
+function openNestedEditor(nodeId,field){
+ const node=graph.nodes.find(item=>item.id===nodeId);
+ if(!node||!bodyFields.includes(field))return status('The selected nested field is unavailable.',true);
+ if(nestedDraft&&(nestedDraft.nodeId!==nodeId||nestedDraft.field!==field))return status('Apply the existing nested draft before editing another field, or discard it explicitly.',true);
+ const value=node.parameters[field]??[];
+ if(!Array.isArray(value))return status('Correct this field to a JSON array before opening its subgraph.',true);
+ nestedReturnFocus=document.activeElement;
+ nestedDraft??={nodeId,field,value:structuredClone(value),original:JSON.stringify(value),path:[]};
+ persistNested();renderNested();if(!nestedDialog.open)nestedDialog.showModal();
+}
+function renderNested(){
+ const list=nestedAt(),cases=nestedDraft.path.at(-1)==='cases'||!nestedDraft.path.length&&nestedDraft.field==='cases';
+ byId('nested-error').textContent='';
+ byId('nested-success').textContent='';
+ byId('nested-route').replaceChildren();
+ for(let depth=0;depth<=nestedDraft.path.length;depth++){
+  if(!Array.isArray(nestedAt(nestedDraft.path.slice(0,depth))))continue;
+  const button=document.createElement('button');button.textContent=depth?nestedDraft.path.slice(0,depth).join(' / '):nestedDraft.nodeId+' / '+nestedDraft.field;
+  button.onclick=()=>{if(nestedDraft.rawJson)return nestedError(Error('Use the pending Exact subgraph JSON or Undo before navigating.'));nestedDraft.path=nestedDraft.path.slice(0,depth);persistNested();renderNested()};
+  byId('nested-route').append(button);
+ }
+ byId('nested-kind').hidden=cases;
+ byId('nested-kind').innerHTML=actions.filter(action=>!action.palette_hidden&&!action.direct_only&&action.availability.state==='ready').map(action=>'<option value="'+esc(action.action_id)+'">'+esc(action.display_name||action.action_id)+'</option>').join('');
+ byId('nested-add').textContent=cases?'Add case':'Add node';
+ byId('nested-undo').disabled=!nestedUndo.length;
+ byId('nested-json').value=nestedDraft.rawJson?.text??JSON.stringify(list,null,2);
+ if(nestedDraft.rawJson)byId('nested-json').closest('details').open=true;
+ byId('nested-nodes').replaceChildren();
+ if(!list.length)byId('nested-nodes').textContent='Empty subgraph: no internal nodes will execute.';
+ list.forEach((step,index)=>{
+  const article=document.createElement('article');article.dataset.nestedIndex=index;
+  const action=actions.find(action=>action.action_id===(step.component||step.action_id));
+  article.innerHTML='<h3>'+esc(cases?'Case '+(index+1):(step.component||step.action_id||'Unknown node'))+'</h3><div class="nested-tools"><button data-nested-up '+(index?'':'disabled')+'>Move up</button><button data-nested-down '+(index<list.length-1?'':'disabled')+'>Move down</button><button data-nested-delete>Delete node</button></div>';
+  if(!cases){
+   const label=document.createElement('label');label.textContent='Stable step ID';
+   const input=document.createElement('input');input.value=step.id||'';input.dataset.stepId='';input.setAttribute('aria-label','Step ID '+(index+1));
+   const key=JSON.stringify([...nestedDraft.path,index,'id']);input.value=nestedDraft.invalid?.[key]??input.value;
+   input.onchange=()=>{if(!/^[a-z][a-z0-9_-]{0,63}$/.test(input.value)||list.some((item,i)=>i!==index&&item.id===input.value)){invalidNested(key,input.value,Error('Use a unique step ID: '+input.value));return}editNested(()=>{delete nestedDraft.invalid?.[key];step.id=input.value},true)};
+   label.append(input);article.append(label);
+  }
+  const inputs=cases?step:step.inputs;
+  if(!inputs||typeof inputs!=='object'||Array.isArray(inputs)){article.append(document.createTextNode('Invalid inputs object; correct Exact subgraph JSON.'));byId('nested-nodes').append(article);return}
+  const schemas=cases?{match:{},value:{},steps:{type:'array'}}:action?.input_schema?.properties||{};
+  const keys=new Set([...Object.keys(inputs),...Object.keys(schemas).filter(key=>bodyFields.includes(key))]);
+  for(const field of keys){
+   const isBody=(cases&&field==='steps')||bodyFields.includes(field);
+   if(isBody){
+    const button=document.createElement('button');button.textContent='Open '+field+' subgraph';button.dataset.nestedField=field;
+    button.onclick=()=>{if(nestedDraft.rawJson)return nestedError(Error('Use the pending Exact subgraph JSON or Undo before navigating.'));if(inputs[field]!==undefined&&!Array.isArray(inputs[field]))return nestedError(Error(field+' must be an array.'));if(inputs[field]===undefined){nestedUndo.push(structuredClone(nestedDraft));inputs[field]=[]}nestedDraft.path=[...nestedDraft.path,index,...(cases?[]:['inputs']),field];persistNested();renderNested()};
+    article.append(button);
+   }else{
+    const label=document.createElement('label');label.textContent=field+' (JSON literal or expression)';
+    const input=document.createElement('textarea'),key=JSON.stringify([...nestedDraft.path,index,field]);input.value=nestedDraft.invalid?.[key]??JSON.stringify(inputs[field],null,2);input.setAttribute('aria-label',field+' for nested '+(step.id||index));
+    input.onchange=()=>{try{const value=JSON.parse(input.value);editNested(()=>{delete nestedDraft.invalid?.[key];inputs[field]=value},true)}catch(error){invalidNested(key,input.value,error)}};
+    label.append(input);article.append(label);
+   }
+  }
+  article.querySelector('[data-nested-up]').onclick=()=>editNested(()=>{[list[index-1],list[index]]=[list[index],list[index-1]]});
+  article.querySelector('[data-nested-down]').onclick=()=>editNested(()=>{[list[index+1],list[index]]=[list[index],list[index+1]]});
+  article.querySelector('[data-nested-delete]').onclick=()=>editNested(()=>list.splice(index,1));
+  byId('nested-nodes').append(article);
+ });
+ if(nestedDraft.rawJson)byId('nested-nodes').querySelectorAll('input,textarea').forEach(input=>input.disabled=true);
+}
+byId('nested-add').onclick=()=>{
+ const list=nestedAt(),cases=nestedDraft.path.at(-1)==='cases'||!nestedDraft.path.length&&nestedDraft.field==='cases';
+ if(list.length>=100)return nestedError(Error('A subgraph supports at most 100 nodes.'));
+ if(cases)return editNested(()=>list.push({match:null,steps:[],value:null}));
+ const action=actions.find(action=>action.action_id===byId('nested-kind').value);
+ if(!action)return nestedError(Error('Select an available component or qualified Action.'));
+ const inputs=Object.fromEntries((action.input_schema.required||[]).map(field=>[field,initialValue(action.input_schema.properties[field])]));
+ if(action.action_id==='core.if-else'||action.action_id==='core.while')inputs.condition=false;
+ const node={id:'step_'+crypto.randomUUID().replaceAll('-','').slice(0,12),[action.component?'component':'action_id']:action.action_id,inputs,...(action.component?{}:{content_hash:action.content_hash})};
+ editNested(()=>list.push(node));
+};
+byId('nested-undo').onclick=()=>{if(nestedUndo.length){nestedDraft=nestedUndo.pop();persistNested();renderNested()}};
+byId('nested-json').oninput=()=>{
+ if(!nestedDraft.rawJson){nestedUndo.push(structuredClone(nestedDraft));if(nestedUndo.length>50)nestedUndo.shift()}
+ nestedDraft.rawJson={text:byId('nested-json').value};persistNested();
+ byId('nested-nodes').querySelectorAll('input,textarea').forEach(input=>input.disabled=true);
+};
+byId('nested-use-json').onclick=()=>{
+ try{
+  const value=JSON.parse(byId('nested-json').value);
+  if(!Array.isArray(value)||value.length>100||value.some(item=>!item||typeof item!=='object'||Array.isArray(item)))throw Error('Use an array of at most 100 node/case objects.');
+  editNested(()=>{
+   for(const key of Object.keys(nestedDraft.invalid||{})){const location=JSON.parse(key);if(nestedDraft.path.every((part,index)=>location[index]===part))delete nestedDraft.invalid[key]}
+   delete nestedDraft.rawJson;
+   if(!nestedDraft.path.length)nestedDraft.value=value;else{const parent=nestedAt(nestedDraft.path.slice(0,-1));parent[nestedDraft.path.at(-1)]=value}
+  },true);
+ }catch(error){nestedError(error)}
+};
+function nestedCandidate(){
+ if(nestedDraft.rawJson)throw Error('Use the pending Exact subgraph JSON or Undo before checking or applying.');
+ if(Object.keys(nestedDraft.invalid||{}).length)throw Error('Correct invalid draft fields before checking or applying: '+Object.keys(nestedDraft.invalid).join(', '));
+ const candidate=structuredClone(graph),node=candidate.nodes.find(item=>item.id===nestedDraft.nodeId);
+ if(!node)throw Error('The parent block was removed. The nested draft is retained.');
+ if(JSON.stringify(node.parameters[nestedDraft.field]??[])!==nestedDraft.original)throw Error('The parent field changed since this draft opened. Original and draft are retained; do not overwrite a newer edit.');
+ node.parameters[nestedDraft.field]=structuredClone(nestedDraft.value);return candidate;
+}
+byId('nested-check').onclick=async()=>{try{await request('check_graph',{graph:nestedCandidate()});byId('nested-error').textContent='';byId('nested-success').textContent='Whole draft contract is valid; nothing was saved or executed.'}catch(error){nestedError(error)}};
+byId('nested-apply').onclick=()=>{
+ try{
+  const candidate=nestedCandidate();remember();graph=candidate;persist();
+  nestedDraft=null;nestedUndo=[];persistNested();nestedDialog.close();renderGraph();status('Nested draft applied. Check, save and qualify explicitly before running.');
+ }catch(error){nestedError(error)}
+};
+byId('nested-close').onclick=()=>{persistNested();nestedDialog.close();nestedReturnFocus?.focus()};
+nestedDialog.addEventListener('cancel',persistNested);
+const discardNested=document.createElement('button');discardNested.id='nested-discard';discardNested.textContent='Discard nested draft';
+discardNested.onclick=()=>{if(confirm('Discard this unsaved nested draft?')){nestedDraft=null;nestedUndo=[];persistNested();nestedDialog.close()}};
+byId('nested-close').before(discardNested);
+const resumeNested=document.createElement('button');resumeNested.id='resume-nested';resumeNested.textContent='Resume nested draft';resumeNested.hidden=!nestedDraft;
+resumeNested.onclick=()=>{renderNested();nestedDialog.showModal()};document.querySelector('header.top .toolbar').append(resumeNested);
 </script></body></html>

@@ -72,7 +72,7 @@ try {
   assert.match(created.snapshot.magicCode, /^PKM-SNAP-(?:[A-F0-9]{4}-){3}[A-F0-9]{4}$/);
   assert.strictEqual(
     created.recoveryPrompt,
-    `Call the PKM MCP function agent_session_snapshot_recover with {"magic_code":"${created.snapshot.magicCode}"}.`,
+    `Read the PKM Agent Snapshot state first: call the PKM MCP function agent_session_snapshot_read with {"magic_code":"${created.snapshot.magicCode}"}. It is read-only and does not create an Agent Session; continue from its task, todos, checkpoints and Recipe run states.`,
   );
 
   const snapshotPath = path.join(state, "agent-snapshots", `${created.snapshot.snapshotId}.json`);
@@ -261,10 +261,11 @@ vm.runInContext(projectsSource.slice(projectsSource.indexOf("function renderAgen
 ui.agentSnapshotContextMenu({ preventDefault() {}, stopPropagation() {}, clientX: 0, clientY: 0 }, snapshotFixture.snapshotId);
 assert.strictEqual(menu[0].label, snapshotFixture.name);
 assert.ok(!menu.some(item => item.label === "Copy Magic Code"));
-const recoveryItem = menu.find(item => item.label === "Copy Recovery Prompt");
+assert.ok(menu.some(item => item.label === "Recover into New PKM Chat"));
+const recoveryItem = menu.find(item => item.label === "Copy Read Prompt");
 recoveryItem.onClick();
 assert.strictEqual(clipboardMessages[0].command, "copyText");
-assert.strictEqual(clipboardMessages[0].text, `Call the PKM MCP function agent_session_snapshot_recover with {"magic_code":"${snapshotFixture.magicCode}"}.`);
+assert.strictEqual(clipboardMessages[0].text, `Read the PKM Agent Snapshot state first: call the PKM MCP function agent_session_snapshot_read with {"magic_code":"${snapshotFixture.magicCode}"}. It is read-only and does not create an Agent Session; continue from its task, todos, checkpoints and Recipe run states.`);
 menu.find(item => item.label === "Rename…").onClick();
 assert.strictEqual(modal.defaultValue, snapshotFixture.name);
 assert.strictEqual(modal.validate("Tiny"), "");

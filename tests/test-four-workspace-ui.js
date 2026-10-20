@@ -39,7 +39,7 @@ assert.deepStrictEqual(backgroundButtons, [null, refreshButton], "Background req
 assert(backgroundRequests.every(message => message.silent === true));
 
 const nativeArchitectureSource = projectsSource.slice(projectsSource.indexOf("function renderNativeAgentArchitecture("), projectsSource.indexOf("function renderAgentSessions()"));
-const nativeContext = vm.createContext({ esc: value => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;") });
+const nativeContext = vm.createContext({ window: { addEventListener() {} }, esc: value => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;") });
 vm.runInContext(nativeArchitectureSource, nativeContext);
 assert.strictEqual(nativeContext.renderNativeAgentArchitecture({ origin: "external", nativeAgent: {} }), "", "External sessions must not claim native capabilities");
 const nativeDiagram = nativeContext.renderNativeAgentArchitecture({ origin: "pkm-native", sessionId: "agent_session_0123456789abcdef0123456789abcdef", nativeAgent: { platform: "linux", model: "fixture-model", includeHistory: true, contextWindow: 8192, maxOutputTokens: 1024, memory: ["<img src=invalid>"], pkmSkills: ["Test skill"], externalSkills: ["External skill"], context: ["file.txt"], builtinTools: ["read_file", "run_process"], mcpServers: [{ label: "Fixture server", enabled: true, tools: ["echo"] }] } });
@@ -92,7 +92,7 @@ assert.match(projectsSource, /pkm:\/\/agent-sessions\//, "Agent Sessions expose 
 assert.match(projectsSource, /workspaceCatTreeDivider\('recipes',recipeTreeCollapsed,true\)/, "Recipe Library exposes the shared CatTree collapse control");
 assert.match(projectsSource, /workspaceCatTreeDivider\('agentSessions',agentSessionTreeCollapsed\)/, "Agent Sessions expose the shared CatTree collapse control");
 assert.match(projectsSource, /workspaceCatTreeDivider\('projects',projectTreeCollapsed\)/, "Projects expose the shared CatTree collapse control");
-assert.match(projectsSource, /const projectSections = \['Overview','Todos','Threads','Gantt'/, "Projects expose Gantt navigation");
+assert.match(projectsSource, /const projectSections = \[[^\]]*'Todos','Threads','Gantt'/, "Projects expose Gantt navigation");
 assert.match(projectsSource, /function projectRenameThread\(threadId\)/, "Threads expose stable-identity rename");
 assert.match(projectsSource, /ask\('threadOpenChatroom', \{ threadId \}\)/, "opening a Thread delegates durable Chatroom ownership to the extension");
 assert.match(projectsSource, /class="gantt-timeline"/, "Gantt renders an accessible timeline");
@@ -114,11 +114,11 @@ assert.match(projectsSource, /MCP ~.*est\..*calls/, "Todo usage labels MCP proto
 assert.match(projectsSource, /Model tokens unknown/, "Todo usage explicitly distinguishes unknown model tokens");
 assert.match(projectsSource, /Premium-request or credit usage is unavailable from the host/, "Todo usage does not imply unavailable credit telemetry");
 assert.match(css, /\.agent-session-todo-usage\{/, "Todo usage badges have a compact presentation");
-assert.match(extensionSource, /mcp-usage\/todos\/\*\*\/\*\.json/, "Todo usage ledger changes refresh Agent Session projections");
+assert.match(extensionSource, /"mcp-usage\/todos"/, "Todo usage ledger changes refresh Agent Session projections");
 assert.match(knowledgeSource, /const currentlyOpen = body \? body\.style\.display !== 'none'/, "default-open CatTree folders derive their first toggle from rendered state");
 assert.match(knowledgeSource, /if \(body && \['agentSessions', 'agentSnapshots', 'recipes'\]\.includes\(state\.tab\)\)/, "Automation and Snapshot CatTree folders toggle locally without rerendering graphs");
 assert.strictEqual((knowledgeSource.match(/if \(!projectSnapshot \|\| projectSnapshotDirty\) ask\('projectState', \{\}\);/g) || []).length, 2, "Recipe and Project revisits reuse a clean cached snapshot");
-assert.match(bundle, /projectSnapshotDirty = true;[\s\S]{0,500}if \(relevant\) ask\('projectState', \{\}\)/, "hidden Project changes invalidate the cache without forcing an off-screen reload");
+assert.match(bundle, /projectSnapshotDirty = true;[\s\S]{0,500}if \(relevant\) \{[\s\S]{0,80}ask\('projectState', \{\}\)/, "hidden Project changes invalidate the cache without forcing an off-screen reload");
 assert.match(projectsSource, /Ad hoc task · No Recipe run attached/, "Agent Sessions without a task graph still expose their top-level task as an ad hoc task");
 assert.doesNotMatch(projectsSource, /Unplanned session/, "a managed Session task is never presented as missing merely because no Recipe ran");
 assert.match(extensionSource, /function agentSessionTrashSnapshots\(\)/, "Agent Session Trash is projected from durable storage");
@@ -249,7 +249,8 @@ assert.doesNotMatch(extensionSource, /case "agentSnapshotRotate"/);
 assert.match(extensionSource, /case "agentSnapshotDelete"/);
 assert.match(extensionSource, /vscode\.env\.clipboard\.writeText\(created\.recoveryPrompt\)/);
 assert.match(projectsSource, /function renderAgentSnapshots\(\)/);
-assert.match(projectsSource, /Copy Recovery Prompt/);
+assert.match(projectsSource, /Copy Read Prompt/);
+assert.match(projectsSource, /Recover into New PKM Chat/);
 assert.doesNotMatch(projectsSource, /Rotate Passphrase/);
 assert.match(projectsSource, /fixed local <code>uone<\/code> obfuscation key/);
 assert.match(projectsSource, /Right-click this Snapshot to delete it/);
@@ -302,9 +303,9 @@ assert.match(bundle, /id="github-sync-interval-minutes"/, "GitHub Sync exposes a
 assert.match(bundle, /id="github-sync-on-change"/, "GitHub Sync exposes change-triggered backup");
 assert.match(bundle, /Automatic synchronization/, "GitHub Sync describes background two-way synchronization");
 assert.match(bundle, /Sync interval \(minutes\)/, "GitHub Sync exposes the periodic per-target interval");
-assert.match(bundle, /Unchanged checks do not create commits/, "GitHub Sync makes unchanged-content behavior explicit");
+assert.match(bundle, /Unchanged file events do not start Git/, "GitHub Sync makes unchanged-content behavior explicit");
 assert.doesNotMatch(bundle, /Waiting for schedule/, "GitHub Sync must not imply periodic forced synchronization");
-assert.match(bundle, /const forceDisabled = autoEnabled \|\| status === 'syncing' \|\| forcePending \|\| !!conflict \|\| migrationBusy;/,
+assert.match(bundle, /const forceDisabled = !!automationPending \|\| autoEnabled \|\| status === 'syncing' \|\| forcePending \|\| !!conflict \|\| migrationBusy;/,
   "Force sync disabled state must include queued, syncing, conflict, automatic, and migration states");
 assert.match(bundle, /githubSyncForceUpdate\('\$\{esc\(target\.id\)\}',this\)" \$\{forceDisabled \? 'disabled' : ''\}/,
   "every GitHub target disables Force sync while queued, syncing, waiting for conflict approval, or inside a pre-cutover migration");
@@ -380,6 +381,7 @@ const detail = { querySelector: selector => ({ selector, setAttribute() {} }) };
 const formElements = {};
 Object.defineProperty(detail, "innerHTML", { get: () => detailHtml, set: value => { detailHtml = value; } });
 const context = {
+  window: { addEventListener() {} },
   console,
   state: { tab: "projects" },
   vscode: { getState: () => webviewState, setState: value => { webviewState = value; } },
@@ -458,8 +460,8 @@ assert.deepStrictEqual(JSON.parse(JSON.stringify(webviewState.projectRoute)), { 
 assert.match(detailHtml, /Default Project/);
 assert.doesNotMatch(detailHtml, /Global Recipes/, "global Recipes are not shown in the Projects tree");
 assert.match(detailHtml, /System · Default/);
-assert.match(detailHtml, />1 Threads · 0 Todo Executions · 0 Active Agents</);
-assert.match(detailHtml, /No active Todos/);
+assert.match(detailHtml, />1 Threads · 0 execution items · Intent: planned</);
+assert.match(detailHtml, /Project intent is separate from execution state/);
 assert.doesNotMatch(detailHtml, /Run 1|Agent 1|Example Artifact/, "unbacked records are not fabricated");
 
 context.projectNew(); modal.onOk("Roadmap");
@@ -473,7 +475,7 @@ assert.match(detailHtml, /No Recipes/);
 assert.match(detailHtml, /New Recipe/);
 context.projectNewRecipe(); modal.onOk("Daily Review");
 assert.deepStrictEqual(JSON.parse(JSON.stringify(messages)), [
-  { command: "projectCreate", data: { name: "Roadmap" } },
+  { command: "projectCreate", data: { expectedStoreVersion: 1, name: "Roadmap", template: "" } },
   { command: "threadCreate", data: { projectId: "project_default", name: "Delivery" } },
   { command: "threadMove", data: { threadId: "thread_delivery", destinationProjectId: "project_default" } },
   { command: "recipeCreate", data: { scope: "project", projectId: "project_default", name: "Daily Review" } }
@@ -698,17 +700,8 @@ assert.match(detailHtml, /New Thread/);
 context.projectSelect("project_pkm");
 context.projectSection("Todos");
 context.projectWorkflowView("Todos");
-assert.match(detailHtml, /Active Todo Execution/);
-assert.match(detailHtml, /Copilot Agent/);
-assert.match(detailHtml, /2 complete/);
-assert.match(detailHtml, /<span>Remaining<\/span><strong>4<\/strong>/);
-assert.match(detailHtml, /33%/);
-assert.match(detailHtml, /Implement dashboard/);
-assert.match(detailHtml, /Project Todo technology tree/);
-context.agentTechToggle("implement");
-assert.match(detailHtml, /Project Todo technology tree/);
-assert.match(detailHtml, /UI Development/, "Project scope expands the shared nested Recipe in place");
-context.agentTechToggle("implement");
+assert.match(detailHtml, /No Todos/);
+assert.match(detailHtml, /regardless of which Agent owns them/);
 context.state.tab = "agentSessions";
 context.renderAgentSessions();
 assert.match(detailHtml, /No Agent Sessions/);
@@ -873,10 +866,10 @@ context.renderAgentSnapshots();
 assert.match(detailHtml, /Create Agent Snapshot/);
 assert.match(detailHtml, /PKM-SNAP-1234-5678-90AB-CDEF/);
 assert.match(detailHtml, /2 recoveries/);
-assert.match(detailHtml, /agent_session_snapshot_recover/);
+assert.match(detailHtml, /Recover into New PKM Chat/);
 assert.strictEqual(
   context.agentSnapshotRecoveryPrompt("PKM-SNAP-1234-5678-90AB-CDEF"),
-  'Call the PKM MCP function agent_session_snapshot_recover with {"magic_code":"PKM-SNAP-1234-5678-90AB-CDEF"}.',
+  'Read the PKM Agent Snapshot state first: call the PKM MCP function agent_session_snapshot_read with {"magic_code":"PKM-SNAP-1234-5678-90AB-CDEF"}. It is read-only and does not create an Agent Session; continue from its task, todos, checkpoints and Recipe run states.',
 );
 assert.match(detailHtml, /No recovery password is created or stored/);
 assert.match(detailHtml, /fixed local <code>uone<\/code> obfuscation key/);

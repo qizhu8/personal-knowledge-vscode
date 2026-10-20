@@ -11,6 +11,8 @@ const fixtures = require("./fixtures/chat-context");
 const originalLoad = Module._load;
 const host = {
   commands: {},
+  env: { language: "en" },
+  window: { showInformationMessage: async () => undefined, showWarningMessage: async () => undefined, showErrorMessage: async () => undefined },
   workspace: { isTrusted: true, workspaceFolders: [], getConfiguration: () => ({ get: (_key, fallback) => fallback }) },
   lm: { tools: [] },
   Uri:undefined,
@@ -119,6 +121,73 @@ test("managed Visualization uses the authoritative reader and cannot override th
   assert.deepEqual(await ApiChatView.prototype.visualizationRequest.call(target, chat, "snapshot", {
     sessionId:"foreign",
   }), { authoritative:true });
+});
+
+test("Visualization window reads any non-Trash Chat by id: live records while running, stored records otherwise", async () => {
+  const live = { id:"11111111-1111-4111-8111-111111111111", title:"Live title", messages:[{ id:"r", role:"assistant", delegations:[{}] }] };
+  const stored = { id:"22222222-2222-4222-8222-222222222222", title:"Stored" };
+  const loads = [], reads = [];
+  const store = {
+    list:() => [{ id:live.id, title:"Old title", status:"completed", groupId:"g", updatedAt:"2" },
+      { id:stored.id, title:"Stored", status:"failed", groupId:"missing", updatedAt:"1", workerParentChatId:live.id, workerTreeId:"t" }],
+    library:{ read:() => ({ groups:[{ id:"g", name:"Group", order:0 }], placements:{} }) },
+    load(id, create) { loads.push([id, create]); if (id === stored.id) return stored; throw new Error("ENOENT /private/path"); },
+  };
+  const target = { disposed:false, openStore:() => store, running:new Set([live.id]), chats:new Map([[live.id, live]]), awaitingInput:new Set(),
+    visualizationRequest:async (chat, method, params) => { reads.push([chat, method, params]); return chat.id; } };
+  const library = ApiChatView.prototype.visualizationLibrary.call(target);
+  assert.deepEqual(library.groups, [{ id:"g", name:"Group" }], "only display fields cross into the window");
+  assert.equal(library.chats[0].title, "Live title");
+  assert.equal(library.chats[0].status, "running");
+  assert.equal(library.chats[0].workerManager, true);
+  assert.deepEqual([library.chats[1].status, library.chats[1].workerParentChatId], ["failed", live.id]);
+
+  const read = id => ApiChatView.prototype.readVisualization.call(target, id, "snapshot", {});
+  assert.equal(await read(live.id), live.id);
+  assert.deepEqual(loads, [], "a running Chat is read from memory, not a stale disk copy");
+  assert.equal(await read(stored.id), stored.id);
+  assert.deepEqual(loads, [[stored.id, false]], "reading never creates a Chat");
+  await assert.rejects(read("33333333-3333-4333-8333-333333333333"), error => /unavailable in the current Knowledge Root/.test(error.message) && !/private/.test(error.message));
+  await assert.rejects(read("../../escape-attempt-0000000000000000"), /Choose a PKM Chat/);
+  assert.equal(reads.length, 2, "every read goes through the shared trust/Trash/read-only gate");
+  target.disposed = true;
+  await assert.rejects(read(stored.id), /Host is closed/);
+  assert.throws(() => ApiChatView.prototype.visualizationLibrary.call(target), /Host is closed/);
+  const observed = { recordListeners:new Set() };
+  let calls = 0;
+  observed.recordListeners.add(() => { throw new Error("observer bug"); });
+  observed.recordListeners.add(() => calls++);
+  ApiChatView.prototype.notifyRecordChanges.call(observed);
+  assert.equal(calls, 1, "one failing observer does not stop others or the save/publish path");
+});
+
+test("Visualization window navigation builds full pkm://chats locators and routes other PKM sources to Go to PKM Path", async t => {
+  const previous = host.commands.executeCommand;
+  const executed = [], opened = [];
+  host.commands.executeCommand = async (...args) => { executed.push(args); };
+  t.after(() => { host.commands.executeCommand = previous; });
+  const chatId = "11111111-1111-4111-8111-111111111111", other = "22222222-2222-4222-8222-222222222222";
+  const ns = "0123456789abcdef";
+  const target = { disposed:false, openStore:() => ({ list:() => [{ id:chatId, workspaceNamespace:ns }, { id:other, workspaceNamespace:"fedcba9876543210" }] }),
+    openPkmChat:async locator => { opened.push(locator); } };
+  const go = (id, uri) => ApiChatView.prototype.openVisualizationTarget.call(target, id, uri);
+  await go(chatId);
+  assert.deepEqual(opened, [`pkm://chats/${ns}/${chatId}`], "a bare id is never passed to the Chat opener");
+  await go(chatId, `pkm://chats/${other}/memory/reply%3Adialogue`);
+  assert.equal(opened[1], `pkm://chats/fedcba9876543210/${other}`, "memory evidence opens its owning Chat");
+  await go(chatId, `pkm://knowledge/knowledge_${"a".repeat(24)}`);
+  assert.equal(executed.length, 1);
+  assert.equal(executed[0][0], "personalKnowledge.goToPkmPath");
+  assert.match(executed[0][1], /^pkm:\/\/knowledge\//);
+  await assert.rejects(go(chatId, "https://example.com"), /no navigable PKM path/);
+  await assert.rejects(go(chatId, `pkm://chats/${"3".repeat(8)}-3333-4333-8333-${"3".repeat(12)}/memory/x`), /unavailable .*Trash/);
+  await assert.rejects(go("33333333-3333-4333-8333-333333333333"), /Trash/);
+  await assert.rejects(go("../x"), /Choose a PKM Chat/);
+  host.workspace.isTrusted = false;
+  try { await assert.rejects(go(chatId), /Trust/); } finally { host.workspace.isTrusted = true; }
+  target.disposed = true;
+  await assert.rejects(go(chatId), /Host is closed/);
+  assert.equal(opened.length, 2);
 });
 
 test("CTX-U01: the synthetic original tool history exceeds 100,000 characters", () => {
@@ -386,7 +455,7 @@ test("transport-child pending approvals reject a replaced owner and abort with t
   const provider = {
     running:new Map([[chat.id, owner]]), store:{ assertAvailable() {} }, approvals:new Map(),
     baselineApprovalScopes:new Map(), measureBaseline() {}, setAwaitingInput() {},
-    workerDecision() {}, clearWorkerDecision() {}, publish() {},
+    workerDecision() {}, clearWorkerDecision() {}, publish() {}, notifyChat() {},
   };
   const permission = signal => ApiChatView.prototype.requestPermission.call(
     provider, chat, "process", "Pending local probe", "", signal, true, false, owner.signal);

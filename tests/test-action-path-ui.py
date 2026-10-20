@@ -55,7 +55,7 @@ window.__posts=[];window.acquireVsCodeApi=()=>({
                      "availability": {"state": "ready"}}
         bootstrap = "window.__component=" + json.dumps(component) + ";" + """
 window.__posts=[];window.acquireVsCodeApi=()=>({
- getState:()=>({targetAction:'core.file-path'}),setState:()=>{},
+ getState:()=>({targetAction:'core.file-path',treeCollapsed:false,catExpanded:{'["core"]':true}}),setState:()=>{},
  postMessage:message=>{
   __posts.push(message);const result={ok:true,actions:[__component],groups:['core'],module_sets:[],queue:{jobs:[]},runs:[]};
   queueMicrotask(()=>window.dispatchEvent(new MessageEvent('message',{data:{requestId:message.requestId,result}})));

@@ -287,7 +287,12 @@ function agentSnapshotOnCreated(data) {
 
 function agentSnapshotRecoveryPrompt(magicCode) {
   const code = String(magicCode || '');
-  return `Call the PKM MCP function agent_session_snapshot_recover with {"magic_code":"${code}"}.`;
+  return `Read the PKM Agent Snapshot state first: call the PKM MCP function agent_session_snapshot_read with {"magic_code":"${code}"}. It is read-only and does not create an Agent Session; continue from its task, todos, checkpoints and Recipe run states.`;
+}
+
+function agentSnapshotRecover(snapshotId, button) {
+  if (!snapshotId) return;
+  ask('agentSnapshotRecover', { snapshotId }, button);
 }
 
 function agentSnapshotCopy(text, button) {
@@ -321,7 +326,8 @@ function agentSnapshotContextMenu(event, snapshotId) {
   showPaperMenu(event.clientX, event.clientY, [
     { label:snapshot?.name || snapshot?.task || snapshotId, header:true },
     { label:'Rename…', onClick:()=>agentSnapshotRename(snapshotId) },
-    recipeCopyPathMenu(agentSnapshotRecoveryPrompt(snapshot?.magicCode || ''), 'Copy Recovery Prompt'),
+    { label:'Recover into New PKM Chat', onClick:()=>agentSnapshotRecover(snapshotId) },
+    recipeCopyPathMenu(agentSnapshotRecoveryPrompt(snapshot?.magicCode || ''), 'Copy Read Prompt'),
     { sep:true },
     { label:'Delete Snapshot…', danger:true, onClick:()=>pkModal({
       title:'Delete Agent Snapshot?',
@@ -385,7 +391,7 @@ function agentSessionFolderMenu(event, folder) {
     recipeCopyPathMenu(String(folder || ''), 'Copy Group identity'),
     ...(storedGroup && !storedGroup.recovered && /^agent_group_[a-f0-9]{64}$/.test(String(folder || '')) ? [{ label:'Delete Chat Group…', danger:true, onClick:()=>pkModal({
       title:'Delete Chat Group?',
-      message:'Remove this Group from Agent Sessions. Task and Recipe history in Trash is retained. Move any remaining Tasks to Trash first; running Tasks must be stopped explicitly. This does not delete the Copilot conversation.',
+      message:'Remove this Group from Agent Sessions. Task and Recipe history in Trash is retained. Move any remaining Tasks to Trash first; running Tasks must be stopped explicitly. This does not delete the PKM Chat conversation.',
       okLabel:'Delete Group', danger:true,
       onOk:()=>ask('agentSessionGroupDelete',{groupId:String(folder || '')})
     }) }] : [])
@@ -394,8 +400,11 @@ function agentSessionFolderMenu(event, folder) {
 
 function agentSessionTrashContextMenu(event, sessionId) {
   event.preventDefault(); event.stopPropagation();
+  const trashed = (projectSnapshot?.agentSessionTrash || []).find(session => session.sessionId === sessionId);
   showPaperMenu(event.clientX, event.clientY, [
-    { label:'Restore', onClick:()=>ask('agentSessionTrash',{action:'restore',sessionId}) },
+    trashed && trashed.restorable === false
+      ? { label:'External agent Session (read-only, not restorable)', header:true }
+      : { label:'Restore', onClick:()=>ask('agentSessionTrash',{action:'restore',sessionId}) },
     { label:'Delete Permanently…', danger:true, onClick:()=>pkModal({ title:'Permanently delete Agent Session?', message:`${sessionId}\n\nRecipe run evidence is retained. This Session record cannot be recovered.`, okLabel:'Delete Permanently', danger:true, onOk:()=>ask('agentSessionTrash',{action:'delete',sessionId}) }) }
   ], 'agent-session-context-menu');
 }
@@ -3175,13 +3184,13 @@ function renderAgentSnapshots() {
     : sessions.some(session => session.sessionId === selectedAgentSessionId)
       ? selectedAgentSessionId : sessions.find(session => session.status === 'running')?.sessionId || sessions[0]?.sessionId || '';
   const sourceOptions = sessions.map(session => `<option value="${esc(session.sessionId)}" ${session.sessionId === preferredSessionId ? 'selected' : ''}>${esc(session.task)} · ${esc(session.status)}</option>`).join('');
-  const create = `<section class="agent-snapshot-create"><div><span>Capture current durable state</span><strong>Create Agent Snapshot</strong><p>Saves the Session, ordered todos, checkpoints, and linked Recipe runs. The source Session remains unchanged.</p></div><label>Source Agent Session<select id="agent-snapshot-source" ${sessions.length ? '' : 'disabled'}>${sourceOptions || '<option value="">No Agent Sessions available</option>'}</select></label><button class="pk-button primary" data-pending-label="Creating…" onclick="agentSnapshotCreate(this)" ${sessions.length ? '' : 'disabled'}><span class="codicon codicon-save"></span>Create Snapshot</button></section>`;
+  const create = `<section class="agent-snapshot-create"><div><span>Capture current durable state</span><strong>Create Agent Snapshot</strong><p>Saves the PKM Chat Session, conversation, ordered todos, checkpoints, and linked Recipe runs. The source Session remains unchanged.</p></div><label>Source Agent Session<select id="agent-snapshot-source" ${sessions.length ? '' : 'disabled'}>${sourceOptions || '<option value="">No Agent Sessions available</option>'}</select></label><button class="pk-button primary" data-pending-label="Creating…" onclick="agentSnapshotCreate(this)" ${sessions.length ? '' : 'disabled'}><span class="codicon codicon-save"></span>Create Snapshot</button></section>`;
   const list = snapshots.length ? agentSnapshotTree(snapshots) : `<div class="agent-snapshot-empty"><span class="codicon codicon-save"></span><strong>No Agent Snapshots</strong><p>Create one before closing a resource-heavy conversation.</p></div>`;
   let content = `<div class="agent-snapshot-empty detail"><span class="codicon codicon-key"></span><strong>Choose or create a Snapshot</strong><p>A Snapshot can be recovered repeatedly into independent Agent Sessions.</p></div>`;
   if (selected) {
     const encodedMagic = encodeURIComponent(selected.magicCode);
     const encodedPrompt = encodeURIComponent(agentSnapshotRecoveryPrompt(selected.magicCode));
-    content = `<article class="agent-snapshot-detail"><header><div><span>Immutable recovery point</span><div class="agent-snapshot-title"><h3>${esc(selected.name || selected.task)}</h3><button class="ibtn" title="Rename Snapshot" aria-label="Rename Snapshot" onclick="agentSnapshotRename(decodeURIComponent('${encodeURIComponent(selected.snapshotId)}'))"><span class="codicon codicon-edit" aria-hidden="true"></span></button></div><p>${esc(selected.snapshotId)}</p></div><b>${selected.recoveryCount || 0} recoveries</b></header><section class="agent-snapshot-identity"><div><span>Magic Code</span><code>${esc(selected.magicCode)}</code><button class="pk-button secondary" onclick="agentSnapshotCopy(decodeURIComponent('${encodedMagic}'),this)">Copy</button><button class="pk-button secondary" onclick="agentSnapshotCopy(decodeURIComponent('${encodedPrompt}'),this)">Copy Recovery Prompt</button></div><p>No recovery password is created or stored. The payload uses the fixed local <code>uone</code> obfuscation key only to avoid plaintext on disk; it is not credential protection. Keep the Snapshot in this Knowledge Root, or explicitly select it for GitHub Sync before recovering elsewhere.</p></section><div class="agent-snapshot-metrics"><div><span>Source Session</span><strong>${esc(selected.sourceSessionId)}</strong></div><div><span>Captured</span><strong>${esc(selected.createdAt)}</strong></div><div><span>Session Todos</span><strong>${selected.todoCount || 0}</strong></div><div><span>Recipe Runs</span><strong>${selected.recipeRunCount || 0}</strong></div></div><section class="agent-snapshot-recover"><span class="codicon codicon-debug-restart"></span><div><strong>Recover in a new conversation</strong><ol><li>Open a new Copilot session in this Knowledge Root, or restore the Snapshot through GitHub Sync first.</li><li>Paste the recovery prompt containing the Magic Code and explicit PKM recovery-tool instruction.</li><li>The Agent calls <code>agent_session_snapshot_recover</code> before starting any new Agent Session, then continues the captured todos and Recipe runs.</li></ol><p>Each recovery creates a new independent Session. Right-click this Snapshot to delete it when it is no longer needed.</p></div></section></article>`;
+    content = `<article class="agent-snapshot-detail"><header><div><span>Immutable recovery point</span><div class="agent-snapshot-title"><h3>${esc(selected.name || selected.task)}</h3><button class="ibtn" title="Rename Snapshot" aria-label="Rename Snapshot" onclick="agentSnapshotRename(decodeURIComponent('${encodeURIComponent(selected.snapshotId)}'))"><span class="codicon codicon-edit" aria-hidden="true"></span></button></div><p>${esc(selected.snapshotId)}</p></div><b>${selected.recoveryCount || 0} recoveries</b></header><section class="agent-snapshot-identity"><div><span>Magic Code</span><code>${esc(selected.magicCode)}</code><button class="pk-button secondary" onclick="agentSnapshotCopy(decodeURIComponent('${encodedMagic}'),this)">Copy</button><button class="pk-button secondary" onclick="agentSnapshotCopy(decodeURIComponent('${encodedPrompt}'),this)">Copy Read Prompt</button></div><p>No recovery password is created or stored. The payload uses the fixed local <code>uone</code> obfuscation key only to avoid plaintext on disk; it is not credential protection. Keep the Snapshot in this Knowledge Root, or explicitly select it for GitHub Sync before recovering elsewhere.</p></section><div class="agent-snapshot-metrics"><div><span>Source Session</span><strong>${esc(selected.sourceSessionId)}</strong></div><div><span>Captured</span><strong>${esc(selected.createdAt)}</strong></div><div><span>Session Todos</span><strong>${selected.todoCount || 0}</strong></div><div><span>Recipe Runs</span><strong>${selected.recipeRunCount || 0}</strong></div></div><section class="agent-snapshot-recover"><span class="codicon codicon-debug-restart"></span><div><strong>Recover into a new PKM Chat</strong><ol><li>PKM creates a new Chat and Task from this Snapshot. PKM Snapshots also restore the conversation and clone Recipe runs; Snapshots without Recipes restore task, todos and checkpoints only.</li><li>Unfinished todos become pending; running Recipe nodes restart as pending.</li><li>Any other agent can read the same state with the Copy Read Prompt (<code>agent_session_snapshot_read</code>); reading never creates an Agent Session.</li></ol><p>Each recovery creates a new independent PKM Chat. Right-click this Snapshot to delete it when it is no longer needed.</p><button class="pk-button primary" data-pending-label="Recovering…" onclick="agentSnapshotRecover(decodeURIComponent('${encodeURIComponent(selected.snapshotId)}'),this)"><span class="codicon codicon-debug-restart"></span>Recover into New PKM Chat</button></div></section></article>`;
   }
   const contents = selected ? agentSnapshotContentsView(selected.snapshotId) : '';
   if (!selected) agentSnapshotContentsState = null;
@@ -3196,7 +3205,7 @@ function renderAgentSnapshots() {
 function agentSnapshotTree(snapshots) {
   const tree = buildCatTree(snapshots, snapshot => [
     snapshot.agent?.name || 'Agent',
-    snapshot.sourceHostSessionId ? `Copilot Session ${snapshot.sourceHostSessionId}` : 'Unlinked sessions'
+    snapshot.sourceHostSessionId ? `${snapshot.sourceHostKind === 'pkm' ? 'PKM Chat' : 'External Session'} ${snapshot.sourceHostSessionId}` : 'Unlinked sessions'
   ], 'Unlinked sessions');
   return renderCatTree(tree, [], 0, (snapshot, depth) => {
     const id = encodeURIComponent(snapshot.snapshotId);
@@ -3389,7 +3398,7 @@ function projectOnState(snapshot) {
   const preserveProjectForm = state.tab === 'projects' && document.activeElement?.closest?.('.cockpit-form,.cockpit-checkpoint-form');
   projectSnapshot = snapshot;
   projectSnapshotDirty = false;
-  finishAction('agentSnapshotDelete','agentSessionTrash','agentSessionStop');
+  finishAction('agentSnapshotDelete','agentSnapshotRecover','agentSessionTrash','agentSessionStop');
   normalizeProjectRoute(snapshot);
   if (state.tab === 'agentSessions') {
     if (!agentSessionStateChanged) return;

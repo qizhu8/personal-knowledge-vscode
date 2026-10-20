@@ -1,13 +1,13 @@
 ---
 name: PKM Skills
-description: "Use at the start of every multi-step agent task: coding, implementation, bug fixes, refactoring, research, analysis, diagnosis, or code review. Start and track a PKM Agent Session even for read-only work; skip quick answers, trivial commands, and casual conversation."
+description: "Use at the start of every multi-step agent task: coding, implementation, bug fixes, refactoring, research, analysis, diagnosis, or code review. Retrieves personal Skills and Recipes and reads PKM Agent Snapshots; skip quick answers, trivial commands, and casual conversation."
 tags:
   - pkm
   - copilot
   - skill-router
   - knowledge-management
 type: system
-router_version: 1.7.2
+router_version: 2.0.0
 created: 2026-08-12
 ---
 
@@ -15,95 +15,36 @@ created: 2026-08-12
 
 PKM is the canonical source for personal, workflow, and domain-specific skills. Native `SKILL.md` files are generated discovery adapters and are not independent sources of truth.
 
-## Agent Snapshot Creation Fast Path
+## Agent Snapshots (read-only)
 
-When a user asks to create, generate, or save an Agent Snapshot, use the
-PKM-provided `Create Agent Snapshot` Recipe under
-`System/PKM/Agent Sessions`. Search for that exact built-in, start its pinned
-revision and digest, then call `recipe_run_next`. Its native operation creates
-and verifies the Snapshot in-process without an Agent-executed step.
+PKM Agent Sessions belong to PKM Chat. External agents do not start, track,
+checkpoint, or recover Agent Sessions, and there are no `agent_session_start`,
+`agent_session_todo_*`, or `agent_session_snapshot_recover` tools.
 
-Return the Recipe's reusable Magic Code recovery prompt to the user. No
-recovery password exists. The Snapshot payload is stored with PKM's fixed local
-`uone` obfuscation key only to avoid plaintext on disk; it is not credential
-protection and must not be described as security encryption.
+When a user pastes an Agent Snapshot Magic Code (`PKM-SNAP-...`) or asks you to
+continue or inspect captured work, call `pkm.agent_session_snapshot_read` with
+that Magic Code. It is read-only and never creates an Agent Session. It returns
+the task, todos, checkpoints, the latest checkpoint state, and — for Snapshots
+captured from PKM Chat — Recipe run states and recent conversation. Snapshots
+from other agents contain no Recipes. Continue the work in your own context from
+that state; use `pkm.agent_session_snapshot_list` only to find a Snapshot.
 
-Do not replace a missing built-in with an ad hoc Recipe. Report that the
-installed Extension or MCP runtime needs upgrade/repair so the System Recipe
-identity, executable digest, and allowlisted native operation remain pinned
-together.
+If the Snapshot is absent from the current Knowledge Root, explain that the
+Magic Code identifies the Snapshot but does not contain its locally obfuscated
+payload; the record must first be restored from its origin Knowledge Root or an
+explicitly configured GitHub Sync backup. Never present new work as recovered.
 
-## Agent Snapshot Recovery Fast Path
+To create a Snapshot or recover one into a new PKM Chat with its own Task,
+direct the user to the Agent Snapshots panel in PKM. The payload uses PKM's
+fixed local `uone` obfuscation key only to avoid plaintext on disk; it is not
+credential protection and must not be described as security encryption.
 
-When a user pastes `Recover PKM Agent Snapshot PKM-SNAP-...`, call
-`pkm.agent_session_snapshot_recover` immediately with that Magic Code. This
-recovery call creates and activates the successor Agent Session, so do not call
-`agent_session_start` first. After successful recovery, follow the returned
-`next_action` and continue the restored todos and Recipe runs.
+## Multi-step Task Tracking
 
-If recovery reports that the Snapshot is absent from the current Knowledge
-Root, do not create a replacement Session that looks recovered. Explain that
-the Magic Code identifies the Snapshot but does not contain the locally
-obfuscated payload. The Agent Snapshot record must first be restored from the
-origin Knowledge Root or an explicitly configured GitHub Sync backup.
-
-## Managed Task Routing
-
-For every multi-step task, call `pkm.agent_session_start` before the first
-substantive investigation, edit, or operational mutation. This includes coding,
-implementation, bug fixes, refactoring, research, analysis, diagnosis, and code
-review, even when the work is read-only. Call `agent_session_capabilities`
-only when the tool contract is not already available in the current
-conversation or its version changed. A multi-step task is a user goal that
-needs multiple investigation, execution, or validation steps. Use one Agent
-Session for the user goal; do not wait for an explicit tracking request or
-the first code edit.
-
-Skip an Agent Session for a quick answer, single trivial command, or casual
-conversation. A short explanation or assessment that needs no multi-step work
-also qualifies for this exception; read-only work alone does not. When the host
-chat/session ID is available, pass it as `host_session_id`.
-
-At the start of every later user turn while work may still be active, call
-`pkm.agent_session_status` before planning or using tools. Reconcile the new
-instruction against the durable running and pending todos. This turn gate is
-mandatory: do not rely on chat memory alone and do not begin the new request
-until earlier unfinished work has been preserved, explicitly redirected, or
-explicitly cancelled.
-Use its default compact projection for this turn gate. Request `detail=full`
-only when complete historical todos, checkpoints, or receipts are specifically
-needed for recovery or diagnosis.
-
-After starting a substantial task, append a small outcome-oriented plan with
-`pkm.agent_session_todo_append`, then claim work with
-`pkm.agent_session_todo_next`. Report a todo as `succeeded`, `failed`, or
-`skipped` with `pkm.agent_session_todo_report` only after obtaining relevant
-evidence. Prefer one to three durable outcome Todos; do not create separate
-Todos for narration, status summaries, or steps already enforced by a Recipe.
-Keep report summaries concise and evidence-oriented. Session todos are the
-ordered user-goal backlog; Recipe runs may provide a more detailed executable
-graph when they add a reusable solution, automation, or useful task structure.
-
-When a later user instruction arrives, classify it before changing the queue.
-If it replaces, contradicts, or cancels earlier work, treat it as a redirect and
-state which unfinished todos are affected, then call
-`pkm.agent_session_todo_replan` to interrupt, update, or cancel them. When the
-user asks for an explanation or status before work continues, interrupt the
-running todo with a `report_status` action; complete that action only after
-reporting to the user, then claim the automatically resumed todo. If the new
-instruction adds non-conflicting work, append new todos at the tail
-with a new idempotent `command_id`; do not abandon, reorder, or preempt the
-running and pending todos. A valid payload is
-`[{"title":"Implement change","details":"Preserve existing behavior"},{"title":"Validate","details":"Run focused tests"}]`.
-
-Checkpoint or save an Agent Snapshot only for an explicit
-preserve/recover/handoff request or a declared recovery operation. Routine
-success, failed attempts, and ordinary turn boundaries do not by themselves
-request scene preservation. Keep goals, todos, results, and evidence in their
-owning runtime records without copying the conversation into checkpoints.
-End the Agent Session after the overall user outcome is validated. Omit the Session-end summary when Todo
-outcomes already contain the evidence; do not restate the final answer in
-durable state.
+Track multi-step work with your host's native plan or todo facility. Prefer one
+to three outcome-oriented steps, report a step complete only after obtaining
+relevant evidence, and keep goals, results, and evidence in their owning
+runtime records without copying the conversation into durable state.
 
 ## Before Substantial Work
 
@@ -137,8 +78,8 @@ inputs, outputs, constraints, and graph shape rather than name or score alone.
 Use a qualified Library Recipe with its pinned revision and executable digest.
 A no-match result is valid. Create an ad hoc Recipe only when a task-specific
 solution or useful decomposition adds value; never create a one-node noop Recipe merely to
-represent work already tracked by a Todo. The Agent Session Todo remains the
-durable cross-turn commitment. Report it complete only after any attached
+represent work already tracked by a Todo. The task step remains the
+cross-turn commitment. Report it complete only after any attached
 Recipe is terminal and the outcome has independent validation evidence.
 
 For a qualified recurring Recipe, call `recipe_usage_summary` with its

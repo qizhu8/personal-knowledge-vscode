@@ -47,7 +47,7 @@
         if (current !== generation) return;
         content.replaceChildren();
         view = globalThis.PkmAgentHarness.mount(content, { initial, request });
-        view.focusCurrent();
+        view.showLifecycle();
       } catch (error) {
         if (current !== generation) return;
         content.replaceChildren();
@@ -65,6 +65,7 @@
     button.onclick = () => { if (panel.hidden) void open(); else close(); };
     document.getElementById("visualization-close").onclick = () => close(true);
     document.getElementById("visualization-steer").onclick = steer;
+    document.getElementById("visualization-window").onclick = () => { if (chatId) post("openVisualizationWindow", { chatId }); };
     window.addEventListener("message", receive);
     panel.addEventListener("keydown", keydown);
     return {

@@ -172,6 +172,7 @@ fs.mkdirSync(activeDirectory, { recursive: true });
 function writeSession(id, status, updatedAt) {
   fs.writeFileSync(path.join(activeDirectory, `${id}.json`), JSON.stringify({
     schema: "pkm.agent.session/v1", sessionId: id, status, task: id, createdAt: updatedAt, updatedAt,
+    origin: "pkm-native", runtimeOwner: "pkm", hostKind: "pkm",
   }));
 }
 
@@ -345,6 +346,8 @@ function writeSession(id, status, updatedAt) {
     lifecycle.permanentlyDeleteTrashedAgentSession(stateDirectory, nativeId);
     assert(!fs.existsSync(path.join(trashDirectory, `${nativeId}.json`)));
     writeSession("agent_session_external_paused", "paused", "2026-04-01T00:00:00Z");
+    const externalPath = path.join(activeDirectory, "agent_session_external_paused.json");
+    fs.writeFileSync(externalPath, JSON.stringify({ ...JSON.parse(fs.readFileSync(externalPath, "utf8")), origin: "external", runtimeOwner: "host", hostKind: "copilot" }));
     await assert.rejects(lifecycle.stopAgentSession(stateDirectory, "agent_session_external_paused"), /Only a running/);
     const menuContext = {
       projectSnapshot: { agentSessions: [{ sessionId: nativeId, origin: "pkm-native", runtimeOwner: "pkm" }] },
@@ -378,7 +381,7 @@ function writeSession(id, status, updatedAt) {
     assert.match(projectsSource, /class="agent-session-ownership-edge"/, "Todo-to-Recipe ownership is visible as a structural link");
     assert.match(projectsSource, /data-todo-status="\$\{esc\(status\)\}"/, "Todo cards expose only their durable lifecycle status");
     assert.match(projectsSource, /data-recipe-statuses="\$\{esc\(statuses\)\}"/, "Recipe subtree overlays expose runtime status separately from Todo status");
-    assert.match(projectsSource, /state\.tab !== 'agentSessions'[\s\S]{0,220}ask\('projectState', \{\}, null, true\)/,
+    assert.match(projectsSource, /\['agentSessions','projects'\]\.includes\(state\.tab\)[\s\S]{0,320}ask\('projectState', \{\}, null, true\)/,
       "visible Agent Sessions poll durable state silently so terminal Todo transitions do not remain stale");
     assert.match(projectsSource, /agentSessionSnapshotSignature\(snapshot\) !== agentSessionSnapshotSignature\(projectSnapshot\)/,
       "silent polling compares durable Agent Session state before replacing interactive DOM");

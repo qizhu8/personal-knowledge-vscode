@@ -2,7 +2,7 @@ import type * as vscode from "vscode";
 import type { ApiChatStore } from "./api-chat-store";
 
 export async function handleChatLibraryAction(message: { type?: string; id?: string; value?: string | boolean }, store: ApiChatStore,
-  host: Pick<typeof vscode, "window">, isRunning: (id: string) => boolean, forget: (id: string) => void, deleted?: (id: string) => void): Promise<void> {
+  host: Pick<typeof vscode, "window">, isRunning: (id: string) => boolean, forget: (id: string) => void, deleted?: (id: string) => void | Promise<void>): Promise<void> {
   const id = String(message.id);
   switch (message.type) {
     case "groupCreate": {
@@ -36,11 +36,11 @@ export async function handleChatLibraryAction(message: { type?: string; id?: str
     case "restoreChat": store.restoreChat(id); return;
     case "deleteChat": {
       const choice = await host.window.showWarningMessage("Permanently delete this Chat? Task Session evidence is preserved.", { modal: true }, "Delete permanently");
-      if (choice === "Delete permanently") { store.deleteChat(id); forget(id); deleted?.(id); } return;
+      if (choice === "Delete permanently") { store.deleteChat(id); forget(id); await deleted?.(id); } return;
     }
     case "emptyTrash": {
       const choice = await host.window.showWarningMessage("Permanently delete all Chats in Trash? Task Session evidence is preserved.", { modal: true }, "Empty Trash");
-      if (choice === "Empty Trash") for (const item of store.list(true).filter(item => item.trashedAt)) { store.deleteChat(item.id); forget(item.id); deleted?.(item.id); }
+      if (choice === "Empty Trash") for (const item of store.list(true).filter(item => item.trashedAt)) { store.deleteChat(item.id); forget(item.id); await deleted?.(item.id); }
       return;
     }
     default: throw new Error("Unknown Chat library action.");

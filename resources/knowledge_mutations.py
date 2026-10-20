@@ -6,6 +6,19 @@ import subprocess
 import re
 
 
+def write_markdown(store, area, relative, previous, content, node, extension_root):
+    helper = Path(__file__).with_suffix(".js")
+    request = {"operation": "write-markdown", "area": area, "path": relative,
+               "previous": previous, "content": content}
+    result = subprocess.run(
+        [str(node), str(helper), str(extension_root), str(store)],
+        input=json.dumps(request), text=True, capture_output=True, check=True,
+        env={**os.environ, "ELECTRON_RUN_AS_NODE": "1"})
+    value = json.loads(result.stdout)
+    if value.get("ok") is not True:
+        raise RuntimeError("The Knowledge mutation was not confirmed.")
+
+
 def trash_file(store, area, relative, node, extension_root, expected_sha256=None):
     helper = Path(__file__).with_suffix(".js")
     request = {"operation": "trash", "area": area, "path": relative}

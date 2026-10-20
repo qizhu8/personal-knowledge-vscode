@@ -13,7 +13,7 @@ const actionMethods = new Set(["catalog", "module_sets", "load", "remove", "impo
   "resume_validation", "select_implementation", "save_graph", "check_graph", "call", "run", "runs", "recover_runs", "cancel_run", "choices", "answer_choice",
   "group_create", "action_rename", "action_move", "action_delete", "definition_read", "definition_save", "source_read", "source_save", "migration_preview", "locator_read",
   "checkpoints", "respond_checkpoint", "schedule_run", "wake_run", "reconcile_run", "safety_scan", "associate_project",
-  "platform_call", "retrieve", "definition_get", "templates", "template_create", "check_checkpoint_answer"]);
+  "platform_call", "retrieve", "definition_get", "library_get", "templates", "template_create", "check_checkpoint_answer"]);
 let actionChatAvailable = false;
 let browserServer: { store: string; promise: Promise<ActionWorkbenchServer> } | undefined;
 const observedRuns = new Map<string, string>();
@@ -117,7 +117,7 @@ export function initializeActionChat(context: vscode.ExtensionContext): void {
   context.subscriptions.push(participant);
 }
 
-export function openActionWorkbench(context: vscode.ExtensionContext, runId?: string, actionId?: string): void {
+export function openActionWorkbench(context: vscode.ExtensionContext, runId?: string, actionId?: string, library = false): void {
   checkActionAccess();
   if (runId && !/^action_run_[0-9a-f]{32}$/.test(runId)) throw new Error("Invalid Action Run.");
   if (actionId && !/^[a-z][a-z0-9_.-]{2,100}$/.test(actionId)) throw new Error("Invalid Action identity.");
@@ -126,12 +126,14 @@ export function openActionWorkbench(context: vscode.ExtensionContext, runId?: st
   const nonce = randomBytes(24).toString("hex");
   const icons = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "dist", "webview", "codicon.css"));
   let document = fs.readFileSync(path.join(context.extensionPath, "resources", "action-workbench.html"), "utf8");
+  if (library) document = document.replace("initialView=vscode?.getState()||null",
+    "initialView={...(vscode?.getState()||{}),libraryOpen:true}");
   if (runId) document = document.replace("initialView=vscode?.getState()||null",
     `initialView={...(vscode?.getState()||{}),currentRun:${JSON.stringify(runId)}}`);
   else if (actionId) document = document.replace("initialView=vscode?.getState()||null",
     `initialView={targetAction:${JSON.stringify(actionId)}}`);
   panel.webview.html = document.replace("<head>", `<head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; font-src ${panel.webview.cspSource}; style-src ${panel.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';"><link rel="stylesheet" href="${icons}">`)
-    .replace("<script>", `<script nonce="${nonce}">`);
+    .replace(/<script>/g, `<script nonce="${nonce}">`);
   const listener = panel.webview.onDidReceiveMessage(async message => {
     if (typeof message?.requestId !== "string" || typeof message?.method !== "string") return;
     try {

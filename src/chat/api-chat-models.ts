@@ -15,7 +15,36 @@ export interface ChatModelProfile {
   includeUsage: boolean;
   outputTokenParameter: "max_tokens" | "max_completion_tokens";
 }
-export interface ChatTokenUsage { inputTokens: number; outputTokens: number; cachedInputTokens?: number; }
+export interface ChatTokenUsage { inputTokens: number; outputTokens: number; cachedInputTokens?: number; reasoningTokens?: number; }
+
+export function reportedReasoningTokens(usage: { completion_tokens: number; completion_tokens_details?: { reasoning_tokens?: unknown } }): { reasoningTokens?: number } {
+  const value = usage.completion_tokens_details?.reasoning_tokens;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= usage.completion_tokens ? { reasoningTokens: value } : {};
+}
+
+export type ThinkingBudget = number | "unlimited";
+export const thinkingBudgetChoices = ["900", "1500", "2048", "unlimited"] as const;
+
+export function parseThinkingBudget(value: unknown): ThinkingBudget {
+  return value === "unlimited" ? "unlimited" : thinkingBudgetChoices.includes(value as typeof thinkingBudgetChoices[number]) ? Number(value) : 2048;
+}
+
+/** Without a thinking budget, provider-reported output (including hidden thinking) must fit the output budget. */
+export function checkReportedOutput(usage: ChatTokenUsage, outputBudget: number, thinkingBudget?: ThinkingBudget): void {
+  const suffix = " Partial output was preserved; no pending tool was executed.";
+  if (thinkingBudget === undefined) {
+    if (usage.outputTokens > outputBudget) throw new Error(`Model output exceeded the per-inference token budget.${suffix}`);
+    return;
+  }
+  const thinkingLimit = thinkingBudget === "unlimited" ? Infinity : thinkingBudget;
+  if (usage.reasoningTokens === undefined) {
+    if (usage.outputTokens > outputBudget + thinkingLimit) throw new Error(`Model output (${usage.outputTokens} tokens, thinking not reported separately) exceeded the ${outputBudget}-token output plus ${thinkingBudget}-token thinking budget.${suffix}`);
+    return;
+  }
+  if (usage.reasoningTokens > thinkingLimit) throw new Error(`Model thinking used ${usage.reasoningTokens} tokens, over the ${thinkingBudget}-token thinking budget.${suffix}`);
+  const visible = usage.outputTokens - usage.reasoningTokens;
+  if (visible > outputBudget) throw new Error(`Model visible output used ${visible} tokens, over the ${outputBudget}-token output budget.${suffix}`);
+}
 
 export function modelProfiles(values: unknown, legacyIds: string[]): ChatModelProfile[] {
   if (!Array.isArray(values)) throw new Error("API Chat model profiles must be an array.");
@@ -63,7 +92,7 @@ export function validateBudget(profile: ChatModelProfile, contextWindow: number,
   return input;
 }
 
-export function estimateCost(profile: ChatModelProfile, inputTokens: number, outputTokens: number): number | undefined {
+export function estimateCost(profile: Pick<ChatModelProfile, "inputPricePerMillion" | "outputPricePerMillion">, inputTokens: number, outputTokens: number): number | undefined {
   if (profile.inputPricePerMillion === undefined || profile.outputPricePerMillion === undefined) return undefined;
   return (inputTokens * profile.inputPricePerMillion + outputTokens * profile.outputPricePerMillion) / 1_000_000;
 }

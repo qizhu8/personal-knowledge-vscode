@@ -301,6 +301,12 @@
       }).catch(error => failed(holder, error));
     }
   }
+  function loadOlderMessages() {
+    const beforeId = state?.chat.messages[0]?.id;
+    if (!beforeId || historyPending || historyStart <= 0) return;
+    historyPending = beforeId;
+    post("historyPage", { chatId: state.chat.id, id: beforeId }); renderMessages();
+  }
   function renderMessages() {
     if (!state || screen !== "chat" || document.visibilityState !== "visible") return;
     const target = element("messages");
@@ -317,12 +323,7 @@
       older.type = "button"; older.className = "load-chat-history";
       older.textContent = t(historyPending ? "Loading older messages..." : "Load older messages");
       older.disabled = !!historyPending;
-      older.onclick = () => {
-        const beforeId = state.chat.messages[0]?.id;
-        if (!beforeId || historyPending) return;
-        historyPending = beforeId;
-        post("historyPage", { chatId: state.chat.id, id: beforeId }); renderMessages();
-      };
+      older.onclick = loadOlderMessages;
       children.push(older);
     }
     const retained = new Set();
@@ -507,7 +508,7 @@
         section.append(form);
       }
       const choices = approval.decision ? approval.choices.map(choice => [choice.value, choice.value === "cancel" ? "close" : "check", choice.label])
-        : [["approve", "check", approval.quota ? "Yes" : approval.once ? "Approve" : "Approve & remember"], ["deny", "close", approval.quota ? "No" : "Deny"], ...(!approval.once ? [["allow-all", "shield", "Allow All"]] : [])];
+        : [...(!approval.once ? [["approve-once", "check", "Allow once"]] : []), ["approve", "check", approval.quota ? "Yes" : approval.once ? "Approve" : "Approve & remember"], ["deny", "close", approval.quota ? "No" : "Deny"], ...(!approval.once ? [["allow-all", "shield", "Allow All"]] : [])];
       for (const [value, icon, label] of choices) {
         const button = iconButton(icon, label, () => {
           const answer = value === "submit" && readForm ? readForm() : undefined;
@@ -955,6 +956,10 @@
   });
   element("new").onclick = () => { saveDraft(); error(""); post("new"); };
   element("messages").addEventListener("scroll", markResultRead);
+  // Scrolling near the top pages in older stored messages; the button remains for keyboard use.
+  element("messages").addEventListener("scroll", () => {
+    if (screen === "chat" && element("messages").scrollTop < 120) loadOlderMessages();
+  }, { passive: true });
   element("rename").onclick = () => post("rename");
   element("copy-chat-id").onclick = () => { if (state?.chat?.id) post("copyChatId", { id: state.chat.id }); };
   element("promote-project").onclick = () => { if (state?.chat?.id) post("promoteProject"); };

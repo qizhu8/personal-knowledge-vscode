@@ -94,7 +94,7 @@ function materialize(task: MaterializeTask): number {
   };
   for (const skill of bundle.skills || []) writeCached("skills", `${skill.metadata?.category ? `${skill.metadata.category}/` : ""}${skill.name}.md`, String(skill.content || ""));
   for (const note of bundle.notes || []) writeCached("notes", `${note.slug || note.title || "note"}.md`, String(note.content || ""));
-  for (const paper of bundle.papers || []) writeCached("papers", `${paper.category ? `${paper.category}/` : ""}${paper.slug || paper.title || "paper"}.md`, String(paper.content || ""));
+  for (const paper of bundle.papers || []) writeCached("papers", `${paper.slug || [paper.category, paper.title || "paper"].filter(Boolean).join("/")}.md`, String(paper.content || ""));
   for (const prompt of bundle.prompts || []) writeCached("prompts", `${prompt.project}/${prompt.task}/${prompt.version}/${prompt.file}`, String(prompt.content || ""));
   for (const script of bundle.scripts || []) writeCached("scripts", `${script.category === "(root)" ? "" : `${script.category}/`}${script.file}`, String(script.content || ""));
   for (const pkg of bundle.packages || []) for (const file of pkg.files || []) writeCached("packages", `${pkg.name}/${file.path}`, String(file.content || ""));
@@ -103,7 +103,7 @@ function materialize(task: MaterializeTask): number {
   for (const asset of bundle.assets || []) {
     const type = String(asset?.type || "");
     const remotePath = String(asset?.path || "").replace(/\\/g, "/");
-    if (!["skills", "notes", "papers"].includes(type) || !remotePath.split("/").includes("_assets")) {
+    if (!["skills", "notes", "papers"].includes(type) || !remotePath.split("/").some(part => part === "_assets" || part.toLowerCase().endsWith(".assets"))) {
       throw new Error("Background Sync contains an invalid Markdown asset path.");
     }
     const relative = safeRelativePath("content", type, remotePath);
