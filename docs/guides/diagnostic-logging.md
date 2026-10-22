@@ -85,6 +85,36 @@ leak proof, load benchmark, or Windows OOM diagnosis. The installed-context
 initial/restart acceptance passed after the cleanup change and left zero net
 new fixture services; historical processes were not stopped by that test.
 
+## Skill Write Bridge Recovery (2026-10-22)
+
+Three production `add_skill` calls failed because the generated MCP server
+still referenced a removed startup-test extension directory. The bridge's
+captured executable was a test VS Code binary, and its extension root was
+`/tmp/pkm-startup-.../extension`. The actual subprocess failure was a missing
+`dist/knowledge/filestore` module, not an invalid Skill payload or Sync conflict.
+Subscription, environment and retrieval paths also retained that fixture root.
+
+For recovery, back up the generated server and compiler configuration, restore
+the verified installed extension/Node and production storage paths, and validate
+syntax and referenced files. Retain the pinned Recipe compiler contracts; this
+is not permission to downgrade a generated runtime or replace user toolchains.
+Existing Python MCP processes keep their imported constants: fixing the file
+does not repair an already-running connection. Restart only identified PKM MCP
+processes with approval; other agents may have in-flight calls.
+
+This incident was reproduced against an isolated Skill directory. The broken
+bridge failed before creating the file; the correct production bridge succeeded.
+After recovery, a fresh stdio initialization and read-only capability check
+succeeded, and real MCP add/update/read calls passed against an isolated
+temporary store. No failed formal Skill request was replayed. Client-side
+reconnection and the original agent's next successful write remain separate
+acceptance steps; never report disk repair alone as end-to-end recovery.
+
+Startup acceptance now uses an isolated HOME/account environment and asserts
+its Knowledge Root. Those earlier isolation changes prevent new test writes to
+the production root; they do not retroactively restore generated files left by
+an older test run.
+
 ## Copilot Tool-Search Timeout Investigation (2026-10-22)
 
 This incident concerns the surrounding development Agent, not a PKM Chat model

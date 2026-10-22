@@ -167,6 +167,59 @@ test(`moved Markdown resource ownership requires unique identity, alias and equa
 });
 }
 
+test("repeated Archive moves reconcile legacy PNG ownership with all aliases and remain stable on the next Sync", async t => {
+  const f = fixture(t), a = f.replica("archive-resource-owner");
+  const old = "Project/AAGL_Improvement/Auxiliary/GPU Throughput & Scheduling Analysis";
+  const intermediate = "Project/AAGL_Improvement/Scheduling/Research/Auxiliary/GPU Throughput & Scheduling Analysis";
+  const archived = "Project/AAGL_Improvement/Archive/Scheduling/Auxiliary/GPU Throughput & Scheduling Analysis";
+  const destination = `notes/${archived}.md`;
+  const source = path.join(a.store, destination);
+  const imagePath = "notes/Project/AAGL_Improvement/_assets/gpu_utilization_all_strategies.png";
+  const resource = path.join(a.store, imagePath);
+  const bytes = Buffer.from([137, 80, 78, 71, 1, 2, 3]);
+  fs.mkdirSync(path.dirname(source), { recursive:true });
+  fs.mkdirSync(path.dirname(resource), { recursive:true });
+  const content = `---\nschema: "pkm.knowledge/v1"\nknowledgeId: "knowledge_${"e".repeat(24)}"\nrevision: 3\naliases: ${JSON.stringify([archived, old, intermediate].map(value => `note:${value}`))}\n---\n![chart](../../../_assets/gpu_utilization_all_strategies.png)\n`;
+  fs.writeFileSync(source, content);
+  fs.writeFileSync(resource, bytes);
+  const run = () => {
+    const catalog = Object.fromEntries(sync.GITHUB_SYNC_CONTENT_TYPES.map(type => [type, []]));
+    catalog.notes = [{ id:archived, label:"GPU Throughput & Scheduling Analysis",
+      cat:path.posix.dirname(archived), isPrivate:false, source, destination,
+      dependencies:[{ source:resource, destination:imagePath }] }];
+    return a.run(catalog);
+  };
+  assert(!(await run()).error);
+  const editor = path.join(f.root, "multiple-move-editor");
+  git(f.root, ["clone", f.remote, editor]);
+  git(editor, ["config", "user.name", "Fixture"]);
+  git(editor, ["config", "user.email", "fixture@example.invalid"]);
+  const manifestPath = path.join(editor, ".pkm-github-sync.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  const image = manifest.files.find(file => file.path === imagePath);
+  image.itemId = old; image.category = path.posix.dirname(old);
+  manifest.files = manifest.files.filter(file => file.path !== destination);
+  fs.unlinkSync(path.join(editor, destination));
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+  git(editor, ["add", "."]);
+  git(editor, ["commit", "-m", "fixture orphan PNG after repeated moves"]);
+  git(editor, ["push", "origin", "main"]);
+  a.target.lastSync.commit = git(editor, ["rev-parse", "HEAD"]);
+  a.target.lastSync.entityBases = {};
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const outcome = await run();
+    assert(!outcome.error, "matching aliases and unchanged PNG must not recreate path collisions");
+    const published = JSON.parse(git(f.root, ["--git-dir", f.remote, "show", "main:.pkm-github-sync.json"]));
+    const images = published.files.filter(file => file.path === imagePath);
+    assert.equal(images.length, 1);
+    assert.equal(images[0].itemId, archived);
+    assert.equal(images[0].category, path.posix.dirname(archived));
+    assert.equal(git(f.root, ["--git-dir", f.remote, "show", `main:${destination}`]), content.trim());
+    assert.deepEqual(fs.readFileSync(resource), bytes);
+    assert.equal(fs.readFileSync(source, "utf8"), content);
+  }
+});
+
 test("paused items override selected folders, preserve both copies and their Base, and resume normal conflict review", async t => {
   const f = fixture(t), a = f.replica("pause-a"), b = f.replica("pause-b");
   for (const client of [a, b]) {
