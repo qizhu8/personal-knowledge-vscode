@@ -119,6 +119,8 @@ assert(packageJson.contributes.commands.some(command => command.command === "per
   "VSIX must register the browser Action Workbench command");
 assert(entries.includes("extension/dist/chat/agent-control.js"),
   "VSIX must include the owning Extension Host Chat controller transport");
+assert(entries.includes("extension/dist/chat/chat-library-worker.js"),
+  "VSIX must include the off-thread Chat library worker");
 for (const artifact of ["dist/runtime/pkm-service.js", "dist/runtime/pkm-service-entry.js"]) {
   assert(entries.includes(`extension/${artifact}`), `VSIX must include the independent PKM service runtime: ${artifact}`);
 }
@@ -149,6 +151,10 @@ try {
     for (const name of ["api-chat-client", "api-chat-mcp", "api-chat-tools", "api-chat-view", "api-chat-acceptance"]) {
       assert(Object.keys(require(path.join(process.argv[1], "dist", name + ".js"))).length > 0, name + " must load its exports");
     }
+    const processRuntime = require(path.join(process.argv[1], "dist/chat/chat-process-runtime.js"));
+    assert.strictEqual(typeof processRuntime.launchChatProcess, "function");
+    assert.strictEqual(processRuntime.processOutputLimit, 64 * 1024 * 1024);
+    assert.strictEqual(typeof require(path.join(process.argv[1], "dist/chat/chat-inference-timing.js")).ChatInferenceClock, "function");
     const workbench = require(path.join(process.argv[1], "dist", "sync", "github-sync-workbench.js"));
     assert.strictEqual(typeof workbench.openGitHubSyncConflictWorkbench, "function");
     const comparison = workbench.githubSyncWorkbenchComparison("a\\nleft\\n", "a\\nright\\n", "a\\nleft\\n");
@@ -166,6 +172,32 @@ try {
   assert.strictEqual(result.status, 0,
     `Packaged Chat and Sync workbench modules must load without repository node_modules: ${result.stderr || result.error || result.stdout}`);
   console.log("VSIX package test: isolated Chat and Sync workbench dependency loading OK");
+  const libraryWorkerTest = spawnSync(process.execPath, ["-e", `
+    const assert = require("assert"), fs = require("fs"), path = require("path"), os = require("os");
+    const { ApiChatStore } = require(path.join(process.argv[1], "dist/chat/api-chat-store.js"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-packaged-library-"));
+    (async () => {
+      try {
+        const store = new ApiChatStore(root, "0123456789abcdef"), chat = store.create();
+        await store.libraryMutation("trash", chat.id);
+        assert.strictEqual((await store.trashList())[0].id, chat.id);
+        assert.strictEqual(await store.memoryNamespace(chat.id), store.namespace);
+        await store.libraryMutation("restore", chat.id);
+        assert.strictEqual(store.list().length, 1);
+        await store.libraryMutation("trash", chat.id);
+        await store.libraryMutation("delete", chat.id);
+        assert.strictEqual(store.list(true).length, 0);
+      } finally { fs.rmSync(root, { recursive: true, force: true }); }
+    })().catch(error => { console.error(error); process.exitCode = 1; });
+  `, isolatedExtension], {
+    cwd: isolatedRoot,
+    env: { ...process.env, NODE_PATH: "", NODE_OPTIONS: "" },
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  assert.strictEqual(libraryWorkerTest.status, 0,
+    `Packaged Chat library worker must run without repository dependencies: ${libraryWorkerTest.stderr || libraryWorkerTest.error || libraryWorkerTest.stdout}`);
+  console.log("VSIX package test: isolated Chat library worker trash/restore/delete OK");
   const serviceTest = spawnSync(process.execPath, [path.join(__dirname, "..", "tests", "test-pkm-service.js")], {
     cwd: isolatedRoot,
     env: { ...process.env, NODE_PATH: "", NODE_OPTIONS: "", PKM_SERVICE_TEST_EXTENSION_ROOT: isolatedExtension },

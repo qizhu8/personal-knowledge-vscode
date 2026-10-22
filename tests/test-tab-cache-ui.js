@@ -80,21 +80,25 @@ const githubContext = {
 };
 vm.createContext(githubContext);
 vm.runInContext(`${functionSource(github, "ensureGitHubSyncStatus")};${functionSource(github, "showGitHubSyncTab")};this.show=showGitHubSyncTab`, githubContext);
+// Reopening GitHub Sync always re-reads current metadata so obsolete cached failures never paint (see test-github-sync-feedback).
+const githubStateRequest = ["ask", "githubSyncState", {}, null, true];
 githubContext.show();
-assert.deepStrictEqual(plain(githubCalls), [["render"], githubRuntimeRequest],
-  "fresh GitHub Sync cache must render immediately and refresh only lightweight runtime state");
+assert.deepStrictEqual(plain(githubCalls), [["render"], githubRuntimeRequest, githubStateRequest],
+  "cached GitHub Sync renders immediately while runtime and full state refresh in the background");
 githubCalls.length = 0;
-githubContext.githubSyncUpdatedAt = 50;
-githubContext.show();
-assert.deepStrictEqual(plain(githubCalls), [["render"], githubRuntimeRequest, ["ask", "githubSyncState", {}, null, true]]);
-githubCalls.length = 0;
-githubContext.show();
-assert.deepStrictEqual(plain(githubCalls), [["render"], githubRuntimeRequest], "pending full GitHub Sync state requests must be deduplicated");
-githubCalls.length = 0;
-githubContext.githubSyncStatusRequested = false;
 githubContext.githubSyncUpdatedAt = 0;
 githubContext.show();
-assert.deepStrictEqual(plain(githubCalls), [["loading"], githubRuntimeRequest, ["ask", "githubSyncState", {}, null, false]]);
+assert.deepStrictEqual(plain(githubCalls), [["loading"], githubRuntimeRequest, githubStateRequest],
+  "without cached data GitHub Sync shows loading before requesting state");
+githubCalls.length = 0;
+githubContext.githubSyncStatusRequested = true;
+githubContext.githubSyncUpdatedAt = 100;
+vm.runInContext("ensureGitHubSyncStatus()", githubContext);
+assert.deepStrictEqual(plain(githubCalls), [], "pending full GitHub Sync state requests are deduplicated");
+githubContext.githubSyncStatusRequested = false;
+githubContext.githubSyncUpdatedAt = 50;
+vm.runInContext("ensureGitHubSyncStatus()", githubContext);
+assert.deepStrictEqual(plain(githubCalls), [["ask", "githubSyncState", {}, null, true]], "stale cache refreshes in the background");
 
 assert.match(knowledge, /state\.tab === 'mcp'[\s\S]{0,220}showMcpTab\(\)/);
 assert.match(knowledge, /state\.tab === 'skillRouter'[\s\S]{0,220}showSkillRouterTab\(\)/);

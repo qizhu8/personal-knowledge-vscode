@@ -5,10 +5,13 @@ let projectSnapshotDirty = false;
 let projectRoute = { projectId:'', section:'', workflowView:'' };
 let selectedGanttTaskId = '';
 let selectedAgentSessionId = '';
+let selectedAgentChatId = '';
 let selectedAgentSnapshotId = '';
 let agentSnapshotContentsState = null;
 let agentSessionArchiveExpanded = vscode.getState()?.agentSessionArchiveExpanded;
 let agentSessionTreeCollapsed = !!vscode.getState()?.agentSessionTreeCollapsed;
+let agentSessionPortalFilter = ['all','controller','controlled','connected','none'].includes(vscode.getState()?.agentSessionPortalFilter)
+  ? vscode.getState().agentSessionPortalFilter : 'all';
 let agentSessionFullscreenRunId = String(vscode.getState()?.agentSessionFullscreenRunId || '');
 let agentSessionGraphZoom = Number(vscode.getState()?.agentSessionGraphZoom || 1);
 let selectedAgentSessionTodoId = String(vscode.getState()?.selectedAgentSessionTodoId || '');
@@ -143,7 +146,14 @@ function agentSessionGroupToggle(group, open) {
 }
 
 function agentSessionSelect(sessionId) {
+  selectedAgentChatId = '';
   selectedAgentSessionId = String(sessionId || '');
+  renderAgentSessions();
+}
+
+function agentSessionChatSelect(chatId) {
+  selectedAgentChatId = String(chatId || '');
+  selectedAgentSessionId = '';
   renderAgentSessions();
 }
 
@@ -388,6 +398,9 @@ function agentSessionFolderMenu(event, folder) {
   const storedGroup = (projectSnapshot?.agentSessionGroups || []).find(group => group.groupId === folder);
   showPaperMenu(event.clientX, event.clientY, [
     { label:'Chat Group', header:true },
+    ...(storedGroup?.hostKind === 'pkm' && /^[a-f0-9-]{36}$/.test(storedGroup.hostSessionId || '') ? [
+      { label:'Open PKM Chat', onClick:()=>ask('agentSessionGroupOpenChat',{chatId:storedGroup.hostSessionId}) }
+    ] : []),
     recipeCopyPathMenu(String(folder || ''), 'Copy Group identity'),
     ...(storedGroup && !storedGroup.recovered && /^agent_group_[a-f0-9]{64}$/.test(String(folder || '')) ? [{ label:'Delete Chat Group…', danger:true, onClick:()=>pkModal({
       title:'Delete Chat Group?',
@@ -2935,10 +2948,26 @@ function agentSessionGroupKey(session) {
     : `recovered:${session.sessionId}`);
 }
 
+function agentSessionMatchesPortal(groupId) {
+  if (agentSessionPortalFilter === 'all') return true;
+  const portal = projectSnapshot?.agentSessionGroups?.find(group => group.groupId === groupId)?.portal;
+  if (agentSessionPortalFilter === 'connected') return portal?.connected === true;
+  if (agentSessionPortalFilter === 'none') return !portal?.binding?.role;
+  return portal?.binding?.role === agentSessionPortalFilter;
+}
+
+function agentSessionSetPortalFilter(value) {
+  if (!['all','controller','controlled','connected','none'].includes(value)) return;
+  agentSessionPortalFilter = value;
+  vscode.setState({ ...vscode.getState(), agentSessionPortalFilter:value });
+  renderAgentSessions();
+}
+
 function agentSessionTree(sessions, archived = false) {
+  sessions = sessions.filter(session => agentSessionMatchesPortal(agentSessionGroupKey(session)));
   const hiddenGroups = new Set((projectSnapshot?.agentSessionGroups || []).filter(group => group.deletedAt).map(group => group.groupId));
   if (!archived) sessions = sessions.filter(session => !hiddenGroups.has(agentSessionGroupKey(session)));
-  const groupRecords = archived ? [] : (projectSnapshot?.agentSessionGroups || []).filter(group => !group.deletedAt);
+  const groupRecords = archived ? [] : (projectSnapshot?.agentSessionGroups || []).filter(group => !group.deletedAt && agentSessionMatchesPortal(group.groupId));
   const emptyGroups = groupRecords.filter(group => !sessions.some(session => agentSessionGroupKey(session) === group.groupId));
   if (!sessions.length && !emptyGroups.length) return '';
   const groups = new Map(sessions.map(session => [agentSessionGroupKey(session), session]));
@@ -2969,7 +2998,9 @@ function agentSessionTree(sessions, archived = false) {
   }
   return `<div class="agent-session-tree">${renderCatTree(tree, [], 0, (session, depth) => `<div class="li cattree-item agent-session-row ${session.sessionId === selectedAgentSessionId ? 'active' : ''}" style="padding-left:${8 + depth * 12}px" role="button" tabindex="0" onclick="agentSessionSelect(decodeURIComponent('${encodeURIComponent(session.sessionId)}'))" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();agentSessionSelect(decodeURIComponent('${encodeURIComponent(session.sessionId)}'))}" oncontextmenu="agentSessionContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'),'${esc(session.status)}')"><span>${agentSessionStatusIndicator(session, true)}<strong>${esc(session.task)}</strong></span><b>${esc(session.sessionId.replace(/^agent_session_/, '').slice(0,12))}</b><small>${esc(session.lastActivity?.tool || (session.checkpoint ? 'Checkpoint ready' : 'Registered'))}${agentSessionLivenessLabel(session.liveness) ? ` · <em class="agent-session-liveness ${esc(session.liveness.state)}">${esc(agentSessionLivenessLabel(session.liveness))}</em>` : ''}</small><button class="cattree-item-menu" title="Agent Session actions" aria-label="Actions for ${esc(session.task)}" onclick="event.stopPropagation();agentSessionContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'),'${esc(session.status)}')"><span class="codicon codicon-ellipsis"></span></button></div>`, '', (_child, _name, fullPath) => ` oncontextmenu="agentSessionFolderMenu(event,decodeURIComponent('${encodeURIComponent(fullPath.join('/'))}'))"`, null, {
     area:'agentSessions',
+    countLabel:count => `${count} Tasks`,
     defaultOpen:true,
+    isFolderExpandable:child => child.items.length > 0 || Object.keys(child.folders).length > 0,
     renderFolderLabel:name => {
       if (name.startsWith('chat-library:')) {
         const id = name.slice('chat-library:'.length);
@@ -2983,7 +3014,13 @@ function agentSessionTree(sessions, archived = false) {
         ? `${source} Chat ${group.hostSessionId}${group.origin === 'external' ? ' (external)' : ''}`
         : `Recovered Session: ${group?.task || group?.sessionId || 'Unknown origin'}`);
       const icon = group?.hostKind === 'pkm' || group?.origin === 'pkm-native' ? '<span class="agent-session-pkm-icon" role="img" aria-label="PKM Chat" title="PKM Chat"></span>' : '<span class="codicon codicon-comment-discussion"></span>';
-      return `${icon}<span title="${esc(label)}">${esc(label)}</span>${emptyGroups.some(group => group.groupId === name) ? '<small>No Task</small>' : ''}<button class="cattree-item-menu" title="Chat Group actions" aria-label="Chat Group actions" onclick="event.stopPropagation();agentSessionFolderMenu(event,decodeURIComponent('${encodeURIComponent(name)}'))"><span class="codicon codicon-ellipsis"></span></button>`;
+      const portalState = records.get(name)?.portal || group?.portal;
+      const portal = portalState?.binding?.role;
+      const portalLabel = portal === 'controller' ? 'Controller' : portal === 'controlled' ? 'Controlled' : '';
+      const chat = records.get(name);
+      const dashboard = !archived && chat?.hostKind === 'pkm' && !chat.deletedAt;
+      const labelContent = `${icon}<span title="${esc(label)}">${esc(label)}</span>${portalLabel ? `<small>${portalLabel} · ${portalState.connected ? 'Connected' : 'Disconnected'}</small>` : ''}${emptyGroups.some(group => group.groupId === name) ? '<small>No Task · Chat history is separate</small>' : ''}`;
+      return `${dashboard ? `<button class="agent-session-chat-select" type="button" aria-label="Open Chat Dashboard: ${esc(label)}" aria-pressed="${selectedAgentChatId === chat.hostSessionId}" onclick="event.stopPropagation();agentSessionChatSelect(decodeURIComponent('${encodeURIComponent(chat.hostSessionId)}'))">${labelContent}</button>` : labelContent}<button class="cattree-item-menu" title="Chat Group actions" aria-label="Chat Group actions" onclick="event.stopPropagation();agentSessionFolderMenu(event,decodeURIComponent('${encodeURIComponent(name)}'))"><span class="codicon codicon-ellipsis"></span></button>`;
     }
   })}</div>`;
 }
@@ -3093,12 +3130,18 @@ function renderAgentSessions() {
   const activeSessions = sessions.filter(session => session.status === 'running');
   const archivedSessions = sessions.filter(session => session.status !== 'running');
   const selectableSessions = [...sessions, ...trash];
-  if (!selectableSessions.some(session => session.sessionId === selectedAgentSessionId)) selectedAgentSessionId = activeSessions[0]?.sessionId || archivedSessions[0]?.sessionId || trash[0]?.sessionId || '';
+  const selectedChat = (projectSnapshot?.agentSessionGroups || []).find(group =>
+    group.hostKind === 'pkm' && !group.deletedAt && group.hostSessionId === selectedAgentChatId && agentSessionMatchesPortal(group.groupId));
+  if (!selectedChat) selectedAgentChatId = '';
+  if (!selectedChat && !selectableSessions.some(session => session.sessionId === selectedAgentSessionId)) selectedAgentSessionId = activeSessions[0]?.sessionId || archivedSessions[0]?.sessionId || trash[0]?.sessionId || '';
   const selectedRecord = selectableSessions.find(session => session.sessionId === selectedAgentSessionId);
-  const selected = selectedRecord && {...selectedRecord, runs:selectedRecord.runs || []};
+  const selected = selectedChat
+    ? { origin:'pkm-native', sessionId:selectedChat.hostSessionId, hostSessionId:selectedChat.hostSessionId,
+      task:selectedChat.title, status:'unknown', runs:[], todos:[] }
+    : selectedRecord && {...selectedRecord, runs:selectedRecord.runs || []};
   const trashList = trash.map(session => `<div class="li knowledge-trash-item cattree-item agent-session-trash-row ${session.sessionId === selectedAgentSessionId ? 'active' : ''}" role="button" tabindex="0" onclick="agentSessionSelect(decodeURIComponent('${encodeURIComponent(session.sessionId)}'))" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();agentSessionSelect(decodeURIComponent('${encodeURIComponent(session.sessionId)}'))}" oncontextmenu="agentSessionTrashContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'))"><div><strong>${esc(session.task)}</strong><small>${esc(session.agent?.name || 'Agent')}</small></div><button class="cattree-item-menu" title="Trash actions" aria-label="Trash actions for ${esc(session.task)}" onclick="event.stopPropagation();agentSessionTrashContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'))"><span class="codicon codicon-ellipsis"></span></button></div>`).join('');
-  const list = agentSessionTree(sessions);
-  const empty = `<div class="agent-session-empty"><span class="codicon codicon-run-all"></span><strong>No Agent Sessions</strong><p>An Agent appears here only after it explicitly accepts PKM management with agent_session_start.</p></div>`;
+  const list = agentSessionTree(sessions) || '<p class="empty">No Chat Groups match this Portal filter.</p>';
+  const empty = `<div class="agent-session-empty"><span class="codicon codicon-run-all"></span><strong>No Agent Sessions</strong><p>Select a Chat name to inspect its execution records. Managed Tasks appear only after an Agent explicitly accepts PKM management with agent_session_start.</p></div>`;
   let content = empty;
   const native = selected?.origin === 'pkm-native' && !selected.trashedAt;
   if (native) content = '<div id="native-agent-harness"></div>';
@@ -3121,16 +3164,19 @@ function renderAgentSessions() {
     content = `<div class="agent-dashboard"><header class="agent-session-head"><div><span>PKM-managed Agent Session</span><h3>${esc(selected.task)}</h3><p>${esc(selected.sessionId)} · Updated ${esc(selected.updatedAt || 'unknown')}</p></div><div class="agent-session-head-actions"><button class="tbtn" title="Refresh without resetting graph focus" onclick="agentSessionRefresh()"><span class="codicon codicon-refresh"></span>Refresh</button><span class="agent-status ${selected.status === 'running' ? 'running' : ''}">${selected.status === 'running' ? '<i class="agent-live-dot"></i> ' : ''}${esc(selected.status)}</span>${agentSessionLivenessLabel(selected.liveness) ? `<span class="agent-session-liveness ${esc(selected.liveness.state)}" title="Heartbeat age: ${selected.liveness.heartbeatAgeSeconds === null ? 'unknown' : `${Math.round(selected.liveness.heartbeatAgeSeconds)}s`} · Lease: ${selected.liveness.leaseSeconds}s">${esc(agentSessionLivenessLabel(selected.liveness))}</span>` : ''}</div></header>${renderAgentHarness(selected)}<div class="agent-session-summary"><div><span>Agent</span><strong>${esc(selected.agent?.name || 'Agent')}</strong><small>${esc(selected.agent?.product || '')}</small></div><div><span>Current task</span><strong>${esc(runningTodo?.title || running?.nodeId || (selected.runs.length ? 'No running node' : 'Awaiting task plan'))}</strong><small>${esc(selected.lastActivity?.tool || 'Registered')}</small></div><div><span>${sessionTodos.length ? 'Session todos' : 'Task runs'}</span><strong>${sessionTodos.length || selected.runs.length}</strong><small>${sessionTodos.length ? `${sessionTodos.filter(todo => todo.status === 'pending').length} queued` : `${nodes.length} graph tasks`}</small></div><div><span>Progress</span><strong>${progressDone} / ${progressTotal}</strong><small>${percent}% complete</small><div class="agent-progress" aria-label="${progressDone} of ${progressTotal} tasks terminal"><i style="width:${percent}%"></i></div></div></div>${selected.checkpoint ?  `<div class="agent-checkpoint-strip"><span class="codicon codicon-save"></span><div><strong>Checkpoint ${selected.checkpoint.sequence}</strong><small>${esc(selected.checkpoint.summary || selected.checkpoint.reason || 'Recovery state saved')} · ${selected.checkpoint.nextActionCount} next actions</small></div><code>${esc(selected.checkpoint.checkpointId)}</code></div>` : ''}${agentSessionTodoFlow(selected, sessionTodos, selected.runs)}</div>${agentSessionFullscreenGraph(selected)}`;
   }
   if (selected && !native) content = renderNativeAgentArchitecture(selected) + content;
+  if (native && selected.hostSessionId) content = `<div class="agent-session-head-actions"><button class="tbtn" onclick="ask('peerCollaboration',{chatId:decodeURIComponent('${encodeURIComponent(selected.hostSessionId)}')})" title="Portal for this Chat"><span class="codicon codicon-remote"></span>PKM Portal</button></div>` + content;
   const groupCount = agentSessionGroupCount(sessions);
-  const binding = selected ? `<p class="agent-session-group-binding">${selected.hostSessionId || selected.liveness?.hostSessionId ? 'Group' : 'Recovered Group'}: ${esc(agentSessionGroupKey(selected))}<br>Task: ${esc(selected.taskId || selected.sessionId)}<br>Grouping preserves task history; host model context is not isolated.</p>` : '';
-  detail.innerHTML = `<div class="agent-sessions-workspace ${agentSessionTreeCollapsed ? 'cattree-collapsed' : ''}"><aside class="agent-session-list"><div class="agent-session-list-head"><strong>Chat Groups</strong><span>${groupCount} groups · ${sessions.length} tasks</span></div><div class="agent-session-tree-scroll" oncontextmenu="if(event.target===this)agentSessionRootMenu(event)">${list}</div>${catTreeTrashDock('Trash', trash.length, trashList, 'emptyAgentSessionTrash()')}</aside>${workspaceCatTreeDivider('agentSessions',agentSessionTreeCollapsed)}<main class="agent-session-content">${binding}${content}</main></div>`;
+  const binding = selectedChat ? `<p class="agent-session-group-binding">PKM Chat: ${esc(selectedChat.title)}<br>Chat execution view. Selecting a Chat does not create a managed Task or a Recipe binding.</p>`
+    : selected ? `<p class="agent-session-group-binding">${selected.hostSessionId || selected.liveness?.hostSessionId ? 'Group' : 'Recovered Group'}: ${esc(agentSessionGroupKey(selected))}<br>Task: ${esc(selected.taskId || selected.sessionId)}<br>Grouping preserves task history; host model context is not isolated.</p>` : '';
+  detail.innerHTML = `<div class="agent-sessions-workspace ${agentSessionTreeCollapsed ? 'cattree-collapsed' : ''}"><aside class="agent-session-list"><div class="agent-session-list-head"><strong>Chat Groups</strong><span>${groupCount} groups · ${sessions.length} tasks total</span></div><label>Portal <select aria-label="Filter Chat Groups by Portal role" onchange="agentSessionSetPortalFilter(this.value)">${[['all','All Chats'],['controller','Controller'],['controlled','Controlled'],['connected','Connected'],['none','No Portal role']].map(([value,label])=>`<option value="${value}"${value === agentSessionPortalFilter ? ' selected' : ''}>${label}</option>`).join('')}</select></label><button class="tbtn" onclick="document.querySelector('.tab[data-tab=portalConnections]').click()">Portal Connections overview</button><p class="agent-session-group-binding">Counts are managed Tasks, not messages or model rounds. A Chat can have history without any managed Task.</p><div class="agent-session-tree-scroll" oncontextmenu="if(event.target===this)agentSessionRootMenu(event)">${list}</div>${catTreeTrashDock('Trash', trash.length, trashList, 'emptyAgentSessionTrash()')}</aside>${workspaceCatTreeDivider('agentSessions',agentSessionTreeCollapsed)}<main class="agent-session-content">${binding}${content}</main></div>`;
   if (native) {
     const host = detail.querySelector('#native-agent-harness');
     if (!nativeHarnessView || nativeHarnessSessionId !== selected.sessionId) {
       nativeHarnessView?.dispose();
       nativeHarnessSessionId = selected.sessionId;
-      nativeHarnessView = PkmAgentHarness.mount(host, { initial:selected, request:requestNativeHarness,
-        openBrowser:sessionId => requestNativeHarness('openBrowser', { sessionId }) });
+      nativeHarnessView = PkmAgentHarness.mount(host, { initial:selected,
+        request:selectedChat ? (method, params) => requestNativeHarness(method, { ...params, chatId:selectedChat.hostSessionId }) : requestNativeHarness,
+        ...(!selectedChat ? { openBrowser:sessionId => requestNativeHarness('openBrowser', { sessionId }) } : {}) });
       void nativeHarnessView.refresh(true);
     } else nativeHarnessView.attach(host);
     if (nativeFocus?.isConnected) nativeFocus.focus({ preventScroll:true });
@@ -3143,8 +3189,9 @@ function renderAgentSessions() {
   const nextContent = detail.querySelector?.('.agent-session-content');
   if (nextTree) nextTree.scrollTop = previousTreeScroll;
   if (nextContent) nextContent.scrollTop = previousContentScroll;
-  if (previousSessionId === selectedAgentSessionId) restoreRefreshView(detail, inlineView);
-  if (detail.dataset) detail.dataset.agentSessionId = selectedAgentSessionId;
+  const selectionId = selectedAgentChatId || selectedAgentSessionId;
+  if (previousSessionId === selectionId) restoreRefreshView(detail, inlineView);
+  if (detail.dataset) detail.dataset.agentSessionId = selectionId;
   const nextGraphStage = detail.querySelector?.('.agent-session-graph-stage');
   const graphViewport = agentSessionGraphViewport[agentSessionFullscreenRunId];
   if (nextGraphStage && graphViewport) {

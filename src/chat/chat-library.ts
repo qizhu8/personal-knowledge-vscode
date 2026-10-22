@@ -45,6 +45,18 @@ export class ChatLibrary {
     });
   }
 
+  moveToNamedGroup(chatId: string, name: string): void {
+    this.update(state => {
+      const id = this.chatId(chatId);
+      let group = state.groups.find(item => item.name.toLowerCase() === name.trim().toLowerCase());
+      if (!group) {
+        group = { id: "chat_group_" + randomUUID().replace(/-/g, ""), name: this.name(name, state) };
+        state.groups.push(group);
+      }
+      state.placements[id] = { ...state.placements[id], groupId: group.id };
+    });
+  }
+
   trash(chatId: string): void {
     this.update(state => { state.placements[this.chatId(chatId)] = { groupId: state.placements[chatId]?.groupId || "ungroup", trashedAt: new Date().toISOString() }; });
   }

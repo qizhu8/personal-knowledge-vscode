@@ -1,5 +1,7 @@
 .pkm-host-warning{position:fixed;top:8px;right:8px;z-index:30000;box-sizing:border-box;display:flex;align-items:flex-start;gap:8px;width:max-content;max-width:calc(100vw - 16px);padding:10px 12px;border:1px solid var(--vscode-editorWarning-foreground,#b45309);border-radius:4px;background:var(--vscode-editor-background,#fff);color:var(--vscode-editorWarning-foreground,#b45309);font-size:12px;line-height:1.5;box-shadow:0 2px 8px #0003}
 .pkm-host-warning[hidden]{display:none!important}
+.pkm-host-warning[data-kind=starting]{border-color:var(--vscode-focusBorder,#0078d4);color:var(--vscode-foreground,#333)}
+.pkm-host-warning[data-kind=starting] .codicon-warning:before{content:"\ea74"}
 .pkm-host-warning>span:not(.codicon){max-width:360px;overflow-wrap:anywhere;white-space:normal}
 .pkm-host-warning button{flex:none;display:flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:0;background:transparent;color:inherit;cursor:pointer}
 .pkm-host-unavailable .working-cauldron,.pkm-host-unavailable .pixel-wizard-frame,.pkm-host-unavailable .academy-loading-sigil *{animation-play-state:paused!important}

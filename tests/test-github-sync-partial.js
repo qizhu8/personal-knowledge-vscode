@@ -10,6 +10,45 @@ const { GitHubSyncScheduler } = require("../dist/sync/github-sync-scheduler");
 const conflicts = require("../dist/sync/github-sync-conflicts");
 const git = (cwd, args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 
+test("stale partial-result recovery is rejected before modifying Recipes, privacy, lastSync or conflicts", async t => {
+  const vm = require("node:vm"), ts = require("typescript");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-stale-sync-result-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const target = { id: "fixture", repository: "/fixture/remote.git", branch: "main" };
+  const receiptFile = path.join(root, "checkouts", target.id, "transactions", "latest.json");
+  fs.mkdirSync(path.dirname(receiptFile), { recursive: true });
+  const receipt = { schema: 1, targetId: target.id, transactionId: "current", state: "recorded",
+    repository: target.repository, branch: target.branch, pushedCommit: "b".repeat(40) };
+  fs.writeFileSync(receiptFile, JSON.stringify(receipt));
+  const source = fs.readFileSync(path.join(__dirname, "../src/extension.ts"), "utf8");
+  const ast = ts.createSourceFile("extension.ts", source, ts.ScriptTarget.Latest, true);
+  const declaration = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "finalizeGitHubSyncServiceResult");
+  assert(declaration);
+  const touched = [];
+  const scope = {
+    path, validateGitHubSyncTransaction: sync.validateGitHubSyncTransaction,
+    githubSyncTargetById: () => target, githubSyncStateDirectory: () => root,
+    applyGitHubSyncRecipePulls: () => touched.push("Recipes"),
+    applyGitHubSyncRecipeDeletes: () => touched.push("Recipe deletes"),
+    setTopLevelPrivacy: () => touched.push("privacy"),
+    mutateGitHubSyncTargets: () => { touched.push("lastSync"); throw new Error("unexpected target mutation"); },
+    invalidateSharedContentCatalog: () => touched.push("catalog"),
+    clearGitHubSyncConflict: () => touched.push("conflict"),
+  };
+  vm.runInNewContext(ts.transpileModule(`${declaration.getText(ast)}\nglobalThis.finalize = finalizeGitHubSyncServiceResult;`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, scope);
+  const result = { transactionId: "old", commit: "a".repeat(40), recipePulls: [], recipeDeletes: [],
+    pulled: [], deletedLocal: [], privateTopLevels: { notes: ["fixture"] } };
+  await assert.rejects(scope.finalize({}, target.id, "manual", result), /receipt does not match/);
+  assert.deepEqual(touched, [], "no host-side mutation is allowed before transaction validation");
+  assert.deepEqual(JSON.parse(fs.readFileSync(receiptFile, "utf8")), receipt);
+  await assert.rejects(scope.finalize({}, target.id, "manual", { ...result, transactionId: "current" }), /repository, branch or commit/);
+  assert.deepEqual(touched, []);
+  assert.equal(sync.validateGitHubSyncTransaction(path.join(root, "checkouts"), target.id, "current", {
+    repository: target.repository, branch: target.branch, commit: receipt.pushedCommit,
+  }).state, "recorded");
+});
+
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-sync-partial-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -46,9 +85,9 @@ function fixture(t) {
         entityBases: result.entityBases };
       sync.completeGitHubSyncTransaction(checkout, target.id, result.transactionId);
     };
-    const run = async () => {
+    const run = async (value = catalog()) => {
       try {
-        const result = await sync.syncGitHubTarget(target, catalog(), checkout, undefined, store);
+        const result = await sync.syncGitHubTarget(target, value, checkout, undefined, store);
         acknowledge(result);
         return { result };
       } catch (error) {
@@ -72,6 +111,61 @@ test("pure planner isolates required groups and portable destination collisions 
   assert.deepEqual(result.files.map(file => file.path).sort(), ["notes/old.md", "notes/other.md", "notes/safe.md"]);
   assert.equal(JSON.stringify([...candidates]), before);
 });
+
+for (const scenario of ["verified-alias", "metadata-only", "missing-alias", "missing-identity",
+  "invalid-identity", "ambiguous-alias", "different-resource", "different-member"]) {
+test(`moved Markdown resource ownership requires unique identity, alias and equal bytes: ${scenario}`, async t => {
+  const f = fixture(t), a = f.replica("resource-owner");
+  const identity = scenario === "invalid-identity" ? "knowledge_invalid" : "knowledge_" + "1".repeat(24);
+  a.write("New", `---\n${scenario === "missing-identity" ? "" : `knowledgeId: ${identity}\n`}revision: 2\naliases: ${scenario === "missing-alias" ? '["note:Shared/New"]' : '["note:Shared/Old", "note:Shared/New"]'}\n---\n![chart](../_assets/chart.png)\n`);
+  const resource = path.join(a.store, "notes", "_assets", "chart.png");
+  fs.mkdirSync(path.dirname(resource), { recursive: true });
+  fs.writeFileSync(resource, Buffer.from([137, 80, 78, 71, 1, 2, 3]));
+  const run = () => {
+    const catalog = a.catalog();
+    catalog.notes[0].dependencies = [{ source: resource, destination: "notes/_assets/chart.png" }];
+    return a.run(catalog);
+  };
+  assert(!(await run()).error);
+  const editor = path.join(f.root, "legacy-owner-editor");
+  git(f.root, ["clone", f.remote, editor]);
+  git(editor, ["config", "user.name", "Fixture"]);
+  git(editor, ["config", "user.email", "fixture@example.invalid"]);
+  const manifestPath = path.join(editor, ".pkm-github-sync.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  const image = manifest.files.find(file => file.path === "notes/_assets/chart.png");
+  assert(image, "fixture must contain the real referenced resource");
+  image.itemId = "Shared/Old";
+  if (scenario === "different-member") image.member = "notes/_assets/other.png";
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+  git(editor, ["add", "."]);
+  git(editor, ["commit", "-m", "fixture legacy resource owner after a move"]);
+  git(editor, ["push", "origin", "main"]);
+  if (scenario !== "metadata-only") fs.appendFileSync(path.join(a.store, "notes", "Shared", "New.md"), "\nA local update after the document move.\n");
+  if (scenario === "ambiguous-alias") {
+    a.write("Other", `---\nknowledgeId: knowledge_${"2".repeat(24)}\naliases: ["note:Shared/Old"]\n---\nA distinct Note claiming the same old alias.\n`);
+  }
+  if (scenario === "different-resource") fs.appendFileSync(resource, Buffer.from([4]));
+  const expectedResource = fs.readFileSync(resource);
+  const result = await run();
+  if (!["verified-alias", "metadata-only"].includes(scenario)) {
+    assert(result.error instanceof sync.GitHubSyncConflictError, "unproven identity or changed bytes remain an explicit conflict");
+    assert(result.error.conflicts.some(file => file.path === "notes/_assets/chart.png"
+      && ["content-conflict", "path-collision"].includes(file.reason)));
+    const retained = JSON.parse(git(f.root, ["--git-dir", f.remote, "show", "main:.pkm-github-sync.json"]));
+    assert.equal(retained.files.find(file => file.path === image.path).itemId, "Shared/Old");
+    assert.deepEqual(fs.readFileSync(resource), expectedResource);
+    return;
+  }
+  assert(!result.error, "a proven moved-document alias and byte-identical resource must not conflict forever");
+  const published = JSON.parse(git(f.root, ["--git-dir", f.remote, "show", "main:.pkm-github-sync.json"]));
+  const images = published.files.filter(file => file.path === "notes/_assets/chart.png");
+  assert.equal(images.length, 1);
+  assert.equal(images[0].itemId, "Shared/New");
+  assert.deepEqual(fs.readFileSync(resource), Buffer.from([137, 80, 78, 71, 1, 2, 3]));
+  assert(!(await run()).error, "subsequent Sync must not recreate the collision");
+});
+}
 
 test("paused items override selected folders, preserve both copies and their Base, and resume normal conflict review", async t => {
   const f = fixture(t), a = f.replica("pause-a"), b = f.replica("pause-b");
@@ -145,12 +239,31 @@ test("15 isolated replicas converge under concurrent CAS contention and an offli
   await clients[0].run();
   for (const client of clients.slice(1)) await client.run();
   for (let index = 0; index < clients.length; index++) clients[index].write("new-" + index, "author " + index + "\n");
-  const results = await Promise.all(clients.map(client => client.run()));
-  assert(results.every(result => !result.error));
+  const bases = clients.map(client => JSON.stringify(client.target.lastSync));
+  const random = Math.random;
+  let results;
+  try {
+    // Force synchronized retry delays: one finite retry window need not publish all 15 writers.
+    Math.random = () => 0;
+    results = await Promise.allSettled(clients.map(client => client.run()));
+  } finally { Math.random = random; }
+  for (const [index, result] of results.entries()) {
+    if (result.status === "fulfilled") assert(!result.value.error);
+    else {
+      assert.match(result.reason.message, /git push failed/i);
+      assert.match(result.reason.message, /stale info|non-fast-forward|fetch first|failed to push some refs|rejected/i);
+      assert.equal(JSON.stringify(clients[index].target.lastSync), bases[index], "unpublished contention must not advance acknowledged Base");
+      const retried = await clients[index].run();
+      assert(!retried.error, "an explicit quiescent retry must revalidate and publish the retained contribution");
+    }
+  }
   for (const client of clients) {
     const result = await client.run();
     assert(!result.error);
     assert.equal(client.catalog().notes.length, 16);
+    for (let author = 0; author < clients.length; author++) {
+      assert.equal(fs.readFileSync(path.join(client.store, "notes/Shared", `new-${author}.md`), "utf8"), `author ${author}\n`);
+    }
   }
   clients[14].write("offline", "reconnected contribution\n");
   const unavailable = f.remote + ".offline";

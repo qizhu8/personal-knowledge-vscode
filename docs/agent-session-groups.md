@@ -21,6 +21,22 @@ controlled reliably and gave no clear benefit over the agent's own planning.
   be restored from Trash. Retired external Group bindings are no longer shown.
 - Empty Groups offer **Delete Chat Group**. Populated Groups need their Tasks
   moved to Trash first. Deleting a Group never deletes the PKM Chat conversation.
+- Chats without Tasks remain visible with their Chat icon and **No Task** label,
+  but have no expand arrow or empty expandable body. Library categories and
+  Chats with Tasks or worker Chats remain expandable; Task rows remain leaves.
+- Chat metadata, Library placement and Group changes invalidate the Agent
+  Sessions view automatically, including Chats created in another workspace
+  namespace of the same Knowledge Root. History-segment directories are not
+  watched for this tree; message bodies are not needed to discover a Chat.
+- Tree counts explicitly say **Tasks**: `0 Tasks` means no managed Task beneath
+  that Chat, not zero messages, calls or execution. Use the Chat Group actions'
+  **Open PKM Chat** to inspect its conversation and Chat-only Visualization
+  without creating a Task.
+- The **Portal** tree filter supports All Chats, Controller, Controlled,
+  Connected and No Portal role. Role labels use the Chat Group's Portal binding
+  even when it owns Tasks. Ancestors can remain for worker-tree context.
+  **Portal Connections overview** opens the separate live/history pairing tab;
+  it shows this machine's recorded pairings, not a global network registry.
 
 ## Agent Snapshots
 

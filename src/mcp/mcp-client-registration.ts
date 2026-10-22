@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { createHash, randomUUID } from "crypto";
-import { parse, ParseError, visit } from "jsonc-parser";
+import { applyEdits, modify, parse, ParseError, visit } from "jsonc-parser";
 import { withCrossProcessLock } from "../runtime/cross-process-lock";
 import { McpStdioCommand } from "./mcp-stdio-command";
 
@@ -50,6 +50,19 @@ export function parseNativeMcpConfiguration(text: string): unknown {
   if (errors.length) throw new Error("Invalid VS Code MCP JSONC configuration; no registration was changed.");
   assertUniqueProperties(text);
   return result;
+}
+
+export function vscodeMcpConfiguration(text: string, launch: McpStdioCommand & { cwd: string }): string {
+  const source = text || "{}\n";
+  const config = parseNativeMcpConfiguration(source);
+  const definition = { type: "stdio", command: launch.command, args: launch.args, cwd: launch.cwd, ...(launch.env ? { env: launch.env } : {}) };
+  if (object(config) && object(config.servers) && canonical(config.servers.pkm) === canonical(definition)) return text;
+  assertNoManualPkm(config, launch);
+  const bom = source.startsWith("\uFEFF") ? "\uFEFF" : "";
+  const body = source.slice(bom.length);
+  return bom + applyEdits(body, modify(body, ["servers", "pkm"], definition, {
+    formattingOptions: { insertSpaces: true, tabSize: 2, eol: body.includes("\r\n") ? "\r\n" : "\n" },
+  }));
 }
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -100,7 +113,7 @@ function assertUniqueProperties(text: string): void {
   });
 }
 
-function readConfig(filename: string): { text?: string; config: Record<string, unknown>; revision: string } {
+function readConfig(filename: string, vscode = false): { text?: string; config: Record<string, unknown>; revision: string } {
   assertSafeParents(filename);
   const directory = path.dirname(filename);
   if (fs.existsSync(directory)) assertSafeEntry(directory, true);
@@ -111,12 +124,37 @@ function readConfig(filename: string): { text?: string; config: Record<string, u
   assertSafeEntry(filename, false);
   if (fs.statSync(filename).size > 2 * 1024 * 1024) throw new Error("MCP configuration is too large to safely edit.");
   const text = fs.readFileSync(filename, "utf8");
-  const config: unknown = JSON.parse(text.replace(/^\uFEFF/, ""));
+  const config: unknown = vscode ? parseNativeMcpConfiguration(text) : JSON.parse(text.replace(/^\uFEFF/, ""));
   assertUniqueProperties(text);
   if (!object(config) || ("mcpServers" in config && !object(config.mcpServers))) {
     throw new Error("Expected a JSON object with an mcpServers object. Existing configuration was not changed.");
   }
   return { text, config, revision: createHash("sha256").update(text).digest("hex") };
+}
+
+export function inspectVscodeMcpRegistration(filename: string, launch: McpStdioCommand & { cwd: string }): { revision: string; text: string } {
+  const current = readConfig(filename, true);
+  return { revision: current.revision, text: vscodeMcpConfiguration(current.text || "", launch) };
+}
+
+export async function registerVscodeMcp(filename: string, launch: McpStdioCommand & { cwd: string }, reviewedRevision: string): Promise<void> {
+  assertSafeParents(filename);
+  const directory = path.dirname(filename);
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  assertSafeEntry(directory, true);
+  await withCrossProcessLock(path.join(directory, ".pkm-mcp-config.lock"), "PKM VS Code MCP registration", 5_000, async () => {
+    const current = readConfig(filename, true);
+    if (current.revision !== reviewedRevision) throw new Error("MCP configuration changed after review. Review and confirm again; nothing was written.");
+    const text = vscodeMcpConfiguration(current.text || "", launch);
+    if (text === current.text) return;
+    const temporary = path.join(directory, `.pkm-mcp-config.${randomUUID()}.tmp`);
+    try {
+      fs.writeFileSync(temporary, text, { mode: 0o600, flag: "wx" });
+      if (current.text !== undefined) fs.writeFileSync(`${filename}.pkm-backup-${randomUUID()}`, current.text, { mode: 0o600, flag: "wx" });
+      if (readConfig(filename, true).revision !== reviewedRevision) throw new Error("MCP configuration changed during registration. Nothing was replaced.");
+      fs.renameSync(temporary, filename);
+    } finally { fs.rmSync(temporary, { force: true }); }
+  });
 }
 
 export function inspectCopilotMcpRegistration(

@@ -1,10 +1,295 @@
 # Independent API Chat
 
+The Chat sidebar retains its webview context while hidden. Switching away and
+back preserves the live conversation DOM and draft instead of requiring page
+initialization again. The main PKM editor panel follows the same policy and
+silently revalidates its active view on return. Retention uses more memory for
+hidden views; actual disposal and window restarts still use persisted state.
+
+Daily-use regression requirements and refresh ownership are tracked in the
+[PKM Chat acceptance matrix](../tests/cases/PKM_CHAT_DAILY_TEST_CASES.md).
+Run `npm run test:pkm-chat:daily`; the full release browser plan includes it.
+The legacy Chatroom code-coverage percentage does not represent PKM Chat.
+
+Completed responses use a small side-profile wizard sleeping at a desk with
+animated zZZ and a green light. Failed responses use a smaller sooty face with
+a visible upper-right red light. Stopped/cancelled is separate from Failed:
+it uses a neutral pause glyph and a plain-language notice, not a red error.
+The notice distinguishes an unfinished tool from already completed tools;
+stopping a response cannot undo prior actions. Older generic cancellation
+messages are clarified when displayed, without rewriting stored evidence.
+Animations stop in hidden views and honor reduced-motion preferences.
+
+When context estimates exceed the budget, the composer explains why Send is
+disabled. A first send needing PKM tools initializes and waits for the
+configured managed service even when the previously selected Chat was read-only;
+startup failure remains explicit and does not fall back to native confirmation.
+
+## PKM Portal / PKM 传送门 (Chat-scoped)
+
+PKM Portal is the user-facing name for the peer-to-peer connection between two
+agents over the existing Chat transport. It does not imply NAT traversal or a
+new transport. Existing protocol fields, command IDs and tool names are unchanged.
+
+This uses the existing Chatroom WebSocket client/Hub, not SSH or a second
+transport service. A Portal belongs to one specific Chat, not the active Room,
+window or machine. Different Chats can simultaneously control different
+IP/hostname endpoints or be controlled independently. Open the current Chat's
+**Portal** door button; it shows only a closed door before pairing/disconnected
+and an open door while connected. Role-specific wizards remain in status/details,
+not on this two-state button. Chat List has no global Portal button.
+**PKM: Portal** asks which Chat owns the connection.
+Agent Sessions passes its native Chat identity. Opening or using a Portal does
+not select a different Chat, interrupt its current local turn or replace history.
+
+**Portal link (recommended).** No Room needs to exist beforehand.
+
+The top-right Chat Portal button shows only an open or closed portal, without
+a wizard or role-specific decoration. Clicking it opens the Portal controls to
+prepare a connection change; it does not immediately disconnect or switch roles.
+Role-specific wizards remain in status and connection details.
+
+1. Choose **Start a Portal**, then this Chat's direction: **Controller** (the
+   default) or **Controlled**. For example Windows can create a controlled
+   endpoint so the existing Linux conversation can test it. PKM starts the Hub,
+   creates a private transport Room and copies a one-time `pkmportal:v1:` link
+   (Room address, Room secret, role and pairing code; ten-minute expiry).
+   In a Remote window the Hub port is forwarded with
+   VS Code port forwarding, so the link uses `localhost` on the computer that
+   shows the initiator's window; the receiving window must run on that computer.
+   Alternatively enter a reachable **WSS** address (IP or hostname). A link
+   cannot create network reachability, certificates or NAT traversal.
+2. In the other Chat choose **Accept a Portal link**, paste it privately and
+   explicitly confirm the stated direction and endpoint. When the initiator is
+   controlled it must also approve the incoming controller. One Room cannot be
+   attached to another local Chat. Pasting alone grants nothing; a link redeemed
+   in the wrong direction is rejected.
+3. Control direction is fixed. **Switch control direction…** first asks the
+   requester to confirm, then the peer must explicitly **Allow switch**; roles
+   flip only after both consents, never while a remote task is active, and
+   tasks cannot be sent while a switch is pending. Declined or expired requests
+   leave roles unchanged; an ambiguously late acceptance revokes the connection
+   rather than leaving contradictory roles.
+
+**Copy a forgotten invitation.** Projects → Portal Connections includes an
+**Awaiting peer** section with **Copy magic link** for unredeemed, unexpired
+invitations owned by this window. The Host copies directly to the clipboard;
+the secret link is never included in webview snapshots or persisted history.
+Redeemed, revoked or expired links cannot be reused. Invitations remain
+memory-only and disappear on Host restart; established pairings use re-attach.
+
+After pairing:
+
+1. Continue asking the controller Chat to work on the remote machine. Enable
+   the **PKM Portal** builtin capability: it exposes `portal` with
+   `open/status/send/get/cancel/disconnect/switch/permissions/files`. `send` uses a stable request
+   UUID and returns delivery only; `get` reads that exact remote request's answer
+   back into this conversation. Manual **Send task** remains available.
+   The target approves the exact instruction separately from pairing. Execution
+   uses the existing bound Chat's model/history, not a newly created Chat per
+   instruction. A busy target rejects instead of interrupting or queueing.
+   Existing local Allow All
+   does not authorize remote calls; reusable approvals must use explicit Portal
+   leases. Initial remote
+   execution cannot delegate to other Chats/workers or start another peer session.
+2. **Status** shows endpoint, peer participant, advertised machine/Chat identity,
+   role and original request IDs. `get` returns the bounded answer.
+   **Cancel task** addresses
+   the original request, and **Disconnect** revokes pairing and requests
+   cancellation. Cancellation cannot undo effects or implicitly terminate
+   previously approved durable background commands.
+
+**Copilot and other MCP clients.** Discover a Host with
+`api_chat_capabilities`, then call `portal_control` with `operation="open"`
+and no context ID. Local UI names the conversation and handles link copying/
+pasting; credentials are never returned to the model or written into the
+MCP request queue. Poll the returned local request with `api_chat_request_get`
+to get its `contextId`. Keep it in this conversation. Subsequent operations
+use that context and the original remote `request_id`; local control receipts
+and remote task receipts are different identities.
+
+**Automatic review (PKM controller Chats only).** Receipt/observation changes to
+awaiting approval, waiting input, restricted visibility, completed, failed,
+cancelled, denied or unknown enqueue a PKM system event:
+`Please check controlled chat status.` It contains the original context/request
+identity, not copied remote instructions or approval authority. Running changes
+and repeated heartbeat/receipt delivery do not repeatedly trigger a waiting
+episode. Completion is triggered after its final receipt has been stored, so
+the controller can query that same request rather than guess from an early
+snapshot. Late snapshots cannot reopen a terminal task.
+
+The normal controller runner consumes the persisted event when idle (model
+charges may apply); it never interrupts a busy run, steals focus, or approves
+anything for the controlled user. Pending events for the same request coalesce
+to the newest state. A paused/stopped controller retains the notification for
+explicit resumption. The event is labelled **PKM · Portal status event**, not
+**You**, and is not a human Task requirement. Expired execution context,
+disconnect or role/pair changes prevent a queued review from running; the
+queue reports the reason instead of replaying a remote task.
+
+External Copilot/MCP contexts do **not** auto-wake the companion PKM Chat or
+inject messages into Copilot. Use an explicit status/get request when the user
+asks, or keep the external agent's own approved blocking watcher/program
+waiting for results (as with Chatroom standby). A pushed transport receipt
+alone is not a mechanism for starting a new Copilot turn.
+
+MCP does **not** authenticate individual Copilot conversation IDs. External
+operations require local consent showing the named context, or an explicit
+unexpired grant to remember access to the current connection. That grant trusts
+the local MCP client holding the handle, not a cryptographically authenticated
+Copilot conversation; a caller-supplied name is not authorization. External handles
+cannot access PKM Chat-owned contexts. Remote execution for an external context
+uses one dedicated, visible PKM companion Chat; it cannot inject a task into an
+existing Copilot UI conversation. The controller's Copilot conversation remains
+the planning/reporting surface. Pairing is never re-attached automatically after a
+Host restart or Knowledge Root change; see **Re-attach** below for the explicit path.
+
+New external companions have a `Portal:` title and are placed in the **Portal**
+Chat group rather than Ungroup. They retain ordinary inspectable execution
+history and permissions, and creating one does not switch the currently selected
+Chat. Reuse its returned `contextId`: an `open` without a context ID creates a
+new companion, even if the label matches. Existing titles alone do not prove
+provenance; historical Chats are not automatically hidden, merged or deleted.
+Opening a Portal on a normal existing Chat does not regroup that Chat.
+
+Dedicated `pkm.peer/v1` frames are directed to one authenticated Room participant.
+The Hub replaces supplied sender identities and does not store peer frames in
+chat history; ordinary messages and catch-up history never trigger remote work.
+The controlled Host first creates an exclusive, synced claim under local
+`.pkm/state/peer-tasks`. Duplicate IDs do not execute again, altered content is
+rejected, and interrupted claims remain unknown rather than being replayed.
+Claims are not a distributed exactly-once transaction for external side effects.
+
+**Re-attach (`resume-v1`, 3.2.83+ on both Hosts).** After pairing, each Host keeps
+the pairing (pair ID, derived HMAC secret, role, peer Chat identity, controller
+outgoing receipts) and its transport details in VS Code SecretStorage, never in
+knowledge, Sync or ordinary logs. After a restart or network loss, the Chat door
+shows *Re-attach available*; choose **Re-attach previous Portal** in the Portal menu
+or call `portal_control` with `operation="reattach"`. The controller restarts its
+Hub Room if it hosted it; the other side rejoins with the saved Room secret. Both
+sides must be online on the same transport and Knowledge Root. A nonce-bound HMAC
+proof must match the stored pair, the expected peer Chat and the complementary
+role; mismatches are rejected without attaching. Reusable permissions and external
+grants are **not** restored. The controlled Host then re-sends durable receipts for
+the controller's open requests: interrupted running/awaiting tasks become `unknown`,
+missing journals become `unknown`, completed results are recovered, and nothing is
+replayed. Revoke forgets the stored pairing on both sides; Disconnect keeps it.
+Pre-3.2.83 Hosts must pair once more after upgrading.
+
+Cross-machine endpoints require **WSS/TLS**; plain WS is accepted only on loopback
+for local tests. The existing Hub does not itself supply TLS, NAT traversal, or a
+public relay. Use an already reachable secure Chat endpoint; Magic Codes do not
+create reachability. The Room Hub terminates the transport and is trusted with
+peer frames: this is not end-to-end encryption against the Hub.
+
+Current limits: one peer binding and one active incoming task per local Room
+connection, 100 outgoing requests per pairing, 16,000-character instructions,
+48 KiB frames and a 12,000-character answer preview (oversized encoded receipts
+are additionally bounded to fit the frame).
+Pairing and live controls are session-local and must be re-established after
+Host restart; claims remain to prevent replay, but automatic Chat attachment and
+outgoing receipt recovery are not implemented. Real Linux/Windows installed-host
+acceptance remains separate from local automated tests. Machine/Chat labels are peer-advertised metadata; transport
+participant identity and the approved pairing determine routing.
+
+**Timed permissions.** Portal tasks never inherit the controlled Chat's local
+remembered approvals or permanent Allow All. Choose Run once, or open Permissions
+to select Chat/progress reads, file reads/writes, program execution, PKM reads/
+writes, Git reads/writes and environment management. The matrix shows effective
+grants and expiry. Recognized builtin tools reuse only their mapped dimension;
+unrecognized/native tools still ask unless timed Allow All was explicitly granted.
+A dimension is not a promise that every third-party tool supports fine-grained
+authorization. Existing tool workspace boundaries still apply. When files-read or
+files-write is granted, the matrix can limit it to chosen folders (not drive/filesystem
+roots; compared case-insensitively on Windows). Accesses outside them, or whose path
+cannot be resolved, still ask. Bounded tool output (at most 1,500 characters per tool
+and 12,000 in total) is mirrored to the controller only under a reusable, unscoped
+`progress-read` lease plus an unscoped lease for that tool's own dimension; otherwise
+the controller sees the tool status with output marked as withheld.
+
+The default is a fixed 15-minute deadline, never sliding renewal. Longer or custom
+durations and Until disconnected are allowed after warning. Until disconnected is
+not persisted permanent access: disconnect, Host restart, role/identity, Root or
+trust change revoke reuse; reconnect does not restore it. Expiry blocks new
+operations and cancels the active Portal run. This does not roll back effects or
+prove a previously submitted external/cloud job stopped. Revoke is available
+from the same Permissions menu. Program execution and Allow All are **not an OS/
+network sandbox** and cannot guarantee that arbitrary code cannot copy data by a
+different channel. Do not grant them to an untrusted controller.
+
+**Visible state and attribution.** Both bound Chats show Controller/Controlled,
+peer identity and front/back wizard visuals independently of task execution.
+Public task snapshots include stage, partial answer, tool names/status, waiting
+approval/question titles, errors and terminal state. UI and `status`/`get` use
+the same per-original-request snapshots. Hidden/background webviews do not stop
+collection. Snapshots are bounded (latest per task, up to 100 tasks), ordered and
+deduplicated, with a five-second heartbeat; this is not a replayable event log or
+screen sharing. Freshness uses local receipt time, not an assumed synchronized
+remote clock. Restricted and stale observations are explicitly labelled. Hidden
+reasoning, raw tool stdout, unrelated history, desktop state and system dialogs
+are not mirrored. When the user is focused on the actual target Chat, permission/
+input prompts remain inline rather than adding another VS Code notification.
+Remote instructions persist their controller hostname, endpoint and Chat identity.
+The Chat header no longer has Pause, New Chat or connection Settings buttons;
+Chat List creation, model selection/configuration and immediate Stop remain.
+
+**Files require separate permission.** `portal` operation `files` accepts
+absolute local `paths`, or opens a local multi-file picker. MCP `portal_control`
+uses `file_paths`. The controlled user explicitly approves **every** immutable
+batch, in either direction, even with Allow All/Until disconnected. Receiver
+selects a destination and reviews names, sizes and SHA-256 hashes. No content is
+sent before required controlled-side approval. Both Hosts must advertise
+`files-v1`; older Hosts fail explicitly and cannot receive their own upgrade
+through this new protocol. Transfer is flat files only: no unpacking, execution,
+installation or Reload.
+
+Defaults are 64 files, 100 MiB per file/batch and a 10-minute idle timeout.
+Source/destination identity is rechecked after approval, writes use private
+temporary files, size/hash verification and exclusive non-overwriting commit.
+Cancellation, timeout and disconnect clean up owned temporary files. This is
+not resumable transport or protection against every local filesystem attacker.
+`status.transfers` retains the latest 32 local batches. `files` metadata is the
+expected manifest, **not** proof of delivery. Only completed `verifiedFiles` is
+verification evidence: on the sender it means the receiver acknowledged the
+same manifest after verification, not an independent inspection of remote disk.
+An offered batch is not a completed delivery, and delivery is never installation.
+
+Validation: `npm run test:peer-collaboration` covers actual loopback Hub/Clients,
+pairing/denial/revocation, durable duplicate suppression, shared-store races,
+interrupted claims, cancellation, and local HTTP-controller tool approvals.
+Loopback tests do not constitute Windows, TLS deployment or real-model acceptance.
+
+If Memory context preparation fails, the main response can still complete using
+the recent dialogue. Post-response organization is then explicitly **skipped**
+with the original preparation error, not submitted to `turn_commit` for an
+unfinished turn. The saved response is retained; memory organization is not
+misreported as successful. This guard does not explain or hide the original
+transport/provider/storage failure during preparation.
+
 Agent Sessions uses the same user groups as Chat List: user group → Chat →
 Task Session. Spawned worker Chats are nested under their parent Chat; existing
 Chats receiving a delegation retain their own user group. Empty/no-Task Chats
 also appear inside their user group rather than as loose top-level entries.
 This is a display projection; Task and host-group identities are unchanged.
+Select a PKM Chat's name to inspect its recorded execution in the right-hand
+Harness dashboard, including ordinary or Portal-controlled Chats with no managed
+Task. This uses the same read-only, current-root and non-Trash access checks as
+Visualization; it neither starts a model nor creates a Task or Recipe binding.
+The tree's counts still refer to managed Tasks. Folder arrows expand groups
+independently, and selecting a Task restores its existing Task dashboard.
+
+Completed Chats and unread results use a sleeping wizard with zzz and a green
+status light. Failed Chats use a sooty wizard with white blinking eyes. Manager/
+worker roles remain available in status labels and metadata; reduced motion
+disables blinking and hidden/background animation is paused.
+
+Tool-enabled explicit Tasks receive knowledge-stewardship guidance: search and
+read existing assets before proposing new ones, distinguish evidence from
+reusable procedures and executable/orchestrated contracts, and propose useful
+corrections with source/validation provenance. This is not an automatic promotion
+ladder or a requirement to persist every exchange. Casual/tool-free Chats do not
+receive this extra guidance. No background model call or bulk knowledge mutation
+is introduced; durable changes still need appropriate tools and authorization.
 
 Assistant replies and delegated worker result cards share sanitized Markdown,
 KaTeX math (`$...$`, `$$...$$`, `\(...\)`, `\[...\]`) and Mermaid rendering.
@@ -12,10 +297,56 @@ Math and diagram libraries load locally only when needed. Raw HTML is displayed
 as text; unsafe links and interactive Mermaid bindings are disabled. Invalid
 math or diagrams show explicit rendering errors.
 
-Sending immediately shows a local user bubble before dispatching the request.
+Sending clears and persists the composer first, then immediately shows a local
+user bubble before dispatching the request.
 It remains marked as sending/awaiting sync until its exact submission identity
-appears in saved messages or the input queue. Rejections retain the current draft
-and display an error; local bubbles are not written to conversation history.
+appears in saved messages or the input queue. A pre-acceptance rejection restores
+the submitted text, preserving any newer draft after it, and displays an error;
+local bubbles are not written to conversation history. Delayed acceptance or
+state updates never clear a new draft, even when it equals the submitted text.
+
+The Activity list owns its per-operation disclosures: tool arguments/results,
+model-round receipts and Advertised tools expand in place and default to
+collapsed. Original tool call IDs and model round IDs correlate new records;
+old records without these IDs remain readable without guessing a match by
+tool name. Reported model-round `in / out` usage appears before elapsed time.
+Tools without independent provider usage show `usage n/a`; request usage is not
+allocated arbitrarily to tool calls. The current owned Task Session's todos are
+shown as a flat grey list; when no Session todos exist, explicit agent-reported
+planning possibilities are shown instead. Neither is a guarantee of future
+execution. Old activity records retain their own recorded plans.
+
+Direct HTTP providers can supply explicit public `reasoning_summary` deltas;
+these are bounded, persisted and displayed inside the corresponding model
+activity and Harness output graph. Hidden `reasoning_content` and opaque native
+`thinking` metadata are not exposed or interpreted as a public summary. When
+no public summary is reported, the UI says so; it does not generate one using
+an extra model call.
+
+Agent Sessions' shared native renderer starts with a full-width diagnostic log
+(latest recorded errors/warnings/status), a runtime-parameter table, and
+simultaneous Harness, Recipe/Action, Memory and Retrieval diagram cards in two
+columns. Narrow containers stack cards. Model/limits/usage use recorded receipts;
+unknown quantities stay unknown. The Memory pyramid groups actual preparation
+blocks by kind; its widths do not represent tokens or an inferred storage tree.
+Full graph navigation, nested evidence, read-only receipts and lifecycle controls
+remain below the cards. Automation orders Action Library third, immediately
+before Recipe Library.
+
+The dashboard's **Attempt records** selector can inspect earlier replies instead
+of only the latest attempt. Parameters, Memory and retrieval diagrams follow
+that selection; Recipe/Action bindings remain Session-wide. Missing receipts
+stay explicitly unavailable and do not imply an empty memory store. Actual
+Harness, retrieval and Memory-accounting records have graph previews when
+present; absent Recipe/Action bindings do not generate synthetic runs.
+
+The lifecycle's Run node is a rounded rectangle with room for the live activity
+name. Finished activities are not retained in the node. Terminal attempts show
+**Last recorded** rather than **current**; failures include their recorded error.
+Run counters describe the latest attempt's recorded events, not test coverage.
+An absent field says **not recorded**, whereas an explicitly empty event array
+may show zero. Provider token usage is separate from public output-segment
+records and does not imply a recorded output-segment count.
 
 Native VS Code notifications announce permission requests, questions/decisions
 waiting for input, completed replies, explicitly completed Tasks, and failures.
@@ -27,13 +358,12 @@ are reported separately and do not change a successfully saved reply to failed.
 sets how much hidden model thinking each background memory step may use,
 separately from its limited visible output.
 
-Simple permission notifications offer **Allow once**, **Allow All**, **Refuse**,
-and **Open Chat** (localized with the UI). Allow once grants only the pending
-action; it does not remember permission. Allow All uses the existing current-Chat
-permission mode, not a permanent/global grant, and does not bypass native VS Code
-confirmations. The inline Chat prompt also retains **Approve & remember**.
-Batch/quota confirmations and complex questions open the Chat for explicit
-review instead of bypassing their safeguards. Dismissing a notification or
+Permission notifications offer only **Open Chat** (localized with the UI);
+authorization is always decided in the originating Chat's inline card.
+The card offers **Allow once**, **Approve & remember**, **Allow All** and refusal
+where appropriate. Allow once does not remember a grant; Allow All belongs to
+this Chat, not the account or other Chats. Batch/quota safeguards still require
+explicit review. Dismissing a notification or
 choosing Open Chat leaves its decision pending. Cancelled, replaced or disposed
 requests cannot be authorized through an old notification.
 
@@ -49,6 +379,42 @@ The Webview opens in the secondary (right) sidebar on VS Code versions supportin
 `viewsContainers.secondarySidebar`; the current development host is 1.140.
 The extension's general minimum version has not changed. Older hosts without
 this contribution location cannot use this view.
+
+## Asset stewardship and organization
+
+The current Task guidance is a prompt-level policy, not an autonomous learning or
+deduplication service. It does not prove that a model follows the guidance; real
+model acceptance remains distinct from request-context tests.
+
+For a large library, prefer a logical/faceted index over a bulk physical folder
+reorganization. Keep stable PKM identities and separate asset kind, domain,
+project/scope, maturity, privacy, provenance and relationships such as
+`derived-from`, `implements`, `orchestrates` and `supersedes`. A Note can remain
+valuable evidence without ever becoming a Skill; a Recipe is orchestration, not
+automatically a more general or better Action.
+
+A suggested model-free first pass is byte hashes for exact duplicates, existing
+lexical retrieval plus optional shingles/MinHash for near-duplicate *candidates*,
+and explicit links/references for structural grouping. Do not normalize executable
+code or merge records on text similarity alone. An optional small embedding model
+can rank ambiguous candidates incrementally; it cannot certify equivalence,
+contradictions or permission to publish. Any future reorganization should first
+produce a read-only review list with stable IDs, evidence and reasons, followed by
+an explicitly approved, recoverable migration. None of those bulk mutations runs
+as a side effect of Chat or this guidance.
+
+Relevant research, verified against the primary arXiv abstracts:
+
+- [A-MEM](https://arxiv.org/abs/2502.12110): Zettelkasten-inspired structured notes,
+  links and memory evolution; useful inspiration for organizing related evidence.
+- [ExpeL](https://arxiv.org/abs/2308.10144): extracts natural-language insights from
+  experience and retrieves them for later tasks without parameter updates.
+- [Voyager](https://arxiv.org/abs/2305.16291): an executable skill library with
+  environment feedback, execution errors and self-verification in Minecraft.
+
+These are related designs, not proof that PKM now has autonomous consolidation,
+semantic deduplication or reliable model-free generalization. PKM must retain
+source evidence, local validation, correction history and user authorization.
 
 ## Configuration
 
@@ -137,10 +503,27 @@ other servers or change tool selection. A registered catalog is not proof that
 Copilot enabled those tools for a particular agent request.
 
 Installation updates files on disk; it does not replace code already loaded in
-other windows. The status bar shows the running PKM build fingerprint. Click it
-or run **Personal Knowledge Manager: Show Running Extension Hosts** to compare
-loaded and installed version/fingerprint, PID and VS Code version, online host
-records and coordinated-reload verification. Startup logs and `session_info`
+other windows. The status bar shows the running PKM build fingerprint, observed
+retrieval-index state/progress and GitHub Sync state. Click it or run
+**Personal Knowledge Manager: Show Running Extension Hosts** to open the read-only
+**PKM Status Dashboard**. It shows loaded/installed identity, PID, online hosts,
+background work, worker-reported index counters/generations and each Sync target's
+state, last success and next schedule. **Host log** and **Host diagnostics JSON**
+retain the original log and detailed coordinated-reload verification.
+
+Webview rendering runs separately from the Extension Host and index worker.
+The dashboard receives small snapshots; it never scans knowledge, builds an index,
+fetches a remote, starts/restarts a worker or starts Sync. Existing worker status
+observations are asynchronous, non-overlapping, cancellable and bounded to two
+seconds including the response body. Visible dashboard refreshes do not overlap
+and stop when hidden/disposed. A submitted corpus is not a completed index.
+Percentages require real nonnegative counters and a known positive total; unknown
+totals show indeterminate progress. These are per-phase document counts, not an
+elapsed-time estimate. An earlier ready generation may still serve during a build.
+Observation failures are explicit, not a fabricated healthy/100% state. This is
+not a claim that every existing Extension Host filesystem operation is off-thread.
+
+Startup logs and `session_info`
 also include the captured build identity; subsequent disk changes do not change
 that running identity. Packages verify fingerprints against shipped artifacts.
 
@@ -266,8 +649,9 @@ retained Task or worker archive still owns that evidence.
 
 The Chat UI initially receives up to 20 recent messages, with an approximately
 512 KiB page budget (one larger message is still displayed in full).
-Scrolling near the top (or the **Load older messages** button, kept for keyboard
-use) retrieves preceding pages from the shared store without model inference or
+Scrolling near the top automatically retrieves preceding pages; there is no
+manual load button. The message area is keyboard-focusable so keyboard scrolling
+uses the same pagination. Loading retrieves history without model inference or
 adding those pages to model context. This is rendering pagination, not a
 multi-window fallback: every window reads and writes the same Chat history. UI paging does not delete stored evidence
 or affect in-place Retry and worker Resume. Retrieval and execution still use
@@ -290,6 +674,24 @@ its Chats to Ungroup, not Trash. Drag a Chat to a folder or use its context menu
 to move it. **Trash** stays at the bottom and supports restore, permanent delete
 and Empty Trash. Destructive actions require confirmation; Task/Group evidence
 is preserved even when a Chat is permanently deleted.
+The move picker accepts a new name directly and creates that group; selecting an
+existing name reuses it. Permanent deletion completes Memory cleanup before
+removing the recoverable Chat file. Empty Trash attempts each item, reports
+failures explicitly, and leaves failed items in Trash rather than presenting
+a UI-only deletion or silently stopping the remainder. Cross-workspace cleanup
+uses the original Chat's namespace. Successful deletions persist after reopening.
+
+Chat List trash/restore/permanent-delete operations, Empty Trash enumeration and
+the deletion cleanup's owning-namespace lookup run in a Node worker. Full-history
+validation, segment cleanup and contended filesystem locks therefore do not block
+the Extension Host's health replies during those operations. The same store locks,
+running-Chat checks and evidence-retention rules still apply; failures are surfaced
+without automatic replay. Unchanged selected Chats reuse already validated history
+when publishing state, with filesystem-stamp invalidation for changes from other
+windows. This does not make every Chat load or rendering operation asynchronous.
+Slow publishes log `PKM Chat slow publish` phase timings; library actions log
+`PKM Chat library action` cleanup/publish timings without Chat contents or paths.
+The request duration includes the user's confirmation time, not just storage work.
 
 Shared-file notifications refresh lists across windows. Revision checks and a
 cross-process write lock reject stale overwrites and overlapping requests.
@@ -305,8 +707,14 @@ Sending and incoming native Session questions remain blocked after reload until
 **Resume Chat** and remains available even with an empty draft or no model connection.
 Resume preserves the draft without replaying a request or submitting a message;
 send the message explicitly after resuming. The running composer's **Stop response**
-button only cancels the current response and leaves the Chat available for new messages.
-Pausing or stopping a source does not cancel an already approved independent
+button stops everything this Chat is doing: the current response and its in-flight
+tools, the queued-input drain, running worker Chats it manages (recursively) and its
+durable background processes. Cancellation does not await a tool result or MCP
+connection shutdown. Late output cannot restart the response or execute another
+tool. Connection/process cleanup runs separately; a cancellation request is not
+proof of remote termination. The Chat stays available for new messages. Stop cannot
+cancel work already submitted to a remote service (for example an AML job).
+Pausing a source does not cancel an already approved independent
 delegation. Stop the target Chat to cancel its work; its own permissions still apply.
 Session stop/Trash/removal is detected within one
 second and aborts generation without recreating the Session. Partial chat text
@@ -375,6 +783,26 @@ Activity for the recorded sequence and actually advertised tool names. Terminal
 timers stop. Reload recovers interrupted nodes without replaying the request.
 Historical attempts retain their own graph when the next request starts.
 
+Attempts also persist `invocationBudgets` (`pkm.chat.invocation-budget/v1`)
+for each observed tool dispatch, local Chat/authorized-worker recall, and
+knowledge-provider guard. These are invocation records, not per-round totals:
+repeated observations replace the same original identity rather than adding
+another call. Each record separates `elapsedMs`, `activeMs` and `userWaitMs`;
+active excludes tracked PKM approval/input waits, but is not CPU time.
+Native provider confirmations that PKM cannot observe are not subtracted.
+The knowledge-provider guard records its actual configured 5000 ms deadline;
+that deadline does not cover subsequent reference materialization. Missing
+tool deadlines are uninstrumented, not unlimited capacity or the model idle
+timeout. Existing tool/process limits remain unchanged.
+
+Visualization's **Tool / retrieval invocation budgets** subgraph is read-only
+and available even if retrieval was cancelled before the first model round.
+Degraded/unavailable retrieval remains distinct from a successful Chat answer.
+Cancelling a tool records the end of local observation, not proof that its
+remote effects or durable process terminated. Host recovery marks running
+records interrupted and preserves their last sampled counters without
+inventing an end timestamp or charging downtime.
+
 Only the latest failed/cancelled/interrupted response offers Retry. It requires
 an explicit inline Chat decision and replaces that failed assistant response in place with
 a new attempt using current settings and the original user message/images.
@@ -406,7 +834,7 @@ registrations do not expose verified safety annotations, so PKM does not infer
 read-only safety from their names. **Allow All** enables all configured tools,
 clears prior selection exclusions, and skips PKM approval prompts but
 does not bypass VS Code confirmations, workspace trust or ownership checks.
-The permission picker labels this **Allow All (PKM)** and explains this boundary:
+The composer labels this **Allow All (PKM)** and explains this boundary:
 PKM-controlled loop, Retry and Complete Task decisions appear as inline Chat
 cards, not VS Code-level modal dialogs. These decisions cannot be approved by
 changing tool permissions. Pending cards are scoped to their Chat, attempt and
@@ -415,35 +843,49 @@ idle conversations invalidate Retry/Task confirmations without executing them.
 Reset approvals clears remembered grants; cancelled settings leave the previous
 mode unchanged. These controls are not an OS-level
 filesystem/network sandbox for approved processes.
-`pkm_search` searches local note/skill titles and categories (at most 12 matches;
-notes are drawn from the first 1,000 catalog items); `pkm_read` reads an exact
-local catalog identity with bounded content. Both require a trusted workspace;
+`pkm_search` searches local Note/Skill/Research/Script/Recipe titles and categories
+and available cached Subscription metadata (at most 12 matches, without a
+first-1,000-Notes cutoff); `pkm_read` reads an exact catalog identity with bounded
+content. Previews expose an exact UTF-16 range and a revision/hash handle for
+subsequent half-open reads of at most 4,000 characters. Small Recipes keep their
+complete structured response; oversized definitions expose pinned JSON text
+ranges instead of failing solely on size. Neither Scripts nor Recipes execute
+when read. Stale, removed/private or trashed sources fail explicitly. Both tools require a trusted workspace;
 their verified builtin read operations need no change approval in Ask mode,
 but outside-root references still require the Protective boundary grant. These
-are not access to all PKM services or subscribed/Broker content. Read-only mode
+are not access to all PKM services or live Broker content; cached Subscription
+reads use the current local snapshot without a remote fetch. Read-only mode
 keeps safe read/question tools, not write/process/MCP/cooperation tools.
 PKM supplies its own Session ID and actual tool availability to the model even
 when no tool is selected. Independent Streamable HTTP MCP connections remain
 supported. The Tools tree lists the actual `vscode.lm.tools`
 registry on capable hosts. Enabled registrations are made available
 through `find_vscode_tools` (bounded schema discovery) and `invoke_vscode_tool`
-(exact discovered name and validated input). PKM uses `vscode.lm.invokeTool`
-with `toolInvocationToken: undefined` outside a Chat Participant, preserving
-VS Code's tool confirmations as well as PKM's saved permission policy. There is no
-fabricated token, copied credential or separately launched stdio process.
+(exact discovered name and validated input). PKM's own tools use a Chat-owned SDK connection to the **configured managed PKM
+MCP launch** (the same Python/runtime, generated server, cwd and Windows proxy).
+The Tools tree identifies them as **PKM · Chat permissions**. Discovery starts
+one service process per Chat view Host, shared by that view's requests and closed
+on disposal/replacement. Tool definitions and safety annotations come from that
+service, not guessed from native tool names. Existing canonical PKM selection
+IDs remain valid. Ordinary `list_notes`, `update_note` and other PKM calls obey
+the Chat's permissions: Allow All does not show a second native tool dialog;
+required approvals appear inline. No failed/uncertain call is automatically
+retried, and failed managed setup never falls back to native execution.
+
+Third-party/native tools still use `vscode.lm.invokeTool`
+with `toolInvocationToken: undefined` outside a Chat Participant. Their VS Code
+or extension-specific confirmations are independent of PKM permissions.
 The [public invocation API](https://code.visualstudio.com/api/references/vscode-api#LanguageModelToolInvocationOptions)
 only supplies an inline native confirmation token through a real Chat Participant
-request. A custom PKM webview cannot manufacture that token, relocate VS Code's
+request. A custom PKM webview cannot manufacture that token, relocate a third-party
 confirmation into its own DOM, or override it with Allow All.
 Opening PKM Chat in a trusted workspace starts background discovery of the
-extension-managed `pkm` server when its tools are not registered yet. The
-targeted native startup publishes the current Knowledge Root's definition and
-waits for live tools before refreshing the Tools tree. Core extension activation
+configured managed `pkm` service. Core extension activation
 and the initial Chat page do not wait for this discovery. Read-only Chats skip
 it; saved exclusions and native confirmations remain unchanged. Startup errors
 are reported separately, with no automatic tool-call retry or replay. A broken
 or missing managed runtime still requires repair in Config.
-Servers must already be configured, trusted and registered by VS Code; this
+Third-party native servers must already be configured, trusted and registered by VS Code; this
 does not imply access to every Copilot-internal tool. Missing registrations
 fail explicitly. The bridge currently returns text results only, not MCP
 resources, prompts or image results. New chats do not inherit exclusions/grants.
@@ -452,6 +894,18 @@ The native selector groups registered PKM tools into Skills, Notes, Papers,
 Chatroom, Recipe, Agent Sessions, Subscriptions, Retrieval and Runtime. Other
 VS Code/MCP tools remain selectable in a separate group. Grouping does not
 rename invocation IDs, add unavailable functions or change saved selections.
+
+The builtin `list_directory` lists bounded entry names/types in a relative or
+absolute directory without reading file bodies or following entry symlinks.
+It uses the same per-Chat outside-workspace approval as other builtin tools;
+local Allow All does not show an extra directory dialog. The agent is instructed
+to prefer this path over equivalent native directory tools. While the builtin
+is enabled, the duplicate `copilot_listDirectory` is omitted from the Chat tool
+catalog, so an ordinary listing cannot accidentally enter its separate approval
+path. Disable the builtin first to explicitly select that native tool. Hidden/sensitive
+path exclusions, trust, sending-workspace checks and Portal folder grants still
+apply. Third-party tools such as `copilot_listDirectory` retain their own
+confirmation if explicitly enabled and invoked; PKM does not forge their consent.
 
 For collapsible groups in Copilot, run **Personal Knowledge Manager: Export PKM
 MCP Tool Sets** after PKM MCP has registered its tools. The export contains only
@@ -698,6 +1152,25 @@ or revised source content is reported unavailable rather than substituted.
 Retries, manager wakeups and peer-message responses are separate activities with
 their own timeline. No extra model call is used to render or summarize it.
 
+Memory inference has an independent durable per-turn accounting receipt. Each
+observed call records the actual model/provider, local call duration, configured
+timeout/output/thinking limits and available transport timing/provider usage.
+Repeated cumulative usage frames replace rather than add; a missing native model
+that actually falls back to HTTP is labelled HTTP. Failure can retain partial
+usage/timing without applying partial model output. Cancellation persists a
+cancelled call/turn without applying late topics or statements; restarting the
+worker does not revive it.
+
+The Memory accounting subgraph preserves the preparation snapshot. In PKM
+Visualization, **Read durable Memory receipt** explicitly reads the original turn's
+latest SQLite receipt, including post-reply extraction, without changing Chat
+files, running a model or accepting a caller-supplied foreign turn. Other readers
+without this capability retain the preparation snapshot only. Totals report
+known/unknown usage and timing coverage; unknown is not zero/free. Local duration
+includes model selection/access overhead and is neither CPU nor a provider invoice.
+Memory usage is never added to the main Chat usage. Run `npm run test:memory-engine`
+for the real Python/SQLite policy, host integration and accounting regression suite.
+
 ### Retrieval-first acceptance
 
 Run `npm run test:chat-context` for source immutability, the eight original
@@ -720,6 +1193,40 @@ remain meaningful:
   program/arguments, closed stdin, restricted inherited environment, output cap
   and 1-120 second deadline. Programs can still modify files outside the workspace
   or access the network; inspect the approval prompt before authorizing.
+  Foreground behavior remains unchanged. For an explicitly durable command use
+  `background:true`, a required `timeoutSeconds` from 1 to 86,400 and a stable
+  `idempotency_key` from 1 to 200 characters. Its lifetime requires a one-time
+  approval even under Allow All or remembered program permission. The approved
+  process survives window reload; Chat Stop or `process_cancel` with the
+  original handle cancels it. No shell, credentials or production execution is implied.
+- `process_get`: query the original durable handle in this Chat, including
+  launcher/running/exit/timeout/cancel/storage-limit states. A stale supervisor
+  reports **unknown**, not success or permission to retry. Reusing the exact
+  launch key/inputs returns the original record, including after response loss
+  or restart. Changed inputs with that key are rejected. It never launches a
+  replacement or signals a historical PID.
+- `process_output`: read stdout/stderr by bounded byte offset and length, up to
+  12,000 bytes. Read the returned `end` as the next offset: escaping can shorten
+  a page to fit the actual tool-result envelope. Large output does not kill a
+  healthy command. Complete local logs have an independent 64 MiB combined hard
+  storage limit; reaching it requests process-tree termination and is reported
+  explicitly. UTF-8 split-byte display replacement does not alter stored bytes.
+  Foreground execution also returns an `outputHandle` for reading its saved logs
+  without arbitrary filesystem access. Its `foreground-log` state reports only
+  log availability; the original execution receipt remains the completion
+  authority. These handles cannot be used to poll or cancel a durable process.
+- `process_cancel`: explicitly approve cancellation of that Chat's original
+  handle, then query until termination is confirmed. A cancellation request is
+  not a completion receipt or rollback of effects already performed.
+- `record_harness`: record public task/plan/Step/validation observations without
+  changing managed Task/Recipe completion or execution authority. Task updates
+  must `supersedes` the latest task report ID from `session_info` and cite the
+  latest actual user input in `sourceInputIds`. A stale-base or stale-input update
+  is rejected without changing history. `session_info.taskWorkingState`, model
+  working context, snapshots and the Input/Goal inspector expose the original
+  report and `pendingInputIds` newer than its cited sources; workers do not become
+  user instructions. Reading or restoring a report does not reconcile those
+  inputs, authorize effects, or certify acceptance.
 - `ask_user`: native single/multi-choice picker and optional free-text input.
   Dismissal returns a cancelled answer, not consent. Answers are model-visible;
   this is not a secret/password collection tool.
@@ -822,7 +1329,7 @@ has already processed it. Tree members and parent links are discoverable through
 only when the task-tree tool remains enabled.
 
 Stop also works while a manager sleeps and disables its automatic wakeups; it
-does not cancel independent children. Pause, failed/cancelled manager requests,
+also stops the manager's running worker Chats. Pause, failed/cancelled manager requests,
 Trash and changed sending-window context likewise prevent auto-wakes. Queued
 events remain visible in saved state. Host reload does not silently replay child
 jobs or resume model work in another window: send/resume explicitly in the owner
@@ -863,8 +1370,9 @@ while the host loads its available models. Permissions choose a persistent
 per-Session mode. **Protective** asks for the Chat's outside-workspace boundary grant.
 **Read only** permits enabled workspace reads and user questions, but
 withholds edits, programs, MCP and Session questions. **Ask before changes**
-uses remembered scopes for PKM approval. **Allow All** skips PKM approvals but
-does not bypass native VS Code confirmations or trust. Changes apply to the next request, not a running
+uses remembered scopes for PKM approval. **Allow All** skips ordinary builtin/managed PKM approvals, including approved
+outside-workspace reads, but does not bypass third-party/native confirmations,
+trust or special batch safeguards. Changes apply to the next request, not a running
 tool catalog; read-only is not a general sandbox for providers or attachments.
 
 An explicit permission change (including **Allow All** in a pending approval)

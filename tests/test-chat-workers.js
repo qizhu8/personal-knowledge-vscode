@@ -345,7 +345,7 @@ test("busy manager queues concurrent completions and handles them once after its
   assert.equal(wakes, 2, "No duplicate manager dispatch");
 });
 
-test("Stop while sleeping prevents automatic wake; resume processes the saved event", async t => {
+test("Stop while sleeping cancels workers and prevents automatic wake; resume processes the saved event", async t => {
   let gate;
   const fixture = await harness(t, (payload, res) => {
     const prompt = payload.messages.at(-1).content;
@@ -358,12 +358,14 @@ test("Stop while sleeping prevents automatic wake; resume processes the saved ev
   fixture.provider.chat = fixture.provider.store.load(fixture.root.id, false);
   fixture.provider.chats.set(fixture.root.id, fixture.provider.chat);
   await fixture.provider.handle({ type: "cancel" });
-  answer(gate, "Worker finished independently");
-  await until(() => fixture.provider.running.size === 0, "worker finished");
+  await until(() => fixture.provider.running.size === 0, "Stop cancels the running worker without waiting for it");
+  try { answer(gate, "Too late"); } catch {}
   const stopped = fixture.provider.store.load(fixture.root.id, false);
+  assert.deepEqual(stopped.messages.flatMap(message => message.delegations || []).map(record => record.status), ["cancelled"]);
+  assert.equal(stopped.workerState.events[0].phase, "cancelled");
   assert.equal(apiChatStatus(stopped), "stopped");
   assert.equal(stopped.workerState.events.length, 1);
-  assert.equal(fixture.requests.length, 2, "Stopping a sleeping manager must not cancel the child or wake the manager");
+  assert.equal(fixture.requests.length, 2, "Stopping a sleeping manager must not wake the manager");
   fixture.provider.chat = stopped; fixture.provider.chats.set(stopped.id, stopped);
   await fixture.provider.handle({ type: "resume" });
   await until(() => fixture.requests.length === 3 && fixture.provider.running.size === 0, "saved event resumed");
@@ -599,5 +601,38 @@ test("suspected loop has repeated-tool evidence and manager can summarize the he
   await until(() => fixture.requests.some(request => request.messages.at(-1).content.includes("suspected-loop")) && fixture.provider.running.size === 0, "loop summarized");
   assert.equal(fixture.provider.store.workerTrees.count(fixture.root.workerState.treeId), 0);
   assert.equal(fixture.provider.store.workerTrees.members(fixture.root.workerState.treeId).length, 1, "No replacement worker created");
+  assert.deepEqual(fixture.errors, []);
+});
+
+test("Chat Stop also cancels the Chat's durable background processes", async t => {
+  const fixture = await harness(t, (_payload, res) => answer(res, "unused"));
+  const { setStorePath, getStorePath } = require("../dist/knowledge/filestore");
+  const { launchChatProcess, getChatProcess } = require("../dist/chat/chat-process-runtime");
+  const previous = getStorePath();
+  const store = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-stop-store-"));
+  setStorePath(store);
+  const root = path.join(store, ".pkm", "state", "api-chat-tool-results", fixture.root.id);
+  const other = path.join(store, ".pkm", "state", "api-chat-tool-results", randomUUID());
+  const spec = cwd => ({ program: process.execPath, arguments: ["-e", "setInterval(()=>{},100)"], cwd, timeoutSeconds: 10 });
+  fs.mkdirSync(root, { recursive: true }); fs.mkdirSync(other, { recursive: true });
+  const mine = await launchChatProcess(root, "stop-me", spec(store));
+  const foreign = await launchChatProcess(other, "keep-me", spec(store));
+  t.after(async () => {
+    const { cancelChatProcess } = require("../dist/chat/chat-process-runtime");
+    try { cancelChatProcess(other, foreign.handle); } catch {}
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline && ["launching", "running"].includes(getChatProcess(other, foreign.handle).state)) await new Promise(resolve => setTimeout(resolve, 30));
+    setStorePath(previous); fs.rmSync(store, { recursive: true, force: true });
+  });
+  const settle = async (dir, handle, predicate) => {
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) { const record = getChatProcess(dir, handle); if (predicate(record)) return record; await new Promise(resolve => setTimeout(resolve, 30)); }
+    assert.fail(JSON.stringify(getChatProcess(dir, handle)));
+  };
+  await settle(root, mine.handle, record => record.state === "running");
+  await settle(other, foreign.handle, record => record.state === "running");
+  await fixture.provider.handle({ type: "cancel" });
+  assert.equal((await settle(root, mine.handle, record => !["launching", "running"].includes(record.state))).state, "cancelled");
+  assert.equal(getChatProcess(other, foreign.handle).state, "running", "Stop must not touch another Chat's processes");
   assert.deepEqual(fixture.errors, []);
 });

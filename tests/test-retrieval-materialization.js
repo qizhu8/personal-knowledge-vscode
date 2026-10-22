@@ -48,6 +48,91 @@ test("large sources reach tail passages without transporting or substituting the
   assert(validation.sourceIsCurrent(evidence));
 });
 
+test("large declared JSON materialization uses current source metadata and fails closed on malformed bodies", () => {
+  for (const [title, sourceUri] of [
+    ["policy.json", "pkm://knowledge/research"],
+    ["Policy", "file:///policy.json?revision=7"],
+  ]) {
+    const body = '{invalid JSON\n\n' + "Unrelated explanation.\n\n".repeat(10000) + "latency must not exceed 125 ms.\n";
+    const source = { ...document(body), title, source_uri:sourceUri };
+    const indexed = indexedRetrievalDocument(source), hit = { ...candidate(indexed), label:"misleading.md" };
+    const result = materializeRetrievalCandidates([hit], { documents:[source] }, "latency");
+    assert.equal(result.length, 1);
+    assert.equal(result[0].content, undefined);
+    assert.equal(result[0].label, title, "Verified document metadata determines the source format");
+    assert.match(result[0].reason, /invalid JSON/);
+    assert(!result[0].reason.includes("falling back"));
+  }
+});
+
+test("large valid JSON sources retain exact tail records and current shared conditions despite stale provider labels", () => {
+  const body = JSON.stringify({ approved:false, unit:"ms", records:[
+    ...Array.from({length:12000}, () => ({unrelated:"background"})),
+    {latency:125, policy:"never deploy"},
+  ] });
+  let snapshot = { documents:[{ ...document(body), title:"policy.json", content_type:"script" }] };
+  const indexed = indexedRetrievalDocument(snapshot.documents[0]), hit = { ...candidate(indexed), label:"misleading.csv" };
+  const result = materializeRetrievalCandidates([hit], snapshot, "latency");
+  const evidence = result.find(item => item.content?.includes('"latency":125'));
+  assert(evidence && evidence.range.start > 160000);
+  const group = passageReferenceGroup(evidence, result);
+  assert(group.some(item => item.content === '"approved":false'));
+  assert(group.some(item => item.content === '"unit":"ms"'));
+  for (const item of group) assert.equal(item.content, body.slice(item.range.start, item.range.end));
+  const validation = retrievalSourceValidation(() => snapshot);
+  validation.admit(hit, indexed); validation.refreshSourceValidation();
+  assert(validation.sourceIsCurrent(evidence));
+  snapshot = { documents:[{ ...snapshot.documents[0], title:"policy.md" }] };
+  validation.refreshSourceValidation();
+  assert.equal(validation.sourceIsCurrent(evidence), false, "A source format change invalidates the old passage");
+  assert.equal(sanitizeRetrievalCandidatesV1(result).incomplete, false);
+});
+
+test("source metadata outside label boundaries fails explicitly without injecting invalid candidates", () => {
+  for (const title of ["", "x".repeat(513)]) {
+    const source = { ...document("latency must not exceed 125 ms."), title };
+    const indexed = indexedRetrievalDocument(source), hit = { ...candidate(indexed), label:"Provider display title" };
+    const result = materializeRetrievalCandidates([hit], { documents:[source] }, "latency");
+    assert.equal(result[0].content, undefined);
+    assert.match(result[0].reason, /source title.*boundary|source title.*empty/);
+    assert.equal(sanitizeRetrievalCandidatesV1(result).incomplete, false);
+  }
+});
+
+test("large JSON with multiple shared arrays never materializes an unqualified record", () => {
+  const body = JSON.stringify({ conditions:["never deploy", "all latency in ms"], records:[
+    { unrelated:"background".repeat(17000) }, { latency:125 },
+  ] });
+  const source = { ...document(body), title:"policy.json" };
+  const indexed = indexedRetrievalDocument(source), hit = candidate(indexed);
+  const result = materializeRetrievalCandidates([hit], { documents:[source] }, "latency");
+  assert.equal(result.length, 1);
+  assert.equal(result[0].content, undefined);
+  assert.match(result[0].reason, /not truncated/);
+});
+
+test("large code materialization keeps module preamble dependencies and invalidates changed conditions", () => {
+  const preamble = '"""Only CPU; do not deploy. All measurements in ms."""\r\nfrom settings import UNIT\r\nMAXIMUM = 125\r\n\r\n';
+  const body = preamble + "def other():\n    return 0\n".repeat(10000) + "def p99_latency():\n    return MAXIMUM\n";
+  let snapshot = { documents:[{ ...document(body), title:"benchmark.py", content_type:"script" }] };
+  const indexed = indexedRetrievalDocument(snapshot.documents[0]), hit = { ...candidate(indexed), label:"misleading.csv" };
+  const result = materializeRetrievalCandidates([hit], snapshot, "p99_latency");
+  const evidence = result.find(item => item.content?.includes("def p99_latency"));
+  assert(evidence && evidence.range.start > 160000);
+  const group = passageReferenceGroup(evidence, result);
+  assert(group.some(item => item.content === preamble));
+  const validation = retrievalSourceValidation(() => snapshot);
+  validation.admit(hit, indexed); validation.refreshSourceValidation();
+  for (const item of group) {
+    assert.equal(item.content, body.slice(item.range.start, item.range.end));
+    assert.equal(validation.sourceIsCurrent(item), true);
+  }
+  snapshot = { documents:[{ ...snapshot.documents[0], body:body.replace("measurements in ms", "measurements in seconds") }] };
+  validation.refreshSourceValidation();
+  assert.equal(validation.sourceIsCurrent(evidence), false);
+  assert.equal(sanitizeRetrievalCandidatesV1(result).incomplete, false);
+});
+
 test("private, removed and content-hash-mismatched sources are not materialized", () => {
   const original = document("PRIVATE-RESEARCH"), indexed = indexedRetrievalDocument(original), parent = candidate(indexed);
   for (const documents of [[], [{ ...original, visibility:"private" }], [{ ...original, visibility:"trashed" }]]) {
@@ -95,4 +180,31 @@ test("large cached RST sources materialize tail evidence and retain validated pa
     assert.equal(validation.sourceIsCurrent(item), true);
   }
   assert.equal(sanitizeRetrievalCandidatesV1(result).incomplete, false);
+});
+
+test("large CSV/TSV materialization reaches original tail records with current mandatory headers", () => {
+  for (const [extension, delimiter] of [["csv", ","], ["tsv", "\t"]]) {
+    const header = `entity${delimiter}p99 limit (ms)\r\n`;
+    const tail = `"latency\r\nnot approved"${delimiter}125\r\n`;
+    const body = header + `unrelated${delimiter}0\r\n`.repeat(20000) + tail;
+    const source = { ...document(body), title:`benchmarks.${extension}`, content_type:"script" };
+    let snapshot = { corpus_revision:"table", documents:[source] };
+    const indexed = indexedRetrievalDocument(source), hit = candidate(indexed);
+    const result = materializeRetrievalCandidates([hit], snapshot, "latency");
+    assert.equal(result[0].content, undefined);
+    const evidence = result.find(item => item.content === tail);
+    assert(evidence && evidence.range.start > 160000);
+    const group = passageReferenceGroup(evidence, result);
+    assert(group.some(item => item.content === header));
+    const validation = retrievalSourceValidation(() => snapshot);
+    validation.admit(hit, indexed); validation.refreshSourceValidation();
+    for (const item of group) {
+      assert.equal(item.content, body.slice(item.range.start, item.range.end));
+      assert.equal(validation.sourceIsCurrent(item), true);
+    }
+    assert.equal(sanitizeRetrievalCandidatesV1(result).incomplete, false);
+    snapshot = { ...snapshot, documents:[{ ...source, body:body.replace("limit (ms)", "limit (seconds)") }] };
+    validation.refreshSourceValidation();
+    for (const item of group) assert.equal(validation.sourceIsCurrent(item), false);
+  }
 });

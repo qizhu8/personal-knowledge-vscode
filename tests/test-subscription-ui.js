@@ -278,7 +278,7 @@ assert.match(extension, /if \(sharedCatalogCache\?\.revision === revision\) retu
 assert.match(extension, /if \(sharedCatalogBuild\?\.revision === revision\) return sharedCatalogBuild\.promise/);
 assert.match(extension, /function invalidateSharedContentCatalog\(\)/);
 assert.match(extension, /function gitCommit[\s\S]{0,100}invalidateSharedContentCatalog\(\)/);
-assert.match(extension, /const onChange = \(uri:[^)]*\) => \{\n    invalidateSharedContentCatalog\(\)/);
+assert.match(extension, /const onChange = \(uri:[^)]*\) => \{[\s\S]{0,1500}if \(signatureController\.signal\.aborted \|\| !relevantPaths\.length\) return;\s*invalidateSharedContentCatalog\(\)/, "relevant knowledge changes invalidate the shared catalog");
 assert.match(extension, /subscription catalog build revision=/);
 assert.match(fs.readFileSync(path.join(root, "src", "subscriptions/subscriptions.ts"), "utf8"), /MAX_CACHED_SEARCH_FILE_BYTES = 256 \* 1024/);
 assert.match(fs.readFileSync(path.join(root, "src", "subscriptions/subscriptions.ts"), "utf8"), /MAX_CACHED_SEARCH_RESULTS = 200/);

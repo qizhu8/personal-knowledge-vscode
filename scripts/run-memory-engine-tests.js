@@ -13,7 +13,8 @@ const environment = {
 
 for (const [program, args] of [
   [python, ["-m", "unittest", "discover", "-s", path.join(moduleRoot, "tests"), "-v"]],
-  [process.execPath, ["--test", path.join(root, "tests", "test-memory-engine-client.js"), path.join(root, "tests", "test-chat-memory-service.js")]],
+  [process.execPath, ["--test", path.join(root, "tests", "test-memory-engine-client.js"), path.join(root, "tests", "test-chat-memory-service.js"),
+    path.join(root, "tests", "test-memory-accounting.js")]],
 ]) {
   const result = spawnSync(program, args, { cwd: root, env: environment, stdio: "inherit", timeout: 120000 });
   if (result.error) {

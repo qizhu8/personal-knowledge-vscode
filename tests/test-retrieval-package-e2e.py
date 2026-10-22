@@ -91,7 +91,7 @@ class TestOfflinePackageEndToEnd(unittest.TestCase):
                     self.assertGreater(first_build["observed"]["cpu_core_equivalents"], 0)
                     self.assertGreater(first_build["observed"]["sampled_peak_rss_bytes"], 0)
                     self.assertTrue(phases.intersection({"verifying", "loading-model", "building-index", "encoding-documents-or-sections"}))
-                    payload = {"query": "fix problems importing modules in python", "content_type_filter": ["skill"],
+                    payload = {"route": "semantic", "query": "fix problems importing modules in python", "content_type_filter": ["skill"],
                                "limit": 2, "scope": {"capability_id": "pkm.search_skills"}}
                     result = request("/search", payload)
                     self.assertTrue(result["skill_serving"]["used"])

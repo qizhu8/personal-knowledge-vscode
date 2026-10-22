@@ -23,12 +23,14 @@ async function main() {
   const userDataDir = path.join(testRoot, "user-data");
   const workspaceDir = path.join(testRoot, "workspace");
   const storeDir = path.join(testRoot, "knowledge");
+  const homeDir = path.join(testRoot, "home");
   const settingsDir = path.join(userDataDir, "User");
   const logPath = path.join(userDataDir, "User", "globalStorage", "uone.personal-knowledge", "diagnostics", "extension");
 
   fs.mkdirSync(settingsDir, { recursive: true });
   fs.mkdirSync(workspaceDir, { recursive: true });
   fs.mkdirSync(storeDir, { recursive: true });
+  fs.mkdirSync(homeDir, { recursive: true });
   const navigationNoteDir = path.join(storeDir, "notes", "Project", "AAGL_Improvement", "Module Optimizer", "LP Processor");
   fs.mkdirSync(navigationNoteDir, { recursive: true });
   fs.writeFileSync(path.join(navigationNoteDir, "progress.md.md"), [
@@ -72,7 +74,12 @@ async function main() {
         extensionDevelopmentPath: packagedExtensionPath,
         extensionTestsPath: path.join(root, "tests", "extension-startup"),
         extensionTestsEnv: {
+          HOME: homeDir,
+          USERPROFILE: homeDir,
+          XDG_CONFIG_HOME: path.join(homeDir, ".config"),
+          XDG_DATA_HOME: path.join(homeDir, ".local", "share"),
           DISPLAY: virtualDisplay?.display || process.env.DISPLAY,
+          PKM_STARTUP_STORE_PATH: storeDir,
           PKM_STARTUP_LOG_PATH: logPath,
           PKM_STARTUP_RESULT_PATH: resultPath,
           PKM_STARTUP_SCENARIO: scenario.name,

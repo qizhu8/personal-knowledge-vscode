@@ -147,7 +147,7 @@ assert.match(panelJs, /clientRegistration\?\.vscode\?\.definitionAvailable \? 'a
 assert.match(panelJs, /Default CLI user configuration: \$\{esc\(data\?\.clientRegistration\?\.copilot\?\.state/,
   "CLI configuration state must be shown independently from native discovery");
 for (const [id, command, label] of [
-  ["mcp-configure-native", "configureNativeMcpDiscovery", "Configure VS Code MCP discovery"],
+  ["mcp-configure-native", "configureNativeMcpDiscovery", "Configure PKM MCP..."],
   ["mcp-register-copilot-user", "registerCopilotMcp", "Register Copilot CLI MCP (User)"],
 ]) {
   assert.match(panelJs, new RegExp(`id="${id}"[^>]*beginMcpUiAction\\('${command}'[^>]*>${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}<\\/button>`),
@@ -278,7 +278,8 @@ assert.doesNotMatch(panelJs, /configureStorePath|configureEnvironmentsPath/);
 assert(panelJs.includes("mcpProcess"));
 assert(sourceTs.includes("export function mcpProcessStatus"));
 assert(extensionTs.includes('context.globalState.get<string>("lastStorePath"'));
-assert(extensionTs.includes('_pendingTab = configuredPath ?'));
+assert(extensionTs.includes('initializePanel(webviewPanel, context, true, state)'), 'restore each tab from its own VS Code snapshot');
+assert(extensionTs.includes('if (!configuredPath) panels.instances.get(webviewPanel)!.pendingTab = "mcp"'), 'unconfigured restored tabs must route to MCP setup');
 assert(extensionTs.includes('const initialResolution = resolvedStorePath(context)'));
 assert(extensionTs.includes('case "pkmSkillInjectAll"'));
 assert(extensionTs.includes('case "reconfigureKnowledgeRoot"'));
@@ -298,7 +299,7 @@ for (const text of [
   "safeMcpRuntimeTarget(chosen)",
   "safeMcpServerTarget(chosen)",
   "mcpPathSizeGeneration += 1",
-  'panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() })',
+  'postToPanel({ command: "mcpStatus", data: mcpPanelStatusData() })',
 ]) assert(extensionTs.includes(text), `missing safe path refresh: ${text}`);
 assert(sourceTs.includes("Refusing to replace unrecognized directory"));
 const pipInstallIndex = sourceTs.indexOf('execFile(validation.path, ["-m", "pip", "install"');

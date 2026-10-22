@@ -50,6 +50,7 @@ module.exports = async function testMemoryController(ApiChatView, context, nativ
       if (failExtraction) {
         onText(failedOutput);
         request.onUsage({ inputTokens: 1230, outputTokens: 901, reasoningTokens: 820 });
+        request.onUsage({ inputTokens: 1230, outputTokens: 901, reasoningTokens: 820 });
         throw new Error("Fixture extraction failure: per-inference token budget exceeded.");
       }
       const statements = data.user === "Review memory design" ? Array.from({ length: 5 }, (_, index) => ({
@@ -121,7 +122,40 @@ module.exports = async function testMemoryController(ApiChatView, context, nativ
     assert.deepEqual(restartedReceipt.calls.at(-1), failedCall, "Failure evidence must be durable");
     assert(!JSON.stringify(restartedReceipt).includes("Rejected partial model statement"), "Receipts store counts and usage, not failed model text");
     assert.equal(provider.store.load(provider.chat.id, false).messages.at(-1).status, "complete");
+    const persistedBeforeInspect = provider.store.load(provider.chat.id, false);
+    const callsBeforeInspect = calls.length;
+    const inspected = await provider.readVisualization(provider.chat.id, "memoryReceipt", { messageId: extractionFailure.id });
+    assert.deepEqual(inspected, restartedReceipt);
+    assert.equal(inspected.accounting.failedCalls, 1);
+    assert.deepEqual(inspected.accounting.reportedUsage, failedCall.usage);
+    assert.equal(inspected.calls.at(-1).accounting.provider, "vscode");
+    assert.equal(calls.length, callsBeforeInspect, "durable receipt inspection makes no model call");
+    assert.deepEqual(provider.store.load(provider.chat.id, false), persistedBeforeInspect,
+      "post-reply accounting is read from SQLite, never written over a possibly newer Chat");
+    await assert.rejects(provider.readVisualization(provider.chat.id, "memoryReceipt", { messageId: "foreign-reply" }), /no recorded Memory turn/);
     failExtraction = false;
+
+    const prepare = service.prepare, commit = service.commit;
+    let invalidCommits = 0;
+    try {
+      service.prepare = async (scope, turn, input) => {
+        const engine = await service.engine();
+        const pending = await engine.request({ method: "turn_begin", params: { scope, turn, input, recent: [], budget_chars: 2000 } });
+        assert.equal(pending.status, "model", "reproduce a persisted but unfinished intent phase");
+        throw new Error("Fixture transport failed after turn_begin, before context was ready");
+      };
+      service.commit = async (...args) => { invalidCommits++; return commit.apply(service, args); };
+      await provider.handle({ type: "send", text: "Keep answering if context preparation fails" });
+      const unprepared = provider.chat.messages.at(-1);
+      assert.equal(unprepared.status, "complete", "the main answer remains saved");
+      assert.match(unprepared.memory.error, /transport failed after turn_begin/);
+      assert.equal(invalidCommits, 0, "must not submit turn_commit for an unprepared turn");
+      const result = provider.memoryCommitResults.get(unprepared.memory.turn);
+      assert.equal(result.status, "skipped");
+      assert.equal(result.reason, "context-not-prepared");
+      assert.match(result.error, /transport failed after turn_begin/, "preserve original failure rather than replacing it with a commit error");
+      assert.equal(provider.store.load(provider.chat.id, false).messages.at(-1).status, "complete");
+    } finally { service.prepare = prepare; service.commit = commit; }
 
     provider.chat.includeHistory = false;
     provider.persist(provider.chat);
@@ -129,6 +163,74 @@ module.exports = async function testMemoryController(ApiChatView, context, nativ
     await provider.handle({ type: "send", text: "History disabled" });
     assert.equal(provider.chat.messages.at(-1).memory, undefined);
     assert.equal(calls.length, before, "History off must skip both memory preparation and commit");
+    const { configurePortalRuntime } = require("../dist/chatroom/portal-runtime");
+    const { randomUUID } = require("node:crypto");
+    const pairId = randomUUID(), requestId = randomUUID();
+    let connected = true;
+    configurePortalRuntime({ state: id => id === provider.chat.id ? { connected, binding: { role:"controller", pairId } } : undefined,
+      permission: () => false, invalidate() {} });
+    try {
+      const chat = provider.chat;
+      provider.running.set(chat.id, new AbortController());
+      const queued = { id:randomUUID(), pairId, requestId, state:"waiting-input" };
+      const payloadCount = payloads.length;
+      await provider.receivePortalReview(chat.id, queued);
+      assert.equal(payloads.length, payloadCount, "busy controller is not interrupted");
+      assert.equal(provider.store.load(chat.id, false).queuedInputs.length, 1, "review is durably queued");
+      const completed = { ...queued, id:randomUUID(), state:"completed" };
+      await provider.receivePortalReview(chat.id, completed);
+      assert.equal(chat.queuedInputs.length, 1, "newer status coalesces a pending event for the same request");
+      assert.equal(chat.queuedInputs[0].portalReview.state, "completed");
+      provider.running.delete(chat.id);
+      await provider.drainQueue(chat);
+      assert.equal(payloads.length, payloadCount + 1, "idle PKM controller is automatically resumed through the normal runner");
+      const event = provider.store.load(chat.id, false).messages.find(message => message.portalReview?.id === completed.id);
+      assert(event);
+      assert.match(event.content, /Please check controlled chat status/);
+      assert.match(event.content, new RegExp(requestId));
+      await provider.receivePortalReview(chat.id, completed);
+      assert.equal(payloads.length, payloadCount + 1, "consumed event must not run twice");
+      chat.paused = true; provider.persist(chat);
+      const paused = { id:randomUUID(), pairId, requestId:randomUUID(), state:"failed" };
+      await provider.receivePortalReview(chat.id, paused);
+      assert.equal(payloads.length, payloadCount + 1, "paused controller keeps the event without starting a model");
+      assert.equal(provider.store.load(chat.id, false).queuedInputs[0].portalReview.id, paused.id);
+      connected = false;
+      await assert.rejects(provider.receivePortalReview(chat.id, { ...completed, id:randomUUID() }), /inactive controller/);
+      chat.paused = false; provider.persist(chat);
+      await assert.rejects(provider.drainQueue(chat), /disconnected or changed/);
+      chat.queuedInputs = []; provider.persist(chat);
+    } finally {
+      provider.running.delete(provider.chat.id);
+      configurePortalRuntime({ state:() => undefined, permission:() => false, invalidate() {} });
+    }
+    const apiClient = require("../dist/chat/api-chat-client");
+    const originalApiStream = apiClient.streamApiChat, originalSettings = provider.settings, originalKey = provider.readApiKey;
+    try {
+      const settings = provider.settings(provider.chat);
+      provider.settings = () => ({ ...settings, provider: "openai-compatible", model: "http-memory-fixture" });
+      provider.vscodeModels = [];
+      nativeClient.discoverVscodeModels = async () => [];
+      provider.readApiKey = async () => "fixture-key";
+      apiClient.streamApiChat = async (request, onText) => {
+        request.onUsage({ inputTokens: 12, outputTokens: 4 });
+        request.onUsage({ inputTokens: 12, outputTokens: 4 });
+        onText('{"focus":[]}');
+      };
+      const modelRequest = { purpose: "intent", max_tokens: 400, messages: [{ role: "user", content: "Metadata fallback fixture" }] };
+      const fallbackResult = await provider.runMemoryModel(provider.chat, modelRequest, new AbortController().signal, {});
+      assert.equal(fallbackResult.accounting.provider, "http", "a missing configured native model must not label actual HTTP fallback as VS Code");
+      assert.equal(fallbackResult.accounting.modelId, "http-memory-fixture");
+      assert.deepEqual(fallbackResult.usage, { inputTokens: 12, outputTokens: 4 }, "repeated per-call usage snapshots are not summed");
+      provider.readApiKey = async () => { throw new Error("Fixture credential unavailable"); };
+      await assert.rejects(provider.runMemoryModel(provider.chat, modelRequest, new AbortController().signal, {}), error => {
+        assert.match(error.message, /credential unavailable/);
+        assert.equal(error.result.accounting, undefined, "credential failure is not fabricated as an actual provider inference");
+        return true;
+      });
+    } finally {
+      apiClient.streamApiChat = originalApiStream; provider.settings = originalSettings; provider.readApiKey = originalKey;
+    }
     await service.forget(scope);
     assert.equal((await service.overview(scope)).topics.length, 0);
     console.log("Chat Memory controller tests passed: real Python/SQLite, lazy summary/reuse, topic switching, restored payload, failure receipt and History off.");

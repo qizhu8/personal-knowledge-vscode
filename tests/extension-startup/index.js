@@ -30,6 +30,9 @@ async function run() {
 
   await extension.activate();
   assert.strictEqual(extension.isActive, true, "extension did not activate");
+  const store = require(path.join(extension.extensionPath, "dist", "knowledge", "filestore.js"));
+  assert.strictEqual(path.resolve(store.getStorePath()), path.resolve(process.env.PKM_STARTUP_STORE_PATH),
+    "startup acceptance must use its isolated knowledge store, never an account-bound production store");
 
   const commands = await vscode.commands.getCommands(true);
   assert.ok(commands.includes("personalKnowledge.open"), "open command was not registered");

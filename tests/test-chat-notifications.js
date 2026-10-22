@@ -33,13 +33,17 @@ exports.testPermissions = async (provider, notifications, owner) => {
     const allowed = request();
     const notice = notifications.at(-1);
     assert.strictEqual(notifications.length, before + 1);
-    assert.deepStrictEqual(notice.actions, ["Allow once", "Allow All", "Refuse", "Open Chat"]);
+    assert.deepStrictEqual(notice.actions, ["Open Chat"]);
     assert.match(notice.title, /needs authorization/);
     provider.publish(); provider.publish();
     assert.strictEqual(notifications.length, before + 1, "Publishing state must not duplicate a pending notification");
     const selected = provider.chat;
     provider.chat = provider.store.create();
     notice.resolve("Allow once");
+    await settle();
+    const allowedId = [...provider.approvals.keys()][0];
+    assert(provider.approvals.has(allowedId), "A notification must not authorize tools");
+    provider.resolveApproval(allowedId, "approve-once");
     assert.strictEqual(await allowed, true, "A toast resolves its owning Chat, not the selected Chat");
     provider.chat = selected;
     assert(!chat.permissionGrants.includes("notification-fixture"), "Allow once must not remember a grant");
@@ -74,10 +78,15 @@ exports.testPermissions = async (provider, notifications, owner) => {
 
     const denied = request();
     notifications.at(-1).resolve("Refuse");
+    await settle();
+    provider.resolveApproval([...provider.approvals.keys()][0], "deny");
     assert.strictEqual(await denied, false);
 
     const all = request();
     notifications.at(-1).resolve("Allow All");
+    await settle();
+    assert.notStrictEqual(chat.permissionMode, "allow-all", "Only the Chat's inline approval can grant Allow All");
+    provider.resolveApproval([...provider.approvals.keys()][0], "allow-all");
     assert.strictEqual(await all, true);
     assert.strictEqual(chat.permissionMode, "allow-all");
     assert.strictEqual(provider.store.load(chat.id, false).permissionMode, "allow-all");

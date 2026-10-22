@@ -42,6 +42,19 @@ const candidate = "#CS\r\nvoid Run() {}\r\n#ENDCS\r\n";
     managed("scripts", "marked", "scripts/Marked.script", original),
     managed("recipes", "recipe_legacy", "recipes/Examples/Legacy.recipe_legacy.json", JSON.stringify(legacy)),
   ];
+  const resourceFiles = [
+    managed("skills", "aml-migration", "skills/General/AML/_assets/aml-migration/references/workflow.md", "# Workflow\n\nOrdinary attached Markdown without Skill frontmatter.\n"),
+    managed("skills", "aml-migration", "skills/General/AML/aml-migration.assets/templates/migration-plan.md", "# Migration plan\n"),
+    { ...managed("skills", "bundle", "skills/Bundle/references/guide.md", "# Guide\n"), member: "references/guide.md" },
+    managed("skills", "aml-migration", "skills/General/AML/aml-migration.assets/diagram.png", Buffer.from([137, 80, 78, 71, 0])),
+  ];
+  assert.deepEqual(sync.collectGitHubSyncLocalContentIssues(resourceFiles, catalog), [],
+    "Markdown/binary attachments are not Skill documents and must not require frontmatter");
+  for (const file of resourceFiles) sync.validateGitHubSyncCandidate(file.path, file.content, file.member);
+  assert.throws(() => sync.validateGitHubSyncCandidate("skills/Invalid.md", Buffer.from("# Missing Skill frontmatter\n")), /frontmatter/);
+  assert.throws(() => sync.validateGitHubSyncCandidate("skills/Bundle/SKILL.md", Buffer.from("# Missing Skill frontmatter\n")), /frontmatter/);
+  assert.throws(() => sync.validateGitHubSyncCandidate("skills/Bundle.assets/guide.md",
+    Buffer.from("<<<<<<< local\nlocal\n=======\nremote\n>>>>>>> remote\n")), /merge conflict markers/);
   for (const files of [mixed, [...mixed].reverse()]) {
     const issues = sync.collectGitHubSyncLocalContentIssues(files, catalog);
     assert.equal(issues.length, 2);

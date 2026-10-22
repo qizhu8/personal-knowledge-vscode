@@ -4,6 +4,11 @@
     "label": "English"
   },
   "strings": {
+    "apiChat.responseStopped": "Response stopped. You can send a new message or retry this response.",
+    "apiChat.responseStoppedAfterTools": "Response stopped. Earlier tool actions were not undone. Review their results before retrying.",
+    "apiChat.responseStoppedDuringTool": "Response stopped. A tool was still running and may already have changed files or submitted remote work. Stopping does not undo that work. Check tool results before retrying.",
+    "apiChat.responseStoppedLegacy": "Response stopped. Earlier tool actions may already have taken effect; stopping does not undo them. Review the tool results before retrying.",
+    "apiChat.contextBudgetExceeded": "Estimated input plus reserved output exceeds this context budget. Increase the budget, reduce context/tools, or choose a larger model.",
     "apiChat.allowOnce": "Allow once",
     "apiChat.refuse": "Refuse",
     "apiChat.notification.permission": "PKM Chat [{chat}] needs authorization: {detail}",

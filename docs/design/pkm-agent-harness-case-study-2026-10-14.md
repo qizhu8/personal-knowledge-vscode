@@ -311,6 +311,89 @@ worker/resource allocation, CPU/RSS, model first-token/idle measurements and
 provider invoices still need their own actual sources and lifecycle wiring.
 They cannot be inferred from elapsed wall time, UI event counts or local bytes.
 
+### Durable commands and measured transport follow-up, 2026-10-20
+
+The user approved durable background lifetime and isolated offline acceptance.
+`run_process` now has an explicit background mode with a required approved
+deadline and persistent invocation key. A separate Node supervisor owns the
+original command, its stdout/stderr evidence and terminal receipt. Chat Stop and
+Extension Host reload do not implicitly terminate that approved process. Only
+the explicit process cancellation tool or its approved deadline/storage boundary
+request process-tree termination.
+
+The launch record is durably written before the supervisor is started. A
+cross-process key lock and one-time supervisor claim prevent concurrent retries
+from repeating the program. Lost launch responses, completed commands and stale
+supervisors retain the same handle. Stale means unknown effects, not automatic
+retry. Cancellation uses an owned marker consumed by the original supervisor,
+never a signal sent to a historical PID after recovery.
+
+Read-only status and bounded stdout/stderr byte ranges are available in the same
+Chat, including a fresh Host/tool instance. Output pages fit the actual tool
+result envelope after JSON escaping, not merely a raw-byte proxy. A separate
+64 MiB combined log-storage hard boundary is explicit. Foreground `run_process`
+retains its existing timeout, approval and cancellation contract.
+
+HTTP and native transports now measure each inference independently:
+transport elapsed time, longest observed activity gap, first transport activity
+and first observed public text/tool/image. Heartbeats and thinking metadata count
+as activity, not generated public output or a provider token timestamp.
+Tool/approval/user waits occur outside the inference clock. Interrupted streams
+retain an interrupted observation; provider token usage remains a separate
+source. The ledger samples the actual shared worker-tree active slots and its
+configured maximum/reusable quota, and records original durable process deadline
+and combined log bytes without summing repeated status snapshots.
+
+Task-report updates now explicitly supersede the latest task report and cite
+the latest original user input, rather than allowing an old summary/base to
+replace newer state. This was reproduced as a failing regression before the
+validation fix. Session info, model working context, snapshots and the read-only
+Input/Goal inspector expose pending inputs newer than the report's cited sources.
+The report remains an interpretation, not a managed Task/Recipe completion
+certificate. Worker events and other Tasks never become original user authority.
+
+The single-inference Memory-model usage callback also replaces repeated provider
+snapshots instead of double counting them. This does not merge separate Memory
+steps into the main Chat's usage or pretend to implement task-wide billing.
+
+The next accounting layer records each tool dispatch and retrieval invocation
+under its original identity in the assistant attempt's `invocationBudgets`,
+independently of prepared/sent model rounds. It measures local observed elapsed,
+active and tracked user-wait milliseconds on HTTP and native paths. Local lexical
+recall is not Memory-model inference; the knowledge-provider guard's existing
+5000 ms deadline is recorded only for that guard, not materialization. Unobserved
+native confirmations are not subtracted, and active milliseconds are not CPU.
+Failed/degraded/unavailable retrieval, cancelled observation and interrupted-host
+state stay distinct from successful answers or confirmed process termination.
+Recovery retains the last sampled counters without a fabricated end timestamp.
+Read-only Visualization navigation is tested at 1280, 390 and 320 px, including
+an invocation interrupted before a model round exists.
+
+Repeatable commands:
+
+- `npm run test:chat-processes`: real process lifetime, response-loss/concurrent
+  key recovery, launching Host exit, cancellation/descendants, deadlines,
+  executable errors, stale outcomes, complete tails and escaped range paging.
+- `npm run test:chat-context`: production controller/local HTTP workflow with an
+  isolated workspace, explicit durable approval even under Allow All, original
+  handle/status/output, exact sent manifests and persisted ledger evidence.
+- `npm run test:chat-budget-ledger`: main Chat/Memory usage, transport timing,
+  shared quota and read-only production-renderer accounting.
+
+These are not an AML replay, live-model quality result, Windows/ACL acceptance
+or proof of correct recovery after every power-loss/filesystem failure. BUD-01
+still needs foreground/tool-specific deadline instrumentation, materialization
+deadlines, full Memory aggregation, task-wide resources and provider invoices.
+Invocation timing and the existing knowledge-provider guard deadline are now
+covered; they do not close that whole item. HAR-03 still needs
+Windows process-tree qualification before its whole cross-platform acceptance
+can close. Linux installed VSIX acceptance now starts the supervisor from a real
+Electron Extension Host, exits that Host and rejoins the same runner/child from
+a second Host with the same key, verifies one side effect and reads the terminal
+output. A standalone Node-only test would not cover that Electron launch path.
+Foreground commands also return bounded-read output handles without permitting
+arbitrary evidence-directory paths; log presence is not a completion receipt.
+
 Repeatable validation: `npm run test:chat-budget-ledger` covers accounting,
 real HTTP/native controller paths, duplicate usage frames, persistence/recovery
 and production-renderer desktop/narrow browser navigation without model calls.

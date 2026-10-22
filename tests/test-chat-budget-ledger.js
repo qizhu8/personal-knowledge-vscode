@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { createChatBudgetLedger, recordChatBudgetTransport, recordChatBudgetUsage, chatBudgetUsage, recordChatBudgetRuntime } = require("../dist/chat/chat-budget-ledger");
+const { createChatBudgetLedger, recordChatBudgetTransport, recordChatBudgetUsage, chatBudgetUsage, recordChatBudgetRuntime, recordChatInferenceTiming, recordChatWorkerBudget, recordChatInvocationBudget, validChatInvocationBudget } = require("../dist/chat/chat-budget-ledger");
 const { ApiChatStore, apiChatHarnessSnapshot } = require("../dist/chat/api-chat-store");
 const { build } = require("../src/webview/agent-harness");
 
@@ -19,6 +19,72 @@ function receipt(prices = {}) {
   return value;
 }
 const row = (value, id) => value.ledger.entries.find(item => item.id === id);
+const invocation = (overrides = {}) => ({
+  schema: "pkm.chat.invocation-budget/v1", id: "tool:original-call", owner: "tool", label: "run_process",
+  status: "running", startedAt: 1000, elapsedMs: 0, activeMs: 0, userWaitMs: 0,
+  timingSource: "pkm.invocation-clock-excluding-tracked-user-wait", ...overrides,
+});
+
+test("invocation budgets replace only the same original running observation and keep waits separate", () => {
+  const items = [], initial = invocation();
+  recordChatInvocationBudget(items, initial);
+  initial.label = "mutated";
+  assert.equal(items[0].label, "run_process");
+  const complete = invocation({ status: "complete", finishedAt: 2100, elapsedMs: 1100, activeMs: 100, userWaitMs: 1000 });
+  recordChatInvocationBudget(items, complete);
+  recordChatInvocationBudget(items, complete);
+  assert.equal(items.length, 1, "Repeated observations are not new calls or additive usage");
+  assert.equal(items[0].activeMs, 100);
+  assert.equal(items[0].deadlineMs, undefined, "Missing tool deadlines are not unlimited capacity or the model idle timeout");
+  const before = JSON.stringify(items);
+  for (const patch of [{ label: "different" }, { startedAt: 2000 }, { status: "failed" }, { elapsedMs: 1200, userWaitMs: 1100 }]) {
+    assert.throws(() => recordChatInvocationBudget(items, { ...complete, ...patch }), /identity or terminal/);
+    assert.equal(JSON.stringify(items), before);
+  }
+});
+
+test("malformed invocation observations fail before mutation rather than inventing valid clocks", () => {
+  for (const patch of [
+    { id: "" }, { owner: "model" }, { status: "success" }, { startedAt: NaN }, { elapsedMs: Infinity },
+    { activeMs: -1 }, { elapsedMs: 10, activeMs: 11 }, { elapsedMs: 10, userWaitMs: 9 },
+    { status: "complete" }, { finishedAt: 900 }, { finishedAt: 1100 }, { deadlineMs: { value: 0, method: "configured", source: "guard" } },
+    { deadlineMs: { value: 10, method: "estimated", source: "guard" } }, { detail: "x".repeat(1025) },
+  ]) {
+    const items = [];
+    assert.equal(validChatInvocationBudget(invocation(patch)), false, JSON.stringify(patch));
+    assert.throws(() => recordChatInvocationBudget(items, invocation(patch)), /Invalid invocation/);
+    assert.deepEqual(items, []);
+  }
+  const items = [invocation({ elapsedMs: 100, activeMs: 50, userWaitMs: 50 })];
+  assert.throws(() => recordChatInvocationBudget(items, invocation()), /cannot be replaced/);
+});
+
+test("invocation accounting survives Snapshot without a model round, and reload preserves unknown completion and observed time", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-invocation-ledger-"));
+  try {
+    const store = new ApiChatStore(root, "aaaaaaaaaaaaaaaa"), chat = store.create();
+    const running = invocation({ elapsedMs: 300, activeMs: 100, userWaitMs: 200 });
+    chat.messages.push({ id: "answer", role: "assistant", content: "", status: "streaming", invocationBudgets: [running] });
+    store.save(chat);
+    const restored = store.load(chat.id), latest = restored.messages.at(-1);
+    const observed = latest.invocationBudgets[0];
+    assert.equal(observed.status, "interrupted");
+    assert.equal(observed.finishedAt, undefined, "Reload is not the observed invocation end");
+    assert.equal(observed.elapsedMs, 300, "No downtime or invented zero usage");
+    assert.equal(observed.activeMs, 100);
+    assert.match(observed.detail, /termination.*unknown/);
+    const snapshot = apiChatHarnessSnapshot(restored);
+    assert.deepEqual(snapshot.attempts.at(-1).invocationBudgets, latest.invocationBudgets);
+    const nodes = [...build({ origin: "pkm-native", sessionId: "task", harness: snapshot }).graphs.values()].flatMap(graph => graph.nodes);
+    const node = nodes.find(node => node.kind === "Invocation accounting");
+    assert.equal(node.status, "interrupted");
+    assert.equal(node.info.userWaitMs, 200);
+    assert.equal(node.executable, false);
+    latest.invocationBudgets.push(structuredClone(observed));
+    store.save(restored);
+    assert.throws(() => store.load(chat.id), /Unsupported chat history/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
 
 test("budget ledger preserves owner/unit/source and never substitutes estimates for provider usage", () => {
   const value = receipt();
@@ -95,6 +161,23 @@ test("round-only loop review remains supported without inventing an active-time 
   assert.match(row(value, "active-review").note, /No active-time gate/);
   assert.equal(row(value, "active-review").consumed.value, 100);
   assert.equal(row(value, "tool-round-review").limit.value, 30);
+});
+
+test("actual transport timing and shared worker quota use their own units and do not invent provider tokens", () => {
+  const value = receipt();
+  recordChatInferenceTiming(value.ledger, { schema: "pkm.chat.inference-timing/v1", provider: "http",
+    startedAt: 100, finishedAt: 200, elapsedMs: 100, maxInactivityMs: 40, firstActivityMs: 40,
+    firstPublicOutputMs: 90, outcome: "stream-ended" });
+  assert.equal(row(value, "model-idle").consumed.value, 40);
+  assert.equal(row(value, "model-elapsed").consumed.value, 100);
+  assert.equal(row(value, "first-public-output").consumed.value, 90);
+  assert.equal(row(value, "output").consumed, undefined);
+  recordChatWorkerBudget(value.ledger, { treeId: "same-root-tree", active: 4, quota: 5, maximum: 10 });
+  assert.equal(row(value, "worker-quota").consumed.value, 4);
+  assert.equal(row(value, "worker-quota").limit.value, 10);
+  assert.match(row(value, "worker-quota").note, /share the same tree/);
+  recordChatWorkerBudget(value.ledger, { treeId: "same-root-tree", active: 4, quota: 2, maximum: 2 });
+  assert.equal(row(value, "worker-quota").consumed.value, 4, "A configuration change does not hide already active workers");
 });
 
 test("ledger survives persistence/Snapshot, recovery records interruption without fabricated downtime usage, and old receipts remain readable", () => {

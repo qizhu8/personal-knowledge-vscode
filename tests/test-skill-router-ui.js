@@ -13,6 +13,10 @@ const extensionTs = fs.readFileSync(path.join(root, 'src', 'extension.ts'), 'utf
 assert.match(panelHtml, /data-tab="skillRouter">Router</);
 assert.match(panelJs, /state\.tab === 'skillRouter'[\s\S]{0,300}ask\('skillRouterStatus'/);
 assert.match(panelJs, /command === 'skillRouterStatus'/);
+assert.match(panelJs, /Model availability & deployment/);
+assert.match(panelJs, /This lexical engine requires no model weights/);
+assert.match(panelJs, /Not connected to this UI yet/);
+assert.match(panelJs, /not a visualization of a deployed model/);
 assert.match(extensionTs, /case "skillRouterStatus"/);
 assert.match(extensionTs, /activeProfile = enabledSolutions\.includes\("l1_online"\) \? "l1_online" : "copilot_default"/,
   'the active path must resolve from enabled mature solutions with automatic Copilot fallback');
@@ -25,7 +29,8 @@ assert.doesNotMatch(extensionTs, /setSkillRouterProfile/,
   'an unimplemented path must not expose a persistence command');
 
 const start = panelJs.indexOf('const skillRouterBenchmarks');
-const end = panelJs.indexOf('// ── Init', start);
+const panelRestoreStart = panelJs.indexOf('// UI snapshots contain data only', start);
+const end = panelRestoreStart > start ? panelRestoreStart : panelJs.indexOf('// ── Init', start);
 assert(start >= 0 && end > start, 'Skill Router renderer must be included before panel initialization');
 const detail = { innerHTML: '' };
 const routerSection = { dataset:{}, closest() { return this; }, setAttribute() {} };

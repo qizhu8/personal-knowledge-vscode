@@ -8,6 +8,15 @@ the conflict record supplies them.
 
 ## Review workflow
 
+### Recovered partial transactions
+
+Before applying a service result (including a partial-conflict result), the Host
+validates its transaction ID, target, repository, branch and pushed commit against
+the checkout receipt. A stale result is rejected before updating Recipes, privacy,
+Last Sync or conflict records. The result is retained for review, not automatically
+replayed, acknowledged or used to clear a newer conflict workspace. A receipt
+mismatch is a recovery blocker, not evidence that retained conflicts were resolved.
+
 ### Local validation blockers
 
 A target status refresh carries a monotonic snapshot sequence; older overlapping
@@ -31,6 +40,24 @@ is not a three-way conflict: GitHub has not yet been fetched. Each issue offers
 **Edit content**, **Pause sync for this item...**, and, for file-backed knowledge,
 **Move to Trash...**. Do not fabricate an empty-body merge or treat an empty
 file as permission to delete it.
+
+Only Skill **documents** require Skill frontmatter/body. Legacy `_assets/` and
+document-owned `Name.assets/` directories hold attachments, which may be ordinary
+Markdown, templates or binary images. Directory-backed Skill bundles likewise
+validate `SKILL.md` as the document, not every reference/script/image member.
+All members still require matching digests, safe paths and the existing text
+conflict-marker checks. Workbench candidates retain their recorded member role;
+choosing/editing a resource must not turn it into a Skill document.
+
+A purely local attachment addition with an unchanged common Remote normally
+publishes without a three-way conflict. Distinguish that from preflight blockers:
+**Local content needs repair. Remote has not been fetched.** means no comparison
+with current Remote has happened. Do not resolve it by forcing Local/Remote or
+adding fake Skill frontmatter to attachments.
+
+Target cards retain the absolute Last Sync timestamp and append `h min ago`.
+Only age text updates each minute; drafts, focus and scroll are not rerendered.
+Missing, invalid and future-clock timestamps remain explicit.
 
 - Edit and save the source, then **Revalidate only**. This uses the same local
   admission checks as Sync, without fetching, pushing, or queueing Sync.
@@ -92,6 +119,28 @@ succeeds. No active record means the workspace is gone, not proof of a push:
 the UI directs the user to GitHub Sync status for actual completion.
 
 ## Conflict entities and conservative merge
+
+### Moved Markdown resource ownership
+
+A legacy manifest may still assign an image to a Note's old path after the
+Markdown document moves. Resource-only orphan groups can be reassigned to the
+current Note, Skill or Research document only when one document with a valid
+stable knowledge ID explicitly claims the old path as an identity alias, and
+every resource has the same path, member role and bytes. This repairs ownership
+metadata without replacing the canonical document or changing resource bytes.
+Missing/invalid identities, absent or ambiguous aliases, changed resources and
+groups that still contain a primary document are not proof of a migration.
+
+When different Local/Remote entity owners share a destination and either owner
+is blocked, their local writes/deletes and publication are isolated together.
+An otherwise independent download must not overwrite bytes belonging to a
+conflicted Local entity. Legitimate same-byte ownership reassignment without
+blocked entities retains its existing behavior.
+
+Candidate-ready means staged, not applied or pushed. Conflict workspace ID and
+revision checks still reject stale actions before changing choices or files.
+After a stale-workspace error, refresh and review the current record; do not use
+Force, discard the workspace, or automatically replay the old Apply request.
 
 ### Partial publication and independent Bases
 

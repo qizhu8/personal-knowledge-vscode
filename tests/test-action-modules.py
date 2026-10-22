@@ -127,6 +127,41 @@ class ModuleTests(unittest.TestCase):
             with self.assertRaisesRegex(PermissionError, "PKM does not install SDKs"):
                 self.runtime.resolve_program("unconfigured-sdk")
 
+    def test_javascript_and_typescript_programs_use_the_existing_qualified_runtime(self):
+        node = shutil.which("node")
+        compiler = Path(__file__).resolve().parents[1] / "node_modules" / "typescript" / "bin" / "tsc"
+        self.assertIsNotNone(node, "Node is required by this repository")
+        self.assertTrue(compiler.is_file(), "Use this repository's installed TypeScript compiler")
+        source = ("declare function require(name: string): any;\n"
+                  "declare const process: any;\n"
+                  "const fs = require('fs');\n"
+                  "const input: {left: number, right: number} = JSON.parse(fs.readFileSync(0, 'utf8'));\n"
+                  "console.log(JSON.stringify({sum: input.left + input.right}));\n")
+        typescript = self.directory / "sum.ts"
+        typescript.write_text(source, encoding="utf-8")
+        javascript = self.directory / "sum.cjs"
+        javascript.write_text(source.replace("declare function require(name: string): any;\n", "")
+                              .replace("declare const process: any;\n", "")
+                              .replace(": {left: number, right: number}", ""), encoding="utf-8")
+        child = self.runtime.definition("test.fixture.add")
+        for language in ["JavaScript", "TypeScript"]:
+            implementation = {"kind": "program", "program": "node", "platforms": [platform.system()]}
+            if language == "JavaScript":
+                implementation.update({"args": [str(javascript)], "files": [str(javascript)]})
+            else:
+                implementation.update({"args": ["${build_dir}/sum.js"], "build": {
+                    "program": "node", "args": [str(compiler), str(typescript), "--outDir", "${build_dir}",
+                                               "--target", "ES2020", "--module", "commonjs", "--skipLibCheck"],
+                    "source_files": [str(typescript), str(compiler)], "outputs": ["sum.js"]}})
+            definition = self.runtime.register({"schema": "pkm.action.definition/v1",
+                "action_id": "test.language." + language.lower(), "version": 1, "effects": ["pure"],
+                "input_schema": child["input_schema"], "output_schema": child["output_schema"],
+                "implementations": [implementation], "examples": [{"inputs": {"left": 2, "right": 3}, "output": {"sum": 5}}]})
+            self.grant(definition)
+            self.assertIn(language, self.runtime.action_languages(definition))
+            self.assertTrue(self.runtime.validate(definition["action_id"], definition["content_hash"])["ok"])
+            self.assertEqual(self.call(definition["action_id"], {"left": 7, "right": 8}, language)["output"], {"sum": 15})
+
     def test_unified_cast_component(self):
         for value, target, expected in [("42", "integer", 42), ("1.5e2", "number", 150.0),
                 ("false", "boolean", False), (True, "string", "true"), ('{"a":1}', "object", {"a": 1}),
@@ -779,9 +814,34 @@ class ResourceReferenceTests(unittest.TestCase):
         manifest_path = receiver.module_set_path("test.resources", 1) / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
         manifest["resources"] = {}
+        manifest["package_hash"] = digest({key: value for key, value in manifest.items() if key != "package_hash"})
         manifest_path.write_text(json.dumps(manifest))
         with self.assertRaisesRegex(FileNotFoundError, "not included"):
             receiver.implementation(definition)
+
+    def test_installed_modules_refuse_manifest_and_definition_tampering_before_use(self):
+        package = self.runtime.workspace() / "integrity.pkm-actions"
+        self.runtime.module_set_export("test.integrity", 1, [self.definition["action_id"]], str(package))
+        receiver = ModuleRuntime(self.directory / "receiver")
+        receiver.configure_workspace(str(self.runtime.workspace()))
+        receiver.module_set_import(str(package))
+        receiver.module_set_load("test.integrity", 1)
+        directory = receiver.module_set_path("test.integrity", 1)
+        source = directory / "definitions" / (self.definition["action_id"] + ".json")
+        original = source.read_bytes()
+        source.write_text("{}")
+        with self.assertRaisesRegex(ValueError, "definition hash mismatch"):
+            receiver.definition(self.definition["action_id"])
+        with self.assertRaisesRegex(ValueError, "file hash mismatch"):
+            receiver.module_set_load("test.integrity", 1)
+        receiver.module_set_load("test.integrity", 1, enabled=False)
+        source.write_bytes(original)
+        manifest = directory / "manifest.json"
+        value = json.loads(manifest.read_text())
+        value["name"] = "tampered"
+        manifest.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, "manifest/hash"):
+            receiver.module_set_load("test.integrity", 1)
 
     def test_package_binding_validation_and_component_workspace_permission(self):
         for resources in [[], {"other.action": {}}, {self.definition["action_id"]: {self.uri: "../source.py"}},

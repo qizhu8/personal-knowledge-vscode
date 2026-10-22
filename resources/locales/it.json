@@ -4,6 +4,11 @@
     "label": "Italiano"
   },
   "strings": {
+    "apiChat.responseStopped": "Risposta interrotta. Puoi inviare un nuovo messaggio o riprovare questa risposta.",
+    "apiChat.responseStoppedAfterTools": "Risposta interrotta. Le azioni precedenti degli strumenti non sono state annullate. Controlla i risultati prima di riprovare.",
+    "apiChat.responseStoppedDuringTool": "Risposta interrotta. Uno strumento era ancora in esecuzione e potrebbe aver modificato file o inviato attività remote. L'interruzione non annulla tali operazioni. Controlla i risultati prima di riprovare.",
+    "apiChat.responseStoppedLegacy": "Risposta interrotta. Le azioni precedenti degli strumenti potrebbero essere già effettive; l'interruzione non le annulla. Controlla i risultati prima di riprovare.",
+    "apiChat.contextBudgetExceeded": "L'input stimato e l'output riservato superano il budget di contesto. Aumentalo, riduci contesto o strumenti, oppure scegli un modello con maggiore capacità.",
     "config.copilotRegistrationTitle": "Copilot CLI / SDK: registrazione manuale una tantum",
     "config.copilotRegistrationDescription": "PKM fornisce una definizione MCP a VS Code, ma non modifica la configurazione di Copilot CLI. Le sessioni CLI / SDK che non ereditano tale definizione richiedono una registrazione separata. Se gli strumenti pkm sono già disponibili, saltare questo passaggio; non duplicare le registrazioni nello stesso client.",
     "config.copilotRegistrationPrepare": "Selezionare Python e completare sopra la configurazione del runtime gestito e la generazione del server. Installare Copilot CLI se il comando copilot non è disponibile.",

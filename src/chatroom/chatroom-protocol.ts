@@ -13,6 +13,7 @@ export interface FileMeta {
 }
 
 export type Frame =
+  | { t: "peer"; target: string; from?: string; fromName?: string; packet: import("./peer-protocol").PeerPacket }
   | { t: "join";       room: string; roomId?: string; user: string; token: string; kind?: MemberKind; cid?: string; hostToken?: string; resumeAfter?: string; temporary?: boolean }
   | { t: "join.pending"; room: string; requestId: string; expiresAt: number }
   | { t: "join.approved"; room: string; participantId: string; outcome: "new" | "reuse" }

@@ -4,6 +4,11 @@
     "label": "日本語"
   },
   "strings": {
+    "apiChat.responseStopped": "応答を停止しました。新しいメッセージを送信するか、この応答を再試行できます。",
+    "apiChat.responseStoppedAfterTools": "応答を停止しました。以前のツール操作は取り消されていません。再試行する前に結果を確認してください。",
+    "apiChat.responseStoppedDuringTool": "応答を停止しました。実行中のツールがファイルを変更したり、リモート処理を送信した可能性があります。停止してもその処理は取り消されません。再試行する前にツールの結果を確認してください。",
+    "apiChat.responseStoppedLegacy": "応答を停止しました。以前のツール操作はすでに反映されている可能性があり、停止しても取り消されません。再試行する前にツールの結果を確認してください。",
+    "apiChat.contextBudgetExceeded": "推定入力と予約出力の合計がコンテキスト予算を超えています。予算を増やすか、コンテキストやツールを減らすか、容量の大きいモデルを選択してください。",
     "config.copilotRegistrationTitle": "Copilot CLI / SDK：初回のみの手動登録",
     "config.copilotRegistrationDescription": "PKM のインストールにより VS Code 用の MCP 定義が提供されますが、Copilot CLI の設定は書き換えません。この定義を継承しない CLI / SDK セッションは別途登録が必要です。すでに pkm ツールが利用できる場合は省略し、同じクライアント内で重複登録しないでください。",
     "config.copilotRegistrationPrepare": "まず Python を選択し、上記の管理対象ランタイム設定とサーバー生成を完了してください。copilot コマンドがない場合は Copilot CLI をインストールしてください。",

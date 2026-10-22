@@ -9,6 +9,10 @@ import { hostname } from "os";
 import { ApiChatAgentControl } from "./agent-control";
 import { registerVisualizationWindow } from "./visualization-window";
 
+/** Startup timing sink (PKM log). Slow first starts are diagnosed from these lines, not guessed. */
+export let chatStartupTrace: ((message: string) => void) | undefined;
+export function setChatStartupTrace(trace: ((message: string) => void) | undefined): void { chatStartupTrace = trace; }
+
 export function registerApiChatHost(context: vscode.ExtensionContext, handle: (operation: string, args: Record<string, unknown>) => Promise<unknown>, busy: () => boolean): void {
   let control: ApiChatAgentControl | undefined;
   let controlRoot: string | undefined;
@@ -56,7 +60,13 @@ export function renderApiChat(view: vscode.WebviewView, context: vscode.Extensio
     .replace(/\{\{(\w+)\}\}/g, (match, key: string) => assets[key] || match);
 }
 
-export function registerApiChatShell(context: vscode.ExtensionContext, load: () => Promise<ApiChatView>): { readonly isBusy: boolean } {
+export function registerApiChatShell(context: vscode.ExtensionContext, load: () => Promise<ApiChatView>): {
+  readonly isBusy: boolean;
+  executeRemoteTask(prompt: string, signal: AbortSignal, requestId: string, chatId: string, observer?: import("../chatroom/portal-runtime").PortalObserver, source?: import("../chatroom/portal-runtime").PortalSource): Promise<unknown>;
+  portalContext(chatId?: string, label?: string): Promise<{ id: string; label: string }>;
+  choosePortalContext(): Promise<{ id: string; label: string } | undefined>;
+  receivePortalReview(chatId: string, review: import("../chatroom/portal-runtime").PortalReview): Promise<void>;
+} {
   let backend: ApiChatView | undefined;
   let loading: Promise<ApiChatView> | undefined;
   const busy = () => !!loading && !backend || backend?.isBusy === true;
@@ -66,6 +76,7 @@ export function registerApiChatShell(context: vscode.ExtensionContext, load: () 
   };
   const shell: vscode.WebviewViewProvider = {
     resolveWebviewView(view) {
+      const resolvedAt = Date.now();
       let closed = false;
       let connecting = false;
       const listener = view.webview.onDidReceiveMessage(async message => {
@@ -80,7 +91,9 @@ export function registerApiChatShell(context: vscode.ExtensionContext, load: () 
         try {
           await new Promise<void>(resolve => setTimeout(resolve, 0));
           if (closed) return;
+          const loadStartedAt = Date.now();
           backend = await getBackend();
+          chatStartupTrace?.(`PKM Chat startup: view resolved→ready ${loadStartedAt - resolvedAt}ms, backend load ${Date.now() - loadStartedAt}ms`);
           if (closed) return;
           listener.dispose();
           backend.attachWebviewView(view, true);
@@ -95,8 +108,10 @@ export function registerApiChatShell(context: vscode.ExtensionContext, load: () 
     },
   };
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider("personalKnowledge.apiChat", shell),
+    vscode.window.registerWebviewViewProvider("personalKnowledge.apiChat", shell, { webviewOptions: { retainContextWhenHidden: true } }),
     vscode.commands.registerCommand("personalKnowledge.openApiChat", async (locator?: string) => typeof locator === "string" ? (await getBackend()).openPkmChat(locator) : vscode.commands.executeCommand("personalKnowledge.apiChat.focus")),
+    vscode.commands.registerCommand("personalKnowledge.readChatHarness", async (chatId: string, method: string, params: Record<string, unknown>) =>
+      (await getBackend()).readVisualization(chatId, method, params)),
     vscode.commands.registerCommand("personalKnowledge.configureApiChatSession", async (sessionId: string, section: string) => (await getBackend()).configureAgent(sessionId, section)),
     vscode.commands.registerCommand("personalKnowledge.recoverAgentSnapshot", async (snapshotId: string) => (await getBackend()).recoverAgentSnapshot(snapshotId)),
     vscode.commands.registerCommand("personalKnowledge.testApiChatE2E", async () => (await getBackend()).runAcceptance()),
@@ -104,5 +119,9 @@ export function registerApiChatShell(context: vscode.ExtensionContext, load: () 
   );
   registerVisualizationWindow(context, getBackend);
   registerApiChatHost(context, async (operation, args) => (await getBackend()).agentControl(operation, args), busy);
-  return { get isBusy() { return busy(); } };
+  return { get isBusy() { return busy(); },
+    receivePortalReview: async (chatId, review) => (await getBackend()).receivePortalReview(chatId, review),
+    executeRemoteTask: async (prompt, signal, requestId, chatId, observer, source) => (await getBackend()).executeRemoteTask(prompt, signal, requestId, chatId, observer, source),
+    portalContext: async (chatId, label) => (await getBackend()).portalContext(chatId, label),
+    choosePortalContext: async () => (await getBackend()).choosePortalContext() };
 }

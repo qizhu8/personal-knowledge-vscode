@@ -181,6 +181,69 @@ try {
   }).phase, "cutover", "cutover retry finalizes an interrupted matching directory swap");
   assert.strictEqual(new ProjectStore(interruptedState).list().projects.length, 2);
 
+  {
+    // Windows: renaming a directory that a watcher/indexer holds open fails with EPERM.
+    const { setProjectStoreFsRetryPolicyForTests } = require("../dist/workflows/project-filesystem-store.js");
+    const windowsRoot = temporary();
+    const windowsState = path.join(windowsRoot, ".pkm", "state");
+    const windowsStore = new ProjectStore(windowsState, ids("root", "project-a", "thread-a", "project-b"));
+    windowsStore.list();
+    const realRename = fs.renameSync;
+    let transientFailures = 0;
+    const restorePolicy = setProjectStoreFsRetryPolicyForTests({ attempts: 5, initialDelayMs: 1, maxDelayMs: 2 });
+    fs.renameSync = (from, to) => {
+      if (path.resolve(from) === path.join(windowsRoot, "project")) {
+        throw Object.assign(new Error(`EPERM: operation not permitted, rename '${from}'`), { code: "EPERM" });
+      }
+      if (String(to).endsWith("project.json") && transientFailures < 2) {
+        transientFailures += 1;
+        throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+      }
+      return realRename(from, to);
+    };
+    try {
+      const first = windowsStore.createProject(command("w-project", windowsStore.list().storeVersion), "Windows A");
+      const second = windowsStore.createThread(command("w-thread", first.snapshot.storeVersion), first.entityId, "Work");
+      const third = windowsStore.createProject(command("w-project-b", second.snapshot.storeVersion), "Windows B");
+      assert.strictEqual(transientFailures, 2, "transient Windows file-replace errors are retried");
+      assert(third.snapshot.threads.some(thread => thread.name === "Work"));
+      assert(third.snapshot.projects.some(project => project.name === "Windows B"));
+    } finally {
+      fs.renameSync = realRename;
+      restorePolicy();
+    }
+    const reopened = new ProjectStore(windowsState).list();
+    assert(reopened.projects.some(project => project.name === "Windows A"));
+    assert(reopened.projects.some(project => project.name === "Windows B"));
+    assert(!fs.readdirSync(windowsState).some(entry => entry.startsWith(".project-store-write-")),
+      "no staging directories remain after an in-place commit");
+    assert(!fs.existsSync(path.join(windowsState, "project-store-intent.json")));
+
+    // Crash after the tree is reconciled but before control is written rolls forward on next read.
+    const beforeCrash = new ProjectStore(windowsState).list();
+    fs.renameSync = (from, to) => {
+      if (String(to).endsWith("project-store.json")) throw Object.assign(new Error("EIO"), { code: "EIO" });
+      return realRename(from, to);
+    };
+    try {
+      assert.throws(() => new ProjectStore(windowsState).createProject(
+        command("w-crash", beforeCrash.storeVersion), "Crash Survivor"));
+    } finally {
+      fs.renameSync = realRename;
+    }
+    assert(fs.existsSync(path.join(windowsState, "project-store-intent.json")), "intent survives the failed commit");
+    const recovered = new ProjectStore(windowsState).list();
+    assert.strictEqual(recovered.storeVersion, beforeCrash.storeVersion + 1);
+    assert(recovered.projects.some(project => project.name === "Crash Survivor"));
+    assert(!fs.existsSync(path.join(windowsState, "project-store-intent.json")));
+
+    // Stray files inside the canonical tree are reconciled away, matching the old full-replace semantics.
+    fs.writeFileSync(path.join(windowsRoot, "project", "stray.txt"), "x");
+    const afterStray = new ProjectStore(windowsState);
+    afterStray.createProject(command("w-after-stray", recovered.storeVersion), "After Stray");
+    assert(!fs.existsSync(path.join(windowsRoot, "project", "stray.txt")));
+  }
+
   console.log("project filesystem store tests passed");
 } finally {
   for (const root of roots) fs.rmSync(root, { recursive: true, force: true });

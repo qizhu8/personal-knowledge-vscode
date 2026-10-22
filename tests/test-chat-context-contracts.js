@@ -51,6 +51,21 @@ function text(messages) {
   return messages.map(item => item.content).join("\n");
 }
 
+test("Task knowledge stewardship distinguishes abstraction, retrieval-first reuse and permission without changing casual or tool-free Chats", () => {
+  const { CHAT_ASSET_CURATION_GUIDANCE } = require("../dist/chat/knowledge-reader");
+  const chat = fixtures.conversation({ sessionId:"session-curation" });
+  const render = (tools, value = chat) => ApiChatView.prototype.requestMessages.call({
+    store:{ namespace:fixtures.namespace, save() { assert.fail("Preparing a request must not save assets"); } },
+    toolGroups:() => [{ tools }],
+  }, value, "Finish the verified task");
+  assert(text(render([{ enabled:true }])).includes(CHAT_ASSET_CURATION_GUIDANCE));
+  assert.match(CHAT_ASSET_CURATION_GUIDANCE, /search existing knowledge/);
+  assert.match(CHAT_ASSET_CURATION_GUIDANCE, /not a compulsory promotion ladder/);
+  assert.match(CHAT_ASSET_CURATION_GUIDANCE, /without user authorization/);
+  assert(!text(render([])).includes(CHAT_ASSET_CURATION_GUIDANCE));
+  assert(!text(render([{ enabled:true }], fixtures.conversation())).includes(CHAT_ASSET_CURATION_GUIDANCE));
+});
+
 test("advertised fixture E2E control reaches the real runner and rejects overrides without model dispatch", async () => {
   const { API_CHAT_CONTROL_OPERATIONS } = require("../dist/chat/agent-control");
   assert(API_CHAT_CONTROL_OPERATIONS.includes("fixture-e2e"));
@@ -120,7 +135,7 @@ test("managed Visualization uses the authoritative reader and cannot override th
   const target = { store:{ assertAvailable() {} } };
   assert.deepEqual(await ApiChatView.prototype.visualizationRequest.call(target, chat, "snapshot", {
     sessionId:"foreign",
-  }), { authoritative:true });
+  }), { authoritative:true, memoryReceiptReader:true });
 });
 
 test("Visualization window reads any non-Trash Chat by id: live records while running, stored records otherwise", async () => {
@@ -409,7 +424,7 @@ async function transportFixture(t, source, options = {}) {
 test("transport-child permission signals retain the original attempt owner", async () => {
   const owner = new AbortController(), child = new AbortController();
   const chat = fixtures.conversation({ permissionMode:"allow-all" });
-  const provider = { running:new Map([[chat.id, owner]]), store:{ assertAvailable() {} } };
+  const provider = { running:new Map([[chat.id, owner]]), store:{ assertAvailable() {} }, remoteControlledRequests:new Set() };
   const permission = () => ApiChatView.prototype.requestPermission.call(
     provider, chat, "process", "Run local probe", "", child.signal, true, false, owner.signal);
   assert.equal(await permission(), true);
@@ -454,6 +469,7 @@ test("transport-child pending approvals reject a replaced owner and abort with t
   const owner = new AbortController();
   const provider = {
     running:new Map([[chat.id, owner]]), store:{ assertAvailable() {} }, approvals:new Map(),
+    remoteControlledRequests:new Set(),
     baselineApprovalScopes:new Map(), measureBaseline() {}, setAwaitingInput() {},
     workerDecision() {}, clearWorkerDecision() {}, publish() {}, notifyChat() {},
   };
@@ -471,6 +487,63 @@ test("transport-child pending approvals reject a replaced owner and abort with t
   child.abort();
   await assert.rejects(cancelled, /Request cancelled/);
   assert.equal(provider.approvals.size, 0);
+});
+
+test("remote task wrapper uses its bound Chat, preserves local configuration and binds original cancellation", async () => {
+  const originalCommands = host.commands;
+  host.commands = { executeCommand: async () => undefined };
+  try {
+    const chat = fixtures.conversation({ permissionMode:"allow-all", permissionGrants:["process"], includeHistory:true, messages:[] });
+    const signal = new AbortController().signal;
+    const requestId = "12345678-1234-1234-1234-123456789abc";
+    const target = {
+      disposed:false, openStore() {}, chats:new Map(), store:{ namespace:fixtures.namespace, resolveChat:id => { assert.equal(id, chat.id); return chat; } },
+      remoteControlledRequests:new Set(), agentControlledRequests:new Set(), running:new Map(), queueDrains:new Map(), assertRunnable() {},
+      send: async (prompt, actual, parent) => {
+        assert.equal(actual, chat); assert.equal(prompt, "remote exact instruction"); assert.equal(parent.signal, signal);
+        assert.equal(actual.permissionMode, "allow-all"); assert.deepEqual(actual.permissionGrants, ["process"]);
+        assert.equal(actual.includeHistory, true);
+        assert(target.remoteControlledRequests.has(chat.id));
+        assert(target.agentControlledRequests.has(chat.id));
+        chat.messages.push({ id:"remote-reply", role:"assistant", status:"complete", content:"verified fixture" });
+      },
+    };
+    const result = await ApiChatView.prototype.executeRemoteTask.call(target, "remote exact instruction", signal, requestId, chat.id);
+    assert.equal(result.requestId, requestId); assert.equal(result.replyId, "remote-reply");
+    assert.equal(target.remoteControlledRequests.size, 0); assert.equal(target.agentControlledRequests.size, 0);
+    const aborted = new AbortController(); aborted.abort();
+    await assert.rejects(ApiChatView.prototype.executeRemoteTask.call(target, "remote", aborted.signal, requestId), /live, trusted/);
+  } finally { host.commands = originalCommands; }
+});
+
+test("real remote-controlled HTTP execution ignores Allow All and remembered grants for every call and excludes redelegation", async t => {
+  const fixture = await transportFixture(t, fixtures.conversation({
+    permissionMode:"allow-all", permissionGrants:["non-destructive"], builtinTools:["run_process", "spawn_workers", "ask_chat", "list_chats", "cross_machine_collaboration"], vscodeTools:[],
+  }), { tools:true, respond:(_payload, round) => round < 2 ? { tool_calls:[{
+    index:0, id:`remote-local-process-${round}`, type:"function",
+    function:{ name:"run_process", arguments:JSON.stringify({
+      program:process.execPath, arguments:["-e", `process.stdout.write('REMOTE_PERMISSION_${round}')`],
+    }) },
+  }] } : { content:"Remote evidence received." } });
+  processWorkspace(t, fixture);
+  const provider = fixture.provider;
+  const approvals = [];
+  provider.remoteControlledRequests.add(provider.chat.id);
+  provider.notifyChat = (_chat, _key, kind, _detail, id) => {
+    if (kind !== "permission") return;
+    const pending = provider.approvals.get(id);
+    approvals.push(_detail);
+    assert(pending.once, "No remembered approvals for remote calls");
+    assert.throws(() => provider.resolveApproval(id, "allow-all"), /Allow All cannot approve/);
+    provider.resolveApproval(id, "approve-once");
+  };
+  await provider.send("Perform the two remote fixture probes.");
+  assert.equal(provider.chat.messages.at(-1).status, "complete", provider.chat.messages.at(-1).error);
+  assert.equal(approvals.filter(title => title === `Run program ${process.execPath}?`).length, 2, JSON.stringify(approvals));
+  assert.equal(provider.chat.messages.at(-1).toolCalls.length, 2);
+  const advertised = fixture.requests[0].tools.map(tool => tool.function.name);
+  assert(advertised.includes("run_process"));
+  for (const name of ["spawn_workers", "ask_chat", "list_chats", "cross_machine_collaboration"]) assert(!advertised.includes(name));
 });
 
 test("HTTP controller executes a real builtin process through its transport-child permission signal", async t => {
@@ -491,8 +564,89 @@ test("HTTP controller executes a real builtin process through its transport-chil
   assert.equal(result.exitCode, 0);
   assert.equal(result.stdout, "CTX_PERMISSION_PROCESS_OK");
   assert.equal(fs.readFileSync(result.stdoutLog, "utf8"), result.stdout);
+  const invocation = reply.invocationBudgets.find(item => item.id === "tool:real-local-process");
+  assert.equal(invocation.status, "complete");
+  assert.equal(invocation.owner, "tool");
+  assert.equal(invocation.deadlineMs, undefined);
+  assert.equal(invocation.activeMs + invocation.userWaitMs, invocation.elapsedMs);
+  assert.equal(reply.invocationBudgets.filter(item => item.id === invocation.id).length, 1);
   assert.equal(fixture.requests.length, 2);
   assert(fixture.requests[1].messages.some(message => message.role === "tool" && message.content.includes(result.stdout)));
+});
+
+test("actual WebSocket pair -> local instruction approval -> bound PKM Chat -> HTTP model -> approved process -> original peer receipt", { timeout:20000 }, async t => {
+  const { ChatHub } = require("../dist/chatroom/chatroom-hub");
+  const { ChatClient } = require("../dist/chatroom/chatroom-client");
+  const { PeerSession } = require("../dist/chatroom/peer-session");
+  const fixture = await transportFixture(t, fixtures.conversation({ permissionMode:"ask", builtinTools:["run_process"] }), {
+    tools:true, respond:(_payload, round) => round === 0 ? { tool_calls:[{
+      index:0, id:"peer-process", type:"function", function:{ name:"run_process", arguments:JSON.stringify({
+        program:process.execPath, arguments:["-e", "process.stdout.write('PEER_REAL_EXECUTION')"],
+      }) },
+    }] } : { content:"PEER_REAL_EXECUTION verified" },
+  });
+  processWorkspace(t, fixture);
+  const previousCommands = host.commands;
+  host.commands = { ...host.commands, executeCommand:async () => undefined };
+  t.after(() => { host.commands = previousCommands; });
+  const provider = fixture.provider;
+  let toolApprovals = 0, taskApprovals = 0;
+  provider.notifyChat = (_chat, _key, kind, _detail, id) => {
+    if (kind === "permission") { toolApprovals++; provider.resolveApproval(id, "approve-once"); }
+  };
+  const hub = new ChatHub(), secrets = new Map(), clients = [], sessions = [], errors = [];
+  const roomDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-peer-pipeline-"));
+  hub.configureLifecycle(roomDirectory, 1024 * 1024, "fixture-owner", {
+    get:async key => secrets.get(key), store:async (key,value) => { secrets.set(key,value); }, delete:async key => { secrets.delete(key); },
+  });
+  t.after(async () => {
+    sessions.forEach(session => session.dispose()); clients.forEach(client => client.disconnect());
+    await hub.stop();
+    fs.rmSync(roomDirectory, { recursive: true, force: true });
+  });
+  await hub.start(0);
+  const room = await hub.createRoom("Peer Pipeline", "synthetic-room-secret");
+  const wait = async predicate => {
+    const end = Date.now() + 10000;
+    while (Date.now() < end) {
+      if (predicate()) return;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    throw new Error(`Peer pipeline timeout: ${errors.join("; ")}`);
+  };
+  for (let i = 0; i < 2; i++) {
+    const client = new ChatClient({ onStatus() {}, onMessage() {}, onHistory() {}, onPresence() {}, onFileComplete() {},
+      onPeer: delivery => { void sessions[i].receive(delivery); } });
+    clients.push(client);
+    sessions.push(new PeerSession({
+      roomId:room.roomId, journalDirectory:path.join(fixture.directory, "peer-journal"),
+      connected:() => client.isConnected, send:(target, packet) => client.sendPeer(target, packet),
+      approvePair:async () => true, approveSwap:async () => true, approveTask:async () => { taskApprovals++; return true; },
+      execute:(prompt, signal, id) => provider.executeRemoteTask(prompt, signal, id, fixture.provider.chat.id),
+      changed() {}, error:error => errors.push(error.message),
+    }));
+    client.connect({ url:`ws://127.0.0.1:${hub.port}/Peer`, room:room.room, roomId:room.roomId, token:room.secret,
+      user:`Machine${i}`, cid:`peer-machine-${i}`, kind:"human", ...(i === 0 ? { hostToken:room.hostToken } : {}) });
+    await wait(() => client.isConnected);
+  }
+  sessions[0].pair(clients[1].participantId, sessions[1].invite());
+  await wait(() => sessions[0].binding);
+  const id = sessions[0].submit("Run the synthetic local process and report its exact stdout.");
+  await wait(() => ["completed", "failed"].includes(sessions[0].receipts.get(id)?.state));
+  const receipt = sessions[0].receipts.get(id);
+  assert.equal(receipt.state, "completed", JSON.stringify(receipt));
+  assert.equal(receipt.result.chatId, fixture.provider.chat.id, "Remote execution stays in the bound Chat");
+  assert.match(receipt.result.content, /PEER_REAL_EXECUTION/);
+  assert.equal(taskApprovals, 1); assert.equal(toolApprovals, 2, "Bound remote Chat approves retrieval separately from the process");
+  const saved = provider.store.load(receipt.result.chatId, false);
+  assert.equal(saved.permissionMode, "ask"); assert.deepEqual(saved.permissionGrants, []);
+  assert.equal(saved.messages.at(-1).toolCalls[0].status, "complete");
+  assert.match(saved.messages.at(-1).toolCalls[0].result, /PEER_REAL_EXECUTION/);
+  sessions[0].submit("Run the synthetic local process and report its exact stdout.", id);
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.equal(taskApprovals, 1); assert.equal(toolApprovals, 2);
+  assert.equal(fixture.requests.length, 2, "Duplicate packet does not call the model or process again");
+  assert.deepEqual(errors, []);
 });
 
 function processWorkspace(t, fixture) {
@@ -509,6 +663,118 @@ function processWorkspace(t, fixture) {
   fixture.provider.captureExecution = chat => captureExecutionContext(fixture.provider.executionHostId,
     host.workspace.workspaceFolders, fixture.directory, true, chat.permissionMode);
 }
+
+test("failed foreground tool dispatch has its own terminal accounting without turning the answer into a tool success", async t => {
+  const fixture = await transportFixture(t, fixtures.conversation({
+    permissionMode: "allow-all", builtinTools: ["run_process"], vscodeTools: [],
+  }), { tools: true, respond: (_payload, round) => round === 0 ? { tool_calls: [{
+    index: 0, id: "invalid-program", type: "function", function: { name: "run_process", arguments: '{"program":""}' },
+  }] } : { content: "The requested program was invalid; nothing was launched." } });
+  processWorkspace(t, fixture);
+  await fixture.provider.send("Try the invalid program and report its actual failure.");
+  const reply = fixture.provider.store.load(fixture.provider.chat.id, false).messages.at(-1);
+  assert.equal(reply.status, "complete", reply.error);
+  assert.equal(reply.toolCalls[0].status, "failed", reply.toolCalls[0].result);
+  const invocation = reply.invocationBudgets.find(item => item.id === "tool:invalid-program");
+  assert.equal(invocation.status, "failed");
+  assert.equal(invocation.userWaitMs, 0);
+  assert.match(invocation.detail, /program/i);
+  assert(invocation.finishedAt >= invocation.startedAt);
+});
+
+test("cancelling a pending tool approval freezes invocation clocks and never claims confirmed process termination", async t => {
+  const fixture = await transportFixture(t, fixtures.conversation({
+    permissionMode: "allow-all", builtinTools: ["run_process"], vscodeTools: [],
+  }), { tools: true, respond: () => ({ tool_calls: [{
+    index: 0, id: "cancelled-approval", type: "function", function: { name: "run_process", arguments: JSON.stringify({
+      program: process.execPath, arguments: ["-e", "require('fs').writeFileSync('must-not-launch','unexpected')"],
+      background: true, timeoutSeconds: 5, idempotency_key: "cancel-before-launch",
+    }) },
+  }] }) });
+  processWorkspace(t, fixture);
+  const sending = fixture.provider.send("Wait for approval before launching the process.");
+  for (let index = 0; index < 300 && !fixture.provider.approvals.size; index++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(fixture.provider.approvals.size, 1);
+  const running = fixture.provider.store.load(fixture.provider.chat.id, false).messages.at(-1);
+  assert.equal(running.invocationBudgets.find(item => item.id === "tool:cancelled-approval").status, "running");
+  await new Promise(resolve => setTimeout(resolve, 80));
+  fixture.provider.running.get(fixture.provider.chat.id).abort();
+  await sending;
+  const reply = fixture.provider.store.load(fixture.provider.chat.id, false).messages.at(-1);
+  assert.equal(reply.status, "cancelled");
+  const invocation = reply.invocationBudgets.find(item => item.id === "tool:cancelled-approval");
+  assert.equal(invocation.status, "cancelled");
+  assert(invocation.userWaitMs >= 70, JSON.stringify(invocation));
+  assert.equal(invocation.elapsedMs, invocation.activeMs + invocation.userWaitMs);
+  assert.match(invocation.detail, /termination is not confirmed/);
+  assert.equal(fixture.requests.length, 1);
+  assert.equal(fs.existsSync(path.join(fixture.directory, "must-not-launch")), false);
+  assert.equal(fixture.provider.approvals.size, 0);
+});
+
+test("offline new Chat workflow: explicit durable approval, real background command, original-handle status/output and persisted model evidence", async t => {
+  let handle;
+  const call = (name, args, round) => ({ tool_calls: [{
+    index: 0, id: `durable-call-${round}`, type: "function", function: { name, arguments: JSON.stringify(args) },
+  }] });
+  const fixture = await transportFixture(t, fixtures.conversation({
+    permissionMode: "allow-all", builtinTools: ["run_process", "process_get", "process_output"], vscodeTools: [],
+  }), { tools: true, respond: async (payload, round) => {
+    if (round === 0) return call("run_process", {
+      program: process.execPath, arguments: ["-e", "require('fs').appendFileSync('durable-effect','once');setTimeout(()=>console.log('OFFLINE_DURABLE_ACCEPTANCE_OK'),100)"],
+      background: true, timeoutSeconds: 5, idempotency_key: "offline-acceptance",
+    }, round);
+    const evidence = JSON.parse(payload.messages.filter(message => message.role === "tool").at(-1).content);
+    if (round === 1) {
+      handle = evidence.handle;
+      assert.match(handle, /^process_[a-f0-9]{64}$/);
+      const runtime = require("../dist/chat/chat-process-runtime");
+      const directory = path.join(fixture.directory, ".pkm", "state", "api-chat-tool-results", fixture.provider.chat.id);
+      for (let index = 0; index < 200 && ["launching", "running"].includes(runtime.getChatProcess(directory, handle).state); index++)
+        await new Promise(resolve => setTimeout(resolve, 10));
+      return call("process_get", { handle }, round);
+    }
+    if (round === 2) {
+      assert.equal(evidence.handle, handle);
+      assert.equal(evidence.state, "complete");
+      assert.equal(evidence.exitCode, 0);
+      return call("process_output", { handle, stream: "stdout", start: 0, length: 1000 }, round);
+    }
+    assert.equal(evidence.text, "OFFLINE_DURABLE_ACCEPTANCE_OK\n");
+    return { content: "Verified the original background execution and its output; task acceptance is based on that evidence." };
+  } });
+  processWorkspace(t, fixture);
+  const sending = fixture.provider.send("Run the isolated durable process once, verify the original handle and read its output.");
+  for (let index = 0; index < 300 && !fixture.provider.approvals.size; index++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(fixture.provider.approvals.size, 1, "Allow All cannot auto-approve a durable lifetime");
+  const [id, approval] = [...fixture.provider.approvals.entries()][0];
+  assert.equal(approval.once, true);
+  assert.match(approval.detail, /continues after window reload\. Chat Stop or process_cancel with the original handle cancels it/);
+  await new Promise(resolve => setTimeout(resolve, 80));
+  await fixture.provider.handle({ type: "approval", id, value: "approve" });
+  await sending;
+  const reply = fixture.provider.chat.messages.at(-1);
+  assert.equal(reply.status, "complete", reply.error);
+  assert.deepEqual(reply.toolCalls.map(tool => tool.name), ["run_process", "process_get", "process_output"]);
+  assert(reply.toolCalls.every(tool => tool.status === "complete"), JSON.stringify(reply.toolCalls));
+  assert.equal(fs.readFileSync(path.join(fixture.directory, "durable-effect"), "utf8"), "once");
+  assert.equal(fixture.requests.length, 4);
+  assertHttpManifests(fixture);
+  const restored = fixture.provider.store.load(fixture.provider.chat.id, false).messages.at(-1);
+  assert(restored.toolCalls.some(tool => tool.result.includes("OFFLINE_DURABLE_ACCEPTANCE_OK")));
+  assert.equal(restored.budgetReceipts.at(-1).ledger.outcome.status, "complete");
+  const processLedger = restored.budgetReceipts.flatMap(receipt => receipt.ledger.entries).filter(entry => entry.owner === "process");
+  assert(processLedger.some(entry => entry.unit === "bytes" && entry.consumed.value > 0));
+  assert(processLedger.some(entry => entry.unit === "milliseconds" && entry.limit.value === 5000));
+  assert(restored.budgetReceipts.every(receipt => receipt.ledger.entries.find(entry => entry.id === "worker-quota").consumed.value === 0));
+  const invocations = restored.invocationBudgets.filter(item => item.owner === "tool");
+  assert.equal(invocations.length, 3, "Model rounds must not duplicate invocation totals");
+  assert(invocations.every(item => item.status === "complete"));
+  const dispatch = invocations.find(item => item.id === "tool:durable-call-0");
+  assert(dispatch.userWaitMs >= 70, `Explicit approval wait must be excluded from active time: ${JSON.stringify(dispatch)}`);
+  assert.equal(dispatch.elapsedMs, dispatch.activeMs + dispatch.userWaitMs);
+  assert.equal(invocations.find(item => item.id === "tool:durable-call-1").userWaitMs, 0, "A later call must not inherit the previous approval wait");
+});
 
 test("real HTTP loop-review decisions retain their attempt owner across transport child signals", async t => {
   const fixture = await transportFixture(t, fixtures.conversation({
@@ -541,6 +807,10 @@ function assertHttpManifests(fixture) {
   for (const [index, payload] of fixture.requests.entries()) {
     const plan = stored.budgetReceipts[index].contextPlan;
     const transport = stored.budgetReceipts[index].transport;
+    const timing = stored.budgetReceipts[index].ledger?.inferenceTiming;
+    assert.equal(timing?.provider, "http");
+    assert.equal(timing.outcome, "stream-ended");
+    assert(timing.maxInactivityMs <= timing.elapsedMs);
     assert.equal(transport.provider, "http");
     assert.deepEqual(transport.messageHashes, payload.messages.map(message => createHash("sha256").update(JSON.stringify(message)).digest("hex")));
     assert.equal(transport.toolSchemaHash, createHash("sha256").update(JSON.stringify(payload.tools || [])).digest("hex"));
@@ -733,6 +1003,11 @@ test("CTX-T02: an empty knowledge result adds no reference context", async t => 
   assert.equal(fixture.requests.length, 1);
   assert(!text(fixture.requests[0].messages).includes("Automatically retrieved PKM references"));
   assert.equal(fixture.provider.chat.messages.at(-1).retrieval.selectedCount, 0);
+  const invocations = fixture.provider.chat.messages.at(-1).invocationBudgets;
+  assert.equal(invocations.length, 2);
+  assert(invocations.every(item => item.status === "complete" && item.owner === "retrieval"));
+  assert.equal(invocations.find(item => item.id === "retrieval:chat-memory").deadlineMs, undefined);
+  assert.equal(invocations.find(item => item.id === "retrieval:knowledge-provider").deadlineMs.value, 5000);
 });
 
 test("CTX-T04: retrieval failure is isolated from the primary Chat request", async t => {
@@ -745,6 +1020,9 @@ test("CTX-T04: retrieval failure is isolated from the primary Chat request", asy
   assert.equal(fixture.requests.length, 1);
   assert(!text(fixture.requests[0].messages).includes("Automatically retrieved PKM references"));
   assert.match(reply.retrieval.warning, /retrieval unavailable/i);
+  const invocation = reply.invocationBudgets.find(item => item.id === "retrieval:knowledge-provider");
+  assert.equal(invocation.status, "unavailable", "An answer without retrieval must not mark retrieval successful");
+  assert.match(invocation.detail, /synthetic retrieval model failure/);
   assert.deepEqual(fixture.errors, []);
 });
   test("CTX-T05: malformed retrieval is rejected while a valid candidate still reaches HTTP", async t => {
@@ -762,6 +1040,7 @@ test("CTX-T04: retrieval failure is isolated from the primary Chat request", asy
     assert(text(fixture.requests[0].messages).includes(candidate.content));
     assert.equal(reply.retrieval.selectedCount, 1);
     assert.match(reply.retrieval.warning, /degraded/i);
+    assert.equal(reply.invocationBudgets.find(item => item.id === "retrieval:knowledge-provider").status, "degraded");
   });
 
   test("CTX-T06: an unresponsive retriever times out without blocking the primary answer", async t => {
@@ -772,6 +1051,11 @@ test("CTX-T04: retrieval failure is isolated from the primary Chat request", asy
     assert.equal(reply.status, "complete", reply.error);
     assert.equal(fixture.requests.length, 1);
     assert.match(reply.retrieval.warning, /deadline/i);
+    const invocation = reply.invocationBudgets.find(item => item.id === "retrieval:knowledge-provider");
+    assert.equal(invocation.status, "unavailable");
+    assert.equal(invocation.deadlineMs.value, 5000);
+    assert(invocation.elapsedMs >= 4900 && invocation.elapsedMs < 8000, JSON.stringify(invocation));
+    assert.equal(invocation.userWaitMs, 0);
     assert(Date.now() - started < 8000, "Five-second retrieval deadline must bound dispatch delay");
   });
 
@@ -786,6 +1070,11 @@ test("CTX-T04: retrieval failure is isolated from the primary Chat request", asy
     await send;
     assert(Date.now() - started < 1000);
     assert.equal(fixture.provider.chat.messages.at(-1).status, "cancelled");
+    const reply = fixture.provider.store.load(fixture.provider.chat.id, false).messages.at(-1);
+    const invocation = reply.invocationBudgets.find(item => item.id === "retrieval:knowledge-provider");
+    assert.equal(invocation.status, "cancelled");
+    assert(invocation.finishedAt >= invocation.startedAt);
+    assert.equal(reply.budgetReceipts, undefined, "Cancelled retrieval has evidence even before a model round exists");
     assert.equal(fixture.requests.length, 0);
   });
 
@@ -865,11 +1154,13 @@ test("CTX-M09/M14: actual multi-round HTTP excludes revoked source projections a
 });
 
 test("CTX-M09/M10: production source validation excludes cached L2 after revision, privacy, content or deletion changes", async t => {
-  const { retrievalSourceValidation } = require("../dist/retrieval/retrieval-snapshot");
+  const { retrievalSourceValidation, retrievalDocumentContentHash } = require("../dist/retrieval/retrieval-snapshot");
   for (const change of ["revision", "private", "body", "delete"]) {
     const body = "# Experiment\n\n" + "Background.\n\n".repeat(500) + "latency must not exceed 125 ms.\n";
-    const document = { source_id:"pkm://fixture/source", source_revision:"r1", visibility:"available", body };
-    const candidate = { id:"source", level:"l1-source", sourceId:document.source_id, sourceRevision:"r1", contentHash:"c".repeat(64),
+    const document = { skill_id:"source", source_id:"pkm://fixture/source", source_uri:"pkm://fixture/source",
+      source_revision:"r1", visibility:"available", content_type:"note", title:"Source", description:"",
+      metadata:{}, provenance:{}, read_only:false, links:[], body };
+    const candidate = { id:"source", level:"l1-source", sourceId:document.source_id, sourceRevision:"r1", contentHash:retrievalDocumentContentHash(document),
       kind:"note", label:"Source", sourceUri:document.source_id, score:1, method:"fixture", selected:false, reason:"fixture", content:body };
     let snapshot = { documents:[document] };
     const validation = retrievalSourceValidation(() => snapshot);
@@ -967,6 +1258,10 @@ test("CTX-M14: native transformed prompts and schemas match persisted transport 
   const stored = fixture.provider.store.load(fixture.provider.chat.id, false).messages.at(-1);
   assert.equal(stored.status, "complete", stored.error);
   assert.equal(stored.toolCalls[0].status, "complete", stored.toolCalls[0].result);
+  const invocation = stored.invocationBudgets.find(item => item.id === "tool:native-evidence");
+  assert.equal(invocation.status, "complete");
+  assert.equal(invocation.userWaitMs, 0);
+  assert.equal(stored.invocationBudgets.filter(item => item.owner === "tool").length, 1);
   const processResult = JSON.parse(stored.toolCalls[0].result);
   assert.equal(processResult.exitCode, 0);
   assert.equal(processResult.stdout, "CTX_NATIVE_PERMISSION_OK");

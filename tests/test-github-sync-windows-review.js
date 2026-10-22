@@ -8,6 +8,7 @@ const vm = require("node:vm");
 const sync = require("../dist/sync/github-sync");
 const conflicts = require("../dist/sync/github-sync-conflicts");
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-windows-review-"));
+const uiTimers = new Set();
 let assertions = 0;
 const check = action => { action(); assertions++; };
 const lf = Buffer.from("first\nsecond\n");
@@ -93,7 +94,9 @@ try {
   check(() => assert.equal(conflicts.readGitHubSyncConflict(root, "batch").files[0].candidateSource, "unresolved"));
 
   const ui = vm.createContext({ Map, Set, esc: String, uiIcon: (_name, label) => label,
-    document: {}, state: {}, setTimeout, clearTimeout });
+    document: { querySelectorAll: () => [] }, state: {},
+    setTimeout: (callback, delay) => { const timer = setTimeout(callback, delay); uiTimers.add(timer); return timer; },
+    clearTimeout });
   vm.runInContext(fs.readFileSync(path.join(__dirname, "../src/webview/panel/46-github-sync.js"), "utf8"), ui);
   // Historical report fixture: counts must describe its actual stored candidates,
   // not fabricate "both changed" from Remote-only members.
@@ -140,5 +143,6 @@ try {
     "failed fsync does not publish an applying marker"));
   console.log(`github-sync Windows review: ${assertions} assertions passed`);
 } finally {
+  for (const timer of uiTimers) clearTimeout(timer);
   fs.rmSync(root, { recursive: true, force: true });
 }

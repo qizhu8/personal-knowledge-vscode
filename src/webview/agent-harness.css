@@ -1,5 +1,33 @@
 .pkm-harness { color:var(--vscode-foreground,#dce5ee); background:var(--vscode-editor-background,#17212b); font:14px system-ui,sans-serif; padding:16px; min-width:0; box-sizing:border-box; }
 .pkm-harness * { box-sizing:border-box; }
+.pkm-harness-dashboard { container-type:inline-size; }
+.pkm-harness-diagnostics { width:100%; max-height:210px; overflow:auto; border:1px solid var(--vscode-panel-border,#556779); border-radius:6px; padding:8px 10px; margin-bottom:12px; }
+.pkm-harness-diagnostics h3 { margin:0 0 6px; font-size:14px; }
+.pkm-harness-diagnostics p { margin:3px 0; font:12px/1.5 var(--vscode-editor-font-family,monospace); overflow-wrap:anywhere; }
+.pkm-harness-diagnostics [data-level=error] { color:var(--vscode-errorForeground,#ff9292); }
+.pkm-harness-diagnostics [data-level=warning] { color:var(--vscode-editorWarning-foreground,#ecc56e); }
+.pkm-harness-parameters { width:100%; border-collapse:collapse; margin-bottom:12px; table-layout:fixed; }
+.pkm-harness-parameters caption { text-align:left; font-weight:600; margin-bottom:6px; }
+.pkm-harness-parameters th,.pkm-harness-parameters td { text-align:left; padding:4px 8px; border-bottom:1px solid var(--vscode-panel-border,#556779); overflow-wrap:anywhere; }
+.pkm-harness-parameters th { width:42%; }
+.pkm-harness-diagram-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin-bottom:16px; }
+.pkm-harness-diagram-card { min-width:0; padding:10px; border:1px solid var(--vscode-panel-border,#556779); border-radius:6px; overflow:hidden; }
+.pkm-harness-diagram-card h3 { font-size:14px; margin:0 0 8px; }
+.pkm-harness-diagram-card > button { margin:0 4px 8px 0; max-width:100%; overflow-wrap:anywhere; }
+.pkm-harness-diagram-card svg { display:block; width:100%; margin:8px 0; }
+.pkm-harness-diagram-card rect { fill:var(--vscode-editorWidget-background,#223241); stroke:var(--vscode-panel-border,#556779); }
+.pkm-harness-diagram-card [data-status=complete] rect { stroke:#62b88e; }
+.pkm-harness-diagram-card [data-status=failed] rect { stroke:#ed8181; }
+.pkm-harness-diagram-card [data-status=running] rect { stroke:var(--vscode-progressBar-background,#3794ff); }
+.pkm-harness-diagram-card text { fill:var(--vscode-foreground,#dce5ee); font:12px system-ui,sans-serif; }
+.pkm-harness-preview-edge { fill:none; stroke:var(--vscode-focusBorder,#70c2ff); stroke-width:2; }
+.pkm-harness-flow-preview { list-style:none; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin:10px 0; padding:0; }
+.pkm-harness-flow-preview li { padding:8px; border:1px solid var(--vscode-panel-border,#556779); border-radius:6px; overflow-wrap:anywhere; }
+.pkm-harness-flow-preview [aria-current=step] { border-color:var(--vscode-focusBorder,#70c2ff); background:var(--vscode-editorWidget-background,#223241); }
+.pkm-harness-memory-pyramid { display:flex; flex-direction:column; align-items:center; gap:6px; margin:12px 0; }
+.pkm-harness-memory-pyramid > div,.pkm-harness-retrieval-stages > div { padding:8px; border:1px solid var(--vscode-panel-border,#556779); border-radius:4px; text-align:center; overflow-wrap:anywhere; }
+.pkm-harness-retrieval-stages { display:flex; flex-direction:column; gap:8px; margin:12px 0; }
+@container (max-width:540px) { .pkm-harness-diagram-grid { grid-template-columns:minmax(0,1fr); } }
 .pkm-harness header,.pkm-harness nav,.pkm-harness-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
 .pkm-harness h2 { flex:1 1 100%; font-size:19px; margin:0 0 8px; }
 .pkm-harness button { background:var(--vscode-button-secondaryBackground,#303e4e); color:inherit; border:1px solid var(--vscode-panel-border,#556779); border-radius:5px; padding:6px 10px; cursor:pointer; font:inherit; }
@@ -74,6 +102,8 @@
 .pkm-harness-stage small { font-size:clamp(9px,1.3vw,12px); }
 .pkm-harness-stage[data-stage=configure] { --stage:#185f80; }
 .pkm-harness-stage[data-stage=run] { --stage:#e27332; }
+.pkm-harness .pkm-harness-stage[data-stage=run] { width:18%; aspect-ratio:auto; min-height:100px; border-radius:12px; padding:8px; }
+.pkm-harness-current-activity { font-size:12px; overflow-wrap:anywhere; max-width:100%; }
 .pkm-harness-stage[data-stage=monitor] { --stage:#1c6b2a; }
 .pkm-harness-stage[data-stage=evaluate] { --stage:#1196d1; }
 .pkm-harness-stage[data-stage=check] { --stage:#9a2c94; }
@@ -99,6 +129,7 @@
   .pkm-harness .pkm-harness-stage { position:static; transform:none; width:100%; aspect-ratio:auto; border-radius:18px; flex-direction:row; justify-content:space-between; padding:8px 14px; }
   .pkm-harness-stage-label { font-size:14px; }
   .pkm-harness-stage small { font-size:12px; }
+  .pkm-harness .pkm-harness-stage[data-stage=run] { width:100%; min-height:0; flex-wrap:wrap; }
   .pkm-harness .pkm-harness-stage[data-status=pending] { opacity:.55; }
 }
 .pkm-harness [hidden] { display:none !important; }

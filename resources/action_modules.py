@@ -183,11 +183,53 @@ class ModuleRuntime:
                 "steps": steps, "output": {name: {"$step": "poll." + name} for name in ["status", "attempts", "value"]}}],
             "examples": [{"inputs": {}}]})
 
+    def installed_module_manifest(self, module_set_id, version, verify_files=False):
+        directory = self.module_set_path(module_set_id, version)
+        source = directory / "manifest.json"
+        if source.is_symlink():
+            raise PermissionError("ModuleSet manifest cannot be a symlink.")
+        manifest = json.loads(source.read_text(encoding="utf-8"))
+        if (manifest.get("schema") != "pkm.action.module-set/v1"
+                or manifest.get("module_set_id") != module_set_id or manifest.get("version") != version
+                or manifest.get("package_hash") != digest({key: value for key, value in manifest.items() if key != "package_hash"})):
+            raise ValueError("Invalid installed ModuleSet manifest/hash.")
+        self.validate_member_layout(["manifest.json", *manifest["files"]])
+        if len(manifest["files"]) > 499:
+            raise ValueError("ModuleSet exceeds 500 entries.")
+        self.validate_package_resources(manifest)
+        if verify_files:
+            total = 0
+            for member, expected in manifest["files"].items():
+                if not member.startswith(("definitions/", "assets/")):
+                    raise ValueError("Host state is not portable package content.")
+                file = directory / member
+                if (not file.is_file() or file.is_symlink()
+                        or any(parent.is_symlink() for parent in file.parents if parent.is_relative_to(directory))):
+                    raise PermissionError("ModuleSet files cannot traverse symlinks.")
+                total += file.stat().st_size
+                if total > 32 * 1024 * 1024:
+                    raise ValueError("ModuleSet exceeds 32 MiB.")
+                if hashlib.sha256(file.read_bytes()).hexdigest() != expected:
+                    raise ValueError("Installed ModuleSet file hash mismatch: " + member)
+            for action_id in manifest["actions"]:
+                if (not isinstance(action_id, str) or not re.fullmatch(r"[a-z][a-z0-9_.-]{2,100}", action_id)
+                        or action_id in builtin_definitions() or action_id in component_definitions()):
+                    raise ValueError("Invalid/reserved packaged Action ID.")
+                member = "definitions/" + action_id + ".json"
+                if member not in manifest["files"]:
+                    raise ValueError("Packaged Action definition is missing.")
+                value = json.loads((directory / member).read_text(encoding="utf-8"))
+                if value.get("action_id") != action_id or value.get("schema") != "pkm.action.definition/v1" or not value.get("knowledgeId"):
+                    raise ValueError("Invalid packaged Action identity.")
+                for field in ["input_schema", "output_schema"]:
+                    Draft202012Validator.check_schema(value[field])
+        return manifest
+
     def module_set_list(self):
         enabled = self.settings().get("enabled_module_sets", {})
         result = []
         for path in sorted(self.module_sets.glob("*/*/manifest.json")):
-            manifest = json.loads(path.read_text(encoding="utf-8"))
+            manifest = self.installed_module_manifest(path.parent.parent.name, int(path.parent.name))
             result.append({key: manifest[key] for key in ["module_set_id", "version", "name", "actions", "package_hash", "provenance"]})
             result[-1]["enabled"] = enabled.get(manifest["module_set_id"]) == manifest["version"]
         return {"ok": True, "module_sets": result}
@@ -196,7 +238,7 @@ class ModuleRuntime:
         result = {}
         for module_set_id, version in self.settings().get("enabled_module_sets", {}).items():
             directory = self.module_set_path(module_set_id, version)
-            manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+            manifest = self.installed_module_manifest(module_set_id, version)
             for action_id in manifest["actions"]:
                 if action_id in result or action_id in builtin_definitions() or (self.registry / (action_id + ".json")).exists():
                     raise ValueError("Ambiguous Action provider: " + action_id)
@@ -207,7 +249,7 @@ class ModuleRuntime:
         if type(enabled) is not bool:
             raise ValueError("enabled must be a boolean.")
         directory = self.module_set_path(module_set_id, version)
-        manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+        manifest = self.installed_module_manifest(module_set_id, version, verify_files=enabled)
         with self.lock():
             settings = self.settings()
             previous = dict(settings.get("enabled_module_sets", {}))
@@ -225,6 +267,10 @@ class ModuleRuntime:
                     if job["state"] in {"queued", "running"} and job["action_id"] in old_actions:
                         raise PermissionError("ModuleSet has queued/running validation; cancel it before unloading.")
             if enabled:
+                for member in manifest.get("executables", []):
+                    if not isinstance(member, str) or not member.startswith("assets/") or member not in manifest["files"]:
+                        raise ValueError("Invalid executable package assets.")
+                    (directory / member).chmod(0o700)
                 selected[module_set_id] = version
             elif selected.get(module_set_id) == version:
                 selected.pop(module_set_id)
@@ -792,6 +838,10 @@ class ModuleRuntime:
                 path = self.loaded_module_definitions().get(action_id)
                 if path is None:
                     raise FileNotFoundError("Action is not registered or its ModuleSet is not loaded: " + action_id)
+                manifest = self.installed_module_manifest(path.parent.parent.parent.name, int(path.parent.parent.name))
+                if (path.is_symlink() or any(parent.is_symlink() for parent in path.parents if parent.is_relative_to(path.parent.parent))
+                        or hashlib.sha256(path.read_bytes()).hexdigest() != manifest["files"].get("definitions/" + action_id + ".json")):
+                    raise ValueError("Installed ModuleSet definition hash mismatch.")
             value = json.loads(path.read_text(encoding="utf-8"))
         return self.definition_value(value)
 

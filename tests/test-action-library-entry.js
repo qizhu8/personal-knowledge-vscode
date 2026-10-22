@@ -8,8 +8,8 @@ const core = fs.readFileSync(path.join(root, "src", "webview", "panel", "00-core
 const extension = fs.readFileSync(path.join(root, "src", "extension.ts"), "utf8");
 
 assert.match(html,
-  /<span class="workspace-context-title">Automation<\/span>[\s\S]*?openActionLibrary\(event\)[^>]*>Action Library<\/button>[\s\S]*?data-tab="agentSessions"/,
-  "Automation exposes Action Library before its persisted collection tabs");
+  /<span class="workspace-context-title">Automation<\/span>[\s\S]*?data-tab="agentSnapshots"[\s\S]*?openActionLibrary\(event\)[^>]*>Action Library<\/button>\s*<button[^>]*data-tab="recipes"/,
+  "Automation places Action Library third, immediately before Recipe Library (BR-03)");
 assert.match(core,
   /function openActionLibrary\(event\)[\s\S]*?vscode\.postMessage\(\{ command:'openActionLibrary' \}\)/,
   "the navigation entry sends a dedicated extension-host request");

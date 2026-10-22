@@ -6,8 +6,10 @@ Turn state is persisted, so a worker restart can resume or the caller can report
 """
 from __future__ import annotations
 
+from functools import wraps
 import hashlib
 import json
+import math
 import re
 from typing import Any
 
@@ -20,6 +22,49 @@ SUMMARY_DELTA_LIMIT = 3000
 MAX_SUMMARIES_PER_TURN = 3
 MAX_CANDIDATES = 16
 MAX_EARLIER_MESSAGES = 3
+
+
+def _model_observation(usage: dict | None, accounting: dict | None) -> dict:
+    result = {}
+    if usage is not None:
+        if not isinstance(usage, dict) or set(usage) - {"inputTokens", "outputTokens", "reasoningTokens", "cachedInputTokens"}:
+            raise MemoryError("Invalid Memory provider usage.")
+        if any(type(usage.get(key)) is not int or not 0 <= usage[key] <= 2**53 - 1 for key in ("inputTokens", "outputTokens")):
+            raise MemoryError("Invalid Memory provider usage.")
+        for key, maximum in (("reasoningTokens", "outputTokens"), ("cachedInputTokens", "inputTokens")):
+            if key in usage and (type(usage[key]) is not int or not 0 <= usage[key] <= usage[maximum]):
+                raise MemoryError("Invalid Memory provider usage.")
+        result["usage"] = usage
+    if accounting is not None:
+        if not isinstance(accounting, dict) or accounting.get("schema") != "pkm.memory.model-accounting/v1":
+            raise MemoryError("Invalid Memory model accounting.")
+        text(accounting.get("modelId"), "modelId", 512)
+        if accounting.get("provider") not in ("http", "vscode"):
+            raise MemoryError("Invalid Memory model provider.")
+        duration = accounting.get("durationMs")
+        if type(duration) not in (int, float) or not math.isfinite(duration) or duration < 0:
+            raise MemoryError("Invalid Memory model duration.")
+        for key in ("timeoutMs", "maxOutputTokens"):
+            if type(accounting.get(key)) is not int or not 1 <= accounting[key] <= 2**53 - 1:
+                raise MemoryError("Invalid Memory configured limit.")
+        thinking = accounting.get("thinkingBudget")
+        if thinking != "unlimited" and (type(thinking) is not int or not 0 <= thinking <= 2**53 - 1):
+            raise MemoryError("Invalid Memory thinking budget.")
+        timing = accounting.get("inferenceTiming")
+        if timing is not None:
+            if not isinstance(timing, dict) or timing.get("schema") != "pkm.chat.inference-timing/v1" or timing.get("provider") != accounting["provider"]:
+                raise MemoryError("Invalid Memory inference timing.")
+            elapsed = timing.get("elapsedMs")
+            if type(elapsed) not in (int, float) or not math.isfinite(elapsed) or elapsed < 0:
+                raise MemoryError("Invalid Memory inference timing.")
+            for key in ("maxInactivityMs", "firstActivityMs", "firstPublicOutputMs"):
+                if key not in timing and key != "maxInactivityMs":
+                    continue
+                value = timing.get(key)
+                if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= elapsed:
+                    raise MemoryError("Invalid Memory inference timing.")
+        result["accounting"] = accounting
+    return result
 
 INTENT_SYSTEM = """You organize the memory of one conversation into topics. Decide which topics the
 CURRENT user input continues or needs. Rules:
@@ -80,6 +125,15 @@ def parse_json_object(output: str) -> dict:
     return value
 
 
+def _atomic(method):
+    """Persist a complete policy step, including its receipt and all content, or nothing."""
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self.engine._transaction():
+            return method(self, *args, **kwargs)
+    return wrapped
+
+
 class Memory:
     def __init__(self, engine: Engine) -> None:
         self.engine = engine
@@ -123,6 +177,7 @@ class Memory:
                 "revision": revision, "locator": f"message:{message['id']}"}
 
     # ---------- intent ----------
+    @_atomic
     def turn_begin(self, scope: str, turn: str, input: dict, recent: list[dict] | None = None,
                    budget_chars: int = 24000, model: str = "") -> dict:
         text(scope, "scope", 1024)
@@ -166,6 +221,7 @@ class Memory:
                 "request": {"purpose": purpose, "max_tokens": max_tokens,
                             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}}
 
+    @_atomic
     def _new_topic(self, state: dict, key: str, label: str, parent: str | None) -> str:
         piece = f"{state['scope']}|t|{_hash(state['turn'], key)[:20]}"
         self._mutate(f"{state['turn']}:topic:{key}", "create",
@@ -177,15 +233,17 @@ class Memory:
         state.setdefault("created", {})[key] = piece
         return piece
 
-    def turn_continue(self, turn: str, output: str = "", error: str = "", usage: dict | None = None) -> dict:
+    @_atomic
+    def turn_continue(self, turn: str, output: str = "", error: str = "", usage: dict | None = None,
+                      accounting: dict | None = None) -> dict:
         state = self.engine.turn_get(turn)
         if not state or "pending" not in state:
             raise MemoryError("No pending model step for this turn.")
+        observation = _model_observation(usage, accounting)
         purpose = state.pop("pending")["purpose"]
         call = state["calls"][-1]
         call.update({"status": "failed" if error else "complete", "output_chars": len(output or "")})
-        if usage:
-            call["usage"] = usage
+        call.update(observation)
         if error:
             call["error"] = _clip(str(error), 500)
         if purpose == "intent":
@@ -196,32 +254,50 @@ class Memory:
             return self._apply_extract(state, output, error)
         raise MemoryError("Unknown pending step.")
 
+    @_atomic
+    def turn_abort(self, turn: str, error: str, usage: dict | None = None, accounting: dict | None = None) -> dict:
+        state = self.engine.turn_get(turn)
+        if not state or "pending" not in state:
+            raise MemoryError("No pending model step for this turn.")
+        observation = _model_observation(usage, accounting)
+        text(error, "cancellation reason", 1024)
+        state.pop("pending")
+        state["calls"][-1].update({"status": "cancelled", "error": error, **observation})
+        state["phase"] = "cancelled"
+        self._save(state)
+        return {"turn": turn, "status": "done", "receipt": self._receipt(state)}
+
     def _apply_intent(self, state: dict, output: str, error: str) -> dict:
         aliases = state["aliases"]
         intent: dict[str, Any] = {"status": "model", "focus": [], "related": [], "created": []}
         try:
-            if error:
-                raise MemoryError(error)
-            value = parse_json_object(output)
-            new = value.get("new") or []
-            if not isinstance(new, list):
-                raise MemoryError("new must be a list.")
-            for item in new[:3]:
-                key, label = str(item.get("key", "")), str(item.get("label", "")).strip()
-                if not key.startswith("new:") or not label:
-                    continue
-                parent = item.get("parent")
-                parent_id = aliases.get(parent) or state.get("created", {}).get(parent) if parent else None
-                intent["created"].append(self._new_topic(state, key, label[:120], parent_id))
-            resolve = lambda alias: aliases.get(alias) or state.get("created", {}).get(alias)
-            intent["focus"] = list(dict.fromkeys(p for p in map(resolve, value.get("focus") or []) if p))[:3]
-            intent["related"] = [p for p in dict.fromkeys(map(resolve, value.get("related") or []))
-                                 if p and p not in intent["focus"]][:5]
-            intent["reason"] = _clip(str(value.get("reason", "")), 300)
-            if not intent["focus"]:
-                raise MemoryError("Intent selected no valid focus topic.")
+            with self.engine._transaction():
+                if error:
+                    raise MemoryError(error)
+                value = parse_json_object(output)
+                new = value.get("new") or []
+                if not isinstance(new, list):
+                    raise MemoryError("new must be a list.")
+                for item in new[:3]:
+                    key, label = str(item.get("key", "")), str(item.get("label", "")).strip()
+                    if not key.startswith("new:") or not label:
+                        continue
+                    parent = item.get("parent")
+                    parent_id = aliases.get(parent) or state.get("created", {}).get(parent) if parent else None
+                    intent["created"].append(self._new_topic(state, key, label[:120], parent_id))
+                resolve = lambda alias: aliases.get(alias) or state.get("created", {}).get(alias)
+                intent["focus"] = list(dict.fromkeys(p for p in map(resolve, value.get("focus") or []) if p))[:3]
+                intent["related"] = [p for p in dict.fromkeys(map(resolve, value.get("related") or []))
+                                     if p and p not in intent["focus"]][:5]
+                intent["reason"] = _clip(str(value.get("reason", "")), 300)
+                if not intent["focus"]:
+                    raise MemoryError("Intent selected no valid focus topic.")
         except (MemoryError, ValueError, TypeError, AttributeError) as failure:
             # Visible fallback: keep the active topic; never silently drop the conversation thread.
+            state.pop("created", None)
+            intent["created"] = []
+            intent["focus"] = []
+            intent["related"] = []
             intent.update({"status": "fallback", "error": _clip(str(failure), 300)})
             intent["focus"] = intent["focus"] or state["previous_focus"][:1]
             if not intent["focus"]:
@@ -361,6 +437,7 @@ class Memory:
                 "context": {"blocks": selected, "focus": focus, "related": related}}
 
     # ---------- growth ----------
+    @_atomic
     def _ingest(self, state: dict, message: dict, role: str) -> str:
         scope = state["scope"]
         source = self._source(scope, message)
@@ -384,6 +461,7 @@ class Memory:
                 self._mutate(f"{state['turn']}:link:{topic}:{piece}", "link", {"parent": topic, "child": piece, "relation": "abstracts"})
         return piece
 
+    @_atomic
     def turn_commit(self, turn: str, user: dict, assistant: dict, scope: str = "", model: str = "") -> dict:
         state = self.engine.turn_get(turn)
         if not state:
@@ -421,46 +499,52 @@ class Memory:
     def _apply_extract(self, state: dict, output: str, error: str) -> dict:
         added = []
         try:
-            if error:
-                raise MemoryError(error)
-            items = parse_json_object(output).get("statements") or []
-            if not isinstance(items, list):
-                raise MemoryError("statements must be a list.")
-            for index, item in enumerate(items[:6]):
-                piece_id = state["extract_aliases"].get(str(item.get("topic")))
-                body = str(item.get("text", "")).strip()
-                status = item.get("status") if item.get("status") in {"proposal", "observation", "user-confirmed", "verified", "disputed"} else "proposal"
-                if not piece_id or not body:
-                    continue
-                revision = self.engine._piece(piece_id)["revision"]
-                self._mutate(f"{state['turn']}:statement:{index}", "append",
-                             {"piece": piece_id, "expected_revision": revision,
-                              "statement_id": f"{piece_id}|{_hash(state['turn'], index)[:20]}",
-                              "body": _clip(body, 1500), "status": status, "sources": state["sources"]})
-                added.append({"piece": piece_id, "status": status})
-            state["extract"] = {"status": "model", "added": added}
+            with self.engine._transaction():
+                if error:
+                    raise MemoryError(error)
+                items = parse_json_object(output).get("statements") or []
+                if not isinstance(items, list):
+                    raise MemoryError("statements must be a list.")
+                for index, item in enumerate(items[:6]):
+                    piece_id = state["extract_aliases"].get(str(item.get("topic")))
+                    body = str(item.get("text", "")).strip()
+                    status = item.get("status") if item.get("status") in {"proposal", "observation", "user-confirmed", "verified", "disputed"} else "proposal"
+                    if not piece_id or not body:
+                        continue
+                    revision = self.engine._piece(piece_id)["revision"]
+                    self._mutate(f"{state['turn']}:statement:{index}", "append",
+                                 {"piece": piece_id, "expected_revision": revision,
+                                  "statement_id": f"{piece_id}|{_hash(state['turn'], index)[:20]}",
+                                  "body": _clip(body, 1500), "status": status, "sources": state["sources"]})
+                    added.append({"piece": piece_id, "status": status})
+                state["extract"] = {"status": "model", "added": added}
         except (MemoryError, ValueError, TypeError, AttributeError) as failure:
-            state["extract"] = {"status": "failed", "error": _clip(str(failure), 300), "added": added}
+            state["extract"] = {"status": "failed", "error": _clip(str(failure), 300), "added": []}
         state["phase"] = "done"
         self._save(state)
         return {"turn": state["turn"], "status": "done", "receipt": self._receipt(state)}
 
     # ---------- reading, lifecycle and visualization ----------
+    @_atomic
     def memory_read(self, scope: str, piece: str, after: int = 0) -> dict:
         info = self._scope_piece(scope, piece)
         if info["evicted"]:
             return {"piece": piece, "label": info["label"], "evicted": True,
                     "note": "Content was evicted from memory; the original Chat history may still hold it."}
         page = self.engine.read(piece, after=after, limit=40)
+        missing = page["status"] == "missing"
         more = self.engine.read(piece, after=page["next"], limit=1)["statements"]
         children = self.engine.children(piece, limit=30)["children"]
-        self._mutate(f"read:{piece}:{info['revision']}:{after}", "touch", {"piece": piece, "reason": "expand"})
+        if not missing:
+            self._mutate(f"read:{piece}:{info['revision']}:{after}", "touch", {"piece": piece, "reason": "expand"})
         return {"piece": piece, "label": info["label"], "kind": info["kind"], "level": info["level"],
                 "summary": page["summary"]["body"] if page["summary"] else None, "summary_current": page["summary_current"],
                 "statements": [{"n": s["sequence"], "status": s["status"], "text": s["body"]} for s in page["statements"] if s["body"]],
                 "next": page["next"] if more else None,
                 "children": [{"piece": c["id"], "label": c["label"], "kind": c["kind"], "evicted": bool(c["evicted"])} for c in children],
-                "parents": [{"piece": p["id"], "label": p["label"]} for p in self.engine.parents(piece)]}
+                "parents": [{"piece": p["id"], "label": p["label"]} for p in self.engine.parents(piece)]} | (
+                    {"status": "missing", "note": "Memory content is missing; reconstruct it from the original Chat history."}
+                    if missing else {})
 
     def overview(self, scope: str, limit: int = 100) -> dict:
         topics = self.engine.pieces(scope, "topic", limit=min(limit, 200))
@@ -480,16 +564,19 @@ class Memory:
             raise MemoryError("Unknown turn.")
         return self._receipt(state)
 
+    @_atomic
     def enforce_capacity(self, max_bytes: int, protected: list[str] | None = None) -> dict:
         evicted: list[str] = []
         while (used := self.engine.usage()["bytes"]) > max_bytes:
-            result = self.engine.mutate(_hash("capacity", used, len(evicted))[:48], "evict",
+            sequence = self.engine.db.execute("SELECT COALESCE(MAX(sequence),0) FROM changes").fetchone()[0]
+            result = self.engine.mutate(_hash("capacity", used, sequence, protected or [])[:48], "evict",
                                         {"count": 100, "protected": protected or [], "free_bytes": used - max_bytes})
             if not result["evicted"]:
                 break
             evicted += result["evicted"]
         return {"evicted": evicted, "usage": self.engine.usage()}
 
+    @_atomic
     def forget_scope(self, scope: str) -> dict:
         return self._mutate(f"forget-scope:v2:{scope}", "purge_chat", {"chat": scope})
 

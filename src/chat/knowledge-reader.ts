@@ -24,8 +24,22 @@ export function automaticChatSkills(query: string) {
 
 export const CHAT_KNOWLEDGE_KINDS = ["note", "skill", "research", "script", "recipe", "subscription"] as const;
 
+export const CHAT_ASSET_CURATION_GUIDANCE = [
+  "Knowledge stewardship for substantive Tasks: search existing knowledge before proposing a new reusable asset; read candidate sources and reuse or update rather than duplicate.",
+  "Distinguish evidence Notes and Papers, reusable procedural Skills, executable Scripts and typed Components, contract-validated Actions, and multi-step orchestration Recipes. This is a choice of abstraction and reuse, not a compulsory promotion ladder.",
+  "After verified work, proactively identify a genuinely reusable lesson or correction when useful. Propose its asset kind, scope/tags, source URLs or receipt IDs, validation evidence and nearest existing asset. Explain what is new and what remains uncertain.",
+  "Do not persist every exchange. Do not claim an asset was saved without a successful advertised write tool. Propose when no suitable tool is enabled; respect existing authorization before durable writes.",
+  "Contradictions require source comparison and explicit correction provenance, not silent replacement. Do not bulk move, rename, merge, delete, reclassify, or promote assets, and do not run extra model calls, without user authorization.",
+].join("\n");
+
+interface SourceReadOptions { start?: unknown; end?: unknown; sourceRevision?: unknown; contentHash?: unknown; }
+interface SourceReadHandle {
+  id: string; kind: string; sourceId: string; sourceRevision: string; contentHash: string;
+  totalCharacters: number; offsetEncoding: string; readOnly?: boolean; executableDigest?: string;
+}
+
 export function readChatKnowledge(name: string, kind: string, value: string,
-  options: { start?: unknown; end?: unknown; sourceRevision?: unknown; contentHash?: unknown } = {},
+  options: SourceReadOptions = {},
   readSnapshot?: () => RetrievalSnapshot): string {
   const identityLimit = name === "pkm_search" ? 512 : 2048;
   if (!["pkm_search", "pkm_read"].includes(name) || !CHAT_KNOWLEDGE_KINDS.some(item => item === kind) || !value.trim() || value.length > identityLimit || /[\u0000-\u001f\u007f]/.test(value)) throw new Error("Provide a bounded knowledge query or identity.");
@@ -48,11 +62,15 @@ export function readChatKnowledge(name: string, kind: string, value: string,
   }
   if (!items.some(item => item.id === value)) throw new Error("Choose an existing local knowledge identity returned by pkm_search.");
   if (kind === "recipe") {
-    if (Object.values(options).some(value => value !== undefined)) throw new Error("Recipe definitions are pinned structured records; source-range options are not supported.");
     const recipe = recipes.find(item => item.recipeId === value)!;
-    const result = JSON.stringify({ id: value, revision: recipe.revision, executableDigest: recipe.executableDigest, definition: recipe.definition, metadata: recipe.metadata, truncated: false });
-    if (result.length > 16_000) throw new Error("Recipe definition exceeds the tool result limit; it was not truncated or executed.");
-    return result;
+    const document = { id:value, revision:recipe.revision, executableDigest:recipe.executableDigest,
+      definition:recipe.definition, metadata:recipe.metadata };
+    const complete = JSON.stringify({ ...document, truncated:false });
+    if (complete.length <= 16_000 && Object.values(options).every(value => value === undefined)) return complete;
+    const content = JSON.stringify(document);
+    return readSourceRange(content, { id:value, kind, sourceId:`pkm://knowledge/${recipe.knowledgeId}`,
+      sourceRevision:String(recipe.revision), contentHash:createHash("sha256").update(content).digest("hex"),
+      totalCharacters:content.length, offsetEncoding:"utf16", readOnly:true, executableDigest:recipe.executableDigest }, options);
   }
   const record = kind === "note" ? noteGet(value) : kind === "research" ? paperGet(value)
     : kind === "script" ? scriptGet(value) : kind === "subscription" ? (() => {
@@ -69,8 +87,12 @@ export function readChatKnowledge(name: string, kind: string, value: string,
     : `pkm://${kind === "skill" ? "skills" : kind === "research" ? "research" : "notes"}/${value.split("/").map(encodeURIComponent).join("/")}`;
   const handle = { id:value, kind, sourceId, sourceRevision, contentHash, totalCharacters:content.length,
     offsetEncoding:"utf16", ...(kind === "subscription" ? { readOnly:true } : {}) };
-  if (options.sourceRevision !== undefined && (typeof options.sourceRevision !== "string" || options.sourceRevision !== sourceRevision)) throw new Error("Source revision changed; fetch the current source handle before reading ranges.");
-  if (options.contentHash !== undefined && (typeof options.contentHash !== "string" || options.contentHash !== contentHash)) throw new Error("Source content hash changed; stale ranges were not returned.");
+  return readSourceRange(content, handle, options);
+}
+
+function readSourceRange(content: string, handle: SourceReadHandle, options: SourceReadOptions): string {
+  if (options.sourceRevision !== undefined && (typeof options.sourceRevision !== "string" || options.sourceRevision !== handle.sourceRevision)) throw new Error("Source revision changed; fetch the current source handle before reading ranges.");
+  if (options.contentHash !== undefined && (typeof options.contentHash !== "string" || options.contentHash !== handle.contentHash)) throw new Error("Source content hash changed; stale ranges were not returned.");
   const ranged = options.start !== undefined || options.end !== undefined;
   if (ranged) {
     if (!Number.isSafeInteger(options.start) || !Number.isSafeInteger(options.end) || Number(options.start) < 0

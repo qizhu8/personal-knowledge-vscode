@@ -14,6 +14,7 @@ import { ChatRoomLifecycle, ActiveChatRoom, StoredChatRoom } from "./chat-room-l
 import { SecretStorageLike } from "./chat-room-credentials";
 import { ChatJoinApprovalManager, JoinApprovalResult, PendingJoinApproval } from "./chat-join-approval";
 import { assertCollaborationMessageCanConverge, CollaborationError, CollaborationWarning, communicationReceiptTemplate, normalizeCollaborationMessage } from "./collaboration-model";
+import { parsePeerPacket } from "./peer-protocol";
 
 function constantTimeEquals(a: string, b: string): boolean {
   const ba = Buffer.from(a, "utf-8");
@@ -716,6 +717,7 @@ export class ChatHub {
         this.sendTo(conn.ws, { t: "error", code: "meeting-host-only", msg: "Only the Room Host can publish Meeting state.", correctable: true, connectionAlive: true });
         return;
       }
+
       const snapshot = frame.snapshot;
       if (!snapshot || typeof snapshot !== "object" || !Array.isArray(snapshot.history) || !Array.isArray(snapshot.trash) || JSON.stringify(snapshot).length > 1024 * 1024) {
         this.sendTo(conn.ws, { t: "error", code: "meeting-invalid", msg: "Meeting state is invalid or too large.", correctable: true, connectionAlive: true });
@@ -723,6 +725,20 @@ export class ChatHub {
       }
       roomState.meetingSnapshot = snapshot;
       this.broadcast(conn.room, { t: "meeting.snapshot", room: conn.room, snapshot });
+      return;
+    }
+
+    if (conn.joined && frame.t === "peer") {
+      try {
+        const packet = parsePeerPacket(frame.packet);
+        if (this.roomState(conn.room).muted.has(this.identityKey(conn))) throw new Error("Muted participants cannot send peer tasks.");
+        const targets = [...this.conns.values()].filter(peer => peer.joined && peer.room === conn.room
+          && peer.participantId === frame.target && peer.participantId !== conn.participantId);
+        if (targets.length !== 1) throw new Error("Choose exactly one connected peer in this Room.");
+        this.sendTo(targets[0].ws, { t: "peer", target: targets[0].participantId, from: conn.participantId, fromName: conn.user, packet });
+      } catch (error) {
+        this.sendTo(conn.ws, { t: "error", code: "peer-rejected", msg: error instanceof Error ? error.message : "Peer delivery failed.", correctable: true, connectionAlive: true });
+      }
       return;
     }
 

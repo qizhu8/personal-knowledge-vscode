@@ -1,4 +1,9 @@
-const vscode = globalThis.PkmWebviewApi || acquireVsCodeApi();
+const panelNativeApi = globalThis.PkmWebviewApi || acquireVsCodeApi();
+let panelInitialSnapshot = null;
+try { const value = document.querySelector('meta[name="pkm-panel-snapshot"]')?.content; if (value) panelInitialSnapshot = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(value), c => c.charCodeAt(0)))); } catch {}
+// Each VS Code webview owns its own API state. Host snapshots seed duplicate/serializer instances only.
+if (!panelNativeApi.getState() && panelInitialSnapshot && Object.keys(panelInitialSnapshot).length) panelNativeApi.setState(panelInitialSnapshot);
+const vscode = { getState:()=>panelNativeApi.getState(), postMessage:message=>panelNativeApi.postMessage(message), setState:value=>{ panelNativeApi.setState(value); panelNativeApi.postMessage({command:'panelViewState',state:value}); return value; } };
 const panelStylesReady = getComputedStyle(document.documentElement).getPropertyValue('--pkm-panel-css-ready').trim() === '1';
 if (panelStylesReady) {
   for (const id of ['topbar', 'mcp-global-warning', 'workspace-shell', 'ctx-menu', 'sync-modal-bg']) {
@@ -257,7 +262,7 @@ function fileSelectorCategoryTree(items) {
 function fileSelectorTreeItems(node) { return [...node.items, ...Object.values(node.folders).flatMap(fileSelectorTreeItems)]; }
 const uiIcon = (name, label = '') => `<span class="codicon codicon-${name}" aria-hidden="true"></span>${label ? `<span>${esc(label)}</span>` : ''}`;
 const ICON = {todo:uiIcon('circle-outline'),done:uiIcon('pass-filled'),'data-path':uiIcon('folder'),observation:uiIcon('eye'),general:uiIcon('note')};
-const surfacePanelTitles = { skills:'Skills', notes:'Notes', papers:'Research', agentSessions:'Agent Sessions', recipes:'Recipe Library', prompts:'Prompts', scripts:'Scripts', packages:'Packages', environments:'Environments', servers:'Servers', projects:'Projects', chatroom:'Threads', subscriptions:'Network & Sharing', githubSync:'GitHub Sync', backgroundTasks:'Background Tasks', mcp:'General & MCP', skillRouter:'Router' };
+const surfacePanelTitles = { skills:'Skills', notes:'Notes', papers:'Research', agentSessions:'Agent Sessions', recipes:'Recipe Library', actions:'Action Workbench', prompts:'Prompts', scripts:'Scripts', packages:'Packages', environments:'Environments', servers:'Servers', projects:'Projects', chatroom:'Threads', portalConnections:'Portal Connections', subscriptions:'Network & Sharing', githubSync:'GitHub Sync', backgroundTasks:'Background Tasks', mcp:'General & MCP', skillRouter:'Router' };
 let lastPanelTitle = '';
 function setPanelTitle(title) {
   const next = String(title || 'Personal Knowledge Manager').trim();
@@ -379,8 +384,8 @@ scheduleUiTranslation();
 const workspaceSurfaces = Object.freeze({
   knowledge:['skills','notes','papers'],
   tools:['prompts','scripts','packages','environments','servers'],
-  automation:['agentSessions','agentSnapshots','recipes'],
-  projects:['projects','chatroom'],
+  automation:['agentSessions','agentSnapshots','recipes','actions'],
+  projects:['projects','chatroom','portalConnections'],
   settings:['mcp','skillRouter','subscriptions','githubSync','backgroundTasks']
 });
 const workspaceDefaultSurface = Object.freeze({ knowledge:'skills', tools:'prompts', automation:'agentSessions', projects:'projects', settings:'mcp' });
@@ -394,7 +399,7 @@ const loadProfileRequests = new Map();
 const loadProfileResponseCommands = Object.freeze({
   list:'list', projectState:'projectState', envList:'envList', serverList:'serverList',
   subscriptionState:'subscriptionState', githubSyncState:'githubSyncState',
-  backgroundTasks:'backgroundTasks', chatState:'chatState', checkMcp:'mcpStatus',
+  backgroundTasks:'backgroundTasks', portalConnections:'portalConnections', chatState:'chatState', checkMcp:'mcpStatus',
   skillRouterStatus:'skillRouterStatus', setLoadProfiling:'mcpStatus',
 });
 function loadProfileEvent(event, detail = {}) {
@@ -440,13 +445,22 @@ function tabCacheIsFresh(updatedAt, now = Date.now()) {
   return Number(updatedAt) > 0 && now - Number(updatedAt) < TAB_CACHE_FRESH_MS;
 }
 const pendingActionButtons = new Map();
+const knowledgeTrashActionLabels = {
+  deleteNote:'Moving Note to Trash...', deleteSkill:'Moving Skill to Trash...', deletePaper:'Moving Paper to Trash...',
+  deleteScript:'Moving Script to Trash...', deleteAllPapers:'Moving Research to Trash...',
+  skillTrashFolder:'Moving Skill folder to Trash...', knowledgeTrashMove:'Moving to Trash...',
+  skillTrashRestore:'Restoring from Trash...', knowledgeTrashRestore:'Restoring from Trash...',
+  skillTrashDelete:'Permanently deleting Trash entry...', knowledgeTrashDelete:'Permanently deleting Trash entry...',
+  skillTrashEmpty:'Emptying Trash...', knowledgeTrashEmpty:'Emptying Trash...',
+};
 const actionTimeouts = {
   subscriptionCopyLink:10000, subscriptionConfigure:15000, subscriptionSetOnline:30000, subscriptionSetSharePublished:30000,
   subscriptionUpsertShare:30000, subscriptionDeleteShare:30000, subscriptionAdd:60000,
   subscriptionTestGitHubBranch:150000, subscriptionMountGitHub:150000,
   subscriptionRename:10000, subscriptionSetPriority:15000, subscriptionRefresh:60000, subscriptionRemove:30000,
   subscriptionRevealSecret:10000, subscriptionRotateSecret:30000, subscriptionUnblockIp:15000, subscriptionFork:30000, subscriptionOpenServerLink:15000,
-  skillTrashRestore:15000, skillTrashDelete:15000, skillTrashEmpty:30000,
+  deleteNote:15000, deleteSkill:15000, deletePaper:15000, deleteScript:15000, deleteAllPapers:30000,
+  skillTrashFolder:15000, skillTrashRestore:15000, skillTrashDelete:15000, skillTrashEmpty:30000,
   knowledgeTrashMove:15000, knowledgeTrashRestore:15000, knowledgeTrashDelete:15000, knowledgeTrashEmpty:30000,
   serverSubscriptionStatus:15000,
   serverSubscriptionRefresh:60000,
@@ -472,6 +486,7 @@ const actionTimeouts = {
 
 function restoreActionButton(entry) {
   clearTimeout(entry.timer);
+  entry.progress?.remove();
   if (!entry.button.isConnected) return;
   entry.button.disabled = false;
   entry.button.removeAttribute('aria-busy');
@@ -555,11 +570,23 @@ function timeoutAction(command, entry) {
 
 function beginAction(command, button) {
   const timeout = actionTimeouts[command];
-  if (!timeout || !(button instanceof HTMLButtonElement)) return true;
+  const trashLabel = knowledgeTrashActionLabels[command];
+  if (!timeout || (!trashLabel && !(button instanceof HTMLButtonElement))) return true;
+  if (trashLabel && Object.keys(knowledgeTrashActionLabels).some(action => pendingActionButtons.has(action))) return false;
+  if (!(button instanceof HTMLButtonElement)) button = document.createElement('button');
   if (button.disabled || pendingActionButtons.has(command)) return false;
   clearActionError(button);
   const entries = pendingActionButtons.get(command) || [];
-  const entry = { button, html:button.innerHTML, label:(button.textContent || command).trim(), timer:0 };
+  const entry = { button, html:button.innerHTML, label:(button.textContent || command).trim(), timer:0, progress:null };
+  if (trashLabel) {
+    entry.progress = document.createElement('div');
+    entry.progress.className = 'pk-action-progress';
+    entry.progress.setAttribute('role','status');
+    entry.progress.setAttribute('aria-live','polite');
+    entry.progress.setAttribute('aria-busy','true');
+    entry.progress.textContent = trashLabel;
+    document.body.appendChild(entry.progress);
+  }
   entry.timer = setTimeout(() => timeoutAction(command, entry), timeout);
   entries.push(entry);
   pendingActionButtons.set(command, entries);
@@ -804,7 +831,7 @@ window.addEventListener('message', e => {
     ['skills','notes','scripts'].forEach(invalidateKnowledgeTabView);
     if (['skills','notes','scripts'].includes(state.tab)) ask('list', { tab: state.tab, filter: state.filter, q: state.search, fresh: true }, null, true);
   }
-  else if (command === 'list' || command === 'listPartial')     { if (e.data.tab && e.data.tab !== state.tab) return; if (state.tab === 'skills' && (e.data.q || '') !== state.search) return; if (command === 'list') { skillsListLoading = false; finishAction('list','deleteSkill','skillTrashFolder','skillTrashRestore','skillTrashDelete','skillTrashEmpty','knowledgeTrashMove','knowledgeTrashRestore','knowledgeTrashDelete','knowledgeTrashEmpty'); } if (command === 'list' && revealRefreshedTreeItems(state.tab, state.items, data, pendingTreeRefresh)) pendingTreeRefresh = null; state.items = data; state.folders = e.data.folders || []; state.knowledgeGroups = e.data.knowledgeGroups || null; state.subscriptionGroups = e.data.subscriptionGroups || []; state.knowledgeTrash = e.data.knowledgeTrash || []; state.brokerSharedFolders = e.data.brokerSharedFolders || {}; if (Array.isArray(e.data.privateTopLevels)) state.privateTopLevels = e.data.privateTopLevels; renderList(); highlightDetailMatches(document.getElementById('layout'), state.search); }
+  else if (command === 'list' || command === 'listPartial')     { if (e.data.tab && e.data.tab !== state.tab) return; if (state.tab === 'skills' && (e.data.q || '') !== state.search) return; if (command === 'list') { skillsListLoading = false; finishAction('list'); } if (command === 'list' && revealRefreshedTreeItems(state.tab, state.items, data, pendingTreeRefresh)) pendingTreeRefresh = null; state.items = data; state.folders = e.data.folders || []; state.knowledgeGroups = e.data.knowledgeGroups || null; state.subscriptionGroups = e.data.subscriptionGroups || []; state.knowledgeTrash = e.data.knowledgeTrash || []; state.brokerSharedFolders = e.data.brokerSharedFolders || {}; if (Array.isArray(e.data.privateTopLevels)) state.privateTopLevels = e.data.privateTopLevels; renderList(); highlightDetailMatches(document.getElementById('layout'), state.search); }
   else if (command === 'listSubscriptionGroups') {
     if (e.data.tab !== state.tab) {
       updateCachedKnowledgeTabSubscriptions(e.data.tab, data || []);
@@ -814,6 +841,11 @@ window.addEventListener('message', e => {
     renderSubscribedGroups(document.getElementById('item-list'));
   }
   else if (command === 'detail') {
+    if (e.data.editIdentity && e.data.editRevision) {
+      const snapshot = vscode.getState() || {};
+      const preserve = panelRestoreActive && panelRestoreState.view?.selection && Object.keys(panelRestoreState.view?.forms || {}).length;
+      if (!preserve || !snapshot.editRevisions?.[e.data.editIdentity]) vscode.setState({ ...snapshot, editRevisions:{ ...(snapshot.editRevisions || {}), [e.data.editIdentity]:e.data.editRevision } });
+    }
     if (e.data.detailRequestId !== undefined
       && (e.data.detailRequestId !== detailRequestSequence || e.data.detailTab !== state.tab || !currentDetailRequest)) return;
     if (pendingEditSlug && data?.type === 'note' && data.slug === pendingEditSlug) {
@@ -834,9 +866,10 @@ window.addEventListener('message', e => {
   }
   else if (command === 'saved')    { ask('list', { tab: state.tab, filter: state.filter, q: state.search }); if (state.tab === 'papers') { ask('paperGroups', {}); ask('paperFacets', {}); } }
   else if (command === 'skillTrashResult') {
+    finishAction('deleteSkill','skillTrashFolder','skillTrashRestore','skillTrashDelete','skillTrashEmpty');
     if (!data?.ok) pkModal({ title:'Skills Trash', message:data?.error || 'Trash action failed.', okLabel:'OK' });
     else vscode.postMessage({ command:'toast', text:data.action === 'emptied' ? `Emptied ${Number(data.count)||0} Trash entries` : `${data.action === 'restored' ? 'Restored' : data.action === 'deleted' ? 'Permanently deleted' : 'Moved to Trash'}: ${data.path || ''}` });
-    currentDetail = null; currentDetailRequest = null; renderEmptyDetail();
+    if (data?.ok) { currentDetail = null; currentDetailRequest = null; renderEmptyDetail(); }
     ask('list', { tab:'skills', filter:'all', q:state.tab === 'skills' ? state.search : '', fresh:true });
   }
   else if (command === 'knowledgeTrashResult') {
@@ -912,6 +945,7 @@ window.addEventListener('message', e => {
   else if (command === 'githubSyncAutomationResult') { githubSyncOnAutomationResult(data); }
   else if (command === 'githubSyncRuntimeSnapshot') { for (const [targetId, runtime] of Object.entries(data || {})) githubSyncOnRuntimeState({ targetId, state:runtime }); }
   else if (command === 'backgroundTasks') { backgroundTasksOnSnapshot(data); finishLoadingProgress(); }
+  else if (command === 'portalConnections') { portalConnectionsOnSnapshot(data); finishLoadingProgress(); }
   else if (command === 'githubSyncRestored') { finishAction('githubSyncRestore'); vscode.postMessage({ command:'toast', text:`Restored ${data?.restored?.length || 0} file(s) from GitHub` }); }
   else if (command === 'githubSyncRestoreCancelled') { finishAction('githubSyncRestore'); }
   else if (command === 'githubSyncIdentityPicked') { finishAction('githubSyncPickIdentity'); githubSyncIdentityPicked(data?.identityFile || ''); }
@@ -1225,6 +1259,7 @@ function ask(command, payload, button, silent = false) {
     currentDetailRequest = { type:payload.type, key:payload.key };
     payload = { ...payload, detailRequestId:++detailRequestSequence, detailTab:state.tab };
   }
+  if (command === 'recipeUpdate' && typeof panelRecipeRevision === 'function') payload = { ...payload, expectedRecipeRevision:panelRecipeRevision(payload.recipeId) };
   const knowledgeLoadingLabels = {
     skills: 'Opening the spellbook…',
     notes: 'Opening the enchanted notebook…',
@@ -1307,7 +1342,7 @@ function isInitialViewResponse(command, message = {}) {
   const responseByTab = {
     skills:'list', notes:'list', papers:'list', prompts:'list', packages:'list', scripts:'list',
     environments:'envList', servers:'serverList', agentSessions:'projectState', recipes:'projectState', projects:'projectState',
-    chatroom:'chatState', mcp:'mcpStatus', skillRouter:'skillRouterStatus', subscriptions:'subscriptionState', githubSync:'githubSyncState', backgroundTasks:'backgroundTasks',
+    chatroom:'chatState', mcp:'mcpStatus', skillRouter:'skillRouterStatus', subscriptions:'subscriptionState', githubSync:'githubSyncState', backgroundTasks:'backgroundTasks', portalConnections:'portalConnections',
   };
   return responseByTab[state.tab] === command && (command !== 'list' || message.tab === state.tab);
 }

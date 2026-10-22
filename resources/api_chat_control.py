@@ -112,7 +112,7 @@ def register_api_chat_tools(mcp, store):
                 continue
         return {"ok": True, "schema_version": SCHEMA_VERSION, "hosts": hosts[:32], "truncated": len(hosts) > 32,
                 "tools": ["api_chat_models", "api_chat_list", "api_chat_create", "api_chat_send", "api_chat_get",
-                          "api_chat_cancel", "api_chat_request_get"],
+                          "api_chat_cancel", "api_chat_request_get", "portal_control"],
                 "policy": "Select a Host explicitly. Chats are visible and Group-only; no automatic Tasks. Sends use real selected models and Chat permissions, can incur credits, and are never retried automatically."}
 
     @mcp.tool(annotations={"readOnlyHint": True})
@@ -159,6 +159,29 @@ def register_api_chat_tools(mcp, store):
         """Read the existing request receipt without submitting or replaying it. A completed receipt is not proof that reply.status is complete; inspect model/tool results."""
         return _receipt(root, host_id, request_id)
 
+    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
+    def portal_control(host_id: str, operation: str, command_id: str, context_id: str = "",
+                       prompt: str = "", request_id: str = "", file_paths: list[str] | None = None) -> dict:
+        """Use a Chat-scoped Portal from Copilot or another MCP agent. First open without context_id: local UI names this conversation and pairs it (links never enter tool arguments). Poll api_chat_request_get for its local receipt and keep contextId in this conversation. status/send/get/cancel/disconnect/switch/permissions/files/reattach require that handle. reattach reconnects the same stored pairing after a restart or drop with an HMAC proof; permissions start empty and open requests are reconciled from durable receipts, never replayed. send needs a stable UUID request_id; get polls the ORIGINAL remote task. permissions opens the local timed permission matrix. files offers one batch of local file_paths, or a local picker when omitted; status reports verified receipts, not automatic installation. Every batch ALWAYS needs controlled-user consent, even under Allow All. Both Hosts must support transfers. External access requires local consent or an unexpired connection grant; MCP cannot authenticate individual Copilot conversations. Remote work uses a bound PKM companion Chat. open completes after pairing, link expiry or void (at most 10 minutes); its receipt state is connected/awaiting-peer/disconnected, and endpointScope=forwarded-localhost means the address is loopback on the computer running the VS Code UI, not proof the peer is unreachable. After pairing, the local user is offered one fixed-deadline external grant bound to that pairing and direction so status polling stops prompting. No automatic replay, role escalation, SSH or NAT traversal."""
+        if operation not in {"open", "status", "send", "get", "cancel", "disconnect", "switch", "permissions", "files", "reattach"}:
+            raise ValueError("Unsupported Portal operation.")
+        if context_id:
+            _host_id(context_id)
+        elif operation != "open":
+            raise ValueError("Use the contextId from this conversation's Portal open receipt.")
+        if not isinstance(prompt, str) or len(prompt) > 16000:
+            raise ValueError("Portal prompt must contain at most 16000 characters.")
+        if operation in {"send", "get", "cancel"}:
+            _host_id(request_id)
+        if operation == "send" and not prompt.strip():
+            raise ValueError("Portal send requires an explicit nonempty instruction.")
+        if file_paths is not None and (operation != "files" or not file_paths or len(file_paths) > 64
+                                       or any(not isinstance(value, str) or not value or len(value) > 4096 for value in file_paths)):
+            raise ValueError("file_paths requires 1-64 bounded local paths and operation=files.")
+        return _submit(root, host_id, "portal", {"operation": operation, "contextId": context_id,
+                       "prompt": prompt, "requestId": request_id, **({"paths": file_paths} if file_paths is not None else {})}, command_id)
+
     return {"api_chat_capabilities": api_chat_capabilities, "api_chat_models": api_chat_models,
             "api_chat_list": api_chat_list, "api_chat_create": api_chat_create, "api_chat_send": api_chat_send,
-            "api_chat_get": api_chat_get, "api_chat_cancel": api_chat_cancel, "api_chat_request_get": api_chat_request_get}
+            "api_chat_get": api_chat_get, "api_chat_cancel": api_chat_cancel, "api_chat_request_get": api_chat_request_get,
+            "portal_control": portal_control}

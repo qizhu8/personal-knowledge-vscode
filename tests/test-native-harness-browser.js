@@ -6,6 +6,103 @@ const { createNativeHarnessServer } = require("../dist/runtime/native-harness-se
 const { fixture, sessionId } = require("./native-harness-fixture");
 const { createChatBudgetLedger, recordChatBudgetUsage, recordChatBudgetRuntime } = require("../dist/chat/chat-budget-ledger");
 
+test("Run uses a rounded rectangle, displays only live activity, and distinguishes missing records from zero", { timeout:30000 }, async t => {
+  const browser = await chromium.launch({ headless:true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport:{ width:1100, height:900 } });
+  await page.setContent('<main id="host"></main>');
+  await page.addStyleTag({ path:path.join(__dirname, "../src/webview/agent-harness.css") });
+  await page.addScriptTag({ path:path.join(__dirname, "../src/webview/agent-harness.js") });
+  const data = fixture();
+  Object.assign(data, { todos:[], runs:[], actionRuns:[] });
+  data.harness = { state:"running", currentPhase:{ kind:"tool", label:"Calling read_file" }, attempts:[
+    { messageId:"earlier", status:"complete", memory:{ blocks:[{kind:"focus-topic"}] }, toolCalls:[],
+      retrieval:[{kind:"selection",receipt:{candidates:[{id:"n",label:"Recorded evidence",selected:true}]}}] },
+    { messageId:"latest", status:"running", toolCalls:[{name:"read_file",status:"running"}] }
+  ] };
+  await page.evaluate(initial => {
+    window.controller = PkmAgentHarness.mount(document.getElementById("host"), { initial, request:() => new Promise(() => {}) });
+    window.controller.showLifecycle();
+  }, data);
+  const run = page.locator('.pkm-harness-stage[data-stage=run]');
+  assert.equal(await run.locator(".pkm-harness-current-activity").innerText(), "read_file");
+  const shape = await run.evaluate(node => ({ radius:getComputedStyle(node).borderRadius, width:node.clientWidth, height:node.clientHeight }));
+  assert.equal(shape.radius, "12px");
+  assert(shape.width > shape.height, "Run is a rectangle, not a circle");
+  const failed = JSON.parse(JSON.stringify(data));
+  failed.harness.state = "failed";
+  Object.assign(failed.harness.attempts[1], { status:"failed", toolCalls:undefined, validation:{error:"Failed before model output"} });
+  await page.evaluate(value => window.controller.update(value, true), failed);
+  assert.equal(await run.locator(".pkm-harness-current-activity").count(), 0, "past activities disappear");
+  assert.match(await page.locator(".pkm-harness-inspector").innerText(), /Run \(last recorded\)/);
+  assert.match(await page.locator(".pkm-harness-inspector").innerText(), /not recorded/);
+  assert.match(await page.locator(".pkm-harness-inspector").innerText(), /Failed before model output/);
+  assert.match(await page.locator(".pkm-harness-ring-summary").innerText(), /Last recorded/);
+  const dashboard = page.getByRole("region", { name:"Agent runtime dashboard" });
+  assert.match(await dashboard.locator('[data-diagram=memory]').innerText(), /No Memory preparation receipt/);
+  const recorded = JSON.parse(JSON.stringify(failed));
+  Object.assign(recorded.harness.attempts[1], {
+    toolCalls:[{id:"r1",name:"read_chat_result",status:"complete"},{id:"r2",name:"read_chat_result",status:"complete"}],
+    memory:{blocks:Array.from({length:4},()=>({kind:"earlier-message"}))},
+    retrieval:Array.from({length:6},()=>({kind:"sent-round",receipt:{candidates:[{id:"r",selected:true}]}}))
+  });
+  await page.evaluate(value => { window.controller.update(value, true); window.controller.showLifecycle(); }, recorded);
+  assert.match(await page.locator(".pkm-harness-inspector").innerText(), /2 \(0 running, 0 failed\)/);
+  assert.match(await dashboard.locator('[data-diagram=memory]').innerText(), /earlier-message: 4 block/);
+  assert(await dashboard.locator('[data-diagram=retrieval] svg').count() > 0);
+  await page.getByRole("combobox", {name:"Attempt records"}).selectOption("earlier");
+  assert.match(await dashboard.locator('[data-diagram=memory]').innerText(), /focus-topic: 1 block/);
+  assert(await dashboard.locator('[data-diagram=retrieval] svg').count() > 0, "recorded historical retrieval renders a graph");
+  assert.match(await dashboard.locator('[data-diagram=recipes]').innerText(), /No available explicit Recipe/);
+});
+
+test("Agent runtime dashboard has a full-width diagnostic log, recorded parameters and simultaneous two-column diagrams", { timeout:30000 }, async t => {
+  const data = fixture(), attempt = data.harness.attempts[1], methods = [];
+  attempt.model = "fixture-model";
+  attempt.validation = { reportedUsage:{ inputTokens:100, outputTokens:20, reasoningTokens:5 } };
+  attempt.memory = { blocks:[{ kind:"focus-topic", piece:"topic", characters:400 }, { kind:"earlier-message", piece:"message", characters:900 }] };
+  attempt.retrieval = [{ kind:"selection", receipt:{ phase:"prepared", candidates:[{ id:"n1", selected:true }, { id:"n2", selected:false }] } }];
+  attempt.progress = { transitions:[{ label:'<script>window.__unsafe=true</script>', status:"failed", at:1 }] };
+  attempt.budgetReceipts = [{ round:0, transport:{ provider:"http" }, requested:{ contextWindow:4096 },
+    effective:{ outputTokens:512 }, ledger:{ thinkingPolicy:"provider-default", entries:[] } }];
+  const server = await createNativeHarnessServer({ extensionPath:path.join(__dirname, ".."), sessionId,
+    access() {}, async request(method) { methods.push(method); return data; } });
+  t.after(() => server.dispose());
+  const browser = await chromium.launch({ headless:true });
+  t.after(() => browser.close());
+  for (const width of [1280, 390, 320]) {
+    const page = await browser.newPage({ viewport:{ width, height:900 } });
+    const errors = [];
+    page.on("pageerror", error => errors.push(error.message));
+    await page.goto(server.url);
+    const dashboard = page.getByRole("region", { name:"Agent runtime dashboard" });
+    const log = page.getByRole("log", { name:"Latest runtime diagnostics" });
+    await log.waitFor();
+    assert.match(await log.innerText(), /ERROR \/.*<script>/);
+    assert.equal(await page.evaluate(() => Boolean(window.__unsafe)), false);
+    const parameters = page.getByRole("table", { name:"Recorded runtime parameters" });
+    assert.match(await parameters.innerText(), /fixture-model/);
+    assert.match(await parameters.innerText(), /100 \/ 20/);
+    assert.match(await parameters.innerText(), /Provider default \(no override\)/);
+    const geometry = await dashboard.evaluate(node => {
+      const grid = node.querySelector(".pkm-harness-diagram-grid");
+      return { width:node.clientWidth, columns:getComputedStyle(grid).gridTemplateColumns.split(" ").length,
+        log:node.querySelector('[role="log"]').getBoundingClientRect().width };
+    });
+    assert.equal(geometry.columns, geometry.width > 540 ? 2 : 1);
+    assert(geometry.log >= geometry.width - 2, "diagnostics span the entire dashboard");
+    assert.equal(await dashboard.locator(".pkm-harness-diagram-card").count(), 4);
+    assert.match(await dashboard.locator('[data-diagram="memory"]').innerText(), /focus-topic: 1 block/);
+    assert.match(await dashboard.locator('[data-diagram="retrieval"]').innerText(), /Selected: 1/);
+    await dashboard.getByRole("button", { name:"Inspect Harness flow", exact:true }).click();
+    await page.locator('.pkm-harness-node').first().waitFor();
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+    assert.deepEqual(errors, []);
+    await page.close();
+  }
+  assert(methods.every(method => method === "snapshot"), "dashboard never dispatches execution or summary calls");
+});
+
 test("production browser: round ledger distinguishes provider usage, estimates and unknown thinking without model requests", { timeout:60000 }, async t => {
   const data = fixture(), methods = [];
   const receipt = {
@@ -39,6 +136,51 @@ test("production browser: round ledger distinguishes provider usage, estimates a
     await page.getByRole("button", { name:"User/approval/continuation wait (milliseconds)", exact:true }).click();
     assert.match(await page.locator(".pkm-harness-inspector").innerText(), /45000/);
     assert.equal(await page.locator(".pkm-harness-node .pkm-harness-port").count(), 0, "Accounting is not executable");
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `No page overflow at ${width}px`);
+    await page.close();
+  }
+  assert(methods.length > 0 && methods.every(method => method === "snapshot"));
+});
+
+test("production browser: invocation accounting remains navigable before any model round and never becomes executable", { timeout:60000 }, async t => {
+  const data = fixture(), methods = [], attempt = data.harness.attempts[1];
+  delete attempt.budgetReceipts;
+  attempt.invocationBudgets = [{
+    schema: "pkm.chat.invocation-budget/v1", id: "retrieval:knowledge-provider", owner: "retrieval",
+    label: "Knowledge provider guard (not materialization)", status: "unavailable",
+    startedAt: 1000, finishedAt: 6010, elapsedMs: 5010, activeMs: 5010, userWaitMs: 0,
+    timingSource: "pkm.invocation-clock-excluding-tracked-user-wait",
+    deadlineMs: { value: 5000, source: "retrieval.guard.deadlineMs", method: "configured" }, detail: "Retrieval exceeded its deadline.",
+  }, {
+    schema: "pkm.chat.invocation-budget/v1", id: "tool:original-call", owner: "tool", label: "run_process", status: "interrupted",
+    startedAt: 7000, elapsedMs: 1200, activeMs: 200, userWaitMs: 1000,
+    timingSource: "pkm.invocation-clock-excluding-tracked-user-wait",
+    detail: "Completion and termination are unknown; no tool-wide deadline was instrumented.",
+  }];
+  const server = await createNativeHarnessServer({ extensionPath:path.join(__dirname, ".."), sessionId,
+    access() {}, async request(method) { methods.push(method); assert.equal(method, "snapshot"); return data; } });
+  t.after(() => server.dispose());
+  const browser = await chromium.launch({ headless:true });
+  t.after(() => browser.close());
+  for (const width of [1280, 390, 320]) {
+    const page = await browser.newPage({ viewport:{ width, height:900 } });
+    await page.goto(server.url);
+    await page.getByRole("button", { name:"Full execution graph", exact:true }).click();
+    const expand = title => page.getByRole("button", { name:`Open subgraph: ${title}`, exact:true }).click();
+    await expand("Implement and validate"); await expand("Fix the failing test"); await expand("Attempt 2");
+    await expand("2 observed invocations");
+    await page.getByRole("button", { name:"Knowledge provider guard (not materialization)", exact:true }).click();
+    const retrieval = await page.locator(".pkm-harness-inspector").innerText();
+    assert.match(retrieval, /unavailable/);
+    assert.match(retrieval, /5010/);
+    assert.match(retrieval, /configured/);
+    await page.getByRole("button", { name:"run_process", exact:true }).click();
+    const tool = await page.locator(".pkm-harness-inspector").innerText();
+    assert.match(tool, /interrupted/);
+    assert.match(tool, /userWaitMs/);
+    assert.match(tool, /1000/);
+    assert.match(tool, /termination are unknown/);
+    assert.equal(await page.locator(".pkm-harness-node .pkm-harness-port").count(), 0);
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `No page overflow at ${width}px`);
     await page.close();
   }
@@ -138,7 +280,7 @@ test("production browser: nested tabs, Recipe previews, retries, refresh and dua
   await page.waitForTimeout(150);
   assert.equal(snapshots, baseline, "paused automatic mode does not issue a snapshot request on events");
   await page.getByRole("button", { name:"Refresh", exact:true }).click();
-  await page.waitForFunction(() => document.querySelector('[data-node-id="a2"] strong')?.textContent === "complete");
+  await page.locator('[data-node-id="a2"] strong').filter({ hasText: /^complete$/ }).waitFor();
   await expand("Attempt 1");
   await expand("1 recorded calls");
   await expand("run_process");
@@ -147,7 +289,7 @@ test("production browser: nested tabs, Recipe previews, retries, refresh and dua
   assert.equal(await page.locator(".pkm-harness script").count(), 0);
   await page.getByRole("button", { name:"Preview (2000/2001 characters)", exact:true }).click();
   await page.getByRole("button", { name:"Load full recorded result", exact:true }).click();
-  await page.waitForFunction(() => document.querySelector(".pkm-harness-inspector pre")?.textContent.length === 2001);
+  await page.locator(".pkm-harness-inspector pre").filter({ hasText: /^x{2001}$/ }).waitFor();
   await parent(); await parent(); await parent();
   await expand("Attempt 2");
   await expand("1 recorded calls");

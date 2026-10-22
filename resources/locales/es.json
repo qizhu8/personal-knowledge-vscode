@@ -4,6 +4,11 @@
     "label": "Español"
   },
   "strings": {
+    "apiChat.responseStopped": "Respuesta detenida. Puedes enviar otro mensaje o reintentar esta respuesta.",
+    "apiChat.responseStoppedAfterTools": "Respuesta detenida. Las acciones anteriores de las herramientas no se deshicieron. Revisa sus resultados antes de reintentar.",
+    "apiChat.responseStoppedDuringTool": "Respuesta detenida. Una herramienta seguía ejecutándose y puede haber modificado archivos o enviado trabajo remoto. Detener no deshace ese trabajo. Revisa los resultados antes de reintentar.",
+    "apiChat.responseStoppedLegacy": "Respuesta detenida. Las acciones anteriores de las herramientas pueden haber surtido efecto; detener no las deshace. Revisa los resultados antes de reintentar.",
+    "apiChat.contextBudgetExceeded": "La entrada estimada más la salida reservada supera el presupuesto de contexto. Auméntalo, reduce el contexto o las herramientas, o elige un modelo con mayor capacidad.",
     "config.copilotRegistrationTitle": "Copilot CLI / SDK: registro manual único",
     "config.copilotRegistrationDescription": "PKM proporciona una definición MCP para VS Code, pero no modifica la configuración de Copilot CLI. Las sesiones CLI / SDK que no heredan esa definición necesitan un registro independiente. Si ya hay herramientas pkm, omita este paso; no duplique registros en el mismo cliente.",
     "config.copilotRegistrationPrepare": "Seleccione Python y complete arriba la preparación del entorno administrado y la generación del servidor. Instale Copilot CLI si el comando copilot no está disponible.",

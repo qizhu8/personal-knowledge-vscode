@@ -52,6 +52,15 @@ const base = {
 
 if (process.argv.includes("--preview") || process.argv.includes("--browser-check")) startPreview();
 else (async () => {
+  const publicSummaries = [];
+  let publicAnswer = "";
+  await streamApiChat({ ...base, onReasoningSummary:text => publicSummaries.push(text),
+    fetch:async () => events([
+      `data: ${JSON.stringify({ choices:[{ delta:{ reasoning_summary:"Check the inputs.", reasoning_content:"private internal text" }, finish_reason:null }] })}\n\n`,
+      delta("Done."), done,
+    ]) }, text => { publicAnswer += text; });
+  assert.deepStrictEqual(publicSummaries, ["Check the inputs."]);
+  assert.strictEqual(publicAnswer, "Done.");
   assert(decodeChatImage(testImage).length > 0);
   for (const image of [{ ...testImage, mimeType: "image/jpeg" }, { ...testImage, mimeType: "image/svg+xml" }, { ...testImage, dataBase64: "invalid" }, { ...testImage, dataBase64: testImage.dataBase64 + "\n" }, { ...testImage, label: "unsafe\nlabel" }, { ...testImage, dataBase64: Buffer.alloc(512 * 1024 + 1).toString("base64") }]) assert.throws(() => decodeChatImage(image));
   const tooWide = decodeChatImage(testImage); tooWide.writeUInt32BE(4097, 16);
@@ -582,7 +591,7 @@ else (async () => {
   await healthy;
   let controllerTimeout;
   try {
-    await Promise.race([testController(), new Promise((_, reject) => { controllerTimeout = setTimeout(() => reject(new Error("Chat controller test timed out with an unresolved operation")), 10_000); })]);
+    await Promise.race([testController(), new Promise((_, reject) => { controllerTimeout = setTimeout(() => reject(new Error("Chat controller/browser suite timed out with an unresolved operation")), 60_000); })]);
   } finally { clearTimeout(controllerTimeout); }
   await testCrossProcessStore();
   await testAcceptanceIsolation();
@@ -607,7 +616,13 @@ async function testCrossProcessStore() {
     const inputs = ["Work", "Renamed work"];
     let approval;
     const forgotten = [];
-    const host = { window: { showInputBox: async () => inputs.shift(), showQuickPick: async items => items.at(-1), showWarningMessage: async () => approval } };
+    const host = { window: { showInputBox: async () => inputs.shift(), showQuickPick: async items => items.at(-1), showWarningMessage: async () => approval,
+      createQuickPick: () => {
+        let accept;
+        return { value:"", items:[], selectedItems:[],
+          onDidChangeValue() {}, onDidHide() {}, onDidAccept(callback) { accept = callback; },
+          show() { this.selectedItems = [this.items.at(-1)]; accept(); }, dispose() {} };
+      } } };
     const action = message => handleChatLibraryAction(message, store, host, () => false, id => forgotten.push(id));
     await action({ type: "groupCreate" });
     const folder = store.library.read().groups[0].id;
@@ -739,6 +754,7 @@ function testControlRegistration(directory) {
       if (["fs", "path", "crypto", "os"].includes(name)) return require(name);
       if (name.endsWith("/filestore")) return { getStorePath: () => root };
       if (name === "./agent-control") return require("../dist/chat/agent-control");
+      if (name === "../chatroom/portal-runtime") return require("../dist/chatroom/portal-runtime");
       if (name === "./api-chat-shell") {
         const shell = {};
         vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../dist/chat/api-chat-shell.js"), "utf8"), {
@@ -818,6 +834,7 @@ async function testController() {
   const chatNotifications = [];
   const showChatNotification = (kind, title, actions) => new Promise(resolve => chatNotifications.push({ kind, title, actions, resolve }));
   const nativeInvocations = [];
+  const managedInvocations = [];
   const registeredTools = [{ name: "mcp_pkm_list_notes", description: "List notes" }, { name: "mcp_pkm_list_skills", description: "List skills" }, { name: "foreign_list_notes", description: "Foreign tool" }];
   class MockFileSystemError extends Error { constructor(code) { super(code); this.code = code; } }
   context.globalStorageUri = { fsPath: directory, path: directory };
@@ -826,6 +843,18 @@ async function testController() {
   let provider;
   try {
     Module._load = function(name, parent, ...rest) {
+      if (parent?.filename.endsWith("api-chat-view.js") && name === "./api-chat-mcp") {
+        const mcp = originalLoad.call(this, name, parent, ...rest);
+        mcp.connectManagedChatMcp = async () => ({
+          catalog: registeredTools.filter(tool => tool.name.startsWith("mcp_pkm_")).map(tool => ({ ...tool, managed: true, inputSchema: { type: "object" } })),
+          invoke: async (name, input) => { managedInvocations.push({ name, input }); return "managed fixture result"; },
+          close: async () => {},
+        });
+        return mcp;
+      }
+      if (parent?.filename.endsWith("api-chat-view.js") && name === "../mcp/mcp") {
+        return { ...originalLoad.call(this, name, parent, ...rest), mcpServerDefinitionData: () => ({ command: "fixture", args: [] }) };
+      }
       if (parent?.filename.endsWith("api-chat-view.js") && name === "../knowledge/filestore" || parent?.filename.endsWith("knowledge-reader.js") && name === "../knowledge/filestore") return { getStorePath: () => directory, noteList: () => [{ title: "Selected memory", slug: "note", content: "memory" }], noteGet: () => ({ content: "memory snapshot" }), skillList: () => [{ name: "Selected skill" }], skillGet: () => ({ content: "pkm skill snapshot" }),
         paperList: () => [{ title:"Selected research", slug:"research" }],
         paperGet: () => ({ content:"research snapshot", conclusions:["No production writes."], assumptions:["Fixture only."] }) };
@@ -848,7 +877,7 @@ async function testController() {
           showInputBox: async options => { if (inputs.length) return inputs.shift()(options); throw new Error("VS Code connection must not request API credentials"); },
           showOpenDialog: async () => selectedFiles, showSaveDialog: async () => saveDestination,
         },
-        workspace: { workspaceFolders: [], fs: { stat: async uri => { try { return await fs.promises.stat(uri.fsPath); } catch (error) { if (error.code === "ENOENT" && uri.path?.endsWith(".toolsets.jsonc")) throw new MockFileSystemError("FileNotFound"); throw error; } }, readFile: uri => readImage(uri), writeFile: async (uri, bytes) => { imageWrites++; await fs.promises.writeFile(uri.fsPath, bytes); } }, openTextDocument: async uri => ({ getText: () => fs.readFileSync(uri.fsPath, "utf8") }), asRelativePath: uri => path.relative(directory, uri.fsPath), getConfiguration: () => ({ get: (key, fallback) => configuration[key] ?? fallback }) },
+        workspace: { isTrusted: true, workspaceFolders: [], fs: { stat: async uri => { try { return await fs.promises.stat(uri.fsPath); } catch (error) { if (error.code === "ENOENT" && uri.path?.endsWith(".toolsets.jsonc")) throw new MockFileSystemError("FileNotFound"); throw error; } }, readFile: uri => readImage(uri), writeFile: async (uri, bytes) => { imageWrites++; await fs.promises.writeFile(uri.fsPath, bytes); } }, openTextDocument: async uri => ({ getText: () => fs.readFileSync(uri.fsPath, "utf8") }), asRelativePath: uri => path.relative(directory, uri.fsPath), getConfiguration: () => ({ get: (key, fallback) => configuration[key] ?? fallback }) },
       };
       return originalLoad.call(this, name, parent, ...rest);
     };
@@ -912,6 +941,17 @@ async function testController() {
     assert.strictEqual(provider.store.list().length, 1, "Opening a URL must not create a Chat");
     assert.strictEqual((await provider.agentControl("get", { chatId: deleteFixtureUrl })).chatUrl, deleteFixtureUrl);
     assert.strictEqual((await provider.agentControl("list", {})).chats[0].chatUrl, deleteFixtureUrl);
+    const chatDashboard = await provider.readVisualization(deleteFixture, "snapshot", {});
+    assert.strictEqual(chatDashboard.sessionId, deleteFixture);
+    assert.strictEqual(chatDashboard.origin, "pkm-native");
+    assert.deepStrictEqual(chatDashboard.runs, []);
+    assert.deepStrictEqual(chatDashboard.todos, []);
+    assert.match(chatDashboard.harnessWarnings.join("\n"), /Chat-only execution view/);
+    assert.strictEqual(provider.chat.sessionId, undefined, "Inspecting a Chat must not create a managed Task");
+    assert.strictEqual(requests.length, 0, "Inspecting a Chat dashboard must not invoke a model");
+    await assert.rejects(provider.readVisualization("../invalid", "snapshot", {}), /Choose a PKM Chat/);
+    await assert.rejects(provider.readVisualization("00000000-0000-0000-0000-000000000000", "snapshot", {}), /unavailable/);
+    await assert.rejects(provider.readVisualization(deleteFixture, "send", {}), /Unsupported read-only Visualization operation/);
     await provider.handle({ type: "openLink", value: deleteFixtureUrl });
     assert.deepStrictEqual(openedPkmPaths, [deleteFixtureUrl]);
     await assert.rejects(provider.handle({ type: "openLink", value: deleteFixtureUrl + "?secret=anything" }), /queries/);
@@ -942,6 +982,7 @@ async function testController() {
     await otherWindow.handle({ type: "ready" });
     assert.strictEqual(provider.store.list().length, 0, "Deleting the last Chat and refreshing two windows must create no blank Chats");
     assert.strictEqual(provider.store.list(true).length, 1, "Only the original trashed record may remain");
+    await assert.rejects(provider.readVisualization(deleteFixture, "snapshot", {}), /unavailable|Trash/);
     assert.strictEqual(posts.at(-1).chat, null);
     assert.strictEqual(otherPosts.at(-1).chat, null);
     await provider.handle({ type: "restoreChat", id: deleteFixture });
@@ -1589,6 +1630,28 @@ async function testController() {
     assert.strictEqual(nativeInvocations.at(-1).options.toolInvocationToken, undefined, "native host confirmation must not be bypassed with a fabricated token");
     requests.at(-1).resolve(); await nativeToolRun;
     registeredTools.pop();
+    const managed = provider.managedMcp.connection;
+    managed.catalog.push({ name: "mcp_pkm_update_note", description: "Update note", inputSchema: { type: "object" }, managed: true });
+    provider.chat.vscodeTools = ["mcp_pkm_list_notes", "mcp_pkm_update_note"];
+    const managedStarted = new Promise(resolve => { started = resolve; });
+    const managedRun = provider.handle({ type: "send", text: "Organize my PKM Notes with Allow All" });
+    await managedStarted;
+    const managedRequest = requests.at(-1).request;
+    const nativeCount = nativeInvocations.length;
+    const managedModalCount = nativeConfirmations.length;
+    const approvalsBefore = posts.filter(post => post.approvals?.length).length;
+    assert.strictEqual(await provider.requestPermission(provider.chat, "read-only", "Read external directory?",
+      "List names outside the current folder", managedRequest.signal), true);
+    await managedRequest.tools.find(tool => tool.name === "find_vscode_tools").execute({ query: "note" }, managedRequest.signal);
+    const invokeManaged = managedRequest.tools.find(tool => tool.name === "invoke_vscode_tool");
+    await invokeManaged.execute({ name: "mcp_pkm_list_notes", input: {} }, managedRequest.signal);
+    await invokeManaged.execute({ name: "mcp_pkm_update_note", input: { slug: "fixture", content: "Organized" } }, managedRequest.signal);
+    assert.deepStrictEqual(managedInvocations.slice(-2).map(call => call.name), ["mcp_pkm_list_notes", "mcp_pkm_update_note"]);
+    assert.strictEqual(nativeInvocations.length, nativeCount, "PKM Notes must never reach native tool confirmation");
+    assert.strictEqual(nativeConfirmations.length, managedModalCount);
+    assert.strictEqual(posts.filter(post => post.approvals?.length).length, approvalsBefore, "Allow All must not ask again for managed PKM tools");
+    requests.at(-1).resolve(); await managedRun;
+    managed.catalog.pop();
     Object.assign(provider.chat, savedNativeSettings); provider.persist(provider.chat);
     sessionApproval = "Ask Session";
     const targetChat = provider.chats.get(second); targetChat.builtinTools = ["ask_session"]; targetChat.includeHistory = false; targetChat.images = [testImage];
@@ -1642,6 +1705,10 @@ async function testController() {
     provider.chat.workerState.events = [];
     provider.persist(provider.chat);
     provider.chat.builtinTools = ["read_file"];
+    // Keep this persistence test independent of schema/history growth in earlier scenarios.
+    provider.chat.modelProfileId = "next";
+    provider.chat.contextWindow = 32768;
+    provider.persist(provider.chat);
     const receiptId = require("crypto").randomUUID();
     const receiptStart = posts.length;
     const receiptReady = new Promise(resolve => { started = resolve; });
@@ -1735,6 +1802,65 @@ async function testController() {
     await provider.handle({ type: "send", text: "Retain after stop", mode: "task", submissionId: retainedInput });
     await provider.handle({ type: "cancel" }); await stoppedRun; await new Promise(setImmediate);
     assert.strictEqual(requests.length, stoppedCount, "stop must not automatically launch queued work");
+    const mcpModule = require("../dist/chat/api-chat-mcp");
+    const regularStream = client.streamApiChat, regularConnect = mcpModule.connectApiChatMcp;
+    const regularServers = provider.chat.mcpServers;
+    let lateRequest, lateText, finishLateStream, finishClose, closeStarted = false;
+    let dispatchReady;
+    const dispatched = new Promise(resolve => { dispatchReady = resolve; });
+    provider.chat.mcpServers = [{ id: "hung-close", label: "Hung close", url: "http://localhost/mcp", enabled: true, tools: ["echo"] }];
+    mcpModule.connectApiChatMcp = async () => ({ tools: [], close: () => {
+      closeStarted = true; return new Promise(resolve => { finishClose = resolve; });
+    } });
+    client.streamApiChat = (request, onText) => request.purpose === "memory" ? Promise.resolve()
+      : new Promise(resolve => {
+        lateRequest = request; lateText = onText; finishLateStream = resolve;
+        request.onTool({ id: "hung-tool", name: "invoke_vscode_tool", arguments: "{}", status: "running" });
+        dispatchReady();
+      });
+    let stopDeadline;
+    try {
+      const hungRun = provider.send("Stop without waiting for the tool or connection", provider.chat);
+      await Promise.race([dispatched, hungRun.then(() => { throw new Error("The cancellation fixture ended before tool dispatch"); })]);
+      const deadline = new Promise((_, reject) => { stopDeadline = setTimeout(() => reject(new Error("Stop waited for an uncooperative tool/connection (250 ms deadline)")), 250); });
+      await Promise.race([(async () => { await provider.handle({ type: "cancel" }); await hungRun; })(), deadline]);
+      assert.strictEqual(provider.running.size, 0);
+      assert.strictEqual(provider.chat.messages.at(-1).status, "cancelled");
+      assert.match(provider.chat.messages.at(-1).error, /Response stopped.*tool was still running.*does not undo/);
+      assert.strictEqual(provider.store.load(first, false).messages.at(-1).status, "cancelled");
+      const stoppedSnapshot = JSON.stringify(provider.chat.messages.at(-1));
+      lateText("late output must be ignored");
+      lateRequest.onTool({ id: "hung-tool", name: "invoke_vscode_tool", arguments: "{}", status: "complete", result: "late" });
+      lateRequest.onImage(testImage);
+      lateRequest.onReasoningSummary("late summary");
+      lateRequest.onUsage({ inputTokens: 1, outputTokens: 1 });
+      lateRequest.onUsageMetadata(true);
+      lateRequest.onOutputBudgetWarning("late warning");
+      lateRequest.onInferenceTiming({});
+      assert.throws(() => lateRequest.beforeRound([], 1), /cancelled/);
+      assert.throws(() => lateRequest.onTransportPrepared({}), /cancelled/);
+      await assert.rejects(lateRequest.tools[0].execute({}, lateRequest.signal), /cancelled/);
+      assert.strictEqual(JSON.stringify(provider.chat.messages.at(-1)), stoppedSnapshot, "late callbacks must not overwrite a cancelled response");
+      await new Promise(setImmediate);
+      assert(closeStarted, "connection cleanup starts separately after the stopped state is persisted");
+    } finally {
+      clearTimeout(stopDeadline); finishLateStream?.(); finishClose?.();
+      client.streamApiChat = regularStream; mcpModule.connectApiChatMcp = regularConnect;
+      provider.chat.mcpServers = regularServers;
+      provider.persist(provider.chat);
+    }
+    let finishStoppedDiscovery;
+    provider.pkmMcpDiscovery = new Promise(resolve => { finishStoppedDiscovery = resolve; });
+    const discoveryDispatchCount = requests.length;
+    const checkingTools = provider.send("Cancel while checking MCP", provider.chat);
+    const cancelledDiscovery = assert.rejects(checkingTools, /cancelled/);
+    assert(provider.running.has(provider.chat.id), "MCP discovery must be cancellable before tool dispatch");
+    await provider.handle({ type: "cancel" });
+    await cancelledDiscovery;
+    finishStoppedDiscovery(); provider.pkmMcpDiscovery = undefined;
+    await new Promise(setImmediate);
+    assert.strictEqual(requests.length, discoveryDispatchCount, "a cancelled discovery must never later dispatch the message");
+    assert.strictEqual(provider.running.size, 0);
     assert.strictEqual(provider.store.load(first, false).queuedInputs[0].id, retainedInput);
     await provider.handle({ type: "select", id: first });
     assert.strictEqual(requests.length, stoppedCount, "reopening must not replay saved inputs");
@@ -1978,6 +2104,7 @@ async function testController() {
       await context.workspaceState.update("apiChat.defaultModel", rememberedModel);
     }
     await require("./test-chat-memory-controller")(ApiChatView, context, nativeClient, models);
+    await require("./test-chat-lifecycle-browser-controller")(ApiChatView, context, client, value => { sessionApproval = value; }, configuration);
     assert(chatNotifications.some(notice => notice.kind === "error" && notice.title.includes("Fixture extraction failure")),
       "A failed extraction receipt must notify without marking the saved reply failed");
     console.log("API chat controller tests passed: rename persistence/ownership, run/approval/unread status, model picker, request ownership, memory privacy, budgets and cancellation.");
@@ -2455,7 +2582,7 @@ async function testNativeTools() {
     }
     const boundaryCalls = [];
     let grantOutside = false;
-    const boundaryTools = createBuiltinTools(["read_file", "replace_text", "save_file"], host, undefined, undefined, async (name, prompt, detail, signal, boundary) => {
+    const boundaryTools = createBuiltinTools(["read_file", "list_directory", "replace_text", "save_file"], host, undefined, undefined, async (name, prompt, detail, signal, boundary) => {
       boundaryCalls.push({ name, boundary });
       return boundary === "workspace" || grantOutside;
     });
@@ -2463,7 +2590,11 @@ async function testNativeTools() {
     await boundaryRun("read_file", { path: "nested/sample.txt" });
     assert.strictEqual(boundaryCalls.length, 0, "Local reads need no outside grant");
     await assert.rejects(boundaryRun("read_file", { path: path.join(outside, "secret.txt") }), /declined/);
+    await assert.rejects(boundaryRun("list_directory", { path: outside }), /declined/);
     grantOutside = true;
+    const listing = JSON.parse(await boundaryRun("list_directory", { path: outside }));
+    assert(listing.entries.some(entry => entry.name === "secret.txt" && entry.type === "file"));
+    assert(!JSON.stringify(listing).includes('"content"'), "Directory listing must not read file bodies");
     assert.strictEqual(JSON.parse(await boundaryRun("read_file", { path: path.join(outside, "secret.txt") })).content, "outside");
     assert.strictEqual(JSON.parse(await boundaryRun("read_file", { path: path.relative(directory, path.join(outside, "secret.txt")) })).content, "outside");
     if (process.platform !== "win32") assert.strictEqual(JSON.parse(await boundaryRun("read_file", { path: "linked.txt" })).content, "outside");
@@ -2472,6 +2603,16 @@ async function testNativeTools() {
     assert.strictEqual(fs.readFileSync(path.join(outside, "secret.txt"), "utf8"), "authorized edit");
     assert.ok(boundaryCalls.every(call => call.boundary === "outside-workspace"));
     fs.writeFileSync(path.join(outside, ".env"), "fixture-only");
+    assert(!JSON.parse(await boundaryRun("list_directory", { path: outside })).entries.some(entry => entry.name === ".env"));
+    await assert.rejects(boundaryRun("list_directory", { path: path.join(outside, ".env") }), /excluded/);
+    const bulk = path.join(outside, "bulk");
+    fs.mkdirSync(bulk);
+    for (let index = 0; index < 205; index++) fs.writeFileSync(path.join(bulk, `entry-${index}.txt`), "");
+    const boundedListing = JSON.parse(await boundaryRun("list_directory", { path: bulk }));
+    assert.equal(boundedListing.entries.length, 200);
+    assert.equal(boundedListing.truncated, true);
+    const cancelledDirectory = new AbortController(); cancelledDirectory.abort();
+    await assert.rejects(boundaryTools.find(tool => tool.name === "list_directory").execute({ path: outside }, cancelledDirectory.signal), /cancelled/);
     await assert.rejects(boundaryRun("read_file", { path: path.join(outside, ".env") }), /excluded/);
     if (process.platform !== "win32") {
       fs.symlinkSync(path.join(outside, ".env"), path.join(directory, "sensitive-link.txt"));
@@ -2644,11 +2785,18 @@ async function testVscodeTools() {
   await ensurePkmMcpTools(discoveryHost);
   assert.strictEqual(startupCalls.length, 2, "untrusted workspaces must not launch MCP");
   discoveryHost.workspace = { isTrusted: true };
-  discoveryHost.commands.executeCommand = async () => { startupCalls.push("failed-start"); throw new Error("fixture startup failed"); };
-  await assert.rejects(ensurePkmMcpTools(discoveryHost), /fixture startup failed/);
+  const offers = [];
+  discoveryHost.commands.executeCommand = async (command, reason) => {
+    if (command === "personalKnowledge.offerPkmMcpConfiguration") { offers.push(reason); return; }
+    startupCalls.push("failed-start"); throw new Error("fixture startup failed");
+  };
+  await ensurePkmMcpTools(discoveryHost);
+  assert.match(offers[0], /fixture startup failed/);
   assert.strictEqual(startupCalls.length, 3, "a failed startup must not retry automatically");
-  discoveryHost.commands.executeCommand = async () => undefined;
-  await assert.rejects(ensurePkmMcpTools(discoveryHost), /unavailable after startup/);
+  discoveryHost.commands.executeCommand = async (command, reason) => { if (command === "personalKnowledge.offerPkmMcpConfiguration") offers.push(reason); };
+  await ensurePkmMcpTools(discoveryHost);
+  assert.match(offers[1], /VS Code did not publish pkm tools/);
+  assert.strictEqual(invoked.length, 0, "missing MCP must offer configuration, never invoke tools or launch an independent stdio server");
   await ensurePkmMcpTools({ workspace: { isTrusted: true } });
   const ts = require("typescript");
   const extensionSource = fs.readFileSync(path.join(__dirname, "../src/extension.ts"), "utf8");

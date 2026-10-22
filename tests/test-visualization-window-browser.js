@@ -35,6 +35,9 @@ function snapshot(title) {
       { id:"n2", label:"Old memo", kind:"note", method:"lexical", score:1, selected:false, reason:"below threshold" }] } }];
   attempt.memory = { turn:"t2", model:"memory-model", durationMs:850, blocks:[
     { kind:"focus-topic", piece:"topic:aml", characters:420 }, { kind:"earlier-message", piece:"m|m1", characters:900 }] };
+  attempt.memory.accounting = { schema:"pkm.memory.turn-accounting/v1", calls:1, reportedCalls:0, unreportedCalls:1 };
+  attempt.memory.calls = [{ purpose:"intent", status:"complete" }];
+  data.memoryReceiptReader = true;
   return data;
 }
 
@@ -51,7 +54,9 @@ async function open(t, viewport, mutate = () => {}) {
     if (message.type === "ready") await reply({ type:"library", library:library() });
     if (message.type === "request") {
       const chat = library().chats.find(item => item.id === message.chatId);
-      const data = message.method === "result" ? JSON.stringify({ results:[{ id:"a" }, { id:"b" }, { id:"c" }], pad:"y".repeat(2500) })
+      const data = message.method === "memoryReceipt" ? { schema:"pkm.memory.turn-receipt/v1", turn:"t2", phase:"done",
+        accounting:{ calls:2, reportedCalls:1, unreportedCalls:1, reportedUsage:{ inputTokens:100, outputTokens:30 } } }
+        : message.method === "result" ? JSON.stringify({ results:[{ id:"a" }, { id:"b" }, { id:"c" }], pad:"y".repeat(2500) })
         : (() => { const value = snapshot(chat.title); mutate(value); return value; })();
       if (message.method === "snapshot") data.updatedAt = `snapshot-${posted.filter(item => item.type === "request").length}`;
       const response = { type:"result", requestId:message.requestId, chatId:message.chatId, data };
@@ -217,6 +222,25 @@ test("visualization window: Chat tree mirrors groups and workers, dashboard enla
     await page.screenshot({ path:`${process.env.PKM_VIS_WINDOW_SCREENSHOT}-timeline.png`, fullPage:true });
   }
   assert(posted.filter(item => item.type === "request").every(item => item.method === "snapshot" && item.chatId === managerId));
+  assert.deepEqual(errors, []);
+});
+
+test("visualization window: independent Memory receipt is explicitly read without rewriting preparation evidence", { timeout:60000 }, async t => {
+  const { page, errors, posted } = await open(t, { width:390, height:900 });
+  await page.locator(`[data-chat-id="${managerId}"] > .pkm-vis-treerow`).click();
+  await page.getByRole("heading", { name:"Manager chat", level:1 }).waitFor();
+  await page.getByRole("navigation", { name:"Dashboard views" }).getByRole("button", { name:/^Execution graph/ }).click();
+  await page.getByRole("navigation", { name:"Graph ancestors" }).getByRole("button", { name:"Lifecycle", exact:true }).click();
+  await page.getByRole("button", { name:"Full execution graph", exact:true }).click();
+  const expand = title => page.getByRole("button", { name:`Open subgraph: ${title}`, exact:true }).click();
+  await expand("Implement and validate"); await expand("Fix the failing test"); await expand("Attempt 2");
+  await page.getByRole("button", { name:"Memory preparation accounting", exact:true }).click();
+  assert.match(await page.locator(".pkm-harness-inspector").innerText(), /Preparation snapshot only/);
+  await page.getByRole("button", { name:"Read durable Memory receipt", exact:true }).click();
+  await page.getByRole("heading", { name:"Durable Memory receipt (read-only)", exact:true }).waitFor();
+  assert.match(await page.locator(".pkm-harness-inspector").innerText(), /"phase": "done"[\s\S]*"calls": 2[\s\S]*"inputTokens": 100/);
+  assert.equal(posted.filter(message => message.method === "memoryReceipt").length, 1);
+  assert(posted.every(message => message.type !== "request" || ["snapshot", "memoryReceipt"].includes(message.method)));
   assert.deepEqual(errors, []);
 });
 

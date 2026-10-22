@@ -29,6 +29,34 @@ const register = reviewed => registration.registerCopilotMcp(definition, reviewe
 const write = value => fs.writeFileSync(filename, JSON.stringify(value));
 
 async function main() {
+  const nativeLaunch = { ...launch, cwd: path.join(fixture, "knowledge", "mcp-server") };
+  const workspaceConfig = path.join(fixture, "workspace", ".vscode", "mcp.json");
+  fs.mkdirSync(path.dirname(workspaceConfig), { recursive: true });
+  const scopedJsonc = '\uFEFF{\r\n  // Preserve this comment\r\n  "servers": { "other": { "type": "http", "url": "https://example.test/mcp" }, },\r\n  "inputs": [],\r\n}\r\n';
+  fs.writeFileSync(workspaceConfig, scopedJsonc);
+  const reviewedVscode = registration.inspectVscodeMcpRegistration(workspaceConfig, nativeLaunch);
+  await registration.registerVscodeMcp(workspaceConfig, nativeLaunch, reviewedVscode.revision);
+  const registeredJsonc = fs.readFileSync(workspaceConfig, "utf8");
+  assert(registeredJsonc.startsWith("\uFEFF") && registeredJsonc.includes("// Preserve this comment"));
+  const parsedVscode = registration.parseNativeMcpConfiguration(registeredJsonc);
+  assert.strictEqual(parsedVscode.servers.pkm.type, "stdio");
+  assert.strictEqual(parsedVscode.servers.pkm.cwd, nativeLaunch.cwd);
+  assert.strictEqual(parsedVscode.servers.pkm.env.ELECTRON_RUN_AS_NODE, "1");
+  assert.strictEqual(parsedVscode.servers.other.url, "https://example.test/mcp");
+  assert.deepStrictEqual(parsedVscode.inputs, []);
+  assert(fs.readdirSync(path.dirname(workspaceConfig)).some(name => name.includes(".pkm-backup-")));
+  const matchingVscode = registration.inspectVscodeMcpRegistration(workspaceConfig, nativeLaunch);
+  await registration.registerVscodeMcp(workspaceConfig, nativeLaunch, matchingVscode.revision);
+  assert.strictEqual(fs.readFileSync(workspaceConfig, "utf8"), registeredJsonc, "matching scoped configuration is idempotent");
+  fs.appendFileSync(workspaceConfig, "\n");
+  await assert.rejects(registration.registerVscodeMcp(workspaceConfig, nativeLaunch, matchingVscode.revision), /changed after review/);
+  assert.throws(() => registration.vscodeMcpConfiguration('{"servers":{"pkm":{"command":"different"}}}', nativeLaunch), /conflicts/);
+  assert.throws(() => registration.vscodeMcpConfiguration('{"servers":{}, "servers":{}}', nativeLaunch), /Duplicate/);
+  const profileConfig = path.join(fixture, "profile", "mcp.json");
+  const profileReview = registration.inspectVscodeMcpRegistration(profileConfig, nativeLaunch);
+  assert(!fs.existsSync(profileConfig));
+  await registration.registerVscodeMcp(profileConfig, nativeLaunch, profileReview.revision);
+  assert.strictEqual(JSON.parse(fs.readFileSync(profileConfig, "utf8")).servers.pkm.command, launch.command);
   assert.deepStrictEqual(definition, { type: "local", command: launch.command, args: launch.args, env: launch.env, tools: ["*"] });
   assert.strictEqual(inspect().state, "missing");
   assert(!fs.existsSync(path.dirname(filename)), "inspection must not create any configuration");
@@ -196,6 +224,73 @@ async function main() {
   assert.strictEqual(await commandSandbox.configure({ globalStorageUri: "profile/globalStorage/pkm" }), true);
   assert.strictEqual(selectedOwner, "native-provider");
   assert.strictEqual(refreshCount, 1);
+
+  const scopeChoices = [];
+  let scopeChoice = "none", scopeWrites = 0;
+  commandSandbox.vscode.window.showQuickPick = async items => { scopeChoices.push(...items); return items.find(item => item.id === scopeChoice); };
+  commandSandbox.configureNativeMcpDiscovery = async () => { scopeWrites++; return true; };
+  vm.runInNewContext(functionText("configurePkmMcp") + "\nthis.configureScope = configurePkmMcp;", commandSandbox);
+  assert.strictEqual(await commandSandbox.configureScope({}), false);
+  assert.deepStrictEqual(scopeChoices.map(item => item.id), ["account", "profile", "workspace", "none"]);
+  assert.strictEqual(scopeWrites, 0, "Do not configure must not write anything");
+  scopeChoice = undefined;
+  assert.strictEqual(await commandSandbox.configureScope({}), false);
+  scopeChoice = "account";
+  assert.strictEqual(await commandSandbox.configureScope({}), true);
+  assert.strictEqual(scopeWrites, 1, "account scope uses the existing managed native provider");
+  let notices = 0, configuredOffers = 0, respondToNotice;
+  commandSandbox.vscode.window.showWarningMessage = () => { notices++; return new Promise(resolve => { respondToNotice = resolve; }); };
+  commandSandbox.configurePkmMcp = async () => { configuredOffers++; return false; };
+  vm.runInNewContext("let _mcpConfigurationOffered = false; let _mcpConfigurationOffer;\n" + functionText("offerPkmMcpConfiguration") + "\nthis.offer = offerPkmMcpConfiguration;", commandSandbox);
+  const firstOffer = commandSandbox.offer({}, "Missing runtime");
+  const secondOffer = commandSandbox.offer({}, "Missing tools");
+  assert.strictEqual(notices, 1, "parallel discovery failures must show one notification");
+  respondToNotice("Configure MCP");
+  await Promise.all([firstOffer, secondOffer]);
+  assert.strictEqual(configuredOffers, 1);
+  await commandSandbox.offer({}, "still missing");
+  assert.strictEqual(notices, 1, "declining configuration must not repeatedly interrupt Chat");
+
+  const fileUri = filename => ({ fsPath: filename, toString: () => filename });
+  const scopeRoot = path.join(fixture, "scoped-ui");
+  let pickedScope = "profile", confirmScope = true, scopeOwner = "native-provider";
+  const scopedContext = { globalStorageUri: fileUri(path.join(scopeRoot, "User", "globalStorage", "pkm")) };
+  const scopedFolder = { name: "Project", uri: fileUri(path.join(scopeRoot, "Project")) };
+  const scopeSandbox = {
+    fs, process, os: require("os"), _storeReady: true,
+    getStorePath: () => nativeLaunch.cwd, mcpServerDefinitionData: () => nativeLaunch,
+    extensionHostDescription: () => "Windows account",
+    readAccountMcpBinding: () => ({ knowledgeRoot: nativeLaunch.cwd, registrationOwner: scopeOwner }),
+    writeAccountMcpBinding: async (_root, value) => { scopeOwner = value; },
+    refreshMcpDefinitions: () => {},
+    inspectVscodeMcpRegistration: registration.inspectVscodeMcpRegistration,
+    registerVscodeMcp: registration.registerVscodeMcp,
+    parseNativeMcpConfiguration: registration.parseNativeMcpConfiguration, assertNoManualPkm: registration.assertNoManualPkm,
+    vscode: {
+      env: {}, Uri: { joinPath: (base, ...parts) => fileUri(path.resolve(base.fsPath, ...parts)) },
+      workspace: { isTrusted: true, workspaceFolders: [scopedFolder], textDocuments: [] },
+      window: {
+        showQuickPick: async items => items.find(item => item.id === pickedScope),
+        showInformationMessage: async (_message, options) => options?.modal && confirmScope ? "Configure MCP" : undefined,
+      },
+    },
+  };
+  vm.runInNewContext(functionText("configurePkmMcp") + "\nthis.configure = configurePkmMcp;", scopeSandbox);
+  confirmScope = false;
+  assert.strictEqual(await scopeSandbox.configure(scopedContext), false);
+  assert.strictEqual(scopeOwner, "native-provider", "declining confirmation must preserve native ownership");
+  assert(!fs.existsSync(scopeRoot), "declining confirmation must not create directories or files");
+  confirmScope = true;
+  assert.strictEqual(await scopeSandbox.configure(scopedContext), true);
+  const userMcp = path.join(scopeRoot, "User", "mcp.json");
+  assert(fs.existsSync(userMcp), "user/profile selection must target this host profile, not the workspace");
+  assert.strictEqual(scopeOwner, "manual-user");
+  pickedScope = "workspace";
+  await assert.rejects(scopeSandbox.configure(scopedContext), /conflicts/, "must not add another scope over a matching user registration");
+  fs.unlinkSync(userMcp);
+  assert.strictEqual(await scopeSandbox.configure(scopedContext), true);
+  assert(fs.existsSync(path.join(scopedFolder.uri.fsPath, ".vscode", "mcp.json")), "workspace selection must target the selected folder");
+  assert(!fs.existsSync(userMcp));
 
   let writerCalls = 0;
   let cliState = "missing";

@@ -196,7 +196,7 @@ assert.strictEqual(githubSyncShield([legacySkillTarget], 'skills', {
 assert.strictEqual(JSON.stringify(legacySkillTargets), legacyTargetSnapshot, 'status comparison never rewrites stored synchronization records');
 assert(GITHUB_SYNC_CONTENT_TYPES.includes("agentSnapshots"));
 for (const type of GITHUB_SYNC_CONTENT_TYPES) {
-  assert.deepStrictEqual(defaults.public[type], { items: [], folders: ["packages", "servers", "agentSnapshots"].includes(type) ? [] : [""] });
+  assert.deepStrictEqual(defaults.public[type], { items: [], folders: ["packages", "servers", "agentSnapshots", "actions", "action-module-sets"].includes(type) ? [] : [""] });
   assert.deepStrictEqual(defaults.private[type], { items: [], folders: [] });
 }
 const extensionSource = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");

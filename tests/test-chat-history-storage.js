@@ -20,6 +20,33 @@ function message(content, extra = {}) {
   return { id: randomUUID(), role: "assistant", content, status: "complete", ...extra };
 }
 
+test("unchanged selected Chat refresh reuses validated history and detects another window's save", t => {
+  const { directory, store, chat } = fixture(t);
+  chat.messages = [message("x".repeat(2_000_000))];
+  store.save(chat);
+  const selected = store.load(chat.id, false);
+  const original = fs.readFileSync;
+  let segments = 0;
+  fs.readFileSync = function (file, ...args) {
+    if (String(file).endsWith(".bin")) segments++;
+    return original.call(this, file, ...args);
+  };
+  try {
+    assert.equal(store.reloadIfChanged(selected), selected);
+    assert.equal(store.reloadIfChanged(selected), selected);
+    assert.equal(segments, 0, "publishing unchanged state must not unpack and hash history again");
+    const other = new ApiChatStore(directory, store.namespace);
+    const updated = other.load(chat.id, false);
+    updated.title = "Updated in another window";
+    other.save(updated);
+    const refreshed = store.reloadIfChanged(selected);
+    assert.notEqual(refreshed, selected);
+    assert.equal(refreshed.title, updated.title);
+    assert(refreshed.revision > selected.revision);
+    assert.equal(store.reloadIfChanged(refreshed), refreshed);
+  } finally { fs.readFileSync = original; }
+});
+
 test("large legacy Chat migrates on save without a cumulative limit or lost evidence", t => {
   const { directory, store, chat, file } = fixture(t);
   chat.messages = Array.from({ length: 80 }, (_, index) => message(`Message ${index}`, {
@@ -180,6 +207,15 @@ test("controller publishes only a recent page and rejects cross-Chat or stale hi
   assert.equal(state.history.total, 151);
   assert(state.history.start > 0);
   assert.equal(chat.messages.length, 151);
+  const read = fs.readFileSync;
+  let repeatedSegmentReads = 0;
+  fs.readFileSync = function (file, ...args) {
+    if (String(file).endsWith(".bin")) repeatedSegmentReads++;
+    return read.call(this, file, ...args);
+  };
+  try { provider.publish(); provider.publish(); }
+  finally { fs.readFileSync = read; }
+  assert.equal(repeatedSegmentReads, 0, "actual publish and abandoned-owner check must not unpack unchanged idle history");
   const before = state.chat.messages[0].id;
   await provider.handle({ type: "historyPage", chatId: chat.id, id: before });
   const older = posts.at(-1);
@@ -199,4 +235,21 @@ test("image safety remains per message rather than imposing a cumulative history
   assert.doesNotThrow(() => store.validateImages(chat));
   assert.throws(() => store.validateImages({ ...chat, messages: [message("Invalid image count", { images: [image, image, image] })] }), /At most two/);
   assert.throws(() => store.validateImages({ ...chat, messages: [message("Invalid image size", { images: [{ ...image, dataBase64: Buffer.alloc(512 * 1024 + 1).toString("base64") }] })] }), /512 KB/);
+});
+
+test("Chat listing reuses unchanged files and still reflects renames and deletes", t => {
+  const { directory, store, chat } = fixture(t);
+  chat.title = "First"; store.save(chat);
+  const other = store.create(); other.title = "Other"; store.save(other);
+  assert.deepEqual(store.list().map(item => item.title).sort(), ["First", "Other"]);
+  const read = fs.readFileSync, reads = [];
+  fs.readFileSync = function (file, ...args) { reads.push(String(file)); return read.call(this, file, ...args); };
+  try {
+    store.list(); store.list(true);
+    assert.deepEqual(reads.filter(file => /api-chats.*\.json$/.test(file) && !file.endsWith("library.json")), [], "unchanged Chat files are not re-read");
+  } finally { fs.readFileSync = read; }
+  const renamed = store.load(chat.id, false); renamed.title = "Renamed with a much longer title"; store.save(renamed);
+  assert(store.list().some(item => item.id === chat.id && item.title === "Renamed with a much longer title"));
+  fs.rmSync(path.join(directory, "api-chats", store.namespace, `${other.id}.json`));
+  assert.deepEqual(store.list().map(item => item.id), [chat.id]);
 });

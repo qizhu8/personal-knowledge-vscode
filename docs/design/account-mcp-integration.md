@@ -10,8 +10,10 @@ workspaces using that same account and target. Native client trust, enablement,
 and per-chat tool selection remain separate decisions.
 
 Use the standard VS Code MCP definition provider as the primary VS Code entry
-point. Its definitions must derive from account-level configuration. Do not also
-install an equivalent workspace or user JSON entry. Prefer stdio: formal MCP
+point, derived from account-level configuration. Users may instead explicitly
+choose a VS Code user/profile or workspace-folder MCP file; doing so suppresses
+the account provider to avoid duplicate registrations. Choosing no configuration
+leaves files unchanged and does not launch a hidden fallback. Prefer stdio: formal MCP
 integration does not require opening a network port or running a public service.
 
 This decision does not promise one MCP process. Several Remote Extension Hosts
@@ -27,8 +29,11 @@ those processes; a centralized Remote Server is not a singleton Extension Host.
   compares the global configuration value before updating it. It determines
   provider support from the API, not registration timing: startup must not
   accidentally persist `manual-user` before the native provider is registered.
-- **PKM: Configure VS Code MCP Discovery** explicitly selects native ownership
-  after user/profile/workspace conflict checks and confirmation. Manual
+- **PKM: Configure VS Code MCP Discovery** offers account (native provider),
+  user/profile, workspace folder and no-configuration choices. File-based setup
+  preserves JSONC comments and other servers, backs up existing bytes and rejects
+  stale reviews or conflicts. Missing tools produce one configuration offer per
+  extension-host session, not an independent direct stdio launch. Manual
   ownership is not silently taken over at startup; changed bindings are backed
   up. The native definition builder checks paths without spawning Python.
 - **PKM: Register Copilot CLI MCP (User)** previews the current host/account and

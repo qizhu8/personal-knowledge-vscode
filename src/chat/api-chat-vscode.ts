@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { ChatInferenceClock } from "./chat-inference-timing";
 import { ApiChatMessage, ApiChatRequest, ApiChatToolEvent, ChatImage, decodeChatImage, ChatToolLoopGuard, toolBudgetSummary, chatInferenceOutputByteLimit, chatTransportReceipt } from "./api-chat-client";
 import { ChatModelProfile, ChatTokenUsage, checkReportedOutput, reportedReasoningTokens } from "./api-chat-models";
 import { abortable } from "./api-chat-tools";
@@ -40,7 +41,7 @@ export async function discoverVscodeModels(host = vscode, signal?: AbortSignal):
   }
 }
 
-type VscodeChatRequest = Pick<ApiChatRequest, "messages" | "purpose" | "signal" | "timeoutMs" | "maxOutputTokens" | "thinkingBudget" | "maxToolRounds" | "loopReviewAfterMs" | "loopReviewClock" | "loopExemptTools" | "onToolLoopNotice" | "contextWindow" | "onImage" | "tools" | "onTool" | "beforeRound" | "onTransportPrepared" | "onTransportSent" | "afterTools" | "onStage" | "onUsage" | "onUsageMetadata" | "onOutputBudgetWarning">;
+type VscodeChatRequest = Pick<ApiChatRequest, "messages" | "purpose" | "signal" | "timeoutMs" | "maxOutputTokens" | "thinkingBudget" | "maxToolRounds" | "loopReviewAfterMs" | "loopReviewClock" | "loopExemptTools" | "onToolLoopNotice" | "contextWindow" | "onImage" | "tools" | "onTool" | "beforeRound" | "onTransportPrepared" | "onTransportSent" | "afterTools" | "onStage" | "onUsage" | "onUsageMetadata" | "onInferenceTiming" | "onOutputBudgetWarning">;
 type NativePart = { value?: string; callId?: string; name?: string; input?: unknown; data?: Uint8Array; mimeType?: string };
 
 export async function streamVscodeChat(model: VscodeChatModel, request: VscodeChatRequest,
@@ -49,6 +50,7 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
   const { signal } = request;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
+  const inferenceClock = new ChatInferenceClock("vscode", request.onInferenceTiming);
   const loop = new ChatToolLoopGuard(request);
   const cancellation = new host.CancellationTokenSource();
   const native = host as typeof host & {
@@ -60,6 +62,7 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
   const cancel = () => { controller.abort(); cancellation.cancel(); };
   const activity = () => {
     if (controller.signal.aborted) return;
+    inferenceClock.activity();
     clearTimeout(timer);
     timer = setTimeout(() => { timedOut = true; cancel(); }, request.timeoutMs ?? 1_800_000);
   };
@@ -136,6 +139,7 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
       try { request.onTransportPrepared?.(transport); }
       catch (error) { throw new VscodeChatError(error instanceof Error ? error.message : "Transport receipt persistence failed."); }
       request.onStage?.("connecting");
+      inferenceClock.start();
       const response = await abortable(model.sendRequest(prompt, options, cancellation.token), controller.signal);
       activity();
       request.onTransportSent?.(transport);
@@ -153,11 +157,13 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
         const part = next.value;
         if (typeof part === "string" || (native.LanguageModelTextPart && part instanceof native.LanguageModelTextPart)) {
           const text = typeof part === "string" ? part : part.value || "";
+          if (text) inferenceClock.publicOutput();
           const nextOutput = outputText + text;
           await checkOutputBudget(nextOutput);
           outputText = nextOutput;
           responseText += text; if (text) onText(text);
         } else if (native.LanguageModelToolCallPart && part instanceof native.LanguageModelToolCallPart) {
+          inferenceClock.publicOutput();
           if (!part.callId || !part.name || part.callId.length > 200 || part.name.length > 200 || callIds.has(part.callId) || calls.length >= 16) throw new VscodeChatError("Invalid or duplicate tool call. No pending tool was executed.");
           const arguments_ = JSON.stringify(part.input);
           if (!arguments_ || arguments_.length > 32_000 || !part.input || typeof part.input !== "object" || Array.isArray(part.input)) throw new VscodeChatError("Invalid tool arguments. No pending tool was executed.");
@@ -188,10 +194,12 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
           const image: ChatImage = { label: `Model image ${imagesReturned}`, mimeType: part.mimeType as ChatImage["mimeType"], dataBase64: Buffer.from(part.data).toString("base64") };
           try { decodeChatImage(image); } catch { throw new VscodeChatError("Invalid PNG/JPEG image response; partial output was preserved."); }
           responseImages.push(image); request.onImage(image);
+          inferenceClock.publicOutput();
         } else throw new VscodeChatError("The model returned an unsupported response part.");
       }
       if (outputText) await checkOutputBudget(outputText, true);
       clearTimeout(timer);
+      inferenceClock.finish("stream-ended");
       if (usage) request.onUsage?.(usage);
       if (usage) {
         try { checkReportedOutput(usage, remaining, request.thinkingBudget); }
@@ -244,5 +252,6 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
     clearTimeout(timer);
     signal.removeEventListener("abort", cancel);
     cancellation.cancel(); cancellation.dispose();
+    inferenceClock.finish("interrupted");
   }
 }

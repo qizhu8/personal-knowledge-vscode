@@ -1,3 +1,4 @@
+import { PanelRegistry, clonePanelSnapshot as panelsSnapshot } from "./ui/panel-registry";
 import { withCrossProcessLock } from "./runtime/cross-process-lock";
 import { ensureRecipeCompiler } from "./mcp/recipe-compiler";
 import { assertPkmWatchRootAllowed, createBoundedFileWatcher, isPkmWatchDirectory } from "./runtime/bounded-file-watcher";
@@ -43,12 +44,23 @@ import {
 } from "./knowledge/filestore";
 import { checkedMarkdownPath, importMarkdownAssetBundle, isMarkdownAssetDirectory, MarkdownAssetArea, markdownAssetDirectory, markdownBundleDocuments, listedMarkdownAssets } from "./knowledge/markdown-assets";
 import { manageMarkdownAssets } from "./ui/markdown-assets";
+import { reviewAssetClassification, reviewAssetClassificationRollback } from "./ui/asset-classification";
+import { importGitPackage, updateGitPackage } from "./knowledge/git-package";
 import { migrateDbToFiles } from "./knowledge/migrate";
 import {
-  initServers, disposeServers, serverList, serverImport, serverCreate,
+  initServers, disposeServers, serverList, serverImport, serverImportGit, serverUpdateGit, serverCreate,
   serverUpdate, serverGroupList, serverCreateGroup, serverMoveGroup, serverPortOwner, serverNetworkAddresses, forceStopExternalServer, serverDelete, startServer, stopServer, restartServer, setServerPort, serverLog, serverDir,
 } from "./servers/servers";
 import { ChatHub, ChatClient, ChatMessage, Member, FileMeta, AgentRuntimeState, ChatMode, ReplyPolicy, MAX_FILE_BYTES } from "./chatroom/chatroom";
+import { PeerResumeRecord, PeerSession, validPeerResumeRecord } from "./chatroom/peer-session";
+import { boundPortalToolOutputs } from "./chatroom/portal-observation";
+import { assertPeerEndpoint } from "./chatroom/peer-protocol";
+import { createPortalLink, parsePortalLink } from "./chatroom/portal-link";
+import { configurePortalRuntime, portalChanged, PortalObserver, PortalSource, PortalReview } from "./chatroom/portal-runtime";
+import { endpointScope, PortalConnectionJournal, PortalConnectionLive, PortalConnectionSnapshot } from "./chatroom/portal-connections";
+import { PortalPermissions, PORTAL_PERMISSION_DIMENSIONS } from "./chatroom/portal-permissions";
+import { toolPermissionScope } from "./chat/permissions";
+import { PortalFiles, PortalTransferStatus } from "./chatroom/portal-files";
 import { MeetingStateStore, MeetingRoomSnapshot } from "./chatroom/meeting-state";
 import { ChatMeetingLifecycle, isFinalLeadSummary } from "./chatroom/chat-meeting-lifecycle";
 import { messageAddressesManagedAgent } from "./chatroom/chat-managed-agent-routing";
@@ -84,13 +96,13 @@ import { parsePkmLocator, PkmLocatorError, resolvePkmLocator, ResolvedPkmLocator
 import { subscriptionNavigationRoot, SubscriptionNavigationNode } from "./ui/navigation-subscriptions";
 import { createRetrievalSnapshot, materializeRetrievalSource, materializeRetrievalCandidates,
   retrievalDocumentForSource, retrievalSourceValidation } from "./retrieval/retrieval-snapshot";
-import { RetrievalWorkerManager } from "./retrieval/retrieval-worker";
+import { RetrievalWorkerManager, type RetrievalWorkerStatus } from "./retrieval/retrieval-worker";
 import { cloudSynchronizedPath, extensionHostDescription, isAbsoluteForPlatform, isForeignAbsolutePath, resolveMachineStorePath } from "./knowledge/store-path";
 import { loadLocaleCatalogs, loadLocaleManifest, localizedText, normalizeUiLanguage, resolveUiLanguage, UiLanguageSetting, uiLanguageSetting } from "./ui/localization";
 import { decideInitialExperience, FEATURE_TOUR_MODULES, minorRelease } from "./ui/onboarding-experience";
 import { AiBackend, aiSummarizeScript, listAiBackends, runAiPrompt, scriptCacheDir } from "./ai/ai";
-import { registerApiChatShell } from "./chat/api-chat-shell";
-import { actionRequest, initializeActionChat, openActionWorkbench, openActionWorkbenchInBrowser } from "./ui/action-browser";
+import { registerApiChatShell, setChatStartupTrace } from "./chat/api-chat-shell";
+import { actionRequest, initializeActionChat, openActionWorkbench, openActionWorkbenchInBrowser, renderEmbeddedActionWorkbench, handleActionWorkbenchMessage } from "./ui/action-browser";
 import { createNativeHarnessServer } from "./runtime/native-harness-server";
 import { readHarnessActions } from "./runtime/native-harness-actions";
 import { projectCockpits } from "./workflows/project-cockpit";
@@ -99,12 +111,12 @@ import { agentSessionOrigin, apiChatGroupSnapshots, apiChatSessionHarnessSnapsho
 import {
   cancelMcpPythonScan, combinedMcpRegistry,
   configuredMcpFeatureDomains, detectMcpPython, ensureMcpRuntime, generateMcpServer, MCP_FEATURE_DOMAINS, McpFeatureDomain,
-  managedMcpRuntimePath, managedMcpServerDirectory, mcpProcessStatus, mcpRuntimeManualCommands, mcpRuntimeStatus, mcpServerDefinitionData, mcpStatus, streamMcpPythonCandidates,
+  managedMcpRuntimePath, managedMcpServerDirectory, mcpProcessStatus, mcpRuntimeManualCommands, mcpRuntimeStatus, mcpRuntimeStatusAsync, warmMcpPythonProbes, mcpServerDefinitionData, mcpStatus, streamMcpPythonCandidates,
   resolveMcpPython, validateMcpPython, writeMcpFeatureDomainConfig, writeActionWorkspaceConfig, trashKnowledgeFileViaMcp,
 } from "./mcp/mcp";
 import { nativeMcpCwdUri } from "./mcp/mcp-native-location";
 import { readAccountMcpBinding, writeAccountMcpBinding, accountKnowledgeSecurity } from "./mcp/mcp-account-binding";
-import { assertNoManualPkm, copilotMcpConfigPath, copilotMcpDefinition, inspectCopilotMcpRegistration, parseNativeMcpConfiguration, registerCopilotMcp } from "./mcp/mcp-client-registration";
+import { assertNoManualPkm, copilotMcpConfigPath, copilotMcpDefinition, inspectCopilotMcpRegistration, parseNativeMcpConfiguration, registerCopilotMcp, inspectVscodeMcpRegistration, registerVscodeMcp } from "./mcp/mcp-client-registration";
 import { scheduleRestoredWebviewRecovery } from "./ui/webview-restoration";
 import {
   disconnectPkmSkill, retirePkmSkillProjections,
@@ -119,7 +131,7 @@ import { recipeBrowserEditorDocument } from "./ui/recipe-browser";
 import { availableSkillRouterSources, normalizeSkillRouterSourcePriority, SkillRouterSource } from "./skills/skill-router-config";
 import {
   GITHUB_SYNC_CONTENT_TYPES, GitHubPublicationMigration, GitHubPublicationMigrationSource, GitHubSyncCatalog, GitHubSyncConflictError, GitHubSyncContentType, GitHubSyncCredentials, GitHubSyncExtensionCompatibilityError, GitHubSyncFolderFingerprints, GitHubSyncRecipePull, GitHubSyncRecipeDelete, GitHubSyncTarget, githubSyncMigrationCanonicalFiles,
-  completeGitHubSyncTransaction, createGitHubSyncIdentity, discoverGitHubCredentialManagerAccounts, discoverGitHubSshIdentities, fetchGitHubRemoteSnapshot, githubSyncAuthenticationSessionOptions, githubSyncEntryShields, githubSyncExcludedPaths, githubSyncFolderShields, githubSyncIgnoredPath, githubSyncIsTextContent, githubSyncManagedContent, githubSyncManifestFileFingerprints, githubSyncManifestFolderFingerprints, githubSyncResultIsNoChange, githubSyncSafeRelativePath, githubSyncShield, normalizeGitHubSyncTarget, previewGitHubSyncTarget,
+  completeGitHubSyncTransaction, validateGitHubSyncTransaction, createGitHubSyncIdentity, discoverGitHubCredentialManagerAccounts, discoverGitHubSshIdentities, fetchGitHubRemoteSnapshot, githubSyncAuthenticationSessionOptions, githubSyncEntryShields, githubSyncExcludedPaths, githubSyncFolderShields, githubSyncIgnoredPath, githubSyncIsTextContent, githubSyncManagedContent, githubSyncManifestFileFingerprints, githubSyncManifestFolderFingerprints, githubSyncResultIsNoChange, githubSyncSafeRelativePath, githubSyncShield, normalizeGitHubSyncTarget, previewGitHubSyncTarget,
   applyGitHubRemoteAuthority, completeGitHubRemoteAuthorityBackup, githubSyncLocalFingerprints, previewGitHubRemoteAuthority, probeGitHubSyncAuthentication, probeGitHubSyncHttpsAuthentication, probeGitHubSyncVscodeAuthentication, readGitHubCachedManifest, readGitHubRemoteFile, readGitHubRemoteFilesForSubscription, readGitHubRemoteManifest, replaceGitHubSyncFilesAtomically, restoreGitHubRemoteFiles, testGitHubSyncAuthentication,
   inspectGitHubSyncLocalContent,
 } from "./sync/github-sync";
@@ -144,6 +156,7 @@ import {
 import { PkmServiceClient, PkmServiceRecoveryPersistenceError } from "./runtime/pkm-service";
 import { BackgroundTaskProducer, BackgroundTaskRegistry } from "./runtime/background-task-registry";
 import { ActionBackgroundTasks } from "./runtime/action-background-tasks";
+import { StatusDashboard, dashboardSyncTargets, indexBuildPercent } from "./ui/status-dashboard";
 
 let projectStoreBinding: { root: string; store: ProjectStore } | undefined;
 
@@ -531,7 +544,11 @@ async function agentSessionProjectStateData(): Promise<any> {
       return [{ groupId: group.groupId, hostSessionId: group.hostSessionId, hostKind: String(group.hostKind || "unknown"), title: typeof group.title === "string" ? group.title : "", deletedAt: group.deletedAt }];
     } catch { return []; }
   });
-  const agentSessionGroups = [...new Map([...storedGroups, ...apiChatGroupSnapshots(path.join(getStorePath(), ".pkm", "state"))].map(group => [group.groupId, group])).values()];
+  const agentSessionGroups = [...new Map([...storedGroups, ...apiChatGroupSnapshots(path.join(getStorePath(), ".pkm", "state"))].map(group => [group.groupId, group])).values()]
+    .map(group => {
+      const portal = getChatMgr().portalStateForChat(group.hostSessionId);
+      return { ...group, portal: portal && { connected: portal.connected, binding: portal.binding } };
+    });
   return {
     ...snapshot,
     projects: snapshot.projects.map(project => ({ ...project, objectKind: "Project" })),
@@ -975,7 +992,7 @@ class LoadProfiler {
 const loadProfiler = new LoadProfiler();
 let sharedMarket: SharedMarketManager | undefined;
 const RETRIEVAL_ENGINE_VERSION = "0.3.0.dev2026100504";
-const RETRIEVAL_CONFIGURATION_HASH = createHash("sha256").update("retrieval-boundary-v2|exact-match-v1|bm25-academic-k1=0.9-b=0.4|typed-prior-v1|derived-link-graph-v1").digest("hex");
+const RETRIEVAL_CONFIGURATION_HASH = createHash("sha256").update("retrieval-boundary-v2|exact-match-v1|bm25-academic-k1=0.9-b=0.4|typed-prior-v1|derived-link-graph-v1|dual-path-rrf60-fuzzy08-v1").digest("hex");
 let retrievalWorker: RetrievalWorkerManager | undefined;
 let retrievalRefreshTimer: NodeJS.Timeout | undefined;
 let retrievalRefreshRunning: Promise<void> | undefined;
@@ -1002,11 +1019,10 @@ let performanceStateDir = "";
 let activationStartedAt = 0;
 let firstContentRecorded = false;
 let knowledgeListRequestSequence = 0;
-const latestKnowledgeListRequest = new Map<string, number>();
 
 function invalidatePendingSubscriptionGroupLists(): void {
   knowledgeListRequestSequence += 1;
-  latestKnowledgeListRequest.clear();
+  for (const session of [panels.staging, ...panels.instances.values()]) session.listRequests.clear();
 }
 
 function refreshKnowledgeInventory(context: vscode.ExtensionContext): Promise<void> {
@@ -1019,13 +1035,13 @@ function refreshKnowledgeInventory(context: vscode.ExtensionContext): Promise<vo
       progress: { current: progress.scanned, unit: "files" },
     });
     if (progress.batchCount) {
-      panel?.webview.postMessage({ command: "inventoryBatch", data: { count: progress.batchCount, scanned: progress.scanned } });
+      postToPanel({ command: "inventoryBatch", data: { count: progress.batchCount, scanned: progress.scanned } });
     }
   }).then(snapshot => {
     if (performanceStateDir) recordPerformanceMetric(performanceStateDir, "inventory.refresh_ms", Date.now() - startedAt, snapshot.stats.scanned);
     log.info(`knowledge inventory ready revision=${snapshot.revision.slice(0, 12)} scanned=${snapshot.stats.scanned} reused=${snapshot.stats.reused} parsed=${snapshot.stats.parsed} removed=${snapshot.stats.removed}`);
     _treeProvider?.refresh();
-    panel?.webview.postMessage({ command: "inventoryReady", data: { revision: snapshot.revision, stats: snapshot.stats } });
+    postToPanel({ command: "inventoryReady", data: { revision: snapshot.revision, stats: snapshot.stats } });
   }).catch(error => log.warn(`knowledge inventory refresh failed: ${(error as Error).message}`))
     .finally(() => inventoryTask.idle());
 }
@@ -1201,7 +1217,7 @@ async function skillRouterStatusData(context: vscode.ExtensionContext): Promise<
 }
 
 async function refreshRetrievalIndex(context: vscode.ExtensionContext): Promise<void> {
-  if (!getStorePath() || !mcpRuntimeStatus().healthy) return;
+  if (!getStorePath() || !(await mcpRuntimeStatusAsync()).healthy) return;
   retrievalWorker ||= new RetrievalWorkerManager(
     retrievalStateDirectory(context),
     path.join(context.extensionPath, "resources", "retrieval_worker.py"),
@@ -1260,7 +1276,7 @@ function schedulePublishedShareRefresh(context: vscode.ExtensionContext, delay =
         title: "PKM: Refreshing published Brokers",
       }, async () => {
         const changed = await sharedMarket?.refreshPublishedShares() || 0;
-        if (changed && panel) void handleMessage({ command: "subscriptionState", refresh: false }, message => panel?.webview.postMessage(message), context);
+        if (changed && activePanel()) void handleMessage({ command: "subscriptionState", refresh: false }, message => postToPanel(message), context);
       });
     }).catch(error => {
       log.warn(`background Broker refresh failed: ${(error as Error).message}`);
@@ -1839,6 +1855,7 @@ async function acceptGitHubSyncConflict(
         ...(source && source !== destination ? [{ destination: source, content: undefined, guard: { original: originalLocal } }] : []),
       ]),
     "GitHub Sync conflict acceptance",
+    getStorePath(),
   );
   if (recipeCandidates.length) {
     const store = currentProjectStore();
@@ -1853,7 +1870,7 @@ async function acceptGitHubSyncConflict(
     .map(candidate => candidate.file.itemId));
   for (const { file } of candidates) {
     if (file.privacy === "private" && file.type !== "agentSnapshots") {
-      const topLevel = (file.resultPath || file.path).split("/").slice(1, -1)[0];
+      const topLevel = file.type === "actions" ? file.itemId : (file.resultPath || file.path).split("/").slice(1, -1)[0];
       if (topLevel) setTopLevelPrivacy(file.type as PrivacyContentType, topLevel, true);
     }
   }
@@ -2053,6 +2070,11 @@ async function finalizeGitHubSyncServiceResult(
   result: GitHubSyncResult, reportRefresh?: () => void, localChangeFingerprint?: string,
 ): Promise<void> {
   const target = githubSyncTargetById(context, targetId);
+  // In particular, a recovered partial result can outlive the checkout's latest transaction.
+  // Validate before changing Recipes, privacy, lastSync or conflict records, not only when acknowledging.
+  validateGitHubSyncTransaction(path.join(githubSyncStateDirectory(context), "checkouts"), targetId, result.transactionId, {
+    repository: target.repository, branch: target.branch, commit: result.commit,
+  });
   applyGitHubSyncRecipePulls(result.recipePulls);
   applyGitHubSyncRecipeDeletes(result.recipeDeletes);
   const changedLocalContent = result.pulled.length > 0 || result.deletedLocal.length > 0
@@ -2211,7 +2233,7 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
           return { targets: currentTargets, result: undefined };
         }).then(async () => {
           log.warn(`GitHub Sync target=${targetId}: Auto Sync disabled after exhausting automatic retries`);
-          if (panel?.visible) panel.webview.postMessage({ command: "githubSyncState", data: await githubSyncStateData(context) });
+          if (panels.instances.size) postToPanel({ command: "githubSyncState", data: await githubSyncStateData(context) });
         }).catch(error => log.error(`GitHub Sync auto-pause persistence failed: ${error instanceof Error ? error.message : String(error)}`));
       },
       stateDirectory: coordinatorStatePath,
@@ -2433,13 +2455,13 @@ function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
             throw error;
           } finally {
             if (reason === "force-local-authority") githubSyncForceUpdateAudit.delete(targetId);
-            if (panel?.visible) void githubSyncStateData(context).then(data => panel?.webview.postMessage({ command: "githubSyncState", data })).catch(error => log.warn(`GitHub Sync state refresh failed: ${(error as Error).message}`));
+            if (panels.instances.size) void githubSyncStateData(context).then(data => postToPanel({ command: "githubSyncState", data })).catch(error => log.warn(`GitHub Sync state refresh failed: ${(error as Error).message}`));
           }
         }));
       },
       onState: (targetId, state) => {
         updateGitHubSyncBackgroundTask(context, targetId, state);
-        panel?.webview.postMessage({ command: "githubSyncRuntimeState", data: { targetId, state } });
+        postToPanel({ command: "githubSyncRuntimeState", data: { targetId, state } });
       },
     });
   }
@@ -3732,8 +3754,10 @@ function katexCssForExport(context: vscode.ExtensionContext): string {
 }
 
 // ── Panel management ───────────────────────────────────────────────────────
-let panel: vscode.WebviewPanel | undefined;
-let panelMarkdownDraftOpen = false;
+const panels = new PanelRegistry<vscode.WebviewPanel>();
+function panelSession() { return panels.current(); }
+// Navigation follows the requesting instance, otherwise the last-focused tab. Shared events broadcast.
+function activePanel() { const target = panelSession().panel; return target && panels.instances.has(target) ? target : undefined; }
 let _treeProvider: PkTreeProvider | undefined;
 const MACHINE_STORE_PATH_KEY = "machineStorePath.v1";
 const ONBOARDING_PENDING_KEY = "pkm.onboarding.pending.v2";
@@ -3776,22 +3800,10 @@ async function rememberMachineStorePath(context: vscode.ExtensionContext, storeP
     await configuration.update("storePath", storePath, vscode.ConfigurationTarget.Global);
   }
 }
-let _panelReady = false;                       // webview has signalled it's ready
-let _panelLastHeartbeat = 0;
-let _panelLastDiagnostic = "";
 let _storeReady = false;                       // file store configured & migrated
-let _pendingOpen: { type: string; key: string; edit?: boolean; tab?: string } | undefined; // item to open once ready
-let _pendingTab: string | undefined;           // tab to switch to once the webview is ready
-let _pendingProjectId: string | undefined;
-let _pendingNativeSessionId: string | undefined;
-let _pendingSubscriptionShare: string | undefined;
-let _pendingServerSlug: string | undefined;
-let _pendingEnvironmentId: string | undefined;
-let _pendingMcpRegenerateHighlight = false;
 let _nativeMcpProvider = false;
 let _mcpDefinitionsChanged: vscode.EventEmitter<void> | undefined;
 let _mcpRegenerationPromptedFor = "";
-let _panelRestoredRecoveryTimer: ReturnType<typeof setTimeout> | undefined;
 
 function refreshMcpDefinitions(): void {
   mcpRuntimeStatusCache = undefined;
@@ -3813,8 +3825,8 @@ function mcpClientRegistrationStatus(): object {
     vscode: {
       configured: _nativeMcpProvider && binding?.registrationOwner === "native-provider",
       definitionAvailable: _nativeMcpProvider && !!getStorePath() && binding?.registrationOwner !== "manual-user",
-      detail: !_nativeMcpProvider ? "This VS Code host does not support the native MCP provider. Upgrade VS Code."
-        : binding?.registrationOwner === "manual-user" ? "Native discovery is suppressed by the saved manual registration owner. Use Configure VS Code MCP Discovery to review and select the native provider."
+      detail: binding?.registrationOwner === "manual-user" ? "Account-wide native registration is disabled for user/profile or workspace MCP configuration. Use Configure PKM MCP to review the scope. Check MCP: List Servers to verify pkm."
+        : !_nativeMcpProvider ? "This VS Code host does not support the native MCP provider. Use Configure PKM MCP to choose user/profile or workspace configuration."
           : "A native definition is available on this extension host; this is not evidence that Copilot has discovered or enabled it.",
     },
     copilot: inspectCopilotMcpRegistration(copilotMcpDefinition(launch)),
@@ -3849,8 +3861,8 @@ async function configureNativeMcpDiscovery(context: vscode.ExtensionContext): Pr
   await checkManualEntries();
   const host = extensionHostDescription(process.platform, os.hostname(), vscode.env.remoteName || "");
   const selected = await vscode.window.showInformationMessage(
-    "Use the native PKM MCP provider for VS Code?",
-    { modal: true, detail: `${host}\nKnowledge Root: ${getStorePath()}\n\nThis updates only ~/.pkm/mcp-binding.json and refreshes this host's provider. It does not create VS Code user/workspace MCP entries, register Copilot CLI, start a server or grant trust. Confirm there are no equivalent PKM entries in other VS Code profiles or MCP adapters. Those cannot be inventoried from this host.` },
+    "Let PKM register its MCP server with VS Code automatically?",
+    { modal: true, detail: `Recommended: click "Use Native Provider". PKM then appears as "pkm" in "MCP: List Servers" and PKM Chat can use its tools. If unsure, choose it.\n\n${host}\nKnowledge Root: ${getStorePath()}\n\nOnly ~/.pkm/mcp-binding.json changes. It does not create VS Code user/workspace MCP entries, install anything, start a server or grant trust. If you once added a "pkm" server by hand in another VS Code profile, remove that entry to avoid duplicates.` },
     "Use Native Provider",
   );
   if (selected !== "Use Native Provider") return false;
@@ -3859,6 +3871,77 @@ async function configureNativeMcpDiscovery(context: vscode.ExtensionContext): Pr
   await writeAccountMcpBinding(knowledgeRoot, "native-provider", true);
   refreshMcpDefinitions();
   void vscode.window.showInformationMessage("Native PKM definition configured, not yet client-verified. Run MCP: List Servers in this host, select pkm, review trust and start it; enable its tools in Copilot Agent and call check_version. Repeat in a second workspace.");
+  return true;
+}
+
+let _mcpConfigurationOffered = false;
+let _mcpConfigurationOffer: Promise<void> | undefined;
+
+function offerPkmMcpConfiguration(context: vscode.ExtensionContext, reason: string): Promise<void> {
+  if (_mcpConfigurationOffer) return _mcpConfigurationOffer;
+  if (_mcpConfigurationOffered) return Promise.resolve();
+  _mcpConfigurationOffered = true;
+  _mcpConfigurationOffer = (async () => {
+    const choice = await vscode.window.showWarningMessage(
+      `PKM MCP tools are unavailable. Chat cannot use PKM MCP tools until this is fixed. ${reason.slice(0, 400)}`,
+      "Configure MCP", "Not now",
+    );
+    if (choice === "Configure MCP") await configurePkmMcp(context);
+  })().finally(() => { _mcpConfigurationOffer = undefined; });
+  return _mcpConfigurationOffer;
+}
+
+async function configurePkmMcp(context: vscode.ExtensionContext): Promise<boolean> {
+  const scope = await vscode.window.showQuickPick([
+    { label: "This machine's account (recommended)", description: "All workspaces on this host account; PKM manages registration.", id: "account" },
+    { label: "VS Code user / profile", description: "Only this VS Code profile's MCP configuration.", id: "profile" },
+    ...(vscode.workspace.workspaceFolders?.length ? [{ label: "Workspace folder", description: "Only the selected folder; writes .vscode/mcp.json (may be shared by Git).", id: "workspace" }] : []),
+    { label: "Do not configure", description: "Leave configuration unchanged. Chat continues without PKM MCP tools.", id: "none" },
+  ], { title: "Where should PKM MCP be available?", placeHolder: extensionHostDescription(process.platform, os.hostname(), vscode.env.remoteName || ""), ignoreFocusOut: true });
+  if (!scope || scope.id === "none") return false;
+  if (vscode.workspace.isTrusted === false) throw new Error("Trust this workspace before configuring PKM MCP.");
+  if (scope.id === "account") return configureNativeMcpDiscovery(context);
+  if (!_storeReady || !getStorePath()) throw new Error("Configure the Knowledge Root and repair the managed MCP runtime in PKM Config first.");
+  const knowledgeRoot = getStorePath(), launch = mcpServerDefinitionData();
+  let uri = vscode.Uri.joinPath(context.globalStorageUri, "..", "..", "mcp.json");
+  if (scope.id === "workspace") {
+    const folders = vscode.workspace.workspaceFolders || [];
+    const folder = folders.length === 1 ? folders[0] : await vscode.window.showQuickPick(folders.map(folder => ({ label: folder.name, folder })), { title: "Choose the workspace folder for PKM MCP" }).then(choice => choice?.folder);
+    if (!folder) return false;
+    uri = vscode.Uri.joinPath(folder.uri, ".vscode", "mcp.json");
+  }
+  const filename = uri.fsPath;
+  const assertClean = () => {
+    if (vscode.workspace.textDocuments.some(document => document.uri.toString() === uri.toString() && document.isDirty)) throw new Error("Save or discard unsaved MCP configuration edits before configuring PKM.");
+  };
+  assertClean();
+  // Do not leave an equivalent registration enabled at another scope.
+  const checkOtherScopes = async () => {
+    for (const other of [vscode.Uri.joinPath(context.globalStorageUri, "..", "..", "mcp.json"), ...(vscode.workspace.workspaceFolders || []).map(folder => vscode.Uri.joinPath(folder.uri, ".vscode", "mcp.json"))]) {
+      if (other.toString() === uri.toString()) continue;
+      try { assertNoManualPkm(parseNativeMcpConfiguration(await fs.promises.readFile(other.fsPath, "utf8")), launch); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    }
+  };
+  await checkOtherScopes();
+  const reviewed = inspectVscodeMcpRegistration(filename, launch);
+  const binding = readAccountMcpBinding();
+  if (!binding) throw new Error("Finish PKM account setup in Config before adding a scoped MCP registration.");
+  const choice = await vscode.window.showInformationMessage("Configure PKM MCP here?", {
+    modal: true, detail: `${filename}\n\nAdds only servers.pkm, preserving other entries and JSONC comments. An existing file is backed up. Account-wide native registration is disabled to avoid duplicates. VS Code may ask for trust before starting the server.\n\nKnowledge Root: ${knowledgeRoot}`,
+  }, "Configure MCP");
+  if (choice !== "Configure MCP") return false;
+  assertClean();
+  await checkOtherScopes();
+  if (getStorePath() !== knowledgeRoot || JSON.stringify(mcpServerDefinitionData()) !== JSON.stringify(launch)
+    || JSON.stringify(readAccountMcpBinding()) !== JSON.stringify(binding)) throw new Error("PKM setup changed during review. Review and confirm again; no configuration was changed.");
+  await writeAccountMcpBinding(knowledgeRoot, "manual-user", true);
+  try { await registerVscodeMcp(filename, launch, reviewed.revision); }
+  catch (error) {
+    if (binding) await writeAccountMcpBinding(binding.knowledgeRoot, binding.registrationOwner, true);
+    throw error;
+  } finally { refreshMcpDefinitions(); }
+  void vscode.window.showInformationMessage(`PKM MCP configured in ${filename}. Run MCP: List Servers, choose pkm and review trust to start it. Tools are not verified until the server connects.`);
   return true;
 }
 
@@ -3901,9 +3984,14 @@ function registerNativeMcpProvider(context: vscode.ExtensionContext): void {
   const provider = {
     onDidChangeMcpServerDefinitions: changed.event,
     provideMcpServerDefinitions: () => {
-      if (!getStorePath() || readAccountMcpBinding()?.registrationOwner === "manual-user") return [];
-      try { return [createDefinition()]; }
-      catch { return []; } // Config reports missing runtime/assets; passive discovery never installs them.
+      try {
+        if (!getStorePath() || readAccountMcpBinding()?.registrationOwner === "manual-user") return [];
+        return [createDefinition()];
+      } catch (error) {
+        log.warn(`PKM MCP definition unavailable: ${error instanceof Error ? error.message : String(error)}`);
+        void offerPkmMcpConfiguration(context, error instanceof Error ? error.message : String(error)).catch(error => log.warn(`PKM MCP configuration failed: ${error instanceof Error ? error.message : String(error)}`));
+        return [];
+      }
     },
     resolveMcpServerDefinition: () => {
       const binding = readAccountMcpBinding();
@@ -3929,10 +4017,10 @@ function registerNativeMcpProvider(context: vscode.ExtensionContext): void {
 function openInPanel(context: vscode.ExtensionContext, type: string, key: string, edit = false, tab?: string): void {
   const p = getOrCreatePanel(context);
   p.reveal(vscode.ViewColumn.One);
-  if (_panelReady) {
+  if (panelSession().ready) {
     p.webview.postMessage({ command: "openItem", type, key, edit, tab });
   } else {
-    _pendingOpen = { type, key, edit, tab }; // flushed on the "ready" message
+    panelSession().pendingOpen = { type, key, edit, tab }; // flushed on the "ready" message
   }
 }
 
@@ -4073,50 +4161,50 @@ async function closeNavigationSidebar(): Promise<void> {
 function openChatroomPanel(context: vscode.ExtensionContext): void {
   const chatPanel = getOrCreatePanel(context);
   chatPanel.reveal(vscode.ViewColumn.One);
-  if (_panelReady) chatPanel.webview.postMessage({ command: "openTab", tab: "chatroom" });
-  else _pendingTab = "chatroom";
+  if (panelSession().ready) chatPanel.webview.postMessage({ command: "openTab", tab: "chatroom" });
+  else panelSession().pendingTab = "chatroom";
 }
 
 function openPanelTab(context: vscode.ExtensionContext, tab: string): void {
   const target = getOrCreatePanel(context);
   target.reveal(vscode.ViewColumn.One);
-  if (_panelReady) target.webview.postMessage({ command: "openTab", tab });
-  else _pendingTab = tab;
+  if (panelSession().ready) target.webview.postMessage({ command: "openTab", tab });
+  else panelSession().pendingTab = tab;
 }
 
 function openProjectCockpit(context: vscode.ExtensionContext, projectId: string): void {
   openPanelTab(context, "projects");
-  if (_panelReady) void panel?.webview.postMessage({ command: "openProject", projectId });
-  else _pendingProjectId = projectId;
+  if (panelSession().ready) void activePanel()?.webview.postMessage({ command: "openProject", projectId });
+  else panelSession().pendingProjectId = projectId;
 }
 
 function openServerPanel(context: vscode.ExtensionContext, slug = ""): void {
   const target = getOrCreatePanel(context);
   target.reveal(vscode.ViewColumn.One);
-  if (_panelReady) target.webview.postMessage({ command: "focusServer", slug });
+  if (panelSession().ready) target.webview.postMessage({ command: "focusServer", slug });
   else {
-    _pendingTab = "servers";
-    _pendingServerSlug = slug;
+    panelSession().pendingTab = "servers";
+    panelSession().pendingServerSlug = slug;
   }
 }
 
 function openEnvironmentPanel(context: vscode.ExtensionContext, environmentId = ""): void {
   const target = getOrCreatePanel(context);
   target.reveal(vscode.ViewColumn.One);
-  if (_panelReady) target.webview.postMessage({ command: "focusEnvironment", environmentId });
+  if (panelSession().ready) target.webview.postMessage({ command: "focusEnvironment", environmentId });
   else {
-    _pendingTab = "environments";
-    _pendingEnvironmentId = environmentId;
+    panelSession().pendingTab = "environments";
+    panelSession().pendingEnvironmentId = environmentId;
   }
 }
 
 function openSubscriptionPanel(context: vscode.ExtensionContext, shareId = ""): void {
   const target = getOrCreatePanel(context);
   target.reveal(vscode.ViewColumn.One);
-  if (_panelReady) target.webview.postMessage({ command: "openSubscription", shareId });
+  if (panelSession().ready) target.webview.postMessage({ command: "openSubscription", shareId });
   else {
-    _pendingTab = "subscriptions";
-    _pendingSubscriptionShare = shareId;
+    panelSession().pendingTab = "subscriptions";
+    panelSession().pendingSubscriptionShare = shareId;
   }
 }
 
@@ -4180,7 +4268,7 @@ class KnowledgeContentFileSystem implements vscode.FileSystemProvider {
     gitCommit(`edit(content): ${info.area}/${info.key}`);
     this.changed.fire([{ type: vscode.FileChangeType.Changed, uri }]);
     _treeProvider?.refresh();
-    panel?.webview.postMessage({ command: "reloaded" });
+    postToPanel({ command: "reloaded" });
   }
   delete(): void { throw vscode.FileSystemError.NoPermissions("Delete from the Knowledge tree instead."); }
   rename(): void { throw vscode.FileSystemError.NoPermissions("Rename with Edit Metadata instead."); }
@@ -4215,7 +4303,7 @@ class RecipeDraftFileSystem implements vscode.FileSystemProvider {
     const next = Uint8Array.from(content);
     this.content.set(uri.toString(), next);
     this.changed.fire([{ type: vscode.FileChangeType.Changed, uri }]);
-    panel?.webview.postMessage({ command: "recipeIntentEdited", data: {
+    activePanel()?.webview.postMessage({ command: "recipeIntentEdited", data: {
       recipeId: uri.authority,
       nodeId: uri.path.replace(/^\//, "").replace(/\.md$/i, ""),
       guidance: Buffer.from(next).toString("utf8")
@@ -4315,7 +4403,7 @@ async function editMarkdownMetadata(uri?: vscode.Uri): Promise<void> {
   const newKey = cleanCategory ? `${cleanCategory}/${safeTitle}` : safeTitle;
   gitCommit(`metadata(${info.area}): ${info.key} -> ${newKey}`);
   _treeProvider?.refresh();
-  panel?.webview.postMessage({ command: "reloaded" });
+  postToPanel({ command: "reloaded" });
   const newUri = knowledgeContentUri(info.area, newKey);
   const newDocument = await vscode.workspace.openTextDocument(newUri);
   await vscode.window.showTextDocument(newDocument, { preview: false });
@@ -4358,7 +4446,7 @@ function normalizedSubgroupPath(value: string): string | undefined {
 
 function refreshKnowledgeGroups(): void {
   _treeProvider?.refresh();
-  panel?.webview.postMessage({ command: "reloaded" });
+  postToPanel({ command: "reloaded" });
 }
 
 type KnowledgeFolderArea = "skills" | "notes" | "papers" | "scripts";
@@ -4447,6 +4535,7 @@ async function createScriptAtFolder(folder: string): Promise<string | undefined>
 // received-file buffers (never written to disk unless the user saves them), and
 // forwards live events to the webview chatroom tab.
 interface RoomConn {
+  peer?: PeerSession;
   key:     string;             // durable Room UUID when available; URL+name for legacy Rooms
   url:     string;
   room:    string;
@@ -4494,6 +4583,11 @@ interface HostedRoomNavigationItem {
   unavailableReason?: string;
 }
 
+const PORTAL_WINDOWS_KEY = "pkm.portal.windows.v1";
+const PORTAL_CONNECTIONS_KEY = "pkm.portal.connections.v1";
+interface PortalConnectionInfo { url: string; room: string; roomId: string; user: string; secret: string; host: boolean; port?: number }
+interface StoredPortalResume { version: 1; chatId: string; label: string; external: boolean; root: string; connection: PortalConnectionInfo; record: PeerResumeRecord }
+
 class ChatRoomManager {
   private hub:   ChatHub | undefined;
   private rooms: Map<string, RoomConn> = new Map();
@@ -4513,6 +4607,860 @@ class ChatRoomManager {
   private navigationStatusSignature = "";
   private static readonly MAX_MSGS = 1000;   // bounded visible transcript; full history remains durable in the Room DB
   private static readonly DEFAULT_MANAGED_AGENT_ROLE = "Contribute relevant expertise, ask focused questions, review peer proposals, and help the Room reach concrete decisions.";
+
+  private readonly chatPortals = new Map<string, { id: string; label: string; root: string; external: boolean; room?: RoomConn }>();
+  private readonly portalOpening = new Set<string>();
+  private readonly portalPermissions = new Map<string, PortalPermissions>();
+  /** External (MCP) reuse window, bound to the pairing and control direction it was granted for. */
+  private readonly externalPortalExpiry = new Map<string, { expiresAt: number; pairId: string; role: string }>();
+  /** Unredeemed Portal links, memory only: never logged, persisted, synced or sent to MCP. */
+  private readonly portalPendingLinks = new Map<string, { link: string; expiresAt: number; endpoint: string }>();
+  private readonly portalExecutions = new Map<string, AbortController>();
+  private readonly portalFiles = new Map<string, PortalFiles>();
+  private readonly portalTransfers = new Map<string, Map<string, PortalTransferStatus>>();
+  private readonly portalEpochs = new Map<string, number>();
+  private readonly portalConnections = new Map<string, PortalConnectionInfo>();
+  private readonly portalResumable = new Map<string, { peerName: string; role: string; peerChatName?: string; peerMachine?: string; updatedAt: number }>();
+  private portalResumeWrites: Promise<void> = Promise.resolve();
+  private portalResumeLoaded = false;
+  private portalJournal: PortalConnectionJournal | undefined;
+  private portalWindowBeat: { dispose(): void } | undefined;
+  private portalJournalSignature = "";
+
+  configurePortalJournal(memento: vscode.Memento): void {
+    if (this.portalJournal) return;
+    const beats = () => { const value = memento.get<Record<string, number>>(PORTAL_WINDOWS_KEY); return value && typeof value === "object" ? value : {}; };
+    this.portalJournal = new PortalConnectionJournal(memento.get(PORTAL_CONNECTIONS_KEY), records => memento.update(PORTAL_CONNECTIONS_KEY, records).then(undefined, error => log.error(`Portal connection history: ${String(error)}`)),
+      Date.now, () => memento.get(PORTAL_CONNECTIONS_KEY), undefined, windowId => Date.now() - (beats()[windowId] || 0) < 3 * 60_000);
+    // Window heartbeat lets other windows show this window's live Portals as "elsewhere" instead of ended.
+    const windowId = this.portalJournal.windowId;
+    const beat = () => {
+      const now = Date.now(), next: Record<string, number> = {};
+      for (const [id, at] of Object.entries(beats())) if (typeof at === "number" && now - at < 10 * 60_000) next[id] = at;
+      next[windowId] = now;
+      void memento.update(PORTAL_WINDOWS_KEY, next).then(undefined, () => {});
+    };
+    beat();
+    const timer = setInterval(beat, 60_000);
+    timer.unref?.();
+    this.portalWindowBeat = { dispose: () => { clearInterval(timer); const next = { ...beats() }; delete next[windowId]; void memento.update(PORTAL_WINDOWS_KEY, next).then(undefined, () => {}); } };
+  }
+
+  portalConnectionHistory(): PortalConnectionSnapshot {
+    const live = new Map<string, PortalConnectionLive>();
+    for (const entry of this.chatPortals.values()) {
+      const binding = entry.room?.peer?.binding;
+      live.set(entry.id, { pairId: binding?.pairId, connected: !!binding && !!entry.room?.client.isConnected });
+    }
+    const resumable = new Set([...this.portalResumable.keys()].filter(id => !this.chatPortals.get(id)?.room?.peer?.binding));
+    const snapshot = this.portalJournal?.snapshot(live, resumable) ?? { updatedAt: Date.now(), active: 0, connections: [] };
+    const pendingInvitations: NonNullable<PortalConnectionSnapshot["pendingInvitations"]> = [];
+    for (const [chatId, record] of this.portalPendingLinks) {
+      const entry = this.chatPortals.get(chatId);
+      const invitation = entry?.room?.peer?.pendingInvitation;
+      if (record.expiresAt > Date.now() && invitation && !entry?.room?.peer?.binding && entry.root === getStorePath() && vscode.workspace.isTrusted && entry.room?.client.isConnected) {
+        pendingInvitations.push({ chatId, chatLabel: entry.label, external: entry.external, role: invitation.role, expiresAt: record.expiresAt, endpoint: record.endpoint });
+      }
+    }
+    return { ...snapshot, pendingInvitations };
+  }
+
+  forgetPortalConnection(pairId: string): void {
+    if (this.portalConnectionHistory().connections.some(item => item.pairId === pairId && item.state !== "ended")) throw new Error("Disconnect this Portal before removing it from the history.");
+    this.portalJournal?.forget(pairId);
+    this.postPortalConnections(true);
+  }
+
+  private postPortalConnections(force = false): void {
+    if (!this.portalJournal) return;
+    const snapshot = this.portalConnectionHistory();
+    const signature = JSON.stringify([snapshot.connections.map(item => [item.pairId, item.chatId, item.state, item.role, item.chatLabel, item.endedAt, item.resumable]), snapshot.pendingInvitations]);
+    if (!force && signature === this.portalJournalSignature) return;
+    this.portalJournalSignature = signature;
+    postToPanel({ command: "portalConnections", data: snapshot });
+  }
+
+  private static portalResumeKey(chatId: string): string { return `pkm.portal.resume.${chatId}`; }
+
+  /** Loads the secret-free summary of stored Portal pairings so Chats can offer re-attach. */
+  async loadPortalResumeIndex(): Promise<void> {
+    const storage = this.secretStorage;
+    if (!storage || this.portalResumeLoaded) return;
+    this.portalResumeLoaded = true;
+    let ids: string[] = [];
+    try { ids = JSON.parse(await storage.get("pkm.portal.resume.index") || "[]"); } catch { ids = []; }
+    for (const id of Array.isArray(ids) ? ids.filter(value => typeof value === "string").slice(0, 200) : []) {
+      const stored = await this.readPortalResume(id);
+      if (stored) this.portalResumable.set(id, { peerName: stored.record.peerName, role: stored.record.role, peerChatName: stored.record.peerChatName, peerMachine: stored.record.peerMachine, updatedAt: stored.record.updatedAt });
+    }
+    portalChanged();
+  }
+
+  private async readPortalResume(chatId: string): Promise<StoredPortalResume | undefined> {
+    const raw = await this.secretStorage?.get(ChatRoomManager.portalResumeKey(chatId));
+    if (!raw) return undefined;
+    try {
+      const value = JSON.parse(raw);
+      const connection = value?.connection;
+      if (value?.version !== 1 || value.chatId !== chatId || typeof value.root !== "string" || !validPeerResumeRecord(value.record)
+        || !connection || typeof connection.url !== "string" || typeof connection.room !== "string" || typeof connection.roomId !== "string"
+        || typeof connection.user !== "string" || typeof connection.secret !== "string" || typeof connection.host !== "boolean") return undefined;
+      return value as StoredPortalResume;
+    } catch { return undefined; }
+  }
+
+  private persistPortalResume(owner: { id: string; label: string }, record: PeerResumeRecord | undefined): void {
+    const storage = this.secretStorage;
+    if (!storage) return;
+    const entry = this.chatPortals.get(owner.id);
+    const connection = this.portalConnections.get(owner.id);
+    if (record && (!connection || !entry)) return;
+    if (record) this.portalResumable.set(owner.id, { peerName: record.peerName, role: record.role, peerChatName: record.peerChatName, peerMachine: record.peerMachine, updatedAt: record.updatedAt });
+    else this.portalResumable.delete(owner.id);
+    const snapshot = record ? JSON.stringify({ version: 1, chatId: owner.id, label: owner.label, external: !!entry?.external, root: entry!.root, connection: connection!, record } satisfies StoredPortalResume) : undefined;
+    this.portalResumeWrites = this.portalResumeWrites.then(async () => {
+      const key = ChatRoomManager.portalResumeKey(owner.id);
+      if (snapshot) await storage.store(key, snapshot); else await storage.delete(key);
+      let ids: string[] = [];
+      try { ids = JSON.parse(await storage.get("pkm.portal.resume.index") || "[]"); } catch { ids = []; }
+      const next = new Set(Array.isArray(ids) ? ids.filter(value => typeof value === "string") : []);
+      if (snapshot) next.add(owner.id); else next.delete(owner.id);
+      await storage.store("pkm.portal.resume.index", JSON.stringify([...next].slice(-200)));
+    }).catch(error => log.error(`Portal resume persistence: ${String(error)}`));
+    portalChanged();
+  }
+
+  /** Reconnect this Chat's previous transport and re-attach the same pairing. Leases are not restored; tasks are never replayed. */
+  async reattachPortal(context: vscode.ExtensionContext, owner: { id: string; label: string }): Promise<Record<string, unknown>> {
+    const peerRoot = this.portalPreflight();
+    await this.loadPortalResumeIndex();
+    const stored = await this.readPortalResume(owner.id);
+    if (!stored) throw new Error("This Chat has no stored Portal pairing to re-attach. Pair again with a new link.");
+    if (stored.root !== peerRoot) throw new Error("The stored Portal belongs to another Knowledge Root; it was not re-attached.");
+    let entry = this.chatPortals.get(owner.id);
+    if (!entry) { entry = { ...owner, root: peerRoot, external: stored.external }; this.chatPortals.set(owner.id, entry); }
+    if (entry.room?.peer?.binding) return this.portalStatus(owner.id);
+    const { connection } = stored;
+    this.portalConnections.set(owner.id, connection);
+    if (connection.host) {
+      const hub = await this.startHub(connection.port ?? vscode.workspace.getConfiguration("personalKnowledge").get<number>("chatHubPort") ?? 7345);
+      if (!hub.ok) throw new Error(`Couldn't restart the Portal Chat Hub: ${hub.error || "unknown error"}`);
+      let hostToken: string | undefined;
+      try { hostToken = (await this.rehostRoom(connection.roomId)).hostToken; }
+      catch (error) { if (!/already active/i.test(String(error))) throw error; }
+      this.joinRoom({ url: `ws://127.0.0.1:${this.hubPort}`, room: connection.room, roomId: connection.roomId, user: connection.user, token: connection.secret, cid: getChatCid(context), ...(hostToken ? { hostToken } : {}) });
+    } else {
+      assertPeerEndpoint(connection.url);
+      this.joinRoom({ url: connection.url, room: connection.room, roomId: connection.roomId, user: connection.user, token: connection.secret, cid: getChatCid(context) });
+    }
+    const room = [...this.rooms.values()].find(item => item.roomId === connection.roomId);
+    if (!room) throw new Error("Couldn't reopen the Portal Room.");
+    entry.room = room;
+    await this.waitForRoom(() => room.client.isConnected && !!room.client.participantId, 30_000, `Couldn't reach the Portal endpoint ${connection.url}. Keep the other side's VS Code open and reachable.`);
+    const peer = this.ensurePeer(room, peerRoot, entry, stored.record);
+    this.tryPortalResume(room);
+    return { ...this.portalStatus(owner.id), instruction: peer.binding ? "Re-attached." : "Waiting for the previous peer to come back on this transport; re-attach completes automatically when it does." };
+  }
+
+  private tryPortalResume(room: RoomConn): void {
+    const peer = room.peer;
+    if (!peer || peer.binding || !peer.resumeTarget || !room.client.isConnected) return;
+    const other = room.members.find(member => member.participantId && member.participantId !== room.client.participantId && member.present !== false && (member as { kind?: string }).kind !== "agent");
+    if (!other?.participantId) return;
+    try { peer.resume(other.participantId); }
+    catch (error) { log.warn(`Portal re-attach: ${String(error)}`); }
+  }
+
+  portalStateForChat(id: string): Record<string, unknown> | undefined {
+    if (!this.chatPortals.has(id)) {
+      const resumable = this.portalResumable.get(id);
+      return resumable ? { connected: false, resumable } : undefined;
+    }
+    const permissions = this.portalPermissions.get(id)?.snapshot();
+    const grant = permissions?.grants[permissions.grants.length - 1];
+    return { ...this.portalStatus(id), permissions: { ...permissions, active: !!grant, mode: grant?.mode, expiresAt: grant?.expiresAt } };
+  }
+
+  portalToolAllowed(id: string, tool: string, resource?: string): boolean {
+    const entry = this.chatPortals.get(id);
+    const policy = this.portalPermissions.get(id);
+    if (!entry || !entry.room?.peer?.binding || !entry.room.client.isConnected || entry.root !== getStorePath() || !vscode.workspace.isTrusted) {
+      policy?.invalidate("trust-change");
+      return false;
+    }
+    const map = ChatRoomManager.PORTAL_TOOL_DIMENSIONS;
+    const permission = map[tool.replace(/^remote:/, "")] || Object.entries(map).find(([name]) => toolPermissionScope("builtin", name) === tool)?.[1];
+    if (!permission && /^(?:tool:|read-only$|non-destructive$)/.test(tool)) {
+      return !!policy?.snapshot().grants.some(grant => grant.mode === "all");
+    }
+    if (!permission) return false;
+    return policy?.allows(permission, permission.startsWith("files-") && resource ? ChatRoomManager.portalScopePath(resource) : undefined) === true;
+  }
+
+  private static readonly PORTAL_TOOL_DIMENSIONS: Record<string, typeof PORTAL_PERMISSION_DIMENSIONS[number]> = {
+    read_file: "files-read", find_files: "files-read", search_text: "files-read", list_directory: "files-read",
+    replace_text: "files-write", save_file: "files-write", run_process: "code-execute",
+    run_process_background: "code-execute", process_cancel: "code-execute", process_get: "progress-read", process_output: "progress-read",
+    pkm_search: "pkm-read", pkm_read: "pkm-read", memory_read: "chat-read", list_chats: "chat-read",
+    session_info: "progress-read", record_harness: "progress-read", find_actions: "pkm-read",
+  };
+
+  /** Raw tool output may leave the controlled Host only under a reusable progress-read lease plus an unscoped lease for that tool's own dimension. */
+  private portalMirrorObservation(id: string, observation: import("./chatroom/portal-observation").PortalObservation): import("./chatroom/portal-observation").PortalObservation {
+    if (!observation.tools?.some(tool => tool.output !== undefined)) return observation;
+    const grants = (this.portalPermissions.get(id)?.snapshot().grants || []).filter(grant => grant.mode !== "once");
+    const unscoped = (dimension: string) => grants.some(grant => grant.permissions.includes(dimension as typeof PORTAL_PERMISSION_DIMENSIONS[number])
+      && !grant.scopes[dimension as typeof PORTAL_PERMISSION_DIMENSIONS[number]]);
+    const progress = unscoped("progress-read");
+    const all = grants.some(grant => grant.mode === "all" && !Object.keys(grant.scopes).length);
+    return { ...observation, tools: boundPortalToolOutputs(observation.tools.map(tool => {
+      if (tool.output === undefined) return tool;
+      const dimension = ChatRoomManager.PORTAL_TOOL_DIMENSIONS[tool.name];
+      if (progress && (dimension ? unscoped(dimension) : all)) return tool;
+      const { output: _withheld, ...rest } = tool;
+      return { ...rest, outputWithheld: true };
+    })) };
+  }
+
+  /** Canonical comparison form for Portal folder scopes (case-insensitive on Windows). */
+  static portalScopePath(value: string): string {
+    const resolved = path.resolve(value);
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  }
+
+  invalidatePortal(id: string): void {
+    this.portalEpochs.set(id, (this.portalEpochs.get(id) || 0) + 1);
+    this.portalPermissions.get(id)?.invalidate("revoke");
+    this.portalPermissions.delete(id);
+    this.externalPortalExpiry.delete(id);
+    this.portalPendingLinks.delete(id);
+    const execution = this.portalExecutions.get(id);
+    const files = this.portalFiles.get(id);
+    this.portalExecutions.delete(id);
+    this.portalFiles.delete(id);
+    execution?.abort();
+    files?.dispose();
+    portalChanged();
+  }
+
+  invalidatePortalsForContextChange(nextRoot: string): void {
+    for (const entry of this.chatPortals.values()) if (entry.root !== nextRoot || !vscode.workspace.isTrusted) this.invalidatePortal(entry.id);
+  }
+
+  async authorizePortalForChat(id: string): Promise<void> {
+    const entry = this.chatPortals.get(id);
+    if (!entry?.room || entry.root !== getStorePath()) throw new Error("This Chat has no live Portal.");
+    await this.configurePortalPermissions(entry, entry.room);
+  }
+
+  private async configurePortalPermissions(owner: { id: string; label: string }, room: RoomConn): Promise<boolean> {
+    const binding = room.peer?.binding;
+    const epoch = this.portalEpochs.get(owner.id) || 0;
+    if (!binding) throw new Error("Pair before granting reusable permissions.");
+    const root = getStorePath();
+    const mode = await vscode.window.showQuickPick([
+      { label: "Remember selected permissions", mode: "scoped" as const },
+      { label: "Allow All for this Portal", mode: "all" as const },
+      { label: "Revoke reusable authorization", mode: "revoke" as const },
+    ], { title: `Permissions · ${owner.label} · ${binding.peerName}`, ignoreFocusOut: true });
+    if (!mode) return false;
+    if (mode.mode === "revoke") { this.invalidatePortal(owner.id); this.push(); return false; }
+    const selection = mode.mode === "all" ? [...PORTAL_PERMISSION_DIMENSIONS] : (await vscode.window.showQuickPick(
+      PORTAL_PERMISSION_DIMENSIONS.map(permission => ({ label: permission, permission })),
+      { title: "Permission matrix: select allowed dimensions (unselected = ask)", canPickMany: true, ignoreFocusOut: true },
+    ))?.map(item => item.permission);
+    if (!selection?.length) return false;
+    const fileDimensions = selection.filter(permission => permission === "files-read" || permission === "files-write");
+    let folders: string[] = [];
+    if (fileDimensions.length) {
+      const boundary = await vscode.window.showQuickPick([
+        { label: "Workspace boundaries", description: "tools' existing workspace rules", folders: false },
+        { label: "Only chosen folders…", description: `limit ${fileDimensions.join(" + ")} to folders you pick`, folders: true },
+      ], { title: "File access scope", ignoreFocusOut: true });
+      if (!boundary) return false;
+      if (boundary.folders) {
+        const picked = await vscode.window.showOpenDialog({ canSelectFiles: false, canSelectFolders: true, canSelectMany: true, openLabel: "Allow these folders", title: "Folders the remote controller may use" });
+        if (!picked?.length) return false;
+        folders = [...new Set(picked.filter(uri => uri.scheme === "file").map(uri => ChatRoomManager.portalScopePath(uri.fsPath)))].slice(0, 16);
+        if (!folders.length || folders.some(folder => path.parse(folder).root === folder)) throw new Error("Choose specific folders, not a drive or filesystem root.");
+      }
+    }
+    const duration = await this.portalDuration();
+    if (duration === undefined) return false;
+    const confirm = await vscode.window.showWarningMessage(`Authorize ${binding.peerName} for Chat "${owner.label}"?`, {
+      modal: true,
+      detail: `Scope: this Portal only, ${folders.length ? `${fileDimensions.join(" + ")} limited to:\n  ${folders.join("\n  ")}\n` : "tools' existing workspace boundaries. "}Permissions: ${selection.join(", ")}.\nDuration: ${duration === null ? "until disconnected" : `${duration / 60000} minutes`}.\nFile transfers ALWAYS require separate controlled-side batch approval. Task answers/progress may be shared only by the selected dimensions. Chat history is not automatically exported.\n${selection.includes("code-execute") || mode.mode === "all" ? "WARNING: arbitrary programs and Allow All can access the operating system and network. PKM cannot sandbox arbitrary code or guarantee it cannot copy data outside the Portal file-transfer protocol. Use only with a trusted controller." : "Unselected capabilities still need explicit approval."}`,
+    }, "Grant");
+    if (confirm !== "Grant") return false;
+    if ((this.portalEpochs.get(owner.id) || 0) !== epoch || room.peer?.binding !== binding || root !== getStorePath() || !vscode.workspace.isTrusted || !room.client.isConnected) throw new Error("Portal changed during authorization.");
+    const policy = new PortalPermissions({ chatId: owner.id, connectionId: binding.pairId });
+    policy.grant({ mode: mode.mode, permissions: selection, durationMs: duration, ...(folders.length ? { scopes: Object.fromEntries(fileDimensions.map(permission => [permission, folders])) } : {}) });
+    this.portalPermissions.set(owner.id, policy);
+    portalChanged();
+    this.push();
+    return true;
+  }
+
+  private async portalDuration(): Promise<number | null | undefined> {
+    const selected = await vscode.window.showQuickPick([
+      { label: "15 minutes (recommended)", minutes: 15 },
+      { label: "60 minutes", minutes: 60 },
+      { label: "Custom duration", minutes: -1 },
+      { label: "Until disconnected", minutes: 0 },
+    ], { title: "Authorization lifetime (never renewed by activity)", ignoreFocusOut: true });
+    if (!selected) return undefined;
+    let minutes = selected.minutes;
+    if (minutes === -1) {
+      const input = await vscode.window.showInputBox({ title: "Duration in minutes", ignoreFocusOut: true,
+        validateInput: value => Number.isFinite(Number(value)) && Number(value) > 0 && Number.isSafeInteger(Number(value) * 60000) && Date.now() + Number(value) * 60000 <= 8.64e15 ? undefined : "Enter a positive representable duration." });
+      if (input === undefined) return undefined;
+      minutes = Number(input);
+    }
+    if (!minutes || minutes > 15) {
+      const allowed = await vscode.window.showWarningMessage("Long-lived Portal authorization increases exposure.", {
+        modal: true, detail: minutes ? `Permissions remain usable for ${minutes} minutes unless revoked or disconnected.` : "Until disconnected can last indefinitely while connected. Disconnect/restart/role change invalidates it; reconnect does not restore it.",
+      }, "Use this duration");
+      if (allowed !== "Use this duration") return undefined;
+    }
+    return minutes ? minutes * 60000 : null;
+  }
+
+  async portalControl(context: vscode.ExtensionContext, args: Record<string, unknown>, external: boolean): Promise<unknown> {
+    this.portalPreflight();
+    const operation = args.operation;
+    if (!["open", "status", "send", "get", "cancel", "disconnect", "switch", "permissions", "files", "reattach"].includes(String(operation))) throw new Error("Unsupported Portal operation.");
+    if (operation === "open" && external && !args.contextId) {
+      const label = await vscode.window.showInputBox({ title: "Name this external Chat's Portal", prompt: "MCP cannot identify the Copilot conversation. Give this connection a unique name. Remote execution uses one dedicated PKM Chat, not the Copilot UI.", ignoreFocusOut: true });
+      if (!label?.trim()) throw new Error("Portal creation cancelled.");
+      if (!portalChatContext) throw new Error("PKM Chat backend is unavailable.");
+      const owner = await portalChatContext(undefined, label);
+      this.chatPortals.set(owner.id, { ...owner, root: getStorePath(), external: true });
+      await this.managePeer(context, owner);
+      if (args.wait !== false) await this.waitForPortalPairing(this.chatPortals.get(owner.id)!);
+      return { contextId: owner.id, label: owner.label, ...this.portalStatus(owner.id) };
+    }
+    const id = typeof args.contextId === "string" ? args.contextId : "";
+    if (operation === "reattach" && id && !this.chatPortals.has(id)) {
+      const stored = await this.readPortalResume(id);
+      if (stored && stored.external === external && stored.root === getStorePath()) this.chatPortals.set(id, { id, label: stored.label, root: stored.root, external: stored.external });
+    }
+    const entry = this.chatPortals.get(id);
+    if (!entry || entry.external !== external || entry.root !== getStorePath()) throw new Error("Unknown Portal context for this Chat/Host. Open a Portal first; never use another Chat's context.");
+    if (external && !this.externalAuthorized(id)) {
+      const binding = entry.room?.peer?.binding;
+      const epoch = this.portalEpochs.get(id) || 0;
+      const canRemember = !!binding && entry.room?.client.isConnected;
+      const allow = await vscode.window.showWarningMessage(`External Chat "${entry.label}": allow Portal ${operation}?`, {
+        modal: true, detail: `MCP does not authenticate individual Copilot conversations. Confirm this request belongs to the intended conversation.\n${typeof args.prompt === "string" ? args.prompt.slice(0, 16000) : ""}`,
+      }, "Allow once", ...(canRemember ? ["Remember this connection"] : []));
+      if (allow === "Remember this connection") {
+        const duration = await this.portalDuration();
+        if (duration === undefined) throw new Error("External Portal authorization cancelled.");
+        if (!canRemember || !entry.room?.client.isConnected || entry.room.peer?.binding !== binding
+          || (this.portalEpochs.get(id) || 0) !== epoch || entry.root !== getStorePath() || !vscode.workspace.isTrusted) throw new Error("Portal changed during external authorization; approval was not remembered.");
+        this.externalPortalExpiry.set(id, { expiresAt: duration === null ? Infinity : Date.now() + duration, pairId: binding!.pairId, role: binding!.role });
+      } else if (allow !== "Allow once") throw new Error("External Portal request declined.");
+    }
+    if (entry.root !== getStorePath() || !vscode.workspace.isTrusted) throw new Error("Portal workspace or Knowledge Root changed during approval.");
+    if (operation === "open") {
+      await this.managePeer(context, entry);
+      if (args.wait !== false) await this.waitForPortalPairing(entry);
+      return this.portalStatus(id);
+    }
+    if (operation === "reattach") return this.reattachPortal(context, entry);
+    if (operation === "status") return this.portalStatus(id);
+    const room = entry.room;
+    if (!room?.peer || !room.client.isConnected) throw new Error("This Chat's Portal is disconnected.");
+    const peer = room.peer;
+    if (operation === "permissions") {
+      await this.configurePortalPermissions(entry, room);
+      return this.portalStateForChat(id);
+    }
+    if (operation === "files") {
+      let paths: string[];
+      if (args.paths === undefined) {
+        const selected = await vscode.window.showOpenDialog({ title: "Select this batch of Portal files", canSelectMany: true, canSelectFiles: true, canSelectFolders: false });
+        if (!selected?.length) throw new Error("File selection cancelled.");
+        paths = selected.map(uri => uri.fsPath);
+      } else {
+        if (!Array.isArray(args.paths) || !args.paths.length || args.paths.some(value => typeof value !== "string" || !path.isAbsolute(value))) throw new Error("Provide absolute local file paths for one explicit batch.");
+        paths = args.paths;
+      }
+      const offered = await this.filesForPortal(entry, room).offer(paths);
+      void offered.done.then(() => portalChanged(), error => log.error(`Portal transfer completion: ${String(error)}`));
+      return { contextId: id, transferId: offered.transferId, instruction: "Waiting for per-batch controlled-side permission. Inspect status for the receiver's verified receipt; offering is not delivery or installation." };
+    }
+    if (operation === "send") {
+      if (typeof args.prompt !== "string" || typeof args.requestId !== "string") throw new Error("Portal send requires a prompt and stable UUID requestId.");
+      const requestId = peer.submit(args.prompt, args.requestId);
+      return { contextId: id, requestId, receipt: peer.receipts.get(requestId), endpoint: room.url };
+    }
+    if (operation === "get" || operation === "cancel") {
+      if (typeof args.requestId !== "string" || !peer.receipts.has(args.requestId)) throw new Error("Unknown request in this Chat's Portal.");
+      if (operation === "cancel") peer.cancel(args.requestId);
+      return { contextId: id, receipt: peer.receipts.get(args.requestId), observation: peer.observations.get(args.requestId) };
+    }
+    if (operation === "switch") {
+      await this.portalActions(room, peer, true);
+      return this.portalStatus(id);
+    }
+    peer.revoke();
+    room.client.disconnect();
+    entry.room = undefined;
+    return { contextId: id, connected: false };
+  }
+
+  private portalStatus(id: string): Record<string, unknown> & { connected: boolean } {
+    const entry = this.chatPortals.get(id);
+    const room = entry?.room;
+    const binding = room?.peer?.binding;
+    const invitation = room?.peer?.pendingInvitation;
+    const link = this.portalPendingLinks.get(id);
+    const pending = invitation ? { role: invitation.role, expiresAt: invitation.expiresAt, linkAvailable: !!link && link.expiresAt > Date.now(),
+      ...(link ? { endpoint: link.endpoint, endpointScope: endpointScope(link.endpoint) } : {}) } : undefined;
+    const connected = !!room?.client.isConnected && !!binding;
+    const external = entry?.external ? this.externalPortalExpiry.get(id) : undefined;
+    const reviewMode = !binding ? undefined : binding.role === "controller" ? (entry!.external ? "manual" : "auto")
+      : binding.peerCapabilities?.includes("auto-review-v1") ? "auto" : binding.peerCapabilities?.includes("review-mode-v1") ? "manual" : undefined;
+    return { connected, reviewMode,
+      state: connected ? "connected" : pending ? "awaiting-peer" : binding ? "reconnecting" : this.portalResumable.has(id) ? "resumable" : "disconnected",
+      ...(pending ? { pending } : {}),
+      ...(external && this.externalAuthorized(id) ? { externalAuthorization: { expiresAt: Number.isFinite(external.expiresAt) ? external.expiresAt : null } } : {}),
+      endpoint: room?.url, endpointScope: endpointScope(room?.url),
+      ...(binding?.peerEndpoint ? { peerEndpoint: binding.peerEndpoint, peerEndpointScope: endpointScope(binding.peerEndpoint) } : {}),
+      binding: room?.peer?.binding, switchPending: room?.peer?.swapPending,
+      resumable: room?.peer?.binding ? undefined : this.portalResumable.get(id),
+      observations: room?.peer ? [...room.peer.observations.values()] : [],
+      transfers: [...(this.portalTransfers.get(id)?.values() || [])],
+      receipts: room?.peer ? [...room.peer.receipts.values()].map(({ requestId, state, error }) => ({ requestId, state, error })) : [] };
+  }
+
+  private externalAuthorized(id: string): boolean {
+    const grant = this.externalPortalExpiry.get(id);
+    const binding = this.chatPortals.get(id)?.room?.peer?.binding;
+    if (!grant || grant.expiresAt <= Date.now() || !binding || binding.pairId !== grant.pairId || binding.role !== grant.role) {
+      if (grant) this.externalPortalExpiry.delete(id);
+      return false;
+    }
+    return true;
+  }
+
+  /** Bounded by the link's own 10-minute lifetime; ends early on pairing, expiry, void or disconnect. */
+  private async waitForPortalPairing(entry: { id: string; room?: RoomConn }): Promise<void> {
+    // A redeemed link is still awaiting local pairing approval; keep waiting until bound, rejected, expired or disconnected.
+    const pending = (peer?: PeerSession) => peer?.pendingInvitation || peer?.pairingInProgress;
+    const deadline = pending(entry.room?.peer)?.expiresAt;
+    if (!deadline) return;
+    const limit = Math.min(deadline, Date.now() + 10 * 60_000);
+    while (Date.now() < limit) {
+      const peer = entry.room?.peer;
+      if (!peer || peer.binding || !pending(peer) || !entry.room?.client.isConnected) return;
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+  }
+
+  /** One timed external authorization offered once per new pairing, so MCP status polling doesn't prompt every call. */
+  private async offerExternalAuthorization(id: string): Promise<void> {
+    const entry = this.chatPortals.get(id);
+    const binding = entry?.room?.peer?.binding;
+    if (!entry?.external || !binding || this.externalAuthorized(id)) return;
+    const epoch = this.portalEpochs.get(id) || 0;
+    const FIFTEEN = "Allow for 15 minutes", CHOOSE = "Choose duration…";
+    const pick = await vscode.window.showInformationMessage(`External Chat "${entry.label}" is paired with ${binding.peerMachine || binding.peerName}. Let it check status and send Portal requests without a prompt each time?`, {
+      modal: true,
+      detail: "Fixed deadline that activity never extends; ends on disconnect, control-direction switch, Knowledge Root or trust change, or Revoke. MCP can't authenticate individual Copilot conversations, so allow this only when the MCP clients of this VS Code window are trusted. The controlled side still approves every task.",
+    }, FIFTEEN, CHOOSE);
+    if (!pick) return;
+    const duration = pick === FIFTEEN ? 15 * 60_000 : await this.portalDuration();
+    if (duration === undefined) return;
+    const current = this.chatPortals.get(id)?.room?.peer?.binding;
+    if (current !== binding || (this.portalEpochs.get(id) || 0) !== epoch || entry.root !== getStorePath() || !vscode.workspace.isTrusted || !entry.room?.client.isConnected) {
+      void vscode.window.showWarningMessage("The Portal changed during authorization; external access was not remembered.");
+      return;
+    }
+    this.externalPortalExpiry.set(id, { expiresAt: duration === null ? Infinity : Date.now() + duration, pairId: binding.pairId, role: binding.role });
+    portalChanged();
+  }
+
+  /** Re-copy or void this Chat's unredeemed Portal link from its Portal panel. */
+  async portalPendingLink(id: string, action: "copy" | "void"): Promise<void> {
+    const entry = this.chatPortals.get(id);
+    const peer = entry?.room?.peer;
+    const link = this.portalPendingLinks.get(id);
+    if (!entry?.room || !peer?.pendingInvitation) { this.portalPendingLinks.delete(id); portalChanged(); throw new Error("This Chat has no unredeemed Portal link."); }
+    if (action === "copy") {
+      if (entry.root !== getStorePath() || !vscode.workspace.isTrusted || !entry.room.client.isConnected || peer.binding) throw new Error("The Portal context changed; no link was copied.");
+      if (!link || link.expiresAt <= Date.now()) throw new Error("The link is no longer available; void it and start a new Portal.");
+      await vscode.env.clipboard.writeText(link.link);
+      vscode.window.setStatusBarMessage("$(remote) PKM Portal link copied again", 4000);
+      return;
+    }
+    this.portalPendingLinks.delete(id);
+    peer.revoke();
+    peer.dispose();
+    entry.room.client.disconnect();
+    entry.room = undefined;
+    portalChanged();
+    this.push();
+  }
+
+  async managePeer(context: vscode.ExtensionContext, owner?: { id: string; label: string }): Promise<void> {
+    if (!owner) throw new Error("Open Portal from the intended Chat's toolbar, or use the MCP portal_control tool.");
+    this.portalPreflight();
+    let entry = this.chatPortals.get(owner.id);
+    if (entry && entry.root !== getStorePath()) throw new Error("The Portal Knowledge Root changed. Reload before reconnecting.");
+    if (!entry) { entry = { ...owner, root: getStorePath(), external: false }; this.chatPortals.set(owner.id, entry); }
+    const portal = entry.room;
+    if (portal?.peer?.binding) { await this.portalActions(portal, portal.peer); return; }
+    if (this.portalOpening.has(owner.id)) throw new Error("This Chat already has a Portal opening.");
+    const START = "Start a Portal", ACCEPT = "Accept a Portal link", REATTACH = "Re-attach previous Portal";
+    await this.loadPortalResumeIndex();
+    const resumable = this.portalResumable.get(owner.id);
+    const items: vscode.QuickPickItem[] = [
+      ...(resumable && !portal?.peer?.binding ? [{ label: `$(debug-restart) ${REATTACH}`, description: `${resumable.role} · ${resumable.peerMachine || resumable.peerName} · ${resumable.peerChatName || ""}`,
+        detail: "Reconnect the same pairing after a restart or network drop. Permissions start empty; open requests are reconciled, never replayed." }] : []),
+      { label: `$(link-external) ${START}`, description: "This Chat will control the other Chat", detail: "Copy a private one-time link; continue working in this Chat." },
+      { label: `$(link) ${ACCEPT}`, description: "Connect this Chat to the initiator", detail: "Paste a private link. Control direction and task execution require explicit approval." },
+    ];
+    this.portalOpening.add(owner.id);
+    try {
+      const choice = (await vscode.window.showQuickPick(items, { title: `PKM Portal · ${owner.label}`, ignoreFocusOut: true }))?.label.replace(/^\$\([^)]+\)\s*/, "");
+      if (!choice) return;
+      if (choice === REATTACH) {
+        if (portal && !portal.peer?.binding) { portal.peer?.dispose(); portal.client.disconnect(); entry.room = undefined; }
+        const result = await this.reattachPortal(context, owner);
+        vscode.window.setStatusBarMessage(`$(remote) PKM Portal: ${String(result.instruction || "re-attaching…")}`, 10_000);
+        return;
+      }
+      if (portal) {
+        const replace = await vscode.window.showWarningMessage(`Replace the pending or disconnected Portal for "${owner.label}"?`,
+          { modal: true, detail: "The old invitation and connection will be revoked. Other Chats are not affected." }, "Replace");
+        if (replace !== "Replace") return;
+        portal.peer?.revoke();
+        portal.peer?.dispose();
+        portal.client.disconnect();
+        entry.room = undefined;
+      }
+      const selected = choice;
+      if (selected === START) await this.startPortal(context, owner);
+      if (selected === ACCEPT) await this.acceptPortal(context, owner);
+    } finally {
+      this.portalOpening.delete(owner.id);
+    }
+  }
+
+  private portalPreflight(room?: RoomConn): string {
+    if (!vscode.workspace.isTrusted) throw new Error("PKM Portal requires a trusted workspace.");
+    if (room) {
+      if (!room.client.isConnected || !room.roomId) throw new Error("Connect to a Chat Room first, then open PKM Portal.");
+      assertPeerEndpoint(room.url);
+    }
+    const peerRoot = getStorePath();
+    if (!peerRoot) throw new Error("Configure a Knowledge Root before using PKM Portal.");
+    return peerRoot;
+  }
+
+  private ensurePeer(room: RoomConn, peerRoot: string, owner: { id: string; label: string }, resumeFrom?: PeerResumeRecord): PeerSession {
+    if ([...this.chatPortals.values()].some(entry => entry.room === room && entry.id !== owner.id)) throw new Error("This transport belongs to another Chat.");
+    if (room.peer) return room.peer;
+    let announced = "";
+    let onceShare = false;
+    const peer = new PeerSession({
+      roomId: room.roomId!,
+      chatId: owner.id,
+      machine: os.hostname(),
+      chatName: owner.label,
+      endpoint: room.url,
+      journalDirectory: path.join(peerRoot, ".pkm", "state", "peer-tasks"),
+      autoReview: () => !this.chatPortals.get(owner.id)?.external,
+      ...(this.secretStorage ? { persist: (record: PeerResumeRecord | undefined) => this.persistPortalResume(owner, record) } : {}),
+      ...(resumeFrom ? { resumeFrom } : {}),
+      resumed: binding => {
+        void vscode.window.showInformationMessage(`Chat "${owner.label}" Portal re-attached to ${binding.peerName} (${binding.role}). Reusable permissions were not restored; open requests were reconciled from receipts without replay.`);
+      },
+      connected: () => room.client.isConnected && vscode.workspace.isTrusted && peerRoot === getStorePath(),
+      send: (target, packet) => {
+        if (!vscode.workspace.isTrusted || getStorePath() !== peerRoot) throw new Error("Portal workspace or Knowledge Root changed; pair again.");
+        room.client.sendPeer(target, packet);
+      },
+      approvePair: async name => await vscode.window.showWarningMessage(`Allow ${name} to control this machine?`,
+        { modal: true, detail: "This pairs two participants on the current Chat transport. Each remote instruction still requires separate local approval. Local Allow All does not apply." }, "Pair") === "Pair",
+      approveSwap: async (name, role) => await vscode.window.showWarningMessage(
+        role === "controlled" ? `${name} asks to switch direction: ${name} would control this machine.` : `${name} asks to switch direction: you would control ${name}.`,
+        { modal: true, detail: role === "controlled"
+          ? `After switching, ${name} can send tasks to this machine and you can no longer send tasks to ${name}. Each task still needs your approval here.`
+          : `After switching, you can send tasks to ${name}, and ${name} can no longer send tasks here.` }, "Allow switch") === "Allow switch",
+      approveTask: async (name, prompt) => {
+        onceShare = false;
+        if (this.portalPermissions.get(owner.id)?.snapshot().grants.length) return true;
+        const answer = await vscode.window.showWarningMessage(`Run a remote task from ${name} in Chat "${owner.label}"?`,
+          { modal: true, detail: `${prompt}\n\nOnly this bound Chat executes, with its model/history; charges may apply. Run once shares this task's public answer, stages and tool names/status (not hidden reasoning or unrelated history). Configure reusable authorization to avoid repeated approvals. Files ALWAYS need a separate batch permit.` }, "Run once", "Configure permissions");
+        if (answer === "Configure permissions") return this.configurePortalPermissions(owner, room);
+        onceShare = answer === "Run once";
+        return onceShare;
+      },
+      execute: async (prompt, signal, requestId) => {
+        if (!vscode.workspace.isTrusted || getStorePath() !== peerRoot) throw new Error("Peer task workspace or Knowledge Root changed; pair again.");
+        if (!remoteChatExecutor) throw new Error("The local PKM Chat backend is unavailable.");
+        const binding = room.peer?.binding;
+        if (!binding) throw new Error("Portal disconnected before execution.");
+        const policy = this.portalPermissions.get(owner.id);
+        const leased = !!policy?.snapshot().grants.length;
+        const localController = new AbortController();
+        this.portalExecutions.set(owner.id, localController);
+        const cancel = () => localController.abort();
+        signal.addEventListener("abort", cancel, { once: true });
+        if (signal.aborted) cancel();
+        const deadline = setInterval(() => {
+          if (!vscode.workspace.isTrusted || getStorePath() !== peerRoot || !room.client.isConnected || room.peer?.binding !== binding
+            || leased && !policy?.snapshot().grants.length) cancel();
+        }, 500);
+        try {
+        const result = await remoteChatExecutor(prompt, localController.signal, requestId, owner.id, observation => {
+          if (room.peer?.binding !== binding || !room.client.isConnected || !binding.peerCapabilities?.includes("observations-v1")) return;
+          const allowed = onceShare || this.portalPermissions.get(owner.id)?.allows("progress-read");
+          room.peer.observe(allowed ? this.portalMirrorObservation(owner.id, observation) : { requestId: observation.requestId, chatId: observation.chatId, sequence: observation.sequence, at: observation.at, state: "restricted", visibility: "restricted" });
+        }, {
+          hostname: binding.peerMachine || binding.peerName, endpoint: binding.peerEndpoint || room.url,
+          chatId: binding.peerChatId, chatName: binding.peerChatName || binding.peerName, participantId: binding.peerId,
+        });
+        if (localController.signal.aborted) throw new Error("Portal execution interrupted by cancellation, authorization expiry or context change. External side effects may still exist; inspect the original task instead of replaying it.");
+        return onceShare || this.portalPermissions.get(owner.id)?.allows("progress-read") || this.portalPermissions.get(owner.id)?.allows("chat-read")
+          ? result : { requestId, chatId: owner.id, visibility: "restricted", message: "Task completed; answer sharing is not authorized." };
+        } finally {
+          signal.removeEventListener("abort", cancel);
+          clearInterval(deadline);
+          if (this.portalExecutions.get(owner.id) === localController) this.portalExecutions.delete(owner.id);
+          onceShare = false;
+        }
+      },
+      invalidated: () => this.invalidatePortal(owner.id),
+      reviewNeeded: review => {
+        const entry = this.chatPortals.get(owner.id);
+        if (!entry || entry.external) return;
+        if (!portalReviewReceiver) {
+          log.error("Portal review could not be delivered: Chat backend is unavailable.");
+          void vscode.window.showErrorMessage("Portal needs controller review; Chat backend is unavailable. Read the original request manually.");
+          return;
+        }
+        void portalReviewReceiver(owner.id, review).catch(error => {
+          log.error(`Portal controller review: ${String(error)}`);
+          void vscode.window.showErrorMessage(`Portal controller review was not started: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      },
+      files: async payload => {
+        if (!vscode.workspace.isTrusted || getStorePath() !== peerRoot) {
+          this.invalidatePortal(owner.id);
+          throw new Error("Portal file transfer stopped after a Root or trust change.");
+        }
+        await this.filesForPortal(owner, room).handle(payload);
+      },
+      changed: () => {
+        const binding = room.peer?.binding;
+        const state = binding ? `${binding.pairId}:${binding.role}` : "";
+        const current = this.chatPortals.get(owner.id);
+        if (current?.room === room || !current?.room) this.portalJournal?.observe({ chatId: owner.id, chatLabel: current?.label || owner.label, external: !!current?.external, localMachine: os.hostname(), endpoint: room.url }, binding);
+        if (binding && !this.portalPermissions.has(owner.id)) this.portalPermissions.set(owner.id, new PortalPermissions({ chatId: owner.id, connectionId: binding.pairId }));
+        if (binding || !room.peer?.pendingInvitation) this.portalPendingLinks.delete(owner.id);
+        if (state && state !== announced && current?.external) void this.offerExternalAuthorization(owner.id).catch(error => log.error(`External Portal authorization: ${String(error)}`));
+        if (state && state !== announced) {
+          void vscode.window.showInformationMessage(binding!.role === "controller"
+            ? `Chat "${owner.label}" Portal connected: controller of ${binding!.peerName}.`
+            : `Chat "${owner.label}" Portal connected: controlled by ${binding!.peerName}. Each task needs approval.`);
+        }
+        if (state !== announced) void agentSessionProjectStateData().then(
+          data => postToPanel({ command: "projectState", data }),
+          error => log.error(`Portal navigation refresh: ${String(error)}`),
+        );
+        announced = state;
+        portalChanged();
+        this.push();
+      },
+      error: error => { log.error(`peer collaboration: ${error.message}`); void vscode.window.showErrorMessage(`PKM Portal: ${error.message}`); },
+    });
+    room.peer = peer;
+    return peer;
+  }
+
+  private filesForPortal(owner: { id: string; label: string }, room: RoomConn): PortalFiles {
+    const existing = this.portalFiles.get(owner.id);
+    if (existing) return existing;
+    const binding = room.peer?.binding;
+    if (!binding || !room.client.isConnected) throw new Error("File transfer requires a live paired Portal.");
+    if (!binding.peerCapabilities?.includes("files-v1")) throw new Error("Remote Host lacks approved file-transfer support. Upgrade both Hosts and pair again first.");
+    const root = getStorePath();
+    const epoch = this.portalEpochs.get(owner.id) || 0;
+    const active = () => {
+      if ((this.portalEpochs.get(owner.id) || 0) !== epoch || room.peer?.binding !== binding || !room.client.isConnected || root !== getStorePath() || !vscode.workspace.isTrusted) throw new Error("Portal changed; file batch is not authorized.");
+    };
+    let lastTransferPublish = 0;
+    const files = new PortalFiles({
+      controlled: () => binding.role === "controlled",
+      send: payload => { active(); room.peer!.sendFiles(payload); },
+      destination: async () => {
+        active();
+        const selected = await vscode.window.showOpenDialog({ title: `Save Portal files from ${binding.peerName} (never auto-install)`, canSelectMany: false, canSelectFolders: true, canSelectFiles: false });
+        active();
+        return selected?.[0]?.fsPath;
+      },
+      approve: async batch => {
+        active();
+        const allowed = await vscode.window.showWarningMessage(`Permit this file batch ${batch.direction === "incoming" ? "from" : "to"} ${binding.peerMachine || binding.peerName}?`, {
+          modal: true,
+          detail: `Chat: ${owner.label}\nPeer: ${binding.peerChatName || binding.peerName} · ${room.url}\nDirection: ${batch.direction}\nTotal: ${batch.totalBytes} bytes\nDestination: ${batch.destination || "remote user-selected directory"}\n${batch.files.map((file, index) => `${file.name} · ${file.size} bytes · SHA-256 ${file.sha256}${batch.sources?.[index] ? `\nSource: ${batch.sources[index]}` : ""}`).join("\n")}\n\nOnly this immutable batch. No overwrite, execution, installation or reload. Allow All never skips controlled-side file-transfer approval.`,
+        }, "Permit this batch");
+        active();
+        return allowed === "Permit this batch";
+      },
+      onStatus: status => {
+        let records = this.portalTransfers.get(owner.id);
+        if (!records) { records = new Map(); this.portalTransfers.set(owner.id, records); }
+        const previous = records.get(status.transferId);
+        records.set(status.transferId, status);
+        while (records.size > 32) records.delete(records.keys().next().value!);
+        if (previous?.state !== status.state || Date.now() - lastTransferPublish >= 100) {
+          lastTransferPublish = Date.now();
+          portalChanged();
+        }
+      },
+    });
+    this.portalFiles.set(owner.id, files);
+    return files;
+  }
+
+  private async waitForRoom(predicate: () => boolean, timeoutMs: number, failure: string): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (!predicate()) {
+      if (Date.now() > deadline) throw new Error(failure);
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+  }
+
+  private static portalAlias(): string {
+    return `${os.userInfo().username || "user"}@${os.hostname().split(".")[0] || "host"}`.slice(0, 60);
+  }
+
+  private async startPortal(context: vscode.ExtensionContext, owner: { id: string; label: string }): Promise<void> {
+    const peerRoot = this.portalPreflight();
+    const roleChoice = await vscode.window.showQuickPick([
+      { label: "Controller (default)", role: "controller" as const, detail: "This Chat sends tasks to the other machine." },
+      { label: "Controlled", role: "controlled" as const, detail: "Share this link so another Chat can test this machine. Every task needs approval." },
+    ], { title: `Portal direction for "${owner.label}"`, ignoreFocusOut: true });
+    if (!roleChoice) return;
+    const hub = await this.startHub(vscode.workspace.getConfiguration("personalKnowledge").get<number>("chatHubPort") ?? 7345);
+    if (!hub.ok) throw new Error(`Couldn't start the Chat Hub: ${hub.error || "unknown error"}`);
+    const created = await this.createHostedRoom(`PKM Portal ${randomUUID()}`);
+    const user = `${ChatRoomManager.portalAlias().slice(0, 40)}-${owner.id.slice(0, 8)}`;
+    this.joinRoom({ url: `ws://127.0.0.1:${this.hubPort}`, room: created.room, roomId: created.roomId, user, token: created.secret, cid: getChatCid(context), hostToken: created.hostToken });
+    const room = [...this.rooms.values()].find(item => item.roomId === created.roomId);
+    if (!room) throw new Error("The Portal Room was not created.");
+    this.portalConnections.set(owner.id, { url: `ws://127.0.0.1:${this.hubPort}`, room: created.room, roomId: created.roomId, user, secret: created.secret, host: true, port: this.hubPort });
+    this.chatPortals.get(owner.id)!.room = room;
+    await this.waitForRoom(() => room.client.isConnected && !!room.client.participantId, 30_000, "The Portal Room did not connect.");
+    const peer = this.ensurePeer(room, peerRoot, owner);
+    const code = roleChoice.role === "controller" ? peer.offer() : peer.invite();
+    // In a Remote window this forwards the Hub port to the computer running the VS Code UI.
+    const external = await vscode.env.asExternalUri(vscode.Uri.parse(`http://localhost:${this.hubPort}`));
+    const forwardedUrl = `${external.scheme === "https" ? "wss" : "ws"}://${external.authority}`;
+    const url = await vscode.window.showInputBox({ title: "Portal connection address", value: forwardedUrl, ignoreFocusOut: true,
+      prompt: "Use the forwarded localhost address for this computer, or a reachable WSS IP/hostname for another computer. No NAT traversal is provided.",
+      validateInput: value => { try { assertPeerEndpoint(value); return undefined; } catch (error) { return String(error); } },
+    });
+    if (!url) { peer.revoke(); room.client.disconnect(); return; }
+    const link = createPortalLink({ url, room: created.room, roomId: created.roomId, secret: created.secret, code, controller: room.client.participantId, name: room.user, role: roleChoice.role });
+    const pendingInvitation = peer.pendingInvitation;
+    if (pendingInvitation) this.portalPendingLinks.set(owner.id, { link, expiresAt: pendingInvitation.expiresAt, endpoint: url });
+    portalChanged();
+    await vscode.env.clipboard.writeText(link);
+    const COPY = "Copy Portal link again";
+    const pick = await vscode.window.showInformationMessage("PKM Portal link copied. Send it privately to the other side.", {
+      modal: true,
+      detail: `The other Chat opens Portal → Accept a Portal link. The link works once and expires in 10 minutes. This Chat will be ${roleChoice.role}; switching direction requires approval on both sides.\n\nEndpoint: ${url}. Localhost links work only on the computer receiving the forwarded port. Other machines need reachable WSS.`,
+    }, COPY);
+    if (pick === COPY) await this.portalPendingLink(owner.id, "copy");
+  }
+
+  private async acceptPortal(context: vscode.ExtensionContext, owner: { id: string; label: string }): Promise<void> {
+    const peerRoot = this.portalPreflight();
+    const input = await vscode.window.showInputBox({ title: "Accept PKM Portal", prompt: "Paste the pkmportal:v1:… link the other side sent you.", password: true, ignoreFocusOut: true });
+    if (!input) return;
+    const link = parsePortalLink(input);
+    if ([...this.chatPortals.values()].some(entry => entry.room?.roomId === link.roomId && entry.id !== owner.id)) throw new Error("This Portal is already attached to another Chat. Create a separate link for this Chat.");
+    const controlsRemote = link.role === "controlled";
+    const ALLOW = controlsRemote ? "Connect as controller" : "Allow control";
+    const consent = await vscode.window.showWarningMessage(controlsRemote
+      ? `Connect Chat "${owner.label}" as controller of ${link.name || "the remote Chat"}?`
+      : `Let ${link.name || "the Portal initiator"} control Chat "${owner.label}"?`, {
+      modal: true,
+      detail: `Endpoint: ${link.url}\n${controlsRemote ? "This Chat will send tasks to the remote Chat, which must approve pairing and each task." : "The initiator can send tasks only to this bound Chat. Each task and tool needs local approval; model charges may apply."} Switching direction needs explicit approval on both sides.`,
+    }, ALLOW);
+    if (consent !== ALLOW) return;
+    if (getStorePath() !== peerRoot || !vscode.workspace.isTrusted) throw new Error("Portal workspace or Knowledge Root changed during approval.");
+    if ([...this.chatPortals.values()].some(entry => entry.room?.roomId === link.roomId && entry.id !== owner.id)) throw new Error("This Portal was attached to another Chat during approval.");
+    let user = ChatRoomManager.portalAlias();
+    if (user === link.name) user = `${user}-2`;
+    this.joinRoom({ url: link.url, room: link.room, roomId: link.roomId, user, token: link.secret, cid: getChatCid(context) });
+    const room = [...this.rooms.values()].find(item => item.roomId === link.roomId);
+    if (!room) throw new Error("Couldn't open the Portal Room.");
+    this.portalConnections.set(owner.id, { url: link.url, room: link.room, roomId: link.roomId, user, secret: link.secret, host: false });
+    this.chatPortals.get(owner.id)!.room = room;
+    await this.waitForRoom(() => room.client.isConnected && room.members.some(member => member.participantId === link.controller && member.present !== false), 30_000,
+      `Couldn't reach the Portal initiator at ${link.url}. Keep the initiator's VS Code window open, and run this window on the computer where the initiator's window is displayed.`);
+    const peer = this.ensurePeer(room, peerRoot, owner);
+    if (controlsRemote) peer.pair(link.controller, link.code);
+    else peer.accept(link.controller, link.code);
+    await this.waitForRoom(() => !!peer.binding, 30_000, "Portal pairing was not approved, expired, or the peer disconnected. No task was sent.");
+    vscode.window.setStatusBarMessage("$(remote) PKM Portal: connecting…", 10_000);
+  }
+
+  private async portalActions(room: RoomConn, peer: PeerSession, switchOnly = false): Promise<void> {
+    const binding = peer.binding!;
+    const SWITCH = "Switch control direction…";
+    const actions = ["Status", "Permissions", "Send files", ...(binding.role === "controller" ? ["Send task", "Cancel task"] : []), SWITCH, "Disconnect"];
+    const selected = switchOnly ? SWITCH : await vscode.window.showQuickPick(actions, {
+      title: binding.role === "controller" ? `PKM Portal · you control ${binding.peerName}` : `PKM Portal · ${binding.peerName} controls this machine`,
+      ignoreFocusOut: true,
+    });
+    if (selected === "Send files") {
+      const owner = [...this.chatPortals.values()].find(item => item.room === room);
+      if (!owner) throw new Error("Portal owner is unavailable.");
+      const selectedFiles = await vscode.window.showOpenDialog({ title: "Select Portal file batch", canSelectMany: true, canSelectFiles: true, canSelectFolders: false });
+      if (!selectedFiles?.length) return;
+      const offered = await this.filesForPortal(owner, room).offer(selectedFiles.map(uri => uri.fsPath));
+      void offered.done.then(() => portalChanged(), error => log.error(`Portal file transfer: ${String(error)}`));
+    } else if (selected === "Permissions") {
+      const owner = [...this.chatPortals.values()].find(item => item.room === room);
+      if (!owner) throw new Error("Portal owner is unavailable.");
+      await this.configurePortalPermissions(owner, room);
+    } else if (selected === "Send task") {
+      const prompt = await vscode.window.showInputBox({ title: `Remote task for ${binding.peerName}`, prompt: "The target must approve this exact instruction. Existing local permissions are not shared.", ignoreFocusOut: true });
+      if (prompt) {
+        const requestId = peer.submit(prompt);
+        await vscode.window.showInformationMessage(`Remote task sent (${requestId}). Delivery is not execution approval; inspect Status for the result.`);
+      }
+    } else if (selected === "Cancel task") {
+      const requestId = await vscode.window.showQuickPick([...peer.receipts.values()].filter(receipt => ["running", "awaiting-approval"].includes(receipt.state)).map(receipt => receipt.requestId), { title: "Cancel original remote request" });
+      if (requestId) peer.cancel(requestId);
+    } else if (selected === SWITCH) {
+      const next = binding.role === "controller" ? "controlled" : "controller";
+      const REQUEST = "Request switch";
+      const confirmed = await vscode.window.showWarningMessage(next === "controlled" ? `Let ${binding.peerName} control this machine instead?` : `Ask to control ${binding.peerName} instead?`, {
+        modal: true,
+        detail: `Roles change only after ${binding.peerName} also explicitly allows it. Until then nothing changes.${next === "controlled" ? " Afterwards each task from them still needs your approval here." : ""}`,
+      }, REQUEST);
+      if (confirmed === REQUEST) {
+        peer.requestSwap();
+        vscode.window.setStatusBarMessage(`$(remote) PKM Portal: waiting for ${binding.peerName} to allow the switch…`, 15_000);
+      }
+    } else if (selected === "Disconnect") {
+      peer.revoke();
+      room.client.disconnect();
+    } else if (selected === "Status") {
+      const document = await vscode.workspace.openTextDocument({ language: "json",
+        content: JSON.stringify({ room: room.room, connected: room.client.isConnected, binding: peer.binding, switchPending: peer.swapPending, receipts: [...peer.receipts.values()] }, null, 2) });
+      await vscode.window.showTextDocument(document, { preview: true });
+    }
+  }
 
   private static roomKey(url: string, room: string, roomId?: string): string {
     return chatRoomIdentity(url, room, roomId);
@@ -4566,6 +5514,7 @@ class ChatRoomManager {
     if (!isTopLevelPrivate("notes", "Chatroom Meetings")) setTopLevelPrivacy("notes", "Chatroom Meetings", true);
     this.hub?.configureLifecycle(rootDir, this.archiveLimitBytes, installationId, secretStorage);
     void this.refreshStoredRooms().catch(error => log.warn(`chat: couldn't refresh Stored Rooms: ${(error as Error).message}`));
+    void this.loadPortalResumeIndex().catch(error => log.warn(`Portal resume index: ${String(error)}`));
   }
 
   get activeRoom(): RoomConn | undefined { return this.rooms.get(this.activeKey); }
@@ -4593,6 +5542,7 @@ class ChatRoomManager {
   push(): void {
     const snapshot = this.state();
     postToPanel({ command: "chatState", data: snapshot });
+    this.postPortalConnections();
     const status = summarizeChatNavigation(snapshot as any);
     const signature = `${status.kind}:${status.description}`;
     if (signature !== this.navigationStatusSignature) {
@@ -4913,6 +5863,7 @@ class ChatRoomManager {
       }
       for (const duplicate of sameRoom) {
         if (duplicate === rc) continue;
+        duplicate.peer?.dispose();
         try { duplicate.client.disconnect(); } catch { /* ignore */ }
         this.rooms.delete(duplicate.key);
         if (this.activeKey === duplicate.key) this.activeKey = key;
@@ -4922,6 +5873,7 @@ class ChatRoomManager {
       }
     }
     if (rc) {
+      rc.peer?.dispose(); rc.peer = undefined;
       rc.url = opts.url; rc.room = opts.room; rc.user = opts.user; rc.roomId = opts.roomId ?? rc.roomId;
       rc.client.connect({ ...opts, kind: "human" }); this.setActive(key); return;
     }
@@ -4933,8 +5885,14 @@ class ChatRoomManager {
     };
     rc.client = new ChatClient(
       {
-        onStatus:   (s, d) => { rc!.status = s; rc!.statusDetail = d ?? ""; if (s === "connected") this.publishMeetingSnapshot(rc!); this.push(); },
+        onStatus:   (s, d) => {
+          rc!.status = s; rc!.statusDetail = d ?? "";
+          if (s === "connected") this.publishMeetingSnapshot(rc!);
+          if (s === "disconnected") { rc!.peer?.dispose(); rc!.peer = undefined; }
+          this.push();
+        },
         onMessage:  m => this.addMessage(rc!, m),
+        onPeer: delivery => { if (rc!.peer) void rc!.peer.receive(delivery); },
         onHistory:  ms => { rc!.messages = ms.slice(-ChatRoomManager.MAX_MSGS); if (rc!.selfHost) void this.syncMeetingFromHistory(rc!); if (rc!.key === this.activeKey) this.push(); },
         onPresence: mm => {
           rc!.members = mm;
@@ -4945,6 +5903,7 @@ class ChatRoomManager {
           rc!.selfHost = !!me?.host;
           rc!.selfMuted = !!me?.muted;
           if (rc!.selfHost) void this.syncMeetingFromHistory(rc!);
+          this.tryPortalResume(rc!);
           this.push();
         },
         onMeetingSnapshot: snapshot => {
@@ -4972,6 +5931,7 @@ class ChatRoomManager {
   async closeOrLeaveRoom(key: string): Promise<void> {
     const rc = this.rooms.get(key);
     if (!rc) return;
+    rc.peer?.dispose();
     const locallyHosted = this.hub?.adminRooms().find(room =>
       (!!rc.roomId && room.roomId === rc.roomId) ||
       (!rc.roomId && rc.selfHost && ChatHub.canonRoom(room.room) === ChatHub.canonRoom(rc.room)));
@@ -5430,17 +6390,21 @@ class ChatRoomManager {
   }
 
   async dispose(): Promise<void> {
+    this.portalWindowBeat?.dispose(); this.portalWindowBeat = undefined;
     if (this.crossWindowRefreshTimer) clearTimeout(this.crossWindowRefreshTimer);
     this.crossWindowRefreshTimer = undefined;
     for (const agent of this.managedAgents.values()) { try { agent.client.disconnect(); } catch { /* ignore */ } }
     this.managedAgents.clear();
-    for (const rc of this.rooms.values()) { try { rc.client.disconnect(); } catch { /* ignore */ } }
+    for (const rc of this.rooms.values()) { rc.peer?.dispose(); try { rc.client.disconnect(); } catch { /* ignore */ } }
     this.rooms.clear();
     try { await this.hub?.stop(); } catch { /* ignore */ }
   }
 }
 
 let chatMgr: ChatRoomManager | undefined;
+let remoteChatExecutor: ((prompt: string, signal: AbortSignal, requestId: string, chatId: string, observer?: PortalObserver, source?: PortalSource) => Promise<unknown>) | undefined;
+let portalChatContext: ((chatId?: string, label?: string) => Promise<{ id: string; label: string }>) | undefined;
+let portalReviewReceiver: ((chatId: string, review: PortalReview) => Promise<void>) | undefined;
 function getChatMgr(): ChatRoomManager {
   if (!chatMgr) chatMgr = new ChatRoomManager();
   return chatMgr;
@@ -5482,9 +6446,9 @@ function getChatInstallationId(context: vscode.ExtensionContext): string {
   return chatInstallationId;
 }
 
-/** Post a message to the panel webview if it's open. */
+/** Shared backend events invalidate every tab; request responses use the captured session instead. */
 function postToPanel(m: object): void {
-  panel?.webview.postMessage(m);
+  panels.broadcast(m);
 }
 
 // ── Chatroom recents (persisted across sessions) ────────────────────────────
@@ -5610,6 +6574,7 @@ async function confirmAndDeleteStoredRoom(context: vscode.ExtensionContext, room
 /** Set store paths, run the one-time DB→files migration, mark ready, refresh. */
 async function initStore(context: vscode.ExtensionContext, storePath: string): Promise<void> {
   invalidateSharedContentCatalog();
+  getChatMgr().invalidatePortalsForContextChange(storePath);
   fsSetStorePath(storePath);
   storageSetStorePath(storePath);
   setPrivacyStoreRoot(storePath);
@@ -5901,7 +6866,7 @@ function resolveNoteSlugFromPath(target: string, from: string): string | null {
 function makeWebviewOptions(context: vscode.ExtensionContext): vscode.WebviewOptions & vscode.WebviewPanelOptions {
   return {
     enableScripts: true,
-    retainContextWhenHidden: false,
+    retainContextWhenHidden: true,
     localResourceRoots: [
       vscode.Uri.joinPath(context.extensionUri, "dist", "webview"),
       vscode.Uri.joinPath(context.extensionUri, "src", "webview"),
@@ -5996,50 +6961,69 @@ function getWebviewHtml(webview: vscode.Webview, context: vscode.ExtensionContex
 }
 
 function getOrCreatePanel(context: vscode.ExtensionContext): vscode.WebviewPanel {
-  if (panel) { panel.reveal(vscode.ViewColumn.One); return panel; }
+  const existing = activePanel();
+  if (existing) { existing.reveal(); return existing; }
 
+  return createPanelInstance(context, panels.staging.snapshot, true);
+}
+
+function injectPanelSnapshot(html: string, snapshot: unknown): string {
+  const encoded = Buffer.from(JSON.stringify(snapshot || {})).toString("base64");
+  return html.replace("<head>", `<head><meta name="pkm-panel-snapshot" content="${encoded}">`);
+}
+
+function createPanelInstance(context: vscode.ExtensionContext, snapshot: unknown = {}, transferPending = false): vscode.WebviewPanel {
   const created = vscode.window.createWebviewPanel(
     "personalKnowledge",
     "Personal Knowledge Manager",
     vscode.ViewColumn.One,
     makeWebviewOptions(context)
   );
-  initializePanel(created, context, false);
+  initializePanel(created, context, false, snapshot);
+  if (transferPending) {
+    const session = panels.instances.get(created)!;
+    for (const key of Object.keys(panels.staging).filter(key => key.startsWith("pending"))) {
+      (session as any)[key] = (panels.staging as any)[key];
+      (panels.staging as any)[key] = undefined;
+    }
+  }
   return created;
 }
 
-function initializePanel(target: vscode.WebviewPanel, context: vscode.ExtensionContext, restored: boolean): void {
-  panel = target;
+function initializePanel(target: vscode.WebviewPanel, context: vscode.ExtensionContext, restored: boolean, snapshot: unknown = {}): void {
+  const previousActive = panels.active;
+  const session = panels.add(target, snapshot);
+  if (!target.active && previousActive) panels.focus(previousActive);
   if (performanceStateDir && activationStartedAt) recordPerformanceMetric(performanceStateDir, "startup.framework_ms", Date.now() - activationStartedAt);
   target.webview.options = makeWebviewOptions(context);
   target.iconPath = vscode.Uri.joinPath(context.extensionUri, "resources", "brand-icon.svg");
-  _panelReady = false; // fresh webview; wait for its "ready" signal
-  _panelLastHeartbeat = Date.now();
-  _panelLastDiagnostic = "";
+  session.ready = false; // fresh webview; wait for its "ready" signal
+  session.lastHeartbeat = Date.now();
+  session.lastDiagnostic = "";
   const htmlStartedAt = Date.now();
   const html = getWebviewHtml(target.webview, context);
   const htmlDuration = Date.now() - htmlStartedAt;
   if (performanceStateDir) recordPerformanceMetric(performanceStateDir, "startup.panel_html_ms", htmlDuration, html.length);
-  target.webview.html = html;
+  target.webview.html = injectPanelSnapshot(html, session.snapshot);
   loadProfiler.record("host.panel.html_ready", {
     restored,
     durationMs: htmlDuration,
     htmlBytes: html.length,
   });
   log.info(`panel ${restored ? "restored" : "created"} (html ${html.length} bytes, generated ${htmlDuration}ms)`);
-  if (_panelRestoredRecoveryTimer) clearTimeout(_panelRestoredRecoveryTimer);
-  _panelRestoredRecoveryTimer = scheduleRestoredWebviewRecovery({
+  if (session.recoveryTimer) clearTimeout(session.recoveryTimer);
+  session.recoveryTimer = scheduleRestoredWebviewRecovery({
     restored,
-    isReady: () => _panelReady,
-    isCurrent: () => panel === target,
+    isReady: () => session.ready,
+    isCurrent: () => panels.instances.has(target),
     recover: () => {
-      _panelRestoredRecoveryTimer = undefined;
+      session.recoveryTimer = undefined;
       log.warn("restored panel did not become ready; recreating the webview");
       target.dispose();
-      setTimeout(() => getOrCreatePanel(context), 0);
+      setTimeout(() => createPanelInstance(context, session.snapshot), 0);
     },
   });
-  _panelRestoredRecoveryTimer?.unref?.();
+  session.recoveryTimer?.unref?.();
 
   // Debug: dump generated HTML for inspection (debug level only)
   if (vscode.workspace.getConfiguration("personalKnowledge").get<string>("logLevel", "info") === "debug") {
@@ -6062,10 +7046,11 @@ function initializePanel(target: vscode.WebviewPanel, context: vscode.ExtensionC
           workspace: String(msg.profileWorkspace || ""),
         });
       }
-      void handleMessage(msg, m => panel?.webview.postMessage({
+      void panels.requests.run(session, () => handleMessage(msg, m => panels.reply(session, {
         ...m,
         ...(traceId ? { profileRequestId: traceId } : {}),
-      }), context).finally(() => {
+      }), context)).finally(() => {
+        if (/^(save|delete|markDone|skillRename|skillMove|skillSet|noteSet|knowledgeTrash|createKnowledge|updateKnowledgeMetadata|recipe(?:Create|Update|Delete|Trash|Folder)|project(?:Create|Overview|Link|Lifecycle|Checkpoint)|ganttTask(?:Create|Update|Delete)|thread(?:Create|Rename|Move)|server(?:Update|Delete|Create)|envUpdate)/.test(String(msg.command || ""))) panels.broadcast({ command: "sharedDataChanged" }, target);
         if (traceId) {
           loadProfiler.record("host.request.completed", {
             traceId,
@@ -6079,13 +7064,18 @@ function initializePanel(target: vscode.WebviewPanel, context: vscode.ExtensionC
     undefined, context.subscriptions
   );
 
+  target.onDidChangeViewState(() => {
+    if (!target.active) return;
+    panels.focus(target);
+    if (session.ready) panels.reply(session, { command: "panelVisible" });
+  }, undefined, context.subscriptions);
   target.onDidDispose(() => {
-    if (_panelRestoredRecoveryTimer) clearTimeout(_panelRestoredRecoveryTimer);
-    _panelRestoredRecoveryTimer = undefined;
-    if (panel === target) { panel = undefined; panelMarkdownDraftOpen = false; }
-    _panelReady = false;
-    loadProfiler.record("host.panel.disposed", { heartbeatAgeMs: Date.now() - _panelLastHeartbeat });
-    log.info(`panel disposed heartbeatAgeMs=${Date.now() - _panelLastHeartbeat}${_panelLastDiagnostic ? ` lastDiagnostic=${_panelLastDiagnostic}` : ""}`);
+    if (session.recoveryTimer) clearTimeout(session.recoveryTimer);
+    session.recoveryTimer = undefined;
+    panels.remove(target);
+    session.ready = false;
+    loadProfiler.record("host.panel.disposed", { heartbeatAgeMs: Date.now() - session.lastHeartbeat });
+    log.info(`panel disposed heartbeatAgeMs=${Date.now() - session.lastHeartbeat}${session.lastDiagnostic ? ` lastDiagnostic=${session.lastDiagnostic}` : ""}`);
   }, undefined, context.subscriptions);
 }
 
@@ -6151,12 +7141,48 @@ async function ensureServerForwarding(context: vscode.ExtensionContext, slug: st
   }
 }
 
+function panelEditIdentity(type: string, key: unknown): string { return type + ":" + String(key || ""); }
+function panelEditValue(type: string, key: string): unknown {
+  if (type === "skill") return skillGet(key);
+  if (type === "note") return noteGet(key);
+  if (type === "paper") return paperGet(key);
+  if (type === "script") return scriptGet(key);
+  return undefined;
+}
+function panelEditRevision(value: unknown): string { return createHash("sha256").update(JSON.stringify(value ?? null)).digest("hex"); }
+function advancePanelEditBaseline(type: string, key: string, respond: (message: object) => void): void {
+  const session = panelSession();
+  const identity = panelEditIdentity(type, key);
+  const revision = panelEditRevision(panelEditValue(type, key));
+  session.revisions.set(identity, revision);
+  session.snapshot.editRevisions ||= {};
+  session.snapshot.editRevisions[identity] = revision;
+  respond({ command: "panelEditBaseline", identity, revision });
+}
+
+function checkPanelEdit(msg: any): void {
+  const types: Record<string, string> = { saveNote:"note", saveSkill:"skill", savePaper:"paper", saveScript:"script" };
+  const type = types[msg.command];
+  if (!type) return;
+  const key = String(msg.name || msg.slug || msg.paper?.slug || msg.path || "");
+  if (!key) return;
+  const session = panelSession();
+  const identity = panelEditIdentity(type, key);
+  const baseline = session.snapshot.editRevisions?.[identity] || session.revisions.get(identity);
+  if (baseline && baseline !== panelEditRevision(panelEditValue(type, key))) {
+    throw new Error("This item changed in another PKM tab or on disk. Your draft was kept. Refresh/reopen the item before saving.");
+  }
+}
+
 async function handleMessage(
   msg: any,
   respond: (m: object) => void,
   context: vscode.ExtensionContext
 ): Promise<void> {
+  const panel = activePanel();
+  const session = panelSession();
   try {
+  checkPanelEdit(msg);
   // Log user-meaningful actions at info level; noisy list/detail at debug
     if (["saveNote", "saveSkill", "deleteNote", "deleteSkill", "markDone",
       "export", "import", "startSync", "joinSync", "revokeSync", "generateMcp", "setSkillRouterSolutionEnabled"].includes(msg.command)) {
@@ -6165,8 +7191,27 @@ async function handleMessage(
     log.debug(`handleMessage: ${msg.command}`);
   }
   switch (msg.command) {
+    case "panelViewState": {
+      session.snapshot = panelsSnapshot(msg.state);
+      break;
+    }
+    case "duplicatePanel": {
+      createPanelInstance(context, msg.state || session.snapshot);
+      break;
+    }
+    case "actionWorkbenchDocument": {
+      if (!panel) break;
+      try { respond({ command: "actionWorkbenchDocument", html: renderEmbeddedActionWorkbench(panel.webview, context, msg.state) }); }
+      catch (error) { respond({ command: "actionWorkbenchDocument", error: error instanceof Error ? error.message : String(error) }); }
+      break;
+    }
+    case "actionWorkbenchRequest": {
+      await handleActionWorkbenchMessage(context, msg.message, message => respond({ command: "actionWorkbenchReply", message }));
+      panels.broadcast({ command: "sharedDataChanged" }, panel);
+      break;
+    }
     case "markdownDraftState": {
-      panelMarkdownDraftOpen = msg.busy === true;
+      session.markdownDraftOpen = msg.busy === true;
       break;
     }
     case "hostHealth": {
@@ -6181,10 +7226,10 @@ async function handleMessage(
 
     case "webviewDiagnostic": {
       if (msg.kind === "heartbeat") {
-        _panelLastHeartbeat = Date.now();
+        session.lastHeartbeat = Date.now();
       } else {
-        _panelLastDiagnostic = `${String(msg.kind || "error")}: ${String(msg.message || "unknown").slice(0, 500)}`;
-        log.warn(`webview diagnostic ${_panelLastDiagnostic}`);
+        session.lastDiagnostic = `${String(msg.kind || "error")}: ${String(msg.message || "unknown").slice(0, 500)}`;
+        log.warn(`webview diagnostic ${session.lastDiagnostic}`);
       }
       break;
     }
@@ -6271,45 +7316,49 @@ async function handleMessage(
 
     case "ready": {
       // Webview finished loading — flush any queued item to open
-      if (_panelRestoredRecoveryTimer) clearTimeout(_panelRestoredRecoveryTimer);
-      _panelRestoredRecoveryTimer = undefined;
-      _panelReady = true;
+      if (session.recoveryTimer) clearTimeout(session.recoveryTimer);
+      session.recoveryTimer = undefined;
+      session.ready = true;
       respond({ command: "loadingProgress", data: { stage: "preparing", percent: 5, message: "Brewing the startup potion…" } });
-      if (_pendingOpen) {
-        const { type, key, edit, tab } = _pendingOpen;
-        _pendingOpen = undefined;
+      if (session.pendingOpen) {
+        const { type, key, edit, tab } = session.pendingOpen;
+        session.pendingOpen = undefined;
         respond({ command: "openItem", type, key, edit, tab });
       }
-      if (_pendingTab) {
-        const tab = _pendingTab;
-        _pendingTab = undefined;
+      if (session.pendingTab) {
+        const tab = session.pendingTab;
+        session.pendingTab = undefined;
         respond({ command: "openTab", tab });
       }
-      if (_pendingProjectId) {
-        respond({ command: "openProject", projectId: _pendingProjectId });
-        _pendingProjectId = undefined;
+      if (session.pendingActions) {
+        respond({ command: "openEmbeddedActions", state: session.pendingActions });
+        session.pendingActions = undefined;
       }
-      if (_pendingNativeSessionId) {
-        respond({ command:"openNativeHarness", sessionId:_pendingNativeSessionId });
-        _pendingNativeSessionId = undefined;
+      if (session.pendingProjectId) {
+        respond({ command: "openProject", projectId: session.pendingProjectId });
+        session.pendingProjectId = undefined;
       }
-      if (_pendingSubscriptionShare !== undefined) {
-        const shareId = _pendingSubscriptionShare;
-        _pendingSubscriptionShare = undefined;
+      if (session.pendingNativeSessionId) {
+        respond({ command:"openNativeHarness", sessionId:session.pendingNativeSessionId });
+        session.pendingNativeSessionId = undefined;
+      }
+      if (session.pendingSubscriptionShare !== undefined) {
+        const shareId = session.pendingSubscriptionShare;
+        session.pendingSubscriptionShare = undefined;
         respond({ command: "openSubscription", shareId });
       }
-      if (_pendingServerSlug !== undefined) {
-        const slug = _pendingServerSlug;
-        _pendingServerSlug = undefined;
+      if (session.pendingServerSlug !== undefined) {
+        const slug = session.pendingServerSlug;
+        session.pendingServerSlug = undefined;
         respond({ command: "focusServer", slug });
       }
-      if (_pendingEnvironmentId !== undefined) {
-        const environmentId = _pendingEnvironmentId;
-        _pendingEnvironmentId = undefined;
+      if (session.pendingEnvironmentId !== undefined) {
+        const environmentId = session.pendingEnvironmentId;
+        session.pendingEnvironmentId = undefined;
         respond({ command: "focusEnvironment", environmentId });
       }
-      if (_pendingMcpRegenerateHighlight) {
-        _pendingMcpRegenerateHighlight = false;
+      if (session.pendingMcpRegenerateHighlight) {
+        session.pendingMcpRegenerateHighlight = false;
         respond({ command: "highlightMcpRegenerate" });
       }
       respond({
@@ -6355,6 +7404,32 @@ async function handleMessage(
 
     case "backgroundTasks": {
       respond({ command: "backgroundTasks", data: backgroundTaskRegistry.snapshot() });
+      break;
+    }
+
+    case "portalConnections": {
+      respond({ command: "portalConnections", data: getChatMgr().portalConnectionHistory() });
+      break;
+    }
+
+    case "portalConnectionCopyMagicLink": {
+      const chatId = typeof msg.chatId === "string" && /^[a-f0-9-]{36}$/.test(msg.chatId) ? msg.chatId : "";
+      if (!chatId) throw new Error("Choose a Portal connection.");
+      await getChatMgr().portalPendingLink(chatId, "copy");
+      break;
+    }
+
+    case "agentSessionGroupOpenChat":
+    case "portalConnectionOpenChat": {
+      const chatId = typeof msg.chatId === "string" && /^[a-f0-9-]{36}$/.test(msg.chatId) ? msg.chatId : "";
+      if (!chatId) throw new Error("Choose a PKM Chat.");
+      await vscode.commands.executeCommand("personalKnowledge.openApiChat", chatId);
+      break;
+    }
+
+    case "portalConnectionForget": {
+      if (typeof msg.pairId !== "string" || !msg.pairId) throw new Error("Choose a recorded Portal connection.");
+      getChatMgr().forgetPortalConnection(msg.pairId);
       break;
     }
 
@@ -6628,6 +7703,12 @@ async function handleMessage(
     case "nativeHarness": {
       try {
         const params = msg.params && typeof msg.params === "object" ? msg.params : {};
+        if (params.chatId !== undefined) {
+          if (typeof params.chatId !== "string") throw new Error("Choose a PKM Chat.");
+          const data = await vscode.commands.executeCommand("personalKnowledge.readChatHarness", params.chatId, String(msg.method || ""), params);
+          respond({ command:"nativeHarnessResult", requestId:msg.requestId, data });
+          break;
+        }
         const data = msg.method === "openBrowser"
           ? await openNativeHarnessBrowser(context, String(params.sessionId || ""))
           : await nativeHarnessRequest(String(msg.method || ""), params);
@@ -6915,6 +7996,10 @@ async function handleMessage(
     case "recipeUpdate": {
       const store = currentProjectStore();
       const recipeId = String(msg.recipeId || "");
+      const previous = store.list().recipes.find(recipe => recipe.recipeId === recipeId);
+      if (typeof msg.expectedRecipeRevision === "number" && previous?.revision !== msg.expectedRecipeRevision) {
+        throw new Error("This Recipe changed in another PKM tab. Your draft was kept; reopen the Recipe before saving.");
+      }
       const input = {
         name: String(msg.name || ""),
         category: String(msg.category || ""),
@@ -7056,6 +8141,11 @@ async function handleMessage(
       });
       getChatMgr().push();
       respond({ command: "chatRecents", data: { recents: chatRecentsForUi(context) } });
+      break;
+    }
+
+    case "peerCollaboration": {
+      await vscode.commands.executeCommand("personalKnowledge.peerCollaboration", typeof msg.chatId === "string" ? { id: msg.chatId } : undefined);
       break;
     }
 
@@ -7527,12 +8617,17 @@ async function handleMessage(
     case "contentSetPrivacy": {
       const type = String(msg.type || "") as PrivacyContentType;
       const topLevel = String(msg.topLevel || "");
-      if (!(SHARED_CONTENT_TYPES as readonly string[]).includes(type) && type !== "recipes") throw new Error(`Unsupported privacy content type: ${type}`);
+      if (!(SHARED_CONTENT_TYPES as readonly string[]).includes(type) && !["recipes", "actions", "action-module-sets"].includes(type)) throw new Error(`Unsupported privacy content type: ${type}`);
+      if (["actions", "action-module-sets"].includes(type) && !msg.isPrivate) {
+        if (await vscode.window.showWarningMessage("Make this Action source Public? Selected public GitHub Sync targets may publish its definition or bundled source. Review it for secrets first.", { modal:true }, "Make Public") !== "Make Public") break;
+      }
       setTopLevelPrivacy(type, topLevel, !!msg.isPrivate);
+      invalidateSharedContentCatalog();
       gitCommit(`privacy(${type}): ${topLevel} ${msg.isPrivate ? "private" : "public"}`);
       const changed = await sharedMarket?.refreshPublishedShares() || 0;
       _treeProvider?.refresh();
       respond({ command: "privacyChanged", data: { type, topLevel, isPrivate: !!msg.isPrivate, brokersRefreshed: changed } });
+      if (["actions", "action-module-sets"].includes(type)) respond({ command:"githubSyncState", data:await githubSyncStateData(context, false) });
       break;
     }
 
@@ -8361,7 +9456,30 @@ async function handleMessage(
       break;
     }
 
+    case "knowledgeSearch": {
+      const mode = ["lexical", "semantic", "dual"].includes(msg.mode) ? msg.mode as "lexical" | "semantic" | "dual" : "lexical";
+      const contentType = ({ skills: "skill", notes: "note", papers: "research", scripts: "script" } as const)[msg.tab as "skills" | "notes" | "papers" | "scripts"];
+      try {
+        if (!contentType) throw new Error("This collection does not support indexed search.");
+        if (!retrievalWorker) await refreshRetrievalIndex(context);
+        if (!retrievalWorker) throw new Error("The unified retrieval worker is not ready. Check Settings → Router.");
+        const result = await retrievalWorker.query({ schema: "pkm.retrieval.query/v1",
+          requestId: String(msg.requestId), text: String(msg.q || ""), contentTypeFilter: [contentType],
+          scope: { capabilityId: "panel.search" }, topK: 100, route: mode,
+          generation: { mode: "latest-ready" }, diagnostics: "summary" });
+        const subscriptionKeys = new Map((sharedMarket?.cachedGroups(msg.tab as SharedContentType) || [])
+          .flatMap(group => group.items.map(item => [item.pkmPath, item.key] as const)));
+        respond({ command: "knowledgeSearch", requestId: msg.requestId, tab: msg.tab,
+          data: { ...result, hits: result.hits.map(hit => ({ ...hit, subscription_key: subscriptionKeys.get(hit.sourceUri) })) } });
+      } catch (error) {
+        respond({ command: "knowledgeSearch", requestId: msg.requestId, tab: msg.tab,
+          data: { ok: false, search_mode: mode, semantic_status: "unavailable", semantic_reason: String(error), hits: [] } });
+      }
+      break;
+    }
+
     case "list": {
+      const latestKnowledgeListRequest = session.listRequests;
       const { tab, filter, q } = msg;
       const requestSequence = ++knowledgeListRequestSequence;
       latestKnowledgeListRequest.set(String(tab || ""), requestSequence);
@@ -8680,7 +9798,10 @@ async function handleMessage(
           (data as any).isPrivate = isContentItemPrivate(type === "package" ? "packages" : type === "prompt" ? "prompts" : `${type}s` as PrivacyContentType, data);
         }
       }
-      respond({ command: "detail", data, detailRequestId: msg.detailRequestId, detailTab: msg.detailTab });
+      const editIdentity = panelEditIdentity(type, key);
+      const editRevision = panelEditRevision(panelEditValue(type, key));
+      session.revisions.set(editIdentity, editRevision);
+      respond({ command: "detail", data, editIdentity, editRevision, detailRequestId: msg.detailRequestId, detailTab: msg.detailTab });
       break;
     }
 
@@ -8812,6 +9933,7 @@ async function handleMessage(
       const { title, content, type, tags, category, slug: existingSlug } = msg;
       const slug = existingSlug ?? uniqueSlug(title || content.slice(0, 60));
       noteUpsert({ slug, title: title || slug, content, type, tags, category });
+      advancePanelEditBaseline("note", slug, respond);
       gitCommit(existingSlug ? `update(note): ${slug}` : `add(note): ${slug}`);
       respond({ command: "saved" });
       vscode.window.setStatusBarMessage("$(check) Note saved", 3000);
@@ -8852,7 +9974,7 @@ async function handleMessage(
         const asset = listedMarkdownAssets(getStorePath(), area as MarkdownAssetArea, documentPath, fs.readFileSync(full, "utf8")).find(asset => asset.path === msg.assetPath);
         if (!asset) throw new Error("The Markdown resource is no longer available.");
         await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(asset.fullPath));
-      } else if (panelMarkdownDraftOpen) {
+      } else if (session.markdownDraftOpen) {
         throw new Error("Save or close inline Markdown editors before managing resources.");
       } else if (await manageMarkdownAssets(area as MarkdownAssetArea, documentPath)) {
         _treeProvider?.refresh();
@@ -9134,6 +10256,57 @@ async function handleMessage(
       await _treeProvider?.refreshServerStatus();
       break;
     }
+    case "serverImportGit": {
+      if (!vscode.workspace.isTrusted) throw new Error("Trust this workspace before importing Git sources.");
+      const url = await vscode.window.showInputBox({ title:"Import server from Git", prompt:"Repository HTTPS/SSH URL. Checkout only: no install, build, or automatic start.", ignoreFocusOut:true });
+      if (!url) break;
+      const branch = await vscode.window.showInputBox({ title:"Git branch", prompt:"Explicit branch to checkout and track", value:"main", ignoreFocusOut:true });
+      if (!branch) break;
+      const name = await vscode.window.showInputBox({ title:"Server name", value:url.split("/").pop()?.replace(/\.git$/, "") || "Git server", ignoreFocusOut:true });
+      if (!name) break;
+      const command = await vscode.window.showInputBox({ title:"Start command (saved, NOT executed)", prompt:"Runs later only when you explicitly start the server; supports {port} and {python}.", ignoreFocusOut:true });
+      if (!command) break;
+      const slug = await vscode.window.withProgress({ location:vscode.ProgressLocation.Notification, title:"Checking out Git server (no code execution)", cancellable:false },
+        () => serverImportGit(name, url, branch, command));
+      vscode.window.showInformationMessage(`Imported ${slug}. Review the checkout and install dependencies yourself before starting it.`);
+      invalidateSharedContentCatalog();
+      respond({ command:"serverList", data:await serverListForUi(context) });
+      await _treeProvider?.refreshServerStatus();
+      break;
+    }
+    case "packageImportGit": {
+      if (!vscode.workspace.isTrusted) throw new Error("Trust this workspace before importing Git sources.");
+      const url = await vscode.window.showInputBox({ title:"Import package from Git", prompt:"Repository HTTPS/SSH URL; source snapshot only, no install or execution.", ignoreFocusOut:true });
+      if (!url) break;
+      const branch = await vscode.window.showInputBox({ title:"Git branch", value:"main", ignoreFocusOut:true });
+      if (!branch) break;
+      const name = await vscode.window.showInputBox({ title:"Package name", value:url.split("/").pop()?.replace(/\.git$/, "") || "package", ignoreFocusOut:true });
+      if (!name) break;
+      await vscode.window.withProgress({ location:vscode.ProgressLocation.Notification, title:"Importing Git package source (no code execution)", cancellable:false },
+        () => importGitPackage(path.join(getStorePath(), "packages"), path.join(context.globalStorageUri.fsPath, "git-packages"), name, url, branch));
+      invalidateSharedContentCatalog();
+      respond({ command:"reloaded" });
+      _treeProvider?.refresh();
+      break;
+    }
+    case "packageUpdateGit": {
+      if (!vscode.workspace.isTrusted) throw new Error("Trust this workspace before updating Git sources.");
+      await vscode.window.withProgress({ location:vscode.ProgressLocation.Notification, title:"Updating package source; preserving local changes", cancellable:false },
+        () => updateGitPackage(path.join(getStorePath(), "packages"), path.join(context.globalStorageUri.fsPath, "git-packages"), String(msg.name || "")));
+      invalidateSharedContentCatalog();
+      respond({ command:"reloaded" });
+      _treeProvider?.refresh();
+      break;
+    }
+    case "serverUpdateGit": {
+      if (!vscode.workspace.isTrusted) throw new Error("Trust this workspace before updating Git sources.");
+      await vscode.window.withProgress({ location:vscode.ProgressLocation.Notification, title:"Fetching configured branch and fast-forwarding stopped server", cancellable:false },
+        () => serverUpdateGit(String(msg.slug || "")));
+      invalidateSharedContentCatalog();
+      respond({ command:"serverList", data:await serverListForUi(context) });
+      await _treeProvider?.refreshServerStatus();
+      break;
+    }
     case "serverCreate": {
       const r = serverCreate(String(msg.name || ""));
       if (r.ok) gitCommit(`server create: ${r.slug}`);
@@ -9386,6 +10559,7 @@ async function handleMessage(
       const priority = String(msg.priority || "normal") as SkillPriority;
       if (!["normal", "high", "highest"].includes(priority)) throw new Error("Skill priority must be normal, high, or highest.");
       skillUpsert({ name, content, category, description, tags, priority });
+      advancePanelEditBaseline("skill", name, respond);
       gitCommit(`save(skill): ${name}`);
       respond({ command: "saved" });
       vscode.window.setStatusBarMessage("$(check) Skill saved", 3000);
@@ -9496,6 +10670,7 @@ async function handleMessage(
         assumptions: p.assumptions ?? [], cites: p.cites ?? [],
         category: p.category ?? "", kind: p.kind ?? "paper", group: p.group ?? "Papers", pinned: !!p.pinned,
       });
+      advancePanelEditBaseline("paper", slug, respond);
       gitCommit(p.slug ? `update(paper): ${slug}` : `add(paper): ${slug}`);
       respond({ command: "saved" });
       vscode.window.setStatusBarMessage("$(check) Paper saved", 3000);
@@ -10155,9 +11330,9 @@ async function handleMessage(
     // ── MCP ──────────────────────────────────────────────────────────────
     case "configureNativeMcpDiscovery": {
       try {
-        const completed = await configureNativeMcpDiscovery(context);
+        const completed = await configurePkmMcp(context);
         respond({ command: "mcpStatus", data: mcpPanelStatusData() });
-        respond({ command: "mcpActionResult", data: { action: "configureNativeMcpDiscovery", ok: completed, cancelled: !completed, message: "Native PKM definition configured. Client discovery and tool access are not yet verified." } });
+        respond({ command: "mcpActionResult", data: { action: "configureNativeMcpDiscovery", ok: completed, cancelled: !completed, message: "PKM MCP configuration saved at the selected scope. Client discovery and tool access are not yet verified." } });
       } catch (error) {
         respond({ command: "mcpActionResult", data: { action: "configureNativeMcpDiscovery", ok: false, error: error instanceof Error ? error.message : String(error) } });
       }
@@ -10527,9 +11702,11 @@ async function handleMessage(
         break;
       }
       try {
+        checkPanelEdit(msg);
         fs.writeFileSync(full, content);
         // Content changed → all cached AI summaries for this script are stale
         fs.rmSync(scriptCacheDir(relPath), { recursive: true, force: true });
+        advancePanelEditBaseline("script", relPath, respond);
         gitCommit(`edit(script): ${relPath}`);
         log.action("script.save", { path: relPath });
         vscode.window.setStatusBarMessage("$(check) Script saved & committed", 3000);
@@ -10545,6 +11722,14 @@ async function handleMessage(
     log.error(`handleMessage(${msg.command}) failed: ${e?.stack ?? e?.message ?? e}`);
     if (msg.command === "list") {
       respond({ command: "list", tab: String(msg.tab || ""), data: [] });
+    } else if (String(msg.command || "").startsWith("skillTrash") || msg.command === "deleteSkill") {
+      respond({ command: "skillTrashResult", data: { ok: false, error: e?.message || String(e) } });
+    } else if (String(msg.command || "").startsWith("knowledgeTrash")
+      || ["deleteNote", "deletePaper", "deleteAllPapers", "deleteScript"].includes(String(msg.command || ""))) {
+      const area = msg.command === "deleteNote" ? "notes"
+        : msg.command === "deletePaper" || msg.command === "deleteAllPapers" ? "papers"
+        : msg.command === "deleteScript" ? "scripts" : String(msg.area || "");
+      respond({ command: "knowledgeTrashResult", data: { ok: false, area, error: e?.message || String(e) } });
     } else if (["projectState", "projectCreate", "projectOverview", "projectLink", "projectLifecycle", "projectCheckpoint", "projectOpenSource", "threadCreate", "threadRename", "threadMove", "threadOpenChatroom", "ganttTaskCreate", "ganttTaskUpdate", "ganttTaskDelete", "collaborationCreate", "collaborationTransition", "recipeCreate", "recipeFolderCreate", "recipeFolderDelete", "recipeUpdate", "recipeDelete", "recipeTrash", "recipeValidateDefinition", "recipeOpenBrowser", "projectRecipesExport", "agentSessionTrash", "agentSessionStop", "agentSessionGroupDelete"].includes(String(msg.command || ""))) {
       respond({ command: "projectError", data: { action: String(msg.command || ""), code: String(e?.code || "project-error"), error: e?.message || String(e), ...(e?.details ? { details: e.details } : {}) } });
     } else if (String(msg.command || "").startsWith("subscription")) {
@@ -10557,10 +11742,11 @@ async function handleMessage(
 }
 
 async function offerMcpRuntimeSetup(context: vscode.ExtensionContext): Promise<void> {
-  if (context.globalState.get<boolean>("mcpRuntimeSetupOffered.v1", false) || mcpRuntimeStatus().healthy) return;
+  if (context.globalState.get<boolean>("mcpRuntimeSetupOffered.v1", false) || (await mcpRuntimeStatusAsync()).healthy) return;
+  await warmMcpPythonProbes();
   await context.globalState.update("mcpRuntimeSetupOffered.v1", true);
   const base = detectMcpPython();
-  const openSetup = () => { const panel = getOrCreatePanel(context); panel.reveal(vscode.ViewColumn.One); if (_panelReady) panel.webview.postMessage({ command: "openTab", tab: "mcp" }); else _pendingTab = "mcp"; };
+  const openSetup = () => { const panel = getOrCreatePanel(context); panel.reveal(vscode.ViewColumn.One); if (panelSession().ready) panel.webview.postMessage({ command: "openTab", tab: "mcp" }); else panelSession().pendingTab = "mcp"; };
   if (!base.valid) {
     const choice = await vscode.window.showWarningMessage(
       "Personal Knowledge Manager is ready, but MCP requires Python 3.10+. Install Python or specify an executable in Config. PKM features remain available.",
@@ -10601,8 +11787,8 @@ async function offerMcpRuntimeDependencyRepair(context: vscode.ExtensionContext)
   const openSetup = () => {
     const panel = getOrCreatePanel(context);
     panel.reveal(vscode.ViewColumn.One);
-    if (_panelReady) void panel.webview.postMessage({ command: "openTab", tab: "mcp" });
-    else _pendingTab = "mcp";
+    if (panelSession().ready) void panel.webview.postMessage({ command: "openTab", tab: "mcp" });
+    else panelSession().pendingTab = "mcp";
   };
   if (choice === "Open Config") { openSetup(); return; }
   if (choice !== "Repair Runtime") return;
@@ -10628,12 +11814,12 @@ async function offerMcpRuntimeDependencyRepair(context: vscode.ExtensionContext)
 function openMcpSetup(context: vscode.ExtensionContext, highlightRegenerate = false): void {
   const mcpPanel = getOrCreatePanel(context);
   mcpPanel.reveal(vscode.ViewColumn.One);
-  if (_panelReady) {
+  if (panelSession().ready) {
     void mcpPanel.webview.postMessage({ command: "openTab", tab: "mcp" });
     if (highlightRegenerate) void mcpPanel.webview.postMessage({ command: "highlightMcpRegenerate" });
   } else {
-    _pendingTab = "mcp";
-    _pendingMcpRegenerateHighlight ||= highlightRegenerate;
+    panelSession().pendingTab = "mcp";
+    panelSession().pendingMcpRegenerateHighlight ||= highlightRegenerate;
   }
 }
 
@@ -10642,7 +11828,7 @@ async function regenerateMcpServerCode(context: vscode.ExtensionContext): Promis
     const info = generateMcpServer(context);
     refreshMcpDefinitions();
     _treeProvider?.refresh();
-    panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+    postToPanel({ command: "mcpStatus", data: mcpPanelStatusData() });
     await vscode.window.showInformationMessage(
       `PKM MCP server code regenerated at ${info.serverPath}. Restart the pkm MCP server to load it.`,
       "Open Config",
@@ -10658,7 +11844,7 @@ async function regenerateMcpServerCode(context: vscode.ExtensionContext): Promis
 
 async function offerMcpServerRegeneration(context: vscode.ExtensionContext): Promise<void> {
   const status = mcpStatus();
-  if (status.current || !mcpRuntimeStatus().healthy) return;
+  if (status.current || !(await mcpRuntimeStatusAsync()).healthy) return;
   const promptKey = `${status.installedVersion || "missing"}->${status.expectedVersion}`;
   if (_mcpRegenerationPromptedFor === promptKey) return;
   _mcpRegenerationPromptedFor = promptKey;
@@ -10684,13 +11870,16 @@ function maintainPkmIntegration(context: vscode.ExtensionContext): Promise<void>
   producer.queued({ detail: "Waiting for shared runtime maintenance" });
   integrationMaintenance = withCrossProcessLock(path.join(managedMcpServerDirectory(), "integration-upgrade.lock"), "PKM integration upgrade", 600_000, async () => {
     producer.running({ detail: "Checking managed runtime and server compatibility" });
-    panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "integration", percent: 10, message: "Checking PKM integration…" } });
+    const probeStartedAt = Date.now();
+    await warmMcpPythonProbes();
+    log.info(`PKM integration: Python/runtime probes ${Date.now() - probeStartedAt}ms (async, off the Extension Host thread)`);
+    activePanel()?.webview.postMessage({ command: "loadingProgress", data: { stage: "integration", percent: 10, message: "Checking PKM integration…" } });
     const server = mcpStatus();
     if (server.newerThanExpected) {
       const detected = `MCP server v${server.installedVersion}`;
       integrationMaintenanceState = "action-required";
       integrationMaintenanceError = `Newer PKM components detected: ${detected}. Reload this VS Code window to use the updated extension. No files were changed.`;
-      panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+      postToPanel({ command: "mcpStatus", data: mcpPanelStatusData() });
       if (newerPkmVersionNotice !== detected) {
         newerPkmVersionNotice = detected;
         void vscode.window.showInformationMessage(
@@ -10705,37 +11894,37 @@ function maintainPkmIntegration(context: vscode.ExtensionContext): Promise<void>
       integrationMaintenanceState = "action-required";
       integrationMaintenanceError = python.error || "Python 3.10+ is required for PKM MCP.";
       log.warn(`automatic PKM integration setup requires action: ${integrationMaintenanceError}`);
-      panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+      postToPanel({ command: "mcpStatus", data: mcpPanelStatusData() });
       return;
     }
     const runtime = mcpRuntimeStatus();
     if (!runtime.healthy) {
-      panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "runtime", percent: 25, message: "Preparing managed Python runtime…" } });
+      activePanel()?.webview.postMessage({ command: "loadingProgress", data: { stage: "runtime", percent: 25, message: "Preparing managed Python runtime…" } });
       log.info("automatically creating or repairing managed MCP runtime");
       await ensureMcpRuntime(context);
     } else if (!server.current) {
-      panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "mcp", percent: 48, message: "Updating MCP server code…" } });
+      activePanel()?.webview.postMessage({ command: "loadingProgress", data: { stage: "mcp", percent: 48, message: "Updating MCP server code…" } });
       log.info("automatically updating generated MCP server code");
       generateMcpServer(context);
     }
     ensureRecipeCompiler(context.extensionPath, managedMcpServerDirectory(), process.execPath);
     refreshMcpDefinitions();
-    if (!mcpRuntimeStatus().healthy || !mcpStatus().current) {
+    if (!(await mcpRuntimeStatusAsync()).healthy || !mcpStatus().current) {
       throw new Error("PKM integration upgrade did not produce a healthy runtime and current MCP server.");
     }
-    panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "retrieval", percent: 68, message: "Refreshing knowledge retrieval index…" } });
+    activePanel()?.webview.postMessage({ command: "loadingProgress", data: { stage: "retrieval", percent: 68, message: "Refreshing knowledge retrieval index…" } });
     scheduleRetrievalRefresh(context, 0);
 
     integrationMaintenanceErrorShown = false;
     integrationMaintenanceState = "ready";
-    panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "ready", percent: 100, message: "PKM integration ready" } });
-    panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+    activePanel()?.webview.postMessage({ command: "loadingProgress", data: { stage: "ready", percent: 100, message: "PKM integration ready" } });
+    postToPanel({ command: "mcpStatus", data: mcpPanelStatusData() });
   }, 1_800_000).catch(error => {
     const message = (error as Error).message;
     integrationMaintenanceState = "error";
     integrationMaintenanceError = message;
     log.warn(`automatic PKM integration maintenance failed: ${message}`);
-    panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+    postToPanel({ command: "mcpStatus", data: mcpPanelStatusData() });
     if (!integrationMaintenanceErrorShown) {
       integrationMaintenanceErrorShown = true;
       void vscode.window.showWarningMessage(
@@ -11599,8 +12788,8 @@ class PkTreeDragAndDropController implements vscode.TreeDragAndDropController<Pk
       if (!serverUpdate(source.relPath, { category: destination.relPath })) { vscode.window.showWarningMessage("Could not move Server to that group."); return; }
       gitCommit(`server move: ${source.relPath} -> ${destination.relPath || "(root)"}`);
       await _treeProvider?.refreshServerStatus();
-      panel?.webview.postMessage({ command: "serverGroupList", data: serverGroupList() });
-      panel?.webview.postMessage({ command: "serverList", data: await serverListForUi(this.context) });
+      postToPanel({ command: "serverGroupList", data: serverGroupList() });
+      postToPanel({ command: "serverList", data: await serverListForUi(this.context) });
       vscode.window.setStatusBarMessage(`$(move) Moved ${server.name} to ${destination.relPath || "Ungrouped"}`, 3000);
       return;
     }
@@ -11617,7 +12806,7 @@ class PkTreeDragAndDropController implements vscode.TreeDragAndDropController<Pk
     if (!result.ok) { vscode.window.showWarningMessage(result.error || "Move failed."); return; }
     gitCommit(`move(${source.area}): ${source.relPath} -> ${result.newPath}`);
     _treeProvider?.refresh();
-    panel?.webview.postMessage({ command: "reloaded" });
+    postToPanel({ command: "reloaded" });
     vscode.window.setStatusBarMessage(`$(move) Moved to ${result.newPath}`, 3000);
   }
 }
@@ -11821,6 +13010,69 @@ function registerExtensionHostRuntime(context: vscode.ExtensionContext, isBusy: 
   });
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, -1000);
   status.command = "personalKnowledge.hostStatus";
+  let retrievalObservation: RetrievalWorkerStatus | undefined;
+  let observedWorker: RetrievalWorkerManager | undefined;
+  let retrievalObservedAt: string | undefined;
+  let retrievalObservationError: string | undefined;
+  let observing = false, disposed = false;
+  const observationAbort = new AbortController();
+  const indexTask = backgroundTaskRegistry.producer({ id: "retrieval-index-build", kind: "retrieval", label: "Build retrieval index" });
+  const observeRetrieval = async () => {
+    if (observing || disposed) return;
+    observing = true;
+    const worker = retrievalWorker;
+    try {
+      const observed = await worker?.observeStatus(observationAbort.signal);
+      if (disposed || worker !== retrievalWorker) return;
+      retrievalObservation = observed;
+      observedWorker = worker;
+      retrievalObservedAt = observed ? new Date().toISOString() : undefined;
+      retrievalObservationError = undefined;
+      const lifecycle = worker?.lifecycleStatus();
+      if (observed && (observed.building_revision || observed.work_state && observed.work_state !== "idle")) {
+        indexTask.running({ detail: lifecycle?.detail, progress: lifecycle?.progress });
+      } else indexTask.idle();
+    } catch (error) {
+      if (disposed || worker !== retrievalWorker) return;
+      const message = String(error);
+      if (retrievalObservationError !== message) log.warn(`Retrieval status observation unavailable: ${message}`);
+      retrievalObservationError = message;
+      indexTask.idle();
+    } finally { observing = false; }
+  };
+  const diagnostics = async () => {
+    const report = {
+      coverage: "Registered PKM hosts sharing this installation and profile storage only. Unregistered legacy hosts, other machines/profiles and external agent activity are not verified.",
+      current: registry.identity, installed: installedBuild(), online: registry.hosts(), reload: registry.progress() ?? null,
+      integration: { state: integrationMaintenanceState, error: integrationMaintenanceError },
+    };
+    const document = await vscode.workspace.openTextDocument({ language: "json", content: JSON.stringify(report, null, 2) });
+    await vscode.window.showTextDocument(document, { preview: true });
+    return report;
+  };
+  const dashboard = new StatusDashboard(context, async () => {
+    const installed = installedBuild();
+    let targets: GitHubSyncTarget[] = [];
+    try {
+      const parsed = JSON.parse(await fs.promises.readFile(githubSyncTargetsPath(context), "utf8"));
+      if (parsed?.schema !== GITHUB_SYNC_TARGETS_SCHEMA || !Array.isArray(parsed.targets)) throw new Error("unsupported target file");
+      targets = parsed.targets.map((target: unknown) => normalizeGitHubSyncTarget(target));
+    } catch (error) { if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) throw error; }
+    const currentObservation = observedWorker === retrievalWorker ? retrievalObservation : undefined;
+    return {
+      updatedAt: new Date().toISOString(),
+      host: { version: build.version, build: build.buildId, installedVersion: installed?.version, installedBuild: installed?.buildId,
+        pid: process.pid, node: process.version, vscode: vscode.version, hosts: registry.hosts().length,
+        busy: isBusy(), integration: integrationMaintenanceState, error: integrationMaintenanceError },
+      retrieval: { lifecycle: currentObservation && retrievalWorker ? retrievalWorker.lifecycleStatus() : { state: "idle" as const, detail: "No running retrieval worker observed." },
+        observedAt: currentObservation ? retrievalObservedAt : undefined,
+        status: currentObservation ? { ready: currentObservation.ready, ready_generation: currentObservation.ready_generation,
+          building_generation: currentObservation.building_generation, document_count: currentObservation.document_count, error: currentObservation.error } : undefined,
+        error: retrievalObservationError },
+      sync: dashboardSyncTargets(targets, githubSyncScheduler?.snapshot() || {}),
+      tasks: backgroundTaskRegistry.snapshot(),
+    };
+  }, diagnostics);
   const tick = () => {
     try {
       const installed = installedBuild();
@@ -11828,8 +13080,19 @@ function registerExtensionHostRuntime(context: vscode.ExtensionContext, isBusy: 
         : integrationMaintenanceState === "error" ? "failed"
         : integrationMaintenanceState === "action-required" ? "action-required" : "pending";
       registry.heartbeat(isBusy(), "ready", migration);
-      status.text = `${installed?.buildId === build.buildId ? "$(versions)" : "$(warning)"} PKM ${build.buildId.slice(0, 8)}`;
-      status.tooltip = `Loaded: ${build.version} / ${build.buildId}\nInstalled: ${installed?.version ?? "unknown"} / ${installed?.buildId ?? "unknown"}\nVS Code: ${vscode.version}; Node: ${process.version}; PID: ${process.pid}\nIntegration: ${migration}\nRegistered online hosts: ${registry.hosts().length}\nClick for Host status and reload verification.`;
+      const lifecycle = retrievalWorker?.lifecycleStatus();
+      const percent = indexBuildPercent(lifecycle?.progress);
+      const indexSummary = retrievalObservationError ? "Index unavailable" : retrievalObservation && lifecycle?.state === "working"
+        ? `Index ${percent === undefined ? "building" : `${percent}%`}`
+        : retrievalObservation?.error ? "Index error" : retrievalObservation?.ready ? "Index ready" : "Index pending";
+      const syncStates = Object.values(githubSyncScheduler?.snapshot() || {});
+      const syncSummary = syncStates.some(state => ["error", "needs-attention", "blocked", "partial"].includes(state.status))
+        ? "Sync needs attention" : syncStates.some(state => state.status === "syncing") ? "Sync running"
+        : syncStates.some(state => state.status === "queued") ? "Sync queued"
+        : syncStates.some(state => state.status === "scheduled") ? "Sync scheduled" : "Sync inactive";
+      status.text = `${installed?.buildId === build.buildId ? "$(versions)" : "$(warning)"} PKM ${build.buildId.slice(0, 8)} · ${indexSummary} · ${syncSummary}`;
+      status.tooltip = `Loaded: ${build.version} / ${build.buildId}\nInstalled: ${installed?.version ?? "unknown"} / ${installed?.buildId ?? "unknown"}\nVS Code: ${vscode.version}; Node: ${process.version}; PID: ${process.pid}\nIntegration: ${migration}\n${indexSummary}; ${syncSummary}\nRegistered online hosts: ${registry.hosts().length}\nOpen PKM Status Dashboard, Host log and diagnostics.`;
+      void observeRetrieval();
       if (registry.poll(installed?.buildId, isBusy())) {
         log.info(`coordinated reload requested pid=${process.pid} target=${installed?.buildId}`);
         void vscode.commands.executeCommand("workbench.action.reloadWindow").then(undefined, error => {
@@ -11841,16 +13104,16 @@ function registerExtensionHostRuntime(context: vscode.ExtensionContext, isBusy: 
   };
   tick(); status.show();
   const timer = setInterval(tick, 2_000); timer.unref();
-  context.subscriptions.push(status, { dispose: () => { clearInterval(timer); try { registry.dispose(); } catch {} } },
+  context.subscriptions.push(status, dashboard, { dispose: () => {
+    disposed = true; observationAbort.abort(); clearInterval(timer); indexTask.idle();
+    try { registry.dispose(); } catch {}
+  } },
     vscode.commands.registerCommand("personalKnowledge.hostStatus", async () => {
-      const report = {
-        coverage: "Registered PKM hosts sharing this installation and profile storage only. Unregistered legacy hosts, other machines/profiles and external agent activity are not verified.",
+      await dashboard.open();
+      // Callers (startup tests, automation) still need the verified host report, not just the opened dashboard.
+      return { coverage: "Registered PKM hosts sharing this installation and profile storage only. Unregistered legacy hosts, other machines/profiles and external agent activity are not verified.",
         current: registry.identity, installed: installedBuild(), online: registry.hosts(), reload: registry.progress() ?? null,
-        integration: { state: integrationMaintenanceState, error: integrationMaintenanceError },
-      };
-      const document = await vscode.workspace.openTextDocument({ language: "json", content: JSON.stringify(report, null, 2) });
-      await vscode.window.showTextDocument(document, { preview: true });
-      return report;
+        integration: { state: integrationMaintenanceState, error: integrationMaintenanceError } };
     }),
     vscode.commands.registerCommand("personalKnowledge.reloadAllHosts", async () => {
       const installed = installedBuild();
@@ -11872,7 +13135,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   firstContentRecorded = false;
   performanceStateDir = path.join(context.globalStorageUri.fsPath, "performance");
   log.init(context);
-  let apiChat: { readonly isBusy: boolean } | undefined;
+  let apiChat: ReturnType<typeof registerApiChatShell> | undefined;
+  setChatStartupTrace(message => log.info(`${message} (activation+${Date.now() - activationStartedAt}ms)`));
   try {
     apiChat = registerApiChatShell(context, async () => {
       const { registerApiChat } = await import("./chat/api-chat-view");
@@ -11901,6 +13165,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }, { refreshSourceValidation:sourceValidation.refreshSourceValidation, sourceIsCurrent:sourceValidation.sourceIsCurrent,
       readSnapshot:currentRetrievalSnapshot }), false);
     });
+    portalChatContext = (chatId, label) => {
+      if (!apiChat) throw new Error("PKM Chat is unavailable.");
+      return apiChat.portalContext(chatId, label);
+    };
+    remoteChatExecutor = (prompt, signal, requestId, chatId, observer, source) => {
+      if (!apiChat) throw new Error("PKM Chat is unavailable.");
+      return apiChat.executeRemoteTask(prompt, signal, requestId, chatId, observer, source);
+    };
+    portalReviewReceiver = (chatId, review) => apiChat!.receivePortalReview(chatId, review);
   } catch (error) {
     log.error(`PKM Chat initialization failed: ${error instanceof Error ? error.stack || error.message : String(error)}`);
     void vscode.window.showErrorMessage("PKM Chat could not initialize. Other PKM features remain available. See the Personal Knowledge Manager log for details.");
@@ -11917,7 +13190,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   recordActivationPhase("shell");
   log.info(`activating extension v${context.extension?.packageJSON?.version ?? "?"}`);
   context.subscriptions.push(backgroundTaskRegistry.subscribe(snapshot => {
-    if (panel && _panelReady) void panel.webview.postMessage({ command: "backgroundTasks", data: snapshot });
+    if (panels.instances.size) void postToPanel({ command: "backgroundTasks", data: snapshot });
   }));
   context.subscriptions.push(new ActionBackgroundTasks(backgroundTaskRegistry, getStorePath, {
     enabled: () => _storeReady && vscode.workspace.isTrusted && configuredMcpFeatureDomains().includes("automation") && mcpRuntimeStatus().healthy,
@@ -11934,6 +13207,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
   recordActivationPhase("ports");
   chatCtx = context;
+  configurePortalRuntime({
+    state: id => getChatMgr().portalStateForChat(id),
+    permission: (id, tool, resource) => getChatMgr().portalToolAllowed(id, tool, resource),
+    invalidate: id => getChatMgr().invalidatePortal(id),
+  });
   await migrateChatRecents(context);
   recordActivationPhase("chat-recents");
   const applyChatArchiveCfg = () => {
@@ -11943,6 +13221,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     getChatMgr().configureArchive(dir, Math.round(mb * 1024 * 1024));
     const store = _storeReady ? getStorePath() : "";
     if (store) getChatMgr().configurePersistence(path.join(store, "chatrooms"), getChatInstallationId(context), context.secrets);
+    getChatMgr().configurePortalJournal(context.globalState);
   };
   applyChatArchiveCfg();
   recipeDraftFileSystem = new RecipeDraftFileSystem();
@@ -11965,7 +13244,35 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (projectId) openProjectCockpit(context, projectId);
       return projectId;
     }),
+    vscode.commands.registerCommand("personalKnowledge.duplicatePanel", () => {
+      const source = getOrCreatePanel(context);
+      if (!panels.instances.get(source)?.ready) { createPanelInstance(context, panels.duplicate(source)); return; }
+      // A live snapshot request includes keystrokes/scroll not yet delivered by the periodic sync.
+      void source.webview.postMessage({ command: "duplicatePanelSnapshot" });
+    }),
+    vscode.commands.registerCommand("personalKnowledge.openEmbeddedActions", (target = {}) => {
+      const instance = getOrCreatePanel(context);
+      const session = panels.instances.get(instance)!;
+      const current = session.snapshot.actions || {};
+      const next = { ...current };
+      if (target.runId) { next.currentRun = target.runId; next.lastRun = target.runId; delete next.targetAction; next.libraryOpen = false; }
+      else if (target.actionId) { next.targetAction = target.actionId; next.currentRun = null; next.lastRun = null; next.libraryOpen = false; }
+      else if (target.library) next.libraryOpen = true;
+      session.snapshot.actions = next;
+      if (session.ready) void instance.webview.postMessage({ command: "openEmbeddedActions", state: session.snapshot.actions });
+      else session.pendingActions = next;
+    }),
     vscode.commands.registerCommand("personalKnowledge.openActions", () => openActionWorkbench(context, undefined, undefined, true)),
+    vscode.commands.registerCommand("personalKnowledge.portalControl", async (args: Record<string, unknown>, external = false) => getChatMgr().portalControl(context, args, external)),
+    vscode.commands.registerCommand("personalKnowledge.portalPermissions", async (id: string) => getChatMgr().authorizePortalForChat(id)),
+    vscode.commands.registerCommand("personalKnowledge.portalPendingLink", async (id: string, action: "copy" | "void") => getChatMgr().portalPendingLink(id, action)),
+    vscode.commands.registerCommand("personalKnowledge.peerCollaboration", async (owner?: { id: string; label: string }) => {
+      try {
+        const resolved = owner && portalChatContext ? await portalChatContext(owner.id) : await apiChat?.choosePortalContext();
+        if (resolved) await getChatMgr().managePeer(context, resolved);
+      }
+      catch (error) { log.error(`peer collaboration: ${String(error)}`); await vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error)); }
+    }),
     vscode.commands.registerCommand("personalKnowledge.openActionsInBrowser", () => openActionWorkbenchInBrowser(context)),
     vscode.commands.registerCommand("personalKnowledge.configureActionWorkspace", async () => {
       const platformKey = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux";
@@ -11989,7 +13296,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (e.affectsConfiguration("personalKnowledge.externalLinkHost")) {
         const selected = externalLinkHostOptions();
         if (!selected.unavailable && chatCtx) getChatMgr().setAdvertisedHost(selected.resolved);
-        panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+        postToPanel({ command: "mcpStatus", data: mcpPanelStatusData() });
       }
       if (e.affectsConfiguration("personalKnowledge.contentGatewayPort")) {
         publicContentServer?.close();
@@ -12000,13 +13307,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (e.affectsConfiguration("personalKnowledge.skillRouterEnabledSolutions")
           || e.affectsConfiguration("personalKnowledge.skillRouterSourcePriority")) {
         writeSkillRouterRuntimeConfig(context);
-        void skillRouterStatusData(context).then(data => panel?.webview.postMessage({ command: "skillRouterStatus", data }));
+        void skillRouterStatusData(context).then(data => postToPanel({ command: "skillRouterStatus", data }));
       }
       if (e.affectsConfiguration("personalKnowledge.mcpEnabledFeatureDomains") && getStorePath()) {
         try {
           writeMcpFeatureDomainConfig();
           refreshMcpDefinitions();
-          panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+          postToPanel({ command: "mcpStatus", data: mcpPanelStatusData() });
         } catch (error) {
           log.error(`MCP feature domain update failed: ${(error as Error).message}`);
           void vscode.window.showErrorMessage(`MCP feature domain update failed: ${(error as Error).message}`);
@@ -12014,7 +13321,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       if (e.affectsConfiguration("personalKnowledge.agentSessionArchiveKeepLatestK") && _storeReady) {
         void agentSessionProjectStateData()
-          .then(data => panel?.webview.postMessage({ command: "projectState", data }))
+          .then(data => postToPanel({ command: "projectState", data }))
           .catch(error => {
             log.warn(`Agent Session archive retention configuration refresh failed: ${(error as Error).message}`);
             void vscode.window.showErrorMessage(`Agent Session archive retention failed: ${(error as Error).message}`);
@@ -12034,7 +13341,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // First-time setup: ask user where to store their knowledge base
   if (!configuredPath) {
-    _pendingTab = "mcp";
+    panelSession().pendingTab = "mcp";
     const chosen = await firstTimeSetup(context, false);
     if (!chosen) {
       vscode.window.showErrorMessage(
@@ -12073,15 +13380,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   applyChatArchiveCfg();
   context.subscriptions.push(vscode.window.registerWebviewPanelSerializer("personalKnowledge", {
     async deserializeWebviewPanel(webviewPanel, state) {
-      const restoredState = state as { tab?: unknown } | undefined;
-      _pendingTab = configuredPath ? (typeof restoredState?.tab === "string" ? restoredState.tab : "chatroom") : "mcp";
-      initializePanel(webviewPanel, context, true);
+      initializePanel(webviewPanel, context, true, state);
+      if (!configuredPath) panels.instances.get(webviewPanel)!.pendingTab = "mcp";
     },
   }));
   const openPanelOnStartup = !!configuredPath && (firstConfiguration || cfg.get<boolean>("openOnStartup"));
   if (openPanelOnStartup) {
     getOrCreatePanel(context);
-    panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "framework", percent: 3, message: "The library doors are opening…", detail: "Preparing each collection in turn…" } });
+    activePanel()?.webview.postMessage({ command: "loadingProgress", data: { stage: "framework", percent: 3, message: "The library doors are opening…", detail: "Preparing each collection in turn…" } });
   }
   if (configuredPath) {
     const chatroomsRoot = path.join(getStorePath(), "chatrooms");
@@ -12120,16 +13426,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       {
         onChanged: () => {
           invalidatePendingSubscriptionGroupLists();
-          panel?.webview.postMessage({ command: "subscriptionChanged" });
+          postToPanel({ command: "subscriptionChanged" });
           writeSkillRouterRuntimeConfig(context);
-          void skillRouterStatusData(context).then(data => panel?.webview.postMessage({ command: "skillRouterStatus", data }));
+          void skillRouterStatusData(context).then(data => postToPanel({ command: "skillRouterStatus", data }));
           _treeProvider?.refresh();
           scheduleRetrievalRefresh(context);
         },
         onWarning: message => { void vscode.window.showWarningMessage(message, "Open Subscription").then(choice => {
           if (choice !== "Open Subscription") return;
-          if (panel) { panel.reveal(vscode.ViewColumn.One); void panel.webview.postMessage({ command: "openTab", tab: "subscriptions" }); }
-          else { _pendingTab = "subscriptions"; getOrCreatePanel(context); }
+          if (activePanel()) { activePanel()!.reveal(vscode.ViewColumn.One); void activePanel()!.webview.postMessage({ command: "openTab", tab: "subscriptions" }); }
+          else { panelSession().pendingTab = "subscriptions"; getOrCreatePanel(context); }
         }); },
         onDiagnostic: event => log.info(`subscription diagnostic ${JSON.stringify(event)}`),
       },
@@ -12146,7 +13452,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   } catch (error: any) { log.warn(`subscription init failed: ${error?.message || error}`); }
   registerNativeMcpProvider(context);
   context.subscriptions.push(
-    vscode.commands.registerCommand("personalKnowledge.configureNativeMcpDiscovery", () => configureNativeMcpDiscovery(context)),
+    vscode.commands.registerCommand("personalKnowledge.configureNativeMcpDiscovery", () => configurePkmMcp(context)),
+    vscode.commands.registerCommand("personalKnowledge.offerPkmMcpConfiguration", (reason: string) => offerPkmMcpConfiguration(context, reason)),
     vscode.commands.registerCommand("personalKnowledge.registerCopilotMcp", () => registerCopilotMcpUserConfig()),
   );
 
@@ -12241,8 +13548,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("personalKnowledge.openNativeHarness", async (sessionId: string) => {
       nativeHarnessAccess(sessionId);
       openPanelTab(context, "agentSessions");
-      if (_panelReady) void panel?.webview.postMessage({ command:"openNativeHarness", sessionId });
-      else _pendingNativeSessionId = sessionId;
+      if (panelSession().ready) void activePanel()?.webview.postMessage({ command:"openNativeHarness", sessionId });
+      else panelSession().pendingNativeSessionId = sessionId;
     }),
     vscode.commands.registerCommand("personalKnowledge.readNativeHarness", (method: string, params: Record<string, unknown>) => nativeHarnessRequest(method, params)),
 
@@ -12279,16 +13586,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       treeProvider.refresh();
     }),
 
+    vscode.commands.registerCommand("personalKnowledge.classifyAssets", reviewAssetClassification),
+    vscode.commands.registerCommand("personalKnowledge.rollbackAssetClassification", reviewAssetClassificationRollback),
     vscode.commands.registerCommand("personalKnowledge.editMarkdownMetadata", editMarkdownMetadata),
     vscode.commands.registerCommand("personalKnowledge.manageMarkdownAssets", async (item?: PkTreeItem) => {
       const area = item?.nodeData?.area || (item?.nodeType === "skill" ? "skills" : item?.nodeType === "note" ? "notes" : item?.nodeType === "paper" ? "papers" : "");
       const documentPath = item?.nodeData?.documentPath || item?.nodeData?.relPath;
       if (!["skills", "notes", "papers"].includes(area) || !documentPath) return;
       try {
-        if (panelMarkdownDraftOpen) throw new Error("Save or close inline Markdown editors before managing resources.");
+        if ([...panels.instances.values()].some(session => session.markdownDraftOpen)) throw new Error("Save or close inline Markdown editors before managing resources.");
         if (await manageMarkdownAssets(area, documentPath)) {
           treeProvider.refresh();
-          panel?.webview.postMessage({ command: "reloaded", data: { changedPath: `${area}/${documentPath}` } });
+          postToPanel({ command: "reloaded", data: { changedPath: `${area}/${documentPath}` } });
         }
       } catch (error) {
         log.error(`Markdown resource operation failed: ${String(error)}`);
@@ -12314,7 +13623,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       gitCommit(`privacy(${type}): ${name} private`);
       const changed = await sharedMarket?.refreshPublishedShares() || 0;
       treeProvider.refresh();
-      if (panel) await handleMessage({ command: "subscriptionState" }, message => panel?.webview.postMessage(message), context);
+      if (activePanel()) await handleMessage({ command: "subscriptionState" }, message => postToPanel(message), context);
       vscode.window.setStatusBarMessage(`$(lock) ${name} is private${changed ? `; refreshed ${changed} Broker${changed === 1 ? "" : "s"}` : ""}`, 5000);
     }),
 
@@ -12326,7 +13635,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       gitCommit(`privacy(${type}): ${name} public`);
       const changed = await sharedMarket?.refreshPublishedShares() || 0;
       treeProvider.refresh();
-      if (panel) await handleMessage({ command: "subscriptionState" }, message => panel?.webview.postMessage(message), context);
+      if (activePanel()) await handleMessage({ command: "subscriptionState" }, message => postToPanel(message), context);
       vscode.window.setStatusBarMessage(`$(unlock) ${name} is public${changed ? `; refreshed ${changed} Broker${changed === 1 ? "" : "s"}` : ""}`, 5000);
     }),
 
@@ -12378,31 +13687,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!(await ensureSetup(context))) return;
       const group = navigationGroupInfo(item);
       if (!group?.path) { vscode.window.showWarningMessage("Category roots cannot be deleted."); return; }
-      if (group.area === "skills") {
-        const choice = await vscode.window.showWarningMessage(
-          `Move Skill folder “${group.path}” and all its contents to Trash?`,
-          { modal: true }, "Move to Trash",
-        );
-        if (choice !== "Move to Trash") return;
-        const trashed = skillFolderMoveToTrash(group.path);
-        if (!trashed) { vscode.window.showErrorMessage(`Could not move Skill folder to Trash: ${group.path}`); return; }
-        gitCommit(`trash(skill-folder): ${trashed.originalPath}`);
-        refreshKnowledgeGroups();
-        vscode.window.setStatusBarMessage(`$(trash) Moved Skill folder to Trash: ${group.path}`, 3000);
-        return;
-      }
-      if ((["notes", "papers", "prompts", "scripts"] as string[]).includes(group.area)) {
-        const area = group.area as KnowledgeTrashArea;
+      if ((["skills", "notes", "papers", "prompts", "scripts"] as string[]).includes(group.area)) {
+        const area = group.area as KnowledgeTrashArea | "skills";
         const choice = await vscode.window.showWarningMessage(
           `Move ${area} folder “${group.path}” and all its contents to Trash?`,
           { modal: true }, "Move to Trash",
         );
         if (choice !== "Move to Trash") return;
-        const trashed = knowledgeMoveToTrash(area, group.path, "folder", path.basename(group.path));
-        if (!trashed) { vscode.window.showErrorMessage(`Could not move ${area} folder to Trash: ${group.path}`); return; }
-        gitCommit(`trash(${area}-folder): ${trashed.originalPath}`);
-        refreshKnowledgeGroups();
-        vscode.window.setStatusBarMessage(`$(trash) Moved ${area} folder to Trash: ${group.path}`, 3000);
+        try {
+          await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification, title: `Moving ${area} folder to Trash: ${group.path}`, cancellable: false,
+          }, async () => {
+            await new Promise(resolve => setTimeout(resolve, 16));
+            const trashed = area === "skills" ? skillFolderMoveToTrash(group.path)
+              : knowledgeMoveToTrash(area, group.path, "folder", path.basename(group.path));
+            if (!trashed) throw new Error(`Folder was not found: ${group.path}`);
+            gitCommit(`trash(${area}-folder): ${trashed.originalPath}`);
+            refreshKnowledgeGroups();
+            vscode.window.setStatusBarMessage(`$(trash) Moved ${area} folder to Trash: ${group.path}`, 3000);
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          log.error(`Move ${area} folder to Trash failed: ${message}`);
+          vscode.window.showErrorMessage(`Could not move ${area} folder to Trash: ${message}`);
+        }
         return;
       }
       const full = path.join(getStorePath(), group.area, ...group.path.split("/"));
@@ -12548,7 +13856,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const result = store.createRecipeFolder(projectCommand(store, "recipe-folder-create", input), parent, name);
       gitCommit(`add(recipe-folder): ${result.entityId}`);
       treeProvider.refresh();
-      if (panel) panel.webview.postMessage({ command: "projectState", data: await agentSessionProjectStateData() });
+      if (activePanel()) postToPanel({ command: "projectState", data: await agentSessionProjectStateData() });
       vscode.window.setStatusBarMessage(`$(new-folder) Created Recipe folder ${result.entityId}`, 3000);
     }),
 
@@ -12567,7 +13875,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!folder.includes("/") && isTopLevelPrivate("recipes", folder)) setTopLevelPrivacy("recipes", folder, false);
       gitCommit(`delete(recipe-folder): ${folder}`);
       treeProvider.refresh();
-      if (panel) panel.webview.postMessage({ command: "projectState", data: await agentSessionProjectStateData() });
+      if (activePanel()) postToPanel({ command: "projectState", data: await agentSessionProjectStateData() });
       vscode.window.setStatusBarMessage(`$(trash) Deleted Recipe folder ${folder}; contents moved to ${parent}`, 4000);
     }),
 
@@ -12753,7 +14061,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       skillUpsert({ name: name.trim(), content: selection, category: category?.trim() });
       gitCommit(`save(skill): ${name.trim()}`);
       vscode.window.setStatusBarMessage("$(check) Skill saved to knowledge store", 3000);
-      panel?.webview.postMessage({ command: "saved" });
+      postToPanel({ command: "saved" });
       treeProvider.refresh();
     }),
 
@@ -12761,8 +14069,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       log.action("command.setupMcp");
       const p = getOrCreatePanel(context);
       p.reveal(vscode.ViewColumn.One);
-      if (_panelReady) p.webview.postMessage({ command: "openTab", tab: "mcp" });
-      else _pendingTab = "mcp";
+      if (panelSession().ready) p.webview.postMessage({ command: "openTab", tab: "mcp" });
+      else panelSession().pendingTab = "mcp";
     }),
 
     vscode.commands.registerCommand("personalKnowledge.removeLegacyAgentInjection", async () => {
@@ -12775,7 +14083,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const backupDirectory = path.join(context.globalStorageUri.fsPath, "retired-agent-injection");
         const result = await retirePkmSkillProjections(context, backupDirectory);
         log.action("pkmSkill.retire", { removed: result.removed, preserved: result.preserved, backupDirectory });
-        panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+        postToPanel({ command: "mcpStatus", data: mcpPanelStatusData() });
         await vscode.window.showInformationMessage(
           `Removed ${result.removed.length} generated Router file(s); preserved ${result.preserved.length} unowned or unsafe file(s). Backups: ${backupDirectory}`,
         );
@@ -12816,8 +14124,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         mcpPathSizeCache.clear();
         refreshMcpDefinitions();
         treeProvider.refresh();
-        panel?.webview.postMessage({ command: "reloaded" });
-        panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+        postToPanel({ command: "reloaded" });
+        postToPanel({ command: "mcpStatus", data: mcpPanelStatusData() });
         vscode.window.showInformationMessage(`Knowledge Root changed on ${extensionHostDescription(process.platform, os.hostname(), vscode.env.remoteName || "")}: ${chosen}. Chatroom history now uses ${path.join(chosen, "chatrooms")}; existing Rooms were not moved.`);
         void maintainPkmIntegration(context);
         return { ok: true, message: `Knowledge Root changed to ${chosen}.` };
@@ -12833,8 +14141,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
         refreshMcpDefinitions();
         treeProvider.refresh();
-        panel?.webview.postMessage({ command: "reloaded" });
-        panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+        postToPanel({ command: "reloaded" });
+        postToPanel({ command: "mcpStatus", data: mcpPanelStatusData() });
         vscode.window.showErrorMessage(`Knowledge Root change failed and the previous root was restored: ${error?.message || String(error)}`);
         return { ok: false, error: `Knowledge Root change failed and the previous root was restored: ${error?.message || String(error)}` };
       }
@@ -12863,16 +14171,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         mcpPathSizeGeneration += 1;
         mcpPathSizeCache.clear();
         treeProvider.refresh();
-        panel?.webview.postMessage({ command: "envList", data: envListForUi() });
-        panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+        postToPanel({ command: "envList", data: envListForUi() });
+        postToPanel({ command: "mcpStatus", data: mcpPanelStatusData() });
         vscode.window.showErrorMessage(`Environments Root was restored because reconfiguration failed: ${error?.message || String(error)}`);
         return { ok: false, error: `Environments Root was restored because reconfiguration failed: ${error?.message || String(error)}` };
       }
       mcpPathSizeGeneration += 1;
       mcpPathSizeCache.clear();
       treeProvider.refresh();
-      panel?.webview.postMessage({ command: "envList", data: envListForUi() });
-      panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+      postToPanel({ command: "envList", data: envListForUi() });
+      postToPanel({ command: "mcpStatus", data: mcpPanelStatusData() });
       vscode.window.showInformationMessage(`Environments Root changed to ${chosen}. Existing environments were not moved.`);
       return { ok: true, message: `Environments Root changed to ${chosen}. Managed runtime status was refreshed.` };
     }),
@@ -12898,16 +14206,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         mcpPathSizeGeneration += 1;
         mcpPathSizeCache.clear();
         treeProvider.refresh();
-        panel?.webview.postMessage({ command: "envList", data: envListForUi() });
-        panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+        postToPanel({ command: "envList", data: envListForUi() });
+        postToPanel({ command: "mcpStatus", data: mcpPanelStatusData() });
         vscode.window.showErrorMessage(`Managed MCP Runtime path was restored because rebuilding failed: ${error?.message || String(error)}`);
         return { ok: false, error: `Managed MCP Runtime path was restored because rebuilding failed: ${error?.message || String(error)}` };
       }
       mcpPathSizeGeneration += 1;
       mcpPathSizeCache.clear();
       treeProvider.refresh();
-      panel?.webview.postMessage({ command: "envList", data: envListForUi() });
-      panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+      postToPanel({ command: "envList", data: envListForUi() });
+      postToPanel({ command: "mcpStatus", data: mcpPanelStatusData() });
       vscode.window.showInformationMessage(`Managed MCP Runtime is ready at ${chosen}.`);
       return { ok: true, message: `Managed MCP Runtime is healthy and ready at ${chosen}.` };
     }),
@@ -12931,14 +14239,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         refreshMcpDefinitions();
         mcpPathSizeGeneration += 1;
         mcpPathSizeCache.clear();
-        panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+        postToPanel({ command: "mcpStatus", data: mcpPanelStatusData() });
         vscode.window.showErrorMessage(`MCP Server Directory was restored because generation failed: ${error?.message || String(error)}`);
         return { ok: false, error: `MCP Server Directory was restored because generation failed: ${error?.message || String(error)}` };
       }
       mcpPathSizeGeneration += 1;
       mcpPathSizeCache.clear();
       refreshMcpDefinitions();
-      panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+      postToPanel({ command: "mcpStatus", data: mcpPanelStatusData() });
       vscode.window.showInformationMessage(`PKM MCP server code regenerated at ${chosen}. Restart pkm in each MCP client.`);
       return { ok: true, message: `PKM MCP server code was regenerated at ${chosen}. Restart pkm in each MCP client.` };
     }),
@@ -13022,8 +14330,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!serverUpdate(slug, { category })) { vscode.window.showErrorMessage("Could not move Server to the selected group."); return; }
       gitCommit(`server move: ${slug} -> ${category || "(root)"}`);
       await treeProvider.refreshServerStatus();
-      panel?.webview.postMessage({ command: "serverGroupList", data: serverGroupList() });
-      panel?.webview.postMessage({ command: "serverList", data: await serverListForUi(context) });
+      postToPanel({ command: "serverGroupList", data: serverGroupList() });
+      postToPanel({ command: "serverList", data: await serverListForUi(context) });
     }),
 
     vscode.commands.registerCommand("personalKnowledge.createServerGroupFromNavigation", async (item?: PkTreeItem) => {
@@ -13040,7 +14348,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!result.ok) { vscode.window.showErrorMessage(`Create Server group failed: ${result.error || "unknown error"}`); return; }
       gitCommit(`server group create: ${result.group}`);
       await treeProvider.refreshServerStatus();
-      panel?.webview.postMessage({ command: "serverGroupList", data: serverGroupList() });
+      postToPanel({ command: "serverGroupList", data: serverGroupList() });
       vscode.window.setStatusBarMessage(`$(new-folder) Created Server subgroup ${result.group}`, 3000);
     }),
 
@@ -13065,8 +14373,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       preserveTopLevelPrivacy("servers", picked.group, newPrefix);
       gitCommit(`server group move: ${picked.group} -> ${newPrefix}`);
       await treeProvider.refreshServerStatus();
-      panel?.webview.postMessage({ command: "serverGroupList", data: serverGroupList() });
-      panel?.webview.postMessage({ command: "serverList", data: await serverListForUi(context) });
+      postToPanel({ command: "serverGroupList", data: serverGroupList() });
+      postToPanel({ command: "serverList", data: await serverListForUi(context) });
       vscode.window.setStatusBarMessage(`$(edit) Renamed Server subgroup to ${newPrefix}`, 3000);
     }),
 
@@ -13096,8 +14404,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!result.ok) { vscode.window.showErrorMessage(`Delete Server group failed: ${result.error || "unknown error"}`); return; }
       gitCommit(`server group delete: ${picked.group}`);
       await treeProvider.refreshServerStatus();
-      panel?.webview.postMessage({ command: "serverGroupList", data: serverGroupList() });
-      panel?.webview.postMessage({ command: "serverList", data: await serverListForUi(context) });
+      postToPanel({ command: "serverGroupList", data: serverGroupList() });
+      postToPanel({ command: "serverList", data: await serverListForUi(context) });
       vscode.window.setStatusBarMessage(`$(trash) Deleted Server subgroup ${name}`, 3000);
     }),
 
@@ -13117,8 +14425,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       else {
         preserveTopLevelPrivacy("servers", oldPrefix, newPrefix);
         gitCommit(`server group move: ${oldPrefix} -> ${newPrefix}`); await treeProvider.refreshServerStatus();
-        panel?.webview.postMessage({ command: "serverGroupList", data: serverGroupList() });
-        panel?.webview.postMessage({ command: "serverList", data: await serverListForUi(context) });
+        postToPanel({ command: "serverGroupList", data: serverGroupList() });
+        postToPanel({ command: "serverList", data: await serverListForUi(context) });
       }
     }),
 
@@ -13141,8 +14449,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!result.ok) vscode.window.showErrorMessage(`Delete Server group failed: ${result.error || "unknown error"}`);
       else {
         gitCommit(`server group delete: ${oldPrefix}`); await treeProvider.refreshServerStatus();
-        panel?.webview.postMessage({ command: "serverGroupList", data: serverGroupList() });
-        panel?.webview.postMessage({ command: "serverList", data: await serverListForUi(context) });
+        postToPanel({ command: "serverGroupList", data: serverGroupList() });
+        postToPanel({ command: "serverList", data: await serverListForUi(context) });
       }
     }),
 
@@ -13281,9 +14589,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }, 10_000);
       githubSyncStartupTimer.unref?.();
       treeProvider.refresh();
-      panel?.webview.postMessage({ command: "saved" }); // re-fetch if panel already open
+      postToPanel({ command: "saved" }); // re-fetch if panel already open
       setImmediate(() => {
-        panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "background", percent: 82, message: "Setting the library wards…" } });
+        activePanel()?.webview.postMessage({ command: "loadingProgress", data: { stage: "background", percent: 82, message: "Setting the library wards…" } });
         if (!fs.existsSync(path.join(getStorePath(), ".git"))) ensureGitRepo();
         schedulePublishedShareRefresh(context, 10_000);
         if (firstConfiguration) void maybeSeedExamples(context).catch(error => log.warn(`example seed failed: ${(error as Error).message}`));
@@ -13305,7 +14613,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     registerExtensionHostRuntime(context, () => apiChat?.isBusy === true || backgroundTaskRegistry.snapshot().tasks.some(task => task.status === "running"));
   } catch (error) { log.warn(`Host coordination unavailable: ${String(error)}`); }
   setImmediate(() => {
-    panel?.webview.postMessage({ command: "loadingProgress", data: { stage: "servers", percent: 12, message: "Preparing the Muggle gateway…" } });
+    activePanel()?.webview.postMessage({ command: "loadingProgress", data: { stage: "servers", percent: 12, message: "Preparing the Muggle gateway…" } });
     try { initializeServers(); }
     catch (error) { log.warn(`deferred Servers initialization failed: ${(error as Error).message}`); }
     void treeProvider.refreshServerStatus();
@@ -13358,7 +14666,7 @@ async function knowledgeTreeSignature(root = getStorePath(), signal?: AbortSigna
       if (++visited % 64 === 0) await new Promise<void>(resolve => setImmediate(resolve));
     }
   };
-  for (const area of ["notes", "skills", "papers", "prompts", "scripts", "packages", "servers", "recipes"]) {
+  for (const area of ["notes", "skills", "papers", "prompts", "scripts", "packages", "servers", "recipes", "actions", "action-module-sets"]) {
     checkCancelled();
     const startedAt = Date.now();
     const previousCount = entries.length;
@@ -13413,7 +14721,7 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
         if (compare && changed) {
           invalidateSharedContentCatalog();
           _treeProvider?.refresh();
-          if (panel?.visible && _panelReady) void panel.webview.postMessage({ command: "reloaded", data: { fallback: true } });
+          if (panels.instances.size) void postToPanel({ command: "reloaded", data: { fallback: true } });
           scheduleRetrievalRefresh(context);
           githubSyncScheduler?.notifyContentChanged();
           log.info("file watcher fallback detected a knowledge tree change");
@@ -13440,8 +14748,8 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
       projectScopes.clear();
       projectPaths.clear();
       for (const entry of nativeHarnessServers.values()) entry.server?.changed();
-      if (!panel?.visible || !_panelReady) return;
-      void panel.webview.postMessage({ command: "projectStateChanged", data: {
+      if (![...panels.instances.values()].some(session => session.ready && session.panel?.visible)) return;
+      void postToPanel({ command: "projectStateChanged", data: {
         scope: scopes.length === 1 ? scopes[0] : "all", scopes, changedPaths,
         ...(changedPaths.length === 1 ? { changedPath: changedPaths[0] } : {}),
       } });
@@ -13449,7 +14757,7 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
     _projectStateRefreshTimer.unref?.();
   };
   _watcher = createKnowledgeFileWatcher(
-    ["notes", "skills", "papers", "prompts", "scripts", "packages", "servers"].map(area => path.join(signatureRoot, area)),
+    ["notes", "skills", "papers", "prompts", "scripts", "packages", "servers", "actions", "action-module-sets"].map(area => path.join(signatureRoot, area)),
   );
   const onChange = (uri: vscode.Uri) => {
     const relativePath = path.relative(getStorePath(), uri.fsPath).replace(/\\/g, "/");
@@ -13471,7 +14779,7 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
         invalidateSharedContentCatalog();
         checkContents();
         _treeProvider?.refresh();
-        panel?.webview.postMessage({ command: "reloaded", data: {
+        postToPanel({ command: "reloaded", data: {
           changedPaths: relevantPaths, ...(relevantPaths.length === 1 ? { changedPath: relevantPaths[0] } : {}),
         } });
         schedulePublishedShareRefresh(context);
@@ -13487,7 +14795,7 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
           }))) githubSyncScheduler?.notifyContentChanged();
         if (_watcherSkillProjectionChanged) {
           _watcherSkillProjectionChanged = false;
-          panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() });
+          postToPanel({ command: "mcpStatus", data: mcpPanelStatusData() });
           void maintainPkmIntegration(context);
         }
       })().catch(error => log.warn(`knowledge watcher refresh failed: ${String(error)}`));
@@ -13503,10 +14811,13 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
   _privacyWatcher.onDidDelete(onChange);
   const stateRoot = path.join(signatureRoot, ".pkm", "state");
   _projectStateWatcher = createKnowledgeFileWatcher(
-    ["projects.json", "project-store.json", "agent-sessions", "agent-sessions-trash", "recipe-runs", "actions/runs", "mcp-usage/todos"]
+    ["projects.json", "project-store.json", "agent-groups", "api-chats", "agent-sessions", "agent-sessions-trash", "recipe-runs", "actions/runs", "mcp-usage/todos"]
       .map(area => path.join(stateRoot, area)),
     filename => filename.endsWith(".json"),
     directory => {
+      const chatRelative = path.relative(path.join(stateRoot, "api-chats"), directory).replace(/\\/g, "/");
+      if (chatRelative === "" || /^[a-f0-9]{16}$/.test(chatRelative)) return true;
+      if (chatRelative !== ".." && !chatRelative.startsWith("../")) return false;
       const relative = path.relative(path.join(stateRoot, "actions", "runs"), directory).replace(/\\/g, "/");
       if (relative === ".." || relative.startsWith("../")) return true;
       return relative === "" || /^action_run_[a-f0-9]{32}(?:\/(?:steps|step-events))?$/.test(relative);

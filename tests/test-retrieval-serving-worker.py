@@ -93,19 +93,30 @@ class TestServingWorkerBoundary(unittest.TestCase):
                             return json.load(error)
 
                     self.wait(lambda: request("/status")["skill_serving"]["ready"])
-                    query = {"query": "find guidance", "content_type_filter": ["skill"], "limit": 5}
+                    query = {"route": "semantic", "query": "find guidance", "content_type_filter": ["skill"], "limit": 5}
                     result = request("/search", query)
                     self.assertTrue(result["skill_serving"]["used"])
+                    self.assertEqual(result["semantic_status"], "ready")
+                    self.assertTrue(all(hit["source_label"] == "from embedding retrieval" for hit in result["hits"]))
+                    dual = request("/search", {**query, "route": "dual"})
+                    self.assertEqual(dual["semantic_status"], "ready")
+                    self.assertEqual({hit["source_id"] for hit in dual["hits"]}, {"alpha", "beta"})
+                    for hit in dual["hits"]:
+                        self.assertEqual(hit["source_label"], "both")
+                        self.assertEqual(len(hit["path_evidence"]), 2)
+                        self.assertAlmostEqual(hit["score"], sum(1 / (60 + evidence["rank"]) for evidence in hit["path_evidence"]))
+                    no_scope = request("/search", {**query, "route": "dual", "scope": {"source_ids": []}})
+                    self.assertEqual(no_scope["hits"], [])
                     self.assertEqual([hit["skill_id"] for hit in result["hits"]], ["skill:beta", "skill:alpha"])
                     scoped = request("/search", {**query, "scope": {"source_ids": ["alpha"]}})
                     self.assertEqual([hit["skill_id"] for hit in scoped["hits"]], ["skill:alpha"])
-                    for extra in ({"content_type_filter": ["note"]}, {"query": "$beta$"}):
+                    for extra in ({"content_type_filter": ["note"]}, {"route": "lexical", "query": "$beta$"}):
                         self.assertFalse(request("/search", {**query, **extra})["skill_serving"]["used"])
                     self.assertEqual(request("/search", {**query, "content_type_filter": []})["code"], "invalid-filter")
-                    failure = request("/search", {**query, "query": "explode"})
+                    failure = request("/search", {**query, "route": "dual", "query": "explode"})
                     self.assertFalse(failure["skill_serving"]["used"])
                     self.assertIn("encoder unavailable", failure["skill_serving"]["fallback_reason"])
-                    malformed = request("/search", {**query, "query": "malformed"})
+                    malformed = request("/search", {**query, "route": "dual", "query": "malformed"})
                     self.assertTrue(malformed["ok"])
                     self.assertFalse(malformed["skill_serving"]["used"])
                     self.assertIn("invalid hit", malformed["skill_serving"]["fallback_reason"])
@@ -120,6 +131,52 @@ class TestServingWorkerBoundary(unittest.TestCase):
                     stale = request("/search", query)
                     self.assertFalse(stale["skill_serving"]["used"])
                     self.assertIn("corpus changed", stale["skill_serving"]["fallback_reason"])
+                    request("/shutdown", {})
+                finally:
+                    if process.poll() is None:
+                        process.terminate()
+                    process.wait(timeout=10)
+
+    def test_unconfigured_worker_never_imports_or_initializes_encoder(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            resources = Path(__file__).resolve().parents[1] / "resources"
+            for name in ("retrieval_worker.py", "retrieval_solutions.py", "retrieval_solution_resources.py"):
+                shutil.copy2(resources / name, root)
+            (root / "retrieval_serving.py").write_text(
+                "from pathlib import Path\n"
+                "Path(__file__).with_name('encoder-imported').touch()\n"
+                "raise AssertionError('An unconfigured encoder must never be imported')\n")
+            state = root / "state"
+            state.mkdir()
+            (state / "snapshot.json").write_text(json.dumps({
+                "corpus_revision": "no-embedding", "generation": 1,
+                "documents": [{"skill_id": "note:networks", "source_id": "networks",
+                               "title": "Neural networks", "body": "classification guide", "content_type": "note"}],
+            }))
+            with (root / "worker.log").open("w") as log:
+                process = subprocess.Popen([self.python, str(root / "retrieval_worker.py"), str(state)], stdout=log, stderr=log)
+                try:
+                    self.wait(lambda: (state / "worker.json").exists())
+                    endpoint = json.loads((state / "worker.json").read_text())
+                    def request(path, payload=None):
+                        req = urllib.request.Request(
+                            f"http://127.0.0.1:{endpoint['port']}{path}",
+                            data=None if payload is None else json.dumps(payload).encode(),
+                            headers={"X-PKM-Retrieval-Token": endpoint["token"]})
+                        with urllib.request.urlopen(req, timeout=5) as response:
+                            return json.load(response)
+                    self.wait(lambda: request("/status")["ready"])
+                    for mode in ("lexical", "semantic", "dual"):
+                        result = request("/search", {"query": "netwroks", "route": mode})
+                        self.assertTrue(result["ok"], result)
+                        self.assertEqual(result["semantic_status"], "off")
+                        self.assertFalse(result["skill_serving"]["used"])
+                        self.assertEqual(len(result["hits"]), 0 if mode == "semantic" else 1)
+                        if result["hits"]:
+                            self.assertEqual(result["hits"][0]["source_label"], "from keyword search")
+                            self.assertEqual(result["hits"][0]["path_evidence"][0]["match"], "fuzzy")
+                    self.assertFalse((root / "encoder-imported").exists(), "Zero imports also proves zero encoder initialization/model calls")
                     request("/shutdown", {})
                 finally:
                     if process.poll() is None:

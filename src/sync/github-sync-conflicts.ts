@@ -416,7 +416,7 @@ export function updateGitHubSyncAgentCandidate(
     throw new Error("Agent merge still has accuracy risks; resolve this conflict manually.");
   }
   const candidate = Buffer.from(content, "utf8");
-  validateGitHubSyncCandidate(relative, candidate);
+  validateGitHubSyncCandidate(relative, candidate, file.member);
   writeVariant(stateDirectory, targetId, "merged", relative, candidate);
   file.candidateDigest = createHash("sha256").update(candidate).digest("hex");
   file.candidateSource = "agent";
@@ -440,7 +440,7 @@ export function selectGitHubSyncConflictCandidate(
     const prepared = members.map(member => {
       if (!member.hasRemote) throw new Error(`GitHub member is unavailable; review the move or deletion: ${member.path}`);
       const content = fs.readFileSync(variantPath(stateDirectory, targetId, "remote", member.path));
-      validateGitHubSyncCandidate(member.remotePath || member.path, content);
+      validateGitHubSyncCandidate(member.remotePath || member.path, content, member.member);
       return { member, content };
     });
     for (const { member, content } of prepared) {
@@ -456,7 +456,7 @@ export function selectGitHubSyncConflictCandidate(
   }
   const candidate = fs.readFileSync(gitHubSyncConflictVariantPath(stateDirectory, targetId, source, relative));
   const resultPath = source === "base" ? file.basePath || relative : source === "local" ? file.localPath || relative : file.remotePath || relative;
-  validateGitHubSyncCandidate(resultPath, candidate);
+  validateGitHubSyncCandidate(resultPath, candidate, file.member);
   writeVariant(stateDirectory, targetId, "merged", relative, candidate);
   file.candidateSource = source;
   file.resultPath = resultPath;
@@ -492,7 +492,7 @@ export function selectAllGitHubSyncConflictCandidates(
       continue;
     }
     const content = fs.readFileSync(variantPath(stateDirectory, targetId, source, file.path));
-    validateGitHubSyncCandidate(source === "remote" ? file.remotePath || file.path : file.localPath || file.path, content);
+    validateGitHubSyncCandidate(source === "remote" ? file.remotePath || file.path : file.localPath || file.path, content, file.member);
     candidates.push({ file, content });
   }
   for (const { file, content } of candidates) {
@@ -611,7 +611,7 @@ export function validateGitHubSyncManualCandidate(
   const file = record?.files.find(candidate => candidate.path === relative);
   if (!record || !file) throw new Error("GitHub Sync conflict file was not found.");
   const candidate = fs.readFileSync(gitHubSyncConflictVariantPath(stateDirectory, targetId, "merged", relative));
-  validateGitHubSyncCandidate(file.resultPath || relative, candidate);
+  validateGitHubSyncCandidate(file.resultPath || relative, candidate, file.member);
   file.candidateSource = "manual";
   file.candidateDigest = createHash("sha256").update(candidate).digest("hex");
   delete file.agentReview;
@@ -628,7 +628,7 @@ export function saveGitHubSyncManualCandidate(stateDirectory: string, targetId: 
     throw new Error("Binary conflict candidates cannot be edited as text. Choose a source version.");
   }
   const candidate = Buffer.from(content, "utf8");
-  validateGitHubSyncCandidate(file.resultPath || relative, candidate);
+  validateGitHubSyncCandidate(file.resultPath || relative, candidate, file.member);
   writeVariant(stateDirectory, targetId, "merged", relative, candidate);
   file.candidateSource = "manual";
   file.candidateDigest = createHash("sha256").update(candidate).digest("hex");
@@ -640,7 +640,7 @@ export function saveGitHubSyncManualCandidate(stateDirectory: string, targetId: 
 export function readGitHubSyncConflictCandidate(stateDirectory: string, targetId: string, relative: string, requireApproved = false): Buffer {
   const file = readGitHubSyncConflict(stateDirectory, targetId)?.files.find(file => file.path === relative);
   const candidate = fs.readFileSync(gitHubSyncConflictVariantPath(stateDirectory, targetId, "merged", relative));
-  validateGitHubSyncCandidate(file?.resultPath || relative, candidate);
+  validateGitHubSyncCandidate(file?.resultPath || relative, candidate, file?.member);
   if (requireApproved && (!file?.candidateDigest || file.candidateDigest !== createHash("sha256").update(candidate).digest("hex"))) {
     throw new Error(`The merge candidate changed after validation. Save and validate it again: ${relative}`);
   }
@@ -658,7 +658,7 @@ export function refreshGitHubSyncConflictLocalCandidate(
   if (!record || !file) throw new Error("GitHub Sync conflict file was not found.");
   const localPath = variantPath(stateDirectory, targetId, "local", relative);
   if (currentLocal) {
-    validateGitHubSyncCandidate(relative, currentLocal);
+    validateGitHubSyncCandidate(relative, currentLocal, file.member);
     writeVariant(stateDirectory, targetId, "local", relative, currentLocal);
     writeVariant(stateDirectory, targetId, "merged", relative, currentLocal);
     file.hasLocal = true;

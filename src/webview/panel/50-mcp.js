@@ -222,7 +222,7 @@ function renderMcpDashboard(data) {
     [status.store.valid, 'Knowledge location', status.store.valid ? status.store.path : 'Choose where this machine stores PKM Markdown files.', '<span class="mcp-no-action">Chosen at startup</span>'],
     [!!data?.mcpPython?.valid, 'Python 3.10+', data?.mcpPython?.valid ? `${data.mcpPython.path} · ${data.mcpPython.version}` : 'Select and validate a Python executable.', '<button class="tbtn" onclick="document.getElementById(\'mcp-python-path\')?.scrollIntoView({behavior:\'smooth\'})">Choose Python</button>'],
     [automaticReady, 'Automatic integration', automaticDetail, automatic.state === 'error' ? '<button class="tbtn" data-pending-label="Retrying…" onclick="beginMcpUiAction(\'checkMcp\',{},this)">Retry</button>' : `<span class="mcp-no-action">${automatic.state === 'running' ? 'Working…' : automaticReady ? 'Ready' : 'Automatic'}</span>`],
-    [!!data?.accountBinding, 'Account binding (not client discovery)', data?.accountBinding ? `VS Code owner: ${data.accountBinding.registrationOwner}. ~/.pkm/mcp-binding.json is not a client registration. Verify each client separately.` : 'Complete account-level PKM setup.', '<button class="tbtn" onclick="beginMcpUiAction(\'configureNativeMcpDiscovery\',{},this)">Configure VS Code discovery</button>'],
+    [!!data?.accountBinding, 'Account binding (not client discovery)', data?.accountBinding ? `VS Code owner: ${data.accountBinding.registrationOwner}. ~/.pkm/mcp-binding.json is not a client registration. Verify each client separately.` : 'Complete account-level PKM setup.', '<button class="tbtn" onclick="beginMcpUiAction(\'configureNativeMcpDiscovery\',{},this)">Configure PKM MCP...</button>'],
   ];
   return `<section class="mcp-dashboard">
     <div class="mcp-dashboard-head"><div><h2>PKM Integration Status</h2><p>Server runtime and generated schemas are versioned independently.</p></div><div class="mcp-running">${mcpStatusLight(processKind, processLabel, processLabelKey, { pid: status.process.pid || '' })}<button class="tbtn" data-pending-label="Refreshing…" onclick="beginMcpUiAction('checkMcp',{},this)" title="Refresh process and version status" aria-label="Refresh process and version status">${uiIcon('refresh')}</button></div></div>
@@ -306,7 +306,7 @@ function renderMcpPane(data) {
         <div><span data-i18n="config.source">Source</span>: <code>${data?.accountBinding?.registrationOwner ? esc(data.accountBinding.registrationOwner) : '<span data-i18n="config.stateMissing">Missing</span>'}</code></div>
         <div>Native definition: ${data?.clientRegistration?.vscode?.definitionAvailable ? 'available on this host (client discovery not verified)' : 'unavailable or not selected'}</div>
         <div>${esc(data?.clientRegistration?.vscode?.detail || '')}</div>
-        <button class="tbtn" id="mcp-configure-native" onclick="beginMcpUiAction('configureNativeMcpDiscovery',{},this)">Configure VS Code MCP discovery</button>
+        <button class="tbtn" id="mcp-configure-native" onclick="beginMcpUiAction('configureNativeMcpDiscovery',{},this)">Configure PKM MCP...</button>
         <span data-i18n="config.restartServer">Run MCP: List Servers, select pkm, then Start/Restart. Remote SSH windows use the provider and paths from the remote extension host.</span>
       </div>
       <div style="background:var(--panel);border:1px solid ${python.valid ? '#4ade8066' : '#f4b40066'};border-radius:8px;padding:12px 14px;margin-bottom:16px">

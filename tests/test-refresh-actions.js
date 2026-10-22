@@ -72,8 +72,9 @@ const watcherContext = vm.createContext({
   _watcher: null, _privacyWatcher: null, _projectStateWatcher: null, _projectContentWatcher: null, _recipeContentWatcher: null,
   _watcherRefreshTimer: null, _projectStateRefreshTimer: null, _watcherFallbackTimer: null,
   _watcherSignatureController: undefined,
-  _watcherSkillProjectionChanged: false, _knowledgeTreeSignature: "", _panelReady: true, _treeProvider: { refresh: noop },
-  panel: { visible: true, webview: { postMessage: message => notifications.push(JSON.parse(JSON.stringify(message))) } },
+  _watcherSkillProjectionChanged: false, _knowledgeTreeSignature: "", _treeProvider: { refresh: noop },
+  panels: { instances: new Map([[{}, { ready: true, panel: { visible: true } }]]) },
+  postToPanel: message => notifications.push(JSON.parse(JSON.stringify(message))),
   nativeHarnessServers: new Map(),
   contentCheckTask: { idle: noop, queued: noop, running: noop }, agentSessionJsonCache: { invalidate: noop },
   log: { info: noop, warn: noop },
@@ -129,7 +130,7 @@ async function checkStagedSignatures() {
   const signatureFunction = ast.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === "knowledgeTreeSignature");
   assert(signatureFunction);
   const scanRoot = "/signature-test-root";
-  const areas = ["notes", "skills", "papers", "prompts", "scripts", "packages", "servers", "recipes"];
+  const areas = ["notes", "skills", "papers", "prompts", "scripts", "packages", "servers", "recipes", "actions", "action-module-sets"];
   const directories = {
     notes: [...Array.from({ length: 65 }, (_unused, index) => `note-${index}.md`), "_assets", ".hidden.md"],
     skills: ["SKILL.md"], scripts: ["__pycache__", "review.py"], packages: ["node_modules", "source.js"],

@@ -4,7 +4,7 @@ const path = require("path");
 const ts = require("typescript");
 
 const domains = {
-  chat: "api-chat-acceptance api-chat-client api-chat-mcp api-chat-models api-chat-store api-chat-tools api-chat-view api-chat-vscode",
+  chat: "api-chat-acceptance api-chat-client api-chat-mcp api-chat-models api-chat-store api-chat-tools api-chat-view api-chat-vscode chat-inference-timing chat-process-runtime",
   "agent-sessions": "agent-session-lifecycle agent-snapshots",
   chatroom: "chat-commands chat-hub-health chat-join-approval chat-magic-link chat-managed-agent-routing chat-meeting-lifecycle chat-persistence-worker chat-persistence chat-room-credentials chat-room-identity chat-room-lifecycle chat-room-lock chatroom-browser chatroom-client chatroom-hub chatroom-protocol chatroom collaboration-model meeting-state",
   knowledge: "content-privacy filestore knowledge-contracts knowledge-groups knowledge-inventory-worker knowledge-inventory knowledge-locator knowledge-migration link-graph live-note-server markdown-assets migrate storage store-path",

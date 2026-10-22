@@ -116,6 +116,7 @@ class Engine:
             file.chmod(0o600)
         self.db = sqlite3.connect(file, timeout=10, isolation_level=None)
         self.db.row_factory = sqlite3.Row
+        self._savepoint_sequence = 0
         try:
             self.db.execute("PRAGMA foreign_keys=ON")
             self.db.execute("PRAGMA synchronous=FULL")
@@ -138,6 +139,7 @@ class Engine:
             mode = self.db.execute("PRAGMA journal_mode=WAL").fetchone()[0]
             if mode != "wal":
                 raise MemoryError("Disk-backed WAL is required.")
+            self.reconciliation = self._reconcile()
         except Exception:
             self.db.close()
             raise
@@ -146,20 +148,64 @@ class Engine:
         self.db.close()
 
     @contextmanager
-    def _transaction(self) -> Generator[None, None, None]:
-        self.db.execute("BEGIN IMMEDIATE")
+    def _transaction(self, *, immediate: bool = True) -> Generator[None, None, None]:
+        # Policy steps group multiple mutations; savepoints preserve their outer transaction.
+        nested = self.db.in_transaction
+        self._savepoint_sequence += 1
+        savepoint = f"memory_{self._savepoint_sequence}"
+        self.db.execute(f"SAVEPOINT {savepoint}" if nested else
+                        "BEGIN IMMEDIATE" if immediate else "BEGIN")
         try:
             yield
-            self.db.execute("COMMIT")
+            self.db.execute(f"RELEASE {savepoint}" if nested else "COMMIT")
         except BaseException:
-            self.db.execute("ROLLBACK")
+            # SQLite may already have rolled back after an I/O or disk-full error.
+            if self.db.in_transaction:
+                if nested:
+                    self.db.execute(f"ROLLBACK TO {savepoint}")
+                    self.db.execute(f"RELEASE {savepoint}")
+                else:
+                    self.db.execute("ROLLBACK")
             raise
+
+    def _reconcile(self) -> dict:
+        """Repair legacy dangling projections. All payloads, including blobs, live in SQLite.
+
+        There is no external content store or file/DB commit gap requiring pending intents.
+        Missing payloads are not invented: readers report them explicitly.
+        Turn age is not an integrity failure; scope state and resumable work persist.
+        """
+        removed = 0
+        with self._transaction():
+            for table, predicate in (
+                ("statements", "piece NOT IN (SELECT id FROM pieces)"),
+                ("provenance", "statement NOT IN (SELECT id FROM statements) OR source NOT IN (SELECT id FROM sources)"),
+                ("sources", "deleted=0 AND id NOT IN (SELECT source FROM provenance)"),
+                ("edges", "parent NOT IN (SELECT id FROM pieces) OR child NOT IN (SELECT id FROM pieces)"),
+                ("leases", "piece NOT IN (SELECT id FROM pieces) OR expires_at<=?"),
+                ("summaries", "piece NOT IN (SELECT id FROM pieces WHERE evicted=0)"),
+                ("piece_embeddings", "piece NOT IN (SELECT id FROM pieces WHERE evicted=0)"),
+            ):
+                args = (time.time(),) if table == "leases" else ()
+                cursor = self.db.execute(f"DELETE FROM {table} WHERE {predicate}", args)
+                removed += cursor.rowcount
+            missing = self.db.execute(
+                "SELECT COUNT(*) FROM statements s JOIN pieces p ON p.id=s.piece "
+                "WHERE s.body IS NULL AND p.evicted=0").fetchone()[0]
+            missing += self.db.execute(
+                "SELECT COUNT(*) FROM pieces p WHERE p.evicted=0 AND p.kind='message' "
+                "AND NOT EXISTS(SELECT 1 FROM statements s WHERE s.piece=p.id)").fetchone()[0]
+            missing += self.db.execute(
+                "SELECT COUNT(*) FROM piece_embeddings WHERE status='ready' AND embedding IS NULL").fetchone()[0]
+        return {"status": "missing" if missing else "ok", "removed_rows": removed,
+                "missing_payloads": missing, "content_storage": "sqlite"}
 
     def capabilities(self) -> dict:
         return {"module": "pkm-memory-engine", "version": "0.2.0", "policy": "pkm-memory-policy/1",
                 "protocol": 1, "schema": 1, "identity": self.identity,
                 "sqlite": sqlite3.sqlite_version, "embedding_encoding": "float32-le",
-                "model_calls": "caller-executed", "source_acl": "trusted-host-adapter-required"}
+                "model_calls": "caller-executed", "source_acl": "trusted-host-adapter-required",
+                "reconciliation": dict(self.reconciliation)}
 
     def mutate(self, operation_id: str, method: str, params: dict) -> dict:
         text(operation_id, "operation_id", 256)
@@ -206,6 +252,7 @@ class Engine:
                             (affected,))
             if destructive:
                 self.db.execute("DELETE FROM summaries WHERE piece=?", (affected,))
+                self.db.execute("DELETE FROM piece_embeddings WHERE piece=?", (affected,))
             self._change("invalidated", affected)
 
     def _create(self, p: dict) -> dict:
@@ -294,8 +341,7 @@ class Engine:
     def read(self, piece_id: str, after: int = 0, limit: int = 20) -> dict:
         integer(after, "after")
         integer(limit, "limit", 1, 100)
-        self.db.execute("BEGIN")
-        try:
+        with self._transaction(immediate=False):
             piece = dict(self._piece(piece_id))
             summary = self.db.execute("SELECT * FROM summaries WHERE piece=?", (piece_id,)).fetchone()
             candidates = self.db.execute(
@@ -309,11 +355,15 @@ class Engine:
                 if rows and payload_bytes > 192 * 1024:
                     break
                 rows.append(row)
-            return {"piece": piece, "summary": dict(summary) if summary else None,
+            missing = not piece["evicted"] and bool(self.db.execute(
+                "SELECT 1 FROM statements WHERE piece=? AND body IS NULL LIMIT 1", (piece_id,)).fetchone())
+            if not piece["evicted"] and piece["kind"] == "message" and not self.db.execute(
+                    "SELECT 1 FROM statements WHERE piece=? LIMIT 1", (piece_id,)).fetchone():
+                missing = True
+            return {"status": "evicted" if piece["evicted"] else "missing" if missing else "ready",
+                    "piece": piece, "summary": dict(summary) if summary else None,
                     "summary_current": bool(summary and summary["input_revision"] == piece["revision"]),
                     "statements": rows, "next": rows[-1]["sequence"] if rows else after}
-        finally:
-            self.db.execute("ROLLBACK")
 
     def sources(self, statement_id: str, after: str = "", limit: int = 20) -> list[dict]:
         text(statement_id, "statement_id", 256)
@@ -394,6 +444,8 @@ class Engine:
                AND revision=? AND status='ready'""", (piece_id, space, piece["revision"])).fetchone()
         if not row:
             return {"piece": piece_id, "embedding": None, "status": "unavailable"}
+        if row["embedding"] is None:
+            return {"piece": piece_id, "embedding": None, "status": "missing"}
         result = dict(row)
         result["embedding"] = list(struct.unpack(f"<{row['dimensions']}f", row["embedding"]))
         return result
@@ -463,7 +515,9 @@ class Engine:
 
     def _purge_chat(self, p: dict) -> dict:
         chat = text(p["chat"], "chat", 1024)
-        self.db.execute("INSERT OR IGNORE INTO deleted_chats VALUES(?)", (chat,))
+        if self.db.execute("SELECT 1 FROM deleted_chats WHERE chat=?", (chat,)).fetchone():
+            return {"removed_statements": 0}
+        self.db.execute("INSERT INTO deleted_chats VALUES(?)", (chat,))
         rows = self.db.execute(
             """SELECT DISTINCT s.id,s.piece FROM statements s JOIN provenance p ON p.statement=s.id
                JOIN sources r ON r.id=p.source WHERE r.chat=?""", (chat,)).fetchall()
@@ -545,11 +599,11 @@ class Engine:
         return json.loads(row[0]) if row else None
 
     def turn_put(self, turn_id: str, scope: str, state: dict) -> None:
+        """Persist state without implicit retention, including scope focus and pending steps."""
         with self._transaction():
             self._assert_scope_live(scope)
             self.db.execute("INSERT OR REPLACE INTO turns VALUES(?,?,?,?)",
                             (text(turn_id, "turn", 256), scope, json.dumps(state, ensure_ascii=False), time.time()))
-            self.db.execute("DELETE FROM turns WHERE updated<?", (time.time() - 7 * 86400,))
 
     def _assert_scope_live(self, scope: str) -> None:
         if self.db.execute("SELECT 1 FROM deleted_chats WHERE chat=?", (scope,)).fetchone():

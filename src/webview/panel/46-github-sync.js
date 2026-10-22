@@ -20,8 +20,8 @@ let githubSyncRepairRequestSequence = 0;
 const githubSyncRepairCommands = new Set(['githubSyncRepairOpen','githubSyncRepairPreview','githubSyncRepairApply',
   'githubSyncRecipeRecompilePreview','githubSyncRecipeRecompileApply','githubSyncRepairRevalidate',
   'githubSyncRepairRevalidateOnly','githubSyncRepairPause','githubSyncRepairResume','githubSyncRepairTrash']);
-const githubSyncTypes = ['skills','notes','papers','prompts','scripts','packages','servers','recipes','agentSnapshots'];
-const githubSyncLabels = { skills:'Skills', notes:'Notes', papers:'Research', prompts:'Prompts', scripts:'Scripts', packages:'Packages', servers:'Servers', recipes:'Recipes', agentSnapshots:'Agent Snapshots' };
+const githubSyncTypes = ['skills','notes','papers','prompts','scripts','packages','servers','recipes','agentSnapshots','actions','action-module-sets'];
+const githubSyncLabels = { skills:'Skills', notes:'Notes', papers:'Research', prompts:'Prompts', scripts:'Scripts', packages:'Packages', servers:'Servers', recipes:'Recipes', agentSnapshots:'Agent Snapshots', actions:'Actions', 'action-module-sets':'Action ModuleSets' };
 
 function renderGitHubSyncLoading() {
   renderGitHubSyncPane();
@@ -39,7 +39,7 @@ function githubSyncDefaultSelection() {
   const publicScope = {};
   const privateScope = {};
   for (const type of githubSyncTypes) {
-    publicScope[type] = { items:[], folders:['packages','servers','agentSnapshots'].includes(type) ? [] : [''] };
+    publicScope[type] = { items:[], folders:['packages','servers','agentSnapshots','actions','action-module-sets'].includes(type) ? [] : [''] };
     privateScope[type] = { items:[], folders:[] };
   }
   return { public:publicScope, private:privateScope };
@@ -228,7 +228,8 @@ function githubSyncRenderTree(privacy, type, node, pathParts, picked, folders, o
   }).join('');
   const leaves = node.items.sort((left,right) => left.label.localeCompare(right.label)).map(item => {
     const inherited = folders.has('') || [...folders].some(folder => folder && (item.cat === folder || item.cat.startsWith(folder + '/')));
-    return `<label class="sub-tree-leaf"><input type="checkbox" data-gh-item="${privacy}:${type}" data-gh-cat="${esc(item.cat || '')}" value="${esc(item.id)}" ${(inherited || picked.has(item.id)) ? 'checked' : ''} onchange="githubSyncItemToggle(this)"><span>${esc(item.label)}</span><small>${esc(item.meta || '')}</small></label>`;
+    const privacyControl = ['actions','action-module-sets'].includes(type) ? `<button type="button" data-gh-action-type="${type}" data-gh-action-id="${esc(type === 'actions' ? item.id : item.cat)}" data-gh-action-private="${item.isPrivate ? 'false' : 'true'}" onclick="event.preventDefault();event.stopPropagation();githubSyncActionPrivacy(this)">Make ${item.isPrivate ? 'Public' : 'Private'}</button>` : '';
+    return `<label class="sub-tree-leaf"><input type="checkbox" data-gh-item="${privacy}:${type}" data-gh-cat="${esc(item.cat || '')}" value="${esc(item.id)}" ${(inherited || picked.has(item.id)) ? 'checked' : ''} onchange="githubSyncItemToggle(this)"><span>${esc(item.label)}</span><small>${esc(item.meta || '')}</small>${privacyControl}</label>`;
   }).join('');
   return folderRows + leaves;
 }
@@ -244,6 +245,9 @@ function githubSyncPrivacyTree(target, privacy) {
     const selectedCount = items.filter(item => folders.has('') || picked.has(item.id) || [...folders].some(folder => folder && (item.cat === folder || item.cat.startsWith(folder + '/')))).length;
     return `<details class="sub-picker github-sync-picker" data-gh-picker="${privacy}:${type}" ${draft?.openTypes?.[privacy]?.includes(type) ? 'open' : ''}><summary><strong>${githubSyncLabels[type]}</strong><span>${selectedCount} selected · ${items.length} available</span></summary><div class="sub-picker-items"><label class="sub-folder-rule"><input type="checkbox" data-gh-folder="${privacy}:${type}" value="" ${folders.has('') ? 'checked' : ''} onchange="githubSyncFolderToggle(this)"><span>Entire ${githubSyncLabels[type]}</span><small>include future items</small></label>${githubSyncRenderTree(privacy,type,fileSelectorCategoryTree(items),[],picked,folders,openFolders) || '<span class="sub-empty">No items</span>'}</div></details>`;
   }).join('');
+}
+function githubSyncActionPrivacy(button) {
+  ask('contentSetPrivacy', { type:button.dataset.ghActionType, topLevel:button.dataset.ghActionId, isPrivate:button.dataset.ghActionPrivate === 'true' });
 }
 
 function githubSyncEditor() {
@@ -490,6 +494,33 @@ function githubSyncEffectiveError(target, runtime) {
     || 'No error details were recorded. Open Sync Diagnostic Log for this attempt.';
 }
 
+function githubSyncRelativeAge(value, now = Date.now()) {
+  const timestamp = Date.parse(value || '');
+  if (!Number.isFinite(timestamp)) return '';
+  if (timestamp > now) return 'clock ahead';
+  const minutes = Math.floor((now - timestamp) / 60000);
+  return `${Math.floor(minutes / 60)} h ${minutes % 60} min ago`;
+}
+
+function githubSyncLastTime(value) {
+  if (!value) return 'Never synchronized';
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return 'Unknown (invalid recorded timestamp)';
+  const iso = new Date(timestamp).toISOString();
+  return `<time datetime="${esc(iso)}">${esc(new Date(timestamp).toLocaleString())}</time> <span data-github-sync-age="${esc(iso)}">${esc(githubSyncRelativeAge(iso))}</span>`;
+}
+
+function githubSyncUpdateAges() {
+  if (document.hidden) return;
+  document.querySelectorAll('[data-github-sync-age]').forEach(node => {
+    node.textContent = githubSyncRelativeAge(node.dataset.githubSyncAge);
+  });
+}
+
+(function scheduleGitHubSyncAges() {
+  setTimeout(() => { githubSyncUpdateAges(); scheduleGitHubSyncAges(); }, 60000);
+})();
+
 function githubSyncCards() {
   if (githubSyncAwaitingState) return '<div class="sub-empty" role="status" aria-live="polite"><span class="codicon codicon-loading codicon-modifier-spin" aria-hidden="true"></span> Refreshing current Sync status…</div>';
   const cards = githubSyncData.targets.map(storedTarget => {
@@ -498,7 +529,7 @@ function githubSyncCards() {
       ? { ...storedTarget, automation:{ ...storedTarget.automation, enabled:automationPending.enabled } }
       : storedTarget;
     const expanded = githubSyncEditing === target.id;
-    const last = target.lastSync?.at ? new Date(target.lastSync.at).toLocaleString() : 'Never synchronized';
+    const last = githubSyncLastTime(target.lastSync?.at);
     const runtime = githubSyncData.runtime?.[target.id] || {};
     const automaticReady = !!target.automation?.initialSyncCompleted;
     const successAt = Math.max(Date.parse(target.lastSync?.at || '') || 0, Date.parse(runtime.lastSuccessAt || '') || 0);
@@ -556,7 +587,7 @@ function githubSyncCards() {
     const remoteDisabled = !!automationPending || autoEnabled || status === 'syncing' || status === 'queued' || forcePending || migrationBusy;
     const restoreDisabled = !!automationPending || autoEnabled || status === 'syncing' || forcePending || migrationBusy || !!conflict;
     const dangerZone = `<details class="github-sync-danger-zone" onclick="event.stopPropagation()" onkeydown="event.stopPropagation();if(event.key==='Escape'){this.open=false;this.querySelector('summary').focus()}"><summary class="pk-button danger">Danger Zone</summary><div class="github-sync-danger-menu"><button class="pk-button danger" title="${esc(manualTitle || 'Local → GitHub: replace selected Remote content')}" data-pending-label="Forcing…" onclick="this.closest('details').open=false;githubSyncForceUpdate('${esc(target.id)}',this)" ${forceDisabled ? 'disabled' : ''}>Force use Local</button><button class="pk-button danger" title="${esc(manualTitle || 'GitHub → Local: replace selected Local content, including local-only deletions')}" data-pending-label="Reviewing…" onclick="this.closest('details').open=false;githubSyncForceRemote('${esc(target.id)}',this)" ${remoteDisabled ? 'disabled' : ''}>Force use Remote</button><button class="pk-button" title="${esc(manualTitle || (conflict ? 'Resolve or discard the current comparison before restoring a snapshot' : ''))}" data-pending-label="Loading…" onclick="this.closest('details').open=false;githubSyncRestore('${esc(target.id)}',this)" ${restoreDisabled ? 'disabled' : ''}>${uiIcon('history','Restore snapshot…')}</button></div></details>`;
-    return `<article class="pk-card sub-broker-card ${expanded ? 'active' : ''}"><div class="sub-broker-row" role="button" tabindex="0" aria-expanded="${expanded}" onclick="githubSyncEdit('${esc(target.id)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();githubSyncEdit('${esc(target.id)}')}"><span><span class="sub-broker-title"><strong>${esc(target.name)}</strong><span class="sub-broker-actions"><button class="pk-button" title="${esc(manualTitle)}" data-pending-label="Pulling…" onclick="event.stopPropagation();githubSyncForce('${esc(target.id)}',this)" ${syncDisabled ? 'disabled' : ''}>${uiIcon('refresh',syncLabel)}</button>${dangerZone}<button class="pk-button danger" data-pending-label="Deleting…" onclick="event.stopPropagation();githubSyncDelete('${esc(target.id)}',this)" title="Delete target">${uiIcon('trash')}</button></span></span>${phaseDiagram}<small>${esc(target.repository)}</small>${error ? `<small class="github-sync-error" onclick="event.stopPropagation()" onpointerdown="event.stopPropagation()" title="Select and copy this error">${esc(error)}</small>` : ''}${conflictActions}${resolutionDiagram}${migrationPanel}</span><span class="sub-broker-meta"><span class="github-sync-meta-head"><b>${esc(target.branch)} · ${esc(scheduleLabel)}</b>${autoToggle}</span><small>Last ${esc(last)}</small><small>${esc(next)}</small><i>›</i></span></div>${expanded ? `<div class="sub-broker-expanded">${githubSyncEditor()}</div>` : ''}</article>`;
+    return `<article class="pk-card sub-broker-card ${expanded ? 'active' : ''}"><div class="sub-broker-row" role="button" tabindex="0" aria-expanded="${expanded}" onclick="githubSyncEdit('${esc(target.id)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();githubSyncEdit('${esc(target.id)}')}"><span><span class="sub-broker-title"><strong>${esc(target.name)}</strong><span class="sub-broker-actions"><button class="pk-button" title="${esc(manualTitle)}" data-pending-label="Pulling…" onclick="event.stopPropagation();githubSyncForce('${esc(target.id)}',this)" ${syncDisabled ? 'disabled' : ''}>${uiIcon('refresh',syncLabel)}</button>${dangerZone}<button class="pk-button danger" data-pending-label="Deleting…" onclick="event.stopPropagation();githubSyncDelete('${esc(target.id)}',this)" title="Delete target">${uiIcon('trash')}</button></span></span>${phaseDiagram}<small>${esc(target.repository)}</small>${error ? `<small class="github-sync-error" onclick="event.stopPropagation()" onpointerdown="event.stopPropagation()" title="Select and copy this error">${esc(error)}</small>` : ''}${conflictActions}${resolutionDiagram}${migrationPanel}</span><span class="sub-broker-meta"><span class="github-sync-meta-head"><b>${esc(target.branch)} · ${esc(scheduleLabel)}</b>${autoToggle}</span>    <small>Last Sync ${last}</small><small>${esc(next)}</small><i>›</i></span></div>${expanded ? `<div class="sub-broker-expanded">${githubSyncEditor()}</div>` : ''}</article>`;
   }).join('');
   const create = githubSyncEditing === 'new' ? `<article class="pk-card sub-broker-card active"><div class="sub-broker-expanded">${githubSyncEditor()}</div></article>` : '';
   return cards + create || (githubSyncUpdatedAt ? '<div class="sub-empty">No GitHub targets.</div>' : '<div class="sub-empty" role="status">Reading local GitHub Sync settings…</div>');

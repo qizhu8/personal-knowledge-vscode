@@ -1,10 +1,12 @@
 import * as fs from "fs";
+import { classifyTaskProgress, type TaskProgressRecord } from "./task-progress";
 import * as path from "path";
 import { createHash, randomUUID } from "crypto";
 import { hostname } from "os";
 import { agentSessionGroup } from "../agent-sessions/agent-session-lifecycle";
 import { decodeChatImage } from "./api-chat-client";
 import { ChatLibrary } from "./chat-library";
+import { runChatLibraryWork, type ChatLibraryWork } from "./chat-library-worker";
 import { validChatRetrievalReceipt, validChatRetrievalActivity } from "./chat-retrieval";
 import { withCrossProcessLockSync } from "../runtime/cross-process-lock";
 import { chatPkmUrl, parsePkmLocator } from "../knowledge/knowledge-locator";
@@ -12,15 +14,17 @@ import { ChatExecutionContext, validExecutionContext } from "./execution-context
 import { accountMcpIdentity } from "../mcp/mcp-account-binding";
 import { WorkerTreeStore, ChatWorkerState, WorkerPhase, WorkerActivity, validWorkerActivity, workerIsDescendant } from "./worker-tree";
 import { memoryPolicy, validMemoryPolicy, type ChatMemoryGrant } from "./chat-memory-policy";
+import { validChatInvocationBudget } from "./chat-budget-ledger";
+import { memoryTurnAccounting } from "../memory/memory-accounting";
 import { ChatHistoryStorage, StoredChat } from "./chat-history-storage";
 import { ExecutionProjection, projectExecution } from "../runtime/pkm-projection";
 import { recordBaselineEvent, BaselineEventKind } from "../runtime/pkm-baseline";
 import { recordedActionReferences } from "../runtime/native-harness-actions";
 import { agentSnapshotRecovery, AgentSnapshotContents, AgentSnapshotSummary } from "../agent-sessions/agent-snapshots";
-import { assertHarnessRecipeBinding, HarnessBinding } from "./chat-harness-records";
+import { assertHarnessRecipeBinding, currentHarnessTaskState, HarnessBinding } from "./chat-harness-records";
 
 export interface ChatContext { id: string; label: string; content: string; }
-export interface QueuedChatInput { id: string; text: string; mode: "steer" | "task"; attemptId?: string; executionContext?: ChatExecutionContext; }
+export interface QueuedChatInput { id: string; text: string; mode: "steer" | "task"; attemptId?: string; executionContext?: ChatExecutionContext; portalReview?: PortalReview; }
 export interface ChatDelegation {
   id: string;
   chatId: string;
@@ -55,7 +59,8 @@ export interface ApiChatProgress {
   tools?: string[];
   droppedSteps?: number;
   completedDroppedSteps?: number;
-  steps: Array<{ label: string; at: number; status?: "running" | "waiting" | "complete" | "cancelled" | "failed" }>;
+  steps: Array<{ label: string; at: number; status?: "running" | "waiting" | "complete" | "cancelled" | "failed";
+    kind?: "model" | "tool"; round?: number; toolCallId?: string }>;
 }
 export interface ChatPlanningPossibility {
   id: string;
@@ -95,7 +100,9 @@ export interface ChatMessage {
   planning?: ChatPlanningReceipt;
   harnessReports?: import("./chat-harness-records").HarnessReport[];
   budgetReceipts?: import("./chat-harness-records").HarnessBudgetReceipt[];
+  invocationBudgets?: import("./chat-budget-ledger").ChatInvocationBudget[];
   publicOutputSegments?: Array<{ round:number; start:number; end:number; hasToolCalls?:boolean }>;
+  reasoningSummaries?: Array<{ round: number; text: string }>;
   inputId?: string;
   role: "user" | "assistant";
   content: string;
@@ -107,6 +114,8 @@ export interface ChatMessage {
   contextLabels?: string[];
   fromSessionId?: string;
   fromChatId?: string;
+  portalSource?: import("../chatroom/portal-runtime").PortalSource;
+  portalReview?: PortalReview;
   delegationId?: string;
   delegations?: ChatDelegation[];
   submissionId?: string;
@@ -213,7 +222,38 @@ export function apiChatDiagnostics(chat: ApiConversation) {
       progress: progress(message.progress),
     })),
     latestProgress: progress(chat.progress),
+    turnProgress: apiChatTurnProgress(chat),
   };
+}
+
+/** Read-only HAR-04 classification of the latest assistant turn; evidence is reduced to counts so paths and arguments never leave. */
+export function apiChatTurnProgress(chat: ApiConversation, now = Date.now()) {
+  const message = [...chat.messages].reverse().find(item => item.role === "assistant");
+  if (!message) return undefined;
+  const records: TaskProgressRecord[] = [];
+  const startedAt = message.progress?.startedAt ?? (message.recordedAt ? Date.parse(message.recordedAt) : undefined);
+  for (const call of message.toolCalls || []) {
+    const at = call.finishedAt ?? call.startedAt ?? startedAt;
+    if (!Number.isFinite(at)) continue;
+    records.push({ at: at!, kind: "tool-call", call: { id: call.id, name: call.name, arguments: call.arguments, status: call.status, result: call.result } });
+  }
+  for (const change of message.changes || []) {
+    const at = Date.parse(change.appliedAt);
+    if (Number.isFinite(at)) records.push({ at, kind: "file", path: change.path });
+  }
+  const live = message.status === "streaming" ? chat.progress : undefined;
+  const last = live?.steps[live.steps.length - 1];
+  if (last?.status === "waiting" && Number.isFinite(last.at)) records.push({ at: last.at, kind: "wait", id: "current", reason: /approv|permission|authoriz/i.test(last.label) ? "approval" : "user", status: "pending" });
+  const finishedAt = message.progress?.finishedAt;
+  if (message.status === "complete" && Number.isFinite(finishedAt)) records.push({ at: finishedAt!, kind: "complete", detail: "Assistant turn completed" });
+  try {
+    const result = classifyTaskProgress(records, { now: message.status === "streaming" ? now : undefined, startedAt: Number.isFinite(startedAt) ? startedAt : undefined });
+    const evidence: Record<string, number> = {};
+    for (const item of result.evidence) evidence[item.kind] = (evidence[item.kind] || 0) + 1;
+    return { scope: "latest-turn" as const, messageId: message.id, status: result.status, reasons: result.reasons, evidence };
+  } catch (error) {
+    return { scope: "latest-turn" as const, messageId: message.id, status: "unknown" as const, reasons: [`Progress classification unavailable: ${error instanceof Error ? error.message : String(error)}`], evidence: {} };
+  }
 }
 
 export function apiChatSessionDiagnostics(record: Record<string, unknown>, sessionId: string, stateDirectory?: string) {
@@ -252,10 +292,12 @@ export function apiChatHarnessSnapshot(chat: ApiConversation, fullResults = fals
       attempt: message.progress?.attempt, retryOf: message.progress?.retryOf, retryReason:message.progress?.retryReason,
       harnessReports:message.harnessReports,
       budgetReceipts:message.budgetReceipts,
+      invocationBudgets:message.invocationBudgets,
       response: message.content,
       publicOutputs:message.publicOutputSegments?.map(segment => ({
         ...segment, text:message.content.slice(segment.start, segment.end),
       })),
+      reasoningSummaries: message.reasoningSummaries,
       associatedProblem: input?.content || "",
       problemSource: input?.workerEventIds?.length ? "worker-event" : input?.inputKind || "user-input",
       planning: message.planning ? {
@@ -291,6 +333,10 @@ export function apiChatHarnessSnapshot(chat: ApiConversation, fullResults = fals
       memory: message.memory ? {
         turn: message.memory.turn, model: message.memory.model, durationMs: message.memory.durationMs, error: message.memory.error,
         blocks: (message.memory.blocks || []).map(block => ({ ...block })),
+        ...(message.memory.prepare?.schema === "pkm.memory.turn-receipt/v1" ? {
+          accounting: memoryTurnAccounting(message.memory.prepare),
+          calls: message.memory.prepare.calls,
+        } : {}),
       } : undefined,
       toolCalls: (message.toolCalls || []).map(call => ({
         id: call.id, name: call.name, status: call.status,
@@ -314,12 +360,14 @@ export function apiChatHarnessSnapshot(chat: ApiConversation, fullResults = fals
   const latestUser = [...chat.messages].reverse().find(message => message.role === "user" && !message.workerEventIds?.length)
     || [...chat.messages].reverse().find(message => message.role === "user");
   const current = phase(chat.progress);
+  const taskWorkingState = currentHarnessTaskState(chat);
   return {
     schema: "pkm.agent.harness/v1" as const,
     chatId: chat.id, sessionId: chat.sessionId, state: apiChatStatus(chat),
     currentPhase: current,
     currentProblem: latestUser?.content || "",
     currentProblemSource: latestUser?.workerEventIds?.length ? "worker-event" : latestUser?.inputKind || "user-input",
+    ...(taskWorkingState ? { taskWorkingState } : {}),
     waiting: current.kind === "waiting" ? { kind: /answer|approval|input/i.test(current.label) ? "user" : "dependency", detail: current.label } : undefined,
     queuedInputs: (chat.queuedInputs || []).map(input => ({ id: input.id, mode: input.mode, text: input.text })),
     attempts,
@@ -736,6 +784,8 @@ export class ApiChatStore {
   }
 
   recoverAbandoned(chat: ApiConversation): boolean {
+    const observed = chat.progress;
+    if (observed?.status !== "running" || observed.ownerHost !== hostname() || !observed.ownerPid || observed.ownerPid === process.pid) return false;
     return withCrossProcessLockSync(path.join(this.stateDirectory, "api-chats", "chats.lock"), "Chat history", () => {
       const current = this.load(chat.id, false);
       const owner = current.progress;
@@ -750,8 +800,22 @@ export class ApiChatStore {
     });
   }
 
+  private readonly loadedFiles = new WeakMap<ApiConversation, { file: string; stamp: string }>();
+
+  reloadIfChanged(chat: ApiConversation): ApiConversation {
+    const previous = this.loadedFiles.get(chat);
+    const file = this.file(chat.id);
+    if (previous?.file === file && previous.stamp === ApiChatStore.fileStamp(file)) return chat;
+    const latest = this.load(chat.id, false);
+    const validated = this.loadedFiles.get(latest);
+    // The controller keeps its in-memory object when the revision is unchanged.
+    if (validated && latest.revision === chat.revision) this.loadedFiles.set(chat, validated);
+    return latest;
+  }
+
   load(id: string, recoverInterrupted = true): ApiConversation {
     const file = this.file(id);
+    const before = !recoverInterrupted ? ApiChatStore.fileStamp(file) : undefined;
     const chat = this.history.unpack(JSON.parse(fs.readFileSync(file, "utf8")) as StoredChat);
     const contextsValid = (items: ChatContext[]) => Array.isArray(items) && items.every(item => item && typeof item.id === "string" && typeof item.label === "string" && typeof item.content === "string");
     const progressValid = (run: ApiChatProgress) => run && Number.isFinite(run.startedAt) && (run.finishedAt === undefined || Number.isFinite(run.finishedAt)) && ["running", "complete", "cancelled", "failed"].includes(run.status) && typeof run.model === "string"
@@ -761,18 +825,31 @@ export class ApiChatStore {
       && (run.attempt === undefined || Number.isSafeInteger(run.attempt) && run.attempt > 0) && (run.tools === undefined || Array.isArray(run.tools) && run.tools.every(name => typeof name === "string" && name.length <= 200))
       && (run.droppedSteps === undefined || Number.isSafeInteger(run.droppedSteps) && run.droppedSteps >= 0)
       && (run.completedDroppedSteps === undefined || Number.isSafeInteger(run.completedDroppedSteps) && run.completedDroppedSteps >= 0 && run.completedDroppedSteps <= (run.droppedSteps || 0))
-      && Array.isArray(run.steps) && run.steps.length <= 512 && run.steps.every(step => step && typeof step.label === "string" && Number.isFinite(step.at) && (step.status === undefined || ["running", "waiting", "complete", "cancelled", "failed"].includes(step.status)));
+      && Array.isArray(run.steps) && run.steps.length <= 512 && run.steps.every(step => step && typeof step.label === "string" && Number.isFinite(step.at)
+        && (step.status === undefined || ["running", "waiting", "complete", "cancelled", "failed"].includes(step.status))
+        && (step.kind === undefined || ["model", "tool"].includes(step.kind))
+        && (step.round === undefined || Number.isSafeInteger(step.round) && step.round >= 0)
+        && (step.toolCallId === undefined || typeof step.toolCallId === "string" && step.toolCallId.length > 0 && step.toolCallId.length <= 200));
     const changesValid = (items: NonNullable<ChatMessage["changes"]>) => Array.isArray(items) && items.length <= 4096 && items.every(item => item && typeof item.path === "string" && item.path.length <= 4096 && Number.isSafeInteger(item.workspace) && item.workspace >= 0 && typeof item.appliedAt === "string" && Number.isFinite(Date.parse(item.appliedAt)) && /^[a-f0-9]{64}$/.test(item.beforeHash) && /^[a-f0-9]{64}$/.test(item.afterHash) && item.saved === false && ["exact", "unknown"].includes(item.attribution) && (item.attribution !== "exact" || Number.isSafeInteger(item.added) && item.added! >= 0 && Number.isSafeInteger(item.removed) && item.removed! >= 0));
     if (!chat || chat.version !== 1 || chat.id !== id || chat.sessionId !== undefined && !/^agent_session_[a-f0-9]{32}$/.test(chat.sessionId) || typeof chat.title !== "string" || typeof chat.updatedAt !== "string" || !Number.isFinite(Date.parse(chat.updatedAt)) || typeof chat.createdAt !== "string" || !Number.isFinite(Date.parse(chat.createdAt)) || typeof chat.includeHistory !== "boolean" || !Array.isArray(chat.messages) || !contextsValid(chat.context)
       || chat.memoryPolicy !== undefined && !validMemoryPolicy(chat.memoryPolicy)
       || chat.messages.some(message => !message || typeof message.id !== "string" || typeof message.content !== "string" || !["user", "assistant"].includes(message.role) || !["complete", "streaming", "cancelled", "failed", "interrupted"].includes(message.status)
         || message.recordedAt !== undefined && (typeof message.recordedAt !== "string" || !Number.isFinite(Date.parse(message.recordedAt)))
         || message.executionContext !== undefined && !validExecutionContext(message.executionContext)
+        || message.portalSource !== undefined && !validPortalSource(message.portalSource)
+        || message.portalReview !== undefined && !validPortalReview(message.portalReview)
         || message.taskId !== undefined && (typeof message.taskId !== "string" || message.taskId.length > 128)
         || message.retrieval !== undefined && !validChatRetrievalReceipt(message.retrieval, chat.id)
         || message.retrievalActivity !== undefined && !validChatRetrievalActivity(message.retrievalActivity, chat.id)
+        || message.invocationBudgets !== undefined && (!Array.isArray(message.invocationBudgets)
+          || message.invocationBudgets.some(item => !validChatInvocationBudget(item))
+          || new Set(message.invocationBudgets.map(item => item.id)).size !== message.invocationBudgets.length)
         || message.memory !== undefined && (typeof message.memory !== "object" || message.memory === null || message.memory.schema !== "pkm.chat.memory/v1" || typeof message.memory.turn !== "string")
         || message.progress !== undefined && !progressValid(message.progress)
+        || message.reasoningSummaries !== undefined && (!Array.isArray(message.reasoningSummaries)
+          || message.reasoningSummaries.length > 1000
+          || message.reasoningSummaries.some(item => !item || !Number.isSafeInteger(item.round) || item.round < 0 || typeof item.text !== "string")
+          || message.reasoningSummaries.reduce((size, item) => size + item.text.length, 0) > 16000)
         || message.changes !== undefined && !changesValid(message.changes)
         || message.fromSessionId !== undefined && (typeof message.fromSessionId !== "string" || !/^agent_session_[a-f0-9]{32}$/.test(message.fromSessionId))
         || message.fromChatId !== undefined && (typeof message.fromChatId !== "string" || !/^[a-f0-9-]{36}$/.test(message.fromChatId))
@@ -798,7 +875,7 @@ export class ApiChatStore {
       || chat.revision !== undefined && (!Number.isSafeInteger(chat.revision) || chat.revision < 0)
       || chat.workspaceNamespace !== undefined && chat.workspaceNamespace !== path.basename(path.dirname(file))
       || chat.customTitle !== undefined && typeof chat.customTitle !== "boolean"
-      || chat.queuedInputs !== undefined && (!Array.isArray(chat.queuedInputs) || chat.queuedInputs.length > 20 || chat.queuedInputs.some(input => !input || typeof input.id !== "string" || !/^[a-f0-9-]{36}$/.test(input.id) || typeof input.text !== "string" || !input.text.trim() || input.text.length > 16_000 || !["steer", "task"].includes(input.mode) || input.attemptId !== undefined && (typeof input.attemptId !== "string" || input.attemptId.length > 80) || input.executionContext !== undefined && !validExecutionContext(input.executionContext)) || new Set(chat.queuedInputs.map(input => input.id)).size !== chat.queuedInputs.length)
+      || chat.queuedInputs !== undefined && (!Array.isArray(chat.queuedInputs) || chat.queuedInputs.length > 20 || chat.queuedInputs.some(input => !input || typeof input.id !== "string" || !/^[a-f0-9-]{36}$/.test(input.id) || typeof input.text !== "string" || !input.text.trim() || input.text.length > 16_000 || !["steer", "task"].includes(input.mode) || input.attemptId !== undefined && (typeof input.attemptId !== "string" || input.attemptId.length > 80) || input.executionContext !== undefined && !validExecutionContext(input.executionContext) || input.portalReview !== undefined && !validPortalReview(input.portalReview)) || new Set(chat.queuedInputs.map(input => input.id)).size !== chat.queuedInputs.length)
       || chat.memoryTasks !== undefined && (!Array.isArray(chat.memoryTasks) || chat.memoryTasks.length > 4096 || chat.memoryTasks.some(task => !task || typeof task.id !== "string" || task.id.length > 128 || typeof task.title !== "string" || task.title.length > 512 || typeof task.createdAt !== "string" || !Number.isFinite(Date.parse(task.createdAt))))
       || chat.paused !== undefined && typeof chat.paused !== "boolean"
       || chat.workerActivity !== undefined && !validWorkerActivity(chat.workerActivity)
@@ -832,6 +909,10 @@ export class ApiChatStore {
       message.error = "The previous request was interrupted. Partial output was preserved.";
       const ledger = message.budgetReceipts?.[message.budgetReceipts.length - 1]?.ledger;
       if (ledger) ledger.outcome = { status: "interrupted", detail: message.error };
+      for (const invocation of message.invocationBudgets || []) if (invocation.status === "running") {
+        invocation.status = "interrupted";
+        invocation.detail = "Host interrupted. Only the last observed timing is retained; completion, downtime usage and termination are unknown.";
+      }
       for (const tool of message.toolCalls || []) if (tool.status === "running") { tool.status = "failed"; tool.result = "The request was interrupted. Execution may already have occurred."; }
     }
     if (recoverInterrupted && chat.progress?.status === "running") {
@@ -843,6 +924,7 @@ export class ApiChatStore {
       for (const step of run.steps) if (["running", "waiting"].includes(step.status || "")) step.status = run.status === "complete" ? "complete" : run.status === "cancelled" ? "cancelled" : "failed";
     }
     this.validateImages(chat);
+    if (before && before === ApiChatStore.fileStamp(file)) this.loadedFiles.set(chat, { file, stamp: before });
     return chat;
   }
 
@@ -950,8 +1032,9 @@ export class ApiChatStore {
       const current = this.load(chat.id, false);
       this.assertAvailable(current);
       if (!input.executionContext || !/^[a-f0-9-]{36}$/.test(input.id) || !input.text.trim() || input.text.length > 16_000 || !["steer", "task"].includes(input.mode)) throw new Error("Choose a valid input with sending-window context.");
+      if (input.portalReview !== undefined && !validPortalReview(input.portalReview)) throw new Error("Invalid Portal status event.");
       this.assertExecutionContext(input.executionContext);
-      if (current.paused) throw new Error("This Chat is paused. Resume it before sending another request.");
+      if (current.paused && !input.portalReview) throw new Error("This Chat is paused. Resume it before sending another request.");
       if (input.mode === "steer" && (current.progress?.status !== "running" || current.progress.executionContext?.digest !== input.executionContext.digest)) throw new Error("Steering belongs to a different execution context. Submit a separate task instead.");
       const prior = current.queuedInputs?.find(item => item.id === input.id) || current.messages.find(message => message.submissionId === input.id);
       if (prior) {
@@ -959,8 +1042,11 @@ export class ApiChatStore {
         if (text !== input.text || prior.executionContext?.digest !== input.executionContext.digest) throw new Error("Submission identity was already used with different text or execution context.");
         return current;
       }
-      if ((current.queuedInputs?.length || 0) >= 20) throw new Error("The Chat already has 20 queued inputs.");
-      (current.queuedInputs ||= []).push({ ...input, ...(input.mode === "steer" ? { attemptId: current.progress?.attemptId } : {}) });
+      const priorReview = input.portalReview ? current.queuedInputs?.findIndex(item => item.portalReview?.pairId === input.portalReview!.pairId && item.portalReview.requestId === input.portalReview!.requestId) ?? -1 : -1;
+      if (priorReview < 0 && (current.queuedInputs?.length || 0) >= 20) throw new Error("The Chat already has 20 queued inputs.");
+      const queued = { ...input, ...(input.mode === "steer" ? { attemptId: current.progress?.attemptId } : {}) };
+      if (priorReview >= 0) current.queuedInputs![priorReview] = queued;
+      else (current.queuedInputs ||= []).push(queued);
       current.updatedAt = new Date().toISOString();
       this.saveUnlocked(current, false);
       return current;
@@ -974,7 +1060,7 @@ export class ApiChatStore {
     if (ownedAttemptId && current.progress?.attemptId === ownedAttemptId) this.reconcileQueue(chat, current);
     if ((current.revision || 0) !== (chat.revision || 0)) throw new Error("This Chat changed in another window. Reopen it before sending a request.");
     if ((current.progress?.status === "running" || current.messages.some((message: ChatMessage) => message.status === "streaming")) && (!ownedAttemptId || current.progress?.attemptId !== ownedAttemptId)) throw new Error("This Chat is already running. Wait for its owning window to finish.");
-    if (!executionContext && chat.workspaceNamespace && chat.workspaceNamespace !== this.namespace && ["read_file", "find_files", "search_text", "replace_text", "save_file", "run_process"].some(name => chat.toolSelection ? !chat.toolSelection.disabledSources.includes("builtin") && !chat.toolSelection.disabledTools.includes(`builtin:${name}`) : chat.builtinTools === undefined || chat.builtinTools.includes(name))) throw new Error("This Chat's file/process tools belong to another workspace. Open the original workspace or disable those tools.");
+    if (!executionContext && chat.workspaceNamespace && chat.workspaceNamespace !== this.namespace && ["read_file", "find_files", "search_text", "list_directory", "replace_text", "save_file", "run_process"].some(name => chat.toolSelection ? !chat.toolSelection.disabledSources.includes("builtin") && !chat.toolSelection.disabledTools.includes(`builtin:${name}`) : chat.builtinTools === undefined || chat.builtinTools.includes(name))) throw new Error("This Chat's file/process tools belong to another workspace. Open the original workspace or disable those tools.");
     if (chat.paused) throw new Error("This Chat is paused. Resume it before sending another request.");
     if (!chat.sessionId) return;
     const session = JSON.parse(fs.readFileSync(path.join(this.stateDirectory, "agent-sessions", `${chat.sessionId}.json`), "utf8"));
@@ -986,24 +1072,97 @@ export class ApiChatStore {
   list(includeTrash = false): Array<{ id: string; workspaceNamespace: string; title: string; updatedAt: string; status: ApiChatStatus; groupId: string; trashedAt?: string; workerParentChatId?: string; workerTreeId?: string; workerManager?: boolean }> {
     const placements = this.library.read().placements;
     const chats: ReturnType<ApiChatStore["list"]> = [];
+    const seen = new Set<string>();
     for (const directory of this.directories()) for (const name of fs.readdirSync(directory)) {
       if (!/^[a-f0-9-]{36}\.json$/.test(name)) continue;
+      const file = path.join(directory, name);
+      seen.add(file);
       try {
-        const stored = JSON.parse(fs.readFileSync(path.join(directory, name), "utf8")) as StoredChat;
-        const summary = this.history.summary(stored);
-        const chat = summary ? stored : this.load(name.slice(0, -5), false);
-        if (chat.id !== name.slice(0, -5) || typeof chat.title !== "string" || typeof chat.updatedAt !== "string"
-          || !Number.isFinite(Date.parse(chat.updatedAt))) throw new Error("Unsupported Chat listing metadata.");
-        const placement = placements[chat.id] || { groupId: "ungroup" };
-        const sessionFile = chat.sessionId && path.join(this.stateDirectory, "agent-sessions", `${chat.sessionId}.json`);
-        const session = sessionFile && fs.existsSync(sessionFile) ? JSON.parse(fs.readFileSync(sessionFile, "utf8")) : undefined;
-        const stopped = session?.status === "stopped" && session.hostKind === "pkm" && session.hostSessionId === chat.id;
-        if (includeTrash || !placement.trashedAt) chats.push({ id: chat.id, workspaceNamespace: chat.workspaceNamespace || path.basename(directory), title: chat.title, updatedAt: chat.updatedAt, status: stopped ? "stopped" : summary?.status || apiChatStatus({ ...chat, version: 1 }), ...placement,
-          ...((summary?.workerManager ?? chat.messages.some(message => message.delegations?.length)) ? { workerManager: true } : {}),
-          ...(chat.workerState ? { workerTreeId: chat.workerState.treeId, ...(chat.workerState.parentChatId ? { workerParentChatId: chat.workerState.parentChatId } : {}) } : {}) });
+        const entry = this.listingEntry(file, directory, name);
+        const placement = placements[entry.id] || { groupId: "ungroup" };
+        const stopped = entry.sessionId ? this.sessionStopped(entry.sessionId, entry.id) : false;
+        if (includeTrash || !placement.trashedAt) chats.push({ id: entry.id, workspaceNamespace: entry.workspaceNamespace, title: entry.title, updatedAt: entry.updatedAt,
+          status: stopped ? "stopped" : entry.status, ...placement, ...(entry.workerManager ? { workerManager: true } : {}),
+          ...(entry.workerTreeId ? { workerTreeId: entry.workerTreeId, ...(entry.workerParentChatId ? { workerParentChatId: entry.workerParentChatId } : {}) } : {}) });
       } catch {}
     }
+    for (const file of this.listingCache.keys()) if (!seen.has(file)) this.listingCache.delete(file);
     return chats.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  }
+
+  // Listing used to parse every full Chat file (all messages) and session file on each call; renaming or copying a Chat
+  // URL called it 3-4 times, which on Windows/NTFS with many Chats took seconds. Entries are reused while a file's
+  // size and mtime are unchanged.
+  private readonly listingCache = new Map<string, { stamp: string; entry: { id: string; workspaceNamespace: string; title: string; updatedAt: string; status: ApiChatStatus; sessionId?: string; workerManager: boolean; workerTreeId?: string; workerParentChatId?: string } }>();
+  private readonly sessionStatusCache = new Map<string, { stamp: string; stopped: (chatId: string) => boolean }>();
+  private static fileStamp(file: string): string | undefined {
+    try { const stat = fs.statSync(file); return `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.ino}`; } catch { return undefined; }
+  }
+  private listingEntry(file: string, directory: string, name: string) {
+    const stamp = ApiChatStore.fileStamp(file);
+    const cached = this.listingCache.get(file);
+    if (stamp && cached?.stamp === stamp) return cached.entry;
+    const stored = JSON.parse(fs.readFileSync(file, "utf8")) as StoredChat;
+    const summary = this.history.summary(stored);
+    const chat = summary ? stored : this.load(name.slice(0, -5), false);
+    if (chat.id !== name.slice(0, -5) || typeof chat.title !== "string" || typeof chat.updatedAt !== "string"
+      || !Number.isFinite(Date.parse(chat.updatedAt))) throw new Error("Unsupported Chat listing metadata.");
+    const entry = { id: chat.id, workspaceNamespace: chat.workspaceNamespace || path.basename(directory), title: chat.title, updatedAt: chat.updatedAt,
+      status: summary?.status || apiChatStatus({ ...chat, version: 1 }), ...(chat.sessionId ? { sessionId: chat.sessionId } : {}),
+      workerManager: !!(summary?.workerManager ?? chat.messages.some(message => message.delegations?.length)),
+      ...(chat.workerState ? { workerTreeId: chat.workerState.treeId, ...(chat.workerState.parentChatId ? { workerParentChatId: chat.workerState.parentChatId } : {}) } : {}) };
+    // A legacy file may have been rewritten by load(); stamp after reading so the next call re-validates once.
+    const after = ApiChatStore.fileStamp(file);
+    if (after) this.listingCache.set(file, { stamp: after, entry });
+    return entry;
+  }
+  private sessionStopped(sessionId: string, chatId: string): boolean {
+    const file = path.join(this.stateDirectory, "agent-sessions", `${sessionId}.json`);
+    const stamp = ApiChatStore.fileStamp(file);
+    if (!stamp) { this.sessionStatusCache.delete(file); return false; }
+    const cached = this.sessionStatusCache.get(file);
+    if (cached?.stamp === stamp) return cached.stopped(chatId);
+    let session: any;
+    try { session = JSON.parse(fs.readFileSync(file, "utf8")); } catch { return false; }
+    const host = session?.status === "stopped" && session.hostKind === "pkm" ? session.hostSessionId : undefined;
+    const stopped = (id: string) => host === id;
+    this.sessionStatusCache.set(file, { stamp, stopped });
+    return stopped(chatId);
+  }
+
+  taskPlan(chat: ApiConversation): { items: Array<{ todoId: string; title: string; status: string }>; unavailable?: string } {
+    if (!chat.sessionId) return { items: [] };
+    if (!/^agent_session_[a-f0-9]{32}$/.test(chat.sessionId)) throw new Error("Invalid native Session identity.");
+    const file = path.join(this.stateDirectory, "agent-sessions", `${chat.sessionId}.json`);
+    if (!fs.existsSync(file)) return { items: [], unavailable: "The current Task Session is unavailable." };
+    const session = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (session.schema !== "pkm.agent.session/v1" || session.sessionId !== chat.sessionId
+      || agentSessionOrigin(session).origin !== "pkm-native" || session.hostSessionId !== chat.id || !Array.isArray(session.todos)) {
+      throw new Error("The current Task plan does not belong to this PKM Chat.");
+    }
+    return { items: session.todos.map((item: unknown) => {
+      if (!item || typeof item !== "object" || !("todoId" in item) || typeof item.todoId !== "string"
+        || !("title" in item) || typeof item.title !== "string" || !("status" in item) || typeof item.status !== "string") {
+        throw new Error("The current Task has an invalid todo record.");
+      }
+      return { todoId: item.todoId, title: item.title, status: item.status };
+    }) };
+  }
+
+  async libraryMutation(operation: Exclude<ChatLibraryWork, "namespace" | "trash-list">, id: string): Promise<void> {
+    await runChatLibraryWork(this.stateDirectory, this.namespace, operation, id);
+  }
+
+  async trashList(): Promise<Array<{ id: string; title: string }>> {
+    const result = await runChatLibraryWork(this.stateDirectory, this.namespace, "trash-list", "");
+    if (!result.chats) throw new Error("Chat library worker did not return the Trash listing.");
+    return result.chats;
+  }
+
+  async memoryNamespace(id: string): Promise<string> {
+    const result = await runChatLibraryWork(this.stateDirectory, this.namespace, "namespace", id);
+    if (!result.namespace) throw new Error("Chat library worker did not return the owning namespace.");
+    return result.namespace;
   }
 
   trashChat(id: string): void {
@@ -1018,6 +1177,7 @@ export class ApiChatStore {
     withCrossProcessLockSync(path.join(this.stateDirectory, "api-chats", "chats.lock"), "Chat history", () => {
       if (!this.library.read().placements[id]?.trashedAt) throw new Error("Move this Chat to Trash before permanently deleting it.");
       const chat = this.load(id, false);
+      if (chat.progress?.status === "running" || chat.messages.some(message => message.status === "streaming")) throw new Error("Stop the running Chat before permanently deleting it.");
       const group = agentSessionGroup({ sessionId: "", hostKind: "pkm", hostSessionId: id });
       const groupPath = path.join(this.stateDirectory, "agent-groups", `${group.groupId}.json`);
       const previous = fs.existsSync(groupPath) ? JSON.parse(fs.readFileSync(groupPath, "utf8")) : {};
@@ -1073,3 +1233,4 @@ export function apiChatGroupSnapshots(stateDirectory: string) {
     workerTreeId: chat.workerTreeId,
   }));
 }
+import { validPortalSource, validPortalReview, PortalReview } from "../chatroom/portal-runtime";

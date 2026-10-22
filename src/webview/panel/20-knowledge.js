@@ -113,6 +113,8 @@ document.querySelectorAll('.workspace-button').forEach(button => button.addEvent
 document.querySelectorAll('.tab').forEach(t =>
   t.addEventListener('click', () => {
     loadProfileEvent('webview.tab.clicked', { workspace:workspaceForTab(t.dataset.tab), surface:t.dataset.tab });
+    capturePanelViewState();
+    setEmbeddedActionsVisible(t.dataset.tab === 'actions');
     stashKnowledgeTabView(state.tab);
     if (state.tab === 'chatroom' && t.dataset.tab !== 'chatroom') chatCaptureDraft();
     if (state.tab === 'servers' && t.dataset.tab !== 'servers') stopSubscribedServerMonitoring();
@@ -123,7 +125,7 @@ document.querySelectorAll('.tab').forEach(t =>
     state.workspace = workspaceForTab(state.tab);
     agentSessionSetActive(['agentSessions','agentSnapshots'].includes(state.tab));
     const persisted = vscode.getState() || {};
-    vscode.setState({ ...persisted, tab: state.tab, workspace: state.workspace, workspaceRoutes: { ...(persisted.workspaceRoutes || {}), [state.workspace]: state.tab } });
+    vscode.setState({ ...persisted, view: panelSnapshotRestoring ? persisted.view : null, tab: state.tab, workspace: state.workspace, workspaceRoutes: { ...(persisted.workspaceRoutes || {}), [state.workspace]: state.tab } });
     document.getElementById('searchbox').value = '';
     document.querySelectorAll('.tab').forEach(x => {
       const active = x.dataset.tab === state.tab;
@@ -137,11 +139,15 @@ document.querySelectorAll('.tab').forEach(t =>
     if (!hasCachedProjectView) renderEmptyDetail();
     closePaperViews();
     updatePaperChrome();
-    const fullWidthTab = ['mcp', 'skillRouter', 'environments', 'servers', 'subscriptions', 'githubSync', 'backgroundTasks', 'agentSessions', 'agentSnapshots', 'recipes', 'projects', 'chatroom'].includes(state.tab);
+    const fullWidthTab = ['actions', 'mcp', 'skillRouter', 'environments', 'servers', 'subscriptions', 'githubSync', 'backgroundTasks', 'portalConnections', 'agentSessions', 'agentSnapshots', 'recipes', 'projects', 'chatroom'].includes(state.tab);
     document.getElementById('layout-resizer').style.display = fullWidthTab ? 'none' : '';
     document.getElementById('sidebar-toggle').style.display = fullWidthTab ? 'none' : '';
     document.getElementById('content-toolbar').style.display = fullWidthTab ? 'none' : '';
-    if (state.tab === 'agentSessions') {
+    if (state.tab === 'actions') {
+      document.getElementById('sidebar').style.display = 'none';
+      document.getElementById('searchbox').style.display = 'none';
+      showEmbeddedActions();
+    } else if (state.tab === 'agentSessions') {
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
       renderAgentSessions();
@@ -192,6 +198,10 @@ document.querySelectorAll('.tab').forEach(t =>
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
       showBackgroundTasksTab();
+    } else if (state.tab === 'portalConnections') {
+      document.getElementById('sidebar').style.display = 'none';
+      document.getElementById('searchbox').style.display = 'none';
+      showPortalConnectionsTab();
     } else if (state.tab === 'chatroom') {
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
@@ -253,6 +263,7 @@ function contentSearchChanged(requestList = true) {
   clearTimeout(searchDebounce);
   searchDebounce = setTimeout(() => {
     if (compileFindPattern(state.search, options.regex, options.caseSensitive) !== false) {
+      if (requestKnowledgeSearch(options)) return;
       if (state.tab === 'skills') {
         skillsListLoading = true;
         state.items = [];
@@ -514,14 +525,14 @@ function renderList() {
     fEl.innerHTML = ['all',...langs].map(l =>
       `<span class="chip ${filter===l?'active':''}" onclick="setFilter('${l}')">${l}</span>`).join('');
     const shown = filter==='all' ? items : items.filter(r => r.lang===filter);
-    el.innerHTML = `<div class="sub-virtual-divider local-packages"><span>Local Packages</span></div>` + (shown.map(r => {
+    el.innerHTML = `<div class="sub-virtual-divider local-packages"><span>Local Packages</span><button type="button" class="tbtn" onclick="ask('packageImportGit',{})" title="Import a Git branch as a source snapshot; no dependencies are installed">Import Git</button></div>` + (shown.map(r => {
       const gitTag = r.gitRepo
         ? '<span class="pkg-git repo" title="Has its own .git repository">git repo</span>'
         : r.gitTracked
           ? '<span class="pkg-git tracked" title="Tracked in the knowledge store\'s git">git</span>'
           : '<span class="pkg-git untracked" title="Not tracked by git yet (uncommitted)">untracked</span>';
           const sourceTag = packageSourceTag(r.source);
-      return `<div class="li" onclick="openItem('package','${esc(r.name)}')" oncontextmenu="packageItemMenu(event,${JSON.stringify(r.name).replace(/"/g,'&quot;')})">
+      return `<div class="li" onclick="openItem('package','${esc(r.name)}')" oncontextmenu="packageItemMenu(event,${JSON.stringify(r.name).replace(/"/g,'&quot;')},${!!r.gitSource})">
       <div class="li-name">${privacyLock(r.isPrivate)}${folkDisplayPath(r.name)} ${gitTag}${brokerShareMarker(r.brokerShares)}${githubSyncFileMarker('packages', r.name)}</div>
           <div class="li-meta">${esc(r.lang)} · ${esc((r.description||'').slice(0,50))}${sourceTag}</div>
     </div>`;
@@ -863,7 +874,8 @@ function renderCatTree(node, path, depth, renderLeaf, q, folderAttr, order, opti
     if (path.length === 0 && privacyInherited([name]) && !folderKeys.slice(0, index).some(previous => privacyInherited([previous]))) html += privacyDivider();
     // Base64 key: safe inside HTML attrs and JS strings (no quotes/null/unicode issues)
     const key = expandedCategoryKey(path.concat(name), options.area || state.tab);
-    const open = !!q || (Object.prototype.hasOwnProperty.call(catExpanded, key) ? !!catExpanded[key] : !!options.defaultOpen);
+    const expandable = !options.isFolderExpandable || options.isFolderExpandable(child, name, path.concat(name));
+    const open = expandable && (!!q || (Object.prototype.hasOwnProperty.call(catExpanded, key) ? !!catExpanded[key] : !!options.defaultOpen));
     const pad = (Number.isFinite(options.baseIndent) ? options.baseIndent : 8) + depth * 12;
     const pinnedFolder = isFP && name !== '(uncategorized)' && isFP(path.concat(name));
     const addPath = name === '(uncategorized)' ? '' : path.concat(name).join('/');
@@ -873,13 +885,13 @@ function renderCatTree(node, path, depth, renderLeaf, q, folderAttr, order, opti
     const syncType = options.githubSyncType || state.tab;
     const syncFolder = path.concat(name).filter(part => !['(uncategorized)','(root)'].includes(part)).join('/');
     html += `<div class="tree-cat">
-      <div class="tree-cat-hdr${pinnedFolder ? ' cat-pinned' : ''}" role="button" tabindex="0" style="padding-left:${pad}px" onclick="toggleCat('${key}',this)" onkeydown="if(event.target===this&&(event.key==='Enter'||event.key===' ')){event.preventDefault();toggleCat('${key}',this)}" title="${esc(name)}" aria-expanded="${open}"${folderAttr ? folderAttr(child, name, path.concat(name)) : ''}>
-        <span class="tree-cat-arrow">${uiIcon(open ? 'chevron-down' : 'chevron-right')}</span>
+      <div class="tree-cat-hdr${pinnedFolder ? ' cat-pinned' : ''}" ${expandable ? `role="button" tabindex="0" onclick="toggleCat('${key}',this)" onkeydown="if(event.target===this&&(event.key==='Enter'||event.key===' ')){event.preventDefault();toggleCat('${key}',this)}" aria-expanded="${open}"` : 'role="group"'} style="padding-left:${pad}px" title="${esc(name)}"${folderAttr ? folderAttr(child, name, path.concat(name)) : ''}>
+        <span class="tree-cat-arrow">${expandable ? uiIcon(open ? 'chevron-down' : 'chevron-right') : ''}</span>
         <span class="tree-cat-label">${folderLabel}${githubSyncTypes.includes(syncType) ? githubSyncFolderMarker(syncType, syncFolder) : ''}</span>
-        <span class="tree-cat-count">${countTreeLeaves(child)}</span>
+        <span class="tree-cat-count">${options.countLabel ? esc(options.countLabel(countTreeLeaves(child))) : countTreeLeaves(child)}</span>
         ${['skills', 'notes', 'papers'].includes(state.tab) ? `<button class="tree-cat-add" type="button" title="Add inside ${esc(name)}" aria-label="Add inside ${esc(name)}" onclick="openCatFolderAddMenu(event,${JSON.stringify(state.tab).replace(/"/g, '&quot;')},${JSON.stringify(addPath).replace(/"/g, '&quot;')})">${uiIcon('add')}</button>` : ''}
       </div>
-      <div class="tree-cat-body" style="${open ? '' : 'display:none'}">${renderCatTree(child, path.concat(name), depth + 1, renderLeaf, q, folderAttr, order, options)}</div>
+      ${expandable ? `<div class="tree-cat-body" style="${open ? '' : 'display:none'}">${renderCatTree(child, path.concat(name), depth + 1, renderLeaf, q, folderAttr, order, options)}</div>` : ''}
     </div>`;
   }
   let leaves = node.items;
@@ -2709,6 +2721,7 @@ function paperFolderMenu(ev, b64, name, path) {
         onOk: () => ask('paperFolderDelete', { path: physicalPath }),
       }),
     });
+    items.push({ label:'Move folder to Trash…', danger:true, onClick:()=>moveKnowledgeFolderToTrash('papers',physicalPath,name) });
   }
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
@@ -2869,7 +2882,7 @@ function scriptItemMenu(ev, relPath, category) {
 }
 
 // Right-click a Package -> open its folder in a new window.
-function packageItemMenu(ev, name) {
+function packageItemMenu(ev, name, gitSource = false) {
   ev.preventDefault(); ev.stopPropagation();
   const items = [
     { label: name, header: true },
@@ -2877,6 +2890,7 @@ function packageItemMenu(ev, name) {
     copyPathMenu(`packages/${name}/`),
     { sep: true },
   ];
+  if (gitSource) items.push({ label:'Update Git branch (refuses local changes)', onClick:() => ask('packageUpdateGit', { name }) });
   appendPrivacyMenu(items, 'packages', name);
   items.push({ sep: true });
   items.push({ label: 'Delete Package…', danger: true, onClick: () => confirmDeletePackage(name) });

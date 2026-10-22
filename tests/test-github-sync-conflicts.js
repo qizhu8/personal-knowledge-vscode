@@ -71,6 +71,19 @@ try {
   selectGitHubSyncConflictCandidate(root, "target-1", stored.files[0].path, "remote");
   assert(readGitHubSyncConflictCandidate(root, "target-1", stored.files[0].path).equals(skill("remote")));
   assert.strictEqual(readGitHubSyncConflict(root, "target-1").files[0].candidateSource, "remote");
+  const reviewed = readGitHubSyncConflict(root, "target-1");
+  const reviewedMetadata = fs.readFileSync(path.join(root, "conflicts", "target-1", "conflict.json"));
+  assert.throws(() => validateGitHubSyncConflictVersion(root, "target-1", {
+    conflictId: stored.id, revision: stored.revision,
+  }), /workspace changed/, "a choice made in another window invalidates the old revision");
+  assert.throws(() => validateGitHubSyncConflictVersion(root, "target-1", {
+    conflictId: "old-workspace", revision: reviewed.revision,
+  }), /workspace changed/, "an old workspace cannot apply against a newer workspace at the same revision");
+  assert.doesNotThrow(() => validateGitHubSyncConflictVersion(root, "target-1", {
+    conflictId: reviewed.id, revision: reviewed.revision,
+  }));
+  assert.deepStrictEqual(fs.readFileSync(path.join(root, "conflicts", "target-1", "conflict.json")), reviewedMetadata,
+    "rejected stale requests and successful version checks must not mutate the current choices");
   selectGitHubSyncConflictCandidate(root, "target-1", stored.files[0].path, "local");
   const batchRemote = selectAllGitHubSyncConflictCandidates(root, "target-1", "remote");
   assert.deepStrictEqual(batchRemote, { selected: 0, unavailable: [] }, "bulk choices preserve previously selected candidates");

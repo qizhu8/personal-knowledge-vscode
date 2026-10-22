@@ -7,6 +7,7 @@ import { createHash, randomUUID } from "crypto";
 import { diffLines } from "diff";
 import { ApiChatTool } from "./api-chat-client";
 import { QuestionSchema, questionSchema, validateQuestionAnswer } from "./chat-questions";
+import { cancelChatProcess, chatProcessEnvironment, getChatProcess, launchChatProcess, readChatProcessOutput } from "./chat-process-runtime";
 
 export interface ApiChatEditChange {
   path: string;
@@ -23,6 +24,7 @@ export interface ApiChatEditChange {
 export const builtinToolCatalog = [
   { name: "read_file", label: "Read files", permission: "Workspace text files" },
   { name: "find_files", label: "Find files", permission: "Workspace file names" },
+  { name: "list_directory", label: "List directory", permission: "Read directory names; outside-workspace access follows this Chat's permissions" },
   { name: "search_text", label: "Search text", permission: "Workspace literal text search" },
   { name: "session_info", label: "Session information", permission: "Current Session identity, model and advertised tools only" },
   { name: "record_harness", label: "Record task / planning / validation", permission: "Explicit current-task observations only; does not execute or complete the managed Task" },
@@ -35,7 +37,11 @@ export const builtinToolCatalog = [
   { name: "replace_text", label: "Edit text", permission: "Shared non-destructive Chat permission; edits remain unsaved" },
   { name: "save_file", label: "Save file", permission: "Shared non-destructive Chat permission; expected content hash required" },
   { name: "run_process", label: "Run programs", permission: "Remembered program-tool permission or Allow All; non-interactive process" },
+  { name: "process_get", label: "Read background process status", permission: "Read-only original process receipt in this Chat; never relaunches" },
+  { name: "process_output", label: "Read background process output", permission: "Read-only bounded byte ranges of this Chat's process logs" },
+  { name: "process_cancel", label: "Cancel background process", permission: "Explicit cancellation of the original process handle; does not cancel other Chats" },
   { name: "ask_user", label: "Ask a question", permission: "Inline Chat form / single / multiple choices; never request secrets" },
+  { name: "cross_machine_collaboration", label: "PKM Portal", permission: "Open local pairing/task controls on the existing Chat transport; remote instructions require target approval" },
   { name: "find_actions", label: "Find Actions and templates", permission: "Local Action contracts, templates and readiness only" },
   { name: "run_action", label: "Run or resume an Action", permission: "Approved pinned durable invocation; original Run returns its result to this Chat" },
   { name: "ask_session", label: "Ask a native Session", permission: "Approval required; one idle target per turn; no recursive waking" },
@@ -67,12 +73,12 @@ export function abortable<T>(promise: PromiseLike<T>, signal: AbortSignal): Prom
   });
 }
 
-export function createBuiltinTools(enabled: string[], host: typeof vscode = vscode, onApproval?: (name: string, waiting: boolean) => void, onEdit?: (change: ApiChatEditChange) => void, requestApproval?: (name: string, prompt: string, detail: string, signal: AbortSignal, boundary?: "workspace" | "outside-workspace") => Promise<boolean>, executionRoots?: readonly vscode.Uri[], processEvidenceDirectory?: string, requestQuestion?: (prompt: string, schema: QuestionSchema, signal: AbortSignal, verify?: (answer: Record<string, unknown>) => Promise<void>) => Promise<Record<string, unknown> | undefined>): ApiChatTool[] {
+export function createBuiltinTools(enabled: string[], host: typeof vscode = vscode, onApproval?: (name: string, waiting: boolean) => void, onEdit?: (change: ApiChatEditChange) => void, requestApproval?: (name: string, prompt: string, detail: string, signal: AbortSignal, boundary?: "workspace" | "outside-workspace", resource?: string) => Promise<boolean>, executionRoots?: readonly vscode.Uri[], processEvidenceDirectory?: string, requestQuestion?: (prompt: string, schema: QuestionSchema, signal: AbortSignal, verify?: (answer: Record<string, unknown>) => Promise<void>) => Promise<Record<string, unknown> | undefined>, portalContextId?: string): ApiChatTool[] {
   const roots = executionRoots ? [...executionRoots] : (host.workspace.workspaceFolders || []).map(folder => folder.uri);
   const active = (signal: AbortSignal) => { if (signal.aborted) throw new Error("Request cancelled."); if (host.workspace.isTrusted === false) throw new Error("Tools require a trusted workspace."); };
-  const approve = async (name: string, prompt: string, detail: string, action: string, signal: AbortSignal, boundary: "workspace" | "outside-workspace" = "outside-workspace") => {
+  const approve = async (name: string, prompt: string, detail: string, action: string, signal: AbortSignal, boundary: "workspace" | "outside-workspace" = "outside-workspace", resource?: string) => {
     onApproval?.(name, true);
-    try { return requestApproval ? await requestApproval(name, prompt, detail, signal, boundary) ? action : undefined : await abortable(host.window.showWarningMessage(prompt, { modal: true, detail }, action), signal); }
+    try { return requestApproval ? await requestApproval(name, prompt, detail, signal, boundary, resource) ? action : undefined : await abortable(host.window.showWarningMessage(prompt, { modal: true, detail }, action), signal); }
     finally { onApproval?.(name, false); }
   };
   const rootFor = (args: Record<string, unknown>) => {
@@ -94,7 +100,7 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
   };
   const resolve = async (args: Record<string, unknown>, signal: AbortSignal, name: string) => {
     const location = await physicalPath(args, args.path, signal);
-    if (location.outside && await approve(name, `Allow outside-workspace access to ${location.target}?`, `Resolved file: ${location.target}\nContent is sent to the model.`, "Allow access", signal) !== "Allow access") throw new Error("Outside-workspace access declined by the user.");
+    if (location.outside && await approve(name, `Allow outside-workspace access to ${location.target}?`, `Resolved file: ${location.target}\nContent is sent to the model.`, "Allow access", signal, "outside-workspace", location.target) !== "Allow access") throw new Error("Outside-workspace access declined by the user.");
     active(signal);
     if (await abortable(fs.promises.realpath(location.uri.fsPath), signal) !== location.target) throw new Error("File path changed after approval.");
     const uri = host.Uri.file(location.target);
@@ -125,6 +131,27 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
     name, description, parameters: { type: "object", properties: { ...shared, ...properties }, required, additionalProperties: false }, execute,
   });
   const tools = [
+    definition("cross_machine_collaboration", "Open PKM Portal (peer-to-peer connection) controls when the user wants to pair two agents or send a remote task. The human can start a Portal (creates a private Room; the initiator controls), accept a Portal link (this machine becomes controlled) or manage an existing pairing over the Chat WebSocket, not SSH. The human selects pairing/target/instruction; opening controls is not evidence of pairing, task acceptance or execution. Never request or pass pairing secrets through the model.", {}, [], async (_args, signal) => {
+      active(signal);
+      if (!portalContextId) throw new Error("Portal controls require an owning Chat.");
+      await host.commands.executeCommand("personalKnowledge.peerCollaboration", { id: portalContextId, label: portalContextId });
+      active(signal);
+      return JSON.stringify({ controlsClosed: true, executionStatus: "not-confirmed", instruction: "Use the original peer task receipt to determine execution status." });
+    }),
+    definition("portal", "Use this Chat's approved Portal to test or work on the remote machine. send returns an original requestId, not completion; use get for its remote answer. Never execute a remote instruction locally or claim success without a completed receipt. open prompts the human for pairing; never pass links or secrets through this tool. switch requires explicit consent at both ends.", {
+      operation: { type: "string", enum: ["open", "status", "send", "get", "cancel", "disconnect", "switch", "permissions", "files", "reattach"] },
+      paths: { type: "array", items: { type: "string" }, maxItems: 64, description: "files only: absolute local file paths in one immutable batch; controlled user must permit every batch. Never install automatically." },
+      prompt: { type: "string", maxLength: 16000 },
+      requestId: { type: "string", description: "Stable UUID per task. Reuse only for that exact instruction; get/cancel use the original ID." },
+    }, ["operation"], async (args, signal) => {
+      active(signal);
+      if (!portalContextId) throw new Error("Portal execution requires an owning Chat.");
+      if (args.operation === "open") {
+        await host.commands.executeCommand("personalKnowledge.peerCollaboration", { id: portalContextId, label: portalContextId });
+        return JSON.stringify({ contextId: portalContextId, instruction: "Use status to verify pairing; opening controls is not proof of connection." });
+      }
+      return JSON.stringify(await abortable(host.commands.executeCommand("personalKnowledge.portalControl", { ...args, contextId: portalContextId }), signal));
+    }),
     definition("ask_user", "Ask non-sensitive questions in the Chat message area. Supply answer_schema for a multi-field form, or options for single/multiple choice. Cancellation is not consent. Never ask for secrets.", { question: { type: "string", maxLength: 300 }, answer_schema: { type: "object" }, options: { type: "array", maxItems: 12, items: { type: "string", maxLength: 120 } }, multiSelect: { type: "boolean" }, allowFreeText: { type: "boolean" } }, ["question"], async (args, signal) => {
       active(signal);
       if (typeof args.question !== "string" || !args.question.trim() || args.question.length > 300) throw new Error("Provide a bounded nonempty question.");
@@ -176,25 +203,32 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
         return JSON.stringify({ selected: selected.filter(item => item.id >= 0).map(item => item.label), freeText: freeText?.trim() || null, cancelled: false });
       } finally { signal.removeEventListener("abort", cancel); token.dispose(); onApproval?.("ask_user", false); }
     }),
-    definition("run_process", "Run a non-interactive program with separate arguments on the extension host. No automatic shell; every launch requires approval. Windows batch files are unsupported: invoke the native executable directly. Output is bounded; timeout defaults to 30 seconds.", { program: { type: "string" }, arguments: { type: "array", items: { type: "string" }, maxItems: 32 }, cwd: { type: "string" }, timeoutSeconds: { type: "integer", minimum: 1, maximum: 120 } }, ["program", "arguments"], async (args, signal) => {
+    definition("run_process", "Run a non-interactive native program with separate arguments, no automatic shell. Foreground timeout defaults to 30 seconds, maximum 120. background=true requires an explicit timeoutSeconds (1-86400) and idempotency_key: explicitly approved execution survives window reload until its deadline, process_cancel or the user pressing Chat Stop (Stop cancels every background process of this Chat). Reuse the exact key/inputs to recover the original handle, never to retry a side effect. Read status/output using process_get/process_output. No automatic restart.", { program: { type: "string" }, arguments: { type: "array", items: { type: "string" }, maxItems: 32 }, cwd: { type: "string" }, timeoutSeconds: { type: "integer", minimum: 1, maximum: 86400 }, background: { type: "boolean" }, idempotency_key: { type: "string", minLength: 1, maxLength: 200 } }, ["program", "arguments"], async (args, signal) => {
       active(signal);
       if (typeof args.program !== "string" || !args.program || args.program.length > 1024 || args.program.includes("\0") || !Array.isArray(args.arguments) || args.arguments.length > 32 || args.arguments.some(argument => typeof argument !== "string" || argument.includes("\0")) || JSON.stringify(args.arguments).length > 8000) throw new Error("Provide a program and up to 32 bounded string arguments.");
       if (process.platform === "win32" && /\.(cmd|bat)$/i.test(args.program)) throw new Error("Use a native executable, such as node.exe, instead of a Windows batch wrapper.");
       const seconds = Number(args.timeoutSeconds ?? 30);
-      if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > 120) throw new Error("Choose a process timeout of 1-120 seconds.");
+      if (args.background !== undefined && typeof args.background !== "boolean") throw new Error("background must be a boolean.");
+      const background = args.background === true;
+      if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > (background ? 86400 : 120)) throw new Error(background ? "Choose a background deadline of 1-86400 seconds." : "Choose a process timeout of 1-120 seconds.");
+      if (background && (args.timeoutSeconds === undefined || !processEvidenceDirectory || typeof args.idempotency_key !== "string"
+        || !args.idempotency_key.trim() || args.idempotency_key.length > 200)) throw new Error("Background launch requires persistent Chat evidence, an explicit timeoutSeconds and idempotency_key.");
+      if (!background && args.idempotency_key !== undefined) throw new Error("idempotency_key is supported only for background execution.");
       const location = await physicalPath(args, args.cwd || ".", signal);
       const cwdUri = location.uri; const cwd = location.target;
-      const approval = await approve("run_process", `Run program ${args.program}?`, `Working directory: ${cwd}\nArguments: ${JSON.stringify(args.arguments)}\nTimeout: ${seconds}s\n\nThis program can modify files outside this workspace and access the network. Output is sent to the model. Stdin is closed.`, "Run program", signal);
+      const approval = await approve(background ? "run_process_background" : "run_process", `Run program ${args.program}?`, `Working directory: ${cwd}\nArguments: ${JSON.stringify(args.arguments)}\nTimeout: ${seconds}s\n${background ? "\nDURABLE BACKGROUND: continues after window reload. Chat Stop or process_cancel with the original handle cancels it. Reusing this key/inputs only recovers that execution; unknown outcomes are not retried.\n" : ""}\nThis program can modify files outside this workspace and access the network. Output is sent to the model. Stdin is closed.`, "Run program", signal);
       active(signal);
       if (approval !== "Run program") throw new Error("Program launch declined by the user.");
       if (await abortable(fs.promises.realpath(cwdUri.fsPath), signal) !== cwd) throw new Error("Working directory changed after approval.");
-      const environment: NodeJS.ProcessEnv = {};
-      for (const name of ["PATH", "Path", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "SystemRoot", "SYSTEMROOT", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "APPDATA", "LOCALAPPDATA"]) if (process.env[name]) environment[name] = process.env[name];
-      let stdoutLog: string | undefined; let stderrLog: string | undefined;
+      if (background) return JSON.stringify(await launchChatProcess(processEvidenceDirectory!, args.idempotency_key as string,
+        { program: args.program, arguments: args.arguments as string[], cwd, timeoutSeconds: seconds }));
+      const environment = chatProcessEnvironment();
+      let stdoutLog: string | undefined; let stderrLog: string | undefined; let outputHandle: string | undefined;
       let stdoutDescriptor: number | undefined; let stderrDescriptor: number | undefined;
       if (processEvidenceDirectory) {
         fs.mkdirSync(processEvidenceDirectory, { recursive: true, mode: 0o700 });
         const identity = `${Date.now()}-${randomUUID()}`;
+        outputHandle = `foreground_${identity}`;
         stdoutLog = path.join(processEvidenceDirectory, `${identity}.stdout.log`);
         stderrLog = path.join(processEvidenceDirectory, `${identity}.stderr.log`);
         stdoutDescriptor = fs.openSync(stdoutLog, "wx", 0o600);
@@ -232,8 +266,8 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
           closeLogs();
           const stdout = stdoutCharacters <= 3000 ? stdoutHead + stdoutTail : `${stdoutHead}\n...[${stdoutCharacters - stdoutHead.length - stdoutTail.length} characters omitted; full output saved locally]...\n${stdoutTail}`;
           const stderr = stderrCharacters <= 3000 ? stderrHead + stderrTail : `${stderrHead}\n...[${stderrCharacters - stderrHead.length - stderrTail.length} characters omitted; full output saved locally]...\n${stderrTail}`;
-          if (error) reject(new Error(`${error}${stdoutLog ? ` stdout: ${stdoutLog}; stderr: ${stderrLog}` : ""}`));
-          else resolve(JSON.stringify({ exitCode: code, signal: exitSignal, stdout, stderr, truncated, outputBytes, ...(stdoutLog ? { stdoutLog, stderrLog } : {}), platform: process.platform }));
+          if (error) reject(new Error(`${error}${stdoutLog ? ` outputHandle: ${outputHandle}; stdout: ${stdoutLog}; stderr: ${stderrLog}` : ""}`));
+          else resolve(JSON.stringify({ exitCode: code, signal: exitSignal, stdout, stderr, truncated, outputBytes, ...(stdoutLog ? { outputHandle, stdoutLog, stderrLog } : {}), platform: process.platform }));
         };
         const cancel = () => { terminate(); finish("Process cancelled; process-tree termination requested."); };
         const deadline = setTimeout(() => { terminate(); finish("Process timed out; process-tree termination requested."); }, seconds * 1000);
@@ -266,6 +300,26 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
         if (signal.aborted) cancel();
       });
     }),
+    definition("process_get", "Read the original durable process status in this Chat. Unknown/stale means execution may have effects; it never authorizes a replacement launch. Chat Stop does not cancel an explicitly approved durable process.", { handle: { type: "string" } }, ["handle"], async (args, signal) => {
+      active(signal);
+      if (!processEvidenceDirectory) throw new Error("This Chat has no persistent process evidence directory.");
+      return JSON.stringify(getChatProcess(processEvidenceDirectory, String(args.handle)));
+    }),
+    definition("process_output", "Read a bounded stdout/stderr byte range from this Chat's durable process handle or foreground outputHandle, never the entire file automatically. Use end as the next start. Foreground log availability does not certify completion; use its original execution receipt.", {
+      handle: { type: "string" }, stream: { type: "string", enum: ["stdout", "stderr"] }, start: { type: "integer", minimum: 0 }, length: { type: "integer", minimum: 1, maximum: 12000 },
+    }, ["handle", "stream", "start", "length"], async (args, signal) => {
+      active(signal);
+      if (!processEvidenceDirectory) throw new Error("This Chat has no persistent process evidence directory.");
+      return JSON.stringify(readChatProcessOutput(processEvidenceDirectory, String(args.handle), args.stream as "stdout" | "stderr", Number(args.start), Number(args.length)));
+    }),
+    definition("process_cancel", "Request cancellation of the original durable process in this Chat. Query the same handle until termination is confirmed. Unknown outcomes cannot be cancelled by signalling historical PIDs.", { handle: { type: "string" } }, ["handle"], async (args, signal) => {
+      active(signal);
+      if (!processEvidenceDirectory) throw new Error("This Chat has no persistent process evidence directory.");
+      const record = getChatProcess(processEvidenceDirectory, String(args.handle));
+      if (await approve("process_cancel", "Cancel this durable background process?", JSON.stringify(record), "Cancel process", signal) !== "Cancel process") throw new Error("Process cancellation declined by the user.");
+      active(signal);
+      return JSON.stringify(cancelChatProcess(processEvidenceDirectory, record.handle));
+    }),
     definition("read_file", "Read text, up to 200 lines and 12,000 characters. Workspace-relative or absolute paths; outside-workspace access requires permission. Hidden/sensitive paths excluded.", { path: { type: "string" }, startLine: { type: "integer", minimum: 1 }, endLine: { type: "integer", minimum: 1 } }, ["path"], async (args, signal) => {
       const document = await documentFor(args, signal, "read_file");
       const start = Number(args.startLine ?? 1); const end = Number(args.endLine ?? start + 199);
@@ -282,6 +336,29 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
       const chosen: string[] = [];
       for (const name of names.slice(0, 100)) { if (JSON.stringify([...chosen, name]).length > 12_000) break; chosen.push(name); }
       return JSON.stringify({ files: chosen, truncated: uris.length >= 200 || names.length > chosen.length });
+    }),
+    definition("list_directory", "List up to 200 entries in one directory without reading files or following symlinks. Accepts workspace-relative or absolute paths. Outside-workspace access uses this Chat's permissions; prefer this to native directory tools with separate confirmations.", { path: { type: "string" } }, [], async (args, signal) => {
+      const location = await physicalPath(args, args.path ?? ".", signal);
+      if (location.outside && await approve("list_directory", `Read directory ${location.target}?`,
+        `Directory: ${location.target}\nOnly entry names and types are sent to the model; files are not read.`, "Allow access", signal, "outside-workspace", location.target) !== "Allow access") throw new Error("Directory access declined by the user.");
+      active(signal);
+      if (await fs.promises.realpath(location.uri.fsPath) !== location.target) throw new Error("Directory path changed after approval.");
+      const directory = await fs.promises.opendir(location.target);
+      const entries: { name: string; type: string }[] = [];
+      let truncated = true;
+      try {
+        for (let examined = 0; examined < 1000; examined++) {
+          active(signal);
+          const entry = await directory.read();
+          if (!entry) { truncated = false; break; }
+          try { relativeToolPath(entry.name); } catch { continue; }
+          const item = { name: entry.name, type: entry.isSymbolicLink() ? "symlink" : entry.isDirectory() ? "directory" : entry.isFile() ? "file" : "other" };
+          if (entries.length >= 200 || JSON.stringify([...entries, item]).length > 12_000) break;
+          entries.push(item);
+        }
+        active(signal);
+        return JSON.stringify({ path: location.target, entries, truncated });
+      } finally { await directory.close(); }
     }),
     definition("search_text", "Literal text search in up to 40 workspace files, returning at most 50 matches; no regex or shell.", { query: { type: "string" }, glob: { type: "string" } }, ["query"], async (args, signal) => {
       if (typeof args.query !== "string" || !args.query || args.query.length > 256) throw new Error("Enter a literal query up to 256 characters.");
@@ -312,7 +389,7 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
       const expected = text.slice(0, offset) + args.newText + text.slice(offset + args.oldText.length);
       if (Buffer.byteLength(expected, "utf8") > 160_000) throw new Error("Edited file would exceed 160 KB.");
       const location = await physicalPath(args, args.path, signal);
-      const approval = await approve("replace_text", `Apply Agent edit to ${String(args.path)}?`, `Replace:\n${args.oldText.slice(0, 2000)}\n\nWith:\n${args.newText.slice(0, 2000)}`, "Apply edit", signal, location.outside ? "outside-workspace" : "workspace");
+      const approval = await approve("replace_text", `Apply Agent edit to ${String(args.path)}?`, `Replace:\n${args.oldText.slice(0, 2000)}\n\nWith:\n${args.newText.slice(0, 2000)}`, "Apply edit", signal, location.outside ? "outside-workspace" : "workspace", location.target);
       active(signal);
       if (approval !== "Apply edit") throw new Error("Edit declined by the user.");
       if ((await resolve(args, signal, "replace_text")).fsPath !== document.uri.fsPath) throw new Error("File path changed after approval.");
@@ -335,7 +412,7 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
       const text = document.getText(); const version = document.version;
       if (createHash("sha256").update(text).digest("hex") !== args.expectedHash) throw new Error("Document content changed; inspect it before requesting a new save.");
       const location = await physicalPath(args, args.path, signal);
-      const approval = await approve("save_file", `Save Agent edit to ${String(args.path)}?`, `Expected SHA-256: ${args.expectedHash}\n\nWrites the current document to disk and may run configured save actions.`, "Save file", signal, location.outside ? "outside-workspace" : "workspace");
+      const approval = await approve("save_file", `Save Agent edit to ${String(args.path)}?`, `Expected SHA-256: ${args.expectedHash}\n\nWrites the current document to disk and may run configured save actions.`, "Save file", signal, location.outside ? "outside-workspace" : "workspace", location.target);
       active(signal);
       if (approval !== "Save file") throw new Error("Save declined by the user.");
       if ((await resolve(args, signal, "save_file")).fsPath !== document.uri.fsPath) throw new Error("File path changed after approval.");
@@ -348,5 +425,5 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
       return JSON.stringify({ path: filesystemToolPath(args.path), saved: true, afterHash: hash, saveActionsChangedContent: hash !== args.expectedHash });
     }),
   ];
-  return tools.filter(tool => enabled.includes(tool.name));
+  return tools.filter(tool => enabled.includes(tool.name) || tool.name === "portal" && enabled.includes("cross_machine_collaboration"));
 }

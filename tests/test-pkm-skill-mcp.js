@@ -112,7 +112,7 @@ Build deterministic training datasets and validate every exported split.`);
   fs.copyFileSync(path.join(__dirname, "..", "resources", "mcp_call_guard.py"), path.join(moduleDir, "mcp_call_guard.py"));
   fs.copyFileSync(path.join(__dirname, "..", "resources", "diagnostic_log.py"), path.join(moduleDir, "diagnostic_log.py"));
   fs.copyFileSync(path.join(__dirname, "..", "resources", "api_chat_control.py"), path.join(moduleDir, "api_chat_control.py"));
-  for (const resource of ["knowledge_recovery.py", "knowledge_mutations.py", "knowledge_mutations.js", "knowledge_snapshots.py"]) {
+  for (const resource of ["knowledge_recovery.py", "knowledge_mutations.py", "knowledge_mutations.js", "knowledge_snapshots.py", "asset_classification.py", "asset_classification.js"]) {
     fs.copyFileSync(path.join(__dirname, "..", "resources", resource), path.join(moduleDir, resource));
   }
   for (const resource of ["action_runtime.py", "action_modules.py", "action_run_store.py", "action_recovery.py", "action_components.py"]) {
@@ -301,6 +301,34 @@ finally:
     server._retrieval_request = saved_request
     server.urllib.request.urlopen = saved_urlopen
 print('Knowledge MCP contracts: mixed/strict retrieval, classification, limits, standard transport, stable reads, aliases and denial handling passed')
+`);
+  fs.appendFileSync(path.join(moduleDir, "exercise.py"), `
+# BR-13: normal (compact) MCP output must retain provenance and zero-hit status.
+def dual_fixture(path, payload=None):
+    route = payload['route']
+    evidence = [dict(path='lexical', rank=1, score=500, matched_field='title', matched_path='pkm://notes/network', match='keyword'),
+                dict(path='semantic', rank=2, score=.001, matched_field='embedding-index', matched_path='pkm://notes/network', match='semantic')]
+    hits = [] if route == 'semantic' else [dict(rank=1, score=1/61 + 1/62, skill_id='note:network', source_id='pkm://notes/network',
+        content_hash='a'*64, source_revision='r1', content_type='note', source_uri='pkm://notes/network', title='Network', description='',
+        sources=['lexical','semantic'], source_label='both', path_evidence=evidence, score_semantics='rrf')]
+    return dict(ok=True, route=route, search_mode=route, semantic_status='off' if route=='semantic' else 'fallback',
+                semantic_reason='embedding not configured' if route=='semantic' else 'fixture provider failed', hits=hits)
+previous_request = server._retrieval_request
+server._retrieval_request = dual_fixture
+try:
+    result = json.loads(server.search_knowledge('network', route='dual'))
+    assert result['search_mode'] == 'dual' and result['semantic_status'] == 'fallback', result
+    assert result['hits'][0]['source_label'] == 'both' and result['hits'][0]['path_evidence'][1]['score'] == .001, result
+    assert result['hits'][0]['score_semantics'] == 'rrf', result
+    empty = json.loads(server.search_notes('network', route='semantic'))
+    assert empty['hits'] == [] and empty['semantic_status'] == 'off' and empty['search_mode'] == 'semantic', empty
+    assert json.loads(server.search_notes('network', route='invalid'))['ok'] is False
+    server._retrieval_request = lambda *_args, **_kwargs: dict(ok=False, error='worker offline')
+    unavailable = json.loads(server.search_knowledge('network', route='dual'))
+    assert unavailable['semantic_status'] == 'unavailable' and 'offline' in unavailable['semantic_reason'], unavailable
+finally:
+    server._retrieval_request = previous_request
+print('BR-13 MCP: compact source labels/evidence, explicit modes, empty off status and transport unavailable passed')
 `);
   execFileSync("python", [path.join(moduleDir, "exercise.py")], { cwd: moduleDir, stdio: "inherit" });
   fs.writeFileSync(path.join(moduleDir, "feature-domains.json"), JSON.stringify({ schema: 1, enabled: ["skillRouter"] }));

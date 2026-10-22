@@ -3,7 +3,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
 import { createHash } from "crypto";
-import { execFile, execFileSync, execSync } from "child_process";
+import { exec, execFile, execFileSync, execSync } from "child_process";
 import { getStorePath } from "../knowledge/filestore";
 import { condaEnvs, pyenvAdd, pyenvCreate, pyenvDelete, pyenvList, pyenvUpdate } from "../servers/pyenvs";
 import { managedEnvironmentsRoot } from "../runtime/environment-paths";
@@ -34,7 +34,7 @@ asyncio.run(main())
   await new Promise<void>((resolve, reject) => {
     execFile(resolveMcpPython(), ["-c", script, path.join(extensionRoot, "resources", "knowledge_mutations.py"),
       storeRoot, process.execPath, extensionRoot, area, relative, expectedSha256],
-    { timeout: 90_000, maxBuffer: 1024 * 1024, windowsHide: true, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } },
+    { timeout: 90_000, maxBuffer: 1024 * 1024, windowsHide: true, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" } },
     (error, stdout, stderr) => {
       if (error) { reject(new Error(`MCP Trash failed: ${stderr.trim() || error.message}`)); return; }
       try {
@@ -49,7 +49,7 @@ asyncio.run(main())
 }
 
 // ── MCP server scaffold ────────────────────────────────────────────────────
-export const UNIFIED_MCP_VERSION = "2.14.0";
+export const UNIFIED_MCP_VERSION = "2.17.0";
 const PROMPT_MANAGER_WHEEL = "uone_prompt_manager-0.1.0-py3-none-any.whl";
 const PROMPT_MANAGER_WHEEL_SHA256 = "eb9fd76058134f9ab9711d8e7604c75f761db5762d93e67f65740dc07fdc1518";
 const RETRIEVAL_ENGINE_WHEEL = "adaptive_skill_retrieval-0.3.0.dev2026100504-py3-none-any.whl";
@@ -172,23 +172,102 @@ function mcpRuntimePythonPath(): string {
   return process.platform === "win32" ? path.join(mcpRuntimePath(), "Scripts", "python.exe") : path.join(mcpRuntimePath(), "bin", "python");
 }
 
-export function validateMcpPython(candidate: string): { path: string; version: string; error: string } {
+// Python probes are child processes: ~15 ms on a warm Linux host but seconds on a cold Windows host (Defender scans every
+// .pyd/.pyc on first import). Startup used to run them synchronously several times on the Extension Host thread, which
+// froze PKM (health pings unanswered, Chat rename/copy waiting). Results are cached by executable identity, and the
+// startup paths warm the cache with the async variants first so the synchronous callers only read the cache.
+const PYTHON_PROBE_OK_TTL_MS = 5 * 60_000, PYTHON_PROBE_ERROR_TTL_MS = 15_000, RUNTIME_PROBE_TTL_MS = 60_000;
+const pythonProbes = new Map<string, { at: number; value: { path: string; version: string; error: string } }>();
+let runtimeProbe: { at: number; key: string; value: McpRuntimeStatus } | undefined;
+let runtimeProbeInFlight: Promise<McpRuntimeStatus> | undefined;
+let pathPythonProbe: { at: number; value: string[] } | undefined;
+export function invalidateMcpPythonProbes(): void { pythonProbes.clear(); runtimeProbe = undefined; pathPythonProbe = undefined; }
+function executableIdentity(file: string): string {
+  try { const stat = fs.statSync(file); return `${file}\0${stat.size}\0${stat.mtimeMs}`; } catch { return `${file}\0missing`; }
+}
+function cachedProbe(key: string): { path: string; version: string; error: string } | undefined {
+  const hit = pythonProbes.get(key);
+  return hit && Date.now() - hit.at < (hit.value.error ? PYTHON_PROBE_ERROR_TTL_MS : PYTHON_PROBE_OK_TTL_MS) ? hit.value : undefined;
+}
+function pythonVersionResult(executable: string, version: string): { path: string; version: string; error: string } {
+  const match = /^(\d+)\.(\d+)(?:\.(\d+))?/.exec(version);
+  if (!match || Number(match[1]) < 3 || (Number(match[1]) === 3 && Number(match[2]) < 10)) {
+    return { path: executable, version, error: `Python 3.10+ is required (found ${version || "unknown"}).` };
+  }
+  return { path: executable, version, error: "" };
+}
+function precheckPython(candidate: string): { value: string; result?: { path: string; version: string; error: string } } {
   const value = String(candidate || "").trim();
-  if (!value || !path.isAbsolute(value)) return { path: value, version: "", error: "Enter an absolute Python executable path." };
-  if (!fs.existsSync(value) || fs.statSync(value).isDirectory()) return { path: value, version: "", error: "Python executable was not found." };
+  if (!value || !path.isAbsolute(value)) return { value, result: { path: value, version: "", error: "Enter an absolute Python executable path." } };
+  if (!fs.existsSync(value) || fs.statSync(value).isDirectory()) return { value, result: { path: value, version: "", error: "Python executable was not found." } };
+  return { value };
+}
+
+export function validateMcpPython(candidate: string): { path: string; version: string; error: string } {
+  const { value, result } = precheckPython(candidate);
+  if (result) return result;
+  const executable = path.normalize(value), key = executableIdentity(executable);
+  const cached = cachedProbe(key);
+  if (cached) return cached;
+  let validated: { path: string; version: string; error: string };
   try {
-    const executable = path.normalize(value);
     const version = execFileSync(executable, ["-c", "import platform;print(platform.python_version())"], {
       encoding: "utf-8", timeout: 8000, stdio: ["ignore", "pipe", "pipe"], windowsHide: process.platform === "win32",
     }).trim();
-    const match = /^(\d+)\.(\d+)(?:\.(\d+))?/.exec(version);
-    if (!match || Number(match[1]) < 3 || (Number(match[1]) === 3 && Number(match[2]) < 10)) {
-      return { path: executable, version, error: `Python 3.10+ is required (found ${version || "unknown"}).` };
-    }
-    return { path: executable, version, error: "" };
+    validated = pythonVersionResult(executable, version);
   } catch (error: any) {
-    return { path: value, version: "", error: `Could not run Python: ${error?.message || String(error)}` };
+    validated = { path: value, version: "", error: `Could not run Python: ${error?.message || String(error)}` };
   }
+  pythonProbes.set(key, { at: Date.now(), value: validated });
+  return validated;
+}
+
+export async function validateMcpPythonAsync(candidate: string): Promise<{ path: string; version: string; error: string }> {
+  const { value, result } = precheckPython(candidate);
+  if (result) return result;
+  const executable = path.normalize(value), key = executableIdentity(executable);
+  const cached = cachedProbe(key);
+  if (cached) return cached;
+  const validated = await new Promise<{ path: string; version: string; error: string }>(resolve => execFile(executable, ["-c", "import platform;print(platform.python_version())"],
+    { encoding: "utf-8", timeout: 8000, windowsHide: process.platform === "win32" },
+    (error, stdout) => resolve(error ? { path: value, version: "", error: `Could not run Python: ${error.message}` } : pythonVersionResult(executable, String(stdout).trim()))));
+  pythonProbes.set(key, { at: Date.now(), value: validated });
+  return validated;
+}
+
+function pathPythonCommand(): string { return process.platform === "win32" ? "where python" : "command -v python3 || command -v python"; }
+function pathPythonCandidates(): string[] {
+  if (pathPythonProbe && Date.now() - pathPythonProbe.at < PYTHON_PROBE_OK_TTL_MS) return pathPythonProbe.value;
+  let value: string[] = [];
+  try { value = execSync(pathPythonCommand(), { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], windowsHide: process.platform === "win32" }).split(/\r?\n/); }
+  catch { /* no executable on PATH */ }
+  pathPythonProbe = { at: Date.now(), value };
+  return value;
+}
+async function pathPythonCandidatesAsync(): Promise<string[]> {
+  if (pathPythonProbe && Date.now() - pathPythonProbe.at < PYTHON_PROBE_OK_TTL_MS) return pathPythonProbe.value;
+  const value = await new Promise<string[]>(resolve => exec(pathPythonCommand(), { encoding: "utf-8", windowsHide: process.platform === "win32", timeout: 10_000 },
+    (error, stdout) => resolve(error && !stdout ? [] : String(stdout).split(/\r?\n/))));
+  pathPythonProbe = { at: Date.now(), value };
+  return value;
+}
+function detectionCandidates(pathCandidates: string[]): string[] {
+  const prefixes = [process.env.CONDA_PREFIX, process.env.VIRTUAL_ENV].filter(Boolean).map(String);
+  const candidates: string[] = [];
+  for (const prefix of prefixes) {
+    if (process.platform === "win32") candidates.push(path.join(prefix, "python.exe"), path.join(prefix, "Scripts", "python.exe"));
+    else candidates.push(path.join(prefix, "bin", "python"), path.join(prefix, "bin", "python3"));
+  }
+  candidates.push(...pathCandidates);
+  return [...new Set(candidates.map(value => value.trim()).filter(Boolean))];
+}
+
+/** Non-blocking warm-up of every probe startup needs; later synchronous callers then read cached results. */
+export async function warmMcpPythonProbes(): Promise<void> {
+  const configured = vscode.workspace.getConfiguration("personalKnowledge").get<string>("mcpPythonPath", "").trim();
+  if (configured) await validateMcpPythonAsync(configured);
+  else for (const candidate of detectionCandidates(await pathPythonCandidatesAsync())) if (!(await validateMcpPythonAsync(candidate)).error) break;
+  await mcpRuntimeStatusAsync();
 }
 
 export function detectMcpPython(ignoreConfigured = false): McpPythonStatus {
@@ -197,17 +276,7 @@ export function detectMcpPython(ignoreConfigured = false): McpPythonStatus {
     const result = validateMcpPython(configured);
     return { ...result, valid: !result.error, source: "configured" };
   }
-  const prefixes = [process.env.CONDA_PREFIX, process.env.VIRTUAL_ENV].filter(Boolean).map(String);
-  const candidates: string[] = [];
-  for (const prefix of prefixes) {
-    if (process.platform === "win32") candidates.push(path.join(prefix, "python.exe"), path.join(prefix, "Scripts", "python.exe"));
-    else candidates.push(path.join(prefix, "bin", "python"), path.join(prefix, "bin", "python3"));
-  }
-  try {
-    const command = process.platform === "win32" ? "where python" : "command -v python3 || command -v python";
-    candidates.push(...execSync(command, { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], windowsHide: process.platform === "win32" }).split(/\r?\n/));
-  } catch { /* no executable on PATH */ }
-  for (const candidate of [...new Set(candidates.map(value => value.trim()).filter(Boolean))]) {
+  for (const candidate of detectionCandidates(pathPythonCandidates())) {
     const result = validateMcpPython(candidate);
     if (!result.error) return { ...result, valid: true, source: "detected" };
   }
@@ -342,21 +411,58 @@ export function mcpServerDefinitionData(): { label: string; command: string; arg
   };
 }
 
-export function mcpRuntimeStatus(): McpRuntimeStatus {
+const RUNTIME_IMPORT_PROBE = "import fastmcp, prompt_manager, websockets, adaptive_skill_retrieval, cryptography; from adaptive_skill_retrieval import ContentType, RetrievalEngine, SkillDocument, academic_bm25_benchmark_route, exact_match_route";
+function runtimeProbeKey(): string {
+  return `${executableIdentity(mcpRuntimePythonPath())}\0${executableIdentity(mcpRuntimeBaseMarker())}\0${pyenvList().some(env => env.path && path.resolve(env.path) === path.resolve(mcpRuntimePath()))}`;
+}
+function runtimeStatusFrom(validation: { path: string; version: string; error: string }, importError: string | undefined): McpRuntimeStatus {
   const runtimePath = mcpRuntimePath(), python = mcpRuntimePythonPath();
   const exists = fs.existsSync(runtimePath);
-  const validation = validateMcpPython(python);
   const registered = pyenvList().some(env => env.path && path.resolve(env.path) === path.resolve(runtimePath));
   if (validation.error) return { path: runtimePath, python, exists, healthy: false, version: validation.version, error: exists ? validation.error : "Managed MCP runtime has not been created.", registered };
-  try {
-    execFileSync(validation.path, ["-c", "import fastmcp, prompt_manager, websockets, adaptive_skill_retrieval, cryptography; from adaptive_skill_retrieval import ContentType, RetrievalEngine, SkillDocument, academic_bm25_benchmark_route, exact_match_route"], { timeout: 10000, stdio: ["ignore", "pipe", "pipe"], windowsHide: process.platform === "win32" });
-    return { path: runtimePath, python: validation.path, exists: true, healthy: true, version: validation.version, error: "", registered };
-  } catch (error: any) {
-    return { path: runtimePath, python: validation.path, exists: true, healthy: false, version: validation.version, error: `MCP dependencies are missing or broken: ${error?.message || String(error)}`, registered };
+  if (importError !== undefined) return { path: runtimePath, python: validation.path, exists: true, healthy: false, version: validation.version, error: `MCP dependencies are missing or broken: ${importError}`, registered };
+  return { path: runtimePath, python: validation.path, exists: true, healthy: true, version: validation.version, error: "", registered };
+}
+function cachedRuntimeStatus(key: string): McpRuntimeStatus | undefined {
+  return runtimeProbe && runtimeProbe.key === key && Date.now() - runtimeProbe.at < RUNTIME_PROBE_TTL_MS ? runtimeProbe.value : undefined;
+}
+
+export function mcpRuntimeStatus(): McpRuntimeStatus {
+  const key = runtimeProbeKey();
+  const cached = cachedRuntimeStatus(key);
+  if (cached) return cached;
+  if (runtimeProbe?.key === key) {
+    void mcpRuntimeStatusAsync().catch(() => undefined);
+    return runtimeProbe.value;
   }
+  const validation = validateMcpPython(mcpRuntimePythonPath());
+  let importError: string | undefined;
+  if (!validation.error) {
+    try { execFileSync(validation.path, ["-c", RUNTIME_IMPORT_PROBE], { timeout: 10000, stdio: ["ignore", "pipe", "pipe"], windowsHide: process.platform === "win32" }); }
+    catch (error: any) { importError = error?.message || String(error); }
+  }
+  const value = runtimeStatusFrom(validation, importError);
+  runtimeProbe = { at: Date.now(), key, value };
+  return value;
+}
+
+export function mcpRuntimeStatusAsync(): Promise<McpRuntimeStatus> {
+  const key = runtimeProbeKey();
+  const cached = cachedRuntimeStatus(key);
+  if (cached) return Promise.resolve(cached);
+  return runtimeProbeInFlight ||= (async () => {
+    const validation = await validateMcpPythonAsync(mcpRuntimePythonPath());
+    const importError = validation.error ? undefined : await new Promise<string | undefined>(resolve => execFile(validation.path, ["-c", RUNTIME_IMPORT_PROBE],
+      { timeout: 30_000, windowsHide: process.platform === "win32" }, error => resolve(error ? error.message : undefined)));
+    const value = runtimeStatusFrom(validation, importError);
+    runtimeProbe = { at: Date.now(), key, value };
+    return value;
+  })().finally(() => { runtimeProbeInFlight = undefined; });
 }
 
 export async function ensureMcpRuntime(context: vscode.ExtensionContext): Promise<McpRuntimeStatus> {
+  invalidateMcpPythonProbes();
+  await warmMcpPythonProbes();
   const base = detectMcpPython();
   if (!base.valid) throw new Error(base.error);
   const runtimePath = mcpRuntimePath(), root = path.dirname(runtimePath);
@@ -414,7 +520,8 @@ export async function ensureMcpRuntime(context: vscode.ExtensionContext): Promis
   const existing = pyenvList().find(env => env.path && path.resolve(env.path) === path.resolve(runtimePath));
   if (existing) pyenvUpdate(existing.id, { name: "PKM MCP Runtime", manager: "venv", python: validation.path, description: "Managed runtime for the unified PKM MCP server" });
   else pyenvAdd({ name: "PKM MCP Runtime", manager: "venv", path: runtimePath, python: validation.path, description: "Managed runtime for the unified PKM MCP server" });
-  return mcpRuntimeStatus();
+  invalidateMcpPythonProbes();
+  return mcpRuntimeStatusAsync();
 }
 
 export function mcpRuntimeManualCommands(basePython: string): string[] {
@@ -585,7 +692,7 @@ export function generateMcpServer(context: vscode.ExtensionContext): { serverPat
   fs.copyFileSync(path.join(context.extensionPath, "resources", "agent_session_runtime.py"), agentSessionRuntimePy);
   fs.copyFileSync(path.join(context.extensionPath, "resources", "api_chat_control.py"), path.join(mcpDir, "api_chat_control.py"));
   fs.copyFileSync(path.join(context.extensionPath, "resources", "knowledge_recovery.py"), path.join(mcpDir, "knowledge_recovery.py"));
-  for (const resource of ["knowledge_mutations.py", "knowledge_mutations.js", "knowledge_snapshots.py"]) {
+  for (const resource of ["knowledge_mutations.py", "knowledge_mutations.js", "knowledge_snapshots.py", "asset_classification.py", "asset_classification.js"]) {
     fs.copyFileSync(path.join(context.extensionPath, "resources", resource), path.join(mcpDir, resource));
   }
   fs.copyFileSync(path.join(context.extensionPath, "resources", "mcp_call_guard.py"), callGuardPy);
@@ -681,6 +788,7 @@ from api_chat_control import register_api_chat_tools
 from knowledge_recovery import register_knowledge_recovery_tools
 from knowledge_mutations import trash_file, write_markdown, register_knowledge_mutation_tools
 from knowledge_snapshots import register_knowledge_snapshot_tools
+from asset_classification import register_asset_classification_tools
 _KNOWLEDGE_NODE = ${JSON.stringify(process.execPath)}
 _KNOWLEDGE_EXTENSION = ${JSON.stringify(context.extensionPath.replace(/\\/g, "/"))}
 from mcp_call_guard import McpCallGuardMiddleware, McpDiagnosticsMiddleware
@@ -705,6 +813,7 @@ if "knowledge" in _FEATURE_DOMAINS:
   register_knowledge_recovery_tools(mcp, STORE)
   register_knowledge_mutation_tools(mcp, STORE, _KNOWLEDGE_NODE, _KNOWLEDGE_EXTENSION)
   register_knowledge_snapshot_tools(mcp, STORE, _KNOWLEDGE_NODE, _KNOWLEDGE_EXTENSION)
+  register_asset_classification_tools(mcp, STORE, _KNOWLEDGE_NODE, _KNOWLEDGE_EXTENSION)
 if "automation" in _FEATURE_DOMAINS:
   _AGENT_SESSION_TOOLS = register_agent_session_tools(mcp, STORE)
   register_api_chat_tools(mcp, STORE)
@@ -814,6 +923,8 @@ def search_knowledge(query: str, limit: int = 5, content_type_filter: Optional[L
              capability_source_ids: Optional[List[str]] = None, deadline_ms: int = 5000) -> str:
   """Search one typed index containing local Skills/Notes/Research/Scripts/Recipes and subscribed content.
 
+  Routes lexical / semantic / dual are explicit. No embedding configuration means
+  semantic_status=off without loading an encoder. Dual uses RRF and preserves path evidence.
   Query text is passed unchanged so mixed exact syntax remains observable. An explicit
   content_type_filter is strict; type words in query text are only soft preferences. Graph
   traversal is bounded and filtered before unavailable targets can enter the result.
@@ -821,7 +932,9 @@ def search_knowledge(query: str, limit: int = 5, content_type_filter: Optional[L
   started_at = time.perf_counter()
   if "l1_online" not in _enabled_router_solutions():
     _collect_search_invocation("pkm.search_knowledge", started_at, [], False, ["copilot-fallback"])
-    return _disabled_router_response("pkm.search_knowledge")
+    disabled = json.loads(_disabled_router_response("pkm.search_knowledge"))
+    disabled.update({"search_mode": route, "semantic_status": "unavailable", "semantic_reason": "Unified retrieval is disabled"})
+    return json.dumps(disabled, ensure_ascii=False)
   if not str(query or "").strip():
     _collect_search_invocation("pkm.search_knowledge", started_at, [], False, ["exact", "bm25"])
     return json.dumps({"ok": False, "error": "query is required"})
@@ -831,7 +944,7 @@ def search_knowledge(query: str, limit: int = 5, content_type_filter: Optional[L
     _collect_search_invocation("pkm.search_knowledge", started_at, [], False, ["exact", "bm25"])
     return json.dumps({"ok": False, "error": "Invalid content_type_filter"})
   requested_limit = max(1, min(int(limit or 5), 100))
-  if route not in {"lexical", "semantic", "graph", "hybrid"}:
+  if route not in {"lexical", "semantic", "dual", "graph", "hybrid"}:
     return json.dumps({"ok": False, "error": "Invalid route"})
   if generation_mode not in {"latest-ready", "exact", "minimum"}:
     return json.dumps({"ok": False, "error": "Invalid generation_mode"})
@@ -854,6 +967,9 @@ def search_knowledge(query: str, limit: int = 5, content_type_filter: Optional[L
     },
     "deadline_at_ms": deadline_at_ms,
   })
+  if not result.get("ok"):
+    result = {**result, "search_mode": route, "semantic_status": "unavailable",
+              "semantic_reason": result.get("error") or "Retrieval worker unavailable"}
   if result.get("ok"):
     def priority_multiplier(hit):
       metadata = hit.get("metadata") or {}
@@ -865,7 +981,7 @@ def search_knowledge(query: str, limit: int = 5, content_type_filter: Optional[L
     ranked_hits = [dict(hit) for hit in (result.get("hits") or [])
                    if _matches_retrieval_types(hit, content_type_filter)]
     ranked_hits.sort(key=lambda hit: (
-      -(float(hit.get("score") or 0) * priority_multiplier(hit)),
+      -(float(hit.get("score") or 0) * (1.0 if route in {"dual", "semantic"} else priority_multiplier(hit))),
       int(hit.get("rank") or 0),
       str(hit.get("skill_id") or ""),
     ))
@@ -890,10 +1006,12 @@ def search_knowledge(query: str, limit: int = 5, content_type_filter: Optional[L
     compact_provenance = {key: provenance.get(key) for key in
       ["provider", "broker", "subscription_id", "revision", "source_priority"] if provenance.get(key) is not None}
     compact_hit = {
-      "rank": hit.get("rank"), "score": round(float(hit.get("score") or 0), 6),
+      "rank": hit.get("rank"), "score": float(hit.get("score") or 0) if hit.get("score_semantics") == "rrf" else round(float(hit.get("score") or 0), 6),
       "skill_id": hit.get("skill_id"), "content_hash": hit.get("content_hash"),
       "source_id": hit.get("source_id"), "source_revision": hit.get("source_revision"),
       "score_components": hit.get("score_components") or {},
+      "sources": hit.get("sources"), "source_label": hit.get("source_label"),
+      "path_evidence": hit.get("path_evidence"), "score_semantics": hit.get("score_semantics"),
       "content_type": hit.get("content_type"), "source_uri": hit.get("source_uri"),
       "title": hit.get("title"), "description": hit.get("description"),
       "read_only": bool(hit.get("read_only")), "provenance": compact_provenance,
@@ -904,6 +1022,7 @@ def search_knowledge(query: str, limit: int = 5, content_type_filter: Optional[L
     hits.append(compact_hit)
   compact = {key: result.get(key) for key in [
     "schema", "ok", "request_id", "corpus_revision", "ready_generation", "route", "query_intent", "exact_terms",
+    "search_mode", "semantic_status", "semantic_reason",
     "lexical_anchors", "requested_content_types", "content_type_routing", "stale", "incomplete", "diagnostics",
     "truncated", "limit_reached", "result_count", "groups", "counts"]}
   compact["hits"] = hits
@@ -947,11 +1066,11 @@ def get_script(id: str) -> str:
   return get_knowledge(id, content_type_filter=["script"])
 
 
-def _search_typed_knowledge(query, content_type, limit, detail, tool_name):
+def _search_typed_knowledge(query, content_type, limit, detail, tool_name, route="lexical"):
   if detail not in {"legacy", "standard"}:
     return json.dumps({"ok": False, "error": "detail must be legacy or standard"})
   started_at = time.perf_counter()
-  result = json.loads(search_knowledge(query, limit=limit, content_type_filter=[content_type], debug=detail == "legacy"))
+  result = json.loads(search_knowledge(query, limit=limit, content_type_filter=[content_type], debug=detail == "legacy", route=route))
   _collect_search_invocation(tool_name, started_at,
       [hit.get("content_hash") or hit.get("source_id") for hit in result.get("hits") or []],
       bool(result.get("ok")), ["unified-retrieval"])
@@ -962,7 +1081,9 @@ def _search_typed_knowledge(query, content_type, limit, detail, tool_name):
   rows = []
   for hit in result.get("hits") or []:
     row = {key: hit.get(key) for key in ["rank", "score", "source_id", "source_revision", "content_hash",
-           "content_type", "source_uri", "title", "description", "read_only", "provenance"]}
+           "content_type", "source_uri", "title", "description", "read_only", "provenance",
+           "sources", "source_label", "path_evidence", "score_semantics"]}
+    row.update({key: result.get(key) for key in ["search_mode", "semantic_status", "semantic_reason"]})
     key = str(hit.get("skill_id") or "").removeprefix(content_type + ":")
     if content_type == "skill":
       skill = _skill_by_id(key)
@@ -1990,9 +2111,17 @@ def list_notes(type: Optional[str] = None) -> str:
 
 
 @_feature_tool("knowledge", read_only=True)
-def search_notes(query: str, limit: int = 20, detail: str = "legacy") -> str:
-    """Search only Notes. detail=standard uses the shared retrieval envelope; legacy preserves arrays and offline fallback."""
-    standard = _search_typed_knowledge(query, "note", limit, detail, "pkm.search_notes")
+def search_notes(query: str, limit: int = 20, detail: str = "legacy", route: str = "lexical") -> str:
+    """Search Notes with lexical/semantic/dual routes. Standard returns status even for zero hits.
+
+    The default legacy lexical shape preserves arrays and offline fallback; detail=standard
+    returns the shared envelope. Semantic/dual always return the envelope.
+    """
+    if route not in {"lexical", "semantic", "dual", "graph", "hybrid"}:
+        return json.dumps({"ok": False, "error": "Invalid route"})
+    if route in {"semantic", "dual"} and detail == "legacy":
+        detail = "standard"  # Empty semantic results must still expose off/unavailable status.
+    standard = _search_typed_knowledge(query, "note", limit, detail, "pkm.search_notes", route=route)
     if standard is not None:
         return standard
     limit = max(1, min(int(limit or 20), 100))

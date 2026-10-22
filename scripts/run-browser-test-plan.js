@@ -30,11 +30,19 @@ const taskCatalog = {
     args: ["scripts/run-extension-startup-test.js"],
     budgetMs: 90_000,
   },
+  "pkm-chat": {
+    command: process.execPath,
+    args: ["--test", "tests/test-api-chat.js", "tests/test-chat-managed-mcp.js", "tests/test-chat-library-actions.js",
+      "tests/test-host-health-startup.js", "tests/test-chat-activity-browser.js", "tests/test-chat-history-storage.js",
+      "tests/test-agent-session-tree-groups.js", "tests/test-agent-session-tree-browser.js", "tests/test-panel-instances-browser.js",
+      "tests/test-portal-connections.js", "tests/test-portal-permissions.js"],
+    budgetMs: 120_000,
+  },
 };
 
 const plans = {
   smoke: ["panel", "startup"],
-  full: ["plan", "contract", "standalone", "panel", "startup"],
+  full: ["plan", "contract", "standalone", "panel", "startup", "pkm-chat"],
 };
 
 function parsePositiveInteger(value, fallback, label) {

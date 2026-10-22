@@ -40,6 +40,19 @@ requesting more results does not silently change hybrid fusion's candidate pool.
 
 ## Router controls
 
+**Current integration gap:** the current extension Router renders the mature
+Exact/BM25 toggle, its benchmark and a disabled proposed model map. It does not
+yet expose the text-solution import, selection or preparation controls described
+below. The local worker has solution catalog and enable/rebuild/disable/delete
+interfaces, but these are not wired into the current Router message handlers.
+The following UI workflow is the intended contract, not a currently available
+end-to-end desktop workflow. There is no model-weight download button. A Router
+benchmark measures the lexical synthetic corpus, not an imported model.
+Router now explicitly labels this availability boundary. End-to-end model
+management remains pending: package provenance/import, selected versus ready
+model, explicit weight acquisition, dependency readiness, preparation progress,
+resource observations and per-query path visualization need one connected UX.
+
 In **Router → Text retrieval solutions**:
 
 The embedded interface separates the **current text path**, **solution cards**,

@@ -7,6 +7,52 @@ const { readChatKnowledge, automaticChatSkills } = require("../dist/chat/knowled
 const { getStorePath, setStorePath, noteUpsert, noteGet, paperUpsert, paperGet } = require("../dist/knowledge/filestore");
 const storage = require("../dist/knowledge/storage");
 const { createRetrievalSnapshot } = require("../dist/retrieval/retrieval-snapshot");
+const { RecipeFilesystemStore } = require("../dist/workflows/recipe-filesystem-store");
+const { compileWorkflowDefinitionV1 } = require("../dist/workflows/workflow-contracts");
+
+test("Recipe reads preserve small definitions and expose pinned exact ranges for large definitions without execution", () => {
+  const previous = getStorePath(), directory = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-recipe-ranges-"));
+  try {
+    setStorePath(directory);
+    const store = new RecipeFilesystemStore(path.join(directory, ".pkm", "state"));
+    const definition = { schema:"pkm.workflow.definition/v1", spec:{ inputs:{},
+      nodes:[{ nodeId:"inspect", kind:"pkm.step.noop/v1", config:{}, dependsOn:[] }],
+      outputs:{}, completion:{ requiredNodes:["inspect"] } } };
+    const compiled = compileWorkflowDefinitionV1(definition);
+    assert(compiled.ok);
+    const recipe = store.put({ recipeId:"recipe_ranges", name:"Range Recipe", category:"Tests", scope:"global",
+      description:"Read-only fixture", revision:1, definition, executableDigest:compiled.executableDigest,
+      metadata:{ evidence:"small" }, createdAt:"2026-01-01T00:00:00Z", updatedAt:"2026-01-01T00:00:00Z" });
+    const small = JSON.parse(readChatKnowledge("pkm_read", "recipe", recipe.recipeId));
+    assert.deepEqual(small.definition, definition);
+    assert.equal(small.truncated, false);
+    const large = store.put({ ...recipe, revision:2, metadata:{ evidence:"background ".repeat(17000) + "\ud83d\udc26 never deploy; limit 125 ms." } });
+    const initial = JSON.parse(readChatKnowledge("pkm_read", "recipe", recipe.recipeId));
+    assert.equal(initial.truncated, true);
+    assert.equal(initial.readOnly, true);
+    assert.equal(initial.sourceId, `pkm://knowledge/${large.knowledgeId}`);
+    assert.equal(initial.sourceRevision, "2");
+    assert.equal(initial.executableDigest, large.executableDigest);
+    const source = JSON.stringify({ id:large.recipeId, revision:large.revision, executableDigest:large.executableDigest,
+      definition:large.definition, metadata:large.metadata });
+    assert.equal(initial.totalCharacters, source.length);
+    const handle = { sourceRevision:initial.sourceRevision, contentHash:initial.contentHash };
+    const start = source.indexOf("\ud83d\udc26"), end = source.length;
+    const tail = JSON.parse(readChatKnowledge("pkm_read", "recipe", recipe.recipeId, { ...handle, start, end }));
+    assert.equal(tail.content, source.slice(start, end));
+    assert.equal(tail.nextStart, null);
+    assert.throws(() => readChatKnowledge("pkm_read", "recipe", recipe.recipeId, { ...handle, start:start + 1, end }), /surrogate/);
+    assert.throws(() => readChatKnowledge("pkm_read", "recipe", recipe.recipeId, { start, end }), /revision and contentHash/);
+    store.put({ ...large, metadata:{ evidence:"changed without bumping revision" } });
+    assert.throws(() => readChatKnowledge("pkm_read", "recipe", recipe.recipeId, { ...handle, start:0, end:10 }), /hash changed/);
+    store.moveToTrash(recipe.recipeId);
+    assert.throws(() => readChatKnowledge("pkm_read", "recipe", recipe.recipeId, { ...handle, start:0, end:10 }), /existing local knowledge/);
+    assert.equal(fs.existsSync(path.join(directory, ".pkm", "state", "recipe-runs")), false, "Reading must not start a Run");
+  } finally {
+    setStorePath(previous);
+    fs.rmSync(directory, { recursive:true, force:true });
+  }
+});
 
 test("real local knowledge handles fetch exact tail ranges and reject stale revision/hash/Unicode boundaries", () => {
   const previous = getStorePath(), directory = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-source-ranges-"));

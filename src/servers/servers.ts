@@ -11,6 +11,7 @@ import * as http from "http";
 import * as net from "net";
 import { hostname, networkInterfaces } from "os";
 import { createHash, randomUUID } from "crypto";
+import { GitSource, importGitSource, updateGitSource, parseGitSource, assertGitSourceAncestor } from "../knowledge/git-source";
 
 export interface ServerManifest {
   name: string;
@@ -21,6 +22,7 @@ export interface ServerManifest {
   category?: string;        // slash-separated dashboard group path
   pinned?: boolean;         // sort first within its immediate group
   tags?: string[];          // searchable labels
+  git?: GitSource;
 }
 
 interface RunState {
@@ -109,7 +111,9 @@ export function serverNetworkAddresses(interfaces = networkInterfaces(), hostNam
 }
 
 /** Absolute path to a server's managed folder (its code + any data it writes). */
-export function serverDir(slug: string): string { return serverDirOf(slug); }
+export function serverDir(slug: string): string {
+  return readManifest(slug)?.git ? path.join(_stateDir, "checkouts", slug) : serverDirOf(slug);
+}
 
 export function serverExport(selectedSlugs: string[] = [], advertisedHost = ""): SharedServerLink[] {
   const selected = new Set(selectedSlugs);
@@ -152,6 +156,7 @@ function readManifest(slug: string): ServerManifest | null {
       category: normalizeCategory(j.category),
       pinned: !!j.pinned,
       tags: Array.isArray(j.tags) ? [...new Set<string>(j.tags.map((tag: unknown) => String(tag || "").trim()).filter(Boolean))] : [],
+      ...(j.git ? { git:parseGitSource(j.git) } : {}),
     };
   } catch { return null; }
 }
@@ -503,9 +508,41 @@ export function serverUpdate(slug: string, patch: Partial<ServerManifest>): bool
     category: patch.category !== undefined ? normalizeCategory(patch.category) : m.category,
     pinned: patch.pinned !== undefined ? !!patch.pinned : m.pinned,
     tags: patch.tags !== undefined ? [...new Set((Array.isArray(patch.tags) ? patch.tags : []).map(tag => String(tag || "").trim()).filter(Boolean))] : m.tags,
+    ...(m.git ? { git:m.git } : {}),
   });
   if (patch.category !== undefined) registerServerGroup(normalizeCategory(patch.category));
   return true;
+}
+
+export async function serverImportGit(name: string, url: string, branch: string, command: string): Promise<string> {
+  if (!name.trim() || !command.trim()) throw new Error("A server name and an explicit start command are required.");
+  const slug = uniqueSlug(name);
+  const directory = path.join(_stateDir, "checkouts", slug);
+  if (fs.existsSync(directory) || fs.existsSync(serverDirOf(slug))) throw new Error("The import destination already exists. Choose a different server name.");
+  const source = await importGitSource(directory, url, branch);
+  writeManifest(slug, { name:name.trim(), command:command.trim(), port:nextServerPort(8000, slug), autostart:false, git:source });
+  return slug;
+}
+
+export async function serverUpdateGit(slug: string): Promise<void> {
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) throw new Error("Invalid server slug.");
+  const release = acquireProcessLock(`start-${createHash("sha256").update(slug).digest("hex").slice(0, 16)}`);
+  if (!release) throw new Error("Server lifecycle is busy; try again.");
+  try {
+    const manifest = readManifest(slug);
+    if (!manifest?.git) throw new Error("This server has no Git source.");
+    const run = readState()[slug];
+    if (run && isAlive(run.pid)) throw new Error("Stop the managed server before updating its checkout.");
+    if (await probePort(manifest.port)) throw new Error("Stop the listener on this server port before updating.");
+    const directory = path.join(_stateDir, "checkouts", slug);
+    if (fs.existsSync(directory)) manifest.git = await updateGitSource(directory, manifest.git);
+    else {
+      const source = await importGitSource(directory, manifest.git.url, manifest.git.branch);
+      await assertGitSourceAncestor(directory, manifest.git.revision);
+      manifest.git = source;
+    }
+    writeManifest(slug, manifest);
+  } finally { release(); }
 }
 
 /** Rename or remove one group path without deleting any servers. */
@@ -557,7 +594,7 @@ export function startServer(slug: string): { ok: boolean; error?: string } {
   if (!m) return { ok: false, error: "unknown server" };
   const owner = serverPortOwner(m.port, slug);
   if (owner) return { ok: false, error: `port ${m.port} is reserved by ${owner}` };
-  const dir = serverDirOf(slug);
+  const dir = m.git ? path.join(_stateDir, "checkouts", slug) : serverDirOf(slug);
   if (!fs.existsSync(dir)) return { ok: false, error: `directory not found: ${dir}` };
   const st = readState();
   if (st[slug] && isAlive(st[slug].pid)) return { ok: true };
@@ -645,10 +682,11 @@ export async function serverList(inspectExternalSlug = ""): Promise<any[]> {
       status = "external";
     }
     out.push({
-      slug, name: m.name, dir: serverDirOf(slug), command: m.command, port: m.port,
+      slug, name: m.name, dir: serverDir(slug), command: m.command, port: m.port,
       python: m.python || "", autostart: !!m.autostart, status, pid, activePort, startedAt,
       category: m.category || "", pinned: !!m.pinned,
       tags: m.tags || [],
+      git:m.git,
       suggestedPort,
       externalProcesses: status === "external" && slug === inspectExternalSlug ? serverListenerProcesses(m.port) : [],
       stableUrl: `http://localhost:${_proxyPort}/s/${slug}/`,

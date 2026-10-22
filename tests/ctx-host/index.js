@@ -84,7 +84,8 @@ async function checkBrowser(extension, snapshot) {
     access() {}, request:async () => snapshot });
   let browser;
   try {
-    browser = await chromium.launch({ headless:true, executablePath:process.env.PKM_CTX_CHROMIUM_PATH });
+    browser = await chromium.launch({ headless:true,
+      ...(process.env.PKM_CTX_CHROMIUM_PATH ? { executablePath:process.env.PKM_CTX_CHROMIUM_PATH } : {}) });
     const page = await browser.newPage();
     await page.goto(server.url);
     await page.getByRole("heading", { name:snapshot.task, exact:true }).waitFor();
@@ -197,8 +198,9 @@ async function run() {
     ? await require("./visualization-live").checkLiveVisualization(extension, store, root)
     : await require("./visualization-live").checkLiveVisualizationRecord(extension, store, root);
   const visualizationChain = await require("./visualization-chain").checkVisualizationChain(extension, store, root, phase === "restart");
+  const durableProcess = await require("./durable-process").checkDurableProcess(extension, root, phase === "restart");
   fs.writeFileSync(path.join(root, `${phase}.json`), JSON.stringify({ pid:process.pid, installed:true, webview:true, browser:true,
-    nativeEnvelope:true, inlineVisualization:true, standaloneVisualization, liveVisualization, visualizationChain,
+    nativeEnvelope:true, inlineVisualization:true, standaloneVisualization, liveVisualization, visualizationChain, durableProcess,
     refinements:reply.budgetReceipts[0].contextPlan.refinements, evidenceHash:digest([reply.toolCalls, reply.budgetReceipts]) }));
 }
 

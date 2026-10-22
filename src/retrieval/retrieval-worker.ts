@@ -7,7 +7,7 @@ import { mcpStdioCommand } from "../mcp/mcp-stdio-command";
 import {
   RETRIEVAL_QUERY_SCHEMA_V1,
   compileRetrievalQueryV1,
-  compileRetrievalResultV1,
+  assertRetrievalResultForQuery,
   type RetrievalQueryV1,
   type RetrievalResultV1,
   type RetrievalIndexEventV1,
@@ -25,7 +25,7 @@ interface RetrievalEndpoint {
   configuration_hash: string;
 }
 
-function workerHitServingIdentity(engineVersion:string, raw:unknown, contributingRoutes:unknown): RetrievalServingIdentityV1 {
+function workerHitServingIdentity(engineVersion:string, raw:unknown, contributingRoutes:unknown, scoreSemantics?:unknown): RetrievalServingIdentityV1 {
   const object = (value:unknown): Record<string, unknown> =>
     value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
   const result = object(raw), solution = object(result.solution), serving = object(result.skill_serving);
@@ -33,7 +33,7 @@ function workerHitServingIdentity(engineVersion:string, raw:unknown, contributin
   if (!Array.isArray(contributingRoutes) || contributingRoutes.some(route => typeof route !== "string" || !route)) throw new Error("Retrieval worker returned invalid contributing routes.");
   const identity:RetrievalServingIdentityV1 = {
     providerId:"pkm.unified-retrieval", providerVersion:engineVersion,
-    route:[...new Set(contributingRoutes)].join("+") || "unreported", scoreSemantics:"engine-defined",
+    route:[...new Set(contributingRoutes)].join("+") || "unreported", scoreSemantics:scoreSemantics === "rrf" ? "rrf" : "engine-defined",
   };
   if (serving.used) {
     if (typeof solution.package_id === "string" && solution.package_id) identity.packageId = solution.package_id;
@@ -89,6 +89,8 @@ export interface RetrievalWorkerStatus {
   edge_count: number;
   schema: { query: string; result: string; index_event: string };
   engine: string;
+  search_modes?: string[];
+  semantic_status?: "off" | "ready" | "unavailable";
   supported_routes: string[];
   unsupported_routes: string[];
   tokenizers: string[];
@@ -183,7 +185,7 @@ export class RetrievalWorkerManager {
     private readonly workerScript: string,
     private readonly python: string,
     private readonly engineVersion: string,
-    private readonly configurationHash = "exact-bm25-academic-v1",
+    private readonly configurationHash = "exact-bm25-fuzzy-dual-rrf-v1",
   ) {}
 
   private endpointPath(): string { return path.join(this.stateDir, "worker.json"); }
@@ -284,24 +286,23 @@ export class RetrievalWorkerManager {
     const abort = () => controller.abort(options.signal?.reason);
     if (options.signal?.aborted) abort();
     else options.signal?.addEventListener("abort", abort, { once: true });
-    let response: Response;
     try {
-      response = await fetch(`http://127.0.0.1:${endpoint.port}${route}`, {
+      const response = await fetch(`http://127.0.0.1:${endpoint.port}${route}`, {
         method,
         headers: { "X-PKM-Retrieval-Token": endpoint.token, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: controller.signal,
       });
+      const value = await response.json() as unknown;
+      if (!response.ok) {
+        const message = value && typeof value === "object" && "error" in value ? String((value as { error?: unknown }).error || "") : "";
+        throw new Error(message || `Retrieval worker returned ${response.status}.`);
+      }
+      return value as T;
     } finally {
       clearTimeout(timeout);
       options.signal?.removeEventListener("abort", abort);
     }
-    const value = await response.json() as unknown;
-    if (!response.ok) {
-      const message = value && typeof value === "object" && "error" in value ? String((value as { error?: unknown }).error || "") : "";
-      throw new Error(message || `Retrieval worker returned ${response.status}.`);
-    }
-    return value as T;
   }
 
   async ensure(expectedDocumentCount = 0): Promise<RetrievalEndpoint> {
@@ -428,10 +429,11 @@ export class RetrievalWorkerManager {
         state: "working",
         startedAt: this.lifecycle.startedAt || new Date().toISOString(),
         detail: status.work_detail || "Building the local retrieval index",
-        progress: Number.isFinite(Number(status.work_current))
+        progress: typeof status.work_current === "number" && Number.isFinite(status.work_current) && status.work_current >= 0
           ? {
-            current: Number(status.work_current),
-            total: Number.isFinite(Number(status.work_total)) ? Number(status.work_total) : undefined,
+            current: status.work_current,
+            total: typeof status.work_total === "number" && Number.isFinite(status.work_total) && status.work_total > 0
+              ? status.work_total : undefined,
             unit: "documents",
           }
           : undefined,
@@ -557,6 +559,14 @@ export class RetrievalWorkerManager {
     return this.request(await this.ensure(), "/status");
   }
 
+  async observeStatus(signal?: AbortSignal): Promise<RetrievalWorkerStatus | undefined> {
+    const endpoint = this.readEndpoint();
+    if (!endpoint || !this.processAlive(endpoint.pid)) return undefined;
+    const status = await this.request<RetrievalWorkerStatus>(endpoint, "/status", "GET", undefined, { signal, timeoutMs: 2_000 });
+    this.updateLifecycleFromStatus(status);
+    return status;
+  }
+
   async search(query: string, limit = 5, contentTypeFilter?: string[], requestId = ""): Promise<any> {
     const result = await this.query({
       schema: RETRIEVAL_QUERY_SCHEMA_V1,
@@ -575,6 +585,7 @@ export class RetrievalWorkerManager {
   async query(input: RetrievalQueryV1, signal?: AbortSignal): Promise<RetrievalResultV1 & Record<string, any>> {
     const compiled = compileRetrievalQueryV1(input);
     if (!compiled.ok) throw new Error(`Invalid retrieval query: ${compiled.diagnostics.map(item => `${item.pointer} ${item.message}`).join("; ")}`);
+    if (input.level === "l2-passage") throw new Error("The unified worker returns L1 sources, not L2 passage ranges.");
     if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("Retrieval query cancelled.");
     const startedAt = Date.now();
     const deadlineAt = startedAt + (input.deadlineMs || 5_000);
@@ -645,14 +656,13 @@ export class RetrievalWorkerManager {
         sourceUri: hit.source_uri,
         readOnly: !!hit.read_only,
         route: input.route,
-        serving:workerHitServingIdentity(status.engine_version, result, hit.contributing_routes),
+        serving:workerHitServingIdentity(status.engine_version, result, hit.contributing_routes, hit.score_semantics),
       })),
       diagnostics: result.diagnostics || [],
       stale: !!result.stale,
       incomplete: !!result.incomplete,
     };
-    const validated = compileRetrievalResultV1(normalized);
-    if (!validated.ok) throw new Error(`Retrieval worker returned an invalid result: ${validated.diagnostics.map(item => `${item.pointer} ${item.message}`).join("; ")}`);
+    assertRetrievalResultForQuery(input, normalized);
     return normalized;
   }
 }

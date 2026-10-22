@@ -18,12 +18,13 @@ from api_chat_control import register_api_chat_tools
 HOST = r"""
 const { ApiChatAgentControl } = require(process.argv[2]);
 const { randomUUID } = require('crypto');
-const pending = new Map(); let createCalls = 0; let sendCalls = 0;
+const pending = new Map(); let createCalls = 0; let sendCalls = 0; let portalCalls = 0;
 const control = new ApiChatAgentControl(process.argv[1], { workspacePaths: ['/fixture'], build: { fingerprint: 'transport-fixture' } }, async (operation, args) => {
   if (operation === 'create') return { chatId: randomUUID(), title: args.title, createCalls: ++createCalls, sessionId: null };
   if (operation === 'send') { sendCalls++; return new Promise(resolve => pending.set(args.chatId, resolve)); }
   if (operation === 'get') return { running: pending.has(args.chatId), createCalls, sendCalls };
   if (operation === 'cancel') { pending.get(args.chatId)?.({ reply: { status: 'cancelled', credits: null } }); pending.delete(args.chatId); return { cancelled: true }; }
+  if (operation === 'portal') return { ...args, portalCalls: ++portalCalls };
   return { createCalls, sendCalls };
 });
 process.on('SIGTERM', () => { control.dispose(); process.exit(0); });
@@ -90,11 +91,36 @@ async def main():
             register_api_chat_tools(mcp, store)
             async with Client(mcp) as client:
                 catalog = await client.list_tools()
-                assert len(catalog) == 8
+                assert len(catalog) == 9
                 capabilities = await call(client, "api_chat_capabilities", {})
                 assert capabilities["hosts"][0]["host_id"] == host_id
                 assert capabilities["hosts"][0]["workspace_paths"] == ["/fixture"]
                 requests = store / ".pkm/state/api-chat-control/requests" / host_id
+                assert "portal_control" in capabilities["tools"]
+                portal_args = {"host_id": host_id, "operation": "open", "command_id": "portal-once"}
+                portal = await call(client, "portal_control", portal_args)
+                opened = await receipt(client, portal, "succeeded")
+                assert opened["result"]["portalCalls"] == 1
+                assert await call(client, "portal_control", portal_args) == opened
+                await rejected(client, "portal_control", {**portal_args, "operation": "status"}, "contextId")
+                await rejected(client, "portal_control", {**portal_args, "operation": "execute"}, "Unsupported")
+                portal_send = {**portal_args, "operation": "send", "command_id": "remote-test",
+                               "context_id": host_id, "prompt": "Test the remote Windows installation",
+                               "request_id": host_id}
+                submitted_portal = await call(client, "portal_control", portal_send)
+                routed = await receipt(client, submitted_portal, "succeeded")
+                assert routed["result"]["contextId"] == host_id
+                assert routed["result"]["requestId"] == host_id
+                assert routed["result"]["prompt"] == portal_send["prompt"]
+                await rejected(client, "portal_control", {**portal_send, "prompt": "Changed task"}, "different request")
+                await rejected(client, "portal_control", {**portal_send, "request_id": "not-a-uuid"}, "UUID")
+                files_args = {**portal_args, "command_id": "portal-file-batch", "operation": "files",
+                              "context_id": host_id, "file_paths": ["/fixture/extension.vsix", "/fixture/checksums.txt"]}
+                file_request = await call(client, "portal_control", files_args)
+                file_receipt = await receipt(client, file_request, "succeeded")
+                assert file_receipt["result"]["paths"] == files_args["file_paths"]
+                await rejected(client, "portal_control", {**files_args, "file_paths": []}, "file_paths")
+                await rejected(client, "portal_control", {**files_args, "operation": "status"}, "file_paths")
                 (requests / ("0" * 64 + ".json")).write_text("{invalid", encoding="utf-8")
                 create_args = {"host_id": host_id, "title": "Visible Agent QA", "command_id": "create-once"}
                 submitted = await asyncio.gather(*(call(client, "api_chat_create", create_args) for _ in range(4)))

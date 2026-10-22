@@ -224,7 +224,8 @@ test("the production watcher debounces browser events before checking panel visi
   const timers = new Set(), notifications = [];
   const panel = { visible:false, webview:{ postMessage:value => notifications.push(value) } };
   const scope = vm.createContext({
-    path, getStorePath:() => "/fixture", panel, _panelReady:true, _projectStateRefreshTimer:undefined,
+    path, getStorePath:() => "/fixture", panels:{ instances:new Map([[panel, { ready:true, panel }]]) },
+    postToPanel:value => panel.webview.postMessage(value), _projectStateRefreshTimer:undefined,
     projectScopes:new Set(), projectPaths:new Set(),
     nativeHarnessServers:new Map([["active", { server:{ changed() { changes++; } } }], ["starting", {}]]),
     setTimeout(callback) { const timer = { callback, unref() {} }; timers.add(timer); return timer; },
@@ -321,6 +322,8 @@ test("lifecycle ring highlights only the stage supported by recorded evidence", 
   assert.equal(l.current, "configure");
   l = variant({}, { state:"awaiting-result", waiting:{ kind:"dependency", detail:"Polling AML job" } });
   assert.deepEqual([l.current, l.outcome, l.reason], ["monitor", "waiting", "Polling AML job"]);
+  l = variant({status:"complete"}, { state:"awaiting-result", waiting:{ kind:"dependency", detail:"Worker still running" } });
+  assert.deepEqual([l.current, l.outcome, l.live], ["monitor", "waiting", true], "a delivered response does not end an explicitly recorded background wait");
   l = variant({ harnessReports:[{ id:"v", kind:"validation", status:"start", summary:"Running tests", binding:{} }] });
   assert.equal(l.current, "evaluate");
   l = variant({ status:"running" }, { state:"awaiting-input", waiting:{ kind:"user", detail:"Approve write" } });
@@ -334,5 +337,16 @@ test("lifecycle ring highlights only the stage supported by recorded evidence", 
   assert.deepEqual([l.current, l.outcome, l.check], ["check", "failed", "failed"]);
   l = variant({ status:"failed", validation:{ error:"Model timed out" } }, { state:"failed" });
   assert.deepEqual([l.current, l.outcome, l.reason], ["run", "failed", "Model timed out"]);
+  assert.equal(l.live, false);
+  assert.equal(l.activity, "", "completed or failed work must not retain a current activity");
+  const missing = variant({ toolCalls:undefined }, { state:"failed" });
+  assert.equal(missing.stages.find(item => item.id === "run").items.find(([label]) => label === "Tool calls")[1], "not recorded");
+  const stale = fixture();
+  stale.harness.attempts[0].status = "running";
+  stale.harness.attempts[1].status = "failed";
+  stale.harness.state = "failed";
+  assert.equal(build(stale).lifecycle.outcome, "failed", "an older unclosed attempt must not replace the latest failure");
+  l = variant({ toolCalls:[{ name:"read_file", status:"running" }] }, { currentPhase:{kind:"tool",label:"Calling read_file"} });
+  assert.equal(l.activity, "read_file");
   assert.equal(variant({}, {}, {}).stages.length, 6);
 });

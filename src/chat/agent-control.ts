@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { randomUUID } from "crypto";
 
-export const API_CHAT_CONTROL_OPERATIONS = ["models", "tools", "list", "create", "get", "send", "cancel", "fixture-e2e"] as const;
+export const API_CHAT_CONTROL_OPERATIONS = ["models", "tools", "list", "create", "get", "send", "cancel", "fixture-e2e", "portal"] as const;
 
 export class ApiChatAgentControl {
   readonly hostId = randomUUID();

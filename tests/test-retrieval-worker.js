@@ -74,10 +74,10 @@ async function main() {
       result: "pkm.retrieval.result/v1",
       index_event: "pkm.retrieval.index-event/v1",
     });
-    assert(ready.supported_routes.includes("graph") && ready.unsupported_routes.includes("semantic"));
+    assert(ready.supported_routes.includes("graph") && ready.supported_routes.includes("semantic") && ready.supported_routes.includes("dual"));
     const reused = await second.status();
     assert.strictEqual(reused.pid, ready.pid, "all MCP clients on one Subscriber must reuse one worker PID");
-    assert.strictEqual(reused.configuration_hash, "exact-bm25-academic-v1");
+    assert.strictEqual(reused.configuration_hash, "exact-bm25-fuzzy-dual-rrf-v1");
     endpoint = JSON.parse(fs.readFileSync(path.join(state, "worker.json"), "utf8"));
     const readSource = async (sourceId, extra = {}) => {
       const response = await fetch(`http://127.0.0.1:${endpoint.port}/get`, {
@@ -96,7 +96,9 @@ async function main() {
     assert(materializedSource, "Actual worker revisions must resolve to physical Chat evidence, not silently become unavailable.");
     assert.strictEqual(materializedSource.body, readSkill.content);
     const validation = retrievalSourceValidation(() => initialSnapshot);
-    const evidence = { sourceId:skillHit.source_id, sourceRevision:skillHit.source_revision, contentHash:skillHit.content_hash };
+    const evidence = { id:skillHit.source_id, level:"l1-source", kind:skillHit.content_type,
+      sourceUri:skillHit.source_uri, sourceId:skillHit.source_id, sourceRevision:skillHit.source_revision,
+      contentHash:skillHit.content_hash, content:materializedSource.body };
     validation.admit(evidence, materializedSource);
     validation.refreshSourceValidation();
     assert(validation.sourceIsCurrent(evidence), "The actual worker identity must survive send-time revalidation.");
@@ -217,7 +219,7 @@ async function main() {
       }
     };
     auditFiles(state);
-    await assert.rejects(() => manager.query({
+    const offSemantic = await manager.query({
       schema: "pkm.retrieval.query/v1",
       requestId: "request-semantic",
       text: "Language",
@@ -226,7 +228,11 @@ async function main() {
       route: "semantic",
       generation: { mode: "latest-ready" },
       diagnostics: "summary",
-    }), /Semantic retrieval is not supported/);
+    });
+    assert.strictEqual(offSemantic.semantic_status, "off");
+    assert.deepStrictEqual(offSemantic.hits, []);
+    assert.strictEqual(skillHit.source_label, "from keyword search");
+    assert(skillHit.path_evidence.length > 0);
     const cancelled = new AbortController();
     cancelled.abort(new Error("test cancellation"));
     await assert.rejects(() => manager.query({
@@ -294,6 +300,16 @@ async function main() {
     const brokerSkill = await manager.search("BROKER-TYPED-TOKEN", 10, ["skill"]);
     assert.strictEqual(brokerSkill.hits[0].content_type, "skill");
     assert.strictEqual(brokerSkill.hits[0].read_only, true);
+    const brokerHit = brokerSkill.hits[0];
+    const brokerDocument = retrievalDocumentForSource(brokerSnapshot, brokerHit.source_id, brokerHit.source_revision, brokerHit.content_hash);
+    assert(brokerDocument, "Typed subscription hits resolve to their actual physical content hash and immutable revision");
+    assert.equal(brokerDocument.content_type, "skill");
+    const brokerValidation = retrievalSourceValidation(() => brokerSnapshot);
+    const brokerEvidence = { id:brokerHit.source_id, level:"l1-source", kind:brokerHit.content_type,
+      sourceUri:brokerHit.source_uri, sourceId:brokerHit.source_id, sourceRevision:brokerHit.source_revision,
+      contentHash:brokerHit.content_hash, content:brokerDocument.body };
+    brokerValidation.admit(brokerEvidence, brokerDocument); brokerValidation.refreshSourceValidation();
+    assert(brokerValidation.sourceIsCurrent(brokerEvidence), "Subscription evidence survives the same send-time validation as local sources");
     assert.strictEqual((await manager.search("BROKER-TYPED-TOKEN", 10, ["note"])).hits.length, 0);
     assert((await manager.search("BROKER-TYPED-TOKEN", 10, ["subscription"])).hits.some(hit => hit.skill_id === "pkm://subscriptions/typed-skill"));
     assert.strictEqual((await readSource("pkm://subscriptions/typed-skill", { content_type_filter: ["skill"] })).read_only, true);
@@ -318,7 +334,11 @@ async function main() {
       return value.skill_serving.error ? value : undefined;
     });
     assert.strictEqual(fallback.skill_serving.ready, false, "invalid/missing serving dependencies must keep BM25 ready");
-    const fallbackResult = await restarted.search("Data Preparation", 5, ["skill"]);
+    const fallbackResult = await restarted.query({ schema: "pkm.retrieval.query/v1", requestId: "fallback-dual",
+      text: "Data Preparation", topK: 5, contentTypeFilter: ["skill"], route: "dual",
+      scope: { capabilityId: "test" }, generation: { mode: "latest-ready" }, diagnostics: "summary" });
+    assert.strictEqual(fallbackResult.semantic_status, "fallback");
+    assert.strictEqual(fallbackResult.hits[0].serving.scoreSemantics, "rrf");
     assert(fallbackResult.hits.length > 0);
     assert(fallbackResult.hits[0].serving.fallback, "Actual worker fallback reason must survive normalization");
     assert.strictEqual(fallbackResult.hits[0].serving.packageId, undefined);

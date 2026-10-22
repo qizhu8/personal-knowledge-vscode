@@ -29,6 +29,31 @@ Status: implemented source and isolated acceptance evidence, not an installed re
 | 19 | Required border on the edit box only; no parameter-wrapper frame. | Actual computed-style assertions in Workbench browser tests. |
 | 20 | Raw multiline string input with visible delimiters and escape-looking highlighting; no added quotes or decoding/eval. | Workbench browser/runtime tests. |
 
+## Folder Trash feedback follow-up (2026-10-21)
+
+Physical empty Notes directories remain visible without `.gitkeep` or other
+marker files. Moving the last Note to Trash does not prune its empty ancestors;
+only an explicit folder action removes a Notes directory. This does not change
+Research's separate container-cleanup behavior.
+
+Notes, Skills and Research folder Trash checks ignore dangling local links, but
+still block existing externally referenced resources. Failure to inspect a target
+(for example, permission denied) remains an explicit error. Research retains
+**Delete folder container** (promote contents) separately from **Move folder to Trash**.
+
+Trash commands keep a visible, accessible pending notice after confirmation
+closes, suppress duplicate Trash submissions, and finish only on a Trash result,
+not an unrelated list refresh. Host exceptions return a failure result; failures
+preserve the current detail selection. Timeout warns that the background operation
+may still be running, not that it has been cancelled. Native Navigation folder
+Trash also shows progress and explicit failures.
+
+Run `npm run test:knowledge-trash` for isolated store, actual Host-handler and
+built-panel Chromium coverage: empty/hidden-only folders, stale and live references,
+filesystem/lock failures, menu submission, progress, repeat activation, successful
+refresh, failure preservation, retry and delayed/missing-path results. These tests
+do not install the extension or delete production knowledge.
+
 ## Refresh matrix
 
 | Surface | Refresh reads / recomputes | Preservation and effect boundary |

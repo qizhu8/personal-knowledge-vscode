@@ -195,16 +195,37 @@ Keep three concepts separate:
 | Package carrier | Validated ZIP entry / `${module_assets}` relative member | Anchored to the installed package |
 | Machine binding | Local workspace, toolchain or external resource binding | Never implicitly published as a portable default |
 
-#### Current sharing route: ModuleSet delivery, not direct GitHub Sync
+#### Sharing routes: explicit GitHub selection and ModuleSet delivery
 
-The current `GITHUB_SYNC_CONTENT_TYPES` contains Skills, Notes, Papers, Prompts,
-Scripts, packages, Servers, Recipes and Agent Snapshots. It does **not** contain
-`actions` or `action-module-sets`. Neither Action registry definitions nor installed
-ModuleSet directories are automatically carried by that content-type pipeline.
-The publication/privacy principle above is not a claim that direct Action Sync
-has been implemented.
+GitHub Sync includes opt-in **Actions** and **Action ModuleSets** content types.
+Existing and new targets select neither by default. In the Content editor, choose
+public/private items explicitly; each Action ID and each top-level ModuleSet ID
+has a Make Private/Public control. Making sources public requires confirmation.
+System/core definitions and components are excluded; machine-local private
+adapters in runtime state are not public registry definitions.
 
-The working Action delivery route is selective **ModuleSet export → separate
+Actions transfer the original `actions/<id>.json` definition, not arbitrary
+absolute-path source files or independently referenced knowledge. Select required
+Scripts/Packages separately, or export a self-contained ModuleSet. Action names
+stored in definitions travel with them; local Workbench group/display overrides
+are not execution or portable source metadata.
+
+ModuleSets transfer `manifest.json` and only its declared `definitions/` and
+`assets/` members, preserving their identities and byte hashes. Settings,
+credentials, grants, enablement, toolchain bindings, validation, run history and
+undeclared files do not travel. The receiver must explicitly enable and locally
+qualify a package; installed manifests and members are checked before enabling,
+and packaged definition hashes are checked before use. Divergent Action/module
+edits remain explicit Sync conflicts, not automatic executable JSON/code merges.
+Sync/restore/conflict acceptance shares the Action mutation marker: active,
+waiting or uncertain Runs and queued/running qualification block source mutation.
+Unload an affected ModuleSet before changing/removing its installed tree.
+Ordinary Sync refuses different bytes for an existing immutable ModuleSet member;
+publish a new version, or use explicit recovery for damaged local content.
+Publications containing these assets declare the `action-library-assets` required
+capability so older clients refuse incompatible publications explicitly.
+
+The alternative offline delivery route remains selective **ModuleSet export → separate
 transfer of the `.pkm-actions` ZIP → import → explicit enable → local grants and
 qualification**. Export/import is available in the Workbench and through
 `action_module_set_export` / `action_module_set_import`; carrier transfer is not
@@ -213,12 +234,10 @@ through its existing Sync content type, but that does not deliver the Action
 definition. An imported ModuleSet uses its own validated resource bindings,
 not host resources borrowed from an independently synced tree.
 
-Do not assume that placing this binary ZIP in an existing text-content/package
-Sync route provides a supported transport. Adding direct Action/ModuleSet Sync
-or an explicit binary carrier transport is a separate, parent-owned scope
-decision. Any such route must preserve identities and package integrity without
-syncing `.pkm/state/actions`, execution grants, enablement, credentials or local
-qualification as portable authority.
+The ModuleSet Sync type transports the installed validated tree, not arbitrary
+ZIP files placed in another content type. It never copies `.pkm/state/actions`
+as portable execution authority. Linux isolated Git/runtime roundtrips are not
+production synchronization or Windows acceptance.
 
 Script navigation now accepts canonical Script URLs and existing
 `pkm://scripts/<relative-path>` aliases, with duplicate identities reported rather
@@ -685,6 +704,15 @@ are shown directly; Hybrid lists its constituent languages in a tooltip. Unsuppo
 or ambiguous alternative implementations list their languages separately rather
 than claiming mixed-language composition. An MCP carrier is labeled MCP because
 its remote implementation language is not known.
+
+JavaScript and TypeScript use the existing `program` implementation, not a special
+executor. JavaScript can invoke `node` with a declared `.js`/`.cjs`/`.mjs` source
+and argv. TypeScript can use an explicit declared compiler build and run the
+verified `${build_dir}/...js` output with Node. Install/configure the appropriate
+host tools yourself; PKM does not silently install Node, TypeScript or `ts-node`.
+Both paths retain effects, host grants, input/output schemas, pinned qualification
+and output checking. The focused language test compiles actual TypeScript and
+executes both languages through `ModuleRuntime.validate/call/wait`.
 
 ### Optional host toolchains
 

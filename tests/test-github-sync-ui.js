@@ -23,6 +23,22 @@ const context = vm.createContext({
   clearTimeout: () => {},
 });
 vm.runInContext(source, context);
+const fixedNow = Date.parse("2026-10-20T12:00:00Z");
+context.fixedNow = fixedNow;
+for (const [minutes, expected] of [[0, "0 h 0 min ago"], [59, "0 h 59 min ago"], [60, "1 h 0 min ago"], [1501, "25 h 1 min ago"]]) {
+  context.ageAt = new Date(fixedNow - minutes * 60000).toISOString();
+  assert.equal(vm.runInContext("githubSyncRelativeAge(ageAt, fixedNow)", context), expected);
+}
+assert.equal(vm.runInContext("githubSyncRelativeAge('invalid', fixedNow)", context), "");
+assert.equal(vm.runInContext("githubSyncRelativeAge('2026-10-20T12:01:00Z', fixedNow)", context), "clock ahead");
+assert.match(vm.runInContext("githubSyncLastTime('2026-10-20T10:00:00Z')", context), /<time datetime=.*data-github-sync-age=/);
+assert.equal(vm.runInContext("githubSyncLastTime()", context), "Never synchronized");
+assert.match(vm.runInContext("githubSyncLastTime('invalid')", context), /invalid recorded timestamp/);
+const ageNode = { dataset: { githubSyncAge: new Date(Date.now() - 61 * 60000).toISOString() }, textContent: "" };
+context.document.querySelectorAll = () => [ageNode];
+vm.runInContext("githubSyncUpdateAges()", context);
+assert.equal(ageNode.textContent, "1 h 1 min ago", "age refresh touches only the dedicated text node, never rerenders drafts");
+context.document.querySelectorAll = () => [];
 assert.match(vm.runInContext("githubSyncPhaseDiagram('', 'scheduled')", context), /github-sync-phase-current " aria-hidden="true">Scheduled</,
   "a scheduled snapshot without a phase must not claim that Sync failed");
 assert.doesNotMatch(vm.runInContext("githubSyncPhaseDiagram('', 'scheduled')", context), /Sync failed/);
@@ -664,7 +680,8 @@ async function verifyRetryHost() {
   targets[0].lastFailure = {error:'network unavailable', attempts:3};
   const updates = [];
   host.log = {warn:() => {},error:message => { throw new Error(message); }};
-  host.panel = {visible:true,webview:{postMessage:message => updates.push(message)}};
+  host.panels = {instances:new Map([['primary', {}]])};
+  host.postToPanel = message => updates.push(message);
   const autoPause = vm.runInContext(`targetId => { ${autoPauseHandler} }`, host);
   autoPause('primary');
   await new Promise(resolve => setImmediate(resolve));

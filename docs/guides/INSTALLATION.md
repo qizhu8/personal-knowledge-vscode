@@ -91,13 +91,21 @@ that VS Code or Copilot CLI reads. A saved binding alone does not prove either
 client has discovered PKM.
 
 1. In the relevant local or remote VS Code extension host, run **PKM: Configure
-   VS Code MCP Discovery**, also available in **General & MCP > MCP**. This uses
-   the extension's native provider; it does **not** create a duplicate user or
-   workspace MCP JSON entry. Unsupported VS Code versions must be upgraded.
+   VS Code MCP Discovery**, also available as **Configure PKM MCP...** in
+   **General & MCP > MCP**. Choose **This machine's account** (recommended,
+   extension-managed native provider across workspaces on this host account),
+   **VS Code user / profile** (this profile's user MCP file), **Workspace folder**
+   (the selected folder's `.vscode/mcp.json`), or **Do not configure**. On Remote
+   SSH these choices apply to the remote extension host, not the Windows-local
+   account. Choosing no configuration changes nothing; Chat remains usable
+   without PKM MCP tools. No independent stdio server is silently started.
 2. The command checks the current profile's user `mcp.json`, open workspace
    folders' `.vscode/mcp.json` files (JSONC supported), and legacy `mcp.servers`
    settings for conflicts. Back up and remove matching manual entries yourself
-   before retrying. Other profiles/adapters cannot be fully inventoried from
+   before switching to account scope. Explicit profile/workspace setup preserves
+   other entries and JSONC comments, backs up the existing file, and disables the
+   account provider to avoid duplicates. Review the file path before confirming;
+   workspace configuration may be committed to Git. Other profiles/adapters cannot be fully inventoried from
    this host; review those before confirming. Existing manual ownership stays
    suppressed until you explicitly select the native provider. A changed
    account binding is backed up beside `mcp-binding.json`.

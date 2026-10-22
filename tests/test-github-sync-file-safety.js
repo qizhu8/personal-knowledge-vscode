@@ -376,6 +376,30 @@ async function scenario(name, action) {
     }
   });
 
+  await scenario("local-only Skill Markdown and image attachments publish without false content conflicts", async () => {
+    const fixture = createFixture("skill-resource-files");
+    try {
+      await initialize(fixture);
+      const dependencies = [
+        ["skills/Shared/_assets/One/references/workflow.md", Buffer.from("# Workflow\n\nNo deployment is approved.\n")],
+        ["skills/Shared/One.assets/templates/migration-plan.md", Buffer.from("# Migration plan\n")],
+        ["skills/Shared/One.assets/diagram.png", Buffer.from([137, 80, 78, 71, 0, 255])],
+      ];
+      fixture.catalog.skills[0].dependencies = dependencies.map(([destination, content]) => {
+        const source = path.join(fixture.store, destination);
+        fs.mkdirSync(path.dirname(source), { recursive: true }); fs.writeFileSync(source, content);
+        return { source, destination };
+      });
+      const result = await syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store);
+      rememberSync(fixture.target, result);
+      assert.strictEqual(result.resolutionReport.rules["human-required"] || 0, 0);
+      const verify = cloneRemote(fixture);
+      for (const [relative, content] of dependencies) assert(fs.readFileSync(path.join(verify, relative)).equals(content));
+      const second = await syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store);
+      assert.strictEqual(second.changed, false, "An unchanged attachment set converges without repeated commits");
+    } finally { fs.rmSync(fixture.root, { recursive: true, force: true }); }
+  });
+
   await scenario("ignoring an existing bundle member preserves its remote bytes while syncing other members", async () => {
     const fixture = createFixture("ignore-existing-member");
     try {

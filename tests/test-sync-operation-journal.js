@@ -136,18 +136,18 @@ test("Skill Trash failure leaves no durable deletion, and direct delete failures
       if (path.basename(to) === "payload") throw new Error("injected Trash failure");
       return rename(from, to);
     };
-    assert.equal(store.skillMoveToTrash("Keep"), undefined);
+    assert.throws(() => store.skillMoveToTrash("Keep"), /injected Trash failure/);
   } finally { fs.renameSync = rename; }
   assert.equal(store.skillGet("Keep").content, "keep");
   assert.deepEqual(records(root), []);
-  const remove = fs.rmSync;
   try {
-    fs.rmSync = (file, ...args) => {
-      if (file === path.join(root, "skills/Keep.md")) throw new Error("injected delete failure");
-      return remove(file, ...args);
+    fs.renameSync = (from, to) => {
+      if (path.basename(to) === "payload") throw new Error("injected delete failure");
+      return rename(from, to);
     };
     assert.throws(() => store.skillDelete("Keep"), /injected delete failure/);
-  } finally { fs.rmSync = remove; }
+  } finally { fs.renameSync = rename; }
+  assert.equal(store.skillGet("Keep").content, "keep");
   assert.deepEqual(records(root), []);
 });
 

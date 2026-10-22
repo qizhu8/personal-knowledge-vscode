@@ -37,8 +37,8 @@ const disposedPanel = {
 const panelTimer = {};
 const panelDisposeSandbox = {
   target: disposedPanel, panel: disposedPanel, context: { subscriptions: [] },
-  _panelReady: true, _panelRestoredRecoveryTimer: panelTimer,
-  _panelLastHeartbeat: Date.now(), _panelLastDiagnostic: "fixture diagnostic",
+  session: { ready:true, recoveryTimer:panelTimer, lastHeartbeat:Date.now(), lastDiagnostic:"fixture diagnostic" },
+  panels: { remove(target) { assert.strictEqual(target, disposedPanel); } },
   clearTimeout: timer => clearedPanelTimers.push(timer),
   loadProfiler: { record() {} },
   log: { info: message => disposedPanelMessages.push(message) },
@@ -46,9 +46,9 @@ const panelDisposeSandbox = {
 require("vm").runInNewContext(extensionSource.slice(panelDisposeStart, panelDisposeEnd + panelDisposeClosing.length), panelDisposeSandbox);
 assert.strictEqual(typeof panelDisposeCallback, "function");
 assert.doesNotThrow(() => panelDisposeCallback(), "panel disposal must not read invalidated Webview getters");
-assert.strictEqual(panelDisposeSandbox.panel, undefined);
-assert.strictEqual(panelDisposeSandbox._panelReady, false);
-assert.strictEqual(panelDisposeSandbox._panelRestoredRecoveryTimer, undefined);
+assert.strictEqual(panelDisposeSandbox.panel, disposedPanel, "disposing a tab must not clear another active tab");
+assert.strictEqual(panelDisposeSandbox.session.ready, false);
+assert.strictEqual(panelDisposeSandbox.session.recoveryTimer, undefined);
 assert.deepStrictEqual(clearedPanelTimers, [panelTimer]);
 assert.match(disposedPanelMessages[0], /panel disposed heartbeatAgeMs=\d+ lastDiagnostic=fixture diagnostic/);
 
@@ -89,6 +89,7 @@ require("vm").runInNewContext(`(async () => { ${compiled.slice(chatStart, chatEn
         if (name === "vscode") return vscode;
         if (name.endsWith("/filestore")) return { getStorePath: () => "" };
         if (name.endsWith("/extension-host-runtime")) return {};
+        if (name === "./visualization-window") return { registerVisualizationWindow() {} };
         if (name === "./agent-control") return require("../dist/chat/agent-control");
         return require(name);
       },
@@ -102,7 +103,7 @@ require("vm").runInNewContext(`(async () => { ${compiled.slice(chatStart, chatEn
       if (loads === 1) throw new Error("fixture backend unavailable");
       return { attachWebviewView: (view, retainHtml) => { handoff = { view, retainHtml }; }, isBusy: false };
     });
-    assert.strictEqual(commands, 4);
+    assert.strictEqual(commands, 5);
     assert.strictEqual(loads, 0);
     const listeners = new Set();
     const posted = [];
@@ -226,7 +227,7 @@ require("vm").runInNewContext(`(async () => { ${compiled.slice(chatStart, chatEn
       const integrationShell = {};
       require("vm").runInNewContext(fs.readFileSync(path.join(root, "dist/chat/api-chat-shell.js"), "utf8"), {
         exports: integrationShell,
-        require: name => name === "vscode" ? integrationHost : name.endsWith("/filestore") ? { getStorePath: () => "" } : name.endsWith("/extension-host-runtime") ? {} : name === "./agent-control" ? require("../dist/chat/agent-control") : require(name),
+        require: name => name === "vscode" ? integrationHost : name.endsWith("/filestore") ? { getStorePath: () => "" } : name.endsWith("/extension-host-runtime") ? {} : name === "./agent-control" ? require("../dist/chat/agent-control") : name === "./visualization-window" ? { registerVisualizationWindow() {} } : require(name),
         setTimeout: callback => queueMicrotask(callback),
         setInterval: () => ({ unref() {} }), clearInterval() {},
       });
@@ -268,7 +269,7 @@ require("vm").runInNewContext(`(async () => { ${compiled.slice(chatStart, chatEn
         assert.strictEqual(registrationCalls[0][0], integrationContext);
         assert.strictEqual(typeof registrationCalls[0][1], "function");
         assert.strictEqual(registrationCalls[0][2], false, "The backend must not register another view or command facade");
-        assert.strictEqual(providers.size, 1); assert.strictEqual(commandNames.size, 4);
+        assert.strictEqual(providers.size, 1); assert.strictEqual(commandNames.size, 5);
         assert.strictEqual(modelListeners, 1, "Backend lifecycle listeners must remain registered");
         assert.strictEqual(instances[0].attached.view, integrationView);
         assert.strictEqual(instances[0].attached.retainHtml, true);

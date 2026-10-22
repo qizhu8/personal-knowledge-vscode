@@ -95,6 +95,16 @@ responses, non-fallback intent receipts, unused-topic lazy behavior, summary
 publication/reuse, out-of-window message restoration into the model payload,
 provider failure and History off. This is **not** real-model quality validation.
 
+[Crash-consistency tests](./tests/test_crash_consistency.py) also use independent
+Python processes against one temporary database. They verify that an already-open
+reader observes committed statement revisions, stale summaries/embeddings,
+change events and permanent scope deletion without restarting. Competing writers
+on one expected revision admit only one mutation and leave no partial loser.
+A process exiting immediately after commit can retry the exact operation without
+duplicating statements; a reader spanning an external commit retains one coherent
+SQLite snapshot. These are local storage guarantees, not evidence of Windows UI
+refresh, cross-store recovery or physical power-loss durability.
+
 ## Integration boundaries and remaining work
 
 This is a trusted local memory module, **not yet production-accepted**.

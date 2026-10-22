@@ -7,7 +7,7 @@ export const RETRIEVAL_CAPABILITIES_SCHEMA_V1 = "pkm.retrieval.capabilities/v1" 
 export const RETRIEVAL_SELECTION_RECEIPT_SCHEMA_V1 = "pkm.retrieval.selection-receipt/v1" as const;
 
 export type RetrievalContentType = "skill" | "note" | "research" | "script" | "recipe" | "action" | "subscription";
-export type RetrievalRoute = "lexical" | "semantic" | "graph" | "hybrid";
+export type RetrievalRoute = "lexical" | "semantic" | "dual" | "graph" | "hybrid";
 export type RetrievalDiagnosticsLevel = "none" | "summary" | "debug";
 export type RetrievalScoreSemantics = "rank-only" | "similarity" | "distance" | "probability" | "rrf" | "engine-defined";
 export type RetrievalLevel = "l1-source" | "l2-passage";
@@ -159,7 +159,23 @@ export interface RetrievalDiagnostic {
   relation?: string;
 }
 
+/** Raw scores are evidence only. Dual ranking uses reciprocal ranks (k=60). */
+export interface RetrievalPathEvidence {
+  path: "lexical" | "semantic";
+  rank: number;
+  score: number;
+  matched_field: string;
+  matched_path: string;
+  match: "exact" | "keyword" | "fuzzy" | "semantic";
+}
+
+export type RetrievalSemanticStatus = "off" | "ready" | "unavailable" | "fallback";
+
 export interface RetrievalResultHitV1 {
+  sources?: Array<"lexical" | "semantic">;
+  source_label?: "from keyword search" | "from embedding retrieval" | "both";
+  path_evidence?: RetrievalPathEvidence[];
+  score_semantics?: RetrievalScoreSemantics;
   rank: number;
   score: number;
   scoreComponents: {
@@ -183,6 +199,9 @@ export interface RetrievalResultHitV1 {
 }
 
 export interface RetrievalResultV1 {
+  search_mode?: "lexical" | "semantic" | "dual";
+  semantic_status?: RetrievalSemanticStatus;
+  semantic_reason?: string;
   schema: typeof RETRIEVAL_RESULT_SCHEMA_V1;
   ok: true;
   requestId: string;
@@ -242,7 +261,7 @@ export type RetrievalCompileResult<T> =
   | { ok: false; diagnostics: RetrievalContractDiagnostic[] };
 
 const CONTENT_TYPES = new Set<RetrievalContentType>(["skill", "note", "research", "script", "recipe", "action", "subscription"]);
-const ROUTES = new Set<RetrievalRoute>(["lexical", "semantic", "graph", "hybrid"]);
+const ROUTES = new Set<RetrievalRoute>(["lexical", "semantic", "dual", "graph", "hybrid"]);
 const DIAGNOSTICS = new Set<RetrievalDiagnosticsLevel>(["none", "summary", "debug"]);
 const SCORE_SEMANTICS = new Set<RetrievalScoreSemantics>(["rank-only", "similarity", "distance", "probability", "rrf", "engine-defined"]);
 const RETRIEVAL_LEVELS = new Set<RetrievalLevel>(["l1-source", "l2-passage"]);
@@ -263,6 +282,10 @@ function positiveInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) > 0;
 }
 
+function boundedText(value: unknown, maximum: number): value is string {
+  return typeof value === "string" && value.trim().length > 0 && value.length <= maximum;
+}
+
 export function compileRetrievalCapabilitiesV1(input: unknown): RetrievalCompileResult<RetrievalProviderCapabilitiesV1> {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     return { ok: false, diagnostics: [{ code: "object", pointer: "", message: "Expected a retrieval capabilities object." }] };
@@ -270,10 +293,7 @@ export function compileRetrievalCapabilitiesV1(input: unknown): RetrievalCompile
   const value = input as Record<string, unknown>;
   const diagnostics: RetrievalContractDiagnostic[] = [];
   if (value.schema !== RETRIEVAL_CAPABILITIES_SCHEMA_V1) diagnostics.push({ code: "schema", pointer: "/schema", message: `Expected ${RETRIEVAL_CAPABILITIES_SCHEMA_V1}.` });
-  const provider = value.provider as Record<string, unknown> | undefined;
-  if (!provider || typeof provider !== "object" || Array.isArray(provider)
-    || !String(provider.providerId || "").trim() || !String(provider.providerVersion || "").trim()
-    || !String(provider.route || "").trim() || !SCORE_SEMANTICS.has(provider.scoreSemantics as RetrievalScoreSemantics)) {
+  if (!validRetrievalServingIdentity(value.provider)) {
     diagnostics.push({ code: "field", pointer: "/provider", message: "provider requires stable identity, version, route, and score semantics." });
   }
   for (const field of ["querySchemas", "resultSchemas", "levels", "sourceKinds", "routes", "scoreSemantics"] as const) {
@@ -359,19 +379,22 @@ export function compileRetrievalQueryV1(input: unknown): RetrievalCompileResult<
     diagnostics.push({ code: "unknown-field", pointer: `/${key}`, message: `Unknown field ${key}.` });
   }
   if (value.schema !== RETRIEVAL_QUERY_SCHEMA_V1) diagnostics.push({ code: "schema", pointer: "/schema", message: `Expected ${RETRIEVAL_QUERY_SCHEMA_V1}.` });
-  if (!String(value.requestId || "").trim()) diagnostics.push({ code: "field", pointer: "/requestId", message: "requestId is required." });
-  if (!String(value.text || "").trim()) diagnostics.push({ code: "field", pointer: "/text", message: "text is required." });
+  if (!boundedText(value.requestId, 256)) diagnostics.push({ code: "field", pointer: "/requestId", message: "requestId must be nonempty text up to 256 characters." });
+  if (!boundedText(value.text, 160_000)) diagnostics.push({ code: "field", pointer: "/text", message: "text must be nonempty text up to 160000 characters." });
   if (value.level !== undefined && !RETRIEVAL_LEVELS.has(value.level as RetrievalLevel)) diagnostics.push({ code: "field", pointer: "/level", message: "level must be l1-source or l2-passage." });
   if (!positiveInteger(value.topK) || Number(value.topK) > 100) diagnostics.push({ code: "field", pointer: "/topK", message: "topK must be between 1 and 100." });
   if (!ROUTES.has(value.route as RetrievalRoute)) diagnostics.push({ code: "field", pointer: "/route", message: "Unsupported retrieval route." });
   if (!DIAGNOSTICS.has(value.diagnostics as RetrievalDiagnosticsLevel)) diagnostics.push({ code: "field", pointer: "/diagnostics", message: "Unsupported diagnostics level." });
   if (value.contentTypeFilter !== undefined && (!Array.isArray(value.contentTypeFilter)
-    || value.contentTypeFilter.some(type => !CONTENT_TYPES.has(type as RetrievalContentType)))) {
+    || value.contentTypeFilter.some(type => !CONTENT_TYPES.has(type as RetrievalContentType))
+    || new Set(value.contentTypeFilter).size !== value.contentTypeFilter.length)) {
     diagnostics.push({ code: "field", pointer: "/contentTypeFilter", message: "contentTypeFilter must contain supported content types." });
   }
   const scope = value.scope as Record<string, unknown> | undefined;
-  if (!scope || typeof scope !== "object" || Array.isArray(scope) || !String(scope.capabilityId || "").trim()
-    || (scope.sourceIds !== undefined && (!Array.isArray(scope.sourceIds) || scope.sourceIds.some(id => typeof id !== "string")))) {
+  if (!scope || typeof scope !== "object" || Array.isArray(scope) || !boundedText(scope.capabilityId, 256)
+    || scope.includeReadOnly !== undefined && typeof scope.includeReadOnly !== "boolean"
+    || (scope.sourceIds !== undefined && (!Array.isArray(scope.sourceIds) || scope.sourceIds.length > 10_000
+      || scope.sourceIds.some(id => !boundedText(id, 1024)) || new Set(scope.sourceIds).size !== scope.sourceIds.length))) {
     diagnostics.push({ code: "field", pointer: "/scope", message: "scope requires capabilityId and optional sourceIds." });
   }
   const generation = value.generation as Record<string, unknown> | undefined;
@@ -384,7 +407,8 @@ export function compileRetrievalQueryV1(input: unknown): RetrievalCompileResult<
     diagnostics.push({ code: "field", pointer: "/deadlineMs", message: "deadlineMs must be between 1 and 300000." });
   }
   const graph = value.graph as Record<string, unknown> | undefined;
-  if (graph && (!positiveInteger(graph.maxDepth) || !positiveInteger(graph.maxNodes) || !positiveInteger(graph.maxEdges)
+  if (value.graph !== undefined && (!graph || typeof graph !== "object" || Array.isArray(graph)
+    || !positiveInteger(graph.maxDepth) || !positiveInteger(graph.maxNodes) || !positiveInteger(graph.maxEdges)
     || Number(graph.maxDepth) > 32 || Number(graph.maxNodes) > 10_000 || Number(graph.maxEdges) > 50_000
     || (graph.direction !== undefined && !["forward", "backlink", "both"].includes(String(graph.direction)))
     || (graph.relations !== undefined && (!Array.isArray(graph.relations) || graph.relations.some(relation => typeof relation !== "string"))))) {
@@ -402,12 +426,20 @@ export function compileRetrievalResultV1(input: unknown): RetrievalCompileResult
   const diagnostics: RetrievalContractDiagnostic[] = [];
   if (value.schema !== RETRIEVAL_RESULT_SCHEMA_V1) diagnostics.push({ code: "schema", pointer: "/schema", message: `Expected ${RETRIEVAL_RESULT_SCHEMA_V1}.` });
   if (value.ok !== true) diagnostics.push({ code: "field", pointer: "/ok", message: "A successful result must set ok to true." });
-  if (!String(value.requestId || "").trim()) diagnostics.push({ code: "field", pointer: "/requestId", message: "requestId is required." });
+  if (!boundedText(value.requestId, 256)) diagnostics.push({ code: "field", pointer: "/requestId", message: "requestId must be bounded text." });
   if (!positiveInteger(value.readyGeneration)) diagnostics.push({ code: "field", pointer: "/readyGeneration", message: "readyGeneration must be positive." });
-  if (!String(value.corpusRevision || "").trim()) diagnostics.push({ code: "field", pointer: "/corpusRevision", message: "corpusRevision is required." });
+  if (!boundedText(value.corpusRevision, 512)) diagnostics.push({ code: "field", pointer: "/corpusRevision", message: "corpusRevision must be bounded text." });
   if (!ROUTES.has(value.route as RetrievalRoute)) diagnostics.push({ code: "field", pointer: "/route", message: "Unsupported retrieval route." });
   if (!Array.isArray(value.hits) || value.hits.length > 100) diagnostics.push({ code: "field", pointer: "/hits", message: "hits must be an array of at most 100 items." });
-  else value.hits.forEach((hit, index) => {
+  if (value.semantic_status !== undefined && !["off", "ready", "unavailable", "fallback"].includes(String(value.semantic_status))) {
+    diagnostics.push({ code: "field", pointer: "/semantic_status", message: "Unsupported semantic path status." });
+  }
+  if (value.search_mode !== undefined && (!["lexical", "semantic", "dual"].includes(String(value.search_mode))
+    || (["lexical", "semantic", "dual"].includes(String(value.route)) && value.search_mode !== value.route))) {
+    diagnostics.push({ code: "field", pointer: "/search_mode", message: "Search mode must match the requested path." });
+  }
+  const sourceIds = new Set<string>(), ranks = new Set<number>();
+  if (Array.isArray(value.hits)) value.hits.forEach((hit, index) => {
     if (!hit || typeof hit !== "object" || Array.isArray(hit)) {
       diagnostics.push({ code: "field", pointer: `/hits/${index}`, message: "Hit must be an object." });
       return;
@@ -417,23 +449,77 @@ export function compileRetrievalResultV1(input: unknown): RetrievalCompileResult
     if (record.serving !== undefined && !validRetrievalServingIdentity(record.serving)) {
       diagnostics.push({ code:"field", pointer:`/hits/${index}/serving`, message:"Hit serving identity is invalid." });
     }
+    if (record.sources !== undefined || record.path_evidence !== undefined || record.source_label !== undefined) {
+      const sources = record.sources, evidence = record.path_evidence;
+      const expectedLabel = Array.isArray(sources) && sources.length === 2 ? "both"
+        : Array.isArray(sources) && sources[0] === "lexical" ? "from keyword search" : "from embedding retrieval";
+      if (!Array.isArray(sources) || !sources.length || sources.length > 2 || new Set(sources).size !== sources.length
+        || sources.some(path => path !== "lexical" && path !== "semantic")
+        || record.source_label !== expectedLabel || !Array.isArray(evidence) || evidence.length !== sources.length
+        || new Set(evidence.map(entry => entry?.path)).size !== evidence.length
+        || evidence.some(entry => !entry || !sources.includes(entry.path) || !positiveInteger(entry.rank)
+          || !Number.isFinite(entry.score) || !boundedText(entry.matched_field, 256)
+          || typeof entry.matched_path !== "string" || entry.matched_path.length > 2048
+          || !["exact", "keyword", "fuzzy", "semantic"].includes(entry.match))
+        || (record.score_semantics === "rrf" && Math.abs(Number(record.score)
+          - evidence.reduce((total, entry) => total + 1 / (60 + entry.rank), 0)) > 1e-12)) {
+        diagnostics.push({ code: "field", pointer: `/hits/${index}/path_evidence`, message: "Result labels and finite per-path evidence must agree; RRF scores must use ranks." });
+      }
+    }
     if (!positiveInteger(record.rank) || !Number.isFinite(record.score)
-      || !String(record.sourceId || "") || !String(record.sourceRevision || "")
-      || !String(record.contentHash || "") || !String(record.sourceUri || "")
+      || !boundedText(record.sourceId, 1024) || !boundedText(record.sourceRevision, 512)
+      || typeof record.contentHash !== "string" || !/^[a-f0-9]{64}$/.test(record.contentHash)
+      || !boundedText(record.sourceUri, 2048)
       || !CONTENT_TYPES.has(record.contentType as RetrievalContentType)
+      || typeof record.readOnly !== "boolean" || !ROUTES.has(record.route as RetrievalRoute)
+      || typeof record.title !== "string" || typeof record.description !== "string"
+      || !record.metadata || typeof record.metadata !== "object" || Array.isArray(record.metadata)
+      || !record.provenance || typeof record.provenance !== "object" || Array.isArray(record.provenance)
+      || sourceIds.has(record.sourceId as string) || ranks.has(record.rank as number)
       || !scores || ["lexical", "semantic", "graph", "priority"].some(key => !Number.isFinite(scores[key]))) {
       diagnostics.push({ code: "field", pointer: `/hits/${index}`, message: "Hit identity, type, rank, or score components are invalid." });
     }
+    sourceIds.add(record.sourceId as string);
+    ranks.add(record.rank as number);
   });
   if (!Array.isArray(value.diagnostics)) diagnostics.push({ code: "field", pointer: "/diagnostics", message: "diagnostics must be an array." });
   if (typeof value.stale !== "boolean" || typeof value.incomplete !== "boolean") {
     diagnostics.push({ code: "field", pointer: "/stale", message: "stale and incomplete must be booleans." });
   }
   const timings = value.timingsMs as Record<string, unknown> | undefined;
-  if (!timings || ["wait", "search", "total"].some(key => typeof timings[key] !== "number" || Number(timings[key]) < 0)) {
+  if (!timings || ["wait", "search", "total"].some(key => typeof timings[key] !== "number" || !Number.isFinite(timings[key]) || Number(timings[key]) < 0)) {
     diagnostics.push({ code: "field", pointer: "/timingsMs", message: "timingsMs must contain non-negative wait, search, and total values." });
   }
   return diagnostics.length ? { ok: false, diagnostics } : { ok: true, value: input as RetrievalResultV1, diagnostics: [] };
+}
+
+export function assertRetrievalResultForQuery(query: RetrievalQueryV1, input: unknown): RetrievalResultV1 {
+  const compiledQuery = compileRetrievalQueryV1(query);
+  if (!compiledQuery.ok) throw new Error(`Invalid retrieval query: ${compiledQuery.diagnostics.map(item => item.message).join("; ")}`);
+  if (query.level === "l2-passage") throw new Error("This retrieval result contract contains L1 sources, not L2 passage ranges.");
+  const compiled = compileRetrievalResultV1(input);
+  if (!compiled.ok) throw new Error(`Invalid retrieval result: ${compiled.diagnostics.map(item => item.message).join("; ")}`);
+  const result = compiled.value;
+  if (result.requestId !== query.requestId) throw new Error("Retrieval result request identity does not match the original query.");
+  if (result.route !== query.route || result.hits.some(hit => hit.route !== query.route)) throw new Error("Retrieval result requested route does not match the query.");
+  if (result.stale || query.generation.mode === "exact" && result.readyGeneration !== query.generation.generation
+    || query.generation.mode === "minimum" && result.readyGeneration < query.generation.generation) {
+    throw new Error("Retrieval result generation is stale or does not satisfy the original generation policy.");
+  }
+  if (result.hits.length > query.topK) throw new Error("Retrieval result exceeds the requested topK boundary.");
+  const sources = query.scope.sourceIds && new Set(query.scope.sourceIds);
+  for (const hit of result.hits) {
+    if (sources && !sources.has(hit.sourceId) || query.scope.includeReadOnly === false && hit.readOnly) {
+      throw new Error("Retrieval result violates the original authorized source scope.");
+    }
+    // Subscription is a provenance filter; imported sources keep their concrete content type.
+    const subscription = hit.provenance.provider === "broker" || hit.sourceUri.startsWith("pkm://subscriptions/");
+    if (query.contentTypeFilter?.length && !query.contentTypeFilter.includes(hit.contentType)
+      && !(query.contentTypeFilter.includes("subscription") && subscription)) {
+      throw new Error("Retrieval result content type does not satisfy the original filter.");
+    }
+  }
+  return result;
 }
 
 export function assertRetrievalIndexEventV1(input: unknown): RetrievalIndexEventV1 {

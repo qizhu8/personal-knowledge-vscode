@@ -1,6 +1,7 @@
 import { AgentRuntimeState, ChatMessage, ChatMode, CHUNK_BYTES, FileMeta, Frame, MAX_FILE_BYTES, Member, MemberKind, ReplyPolicy } from "./chatroom-protocol";
 import { WebSocket } from "ws";
 import { randomBytes } from "crypto";
+import { assertPeerEndpoint, parsePeerPacket, PeerDelivery, PeerPacket } from "./peer-protocol";
 
 // ── Client (one connection == one room) ───────────────────────────────────────
 export type ChatStatus = "disconnected" | "connecting" | "connected" | "error";
@@ -18,6 +19,7 @@ export interface JoinOpts {
 }
 
 export interface ClientEvents {
+  onPeer?: (delivery: PeerDelivery) => void;
   onStatus:       (status: ChatStatus, detail?: string) => void;
   onMessage:      (m: ChatMessage) => void;
   onHistory:      (messages: ChatMessage[]) => void;
@@ -105,6 +107,15 @@ export class ChatClient {
     let frame: Frame;
     try { frame = JSON.parse(raw); } catch { return; }
     switch (frame.t) {
+      case "peer":
+        if (frame.target !== this.participantId || typeof frame.from !== "string" || !frame.from) break;
+        try {
+          const packet = parsePeerPacket(frame.packet);
+          this.events.onPeer?.({ from: frame.from, fromName: String(frame.fromName || ""), packet });
+        } catch (error) {
+          this.log(`peer packet rejected: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        break;
       case "join.pending":
         this.setStatus("connecting", "assigning Room identity automatically…");
         this.events.onJoinPending?.(frame.requestId, frame.expiresAt);
@@ -214,8 +225,8 @@ export class ChatClient {
       }
       case "error":
         // A rejected action is scoped to that action; it must not poison the live connection.
-        if (["muted", "moderation", "mention-required", "host-only-broadcast", "discuss-requires-peers", "phase-closed", "duplicate-slot"].includes(frame.code)
-          || frame.code.startsWith("collaboration-")) {
+        if (frame.connectionAlive === true || ["muted", "moderation", "mention-required", "host-only-broadcast", "discuss-requires-peers", "phase-closed", "duplicate-slot"].includes(frame.code)
+          || frame.code.startsWith("collaboration-") || frame.code.startsWith("peer-")) {
           this.events.onMessage({ id: randomBytes(6).toString("hex"), from: "", fromId: "", text: frame.msg, ts: Date.now(), kind: "human", system: true });
           break;
         }
@@ -236,6 +247,14 @@ export class ChatClient {
     this.send({ t: "msg", room: this.opts.room, from: this.opts.user, text: t, kind: this.opts.kind ?? "human", responseRequired, replyPolicy, mode,
       clientRequestId: randomBytes(8).toString("hex"), recipients, replyToMessageId, discussionLead, finalTopicSummary, collaboration });
     return true;
+  }
+
+  sendPeer(target: string, packet: PeerPacket): void {
+    if (!this.isConnected || !this.opts || !this.ws || this.ws.readyState !== WebSocket.OPEN) throw new Error("Peer is disconnected; no task was sent.");
+    assertPeerEndpoint(this.opts.url);
+    if (!target || target === this.participantId) throw new Error("Choose another connected participant.");
+    if (this.ws.bufferedAmount > 1024 * 1024) throw new Error("Peer connection is busy; no task was sent.");
+    this.ws.send(JSON.stringify({ t: "peer", target, packet: parsePeerPacket(packet) }));
   }
 
   sendAgentState(state: AgentRuntimeState): boolean {

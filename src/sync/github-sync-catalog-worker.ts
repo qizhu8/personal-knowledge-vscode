@@ -1,10 +1,11 @@
 import * as fs from "fs";
 import * as path from "path";
+import { createHash } from "crypto";
 import { isMainThread, parentPort, Worker, workerData } from "worker_threads";
 import { agentSnapshotIsEncrypted, listAgentSnapshots } from "../agent-sessions/agent-snapshots";
-import { isContentItemPrivate, PrivacyContentType, setPrivacyStoreRoot } from "../knowledge/content-privacy";
+import { isContentItemPrivate, isTopLevelPrivate, PrivacyContentType, setPrivacyStoreRoot } from "../knowledge/content-privacy";
 import { getStorePath, knowledgeFilePath, noteList, paperList, setStorePath as setFileStorePath, skillList } from "../knowledge/filestore";
-import { GitHubSyncCatalog, GitHubSyncCatalogItem, githubSyncIsSystemItem, githubSyncIgnoredPath } from "./github-sync";
+import { GitHubSyncCatalog, GitHubSyncCatalogItem, githubSyncIsSystemItem, githubSyncIgnoredPath, githubSyncSafeRelativePath } from "./github-sync";
 import { readSyncScriptIdentity } from "./github-sync-script-identity";
 import { referencedMarkdownAssets } from "../knowledge/markdown-assets";
 import { packageList, promptList, scriptGet, scriptIdentityFile, scriptList, setStorePath as setStoragePath } from "../knowledge/storage";
@@ -58,6 +59,45 @@ function buildCatalog({ root, servers, recipes }: CatalogInput): GitHubSyncCatal
   setFileStorePath(root);
   setStoragePath(root);
   setPrivacyStoreRoot(root);
+  const actionRoot = path.join(root, "actions");
+  if (fs.existsSync(actionRoot) && fs.lstatSync(actionRoot).isSymbolicLink()) throw new Error("Action registry cannot be a symlink.");
+  const actions: GitHubSyncCatalogItem[] = !fs.existsSync(actionRoot) ? [] : fs.readdirSync(actionRoot).filter(name => /^[a-z][a-z0-9_.-]+\.json$/.test(name)).map(name => {
+    const source = path.join(actionRoot, name);
+    if (fs.lstatSync(source).isSymbolicLink()) throw new Error(`Action definitions cannot be symlinks: ${name}`);
+    const value = JSON.parse(fs.readFileSync(source, "utf8"));
+    if (name !== `${value.action_id}.json`) throw new Error(`Action filename and identity disagree: ${name}`);
+    return { id:value.action_id, label:value.display_name || value.action_id, cat:"", meta:`v${value.version} · definition only`,
+      isPrivate:isTopLevelPrivate("actions", value.action_id), source, destination:`actions/${name}` };
+  }).filter(item => !githubSyncIsSystemItem("actions", item));
+  const moduleRoot = path.join(root, "action-module-sets");
+  if (fs.existsSync(moduleRoot) && fs.lstatSync(moduleRoot).isSymbolicLink()) throw new Error("ModuleSet root cannot be a symlink.");
+  const actionModules: GitHubSyncCatalogItem[] = [];
+  if (fs.existsSync(moduleRoot)) for (const id of fs.readdirSync(moduleRoot)) {
+    if (!/^[a-z][a-z0-9_.-]{2,100}$/.test(id) || /^(?:core|system)(?:[.]|$)/i.test(id)) continue;
+    if (fs.lstatSync(path.join(moduleRoot, id)).isSymbolicLink()) throw new Error(`ModuleSet cannot be a symlink: ${id}`);
+    for (const version of fs.readdirSync(path.join(moduleRoot, id))) {
+      if (!/^[1-9]\d*$/.test(version)) continue;
+      const destination = `action-module-sets/${id}/${version}`;
+      const directory = path.join(root, destination);
+      const source = path.join(directory, "manifest.json");
+      if (!fs.existsSync(source)) continue;
+      if (fs.lstatSync(directory).isSymbolicLink() || fs.lstatSync(source).isSymbolicLink()) throw new Error(`ModuleSet manifest cannot traverse symlinks: ${source}`);
+      const manifest = JSON.parse(fs.readFileSync(source, "utf8"));
+      if (manifest.schema !== "pkm.action.module-set/v1" || manifest.module_set_id !== id || manifest.version !== Number(version)
+        || !manifest.files || typeof manifest.files !== "object" || Array.isArray(manifest.files)) throw new Error(`ModuleSet has an invalid file manifest: ${destination}`);
+      const dependencies = Object.keys(manifest.files).map(member => {
+        if (githubSyncSafeRelativePath(member) !== member || !/^(?:definitions|assets)\//.test(member)) throw new Error(`Invalid ModuleSet member: ${member}`);
+        const file = path.join(directory, member);
+        for (let current = file; current !== moduleRoot; current = path.dirname(current)) {
+          if (fs.lstatSync(current).isSymbolicLink()) throw new Error(`ModuleSet members cannot traverse symlinks: ${file}`);
+        }
+        if (createHash("sha256").update(fs.readFileSync(file)).digest("hex") !== manifest.files[member]) throw new Error(`ModuleSet member hash mismatch: ${file}`);
+        return { source:file, destination:`${destination}/${member}` };
+      });
+      actionModules.push({ id:`${id}/${version}`, label:manifest.name || id, cat:id, meta:`v${version} · loaded separately`,
+        isPrivate:isTopLevelPrivate("action-module-sets", id), source, destination:`${destination}/manifest.json`, dependencies });
+    }
+  }
   const skills = (skillList() as any[]).flatMap(row => {
     const source = knowledgeFilePath("skills", row.name);
     return source ? [githubSyncItem(row, "skills", source)] : [];
@@ -110,6 +150,8 @@ function buildCatalog({ root, servers, recipes }: CatalogInput): GitHubSyncCatal
     scripts, packages, servers: serverItems,
     recipes: recipes.filter(item => !githubSyncIsSystemItem("recipes", item)),
     agentSnapshots,
+    actions,
+    "action-module-sets":actionModules,
   };
 }
 

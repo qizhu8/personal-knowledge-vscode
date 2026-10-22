@@ -12,7 +12,7 @@ assert.deepStrictEqual(
 
 assert.deepStrictEqual(
   selectTasks("full", {}).map(task => task.name),
-  ["plan", "contract", "standalone", "panel", "startup"],
+  ["plan", "contract", "standalone", "panel", "startup", "pkm-chat"],
 );
 
 assert.deepStrictEqual(
@@ -22,9 +22,12 @@ assert.deepStrictEqual(
 
 assert.deepStrictEqual(
   selectTasks("full", { PKM_BROWSER_SHARD_COUNT: "2", PKM_BROWSER_SHARD_INDEX: "2" }).map(task => task.name),
-  ["contract", "panel"],
+  ["contract", "panel", "pkm-chat"],
 );
 
+const daily = selectTasks("targeted", { PKM_BROWSER_SUITES:"pkm-chat" })[0];
+assert.equal(require("../package.json").scripts["test:pkm-chat:daily:run"], `node ${daily.args.join(" ")}`,
+  "The release browser plan and the daily-use command must run the same tests");
 assert.throws(
   () => selectTasks("targeted", {}),
   /PKM_BROWSER_SUITES is required/,

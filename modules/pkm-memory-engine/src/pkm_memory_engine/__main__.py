@@ -10,6 +10,12 @@ from .memory import Memory
 MAX_REQUEST = 8 * 1024 * 1024
 
 
+def _emit(value: object, **options: object) -> None:
+    # The protocol is UTF-8 regardless of the console code page (cp1252 on Windows pipes).
+    sys.stdout.buffer.write(json.dumps(value, **options).encode("utf-8") + b"\n")
+    sys.stdout.buffer.flush()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--database", required=True)
@@ -22,6 +28,7 @@ def main() -> None:
              "pieces": engine.pieces, "children": engine.children, "parents": engine.parents,
              "usage": engine.usage}
     policy = {"turn_begin": memory.turn_begin, "turn_continue": memory.turn_continue,
+              "turn_abort": memory.turn_abort,
               "turn_commit": memory.turn_commit, "turn_receipt": memory.turn_receipt,
               "memory_read": memory.memory_read, "overview": memory.overview,
               "enforce_capacity": memory.enforce_capacity, "forget_scope": memory.forget_scope}
@@ -31,7 +38,7 @@ def main() -> None:
             if not line:
                 break
             if len(line) > MAX_REQUEST:
-                print(json.dumps({"ok": False, "error": "Request exceeds 8 MiB; worker closed."}), flush=True)
+                _emit({"ok": False, "error": "Request exceeds 8 MiB; worker closed."})
                 break
             request_id = None
             try:
@@ -52,7 +59,7 @@ def main() -> None:
             except (ValueError, sqlite3.Error, KeyError, TypeError, OverflowError) as error:
                 response = {"id": request_id, "ok": False,
                             "error": {"type": type(error).__name__, "message": str(error)}}
-            print(json.dumps(response, allow_nan=False, ensure_ascii=False), flush=True)
+            _emit(response, allow_nan=False, ensure_ascii=False)
     finally:
         engine.close()
 

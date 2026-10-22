@@ -110,7 +110,7 @@ providerBinding = undefined;
 assert.match(extensionSource, /_storeReady = true;[\s\S]*?_treeProvider\?\.refresh\(\);\s*refreshMcpDefinitions\(\);/, "store initialization must notify existing MCP definition subscribers");
 
 const rememberStart = extensionSource.indexOf("async function rememberMachineStorePath(");
-const rememberEnd = extensionSource.indexOf("\nlet _panelReady", rememberStart);
+const rememberEnd = extensionSource.indexOf("\nlet _storeReady", rememberStart);
 assert(rememberStart >= 0 && rememberEnd > rememberStart);
 let globalPath;
 const globalWrites = [];

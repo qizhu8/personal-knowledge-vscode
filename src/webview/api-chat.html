@@ -27,10 +27,9 @@
     <button id="promote-project" title="Promote Chat to Project (optional)" aria-label="Promote Chat to Project"><span class="codicon codicon-project"></span></button>
     <button id="rename" title="Rename chat" aria-label="Rename chat"><span class="codicon codicon-edit"></span></button>
     <button id="task" title="Start Task" aria-label="Start Task"><span class="codicon codicon-checklist"></span></button>
-    <button id="pause" title="Pause Chat" aria-label="Pause Chat"><span class="codicon codicon-debug-pause"></span></button>
-    <button id="new" title="New chat" aria-label="New chat"><span class="codicon codicon-add"></span></button>
-    <button id="settings" title="Model connection" aria-label="Model connection"><span class="codicon codicon-gear"></span></button>
+    <button id="chat-portal" title="Chat Portal: disconnected (closed)" aria-label="Chat Portal" aria-pressed="false"><svg class="portal-door" viewBox="0 0 24 24" aria-hidden="true"><path class="portal-frame" d="M5 21V10a7 7 0 0 1 14 0v11Z"/><path class="portal-leaf" d="M8 20V10a4 4 0 0 1 8 0v10Z"/><circle cx="14" cy="14" r="1"/></svg></button>
   </header>
+  <section id="portal-state" aria-label="Portal connection" hidden></section>
   <div id="error" class="error" role="alert" hidden></div>
   <section id="harness-summary" aria-label="Native Harness summary" hidden>
     <span id="harness-summary-text"></span>
@@ -50,7 +49,7 @@
       <div id="workers-tree" role="list"></div>
     </section>
   </section>
-  <main id="messages" aria-label="Messages" aria-busy="false"></main>
+  <main id="messages" aria-label="Messages" aria-busy="false" tabindex="0"></main>
   <section id="visualization-panel" class="chat-visualization" aria-label="Harness visualization" hidden>
     <header class="toolbar">
       <strong>Visualization</strong>
@@ -62,6 +61,7 @@
   </section>
   <section id="applied-edits" aria-label="Applied edits" hidden></section>
   <form id="composer">
+    <p id="composer-budget-warning" class="message-status" role="status" hidden></p>
     <section id="queued-inputs" aria-label="Queued inputs" hidden></section>
     <div id="input-mode" role="radiogroup" aria-label="Running input mode" hidden>
       <button id="steer-mode" type="button" role="radio" aria-checked="true" title="Steer"><span class="codicon codicon-debug-step-over" aria-hidden="true"></span><span>Steer</span></button>

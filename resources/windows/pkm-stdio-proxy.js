@@ -8,6 +8,9 @@ if (!command) {
 } else {
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
+  // PKM stdio protocols are UTF-8; Windows pipes otherwise default to the ANSI code page (e.g. cp1252).
+  env.PYTHONUTF8 = "1";
+  env.PYTHONIOENCODING = "utf-8";
   const child = spawn(command, args, {
     env,
     stdio: "inherit",

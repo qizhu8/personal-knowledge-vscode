@@ -176,7 +176,7 @@ export function packageList() {
     }
     const lang = existsSync(join(dir, 'pyproject.toml')) ? 'python'
       : existsSync(join(dir, 'package.json')) ? 'node' : 'unknown';
-    return { name, description, lang, source: packageSource(dir) };
+    return { name, description, lang, source: packageSource(dir), gitSource:existsSync(join(dir, ".pkm-git-source.json")) };
   });
 }
 

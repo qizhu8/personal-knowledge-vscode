@@ -79,6 +79,13 @@ const surfaces = {
     error: ["test-agent-snapshots.js", "test-context-menu-actions.js"],
     fallback: ["test-four-workspace-ui.js", "test-loading-progress.js"],
   }),
+  actions: surface("automation", "src/webview/panel/53-panel-instances.js", "showEmbeddedActions", ["embedded-workbench"], {
+    functionality: ["test-panel-instances.js", "test-action-browser.js"],
+    ui: ["test-action-library-entry.js", "test-panel-instances.js"],
+    refresh: ["test-panel-instances.js"],
+    error: ["test-action-browser.js"],
+    fallback: ["test-panel-instances.js"],
+  }),
   recipes: surface("automation", "src/webview/panel/15-projects.js", "renderGlobalRecipes", ["cattree", "card", "table", "graph"], {
     functionality: ["test-recipe-browser-editor.js", "test-workflow-project-model.js"],
     ui: ["test-four-workspace-ui.js", "test-recipe-browser-editor.js"],
@@ -127,6 +134,13 @@ const surfaces = {
     refresh: ["test-github-sync-ui.js", "test-tab-cache-ui.js"],
     error: ["test-github-sync-ui.js", "test-github-sync-conflicts.js"],
     fallback: ["test-github-sync-ui.js", "test-tab-cache-ui.js"],
+  }),
+  portalConnections: surface("projects", "src/webview/panel/16-portal-connections.js", "renderPortalConnections", ["card"], {
+    functionality: ["test-portal-connections.js"],
+    ui: ["test-portal-connections.js", "test-four-workspace-ui.js"],
+    refresh: ["test-portal-connections.js"],
+    error: ["test-portal-connections.js"],
+    fallback: ["test-portal-connections.js"],
   }),
   backgroundTasks: surface("settings", "src/webview/panel/52-background-tasks.js", "renderBackgroundTasks", ["card"], {
     functionality: ["test-background-tasks.js"],

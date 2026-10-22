@@ -2,6 +2,7 @@ import { spawn, ChildProcessWithoutNullStreams } from "child_process";
 import * as path from "path";
 import { randomUUID } from "crypto";
 import { mcpStdioCommand } from "../mcp/mcp-stdio-command";
+import type { MemoryModelAccounting } from "./memory-accounting";
 
 export interface MemorySourceReference {
   id: string;
@@ -27,7 +28,8 @@ export type MemoryCommand =
   | { method: "usage"; params: { scope?: string } }
   | { method: "turn_begin"; params: { scope: string; turn: string; input: { id: string; text: string };
       recent?: MemoryDialogueMessage[]; budget_chars?: number } }
-  | { method: "turn_continue"; params: { turn: string; output?: string; error?: string; usage?: Record<string, number> } }
+  | { method: "turn_continue"; params: { turn: string; output?: string; error?: string; usage?: Record<string, number>; accounting?: MemoryModelAccounting } }
+  | { method: "turn_abort"; params: { turn: string; error: string; usage?: Record<string, number>; accounting?: MemoryModelAccounting } }
   | { method: "turn_commit"; params: { turn: string; user: MemoryMessage; assistant: MemoryMessage; scope?: string } }
   | { method: "turn_receipt"; params: { turn: string } }
   | { method: "memory_read"; params: { scope: string; piece: string; after?: number } }
@@ -80,6 +82,13 @@ function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+/** Lead with the final exception line; notifications truncate, and the traceback head is only runpy frames. */
+export function memoryEngineDiagnostic(stderr: string): string {
+  const lines = stderr.split(/\r?\n/).map(line => line.trimEnd()).filter(Boolean);
+  const final = [...lines].reverse().find(line => /^[A-Za-z_][\w.]*(Error|Exception|Exit|Interrupt)\b/.test(line));
+  return final ? `${final} | ${stderr.trim()}` : stderr.trim();
+}
+
 /** Private storage transport only. Host authorization is required before each command. */
 export class MemoryEngineClient {
   private readonly child: ChildProcessWithoutNullStreams;
@@ -103,12 +112,12 @@ export class MemoryEngineClient {
     ], process.platform, options.extensionRoot);
     this.child = spawn(launch.command, launch.args, {
       windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, ...launch.env, PYTHONDONTWRITEBYTECODE: "1" },
+      env: { ...process.env, ...launch.env, PYTHONDONTWRITEBYTECODE: "1", PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
     });
     this.exit = new Promise(resolve => {
       this.child.once("close", (code, signal) => {
         this.exited = true;
-        this.fail(new Error(`Memory Engine exited (${code ?? signal}); pending mutation outcomes may be uncertain.${this.stderr ? ` ${this.stderr}` : ""}`));
+        this.fail(new Error(`Memory Engine exited (${code ?? signal}); pending mutation outcomes may be uncertain.${this.stderr ? ` ${memoryEngineDiagnostic(this.stderr)}` : ""}`));
         resolve();
       });
     });

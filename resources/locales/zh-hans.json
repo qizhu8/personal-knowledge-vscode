@@ -4,6 +4,11 @@
     "label": "简体中文"
   },
   "strings": {
+    "apiChat.responseStopped": "回复已停止。你可以发送新消息，或重试这次回复。",
+    "apiChat.responseStoppedAfterTools": "回复已停止。之前工具执行的操作不会撤销；重试前请先检查工具结果。",
+    "apiChat.responseStoppedDuringTool": "回复已停止。当时仍有工具在运行，可能已经修改文件或提交远程任务。停止回复不会撤销这些操作；重试前请先检查工具结果。",
+    "apiChat.responseStoppedLegacy": "回复已停止。之前的工具操作可能已经生效，停止回复不会撤销这些操作；重试前请先检查工具结果。",
+    "apiChat.contextBudgetExceeded": "预估输入加预留输出已超出上下文预算。请增大预算、减少上下文或工具，或选择上下文容量更大的模型。",
     "apiChat.allowOnce": "允许本次",
     "apiChat.refuse": "拒绝",
     "apiChat.notification.permission": "PKM Chat [{chat}] 需要授权：{detail}",

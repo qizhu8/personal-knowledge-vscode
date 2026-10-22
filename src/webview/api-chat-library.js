@@ -1,9 +1,67 @@
 (() => {
   const t = text => globalThis.PkmChatText?.(text) || text;
-  window.PkmChatRole = chat => chat?.workerManager || chat?.manager || chat?.messages?.some(message => message.delegations?.length)
-    ? "manager" : chat?.workerParentChatId || chat?.workerState?.parentChatId || chat?.parentChatId ? "worker" : undefined;
+  window.PkmChatRole = chat => chat?.portal?.binding?.role || (chat?.workerManager || chat?.manager || chat?.messages?.some(message => message.delegations?.length)
+    ? "manager" : chat?.workerParentChatId || chat?.workerState?.parentChatId || chat?.parentChatId ? "worker" : undefined);
   const wizardTemplates = new Map();
+  const portalTemplates = new Map();
+  // Controller: blue Portal ring on the left, side-profile wizard on the right facing it.
+  // Controlled: wizard on the left with its back to the ring on the right. Closed: a dashed ring only.
+  window.PkmChatPortalIcon = (connected, role, showWizard = true) => {
+    const key = `${connected ? "open" : "closed"}:${showWizard ? role === "controlled" ? "controlled" : "controller" : "button"}`;
+    if (!portalTemplates.has(key)) {
+      const ns = "http://www.w3.org/2000/svg";
+      const icon = document.createElement("span");
+      icon.className = `portal-button-icon portal-scene ${connected ? "portal-open" : "portal-closed"}`;
+      icon.dataset.connection = connected ? "connected" : "disconnected";
+      const svg = document.createElementNS(ns, "svg");
+      svg.setAttribute("viewBox", "0 0 24 16"); svg.setAttribute("aria-hidden", "true"); svg.setAttribute("focusable", "false");
+      svg.classList.add("portal-scene-svg");
+      const controlled = role === "controlled";
+      const ringX = !connected || !showWizard ? 12 : controlled ? 18.5 : 5.5;
+      const shift = controlled ? 0 : 12;
+      const ring = (className, rx, ry) => {
+        const node = document.createElementNS(ns, "ellipse");
+        for (const [name, value] of Object.entries({ class: className, cx: ringX, cy: 8, rx, ry })) node.setAttribute(name, String(value));
+        svg.append(node);
+      };
+      ring("portal-ring-glow", 4.2, 7.2); ring("portal-ring", 4.2, 7.2); ring("portal-ring-inner", 2.4, 5.2);
+      if (connected && showWizard) {
+        const palette = { outline: "#30273f", hat: controlled ? "#5fae94" : "#9983ce", edge: controlled ? "#b5e4d2" : "#c8b4ef",
+          skin: "#f6ceaa", hair: "#795440", eye: "#3a3040", wand: "#c89355", spark: "#bfe6ff" };
+        const rect = (parent, x, y, width, height, color) => {
+          const node = document.createElementNS(ns, "rect");
+          for (const [name, value] of Object.entries({ x: x + shift, y, width, height, fill: palette[color] })) node.setAttribute(name, String(value));
+          parent.append(node);
+        };
+        const wizard = document.createElementNS(ns, "g"); wizard.setAttribute("class", "portal-side-wizard");
+        wizard.dataset.facing = controlled ? "away-from-portal" : "toward-portal"; wizard.dataset.chatRole = controlled ? "controlled" : "controller";
+        for (const [x, y, width, height, color] of [
+          [8, 1, 2, 1, "edge"], [6, 2, 3, 1, "hat"], [5, 3, 4, 1, "hat"], [3, 4, 8, 1, "edge"],
+          [4, 5, 4, 4, "skin"], [8, 5, 2, 3, "hair"], [3, 6, 1, 1, "skin"], [4, 6, 1, 1, "eye"], [4, 8, 2, 1, "hair"],
+          [4, 9, 5, 2, "hat"], [3, 11, 7, 3, "hat"], [5, 10, 1, 3, "edge"], [3, 14, 2, 1, "outline"], [7, 14, 2, 1, "outline"],
+        ]) rect(wizard, x, y, width, height, color);
+        svg.append(wizard);
+        for (let frame = 0; frame < 4; frame++) {
+          const group = document.createElementNS(ns, "g"); group.classList.add("pixel-wizard-frame"); group.dataset.frame = String(frame);
+          const up = frame === 1 || frame === 2;
+          rect(group, 2, 9, 2, 1, "skin"); rect(group, 1, up ? 6 : 7, 1, 3, "wand");
+          rect(group, 0, up ? 5 : 6, 1, 1, "spark");
+          const [sx, sy] = [[22, 4], [20, 1], [15, 3], [16, 12]][frame];
+          if (controlled) rect(group, sx, sy, 1, 1, "spark");
+          else { rect(group, [10, 9, 8, 9][frame] - shift, [6, 5, 7, 8][frame], 1, 1, "spark"); rect(group, [6, 4, 5, 7][frame] - shift, [3, 10, 6, 12][frame], 1, 1, "spark"); }
+          svg.append(group);
+        }
+      }
+      icon.append(svg); portalTemplates.set(key, icon);
+    }
+    return portalTemplates.get(key).cloneNode(true);
+  };
   window.PkmChatWorkingIcon = role => {
+    if (role === "controller" || role === "controlled") {
+      const icon = window.PkmChatPortalIcon(true, role);
+      icon.classList.add("chat-role-icon"); icon.dataset.chatRole = role;
+      return icon;
+    }
     if (!["manager", "worker"].includes(role)) return document.getElementById("working-cauldron-template").content.firstElementChild.cloneNode(true);
     if (!wizardTemplates.has(role)) {
       const icon = document.createElement("span"); icon.className = "chat-role-icon"; icon.dataset.chatRole = role;
@@ -23,6 +81,7 @@
         [3, 6, 1, 1, "eye"], [2, 8, 1, 1, "hair"], [0, 9, 4, 4, "hat"], [-1, 11, 6, 3, "hat"],
         [0, 14, 2, 1, "outline"], [3, 14, 2, 1, "outline"], [1, 10, 1, 3, "edge"],
       ]) rect(svg, x + dx, y, width, height, color);
+      svg.dataset.facing = "front";
       for (const [left, top, width, height, color] of worker ? [
         [7, 11, 8, 1, "rim"], [8, 12, 6, 1, "potion"], [8, 13, 6, 2, "pot"], [9, 15, 4, 1, "pot"],
         [6, 12, 1, 1, "rim"], [15, 12, 1, 1, "rim"],
@@ -49,13 +108,48 @@
     }
     return wizardTemplates.get(role).cloneNode(true);
   };
+  const terminalWizard = state => {
+    const icon = document.createElement("span"); icon.className = `chat-role-icon chat-terminal-wizard ${state === "completed" ? "wizard-sleeping" : "wizard-sooty"}`;
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("aria-hidden", "true"); svg.classList.add("pixel-wizard");
+    const rect = (x, y, width, height, color, className) => {
+      const node = document.createElementNS(svg.namespaceURI, "rect");
+      for (const [key, value] of Object.entries({ x, y, width, height, fill:color })) node.setAttribute(key, String(value));
+      if (className) node.setAttribute("class", className);
+      svg.append(node);
+    };
+    if (state === "completed") {
+      svg.dataset.facing = "side";
+      rect(3, 16, 8, 3, "#9983ce"); rect(5, 18, 10, 1, "#c8b4ef");
+      rect(7, 8, 2, 2, "#c8b4ef"); rect(5, 10, 5, 2, "#9983ce"); rect(4, 12, 9, 1, "#c8b4ef");
+      rect(8, 13, 6, 4, "#f6ceaa", "wizard-face"); rect(7, 13, 2, 4, "#795440");
+      rect(14, 15, 1, 1, "#f6ceaa"); rect(11, 15, 2, 1, "#493649");
+      rect(2, 19, 18, 2, "#996d48", "wizard-desk"); rect(3, 21, 2, 3, "#795440"); rect(17, 21, 2, 3, "#795440");
+      const snores = document.createElementNS(svg.namespaceURI, "g"); snores.classList.add("wizard-zzz");
+      for (const [index, letter] of [..."zZZ"].entries()) {
+        const text = document.createElementNS(svg.namespaceURI, "text");
+        text.setAttribute("x", String(14 + index * 3)); text.setAttribute("y", String(11 - index * 3));
+        text.setAttribute("class", "wizard-snore"); text.style.animationDelay = `${index * -.6}s`; text.textContent = letter; snores.append(text);
+      }
+      svg.append(snores);
+    } else {
+      svg.dataset.facing = "front";
+      rect(9, 5, 2, 2, "#c8b4ef"); rect(7, 7, 6, 3, "#9983ce"); rect(5, 10, 11, 2, "#c8b4ef");
+      rect(7, 12, 7, 6, "#39333d", "wizard-face"); rect(6, 12, 1, 5, "#795440");
+      rect(8, 14, 2, 2, "#fff", "wizard-eye"); rect(11, 14, 2, 2, "#fff", "wizard-eye");
+      rect(9, 17, 3, 1, "#bbb2bd"); rect(7, 19, 8, 3, "#9983ce");
+    }
+    icon.append(svg); return icon;
+  };
   window.PkmChatStatusIndicator = (value, role) => {
     const labels = { running: 'Running', stopped: 'Stopped', failed: 'Failed', completed: 'Completed', 'awaiting-input': 'Waiting for Input', 'awaiting-result': 'Waiting for delegated result', 'new-result': 'Completed: unread result', paused: 'Paused', idle: 'Idle' };
     const state = value === 'awaiting-input' ? 'waiting-input' : value === 'awaiting-result' ? 'waiting-result' : value === 'new-result' ? 'completed' : value === 'paused' ? 'stopped' : ['running', 'stopped', 'failed', 'completed'].includes(value) ? value : 'idle';
-    const node = role || state === 'running' ? window.PkmChatWorkingIcon(role) : document.createElement('span');
+    const node = ["completed", "failed"].includes(state) ? terminalWizard(state)
+      : role || state === 'running' ? window.PkmChatWorkingIcon(role) : document.createElement('span');
     node.classList.add('chat-status-indicator'); node.removeAttribute('aria-hidden'); node.dataset.state = state;
+    if (role) node.dataset.chatRole = role;
     if (role && state !== 'running') node.classList.add("chat-role-still");
-    const label = `${role ? `${t(role === "manager" ? "Manager" : "Worker")} · ` : ""}${t(labels[value] || 'Idle')}`;
+    const label = `${role ? `${t(({ manager:"Manager", worker:"Worker", controller:"Controller", controlled:"Controlled" })[role] || role)} · ` : ""}${t(labels[value] || 'Idle')}`;
     node.setAttribute('title', label); node.setAttribute('role', 'img'); node.setAttribute('aria-label', label);
     if (node.namespaceURI === 'http://www.w3.org/2000/svg') { const title = document.createElementNS(node.namespaceURI, 'title'); title.textContent = label; node.append(title); }
     return node;
@@ -168,7 +262,7 @@
             cached = { node, row, open, name, toggle, count, children: childList, menuActions }; rows.set(chat.id, cached);
           }
           const indicator = cached.open.querySelector(".chat-status-indicator");
-          const role = children.has(chat.id) ? "manager" : window.PkmChatRole(chat);
+          const role = chat.portal?.binding?.role || (children.has(chat.id) ? "manager" : window.PkmChatRole(chat));
           const key = `${chat.status}:${role}:${trash}:${document.documentElement.lang}`;
           if (cached.statusKey !== key) {
             const status = window.PkmChatStatusIndicator(chat.status, role);

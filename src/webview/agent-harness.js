@@ -59,6 +59,7 @@
       input:harness?.currentProblem, source:harness?.currentProblemSource,
       note:'A user request is not a separately recorded goal or acceptance contract.',
       waiting:harness?.waiting, queuedInputs:harness?.queuedInputs,
+      taskWorkingState:harness?.taskWorkingState,
       liveness:session.liveness, configuration:session.nativeAgent, recordUpdatedAt:session.updatedAt
     }, { executable:false });
     const todos = new Map();
@@ -174,6 +175,24 @@
       if (attempt.retryOf) group.edges.push({ from:attempt.retryOf, to:attempt.attemptId || attempt.messageId, kind:'retry' });
       add(a, 'input', 'Input', 'Associated input', 'recorded', { text:attempt.associatedProblem, source:attempt.problemSource }, { executable:false });
       const reportSteps = new Map(), reports = list(attempt.harnessReports);
+      if (attempt.memory?.accounting) {
+        const memory = graph(key('memory-accounting', attempt.messageId), 'Independent Memory inference accounting', a.id);
+        const recordedMemory = add(a, 'memory-accounting', 'Memory accounting', 'Memory preparation accounting', attempt.memory.error ? 'failed' : 'recorded', {
+          ...attempt.memory.accounting, turn:attempt.memory.turn,
+          note:'Preparation snapshot only. Post-reply extraction is stored in the original durable Memory turn receipt, not written back into the Chat. Missing usage is not zero or free.'
+        }, { child:memory.id, executable:false });
+        if (session.memoryReceiptReader) recordedMemory.memoryReceipt = { messageId:attempt.messageId };
+        for (const [index, call] of list(attempt.memory.calls).entries()) add(memory, String(index), 'Memory model call',
+          `${call.purpose} / ${index + 1}`, call.status, call, { executable:false });
+      }
+      if (list(attempt.invocationBudgets).length) {
+        const invocations = graph(key('invocation-budgets', attempt.messageId), 'Tool / retrieval invocation budgets', a.id);
+        add(a, 'invocation-budgets', 'Invocation budgets', `${attempt.invocationBudgets.length} observed invocations`, 'recorded', {
+          note:'Each invocation is recorded once, independently of model rounds. Active time excludes tracked PKM user waits, not CPU time. Missing deadlines are unknown, not unlimited.'
+        }, { child:invocations.id, executable:false });
+        for (const invocation of attempt.invocationBudgets) add(invocations, invocation.id, 'Invocation accounting',
+          invocation.label, invocation.status, invocation, { executable:false });
+      }
       if (list(attempt.budgetReceipts).length) {
         const budgets = graph(key('budgets', attempt.messageId), 'Per-round budget receipts', a.id);
         add(a, 'budgets', 'Budget', `${attempt.budgetReceipts.length} prepared rounds`, 'recorded',
@@ -294,6 +313,9 @@
       const outputGraph = graph(key('public-output', attempt.messageId), 'Agent explanation / response', a.id);
       const outputs = list(attempt.publicOutputs);
       const note = 'Original public assistant output, not hidden reasoning. No extra summary/model request. Response completion does not certify task validation.';
+      for (const summary of list(attempt.reasoningSummaries)) add(outputGraph, key('reasoning-summary', summary.round), 'Public reasoning summary',
+        `Provider summary / round ${summary.round + 1}`, 'recorded',
+        { note:'Explicit public provider summary only; hidden reasoning is not exposed.' }, { executable:false, publicText:summary.text });
       if (outputs.length) {
         outputs.forEach((output, index) => {
           const last = index === outputs.length - 1;
@@ -338,14 +360,16 @@
   const ringPositions = { configure:[520, 80], run:[720, 200], monitor:[650, 380], evaluate:[420, 380], check:[330, 200], end:[90, 200] };
   function lifecycle(session, model, actions) {
     const harness = session.harness || {}, attempts = list(harness.attempts);
-    const attempt = [...attempts].reverse().find(item => liveStatuses.has(item.status)) || attempts.at(-1);
+    const attempt = attempts.at(-1);
     const reports = list(attempt?.harnessReports), calls = list(attempt?.toolCalls);
     const validation = [...reports].reverse().find(report => report.kind === 'validation');
     const setup = [...reports].reverse().find(report => report.kind === 'task' || report.kind === 'planning');
     const referenced = calls.flatMap(call => list(call.actionRunIds)).map(id => actions.get(id)).filter(Boolean);
     const backgroundRuns = referenced.filter(run => !terminal(run.state) && !['cancelled', 'submitted-and-closed'].includes(run.state));
     const state = harness.state || session.status || 'unknown';
-    const live = (attempt && liveStatuses.has(attempt.status)) || ['running', 'awaiting-input', 'awaiting-result'].includes(state);
+    const live = liveStatuses.has(attempt?.status)
+      || (['awaiting-input', 'awaiting-result'].includes(state) && !['failed', 'interrupted', 'cancelled'].includes(attempt?.status))
+      || (!attempt && state === 'running');
     const waitingUser = harness.waiting?.kind === 'user' || state === 'awaiting-input';
     const outputs = list(attempt?.publicOutputs);
     const todos = list(session.todos), taskAccepted = session.status === 'completed' && todos.length > 0
@@ -386,10 +410,13 @@
         ['Acceptance criteria', reports.find(report => report.kind === 'task')?.goal || 'not recorded'],
       ],
       run:[
-        ['Model output rounds', String(new Set(outputs.map(output => output.round)).size)],
-        ['Tool calls', `${calls.length} (${calls.filter(call => call.status === 'running').length} running, ${calls.filter(call => call.status === 'failed').length} failed)`],
-        ['Retrieval receipts', String(list(attempt?.retrieval).length)],
-        ['Reported steps', String(new Set(reports.filter(report => report.kind === 'step').map(report => report.binding?.stepId)).size)],
+        ['Model output rounds', Array.isArray(attempt?.publicOutputs) ? String(new Set(outputs.map(output => output.round)).size) : 'not recorded'],
+        ['Tool calls', Array.isArray(attempt?.toolCalls) ? `${calls.length} (${calls.filter(call => call.status === 'running').length} running, ${calls.filter(call => call.status === 'failed').length} failed)` : 'not recorded'],
+        ['Retrieval receipts', Array.isArray(attempt?.retrieval) ? String(attempt.retrieval.length) : 'not recorded'],
+        ['Reported steps', Array.isArray(attempt?.harnessReports) ? String(new Set(reports.filter(report => report.kind === 'step').map(report => report.binding?.stepId)).size) : 'not recorded'],
+        ['Scope', 'Latest attempt only; zero means no recorded events, not a test result.'],
+        ['Attempt outcome', attempt?.status || 'not recorded'],
+        ['Error', attempt?.validation?.error || 'none recorded'],
       ],
       monitor:[
         ['Waiting on', harness.waiting?.kind === 'dependency' ? harness.waiting.detail : backgroundRuns.length ? `${backgroundRuns.length} Action Run(s)` : 'nothing recorded'],
@@ -422,7 +449,10 @@
     const passed = id => stageIds.indexOf(id) < index;
     if (passed('monitor') && !referenced.length && harness.waiting?.kind !== 'dependency') stages[2].status = 'skipped';
     if (passed('evaluate') && !validation && !taskAccepted) stages[3].status = 'skipped';
-    return { current, outcome, check, reason, waitingUser, iterations:attempts.filter(item => item.retryOf).length, stages };
+    const activity = live && current === 'run'
+      ? calls.findLast(call => call.status === 'running')?.name || harness.currentPhase?.label || ''
+      : '';
+    return { current, outcome, check, reason, live, activity, waitingUser, iterations:attempts.filter(item => item.retryOf).length, stages };
   }
 
   const liveStatuses = new Set(['running', 'streaming', 'waiting', 'awaiting-input', 'awaiting-result']);
@@ -525,7 +555,7 @@
     const root = el('section', undefined, 'pkm-harness');
     root.setAttribute('aria-label', 'PKM native execution subgraphs');
     let session, model, active, sequence = 0, disposed = false, loading = false, pending = false, pendingForce = false;
-    let tabs = [], views = new Map(), auto = true, ringSelected;
+    let tabs = [], views = new Map(), auto = true, ringSelected, dashboardAttemptId;
     const toolbar = el('header'), title = el('h2'), status = el('span'), error = el('p', '', 'pkm-harness-error');
     error.setAttribute('role', 'alert');
     const manual = button('Refresh', () => void refresh(true));
@@ -535,6 +565,8 @@
     toolbar.append(title, manual, autoLabel, status);
     if (options.openBrowser) toolbar.append(button('Open in browser', () => void options.openBrowser(session.sessionId).catch(showError)));
     const warning = el('p', '', 'pkm-harness-warning');
+    const dashboard = el('section', undefined, 'pkm-harness-dashboard');
+    dashboard.setAttribute('aria-label', 'Agent runtime dashboard');
     const overviewBox = el('section', undefined, 'pkm-harness-overview');
     overviewBox.setAttribute('aria-label', 'Live execution overview'); overviewBox.setAttribute('aria-live', 'polite');
     const tabbar = el('nav'); tabbar.setAttribute('aria-label', 'Open subgraphs');
@@ -548,7 +580,7 @@
     const inspector = el('section', undefined, 'pkm-harness-inspector');
     const dialog = el('dialog'), dialogTitle = el('h3'), dialogBody = el('pre');
     dialog.append(dialogTitle, button('Close preview', () => dialog.close()), dialogBody);
-    root.append(toolbar, error, overviewBox, warning, tabbar, breadcrumbs, tools, viewport, inspector, dialog);
+    root.append(toolbar, error, dashboard, overviewBox, warning, tabbar, breadcrumbs, tools, viewport, inspector, dialog);
     container.append(root);
     function view() { if (!views.has(active)) views.set(active, { zoom:1, left:0, top:0, selected:'' }); return views.get(active); }
     function capture() { if (!active) return; Object.assign(view(), { left:viewport.scrollLeft, top:viewport.scrollTop }); }
@@ -575,6 +607,14 @@
         try {
           const value = await options.request('result', { sessionId:id, ...node.fullResult });
           if (session.sessionId === id && active === graphId && view().selected === selected) inspector.replaceChildren(el('h3', 'Full recorded result'), el('pre', value));
+        } catch (e) { showError(e); }
+      }));
+      if (node.memoryReceipt) inspector.append(button('Read durable Memory receipt', async () => {
+        const id = session.sessionId, graphId = active, selected = node.id;
+        try {
+          const value = await options.request('memoryReceipt', { sessionId:id, ...node.memoryReceipt });
+          if (session.sessionId === id && active === graphId && view().selected === selected) inspector.replaceChildren(
+            el('h3', 'Durable Memory receipt (read-only)'), el('pre', JSON.stringify(value, null, 2)));
         } catch (e) { showError(e); }
       }));
     }
@@ -623,7 +663,7 @@
       }
       ring.append(svg);
       for (const stage of data.stages) {
-        const circle = button('', () => { ringSelected = stage.id; drawRing(); }, `${stage.label}: ${stage.current ? `current, ${stage.status}` : stage.status}`);
+        const circle = button('', () => { ringSelected = stage.id; drawRing(); }, `${stage.label}: ${stage.current ? `${data.live ? 'current' : 'last recorded'}, ${stage.status}` : stage.status}`);
         circle.className = 'pkm-harness-stage'; circle.dataset.stage = stage.id; circle.dataset.status = stage.status;
         circle.dataset.harnessFocus = key('stage', stage.id);
         if (stage.current) circle.setAttribute('aria-current', 'step');
@@ -633,15 +673,19 @@
         circle.append(el('span', stage.label, 'pkm-harness-stage-label'),
           el('small', stage.current ? { unverified:'done, not validated', waiting:'waiting', running:'running', failed:'failed', complete:'reached' }[stage.status] || stage.status
             : stage.status === 'pending' ? '' : stage.status));
+        if (stage.id === 'run' && data.activity) {
+          circle.append(el('span', data.activity, 'pkm-harness-current-activity'));
+          circle.title = `Current activity: ${data.activity}`;
+        }
         ring.append(circle);
       }
       const summary = el('p', undefined, 'pkm-harness-ring-summary');
-      summary.append(el('strong', `${data.stages.find(stage => stage.current).label}: `), document.createTextNode(data.reason));
+      summary.append(el('strong', `${data.live ? 'Current' : 'Last recorded'} / ${data.stages.find(stage => stage.current).label}: `), document.createTextNode(data.reason));
       tools.hidden = true;
       summary.append(button('Current execution', focusCurrent), button('Full execution graph', () => open(model.root)));
       viewport.replaceChildren(summary, ring);
       const selected = data.stages.find(stage => stage.id === ringSelected);
-      inspector.replaceChildren(el('h3', `${selected.label}${selected.current ? ' (current)' : ''}`));
+      inspector.replaceChildren(el('h3', `${selected.label}${selected.current ? data.live ? ' (current)' : ' (last recorded)' : ''}`));
       const items = el('dl', undefined, 'pkm-harness-stage-items');
       for (const [name, value] of selected.items) items.append(el('dt', name), el('dd', value));
       inspector.append(items, button('Open records', () => open(selected.graphId), `Open recorded evidence for ${selected.label}`));
@@ -656,6 +700,151 @@
       const position = layout(graph).positions.get(node.id);
       viewport.scrollLeft = position.x * view().zoom;
       viewport.scrollTop = Math.max(0, position.y * view().zoom - 24);
+    }
+    function drawDashboard() {
+      const focused = document.activeElement?.dataset?.harnessFocus;
+      const attempts = list(session.harness?.attempts);
+      const attempt = attempts.find(item => item.messageId === dashboardAttemptId) || attempts.at(-1);
+      const receipts = list(attempt?.budgetReceipts), receipt = receipts.at(-1), usage = attempt?.validation?.reportedUsage;
+      const diagnostics = el('section', undefined, 'pkm-harness-diagnostics');
+      diagnostics.setAttribute('role', 'log'); diagnostics.setAttribute('aria-label', 'Latest runtime diagnostics');
+      diagnostics.append(el('h3', 'Latest errors / warnings / status'));
+      const records = [];
+      for (const item of list(session.harness?.attempts).slice(-5)) {
+        for (const event of list(item.progress?.transitions).slice(-10)) records.push({
+          level:event.status === 'failed' ? 'error' : event.status === 'waiting' ? 'warning' : 'status',
+          text:`${Number.isFinite(event.at) ? new Date(event.at).toLocaleTimeString() : 'time unknown'} / ${event.label}`
+        });
+        if (item.validation?.error) records.push({ level:'error', text:item.validation.error });
+        if (item.validation?.outputBudgetWarning) records.push({ level:'warning', text:item.validation.outputBudgetWarning });
+      }
+      records.push(...model.warnings.map(text => ({ level:'warning', text })));
+      records.push({ level:'status', text:`${session.harness?.state || session.status || 'unknown'} / ${session.harness?.currentPhase?.label || 'No current phase recorded'}` });
+      for (const record of records.slice(-10)) {
+        const line = el('p', `${record.level.toUpperCase()} / ${record.text}`);
+        line.dataset.level = record.level; diagnostics.append(line);
+      }
+      const parameters = el('table', undefined, 'pkm-harness-parameters');
+      parameters.setAttribute('aria-label', 'Recorded runtime parameters');
+      const caption = el('caption', 'Runtime parameters (latest attempt; reported usage may cover only some rounds)');
+      parameters.append(caption);
+      const body = el('tbody');
+      const quantity = value => Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString() : 'not reported';
+      for (const [label, value] of [
+        ['Record identity', `${session.harness?.chatId || session.sessionId || 'unknown'} / ${attempt?.messageId || 'no attempt'}`],
+        ['Model', attempt?.model || session.nativeAgent?.model || 'not recorded'],
+        ['Provider', receipt?.transport?.provider || session.nativeAgent?.provider || 'not recorded'],
+        ['Thinking quota', receipt?.ledger?.thinkingPolicy === 'provider-default' ? 'Provider default (no override)' : 'not recorded'],
+        ['Context window', quantity(receipt?.requested?.contextWindow)],
+        ['Output token limit (effective)', quantity(receipt?.effective?.outputTokens)],
+        ['Token usage (input / output)', `${quantity(usage?.inputTokens)} / ${quantity(usage?.outputTokens)}`],
+        ['Reasoning tokens', quantity(usage?.reasoningTokens)],
+        ['Model rounds / tools', `${receipts.length} prepared / ${list(attempt?.toolCalls).length} recorded`],
+      ]) { const row = el('tr'); row.append(el('th', label), el('td', value)); body.append(row); }
+      parameters.append(body);
+      const grid = el('div', undefined, 'pkm-harness-diagram-grid');
+      const selection = el('label', 'Attempt records ');
+      const attemptSelect = el('select');
+      attemptSelect.setAttribute('aria-label', 'Attempt records');
+      attemptSelect.dataset.harnessFocus = 'dashboard-attempt-records';
+      attempts.forEach((item, index) => {
+        const option = el('option', `${index + 1} / ${item.status}${index === attempts.length - 1 ? ' (latest)' : ''}`);
+        option.value = item.messageId; option.selected = item === attempt; attemptSelect.append(option);
+      });
+      attemptSelect.disabled = !attempts.length;
+      attemptSelect.addEventListener('change', () => { dashboardAttemptId = attemptSelect.value; drawDashboard(); });
+      selection.append(attemptSelect, el('p', 'Diagrams and parameters use the selected attempt; Recipe / Action bindings are Session-wide. Missing receipts are not zero work. No model, Recipe or Action is run to populate this view.', 'pkm-harness-unknown'));
+      const card = (id, title, graphId) => {
+        const node = el('section', undefined, 'pkm-harness-diagram-card'); node.dataset.diagram = id;
+        const heading = el('h3', title); node.append(heading);
+        if (graphId && model.graphs.has(graphId)) {
+          const openGraph = button('Inspect recorded graph', () => locate(graphId), `Inspect ${title}`);
+          openGraph.dataset.harnessFocus = key('dashboard', id); node.append(openGraph);
+        }
+        grid.append(node); return node;
+      };
+      const preview = (node, graphId) => {
+        const graph = model.graphs.get(graphId), nodes = list(graph?.nodes).slice(0, 18);
+        if (!nodes.length) { node.append(el('p', 'No execution records available.', 'pkm-harness-unknown')); return; }
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('viewBox', `0 0 600 ${Math.ceil(nodes.length / 3) * 66 + 8}`);
+        svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', `${graph.title}: recorded nodes; placement is not execution order`);
+        const positions = new Map(nodes.map((item, index) => [item.id, { x:index % 3 * 200 + 100, y:Math.floor(index / 3) * 66 + 32 }]));
+        for (const edge of graph.edges) {
+          const from = positions.get(edge.from), to = positions.get(edge.to);
+          if (!from || !to) continue;
+          const line = document.createElementNS(svg.namespaceURI, 'path');
+          line.setAttribute('d', `M${from.x} ${from.y} L${to.x} ${to.y}`);
+          line.setAttribute('class', 'pkm-harness-preview-edge'); svg.append(line);
+        }
+        nodes.forEach((item, index) => {
+          const group = document.createElementNS(svg.namespaceURI, 'g');
+          group.dataset.status = terminal(item.status) || item.status;
+          const x = index % 3 * 200 + 4, y = Math.floor(index / 3) * 66 + 4;
+          const rect = document.createElementNS(svg.namespaceURI, 'rect');
+          for (const [name, value] of Object.entries({ x, y, width:192, height:56, rx:6 })) rect.setAttribute(name, String(value));
+          const title = document.createElementNS(svg.namespaceURI, 'title'); title.textContent = `${item.title} / ${item.status}`;
+          group.append(title, rect);
+          for (const [line, text] of [[0, item.title], [1, item.status]]) {
+            const label = document.createElementNS(svg.namespaceURI, 'text');
+            label.setAttribute('x', String(x + 8)); label.setAttribute('y', String(y + 22 + line * 19));
+            label.textContent = String(text).slice(0, 24); group.append(label);
+          }
+          svg.append(group);
+        });
+        node.append(svg, el('small', `${nodes.length} of ${graph.nodes.length} recorded nodes; open the graph for edges, nesting and full evidence.`));
+      };
+      const attemptGraph = attempt && key('chat-attempt', attempt.messageId);
+      const harnessCard = card('harness', 'Harness flow', attemptGraph || model.root);
+      const selectedLifecycle = attempt && attempt !== attempts.at(-1)
+        ? lifecycle({ ...session, status:attempt.status, todos:[], harness:{ ...session.harness, attempts:[attempt], state:attempt.status,
+          currentPhase:attempt.progress?.phase, waiting:undefined } }, model, new Map(list(session.actionRuns).map(run => [run.runId, run])))
+        : model.lifecycle;
+      const stages = el('ol', undefined, 'pkm-harness-flow-preview');
+      for (const stage of selectedLifecycle.stages) {
+        const item = el('li', `${stage.label} / ${stage.status}`);
+        if (stage.current) item.setAttribute('aria-current', 'step');
+        stages.append(item);
+      }
+      harnessCard.append(stages, el('small', selectedLifecycle.reason));
+      preview(harnessCard, attemptGraph || model.root);
+      const recipe = card('recipes', 'Recipe / Action graphs');
+      const bindings = [...model.overview.recipes, ...model.overview.actions].filter(item => item.available && item.graphId);
+      if (!bindings.length) recipe.append(el('p', 'No available explicit Recipe / Action binding.', 'pkm-harness-unknown'));
+      for (const binding of bindings) {
+        const name = binding.name || binding.actionId || binding.runId;
+        const link = button(`Inspect ${name}`, () => locate(binding.graphId, binding.nodeId));
+        link.dataset.harnessFocus = key('dashboard-binding', binding.runId); recipe.append(link);
+        preview(recipe, binding.graphId);
+      }
+      const memory = card('memory', 'Memory pyramid', attempt?.memory?.accounting && key('memory-accounting', attempt.messageId));
+      if (!attempt?.memory) memory.append(el('p', 'No Memory preparation receipt recorded for this attempt. This does not establish that Memory is disabled or empty.', 'pkm-harness-unknown'));
+      else {
+        const pyramid = el('div', undefined, 'pkm-harness-memory-pyramid');
+        const blocks = list(attempt.memory.blocks);
+        const kinds = [...new Set(blocks.map(block => block.kind))];
+        kinds.forEach((kind, index) => {
+          const level = el('div', `${kind}: ${blocks.filter(block => block.kind === kind).length} block(s)`);
+          level.style.width = `${55 + (index + 1) / kinds.length * 45}%`; pyramid.append(level);
+        });
+        memory.append(pyramid, el('small', kinds.length ? 'Recorded preparation blocks grouped by kind; widths are illustrative, not token usage or inferred storage hierarchy.' : 'Receipt recorded no preparation blocks.'));
+        if (attempt.memory.error) memory.append(el('p', `Memory preparation error: ${attempt.memory.error}`, 'pkm-harness-unknown'));
+        if (attempt.memory.accounting) preview(memory, key('memory-accounting', attempt.messageId));
+      }
+      const retrieval = card('retrieval', 'Retrieval flow', attempt && key('retrieval', attempt.messageId));
+      const last = list(attempt?.retrieval).at(-1), candidates = list(last?.receipt?.candidates);
+      if (!last) retrieval.append(el('p', 'No retrieval receipt recorded.', 'pkm-harness-unknown'));
+      else {
+        const flow = el('div', undefined, 'pkm-harness-retrieval-stages');
+        for (const [label, count] of [
+          ['Candidates', candidates.length], ['Selected', candidates.filter(item => item.selected).length],
+          ['Sent', candidates.filter(item => item.evidenceState === 'sent').length]
+        ]) flow.append(el('div', `${label}: ${count}`));
+        retrieval.append(flow, el('small', `Latest receipt: ${last.kind} / ${last.receipt?.phase || 'unknown'}. Selection alone does not prove transmission.`));
+        preview(retrieval, key('retrieval', attempt.messageId));
+      }
+      dashboard.replaceChildren(diagnostics, selection, parameters, grid);
+      if (focused) [...dashboard.querySelectorAll('[data-harness-focus]')].find(node => node.dataset.harnessFocus === focused)?.focus({ preventScroll:true });
     }
     function focusCurrent() {
       const current = currentNode(model);
@@ -769,7 +958,7 @@
       title.textContent = next.task || 'PKM Chat';
       status.textContent = `Recorded: ${next.harness?.state || next.status}${next.harness?.currentPhase?.label ? ` / ${next.harness.currentPhase.label}` : ''}${next.liveness?.state ? ` / liveness: ${next.liveness.state}` : ''} / record: ${next.updatedAt || 'unknown'} / refreshed ${new Date().toLocaleTimeString()}`;
       warning.textContent = model.warnings.join('\n'); error.textContent = '';
-      drawOverview(); draw();
+      drawDashboard(); drawOverview(); draw();
       options.onUpdate?.(session, model);
     }
     async function refresh(force = false) {

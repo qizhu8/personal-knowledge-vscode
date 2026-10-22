@@ -63,7 +63,7 @@ try {
   for (const name of ["recipe_runtime.py", "action_runtime.py", "action_modules.py", "action_run_store.py", "action_recovery.py", "action_components.py", "recipe_health.py", "agent_session_runtime.py", "api_chat_control.py", "mcp_call_guard.py", "diagnostic_log.py"]) {
     fs.copyFileSync(path.join(repositoryRoot, "resources", name), path.join(moduleDirectory, name));
   }
-  for (const name of ["knowledge_recovery.py", "knowledge_mutations.py", "knowledge_mutations.js", "knowledge_snapshots.py"]) {
+  for (const name of ["knowledge_recovery.py", "knowledge_mutations.py", "knowledge_mutations.js", "knowledge_snapshots.py", "asset_classification.py", "asset_classification.js"]) {
     fs.copyFileSync(path.join(repositoryRoot, "resources", name), path.join(moduleDirectory, name));
   }
 
@@ -147,12 +147,25 @@ async def main():
                 assert {"knowledge_recovery_preview", "knowledge_recovery_apply", "knowledge_snapshot_create",
                     "knowledge_snapshot_status", "knowledge_snapshot_configure",
                     "knowledge_snapshot_restore_preview", "knowledge_snapshot_restore_apply",
-                    "knowledge_file_trash"} <= set(by_name)
+                    "knowledge_file_trash", "asset_classify_preview", "asset_classify_apply", "asset_classify_rollback"} <= set(by_name)
                 cas_note = (await client.call_tool("add_note", {"title": "CAS Trash", "content": "Reviewed original"})).structured_content
                 store = module_directory.parent / "store"
                 note_file = store / "notes" / (cas_note["slug"] + ".md")
                 reviewed_bytes = note_file.read_bytes()
                 reviewed_digest = hashlib.sha256(reviewed_bytes).hexdigest()
+                classification = (await client.call_tool("asset_classify_preview", {})).structured_content
+                proposal = next(p for p in classification["proposals"] if p["type"] == "classification"
+                    and p["asset"] == "notes/" + cas_note["slug"] + ".md")
+                assert note_file.read_bytes() == reviewed_bytes, "classification preview must not write"
+                applied = (await client.call_tool("asset_classify_apply", {
+                    "preview_id": classification["id"], "proposal_ids": [proposal["id"]]})).structured_content
+                assert applied["applied"] == [proposal["id"]]
+                assert b"pkmClassification:" in note_file.read_bytes()
+                restored = (await client.call_tool("asset_classify_rollback", {
+                    "journal_id": applied["journalId"]})).structured_content
+                assert restored["applied"] == [proposal["id"]]
+                assert note_file.read_bytes() == reviewed_bytes
+
                 note_file.write_bytes(reviewed_bytes + b"changed during approval")
                 try:
                     await client.call_tool("knowledge_file_trash",

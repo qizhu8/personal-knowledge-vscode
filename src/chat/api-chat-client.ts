@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import { imageSize } from "image-size";
 import { createHash } from "crypto";
 import { ChatTokenUsage, ThinkingBudget, checkReportedOutput, reportedReasoningTokens } from "./api-chat-models";
+import { ChatInferenceClock, ChatInferenceTiming } from "./chat-inference-timing";
 
 export interface ChatImage { label: string; mimeType: "image/png" | "image/jpeg"; dataBase64: string; }
 
@@ -70,7 +71,10 @@ export interface ApiChatRequest {
   outputTokenParameter?: "max_tokens" | "max_completion_tokens";
   includeUsage?: boolean;
   onUsage?: (usage: ChatTokenUsage) => void;
+  /** Only explicitly public provider summaries; never hidden reasoning_content or opaque thinking metadata. */
+  onReasoningSummary?: (text: string) => void;
   onUsageMetadata?: (valid: boolean) => void;
+  onInferenceTiming?: (timing: ChatInferenceTiming) => void;
   onOutputBudgetWarning?: (warning: string) => void;
   onStage?: (stage: "connecting" | "waiting") => void;
   fetch?: typeof fetch;
@@ -186,10 +190,12 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
   request.signal.addEventListener("abort", cancel, { once: true });
   if (request.signal.aborted) cancel();
   let timedOut = false;
+  const inferenceClock = new ChatInferenceClock("http", request.onInferenceTiming);
   const idleMs = request.timeoutMs ?? 1_800_000;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const activity = () => {
     if (controller.signal.aborted) return;
+    inferenceClock.activity();
     clearTimeout(timer);
     timer = setTimeout(() => { timedOut = true; controller.abort(); }, idleMs);
   };
@@ -246,6 +252,7 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
     };
     const transport = chatTransportReceipt("http", payload.messages, payload.tools || []);
     request.onTransportPrepared?.(transport);
+    inferenceClock.start();
     const stream = await client.chat.completions.create(payload, { signal: controller.signal });
     activity();
     request.onTransportSent?.(transport);
@@ -262,7 +269,11 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
         request.onUsage?.(measuredUsage);
       }
       const choice = chunk.choices[0];
+      if (choice?.delta && "reasoning_summary" in choice.delta && typeof choice.delta.reasoning_summary === "string") {
+        request.onReasoningSummary?.(choice.delta.reasoning_summary);
+      }
       const text = choice?.delta.content || choice?.delta.refusal || "";
+      if (text || choice?.delta.tool_calls?.length) inferenceClock.publicOutput();
       responseText += text;
       for (const fragment of choice?.delta.tool_calls || []) {
         if (!calls.has(fragment.index)) calls.set(fragment.index, { id: "", type: "function", function: { name: "", arguments: "" } });
@@ -280,6 +291,7 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
       if (choice?.finish_reason) finishReason = choice.finish_reason;
     }
     clearTimeout(timer);
+    inferenceClock.finish("stream-ended");
     if (!finishReason) throw new Error("The response ended before completion.");
     const toolCalls = [...calls.values()];
     if (outputTokens !== undefined && measuredUsage) checkReportedOutput(measuredUsage, outputTokens, request.thinkingBudget);
@@ -349,5 +361,6 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
     controller.abort();
     clearTimeout(timer);
     request.signal.removeEventListener("abort", cancel);
+    inferenceClock.finish("interrupted");
   }
 }

@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src {{cspSource}}; script-src 'nonce-{{nonce}}';">
+  <title>PKM Status Dashboard</title>
+  <link rel="stylesheet" href="{{styles}}">
+</head>
+<body>
+  <header><div><h1>PKM Status</h1><p>Read-only runtime observations. Opening this dashboard never starts a Sync or index build.</p></div>
+    <nav aria-label="Status actions"><button data-action="refresh">Refresh</button><button data-action="sync">GitHub Sync</button><button data-action="logs">Host log</button><button data-action="diagnostics">Host diagnostics JSON</button></nav>
+  </header>
+  <p id="notice" role="alert" hidden></p>
+  <p id="updated" role="status">Waiting for runtime snapshot...</p>
+  <main id="dashboard" aria-label="PKM runtime dashboard"></main>
+  <script nonce="{{nonce}}" src="{{script}}"></script>
+</body>
+</html>

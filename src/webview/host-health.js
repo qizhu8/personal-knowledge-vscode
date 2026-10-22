@@ -1,5 +1,6 @@
 (() => {
   const api = acquireVsCodeApi();
+  const STARTUP_LIMIT_MS = 180_000;
   let startedAt = Date.now();
   let hiddenAt;
   let lastReply = startedAt;
@@ -29,9 +30,20 @@
     if (loading) loading.hidden = true;
     failed = true;
     failureKind = kind;
+    banner.dataset.kind = kind;
+    banner.setAttribute('role', 'alert');
     text.textContent = message;
     banner.hidden = false;
     document.body.classList.add('pkm-host-unavailable');
+  }
+  // The Host answers health pings before the Chat backend has loaded. While it does, slow first activation (cold
+  // Windows disk caches, Defender scanning a freshly installed VSIX, Python discovery) is "starting", not a failure.
+  function starting(seconds) {
+    if (failed) return;
+    text.textContent = `PKM is still starting (${seconds}s). First start after install or update can take a minute or two; nothing is wrong yet.`;
+    banner.dataset.kind = 'starting';
+    banner.setAttribute('role', 'status');
+    banner.hidden = false;
   }
   function ready() {
     if (loading) loading.hidden = true;
@@ -75,6 +87,11 @@
       pending.delete(message.id);
       lastReply = Date.now();
       if (loaded && failed && failureKind === 'host') ready();
+      else if (!loaded && failed && failureKind === 'initial-unresponsive') {
+        failed = false; failureKind = undefined; document.body.classList.remove('pkm-host-unavailable');
+        if (loading) loading.hidden = false;
+        starting(Math.round((Date.now() - startedAt) / 1000));
+      }
     }
   });
   document.addEventListener('visibilitychange', () => {
@@ -91,7 +108,11 @@
   setInterval(() => {
     if (document.visibilityState === 'hidden') return;
     const now = Date.now();
-    if (!loaded && now - startedAt >= 15_000 && failureKind !== 'interface') warn('PKM failed to load: Extension Host did not provide the initial state.', 'initial');
+    if (!loaded && failureKind !== 'interface' && failureKind !== 'initial') {
+      if (now - startedAt >= STARTUP_LIMIT_MS) warn('PKM failed to load: the Extension Host is responding but did not provide the initial state within 3 minutes. Use reconnect, or check Output > Personal Knowledge.', 'initial');
+      else if (now - startedAt >= 15_000 && now - lastReply >= 30_000) warn('PKM is not responding while starting. The Extension Host may be busy or stopped; your draft is preserved.', 'initial-unresponsive');
+      else if (now - startedAt >= 8_000) starting(Math.round((now - startedAt) / 1000));
+    }
     else if (loaded && now - lastReply >= 20_000 && failureKind !== 'interface') warn('Extension Host is not responding. PKM is disconnected; your draft is preserved.', 'host');
     ping();
   }, 5000);

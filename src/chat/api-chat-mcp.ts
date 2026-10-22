@@ -1,10 +1,62 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { StdioClientTransport, StdioServerParameters } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ApiChatTool } from "./api-chat-client";
 import { abortable } from "./api-chat-tools";
 import { ToolSafetyHints } from "./permissions";
 
 export interface ApiChatMcpServer { id: string; label: string; url: string; enabled: boolean; tools: string[] }
+
+export interface ManagedChatMcp {
+  catalog: { name: string; description: string; inputSchema: object; managed: true; hints?: ToolSafetyHints }[];
+  invoke(name: string, input: Record<string, unknown>, signal: AbortSignal): Promise<string>;
+  close(): Promise<void>;
+}
+
+/** This is the configured PKM service, not a name-based substitute for an arbitrary native tool. */
+export async function connectManagedChatMcp(launch: StdioServerParameters, signal: AbortSignal): Promise<ManagedChatMcp> {
+  if (signal.aborted) throw new Error("Request cancelled.");
+  const client = new Client({ name: "pkm-chat-managed", version: "1.0.0" });
+  const transport = new StdioClientTransport({ ...launch, stderr: "inherit" });
+  const close = () => { void client.close().catch(error => console.error("PKM Chat MCP close failed:", error)); };
+  signal.addEventListener("abort", close, { once: true });
+  try {
+    await abortable(client.connect(transport, { timeout: 30_000 }), signal);
+    const definitions: Awaited<ReturnType<typeof client.listTools>>["tools"] = [];
+    const cursors = new Set<string>();
+    let cursor: string | undefined;
+    do {
+      const page = await abortable(client.listTools(cursor ? { cursor } : undefined, { signal, timeout: 30_000 }), signal);
+      definitions.push(...page.tools);
+      if (definitions.length > 512 || page.nextCursor && cursors.has(page.nextCursor)) throw new Error("Managed PKM discovery exceeded its bound or repeated a cursor.");
+      cursor = page.nextCursor;
+      if (cursor) cursors.add(cursor);
+    } while (cursor);
+    const catalog: ManagedChatMcp["catalog"] = definitions.map(tool => {
+      if (!/^[a-zA-Z0-9_]+$/.test(tool.name) || JSON.stringify(tool.inputSchema).length > 16_000) throw new Error("Invalid managed PKM tool definition.");
+      return { name: `mcp_pkm_${tool.name}`, description: tool.description || "", inputSchema: tool.inputSchema, managed: true, hints: tool.annotations };
+    });
+    return { catalog,
+      invoke: async (name, input, requestSignal) => {
+        if (!catalog.some(tool => tool.name === name)) throw new Error("Tool is not in the configured PKM catalog.");
+        if (signal.aborted || requestSignal.aborted) throw new Error("Request cancelled.");
+        try {
+          const result = await abortable(client.callTool({ name: name.slice("mcp_pkm_".length), arguments: input },
+            undefined, { signal: requestSignal, timeout: 60_000 }), requestSignal);
+          if (result.isError) throw new Error(JSON.stringify(result.content).slice(0, 1000));
+          return JSON.stringify(result);
+        } catch (error) {
+          throw new Error(`PKM tool ${name} failed; execution may already have occurred. Do not retry automatically. ${error instanceof Error ? error.message : String(error)}`);
+        }
+      },
+      close: async () => { signal.removeEventListener("abort", close); await client.close(); },
+    };
+  } catch (error) {
+    signal.removeEventListener("abort", close);
+    close();
+    throw error;
+  }
+}
 
 const PKM_TOOL_GROUPS = [
   { id: "skills", label: "PKM Skills", icon: "sparkle" },
@@ -52,32 +104,58 @@ type VscodeToolHost = typeof import("vscode") & {
     invokeTool?: (name: string, options: { input: Record<string, unknown>; toolInvocationToken: undefined }, token: import("vscode").CancellationToken) => Thenable<{ content: readonly unknown[] }> };
 };
 
-export function vscodeToolCatalog(host: typeof import("vscode")) {
+const PKM_TOOL_NAME = /^(?:mcp_)?pkm[_/.]/i;
+const NATIVE_START_TIMEOUT_MS = 15_000;
+
+function nativeTools(host: typeof import("vscode")): { name: string; description: string; inputSchema?: object }[] | undefined {
   const native = host as VscodeToolHost;
-  if (!native.lm?.tools || !native.lm.invokeTool || !native.LanguageModelTextPart) throw new Error("This host does not expose registered VS Code/MCP tools.");
+  if (!native.lm?.tools || !native.lm.invokeTool || !native.LanguageModelTextPart) return undefined;
   return [...native.lm.tools];
 }
 
+export function vscodeToolCatalog(host: typeof import("vscode")) {
+  const native = nativeTools(host);
+  if (!native) throw new Error("This host does not expose registered VS Code/MCP tools.");
+  return native;
+}
+
+/**
+ * Start the registered server, or offer explicit scoped configuration when tools remain unavailable.
+ * A missing registration must not silently launch an independent server.
+ */
 export async function ensurePkmMcpTools(host: typeof import("vscode")): Promise<void> {
   if (host.workspace.isTrusted === false) return;
-  let catalog: ReturnType<typeof vscodeToolCatalog>;
-  try { catalog = vscodeToolCatalog(host); } catch { return; }
-  const hasPkmTools = (tools: typeof catalog) => tools.some(tool => /^(?:mcp_)?pkm[_/.]/i.test(tool.name));
-  if (hasPkmTools(catalog)) return;
-  await host.commands.executeCommand("personalKnowledge.startPkmMcp");
-  const deadline = Date.now() + 5_000;
-  while (!hasPkmTools(vscodeToolCatalog(host)) && Date.now() < deadline) {
-    await new Promise<void>(resolve => setTimeout(resolve, 50));
+  const hasPkm = () => (nativeTools(host) || []).some(tool => PKM_TOOL_NAME.test(tool.name));
+  if (hasPkm()) return;
+  let nativeError = "";
+  if (nativeTools(host) && host.commands?.executeCommand) {
+    try {
+      await Promise.race([
+        Promise.resolve(host.commands.executeCommand("personalKnowledge.startPkmMcp")),
+        new Promise<void>(resolve => setTimeout(resolve, NATIVE_START_TIMEOUT_MS)),
+      ]);
+      const deadline = Date.now() + 3_000;
+      while (!hasPkm() && Date.now() < deadline) await new Promise<void>(resolve => setTimeout(resolve, 100));
+      if (hasPkm()) return;
+      nativeError = "VS Code did not publish pkm tools";
+    } catch (error) {
+      nativeError = error instanceof Error ? error.message : String(error);
+    }
   }
-  if (!hasPkmTools(vscodeToolCatalog(host))) throw new Error("PKM MCP tools are unavailable after startup. Check MCP: List Servers and the pkm server log; no tool call was retried.");
+  if (!host.commands?.executeCommand) return;
+  await host.commands.executeCommand("personalKnowledge.offerPkmMcpConfiguration", nativeError || "VS Code did not publish pkm tools");
 }
 
 export function createVscodeTools(names: string[], host: typeof import("vscode"),
   approve: (name: string, arguments_: Record<string, unknown>, signal: AbortSignal, hints?: ToolSafetyHints) => Promise<void>,
-  prepare?: (name: string, input: Record<string, unknown>, signal: AbortSignal) => Promise<Record<string, unknown>>): ApiChatTool[] {
+  prepare?: (name: string, input: Record<string, unknown>, signal: AbortSignal) => Promise<Record<string, unknown>>,
+  managed?: ManagedChatMcp): ApiChatTool[] {
   if (!names.length) return [];
   const native = host as VscodeToolHost;
-  const catalog = vscodeToolCatalog(host).filter(tool => names.includes(tool.name));
+  const catalog = [
+    ...(managed ? (nativeTools(host) || []).filter(tool => !/^mcp_pkm_/.test(tool.name)) : vscodeToolCatalog(host)),
+    ...(managed?.catalog || []),
+  ].filter(tool => names.includes(tool.name));
   if (names.some(name => !catalog.some(tool => tool.name === name))) throw new Error("A selected VS Code/MCP tool is unavailable. Review Tools; no substitute was used.");
   const discovered = new Set<string>();
   const attempted = new Set<string>();
@@ -112,9 +190,16 @@ export function createVscodeTools(names: string[], host: typeof import("vscode")
       const attempt = `${args.name}:${JSON.stringify(input)}`;
       if (attempted.has(attempt)) throw new Error("Duplicate VS Code/MCP execution blocked. Retry explicitly in a new request.");
       if (prepare) input = await prepare(args.name, input, signal);
-      await approve(args.name, input, signal);
+      const managedTool = managed?.catalog.find(tool => tool.name === args.name);
+      await approve(args.name, input, signal, managedTool?.hints);
       if (signal.aborted) throw new Error("Request cancelled.");
       attempted.add(attempt);
+      if (managedTool && managed) {
+        const text = await managed.invoke(args.name, input, signal);
+        const output = { tool: args.name, content: text.slice(0, 12_000), truncated: text.length > 12_000 };
+        while (JSON.stringify(output).length > 16_000) { output.content = output.content.slice(0, Math.floor(output.content.length * 0.8)); output.truncated = true; }
+        return JSON.stringify(output);
+      }
       const cancellation = new host.CancellationTokenSource();
       const cancel = () => cancellation.cancel();
       signal.addEventListener("abort", cancel, { once: true });

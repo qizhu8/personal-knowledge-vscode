@@ -2,11 +2,10 @@
 const assert = require("assert");
 const childProcess = require("child_process");
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
 
 const root = path.join(__dirname, "..");
-const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-webview-restoration-"));
+const fixture = fs.mkdtempSync(path.join(root, ".pkm-webview-restoration-"));
 const compiled = path.join(fixture, "webview-restoration.js");
 childProcess.execFileSync("npx", [
   "esbuild",
@@ -75,7 +74,7 @@ assert.strictEqual(scheduled.length, before, "a newly created replacement must n
 
 const extensionSource = fs.readFileSync(path.join(root, "src", "extension.ts"), "utf8");
 assert.match(extensionSource, /restored panel did not become ready; recreating the webview/);
-assert.match(extensionSource, /if \(_panelRestoredRecoveryTimer\) clearTimeout\(_panelRestoredRecoveryTimer\)/);
+assert.match(extensionSource, /if \(session\.recoveryTimer\) clearTimeout\(session\.recoveryTimer\)/);
 
 fs.rmSync(fixture, { recursive: true, force: true });
 console.log("webview restoration tests passed");

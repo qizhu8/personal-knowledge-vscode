@@ -191,6 +191,11 @@ export function assertMarkdownResourceTreeUnshared(areaRoot: string, resourcePat
           if (!reference) continue;
           const target = path.resolve(path.dirname(full), reference);
           if (target === owned || target.startsWith(owned + path.sep)) {
+            try { fs.statSync(target); }
+            catch (error) {
+              if (error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR")) continue;
+              throw error;
+            }
             throw new Error(`Resource is shared by ${path.relative(areaRoot, full)}. Update its references before moving or deleting ${resourcePath}.`);
           }
         }

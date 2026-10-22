@@ -77,6 +77,7 @@ function invokePromptManager(extensionPath: string, payload: Record<string, unkn
     const child = spawn(python, [bridge], {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: process.platform === "win32",
+      env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
     });
     let stdout = "", stderr = "", settled = false;
     const finish = (callback: () => void) => { if (settled) return; settled = true; clearTimeout(timer); callback(); };

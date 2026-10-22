@@ -15,7 +15,6 @@ async function main() {
     const workspace = path.join(temporary, "workspace"), knowledge = path.join(temporary, "knowledge");
     const home = path.join(temporary, "home");
     const environment = { HOME:home, XDG_CONFIG_HOME:path.join(home, ".config"), XDG_DATA_HOME:path.join(home, ".local", "share") };
-    const { chromium } = require(process.env.PKM_PLAYWRIGHT_PATH || "playwright");
     for (const directory of [path.join(user, "User"), workspace, knowledge, home]) fs.mkdirSync(directory, { recursive:true });
     fs.writeFileSync(path.join(user, "User", "settings.json"), JSON.stringify({
       "personalKnowledge.storePath":knowledge, "personalKnowledge.openOnStartup":false,
@@ -48,7 +47,7 @@ async function main() {
           PKM_CTX_NODE:process.execPath,
           PKM_TEST_PYTHON:process.env.PKM_TEST_PYTHON || "python",
           PKM_CTX_DEBUG_PORT:String(debugPort), PKM_VIS_ACCEPTANCE_OUTPUT:process.env.PKM_VIS_ACCEPTANCE_OUTPUT || "",
-          PKM_CTX_CHROMIUM_PATH:chromium.executablePath(),
+          PKM_CTX_CHROMIUM_PATH:process.env.PKM_CHROMIUM_EXECUTABLE || "",
           HTTP_PROXY:"http://127.0.0.1:9", HTTPS_PROXY:"http://127.0.0.1:9", NO_PROXY:"localhost,127.0.0.1" },
         launchArgs:[workspace, `--user-data-dir=${user}`, `--extensions-dir=${extensions}`, `--remote-debugging-port=${debugPort}`, "--disable-gpu", "--skip-welcome", "--skip-release-notes"],
       });
@@ -57,12 +56,15 @@ async function main() {
       assert(result.standaloneVisualization?.panels === 6 && result.standaloneVisualization.reopen && result.standaloneVisualization.recordChange);
       assert(result.liveVisualization?.recovered && result.liveVisualization.reopen && result.liveVisualization.requests === 4);
       assert(result.visualizationChain.tags.includes("terminal") && result.visualizationChain.tags.includes("recipe"));
+      assert.equal(result.durableProcess.state, phase === "initial" ? "running" : "complete");
       if (!first) first = result;
       else {
         assert.notEqual(result.pid, first.pid);
         assert.equal(result.evidenceHash, first.evidenceHash);
         assert.equal(result.liveVisualization.evidenceHash, first.liveVisualization.evidenceHash);
         assert.equal(result.visualizationChain.evidenceHash, first.visualizationChain.evidenceHash);
+        assert.equal(result.durableProcess.handle, first.durableProcess.handle);
+        assert.equal(result.durableProcess.recovered, true);
       }
       console.log(`CTX-M18 installed Extension Host ${phase}: webview/browser, actual HTTP receipts and evidence OK`);
       console.log(`VIS installed ${phase}: ${result.liveVisualization.phases.join(" -> ")}, deny/approve-once/approve-once, six panels, reopen, once-only process effect; evidence=${result.liveVisualization.evidenceHash}`);

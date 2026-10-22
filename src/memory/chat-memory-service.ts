@@ -1,12 +1,14 @@
 import { createHash } from "crypto";
 import { MemoryDialogueMessage, MemoryEngineClient, MemoryEngineClientOptions, MemoryMessage } from "./memory-engine-client";
+import { memoryTurnAccounting, type MemoryModelAccounting } from "./memory-accounting";
+import type { ChatTokenUsage } from "../chat/api-chat-models";
 
 export interface MemoryModelRequest {
   purpose: "intent" | "summary" | "extract";
   max_tokens: number;
   messages: Array<{ role: "system" | "user"; content: string }>;
 }
-export interface MemoryModelResult { text: string; usage?: { inputTokens: number; outputTokens: number; reasoningTokens?: number } }
+export interface MemoryModelResult { text: string; usage?: ChatTokenUsage; accounting?: MemoryModelAccounting }
 export class MemoryModelError extends Error {
   constructor(message: string, readonly result: MemoryModelResult) {
     super(message);
@@ -97,17 +99,24 @@ export class ChatMemoryService {
       if (index >= 12) throw new Error("Memory turn exceeded its model-step limit.");
       const request = current.request!;
       onStep?.(request.purpose);
-      let params: { turn: string; output?: string; error?: string; usage?: Record<string, number> };
+      let params: { turn: string; output?: string; error?: string; usage?: Record<string, number>; accounting?: MemoryModelAccounting };
+      let result: MemoryModelResult | undefined;
       try {
         if (signal.aborted) throw new Error("Request cancelled.");
-        const result = await run(request, signal);
+        result = await run(request, signal);
         if (signal.aborted) throw new Error("Request cancelled.");
-        params = { turn: current.turn, output: result.text, ...(result.usage ? { usage: { ...result.usage } } : {}) };
+        params = { turn: current.turn, output: result.text, ...(result.usage ? { usage: { ...result.usage } } : {}),
+          ...(result.accounting ? { accounting: result.accounting } : {}) };
       } catch (error) {
-        if (signal.aborted) throw error;
-        const partial = error instanceof MemoryModelError ? error.result : undefined;
+        const partial = error instanceof MemoryModelError ? error.result : result;
+        if (signal.aborted) {
+          await (await this.engine()).request({ method: "turn_abort", params: { turn: current.turn, error: "Request cancelled; model output was not applied.",
+            ...(partial?.usage ? { usage: { ...partial.usage } } : {}), ...(partial?.accounting ? { accounting: partial.accounting } : {}) } });
+          throw error;
+        }
         params = { turn: current.turn, error: error instanceof Error ? error.message : String(error),
-          ...(partial ? { output: partial.text, ...(partial.usage ? { usage: { ...partial.usage } } : {}) } : {}) };
+          ...(partial ? { output: partial.text, ...(partial.usage ? { usage: { ...partial.usage } } : {}),
+            ...(partial.accounting ? { accounting: partial.accounting } : {}) } : {}) };
       }
       current = step(await (await this.engine()).request({ method: "turn_continue", params }));
     }
@@ -124,7 +133,8 @@ export class ChatMemoryService {
       budget_chars: Math.max(2000, Math.min(400_000, Math.floor(budgetChars))),
     } }), run, signal, onStep);
     if (ready.status !== "ready" || !ready.context) throw new Error("Memory turn did not produce context.");
-    return { turn, blocks: ready.context.blocks, focus: ready.context.focus, related: ready.context.related, receipt: ready.receipt };
+    return { turn, blocks: ready.context.blocks, focus: ready.context.focus, related: ready.context.related,
+      receipt: { ...ready.receipt, accounting: memoryTurnAccounting(ready.receipt) } };
   }
 
   async commit(scope: string, turn: string, user: MemoryMessage, assistant: MemoryMessage, run: MemoryModelRunner, signal: AbortSignal,
@@ -137,7 +147,7 @@ export class ChatMemoryService {
       text: message.text.length > 2_000_000 ? `${message.text.slice(0, 2_000_000)}\n…[truncated in memory; see the Chat message]` : message.text });
     const done = await this.drive(await engine.request({ method: "turn_commit", params: { turn, scope, user: bounded(user), assistant: bounded(assistant) } }), run, signal);
     if (maxBytes) await engine.request({ method: "enforce_capacity", params: { max_bytes: maxBytes } });
-    return done.receipt;
+    return { ...done.receipt, accounting: memoryTurnAccounting(done.receipt) };
   }
 
   async read(scope: string, piece: string, after = 0): Promise<Record<string, unknown>> {
@@ -149,7 +159,8 @@ export class ChatMemoryService {
   }
 
   async receipt(turn: string): Promise<Record<string, unknown>> {
-    return await (await this.engine()).request({ method: "turn_receipt", params: { turn } }) as Record<string, unknown>;
+    const receipt = await (await this.engine()).request({ method: "turn_receipt", params: { turn } }) as Record<string, unknown>;
+    return { ...receipt, accounting: memoryTurnAccounting(receipt) };
   }
 
   async forget(scope: string): Promise<void> {

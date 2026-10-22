@@ -305,7 +305,9 @@ function knowledgeMoveToTrashUnlocked(area: KnowledgeTrashArea, relativePath: st
       mkdirSync(entryDir, { recursive: true });
       writeFileSync(join(entryDir, "metadata.json"), JSON.stringify(entry, null, 2) + "\n");
       moveMarkdownPair(source.full, join(entryDir, "payload"), entry.assetsPath ? join(areaRoot(area), entry.assetsPath) : join(entryDir, "absent-assets"), join(entryDir, "assets"));
-          try { pruneEmptyAncestors(resolve(source.full, ".."), resolve(areaRoot(area))); } catch {}
+      if (area !== "notes") {
+        try { pruneEmptyAncestors(resolve(source.full, ".."), resolve(areaRoot(area))); } catch {}
+      }
       return entry;
     } catch (error) {
       if (!existsSync(join(entryDir, "payload")) && !existsSync(join(entryDir, "assets"))) rmSync(entryDir, { recursive: true, force: true });

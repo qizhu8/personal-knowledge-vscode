@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 import json
 import math
+import re
+from difflib import SequenceMatcher
+from types import SimpleNamespace
 import os
 import secrets
 import signal
@@ -21,7 +24,7 @@ from adaptive_skill_retrieval import (
 )
 
 ENGINE_VERSION = "0.3.0.dev2026100504"
-CONFIGURATION_HASH = sys.argv[2] if len(sys.argv) > 2 else "exact-bm25-academic-v1"
+CONFIGURATION_HASH = sys.argv[2] if len(sys.argv) > 2 else "exact-bm25-fuzzy-dual-rrf-v1"
 state_dir = Path(sys.argv[1]).resolve()
 state_dir.mkdir(parents=True, exist_ok=True)
 try: os.chmod(state_dir, 0o700)
@@ -262,6 +265,8 @@ def status():
     edge_count = sum(len(edges) for edges in ready_forward.values())
     _, selected_package, imported_path, imported_error = solutions.capture()
     active_path = imported_path if solutions.managed else frozen_skill_path
+    configured = bool(selected_package or imported_error) if solutions.managed else (state_dir / "serving-release.json").is_file()
+    semantic_ready = imported_path is not None if solutions.managed else serving_ready
     return {
         "ok": True,
         "engine_version": ENGINE_VERSION,
@@ -281,6 +286,8 @@ def status():
         },
         "engine": "adaptive_skill_retrieval",
         "solution": solutions.status(),
+        "search_modes": ["lexical", "semantic", "dual"],
+        "semantic_status": "off" if not configured else "ready" if semantic_ready else "unavailable",
         "skill_serving": {
             "enabled": bool(selected_package) if solutions.managed else serving_attempted,
             "ready": imported_path is not None if solutions.managed else serving_ready,
@@ -288,16 +295,17 @@ def status():
             "architecture_id": active_path.architecture_id if active_path else None,
             "validation": active_path.validation if active_path else None,
             "fallback": "exact-bm25", "error": imported_error if solutions.managed else serving_error,
-            "scope": "explicit skill-only fuzzy queries; other retrieval contracts remain lexical",
+            "scope": "Explicit semantic/dual modes only; imported solutions use their indexed corpus, frozen releases cover Skills only",
         },
-        "supported_routes": ["lexical", "graph", "hybrid"],
-        "unsupported_routes": ["semantic"],
+        "supported_routes": ["lexical", "semantic", "dual", "graph", "hybrid"],
+        "unsupported_routes": [],
         "tokenizers": ["adaptive-skill-retrieval-academic-bm25"],
         "facets": ["content_type", "relation", "direction", "source_scope"],
         "update_mode": "persistent-delta-events-with-full-in-memory-rebuild",
         "limitations": [
             "The current Python engine rebuilds all in-memory lexical state for each accepted delta.",
-            "General semantic routing is unavailable; an admitted frozen path may serve Skill-only fuzzy queries.",
+            "Embedding retrieval requires an explicitly selected local solution or admitted frozen release; unconfigured means off.",
+            "Results are L1 sources, not model-generated passage spans; raw path scores are evidence, dual ranking uses RRF(k=60).",
             "Cancellation is cooperative at request/deadline boundaries; an in-flight lexical call cannot be interrupted.",
         ],
         "error": last_error,
@@ -369,6 +377,98 @@ def search(payload):
     return result
 
 
+def lexical_match_evidence(query, value):
+    """Bounded typo matching supplements Exact/BM25; never loads an encoder."""
+    terms = re.findall(r"\w+", query.casefold())
+    fields = [(key, str(value.get(key) or "")) for key in
+              ("title", "description", "body", "source_uri", "skill_id")]
+    for field, text in fields:
+        if query.casefold() in text.casefold():
+            return field, "exact"
+    for field, text in fields:
+        words = set(re.findall(r"\w+", text.casefold()))
+        if terms and all(term in words for term in terms):
+            return field, "keyword"
+    for field, text in fields:
+        words = set(re.findall(r"\w+", text.casefold()))
+        if terms and all(term in words or (len(term) >= 4 and any(
+                abs(len(term) - len(word)) <= 2 and SequenceMatcher(None, term, word).ratio() >= .8
+                for word in words)) for term in terms):
+            return field, "fuzzy"
+    return "index", "keyword"
+
+
+def dual_path_hits(query, mode, lexical_hits, documents, values, admitted, *, configured,
+                   provider, provider_error="", imported=True):
+    """Fuse ranks, not model scores; preserve each admitted path's original evidence.
+
+    Configuration is checked before touching a provider, including its attributes.
+    A semantic-only failure returns no lexical results; dual reports its fallback.
+    """
+    paths = {}
+    if mode != "semantic":
+        lexical = [hit for hit in lexical_hits if admitted(hit.skill_version)]
+        seen = {hit.skill_version for hit in lexical}
+        for version, value in values.items():
+            if version not in seen and admitted(version) and lexical_match_evidence(query, value)[1] == "fuzzy":
+                lexical.append(SimpleNamespace(skill_version=version, rank=max((hit.rank for hit in lexical), default=0) + 1, score=0.0))
+        paths["lexical"] = lexical
+    status = "off"
+    reason = ""
+    if mode in {"semantic", "dual"} and configured:
+        status = "unavailable"
+        try:
+            if provider is None:
+                raise ValueError(provider_error or "Configured embedding solution is not ready")
+            allowed = {version for version in values if admitted(version)}
+            raw = [] if not allowed else (provider.search(query, len(documents), allowed) if imported
+                                         else provider.search(query, len(documents)))
+            by_id = {version.skill_id: version for version in documents}
+            semantic = []
+            for hit in raw:
+                version = hit.skill_version if imported else by_id.get("skill:" + hit.skill_version.skill_id)
+                if (version not in values or type(hit.rank) is not int or hit.rank < 1
+                        or isinstance(hit.score, bool) or not math.isfinite(hit.score)):
+                    raise ValueError("retrieval model returned invalid hit identity, rank, or score")
+                if admitted(version):
+                    semantic.append(SimpleNamespace(skill_version=version, rank=hit.rank, score=hit.score))
+            paths["semantic"] = semantic
+            status = "ready"
+        except Exception as error:
+            reason = f"Embedding retrieval unavailable: {type(error).__name__}: {error}"
+            status = "fallback" if mode == "dual" else "unavailable"
+    fused = {}
+    for path, hits in paths.items():
+        seen = set()
+        for hit in hits:
+            version = hit.skill_version
+            if version in seen:
+                continue
+            seen.add(version)
+            field, match = lexical_match_evidence(query, values[version]) if path == "lexical" else ("embedding-index", "semantic")
+            evidence = {"path": path, "rank": hit.rank, "score": float(hit.score),
+                        "matched_field": field, "matched_path": values[version].get("source_uri", ""), "match": match}
+            row = fused.setdefault(version, {"score": 0.0, "evidence": []})
+            row["score"] += 1.0 / (60 + hit.rank) if mode == "dual" else float(hit.score)
+            row["evidence"].append(evidence)
+    result = []
+    def ranking(item):
+        row = item[1]
+        return (-row["score"] if mode == "dual" else row["evidence"][0]["rank"], str(item[0]))
+
+    for rank, (version, row) in enumerate(sorted(fused.items(), key=ranking), 1):
+        sources = [entry["path"] for entry in row["evidence"]]
+        result.append(SimpleNamespace(
+            skill_version=version, rank=rank, score=row["score"], sources=sources,
+            source_label="both" if len(sources) == 2 else "from keyword search" if sources == ["lexical"] else "from embedding retrieval",
+            path_evidence=row["evidence"], contributing_routes=tuple(sources),
+            score_components={"lexical": next((entry["score"] for entry in row["evidence"] if entry["path"] == "lexical"), 0.0),
+                              "semantic": next((entry["score"] for entry in row["evidence"] if entry["path"] == "semantic"), 0.0),
+                              "graph": 0.0, "priority": 1.0},
+        ))
+    return result, status, reason
+
+
 def search_unmeasured(payload):
     search_started = time.perf_counter()
     with engine_lock:
@@ -386,9 +486,7 @@ def search_unmeasured(payload):
     if engine is None:
         return {"ok": False, "error": "Retrieval index is not ready.", "corpus_revision": revision}
     route = str(payload.get("route") or "lexical")
-    if route == "semantic":
-        return {"ok": False, "error": "Semantic retrieval is not supported by the active engine.", "code": "unsupported-route"}
-    if route not in {"lexical", "graph", "hybrid"}:
+    if route not in {"lexical", "semantic", "dual", "graph", "hybrid"}:
         return {"ok": False, "error": "Unsupported retrieval route.", "code": "unsupported-route"}
     deadline_at_ms = int(payload.get("deadline_at_ms") or 0)
     if deadline_at_ms and int(time.time() * 1000) >= deadline_at_ms:
@@ -415,50 +513,31 @@ def search_unmeasured(payload):
         except ValueError: engine_filter.append(ContentType("note"))
     content_filter = engine_filter if requested is not None else None
     result = engine.search(str(payload.get("query") or ""), limit=max(1, min(int(payload.get("limit") or 5), 100)), content_type_filter=content_filter)
-    selected_hits = result.hits
-    serving_used = False
-    fallback_error = package_error if solutions.managed else serving_error
-    if requested_package and skill_path is None and not fallback_error:
-        fallback_error = "Imported solution is building; using Exact/BM25"
-    allowed_source_ids = set(str(value) for value in ((payload.get("scope") or {}).get("source_ids") or []))
+    scope = payload.get("scope") or {}
+    allowed_source_ids = None if scope.get("source_ids") is None else set(scope["source_ids"])
     strict_types = set(str(value) for value in requested or [])
-    if skill_path is not None and (solutions.managed or requested == ["skill"]) and result.query_intent.value == "semantic":
-        try:
-            if solutions.managed:
-                allowed = {
-                    version for version, value in source_values.items()
-                    if matches_content_types(value, strict_types)
-                    and (not allowed_source_ids or str(value.get("source_id") or version.skill_id) in allowed_source_ids)
-                    and str(value.get("visibility") or "available") == "available"
-                    and not ((payload.get("scope") or {}).get("include_read_only") is False and value.get("read_only"))
-                }
-                frozen_hits = skill_path.search(str(payload.get("query") or ""), len(skill_path.documents), allowed)
-            else:
-                frozen_hits = skill_path.search(str(payload.get("query") or ""), len(skill_path.documents))
-            versions_by_id = {version.skill_id: version for version in documents}
-            if any(not isinstance(hit.rank, int) or hit.rank < 1
-                   or not isinstance(hit.score, (int, float)) or not math.isfinite(float(hit.score))
-                   or (hit.skill_version not in source_values if solutions.managed
-                       else "skill:" + hit.skill_version.skill_id not in versions_by_id)
-                   for hit in frozen_hits):
-                raise ValueError("retrieval model returned invalid hit identity, rank, or score")
-            from dataclasses import replace
-            selected_hits = frozen_hits if solutions.managed else [
-                replace(hit, skill_version=versions_by_id["skill:" + hit.skill_version.skill_id])
-                for hit in frozen_hits
-            ]
-            serving_used = True
-        except Exception as error:
-            fallback_error = f"Imported text search failed: {type(error).__name__}: {error}"
-            print(fallback_error, file=sys.stderr, flush=True)
-    allowed_source_ids = set(str(value) for value in ((payload.get("scope") or {}).get("source_ids") or []))
-    strict_types = set(str(value) for value in requested or [])
+
+    def admitted(version):
+        value = source_values[version]
+        return ((allowed_source_ids is None or str(value.get("source_id") or version.skill_id) in allowed_source_ids)
+                and str(value.get("visibility") or "available") == "available"
+                and not (scope.get("include_read_only") is False and value.get("read_only"))
+                and matches_content_types(value, strict_types))
+
+    configured = bool(requested_package or package_error) if solutions.managed else (state_dir / "serving-release.json").is_file()
+    selected_hits, semantic_status, fallback_error = dual_path_hits(
+        str(payload.get("query") or ""), route, result.hits, documents, source_values,
+        admitted, configured=configured, provider=skill_path,
+        provider_error=package_error if solutions.managed else serving_error,
+        imported=solutions.managed,
+    )
+    serving_used = any("semantic" in hit.sources for hit in selected_hits)
     hits = []
     for hit in selected_hits:
         document = documents[hit.skill_version]
         source_value = source_values[hit.skill_version]
         source_id = str(source_value.get("source_id") or hit.skill_version.skill_id)
-        if allowed_source_ids and source_id not in allowed_source_ids:
+        if allowed_source_ids is not None and source_id not in allowed_source_ids:
             continue
         if str(source_value.get("visibility") or "available") != "available":
             continue
@@ -481,15 +560,16 @@ def search_unmeasured(payload):
             "provenance": dict(document.provenance),
             "read_only": document.read_only,
             "contributing_routes": list(hit.contributing_routes),
-            "score_components": {
-                "lexical": 0.0 if serving_used else float(hit.score),
-                "semantic": float(hit.score) if serving_used else 0.0, "graph": 0.0, "priority": 1.0,
-            },
+            "sources": hit.sources,
+            "source_label": hit.source_label,
+            "path_evidence": hit.path_evidence,
+            "score_semantics": "rrf" if route == "dual" else "engine-defined",
+            "score_components": hit.score_components,
         })
     diagnostics = []
     if fallback_error:
         diagnostics.append({"code": "skill-serving-fallback", "message": fallback_error})
-    incomplete = False
+    incomplete = semantic_status in {"unavailable", "fallback"}
     if route in {"graph", "hybrid"} and hits:
         graph = payload.get("graph") or {}
         max_depth = max(1, min(int(graph.get("max_depth") or 1), 32))
@@ -570,7 +650,7 @@ def search_unmeasured(payload):
         if incomplete:
             diagnostics.append({"code": "truncated", "message": "Graph traversal stopped at the configured budget."})
     result_limit = max(1, min(int(payload.get("limit") or 5), 100))
-    limit_reached = not serving_used and len(result.hits) >= result_limit
+    limit_reached = len(selected_hits) >= result_limit or (route != "semantic" and len(result.hits) >= result_limit)
     truncated = len(hits) > result_limit
     if limit_reached:
         diagnostics.append({"code": "candidate-limit-reached", "message": "Candidate limit reached; more matching sources may exist."})
@@ -582,6 +662,9 @@ def search_unmeasured(payload):
         "corpus_revision": revision,
         "ready_generation": generation,
         "route": route,
+        "search_mode": route if route in {"lexical", "semantic", "dual"} else "lexical",
+        "semantic_status": semantic_status,
+        "semantic_reason": fallback_error or ("Embedding retrieval is not configured" if not configured else "Embedding path not requested" if route not in {"semantic", "dual"} else ""),
         "solution": {
             "package_id": requested_package if serving_used and solutions.managed else None,
             "reason": "served" if serving_used else "scope" if requested_package and result.query_intent.value != "semantic" else "unavailable" if requested_package and skill_path is None else "execution-error" if fallback_error else "default",

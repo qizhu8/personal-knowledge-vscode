@@ -428,7 +428,7 @@ function writeSession(id, status, updatedAt) {
     assert.strictEqual(fs.readFileSync(trashedTaskPath, "utf8"), preservedTask);
     await lifecycle.deleteAgentSessionGroup(groupState, group.groupId); assert.strictEqual(fs.readFileSync(groupPath, "utf8"), tombstone);
     await assert.rejects(lifecycle.deleteAgentSessionGroup(groupState, "../outside"), /identity is invalid/);
-    const groupUi = { projectSnapshot: { agentSessionGroups: [group, { ...group, groupId: "hidden-fixture", deletedAt: "deleted" }] }, esc: escapeHtml,
+    const groupUi = { agentSessionPortalFilter:"all", projectSnapshot: { agentSessionGroups: [group, { ...group, groupId: "hidden-fixture", deletedAt: "deleted" }] }, esc: escapeHtml,
       buildCatTree: () => ({ folders: {}, items: [] }),
       renderCatTree: (tree, _path, _depth, _leaf, _q, folderAttr, _order, options) => {
         const render = (node, ancestors = []) => Object.entries(node.folders).map(([name, child]) =>
@@ -437,7 +437,7 @@ function writeSession(id, status, updatedAt) {
       }, recipeCopyPathMenu: () => ({ label: "Copy Group identity" }),
       showPaperMenu: (_x, _y, items) => { groupUi.items = items; }, pkModal: options => { groupUi.confirmation = options; }, ask: (command, args) => { groupUi.request = { command, args }; } };
     vm.createContext(groupUi);
-    const wantedGroupFunctions = new Set(["agentSessionGroupKey", "agentSessionTree", "agentSessionGroupCount", "agentSessionFolderMenu", "agentSessionSnapshotSignature", "agentSessionDisplayStatus", "agentSessionStatusIndicator"]);
+    const wantedGroupFunctions = new Set(["agentSessionGroupKey", "agentSessionMatchesPortal", "agentSessionTree", "agentSessionGroupCount", "agentSessionFolderMenu", "agentSessionSnapshotSignature", "agentSessionDisplayStatus", "agentSessionStatusIndicator"]);
     const groupParsed = ts.createSourceFile("projects.js", projectsSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
     for (const node of groupParsed.statements) if (ts.isFunctionDeclaration(node) && wantedGroupFunctions.has(node.name?.text)) vm.runInContext(node.getText(groupParsed), groupUi);
     assert.strictEqual(groupUi.agentSessionDisplayStatus({ status: "paused", todos: [], nativeAgent: { requestStatus: "failed" } }).state, "failed");
@@ -468,6 +468,14 @@ function writeSession(id, status, updatedAt) {
     assert.notStrictEqual(groupUi.agentSessionSnapshotSignature({ agentSessionGroups: [group] }), groupUi.agentSessionSnapshotSignature({ agentSessionGroups: [] }), "Group-only changes must invalidate cached UI state");
     assert.match(extensionSource, /apiChatGroupSnapshots\(path\.join\(getStorePath\(\), "\.pkm", "state"\)\)/);
     assert.match(projectsSource, /hiddenGroups\.has\(agentSessionGroupKey\(session\)\)/);
+    const chatGroup = { groupId:"pkm-chat-fixture",hostKind:"pkm",hostSessionId:"00000000-0000-0000-0000-000000000000" };
+    groupUi.projectSnapshot.agentSessionGroups.push(chatGroup);
+    groupUi.agentSessionFolderMenu(event, chatGroup.groupId);
+    groupUi.items.find(item => item.label === "Open PKM Chat").onClick();
+    assert.strictEqual(groupUi.request.command, "agentSessionGroupOpenChat");
+    assert.strictEqual(groupUi.request.args.chatId, chatGroup.hostSessionId);
+    groupUi.agentSessionFolderMenu(event, "chat-library:ungroup");
+    assert(!groupUi.items.some(item => item.label === "Open PKM Chat"), "Library categories are not Chats");
     console.log("agent-session lifecycle tests passed");
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });

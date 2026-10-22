@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 
-export type PrivacyContentType = "skills" | "notes" | "papers" | "prompts" | "packages" | "servers" | "scripts" | "recipes";
+export type PrivacyContentType = "skills" | "notes" | "papers" | "prompts" | "packages" | "servers" | "scripts" | "recipes" | "actions" | "action-module-sets";
 
 interface PrivacyState {
   schema: 1;
@@ -9,7 +9,7 @@ interface PrivacyState {
 }
 
 let storeRoot = "";
-const validTypes = new Set<PrivacyContentType>(["skills", "notes", "papers", "prompts", "packages", "servers", "scripts", "recipes"]);
+const validTypes = new Set<PrivacyContentType>(["skills", "notes", "papers", "prompts", "packages", "servers", "scripts", "recipes", "actions", "action-module-sets"]);
 
 export function setPrivacyStoreRoot(root: string): void {
   storeRoot = path.resolve(root);

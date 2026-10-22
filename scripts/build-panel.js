@@ -15,7 +15,9 @@ const parts = [
   path.join(root, "src", "webview", "recipe-graph-shared.js"),
   path.join(root, "src", "webview", "agent-harness.js"),
   "15-projects.js",
+  "16-portal-connections.js",
   "20-knowledge.js",
+  "21-search.js",
   "30-environments.js",
   "40-servers.js",
   "45-subscriptions.js",
@@ -23,6 +25,7 @@ const parts = [
   "50-mcp.js",
   "51-skill-router.js",
   "52-background-tasks.js",
+  "53-panel-instances.js",
   "60-init.js",
 ];
 

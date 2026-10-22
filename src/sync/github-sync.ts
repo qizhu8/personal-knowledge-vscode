@@ -7,17 +7,19 @@ import { promisify } from "util";
 import { normalizeTextNewlines } from "../knowledge/text-format";
 import { canonicalJson, compileWorkflowDefinitionV1 } from "../workflows/workflow-contracts";
 import { compareVersionOrder } from "../runtime/version-order";
-import { knowledgeSyncDeletionRecords } from "../knowledge/filestore";
+import { knowledgeSyncDeletionRecords, parseStoreFrontmatter } from "../knowledge/filestore";
+import { legacyKnowledgeAlias, readKnowledgeIdentity } from "../knowledge/knowledge-contracts";
 import { alignSyncScriptIdentities, mergeSyncScriptIdentities, readSyncScriptIdentity, syncHistoricalScriptTrash, syncScriptAliasPath, syncScriptSidecarPath, SyncHistoricalTrashEvidence } from "./github-sync-script-identity";
 import { sameKnowledgeRoot } from "./github-sync-coordinator";
 import { GitHubSyncContentIssue, GitHubSyncContentRepairError, inspectConflictMarkers } from "./github-sync-content-repair";
 import { GitHubSyncBaseEvidence, verifyGitHubSyncBaseDigest } from "./github-sync-base-integrity";
 import { planGitHubSyncPublication } from "./github-sync-publication-plan";
+import { isMarkdownAssetDirectory } from "../knowledge/markdown-assets";
 
 const execFileAsync = promisify(execFile);
 
 export const GITHUB_SYNC_CONTENT_TYPES = [
-  "skills", "notes", "papers", "prompts", "scripts", "packages", "servers", "recipes", "agentSnapshots"
+  "skills", "notes", "papers", "prompts", "scripts", "packages", "servers", "recipes", "agentSnapshots", "actions", "action-module-sets"
 ] as const;
 
 export type GitHubSyncContentType = typeof GITHUB_SYNC_CONTENT_TYPES[number];
@@ -559,7 +561,7 @@ export function completeGitHubRemoteAuthorityBackup(backupDirectory: string): vo
 function emptyScope(includeAll: boolean): GitHubSyncSelectionScope {
   const scope = {} as GitHubSyncSelectionScope;
   for (const type of GITHUB_SYNC_CONTENT_TYPES) {
-    const selectedByDefault = type !== "packages" && type !== "servers" && type !== "agentSnapshots";
+    const selectedByDefault = !["packages", "servers", "agentSnapshots", "actions", "action-module-sets"].includes(type);
     scope[type] = { items: [], folders: includeAll && selectedByDefault ? [""] : [] };
   }
   return scope;
@@ -1008,6 +1010,9 @@ export function githubSyncFolderShields(
 }
 
 export function githubSyncIsSystemContent(type: GitHubSyncContentType, category: string, itemId = "", destination = ""): boolean {
+  if (type === "actions" || type === "action-module-sets") {
+    return [category, itemId, destination.replace(new RegExp(`^${type}/`), "")].some(value => /^(?:core|system)(?:[./]|$)/i.test(value));
+  }
   if (!["prompts", "notes", "skills", "recipes"].includes(type)) return false;
   const first = (value: string): string => path.posix.normalize(String(value || "").replace(/\\/g, "/")).split("/")[0].toLowerCase();
   const relative = destination.replace(/\\/g, "/").replace(new RegExp(`^${type}/`, "i"), "");
@@ -1190,7 +1195,7 @@ interface GitHubSyncManifest {
 const GITHUB_SYNC_MANIFEST_SCHEMA = 3;
 const GITHUB_SYNC_EXTENSION_VERSION = String(require("../../package.json").version || "");
 const GITHUB_SYNC_REQUIRED_CAPABILITIES = ["explicit-deletions", "stable-entity-identity"] as const;
-const GITHUB_SYNC_SUPPORTED_CAPABILITIES = new Set<string>([...GITHUB_SYNC_REQUIRED_CAPABILITIES, "entity-partial-progress"]);
+const GITHUB_SYNC_SUPPORTED_CAPABILITIES = new Set<string>([...GITHUB_SYNC_REQUIRED_CAPABILITIES, "entity-partial-progress", "action-library-assets"]);
 
 function legacyManifestMetadata(filePath: string, type: GitHubSyncContentType): Pick<GitHubSyncManagedFile, "itemId" | "category" | "privacy"> {
   const relative = filePath.slice(type.length + 1);
@@ -1219,7 +1224,11 @@ function legacyManifestMetadata(filePath: string, type: GitHubSyncContentType): 
       itemId = /\.([^.]+)\.json$/i.exec(filename)?.[1] || withoutExtension;
       break;
     case "agentSnapshots":
+    case "actions":
       itemId = withoutExtension;
+      break;
+    case "action-module-sets":
+      itemId = segments.slice(0, 2).join("/");
       break;
   }
   if (!itemId) throw new Error(`Cannot infer legacy manifest identity for ${filePath}.`);
@@ -1242,7 +1251,7 @@ function selectedFiles(target: GitHubSyncTarget, catalog: GitHubSyncCatalog, exc
   for (const type of GITHUB_SYNC_CONTENT_TYPES) {
     const entries: GitHubSyncFingerprintEntry[] = [];
     const folderEntries = new Map<string, GitHubSyncFingerprintEntry[]>();
-    for (const item of catalog[type].filter(candidate => selectedItem(target, type, candidate))) {
+    for (const item of (catalog[type] || []).filter(candidate => selectedItem(target, type, candidate))) {
       const blocked = (error: unknown, destination = item.destination, source = item.source): void => {
         if (!issues) throw error;
         issues.push({ path: destination, type, itemId: item.id, source: "local", reason: "materialization",
@@ -1347,7 +1356,8 @@ export function manifestJson(files: GitHubSyncManagedFile[], deletions: GitHubSy
     schema: GITHUB_SYNC_MANIFEST_SCHEMA,
     minimumExtensionVersion: GITHUB_SYNC_EXTENSION_VERSION,
     capabilities: {
-      required: [...GITHUB_SYNC_SUPPORTED_CAPABILITIES],
+      required: [...GITHUB_SYNC_SUPPORTED_CAPABILITIES].filter(capability => capability !== "action-library-assets"
+        || [...ordered, ...deletions].some(file => file.type === "actions" || file.type === "action-module-sets")),
       storage: "pkm.github.publication/v1",
     },
     // Review-only evidence is machine-local, never publication metadata.
@@ -2060,7 +2070,7 @@ export async function restoreGitHubRemoteFiles(
       id: "", label: "", cat: "", isPrivate: false, destination: item.file, content: item.content.toString("utf8"),
     })) throw new Error(`System content is excluded from GitHub Sync restore: ${item.file}`);
   }
-  replaceGitHubSyncFilesAtomically(contents.map(item => ({ destination: item.destination, content: item.content })), "GitHub Sync restore");
+  replaceGitHubSyncFilesAtomically(contents.map(item => ({ destination: item.destination, content: item.content })), "GitHub Sync restore", storeRoot);
   return { restored: restorePaths, conflicts };
 }
 
@@ -2269,6 +2279,29 @@ function validateManagedContent(file: GitHubSyncManagedFile, content: Buffer, ex
     && /^(?:<<<<<<<(?: .*)?|>>>>>>>(?: .*)?)\r?$/m.test(text)) {
     throw new Error(`GitHub Sync content still contains merge conflict markers: ${file.path}`);
   }
+  if (file.type === "skills" && (file.path.split("/").slice(0, -1).some(isMarkdownAssetDirectory)
+    || file.member && path.posix.basename(file.member).toLowerCase() !== "skill.md")) return;
+  if (file.type === "actions") {
+    const value = JSON.parse(text);
+    if (value?.schema !== "pkm.action.definition/v1" || !/^[a-z][a-z0-9_.-]{2,100}$/.test(value.action_id)
+      || file.path !== `actions/${value.action_id}.json` || !Number.isInteger(value.version) || value.version < 1
+      || !Array.isArray(value.implementations) || !value.implementations.length
+      || !value.input_schema || !value.output_schema || !Array.isArray(value.effects)) throw new Error(`Invalid portable Action definition: ${file.path}`);
+    if (githubSyncIsSystemContent("actions", "", value.action_id)) throw new Error(`System Actions cannot be synchronized: ${file.path}`);
+    return;
+  }
+  if (file.type === "action-module-sets") {
+    const member = file.path.split("/").slice(3).join("/");
+    if (member !== "manifest.json" && !/^(?:definitions|assets)\//.test(member)) throw new Error(`Only ModuleSet manifests, definitions and assets may be synchronized: ${file.path}`);
+    if (member === "manifest.json") {
+      const value = JSON.parse(text);
+      if (!value || value.schema !== "pkm.action.module-set/v1" || `${value.module_set_id}/${value.version}` !== file.path.split("/").slice(1, 3).join("/")
+        || typeof value.files !== "object" || !value.files || Array.isArray(value.files)
+        || Object.entries(value.files).some(([name, hash]) => !/^(?:definitions|assets)\//.test(name)
+          || githubSyncSafeRelativePath(name) !== name || typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash))) throw new Error(`Invalid ModuleSet file manifest: ${file.path}`);
+    }
+    return;
+  }
   if (file.type !== "skills" && file.type !== "recipes") return;
   if (!Buffer.from(text, "utf8").equals(content) || text.includes("\0")) throw new Error(`GitHub Sync content is not valid UTF-8 text: ${file.path}`);
   if (file.type === "recipes") {
@@ -2304,7 +2337,7 @@ export function githubSyncIsTextContent(relative: string, content: Buffer): bool
     && !content.includes(0) && Buffer.from(content.toString("utf8"), "utf8").equals(content);
 }
 
-export function validateGitHubSyncCandidate(relative: string, content: Buffer): void {
+export function validateGitHubSyncCandidate(relative: string, content: Buffer, member = ""): void {
   const safe = githubSyncSafeRelativePath(relative);
   const type = safe.split("/", 1)[0] as GitHubSyncContentType;
   if (!(GITHUB_SYNC_CONTENT_TYPES as readonly string[]).includes(type)) throw new Error(`Unsupported GitHub Sync content path: ${safe}`);
@@ -2313,7 +2346,7 @@ export function validateGitHubSyncCandidate(relative: string, content: Buffer): 
     path: safe,
     type,
     itemId: safe,
-    member: "",
+    member,
     category: "",
     privacy: "public",
     digest: fileDigest(content),
@@ -2423,7 +2456,54 @@ function rollbackGitHubSyncMutation(destination: string, original: Buffer | unde
   else fs.rmSync(destination, { force: true });
 }
 
+function withActionSyncMutation<T>(storeRoot:string | undefined, destinations:string[], apply:() => T):T {
+  const affected = storeRoot ? destinations.map(destination => path.relative(storeRoot, destination).replace(/\\/g, "/"))
+    .filter(relative => /^(?:actions|action-module-sets)\//.test(relative)) : [];
+  if (!storeRoot || !affected.length) return apply();
+  const root = managedPath(storeRoot, ".pkm/state/actions");
+  fs.mkdirSync(root, { recursive:true });
+  const lock = path.join(root, "mutation.lock");
+  let descriptor:number;
+  try { descriptor = fs.openSync(lock, "wx", 0o600); }
+  catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "EEXIST") throw new Error("Action state is busy or requires lock recovery. Retry the original Sync after resolving it.");
+    throw error;
+  }
+  try {
+    fs.writeSync(descriptor, JSON.stringify({ pid:process.pid, started_at:new Date().toISOString() }));
+    fs.fsyncSync(descriptor);
+    const runs = path.join(root, "runs");
+    if (fs.existsSync(runs)) for (const name of fs.readdirSync(runs)) {
+      const record = managedPath(root, `runs/${name}/run.json`);
+      if (!fs.existsSync(record)) continue;
+      const run = JSON.parse(fs.readFileSync(record, "utf8"));
+      if (["running", "waiting", "outcome_unknown"].includes(run.state)) throw new Error("Resolve active/waiting/uncertain Action Runs before synchronizing Action sources.");
+    }
+    const queuePath = managedPath(root, "validation-queue.json");
+    if (fs.existsSync(queuePath)) {
+      const queue = JSON.parse(fs.readFileSync(queuePath, "utf8"));
+      if (Object.values(queue.jobs || {}).some(job => !!job && typeof job === "object" && "state" in job
+        && ["queued", "running"].includes(String(job.state)))) throw new Error("Cancel or finish queued/running Action qualification before synchronizing Action sources.");
+    }
+    const settingsPath = managedPath(root, "settings.json");
+    const settings = fs.existsSync(settingsPath) ? JSON.parse(fs.readFileSync(settingsPath, "utf8")) : {};
+    if (affected.some(relative => {
+      const [area, id, version] = relative.split("/");
+      return area === "action-module-sets" && settings.enabled_module_sets?.[id] === Number(version);
+    })) throw new Error("Unload the affected ModuleSet before synchronizing its installed source version.");
+    return apply();
+  } finally { fs.closeSync(descriptor); fs.unlinkSync(lock); }
+}
+
 export function replaceGitHubSyncFilesAtomically(
+  replacements: Array<{ destination: string; content: Buffer | undefined; guard?: { original: Buffer | undefined } }>,
+  operation = "GitHub Sync",
+  actionStoreRoot?:string
+): void {
+  withActionSyncMutation(actionStoreRoot, replacements.map(item => item.destination), () => replaceGitHubSyncFilesUnlocked(replacements, operation));
+}
+
+function replaceGitHubSyncFilesUnlocked(
   replacements: Array<{ destination: string; content: Buffer | undefined; guard?: { original: Buffer | undefined } }>,
   operation = "GitHub Sync"
 ): void {
@@ -2478,7 +2558,13 @@ class GitHubSyncLocalChangeError extends Error {
   }
 }
 
-function applyLocalChanges(
+function applyLocalChanges(...args:Parameters<typeof applyLocalChangesUnlocked>):ReturnType<typeof applyLocalChangesUnlocked> {
+  const [storeRoot, writes, deletes] = args;
+  return withActionSyncMutation(storeRoot, storeRoot ? [...writes, ...deletes].map(item => syncLocalPath(storeRoot, item.file.path)) : [],
+    () => applyLocalChangesUnlocked(...args));
+}
+
+function applyLocalChangesUnlocked(
   storeRoot: string | undefined,
   localWrites: GitHubSyncLocalWrite[],
   localDeletes: Array<{ file: GitHubSyncManagedFile; expectedLocal?: Buffer }>
@@ -2502,6 +2588,9 @@ function applyLocalChanges(
   }));
   for (const { item, destination } of replacements) {
     const current = fs.existsSync(destination) ? fs.readFileSync(destination) : undefined;
+    if (item.file.type === "action-module-sets" && current && !current.equals(item.content)) {
+      throw new Error(`Immutable ModuleSet member differs: ${item.file.path}. Publish a new version, or use explicit recovery for damaged files.`);
+    }
     if (!githubSyncLocalSnapshotMatches(item.expectedLocal, item.content, current)) {
       throw new GitHubSyncLocalChangeError(item.file, item.expectedLocal, current, item.content);
     }
@@ -2554,7 +2643,7 @@ function applyLocalChanges(
   for (const item of localWrites) {
     pulled.push(item.file.path);
     if (item.file.privacy === "private" && item.file.type !== "agentSnapshots") {
-      const topLevel = item.file.category.split("/").filter(Boolean)[0];
+      const topLevel = item.file.type === "actions" ? item.file.itemId : item.file.category.split("/").filter(Boolean)[0];
       if (topLevel) {
         const values = privateTopLevels.get(item.file.type) || new Set<string>();
         values.add(topLevel);
@@ -2712,6 +2801,7 @@ function reconcileMigratedEntityIdentities(
 ): number {
   const authorityByPathContent = new Map<string, Array<{ key: string; files: GitHubSyncManagedFile[] }>>();
   const authorityByPathLayout = new Map<string, Array<{ key: string; files: GitHubSyncManagedFile[] }>>();
+  const resourceOwnersByAlias = new Map<string, Array<{ key: string; files: GitHubSyncManagedFile[] }>>();
   for (const [key, files] of authorityEntities) {
     const contentSignature = entityPathContentState(files)!;
     const matches = authorityByPathContent.get(contentSignature) || [];
@@ -2721,11 +2811,49 @@ function reconcileMigratedEntityIdentities(
     const layoutMatches = authorityByPathLayout.get(layoutSignature) || [];
     layoutMatches.push({ key, files });
     authorityByPathLayout.set(layoutSignature, layoutMatches);
+    const document = files.find(file => file.member === "" && file.content
+      && ["notes", "skills", "papers"].includes(file.type) && /\.md$/i.test(file.path));
+    if (document?.content) {
+      const kind = document.type === "notes" ? "note" : document.type === "skills" ? "skill" : "research";
+      const identity = readKnowledgeIdentity(parseStoreFrontmatter(document.content.toString("utf8")).fm, kind, document.itemId);
+      if (identity.knowledgeId) for (const alias of identity.aliases) {
+        const owners = resourceOwnersByAlias.get(alias) || [];
+        owners.push({ key, files });
+        resourceOwnersByAlias.set(alias, owners);
+      }
+    }
   }
   let reconciled = 0;
   for (const [legacyKey, files] of [...entities]) {
     if (authorityEntities.has(legacyKey)) continue;
     if (files[0]?.type === "scripts" && files.some(file => /^script_[a-f0-9]{24}$/.test(file.itemId) || file.member === "identity-sidecar")) continue;
+    if (files.length && files.every(file => file.member && ["notes", "skills", "papers"].includes(file.type))) {
+      const first = files[0];
+      const kind = first.type === "notes" ? "note" : first.type === "skills" ? "skill" : "research";
+      const owners = resourceOwnersByAlias.get(legacyKnowledgeAlias(kind, first.itemId)) || [];
+      const owner = owners.length === 1 ? owners[0] : undefined;
+      if (owner && owner.key !== legacyKey && files.every(file => {
+          const resource = owner.files.find(candidate => candidate.path === file.path && candidate.type === file.type
+            && candidate.member === file.member);
+          const existing = entities.get(owner.key)?.find(candidate => candidate.path === file.path);
+          return file.content && resource?.content && file.content.equals(resource.content)
+            && (!existing || (existing.content && existing.content.equals(file.content)));
+        })) {
+        const reassigned = files.map(file => {
+          const resource = owner.files.find(candidate => candidate.path === file.path)!;
+          return { ...file, itemId: resource.itemId, category: resource.category, privacy: resource.privacy, member: resource.member };
+        });
+        entities.delete(legacyKey);
+        const combined = new Map((entities.get(owner.key) || []).map(file => [file.path, file]));
+        for (const file of reassigned) {
+          combined.set(file.path, file);
+          finalRemote?.set(file.path, file);
+        }
+        entities.set(owner.key, [...combined.values()].sort((left, right) => left.member.localeCompare(right.member)));
+        reconciled++;
+        continue;
+      }
+    }
     let matches = authorityByPathContent.get(entityPathContentState(files)!) || [];
     if (matches.length !== 1) matches = authorityByPathLayout.get(entityPathLayoutState(files)!) || [];
     if (matches.length !== 1 || entities.has(matches[0].key)) continue;
@@ -2904,6 +3032,7 @@ export function deterministicJsonMerge(base: Buffer, local: Buffer, remote: Buff
 }
 
 async function mergeManagedContent(file: GitHubSyncManagedFile, base: Buffer, local: Buffer, remote: Buffer): Promise<Buffer | undefined> {
+  if (file.type === "actions" || file.type === "action-module-sets") return undefined;
   if ([base, local, remote].some(content => !githubSyncIsTextContent(file.path, content))) return undefined;
   const merged = file.type === "recipes" || (file.path.endsWith(".json") && file.type !== "agentSnapshots")
     ? deterministicJsonMerge(base, local, remote, file.type === "recipes")
@@ -2944,7 +3073,10 @@ function writeTransactionReceipt(checkoutRoot: string, receipt: GitHubSyncTransa
   writeAtomic(destination, Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`, "utf8"), 0o600);
 }
 
-export function completeGitHubSyncTransaction(checkoutRoot: string, targetId: string, transactionId: string): void {
+export function validateGitHubSyncTransaction(
+  checkoutRoot: string, targetId: string, transactionId: string,
+  expected?: { repository: string; branch: string; commit: string },
+): GitHubSyncTransactionReceipt {
   const destination = transactionReceiptPath(checkoutRoot, targetId);
   const receipt = JSON.parse(fs.readFileSync(destination, "utf8")) as GitHubSyncTransactionReceipt;
   if (receipt.schema !== 1 || receipt.targetId !== targetId || receipt.transactionId !== transactionId) {
@@ -2953,6 +3085,14 @@ export function completeGitHubSyncTransaction(checkoutRoot: string, targetId: st
   if (!["pushed", "recorded"].includes(receipt.state) || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(receipt.pushedCommit)) {
     throw new Error("GitHub Sync cannot acknowledge an outbox that has not been pushed.");
   }
+  if (expected && (receipt.repository !== expected.repository || receipt.branch !== expected.branch || receipt.pushedCommit !== expected.commit)) {
+    throw new Error("GitHub Sync transaction receipt no longer matches the result's repository, branch or commit. Preserve the recovery record; no result was applied.");
+  }
+  return receipt;
+}
+
+export function completeGitHubSyncTransaction(checkoutRoot: string, targetId: string, transactionId: string): void {
+  const receipt = validateGitHubSyncTransaction(checkoutRoot, targetId, transactionId);
   receipt.state = "recorded";
   receipt.recordedAt = new Date().toISOString();
   writeTransactionReceipt(checkoutRoot, receipt);
@@ -3545,11 +3685,30 @@ async function syncGitHubTargetAttempt(
   }
   const initialBlocked = new Set([...deferredEntities, ...(normalized.pausedItems || []).map(item => entityKey(item.type, item.itemId)),
     ...conflicts.map(file => entityKey(file.type, file.itemId))]);
+  const ownershipCollisions = new Set<string>();
+  if (!authoritativeMigrationCutover && !forceLocalAuthority) {
+    const ownersByPath = new Map<string, Set<string>>();
+    for (const entities of [localEntities, remoteEntities]) for (const [key, files] of entities) for (const file of files) {
+      const portable = file.path.toLocaleLowerCase("en-US");
+      const owners = ownersByPath.get(portable) || new Set<string>();
+      owners.add(key);
+      ownersByPath.set(portable, owners);
+    }
+    // Keep Local ownership visible even when a blocked candidate falls back to Remote.
+    for (const owners of ownersByPath.values()) if (owners.size > 1) {
+      for (const owner of owners) {
+        ownershipCollisions.add(owner);
+        const required = dependencies.get(owner) || new Set<string>();
+        for (const other of owners) if (other !== owner) required.add(other);
+        dependencies.set(owner, required);
+      }
+    }
+  }
   const publication = planGitHubSyncPublication(candidateEntities, retainedEntities, initialBlocked, dependencies);
   for (const key of publication.blocked) {
     if (!initialBlocked.has(key)) {
       await conflictEntity(baseEntities.get(key), localEntities.get(key), remoteEntities.get(key),
-        publication.collisions.has(key) ? "path-collision" : "dependency-conflict");
+        publication.collisions.has(key) || ownershipCollisions.has(key) ? "path-collision" : "dependency-conflict");
     }
     if (remoteDeletionMap.has(key)) finalDeletions.set(key, remoteDeletionMap.get(key)!);
     else finalDeletions.delete(key);
@@ -3829,7 +3988,7 @@ export function githubSyncMigrationCanonicalFiles(
   const files: GitHubSyncMigrationCanonicalFile[] = [];
   const destinations = new Set<string>();
   for (const type of GITHUB_SYNC_CONTENT_TYPES) {
-    for (const item of catalog[type].filter(candidate => !target || selectedItem(target, type, candidate))) {
+    for (const item of (catalog[type] || []).filter(candidate => !target || selectedItem(target, type, candidate))) {
       for (const file of collectItemFiles(item)) {
         const portable = file.destination.toLocaleLowerCase("en-US");
         if (destinations.has(portable)) continue;

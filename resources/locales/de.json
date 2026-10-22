@@ -4,6 +4,11 @@
     "label": "Deutsch"
   },
   "strings": {
+    "apiChat.responseStopped": "Antwort gestoppt. Sie können eine neue Nachricht senden oder diese Antwort erneut versuchen.",
+    "apiChat.responseStoppedAfterTools": "Antwort gestoppt. Frühere Werkzeugaktionen wurden nicht rückgängig gemacht. Prüfen Sie deren Ergebnisse vor einem erneuten Versuch.",
+    "apiChat.responseStoppedDuringTool": "Antwort gestoppt. Ein Werkzeug lief noch und hat möglicherweise Dateien geändert oder einen Remoteauftrag übermittelt. Das Stoppen macht dies nicht rückgängig. Prüfen Sie die Werkzeugergebnisse vor einem erneuten Versuch.",
+    "apiChat.responseStoppedLegacy": "Antwort gestoppt. Frühere Werkzeugaktionen können bereits wirksam sein; das Stoppen macht sie nicht rückgängig. Prüfen Sie die Werkzeugergebnisse vor einem erneuten Versuch.",
+    "apiChat.contextBudgetExceeded": "Geschätzte Eingabe und reservierte Ausgabe überschreiten das Kontextbudget. Erhöhen Sie das Budget, reduzieren Sie Kontext/Werkzeuge oder wählen Sie ein Modell mit größerem Kontext.",
     "config.copilotRegistrationTitle": "Copilot CLI / SDK: einmalige manuelle Registrierung",
     "config.copilotRegistrationDescription": "PKM stellt VS Code eine MCP-Definition bereit, schreibt aber keine Copilot-CLI-Konfiguration. CLI-/SDK-Sitzungen ohne geerbte VS-Code-MCP-Definition benötigen eine separate Registrierung. Sind pkm-Tools bereits verfügbar, überspringen Sie diesen Schritt; registrieren Sie sie im selben Client nicht doppelt.",
     "config.copilotRegistrationPrepare": "Wählen Sie zuerst Python und schließen Sie oben die Einrichtung der verwalteten Laufzeit und die Servergenerierung ab. Installieren Sie Copilot CLI, falls der Befehl copilot fehlt.",

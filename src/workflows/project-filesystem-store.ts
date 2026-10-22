@@ -113,12 +113,12 @@ export class ProjectFilesystemStore {
     if (this.hasCanonicalStore()) return this.list();
     const domain = projectDomain(state);
     fs.mkdirSync(this.stateDirectory, { recursive: true });
-    this.replaceProjectTree(domain);
-    this.writeControl(makeControl(domain, storeVersion, []));
+    this.commitProjectTree(domain, makeControl(domain, storeVersion, []));
     return { ...clone(domain), storeVersion };
   }
 
   list(): ProjectFilesystemSnapshot {
+    this.recoverPendingCommit();
     const control = this.readControl()!;
     const domain = this.readProjectTree(control.rootId);
     if (domainDigest(domain) !== control.canonicalDigest) {
@@ -128,6 +128,7 @@ export class ProjectFilesystemStore {
   }
 
   checkCommand(command: ProjectFilesystemCommand): ProjectFilesystemMutationResult | undefined {
+    this.recoverPendingCommit();
     const control = this.readControl()!;
     const replay = control.receipts.find(receipt => receipt.commandId === command.commandId);
     if (replay) {
@@ -160,8 +161,7 @@ export class ProjectFilesystemStore {
       storeVersion,
       entityId,
     }));
-    this.replaceProjectTree(domain);
-    this.writeControl({
+    this.commitProjectTree(domain, {
       ...makeControl(domain, storeVersion, receipts),
       ...(control.migration ? { migration: control.migration } : {}),
     });
@@ -255,7 +255,7 @@ export class ProjectFilesystemStore {
     const backupRoot = this.backupProjectRoot();
     fs.rmSync(path.dirname(backupRoot), { recursive: true, force: true });
     fs.mkdirSync(path.dirname(backupRoot), { recursive: true });
-    fs.renameSync(this.stagingProjectRoot(), this.projectRoot);
+    withFsRetry(() => fs.renameSync(this.stagingProjectRoot(), this.projectRoot));
     const receipt = { ...withoutInternalMarker(marker), phase: "cutover" as const };
     this.writeControl({
       ...makeControl(projectDomain(source.state), source.storeVersion, source.receipts || []),
@@ -278,7 +278,7 @@ export class ProjectFilesystemStore {
     }
     fs.rmSync(this.projectRoot, { recursive: true, force: true });
     if (marker.hadTarget && fs.existsSync(this.backupProjectRoot())) {
-      fs.renameSync(this.backupProjectRoot(), this.projectRoot);
+      withFsRetry(() => fs.renameSync(this.backupProjectRoot(), this.projectRoot));
     }
     const receipt = { ...withoutInternalMarker(marker), phase: "rolled-back" as const };
     this.writeControl({
@@ -321,24 +321,60 @@ export class ProjectFilesystemStore {
     return readProjectTreeAt(this.projectRoot, rootId);
   }
 
-  private replaceProjectTree(domain: ProjectDomainState): void {
-    const staging = path.join(this.stateDirectory, `.project-store-write-${process.pid}-${randomUUID()}`);
-    const stagedProjectRoot = path.join(staging, "project");
-    const backup = path.join(staging, "previous");
-    try {
-      writeProjectTree(stagedProjectRoot, domain);
-      const verified = readProjectTreeAt(stagedProjectRoot, domain.rootId);
-      if (domainDigest(verified) !== domainDigest(domain)) fail("store-write-verification-failed", "Project write verification failed.");
-      if (fs.existsSync(this.projectRoot)) fs.renameSync(this.projectRoot, backup);
-      fs.renameSync(stagedProjectRoot, this.projectRoot);
-      fs.rmSync(backup, { recursive: true, force: true });
-      fsyncDirectory(this.knowledgeRoot);
-    } catch (error) {
-      if (!fs.existsSync(this.projectRoot) && fs.existsSync(backup)) fs.renameSync(backup, this.projectRoot);
-      throw error;
-    } finally {
-      fs.rmSync(staging, { recursive: true, force: true });
+  // Windows cannot rename a directory while another process (file watcher, indexer,
+  // antivirus) holds a handle inside it, so the tree is reconciled in place behind a
+  // roll-forward intent instead of swapping the whole directory.
+  private commitProjectTree(domain: ProjectDomainState, control: ProjectStoreControl): void {
+    atomicWriteJson(this.intentPath(), { schema: 1, domain, control });
+    this.applyIntent(domain, control);
+  }
+
+  private applyIntent(domain: ProjectDomainState, control: ProjectStoreControl): void {
+    syncProjectTree(this.projectRoot, domain);
+    const verified = readProjectTreeAt(this.projectRoot, domain.rootId);
+    if (domainDigest(verified) !== control.canonicalDigest) {
+      fail("store-write-verification-failed", "Project write verification failed.");
     }
+    fsyncDirectory(this.knowledgeRoot);
+    this.writeControl(control);
+    withFsRetry(() => fs.rmSync(this.intentPath(), { force: true }));
+    this.removeLegacyWriteStaging();
+  }
+
+  private recoverPendingCommit(): void {
+    if (!fs.existsSync(this.intentPath())) return;
+    let intent: any;
+    try {
+      intent = JSON.parse(fs.readFileSync(this.intentPath(), "utf8"));
+    } catch {
+      fail("store-corrupt", "Pending Project write intent is corrupt.");
+    }
+    if (!isRecord(intent) || !isRecord(intent.domain) || !isRecord(intent.control)
+      || domainDigest(intent.domain as ProjectDomainState) !== intent.control.canonicalDigest) {
+      fail("store-corrupt", "Pending Project write intent is invalid.");
+    }
+    this.applyIntent(intent.domain as ProjectDomainState, intent.control as ProjectStoreControl);
+  }
+
+  private removeLegacyWriteStaging(): void {
+    let entries: string[] = [];
+    try {
+      entries = fs.readdirSync(this.stateDirectory);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.startsWith(".project-store-write-")) continue;
+      try {
+        fs.rmSync(path.join(this.stateDirectory, entry), { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+      } catch {
+        // Best effort: a leftover staging directory is never read as canonical data.
+      }
+    }
+  }
+
+  private intentPath(): string {
+    return path.join(this.stateDirectory, "project-store-intent.json");
   }
 
   private writeControl(control: ProjectStoreControl): void {
@@ -486,25 +522,64 @@ function sortDomain(domain: ProjectDomainState): ProjectDomainState {
   };
 }
 
-function writeProjectTree(projectRoot: string, domain: ProjectDomainState): void {
-  fs.mkdirSync(projectRoot, { recursive: true });
+const PROJECT_ENTITY_DIRECTORIES = ["threads", "gantt", "collaboration"] as const;
+
+function projectTreeFiles(domain: ProjectDomainState): Map<string, Map<string, unknown>> {
+  const directories = new Map<string, Map<string, unknown>>();
   for (const project of domain.projects) {
-    const directory = path.join(projectRoot, safeProjectDirectoryName(project.name, project.projectId));
-    fs.mkdirSync(path.join(directory, "threads"), { recursive: true });
-    fs.mkdirSync(path.join(directory, "gantt"), { recursive: true });
-    fs.mkdirSync(path.join(directory, "collaboration"), { recursive: true });
-    atomicWriteJson(path.join(directory, "project.json"), project);
+    const files = new Map<string, unknown>();
+    files.set("project.json", project);
     for (const thread of domain.threads.filter(candidate => candidate.projectId === project.projectId)) {
-      atomicWriteJson(path.join(directory, "threads", `${safeEntityFileName(thread.threadId)}.json`), thread);
+      files.set(`threads/${safeEntityFileName(thread.threadId)}.json`, thread);
     }
     for (const task of domain.ganttTasks.filter(candidate => candidate.projectId === project.projectId)) {
-      atomicWriteJson(path.join(directory, "gantt", `${safeEntityFileName(task.taskId)}.json`), task);
+      files.set(`gantt/${safeEntityFileName(task.taskId)}.json`, task);
     }
     for (const task of domain.collaborationTasks.filter(candidate => candidate.projectId === project.projectId)) {
-      atomicWriteJson(path.join(directory, "collaboration", `${safeEntityFileName(task.collaborationId)}.json`), task);
+      files.set(`collaboration/${safeEntityFileName(task.collaborationId)}.json`, task);
+    }
+    directories.set(safeProjectDirectoryName(project.name, project.projectId), files);
+  }
+  return directories;
+}
+
+function syncProjectTree(projectRoot: string, domain: ProjectDomainState): void {
+  const desired = projectTreeFiles(domain);
+  withFsRetry(() => fs.mkdirSync(projectRoot, { recursive: true }));
+  for (const [directoryName, files] of desired) {
+    const directory = path.join(projectRoot, directoryName);
+    for (const child of PROJECT_ENTITY_DIRECTORIES) {
+      withFsRetry(() => fs.mkdirSync(path.join(directory, child), { recursive: true }));
+    }
+    for (const [relative, value] of files) {
+      const filePath = path.join(directory, ...relative.split("/"));
+      const text = canonicalJson(value);
+      let current: string | undefined;
+      try {
+        current = fs.readFileSync(filePath, "utf8");
+      } catch {
+        current = undefined;
+      }
+      if (current !== text) atomicWriteJson(filePath, value);
+    }
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isDirectory() && (PROJECT_ENTITY_DIRECTORIES as readonly string[]).includes(entry.name)) {
+        for (const file of fs.readdirSync(path.join(directory, entry.name))) {
+          if (!files.has(`${entry.name}/${file}`)) removeWithRetry(path.join(directory, entry.name, file));
+        }
+      } else if (!(entry.isFile() && entry.name === "project.json")) {
+        removeWithRetry(path.join(directory, entry.name));
+      }
     }
   }
+  for (const entry of fs.readdirSync(projectRoot)) {
+    if (!desired.has(entry)) removeWithRetry(path.join(projectRoot, entry));
+  }
   fsyncDirectory(projectRoot);
+}
+
+function writeProjectTree(projectRoot: string, domain: ProjectDomainState): void {
+  syncProjectTree(projectRoot, domain);
 }
 
 function readProjectTreeAt(projectRoot: string, rootId: string): ProjectDomainState {
@@ -565,7 +640,12 @@ function atomicWriteJson(filePath: string, value: unknown): void {
   } finally {
     fs.closeSync(descriptor);
   }
-  fs.renameSync(temporary, filePath);
+  try {
+    withFsRetry(() => fs.renameSync(temporary, filePath));
+  } catch (error) {
+    try { fs.rmSync(temporary, { force: true }); } catch { /* keep original error */ }
+    throw error;
+  }
   fs.chmodSync(filePath, 0o600);
   fsyncDirectory(path.dirname(filePath));
 }
@@ -588,6 +668,33 @@ function fsyncDirectory(directory: string): void {
   } finally {
     if (descriptor !== undefined) fs.closeSync(descriptor);
   }
+}
+
+const TRANSIENT_FS_CODES = new Set(["EPERM", "EBUSY", "EACCES", "ENOTEMPTY", "EMFILE", "ENFILE"]);
+let fsRetryPolicy = { attempts: process.platform === "win32" ? 8 : 1, initialDelayMs: 25, maxDelayMs: 500 };
+
+/** Test hook: lets non-Windows tests exercise the Windows retry/backoff path. */
+export function setProjectStoreFsRetryPolicyForTests(policy: Partial<typeof fsRetryPolicy>): () => void {
+  const previous = fsRetryPolicy;
+  fsRetryPolicy = { ...previous, ...policy };
+  return () => { fsRetryPolicy = previous; };
+}
+
+export function withFsRetry<T>(operation: () => T): T {
+  let delay = fsRetryPolicy.initialDelayMs;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return operation();
+    } catch (error: any) {
+      if (attempt >= fsRetryPolicy.attempts || !TRANSIENT_FS_CODES.has(error?.code)) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);
+      delay = Math.min(delay * 2, fsRetryPolicy.maxDelayMs);
+    }
+  }
+}
+
+function removeWithRetry(target: string): void {
+  withFsRetry(() => fs.rmSync(target, { recursive: true, force: true }));
 }
 
 function clone<T>(value: T): T {

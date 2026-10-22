@@ -104,7 +104,7 @@ test("CTX-M15/M16: actual imported encoder serving is attributed, query-free and
     for (const diagnostics of ["none", "summary", "debug"]) {
       const result = await manager.query({ schema:"pkm.retrieval.query/v1", requestId:`${phase}-${diagnostics}`,
         text:`measure latency for ${sentinel}`, level:"l1-source", scope:{ capabilityId:sentinel.toString() },
-        topK:5, route:"lexical", generation:{ mode:"latest-ready" }, diagnostics, deadlineMs:30000 });
+        topK:5, route:"semantic", generation:{ mode:"latest-ready" }, diagnostics, deadlineMs:30000 });
       assert(result.hits.length > 0);
       for (const hit of result.hits) {
         assert.equal(hit.serving.packageId, identity);

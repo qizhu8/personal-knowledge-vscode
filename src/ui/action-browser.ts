@@ -65,7 +65,7 @@ export async function actionRequest(context: vscode.ExtensionContext, method: st
   const started = Date.now();
   return new Promise((resolve, reject) => {
     const child = execFile(runtime.python, [path.join(context.extensionPath, "resources", "action_modules.py"), "--api", getStorePath()],
-      { timeout: 30000, maxBuffer: 2 * 1024 * 1024, windowsHide: true }, (error, stdout) => {
+      { timeout: 30000, maxBuffer: 2 * 1024 * 1024, windowsHide: true, env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" } }, (error, stdout) => {
         if (error) return reject(new Error(`Action service failed: ${error.message}`));
         try {
           const result = JSON.parse(stdout);
@@ -117,40 +117,14 @@ export function initializeActionChat(context: vscode.ExtensionContext): void {
   context.subscriptions.push(participant);
 }
 
-export function openActionWorkbench(context: vscode.ExtensionContext, runId?: string, actionId?: string, library = false): void {
+export function openActionWorkbenchTab(context: vscode.ExtensionContext, runId?: string, actionId?: string, library = false): void {
   checkActionAccess();
   if (runId && !/^action_run_[0-9a-f]{32}$/.test(runId)) throw new Error("Invalid Action Run.");
   if (actionId && !/^[a-z][a-z0-9_.-]{2,100}$/.test(actionId)) throw new Error("Invalid Action identity.");
   const panel = vscode.window.createWebviewPanel("personalKnowledge.actions", "Action Workbench", vscode.ViewColumn.One,
     { enableScripts: true, retainContextWhenHidden: true });
-  const nonce = randomBytes(24).toString("hex");
-  const icons = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "dist", "webview", "codicon.css"));
-  let document = fs.readFileSync(path.join(context.extensionPath, "resources", "action-workbench.html"), "utf8");
-  if (library) document = document.replace("initialView=vscode?.getState()||null",
-    "initialView={...(vscode?.getState()||{}),libraryOpen:true}");
-  if (runId) document = document.replace("initialView=vscode?.getState()||null",
-    `initialView={...(vscode?.getState()||{}),currentRun:${JSON.stringify(runId)}}`);
-  else if (actionId) document = document.replace("initialView=vscode?.getState()||null",
-    `initialView={targetAction:${JSON.stringify(actionId)}}`);
-  panel.webview.html = document.replace("<head>", `<head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; font-src ${panel.webview.cspSource}; style-src ${panel.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';"><link rel="stylesheet" href="${icons}">`)
-    .replace(/<script>/g, `<script nonce="${nonce}">`);
-  const listener = panel.webview.onDidReceiveMessage(async message => {
-    if (typeof message?.requestId !== "string" || typeof message?.method !== "string") return;
-    try {
-      if (message.method === "show_choices") {
-        checkActionAccess();
-        const runId = message.params?.run_id;
-        if (typeof runId !== "string" || !/^action_run_[0-9a-f]{32}$/.test(runId)) throw new Error("Invalid Action Run.");
-        if (actionChatAvailable) await vscode.commands.executeCommand("workbench.action.chat.open", { query: `@pkm-actions ${runId}` });
-        await panel.webview.postMessage({ requestId: message.requestId, result: { ok: true, inline_chat: !actionChatAvailable } });
-        return;
-      }
-      const result = await workbenchRequest(context, message.method, { ...(message.params || {}) });
-      await panel.webview.postMessage({ requestId: message.requestId, result });
-    } catch (error) {
-      await panel.webview.postMessage({ requestId: message.requestId, result: { ok: false, error: (error as Error).message } });
-    }
-  });
+  panel.webview.html = actionWorkbenchHtml(panel.webview, context, runId, actionId, library);
+  const listener = panel.webview.onDidReceiveMessage(message => handleActionWorkbenchMessage(context, message, response => panel.webview.postMessage(response)));
   panel.onDidDispose(() => listener.dispose());
   context.subscriptions.push(panel, listener);
 }
@@ -250,4 +224,53 @@ export async function openActionWorkbenchInBrowser(context: vscode.ExtensionCont
   server.allowOrigin(external.origin);
   external.hash = `${local.hash}&launch=${randomUUID()}`;
   if (!await vscode.env.openExternal(vscode.Uri.parse(external.toString()))) throw new Error("The browser could not open the Action Workbench.");
+}
+/** Legacy commands focus the main panel; the standalone renderer is retained for compatibility/tests. */
+export function openActionWorkbench(context: vscode.ExtensionContext, runId?: string, actionId?: string, library = false): void {
+  checkActionAccess();
+  if (runId && !/^action_run_[0-9a-f]{32}$/.test(runId)) throw new Error("Invalid Action Run.");
+  if (actionId && !/^[a-z][a-z0-9_.-]{2,100}$/.test(actionId)) throw new Error("Invalid Action identity.");
+  void vscode.commands.executeCommand("personalKnowledge.openEmbeddedActions", { runId, actionId, library });
+}
+
+function actionWorkbenchHtml(webview: vscode.Webview, context: vscode.ExtensionContext, runId?: string, actionId?: string, library = false): string {
+  const nonce = randomBytes(24).toString("hex");
+  const icons = webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "dist", "webview", "codicon.css"));
+  let document = fs.readFileSync(path.join(context.extensionPath, "resources", "action-workbench.html"), "utf8");
+  if (library) document = document.replace("initialView=vscode?.getState()||null",
+    "initialView={...(vscode?.getState()||{}),libraryOpen:true}");
+  if (runId) document = document.replace("initialView=vscode?.getState()||null",
+    `initialView={...(vscode?.getState()||{}),currentRun:${JSON.stringify(runId)}}`);
+  else if (actionId) document = document.replace("initialView=vscode?.getState()||null",
+    `initialView={targetAction:${JSON.stringify(actionId)}}`);
+  return document.replace("<head>", `<head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; font-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';"><link rel="stylesheet" href="${icons}">`)
+    .replace(/<script>/g, `<script nonce="${nonce}">`);
+}
+
+export async function handleActionWorkbenchMessage(context: vscode.ExtensionContext, message: any, respond: (message: any) => unknown): Promise<void> {
+  if (typeof message?.requestId !== "string" || typeof message?.method !== "string") return;
+  try {
+    if (message.method === "show_choices") {
+      checkActionAccess();
+      const runId = message.params?.run_id;
+      if (typeof runId !== "string" || !/^action_run_[0-9a-f]{32}$/.test(runId)) throw new Error("Invalid Action Run.");
+      if (actionChatAvailable) await vscode.commands.executeCommand("workbench.action.chat.open", { query: `@pkm-actions ${runId}` });
+      await respond({ requestId: message.requestId, result: { ok: true, inline_chat: !actionChatAvailable } });
+      return;
+    }
+    const result = await workbenchRequest(context, message.method, { ...(message.params || {}) });
+    await respond({ requestId: message.requestId, result });
+  } catch (error) {
+    await respond({ requestId: message.requestId, result: { ok: false, error: (error as Error).message } });
+  }
+}
+
+export function renderEmbeddedActionWorkbench(webview: vscode.Webview, context: vscode.ExtensionContext, snapshot: unknown): string {
+  checkActionAccess();
+  const state = JSON.stringify(snapshot || {}).replace(/</g, "\\u003c");
+  const html = actionWorkbenchHtml(webview, context);
+  const bridge = `let embeddedState=${state};const acquireVsCodeApi=()=>({getState:()=>embeddedState,setState:value=>{value={...value,libraryOpen:!!document.getElementById('action-library')?.open};embeddedState=value;parent.postMessage({channel:'pkm-actions',type:'state',state:value},'*');return value},postMessage:message=>parent.postMessage({channel:'pkm-actions',type:'request',message},'*')});
+window.addEventListener('message',event=>{if(event.source!==parent||event.data?.channel!=='pkm-actions-control')return;if(event.data.command==='snapshot'){graph.name=document.getElementById('name').value;saveView();parent.postMessage({channel:'pkm-actions',type:'snapshot',state:embeddedState},'*')}});
+window.addEventListener('load',()=>{document.addEventListener('input',()=>{graph.name=document.getElementById('name').value;queueMicrotask(saveView)});const library=document.getElementById('action-library');if(library)new MutationObserver(()=>saveView()).observe(library,{attributes:true,attributeFilter:['open']})});`;
+  return html.replace(/(<script nonce="[a-f0-9]+">)/, (_, script) => script + bridge);
 }

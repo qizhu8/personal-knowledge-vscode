@@ -46,6 +46,24 @@ heading/shared-condition contexts remain separate. The 100-candidate boundary
 admits or excludes whole dependency groups, never orphaned passages or prefixes.
 Private, trashed, removed or changed revisions cannot materialize; send-time
 validation checks the current physical source again.
+Materialization takes the display title from that verified source rather than
+trusting a provider's display label to declare its format. Empty or over-512-unit
+titles fail explicitly without emitting content or invalid candidate metadata.
+
+Result admission binds the original request/route, source scope (including an
+explicit empty allowlist), content filter, generation policy and top-K. Duplicate
+source IDs/ranks, non-finite timings/scores and string-coerced identities are
+rejected. The current worker result schema contains L1 sources only: asking it
+for `l2-passage` fails before dispatch instead of relabelling a source result.
+Materialized candidates must match the physical source URI/type, revision and
+complete body, or the exact original UTF-16 passage range/hash and parent identity.
+
+`subscription` is also an origin filter: broker/subscription-URI sources retain
+their concrete upstream Skill/Note/Research/Script type, read-only status and
+source-scope restrictions. Host canonical hashing/materialization uses the same
+upstream type as the worker while retaining the original index-event fingerprint.
+It neither relabels all subscribed content as Skills nor bypasses local source
+freshness checks. These compatibility cases run against the real pinned worker.
 
 This closes the lexical worker-to-Chat identity mismatch and large-source
 transport gap. It does not establish general provider admission, model-generated
@@ -175,8 +193,11 @@ labelled condition blocks, and prose accompanying split tables remain required
 original contexts. Oversized required contexts refuse dependent evidence rather
 than inject an unqualified metric. Valid JSON root arrays preserve whole entities;
 root objects with one records array also retain other root properties as shared
-conditions, including conditions appearing after that array. Invalid JSON is
-explicitly unavailable. RST sources identified by `.rst` source URI/label or a
+conditions, including conditions appearing after that array. Multiple root
+arrays and duplicate root keys (including escaped spellings of the same key)
+stay one original atomic object; oversized objects refuse rather than dropping
+an uncertain condition array or key scope. Invalid explicitly declared JSON is
+unavailable, never silently reclassified as prose. RST sources identified by `.rst` source URI/label or a
 recognized overlined title use a conservative section path: adornment styles
 define hierarchy, ancestor introductions, document preambles and same-scope
 shared-condition sections remain required context. Original literal/directive
@@ -185,7 +206,26 @@ indented adornments are not headings. Oversized RST sections or required context
 are refused, not paragraph-sliced. Includes, raw directives, substitutions and
 cross-document roles explicitly refuse refinement rather than execute or omit
 unresolved dependencies. This is a bounded RST subset, not a general RST renderer.
-Unsupported multi-array structures, Scripts, Recipes and
+Explicit `.csv`/`.tsv` source URIs or labels route long sources to deterministic
+whole-record refinement. The original first record is required header context
+for each selected data record. Delimiters, escaped quotes and embedded quoted
+newlines are scanned without changing original offsets, BOM or line endings.
+At least two header columns and equal record widths are required; malformed
+quoting or widths refuse the entire table, not just the failing tail. Oversized
+records or required headers are refused rather than clipped. There is no
+delimiter/header guessing for prose or headerless data.
+Recognized explicit formats take precedence in source URI, then source label,
+then type suffix order, before content heuristics. Explicit `.md`/`.markdown`
+and `.rst` formats also apply to Script/file sources. Code files beginning with
+`[` or `{` do not become inferred JSON; Markdown does not acquire JSON entity
+scopes merely because its entire text parses as JSON. Only otherwise-untyped
+JSON-looking text retains the warned original-prose fallback on invalid JSON.
+The code lexical subset retains the complete prefix before its first recognized
+symbol as mandatory original context, preserving module imports and recorded
+conditions there. An oversized required prefix refuses the dependent symbol
+instead of silently discarding it. This is not resolution of arbitrary
+cross-symbol references or module-level bindings split into separate symbols.
+Unsupported multi-array structures, Scripts without a recognized format, Recipes and
 unknown kinds remain atomic; oversized units are refused instead of slicing
 their prefix. This is not a general code parser or proof that all
 cross-section shared test conditions are complete.
@@ -220,7 +260,15 @@ snapshot, retain their upstream source URI and read-only marker, and never
 refresh/fetch the remote subscription. Removed/private entries or changed bytes
 cannot satisfy an earlier handle. Read identities support up to 2,048 characters;
 search queries remain limited to 512, and identities are never silently shortened.
-Recipe reads remain complete bounded structured definitions, not text ranges.
+Small Recipe reads retain their complete structured `definition`, `metadata`,
+revision and executable digest. When that result would exceed 16,000 serialized
+characters, the same read returns a version/hash-pinned JSON text preview and
+the exact source-range contract above. Its source text is the serialized
+`id`, `revision`, `executableDigest`, `definition` and `metadata` record, not the
+worker's indexed body. Revision or metadata/body changes invalidate old handles,
+even if the executable digest stays unchanged. Range fragments are read-only
+evidence, not executable Recipes; they never create or resume Runs. Trashed or
+removed Recipes cannot satisfy earlier handles.
 
 Verification uses [passage tests](../../tests/test-retrieval-passages.js),
 [real local source-range tests](../../tests/test-knowledge-source-ranges.js)
@@ -379,6 +427,13 @@ Browser gates use installed Playwright or `PKM_PLAYWRIGHT_PATH`; the host gate
 requires VS Code test-electron, packaging tools and DISPLAY/Xvfb. It isolates
 HOME as well as user data, because the account MCP binding otherwise overrides
 the configured Knowledge Root. It does not replace the user's installed build.
+When the installed browser is a headless-shell-only or custom installation, set
+`PKM_CHROMIUM_EXECUTABLE` to that existing executable for the installed-host gate.
+The runner forwards this explicit path into the isolated Host rather than forcing
+Playwright's full Chromium executable path (which may not be installed). Without
+an explicit executable, Playwright uses its normal browser selection; its browser
+cache must be accessible under the isolated HOME or an explicit
+`PLAYWRIGHT_BROWSERS_PATH`. No browser or model is downloaded by these gates.
 The default-worker audit independently verifies unchanged corpus generation
 and query-free metrics under all diagnostics levels.
 Local Chat history and its explicit retrieval audit receipts are not a training

@@ -109,7 +109,7 @@ export function validateHarnessReport(chat: ApiConversation, reply: ChatMessage,
   };
   if (report.supersedes && !reports.some(previous => previous.id === report.supersedes && previous.kind === kind)) throw new Error("supersedes must reference an earlier report of the same kind in this task.");
   for (const id of report.sourceInputIds || []) if (!chat.messages.some(message =>
-    message.id === id && message.role === "user" && message.taskId === reply.taskId && !message.workerEventIds?.length)) {
+    message.id === id && message.role === "user" && message.taskId === reply.taskId && !message.workerEventIds?.length && !message.portalReview)) {
     throw new Error(`Source input ${id} is not a user input in this task.`);
   }
   if (new Set(report.evidenceCallIds).size !== (report.evidenceCallIds?.length || 0)) throw new Error("Evidence call identities must not be duplicated.");
@@ -124,6 +124,11 @@ export function validateHarnessReport(chat: ApiConversation, reply: ChatMessage,
   });
   if (kind === "task") {
     if (!report.goal || !report.sourceInputIds?.length) throw new Error("Task reports require a goal and sourceInputIds; they do not complete the managed Task.");
+    const latest = currentHarnessTask(chat);
+    if (latest && report.supersedes !== latest.id) throw new Error(`Task updates must supersede the latest task report ${latest.id}; read session_info before reconciling a stale summary.`);
+    const latestInput = [...chat.messages].reverse().find(message =>
+      message.taskId === reply.taskId && message.role === "user" && !message.workerEventIds?.length && !message.portalReview);
+    if (latestInput && !report.sourceInputIds.includes(latestInput.id)) throw new Error(`Task reports must reference the latest user input ${latestInput.id}; reconcile newer requirements before updating the working state.`);
   } else if (kind === "planning") {
     if (!Array.isArray(args.possibilities) || args.possibilities.length > 128) throw new Error("Planning requires at most 128 explicitly reported possibilities; an empty list means direct execution.");
     const possibilities = args.possibilities.map(value => {
@@ -202,7 +207,7 @@ export function createHarnessReportTool(chat: ApiConversation, reply: ChatMessag
   const array = { type:"array", maxItems:64, items:string };
   return {
     name:"record_harness",
-    description:"Record explicit public task state, planning summaries, Step lifecycle or validation evidence for this attempt. Not hidden reasoning. Does not execute an Action, alter Recipe authority or complete a managed Task. Use sourceInputIds from session_info for task reports, unambiguous terminal evidenceCallIds with available results for validation. A complete validation citing failed calls requires a reason explaining the expected failure or superseding successful evidence; tool completion alone never proves acceptance. Report Recipe Run/Stage together when known. Nest Steps with a stable parentStepId; start the parent first and finish children before completing it. Plans are optional: direct execution is allowed. Report ignored with its reason; report a new start for each attempt. Preserve prior failed evidence.",
+    description:"Record explicit public task state, planning summaries, Step lifecycle or validation evidence for this attempt. Not hidden reasoning. Does not execute an Action, alter Recipe authority or complete a managed Task. Use sourceInputIds from session_info for task reports, including the latest user input; updates must supersede the latest task report ID. Reconcile newer user requirements instead of replaying old summaries. Use unambiguous terminal evidenceCallIds with available results for validation. A complete validation citing failed calls requires a reason explaining the expected failure or superseding successful evidence; tool completion alone never proves acceptance. Report Recipe Run/Stage together when known. Nest Steps with a stable parentStepId; start the parent first and finish children before completing it. Plans are optional: direct execution is allowed. Report ignored with its reason; report a new start for each attempt. Preserve prior failed evidence.",
     parameters:{ type:"object", additionalProperties:false, required:["kind"], properties:{
       kind:{ type:"string", enum:["task", "planning", "step", "validation"] },
       recipeRunId:string, recipeStageId:string, stepId:string, parentStepId:string, goal:string,
@@ -230,6 +235,19 @@ export function currentHarnessTask(chat: ApiConversation): HarnessReport | undef
   return [...chat.messages].reverse().flatMap(message =>
     message.taskId === chat.sessionId ? [...message.harnessReports || []].reverse() : [])
     .find(report => report.kind === "task" && report.taskId === chat.sessionId && report.schema === "pkm.chat.harness-report/v1" && report.source === "agent-report");
+}
+
+export function currentHarnessTaskState(chat: ApiConversation) {
+  if (!chat.sessionId) return undefined;
+  const report = currentHarnessTask(chat);
+  const inputs = chat.messages.filter(message => message.taskId === chat.sessionId && message.role === "user" && !message.workerEventIds?.length && !message.portalReview);
+  const covered = inputs.reduce((last, input, index) => report?.sourceInputIds?.includes(input.id) ? index : last, -1);
+  return {
+    schema:"pkm.chat.task-working-state/v1" as const, taskId:chat.sessionId,
+    authority:"original-user-inputs-and-managed-task-recipe" as const,
+    report, pendingInputIds:inputs.slice(covered + 1).map(input => input.id),
+    note:"A report is an agent interpretation, not authorization or completion. Pending inputs are newer than its cited sources; reconcile the original instructions before relying on the report.",
+  };
 }
 
 export function activeHarnessBinding(reply: ChatMessage): HarnessBinding | undefined {

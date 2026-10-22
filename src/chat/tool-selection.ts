@@ -10,7 +10,7 @@ export interface ChatToolGroup {
 
 export function chatToolGroups(chat: ApiConversation,
   builtins: readonly { name: string; label: string; permission: string }[],
-  native: readonly { name: string; description: string }[]): ChatToolGroup[] {
+  native: readonly { name: string; description: string; managed?: boolean }[]): ChatToolGroup[] {
   const groups: ChatToolGroup[] = [{ id: "builtin", label: "Builtin", description: "PKM workspace and knowledge tools", tools: [] }];
   const enabled = (source: string, id: string, legacy: boolean) => chat.toolSelection
     ? !chat.toolSelection.disabledTools.includes(id) && !chat.toolSelection.disabledSources.includes(source)
@@ -21,11 +21,13 @@ export function chatToolGroups(chat: ApiConversation,
   const catalog = [...native];
   for (const name of chat.vscodeTools || []) if (!catalog.some(tool => tool.name === name)) catalog.push({ name, description: "Unavailable in this Host; no substitute will be used" });
   for (const tool of catalog) {
+    if (tool.name === "copilot_listDirectory" && groups[0].tools.some(item => item.name === "list_directory" && item.enabled)) continue;
     const namespace = /^mcp_([^_]+)_/.exec(tool.name)?.[1];
     const source = namespace ? `vscode:mcp:${namespace}` : "vscode:unknown";
     let group = groups.find(item => item.id === source);
-    if (!group) { group = { id: source, label: namespace ? `MCP namespace: ${namespace}` : "VS Code: unknown source",
-      description: "Native registry names; server/extension identity is not exposed by the public API", tools: [] }; groups.push(group); }
+    if (!group) { group = { id: source, label: tool.managed ? "PKM · Chat permissions" : namespace ? `MCP namespace: ${namespace}` : "VS Code: unknown source",
+      description: tool.managed ? "Configured PKM service; approvals stay in this Chat. Allow All skips ordinary tool approvals."
+        : "Native VS Code tools; independent host or extension confirmations may still appear under Allow All.", tools: [] }; groups.push(group); }
     group.tools.push({ id: `vscode:${tool.name}`, name: tool.name, label: tool.name, description: tool.description,
       enabled: enabled(source, `vscode:${tool.name}`, chat.vscodeTools === undefined || chat.vscodeTools.includes(tool.name)) });
   }

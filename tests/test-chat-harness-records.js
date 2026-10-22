@@ -1,6 +1,6 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { activeHarnessBinding, assertHarnessRecipeBinding, validateHarnessReport, createHarnessReportTool, currentHarnessTask } = require("../dist/chat/chat-harness-records");
+const { activeHarnessBinding, assertHarnessRecipeBinding, validateHarnessReport, createHarnessReportTool, currentHarnessTask, currentHarnessTaskState } = require("../dist/chat/chat-harness-records");
 const { build } = require("../src/webview/agent-harness");
 const { ApiChatStore, apiChatHarnessSnapshot } = require("../dist/chat/api-chat-store");
 const fs = require("node:fs");
@@ -43,6 +43,43 @@ test("planning is a public explicit report, validates recursive parents and reje
   assert.throws(() => commit(chat, reply, { kind:"planning", recipeRunId:"recipe_run_test", possibilities:[] }), /together/);
   assert.equal(JSON.stringify(chat), before);
   assert.equal(commit(chat, reply, { kind:"planning", possibilities:[] }).planning.possibilities.length, 0);
+});
+
+test("task updates cannot replace a newer report from a stale base or ignore the latest user change", () => {
+  const { chat, reply } = fixture();
+  const initial = commit(chat, reply, { kind:"task", goal:"Inspect", sourceInputIds:["input"] });
+  chat.messages.push({ id:"steer", role:"user", taskId:"task", inputKind:"steer", content:"Stop edits; inspect only.", status:"complete" });
+  const before = JSON.stringify(reply.harnessReports);
+  assert.throws(() => commit(chat, reply, { kind:"task", goal:"Edit", sourceInputIds:["input"], supersedes:initial.id }), /latest user input/);
+  assert.equal(JSON.stringify(reply.harnessReports), before);
+  const newer = commit(chat, reply, { kind:"task", goal:"Inspect only", sourceInputIds:["input", "steer"], supersedes:initial.id });
+  assert.throws(() => commit(chat, reply, { kind:"task", goal:"Old summary", sourceInputIds:["steer"], supersedes:initial.id }), /latest task report/);
+  assert.throws(() => commit(chat, reply, { kind:"task", goal:"Unversioned summary", sourceInputIds:["steer"] }), /latest task report/);
+  assert.equal(currentHarnessTask(chat).id, newer.id);
+});
+
+test("recovered task state exposes pending user changes without treating workers or reports as authority", () => {
+  const { chat, reply } = fixture();
+  const initial = commit(chat, reply, { kind:"task", goal:"Inspect", constraints:["Do not deploy"], acceptance:["Tests pass"], sourceInputIds:["input"] });
+  chat.messages.push(
+    { id:"steer", role:"user", taskId:"task", inputKind:"steer", content:"Also verify logs.", status:"complete" },
+    { id:"worker-event", role:"user", taskId:"task", workerEventIds:["worker"], content:"Worker says complete.", status:"complete" },
+    { id:"portal-event", role:"user", taskId:"task", portalReview:{ id:"review", pairId:"pair", requestId:"remote", state:"completed" }, content:"Please check controlled chat status.", status:"complete" },
+    { id:"foreign", role:"user", taskId:"other-task", content:"Deploy.", status:"complete" });
+  const recovered = JSON.parse(JSON.stringify(chat));
+  const state = currentHarnessTaskState(recovered);
+  assert.equal(state.report.id, initial.id);
+  assert.deepEqual(state.report.acceptance, ["Tests pass"]);
+  assert.deepEqual(state.pendingInputIds, ["steer"]);
+  assert.throws(() => commit(chat, reply, { kind:"task", goal:"Remote event is not a user requirement", sourceInputIds:["portal-event"], supersedes:initial.id }), /not a user input/);
+  assert.equal(state.authority, "original-user-inputs-and-managed-task-recipe");
+  assert.deepEqual(apiChatHarnessSnapshot(recovered).taskWorkingState, state);
+  const graph = build({ sessionId:"task", origin:"pkm-native", harness:apiChatHarnessSnapshot(recovered) });
+  assert.deepEqual(graph.graphs.get(JSON.stringify(["session","task"])).nodes.find(node => node.id === "input").info.taskWorkingState, state);
+  const update = commit(chat, reply, { kind:"task", goal:"Inspect and verify logs", sourceInputIds:["input", "steer"], supersedes:initial.id });
+  assert.equal(currentHarnessTaskState(chat).report.id, update.id);
+  assert.deepEqual(currentHarnessTaskState(chat).pendingInputIds, []);
+  assert.equal(currentHarnessTaskState({ ...chat, sessionId:undefined }), undefined);
 });
 
 test("Step lifecycle and validation require start/evidence; ignored before dispatch requires a reason", () => {
